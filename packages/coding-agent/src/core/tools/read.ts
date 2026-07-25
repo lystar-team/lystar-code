@@ -6,7 +6,7 @@ import { constants } from "fs";
 import { access as fsAccess, readFile as fsReadFile } from "fs/promises";
 import { type Static, Type } from "typebox";
 import { getReadmePath } from "../../config.ts";
-import { keyHint, keyText } from "../../modes/interactive/components/keybinding-hints.ts";
+import { formatToolSummary } from "../../modes/interactive/components/tool-summary.ts";
 import { getLanguageFromPath, highlightCode, type Theme } from "../../modes/interactive/theme/theme.ts";
 import { processImage } from "../../utils/image-process.ts";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
@@ -71,9 +71,21 @@ function formatReadLineRange(args: ReadRenderArgs | undefined, theme: Theme): st
 	return theme.fg("warning", `:${startLine}${endLine ? `-${endLine}` : ""}`);
 }
 
-function formatReadCall(args: ReadRenderArgs | undefined, theme: Theme, cwd: string): string {
+function formatReadCall(
+	args: ReadRenderArgs | undefined,
+	theme: Theme,
+	cwd: string,
+	options: { expanded: boolean; isPartial: boolean; isError: boolean },
+): string {
 	const pathDisplay = renderToolPath(str(args?.file_path ?? args?.path), theme, cwd);
-	return `${theme.fg("toolTitle", theme.bold("read"))} ${pathDisplay}${formatReadLineRange(args, theme)}`;
+	return formatToolSummary({
+		icon: "≡",
+		subject: `${pathDisplay}${formatReadLineRange(args, theme)}`,
+		expanded: options.expanded,
+		isPartial: options.isPartial,
+		isError: options.isError,
+		labels: { running: "正在读取", success: "已读取", error: "读取失败" },
+	});
 }
 
 function trimTrailingEmptyLines(lines: string[]): string[] {
@@ -141,24 +153,20 @@ function formatCompactReadCall(
 	classification: CompactReadClassification,
 	args: ReadRenderArgs | undefined,
 	theme: Theme,
+	options: { expanded: boolean; isPartial: boolean; isError: boolean },
 ): string {
-	const expandHint = theme.fg("dim", ` (${keyText("app.tools.expand")} to expand)`);
-	if (classification.kind === "skill") {
-		return (
-			theme.fg("customMessageLabel", `\x1b[1m[skill]\x1b[22m `) +
-			theme.fg("customMessageText", classification.label) +
-			formatReadLineRange(args, theme) +
-			expandHint
-		);
-	}
-
-	return (
-		theme.fg("toolTitle", theme.bold(`read ${classification.kind}`)) +
-		" " +
-		theme.fg("accent", classification.label) +
-		formatReadLineRange(args, theme) +
-		expandHint
-	);
+	const subject =
+		classification.kind === "skill"
+			? `${theme.fg("customMessageLabel", "[skill]")} ${theme.fg("customMessageText", classification.label)}`
+			: `${theme.fg("accent", classification.label)}`;
+	return formatToolSummary({
+		icon: "≡",
+		subject: `${subject}${formatReadLineRange(args, theme)}`,
+		expanded: options.expanded,
+		isPartial: options.isPartial,
+		isError: options.isError,
+		labels: { running: "正在读取", success: "已读取", error: "读取失败" },
+	});
 }
 
 function formatReadResult(
@@ -179,13 +187,9 @@ function formatReadResult(
 	const lang = !isError && rawPath ? getLanguageFromPath(rawPath) : undefined;
 	const renderedLines = lang ? highlightCode(replaceTabs(output), lang) : output.split("\n");
 	const lines = trimTrailingEmptyLines(renderedLines);
-	const maxLines = options.expanded ? lines.length : 10;
+	const maxLines = options.expanded ? lines.length : 1;
 	const displayLines = lines.slice(0, maxLines);
-	const remaining = lines.length - maxLines;
 	let text = `\n${displayLines.map((line) => (lang ? replaceTabs(line) : theme.fg("toolOutput", replaceTabs(line)))).join("\n")}`;
-	if (remaining > 0) {
-		text += `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
-	}
 
 	const truncation = result.details?.truncation;
 	if (truncation?.truncated) {
@@ -329,10 +333,15 @@ export function createReadToolDefinition(
 		renderCall(args, theme, context) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 			const classification = !context.expanded ? getCompactReadClassification(args, context.cwd) : undefined;
+			const options = {
+				expanded: context.expanded,
+				isPartial: context.isPartial,
+				isError: context.isError,
+			};
 			text.setText(
 				classification
-					? formatCompactReadCall(classification, args, theme)
-					: formatReadCall(args, theme, context.cwd),
+					? formatCompactReadCall(classification, args, theme, options)
+					: formatReadCall(args, theme, context.cwd, options),
 			);
 			return text;
 		},

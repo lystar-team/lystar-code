@@ -2,7 +2,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, test } from "vitest";
 import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
 import { UserMessageComponent } from "../src/modes/interactive/components/user-message.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { getMarkdownTheme, initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
@@ -58,6 +58,33 @@ describe("AssistantMessageComponent", () => {
 		expect(rendered.includes(OSC133_ZONE_START)).toBe(false);
 		expect(rendered.includes(OSC133_ZONE_END)).toBe(false);
 		expect(rendered.includes(OSC133_ZONE_FINAL)).toBe(false);
+	});
+
+	test("hides configured markdown fences while keeping a code rail", () => {
+		initTheme("dark");
+		const component = new AssistantMessageComponent(
+			createAssistantMessage([{ type: "text", text: "```text\nstatus line\n```" }]),
+			false,
+			{ ...getMarkdownTheme(), showCodeBlockFences: false },
+		);
+
+		const rendered = stripAnsi(component.render(80).join("\n"));
+
+		expect(rendered).toContain("│ status line");
+		expect(rendered).not.toContain("```text");
+		expect(rendered).not.toContain("```");
+	});
+
+	test("shows thinking content by default", () => {
+		initTheme("dark");
+
+		const component = new AssistantMessageComponent(
+			createAssistantMessage([{ type: "thinking", thinking: "检查输入和边界条件" }]),
+		);
+		const rendered = stripAnsi(component.render(80).join("\n"));
+
+		expect(rendered).toContain("检查输入和边界条件");
+		expect(rendered).not.toContain("◆ 思考过程");
 	});
 
 	test("renders length stops as visible errors", () => {

@@ -3,15 +3,16 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 export const THINKING_LEVEL_ZH_CN: Record<ThinkingLevel, string> = {
 	off: "关闭",
 	minimal: "极简",
-	low: "轻量",
-	medium: "中等",
-	high: "深度",
+	low: "低",
+	medium: "中",
+	high: "高",
 	xhigh: "超高",
 	max: "最大",
 };
 
 export function formatThinkingLevel(level: ThinkingLevel | string): string {
-	return THINKING_LEVEL_ZH_CN[level as ThinkingLevel] ?? level;
+	const translated = THINKING_LEVEL_ZH_CN[level as ThinkingLevel];
+	return translated ? `${translated}(${level})` : level;
 }
 
 export const zhCN = {
@@ -38,7 +39,7 @@ export const zhCN = {
 	"status.operationAborted": "操作已取消",
 	"status.unknownError": "发生未知错误",
 	"status.maxOutput": "模型已达到最大输出长度，回复可能不完整。",
-	"status.thinkingLevel": "推理：{level}",
+	"status.thinkingLevel": "思考强度：{level}",
 	"update.changelog": "更新记录：",
 	"update.packages": "Package：",
 	"update.available": "发现新版本",

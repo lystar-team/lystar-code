@@ -381,9 +381,11 @@ export function generateDiffString(
 	oldContent: string,
 	newContent: string,
 	contextLines = 4,
-): { diff: string; firstChangedLine: number | undefined } {
+): { diff: string; firstChangedLine: number | undefined; additions: number; deletions: number } {
 	const parts = Diff.diffLines(oldContent, newContent);
 	const output: string[] = [];
+	let additions = 0;
+	let deletions = 0;
 
 	const oldLines = oldContent.split("\n");
 	const newLines = newContent.split("\n");
@@ -403,6 +405,8 @@ export function generateDiffString(
 		}
 
 		if (part.added || part.removed) {
+			if (part.added) additions += raw.length;
+			if (part.removed) deletions += raw.length;
 			// Capture the first changed line (in the new file)
 			if (firstChangedLine === undefined) {
 				firstChangedLine = newLineNum;
@@ -499,12 +503,14 @@ export function generateDiffString(
 		}
 	}
 
-	return { diff: output.join("\n"), firstChangedLine };
+	return { diff: output.join("\n"), firstChangedLine, additions, deletions };
 }
 
 export interface EditDiffResult {
 	diff: string;
 	firstChangedLine: number | undefined;
+	additions: number;
+	deletions: number;
 }
 
 export interface EditDiffError {

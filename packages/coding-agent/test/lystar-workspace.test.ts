@@ -1,4 +1,4 @@
-import { Container, Text } from "@earendil-works/pi-tui";
+import { Container, Text, visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
 	LystarWorkspace,
@@ -39,7 +39,7 @@ describe("LYStar workspace", () => {
 	it("keeps the composer and shortcuts when optional bottom content overflows", () => {
 		const optional = textContainer(...Array.from({ length: 10 }, (_, index) => `status-${index + 1}`));
 		const composer = textContainer("╭────╮", "│❯   │", "╰────╯");
-		const shortcuts = textContainer("Shift+Tab:推理  │  Escape:取消");
+		const shortcuts = textContainer("Shift+Tab:思考强度  │  Esc:取消");
 		const workspace = new LystarWorkspace({
 			getHeight: () => 8,
 			header: textContainer("header"),
@@ -56,7 +56,7 @@ describe("LYStar workspace", () => {
 			"╭────╮",
 			"│❯   │",
 			"╰────╯",
-			"Shift+Tab:推理  │  Escape:取消",
+			"Shift+Tab:思考强度  │  Esc:取消",
 		]);
 	});
 
@@ -83,12 +83,46 @@ describe("LYStar workspace", () => {
 		expect(workspace.render(60).join("\n")).toContain("line-21");
 	});
 
+	it("reports the row inside a clicked scroll component", () => {
+		const execution = { render: () => ["summary", "detail-1", "detail-2"], invalidate: () => {} };
+		const chat = new Container();
+		chat.addChild(execution);
+		const workspace = new LystarWorkspace({
+			getHeight: () => 8,
+			header: textContainer("header"),
+			scrollContainers: [chat],
+			bottomContainers: [textContainer("editor")],
+			fullscreen: true,
+		});
+
+		workspace.render(40);
+
+		expect(workspace.getComponentHitAtScreenRow(1)).toEqual({ component: execution, row: 0 });
+		expect(workspace.getComponentHitAtScreenRow(2)).toEqual({ component: execution, row: 1 });
+	});
+
+	it("keeps context usage visible when the header is narrow", () => {
+		const header = new WorkspaceHeader(() => ({
+			path: "~/very/long/project/path/that/needs/truncation",
+			context: "上下文 64.2%  ·  82k/128k",
+		}));
+
+		const line = stripAnsi(header.render(40)[0]);
+
+		expect(line).toContain("上下文 64.2%  ·  82k/128k");
+		expect(visibleWidth(line)).toBeLessThanOrEqual(40);
+	});
+
 	it("renders the Grok-style workspace header and composer", () => {
-		const header = new WorkspaceHeader(() => ({ path: "~/project", session: "任务一", context: "9.5k / 128k" }));
+		const header = new WorkspaceHeader(() => ({
+			path: "~/project",
+			session: "任务一",
+			context: "上下文 7.4%  ·  9.5k/128k",
+		}));
 		const editor = textContainer("────────────────", "  修复登录流程", "────────────────");
 		const composer = new WorkspaceComposer({
 			editor,
-			getInfo: () => "claude-sonnet-4  ·  推理：深度  ·  项目已信任",
+			getInfo: () => "claude-sonnet-4  ·  思考强度：高(high)  ·  项目已信任",
 			fullscreen: true,
 		});
 
@@ -97,10 +131,21 @@ describe("LYStar workspace", () => {
 
 		expect(headerLines).toHaveLength(1);
 		expect(headerLines[0]).toContain("~/project  ·  任务一");
-		expect(headerLines[0]).toContain("9.5k / 128k");
+		expect(headerLines[0]).toContain("上下文 7.4%  ·  9.5k/128k");
 		expect(composerLines[0]).toMatch(/^╭─+╮$/);
 		expect(composerLines[1]).toContain("│❯ 修复登录流程");
-		expect(composerLines[2]).toContain("claude-sonnet-4  ·  推理：深度  ·  项目已信任");
+		expect(composerLines[2]).toContain("claude-sonnet-4  ·  思考强度：高(high)  ·  项目已信任");
 		expect(composerLines[2]).toMatch(/^╰─+ .* ╯$/);
+	});
+
+	it("centers the prompt arrow beside multiline input", () => {
+		const editor = textContainer("────────────────", "  第一行", "  第二行", "  第三行", "────────────────");
+		const composer = new WorkspaceComposer({ editor, getInfo: () => "", fullscreen: true });
+
+		const lines = composer.render(40).map(stripAnsi);
+
+		expect(lines[1]).toContain("│  第一行");
+		expect(lines[2]).toContain("│❯ 第二行");
+		expect(lines[3]).toContain("│  第三行");
 	});
 });

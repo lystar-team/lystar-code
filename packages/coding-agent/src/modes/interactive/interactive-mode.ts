@@ -505,8 +505,8 @@ export class InteractiveMode {
 		this.shortcutContainer.addChild(
 			new Text(
 				[
-					`${theme.bold(theme.fg("text", keyDisplayText("app.thinking.cycle")))}${theme.fg("dim", " 推理")}`,
-					`${theme.bold(theme.fg("text", keyDisplayText("app.interrupt")))}${theme.fg("dim", ` ${t("workspace.interrupt")}`)}`,
+					`${theme.bold(theme.fg("text", keyDisplayText("app.thinking.cycle")))}${theme.fg("dim", " 思考强度")}`,
+					`${theme.bold(theme.fg("text", keyDisplayText("app.interrupt").replaceAll("Escape", "Esc")))}${theme.fg("dim", ` ${t("workspace.interrupt")}`)}`,
 					`${theme.bold(theme.fg("text", keyDisplayText("app.tools.expand")))}${theme.fg("dim", ` ${t("workspace.expand")}`)}`,
 					`${theme.bold(theme.fg("text", "/"))}${theme.fg("dim", ` ${t("workspace.commands")}`)}`,
 				].join(theme.fg("dim", "  │  ")),
@@ -527,7 +527,6 @@ export class InteractiveMode {
 			mouse: alternateScreen && (options.mouse ?? lystarSettings.settings.mouse),
 		});
 		if (alternateScreen) this.defaultEditor.setPaddingX(Math.max(2, editorPaddingX));
-		this.footer.setHidden(alternateScreen);
 		const composer = new WorkspaceComposer({
 			editor: this.editorContainer,
 			fullscreen: alternateScreen,
@@ -800,10 +799,11 @@ export class InteractiveMode {
 			const usage = this.session.getContextUsage();
 			const used = usage?.tokens === null || usage?.tokens === undefined ? "?" : formatTokens(usage.tokens);
 			const available = usage ? formatTokens(usage.contextWindow) : "?";
+			const percent = usage?.percent === null || usage?.percent === undefined ? "?" : `${usage.percent.toFixed(1)}%`;
 			return {
 				path: this.formatDisplayPath(this.sessionManager.getCwd()),
 				session: this.sessionManager.getSessionName(),
-				context: `${used} / ${available}`,
+				context: `上下文 ${percent}  ·  ${used}/${available}`,
 			};
 		});
 		this.headerContainer.addChild(this.builtInHeader);
@@ -1061,6 +1061,7 @@ export class InteractiveMode {
 		return {
 			...getMarkdownTheme(),
 			codeBlockIndent: this.settingsManager.getCodeBlockIndent(),
+			showCodeBlockFences: this.settingsManager.getShowMarkdownCodeBlockFences(),
 		};
 	}
 
@@ -2583,8 +2584,14 @@ export class InteractiveMode {
 				if (this.workspace.isNewContentIndicatorRow(mouse.row)) {
 					this.workspace.scrollToBottom();
 				} else {
-					const component = this.workspace.getComponentAtScreenRow(mouse.row);
-					if (component && isExpandable(component)) {
+					const hit = this.workspace.getComponentHitAtScreenRow(mouse.row);
+					const component = hit?.component;
+					const rowToggle = component as Component & { isExpansionToggleRow?: (row: number) => boolean };
+					if (
+						component &&
+						isExpandable(component) &&
+						(rowToggle.isExpansionToggleRow === undefined || rowToggle.isExpansionToggleRow(hit?.row ?? -1))
+					) {
 						const expanded = !(this.componentExpansion.get(component) ?? this.toolOutputExpanded);
 						this.componentExpansion.set(component, expanded);
 						component.setExpanded(expanded);
@@ -3081,8 +3088,7 @@ export class InteractiveMode {
 
 			case "tool_execution_update": {
 				const component = this.pendingTools.get(event.toolCallId);
-				if (component) {
-					component.updateResult({ ...event.partialResult, isError: false }, true);
+				if (component?.updateResult({ ...event.partialResult, isError: false }, true)) {
 					this.ui.requestRender();
 				}
 				break;
@@ -3288,6 +3294,7 @@ export class InteractiveMode {
 		switch (message.role) {
 			case "bashExecution": {
 				const component = new BashExecutionComponent(message.command, this.ui, message.excludeFromContext);
+				component.setExpanded(this.toolOutputExpanded);
 				if (message.output) {
 					component.appendOutput(message.output);
 				}
@@ -3819,11 +3826,11 @@ export class InteractiveMode {
 	private cycleThinkingLevel(): void {
 		const newLevel = this.session.cycleThinkingLevel();
 		if (newLevel === undefined) {
-			this.showStatus("当前模型不支持推理");
+			this.showStatus("当前模型不支持思考");
 		} else {
 			this.footer.invalidate();
 			this.updateEditorBorderColor();
-			this.showStatus(`推理级别：${formatThinkingLevel(newLevel)}`);
+			this.showStatus(`思考强度：${formatThinkingLevel(newLevel)}`);
 		}
 	}
 
@@ -3838,7 +3845,7 @@ export class InteractiveMode {
 				this.updateEditorBorderColor();
 				const thinkingStr =
 					result.model.reasoning && result.thinkingLevel !== "off"
-						? `（推理：${formatThinkingLevel(result.thinkingLevel)}）`
+						? `（思考强度：${formatThinkingLevel(result.thinkingLevel)}）`
 						: "";
 				this.showStatus(`已切换到 ${result.model.name || result.model.id}${thinkingStr}`);
 				void this.maybeWarnAboutAnthropicSubscriptionAuth(result.model);
@@ -4209,6 +4216,7 @@ export class InteractiveMode {
 					defaultProjectTrust: this.settingsManager.getDefaultProjectTrust(),
 					editorPaddingX: this.settingsManager.getEditorPaddingX(),
 					outputPad: this.settingsManager.getOutputPad(),
+					showMarkdownCodeBlockFences: this.settingsManager.getShowMarkdownCodeBlockFences(),
 					autocompleteMaxVisible: this.settingsManager.getAutocompleteMaxVisible(),
 					quietStartup: this.settingsManager.getQuietStartup(),
 					clearOnShrink: this.settingsManager.getClearOnShrink(),
@@ -4333,6 +4341,10 @@ export class InteractiveMode {
 							this.ui.requestRender();
 							return;
 						}
+						this.rebuildChatFromMessages();
+					},
+					onShowMarkdownCodeBlockFencesChange: (shown) => {
+						this.settingsManager.setShowMarkdownCodeBlockFences(shown);
 						this.rebuildChatFromMessages();
 					},
 					onAutocompleteMaxVisibleChange: (maxVisible) => {
@@ -5840,7 +5852,7 @@ export class InteractiveMode {
 | \`${clear}\` | 第一次清空输入，第二次退出 |
 | \`${exit}\` | 输入框为空时退出 |
 | \`${suspend}\` | 挂起到后台 |
-| \`${cycleThinkingLevel}\` | 切换推理级别 |
+| \`${cycleThinkingLevel}\` | 切换思考强度 |
 | \`${cycleModelForward}\` / \`${cycleModelBackward}\` | 切换模型 |
 | \`${selectModel}\` | 打开模型选择器 |
 | \`${expandTools}\` | 展开或折叠 Tool 输出 |
@@ -5969,6 +5981,7 @@ export class InteractiveMode {
 
 			// Create UI component for display
 			this.bashComponent = new BashExecutionComponent(command, this.ui, excludeFromContext);
+			this.bashComponent.setExpanded(this.toolOutputExpanded);
 			if (this.session.isStreaming) {
 				this.pendingMessagesContainer.addChild(this.bashComponent);
 				this.pendingBashComponents.push(this.bashComponent);
@@ -5997,6 +6010,7 @@ export class InteractiveMode {
 		// Normal execution path (possibly with custom operations)
 		const isDeferred = this.session.isStreaming;
 		this.bashComponent = new BashExecutionComponent(command, this.ui, excludeFromContext);
+		this.bashComponent.setExpanded(this.toolOutputExpanded);
 
 		if (isDeferred) {
 			// Show in pending area when agent is streaming
@@ -6012,8 +6026,7 @@ export class InteractiveMode {
 			const result = await this.session.executeBash(
 				command,
 				(chunk) => {
-					if (this.bashComponent) {
-						this.bashComponent.appendOutput(chunk);
+					if (this.bashComponent?.appendOutput(chunk)) {
 						this.ui.requestRender();
 					}
 				},

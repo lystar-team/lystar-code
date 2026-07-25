@@ -9,13 +9,13 @@ const THINKING_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
 };
 
 const LEVEL_DESCRIPTIONS: Record<ThinkingLevel, string> = {
-	off: "关闭推理",
-	minimal: "极简推理（约 1k tokens）",
-	low: "轻量推理（约 2k tokens）",
-	medium: "中等推理（约 8k tokens）",
-	high: "深度推理（约 16k tokens）",
-	xhigh: "超高推理（约 32k tokens）",
-	max: "最大推理",
+	off: "关闭思考",
+	minimal: "极简思考（约 1k tokens）",
+	low: "低强度思考（约 2k tokens）",
+	medium: "中等强度思考（约 8k tokens）",
+	high: "高强度思考（约 16k tokens）",
+	xhigh: "超高强度思考（约 32k tokens）",
+	max: "最大强度思考",
 };
 
 /**

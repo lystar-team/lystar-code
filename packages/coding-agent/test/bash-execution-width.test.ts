@@ -32,6 +32,20 @@ describe("BashExecutionComponent width handling (#2569)", () => {
 		initTheme(undefined, false);
 	});
 
+	it("keeps successful output collapsed until explicitly expanded", () => {
+		const { stub } = createTuiStub(80);
+		const component = new BashExecutionComponent("generate output", stub);
+		for (let index = 1; index <= 100; index++) component.appendOutput(`line-${index}\n`);
+		component.setComplete(0, false);
+
+		const collapsed = component.render(80);
+		expect(collapsed).toHaveLength(1);
+		expect(collapsed.join("\n")).not.toContain("line-100");
+
+		component.setExpanded(true);
+		expect(component.render(80).join("\n")).toContain("line-100");
+	});
+
 	it("collapsed preview lines respect render-time width, not construction-time width", () => {
 		const wideWidth = 200;
 		const narrowWidth = 80;

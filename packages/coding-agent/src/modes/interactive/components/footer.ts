@@ -4,6 +4,7 @@ import type { AgentSession } from "../../../core/agent-session.ts";
 import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { addUsageToTotals, createUsageTotals } from "../../../core/usage-totals.ts";
+import { formatThinkingLevel } from "../../../locales/zh-CN.ts";
 import { theme } from "../theme/theme.ts";
 
 /**
@@ -49,7 +50,6 @@ export function formatCwdForFooter(cwd: string, home: string | undefined): strin
  */
 export class FooterComponent implements Component {
 	private autoCompactEnabled = true;
-	private hidden = false;
 	private session: AgentSession;
 	private footerData: ReadonlyFooterDataProvider;
 
@@ -64,10 +64,6 @@ export class FooterComponent implements Component {
 
 	setAutoCompactEnabled(enabled: boolean): void {
 		this.autoCompactEnabled = enabled;
-	}
-
-	setHidden(hidden: boolean): void {
-		this.hidden = hidden;
 	}
 
 	/**
@@ -87,7 +83,6 @@ export class FooterComponent implements Component {
 	}
 
 	render(width: number): string[] {
-		if (this.hidden) return [];
 		const state = this.session.state;
 
 		// Calculate cumulative usage from ALL session entries (not just post-compaction messages)
@@ -155,8 +150,8 @@ export class FooterComponent implements Component {
 		const autoIndicator = this.autoCompactEnabled ? "（自动）" : "";
 		const contextPercentDisplay =
 			contextPercent === "?"
-				? `?/${formatTokens(contextWindow)}${autoIndicator}`
-				: `${contextPercent}%/${formatTokens(contextWindow)}${autoIndicator}`;
+				? `上下文 ?/${formatTokens(contextWindow)}${autoIndicator}`
+				: `上下文 ${contextPercent}%/${formatTokens(contextWindow)}${autoIndicator}`;
 		if (contextPercentValue > 90) {
 			contextPercentStr = theme.fg("error", contextPercentDisplay);
 		} else if (contextPercentValue > 70) {
@@ -189,8 +184,7 @@ export class FooterComponent implements Component {
 		let rightSideWithoutProvider = modelName;
 		if (state.model?.reasoning) {
 			const thinkingLevel = state.thinkingLevel || "off";
-			rightSideWithoutProvider =
-				thinkingLevel === "off" ? `${modelName} • 思考关闭` : `${modelName} • ${thinkingLevel}`;
+			rightSideWithoutProvider = `${modelName} • 思考强度：${formatThinkingLevel(thinkingLevel)}`;
 		}
 
 		// Prepend the provider in parentheses if there are multiple providers and there's enough room

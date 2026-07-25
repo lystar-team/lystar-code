@@ -14,7 +14,7 @@ describe("settings zh-CN display values", () => {
 		expect(item.values).toEqual(["one-at-a-time", "all"]);
 		expect(item.formatValue(item.currentValue)).toBe("逐条处理");
 		expect(localizeSettingValue("autocompact", "true")).toBe("开启");
-		expect(localizeSettingValue("thinking", "high")).toBe("深度");
+		expect(localizeSettingValue("thinking", "high")).toBe("高(high)");
 		expect(localizeSettingValue("default-project-trust", "ask")).toBe("每次询问");
 	});
 });

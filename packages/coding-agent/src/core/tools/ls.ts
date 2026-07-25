@@ -3,7 +3,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
 import nodePath from "path";
 import { type Static, Type } from "typebox";
-import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
+import { formatToolSummary } from "../../modes/interactive/components/tool-summary.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { pathExists, resolveToCwd } from "./path-utils.ts";
@@ -49,14 +49,22 @@ export interface LsToolOptions {
 	operations?: LsOperations;
 }
 
-function formatLsCall(args: { path?: string; limit?: number } | undefined, theme: Theme, cwd: string): string {
-	const limit = args?.limit;
+function formatLsCall(
+	args: { path?: string; limit?: number } | undefined,
+	theme: Theme,
+	cwd: string,
+	options: { expanded: boolean; isPartial: boolean; isError: boolean },
+): string {
 	const pathDisplay = renderToolPath(str(args?.path), theme, cwd, { emptyFallback: "." });
-	let text = `${theme.fg("toolTitle", theme.bold("ls"))} ${pathDisplay}`;
-	if (limit !== undefined) {
-		text += theme.fg("toolOutput", ` (limit ${limit})`);
-	}
-	return text;
+	return formatToolSummary({
+		icon: "≡",
+		subject: pathDisplay,
+		expanded: options.expanded,
+		isPartial: options.isPartial,
+		isError: options.isError,
+		labels: { running: "正在列出", success: "已列出", error: "列出失败" },
+		detail: args?.limit !== undefined ? `上限 ${args.limit}` : undefined,
+	});
 }
 
 function formatLsResult(
@@ -67,18 +75,15 @@ function formatLsResult(
 	options: ToolRenderResultOptions,
 	theme: Theme,
 	showImages: boolean,
+	isError: boolean,
 ): string {
+	if (!options.expanded && !isError) return "";
 	const output = getTextOutput(result, showImages).trim();
 	let text = "";
 	if (output) {
 		const lines = output.split("\n");
-		const maxLines = options.expanded ? lines.length : 20;
-		const displayLines = lines.slice(0, maxLines);
-		const remaining = lines.length - maxLines;
-		text += `\n${displayLines.map((line) => theme.fg("toolOutput", line)).join("\n")}`;
-		if (remaining > 0) {
-			text += `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
-		}
+		const displayLines = options.expanded ? lines : lines.slice(0, 1);
+		text += `\n${displayLines.map((line) => theme.fg(isError ? "error" : "toolOutput", line)).join("\n")}`;
 	}
 
 	const entryLimit = result.details?.entryLimitReached;
@@ -209,12 +214,18 @@ export function createLsToolDefinition(
 		},
 		renderCall(args, theme, context) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			text.setText(formatLsCall(args, theme, context.cwd));
+			text.setText(
+				formatLsCall(args, theme, context.cwd, {
+					expanded: context.expanded,
+					isPartial: context.isPartial,
+					isError: context.isError,
+				}),
+			);
 			return text;
 		},
 		renderResult(result, options, theme, context) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			text.setText(formatLsResult(result as any, options, theme, context.showImages));
+			text.setText(formatLsResult(result as any, options, theme, context.showImages, context.isError));
 			return text;
 		},
 	};

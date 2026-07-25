@@ -86,10 +86,13 @@ function createSession(options: {
 	return session as unknown as AgentSession;
 }
 
-function createFooterData(providerCount: number): ReadonlyFooterDataProvider {
+function createFooterData(
+	providerCount: number,
+	extensionStatuses: ReadonlyMap<string, string> = new Map(),
+): ReadonlyFooterDataProvider {
 	const provider = {
 		getGitBranch: () => "main",
-		getExtensionStatuses: () => new Map<string, string>(),
+		getExtensionStatuses: () => extensionStatuses,
 		getAvailableProviderCount: () => providerCount,
 		onBranchChange: (callback: () => void) => {
 			void callback;
@@ -149,6 +152,22 @@ describe("FooterComponent width handling", () => {
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 		}
+	});
+
+	it("shows cwd, context percentage, thinking level, and extension status", () => {
+		const session = createSession({
+			sessionName: "",
+			reasoning: true,
+			thinkingLevel: "high",
+		});
+		const footer = new FooterComponent(session, createFooterData(1, new Map([["openviking", "OV ✓"]])));
+
+		const lines = footer.render(120).map(stripAnsi);
+
+		expect(lines[0]).toContain("/tmp/project (main)");
+		expect(lines[1]).toContain("上下文 12.3%/200k");
+		expect(lines[1]).toContain("思考强度：高(high)");
+		expect(lines[2]).toContain("OV ✓");
 	});
 
 	it("includes summary and tool result usage in the total cost", () => {

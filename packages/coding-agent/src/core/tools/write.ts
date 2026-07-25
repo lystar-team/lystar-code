@@ -1,9 +1,10 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Container, Text } from "@earendil-works/pi-tui";
-import { mkdir as fsMkdir, writeFile as fsWriteFile } from "fs/promises";
+import { diffLines } from "diff";
+import { mkdir as fsMkdir, readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
 import { dirname } from "path";
 import { type Static, Type } from "typebox";
-import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
+import { formatToolSummary } from "../../modes/interactive/components/tool-summary.ts";
 import { getLanguageFromPath, highlightCode, type Theme } from "../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
@@ -27,11 +28,20 @@ export interface WriteOperations {
 	writeFile: (absolutePath: string, content: string) => Promise<void>;
 	/** Create directory recursively */
 	mkdir: (dir: string) => Promise<void>;
+	/** Read existing content when available so the UI can report create/update statistics. */
+	readFile?: (absolutePath: string) => Promise<Buffer>;
+}
+
+export interface WriteToolDetails {
+	operation: "created" | "updated" | "written";
+	additions: number;
+	deletions: number;
 }
 
 const defaultWriteOperations: WriteOperations = {
 	writeFile: (path, content) => fsWriteFile(path, content, "utf-8"),
 	mkdir: (dir) => fsMkdir(dir, { recursive: true }).then(() => {}),
+	readFile: (path) => fsReadFile(path),
 };
 
 export interface WriteToolOptions {
@@ -128,9 +138,31 @@ function trimTrailingEmptyLines(lines: string[]): string[] {
 	return lines.slice(0, end);
 }
 
+function countLines(text: string): number {
+	if (!text) return 0;
+	return text.endsWith("\n") ? text.split("\n").length - 1 : text.split("\n").length;
+}
+
+function getWriteDetails(previous: string | undefined, content: string, canRead: boolean): WriteToolDetails {
+	if (!canRead) {
+		return { operation: "written", additions: countLines(content), deletions: 0 };
+	}
+	if (previous === undefined) {
+		return { operation: "created", additions: countLines(content), deletions: 0 };
+	}
+
+	let additions = 0;
+	let deletions = 0;
+	for (const part of diffLines(previous, content)) {
+		if (part.added) additions += part.count ?? countLines(part.value);
+		if (part.removed) deletions += part.count ?? countLines(part.value);
+	}
+	return { operation: "updated", additions, deletions };
+}
+
 function formatWriteCall(
 	args: { path?: string; file_path?: string; content?: string } | undefined,
-	options: ToolRenderResultOptions,
+	options: ToolRenderResultOptions & { isError: boolean; details?: WriteToolDetails },
 	theme: Theme,
 	cache: WriteHighlightCache | undefined,
 	cwd: string,
@@ -138,24 +170,29 @@ function formatWriteCall(
 	const rawPath = str(args?.file_path ?? args?.path);
 	const fileContent = str(args?.content);
 	const pathDisplay = renderToolPath(rawPath, theme, cwd);
-	let text = `${theme.fg("toolTitle", theme.bold("write"))} ${pathDisplay}`;
+	const additions = options.details?.additions ?? countLines(fileContent ?? "");
+	const deletions = options.details?.deletions ?? 0;
+	const detail = deletions > 0 ? `+${additions} -${deletions}` : `+${additions}`;
+	const successLabel = options.details?.operation === "created" ? "已创建" : "已写入";
+	let text = formatToolSummary({
+		icon: options.details?.operation === "created" ? "+" : "✎",
+		subject: pathDisplay,
+		expanded: options.expanded,
+		isPartial: options.isPartial,
+		isError: options.isError,
+		labels: { running: "正在写入", success: successLabel, error: "写入失败" },
+		detail,
+	});
 
 	if (fileContent === null) {
 		text += `\n\n${theme.fg("error", "[invalid content arg - expected string]")}`;
-	} else if (fileContent) {
+	} else if (fileContent && options.expanded) {
 		const lang = rawPath ? getLanguageFromPath(rawPath) : undefined;
 		const renderedLines = lang
 			? (cache?.highlightedLines ?? highlightCode(replaceTabs(normalizeDisplayText(fileContent)), lang))
 			: normalizeDisplayText(fileContent).split("\n");
 		const lines = trimTrailingEmptyLines(renderedLines);
-		const totalLines = lines.length;
-		const maxLines = options.expanded ? lines.length : 10;
-		const displayLines = lines.slice(0, maxLines);
-		const remaining = lines.length - maxLines;
-		text += `\n\n${displayLines.map((line) => (lang ? line : theme.fg("toolOutput", replaceTabs(line)))).join("\n")}`;
-		if (remaining > 0) {
-			text += `${theme.fg("muted", `\n... (${remaining} more lines, ${totalLines} total,`)} ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
-		}
+		text += `\n\n${lines.map((line) => (lang ? line : theme.fg("toolOutput", replaceTabs(line)))).join("\n")}`;
 	}
 
 	return text;
@@ -181,7 +218,7 @@ function formatWriteResult(
 export function createWriteToolDefinition(
 	cwd: string,
 	options?: WriteToolOptions,
-): ToolDefinition<typeof writeSchema, undefined> {
+): ToolDefinition<typeof writeSchema, WriteToolDetails> {
 	const ops = options?.operations ?? defaultWriteOperations;
 	return {
 		name: "write",
@@ -210,6 +247,16 @@ export function createWriteToolDefinition(
 				};
 
 				throwIfAborted();
+				let previousContent: string | undefined;
+				if (ops.readFile) {
+					try {
+						previousContent = (await ops.readFile(absolutePath)).toString("utf-8");
+					} catch {
+						previousContent = undefined;
+					}
+				}
+				throwIfAborted();
+
 				// Create parent directories if needed.
 				await ops.mkdir(dir);
 				throwIfAborted();
@@ -220,7 +267,7 @@ export function createWriteToolDefinition(
 
 				return {
 					content: [{ type: "text", text: `Successfully wrote ${content.length} bytes to ${path}` }],
-					details: undefined,
+					details: getWriteDetails(previousContent, content, ops.readFile !== undefined),
 				};
 			});
 		},
@@ -230,7 +277,7 @@ export function createWriteToolDefinition(
 			const fileContent = str(renderArgs?.content);
 			const component =
 				(context.lastComponent as WriteCallRenderComponent | undefined) ?? new WriteCallRenderComponent();
-			if (fileContent !== null) {
+			if (context.expanded && fileContent !== null) {
 				component.cache = context.argsComplete
 					? rebuildWriteHighlightCacheFull(rawPath, fileContent)
 					: updateWriteHighlightCacheIncremental(component.cache, rawPath, fileContent);
@@ -240,7 +287,12 @@ export function createWriteToolDefinition(
 			component.setText(
 				formatWriteCall(
 					renderArgs,
-					{ expanded: context.expanded, isPartial: context.isPartial },
+					{
+						expanded: context.expanded,
+						isPartial: context.isPartial,
+						isError: context.isError,
+						details: context.resultDetails as WriteToolDetails | undefined,
+					},
 					theme,
 					component.cache,
 					context.cwd,

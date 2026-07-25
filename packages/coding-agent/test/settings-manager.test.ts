@@ -25,6 +25,14 @@ describe("SettingsManager", () => {
 		}
 	});
 
+	describe("defaults", () => {
+		it("shows thinking content unless the user explicitly hides it", () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getHideThinkingBlock()).toBe(false);
+		});
+	});
+
 	describe("preserves externally added settings", () => {
 		it("should preserve enabledModels when changing thinking level", async () => {
 			// Create initial settings file
@@ -394,6 +402,20 @@ describe("SettingsManager", () => {
 
 			Object.defineProperty(process, "platform", { value: "linux" });
 			expect(SettingsManager.inMemory().getExternalEditorCommand()).toBe("nano");
+		});
+	});
+
+	describe("markdown code fences", () => {
+		it("defaults to hidden and persists the renderer preference", async () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getShowMarkdownCodeBlockFences()).toBe(false);
+			manager.setShowMarkdownCodeBlockFences(true);
+			await manager.flush();
+
+			expect(manager.getShowMarkdownCodeBlockFences()).toBe(true);
+			const savedSettings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+			expect(savedSettings.markdown.showCodeBlockFences).toBe(true);
 		});
 	});
 

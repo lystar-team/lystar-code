@@ -832,7 +832,7 @@ class TreeList implements Component {
 				result = theme.fg("dim", `[模型：${entry.modelId}]`);
 				break;
 			case "thinking_level_change":
-				result = theme.fg("dim", `[推理：${formatThinkingLevel(entry.thinkingLevel)}]`);
+				result = theme.fg("dim", `[思考强度：${formatThinkingLevel(entry.thinkingLevel)}]`);
 				break;
 			case "custom":
 				result = theme.fg("dim", `[自定义：${entry.customType}]`);

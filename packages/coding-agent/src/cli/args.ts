@@ -276,7 +276,7 @@ ${chalk.bold("选项：")}
   --no-builtin-tools, -nbt       默认禁用内置工具，保留 Extension 和自定义工具
   --tools, -t <tools>            启用的工具名称，逗号分隔
   --exclude-tools, -xt <tools>   禁用的工具名称，逗号分隔
-  --thinking <level>             思考级别：off、minimal、low、medium、high、xhigh、max
+  --thinking <level>             思考强度：off、minimal、low、medium、high、xhigh、max
   --extension, -e <path>         加载 Extension 文件，可重复使用
   --no-extensions, -ne           关闭 Extension 自动发现，显式 -e 仍生效
   --skill <path>                 加载 Skill 文件或目录，可重复使用
@@ -328,7 +328,7 @@ ${chalk.bold("示例：")}
   # 使用带 Provider 前缀的模型
   ${APP_NAME} --model openai/gpt-4o "Help me refactor this code"
 
-  # 使用模型及思考级别简写
+  # 使用模型及思考强度简写
   ${APP_NAME} --model sonnet:high "Solve this complex problem"
 
   # 限制 Ctrl+P 循环模型
@@ -337,10 +337,10 @@ ${chalk.bold("示例：")}
   # 使用 glob 限制到指定 Provider
   ${APP_NAME} --models "github-copilot/*"
 
-  # 为循环模型固定思考级别
+  # 为循环模型固定思考强度
   ${APP_NAME} --models sonnet:high,haiku:low
 
-  # 使用指定思考级别启动
+  # 使用指定思考强度启动
   ${APP_NAME} --thinking high "Solve this complex problem"
 
   # 只读模式

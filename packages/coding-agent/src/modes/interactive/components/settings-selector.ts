@@ -32,13 +32,13 @@ const SETTINGS_SUBMENU_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
 };
 
 const THINKING_DESCRIPTIONS: Record<ThinkingLevel, string> = {
-	off: "关闭推理",
-	minimal: "极简推理（约 1k tokens）",
-	low: "轻量推理（约 2k tokens）",
-	medium: "中等推理（约 8k tokens）",
-	high: "深度推理（约 16k tokens）",
-	xhigh: "超高推理（约 32k tokens）",
-	max: "最大推理",
+	off: "关闭思考",
+	minimal: "极简思考（约 1k tokens）",
+	low: "低强度思考（约 2k tokens）",
+	medium: "中等强度思考（约 8k tokens）",
+	high: "高强度思考（约 16k tokens）",
+	xhigh: "超高强度思考（约 32k tokens）",
+	max: "最大强度思考",
 };
 
 const DEFAULT_PROJECT_TRUST_VALUES: DefaultProjectTrust[] = ["ask", "always", "never"];
@@ -68,6 +68,7 @@ export interface SettingsConfig {
 	showHardwareCursor: boolean;
 	editorPaddingX: number;
 	outputPad: 0 | 1;
+	showMarkdownCodeBlockFences: boolean;
 	autocompleteMaxVisible: number;
 	quietStartup: boolean;
 	defaultProjectTrust: DefaultProjectTrust;
@@ -99,6 +100,7 @@ export interface SettingsCallbacks {
 	onShowHardwareCursorChange: (enabled: boolean) => void;
 	onEditorPaddingXChange: (padding: number) => void;
 	onOutputPadChange: (padding: 0 | 1) => void;
+	onShowMarkdownCodeBlockFencesChange: (shown: boolean) => void;
 	onAutocompleteMaxVisibleChange: (maxVisible: number) => void;
 	onQuietStartupChange: (enabled: boolean) => void;
 	onDefaultProjectTrustChange: (defaultProjectTrust: DefaultProjectTrust) => void;
@@ -570,8 +572,8 @@ export class SettingsSelectorComponent extends Container {
 				currentValue: config.thinkingLevel,
 				submenu: (currentValue, done) =>
 					new SelectSubmenu(
-						"思考级别",
-						"选择支持思考的模型使用的推理深度",
+						"思考强度",
+						"选择支持思考的模型使用的思考强度",
 						config.availableThinkingLevels.map((level) => ({
 							value: level,
 							label: formatThinkingLevel(level),
@@ -673,9 +675,18 @@ export class SettingsSelectorComponent extends Container {
 			values: ["0", "1"],
 		});
 
-		// Autocomplete max visible toggle (insert after output-padding)
 		const outputPaddingIndex = items.findIndex((item) => item.id === "output-padding");
 		items.splice(outputPaddingIndex + 1, 0, {
+			id: "markdown-code-fences",
+			label: "Markdown code fences",
+			description: "Show literal opening and closing markers around fenced code blocks",
+			currentValue: config.showMarkdownCodeBlockFences ? "true" : "false",
+			values: ["true", "false"],
+		});
+
+		// Autocomplete max visible toggle (insert after markdown-code-fences)
+		const markdownCodeFencesIndex = items.findIndex((item) => item.id === "markdown-code-fences");
+		items.splice(markdownCodeFencesIndex + 1, 0, {
 			id: "autocomplete-max-visible",
 			label: "Autocomplete max items",
 			description: "Max visible items in autocomplete dropdown (3-20)",
@@ -777,6 +788,9 @@ export class SettingsSelectorComponent extends Container {
 						break;
 					case "output-padding":
 						callbacks.onOutputPadChange(newValue === "0" ? 0 : 1);
+						break;
+					case "markdown-code-fences":
+						callbacks.onShowMarkdownCodeBlockFencesChange(newValue === "true");
 						break;
 					case "autocomplete-max-visible":
 						callbacks.onAutocompleteMaxVisibleChange(parseInt(newValue, 10));

@@ -768,6 +768,32 @@ describe("Markdown component", () => {
 		});
 	});
 
+	describe("Hidden code block fences", () => {
+		it("keeps a visual rail without rendering literal fence markers", () => {
+			const markdown = new Markdown("```text\nfirst line\nsecond line\n```", 0, 0, {
+				...defaultMarkdownTheme,
+				showCodeBlockFences: false,
+			});
+
+			const lines = markdown.render(80).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "").trimEnd());
+
+			assert.deepStrictEqual(lines, ["│ first line", "│ second line"]);
+			assert.ok(lines.every((line) => !line.includes("```")));
+		});
+
+		it("repeats the visual rail on wrapped code lines", () => {
+			const markdown = new Markdown("```text\nalpha beta gamma delta\n```", 0, 0, {
+				...defaultMarkdownTheme,
+				showCodeBlockFences: false,
+			});
+
+			const lines = markdown.render(12).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "").trimEnd());
+
+			assert.ok(lines.length > 1);
+			assert.ok(lines.every((line) => line.startsWith("│ ")));
+		});
+	});
+
 	describe("Spacing after code blocks", () => {
 		it("should have only one blank line between code block and following paragraph", () => {
 			const markdown = new Markdown(

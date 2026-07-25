@@ -226,6 +226,7 @@ When multiple sources specify a session directory, precedence is `--session-dir`
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `markdown.codeBlockIndent` | string | `"  "` | Indentation for code blocks |
+| `markdown.showCodeBlockFences` | boolean | `false` | Show literal opening and closing fence markers around code blocks |
 
 ### Resources
 

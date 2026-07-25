@@ -435,6 +435,8 @@ export interface ToolRenderContext<TState = any, TArgs = any> {
 	showImages: boolean;
 	/** Whether the current result is an error. */
 	isError: boolean;
+	/** Structured details from the latest partial or final result, when available. */
+	resultDetails?: unknown;
 }
 
 /**

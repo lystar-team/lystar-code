@@ -93,6 +93,8 @@ export interface MarkdownTheme {
 	highlightCode?: (code: string, lang?: string) => string[];
 	/** Prefix applied to each rendered code block line (default: "  ") */
 	codeBlockIndent?: string;
+	/** Whether fenced code blocks display their literal opening and closing markers (default: true). */
+	showCodeBlockFences?: boolean;
 }
 
 export interface MarkdownOptions {
@@ -376,21 +378,28 @@ export class Markdown implements Component {
 				break;
 
 			case "code": {
-				const indent = this.theme.codeBlockIndent ?? "  ";
-				lines.push(this.theme.codeBlockBorder(`\`\`\`${token.lang || ""}`));
+				const showFences = this.theme.showCodeBlockFences ?? true;
+				const linePrefix = showFences ? (this.theme.codeBlockIndent ?? "  ") : this.theme.codeBlockBorder("│ ");
+				const pushCodeLine = (line: string): void => {
+					if (showFences) {
+						lines.push(`${linePrefix}${line}`);
+						return;
+					}
+					const codeWidth = Math.max(1, width - visibleWidth(linePrefix));
+					for (const wrappedLine of wrapTextWithAnsi(line, codeWidth)) {
+						lines.push(`${linePrefix}${wrappedLine}`);
+					}
+				};
+				if (showFences) lines.push(this.theme.codeBlockBorder(`\`\`\`${token.lang || ""}`));
 				if (this.theme.highlightCode) {
 					const highlightedLines = this.theme.highlightCode(token.text, token.lang);
-					for (const hlLine of highlightedLines) {
-						lines.push(`${indent}${hlLine}`);
-					}
+					for (const hlLine of highlightedLines) pushCodeLine(hlLine);
 				} else {
-					// Split code by newlines and style each line
-					const codeLines = token.text.split("\n");
-					for (const codeLine of codeLines) {
-						lines.push(`${indent}${this.theme.codeBlock(codeLine)}`);
+					for (const codeLine of token.text.split("\n")) {
+						pushCodeLine(this.theme.codeBlock(codeLine));
 					}
 				}
-				lines.push(this.theme.codeBlockBorder("```"));
+				if (showFences) lines.push(this.theme.codeBlockBorder("```"));
 				if (nextTokenType && nextTokenType !== "space") {
 					lines.push(""); // Add spacing after code blocks (unless space token follows)
 				}

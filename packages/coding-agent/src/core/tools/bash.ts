@@ -1,11 +1,10 @@
 import { constants } from "node:fs";
 import { access as fsAccess } from "node:fs/promises";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { Container, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Container, Text } from "@earendil-works/pi-tui";
 import { spawn } from "child_process";
 import { type Static, Type } from "typebox";
-import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
-import { truncateToVisualLines } from "../../modes/interactive/components/visual-truncate.ts";
+import { formatToolSummary, getToolSummary } from "../../modes/interactive/components/tool-summary.ts";
 import { theme } from "../../modes/interactive/theme/theme.ts";
 import { waitForChildProcess } from "../../utils/child-process.ts";
 import {
@@ -196,39 +195,42 @@ export interface BashToolOptions {
 	spawnHook?: BashSpawnHook;
 }
 
-const BASH_PREVIEW_LINES = 5;
 const BASH_UPDATE_THROTTLE_MS = 100;
 
 type BashRenderState = {
 	startedAt: number | undefined;
 	endedAt: number | undefined;
-	interval: NodeJS.Timeout | undefined;
 };
 
-type BashResultRenderState = {
-	cachedWidth: number | undefined;
-	cachedLines: string[] | undefined;
-	cachedSkipped: number | undefined;
-};
-
-class BashResultRenderComponent extends Container {
-	state: BashResultRenderState = {
-		cachedWidth: undefined,
-		cachedLines: undefined,
-		cachedSkipped: undefined,
-	};
-}
+class BashResultRenderComponent extends Container {}
 
 function formatDuration(ms: number): string {
 	return `${(ms / 1000).toFixed(1)}s`;
 }
 
-function formatBashCall(args: { command?: string; timeout?: number } | undefined): string {
+function formatBashCall(
+	args: { command?: string; timeout?: number } | undefined,
+	options: {
+		expanded: boolean;
+		isPartial: boolean;
+		isError: boolean;
+		duration?: string;
+	},
+): string {
 	const command = str(args?.command);
 	const timeout = args?.timeout as number | undefined;
-	const timeoutSuffix = timeout ? theme.fg("muted", ` (timeout ${timeout}s)`) : "";
+	const timeoutSuffix = timeout ? `超时 ${timeout}s` : undefined;
 	const commandDisplay = command === null ? invalidArgText(theme) : command ? command : theme.fg("toolOutput", "...");
-	return theme.fg("toolTitle", theme.bold(`$ ${commandDisplay}`)) + timeoutSuffix;
+	const detail = [options.duration, timeoutSuffix].filter(Boolean).join("  ");
+	return formatToolSummary({
+		icon: "▣",
+		subject: commandDisplay,
+		expanded: options.expanded,
+		isPartial: options.isPartial,
+		isError: options.isError,
+		labels: { running: "正在运行", success: "已运行", error: "运行失败" },
+		detail: detail || undefined,
+	});
 }
 
 function rebuildBashResultRenderComponent(
@@ -239,10 +241,8 @@ function rebuildBashResultRenderComponent(
 	},
 	options: ToolRenderResultOptions,
 	showImages: boolean,
-	startedAt: number | undefined,
-	endedAt: number | undefined,
+	isError: boolean,
 ): void {
-	const state = component.state;
 	component.clear();
 
 	let output = getTextOutput(result as any, showImages).trim();
@@ -255,38 +255,22 @@ function rebuildBashResultRenderComponent(
 		}
 	}
 
+	if (!options.expanded) {
+		if (isError && output) {
+			const summary = getToolSummary(undefined);
+			summary.setText(theme.fg("error", output.split("\n").find((line) => line.trim()) ?? output));
+			component.addChild(summary);
+		}
+		return;
+	}
+
 	if (output) {
 		const styledOutput = output
 			.split("\n")
 			.map((line) => theme.fg("toolOutput", line))
 			.join("\n");
 
-		if (options.expanded) {
-			component.addChild(new Text(`\n${styledOutput}`, 0, 0));
-		} else {
-			component.addChild({
-				render: (width: number) => {
-					if (state.cachedLines === undefined || state.cachedWidth !== width) {
-						const preview = truncateToVisualLines(styledOutput, BASH_PREVIEW_LINES, width);
-						state.cachedLines = preview.visualLines;
-						state.cachedSkipped = preview.skippedCount;
-						state.cachedWidth = width;
-					}
-					if (state.cachedSkipped && state.cachedSkipped > 0) {
-						const hint =
-							theme.fg("muted", `... (${state.cachedSkipped} earlier lines,`) +
-							` ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
-						return ["", truncateToWidth(hint, width, "..."), ...(state.cachedLines ?? [])];
-					}
-					return ["", ...(state.cachedLines ?? [])];
-				},
-				invalidate: () => {
-					state.cachedWidth = undefined;
-					state.cachedLines = undefined;
-					state.cachedSkipped = undefined;
-				},
-			});
-		}
+		component.addChild(new Text(`\n${styledOutput}`, 0, 0));
 	}
 
 	if (truncation?.truncated || fullOutputPath) {
@@ -304,12 +288,6 @@ function rebuildBashResultRenderComponent(
 			}
 		}
 		component.addChild(new Text(`\n${theme.fg("warning", `[${warnings.join(". ")}]`)}`, 0, 0));
-	}
-
-	if (startedAt !== undefined) {
-		const label = options.isPartial ? "Elapsed" : "Took";
-		const endTime = endedAt ?? Date.now();
-		component.addChild(new Text(`\n${theme.fg("muted", `${label} ${formatDuration(endTime - startedAt)}`)}`, 0, 0));
 	}
 }
 
@@ -462,32 +440,28 @@ export function createBashToolDefinition(
 				state.startedAt = Date.now();
 				state.endedAt = undefined;
 			}
-			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			text.setText(formatBashCall(args));
-			return text;
+			if ((!context.isPartial || context.isError) && state.startedAt !== undefined) {
+				state.endedAt ??= Date.now();
+			}
+			const duration =
+				state.startedAt !== undefined && state.endedAt !== undefined
+					? formatDuration(state.endedAt - state.startedAt)
+					: undefined;
+			const summary = getToolSummary(context.lastComponent);
+			summary.setText(
+				formatBashCall(args, {
+					expanded: context.expanded,
+					isPartial: context.isPartial,
+					isError: context.isError,
+					duration,
+				}),
+			);
+			return summary;
 		},
 		renderResult(result, options, _theme, context) {
-			const state = context.state;
-			if (state.startedAt !== undefined && options.isPartial && !state.interval) {
-				state.interval = setInterval(() => context.invalidate(), 1000);
-			}
-			if (!options.isPartial || context.isError) {
-				state.endedAt ??= Date.now();
-				if (state.interval) {
-					clearInterval(state.interval);
-					state.interval = undefined;
-				}
-			}
 			const component =
 				(context.lastComponent as BashResultRenderComponent | undefined) ?? new BashResultRenderComponent();
-			rebuildBashResultRenderComponent(
-				component,
-				result as any,
-				options,
-				context.showImages,
-				state.startedAt,
-				state.endedAt,
-			);
+			rebuildBashResultRenderComponent(component, result as any, options, context.showImages, context.isError);
 			component.invalidate();
 			return component;
 		},

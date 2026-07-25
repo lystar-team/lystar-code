@@ -4,7 +4,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { spawn } from "child_process";
 import path from "path";
 import { type Static, Type } from "typebox";
-import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
+import { formatToolSummary } from "../../modes/interactive/components/tool-summary.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
@@ -56,21 +56,27 @@ export interface FindToolOptions {
 	operations?: FindOperations;
 }
 
-function formatFindCall(args: { pattern: string; path?: string; limit?: number } | undefined, theme: Theme): string {
+function formatFindCall(
+	args: { pattern: string; path?: string; limit?: number } | undefined,
+	theme: Theme,
+	options: { expanded: boolean; isPartial: boolean; isError: boolean },
+): string {
 	const pattern = str(args?.pattern);
 	const rawPath = str(args?.path);
 	const path = rawPath !== null ? shortenPath(rawPath || ".") : null;
-	const limit = args?.limit;
 	const invalidArg = invalidArgText(theme);
-	let text =
-		theme.fg("toolTitle", theme.bold("find")) +
-		" " +
+	const subject =
 		(pattern === null ? invalidArg : theme.fg("accent", pattern || "")) +
-		theme.fg("toolOutput", ` in ${path === null ? invalidArg : path}`);
-	if (limit !== undefined) {
-		text += theme.fg("toolOutput", ` (limit ${limit})`);
-	}
-	return text;
+		theme.fg("toolOutput", `  ${path === null ? invalidArg : path}`);
+	return formatToolSummary({
+		icon: "⌕",
+		subject,
+		expanded: options.expanded,
+		isPartial: options.isPartial,
+		isError: options.isError,
+		labels: { running: "正在查找", success: "已查找", error: "查找失败" },
+		detail: args?.limit !== undefined ? `上限 ${args.limit}` : undefined,
+	});
 }
 
 function formatFindResult(
@@ -81,18 +87,15 @@ function formatFindResult(
 	options: ToolRenderResultOptions,
 	theme: Theme,
 	showImages: boolean,
+	isError: boolean,
 ): string {
+	if (!options.expanded && !isError) return "";
 	const output = getTextOutput(result, showImages).trim();
 	let text = "";
 	if (output) {
 		const lines = output.split("\n");
-		const maxLines = options.expanded ? lines.length : 20;
-		const displayLines = lines.slice(0, maxLines);
-		const remaining = lines.length - maxLines;
-		text += `\n${displayLines.map((line) => theme.fg("toolOutput", line)).join("\n")}`;
-		if (remaining > 0) {
-			text += `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
-		}
+		const displayLines = options.expanded ? lines : lines.slice(0, 1);
+		text += `\n${displayLines.map((line) => theme.fg(isError ? "error" : "toolOutput", line)).join("\n")}`;
 	}
 
 	const resultLimit = result.details?.resultLimitReached;
@@ -358,12 +361,18 @@ export function createFindToolDefinition(
 		},
 		renderCall(args, theme, context) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			text.setText(formatFindCall(args, theme));
+			text.setText(
+				formatFindCall(args, theme, {
+					expanded: context.expanded,
+					isPartial: context.isPartial,
+					isError: context.isError,
+				}),
+			);
 			return text;
 		},
 		renderResult(result, options, theme, context) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			text.setText(formatFindResult(result as any, options, theme, context.showImages));
+			text.setText(formatFindResult(result as any, options, theme, context.showImages, context.isError));
 			return text;
 		},
 	};

@@ -246,7 +246,19 @@ describe("Coding Agent Tools", () => {
 
 			expect(getTextOutput(result)).toContain("Successfully wrote");
 			expect(getTextOutput(result)).toContain(testFile);
-			expect(result.details).toBeUndefined();
+			expect(result.details).toEqual({ operation: "created", additions: 1, deletions: 0 });
+		});
+
+		it("should report line changes when overwriting a file", async () => {
+			const testFile = join(testDir, "overwrite-test.txt");
+			writeFileSync(testFile, "one\ntwo\n");
+
+			const result = await writeTool.execute("test-call-overwrite", {
+				path: testFile,
+				content: "one\nthree\nfour\n",
+			});
+
+			expect(result.details).toEqual({ operation: "updated", additions: 2, deletions: 1 });
 		});
 
 		it("should create parent directories", async () => {
@@ -280,6 +292,7 @@ describe("Coding Agent Tools", () => {
 			expect(result.details.patch).toContain("@@");
 			expect(result.details.patch).toContain("-Hello, world!");
 			expect(result.details.patch).toContain("+Hello, testing!");
+			expect(result.details).toMatchObject({ additions: 1, deletions: 1 });
 			expect(applyPatch(originalContent, result.details.patch)).toBe("Hello, testing!");
 		});
 

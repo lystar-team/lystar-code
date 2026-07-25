@@ -4,6 +4,7 @@ import { createAllToolDefinitions, type ToolName } from "../../../core/tools/ind
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
 import { convertToPng } from "../../../utils/image-convert.ts";
 import { theme } from "../theme/theme.ts";
+import { formatToolSummary, getToolSummary } from "./tool-summary.ts";
 
 export interface ToolExecutionOptions {
 	showImages?: boolean;
@@ -59,8 +60,6 @@ export class ToolExecutionComponent extends Container {
 		this.imageWidthCells = options.imageWidthCells ?? 60;
 		this.ui = ui;
 		this.cwd = cwd;
-
-		this.addChild(new Spacer(1));
 
 		// Always create all shell variants. contentBox is used for default renderer-based composition.
 		// selfRenderContainer is used when the tool renders its own framing.
@@ -129,17 +128,35 @@ export class ToolExecutionComponent extends Container {
 			expanded: this.expanded,
 			showImages: this.showImages,
 			isError: this.result?.isError ?? false,
+			resultDetails: this.result?.details,
 		};
 	}
 
 	private createCallFallback(): Component {
-		return new Text(theme.fg("toolTitle", theme.bold(this.toolName)), 0, 0);
+		return new Text(
+			formatToolSummary({
+				icon: "◆",
+				subject: this.toolName,
+				expanded: this.expanded,
+				isPartial: this.isPartial,
+				isError: this.result?.isError ?? false,
+				labels: { running: "正在执行", success: "已执行", error: "执行失败" },
+			}),
+			0,
+			0,
+		);
 	}
 
 	private createResultFallback(): Component | undefined {
+		if (!this.expanded && !this.result?.isError) return undefined;
 		const output = this.getTextOutput();
 		if (!output) {
 			return undefined;
+		}
+		if (!this.expanded) {
+			const summary = getToolSummary(undefined);
+			summary.setText(theme.fg("error", output.split("\n").find((line) => line.trim()) ?? output));
+			return summary;
 		}
 		return new Text(theme.fg("toolOutput", output), 0, 0);
 	}
@@ -152,13 +169,11 @@ export class ToolExecutionComponent extends Container {
 	markExecutionStarted(): void {
 		this.executionStarted = true;
 		this.updateDisplay();
-		this.ui.requestRender();
 	}
 
 	setArgsComplete(): void {
 		this.argsComplete = true;
 		this.updateDisplay();
-		this.ui.requestRender();
 	}
 
 	updateResult(
@@ -168,11 +183,13 @@ export class ToolExecutionComponent extends Container {
 			isError: boolean;
 		},
 		isPartial = false,
-	): void {
+	): boolean {
 		this.result = result;
 		this.isPartial = isPartial;
-		this.updateDisplay();
+		const visibleChanged = !isPartial || this.expanded || !this.builtInToolDefinition;
+		if (visibleChanged) this.updateDisplay();
 		this.maybeConvertImagesForKitty();
+		return visibleChanged;
 	}
 
 	private maybeConvertImagesForKitty(): void {
@@ -203,6 +220,10 @@ export class ToolExecutionComponent extends Container {
 		this.updateDisplay();
 	}
 
+	isExpansionToggleRow(row: number): boolean {
+		return row === 0;
+	}
+
 	setShowImages(show: boolean): void {
 		this.showImages = show;
 		this.updateDisplay();
@@ -229,11 +250,7 @@ export class ToolExecutionComponent extends Container {
 				return [];
 			}
 
-			const lines: string[] = [];
-			if (contentLines.length > 0) {
-				lines.push("");
-				lines.push(...contentLines);
-			}
+			const lines: string[] = contentLines.length > 0 ? [...contentLines] : [];
 			for (let i = 0; i < this.imageComponents.length; i++) {
 				const spacer = this.imageSpacers[i];
 				if (spacer) {
@@ -250,14 +267,16 @@ export class ToolExecutionComponent extends Container {
 		return super.render(width);
 	}
 
+	private getBackgroundFn(): (text: string) => string {
+		return this.isPartial
+			? (text: string) => theme.bg("toolPendingBg", text)
+			: this.result?.isError
+				? (text: string) => theme.bg("toolErrorBg", text)
+				: (text: string) => theme.bg("toolSuccessBg", text);
+	}
+
 	private updateDisplay(): void {
-		const bgFn = !this.expanded
-			? (text: string) => text
-			: this.isPartial
-				? (text: string) => theme.bg("toolPendingBg", text)
-				: this.result?.isError
-					? (text: string) => theme.bg("toolErrorBg", text)
-					: (text: string) => theme.bg("toolSuccessBg", text);
+		const bgFn = this.getBackgroundFn();
 
 		let hasContent = false;
 		this.hideComponent = false;
@@ -365,7 +384,20 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private formatToolExecution(): string {
-		let text = theme.fg("toolTitle", theme.bold(this.toolName));
+		let text = formatToolSummary({
+			icon: "◆",
+			subject: this.toolName,
+			expanded: this.expanded,
+			isPartial: this.isPartial,
+			isError: this.result?.isError ?? false,
+			labels: { running: "正在执行", success: "已执行", error: "执行失败" },
+		});
+		if (!this.expanded) {
+			const output = this.getTextOutput();
+			return output
+				? `${text}\n${theme.fg("error", output.split("\n").find((line) => line.trim()) ?? output)}`
+				: text;
+		}
 		const content = JSON.stringify(this.args, null, 2);
 		if (content) {
 			text += `\n\n${content}`;

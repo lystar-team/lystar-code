@@ -4,6 +4,7 @@ import { constants } from "fs";
 import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
 import { type Static, Type } from "typebox";
 import { renderDiff } from "../../modes/interactive/components/diff.ts";
+import { formatToolSummary, getToolSummary } from "../../modes/interactive/components/tool-summary.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import {
@@ -65,6 +66,8 @@ export interface EditToolDetails {
 	patch: string;
 	/** Line number of the first change in the new file (for editor navigation) */
 	firstChangedLine?: number;
+	additions?: number;
+	deletions?: number;
 }
 
 /**
@@ -192,9 +195,36 @@ function getRenderablePreviewInput(args: RenderableEditArgs | undefined): { path
 	return null;
 }
 
-function formatEditCall(args: RenderableEditArgs | undefined, theme: Theme, cwd: string): string {
+function countRenderedDiff(diff: string): { additions: number; deletions: number } {
+	let additions = 0;
+	let deletions = 0;
+	for (const line of diff.split("\n")) {
+		if (/^\+\s*\d+\s/.test(line)) additions++;
+		if (/^-\s*\d+\s/.test(line)) deletions++;
+	}
+	return { additions, deletions };
+}
+
+function formatEditCall(
+	args: RenderableEditArgs | undefined,
+	preview: EditPreview | undefined,
+	theme: Theme,
+	cwd: string,
+	expanded: boolean,
+	isPartial: boolean,
+	isError: boolean,
+): string {
 	const pathDisplay = renderToolPath(str(args?.file_path ?? args?.path), theme, cwd);
-	return `${theme.fg("toolTitle", theme.bold("edit"))} ${pathDisplay}`;
+	const detail = preview && !("error" in preview) ? `+${preview.additions} -${preview.deletions}` : undefined;
+	return formatToolSummary({
+		icon: "✎",
+		subject: pathDisplay,
+		expanded,
+		isPartial,
+		isError: isError || Boolean(preview && "error" in preview),
+		labels: { running: "正在编辑", success: "已编辑", error: "编辑失败" },
+		detail,
+	});
 }
 
 function formatEditResult(
@@ -248,13 +278,17 @@ function buildEditCallComponent(
 	args: RenderableEditArgs | undefined,
 	theme: Theme,
 	cwd: string,
-	expanded: boolean,
+	options: { expanded: boolean; isPartial: boolean; isError: boolean },
 ): EditCallRenderComponent {
 	const previewIsError = component.preview && "error" in component.preview;
-	const showPreview = expanded || previewIsError;
-	component.setBgFn(showPreview ? getEditHeaderBg(component.preview, component.settledError, theme) : (text) => text);
+	const showPreview = options.expanded || previewIsError;
+	component.setBgFn(getEditHeaderBg(component.preview, component.settledError, theme));
 	component.clear();
-	component.addChild(new Text(formatEditCall(args, theme, cwd), 0, 0));
+	const summary = getToolSummary(undefined);
+	summary.setText(
+		formatEditCall(args, component.preview, theme, cwd, options.expanded, options.isPartial, options.isError),
+	);
+	component.addChild(summary);
 
 	if (!component.preview || !showPreview) {
 		return component;
@@ -359,7 +393,13 @@ export function createEditToolDefinition(
 							text: `Successfully replaced ${edits.length} block(s) in ${path}.`,
 						},
 					],
-					details: { diff: diffResult.diff, patch, firstChangedLine: diffResult.firstChangedLine },
+					details: {
+						diff: diffResult.diff,
+						patch,
+						firstChangedLine: diffResult.firstChangedLine,
+						additions: diffResult.additions,
+						deletions: diffResult.deletions,
+					},
 				};
 			});
 		},
@@ -388,7 +428,11 @@ export function createEditToolDefinition(
 				});
 			}
 
-			return buildEditCallComponent(component, args, theme, context.cwd, context.expanded);
+			return buildEditCallComponent(component, args, theme, context.cwd, {
+				expanded: context.expanded,
+				isPartial: context.isPartial,
+				isError: context.isError,
+			});
 		},
 		renderResult(result, _options, theme, context) {
 			const callComponent = context.state.callComponent;
@@ -401,10 +445,16 @@ export function createEditToolDefinition(
 			let changed = false;
 			if (callComponent) {
 				if (typeof resultDiff === "string") {
+					const fallbackStats = countRenderedDiff(resultDiff);
 					changed =
 						setEditPreview(
 							callComponent,
-							{ diff: resultDiff, firstChangedLine: typedResult.details?.firstChangedLine },
+							{
+								diff: resultDiff,
+								firstChangedLine: typedResult.details?.firstChangedLine,
+								additions: typedResult.details?.additions ?? fallbackStats.additions,
+								deletions: typedResult.details?.deletions ?? fallbackStats.deletions,
+							},
 							argsKey,
 						) || changed;
 				}
@@ -418,7 +468,11 @@ export function createEditToolDefinition(
 						context.args as RenderableEditArgs | undefined,
 						theme,
 						context.cwd,
-						context.expanded,
+						{
+							expanded: context.expanded,
+							isPartial: context.isPartial,
+							isError: context.isError,
+						},
 					);
 				}
 			}

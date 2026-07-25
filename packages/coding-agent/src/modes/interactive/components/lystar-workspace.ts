@@ -4,6 +4,11 @@ import { t } from "../../../locales/zh-CN.ts";
 import { stripAnsi } from "../../../utils/ansi.ts";
 import { theme } from "../theme/theme.ts";
 
+export interface WorkspaceComponentHit {
+	component: Component;
+	row: number;
+}
+
 interface RenderedComponentRange {
 	component: Component;
 	start: number;
@@ -30,13 +35,15 @@ export class WorkspaceHeader implements Component {
 		const location = state.session ? `${state.path}  ·  ${state.session}` : state.path;
 		const left = theme.fg("dim", location);
 		const right = theme.fg("text", state.context);
-		const leftWidth = visibleWidth(left);
 		const rightWidth = visibleWidth(right);
-		const statusLine =
-			leftWidth + rightWidth + 2 <= width
-				? `${left}${" ".repeat(width - leftWidth - rightWidth)}${right}`
-				: truncateToWidth(`${left}  ${right}`, width, theme.fg("dim", "..."));
-		return [statusLine];
+		if (rightWidth >= width) {
+			return [truncateToWidth(right, width, theme.fg("dim", "..."))];
+		}
+
+		const leftMaxWidth = Math.max(0, width - rightWidth - 2);
+		const visibleLeft = truncateToWidth(left, leftMaxWidth, theme.fg("dim", "..."));
+		const gap = " ".repeat(Math.max(0, width - visibleWidth(visibleLeft) - rightWidth));
+		return [`${visibleLeft}${gap}${right}`];
 	}
 }
 
@@ -66,9 +73,11 @@ export class WorkspaceComposer implements Component {
 		const body = bottomBorder > 0 ? lines.slice(1, bottomBorder) : lines;
 		const autocomplete = bottomBorder > 0 ? lines.slice(bottomBorder + 1) : [];
 		const border = (text: string) => theme.fg("borderMuted", text);
-		const framedBody = (body.length > 0 ? body : [""]).map((line, index) => {
+		const visibleBody = body.length > 0 ? body : [""];
+		const arrowRow = Math.floor(visibleBody.length / 2);
+		const framedBody = visibleBody.map((line, index) => {
 			let content = truncateToWidth(line, innerWidth, "", true);
-			if (index === 0 && content.startsWith("  ")) {
+			if (index === arrowRow && content.startsWith("  ")) {
 				content = theme.fg("accent", "❯ ") + content.slice(2);
 			}
 			return `${border("│")}${content}${border("│")}`;
@@ -151,6 +160,10 @@ export class LystarWorkspace implements Component {
 	}
 
 	getComponentAtScreenRow(row: number): Component | undefined {
+		return this.getComponentHitAtScreenRow(row)?.component;
+	}
+
+	getComponentHitAtScreenRow(row: number): WorkspaceComponentHit | undefined {
 		if (
 			!this.options.fullscreen ||
 			row < this.viewportScreenTop ||
@@ -160,7 +173,8 @@ export class LystarWorkspace implements Component {
 		}
 		if (row === this.indicatorRow) return undefined;
 		const contentRow = this.scrollTop + row - this.viewportScreenTop;
-		return this.contentRanges.find((range) => contentRow >= range.start && contentRow < range.end)?.component;
+		const range = this.contentRanges.find((item) => contentRow >= item.start && contentRow < item.end);
+		return range ? { component: range.component, row: contentRow - range.start } : undefined;
 	}
 
 	isNewContentIndicatorRow(row: number): boolean {

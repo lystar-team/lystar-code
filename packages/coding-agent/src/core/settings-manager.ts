@@ -53,6 +53,7 @@ export interface ThinkingBudgetsSettings {
 
 export interface MarkdownSettings {
 	codeBlockIndent?: string; // default: "  "
+	showCodeBlockFences?: boolean; // default: false in LYStar interactive mode
 }
 
 export interface WarningSettings {
@@ -844,7 +845,7 @@ export class SettingsManager {
 	}
 
 	getHideThinkingBlock(): boolean {
-		return this.settings.hideThinkingBlock ?? true;
+		return this.settings.hideThinkingBlock ?? false;
 	}
 
 	getShowCacheMissNotices(): boolean {
@@ -1220,6 +1221,16 @@ export class SettingsManager {
 
 	getCodeBlockIndent(): string {
 		return this.settings.markdown?.codeBlockIndent ?? "  ";
+	}
+
+	getShowMarkdownCodeBlockFences(): boolean {
+		return this.settings.markdown?.showCodeBlockFences ?? false;
+	}
+
+	setShowMarkdownCodeBlockFences(show: boolean): void {
+		this.globalSettings.markdown = { ...this.globalSettings.markdown, showCodeBlockFences: show };
+		this.markModified("markdown", "showCodeBlockFences");
+		this.save();
 	}
 
 	getWarnings(): WarningSettings {
