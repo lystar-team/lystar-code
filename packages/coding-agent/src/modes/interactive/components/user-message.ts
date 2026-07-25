@@ -31,7 +31,7 @@ export class UserMessageComponent extends Container {
 		const contentBox = new Box(this.outputPad, 1, (content: string) => theme.bg("userMessageBg", content));
 		contentBox.addChild(
 			new Markdown(
-				this.text,
+				`❯ ${this.text}`,
 				0,
 				0,
 				this.markdownTheme,

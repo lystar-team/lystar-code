@@ -1,6 +1,7 @@
 import type { Component } from "@earendil-works/pi-tui";
 import { type Container, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { t } from "../../../locales/zh-CN.ts";
+import { stripAnsi } from "../../../utils/ansi.ts";
 import { theme } from "../theme/theme.ts";
 
 interface RenderedComponentRange {
@@ -16,11 +17,9 @@ export interface WorkspaceHeaderState {
 }
 
 export class WorkspaceHeader implements Component {
-	private readonly version: string;
 	private readonly getState: () => WorkspaceHeaderState;
 
-	constructor(version: string, getState: () => WorkspaceHeaderState) {
-		this.version = version;
+	constructor(getState: () => WorkspaceHeaderState) {
 		this.getState = getState;
 	}
 
@@ -28,17 +27,62 @@ export class WorkspaceHeader implements Component {
 
 	render(width: number): string[] {
 		const state = this.getState();
-		const brand = theme.bold(theme.fg("accent", "LYStar Agent")) + theme.fg("dim", ` v${this.version}`);
-		const context = theme.fg("muted", state.context);
-		const brandWidth = visibleWidth(brand);
-		const contextWidth = visibleWidth(context);
-		const firstLine =
-			brandWidth + contextWidth + 2 <= width
-				? `${brand}${" ".repeat(width - brandWidth - contextWidth)}${context}`
-				: truncateToWidth(`${brand}  ${context}`, width, "");
 		const location = state.session ? `${state.path}  ·  ${state.session}` : state.path;
-		const secondLine = truncateToWidth(theme.fg("dim", location), width, theme.fg("dim", "..."));
-		return [firstLine, secondLine, theme.fg("border", "─".repeat(Math.max(0, width)))];
+		const left = theme.fg("dim", location);
+		const right = theme.fg("text", state.context);
+		const leftWidth = visibleWidth(left);
+		const rightWidth = visibleWidth(right);
+		const statusLine =
+			leftWidth + rightWidth + 2 <= width
+				? `${left}${" ".repeat(width - leftWidth - rightWidth)}${right}`
+				: truncateToWidth(`${left}  ${right}`, width, theme.fg("dim", "..."));
+		return [statusLine];
+	}
+}
+
+export interface WorkspaceComposerOptions {
+	editor: Container;
+	getInfo: () => string;
+	fullscreen: boolean;
+}
+
+export class WorkspaceComposer implements Component {
+	private readonly options: WorkspaceComposerOptions;
+
+	constructor(options: WorkspaceComposerOptions) {
+		this.options = options;
+	}
+
+	invalidate(): void {
+		this.options.editor.invalidate();
+	}
+
+	render(width: number): string[] {
+		const lines = this.options.editor.render(this.options.fullscreen ? Math.max(1, width - 2) : width);
+		if (!this.options.fullscreen || width < 4 || lines.length === 0) return lines;
+
+		const innerWidth = width - 2;
+		const bottomBorder = lines.findIndex((line, index) => index > 0 && stripAnsi(line).startsWith("─"));
+		const body = bottomBorder > 0 ? lines.slice(1, bottomBorder) : lines;
+		const autocomplete = bottomBorder > 0 ? lines.slice(bottomBorder + 1) : [];
+		const border = (text: string) => theme.fg("borderMuted", text);
+		const framedBody = (body.length > 0 ? body : [""]).map((line, index) => {
+			let content = truncateToWidth(line, innerWidth, "", true);
+			if (index === 0 && content.startsWith("  ")) {
+				content = theme.fg("accent", "❯ ") + content.slice(2);
+			}
+			return `${border("│")}${content}${border("│")}`;
+		});
+
+		const info = truncateToWidth(this.options.getInfo().trim(), Math.max(0, innerWidth - 4), "…");
+		const infoLabel = info ? ` ${info} ` : "";
+		const dividerWidth = Math.max(0, innerWidth - visibleWidth(infoLabel));
+		const bottom = `${border(`╰${"─".repeat(dividerWidth)}`)}${theme.fg("dim", infoLabel)}${border("╯")}`;
+		const framed = [`${border("╭")}${border("─".repeat(innerWidth))}${border("╮")}`, ...framedBody, bottom];
+		for (const line of autocomplete) {
+			framed.push(` ${truncateToWidth(line, innerWidth, "", true)} `);
+		}
+		return framed;
 	}
 }
 
@@ -46,8 +90,9 @@ export interface WorkspaceOptions {
 	getHeight: () => number;
 	header: Container;
 	scrollContainers: Container[];
-	bottomContainers: Container[];
+	bottomContainers: Component[];
 	fullscreen: boolean;
+	horizontalPadding?: number;
 }
 
 export class LystarWorkspace implements Component {
@@ -122,9 +167,13 @@ export class LystarWorkspace implements Component {
 	}
 
 	render(width: number): string[] {
-		const headerLines = this.options.header.render(width);
-		const { lines: contentLines, ranges } = this.renderScrollContent(width);
-		const bottomLines = this.options.bottomContainers.flatMap((component) => component.render(width));
+		const horizontalPadding = this.options.fullscreen
+			? Math.min(this.options.horizontalPadding ?? 2, Math.max(0, Math.floor((width - 1) / 2)))
+			: 0;
+		const renderWidth = Math.max(1, width - horizontalPadding * 2);
+		const headerLines = this.options.header.render(renderWidth);
+		const { lines: contentLines, ranges } = this.renderScrollContent(renderWidth);
+		const bottomLines = this.options.bottomContainers.flatMap((component) => component.render(renderWidth));
 		this.contentRanges = ranges;
 
 		if (!this.options.fullscreen) {
@@ -136,7 +185,7 @@ export class LystarWorkspace implements Component {
 		}
 
 		const height = Math.max(1, this.options.getHeight());
-		const maxHeaderHeight = Math.min(4, Math.max(0, height - 1));
+		const maxHeaderHeight = Math.min(3, Math.max(0, height - 1));
 		const visibleHeader = headerLines.slice(0, maxHeaderHeight);
 		const maxBottomHeight = Math.max(0, height - visibleHeader.length - 1);
 		const visibleBottom = bottomLines.slice(0, maxBottomHeight);
@@ -158,13 +207,16 @@ export class LystarWorkspace implements Component {
 			const remaining = maxScrollTop - this.scrollTop;
 			viewport[viewport.length - 1] = truncateToWidth(
 				theme.fg("accent", t("workspace.moreLines", { count: remaining })),
-				width,
+				renderWidth,
 				"",
 			);
 			this.indicatorRow = this.viewportScreenTop + viewport.length - 1;
 		}
 
-		return [...visibleHeader, ...viewport, ...visibleBottom];
+		const padding = " ".repeat(horizontalPadding);
+		return [...visibleHeader, ...viewport, ...visibleBottom].map(
+			(line) => `${padding}${truncateToWidth(line, renderWidth, "", true)}${padding}`,
+		);
 	}
 
 	private getMaxScrollTop(): number {

@@ -508,8 +508,8 @@ export class SettingsSelectorComponent extends Container {
 			},
 			{
 				id: "hide-thinking",
-				label: "Hide thinking",
-				description: "Hide thinking blocks in assistant responses",
+				label: "折叠思考过程",
+				description: "默认只显示思考状态，可随时展开完整内容",
 				currentValue: config.hideThinkingBlock ? "true" : "false",
 				values: ["true", "false"],
 			},

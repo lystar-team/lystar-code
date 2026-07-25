@@ -15,7 +15,7 @@ export const zhCN = {
 	"workspace.thinking": "思考",
 	"workspace.commands": "命令",
 	"status.working": "正在处理...",
-	"status.thinking": "正在思考...",
+	"status.thinking": "◆ 思考过程",
 	"status.compacting": "正在压缩上下文...",
 	"status.retrying": "正在重试...",
 	"status.noModel": "未选择模型",

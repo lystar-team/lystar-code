@@ -18,7 +18,7 @@ describe("UserMessageComponent", () => {
 		expect(lines[0]).toContain(OSC133_ZONE_START);
 		expect(lines[0].endsWith(BG_RESET)).toBe(true);
 		expect(lines[0]).not.toContain(OSC133_ZONE_END);
-		expect(lines[1]).toContain("hello");
+		expect(lines[1]).toContain("❯ hello");
 		expect(lines[2].startsWith(OSC133_ZONE_END + OSC133_ZONE_FINAL)).toBe(true);
 		expect(lines[2].endsWith(BG_RESET)).toBe(true);
 	});

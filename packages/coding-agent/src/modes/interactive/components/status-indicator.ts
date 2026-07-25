@@ -108,7 +108,6 @@ export class IdleStatus implements Component {
 	}
 
 	render(width: number): string[] {
-		const emptyLine = " ".repeat(width);
-		return [emptyLine, emptyLine];
+		return [" ".repeat(width)];
 	}
 }

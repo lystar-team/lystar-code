@@ -8,12 +8,11 @@ describe("status indicators", () => {
 		vi.useRealTimers();
 	});
 
-	it("keeps idle status at the same height as status indicators", () => {
+	it("keeps idle status to one reserved line", () => {
 		const idleStatus = new IdleStatus();
 
 		const lines = idleStatus.render(20);
-		expect(lines).toHaveLength(2);
-		expect(lines).toEqual([" ".repeat(20), " ".repeat(20)]);
+		expect(lines).toEqual([" ".repeat(20)]);
 	});
 
 	it("disposes retry countdown updates", () => {

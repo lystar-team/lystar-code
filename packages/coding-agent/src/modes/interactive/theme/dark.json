@@ -7,22 +7,22 @@
 		"green": "#b5bd68",
 		"red": "#cc6666",
 		"yellow": "#ffff00",
-		"text": "#d4d4d4",
-		"gray": "#808080",
+		"text": "#e6e6e6",
+		"gray": "#8a8a8a",
 		"dimGray": "#666666",
-		"darkGray": "#505050",
-		"accent": "#8abeb7",
-		"selectedBg": "#3a3a4a",
-		"userMsgBg": "#343541",
-		"toolPendingBg": "#282832",
-		"toolSuccessBg": "#283228",
-		"toolErrorBg": "#3c2828",
-		"customMsgBg": "#2d2838"
+		"darkGray": "#4a4a4a",
+		"accent": "#58d6a9",
+		"selectedBg": "#303030",
+		"userMsgBg": "#262626",
+		"toolPendingBg": "#202524",
+		"toolSuccessBg": "#202824",
+		"toolErrorBg": "#2c2222",
+		"customMsgBg": "#24262b"
 	},
 	"colors": {
 		"accent": "accent",
-		"border": "blue",
-		"borderAccent": "cyan",
+		"border": "darkGray",
+		"borderAccent": "accent",
 		"borderMuted": "darkGray",
 		"success": "green",
 		"error": "red",
@@ -44,8 +44,8 @@
 		"toolTitle": "text",
 		"toolOutput": "gray",
 
-		"mdHeading": "#f0c674",
-		"mdLink": "#81a2be",
+		"mdHeading": "#8ab4f8",
+		"mdLink": "#8ab4f8",
 		"mdLinkUrl": "dimGray",
 		"mdCode": "accent",
 		"mdCodeBlock": "green",
@@ -53,7 +53,7 @@
 		"mdQuote": "gray",
 		"mdQuoteBorder": "gray",
 		"mdHr": "gray",
-		"mdListBullet": "accent",
+		"mdListBullet": "gray",
 
 		"toolDiffAdded": "green",
 		"toolDiffRemoved": "red",
@@ -80,8 +80,8 @@
 		"bashMode": "green"
 	},
 	"export": {
-		"pageBg": "#18181e",
-		"cardBg": "#1e1e24",
-		"infoBg": "#3c3728"
+		"pageBg": "#111111",
+		"cardBg": "#181818",
+		"infoBg": "#262626"
 	}
 }

@@ -96,7 +96,7 @@ export class SettingsList implements Component {
 		}
 
 		if (this.items.length === 0) {
-			lines.push(this.theme.hint("  No settings available"));
+			lines.push(this.theme.hint("  暂无设置项"));
 			if (this.searchEnabled) {
 				this.addHintLine(lines, width);
 			}
@@ -105,7 +105,7 @@ export class SettingsList implements Component {
 
 		const displayItems = this.searchEnabled ? this.filteredItems : this.items;
 		if (displayItems.length === 0) {
-			lines.push(truncateToWidth(this.theme.hint("  No matching settings"), width));
+			lines.push(truncateToWidth(this.theme.hint("  没有匹配的设置项"), width));
 			this.addHintLine(lines, width);
 			return lines;
 		}
@@ -239,9 +239,7 @@ export class SettingsList implements Component {
 		lines.push(
 			truncateToWidth(
 				this.theme.hint(
-					this.searchEnabled
-						? "  Type to search · Enter/Space to change · Esc to cancel"
-						: "  Enter/Space to change · Esc to cancel",
+					this.searchEnabled ? "  输入文字搜索 · Enter/Space 修改 · Esc 取消" : "  Enter/Space 修改 · Esc 取消",
 				),
 				width,
 			),

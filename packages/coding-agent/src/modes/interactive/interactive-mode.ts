@@ -114,9 +114,9 @@ import { ExtensionEditorComponent } from "./components/extension-editor.ts";
 import { ExtensionInputComponent } from "./components/extension-input.ts";
 import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
 import { FooterComponent, formatTokens } from "./components/footer.ts";
-import { formatKeyText, keyDisplayText, keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.ts";
+import { formatKeyText, keyDisplayText, keyText } from "./components/keybinding-hints.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
-import { LystarWorkspace, WorkspaceHeader } from "./components/lystar-workspace.ts";
+import { LystarWorkspace, WorkspaceComposer, WorkspaceHeader } from "./components/lystar-workspace.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
 import {
 	type AuthSelectorProvider,
@@ -500,13 +500,12 @@ export class InteractiveMode {
 		this.shortcutContainer.addChild(
 			new Text(
 				[
-					keyHint("app.interrupt", t("workspace.interrupt")),
-					keyHint("app.model.select", t("workspace.model")),
-					keyHint("app.tools.expand", t("workspace.expand")),
-					keyHint("app.thinking.toggle", t("workspace.thinking")),
-					rawKeyHint("/", t("workspace.commands")),
-				].join(theme.fg("muted", "  ·  ")),
-				1,
+					`${theme.bold(theme.fg("text", keyDisplayText("app.thinking.cycle")))}${theme.fg("dim", ":推理")}`,
+					`${theme.bold(theme.fg("text", keyDisplayText("app.interrupt")))}${theme.fg("dim", `:${t("workspace.interrupt")}`)}`,
+					`${theme.bold(theme.fg("text", keyDisplayText("app.tools.expand")))}${theme.fg("dim", `:${t("workspace.expand")}`)}`,
+					`${theme.bold(theme.fg("text", "/"))}${theme.fg("dim", `:${t("workspace.commands")}`)}`,
+				].join(theme.fg("dim", "  │  ")),
+				0,
 				0,
 			),
 		);
@@ -522,6 +521,19 @@ export class InteractiveMode {
 			alternateScreen,
 			mouse: alternateScreen && (options.mouse ?? lystarSettings.settings.mouse),
 		});
+		if (alternateScreen) this.defaultEditor.setPaddingX(Math.max(2, editorPaddingX));
+		this.footer.setHidden(alternateScreen);
+		const composer = new WorkspaceComposer({
+			editor: this.editorContainer,
+			fullscreen: alternateScreen,
+			getInfo: () => {
+				const state = this.session.state;
+				const model = !state.model || state.model.id === "unknown" ? "未选择模型" : state.model.id;
+				const thinking = state.model?.reasoning ? ` (${state.thinkingLevel || "off"})` : "";
+				const trust = this.settingsManager.isProjectTrusted() ? "项目已信任" : "操作需确认";
+				return `${model}${thinking}  ·  ${trust}`;
+			},
+		});
 		this.workspace = new LystarWorkspace({
 			getHeight: () => this.ui.terminal.rows,
 			header: this.headerContainer,
@@ -530,10 +542,10 @@ export class InteractiveMode {
 				this.pendingMessagesContainer,
 				this.statusContainer,
 				this.widgetContainerAbove,
-				this.editorContainer,
+				composer,
 				this.widgetContainerBelow,
-				this.shortcutContainer,
 				this.footerContainer,
+				this.shortcutContainer,
 			],
 			fullscreen: alternateScreen,
 		});
@@ -776,16 +788,14 @@ export class InteractiveMode {
 
 		await this.themeController.applyFromSettings();
 
-		this.builtInHeader = new WorkspaceHeader(this.version, () => {
+		this.builtInHeader = new WorkspaceHeader(() => {
 			const usage = this.session.getContextUsage();
-			const context =
-				usage?.percent === null || usage?.percent === undefined
-					? t("workspace.contextUnknown")
-					: t("workspace.contextPercent", { percent: usage.percent.toFixed(1) });
+			const used = usage?.tokens === null || usage?.tokens === undefined ? "?" : formatTokens(usage.tokens);
+			const available = usage ? formatTokens(usage.contextWindow) : "?";
 			return {
 				path: this.formatDisplayPath(this.sessionManager.getCwd()),
 				session: this.sessionManager.getSessionName(),
-				context,
+				context: `${used} / ${available}`,
 			};
 		});
 		this.headerContainer.addChild(this.builtInHeader);
@@ -1711,6 +1721,11 @@ export class InteractiveMode {
 		this.showStartupNoticesIfNeeded();
 	}
 
+	private getEffectiveEditorPaddingX(): number {
+		const configured = this.settingsManager.getEditorPaddingX();
+		return this.workspace?.isFullscreen() ? Math.max(2, configured) : configured;
+	}
+
 	private applyRuntimeSettings(): void {
 		configureHttpDispatcher(this.settingsManager.getHttpIdleTimeoutMs());
 		this.footer.setSession(this.session);
@@ -1724,7 +1739,7 @@ export class InteractiveMode {
 		if (!clearOnShrink && !this.activeStatusIndicator) {
 			this.statusContainer.clear();
 		}
-		const editorPaddingX = this.settingsManager.getEditorPaddingX();
+		const editorPaddingX = this.getEffectiveEditorPaddingX();
 		const autocompleteMaxVisible = this.settingsManager.getAutocompleteMaxVisible();
 		this.defaultEditor.setPaddingX(editorPaddingX);
 		this.defaultEditor.setAutocompleteMaxVisible(autocompleteMaxVisible);
@@ -4297,9 +4312,10 @@ export class InteractiveMode {
 					},
 					onEditorPaddingXChange: (padding) => {
 						this.settingsManager.setEditorPaddingX(padding);
-						this.defaultEditor.setPaddingX(padding);
+						const effectivePadding = this.getEffectiveEditorPaddingX();
+						this.defaultEditor.setPaddingX(effectivePadding);
 						if (this.editor !== this.defaultEditor && this.editor.setPaddingX !== undefined) {
-							this.editor.setPaddingX(padding);
+							this.editor.setPaddingX(effectivePadding);
 						}
 					},
 					onOutputPadChange: (padding) => {
@@ -5396,7 +5412,7 @@ export class InteractiveMode {
 			}
 			setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
 			await this.themeController.applyFromSettings();
-			const editorPaddingX = this.settingsManager.getEditorPaddingX();
+			const editorPaddingX = this.getEffectiveEditorPaddingX();
 			const autocompleteMaxVisible = this.settingsManager.getAutocompleteMaxVisible();
 			this.defaultEditor.setPaddingX(editorPaddingX);
 			this.defaultEditor.setAutocompleteMaxVisible(autocompleteMaxVisible);

@@ -110,6 +110,7 @@ describe("edit tool TUI rendering", () => {
 			process.cwd(),
 		);
 		root.addChild(component);
+		component.setExpanded(true);
 		tui.addChild(root);
 		tui.start();
 		await waitForRender();
@@ -193,6 +194,11 @@ describe("edit tool TUI rendering", () => {
 		await waitForRender();
 		await waitForRender();
 
+		const collapsed = component.render(80).join("\n");
+		expect(collapsed).toContain("edit");
+		expect(collapsed).not.toContain("line 50 changed");
+
+		component.setExpanded(true);
 		const rendered = component.render(80).join("\n");
 		expect(rendered).toContain("line 50 changed");
 		expect(rendered).toContain("line 150 changed");

@@ -2,25 +2,25 @@
 	"$schema": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
 	"name": "light",
 	"vars": {
-		"teal": "#5a8080",
-		"blue": "#547da7",
-		"green": "#588458",
-		"red": "#aa5555",
-		"yellow": "#9a7326",
-		"text": "#1f2328",
-		"mediumGray": "#6c6c6c",
-		"dimGray": "#767676",
-		"lightGray": "#b0b0b0",
-		"selectedBg": "#d0d0e0",
-		"userMsgBg": "#e8e8e8",
-		"toolPendingBg": "#e8e8f0",
-		"toolSuccessBg": "#e8f0e8",
-		"toolErrorBg": "#f0e8e8",
-		"customMsgBg": "#ede7f6"
+		"teal": "#247a62",
+		"blue": "#3f6fa8",
+		"green": "#3f7f59",
+		"red": "#a84f4f",
+		"yellow": "#8a681f",
+		"text": "#202124",
+		"mediumGray": "#66686d",
+		"dimGray": "#7a7c80",
+		"lightGray": "#b9b9b9",
+		"selectedBg": "#dedede",
+		"userMsgBg": "#e9e9e9",
+		"toolPendingBg": "#e8ecea",
+		"toolSuccessBg": "#e5eee8",
+		"toolErrorBg": "#f1e6e6",
+		"customMsgBg": "#e8eaee"
 	},
 	"colors": {
 		"accent": "teal",
-		"border": "blue",
+		"border": "lightGray",
 		"borderAccent": "teal",
 		"borderMuted": "lightGray",
 		"success": "green",
@@ -52,7 +52,7 @@
 		"mdQuote": "mediumGray",
 		"mdQuoteBorder": "mediumGray",
 		"mdHr": "mediumGray",
-		"mdListBullet": "green",
+		"mdListBullet": "mediumGray",
 
 		"toolDiffAdded": "green",
 		"toolDiffRemoved": "red",
@@ -79,8 +79,8 @@
 		"bashMode": "green"
 	},
 	"export": {
-		"pageBg": "#f8f8f8",
+		"pageBg": "#f4f4f4",
 		"cardBg": "#ffffff",
-		"infoBg": "#fffae6"
+		"infoBg": "#e9e9e9"
 	}
 }

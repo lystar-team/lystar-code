@@ -49,6 +49,7 @@ export function formatCwdForFooter(cwd: string, home: string | undefined): strin
  */
 export class FooterComponent implements Component {
 	private autoCompactEnabled = true;
+	private hidden = false;
 	private session: AgentSession;
 	private footerData: ReadonlyFooterDataProvider;
 
@@ -63,6 +64,10 @@ export class FooterComponent implements Component {
 
 	setAutoCompactEnabled(enabled: boolean): void {
 		this.autoCompactEnabled = enabled;
+	}
+
+	setHidden(hidden: boolean): void {
+		this.hidden = hidden;
 	}
 
 	/**
@@ -82,6 +87,7 @@ export class FooterComponent implements Component {
 	}
 
 	render(width: number): string[] {
+		if (this.hidden) return [];
 		const state = this.session.state;
 
 		// Calculate cumulative usage from ALL session entries (not just post-compaction messages)
