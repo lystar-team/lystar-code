@@ -34,11 +34,10 @@ const manifest = {
 writeFileSync(join(outputDir, "release-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 writeFileSync(join(outputDir, "SHA256SUMS"), `${sums.join("\n")}\n`);
 
+const RELEASE_REPOSITORY_PLACEHOLDER = "__LYSTAR_RELEASE_REPOSITORY__";
 for (const name of ["install.sh", "install.ps1"]) {
 	const source = readFileSync(resolve("scripts", name), "utf8");
-	const materialized = source.replaceAll(
-		"__LYSTAR_RELEASE_REPOSITORY__",
-		repository || "__LYSTAR_RELEASE_REPOSITORY__",
-	);
+	const assignment = name === "install.sh" ? `REPOSITORY="${RELEASE_REPOSITORY_PLACEHOLDER}"` : `$Repository = "${RELEASE_REPOSITORY_PLACEHOLDER}"`;
+	const materialized = repository ? source.replace(assignment, assignment.replace(RELEASE_REPOSITORY_PLACEHOLDER, repository)) : source;
 	writeFileSync(join(outputDir, basename(name)), materialized, { mode: name.endsWith(".sh") ? 0o755 : 0o644 });
 }

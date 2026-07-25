@@ -27,4 +27,12 @@ if bash "$ROOT/scripts/install.sh" >/dev/null 2>&1; then
     exit 1
 fi
 
-printf 'install.sh rollback/uninstall checks passed\n'
+release_dir="$tmp/release"
+mkdir -p "$release_dir"
+node "$ROOT/scripts/generate-release-metadata.mjs" "$release_dir" "1.0.0-lystar.1" "octyean/lystar-agent"
+grep -F 'REPOSITORY="octyean/lystar-agent"' "$release_dir/install.sh" >/dev/null
+grep -F '[[ "$REPOSITORY" == "__LYSTAR_RELEASE_REPOSITORY__" ]]' "$release_dir/install.sh" >/dev/null
+grep -F '$Repository = "octyean/lystar-agent"' "$release_dir/install.ps1" >/dev/null
+grep -F '$Repository -eq "__LYSTAR_RELEASE_REPOSITORY__"' "$release_dir/install.ps1" >/dev/null
+
+printf 'install.sh rollback/uninstall and release materialization checks passed\n'
