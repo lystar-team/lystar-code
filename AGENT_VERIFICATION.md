@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-07-25T22:03:27+08:00
+最后核验时间：2026-07-25T22:26:34+08:00
 
 环境：
 
@@ -27,7 +27,7 @@ Coding Agent 全量测试：
 npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=4
 ```
 
-结果：180 个 test files 通过、6 个跳过；1637 项测试通过、48 项跳过。
+结果：182 个 test files 通过、6 个跳过；1649 项测试通过、48 项跳过。
 
 TUI 全量测试：
 
@@ -37,13 +37,21 @@ npm --workspace @earendil-works/pi-tui test
 
 结果：退出码 0。包含 alternate screen、SGR mouse 和 reduceMotion 新增回归。
 
-Agent Core 排除已知上游长输出基线后的回归：
+AI 全量测试：
 
 ```bash
-npm --workspace @earendil-works/pi-agent-core test -- --exclude test/harness/tools.test.ts
+npm --workspace @earendil-works/pi-ai test
 ```
 
-结果：17 个 test files、217 项测试通过，1 项跳过。
+结果：89 个 test files 通过、25 个跳过；667 项测试通过、783 项跳过。
+
+Agent Core 全量回归：
+
+```bash
+npm --workspace @earendil-works/pi-agent-core test
+```
+
+结果：18 个 test files、240 项测试通过，1 项跳过。Pi `v0.82.0` 基线中的长输出失败已由 `v0.82.1` 修复，不再排除 `test/harness/tools.test.ts`。
 
 Unix 安装器回退、卸载和用户数据保留：
 
@@ -93,12 +101,8 @@ lystar-agent-v<version>-windows-x64.zip
 
 同时生成 `SHA256SUMS`、`release-manifest.json`、`install.sh`、`install.ps1` 和 `VERSION`。
 
-## 已知上游基线
+## 已知限制
 
-```bash
-npm test
-```
+完整 `npm test` 已通过，包含 scripts、Agent Core、AI、Coding Agent 和 TUI 全量测试。
 
-除 `packages/agent/test/harness/tools.test.ts` 的长输出测试外，其余工作区通过。该上游测试在当前机器写出的完整输出止于 `line-2236`，断言要求包含 `line-2999\nline-3000`；这是导入 Pi `v0.82.0` 时已确认的本机基线问题，LYStar Coding Agent 与 TUI 测试不受影响。未修改测试或生产逻辑规避它。
-
-依赖安装仍报告 3 个上游 high severity audit 告警，以及 `@earendil-works/gondolin@0.12.0` 要求 Node.js `>=23.6.0` 的 engine 警告。本轮没有越过 Pi `v0.82.0` 基线擅自升级依赖。
+`npm audit --audit-level=high` 仍报告 3 个上游 high severity 告警：`brace-expansion`、`postcss` 和 `shell-quote`。`@earendil-works/gondolin@0.12.0` 仍要求 Node.js `>=23.6.0`，当前验证环境为 Node.js 22；本轮没有脱离 Pi `v0.82.1` 依赖基线单独执行 `npm audit fix`。

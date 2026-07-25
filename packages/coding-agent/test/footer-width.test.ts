@@ -225,6 +225,31 @@ describe("FooterComponent width handling", () => {
 		expect(statsLine).toContain("CH25.0%");
 	});
 
+	it("shows the session name and cumulative usage including compaction", () => {
+		const session = createSession({
+			sessionName: "上游升级",
+			usage: {
+				input: 100,
+				output: 10,
+				cacheRead: 50,
+				cacheWrite: 50,
+				cost: { total: 0 },
+			},
+			compactionUsage: {
+				input: 200,
+				output: 20,
+				cacheRead: 80,
+				cacheWrite: 30,
+				cost: { total: 0 },
+			},
+		});
+		const footer = new FooterComponent(session, createFooterData(1));
+		const lines = footer.render(120).map(stripAnsi);
+
+		expect(lines[0]).toContain("• 上游升级");
+		expect(lines[1]).toContain("↑300 ↓30 R130 W80 CH25.0%");
+	});
+
 	it("marks Kimi Coding costs as subscription estimates", () => {
 		const session = createSession({
 			sessionName: "",

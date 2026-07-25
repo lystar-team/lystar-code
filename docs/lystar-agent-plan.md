@@ -2,7 +2,7 @@
 
 > 状态：开发基线。按本文连续实施，不设阶段审批。
 >
-> 调研基线：2026-07-25；Pi `v0.82.0`，commit `083e61621276bff9f6faefab87ce07fcd98734e2`；Grok Build commit `6e386420825bd44ae648c63e7c8cba12fcec9401`。
+> 当前上游基线：2026-07-25；Pi `v0.82.1`，commit `b4f293684bba718d59cc1157679bcf6157b3a7f5`；Grok Build commit `6e386420825bd44ae648c63e7c8cba12fcec9401`。
 
 ## 1. 产品定义
 
@@ -40,7 +40,7 @@ Todo、后台任务、子 Agent 和 MCP 等能力继续由 Pi Extension 提供�
 
 ### Pi
 
-Pi `v0.82.0` 已具备以下基础，LYStar 直接复用：
+Pi `v0.82.1` 已具备以下基础，LYStar 直接复用：
 
 - Bun executable 构建入口和 macOS、Linux、Windows 多架构 CI。
 - Agent Runtime、Provider、Session、Tool、Extension、Skill 和 Package 管理。
@@ -348,7 +348,7 @@ LYStar 自己的终端偏好保存在共享数据根下的独立文件，避免�
 ├────────────────────────────────────────────────────────────┤
 │  输入区                                                    │
 ├────────────────────────────────────────────────────────────┤
-│  模型  推理级别  模式                    当前快捷键提示     │
+│  模型  思考强度  模式                    当前快捷键提示     │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -433,7 +433,7 @@ LYStar 自己的终端偏好保存在共享数据根下的独立文件，避免�
 LYStar 自有内容使用简体中文：
 
 - 启动欢迎区、菜单、设置、选择器和命令描述。
-- 会话、模型、推理级别、上下文和费用状态。
+- 会话、模型、思考强度、上下文和费用状态。
 - 加载、运行、等待、重试、压缩、成功、失败和取消状态。
 - 项目信任、危险操作确认、登录和配置提示。
 - 内置帮助、快捷键、更新、诊断和 LYStar 自有错误。
@@ -517,6 +517,7 @@ LYStar 不增加 MCP 配置文件、内置管理器或代理 Tool。TUI 负责�
 
 | LYStar | Pi 基线 | Pi commit | MCP Adapter | Session | Extension API |
 |---|---|---|---|---|---|
+| `0.82.1-lystar.1` | `0.82.1` | `b4f29368...` | `2.12.1` | Pi 原格式 | Pi `0.82.1` |
 | `0.82.0-lystar.4` | `0.82.0` | `083e6162...` | `2.12.1` | Pi 原格式 | Pi `0.82.0` |
 | `0.82.0-lystar.3` | `0.82.0` | `083e6162...` | `2.12.1` | Pi 原格式 | Pi `0.82.0` |
 | `0.82.0-lystar.2` | `0.82.0` | `083e6162...` | `2.12.1` | Pi 原格式 | Pi `0.82.0` |
@@ -541,7 +542,7 @@ LYStar 不增加 MCP 配置文件、内置管理器或代理 Tool。TUI 负责�
 
 | 工作项 | 完成标准 |
 |---|---|
-| 仓库基线 | 建立 `origin/upstream`，原样构建 Pi `v0.82.0`，记录可重复命令 |
+| 仓库基线 | 建立 `origin/upstream`，可重复构建当前 Pi `v0.82.1` 基线 |
 | 产品常量 | `la`、`LYStar Agent`、`.pi`、`PI_*` 和 release repository 各自只有一个事实源 |
 | CLI 品牌 | banner、标题、帮助、版本、错误和示例统一；参数与退出码兼容 |
 | 发行包 | 五个平台归档包含 executable、运行资源、许可证和 manifest |
@@ -658,7 +659,7 @@ SSH
 ## 14. 调研与许可证来源
 
 - Pi 官方仓库：https://github.com/earendil-works/pi
-- Pi 基线：`v0.82.0`，commit `083e61621276bff9f6faefab87ce07fcd98734e2`
+- Pi 当前基线：`v0.82.1`，commit `b4f293684bba718d59cc1157679bcf6157b3a7f5`
 - Pi 本机文档：`extensions.md`、`tui.md`、`themes.md`、`keybindings.md`、`packages.md`、`skills.md`、`sdk.md`、`rpc.md`、`development.md`、`settings.md`、`session-format.md`、`windows.md`、`tmux.md`
 - Grok Build：https://github.com/xai-org/grok-build
 - Grok Build 调研 commit：`6e386420825bd44ae648c63e7c8cba12fcec9401`

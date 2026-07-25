@@ -41,8 +41,8 @@ jobs:
           npm --workspace @earendil-works/pi-ai test
           npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=4
 
-      - name: Test Agent Core except documented upstream long-output baseline
-        run: npm --workspace @earendil-works/pi-agent-core test -- --exclude test/harness/tools.test.ts
+      - name: Test Agent Core
+        run: npm --workspace @earendil-works/pi-agent-core test
 
       - name: Build standalone bundles
         run: |

@@ -1,6 +1,6 @@
 # LYStar Agent
 
-LYStar Agent 是基于 Pi `v0.82.0` 的中文编码 Agent。命令固定为 `la`，保留 Pi Runtime、Session、Skill、Extension、Package、MCP 与 `.pi` 数据兼容。
+LYStar Agent 是基于 Pi `v0.82.1` 的中文编码 Agent。命令固定为 `la`，保留 Pi Runtime、Session、Skill、Extension、Package、MCP 与 `.pi` 数据兼容。
 
 ## 本地开发
 
@@ -91,10 +91,10 @@ la update --rollback
 
 ## 来源与许可证
 
-LYStar Agent 基于 `@earendil-works/pi-mono` `v0.82.0`，基线 commit：
+LYStar Agent 当前基于 `earendil-works/pi` `v0.82.1`，上游 commit：
 
 ```text
-083e61621276bff9f6faefab87ce07fcd98734e2
+b4f293684bba718d59cc1157679bcf6157b3a7f5
 ```
 
 项目按 [MIT License](LICENSE) 发行。第三方依赖说明见 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)。Grok Build 仅作为全屏 TUI 交互参考，没有复制其源码或资产。
