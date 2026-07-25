@@ -223,7 +223,7 @@ function formatBashCall(
 	const commandDisplay = command === null ? invalidArgText(theme) : command ? command : theme.fg("toolOutput", "...");
 	const detail = [options.duration, timeoutSuffix].filter(Boolean).join("  ");
 	return formatToolSummary({
-		icon: "▣",
+		icon: "$",
 		subject: commandDisplay,
 		expanded: options.expanded,
 		isPartial: options.isPartial,

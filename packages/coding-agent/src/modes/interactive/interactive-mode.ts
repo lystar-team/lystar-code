@@ -503,7 +503,6 @@ export class InteractiveMode {
 		this.editorContainer.addChild(this.editor as Component);
 		this.footerDataProvider = new FooterDataProvider(this.sessionManager.getCwd());
 		this.footer = new FooterComponent(this.session, this.footerDataProvider);
-		this.footer.setAutoCompactEnabled(this.session.autoCompactionEnabled);
 		this.footerContainer = new Container();
 		this.footerContainer.addChild(this.footer);
 		this.shortcutContainer = new Container();
@@ -513,8 +512,8 @@ export class InteractiveMode {
 					`${theme.bold(theme.fg("text", keyDisplayText("app.thinking.cycle")))}${theme.fg("dim", " 思考强度")}`,
 					`${theme.bold(theme.fg("text", keyDisplayText("app.interrupt").replaceAll("Escape", "Esc")))}${theme.fg("dim", ` ${t("workspace.interrupt")}`)}`,
 					`${theme.bold(theme.fg("text", keyDisplayText("app.tools.expand")))}${theme.fg("dim", ` ${t("workspace.expand")}`)}`,
-					`${theme.bold(theme.fg("text", "/"))}${theme.fg("dim", ` ${t("workspace.commands")}`)}`,
-				].join(theme.fg("dim", "  │  ")),
+					`${theme.bold(theme.fg("text", "/"))}`,
+				].join(theme.fg("dim", " │ ")),
 				0,
 				0,
 			),
@@ -538,11 +537,15 @@ export class InteractiveMode {
 			getInfo: () => {
 				const state = this.session.state;
 				const model = !state.model || state.model.id === "unknown" ? t("status.noModel") : state.model.id;
+				const modelIdentity =
+					state.model && this.footerDataProvider.getAvailableProviderCount() > 1
+						? `(${state.model.provider}) ${model}`
+						: model;
 				const thinking = state.model?.reasoning
 					? t("status.thinkingLevel", { level: formatThinkingLevel(state.thinkingLevel || "off") })
 					: undefined;
 				const trust = this.settingsManager.isProjectTrusted() ? "项目已信任" : "操作需确认";
-				return [model, thinking, trust].filter(Boolean).join("  ·  ");
+				return [modelIdentity, thinking, trust].filter(Boolean).join(" · ");
 			},
 		});
 		this.workspace = new LystarWorkspace({
@@ -805,8 +808,10 @@ export class InteractiveMode {
 			const used = usage?.tokens === null || usage?.tokens === undefined ? "?" : formatTokens(usage.tokens);
 			const available = usage ? formatTokens(usage.contextWindow) : "?";
 			const percent = usage?.percent === null || usage?.percent === undefined ? "?" : `${usage.percent.toFixed(1)}%`;
+			const branch = this.footerDataProvider.getGitBranch();
+			const path = this.formatDisplayPath(this.sessionManager.getCwd());
 			return {
-				path: this.formatDisplayPath(this.sessionManager.getCwd()),
+				path: branch ? `${path} (${branch})` : path,
 				session: this.sessionManager.getSessionName(),
 				context: `上下文 ${percent}  ·  ${used}/${available}`,
 			};
@@ -1744,7 +1749,6 @@ export class InteractiveMode {
 	private applyRuntimeSettings(): void {
 		configureHttpDispatcher(this.settingsManager.getHttpIdleTimeoutMs());
 		this.footer.setSession(this.session);
-		this.footer.setAutoCompactEnabled(this.session.autoCompactionEnabled);
 		this.footerDataProvider.setCwd(this.sessionManager.getCwd());
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
 		this.outputPad = this.settingsManager.getOutputPad();
@@ -3517,7 +3521,7 @@ export class InteractiveMode {
 		if (miss.missedTokens < 20_000 && miss.missedCost < 0.1) return;
 
 		const cost = miss.missedCost >= 0.01 ? `（约 $${miss.missedCost.toFixed(2)}）` : "";
-		const reBilled = `${formatTokens(miss.missedTokens)} tokens 重新计费${cost}`;
+		const reBilled = `${formatTokens(miss.missedTokens)} Token 重新计费${cost}`;
 		let label = "Prompt Cache 未命中";
 		if (miss.modelChanged) {
 			label = "切换模型后 Prompt Cache 未命中";
@@ -4236,7 +4240,6 @@ export class InteractiveMode {
 				{
 					onAutoCompactChange: (enabled) => {
 						this.session.setAutoCompactionEnabled(enabled);
-						this.footer.setAutoCompactEnabled(enabled);
 					},
 					onShowImagesChange: (enabled) => {
 						this.settingsManager.setShowImages(enabled);
@@ -5728,7 +5731,7 @@ export class InteractiveMode {
 		info += `${theme.fg("dim", "用户：")} ${stats.userMessages}\n`;
 		info += `${theme.fg("dim", "Agent：")} ${stats.assistantMessages}\n`;
 		info += `${theme.fg("dim", "工具：")} ${stats.toolCalls} 次调用，${stats.toolResults} 次返回\n\n`;
-		info += `${theme.bold("Tokens")}\n`;
+		info += `${theme.bold("Token 用量（会话累计）")}\n`;
 		// "Input" is the full prompt volume. With cache activity, split it into
 		// cached (served from cache) vs uncached (everything else) - the only
 		// provider-independent split. Cache writes, where reported, are a detail
@@ -5750,11 +5753,11 @@ export class InteractiveMode {
 			info += `${theme.fg("dim", "合计：")} $${stats.cost.toFixed(3)}`;
 			if (usageBreakdown.length > 1) {
 				for (const entry of usageBreakdown) {
-					info += `\n  ${theme.fg("dim", `${entry.key}:`)} $${entry.cost.toFixed(3)} ${theme.fg("dim", `(${formatTokens(entry.tokens)} tokens)`)}`;
+					info += `\n  ${theme.fg("dim", `${entry.key}:`)} $${entry.cost.toFixed(3)} ${theme.fg("dim", `（${formatTokens(entry.tokens)} Token）`)}`;
 				}
 			}
 			if (cacheWaste.missedTokens > 0) {
-				const detail = `${cacheWaste.missedTokens.toLocaleString()} tokens，${cacheWaste.missCount} 次未命中`;
+				const detail = `${cacheWaste.missedTokens.toLocaleString()} Token，${cacheWaste.missCount} 次未命中`;
 				info +=
 					cacheWaste.missedCost >= 0.0001
 						? `\n${theme.fg("dim", "Cache 重复计费：")} $${cacheWaste.missedCost.toFixed(3)} ${theme.fg("dim", `（${detail}）`)}`

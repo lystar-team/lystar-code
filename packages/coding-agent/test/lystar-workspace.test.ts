@@ -60,6 +60,31 @@ describe("LYStar workspace", () => {
 		]);
 	});
 
+	it("keeps the one-line usage footer when one optional row fits", () => {
+		const footer = textContainer("输入 267M · 输出 572K · 命中 99.5%");
+		const composer = textContainer("╭────╮", "│❯   │", "╰────╯");
+		const shortcuts = textContainer("Shift+Tab:思考强度  │  Esc:取消");
+		const workspace = new LystarWorkspace({
+			getHeight: () => 7,
+			header: textContainer("~/project  上下文 81.8%"),
+			scrollContainers: [textContainer("latest message")],
+			bottomContainers: [composer, footer, shortcuts],
+			fixedBottomContainers: [composer, shortcuts],
+			fullscreen: true,
+		});
+
+		const rendered = workspace.render(60).map(stripAnsi);
+
+		expect(rendered.join("\n")).toContain("输入 267M · 输出 572K · 命中 99.5%");
+		expect(rendered.slice(-5).map((line) => line.trim())).toEqual([
+			"╭────╮",
+			"│❯   │",
+			"╰────╯",
+			"输入 267M · 输出 572K · 命中 99.5%",
+			"Shift+Tab:思考强度  │  Esc:取消",
+		]);
+	});
+
 	it("preserves the user's position while new content arrives", () => {
 		const chat = textContainer(...Array.from({ length: 20 }, (_, index) => `line-${index + 1}`));
 		const workspace = new LystarWorkspace({
@@ -104,12 +129,12 @@ describe("LYStar workspace", () => {
 	it("keeps context usage visible when the header is narrow", () => {
 		const header = new WorkspaceHeader(() => ({
 			path: "~/very/long/project/path/that/needs/truncation",
-			context: "上下文 64.2%  ·  82k/128k",
+			context: "上下文 64.2%  ·  82K/128K",
 		}));
 
 		const line = stripAnsi(header.render(40)[0]);
 
-		expect(line).toContain("上下文 64.2%  ·  82k/128k");
+		expect(line).toContain("上下文 64.2%  ·  82K/128K");
 		expect(visibleWidth(line)).toBeLessThanOrEqual(40);
 	});
 
@@ -117,12 +142,12 @@ describe("LYStar workspace", () => {
 		const header = new WorkspaceHeader(() => ({
 			path: "~/project",
 			session: "任务一",
-			context: "上下文 7.4%  ·  9.5k/128k",
+			context: "上下文 7.4%  ·  9.5K/128K",
 		}));
 		const editor = textContainer("────────────────", "  修复登录流程", "────────────────");
 		const composer = new WorkspaceComposer({
 			editor,
-			getInfo: () => "claude-sonnet-4  ·  思考强度：高(high)  ·  项目已信任",
+			getInfo: () => "(upstream) claude-sonnet-4 · 思考强度：高(high) · 项目已信任",
 			fullscreen: true,
 		});
 
@@ -131,10 +156,11 @@ describe("LYStar workspace", () => {
 
 		expect(headerLines).toHaveLength(1);
 		expect(headerLines[0]).toContain("~/project  ·  任务一");
-		expect(headerLines[0]).toContain("上下文 7.4%  ·  9.5k/128k");
+		expect(headerLines[0]).toContain("上下文 7.4%  ·  9.5K/128K");
 		expect(composerLines[0]).toMatch(/^╭─+╮$/);
 		expect(composerLines[1]).toContain("│❯ 修复登录流程");
-		expect(composerLines[2]).toContain("claude-sonnet-4  ·  思考强度：高(high)  ·  项目已信任");
+		expect(composerLines[2]).toContain("(upstream) claude-sonnet-4");
+		expect(composerLines[2]).toContain("思考强度：高(high)");
 		expect(composerLines[2]).toMatch(/^╰─+ .* ╯$/);
 	});
 

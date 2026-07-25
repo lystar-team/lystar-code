@@ -85,6 +85,8 @@ describe("ToolExecutionComponent parity", () => {
 			process.cwd(),
 		);
 		expect(component.render(120)).toEqual([]);
+		expect(component.isExpansionToggleRow(0)).toBe(true);
+		expect(component.isExpansionToggleRow(1)).toBe(false);
 
 		component.updateResult(
 			{
@@ -232,8 +234,11 @@ describe("ToolExecutionComponent parity", () => {
 		const collapsedLines = component.render(80);
 		const collapsed = stripAnsi(collapsedLines.join("\n"));
 		expect(collapsedLines).toHaveLength(1);
-		expect(collapsed).toContain("已运行");
+		expect(collapsed).toContain("$ 已运行");
+		expect(collapsed).not.toContain("▣");
 		expect(collapsed).not.toContain("line-100");
+		expect(component.isExpansionToggleRow(0)).toBe(true);
+		expect(component.isExpansionToggleRow(99)).toBe(true);
 		expect(component.render(80).join("\n")).toContain(theme.getBgAnsi("toolSuccessBg"));
 
 		component.setExpanded(true);

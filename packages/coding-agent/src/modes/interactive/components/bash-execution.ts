@@ -37,7 +37,7 @@ export class BashExecutionComponent extends Container {
 	}
 
 	isExpansionToggleRow(row: number): boolean {
-		return row === 0;
+		return row >= 0;
 	}
 
 	override invalidate(): void {
@@ -83,7 +83,7 @@ export class BashExecutionComponent extends Container {
 		const summary = getToolSummary(undefined);
 		summary.setText(
 			formatToolSummary({
-				icon: "▣",
+				icon: "$",
 				subject: this.command,
 				expanded: this.expanded,
 				isPartial,

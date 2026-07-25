@@ -2,7 +2,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import type { ReadonlyFooterDataProvider } from "../src/core/footer-data-provider.ts";
-import { FooterComponent, formatCwdForFooter } from "../src/modes/interactive/components/footer.ts";
+import { FooterComponent, formatTokens } from "../src/modes/interactive/components/footer.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
@@ -77,7 +77,6 @@ function createSession(options: {
 			getSessionName: () => options.sessionName,
 			getCwd: () => "/tmp/project",
 		},
-		getContextUsage: () => ({ contextWindow: 200_000, percent: 12.3 }),
 		modelRuntime: {
 			isUsingOAuth: () => false,
 		},
@@ -103,14 +102,13 @@ function createFooterData(
 	return provider;
 }
 
-describe("formatCwdForFooter", () => {
-	it("does not abbreviate sibling paths that share the home prefix", () => {
-		expect(formatCwdForFooter("/home/user2", "/home/user")).toBe("/home/user2");
-	});
-
-	it("abbreviates the home directory and descendants", () => {
-		expect(formatCwdForFooter("/home/user", "/home/user")).toBe("~");
-		expect(formatCwdForFooter("/home/user/project", "/home/user")).toBe("~/project");
+describe("formatTokens", () => {
+	it("uses compact uppercase token units", () => {
+		expect(formatTokens(950)).toBe("950");
+		expect(formatTokens(9500)).toBe("9.5K");
+		expect(formatTokens(516_000)).toBe("516K");
+		expect(formatTokens(4_900_000)).toBe("4.9M");
+		expect(formatTokens(1_200_000_000)).toBe("1.2B");
 	});
 });
 
@@ -119,9 +117,18 @@ describe("FooterComponent width handling", () => {
 		initTheme(undefined, false);
 	});
 
-	it("keeps all lines within width for wide session names", () => {
+	it("keeps all lines within width for large cumulative totals", () => {
 		const width = 93;
-		const session = createSession({ sessionName: "한글".repeat(30) });
+		const session = createSession({
+			sessionName: "不应出现在底部",
+			usage: {
+				input: 4_900_000,
+				output: 516_000,
+				cacheRead: 242_000_000,
+				cacheWrite: 80_000,
+				cost: { total: 12.345 },
+			},
+		});
 		const footer = new FooterComponent(session, createFooterData(1));
 
 		const lines = footer.render(width);
@@ -130,7 +137,7 @@ describe("FooterComponent width handling", () => {
 		}
 	});
 
-	it("keeps stats line within width for wide model and provider names", () => {
+	it("keeps footer lines within width regardless of model metadata", () => {
 		const width = 60;
 		const session = createSession({
 			sessionName: "",
@@ -154,9 +161,9 @@ describe("FooterComponent width handling", () => {
 		}
 	});
 
-	it("shows cwd, context percentage, thinking level, and extension status", () => {
+	it("shows only extension status before the session has usage", () => {
 		const session = createSession({
-			sessionName: "",
+			sessionName: "只在顶部显示",
 			reasoning: true,
 			thinkingLevel: "high",
 		});
@@ -164,10 +171,8 @@ describe("FooterComponent width handling", () => {
 
 		const lines = footer.render(120).map(stripAnsi);
 
-		expect(lines[0]).toContain("/tmp/project (main)");
-		expect(lines[1]).toContain("上下文 12.3%/200k");
-		expect(lines[1]).toContain("思考强度：高(high)");
-		expect(lines[2]).toContain("OV ✓");
+		expect(lines).toEqual(["OV ✓"]);
+		expect(lines.join("\n")).not.toMatch(/\/tmp\/project|只在顶部显示|上下文|思考强度/);
 	});
 
 	it("includes summary and tool result usage in the total cost", () => {
@@ -204,8 +209,8 @@ describe("FooterComponent width handling", () => {
 		});
 		const footer = new FooterComponent(session, createFooterData(1));
 
-		const statsLine = stripAnsi(footer.render(120)[1]);
-		expect(statsLine).toContain("$1.250");
+		const statsLine = stripAnsi(footer.render(120)[0]);
+		expect(statsLine).toContain("费用 $1.250");
 	});
 
 	it("shows the latest cache hit rate when cache usage is present", () => {
@@ -221,11 +226,11 @@ describe("FooterComponent width handling", () => {
 		});
 		const footer = new FooterComponent(session, createFooterData(1));
 
-		const statsLine = stripAnsi(footer.render(120)[1]);
-		expect(statsLine).toContain("CH25.0%");
+		const line = stripAnsi(footer.render(120)[0]);
+		expect(line).toContain("本次命中 25.0%");
 	});
 
-	it("shows the session name and cumulative usage including compaction", () => {
+	it("shows cumulative usage including compaction without repeating the session name", () => {
 		const session = createSession({
 			sessionName: "上游升级",
 			usage: {
@@ -246,8 +251,31 @@ describe("FooterComponent width handling", () => {
 		const footer = new FooterComponent(session, createFooterData(1));
 		const lines = footer.render(120).map(stripAnsi);
 
-		expect(lines[0]).toContain("• 上游升级");
-		expect(lines[1]).toContain("↑300 ↓30 R130 W80 CH25.0%");
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toContain("累计 输入 510 · 输出 30 · 缓存读取 130 · 缓存写入 80 · 本次命中 25.0%");
+		expect(lines.join("\n")).not.toContain("上游升级");
+		expect(lines.join("\n")).not.toMatch(/CH|R130|W80|↑|↓/);
+	});
+
+	it.each([120, 80, 58, 40])("uses semantic fallbacks at width %i", (width) => {
+		const session = createSession({
+			sessionName: "顶部会话名",
+			usage: {
+				input: 4_900_000,
+				output: 516_000,
+				cacheRead: 242_000_000,
+				cacheWrite: 80_000,
+				cost: { total: 0 },
+			},
+		});
+		const lines = new FooterComponent(session, createFooterData(1)).render(width).map(stripAnsi);
+
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toContain("输入 247M");
+		expect(lines[0]).toContain("输出 516K");
+		if (width >= 58) expect(lines[0]).toContain("命中 98.0%");
+		expect(lines.join("\n")).not.toMatch(/CH|R242|W80|↑|↓|上下文|顶部会话名|\/tmp\/project/);
+		for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 	});
 
 	it("marks Kimi Coding costs as subscription estimates", () => {
@@ -264,6 +292,6 @@ describe("FooterComponent width handling", () => {
 		});
 		const footer = new FooterComponent(session, createFooterData(1));
 
-		expect(stripAnsi(footer.render(120)[1])).toContain("$1.234（订阅）");
+		expect(stripAnsi(footer.render(120)[0])).toContain("费用 $1.234（订阅）");
 	});
 });

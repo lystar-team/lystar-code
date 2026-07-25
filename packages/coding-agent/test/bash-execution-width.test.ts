@@ -40,7 +40,11 @@ describe("BashExecutionComponent width handling (#2569)", () => {
 
 		const collapsed = component.render(80);
 		expect(collapsed).toHaveLength(1);
+		expect(collapsed.join("\n")).toContain("$");
+		expect(collapsed.join("\n")).not.toContain("▣");
 		expect(collapsed.join("\n")).not.toContain("line-100");
+		expect(component.isExpansionToggleRow(0)).toBe(true);
+		expect(component.isExpansionToggleRow(99)).toBe(true);
 
 		component.setExpanded(true);
 		expect(component.render(80).join("\n")).toContain("line-100");
