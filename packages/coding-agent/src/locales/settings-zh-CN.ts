@@ -1,0 +1,38 @@
+export const SETTINGS_ZH_CN = {
+	"anthropic-extra-usage": ["Anthropic 额外用量", "订阅认证可能产生额外付费用量时提醒"],
+	autocompact: ["自动压缩上下文", "接近上下文上限时自动压缩会话"],
+	"autocomplete-max-visible": ["补全列表高度", "自动补全列表最多显示的条目数"],
+	"auto-resize-images": ["自动缩放图片", "上传前缩小大图以满足 Provider 限制"],
+	"block-images": ["阻止图片输入", "不向模型发送图片"],
+	"cache-miss-notices": ["Prompt Cache 提示", "出现明显 Prompt Cache miss 时在会话中提示"],
+	"clear-on-shrink": ["缩小时清屏", "终端高度缩小时清除旧内容"],
+	"collapse-changelog": ["折叠更新记录", "更新后只显示精简记录"],
+	"default-project-trust": ["默认项目可信状态", "没有其他规则时如何处理项目本地文件"],
+	"double-escape-action": ["双击 Escape", "输入框为空时连续按两次 Escape 执行的操作"],
+	"editor-padding": ["输入框横向留白", "输入区左右保留的列数"],
+	"follow-up-mode": ["后续消息处理", "当前回复完成后如何处理排队消息"],
+	"hide-thinking": ["隐藏思考块", "默认折叠模型思考内容"],
+	"http-idle-timeout": ["HTTP 空闲超时", "流式响应没有新数据时等待多久"],
+	"image-width-cells": ["图片显示宽度", "终端内图片预览占用的列数"],
+	"light-theme": ["浅色主题", "终端为浅色外观时使用的主题"],
+	"dark-theme": ["深色主题", "终端为深色外观时使用的主题"],
+	"output-padding": ["输出留白", "Agent 输出左右保留的列数"],
+	"quiet-startup": ["安静启动", "启动时隐藏详细加载信息"],
+	"show-hardware-cursor": ["硬件光标", "在输入框中显示终端原生光标"],
+	"show-images": ["显示图片", "在支持的终端里显示图片预览"],
+	"skill-commands": ["Skill 命令", "把 Skill 注册为斜杠命令"],
+	"steering-mode": ["引导消息处理", "模型运行时如何处理排队的引导消息"],
+	"terminal-progress": ["终端进度状态", "工作时更新终端进度指示"],
+	theme: ["主题", "选择界面主题或跟随终端外观"],
+	thinking: ["思考级别", "控制模型推理深度"],
+	transport: ["传输方式", "选择 Provider 的请求传输方式"],
+	"tree-filter-mode": ["会话树筛选", "打开 /tree 时默认显示哪些消息"],
+	warnings: ["警告设置", "配置运行时警告"],
+} as const;
+
+export type SettingTextId = keyof typeof SETTINGS_ZH_CN;
+
+export function localizeSetting<T extends { id: string; label: string; description?: string }>(item: T): T {
+	const text = SETTINGS_ZH_CN[item.id as SettingTextId];
+	return text ? { ...item, label: text[0], description: text[1] } : item;
+}

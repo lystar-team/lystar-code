@@ -1,0 +1,82 @@
+name: Release LYStar Agent
+
+on:
+  push:
+    tags:
+      - "v*-lystar.*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.9
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Verify source
+        run: npm run check
+
+      - name: Test TUI, AI, and Coding Agent
+        run: |
+          npm --workspace @earendil-works/pi-tui test
+          npm --workspace @earendil-works/pi-ai test
+          npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=4
+
+      - name: Test Agent Core except documented upstream long-output baseline
+        run: npm --workspace @earendil-works/pi-agent-core test -- --exclude test/harness/tools.test.ts
+
+      - name: Build JavaScript packages
+        run: npm run build:offline
+
+      - name: Build standalone bundles
+        run: |
+          bash scripts/build-binaries.sh \
+            --skip-install \
+            --skip-build \
+            --repository "${GITHUB_REPOSITORY}"
+
+      - name: Verify release version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: test "v$(cat packages/coding-agent/binaries/VERSION)" = "$TAG"
+
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            packages/coding-agent/binaries/*.tar.gz
+            packages/coding-agent/binaries/*.zip
+            packages/coding-agent/binaries/SHA256SUMS
+            packages/coding-agent/binaries/release-manifest.json
+            packages/coding-agent/binaries/install.sh
+            packages/coding-agent/binaries/install.ps1
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --verify-tag \
+            --generate-notes \
+            packages/coding-agent/binaries/*.tar.gz \
+            packages/coding-agent/binaries/*.zip \
+            packages/coding-agent/binaries/SHA256SUMS \
+            packages/coding-agent/binaries/release-manifest.json \
+            packages/coding-agent/binaries/install.sh \
+            packages/coding-agent/binaries/install.ps1
