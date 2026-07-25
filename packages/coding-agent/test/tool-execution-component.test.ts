@@ -234,7 +234,7 @@ describe("ToolExecutionComponent parity", () => {
 		expect(collapsedLines).toHaveLength(1);
 		expect(collapsed).toContain("已运行");
 		expect(collapsed).not.toContain("line-100");
-		expect(component.render(80).join("\n")).toMatch(/\x1b\[48;2;/);
+		expect(component.render(80).join("\n")).toContain(theme.getBgAnsi("toolSuccessBg"));
 
 		component.setExpanded(true);
 		expect(stripAnsi(component.render(80).join("\n"))).toContain("line-100");
