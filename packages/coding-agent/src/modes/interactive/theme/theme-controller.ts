@@ -94,7 +94,7 @@ export class InteractiveThemeController {
 		this.activeThemeName = result.success ? themeName : "dark";
 		this.notifyChanged();
 		if (!result.success && showError) {
-			this.showError(`Failed to load theme "${themeName}": ${result.error}\nFell back to dark theme.`);
+			this.showError(`无法加载主题“${themeName}”：${result.error}\n已切回深色主题。`);
 		}
 		return result;
 	}

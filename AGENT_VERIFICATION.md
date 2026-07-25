@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-07-25T15:09:54+08:00
+最后核验时间：2026-07-25T18:34:18+08:00
 
 环境：
 
@@ -27,7 +27,7 @@ Coding Agent 全量测试：
 npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=4
 ```
 
-结果：179 个 test files 通过、6 个跳过；1621 项测试通过、48 项跳过。
+结果：180 个 test files 通过、6 个跳过；1624 项测试通过、48 项跳过。
 
 TUI 全量测试：
 
@@ -66,9 +66,12 @@ sha256sum -c SHA256SUMS
 真实 PTY 使用独立 tmux socket 和临时 HOME 验证：
 
 - 120x36 首次启动显示中文主题选择。
-- 120x36 主界面显示固定顶栏、独立对话区、输入区、快捷栏和 footer。
-- `/settings` 显示中文设置项。
-- resize 到 80x24 后布局仍保持 24 行，无控件重叠或进程退出。
+- 120x36 主界面显示固定顶栏、独立对话区、输入区和快捷栏。
+- 80x24 下完成短回复、30 行流式输出、运行状态和回复完成状态验证，输入框底边与快捷栏始终可见。
+- 80x8 下叠加 10 行 Extension Widget，输入框与快捷栏仍保留最后 4 行，附加状态只使用剩余空间。
+- `/settings` 显示中文设置名、中文枚举值和明确的搜索提示。
+- `/session`、`/hotkeys`、分支、压缩、登录、Shell 状态和常见错误使用中文界面文案。
+- resize 后布局保持终端总行数，无控件重叠或进程退出。
 - `/quit` 正常退出；本轮 tmux socket 已关闭并删除。
 
 ## 发行产物
@@ -76,11 +79,11 @@ sha256sum -c SHA256SUMS
 目录：`packages/coding-agent/binaries/`
 
 ```text
-lystar-agent-v0.82.0-lystar.1-darwin-arm64.tar.gz   29M
-lystar-agent-v0.82.0-lystar.1-darwin-x64.tar.gz     31M
-lystar-agent-v0.82.0-lystar.1-linux-arm64.tar.gz    44M
-lystar-agent-v0.82.0-lystar.1-linux-x64.tar.gz      45M
-lystar-agent-v0.82.0-lystar.1-windows-x64.zip       47M
+lystar-agent-v<version>-darwin-arm64.tar.gz
+lystar-agent-v<version>-darwin-x64.tar.gz
+lystar-agent-v<version>-linux-arm64.tar.gz
+lystar-agent-v<version>-linux-x64.tar.gz
+lystar-agent-v<version>-windows-x64.zip
 ```
 
 同时生成 `SHA256SUMS`、`release-manifest.json`、`install.sh`、`install.ps1` 和 `VERSION`。

@@ -91,6 +91,7 @@ export interface WorkspaceOptions {
 	header: Container;
 	scrollContainers: Container[];
 	bottomContainers: Component[];
+	fixedBottomContainers?: Component[];
 	fullscreen: boolean;
 	horizontalPadding?: number;
 }
@@ -173,7 +174,11 @@ export class LystarWorkspace implements Component {
 		const renderWidth = Math.max(1, width - horizontalPadding * 2);
 		const headerLines = this.options.header.render(renderWidth);
 		const { lines: contentLines, ranges } = this.renderScrollContent(renderWidth);
-		const bottomLines = this.options.bottomContainers.flatMap((component) => component.render(renderWidth));
+		const bottomSections = this.options.bottomContainers.map((component) => ({
+			component,
+			lines: component.render(renderWidth),
+		}));
+		const bottomLines = bottomSections.flatMap((section) => section.lines);
 		this.contentRanges = ranges;
 
 		if (!this.options.fullscreen) {
@@ -188,7 +193,36 @@ export class LystarWorkspace implements Component {
 		const maxHeaderHeight = Math.min(3, Math.max(0, height - 1));
 		const visibleHeader = headerLines.slice(0, maxHeaderHeight);
 		const maxBottomHeight = Math.max(0, height - visibleHeader.length - 1);
-		const visibleBottom = bottomLines.slice(0, maxBottomHeight);
+		// 先预留输入框和快捷栏，状态与 Extension Widget 只使用剩余空间。
+		const fixedComponents = new Set(this.options.fixedBottomContainers ?? []);
+		const fixedHeight = bottomSections.reduce(
+			(total, section) => total + (fixedComponents.has(section.component) ? section.lines.length : 0),
+			0,
+		);
+		let visibleBottom: string[];
+		if (maxBottomHeight === 0) {
+			visibleBottom = [];
+		} else if (fixedHeight >= maxBottomHeight) {
+			visibleBottom = bottomSections
+				.filter((section) => fixedComponents.has(section.component))
+				.flatMap((section) => section.lines)
+				.slice(-maxBottomHeight);
+		} else {
+			let optionalBudget = maxBottomHeight - fixedHeight;
+			const optionalLineCounts = new Map<Component, number>();
+			for (let index = bottomSections.length - 1; index >= 0; index--) {
+				const section = bottomSections[index];
+				if (fixedComponents.has(section.component)) continue;
+				const lineCount = Math.min(optionalBudget, section.lines.length);
+				optionalLineCounts.set(section.component, lineCount);
+				optionalBudget -= lineCount;
+			}
+			visibleBottom = bottomSections.flatMap((section) => {
+				if (fixedComponents.has(section.component)) return section.lines;
+				const visibleLineCount = Math.min(section.lines.length, optionalLineCounts.get(section.component) ?? 0);
+				return visibleLineCount > 0 ? section.lines.slice(-visibleLineCount) : [];
+			});
+		}
 		this.viewportHeight = Math.max(1, height - visibleHeader.length - visibleBottom.length);
 		this.viewportScreenTop = visibleHeader.length;
 

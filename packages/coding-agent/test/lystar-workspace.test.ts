@@ -26,6 +26,7 @@ describe("LYStar workspace", () => {
 			header,
 			scrollContainers: [chat],
 			bottomContainers: [bottom],
+			fixedBottomContainers: [bottom],
 			fullscreen: true,
 		});
 
@@ -33,6 +34,30 @@ describe("LYStar workspace", () => {
 		expect(rendered).toHaveLength(8);
 		expect(rendered.join("\n")).toContain("line-12");
 		expect(rendered.slice(-2).map((line) => line.trimEnd())).toEqual(["  editor", "  footer"]);
+	});
+
+	it("keeps the composer and shortcuts when optional bottom content overflows", () => {
+		const optional = textContainer(...Array.from({ length: 10 }, (_, index) => `status-${index + 1}`));
+		const composer = textContainer("╭────╮", "│❯   │", "╰────╯");
+		const shortcuts = textContainer("Shift+Tab:推理  │  Escape:取消");
+		const workspace = new LystarWorkspace({
+			getHeight: () => 8,
+			header: textContainer("header"),
+			scrollContainers: [textContainer("latest message")],
+			bottomContainers: [optional, composer, shortcuts],
+			fixedBottomContainers: [composer, shortcuts],
+			fullscreen: true,
+		});
+
+		const rendered = workspace.render(60).map(stripAnsi);
+
+		expect(rendered).toHaveLength(8);
+		expect(rendered.slice(-4).map((line) => line.trim())).toEqual([
+			"╭────╮",
+			"│❯   │",
+			"╰────╯",
+			"Shift+Tab:推理  │  Escape:取消",
+		]);
 	});
 
 	it("preserves the user's position while new content arrives", () => {
@@ -63,7 +88,7 @@ describe("LYStar workspace", () => {
 		const editor = textContainer("────────────────", "  修复登录流程", "────────────────");
 		const composer = new WorkspaceComposer({
 			editor,
-			getInfo: () => "claude-sonnet-4 (high)  ·  项目已信任",
+			getInfo: () => "claude-sonnet-4  ·  推理：深度  ·  项目已信任",
 			fullscreen: true,
 		});
 
@@ -75,7 +100,7 @@ describe("LYStar workspace", () => {
 		expect(headerLines[0]).toContain("9.5k / 128k");
 		expect(composerLines[0]).toMatch(/^╭─+╮$/);
 		expect(composerLines[1]).toContain("│❯ 修复登录流程");
-		expect(composerLines[2]).toContain("claude-sonnet-4 (high)  ·  项目已信任");
+		expect(composerLines[2]).toContain("claude-sonnet-4  ·  推理：深度  ·  项目已信任");
 		expect(composerLines[2]).toMatch(/^╰─+ .* ╯$/);
 	});
 });

@@ -28,6 +28,11 @@ export class Input implements Component, Focusable {
 	// Bracketed paste mode buffering
 	private pasteBuffer: string = "";
 	private isInPaste: boolean = false;
+	private readonly prompt: string;
+
+	constructor(prompt = "> ") {
+		this.prompt = prompt;
+	}
 
 	// Kill ring for Emacs-style kill/yank operations
 	private killRing = new KillRing();
@@ -377,8 +382,8 @@ export class Input implements Component, Focusable {
 
 	render(width: number): string[] {
 		// Calculate visible window
-		const prompt = "> ";
-		const availableWidth = width - prompt.length;
+		const prompt = this.prompt;
+		const availableWidth = width - visibleWidth(prompt);
 
 		if (availableWidth <= 0) {
 			return [prompt];

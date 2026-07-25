@@ -34,7 +34,7 @@ class UserMessageList implements Component {
 		const lines: string[] = [];
 
 		if (this.messages.length === 0) {
-			lines.push(theme.fg("muted", "  No user messages found"));
+			lines.push(theme.fg("muted", "  没有可用于创建分支的用户消息"));
 			return lines;
 		}
 
@@ -63,7 +63,7 @@ class UserMessageList implements Component {
 
 			// Second line: metadata (position in history)
 			const position = i + 1;
-			const metadata = `  Message ${position} of ${this.messages.length}`;
+			const metadata = `  第 ${position} 条，共 ${this.messages.length} 条`;
 			const metadataLine = theme.fg("muted", metadata);
 			lines.push(metadataLine);
 			lines.push(""); // Blank line between messages
@@ -120,14 +120,8 @@ export class UserMessageSelectorComponent extends Container {
 
 		// Add header
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.bold("Fork from Message"), 1, 0));
-		this.addChild(
-			new Text(
-				theme.fg("muted", "Select a user message to copy the active path up to that point into a new session"),
-				1,
-				0,
-			),
-		);
+		this.addChild(new Text(theme.bold("从消息创建分支"), 1, 0));
+		this.addChild(new Text(theme.fg("muted", "选择一条用户消息，新会话会复制到该消息为止的当前路径"), 1, 0));
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));

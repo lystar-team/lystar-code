@@ -69,9 +69,9 @@ describe("AssistantMessageComponent", () => {
 		);
 		const rendered = component.render(80).join("\n");
 
-		expect(rendered).toContain("Thinking...");
-		expect(rendered).toContain("maximum output token limit");
-		expect(rendered).toContain("response may be incomplete");
+		expect(rendered).toContain("◆ 思考过程");
+		expect(rendered).toContain("最大输出长度");
+		expect(rendered).toContain("回复可能不完整");
 	});
 
 	test("coalesces adjacent thinking blocks into one hidden thinking label", () => {
@@ -88,7 +88,7 @@ describe("AssistantMessageComponent", () => {
 		);
 		const rendered = stripAnsi(component.render(80).join("\n"));
 
-		expect(rendered.match(/Thinking\.\.\./g)).toHaveLength(1);
+		expect(rendered.match(/◆ 思考过程/g)).toHaveLength(1);
 		expect(rendered).toContain("answer");
 	});
 

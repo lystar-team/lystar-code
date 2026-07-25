@@ -461,8 +461,8 @@ async function promptForMissingSessionCwd(
 	settingsManager: SettingsManager,
 ): Promise<string | undefined> {
 	return showStartupSelector(settingsManager, formatMissingSessionCwdPrompt(issue), [
-		{ label: "Continue", value: issue.fallbackCwd },
-		{ label: "Cancel", value: undefined },
+		{ label: "继续", value: issue.fallbackCwd },
+		{ label: "取消", value: undefined },
 	]);
 }
 

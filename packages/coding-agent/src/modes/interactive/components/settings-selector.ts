@@ -15,6 +15,7 @@ import {
 import { formatHttpIdleTimeoutMs, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
 import type { DefaultProjectTrust, WarningSettings } from "../../../core/settings-manager.ts";
 import { localizeSetting } from "../../../locales/settings-zh-CN.ts";
+import { formatThinkingLevel } from "../../../locales/zh-CN.ts";
 import {
 	getSelectListTheme,
 	getSettingsListTheme,
@@ -40,15 +41,7 @@ const THINKING_DESCRIPTIONS: Record<ThinkingLevel, string> = {
 	max: "最大推理",
 };
 
-const DEFAULT_PROJECT_TRUST_LABELS: Record<DefaultProjectTrust, string> = {
-	ask: "Ask",
-	always: "Always trust",
-	never: "Never trust",
-};
-
-const DEFAULT_PROJECT_TRUST_BY_LABEL = new Map(
-	Object.entries(DEFAULT_PROJECT_TRUST_LABELS).map(([value, label]) => [label, value as DefaultProjectTrust]),
-);
+const DEFAULT_PROJECT_TRUST_VALUES: DefaultProjectTrust[] = ["ask", "always", "never"];
 
 export interface SettingsConfig {
 	autoCompact: boolean;
@@ -216,7 +209,7 @@ class SelectSubmenu extends Container {
 
 		// Hint
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", "  Enter to select · Esc to go back"), 0, 0));
+		this.addChild(new Text(theme.fg("dim", "  Enter 选择 · Esc 返回"), 0, 0));
 	}
 
 	handleInput(data: string): void {
@@ -234,8 +227,8 @@ function singleModeThemeItems(availableThemes: string[]): SelectItem[] {
 	return [
 		{
 			value: AUTOMATIC_THEME_VALUE,
-			label: "Automatic",
-			description: "Use separate themes for light and dark terminal appearance",
+			label: "自动",
+			description: "根据终端浅色或深色外观切换主题",
 		},
 		...themeItems(availableThemes),
 	];
@@ -316,7 +309,7 @@ class ThemeSubmenu extends Container {
 	private showSingleMenu(): void {
 		this.mode = "single";
 		const menu = new SelectSubmenu(
-			"Theme",
+			"主题",
 			"选择主题，或使用“自动”跟随终端外观。",
 			singleModeThemeItems(this.availableThemes),
 			this.singleTheme,
@@ -355,7 +348,7 @@ class ThemeSubmenu extends Container {
 				description: "Theme to use in automatic mode when the terminal is light",
 				currentValue: this.lightTheme,
 				submenu: (currentValue, done) =>
-					this.createThemeSelect("Light Theme", "选择终端为浅色外观时使用的主题", currentValue, done, (value) => {
+					this.createThemeSelect("浅色主题", "选择终端为浅色外观时使用的主题", currentValue, done, (value) => {
 						this.lightTheme = value;
 						this.callbacks.onThemePreview?.(this.getThemeSetting());
 						done(value);
@@ -367,7 +360,7 @@ class ThemeSubmenu extends Container {
 				description: "Theme to use in automatic mode when the terminal is dark",
 				currentValue: this.darkTheme,
 				submenu: (currentValue, done) =>
-					this.createThemeSelect("Dark Theme", "选择终端为深色外观时使用的主题", currentValue, done, (value) => {
+					this.createThemeSelect("深色主题", "选择终端为深色外观时使用的主题", currentValue, done, (value) => {
 						this.darkTheme = value;
 						this.callbacks.onThemePreview?.(this.getThemeSetting());
 						done(value);
@@ -538,8 +531,8 @@ export class SettingsSelectorComponent extends Container {
 				id: "default-project-trust",
 				label: "Default project trust",
 				description: "Fallback behavior when no extension or saved trust decision decides project trust",
-				currentValue: DEFAULT_PROJECT_TRUST_LABELS[config.defaultProjectTrust],
-				values: Object.values(DEFAULT_PROJECT_TRUST_LABELS),
+				currentValue: config.defaultProjectTrust,
+				values: DEFAULT_PROJECT_TRUST_VALUES,
 			},
 			{
 				id: "double-escape-action",
@@ -577,11 +570,11 @@ export class SettingsSelectorComponent extends Container {
 				currentValue: config.thinkingLevel,
 				submenu: (currentValue, done) =>
 					new SelectSubmenu(
-						"Thinking Level",
+						"思考级别",
 						"选择支持思考的模型使用的推理深度",
 						config.availableThinkingLevels.map((level) => ({
 							value: level,
-							label: level,
+							label: formatThinkingLevel(level),
 							description: THINKING_DESCRIPTIONS[level],
 						})),
 						currentValue,
@@ -765,13 +758,9 @@ export class SettingsSelectorComponent extends Container {
 					case "quiet-startup":
 						callbacks.onQuietStartupChange(newValue === "true");
 						break;
-					case "default-project-trust": {
-						const defaultProjectTrust = DEFAULT_PROJECT_TRUST_BY_LABEL.get(newValue);
-						if (defaultProjectTrust) {
-							callbacks.onDefaultProjectTrustChange(defaultProjectTrust);
-						}
+					case "default-project-trust":
+						callbacks.onDefaultProjectTrustChange(newValue as DefaultProjectTrust);
 						break;
-					}
 					case "double-escape-action":
 						callbacks.onDoubleEscapeActionChange(newValue as "fork" | "tree");
 						break;

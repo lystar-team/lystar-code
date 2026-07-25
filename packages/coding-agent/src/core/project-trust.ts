@@ -1,4 +1,4 @@
-import { CONFIG_DIR_NAME } from "../config.ts";
+import { APP_TITLE, CONFIG_DIR_NAME } from "../config.ts";
 import { emitProjectTrustEvent } from "./extensions/runner.ts";
 import type { LoadExtensionsResult, ProjectTrustContext } from "./extensions/types.ts";
 import type { DefaultProjectTrust } from "./settings-manager.ts";
@@ -22,7 +22,7 @@ export interface ResolveProjectTrustedOptions {
 }
 
 function formatProjectTrustPrompt(cwd: string): string {
-	return `Trust project folder?\n${cwd}\n\nThis allows pi to load ${CONFIG_DIR_NAME} settings and resources, install missing project packages, and execute project extensions.`;
+	return `是否信任项目目录？\n${cwd}\n\n信任后，${APP_TITLE} 可以加载项目级 ${CONFIG_DIR_NAME} 设置和资源、安装缺失的项目 Package，并执行项目 Extension。`;
 }
 
 async function selectProjectTrustOption(
@@ -58,7 +58,7 @@ export async function resolveProjectTrusted(options: ResolveProjectTrustedOption
 			options.projectTrustContext,
 		);
 		for (const error of errors) {
-			options.onExtensionError?.(`Extension "${error.extensionPath}" project_trust error: ${error.error}`);
+			options.onExtensionError?.(`Extension“${error.extensionPath}”处理项目可信状态失败：${error.error}`);
 		}
 		if (result) {
 			const trusted = result.trusted === "yes";

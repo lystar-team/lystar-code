@@ -33,12 +33,12 @@ export function getMissingSessionCwdIssue(
 }
 
 export function formatMissingSessionCwdError(issue: SessionCwdIssue): string {
-	const sessionFile = issue.sessionFile ? `\nSession file: ${issue.sessionFile}` : "";
-	return `Stored session working directory does not exist: ${issue.sessionCwd}${sessionFile}\nCurrent working directory: ${issue.fallbackCwd}`;
+	const sessionFile = issue.sessionFile ? `\n会话文件：${issue.sessionFile}` : "";
+	return `会话保存的工作目录不存在：${issue.sessionCwd}${sessionFile}\n当前工作目录：${issue.fallbackCwd}`;
 }
 
 export function formatMissingSessionCwdPrompt(issue: SessionCwdIssue): string {
-	return `cwd from session file does not exist\n${issue.sessionCwd}\n\ncontinue in current cwd\n${issue.fallbackCwd}`;
+	return `会话文件中的工作目录不存在\n${issue.sessionCwd}\n\n是否在当前目录继续\n${issue.fallbackCwd}`;
 }
 
 export class MissingSessionCwdError extends Error {

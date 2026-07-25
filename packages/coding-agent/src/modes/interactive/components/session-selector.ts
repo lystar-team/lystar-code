@@ -423,9 +423,9 @@ class SessionList implements Component, Focusable {
 			if (this.nameFilter === "named") {
 				const toggleKey = keyText("app.session.toggleNamedFilter");
 				if (this.showCwd) {
-					emptyMessage = `  No named sessions found. Press ${toggleKey} to show all.`;
+					emptyMessage = `  没有已命名会话。按 ${toggleKey} 显示全部会话。`;
 				} else {
-					emptyMessage = `  No named sessions in current folder. Press ${toggleKey} to show all, or Tab to view all.`;
+					emptyMessage = `  当前目录没有已命名会话。按 ${toggleKey} 显示全部会话，或按 Tab 查看所有目录。`;
 				}
 			} else if (this.showCwd) {
 				// "All" scope - no sessions anywhere that match filter

@@ -167,11 +167,7 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 			const label = provider.status.type === "oauth" ? "已配置订阅" : "已配置 API key";
 			return theme.fg("muted", " • ") + theme.fg("warning", label);
 		}
-		if (
-			!provider.status.source ||
-			provider.status.source === "OAuth" ||
-			provider.status.source === "stored credential"
-		) {
+		if (!provider.status.source || provider.status.source === "OAuth" || provider.status.source === "已保存的凭据") {
 			return theme.fg("success", " ✓ 已配置");
 		}
 		const source = /^[A-Z][A-Z0-9_]*(?:, [A-Z][A-Z0-9_]*)*$/.test(provider.status.source)

@@ -13,6 +13,8 @@ export interface SettingItem {
 	description?: string;
 	/** Current value to display (right side) */
 	currentValue: string;
+	/** Format the value for display without changing the stored value. */
+	formatValue?: (value: string) => string;
 	/** If provided, Enter/Space cycles through these values */
 	values?: string[];
 	/** If provided, Enter opens this submenu. Receives current value and done callback. */
@@ -62,7 +64,7 @@ export class SettingsList implements Component {
 		this.onCancel = onCancel;
 		this.searchEnabled = options.enableSearch ?? false;
 		if (this.searchEnabled) {
-			this.searchInput = new Input();
+			this.searchInput = new Input("搜索设置：");
 		}
 	}
 
@@ -138,7 +140,8 @@ export class SettingsList implements Component {
 			const usedWidth = prefixWidth + maxLabelWidth + visibleWidth(separator);
 			const valueMaxWidth = width - usedWidth - 2;
 
-			const valueText = this.theme.value(truncateToWidth(item.currentValue, valueMaxWidth, ""), isSelected);
+			const displayValue = item.formatValue?.(item.currentValue) ?? item.currentValue;
+			const valueText = this.theme.value(truncateToWidth(displayValue, valueMaxWidth, ""), isSelected);
 
 			lines.push(truncateToWidth(prefix + labelText + separator + valueText, width));
 		}

@@ -1,3 +1,5 @@
+import { formatThinkingLevel } from "./zh-CN.ts";
+
 export const SETTINGS_ZH_CN = {
 	"anthropic-extra-usage": ["Anthropic 额外用量", "订阅认证可能产生额外付费用量时提醒"],
 	autocompact: ["自动压缩上下文", "接近上下文上限时自动压缩会话"],
@@ -28,11 +30,60 @@ export const SETTINGS_ZH_CN = {
 	transport: ["传输方式", "选择 Provider 的请求传输方式"],
 	"tree-filter-mode": ["会话树筛选", "打开 /tree 时默认显示哪些消息"],
 	warnings: ["警告设置", "配置运行时警告"],
+	apply: ["应用", "保存主题设置并返回"],
+	"single-mode": ["主题模式", "切换为固定主题"],
 } as const;
 
 export type SettingTextId = keyof typeof SETTINGS_ZH_CN;
 
-export function localizeSetting<T extends { id: string; label: string; description?: string }>(item: T): T {
+const SETTING_VALUE_ZH_CN: Partial<Record<SettingTextId, Record<string, string>>> = {
+	"steering-mode": { "one-at-a-time": "逐条处理", all: "全部处理" },
+	"follow-up-mode": { "one-at-a-time": "逐条处理", all: "全部处理" },
+	transport: { auto: "自动", sse: "SSE", websocket: "WebSocket", "websocket-cached": "WebSocket（缓存）" },
+	"http-idle-timeout": {
+		"30 sec": "30 秒",
+		"1 min": "1 分钟",
+		"2 min": "2 分钟",
+		"5 min": "5 分钟",
+		disabled: "关闭",
+	},
+	"default-project-trust": { ask: "每次询问", always: "始终信任", never: "始终不信任" },
+	"double-escape-action": { tree: "打开会话树", fork: "创建分支", none: "不执行" },
+	"tree-filter-mode": {
+		default: "默认",
+		"no-tools": "隐藏工具",
+		"user-only": "仅用户消息",
+		"labeled-only": "仅标签消息",
+		all: "全部消息",
+	},
+	warnings: { configure: "打开设置" },
+	thinking: {
+		off: formatThinkingLevel("off"),
+		minimal: formatThinkingLevel("minimal"),
+		low: formatThinkingLevel("low"),
+		medium: formatThinkingLevel("medium"),
+		high: formatThinkingLevel("high"),
+		xhigh: formatThinkingLevel("xhigh"),
+		max: formatThinkingLevel("max"),
+	},
+	theme: { dark: "深色", light: "浅色" },
+	apply: { "save and go back": "保存并返回" },
+	"single-mode": { "switch to single theme": "使用固定主题" },
+};
+
+export function localizeSettingValue(id: string, value: string): string {
+	if (value === "true") return "开启";
+	if (value === "false") return "关闭";
+	return SETTING_VALUE_ZH_CN[id as SettingTextId]?.[value] ?? value;
+}
+
+export function localizeSetting<T extends { id: string; label: string; description?: string }>(
+	item: T,
+): T & { formatValue: (value: string) => string } {
 	const text = SETTINGS_ZH_CN[item.id as SettingTextId];
-	return text ? { ...item, label: text[0], description: text[1] } : item;
+	return {
+		...item,
+		...(text && { label: text[0], description: text[1] }),
+		formatValue: (value) => localizeSettingValue(item.id, value),
+	};
 }
