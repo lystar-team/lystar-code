@@ -769,7 +769,9 @@ export async function handlePackageCommand(
 				}
 				if (options.showExtensionsSkippedNote) {
 					console.log(
-						chalk.dim(`Extensions are skipped. Run ${APP_NAME} update --extensions to update extensions.`),
+						chalk.dim(
+							`本次仅更新 LYStar Agent；如需同时更新 Extension，请运行 ${APP_NAME} update --extensions。`,
+						),
 					);
 				}
 				if (updateTargetIncludesExtensions(target)) {
