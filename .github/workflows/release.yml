@@ -32,6 +32,9 @@ jobs:
       - name: Verify source
         run: npm run check
 
+      - name: Build JavaScript packages
+        run: npm run build:offline
+
       - name: Test TUI, AI, and Coding Agent
         run: |
           npm --workspace @earendil-works/pi-tui test
@@ -40,9 +43,6 @@ jobs:
 
       - name: Test Agent Core except documented upstream long-output baseline
         run: npm --workspace @earendil-works/pi-agent-core test -- --exclude test/harness/tools.test.ts
-
-      - name: Build JavaScript packages
-        run: npm run build:offline
 
       - name: Build standalone bundles
         run: |
