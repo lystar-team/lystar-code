@@ -30,6 +30,15 @@ fi
 release_dir="$tmp/release"
 mkdir -p "$release_dir"
 node "$ROOT/scripts/generate-release-metadata.mjs" "$release_dir" "1.0.0-lystar.1" "octyean/lystar-agent"
+node - "$ROOT/scripts/install.ps1" "$release_dir/install.ps1" <<'NODE'
+const fs = require("node:fs");
+for (const path of process.argv.slice(2)) {
+    const bytes = fs.readFileSync(path);
+    if (!bytes.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]))) {
+        throw new Error(`${path} must start with a UTF-8 BOM for Windows PowerShell 5.1`);
+    }
+}
+NODE
 grep -F 'REPOSITORY="octyean/lystar-agent"' "$release_dir/install.sh" >/dev/null
 grep -F '[[ "$REPOSITORY" == "__LYSTAR_RELEASE_REPOSITORY__" ]]' "$release_dir/install.sh" >/dev/null
 grep -F '$Repository = "octyean/lystar-agent"' "$release_dir/install.ps1" >/dev/null
