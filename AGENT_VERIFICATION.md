@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-07-25T22:26:34+08:00
+最后核验时间：2026-07-25T22:33:30+08:00
 
 环境：
 
@@ -69,13 +69,15 @@ cd packages/coding-agent/binaries
 sha256sum -c SHA256SUMS
 ```
 
-结果：macOS ARM64/x64、Linux ARM64/x64、Windows x64 五个压缩包全部校验通过。`release-manifest.json`、两个安装器和五个平台包内的 `piConfig.releaseRepository` 均固定为 `octyean/lystar-agent`。Linux x64 包已实机运行 `la --version`、`la --help` 和 `PI_OFFLINE=1 la --list-models`。
+结果：`0.82.1-lystar.1` 的 macOS ARM64/x64、Linux ARM64/x64、Windows x64 五个压缩包全部校验通过。`release-manifest.json`、两个安装器和五个平台包内的 `piConfig.releaseRepository` 均固定为 `octyean/lystar-agent`。Linux x64 包已实机运行 `la --version`、`la --help` 和 `PI_OFFLINE=1 la --list-models`。
 
 真实 PTY 使用独立 tmux socket 和临时工作目录验证：
 
 - 120x36 首次启动显示中文主题选择。
 - 120x36 主界面显示固定顶栏、独立对话区、输入区和快捷栏。
 - 顶栏和输入框下方恢复工作目录、上下文百分比、token 用量、模型、双语思考强度和 Extension 状态。
+- 使用包含 7 次压缩的真实 Session 快照验证 Footer 显示 `↑4.9M ↓516k R242M CH98.7%`；设置会话名后同步显示在工作目录行。
+- Footer 回归确认普通回复与压缩 entry 的 `↑/↓/R/W` 累加，正数写缓存显示为 `W80`；值为 0 时不显示该项。
 - 三行输入时 `❯` 位于中间行；单行和多行输入都保持稳定边框。
 - `high` 显示为 `高(high)`；默认展开模型返回的思考过程正文，用户仍可主动折叠。
 - 80x24 下连续执行 Bash、创建、编辑和读取操作，成功结果各占一行；点击目标摘要后仅展开该条完整输出。
