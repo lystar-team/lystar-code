@@ -18,6 +18,16 @@ la config
 
 npm Package 需要 Node.js/npm；Git Package 需要 Git，仓库带 `package.json` 时还会安装 npm 依赖。
 
+## 内置 subagent
+
+LYStar 二进制自带 `subagent` Tool，并提供三个不固定模型的后备 Agent：
+
+- `research-specialist`：只读调查代码和文档。
+- `review-specialist`：只读检查缺陷、回归和验证缺口。
+- `worker`：完成一个范围明确的实现单元。
+
+默认读取内建 Agent 和 `~/.pi/agent/agents/`；调用时把 `agentScope` 设为 `both` 或 `project` 才会加载项目 `.pi/agents/`。用户或项目中的同名 Agent 会覆盖内建定义，不需要另装 subagent Extension。
+
 ## 创建最小 Extension
 
 创建 `~/.pi/agent/extensions/hello.ts`：

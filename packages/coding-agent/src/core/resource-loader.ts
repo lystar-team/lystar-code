@@ -1014,12 +1014,18 @@ export class DefaultResourceLoader implements ResourceLoader {
 			// Check tools
 			for (const toolName of ext.tools.keys()) {
 				const existingOwner = toolOwners.get(toolName);
-				if (existingOwner && existingOwner !== ext.path) {
+				if (
+					existingOwner &&
+					existingOwner !== ext.path &&
+					!existingOwner.startsWith("<inline:") &&
+					!ext.path.startsWith("<inline:")
+				) {
 					conflicts.push({
 						path: ext.path,
 						message: `Tool "${toolName}" conflicts with ${existingOwner}`,
 					});
-				} else {
+				} else if (!existingOwner) {
+					// Inline tools are built-in fallbacks; discovered extensions keep load-order precedence.
 					toolOwners.set(toolName, ext.path);
 				}
 			}

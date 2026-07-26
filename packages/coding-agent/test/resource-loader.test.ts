@@ -2,9 +2,11 @@ import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ExtensionRunner } from "../src/core/extensions/runner.ts";
+import type { ExtensionFactory } from "../src/core/extensions/types.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
@@ -681,6 +683,52 @@ export default function(pi: ExtensionAPI) {
 
 			const { errors } = loader.getExtensions();
 			expect(errors.some((e) => e.error.includes("duplicate-tool") && e.error.includes("conflicts"))).toBe(true);
+		});
+
+		it("should treat inline tools as fallbacks for discovered extensions", async () => {
+			const globalExtDir = join(agentDir, "extensions");
+			mkdirSync(globalExtDir, { recursive: true });
+			writeFileSync(
+				join(globalExtDir, "subagent.ts"),
+				`
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+export default function(pi: ExtensionAPI) {
+  pi.registerTool({
+    name: "subagent",
+    description: "user tool",
+    parameters: Type.Object({}),
+    execute: async () => ({ content: [{ type: "text", text: "user" }] }),
+  });
+}`,
+			);
+			const inlineFactory: ExtensionFactory = (pi) => {
+				pi.registerTool({
+					name: "subagent",
+					label: "Subagent",
+					description: "built-in fallback",
+					parameters: Type.Object({}),
+					execute: async () => ({ content: [{ type: "text", text: "built-in" }], details: undefined }),
+				});
+			};
+
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				extensionFactories: [{ name: "subagent", factory: inlineFactory, hidden: true }],
+			});
+			await loader.reload();
+
+			const { extensions, errors } = loader.getExtensions();
+			expect(errors.some((error) => error.error.includes('Tool "subagent" conflicts'))).toBe(false);
+			const runner = new ExtensionRunner(
+				extensions,
+				loader.getExtensions().runtime,
+				cwd,
+				SessionManager.inMemory(),
+				await createModelRegistry(AuthStorage.create(join(tempDir, "auth-inline.json"))),
+			);
+			expect(runner.getToolDefinition("subagent")?.description).toBe("user tool");
 		});
 
 		it("should prefer explicit CLI extensions over discovered extensions when commands and tools conflict", async () => {

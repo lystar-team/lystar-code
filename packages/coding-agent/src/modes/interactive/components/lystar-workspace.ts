@@ -217,10 +217,23 @@ export class LystarWorkspace implements Component {
 		if (maxBottomHeight === 0) {
 			visibleBottom = [];
 		} else if (fixedHeight >= maxBottomHeight) {
-			visibleBottom = bottomSections
-				.filter((section) => fixedComponents.has(section.component))
-				.flatMap((section) => section.lines)
-				.slice(-maxBottomHeight);
+			let fixedBudget = maxBottomHeight;
+			const fixedLineCounts = new Map<Component, number>();
+			for (let index = bottomSections.length - 1; index >= 0; index--) {
+				const section = bottomSections[index];
+				if (!fixedComponents.has(section.component)) continue;
+				const lineCount = Math.min(fixedBudget, section.lines.length);
+				fixedLineCounts.set(section.component, lineCount);
+				fixedBudget -= lineCount;
+			}
+			visibleBottom = bottomSections.flatMap((section) => {
+				if (!fixedComponents.has(section.component)) return [];
+				const lineCount = fixedLineCounts.get(section.component) ?? 0;
+				if (lineCount === 0) return [];
+				return section.component instanceof WorkspaceComposer
+					? section.lines.slice(0, lineCount)
+					: section.lines.slice(-lineCount);
+			});
 		} else {
 			let optionalBudget = maxBottomHeight - fixedHeight;
 			const optionalLineCounts = new Map<Component, number>();

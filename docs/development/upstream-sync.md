@@ -25,6 +25,7 @@ git show --no-patch --decorate <pi-tag>
 - Package、Skill、Theme、Prompt Template。
 - Provider 和模型目录。
 - TUI renderer、组件、keybinding、终端清理。
+- `packages/coding-agent/examples/extensions/subagent/` 的上游变化。内建版位于 `packages/coding-agent/src/extensions/subagent/`，每次升级都要同步比较。
 
 ```bash
 git log --oneline <old-pi-commit>..<new-pi-commit>
@@ -44,6 +45,7 @@ git merge --no-commit --no-ff <new-pi-commit>
 - Provider、Session、Tool、Extension、Skill、Package 和基础 TUI 逻辑采用上游新实现。
 - 产品常量、中文 locale、LYStar workspace、更新器、安装器和 Release workflow保留 LYStar 契约。
 - 上游已有等价能力时删除 LYStar 重复实现。
+- subagent 采用上游示例的新行为，同时保留内建 Agent 覆盖顺序、子进程禁用递归 subagent、跨平台进程树终止和输出上限。
 - 逐块判断冲突，不整文件选择 ours/theirs。
 
 ## 版本与文档

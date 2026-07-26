@@ -60,6 +60,34 @@ describe("LYStar workspace", () => {
 		]);
 	});
 
+	it("keeps the editor visible before autocomplete items at minimal height", () => {
+		const editor = textContainer(
+			"────────────────",
+			"  $",
+			"────────────────",
+			"skill-1",
+			"skill-2",
+			"skill-3",
+			"(1/3)",
+		);
+		const composer = new WorkspaceComposer({ editor, getInfo: () => "model", fullscreen: true });
+		const shortcuts = textContainer("shortcuts");
+		const workspace = new LystarWorkspace({
+			getHeight: () => 8,
+			header: textContainer("header"),
+			scrollContainers: [textContainer("latest message")],
+			bottomContainers: [composer, shortcuts],
+			fixedBottomContainers: [composer, shortcuts],
+			fullscreen: true,
+		});
+
+		const rendered = workspace.render(40).map(stripAnsi);
+		expect(rendered).toHaveLength(8);
+		expect(rendered.join("\n")).toContain("│❯ $");
+		expect(rendered.join("\n")).toContain("skill-1");
+		expect(rendered.at(-1)?.trim()).toBe("shortcuts");
+	});
+
 	it("keeps the one-line usage footer when one optional row fits", () => {
 		const footer = textContainer("输入 267M · 输出 572K · 命中 99.5%");
 		const composer = textContainer("╭────╮", "│❯   │", "╰────╯");

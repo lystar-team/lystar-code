@@ -83,9 +83,26 @@ description: 说明这个 Skill 做什么，以及什么任务应该使用它。
 - 脚本写清运行环境和依赖。
 - 不在 Skill 中保存真实 Key、cookie 或用户数据。
 
+## 在 Prompt 中引用
+
+在输入框中键入 `$` 会只显示 Skill；键入 `@` 会同时显示 Skill 和文件，Skill 候选带有 `[Skill]` 标记。输入名称或描述片段后选择候选即可，不用手动补方括号：
+
+```text
+$shuo   -> $[shuorenhua]
+@ui     -> @[ui-design]
+```
+
+同一条 Prompt 可以引用多个 Skill，也可以继续夹带文件引用：
+
+```text
+请结合 @[ui-design] 和 $[shuorenhua] 检查 @src/App.vue
+```
+
+提交时按引用出现顺序加载全部 Skill，重复引用只加载一次。普通 `$PATH`、`${HOME}` 和金额不会被当成 Skill。
+
 ## 验证
 
-执行 `/reload` 后：
+执行 `/reload` 后，可输入 `$` 或 `@` 查看候选，也可以继续使用原有命令：
 
 ```text
 /skill:my-skill
