@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-07-26T08:52:12+08:00
+最后核验时间：2026-07-26T15:06:00+08:00
 
 环境：
 
@@ -29,7 +29,7 @@ Coding Agent 全量测试：
 npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=4
 ```
 
-结果：182 个 test files 通过、6 个跳过；1653 项测试通过、48 项跳过。CodeGraph 标记的 Footer 与工具交互受影响测试均已覆盖。
+结果：184 个 test files 通过、6 个跳过；1672 项测试通过、48 项跳过。Token 请求前保护、连续 Tool Result 压缩切点、托管 Bash Shell 解析和既有 Session/Extension 链路均已覆盖。
 
 README 与中文文档：
 
@@ -53,7 +53,7 @@ AI 全量测试：
 npm --workspace @earendil-works/pi-ai test
 ```
 
-结果：89 个 test files 通过、25 个跳过；667 项测试通过、783 项跳过。
+结果：89 个 test files 通过、25 个跳过；670 项测试通过、783 项跳过。
 
 Agent Core 全量回归：
 
@@ -71,7 +71,7 @@ bash scripts/test-install-sh.sh
 
 结果：本地假 Release 分别通过 curl 和仅 wget 下载，latest manifest 版本解析、SHA-256、executable smoke、PATH 幂等写入、`--no-path-update`、坏 SHA 拒绝、回退、卸载和 release materialization 全部通过。该测试不访问网络，已加入 CI 与 Release workflow。
 
-Windows 安装器源码继续保持 UTF-8 BOM 和 CRLF；本轮增加 PowerShell 5.1 版本检查、网络重试和 `install.cmd` 进程级执行策略入口，并移除与安装无关的 Git/Bash 前置条件。当前 Linux 环境没有 `powershell.exe`、`pwsh`、Docker 或 Windows 实机，更新后的 PowerShell 5.1 parser gate 需由 Windows CI job 执行后才能确认。
+Windows 安装器源码继续保持 UTF-8 BOM 和 CRLF；本轮加入 LYStar 托管 MinGit Bash 准备命令，安装器在切换版本前执行下载、固定 SHA-256 校验和 Bash/Git 自检。Linux 已通过 PowerShell 脚本物化检查；PowerShell 5.1 parser、npmmirror 下载、跨进程锁、中文空格路径和真实命令集由 Windows CI job 执行后确认。
 
 五平台独立发行包：
 
@@ -81,7 +81,7 @@ cd packages/coding-agent/binaries
 sha256sum -c SHA256SUMS
 ```
 
-结果：`0.82.1-lystar.5` 的 macOS ARM64/x64、Linux ARM64/x64、Windows x64 五个压缩包全部校验通过。`release-manifest.json` 的版本、Pi 版本、仓库、五个平台文件、大小和 SHA-256 与产物一致；归档包含 `LICENSE` 和 `THIRD_PARTY_LICENSES.md`。Linux x64 包已实机运行 `la --version`、`la --help` 和 `PI_OFFLINE=1 la --list-models`；Windows x64 executable 已核对为 PE32+ x86-64。
+结果：`0.82.1-lystar.6` 的 macOS ARM64/x64、Linux ARM64/x64、Windows x64 五个压缩包全部校验通过。`release-manifest.json` 的版本、Pi 版本、仓库、五个平台文件、大小和 SHA-256 与产物一致；归档包含 `LICENSE` 和 `THIRD_PARTY_LICENSES.md`。Linux x64 包已实机运行 `la --version`、`la --help` 和 `PI_OFFLINE=1 la --list-models`；Windows x64 executable 已核对为 PE32+ x86-64。
 
 真实 PTY 使用独立 tmux socket 和临时工作目录验证：
 
@@ -108,10 +108,10 @@ sha256sum -c SHA256SUMS
 - `pi-sandbox@0.6.1` 安装和加载成功，但真实启动因当前环境缺少上游 README 未列出的 `socat` 而未启用，已明确放入未通过清单，没有作为已适配资源推荐。
 - Windows 安装器源码和物化资产都以 UTF-8 BOM `EF BB BF` 开头；CI 与 Release 保留 Windows PowerShell 5.1 `Parser.ParseFile` gate。
 - Skill 引用局部测试 6 项通过：`$` / `@`、部分名称、显式方括号、文件候选共存、多 Skill 顺序去重、普通环境变量和失效引用均已覆盖。
-- 上下文上限回归已核对真实 Session：模型配置为 272000 tokens，旧逻辑曾到 371606 tokens 才压缩。现已在每次 Provider 请求前纳入 Skill/Extension 展开、steering/follow-up 和 Tool Result，并以 Provider usage 加 UTF-8 上界预估；摘要超限时分块合并，无法降到 `contextWindow` 内时本地停止。AI 估算、Agent 请求边界和 Coding Agent 压缩回归均通过。
+- 上下文上限回归已用 `215K Provider usage + 大段中文新增内容` 和连续大 Tool Result 形态覆盖。Provider usage 作为历史锚点，新增内容按 UTF-8 bytes/3 轻量估算并触发请求前压缩；估算不再作为 Provider tokenizer 的绝对事实，只有不可拆增量本身达到窗口才本地停止，其余真实 overflow 保留压缩和单次重试。连续 Tool Result 超预算时回到最后一个合法 Assistant Tool Call 切点，手动 `/compact` 才能继续的故障已进入自动回归。
 - subagent 已作为隐藏内建 Extension 编入 Coding Agent，三个内建 Agent、项目覆盖和外部同名 Extension 后备优先级测试通过；Coding Agent 全量 1670 项通过。
 - Linux x64 独立二进制成功编入 3168 个模块，`--version`、`PI_OFFLINE=1 --list-models`、归档 SHA-256 和真实 PTY 通过。80x8 保留输入框、Skill 候选和快捷栏，120x36 下 `$` Skill 与 `@README` 文件补全均正常。
-- Windows Release 新增 `install.cmd`；本地物化测试确认仓库占位符、进程级 `ExecutionPolicy Bypass`、ZIP/SHA 下载校验和用户 PATH 处理均进入产物。安装器不再下载 Git 或 Bash；`bash` Tool 只在实际调用时解析可选 Shell。
+- Windows Release 保留 `install.cmd` 和 PowerShell 5.1 parser gate，并新增托管 MinGit `2.55.0.3`：npmmirror 优先、Git for Windows 官方 Release 回退、固定 SHA-256、staging 自检、原子替换、跨进程锁和 `PI_OFFLINE=1` 禁止隐式下载。Windows CI 会并发启动两个准备进程，再验证 Bash 专属语法、Git、grep/sed/awk/find、中文空格路径和重复检查。
 
 ## 发行产物
 
@@ -129,9 +129,9 @@ lystar-agent-v<version>-windows-x64.zip
 
 ## 已知限制
 
-Pi `v0.82.1` 发布基线的完整 `npm test` 已通过。本轮 AI 669 项、Agent Core 241 项和 Coding Agent 1670 项通过；Agent Core 的 50ms 命令超时用例已移除逐行 shell 循环的负载依赖，连续 10 次局部回归和最终全量回归均通过。
+Pi `v0.82.1` 发布基线的完整 `npm test` 已通过。本轮 AI 670 项、Agent Core 241 项和 Coding Agent 1672 项通过；Agent Core 的 50ms 命令超时用例已移除逐行 shell 循环的负载依赖，连续 10 次局部回归和最终全量回归均通过。
 
-本轮更新后的 Windows 安装器尚未在本机 PowerShell 5.1 或 Windows x64 实机执行；只有 Windows CI parser job 通过后，才能确认 PowerShell 5.1 语法 gate，ZIP 下载校验、PATH 广播、启动、回退和卸载仍需要 Windows x64 实机安装证据。macOS 归档继续只有构建、格式和 SHA 证据，没有新增 macOS 实机安装证据。
+本轮更新后的 Windows 安装器和托管 MinGit 尚未在本机 Windows x64 执行；推送后的 Windows CI 必须通过 PowerShell 5.1 parser、真实 npmmirror 下载、固定 SHA、自检、并发锁和命令集 gate，正式 Release workflow 还会再次执行同一 Windows job。安装器的完整下载发行包、PATH 广播、回退和卸载仍缺 Windows x64 实机证据。macOS 归档继续只有构建、格式和 SHA 证据，没有新增 macOS 实机安装证据。
 
 当前环境的 `/tmp` 是 tmpfs，Bun 1.3.9 把 `--compile` 输出直接写入该目录时会产生同尺寸全零文件；改用项目所在 ext4 临时目录后生成正常 ELF。正式构建默认输出到仓库 `packages/coding-agent/binaries/`，不受这个本地 tmpfs 限制。
 
