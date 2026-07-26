@@ -221,7 +221,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	isExpansionToggleRow(row: number): boolean {
-		return this.getRenderShell() === "self" ? row === 0 : row >= 0;
+		return row >= 0;
 	}
 
 	setShowImages(show: boolean): void {

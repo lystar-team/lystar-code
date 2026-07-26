@@ -86,7 +86,8 @@ describe("ToolExecutionComponent parity", () => {
 		);
 		expect(component.render(120)).toEqual([]);
 		expect(component.isExpansionToggleRow(0)).toBe(true);
-		expect(component.isExpansionToggleRow(1)).toBe(false);
+		expect(component.isExpansionToggleRow(1)).toBe(true);
+		expect(component.isExpansionToggleRow(-1)).toBe(false);
 
 		component.updateResult(
 			{
