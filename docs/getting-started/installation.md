@@ -75,7 +75,7 @@ la --version
 la --help
 ```
 
-`la --version` 应输出 `<Pi版本>-lystar.<修订号>`，例如 `0.82.1-lystar.3`。
+`la --version` 应输出 `<Pi版本>-lystar.<修订号>`，例如 `0.82.1-lystar.4`。
 
 ## 先审阅安装器再执行
 
@@ -132,11 +132,11 @@ Get-FileHash -Algorithm SHA256 .\<下载的归档>
 先下载安装器，再传入不带 `v` 的版本号：
 
 ```bash
-bash install.sh --version 0.82.1-lystar.3
+bash install.sh --version 0.82.1-lystar.4
 ```
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.82.1-lystar.3
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.82.1-lystar.4
 ```
 
 中国大陆下载配置见[中国大陆网络配置](mainland-china.md)，安装失败见[安装问题](../troubleshooting/installation.md)。
