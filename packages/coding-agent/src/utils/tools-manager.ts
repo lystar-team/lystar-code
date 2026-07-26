@@ -18,7 +18,7 @@ import {
 	writeFileSync,
 } from "fs";
 import { arch, platform } from "os";
-import { delimiter, join } from "path";
+import { delimiter, join, resolve } from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import type { ReadableStream as NodeReadableStream } from "stream/web";
@@ -275,16 +275,27 @@ function getManagedWindowsBashCandidate(rootDir: string): string {
 	return join(rootDir, "usr", "bin", "bash.exe");
 }
 
-function addManagedMinGitToPath(rootDir: string): void {
+function getManagedMinGitPathEntries(rootDir: string): string[] {
+	return [join(rootDir, "cmd"), join(rootDir, "mingw64", "bin"), join(rootDir, "usr", "bin")];
+}
+
+function getManagedMinGitEnv(rootDir: string): NodeJS.ProcessEnv {
 	const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
 	const currentPath = process.env[pathKey] ?? "";
 	const currentEntries = currentPath.split(delimiter).filter(Boolean);
-	const managedEntries = [join(rootDir, "cmd"), join(rootDir, "usr", "bin")];
-	const missingEntries = managedEntries.filter(
+	const missingEntries = getManagedMinGitPathEntries(rootDir).filter(
 		(candidate) => !currentEntries.some((entry) => entry.toLowerCase() === candidate.toLowerCase()),
 	);
-	if (missingEntries.length > 0)
-		process.env[pathKey] = [...missingEntries, currentPath].filter(Boolean).join(delimiter);
+	return {
+		...process.env,
+		[pathKey]: [...missingEntries, currentPath].filter(Boolean).join(delimiter),
+	};
+}
+
+function addManagedMinGitToPath(rootDir: string): void {
+	const env = getManagedMinGitEnv(rootDir);
+	const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+	process.env[pathKey] = env[pathKey];
 }
 
 async function acquireManagedMinGitLock(): Promise<() => void> {
@@ -321,11 +332,19 @@ export function getManagedWindowsBashPath(): string | null {
 	return readFileSync(versionPath, "utf8").trim() === MINGIT_VERSION ? bashPath : null;
 }
 
-function validateManagedWindowsBash(bashPath: string, cwd: string): void {
+function validateManagedWindowsBash(bashPath: string, rootDir: string): void {
+	const env = getManagedMinGitEnv(rootDir);
+	const whereGit = spawnSync("where.exe", ["git.exe"], { encoding: "utf8", env, stdio: "pipe", windowsHide: true });
+	const firstGit = whereGit.stdout?.trim().split(/\r?\n/)[0];
+	const normalizedRoot = `${resolve(rootDir).toLowerCase()}\\`;
+	if (whereGit.error || whereGit.status !== 0 || !firstGit?.toLowerCase().startsWith(normalizedRoot)) {
+		throw new Error(`Managed MinGit validation failed: git.exe resolved outside ${rootDir}`);
+	}
+
 	const result = spawnSync(
 		bashPath,
 		["--noprofile", "--norc", "-c", '[[ -n "$BASH_VERSION" ]] && git --version >/dev/null && ls / >/dev/null'],
-		{ cwd, encoding: "utf8", stdio: "pipe", windowsHide: true },
+		{ cwd: rootDir, encoding: "utf8", env, stdio: "pipe", windowsHide: true },
 	);
 	if (result.error || result.status !== 0) {
 		throw new Error(`MinGit Bash validation failed: ${formatSpawnFailure(result)}`);

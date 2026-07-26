@@ -1,7 +1,7 @@
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { ensureManagedWindowsBash } from "../packages/coding-agent/dist/utils/tools-manager.js";
 
 if (process.platform !== "win32") {
@@ -10,11 +10,17 @@ if (process.platform !== "win32") {
 
 const cwd = mkdtempSync(join(tmpdir(), "lystar-managed-bash-"));
 const cliPath = join(import.meta.dirname, "..", "packages", "coding-agent", "dist", "cli.js");
+const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+const pathWithoutSystemGit = (process.env[pathKey] ?? "")
+	.split(delimiter)
+	.filter((entry) => !/[\\/]git[\\/]/i.test(entry))
+	.join(delimiter);
 
 function runBootstrap() {
 	return new Promise((resolve, reject) => {
 		const child = spawn(process.execPath, [cliPath, "--ensure-windows-bash"], {
 			cwd,
+			env: { ...process.env, [pathKey]: pathWithoutSystemGit },
 			stdio: "pipe",
 			windowsHide: true,
 		});
@@ -33,6 +39,12 @@ try {
 	await Promise.all([runBootstrap(), runBootstrap()]);
 	const bashPath = await ensureManagedWindowsBash(false);
 	if (!bashPath) throw new Error("Managed MinGit Bash was not installed");
+	const managedRoot = resolve(dirname(bashPath), "..", "..");
+	const whereGit = spawnSync("where.exe", ["git.exe"], { encoding: "utf8", windowsHide: true });
+	const firstGit = whereGit.stdout?.trim().split(/\r?\n/)[0];
+	if (whereGit.status !== 0 || !firstGit?.toLowerCase().startsWith(`${managedRoot.toLowerCase()}\\`)) {
+		throw new Error(`git.exe did not resolve from managed MinGit first: ${whereGit.stdout || whereGit.stderr}`);
+	}
 
 	const command = [
 		'[[ -n "$BASH_VERSION" ]]',
