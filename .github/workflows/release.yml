@@ -84,6 +84,7 @@ jobs:
             packages/coding-agent/binaries/release-manifest.json
             packages/coding-agent/binaries/install.sh
             packages/coding-agent/binaries/install.ps1
+            packages/coding-agent/binaries/install.cmd
 
       - name: Publish GitHub release
         env:
@@ -97,4 +98,5 @@ jobs:
             packages/coding-agent/binaries/SHA256SUMS \
             packages/coding-agent/binaries/release-manifest.json \
             packages/coding-agent/binaries/install.sh \
-            packages/coding-agent/binaries/install.ps1
+            packages/coding-agent/binaries/install.ps1 \
+            packages/coding-agent/binaries/install.cmd

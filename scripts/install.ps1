@@ -15,6 +15,7 @@ $PreviousFile = Join-Path $InstallRoot "previous"
 if ($PSVersionTable.PSVersion.Major -lt 5) {
     throw "LYStar Agent 安装器需要 PowerShell 5.1 或更高版本。"
 }
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 function Invoke-Download([string]$Uri, [string]$OutFile) {
     for ($Attempt = 1; $Attempt -le 3; $Attempt++) {
@@ -57,10 +58,29 @@ function Set-AtomicText([string]$Path, [string]$Value) {
     }
 }
 
+function Send-EnvironmentChanged {
+    try {
+        Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class LYStarEnvironment {
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, UIntPtr wParam, string lParam, uint flags, uint timeout, out UIntPtr result);
+}
+'@
+        $Result = [UIntPtr]::Zero
+        [void][LYStarEnvironment]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, "Environment", 2, 5000, [ref]$Result)
+    }
+    catch {
+        Write-Verbose "无法广播 PATH 变化：$($_.Exception.Message)"
+    }
+}
+
 if ($Uninstall) {
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $Parts = @($UserPath -split ";" | Where-Object { $_ -and $_ -ne $BinDir })
     [Environment]::SetEnvironmentVariable("Path", ($Parts -join ";"), "User")
+    Send-EnvironmentChanged
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $InstallRoot
     Write-Host "LYStar Agent 已卸载。用户数据仍保留在 ~/.pi/agent。"
     exit 0
@@ -79,17 +99,6 @@ if ($Rollback) {
 
 if ($Repository -eq "__LYSTAR_RELEASE_REPOSITORY__") {
     throw "安装器尚未写入 GitHub repository。请使用 release 构建生成的 install.ps1。"
-}
-
-$Bash = Get-Command bash.exe -ErrorAction SilentlyContinue
-if (!$Bash -and (Test-Path "C:\Program Files\Git\bin\bash.exe")) {
-    $Bash = Get-Item "C:\Program Files\Git\bin\bash.exe"
-}
-if (!$Bash) {
-    if (Get-Command winget.exe -ErrorAction SilentlyContinue) {
-        throw "LYStar Agent 需要 Git for Windows 提供 Bash。请先运行：winget install --id Git.Git -e --source winget"
-    }
-    throw "LYStar Agent 需要 Git for Windows 提供 Bash。请先安装：https://git-scm.com/download/win"
 }
 
 if (!$Version) {
@@ -151,11 +160,14 @@ set /p LYSTAR_VERSION=<"%~dp0..\current"
     $Parts = @($UserPath -split ";" | Where-Object { $_ })
     if ($Parts -notcontains $BinDir) {
         [Environment]::SetEnvironmentVariable("Path", (($Parts + $BinDir) -join ";"), "User")
-        Write-Host "已把 $BinDir 加入用户 PATH。请重新打开终端。"
+        Send-EnvironmentChanged
+        Write-Host "已把 $BinDir 加入用户 PATH。"
     }
+    $env:Path = "$BinDir;$env:Path"
+    & (Join-Path $BinDir "la.cmd") --version | Out-Null
 
     Write-Host "LYStar Agent $Version 已安装到 $Target。"
-    Write-Host "首次使用：重新打开终端，进入项目目录运行 la，然后执行 /login。"
+    Write-Host "新开的终端可直接运行 la；首次使用请执行 /login。"
 }
 finally {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $Temp

@@ -41,7 +41,7 @@ curl -fsSL https://github.com/octyean/lystar-agent/releases/latest/download/inst
 | Linux | 无需 Node.js | Bash、`curl` 或 `wget`、`tar` | `npm:` Package 需要 Node.js/npm；`git:` Package 需要 Git |
 | Windows x64 | 无需 Node.js | PowerShell 5.1+、Git for Windows 提供 Bash | `npm:` Package 需要 Node.js/npm；`git:` Package 使用 Git for Windows |
 
-Windows 安装器当前只在安装结束时警告缺少 Bash。这个时点太晚，用户会得到一个已安装但无法正常工作的 `la`。开发阶段应改为下载前检查，并给出明确安装命令。
+Windows 安装器只负责安装 LYStar 二进制，不把 `bash` Tool 的可选 Shell 依赖提升为产品安装前置条件。没有 Bash 时仍可启动和使用文件工具，实际调用 `bash` Tool 时再显示明确错误。
 
 ### 1.4 文档事实源分散
 
@@ -265,19 +265,13 @@ PATH 修改只增加 `export PATH="$HOME/.local/bin:$PATH"`，不重排、不覆
 
 ### 5.3 `install.ps1` 改造
 
-1. 下载前检查 PowerShell 版本、Windows 架构和 Git for Windows/Bash。
-2. 缺少 Git for Windows 时停止安装，并给出：
-
-```powershell
-winget install --id Git.Git -e --source winget
-```
-
-3. 系统没有 `winget` 时链接到 [Git for Windows 官方安装页](https://git-scm.com/download/win)，不自动下载第三方可执行文件。
-4. 保留用户级 PATH 写入；写入后明确提示重新打开终端。
-5. 为 `Invoke-WebRequest` 增加统一超时、重试和可读错误。
-6. 保持 PowerShell 5.1 语法兼容和 UTF-8 BOM，继续执行现有解析 gate。
-7. 安装结束运行发行包内 `la.exe --version`，再切换 `current`。
-8. 卸载继续保留 `~/.pi/agent`，并在输出中写明数据位置。
+1. 下载前检查 PowerShell 版本和 Windows 架构。
+2. 安装流程不检查、不下载 Git 或 Bash；这些只属于 `bash` Tool 的可选运行依赖。
+3. 保留用户级 PATH 写入；写入后明确提示重新打开终端。
+4. 为 `Invoke-WebRequest` 增加统一超时、重试和可读错误。
+5. 保持 PowerShell 5.1 语法兼容和 UTF-8 BOM，继续执行现有解析 gate。
+6. 安装结束运行发行包内 `la.exe --version`，再切换 `current`。
+7. 卸载继续保留 `~/.pi/agent`，并在输出中写明数据位置。
 
 ### 5.4 手动安装
 
@@ -653,7 +647,7 @@ bash scripts/test-install-sh.sh
 本方案实施完成需同时满足：
 
 - README 第一屏说明产品、平台、无需 Node 和两类安装命令。
-- macOS/Linux 安装命令使用 Bash，Windows 在缺少 Bash 时提前阻止不可用安装。
+- macOS/Linux 安装命令使用 Bash；Windows 安装不依赖 Git 或 Bash，`bash` Tool 的兼容 Shell 在实际调用时检查。
 - 普通用户、国内网络用户、生态用户和贡献者各有独立入口。
 - README 不再承载开发构建、完整 TUI 参数、发行产物和插件长教程。
 - Skill、Extension、Package 文档能够完成安装、配置、验证、更新和卸载。

@@ -27,7 +27,9 @@ Windows PowerShell：
 ```powershell
 $env:HTTPS_PROXY = "http://127.0.0.1:7890"
 $env:HTTP_PROXY = "http://127.0.0.1:7890"
-irm https://github.com/octyean/lystar-agent/releases/latest/download/install.ps1 | iex
+$cmd="$env:TEMP\lystar-install.cmd"
+iwr -UseBasicParsing https://github.com/octyean/lystar-agent/releases/latest/download/install.cmd -OutFile $cmd
+& $cmd
 Remove-Item Env:HTTPS_PROXY -ErrorAction SilentlyContinue
 Remove-Item Env:HTTP_PROXY -ErrorAction SilentlyContinue
 ```

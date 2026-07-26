@@ -36,6 +36,7 @@ SHA256SUMS
 release-manifest.json
 install.sh
 install.ps1
+install.cmd
 VERSION
 ```
 
@@ -65,7 +66,7 @@ gh release view <tag> --json url,assets,isDraft,isPrerelease
 
 - CI 和 Release workflow 成功。
 - Release 公开且不是 draft/prerelease。
-- 五平台包、两个安装器、`SHA256SUMS` 和 manifest 共 9 个公开资产。
+- 五平台包、三个安装器、`SHA256SUMS` 和 manifest 共 10 个公开资产。
 - 下载的 manifest 与 SHA 正确。
 - 当前平台资产存在 provenance attestation。
 - 从旧版执行 `la update` 后 current/previous 正确。

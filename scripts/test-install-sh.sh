@@ -40,6 +40,8 @@ grep -F 'REPOSITORY="octyean/lystar-agent"' "$release_dir/install.sh" >/dev/null
 grep -F '[[ "$REPOSITORY" == "__LYSTAR_RELEASE_REPOSITORY__" ]]' "$release_dir/install.sh" >/dev/null
 grep -F '$Repository = "octyean/lystar-agent"' "$release_dir/install.ps1" >/dev/null
 grep -F '$Repository -eq "__LYSTAR_RELEASE_REPOSITORY__"' "$release_dir/install.ps1" >/dev/null
+grep -F 'https://github.com/octyean/lystar-agent/releases/latest/download/install.ps1' "$release_dir/install.cmd" >/dev/null
+grep -F 'https://github.com/__LYSTAR_RELEASE_REPOSITORY__/releases/latest/download/install.ps1' "$ROOT/scripts/install.cmd" >/dev/null
 
 fake_curl_dir="$tmp/fake-curl"
 mkdir -p "$fake_curl_dir"

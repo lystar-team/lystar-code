@@ -10,7 +10,7 @@ LYStar Agent 的独立发行包已经包含运行所需的 executable、WASM、n
 |---|---|---|
 | macOS | Apple Silicon、Intel x64 | Bash、`curl` 或 `wget`、`tar` |
 | Linux | x64、ARM64 | Bash、`curl` 或 `wget`、`tar` |
-| Windows | x64 | PowerShell 5.1+、Git for Windows |
+| Windows | x64 | Windows PowerShell 5.1+ |
 
 Windows ARM64 当前没有独立发行包。macOS 和 Windows 包尚未完成平台代码签名，系统可能显示 Gatekeeper 或 SmartScreen 提示。
 
@@ -52,21 +52,17 @@ rm install.sh
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-## Windows PowerShell
+## Windows 10 / 11
 
-LYStar 运行 Shell Tool 时需要 Bash。先安装 Git for Windows：
-
-```powershell
-winget install --id Git.Git -e --source winget
-```
-
-没有 `winget` 时，从 [Git for Windows 官方页面](https://git-scm.com/download/win)下载安装。重新打开 PowerShell，然后执行：
+在 Windows PowerShell 5.1 或更高版本中执行：
 
 ```powershell
-irm https://github.com/octyean/lystar-agent/releases/latest/download/install.ps1 | iex
+$cmd="$env:TEMP\lystar-install.cmd"; iwr -UseBasicParsing https://github.com/octyean/lystar-agent/releases/latest/download/install.cmd -OutFile $cmd; & $cmd
 ```
 
-安装器写入用户 PATH，不要求管理员权限。安装完成后重新打开终端。
+`install.cmd` 只为本次安装进程使用 `ExecutionPolicy Bypass`，不会修改系统或用户执行策略。安装器下载 Windows x64 发行包和 `SHA256SUMS`，校验后安装到当前用户目录，不要求管理员权限，也不要求预装 Git、Bash、Node.js 或 npm。
+
+安装器会写入用户 PATH 并广播环境变化；新开的终端可直接运行 `la`。只有实际使用内建 `bash` Tool 时才需要 Git Bash、WSL、MSYS2、Cygwin 或其他兼容 Bash，详见 [Windows 问题](../troubleshooting/windows.md)。
 
 ## 验证
 
@@ -75,7 +71,7 @@ la --version
 la --help
 ```
 
-`la --version` 应输出 `<Pi版本>-lystar.<修订号>`，例如 `0.82.1-lystar.4`。
+`la --version` 应输出 `<Pi版本>-lystar.<修订号>`，例如 `0.82.1-lystar.5`。
 
 ## 先审阅安装器再执行
 
@@ -88,7 +84,16 @@ bash install.sh
 rm install.sh
 ```
 
-Windows PowerShell：
+Windows：
+
+```powershell
+$cmd="$env:TEMP\lystar-install.cmd"; iwr -UseBasicParsing https://github.com/octyean/lystar-agent/releases/latest/download/install.cmd -OutFile $cmd
+notepad $cmd
+& $cmd
+Remove-Item $cmd
+```
+
+`install.cmd` 会下载同一 Release 中的 `install.ps1`。需要直接审阅 PowerShell 主脚本时：
 
 ```powershell
 irm https://github.com/octyean/lystar-agent/releases/latest/download/install.ps1 -OutFile install.ps1
@@ -132,11 +137,11 @@ Get-FileHash -Algorithm SHA256 .\<下载的归档>
 先下载安装器，再传入不带 `v` 的版本号：
 
 ```bash
-bash install.sh --version 0.82.1-lystar.4
+bash install.sh --version 0.82.1-lystar.5
 ```
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.82.1-lystar.4
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.82.1-lystar.5
 ```
 
 中国大陆下载配置见[中国大陆网络配置](mainland-china.md)，安装失败见[安装问题](../troubleshooting/installation.md)。

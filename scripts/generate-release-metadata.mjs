@@ -35,9 +35,15 @@ writeFileSync(join(outputDir, "release-manifest.json"), `${JSON.stringify(manife
 writeFileSync(join(outputDir, "SHA256SUMS"), `${sums.join("\n")}\n`);
 
 const RELEASE_REPOSITORY_PLACEHOLDER = "__LYSTAR_RELEASE_REPOSITORY__";
-for (const name of ["install.sh", "install.ps1"]) {
+const installerAssignments = {
+	"install.sh": `REPOSITORY="${RELEASE_REPOSITORY_PLACEHOLDER}"`,
+	"install.ps1": `$Repository = "${RELEASE_REPOSITORY_PLACEHOLDER}"`,
+	"install.cmd": `https://github.com/${RELEASE_REPOSITORY_PLACEHOLDER}/releases/latest/download/install.ps1`,
+};
+for (const [name, assignment] of Object.entries(installerAssignments)) {
 	const source = readFileSync(resolve("scripts", name), "utf8");
-	const assignment = name === "install.sh" ? `REPOSITORY="${RELEASE_REPOSITORY_PLACEHOLDER}"` : `$Repository = "${RELEASE_REPOSITORY_PLACEHOLDER}"`;
-	const materialized = repository ? source.replace(assignment, assignment.replace(RELEASE_REPOSITORY_PLACEHOLDER, repository)) : source;
+	const materialized = repository
+		? source.replace(assignment, assignment.replace(RELEASE_REPOSITORY_PLACEHOLDER, repository))
+		: source;
 	writeFileSync(join(outputDir, basename(name)), materialized, { mode: name.endsWith(".sh") ? 0o755 : 0o644 });
 }

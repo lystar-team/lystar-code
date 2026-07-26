@@ -30,18 +30,43 @@ try {
         foreach ($Required in @(
             'Invoke-Download',
             'Invoke-JsonRequest',
-            'winget install --id Git.Git -e --source winget',
-            'https://git-scm.com/download/win',
-            '$PSVersionTable.PSVersion.Major -lt 5'
+            'Send-EnvironmentChanged',
+            'set /p LYSTAR_VERSION=',
+            'versions\%LYSTAR_VERSION%\la.exe',
+            '$PSVersionTable.PSVersion.Major -lt 5',
+            '[Net.SecurityProtocolType]::Tls12'
         )) {
             if (!$Source.Contains($Required)) { throw "$Installer is missing: $Required" }
         }
-        if ($Source.Contains('Write-Warning "LYStar Agent 需要 Bash')) {
-            throw "$Installer must stop before installing an unusable binary when Bash is missing."
+        foreach ($Forbidden in @(
+            'Install-PortableGit',
+            'git-for-windows/git',
+            'Get-AuthenticodeSignature',
+            'Git Bash',
+            'winget install --id Git.Git',
+            '请先安装：https://git-scm.com/download/win',
+            'Set-ExecutionPolicy'
+        )) {
+            if ($Source.Contains($Forbidden)) { throw "$Installer contains an unnecessary dependency: $Forbidden" }
         }
     }
 
-    Write-Host "Windows installer encoding, parser, preflight, and retry checks passed."
+    $SourceCmd = [IO.File]::ReadAllText((Join-Path $Root "scripts/install.cmd"))
+    $ReleaseCmd = [IO.File]::ReadAllText((Join-Path $Temp "install.cmd"))
+    foreach ($Required in @('powershell.exe', '-ExecutionPolicy Bypass', '-NoProfile', '%*')) {
+        if (!$SourceCmd.Contains($Required)) { throw "install.cmd is missing: $Required" }
+    }
+    if (!$SourceCmd.Contains('https://github.com/__LYSTAR_RELEASE_REPOSITORY__/releases/latest/download/install.ps1')) {
+        throw "Source install.cmd must preserve the repository placeholder."
+    }
+    if (!$ReleaseCmd.Contains('https://github.com/octyean/lystar-agent/releases/latest/download/install.ps1')) {
+        throw "Release install.cmd was not materialized."
+    }
+    if ($SourceCmd.Contains('Set-ExecutionPolicy')) {
+        throw "install.cmd must only use a process-scoped ExecutionPolicy argument."
+    }
+
+    Write-Host "Windows installer encoding, parser, dependency-free install, CMD entrypoint, and retry checks passed."
 }
 finally {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $Temp
