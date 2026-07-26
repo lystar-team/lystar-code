@@ -18,15 +18,15 @@ curl -fsSL https://github.com/octyean/lystar-agent/releases/latest/download/inst
 
 安装器会识别系统和架构、校验 SHA-256，并安装到 `~/.local/share/lystar-agent/`。没有 Node.js 也可以运行。
 
-### Windows PowerShell
+### Windows 10 / 11
 
-先安装 [Git for Windows](https://git-scm.com/download/win)，它会提供 LYStar 运行 Shell 命令所需的 Bash。然后在 PowerShell 中执行：
+在 Windows PowerShell 5.1 或更高版本中执行：
 
 ```powershell
-irm https://github.com/octyean/lystar-agent/releases/latest/download/install.ps1 | iex
+$cmd="$env:TEMP\lystar-install.cmd"; iwr -UseBasicParsing https://github.com/octyean/lystar-agent/releases/latest/download/install.cmd -OutFile $cmd; & $cmd
 ```
 
-Windows 安装器写入用户 PATH 后，请重新打开终端。
+不需要管理员权限，也不用预装 Git 或 Bash。安装器只下载并校验 LYStar Agent 发行包、维护版本指针并自动写入用户 PATH；新开的终端可直接运行 `la`。只有实际使用内建 `bash` Tool 时才需要 Git Bash、WSL、MSYS2、Cygwin 或其他兼容 Bash。
 
 公司网络、GitHub 访问缓慢、手动校验和系统限制见[完整安装说明](docs/getting-started/installation.md)与[中国大陆网络配置](docs/getting-started/mainland-china.md)。
 
@@ -49,7 +49,9 @@ LYStar 可以读取、创建和编辑文件，也可以执行 Shell 命令。首
 - 内置文件读取、写入、精确编辑和 Bash 工具。
 - 自动保存、继续、浏览、分支和压缩 Session。
 - 支持多 Provider、多模型、思考强度和模型切换。
-- 兼容 Pi Skill、Extension、Package、Theme 和 Prompt Template；MCP 等能力通过 Pi Extension 接入。
+- 兼容 Pi Skill、Extension、Package、Theme 和 Prompt Template；输入 `$` 或 `@` 可同时引用多个 Skill。
+- 内置 subagent 工具和三个通用角色，用户或项目同名 Agent 可直接覆盖。
+- MCP 等能力通过 Pi Extension 接入。
 - 支持独立更新、回退和卸载，程序操作不会删除 `~/.pi/agent` 用户数据。
 
 ## 文档

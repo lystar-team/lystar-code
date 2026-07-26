@@ -76,7 +76,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --version)
             if [[ $# -lt 2 || -z "$2" ]]; then
-                printf '%s\n' '--version 需要版本号，例如 0.82.1-lystar.4。' >&2
+                printf '%s\n' '--version 需要版本号，例如 0.82.1-lystar.5。' >&2
                 exit 2
             fi
             VERSION="$2"

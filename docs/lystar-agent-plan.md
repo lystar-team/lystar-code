@@ -238,15 +238,15 @@ release workflow 把安装脚本附加到 GitHub latest release，并根据固�
 # macOS / Linux
 curl -fsSL "https://github.com/${releaseRepository}/releases/latest/download/install.sh" | bash
 
-# Windows PowerShell
-irm "https://github.com/${releaseRepository}/releases/latest/download/install.ps1" | iex
+# Windows PowerShell 5.1+
+$cmd="$env:TEMP\lystar-install.cmd"; iwr -UseBasicParsing "https://github.com/${releaseRepository}/releases/latest/download/install.cmd" -OutFile $cmd; & $cmd
 ```
 
 `${releaseRepository}` 是文档生成变量，发布后的 README 必须写成实际 `owner/repo`，不能保留变量。
 
 安装器负责识别 OS/arch、下载 manifest 和归档、核对版本、大小和 SHA-256、解压到 staging、验证 executable、移动到版本目录并切换 `current`。下载或验证失败时保留当前版本。
 
-二进制运行不依赖 Node.js。安装 `npm:` 来源的 Pi Package 仍需要 npm；安装 `git:` 来源仍需要 Git。Windows 运行 Agent 还需要 Bash，默认由 Git for Windows 提供，安装器必须在首次运行前检测并给出中文提示。
+二进制运行不依赖 Node.js、Git 或 Bash。安装 `npm:` 来源的 Pi Package 仍需要 npm；安装 `git:` 来源仍需要 Git。只有执行内建 `bash` Tool 时才需要兼容 Bash，用户可以按需使用 Git Bash、WSL、MSYS2、Cygwin 或通过 `shellPath` 指定其他实现。
 
 ### 更新清单
 
@@ -517,6 +517,7 @@ LYStar 不增加 MCP 配置文件、内置管理器或代理 Tool。TUI 负责�
 
 | LYStar | Pi 基线 | Pi commit | MCP Adapter | Session | Extension API |
 |---|---|---|---|---|---|
+| `0.82.1-lystar.5` | `0.82.1` | `b4f29368...` | `2.12.1` | Pi 原格式 | Pi `0.82.1` |
 | `0.82.1-lystar.4` | `0.82.1` | `b4f29368...` | `2.12.1` | Pi 原格式 | Pi `0.82.1` |
 | `0.82.1-lystar.3` | `0.82.1` | `b4f29368...` | `2.12.1` | Pi 原格式 | Pi `0.82.1` |
 | `0.82.1-lystar.2` | `0.82.1` | `b4f29368...` | `2.12.1` | Pi 原格式 | Pi `0.82.1` |
@@ -637,7 +638,7 @@ SSH
 - macOS arm64/x64、Linux x64/arm64、Windows x64 在 CI 构建并冒烟。
 - 每个归档从全新目录运行，确认所有 sidecar 资源可用。
 - 无 Node.js 环境可以完成基础 Agent 流程。
-- Windows 缺少 Bash 时给出准确提示，安装 Git for Windows 后可运行。
+- Windows 安装器在没有 Git、Bash 和 Node.js 的干净环境完成安装、启动、更新、回退和卸载；实际调用 `bash` Tool 时再检查兼容 Bash。
 - 安装、同版本重装、升级、下载中断、校验失败、切换失败、回退和卸载全部验证。
 - `PI_OFFLINE=1` 时不做版本检查和非必要网络请求。
 - SHA-256、artifact attestation 和许可证检查通过；未签名测试 release 的 macOS/Windows 系统警告已在发布说明与安装文档中明确。
@@ -657,7 +658,7 @@ SSH
 | 更新中断导致程序不可用 | staging、完整校验、版本目录、原子指针和 previous 回退 |
 | Windows executable 无法原地替换 | executable 只安装到新版本目录，`la.cmd` 通过原子版本指针选择目标 |
 | 下载来源被篡改 | 首版使用 SHA-256、GitHub artifact attestation 和受保护 release workflow；公开推广前增加 OS 签名 |
-| Windows 用户误以为完全无依赖 | 安装器和文档明确检查 Bash；Node.js 仍非基础运行依赖 |
+| Windows 用户误以为安装依赖 Git 或 Bash | 安装器只安装 LYStar 二进制；`bash` Tool 的可选 Shell 依赖在调用时提示 |
 
 ## 14. 调研与许可证来源
 
