@@ -1,100 +1,88 @@
 # LYStar Agent
 
-LYStar Agent 是基于 Pi `v0.82.1` 的中文编码 Agent。命令固定为 `la`，保留 Pi Runtime、Session、Skill、Extension、Package、MCP 与 `.pi` 数据兼容。
+LYStar Agent 是基于 [Pi](https://github.com/earendil-works/pi) 的中文终端编码 Agent，提供中文全屏 TUI，并兼容 Pi 的 Session、Skill、Extension、Package、Theme、Prompt Template、`.pi` 数据和 `PI_*` 环境变量。
 
-## 本地开发
+支持 macOS、Linux 和 Windows x64。安装独立发行包无需 Node.js。
 
-要求 Node.js 22、npm、Bun 和 Bash。Windows 推荐安装 Git for Windows 提供 Bash。
+<p align="center">
+  <img src="docs/assets/lystar-tui.png" alt="LYStar Agent 中文全屏终端界面" width="920">
+</p>
 
-```bash
-npm ci --ignore-scripts
-npm run build:offline
-node packages/coding-agent/dist/cli.js --help
-```
+## 安装
 
-交互模式：
+### macOS / Linux
 
 ```bash
-node packages/coding-agent/dist/cli.js
+curl -fsSL https://github.com/octyean/lystar-agent/releases/latest/download/install.sh | bash
 ```
 
-源码构建仍使用 monorepo 内部包名，最终用户命令和独立发行包使用 `la`。
+安装器会识别系统和架构、校验 SHA-256，并安装到 `~/.local/share/lystar-agent/`。没有 Node.js 也可以运行。
 
-## TUI
+### Windows PowerShell
 
-交互模式默认在常规 TTY 中进入 alternate screen，固定显示顶栏、独立滚动的对话区、输入区、快捷栏和状态栏。
-
-- `Shift+PageUp` / `Shift+PageDown`：滚动对话
-- `Ctrl+Home` / `Ctrl+End`：跳到首行或末行
-- 鼠标滚轮：滚动对话
-- 点击新内容提示：回到底部并继续跟随输出
-- `--alt-screen auto|always|never`：控制全屏策略
-- `--no-alt-screen`：强制 inline fallback
-- `--mouse` / `--no-mouse`：覆盖鼠标设置
-
-`auto` 会在 Zellij、tmux control mode、非 TTY 和 `TERM=dumb` 环境回退到 inline，普通终端和常规 tmux 使用全屏模式。UI 偏好保存在 `~/.pi/agent/lystar.json`：
-
-```json
-{
-  "altScreen": "auto",
-  "mouse": true,
-  "reduceMotion": false
-}
-```
-
-## 兼容性
-
-LYStar Agent 继续读取：
-
-- `~/.pi/agent/settings.json`
-- `~/.pi/agent/sessions/`
-- 用户与项目级 `.pi/`
-- `PI_*` 环境变量
-- Pi Skill、Extension、Package、Theme、Prompt Template 与 MCP Extension
-
-不要让 Pi 和 LYStar 同时写同一个 Session 文件。需要并行运行时分别创建会话。
-
-## 独立发行包
-
-生成 Linux x64/ARM64、macOS x64/ARM64、Windows x64 完整发行包。仓库固定为 `octyean/lystar-agent`，构建时会把该地址写入发行包：
-
-```bash
-bash scripts/build-binaries.sh --offline-model-data
-```
-
-macOS/Linux 安装：
-
-```bash
-curl -fsSL https://github.com/octyean/lystar-agent/releases/latest/download/install.sh | sh
-```
-
-Windows PowerShell 安装：
+先安装 [Git for Windows](https://git-scm.com/download/win)，它会提供 LYStar 运行 Shell 命令所需的 Bash。然后在 PowerShell 中执行：
 
 ```powershell
 irm https://github.com/octyean/lystar-agent/releases/latest/download/install.ps1 | iex
 ```
 
-产物位于 `packages/coding-agent/binaries/`，包括五个平台压缩包、`SHA256SUMS`、`release-manifest.json`、`install.sh` 和 `install.ps1`。每个平台包都带 executable、WASM、native module、主题、HTML 导出资源、文档和许可证。
+Windows 安装器写入用户 PATH 后，请重新打开终端。
 
-首版允许发布未签名测试包。macOS 会显示 Gatekeeper 警告，Windows 可能触发 SmartScreen；正式面向普通用户推广前再配置 Developer ID/notarization 和 Authenticode。所有发行包都必须发布 SHA-256，CI 可附加 GitHub artifact attestation。
+公司网络、GitHub 访问缓慢、手动校验和系统限制见[完整安装说明](docs/getting-started/installation.md)与[中国大陆网络配置](docs/getting-started/mainland-china.md)。
 
-## 更新与回退
+## 快速开始
 
-正式发行包支持：
+1. 进入准备处理的项目目录，运行 `la`。
+2. 在界面中执行 `/login`，选择 Provider 并登录或填写 API Key。
+3. 输入任务，例如：`阅读这个项目，告诉我如何启动和运行测试。`
+
+```bash
+cd /path/to/project
+la
+```
+
+LYStar 可以读取、创建和编辑文件，也可以执行 Shell 命令。首次在陌生项目中使用前，请确认项目来源并保留 Git 提交或其他可回退点。
+
+## 核心能力
+
+- 中文全屏终端工作区，输入区固定，支持键盘和鼠标滚动。
+- 内置文件读取、写入、精确编辑和 Bash 工具。
+- 自动保存、继续、浏览、分支和压缩 Session。
+- 支持多 Provider、多模型、思考强度和模型切换。
+- 兼容 Pi Skill、Extension、Package、Theme 和 Prompt Template；MCP 等能力通过 Pi Extension 接入。
+- 支持独立更新、回退和卸载，程序操作不会删除 `~/.pi/agent` 用户数据。
+
+## 文档
+
+- [文档首页](docs/README.md)
+- [完整安装说明](docs/getting-started/installation.md)
+- [5 分钟快速开始](docs/getting-started/quick-start.md)
+- [Provider 与 API Key](docs/getting-started/providers.md)
+- [中国大陆网络配置](docs/getting-started/mainland-china.md)
+- [交互界面与快捷键](docs/usage/interactive-tui.md)
+- [安装 Skill、Extension 和 Package](docs/ecosystem/overview.md)
+- [故障排查](docs/troubleshooting/installation.md)
+- [参与开发](docs/development/setup.md)
+
+## 更新、回退与卸载
 
 ```bash
 la update
 la update --rollback
 ```
 
-安装器把版本放入独立目录，通过 `current` 和 `previous` 指针切换。更新失败不会覆盖当前版本；卸载或回退不会删除 `~/.pi/agent`。
+卸载命令、版本目录和数据保留规则见[更新、回退与卸载](docs/usage/update-rollback-uninstall.md)。
+
+## 兼容性与限制
+
+LYStar Agent 当前基于 Pi `v0.82.1`，继续读取 `~/.pi/agent/`、项目 `.pi/`、Pi Session 和生态资源。Pi 与 LYStar 可以共用数据，但不要同时写同一个 Session 文件。
+
+当前 macOS 发行包尚未完成 Developer ID/notarization，Windows 发行包尚未完成 Authenticode。安装器和 Release 提供 SHA-256 与 GitHub artifact attestation；系统仍可能显示 Gatekeeper 或 SmartScreen 提示。
+
+## 开发与贡献
+
+源码开发需要 Node.js 22、npm、Bun 1.3.9 和 Bash。环境准备、检查命令、发行流程与上游同步见[开发文档](docs/development/setup.md)。
 
 ## 来源与许可证
 
-LYStar Agent 当前基于 `earendil-works/pi` `v0.82.1`，上游 commit：
-
-```text
-b4f293684bba718d59cc1157679bcf6157b3a7f5
-```
-
-项目按 [MIT License](LICENSE) 发行。第三方依赖说明见 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)。Grok Build 仅作为全屏 TUI 交互参考，没有复制其源码或资产。
+LYStar Agent 基于 `earendil-works/pi`，按 [MIT License](LICENSE) 发行。第三方依赖说明见 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)。Grok Build 仅作为全屏 TUI 交互参考，没有复制其源码或资产。

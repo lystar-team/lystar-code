@@ -6,6 +6,8 @@ INSTALL_ROOT="$HOME/.local/share/lystar-agent"
 BIN_DIR="$HOME/.local/bin"
 VERSION=""
 ACTION="install"
+UPDATE_PATH=true
+DOWNLOADER=""
 
 replace_symlink() {
     local target="$1"
@@ -20,10 +22,64 @@ replace_symlink() {
     fi
 }
 
+select_downloader() {
+    if command -v curl >/dev/null 2>&1; then
+        DOWNLOADER="curl"
+    elif command -v wget >/dev/null 2>&1; then
+        DOWNLOADER="wget"
+    else
+        printf '缺少下载工具。请先安装 curl 或 wget。\n' >&2
+        exit 1
+    fi
+}
+
+download() {
+    local url="$1"
+    local output="$2"
+    if [[ "$DOWNLOADER" == "curl" ]]; then
+        if ! curl -fL --retry 3 --connect-timeout 10 "$url" -o "$output"; then
+            printf '下载失败：%s\n' "$url" >&2
+            exit 1
+        fi
+    elif ! wget --quiet --tries=3 --timeout=10 -O "$output" "$url"; then
+        printf '下载失败：%s\n' "$url" >&2
+        exit 1
+    fi
+}
+
+ensure_path() {
+    case ":$PATH:" in
+        *":$BIN_DIR:"*) return ;;
+    esac
+
+    if [[ "$UPDATE_PATH" != true ]]; then
+        printf '请把 %s 加入 PATH。\n' "$BIN_DIR"
+        return
+    fi
+
+    local profile
+    local shell_name="${SHELL:-}"
+    case "${shell_name##*/}:$(uname -s)" in
+        zsh:*) profile="$HOME/.zprofile" ;;
+        bash:Darwin) profile="$HOME/.bash_profile" ;;
+        bash:*) profile="$HOME/.bashrc" ;;
+        *) profile="$HOME/.profile" ;;
+    esac
+    local path_line='export PATH="$HOME/.local/bin:$PATH"'
+    if [[ ! -f "$profile" ]] || ! grep -Fqx "$path_line" "$profile"; then
+        printf '\n%s\n' "$path_line" >> "$profile"
+    fi
+    printf '已把 %s 写入 %s。请重新打开终端。\n' "$BIN_DIR" "$profile"
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --version)
-            VERSION="${2:-}"
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                printf '%s\n' '--version 需要版本号，例如 0.82.1-lystar.3。' >&2
+                exit 2
+            fi
+            VERSION="$2"
             shift 2
             ;;
         --rollback)
@@ -32,6 +88,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --uninstall)
             ACTION="uninstall"
+            shift
+            ;;
+        --no-path-update)
+            UPDATE_PATH=false
             shift
             ;;
         *)
@@ -68,8 +128,12 @@ if [[ "$REPOSITORY" == "__LYSTAR_RELEASE_REPOSITORY__" ]]; then
     exit 1
 fi
 
-command -v curl >/dev/null 2>&1 || { printf '缺少 curl。\n' >&2; exit 1; }
 command -v tar >/dev/null 2>&1 || { printf '缺少 tar。\n' >&2; exit 1; }
+if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+    printf '缺少 SHA-256 校验工具。请安装 sha256sum 或 shasum。\n' >&2
+    exit 1
+fi
+select_downloader
 
 case "$(uname -s)" in
     Darwin) os="darwin" ;;
@@ -83,10 +147,12 @@ case "$(uname -m)" in
     *) printf '当前架构暂不支持：%s\n' "$(uname -m)" >&2; exit 1 ;;
 esac
 
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
 if [[ -z "$VERSION" ]]; then
-    latest_url="$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/$REPOSITORY/releases/latest")"
-    tag="${latest_url##*/}"
-    VERSION="${tag#v}"
+    download "https://github.com/$REPOSITORY/releases/latest/download/release-manifest.json" "$tmp/release-manifest.json"
+    VERSION="$(awk -F'"' '/"version"[[:space:]]*:/ { print $4; exit }' "$tmp/release-manifest.json")"
 fi
 
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-lystar\.[0-9]+$ ]] || {
@@ -96,12 +162,10 @@ fi
 
 asset="lystar-agent-v${VERSION}-${os}-${arch}.tar.gz"
 base_url="https://github.com/$REPOSITORY/releases/download/v${VERSION}"
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
 
 printf '正在下载 LYStar Agent %s (%s-%s)...\n' "$VERSION" "$os" "$arch"
-curl -fL --retry 3 --connect-timeout 10 "$base_url/$asset" -o "$tmp/$asset"
-curl -fL --retry 3 --connect-timeout 10 "$base_url/SHA256SUMS" -o "$tmp/SHA256SUMS"
+download "$base_url/$asset" "$tmp/$asset"
+download "$base_url/SHA256SUMS" "$tmp/SHA256SUMS"
 expected="$(awk -v file="$asset" '$2 == file || $2 == "*" file { print $1 }' "$tmp/SHA256SUMS")"
 [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || { printf 'SHA256SUMS 中缺少 %s。\n' "$asset" >&2; exit 1; }
 
@@ -133,7 +197,5 @@ replace_symlink "versions/$VERSION" "$INSTALL_ROOT/current"
 ln -sfn "$INSTALL_ROOT/current/la" "$BIN_DIR/la"
 
 printf 'LYStar Agent %s 已安装到 %s。\n' "$VERSION" "$target"
-case ":$PATH:" in
-    *":$BIN_DIR:"*) ;;
-    *) printf '请把 %s 加入 PATH。\n' "$BIN_DIR" ;;
-esac
+ensure_path
+printf '首次使用：进入项目目录运行 la，然后执行 /login。\n'

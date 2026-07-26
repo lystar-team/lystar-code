@@ -12,6 +12,40 @@ $BinDir = Join-Path $InstallRoot "bin"
 $CurrentFile = Join-Path $InstallRoot "current"
 $PreviousFile = Join-Path $InstallRoot "previous"
 
+if ($PSVersionTable.PSVersion.Major -lt 5) {
+    throw "LYStar Agent 安装器需要 PowerShell 5.1 或更高版本。"
+}
+
+function Invoke-Download([string]$Uri, [string]$OutFile) {
+    for ($Attempt = 1; $Attempt -le 3; $Attempt++) {
+        try {
+            Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 -Uri $Uri -OutFile $OutFile
+            return
+        }
+        catch {
+            if ($Attempt -eq 3) {
+                throw "下载失败：$Uri`n$($_.Exception.Message)"
+            }
+            Start-Sleep -Seconds $Attempt
+        }
+    }
+}
+
+function Invoke-JsonRequest([string]$Uri, [hashtable]$Headers) {
+    for ($Attempt = 1; $Attempt -le 3; $Attempt++) {
+        try {
+            $Result = Invoke-RestMethod -UseBasicParsing -TimeoutSec 30 -Headers $Headers -Uri $Uri
+            return $Result
+        }
+        catch {
+            if ($Attempt -eq 3) {
+                throw "请求失败：$Uri`n$($_.Exception.Message)"
+            }
+            Start-Sleep -Seconds $Attempt
+        }
+    }
+}
+
 function Set-AtomicText([string]$Path, [string]$Value) {
     $Temp = "$Path.next"
     [IO.File]::WriteAllText($Temp, $Value, [Text.UTF8Encoding]::new($false))
@@ -47,9 +81,20 @@ if ($Repository -eq "__LYSTAR_RELEASE_REPOSITORY__") {
     throw "安装器尚未写入 GitHub repository。请使用 release 构建生成的 install.ps1。"
 }
 
+$Bash = Get-Command bash.exe -ErrorAction SilentlyContinue
+if (!$Bash -and (Test-Path "C:\Program Files\Git\bin\bash.exe")) {
+    $Bash = Get-Item "C:\Program Files\Git\bin\bash.exe"
+}
+if (!$Bash) {
+    if (Get-Command winget.exe -ErrorAction SilentlyContinue) {
+        throw "LYStar Agent 需要 Git for Windows 提供 Bash。请先运行：winget install --id Git.Git -e --source winget"
+    }
+    throw "LYStar Agent 需要 Git for Windows 提供 Bash。请先安装：https://git-scm.com/download/win"
+}
+
 if (!$Version) {
     $Headers = @{ "User-Agent" = "LYStar-Agent-Installer" }
-    $Release = Invoke-RestMethod -Headers $Headers -Uri "https://api.github.com/repos/$Repository/releases/latest"
+    $Release = Invoke-JsonRequest "https://api.github.com/repos/$Repository/releases/latest" $Headers
     $Version = [string]$Release.tag_name -replace '^v', ''
 }
 if ($Version -notmatch '^\d+\.\d+\.\d+-lystar\.\d+$') { throw "无效版本：$Version" }
@@ -70,8 +115,8 @@ try {
     $Archive = Join-Path $Temp $Asset
     $Sums = Join-Path $Temp "SHA256SUMS"
     Write-Host "正在下载 LYStar Agent $Version (windows-x64)..."
-    Invoke-WebRequest -UseBasicParsing -Uri "$BaseUrl/$Asset" -OutFile $Archive
-    Invoke-WebRequest -UseBasicParsing -Uri "$BaseUrl/SHA256SUMS" -OutFile $Sums
+    Invoke-Download "$BaseUrl/$Asset" $Archive
+    Invoke-Download "$BaseUrl/SHA256SUMS" $Sums
 
     $Pattern = "^([0-9a-fA-F]{64})\s+\*?" + [Regex]::Escape($Asset) + '$'
     $Match = Get-Content $Sums | Select-String -Pattern $Pattern | Select-Object -First 1
@@ -109,11 +154,8 @@ set /p LYSTAR_VERSION=<"%~dp0..\current"
         Write-Host "已把 $BinDir 加入用户 PATH。请重新打开终端。"
     }
 
-    $Bash = Get-Command bash.exe -ErrorAction SilentlyContinue
-    if (!$Bash -and !(Test-Path "C:\Program Files\Git\bin\bash.exe")) {
-        Write-Warning "LYStar Agent 需要 Bash。请安装 Git for Windows 后再运行 la。"
-    }
     Write-Host "LYStar Agent $Version 已安装到 $Target。"
+    Write-Host "首次使用：重新打开终端，进入项目目录运行 la，然后执行 /login。"
 }
 finally {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $Temp

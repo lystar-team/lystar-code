@@ -25,9 +25,23 @@ try {
         if ($Errors.Count -gt 0) {
             throw (($Errors | ForEach-Object { $_.Message }) -join [Environment]::NewLine)
         }
+
+        $Source = [IO.File]::ReadAllText($Installer)
+        foreach ($Required in @(
+            'Invoke-Download',
+            'Invoke-JsonRequest',
+            'winget install --id Git.Git -e --source winget',
+            'https://git-scm.com/download/win',
+            '$PSVersionTable.PSVersion.Major -lt 5'
+        )) {
+            if (!$Source.Contains($Required)) { throw "$Installer is missing: $Required" }
+        }
+        if ($Source.Contains('Write-Warning "LYStar Agent 需要 Bash')) {
+            throw "$Installer must stop before installing an unusable binary when Bash is missing."
+        }
     }
 
-    Write-Host "Windows installer encoding and parser checks passed."
+    Write-Host "Windows installer encoding, parser, preflight, and retry checks passed."
 }
 finally {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $Temp

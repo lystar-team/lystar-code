@@ -236,7 +236,7 @@ release workflow 把安装脚本附加到 GitHub latest release，并根据固�
 
 ```bash
 # macOS / Linux
-curl -fsSL "https://github.com/${releaseRepository}/releases/latest/download/install.sh" | sh
+curl -fsSL "https://github.com/${releaseRepository}/releases/latest/download/install.sh" | bash
 
 # Windows PowerShell
 irm "https://github.com/${releaseRepository}/releases/latest/download/install.ps1" | iex
@@ -517,6 +517,7 @@ LYStar 不增加 MCP 配置文件、内置管理器或代理 Tool。TUI 负责�
 
 | LYStar | Pi 基线 | Pi commit | MCP Adapter | Session | Extension API |
 |---|---|---|---|---|---|
+| `0.82.1-lystar.3` | `0.82.1` | `b4f29368...` | `2.12.1` | Pi 原格式 | Pi `0.82.1` |
 | `0.82.1-lystar.2` | `0.82.1` | `b4f29368...` | `2.12.1` | Pi 原格式 | Pi `0.82.1` |
 | `0.82.1-lystar.1` | `0.82.1` | `b4f29368...` | `2.12.1` | Pi 原格式 | Pi `0.82.1` |
 | `0.82.0-lystar.4` | `0.82.0` | `083e6162...` | `2.12.1` | Pi 原格式 | Pi `0.82.0` |
