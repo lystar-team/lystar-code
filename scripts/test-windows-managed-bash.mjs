@@ -11,7 +11,7 @@ if (process.platform !== "win32") {
 const cwd = mkdtempSync(join(tmpdir(), "lystar-managed-bash-"));
 const cliPath = join(import.meta.dirname, "..", "packages", "coding-agent", "dist", "cli.js");
 
-function runBootstrap(): Promise<void> {
+function runBootstrap() {
 	return new Promise((resolve, reject) => {
 		const child = spawn(process.execPath, [cliPath, "--ensure-windows-bash"], {
 			cwd,
