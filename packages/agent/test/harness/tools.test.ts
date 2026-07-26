@@ -481,7 +481,7 @@ describe("AgentHarness tools", () => {
 				await createBashTool().execute(
 					"bash-timeout-output",
 					{
-						command: "i=1; while [ $i -le 3000 ]; do echo line-$i; i=$((i + 1)); done; sleep 2",
+						command: "printf 'line-%s\\n' {1..3000}; sleep 2",
 						timeout: 0.05,
 					},
 					undefined,
