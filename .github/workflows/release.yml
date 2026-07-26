@@ -6,43 +6,28 @@ on:
       - "v*-lystar.*"
 
 permissions:
+  actions: read
   contents: write
   id-token: write
   attestations: write
 
 jobs:
-  windows-installer:
-    runs-on: windows-latest
-    timeout-minutes: 15
+  verify-ci:
+    runs-on: ubuntu-24.04
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Build JavaScript packages
-        run: npm run build:offline
-
-      - name: Test managed MinGit Bash
-        shell: powershell
+      - name: Require successful main CI for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $env:PI_CODING_AGENT_DIR = Join-Path $env:RUNNER_TEMP "lystar-agent"
-          node scripts/test-windows-managed-bash.mjs
-
-      - name: Test Windows installer with Windows PowerShell 5.1
-        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-install-ps1.ps1
+          count=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&status=success&per_page=10" \
+            --jq '[.workflow_runs[] | select(.event == "push" and .head_branch == "main")] | length')
+          test "$count" -gt 0
 
   release:
-    needs: windows-installer
+    needs: verify-ci
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -58,23 +43,8 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      - name: Test Unix installer
-        run: bash scripts/test-install-sh.sh
-
-      - name: Verify source
-        run: npm run check
-
       - name: Build JavaScript packages
         run: npm run build:offline
-
-      - name: Test TUI, AI, and Coding Agent
-        run: |
-          npm --workspace @earendil-works/pi-tui test
-          npm --workspace @earendil-works/pi-ai test
-          npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=4
-
-      - name: Test Agent Core
-        run: npm --workspace @earendil-works/pi-agent-core test
 
       - name: Build standalone bundles
         run: |
