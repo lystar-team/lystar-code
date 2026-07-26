@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-07-26T15:20:00+08:00
+最后核验时间：2026-07-26T15:53:00+08:00
 
 环境：
 
@@ -71,7 +71,9 @@ bash scripts/test-install-sh.sh
 
 结果：本地假 Release 分别通过 curl 和仅 wget 下载，latest manifest 版本解析、SHA-256、executable smoke、PATH 幂等写入、`--no-path-update`、坏 SHA 拒绝、回退、卸载和 release materialization 全部通过。该测试不访问网络，已加入 CI 与 Release workflow。
 
-Windows 安装器源码继续保持 UTF-8 BOM 和 CRLF；本轮加入 LYStar 托管 MinGit Bash 准备命令，安装器在切换版本前执行下载、固定 SHA-256 校验和 Bash/Git 自检。GitHub Windows runner 已通过 PowerShell 5.1 parser、npmmirror 真实下载、跨进程锁、中文空格路径和命令集 gate。
+Windows 安装器源码继续保持 UTF-8 BOM 和 CRLF；`0.82.1-lystar.7` 修复托管 MinGit staging 自检遗漏自身 PATH 的问题。自检现在显式加入 `cmd`、`mingw64/bin` 和 `usr/bin`，并先确认 `where.exe git.exe` 的首个结果位于托管目录。Windows 集成 gate 会移除 runner 预装 Git 后并发准备 MinGit，避免系统 Git 再次遮住缺陷。
+
+Release workflow 在 tag 触发后通过 GitHub Actions API 核对同一 commit 已有成功的 `main` CI，且该 run 必须来自 `main` push；核验后只执行依赖安装、离线构建、五平台打包、版本校验、attestation 和发布，不再重复全量测试与 Windows 集成 gate。API 查询已用 `0d684429` 的成功 CI 验证返回 1 条。
 
 五平台独立发行包：
 
@@ -131,7 +133,7 @@ lystar-agent-v<version>-windows-x64.zip
 
 Pi `v0.82.1` 发布基线的完整 `npm test` 已通过。本轮 AI 670 项、Agent Core 241 项和 Coding Agent 1672 项通过；Agent Core 的 50ms 命令超时用例已移除逐行 shell 循环的负载依赖，连续 10 次局部回归和最终全量回归均通过。
 
-本轮 GitHub Windows x64 runner 已执行 PowerShell 5.1 parser、真实 npmmirror 下载、固定 SHA、自检、并发锁和命令集 gate。尚未覆盖从公开 Release 下载完整发行包后的用户 PATH 广播、旧版本回退和卸载，也没有 Windows ARM64 证据。macOS 归档继续只有构建、格式和 SHA 证据，没有新增 macOS 实机安装证据。
+本轮 GitHub Windows x64 runner 必须在移除预装 Git 的 PATH 后通过真实 npmmirror 下载、固定 SHA、自检、并发锁和命令集 gate，成功后才允许创建 `0.82.1-lystar.7` tag。尚未覆盖从公开 Release 下载完整发行包后的用户 PATH 广播、旧版本回退和卸载，也没有 Windows ARM64 证据。macOS 归档继续只有构建、格式和 SHA 证据，没有新增 macOS 实机安装证据。
 
 当前环境的 `/tmp` 是 tmpfs，Bun 1.3.9 把 `--compile` 输出直接写入该目录时会产生同尺寸全零文件；改用项目所在 ext4 临时目录后生成正常 ELF。正式构建默认输出到仓库 `packages/coding-agent/binaries/`，不受这个本地 tmpfs 限制。
 
