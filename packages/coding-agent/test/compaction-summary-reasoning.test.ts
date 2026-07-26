@@ -144,7 +144,7 @@ describe("generateSummary reasoning options", () => {
 
 	it("summarizes oversized history in bounded requests", async () => {
 		const model = { ...createModel(false, 100), contextWindow: 3_000 };
-		const largeMessages: AgentMessage[] = [{ role: "user", content: "你".repeat(2_000), timestamp: Date.now() }];
+		const largeMessages: AgentMessage[] = [{ role: "user", content: "你".repeat(4_000), timestamp: Date.now() }];
 
 		await generateSummary(largeMessages, model, 100, "test-key");
 

@@ -13,10 +13,11 @@ export interface ContextUsageEstimate {
 
 const CHARS_PER_TOKEN = 4;
 const ESTIMATED_IMAGE_CHARS = 4800;
+const REQUEST_BYTES_PER_TOKEN = 3;
 const textEncoder = new TextEncoder();
 
-function encodedLength(value: string | undefined): number {
-	return value ? textEncoder.encode(value).length : 0;
+function estimateEncodedTokens(value: string | undefined): number {
+	return value ? Math.ceil(textEncoder.encode(value).length / REQUEST_BYTES_PER_TOKEN) : 0;
 }
 
 export function calculateContextTokens(usage: Usage): number {
@@ -114,49 +115,52 @@ function estimateToolsTokens(tools: readonly Tool[] | undefined): number {
 
 function estimateToolsTokenUpperBound(tools: readonly Tool[] | undefined): number {
 	if (!tools || tools.length === 0) return 0;
-	return encodedLength(safeJsonStringify(tools));
+	return estimateEncodedTokens(safeJsonStringify(tools));
 }
 
 function estimateMessageTokenUpperBound(message: Message): number {
 	let tokens = 0;
 	const addContent = (content: string | Array<TextContent | ImageContent>) => {
 		if (typeof content === "string") {
-			tokens += encodedLength(content);
+			tokens += estimateEncodedTokens(content);
 			return;
 		}
 		for (const block of content) {
 			tokens +=
 				block.type === "text"
-					? encodedLength(block.text) + encodedLength(block.textSignature)
-					: ESTIMATED_IMAGE_CHARS;
+					? estimateEncodedTokens(block.text) + estimateEncodedTokens(block.textSignature)
+					: Math.ceil(ESTIMATED_IMAGE_CHARS / REQUEST_BYTES_PER_TOKEN);
 		}
 	};
 
 	if (message.role === "user" || message.role === "toolResult") {
 		addContent(message.content);
 		if (message.role === "toolResult") {
-			tokens += encodedLength(message.toolCallId) + encodedLength(message.toolName);
+			tokens += estimateEncodedTokens(message.toolCallId) + estimateEncodedTokens(message.toolName);
 		}
 		return tokens;
 	}
 
 	for (const block of message.content) {
 		if (block.type === "text") {
-			tokens += encodedLength(block.text) + encodedLength(block.textSignature);
+			tokens += estimateEncodedTokens(block.text) + estimateEncodedTokens(block.textSignature);
 		} else if (block.type === "thinking") {
-			tokens += encodedLength(block.thinking) + encodedLength(block.thinkingSignature);
+			tokens += estimateEncodedTokens(block.thinking) + estimateEncodedTokens(block.thinkingSignature);
 		} else {
 			tokens +=
-				encodedLength(block.id) +
-				encodedLength(block.name) +
-				encodedLength(safeJsonStringify(block.arguments)) +
-				encodedLength(block.thoughtSignature);
+				estimateEncodedTokens(block.id) +
+				estimateEncodedTokens(block.name) +
+				estimateEncodedTokens(safeJsonStringify(block.arguments)) +
+				estimateEncodedTokens(block.thoughtSignature);
 		}
 	}
 	return tokens;
 }
 
-/** 保守估算请求上界，用于执行模型配置中的上下文窗口硬限制。 */
+/**
+ * 请求前轻量估算。已有历史以 Provider usage 为锚点，只估算其后新增内容；
+ * 没有 usage 时按 UTF-8 体量近似，结果用于提前压缩，不能替代 Provider 的真实溢出判断。
+ */
 export function estimateContextTokensUpperBound(context: Context): ContextUsageEstimate {
 	const usageInfo = getLastAssistantUsageInfo(context.messages);
 	if (usageInfo) {
@@ -180,7 +184,7 @@ export function estimateContextTokensUpperBound(context: Context): ContextUsageE
 		};
 	}
 
-	let trailingTokens = context.systemPrompt ? encodedLength(context.systemPrompt) : 0;
+	let trailingTokens = estimateEncodedTokens(context.systemPrompt);
 	trailingTokens += estimateToolsTokenUpperBound(context.tools);
 	for (const message of context.messages) trailingTokens += estimateMessageTokenUpperBound(message);
 	return { tokens: trailingTokens, usageTokens: 0, trailingTokens, lastUsageIndex: null };

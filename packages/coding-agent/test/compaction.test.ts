@@ -373,6 +373,33 @@ describe("findCutPoint", () => {
 		expect(customFitsBudget.isSplitTurn).toBe(false);
 		expect(customFitsBudget.turnStartIndex).toBe(-1);
 	});
+
+	it("keeps trailing tool results with the last assistant tool call", () => {
+		const assistant = createAssistantMessage("tool call");
+		assistant.stopReason = "toolUse";
+		assistant.content = [{ type: "toolCall", id: "call-1", name: "read", arguments: {} }];
+		const entries: SessionEntry[] = [
+			createMessageEntry(createUserMessage("old turn")),
+			createMessageEntry(createAssistantMessage("old answer")),
+			createMessageEntry(createUserMessage("current turn")),
+			createMessageEntry(assistant),
+			createMessageEntry({
+				role: "toolResult",
+				toolCallId: "call-1",
+				toolName: "read",
+				content: [{ type: "text", text: "x".repeat(40_000) }],
+				isError: false,
+				timestamp: Date.now(),
+			}),
+		];
+
+		const result = findCutPoint(entries, 0, entries.length, 1_000);
+
+		expect(result.firstKeptEntryIndex).toBe(3);
+		expect(result.isSplitTurn).toBe(true);
+		expect(result.turnStartIndex).toBe(2);
+		expect(prepareCompaction(entries, { ...DEFAULT_COMPACTION_SETTINGS, keepRecentTokens: 1_000 })).toBeDefined();
+	});
 });
 
 describe("buildSessionContext", () => {

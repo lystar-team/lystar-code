@@ -128,7 +128,7 @@ describe("AgentSession compaction characterization", () => {
 					pi.on("context", async (event) => ({
 						messages: event.messages.map((message) =>
 							message.role === "user"
-								? { ...message, content: [{ type: "text", text: "你".repeat(200) }] }
+								? { ...message, content: [{ type: "text", text: "你".repeat(2_500) }] }
 								: message,
 						),
 					}));
@@ -145,6 +145,27 @@ describe("AgentSession compaction characterization", () => {
 			(message): message is AssistantMessage => message.role === "assistant" && message.stopReason === "error",
 		);
 		expect(error?.errorMessage).toContain("配置的 2000 tokens 上限");
+	});
+
+	it("lets the provider verify an anchored estimate when only the combined total is over", async () => {
+		const harness = await createHarness({
+			models: [{ id: "faux-1", contextWindow: 2_000, maxTokens: 20 }],
+			settings: { compaction: { enabled: false, reserveTokens: 10 } },
+			initialActiveToolNames: [],
+		});
+		harnesses.push(harness);
+		const now = Date.now();
+		harness.sessionManager.appendMessage({ role: "user", content: "old", timestamp: now - 1_000 });
+		harness.sessionManager.appendMessage(
+			createAssistant(harness, { stopReason: "stop", totalTokens: 1_900, timestamp: now - 500 }),
+		);
+		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
+		harness.setResponses([fauxAssistantMessage("provider accepted")]);
+
+		await harness.session.prompt("你".repeat(200));
+
+		expect(harness.faux.state.callCount).toBe(1);
+		expect(harness.session.messages.at(-1)?.role).toBe("assistant");
 	});
 
 	it("includes a new prompt in the pre-request compaction budget", async () => {

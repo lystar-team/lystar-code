@@ -434,13 +434,8 @@ export function findCutPoint(
 
 		// Check if we've exceeded the budget
 		if (accumulatedTokens >= keepRecentTokens) {
-			// Find the closest valid cut point at or after this entry
-			for (let c = 0; c < cutPoints.length; c++) {
-				if (cutPoints[c] >= i) {
-					cutIndex = cutPoints[c];
-					break;
-				}
-			}
+			// 连续 Tool Result 必须和对应 Tool Call 一起保留，超出预算时回到最后一个合法切点。
+			cutIndex = cutPoints.find((candidate) => candidate >= i) ?? cutPoints[cutPoints.length - 1];
 			break;
 		}
 	}
@@ -689,7 +684,8 @@ async function summarizeConversationText(options: {
 			let high = remaining.length;
 			while (low < high) {
 				const mid = Math.ceil((low + high) / 2);
-				if (new TextEncoder().encode(remaining.slice(0, mid)).length <= chunkBudget) low = mid;
+				const candidateTokens = estimateContextTokensUpperBound(buildContext(remaining.slice(0, mid))).tokens;
+				if (candidateTokens <= options.model.contextWindow - options.maxTokens) low = mid;
 				else high = mid - 1;
 			}
 			if (low > 0 && /[\uD800-\uDBFF]/.test(remaining[low - 1]!)) low--;

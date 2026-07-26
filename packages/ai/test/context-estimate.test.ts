@@ -79,7 +79,7 @@ describe("context token estimation", () => {
 		});
 	});
 
-	it("uses UTF-8 bytes as the upper bound for text added after provider usage", () => {
+	it("estimates unseen UTF-8 content without counting every byte as a token", () => {
 		const context: Context = {
 			messages: [
 				{ role: "user", content: "old", timestamp: 100 },
@@ -89,11 +89,28 @@ describe("context token estimation", () => {
 		};
 
 		expect(estimateContextTokensUpperBound(context)).toEqual({
-			tokens: 2_300,
+			tokens: 2_100,
 			usageTokens: 2_000,
-			trailingTokens: 300,
+			trailingTokens: 100,
 			lastUsageIndex: 1,
 		});
+	});
+
+	it("keeps a 215K provider anchor plus Chinese additions below a 272K window", () => {
+		const context: Context = {
+			systemPrompt: "系统提示".repeat(2_000),
+			messages: [
+				createAssistant(100, 215_000),
+				{ role: "user", content: "新增中文内容".repeat(5_000), timestamp: 200 },
+			],
+			tools: [{ name: "read", description: "读取文件", parameters: { type: "object" } }],
+		};
+
+		const estimate = estimateContextTokensUpperBound(context);
+
+		expect(estimate.usageTokens).toBe(215_000);
+		expect(estimate.tokens).toBeLessThan(272_000);
+		expect(estimate.tokens).toBeGreaterThan(240_000);
 	});
 
 	it("includes the system prompt and tool schema when no provider usage exists", () => {

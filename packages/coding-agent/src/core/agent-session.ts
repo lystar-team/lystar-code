@@ -25,7 +25,7 @@ import type {
 	PrepareNextTurnContext,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import { contentText, estimateContextTokensUpperBound } from "@earendil-works/pi-ai";
+import { type ContextUsageEstimate, contentText, estimateContextTokensUpperBound } from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
 	AuthResult,
@@ -325,6 +325,7 @@ export class AgentSession {
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
+	private _lastAutoCompactionError: string | undefined;
 	private _overflowRecoveryAttempted = false;
 
 	// Branch summarization state
@@ -520,21 +521,25 @@ export class AgentSession {
 		};
 	}
 
-	private async _estimateRequestTokens(context: AgentContext): Promise<number> {
+	private async _estimateRequestTokens(context: AgentContext): Promise<ContextUsageEstimate> {
 		const messages = await this.agent.convertToLlm(context.messages);
 		return estimateContextTokensUpperBound({
 			systemPrompt: context.systemPrompt,
 			messages,
 			tools: context.tools,
-		}).tokens;
+		});
 	}
 
-	private _assertRequestTokensWithinLimit(requestTokens: number): void {
+	private _assertRequestTokensWithinLimit(estimate: ContextUsageEstimate, compactionError?: string): void {
 		const model = this.model;
-		if (!model || model.contextWindow <= 0 || requestTokens < model.contextWindow) return;
+		if (!model || model.contextWindow <= 0 || estimate.tokens < model.contextWindow) return;
+		// Provider usage 之后的增量尚未经过 tokenizer；只有不可拆增量本身超限时才本地硬拦截。
+		if (estimate.trailingTokens < model.contextWindow) return;
+		const resolution = compactionError
+			? `自动压缩未完成：${compactionError}`
+			: "压缩后估算仍超过上限，请减少单条 Prompt、Skill 或 Tool 输出，或切换到更大上下文的模型。";
 		throw new Error(
-			`请求上下文预计为 ${requestTokens} tokens，超过模型 ${model.provider}/${model.id} 配置的 ${model.contextWindow} tokens 上限。` +
-				"自动压缩未能释放足够空间，请减少单条 Prompt、Skill 或 Tool 输出，或切换到更大上下文的模型。",
+			`请求中的不可拆内容预计为 ${estimate.trailingTokens} tokens，超过模型 ${model.provider}/${model.id} 配置的 ${model.contextWindow} tokens 上限。${resolution}`,
 		);
 	}
 
@@ -546,19 +551,21 @@ export class AgentSession {
 		if (!model || model.contextWindow <= 0) return context;
 
 		const settings = this.settingsManager.getCompactionSettings();
-		let requestTokens = await this._estimateRequestTokens(context);
-		if (settings.enabled && shouldCompact(requestTokens, model.contextWindow, settings)) {
+		let estimate = await this._estimateRequestTokens(context);
+		let compactionAttempted = false;
+		if (settings.enabled && shouldCompact(estimate.tokens, model.contextWindow, settings)) {
+			compactionAttempted = true;
 			const compacted = await this._runAutoCompaction("threshold", true);
 			if (compacted) {
 				context = {
 					...context,
 					messages: [...this.agent.state.messages, ...pendingMessagesAfterCompaction],
 				};
-				requestTokens = await this._estimateRequestTokens(context);
+				estimate = await this._estimateRequestTokens(context);
 			}
 		}
 
-		this._assertRequestTokensWithinLimit(requestTokens);
+		this._assertRequestTokensWithinLimit(estimate, compactionAttempted ? this._lastAutoCompactionError : undefined);
 		return context;
 	}
 
@@ -2119,6 +2126,7 @@ export class AgentSession {
 	 */
 	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
 		const settings = this.settingsManager.getCompactionSettings();
+		this._lastAutoCompactionError = undefined;
 		let started = false;
 
 		try {
@@ -2139,6 +2147,7 @@ export class AgentSession {
 
 			const preparation = prepareCompaction(pathEntries, settings);
 			if (!preparation) {
+				this._lastAutoCompactionError = "没有找到可安全拆分的历史消息，请缩短当前单条输入或 Tool 输出。";
 				return false;
 			}
 
@@ -2161,6 +2170,7 @@ export class AgentSession {
 				})) as SessionBeforeCompactResult | undefined;
 
 				if (extensionResult?.cancel) {
+					this._lastAutoCompactionError = "Extension 取消了本次压缩。";
 					this._emit({
 						type: "compaction_end",
 						reason,
@@ -2268,6 +2278,7 @@ export class AgentSession {
 			return this.agent.hasQueuedMessages();
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : "compaction failed";
+			this._lastAutoCompactionError = errorMessage;
 			if (started) {
 				this._emit({
 					type: "compaction_end",
