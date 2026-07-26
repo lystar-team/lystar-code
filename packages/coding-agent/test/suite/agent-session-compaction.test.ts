@@ -1,9 +1,13 @@
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
+	estimateContextTokensUpperBound,
 	fauxAssistantMessage,
+	fauxToolCall,
 	type Model,
 } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { estimateTokens } from "../../src/core/compaction/index.ts";
 import { createHarness, type Harness } from "./harness.ts";
@@ -94,6 +98,168 @@ describe("AgentSession compaction characterization", () => {
 		while (harnesses.length > 0) {
 			harnesses.pop()?.cleanup();
 		}
+	});
+
+	it("blocks extension-expanded input locally when it cannot fit the configured context window", async () => {
+		const harness = await createHarness({
+			models: [{ id: "faux-1", contextWindow: 100, maxTokens: 20 }],
+			settings: { compaction: { enabled: false, reserveTokens: 10 } },
+			initialActiveToolNames: [],
+			extensionFactories: [
+				(pi) => {
+					pi.on("input", async () => ({ action: "transform", text: "你".repeat(30) }));
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("must not run")]);
+
+		await expect(harness.session.prompt("short")).rejects.toThrow("配置的 100 tokens 上限");
+		expect(harness.faux.state.callCount).toBe(0);
+	});
+
+	it("blocks context-extension growth after the final transform", async () => {
+		const harness = await createHarness({
+			models: [{ id: "faux-1", contextWindow: 2_000, maxTokens: 20 }],
+			settings: { compaction: { enabled: false, reserveTokens: 10 } },
+			initialActiveToolNames: [],
+			extensionFactories: [
+				(pi) => {
+					pi.on("context", async (event) => ({
+						messages: event.messages.map((message) =>
+							message.role === "user"
+								? { ...message, content: [{ type: "text", text: "你".repeat(200) }] }
+								: message,
+						),
+					}));
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("must not run")]);
+
+		await harness.session.prompt("short");
+
+		expect(harness.faux.state.callCount).toBe(0);
+		const error = harness.session.messages.find(
+			(message): message is AssistantMessage => message.role === "assistant" && message.stopReason === "error",
+		);
+		expect(error?.errorMessage).toContain("配置的 2000 tokens 上限");
+	});
+
+	it("includes a new prompt in the pre-request compaction budget", async () => {
+		const harness = await createHarness({
+			models: [{ id: "faux-1", contextWindow: 3_000, maxTokens: 100 }],
+			settings: { compaction: { enabled: true, reserveTokens: 500, keepRecentTokens: 1 } },
+			initialActiveToolNames: [],
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", async (event) => ({
+						compaction: {
+							summary: "proactive summary",
+							firstKeptEntryId: event.preparation.firstKeptEntryId,
+							tokensBefore: event.preparation.tokensBefore,
+							details: {},
+						},
+					}));
+				},
+			],
+		});
+		harnesses.push(harness);
+		const now = Date.now();
+		harness.sessionManager.appendMessage({ role: "user", content: "a".repeat(2_000), timestamp: now - 4000 });
+		const olderAssistant = createAssistant(harness, {
+			stopReason: "stop",
+			totalTokens: 500,
+			timestamp: now - 3000,
+		});
+		olderAssistant.content = [{ type: "text", text: "b".repeat(2_000) }];
+		harness.sessionManager.appendMessage(olderAssistant);
+		harness.sessionManager.appendMessage({ role: "user", content: "recent", timestamp: now - 1000 });
+		harness.sessionManager.appendMessage(
+			createAssistant(harness, { stopReason: "stop", totalTokens: 2_600, timestamp: now - 500 }),
+		);
+		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
+		let requestTokens = 0;
+		harness.setResponses([
+			(context) => {
+				requestTokens = estimateContextTokensUpperBound(context).tokens;
+				return fauxAssistantMessage("done");
+			},
+		]);
+
+		await harness.session.prompt("x".repeat(100));
+
+		expect(harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(1);
+		expect(requestTokens).toBeLessThan(3_000);
+		expect(harness.faux.state.callCount).toBe(1);
+	});
+
+	it("compacts large tool results before the next provider request", async () => {
+		let enableCompaction = () => {};
+		const echoTool: AgentTool = {
+			name: "echo",
+			label: "Echo",
+			description: "Return a large result",
+			parameters: Type.Object({}),
+			execute: async () => {
+				enableCompaction();
+				return { content: [{ type: "text", text: "你".repeat(150) }], details: {} };
+			},
+		};
+		const harness = await createHarness({
+			models: [{ id: "faux-1", contextWindow: 3_000, maxTokens: 100 }],
+			settings: { compaction: { enabled: false, reserveTokens: 700, keepRecentTokens: 1 } },
+			tools: [echoTool],
+			initialActiveToolNames: ["echo"],
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", async (event) => ({
+						compaction: {
+							summary: "tool-turn summary",
+							firstKeptEntryId: event.preparation.firstKeptEntryId,
+							tokensBefore: event.preparation.tokensBefore,
+							details: {},
+						},
+					}));
+				},
+			],
+		});
+		harnesses.push(harness);
+		enableCompaction = () => {
+			harness.settingsManager.applyOverrides({
+				compaction: { enabled: true, reserveTokens: 700, keepRecentTokens: 1 },
+			});
+		};
+		const now = Date.now();
+		harness.sessionManager.appendMessage({ role: "user", content: "a".repeat(4_000), timestamp: now - 4000 });
+		const olderAssistant = createAssistant(harness, {
+			stopReason: "stop",
+			totalTokens: 300,
+			timestamp: now - 3000,
+		});
+		olderAssistant.content = [{ type: "text", text: "b".repeat(4_000) }];
+		harness.sessionManager.appendMessage(olderAssistant);
+		harness.sessionManager.appendMessage({ role: "user", content: "recent", timestamp: now - 1000 });
+		harness.sessionManager.appendMessage(
+			createAssistant(harness, { stopReason: "stop", totalTokens: 2_200, timestamp: now - 500 }),
+		);
+		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
+		let secondRequestTokens = 0;
+		const toolCallMessage = fauxAssistantMessage(fauxToolCall("echo", {}), { stopReason: "toolUse" });
+		harness.setResponses([
+			toolCallMessage,
+			(context) => {
+				secondRequestTokens = estimateContextTokensUpperBound(context).tokens;
+				return fauxAssistantMessage("done");
+			},
+		]);
+
+		await harness.session.prompt("run");
+
+		expect(harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(1);
+		expect(secondRequestTokens).toBeLessThan(3_000);
+		expect(harness.faux.state.callCount).toBe(2);
 	});
 
 	it("manually compacts using an extension-provided summary", async () => {
@@ -346,9 +512,15 @@ describe("AgentSession compaction characterization", () => {
 			],
 		});
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("completed answer")]);
+		seedCompactableSession(harness);
+		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
+		const completed = createAssistant(harness, {
+			stopReason: "stop",
+			totalTokens: 2,
+			timestamp: Date.now(),
+		});
 
-		await expect(harness.session.prompt("hello")).resolves.toBeUndefined();
+		await sessionInternals._checkCompaction(completed);
 
 		const compactionEnd = harness.eventsOfType("compaction_end").at(-1);
 		expect(compactionEnd).toMatchObject({
@@ -356,7 +528,7 @@ describe("AgentSession compaction characterization", () => {
 			aborted: false,
 			willRetry: false,
 		});
-		expect(harness.faux.state.callCount).toBe(1);
+		expect(harness.faux.state.callCount).toBe(0);
 	});
 
 	it("ignores stale pre-compaction assistant usage on pre-prompt checks", async () => {

@@ -29,6 +29,8 @@ la --no-session
 
 默认数据位于 `~/.pi/agent/sessions/`，按工作目录组织。自定义目录可使用 `--session-dir`、`PI_CODING_AGENT_SESSION_DIR` 或 `settings.json` 的 `sessionDir`。
 
+LYStar 在每次模型请求前核对完整上下文，包括 Skill 展开、Extension 附加消息、排队消息和 Tool Result。达到阈值时先自动压缩；压缩摘要过大时分块处理。压缩后仍超过当前模型 `contextWindow` 时，请求会在本地停止，不会继续发给 Provider。
+
 Pi 与 LYStar 可以读取同一目录，但不要让两个进程同时写同一个 Session。需要并行处理任务时分别创建 Session。
 
 ## 项目规则

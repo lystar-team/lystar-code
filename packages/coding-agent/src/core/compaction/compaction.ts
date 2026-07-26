@@ -6,7 +6,14 @@
  */
 
 import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { contentText, type RetryCallbacks, type RetryPolicy, retryAssistantCall, uuidv7 } from "@earendil-works/pi-ai";
+import {
+	contentText,
+	estimateContextTokensUpperBound,
+	type RetryCallbacks,
+	type RetryPolicy,
+	retryAssistantCall,
+	uuidv7,
+} from "@earendil-works/pi-ai";
 import type { AssistantMessage, Context, Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import { convertToLlm } from "../messages.ts";
@@ -567,9 +574,24 @@ export async function completeSummarization(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 ): Promise<AssistantMessage> {
+	const requestTokens = estimateContextTokensUpperBound(context).tokens;
+	if (model.contextWindow > 0 && requestTokens >= model.contextWindow) {
+		throw new Error(
+			`摘要请求上下文预计为 ${requestTokens} tokens，超过模型 ${model.provider}/${model.id} 配置的 ${model.contextWindow} tokens 上限。`,
+		);
+	}
+	const maxTokens =
+		model.contextWindow > 0
+			? Math.min(
+					options.maxTokens ?? (model.maxTokens > 0 ? model.maxTokens : model.contextWindow - requestTokens),
+					Math.max(1, model.contextWindow - requestTokens),
+				)
+			: options.maxTokens;
+
 	// Summaries are standalone requests, so isolate routing and avoid cache writes that cannot be reused.
 	const requestOptions: SimpleStreamOptions = {
 		...options,
+		maxTokens,
 		cacheRetention: "none",
 		sessionId: uuidv7(),
 	};
@@ -618,6 +640,91 @@ export async function generateSummary(
 	).text;
 }
 
+async function summarizeConversationText(options: {
+	conversationText: string;
+	initialPrompt: string;
+	updatePrompt: string;
+	previousSummary?: string;
+	model: Model<any>;
+	maxTokens: number;
+	apiKey: string | undefined;
+	headers?: Record<string, string>;
+	env?: Record<string, string>;
+	signal?: AbortSignal;
+	thinkingLevel?: ThinkingLevel;
+	streamFn?: StreamFn;
+	retry?: RetryPolicy;
+	callbacks?: RetryCallbacks;
+	errorLabel: string;
+}): Promise<{ text: string; usage: Usage }> {
+	let remaining = options.conversationText;
+	let summary = options.previousSummary;
+	let usage: Usage | undefined;
+	let firstChunk = true;
+
+	while (firstChunk || remaining.length > 0) {
+		firstChunk = false;
+		const instructions = summary ? options.updatePrompt : options.initialPrompt;
+		const buildContext = (conversation: string): Context => {
+			let promptText = `<conversation>\n${conversation}\n</conversation>\n\n`;
+			if (summary) promptText += `<previous-summary>\n${summary}\n</previous-summary>\n\n`;
+			promptText += instructions;
+			return {
+				systemPrompt: SUMMARIZATION_SYSTEM_PROMPT,
+				messages: [{ role: "user", content: [{ type: "text", text: promptText }], timestamp: Date.now() }],
+			};
+		};
+
+		let chunk = remaining;
+		if (
+			options.model.contextWindow > 0 &&
+			estimateContextTokensUpperBound(buildContext(chunk)).tokens + options.maxTokens > options.model.contextWindow
+		) {
+			const overhead = estimateContextTokensUpperBound(buildContext("")).tokens;
+			const chunkBudget = options.model.contextWindow - options.maxTokens - overhead;
+			if (chunkBudget <= 0) {
+				throw new Error(`${options.errorLabel}的固定提示和已有摘要已占满模型上下文。`);
+			}
+			let low = 0;
+			let high = remaining.length;
+			while (low < high) {
+				const mid = Math.ceil((low + high) / 2);
+				if (new TextEncoder().encode(remaining.slice(0, mid)).length <= chunkBudget) low = mid;
+				else high = mid - 1;
+			}
+			if (low > 0 && /[\uD800-\uDBFF]/.test(remaining[low - 1]!)) low--;
+			if (low === 0) throw new Error(`${options.errorLabel}无法在模型上下文预算内切分。`);
+			chunk = remaining.slice(0, low);
+		}
+
+		const response = await completeSummarization(
+			options.model,
+			buildContext(chunk),
+			createSummarizationOptions(
+				options.model,
+				options.maxTokens,
+				options.apiKey,
+				options.headers,
+				options.env,
+				options.signal,
+				options.thinkingLevel,
+			),
+			options.streamFn,
+			options.retry,
+			options.callbacks,
+		);
+		if (response.stopReason === "error") {
+			throw new Error(`${options.errorLabel}失败：${response.errorMessage || "未知错误"}`);
+		}
+		summary = contentText(response.content);
+		usage = usage ? combineUsage(usage, response.usage) : response.usage;
+		remaining = remaining.slice(chunk.length);
+	}
+
+	if (!usage) throw new Error(`${options.errorLabel}没有返回用量数据。`);
+	return { text: summary ?? "", usage };
+}
+
 /** Generate or update a conversation summary and return its provider usage. */
 export async function generateSummaryWithUsage(
 	currentMessages: AgentMessage[],
@@ -639,50 +746,32 @@ export async function generateSummaryWithUsage(
 		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
 	);
 
-	// Use update prompt if we have a previous summary, otherwise initial prompt
-	let basePrompt = previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
+	let initialPrompt = SUMMARIZATION_PROMPT;
+	let updatePrompt = UPDATE_SUMMARIZATION_PROMPT;
 	if (customInstructions) {
-		basePrompt = `${basePrompt}\n\nAdditional focus: ${customInstructions}`;
+		const focus = `\n\nAdditional focus: ${customInstructions}`;
+		initialPrompt += focus;
+		updatePrompt += focus;
 	}
 
-	// Serialize conversation to text so model doesn't try to continue it
-	// Convert to LLM messages first (handles custom types like bashExecution, custom, etc.)
-	const llmMessages = convertToLlm(currentMessages);
-	const conversationText = serializeConversation(llmMessages);
-
-	// Build the prompt with conversation wrapped in tags
-	let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
-	if (previousSummary) {
-		promptText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
-	}
-	promptText += basePrompt;
-
-	const summarizationMessages = [
-		{
-			role: "user" as const,
-			content: [{ type: "text" as const, text: promptText }],
-			timestamp: Date.now(),
-		},
-	];
-
-	const completionOptions = createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel);
-
-	const response = await completeSummarization(
+	const conversationText = serializeConversation(convertToLlm(currentMessages));
+	return summarizeConversationText({
+		conversationText,
+		initialPrompt,
+		updatePrompt,
+		previousSummary,
 		model,
-		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
-		completionOptions,
+		maxTokens,
+		apiKey,
+		headers,
+		env,
+		signal,
+		thinkingLevel,
 		streamFn,
 		retry,
 		callbacks,
-	);
-
-	if (response.stopReason === "error") {
-		throw new Error(`Summarization failed: ${response.errorMessage || "Unknown error"}`);
-	}
-
-	const textContent = contentText(response.content);
-
-	return { text: textContent, usage: response.usage };
+		errorLabel: "摘要请求",
+	});
 }
 
 // ============================================================================
@@ -938,32 +1027,21 @@ async function generateTurnPrefixSummary(
 		Math.floor(0.5 * reserveTokens),
 		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
 	); // Smaller budget for turn prefix
-	const llmMessages = convertToLlm(messages);
-	const conversationText = serializeConversation(llmMessages);
-	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
-	const summarizationMessages = [
-		{
-			role: "user" as const,
-			content: [{ type: "text" as const, text: promptText }],
-			timestamp: Date.now(),
-		},
-	];
-
-	const response = await completeSummarization(
+	const conversationText = serializeConversation(convertToLlm(messages));
+	return summarizeConversationText({
+		conversationText,
+		initialPrompt: TURN_PREFIX_SUMMARIZATION_PROMPT,
+		updatePrompt: `${TURN_PREFIX_SUMMARIZATION_PROMPT}\n\nUpdate the previous summary with this additional conversation chunk.`,
 		model,
-		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
-		createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel),
+		maxTokens,
+		apiKey,
+		headers,
+		env,
+		signal,
+		thinkingLevel,
 		streamFn,
 		retry,
 		callbacks,
-	);
-
-	if (response.stopReason === "error") {
-		throw new Error(`Turn prefix summarization failed: ${response.errorMessage || "Unknown error"}`);
-	}
-
-	return {
-		text: contentText(response.content),
-		usage: response.usage,
-	};
+		errorLabel: "轮次前缀摘要请求",
+	});
 }

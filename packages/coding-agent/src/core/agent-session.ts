@@ -17,6 +17,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type {
 	Agent,
+	AgentContext,
 	AgentEvent,
 	AgentMessage,
 	AgentState,
@@ -24,7 +25,7 @@ import type {
 	PrepareNextTurnContext,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import { contentText } from "@earendil-works/pi-ai";
+import { contentText, estimateContextTokensUpperBound } from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
 	AuthResult,
@@ -393,6 +394,8 @@ export class AgentSession {
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
 		this._installAgentToolHooks();
 		this._installAgentNextTurnRefresh();
+		this._installAgentRequestPreparation();
+		this._installAgentRequestValidation();
 
 		this._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
@@ -517,6 +520,64 @@ export class AgentSession {
 		};
 	}
 
+	private async _estimateRequestTokens(context: AgentContext): Promise<number> {
+		const messages = await this.agent.convertToLlm(context.messages);
+		return estimateContextTokensUpperBound({
+			systemPrompt: context.systemPrompt,
+			messages,
+			tools: context.tools,
+		}).tokens;
+	}
+
+	private _assertRequestTokensWithinLimit(requestTokens: number): void {
+		const model = this.model;
+		if (!model || model.contextWindow <= 0 || requestTokens < model.contextWindow) return;
+		throw new Error(
+			`请求上下文预计为 ${requestTokens} tokens，超过模型 ${model.provider}/${model.id} 配置的 ${model.contextWindow} tokens 上限。` +
+				"自动压缩未能释放足够空间，请减少单条 Prompt、Skill 或 Tool 输出，或切换到更大上下文的模型。",
+		);
+	}
+
+	private async _prepareRequestContext(
+		context: AgentContext,
+		pendingMessagesAfterCompaction: AgentMessage[] = [],
+	): Promise<AgentContext> {
+		const model = this.model;
+		if (!model || model.contextWindow <= 0) return context;
+
+		const settings = this.settingsManager.getCompactionSettings();
+		let requestTokens = await this._estimateRequestTokens(context);
+		if (settings.enabled && shouldCompact(requestTokens, model.contextWindow, settings)) {
+			const compacted = await this._runAutoCompaction("threshold", true);
+			if (compacted) {
+				context = {
+					...context,
+					messages: [...this.agent.state.messages, ...pendingMessagesAfterCompaction],
+				};
+				requestTokens = await this._estimateRequestTokens(context);
+			}
+		}
+
+		this._assertRequestTokensWithinLimit(requestTokens);
+		return context;
+	}
+
+	private _installAgentRequestPreparation(): void {
+		const previousPrepareRequest = this.agent.prepareRequest;
+		this.agent.prepareRequest = async (context, signal) => {
+			const preparedContext = previousPrepareRequest ? await previousPrepareRequest(context, signal) : context;
+			return this._prepareRequestContext(preparedContext);
+		};
+	}
+
+	private _installAgentRequestValidation(): void {
+		const previousValidateRequest = this.agent.validateRequest;
+		this.agent.validateRequest = async (context, signal) => {
+			await previousValidateRequest?.(context, signal);
+			this._assertRequestTokensWithinLimit(await this._estimateRequestTokens(context));
+		};
+	}
+
 	private _installAgentNextTurnRefresh(): void {
 		const previousPrepareNextTurnWithContext =
 			this.agent.prepareNextTurnWithContext ??
@@ -527,13 +588,15 @@ export class AgentSession {
 			const previousSnapshot = await previousPrepareNextTurnWithContext?.(turn, signal);
 			const previousContext = previousSnapshot?.context ?? turn.context;
 
+			const refreshedContext: AgentContext = {
+				...previousContext,
+				systemPrompt: this._systemPromptOverride ?? this._baseSystemPrompt,
+				tools: this.agent.state.tools.slice(),
+			};
+
 			return {
 				...previousSnapshot,
-				context: {
-					...previousContext,
-					systemPrompt: this._systemPromptOverride ?? this._baseSystemPrompt,
-					tools: this.agent.state.tools.slice(),
-				},
+				context: refreshedContext,
 				model: this.agent.state.model,
 				thinkingLevel: this.agent.state.thinkingLevel,
 			};
@@ -1251,6 +1314,16 @@ export class AgentSession {
 				this._systemPromptOverride = undefined;
 				this.agent.state.systemPrompt = this._baseSystemPrompt;
 			}
+
+			// 最终预算必须包含扩展展开的 Skill 和附加消息。
+			await this._prepareRequestContext(
+				{
+					systemPrompt: this.agent.state.systemPrompt,
+					messages: [...this.agent.state.messages, ...messages],
+					tools: this.agent.state.tools,
+				},
+				messages,
+			);
 		} catch (error) {
 			preflightResult?.(false);
 			throw error;

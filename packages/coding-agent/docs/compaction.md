@@ -34,13 +34,15 @@ contextTokens > contextWindow - reserveTokens
 
 By default, `reserveTokens` is 16384 tokens (configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`). This leaves room for the LLM's response.
 
+Before every provider request, pi checks the fully prepared context after Skill/input transforms, extension messages, steering/follow-up injection, and tool results. The check uses provider-reported usage for the existing prefix and a conservative UTF-8 upper bound for newly added content. If the request crosses the compaction threshold, compaction runs first. If compaction cannot bring the request below the model's configured `contextWindow`, pi stops locally and does not call the provider.
+
 You can also trigger manually with `/compact [instructions]`, where optional instructions focus the summary.
 
 ### How It Works
 
 1. **Find cut point**: Walk backwards from newest message, accumulating token estimates until `keepRecentTokens` (default 20k, configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`) is reached
 2. **Extract messages**: Collect messages from the previous kept boundary (or session start) up to the cut point
-3. **Generate summary**: Call LLM to summarize with structured format, passing the previous summary as iterative context when present
+3. **Generate summary**: Call LLM to summarize with structured format, passing the previous summary as iterative context when present. Oversized history is split into bounded chunks and merged incrementally; every summary request is checked against the same model context limit.
 4. **Append entry**: Save `CompactionEntry` with summary and `firstKeptEntryId`
 5. **Reload**: Session reloads, using summary + messages from `firstKeptEntryId` onwards
 

@@ -205,6 +205,15 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
 
 	/**
+	 * 每次请求 Provider 前调用，此时排队消息已经注入。
+	 * 可返回替换后的上下文完成压缩等准备；抛错会在请求发出前停止当前运行。
+	 */
+	prepareRequest?: (context: AgentContext, signal?: AbortSignal) => AgentContext | Promise<AgentContext>;
+
+	/** 在 context transform 完成后校验最终请求；抛错会阻止 Provider 调用。 */
+	validateRequest?: (context: AgentContext, signal?: AbortSignal) => void | Promise<void>;
+
+	/**
 	 * Called after each turn fully completes and `turn_end` has been emitted.
 	 *
 	 * If it returns true, the loop emits `agent_end` and exits before polling steering or follow-up queues,

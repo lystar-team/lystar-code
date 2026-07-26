@@ -13,6 +13,11 @@ export interface ContextUsageEstimate {
 
 const CHARS_PER_TOKEN = 4;
 const ESTIMATED_IMAGE_CHARS = 4800;
+const textEncoder = new TextEncoder();
+
+function encodedLength(value: string | undefined): number {
+	return value ? textEncoder.encode(value).length : 0;
+}
 
 export function calculateContextTokens(usage: Usage): number {
 	return usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
@@ -105,6 +110,80 @@ function estimateMessages(messages: readonly Message[]): ContextUsageEstimate {
 function estimateToolsTokens(tools: readonly Tool[] | undefined): number {
 	if (!tools || tools.length === 0) return 0;
 	return estimateTextTokens(safeJsonStringify(tools));
+}
+
+function estimateToolsTokenUpperBound(tools: readonly Tool[] | undefined): number {
+	if (!tools || tools.length === 0) return 0;
+	return encodedLength(safeJsonStringify(tools));
+}
+
+function estimateMessageTokenUpperBound(message: Message): number {
+	let tokens = 0;
+	const addContent = (content: string | Array<TextContent | ImageContent>) => {
+		if (typeof content === "string") {
+			tokens += encodedLength(content);
+			return;
+		}
+		for (const block of content) {
+			tokens +=
+				block.type === "text"
+					? encodedLength(block.text) + encodedLength(block.textSignature)
+					: ESTIMATED_IMAGE_CHARS;
+		}
+	};
+
+	if (message.role === "user" || message.role === "toolResult") {
+		addContent(message.content);
+		if (message.role === "toolResult") {
+			tokens += encodedLength(message.toolCallId) + encodedLength(message.toolName);
+		}
+		return tokens;
+	}
+
+	for (const block of message.content) {
+		if (block.type === "text") {
+			tokens += encodedLength(block.text) + encodedLength(block.textSignature);
+		} else if (block.type === "thinking") {
+			tokens += encodedLength(block.thinking) + encodedLength(block.thinkingSignature);
+		} else {
+			tokens +=
+				encodedLength(block.id) +
+				encodedLength(block.name) +
+				encodedLength(safeJsonStringify(block.arguments)) +
+				encodedLength(block.thoughtSignature);
+		}
+	}
+	return tokens;
+}
+
+/** 保守估算请求上界，用于执行模型配置中的上下文窗口硬限制。 */
+export function estimateContextTokensUpperBound(context: Context): ContextUsageEstimate {
+	const usageInfo = getLastAssistantUsageInfo(context.messages);
+	if (usageInfo) {
+		let trailingTokens = 0;
+		for (let i = usageInfo.index + 1; i < context.messages.length; i++) {
+			trailingTokens += estimateMessageTokenUpperBound(context.messages[i]);
+		}
+		const addedNames = new Set(
+			context.messages
+				.slice(usageInfo.index + 1)
+				.filter((message) => message.role === "toolResult")
+				.flatMap((message) => message.addedToolNames ?? []),
+		);
+		trailingTokens += estimateToolsTokenUpperBound(context.tools?.filter((tool) => addedNames.has(tool.name)));
+		const usageTokens = calculateContextTokens(usageInfo.usage);
+		return {
+			tokens: usageTokens + trailingTokens,
+			usageTokens,
+			trailingTokens,
+			lastUsageIndex: usageInfo.index,
+		};
+	}
+
+	let trailingTokens = context.systemPrompt ? encodedLength(context.systemPrompt) : 0;
+	trailingTokens += estimateToolsTokenUpperBound(context.tools);
+	for (const message of context.messages) trailingTokens += estimateMessageTokenUpperBound(message);
+	return { tokens: trailingTokens, usageTokens: 0, trailingTokens, lastUsageIndex: null };
 }
 
 function isMessageArray(value: Context | readonly Message[]): value is readonly Message[] {

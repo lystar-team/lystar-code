@@ -189,6 +189,10 @@ async function runLoop(
 				pendingMessages = [];
 			}
 
+			if (config.prepareRequest) {
+				currentContext = await config.prepareRequest(currentContext, signal);
+			}
+
 			// Stream assistant response
 			const message = await streamAssistantResponse(currentContext, config, signal, emit, streamFunction);
 			newMessages.push(message);
@@ -289,6 +293,9 @@ async function streamAssistantResponse(
 	let messages = context.messages;
 	if (config.transformContext) {
 		messages = await config.transformContext(messages, signal);
+	}
+	if (config.validateRequest) {
+		await config.validateRequest({ ...context, messages }, signal);
 	}
 
 	// Convert to LLM-compatible messages (AgentMessage[] → Message[])

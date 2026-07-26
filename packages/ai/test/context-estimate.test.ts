@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildBaseOptions } from "../src/api/simple-options.ts";
 import type { AssistantMessage, Context, Model, Usage } from "../src/types.ts";
-import { estimateContextTokens } from "../src/utils/estimate.ts";
+import { estimateContextTokens, estimateContextTokensUpperBound } from "../src/utils/estimate.ts";
 
 function createUsage(totalTokens: number): Usage {
 	return {
@@ -77,5 +77,35 @@ describe("context token estimation", () => {
 			trailingTokens: 1,
 			lastUsageIndex: 3,
 		});
+	});
+
+	it("uses UTF-8 bytes as the upper bound for text added after provider usage", () => {
+		const context: Context = {
+			messages: [
+				{ role: "user", content: "old", timestamp: 100 },
+				createAssistant(200, 2_000),
+				{ role: "user", content: "你".repeat(100), timestamp: 300 },
+			],
+		};
+
+		expect(estimateContextTokensUpperBound(context)).toEqual({
+			tokens: 2_300,
+			usageTokens: 2_000,
+			trailingTokens: 300,
+			lastUsageIndex: 1,
+		});
+	});
+
+	it("includes the system prompt and tool schema when no provider usage exists", () => {
+		const context: Context = {
+			systemPrompt: "系统",
+			messages: [{ role: "user", content: "hello", timestamp: 100 }],
+			tools: [{ name: "read", description: "读取", parameters: { type: "object" } }],
+		};
+
+		const estimate = estimateContextTokensUpperBound(context);
+		expect(estimate.tokens).toBeGreaterThanOrEqual(11);
+		expect(estimate.usageTokens).toBe(0);
+		expect(estimate.lastUsageIndex).toBeNull();
 	});
 });

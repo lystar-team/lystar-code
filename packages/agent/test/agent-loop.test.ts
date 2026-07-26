@@ -1101,6 +1101,54 @@ describe("agentLoop with AgentMessage", () => {
 		expect(convertedSecondTurnSystemPrompt).toBe("second prompt");
 	});
 
+	it("prepares each request after queued steering messages are injected", async () => {
+		const context: AgentContext = { systemPrompt: "", messages: [], tools: [] };
+		let steeringPolls = 0;
+		const preparedRoles: string[][] = [];
+		const validatedRoles: string[][] = [];
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			getSteeringMessages: async () => {
+				steeringPolls++;
+				return steeringPolls === 2 ? [createUserMessage("queued steering")] : [];
+			},
+			prepareRequest: async (requestContext) => {
+				preparedRoles.push(requestContext.messages.map((message) => message.role));
+				return requestContext;
+			},
+			transformContext: async (messages) => [...messages, createUserMessage("transformed")],
+			validateRequest: async (requestContext) => {
+				validatedRoles.push(requestContext.messages.map((message) => message.role));
+			},
+		};
+
+		let llmCalls = 0;
+		const stream = agentLoop([createUserMessage("first")], context, config, undefined, () => {
+			llmCalls++;
+			const mockStream = new MockAssistantStream();
+			queueMicrotask(() => {
+				mockStream.push({
+					type: "done",
+					reason: "stop",
+					message: createAssistantMessage([{ type: "text", text: `response ${llmCalls}` }]),
+				});
+			});
+			return mockStream;
+		});
+
+		for await (const _event of stream) {
+			// consume
+		}
+
+		expect(llmCalls).toBe(2);
+		expect(preparedRoles).toEqual([["user"], ["user", "assistant", "user"]]);
+		expect(validatedRoles).toEqual([
+			["user", "user"],
+			["user", "assistant", "user", "user"],
+		]);
+	});
+
 	it("should stop after the current turn when shouldStopAfterTurn returns true", async () => {
 		const toolSchema = Type.Object({ value: Type.String() });
 		const executed: string[] = [];

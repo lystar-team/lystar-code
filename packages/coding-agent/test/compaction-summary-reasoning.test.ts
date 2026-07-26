@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
+import { type AssistantMessage, estimateContextTokensUpperBound, type Model } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type CompactionPreparation,
@@ -140,6 +140,27 @@ describe("generateSummary reasoning options", () => {
 			apiKey: "test-key",
 		});
 		expect(completeSimpleMock.mock.calls[0][2]).not.toHaveProperty("reasoning");
+	});
+
+	it("summarizes oversized history in bounded requests", async () => {
+		const model = { ...createModel(false, 100), contextWindow: 3_000 };
+		const largeMessages: AgentMessage[] = [{ role: "user", content: "你".repeat(2_000), timestamp: Date.now() }];
+
+		await generateSummary(largeMessages, model, 100, "test-key");
+
+		expect(completeSimpleMock.mock.calls.length).toBeGreaterThan(1);
+		for (const [, context, options] of completeSimpleMock.mock.calls) {
+			expect(estimateContextTokensUpperBound(context).tokens + (options?.maxTokens ?? 0)).toBeLessThanOrEqual(
+				model.contextWindow,
+			);
+		}
+	});
+
+	it("blocks an oversized summarization request before calling the provider", async () => {
+		const model = { ...createModel(false), contextWindow: 100 };
+
+		await expect(generateSummary(messages, model, 20, "test-key")).rejects.toThrow("已占满模型上下文");
+		expect(completeSimpleMock).not.toHaveBeenCalled();
 	});
 
 	it("clamps compaction summary maxTokens to the model output cap", async () => {
