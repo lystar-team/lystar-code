@@ -551,7 +551,7 @@ describe("Coding Agent Tools", () => {
 		});
 
 		it("should handle process spawn errors", async () => {
-			vi.spyOn(shellModule, "getShellConfig").mockReturnValueOnce({
+			vi.spyOn(shellModule, "ensureShellConfig").mockResolvedValueOnce({
 				shell: "/nonexistent-shell-path-xyz123",
 				args: ["-c"],
 			});
@@ -562,7 +562,7 @@ describe("Coding Agent Tools", () => {
 		});
 
 		it("should pass shellPath through to shell resolution", async () => {
-			const getShellConfigSpy = vi.spyOn(shellModule, "getShellConfig");
+			const ensureShellConfigSpy = vi.spyOn(shellModule, "ensureShellConfig");
 			const bashWithCustomShell = createBashTool(testDir, {
 				shellPath: "/custom/bash",
 				operations: {
@@ -572,7 +572,7 @@ describe("Coding Agent Tools", () => {
 
 			await bashWithCustomShell.execute("test-call-12b", { command: "echo test" });
 
-			expect(getShellConfigSpy).not.toHaveBeenCalled();
+			expect(ensureShellConfigSpy).not.toHaveBeenCalled();
 
 			const ops = createLocalBashOperations({ shellPath: "/custom/bash" });
 			await expect(
@@ -580,11 +580,11 @@ describe("Coding Agent Tools", () => {
 					onData: () => {},
 				}),
 			).rejects.toThrow("Custom shell path not found: /custom/bash");
-			expect(getShellConfigSpy).toHaveBeenCalledWith("/custom/bash");
+			expect(ensureShellConfigSpy).toHaveBeenCalledWith("/custom/bash");
 		});
 
 		it("should send commands over stdin when shell resolution requires it", async () => {
-			vi.spyOn(shellModule, "getShellConfig").mockReturnValue({
+			vi.spyOn(shellModule, "ensureShellConfig").mockResolvedValue({
 				shell: process.execPath,
 				args: [
 					"-e",

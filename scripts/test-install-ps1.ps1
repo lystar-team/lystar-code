@@ -34,15 +34,14 @@ try {
             'set /p LYSTAR_VERSION=',
             'versions\%LYSTAR_VERSION%\la.exe',
             '$PSVersionTable.PSVersion.Major -lt 5',
-            '[Net.SecurityProtocolType]::Tls12'
+            '[Net.SecurityProtocolType]::Tls12',
+            '--ensure-windows-bash',
+            'MinGit Bash 自动安装失败'
         )) {
             if (!$Source.Contains($Required)) { throw "$Installer is missing: $Required" }
         }
         foreach ($Forbidden in @(
-            'Install-PortableGit',
-            'git-for-windows/git',
             'Get-AuthenticodeSignature',
-            'Git Bash',
             'winget install --id Git.Git',
             '请先安装：https://git-scm.com/download/win',
             'Set-ExecutionPolicy'
@@ -66,7 +65,7 @@ try {
         throw "install.cmd must only use a process-scoped ExecutionPolicy argument."
     }
 
-    Write-Host "Windows installer encoding, parser, dependency-free install, CMD entrypoint, and retry checks passed."
+    Write-Host "Windows installer encoding, parser, managed Bash bootstrap, CMD entrypoint, and retry checks passed."
 }
 finally {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $Temp

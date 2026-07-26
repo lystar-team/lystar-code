@@ -10,7 +10,7 @@ LYStar Agent 的独立发行包已经包含运行所需的 executable、WASM、n
 |---|---|---|
 | macOS | Apple Silicon、Intel x64 | Bash、`curl` 或 `wget`、`tar` |
 | Linux | x64、ARM64 | Bash、`curl` 或 `wget`、`tar` |
-| Windows | x64 | Windows PowerShell 5.1+ |
+| Windows | x64 | Windows PowerShell 5.1+、安装时可访问 GitHub Release 和 npmmirror |
 
 Windows ARM64 当前没有独立发行包。macOS 和 Windows 包尚未完成平台代码签名，系统可能显示 Gatekeeper 或 SmartScreen 提示。
 
@@ -62,7 +62,7 @@ $cmd="$env:TEMP\lystar-install.cmd"; iwr -UseBasicParsing https://github.com/oct
 
 `install.cmd` 只为本次安装进程使用 `ExecutionPolicy Bypass`，不会修改系统或用户执行策略。安装器下载 Windows x64 发行包和 `SHA256SUMS`，校验后安装到当前用户目录，不要求管理员权限，也不要求预装 Git、Bash、Node.js 或 npm。
 
-安装器会写入用户 PATH 并广播环境变化；新开的终端可直接运行 `la`。只有实际使用内建 `bash` Tool 时才需要 Git Bash、WSL、MSYS2、Cygwin 或其他兼容 Bash，详见 [Windows 问题](../troubleshooting/windows.md)。
+安装器还会准备 LYStar 自己管理的 MinGit Bash，默认先从 npmmirror 下载固定版本，失败时回退 Git for Windows 官方 Release；下载内容经过固定 SHA-256 校验和命令自检后才切换 LYStar 版本。托管环境位于 `~/.pi/agent/bin/mingit/`，所有 LYStar 版本共用，不会随每次升级重复占用空间。
 
 ## 验证
 
@@ -131,6 +131,8 @@ Get-FileHash -Algorithm SHA256 .\<下载的归档>
 ```
 
 手动安装没有 `current` / `previous` 版本切换。需要 `la update` 和一键回退时使用官方安装器。
+
+手动解压后首次启动 LYStar 时，也会自动补齐托管 MinGit Bash。`PI_OFFLINE=1` 会禁止这次隐式下载；离线环境应先在有网络时运行一次 `la --ensure-windows-bash`。
 
 ## 固定版本
 

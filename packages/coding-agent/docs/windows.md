@@ -1,17 +1,25 @@
 # Windows Setup
 
-Pi requires a bash shell on Windows. Checked locations (in order):
+LYStar requires a Bash-compatible shell for the built-in `bash` Tool. On Windows x64, the installer and first interactive startup provision a LYStar-managed MinGit Bash under `~/.pi/agent/bin/mingit/`; users do not need a system Git installation.
 
-1. Custom path from `~/.pi/agent/settings.json`
-2. Git Bash (`C:\Program Files\Git\bin\bash.exe`)
-3. `bash.exe` on PATH (Cygwin, MSYS2, WSL)
+The managed archive is pinned to MinGit `2.55.0.3` and a fixed SHA-256. LYStar downloads from npmmirror first and falls back to the official Git for Windows Release, validates Bash and Git in staging, then replaces the shared managed directory atomically.
 
-For most users, [Git for Windows](https://git-scm.com/download/win) is sufficient.
+Run the bootstrap explicitly with:
 
-## Custom Shell Path
+```powershell
+la --ensure-windows-bash
+```
+
+`PI_OFFLINE=1` disables implicit downloads. An explicit `shellPath` still overrides the managed shell:
 
 ```json
 {
   "shellPath": "C:\\cygwin64\\bin\\bash.exe"
 }
 ```
+
+Without an override, resolution order is:
+
+1. LYStar-managed MinGit Bash
+2. Git Bash in known system locations
+3. `bash.exe` on PATH

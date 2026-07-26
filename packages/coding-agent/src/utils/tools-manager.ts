@@ -1,15 +1,45 @@
 import chalk from "chalk";
 import { type SpawnSyncReturns, spawnSync } from "child_process";
-import { chmodSync, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "fs";
+import { createHash } from "crypto";
+import {
+	chmodSync,
+	closeSync,
+	copyFileSync,
+	createWriteStream,
+	existsSync,
+	mkdirSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+} from "fs";
 import { arch, platform } from "os";
-import { join } from "path";
+import { delimiter, join } from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
+import type { ReadableStream as NodeReadableStream } from "stream/web";
+import { setTimeout as delay } from "timers/promises";
 import { APP_NAME, getBinDir } from "../config.ts";
 
 const TOOLS_DIR = getBinDir();
+const MANAGED_MINGIT_DIR = join(TOOLS_DIR, "mingit");
+const MINGIT_VERSION = "2.55.0.3";
+const MINGIT_ASSET = `MinGit-${MINGIT_VERSION}-64-bit.zip`;
+const MINGIT_SHA256 = "f48e2d2dc74a24454adc6d8fd0ac25bf9c2386f19cfb06202b9465aaad4f9f05";
+const MINGIT_URLS = [
+	`https://registry.npmmirror.com/-/binary/git-for-windows/v2.55.0.windows.3/${MINGIT_ASSET}`,
+	`https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.3/${MINGIT_ASSET}`,
+];
+const MINGIT_LOCK_PATH = join(TOOLS_DIR, "mingit.install.lock");
+const MINGIT_LOCK_TIMEOUT_MS = 6 * 60_000;
+const MINGIT_STALE_LOCK_MS = 5 * 60_000;
 const NETWORK_TIMEOUT_MS = 10_000;
 const DOWNLOAD_TIMEOUT_MS = 120_000;
+let managedWindowsBashPromise: Promise<string | undefined> | undefined;
 
 function isOfflineModeEnabled(): boolean {
 	const value = process.env.PI_OFFLINE;
@@ -133,7 +163,11 @@ async function downloadFile(url: string, dest: string): Promise<void> {
 	}
 
 	const fileStream = createWriteStream(dest);
-	await pipeline(Readable.fromWeb(response.body as any), fileStream);
+	await pipeline(Readable.fromWeb(response.body as NodeReadableStream<Uint8Array>), fileStream);
+}
+
+function calculateFileSha256(filePath: string): string {
+	return createHash("sha256").update(readFileSync(filePath)).digest("hex");
 }
 
 function findBinaryRecursively(rootDir: string, binaryFileName: string): string | null {
@@ -158,7 +192,7 @@ function findBinaryRecursively(rootDir: string, binaryFileName: string): string 
 	return null;
 }
 
-function formatSpawnFailure(result: SpawnSyncReturns<Buffer>): string {
+function formatSpawnFailure(result: SpawnSyncReturns<string | Buffer>): string {
 	if (result.error?.message) {
 		return result.error.message;
 	}
@@ -235,6 +269,172 @@ function extractZipArchive(archivePath: string, extractDir: string, assetName: s
 	}
 
 	throw new Error(`Failed to extract ${assetName}: ${failures.join("; ")}`);
+}
+
+function getManagedWindowsBashCandidate(rootDir: string): string {
+	return join(rootDir, "usr", "bin", "bash.exe");
+}
+
+function addManagedMinGitToPath(rootDir: string): void {
+	const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+	const currentPath = process.env[pathKey] ?? "";
+	const currentEntries = currentPath.split(delimiter).filter(Boolean);
+	const managedEntries = [join(rootDir, "cmd"), join(rootDir, "usr", "bin")];
+	const missingEntries = managedEntries.filter(
+		(candidate) => !currentEntries.some((entry) => entry.toLowerCase() === candidate.toLowerCase()),
+	);
+	if (missingEntries.length > 0)
+		process.env[pathKey] = [...missingEntries, currentPath].filter(Boolean).join(delimiter);
+}
+
+async function acquireManagedMinGitLock(): Promise<() => void> {
+	mkdirSync(TOOLS_DIR, { recursive: true });
+	const deadline = Date.now() + MINGIT_LOCK_TIMEOUT_MS;
+	while (Date.now() < deadline) {
+		try {
+			const fd = openSync(MINGIT_LOCK_PATH, "wx");
+			writeFileSync(fd, `${process.pid}\n`);
+			closeSync(fd);
+			return () => rmSync(MINGIT_LOCK_PATH, { force: true });
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+			try {
+				if (Date.now() - statSync(MINGIT_LOCK_PATH).mtimeMs > MINGIT_STALE_LOCK_MS) {
+					unlinkSync(MINGIT_LOCK_PATH);
+					continue;
+				}
+			} catch (statError) {
+				if ((statError as NodeJS.ErrnoException).code === "ENOENT") continue;
+				throw statError;
+			}
+			await delay(250);
+		}
+	}
+	throw new Error("等待另一个 LYStar 进程安装 MinGit Bash 超时");
+}
+
+export function getManagedWindowsBashPath(): string | null {
+	if (platform() !== "win32") return null;
+	const bashPath = getManagedWindowsBashCandidate(MANAGED_MINGIT_DIR);
+	const versionPath = join(MANAGED_MINGIT_DIR, ".lystar-version");
+	if (!existsSync(bashPath) || !existsSync(versionPath)) return null;
+	return readFileSync(versionPath, "utf8").trim() === MINGIT_VERSION ? bashPath : null;
+}
+
+function validateManagedWindowsBash(bashPath: string, cwd: string): void {
+	const result = spawnSync(
+		bashPath,
+		["--noprofile", "--norc", "-c", '[[ -n "$BASH_VERSION" ]] && git --version >/dev/null && ls / >/dev/null'],
+		{ cwd, encoding: "utf8", stdio: "pipe", windowsHide: true },
+	);
+	if (result.error || result.status !== 0) {
+		throw new Error(`MinGit Bash validation failed: ${formatSpawnFailure(result)}`);
+	}
+}
+
+async function downloadManagedWindowsBash(): Promise<string> {
+	if (platform() !== "win32" || arch() !== "x64") {
+		throw new Error(`Unsupported managed MinGit platform: ${platform()}/${arch()}`);
+	}
+
+	mkdirSync(TOOLS_DIR, { recursive: true });
+	const stagingRoot = join(TOOLS_DIR, `mingit_tmp_${process.pid}_${Date.now()}`);
+	const extractDir = join(stagingRoot, "extract");
+	const archivePath = join(stagingRoot, MINGIT_ASSET);
+	mkdirSync(extractDir, { recursive: true });
+
+	try {
+		const failures: string[] = [];
+		let downloaded = false;
+		for (const url of MINGIT_URLS) {
+			try {
+				rmSync(archivePath, { force: true });
+				await downloadFile(url, archivePath);
+				if (calculateFileSha256(archivePath) !== MINGIT_SHA256) throw new Error("SHA-256 校验失败");
+				downloaded = true;
+				break;
+			} catch (error) {
+				failures.push(`${url}: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
+		if (!downloaded) throw new Error(`MinGit 下载失败：${failures.join("; ")}`);
+
+		extractZipArchive(archivePath, extractDir, MINGIT_ASSET);
+		const shPath = join(extractDir, "usr", "bin", "sh.exe");
+		const bashPath = getManagedWindowsBashCandidate(extractDir);
+		if (!existsSync(shPath)) throw new Error(`${MINGIT_ASSET} 缺少 usr/bin/sh.exe`);
+		copyFileSync(shPath, bashPath);
+		writeFileSync(join(extractDir, ".lystar-version"), `${MINGIT_VERSION}\n`);
+		validateManagedWindowsBash(bashPath, extractDir);
+
+		const backupDir = `${MANAGED_MINGIT_DIR}.previous`;
+		rmSync(backupDir, { recursive: true, force: true });
+		if (existsSync(MANAGED_MINGIT_DIR)) renameSync(MANAGED_MINGIT_DIR, backupDir);
+		try {
+			renameSync(extractDir, MANAGED_MINGIT_DIR);
+			rmSync(backupDir, { recursive: true, force: true });
+		} catch (error) {
+			if (existsSync(backupDir) && !existsSync(MANAGED_MINGIT_DIR)) renameSync(backupDir, MANAGED_MINGIT_DIR);
+			throw error;
+		}
+
+		const installedBash = getManagedWindowsBashPath();
+		if (!installedBash) throw new Error("MinGit Bash 安装后未找到 bash.exe");
+		return installedBash;
+	} finally {
+		rmSync(stagingRoot, { recursive: true, force: true });
+	}
+}
+
+async function provisionManagedWindowsBash(): Promise<string> {
+	const releaseLock = await acquireManagedMinGitLock();
+	try {
+		const existing = getManagedWindowsBashPath();
+		if (existing) {
+			try {
+				validateManagedWindowsBash(existing, MANAGED_MINGIT_DIR);
+				addManagedMinGitToPath(MANAGED_MINGIT_DIR);
+				return existing;
+			} catch {
+				// 锁内重新检查后仍损坏，继续安装。
+			}
+		}
+		const installed = await downloadManagedWindowsBash();
+		addManagedMinGitToPath(MANAGED_MINGIT_DIR);
+		return installed;
+	} finally {
+		releaseLock();
+	}
+}
+
+export async function ensureManagedWindowsBash(silent = false): Promise<string | undefined> {
+	if (platform() !== "win32") return undefined;
+	const existing = getManagedWindowsBashPath();
+	if (existing) {
+		try {
+			validateManagedWindowsBash(existing, MANAGED_MINGIT_DIR);
+			addManagedMinGitToPath(MANAGED_MINGIT_DIR);
+			return existing;
+		} catch {
+			// 损坏或不完整的托管环境会在下面重新安装。
+		}
+	}
+	if (isOfflineModeEnabled()) return undefined;
+
+	managedWindowsBashPromise ??= provisionManagedWindowsBash()
+		.then((bashPath) => {
+			if (!silent) console.log(chalk.dim(`MinGit Bash 已安装到 ${bashPath}`));
+			return bashPath;
+		})
+		.catch((error) => {
+			if (!silent)
+				console.log(chalk.yellow(`MinGit Bash 安装失败：${error instanceof Error ? error.message : error}`));
+			return undefined;
+		})
+		.finally(() => {
+			managedWindowsBashPromise = undefined;
+		});
+	return managedWindowsBashPromise;
 }
 
 // Download and install a tool

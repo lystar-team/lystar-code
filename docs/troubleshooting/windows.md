@@ -2,11 +2,21 @@
 
 [返回文档首页](../README.md)
 
-LYStar 当前提供 Windows x64 发行包，需要 Windows PowerShell 5.1+。安装、启动、登录、会话管理和文件读写不依赖 Git 或 Bash，官方安装器也不会下载 Git。
+LYStar 当前提供 Windows x64 发行包，需要 Windows PowerShell 5.1+。官方安装器会自动准备 LYStar 自己管理的 MinGit Bash，用户无需预装 Git、Bash、Node.js 或 npm。文件位于 `~/.pi/agent/bin/mingit/`，不会修改系统 Git 安装。
 
-## Bash Tool
+## 托管 MinGit Bash
 
-只有实际执行内建 `bash` Tool 时才需要兼容 Bash。LYStar 会寻找 Git Bash 和 PATH 中的 `bash.exe`，也可以在 `settings.json` 中指定 WSL、Cygwin、MSYS2 或其他 Bash：
+安装和首次启动会检查托管环境。缺失或自检失败时，LYStar 先从 npmmirror 下载固定的 MinGit `2.55.0.3`，失败时回退 Git for Windows 官方 Release；SHA-256 不匹配、解压失败或 Bash/Git 自检失败都会停止安装，不会切换到半成品版本。
+
+手动触发检查：
+
+```powershell
+la --ensure-windows-bash
+```
+
+`PI_OFFLINE=1` 时 LYStar 不会隐式联网。托管环境尚未准备好时，应先关闭离线模式执行上面的命令。
+
+显式配置 `shellPath` 仍会覆盖默认 Shell，用于确实需要 WSL、Cygwin 或其他 Bash 的场景：
 
 ```json
 {
@@ -14,7 +24,7 @@ LYStar 当前提供 Windows x64 发行包，需要 Windows PowerShell 5.1+。安
 }
 ```
 
-没有 Bash 时，其他功能仍可正常使用；调用 `bash` Tool 会显示缺少 Shell 的错误。需要该 Tool 时再安装 Git for Windows，或配置机器上已有的兼容 Bash。
+配置项不存在时，内建 `bash` Tool、Git 分支检测和 `git:` Package 都优先使用托管 MinGit。系统 Git Bash 和 PATH 中的 `bash.exe` 只作为手动解压或离线场景的兼容回退。
 
 ## PATH 没有生效
 

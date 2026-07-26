@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { delimiter } from "node:path";
 import { spawn, spawnSync } from "child_process";
 import { getBinDir } from "../config.ts";
+import { ensureManagedWindowsBash, getManagedWindowsBashPath } from "./tools-manager.ts";
 
 export interface ShellConfig {
 	shell: string;
@@ -61,7 +62,7 @@ function findBashOnPath(): string | null {
  * Resolve shell configuration based on platform and an optional explicit shell path.
  * Resolution order:
  * 1. User-specified shellPath
- * 2. On Windows: Git Bash in known locations, then bash on PATH
+ * 2. On Windows: LYStar managed MinGit Bash, Git Bash in known locations, then bash on PATH
  * 3. On Unix: /bin/bash, then bash on PATH, then fallback to sh
  */
 export function getShellConfig(customShellPath?: string): ShellConfig {
@@ -74,7 +75,10 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 	}
 
 	if (process.platform === "win32") {
-		// 2. Try Git Bash in known locations
+		const managedBash = getManagedWindowsBashPath();
+		if (managedBash) return getBashShellConfig(managedBash);
+
+		// Degraded fallback for manual/offline installs. Official LYStar installs provision managed MinGit first.
 		const paths: string[] = [];
 		const programFiles = process.env.ProgramFiles;
 		if (programFiles) {
@@ -98,11 +102,9 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 		}
 
 		throw new Error(
-			`No bash shell found. Options:\n` +
-				`  1. Install Git for Windows: https://git-scm.com/download/win\n` +
-				`  2. Add your bash to PATH (Cygwin, MSYS2, etc.)\n` +
-				"  3. Set shellPath in settings.json\n\n" +
-				`Searched Git Bash in:\n${paths.map((p) => `  ${p}`).join("\n")}`,
+			"未找到 LYStar 托管的 MinGit Bash，自动安装也未完成。" +
+				"请检查网络后重启 LYStar，或在 settings.json 中显式设置 shellPath。\n\n" +
+				`兼容 Bash 查找位置：\n${paths.map((path) => `  ${path}`).join("\n")}`,
 		);
 	}
 
@@ -117,6 +119,12 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 	}
 
 	return { shell: "sh", args: ["-c"] };
+}
+
+export async function ensureShellConfig(customShellPath?: string, silent = true): Promise<ShellConfig> {
+	if (customShellPath || process.platform !== "win32") return getShellConfig(customShellPath);
+	const managedBash = await ensureManagedWindowsBash(silent);
+	return managedBash ? getBashShellConfig(managedBash) : getShellConfig();
 }
 
 export function getShellEnv(): NodeJS.ProcessEnv {

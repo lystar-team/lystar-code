@@ -140,6 +140,9 @@ try {
     $Executable = Join-Path $Bundle "la.exe"
     if (!(Test-Path $Executable)) { throw "发行包缺少 la.exe。" }
     & $Executable --version | Out-Null
+    Write-Host "正在检查 LYStar 托管的 MinGit Bash..."
+    & $Executable --ensure-windows-bash | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "MinGit Bash 自动安装失败，LYStar 版本未切换。" }
 
     New-Item -ItemType Directory -Force $VersionsDir, $BinDir | Out-Null
     $Target = Join-Path $VersionsDir $Version

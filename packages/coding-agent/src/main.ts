@@ -47,6 +47,7 @@ import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
 import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
+import { ensureManagedWindowsBash } from "./utils/tools-manager.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
 const EXTENSION_LOAD_FAILURE_HINT = 'Hint: Start without extensions using "pi -ne".';
@@ -488,6 +489,17 @@ export async function main(args: string[], options?: MainOptions) {
 	const bootstrapSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher();
+
+	if (args.length === 1 && args[0] === "--ensure-windows-bash") {
+		const bashPath = await ensureManagedWindowsBash(false);
+		if (!bashPath) {
+			console.error(chalk.red("Error: LYStar 托管 MinGit Bash 安装失败。"));
+			process.exitCode = 1;
+			return;
+		}
+		console.log(bashPath);
+		return;
+	}
 
 	if (await handlePackageCommand(args, { extensionFactories })) {
 		const exitCode = process.exitCode ?? 0;

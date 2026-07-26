@@ -7,6 +7,7 @@ LYStar 本体、Pi Package 和模型 Provider 使用不同网络链路。先确�
 | 场景 | 访问目标 | 处理方式 |
 |---|---|---|
 | 安装或更新 LYStar | GitHub Releases | `HTTP_PROXY` / `HTTPS_PROXY` |
+| Windows 首次准备 MinGit Bash | npmmirror，失败时回退 Git for Windows Release | 自动处理并校验固定 SHA-256 |
 | 安装 `npm:` Package | npm registry | npmmirror 或 npm 官方源 |
 | 安装 `git:` Package | Git 仓库 | Git 可访问网络或 Git 代理 |
 | 调用模型 | Provider API | Provider 官方国内端点或代理 |
@@ -45,6 +46,16 @@ Remove-Item Env:HTTP_PROXY -ErrorAction SilentlyContinue
 ```
 
 该设置会补充 `HTTP_PROXY` 和 `HTTPS_PROXY`，已有环境变量优先。
+
+## Windows MinGit Bash
+
+Windows 安装器和首次启动会自动准备 LYStar 托管的 MinGit Bash。固定资产优先从 npmmirror 下载，失败时回退 Git for Windows 官方 Release；两条链路都必须通过代码内固定 SHA-256 校验。该镜像只用于这个固定二进制资产，不改变 npm registry 或 Git Package 下载地址。
+
+手动重试：
+
+```powershell
+la --ensure-windows-bash
+```
 
 ## npm 国内源
 
