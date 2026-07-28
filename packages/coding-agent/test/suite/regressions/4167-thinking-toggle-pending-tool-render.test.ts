@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
-import { Container, Text, type TUI } from "@earendil-works/pi-tui";
+import { Container, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../../src/core/agent-session.ts";
 import type { SessionEntry } from "../../../src/core/session-manager.ts";
@@ -118,6 +118,16 @@ function createAssistantBashBatchMessage(): AssistantMessage {
 	};
 }
 
+function createAssistantToolBatchMessage(): AssistantMessage {
+	return {
+		...createAssistantToolCallMessage(),
+		content: [
+			{ type: "toolCall", id: "read-1", name: "read", arguments: { path: "README.md" } },
+			{ type: "toolCall", id: "edit-1", name: "edit", arguments: { path: "README.md" } },
+		],
+	};
+}
+
 function createToolResultMessage(text: string): ToolResultMessage {
 	return {
 		role: "toolResult",
@@ -174,6 +184,35 @@ describe("InteractiveMode.renderSessionEntries", () => {
 
 		expect(fakeThis.pendingTools.has(TOOL_CALL_ID)).toBe(false);
 		expect(renderChat(fakeThis.chatContainer)).toContain("FINAL_RESULT");
+	});
+
+	test("keeps ordinary tool messages separated by one blank line", () => {
+		const fakeThis = createFakeInteractiveModeThis();
+		const renderSessionEntries = (
+			InteractiveMode.prototype as unknown as { renderSessionEntries: RenderSessionEntries }
+		).renderSessionEntries;
+
+		renderSessionEntries.call(fakeThis, createSessionEntries([createAssistantToolBatchMessage()]));
+
+		const spacers = fakeThis.chatContainer.children.filter((component) => component instanceof Spacer);
+		expect(spacers).toHaveLength(2);
+		expect(fakeThis.chatContainer.children[1]).toBeInstanceOf(Spacer);
+		expect(fakeThis.chatContainer.children[3]).toBeInstanceOf(Spacer);
+	});
+
+	test("adds spacing when a tool starts before its assistant tool-call message is rendered", async () => {
+		const fakeThis = createFakeInteractiveModeThis();
+		const handleEvent = (InteractiveMode.prototype as unknown as { handleEvent: HandleEvent }).handleEvent;
+
+		await handleEvent.call(fakeThis, {
+			type: "tool_execution_start",
+			toolCallId: "early-tool",
+			toolName: "read",
+			args: { path: "README.md" },
+		});
+
+		expect(fakeThis.chatContainer.children[0]).toBeInstanceOf(Spacer);
+		expect(fakeThis.pendingTools.has("early-tool")).toBe(true);
 	});
 
 	test("groups bash calls from the same assistant message without changing pending tool ids", () => {

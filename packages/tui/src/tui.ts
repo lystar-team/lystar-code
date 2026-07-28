@@ -95,6 +95,79 @@ type PendingOsc11BackgroundQuery = {
 	timer: NodeJS.Timeout | undefined;
 };
 
+export type TerminalClipboardContent = {
+	bytes: Uint8Array;
+	mimeType: string;
+};
+
+type Osc5522ClipboardResponse = {
+	id: string | undefined;
+	status: string | undefined;
+	mimeType: string | undefined;
+	payload: string;
+};
+
+type PendingTerminalClipboardQuery = {
+	id: string;
+	phase: "types" | "data";
+	requestedMimeTypes: string[];
+	availableMimeTypes: string[];
+	selectedMimeType: string | undefined;
+	chunks: Buffer[];
+	byteLength: number;
+	maxBytes: number;
+	readTimeoutMs: number;
+	tmux: boolean;
+	settled: boolean;
+	resolve: (content: TerminalClipboardContent | undefined) => void;
+	timer: NodeJS.Timeout | undefined;
+};
+
+const OSC_5522_PREFIX = "\x1b]5522;";
+const OSC_STRING_TERMINATOR = "\x1b\\";
+
+function decodeBase64(value: string): Buffer | undefined {
+	if (value.length % 4 === 1 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) return undefined;
+	const bytes = Buffer.from(value, "base64");
+	if (bytes.toString("base64").replace(/=+$/u, "") !== value.replace(/=+$/u, "")) return undefined;
+	return bytes;
+}
+
+function parseOsc5522ClipboardResponse(data: string): Osc5522ClipboardResponse | undefined {
+	if (!data.startsWith(OSC_5522_PREFIX)) return undefined;
+	const terminatorLength = data.endsWith(OSC_STRING_TERMINATOR) ? 2 : data.endsWith("\x07") ? 1 : 0;
+	if (terminatorLength === 0) return undefined;
+
+	const body = data.slice(OSC_5522_PREFIX.length, -terminatorLength);
+	const separator = body.indexOf(";");
+	const metadata = separator === -1 ? body : body.slice(0, separator);
+	const payload = separator === -1 ? "" : body.slice(separator + 1);
+	const fields = new Map<string, string>();
+	for (const field of metadata.split(":")) {
+		const equals = field.indexOf("=");
+		if (equals > 0) fields.set(field.slice(0, equals), field.slice(equals + 1));
+	}
+	if (fields.get("type") !== "read") return undefined;
+
+	const encodedMimeType = fields.get("mime");
+	const mimeBytes = encodedMimeType === undefined ? undefined : decodeBase64(encodedMimeType);
+	return {
+		id: fields.get("id"),
+		status: fields.get("status"),
+		mimeType: mimeBytes?.toString("utf8"),
+		payload,
+	};
+}
+
+function createOsc5522ReadSequence(id: string, mimeTypes: string): string {
+	const payload = Buffer.from(mimeTypes, "utf8").toString("base64");
+	return `${OSC_5522_PREFIX}type=read:id=${id};${payload}${OSC_STRING_TERMINATOR}`;
+}
+
+function wrapTmuxPassthrough(sequence: string): string {
+	return `\x1bPtmux;${sequence.replaceAll("\x1b", "\x1b\x1b")}\x1b\\`;
+}
+
 /**
  * Interface for components that can receive focus and display a hardware cursor.
  * When focused, the component should emit CURSOR_MARKER at the cursor position
@@ -322,6 +395,8 @@ export class TUI extends Container {
 	private stopped = false;
 	private pendingOsc11BackgroundReplies = 0;
 	private pendingOsc11BackgroundQueries: PendingOsc11BackgroundQuery[] = [];
+	private pendingTerminalClipboardQuery: PendingTerminalClipboardQuery | undefined;
+	private terminalClipboardQueryCounter = 0;
 	private terminalColorSchemeListeners = new Set<(scheme: TerminalColorScheme) => void>();
 	private terminalColorSchemeNotificationsEnabled = false;
 	private readonly logDirectory: string;
@@ -740,6 +815,9 @@ export class TUI extends Container {
 
 	stop(): void {
 		this.stopped = true;
+		if (this.pendingTerminalClipboardQuery) {
+			this.settleTerminalClipboardQuery(this.pendingTerminalClipboardQuery, undefined);
+		}
 		if (this.renderTimer) {
 			clearTimeout(this.renderTimer);
 			this.renderTimer = undefined;
@@ -818,6 +896,9 @@ export class TUI extends Container {
 	}
 
 	private handleInput(data: string): void {
+		if (this.consumeTerminalClipboardResponse(data)) {
+			return;
+		}
 		if (this.consumeOsc11BackgroundResponse(data)) {
 			return;
 		}
@@ -891,6 +972,77 @@ export class TUI extends Container {
 			this.focusedComponent.handleInput(data);
 			this.requestRender();
 		}
+	}
+
+	private consumeTerminalClipboardResponse(data: string): boolean {
+		const packet = parseOsc5522ClipboardResponse(data);
+		if (!packet) return false;
+
+		const query = this.pendingTerminalClipboardQuery;
+		if (!query || (packet.id !== undefined && packet.id !== query.id)) return true;
+		const status = packet.status;
+		if (status && status !== "OK" && status !== "DATA" && status !== "DONE") {
+			this.settleTerminalClipboardQuery(query, undefined);
+			return true;
+		}
+
+		if (status === "DATA" && packet.mimeType) {
+			if (query.phase === "types") {
+				query.availableMimeTypes.push(packet.mimeType);
+			} else if (packet.mimeType === query.selectedMimeType) {
+				const bytes = decodeBase64(packet.payload);
+				if (!bytes || query.byteLength + bytes.length > query.maxBytes) {
+					this.settleTerminalClipboardQuery(query, undefined);
+					return true;
+				}
+				query.chunks.push(bytes);
+				query.byteLength += bytes.length;
+			}
+		}
+
+		if (status !== "DONE") return true;
+		if (query.phase === "types") {
+			const selected = query.requestedMimeTypes
+				.map((requested) => query.availableMimeTypes.find((available) => available.split(";", 1)[0] === requested))
+				.find((mimeType) => mimeType !== undefined);
+			if (!selected) {
+				this.settleTerminalClipboardQuery(query, undefined);
+				return true;
+			}
+			query.phase = "data";
+			query.selectedMimeType = selected;
+			this.armTerminalClipboardTimer(query, query.readTimeoutMs);
+			this.writeTerminalClipboardSequence(createOsc5522ReadSequence(query.id, selected), query.tmux);
+			return true;
+		}
+
+		const bytes = query.byteLength > 0 ? Uint8Array.from(Buffer.concat(query.chunks)) : undefined;
+		this.settleTerminalClipboardQuery(
+			query,
+			bytes && query.selectedMimeType ? { bytes, mimeType: query.selectedMimeType } : undefined,
+		);
+		return true;
+	}
+
+	private writeTerminalClipboardSequence(sequence: string, tmux: boolean): void {
+		this.terminal.write(tmux ? wrapTmuxPassthrough(sequence) : sequence);
+	}
+
+	private armTerminalClipboardTimer(query: PendingTerminalClipboardQuery, timeoutMs: number): void {
+		if (query.timer) clearTimeout(query.timer);
+		query.timer = setTimeout(() => this.settleTerminalClipboardQuery(query, undefined), timeoutMs);
+	}
+
+	private settleTerminalClipboardQuery(
+		query: PendingTerminalClipboardQuery,
+		content: TerminalClipboardContent | undefined,
+	): void {
+		if (query.settled) return;
+		query.settled = true;
+		if (query.timer) clearTimeout(query.timer);
+		query.timer = undefined;
+		if (this.pendingTerminalClipboardQuery === query) this.pendingTerminalClipboardQuery = undefined;
+		query.resolve(content);
 	}
 
 	private consumeOsc11BackgroundResponse(data: string): boolean {
@@ -1715,6 +1867,50 @@ export class TUI extends Container {
 		} else {
 			this.terminal.hideCursor();
 		}
+	}
+
+	/**
+	 * Read the first preferred MIME type available through Kitty's OSC 5522 clipboard protocol.
+	 * The initial MIME listing does not prompt; only the selected data read may require terminal approval.
+	 */
+	queryTerminalClipboard({
+		mimeTypes,
+		listTimeoutMs = 750,
+		readTimeoutMs = 10_000,
+		maxBytes = 50 * 1024 * 1024,
+		tmux = false,
+	}: {
+		mimeTypes: string[];
+		listTimeoutMs?: number;
+		readTimeoutMs?: number;
+		maxBytes?: number;
+		tmux?: boolean;
+	}): Promise<TerminalClipboardContent | undefined> {
+		if (mimeTypes.length === 0) return Promise.resolve(undefined);
+		if (this.pendingTerminalClipboardQuery) {
+			this.settleTerminalClipboardQuery(this.pendingTerminalClipboardQuery, undefined);
+		}
+
+		return new Promise((resolve) => {
+			const query: PendingTerminalClipboardQuery = {
+				id: `pi-${++this.terminalClipboardQueryCounter}`,
+				phase: "types",
+				requestedMimeTypes: [...mimeTypes],
+				availableMimeTypes: [],
+				selectedMimeType: undefined,
+				chunks: [],
+				byteLength: 0,
+				maxBytes,
+				readTimeoutMs,
+				tmux,
+				settled: false,
+				resolve,
+				timer: undefined,
+			};
+			this.pendingTerminalClipboardQuery = query;
+			this.armTerminalClipboardTimer(query, listTimeoutMs);
+			this.writeTerminalClipboardSequence(createOsc5522ReadSequence(query.id, "."), tmux);
+		});
 	}
 
 	/**

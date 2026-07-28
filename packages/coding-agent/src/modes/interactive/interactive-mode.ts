@@ -535,8 +535,7 @@ export class InteractiveMode {
 		if (alternateScreen) this.defaultEditor.setPaddingX(Math.max(2, editorPaddingX));
 		const composer = new WorkspaceComposer({
 			editor: this.editorContainer,
-			getEditorRender: (width) =>
-				this.editor === this.defaultEditor ? this.defaultEditor.renderWorkspace(width) : undefined,
+			structuredEditor: this.defaultEditor,
 			fullscreen: alternateScreen,
 			getInfo: () => {
 				const state = this.session.state;
@@ -1715,6 +1714,7 @@ export class InteractiveMode {
 						return { cancelled: true };
 					}
 
+					this.workspace.resetScrollback();
 					this.chatContainer.clear();
 					this.renderInitialMessages();
 					if (result.editorText && !this.editor.getText().trim()) {
@@ -1804,6 +1804,7 @@ export class InteractiveMode {
 	}
 
 	private renderCurrentSessionState(): void {
+		this.workspace.resetScrollback();
 		this.loadedResourcesContainer.clear();
 		this.chatContainer.clear();
 		this.pendingMessagesContainer.clear();
@@ -2718,7 +2719,20 @@ export class InteractiveMode {
 
 	private async handleClipboardPaste(): Promise<void> {
 		try {
-			const image = await readClipboardImage();
+			let image = await readClipboardImage();
+			let terminalText: string | undefined;
+			if (!image) {
+				const content = await this.ui.queryTerminalClipboard({
+					mimeTypes: ["image/png", "image/jpeg", "image/webp", "image/gif", "text/plain"],
+					tmux: Boolean(process.env.TMUX),
+				});
+				if (content?.mimeType.startsWith("image/")) {
+					image = content;
+				} else if (content) {
+					terminalText = new TextDecoder().decode(content.bytes);
+				}
+			}
+
 			if (image) {
 				const tmpDir = os.tmpdir();
 				const ext = extensionForImageMimeType(image.mimeType) ?? "png";
@@ -2731,13 +2745,21 @@ export class InteractiveMode {
 				return;
 			}
 
-			const text = await readClipboardText();
+			const text = terminalText || (await readClipboardText());
 			if (text) {
 				this.editor.insertTextAtCursor?.(text);
 				this.ui.requestRender();
+				return;
 			}
-		} catch {
-			// Silently ignore clipboard errors (may not have permission, etc.)
+
+			const remote = Boolean(process.env.SSH_CONNECTION || process.env.SSH_CLIENT || process.env.MOSH_CONNECTION);
+			this.showWarning(
+				remote
+					? `未读取到剪贴板内容。SSH${process.env.TMUX ? "/tmux" : ""} 下需要支持 OSC 5522 的终端${process.env.TMUX ? "，并启用 tmux allow-passthrough" : ""}；也可以粘贴远端图片路径。`
+					: "剪贴板中没有可用的图片或文本。",
+			);
+		} catch (error) {
+			this.showWarning(`粘贴剪贴板失败：${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 
@@ -3043,10 +3065,12 @@ export class InteractiveMode {
 									if (!this.streamingBashGroup) {
 										this.streamingBashGroup = new ToolExecutionGroupComponent();
 										this.streamingBashGroup.setToolOutputsExpanded(this.toolOutputExpanded);
+										this.chatContainer.addChild(new Spacer(1));
 										this.chatContainer.addChild(this.streamingBashGroup);
 									}
 									this.streamingBashGroup.addTool(component);
 								} else {
+									this.chatContainer.addChild(new Spacer(1));
 									this.chatContainer.addChild(component);
 								}
 								this.pendingTools.set(content.id, component);
@@ -3123,6 +3147,7 @@ export class InteractiveMode {
 						this.sessionManager.getCwd(),
 					);
 					component.setExpanded(this.toolOutputExpanded);
+					this.chatContainer.addChild(new Spacer(1));
 					this.chatContainer.addChild(component);
 					this.pendingTools.set(event.toolCallId, component);
 				}
@@ -3491,10 +3516,12 @@ export class InteractiveMode {
 							if (!bashGroup) {
 								bashGroup = new ToolExecutionGroupComponent();
 								bashGroup.setToolOutputsExpanded(this.toolOutputExpanded);
+								this.chatContainer.addChild(new Spacer(1));
 								this.chatContainer.addChild(bashGroup);
 							}
 							bashGroup.addTool(component);
 						} else {
+							this.chatContainer.addChild(new Spacer(1));
 							this.chatContainer.addChild(component);
 						}
 
@@ -3635,6 +3662,7 @@ export class InteractiveMode {
 	}
 
 	private rebuildChatFromMessages(): void {
+		this.workspace.resetScrollback();
 		this.chatContainer.clear();
 		this.renderSessionEntries(this.sessionManager.buildContextEntries());
 	}
@@ -4851,6 +4879,7 @@ export class InteractiveMode {
 						}
 
 						// Update UI
+						this.workspace.resetScrollback();
 						this.chatContainer.clear();
 						this.renderInitialMessages();
 						if (result.editorText && !this.editor.getText().trim()) {

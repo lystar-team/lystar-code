@@ -62,7 +62,9 @@ export class WorkspaceHeader implements Component {
 
 export interface WorkspaceComposerOptions {
 	editor: Container;
-	getEditorRender?: (width: number) => { body: string[]; autocomplete: string[] } | undefined;
+	structuredEditor?: Component & {
+		renderWorkspace(width: number): { body: string[]; autocomplete: string[] };
+	};
 	getInfo: () => string;
 	fullscreen: boolean;
 }
@@ -81,7 +83,11 @@ export class WorkspaceComposer implements Component {
 	render(width: number): string[] {
 		const editorWidth = this.options.fullscreen ? Math.max(1, width - 2) : width;
 		if (!this.options.fullscreen || width < 4) return this.options.editor.render(editorWidth);
-		const structured = this.options.getEditorRender?.(editorWidth);
+		const structuredEditor = this.options.structuredEditor;
+		const structured =
+			structuredEditor && this.options.editor.children.includes(structuredEditor)
+				? structuredEditor.renderWorkspace(editorWidth)
+				: undefined;
 		const lines = structured ? [] : this.options.editor.render(editorWidth);
 		if (!structured && lines.length === 0) return lines;
 
@@ -133,6 +139,8 @@ export class LystarWorkspace implements Component {
 	private viewportHeight = 0;
 	private contentRanges: RenderedComponentRange[] = [];
 	private blockCache = new WeakMap<Component, { width: number; version: number; lines: string[] }>();
+	private historyStartComponent: Component | undefined;
+	private loadEntireHistory = false;
 	private indicatorRow = -1;
 
 	constructor(options: WorkspaceOptions) {
@@ -152,6 +160,18 @@ export class LystarWorkspace implements Component {
 
 	isFollowing(): boolean {
 		return this.following;
+	}
+
+	resetScrollback(): void {
+		this.following = true;
+		this.scrollTop = 0;
+		this.viewportScreenTop = 0;
+		this.viewportHeight = 0;
+		this.contentRanges = [];
+		this.historyStartComponent = undefined;
+		this.loadEntireHistory = false;
+		this.indicatorRow = -1;
+		this.blockCache = new WeakMap();
 	}
 
 	getWheelScrollStep(): number {
@@ -175,12 +195,14 @@ export class LystarWorkspace implements Component {
 
 	scrollToTop(): void {
 		if (!this.options.fullscreen) return;
+		this.loadEntireHistory = true;
 		this.scrollTop = 0;
 		this.following = false;
 	}
 
 	scrollToBottom(): void {
 		if (!this.options.fullscreen) return;
+		this.loadEntireHistory = false;
 		this.following = true;
 		this.scrollTop = this.getMaxScrollTop();
 	}
@@ -213,16 +235,16 @@ export class LystarWorkspace implements Component {
 			: 0;
 		const renderWidth = Math.max(1, width - horizontalPadding * 2);
 		const headerLines = this.options.header.render(renderWidth);
-		const { blocks: contentBlocks, ranges, height: contentHeight } = this.renderScrollContent(renderWidth);
 		const bottomSections = this.options.bottomContainers.map((component) => ({
 			component,
 			lines: component.render(renderWidth),
 		}));
 		const bottomLines = bottomSections.flatMap((section) => section.lines);
-		this.contentRanges = ranges;
 
 		if (!this.options.fullscreen) {
+			const { blocks: contentBlocks, ranges } = this.renderScrollContent(renderWidth);
 			const contentLines = contentBlocks.flatMap((block) => block.lines);
+			this.contentRanges = ranges;
 			this.viewportScreenTop = headerLines.length;
 			this.viewportHeight = contentLines.length;
 			this.scrollTop = 0;
@@ -293,6 +315,12 @@ export class LystarWorkspace implements Component {
 		this.viewportHeight = Math.max(1, height - visibleHeader.length - visibleBottom.length);
 		this.viewportScreenTop = visibleHeader.length;
 
+		const {
+			blocks: contentBlocks,
+			ranges,
+			height: contentHeight,
+		} = this.renderScrollContent(renderWidth, this.viewportHeight);
+		this.contentRanges = ranges;
 		const maxScrollTop = Math.max(0, contentHeight - this.viewportHeight);
 		if (this.following) {
 			this.scrollTop = maxScrollTop;
@@ -325,35 +353,79 @@ export class LystarWorkspace implements Component {
 		return Math.max(0, contentHeight - this.viewportHeight);
 	}
 
-	private renderScrollContent(width: number): {
+	private renderScrollContent(
+		width: number,
+		viewportHeight?: number,
+	): {
 		blocks: RenderedComponentBlock[];
 		ranges: RenderedComponentRange[];
 		height: number;
 	} {
+		const components = this.options.scrollContainers.flatMap((container) => container.children);
+		const renderedThisPass = new Map<Component, string[]>();
+		const renderComponent = (component: Component): string[] => {
+			const rendered = renderedThisPass.get(component);
+			if (rendered) return rendered;
+
+			let lines: string[];
+			if (isRenderVersioned(component)) {
+				const version = component.getRenderVersion();
+				const cached = this.blockCache.get(component);
+				if (cached && cached.width === width && cached.version === version) {
+					lines = cached.lines;
+				} else {
+					lines = component.render(width);
+					this.blockCache.set(component, { width, version, lines });
+				}
+			} else {
+				lines = component.render(width);
+			}
+			renderedThisPass.set(component, lines);
+			return lines;
+		};
+
+		let start = 0;
+		if (viewportHeight !== undefined && !this.loadEntireHistory) {
+			const anchorIndex = this.historyStartComponent ? components.indexOf(this.historyStartComponent) : -1;
+			if (!this.following && this.historyStartComponent && anchorIndex === -1) {
+				this.following = true;
+				this.scrollTop = 0;
+			}
+
+			if (this.following || anchorIndex === -1) {
+				start = components.length;
+				let tailHeight = 0;
+				const targetHeight = viewportHeight * 3;
+				while (start > 0 && tailHeight < targetHeight) {
+					start--;
+					tailHeight += renderComponent(components[start]!).length;
+				}
+			} else {
+				start = anchorIndex;
+				if (start > 0 && this.scrollTop <= viewportHeight) {
+					let prependedHeight = 0;
+					const targetHeight = viewportHeight * 2;
+					while (start > 0 && prependedHeight < targetHeight) {
+						start--;
+						prependedHeight += renderComponent(components[start]!).length;
+					}
+					this.scrollTop += prependedHeight;
+				}
+			}
+		}
+
+		this.historyStartComponent = components[start];
 		const blocks: RenderedComponentBlock[] = [];
 		const ranges: RenderedComponentRange[] = [];
 		let height = 0;
-		for (const container of this.options.scrollContainers) {
-			for (const component of container.children) {
-				let lines: string[];
-				if (isRenderVersioned(component)) {
-					const version = component.getRenderVersion();
-					const cached = this.blockCache.get(component);
-					if (cached && cached.width === width && cached.version === version) {
-						lines = cached.lines;
-					} else {
-						lines = component.render(width);
-						this.blockCache.set(component, { width, version, lines });
-					}
-				} else {
-					lines = component.render(width);
-				}
-				if (lines.length === 0) continue;
-				const block = { component, start: height, end: height + lines.length, lines };
-				blocks.push(block);
-				ranges.push(block);
-				height = block.end;
-			}
+		for (let index = start; index < components.length; index++) {
+			const component = components[index]!;
+			const lines = renderComponent(component);
+			if (lines.length === 0) continue;
+			const block = { component, start: height, end: height + lines.length, lines };
+			blocks.push(block);
+			ranges.push(block);
+			height = block.end;
 		}
 		return { blocks, ranges, height };
 	}

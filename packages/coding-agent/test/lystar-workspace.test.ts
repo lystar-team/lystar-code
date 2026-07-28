@@ -136,6 +136,30 @@ describe("LYStar workspace", () => {
 		expect(workspace.render(60).join("\n")).toContain("line-21");
 	});
 
+	it("resets the virtual history window when the session changes", () => {
+		const chat = textContainer(...Array.from({ length: 100 }, (_, index) => `old-${index}`));
+		const workspace = new LystarWorkspace({
+			getHeight: () => 12,
+			header: textContainer("header"),
+			scrollContainers: [chat],
+			bottomContainers: [textContainer("editor")],
+			fullscreen: true,
+		});
+
+		workspace.render(60);
+		workspace.pageUp();
+		expect(workspace.isFollowing()).toBe(false);
+
+		chat.clear();
+		chat.addChild(new Text("new-session-tail", 0, 0));
+		workspace.resetScrollback();
+		const rendered = workspace.render(60).map(stripAnsi).join("\n");
+
+		expect(workspace.isFollowing()).toBe(true);
+		expect(rendered).toContain("new-session-tail");
+		expect(rendered).not.toContain("old-");
+	});
+
 	it("reports the row inside a clicked scroll component", () => {
 		const execution = { render: () => ["summary", "detail-1", "detail-2"], invalidate: () => {} };
 		const chat = new Container();
@@ -183,7 +207,7 @@ describe("LYStar workspace", () => {
 		expect(history.render).toHaveBeenCalledTimes(2);
 	});
 
-	it("reuses 500 history blocks and redraws only the changed block", () => {
+	it("materializes only the visible history window and loads older blocks on demand", () => {
 		let renderCount = 0;
 		const histories = Array.from({ length: 500 }, (_, index) => ({
 			version: 0,
@@ -207,12 +231,26 @@ describe("LYStar workspace", () => {
 		});
 
 		workspace.render(80);
-		workspace.render(80);
-		expect(renderCount).toBe(500);
+		const initialRenderCount = renderCount;
+		expect(initialRenderCount).toBeGreaterThan(0);
+		expect(initialRenderCount).toBeLessThan(100);
+		expect(workspace.render(80).join("\n")).toContain("message-499");
+		expect(renderCount).toBe(initialRenderCount);
 
-		histories[250]!.version++;
+		histories[499]!.version++;
 		workspace.render(80);
-		expect(renderCount).toBe(501);
+		expect(renderCount).toBe(initialRenderCount + 1);
+
+		workspace.pageUp();
+		workspace.render(80);
+		workspace.pageUp();
+		workspace.render(80);
+		expect(renderCount).toBeGreaterThan(initialRenderCount + 1);
+		expect(renderCount).toBeLessThan(500);
+
+		workspace.scrollToTop();
+		expect(workspace.render(80).join("\n")).toContain("message-0");
+		expect(renderCount).toBeGreaterThanOrEqual(500);
 	});
 
 	it("prioritizes the active status over widgets when bottom space is limited", () => {
@@ -303,10 +341,17 @@ describe("LYStar workspace", () => {
 		expect(composerLines[2]).toMatch(/^╰─+ .* ╯$/);
 	});
 
-	it("uses structured editor sections without parsing border glyphs", () => {
+	it("uses structured editor sections only while that editor is active", () => {
+		const editor = new Container();
+		const structuredEditor = {
+			render: () => ["legacy editor output"],
+			invalidate: () => {},
+			renderWorkspace: () => ({ body: ["  结构化输入"], autocomplete: ["候选一"] }),
+		};
+		editor.addChild(structuredEditor);
 		const composer = new WorkspaceComposer({
-			editor: textContainer("legacy editor output"),
-			getEditorRender: () => ({ body: ["  结构化输入"], autocomplete: ["候选一"] }),
+			editor,
+			structuredEditor,
 			getInfo: () => "项目已信任 · test-model",
 			fullscreen: true,
 		});
@@ -316,6 +361,12 @@ describe("LYStar workspace", () => {
 		expect(lines.join("\n")).toContain("│❯ 结构化输入");
 		expect(lines.join("\n")).toContain("候选一");
 		expect(lines.join("\n")).not.toContain("legacy editor output");
+
+		editor.clear();
+		editor.addChild(new Text("继续会话（当前目录）", 0, 0));
+		const selectorLines = composer.render(40).map(stripAnsi);
+		expect(selectorLines.join("\n")).toContain("继续会话（当前目录）");
+		expect(selectorLines.join("\n")).not.toContain("结构化输入");
 	});
 
 	it("centers the prompt arrow beside multiline input", () => {

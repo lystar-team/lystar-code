@@ -108,6 +108,7 @@ export {
 	type OverlayOptions,
 	type OverlayUnfocusOptions,
 	type SizeValue,
+	type TerminalClipboardContent,
 	type TerminalModeOptions,
 	TUI,
 } from "./tui.ts";
