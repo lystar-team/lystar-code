@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-07-28T12:02:04+08:00
+最后核验时间：2026-07-28T15:52:28+08:00
 
 环境：
 
@@ -14,6 +14,36 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### `0.82.1-lystar.9` 发布前核验
+
+本版修复 `/resume` 选择器获得焦点后不可见、长 Session 首帧同步物化全部历史、Session 切换继承旧滚动状态、普通 Tool 消息紧贴和图片剪贴板在 SSH/tmux 中失效的问题。Session 格式、Agent 行为、Tool 协议、Extension API 与 `PI_*` 契约保持原样。
+
+发布版本事实源为 `packages/coding-agent/package.json` 中的 `piConfig.productVersion = 0.82.1-lystar.9`。使用 Node.js 22.22.2、npm 11.11.0、Bun 1.3.9 和 `NODE_TLS_REJECT_UNAUTHORIZED=1` 完成：
+
+```bash
+npm ci --ignore-scripts
+npm run check
+npm run build:offline
+npm --workspace @earendil-works/pi-tui test
+npm --workspace @earendil-works/pi-ai test
+npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=4
+npm --workspace @earendil-works/pi-agent-core test
+bash scripts/test-install-sh.sh
+bash scripts/build-binaries.sh --skip-install --skip-build --offline-model-data
+```
+
+结果：静态检查、离线构建和 Unix 安装器通过；TUI 全量退出码 0；AI 670 项通过、783 项跳过；Coding Agent 187 个 test files、1691 项通过，6 个 files、48 项跳过；Agent Core 241 项通过、1 项跳过。
+
+真实 PTY 使用 16 MB、3327 条消息的 Session 验证：`/resume` 列表 251ms 内出现，选择后 368ms 内显示历史尾部和继续提示；首帧只物化当前视口尾部，向上翻页可渐进加载旧历史。100x30 下普通 `read/edit/write/bash` Tool 之间保留一行间距，alternate screen 的 `history_size` 保持 0。
+
+图片粘贴保留 native、Wayland、X11 和 WSL 后端，并新增 Kitty OSC 5522 MIME 查询、分片合并、50 MB 上限与 tmux passthrough。协议单测覆盖 MIME 列表、图片优先级、分片、无匹配类型、tmux 包装和输入隔离；真实 SSH/tmux PTY 注入 OSC 5522 响应后，输入框出现临时 PNG 路径且文件字节正确。无可用后端时显示可操作的中文提示，不再静默吞掉失败。
+
+五平台包使用 Bun 1.3.9 构建，五个归档的 `SHA256SUMS` 全部通过；manifest 的版本、Pi 版本、仓库、文件、大小和 SHA-256 一致；归档均包含 `LICENSE` 与 `THIRD_PARTY_LICENSES.md`。格式核验覆盖 macOS ARM64/x64 Mach-O、Linux ARM64/x64 ELF 和 Windows x64 PE32+。
+
+从 Linux x64 归档运行 `la --version`、`la --help` 和 `PI_OFFLINE=1 la --list-models` 通过。发行包真实 PTY 覆盖 80x24 启动、80x8 和 120x36 resize、OSC 5522 图片粘贴、固定输入区、退出恢复和 `history_size = 0`；本轮独立 tmux socket 与临时文件已关闭并清理。Windows 与 macOS 仍以自动测试、归档格式、架构和 SHA 为证据，不宣称本地实机运行。
+
+CodeGraph 在修改后完成增量同步；`queryTerminalClipboard` 影响面收敛到 TUI 协议处理、`handleClipboardPaste` 和对应测试，Tool 间距影响实时事件与历史重建两条渲染路径。
 
 ### `0.82.1-lystar.8` 发布前核验
 
