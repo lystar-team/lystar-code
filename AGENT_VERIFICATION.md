@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-07-28T16:31:50+08:00
+最后核验时间：2026-07-28T17:53:32+08:00
 
 环境：
 
@@ -14,6 +14,31 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### `0.82.1-lystar.11` 发布前核验
+
+本版将全屏历史区改为有界双向滑动窗口，只保留视口前后缓冲区；离开窗口的渲染块会释放，主题等全局失效在历史块再次进入窗口时执行。顶栏上下文用量改为按 Session、消息数量、模型和完成事件刷新，不再随每个 TUI 帧扫描完整会话。Pi 的 TUI renderer、Session、Tool、Extension API 和存储格式未修改。
+
+发布版本事实源为 `packages/coding-agent/package.json` 中的 `piConfig.productVersion = 0.82.1-lystar.11`。以下 gate 通过：
+
+```bash
+npm run check
+npm run build:offline
+npm --workspace @earendil-works/pi-tui test
+npm --workspace @earendil-works/pi-ai test
+npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=4
+npm --workspace @earendil-works/pi-agent-core test
+bash scripts/test-install-sh.sh
+bash scripts/build-binaries.sh --skip-install --skip-build --offline-model-data
+```
+
+结果：TUI 全量退出码 0；AI 670 项通过、783 项跳过；Coding Agent 187 个 test files、1696 项通过，6 个 files、48 项跳过；Agent Core 241 项通过、1 项跳过；Unix 安装器通过。五个平台归档的 SHA-256 全部通过，manifest 的版本、Pi 版本、仓库和五个平台资产一致；macOS ARM64/x64、Linux ARM64/x64、Windows x64 格式正确，全部归档包含 `LICENSE` 和 `THIRD_PARTY_LICENSES.md`。Linux x64 包通过 `--version`、`--help` 和离线模型列表 smoke。
+
+确定性回归使用 5000 个历史组件验证：跳到首屏和深度滚动后的单帧只读取少于 200 个组件；可从首屏连续翻到 `message-4999` 并恢复 following；全局失效只刷新可见窗口；离开窗口的块缓存会释放。顶栏上下文用量在状态未变化的连续帧只计算一次。
+
+最终 Linux x64 二进制使用 16 MB、3346 条记录的真实 Session 在 PTY 验证：100x30 同机对照中，`.10` 跳到历史开头为 167ms，当前实现为 46ms；最终 `.11` 包在 80x24 下跳顶为 40ms，连续 120 次翻页与输入在 703ms 内完成，120x36 resize 后输入框、Footer 和快捷栏完整，tmux `history_size=0`。本轮独立 socket 和临时 Session 已关闭并清理。
+
+CodeGraph 增量同步和 affected 检查完成，影响面收敛到 `LystarWorkspace`、Interactive 顶栏组合逻辑及两个对应测试文件。上游 Pi 公共包和协议没有变化。
 
 ### `0.82.1-lystar.10` 发布前核验
 
