@@ -452,6 +452,11 @@ export class InteractiveMode {
 
 	// Built-in header (logo + keybinding hints + changelog)
 	private builtInHeader: Component | undefined = undefined;
+	private headerContextUsage: ReturnType<AgentSession["getContextUsage"]> = undefined;
+	private headerContextMessages: AgentMessage[] | undefined;
+	private headerContextMessageCount = -1;
+	private headerContextModel: unknown;
+	private headerContextUsageDirty = true;
 
 	// Custom header from extension (undefined = use built-in header)
 	private customHeader: (Component & { dispose?(): void }) | undefined = undefined;
@@ -472,6 +477,24 @@ export class InteractiveMode {
 	}
 	private get settingsManager() {
 		return this.session.settingsManager;
+	}
+
+	private getHeaderContextUsage(): ReturnType<AgentSession["getContextUsage"]> {
+		const messages = this.session.messages;
+		const model = this.session.model;
+		if (
+			this.headerContextUsageDirty ||
+			this.headerContextMessages !== messages ||
+			this.headerContextMessageCount !== messages.length ||
+			this.headerContextModel !== model
+		) {
+			this.headerContextUsage = this.session.getContextUsage();
+			this.headerContextMessages = messages;
+			this.headerContextMessageCount = messages.length;
+			this.headerContextModel = model;
+			this.headerContextUsageDirty = false;
+		}
+		return this.headerContextUsage;
 	}
 
 	constructor(runtimeHost: AgentSessionRuntime, options: InteractiveModeOptions = {}) {
@@ -813,7 +836,7 @@ export class InteractiveMode {
 		await this.themeController.applyFromSettings();
 
 		this.builtInHeader = new WorkspaceHeader(() => {
-			const usage = this.session.getContextUsage();
+			const usage = this.getHeaderContextUsage();
 			const used = usage?.tokens === null || usage?.tokens === undefined ? "?" : formatTokens(usage.tokens);
 			const available = usage ? formatTokens(usage.contextWindow) : "?";
 			const percent = usage?.percent === null || usage?.percent === undefined ? "?" : `${usage.percent.toFixed(1)}%`;
@@ -1804,6 +1827,7 @@ export class InteractiveMode {
 	}
 
 	private renderCurrentSessionState(): void {
+		this.headerContextUsageDirty = true;
 		this.workspace.resetScrollback();
 		this.loadedResourcesContainer.clear();
 		this.chatContainer.clear();
@@ -3087,6 +3111,7 @@ export class InteractiveMode {
 				break;
 
 			case "message_end":
+				this.headerContextUsageDirty = true;
 				if (event.message.role === "user") break;
 				if (this.streamingComponent && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
@@ -3210,6 +3235,7 @@ export class InteractiveMode {
 			}
 
 			case "compaction_end": {
+				this.headerContextUsageDirty = true;
 				if (this.settingsManager.getShowTerminalProgress() && !event.willRetry) {
 					this.ui.terminal.setProgress(false);
 				}
@@ -3615,6 +3641,7 @@ export class InteractiveMode {
 	}
 
 	renderInitialMessages(): void {
+		this.headerContextUsageDirty = true;
 		const entries = this.sessionManager.buildContextEntries();
 		this.renderSessionEntries(entries, {
 			updateFooter: true,
@@ -3665,6 +3692,7 @@ export class InteractiveMode {
 	}
 
 	private rebuildChatFromMessages(): void {
+		this.headerContextUsageDirty = true;
 		this.workspace.resetScrollback();
 		this.chatContainer.clear();
 		this.renderSessionEntries(this.sessionManager.buildContextEntries());

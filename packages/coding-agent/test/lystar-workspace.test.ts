@@ -248,9 +248,117 @@ describe("LYStar workspace", () => {
 		expect(renderCount).toBeGreaterThan(initialRenderCount + 1);
 		expect(renderCount).toBeLessThan(500);
 
+		const beforeTop = renderCount;
 		workspace.scrollToTop();
 		expect(workspace.render(80).join("\n")).toContain("message-0");
-		expect(renderCount).toBeGreaterThanOrEqual(500);
+		expect(renderCount - beforeTop).toBeLessThan(100);
+		expect(renderCount).toBeLessThan(500);
+	});
+
+	it("keeps rendering work bounded after navigating deep history", () => {
+		let versionReads = 0;
+		const chat = new Container();
+		for (let index = 0; index < 5000; index++) {
+			const component = {
+				render: () => [`message-${index}`],
+				invalidate: () => {},
+				getRenderVersion: () => {
+					versionReads++;
+					return 0;
+				},
+			};
+			chat.addChild(component);
+		}
+		const workspace = new LystarWorkspace({
+			getHeight: () => 24,
+			header: textContainer("header"),
+			scrollContainers: [chat],
+			bottomContainers: [textContainer("editor")],
+			fullscreen: true,
+		});
+
+		workspace.render(80);
+		workspace.scrollToTop();
+		const top = workspace.render(80).join("\n");
+		expect(top).toContain("message-0");
+		expect(versionReads).toBeLessThan(200);
+
+		for (let index = 0; index < 100; index++) {
+			workspace.pageDown();
+			workspace.render(80);
+		}
+		versionReads = 0;
+		workspace.render(80);
+		expect(versionReads).toBeLessThan(200);
+
+		for (let index = 0; index < 400; index++) {
+			workspace.pageDown();
+			workspace.render(80);
+		}
+		expect(workspace.isFollowing()).toBe(true);
+		expect(workspace.render(80).join("\n")).toContain("message-4999");
+	});
+
+	it("invalidates off-screen history lazily", () => {
+		const invalidations = Array.from({ length: 1000 }, () => vi.fn());
+		const chat = new Container();
+		for (let index = 0; index < invalidations.length; index++) {
+			const component = {
+				render: () => [`message-${index}`],
+				invalidate: invalidations[index]!,
+				getRenderVersion: () => 0,
+			};
+			chat.addChild(component);
+		}
+		const workspace = new LystarWorkspace({
+			getHeight: () => 24,
+			header: textContainer("header"),
+			scrollContainers: [chat],
+			bottomContainers: [textContainer("editor")],
+			fullscreen: true,
+		});
+
+		workspace.render(80);
+		workspace.invalidate();
+		workspace.render(80);
+
+		expect(invalidations[0]).not.toHaveBeenCalled();
+		expect(invalidations.at(-1)).toHaveBeenCalledOnce();
+		expect(invalidations.reduce((total, invalidate) => total + invalidate.mock.calls.length, 0)).toBeLessThan(100);
+	});
+
+	it("releases rendered blocks outside the history window", () => {
+		const renderCounts = Array.from({ length: 500 }, () => 0);
+		const chat = new Container();
+		for (let index = 0; index < renderCounts.length; index++) {
+			const component = {
+				render: () => {
+					renderCounts[index]++;
+					return [`message-${index}`];
+				},
+				invalidate: () => {},
+				getRenderVersion: () => 0,
+			};
+			chat.addChild(component);
+		}
+		const workspace = new LystarWorkspace({
+			getHeight: () => 24,
+			header: textContainer("header"),
+			scrollContainers: [chat],
+			bottomContainers: [textContainer("editor")],
+			fullscreen: true,
+		});
+
+		workspace.render(80);
+		workspace.scrollToTop();
+		workspace.render(80);
+		workspace.scrollToBottom();
+		workspace.render(80);
+		workspace.scrollToTop();
+		workspace.render(80);
+
+		expect(renderCounts[0]).toBe(2);
+		expect(renderCounts.at(-1)).toBe(2);
 	});
 
 	it("prioritizes the active status over widgets when bottom space is limited", () => {

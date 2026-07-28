@@ -117,6 +117,35 @@ describe("InteractiveMode.showStatus", () => {
 	});
 });
 
+describe("InteractiveMode header context usage", () => {
+	test("reuses long-session usage until the context changes", () => {
+		const messages: any[] = [];
+		const model = { id: "test", contextWindow: 128_000 };
+		const getContextUsage = vi.fn(() => ({ tokens: 1000, contextWindow: 128_000, percent: 0.78 }));
+		const fakeThis: any = {
+			session: { messages, model, getContextUsage },
+			headerContextUsage: undefined,
+			headerContextMessages: undefined,
+			headerContextMessageCount: -1,
+			headerContextModel: undefined,
+			headerContextUsageDirty: true,
+		};
+		const getUsage = () => (InteractiveMode as any).prototype.getHeaderContextUsage.call(fakeThis);
+
+		expect(getUsage()?.tokens).toBe(1000);
+		expect(getUsage()?.tokens).toBe(1000);
+		expect(getContextUsage).toHaveBeenCalledOnce();
+
+		messages.push({ role: "user", content: "hello" });
+		getUsage();
+		expect(getContextUsage).toHaveBeenCalledTimes(2);
+
+		fakeThis.headerContextUsageDirty = true;
+		getUsage();
+		expect(getContextUsage).toHaveBeenCalledTimes(3);
+	});
+});
+
 describe("InteractiveMode.setToolsExpanded", () => {
 	test("applies expansion state to the active header and chat entries", () => {
 		const header = { setExpanded: vi.fn() };

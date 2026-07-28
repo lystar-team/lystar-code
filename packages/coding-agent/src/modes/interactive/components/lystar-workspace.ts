@@ -17,6 +17,7 @@ interface RenderedComponentRange {
 }
 
 interface RenderedComponentBlock extends RenderedComponentRange {
+	index: number;
 	lines: string[];
 }
 
@@ -138,9 +139,20 @@ export class LystarWorkspace implements Component {
 	private viewportScreenTop = 0;
 	private viewportHeight = 0;
 	private contentRanges: RenderedComponentRange[] = [];
-	private blockCache = new WeakMap<Component, { width: number; version: number; lines: string[] }>();
-	private historyStartComponent: Component | undefined;
-	private loadEntireHistory = false;
+	private blockCache = new Map<Component, { width: number; version: number; lines: string[] }>();
+	private componentInvalidationGeneration = new WeakMap<Component, number>();
+	private invalidationGeneration = 0;
+	private scrollComponents: Component[] = [];
+	private scrollContainerSnapshots: Array<{
+		children: Component[];
+		length: number;
+		first: Component | undefined;
+		last: Component | undefined;
+	}> = [];
+	private historyStartIndex = 0;
+	private historyEndIndex = 0;
+	private jumpToTop = false;
+	private hasNewerHistory = false;
 	private indicatorRow = -1;
 
 	constructor(options: WorkspaceOptions) {
@@ -149,9 +161,10 @@ export class LystarWorkspace implements Component {
 
 	invalidate(): void {
 		this.options.header.invalidate();
-		for (const component of this.options.scrollContainers) component.invalidate();
 		for (const component of this.options.bottomContainers) component.invalidate();
-		this.blockCache = new WeakMap();
+		// 历史组件进入窗口时再按代刷新，避免主题切换同步重建完整会话。
+		this.invalidationGeneration++;
+		this.blockCache = new Map();
 	}
 
 	isFullscreen(): boolean {
@@ -168,10 +181,15 @@ export class LystarWorkspace implements Component {
 		this.viewportScreenTop = 0;
 		this.viewportHeight = 0;
 		this.contentRanges = [];
-		this.historyStartComponent = undefined;
-		this.loadEntireHistory = false;
+		this.scrollComponents = [];
+		this.scrollContainerSnapshots = [];
+		this.historyStartIndex = 0;
+		this.historyEndIndex = 0;
+		this.jumpToTop = false;
+		this.hasNewerHistory = false;
 		this.indicatorRow = -1;
-		this.blockCache = new WeakMap();
+		this.blockCache = new Map();
+		this.componentInvalidationGeneration = new WeakMap();
 	}
 
 	getWheelScrollStep(): number {
@@ -182,7 +200,7 @@ export class LystarWorkspace implements Component {
 		if (!this.options.fullscreen || lines === 0) return;
 		const maxScrollTop = this.getMaxScrollTop();
 		this.scrollTop = Math.max(0, Math.min(maxScrollTop, this.scrollTop + lines));
-		this.following = this.scrollTop >= maxScrollTop;
+		this.following = !this.hasNewerHistory && this.scrollTop >= maxScrollTop;
 	}
 
 	pageUp(): void {
@@ -195,14 +213,14 @@ export class LystarWorkspace implements Component {
 
 	scrollToTop(): void {
 		if (!this.options.fullscreen) return;
-		this.loadEntireHistory = true;
+		this.jumpToTop = true;
 		this.scrollTop = 0;
 		this.following = false;
 	}
 
 	scrollToBottom(): void {
 		if (!this.options.fullscreen) return;
-		this.loadEntireHistory = false;
+		this.jumpToTop = false;
 		this.following = true;
 		this.scrollTop = this.getMaxScrollTop();
 	}
@@ -326,7 +344,7 @@ export class LystarWorkspace implements Component {
 			this.scrollTop = maxScrollTop;
 		} else {
 			this.scrollTop = Math.max(0, Math.min(this.scrollTop, maxScrollTop));
-			if (this.scrollTop >= maxScrollTop) this.following = true;
+			if (!this.hasNewerHistory && this.scrollTop >= maxScrollTop) this.following = true;
 		}
 
 		const viewport = this.renderViewport(contentBlocks, this.scrollTop, this.viewportHeight);
@@ -353,6 +371,31 @@ export class LystarWorkspace implements Component {
 		return Math.max(0, contentHeight - this.viewportHeight);
 	}
 
+	private getScrollComponents(): Component[] {
+		const changed = this.options.scrollContainers.some((container, index) => {
+			const snapshot = this.scrollContainerSnapshots[index];
+			return (
+				!snapshot ||
+				snapshot.children !== container.children ||
+				snapshot.length !== container.children.length ||
+				snapshot.first !== container.children[0] ||
+				snapshot.last !== container.children.at(-1)
+			);
+		});
+		if (!changed && this.scrollContainerSnapshots.length === this.options.scrollContainers.length) {
+			return this.scrollComponents;
+		}
+
+		this.scrollComponents = this.options.scrollContainers.flatMap((container) => container.children);
+		this.scrollContainerSnapshots = this.options.scrollContainers.map((container) => ({
+			children: container.children,
+			length: container.children.length,
+			first: container.children[0],
+			last: container.children.at(-1),
+		}));
+		return this.scrollComponents;
+	}
+
 	private renderScrollContent(
 		width: number,
 		viewportHeight?: number,
@@ -361,11 +404,16 @@ export class LystarWorkspace implements Component {
 		ranges: RenderedComponentRange[];
 		height: number;
 	} {
-		const components = this.options.scrollContainers.flatMap((container) => container.children);
+		const components = this.getScrollComponents();
 		const renderedThisPass = new Map<Component, string[]>();
 		const renderComponent = (component: Component): string[] => {
 			const rendered = renderedThisPass.get(component);
 			if (rendered) return rendered;
+
+			if ((this.componentInvalidationGeneration.get(component) ?? 0) < this.invalidationGeneration) {
+				component.invalidate();
+				this.componentInvalidationGeneration.set(component, this.invalidationGeneration);
+			}
 
 			let lines: string[];
 			if (isRenderVersioned(component)) {
@@ -383,51 +431,112 @@ export class LystarWorkspace implements Component {
 			renderedThisPass.set(component, lines);
 			return lines;
 		};
-
-		let start = 0;
-		if (viewportHeight !== undefined && !this.loadEntireHistory) {
-			const anchorIndex = this.historyStartComponent ? components.indexOf(this.historyStartComponent) : -1;
-			if (!this.following && this.historyStartComponent && anchorIndex === -1) {
-				this.following = true;
-				this.scrollTop = 0;
+		const buildBlocks = (start: number, end: number) => {
+			const blocks: RenderedComponentBlock[] = [];
+			let height = 0;
+			for (let index = start; index < end; index++) {
+				const component = components[index]!;
+				const lines = renderComponent(component);
+				if (lines.length === 0) continue;
+				const block = { component, index, start: height, end: height + lines.length, lines };
+				blocks.push(block);
+				height = block.end;
 			}
+			return { blocks, height };
+		};
 
-			if (this.following || anchorIndex === -1) {
-				start = components.length;
-				let tailHeight = 0;
-				const targetHeight = viewportHeight * 3;
-				while (start > 0 && tailHeight < targetHeight) {
+		if (viewportHeight === undefined) {
+			const { blocks, height } = buildBlocks(0, components.length);
+			return { blocks, ranges: blocks, height };
+		}
+		if (components.length === 0) {
+			this.historyStartIndex = 0;
+			this.historyEndIndex = 0;
+			this.hasNewerHistory = false;
+			return { blocks: [], ranges: [], height: 0 };
+		}
+
+		const bufferHeight = viewportHeight * 2;
+		let start: number;
+		let end: number;
+		let jumpedToTop = false;
+		if (
+			this.following ||
+			this.historyEndIndex <= this.historyStartIndex ||
+			this.historyEndIndex > components.length
+		) {
+			end = components.length;
+			start = end;
+			let tailHeight = 0;
+			while (start > 0 && tailHeight < viewportHeight + bufferHeight) {
+				start--;
+				tailHeight += renderComponent(components[start]!).length;
+			}
+		} else if (this.jumpToTop) {
+			start = 0;
+			end = 0;
+			let headHeight = 0;
+			while (end < components.length && headHeight < viewportHeight + bufferHeight) {
+				headHeight += renderComponent(components[end]!).length;
+				end++;
+			}
+			this.scrollTop = 0;
+			this.jumpToTop = false;
+			jumpedToTop = true;
+		} else {
+			start = this.historyStartIndex;
+			end = this.historyEndIndex;
+			const current = buildBlocks(start, end);
+			let expandedHeight = current.height;
+
+			if (start > 0 && this.scrollTop <= bufferHeight) {
+				let prependedHeight = 0;
+				while (start > 0 && prependedHeight < bufferHeight) {
 					start--;
-					tailHeight += renderComponent(components[start]!).length;
+					prependedHeight += renderComponent(components[start]!).length;
 				}
-			} else {
-				start = anchorIndex;
-				if (start > 0 && this.scrollTop <= viewportHeight) {
-					let prependedHeight = 0;
-					const targetHeight = viewportHeight * 2;
-					while (start > 0 && prependedHeight < targetHeight) {
-						start--;
-						prependedHeight += renderComponent(components[start]!).length;
-					}
-					this.scrollTop += prependedHeight;
+				this.scrollTop += prependedHeight;
+				expandedHeight += prependedHeight;
+			}
+			if (end < components.length && this.scrollTop + viewportHeight + bufferHeight >= expandedHeight) {
+				let appendedHeight = 0;
+				while (end < components.length && appendedHeight < bufferHeight) {
+					appendedHeight += renderComponent(components[end]!).length;
+					end++;
 				}
 			}
 		}
 
-		this.historyStartComponent = components[start];
-		const blocks: RenderedComponentBlock[] = [];
-		const ranges: RenderedComponentRange[] = [];
-		let height = 0;
-		for (let index = start; index < components.length; index++) {
-			const component = components[index]!;
-			const lines = renderComponent(component);
-			if (lines.length === 0) continue;
-			const block = { component, start: height, end: height + lines.length, lines };
-			blocks.push(block);
-			ranges.push(block);
-			height = block.end;
+		let { blocks, height } = buildBlocks(start, end);
+		// 只保留视口前后缓冲区；裁掉上方块时同步重定位局部滚动坐标。
+		if (!this.following && !jumpedToTop && blocks.length > 0) {
+			const keepStart = Math.max(0, this.scrollTop - bufferHeight);
+			const keepEnd = this.scrollTop + viewportHeight + bufferHeight;
+			let first = 0;
+			while (first < blocks.length - 1 && blocks[first]!.end <= keepStart) first++;
+			let last = first + 1;
+			while (last < blocks.length && blocks[last]!.start < keepEnd) last++;
+
+			const removedHeight = blocks[first]!.start;
+			blocks = blocks.slice(first, last).map((block) => ({
+				...block,
+				start: block.start - removedHeight,
+				end: block.end - removedHeight,
+			}));
+			start = blocks[0]!.index;
+			end = blocks.at(-1)!.index + 1;
+			height = blocks.at(-1)!.end;
+			this.scrollTop = Math.max(0, this.scrollTop - removedHeight);
 		}
-		return { blocks, ranges, height };
+
+		this.historyStartIndex = start;
+		this.historyEndIndex = end;
+		this.hasNewerHistory = end < components.length;
+		const retainedComponents = new Set(blocks.map((block) => block.component));
+		for (const component of this.blockCache.keys()) {
+			if (!retainedComponents.has(component)) this.blockCache.delete(component);
+		}
+		return { blocks, ranges: blocks, height };
 	}
 
 	private renderViewport(blocks: RenderedComponentBlock[], start: number, height: number): string[] {
