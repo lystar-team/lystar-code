@@ -56,7 +56,15 @@ describe("ToolExecutionGroupComponent", () => {
 
 		second.updateResult({ content: [{ type: "text", text: "failed" }], isError: true });
 		lines = group.render(100).map(stripAnsi);
+		expect(lines).toHaveLength(2);
 		expect(lines[0]).toContain("2 条命令执行完成 · 1 条失败");
+		expect(lines[1]).toBe("");
+		expect(group.isExpanded()).toBe(false);
+
+		group.setExpanded(true);
+		const expandedLines = group.render(100);
+		expect(expandedLines.length).toBeGreaterThan(1);
+		expect(group.render(100)).toHaveLength(expandedLines.length);
 	});
 
 	it("reports cancelled commands separately from failures", () => {
@@ -68,10 +76,13 @@ describe("ToolExecutionGroupComponent", () => {
 		first.markCancelled("请求已取消");
 		second.updateResult({ content: [{ type: "text", text: "ok" }], isError: false });
 
-		const summary = stripAnsi(group.render(100)[0]);
+		const lines = group.render(100).map(stripAnsi);
 		expect(first.getExecutionStatus()).toBe("cancelled");
-		expect(summary).toContain("2 条命令执行结束 · 1 条取消");
-		expect(summary).not.toContain("失败");
+		expect(lines).toHaveLength(2);
+		expect(lines[0]).toContain("2 条命令执行结束 · 1 条取消");
+		expect(lines[1]).toBe("");
+		expect(lines[0]).not.toContain("失败");
+		expect(group.isExpanded()).toBe(false);
 	});
 
 	it("resolves header and child expansion targets without treating spacing as clickable", () => {
@@ -91,7 +102,7 @@ describe("ToolExecutionGroupComponent", () => {
 		expect(group.isExpanded()).toBe(false);
 		group.setToolOutputsExpanded(true);
 		expect(group.isExpanded()).toBe(false);
-		expect(group.render(100)).toHaveLength(1);
+		expect(group.render(100)).toHaveLength(2);
 		expect(group.getExpansionTargetAtRow(1)).toBeUndefined();
 	});
 });

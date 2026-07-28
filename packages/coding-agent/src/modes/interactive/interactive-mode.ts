@@ -3210,7 +3210,7 @@ export class InteractiveMode {
 			}
 
 			case "compaction_end": {
-				if (this.settingsManager.getShowTerminalProgress()) {
+				if (this.settingsManager.getShowTerminalProgress() && !event.willRetry) {
 					this.ui.terminal.setProgress(false);
 				}
 				if (this.autoCompactionEscapeHandler) {
@@ -3218,6 +3218,9 @@ export class InteractiveMode {
 					this.autoCompactionEscapeHandler = undefined;
 				}
 				this.clearStatusIndicator("compaction");
+				if (event.willRetry) {
+					this.setWorkingVisible(this.workingVisible);
+				}
 				if (event.aborted) {
 					if (event.reason === "manual") {
 						this.showError("上下文压缩已取消");

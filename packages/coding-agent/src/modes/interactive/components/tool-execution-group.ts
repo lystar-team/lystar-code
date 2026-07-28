@@ -17,11 +17,14 @@ interface ToolRange {
 export class ToolExecutionGroupComponent implements Component {
 	private readonly tools: ToolExecutionComponent[] = [];
 	private expanded = true;
+	private completionHandled = false;
 	private ranges: ToolRange[] = [];
 	private renderVersion = 0;
 
 	addTool(component: ToolExecutionComponent): void {
 		this.tools.push(component);
+		if (this.completionHandled) this.expanded = true;
+		this.completionHandled = false;
 		this.renderVersion++;
 	}
 
@@ -70,8 +73,18 @@ export class ToolExecutionGroupComponent implements Component {
 			return lines;
 		}
 
+		const completed = this.tools.every((tool) => {
+			const status = tool.getExecutionStatus();
+			return status === "success" || status === "error" || status === "cancelled";
+		});
+		if (completed && !this.completionHandled) {
+			this.expanded = false;
+			this.renderVersion++;
+		}
+		this.completionHandled = completed;
+
 		const lines = [truncateToWidth(this.renderSummary(), width, "…")];
-		if (!this.expanded) return lines;
+		if (!this.expanded) return [...lines, ""];
 
 		for (const tool of this.tools) {
 			const toolLines = tool.render(width);

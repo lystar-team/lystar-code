@@ -57,6 +57,48 @@ describe("InteractiveMode compaction events", () => {
 		expect(fakeThis.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
 	});
 
+	test("restores the working indicator when compaction continues the agent run", async () => {
+		const setProgress = vi.fn();
+		const setWorkingVisible = vi.fn();
+		const fakeThis = {
+			isInitialized: true,
+			footer: { invalidate: vi.fn() },
+			autoCompactionEscapeHandler: undefined as (() => void) | undefined,
+			defaultEditor: {},
+			workingVisible: true,
+			clearStatusIndicator: vi.fn(),
+			setWorkingVisible,
+			flushCompactionQueue: vi.fn().mockResolvedValue(undefined),
+			settingsManager: { getShowTerminalProgress: () => true },
+			ui: { requestRender: vi.fn(), terminal: { setProgress } },
+		};
+
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+			this: typeof fakeThis,
+			event: {
+				type: "compaction_end";
+				reason: "threshold" | "overflow";
+				result: undefined;
+				aborted: false;
+				willRetry: true;
+				errorMessage?: string;
+			},
+		) => Promise<void>;
+
+		await handleEvent.call(fakeThis, {
+			type: "compaction_end",
+			reason: "overflow",
+			result: undefined,
+			aborted: false,
+			willRetry: true,
+		});
+
+		expect(fakeThis.clearStatusIndicator).toHaveBeenCalledWith("compaction");
+		expect(setWorkingVisible).toHaveBeenCalledWith(true);
+		expect(setProgress).not.toHaveBeenCalledWith(false);
+		expect(fakeThis.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: true });
+	});
+
 	test("preserves steering behavior when flushing into an active agent run", async () => {
 		const fakeThis = {
 			compactionQueuedMessages: [{ text: "change direction", mode: "steer" as const }],
