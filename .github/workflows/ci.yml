@@ -10,9 +10,13 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  NODE_VERSION: 22.19.0
+  NPM_CI_ARGS: --ignore-scripts --no-audit --no-fund
+
 jobs:
-  windows-installer:
-    runs-on: windows-latest
+  verify-source:
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -21,11 +25,149 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        run: npm ci $NPM_CI_ARGS
+
+      - name: Test Unix installer
+        run: bash scripts/test-install-sh.sh
+
+      - name: Verify source
+        run: npm run check
+
+      - name: Build
+        run: npm run build:offline
+
+  test-tui:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install fd
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fd-find
+          sudo ln -s "$(command -v fdfind)" /usr/local/bin/fd
+
+      - name: Install dependencies
+        run: npm ci $NPM_CI_ARGS
+
+      - name: Test TUI
+        run: npm --workspace @earendil-works/pi-tui test
+
+  test-ai:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci $NPM_CI_ARGS
+
+      - name: Test AI
+        run: npm --workspace @earendil-works/pi-ai test
+
+  test-coding-agent-1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install command-line tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fd-find ripgrep
+          sudo ln -s "$(command -v fdfind)" /usr/local/bin/fd
+
+      - name: Install dependencies
+        run: npm ci $NPM_CI_ARGS
+
+      - name: Test Coding Agent shard 1/2
+        run: npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=4 --shard=1/2
+
+  test-coding-agent-2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install command-line tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fd-find ripgrep
+          sudo ln -s "$(command -v fdfind)" /usr/local/bin/fd
+
+      - name: Install dependencies
+        run: npm ci $NPM_CI_ARGS
+
+      - name: Test Coding Agent shard 2/2
+        run: npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=4 --shard=2/2
+
+  test-agent-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci $NPM_CI_ARGS
+
+      - name: Test Agent Core
+        run: npm --workspace @earendil-works/pi-agent-core test
+
+  windows-installer:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Build JavaScript packages
         run: npm run build:offline
@@ -38,42 +180,3 @@ jobs:
 
       - name: Test Windows installer with Windows PowerShell 5.1
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-install-ps1.ps1
-
-  build-check-test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev fd-find ripgrep
-          sudo ln -s $(which fdfind) /usr/local/bin/fd
-
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Test Unix installer
-        run: bash scripts/test-install-sh.sh
-
-      - name: Verify source
-        run: npm run check
-
-      - name: Build
-        run: npm run build:offline
-
-      - name: Test TUI, AI, and Coding Agent
-        run: |
-          npm --workspace @earendil-works/pi-tui test
-          npm --workspace @earendil-works/pi-ai test
-          npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=4
-
-      - name: Test Agent Core
-        run: npm --workspace @earendil-works/pi-agent-core test
