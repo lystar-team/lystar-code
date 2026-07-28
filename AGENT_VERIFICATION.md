@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-07-28T15:52:28+08:00
+最后核验时间：2026-07-28T16:31:50+08:00
 
 环境：
 
@@ -14,6 +14,30 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### `0.82.1-lystar.10` 发布前核验
+
+本版将同轮 Bash 命令组改为执行期间展开、全部结束后自动折叠，并为折叠摘要补齐块间距；上下文压缩触发续跑时恢复“正在执行...”状态和终端 progress。Session 格式、Agent 行为、Tool 协议与 Extension API 保持原样。
+
+发布版本事实源为 `packages/coding-agent/package.json` 中的 `piConfig.productVersion = 0.82.1-lystar.10`。以下 gate 通过：
+
+```bash
+npm ci --ignore-scripts
+npm run check
+npm run build:offline
+npm --workspace @earendil-works/pi-tui test
+npm --workspace @earendil-works/pi-ai test
+npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=4
+npm --workspace @earendil-works/pi-agent-core test
+bash scripts/test-install-sh.sh
+bash scripts/build-binaries.sh --skip-install --skip-build --offline-model-data
+```
+
+结果：TUI 全量退出码 0；AI 670 项通过、783 项跳过；Coding Agent 187 个 test files、1692 项通过，6 个 files、48 项跳过；Agent Core 241 项通过、1 项跳过；Unix 安装器通过。五个平台归档的 SHA-256 全部通过，manifest 版本、Pi 版本、仓库和五个平台资产一致；格式覆盖 macOS ARM64/x64 Mach-O、Linux ARM64/x64 ELF 和 Windows x64 PE32+。
+
+Linux x64 发行包使用真实历史 Session 在 100x30 PTY 验证：4 条已完成 Bash 命令默认折叠为 `4 条命令执行完成`，摘要前后保留空行，点击摘要后 4 条命令全部展开。本轮 tmux socket 和临时 Session 已关闭并清理。
+
+五平台打包会物化发行依赖，不能与读取根 `node_modules` 的 Vitest 并行。一次并发尝试导致 Vitest worker 短暂缺少 `vite/module-runner` 等文件，并使 Agent Core 50ms 超时用例在资源竞争下失败；重新执行 `npm ci --ignore-scripts` 后，Coding Agent 和 Agent Core 单独全量复跑均通过。后续可并行各测试 workspace，但发行打包必须放在测试之后。
 
 ### `0.82.1-lystar.9` 发布前核验
 
