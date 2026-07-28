@@ -1,11 +1,11 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-07-26T15:53:00+08:00
+最后核验时间：2026-07-28T12:02:04+08:00
 
 环境：
 
 ```text
-Node.js v22.21.1
+Node.js v22.22.2
 npm 11.11.0
 Bun 1.3.9
 Linux x64
@@ -14,6 +14,28 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### `0.82.1-lystar.8` 发布前核验
+
+本版完成 CI 并行拆分、长会话块缓存、Footer 用量缓存、自适应滚动、结构化 Composer、上下文快捷栏、Windows 内置安全字符、同轮 Bash 命令组和 TPS 中文化。Session、Tool、Extension、Provider 与 `PI_*` 契约保持原样。
+
+发布版本事实源为 `packages/coding-agent/package.json` 中的 `piConfig.productVersion = 0.82.1-lystar.8`。以下 gate 在该版本号下通过：
+
+```bash
+npm run check
+npm run build:offline
+npm --workspace @earendil-works/pi-tui test
+npm --workspace @earendil-works/pi-ai test
+npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=4
+npm --workspace @earendil-works/pi-agent-core test
+bash scripts/test-install-sh.sh
+```
+
+结果：TUI 全量退出码 0；AI 670 项通过、783 项跳过；Coding Agent 187 个 test files、1688 项测试通过，6 个 files、48 项跳过；Agent Core 241 项通过、1 项跳过；Unix 安装器完整链路通过。
+
+五平台产物使用 Bun 1.3.9 和 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新构建。五个归档的 `SHA256SUMS` 全部通过；manifest 版本、Pi 版本、仓库、平台文件、大小和 SHA-256 一致；归档均包含 `LICENSE` 与 `THIRD_PARTY_LICENSES.md`。格式核验覆盖 macOS ARM64/x64 Mach-O、Linux ARM64/x64 ELF 和 Windows x64 PE32+。
+
+从 Linux x64 归档解压后，`la --version`、`la --help` 和 `PI_OFFLINE=1 la --list-models` 通过。真实 PTY 覆盖 80x24 输入、80x8 Bash 运行状态与动态 `Esc 取消`、120x36 resize 和退出恢复；本轮独立 tmux socket 已关闭。Windows 安全字符分支通过自动测试，Windows 与 macOS 仍以 GitHub runner、归档格式和架构为证据，不宣称本地实机运行。
 
 静态检查与离线构建：
 
@@ -133,7 +155,7 @@ lystar-agent-v<version>-windows-x64.zip
 
 Pi `v0.82.1` 发布基线的完整 `npm test` 已通过。本轮 AI 670 项、Agent Core 241 项和 Coding Agent 1672 项通过；Agent Core 的 50ms 命令超时用例已移除逐行 shell 循环的负载依赖，连续 10 次局部回归和最终全量回归均通过。
 
-本轮 GitHub Windows x64 runner 必须在移除预装 Git 的 PATH 后通过真实 npmmirror 下载、固定 SHA、自检、并发锁和命令集 gate，成功后才允许创建 `0.82.1-lystar.7` tag。尚未覆盖从公开 Release 下载完整发行包后的用户 PATH 广播、旧版本回退和卸载，也没有 Windows ARM64 证据。macOS 归档继续只有构建、格式和 SHA 证据，没有新增 macOS 实机安装证据。
+本轮 `0.82.1-lystar.8` 发布仍以 GitHub Windows x64 runner 在移除预装 Git 的 PATH 后通过真实 npmmirror 下载、固定 SHA、自检、并发锁和命令集 gate 作为打 tag 前置条件。尚未覆盖 Windows ARM64；macOS 归档继续只有构建、格式、架构和 SHA 证据，没有 macOS 实机安装证据。
 
 当前环境的 `/tmp` 是 tmpfs，Bun 1.3.9 把 `--compile` 输出直接写入该目录时会产生同尺寸全零文件；改用项目所在 ext4 临时目录后生成正常 ELF。正式构建默认输出到仓库 `packages/coding-agent/binaries/`，不受这个本地 tmpfs 限制。
 
