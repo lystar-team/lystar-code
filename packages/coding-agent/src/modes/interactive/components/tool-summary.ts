@@ -1,5 +1,6 @@
 import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
 import { theme } from "../theme/theme.ts";
+import { toUiGlyph, uiGlyphs } from "../ui-glyphs.ts";
 
 export interface ToolSummaryLabels {
 	running: string;
@@ -51,7 +52,7 @@ export function formatToolSummary(options: {
 		: options.isPartial
 			? options.labels.running
 			: options.labels.success;
-	const chevron = options.expanded ? "▾" : "▸";
+	const chevron = options.expanded ? uiGlyphs.expanded : uiGlyphs.collapsed;
 	const detail = options.detail ? theme.fg("muted", `  ${options.detail}`) : "";
-	return `${theme.fg("dim", chevron)} ${theme.fg("toolTitle", options.icon)} ${theme.bold(action)} ${options.subject}${detail}`;
+	return `${theme.fg("dim", chevron)} ${theme.fg("toolTitle", toUiGlyph(options.icon))} ${theme.bold(action)} ${options.subject}${detail}`;
 }

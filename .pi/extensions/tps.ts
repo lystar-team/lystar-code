@@ -41,7 +41,7 @@ export default function (pi: ExtensionAPI) {
 
 		const elapsedSeconds = elapsedMs / 1000;
 		const tokensPerSecond = output / elapsedSeconds;
-		const message = `TPS ${tokensPerSecond.toFixed(1)} tok/s. out ${output.toLocaleString()}, in ${input.toLocaleString()}, cache r/w ${cacheRead.toLocaleString()}/${cacheWrite.toLocaleString()}, total ${totalTokens.toLocaleString()}, ${elapsedSeconds.toFixed(1)}s`;
+		const message = `生成速度 ${tokensPerSecond.toFixed(1)} Token/秒 · 输出 ${output.toLocaleString()} · 输入 ${input.toLocaleString()} · 缓存读/写 ${cacheRead.toLocaleString()}/${cacheWrite.toLocaleString()} · 总计 ${totalTokens.toLocaleString()} · 用时 ${elapsedSeconds.toFixed(1)} 秒`;
 		ctx.ui.notify(message, "info");
 	});
 }

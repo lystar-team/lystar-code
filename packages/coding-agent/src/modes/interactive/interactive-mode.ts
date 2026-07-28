@@ -142,10 +142,12 @@ import {
 	WorkingStatusIndicator,
 } from "./components/status-indicator.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
+import { ToolExecutionGroupComponent } from "./components/tool-execution-group.ts";
 import { TreeSelectorComponent } from "./components/tree-selector.ts";
 import { TrustSelectorComponent } from "./components/trust-selector.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
+import { WorkspaceShortcutBar } from "./components/workspace-shortcut-bar.ts";
 import { editInExternalEditor } from "./external-editor.ts";
 import { loadLystarSettings } from "./lystar-settings.ts";
 import { getModelSearchText } from "./model-search.ts";
@@ -165,6 +167,7 @@ import {
 	theme,
 } from "./theme/theme.ts";
 import { InteractiveThemeController } from "./theme/theme-controller.ts";
+import { uiGlyphs } from "./ui-glyphs.ts";
 
 /** Interface for components that can be expanded/collapsed */
 interface Expandable {
@@ -389,6 +392,7 @@ export class InteractiveMode {
 
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
+	private streamingBashGroup: ToolExecutionGroupComponent | undefined;
 
 	// Tool output expansion state
 	private toolOutputExpanded = false;
@@ -507,16 +511,14 @@ export class InteractiveMode {
 		this.footerContainer.addChild(this.footer);
 		this.shortcutContainer = new Container();
 		this.shortcutContainer.addChild(
-			new Text(
-				[
-					`${theme.bold(theme.fg("text", keyDisplayText("app.thinking.cycle")))}${theme.fg("dim", " 思考强度")}`,
-					`${theme.bold(theme.fg("text", keyDisplayText("app.interrupt").replaceAll("Escape", "Esc")))}${theme.fg("dim", ` ${t("workspace.interrupt")}`)}`,
-					`${theme.bold(theme.fg("text", keyDisplayText("app.tools.expand")))}${theme.fg("dim", ` ${t("workspace.expand")}`)}`,
-					`${theme.bold(theme.fg("text", "/"))}`,
-				].join(theme.fg("dim", " │ ")),
-				0,
-				0,
-			),
+			new WorkspaceShortcutBar({
+				getState: () => ({
+					streaming: this.session.isStreaming,
+					bashRunning: this.session.isBashRunning,
+					following: this.workspace?.isFollowing() ?? true,
+				}),
+				getKeyText: (keybinding) => keyDisplayText(keybinding),
+			}),
 		);
 
 		const lystarSettings = loadLystarSettings(getAgentDir());
@@ -533,19 +535,21 @@ export class InteractiveMode {
 		if (alternateScreen) this.defaultEditor.setPaddingX(Math.max(2, editorPaddingX));
 		const composer = new WorkspaceComposer({
 			editor: this.editorContainer,
+			getEditorRender: (width) =>
+				this.editor === this.defaultEditor ? this.defaultEditor.renderWorkspace(width) : undefined,
 			fullscreen: alternateScreen,
 			getInfo: () => {
 				const state = this.session.state;
 				const model = !state.model || state.model.id === "unknown" ? t("status.noModel") : state.model.id;
-				const modelIdentity =
+				const provider =
 					state.model && this.footerDataProvider.getAvailableProviderCount() > 1
-						? `(${state.model.provider}) ${model}`
-						: model;
+						? `(${state.model.provider})`
+						: undefined;
 				const thinking = state.model?.reasoning
 					? t("status.thinkingLevel", { level: formatThinkingLevel(state.thinkingLevel || "off") })
 					: undefined;
 				const trust = this.settingsManager.isProjectTrusted() ? "项目已信任" : "操作需确认";
-				return [modelIdentity, thinking, trust].filter(Boolean).join(" · ");
+				return [trust, model, thinking, provider].filter(Boolean).join(" · ");
 			},
 		});
 		this.workspace = new LystarWorkspace({
@@ -562,6 +566,13 @@ export class InteractiveMode {
 				this.shortcutContainer,
 			],
 			fixedBottomContainers: [composer, this.shortcutContainer],
+			optionalBottomPriority: [
+				this.statusContainer,
+				this.pendingMessagesContainer,
+				this.footerContainer,
+				this.widgetContainerAbove,
+				this.widgetContainerBelow,
+			],
 			fullscreen: alternateScreen,
 		});
 
@@ -1424,7 +1435,7 @@ export class InteractiveMode {
 			lines.push(
 				theme.fg(
 					"dim",
-					`    ${theme.fg("success", "✓")} ${this.formatPathWithSource(first.winnerPath, this.findSourceInfoForPath(first.winnerPath, sourceInfos))}`,
+					`    ${theme.fg("success", uiGlyphs.success)} ${this.formatPathWithSource(first.winnerPath, this.findSourceInfoForPath(first.winnerPath, sourceInfos))}`,
 				),
 			);
 			for (const d of collisionList) {
@@ -1432,7 +1443,7 @@ export class InteractiveMode {
 					lines.push(
 						theme.fg(
 							"dim",
-							`    ${theme.fg("warning", "✗")} ${this.formatPathWithSource(d.collision.loserPath, this.findSourceInfoForPath(d.collision.loserPath, sourceInfos))}（已跳过）`,
+							`    ${theme.fg("warning", uiGlyphs.failure)} ${this.formatPathWithSource(d.collision.loserPath, this.findSourceInfoForPath(d.collision.loserPath, sourceInfos))}（已跳过）`,
 						),
 					);
 				}
@@ -2585,22 +2596,32 @@ export class InteractiveMode {
 		if (mouse) {
 			if (mouse.shift) return undefined;
 			if (mouse.button === "wheel-up") {
-				this.workspace.scrollBy(-3);
+				this.workspace.scrollBy(-this.workspace.getWheelScrollStep());
 			} else if (mouse.button === "wheel-down") {
-				this.workspace.scrollBy(3);
+				this.workspace.scrollBy(this.workspace.getWheelScrollStep());
 			} else if (mouse.button === "left" && !mouse.released) {
 				if (this.workspace.isNewContentIndicatorRow(mouse.row)) {
 					this.workspace.scrollToBottom();
 				} else {
 					const hit = this.workspace.getComponentHitAtScreenRow(mouse.row);
-					const component = hit?.component;
+					let component = hit?.component;
+					let componentRow = hit?.row ?? -1;
+					if (component instanceof ToolExecutionGroupComponent) {
+						const target = component.getExpansionTargetAtRow(componentRow);
+						component = target?.component;
+						componentRow = target?.row ?? -1;
+					}
 					const rowToggle = component as Component & { isExpansionToggleRow?: (row: number) => boolean };
 					if (
 						component &&
 						isExpandable(component) &&
-						(rowToggle.isExpansionToggleRow === undefined || rowToggle.isExpansionToggleRow(hit?.row ?? -1))
+						(rowToggle.isExpansionToggleRow === undefined || rowToggle.isExpansionToggleRow(componentRow))
 					) {
-						const expanded = !(this.componentExpansion.get(component) ?? this.toolOutputExpanded);
+						const currentExpanded =
+							component instanceof ToolExecutionGroupComponent
+								? component.isExpanded()
+								: (this.componentExpansion.get(component) ?? this.toolOutputExpanded);
+						const expanded = !currentExpanded;
 						this.componentExpansion.set(component, expanded);
 						component.setExpanded(expanded);
 					}
@@ -2926,6 +2947,7 @@ export class InteractiveMode {
 		switch (event.type) {
 			case "agent_start":
 				this.pendingTools.clear();
+				this.streamingBashGroup = undefined;
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(true);
 				}
@@ -2981,6 +3003,7 @@ export class InteractiveMode {
 					this.updatePendingMessagesDisplay();
 					this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
+					this.streamingBashGroup = undefined;
 					this.streamingComponent = new AssistantMessageComponent(
 						undefined,
 						this.hideThinkingBlock,
@@ -3016,7 +3039,16 @@ export class InteractiveMode {
 									this.sessionManager.getCwd(),
 								);
 								component.setExpanded(this.toolOutputExpanded);
-								this.chatContainer.addChild(component);
+								if (content.name === "bash") {
+									if (!this.streamingBashGroup) {
+										this.streamingBashGroup = new ToolExecutionGroupComponent();
+										this.streamingBashGroup.setToolOutputsExpanded(this.toolOutputExpanded);
+										this.chatContainer.addChild(this.streamingBashGroup);
+									}
+									this.streamingBashGroup.addTool(component);
+								} else {
+									this.chatContainer.addChild(component);
+								}
 								this.pendingTools.set(content.id, component);
 							} else {
 								const component = this.pendingTools.get(content.id);
@@ -3046,10 +3078,14 @@ export class InteractiveMode {
 							errorMessage = this.streamingMessage.errorMessage || t("status.unknownError");
 						}
 						for (const [, component] of this.pendingTools.entries()) {
-							component.updateResult({
-								content: [{ type: "text", text: errorMessage }],
-								isError: true,
-							});
+							if (this.streamingMessage.stopReason === "aborted") {
+								component.markCancelled(errorMessage);
+							} else {
+								component.updateResult({
+									content: [{ type: "text", text: errorMessage }],
+									isError: true,
+								});
+							}
 						}
 						this.pendingTools.clear();
 					} else {
@@ -3061,6 +3097,7 @@ export class InteractiveMode {
 					}
 					this.streamingComponent = undefined;
 					this.streamingMessage = undefined;
+					this.streamingBashGroup = undefined;
 					this.footer.invalidate();
 				}
 				this.ui.requestRender();
@@ -3107,6 +3144,7 @@ export class InteractiveMode {
 				if (component) {
 					component.updateResult({ ...event.result, isError: event.isError });
 					this.pendingTools.delete(event.toolCallId);
+
 					this.ui.requestRender();
 				}
 				break;
@@ -3123,6 +3161,7 @@ export class InteractiveMode {
 					this.streamingMessage = undefined;
 				}
 				this.pendingTools.clear();
+				this.streamingBashGroup = undefined;
 
 				this.ui.requestRender();
 				break;
@@ -3408,6 +3447,7 @@ export class InteractiveMode {
 		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
 	): void {
 		this.pendingTools.clear();
+		this.streamingBashGroup = undefined;
 		const renderedPendingTools = new Map<string, ToolExecutionComponent>();
 		// Cache-miss notices are not persisted; re-derive them from the full entry
 		// list and re-inject them after the assistant messages that paid for them.
@@ -3430,6 +3470,7 @@ export class InteractiveMode {
 			// Assistant messages need special handling for tool calls
 			if (message.role === "assistant") {
 				this.addMessageToChat(message);
+				let bashGroup: ToolExecutionGroupComponent | undefined;
 				// Render tool call components
 				for (const content of message.content) {
 					if (content.type === "toolCall") {
@@ -3446,16 +3487,27 @@ export class InteractiveMode {
 							this.sessionManager.getCwd(),
 						);
 						component.setExpanded(this.toolOutputExpanded);
-						this.chatContainer.addChild(component);
+						if (content.name === "bash") {
+							if (!bashGroup) {
+								bashGroup = new ToolExecutionGroupComponent();
+								bashGroup.setToolOutputsExpanded(this.toolOutputExpanded);
+								this.chatContainer.addChild(bashGroup);
+							}
+							bashGroup.addTool(component);
+						} else {
+							this.chatContainer.addChild(component);
+						}
 
 						if (message.stopReason === "aborted" || message.stopReason === "error") {
-							let errorMessage: string;
+							const errorMessage =
+								message.stopReason === "aborted"
+									? formatAbortedMessage(this.session.retryAttempt)
+									: message.errorMessage || t("status.unknownError");
 							if (message.stopReason === "aborted") {
-								errorMessage = formatAbortedMessage(this.session.retryAttempt);
+								component.markCancelled(errorMessage);
 							} else {
-								errorMessage = message.errorMessage || t("status.unknownError");
+								component.updateResult({ content: [{ type: "text", text: errorMessage }], isError: true });
 							}
-							component.updateResult({ content: [{ type: "text", text: errorMessage }], isError: true });
 						} else {
 							renderedPendingTools.set(content.id, component);
 						}
@@ -3880,7 +3932,9 @@ export class InteractiveMode {
 		}
 		for (const container of [this.loadedResourcesContainer, this.chatContainer]) {
 			for (const child of container.children) {
-				if (isExpandable(child)) {
+				if (child instanceof ToolExecutionGroupComponent) {
+					child.setToolOutputsExpanded(expanded);
+				} else if (isExpandable(child)) {
 					this.componentExpansion ??= new WeakMap<Component, boolean>();
 					this.componentExpansion.set(child, expanded);
 					child.setExpanded(expanded);
@@ -4049,7 +4103,7 @@ export class InteractiveMode {
 				this.pendingMessagesContainer.addChild(new TruncatedText(text, 1, 0));
 			}
 			const dequeueHint = this.getAppKeyDisplay("app.message.dequeue");
-			const hintText = theme.fg("dim", `↳ ${dequeueHint} 编辑全部排队消息`);
+			const hintText = theme.fg("dim", `${uiGlyphs.branch} ${dequeueHint} 编辑全部排队消息`);
 			this.pendingMessagesContainer.addChild(new TruncatedText(hintText, 1, 0));
 		}
 	}
@@ -5929,7 +5983,7 @@ export class InteractiveMode {
 				return;
 			}
 			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(new Text(`${theme.fg("accent", "✓ 已新建会话")}`, 1, 1));
+			this.chatContainer.addChild(new Text(`${theme.fg("accent", `${uiGlyphs.success} 已新建会话`)}`, 1, 1));
 			this.ui.requestRender();
 		} catch (error: unknown) {
 			await this.handleFatalRuntimeError("新建会话失败", error);
@@ -5964,7 +6018,11 @@ export class InteractiveMode {
 
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(
-			new Text(`${theme.fg("accent", "✓ Debug log written")}\n${theme.fg("muted", debugLogPath)}`, 1, 1),
+			new Text(
+				`${theme.fg("accent", `${uiGlyphs.success} Debug log written`)}\n${theme.fg("muted", debugLogPath)}`,
+				1,
+				1,
+			),
 		);
 		this.ui.requestRender();
 	}

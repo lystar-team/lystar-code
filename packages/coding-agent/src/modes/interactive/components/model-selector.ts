@@ -13,6 +13,7 @@ import type { ModelRuntime } from "../../../core/model-runtime.ts";
 import type { SettingsManager } from "../../../core/settings-manager.ts";
 import { getModelSelectorSearchText } from "../model-search.ts";
 import { theme } from "../theme/theme.ts";
+import { uiGlyphs } from "../ui-glyphs.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint } from "./keybinding-hints.ts";
 
@@ -259,18 +260,17 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 			const isSelected = i === this.selectedIndex;
 			const isCurrent = modelsAreEqual(this.currentModel, item.model);
+			const checkmark = isCurrent ? theme.fg("success", ` ${uiGlyphs.success}`) : "";
 
 			let line = "";
 			if (isSelected) {
 				const prefix = theme.fg("accent", "→ ");
 				const modelText = `${item.id}`;
 				const providerBadge = theme.fg("muted", `[${item.provider}]`);
-				const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
 				line = `${prefix + theme.fg("accent", modelText)} ${providerBadge}${checkmark}`;
 			} else {
 				const modelText = `  ${item.id}`;
 				const providerBadge = theme.fg("muted", `[${item.provider}]`);
-				const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
 				line = `${modelText} ${providerBadge}${checkmark}`;
 			}
 

@@ -3,6 +3,7 @@ import { type Container, truncateToWidth, visibleWidth } from "@earendil-works/p
 import { t } from "../../../locales/zh-CN.ts";
 import { stripAnsi } from "../../../utils/ansi.ts";
 import { theme } from "../theme/theme.ts";
+import { uiGlyphs } from "../ui-glyphs.ts";
 
 export interface WorkspaceComponentHit {
 	component: Component;
@@ -13,6 +14,18 @@ interface RenderedComponentRange {
 	component: Component;
 	start: number;
 	end: number;
+}
+
+interface RenderedComponentBlock extends RenderedComponentRange {
+	lines: string[];
+}
+
+interface RenderVersionedComponent extends Component {
+	getRenderVersion(): number;
+}
+
+function isRenderVersioned(component: Component): component is RenderVersionedComponent {
+	return "getRenderVersion" in component && typeof component.getRenderVersion === "function";
 }
 
 export interface WorkspaceHeaderState {
@@ -49,6 +62,7 @@ export class WorkspaceHeader implements Component {
 
 export interface WorkspaceComposerOptions {
 	editor: Container;
+	getEditorRender?: (width: number) => { body: string[]; autocomplete: string[] } | undefined;
 	getInfo: () => string;
 	fullscreen: boolean;
 }
@@ -65,20 +79,25 @@ export class WorkspaceComposer implements Component {
 	}
 
 	render(width: number): string[] {
-		const lines = this.options.editor.render(this.options.fullscreen ? Math.max(1, width - 2) : width);
-		if (!this.options.fullscreen || width < 4 || lines.length === 0) return lines;
+		const editorWidth = this.options.fullscreen ? Math.max(1, width - 2) : width;
+		if (!this.options.fullscreen || width < 4) return this.options.editor.render(editorWidth);
+		const structured = this.options.getEditorRender?.(editorWidth);
+		const lines = structured ? [] : this.options.editor.render(editorWidth);
+		if (!structured && lines.length === 0) return lines;
 
 		const innerWidth = width - 2;
-		const bottomBorder = lines.findIndex((line, index) => index > 0 && stripAnsi(line).startsWith("─"));
-		const body = bottomBorder > 0 ? lines.slice(1, bottomBorder) : lines;
-		const autocomplete = bottomBorder > 0 ? lines.slice(bottomBorder + 1) : [];
+		const bottomBorder = structured
+			? -1
+			: lines.findIndex((line, index) => index > 0 && stripAnsi(line).startsWith("─"));
+		const body = structured?.body ?? (bottomBorder > 0 ? lines.slice(1, bottomBorder) : lines);
+		const autocomplete = structured?.autocomplete ?? (bottomBorder > 0 ? lines.slice(bottomBorder + 1) : []);
 		const border = (text: string) => theme.fg("borderMuted", text);
 		const visibleBody = body.length > 0 ? body : [""];
 		const arrowRow = Math.floor(visibleBody.length / 2);
 		const framedBody = visibleBody.map((line, index) => {
 			let content = truncateToWidth(line, innerWidth, "", true);
 			if (index === arrowRow && content.startsWith("  ")) {
-				content = theme.fg("accent", "❯ ") + content.slice(2);
+				content = theme.fg("accent", `${uiGlyphs.prompt} `) + content.slice(2);
 			}
 			return `${border("│")}${content}${border("│")}`;
 		});
@@ -101,6 +120,7 @@ export interface WorkspaceOptions {
 	scrollContainers: Container[];
 	bottomContainers: Component[];
 	fixedBottomContainers?: Component[];
+	optionalBottomPriority?: Component[];
 	fullscreen: boolean;
 	horizontalPadding?: number;
 }
@@ -112,6 +132,7 @@ export class LystarWorkspace implements Component {
 	private viewportScreenTop = 0;
 	private viewportHeight = 0;
 	private contentRanges: RenderedComponentRange[] = [];
+	private blockCache = new WeakMap<Component, { width: number; version: number; lines: string[] }>();
 	private indicatorRow = -1;
 
 	constructor(options: WorkspaceOptions) {
@@ -122,6 +143,7 @@ export class LystarWorkspace implements Component {
 		this.options.header.invalidate();
 		for (const component of this.options.scrollContainers) component.invalidate();
 		for (const component of this.options.bottomContainers) component.invalidate();
+		this.blockCache = new WeakMap();
 	}
 
 	isFullscreen(): boolean {
@@ -130,6 +152,10 @@ export class LystarWorkspace implements Component {
 
 	isFollowing(): boolean {
 		return this.following;
+	}
+
+	getWheelScrollStep(): number {
+		return Math.max(2, Math.min(8, Math.round(this.viewportHeight * 0.2)));
 	}
 
 	scrollBy(lines: number): void {
@@ -187,7 +213,7 @@ export class LystarWorkspace implements Component {
 			: 0;
 		const renderWidth = Math.max(1, width - horizontalPadding * 2);
 		const headerLines = this.options.header.render(renderWidth);
-		const { lines: contentLines, ranges } = this.renderScrollContent(renderWidth);
+		const { blocks: contentBlocks, ranges, height: contentHeight } = this.renderScrollContent(renderWidth);
 		const bottomSections = this.options.bottomContainers.map((component) => ({
 			component,
 			lines: component.render(renderWidth),
@@ -196,6 +222,7 @@ export class LystarWorkspace implements Component {
 		this.contentRanges = ranges;
 
 		if (!this.options.fullscreen) {
+			const contentLines = contentBlocks.flatMap((block) => block.lines);
 			this.viewportScreenTop = headerLines.length;
 			this.viewportHeight = contentLines.length;
 			this.scrollTop = 0;
@@ -237,11 +264,24 @@ export class LystarWorkspace implements Component {
 		} else {
 			let optionalBudget = maxBottomHeight - fixedHeight;
 			const optionalLineCounts = new Map<Component, number>();
-			for (let index = bottomSections.length - 1; index >= 0; index--) {
-				const section = bottomSections[index];
-				if (fixedComponents.has(section.component)) continue;
+			const optionalSections = new Map(
+				bottomSections
+					.filter((section) => !fixedComponents.has(section.component))
+					.map((section) => [section.component, section]),
+			);
+			const allocationOrder: Component[] = [];
+			for (const component of [
+				...(this.options.optionalBottomPriority ?? []),
+				...bottomSections.map((section) => section.component).reverse(),
+			]) {
+				if (!optionalSections.has(component) || allocationOrder.includes(component)) continue;
+				allocationOrder.push(component);
+			}
+			for (const component of allocationOrder) {
+				const section = optionalSections.get(component);
+				if (!section) continue;
 				const lineCount = Math.min(optionalBudget, section.lines.length);
-				optionalLineCounts.set(section.component, lineCount);
+				optionalLineCounts.set(component, lineCount);
 				optionalBudget -= lineCount;
 			}
 			visibleBottom = bottomSections.flatMap((section) => {
@@ -253,7 +293,7 @@ export class LystarWorkspace implements Component {
 		this.viewportHeight = Math.max(1, height - visibleHeader.length - visibleBottom.length);
 		this.viewportScreenTop = visibleHeader.length;
 
-		const maxScrollTop = Math.max(0, contentLines.length - this.viewportHeight);
+		const maxScrollTop = Math.max(0, contentHeight - this.viewportHeight);
 		if (this.following) {
 			this.scrollTop = maxScrollTop;
 		} else {
@@ -261,7 +301,7 @@ export class LystarWorkspace implements Component {
 			if (this.scrollTop >= maxScrollTop) this.following = true;
 		}
 
-		const viewport = contentLines.slice(this.scrollTop, this.scrollTop + this.viewportHeight);
+		const viewport = this.renderViewport(contentBlocks, this.scrollTop, this.viewportHeight);
 		while (viewport.length < this.viewportHeight) viewport.push("");
 		this.indicatorRow = -1;
 		if (!this.following && this.scrollTop < maxScrollTop && viewport.length > 0) {
@@ -285,16 +325,49 @@ export class LystarWorkspace implements Component {
 		return Math.max(0, contentHeight - this.viewportHeight);
 	}
 
-	private renderScrollContent(width: number): { lines: string[]; ranges: RenderedComponentRange[] } {
-		const lines: string[] = [];
+	private renderScrollContent(width: number): {
+		blocks: RenderedComponentBlock[];
+		ranges: RenderedComponentRange[];
+		height: number;
+	} {
+		const blocks: RenderedComponentBlock[] = [];
 		const ranges: RenderedComponentRange[] = [];
+		let height = 0;
 		for (const container of this.options.scrollContainers) {
 			for (const component of container.children) {
-				const start = lines.length;
-				lines.push(...component.render(width));
-				if (lines.length > start) ranges.push({ component, start, end: lines.length });
+				let lines: string[];
+				if (isRenderVersioned(component)) {
+					const version = component.getRenderVersion();
+					const cached = this.blockCache.get(component);
+					if (cached && cached.width === width && cached.version === version) {
+						lines = cached.lines;
+					} else {
+						lines = component.render(width);
+						this.blockCache.set(component, { width, version, lines });
+					}
+				} else {
+					lines = component.render(width);
+				}
+				if (lines.length === 0) continue;
+				const block = { component, start: height, end: height + lines.length, lines };
+				blocks.push(block);
+				ranges.push(block);
+				height = block.end;
 			}
 		}
-		return { lines, ranges };
+		return { blocks, ranges, height };
+	}
+
+	private renderViewport(blocks: RenderedComponentBlock[], start: number, height: number): string[] {
+		const end = start + height;
+		const lines: string[] = [];
+		for (const block of blocks) {
+			if (block.end <= start) continue;
+			if (block.start >= end) break;
+			const from = Math.max(0, start - block.start);
+			const to = Math.min(block.lines.length, end - block.start);
+			lines.push(...block.lines.slice(from, to));
+		}
+		return lines;
 	}
 }

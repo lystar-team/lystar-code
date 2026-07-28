@@ -18,6 +18,7 @@ export class AssistantMessageComponent extends Container {
 	private outputPad: number;
 	private lastMessage?: AssistantMessage;
 	private hasToolCalls = false;
+	private renderVersion = 0;
 
 	constructor(
 		message?: AssistantMessage,
@@ -81,7 +82,12 @@ export class AssistantMessageComponent extends Container {
 		return lines;
 	}
 
+	getRenderVersion(): number {
+		return this.renderVersion;
+	}
+
 	updateContent(message: AssistantMessage): void {
+		this.renderVersion++;
 		this.lastMessage = message;
 
 		// Clear content container

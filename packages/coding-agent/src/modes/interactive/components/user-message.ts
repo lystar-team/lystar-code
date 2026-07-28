@@ -1,5 +1,6 @@
 import { Box, Container, Markdown, type MarkdownTheme } from "@earendil-works/pi-tui";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
+import { uiGlyphs } from "../ui-glyphs.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
@@ -12,6 +13,7 @@ export class UserMessageComponent extends Container {
 	private text: string;
 	private markdownTheme: MarkdownTheme;
 	private outputPad: number;
+	private renderVersion = 0;
 
 	constructor(text: string, markdownTheme: MarkdownTheme = getMarkdownTheme(), outputPad = 1) {
 		super();
@@ -27,11 +29,12 @@ export class UserMessageComponent extends Container {
 	}
 
 	private rebuild(): void {
+		this.renderVersion++;
 		this.clear();
 		const contentBox = new Box(this.outputPad, 1, (content: string) => theme.bg("userMessageBg", content));
 		contentBox.addChild(
 			new Markdown(
-				`❯ ${this.text}`,
+				`${uiGlyphs.prompt} ${this.text}`,
 				0,
 				0,
 				this.markdownTheme,
@@ -42,6 +45,10 @@ export class UserMessageComponent extends Container {
 			),
 		);
 		this.addChild(contentBox);
+	}
+
+	getRenderVersion(): number {
+		return this.renderVersion;
 	}
 
 	override render(width: number): string[] {

@@ -235,6 +235,11 @@ export interface EditorOptions {
 	autocompleteMaxVisible?: number;
 }
 
+interface EditorRenderSections {
+	body: string[];
+	autocomplete: string[];
+}
+
 const SLASH_COMMAND_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
 	minPrimaryColumnWidth: 12,
 	maxPrimaryColumnWidth: 32,
@@ -304,6 +309,7 @@ export class Editor implements Component, Focusable {
 	private autocompleteRequestTask: Promise<void> = Promise.resolve();
 	private autocompleteStartToken: number = 0;
 	private autocompleteRequestId: number = 0;
+	private lastAutocompleteLineCount = 0;
 
 	// Paste tracking for large pastes
 	private pastes: Map<number, string> = new Map();
@@ -519,6 +525,7 @@ export class Editor implements Component, Focusable {
 		const visibleLines = layoutLines.slice(this.scrollOffset, this.scrollOffset + maxVisibleLines);
 
 		const result: string[] = [];
+		this.lastAutocompleteLineCount = 0;
 		const leftPadding = " ".repeat(paddingX);
 		const rightPadding = leftPadding;
 
@@ -590,6 +597,7 @@ export class Editor implements Component, Focusable {
 		// Add autocomplete list if active
 		if (this.autocompleteState && this.autocompleteList) {
 			const autocompleteResult = this.autocompleteList.render(contentWidth);
+			this.lastAutocompleteLineCount = autocompleteResult.length;
 			for (const line of autocompleteResult) {
 				const lineWidth = visibleWidth(line);
 				const linePadding = " ".repeat(Math.max(0, contentWidth - lineWidth));
@@ -598,6 +606,14 @@ export class Editor implements Component, Focusable {
 		}
 
 		return result;
+	}
+
+	protected getRenderedSections(lines: string[]): EditorRenderSections {
+		const autocompleteStart = Math.max(1, lines.length - this.lastAutocompleteLineCount);
+		return {
+			body: lines.slice(1, Math.max(1, autocompleteStart - 1)),
+			autocomplete: lines.slice(autocompleteStart),
+		};
 	}
 
 	handleInput(data: string): void {

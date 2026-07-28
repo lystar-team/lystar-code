@@ -5,6 +5,7 @@ import {
 	type ProjectTrustStoreEntry,
 } from "../../../core/trust-manager.ts";
 import { theme } from "../theme/theme.ts";
+import { uiGlyphs } from "../ui-glyphs.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint, rawKeyHint } from "./keybinding-hints.ts";
 
@@ -102,7 +103,7 @@ export class TrustSelectorComponent extends Container {
 
 			const isSelected = i === this.selectedIndex;
 			const isCurrent = this.isSavedOption(option);
-			const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
+			const checkmark = isCurrent ? theme.fg("success", ` ${uiGlyphs.success}`) : "";
 			const prefix = isSelected ? theme.fg("accent", "→ ") : "  ";
 			const label = isSelected ? theme.fg("accent", option.label) : theme.fg("text", option.label);
 			this.listContainer.addChild(new Text(`${prefix}${label}${checkmark}`, 1, 0));

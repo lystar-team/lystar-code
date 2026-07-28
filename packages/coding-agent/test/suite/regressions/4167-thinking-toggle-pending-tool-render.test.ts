@@ -5,6 +5,7 @@ import { beforeAll, describe, expect, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../../src/core/agent-session.ts";
 import type { SessionEntry } from "../../../src/core/session-manager.ts";
 import type { ToolExecutionComponent } from "../../../src/modes/interactive/components/tool-execution.ts";
+import { ToolExecutionGroupComponent } from "../../../src/modes/interactive/components/tool-execution-group.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../../../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../../src/utils/ansi.ts";
@@ -107,6 +108,16 @@ function createAssistantToolCallMessage(): AssistantMessage {
 	};
 }
 
+function createAssistantBashBatchMessage(): AssistantMessage {
+	return {
+		...createAssistantToolCallMessage(),
+		content: [
+			{ type: "toolCall", id: "bash-1", name: "bash", arguments: { command: "npm test" } },
+			{ type: "toolCall", id: "bash-2", name: "bash", arguments: { command: "git status" } },
+		],
+	};
+}
+
 function createToolResultMessage(text: string): ToolResultMessage {
 	return {
 		role: "toolResult",
@@ -163,6 +174,23 @@ describe("InteractiveMode.renderSessionEntries", () => {
 
 		expect(fakeThis.pendingTools.has(TOOL_CALL_ID)).toBe(false);
 		expect(renderChat(fakeThis.chatContainer)).toContain("FINAL_RESULT");
+	});
+
+	test("groups bash calls from the same assistant message without changing pending tool ids", () => {
+		const fakeThis = createFakeInteractiveModeThis();
+		const renderSessionEntries = (
+			InteractiveMode.prototype as unknown as { renderSessionEntries: RenderSessionEntries }
+		).renderSessionEntries;
+
+		renderSessionEntries.call(fakeThis, createSessionEntries([createAssistantBashBatchMessage()]));
+
+		const group = fakeThis.chatContainer.children.find(
+			(component) => component instanceof ToolExecutionGroupComponent,
+		);
+		expect(group).toBeInstanceOf(ToolExecutionGroupComponent);
+		expect(fakeThis.pendingTools.has("bash-1")).toBe(true);
+		expect(fakeThis.pendingTools.has("bash-2")).toBe(true);
+		expect(renderChat(fakeThis.chatContainer)).toContain("准备执行 2 条命令");
 	});
 
 	test("does not keep completed historical tool calls registered as pending", () => {

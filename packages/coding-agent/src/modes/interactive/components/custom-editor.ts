@@ -1,6 +1,11 @@
 import { Editor, type EditorOptions, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 import type { AppKeybinding, KeybindingsManager } from "../../../core/keybindings.ts";
 
+export interface WorkspaceEditorRender {
+	body: string[];
+	autocomplete: string[];
+}
+
 /**
  * Custom editor that handles app-level keybindings for coding-agent.
  */
@@ -25,6 +30,10 @@ export class CustomEditor extends Editor {
 	 */
 	onAction(action: AppKeybinding, handler: () => void): void {
 		this.actionHandlers.set(action, handler);
+	}
+
+	renderWorkspace(width: number): WorkspaceEditorRender {
+		return this.getRenderedSections(super.render(width));
 	}
 
 	handleInput(data: string): void {

@@ -2,7 +2,7 @@ import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/p
 import type { AgentSession } from "../../../core/agent-session.ts";
 import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
-import { addUsageToTotals, createUsageTotals } from "../../../core/usage-totals.ts";
+import { addUsageToTotals, createUsageTotals, type UsageTotals } from "../../../core/usage-totals.ts";
 import { theme } from "../theme/theme.ts";
 
 /**
@@ -39,6 +39,14 @@ function firstLineThatFits(lines: string[], width: number): string {
 export class FooterComponent implements Component {
 	private session: AgentSession;
 	private footerData: ReadonlyFooterDataProvider;
+	private usageCache:
+		| {
+				session: AgentSession;
+				leafId: string | null;
+				totals: UsageTotals;
+				latestCacheHitRate: number | undefined;
+		  }
+		| undefined;
 
 	constructor(session: AgentSession, footerData: ReadonlyFooterDataProvider) {
 		this.session = session;
@@ -46,7 +54,9 @@ export class FooterComponent implements Component {
 	}
 
 	setSession(session: AgentSession): void {
+		if (session === this.session) return;
 		this.session = session;
+		this.usageCache = undefined;
 	}
 
 	/**
@@ -67,25 +77,30 @@ export class FooterComponent implements Component {
 
 	render(width: number): string[] {
 		const state = this.session.state;
+		const leafId = this.session.sessionManager.getLeafId();
+		if (this.usageCache?.session !== this.session || this.usageCache.leafId !== leafId) {
+			const totals = createUsageTotals();
+			let latestCacheHitRate: number | undefined;
 
-		// 累加完整 Session 的用量，压缩前记录也不能丢失。
-		const usageTotals = createUsageTotals();
-		let latestCacheHitRate: number | undefined;
+			for (const entry of this.session.sessionManager.getEntries()) {
+				if (entry.type === "message" && entry.message.role === "assistant") {
+					addUsageToTotals(totals, entry.message.usage);
 
-		for (const entry of this.session.sessionManager.getEntries()) {
-			if (entry.type === "message" && entry.message.role === "assistant") {
-				addUsageToTotals(usageTotals, entry.message.usage);
-
-				const latestPromptTokens =
-					entry.message.usage.input + entry.message.usage.cacheRead + entry.message.usage.cacheWrite;
-				latestCacheHitRate =
-					latestPromptTokens > 0 ? (entry.message.usage.cacheRead / latestPromptTokens) * 100 : undefined;
-			} else if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.usage) {
-				addUsageToTotals(usageTotals, entry.message.usage);
-			} else if ((entry.type === "branch_summary" || entry.type === "compaction") && entry.usage) {
-				addUsageToTotals(usageTotals, entry.usage);
+					const latestPromptTokens =
+						entry.message.usage.input + entry.message.usage.cacheRead + entry.message.usage.cacheWrite;
+					latestCacheHitRate =
+						latestPromptTokens > 0 ? (entry.message.usage.cacheRead / latestPromptTokens) * 100 : undefined;
+				} else if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.usage) {
+					addUsageToTotals(totals, entry.message.usage);
+				} else if ((entry.type === "branch_summary" || entry.type === "compaction") && entry.usage) {
+					addUsageToTotals(totals, entry.usage);
+				}
 			}
+			this.usageCache = { session: this.session, leafId, totals, latestCacheHitRate };
 		}
+
+		const usageTotals = this.usageCache.totals;
+		const latestCacheHitRate = this.usageCache.latestCacheHitRate;
 
 		const cumulativeInput = usageTotals.input + usageTotals.cacheRead + usageTotals.cacheWrite;
 		const inputText = cumulativeInput > 0 ? `输入 ${formatTokens(cumulativeInput)}` : undefined;

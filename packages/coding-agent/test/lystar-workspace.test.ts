@@ -1,5 +1,5 @@
 import { Container, Text, visibleWidth } from "@earendil-works/pi-tui";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
 	LystarWorkspace,
 	WorkspaceComposer,
@@ -154,6 +154,117 @@ describe("LYStar workspace", () => {
 		expect(workspace.getComponentHitAtScreenRow(2)).toEqual({ component: execution, row: 1 });
 	});
 
+	it("reuses versioned history blocks until their content changes", () => {
+		const history = {
+			version: 0,
+			render: vi.fn(() => Array.from({ length: 40 }, (_, index) => `history-${index}`)),
+			invalidate: () => {},
+			getRenderVersion() {
+				return this.version;
+			},
+		};
+		const chat = new Container();
+		chat.addChild(history);
+		const workspace = new LystarWorkspace({
+			getHeight: () => 8,
+			header: textContainer("header"),
+			scrollContainers: [chat],
+			bottomContainers: [textContainer("editor")],
+			fullscreen: true,
+		});
+
+		workspace.render(60);
+		workspace.pageUp();
+		workspace.render(60);
+		expect(history.render).toHaveBeenCalledOnce();
+
+		history.version++;
+		workspace.render(60);
+		expect(history.render).toHaveBeenCalledTimes(2);
+	});
+
+	it("reuses 500 history blocks and redraws only the changed block", () => {
+		let renderCount = 0;
+		const histories = Array.from({ length: 500 }, (_, index) => ({
+			version: 0,
+			render: () => {
+				renderCount++;
+				return [`message-${index}`];
+			},
+			invalidate: () => {},
+			getRenderVersion() {
+				return this.version;
+			},
+		}));
+		const chat = new Container();
+		for (const history of histories) chat.addChild(history);
+		const workspace = new LystarWorkspace({
+			getHeight: () => 24,
+			header: textContainer("header"),
+			scrollContainers: [chat],
+			bottomContainers: [textContainer("editor")],
+			fullscreen: true,
+		});
+
+		workspace.render(80);
+		workspace.render(80);
+		expect(renderCount).toBe(500);
+
+		histories[250]!.version++;
+		workspace.render(80);
+		expect(renderCount).toBe(501);
+	});
+
+	it("prioritizes the active status over widgets when bottom space is limited", () => {
+		const status = textContainer("正在执行");
+		const widget = textContainer("widget-1", "widget-2", "widget-3");
+		const footer = textContainer("累计 输入 12K");
+		const composer = textContainer("╭────╮", "│❯   │", "╰────╯");
+		const shortcuts = textContainer("Esc 取消");
+		const workspace = new LystarWorkspace({
+			getHeight: () => 8,
+			header: textContainer("header"),
+			scrollContainers: [textContainer("latest message")],
+			bottomContainers: [status, widget, composer, footer, shortcuts],
+			fixedBottomContainers: [composer, shortcuts],
+			optionalBottomPriority: [status, footer, widget],
+			fullscreen: true,
+		});
+
+		const rendered = workspace.render(60).map(stripAnsi).join("\n");
+
+		expect(rendered).toContain("正在执行");
+		expect(rendered).toContain("累计 输入 12K");
+		expect(rendered).not.toContain("widget-");
+	});
+
+	it("scales the wheel step with the session viewport", () => {
+		let height = 8;
+		const workspace = new LystarWorkspace({
+			getHeight: () => height,
+			header: textContainer("header"),
+			scrollContainers: [textContainer(...Array.from({ length: 100 }, (_, index) => `line-${index}`))],
+			bottomContainers: [textContainer("editor")],
+			fullscreen: true,
+		});
+
+		height = 3;
+		workspace.render(80);
+		expect(workspace.getWheelScrollStep()).toBe(2);
+
+		height = 8;
+		workspace.render(80);
+		expect(workspace.getWheelScrollStep()).toBe(2);
+
+		height = 24;
+		workspace.render(80);
+		expect(workspace.getWheelScrollStep()).toBe(4);
+
+		height = 60;
+		workspace.render(80);
+		expect(workspace.getWheelScrollStep()).toBe(8);
+	});
+
 	it("keeps context usage visible when the header is narrow", () => {
 		const header = new WorkspaceHeader(() => ({
 			path: "~/very/long/project/path/that/needs/truncation",
@@ -190,6 +301,21 @@ describe("LYStar workspace", () => {
 		expect(composerLines[2]).toContain("(upstream) claude-sonnet-4");
 		expect(composerLines[2]).toContain("思考强度：高(high)");
 		expect(composerLines[2]).toMatch(/^╰─+ .* ╯$/);
+	});
+
+	it("uses structured editor sections without parsing border glyphs", () => {
+		const composer = new WorkspaceComposer({
+			editor: textContainer("legacy editor output"),
+			getEditorRender: () => ({ body: ["  结构化输入"], autocomplete: ["候选一"] }),
+			getInfo: () => "项目已信任 · test-model",
+			fullscreen: true,
+		});
+
+		const lines = composer.render(40).map(stripAnsi);
+
+		expect(lines.join("\n")).toContain("│❯ 结构化输入");
+		expect(lines.join("\n")).toContain("候选一");
+		expect(lines.join("\n")).not.toContain("legacy editor output");
 	});
 
 	it("centers the prompt arrow beside multiline input", () => {

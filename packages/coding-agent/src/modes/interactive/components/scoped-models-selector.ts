@@ -12,6 +12,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { getModelSearchText } from "../model-search.ts";
 import { theme } from "../theme/theme.ts";
+import { uiGlyphs } from "../ui-glyphs.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyText } from "./keybinding-hints.ts";
 
@@ -223,9 +224,9 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 				? allEnabled
 					? ""
 					: item.enabled
-						? theme.fg("success", " ✓")
-						: theme.fg("dim", " ✗")
-				: theme.fg("dim", " ✗");
+						? theme.fg("success", ` ${uiGlyphs.success}`)
+						: theme.fg("dim", ` ${uiGlyphs.failure}`)
+				: theme.fg("dim", ` ${uiGlyphs.failure}`);
 			this.listContainer.addChild(new Text(`${prefix}${modelText}${providerBadge}${status}`, 0, 0));
 		}
 

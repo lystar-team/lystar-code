@@ -1,5 +1,5 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import type { ReadonlyFooterDataProvider } from "../src/core/footer-data-provider.ts";
 import { FooterComponent, formatTokens } from "../src/modes/interactive/components/footer.ts";
@@ -62,6 +62,8 @@ function createSession(options: {
 		});
 	}
 
+	const getEntries = vi.fn(() => entries);
+	const getLeafId = vi.fn(() => "leaf-1");
 	const session = {
 		state: {
 			model: {
@@ -73,7 +75,8 @@ function createSession(options: {
 			thinkingLevel: options.thinkingLevel ?? "off",
 		},
 		sessionManager: {
-			getEntries: () => entries,
+			getEntries,
+			getLeafId,
 			getSessionName: () => options.sessionName,
 			getCwd: () => "/tmp/project",
 		},
@@ -211,6 +214,30 @@ describe("FooterComponent width handling", () => {
 
 		const statsLine = stripAnsi(footer.render(120)[0]);
 		expect(statsLine).toContain("费用 $1.250");
+	});
+
+	it("reuses cumulative usage while the session leaf is unchanged", () => {
+		const session = createSession({
+			sessionName: "",
+			usage: {
+				input: 100,
+				output: 10,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { total: 0 },
+			},
+		});
+		const footer = new FooterComponent(session, createFooterData(1));
+		const getEntries = vi.mocked(session.sessionManager.getEntries);
+		const getLeafId = vi.mocked(session.sessionManager.getLeafId);
+
+		footer.render(80);
+		footer.render(40);
+		expect(getEntries).toHaveBeenCalledOnce();
+
+		getLeafId.mockReturnValue("leaf-2");
+		footer.render(80);
+		expect(getEntries).toHaveBeenCalledTimes(2);
 	});
 
 	it("shows the latest cache hit rate when cache usage is present", () => {

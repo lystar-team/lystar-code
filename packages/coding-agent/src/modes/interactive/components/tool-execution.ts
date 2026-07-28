@@ -4,12 +4,15 @@ import { createAllToolDefinitions, type ToolName } from "../../../core/tools/ind
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
 import { convertToPng } from "../../../utils/image-convert.ts";
 import { theme } from "../theme/theme.ts";
+import { uiGlyphs } from "../ui-glyphs.ts";
 import { formatToolSummary, getToolSummary } from "./tool-summary.ts";
 
 export interface ToolExecutionOptions {
 	showImages?: boolean;
 	imageWidthCells?: number;
 }
+
+export type ToolExecutionStatus = "pending" | "running" | "success" | "error" | "cancelled";
 
 export class ToolExecutionComponent extends Container {
 	private contentBox: Box;
@@ -40,6 +43,8 @@ export class ToolExecutionComponent extends Container {
 	};
 	private convertedImages: Map<number, { data: string; mimeType: string }> = new Map();
 	private hideComponent = false;
+	private cancelled = false;
+	private renderVersion = 0;
 
 	constructor(
 		toolName: string,
@@ -135,7 +140,7 @@ export class ToolExecutionComponent extends Container {
 	private createCallFallback(): Component {
 		return new Text(
 			formatToolSummary({
-				icon: "◆",
+				icon: uiGlyphs.tool,
 				subject: this.toolName,
 				expanded: this.expanded,
 				isPartial: this.isPartial,
@@ -184,12 +189,19 @@ export class ToolExecutionComponent extends Container {
 		},
 		isPartial = false,
 	): boolean {
+		this.cancelled = false;
 		this.result = result;
 		this.isPartial = isPartial;
 		const visibleChanged = !isPartial || this.expanded || !this.builtInToolDefinition;
 		if (visibleChanged) this.updateDisplay();
 		this.maybeConvertImagesForKitty();
 		return visibleChanged;
+	}
+
+	markCancelled(message: string): void {
+		this.updateResult({ content: [{ type: "text", text: message }], isError: true });
+		this.cancelled = true;
+		this.renderVersion++;
 	}
 
 	private maybeConvertImagesForKitty(): void {
@@ -222,6 +234,16 @@ export class ToolExecutionComponent extends Container {
 
 	isExpansionToggleRow(row: number): boolean {
 		return row >= 0;
+	}
+
+	getRenderVersion(): number {
+		return this.renderVersion;
+	}
+
+	getExecutionStatus(): ToolExecutionStatus {
+		if (this.cancelled) return "cancelled";
+		if (this.result) return this.result.isError ? "error" : this.isPartial ? "running" : "success";
+		return this.executionStarted ? "running" : "pending";
 	}
 
 	setShowImages(show: boolean): void {
@@ -276,6 +298,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private updateDisplay(): void {
+		this.renderVersion++;
 		const bgFn = this.getBackgroundFn();
 
 		let hasContent = false;
@@ -385,7 +408,7 @@ export class ToolExecutionComponent extends Container {
 
 	private formatToolExecution(): string {
 		let text = formatToolSummary({
-			icon: "◆",
+			icon: uiGlyphs.tool,
 			subject: this.toolName,
 			expanded: this.expanded,
 			isPartial: this.isPartial,

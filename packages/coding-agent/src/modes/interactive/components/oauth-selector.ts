@@ -9,6 +9,7 @@ import {
 	TruncatedText,
 } from "@earendil-works/pi-tui";
 import { theme } from "../theme/theme.ts";
+import { uiGlyphs } from "../ui-glyphs.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 
 export type AuthSelectorProvider = {
@@ -168,12 +169,12 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 			return theme.fg("muted", " • ") + theme.fg("warning", label);
 		}
 		if (!provider.status.source || provider.status.source === "OAuth" || provider.status.source === "已保存的凭据") {
-			return theme.fg("success", " ✓ 已配置");
+			return theme.fg("success", ` ${uiGlyphs.success} 已配置`);
 		}
 		const source = /^[A-Z][A-Z0-9_]*(?:, [A-Z][A-Z0-9_]*)*$/.test(provider.status.source)
 			? `环境变量：${provider.status.source}`
 			: provider.status.source;
-		return theme.fg("success", ` ✓ ${source}`);
+		return theme.fg("success", ` ${uiGlyphs.success} ${source}`);
 	}
 
 	handleInput(keyData: string): void {
