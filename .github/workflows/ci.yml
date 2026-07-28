@@ -106,6 +106,9 @@ jobs:
       - name: Install dependencies
         run: npm ci $NPM_CI_ARGS
 
+      - name: Build JavaScript packages
+        run: npm run build:offline
+
       - name: Test Coding Agent shard 1/2
         run: npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=4 --shard=1/2
 
@@ -131,6 +134,9 @@ jobs:
       - name: Install dependencies
         run: npm ci $NPM_CI_ARGS
 
+      - name: Build JavaScript packages
+        run: npm run build:offline
+
       - name: Test Coding Agent shard 2/2
         run: npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=4 --shard=2/2
 
@@ -149,6 +155,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci $NPM_CI_ARGS
+
+      - name: Build JavaScript packages
+        run: npm run build:offline
 
       - name: Test Agent Core
         run: npm --workspace @earendil-works/pi-agent-core test
