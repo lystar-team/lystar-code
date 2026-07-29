@@ -1,4 +1,5 @@
 import type { Api, CredentialInfo, Model } from "@earendil-works/pi-ai";
+import { APP_NAME } from "../config.ts";
 import { resolveCliModel } from "../core/model-resolver.ts";
 import type { ModelRuntime } from "../core/model-runtime.ts";
 import type { Args } from "./args.ts";
@@ -22,11 +23,11 @@ export function isCredentialPrintHelp(args: string[]): boolean {
 }
 
 export function printCredentialPrintHelp(): void {
-	console.log(`Usage:
-  pi auth print-api-key --model <model> [--provider <provider>]
-  pi auth print-bearer-token --model <model> [--provider <provider>] [--min-expiry <duration>]
+	console.log(`用法：
+  ${APP_NAME} auth print-api-key --model <model> [--provider <provider>]
+  ${APP_NAME} auth print-bearer-token --model <model> [--provider <provider>] [--min-expiry <duration>]
 
-Prints the configured credential alone on stdout. Provider inference uses configured credentials; specify --provider to select explicitly. Bearer tokens have a 30-minute minimum expiry by default. --min-expiry accepts ms, s, m, or h (for example, 30m).`);
+仅向 stdout 输出已配置的凭据。默认根据已配置凭据判断 Provider，也可用 --provider 明确指定。Bearer token 默认至少需要 30 分钟有效期。--min-expiry 支持 ms、s、m、h，例如 30m。`);
 }
 
 /** Parse the small, extensible `pi auth` command surface before normal startup. */
@@ -36,7 +37,7 @@ export function parseCredentialPrintCommand(args: string[]): CredentialPrintComm
 	const kind = args[1] === "print-api-key" ? "api_key" : args[1] === "print-bearer-token" ? "bearer_token" : undefined;
 	if (!kind) {
 		throw new CredentialPrintError(
-			`Unknown auth command "${args[1] ?? ""}". Use "pi auth print-api-key" or "pi auth print-bearer-token".`,
+			`未知 auth 命令“${args[1] ?? ""}”。请使用“${APP_NAME} auth print-api-key”或“${APP_NAME} auth print-bearer-token”。`,
 		);
 	}
 
@@ -48,12 +49,12 @@ export function parseCredentialPrintCommand(args: string[]): CredentialPrintComm
 			continue;
 		}
 		if (kind !== "bearer_token") {
-			throw new CredentialPrintError("--min-expiry is only supported by print-bearer-token");
+			throw new CredentialPrintError("--min-expiry 仅支持 print-bearer-token");
 		}
 		const value = args[++index];
 		const match = value ? /^(\d+)(ms|s|m|h)$/iu.exec(value) : undefined;
 		if (!match) {
-			throw new CredentialPrintError("--min-expiry must use a duration such as 30m or 1h");
+			throw new CredentialPrintError("--min-expiry 必须使用 30m 或 1h 这类时长格式");
 		}
 		const amount = Number(match[1]);
 		const unit = match[2];
@@ -65,13 +66,13 @@ export function parseCredentialPrintCommand(args: string[]): CredentialPrintComm
 
 export function validateCredentialPrintArgs(args: Args): void {
 	if (!args.model?.trim()) {
-		throw new CredentialPrintError("Credential printing requires --model <model>");
+		throw new CredentialPrintError("输出凭据需要 --model <model>");
 	}
 	if (args.apiKey !== undefined) {
-		throw new CredentialPrintError("Credential printing reads configured credentials; --api-key is not supported");
+		throw new CredentialPrintError("输出凭据只读取已配置的凭据，不支持 --api-key");
 	}
 	if (args.messages.length > 0 || args.fileArgs.length > 0 || args.unknownFlags.size > 0) {
-		throw new CredentialPrintError("Credential printing only accepts --provider and --model");
+		throw new CredentialPrintError("输出凭据只接受 --provider 和 --model 参数");
 	}
 }
 
@@ -96,7 +97,7 @@ export async function resolveCredentialForPrint(
 	if (args.provider) {
 		const resolved = resolveCliModel({ cliProvider: args.provider, cliModel: args.model, modelRuntime });
 		if (resolved.error || !resolved.model) {
-			throw new CredentialPrintError(resolved.error ?? "Unable to resolve the requested provider/model");
+			throw new CredentialPrintError(resolved.error ?? "无法确定请求的 Provider 或模型");
 		}
 		models.push(resolved.model);
 	} else {
@@ -108,7 +109,7 @@ export async function resolveCredentialForPrint(
 			}
 		}
 		if (models.length === 0) {
-			throw new CredentialPrintError(`Model "${args.model}" not found. Use --list-models to see available models.`);
+			throw new CredentialPrintError(`找不到模型“${args.model}”。可用 --list-models 查看模型列表。`);
 		}
 	}
 
@@ -137,16 +138,14 @@ export async function resolveCredentialForPrint(
 		const providerId = models[0]?.provider;
 		const type = providerId ? credentialTypes.get(providerId) : undefined;
 		if (args.provider && kind === "api_key" && type === "oauth") {
-			throw new CredentialPrintError(`Provider "${providerId}" is configured with OAuth, not an API key`);
+			throw new CredentialPrintError(`Provider“${providerId}”使用 OAuth，没有配置 API key`);
 		}
 		if (args.provider && kind === "bearer_token" && type !== "oauth") {
-			throw new CredentialPrintError(`Provider "${providerId}" is not configured with an OAuth bearer token`);
+			throw new CredentialPrintError(`Provider“${providerId}”没有配置 OAuth bearer token`);
 		}
-		throw new CredentialPrintError(
-			`No usable ${kind === "api_key" ? "API key" : "OAuth bearer token"} is configured`,
-		);
+		throw new CredentialPrintError(`没有可用的${kind === "api_key" ? " API key" : " OAuth bearer token"}`);
 	}
 	throw new CredentialPrintError(
-		`Model "${args.model}" has multiple configured providers (${credentials.map(({ providerId }) => providerId).join(", ")}). Specify --provider.`,
+		`模型“${args.model}”匹配多个已配置 Provider（${credentials.map(({ providerId }) => providerId).join(", ")}）。请使用 --provider 明确指定。`,
 	);
 }

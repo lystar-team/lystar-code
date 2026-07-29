@@ -4017,7 +4017,7 @@ export class InteractiveMode {
 				}
 			}
 		}
-		this.showStatus(`Tool output: ${expanded ? "expanded" : "collapsed"}`);
+		this.showStatus(`Tool 输出已${expanded ? "展开" : "折叠"}`);
 	}
 
 	private toggleThinkingBlockVisibility(): void {

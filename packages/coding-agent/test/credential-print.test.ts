@@ -92,13 +92,13 @@ describe("credential print commands", () => {
 			minExpiryMs: 30 * 60_000,
 		});
 		expect(() => parseCredentialPrintCommand(["auth", "print-api-key", "--min-expiry", "30m"])).toThrow(
-			"only supported by print-bearer-token",
+			"仅支持 print-bearer-token",
 		);
 		expect(isCredentialPrintHelp(["auth", "--help"])).toBe(true);
 		expect(() => parseCredentialPrintCommand(["auth", "unknown"])).toThrow(CredentialPrintError);
-		await expect(resolveCredentialForPrint(parseArgs([]), runtime, "api_key")).rejects.toThrow("requires --model");
+		await expect(resolveCredentialForPrint(parseArgs([]), runtime, "api_key")).rejects.toThrow("需要 --model");
 		await expect(
 			resolveCredentialForPrint(parseArgs(["--provider", "openai-codex", "--model", "gpt-5.5"]), runtime, "api_key"),
-		).rejects.toThrow("configured with OAuth");
+		).rejects.toThrow("使用 OAuth");
 	});
 });

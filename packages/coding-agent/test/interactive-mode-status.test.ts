@@ -167,7 +167,7 @@ describe("InteractiveMode.setToolsExpanded", () => {
 		expect(header.setExpanded).toHaveBeenCalledWith(true);
 		expect(loadedResourcesChild.setExpanded).toHaveBeenCalledWith(true);
 		expect(chatChild.setExpanded).toHaveBeenCalledWith(true);
-		expect(fakeThis.showStatus).toHaveBeenCalledWith("Tool output: expanded");
+		expect(fakeThis.showStatus).toHaveBeenCalledWith("Tool 输出已展开");
 	});
 });
 
@@ -1196,7 +1196,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		const output = renderAll(fakeThis.loadedResourcesContainer).replace(/\\/g, "/");
-		expect(output).toContain("[Context]");
+		expect(output).toContain("[上下文]");
 		expect(output).toContain(".pi/SYSTEM.md, .pi/APPEND_SYSTEM.md, AGENTS.md");
 	});
 

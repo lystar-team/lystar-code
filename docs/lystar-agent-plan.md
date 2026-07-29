@@ -2,7 +2,7 @@
 
 > 状态：开发基线。按本文连续实施，不设阶段审批。
 >
-> 当前上游基线：2026-07-25；Pi `v0.82.1`，commit `b4f293684bba718d59cc1157679bcf6157b3a7f5`；Grok Build commit `6e386420825bd44ae648c63e7c8cba12fcec9401`。
+> 当前上游基线：2026-07-30；Pi `v0.83.0`，commit `845d6ff1f6643aba440341cce877ce1c43ebbc39`；Grok Build commit `6e386420825bd44ae648c63e7c8cba12fcec9401`。
 
 ## 1. 产品定义
 
@@ -40,7 +40,7 @@ Todo、后台任务、子 Agent 和 MCP 等能力继续由 Pi Extension 提供�
 
 ### Pi
 
-Pi `v0.82.1` 已具备以下基础，LYStar 直接复用：
+Pi `v0.83.0` 已具备以下基础，LYStar 直接复用：
 
 - Bun executable 构建入口和 macOS、Linux、Windows 多架构 CI。
 - Agent Runtime、Provider、Session、Tool、Extension、Skill 和 Package 管理。
@@ -517,6 +517,7 @@ LYStar 不增加 MCP 配置文件、内置管理器或代理 Tool。TUI 负责�
 
 | LYStar | Pi 基线 | Pi commit | MCP Adapter | Session | Extension API |
 |---|---|---|---|---|---|
+| `0.83.0-lystar.1` | `0.83.0` | `845d6ff1...` | `2.12.1` | Pi 原格式；`pending` 中间态不落盘 | Pi `0.83.0`，新增 `ctx.scopedModels` |
 | `0.82.1-lystar.11` | `0.82.1` | `b4f29368...` | `2.12.1` | Pi 原格式 | Pi `0.82.1` |
 | `0.82.1-lystar.10` | `0.82.1` | `b4f29368...` | `2.12.1` | Pi 原格式 | Pi `0.82.1` |
 | `0.82.1-lystar.9` | `0.82.1` | `b4f29368...` | `2.12.1` | Pi 原格式 | Pi `0.82.1` |
@@ -532,6 +533,8 @@ LYStar 不增加 MCP 配置文件、内置管理器或代理 Tool。TUI 负责�
 | `0.82.0-lystar.3` | `0.82.0` | `083e6162...` | `2.12.1` | Pi 原格式 | Pi `0.82.0` |
 | `0.82.0-lystar.2` | `0.82.0` | `083e6162...` | `2.12.1` | Pi 原格式 | Pi `0.82.0` |
 | `0.82.0-lystar.1` | `0.82.0` | `083e6162...` | `2.12.1` | Pi 原格式 | Pi `0.82.0` |
+
+Pi `v0.83.0` 将 TypeBox 升级到 `1.3.7`，删除了 `Type.Base`、`Type.Awaited`、`Type.Promise`、`Type.AsyncIterator`、`Type.Iterator`、`Type.Options` 和 `Value.Mutate` 等弃用 API。使用这些 API 的 Extension 需要改用 TypeBox 当前支持的接口；LYStar 不保留旧 TypeBox 双轨。
 
 合并 Pi 新版本时连续完成以下动作，不拆成独立项目：
 
@@ -552,7 +555,7 @@ LYStar 不增加 MCP 配置文件、内置管理器或代理 Tool。TUI 负责�
 
 | 工作项 | 完成标准 |
 |---|---|
-| 仓库基线 | 建立 `origin/upstream`，可重复构建当前 Pi `v0.82.1` 基线 |
+| 仓库基线 | 建立 `origin/upstream`，可重复构建当前 Pi `v0.83.0` 基线 |
 | 产品常量 | `la`、`LYStar Agent`、`.pi`、`PI_*` 和 release repository 各自只有一个事实源 |
 | CLI 品牌 | banner、标题、帮助、版本、错误和示例统一；参数与退出码兼容 |
 | 发行包 | 五个平台归档包含 executable、运行资源、许可证和 manifest |
@@ -669,7 +672,7 @@ SSH
 ## 14. 调研与许可证来源
 
 - Pi 官方仓库：https://github.com/earendil-works/pi
-- Pi 当前基线：`v0.82.1`，commit `b4f293684bba718d59cc1157679bcf6157b3a7f5`
+- Pi 当前基线：`v0.83.0`，commit `845d6ff1f6643aba440341cce877ce1c43ebbc39`
 - Pi 本机文档：`extensions.md`、`tui.md`、`themes.md`、`keybindings.md`、`packages.md`、`skills.md`、`sdk.md`、`rpc.md`、`development.md`、`settings.md`、`session-format.md`、`windows.md`、`tmux.md`
 - Grok Build：https://github.com/xai-org/grok-build
 - Grok Build 调研 commit：`6e386420825bd44ae648c63e7c8cba12fcec9401`

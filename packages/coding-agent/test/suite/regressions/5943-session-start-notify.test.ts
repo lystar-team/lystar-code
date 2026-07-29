@@ -266,11 +266,12 @@ describe("regression #5943: session_start transient UI", () => {
 
 		const chatRendered = context.chatContainer.render(80).join("\n");
 		expect(chatRendered).toContain("restored message");
-		expect(chatRendered).not.toContain("[Context]");
+		expect(chatRendered).not.toContain("[上下文]");
 
 		const rendered = root.render(80).join("\n");
 		expect(rendered).not.toContain("stale resources");
-		expect(rendered.indexOf("[Context]")).toBeLessThan(rendered.indexOf("restored message"));
+		expect(rendered).toContain("[上下文]");
+		expect(rendered.indexOf("[上下文]")).toBeLessThan(rendered.indexOf("restored message"));
 	});
 
 	it("renders replacement session state before session_start handlers can notify", async () => {

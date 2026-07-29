@@ -138,8 +138,8 @@ async function runCredentialPrintCommand(args: string[]): Promise<boolean> {
 	try {
 		command = parseCredentialPrintCommand(args);
 	} catch (error) {
-		const message = error instanceof CredentialPrintError ? error.message : "Failed to parse auth command";
-		console.error(chalk.red(`Error: ${message}`));
+		const message = error instanceof CredentialPrintError ? error.message : "解析 auth 命令失败";
+		console.error(chalk.red(`错误：${message}`));
 		process.exitCode = 1;
 		return true;
 	}
@@ -148,7 +148,7 @@ async function runCredentialPrintCommand(args: string[]): Promise<boolean> {
 	const parsed = parseArgs(command.args);
 	if (parsed.diagnostics.length > 0) {
 		for (const diagnostic of parsed.diagnostics) {
-			console.error(chalk.red(`Error: ${diagnostic.message}`));
+			console.error(chalk.red(`错误：${diagnostic.message}`));
 		}
 		process.exitCode = 1;
 		return true;
@@ -160,8 +160,8 @@ async function runCredentialPrintCommand(args: string[]): Promise<boolean> {
 		const credential = await resolveCredentialForPrint(parsed, modelRuntime, command.kind, command.minExpiryMs);
 		process.stdout.write(`${credential}\n`);
 	} catch (error) {
-		const message = error instanceof CredentialPrintError ? error.message : "Failed to resolve credential";
-		console.error(chalk.red(`Error: ${message}`));
+		const message = error instanceof CredentialPrintError ? error.message : "读取凭据失败";
+		console.error(chalk.red(`错误：${message}`));
 		process.exitCode = 1;
 	}
 	return true;
