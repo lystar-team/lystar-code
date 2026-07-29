@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-07-28T17:53:32+08:00
+最后核验时间：2026-07-29T23:41:54+08:00
 
 环境：
 
@@ -14,6 +14,25 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### 当前源码：TUI 输出调度与满宽换行修复
+
+本轮在 Coding Agent 的 LYStar 维护区新增 `LystarTUI`，统一执行最高 30 FPS 合帧；`process.stdout.writableNeedDrain` 为真时停止派发旧帧，`drain` 后只绘制最新状态。全屏期间关闭终端自动换行，退出 alternate screen 前恢复；inline 模式保持 Pi 原行为。Pi 公共 TUI renderer、`Terminal` 接口、Session、Tool 和 Extension API 均未修改。
+
+使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 完成：
+
+```bash
+npm run check
+npm run build:offline
+npm --workspace @earendil-works/pi-tui test
+npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=4
+```
+
+结果：定向 LYStar TUI 和 Workspace 共 22 项通过，覆盖 30 FPS 合帧、stdout 背压期间 100 帧只保留最新状态、满宽帧输出顺序、inline 模式和全屏终端模式恢复；TUI 全量退出码 0；Coding Agent 188 个 test files、1700 项通过，6 个 files、48 项跳过；静态检查和离线构建通过。当前 Shell 的 `NODE_TLS_REJECT_UNAUTHORIZED=0` 会使既有模型刷新测试卡满 60 秒，显式恢复为 `1` 后该用例耗时 515ms，通过后完成 Coding Agent 全量复跑。
+
+Linux x64、SSH 与 tmux 环境使用 16 MB 真实 Session 副本完成 PTY 验证。80x24 下 100 次分页延迟为 P50 33ms、P95 83ms、最大 138ms；100 次 SGR 滚轮延迟为 P50 26ms、P95 37ms、最大 46ms；100 个滚轮事件按 17ms 连续输入后，最后一次输入到稳定帧为 22ms。80 列 ASCII 和中文满宽行连续更新 60 帧后，后续行位置正确，无需 resize；80x8、120x36 resize、输入、`/reload`、`Ctrl+Z`/`SIGCONT`、`SIGTERM` 和正常退出均通过。`SIGTERM` 原始写日志确认 `CSI ? 7 h` 位于 `CSI ? 1049 l` 之前。本轮独立 tmux socket、临时 Session 和测试脚本已关闭并清理。
+
+CodeGraph 增量同步完成；调用入口只有 `InteractiveMode`，影响面覆盖滚动、流式消息、状态、Extension UI、overlay、resize 和退出生命周期，对应 Coding Agent 全量测试已复跑。Windows 与 macOS 未做实机验证。
 
 ### `0.82.1-lystar.11` 发布前核验
 

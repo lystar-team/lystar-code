@@ -20,6 +20,7 @@ import type {
 	OverlayHandle,
 	OverlayOptions,
 	SlashCommand,
+	TUI,
 } from "@earendil-works/pi-tui";
 import {
 	CombinedAutocompleteProvider,
@@ -35,7 +36,6 @@ import {
 	setKeybindings,
 	Text,
 	TruncatedText,
-	TUI,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import chalk from "chalk";
@@ -150,6 +150,7 @@ import { UserMessageSelectorComponent } from "./components/user-message-selector
 import { WorkspaceShortcutBar } from "./components/workspace-shortcut-bar.ts";
 import { editInExternalEditor } from "./external-editor.ts";
 import { loadLystarSettings } from "./lystar-settings.ts";
+import { LystarTUI } from "./lystar-tui.ts";
 import { getModelSearchText } from "./model-search.ts";
 import { parseMouseEvent } from "./mouse.ts";
 import { type AltScreenMode, createTerminalModeContext, shouldUseAlternateScreen } from "./terminal-mode.ts";
@@ -508,7 +509,7 @@ export class InteractiveMode {
 			await this.rebindCurrentSession({ renderBeforeBind: true });
 		});
 		this.version = VERSION;
-		this.ui = new TUI(new ProcessTerminal(), this.settingsManager.getShowHardwareCursor(), getAgentDir());
+		this.ui = new LystarTUI(new ProcessTerminal(), this.settingsManager.getShowHardwareCursor(), getAgentDir());
 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
 		this.headerContainer = new Container();
 		this.loadedResourcesContainer = new Container();
