@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-07-29T23:41:54+08:00
+最后核验时间：2026-07-30T07:13:16+08:00
 
 环境：
 
@@ -14,6 +14,28 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### `0.83.0-lystar.1` 发布前核验
+
+上游基线已升级到 Pi `v0.83.0`（`845d6ff1f6643aba440341cce877ce1c43ebbc39`），上游 merge commit `87fe99f9` 的第二个 parent 为该 commit。LYStar 保留 `la` 命令、中文产品配置、全屏 TUI、Session/Extension/Tool 契约和 `octyean/lystar-agent` 发行源，并合入凭据导出、OpenRouter 远程登录、请求级 `fetch`、`rawStopReason`、`ctx.scopedModels`、Session 重绑保护、并发 Bash 取消和 Resource Loader 修复。发布事实源为 `piConfig.productVersion = 0.83.0-lystar.1`，Pi 包版本为 `0.83.0`。
+
+使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 完成：
+
+```bash
+npm ci --ignore-scripts
+npm run check
+npm run build:offline
+npm --workspace @earendil-works/pi-tui test
+npm --workspace @earendil-works/pi-ai test
+npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=4
+npm --workspace @earendil-works/pi-agent-core test
+bash scripts/test-install-sh.sh
+bash scripts/build-binaries.sh --skip-install --skip-build --offline-model-data
+```
+
+结果：TUI 全量退出码 0；AI 95 个 test files、755 项通过，25 个 files、784 项跳过；Coding Agent 192 个 test files、1733 项通过，6 个 files、48 项跳过；Agent Core 241 项通过、1 项跳过；Unix 安装器通过。`main` CI run `30498563387` 全部通过，覆盖源码、构建、TUI、AI、Agent Core、Coding Agent 双分片，以及 Windows MinGit Bash 和 PowerShell 5.1 安装器。
+
+五个平台归档的 SHA-256 全部通过，manifest 的版本、Pi 版本、仓库、文件大小和五个平台资产一致；全部归档包含 `LICENSE` 和 `THIRD_PARTY_LICENSES.md`。从 Linux x64 归档运行 `la --version`、`la --help` 和 `PI_OFFLINE=1 la --list-models` 通过；真实 PTY 覆盖 80x24 启动、80x8 和 120x36 resize、无模型提示和 `/quit` 退出恢复。本轮独立 tmux socket 与临时文件已关闭并清理。Windows 与 macOS 以 CI、归档格式、架构和 SHA 为证据，未做对应系统的二进制实机运行。
 
 ### 当前源码：TUI 输出调度与满宽换行修复
 
