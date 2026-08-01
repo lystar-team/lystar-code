@@ -148,9 +148,31 @@ async function* createFailedEvents(): AsyncIterable<ResponseStreamEvent> {
 		response: {
 			id: "resp_failed",
 			status: "failed",
-			error: { code: "server_error", message: "boom" },
+			error: { code: "stream_read_error", message: "upstream body closed" },
 		},
+	} as unknown as ResponseStreamEvent;
+}
+
+async function* createErrorEvents(): AsyncIterable<ResponseStreamEvent> {
+	yield {
+		type: "error",
+		sequence_number: 0,
+		code: "future_stream_error",
+		message: "future stream failure",
+		param: null,
 	} as ResponseStreamEvent;
+}
+
+function createThrowingEvents(): AsyncIterable<ResponseStreamEvent> {
+	return {
+		[Symbol.asyncIterator]() {
+			return {
+				next: async () => {
+					throw Object.assign(new Error("socket dropped"), { code: "ECONNRESET" });
+				},
+			};
+		},
+	};
 }
 
 async function* createPhasedMessageEvents(
@@ -207,6 +229,12 @@ describe("OpenAI Responses terminal event handling", () => {
 		await expect(processResponsesStream(createEarlyEofEvents(), output, stream, model)).rejects.toThrow(
 			"OpenAI Responses stream ended before a terminal response event",
 		);
+		expect(output.diagnostics).toEqual([
+			expect.objectContaining({
+				type: "provider_stream_failure",
+				details: { eventType: "premature_eof" },
+			}),
+		]);
 	});
 
 	it("emits an error final result when the wrapper stream ends before a terminal response event", async () => {
@@ -231,6 +259,7 @@ describe("OpenAI Responses terminal event handling", () => {
 		expect(lastEvent?.type).toBe("error");
 		expect(result.stopReason).toBe("error");
 		expect(result.errorMessage).toBe("OpenAI Responses stream ended before a terminal response event");
+		expect(result.diagnostics?.map((diagnostic) => diagnostic.type)).toEqual(["provider_stream_failure"]);
 	});
 
 	it.each([
@@ -320,8 +349,56 @@ describe("OpenAI Responses terminal event handling", () => {
 		const stream = new AssistantMessageEventStream();
 
 		await expect(processResponsesStream(createFailedEvents(), output, stream, model)).rejects.toThrow(
-			"server_error: boom",
+			"stream_read_error: upstream body closed",
 		);
 		expect(output.rawStopReason).toBe("failed");
+		expect(output.diagnostics).toEqual([
+			expect.objectContaining({
+				type: "provider_stream_failure",
+				error: expect.objectContaining({
+					code: "stream_read_error",
+					message: "stream_read_error: upstream body closed",
+				}),
+				details: expect.objectContaining({
+					eventType: "response.failed",
+					providerCode: "stream_read_error",
+					providerMessage: "upstream body closed",
+				}),
+			}),
+		]);
+	});
+
+	it("records stream error events before rejecting", async () => {
+		const model = createModel();
+		const output = createOutput(model);
+		const stream = new AssistantMessageEventStream();
+
+		await expect(processResponsesStream(createErrorEvents(), output, stream, model)).rejects.toThrow(
+			"Error Code future_stream_error: future stream failure",
+		);
+		expect(output.diagnostics).toEqual([
+			expect.objectContaining({
+				type: "provider_stream_failure",
+				error: expect.objectContaining({ code: "future_stream_error" }),
+				details: expect.objectContaining({ eventType: "error" }),
+			}),
+		]);
+	});
+
+	it("records errors thrown while reading the provider stream", async () => {
+		const model = createModel();
+		const output = createOutput(model);
+		const stream = new AssistantMessageEventStream();
+
+		await expect(processResponsesStream(createThrowingEvents(), output, stream, model)).rejects.toThrow(
+			"socket dropped",
+		);
+		expect(output.diagnostics).toEqual([
+			expect.objectContaining({
+				type: "provider_stream_failure",
+				error: expect.objectContaining({ code: "ECONNRESET", message: "socket dropped" }),
+				details: { eventType: "stream_iteration" },
+			}),
+		]);
 	});
 });

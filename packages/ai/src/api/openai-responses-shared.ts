@@ -28,6 +28,7 @@ import type {
 	ToolCall,
 	Usage,
 } from "../types.ts";
+import { appendAssistantMessageDiagnostic, createAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import type { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
@@ -413,6 +414,29 @@ type ResponsesOutputSlot =
 
 type ToolCallOutputSlot = Extract<ResponsesOutputSlot, { type: "toolCall" }>;
 
+function createProviderStreamError(message: string, code?: string | null): Error {
+	return Object.assign(new Error(message), code ? { code } : {});
+}
+
+function recordProviderStreamFailure(output: AssistantMessage, error: unknown, details: Record<string, unknown>): void {
+	appendAssistantMessageDiagnostic(
+		output,
+		createAssistantMessageDiagnostic("provider_stream_failure", error, details),
+	);
+}
+
+async function* observeProviderStream(
+	openaiStream: AsyncIterable<ResponseStreamEvent>,
+	output: AssistantMessage,
+): AsyncGenerator<ResponseStreamEvent> {
+	try {
+		yield* openaiStream;
+	} catch (error) {
+		recordProviderStreamFailure(output, error, { eventType: "stream_iteration" });
+		throw error;
+	}
+}
+
 export async function processResponsesStream<TApi extends Api>(
 	openaiStream: AsyncIterable<ResponseStreamEvent>,
 	output: AssistantMessage,
@@ -571,7 +595,7 @@ export async function processResponsesStream<TApi extends Api>(
 		}
 	};
 
-	for await (const event of openaiStream) {
+	for await (const event of observeProviderStream(openaiStream, output)) {
 		if (event.type === "response.created") {
 			output.responseId = event.response.id;
 		} else if (event.type === "response.output_item.added") {
@@ -715,22 +739,41 @@ export async function processResponsesStream<TApi extends Api>(
 		} else if (event.type === "response.completed" || event.type === "response.incomplete") {
 			finalizeResponse(event.response);
 		} else if (event.type === "error") {
-			throw new Error(`Error Code ${event.code}: ${event.message}` || "Unknown error");
+			const error = createProviderStreamError(
+				`Error Code ${event.code ?? "unknown"}: ${event.message || "Unknown error"}`,
+				event.code,
+			);
+			recordProviderStreamFailure(output, error, {
+				eventType: event.type,
+				providerCode: event.code,
+				providerMessage: event.message,
+				providerParam: event.param,
+			});
+			throw error;
 		} else if (event.type === "response.failed") {
 			sawTerminalResponseEvent = true;
 			output.rawStopReason = event.response?.status;
-			const error = event.response?.error;
+			const responseError = event.response?.error;
 			const details = event.response?.incomplete_details;
-			const msg = error
-				? `${error.code || "unknown"}: ${error.message || "no message"}`
+			const message = responseError
+				? `${responseError.code || "unknown"}: ${responseError.message || "no message"}`
 				: details?.reason
 					? `incomplete: ${details.reason}`
 					: "Unknown error (no error details in response)";
-			throw new Error(msg);
+			const error = createProviderStreamError(message, responseError?.code);
+			recordProviderStreamFailure(output, error, {
+				eventType: event.type,
+				providerCode: responseError?.code,
+				providerMessage: responseError?.message,
+				incompleteReason: details?.reason,
+			});
+			throw error;
 		}
 	}
 	if (!sawTerminalResponseEvent) {
-		throw new Error("OpenAI Responses stream ended before a terminal response event");
+		const error = new Error("OpenAI Responses stream ended before a terminal response event");
+		recordProviderStreamFailure(output, error, { eventType: "premature_eof" });
+		throw error;
 	}
 }
 

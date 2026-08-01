@@ -4,7 +4,7 @@ function buildProviderErrorPattern(patterns: readonly string[]): RegExp {
 	return new RegExp(patterns.join("|"), "i");
 }
 
-const NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN = buildProviderErrorPattern([
+const NON_RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	// OpenCode Go/free-tier limits returned as 429 JSON error types by OpenCode's
 	// Zen API. These are subscription/account limits, not transient throttles.
 	"GoUsageLimitError",
@@ -21,7 +21,33 @@ const NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN = buildProviderErrorPattern([
 	"out of budget",
 	"quota exceeded",
 	"billing",
+
+	// Authentication, permissions, and invalid request shapes cannot recover by retrying.
+	"invalid.?api.?key",
+	"authentication.?error",
+	"unauthorized",
+	"permission.?denied",
+	"\\b401\\b",
+	"\\b403\\b",
+	"invalid.?request",
+	"bad.?request",
+	"invalid.?parameter",
+	"unsupported.?parameter",
+	"malformed",
+	"\\b400\\b",
+
+	// Context, model, and policy errors require a changed request or account state.
+	"context.?length",
+	"context.?window",
+	"prompt.?too.?long",
+	"maximum context",
+	"model.?not.?found",
+	"\\b404\\b",
+	"content.?policy",
+	"safety.?policy",
 ]);
+
+const PROVIDER_STREAM_FAILURE_DIAGNOSTIC = "provider_stream_failure";
 
 const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	// Generic provider load, HTTP status, and server-side transient failures.
@@ -69,7 +95,7 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	// Premature stream endings from SDKs and transports. Anthropic can throw
 	// "stream ended without ..." and "Anthropic stream ended before message_stop"
 	// (#4433); Bedrock/Smithy can throw an HTTP/2 no-response error (#3594).
-	"ended without",
+	"stream ended without",
 	"stream ended before message_stop",
 	"stream ended before a terminal response event",
 	"http2 request did not get a response",
@@ -220,8 +246,15 @@ export async function retryAssistantCall(
  * before restarting the assistant turn.
  */
 export function isRetryableAssistantError(message: AssistantMessage): boolean {
-	if (message.stopReason !== "error" || !message.errorMessage) return false;
-	const errorMessage = message.errorMessage;
-	if (NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN.test(errorMessage)) return false;
-	return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);
+	if (message.stopReason !== "error") return false;
+
+	const diagnosticErrors = (message.diagnostics ?? [])
+		.map((diagnostic) => [diagnostic.error?.code, diagnostic.error?.message].filter(Boolean).join(":"))
+		.filter(Boolean);
+	const errorText = [message.errorMessage, ...diagnosticErrors].filter(Boolean).join("\n");
+	if (!errorText || NON_RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorText)) return false;
+	if (message.diagnostics?.some((diagnostic) => diagnostic.type === PROVIDER_STREAM_FAILURE_DIAGNOSTIC)) {
+		return true;
+	}
+	return RETRYABLE_PROVIDER_ERROR_PATTERN.test(message.errorMessage ?? "");
 }

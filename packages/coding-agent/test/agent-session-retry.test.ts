@@ -72,6 +72,7 @@ describe("AgentSession retry", () => {
 		failCount?: number;
 		maxRetries?: number;
 		delayAssistantMessageEndMs?: number;
+		failureOverrides?: Partial<AssistantMessage>;
 	}) {
 		const failCount = options?.failCount ?? 1;
 		const maxRetries = options?.maxRetries ?? 3;
@@ -90,6 +91,7 @@ describe("AgentSession retry", () => {
 						const msg = createAssistantMessage("", {
 							stopReason: "error",
 							errorMessage: "overloaded_error",
+							...options?.failureOverrides,
 						});
 						stream.push({ type: "start", partial: msg });
 						stream.push({ type: "error", reason: "error", error: msg });
@@ -146,6 +148,31 @@ describe("AgentSession retry", () => {
 		expect(created.getCallCount()).toBe(2);
 		expect(events).toEqual(["start:1", "end:success=true"]);
 		expect(created.session.isRetrying).toBe(false);
+	});
+
+	it("retries structured provider stream failures with unknown future error codes", async () => {
+		const created = await createSession({
+			failureOverrides: {
+				errorMessage: "future_stream_failure_v2",
+				diagnostics: [
+					{
+						type: "provider_stream_failure",
+						timestamp: Date.now(),
+						error: { code: "future_stream_failure_v2", message: "future stream failure" },
+					},
+				],
+			},
+		});
+		const events: string[] = [];
+		created.session.subscribe((event) => {
+			if (event.type === "auto_retry_start") events.push(`start:${event.attempt}`);
+			if (event.type === "auto_retry_end") events.push(`end:success=${event.success}`);
+		});
+
+		await created.session.prompt("Test");
+
+		expect(created.getCallCount()).toBe(2);
+		expect(events).toEqual(["start:1", "end:success=true"]);
 	});
 
 	it("exhausts max retries and emits failure", async () => {

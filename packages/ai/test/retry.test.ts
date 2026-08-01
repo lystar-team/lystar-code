@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { fauxAssistantMessage } from "../src/providers/faux.ts";
+import type { AssistantMessage } from "../src/types.ts";
 import { isRetryableAssistantError, type RetryPolicy, retryAssistantCall } from "../src/utils/retry.ts";
 
 const openAIExplicitRetryMessage =
@@ -55,6 +56,59 @@ describe("provider retry classification", () => {
 				fauxAssistantMessage("", { stopReason: "error", errorMessage: openAIResponsesEarlyEofMessage }),
 			),
 		).toBe(true);
+		expect(
+			isRetryableAssistantError(
+				fauxAssistantMessage("", {
+					stopReason: "error",
+					errorMessage: "Anthropic stream ended without message_stop",
+				}),
+			),
+		).toBe(true);
+	});
+
+	it("does not retry deterministic responses that lack a stop reason", () => {
+		expect(
+			isRetryableAssistantError(
+				fauxAssistantMessage("", {
+					stopReason: "error",
+					errorMessage: "Faux response ended without a stop reason",
+				}),
+			),
+		).toBe(false);
+	});
+
+	it("retries structured provider stream failures without knowing the provider error code", () => {
+		const message: AssistantMessage = {
+			...fauxAssistantMessage("", {
+				stopReason: "error",
+				errorMessage: "future_stream_failure_v2",
+			}),
+			diagnostics: [
+				{
+					type: "provider_stream_failure",
+					timestamp: Date.now(),
+					error: { code: "future_stream_failure_v2", message: "future stream failure" },
+				},
+			],
+		};
+
+		expect(isRetryableAssistantError(message)).toBe(true);
+	});
+
+	it.each([
+		"401 unauthorized",
+		"403 permission denied",
+		"invalid_request_error: unsupported parameter",
+		"context_length_exceeded",
+		"model not found",
+		"429 insufficient_quota",
+	])("does not retry permanent errors even when they occur in a provider stream: %s", (errorMessage) => {
+		const message: AssistantMessage = {
+			...fauxAssistantMessage("", { stopReason: "error", errorMessage }),
+			diagnostics: [{ type: "provider_stream_failure", timestamp: Date.now(), error: { message: errorMessage } }],
+		};
+
+		expect(isRetryableAssistantError(message)).toBe(false);
 	});
 
 	it("keeps provider limit errors non-retryable", () => {
