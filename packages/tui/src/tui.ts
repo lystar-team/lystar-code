@@ -427,6 +427,11 @@ export class TUI extends Container {
 		return this.showHardwareCursor;
 	}
 
+	/** 当前帧供基础组件和 overlay 使用的宽度。 */
+	protected getRenderWidth(): number {
+		return this.terminal.columns;
+	}
+
 	setShowHardwareCursor(enabled: boolean): void {
 		if (this.showHardwareCursor === enabled) return;
 		this.showHardwareCursor = enabled;
@@ -1464,7 +1469,7 @@ export class TUI extends Container {
 
 	private doRender(): void {
 		if (this.stopped) return;
-		const width = this.terminal.columns;
+		const width = this.getRenderWidth();
 		const height = this.terminal.rows;
 		const widthChanged = this.previousWidth !== 0 && this.previousWidth !== width;
 		const heightChanged = this.previousHeight !== 0 && this.previousHeight !== height;

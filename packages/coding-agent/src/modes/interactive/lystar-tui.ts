@@ -36,6 +36,10 @@ export class LystarTUI extends TUI {
 		this.outputFlow = outputFlow;
 	}
 
+	protected override getRenderWidth(): number {
+		return Math.max(1, this.terminal.columns - (this.fullscreen ? 1 : 0));
+	}
+
 	override setTerminalModes(options: TerminalModeOptions): void {
 		const wasFullscreen = this.fullscreen;
 		if (this.running && wasFullscreen && !options.alternateScreen) {

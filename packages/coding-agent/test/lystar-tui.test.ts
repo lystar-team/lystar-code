@@ -37,10 +37,12 @@ class TestOutputFlow extends EventEmitter implements OutputFlow {
 class ChangingComponent implements Component {
 	text = "initial";
 	renderCount = 0;
+	widths: number[] = [];
 
-	render(): string[] {
+	render(width: number): string[] {
 		this.renderCount++;
-		return [this.text];
+		this.widths.push(width);
+		return [this.text.slice(0, width)];
 	}
 
 	invalidate(): void {}
@@ -51,7 +53,7 @@ describe("LYStar TUI", () => {
 		const terminal = new CaptureTerminal();
 		const tui = new LystarTUI(terminal);
 		const component = new ChangingComponent();
-		component.text = "X".repeat(terminal.columns);
+		component.text = "X".repeat(terminal.columns - 1);
 		tui.setTerminalModes({ alternateScreen: true, mouse: false });
 		tui.addChild(component);
 
@@ -63,12 +65,38 @@ describe("LYStar TUI", () => {
 		expect(output.indexOf("\x1b[?1049h")).toBeLessThan(output.indexOf("\x1b[?7l"));
 		expect(output.indexOf("\x1b[?7l")).toBeLessThan(output.indexOf(component.text));
 		expect(output.indexOf("\x1b[?7h")).toBeLessThan(output.indexOf("\x1b[?1049l"));
+		expect(component.widths).toContain(terminal.columns - 1);
+	});
+
+	it("keeps base and overlay frames off the physical right margin", async () => {
+		const terminal = new CaptureTerminal();
+		const tui = new LystarTUI(terminal);
+		const component = new ChangingComponent();
+		const overlay = new ChangingComponent();
+		tui.setTerminalModes({ alternateScreen: true, mouse: false });
+		tui.addChild(component);
+		tui.start();
+		await sleep(50);
+
+		tui.showOverlay(overlay, { width: "100%" });
+		for (let index = 0; index < 12; index++) {
+			component.text = `stream-${index}`;
+			tui.requestRender();
+			await sleep(17);
+		}
+		await sleep(50);
+
+		expect(component.widths.every((width) => width === terminal.columns - 1)).toBe(true);
+		expect(overlay.widths.every((width) => width === terminal.columns - 1)).toBe(true);
+		expect(terminal.writes.join("")).toContain("stream-11");
+		tui.stop();
 	});
 
 	it("leaves terminal autowrap unchanged in inline mode", async () => {
 		const terminal = new CaptureTerminal();
 		const tui = new LystarTUI(terminal);
-		tui.addChild(new ChangingComponent());
+		const component = new ChangingComponent();
+		tui.addChild(component);
 
 		tui.start();
 		await sleep(50);
@@ -77,6 +105,7 @@ describe("LYStar TUI", () => {
 		const output = terminal.writes.join("");
 		expect(output).not.toContain("\x1b[?7l");
 		expect(output).not.toContain("\x1b[?7h");
+		expect(component.widths).toContain(terminal.columns);
 	});
 
 	it("keeps only the latest render while stdout is backpressured", async () => {

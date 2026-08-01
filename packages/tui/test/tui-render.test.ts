@@ -40,6 +40,23 @@ class LoggingVirtualTerminal extends VirtualTerminal {
 	}
 }
 
+class InsetTUI extends TUI {
+	protected override getRenderWidth(): number {
+		return Math.max(1, this.terminal.columns - 1);
+	}
+}
+
+class WidthTrackingComponent implements Component {
+	widths: number[] = [];
+
+	render(width: number): string[] {
+		this.widths.push(width);
+		return ["content"];
+	}
+
+	invalidate(): void {}
+}
+
 async function withEnv<T>(updates: Record<string, string | undefined>, run: () => Promise<T>): Promise<T> {
 	const previousValues = new Map<string, string | undefined>();
 	for (const [key, value] of Object.entries(updates)) {
@@ -93,6 +110,27 @@ describe("TUI debug logging", () => {
 		} finally {
 			rmSync(logDir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("TUI render width", () => {
+	it("uses one effective width for base components and overlays", async () => {
+		const terminal = new VirtualTerminal(40, 10);
+		const tui = new InsetTUI(terminal);
+		const base = new WidthTrackingComponent();
+		const overlay = new WidthTrackingComponent();
+		tui.addChild(base);
+		tui.start();
+		await terminal.waitForRender();
+
+		tui.showOverlay(overlay, { width: "100%" });
+		await terminal.waitForRender();
+
+		assert.ok(base.widths.length > 0);
+		assert.ok(overlay.widths.length > 0);
+		assert.ok(base.widths.every((width) => width === 39));
+		assert.ok(overlay.widths.every((width) => width === 39));
+		tui.stop();
 	});
 });
 

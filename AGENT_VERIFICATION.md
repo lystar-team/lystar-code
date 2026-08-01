@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-01T19:55:45+08:00
+最后核验时间：2026-08-01T21:34:52+08:00
 
 环境：
 
@@ -14,6 +14,18 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### `0.83.0-lystar.5` 发布前核验
+
+本版修复普通终端和 Windows Console/ConPTY 一类终端在全屏流式输出时的右边界滚屏：`LystarTUI` 在 fullscreen 下保留最后一个物理列，基础帧和 overlay 使用同一安全宽度，避免输入框消失、布局散架和同段内容短暂重复；inline 模式仍使用完整宽度并保留现有自动换行生命周期。
+
+Pi 公共 TUI renderer 只增加一个默认返回 `terminal.columns` 的受保护渲染宽度入口，并在 `doRender()` 使用该入口；默认行为、`Terminal` 接口、差量算法、Session、Tool 和 Extension API 均未改变。LYStar 的减一列策略留在自身维护文件，上游合并影响限制在公共 TUI 的一个方法和一行取值。
+
+发布事实源为 `piConfig.productVersion = 0.83.0-lystar.5`，Pi 包版本保持 `0.83.0`。使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 完成 `npm run check`、`npm run build:offline`、TUI 全量、AI 95 个 test files 共 765 项、Coding Agent 192 个 test files 共 1739 项、Agent Core 18 个 test files 共 241 项和 Unix 安装器；AI 跳过 25 个 files、784 项，Coding Agent 跳过 6 个 files、48 项，Agent Core 跳过 1 项。
+
+Linux 使用 `script(1)` 创建不经过 tmux 的真实 PTY，在 80x8、80x24 和 120x36 下分别连续执行 120 次中文流式更新。原始 ANSI 逐帧回放得到 41、42、42 个绘制帧：三种尺寸均未使用物理最后一列，alternate screen 滚屏为 0，重复段落为 0 帧，输入框缺失为 0 帧。Linux x64 候选归档的 `la --version`、`la --help`、`PI_OFFLINE=1 la --list-models` 通过；候选二进制在 80x24、80x8、120x36 真实 PTY 中保留 Composer、模型状态和快捷栏，`/quit` 正常退出。
+
+五个平台归档的 SHA-256、manifest 版本与仓库、资产大小、许可证和 executable 格式通过。CodeGraph 增量同步与 affected 检查完成；`LystarTUI` 调用入口仍只有 `InteractiveMode`，影响面覆盖流式消息、Tool、状态、Extension UI、overlay、resize 和退出生命周期。临时 PTY 文件与本轮 tmux socket 已清理；macOS 和 Windows 只完成归档格式、架构和自动测试核验，没有对应系统实机运行证据。
 
 ### `0.83.0-lystar.4` 发布前核验
 
@@ -80,25 +92,6 @@ bash scripts/build-binaries.sh --skip-install --skip-build --offline-model-data
 结果：TUI 全量退出码 0；AI 95 个 test files、755 项通过，25 个 files、784 项跳过；Coding Agent 192 个 test files、1733 项通过，6 个 files、48 项跳过；Agent Core 241 项通过、1 项跳过；Unix 安装器通过。`main` CI run `30498563387` 全部通过，覆盖源码、构建、TUI、AI、Agent Core、Coding Agent 双分片，以及 Windows MinGit Bash 和 PowerShell 5.1 安装器。
 
 五个平台归档的 SHA-256 全部通过，manifest 的版本、Pi 版本、仓库、文件大小和五个平台资产一致；全部归档包含 `LICENSE` 和 `THIRD_PARTY_LICENSES.md`。从 Linux x64 归档运行 `la --version`、`la --help` 和 `PI_OFFLINE=1 la --list-models` 通过；真实 PTY 覆盖 80x24 启动、80x8 和 120x36 resize、无模型提示和 `/quit` 退出恢复。本轮独立 tmux socket 与临时文件已关闭并清理。Windows 与 macOS 以 CI、归档格式、架构和 SHA 为证据，未做对应系统的二进制实机运行。
-
-### 当前源码：TUI 输出调度与满宽换行修复
-
-本轮在 Coding Agent 的 LYStar 维护区新增 `LystarTUI`，统一执行最高 30 FPS 合帧；`process.stdout.writableNeedDrain` 为真时停止派发旧帧，`drain` 后只绘制最新状态。全屏期间关闭终端自动换行，退出 alternate screen 前恢复；inline 模式保持 Pi 原行为。Pi 公共 TUI renderer、`Terminal` 接口、Session、Tool 和 Extension API 均未修改。
-
-使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 完成：
-
-```bash
-npm run check
-npm run build:offline
-npm --workspace @earendil-works/pi-tui test
-npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=4
-```
-
-结果：定向 LYStar TUI 和 Workspace 共 22 项通过，覆盖 30 FPS 合帧、stdout 背压期间 100 帧只保留最新状态、满宽帧输出顺序、inline 模式和全屏终端模式恢复；TUI 全量退出码 0；Coding Agent 188 个 test files、1700 项通过，6 个 files、48 项跳过；静态检查和离线构建通过。当前 Shell 的 `NODE_TLS_REJECT_UNAUTHORIZED=0` 会使既有模型刷新测试卡满 60 秒，显式恢复为 `1` 后该用例耗时 515ms，通过后完成 Coding Agent 全量复跑。
-
-Linux x64、SSH 与 tmux 环境使用 16 MB 真实 Session 副本完成 PTY 验证。80x24 下 100 次分页延迟为 P50 33ms、P95 83ms、最大 138ms；100 次 SGR 滚轮延迟为 P50 26ms、P95 37ms、最大 46ms；100 个滚轮事件按 17ms 连续输入后，最后一次输入到稳定帧为 22ms。80 列 ASCII 和中文满宽行连续更新 60 帧后，后续行位置正确，无需 resize；80x8、120x36 resize、输入、`/reload`、`Ctrl+Z`/`SIGCONT`、`SIGTERM` 和正常退出均通过。`SIGTERM` 原始写日志确认 `CSI ? 7 h` 位于 `CSI ? 1049 l` 之前。本轮独立 tmux socket、临时 Session 和测试脚本已关闭并清理。
-
-CodeGraph 增量同步完成；调用入口只有 `InteractiveMode`，影响面覆盖滚动、流式消息、状态、Extension UI、overlay、resize 和退出生命周期，对应 Coding Agent 全量测试已复跑。Windows 与 macOS 未做实机验证。
 
 ### `0.82.1-lystar.11` 发布前核验
 
