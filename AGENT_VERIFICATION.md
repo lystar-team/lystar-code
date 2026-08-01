@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-01T14:57:49+08:00
+最后核验时间：2026-08-01T19:55:45+08:00
 
 环境：
 
@@ -14,6 +14,16 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### `0.83.0-lystar.4` 发布前核验
+
+本版为 Provider 流阶段失败补充结构化 `provider_stream_failure` 诊断，覆盖 Responses `response.failed`、流内 `error`、提前 EOF 和迭代读取异常。自动重试先排除鉴权、配额、参数、上下文、模型和策略等永久错误，再按结构化诊断处理未来未知流错误；默认最多重试 5 次，间隔为 1s、2s、4s、8s、16s。文本兼容分类中的 `ended without` 收紧为 `stream ended without`，避免确定性的 Provider 协议错误耗尽 31 秒重试预算。
+
+Release workflow 会等待同一 commit 的 main push CI 完成，成功后继续发布，失败则阻止；Node 固定为 `22.19.0`，npm 参数与 main CI 对齐，Checkout、Node、Bun 和 attestation Action 固定到明确 commit。Tag 与源码版本在安装依赖前校验，产物版本在打包后再次校验。真实成功 CI run `30688818708` 可通过门禁，真实失败 run `30688294491` 被阻止。
+
+发布事实源为 `piConfig.productVersion = 0.83.0-lystar.4`，Pi 包版本保持 `0.83.0`。`npm run check`、`npm run build:offline`、TUI 全量、AI 95 个 test files 共 765 项、Coding Agent 192 个 test files 共 1738 项、Agent Core 18 个 test files 共 241 项和 Unix 安装器通过；AI 跳过 25 个 files、784 项，Coding Agent 跳过 6 个 files、48 项，Agent Core 跳过 1 项。
+
+五个平台归档的 SHA-256、manifest 版本与仓库、资产大小、许可证和 executable 格式通过。Linux x64 候选包的 `la --version`、`la --help`、`PI_OFFLINE=1 la --list-models` 以及 80x24、80x8、120x36 真实 PTY 通过，本轮 tmux socket 与临时依赖目录已清理；macOS 和 Windows 只完成归档格式、架构和自动测试核验，没有对应系统实机运行证据。
 
 ### `0.83.0-lystar.3` 发布前核验
 

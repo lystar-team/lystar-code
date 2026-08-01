@@ -7,7 +7,7 @@
 		"commandName": "la",
 		"displayName": "LYStar Agent",
 		"envPrefix": "PI",
-		"productVersion": "0.83.0-lystar.3",
+		"productVersion": "0.83.0-lystar.4",
 		"configDir": ".pi",
 		"releaseRepository": "octyean/lystar-agent"
 	},
