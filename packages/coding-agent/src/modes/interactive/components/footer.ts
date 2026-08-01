@@ -33,12 +33,17 @@ function firstLineThatFits(lines: string[], width: number): string {
 	return lines.find((line) => visibleWidth(line) <= width) ?? truncateToWidth(lines.at(-1) ?? "", width, "");
 }
 
+export interface FooterOptions {
+	showUsage?: boolean;
+}
+
 /**
- * Footer 只显示单行会话用量；上下文、工作目录与会话名称由顶部 WorkspaceHeader 负责。
+ * Footer 显示会话用量与 Extension 状态；全屏工作区可把用量合并进快捷栏。
  */
 export class FooterComponent implements Component {
 	private session: AgentSession;
 	private footerData: ReadonlyFooterDataProvider;
+	private readonly showUsage: boolean;
 	private usageCache:
 		| {
 				session: AgentSession;
@@ -48,9 +53,10 @@ export class FooterComponent implements Component {
 		  }
 		| undefined;
 
-	constructor(session: AgentSession, footerData: ReadonlyFooterDataProvider) {
+	constructor(session: AgentSession, footerData: ReadonlyFooterDataProvider, options: FooterOptions = {}) {
 		this.session = session;
 		this.footerData = footerData;
+		this.showUsage = options.showUsage ?? true;
 	}
 
 	setSession(session: AgentSession): void {
@@ -75,7 +81,7 @@ export class FooterComponent implements Component {
 		// Git watcher cleanup handled by provider
 	}
 
-	render(width: number): string[] {
+	renderUsage(width: number): string | undefined {
 		const state = this.session.state;
 		const leafId = this.session.sessionManager.getLeafId();
 		if (this.usageCache?.session !== this.session || this.usageCache.leafId !== leafId) {
@@ -101,7 +107,6 @@ export class FooterComponent implements Component {
 
 		const usageTotals = this.usageCache.totals;
 		const latestCacheHitRate = this.usageCache.latestCacheHitRate;
-
 		const cumulativeInput = usageTotals.input + usageTotals.cacheRead + usageTotals.cacheWrite;
 		const inputText = cumulativeInput > 0 ? `输入 ${formatTokens(cumulativeInput)}` : undefined;
 		const outputText = usageTotals.output > 0 ? `输出 ${formatTokens(usageTotals.output)}` : undefined;
@@ -113,7 +118,6 @@ export class FooterComponent implements Component {
 				? `本次命中 ${latestCacheHitRate.toFixed(1)}%`
 				: undefined;
 
-		// Kimi Coding is subscription-backed despite using API-key authentication.
 		const usingSubscription = state.model
 			? state.model.provider === "kimi-coding" || this.session.modelRuntime.isUsingOAuth(state.model.provider)
 			: false;
@@ -125,6 +129,7 @@ export class FooterComponent implements Component {
 		const fullParts = [inputText, outputText, cacheReadText, cacheWriteText, latestHitText, costText, xpText].filter(
 			(value): value is string => value !== undefined,
 		);
+		if (fullParts.length === 0) return undefined;
 		const mediumParts = [inputText, outputText, cacheReadText, latestHitText].filter(
 			(value): value is string => value !== undefined,
 		);
@@ -132,25 +137,26 @@ export class FooterComponent implements Component {
 			(value): value is string => value !== undefined,
 		);
 		const minimalParts = [inputText, outputText].filter((value): value is string => value !== undefined);
-		const lines: string[] = [];
-		if (fullParts.length > 0) {
-			const summaries = [
-				`累计 ${fullParts.join(" · ")}`,
-				mediumParts.join(" · "),
-				compactParts.join(" · "),
-				minimalParts.join(" · "),
-			].filter(Boolean);
-			lines.push(theme.fg("dim", firstLineThatFits(summaries, width)));
-		}
+		const summaries = [
+			`累计 ${fullParts.join(" · ")}`,
+			mediumParts.join(" · "),
+			compactParts.join(" · "),
+			minimalParts.join(" · "),
+		].filter(Boolean);
+		return theme.fg("dim", firstLineThatFits(summaries, width));
+	}
 
-		// Add extension statuses on a single line, sorted by key alphabetically
+	render(width: number): string[] {
+		const lines: string[] = [];
+		const usage = this.showUsage ? this.renderUsage(width) : undefined;
+		if (usage) lines.push(usage);
+
 		const extensionStatuses = this.footerData.getExtensionStatuses();
 		if (extensionStatuses.size > 0) {
-			const sortedStatuses = Array.from(extensionStatuses.entries())
+			const statusLine = Array.from(extensionStatuses.entries())
 				.sort(([a], [b]) => a.localeCompare(b))
-				.map(([, text]) => sanitizeStatusText(text));
-			const statusLine = sortedStatuses.join(" ");
-			// Truncate to terminal width with dim ellipsis for consistency with footer style
+				.map(([, text]) => sanitizeStatusText(text))
+				.join(" ");
 			lines.push(truncateToWidth(statusLine, width, theme.fg("dim", "...")));
 		}
 

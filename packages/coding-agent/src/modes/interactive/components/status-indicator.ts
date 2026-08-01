@@ -2,7 +2,6 @@ import { type Component, Loader, type TUI } from "@earendil-works/pi-tui";
 import type { WorkingIndicatorOptions } from "../../../core/extensions/index.ts";
 import { theme } from "../theme/theme.ts";
 import { CountdownTimer } from "./countdown-timer.ts";
-import { keyText } from "./keybinding-hints.ts";
 
 export type StatusIndicatorKind = "working" | "retry" | "compaction" | "branchSummary";
 
@@ -43,8 +42,7 @@ export class RetryStatusIndicator extends StatusIndicator {
 	private countdown: CountdownTimer | undefined;
 
 	constructor(ui: TUI, attempt: number, maxAttempts: number, delayMs: number) {
-		const retryMessage = (seconds: number) =>
-			`${seconds} 秒后重试（${attempt}/${maxAttempts}）...（${keyText("app.interrupt")} 取消）`;
+		const retryMessage = (seconds: number) => `${seconds} 秒后重试 · 第 ${attempt}/${maxAttempts} 次`;
 		super(
 			"retry",
 			ui,
@@ -75,11 +73,12 @@ export type CompactionStatusReason = "manual" | "threshold" | "overflow";
 
 export class CompactionStatusIndicator extends StatusIndicator {
 	constructor(ui: TUI, reason: CompactionStatusReason) {
-		const cancelHint = `（${keyText("app.interrupt")} 取消）`;
 		const label =
 			reason === "manual"
-				? `正在压缩上下文... ${cancelHint}`
-				: `${reason === "overflow" ? "检测到上下文溢出，" : ""}正在自动压缩... ${cancelHint}`;
+				? "正在压缩上下文..."
+				: reason === "overflow"
+					? "上下文已满，正在压缩..."
+					: "正在自动压缩上下文...";
 		super(
 			"compaction",
 			ui,
@@ -97,7 +96,7 @@ export class BranchSummaryStatusIndicator extends StatusIndicator {
 			ui,
 			(spinner) => theme.fg("accent", spinner),
 			(text) => theme.fg("muted", text),
-			`正在生成分支摘要...（${keyText("app.interrupt")} 取消）`,
+			"正在生成分支摘要...",
 		);
 	}
 }

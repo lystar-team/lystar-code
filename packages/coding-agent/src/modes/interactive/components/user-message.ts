@@ -52,11 +52,18 @@ export class UserMessageComponent extends Container {
 	}
 
 	override render(width: number): string[] {
-		const lines = super.render(width);
+		const railWidth = width >= 3 ? 2 : 0;
+		const lines = super.render(Math.max(1, width - railWidth));
 		if (lines.length === 0) {
 			return lines;
 		}
 
+		if (railWidth > 0) {
+			const rail = theme.fg("accent", "│");
+			for (let index = 0; index < lines.length; index++) {
+				lines[index] = `${rail} ${lines[index]}`;
+			}
+		}
 		lines[0] = OSC133_ZONE_START + lines[0];
 		lines[lines.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + lines[lines.length - 1];
 		return lines;

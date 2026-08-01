@@ -305,6 +305,25 @@ describe("FooterComponent width handling", () => {
 		for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 	});
 
+	it("can move usage into the fixed shortcut bar while keeping extension status", () => {
+		const session = createSession({
+			sessionName: "顶部会话名",
+			usage: {
+				input: 12_000,
+				output: 3_000,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { total: 0 },
+			},
+		});
+		const footer = new FooterComponent(session, createFooterData(1, new Map([["openviking", "OV ✓"]])), {
+			showUsage: false,
+		});
+
+		expect(stripAnsi(footer.renderUsage(40) ?? "")).toContain("输入 12K · 输出 3K");
+		expect(footer.render(40).map(stripAnsi)).toEqual(["OV ✓"]);
+	});
+
 	it("marks Kimi Coding costs as subscription estimates", () => {
 		const session = createSession({
 			sessionName: "",

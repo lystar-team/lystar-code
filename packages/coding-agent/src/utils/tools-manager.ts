@@ -148,8 +148,16 @@ async function getLatestVersion(repo: string): Promise<string> {
 	return data.tag_name.replace(/^v/, "");
 }
 
+function formatMegabytes(bytes: number): string {
+	return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+}
+
 // Download a file from URL
-async function downloadFile(url: string, dest: string): Promise<void> {
+async function downloadFile(
+	url: string,
+	dest: string,
+	onStart?: (sizeBytes: number | undefined) => void,
+): Promise<void> {
 	const response = await fetch(url, {
 		signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
 	});
@@ -162,6 +170,8 @@ async function downloadFile(url: string, dest: string): Promise<void> {
 		throw new Error("No response body");
 	}
 
+	const contentLength = Number(response.headers.get("content-length"));
+	onStart?.(Number.isFinite(contentLength) && contentLength > 0 ? contentLength : undefined);
 	const fileStream = createWriteStream(dest);
 	await pipeline(Readable.fromWeb(response.body as NodeReadableStream<Uint8Array>), fileStream);
 }
@@ -351,7 +361,7 @@ function validateManagedWindowsBash(bashPath: string, rootDir: string): void {
 	}
 }
 
-async function downloadManagedWindowsBash(): Promise<string> {
+async function downloadManagedWindowsBash(silent: boolean): Promise<string> {
 	if (platform() !== "win32" || arch() !== "x64") {
 		throw new Error(`Unsupported managed MinGit platform: ${platform()}/${arch()}`);
 	}
@@ -368,7 +378,14 @@ async function downloadManagedWindowsBash(): Promise<string> {
 		for (const url of MINGIT_URLS) {
 			try {
 				rmSync(archivePath, { force: true });
-				await downloadFile(url, archivePath);
+				await downloadFile(url, archivePath, (sizeBytes) => {
+					if (!silent) {
+						const size = sizeBytes ? `（${formatMegabytes(sizeBytes)}）` : "";
+						console.log(chalk.dim(`正在下载 MinGit Bash${size}...`));
+					}
+				});
+				if (!silent)
+					console.log(chalk.dim(`已下载 MinGit Bash（${formatMegabytes(statSync(archivePath).size)}）。`));
 				if (calculateFileSha256(archivePath) !== MINGIT_SHA256) throw new Error("SHA-256 校验失败");
 				downloaded = true;
 				break;
@@ -405,7 +422,7 @@ async function downloadManagedWindowsBash(): Promise<string> {
 	}
 }
 
-async function provisionManagedWindowsBash(): Promise<string> {
+async function provisionManagedWindowsBash(silent: boolean): Promise<string> {
 	const releaseLock = await acquireManagedMinGitLock();
 	try {
 		const existing = getManagedWindowsBashPath();
@@ -418,7 +435,7 @@ async function provisionManagedWindowsBash(): Promise<string> {
 				// 锁内重新检查后仍损坏，继续安装。
 			}
 		}
-		const installed = await downloadManagedWindowsBash();
+		const installed = await downloadManagedWindowsBash(silent);
 		addManagedMinGitToPath(MANAGED_MINGIT_DIR);
 		return installed;
 	} finally {
@@ -440,7 +457,7 @@ export async function ensureManagedWindowsBash(silent = false): Promise<string |
 	}
 	if (isOfflineModeEnabled()) return undefined;
 
-	managedWindowsBashPromise ??= provisionManagedWindowsBash()
+	managedWindowsBashPromise ??= provisionManagedWindowsBash(silent)
 		.then((bashPath) => {
 			if (!silent) console.log(chalk.dim(`MinGit Bash 已安装到 ${bashPath}`));
 			return bashPath;

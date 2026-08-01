@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-07-30T07:13:16+08:00
+最后核验时间：2026-08-01T14:39:31+08:00
 
 环境：
 
@@ -14,6 +14,30 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### `0.83.0-lystar.2` 发布前核验
+
+本版调整 TUI 信息层级：顶栏按宽度保留产品、项目、分支、会话和上下文，用单行摘要替代启动资源墙，用户消息增加任务轨道，Composer 集中展示模型、思考强度和项目可信状态，快捷操作与累计用量合并为单行。主题文件、Pi 公共 TUI renderer、Session、Tool 和 Extension API 均未修改。
+
+Windows 一键安装入口增加 60 秒超时、三次重试和 MB 大小提示；PowerShell 安装器改从 `release-manifest.json` 获取版本、Windows 资产与预期大小，下载后同时校验大小和 SHA-256。托管 MinGit 下载也按 MB 显示。Windows CI 已改为物化当前安装器后真实执行安装、`la --version` 和卸载，并在结束时恢复用户 PATH。
+
+发布事实源为 `piConfig.productVersion = 0.83.0-lystar.2`，Pi 包版本保持 `0.83.0`。使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 完成：
+
+```bash
+npm ci --ignore-scripts
+npm run check
+npm run build:offline
+npm --workspace @earendil-works/pi-tui test
+npm --workspace @earendil-works/pi-ai test
+npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=4
+npm --workspace @earendil-works/pi-agent-core test
+bash scripts/test-install-sh.sh
+bash scripts/build-binaries.sh --skip-install --skip-build --offline-model-data
+```
+
+结果：TUI 全量通过；AI 95 个 test files、755 项通过，25 个 files、784 项跳过；Coding Agent 192 个 test files、1736 项通过，6 个 files、48 项跳过；Agent Core 241 项通过、1 项跳过；Unix 安装器通过。静态检查、离线构建和 `git diff --check` 通过。
+
+五个平台归档的 SHA-256 全部通过，manifest 的版本、Pi 版本、仓库、文件大小和五个平台资产一致；归档均包含 `LICENSE` 和 `THIRD_PARTY_LICENSES.md`。产物格式覆盖 macOS ARM64/x64 Mach-O、Linux ARM64/x64 ELF 和 Windows x64 PE32+。Linux x64 归档的 `la --version`、`la --help` 和 `PI_OFFLINE=1 la --list-models` 通过；发行包真实 PTY 覆盖 80x24、80x8、120x36 resize 和 `/quit` 退出恢复，本轮 tmux socket 与临时目录已清理。Windows PowerShell 5.1 的真实安装、启动和卸载由本次 main push CI 执行，本地没有 Windows 实机证据。
 
 ### `0.83.0-lystar.1` 发布前核验
 

@@ -15,10 +15,11 @@ const keys: Partial<Record<AppKeybinding, string>> = {
 	"app.viewport.bottom": "End",
 };
 
-function createBar(state: WorkspaceShortcutState): WorkspaceShortcutBar {
+function createBar(state: WorkspaceShortcutState, status?: string): WorkspaceShortcutBar {
 	return new WorkspaceShortcutBar({
 		getState: () => state,
 		getKeyText: (keybinding) => keys[keybinding] ?? keybinding,
+		getStatus: status ? () => status : undefined,
 	});
 }
 
@@ -40,6 +41,16 @@ describe("WorkspaceShortcutBar", () => {
 		expect(line).toContain("Esc 取消");
 		expect(line).toContain("Ctrl+O 展开");
 		expect(line).not.toContain("思考强度");
+	});
+
+	it("aligns usage to the right without displacing the primary action", () => {
+		const line = stripAnsi(
+			createBar({ streaming: false, bashRunning: false, following: true }, "输入 12K · 输出 3K").render(80)[0],
+		);
+
+		expect(line).toContain("Shift+Tab 思考强度");
+		expect(line).toContain("输入 12K · 输出 3K");
+		expect(line.endsWith("输入 12K · 输出 3K")).toBe(true);
 	});
 
 	it("keeps the return-to-bottom action first and never wraps", () => {

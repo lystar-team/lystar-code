@@ -30,7 +30,9 @@ function isRenderVersioned(component: Component): component is RenderVersionedCo
 }
 
 export interface WorkspaceHeaderState {
+	product?: string;
 	path: string;
+	branch?: string;
 	session?: string;
 	context: string;
 }
@@ -46,8 +48,11 @@ export class WorkspaceHeader implements Component {
 
 	render(width: number): string[] {
 		const state = this.getState();
-		const location = state.session ? `${state.path}  ·  ${state.session}` : state.path;
-		const left = theme.fg("dim", location);
+		const separator = theme.fg("dim", "  ·  ");
+		const product = state.product ? theme.bold(theme.fg("accent", state.product)) : undefined;
+		const path = theme.fg("muted", state.path);
+		const branch = state.branch ? theme.fg("text", state.branch) : undefined;
+		const session = state.session ? theme.fg("muted", state.session) : undefined;
 		const right = theme.fg("text", state.context);
 		const rightWidth = visibleWidth(right);
 		if (rightWidth >= width) {
@@ -55,10 +60,20 @@ export class WorkspaceHeader implements Component {
 		}
 
 		const leftMaxWidth = Math.max(0, width - rightWidth - 2);
-		const visibleLeft = truncateToWidth(left, leftMaxWidth, theme.fg("dim", "..."));
-		const gap = " ".repeat(Math.max(0, width - visibleWidth(visibleLeft) - rightWidth));
-		return [`${visibleLeft}${gap}${right}`];
+		const candidates = [[product, path, branch, session], [path, branch, session], [path, branch], [path]]
+			.map((parts) => parts.filter((part): part is string => Boolean(part)).join(separator))
+			.filter((candidate, index, all) => candidate && all.indexOf(candidate) === index);
+		const left =
+			candidates.find((candidate) => visibleWidth(candidate) <= leftMaxWidth) ??
+			truncateToWidth(candidates.at(-1) ?? "", leftMaxWidth, theme.fg("dim", "..."));
+		const gap = " ".repeat(Math.max(0, width - visibleWidth(left) - rightWidth));
+		return [`${left}${gap}${right}`];
 	}
+}
+
+export interface WorkspaceComposerInfo {
+	primary: string;
+	secondary?: string;
 }
 
 export interface WorkspaceComposerOptions {
@@ -66,7 +81,7 @@ export interface WorkspaceComposerOptions {
 	structuredEditor?: Component & {
 		renderWorkspace(width: number): { body: string[]; autocomplete: string[] };
 	};
-	getInfo: () => string;
+	getInfo: () => WorkspaceComposerInfo;
 	fullscreen: boolean;
 }
 
@@ -109,10 +124,14 @@ export class WorkspaceComposer implements Component {
 			return `${border("│")}${content}${border("│")}`;
 		});
 
-		const info = truncateToWidth(this.options.getInfo().trim(), Math.max(0, innerWidth - 4), "…");
-		const infoLabel = info ? ` ${info} ` : "";
-		const dividerWidth = Math.max(0, innerWidth - visibleWidth(infoLabel));
-		const bottom = `${border(`╰${"─".repeat(dividerWidth)}`)}${theme.fg("dim", infoLabel)}${border("╯")}`;
+		const info = this.options.getInfo();
+		const secondary = truncateToWidth(info.secondary?.trim() ?? "", Math.max(0, Math.floor(innerWidth / 2)), "…");
+		const secondaryLabel = secondary ? ` ${secondary} ` : "";
+		const primaryWidth = Math.max(0, innerWidth - visibleWidth(secondaryLabel) - 4);
+		const primary = truncateToWidth(info.primary.trim(), primaryWidth, "…");
+		const primaryLabel = primary ? ` ${primary} ` : "";
+		const dividerWidth = Math.max(0, innerWidth - visibleWidth(primaryLabel) - visibleWidth(secondaryLabel) - 2);
+		const bottom = `${border("╰─")}${theme.fg("dim", primaryLabel)}${border("─".repeat(dividerWidth))}${theme.fg("dim", secondaryLabel)}${border("─╯")}`;
 		const framed = [`${border("╭")}${border("─".repeat(innerWidth))}${border("╮")}`, ...framedBody, bottom];
 		for (const line of autocomplete) {
 			framed.push(` ${truncateToWidth(line, innerWidth, "", true)} `);

@@ -5,6 +5,7 @@
 )
 
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 $Repository = "__LYSTAR_RELEASE_REPOSITORY__"
 $InstallRoot = Join-Path $env:LOCALAPPDATA "LYStarAgent"
 $VersionsDir = Join-Path $InstallRoot "versions"
@@ -17,16 +18,31 @@ if ($PSVersionTable.PSVersion.Major -lt 5) {
 }
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
-function Invoke-Download([string]$Uri, [string]$OutFile) {
+function Format-Megabytes([long]$Bytes) {
+    return "{0:0.00} MB" -f ($Bytes / 1MB)
+}
+
+function Invoke-Download([string]$Uri, [string]$OutFile, [long]$ExpectedBytes = 0) {
+    $Name = Split-Path -Leaf $OutFile
+    $SizeHint = if ($ExpectedBytes -gt 0) { "（$(Format-Megabytes $ExpectedBytes)）" } else { "" }
+    Write-Host "正在下载 $Name$SizeHint..."
     for ($Attempt = 1; $Attempt -le 3; $Attempt++) {
         try {
-            Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 -Uri $Uri -OutFile $OutFile
+            Remove-Item -Force -ErrorAction SilentlyContinue $OutFile
+            Invoke-WebRequest -UseBasicParsing -TimeoutSec 60 -Uri $Uri -OutFile $OutFile
+            $ActualBytes = (Get-Item $OutFile).Length
+            if ($ActualBytes -le 0) { throw "下载结果为空。" }
+            if ($ExpectedBytes -gt 0 -and $ActualBytes -ne $ExpectedBytes) {
+                throw "文件大小不符：预期 $(Format-Megabytes $ExpectedBytes)，实际 $(Format-Megabytes $ActualBytes)。"
+            }
+            Write-Host "已下载 $Name（$(Format-Megabytes $ActualBytes)）。"
             return
         }
         catch {
             if ($Attempt -eq 3) {
                 throw "下载失败：$Uri`n$($_.Exception.Message)"
             }
+            Write-Host "下载中断，正在重试（$($Attempt + 1)/3）..."
             Start-Sleep -Seconds $Attempt
         }
     }
@@ -101,12 +117,20 @@ if ($Repository -eq "__LYSTAR_RELEASE_REPOSITORY__") {
     throw "安装器尚未写入 GitHub repository。请使用 release 构建生成的 install.ps1。"
 }
 
-if (!$Version) {
-    $Headers = @{ "User-Agent" = "LYStar-Agent-Installer" }
-    $Release = Invoke-JsonRequest "https://api.github.com/repos/$Repository/releases/latest" $Headers
-    $Version = [string]$Release.tag_name -replace '^v', ''
+$Headers = @{ "User-Agent" = "LYStar-Agent-Installer" }
+$ManifestUrl = if ($Version) {
+    "https://github.com/$Repository/releases/download/v$Version/release-manifest.json"
 }
+else {
+    "https://github.com/$Repository/releases/latest/download/release-manifest.json"
+}
+$Manifest = Invoke-JsonRequest $ManifestUrl $Headers
+if (!$Version) { $Version = [string]$Manifest.version }
 if ($Version -notmatch '^\d+\.\d+\.\d+-lystar\.\d+$') { throw "无效版本：$Version" }
+if ([string]$Manifest.version -ne $Version) { throw "Release manifest 版本不一致。" }
+if ($Manifest.repository -and [string]$Manifest.repository -ne $Repository) {
+    throw "Release manifest 仓库不一致。"
+}
 
 $Arch = switch ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()) {
     "X64" { "x64" }
@@ -116,6 +140,9 @@ $Arch = switch ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToS
 if ($Arch -eq "arm64") { throw "首版暂未提供 Windows ARM64 发行包。" }
 
 $Asset = "lystar-agent-v$Version-windows-x64.zip"
+$AssetInfo = $Manifest.assets."windows-x64"
+if (!$AssetInfo -or [string]$AssetInfo.file -ne $Asset) { throw "Release manifest 中缺少 $Asset。" }
+$ExpectedAssetBytes = [long]$AssetInfo.size
 $BaseUrl = "https://github.com/$Repository/releases/download/v$Version"
 $Temp = Join-Path ([IO.Path]::GetTempPath()) ("lystar-install-" + [Guid]::NewGuid())
 New-Item -ItemType Directory -Force $Temp | Out-Null
@@ -123,8 +150,8 @@ New-Item -ItemType Directory -Force $Temp | Out-Null
 try {
     $Archive = Join-Path $Temp $Asset
     $Sums = Join-Path $Temp "SHA256SUMS"
-    Write-Host "正在下载 LYStar Agent $Version (windows-x64)..."
-    Invoke-Download "$BaseUrl/$Asset" $Archive
+    Write-Host "正在安装 LYStar Agent $Version (windows-x64)..."
+    Invoke-Download "$BaseUrl/$Asset" $Archive $ExpectedAssetBytes
     Invoke-Download "$BaseUrl/SHA256SUMS" $Sums
 
     $Pattern = "^([0-9a-fA-F]{64})\s+\*?" + [Regex]::Escape($Asset) + '$'

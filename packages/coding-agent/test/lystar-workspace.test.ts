@@ -70,7 +70,7 @@ describe("LYStar workspace", () => {
 			"skill-3",
 			"(1/3)",
 		);
-		const composer = new WorkspaceComposer({ editor, getInfo: () => "model", fullscreen: true });
+		const composer = new WorkspaceComposer({ editor, getInfo: () => ({ primary: "model" }), fullscreen: true });
 		const shortcuts = textContainer("shortcuts");
 		const workspace = new LystarWorkspace({
 			getHeight: () => 8,
@@ -413,7 +413,9 @@ describe("LYStar workspace", () => {
 
 	it("keeps context usage visible when the header is narrow", () => {
 		const header = new WorkspaceHeader(() => ({
+			product: "LYStar Agent",
 			path: "~/very/long/project/path/that/needs/truncation",
+			branch: "main",
 			context: "上下文 64.2%  ·  82K/128K",
 		}));
 
@@ -423,30 +425,36 @@ describe("LYStar workspace", () => {
 		expect(visibleWidth(line)).toBeLessThanOrEqual(40);
 	});
 
-	it("renders the Grok-style workspace header and composer", () => {
+	it("renders the product workspace header and structured composer status", () => {
 		const header = new WorkspaceHeader(() => ({
+			product: "LYStar Agent",
 			path: "~/project",
+			branch: "main",
 			session: "任务一",
 			context: "上下文 7.4%  ·  9.5K/128K",
 		}));
 		const editor = textContainer("────────────────", "  修复登录流程", "────────────────");
 		const composer = new WorkspaceComposer({
 			editor,
-			getInfo: () => "(upstream) claude-sonnet-4 · 思考强度：高(high) · 项目已信任",
+			getInfo: () => ({
+				primary: "upstream/claude-sonnet-4 · 思考强度：高(high)",
+				secondary: "项目已信任",
+			}),
 			fullscreen: true,
 		});
 
-		const headerLines = header.render(60).map(stripAnsi);
-		const composerLines = composer.render(60).map(stripAnsi);
+		const headerLines = header.render(100).map(stripAnsi);
+		const composerLines = composer.render(80).map(stripAnsi);
 
 		expect(headerLines).toHaveLength(1);
-		expect(headerLines[0]).toContain("~/project  ·  任务一");
+		expect(headerLines[0]).toContain("LYStar Agent  ·  ~/project  ·  main  ·  任务一");
 		expect(headerLines[0]).toContain("上下文 7.4%  ·  9.5K/128K");
 		expect(composerLines[0]).toMatch(/^╭─+╮$/);
 		expect(composerLines[1]).toContain("│❯ 修复登录流程");
-		expect(composerLines[2]).toContain("(upstream) claude-sonnet-4");
+		expect(composerLines[2]).toContain("upstream/claude-sonnet-4");
 		expect(composerLines[2]).toContain("思考强度：高(high)");
-		expect(composerLines[2]).toMatch(/^╰─+ .* ╯$/);
+		expect(composerLines[2]).toContain("项目已信任");
+		expect(composerLines[2]).toMatch(/^╰─+ .* ─+ .* ─╯$/);
 	});
 
 	it("uses structured editor sections only while that editor is active", () => {
@@ -460,7 +468,7 @@ describe("LYStar workspace", () => {
 		const composer = new WorkspaceComposer({
 			editor,
 			structuredEditor,
-			getInfo: () => "项目已信任 · test-model",
+			getInfo: () => ({ primary: "test-model", secondary: "项目已信任" }),
 			fullscreen: true,
 		});
 
@@ -479,7 +487,7 @@ describe("LYStar workspace", () => {
 
 	it("centers the prompt arrow beside multiline input", () => {
 		const editor = textContainer("────────────────", "  第一行", "  第二行", "  第三行", "────────────────");
-		const composer = new WorkspaceComposer({ editor, getInfo: () => "", fullscreen: true });
+		const composer = new WorkspaceComposer({ editor, getInfo: () => ({ primary: "" }), fullscreen: true });
 
 		const lines = composer.render(40).map(stripAnsi);
 

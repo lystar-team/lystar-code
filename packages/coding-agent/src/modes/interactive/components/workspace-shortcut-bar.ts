@@ -11,6 +11,7 @@ export interface WorkspaceShortcutState {
 export interface WorkspaceShortcutBarOptions {
 	getState: () => WorkspaceShortcutState;
 	getKeyText: (keybinding: AppKeybinding) => string;
+	getStatus?: (width: number) => string | undefined;
 }
 
 export class WorkspaceShortcutBar implements Component {
@@ -39,15 +40,26 @@ export class WorkspaceShortcutBar implements Component {
 			items.push(`${theme.bold(theme.fg("text", "/"))}${theme.fg("dim", " 命令")}`);
 		}
 
-		const separator = theme.fg("dim", " │ ");
+		const separator = theme.fg("dim", "  ·  ");
+		const status = this.options.getStatus?.(Math.max(0, Math.floor(width * 0.45)));
+		const statusWidth = status ? visibleWidth(status) : 0;
+		const actionsWidth = status ? Math.max(1, width - statusWidth - 2) : width;
 		const visible: string[] = [];
 		for (const item of items) {
 			const candidate = visible.length === 0 ? item : `${visible.join(separator)}${separator}${item}`;
-			if (visibleWidth(candidate) > width) break;
+			if (visibleWidth(candidate) > actionsWidth) break;
 			visible.push(item);
 		}
-		const line = visible.length > 0 ? visible.join(separator) : (items[0] ?? "");
-		return [truncateToWidth(line, width, "")];
+		const actions = truncateToWidth(
+			visible.length > 0 ? visible.join(separator) : (items[0] ?? ""),
+			actionsWidth,
+			"",
+		);
+		if (!status || visibleWidth(actions) + statusWidth + 2 > width) {
+			return [truncateToWidth(actions, width, "")];
+		}
+		const gap = " ".repeat(width - visibleWidth(actions) - statusWidth);
+		return [`${actions}${gap}${status}`];
 	}
 
 	private formatKey(keybinding: AppKeybinding, label: string): string {

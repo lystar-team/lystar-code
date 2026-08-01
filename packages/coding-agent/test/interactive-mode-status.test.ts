@@ -718,6 +718,28 @@ describe("InteractiveMode.showLoadedResources", () => {
 		expect(output).not.toContain("resource-list");
 	});
 
+	test("shows one consumer-facing resource summary on normal startup", () => {
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: false,
+			contextFiles: [{ path: "/tmp/project/AGENTS.md" }],
+			skills: [
+				{ filePath: "/tmp/skill/commit/SKILL.md", name: "commit" },
+				{ filePath: "/tmp/skill/review/SKILL.md", name: "review" },
+			],
+			extensions: [{ path: "/tmp/extensions/answer.ts" }],
+		});
+
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
+			force: false,
+			summary: true,
+		});
+
+		const output = renderAll(fakeThis.loadedResourcesContainer);
+		expect(output).toContain("已加载 1 个上下文 · 2 个 Skill · 1 个 Extension");
+		expect(output).not.toContain("[上下文]");
+		expect(output).not.toContain("commit, review");
+	});
+
 	test("shows full resource listing when expanded", () => {
 		const fakeThis = createShowLoadedResourcesThis({
 			quietStartup: false,

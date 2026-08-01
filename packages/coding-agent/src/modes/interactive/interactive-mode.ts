@@ -120,7 +120,7 @@ import { ExtensionEditorComponent } from "./components/extension-editor.ts";
 import { ExtensionInputComponent } from "./components/extension-input.ts";
 import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
 import { FooterComponent, formatTokens } from "./components/footer.ts";
-import { formatKeyText, keyDisplayText, keyText } from "./components/keybinding-hints.ts";
+import { formatKeyText, keyDisplayText } from "./components/keybinding-hints.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { LystarWorkspace, WorkspaceComposer, WorkspaceHeader } from "./components/lystar-workspace.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
@@ -530,7 +530,7 @@ export class InteractiveMode {
 		this.editorContainer = new Container();
 		this.editorContainer.addChild(this.editor as Component);
 		this.footerDataProvider = new FooterDataProvider(this.sessionManager.getCwd());
-		this.footer = new FooterComponent(this.session, this.footerDataProvider);
+		this.footer = new FooterComponent(this.session, this.footerDataProvider, { showUsage: false });
 		this.footerContainer = new Container();
 		this.footerContainer.addChild(this.footer);
 		this.shortcutContainer = new Container();
@@ -542,6 +542,7 @@ export class InteractiveMode {
 					following: this.workspace?.isFollowing() ?? true,
 				}),
 				getKeyText: (keybinding) => keyDisplayText(keybinding),
+				getStatus: (width) => (this.customFooter ? undefined : this.footer.renderUsage(width)),
 			}),
 		);
 
@@ -566,13 +567,15 @@ export class InteractiveMode {
 				const model = !state.model || state.model.id === "unknown" ? t("status.noModel") : state.model.id;
 				const provider =
 					state.model && this.footerDataProvider.getAvailableProviderCount() > 1
-						? `(${state.model.provider})`
+						? state.model.provider
 						: undefined;
 				const thinking = state.model?.reasoning
 					? t("status.thinkingLevel", { level: formatThinkingLevel(state.thinkingLevel || "off") })
 					: undefined;
-				const trust = this.settingsManager.isProjectTrusted() ? "项目已信任" : "操作需确认";
-				return [trust, model, thinking, provider].filter(Boolean).join(" · ");
+				return {
+					primary: [`${provider ? `${provider}/` : ""}${model}`, thinking].filter(Boolean).join(" · "),
+					secondary: this.settingsManager.isProjectTrusted() ? "项目已信任" : "操作需确认",
+				};
 			},
 		});
 		this.workspace = new LystarWorkspace({
@@ -844,7 +847,9 @@ export class InteractiveMode {
 			const branch = this.footerDataProvider.getGitBranch();
 			const path = this.formatDisplayPath(this.sessionManager.getCwd());
 			return {
-				path: branch ? `${path} (${branch})` : path,
+				product: APP_TITLE,
+				path,
+				branch: branch ?? undefined,
 				session: this.sessionManager.getSessionName(),
 				context: `上下文 ${percent}  ·  ${used}/${available}`,
 			};
@@ -1490,6 +1495,7 @@ export class InteractiveMode {
 		extensions?: Array<{ path: string; sourceInfo?: SourceInfo }>;
 		force?: boolean;
 		showDiagnosticsWhenQuiet?: boolean;
+		summary?: boolean;
 	}): void {
 		// Resource rendering is idempotent; chat clears no longer clear this separate container.
 		this.loadedResourcesContainer.clear();
@@ -1559,7 +1565,27 @@ export class InteractiveMode {
 			}
 		}
 
-		if (showListing) {
+		if (showListing && options?.summary && !this.options.verbose) {
+			const systemPromptSource = this.session.resourceLoader.getSystemPromptSource();
+			const contextCount =
+				(systemPromptSource ? 1 : 0) +
+				this.session.resourceLoader.getAppendSystemPromptSources().length +
+				this.session.resourceLoader.getAgentsFiles().agentsFiles.length;
+			const customThemeCount = themesResult.themes.filter((loadedTheme) => loadedTheme.sourcePath).length;
+			const parts = [
+				contextCount > 0 ? `${contextCount} 个上下文` : undefined,
+				skillsResult.skills.length > 0 ? `${skillsResult.skills.length} 个 Skill` : undefined,
+				this.session.promptTemplates.length > 0 ? `${this.session.promptTemplates.length} 个 Prompt` : undefined,
+				extensions.length > 0 ? `${extensions.length} 个 Extension` : undefined,
+				customThemeCount > 0 ? `${customThemeCount} 个主题` : undefined,
+			].filter((part): part is string => Boolean(part));
+			if (parts.length > 0) {
+				this.loadedResourcesContainer.addChild(
+					new TruncatedText(theme.fg("dim", `已加载 ${parts.join(" · ")}`), 0, 0),
+				);
+				this.loadedResourcesContainer.addChild(new Spacer(1));
+			}
+		} else if (showListing) {
 			const systemPromptSource = this.session.resourceLoader.getSystemPromptSource();
 			const contextFiles = [
 				...(systemPromptSource ? [systemPromptSource] : []),
@@ -1776,7 +1802,7 @@ export class InteractiveMode {
 
 		const extensionRunner = this.session.extensionRunner;
 		this.setupExtensionShortcuts(extensionRunner);
-		this.showLoadedResources({ force: false, showDiagnosticsWhenQuiet: true });
+		this.showLoadedResources({ force: false, showDiagnosticsWhenQuiet: true, summary: true });
 		this.showStartupNoticesIfNeeded();
 	}
 
@@ -2072,7 +2098,7 @@ export class InteractiveMode {
 		this.workingVisible = true;
 		this.setWorkingIndicator();
 		if (this.activeStatusIndicator?.kind === "working") {
-			this.activeStatusIndicator.setMessage(`${this.defaultWorkingMessage}（${keyText("app.interrupt")} 取消）`);
+			this.activeStatusIndicator.setMessage(this.defaultWorkingMessage);
 		}
 		this.setHiddenThinkingLabel();
 	}
@@ -5602,6 +5628,7 @@ export class InteractiveMode {
 			this.showLoadedResources({
 				force: false,
 				showDiagnosticsWhenQuiet: true,
+				summary: true,
 			});
 			const savedImplicitProjectTrust = this.maybeSaveImplicitProjectTrustAfterReload();
 			const modelsJsonError = this.session.modelRuntime.getError();

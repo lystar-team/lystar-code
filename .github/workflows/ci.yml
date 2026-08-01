@@ -188,4 +188,4 @@ jobs:
           node scripts/test-windows-managed-bash.mjs
 
       - name: Test Windows installer with Windows PowerShell 5.1
-        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-install-ps1.ps1
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-install-ps1.ps1 -Integration
