@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-01T14:39:31+08:00
+最后核验时间：2026-08-01T14:57:49+08:00
 
 环境：
 
@@ -15,7 +15,15 @@ Linux x64
 
 ## 已通过
 
-### `0.83.0-lystar.2` 发布前核验
+### `0.83.0-lystar.3` 发布前核验
+
+本版包含 `0.83.0-lystar.2` 的 TUI 信息层级与 Windows 一键安装修复，并修正 Release 五平台打包的依赖物化方式。旧脚本在根 monorepo 已执行 `npm ci` 后再次运行 `npm install --force`，GitHub runner 自带的 npm `10.9.8` 连续触发 Arborist `edgesOut` 内部异常。当前脚本把六个平台的 clipboard 原生包安装到独立临时目录，归档直接从该目录取对应平台文件，不再改写根 `node_modules`；成功、失败和退出都会清理临时目录。
+
+发布事实源为 `piConfig.productVersion = 0.83.0-lystar.3`，Pi 包版本保持 `0.83.0`。npm `10.9.8` 与 Bun `1.3.9` 已完成 Windows x64 单平台打包回归，zip、manifest 和临时目录清理通过。使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新完成 `npm ci --ignore-scripts`、`npm run check`、`npm run build:offline`、TUI/AI/Coding Agent/Agent Core 全量测试、Unix 安装器和五平台离线打包。
+
+结果：TUI 全量通过；AI 95 个 test files、755 项通过，25 个 files、784 项跳过；Coding Agent 192 个 test files、1736 项通过，6 个 files、48 项跳过；Agent Core 241 项通过、1 项跳过；Unix 安装器通过。五个平台归档的 SHA-256、manifest 版本与仓库、资产大小、许可证和可执行格式全部通过；Windows zip 包含 `clipboard-win32-x64-msvc` 平台包及正确的 `.node` 文件。Linux x64 归档的版本、帮助、离线模型列表和 80x24、80x8、120x36 真实 PTY 通过，本轮 tmux socket 与临时目录已清理。
+
+### `0.83.0-lystar.2` 发布前核验（未创建 Release）
 
 本版调整 TUI 信息层级：顶栏按宽度保留产品、项目、分支、会话和上下文，用单行摘要替代启动资源墙，用户消息增加任务轨道，Composer 集中展示模型、思考强度和项目可信状态，快捷操作与累计用量合并为单行。主题文件、Pi 公共 TUI renderer、Session、Tool 和 Extension API 均未修改。
 
@@ -37,7 +45,9 @@ bash scripts/build-binaries.sh --skip-install --skip-build --offline-model-data
 
 结果：TUI 全量通过；AI 95 个 test files、755 项通过，25 个 files、784 项跳过；Coding Agent 192 个 test files、1736 项通过，6 个 files、48 项跳过；Agent Core 241 项通过、1 项跳过；Unix 安装器通过。静态检查、离线构建和 `git diff --check` 通过。
 
-五个平台归档的 SHA-256 全部通过，manifest 的版本、Pi 版本、仓库、文件大小和五个平台资产一致；归档均包含 `LICENSE` 和 `THIRD_PARTY_LICENSES.md`。产物格式覆盖 macOS ARM64/x64 Mach-O、Linux ARM64/x64 ELF 和 Windows x64 PE32+。Linux x64 归档的 `la --version`、`la --help` 和 `PI_OFFLINE=1 la --list-models` 通过；发行包真实 PTY 覆盖 80x24、80x8、120x36 resize 和 `/quit` 退出恢复，本轮 tmux socket 与临时目录已清理。Windows PowerShell 5.1 的真实安装、启动和卸载由本次 main push CI 执行，本地没有 Windows 实机证据。
+五个平台归档的 SHA-256 全部通过，manifest 的版本、Pi 版本、仓库、文件大小和五个平台资产一致；归档均包含 `LICENSE` 和 `THIRD_PARTY_LICENSES.md`。产物格式覆盖 macOS ARM64/x64 Mach-O、Linux ARM64/x64 ELF 和 Windows x64 PE32+。Linux x64 归档的 `la --version`、`la --help` 和 `PI_OFFLINE=1 la --list-models` 通过；发行包真实 PTY 覆盖 80x24、80x8、120x36 resize 和 `/quit` 退出恢复，本轮 tmux socket 与临时目录已清理。Windows PowerShell 5.1 的真实安装、启动和卸载由 main push CI run `30688225986` 执行并通过。
+
+Tag `v0.83.0-lystar.2` 已推送且保持不可变；Release workflow run `30688294491` 在五平台打包阶段连续两次触发 npm `10.9.8` Arborist `Cannot read properties of null (reading 'edgesOut')`，版本校验、attestation 和资产发布均未执行，GitHub Release 未创建。修复进入新的 `0.83.0-lystar.3`，不移动或复用 `.2` tag。
 
 ### `0.83.0-lystar.1` 发布前核验
 

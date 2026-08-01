@@ -48,6 +48,12 @@ if [[ -n "$CONFIGURED_REPOSITORY" && "$REPOSITORY" != "$CONFIGURED_REPOSITORY" ]
 fi
 
 VERSION="$(node -p "const p=require('./packages/coding-agent/package.json'); p.piConfig?.productVersion || p.version")"
+CLIPBOARD_MODULES_DIR="$ROOT_DIR/node_modules/@mariozechner"
+RELEASE_DEPS_DIR=""
+cleanup() {
+    if [[ -n "$RELEASE_DEPS_DIR" ]]; then rm -rf "$RELEASE_DEPS_DIR"; fi
+}
+trap cleanup EXIT
 if [[ -z "$OUTPUT_DIR" ]]; then
     OUTPUT_DIR="packages/coding-agent/binaries"
 fi
@@ -61,13 +67,15 @@ fi
 
 if [[ "$SKIP_DEPS" == false ]]; then
     CLIPBOARD_VERSION="$(node -p "require('./packages/coding-agent/package.json').optionalDependencies['@mariozechner/clipboard']")"
-    npm install --include=optional --no-save --package-lock=false --force --ignore-scripts \
+    RELEASE_DEPS_DIR="$(mktemp -d "$ROOT_DIR/.release-deps.XXXXXX")"
+    npm install --prefix "$RELEASE_DEPS_DIR" --include=optional --no-save --package-lock=false --force --ignore-scripts \
         @mariozechner/clipboard@"$CLIPBOARD_VERSION" \
         @mariozechner/clipboard-darwin-arm64@"$CLIPBOARD_VERSION" \
         @mariozechner/clipboard-darwin-x64@"$CLIPBOARD_VERSION" \
         @mariozechner/clipboard-linux-x64-gnu@"$CLIPBOARD_VERSION" \
         @mariozechner/clipboard-linux-arm64-gnu@"$CLIPBOARD_VERSION" \
         @mariozechner/clipboard-win32-x64-msvc@"$CLIPBOARD_VERSION"
+    CLIPBOARD_MODULES_DIR="$RELEASE_DEPS_DIR/node_modules/@mariozechner"
 fi
 
 if [[ "$SKIP_BUILD" == false ]]; then
@@ -137,9 +145,9 @@ for platform in "${PLATFORMS[@]}"; do
             ;;
     esac
     mkdir -p "$OUTPUT_DIR/$platform/node_modules/@mariozechner"
-    cp -r ../../node_modules/@mariozechner/clipboard "$OUTPUT_DIR/$platform/node_modules/@mariozechner/"
-    cp -r "../../node_modules/@mariozechner/$clipboard_package" "$OUTPUT_DIR/$platform/node_modules/@mariozechner/"
-    cp "../../node_modules/@mariozechner/$clipboard_package/$clipboard_file" \
+    cp -r "$CLIPBOARD_MODULES_DIR/clipboard" "$OUTPUT_DIR/$platform/node_modules/@mariozechner/"
+    cp -r "$CLIPBOARD_MODULES_DIR/$clipboard_package" "$OUTPUT_DIR/$platform/node_modules/@mariozechner/"
+    cp "$CLIPBOARD_MODULES_DIR/$clipboard_package/$clipboard_file" \
         "$OUTPUT_DIR/$platform/node_modules/@mariozechner/clipboard/"
 
     if [[ "$platform" == darwin-* ]]; then
