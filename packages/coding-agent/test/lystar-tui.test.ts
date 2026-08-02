@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { Component, Terminal } from "@earendil-works/pi-tui";
+import { type Component, CURSOR_MARKER, type Terminal } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { LystarTUI, type OutputFlow } from "../src/modes/interactive/lystar-tui.ts";
 
@@ -48,6 +48,14 @@ class ChangingComponent implements Component {
 	invalidate(): void {}
 }
 
+class CursorAtMarginComponent implements Component {
+	render(width: number): string[] {
+		return [`${"X".repeat(width)}${CURSOR_MARKER}`];
+	}
+
+	invalidate(): void {}
+}
+
 describe("LYStar TUI", () => {
 	it("disables autowrap only while the alternate screen is active", async () => {
 		const terminal = new CaptureTerminal();
@@ -88,7 +96,13 @@ describe("LYStar TUI", () => {
 
 		expect(component.widths.every((width) => width === terminal.columns - 1)).toBe(true);
 		expect(overlay.widths.every((width) => width === terminal.columns - 1)).toBe(true);
-		expect(terminal.writes.join("")).toContain("stream-11");
+		const output = terminal.writes.join("");
+		const frames = terminal.writes.filter((write) => write.startsWith("\x1b[?2026h"));
+		expect(output).toContain("stream-11");
+		expect(output).not.toContain("\r\n");
+		expect(output).not.toMatch(/\x1b\[\d+[AB]/);
+		expect(frames.length).toBeGreaterThan(0);
+		expect(frames.every((frame) => frame.endsWith("\x1b[?2026l"))).toBe(true);
 		tui.stop();
 	});
 
@@ -108,12 +122,26 @@ describe("LYStar TUI", () => {
 		expect(component.widths).toContain(terminal.columns);
 	});
 
+	it("positions an end cursor in the reserved physical column", async () => {
+		const terminal = new CaptureTerminal();
+		const tui = new LystarTUI(terminal, true);
+		tui.setTerminalModes({ alternateScreen: true, mouse: false });
+		tui.addChild(new CursorAtMarginComponent());
+		tui.start();
+		await sleep(50);
+
+		const frame = terminal.writes.find((write) => write.startsWith("\x1b[?2026h"));
+		expect(frame).toContain("\x1b[1;80H\x1b[?25h");
+		tui.stop();
+	});
+
 	it("keeps only the latest render while stdout is backpressured", async () => {
 		const terminal = new CaptureTerminal();
 		const outputFlow = new TestOutputFlow();
 		outputFlow.writableNeedDrain = true;
 		const component = new ChangingComponent();
 		const tui = new LystarTUI(terminal, undefined, undefined, outputFlow);
+		tui.setTerminalModes({ alternateScreen: true, mouse: false });
 		tui.addChild(component);
 		tui.start();
 
@@ -129,7 +157,33 @@ describe("LYStar TUI", () => {
 		await sleep(50);
 
 		expect(component.renderCount).toBe(1);
+		expect(component.widths).toEqual([terminal.columns - 1]);
 		expect(terminal.writes.join("")).toContain("frame-99");
+		tui.stop();
+	});
+
+	it("repaints the full fixed viewport after resize", async () => {
+		const terminal = new CaptureTerminal();
+		terminal.rows = 8;
+		const tui = new LystarTUI(terminal);
+		const component = new ChangingComponent();
+		tui.setTerminalModes({ alternateScreen: true, mouse: false });
+		tui.addChild(component);
+		tui.start();
+		await sleep(50);
+		terminal.writes = [];
+
+		terminal.columns = 120;
+		terminal.rows = 36;
+		component.text = "resized";
+		tui.requestRender();
+		await sleep(50);
+
+		const output = terminal.writes.join("");
+		expect(component.widths.at(-1)).toBe(119);
+		expect(output).toContain("\x1b[36;1H\x1b[2K");
+		expect(output).toContain("\x1b[1;1Hresized");
+		expect(output).not.toContain("\x1b[2J");
 		tui.stop();
 	});
 

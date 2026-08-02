@@ -19,6 +19,7 @@ import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } fro
 import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, visibleWidth } from "./utils.ts";
 
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
+const FIXED_VIEWPORT_REPAIR_INTERVAL_MS = 500;
 
 interface KittyImageHeader {
 	ids: number[];
@@ -392,6 +393,7 @@ export class TUI extends Container {
 	private maxLinesRendered = 0; // Track terminal's working area (max lines ever rendered)
 	private previousViewportTop = 0; // Track previous viewport top for resize-aware cursor moves
 	private fullRedrawCount = 0;
+	private lastFixedViewportFullRedrawAt = Number.NEGATIVE_INFINITY;
 	private stopped = false;
 	private pendingOsc11BackgroundReplies = 0;
 	private pendingOsc11BackgroundQueries: PendingOsc11BackgroundQuery[] = [];
@@ -430,6 +432,11 @@ export class TUI extends Container {
 	/** 当前帧供基础组件和 overlay 使用的宽度。 */
 	protected getRenderWidth(): number {
 		return this.terminal.columns;
+	}
+
+	/** 固定视口按绝对坐标绘制，默认保持 Pi 的滚动输出路径。 */
+	protected useFixedViewportRenderer(): boolean {
+		return false;
 	}
 
 	setShowHardwareCursor(enabled: boolean): void {
@@ -1467,6 +1474,74 @@ export class TUI extends Container {
 		return null;
 	}
 
+	private renderFixedViewport(
+		newLines: string[],
+		cursorPos: { row: number; col: number } | null,
+		width: number,
+		height: number,
+		forceFullRedraw: boolean,
+	): void {
+		const frameLines = newLines
+			.slice(0, height)
+			.map((line) =>
+				isImageLine(line) || visibleWidth(line) <= width ? line : sliceByColumn(line, 0, width, true),
+			);
+		while (frameLines.length < height) frameLines.push("");
+
+		const now = performance.now();
+		const fullRedraw =
+			forceFullRedraw ||
+			this.previousLines.length !== frameLines.length ||
+			now - this.lastFixedViewportFullRedrawAt >= FIXED_VIEWPORT_REPAIR_INTERVAL_MS;
+		let firstChanged = fullRedraw ? 0 : -1;
+		let lastChanged = fullRedraw ? height - 1 : -1;
+		if (!fullRedraw) {
+			for (let row = 0; row < height; row++) {
+				if (this.previousLines[row] === frameLines[row]) continue;
+				if (firstChanged === -1) firstChanged = row;
+				lastChanged = row;
+			}
+		}
+		if (firstChanged !== -1) {
+			const expandedRange = this.expandChangedRangeForKittyImages(firstChanged, lastChanged, frameLines);
+			firstChanged = Math.max(0, expandedRange.firstChanged);
+			lastChanged = Math.min(height - 1, expandedRange.lastChanged);
+		}
+
+		let buffer = "\x1b[?2026h";
+		if (firstChanged !== -1) {
+			buffer += fullRedraw
+				? this.deleteKittyImages(this.previousKittyImageIds)
+				: this.deleteChangedKittyImages(firstChanged, lastChanged);
+			for (let row = firstChanged; row <= lastChanged; row++) {
+				buffer += `\x1b[${row + 1};1H\x1b[2K`;
+			}
+			for (let row = firstChanged; row <= lastChanged; row++) {
+				if (frameLines[row]) buffer += `\x1b[${row + 1};1H${frameLines[row]}`;
+			}
+		}
+
+		const targetRow = cursorPos ? Math.max(0, Math.min(cursorPos.row, height - 1)) : Math.max(0, height - 1);
+		const targetCol = cursorPos ? Math.max(0, Math.min(cursorPos.col, this.terminal.columns - 1)) : 0;
+		buffer += `\x1b[${targetRow + 1};${targetCol + 1}H`;
+		buffer += this.showHardwareCursor && cursorPos ? "\x1b[?25h" : "\x1b[?25l";
+		buffer += "\x1b[?2026l";
+		this.terminal.write(buffer);
+
+		if (fullRedraw) {
+			this.fullRedrawCount++;
+			this.lastFixedViewportFullRedrawAt = now;
+		}
+		this.cursorRow = Math.max(0, height - 1);
+		this.hardwareCursorRow = targetRow;
+		this.maxLinesRendered = height;
+		this.previousViewportTop = 0;
+		this.previousLines = frameLines;
+		this.previousKittyImageIds = this.collectKittyImageIds(frameLines);
+		this.previousWidth = width;
+		this.previousHeight = height;
+	}
+
 	private doRender(): void {
 		if (this.stopped) return;
 		const width = this.getRenderWidth();
@@ -1495,6 +1570,11 @@ export class TUI extends Container {
 		const cursorPos = this.extractCursorPosition(newLines, height);
 
 		newLines = this.applyLineResets(newLines);
+
+		if (this.useFixedViewportRenderer()) {
+			this.renderFixedViewport(newLines, cursorPos, width, height, widthChanged || heightChanged);
+			return;
+		}
 
 		// Helper to clear scrollback and viewport and render all new lines
 		const fullRender = (clear: boolean): void => {

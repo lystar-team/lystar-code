@@ -40,6 +40,10 @@ export class LystarTUI extends TUI {
 		return Math.max(1, this.terminal.columns - (this.fullscreen ? 1 : 0));
 	}
 
+	protected override useFixedViewportRenderer(): boolean {
+		return this.fullscreen;
+	}
+
 	override setTerminalModes(options: TerminalModeOptions): void {
 		const wasFullscreen = this.fullscreen;
 		if (this.running && wasFullscreen && !options.alternateScreen) {
