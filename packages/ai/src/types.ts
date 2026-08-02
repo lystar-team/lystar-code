@@ -585,6 +585,8 @@ export interface OpenAIResponsesCompat {
 	supportsOpenAIGrammarTools?: boolean;
 	/** Whether the model supports client-executed tool search for deferred tools. Default: false. */
 	supportsToolSearch?: boolean;
+	/** Whether the model supports OpenAI's hosted web search tool. When true, pi exposes `web_search` and requests its sources. Default: false. */
+	supportsWebSearch?: boolean;
 	/** Whether the model accepts `prompt_cache_options` (OpenAI GPT-5.6+ explicit prompt caching). Older OpenAI models reject the parameter. Default: false. */
 	supportsExplicitPromptCacheMode?: boolean;
 }

@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
+import type { Tool as OpenAITool, ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
 import { clampThinkingLevel } from "../models.ts";
 import type {
 	Api,
@@ -72,6 +72,7 @@ function getCompat(model: Model<"openai-responses">): Required<OpenAIResponsesCo
 		supportsStrictMode: model.compat?.supportsStrictMode ?? false,
 		supportsOpenAIGrammarTools: model.compat?.supportsOpenAIGrammarTools ?? false,
 		supportsToolSearch: model.compat?.supportsToolSearch ?? false,
+		supportsWebSearch: model.compat?.supportsWebSearch ?? false,
 		supportsExplicitPromptCacheMode: model.compat?.supportsExplicitPromptCacheMode ?? false,
 	};
 }
@@ -325,6 +326,13 @@ function buildParams(
 			};
 		}
 		if (model.provider === "xai") params.include = ["reasoning.encrypted_content"];
+	}
+
+	if (compat.supportsWebSearch) {
+		params.tools = [...(params.tools ?? []), { type: "web_search" } satisfies OpenAITool];
+		if (!params.include?.includes("web_search_call.action.sources")) {
+			params.include = [...(params.include ?? []), "web_search_call.action.sources"];
+		}
 	}
 
 	return params;

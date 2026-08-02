@@ -40,6 +40,7 @@ import {
 	resolveGrammarConstrainedSampling,
 	resolveJsonSchemaStrictSampling,
 } from "./constrained-sampling.ts";
+import { createWebSearchCollector } from "./openai-responses-web-search.ts";
 import { transformMessages } from "./transform-messages.ts";
 
 // =============================================================================
@@ -447,6 +448,7 @@ export async function processResponsesStream<TApi extends Api>(
 	let sawTerminalResponseEvent = false;
 	const outputSlots = new Map<number, ResponsesOutputSlot>();
 	const reasoningBlocksById = new Map<string, ThinkingContent>();
+	const webSearchCollector = createWebSearchCollector(output, stream);
 	const applyMessagePhaseStopReason = (item: ResponseOutputItem): void => {
 		if (item.type === "message" && item.phase === "final_answer") {
 			output.stopReason = "stop";
@@ -559,6 +561,7 @@ export async function processResponsesStream<TApi extends Api>(
 	): void => {
 		sawTerminalResponseEvent = true;
 		backfillReasoningSignatures(response.output ?? []);
+		webSearchCollector.finalize(response.output ?? []);
 		if (response?.id) {
 			output.responseId = response.id;
 		}
@@ -596,6 +599,7 @@ export async function processResponsesStream<TApi extends Api>(
 	};
 
 	for await (const event of observeProviderStream(openaiStream, output)) {
+		webSearchCollector.observe(event);
 		if (event.type === "response.created") {
 			output.responseId = event.response.id;
 		} else if (event.type === "response.output_item.added") {
