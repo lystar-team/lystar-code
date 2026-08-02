@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-01T21:34:52+08:00
+最后核验时间：2026-08-02T11:08:08+08:00
 
 环境：
 
@@ -15,9 +15,23 @@ Linux x64
 
 ## 已通过
 
+### `0.83.0-lystar.6` 发布前核验
+
+发布事实源为 `piConfig.productVersion = 0.83.0-lystar.6`，Pi 包版本保持 `0.83.0`。`.5` 保留最后一个物理列只能避开自动换行触发条件，不能修复实际终端光标与 renderer 内部 `hardwareCursorRow` 失配。`.6` 让 LYStar fullscreen 使用固定视口路径：每个变更范围先按绝对行列清理，再按绝对行列写入；画面、Kitty 图片和硬件光标合并到同一个 synchronized-output 写入块；不发送换行、相对上下移动或 `CSI 2J`。每 500ms 的活跃渲染至少执行一次完整逐行覆盖，使外层终端丢失或错放中间帧后能在下一校准帧恢复。inline 模式继续走 Pi 原 renderer，消息事件、Workspace、Session、Tool 和 Extension API 未改。
+
+确定性故障注入先在旧实现复现三项失败：把真实光标拨到第 1 行后，更新第 3 行会错误覆盖顶栏；外部覆盖顶栏后，同内容重绘无法恢复；画面与 IME 光标分两次写入。新路径对应回归全部通过，并覆盖 Kitty 图片先清占位行再绘制、越界组件的 ANSI 感知裁切、物理末列光标、overlay 安全宽度、`80x8 -> 120x36` resize 和 stdout 背压只保留最后一帧。
+
+Linux 使用不经过 tmux 的真实 PTY 在 `80x8`、`80x24`、`120x36` 下各执行 120 次中文流式重排，并主动注入错误光标坐标和 `CORRUPT-HEADER`。每种尺寸均得到 31 个绘制帧和 3 次完整校准；ANSI 回放确认顶栏、最终内容、Composer 和快捷栏完整，污染文本消失，scroll buffer 未增长，所有文本绘制避开物理最后一列。独立 tmux socket 另完成 `80x24` 原始转发回放，以及运行中 `80x8 -> 120x36` resize；resize 后出现 3 个覆盖至第 36 行的完整帧，最终固定区域完整。真实 `tmux attach` 外层输出中，未变化的顶栏随校准帧重新发送了 3 次；在第 58 帧后只污染外层终端、不修改 tmux 内部画面，继续回放后顶栏、最终第 120 帧和固定底栏全部恢复。本轮 socket 已关闭。
+
+OpenAI Responses 增加 opt-in 的托管 `web_search`：模型或 Provider 设置 `compat.supportsWebSearch = true` 后，请求附带 `tools: [{ type: "web_search" }]` 和 `web_search_call.action.sources` include；流结束时从搜索 action 与 URL citation 收集、规范化并去重来源，通过正常 text 事件追加到同一 AssistantMessage。`models.json` schema 已接通该字段，其他模型默认关闭。两项新增协议回归通过；最终离线构建使用本机 `upstream/gpt-5.6-luna` 做真实请求，正文返回 OpenAI 官方 Web Search 指南 URL，并收到完整来源列表。
+
+`npm run check`、`npm run build:offline`、TUI 全量、AI 96 个 test files 共 767 项、Coding Agent 192 个 test files 共 1741 项、Agent Core 18 个 test files 共 241 项和 Unix 安装器通过；AI 跳过 25 个 files、784 项，Coding Agent 跳过 6 个 files、48 项，Agent Core 跳过 1 项。五平台最终打包显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1`，SHA-256、manifest 版本/Pi 版本/仓库/资产大小、许可证和 executable 格式全部通过。Linux x64 候选归档的 `la --version`、`la --help`、离线模型列表通过；候选二进制在 `80x24`、`80x8`、`120x36` 下保留顶栏、Composer、模型状态和快捷栏，`/quit` 正常退出。安全重打包前后的 Linux x64 可执行文件 SHA-256 相同，本轮 tmux socket 已确认关闭。
+
+CodeGraph 增量同步后，影响面收敛到 OpenAI Responses 参数/流处理、`models.json` compat、`TUI.doRender()`、`LystarTUI` 和四份受影响测试。与最新 `upstream/main = aa0ec808b970db31822e07835a46647cb51d9d66` 的临时 commit 合并预演显示：上游新增 `TuiBase/TuiAltScreen` 重构已使当前 HEAD 存在基线冲突；本轮把回归放入独立测试文件后，没有增加冲突文件。上游 alt-screen 同样采用绝对行地址，但目前仍使用 `CSI 2J` 且没有周期自校准，后续升级需将本轮减一列和校准规则移植到该 renderer。当前环境没有 Windows Console/ConPTY、macOS cmux 客户端实机证据；应用能保证后续完整帧恢复，不能保证第三方终端直接丢弃整次写入时该单帧完全不闪。Windows 和 macOS 本轮只完成归档格式、架构、SHA 和自动测试核验。
+
 ### `0.83.0-lystar.5` 发布前核验
 
-本版修复普通终端和 Windows Console/ConPTY 一类终端在全屏流式输出时的右边界滚屏：`LystarTUI` 在 fullscreen 下保留最后一个物理列，基础帧和 overlay 使用同一安全宽度，避免输入框消失、布局散架和同段内容短暂重复；inline 模式仍使用完整宽度并保留现有自动换行生命周期。
+本版针对普通终端和 Windows Console/ConPTY 一类终端的右边界滚屏，在 `LystarTUI` fullscreen 下保留最后一个物理列，基础帧和 overlay 使用同一安全宽度。该措施消除了满宽自动换行这一触发条件，并通过 Linux PTY 验证；后续 cmux/SSH/tmux 新会话仍复现坐标漂移，证明它不能修复相对坐标 renderer 的内部光标账本失真，完整修复见上方当前未发布记录。inline 模式仍使用完整宽度并保留现有自动换行生命周期。
 
 Pi 公共 TUI renderer 只增加一个默认返回 `terminal.columns` 的受保护渲染宽度入口，并在 `doRender()` 使用该入口；默认行为、`Terminal` 接口、差量算法、Session、Tool 和 Extension API 均未改变。LYStar 的减一列策略留在自身维护文件，上游合并影响限制在公共 TUI 的一个方法和一行取值。
 
