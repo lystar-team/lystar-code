@@ -212,7 +212,7 @@ export class LystarWorkspace implements Component {
 	}
 
 	getWheelScrollStep(): number {
-		return Math.max(2, Math.min(8, Math.round(this.viewportHeight * 0.2)));
+		return 1;
 	}
 
 	scrollBy(lines: number): void {

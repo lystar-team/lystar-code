@@ -384,8 +384,8 @@ describe("LYStar workspace", () => {
 		expect(rendered).not.toContain("widget-");
 	});
 
-	it("scales the wheel step with the session viewport", () => {
-		let height = 8;
+	it("uses one-line wheel scrolling at every viewport height", () => {
+		let height = 3;
 		const workspace = new LystarWorkspace({
 			getHeight: () => height,
 			header: textContainer("header"),
@@ -394,21 +394,33 @@ describe("LYStar workspace", () => {
 			fullscreen: true,
 		});
 
-		height = 3;
-		workspace.render(80);
-		expect(workspace.getWheelScrollStep()).toBe(2);
+		for (height of [3, 8, 24, 60]) {
+			workspace.render(80);
+			expect(workspace.getWheelScrollStep()).toBe(1);
+		}
+	});
 
-		height = 8;
-		workspace.render(80);
-		expect(workspace.getWheelScrollStep()).toBe(2);
+	it("moves one line per wheel step through a long history", () => {
+		const workspace = new LystarWorkspace({
+			getHeight: () => 24,
+			header: textContainer("header"),
+			scrollContainers: [textContainer(...Array.from({ length: 500 }, (_, index) => `line-${index}`))],
+			bottomContainers: [textContainer("editor")],
+			fullscreen: true,
+		});
+		const topLine = () => stripAnsi(workspace.render(80)[1] ?? "").trim();
 
-		height = 24;
 		workspace.render(80);
-		expect(workspace.getWheelScrollStep()).toBe(4);
-
-		height = 60;
-		workspace.render(80);
-		expect(workspace.getWheelScrollStep()).toBe(8);
+		workspace.scrollToTop();
+		expect(topLine()).toBe("line-0");
+		for (let index = 1; index <= 80; index++) {
+			workspace.scrollBy(workspace.getWheelScrollStep());
+			expect(topLine()).toBe(`line-${index}`);
+		}
+		for (let index = 79; index >= 0; index--) {
+			workspace.scrollBy(-workspace.getWheelScrollStep());
+			expect(topLine()).toBe(`line-${index}`);
+		}
 	});
 
 	it("keeps context usage visible when the header is narrow", () => {
