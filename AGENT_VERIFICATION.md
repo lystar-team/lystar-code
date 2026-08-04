@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-02T11:08:08+08:00
+最后核验时间：2026-08-04T15:00:02+08:00
 
 环境：
 
@@ -14,6 +14,16 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### `0.83.0-lystar.7` 发布前核验
+
+发布事实源为 `piConfig.productVersion = 0.83.0-lystar.7`，Pi 包版本保持 `0.83.0`。全屏工作区滚轮从按视口高度放大的每次 2 至 8 行改为固定 1 行；PageUp、PageDown、Home、End、鼠标协议、Pi 公共 TUI renderer、Session、Tool 和 Extension API 均未修改。回归覆盖 3、8、24、60 行视口，以及 500 行历史连续向下 80 次、向上 80 次滚动，每个事件均移动一行。
+
+源码构建后的真实 tmux PTY 在 `80x24`、当前 SSH/tmux 的 `77x59` 和 `120x36` 下验证：一次滚轮事件只移出对话区顶部一行并从底部补入一行，终端高度不再改变速度。Linux x64 候选归档在 `80x24` 下从历史顶部滚动一次后，“下方还有 51 行”变为 50 行，`/quit` 正常退出；本轮创建的 tmux server、socket 和临时目录均已清理。
+
+显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 完成 `npm run check`、`npm run build:offline`、TUI 全量、AI 96 个 test files 共 767 项、Coding Agent 192 个 test files 共 1742 项、Agent Core 18 个 test files 共 241 项和 Unix 安装器；AI 跳过 25 个 files、784 项，Coding Agent 跳过 6 个 files、48 项，Agent Core 跳过 1 项。Agent Core 的截断输出用例在四 workspace 并行时因资源竞争缺少末尾输出，单独全量复跑全部通过，没有持续断言失败。
+
+五平台包使用 Bun 1.3.9 构建，`SHA256SUMS` 全部通过；manifest 的版本、Pi 版本、仓库、五个平台文件、大小和 SHA-256 一致。格式覆盖 macOS ARM64/x64 Mach-O、Linux ARM64/x64 ELF 和 Windows x64 PE32+，全部归档包含 `LICENSE` 与 `THIRD_PARTY_LICENSES.md`。Linux x64 候选归档的 `la --version`、`la --help` 和 `PI_OFFLINE=1 la --list-models` 通过。CodeGraph 增量同步后，影响面收敛到 `LystarWorkspace` 和对应回归测试；Windows 与 macOS 本轮只完成归档格式、架构、SHA 和自动测试核验，没有对应系统实机运行证据。
 
 ### `0.83.0-lystar.6` 发布前核验
 
