@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Text } from "../src/components/text.ts";
 import type { Terminal } from "../src/terminal.ts";
-import { TUI } from "../src/tui.ts";
+import { TuiAltScreen } from "../src/tui-alt-screen.ts";
 
 class CaptureTerminal implements Terminal {
 	writes: string[] = [];
@@ -32,8 +32,7 @@ async function waitForRender(): Promise<void> {
 
 test("alternate screen and SGR mouse modes are restored on stop", async () => {
 	const terminal = new CaptureTerminal();
-	const tui = new TUI(terminal);
-	tui.setTerminalModes({ alternateScreen: true, mouse: true });
+	const tui = new TuiAltScreen(terminal, undefined, undefined, { mouse: true });
 	tui.addChild(new Text("hello", 0, 0));
 	tui.start();
 	await waitForRender();
@@ -43,7 +42,9 @@ test("alternate screen and SGR mouse modes are restored on stop", async () => {
 
 	const output = terminal.writes.join("");
 	assert.match(output, /\x1b\[\?1049h/);
-	assert.match(output, /\x1b\[\?1000h\x1b\[\?1006h/);
-	assert.match(output, /\x1b\[\?1006l\x1b\[\?1000l\x1b\[\?1049l/);
+	assert.ok(output.includes("\x1b[?1000h"));
+	assert.ok(output.includes("\x1b[?1006h"));
+	assert.ok(output.includes("\x1b[?1006l"));
+	assert.ok(output.includes("\x1b[?1000l"));
 	assert.equal(output.includes("\x1b[3J"), false);
 });

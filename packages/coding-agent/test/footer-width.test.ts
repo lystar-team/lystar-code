@@ -346,7 +346,7 @@ describe("FooterComponent width handling", () => {
 		const session = createSession({ sessionName: "", provider: "anthropic", usingSubscription: true });
 		const footer = new FooterComponent(session, createFooterData(1));
 
-		expect(stripAnsi(footer.render(120)[1])).toContain("$0.000 (sub)");
+		expect(stripAnsi(footer.render(120)[0])).toContain("$0.000（订阅）");
 	});
 
 	it("does not mark generic OAuth sign-in as a subscription", () => {
@@ -362,9 +362,9 @@ describe("FooterComponent width handling", () => {
 			},
 		});
 		const footer = new FooterComponent(session, createFooterData(1));
-		const stats = stripAnsi(footer.render(120)[1]);
+		const stats = stripAnsi(footer.render(120)[0]);
 
 		expect(stats).toContain("$1.234");
-		expect(stats).not.toContain("(sub)");
+		expect(stats).not.toContain("（订阅）");
 	});
 });

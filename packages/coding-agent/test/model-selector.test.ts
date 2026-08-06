@@ -43,7 +43,7 @@ describe("model selector", () => {
 
 		await vi.waitFor(() => {
 			const rendered = stripAnsi(selector.render(120).join("\n"));
-			expect(rendered).toContain("Could not refresh 2 model catalogs (openai, anthropic); showing cached models.");
+			expect(rendered).toContain("有 2 个模型目录刷新失败（openai、anthropic），当前显示缓存模型。");
 		});
 	});
 });

@@ -338,13 +338,13 @@ describe("parseArgs", () => {
 		test("rejects invalid modes", () => {
 			const result = parseArgs(["--tui-mode", "other"]);
 			expect(result.diagnostics).toEqual([
-				{ type: "error", message: 'Invalid TUI mode "other". Valid values: regular, fullscreen' },
+				{ type: "error", message: "TUI 模式“other”无效，可选值：regular、fullscreen" },
 			]);
 		});
 
 		test("requires a mode", () => {
 			const result = parseArgs(["--tui-mode"]);
-			expect(result.diagnostics).toEqual([{ type: "error", message: "--tui-mode requires regular or fullscreen" }]);
+			expect(result.diagnostics).toEqual([{ type: "error", message: "--tui-mode 需要 regular 或 fullscreen" }]);
 		});
 
 		test("does not recognize the old --ui-mode flag", () => {

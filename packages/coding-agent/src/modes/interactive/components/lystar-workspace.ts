@@ -1,5 +1,5 @@
-import type { Component } from "@earendil-works/pi-tui";
-import { type Container, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import type { Component, ScrollViewScrollbar } from "@earendil-works/pi-tui";
+import { type Container, sliceByColumn, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { t } from "../../../locales/zh-CN.ts";
 import { stripAnsi } from "../../../utils/ansi.ts";
 import { theme } from "../theme/theme.ts";
@@ -87,9 +87,15 @@ export interface WorkspaceComposerOptions {
 
 export class WorkspaceComposer implements Component {
 	private readonly options: WorkspaceComposerOptions;
+	private fullscreen: boolean;
 
 	constructor(options: WorkspaceComposerOptions) {
 		this.options = options;
+		this.fullscreen = options.fullscreen;
+	}
+
+	setFullscreen(fullscreen: boolean): void {
+		this.fullscreen = fullscreen;
 	}
 
 	invalidate(): void {
@@ -97,8 +103,8 @@ export class WorkspaceComposer implements Component {
 	}
 
 	render(width: number): string[] {
-		const editorWidth = this.options.fullscreen ? Math.max(1, width - 2) : width;
-		if (!this.options.fullscreen || width < 4) return this.options.editor.render(editorWidth);
+		const editorWidth = this.fullscreen ? Math.max(1, width - 2) : width;
+		if (!this.fullscreen || width < 4) return this.options.editor.render(editorWidth);
 		const structuredEditor = this.options.structuredEditor;
 		const structured =
 			structuredEditor && this.options.editor.children.includes(structuredEditor)
@@ -148,11 +154,15 @@ export interface WorkspaceOptions {
 	fixedBottomContainers?: Component[];
 	optionalBottomPriority?: Component[];
 	fullscreen: boolean;
+	scrollbar?: ScrollViewScrollbar;
+	scrollbarStyle?: (text: string) => string;
 	horizontalPadding?: number;
 }
 
 export class LystarWorkspace implements Component {
 	private readonly options: WorkspaceOptions;
+	private fullscreen: boolean;
+	private scrollbar: ScrollViewScrollbar;
 	private following = true;
 	private scrollTop = 0;
 	private viewportScreenTop = 0;
@@ -176,6 +186,14 @@ export class LystarWorkspace implements Component {
 
 	constructor(options: WorkspaceOptions) {
 		this.options = options;
+		this.fullscreen = options.fullscreen;
+		this.scrollbar = options.scrollbar ?? "auto";
+	}
+
+	setFullscreen(fullscreen: boolean): void {
+		if (this.fullscreen === fullscreen) return;
+		this.fullscreen = fullscreen;
+		this.resetScrollback();
 	}
 
 	invalidate(): void {
@@ -186,8 +204,12 @@ export class LystarWorkspace implements Component {
 		this.blockCache = new Map();
 	}
 
+	setScrollbar(scrollbar: ScrollViewScrollbar): void {
+		this.scrollbar = scrollbar;
+	}
+
 	isFullscreen(): boolean {
-		return this.options.fullscreen;
+		return this.fullscreen;
 	}
 
 	isFollowing(): boolean {
@@ -216,7 +238,7 @@ export class LystarWorkspace implements Component {
 	}
 
 	scrollBy(lines: number): void {
-		if (!this.options.fullscreen || lines === 0) return;
+		if (!this.fullscreen || lines === 0) return;
 		const maxScrollTop = this.getMaxScrollTop();
 		this.scrollTop = Math.max(0, Math.min(maxScrollTop, this.scrollTop + lines));
 		this.following = !this.hasNewerHistory && this.scrollTop >= maxScrollTop;
@@ -231,14 +253,14 @@ export class LystarWorkspace implements Component {
 	}
 
 	scrollToTop(): void {
-		if (!this.options.fullscreen) return;
+		if (!this.fullscreen) return;
 		this.jumpToTop = true;
 		this.scrollTop = 0;
 		this.following = false;
 	}
 
 	scrollToBottom(): void {
-		if (!this.options.fullscreen) return;
+		if (!this.fullscreen) return;
 		this.jumpToTop = false;
 		this.following = true;
 		this.scrollTop = this.getMaxScrollTop();
@@ -249,11 +271,7 @@ export class LystarWorkspace implements Component {
 	}
 
 	getComponentHitAtScreenRow(row: number): WorkspaceComponentHit | undefined {
-		if (
-			!this.options.fullscreen ||
-			row < this.viewportScreenTop ||
-			row >= this.viewportScreenTop + this.viewportHeight
-		) {
+		if (!this.fullscreen || row < this.viewportScreenTop || row >= this.viewportScreenTop + this.viewportHeight) {
 			return undefined;
 		}
 		if (row === this.indicatorRow) return undefined;
@@ -267,7 +285,7 @@ export class LystarWorkspace implements Component {
 	}
 
 	render(width: number): string[] {
-		const horizontalPadding = this.options.fullscreen
+		const horizontalPadding = this.fullscreen
 			? Math.min(this.options.horizontalPadding ?? 2, Math.max(0, Math.floor((width - 1) / 2)))
 			: 0;
 		const renderWidth = Math.max(1, width - horizontalPadding * 2);
@@ -278,7 +296,7 @@ export class LystarWorkspace implements Component {
 		}));
 		const bottomLines = bottomSections.flatMap((section) => section.lines);
 
-		if (!this.options.fullscreen) {
+		if (!this.fullscreen) {
 			const { blocks: contentBlocks, ranges } = this.renderScrollContent(renderWidth);
 			const contentLines = contentBlocks.flatMap((block) => block.lines);
 			this.contentRanges = ranges;
@@ -380,9 +398,35 @@ export class LystarWorkspace implements Component {
 		}
 
 		const padding = " ".repeat(horizontalPadding);
-		return [...visibleHeader, ...viewport, ...visibleBottom].map(
+		const lines = [...visibleHeader, ...viewport, ...visibleBottom].map(
 			(line) => `${padding}${truncateToWidth(line, renderWidth, "", true)}${padding}`,
 		);
+		return this.renderScrollbar(lines, width, this.viewportScreenTop, this.viewportHeight, contentHeight);
+	}
+
+	private renderScrollbar(
+		lines: string[],
+		width: number,
+		viewportTop: number,
+		viewportHeight: number,
+		contentHeight: number,
+	): string[] {
+		if (width < 2 || viewportHeight < 1 || this.scrollbar === "hidden") return lines;
+		const maxScrollTop = Math.max(0, contentHeight - viewportHeight);
+		if (this.scrollbar === "auto" && maxScrollTop === 0) return lines;
+
+		const thumbSize =
+			maxScrollTop === 0 ? viewportHeight : Math.max(1, Math.round(viewportHeight ** 2 / contentHeight));
+		const thumbTop =
+			maxScrollTop === 0 ? 0 : Math.round((this.scrollTop / maxScrollTop) * Math.max(0, viewportHeight - thumbSize));
+		return lines.map((line, index) => {
+			const viewportRow = index - viewportTop;
+			if (viewportRow < 0 || viewportRow >= viewportHeight) return line;
+			const glyph = viewportRow >= thumbTop && viewportRow < thumbTop + thumbSize ? "┃" : "│";
+			const styledGlyph = this.options.scrollbarStyle?.(glyph) ?? glyph;
+			const content = sliceByColumn(line, 0, width - 1, true);
+			return `${content}${" ".repeat(Math.max(0, width - 1 - visibleWidth(content)))}${styledGlyph}`;
+		});
 	}
 
 	private getMaxScrollTop(): number {

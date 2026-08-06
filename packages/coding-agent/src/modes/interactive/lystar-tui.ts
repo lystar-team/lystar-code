@@ -1,9 +1,8 @@
 import { performance } from "node:perf_hooks";
-import { type Terminal, type TerminalModeOptions, TUI } from "@earendil-works/pi-tui";
+import { type Terminal, TuiAltScreen, type TuiAltScreenOptions } from "@earendil-works/pi-tui";
 
-const DISABLE_AUTOWRAP = "\x1b[?7l";
-const ENABLE_AUTOWRAP = "\x1b[?7h";
 const MIN_FRAME_INTERVAL_MS = 1000 / 30;
+const REPAIR_INTERVAL_MS = 500;
 
 export interface OutputFlow {
 	readonly writableNeedDrain: boolean;
@@ -11,9 +10,8 @@ export interface OutputFlow {
 	off(event: "drain", listener: () => void): void;
 }
 
-export class LystarTUI extends TUI {
+export class LystarTUI extends TuiAltScreen {
 	private readonly outputFlow: OutputFlow;
-	private fullscreen = false;
 	private running = false;
 	private renderPending = false;
 	private forcePending = false;
@@ -30,30 +28,27 @@ export class LystarTUI extends TUI {
 		terminal: Terminal,
 		showHardwareCursor?: boolean,
 		logDirectory?: string,
+		options: TuiAltScreenOptions = {},
 		outputFlow: OutputFlow = process.stdout,
 	) {
-		super(terminal, showHardwareCursor, logDirectory);
+		super(terminal, showHardwareCursor, logDirectory, options);
 		this.outputFlow = outputFlow;
 	}
 
 	protected override getRenderWidth(): number {
-		return Math.max(1, this.terminal.columns - (this.fullscreen ? 1 : 0));
+		return Math.max(1, this.terminal.columns - 1);
 	}
 
-	protected override useFixedViewportRenderer(): boolean {
-		return this.fullscreen;
+	protected override getRepairIntervalMs(): number {
+		return REPAIR_INTERVAL_MS;
 	}
 
-	override setTerminalModes(options: TerminalModeOptions): void {
-		const wasFullscreen = this.fullscreen;
-		if (this.running && wasFullscreen && !options.alternateScreen) {
-			this.terminal.write(ENABLE_AUTOWRAP);
-		}
-		this.fullscreen = options.alternateScreen;
-		super.setTerminalModes(options);
-		if (this.running && !wasFullscreen && this.fullscreen) {
-			this.terminal.write(DISABLE_AUTOWRAP);
-		}
+	protected override clearOnEnter(): boolean {
+		return false;
+	}
+
+	protected override clearOnFullRedraw(): boolean {
+		return false;
 	}
 
 	override start(): void {
@@ -61,19 +56,13 @@ export class LystarTUI extends TUI {
 		this.running = true;
 		this.lastFrameAt = Number.NEGATIVE_INFINITY;
 		super.start();
-		if (this.fullscreen) {
-			this.terminal.write(DISABLE_AUTOWRAP);
-		}
 	}
 
-	override stop(): void {
+	override stop(options: Parameters<TuiAltScreen["stop"]>[0] = {}): void {
 		if (!this.running) return;
 		this.cancelPendingRender();
-		if (this.fullscreen) {
-			this.terminal.write(ENABLE_AUTOWRAP);
-		}
 		this.running = false;
-		super.stop();
+		super.stop(options);
 	}
 
 	override requestRender(force = false): void {

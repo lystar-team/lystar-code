@@ -20,6 +20,7 @@ export const SETTINGS_ZH_CN = {
 	"dark-theme": ["深色主题", "终端为深色外观时使用的主题"],
 	"output-padding": ["输出留白", "Agent 输出左右保留的列数"],
 	"markdown-code-fences": ["Markdown 代码围栏", "显示代码块开头和结尾的反引号标记"],
+	"mermaid-rendering": ["Mermaid 图表", "把 Mermaid 代码块显示为 Unicode 图表"],
 	"quiet-startup": ["安静启动", "启动时隐藏详细加载信息"],
 	"show-hardware-cursor": ["硬件光标", "在输入框中显示终端原生光标"],
 	"show-images": ["显示图片", "在支持的终端里显示图片预览"],
@@ -29,6 +30,8 @@ export const SETTINGS_ZH_CN = {
 	theme: ["主题", "选择界面主题或跟随终端外观"],
 	thinking: ["思考强度", "控制模型思考强度"],
 	transport: ["传输方式", "选择 Provider 的请求传输方式"],
+	"tui-mode": ["界面模式", "切换普通终端和全屏工作区"],
+	"fullscreen-scrollbar": ["全屏滚动条", "控制全屏历史区滚动条的显示方式"],
 	"tree-filter-mode": ["会话树筛选", "打开 /tree 时默认显示哪些消息"],
 	warnings: ["警告设置", "配置运行时警告"],
 	apply: ["应用", "保存主题设置并返回"],
@@ -70,6 +73,9 @@ const SETTING_VALUE_ZH_CN: Partial<Record<SettingTextId, Record<string, string>>
 	theme: { dark: "深色", light: "浅色" },
 	apply: { "save and go back": "保存并返回" },
 	"single-mode": { "switch to single theme": "使用固定主题" },
+	"mermaid-rendering": { off: "关闭", final: "完成后渲染", streaming: "流式渲染" },
+	"tui-mode": { regular: "普通", fullscreen: "全屏" },
+	"fullscreen-scrollbar": { auto: "自动", always: "始终显示", hidden: "隐藏" },
 };
 
 export function localizeSettingValue(id: string, value: string): string {

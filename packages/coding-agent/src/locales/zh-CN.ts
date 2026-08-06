@@ -37,7 +37,7 @@ export const zhCN = {
 	"status.noModel": "未选择模型",
 	"status.operationAborted": "操作已取消",
 	"status.unknownError": "发生未知错误",
-	"status.maxOutput": "模型已达到最大输出长度，回复可能不完整。",
+	"status.maxOutput": "回复在完成前已被截断。",
 	"status.thinkingLevel": "思考强度：{level}",
 	"update.changelog": "更新记录：",
 	"update.packages": "Package：",

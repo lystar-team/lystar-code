@@ -553,7 +553,7 @@ describe("ToolExecutionComponent parity", () => {
 			title: "AGENTS.override.md",
 			path: join(process.cwd(), ".pi", "AGENTS.override.md"),
 			content: "Hidden override instructions",
-			compact: "read resource .pi/AGENTS.override.md",
+			compact: ".pi/AGENTS.override.md",
 			hidden: "Hidden override instructions",
 			absent: undefined,
 		},

@@ -131,6 +131,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private readonly wheelScrollLines: number;
 	private readonly mouseEnabled: boolean;
 	private readonly openUrl?: (url: string) => void;
+	private lastFullRedrawAt = Number.NEGATIVE_INFINITY;
 
 	constructor(
 		terminal: Terminal,
@@ -151,6 +152,22 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.mouseEnabled = options.mouse ?? true;
 		this.openUrl = options.openUrl;
 		this.addInputListener((data) => this.handleViewportInput(data));
+	}
+
+	protected getRenderWidth(): number {
+		return Math.max(1, this.terminal.columns);
+	}
+
+	protected getRepairIntervalMs(): number | undefined {
+		return undefined;
+	}
+
+	protected clearOnEnter(): boolean {
+		return true;
+	}
+
+	protected clearOnFullRedraw(): boolean {
+		return true;
 	}
 
 	get viewportTop(): number {
@@ -202,7 +219,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.selectionDragged = false;
 		this.resetRenderState();
 		this.terminal.write(
-			`${ENTER_ALT_SCREEN}${DISABLE_AUTOWRAP}${this.mouseEnabled ? ENABLE_MOUSE : ""}\x1b[2J\x1b[H\x1b[?25l`,
+			`${ENTER_ALT_SCREEN}${DISABLE_AUTOWRAP}${this.mouseEnabled ? ENABLE_MOUSE : ""}${this.clearOnEnter() ? "\x1b[2J" : ""}\x1b[H\x1b[?25l`,
 		);
 	}
 
@@ -303,6 +320,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.previousScreenWidth = 0;
 		this.previousScreenHeight = 0;
 		this.currentLayout = undefined;
+		this.lastFullRedrawAt = Number.NEGATIVE_INFINITY;
 	}
 
 	scrollBy(lines: number): void {
@@ -825,7 +843,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	protected override doRender(): void {
 		if (this.stopped || !this.altScreenActive) return;
-		const width = Math.max(1, this.terminal.columns);
+		const width = this.getRenderWidth();
 		const height = Math.max(1, this.terminal.rows);
 		const root = this.layoutRoot ?? this.implicitScrollView;
 		const nextLayout = renderLayoutFrame(root, width, height, () => this.requestRender());
@@ -841,8 +859,13 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			return sliceByColumn(line, 0, width, true);
 		});
 
+		const now = performance.now();
+		const repairIntervalMs = this.getRepairIntervalMs();
 		const fullRedraw =
-			this.previousScreen.length === 0 || this.previousScreenWidth !== width || this.previousScreenHeight !== height;
+			this.previousScreen.length === 0 ||
+			this.previousScreenWidth !== width ||
+			this.previousScreenHeight !== height ||
+			(repairIntervalMs !== undefined && now - this.lastFullRedrawAt >= repairIntervalMs);
 		const imagesNeedRedraw = screen.some(
 			(line, row) =>
 				line !== this.previousScreen[row] && (isImageLine(line) || isImageLine(this.previousScreen[row] ?? "")),
@@ -861,7 +884,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				this.imageProtocol === "kitty" && hadUploadedKittyImages
 					? deleteAllKittyPlacements()
 					: this.deleteKittyImages();
-			buffer += `${clearImages}\x1b[2J`;
+			buffer += clearImages;
+			if (this.clearOnFullRedraw()) buffer += "\x1b[2J";
 		} else if (imagesNeedRedraw) {
 			if (this.imageProtocol === "iterm2") buffer += "\x1b[2J";
 			else if (this.imageProtocol === "kitty") buffer += deleteAllKittyPlacements();
@@ -885,6 +909,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.previousScreen = screen;
 		this.previousScreenWidth = width;
 		this.previousScreenHeight = height;
+		if (fullRedraw) this.lastFullRedrawAt = now;
 		this.currentLayout = nextLayout;
 	}
 }

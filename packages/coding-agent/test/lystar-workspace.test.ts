@@ -400,6 +400,21 @@ describe("LYStar workspace", () => {
 		}
 	});
 
+	it("renders and hides the fullscreen scrollbar", () => {
+		const workspace = new LystarWorkspace({
+			getHeight: () => 8,
+			header: textContainer("header"),
+			scrollContainers: [textContainer(...Array.from({ length: 30 }, (_, index) => `line-${index}`))],
+			bottomContainers: [textContainer("editor")],
+			fullscreen: true,
+			scrollbar: "always",
+		});
+
+		expect(stripAnsi(workspace.render(40).join("\n"))).toContain("┃");
+		workspace.setScrollbar("hidden");
+		expect(stripAnsi(workspace.render(40).join("\n"))).not.toMatch(/[│┃]/);
+	});
+
 	it("moves one line per wheel step through a long history", () => {
 		const workspace = new LystarWorkspace({
 			getHeight: () => 24,
@@ -407,6 +422,7 @@ describe("LYStar workspace", () => {
 			scrollContainers: [textContainer(...Array.from({ length: 500 }, (_, index) => `line-${index}`))],
 			bottomContainers: [textContainer("editor")],
 			fullscreen: true,
+			scrollbar: "hidden",
 		});
 		const topLine = () => stripAnsi(workspace.render(80)[1] ?? "").trim();
 

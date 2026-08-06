@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-04T15:00:02+08:00
+最后核验时间：2026-08-06T16:24:30Z
 
 环境：
 
@@ -14,6 +14,20 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### `0.84.0-lystar.1` 发布前核验
+
+上游基线已升级到 Pi `v0.84.0`（`a5f43bf8aff3c55752432655f7334e3dafd1e256`），LYStar 产品版本为 `0.84.0-lystar.1`，Pi workspace 包版本保持 `0.84.0`。合并保留 `la`、`LYStar Agent`、`~/.pi/agent`、项目 `.pi`、`PI_*` 和 `octyean/lystar-agent` 契约；上游 Harness v2、Telemetry、SQLite Session backend、Protocol、Client、Server、模型与 Provider 变更均已接入。离线模型目录来自正式 npm 包 `@earendil-works/pi-ai@0.84.0`，manifest 生成时间为 `2026-08-06T11:03:30.465Z`；`models.generated.ts` 和 `image-models.generated.ts` 与 `v0.84.0` Tag 字节一致，没有带入 Tag 之后的实时模型数据。
+
+TUI 使用上游 renderer 分层：普通模式为 `TuiMainScreen`，全屏模式为基于 `TuiAltScreen` 的 `LystarTUI`。LYStar 全屏路径保留最后一列、绝对坐标重绘、500ms 完整校准、stdout backpressure、固定输入区、单行滚轮、鼠标和中文工作区；支持上游 `--tui-mode regular|fullscreen`，并兼容旧 `--alt-screen auto|always|never`、`--no-alt-screen` 与 `--mouse`。运行时可在设置中切换普通/全屏模式，稳定 TUI Proxy 会迁移 children、focus、terminal 和设置，不保留第二套 renderer。
+
+显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 完成 `npm run check`、`npm run build:offline` 和全部 workspace 测试。TUI 全量通过；AI 103 个 test files、849 项通过，25 个 files、806 项跳过；Coding Agent 1947 项通过；Agent Core 20 个 test files、392 项通过、1 项跳过；Telemetry 2 个 files、15 项通过；SQLite Session backend 8 个 files、77 项通过；Protocol 3 个 files、147 项通过；Server 7 个 files、50 项通过；Client 6 个 files、36 项通过；Evals 4 个 files、23 项通过。Unix 安装器的安装、PATH、SHA 校验、回退、卸载和物化检查通过。
+
+源码构建在独立 tmux PTY 中覆盖 `80x24`、`80x8`、`120x36` resize；真实 TTY 验证 `/settings` 中文“界面模式”、普通/全屏双向切换和“全屏滚动条”设置。Linux x64 候选二进制在 `80x24` 全屏启动并通过 `/quit` 正常退出，终端模式得到恢复；本轮创建的 `lystar-pi0840-upgrade` 和 `lystar-pi0840-candidate` tmux server 已关闭。滚轮单行、鼠标协议、剪贴板查询与复制反馈由 TUI/Coding Agent 自动回归覆盖，本轮没有在交互式 tmux 中逐项手动注入鼠标和系统剪贴板事件。
+
+五平台候选包使用 Bun 1.3.9 构建，`SHA256SUMS` 五项全部通过；manifest 的版本、Pi 版本、仓库、文件名、大小和 SHA-256 一致。格式覆盖 macOS ARM64/x64 Mach-O、Linux ARM64/x64 ELF 和 Windows x64 PE32+，全部归档包含 `LICENSE`、`THIRD_PARTY_LICENSES.md`、可执行文件和对应平台 clipboard 包。Linux x64 归档的 `la --version`、`la --help` 和 `PI_OFFLINE=1 la --list-models` 通过，其 SHA-256 为 `e9b61a6f6f9636802a753e30f47f2195ae0729c393aea113f9daf837b6e4ef09`。
+
+CodeGraph 已按 extraction version 24 完整重建到 1169 个文件、19126 个节点和 85027 条边，pending changes 为 0，`reindexRecommended=false`；核心 TUI、Agent、设置、凭据与 OpenAI Responses 入口共追踪 239 个依赖节点，列出的受影响测试均包含在本轮全量测试中。另复跑 12 个兼容测试文件、389 项，覆盖旧 `-c`/`-r` 参数解析、旧 settings、Session 迁移、Package、Skill、Extension 和 `pi-mcp-adapter` 配置读取。当前环境没有 Windows PowerShell/Console/ConPTY 和 macOS 实机，两个平台只完成归档、架构、SHA 和自动测试核验；正式 CI、Tag、GitHub Release、attestation 与公开升级链尚未触发，需在提交并推送后按发布流程验证。
 
 ### `0.83.0-lystar.7` 发布前核验
 

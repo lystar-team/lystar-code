@@ -27,7 +27,7 @@ describe("SettingsSelectorComponent", () => {
 		);
 		const settingsList = selector.getSettingsList();
 
-		for (const character of "Fullscreen scrollbar") settingsList.handleInput(character);
+		for (const character of "全屏滚动条") settingsList.handleInput(character);
 		settingsList.handleInput("\r");
 		settingsList.handleInput("\r");
 		settingsList.handleInput("\r");

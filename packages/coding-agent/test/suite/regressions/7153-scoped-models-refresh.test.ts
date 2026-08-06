@@ -84,14 +84,14 @@ describe("issue #7153 scoped models refresh", () => {
 
 		const initial = stripAnsi(refresh.selector.render(100).join("\n"));
 		expect(initial).toContain("cached");
-		expect(initial).toContain("Refreshing model catalogs…");
+		expect(initial).toContain("正在刷新模型目录...");
 		expect(initial).not.toContain("refreshed");
 
 		refresh.complete(harness.models, { aborted: false, errors: new Map() });
 		await vi.waitFor(() => {
 			const rendered = stripAnsi(refresh.selector.render(100).join("\n"));
 			expect(rendered).toContain("refreshed");
-			expect(rendered).toContain("Model catalogs refreshed.");
+			expect(rendered).toContain("模型目录已刷新。");
 		});
 	});
 

@@ -89,15 +89,24 @@ describe("createInteractiveTui", () => {
 		type SwitchContext = {
 			renderer: ReturnType<typeof createInteractiveTui>;
 			ui: TUI;
-			fullscreenLayoutRoot: Component;
+			composer: { setFullscreen: (fullscreen: boolean) => void };
+			workspace: { setFullscreen: (fullscreen: boolean) => void };
+			runtimeHost: { session: { settingsManager: { getEditorPaddingX: () => number } } };
+			defaultEditor: { setPaddingX: (padding: number) => void };
+			editor: { setPaddingX: (padding: number) => void };
 			options: { tuiMode?: TuiMode };
 			themeController: { rebindTui: () => void };
 			extensionTerminalInputSubscriptions: Set<never>;
 		};
+		const editor = { setPaddingX: vi.fn() };
 		const context = Object.assign(Object.create(InteractiveMode.prototype), {
 			renderer,
 			ui: undefined as unknown as TUI,
-			fullscreenLayoutRoot: component,
+			composer: { setFullscreen: vi.fn() },
+			workspace: { setFullscreen: vi.fn() },
+			runtimeHost: { session: { settingsManager: { getEditorPaddingX: () => 1 } } },
+			defaultEditor: editor,
+			editor,
 			options: { tuiMode: "regular" as TuiMode },
 			themeController: { rebindTui: () => {} },
 			extensionTerminalInputSubscriptions: new Set<never>(),
@@ -123,14 +132,15 @@ describe("createInteractiveTui", () => {
 
 		stopInteractiveTui.call(context);
 
-		expect(stableUi.mode).toBe("regular");
-		expect([terminal.startCount, terminal.stopCount]).toEqual([2, 3]);
+		expect(stableUi.mode).toBe("fullscreen");
+		expect([terminal.startCount, terminal.stopCount]).toEqual([2, 2]);
 	});
 });
 
 type CopyCommandContext = {
 	session: { getLastAssistantText: () => string | undefined };
 	ui: ReturnType<typeof createInteractiveTui>;
+	renderer: ReturnType<typeof createInteractiveTui>;
 	showStatus: (message: string) => void;
 	showError: (message: string) => void;
 };
@@ -162,6 +172,7 @@ describe("InteractiveMode copy confirmation", () => {
 		const context: CopyCommandContext = {
 			session: { getLastAssistantText: () => "assistant response" },
 			ui,
+			renderer: ui,
 			showStatus,
 			showError,
 		};
@@ -175,7 +186,7 @@ describe("InteractiveMode copy confirmation", () => {
 			expect(clipboardMocks.copyToClipboard).toHaveBeenCalledWith("assistant response");
 			expect(showStatus).not.toHaveBeenCalled();
 			expect(showError).not.toHaveBeenCalled();
-			expect(terminal.getViewport().some((line) => line.includes("Copied!"))).toBe(true);
+			expect(terminal.getViewport().some((line) => line.includes("已复制"))).toBe(true);
 		} finally {
 			ui.stop();
 		}
@@ -193,13 +204,14 @@ describe("InteractiveMode copy confirmation", () => {
 		const context: CopyCommandContext = {
 			session: { getLastAssistantText: () => "assistant response" },
 			ui,
+			renderer: ui,
 			showStatus,
 			showError,
 		};
 
 		await copyCommandPrototype.handleCopyCommand.call(context, { flashConfirmation: true });
 
-		expect(showStatus).toHaveBeenCalledWith("Copied last agent message to clipboard");
+		expect(showStatus).toHaveBeenCalledWith("最近一条 Agent 消息已复制到剪贴板");
 		expect(showError).not.toHaveBeenCalled();
 	});
 });

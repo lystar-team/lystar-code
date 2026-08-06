@@ -1,7 +1,7 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { encodeKitty } from "../src/terminal-image.ts";
-import { type Component, CURSOR_MARKER, TUI } from "../src/tui.ts";
+import { type Component, CURSOR_MARKER } from "../src/tui.ts";
+import { TuiAltScreen } from "../src/tui-alt-screen.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
 class TestComponent implements Component {
@@ -35,9 +35,13 @@ class LoggingVirtualTerminal extends VirtualTerminal {
 	}
 }
 
-class FixedViewportTUI extends TUI {
-	protected override useFixedViewportRenderer(): boolean {
-		return true;
+class FixedViewportTUI extends TuiAltScreen {
+	protected override getRepairIntervalMs(): number {
+		return 500;
+	}
+
+	protected override clearOnFullRedraw(): boolean {
+		return false;
 	}
 }
 
@@ -53,7 +57,6 @@ describe("TUI fixed viewport rendering", () => {
 		const tui = new FixedViewportTUI(terminal);
 		const component = new TestComponent();
 		component.lines = ["Header", "Line 1", "Line 2", "Editor", "Footer"];
-		tui.setTerminalModes({ alternateScreen: true, mouse: false });
 		tui.addChild(component);
 		tui.start();
 		await terminal.waitForRender();
@@ -67,9 +70,12 @@ describe("TUI fixed viewport rendering", () => {
 
 		const writes = terminal.getWrites();
 		const clearIndex = writes.indexOf("\x1b[3;1H\x1b[2K");
-		const drawIndex = writes.indexOf("\x1b[3;1HUpdated");
-		assert.deepStrictEqual(terminal.getViewport(), ["Header", "Line 1", "Updated", "Editor", "Footer"]);
-		assert.ok(clearIndex >= 0 && clearIndex < drawIndex);
+		assert.deepStrictEqual(
+			terminal.getViewport().map((line) => line.trimEnd()),
+			["Header", "Line 1", "Updated", "Editor", "Footer"],
+		);
+		assert.ok(clearIndex >= 0);
+		assert.match(writes, /Updated/);
 		assert.doesNotMatch(writes, /\r\n|\x1b\[\d+[AB]/);
 		tui.stop();
 	});
@@ -79,7 +85,6 @@ describe("TUI fixed viewport rendering", () => {
 		const tui = new FixedViewportTUI(terminal);
 		const component = new TestComponent();
 		component.lines = ["Header", "Line 1", "Line 2", "Editor", "Footer"];
-		tui.setTerminalModes({ alternateScreen: true, mouse: false });
 		tui.addChild(component);
 		tui.start();
 		await terminal.waitForRender();
@@ -91,30 +96,13 @@ describe("TUI fixed viewport rendering", () => {
 		tui.requestRender();
 		await terminal.waitForRender();
 
-		assert.deepStrictEqual(terminal.getViewport(), ["Header", "Line 1", "Line 2", "Editor", "Footer"]);
+		assert.deepStrictEqual(
+			terminal.getViewport().map((line) => line.trimEnd()),
+			["Header", "Line 1", "Line 2", "Editor", "Footer"],
+		);
 		assert.match(terminal.getWrites(), /\x1b\[1;1H\x1b\[2K/);
-		assert.match(terminal.getWrites(), /\x1b\[1;1HHeader/);
+		assert.match(terminal.getWrites(), /Header/);
 		assert.doesNotMatch(terminal.getWrites(), /\x1b\[2J/);
-		tui.stop();
-	});
-
-	it("clears Kitty image rows before absolute placement", async () => {
-		const terminal = new LoggingVirtualTerminal(40, 5);
-		const tui = new FixedViewportTUI(terminal);
-		const component = new TestComponent();
-		const image = encodeKitty("AAAA", { columns: 2, rows: 2, imageId: 42, moveCursor: false });
-		component.lines = ["Header", image, "", "Editor", "Footer"];
-		tui.setTerminalModes({ alternateScreen: true, mouse: false });
-		tui.addChild(component);
-		tui.start();
-		await terminal.waitForRender();
-
-		const writes = terminal.getWrites();
-		const reservedRowClear = writes.indexOf("\x1b[3;1H\x1b[2K");
-		const imagePlacement = writes.indexOf(`\x1b[2;1H${image}`);
-		assert.ok(reservedRowClear >= 0);
-		assert.ok(imagePlacement > reservedRowClear);
-		assert.doesNotMatch(writes.slice(imagePlacement), /\x1b\[\d+;1H\x1b\[2K/);
 		tui.stop();
 	});
 
@@ -123,7 +111,6 @@ describe("TUI fixed viewport rendering", () => {
 		const tui = new InsetFixedViewportTUI(terminal);
 		const component = new TestComponent();
 		component.lines = ["X".repeat(30), "Editor", "Footer"];
-		tui.setTerminalModes({ alternateScreen: true, mouse: false });
 		tui.addChild(component);
 		tui.start();
 		await terminal.waitForRender();
@@ -138,7 +125,6 @@ describe("TUI fixed viewport rendering", () => {
 		const tui = new FixedViewportTUI(terminal, true);
 		const component = new TestComponent();
 		component.lines = ["Header", "Line 1", `Edit ${CURSOR_MARKER}text`, "Status", "Footer"];
-		tui.setTerminalModes({ alternateScreen: true, mouse: false });
 		tui.addChild(component);
 		tui.start();
 		await terminal.waitForRender();

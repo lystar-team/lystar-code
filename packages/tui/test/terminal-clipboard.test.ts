@@ -1,6 +1,6 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { type Component, type Terminal, TUI } from "../src/index.ts";
+import { type Component, type Terminal, TuiMainScreen } from "../src/index.ts";
 
 class TestTerminal implements Terminal {
 	private inputHandler?: (data: string) => void;
@@ -68,7 +68,7 @@ const response = (metadata: string, payload?: string) =>
 describe("TUI.queryTerminalClipboard", () => {
 	it("lists MIME types before reading and combines image chunks", async () => {
 		const terminal = new TestTerminal();
-		const tui = new TUI(terminal);
+		const tui = new TuiMainScreen(terminal);
 		tui.start();
 		try {
 			const query = tui.queryTerminalClipboard({
@@ -103,7 +103,7 @@ describe("TUI.queryTerminalClipboard", () => {
 
 	it("returns undefined when none of the requested MIME types are available", async () => {
 		const terminal = new TestTerminal();
-		const tui = new TUI(terminal);
+		const tui = new TuiMainScreen(terminal);
 		tui.start();
 		try {
 			const query = tui.queryTerminalClipboard({ mimeTypes: ["image/png"], listTimeoutMs: 1000 });
@@ -122,7 +122,7 @@ describe("TUI.queryTerminalClipboard", () => {
 
 	it("wraps requests for tmux and never forwards clipboard responses to the focused component", async () => {
 		const terminal = new TestTerminal();
-		const tui = new TUI(terminal);
+		const tui = new TuiMainScreen(terminal);
 		const recorder = new InputRecorder();
 		tui.addChild(recorder);
 		tui.setFocus(recorder);

@@ -4742,12 +4742,12 @@ export class InteractiveMode {
 					onTuiModeChange: (mode) => {
 						if (!this.switchTuiMode(mode)) {
 							selector?.getSettingsList().updateValue("tui-mode", this.ui.mode);
-							this.showStatus("Close active overlays before changing TUI mode");
+							this.showStatus("请先关闭当前弹窗，再切换界面模式");
 							return;
 						}
 						this.settingsManager.setTuiMode(mode);
 						if (!this.activeStatusIndicator) this.statusContainer.clear();
-						this.showStatus(`TUI mode: ${mode}`);
+						this.showStatus(`界面模式：${localizeSettingValue("tui-mode", mode)}`);
 					},
 					onFullscreenScrollbarChange: (mode) => {
 						this.settingsManager.setFullscreenScrollbar(mode);
@@ -4798,7 +4798,7 @@ export class InteractiveMode {
 		const cachedMatch = findExactModelReferenceMatch(searchTerm, cachedModels);
 		if (cachedMatch || this.session.scopedModels.length > 0) return cachedMatch;
 
-		this.showStatus("Refreshing model catalogs…");
+		this.showStatus("正在刷新模型目录...");
 		const controller = new AbortController();
 		let timedOut = false;
 		const timeout = setTimeout(() => {
@@ -4808,15 +4808,15 @@ export class InteractiveMode {
 		try {
 			const result = await this.session.modelRuntime.refresh({ signal: controller.signal });
 			if (result.aborted && timedOut) {
-				this.showWarning("Model refresh timed out; searching cached models.");
+				this.showWarning("刷新模型目录超时，将搜索缓存模型。");
 			} else if (result.errors.size > 0) {
-				this.showWarning(`Could not refresh ${[...result.errors.keys()].join(", ")}; searching cached models.`);
+				this.showWarning(`无法刷新 ${[...result.errors.keys()].join("、")}，将搜索缓存模型。`);
 			}
 		} catch (error) {
 			this.showWarning(
 				timedOut
-					? "Model refresh timed out; searching cached models."
-					: `Could not refresh model catalogs: ${error instanceof Error ? error.message : String(error)}`,
+					? "刷新模型目录超时，将搜索缓存模型。"
+					: `无法刷新模型目录：${error instanceof Error ? error.message : String(error)}`,
 			);
 		} finally {
 			clearTimeout(timeout);
@@ -5003,7 +5003,7 @@ export class InteractiveMode {
 				{
 					allModels: availableModels,
 					enabledModelIds: currentEnabledIds,
-					refreshStatus: "Refreshing model catalogs…",
+					refreshStatus: "正在刷新模型目录...",
 				},
 				{
 					onChange: (enabledIds) => {
@@ -5039,14 +5039,14 @@ export class InteractiveMode {
 					}
 					if (currentEnabledIds !== null) updateSessionModels(currentEnabledIds);
 					if (result.aborted && timedOut) {
-						selector.setRefreshStatus("Model refresh timed out; showing cached models.", "warning");
+						selector.setRefreshStatus("刷新模型目录超时，当前显示缓存模型。", "warning");
 					} else if (result.errors.size > 0) {
 						selector.setRefreshStatus(
-							`Could not refresh ${[...result.errors.keys()].join(", ")}; showing cached models.`,
+							`无法刷新 ${[...result.errors.keys()].join("、")}，当前显示缓存模型。`,
 							"warning",
 						);
 					} else {
-						selector.setRefreshStatus("Model catalogs refreshed.", "success");
+						selector.setRefreshStatus("模型目录已刷新。", "success");
 					}
 					this.ui.requestRender();
 				})
@@ -5054,8 +5054,8 @@ export class InteractiveMode {
 					if (disposed) return;
 					selector.setRefreshStatus(
 						timedOut
-							? "Model refresh timed out; showing cached models."
-							: `Could not refresh model catalogs: ${error instanceof Error ? error.message : String(error)}`,
+							? "刷新模型目录超时，当前显示缓存模型。"
+							: `无法刷新模型目录：${error instanceof Error ? error.message : String(error)}`,
 						"warning",
 					);
 					this.ui.requestRender();
@@ -5345,7 +5345,7 @@ export class InteractiveMode {
 				this.showStatus("已在当前目录继续会话");
 				return result;
 			}
-			return this.handleFatalRuntimeError("Failed to resume session", error);
+			return this.handleFatalRuntimeError("继续会话失败", error);
 		}
 	}
 
@@ -5547,7 +5547,7 @@ export class InteractiveMode {
 		try {
 			providerOptions = await this.getLogoutProviderOptions();
 		} catch (error) {
-			this.showError(`Could not read stored credentials: ${error instanceof Error ? error.message : String(error)}`);
+			this.showError(`读取已保存凭据失败：${error instanceof Error ? error.message : String(error)}`);
 			return;
 		}
 		if (providerOptions.length === 0) {
@@ -5653,9 +5653,9 @@ export class InteractiveMode {
 			.refresh({ providers: [providerId], signal: controller.signal })
 			.then((result) => {
 				if (result.aborted) {
-					this.showWarning(`${actionLabel}, but its model catalog refresh timed out; using cached models.`);
+					this.showWarning(`${actionLabel}，但刷新模型目录超时，当前使用缓存模型。`);
 				} else if (result.errors.size > 0) {
-					this.showWarning(`${actionLabel}, but its model catalog could not be refreshed; using cached models.`);
+					this.showWarning(`${actionLabel}，但模型目录刷新失败，当前使用缓存模型。`);
 				}
 				this.updateAvailableProviderCount();
 				this.footer.invalidate();
@@ -5663,7 +5663,7 @@ export class InteractiveMode {
 			})
 			.catch((error: unknown) => {
 				this.showWarning(
-					`${actionLabel}, but its model catalog could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+					`${actionLabel}，但模型目录刷新失败：${error instanceof Error ? error.message : String(error)}`,
 				);
 			})
 			.finally(() => clearTimeout(timeout));

@@ -13,6 +13,7 @@ import {
 	setCellDimensions,
 } from "../src/terminal-image.ts";
 import type { Component, TUI } from "../src/tui.ts";
+import { TuiAltScreen } from "../src/tui-alt-screen.ts";
 import { TuiMainScreen } from "../src/tui-main-screen.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
@@ -54,7 +55,7 @@ class LoggingVirtualTerminal extends VirtualTerminal {
 	}
 }
 
-class InsetTUI extends TUI {
+class InsetTUI extends TuiAltScreen {
 	protected override getRenderWidth(): number {
 		return Math.max(1, this.terminal.columns - 1);
 	}
