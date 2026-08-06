@@ -23,6 +23,7 @@ import type {
 	BeforeToolCallResult,
 	PrepareNextTurnContext,
 	QueueMode,
+	ShouldStopAfterTurnContext,
 	StreamFn,
 	ToolExecutionMode,
 } from "./types.ts";
@@ -106,6 +107,7 @@ export interface AgentOptions {
 	afterToolCall?: (context: AfterToolCallContext, signal?: AbortSignal) => Promise<AfterToolCallResult | undefined>;
 	prepareRequest?: (context: AgentContext, signal?: AbortSignal) => AgentContext | Promise<AgentContext>;
 	validateRequest?: (context: AgentContext, signal?: AbortSignal) => void | Promise<void>;
+	shouldStopAfterTurn?: (context: ShouldStopAfterTurnContext, signal?: AbortSignal) => boolean | Promise<boolean>;
 	prepareNextTurn?: (
 		signal?: AbortSignal,
 	) => Promise<AgentLoopTurnUpdate | undefined> | AgentLoopTurnUpdate | undefined;
@@ -192,6 +194,10 @@ export class Agent {
 	) => Promise<AfterToolCallResult | undefined>;
 	public prepareRequest?: (context: AgentContext, signal?: AbortSignal) => AgentContext | Promise<AgentContext>;
 	public validateRequest?: (context: AgentContext, signal?: AbortSignal) => void | Promise<void>;
+	public shouldStopAfterTurn?: (
+		context: ShouldStopAfterTurnContext,
+		signal?: AbortSignal,
+	) => boolean | Promise<boolean>;
 	public prepareNextTurn?: (
 		signal?: AbortSignal,
 	) => Promise<AgentLoopTurnUpdate | undefined> | AgentLoopTurnUpdate | undefined;
@@ -225,6 +231,7 @@ export class Agent {
 		this.afterToolCall = runtimeOptions.afterToolCall;
 		this.prepareRequest = runtimeOptions.prepareRequest;
 		this.validateRequest = runtimeOptions.validateRequest;
+		this.shouldStopAfterTurn = runtimeOptions.shouldStopAfterTurn;
 		this.prepareNextTurn = runtimeOptions.prepareNextTurn;
 		this.prepareNextTurnWithContext = runtimeOptions.prepareNextTurnWithContext;
 		this.steeringQueue = new PendingMessageQueue(runtimeOptions.steeringMode ?? "one-at-a-time");
@@ -441,6 +448,7 @@ export class Agent {
 		let skipInitialSteeringPoll = options.skipInitialSteeringPoll === true;
 		const prepareRequest = this.prepareRequest;
 		const validateRequest = this.validateRequest;
+		const shouldStopAfterTurn = this.shouldStopAfterTurn;
 		return {
 			model: this._state.model,
 			reasoning: this._state.thinkingLevel === "off" ? undefined : this._state.thinkingLevel,
@@ -455,6 +463,9 @@ export class Agent {
 			afterToolCall: this.afterToolCall,
 			prepareRequest: prepareRequest ? async (context) => await prepareRequest(context, this.signal) : undefined,
 			validateRequest: validateRequest ? async (context) => await validateRequest(context, this.signal) : undefined,
+			shouldStopAfterTurn: shouldStopAfterTurn
+				? async (context) => await shouldStopAfterTurn(context, this.signal)
+				: undefined,
 			prepareNextTurn:
 				this.prepareNextTurnWithContext || this.prepareNextTurn
 					? async (context) => {

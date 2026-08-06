@@ -6,6 +6,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import chalk from "chalk";
 import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR, ENV_SESSION_DIR } from "../config.ts";
 import type { ExtensionFlag } from "../core/extensions/types.ts";
+import type { TuiMode } from "../core/settings-manager.ts";
 import { t } from "../locales/zh-CN.ts";
 
 export type Mode = "text" | "json" | "rpc";
@@ -46,6 +47,7 @@ export interface Args {
 	noContextFiles?: boolean;
 	listModels?: string | true;
 	offline?: boolean;
+	tuiMode?: TuiMode;
 	verbose?: boolean;
 	altScreen?: "auto" | "always" | "never";
 	mouse?: boolean;
@@ -178,6 +180,20 @@ export function parseArgs(args: string[]): Args {
 			} else {
 				result.listModels = true;
 			}
+		} else if (arg === "--tui-mode") {
+			const mode = args[i + 1];
+			if (mode === "regular" || mode === "fullscreen") {
+				result.tuiMode = mode;
+				i++;
+			} else if (mode === undefined || mode.startsWith("-")) {
+				result.diagnostics.push({ type: "error", message: "--tui-mode requires regular or fullscreen" });
+			} else {
+				i++;
+				result.diagnostics.push({
+					type: "error",
+					message: `Invalid TUI mode "${mode}". Valid values: regular, fullscreen`,
+				});
+			}
 		} else if (arg === "--verbose") {
 			result.verbose = true;
 		} else if (arg === "--alt-screen") {
@@ -290,8 +306,9 @@ ${chalk.bold("选项：")}
   --export <file>                导出会话为 HTML 后退出
   --list-models [search]         列出可用模型，可附带模糊搜索词
   --verbose                      强制显示详细启动信息
-  --alt-screen <mode>            全屏模式：auto、always 或 never
-  --no-alt-screen                使用 inline 模式，等价于 --alt-screen never
+  --tui-mode <mode>              TUI 模式：regular 或 fullscreen
+  --alt-screen <mode>            兼容选项：auto、always 或 never
+  --no-alt-screen                使用 regular 模式，等价于 --alt-screen never
   --mouse / --no-mouse           启用或关闭全屏鼠标操作
   --approve, -a                  本次运行信任项目本地文件
   --no-approve, -na              本次运行忽略项目本地文件
@@ -379,6 +396,7 @@ ${chalk.bold("环境变量：")}
   XAI_API_KEY                      - xAI Grok API key
   FIREWORKS_API_KEY                - Fireworks API key
   TOGETHER_API_KEY                 - Together AI API key
+  BASETEN_API_KEY                  - Baseten API key
   OPENROUTER_API_KEY               - OpenRouter API key
   AI_GATEWAY_API_KEY               - Vercel AI Gateway API key
   ZAI_API_KEY                      - ZAI Coding Plan API key (Global)

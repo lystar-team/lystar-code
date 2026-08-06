@@ -101,11 +101,17 @@ done
 cd packages/coding-agent
 for platform in "${PLATFORMS[@]}"; do
     printf 'Building LYStar Agent %s for %s...\n' "$VERSION" "$platform"
+    bun_target="bun-$platform"
+    if [[ "$platform" == *-x64 ]]; then
+        bun_target="${bun_target}-baseline"
+    fi
+
+    # Bun 只有显式收到 worker 入口时，才会把 worker 编入独立可执行文件。
     if [[ "$platform" == windows-* ]]; then
-        run_bun build --compile --target="bun-$platform" ./dist/bun/cli.js ./src/utils/image-resize-worker.ts \
+        run_bun build --compile --target="$bun_target" ./dist/bun/cli.js ./src/utils/image-resize-worker.ts \
             --outfile "$OUTPUT_DIR/$platform/la.exe"
     else
-        run_bun build --compile --target="bun-$platform" ./dist/bun/cli.js ./src/utils/image-resize-worker.ts \
+        run_bun build --compile --target="$bun_target" ./dist/bun/cli.js ./src/utils/image-resize-worker.ts \
             --outfile "$OUTPUT_DIR/$platform/la"
     fi
 done

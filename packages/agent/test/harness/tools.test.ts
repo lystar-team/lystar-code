@@ -7,13 +7,15 @@ import { createEditTool } from "../../src/harness/tools/edit.ts";
 import { createReadTool } from "../../src/harness/tools/read.ts";
 import { createWriteTool } from "../../src/harness/tools/write.ts";
 import {
-	type ExecutionError,
+	ExecutionError,
+	err,
 	type FileError,
 	getOrThrow,
 	ok,
 	type Result,
 	type ShellExecOptions,
 } from "../../src/harness/types.ts";
+import { DEFAULT_MAX_LINES } from "../../src/harness/utils/truncate.ts";
 import { createTempDir } from "./session-test-utils.ts";
 
 function textOutput(result: { content: Array<{ type: string; text?: string }> }): string {
@@ -97,6 +99,19 @@ class LateOutputExecutionEnv extends NodeExecutionEnv {
 		options?.onStdout?.("before\n");
 		setTimeout(() => options?.onStdout?.("late\n"), 0);
 		return ok({ stdout: "before\n", stderr: "", exitCode: 0 });
+	}
+}
+
+const TRUNCATED_OUTPUT_LINES = DEFAULT_MAX_LINES + 1;
+
+class TimeoutOutputExecutionEnv extends NodeExecutionEnv {
+	override async exec(
+		_command: string,
+		options?: ShellExecOptions,
+	): Promise<Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>> {
+		const output = `${Array.from({ length: TRUNCATED_OUTPUT_LINES }, (_, index) => `line-${index + 1}`).join("\n")}\n`;
+		options?.onStdout?.(output);
+		return err(new ExecutionError("timeout", `timeout:${options?.timeout}`));
 	}
 }
 
@@ -475,7 +490,7 @@ describe("AgentHarness tools", () => {
 		});
 
 		it("preserves truncated output when a command times out", async () => {
-			const context = createContext();
+			const context = { env: new TimeoutOutputExecutionEnv({ cwd: createTempDir() }) };
 			let error: unknown;
 			try {
 				await createBashTool().execute(
@@ -499,7 +514,7 @@ describe("AgentHarness tools", () => {
 			expect(fullOutputPath).toBeDefined();
 			const fullOutput = getOrThrow(await context.env.readTextFile(fullOutputPath!));
 			expect(fullOutput).toContain("line-1\nline-2");
-			expect(fullOutput).toContain("line-2999\nline-3000");
+			expect(fullOutput).toContain(`line-${DEFAULT_MAX_LINES}\nline-${TRUNCATED_OUTPUT_LINES}`);
 		});
 
 		it("ignores output callbacks after execution settles", async () => {

@@ -24,6 +24,7 @@ function createSession(options: {
 	branchUsage?: AssistantUsage;
 	compactionUsage?: AssistantUsage;
 	toolUsage?: AssistantUsage;
+	usingSubscription?: boolean;
 }): AgentSession {
 	const usage = options.usage;
 	const entries: Array<Record<string, unknown>> = [];
@@ -81,7 +82,7 @@ function createSession(options: {
 			getCwd: () => "/tmp/project",
 		},
 		modelRuntime: {
-			isUsingOAuth: () => false,
+			isUsingSubscription: () => options.usingSubscription ?? false,
 		},
 	};
 
@@ -339,5 +340,31 @@ describe("FooterComponent width handling", () => {
 		const footer = new FooterComponent(session, createFooterData(1));
 
 		expect(stripAnsi(footer.render(120)[0])).toContain("费用 $1.234（订阅）");
+	});
+
+	it("marks explicitly identified subscription auth", () => {
+		const session = createSession({ sessionName: "", provider: "anthropic", usingSubscription: true });
+		const footer = new FooterComponent(session, createFooterData(1));
+
+		expect(stripAnsi(footer.render(120)[1])).toContain("$0.000 (sub)");
+	});
+
+	it("does not mark generic OAuth sign-in as a subscription", () => {
+		const session = createSession({
+			sessionName: "",
+			provider: "openrouter",
+			usage: {
+				input: 100,
+				output: 10,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { total: 1.234 },
+			},
+		});
+		const footer = new FooterComponent(session, createFooterData(1));
+		const stats = stripAnsi(footer.render(120)[1]);
+
+		expect(stats).toContain("$1.234");
+		expect(stats).not.toContain("(sub)");
 	});
 });

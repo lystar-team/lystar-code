@@ -176,7 +176,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			} else if (result.errors.size === 1) {
 				this.errorMessage = `无法刷新 ${result.errors.keys().next().value}，当前显示缓存模型。`;
 			} else if (result.errors.size > 1) {
-				this.errorMessage = `有 ${result.errors.size} 个模型目录刷新失败，当前显示缓存模型。`;
+				this.errorMessage = `有 ${result.errors.size} 个模型目录刷新失败（${[...result.errors.keys()].join("、")}），当前显示缓存模型。`;
 			} else {
 				this.errorMessage = this.modelRuntime.getError();
 				if (!this.errorMessage) {
@@ -187,12 +187,21 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			this.loadModelsFromSnapshot();
 			this.filterModels(this.searchInput.getValue());
 			this.tui.requestRender();
+		} catch (error) {
+			if (this.closed) return;
+			this.refreshStatusMessage = "";
+			this.errorMessage = timedOut
+				? "Model refresh timed out; showing cached models."
+				: `Could not refresh model catalogs: ${error instanceof Error ? error.message : String(error)}`;
+			this.updateList();
+			this.tui.requestRender();
 		} finally {
 			if (this.refreshTimeout) clearTimeout(this.refreshTimeout);
 		}
 	}
 
-	private close(): void {
+	dispose(): void {
+		if (this.closed) return;
 		this.closed = true;
 		if (this.refreshTimeout) clearTimeout(this.refreshTimeout);
 		this.refreshAbortController.abort();
@@ -341,7 +350,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		}
 		// Escape or Ctrl+C
 		else if (kb.matches(keyData, "tui.select.cancel")) {
-			this.close();
+			this.dispose();
 			this.onCancelCallback();
 		}
 		// Pass everything else to search input
@@ -352,7 +361,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	}
 
 	private handleSelect(model: Model<any>): void {
-		this.close();
+		this.dispose();
 		// Save as new default
 		this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
 		this.onSelectCallback(model);

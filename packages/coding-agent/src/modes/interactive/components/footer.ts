@@ -119,7 +119,7 @@ export class FooterComponent implements Component {
 				: undefined;
 
 		const usingSubscription = state.model
-			? state.model.provider === "kimi-coding" || this.session.modelRuntime.isUsingOAuth(state.model.provider)
+			? state.model.provider === "kimi-coding" || this.session.modelRuntime.isUsingSubscription(state.model.provider)
 			: false;
 		const costText =
 			usageTotals.cost || usingSubscription
