@@ -4,6 +4,7 @@
 
 ### LYStar 适配
 
+- `0.84.1-lystar.3` 修复 `/changes` 在空工作区错误显示“正在读取 Diff...”的问题。
 - `0.84.1-lystar.2` 将全屏 TUI 调整为轻量任务工作台：运行时显示真实 Agent/Tool 活动，`agent_settled` 后显示不写入 Session 的本轮摘要，并新增 `/changes` 变更审阅器。
 - 顶栏优先显示当前任务与上下文，极小终端优先保留活动状态和输入区；完整更新记录收拢到 `/changelog` Overlay。
 - 基线升级到 Pi `v0.84.1`，继续兼容 `la`、中文全屏工作区、Pi 数据目录和 LYStar 五平台发行体系。

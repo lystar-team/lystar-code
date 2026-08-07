@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-07T15:42:27Z
+最后核验时间：2026-08-07T16:01:08Z
 
 环境：
 
@@ -15,6 +15,16 @@ Linux x64
 
 ## 已通过
 
+### `0.84.1-lystar.3` 发布前核验
+
+发布事实源为 `piConfig.productVersion = 0.84.1-lystar.3`，Pi workspace 包版本、Session、Agent Runtime、Tool 和 Extension API 均未变化。本版只修复 `/changes` 空文件列表的显示判断：只有 `loadingPath` 确实存在且等于选中文件路径时才显示 Diff 加载态，避免 `undefined === undefined` 将空工作区误判为加载中；修复提交为 `555046f`，新增空工作区回归测试。
+
+显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新完成 `npm run check`、`npm run build:offline` 和全部发布 gate。TUI 全量退出码 0；AI 104 个 test files/870 项通过，25 个 files/825 项跳过；Agent Core 20 个 files/398 项通过、1 项跳过；Coding Agent 227 个 files/1997 项通过，6 个 files/49 项跳过。Unix 安装器的安装、PATH、SHA 校验、回退、卸载和物化检查再次通过。
+
+五平台候选包使用 Bun `1.3.9` 重新构建，`SHA256SUMS` 五项全部通过，manifest 版本为 `0.84.1-lystar.3`、Pi 版本为 `0.84.1`、仓库为 `octyean/lystar-agent`；格式覆盖 macOS ARM64/x64 Mach-O、Linux ARM64/x64 ELF 和 Windows x64 PE32+。Linux x64 候选包 SHA-256 为 `4bdff0830437d121e3cc3578e01051d277ecb96b240792449ca3dbac04f1be1f`，其 `la --version` 与 `PI_OFFLINE=1 la --list-models` 通过。
+
+最终 Linux x64 候选包在全新且干净的 Git 仓库中以 `80x24` tmux PTY 打开 `/changes`，稳定显示“工作区没有未提交变更”和“没有可审阅的文件”，不再显示“正在读取 Diff...”；`/quit` 正常退出，`lystar-release-0841-3-candidate` tmux server 已关闭。基于最终 `.3` 发布树创建独立 worktree，将上游 `upstream/main` `541ed488d89dbe11395e4c108f448e1e253ae4c1` 的 21 个 Tag 后提交执行 `--no-commit --no-ff` 合并，结果无冲突；合并后的 `npm run check` 和 4 个聚焦测试文件共 39 项通过，模拟 branch 与 worktree 已删除。
+
 ### `0.84.1-lystar.2` 发布前核验
 
 发布事实源为 `piConfig.productVersion = 0.84.1-lystar.2`，Pi workspace 包版本和基线继续保持 `0.84.1` 与 `53fa77ccd8a279eb87e92294ef3687b03ff80112`。本版将全屏 TUI 调整为轻量任务工作台：活动条只消费真实 Agent/Tool 事件，完成摘要只在 `agent_settled` 后显示且不写入 Session，`/changes` 严格区分本轮 Edit/Write 文件与 Git 工作区变更；没有修改 Pi Session JSONL、Agent Runtime、Tool、Extension API、Provider、CLI 参数或 `PI_*` 契约。
@@ -28,6 +38,12 @@ CodeGraph 增量同步 11 个变更文件、637 个节点，`affected` 只指向
 五平台候选包使用临时 PATH 中的 Bun `1.3.9` 构建，没有修改项目依赖。`SHA256SUMS` 五项全部通过，manifest 版本为 `0.84.1-lystar.2`、Pi 版本为 `0.84.1`、仓库为 `octyean/lystar-agent`，五个平台文件、大小和 SHA-256 一致；归档格式覆盖 macOS ARM64/x64 Mach-O、Linux ARM64/x64 ELF 和 Windows x64 PE32+，全部包含 `LICENSE` 与 `THIRD_PARTY_LICENSES.md`。Linux x64 候选包 SHA-256 为 `daaa7cf59f204ee5cae0a3aa2a48898ff071e33e09fcd41cb96bc680d7355af6`，其 `la --version`、中文 `la --help`、`PI_OFFLINE=1 la --list-models` 和中文 `la auth --help` 均通过。
 
 Linux x64 候选包在独立 `80x24` tmux PTY 打开 `/changes` 与 `/changelog`，再 resize 到 `80x8` 和 `120x36`，Overlay、顶栏、Composer 和快捷栏均正常；`/quit` 正常退出，`lystar-release-0841-2-candidate` tmux server 已关闭。当前 Linux 环境没有 macOS 实机和 Windows Console/ConPTY 的交互证据；这两个平台当前只验证了格式、架构、归档内容和自动测试，不能视为对应平台实机运行通过。
+
+`main` commit `f9c9fb02323b3019e753a02ca70e2f32cde7399f` 的 CI run `31194116547` 七个 job 全部成功。annotated Tag `v0.84.1-lystar.2` 的 Tag 对象为 `90579650e0026ed38db2542fc69a867b3a7ae62c`，解引用后固定指向该 commit。Release workflow run `31194315795` 成功，GitHub Release 于 `2026-08-07T15:48:17Z` 发布，为非草稿、非预发布正式版本，共有 10 个公开资产。
+
+公开 Linux x64 包 SHA-256 为 `ac8308b4f06b6420f6b0a32ddb26258ad5960e8d8d8468384850444ef8229ab4`，与公开 `SHA256SUMS`、manifest 和 Release asset 一致；GitHub Attestations API 返回 1 条 Sigstore provenance，绑定 `.github/workflows/release.yml`、Tag `v0.84.1-lystar.2`、commit `f9c9fb023` 和 run `31194315795`。公开包的版本、中文帮助和离线模型列表通过。
+
+本机通过公开 `la update` 从 `0.84.1-lystar.1` 原子更新到 `0.84.1-lystar.2`，`current` 指向 `.2`，`previous` 保留 `.1`，再次更新显示已是最新版本。安装后的真实 Provider PTY 返回 `OK`；随后在干净工作区打开 `/changes`，确认空列表错误持续显示“正在读取 Diff...”。Tag 与 Release 均按历史保留，本问题由后续 `0.84.1-lystar.3` 修复。
 
 ### `0.84.1-lystar.1` 发布前核验
 
