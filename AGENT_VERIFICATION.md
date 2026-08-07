@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-07T08:33:44Z
+最后核验时间：2026-08-07T15:42:27Z
 
 环境：
 
@@ -14,6 +14,20 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### `0.84.1-lystar.2` 发布前核验
+
+发布事实源为 `piConfig.productVersion = 0.84.1-lystar.2`，Pi workspace 包版本和基线继续保持 `0.84.1` 与 `53fa77ccd8a279eb87e92294ef3687b03ff80112`。本版将全屏 TUI 调整为轻量任务工作台：活动条只消费真实 Agent/Tool 事件，完成摘要只在 `agent_settled` 后显示且不写入 Session，`/changes` 严格区分本轮 Edit/Write 文件与 Git 工作区变更；没有修改 Pi Session JSONL、Agent Runtime、Tool、Extension API、Provider、CLI 参数或 `PI_*` 契约。
+
+CodeGraph 增量同步 11 个变更文件、637 个节点，`affected` 只指向 `lystar-workspace.test.ts` 和 `task-workbench-components.test.ts`。基于功能提交 `e63bd5d46` 创建独立模拟 worktree，将上游 `upstream/main` `541ed488d89dbe11395e4c108f448e1e253ae4c1` 的 21 个 Tag 后提交执行 `--no-commit --no-ff` 合并，结果无冲突；模拟合并后的 `npm run check` 和 4 个聚焦测试文件共 38 项通过。模拟 branch 与 worktree 已删除，没有进入 `main`。
+
+显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 完成 `npm run check`、`npm run build:offline` 和发布 gate。TUI 全量退出码 0；AI 104 个 test files/870 项通过，25 个 files/825 项跳过；Agent Core 20 个 files/398 项通过、1 项跳过；Coding Agent 227 个 files/1996 项通过，6 个 files/49 项跳过。Unix 安装器的安装、PATH、SHA 校验、回退、卸载和物化检查通过。
+
+源码构建在独立 tmux PTY 覆盖 `120x36`、`80x24` 和 `80x8`，验证真实 Faux Provider 的思考、Bash、Write、完成摘要、自动重试和取消事件，以及 `/changes` 的本轮/工作区切换和 `/changelog` Overlay；输入区和快捷栏在极小高度保持可见。本轮创建的所有 tmux socket 和临时 Faux 文件均已删除。
+
+五平台候选包使用临时 PATH 中的 Bun `1.3.9` 构建，没有修改项目依赖。`SHA256SUMS` 五项全部通过，manifest 版本为 `0.84.1-lystar.2`、Pi 版本为 `0.84.1`、仓库为 `octyean/lystar-agent`，五个平台文件、大小和 SHA-256 一致；归档格式覆盖 macOS ARM64/x64 Mach-O、Linux ARM64/x64 ELF 和 Windows x64 PE32+，全部包含 `LICENSE` 与 `THIRD_PARTY_LICENSES.md`。Linux x64 候选包 SHA-256 为 `daaa7cf59f204ee5cae0a3aa2a48898ff071e33e09fcd41cb96bc680d7355af6`，其 `la --version`、中文 `la --help`、`PI_OFFLINE=1 la --list-models` 和中文 `la auth --help` 均通过。
+
+Linux x64 候选包在独立 `80x24` tmux PTY 打开 `/changes` 与 `/changelog`，再 resize 到 `80x8` 和 `120x36`，Overlay、顶栏、Composer 和快捷栏均正常；`/quit` 正常退出，`lystar-release-0841-2-candidate` tmux server 已关闭。当前 Linux 环境没有 macOS 实机和 Windows Console/ConPTY 的交互证据；这两个平台当前只验证了格式、架构、归档内容和自动测试，不能视为对应平台实机运行通过。
 
 ### `0.84.1-lystar.1` 发布前核验
 

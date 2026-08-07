@@ -517,6 +517,7 @@ LYStar 不增加 MCP 配置文件、内置管理器或代理 Tool。TUI 负责�
 
 | LYStar | Pi 基线 | Pi commit | MCP Adapter | Session | Extension API |
 |---|---|---|---|---|---|
+| `0.84.1-lystar.2` | `0.84.1` | `53fa77cc...` | `2.12.1` | Pi 原 JSONL 兼容；活动状态和完成摘要仅在当前 TUI 显示 | Pi `0.84.1`；复用现有 Agent/Tool 事件，不增加运行时契约 |
 | `0.84.1-lystar.1` | `0.84.1` | `53fa77cc...` | `2.12.1` | Pi 原 JSONL 兼容；Harness v4 lane Session/Repo API | Pi `0.84.1`，新增 blocked `tool_call` 的 `terminate` 结果 |
 | `0.84.0-lystar.2` | `0.84.0` | `a5f43bf8...` | `2.12.1` | Pi 原 JSONL 兼容；新增 Harness v2 Session API 与 memory/jsonl backend | Pi `0.84.0`，修复 LYStar 全屏历史输入路由 |
 | `0.84.0-lystar.1` | `0.84.0` | `a5f43bf8...` | `2.12.1` | Pi 原 JSONL 兼容；新增 Harness v2 Session API 与 memory/jsonl backend | Pi `0.84.0`，新增 Markdown transformer |
