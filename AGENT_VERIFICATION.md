@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-07T16:01:08Z
+最后核验时间：2026-08-07T16:14:24Z
 
 环境：
 
@@ -24,6 +24,14 @@ Linux x64
 五平台候选包使用 Bun `1.3.9` 重新构建，`SHA256SUMS` 五项全部通过，manifest 版本为 `0.84.1-lystar.3`、Pi 版本为 `0.84.1`、仓库为 `octyean/lystar-agent`；格式覆盖 macOS ARM64/x64 Mach-O、Linux ARM64/x64 ELF 和 Windows x64 PE32+。Linux x64 候选包 SHA-256 为 `4bdff0830437d121e3cc3578e01051d277ecb96b240792449ca3dbac04f1be1f`，其 `la --version` 与 `PI_OFFLINE=1 la --list-models` 通过。
 
 最终 Linux x64 候选包在全新且干净的 Git 仓库中以 `80x24` tmux PTY 打开 `/changes`，稳定显示“工作区没有未提交变更”和“没有可审阅的文件”，不再显示“正在读取 Diff...”；`/quit` 正常退出，`lystar-release-0841-3-candidate` tmux server 已关闭。基于最终 `.3` 发布树创建独立 worktree，将上游 `upstream/main` `541ed488d89dbe11395e4c108f448e1e253ae4c1` 的 21 个 Tag 后提交执行 `--no-commit --no-ff` 合并，结果无冲突；合并后的 `npm run check` 和 4 个聚焦测试文件共 39 项通过，模拟 branch 与 worktree 已删除。
+
+`main` commit `038b3afd1543ca4bfc7e2e5d1830d89f233ee49c` 的 CI run `31195963110` 七个 job 全部成功，覆盖源码核验与构建、Unix 安装器、TUI、AI、Agent Core、Coding Agent 双分片，以及 Windows managed MinGit Bash 和 Windows PowerShell 5.1 安装器。annotated Tag `v0.84.1-lystar.3` 的 Tag 对象为 `3b33994713a2b8e9993fbfc3a17bbe02a871d360`，解引用后固定指向该 commit。
+
+Release workflow run `31196208689` 成功，完成 main CI 绑定、版本校验、Bun 1.3.9 五平台打包、artifact attestation 和公开发布。GitHub Release 于 `2026-08-07T16:10:55Z` 发布，为非草稿、非预发布正式版本，共有 10 个公开资产：五个平台包、`SHA256SUMS`、`release-manifest.json` 和三个安装器。
+
+公开 Linux x64 包 SHA-256 为 `52889b5cb9bf2e945c2cdeccb3e53acccf5b7849c3ae6ccd7508f0f2d332d675`，与公开 `SHA256SUMS`、manifest 和 Release asset 一致；GitHub Attestations API 返回 1 条 Sigstore provenance，绑定 `.github/workflows/release.yml`、Tag `v0.84.1-lystar.3`、commit `038b3afd1` 和 run `31196208689`。公开包版本、离线模型列表和 manifest 仓库字段均通过。
+
+本机通过公开 `la update` 从 `0.84.1-lystar.2` 原子更新到 `0.84.1-lystar.3`，`current` 指向 `.3`，`previous` 保留 `.2`，再次更新显示已是最新版本。安装后的 `/home/yean/.local/bin/la` 在干净 Git 仓库的独立 `80x24` tmux PTY 使用真实 Provider 返回 `OK3`，随后 `/changes` 稳定显示正确空态并正常退出；`lystar-release-0841-3-installed` tmux server 已关闭。
 
 ### `0.84.1-lystar.2` 发布前核验
 
