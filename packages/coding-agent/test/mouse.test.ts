@@ -11,6 +11,8 @@ describe("SGR mouse input", () => {
 			released: false,
 		});
 		expect(parseMouseEvent("\x1b[<65;3;9M")?.button).toBe("wheel-down");
+		expect(parseMouseEvent("\x1b[<66;3;9M")?.button).toBe("other");
+		expect(parseMouseEvent("\x1b[<67;3;9M")?.button).toBe("other");
 	});
 
 	it("parses shifted click and release events", () => {

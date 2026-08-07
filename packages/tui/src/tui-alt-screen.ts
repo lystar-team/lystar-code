@@ -27,6 +27,7 @@ import {
 	CURSOR_MARKER,
 	compositeTuiLine,
 	TuiBase,
+	type TuiInputListenerResult,
 	type TuiStopOptions,
 	VIEWPORT_TUI,
 	type ViewportTUI,
@@ -357,7 +358,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.flashes.flash(message, durationMs);
 	}
 
-	private handleViewportInput(data: string): { consume?: boolean } | undefined {
+	protected handleViewportInput(data: string): TuiInputListenerResult {
 		if (data === FOCUS_OUT) {
 			const hadActiveSelection = this.selectionPressActive;
 			this.selectionPressActive = false;

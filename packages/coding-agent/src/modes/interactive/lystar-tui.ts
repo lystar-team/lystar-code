@@ -1,8 +1,12 @@
 import { performance } from "node:perf_hooks";
-import { type Terminal, TuiAltScreen, type TuiAltScreenOptions } from "@earendil-works/pi-tui";
+import { type Terminal, TuiAltScreen, type TuiAltScreenOptions, type TuiInputListener } from "@earendil-works/pi-tui";
 
 const MIN_FRAME_INTERVAL_MS = 1000 / 30;
 const REPAIR_INTERVAL_MS = 500;
+
+export interface LystarTuiOptions extends TuiAltScreenOptions {
+	workspaceInputHandler?: TuiInputListener;
+}
 
 export interface OutputFlow {
 	readonly writableNeedDrain: boolean;
@@ -12,6 +16,7 @@ export interface OutputFlow {
 
 export class LystarTUI extends TuiAltScreen {
 	private readonly outputFlow: OutputFlow;
+	private readonly workspaceInputHandler: TuiInputListener | undefined;
 	private running = false;
 	private renderPending = false;
 	private forcePending = false;
@@ -28,11 +33,18 @@ export class LystarTUI extends TuiAltScreen {
 		terminal: Terminal,
 		showHardwareCursor?: boolean,
 		logDirectory?: string,
-		options: TuiAltScreenOptions = {},
+		options: LystarTuiOptions = {},
 		outputFlow: OutputFlow = process.stdout,
 	) {
 		super(terminal, showHardwareCursor, logDirectory, options);
 		this.outputFlow = outputFlow;
+		this.workspaceInputHandler = options.workspaceInputHandler;
+	}
+
+	protected override handleViewportInput(data: string) {
+		const result = this.workspaceInputHandler?.(data);
+		if (result?.consume) return result;
+		return super.handleViewportInput(result?.data ?? data);
 	}
 
 	protected override getRenderWidth(): number {

@@ -3,11 +3,13 @@ import { Container, isViewportTUI, Text } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import type { TuiMode } from "../src/core/settings-manager.ts";
+import { LystarWorkspace } from "../src/modes/interactive/components/lystar-workspace.ts";
 import {
 	createInteractiveTui,
 	createInteractiveTuiReference,
 	InteractiveMode,
 } from "../src/modes/interactive/interactive-mode.ts";
+import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 const clipboardMocks = vi.hoisted(() => ({
 	copyToClipboard: vi.fn<(text: string) => Promise<void>>(),
@@ -68,6 +70,64 @@ describe("createInteractiveTui", () => {
 		altTui.stop();
 	});
 
+	it("routes LYStar workspace wheel input before the inherited viewport", async () => {
+		initTheme("dark");
+		const terminal = new RecordingTerminal(40, 8);
+		const chat = new Container();
+		for (let index = 0; index < 30; index++) chat.addChild(new Text(`line-${index}`, 0, 0));
+		const header = new Container();
+		header.addChild(new Text("header", 0, 0));
+		const workspace = new LystarWorkspace({
+			getHeight: () => terminal.rows,
+			header,
+			scrollContainers: [chat],
+			bottomContainers: [new Text("editor", 0, 0)],
+			fixedBottomContainers: [],
+			fullscreen: true,
+			scrollbar: "hidden",
+		});
+		type WorkspaceInputContext = {
+			workspace: LystarWorkspace;
+			renderer: ReturnType<typeof createInteractiveTui>;
+			ui: TUI;
+		};
+		const handleWorkspaceInput = (
+			InteractiveMode.prototype as unknown as {
+				handleWorkspaceInput(this: WorkspaceInputContext, data: string): { consume: true } | undefined;
+			}
+		).handleWorkspaceInput;
+		const context = {
+			workspace,
+			renderer: undefined as unknown as ReturnType<typeof createInteractiveTui>,
+			ui: undefined as unknown as TUI,
+		};
+		const renderer = createInteractiveTui({
+			tuiMode: "fullscreen",
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal,
+			workspaceInputHandler: (data) => handleWorkspaceInput.call(context, data),
+		});
+		context.renderer = renderer;
+		context.ui = renderer;
+		renderer.addChild(workspace);
+
+		renderer.start();
+		try {
+			await terminal.waitForRender();
+			expect(terminal.getViewport()[0]).toContain("header");
+			expect(terminal.getViewport()[1]).toContain("line-24");
+
+			terminal.sendInput("\x1b[<64;10;4M");
+			await terminal.waitForRender();
+
+			expect(terminal.getViewport()[1]).toContain("line-23");
+			expect(workspace.isFollowing()).toBe(false);
+		} finally {
+			renderer.stop();
+		}
+	});
+
 	it("replaces the renderer while preserving components and focus", async () => {
 		const terminal = new RecordingTerminal(40, 8);
 		const renderer = createInteractiveTui({
@@ -96,9 +156,11 @@ describe("createInteractiveTui", () => {
 			editor: { setPaddingX: (padding: number) => void };
 			options: { tuiMode?: TuiMode };
 			themeController: { rebindTui: () => void };
+			handleWorkspaceInput: (data: string) => { consume: true } | undefined;
 			extensionTerminalInputSubscriptions: Set<never>;
 		};
 		const editor = { setPaddingX: vi.fn() };
+		const handleWorkspaceInput = vi.fn(() => ({ consume: true as const }));
 		const context = Object.assign(Object.create(InteractiveMode.prototype), {
 			renderer,
 			ui: undefined as unknown as TUI,
@@ -109,6 +171,7 @@ describe("createInteractiveTui", () => {
 			editor,
 			options: { tuiMode: "regular" as TuiMode },
 			themeController: { rebindTui: () => {} },
+			handleWorkspaceInput,
 			extensionTerminalInputSubscriptions: new Set<never>(),
 		}) as SwitchContext;
 		stableUi = createInteractiveTuiReference(() => context.renderer);
@@ -129,6 +192,9 @@ describe("createInteractiveTui", () => {
 		expect(component.focused).toBe(true);
 		expect(invalidatedModes).toEqual(["fullscreen"]);
 		expect([terminal.startCount, terminal.stopCount]).toEqual([2, 1]);
+
+		terminal.sendInput("\x1b[<64;10;4M");
+		expect(handleWorkspaceInput).toHaveBeenCalledWith("\x1b[<64;10;4M");
 
 		stopInteractiveTui.call(context);
 

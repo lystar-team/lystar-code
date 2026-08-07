@@ -17,7 +17,7 @@ export function parseMouseEvent(data: string): MouseEvent | undefined {
 
 	let button: MouseEvent["button"];
 	if ((code & 64) !== 0) {
-		button = (code & 1) === 0 ? "wheel-up" : "wheel-down";
+		button = (code & 3) === 0 ? "wheel-up" : (code & 3) === 1 ? "wheel-down" : "other";
 	} else {
 		switch (code & 3) {
 			case 0:

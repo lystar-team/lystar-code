@@ -21,6 +21,7 @@ import type {
 	OverlayOptions,
 	SlashCommand,
 	Terminal,
+	TuiInputListener,
 	TuiMainScreenRenderState,
 } from "@earendil-works/pi-tui";
 import {
@@ -357,6 +358,7 @@ interface InteractiveTuiOptions {
 	showHardwareCursor: boolean;
 	logDirectory: string;
 	mouse?: boolean;
+	workspaceInputHandler?: TuiInputListener;
 	terminal?: Terminal;
 }
 
@@ -367,6 +369,7 @@ export function createInteractiveTui(options: InteractiveTuiOptions): TuiMainScr
 		return new LystarTUI(terminal, options.showHardwareCursor, options.logDirectory, {
 			mouse: options.mouse,
 			openUrl: openBrowser,
+			workspaceInputHandler: options.workspaceInputHandler,
 		});
 	}
 	return new TuiMainScreen(terminal, options.showHardwareCursor, options.logDirectory);
@@ -470,7 +473,6 @@ export class InteractiveMode {
 	// Agent subscription unsubscribe function
 	private unsubscribe?: () => void;
 	private signalCleanupHandlers: Array<() => void> = [];
-	private workspaceInputUnsubscribe?: () => void;
 	private componentExpansion = new WeakMap<Component, boolean>();
 	private lystarSettingsWarning?: string;
 
@@ -592,6 +594,7 @@ export class InteractiveMode {
 			showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
 			logDirectory: getAgentDir(),
 			mouse: this.fullscreenMouse,
+			workspaceInputHandler: (data) => this.handleWorkspaceInput(data),
 		});
 		this.ui = createInteractiveTuiReference(() => this.renderer);
 		this.ui.setReduceMotion(lystarSettings.settings.reduceMotion);
@@ -906,6 +909,7 @@ export class InteractiveMode {
 			showHardwareCursor,
 			logDirectory: getAgentDir(),
 			mouse: this.fullscreenMouse,
+			workspaceInputHandler: (data) => this.handleWorkspaceInput(data),
 			terminal,
 		});
 		nextUi.setClearOnShrink(clearOnShrink);
@@ -2825,7 +2829,7 @@ export class InteractiveMode {
 	// =========================================================================
 
 	private handleWorkspaceInput(data: string): { consume: true } | undefined {
-		if (!this.workspace.isFullscreen()) return undefined;
+		if (!this.workspace.isFullscreen() || this.renderer.hasOverlay()) return undefined;
 
 		const mouse = parseMouseEvent(data);
 		if (mouse) {
@@ -2835,8 +2839,10 @@ export class InteractiveMode {
 			} else if (mouse.button === "wheel-down") {
 				this.workspace.scrollBy(this.workspace.getWheelScrollStep());
 			} else if (mouse.button === "left" && !mouse.released) {
+				let handled = false;
 				if (this.workspace.isNewContentIndicatorRow(mouse.row)) {
 					this.workspace.scrollToBottom();
+					handled = true;
 				} else {
 					const hit = this.workspace.getComponentHitAtScreenRow(mouse.row);
 					let component = hit?.component;
@@ -2859,8 +2865,12 @@ export class InteractiveMode {
 						const expanded = !currentExpanded;
 						this.componentExpansion.set(component, expanded);
 						component.setExpanded(expanded);
+						handled = true;
 					}
 				}
+				if (!handled) return undefined;
+			} else {
+				return undefined;
 			}
 			this.ui.requestRender();
 			return { consume: true };
@@ -2882,8 +2892,6 @@ export class InteractiveMode {
 	}
 
 	private setupKeyHandlers(): void {
-		this.workspaceInputUnsubscribe?.();
-		this.workspaceInputUnsubscribe = this.ui.addInputListener((data) => this.handleWorkspaceInput(data));
 		// Set up handlers on defaultEditor - they use this.editor for text access
 		// so they work correctly regardless of which editor is active
 		this.defaultEditor.onEscape = () => {
@@ -6563,8 +6571,6 @@ export class InteractiveMode {
 		this.clearStatusIndicator();
 		this.themeController.disableAutoSync();
 		this.clearExtensionTerminalInputListeners();
-		this.workspaceInputUnsubscribe?.();
-		this.workspaceInputUnsubscribe = undefined;
 		this.footer.dispose();
 		this.footerDataProvider.dispose();
 		if (this.unsubscribe) {

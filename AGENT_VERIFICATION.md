@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-07T03:30:22Z
+最后核验时间：2026-08-07T04:50:12Z
 
 环境：
 
@@ -14,6 +14,20 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### `0.84.0-lystar.2` 发布前核验
+
+发布事实源为 `piConfig.productVersion = 0.84.0-lystar.2`，Pi workspace 包版本保持 `0.84.0`。`0.84.0-lystar.1` 的 LYStar 全屏工作区本身管理虚拟历史窗口，但继承的 `TuiAltScreen` 会先消费滚轮和视口快捷键；上游隐式 `ScrollView` 只看到一个刚好等于终端高度的 `LystarWorkspace`，没有可滚内容，真正的工作区输入处理因此收不到事件。运行时从普通模式切换到全屏时，旧 renderer 上注册的工作区监听也没有迁移到新 renderer。
+
+当前修复把 `TuiAltScreen.handleViewportInput()` 调整为受保护的可覆写入口，由 `LystarTUI` 先委托 LYStar 工作区输入；工作区消费滚轮、翻页和实际命中的展开点击，其余鼠标事件继续交给上游文本选择、链接和 ScrollView，弹窗可见时也继续使用上游滚动。工作区处理器随 `createInteractiveTui()` 创建和运行时模式切换绑定，不再维护会丢失的外部 listener。新增真实 renderer 回归发送标准 SGR 滚轮序列 `ESC[<64;10;4M`，验证 30 行历史的首行从 `line-24` 移到 `line-23`；另一项断言确认普通模式切到全屏后同一输入处理仍然存在。
+
+公开 `0.84.0-lystar.1` Linux x64 包加载 178K token 长会话后，发送 `ESC[<64;10;10M` 前后画面完全一致，稳定复现用户报告。修复后的源码构建和最终 `0.84.0-lystar.2` Linux x64 候选包使用同一会话、尺寸和输入序列，均上移一行并显示“下方还有 1 行”；发送滚轮下移后回到底部并恢复自动跟随，`/quit` 正常退出，`lystar-scroll-before`、`lystar-scroll-after-source`、`lystar-scroll-candidate-0840-2` 和 `lystar-scroll-candidate-final-0840-2` tmux server 均已关闭。
+
+显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 完成 `npm run check`、`npm run build:offline`、TUI 全量、AI 103 个 test files/849 项、Agent Core 20 个 test files/392 项、Coding Agent 221 个 test files/1948 项和 Unix 安装器验证；AI 跳过 25 个 files/806 项，Agent Core 跳过 1 项，Coding Agent 跳过 6 个 files/49 项。定向回归另覆盖 Coding Agent 38 项，以及上游 `TuiAltScreen`、文本选择、链接、滚动条拖拽、嵌套 ScrollView 和终端模式恢复 26 项；SGR `66/67` 横向触控板事件保持为 `other`，不会被误判成纵向滚轮。
+
+五平台候选包使用 Bun 1.3.9 构建，`SHA256SUMS` 五项全部通过；manifest 版本为 `0.84.0-lystar.2`，Pi 版本、仓库、文件名、大小和 SHA-256 一致。格式覆盖 macOS ARM64/x64 Mach-O、Linux ARM64/x64 ELF 和 Windows x64 PE32+，Linux/Windows 归档包含对应 clipboard 原生包、`LICENSE` 和 `THIRD_PARTY_LICENSES.md`。Linux x64 候选包的 `la --version`、`la --help`、`PI_OFFLINE=1 la --list-models` 通过，其 SHA-256 为 `1045222696837b79e2d07334b7e61338f48b09da40792c48e18c18411a4f928b`。
+
+CodeGraph 在核心修复后增量同步 4 个文件、569 个节点，补充横向触控板判定后再同步 2 个文件、6 个节点；基于最新索引的 affected 结果准确指向 `packages/coding-agent/test/interactive-tui.test.ts` 和 `packages/coding-agent/test/mouse.test.ts`。最终索引为 1169 files、19130 nodes、84445 edges，pending changes 0、`reindexRecommended=false`。由于修改仍经过公共 `TuiAltScreen` 输入入口，本轮额外用 TUI、AI、Agent Core 和 Coding Agent 全量测试覆盖。当前环境没有 macOS 实机和 Windows Console/ConPTY 交互式运行证据；正式 main CI、Tag、Release、attestation 和公开升级链待提交推送后验证。
 
 ### `0.84.0-lystar.1` 发布前核验
 

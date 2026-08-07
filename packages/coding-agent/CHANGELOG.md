@@ -121,6 +121,7 @@
 
 ### Fixed
 
+- Fixed LYStar fullscreen wheel and viewport navigation being consumed by the inherited alternate-screen viewport before reaching the virtual transcript, including after runtime TUI mode switches.
 - Fixed the footer showing `(sub)` for generic OAuth/OpenID sign-ins without a known subscription; extension OAuth providers can opt in with `isSubscription`.
 - Fixed inherited OAuth token refreshes so stalled requests release the credential-store lock ([#7508](https://github.com/earendil-works/pi/issues/7508)).
 - Fixed inherited tool argument validation to preserve values that already match an `anyOf`/`oneOf` union arm before coercion, avoiding nullable unions converting `null` to another primitive value ([#7328](https://github.com/earendil-works/pi/issues/7328)).
