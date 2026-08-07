@@ -116,6 +116,25 @@ describe("task workbench components", () => {
 		expect(loadWorkspaceDiff).toHaveBeenCalledTimes(2);
 	});
 
+	it("shows an empty workspace without a false Diff loading state", () => {
+		const selector = new ChangesSelectorComponent({
+			data: {
+				turnFiles: [],
+				workspaceFiles: [],
+				gitAvailable: true,
+				loadWorkspaceDiff: vi.fn(),
+			},
+			getHeight: () => 24,
+			requestRender: vi.fn(),
+			onCancel: vi.fn(),
+		});
+
+		const rendered = stripAnsi(selector.render(80).join("\n"));
+		expect(rendered).toContain("工作区没有未提交变更");
+		expect(rendered).toContain("没有可审阅的文件");
+		expect(rendered).not.toContain("正在读取 Diff");
+	});
+
 	it("uses the session name, then the first user line, as the task title", () => {
 		const getWorkspaceTaskTitle = (
 			InteractiveMode.prototype as unknown as {

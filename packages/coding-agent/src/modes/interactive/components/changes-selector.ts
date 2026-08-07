@@ -161,7 +161,7 @@ export class ChangesSelectorComponent implements Component, Focusable {
 		}
 
 		const diffLines =
-			this.loadingPath === selected?.path
+			this.loadingPath !== undefined && this.loadingPath === selected?.path
 				? [theme.fg("muted", "正在读取 Diff...")]
 				: selected?.diff
 					? selected.diff.split("\n").map(renderDiffLine)
