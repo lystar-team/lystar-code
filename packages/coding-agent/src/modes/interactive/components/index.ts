@@ -4,6 +4,12 @@ export { AssistantMessageComponent } from "./assistant-message.ts";
 export { BashExecutionComponent } from "./bash-execution.ts";
 export { BorderedLoader } from "./bordered-loader.ts";
 export { BranchSummaryMessageComponent } from "./branch-summary-message.ts";
+export { ChangelogViewerComponent } from "./changelog-viewer.ts";
+export {
+	ChangesSelectorComponent,
+	type ChangesSelectorData,
+	type WorkspaceChangeFile,
+} from "./changes-selector.ts";
 export { CompactionSummaryMessageComponent } from "./compaction-summary-message.ts";
 export { CustomEditor } from "./custom-editor.ts";
 export { CustomMessageComponent } from "./custom-message.ts";
@@ -33,6 +39,18 @@ export { ThinkingSelectorComponent } from "./thinking-selector.ts";
 export { ToolExecutionComponent, type ToolExecutionOptions } from "./tool-execution.ts";
 export { TreeSelectorComponent } from "./tree-selector.ts";
 export { TrustSelectorComponent } from "./trust-selector.ts";
+export {
+	formatTurnSummary,
+	type TurnFileSummary,
+	TurnSummaryComponent,
+	type TurnSummaryData,
+	type TurnToolSummary,
+} from "./turn-summary.ts";
 export { UserMessageComponent } from "./user-message.ts";
 export { UserMessageSelectorComponent } from "./user-message-selector.ts";
 export { truncateToVisualLines, type VisualTruncateResult } from "./visual-truncate.ts";
+export {
+	WorkspaceActivityBar,
+	type WorkspaceActivityPhase,
+	type WorkspaceActivityState,
+} from "./workspace-activity-bar.ts";

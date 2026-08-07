@@ -34,7 +34,10 @@ export interface WorkspaceHeaderState {
 	path: string;
 	branch?: string;
 	session?: string;
+	task?: string;
 	context: string;
+	compactContext?: string;
+	contextWarning?: boolean;
 }
 
 export class WorkspaceHeader implements Component {
@@ -52,20 +55,28 @@ export class WorkspaceHeader implements Component {
 		const product = state.product ? theme.bold(theme.fg("accent", state.product)) : undefined;
 		const path = theme.fg("muted", state.path);
 		const branch = state.branch ? theme.fg("text", state.branch) : undefined;
-		const session = state.session ? theme.fg("muted", state.session) : undefined;
-		const right = theme.fg("text", state.context);
+		const taskText = state.task ?? state.session;
+		const task = taskText ? theme.fg("text", taskText) : undefined;
+		const contextText = width >= 120 ? state.context : (state.compactContext ?? state.context);
+		const right = theme.fg(state.contextWarning ? "warning" : "text", contextText);
 		const rightWidth = visibleWidth(right);
 		if (rightWidth >= width) {
 			return [truncateToWidth(right, width, theme.fg("dim", "..."))];
 		}
 
 		const leftMaxWidth = Math.max(0, width - rightWidth - 2);
-		const candidates = [[product, path, branch, session], [path, branch, session], [path, branch], [path]]
+		const candidateParts =
+			width >= 120
+				? [[product, path, branch, task], [path, branch, task], [branch, task], [task], [path]]
+				: width >= 80
+					? [[path, branch, task], [branch, task], [task], [path]]
+					: [[task], [path]];
+		const candidates = candidateParts
 			.map((parts) => parts.filter((part): part is string => Boolean(part)).join(separator))
 			.filter((candidate, index, all) => candidate && all.indexOf(candidate) === index);
 		const left =
 			candidates.find((candidate) => visibleWidth(candidate) <= leftMaxWidth) ??
-			truncateToWidth(candidates.at(-1) ?? "", leftMaxWidth, theme.fg("dim", "..."));
+			truncateToWidth(candidates[0] ?? "", leftMaxWidth, theme.fg("dim", "..."));
 		const gap = " ".repeat(Math.max(0, width - visibleWidth(left) - rightWidth));
 		return [`${left}${gap}${right}`];
 	}
@@ -74,6 +85,9 @@ export class WorkspaceHeader implements Component {
 export interface WorkspaceComposerInfo {
 	primary: string;
 	secondary?: string;
+	provider?: string;
+	model?: string;
+	thinking?: string;
 }
 
 export interface WorkspaceComposerOptions {
@@ -134,7 +148,21 @@ export class WorkspaceComposer implements Component {
 		const secondary = truncateToWidth(info.secondary?.trim() ?? "", Math.max(0, Math.floor(innerWidth / 2)), "…");
 		const secondaryLabel = secondary ? ` ${secondary} ` : "";
 		const primaryWidth = Math.max(0, innerWidth - visibleWidth(secondaryLabel) - 4);
-		const primary = truncateToWidth(info.primary.trim(), primaryWidth, "…");
+		const structuredCandidates = info.model
+			? [
+					[info.provider ? `${info.provider}/${info.model}` : info.model, info.thinking],
+					[info.model, info.thinking],
+					[info.model, info.thinking?.replace(/^思考\s*/, "")],
+					[info.model],
+				]
+					.map((parts) => parts.filter(Boolean).join(" · "))
+					.filter((candidate, index, all) => candidate && all.indexOf(candidate) === index)
+			: [];
+		const primarySource =
+			structuredCandidates.find((candidate) => visibleWidth(candidate) <= primaryWidth) ??
+			structuredCandidates.at(-1) ??
+			info.primary.trim();
+		const primary = truncateToWidth(primarySource, primaryWidth, "…");
 		const primaryLabel = primary ? ` ${primary} ` : "";
 		const dividerWidth = Math.max(0, innerWidth - visibleWidth(primaryLabel) - visibleWidth(secondaryLabel) - 2);
 		const bottom = `${border("╰─")}${theme.fg("dim", primaryLabel)}${border("─".repeat(dividerWidth))}${theme.fg("dim", secondaryLabel)}${border("─╯")}`;
@@ -149,6 +177,7 @@ export class WorkspaceComposer implements Component {
 export interface WorkspaceOptions {
 	getHeight: () => number;
 	header: Container;
+	topStatus?: Component;
 	scrollContainers: Container[];
 	bottomContainers: Component[];
 	fixedBottomContainers?: Component[];
@@ -198,6 +227,7 @@ export class LystarWorkspace implements Component {
 
 	invalidate(): void {
 		this.options.header.invalidate();
+		this.options.topStatus?.invalidate();
 		for (const component of this.options.bottomContainers) component.invalidate();
 		// 历史组件进入窗口时再按代刷新，避免主题切换同步重建完整会话。
 		this.invalidationGeneration++;
@@ -298,6 +328,7 @@ export class LystarWorkspace implements Component {
 			: 0;
 		const renderWidth = Math.max(1, width - horizontalPadding * 2);
 		const headerLines = this.options.header.render(renderWidth);
+		const topStatusLines = this.options.topStatus?.render(renderWidth) ?? [];
 		const bottomSections = this.options.bottomContainers.map((component) => ({
 			component,
 			lines: component.render(renderWidth),
@@ -308,17 +339,19 @@ export class LystarWorkspace implements Component {
 			const { blocks: contentBlocks, ranges } = this.renderScrollContent(renderWidth);
 			const contentLines = contentBlocks.flatMap((block) => block.lines);
 			this.contentRanges = ranges;
-			this.viewportScreenTop = headerLines.length;
+			this.viewportScreenTop = headerLines.length + topStatusLines.length;
 			this.viewportHeight = contentLines.length;
 			this.scrollTop = 0;
 			this.indicatorRow = -1;
-			return [...headerLines, ...contentLines, ...bottomLines];
+			return [...headerLines, ...topStatusLines, ...contentLines, ...bottomLines];
 		}
 
 		const height = Math.max(1, this.options.getHeight());
-		const maxHeaderHeight = Math.min(3, Math.max(0, height - 1));
-		const visibleHeader = headerLines.slice(0, maxHeaderHeight);
-		const maxBottomHeight = Math.max(0, height - visibleHeader.length - 1);
+		const maxTopHeight = Math.min(topStatusLines.length > 0 && height >= 12 ? 4 : 3, Math.max(0, height - 1));
+		const visibleStatus = topStatusLines.slice(0, maxTopHeight);
+		const visibleHeader = headerLines.slice(0, Math.max(0, maxTopHeight - visibleStatus.length));
+		const visibleTop = [...visibleHeader, ...visibleStatus];
+		const maxBottomHeight = Math.max(0, height - visibleTop.length - 1);
 		// 先预留输入框和快捷栏，状态与 Extension Widget 只使用剩余空间。
 		const fixedComponents = new Set(this.options.fixedBottomContainers ?? []);
 		const fixedHeight = bottomSections.reduce(
@@ -375,8 +408,8 @@ export class LystarWorkspace implements Component {
 				return visibleLineCount > 0 ? section.lines.slice(-visibleLineCount) : [];
 			});
 		}
-		this.viewportHeight = Math.max(1, height - visibleHeader.length - visibleBottom.length);
-		this.viewportScreenTop = visibleHeader.length;
+		this.viewportHeight = Math.max(1, height - visibleTop.length - visibleBottom.length);
+		this.viewportScreenTop = visibleTop.length;
 
 		const {
 			blocks: contentBlocks,
@@ -406,7 +439,7 @@ export class LystarWorkspace implements Component {
 		}
 
 		const padding = " ".repeat(horizontalPadding);
-		const lines = [...visibleHeader, ...viewport, ...visibleBottom].map(
+		const lines = [...visibleTop, ...viewport, ...visibleBottom].map(
 			(line) => `${padding}${truncateToWidth(line, renderWidth, "", true)}${padding}`,
 		);
 		return this.renderScrollbar(lines, width, this.viewportScreenTop, this.viewportHeight, contentHeight);

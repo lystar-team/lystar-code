@@ -27,6 +27,7 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "copy", description: t("command.copy") },
 	{ name: "name", description: t("command.name") },
 	{ name: "session", description: t("command.session") },
+	{ name: "changes", description: t("command.changes") },
 	{ name: "changelog", description: t("command.changelog") },
 	{ name: "hotkeys", description: t("command.hotkeys") },
 	{ name: "fork", description: t("command.fork") },

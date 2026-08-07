@@ -62,6 +62,7 @@ export const zhCN = {
 	"command.copy": "复制最近一条 Agent 回复",
 	"command.name": "设置会话名称",
 	"command.session": "查看会话信息和统计",
+	"command.changes": "审阅本轮触及和工作区全部变更",
 	"command.changelog": "查看更新记录",
 	"command.hotkeys": "查看全部快捷键",
 	"command.fork": "从历史用户消息创建分支会话",

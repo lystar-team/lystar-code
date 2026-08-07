@@ -453,6 +453,45 @@ describe("LYStar workspace", () => {
 		expect(visibleWidth(line)).toBeLessThanOrEqual(40);
 	});
 
+	it("prioritizes task text at medium and narrow widths", () => {
+		const header = new WorkspaceHeader(() => ({
+			product: "LYStar Agent",
+			path: "~/project",
+			branch: "main",
+			task: "修复登录流程",
+			context: "上下文 7.4%  ·  9.5K/128K",
+			compactContext: "上下文 7.4%",
+		}));
+
+		const medium = stripAnsi(header.render(80)[0]);
+		const narrow = stripAnsi(header.render(48)[0]);
+
+		expect(medium).not.toContain("LYStar Agent");
+		expect(medium).toContain("修复登录流程");
+		expect(medium).toContain("上下文 7.4%");
+		expect(narrow).toContain("修复登录流程");
+		expect(narrow).toContain("上下文 7.4%");
+		expect(visibleWidth(medium)).toBeLessThanOrEqual(80);
+		expect(visibleWidth(narrow)).toBeLessThanOrEqual(48);
+	});
+
+	it("keeps the active top status ahead of secondary header rows at minimal height", () => {
+		const workspace = new LystarWorkspace({
+			getHeight: () => 5,
+			header: textContainer("header-1", "header-2", "header-3"),
+			topStatus: textContainer("正在执行 edit src/index.ts"),
+			scrollContainers: [textContainer("latest message")],
+			bottomContainers: [textContainer("editor")],
+			fixedBottomContainers: [textContainer("unused")],
+			fullscreen: true,
+		});
+
+		const rendered = workspace.render(60).map(stripAnsi).join("\n");
+		expect(rendered).toContain("正在执行 edit src/index.ts");
+		expect(rendered).not.toContain("header-3");
+		expect(workspace.render(60)).toHaveLength(5);
+	});
+
 	it("renders the product workspace header and structured composer status", () => {
 		const header = new WorkspaceHeader(() => ({
 			product: "LYStar Agent",
@@ -471,7 +510,7 @@ describe("LYStar workspace", () => {
 			fullscreen: true,
 		});
 
-		const headerLines = header.render(100).map(stripAnsi);
+		const headerLines = header.render(120).map(stripAnsi);
 		const composerLines = composer.render(80).map(stripAnsi);
 
 		expect(headerLines).toHaveLength(1);

@@ -43,7 +43,7 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import chalk from "chalk";
-import { spawn, spawnSync } from "child_process";
+import { execFile, spawn, spawnSync } from "child_process";
 import {
 	APP_NAME,
 	APP_TITLE,
@@ -116,6 +116,8 @@ import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
 import { BorderedLoader } from "./components/bordered-loader.ts";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.ts";
+import { ChangelogViewerComponent } from "./components/changelog-viewer.ts";
+import { ChangesSelectorComponent, type WorkspaceChangeFile } from "./components/changes-selector.ts";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.ts";
 import { CustomEditor } from "./components/custom-editor.ts";
 import { CustomEntryComponent } from "./components/custom-entry.ts";
@@ -153,8 +155,10 @@ import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { ToolExecutionGroupComponent } from "./components/tool-execution-group.ts";
 import { TreeSelectorComponent } from "./components/tree-selector.ts";
 import { TrustSelectorComponent } from "./components/trust-selector.ts";
+import { type TurnFileSummary, TurnSummaryComponent, type TurnSummaryData } from "./components/turn-summary.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
+import { WorkspaceActivityBar, type WorkspaceActivityPhase } from "./components/workspace-activity-bar.ts";
 import { WorkspaceShortcutBar } from "./components/workspace-shortcut-bar.ts";
 import { editInExternalEditor } from "./external-editor.ts";
 import { loadLystarSettings } from "./lystar-settings.ts";
@@ -211,6 +215,31 @@ class ExpandableText extends Text implements Expandable {
 type CompactionQueuedMessage = {
 	text: string;
 	mode: "steer" | "followUp";
+};
+
+type TrackedTurnTool = {
+	id: string;
+	name: string;
+	args: unknown;
+	status: "pending" | "running" | "success" | "error" | "cancelled";
+	subject?: string;
+	filePath?: string;
+	additions?: number;
+	deletions?: number;
+	diff?: string;
+	error?: string;
+};
+
+type TurnActivityCollector = {
+	startedAt: number;
+	phase: WorkspaceActivityPhase;
+	action?: string;
+	tools: Map<string, TrackedTurnTool>;
+	toolOrder: string[];
+	queueCount: number;
+	retried: boolean;
+	compacted: boolean;
+	cancelled: boolean;
 };
 
 type RenderSessionItem = AgentMessage | Extract<SessionEntry, { type: "custom" }>;
@@ -430,6 +459,7 @@ export class InteractiveMode {
 	private footerContainer: Container;
 	private shortcutContainer: Container;
 	private composer: WorkspaceComposer;
+	private activityBar: WorkspaceActivityBar;
 	private workspace: LystarWorkspace;
 	private fullscreenMouse = true;
 	private footerDataProvider: FooterDataProvider;
@@ -465,6 +495,8 @@ export class InteractiveMode {
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
 	private streamingBashGroup: ToolExecutionGroupComponent | undefined;
+	private turnActivity: TurnActivityCollector | undefined;
+	private lastTurnFiles: TurnFileSummary[] = [];
 
 	// Tool output expansion state
 	private toolOutputExpanded = false;
@@ -660,17 +692,28 @@ export class InteractiveMode {
 						? state.model.provider
 						: undefined;
 				const thinking = state.model?.reasoning
-					? t("status.thinkingLevel", { level: formatThinkingLevel(state.thinkingLevel || "off") })
+					? `思考 ${formatThinkingLevel(state.thinkingLevel || "off")}`
 					: undefined;
+				const projectTrusted = this.settingsManager.isProjectTrusted();
+				const trustState = projectTrusted
+					? undefined
+					: hasTrustRequiringProjectResources(this.sessionManager.getCwd())
+						? "项目资源受限"
+						: "项目未信任";
 				return {
 					primary: [`${provider ? `${provider}/` : ""}${model}`, thinking].filter(Boolean).join(" · "),
-					secondary: this.settingsManager.isProjectTrusted() ? "项目已信任" : "操作需确认",
+					secondary: !state.model || state.model.id === "unknown" ? "无可用模型" : trustState,
+					provider,
+					model,
+					thinking,
 				};
 			},
 		});
+		this.activityBar = new WorkspaceActivityBar(() => this.ui.requestRender());
 		this.workspace = new LystarWorkspace({
 			getHeight: () => this.ui.terminal.rows,
 			header: this.headerContainer,
+			topStatus: this.activityBar,
 			scrollContainers: [this.loadedResourcesContainer, this.chatContainer],
 			bottomContainers: [
 				this.pendingMessagesContainer,
@@ -872,11 +915,16 @@ export class InteractiveMode {
 		if (this.chatContainer.children.length > 0) {
 			this.chatContainer.addChild(new Spacer(1));
 		}
+		const versionMatch = this.changelogMarkdown.match(/##\s+\[?(\d+\.\d+\.\d+)\]?/);
+		const latestVersion = versionMatch ? versionMatch[1] : this.version;
+		const condensedText = `已更新到 v${latestVersion}。使用 ${theme.bold("/changelog")} 查看完整更新记录。`;
+		if (this.workspace.isFullscreen()) {
+			this.chatContainer.addChild(new Text(condensedText, 1, 0));
+			return;
+		}
+
 		this.chatContainer.addChild(new DynamicBorder());
 		if (this.settingsManager.getCollapseChangelog()) {
-			const versionMatch = this.changelogMarkdown.match(/##\s+\[?(\d+\.\d+\.\d+)\]?/);
-			const latestVersion = versionMatch ? versionMatch[1] : this.version;
-			const condensedText = `已更新到 v${latestVersion}。使用 ${theme.bold("/changelog")} 查看完整更新记录。`;
 			this.chatContainer.addChild(new Text(condensedText, 1, 0));
 		} else {
 			this.chatContainer.addChild(new Text(theme.bold(theme.fg("accent", "更新内容")), 1, 0));
@@ -1005,15 +1053,23 @@ export class InteractiveMode {
 			const usage = this.getHeaderContextUsage();
 			const used = usage?.tokens === null || usage?.tokens === undefined ? "?" : formatTokens(usage.tokens);
 			const available = usage ? formatTokens(usage.contextWindow) : "?";
-			const percent = usage?.percent === null || usage?.percent === undefined ? "?" : `${usage.percent.toFixed(1)}%`;
+			const percentValue = usage?.percent ?? undefined;
+			const percent = percentValue === null || percentValue === undefined ? "?" : `${percentValue.toFixed(1)}%`;
 			const branch = this.footerDataProvider.getGitBranch();
 			const path = this.formatDisplayPath(this.sessionManager.getCwd());
+			const compaction = this.settingsManager.getCompactionSettings();
+			const threshold =
+				usage && usage.contextWindow > 0
+					? ((usage.contextWindow - compaction.reserveTokens) / usage.contextWindow) * 100
+					: 100;
 			return {
 				product: APP_TITLE,
 				path,
 				branch: branch ?? undefined,
-				session: this.sessionManager.getSessionName(),
+				task: this.getWorkspaceTaskTitle(),
 				context: `上下文 ${percent}  ·  ${used}/${available}`,
+				compactContext: `上下文 ${percent}`,
+				contextWarning: percentValue !== null && percentValue !== undefined && percentValue >= threshold - 5,
 			};
 		});
 		this.headerContainer.addChild(this.builtInHeader);
@@ -3103,6 +3159,11 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
+			if (text === "/changes") {
+				this.handleChangesCommand();
+				this.editor.setText("");
+				return;
+			}
 			if (text === "/changelog") {
 				this.handleChangelogCommand();
 				this.editor.setText("");
@@ -3240,6 +3301,150 @@ export class InteractiveMode {
 		};
 	}
 
+	private getWorkspaceTaskTitle(): string {
+		const sessionName = this.sessionManager.getSessionName()?.trim();
+		if (sessionName) return sessionName;
+		for (const message of this.session.messages) {
+			if (message.role !== "user") continue;
+			const firstLine = this.getUserMessageText(message as Message)
+				.split(/\r?\n/, 1)[0]
+				?.trim();
+			if (firstLine) return firstLine;
+		}
+		return "新会话";
+	}
+
+	private normalizeTurnFilePath(filePath: string): string {
+		const cwd = path.resolve(this.sessionManager.getCwd());
+		const absolutePath = path.isAbsolute(filePath) ? path.resolve(filePath) : path.resolve(cwd, filePath);
+		return (getCwdRelativePath(absolutePath, cwd) ?? absolutePath).split(path.sep).join("/");
+	}
+
+	private getTrackedToolDisplay(name: string, args: unknown): { subject?: string; filePath?: string } {
+		if (!args || typeof args !== "object") return {};
+		const values = args as Record<string, unknown>;
+		if (name === "read" || name === "edit" || name === "write") {
+			const rawPath =
+				typeof values.path === "string"
+					? values.path
+					: typeof values.file_path === "string"
+						? values.file_path
+						: undefined;
+			if (!rawPath) return {};
+			const filePath = this.normalizeTurnFilePath(rawPath);
+			return { subject: filePath, filePath: name === "edit" || name === "write" ? filePath : undefined };
+		}
+		if (name === "bash" && typeof values.command === "string") {
+			return { subject: values.command.split(/\r?\n/, 1)[0]?.trim() };
+		}
+		return {};
+	}
+
+	private ensureTrackedTool(id: string, name: string, args: unknown): TrackedTurnTool | undefined {
+		const activity = this.turnActivity;
+		if (!activity) return undefined;
+		const existing = activity.tools.get(id);
+		if (existing) {
+			if (args !== undefined) {
+				existing.args = args;
+				const display = this.getTrackedToolDisplay(name, args);
+				existing.subject = display.subject;
+				existing.filePath = display.filePath;
+			}
+			return existing;
+		}
+		const display = this.getTrackedToolDisplay(name, args);
+		const tool: TrackedTurnTool = { id, name, args, status: "pending", ...display };
+		activity.tools.set(id, tool);
+		activity.toolOrder.push(id);
+		return tool;
+	}
+
+	private updateActivityBar(phase?: WorkspaceActivityPhase, action?: string): void {
+		const activity = this.turnActivity;
+		if (!activity) {
+			this.activityBar.setState(undefined);
+			return;
+		}
+		if (phase) activity.phase = phase;
+		if (action !== undefined) activity.action = action;
+		const tools = activity.toolOrder
+			.map((id) => activity.tools.get(id))
+			.filter((tool): tool is TrackedTurnTool => Boolean(tool));
+		const running = tools.filter((tool) => tool.status === "running");
+		const current = running.at(-1);
+		this.activityBar.setState({
+			phase: activity.phase,
+			action: activity.phase === "runningTool" ? current?.name : activity.action,
+			subject: activity.phase === "runningTool" && running.length <= 1 ? current?.subject : undefined,
+			startedAt: activity.startedAt,
+			completedTools: tools.filter(
+				(tool) => tool.status === "success" || tool.status === "error" || tool.status === "cancelled",
+			).length,
+			knownTools: tools.length,
+			queueCount: activity.queueCount,
+			runningTools: running.length,
+		});
+	}
+
+	private getCurrentTurnFiles(): TurnFileSummary[] {
+		const activity = this.turnActivity;
+		if (!activity) return this.lastTurnFiles;
+		const files = new Map<string, TurnFileSummary>();
+		for (const id of activity.toolOrder) {
+			const tool = activity.tools.get(id);
+			if (!tool?.filePath || tool.status !== "success") continue;
+			const current = files.get(tool.filePath) ?? { path: tool.filePath };
+			if (tool.additions !== undefined) current.additions = (current.additions ?? 0) + tool.additions;
+			if (tool.deletions !== undefined) current.deletions = (current.deletions ?? 0) + tool.deletions;
+			if (tool.diff) current.diff = current.diff ? `${current.diff}\n\n${tool.diff}` : tool.diff;
+			files.set(tool.filePath, current);
+		}
+		return [...files.values()];
+	}
+
+	private finishTurnActivity(): void {
+		const activity = this.turnActivity;
+		if (!activity) return;
+		const tools = activity.toolOrder
+			.map((id) => activity.tools.get(id))
+			.filter((tool): tool is TrackedTurnTool => Boolean(tool));
+		for (const tool of tools) {
+			if (tool.status === "pending" || tool.status === "running") {
+				tool.status = activity.cancelled ? "cancelled" : "error";
+			}
+		}
+		const files = this.getCurrentTurnFiles();
+		this.lastTurnFiles = files;
+		if (tools.length > 0) {
+			const data: TurnSummaryData = {
+				startedAt: activity.startedAt,
+				endedAt: Date.now(),
+				totalTools: tools.length,
+				successfulTools: tools.filter((tool) => tool.status === "success").length,
+				failedTools: tools.filter((tool) => tool.status === "error").length,
+				cancelledTools: tools.filter((tool) => tool.status === "cancelled").length,
+				commandCount: tools.filter((tool) => tool.name === "bash").length,
+				successfulCommands: tools.filter((tool) => tool.name === "bash" && tool.status === "success").length,
+				files,
+				tools: tools.map((tool) => ({
+					name: tool.name,
+					subject: tool.subject,
+					status: tool.status === "pending" || tool.status === "running" ? "error" : tool.status,
+					error: tool.error,
+				})),
+				retried: activity.retried,
+				compacted: activity.compacted,
+				cancelled: activity.cancelled,
+			};
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(new TurnSummaryComponent(data));
+		}
+		this.turnActivity = undefined;
+		this.activityBar.setState(undefined);
+		this.ui.requestRender();
+	}
+
 	private subscribeToAgent(): void {
 		this.unsubscribe = this.session.subscribe(async (event) => {
 			await this.handleEvent(event);
@@ -3257,6 +3462,17 @@ export class InteractiveMode {
 			case "agent_start":
 				this.pendingTools.clear();
 				this.streamingBashGroup = undefined;
+				this.turnActivity ??= {
+					startedAt: Date.now(),
+					phase: "thinking",
+					tools: new Map(),
+					toolOrder: [],
+					queueCount: 0,
+					retried: false,
+					compacted: false,
+					cancelled: false,
+				};
+				this.updateActivityBar("thinking");
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(true);
 				}
@@ -3281,6 +3497,10 @@ export class InteractiveMode {
 				break;
 
 			case "queue_update":
+				if (this.turnActivity) {
+					this.turnActivity.queueCount = event.steering.length + event.followUp.length;
+					this.updateActivityBar();
+				}
 				this.updatePendingMessagesDisplay();
 				this.ui.requestRender();
 				break;
@@ -3335,6 +3555,8 @@ export class InteractiveMode {
 
 					for (const content of this.streamingMessage.content) {
 						if (content.type === "toolCall") {
+							this.ensureTrackedTool(content.id, content.name, content.arguments);
+							this.updateActivityBar();
 							if (!this.pendingTools.has(content.id)) {
 								const component = new ToolExecutionComponent(
 									content.name,
@@ -3387,6 +3609,13 @@ export class InteractiveMode {
 					this.streamingComponent.updateContent(this.streamingMessage, false);
 
 					if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
+						if (this.turnActivity && this.streamingMessage.stopReason === "aborted") {
+							this.turnActivity.cancelled = true;
+							for (const tool of this.turnActivity.tools.values()) {
+								if (tool.status === "pending" || tool.status === "running") tool.status = "cancelled";
+							}
+							this.updateActivityBar("cancelled");
+						}
 						if (!errorMessage) {
 							errorMessage = this.streamingMessage.errorMessage || t("status.unknownError");
 						}
@@ -3421,6 +3650,11 @@ export class InteractiveMode {
 				break;
 
 			case "tool_execution_start": {
+				if (this.turnActivity) {
+					const trackedTool = this.ensureTrackedTool(event.toolCallId, event.toolName, event.args);
+					if (trackedTool) trackedTool.status = "running";
+					this.updateActivityBar("runningTool");
+				}
 				let component = this.pendingTools.get(event.toolCallId);
 				if (!component) {
 					component = new ToolExecutionComponent(
@@ -3454,6 +3688,31 @@ export class InteractiveMode {
 			}
 
 			case "tool_execution_end": {
+				if (this.turnActivity) {
+					const trackedTool = this.ensureTrackedTool(event.toolCallId, event.toolName, undefined);
+					if (trackedTool) {
+						const result = event.result as {
+							content?: Array<{ type?: string; text?: string }>;
+							details?: unknown;
+						};
+						const firstError = result.content
+							?.find((content) => content.type === "text" && content.text?.trim())
+							?.text?.trim()
+							.split(/\r?\n/, 1)[0];
+						const cancelled = event.isError && Boolean(firstError?.match(/abort|cancel|取消/i));
+						trackedTool.status = cancelled ? "cancelled" : event.isError ? "error" : "success";
+						trackedTool.error = event.isError ? firstError : undefined;
+						if (event.result.details && typeof event.result.details === "object") {
+							const details = event.result.details as Record<string, unknown>;
+							trackedTool.additions = typeof details.additions === "number" ? details.additions : undefined;
+							trackedTool.deletions = typeof details.deletions === "number" ? details.deletions : undefined;
+							trackedTool.diff = typeof details.diff === "string" ? details.diff : undefined;
+						}
+						if (cancelled) this.turnActivity.cancelled = true;
+					}
+					const hasRunningTools = [...this.turnActivity.tools.values()].some((tool) => tool.status === "running");
+					this.updateActivityBar(hasRunningTools ? "runningTool" : "waiting");
+				}
 				const component = this.pendingTools.get(event.toolCallId);
 				if (component) {
 					component.updateResult({ ...event.result, isError: event.isError });
@@ -3476,15 +3735,25 @@ export class InteractiveMode {
 				}
 				this.pendingTools.clear();
 				this.streamingBashGroup = undefined;
+				if (this.turnActivity) {
+					this.updateActivityBar(
+						event.willRetry ? "retrying" : this.turnActivity.cancelled ? "cancelled" : "waiting",
+					);
+				}
 
 				this.ui.requestRender();
 				break;
 
 			case "agent_settled":
+				this.finishTurnActivity();
 				await this.checkShutdownRequested();
 				break;
 
 			case "compaction_start": {
+				if (this.turnActivity) {
+					this.turnActivity.compacted = true;
+					this.updateActivityBar("compacting");
+				}
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(true);
 				}
@@ -3537,11 +3806,16 @@ export class InteractiveMode {
 					}
 				}
 				void this.flushCompactionQueue({ willRetry: event.willRetry });
+				if (this.turnActivity) this.updateActivityBar(event.willRetry ? "thinking" : "waiting");
 				this.ui.requestRender();
 				break;
 			}
 
 			case "auto_retry_start": {
+				if (this.turnActivity) {
+					this.turnActivity.retried = true;
+					this.updateActivityBar("retrying", `第 ${event.attempt}/${event.maxAttempts} 次重试`);
+				}
 				// Set up escape to abort retry
 				this.retryEscapeHandler = this.defaultEditor.onEscape;
 				this.defaultEditor.onEscape = () => {
@@ -3561,6 +3835,7 @@ export class InteractiveMode {
 					this.retryEscapeHandler = undefined;
 				}
 				this.clearStatusIndicator("retry");
+				if (this.turnActivity && event.success) this.updateActivityBar("thinking");
 				// Show error only on final failure (success shows normal response)
 				if (!event.success) {
 					this.showError(`重试 ${event.attempt} 次后仍然失败：${event.finalError || t("status.unknownError")}`);
@@ -3570,6 +3845,7 @@ export class InteractiveMode {
 			}
 
 			case "summarization_retry_scheduled": {
+				if (this.turnActivity) this.updateActivityBar("summarizing");
 				this.showError(event.errorMessage);
 				this.showStatusIndicator(
 					new RetryStatusIndicator(this.ui, event.attempt, event.maxAttempts, event.delayMs),
@@ -3579,6 +3855,7 @@ export class InteractiveMode {
 			}
 
 			case "summarization_retry_attempt_start": {
+				if (this.turnActivity) this.updateActivityBar("summarizing");
 				this.clearStatusIndicator("retry");
 				if (event.source === "branchSummary") {
 					this.showStatusIndicator(new BranchSummaryStatusIndicator(this.ui));
@@ -6282,17 +6559,115 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
+	private runGit(args: string[]): string | undefined {
+		const result = spawnSync("git", ["--no-optional-locks", ...args], {
+			cwd: this.sessionManager.getCwd(),
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+			maxBuffer: 16 * 1024 * 1024,
+		});
+		return result.status === 0 ? result.stdout : undefined;
+	}
+
+	private getWorkspaceChanges(): { gitAvailable: boolean; files: WorkspaceChangeFile[] } {
+		if (this.runGit(["rev-parse", "--is-inside-work-tree"])?.trim() !== "true") {
+			return { gitAvailable: false, files: [] };
+		}
+		const statusOutput = this.runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."]);
+		if (statusOutput === undefined) return { gitAvailable: false, files: [] };
+
+		const numstat = new Map<string, { additions: number; deletions: number }>();
+		for (const line of (this.runGit(["diff", "--numstat", "HEAD", "--", "."]) ?? "").split("\n")) {
+			const [added, deleted, filePath] = line.split("\t");
+			if (!filePath || added === "-" || deleted === "-") continue;
+			const additions = Number.parseInt(added ?? "", 10);
+			const deletions = Number.parseInt(deleted ?? "", 10);
+			if (Number.isFinite(additions) && Number.isFinite(deletions)) {
+				numstat.set(filePath, { additions, deletions });
+			}
+		}
+
+		const files: WorkspaceChangeFile[] = [];
+		const records = statusOutput.split("\0").filter(Boolean);
+		for (let index = 0; index < records.length; index++) {
+			const record = records[index]!;
+			const status = record.slice(0, 2);
+			const filePath = record.slice(3);
+			if (!filePath) continue;
+			const stats = numstat.get(filePath);
+			files.push({ path: filePath, status, ...stats });
+			if (status.includes("R") || status.includes("C")) index++;
+		}
+		return { gitAvailable: true, files };
+	}
+
+	private async loadWorkspaceDiff(filePath: string): Promise<string | undefined> {
+		return new Promise((resolve) => {
+			execFile(
+				"git",
+				["--no-optional-locks", "diff", "--no-ext-diff", "--unified=3", "HEAD", "--", filePath],
+				{
+					cwd: this.sessionManager.getCwd(),
+					encoding: "utf8",
+					maxBuffer: 16 * 1024 * 1024,
+				},
+				(error, stdout) => resolve(error ? undefined : stdout.trimEnd() || undefined),
+			);
+		});
+	}
+
+	private handleChangesCommand(): void {
+		const workspace = this.getWorkspaceChanges();
+		const turnFiles = this.getCurrentTurnFiles();
+		let handle: OverlayHandle | undefined;
+		const selector = new ChangesSelectorComponent({
+			data: {
+				turnFiles,
+				workspaceFiles: workspace.files,
+				gitAvailable: workspace.gitAvailable,
+				loadWorkspaceDiff: (filePath) => this.loadWorkspaceDiff(filePath),
+			},
+			getHeight: () => this.ui.terminal.rows,
+			requestRender: () => this.ui.requestRender(),
+			onCancel: () => handle?.hide(),
+			overlayTop: 1,
+		});
+		handle = this.ui.showOverlay(selector, {
+			row: 1,
+			col: 1,
+			width: Math.max(1, this.ui.terminal.columns - 2),
+			maxHeight: Math.max(1, this.ui.terminal.rows - 2),
+		});
+		this.ui.requestRender();
+	}
+
 	private handleChangelogCommand(): void {
 		const changelogPath = getChangelogPath();
 		const allEntries = parseChangelog(changelogPath);
 
 		const changelogMarkdown =
 			allEntries.length > 0
-				? allEntries
-						.reverse()
-						.map((e) => normalizeChangelogLinks(e.content, e))
-						.join("\n\n")
+				? allEntries.map((e) => normalizeChangelogLinks(e.content, e)).join("\n\n")
 				: "没有更新记录。";
+
+		if (this.workspace.isFullscreen()) {
+			let handle: OverlayHandle | undefined;
+			const viewer = new ChangelogViewerComponent({
+				markdown: changelogMarkdown,
+				markdownTheme: this.getMarkdownThemeWithSettings(),
+				getHeight: () => this.ui.terminal.rows,
+				requestRender: () => this.ui.requestRender(),
+				onCancel: () => handle?.hide(),
+			});
+			handle = this.ui.showOverlay(viewer, {
+				row: 1,
+				col: 1,
+				width: Math.max(1, this.ui.terminal.columns - 2),
+				maxHeight: Math.max(1, this.ui.terminal.rows - 2),
+			});
+			this.ui.requestRender();
+			return;
+		}
 
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new DynamicBorder());
@@ -6616,6 +6991,7 @@ export class InteractiveMode {
 		this.clearStatusIndicator();
 		this.themeController.disableAutoSync();
 		this.clearExtensionTerminalInputListeners();
+		this.activityBar.dispose();
 		this.footer.dispose();
 		this.footerDataProvider.dispose();
 		if (this.unsubscribe) {
