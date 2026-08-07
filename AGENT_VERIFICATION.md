@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-07T04:50:12Z
+最后核验时间：2026-08-07T05:01:15Z
 
 环境：
 
@@ -27,7 +27,17 @@ Linux x64
 
 五平台候选包使用 Bun 1.3.9 构建，`SHA256SUMS` 五项全部通过；manifest 版本为 `0.84.0-lystar.2`，Pi 版本、仓库、文件名、大小和 SHA-256 一致。格式覆盖 macOS ARM64/x64 Mach-O、Linux ARM64/x64 ELF 和 Windows x64 PE32+，Linux/Windows 归档包含对应 clipboard 原生包、`LICENSE` 和 `THIRD_PARTY_LICENSES.md`。Linux x64 候选包的 `la --version`、`la --help`、`PI_OFFLINE=1 la --list-models` 通过，其 SHA-256 为 `1045222696837b79e2d07334b7e61338f48b09da40792c48e18c18411a4f928b`。
 
-CodeGraph 在核心修复后增量同步 4 个文件、569 个节点，补充横向触控板判定后再同步 2 个文件、6 个节点；基于最新索引的 affected 结果准确指向 `packages/coding-agent/test/interactive-tui.test.ts` 和 `packages/coding-agent/test/mouse.test.ts`。最终索引为 1169 files、19130 nodes、84445 edges，pending changes 0、`reindexRecommended=false`。由于修改仍经过公共 `TuiAltScreen` 输入入口，本轮额外用 TUI、AI、Agent Core 和 Coding Agent 全量测试覆盖。当前环境没有 macOS 实机和 Windows Console/ConPTY 交互式运行证据；正式 main CI、Tag、Release、attestation 和公开升级链待提交推送后验证。
+CodeGraph 在核心修复后增量同步 4 个文件、569 个节点，补充横向触控板判定后再同步 2 个文件、6 个节点；基于最新索引的 affected 结果准确指向 `packages/coding-agent/test/interactive-tui.test.ts` 和 `packages/coding-agent/test/mouse.test.ts`。最终索引为 1169 files、19130 nodes、84445 edges，pending changes 0、`reindexRecommended=false`。由于修改仍经过公共 `TuiAltScreen` 输入入口，本轮额外用 TUI、AI、Agent Core 和 Coding Agent 全量测试覆盖。
+
+`main` commit `0e496a61efc917b91f65099b1fb0a35f56005d72` 的 CI run `31148814839` 七个 job 全部成功，覆盖源码核验与构建、Unix 安装器、TUI、AI、Agent Core、Coding Agent 双分片，以及 Windows managed MinGit Bash 和 Windows PowerShell 5.1 安装器。annotated Tag `v0.84.0-lystar.2` 的 Tag 对象为 `329f7dc1d56bcc4d7231dc413a79190d8a0a7f19`，解引用后固定指向该 commit。
+
+Release workflow run `31148934869` 成功，完成 main CI 绑定、版本校验、离线构建、Bun 1.3.9 五平台打包、artifact attestation 和公开发布。GitHub Release 于 `2026-08-07T04:56:55Z` 发布，为非草稿、非预发布正式版本，共有 10 个公开资产：五个平台包、`SHA256SUMS`、`release-manifest.json` 和三个安装器。
+
+公开 Linux x64 包 SHA-256 为 `4ffb1f7bd286bd23252afa276ce54f78ca3c8c800488964d9396d318cf71965a`，与公开 manifest、`SHA256SUMS` 和 Release asset digest 完全一致；归档包含 `la`、Linux x64 clipboard 原生包、`LICENSE` 和 `THIRD_PARTY_LICENSES.md`。GitHub attestations API 返回 1 条 Sigstore provenance，绑定 `.github/workflows/release.yml`、Tag `v0.84.0-lystar.2`、commit `0e496a61e` 和 run `31148934869`，subject 中包含同一 Linux x64 SHA-256。
+
+本机通过公开 `la update` 从 `0.84.0-lystar.1` 原子更新到 `0.84.0-lystar.2`；`current` 指向 `versions/0.84.0-lystar.2`，`previous` 保留 `versions/0.84.0-lystar.1`，再次更新显示已是最新版本，`PI_OFFLINE=1 la --list-models` 通过。安装后的 `/home/yean/.local/bin/la` 在独立 `80x24` tmux PTY 中加载同一 178K token 长会话，标准 SGR 上滚后画面移动并显示“下方还有 1 行”，下滚后恢复自动跟随，`/quit` 正常退出，`lystar-scroll-installed-0840-2` tmux server 已关闭。
+
+当前环境没有 macOS 实机和 Windows Console/ConPTY 的鼠标滚轮交互证据；Windows 安装、版本启动和卸载链已由 main CI 的 Windows PowerShell 5.1 环境验证。
 
 ### `0.84.0-lystar.1` 发布前核验
 
