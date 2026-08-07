@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-06T16:24:30Z
+最后核验时间：2026-08-07T03:30:22Z
 
 环境：
 
@@ -27,7 +27,13 @@ TUI 使用上游 renderer 分层：普通模式为 `TuiMainScreen`，全屏模�
 
 五平台候选包使用 Bun 1.3.9 构建，`SHA256SUMS` 五项全部通过；manifest 的版本、Pi 版本、仓库、文件名、大小和 SHA-256 一致。格式覆盖 macOS ARM64/x64 Mach-O、Linux ARM64/x64 ELF 和 Windows x64 PE32+，全部归档包含 `LICENSE`、`THIRD_PARTY_LICENSES.md`、可执行文件和对应平台 clipboard 包。Linux x64 归档的 `la --version`、`la --help` 和 `PI_OFFLINE=1 la --list-models` 通过，其 SHA-256 为 `e9b61a6f6f9636802a753e30f47f2195ae0729c393aea113f9daf837b6e4ef09`。
 
-CodeGraph 已按 extraction version 24 完整重建到 1169 个文件、19126 个节点和 85027 条边，pending changes 为 0，`reindexRecommended=false`；核心 TUI、Agent、设置、凭据与 OpenAI Responses 入口共追踪 239 个依赖节点，列出的受影响测试均包含在本轮全量测试中。另复跑 12 个兼容测试文件、389 项，覆盖旧 `-c`/`-r` 参数解析、旧 settings、Session 迁移、Package、Skill、Extension 和 `pi-mcp-adapter` 配置读取。当前环境没有 Windows PowerShell/Console/ConPTY 和 macOS 实机，两个平台只完成归档、架构、SHA 和自动测试核验；正式 CI、Tag、GitHub Release、attestation 与公开升级链尚未触发，需在提交并推送后按发布流程验证。
+CodeGraph 已按 extraction version 24 完整重建到 1169 个文件、19126 个节点和 85027 条边，pending changes 为 0，`reindexRecommended=false`；核心 TUI、Agent、设置、凭据与 OpenAI Responses 入口共追踪 239 个依赖节点，列出的受影响测试均包含在本轮全量测试中。另复跑 12 个兼容测试文件、389 项，覆盖旧 `-c`/`-r` 参数解析、旧 settings、Session 迁移、Package、Skill、Extension 和 `pi-mcp-adapter` 配置读取。
+
+`main` CI run `31143661232` 在 commit `da41aad352d20f08677ed3bbd793687abfb06030` 上全部成功，覆盖源码、TUI、AI、Agent Core、Coding Agent 双分片，以及 Windows MinGit Bash 和 PowerShell 5.1 安装器。annotated tag `v0.84.0-lystar.1` 指向同一 commit；Release workflow run `31143930706` 通过 CI 门禁、离线构建、五平台打包、版本校验、artifact attestation 和公开发布。Release 于 `2026-08-07T03:19:32Z` 发布，为正式非草稿版本；五个平台包、三个安装器、`SHA256SUMS` 和 manifest 共 10 个公开资产。
+
+公开 Linux x64 包 SHA-256 为 `847b856d640d2ee8c17ea5c04075378fe501c3ce897ea4d39c87385e400332f5`，与公开 manifest、`SHA256SUMS` 和 GitHub Release digest 一致；GitHub attestations API 返回 1 条 Sigstore provenance，绑定 `release.yml`、Tag、commit 和 Release run。本机通过旧版 `la update` 从 `0.83.0-lystar.7` 原子升级到 `0.84.0-lystar.1`，`current` 指向新版本，`previous` 保留 `0.83.0-lystar.7`；再次更新显示已是最新版本。公开安装后的 `la` 在独立 `80x24` tmux PTY 中使用 `upstream/gpt-5.6-sol` 对“只回复：LYSTAR-0840-OK”返回精确结果 `LYSTAR-0840-OK`，随后 `/quit` 正常退出，本轮 socket 已关闭。
+
+当前环境没有 macOS 实机，也没有 Windows Console/ConPTY 的交互式应用运行证据；Windows 安装、启动版本检查和卸载已由 GitHub CI 的 PowerShell 5.1 环境验证。
 
 ### `0.83.0-lystar.7` 发布前核验
 
