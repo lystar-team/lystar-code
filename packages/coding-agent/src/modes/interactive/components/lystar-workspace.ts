@@ -252,6 +252,14 @@ export class LystarWorkspace implements Component {
 		this.scrollBy(Math.max(1, this.viewportHeight - 2));
 	}
 
+	halfPageUp(): void {
+		this.scrollBy(-Math.max(1, Math.floor(this.viewportHeight / 2)));
+	}
+
+	halfPageDown(): void {
+		this.scrollBy(Math.max(1, Math.floor(this.viewportHeight / 2)));
+	}
+
 	scrollToTop(): void {
 		if (!this.fullscreen) return;
 		this.jumpToTop = true;

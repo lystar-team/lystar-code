@@ -2,6 +2,7 @@ import type { Component, Terminal, TUI } from "@earendil-works/pi-tui";
 import { Container, isViewportTUI, Text } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
+import { KeybindingsManager } from "../src/core/keybindings.ts";
 import type { TuiMode } from "../src/core/settings-manager.ts";
 import { LystarWorkspace } from "../src/modes/interactive/components/lystar-workspace.ts";
 import {
@@ -70,7 +71,7 @@ describe("createInteractiveTui", () => {
 		altTui.stop();
 	});
 
-	it("routes LYStar workspace wheel input before the inherited viewport", async () => {
+	it("routes LYStar workspace viewport input before the inherited viewport", async () => {
 		initTheme("dark");
 		const terminal = new RecordingTerminal(40, 8);
 		const chat = new Container();
@@ -90,6 +91,7 @@ describe("createInteractiveTui", () => {
 			workspace: LystarWorkspace;
 			renderer: ReturnType<typeof createInteractiveTui>;
 			ui: TUI;
+			keybindings: KeybindingsManager;
 		};
 		const handleWorkspaceInput = (
 			InteractiveMode.prototype as unknown as {
@@ -100,6 +102,10 @@ describe("createInteractiveTui", () => {
 			workspace,
 			renderer: undefined as unknown as ReturnType<typeof createInteractiveTui>,
 			ui: undefined as unknown as TUI,
+			keybindings: new KeybindingsManager({
+				"tui.altScreen.halfPageUp": "ctrl+u",
+				"tui.altScreen.halfPageDown": "ctrl+d",
+			}),
 		};
 		const renderer = createInteractiveTui({
 			tuiMode: "fullscreen",
@@ -123,6 +129,31 @@ describe("createInteractiveTui", () => {
 
 			expect(terminal.getViewport()[1]).toContain("line-23");
 			expect(workspace.isFollowing()).toBe(false);
+
+			terminal.sendInput("\x15");
+			expect(workspace.render(terminal.columns)[1]).toContain("line-20");
+
+			terminal.sendInput("\x1b[5~");
+			expect(workspace.render(terminal.columns)[1]).toContain("line-16");
+
+			terminal.sendInput("\x04");
+			expect(workspace.render(terminal.columns)[1]).toContain("line-19");
+
+			terminal.sendInput("\x1b[6~");
+			expect(workspace.render(terminal.columns)[1]).toContain("line-23");
+
+			terminal.sendInput("\x1b[H");
+			expect(workspace.render(terminal.columns)[1]).toContain("line-0");
+
+			terminal.sendInput("\x1b[F");
+			expect(workspace.render(terminal.columns)[1]).toContain("line-24");
+			expect(workspace.isFollowing()).toBe(true);
+
+			terminal.sendInput("\x1b[5;2~");
+			expect(workspace.render(terminal.columns)[1]).toContain("line-20");
+
+			terminal.sendInput("\x1b[1;5F");
+			expect(workspace.render(terminal.columns)[1]).toContain("line-24");
 		} finally {
 			renderer.stop();
 		}

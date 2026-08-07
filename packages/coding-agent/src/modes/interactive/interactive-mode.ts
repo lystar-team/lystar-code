@@ -2891,13 +2891,29 @@ export class InteractiveMode {
 			return { consume: true };
 		}
 
-		if (this.keybindings.matches(data, "app.viewport.pageUp")) {
+		if (
+			this.keybindings.matches(data, "app.viewport.pageUp") ||
+			this.keybindings.matches(data, "tui.altScreen.pageUp")
+		) {
 			this.workspace.pageUp();
-		} else if (this.keybindings.matches(data, "app.viewport.pageDown")) {
+		} else if (
+			this.keybindings.matches(data, "app.viewport.pageDown") ||
+			this.keybindings.matches(data, "tui.altScreen.pageDown")
+		) {
 			this.workspace.pageDown();
-		} else if (this.keybindings.matches(data, "app.viewport.top")) {
+		} else if (this.keybindings.matches(data, "tui.altScreen.halfPageUp")) {
+			this.workspace.halfPageUp();
+		} else if (this.keybindings.matches(data, "tui.altScreen.halfPageDown")) {
+			this.workspace.halfPageDown();
+		} else if (
+			this.keybindings.matches(data, "app.viewport.top") ||
+			this.keybindings.matches(data, "tui.altScreen.top")
+		) {
 			this.workspace.scrollToTop();
-		} else if (this.keybindings.matches(data, "app.viewport.bottom")) {
+		} else if (
+			this.keybindings.matches(data, "app.viewport.bottom") ||
+			this.keybindings.matches(data, "tui.altScreen.bottom")
+		) {
 			this.workspace.scrollToBottom();
 		} else {
 			return undefined;

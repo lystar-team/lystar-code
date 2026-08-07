@@ -2,6 +2,12 @@
 
 ## [0.84.1] - 2026-08-07
 
+### LYStar 适配
+
+- 基线升级到 Pi `v0.84.1`，继续兼容 `la`、中文全屏工作区、Pi 数据目录和 LYStar 五平台发行体系。
+- `la auth check`、认证帮助和错误信息使用中文，支持按 Provider 或模型检查凭据并按需输出凭据。
+- 全屏工作区接入上游默认的整页、半页和首尾滚动动作，同时保留 LYStar 旧快捷键、虚拟历史、运行时 renderer 切换和工作区优先输入路由。
+
 ### New Features
 
 - **Qwen Token Plan Individual** — Use the built-in provider for models documented for Individual subscriptions. See [API Keys](docs/providers.md#api-keys).

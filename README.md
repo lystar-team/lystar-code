@@ -77,7 +77,7 @@ la update --rollback
 
 ## 兼容性与限制
 
-LYStar Agent 当前基于 Pi `v0.84.0`，继续读取 `~/.pi/agent/`、项目 `.pi/`、Pi Session 和生态资源。Pi 与 LYStar 可以共用数据，但不要同时写同一个 Session 文件。
+LYStar Agent 当前基于 Pi `v0.84.1`，继续读取 `~/.pi/agent/`、项目 `.pi/`、Pi Session 和生态资源。Pi 与 LYStar 可以共用数据，但不要同时写同一个 Session 文件。
 
 当前 macOS 发行包尚未完成 Developer ID/notarization，Windows 发行包尚未完成 Authenticode。安装器和 Release 提供 SHA-256 与 GitHub artifact attestation；系统仍可能显示 Gatekeeper 或 SmartScreen 提示。
 

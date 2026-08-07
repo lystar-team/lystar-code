@@ -70,8 +70,7 @@ export function parseAuthCommand(args: string[]): AuthCommand | undefined {
 	for (let index = 2; index < args.length; index++) {
 		const arg = args[index];
 		if (arg === "--min-expiry") {
-			if (kind !== "bearer_token")
-				throw new AuthCommandError("--min-expiry 仅支持 print-bearer-token");
+			if (kind !== "bearer_token") throw new AuthCommandError("--min-expiry 仅支持 print-bearer-token");
 			const value = args[++index];
 			const match = value ? /^(\d+)(ms|s|m|h)$/iu.exec(value) : undefined;
 			if (!match) throw new AuthCommandError("--min-expiry 必须使用 30m 或 1h 这类时长格式");

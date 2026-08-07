@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-07T05:01:15Z
+最后核验时间：2026-08-07T08:18:18Z
 
 环境：
 
@@ -14,6 +14,24 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### `0.84.1-lystar.1` 发布前核验
+
+上游基线已升级到 Pi `v0.84.1`（`53fa77ccd8a279eb87e92294ef3687b03ff80112`），双 parent merge commit 为 `c13f0ad935403042886d4e179e47febb8c1f6e0f`；LYStar 产品版本为 `0.84.1-lystar.1`，Pi workspace 包版本保持 `0.84.1`。合并保留 `la`、中文全屏工作区、`~/.pi/agent`、项目 `.pi`、`PI_*` 和 `octyean/lystar-agent` 契约，并接入 Qwen Token Plan Individual、`auth check`、blocked `tool_call` 的 `terminate` 结果、活跃运行期间拒绝 `Agent.reset()`、多击文本选择、半页滚动、Windows 全屏右键粘贴、低频鼠标追踪和 Bun cwd `bunfig.toml` 隔离。
+
+离线模型目录完整取自正式 npm 包 `@earendil-works/pi-ai@0.84.1` 的 `dist/providers/data`，manifest 生成时间为 `2026-08-07T05:53:06.539Z`；新增 `qwen-token-plan-individual.json`，GitHub Copilot、OpenCode、OpenRouter 和 Vercel AI Gateway 快照同步更新。`models.generated.ts` 与 `image-models.generated.ts` 和 Pi `v0.84.1` Tag 字节一致，`npm run check:model-data` 通过，没有从实时 API 带入 Tag 之后的数据。
+
+LYStar 全屏继续由 `LystarWorkspace` 管理虚拟历史。工作区输入入口同时识别旧 `app.viewport.*` 与上游新 `tui.altScreen.*` action id，覆盖 `Shift+PageUp/PageDown`、`Ctrl+Home/End`、`PageUp/PageDown`、`Home/End` 和可配置半页滚动；滚轮、点击、运行时 renderer 切换处理器迁移及 SGR `66/67` 横向事件保护保持不变。真实候选包 PTY 首次发现上游默认 `PageUp/PageDown/Home/End` 会被空的继承视口消费，修复后新增真实 renderer 回归覆盖滚轮、整页、半页、首尾和新旧快捷键。
+
+显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 完成 `npm run check`、`npm run build:offline` 和全部 workspace 测试。TUI 全量退出码 0；AI 104 个 test files/870 项通过，25 个 files/825 项跳过；Agent Core 20 个 files/398 项通过、1 项跳过；Coding Agent 226 个 files/1986 项通过，6 个 files/49 项跳过。Telemetry 2 个 files/15 项、SQLite Session backend 11 个 files/81 项、Protocol 3 个 files/147 项、Client 6 个 files/36 项、Server 7 个 files/50 项、Evals 4 个 files/23 项全部通过。新增全屏输入定向回归 5 个 files/38 项通过；Unix 安装器的安装、PATH、SHA 校验、回退、卸载和物化检查通过。
+
+五平台候选包使用 Bun 1.3.9 构建，`SHA256SUMS` 五项全部通过；manifest 的版本为 `0.84.1-lystar.1`、Pi 版本为 `0.84.1`、仓库为 `octyean/lystar-agent`，五个平台文件、大小和 SHA-256 一致。格式覆盖 macOS ARM64/x64 Mach-O、Linux ARM64/x64 ELF 和 Windows x64 PE32+；各归档包含对应 clipboard 原生包、`LICENSE` 和 `THIRD_PARTY_LICENSES.md`。Linux x64 候选归档 SHA-256 为 `55dbc0dcb9229413cbb60251d0249e6fd34f44fa9fee8ca0285fe499e7ed0b5a`，其 `la --version`、中文 `la --help`、`PI_OFFLINE=1 la --list-models`、中文 `la auth --help` 和无凭据 `auth check --provider anthropic --no-refresh --json` 均通过。
+
+最终 Linux x64 候选包在独立 `80x24` tmux PTY 加载长 Session：`PageUp` 与底部画面哈希不同，`PageDown` 精确回到底部；`Home` 跳到 Session 开头，`End` 精确回到底部；标准 SGR 滚轮、`Ctrl+U` 半页上移和 `Ctrl+D` 半页下移均产生预期画面。`80x8` 与 `120x36` 下顶栏、历史区、Composer 和快捷栏完整；`/settings` 完成全屏到普通再回全屏的双向切换，切回后的 renderer 继续接收滚轮并显示“下方还有 1 行”。双击 SGR 序列注入后进程保持正常，多击选择语义由 TUI 全量回归覆盖；`/quit` 返回码 0，`lystar-pi0841-candidate` 与 `lystar-pi0841-candidate-final` tmux server 均已关闭。
+
+CodeGraph 在上游合并和 LYStar 适配后增量同步 95 个文件、2879 个节点；最终索引为 1186 files、19368 nodes、78069 edges，pending changes 0、`reindexRecommended=false`。`handleWorkspaceInput` 影响面落在构造、运行时模式切换和设置切换链路；affected 结果列出认证、凭据输出、真实 renderer 输入和 TUI wrapper 四个测试文件，均已包含在全量测试中。
+
+当前 Linux 环境没有 macOS 实机和 Windows Console/ConPTY 的交互证据；Windows PowerShell 5.1 安装器、Windows 启动和卸载链等待 main CI 验证。Node.js `v22.22.2` 仍低于 `@earendil-works/gondolin@0.12.0` 声明的 `>=23.6.0`，本轮构建和测试只有已知 engine 警告，没有行为失败。
 
 ### `0.84.0-lystar.2` 发布前核验
 

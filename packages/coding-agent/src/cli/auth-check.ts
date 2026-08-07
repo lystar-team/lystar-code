@@ -29,11 +29,11 @@ export async function checkProviderAuth(
 	if (cliModel) {
 		const resolved = resolveCliModel({ cliProvider, cliModel, modelRuntime });
 		if (resolved.error || !resolved.model) {
-			throw new AuthCommandError(resolved.error ?? `Unable to resolve model "${cliModel}"`);
+			throw new AuthCommandError(resolved.error ?? `无法确定模型“${cliModel}”`);
 		}
 		provider = resolved.model.provider;
 	}
-	if (!provider) throw new AuthCommandError("Unable to resolve an auth provider");
+	if (!provider) throw new AuthCommandError("无法确定认证 Provider");
 	if (modelRuntime.getError()) {
 		return { status: "invalid", provider, reason: "invalid_state" };
 	}
