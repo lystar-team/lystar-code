@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-07T08:18:18Z
+最后核验时间：2026-08-07T08:33:44Z
 
 环境：
 
@@ -31,7 +31,15 @@ LYStar 全屏继续由 `LystarWorkspace` 管理虚拟历史。工作区输入入
 
 CodeGraph 在上游合并和 LYStar 适配后增量同步 95 个文件、2879 个节点；最终索引为 1186 files、19368 nodes、78069 edges，pending changes 0、`reindexRecommended=false`。`handleWorkspaceInput` 影响面落在构造、运行时模式切换和设置切换链路；affected 结果列出认证、凭据输出、真实 renderer 输入和 TUI wrapper 四个测试文件，均已包含在全量测试中。
 
-当前 Linux 环境没有 macOS 实机和 Windows Console/ConPTY 的交互证据；Windows PowerShell 5.1 安装器、Windows 启动和卸载链等待 main CI 验证。Node.js `v22.22.2` 仍低于 `@earendil-works/gondolin@0.12.0` 声明的 `>=23.6.0`，本轮构建和测试只有已知 engine 警告，没有行为失败。
+`main` commit `298c396b6662342729f86128596bd0533269c350` 的 CI run `31161459499` 七个 job 全部成功，覆盖源码核验与构建、Unix 安装器、TUI、AI、Agent Core、Coding Agent 双分片，以及 Windows managed MinGit Bash 和 Windows PowerShell 5.1 安装器。annotated Tag `v0.84.1-lystar.1` 的 Tag 对象为 `8925848f498f0a33d7d3dbfe1a4155d252891b3a`，解引用后固定指向该 commit。
+
+Release workflow run `31161640992` 成功，完成 main CI 绑定、版本校验、离线构建、Bun 1.3.9 五平台打包、artifact attestation 和公开发布。GitHub Release 于 `2026-08-07T08:26:46Z` 发布，为非草稿、非预发布正式版本，共有 10 个公开资产：五个平台包、`SHA256SUMS`、`release-manifest.json` 和三个安装器。
+
+公开 Linux x64 包 SHA-256 为 `957a33ec572de089ecdb04bd27e387cf7cb47b70a4783737874cb1e9023d200a`，与公开 manifest、`SHA256SUMS` 和 Release asset digest 完全一致；归档包含 `la`、Linux x64 clipboard 原生包、`LICENSE` 和 `THIRD_PARTY_LICENSES.md`。GitHub Attestations API 返回 1 条 Sigstore provenance，证书绑定 `.github/workflows/release.yml`、Tag `v0.84.1-lystar.1`、commit `298c396b6` 和 run `31161640992`，subject 为同一 Linux x64 SHA-256。公开包的版本、中文帮助、离线模型列表和无凭据认证检查均通过。
+
+本机通过公开 `la update` 从 `0.84.0-lystar.2` 原子更新到 `0.84.1-lystar.1`；`current` 指向 `versions/0.84.1-lystar.1`，`previous` 保留 `versions/0.84.0-lystar.2`，再次更新显示已是最新版本，`PI_OFFLINE=1 la --list-models` 通过。安装后的 `/home/yean/.local/bin/la` 在独立 `80x24` tmux PTY 加载长 Session，`PageUp` 显示“下方还有 16 行”，`PageDown` 精确回到底部；全屏与普通模式双向切换后，滚轮仍显示“下方还有 1 行”，`/quit` 返回码 0，`lystar-release-0841-installed` tmux server 已关闭。
+
+当前 Linux 环境没有 macOS 实机和 Windows Console/ConPTY 的交互证据；Windows PowerShell 5.1 安装器、Windows 启动和卸载链已由 main CI 验证。Node.js `v22.22.2` 仍低于 `@earendil-works/gondolin@0.12.0` 声明的 `>=23.6.0`，本轮构建和测试只有已知 engine 警告，没有行为失败。
 
 ### `0.84.0-lystar.2` 发布前核验
 
