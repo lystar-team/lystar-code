@@ -107,11 +107,12 @@ for platform in "${PLATFORMS[@]}"; do
     fi
 
     # Bun 只有显式收到 worker 入口时，才会把 worker 编入独立可执行文件。
+    # 禁用当前目录 bunfig.toml 自动加载，避免项目 preload 在独立程序启动前执行。
     if [[ "$platform" == windows-* ]]; then
-        run_bun build --compile --target="$bun_target" ./dist/bun/cli.js ./src/utils/image-resize-worker.ts \
+        run_bun build --compile --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/cli.js ./src/utils/image-resize-worker.ts \
             --outfile "$OUTPUT_DIR/$platform/la.exe"
     else
-        run_bun build --compile --target="$bun_target" ./dist/bun/cli.js ./src/utils/image-resize-worker.ts \
+        run_bun build --compile --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/cli.js ./src/utils/image-resize-worker.ts \
             --outfile "$OUTPUT_DIR/$platform/la"
     fi
 done

@@ -268,7 +268,7 @@ ${chalk.bold("命令：")}
   ${APP_NAME} update --rollback         回退 LYStar Agent 到上一版本
   ${APP_NAME} list                      列出设置中的 Extension
   ${APP_NAME} config [-l]               打开 Package 资源管理界面，Tab 切换范围
-  ${APP_NAME} auth <command>            输出供外部客户端使用的凭据
+  ${APP_NAME} auth <command>            输出凭据或检查 Provider 是否可用
   ${APP_NAME} <command> --help          查看 install/remove/update/config/auth 等命令帮助
 
 ${chalk.bold("选项：")}
@@ -319,11 +319,14 @@ ${chalk.bold("选项：")}
 Extension 可以注册额外参数，例如 plan-mode 的 --plan。${extensionFlagsText}
 
 ${chalk.bold("示例：")}
-  # 输出供外部客户端使用的 Provider API key
-  ${APP_NAME} auth print-api-key --provider openai --model gpt-5.5
+  # 输出 Provider API key
+  ${APP_NAME} auth print-api-key --provider openai
 
   # 输出 OAuth bearer token，过期前会自动刷新
-  ${APP_NAME} auth print-bearer-token --provider openai-codex --model gpt-5.5
+  ${APP_NAME} auth print-bearer-token --provider openai-codex
+
+  # 检查 Provider 凭据是否可用
+  ${APP_NAME} auth check --provider openai
 
   # 交互模式
   ${APP_NAME}
