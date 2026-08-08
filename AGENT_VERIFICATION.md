@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-08T10:16:34Z
+最后核验时间：2026-08-08T14:20:44Z
 
 环境：
 
@@ -14,6 +14,20 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### `0.84.1-lystar.6` 发布前核验
+
+发布事实源为 `piConfig.productVersion = 0.84.1-lystar.6`，Pi workspace 包版本继续保持 `0.84.1`。本版修复 Subagent parallel 卡片在空 `chain` 参数下显示 `0 个 Agent`、短工具调用的当前动作被合并更新吞掉，以及子会话 Overlay 的滚轮和翻页输入被主会话优先消费三个问题；功能提交为 `36076660d3c390e0cd19e6c52724d617a985f540`。Session JSONL、Subagent Session 引用、Tool Result 和 Extension API 格式不变。
+
+显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 完成 `npm run check`、`npm run build:offline` 和全部发布 gate。TUI 全量退出码 0；AI 104 个 test files/870 项通过，25 个 files/825 项跳过；Agent Core 20 个 files/402 项通过、1 项跳过；Coding Agent 232 个 files/2053 项通过，6 个 files/49 项跳过。Unix 安装器的安装、PATH、SHA 校验、回退、卸载和物化检查通过。第一次 Agent Core 命令使用了不存在的 workspace 名 `@earendil-works/pi-agent`，npm 在执行测试前退出；改用仓库声明的 `@earendil-works/pi-agent-core` 后全量通过。
+
+五平台候选包使用 Bun `1.3.9` 构建，`SHA256SUMS` 五项全部通过，manifest 版本为 `0.84.1-lystar.6`、Pi 版本为 `0.84.1`、仓库为 `octyean/lystar-agent`，五个平台文件大小和 SHA-256 均与 manifest 一致。格式覆盖 macOS ARM64/x64 Mach-O、Linux ARM64/x64 ELF 和 Windows x64 PE32+；所有归档包含 `LICENSE` 与 `THIRD_PARTY_LICENSES.md`。Linux x64 候选包 SHA-256 为 `7b8e60d63823b6d56ac013ce097b5609a07a7ff962a23ef7bdd23f56714d4a95`，其 `la --version`、中文帮助和 `PI_OFFLINE=1 la --list-models` 通过。
+
+Linux x64 候选包在独立 `80x24` tmux PTY 加载包含空 `chain` 和两个 parallel task 的真实 Session，卡片显示 `parallel · 2 个 Agent`，当前动作分别显示 `$ sleep 30` 和 `read docs/lystar-agent-plan.md`。通过 `/agents` 进入 24 条消息的持久子会话后，PageUp 从消息 21–24 上移到 16–19，滚轮下移后显示 17–20，PageDown 回到底部 21–24；Esc 返回主会话，`lystar-0841-6-candidate` tmux server、Session fixture 和候选解压目录均已删除。
+
+CodeGraph 已同步到 1206 个文件、20087 个节点和 77861 条边，pending changes 为 0、`reindexRecommended=false`。受影响范围落在 Subagent RPC 状态、TUI Overlay 输入和子会话滚动链路，对应数量、短命令即时发布、Overlay 输入优先和键鼠滚动回归均已包含在 Coding Agent 全量测试中。
+
+当前 Linux 环境没有 macOS 实机和 Windows Console/ConPTY 的交互证据；这两个平台完成了格式、架构、归档内容和自动测试核验，Windows 安装器链等待 main CI 与 Release workflow 继续验证。
 
 ### `0.84.1-lystar.5` 发布前核验
 
