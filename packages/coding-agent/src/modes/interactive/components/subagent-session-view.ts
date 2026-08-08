@@ -73,6 +73,12 @@ export class SubagentSessionViewComponent implements Component, Focusable {
 		this.options.editor?.invalidate();
 	}
 
+	private scrollBy(lines: number): void {
+		this.scrollTop = Math.max(0, Math.min(this.lastMaxScroll, this.scrollTop + lines));
+		this.following = this.scrollTop >= this.lastMaxScroll;
+		this.options.requestRender();
+	}
+
 	render(width: number): string[] {
 		const height = Math.max(6, this.options.getHeight() - 2);
 		const header = truncateToWidth(
@@ -106,13 +112,9 @@ export class SubagentSessionViewComponent implements Component, Focusable {
 				return;
 			}
 			if (mouse.button === "wheel-up") {
-				this.scrollTop = Math.max(0, this.scrollTop - 3);
-				this.following = false;
-				this.options.requestRender();
+				this.scrollBy(-3);
 			} else if (mouse.button === "wheel-down") {
-				this.scrollTop += 3;
-				this.following = this.scrollTop >= this.lastMaxScroll;
-				this.options.requestRender();
+				this.scrollBy(3);
 			}
 			return;
 		}
@@ -126,15 +128,28 @@ export class SubagentSessionViewComponent implements Component, Focusable {
 			this.options.onReturn();
 			return;
 		}
-		if (kb.matches(data, "tui.select.pageUp")) {
-			this.scrollTop = Math.max(0, this.scrollTop - Math.max(1, this.options.getHeight() - 6));
-			this.following = false;
-			this.options.requestRender();
+		if (kb.matches(data, "tui.select.pageUp") || kb.matches(data, "tui.altScreen.pageUp")) {
+			this.scrollBy(-Math.max(1, this.options.getHeight() - 6));
 			return;
 		}
-		if (kb.matches(data, "tui.select.pageDown")) {
-			this.scrollTop += Math.max(1, this.options.getHeight() - 6);
-			this.options.requestRender();
+		if (kb.matches(data, "tui.select.pageDown") || kb.matches(data, "tui.altScreen.pageDown")) {
+			this.scrollBy(Math.max(1, this.options.getHeight() - 6));
+			return;
+		}
+		if (kb.matches(data, "tui.altScreen.halfPageUp")) {
+			this.scrollBy(-Math.max(1, Math.floor((this.options.getHeight() - 6) / 2)));
+			return;
+		}
+		if (kb.matches(data, "tui.altScreen.halfPageDown")) {
+			this.scrollBy(Math.max(1, Math.floor((this.options.getHeight() - 6) / 2)));
+			return;
+		}
+		if (kb.matches(data, "tui.altScreen.top")) {
+			this.scrollBy(-this.lastMaxScroll);
+			return;
+		}
+		if (kb.matches(data, "tui.altScreen.bottom")) {
+			this.scrollBy(this.lastMaxScroll);
 			return;
 		}
 		this.options.editor?.handleInput(data);

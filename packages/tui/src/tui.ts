@@ -380,6 +380,7 @@ export interface TUI extends Component {
 	showOverlay(component: Component, options?: OverlayOptions): OverlayHandle;
 	hideOverlay(): void;
 	hasOverlay(): boolean;
+	isOverlayFocused(): boolean;
 	start(): void;
 	stop(options?: TuiStopOptions): void;
 	renderNow(force?: boolean): void;
@@ -753,6 +754,13 @@ export abstract class TuiBase extends Container implements TUI {
 	/** Check if there are any visible overlays */
 	hasOverlay(): boolean {
 		return this.overlayStack.some((o) => this.isOverlayVisible(o));
+	}
+
+	/** Check if the focused component is a visible overlay. */
+	isOverlayFocused(): boolean {
+		return this.overlayStack.some(
+			(entry) => entry.component === this.focusedComponent && this.isOverlayVisible(entry),
+		);
 	}
 
 	/** Check if an overlay entry is currently visible */

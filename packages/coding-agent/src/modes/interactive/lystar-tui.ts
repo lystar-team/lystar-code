@@ -42,6 +42,7 @@ export class LystarTUI extends TuiAltScreen {
 	}
 
 	protected override handleViewportInput(data: string) {
+		if (this.isOverlayFocused()) return undefined;
 		const result = this.workspaceInputHandler?.(data);
 		if (result?.consume) return result;
 		return super.handleViewportInput(result?.data ?? data);

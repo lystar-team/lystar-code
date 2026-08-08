@@ -218,6 +218,18 @@ function getPiInvocation(): { command: string; commandArgs: string[] } {
 	return { command: "pi", commandArgs: [] };
 }
 
+function formatCurrentAction(toolName: string, args: unknown): string {
+	const input = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+	if (toolName === "bash" && typeof input.command === "string") {
+		const command = input.command.split(/\r?\n/, 1)[0]?.trim();
+		if (command) return `$ ${command}`;
+	}
+	const rawPath = typeof input.path === "string" ? input.path : input.file_path;
+	if (typeof rawPath === "string" && rawPath) return `${toolName} ${rawPath}`;
+	if (typeof input.pattern === "string" && input.pattern) return `${toolName} ${input.pattern}`;
+	return toolName;
+}
+
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 
 export type SubagentSessionEvent = JsonAgentSessionEvent | { type: "tool_result_end"; message: Message };
@@ -455,8 +467,9 @@ export class SubagentRunController {
 				this.recordMessage(event.message);
 				break;
 			case "tool_execution_start":
-				this.result.currentAction = event.toolName;
+				this.result.currentAction = formatCurrentAction(event.toolName, event.args);
 				this.updateState("running", `tool:${event.toolName}`);
+				this.flushUpdate();
 				break;
 			case "tool_execution_end":
 				this.result.currentAction = undefined;
@@ -1089,10 +1102,20 @@ export default function (pi: ExtensionAPI) {
 			};
 		},
 
-		renderCall(args, theme, _context) {
+		renderCall(args, theme, context) {
 			const scope: AgentScope = args.agentScope ?? "user";
-			const count = args.chain?.length ?? args.tasks?.length ?? (args.agent ? 1 : 0);
-			const mode = args.chain?.length ? "chain" : args.tasks?.length ? "parallel" : "single";
+			const details = context.resultDetails as Partial<SubagentDetails> | undefined;
+			const mode = details?.mode ?? (args.chain?.length ? "chain" : args.tasks?.length ? "parallel" : "single");
+			const requestedCount =
+				mode === "chain"
+					? (args.chain?.length ?? 0)
+					: mode === "parallel"
+						? (args.tasks?.length ?? 0)
+						: args.agent
+							? 1
+							: 0;
+			const count =
+				Array.isArray(details?.results) && details.results.length > 0 ? details.results.length : requestedCount;
 			return new Text(
 				`${theme.fg("toolTitle", theme.bold("subagent"))} ${theme.fg("accent", mode)}${theme.fg("muted", ` · ${count} 个 Agent · ${scope}`)}`,
 				0,

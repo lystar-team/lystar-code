@@ -161,6 +161,39 @@ describe("createInteractiveTui", () => {
 		}
 	});
 
+	it("routes viewport input to the focused overlay before the workspace", async () => {
+		const terminal = new RecordingTerminal(40, 8);
+		const workspaceInputHandler = vi.fn(() => ({ consume: true as const }));
+		const received: string[] = [];
+		const overlay: Component & { focused: boolean } = {
+			focused: false,
+			render: () => ["overlay"],
+			invalidate: () => {},
+			handleInput: (data) => received.push(data),
+		};
+		const renderer = createInteractiveTui({
+			tuiMode: "fullscreen",
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal,
+			workspaceInputHandler,
+		});
+
+		renderer.start();
+		const handle = renderer.showOverlay(overlay, { row: 1, col: 1, width: 20, maxHeight: 4 });
+		try {
+			await terminal.waitForRender();
+			terminal.sendInput("\x1b[5~");
+			terminal.sendInput("\x1b[<64;10;4M");
+
+			expect(received).toEqual(["\x1b[5~", "\x1b[<64;10;4M"]);
+			expect(workspaceInputHandler).not.toHaveBeenCalled();
+		} finally {
+			handle.hide();
+			renderer.stop();
+		}
+	});
+
 	it("replaces the renderer while preserving components and focus", async () => {
 		const terminal = new RecordingTerminal(40, 8);
 		const renderer = createInteractiveTui({

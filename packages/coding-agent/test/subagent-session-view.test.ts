@@ -33,7 +33,7 @@ describe("SubagentSessionViewComponent", () => {
 		expect(returned).toBe(2);
 	});
 
-	it("keeps older transcript rows reachable with PageUp", () => {
+	it("scrolls the transcript with page keys and the mouse wheel", () => {
 		const view = new SubagentSessionViewComponent({
 			agent: "reader",
 			status: "运行中",
@@ -48,5 +48,11 @@ describe("SubagentSessionViewComponent", () => {
 		expect(view.render(40).join("\n")).toContain("line-30");
 		view.handleInput("\x1b[5~");
 		expect(view.render(40).join("\n")).toContain("line-22");
+		view.handleInput("\x1b[6~");
+		expect(view.render(40).join("\n")).toContain("line-30");
+		view.handleInput("\x1b[<64;10;4M");
+		expect(view.render(40).join("\n")).toContain("line-27");
+		view.handleInput("\x1b[<65;10;4M");
+		expect(view.render(40).join("\n")).toContain("line-30");
 	});
 });

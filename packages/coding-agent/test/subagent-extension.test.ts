@@ -18,6 +18,8 @@ import subagentExtension, {
 	type SubagentSessionDescriptor,
 	steerSubagent,
 } from "../src/extensions/subagent/index.ts";
+import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
+import { stripAnsi } from "../src/utils/ansi.ts";
 
 const tempDirs: string[] = [];
 
@@ -44,9 +46,9 @@ function respond(command) {
 }
 function settle(text) {
 	output({ type: "agent_start" });
-	output({ type: "tool_execution_start", toolCallId: "tool-" + turn, toolName: "read", args: { path: "fixture" } });
-	output({ type: "tool_execution_end", toolCallId: "tool-" + turn, toolName: "read", result: { content: [] }, isError: false });
-	output({ type: "tool_result_end", message: { role: "toolResult", toolCallId: "tool-" + turn, toolName: "read", content: [{ type: "text", text: "tool result:" + text }], details: { preserved: true }, isError: false, timestamp: Date.now() } });
+	output({ type: "tool_execution_start", toolCallId: "tool-" + turn, toolName: "bash", args: { command: "echo " + text } });
+	output({ type: "tool_execution_end", toolCallId: "tool-" + turn, toolName: "bash", result: { content: [] }, isError: false });
+	output({ type: "tool_result_end", message: { role: "toolResult", toolCallId: "tool-" + turn, toolName: "bash", content: [{ type: "text", text: "tool result:" + text }], details: { preserved: true }, isError: false, timestamp: Date.now() } });
 	output({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], model: "faux-model", stopReason: "stop", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { total: 0 } } } });
 	output({ type: "agent_end", messages: [], willRetry: false });
 	output({ type: "agent_settled" });
@@ -100,18 +102,27 @@ async function loadSubagentTool() {
 	return extension.tools.get("subagent")!.definition;
 }
 
-async function executeWithFauxRpc(params: Record<string, unknown>) {
+async function executeWithFauxRpc(
+	params: Record<string, unknown>,
+	onUpdate?: (partial: { details?: SubagentDetails }) => void,
+) {
 	const extension = await loadSubagentExtension();
 	const tool = extension.tools.get("subagent")!.definition;
 	const script = writeFauxRpcScript();
 	const originalScript = process.argv[1];
 	process.argv[1] = script;
 	try {
-		const result = await tool.execute("subagent-test", params, undefined, undefined, {
-			cwd: process.cwd(),
-			hasUI: false,
-			sessionManager: { getSessionFile: () => join(tempDirs.at(-1)!, "parent.jsonl") },
-		} as never);
+		const result = await tool.execute(
+			"subagent-test",
+			params,
+			undefined,
+			onUpdate as never,
+			{
+				cwd: process.cwd(),
+				hasUI: false,
+				sessionManager: { getSessionFile: () => join(tempDirs.at(-1)!, "parent.jsonl") },
+			} as never,
+		);
 		const shutdown = extension.handlers.get("session_shutdown")?.[0];
 		if (shutdown) await shutdown({ type: "session_shutdown", reason: "quit" });
 		return result;
@@ -121,6 +132,8 @@ async function executeWithFauxRpc(params: Record<string, unknown>) {
 }
 
 describe("built-in subagent extension", () => {
+	initTheme("dark");
+
 	it("is bundled as a hidden extension and registers its tool", async () => {
 		expect(builtInExtensions).toEqual(
 			expect.arrayContaining([
@@ -201,6 +214,47 @@ describe("built-in subagent extension", () => {
 		const chainDetails = chain.details as SubagentDetails;
 		expect(chainDetails.results[1].task).toBe("second done:first");
 		expect(chain.content).toEqual([{ type: "text", text: "done:second done:first" }]);
+	});
+
+	it("renders the parallel count from the active mode and live result details", async () => {
+		const tool = await loadSubagentTool();
+		const component = tool.renderCall!(
+			{
+				chain: [],
+				tasks: [
+					{ agent: "worker", task: "one" },
+					{ agent: "worker", task: "two" },
+				],
+			},
+			theme,
+			{
+				resultDetails: {
+					mode: "parallel",
+					results: [{ agent: "worker" }, { agent: "worker" }],
+				},
+			} as never,
+		);
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("parallel · 2 个 Agent");
+	});
+
+	it("publishes each latest parallel command even when the tool finishes in the same event batch", async () => {
+		const actions: string[] = [];
+		await executeWithFauxRpc(
+			{
+				tasks: [
+					{ agent: "worker", task: "one" },
+					{ agent: "worker", task: "two" },
+				],
+			},
+			(partial) => {
+				for (const result of partial.details?.results ?? []) {
+					if (result.currentAction) actions.push(result.currentAction);
+				}
+			},
+		);
+
+		expect(actions).toContain("$ echo done:one");
+		expect(actions).toContain("$ echo done:two");
 	});
 
 	it("exposes copied current-run snapshots and typed controls only for the active extension", async () => {
@@ -304,7 +358,7 @@ describe("built-in subagent extension", () => {
 		await controller.steer("focus");
 		expect((await first).state).toBe("succeeded");
 		expect(updateCount).toBeGreaterThan(0);
-		expect(updateCount).toBeLessThanOrEqual(3);
+		expect(updateCount).toBeLessThanOrEqual(4);
 		expect((await controller.followUp("second")).messages?.at(-1)).toMatchObject({ role: "assistant" });
 
 		const runningFollowUp = controller.followUp("cancel me");
