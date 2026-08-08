@@ -32,6 +32,11 @@ function createAssistantMessage(
 	};
 }
 
+function createCodeBlock(lineCount: number, closed = true): string {
+	const lines = Array.from({ length: lineCount }, (_, index) => `line-${String(index + 1).padStart(3, "0")}`);
+	return ["```text", ...lines, ...(closed ? ["```"] : [])].join("\n");
+}
+
 describe("AssistantMessageComponent", () => {
 	test("adds OSC 133 zone markers to assistant messages without tool calls", () => {
 		initTheme("dark");
@@ -252,6 +257,84 @@ describe("AssistantMessageComponent", () => {
 			{ type: "text", text: "answer" },
 			{ type: "thinking", thinking: "reasoning" },
 		]);
+	});
+
+	test("collapses completed code blocks over 200 lines and restores them on expansion", () => {
+		initTheme("dark");
+		const source = createCodeBlock(500);
+		const message = createAssistantMessage([{ type: "text", text: source }]);
+		const component = new AssistantMessageComponent(message);
+
+		const collapsed = stripAnsi(component.render(80).join("\n"));
+		expect(collapsed).toContain("line-001");
+		expect(collapsed).toContain("line-020");
+		expect(collapsed).toContain("... 已省略 460 行 ...");
+		expect(collapsed).toContain("line-481");
+		expect(collapsed).toContain("line-500");
+		expect(collapsed).not.toContain("line-250");
+		expect(message.content[0]).toEqual({ type: "text", text: source });
+
+		component.setExpanded(true);
+		const expanded = stripAnsi(component.render(80).join("\n"));
+		expect(expanded).toContain("line-250");
+		expect(expanded).not.toContain("已省略");
+
+		component.setExpanded(false);
+		const collapsedAgain = stripAnsi(component.render(80).join("\n"));
+		expect(collapsedAgain).toContain("... 已省略 460 行 ...");
+		expect(collapsedAgain).not.toContain("line-250");
+	});
+
+	test("collapses completed long Markdown and restores the exact source on expansion", () => {
+		initTheme("dark");
+		const source = `HEAD-${"a".repeat(9000)}-MIDDLE-${"b".repeat(9000)}-TAIL`;
+		const message = createAssistantMessage([{ type: "text", text: source }]);
+		const component = new AssistantMessageComponent(message);
+
+		const collapsed = stripAnsi(component.render(80).join("\n"));
+		expect(collapsed).toContain("HEAD-");
+		expect(collapsed).toContain("-TAIL");
+		expect(collapsed).toContain("已省略");
+		expect(collapsed).not.toContain("-MIDDLE-");
+		expect(message.content[0]).toEqual({ type: "text", text: source });
+
+		component.setExpanded(true);
+		const expanded = stripAnsi(component.render(80).join("\n"));
+		expect(expanded).toContain("-MIDDLE-");
+		expect(expanded).not.toContain("已省略");
+	});
+
+	test("keeps fenced blocks intact when collapsing surrounding long Markdown", () => {
+		initTheme("dark");
+		const source = `${"a".repeat(1900)}\n\`\`\`ts\nconst insideFence = "${"x".repeat(1000)}";\n\`\`\`\n${"b".repeat(15000)}-TAIL`;
+		const component = new AssistantMessageComponent(createAssistantMessage([{ type: "text", text: source }]));
+
+		const collapsed = stripAnsi(component.render(80).join("\n"));
+		expect(collapsed).toContain("const insideFence");
+		expect(collapsed).toContain("已省略");
+		expect(collapsed).toContain("-TAIL");
+	});
+
+	test("does not react to expansion for short or incomplete streaming code blocks", () => {
+		initTheme("dark");
+		const shortComponent = new AssistantMessageComponent(
+			createAssistantMessage([{ type: "text", text: createCodeBlock(200) }]),
+		);
+		const shortVersion = shortComponent.getRenderVersion();
+		shortComponent.setExpanded(true);
+		expect(shortComponent.getRenderVersion()).toBe(shortVersion);
+
+		const streamingComponent = new AssistantMessageComponent();
+		streamingComponent.updateContent(
+			createAssistantMessage([{ type: "text", text: createCodeBlock(500, false) }]),
+			true,
+		);
+		const streamingVersion = streamingComponent.getRenderVersion();
+		const streaming = stripAnsi(streamingComponent.render(80).join("\n"));
+		expect(streaming).toContain("line-250");
+		expect(streaming).not.toContain("已省略");
+		streamingComponent.setExpanded(true);
+		expect(streamingComponent.getRenderVersion()).toBe(streamingVersion);
 	});
 
 	test("uses configured output padding for user messages", () => {

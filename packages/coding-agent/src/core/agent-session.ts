@@ -1105,6 +1105,11 @@ export class AgentSession {
 				promptGuidelines.push(...toolGuidelines);
 			}
 		}
+		if (validToolNames.includes("edit") && !validToolNames.includes("apply_patch")) {
+			promptGuidelines.push(
+				"The apply_patch tool is unavailable. Use edit with unique oldText/newText replacements for file changes.",
+			);
+		}
 
 		const loaderSystemPrompt = this._resourceLoader.getSystemPrompt();
 		const loaderAppendSystemPrompt = this._resourceLoader.getAppendSystemPrompt();

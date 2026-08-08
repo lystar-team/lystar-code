@@ -1,4 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const { renderSpy } = vi.hoisted(() => ({ renderSpy: vi.fn() }));
+
+vi.mock("grok-mermaid", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("grok-mermaid")>();
+	renderSpy.mockImplementation(actual.render);
+	return { ...actual, render: renderSpy };
+});
+
 import type { MarkdownTransformContext } from "../src/core/extensions/types.ts";
 import type { MermaidRenderingMode } from "../src/core/settings-manager.ts";
 import { createMermaidMarkdownTransformer } from "../src/modes/interactive/components/mermaid.ts";
@@ -37,12 +46,54 @@ describe("Mermaid rendering", () => {
 		expect(rendered).toContain("After");
 	});
 
-	it("leaves unsupported and oversized diagrams unchanged", () => {
+	it("keeps source for unsupported diagrams and reports oversized diagrams after streaming", () => {
 		const unsupported = '```mermaid\npie\n  title Pets\n  "Dogs" : 4\n```';
-		const oversized = "```mermaid\nflowchart LR\n  A[Start] --> B[Done]\n```";
+		const oversized = "```mermaid\nflowchart LR\n  A[One] --> B[Two] --> C[Three] --> D[Four] --> E[Five]\n```";
 
 		expect(transformMermaid(unsupported)).toBe(unsupported);
-		expect(transformMermaid(oversized, { maxWidth: 10 })).toBe(oversized);
+		expect(transformMermaid(oversized, { maxWidth: 40, isStreaming: true })).toBe(oversized);
+
+		const fallback = transformMermaid(oversized, { maxWidth: 40 });
+		expect(fallback).toContain(oversized);
+		expect(fallback).toContain("diagram exceeds current terminal width");
+	});
+
+	it("uses width-specific source fallback and caches repeated failures", () => {
+		const markdown = "```mermaid\nflowchart LR\n  A[One] --> B[Two] --> C[Three] --> D[Four] --> E[Five]\n```";
+		const transformer = createMermaidMarkdownTransformer({ getMode: () => "streaming" });
+		renderSpy.mockClear();
+		const context = (availableWidth: number): MarkdownTransformContext => ({
+			availableWidth,
+			isStreaming: false,
+			messageType: "assistant",
+		});
+
+		expect(transformer(markdown, context(40))).toContain("diagram exceeds current terminal width");
+		expect(transformer(markdown, context(40))).toContain("diagram exceeds current terminal width");
+		expect(renderSpy).toHaveBeenCalledTimes(1);
+
+		expect(transformer(markdown, context(60))).not.toContain("```mermaid");
+		expect(renderSpy).toHaveBeenCalledTimes(2);
+	});
+
+	it("renders diagrams consistently through 40, 60, 80, and 120 column resizes", () => {
+		const markdown = "```mermaid\nflowchart LR\n  A[One] --> B[Two] --> C[Three] --> D[Four] --> E[Five]\n```";
+		const transformer = createMermaidMarkdownTransformer({ getMode: () => "streaming" });
+
+		for (const width of [40, 60, 80, 120]) {
+			const rendered = transformer(markdown, {
+				availableWidth: width,
+				isStreaming: false,
+				messageType: "assistant",
+			});
+			if (width === 40) {
+				expect(rendered).toContain(markdown);
+				expect(rendered).toContain("diagram exceeds current terminal width");
+			} else {
+				expect(rendered).not.toContain("```mermaid");
+				expect(rendered).toContain("┌─────┐");
+			}
+		}
 	});
 
 	it("maps semantic spans through the Pi theme", () => {

@@ -9,7 +9,7 @@ interface TimingNamespace {
 	lastTime: number;
 }
 
-type TimingLabel = "main" | "extensions";
+type TimingLabel = "main" | "extensions" | "sessionOpening";
 
 const timingNamespaces = new Map<TimingLabel, TimingNamespace>();
 

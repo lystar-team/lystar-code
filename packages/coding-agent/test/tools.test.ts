@@ -333,6 +333,48 @@ describe("Coding Agent Tools", () => {
 			).rejects.toThrow(/Found 3 occurrences/);
 		});
 
+		it("should report exact duplicate candidate lines without writing the file", async () => {
+			const testFile = join(testDir, "edit-duplicate-lines.txt");
+			const original = "\uFEFFbefore\r\nrepeat\r\nmiddle\r\nrepeat\r\nafter\r\nrepeat\r\n";
+			writeFileSync(testFile, original);
+
+			await expect(
+				editTool.execute("test-call-duplicate-lines", {
+					path: testFile,
+					edits: [{ oldText: "repeat", newText: "changed" }],
+				}),
+			).rejects.toThrow(
+				`Found 3 occurrences of edits[0] in ${testFile} at lines 2, 4, 6.\nInclude one stable unchanged line before or after the intended block, then retry.\nNo changes were written.`,
+			);
+			expect(readFileSync(testFile, "utf-8")).toBe(original);
+		});
+
+		it("should report fuzzy duplicate candidate lines without writing the file", async () => {
+			const testFile = join(testDir, "edit-fuzzy-duplicate-lines.txt");
+			const original = "header\n\u201ctarget\u201d\nbody\n\u201etarget\u201f\n";
+			writeFileSync(testFile, original);
+
+			await expect(
+				editTool.execute("test-call-fuzzy-duplicate-lines", {
+					path: testFile,
+					edits: [{ oldText: '"target"', newText: "changed" }],
+				}),
+			).rejects.toThrow(`Found 2 occurrences of edits[0] in ${testFile} at lines 2, 4.`);
+			expect(readFileSync(testFile, "utf-8")).toBe(original);
+		});
+
+		it("should limit duplicate candidate lines to five", async () => {
+			const testFile = join(testDir, "edit-many-duplicates.txt");
+			writeFileSync(testFile, Array.from({ length: 101 }, () => "target").join("\n"));
+
+			await expect(
+				editTool.execute("test-call-many-duplicates", {
+					path: testFile,
+					edits: [{ oldText: "target", newText: "changed" }],
+				}),
+			).rejects.toThrow(`Found 101 occurrences of edits[0] in ${testFile} at lines 1, 2, 3, 4, 5 +96 more.`);
+		});
+
 		it("should replace multiple disjoint regions in one call", async () => {
 			const testFile = join(testDir, "edit-multi.txt");
 			writeFileSync(testFile, "alpha\nbeta\ngamma\ndelta\n");

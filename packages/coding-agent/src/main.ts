@@ -5,6 +5,7 @@
  * createAgentSession() options. The SDK does the heavy lifting.
  */
 
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { createInterface } from "node:readline";
 import { type ImageContent, modelsAreEqual } from "@earendil-works/pi-ai";
 import chalk from "chalk";
@@ -62,8 +63,11 @@ import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/tru
 import { builtInExtensions } from "./extensions/index.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
+import { loadLystarSettings } from "./modes/interactive/lystar-settings.ts";
+import { createTerminalModeContext, shouldUseAlternateScreen } from "./modes/interactive/terminal-mode.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
+import { SessionOpenCoordinator } from "./session-open-coordinator.ts";
 import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
 import { ensureManagedWindowsBash } from "./utils/tools-manager.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
@@ -338,13 +342,59 @@ function validateSessionIdFlags(parsed: Args): void {
 	}
 }
 
-function openSessionOrExit(path: string, sessionDir?: string): SessionManager {
+function resolveOpeningTuiMode(parsed: Args, settingsManager: SettingsManager): "regular" | "fullscreen" {
+	const lystarSettings = loadLystarSettings(getAgentDir()).settings;
+	const legacyTuiMode =
+		parsed.altScreen === undefined
+			? undefined
+			: shouldUseAlternateScreen(parsed.altScreen, createTerminalModeContext())
+				? "fullscreen"
+				: "regular";
+	const defaultTuiMode = shouldUseAlternateScreen(lystarSettings.altScreen, createTerminalModeContext())
+		? "fullscreen"
+		: "regular";
+	return parsed.tuiMode ?? legacyTuiMode ?? settingsManager.getConfiguredTuiMode() ?? defaultTuiMode;
+}
+
+interface SessionOpenState {
+	openedExistingSession: boolean;
+}
+
+async function openSessionOrExit(
+	path: string,
+	sessionDir: string | undefined,
+	appMode: AppMode,
+	parsed: Args,
+	settingsManager: SettingsManager,
+	state: SessionOpenState,
+	cwdOverride?: string,
+): Promise<SessionManager> {
+	state.openedExistingSession = true;
+	if (appMode !== "interactive") {
+		try {
+			return SessionManager.open(path, sessionDir, cwdOverride);
+		} catch (error: unknown) {
+			const message = error instanceof Error ? error.message : String(error);
+			console.error(chalk.red(`Error: ${message}`));
+			process.exit(1);
+		}
+	}
+
+	const opening = SessionOpenCoordinator.start({
+		sessionFile: path,
+		tuiMode: resolveOpeningTuiMode(parsed, settingsManager),
+		showHardwareCursor: settingsManager.getShowHardwareCursor(),
+		clearOnShrink: settingsManager.getClearOnShrink(),
+		mouse: parsed.mouse ?? loadLystarSettings(getAgentDir()).settings.mouse,
+	});
 	try {
-		return SessionManager.open(path, sessionDir);
+		return await SessionManager.openAsync(path, sessionDir, cwdOverride);
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(chalk.red(`Error: ${message}`));
 		process.exit(1);
+	} finally {
+		opening.stop();
 	}
 }
 
@@ -363,6 +413,8 @@ async function createSessionManager(
 	cwd: string,
 	sessionDir: string | undefined,
 	settingsManager: SettingsManager,
+	appMode: AppMode,
+	state: SessionOpenState,
 ): Promise<SessionManager> {
 	if (parsed.noSession || parsed.help || parsed.listModels !== undefined) {
 		return SessionManager.inMemory(cwd, parsed.sessionId !== undefined ? { id: parsed.sessionId } : undefined);
@@ -397,7 +449,7 @@ async function createSessionManager(
 		switch (resolved.type) {
 			case "path":
 			case "local":
-				return openSessionOrExit(resolved.path, sessionDir);
+				return await openSessionOrExit(resolved.path, sessionDir, appMode, parsed, settingsManager, state);
 
 			case "global": {
 				console.log(chalk.yellow(`Session found in different project: ${resolved.cwd}`));
@@ -426,20 +478,23 @@ async function createSessionManager(
 				console.log(chalk.dim("No session selected"));
 				process.exit(0);
 			}
-			return SessionManager.open(selectedPath, sessionDir);
+			return await openSessionOrExit(selectedPath, sessionDir, appMode, parsed, settingsManager, state);
 		} finally {
 			stopThemeWatcher();
 		}
 	}
 
 	if (parsed.continue) {
-		return SessionManager.continueRecent(cwd, sessionDir);
+		const mostRecent = SessionManager.findRecentSession(cwd, sessionDir);
+		return mostRecent
+			? await openSessionOrExit(mostRecent, sessionDir, appMode, parsed, settingsManager, state)
+			: SessionManager.create(cwd, sessionDir);
 	}
 
 	if (parsed.sessionId) {
 		const existingSession = await findLocalSessionByExactId(parsed.sessionId, cwd, sessionDir);
 		if (existingSession) {
-			return SessionManager.open(existingSession.path, sessionDir);
+			return await openSessionOrExit(existingSession.path, sessionDir, appMode, parsed, settingsManager, state);
 		}
 		console.error(
 			chalk.yellow(
@@ -569,6 +624,12 @@ export interface MainOptions {
 
 export async function main(args: string[], options?: MainOptions) {
 	resetTimings();
+	resetTimings("sessionOpening");
+	const startupBenchmarkRequested = isTruthyEnvFlag(process.env.PI_STARTUP_BENCHMARK);
+	const eventLoopDelay = startupBenchmarkRequested ? monitorEventLoopDelay({ resolution: 10 }) : undefined;
+	const benchmarkEventLoopPhases: { sessionOpen?: number; runtime?: number; interactiveInit?: number } = {};
+	let benchmarkMaxEventLoopBlockMs = 0;
+	eventLoopDelay?.enable();
 	const extensionFactories = [...builtInExtensions, ...(options?.extensionFactories ?? [])];
 	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(process.env.PI_OFFLINE);
 	if (offlineMode) {
@@ -687,7 +748,15 @@ export async function main(args: string[], options?: MainOptions) {
 		(parsed.sessionDir ? normalizePath(parsed.sessionDir) : undefined) ??
 		(envSessionDir ? expandTildePath(envSessionDir) : undefined) ??
 		startupSettingsManager.getSessionDir();
-	let sessionManager = await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager);
+	const sessionOpenState: SessionOpenState = { openedExistingSession: false };
+	let sessionManager = await createSessionManager(
+		parsed,
+		cwd,
+		sessionDir,
+		startupSettingsManager,
+		appMode,
+		sessionOpenState,
+	);
 	const missingSessionCwdIssue = getMissingSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {
 		if (appMode === "interactive") {
@@ -695,7 +764,15 @@ export async function main(args: string[], options?: MainOptions) {
 			if (!selectedCwd) {
 				process.exit(0);
 			}
-			sessionManager = SessionManager.open(missingSessionCwdIssue.sessionFile!, sessionDir, selectedCwd);
+			sessionManager = await openSessionOrExit(
+				missingSessionCwdIssue.sessionFile!,
+				sessionDir,
+				appMode,
+				parsed,
+				startupSettingsManager,
+				sessionOpenState,
+				selectedCwd,
+			);
 		} else {
 			console.error(chalk.red(new MissingSessionCwdError(missingSessionCwdIssue).message));
 			process.exit(1);
@@ -710,6 +787,7 @@ export async function main(args: string[], options?: MainOptions) {
 		sessionManager.appendSessionInfo(name);
 	}
 	time("createSessionManager");
+	if (eventLoopDelay) benchmarkEventLoopPhases.sessionOpen = Number(eventLoopDelay.max) / 1e6;
 
 	const trustStore = new ProjectTrustStore(agentDir);
 	const sessionCwd = sessionManager.getCwd();
@@ -858,6 +936,7 @@ export async function main(args: string[], options?: MainOptions) {
 		sessionManager,
 	});
 	time("createAgentSessionRuntime");
+	if (eventLoopDelay) benchmarkEventLoopPhases.runtime = Number(eventLoopDelay.max) / 1e6;
 	const { services, session, modelFallbackMessage } = runtime;
 	const { settingsManager, modelRuntime, resourceLoader } = services;
 	applyHttpProxySettings(settingsManager.getGlobalSettings().httpProxy);
@@ -916,7 +995,7 @@ export async function main(args: string[], options?: MainOptions) {
 		process.exit(1);
 	}
 
-	const startupBenchmark = isTruthyEnvFlag(process.env.PI_STARTUP_BENCHMARK);
+	const startupBenchmark = startupBenchmarkRequested;
 	if (startupBenchmark && appMode !== "interactive") {
 		console.error(chalk.red("Error: PI_STARTUP_BENCHMARK only supports interactive mode"));
 		process.exit(1);
@@ -951,11 +1030,24 @@ export async function main(args: string[], options?: MainOptions) {
 		if (startupBenchmark) {
 			await interactiveMode.init();
 			time("interactiveMode.init");
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			if (eventLoopDelay) {
+				benchmarkEventLoopPhases.interactiveInit = Number(eventLoopDelay.max) / 1e6;
+				benchmarkMaxEventLoopBlockMs = benchmarkEventLoopPhases.interactiveInit;
+				eventLoopDelay.disable();
+			}
+			if (sessionOpenState.openedExistingSession) {
+				time("T_context_ready", "sessionOpening");
+			}
 			// Give the TUI's stdin handler a brief chance to consume terminal query replies
 			// (Kitty keyboard protocol, device attributes, cell size) before restoring the terminal.
 			await new Promise((resolve) => setTimeout(resolve, 150));
 			interactiveMode.stop();
 			stopThemeWatcher();
+			eventLoopDelay?.disable();
+			console.error(
+				`PI_BENCHMARK maxEventLoopBlockMs=${benchmarkMaxEventLoopBlockMs} sessionOpenEventLoopBlockMs=${benchmarkEventLoopPhases.sessionOpen ?? 0} runtimeEventLoopBlockMs=${benchmarkEventLoopPhases.runtime ?? 0} interactiveInitEventLoopBlockMs=${benchmarkEventLoopPhases.interactiveInit ?? 0} rssBytes=${process.memoryUsage().rss}`,
+			);
 			printTimings();
 			if (process.stdout.writableLength > 0) {
 				await new Promise<void>((resolve) => process.stdout.once("drain", resolve));

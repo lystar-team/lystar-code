@@ -17,9 +17,24 @@ export interface TurnToolSummary {
 	error?: string;
 }
 
+export type TurnOutcome = "completed" | "failed" | "incomplete" | "cancelled";
+
+export function resolveTurnOutcome(options: {
+	cancelled: boolean;
+	stopReason?: string;
+	hasUnfinishedTools: boolean;
+}): TurnOutcome {
+	if (options.cancelled || options.stopReason === "aborted") return "cancelled";
+	if (options.stopReason === "error") return "failed";
+	if (options.hasUnfinishedTools || options.stopReason !== "stop") return "incomplete";
+	return "completed";
+}
+
 export interface TurnSummaryData {
 	startedAt: number;
 	endedAt: number;
+	outcome?: TurnOutcome;
+	toolErrors?: number;
 	totalTools: number;
 	successfulTools: number;
 	failedTools: number;
@@ -56,13 +71,23 @@ function totals(files: readonly TurnFileSummary[]): { additions: number; deletio
 	return { additions, deletions, known };
 }
 
+function getOutcome(data: TurnSummaryData): TurnOutcome {
+	return data.outcome ?? (data.cancelled ? "cancelled" : "completed");
+}
+
 export function formatTurnSummary(data: TurnSummaryData): string {
 	const duration = formatDuration(data.endedAt - data.startedAt);
 	const parts: string[] = [];
-	if (data.cancelled) {
+	const outcome = getOutcome(data);
+	if (outcome === "cancelled") {
 		parts.push("已取消", `完成 ${data.successfulTools}/${data.totalTools} 个操作`);
-	} else if (data.failedTools > 0 || data.cancelledTools > 0) {
-		parts.push("完成但有问题");
+	} else if (outcome === "failed") {
+		parts.push("执行失败");
+		if (data.successfulTools > 0) parts.push(`${data.successfulTools} 个操作成功`);
+		const incompleteTools = Math.max(0, data.totalTools - data.successfulTools);
+		if (incompleteTools > 0) parts.push(`${incompleteTools} 个操作未完成`);
+	} else if (outcome === "incomplete") {
+		parts.push("未完成");
 	} else {
 		parts.push("完成");
 	}
@@ -104,7 +129,8 @@ export class TurnSummaryComponent extends Box {
 
 	private updateDisplay(): void {
 		this.clear();
-		const hasIssue = this.data.cancelled || this.data.failedTools > 0 || this.data.cancelledTools > 0;
+		const outcome = getOutcome(this.data);
+		const hasIssue = outcome !== "completed";
 		const icon = hasIssue ? uiGlyphs.failure : uiGlyphs.success;
 		const color = hasIssue ? "warning" : "accent";
 		const hint = theme.fg("dim", `（${keyText("app.tools.expand")} 展开）`);
@@ -132,6 +158,12 @@ export class TurnSummaryComponent extends Box {
 					),
 				);
 			}
+		}
+
+		if (this.data.toolErrors && outcome === "completed") {
+			this.addChild(
+				new Text(theme.fg("muted", `过程中有 ${this.data.toolErrors} 次 Tool 调用失败，Agent 已继续处理`), 0, 0),
+			);
 		}
 
 		const failures = this.data.tools.filter((tool) => tool.status !== "success");

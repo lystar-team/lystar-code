@@ -613,9 +613,13 @@ async function prepareToolCall(
 ): Promise<PreparedToolCall | ImmediateToolCallOutcome> {
 	const tool = currentContext.tools?.find((t) => t.name === toolCall.name);
 	if (!tool) {
+		const availableTools = currentContext.tools?.map((candidate) => candidate.name).join(", ") || "none";
+		const editSuggestion = toolCall.name === "apply_patch" ? '\nFor file changes, retry with "edit".' : "";
 		return {
 			kind: "immediate",
-			result: createErrorToolResult(`Tool ${toolCall.name} not found`),
+			result: createErrorToolResult(
+				`Tool "${toolCall.name}" is unavailable.\nAvailable tools: ${availableTools}.${editSuggestion}`,
+			),
 			isError: true,
 		};
 	}

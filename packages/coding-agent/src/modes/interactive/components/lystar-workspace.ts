@@ -212,6 +212,8 @@ export class LystarWorkspace implements Component {
 	private jumpToTop = false;
 	private hasNewerHistory = false;
 	private indicatorRow = -1;
+	private lastContentHeight = 0;
+	private preserveViewportOnNextPrepend = false;
 
 	constructor(options: WorkspaceOptions) {
 		this.options = options;
@@ -259,8 +261,19 @@ export class LystarWorkspace implements Component {
 		this.jumpToTop = false;
 		this.hasNewerHistory = false;
 		this.indicatorRow = -1;
+		this.lastContentHeight = 0;
+		this.preserveViewportOnNextPrepend = false;
 		this.blockCache = new Map();
 		this.componentInvalidationGeneration = new WeakMap();
+	}
+
+	isAtTop(): boolean {
+		return this.fullscreen && this.scrollTop <= 0;
+	}
+
+	preserveViewportAfterPrepend(): void {
+		if (!this.fullscreen || this.following) return;
+		this.preserveViewportOnNextPrepend = true;
 	}
 
 	getWheelScrollStep(): number {
@@ -418,6 +431,11 @@ export class LystarWorkspace implements Component {
 		} = this.renderScrollContent(renderWidth, this.viewportHeight);
 		this.contentRanges = ranges;
 		const maxScrollTop = Math.max(0, contentHeight - this.viewportHeight);
+		if (this.preserveViewportOnNextPrepend) {
+			this.scrollTop += Math.max(0, contentHeight - this.lastContentHeight);
+			this.preserveViewportOnNextPrepend = false;
+		}
+		this.lastContentHeight = contentHeight;
 		if (this.following) {
 			this.scrollTop = maxScrollTop;
 		} else {

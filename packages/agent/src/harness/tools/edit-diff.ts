@@ -202,11 +202,11 @@ export interface AppliedEditsResult {
  */
 export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResult {
 	// Try exact match first
-	const exactIndex = content.indexOf(oldText);
-	if (exactIndex !== -1) {
+	const exactMatches = findAllOccurrences(content, oldText);
+	if (exactMatches.length > 0) {
 		return {
 			found: true,
-			index: exactIndex,
+			index: exactMatches[0],
 			matchLength: oldText.length,
 			usedFuzzyMatch: false,
 			contentForReplacement: content,
@@ -216,9 +216,9 @@ export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResul
 	// Try fuzzy match - work entirely in normalized space
 	const fuzzyContent = normalizeForFuzzyMatch(content);
 	const fuzzyOldText = normalizeForFuzzyMatch(oldText);
-	const fuzzyIndex = fuzzyContent.indexOf(fuzzyOldText);
+	const fuzzyMatches = findAllOccurrences(fuzzyContent, fuzzyOldText);
 
-	if (fuzzyIndex === -1) {
+	if (fuzzyMatches.length === 0) {
 		return {
 			found: false,
 			index: -1,
@@ -233,7 +233,7 @@ export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResul
 	// that normalized output should be written back.
 	return {
 		found: true,
-		index: fuzzyIndex,
+		index: fuzzyMatches[0],
 		matchLength: fuzzyOldText.length,
 		usedFuzzyMatch: true,
 		contentForReplacement: fuzzyContent,
@@ -245,10 +245,38 @@ export function stripBom(content: string): { bom: string; text: string } {
 	return content.startsWith("\uFEFF") ? { bom: "\uFEFF", text: content.slice(1) } : { bom: "", text: content };
 }
 
-function countOccurrences(content: string, oldText: string): number {
-	const fuzzyContent = normalizeForFuzzyMatch(content);
-	const fuzzyOldText = normalizeForFuzzyMatch(oldText);
-	return fuzzyContent.split(fuzzyOldText).length - 1;
+function findAllOccurrences(content: string, text: string): number[] {
+	if (text.length === 0) return [];
+	const offsets: number[] = [];
+	let searchStart = 0;
+	while (true) {
+		const offset = content.indexOf(text, searchStart);
+		if (offset === -1) return offsets;
+		offsets.push(offset);
+		searchStart = offset + text.length;
+	}
+}
+
+function getLineStarts(content: string): number[] {
+	const lineStarts = [0];
+	for (let index = 0; index < content.length; index++) {
+		if (content[index] === "\n") lineStarts.push(index + 1);
+	}
+	return lineStarts;
+}
+
+function getLineNumber(offset: number, lineStarts: number[]): number {
+	let low = 0;
+	let high = lineStarts.length;
+	while (low + 1 < high) {
+		const middle = Math.floor((low + high) / 2);
+		if (lineStarts[middle] <= offset) {
+			low = middle;
+		} else {
+			high = middle;
+		}
+	}
+	return low + 1;
 }
 
 function getNotFoundError(path: string, editIndex: number, totalEdits: number): Error {
@@ -262,14 +290,12 @@ function getNotFoundError(path: string, editIndex: number, totalEdits: number): 
 	);
 }
 
-function getDuplicateError(path: string, editIndex: number, totalEdits: number, occurrences: number): Error {
-	if (totalEdits === 1) {
-		return new Error(
-			`Found ${occurrences} occurrences of the text in ${path}. The text must be unique. Please provide more context to make it unique.`,
-		);
-	}
+function getDuplicateError(path: string, editIndex: number, matchOffsets: number[], lineStarts: number[]): Error {
+	const displayedLines = matchOffsets.slice(0, 5).map((offset) => getLineNumber(offset, lineStarts));
+	const remaining = matchOffsets.length - displayedLines.length;
+	const more = remaining > 0 ? ` +${remaining} more` : "";
 	return new Error(
-		`Found ${occurrences} occurrences of edits[${editIndex}] in ${path}. Each oldText must be unique. Please provide more context to make it unique.`,
+		`Found ${matchOffsets.length} occurrences of edits[${editIndex}] in ${path} at lines ${displayedLines.join(", ")}${more}.\nInclude one stable unchanged line before or after the intended block, then retry.\nNo changes were written.`,
 	);
 }
 
@@ -317,24 +343,25 @@ export function applyEditsToNormalizedContent(
 	const initialMatches = normalizedEdits.map((edit) => fuzzyFindText(normalizedContent, edit.oldText));
 	const usedFuzzyMatch = initialMatches.some((match) => match.usedFuzzyMatch);
 	const replacementBaseContent = usedFuzzyMatch ? normalizeForFuzzyMatch(normalizedContent) : normalizedContent;
+	const replacementLineStarts = getLineStarts(replacementBaseContent);
 
 	const matchedEdits: MatchedEdit[] = [];
 	for (let i = 0; i < normalizedEdits.length; i++) {
 		const edit = normalizedEdits[i];
-		const matchResult = fuzzyFindText(replacementBaseContent, edit.oldText);
-		if (!matchResult.found) {
+		const matchText = usedFuzzyMatch ? normalizeForFuzzyMatch(edit.oldText) : edit.oldText;
+		const matchOffsets = findAllOccurrences(replacementBaseContent, matchText);
+		if (matchOffsets.length === 0) {
 			throw getNotFoundError(path, i, normalizedEdits.length);
 		}
 
-		const occurrences = countOccurrences(replacementBaseContent, edit.oldText);
-		if (occurrences > 1) {
-			throw getDuplicateError(path, i, normalizedEdits.length, occurrences);
+		if (matchOffsets.length > 1) {
+			throw getDuplicateError(path, i, matchOffsets, replacementLineStarts);
 		}
 
 		matchedEdits.push({
 			editIndex: i,
-			matchIndex: matchResult.index,
-			matchLength: matchResult.matchLength,
+			matchIndex: matchOffsets[0],
+			matchLength: matchText.length,
 			newText: edit.newText,
 		});
 	}

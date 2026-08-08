@@ -6,6 +6,7 @@ import { Markdown } from "../src/components/markdown.ts";
 import { resetCapabilitiesCache, setCapabilities } from "../src/terminal-image.ts";
 import type { Component, TUI } from "../src/tui.ts";
 import { TuiMainScreen } from "../src/tui-main-screen.ts";
+import { visibleWidth } from "../src/utils.ts";
 import { defaultMarkdownTheme } from "./test-themes.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
@@ -38,6 +39,52 @@ function stripAnsi(line: string): string {
 
 describe("Markdown component", () => {
 	describe("Transforms", () => {
+		it("reports timings for each width and cache hits without rerunning transforms", () => {
+			const profiles: Array<{
+				bytes: number;
+				width: number;
+				transformMs: number;
+				parseMs: number;
+				renderMs: number;
+				totalMs: number;
+				cached: boolean;
+			}> = [];
+			let transformCalls = 0;
+			const source = "# Render profile\n\nparagraph with **formatting**.";
+			const markdown = new Markdown(source, 0, 0, defaultMarkdownTheme, undefined, {
+				transform: (value) => {
+					transformCalls++;
+					return value;
+				},
+				profile: (profile) => profiles.push(profile),
+			});
+
+			for (const width of [40, 60, 80, 120]) {
+				markdown.render(width);
+				markdown.render(width);
+			}
+
+			assert.strictEqual(transformCalls, 4);
+			assert.strictEqual(profiles.length, 8);
+			for (let index = 0; index < profiles.length; index += 2) {
+				const initial = profiles[index];
+				const cached = profiles[index + 1];
+				assert.strictEqual(initial.width, [40, 60, 80, 120][index / 2]);
+				assert.strictEqual(initial.bytes, new TextEncoder().encode(source).byteLength);
+				assert.strictEqual(initial.cached, false);
+				assert.ok(initial.transformMs >= 0);
+				assert.ok(initial.parseMs >= 0);
+				assert.ok(initial.renderMs >= 0);
+				assert.ok(initial.totalMs >= 0);
+				assert.strictEqual(cached.width, initial.width);
+				assert.strictEqual(cached.cached, true);
+				assert.strictEqual(cached.transformMs, 0);
+				assert.strictEqual(cached.parseMs, 0);
+				assert.strictEqual(cached.renderMs, 0);
+				assert.ok(cached.totalMs >= 0);
+			}
+		});
+
 		it("caches transformed Markdown by source and available width", () => {
 			const calls: Array<{ source: string; availableWidth: number }> = [];
 			const markdown = new Markdown("source", 2, 0, defaultMarkdownTheme, undefined, {
@@ -659,6 +706,45 @@ describe("Markdown component", () => {
 				"",
 				`Expected table to end without a blank line: ${JSON.stringify(plainLines)}`,
 			);
+		});
+	});
+
+	describe("Narrow content", () => {
+		it("falls back from wide tables to a complete record view across resizes", () => {
+			const markdown = new Markdown(
+				`| C1 | C2 | C3 | C4 | C5 | C6 | C7 | C8 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| first | second | third | fourth | fifth | sixth | seventh | eighth |`,
+				0,
+				0,
+				defaultMarkdownTheme,
+			);
+
+			for (const width of [40, 60, 80]) {
+				const lines = markdown.render(width).map((line) => stripAnsi(line).trimEnd());
+				assert.ok(lines.every((line) => visibleWidth(line) <= width));
+				assert.ok(lines.every((line) => !line.startsWith("┌")));
+				assert.ok(lines.join("\n").includes("C1: first"));
+				assert.ok(lines.join("\n").includes("C8: eighth"));
+			}
+
+			const wideLines = markdown.render(120).map((line) => stripAnsi(line).trimEnd());
+			assert.ok(wideLines.every((line) => visibleWidth(line) <= 120));
+			assert.ok(wideLines.some((line) => line.startsWith("┌")));
+			assert.ok(wideLines.join("\n").includes("eighth"));
+		});
+
+		it("hard-wraps long unbroken strings at every supported terminal width", () => {
+			const longToken = "a".repeat(241);
+
+			for (const width of [40, 60, 80, 120]) {
+				const lines = new Markdown(longToken, 0, 0, defaultMarkdownTheme)
+					.render(width)
+					.map((line) => stripAnsi(line).trimEnd());
+				assert.ok(lines.length > 1, `Expected ${width}-column output to wrap`);
+				assert.ok(lines.every((line) => visibleWidth(line) <= width));
+				assert.strictEqual(lines.join(""), longToken);
+			}
 		});
 	});
 

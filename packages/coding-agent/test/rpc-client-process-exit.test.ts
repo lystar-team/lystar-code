@@ -1,6 +1,6 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { RpcClient } from "../src/modes/rpc/rpc-client.ts";
 
@@ -34,5 +34,27 @@ process.stdin.resume();
 		await client.start();
 
 		await expect(client.getCommands()).rejects.toThrow(/Agent process exited \(code=43 signal=null\)/);
+	});
+
+	test("passes commandArgs before RPC mode and client args", async () => {
+		const argsFile = join(mkdtempSync(join(tmpdir(), "pi-rpc-client-args-")), "args.json");
+		tempDirs.push(dirname(argsFile));
+		const client = new RpcClient({
+			command: process.execPath,
+			commandArgs: [
+				writeChildScript(`
+import { writeFileSync } from "node:fs";
+writeFileSync(process.env.ARGS_FILE, JSON.stringify(process.argv.slice(2)));
+setInterval(() => {}, 1000);
+`),
+				"--launcher-arg",
+			],
+			args: ["--no-session"],
+			env: { ARGS_FILE: argsFile },
+		});
+
+		await client.start();
+		expect(JSON.parse(readFileSync(argsFile, "utf8"))).toEqual(["--launcher-arg", "--mode", "rpc", "--no-session"]);
+		await client.stop();
 	});
 });

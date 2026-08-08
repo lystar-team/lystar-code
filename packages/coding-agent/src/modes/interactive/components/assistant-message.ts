@@ -8,6 +8,50 @@ import { createMarkdownTransform } from "./markdown-transform.ts";
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
+const CODE_BLOCK_LINE_LIMIT = 200;
+const CODE_BLOCK_HEAD_LINES = 20;
+const CODE_BLOCK_TAIL_LINES = 20;
+const LONG_MARKDOWN_CHARACTER_LIMIT = 16 * 1024;
+const LONG_MARKDOWN_HEAD_CHARACTERS = 2 * 1024;
+const LONG_MARKDOWN_TAIL_CHARACTERS = 1024;
+
+type MarkdownFence = { character: string; length: number; start: number };
+type MarkdownFenceRange = { start: number; end: number };
+
+function getMarkdownFenceRanges(markdown: string): MarkdownFenceRange[] {
+	const ranges: MarkdownFenceRange[] = [];
+	let fence: MarkdownFence | undefined;
+	let offset = 0;
+	for (const line of markdown.match(/.*(?:\n|$)/g) ?? []) {
+		if (!line) continue;
+		const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+		if (marker) {
+			if (!fence) {
+				fence = { character: marker[0], length: marker.length, start: offset };
+			} else if (marker[0] === fence.character && marker.length >= fence.length) {
+				ranges.push({ start: fence.start, end: offset + line.length });
+				fence = undefined;
+			}
+		}
+		offset += line.length;
+	}
+	if (fence) ranges.push({ start: fence.start, end: markdown.length });
+	return ranges;
+}
+
+function safeMarkdownOffset(target: number, fenceRanges: MarkdownFenceRange[]): number {
+	const fence = fenceRanges.find((range) => target >= range.start && target < range.end);
+	return fence?.end ?? target;
+}
+
+function collapseLongMarkdown(markdown: string): string {
+	if (markdown.length <= LONG_MARKDOWN_CHARACTER_LIMIT) return markdown;
+	const fenceRanges = getMarkdownFenceRanges(markdown);
+	const headEnd = safeMarkdownOffset(LONG_MARKDOWN_HEAD_CHARACTERS, fenceRanges);
+	const tailStart = safeMarkdownOffset(markdown.length - LONG_MARKDOWN_TAIL_CHARACTERS, fenceRanges);
+	if (headEnd >= tailStart) return markdown;
+	return `${markdown.slice(0, headEnd)}\n... 已省略 ${tailStart - headEnd} 个字符 ...\n${markdown.slice(tailStart)}`;
+}
 
 /**
  * Component that renders a complete assistant message
@@ -23,6 +67,9 @@ export class AssistantMessageComponent extends Container {
 	private hasToolCalls = false;
 	private renderVersion = 0;
 	private isStreaming = false;
+	private hasLongCodeBlock = false;
+	private hasLongMarkdown = false;
+	private contentExpanded = false;
 
 	constructor(
 		message?: AssistantMessage,
@@ -92,13 +139,52 @@ export class AssistantMessageComponent extends Container {
 		return this.renderVersion;
 	}
 
+	setExpanded(expanded: boolean): void {
+		if ((!this.hasLongCodeBlock && !this.hasLongMarkdown) || this.contentExpanded === expanded || !this.lastMessage) {
+			return;
+		}
+		this.contentExpanded = expanded;
+		this.updateContent(this.lastMessage);
+	}
+
 	updateContent(message: AssistantMessage, isStreaming = this.isStreaming): void {
 		this.renderVersion++;
 		this.lastMessage = message;
 		this.isStreaming = isStreaming;
+		this.hasLongCodeBlock =
+			!this.isStreaming &&
+			message.content.some((content) => {
+				const markdown =
+					content.type === "text" ? content.text : content.type === "thinking" ? content.thinking : "";
+				return Markdown.hasClosedCodeBlockOverLineLimit(markdown, CODE_BLOCK_LINE_LIMIT);
+			});
+		this.hasLongMarkdown =
+			!this.isStreaming &&
+			message.content.some((content) => {
+				const markdown =
+					content.type === "text" ? content.text : content.type === "thinking" ? content.thinking : "";
+				return markdown.length > LONG_MARKDOWN_CHARACTER_LIMIT;
+			});
+		if (!this.hasLongCodeBlock && !this.hasLongMarkdown) {
+			this.contentExpanded = false;
+		}
+		const codeBlockCollapse =
+			this.hasLongCodeBlock && !this.contentExpanded
+				? {
+						maxLines: CODE_BLOCK_LINE_LIMIT,
+						headLines: CODE_BLOCK_HEAD_LINES,
+						tailLines: CODE_BLOCK_TAIL_LINES,
+						omittedLine: (hiddenLineCount: number) => `... 已省略 ${hiddenLineCount} 行 ...`,
+					}
+				: undefined;
 
 		// Clear content container
 		this.contentContainer.clear();
+
+		const collapseMarkdown = (markdown: string): string => {
+			if (this.isStreaming || this.contentExpanded) return markdown;
+			return collapseLongMarkdown(markdown);
+		};
 
 		const hasVisibleContent = message.content.some(
 			(c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()),
@@ -112,11 +198,13 @@ export class AssistantMessageComponent extends Container {
 		for (let i = 0; i < message.content.length; i++) {
 			const content = message.content[i];
 			if (content.type === "text" && content.text.trim()) {
+				const markdown = collapseMarkdown(content.text.trim());
 				// Assistant text messages with no background - trim the text
 				// Set paddingY=0 to avoid extra spacing before tool executions
 				this.contentContainer.addChild(
-					new Markdown(content.text.trim(), this.outputPad, 0, this.markdownTheme, undefined, {
+					new Markdown(markdown, this.outputPad, 0, this.markdownTheme, undefined, {
 						transform: createMarkdownTransform("assistant", this.isStreaming, this.markdownTransformers),
+						codeBlockCollapse,
 					}),
 				);
 			} else if (content.type === "thinking") {
@@ -152,7 +240,7 @@ export class AssistantMessageComponent extends Container {
 					// Render each run of thinking blocks as one Markdown section.
 					this.contentContainer.addChild(
 						new Markdown(
-							thinkingBlocks.join("\n\n"),
+							collapseMarkdown(thinkingBlocks.join("\n\n")),
 							this.outputPad,
 							0,
 							this.markdownTheme,
@@ -166,6 +254,7 @@ export class AssistantMessageComponent extends Container {
 									this.isStreaming,
 									this.markdownTransformers,
 								),
+								codeBlockCollapse,
 							},
 						),
 					);

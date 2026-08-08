@@ -56,8 +56,29 @@ function themedLines(art: MermaidArt, theme: Theme): string[] {
 	return art.styled.map((row) => row.map((span) => styleSpan(span, theme)).join(""));
 }
 
+type MermaidRenderFailure = "unavailable" | "tooWide";
+
+const MAX_FAILED_RENDER_CACHE_ENTRIES = 64;
+
+function sourceFallback(
+	token: Token & { type: "code"; text: string; lang?: string },
+	failure: MermaidRenderFailure,
+	isStreaming: boolean,
+	theme?: Theme,
+): string {
+	if (failure === "unavailable" || isStreaming) {
+		return token.raw;
+	}
+
+	const warning = "Mermaid diagram not rendered: diagram exceeds current terminal width";
+	const styledWarning = theme ? theme.fg("warning", warning) : warning;
+	return `${token.raw}\n${codeSpan(styledWarning)}  \n`;
+}
+
 /** Create a transformer that replaces top-level Mermaid code blocks with Unicode terminal diagrams. */
 export function createMermaidMarkdownTransformer(options: MermaidTransformerOptions): MarkdownTransformer {
+	const failedRenderings = new Map<string, MermaidRenderFailure>();
+
 	return (markdown, context) => {
 		const mode = options.getMode();
 		if (
@@ -72,8 +93,32 @@ export function createMermaidMarkdownTransformer(options: MermaidTransformerOpti
 			.lexer(markdown)
 			.map((token) => {
 				if (!isMermaid(token)) return token.raw;
-				const art = render(token.text);
-				if (!art || art.width > context.availableWidth) return token.raw;
+
+				const cacheKey = `${context.availableWidth}\u0000${token.text}`;
+				const cachedFailure = failedRenderings.get(cacheKey);
+				if (cachedFailure) {
+					return sourceFallback(token, cachedFailure, context.isStreaming, options.theme);
+				}
+
+				let art: MermaidArt | null;
+				try {
+					art = render(token.text);
+				} catch {
+					art = null;
+				}
+
+				if (!art || art.width > context.availableWidth) {
+					const failure: MermaidRenderFailure = art ? "tooWide" : "unavailable";
+					if (failedRenderings.size === MAX_FAILED_RENDER_CACHE_ENTRIES) {
+						const oldestKey = failedRenderings.keys().next().value;
+						if (oldestKey !== undefined) {
+							failedRenderings.delete(oldestKey);
+						}
+					}
+					failedRenderings.set(cacheKey, failure);
+					return sourceFallback(token, failure, context.isStreaming, options.theme);
+				}
+
 				if (!context.isStreaming && art.warnings.length > 0) {
 					const suffix = art.warnings.length > 1 ? ` (+${art.warnings.length - 1} more)` : "";
 					const warning = `Mermaid diagram not rendered: ${art.warnings[0]}${suffix}`;

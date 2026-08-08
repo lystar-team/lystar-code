@@ -9,6 +9,7 @@ import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createBashTool } from "../src/core/tools/bash.ts";
+import { createApplyPatchToolDefinition } from "../src/extensions/apply-patch/index.ts";
 
 describe("AgentSession dynamic tool registration", () => {
 	let tempDir: string;
@@ -161,7 +162,36 @@ describe("AgentSession dynamic tool registration", () => {
 		expect(session.getActiveToolNames()).toContain("dynamic_tool");
 		expect(session.systemPrompt).toContain("- dynamic_tool: Run dynamic test behavior");
 		expect(session.systemPrompt).toContain("- Use dynamic_tool when the user asks for dynamic behavior tests.");
+		expect(session.systemPrompt).toContain(
+			"The apply_patch tool is unavailable. Use edit with unique oldText/newText replacements for file changes.",
+		);
 
+		session.dispose();
+	});
+
+	it("advertises apply_patch only while the compatibility extension is active", async () => {
+		const settingsManager = SettingsManager.create(tempDir, agentDir);
+		const sessionManager = SessionManager.inMemory();
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: tempDir,
+			agentDir,
+			settingsManager,
+			extensionFactories: [(pi) => pi.registerTool(createApplyPatchToolDefinition())],
+		});
+		await resourceLoader.reload();
+
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir,
+			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			settingsManager,
+			sessionManager,
+			resourceLoader,
+		});
+		await session.bindExtensions({});
+
+		expect(session.systemPrompt).toContain("- apply_patch: Apply a *** Begin Patch block");
+		expect(session.systemPrompt).not.toContain("The apply_patch tool is unavailable.");
 		session.dispose();
 	});
 

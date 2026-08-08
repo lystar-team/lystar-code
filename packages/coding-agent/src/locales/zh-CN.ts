@@ -63,6 +63,7 @@ export const zhCN = {
 	"command.name": "设置会话名称",
 	"command.session": "查看会话信息和统计",
 	"command.changes": "审阅本轮触及和工作区全部变更",
+	"command.agents": "查看和控制当前会话的 Subagent",
 	"command.changelog": "查看更新记录",
 	"command.hotkeys": "查看全部快捷键",
 	"command.fork": "从历史用户消息创建分支会话",

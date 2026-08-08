@@ -14,6 +14,11 @@ export interface ToolExecutionOptions {
 
 export type ToolExecutionStatus = "pending" | "running" | "success" | "error" | "cancelled";
 
+export interface ToolExecutionAgentTarget {
+	runId?: string;
+	agentId: string;
+}
+
 export class ToolExecutionComponent extends Container {
 	private contentBox: Box;
 	private contentText: Text;
@@ -45,6 +50,7 @@ export class ToolExecutionComponent extends Container {
 	private hideComponent = false;
 	private cancelled = false;
 	private renderVersion = 0;
+	private lastRenderedWidth = 0;
 
 	constructor(
 		toolName: string,
@@ -236,6 +242,45 @@ export class ToolExecutionComponent extends Container {
 		return row >= 0;
 	}
 
+	getAgentTargetAtRow(row: number): ToolExecutionAgentTarget | undefined {
+		if (this.toolName !== "subagent" || row < 0 || this.lastRenderedWidth <= 0) return undefined;
+		const details = this.result?.details as
+			| { runId?: unknown; results?: Array<{ agent?: unknown; agentId?: unknown }> }
+			| undefined;
+		if (!Array.isArray(details?.results)) return undefined;
+		const results = details.results;
+		const target = (index: number): ToolExecutionAgentTarget | undefined => {
+			const result = results[index];
+			if (!result) return undefined;
+			const agentId =
+				typeof result.agentId === "string"
+					? result.agentId
+					: `${typeof details.runId === "string" ? details.runId : this.toolCallId}:${index + 1}`;
+			return { runId: typeof details.runId === "string" ? details.runId : undefined, agentId };
+		};
+
+		const callLines = this.callRendererComponent?.render(this.lastRenderedWidth) ?? [];
+		if (row < callLines.length) {
+			if (Array.isArray(this.args?.tasks) || Array.isArray(this.args?.chain)) {
+				return row > 0 ? target(row - 1) : undefined;
+			}
+			return target(0);
+		}
+
+		const resultRow = row - callLines.length;
+		const resultLines = this.resultRendererComponent?.render(this.lastRenderedWidth) ?? [];
+		let searchStart = 0;
+		for (let index = 0; index < results.length; index++) {
+			const agent = results[index]?.agent;
+			if (typeof agent !== "string") continue;
+			const headerRow = resultLines.findIndex((line, lineIndex) => lineIndex >= searchStart && line.includes(agent));
+			if (headerRow < 0) continue;
+			if (headerRow === resultRow) return target(index);
+			searchStart = headerRow + 1;
+		}
+		return undefined;
+	}
+
 	getRenderVersion(): number {
 		return this.renderVersion;
 	}
@@ -262,6 +307,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	override render(width: number): string[] {
+		this.lastRenderedWidth = width;
 		if (this.hideComponent) {
 			return [];
 		}

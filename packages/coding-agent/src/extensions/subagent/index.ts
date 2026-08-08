@@ -9,10 +9,10 @@
  *   - Parallel: { tasks: [{ agent: "name", task: "..." }, ...] }
  *   - Chain: { chain: [{ agent: "name", task: "... {previous} ..." }, ...] }
  *
- * Uses JSON mode to capture structured output from subagents.
+ * Uses RPC mode to retain structured output and a controllable subagent session.
  */
 
-import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -25,6 +25,8 @@ import { CONFIG_DIR_NAME, getAgentDir } from "../../config.ts";
 import type { ExtensionAPI } from "../../core/extensions/types.ts";
 import { withFileMutationQueue } from "../../core/tools/file-mutation-queue.ts";
 import { getMarkdownTheme } from "../../modes/interactive/theme/theme.ts";
+import type { JsonAgentSessionEvent } from "../../modes/json-event.ts";
+import { RpcClient } from "../../modes/rpc/rpc-client.ts";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 
 const MAX_PARALLEL_TASKS = 8;
@@ -133,6 +135,14 @@ function formatToolCall(
 	}
 }
 
+export type AgentRunState = "queued" | "running" | "waiting" | "succeeded" | "failed" | "cancelled";
+
+export interface SubagentEventSummary {
+	type: string;
+	at: number;
+	text?: string;
+}
+
 interface UsageStats {
 	input: number;
 	output: number;
@@ -143,7 +153,7 @@ interface UsageStats {
 	turns: number;
 }
 
-interface SingleResult {
+export interface SingleResult {
 	agent: string;
 	agentSource: "builtin" | "user" | "project" | "unknown";
 	task: string;
@@ -155,16 +165,40 @@ interface SingleResult {
 	stopReason?: string;
 	errorMessage?: string;
 	step?: number;
+	runId?: string;
+	agentId?: string;
+	state?: AgentRunState;
+	currentAction?: string;
+	startedAt?: number;
+	updatedAt?: number;
+	elapsedMs?: number;
+	events?: SubagentEventSummary[];
 }
 
-interface SubagentDetails {
+export interface SubagentDetails {
 	mode: "single" | "parallel" | "chain";
 	agentScope: AgentScope;
 	projectAgentsDir: string | null;
+	runId?: string;
 	results: SingleResult[];
 }
 
-function getFinalOutput(messages: Message[]): string {
+/** A read-only value snapshot of a direct subagent in the current extension instance. */
+export interface SubagentRunSnapshot {
+	runId: string;
+	agentId: string;
+	agent: string;
+	task: string;
+	state: AgentRunState;
+	currentAction?: string;
+	startedAt: number;
+	updatedAt: number;
+	elapsedMs: number;
+	events: SubagentEventSummary[];
+	controllable: boolean;
+}
+
+export function getFinalOutput(messages: readonly Message[]): string {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i];
 		if (msg.role === "assistant") {
@@ -177,7 +211,13 @@ function getFinalOutput(messages: Message[]): string {
 }
 
 function isFailedResult(result: SingleResult): boolean {
-	return result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+	return (
+		result.exitCode !== 0 ||
+		result.stopReason === "error" ||
+		result.stopReason === "aborted" ||
+		result.state === "failed" ||
+		result.state === "cancelled"
+	);
 }
 
 function getResultOutput(result: SingleResult): string {
@@ -243,23 +283,387 @@ async function writePromptToTempFile(agentName: string, prompt: string): Promise
 	return { dir: tmpDir, filePath };
 }
 
-function getPiInvocation(args: string[]): { command: string; args: string[] } {
+function getPiInvocation(): { command: string; commandArgs: string[] } {
 	const currentScript = process.argv[1];
 	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
 	if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
-		return { command: process.execPath, args: [currentScript, ...args] };
+		return { command: process.execPath, commandArgs: [currentScript] };
 	}
 
 	const execName = path.basename(process.execPath).toLowerCase();
 	const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
 	if (!isGenericRuntime) {
-		return { command: process.execPath, args };
+		return { command: process.execPath, commandArgs: [] };
 	}
 
-	return { command: "pi", args };
+	return { command: "pi", commandArgs: [] };
 }
 
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
+
+type SubagentWireEvent = JsonAgentSessionEvent | { type: "tool_result_end"; message: Message };
+
+export const SUBAGENT_RETENTION_MS = 60_000;
+
+export interface SubagentRunControllerOptions {
+	runId: string;
+	agentId: string;
+	agent: AgentConfig;
+	task: string;
+	cwd: string;
+	args: string[];
+	command: string;
+	commandArgs: string[];
+	step?: number;
+	onUpdate?: () => void;
+	onDisposed?: () => void;
+	cleanup?: () => Promise<void>;
+}
+
+export class SubagentRunController {
+	readonly result: SingleResult;
+	private readonly client: RpcClient;
+	private readonly options: SubagentRunControllerOptions;
+	private settledPromise: Promise<SingleResult> | null = null;
+	private settleResolve: ((result: SingleResult) => void) | null = null;
+	private settleReject: ((error: Error) => void) | null = null;
+	private retentionTimer: NodeJS.Timeout | null = null;
+	private updateTimer: NodeJS.Timeout | null = null;
+	private unsubscribeEvent: (() => void) | null = null;
+	private unsubscribeExit: (() => void) | null = null;
+	private removeAbortListener: (() => void) | null = null;
+	private disposed = false;
+	private started = false;
+
+	constructor(options: SubagentRunControllerOptions) {
+		this.options = options;
+		const now = Date.now();
+		this.result = {
+			agent: options.agent.name,
+			agentSource: options.agent.source,
+			task: options.task,
+			exitCode: -1,
+			messages: [],
+			stderr: "",
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+			model: options.agent.model,
+			step: options.step,
+			runId: options.runId,
+			agentId: options.agentId,
+			state: "queued",
+			startedAt: now,
+			updatedAt: now,
+			events: [],
+		};
+		this.client = new RpcClient({
+			command: options.command,
+			commandArgs: options.commandArgs,
+			cwd: options.cwd,
+			args: options.args,
+		});
+	}
+
+	get controllable(): boolean {
+		return !this.disposed;
+	}
+
+	get snapshot(): SubagentRunSnapshot {
+		const result = this.result;
+		return {
+			runId: result.runId ?? this.options.runId,
+			agentId: result.agentId ?? this.options.agentId,
+			agent: result.agent,
+			task: result.task,
+			state: result.state ?? "queued",
+			currentAction: result.currentAction,
+			startedAt: result.startedAt ?? 0,
+			updatedAt: result.updatedAt ?? 0,
+			elapsedMs: result.elapsedMs ?? 0,
+			events: (result.events ?? []).map((event) => ({ ...event })),
+			controllable: this.controllable,
+		};
+	}
+
+	async start(signal?: AbortSignal): Promise<SingleResult> {
+		if (this.started) throw new Error("Subagent controller already started");
+		this.started = true;
+		this.unsubscribeEvent = this.client.onEvent((event) => this.handleEvent(event));
+		this.unsubscribeExit = this.client.onExit((error) => this.fail(error));
+		this.bindAbortSignal(signal);
+
+		try {
+			await this.client.start();
+			const settled = this.waitForSettled();
+			await this.client.prompt(this.options.task);
+			return await settled;
+		} catch (error) {
+			this.fail(error instanceof Error ? error : new Error(String(error)));
+			return this.result;
+		}
+	}
+
+	async steer(message: string): Promise<void> {
+		this.assertAvailable();
+		if (!this.isActive())
+			throw new Error(`Subagent "${this.options.agentId}" has already settled; use follow-up instead.`);
+		await this.client.steer(message);
+		this.updateState("running", "steer");
+	}
+
+	async followUp(message: string): Promise<SingleResult> {
+		this.assertAvailable();
+		if (this.isActive()) throw new Error(`Subagent "${this.options.agentId}" is still active; use steer instead.`);
+		this.clearRetention();
+		const settled = this.waitForSettled();
+		this.updateState("running", "follow_up");
+		try {
+			await this.client.followUp(message);
+			return await settled;
+		} catch (error) {
+			this.fail(error instanceof Error ? error : new Error(String(error)));
+			return this.result;
+		}
+	}
+
+	async abort(): Promise<void> {
+		this.assertAvailable();
+		if (!this.isActive()) throw new Error(`Subagent "${this.options.agentId}" has already settled.`);
+		this.clearRetention();
+		this.updateState("cancelled", "abort");
+		try {
+			const settled = this.waitForSettled();
+			await this.client.abort();
+			await Promise.race([settled, new Promise((resolve) => setTimeout(resolve, 2000))]);
+		} finally {
+			await this.dispose();
+		}
+	}
+
+	async dispose(): Promise<void> {
+		if (this.disposed) return;
+		this.disposed = true;
+		this.clearRetention();
+		this.clearScheduledUpdate();
+		this.removeAbortListener?.();
+		this.removeAbortListener = null;
+		this.unsubscribeEvent?.();
+		this.unsubscribeEvent = null;
+		this.unsubscribeExit?.();
+		this.unsubscribeExit = null;
+		await this.client.stop();
+		this.result.stderr = this.client.getStderr();
+		await this.options.cleanup?.();
+		this.options.onDisposed?.();
+	}
+
+	private assertAvailable(): void {
+		if (this.disposed) throw new Error(`Subagent "${this.options.agentId}" is no longer available.`);
+	}
+
+	private isActive(): boolean {
+		const state = this.result.state ?? "queued";
+		return state === "queued" || state === "running" || state === "waiting";
+	}
+
+	private bindAbortSignal(signal?: AbortSignal): void {
+		if (!signal) return;
+		const onAbort = () => void this.abort();
+		if (signal.aborted) onAbort();
+		else {
+			signal.addEventListener("abort", onAbort, { once: true });
+			this.removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+		}
+	}
+
+	private waitForSettled(): Promise<SingleResult> {
+		if (this.settledPromise) return this.settledPromise;
+		this.settledPromise = new Promise<SingleResult>((resolve, reject) => {
+			this.settleResolve = resolve;
+			this.settleReject = reject;
+		});
+		return this.settledPromise;
+	}
+
+	private handleEvent(event: SubagentWireEvent): void {
+		switch (event.type) {
+			case "agent_start":
+				this.updateState("running", "agent_started");
+				break;
+			case "message_end":
+				this.recordMessage(event.message as Message);
+				break;
+			case "tool_result_end":
+				this.recordMessage(event.message);
+				break;
+			case "tool_execution_start":
+				this.result.currentAction = event.toolName;
+				this.updateState("running", `tool:${event.toolName}`);
+				break;
+			case "tool_execution_end":
+				this.result.currentAction = undefined;
+				this.updateState("running", `tool_finished:${event.toolName}`);
+				break;
+			case "queue_update":
+				this.updateState(event.steering.length + event.followUp.length > 0 ? "waiting" : "running", "queue_update");
+				break;
+			case "agent_end":
+				if (event.willRetry) this.updateState("waiting", "retrying");
+				break;
+			case "agent_settled":
+				this.settle();
+				break;
+		}
+	}
+
+	private recordMessage(message: Message): void {
+		this.result.messages.push(message);
+		if (message.role === "assistant") {
+			this.result.usage.turns++;
+			const usage = message.usage;
+			if (usage) {
+				this.result.usage.input += usage.input || 0;
+				this.result.usage.output += usage.output || 0;
+				this.result.usage.cacheRead += usage.cacheRead || 0;
+				this.result.usage.cacheWrite += usage.cacheWrite || 0;
+				this.result.usage.cost += usage.cost?.total || 0;
+				this.result.usage.contextTokens = usage.totalTokens || 0;
+			}
+			if (!this.result.model && message.model) this.result.model = message.model;
+			if (message.stopReason) this.result.stopReason = message.stopReason;
+			if (message.errorMessage) this.result.errorMessage = message.errorMessage;
+		}
+		this.updateState(this.result.state ?? "running", "message_end");
+	}
+
+	private settle(): void {
+		const state: AgentRunState =
+			this.result.state === "cancelled" || this.result.stopReason === "aborted"
+				? "cancelled"
+				: this.result.stopReason === "error"
+					? "failed"
+					: "succeeded";
+		this.result.exitCode = state === "succeeded" ? 0 : 1;
+		this.updateState(state, "agent_settled");
+		this.flushUpdate();
+		this.settleResolve?.(this.result);
+		this.settledPromise = null;
+		this.settleResolve = null;
+		this.settleReject = null;
+		this.removeAbortListener?.();
+		this.removeAbortListener = null;
+		this.scheduleRetention();
+	}
+
+	private fail(error: Error): void {
+		if (this.disposed) return;
+		this.result.exitCode = 1;
+		this.result.errorMessage = error.message;
+		this.result.stderr = this.client.getStderr();
+		this.updateState("failed", "process_exit");
+		this.flushUpdate();
+		this.settleReject?.(error);
+		this.settledPromise = null;
+		this.settleResolve = null;
+		this.settleReject = null;
+		void this.dispose();
+	}
+
+	private updateState(state: AgentRunState, eventType: string): void {
+		const now = Date.now();
+		this.result.state = state;
+		this.result.updatedAt = now;
+		this.result.elapsedMs = now - (this.result.startedAt ?? now);
+		let events = this.result.events;
+		if (!events) {
+			events = [];
+			this.result.events = events;
+		}
+		events.push({ type: eventType, at: now, text: this.result.currentAction });
+		if (events.length > 20) events.splice(0, events.length - 20);
+		this.scheduleUpdate();
+	}
+
+	private scheduleUpdate(): void {
+		if (this.updateTimer || !this.options.onUpdate) return;
+		this.updateTimer = setTimeout(() => {
+			this.updateTimer = null;
+			if (!this.disposed) this.options.onUpdate?.();
+		}, 16);
+		this.updateTimer.unref();
+	}
+
+	private flushUpdate(): void {
+		if (!this.options.onUpdate) return;
+		this.clearScheduledUpdate();
+		this.options.onUpdate();
+	}
+
+	private clearScheduledUpdate(): void {
+		if (this.updateTimer) clearTimeout(this.updateTimer);
+		this.updateTimer = null;
+	}
+
+	private scheduleRetention(): void {
+		this.clearRetention();
+		this.retentionTimer = setTimeout(() => void this.dispose(), SUBAGENT_RETENTION_MS);
+	}
+
+	private clearRetention(): void {
+		if (this.retentionTimer) clearTimeout(this.retentionTimer);
+		this.retentionTimer = null;
+	}
+}
+
+class SubagentRunRegistry {
+	private readonly controllers = new Map<string, SubagentRunController>();
+
+	add(controller: SubagentRunController): void {
+		this.controllers.set(controller.result.agentId!, controller);
+	}
+
+	get(agentId: string): SubagentRunController | undefined {
+		return this.controllers.get(agentId);
+	}
+
+	snapshots(): SubagentRunSnapshot[] {
+		return [...this.controllers.values()].map((controller) => controller.snapshot);
+	}
+
+	remove(agentId: string): void {
+		this.controllers.delete(agentId);
+	}
+
+	async disposeAll(): Promise<void> {
+		await Promise.all([...this.controllers.values()].map((controller) => controller.dispose()));
+		this.controllers.clear();
+	}
+}
+
+let currentSubagentRunRegistry: SubagentRunRegistry | null = null;
+
+function getCurrentSubagentController(agentId: string): SubagentRunController {
+	if (!currentSubagentRunRegistry) throw new Error("No active subagent registry.");
+	const controller = currentSubagentRunRegistry.get(agentId);
+	if (!controller) throw new Error(`Subagent "${agentId}" is no longer available.`);
+	return controller;
+}
+
+/** Returns copied snapshots so callers cannot mutate the live run registry. */
+export function getCurrentSubagentRuns(): SubagentRunSnapshot[] {
+	return currentSubagentRunRegistry?.snapshots() ?? [];
+}
+
+export async function steerSubagent(agentId: string, message: string): Promise<void> {
+	await getCurrentSubagentController(agentId).steer(message);
+}
+
+export async function followUpSubagent(agentId: string, message: string): Promise<SingleResult> {
+	return await getCurrentSubagentController(agentId).followUp(message);
+}
+
+export async function abortSubagent(agentId: string): Promise<void> {
+	await getCurrentSubagentController(agentId).abort();
+}
 
 async function runSingleAgent(
 	defaultCwd: string,
@@ -271,11 +675,14 @@ async function runSingleAgent(
 	signal: AbortSignal | undefined,
 	onUpdate: OnUpdateCallback | undefined,
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
+	registry: SubagentRunRegistry,
+	runId: string,
+	agentId: string,
 ): Promise<SingleResult> {
-	const agent = agents.find((a) => a.name === agentName);
+	const agent = agents.find((candidate) => candidate.name === agentName);
 
 	if (!agent) {
-		const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
+		const available = agents.map((candidate) => `"${candidate.name}"`).join(", ") || "none";
 		return {
 			agent: agentName,
 			agentSource: "unknown",
@@ -285,154 +692,48 @@ async function runSingleAgent(
 			stderr: `Unknown agent: "${agentName}". Available agents: ${available}.`,
 			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
 			step,
+			runId,
+			agentId,
+			state: "failed",
+			updatedAt: Date.now(),
 		};
 	}
 
-	const args: string[] = ["--mode", "json", "-p", "--no-session", "--no-extensions", "--exclude-tools", "subagent"];
+	const args = ["--no-session", "--no-extensions", "--exclude-tools", "subagent"];
 	if (agent.model) args.push("--model", agent.model);
 	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
-	let tmpPromptDir: string | null = null;
-	let tmpPromptPath: string | null = null;
-
-	const currentResult: SingleResult = {
-		agent: agentName,
-		agentSource: agent.source,
-		task,
-		exitCode: 0,
-		messages: [],
-		stderr: "",
-		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-		model: agent.model,
-		step,
-	};
-
-	const emitUpdate = () => {
-		if (onUpdate) {
-			onUpdate({
-				content: [{ type: "text", text: getFinalOutput(currentResult.messages) || "(running...)" }],
-				details: makeDetails([currentResult]),
-			});
-		}
-	};
-
-	try {
-		if (agent.systemPrompt.trim()) {
-			const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
-			tmpPromptDir = tmp.dir;
-			tmpPromptPath = tmp.filePath;
-			args.push("--append-system-prompt", tmpPromptPath);
-		}
-
-		args.push(`Task: ${task}`);
-		let wasAborted = false;
-
-		const exitCode = await new Promise<number>((resolve) => {
-			const invocation = getPiInvocation(args);
-			const proc = spawn(invocation.command, invocation.args, {
-				cwd: cwd ?? defaultCwd,
-				detached: process.platform !== "win32",
-				shell: false,
-				stdio: ["ignore", "pipe", "pipe"],
-			});
-			let buffer = "";
-
-			const processLine = (line: string) => {
-				if (!line.trim()) return;
-				let event: any;
-				try {
-					event = JSON.parse(line);
-				} catch {
-					return;
-				}
-
-				if (event.type === "message_end" && event.message) {
-					const msg = event.message as Message;
-					currentResult.messages.push(msg);
-
-					if (msg.role === "assistant") {
-						currentResult.usage.turns++;
-						const usage = msg.usage;
-						if (usage) {
-							currentResult.usage.input += usage.input || 0;
-							currentResult.usage.output += usage.output || 0;
-							currentResult.usage.cacheRead += usage.cacheRead || 0;
-							currentResult.usage.cacheWrite += usage.cacheWrite || 0;
-							currentResult.usage.cost += usage.cost?.total || 0;
-							currentResult.usage.contextTokens = usage.totalTokens || 0;
-						}
-						if (!currentResult.model && msg.model) currentResult.model = msg.model;
-						if (msg.stopReason) currentResult.stopReason = msg.stopReason;
-						if (msg.errorMessage) currentResult.errorMessage = msg.errorMessage;
-					}
-					emitUpdate();
-				}
-
-				if (event.type === "tool_result_end" && event.message) {
-					currentResult.messages.push(event.message as Message);
-					emitUpdate();
-				}
-			};
-
-			proc.stdout.on("data", (data) => {
-				buffer += data.toString();
-				const lines = buffer.split("\n");
-				buffer = lines.pop() || "";
-				for (const line of lines) processLine(line);
-			});
-
-			proc.stderr.on("data", (data) => {
-				currentResult.stderr += data.toString();
-			});
-
-			proc.on("close", (code) => {
-				if (buffer.trim()) processLine(buffer);
-				resolve(code ?? 0);
-			});
-
-			proc.on("error", () => {
-				resolve(1);
-			});
-
-			if (signal) {
-				const killProcessTree = (killSignal: NodeJS.Signals) => {
-					if (process.platform !== "win32" && proc.pid) {
-						try {
-							process.kill(-proc.pid, killSignal);
-							return;
-						} catch {
-							// 进程组已退出时退回到子进程本身。
-						}
-					}
-					proc.kill(killSignal);
-				};
-				const killProc = () => {
-					wasAborted = true;
-					killProcessTree("SIGTERM");
-					setTimeout(() => killProcessTree("SIGKILL"), 5000).unref();
-				};
-				if (signal.aborted) killProc();
-				else signal.addEventListener("abort", killProc, { once: true });
-			}
-		});
-
-		currentResult.exitCode = exitCode;
-		if (wasAborted) throw new Error("Subagent was aborted");
-		return currentResult;
-	} finally {
-		if (tmpPromptPath)
-			try {
-				fs.unlinkSync(tmpPromptPath);
-			} catch {
-				/* ignore */
-			}
-		if (tmpPromptDir)
-			try {
-				fs.rmdirSync(tmpPromptDir);
-			} catch {
-				/* ignore */
-			}
+	let temporaryPrompt: { dir: string; filePath: string } | undefined;
+	if (agent.systemPrompt.trim()) {
+		temporaryPrompt = await writePromptToTempFile(agent.name, agent.systemPrompt);
+		args.push("--append-system-prompt", temporaryPrompt.filePath);
 	}
+
+	const invocation = getPiInvocation();
+	let controller: SubagentRunController;
+	controller = new SubagentRunController({
+		runId,
+		agentId,
+		agent,
+		task,
+		cwd: cwd ?? defaultCwd,
+		args,
+		command: invocation.command,
+		commandArgs: invocation.commandArgs,
+		step,
+		onUpdate: () => {
+			onUpdate?.({
+				content: [{ type: "text", text: getFinalOutput(controller.result.messages) || "(running...)" }],
+				details: makeDetails([controller.result]),
+			});
+		},
+		onDisposed: () => registry.remove(agentId),
+		cleanup: async () => {
+			if (temporaryPrompt) await fs.promises.rm(temporaryPrompt.dir, { recursive: true, force: true });
+		},
+	});
+	registry.add(controller);
+	return controller.start(signal);
 }
 
 const TaskItem = Type.Object({
@@ -465,6 +766,15 @@ const SubagentParams = Type.Object({
 });
 
 export default function (pi: ExtensionAPI) {
+	const registry = new SubagentRunRegistry();
+	currentSubagentRunRegistry = registry;
+	const disposeRegistry = async () => {
+		await registry.disposeAll();
+		if (currentSubagentRunRegistry === registry) currentSubagentRunRegistry = null;
+	};
+	pi.on("session_before_switch", disposeRegistry);
+	pi.on("session_shutdown", disposeRegistry);
+
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
@@ -509,6 +819,7 @@ export default function (pi: ExtensionAPI) {
 			const hasTasks = (params.tasks?.length ?? 0) > 0;
 			const hasSingle = Boolean(params.agent && params.task);
 			const modeCount = Number(hasChain) + Number(hasTasks) + Number(hasSingle);
+			const runId = randomUUID();
 
 			const makeDetails =
 				(mode: "single" | "parallel" | "chain") =>
@@ -516,6 +827,7 @@ export default function (pi: ExtensionAPI) {
 					mode,
 					agentScope,
 					projectAgentsDir: discovery.projectAgentsDir,
+					runId,
 					results,
 				});
 
@@ -590,6 +902,9 @@ export default function (pi: ExtensionAPI) {
 						signal,
 						chainUpdate,
 						makeDetails("chain"),
+						registry,
+						runId,
+						`${runId}:${i + 1}`,
 					);
 					results.push(result);
 
@@ -640,6 +955,10 @@ export default function (pi: ExtensionAPI) {
 						messages: [],
 						stderr: "",
 						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+						runId,
+						agentId: `${runId}:${i + 1}`,
+						state: "queued",
+						updatedAt: Date.now(),
 					};
 				}
 
@@ -673,6 +992,9 @@ export default function (pi: ExtensionAPI) {
 							}
 						},
 						makeDetails("parallel"),
+						registry,
+						runId,
+						`${runId}:${index + 1}`,
 					);
 					allResults[index] = result;
 					emitParallelUpdate();
@@ -709,6 +1031,9 @@ export default function (pi: ExtensionAPI) {
 					signal,
 					onUpdate,
 					makeDetails("single"),
+					registry,
+					runId,
+					`${runId}:1`,
 				);
 				const isError = isFailedResult(result);
 				if (isError) {

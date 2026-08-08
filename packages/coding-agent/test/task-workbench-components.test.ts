@@ -6,10 +6,15 @@ import { Container, setKeybindings } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { ChangesSelectorComponent } from "../src/modes/interactive/components/changes-selector.ts";
-import { formatTurnSummary, TurnSummaryComponent } from "../src/modes/interactive/components/turn-summary.ts";
+import {
+	formatTurnSummary,
+	resolveTurnOutcome,
+	TurnSummaryComponent,
+} from "../src/modes/interactive/components/turn-summary.ts";
 import { WorkspaceActivityBar } from "../src/modes/interactive/components/workspace-activity-bar.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { uiGlyphs } from "../src/modes/interactive/ui-glyphs.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
 describe("task workbench components", () => {
@@ -42,10 +47,12 @@ describe("task workbench components", () => {
 		expect(bar.render(80)).toEqual([]);
 	});
 
-	it("formats successful, failed and cancelled turn summaries from facts", () => {
+	it("formats all final turn outcomes from facts", () => {
 		const base = {
 			startedAt: 0,
 			endedAt: 134_000,
+			outcome: "completed" as const,
+			toolErrors: 1,
 			totalTools: 6,
 			successfulTools: 5,
 			failedTools: 1,
@@ -61,14 +68,33 @@ describe("task workbench components", () => {
 			compacted: false,
 			cancelled: false,
 		};
-		expect(formatTurnSummary(base)).toBe("完成但有问题 · 修改 2 个文件 · +6/-1 · 命令 1/2 · 2m14s");
-		expect(formatTurnSummary({ ...base, cancelled: true, successfulTools: 3 })).toContain("已取消 · 完成 3/6 个操作");
+		expect(formatTurnSummary(base)).toBe("完成 · 修改 2 个文件 · +6/-1 · 命令 1/2 · 2m14s");
+		expect(formatTurnSummary({ ...base, outcome: "failed" })).toBe(
+			"执行失败 · 5 个操作成功 · 1 个操作未完成 · 修改 2 个文件 · +6/-1 · 命令 1/2 · 2m14s",
+		);
+		expect(formatTurnSummary({ ...base, outcome: "incomplete" })).toBe(
+			"未完成 · 修改 2 个文件 · +6/-1 · 命令 1/2 · 2m14s",
+		);
+		expect(formatTurnSummary({ ...base, outcome: "cancelled", successfulTools: 3 })).toBe(
+			"已取消 · 完成 3/6 个操作 · 修改 2 个文件 · +6/-1 · 命令 1/2 · 2m14s",
+		);
 	});
 
-	it("expands a turn summary without copying full tool output", () => {
+	it("derives final outcomes from settlement facts instead of historical tool errors", () => {
+		expect(resolveTurnOutcome({ cancelled: false, stopReason: "stop", hasUnfinishedTools: false })).toBe("completed");
+		expect(resolveTurnOutcome({ cancelled: false, stopReason: "error", hasUnfinishedTools: false })).toBe("failed");
+		expect(resolveTurnOutcome({ cancelled: false, stopReason: "toolUse", hasUnfinishedTools: true })).toBe(
+			"incomplete",
+		);
+		expect(resolveTurnOutcome({ cancelled: true, stopReason: "stop", hasUnfinishedTools: false })).toBe("cancelled");
+	});
+
+	it("keeps a completed summary successful while exposing recovered tool errors when expanded", () => {
 		const summary = new TurnSummaryComponent({
 			startedAt: 0,
 			endedAt: 10_000,
+			outcome: "completed",
+			toolErrors: 1,
 			totalTools: 2,
 			successfulTools: 1,
 			failedTools: 1,
@@ -81,9 +107,12 @@ describe("task workbench components", () => {
 			compacted: false,
 			cancelled: false,
 		});
-		expect(stripAnsi(summary.render(80).join("\n"))).not.toContain("Command exited with code 1");
+		const collapsed = stripAnsi(summary.render(80).join("\n"));
+		expect(collapsed).toContain(`${uiGlyphs.success} 完成`);
+		expect(collapsed).not.toContain("Command exited with code 1");
 		summary.setExpanded(true);
 		const expanded = stripAnsi(summary.render(80).join("\n"));
+		expect(expanded).toContain("过程中有 1 次 Tool 调用失败，Agent 已继续处理");
 		expect(expanded).toContain("src/index.ts");
 		expect(expanded).toContain("bash npm test：Command exited with code 1");
 		expect(expanded).toContain("发生过重试");

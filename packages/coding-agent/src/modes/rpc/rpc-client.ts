@@ -28,6 +28,10 @@ type RpcCommandBody = DistributiveOmit<RpcCommand, "id">;
 export interface RpcClientOptions {
 	/** Path to the CLI entry point (default: searches for dist/cli.js) */
 	cliPath?: string;
+	/** Executable command (default: node) */
+	command?: string;
+	/** Arguments before RPC mode and client arguments (default: [cliPath]) */
+	commandArgs?: string[];
 	/** Working directory for the agent */
 	cwd?: string;
 	/** Environment variables */
@@ -48,6 +52,7 @@ export interface ModelInfo {
 }
 
 export type RpcEventListener = (event: JsonAgentSessionEvent) => void;
+export type RpcExitListener = (error: Error) => void;
 
 // ============================================================================
 // RPC Client
@@ -57,6 +62,8 @@ export class RpcClient {
 	private process: ChildProcess | null = null;
 	private stopReadingStdout: (() => void) | null = null;
 	private eventListeners: RpcEventListener[] = [];
+	private exitListeners: RpcExitListener[] = [];
+	private stoppingProcess: ChildProcess | null = null;
 	private pendingRequests: Map<string, { resolve: (response: RpcResponse) => void; reject: (error: Error) => void }> =
 		new Map();
 	private requestId = 0;
@@ -77,8 +84,11 @@ export class RpcClient {
 		}
 
 		this.exitError = null;
+		this.stderr = "";
 
 		const cliPath = this.options.cliPath ?? "dist/cli.js";
+		const command = this.options.command ?? "node";
+		const commandArgs = this.options.commandArgs ?? [cliPath];
 		const args = ["--mode", "rpc"];
 
 		if (this.options.provider) {
@@ -91,10 +101,12 @@ export class RpcClient {
 			args.push(...this.options.args);
 		}
 
-		const childProcess = spawn("node", [cliPath, ...args], {
+		const childProcess = spawn(command, [...commandArgs, ...args], {
 			cwd: this.options.cwd,
 			env: { ...process.env, ...this.options.env },
 			stdio: ["pipe", "pipe", "pipe"],
+			detached: process.platform !== "win32",
+			windowsHide: true,
 		});
 		this.process = childProcess;
 
@@ -105,23 +117,19 @@ export class RpcClient {
 		});
 
 		childProcess.once("exit", (code, signal) => {
-			if (this.process !== childProcess) return;
-			const error = this.createProcessExitError(code, signal);
-			this.exitError = error;
-			this.rejectPendingRequests(error);
+			this.handleProcessFailure(childProcess, this.createProcessExitError(code, signal));
 		});
 		childProcess.once("error", (error) => {
-			if (this.process !== childProcess) return;
-			const processError = new Error(`Agent process error: ${error.message}. Stderr: ${this.stderr}`);
-			this.exitError = processError;
-			this.rejectPendingRequests(processError);
+			this.handleProcessFailure(
+				childProcess,
+				new Error(`Agent process error: ${error.message}. Stderr: ${this.stderr}`),
+			);
 		});
 		childProcess.stdin?.on("error", (error) => {
-			if (this.process !== childProcess) return;
-			const stdinError =
-				this.exitError ?? new Error(`Agent process stdin error: ${error.message}. Stderr: ${this.stderr}`);
-			this.exitError = stdinError;
-			this.rejectPendingRequests(stdinError);
+			this.handleProcessFailure(
+				childProcess,
+				this.exitError ?? new Error(`Agent process stdin error: ${error.message}. Stderr: ${this.stderr}`),
+			);
 		});
 
 		// Set up strict JSONL reader for stdout.
@@ -132,6 +140,7 @@ export class RpcClient {
 		// Wait a moment for process to initialize
 		await new Promise((resolve) => setTimeout(resolve, 100));
 
+		if (this.exitError) throw this.exitError;
 		if (this.process.exitCode !== null) {
 			const error = this.exitError ?? this.createProcessExitError(this.process.exitCode, this.process.signalCode);
 			this.exitError = error;
@@ -143,27 +152,33 @@ export class RpcClient {
 	 * Stop the RPC agent process.
 	 */
 	async stop(): Promise<void> {
-		if (!this.process) return;
+		const childProcess = this.process;
+		if (!childProcess) return;
 
 		this.stopReadingStdout?.();
 		this.stopReadingStdout = null;
-		this.process.kill("SIGTERM");
+		this.stoppingProcess = childProcess;
+		this.rejectPendingRequests(new Error("Agent process stopped"));
 
-		// Wait for process to exit
-		await new Promise<void>((resolve) => {
-			const timeout = setTimeout(() => {
-				this.process?.kill("SIGKILL");
-				resolve();
-			}, 1000);
-
-			this.process?.on("exit", () => {
-				clearTimeout(timeout);
-				resolve();
+		if (childProcess.exitCode === null) {
+			await new Promise<void>((resolve) => {
+				let forceTimeout: NodeJS.Timeout | undefined;
+				const finish = () => {
+					clearTimeout(gracefulTimeout);
+					if (forceTimeout) clearTimeout(forceTimeout);
+					resolve();
+				};
+				const gracefulTimeout = setTimeout(() => {
+					this.terminateProcessTree(childProcess, true);
+					forceTimeout = setTimeout(finish, 1000);
+				}, 1000);
+				childProcess.once("exit", finish);
+				this.terminateProcessTree(childProcess, false);
 			});
-		});
+		}
 
-		this.process = null;
-		this.pendingRequests.clear();
+		if (this.process === childProcess) this.process = null;
+		if (this.stoppingProcess === childProcess) this.stoppingProcess = null;
 	}
 
 	/**
@@ -176,6 +191,15 @@ export class RpcClient {
 			if (index !== -1) {
 				this.eventListeners.splice(index, 1);
 			}
+		};
+	}
+
+	/** Subscribe to an unexpected child-process exit. */
+	onExit(listener: RpcExitListener): () => void {
+		this.exitListeners.push(listener);
+		return () => {
+			const index = this.exitListeners.indexOf(listener);
+			if (index !== -1) this.exitListeners.splice(index, 1);
 		};
 	}
 
@@ -523,6 +547,40 @@ export class RpcClient {
 			}
 		} catch {
 			// Ignore non-JSON lines
+		}
+	}
+
+	private handleProcessFailure(childProcess: ChildProcess, error: Error): void {
+		if (this.process !== childProcess) return;
+		if (this.stoppingProcess === childProcess) return;
+		if (this.exitError) return;
+
+		this.exitError = error;
+		this.rejectPendingRequests(error);
+		for (const listener of this.exitListeners) listener(error);
+	}
+
+	private terminateProcessTree(childProcess: ChildProcess, force: boolean): void {
+		if (!childProcess.pid) return;
+
+		if (process.platform === "win32") {
+			spawn("taskkill", ["/T", ...(force ? ["/F"] : []), "/PID", String(childProcess.pid)], {
+				stdio: "ignore",
+				detached: true,
+				windowsHide: true,
+			}).unref();
+			return;
+		}
+
+		const signal: NodeJS.Signals = force ? "SIGKILL" : "SIGTERM";
+		try {
+			process.kill(-childProcess.pid, signal);
+		} catch {
+			try {
+				childProcess.kill(signal);
+			} catch {
+				// 进程已经退出。
+			}
 		}
 	}
 

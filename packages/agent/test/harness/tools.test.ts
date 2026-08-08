@@ -1,6 +1,15 @@
 import { symlink } from "node:fs/promises";
+import {
+	type AssistantMessage,
+	type AssistantMessageEvent,
+	EventStream,
+	type Message,
+	type Model,
+} from "@earendil-works/pi-ai";
 import { applyPatch } from "diff";
+import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
+import { agentLoop } from "../../src/agent-loop.ts";
 import { NodeExecutionEnv } from "../../src/harness/env/nodejs.ts";
 import { type BashToolDetails, createBashTool } from "../../src/harness/tools/bash.ts";
 import { createEditTool } from "../../src/harness/tools/edit.ts";
@@ -16,7 +25,69 @@ import {
 	type ShellExecOptions,
 } from "../../src/harness/types.ts";
 import { DEFAULT_MAX_LINES } from "../../src/harness/utils/truncate.ts";
+import type { AgentContext, AgentLoopConfig, AgentMessage, AgentTool } from "../../src/types.ts";
 import { createTempDir } from "./session-test-utils.ts";
+
+function createAgentUsage() {
+	return {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+}
+
+function createAgentModel(): Model<"openai-responses"> {
+	return {
+		id: "mock",
+		name: "mock",
+		api: "openai-responses",
+		provider: "openai",
+		baseUrl: "https://example.invalid",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 8192,
+		maxTokens: 2048,
+	};
+}
+
+class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
+	constructor() {
+		super(
+			(event) => event.type === "done" || event.type === "error",
+			(event) => {
+				if (event.type === "done") return event.message;
+				if (event.type === "error") return event.error;
+				throw new Error("Unexpected event type");
+			},
+		);
+	}
+}
+
+function createAssistantMessage(
+	content: AssistantMessage["content"],
+	stopReason: AssistantMessage["stopReason"],
+): AssistantMessage {
+	return {
+		role: "assistant",
+		content,
+		api: "openai-responses",
+		provider: "openai",
+		model: "mock",
+		usage: createAgentUsage(),
+		stopReason,
+		timestamp: Date.now(),
+	};
+}
+
+function identityConverter(messages: AgentMessage[]): Message[] {
+	return messages.filter(
+		(message) => message.role === "user" || message.role === "assistant" || message.role === "toolResult",
+	) as Message[];
+}
 
 function textOutput(result: { content: Array<{ type: string; text?: string }> }): string {
 	return result.content.flatMap((part) => (part.type === "text" ? [part.text ?? ""] : [])).join("\n");
@@ -130,6 +201,69 @@ function createTinyBmp(): Uint8Array {
 	view.setUint32(34, 4, true);
 	return bytes;
 }
+
+describe("Agent loop unknown tools", () => {
+	it("lists active tools and suggests edit for unavailable apply_patch", async () => {
+		const toolSchema = Type.Object({});
+		const tools: AgentTool<typeof toolSchema, Record<string, never>>[] = [
+			{
+				name: "read",
+				label: "read",
+				description: "Read files",
+				parameters: toolSchema,
+				async execute() {
+					return { content: [], details: {} };
+				},
+			},
+			{
+				name: "edit",
+				label: "edit",
+				description: "Edit files",
+				parameters: toolSchema,
+				async execute() {
+					return { content: [], details: {} };
+				},
+			},
+		];
+		const context: AgentContext = { systemPrompt: "", messages: [], tools };
+		const config: AgentLoopConfig = { model: createAgentModel(), convertToLlm: identityConverter };
+		let calls = 0;
+		const stream = agentLoop(
+			[{ role: "user", content: "edit a file", timestamp: Date.now() }],
+			context,
+			config,
+			undefined,
+			() => {
+				const response = new MockAssistantStream();
+				queueMicrotask(() => {
+					const message =
+						calls++ === 0
+							? createAssistantMessage(
+									[{ type: "toolCall", id: "apply-patch", name: "apply_patch", arguments: {} }],
+									"toolUse",
+								)
+							: createAssistantMessage([{ type: "text", text: "done" }], "stop");
+					response.push({
+						type: "done",
+						reason: message.stopReason === "toolUse" ? "toolUse" : "stop",
+						message,
+					});
+				});
+				return response;
+			},
+		);
+
+		const messages = await stream.result();
+		const result = messages.find(
+			(message): message is Extract<AgentMessage, { role: "toolResult" }> => message.role === "toolResult",
+		);
+
+		expect(textOutput(result!)).toBe(
+			'Tool "apply_patch" is unavailable.\nAvailable tools: read, edit.\nFor file changes, retry with "edit".',
+		);
+		expect(result?.isError).toBe(true);
+	});
+});
 
 describe("AgentHarness tools", () => {
 	describe("read", () => {
@@ -371,6 +505,57 @@ describe("AgentHarness tools", () => {
 					context,
 				),
 			).rejects.toThrow(/Found 3 occurrences/);
+		});
+
+		it("reports duplicate candidate lines without writing the file", async () => {
+			const context = createContext();
+			const original = "\uFEFFbefore\r\nrepeat\r\nmiddle\r\nrepeat\r\nafter\r\nrepeat\r\n";
+			getOrThrow(await context.env.writeFile("edit.txt", original));
+
+			await expect(
+				createEditTool().execute(
+					"edit-duplicate-lines",
+					{ path: "edit.txt", edits: [{ oldText: "repeat", newText: "changed" }] },
+					undefined,
+					undefined,
+					context,
+				),
+			).rejects.toThrow(
+				"Found 3 occurrences of edits[0] in edit.txt at lines 2, 4, 6.\nInclude one stable unchanged line before or after the intended block, then retry.\nNo changes were written.",
+			);
+			expect(getOrThrow(await context.env.readTextFile("edit.txt"))).toBe(original);
+		});
+
+		it("reports fuzzy duplicate candidate lines without writing the file", async () => {
+			const context = createContext();
+			const original = "header\n\u201ctarget\u201d\nbody\n\u201etarget\u201f\n";
+			getOrThrow(await context.env.writeFile("edit.txt", original));
+
+			await expect(
+				createEditTool().execute(
+					"edit-fuzzy-duplicate-lines",
+					{ path: "edit.txt", edits: [{ oldText: '"target"', newText: "changed" }] },
+					undefined,
+					undefined,
+					context,
+				),
+			).rejects.toThrow("Found 2 occurrences of edits[0] in edit.txt at lines 2, 4.");
+			expect(getOrThrow(await context.env.readTextFile("edit.txt"))).toBe(original);
+		});
+
+		it("limits duplicate candidate lines to five", async () => {
+			const context = createContext();
+			getOrThrow(await context.env.writeFile("edit.txt", Array.from({ length: 101 }, () => "target").join("\n")));
+
+			await expect(
+				createEditTool().execute(
+					"edit-many-duplicates",
+					{ path: "edit.txt", edits: [{ oldText: "target", newText: "changed" }] },
+					undefined,
+					undefined,
+					context,
+				),
+			).rejects.toThrow("Found 101 occurrences of edits[0] in edit.txt at lines 1, 2, 3, 4, 5 +96 more.");
 		});
 
 		it("keeps the mutation queue locked until an aborted edit write settles", async () => {

@@ -168,6 +168,43 @@ function trimPartialClosingFences(tokens: readonly Token[]): void {
 	token.text = token.text.slice(0, -lastLine.length).replace(/\n$/, "");
 }
 
+function isClosedCodeBlock(token: Tokens.Code): boolean {
+	const openingFence = /^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)/.exec(token.raw)?.[1];
+	const closingFence = token.raw.trimEnd().split("\n").at(-1)?.trim();
+	return Boolean(
+		openingFence &&
+			closingFence &&
+			closingFence.length >= openingFence.length &&
+			closingFence.split("").every((character) => character === openingFence[0]),
+	);
+}
+
+export function hasClosedCodeBlockOverLineLimit(markdown: string, maxLines: number): boolean {
+	const hasLongCodeBlock = (tokens: readonly Token[]): boolean => {
+		for (const token of tokens) {
+			if (token.type === "code") {
+				const codeToken = token as Tokens.Code;
+				if (isClosedCodeBlock(codeToken) && codeToken.text.split("\n").length > maxLines) {
+					return true;
+				}
+				continue;
+			}
+			if (token.type === "list") {
+				const listToken = token as Tokens.List;
+				if (listToken.items.some((item: Tokens.ListItem) => hasLongCodeBlock(item.tokens))) {
+					return true;
+				}
+			}
+			if (token.type === "blockquote" && hasLongCodeBlock(token.tokens ?? [])) {
+				return true;
+			}
+		}
+		return false;
+	};
+
+	return hasLongCodeBlock(markdownParser.lexer(markdown));
+}
+
 const markdownParser = new Marked();
 markdownParser.setOptions({
 	tokenizer: new StrictStrikethroughTokenizer(),
@@ -219,6 +256,23 @@ export interface MarkdownTheme {
 	showCodeBlockFences?: boolean;
 }
 
+export interface MarkdownRenderProfile {
+	bytes: number;
+	width: number;
+	transformMs: number;
+	parseMs: number;
+	renderMs: number;
+	totalMs: number;
+	cached: boolean;
+}
+
+interface CodeBlockCollapseOptions {
+	maxLines: number;
+	headLines: number;
+	tailLines: number;
+	omittedLine: (hiddenLineCount: number) => string;
+}
+
 export interface MarkdownOptions {
 	/** Preserve source list markers instead of normalizing them. */
 	preserveOrderedListMarkers?: boolean;
@@ -228,6 +282,10 @@ export interface MarkdownOptions {
 	transform?: (markdown: string, availableWidth: number) => string;
 	/** Render supported LaTeX math expressions as Unicode text (default: true). */
 	renderLatex?: boolean;
+	/** Receives per-render timing data, including cache hits. */
+	profile?: (profile: MarkdownRenderProfile) => void;
+	/** Collapse only closed fenced code blocks while preserving their head and tail lines. */
+	codeBlockCollapse?: CodeBlockCollapseOptions;
 }
 
 interface InlineStyleContext {
@@ -236,6 +294,10 @@ interface InlineStyleContext {
 }
 
 export class Markdown implements Component {
+	static hasClosedCodeBlockOverLineLimit(markdown: string, maxLines: number): boolean {
+		return hasClosedCodeBlockOverLineLimit(markdown, maxLines);
+	}
+
 	private text: string;
 	private paddingX: number; // Left/right padding
 	private paddingY: number; // Top/bottom padding
@@ -277,35 +339,34 @@ export class Markdown implements Component {
 	}
 
 	render(width: number): string[] {
-		// Check cache
+		const startedAt = performance.now();
 		if (this.cachedLines && this.cachedText === this.text && this.cachedWidth === width) {
+			this.reportProfile(width, startedAt, 0, 0, 0, true);
 			return this.cachedLines;
 		}
 
-		// Calculate available width for content (subtract horizontal padding)
 		const contentWidth = Math.max(1, width - this.paddingX * 2);
+		const transformStartedAt = performance.now();
 		const text = this.options.transform?.(this.text, contentWidth) ?? this.text;
+		const transformMs = performance.now() - transformStartedAt;
+		const renderStartedAt = performance.now();
 
-		// Don't render anything if there's no actual text
 		if (!text || text.trim() === "") {
 			const result: string[] = [];
-			// Update cache
 			this.cachedText = this.text;
 			this.cachedWidth = width;
 			this.cachedLines = result;
+			this.reportProfile(width, startedAt, transformMs, 0, performance.now() - renderStartedAt, false);
 			return result;
 		}
 
-		// Replace tabs with 3 spaces for consistent rendering
 		const normalizedText = text.replace(/\t/g, "   ");
-
-		// Parse markdown to HTML-like tokens
+		const parseStartedAt = performance.now();
 		const tokens = markdownParser.lexer(normalizedText);
 		trimPartialClosingFences(tokens);
+		const parseMs = performance.now() - parseStartedAt;
 
-		// Convert tokens to styled terminal output
 		const renderedLines: string[] = [];
-
 		for (let i = 0; i < tokens.length; i++) {
 			const token = tokens[i];
 			const nextToken = tokens[i + 1];
@@ -315,7 +376,6 @@ export class Markdown implements Component {
 			}
 		}
 
-		// Wrap lines (NO padding, NO background yet)
 		const wrappedLines: string[] = [];
 		for (const line of renderedLines) {
 			if (isImageLine(line)) {
@@ -327,7 +387,6 @@ export class Markdown implements Component {
 			}
 		}
 
-		// Add margins and background to each wrapped line
 		const leftMargin = " ".repeat(this.paddingX);
 		const rightMargin = " ".repeat(this.paddingX);
 		const bgFn = this.defaultTextStyle?.bgColor;
@@ -340,18 +399,15 @@ export class Markdown implements Component {
 			}
 
 			const lineWithMargins = leftMargin + line + rightMargin;
-
 			if (bgFn) {
 				contentLines.push(applyBackgroundToLine(lineWithMargins, width, bgFn));
 			} else {
-				// No background - just pad to width
 				const visibleLen = visibleWidth(lineWithMargins);
 				const paddingNeeded = Math.max(0, width - visibleLen);
 				contentLines.push(lineWithMargins + " ".repeat(paddingNeeded));
 			}
 		}
 
-		// Add top/bottom padding (empty lines)
 		const emptyLine = " ".repeat(width);
 		const emptyLines: string[] = [];
 		for (let i = 0; i < this.paddingY; i++) {
@@ -359,15 +415,32 @@ export class Markdown implements Component {
 			emptyLines.push(line);
 		}
 
-		// Combine top padding, content, and bottom padding
 		const result = emptyLines.concat(contentLines, emptyLines);
-
-		// Update cache
 		this.cachedText = this.text;
 		this.cachedWidth = width;
 		this.cachedLines = result;
+		this.reportProfile(width, startedAt, transformMs, parseMs, performance.now() - renderStartedAt, false);
 
 		return result.length > 0 ? result : [""];
+	}
+
+	private reportProfile(
+		width: number,
+		startedAt: number,
+		transformMs: number,
+		parseMs: number,
+		renderMs: number,
+		cached: boolean,
+	): void {
+		this.options.profile?.({
+			bytes: new TextEncoder().encode(this.text).byteLength,
+			width,
+			transformMs,
+			parseMs,
+			renderMs,
+			totalMs: performance.now() - startedAt,
+			cached,
+		});
 	}
 
 	/**
@@ -520,6 +593,7 @@ export class Markdown implements Component {
 			}
 
 			case "code": {
+				const codeToken = token as Tokens.Code;
 				const showFences = this.theme.showCodeBlockFences ?? true;
 				const linePrefix = showFences ? (this.theme.codeBlockIndent ?? "  ") : this.theme.codeBlockBorder("│ ");
 				const pushCodeLine = (line: string): void => {
@@ -532,15 +606,22 @@ export class Markdown implements Component {
 						lines.push(`${linePrefix}${wrappedLine}`);
 					}
 				};
-				if (showFences) lines.push(this.theme.codeBlockBorder(`\`\`\`${token.lang || ""}`));
-				if (this.theme.highlightCode) {
-					const highlightedLines = this.theme.highlightCode(token.text, token.lang);
-					for (const hlLine of highlightedLines) pushCodeLine(hlLine);
-				} else {
-					for (const codeLine of token.text.split("\n")) {
-						pushCodeLine(this.theme.codeBlock(codeLine));
-					}
-				}
+				const sourceLines = codeToken.text.split("\n");
+				const renderedCodeLines = this.theme.highlightCode
+					? this.theme.highlightCode(codeToken.text, codeToken.lang)
+					: sourceLines.map((codeLine) => this.theme.codeBlock(codeLine));
+				const collapse = this.options.codeBlockCollapse;
+				const hiddenLineCount = collapse ? sourceLines.length - collapse.headLines - collapse.tailLines : 0;
+				const codeLines =
+					collapse && isClosedCodeBlock(codeToken) && sourceLines.length > collapse.maxLines && hiddenLineCount > 0
+						? [
+								...renderedCodeLines.slice(0, collapse.headLines),
+								this.theme.codeBlock(collapse.omittedLine(hiddenLineCount)),
+								...renderedCodeLines.slice(-collapse.tailLines),
+							]
+						: renderedCodeLines;
+				if (showFences) lines.push(this.theme.codeBlockBorder(`\`\`\`${codeToken.lang || ""}`));
+				for (const codeLine of codeLines) pushCodeLine(codeLine);
 				if (showFences) lines.push(this.theme.codeBlockBorder("```"));
 				if (nextTokenType && nextTokenType !== "space") {
 					lines.push(""); // Add spacing after code blocks (unless space token follows)
@@ -839,6 +920,40 @@ export class Markdown implements Component {
 		return wrapTextWithAnsi(text, Math.max(1, maxWidth));
 	}
 
+	private renderTableFallback(
+		token: Tokens.Table,
+		availableWidth: number,
+		nextTokenType?: string,
+		styleContext?: InlineStyleContext,
+	): string[] {
+		const lines: string[] = [];
+		const headers = token.header.map((cell) => this.renderInlineTokens(cell.tokens || [], styleContext));
+		const renderRecord = (row?: (typeof token.rows)[number]): void => {
+			for (let columnIndex = 0; columnIndex < headers.length; columnIndex++) {
+				const cell = row?.[columnIndex];
+				const value = cell ? this.renderInlineTokens(cell.tokens || [], styleContext) : "";
+				const line = `${this.theme.bold(headers[columnIndex] || `第 ${columnIndex + 1} 列`)}: ${value}`;
+				lines.push(...wrapTextWithAnsi(line, availableWidth));
+			}
+		};
+
+		if (token.rows.length === 0) {
+			renderRecord();
+		} else {
+			for (let rowIndex = 0; rowIndex < token.rows.length; rowIndex++) {
+				renderRecord(token.rows[rowIndex]);
+				if (rowIndex < token.rows.length - 1) {
+					lines.push("");
+				}
+			}
+		}
+
+		if (nextTokenType && nextTokenType !== "space") {
+			lines.push("");
+		}
+		return lines;
+	}
+
 	/**
 	 * Render a table with width-aware cell wrapping.
 	 * Cells that don't fit are wrapped to multiple lines.
@@ -860,13 +975,10 @@ export class Markdown implements Component {
 		// = 2 + (n-1) * 3 + 2 = 3n + 1
 		const borderOverhead = 3 * numCols + 1;
 		const availableForCells = availableWidth - borderOverhead;
-		if (availableForCells < numCols) {
-			// Too narrow to render a stable table. Fall back to raw markdown.
-			const fallbackLines = token.raw ? wrapTextWithAnsi(token.raw, availableWidth) : [];
-			if (nextTokenType && nextTokenType !== "space") {
-				fallbackLines.push("");
-			}
-			return fallbackLines;
+		const minReadableColumnWidth = 8;
+		if (availableForCells < numCols * minReadableColumnWidth) {
+			// A dense grid with narrower columns is harder to scan than a record view.
+			return this.renderTableFallback(token, availableWidth, nextTokenType, styleContext);
 		}
 
 		const maxUnbrokenWordWidth = 30;

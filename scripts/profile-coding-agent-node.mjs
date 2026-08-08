@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
@@ -34,6 +34,8 @@ Options:
   --label <name>         Profile name prefix (default: <mode>-startup)
   --runtime <name>       node, bun, or auto (default: auto)
   --agent-dir <dir>      Use a specific PI_CODING_AGENT_DIR for the benchmark run
+  --session <path>       Resume the specified Session JSONL instead of using --no-session
+  --json                 Write a JSON benchmark report to stdout
   --isolated-agent-dir   Use a fresh temporary agent dir instead of the normal one
   --no-offline           Do not force PI_OFFLINE=1 / PI_SKIP_VERSION_CHECK=1
   --skip-build           Reuse the current dist/cli.js without rebuilding first (Node only)
@@ -81,6 +83,8 @@ function parseArgs(argv) {
 		build: true,
 		runtime: "auto",
 		agentDir: undefined,
+		session: undefined,
+		json: false,
 		isolatedAgentDir: false,
 		cpuProfile: false,
 	};
@@ -113,6 +117,11 @@ function parseArgs(argv) {
 			continue;
 		}
 
+		if (arg === "--json") {
+			options.json = true;
+			continue;
+		}
+
 		if (
 			(arg === "--mode" ||
 				arg === "--runs" ||
@@ -120,7 +129,8 @@ function parseArgs(argv) {
 				arg === "--profile-dir" ||
 				arg === "--label" ||
 				arg === "--runtime" ||
-				arg === "--agent-dir") &&
+				arg === "--agent-dir" ||
+				arg === "--session") &&
 			index + 1 >= argv.length
 		) {
 			throw new Error(`Missing value for ${arg}`);
@@ -158,6 +168,11 @@ function parseArgs(argv) {
 
 		if (arg === "--agent-dir") {
 			options.agentDir = resolve(argv[++index]);
+			continue;
+		}
+
+		if (arg === "--session") {
+			options.session = resolve(argv[++index]);
 			continue;
 		}
 
@@ -218,27 +233,66 @@ function summarize(values) {
 function parseStartupTimings(stderr) {
 	const lines = stderr.split(/\r?\n/);
 	const timings = new Map();
-	let inBlock = false;
+	let namespace;
 
 	for (const line of lines) {
-		if (line.includes("--- Startup Timings ---")) {
-			inBlock = true;
+		const header = line.match(/^--- Startup Timings(?:: ([^-]+))? ---$/);
+		if (header) {
+			namespace = header[1]?.trim() || "main";
 			continue;
 		}
-		if (!inBlock) {
+		if (!namespace) continue;
+		if (/^-+$/.test(line)) {
+			namespace = undefined;
 			continue;
-		}
-		if (line.includes("------------------------")) {
-			break;
 		}
 		const match = line.match(/^\s+([^:]+):\s+(\d+)ms$/);
-		if (!match) {
-			continue;
-		}
-		timings.set(match[1], Number.parseInt(match[2], 10));
+		if (!match || match[1] === "TOTAL") continue;
+		const key = namespace === "main" ? match[1] : `${namespace}.${match[1]}`;
+		timings.set(key, Number.parseInt(match[2], 10));
 	}
 
 	return timings;
+}
+
+function parseBenchmarkStats(stderr) {
+	const match = stderr.match(
+		/PI_BENCHMARK maxEventLoopBlockMs=([0-9.]+) sessionOpenEventLoopBlockMs=([0-9.]+) runtimeEventLoopBlockMs=([0-9.]+) interactiveInitEventLoopBlockMs=([0-9.]+) rssBytes=(\d+)/,
+	);
+	return match
+		? {
+				maxEventLoopBlockMs: Number.parseFloat(match[1]),
+				sessionOpenEventLoopBlockMs: Number.parseFloat(match[2]),
+				runtimeEventLoopBlockMs: Number.parseFloat(match[3]),
+				interactiveInitEventLoopBlockMs: Number.parseFloat(match[4]),
+				rssBytes: Number.parseInt(match[5], 10),
+			}
+		: {
+				maxEventLoopBlockMs: null,
+				sessionOpenEventLoopBlockMs: null,
+				runtimeEventLoopBlockMs: null,
+				interactiveInitEventLoopBlockMs: null,
+				rssBytes: null,
+			};
+}
+
+function startMemorySampler(child) {
+	let peakRssBytes = 0;
+	const sample = () => {
+		if (process.platform !== "linux" || !child.pid) return;
+		try {
+			const status = readFileSync(`/proc/${child.pid}/status`, "utf8");
+			const match = status.match(/^VmRSS:\s+(\d+)\s+kB$/m);
+			if (match) peakRssBytes = Math.max(peakRssBytes, Number.parseInt(match[1], 10) * 1024);
+		} catch {}
+	};
+	const timer = setInterval(sample, 10);
+	timer.unref();
+	sample();
+	return () => {
+		clearInterval(timer);
+		return peakRssBytes || null;
+	};
 }
 
 function summarizeTimingMaps(runs) {
@@ -278,8 +332,10 @@ async function waitForExit(child, errorPrefix) {
 	});
 }
 
-async function runBuild() {
-	process.stdout.write("Building packages/tui, packages/telemetry, packages/ai, packages/agent, and packages/coding-agent...\n");
+async function runBuild(quiet = false) {
+	if (!quiet) {
+		process.stdout.write("Building packages/tui, packages/telemetry, packages/ai, packages/agent, and packages/coding-agent...\n");
+	}
 	const startedAt = performance.now();
 	const child = spawn(
 		"npm",
@@ -319,7 +375,7 @@ async function runBuild() {
 	const exitCode = await waitForExit(child, "Build");
 	if (exitCode !== 0) {
 		if (stdout.trim()) {
-			process.stdout.write(`${stdout}${stdout.endsWith("\n") ? "" : "\n"}`);
+			process.stderr.write(`${stdout}${stdout.endsWith("\n") ? "" : "\n"}`);
 		}
 		if (stderr.trim()) {
 			process.stderr.write(`${stderr}${stderr.endsWith("\n") ? "" : "\n"}`);
@@ -327,11 +383,15 @@ async function runBuild() {
 		throw new Error(`Build failed with exit code ${exitCode}`);
 	}
 
-	process.stdout.write(`Build completed in ${formatMs(performance.now() - startedAt)}\n`);
+	if (!quiet) {
+		process.stdout.write(`Build completed in ${formatMs(performance.now() - startedAt)}\n`);
+	}
 }
 
-function getRuntimeCommand(runtime, mode, profileDir, profileName, cpuProfile) {
-	const benchmarkArgs = ["--no-session"];
+function getRuntimeCommand(runtime, mode, profileDir, profileName, cpuProfile, sessionPath) {
+	const benchmarkArgs = sessionPath
+		? ["--session", sessionPath, "--approve", "--no-extensions"]
+		: ["--no-session", "--approve", "--no-extensions"];
 	if (mode === "rpc") {
 		benchmarkArgs.push("--mode", "rpc");
 	}
@@ -368,6 +428,7 @@ function createBenchmarkEnv(options, isolatedAgentDir) {
 	}
 	if (options.mode === "tui") {
 		env[startupBenchmarkEnvName] = "1";
+		env.PI_TIMING = "1";
 	}
 	if (options.offline) {
 		env.PI_OFFLINE = "1";
@@ -386,14 +447,15 @@ async function runTuiBenchmarkRun({ runtime, runIndex, measuredIndex, options, p
 		mkdirSync(isolatedAgentDir, { recursive: true });
 	}
 
-	const command = getRuntimeCommand(runtime, "tui", profileDir, profileName, options.cpuProfile);
+	const command = getRuntimeCommand(runtime, "tui", profileDir, profileName, options.cpuProfile, options.session);
 	const child = spawn(command.executable, command.args, {
 		cwd: packageDir,
 		env: createBenchmarkEnv(options, isolatedAgentDir),
-		stdio: ["inherit", "ignore", "pipe"],
+		stdio: ["inherit", "inherit", "pipe"],
 		shell: process.platform === "win32" && runtime === "bun",
 	});
 
+	const stopMemorySampler = startMemorySampler(child);
 	let stderr = "";
 	child.stderr.setEncoding("utf8");
 	child.stderr.on("data", (chunk) => {
@@ -403,6 +465,7 @@ async function runTuiBenchmarkRun({ runtime, runIndex, measuredIndex, options, p
 	const startedAt = performance.now();
 	const exitCode = await waitForExit(child, `Benchmark ${measuredIndex === undefined ? `warmup ${runNumber}` : `run ${measuredIndex}`}`);
 	const elapsedMs = performance.now() - startedAt;
+	const sampledPeakRssBytes = stopMemorySampler();
 
 	try {
 		if (exitCode !== 0) {
@@ -414,7 +477,17 @@ async function runTuiBenchmarkRun({ runtime, runIndex, measuredIndex, options, p
 			throw new Error(`CPU profile was not written: ${profilePath}`);
 		}
 
-		return { elapsedMs, profilePath, timings: parseStartupTimings(stderr) };
+		const benchmarkStats = parseBenchmarkStats(stderr);
+		return {
+			elapsedMs,
+			profilePath,
+			timings: parseStartupTimings(stderr),
+			peakRssBytes: Math.max(sampledPeakRssBytes ?? 0, benchmarkStats.rssBytes ?? 0) || null,
+			maxEventLoopBlockMs: benchmarkStats.maxEventLoopBlockMs,
+			sessionOpenEventLoopBlockMs: benchmarkStats.sessionOpenEventLoopBlockMs,
+			runtimeEventLoopBlockMs: benchmarkStats.runtimeEventLoopBlockMs,
+			interactiveInitEventLoopBlockMs: benchmarkStats.interactiveInitEventLoopBlockMs,
+		};
 	} finally {
 		if (tempRoot) {
 			rmSync(tempRoot, { recursive: true, force: true });
@@ -445,7 +518,7 @@ async function runRpcBenchmarkRun({ runtime, runIndex, measuredIndex, options, p
 		mkdirSync(isolatedAgentDir, { recursive: true });
 	}
 
-	const command = getRuntimeCommand(runtime, "rpc", profileDir, profileName, options.cpuProfile);
+	const command = getRuntimeCommand(runtime, "rpc", profileDir, profileName, options.cpuProfile, options.session);
 	const child = spawn(command.executable, command.args, {
 		cwd: packageDir,
 		env: createBenchmarkEnv(options, isolatedAgentDir),
@@ -531,6 +604,46 @@ async function runBenchmarkRun(params) {
 	return await runTuiBenchmarkRun(params);
 }
 
+function getSessionBytes(sessionPath) {
+	if (!sessionPath) {
+		return null;
+	}
+	const stats = statSync(sessionPath);
+	if (!stats.isFile()) {
+		throw new Error(`Session path is not a file: ${sessionPath}`);
+	}
+	return stats.size;
+}
+
+function cumulativeSessionTiming(timings, target) {
+	let total = 0;
+	for (const label of ["T_shell", "T_tail", "T_context_ready"]) {
+		const value = timings.get(`sessionOpening.${label}`);
+		if (value !== undefined) total += value;
+		if (label === target) return value === undefined ? null : total;
+	}
+	return null;
+}
+
+function createJsonRun(sessionBytes, run, result) {
+	return {
+		sessionBytes,
+		run,
+		readyMs: result.elapsedMs,
+		T_shell: cumulativeSessionTiming(result.timings, "T_shell"),
+		T_tail: cumulativeSessionTiming(result.timings, "T_tail"),
+		T_context_ready: cumulativeSessionTiming(result.timings, "T_context_ready"),
+		T_index_ready: null,
+		M_peak: result.peakRssBytes,
+		R_resize: null,
+		maxEventLoopBlock: result.maxEventLoopBlockMs ?? null,
+		sessionOpenEventLoopBlock: result.sessionOpenEventLoopBlockMs ?? null,
+		runtimeEventLoopBlock: result.runtimeEventLoopBlockMs ?? null,
+		interactiveInitEventLoopBlock: result.interactiveInitEventLoopBlockMs ?? null,
+		startupTimings: Object.fromEntries(result.timings),
+	};
+}
+
 async function main() {
 	const options = parseArgs(process.argv.slice(2));
 	if (options.help) {
@@ -547,13 +660,14 @@ async function main() {
 	}
 
 	const runtime = resolveRuntime(options.runtime);
+	const sessionBytes = getSessionBytes(options.session);
 	options.label = resolveLabel(options.mode, options.label);
 	const profileDir = resolveProfileDir(runtime, options.profileDir);
 
 	if (runtime === "node" && options.build) {
-		await runBuild();
+		await runBuild(options.json);
 	}
-	if (runtime === "bun") {
+	if (runtime === "bun" && !options.json) {
 		process.stdout.write(
 			`Using Bun runtime with ${options.mode === "rpc" ? "packages/coding-agent/src/cli.ts --mode rpc" : "packages/coding-agent/src/cli.ts"}\n`,
 		);
@@ -578,9 +692,11 @@ async function main() {
 			profileDir,
 		});
 
-		process.stdout.write(
-			`[${measuredIndex === undefined ? `warmup ${runIndex + 1}` : `run ${measuredIndex}`}] elapsed=${formatMs(result.elapsedMs)}\n`,
-		);
+		if (!options.json) {
+			process.stdout.write(
+				`[${measuredIndex === undefined ? `warmup ${runIndex + 1}` : `run ${measuredIndex}`}] elapsed=${formatMs(result.elapsedMs)}\n`,
+			);
+		}
 
 		if (measuredIndex !== undefined) {
 			measuredRuns.push(result);
@@ -588,12 +704,31 @@ async function main() {
 	}
 
 	if (measuredRuns.length === 0) {
-		process.stdout.write("\nNo measured runs requested.\n");
+		if (options.json) {
+			process.stdout.write(`${JSON.stringify({ sessionBytes, runtime, mode: options.mode, runs: [] })}\n`);
+		} else {
+			process.stdout.write("\nNo measured runs requested.\n");
+		}
 		return;
 	}
 
 	const elapsedSummary = summarize(measuredRuns.map((run) => run.elapsedMs));
 	const timingSummaries = summarizeTimingMaps(measuredRuns);
+	if (options.json) {
+		process.stdout.write(
+			`${JSON.stringify({
+				sessionBytes,
+				runtime,
+				mode: options.mode,
+				runs: measuredRuns.map((run, index) => createJsonRun(sessionBytes, index + 1, run)),
+				summary: {
+					readyMs: elapsedSummary,
+					startupTimings: Object.fromEntries(timingSummaries),
+				},
+			})}\n`,
+		);
+		return;
+	}
 	const maxElapsedRun = measuredRuns.reduce((slowest, run) => (run.elapsedMs > slowest.elapsedMs ? run : slowest));
 	if (measuredRuns.length === 1) {
 		process.stdout.write("\nResult\n");

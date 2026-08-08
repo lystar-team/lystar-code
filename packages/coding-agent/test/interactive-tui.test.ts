@@ -92,6 +92,7 @@ describe("createInteractiveTui", () => {
 			renderer: ReturnType<typeof createInteractiveTui>;
 			ui: TUI;
 			keybindings: KeybindingsManager;
+			loadPreviousTranscriptPage: () => Promise<void>;
 		};
 		const handleWorkspaceInput = (
 			InteractiveMode.prototype as unknown as {
@@ -106,6 +107,7 @@ describe("createInteractiveTui", () => {
 				"tui.altScreen.halfPageUp": "ctrl+u",
 				"tui.altScreen.halfPageDown": "ctrl+d",
 			}),
+			loadPreviousTranscriptPage: async () => {},
 		};
 		const renderer = createInteractiveTui({
 			tuiMode: "fullscreen",

@@ -99,6 +99,16 @@ import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
+import {
+	type AgentRunState,
+	abortSubagent,
+	followUpSubagent,
+	getCurrentSubagentRuns,
+	getFinalOutput as getSubagentFinalOutput,
+	type SingleResult,
+	type SubagentDetails,
+	steerSubagent,
+} from "../../extensions/subagent/index.ts";
 import { localizeSettingValue } from "../../locales/settings-zh-CN.ts";
 import { formatThinkingLevel, t } from "../../locales/zh-CN.ts";
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
@@ -111,6 +121,7 @@ import { getPiUserAgent } from "../../utils/pi-user-agent.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { ensureManagedWindowsBash, ensureTool } from "../../utils/tools-manager.ts";
 import { checkForNewPiVersion, type LatestPiRelease } from "../../utils/version-check.ts";
+import { type AgentWorkbenchAgent, AgentWorkbenchComponent } from "./components/agent-workbench.ts";
 import { ArminComponent } from "./components/armin.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
@@ -155,7 +166,12 @@ import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { ToolExecutionGroupComponent } from "./components/tool-execution-group.ts";
 import { TreeSelectorComponent } from "./components/tree-selector.ts";
 import { TrustSelectorComponent } from "./components/trust-selector.ts";
-import { type TurnFileSummary, TurnSummaryComponent, type TurnSummaryData } from "./components/turn-summary.ts";
+import {
+	resolveTurnOutcome,
+	type TurnFileSummary,
+	TurnSummaryComponent,
+	type TurnSummaryData,
+} from "./components/turn-summary.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
 import { WorkspaceActivityBar, type WorkspaceActivityPhase } from "./components/workspace-activity-bar.ts";
@@ -165,6 +181,11 @@ import { loadLystarSettings } from "./lystar-settings.ts";
 import { LystarTUI } from "./lystar-tui.ts";
 import { getModelSearchText } from "./model-search.ts";
 import { parseMouseEvent } from "./mouse.ts";
+import {
+	isTuiVisibleSessionEntry,
+	SessionTranscriptSource,
+	TranscriptCursorInvalidError,
+} from "./session-transcript-source.ts";
 import { type AltScreenMode, createTerminalModeContext, shouldUseAlternateScreen } from "./terminal-mode.ts";
 import {
 	getAvailableThemes,
@@ -224,6 +245,7 @@ type TrackedTurnTool = {
 	status: "pending" | "running" | "success" | "error" | "cancelled";
 	subject?: string;
 	filePath?: string;
+	files?: TurnFileSummary[];
 	additions?: number;
 	deletions?: number;
 	diff?: string;
@@ -240,6 +262,7 @@ type TurnActivityCollector = {
 	retried: boolean;
 	compacted: boolean;
 	cancelled: boolean;
+	finalStopReason?: AssistantMessage["stopReason"];
 };
 
 type RenderSessionItem = AgentMessage | Extract<SessionEntry, { type: "custom" }>;
@@ -437,6 +460,9 @@ export function createInteractiveTuiReference(getTui: () => TUI): TUI {
 	});
 }
 
+const TRANSCRIPT_PAGE_SIZE = 80;
+const ACTIVE_AGENT_STATES = new Set<AgentRunState>(["queued", "running", "waiting"]);
+
 export class InteractiveMode {
 	private runtimeHost: AgentSessionRuntime;
 	private renderer: TuiMainScreen | LystarTUI;
@@ -497,6 +523,11 @@ export class InteractiveMode {
 	private streamingBashGroup: ToolExecutionGroupComponent | undefined;
 	private turnActivity: TurnActivityCollector | undefined;
 	private lastTurnFiles: TurnFileSummary[] = [];
+	private transcriptSource: SessionTranscriptSource | undefined;
+	private transcriptCursor: string | undefined;
+	private transcriptEntries: SessionEntry[] = [];
+	private transcriptGeneration = 0;
+	private transcriptPageLoading = false;
 
 	// Tool output expansion state
 	private toolOutputExpanded = false;
@@ -1083,7 +1114,7 @@ export class InteractiveMode {
 		await this.rebindCurrentSession();
 
 		// Render initial messages AFTER showing loaded resources
-		this.renderInitialMessages();
+		await this.renderInitialMessagesFromTranscript();
 
 		// Set up theme file watcher
 		onThemeChange(() => {
@@ -2907,6 +2938,7 @@ export class InteractiveMode {
 			if (mouse.shift) return undefined;
 			if (mouse.button === "wheel-up") {
 				this.workspace.scrollBy(-this.workspace.getWheelScrollStep());
+				if (this.workspace.isAtTop()) void this.loadPreviousTranscriptPage();
 			} else if (mouse.button === "wheel-down") {
 				this.workspace.scrollBy(this.workspace.getWheelScrollStep());
 			} else if (mouse.button === "left" && !mouse.released) {
@@ -2923,8 +2955,16 @@ export class InteractiveMode {
 						component = target?.component;
 						componentRow = target?.row ?? -1;
 					}
+					if (component instanceof ToolExecutionComponent) {
+						const agentTarget = component.getAgentTargetAtRow(componentRow);
+						if (agentTarget) {
+							this.handleAgentsCommand(agentTarget.agentId);
+							handled = true;
+						}
+					}
 					const rowToggle = component as Component & { isExpansionToggleRow?: (row: number) => boolean };
 					if (
+						!handled &&
 						component &&
 						isExpandable(component) &&
 						(rowToggle.isExpansionToggleRow === undefined || rowToggle.isExpansionToggleRow(componentRow))
@@ -2952,6 +2992,7 @@ export class InteractiveMode {
 			this.keybindings.matches(data, "tui.altScreen.pageUp")
 		) {
 			this.workspace.pageUp();
+			if (this.workspace.isAtTop()) void this.loadPreviousTranscriptPage();
 		} else if (
 			this.keybindings.matches(data, "app.viewport.pageDown") ||
 			this.keybindings.matches(data, "tui.altScreen.pageDown")
@@ -2959,6 +3000,7 @@ export class InteractiveMode {
 			this.workspace.pageDown();
 		} else if (this.keybindings.matches(data, "tui.altScreen.halfPageUp")) {
 			this.workspace.halfPageUp();
+			if (this.workspace.isAtTop()) void this.loadPreviousTranscriptPage();
 		} else if (this.keybindings.matches(data, "tui.altScreen.halfPageDown")) {
 			this.workspace.halfPageDown();
 		} else if (
@@ -2966,6 +3008,7 @@ export class InteractiveMode {
 			this.keybindings.matches(data, "tui.altScreen.top")
 		) {
 			this.workspace.scrollToTop();
+			void this.loadPreviousTranscriptPage();
 		} else if (
 			this.keybindings.matches(data, "app.viewport.bottom") ||
 			this.keybindings.matches(data, "tui.altScreen.bottom")
@@ -3161,6 +3204,11 @@ export class InteractiveMode {
 			}
 			if (text === "/changes") {
 				this.handleChangesCommand();
+				this.editor.setText("");
+				return;
+			}
+			if (text === "/agents") {
+				this.handleAgentsCommand();
 				this.editor.setText("");
 				return;
 			}
@@ -3391,14 +3439,26 @@ export class InteractiveMode {
 		const activity = this.turnActivity;
 		if (!activity) return this.lastTurnFiles;
 		const files = new Map<string, TurnFileSummary>();
+		const addFile = (file: TurnFileSummary): void => {
+			const current = files.get(file.path) ?? { path: file.path };
+			if (file.additions !== undefined) current.additions = (current.additions ?? 0) + file.additions;
+			if (file.deletions !== undefined) current.deletions = (current.deletions ?? 0) + file.deletions;
+			if (file.diff) current.diff = current.diff ? `${current.diff}\n\n${file.diff}` : file.diff;
+			files.set(file.path, current);
+		};
 		for (const id of activity.toolOrder) {
 			const tool = activity.tools.get(id);
-			if (!tool?.filePath || tool.status !== "success") continue;
-			const current = files.get(tool.filePath) ?? { path: tool.filePath };
-			if (tool.additions !== undefined) current.additions = (current.additions ?? 0) + tool.additions;
-			if (tool.deletions !== undefined) current.deletions = (current.deletions ?? 0) + tool.deletions;
-			if (tool.diff) current.diff = current.diff ? `${current.diff}\n\n${tool.diff}` : tool.diff;
-			files.set(tool.filePath, current);
+			if (!tool || tool.status !== "success") continue;
+			if (tool.files) {
+				for (const file of tool.files) addFile(file);
+			} else if (tool.filePath) {
+				addFile({
+					path: tool.filePath,
+					additions: tool.additions,
+					deletions: tool.deletions,
+					diff: tool.diff,
+				});
+			}
 		}
 		return [...files.values()];
 	}
@@ -3409,9 +3469,16 @@ export class InteractiveMode {
 		const tools = activity.toolOrder
 			.map((id) => activity.tools.get(id))
 			.filter((tool): tool is TrackedTurnTool => Boolean(tool));
+		const hasUnfinishedTools = tools.some((tool) => tool.status === "pending" || tool.status === "running");
+		const outcome = resolveTurnOutcome({
+			cancelled: activity.cancelled,
+			stopReason: activity.finalStopReason,
+			hasUnfinishedTools,
+		});
+		const toolErrors = tools.filter((tool) => tool.status === "error").length;
 		for (const tool of tools) {
 			if (tool.status === "pending" || tool.status === "running") {
-				tool.status = activity.cancelled ? "cancelled" : "error";
+				tool.status = outcome === "cancelled" ? "cancelled" : "error";
 			}
 		}
 		const files = this.getCurrentTurnFiles();
@@ -3420,6 +3487,8 @@ export class InteractiveMode {
 			const data: TurnSummaryData = {
 				startedAt: activity.startedAt,
 				endedAt: Date.now(),
+				outcome,
+				toolErrors,
 				totalTools: tools.length,
 				successfulTools: tools.filter((tool) => tool.status === "success").length,
 				failedTools: tools.filter((tool) => tool.status === "error").length,
@@ -3599,6 +3668,9 @@ export class InteractiveMode {
 			case "message_end":
 				this.headerContextUsageDirty = true;
 				if (event.message.role === "user") break;
+				if (event.message.role === "assistant" && this.turnActivity) {
+					this.turnActivity.finalStopReason = event.message.stopReason;
+				}
 				if (this.streamingComponent && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
 					let errorMessage: string | undefined;
@@ -3707,6 +3779,22 @@ export class InteractiveMode {
 							trackedTool.additions = typeof details.additions === "number" ? details.additions : undefined;
 							trackedTool.deletions = typeof details.deletions === "number" ? details.deletions : undefined;
 							trackedTool.diff = typeof details.diff === "string" ? details.diff : undefined;
+							if (Array.isArray(details.files)) {
+								trackedTool.files = details.files.flatMap((file): TurnFileSummary[] => {
+									if (!file || typeof file !== "object") return [];
+									const value = file as Record<string, unknown>;
+									if (typeof value.path !== "string") return [];
+									return [
+										{
+											path: this.normalizeTurnFilePath(value.path),
+											additions: typeof value.additions === "number" ? value.additions : undefined,
+											deletions: typeof value.deletions === "number" ? value.deletions : undefined,
+											diff: typeof value.diff === "string" ? value.diff : undefined,
+										},
+									];
+								});
+								trackedTool.subject = `${trackedTool.files.length} 个文件`;
+							}
 						}
 						if (cancelled) this.turnActivity.cancelled = true;
 					}
@@ -3724,6 +3812,9 @@ export class InteractiveMode {
 			}
 
 			case "agent_end":
+				if (event.willRetry && this.turnActivity) {
+					this.turnActivity.finalStopReason = undefined;
+				}
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(false);
 				}
@@ -4186,18 +4277,139 @@ export class InteractiveMode {
 
 	renderInitialMessages(): void {
 		this.headerContextUsageDirty = true;
-		const entries = this.sessionManager.buildContextEntries();
+		const entries = this.resetTranscriptPagination();
+		this.renderInitialEntries(entries);
+	}
+
+	private async renderInitialMessagesFromTranscript(): Promise<void> {
+		this.headerContextUsageDirty = true;
+		if (!this.workspace.isFullscreen()) {
+			this.renderInitialEntries(this.resetTranscriptPagination());
+			return;
+		}
+
+		const sessionFile = this.sessionManager.getSessionFile();
+		if (!sessionFile || !fs.existsSync(sessionFile)) {
+			this.renderInitialEntries(this.resetTranscriptPagination());
+			return;
+		}
+
+		const generation = ++this.transcriptGeneration;
+		const source = new SessionTranscriptSource(sessionFile);
+		this.transcriptSource = source;
+		this.transcriptPageLoading = false;
+		try {
+			const page = await source.readTail({
+				leafId: this.sessionManager.getLeafId(),
+				limit: TRANSCRIPT_PAGE_SIZE,
+			});
+			if (this.transcriptGeneration !== generation || this.transcriptSource !== source) return;
+			this.transcriptEntries = page.entries;
+			this.transcriptCursor = page.previousCursor;
+			this.renderInitialEntries(page.entries);
+		} catch {
+			if (this.transcriptGeneration !== generation || this.transcriptSource !== source) return;
+			this.renderInitialEntries(this.resetTranscriptPagination());
+		}
+	}
+
+	private renderInitialEntries(entries: SessionEntry[]): void {
 		this.renderSessionEntries(entries, {
 			updateFooter: true,
 			populateHistory: true,
 		});
 		this.renderProjectTrustWarningIfNeeded();
 
-		// Show compaction info if session was compacted
-		const allEntries = this.sessionManager.getEntries();
-		const compactionCount = allEntries.filter((e) => e.type === "compaction").length;
+		const compactionCount = this.sessionManager.getEntries().filter((entry) => entry.type === "compaction").length;
 		if (compactionCount > 0) {
 			this.showStatus(`当前会话已压缩 ${compactionCount} 次`);
+		}
+	}
+
+	private resetTranscriptPagination(): SessionEntry[] {
+		const generation = ++this.transcriptGeneration;
+		this.transcriptCursor = undefined;
+		this.transcriptPageLoading = false;
+		const branch = this.sessionManager.getBranch();
+		if (!this.workspace.isFullscreen()) {
+			this.transcriptSource = undefined;
+			this.transcriptEntries = branch;
+			return branch;
+		}
+
+		const sessionFile = this.sessionManager.getSessionFile();
+		if (!sessionFile || !fs.existsSync(sessionFile)) {
+			this.transcriptSource = undefined;
+			this.transcriptEntries = branch;
+			return branch;
+		}
+
+		const visibleBranch = branch.filter(isTuiVisibleSessionEntry);
+		let tailStart = Math.max(0, visibleBranch.length - TRANSCRIPT_PAGE_SIZE);
+		while (tailStart > 0) {
+			const entry = visibleBranch[tailStart];
+			if (entry?.type !== "message" || entry.message.role !== "toolResult") break;
+			tailStart--;
+		}
+		this.transcriptEntries = visibleBranch.slice(tailStart);
+		const source = new SessionTranscriptSource(sessionFile);
+		this.transcriptSource = source;
+		void source
+			.readTail({ leafId: this.sessionManager.getLeafId(), limit: TRANSCRIPT_PAGE_SIZE })
+			.then((page) => {
+				if (this.transcriptGeneration !== generation || this.transcriptSource !== source) return;
+				this.transcriptCursor = page.previousCursor;
+			})
+			.catch(() => {
+				if (this.transcriptGeneration === generation && this.transcriptSource === source) {
+					this.transcriptSource = undefined;
+					this.transcriptCursor = undefined;
+				}
+			});
+		return this.transcriptEntries;
+	}
+
+	private materializeSessionEntries(entries: SessionEntry[]): Component[] {
+		const chatContainer = this.chatContainer;
+		const pendingTools = this.pendingTools;
+		const streamingBashGroup = this.streamingBashGroup;
+		const temporary = new Container();
+		this.chatContainer = temporary;
+		try {
+			this.renderSessionEntries(entries);
+			return [...temporary.children];
+		} finally {
+			this.chatContainer = chatContainer;
+			this.pendingTools = pendingTools;
+			this.streamingBashGroup = streamingBashGroup;
+		}
+	}
+
+	private async loadPreviousTranscriptPage(): Promise<void> {
+		const source = this.transcriptSource;
+		const cursor = this.transcriptCursor;
+		if (!source || !cursor || this.transcriptPageLoading || this.session.isStreaming) return;
+		this.transcriptPageLoading = true;
+		const generation = this.transcriptGeneration;
+		try {
+			const page = await source.readPrevious(cursor, TRANSCRIPT_PAGE_SIZE);
+			if (this.transcriptGeneration !== generation || this.transcriptSource !== source) return;
+			const existingIds = new Set(this.transcriptEntries.map((entry) => entry.id));
+			const previousEntries = page.entries.filter((entry) => !existingIds.has(entry.id));
+			this.transcriptCursor = page.previousCursor;
+			if (previousEntries.length === 0) return;
+			const existingChildren = [...this.chatContainer.children];
+			const previousChildren = this.materializeSessionEntries(previousEntries);
+			this.chatContainer.children = [...previousChildren, ...existingChildren];
+			this.transcriptEntries = [...previousEntries, ...this.transcriptEntries];
+			this.workspace.preserveViewportAfterPrepend();
+			this.ui.requestRender();
+		} catch (error) {
+			if (error instanceof TranscriptCursorInvalidError && this.transcriptGeneration === generation) {
+				this.resetTranscriptPagination();
+			}
+		} finally {
+			if (this.transcriptGeneration === generation) this.transcriptPageLoading = false;
 		}
 	}
 
@@ -4239,7 +4451,7 @@ export class InteractiveMode {
 		this.headerContextUsageDirty = true;
 		this.workspace.resetScrollback();
 		this.chatContainer.clear();
-		this.renderSessionEntries(this.sessionManager.buildContextEntries());
+		this.renderSessionEntries(this.resetTranscriptPagination());
 	}
 
 	// =========================================================================
@@ -6614,6 +6826,107 @@ export class InteractiveMode {
 				(error, stdout) => resolve(error ? undefined : stdout.trimEnd() || undefined),
 			);
 		});
+	}
+
+	private collectAgentWorkbenchAgents(): AgentWorkbenchAgent[] {
+		const agents = new Map<string, AgentWorkbenchAgent>();
+		for (const entry of this.sessionManager.getBranch()) {
+			if (entry.type !== "message" || entry.message.role !== "toolResult") continue;
+			if (entry.message.toolName !== "subagent") continue;
+			const details = entry.message.details as Partial<SubagentDetails> | undefined;
+			if (!Array.isArray(details?.results)) continue;
+			for (let index = 0; index < details.results.length; index++) {
+				const result = details.results[index] as Partial<SingleResult>;
+				if (typeof result.agent !== "string") continue;
+				const agentId = result.agentId ?? `${details.runId ?? entry.id}:${index + 1}`;
+				const state: AgentRunState =
+					result.state ?? (result.exitCode === -1 ? "running" : result.exitCode === 0 ? "succeeded" : "failed");
+				const messages = Array.isArray(result.messages) ? result.messages : [];
+				const detail =
+					result.errorMessage ||
+					result.stderr ||
+					getSubagentFinalOutput(messages) ||
+					(result.currentAction ? `正在执行 ${result.currentAction}` : undefined);
+				agents.set(agentId, {
+					agentId,
+					agent: result.agent,
+					task: result.task,
+					state,
+					controllable: false,
+					detail,
+				});
+			}
+		}
+
+		for (const snapshot of getCurrentSubagentRuns()) {
+			const persisted = agents.get(snapshot.agentId);
+			agents.set(snapshot.agentId, {
+				agentId: snapshot.agentId,
+				agent: snapshot.agent,
+				task: snapshot.task,
+				state: snapshot.state,
+				controllable: snapshot.controllable,
+				detail: snapshot.currentAction ? `正在执行 ${snapshot.currentAction}` : persisted?.detail,
+			});
+		}
+		return [...agents.values()];
+	}
+
+	private async sendSubagentMessage(agent: AgentWorkbenchAgent): Promise<void> {
+		const active = ACTIVE_AGENT_STATES.has(agent.state);
+		const message = await this.showExtensionInput(
+			active ? `给 ${agent.agent} 发送引导` : `继续 ${agent.agent} 的任务`,
+			"输入指令",
+		);
+		if (!message?.trim()) return;
+		try {
+			if (active) {
+				await steerSubagent(agent.agentId, message.trim());
+				this.showStatus(`已向 ${agent.agent} 发送引导`);
+			} else {
+				this.showStatus(`${agent.agent} 正在继续处理`);
+				await followUpSubagent(agent.agentId, message.trim());
+				this.showStatus(`${agent.agent} 已完成后续任务`);
+			}
+		} catch (error) {
+			this.showError(`控制 ${agent.agent} 失败：${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	private handleAgentsCommand(initialAgentId?: string): void {
+		const data = { agents: this.collectAgentWorkbenchAgents() };
+		let handle: OverlayHandle | undefined;
+		const workbench = new AgentWorkbenchComponent({
+			data,
+			getAgents: () => this.collectAgentWorkbenchAgents(),
+			initialAgentId,
+			getHeight: () => this.ui.terminal.rows,
+			requestRender: () => this.ui.requestRender(),
+			onReturn: () => handle?.hide(),
+			onSteer: (agent) => {
+				handle?.hide();
+				void this.sendSubagentMessage(agent);
+			},
+			onFollowUp: (agent) => {
+				handle?.hide();
+				void this.sendSubagentMessage(agent);
+			},
+			onAbort: (agent) => {
+				void abortSubagent(agent.agentId)
+					.then(() => this.showStatus(`已取消 ${agent.agent}`))
+					.catch((error) =>
+						this.showError(`取消 ${agent.agent} 失败：${error instanceof Error ? error.message : String(error)}`),
+					);
+			},
+			overlayTop: 1,
+		});
+		handle = this.ui.showOverlay(workbench, {
+			row: 1,
+			col: 1,
+			width: Math.max(1, this.ui.terminal.columns - 2),
+			maxHeight: Math.max(1, this.ui.terminal.rows - 2),
+		});
+		this.ui.requestRender();
 	}
 
 	private handleChangesCommand(): void {

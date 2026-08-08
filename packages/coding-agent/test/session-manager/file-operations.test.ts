@@ -3,7 +3,12 @@ import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, rmSync, w
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { findMostRecentSession, loadEntriesFromFile, SessionManager } from "../../src/core/session-manager.ts";
+import {
+	findMostRecentSession,
+	loadEntriesFromFile,
+	loadEntriesFromFileAsync,
+	SessionManager,
+} from "../../src/core/session-manager.ts";
 
 const HEADER_SCAN_LIMIT_BYTES = 1024 * 1024;
 
@@ -66,6 +71,21 @@ describe("loadEntriesFromFile", () => {
 		expect(entries).toHaveLength(2);
 		expect(entries[0].type).toBe("session");
 		expect(entries[1].type).toBe("message");
+	});
+
+	it("opens valid sessions asynchronously with the same context", async () => {
+		const file = join(tempDir, "async-valid.jsonl");
+		writeFileSync(
+			file,
+			" {not json}\n" +
+				'{"type":"session","version":3,"id":"async","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
+				'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}\n',
+		);
+
+		expect(await loadEntriesFromFileAsync(file)).toEqual(loadEntriesFromFile(file));
+		const sessionManager = await SessionManager.openAsync(file, tempDir);
+		expect(sessionManager.getSessionId()).toBe("async");
+		expect(sessionManager.buildSessionContext().messages).toEqual([{ role: "user", content: "hi", timestamp: 1 }]);
 	});
 
 	it("skips malformed lines but keeps valid ones", () => {

@@ -13,7 +13,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "fs";
-import { readdir, stat } from "fs/promises";
+import { open, readdir, stat } from "fs/promises";
 import { join, resolve } from "path";
 import { createInterface } from "readline";
 import { StringDecoder } from "string_decoder";
@@ -28,6 +28,7 @@ import {
 } from "./messages.ts";
 
 export const CURRENT_SESSION_VERSION = 3;
+const ASYNC_SESSION_READ_BUFFER_SIZE = 64 * 1024;
 
 export interface SessionHeader {
 	type: "session";
@@ -555,6 +556,54 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 	return entries;
 }
 
+/**
+ * 异步分块读取 Session，避免整个文件解析期间持续占用事件循环。
+ * 校验规则与 loadEntriesFromFile() 保持一致。
+ */
+export async function loadEntriesFromFileAsync(filePath: string): Promise<FileEntry[]> {
+	const resolvedFilePath = normalizePath(filePath);
+	if (!existsSync(resolvedFilePath)) return [];
+
+	const entries: FileEntry[] = [];
+	const handle = await open(resolvedFilePath, "r");
+	try {
+		const decoder = new StringDecoder("utf8");
+		const buffer = Buffer.allocUnsafe(ASYNC_SESSION_READ_BUFFER_SIZE);
+		let pending = "";
+
+		while (true) {
+			const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+			if (bytesRead === 0) break;
+
+			pending += decoder.write(buffer.subarray(0, bytesRead));
+			let lineStart = 0;
+			let newlineIndex = pending.indexOf("\n", lineStart);
+			while (newlineIndex !== -1) {
+				const entry = parseSessionEntryLine(pending.slice(lineStart, newlineIndex));
+				if (entry) entries.push(entry);
+				lineStart = newlineIndex + 1;
+				newlineIndex = pending.indexOf("\n", lineStart);
+			}
+			pending = pending.slice(lineStart);
+
+			await new Promise<void>((resolve) => setImmediate(resolve));
+		}
+
+		pending += decoder.end();
+		const finalEntry = parseSessionEntryLine(pending);
+		if (finalEntry) entries.push(finalEntry);
+	} finally {
+		await handle.close();
+	}
+
+	if (entries.length === 0) return entries;
+	const header = entries[0];
+	if (header.type !== "session" || typeof (header as { id?: unknown }).id !== "string") {
+		return [];
+	}
+
+	return entries;
+}
 /**
  * Inspect a physical line while searching for the first parsed session entry.
  * Blank and malformed lines are skipped to match loadEntriesFromFile().
@@ -1550,14 +1599,33 @@ export class SessionManager {
 	}
 
 	/**
-	 * Continue the most recent session, or create new if none.
+	 * 异步打开 Session；迁移和索引仍由 SessionManager 的正常初始化路径负责。
+	 */
+	static async openAsync(path: string, sessionDir?: string, cwdOverride?: string): Promise<SessionManager> {
+		const resolvedPath = resolvePath(path);
+		const preloadedFileEntries = await loadEntriesFromFileAsync(resolvedPath);
+		const header = preloadedFileEntries[0];
+		const cwd =
+			cwdOverride ?? (header?.type === "session" ? getSessionHeaderCwd(header) : undefined) ?? process.cwd();
+		const dir = sessionDir ? normalizePath(sessionDir) : resolve(resolvedPath, "..");
+		return new SessionManager(cwd, dir, resolvedPath, true, undefined, preloadedFileEntries);
+	}
+
+	/**
+	 * Find the most recent session that can be continued for this cwd.
 	 * @param cwd Working directory
 	 * @param sessionDir Optional session directory. If omitted, uses default (~/.pi/agent/sessions/<encoded-cwd>/).
 	 */
-	static continueRecent(cwd: string, sessionDir?: string): SessionManager {
+	static findRecentSession(cwd: string, sessionDir?: string): string | null {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
 		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
-		const mostRecent = findMostRecentSession(dir, filterCwd ? cwd : undefined);
+		return findMostRecentSession(dir, filterCwd ? cwd : undefined);
+	}
+
+	/** Continue the most recent session, or create new if none. */
+	static continueRecent(cwd: string, sessionDir?: string): SessionManager {
+		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
+		const mostRecent = SessionManager.findRecentSession(cwd, sessionDir);
 		if (mostRecent) {
 			return new SessionManager(cwd, dir, mostRecent, true);
 		}

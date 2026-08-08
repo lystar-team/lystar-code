@@ -67,6 +67,40 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).toContain("custom result");
 	});
 
+	test("maps Subagent title rows to one stable agentId", () => {
+		const toolDefinition: ToolDefinition = {
+			...createBaseToolDefinition("subagent"),
+			renderCall: () => new Text("subagent parallel\nreader first task\nworker second task", 0, 0),
+			renderResult: () => new Text("parallel summary\nreader done\nworker running", 0, 0),
+		};
+		const component = new ToolExecutionComponent(
+			"subagent",
+			"subagent-call",
+			{ tasks: [{ agent: "reader" }, { agent: "worker" }] },
+			{},
+			toolDefinition,
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult({
+			content: [{ type: "text", text: "done" }],
+			details: {
+				runId: "run-1",
+				results: [
+					{ agent: "reader", agentId: "agent-1" },
+					{ agent: "worker", agentId: "agent-2" },
+				],
+			},
+			isError: false,
+		});
+		component.render(100);
+
+		expect(component.getAgentTargetAtRow(1)).toEqual({ runId: "run-1", agentId: "agent-1" });
+		expect(component.getAgentTargetAtRow(2)).toEqual({ runId: "run-1", agentId: "agent-2" });
+		expect(component.getAgentTargetAtRow(4)).toEqual({ runId: "run-1", agentId: "agent-1" });
+		expect(component.getAgentTargetAtRow(5)).toEqual({ runId: "run-1", agentId: "agent-2" });
+	});
+
 	test("self-rendered empty tool rows take no layout space", () => {
 		const toolDefinition: ToolDefinition = {
 			...createBaseToolDefinition(),
