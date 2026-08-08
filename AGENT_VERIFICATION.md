@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-08T14:20:44Z
+最后核验时间：2026-08-08T14:46:05Z
 
 环境：
 
@@ -27,7 +27,15 @@ Linux x64 候选包在独立 `80x24` tmux PTY 加载包含空 `chain` 和两个 
 
 CodeGraph 已同步到 1206 个文件、20087 个节点和 77861 条边，pending changes 为 0、`reindexRecommended=false`。受影响范围落在 Subagent RPC 状态、TUI Overlay 输入和子会话滚动链路，对应数量、短命令即时发布、Overlay 输入优先和键鼠滚动回归均已包含在 Coding Agent 全量测试中。
 
-当前 Linux 环境没有 macOS 实机和 Windows Console/ConPTY 的交互证据；这两个平台完成了格式、架构、归档内容和自动测试核验，Windows 安装器链等待 main CI 与 Release workflow 继续验证。
+当前 Linux 环境没有 macOS 实机和 Windows Console/ConPTY 的交互证据；这两个平台完成了格式、架构、归档内容和自动测试核验，Windows 安装器链已由 main CI 验证。
+
+`main` commit `f213341f1e3afb2586a5e8b65e99eb3f9563ab18` 的 CI run `31261796935` 七个 job 全部成功，覆盖源码核验与构建、Unix 安装器、TUI、AI、Agent Core、Coding Agent 双分片，以及 Windows managed MinGit Bash 和 PowerShell 5.1 安装器。annotated Tag `v0.84.1-lystar.6` 的 Tag 对象为 `a9853253d2b1afb0dbe738d20216534ea78af0ee`，本地和远端解引用后均固定指向该 commit。
+
+Release workflow run `31261894244` 成功，完成同 commit main CI 绑定、版本校验、离线构建、Bun 1.3.9 五平台打包、artifact attestation 和公开发布。GitHub Release 于 `2026-08-08T14:26:41Z` 发布，为非草稿、非预发布正式版本，共有 10 个公开资产；Release Notes 已列出 parallel 数量、当前动作和子会话滚动三项修复，并保留旧用户级 `~/.pi/agent/extensions/subagent/` 的删除提醒。
+
+公开五平台包重新下载后 `SHA256SUMS` 五项全部通过，文件大小和 SHA 与公开 manifest 一致。公开 Linux x64 包 SHA-256 为 `9877c9358133cbcfba0869a03b53a95f0619654404415de1d2e06f5d369effed`；GitHub Attestations API 返回 1 条 Sigstore bundle，公开包版本和离线模型列表通过。第一次公开资产下载在 GitHub GraphQL 请求阶段返回 `EOF`，清空临时目录并重试后完整下载和验收通过。
+
+本机通过公开 `la update` 从 `0.84.1-lystar.5` 原子更新到 `0.84.1-lystar.6`，`current` 指向 `.6`，`previous` 保留 `.5`，再次更新显示已是最新版本。安装后的 `/home/yean/.local/bin/la` 在独立 `80x24` tmux PTY 显示 `parallel · 2 个 Agent` 和 `$ echo installed-latest`、`read AGENT_VERIFICATION.md` 两项当前动作；通过 `/agents` 进入持久子会话后，PageUp、滚轮和 PageDown 均正确移动并返回底部。`lystar-installed-0841-6` tmux server、Session fixture 和临时解压目录已删除，旧用户级 `~/.pi/agent/extensions/subagent/` 仍不存在。
 
 ### `0.84.1-lystar.5` 发布前核验
 
