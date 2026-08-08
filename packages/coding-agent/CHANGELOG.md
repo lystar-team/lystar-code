@@ -4,6 +4,7 @@
 
 ### LYStar 适配
 
+- `0.84.1-lystar.4` 增加完整活动分支分页和渐进 Session 恢复，完善 `apply_patch`、`edit` 错误恢复、完成状态、Subagent RPC 控制、Agent 工作台及长 Markdown 降级。
 - `0.84.1-lystar.3` 修复 `/changes` 在空工作区错误显示“正在读取 Diff...”的问题。
 - `0.84.1-lystar.2` 将全屏 TUI 调整为轻量任务工作台：运行时显示真实 Agent/Tool 活动，`agent_settled` 后显示不写入 Session 的本轮摘要，并新增 `/changes` 变更审阅器。
 - 顶栏优先显示当前任务与上下文，极小终端优先保留活动状态和输入区；完整更新记录收拢到 `/changelog` Overlay。

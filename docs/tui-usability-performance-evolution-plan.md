@@ -2,7 +2,7 @@
 
 > 文档状态：已完成技术 Review，可按实施清单进入开发
 > 评估日期：2026-08-08
-> 项目基线：Pi `v0.84.1`，LYStar Agent `0.84.1-lystar.3`
+> 项目基线：Pi `v0.84.1`，LYStar Agent `0.84.1-lystar.4`
 > 评估范围：全屏 TUI、Session Resume、历史记录、Markdown/LaTeX/Mermaid、Tool 调用稳固性、完成摘要、Subagent 运行与监督
 > 约束：保持 Session JSONL、Extension API、Tool、Provider、模型 ID 和 `PI_*` 契约兼容
 
@@ -49,7 +49,7 @@ LYStar TUI 已经解决全屏稳定性、固定输入区、长会话虚拟窗口
 
 这里的“可进入开发”只表示方案边界、接口、交互和验收已经明确。文档中的 `[ ]` 仍表示源码尚未实现；benchmark、自动测试和 PTY 结果需要开发完成后才能填写，不能把方案 Review 结论当成运行验证通过。
 
-项目版本以 `packages/coding-agent/package.json` 的 `piConfig` 为事实源：Pi `v0.84.1`、LYStar Agent `0.84.1-lystar.3`。本地维护说明中仍出现的旧版本号不作为本方案基线。
+项目版本以 `packages/coding-agent/package.json` 的 `piConfig` 为事实源：Pi `v0.84.1`、LYStar Agent `0.84.1-lystar.4`。本地维护说明中仍出现的旧版本号不作为本方案基线。
 
 ## 2. 现有基础与证据
 
@@ -1345,7 +1345,7 @@ git diff --check
 
 - Bun 1.3.9 五平台归档构建通过：darwin-arm64、darwin-x64、linux-arm64、linux-x64、windows-x64。
 - `SHA256SUMS` 中 5 个归档全部校验通过。
-- manifest 版本为 `0.84.1-lystar.3`，Pi 版本为 `0.84.1`，仓库为 `octyean/lystar-agent`。
+- manifest 版本为 `0.84.1-lystar.4`，Pi 版本为 `0.84.1`，仓库为 `octyean/lystar-agent`。
 - Linux x64 解压包的 `la --version`、`la --help`、`PI_OFFLINE=1 la --list-models` 通过。
 
 ### 14.6 发布判断

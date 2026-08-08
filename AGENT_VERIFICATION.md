@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-07T16:14:24Z
+最后核验时间：2026-08-08T05:31:34Z
 
 环境：
 
@@ -14,6 +14,22 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### `0.84.1-lystar.4` 发布前核验
+
+发布事实源为 `piConfig.productVersion = 0.84.1-lystar.4`，Pi workspace 包版本继续保持 `0.84.1`。本版分离模型上下文与完整活动分支 transcript，增加反向 JSONL 分页、渐进 Session opening、hidden `apply_patch`、`edit` 候选行号、最终 Turn 状态判定、Subagent RPC controller、`/agents` 工作台、长 Markdown/代码折叠和性能基准；Session JSONL、Provider、模型 ID、CLI、`PI_*` 与现有 Extension API 保持兼容。功能提交为 `836904e0a`。
+
+显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 完成 `npm run check`、`npm run build:offline` 和全部发布 gate。TUI 全量退出码 0；AI 104 个 test files/870 项通过，25 个 files/825 项跳过；Agent Core 20 个 files/402 项通过、1 项跳过；Coding Agent 231 个 files/2044 项通过，6 个 files/49 项跳过。Unix 安装器的安装、PATH、SHA 校验、回退、卸载和物化检查通过。
+
+16/64/256 MB Session 均使用 80x24 真实 PTY 完成 2 次 warmup 和 10 次测量。`T_shell` p95 分别为 35/36/50 ms，`T_tail` p95 为 81/83/105 ms，`T_context_ready` p95 为 564/802/2728 ms。256 MB Session 仍由全量 entry 物化和 V8 GC 主导，event-loop p95 为 115.7 ms、峰值 RSS 为 432.1 MiB；Yean 在获知该限制后明确授权发布 `.4`，后续性能工作保留 lazy entry store 和数值化 resize benchmark，不把该余量描述为已解决。
+
+五平台候选包使用 Bun `1.3.9` 构建，`SHA256SUMS` 五项全部通过，manifest 版本为 `0.84.1-lystar.4`、Pi 版本为 `0.84.1`、仓库为 `octyean/lystar-agent`。格式覆盖 macOS ARM64/x64 Mach-O、Linux ARM64/x64 ELF 和 Windows x64 PE32+；Linux x64 候选包 SHA-256 为 `e5406d9bac5be28bcc77f0375ad0b3a0ffe879c931792bf40bf1500b91a90351`，其 `la --version`、中文帮助和 `PI_OFFLINE=1 la --list-models` 通过。
+
+Linux x64 候选包在全新 Git 工作区的独立 `80x24` tmux PTY 正常启动，`/agents` 显示 0 个 Agent 的中文空态，Esc 返回主会话，`/quit` 正常退出；`lystar-release-0841-4-candidate` tmux server 已关闭。此前源码 PTY 另覆盖 `40x20`、`80x8`、`80x24`、`120x36`、活动分支历史分页、Agent 单栏/双栏详情和 256 MB Session resize。
+
+基于功能提交创建独立模拟 worktree，将最新 `upstream/main` `e47b8e37a` 合入。冲突只落在 `interactive-mode.ts`、`interactive-tui.test.ts` 和 `settings-selector.test.ts`，均来自上游新增 fullscreen exit output 与 LYStar 工作区输入测试占用同一段落；按双方语义合并后 `npm run check` 和 6 个聚焦测试文件共 38 项通过。模拟 branch、worktree 和独立依赖已删除，没有进入 `main`。
+
+当前 Linux 环境没有 macOS 实机和 Windows Console/ConPTY 的交互证据；这两个平台只验证了格式、架构、归档、自动测试和 CI 平台链路。
 
 ### `0.84.1-lystar.3` 发布前核验
 
