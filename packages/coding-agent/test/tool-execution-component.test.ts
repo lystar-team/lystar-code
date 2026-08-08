@@ -7,6 +7,8 @@ import type { ToolDefinition } from "../src/core/extensions/types.ts";
 import { type BashOperations, createBashToolDefinition } from "../src/core/tools/bash.ts";
 import { createReadTool, createReadToolDefinition } from "../src/core/tools/read.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
+import { createApplyPatchToolDefinition } from "../src/extensions/apply-patch/index.ts";
+import { SubagentResultComponent } from "../src/modes/interactive/components/subagent-run.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
@@ -70,8 +72,16 @@ describe("ToolExecutionComponent parity", () => {
 	test("maps Subagent title rows to one stable agentId", () => {
 		const toolDefinition: ToolDefinition = {
 			...createBaseToolDefinition("subagent"),
-			renderCall: () => new Text("subagent parallel\nreader first task\nworker second task", 0, 0),
-			renderResult: () => new Text("parallel summary\nreader done\nworker running", 0, 0),
+			renderCall: () => new Text("subagent parallel", 0, 0),
+			renderResult: (result, _options, _theme, context) => {
+				const details = result.details as never;
+				const rendered =
+					context.lastComponent instanceof SubagentResultComponent
+						? context.lastComponent
+						: new SubagentResultComponent(details);
+				rendered.setDetails(details);
+				return rendered;
+			},
 		};
 		const component = new ToolExecutionComponent(
 			"subagent",
@@ -86,19 +96,97 @@ describe("ToolExecutionComponent parity", () => {
 			content: [{ type: "text", text: "done" }],
 			details: {
 				runId: "run-1",
+				mode: "parallel",
+				agentScope: "user",
 				results: [
-					{ agent: "reader", agentId: "agent-1" },
-					{ agent: "worker", agentId: "agent-2" },
+					{
+						runId: "run-1",
+						agent: "reader",
+						agentSource: "builtin",
+						agentId: "agent-1",
+						task: "first task",
+						state: "succeeded",
+					},
+					{
+						runId: "run-1",
+						agent: "worker",
+						agentSource: "builtin",
+						agentId: "agent-2",
+						task: "second task",
+						state: "running",
+					},
 				],
 			},
 			isError: false,
 		});
 		component.render(100);
 
-		expect(component.getAgentTargetAtRow(1)).toEqual({ runId: "run-1", agentId: "agent-1" });
-		expect(component.getAgentTargetAtRow(2)).toEqual({ runId: "run-1", agentId: "agent-2" });
-		expect(component.getAgentTargetAtRow(4)).toEqual({ runId: "run-1", agentId: "agent-1" });
-		expect(component.getAgentTargetAtRow(5)).toEqual({ runId: "run-1", agentId: "agent-2" });
+		expect(component.getAgentTargetAtRow(0)).toBeUndefined();
+		expect(component.getAgentTargetAtRow(1)).toMatchObject({ runId: "run-1", agentId: "agent-1" });
+		expect(component.getAgentTargetAtRow(2)).toMatchObject({ runId: "run-1", agentId: "agent-2" });
+	});
+
+	test("shows apply_patch files and counts by default, then full diffs when expanded", () => {
+		const component = new ToolExecutionComponent(
+			"apply_patch",
+			"apply-patch-call",
+			{ input: "*** Begin Patch\n*** End Patch" },
+			{},
+			createApplyPatchToolDefinition(),
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult({
+			content: [{ type: "text", text: "Applied patch to 3 file(s)." }],
+			details: {
+				files: [
+					{ path: "docs/new.md", operation: "add", additions: 1, deletions: 0, diff: "+ 1 created" },
+					{
+						path: "src/index.ts",
+						operation: "update",
+						additions: 1,
+						deletions: 1,
+						diff: "- 1 before\n+ 1 after",
+					},
+					{ path: "src/old.ts", operation: "delete", additions: 0, deletions: 1, diff: "- 1 removed" },
+				],
+			},
+			isError: false,
+		});
+
+		const collapsed = stripAnsi(component.render(100).join("\n"));
+		expect(collapsed).toContain("已应用补丁 3 个文件 +2 -2");
+		expect(collapsed).toContain("docs/new.md  +1 -0");
+		expect(collapsed).toContain("src/index.ts  +1 -1");
+		expect(collapsed).toContain("src/old.ts  +0 -1");
+		expect(collapsed).not.toContain("before");
+
+		component.setExpanded(true);
+		const expanded = stripAnsi(component.render(100).join("\n"));
+		expect(expanded).toContain("before");
+		expect(expanded).toContain("after");
+		expect(expanded).toContain("removed");
+	});
+
+	test("renders apply_patch failures and legacy file details", () => {
+		const tool = createApplyPatchToolDefinition();
+		const legacy = new ToolExecutionComponent("apply_patch", "legacy", {}, {}, tool, createFakeTui(), process.cwd());
+		legacy.updateResult({
+			content: [{ type: "text", text: "Applied patch to 1 file(s)." }],
+			details: { files: [{ path: "legacy.ts", additions: 2, deletions: 1, diff: "- 1 old\n+ 1 new" }] },
+			isError: false,
+		});
+		expect(stripAnsi(legacy.render(80).join("\n"))).toContain("legacy.ts  +2 -1");
+
+		const failed = new ToolExecutionComponent("apply_patch", "failed", {}, {}, tool, createFakeTui(), process.cwd());
+		failed.updateResult({
+			content: [{ type: "text", text: "Could not find the expected text in src/index.ts" }],
+			isError: true,
+		});
+		const rendered = stripAnsi(failed.render(80).join("\n"));
+		expect(rendered).toContain("应用补丁失败");
+		expect(rendered).toContain("Could not find the expected text");
+		expect(rendered).not.toContain("已应用补丁");
 	});
 
 	test("self-rendered empty tool rows take no layout space", () => {

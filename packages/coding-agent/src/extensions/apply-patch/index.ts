@@ -1,5 +1,6 @@
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { Container, Spacer, Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import type { ExtensionAPI, ToolDefinition } from "../../core/extensions/types.ts";
 import {
@@ -13,6 +14,9 @@ import {
 } from "../../core/tools/edit-diff.ts";
 import { withFileMutationQueue } from "../../core/tools/file-mutation-queue.ts";
 import { resolveToCwd } from "../../core/tools/path-utils.ts";
+import { renderToolPath } from "../../core/tools/render-utils.ts";
+import { renderDiff } from "../../modes/interactive/components/diff.ts";
+import { formatToolSummary, getToolSummary } from "../../modes/interactive/components/tool-summary.ts";
 
 const applyPatchSchema = Type.Object({
 	input: Type.String({ description: "Patch text in the *** Begin Patch format." }),
@@ -38,10 +42,31 @@ type StagedPatchFile = {
 export interface ApplyPatchDetails {
 	files: Array<{
 		path: string;
+		operation: "add" | "update" | "delete";
 		additions: number;
 		deletions: number;
 		diff: string;
 	}>;
+}
+
+type ApplyPatchFileDetails = ApplyPatchDetails["files"][number];
+
+function formatCounts(additions: number, deletions: number): string {
+	return `+${additions} -${deletions}`;
+}
+
+function operationIcon(operation: ApplyPatchFileDetails["operation"] | undefined): string {
+	if (operation === "add") return "+";
+	if (operation === "delete") return "-";
+	return "✎";
+}
+
+function getTextResult(result: { content: Array<{ type: string; text?: string }> }): string {
+	return result.content
+		.filter((item) => item.type === "text")
+		.map((item) => item.text ?? "")
+		.filter(Boolean)
+		.join("\n");
 }
 
 export interface ApplyPatchOperations {
@@ -320,6 +345,7 @@ export function createApplyPatchToolDefinition(options?: {
 						details: {
 							files: staged.map((file) => ({
 								path: file.operation.path,
+								operation: file.operation.kind,
 								additions: file.additions,
 								deletions: file.deletions,
 								diff: file.diff,
@@ -328,6 +354,52 @@ export function createApplyPatchToolDefinition(options?: {
 					};
 				},
 			);
+		},
+		renderCall(_args, _theme, context) {
+			const details = context.resultDetails as ApplyPatchDetails | undefined;
+			const additions = details?.files.reduce((total, file) => total + file.additions, 0) ?? 0;
+			const deletions = details?.files.reduce((total, file) => total + file.deletions, 0) ?? 0;
+			const summary = getToolSummary(context.lastComponent);
+			summary.setText(
+				formatToolSummary({
+					icon: "✎",
+					subject: details ? `${details.files.length} 个文件` : "",
+					expanded: context.expanded,
+					isPartial: context.isPartial,
+					isError: context.isError,
+					labels: { running: "正在应用补丁", success: "已应用补丁", error: "应用补丁失败" },
+					detail: details ? formatCounts(additions, deletions) : undefined,
+				}),
+			);
+			return summary;
+		},
+		renderResult(result, _options, theme, context) {
+			const component = (context.lastComponent as Container | undefined) ?? new Container();
+			component.clear();
+			if (context.isError) {
+				const message = getTextResult(result);
+				if (message) component.addChild(new Text(theme.fg("error", message), 0, 0));
+				return component;
+			}
+
+			const details = result.details as
+				| { files?: Array<Partial<ApplyPatchFileDetails> & Pick<ApplyPatchFileDetails, "path">> }
+				| undefined;
+			for (const file of details?.files ?? []) {
+				const counts = formatCounts(file.additions ?? 0, file.deletions ?? 0);
+				component.addChild(
+					new Text(
+						`${theme.fg("accent", operationIcon(file.operation))} ${renderToolPath(file.path, theme, context.cwd)}${theme.fg("muted", `  ${counts}`)}`,
+						0,
+						0,
+					),
+				);
+				if (context.expanded && file.diff) {
+					component.addChild(new Spacer(1));
+					component.addChild(new Text(renderDiff(file.diff, { filePath: file.path }), 1, 0));
+				}
+			}
+			return component;
 		},
 	};
 }

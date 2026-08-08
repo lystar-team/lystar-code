@@ -57,9 +57,9 @@ describe("built-in apply_patch extension", () => {
 
 		const details = result.details as ApplyPatchDetails;
 		expect(details.files).toEqual([
-			expect.objectContaining({ path: "add.txt", additions: 1, deletions: 0 }),
-			expect.objectContaining({ path: "delete.txt", additions: 0, deletions: 1 }),
-			expect.objectContaining({ path: "update.txt", additions: 1, deletions: 1 }),
+			expect.objectContaining({ path: "add.txt", operation: "add", additions: 1, deletions: 0 }),
+			expect.objectContaining({ path: "delete.txt", operation: "delete", additions: 0, deletions: 1 }),
+			expect.objectContaining({ path: "update.txt", operation: "update", additions: 1, deletions: 1 }),
 		]);
 		expect(details.files.every((file) => typeof file.diff === "string" && file.diff.length > 0)).toBe(true);
 	});

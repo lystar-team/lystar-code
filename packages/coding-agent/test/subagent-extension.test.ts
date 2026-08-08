@@ -9,12 +9,13 @@ import { builtInExtensions } from "../src/extensions/index.ts";
 import { type AgentConfig, BUILTIN_AGENTS, discoverAgents } from "../src/extensions/subagent/agents.ts";
 import subagentExtension, {
 	abortSubagent,
+	continueSubagentSession,
 	followUpSubagent,
 	getCurrentSubagentRuns,
-	getFinalOutput,
 	SUBAGENT_RETENTION_MS,
 	type SubagentDetails,
 	SubagentRunController,
+	type SubagentSessionDescriptor,
 	steerSubagent,
 } from "../src/extensions/subagent/index.ts";
 
@@ -32,8 +33,15 @@ function writeFauxRpcScript(): string {
 	writeFileSync(
 		script,
 		`let turn = 0;
+const sessionArg = process.argv.indexOf("--session");
+const sessionFile = sessionArg >= 0 ? process.argv[sessionArg + 1] : ${JSON.stringify(join(dir, "child.jsonl"))};
 function output(value) { process.stdout.write(JSON.stringify(value) + "\\n"); }
-function respond(command) { output({ type: "response", id: command.id, command: command.type, success: true, data: {} }); }
+function respond(command) {
+	const data = command.type === "get_state"
+		? { sessionId: "faux-session", sessionFile }
+		: command.type === "get_messages" ? { messages: [] } : {};
+	output({ type: "response", id: command.id, command: command.type, success: true, data });
+}
 function settle(text) {
 	output({ type: "agent_start" });
 	output({ type: "tool_execution_start", toolCallId: "tool-" + turn, toolName: "read", args: { path: "fixture" } });
@@ -102,6 +110,7 @@ async function executeWithFauxRpc(params: Record<string, unknown>) {
 		const result = await tool.execute("subagent-test", params, undefined, undefined, {
 			cwd: process.cwd(),
 			hasUI: false,
+			sessionManager: { getSessionFile: () => join(tempDirs.at(-1)!, "parent.jsonl") },
 		} as never);
 		const shutdown = extension.handlers.get("session_shutdown")?.[0];
 		if (shutdown) await shutdown({ type: "session_shutdown", reason: "quit" });
@@ -158,10 +167,13 @@ describe("built-in subagent extension", () => {
 			state: "succeeded",
 			currentAction: undefined,
 		});
-		expect(singleResult.messages).toEqual(
-			expect.arrayContaining([expect.objectContaining({ role: "toolResult", details: { preserved: true } })]),
-		);
-		expect(getFinalOutput(singleResult.messages)).toBe("done:single");
+		expect(singleResult.finalOutput).toBe("done:single");
+		expect(singleResult.messages).toBeUndefined();
+		expect(singleResult.session).toMatchObject({
+			version: 1,
+			sessionId: "faux-session",
+			parentSessionFile: expect.stringContaining("parent.jsonl"),
+		});
 		expect(singleDetails.results[0].usage).toMatchObject({ input: 1, output: 1, turns: 1 });
 		expect(single.content).toEqual([{ type: "text", text: "done:single" }]);
 
@@ -206,6 +218,7 @@ describe("built-in subagent extension", () => {
 				{
 					cwd: process.cwd(),
 					hasUI: false,
+					sessionManager: { getSessionFile: () => join(tempDirs.at(-1)!, "parent.jsonl") },
 				} as never,
 			);
 			await new Promise((resolve) => setTimeout(resolve, 110));
@@ -237,6 +250,40 @@ describe("built-in subagent extension", () => {
 		}
 	});
 
+	it("resumes a completed subagent from the same persistent session after the RPC registry is recreated", async () => {
+		const script = writeFauxRpcScript();
+		const originalScript = process.argv[1];
+		process.argv[1] = script;
+		try {
+			const firstExtension = await loadSubagentExtension();
+			const firstResult = await firstExtension.tools
+				.get("subagent")!
+				.definition.execute("subagent-resume", { agent: "worker", task: "first" }, undefined, undefined, {
+					cwd: process.cwd(),
+					hasUI: false,
+					sessionManager: { getSessionFile: () => join(tempDirs.at(-1)!, "parent.jsonl") },
+				} as never);
+			const completed = (firstResult.details as SubagentDetails).results[0]!;
+			const descriptor: SubagentSessionDescriptor = {
+				agentId: completed.agentId!,
+				agent: completed.agent,
+				agentSource: completed.agentSource!,
+				task: completed.task,
+				agentScope: "user",
+				session: completed.session!,
+			};
+			await firstExtension.handlers.get("session_shutdown")?.[0]?.({ type: "session_shutdown", reason: "quit" });
+
+			const resumedExtension = await loadSubagentExtension();
+			await continueSubagentSession(descriptor, "resume");
+			await vi.waitFor(() => expect(getCurrentSubagentRuns()[0]?.state).toBe("succeeded"));
+			expect(getCurrentSubagentRuns()[0]?.session?.sessionFile).toBe(descriptor.session.sessionFile);
+			await resumedExtension.handlers.get("session_shutdown")?.[0]?.({ type: "session_shutdown", reason: "quit" });
+		} finally {
+			process.argv[1] = originalScript;
+		}
+	});
+
 	it("supports steer, follow-up, abort, and retention disposal through the RPC controller", async () => {
 		const agent: AgentConfig = { ...BUILTIN_AGENTS.find((candidate) => candidate.name === "worker")! };
 		let updateCount = 0;
@@ -258,7 +305,7 @@ describe("built-in subagent extension", () => {
 		expect((await first).state).toBe("succeeded");
 		expect(updateCount).toBeGreaterThan(0);
 		expect(updateCount).toBeLessThanOrEqual(3);
-		expect((await controller.followUp("second")).messages.at(-1)).toMatchObject({ role: "assistant" });
+		expect((await controller.followUp("second")).messages?.at(-1)).toMatchObject({ role: "assistant" });
 
 		const runningFollowUp = controller.followUp("cancel me");
 		await new Promise((resolve) => setTimeout(resolve, 10));

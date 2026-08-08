@@ -28,6 +28,7 @@ function createWorkbench(
 		onSteer?: (agent: AgentWorkbenchAgent) => void;
 		onFollowUp?: (agent: AgentWorkbenchAgent) => void;
 		onAbort?: (agent: AgentWorkbenchAgent) => void;
+		onOpen?: (agent: AgentWorkbenchAgent) => void;
 	} = {},
 ) {
 	return new AgentWorkbenchComponent({
@@ -38,6 +39,7 @@ function createWorkbench(
 		onSteer: callbacks.onSteer,
 		onFollowUp: callbacks.onFollowUp,
 		onAbort: callbacks.onAbort,
+		onOpen: callbacks.onOpen,
 		overlayTop: 0,
 	});
 }
@@ -168,5 +170,17 @@ describe("AgentWorkbenchComponent", () => {
 		workbench.render(120);
 		workbench.handleInput("\x1b[<0;1;1M");
 		expect(returned).toBe(1);
+	});
+
+	it("acts as a session index when onOpen is provided", () => {
+		const opened: AgentWorkbenchAgent[] = [];
+		const workbench = createWorkbench({ onOpen: (agent) => opened.push(agent) });
+		const output = workbench.render(80).join("\n");
+		expect(output).toContain("Enter 打开会话");
+		expect(output).not.toContain("详情");
+
+		workbench.handleInput("\x1b[B");
+		workbench.handleInput("\r");
+		expect(opened).toEqual([agents[1]]);
 	});
 });

@@ -102,12 +102,14 @@ import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 import {
 	type AgentRunState,
 	abortSubagent,
-	followUpSubagent,
+	continueSubagentSession,
 	getCurrentSubagentRuns,
+	getLiveSubagentMessages,
 	getFinalOutput as getSubagentFinalOutput,
 	type SingleResult,
 	type SubagentDetails,
-	steerSubagent,
+	type SubagentSessionDescriptor,
+	subscribeSubagent,
 } from "../../extensions/subagent/index.ts";
 import { localizeSettingValue } from "../../locales/settings-zh-CN.ts";
 import { formatThinkingLevel, t } from "../../locales/zh-CN.ts";
@@ -162,6 +164,8 @@ import {
 	type StatusIndicator,
 	WorkingStatusIndicator,
 } from "./components/status-indicator.ts";
+import type { SubagentRunTarget } from "./components/subagent-run.ts";
+import { SubagentSessionViewComponent } from "./components/subagent-session-view.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { ToolExecutionGroupComponent } from "./components/tool-execution-group.ts";
 import { TreeSelectorComponent } from "./components/tree-selector.ts";
@@ -461,7 +465,6 @@ export function createInteractiveTuiReference(getTui: () => TUI): TUI {
 }
 
 const TRANSCRIPT_PAGE_SIZE = 80;
-const ACTIVE_AGENT_STATES = new Set<AgentRunState>(["queued", "running", "waiting"]);
 
 export class InteractiveMode {
 	private runtimeHost: AgentSessionRuntime;
@@ -2958,7 +2961,7 @@ export class InteractiveMode {
 					if (component instanceof ToolExecutionComponent) {
 						const agentTarget = component.getAgentTargetAtRow(componentRow);
 						if (agentTarget) {
-							this.handleAgentsCommand(agentTarget.agentId);
+							this.openSubagentSession(agentTarget);
 							handled = true;
 						}
 					}
@@ -4133,16 +4136,18 @@ export class InteractiveMode {
 
 	private renderSessionItems(
 		items: readonly RenderSessionItem[],
-		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
+		options: { updateFooter?: boolean; populateHistory?: boolean; cwd?: string; includeCacheMisses?: boolean } = {},
 	): void {
 		this.pendingTools.clear();
 		this.streamingBashGroup = undefined;
 		const renderedPendingTools = new Map<string, ToolExecutionComponent>();
 		// Cache-miss notices are not persisted; re-derive them from the full entry
 		// list and re-inject them after the assistant messages that paid for them.
-		const cacheMisses = this.settingsManager.getShowCacheMissNotices()
-			? collectCacheMisses(this.sessionManager.getEntries(), this.session.modelRuntime)
-			: new Map<AssistantMessage, CacheMiss>();
+		const cacheMisses =
+			(options.includeCacheMisses ?? true) && this.settingsManager.getShowCacheMissNotices()
+				? collectCacheMisses(this.sessionManager.getEntries(), this.session.modelRuntime)
+				: new Map<AssistantMessage, CacheMiss>();
+		const cwd = options.cwd ?? this.sessionManager.getCwd();
 
 		if (options.updateFooter) {
 			this.footer.invalidate();
@@ -4173,7 +4178,7 @@ export class InteractiveMode {
 							},
 							this.getRegisteredToolDefinition(content.name),
 							this.ui,
-							this.sessionManager.getCwd(),
+							cwd,
 						);
 						component.setExpanded(this.toolOutputExpanded);
 						if (content.name === "bash") {
@@ -4377,6 +4382,24 @@ export class InteractiveMode {
 		this.chatContainer = temporary;
 		try {
 			this.renderSessionEntries(entries);
+			return [...temporary.children];
+		} finally {
+			this.chatContainer = chatContainer;
+			this.pendingTools = pendingTools;
+			this.streamingBashGroup = streamingBashGroup;
+		}
+	}
+
+	private materializeSubagentMessages(messages: AgentMessage[], cwd: string): Component[] {
+		const chatContainer = this.chatContainer;
+		const pendingTools = this.pendingTools;
+		const streamingBashGroup = this.streamingBashGroup;
+		const temporary = new Container();
+		this.chatContainer = temporary;
+		this.pendingTools = new Map();
+		this.streamingBashGroup = undefined;
+		try {
+			this.renderSessionItems(messages as RenderSessionItem[], { cwd, includeCacheMisses: false });
 			return [...temporary.children];
 		} finally {
 			this.chatContainer = chatContainer;
@@ -6845,6 +6868,7 @@ export class InteractiveMode {
 				const detail =
 					result.errorMessage ||
 					result.stderr ||
+					result.finalOutput ||
 					getSubagentFinalOutput(messages) ||
 					(result.currentAction ? `正在执行 ${result.currentAction}` : undefined);
 				agents.set(agentId, {
@@ -6852,8 +6876,12 @@ export class InteractiveMode {
 					agent: result.agent,
 					task: result.task,
 					state,
-					controllable: false,
+					controllable: Boolean(result.session),
 					detail,
+					agentSource: result.agentSource,
+					agentScope: details.agentScope,
+					session: result.session,
+					legacyMessages: result.messages,
 				});
 			}
 		}
@@ -6865,32 +6893,121 @@ export class InteractiveMode {
 				agent: snapshot.agent,
 				task: snapshot.task,
 				state: snapshot.state,
-				controllable: snapshot.controllable,
+				controllable: snapshot.controllable || Boolean(snapshot.session ?? persisted?.session),
 				detail: snapshot.currentAction ? `正在执行 ${snapshot.currentAction}` : persisted?.detail,
+				agentSource: snapshot.agentSource ?? persisted?.agentSource,
+				agentScope: persisted?.agentScope,
+				session: snapshot.session ?? persisted?.session,
+				legacyMessages: persisted?.legacyMessages,
 			});
 		}
 		return [...agents.values()];
 	}
 
-	private async sendSubagentMessage(agent: AgentWorkbenchAgent): Promise<void> {
-		const active = ACTIVE_AGENT_STATES.has(agent.state);
-		const message = await this.showExtensionInput(
-			active ? `给 ${agent.agent} 发送引导` : `继续 ${agent.agent} 的任务`,
-			"输入指令",
-		);
-		if (!message?.trim()) return;
+	private subagentStatusLabel(state: AgentRunState): string {
+		if (state === "queued") return "排队中";
+		if (state === "running") return "运行中";
+		if (state === "waiting") return "等待中";
+		if (state === "succeeded") return "已完成";
+		if (state === "failed") return "失败";
+		return "已取消";
+	}
+
+	private async loadSubagentMessages(target: SubagentRunTarget): Promise<AgentMessage[]> {
 		try {
-			if (active) {
-				await steerSubagent(agent.agentId, message.trim());
-				this.showStatus(`已向 ${agent.agent} 发送引导`);
-			} else {
-				this.showStatus(`${agent.agent} 正在继续处理`);
-				await followUpSubagent(agent.agentId, message.trim());
-				this.showStatus(`${agent.agent} 已完成后续任务`);
-			}
-		} catch (error) {
-			this.showError(`控制 ${agent.agent} 失败：${error instanceof Error ? error.message : String(error)}`);
+			const live = await getLiveSubagentMessages(target.agentId);
+			if (live) return live;
+		} catch {}
+		if (target.session && fs.existsSync(target.session.sessionFile)) {
+			const session = SessionManager.open(target.session.sessionFile);
+			return session.getBranch().flatMap((entry) => sessionEntryToContextMessages(entry)) as AgentMessage[];
 		}
+		return (target.legacyMessages ?? []) as AgentMessage[];
+	}
+
+	private openSubagentSession(target: SubagentRunTarget): void {
+		let handle: OverlayHandle | undefined;
+		let unsubscribe: (() => void) | undefined;
+		let refreshTimer: NodeJS.Timeout | undefined;
+		let closed = false;
+		const editor = target.session
+			? new CustomEditor(this.ui, getEditorTheme(), this.keybindings, {
+					paddingX: this.workspace.isFullscreen() ? 2 : 1,
+					autocompleteMaxVisible: this.settingsManager.getAutocompleteMaxVisible(),
+				})
+			: undefined;
+		const close = () => {
+			closed = true;
+			if (refreshTimer) clearTimeout(refreshTimer);
+			unsubscribe?.();
+			handle?.hide();
+		};
+		const view = new SubagentSessionViewComponent({
+			agent: target.agent,
+			status: this.subagentStatusLabel(target.state),
+			readOnly: !target.session,
+			editor,
+			getHeight: () => this.ui.terminal.rows,
+			requestRender: () => this.ui.requestRender(),
+			renderMessages: (messages) =>
+				this.materializeSubagentMessages(messages, target.session?.cwd ?? this.sessionManager.getCwd()),
+			onReturn: close,
+			onAbort: () => {
+				void abortSubagent(target.agentId).catch((error) =>
+					view.setStatus(`取消失败：${error instanceof Error ? error.message : String(error)}`),
+				);
+			},
+			overlayTop: 1,
+		});
+		const refresh = async () => {
+			if (closed) return;
+			const messages = await this.loadSubagentMessages(target);
+			if (closed) return;
+			view.setMessages(messages);
+			const snapshot = getCurrentSubagentRuns().find((run) => run.agentId === target.agentId);
+			view.setStatus(snapshot ? this.subagentStatusLabel(snapshot.state) : this.subagentStatusLabel(target.state));
+		};
+		const scheduleRefresh = () => {
+			if (refreshTimer || closed) return;
+			refreshTimer = setTimeout(() => {
+				refreshTimer = undefined;
+				void refresh();
+			}, 32);
+		};
+		const bindEvents = () => {
+			unsubscribe?.();
+			unsubscribe = subscribeSubagent(target.agentId, scheduleRefresh);
+		};
+		if (editor && target.session) {
+			editor.onSubmit = (text) => {
+				const message = text.trim();
+				if (!message) return;
+				editor.setText("");
+				const descriptor: SubagentSessionDescriptor = {
+					agentId: target.agentId,
+					agent: target.agent,
+					agentSource: target.agentSource,
+					task: target.task,
+					agentScope: target.agentScope,
+					session: target.session!,
+				};
+				view.setStatus("发送中");
+				void continueSubagentSession(descriptor, message)
+					.then(() => {
+						bindEvents();
+						void refresh();
+					})
+					.catch((error) => view.setStatus(`发送失败：${error instanceof Error ? error.message : String(error)}`));
+			};
+		}
+		handle = this.ui.showOverlay(view, {
+			row: 1,
+			col: 1,
+			width: Math.max(1, this.ui.terminal.columns - 2),
+			maxHeight: Math.max(1, this.ui.terminal.rows - 2),
+		});
+		bindEvents();
+		void refresh();
 	}
 
 	private handleAgentsCommand(initialAgentId?: string): void {
@@ -6903,13 +7020,19 @@ export class InteractiveMode {
 			getHeight: () => this.ui.terminal.rows,
 			requestRender: () => this.ui.requestRender(),
 			onReturn: () => handle?.hide(),
-			onSteer: (agent) => {
+			onOpen: (agent) => {
 				handle?.hide();
-				void this.sendSubagentMessage(agent);
-			},
-			onFollowUp: (agent) => {
-				handle?.hide();
-				void this.sendSubagentMessage(agent);
+				this.openSubagentSession({
+					agentId: agent.agentId,
+					agent: agent.agent,
+					agentSource: agent.agentSource ?? "unknown",
+					agentScope: agent.agentScope ?? "user",
+					task: agent.task ?? "",
+					state: agent.state,
+					finalOutput: agent.detail,
+					session: agent.session,
+					legacyMessages: agent.legacyMessages,
+				});
 			},
 			onAbort: (agent) => {
 				void abortSubagent(agent.agentId)

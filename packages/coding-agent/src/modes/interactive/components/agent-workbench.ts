@@ -7,7 +7,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import type { AgentRunState } from "../../../extensions/subagent/index.ts";
+import type { AgentRunState, SingleResult, SubagentSessionRef } from "../../../extensions/subagent/index.ts";
 import { parseMouseEvent } from "../mouse.ts";
 import { theme } from "../theme/theme.ts";
 
@@ -18,6 +18,10 @@ export interface AgentWorkbenchAgent {
 	state: AgentRunState;
 	controllable: boolean;
 	detail?: string;
+	agentSource?: SingleResult["agentSource"];
+	agentScope?: "user" | "project" | "both";
+	session?: SubagentSessionRef;
+	legacyMessages?: SingleResult["messages"];
 }
 
 export interface AgentWorkbenchData {
@@ -90,6 +94,7 @@ export class AgentWorkbenchComponent implements Component, Focusable {
 	private readonly onSteer: (agent: AgentWorkbenchAgent) => void;
 	private readonly onFollowUp: (agent: AgentWorkbenchAgent) => void;
 	private readonly onAbort: (agent: AgentWorkbenchAgent) => void;
+	private readonly onOpen: ((agent: AgentWorkbenchAgent) => void) | undefined;
 	private readonly overlayTop: number;
 
 	constructor(options: {
@@ -102,6 +107,7 @@ export class AgentWorkbenchComponent implements Component, Focusable {
 		onSteer?: (agent: AgentWorkbenchAgent) => void;
 		onFollowUp?: (agent: AgentWorkbenchAgent) => void;
 		onAbort?: (agent: AgentWorkbenchAgent) => void;
+		onOpen?: (agent: AgentWorkbenchAgent) => void;
 		overlayTop?: number;
 	}) {
 		this.data = options.data;
@@ -119,6 +125,7 @@ export class AgentWorkbenchComponent implements Component, Focusable {
 		this.onSteer = options.onSteer ?? (() => {});
 		this.onFollowUp = options.onFollowUp ?? (() => {});
 		this.onAbort = options.onAbort ?? (() => {});
+		this.onOpen = options.onOpen;
 		this.overlayTop = options.overlayTop ?? 1;
 	}
 
@@ -165,7 +172,12 @@ export class AgentWorkbenchComponent implements Component, Focusable {
 
 	private runSelectedAction(): void {
 		const selected = this.selectedAgent;
-		if (!selected?.controllable) return;
+		if (!selected) return;
+		if (this.onOpen) {
+			this.onOpen(selected);
+			return;
+		}
+		if (!selected.controllable) return;
 		if (isActive(selected)) this.onSteer(selected);
 		else this.onFollowUp(selected);
 	}
@@ -266,6 +278,14 @@ export class AgentWorkbenchComponent implements Component, Focusable {
 			width,
 		);
 		const lines = [header];
+		if (this.onOpen) {
+			lines.push(fitToWidth(theme.fg("muted", "上下键选择 · Enter 打开会话 · Esc 返回主会话"), width));
+			this.lastListStart = lines.length;
+			lines.push(...this.renderList(width, height - lines.length - 1));
+			while (lines.length < height - 1) lines.push("");
+			lines.push(fitToWidth(theme.fg("dim", "Enter 打开会话 · Ctrl+C 取消执行中的 Agent"), width));
+			return lines.slice(0, height).map((line) => fitToWidth(line, width));
+		}
 
 		if (wide) {
 			this.detailVisible = false;
@@ -306,7 +326,8 @@ export class AgentWorkbenchComponent implements Component, Focusable {
 			const offset = localRow - this.lastListStart;
 			if (mouse.column < this.lastListWidth && offset >= 0 && offset < this.lastListCount) {
 				this.select(this.lastAgentStartIndex + offset);
-				if (!this.lastWideLayout) this.detailVisible = true;
+				if (this.onOpen) this.runSelectedAction();
+				else if (!this.lastWideLayout) this.detailVisible = true;
 				this.requestRender();
 			}
 			return;
@@ -338,7 +359,7 @@ export class AgentWorkbenchComponent implements Component, Focusable {
 		} else if (kb.matches(data, "tui.select.pageDown")) {
 			this.scrollDetail(Math.max(1, this.getHeight() - 6));
 		} else if (kb.matches(data, "tui.select.confirm")) {
-			if (this.lastWideLayout || this.detailVisible) this.runSelectedAction();
+			if (this.onOpen || this.lastWideLayout || this.detailVisible) this.runSelectedAction();
 			else this.detailVisible = true;
 		} else {
 			return;

@@ -5,6 +5,7 @@ import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/rend
 import { convertToPng } from "../../../utils/image-convert.ts";
 import { theme } from "../theme/theme.ts";
 import { uiGlyphs } from "../ui-glyphs.ts";
+import type { SubagentRunTarget } from "./subagent-run.ts";
 import { formatToolSummary, getToolSummary } from "./tool-summary.ts";
 
 export interface ToolExecutionOptions {
@@ -14,10 +15,7 @@ export interface ToolExecutionOptions {
 
 export type ToolExecutionStatus = "pending" | "running" | "success" | "error" | "cancelled";
 
-export interface ToolExecutionAgentTarget {
-	runId?: string;
-	agentId: string;
-}
+export type ToolExecutionAgentTarget = SubagentRunTarget;
 
 export class ToolExecutionComponent extends Container {
 	private contentBox: Box;
@@ -244,41 +242,13 @@ export class ToolExecutionComponent extends Container {
 
 	getAgentTargetAtRow(row: number): ToolExecutionAgentTarget | undefined {
 		if (this.toolName !== "subagent" || row < 0 || this.lastRenderedWidth <= 0) return undefined;
-		const details = this.result?.details as
-			| { runId?: unknown; results?: Array<{ agent?: unknown; agentId?: unknown }> }
-			| undefined;
-		if (!Array.isArray(details?.results)) return undefined;
-		const results = details.results;
-		const target = (index: number): ToolExecutionAgentTarget | undefined => {
-			const result = results[index];
-			if (!result) return undefined;
-			const agentId =
-				typeof result.agentId === "string"
-					? result.agentId
-					: `${typeof details.runId === "string" ? details.runId : this.toolCallId}:${index + 1}`;
-			return { runId: typeof details.runId === "string" ? details.runId : undefined, agentId };
-		};
-
 		const callLines = this.callRendererComponent?.render(this.lastRenderedWidth) ?? [];
-		if (row < callLines.length) {
-			if (Array.isArray(this.args?.tasks) || Array.isArray(this.args?.chain)) {
-				return row > 0 ? target(row - 1) : undefined;
-			}
-			return target(0);
-		}
-
+		if (row < callLines.length) return undefined;
 		const resultRow = row - callLines.length;
-		const resultLines = this.resultRendererComponent?.render(this.lastRenderedWidth) ?? [];
-		let searchStart = 0;
-		for (let index = 0; index < results.length; index++) {
-			const agent = results[index]?.agent;
-			if (typeof agent !== "string") continue;
-			const headerRow = resultLines.findIndex((line, lineIndex) => lineIndex >= searchStart && line.includes(agent));
-			if (headerRow < 0) continue;
-			if (headerRow === resultRow) return target(index);
-			searchStart = headerRow + 1;
-		}
-		return undefined;
+		const result = this.resultRendererComponent as
+			| (Component & { getAgentTargetAtRow?: (row: number) => SubagentRunTarget | undefined })
+			| undefined;
+		return result?.getAgentTargetAtRow?.(resultRow);
 	}
 
 	getRenderVersion(): number {
