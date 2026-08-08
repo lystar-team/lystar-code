@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-08T09:58:18Z
+最后核验时间：2026-08-08T10:16:34Z
 
 环境：
 
@@ -28,6 +28,14 @@ Linux x64 候选包使用普通启动方式在独立 `100x30` tmux PTY 加载包
 基于功能提交创建独立模拟 worktree，将最新 `upstream/main` `9dd90a49711d088b86fdd9b4aea575913a8328a8` 合入。冲突只落在 `interactive-mode.ts`、`interactive-tui.test.ts` 和 `settings-selector.test.ts`，来自上游新增 fullscreen exit output 与 LYStar workspace 输入、overlay 清理及本地化测试占用相同段落；按双方语义合并后 `npm run check` 和 7 个聚焦测试文件共 64 项通过。模拟 worktree 和独立依赖已删除，没有进入 `main`。
 
 当前 Linux 环境没有 macOS 实机和 Windows Console/ConPTY 的交互证据；这两个平台只验证了格式、架构、归档内容、自动测试和 CI 平台链路。
+
+`main` commit `33912045e12cc10ea07a3631d7f7f07aa3196d2f` 的 CI run `31252058301` 七个 job 全部成功。annotated Tag `v0.84.1-lystar.5` 的 Tag 对象为 `3e5407b94bec0946c1ee680952b364a4b579585a`，本地和远端解引用后均固定指向该 commit。
+
+Release workflow run `31252154589` 成功，完成同 commit main CI 绑定、版本校验、离线构建、Bun 1.3.9 五平台打包、artifact attestation 和公开发布。GitHub Release 于 `2026-08-08T10:10:39Z` 发布，为非草稿、非预发布正式版本，共有 10 个公开资产；Release Notes 已写明旧用户级 `~/.pi/agent/extensions/subagent/` 的删除要求。
+
+公开五平台包重新下载后 `SHA256SUMS` 五项全部通过，文件大小和 SHA 与公开 manifest 一致。公开 Linux x64 包 SHA-256 为 `eeddfb5a8712b221c0b09dbbced7312fe5d3876ad440c80044ab1aca07b761f1`；GitHub Attestations API 返回 1 条 Sigstore bundle，公开包版本和离线模型列表通过。
+
+本机通过公开 `la update` 从 `0.84.1-lystar.4` 原子更新到 `0.84.1-lystar.5`，`current` 指向 `.5`，`previous` 保留 `.4`，再次更新显示已是最新版本。安装后的 `/home/yean/.local/bin/la` 在独立 `80x24` tmux PTY 显示 `apply_patch` 文件统计和完整 Diff，并通过 `/agents` 进入独立子会话；`lystar-release-0841-5-installed` tmux server 与临时 Session 文件已删除。
 
 ### `0.84.1-lystar.4` 发布前核验
 
