@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-08T05:31:34Z
+最后核验时间：2026-08-08T05:39:52Z
 
 环境：
 
@@ -30,6 +30,14 @@ Linux x64 候选包在全新 Git 工作区的独立 `80x24` tmux PTY 正常启�
 基于功能提交创建独立模拟 worktree，将最新 `upstream/main` `e47b8e37a` 合入。冲突只落在 `interactive-mode.ts`、`interactive-tui.test.ts` 和 `settings-selector.test.ts`，均来自上游新增 fullscreen exit output 与 LYStar 工作区输入测试占用同一段落；按双方语义合并后 `npm run check` 和 6 个聚焦测试文件共 38 项通过。模拟 branch、worktree 和独立依赖已删除，没有进入 `main`。
 
 当前 Linux 环境没有 macOS 实机和 Windows Console/ConPTY 的交互证据；这两个平台只验证了格式、架构、归档、自动测试和 CI 平台链路。
+
+`main` commit `f8c2b6da0a7b2abe5c939a47a80edec9c1d11fb0` 的 CI run `31241929548` 七个 job 全部成功。annotated Tag `v0.84.1-lystar.4` 的 Tag 对象为 `633a9405bd3e193d244512cc23d19b46695175df`，本地和远端解引用后均固定指向该 commit。
+
+Release workflow run `31242031180` 成功，完成同 commit main CI 绑定、版本校验、离线构建、Bun 1.3.9 五平台打包、artifact attestation 和公开发布。GitHub Release 于 `2026-08-08T05:37:10Z` 发布，为非草稿、非预发布正式版本，共有 10 个公开资产。
+
+公开 Linux x64 包 SHA-256 为 `0dc732644720fcf49f461a8b7581e90e2777e7d1533ee0bb7430ae94879fe176`，与公开 `SHA256SUMS`、manifest 文件大小和 SHA 一致；GitHub Attestations API 返回 1 条 in-toto provenance。
+
+本机通过公开 `la update` 从 `0.84.1-lystar.3` 原子更新到 `0.84.1-lystar.4`，`current` 指向 `.4`，`previous` 保留 `.3`，再次更新显示已是最新版本。安装后的 `/home/yean/.local/bin/la` 在独立 `80x24` tmux PTY 使用真实 `upstream/gpt-5.6-sol` 返回 `LYSTAR-0841-4-PROVIDER-OK`，随后 `/quit` 正常退出；`lystar-release-0841-4-installed-final` tmux server 已关闭。
 
 ### `0.84.1-lystar.3` 发布前核验
 
