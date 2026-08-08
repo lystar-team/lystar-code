@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-08T05:39:52Z
+最后核验时间：2026-08-08T09:58:18Z
 
 环境：
 
@@ -14,6 +14,20 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### `0.84.1-lystar.5` 发布前核验
+
+发布事实源为 `piConfig.productVersion = 0.84.1-lystar.5`，Pi workspace 包版本继续保持 `0.84.1`。本版为 `apply_patch` 增加文件级增删统计和可展开完整 Diff，并将 Subagent 升级为可点击、可继续输入、可在 RPC 回收或主程序重启后恢复的持久子会话；旧 Subagent 记录没有 Session 引用时保持只读。功能提交为 `7b1c7cd015f3ee91490df000fcfc7e3bbbbdbe80`。
+
+显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 完成 `npm run check`、`npm run build:offline` 和全部发布 gate。TUI 全量退出码 0；AI 104 个 test files/870 项通过，25 个 files/825 项跳过；Agent Core 20 个 files/402 项通过、1 项跳过；Coding Agent 232 个 files/2050 项通过，6 个 files/49 项跳过。Unix 安装器的安装、PATH、SHA 校验、回退、卸载和物化检查通过。
+
+五平台候选包使用 Bun `1.3.9` 构建，`SHA256SUMS` 五项全部通过，manifest 版本为 `0.84.1-lystar.5`、Pi 版本为 `0.84.1`、仓库为 `octyean/lystar-agent`，五个平台文件大小和 SHA-256 均与 manifest 一致。格式覆盖 macOS ARM64/x64 Mach-O、Linux ARM64/x64 ELF 和 Windows x64 PE32+；所有归档包含 `LICENSE` 与 `THIRD_PARTY_LICENSES.md`。Linux x64 候选包 SHA-256 为 `b20e309914cd1a980af3a8a61cf3b208e145ee8ca39c3b9eb2cf0ec45860675b`，其 `la --version`、中文帮助和 `PI_OFFLINE=1 la --list-models` 通过。
+
+Linux x64 候选包使用普通启动方式在独立 `100x30` tmux PTY 加载包含 `apply_patch` 和 Subagent 的真实 Session：折叠态持续显示两个文件及总计 `+3 -1`，`Ctrl+O` 展开后显示完整逐行 Diff；`/agents` 选中 worker 后进入独立子会话，Esc 返回主会话。随后 resize 到 `80x24`，顶栏、Diff、Agent 行、Composer 和快捷栏无重叠；`lystar-release-0841-5-candidate` tmux server 与临时 Session 文件均已删除。本机旧用户级 `~/.pi/agent/extensions/subagent/` 已删除，普通启动加载二进制内置新版。
+
+基于功能提交创建独立模拟 worktree，将最新 `upstream/main` `9dd90a49711d088b86fdd9b4aea575913a8328a8` 合入。冲突只落在 `interactive-mode.ts`、`interactive-tui.test.ts` 和 `settings-selector.test.ts`，来自上游新增 fullscreen exit output 与 LYStar workspace 输入、overlay 清理及本地化测试占用相同段落；按双方语义合并后 `npm run check` 和 7 个聚焦测试文件共 64 项通过。模拟 worktree 和独立依赖已删除，没有进入 `main`。
+
+当前 Linux 环境没有 macOS 实机和 Windows Console/ConPTY 的交互证据；这两个平台只验证了格式、架构、归档内容、自动测试和 CI 平台链路。
 
 ### `0.84.1-lystar.4` 发布前核验
 

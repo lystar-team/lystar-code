@@ -4,6 +4,7 @@
 
 ### LYStar 适配
 
+- `0.84.1-lystar.5` 为 `apply_patch` 增加文件级增删统计和可展开完整 Diff，并将 Subagent 升级为可点击、可继续输入、可在 RPC 回收或重启后恢复的持久子会话。曾手动安装 `~/.pi/agent/extensions/subagent/` 的用户需删除旧目录，避免同名 Extension 覆盖内置新版。
 - `0.84.1-lystar.4` 增加完整活动分支分页和渐进 Session 恢复，完善 `apply_patch`、`edit` 错误恢复、完成状态、Subagent RPC 控制、Agent 工作台及长 Markdown 降级。
 - `0.84.1-lystar.3` 修复 `/changes` 在空工作区错误显示“正在读取 Diff...”的问题。
 - `0.84.1-lystar.2` 将全屏 TUI 调整为轻量任务工作台：运行时显示真实 Agent/Tool 活动，`agent_settled` 后显示不写入 Session 的本轮摘要，并新增 `/changes` 变更审阅器。
