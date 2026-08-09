@@ -9,8 +9,8 @@ $HostExecutable = Join-Path $BundleDir "lystar-terminal.exe"
 $LaExecutable = Join-Path $BundleDir "la.exe"
 if (!(Test-Path $HostExecutable) -or !(Test-Path $LaExecutable)) { throw "Windows terminal bundle is incomplete: $BundleDir" }
 
-& $HostExecutable --smoke-test
-if ($LASTEXITCODE -ne 0) { throw "Terminal host smoke test failed: $LASTEXITCODE" }
+$SmokeProcess = Start-Process -FilePath $HostExecutable -ArgumentList "--smoke-test" -Wait -PassThru
+if ($SmokeProcess.ExitCode -ne 0) { throw "Terminal host smoke test failed: $($SmokeProcess.ExitCode)" }
 
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
