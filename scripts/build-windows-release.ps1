@@ -22,7 +22,8 @@ New-Item -ItemType Directory -Force $BundleDir, $ReleaseDeps | Out-Null
 
 try {
     Push-Location $Root
-    & bun build --compile --no-compile-autoload-bunfig --target=bun-windows-x64-baseline --windows-icon=packages/coding-agent/assets/lystar-windows-icon.ico packages/coding-agent/dist/bun/cli.js packages/coding-agent/src/utils/image-resize-worker.ts --outfile (Join-Path $BundleDir "la.exe")
+    # Windows CI 安装 baseline Bun；原生编译直接复用当前 runtime，避免再次下载 target executable。
+    & bun build --compile --no-compile-autoload-bunfig --windows-icon=packages/coding-agent/assets/lystar-windows-icon.ico packages/coding-agent/dist/bun/cli.js packages/coding-agent/src/utils/image-resize-worker.ts --outfile (Join-Path $BundleDir "la.exe")
     if ($LASTEXITCODE -ne 0) { throw "la.exe 构建失败。" }
 
     & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "scripts\build-windows-terminal.ps1") -OutputDir $BundleDir
