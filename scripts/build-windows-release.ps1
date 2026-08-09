@@ -29,7 +29,8 @@ try {
     & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "scripts\build-windows-terminal.ps1") -OutputDir $BundleDir
     if ($LASTEXITCODE -ne 0) { throw "lystar-terminal.exe 构建失败。" }
 
-    & npm install --prefix $ReleaseDeps --include=optional --no-save --package-lock=false --force --ignore-scripts "@mariozechner/clipboard@$ClipboardVersion" "@mariozechner/clipboard-win32-x64-msvc@$ClipboardVersion"
+    $Npm = (Get-Command npm.cmd -ErrorAction Stop).Source
+    & $Npm install --prefix $ReleaseDeps --include=optional --no-save --package-lock=false --force --ignore-scripts "@mariozechner/clipboard@$ClipboardVersion" "@mariozechner/clipboard-win32-x64-msvc@$ClipboardVersion"
     if ($LASTEXITCODE -ne 0) { throw "Windows clipboard binding 准备失败。" }
 
     Copy-Item (Join-Path $PackageDir "package.json") $BundleDir
