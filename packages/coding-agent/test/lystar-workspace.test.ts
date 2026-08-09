@@ -503,6 +503,7 @@ describe("LYStar workspace", () => {
 		const editor = textContainer("────────────────", "  修复登录流程", "────────────────");
 		const composer = new WorkspaceComposer({
 			editor,
+			brand: "LYStar Agent",
 			getInfo: () => ({
 				primary: "upstream/claude-sonnet-4 · 思考强度：高(high)",
 				secondary: "项目已信任",
@@ -516,12 +517,31 @@ describe("LYStar workspace", () => {
 		expect(headerLines).toHaveLength(1);
 		expect(headerLines[0]).toContain("LYStar Agent  ·  ~/project  ·  main  ·  任务一");
 		expect(headerLines[0]).toContain("上下文 7.4%  ·  9.5K/128K");
-		expect(composerLines[0]).toMatch(/^╭─+╮$/);
+		expect(composerLines[0]).toMatch(/^╭─+ LYStar Agent ─╮$/);
 		expect(composerLines[1]).toContain("│❯ 修复登录流程");
 		expect(composerLines[2]).toContain("upstream/claude-sonnet-4");
 		expect(composerLines[2]).toContain("思考强度：高(high)");
 		expect(composerLines[2]).toContain("项目已信任");
 		expect(composerLines[2]).toMatch(/^╰─+ .* ─+ .* ─╯$/);
+	});
+
+	it("keeps the LYStar brand in the composer border without changing its width", () => {
+		const composer = new WorkspaceComposer({
+			editor: textContainer("────────────────", "  ", "────────────────"),
+			brand: "LYStar Agent",
+			getInfo: () => ({ primary: "model" }),
+			fullscreen: true,
+		});
+
+		for (const width of [40, 80, 160]) {
+			const top = stripAnsi(composer.render(width)[0]);
+			expect(top).toContain("LYStar Agent");
+			expect(visibleWidth(top)).toBe(width);
+		}
+
+		const tinyTop = stripAnsi(composer.render(16)[0]);
+		expect(tinyTop).not.toContain("LYStar Agent");
+		expect(visibleWidth(tinyTop)).toBe(16);
 	});
 
 	it("uses structured editor sections only while that editor is active", () => {

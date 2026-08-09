@@ -30,14 +30,15 @@ export function getCitationLinks(content: TextContent): WebLink[] {
 	);
 }
 
-export function getWebSearchSourceLinks(call: WebSearchCallContent): WebLink[] {
+export function getWebSearchSourceLinks(call: WebSearchCallContent, citations: readonly WebLink[] = []): WebLink[] {
+	const citationTitles = new Map(citations.map((citation) => [citation.url, citation.title]));
 	const urls =
 		call.action.type === "search"
 			? (call.action.sources ?? []).map((source) => source.url)
 			: call.action.url
 				? [call.action.url]
 				: [];
-	return uniqueLinks(urls.map((url) => ({ title: titleFromUrl(url), url })));
+	return uniqueLinks(urls.map((url) => ({ title: citationTitles.get(url) || titleFromUrl(url), url })));
 }
 
 function escapeMarkdownLabel(value: string): string {

@@ -19,6 +19,8 @@ const LONG_MARKDOWN_TAIL_CHARACTERS = 1024;
 type MarkdownFence = { character: string; length: number; start: number };
 type MarkdownFenceRange = { start: number; end: number };
 
+class WebSearchSummaryText extends Text {}
+
 function getMarkdownFenceRanges(markdown: string): MarkdownFenceRange[] {
 	const ranges: MarkdownFenceRange[] = [];
 	let fence: MarkdownFence | undefined;
@@ -70,7 +72,9 @@ export class AssistantMessageComponent extends Container {
 	private isStreaming = false;
 	private hasLongCodeBlock = false;
 	private hasLongMarkdown = false;
+	private hasWebSearchSources = false;
 	private contentExpanded = false;
+	private webSearchToggleRows = new Set<number>();
 
 	constructor(
 		message?: AssistantMessage,
@@ -126,7 +130,15 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	override render(width: number): string[] {
-		const lines = super.render(width);
+		const lines: string[] = [];
+		this.webSearchToggleRows.clear();
+		for (const child of this.contentContainer.children) {
+			const childLines = child.render(width);
+			if (child instanceof WebSearchSummaryText && childLines.length > 0) {
+				this.webSearchToggleRows.add(lines.length);
+			}
+			lines.push(...childLines);
+		}
 		if (this.hasToolCalls || lines.length === 0) {
 			return lines;
 		}
@@ -140,8 +152,16 @@ export class AssistantMessageComponent extends Container {
 		return this.renderVersion;
 	}
 
+	isExpansionToggleRow(row: number): boolean {
+		return this.webSearchToggleRows.has(row);
+	}
+
 	setExpanded(expanded: boolean): void {
-		if ((!this.hasLongCodeBlock && !this.hasLongMarkdown) || this.contentExpanded === expanded || !this.lastMessage) {
+		if (
+			(!this.hasLongCodeBlock && !this.hasLongMarkdown && !this.hasWebSearchSources) ||
+			this.contentExpanded === expanded ||
+			!this.lastMessage
+		) {
 			return;
 		}
 		this.contentExpanded = expanded;
@@ -166,7 +186,13 @@ export class AssistantMessageComponent extends Container {
 					content.type === "text" ? content.text : content.type === "thinking" ? content.thinking : "";
 				return markdown.length > LONG_MARKDOWN_CHARACTER_LIMIT;
 			});
-		if (!this.hasLongCodeBlock && !this.hasLongMarkdown) {
+		const citations = message.content.flatMap((content) =>
+			content.type === "text" ? getCitationLinks(content) : [],
+		);
+		this.hasWebSearchSources = message.content.some(
+			(content) => content.type === "webSearchCall" && getWebSearchSourceLinks(content, citations).length > 0,
+		);
+		if (!this.hasLongCodeBlock && !this.hasLongMarkdown && !this.hasWebSearchSources) {
 			this.contentExpanded = false;
 		}
 		const codeBlockCollapse =
@@ -223,7 +249,7 @@ export class AssistantMessageComponent extends Container {
 					);
 				}
 			} else if (content.type === "webSearchCall") {
-				const sources = getWebSearchSourceLinks(content);
+				const sources = getWebSearchSourceLinks(content, citations);
 				const status =
 					content.status === "failed"
 						? t("status.webSearchFailed")
@@ -233,12 +259,25 @@ export class AssistantMessageComponent extends Container {
 				const sourceCount =
 					sources.length > 0 ? ` · ${t("status.webSearchSources", { count: sources.length })}` : "";
 				this.contentContainer.addChild(
-					new Text(
-						theme.fg(content.status === "failed" ? "error" : "thinkingText", `⌕ ${status}${sourceCount}`),
+					new WebSearchSummaryText(
+						theme.fg(
+							content.status === "failed" ? "error" : "thinkingText",
+							`${sources.length > 0 ? (this.contentExpanded ? "▾ " : "▸ ") : ""}⌕ ${status}${sourceCount}`,
+						),
 						this.outputPad,
 						0,
 					),
 				);
+				if (this.contentExpanded && sources.length > 0) {
+					this.contentContainer.addChild(
+						new Markdown(
+							formatMarkdownLinks(t("status.webSearchSourceList"), sources),
+							this.outputPad,
+							0,
+							this.markdownTheme,
+						),
+					);
+				}
 			} else if (content.type === "thinking") {
 				const thinkingBlocks: string[] = [];
 				for (; i < message.content.length; i++) {

@@ -92,6 +92,7 @@ export interface WorkspaceComposerInfo {
 
 export interface WorkspaceComposerOptions {
 	editor: Container;
+	brand?: string;
 	structuredEditor?: Component & {
 		renderWorkspace(width: number): { body: string[]; autocomplete: string[] };
 	};
@@ -166,7 +167,13 @@ export class WorkspaceComposer implements Component {
 		const primaryLabel = primary ? ` ${primary} ` : "";
 		const dividerWidth = Math.max(0, innerWidth - visibleWidth(primaryLabel) - visibleWidth(secondaryLabel) - 2);
 		const bottom = `${border("╰─")}${theme.fg("dim", primaryLabel)}${border("─".repeat(dividerWidth))}${theme.fg("dim", secondaryLabel)}${border("─╯")}`;
-		const framed = [`${border("╭")}${border("─".repeat(innerWidth))}${border("╮")}`, ...framedBody, bottom];
+		const brandLabel = this.options.brand?.trim() ? ` ${this.options.brand.trim()} ` : "";
+		const brandWidth = visibleWidth(brandLabel);
+		const top =
+			brandWidth > 0 && brandWidth + 1 <= innerWidth
+				? `${border("╭")}${border("─".repeat(innerWidth - brandWidth - 1))}${theme.bold(theme.fg("accent", brandLabel))}${border("─╮")}`
+				: `${border("╭")}${border("─".repeat(innerWidth))}${border("╮")}`;
+		const framed = [top, ...framedBody, bottom];
 		for (const line of autocomplete) {
 			framed.push(` ${truncateToWidth(line, innerWidth, "", true)} `);
 		}

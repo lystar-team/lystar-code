@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-09T03:12:47Z
+最后核验时间：2026-08-09T06:34:56Z
 
 环境：
 
@@ -14,6 +14,18 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### `0.84.1-lystar.8` 发布前核验
+
+发布事实源为 `piConfig.productVersion = 0.84.1-lystar.8`，Pi workspace 包版本继续保持 `0.84.1`。本版让 TUI 中的原生 Web Search 摘要支持点击和 `Ctrl+O` 展开全部来源，来源链接继续使用现有 Markdown/OSC 8 浏览器打开链路；citation 标题优先于域名回退。`LYStar Agent` 固定显示在全屏输入框右上边框，不再依赖顶栏宽度。Session JSONL、Web Search sources/citation、Provider、Protocol、Tool 和 Extension API 格式不变。
+
+显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 完成 `npm run check`、`npm run build:offline` 和全部发布 gate。TUI 全量通过；AI 104 个 test files/873 项通过，25 个 files/825 项跳过；Agent Core 20 个 files/402 项通过、1 项跳过；Coding Agent 234 个 files/2060 项通过，6 个 files/49 项跳过。Unix 安装器的安装、PATH、SHA 校验、回退、卸载和物化检查通过。新增回归覆盖来源折叠/展开、citation 标题、摘要点击、来源链接打开、`Ctrl+O` 状态文案，以及 40/80/160 列输入框品牌位置。
+
+四个 Unix 候选包使用 Bun `1.3.9` 构建，`SHA256SUMS` 四项全部通过；manifest 版本为 `0.84.1-lystar.8`、Pi 版本为 `0.84.1`、仓库为 `octyean/lystar-agent`，四个平台文件大小和 SHA-256 均与 manifest 一致。格式覆盖 macOS ARM64/x64 Mach-O 和 Linux ARM64/x64 ELF，全部归档包含 `LICENSE` 与 `THIRD_PARTY_LICENSES.md`。Linux x64 候选包 SHA-256 为 `daedfa65f5c97ab149476ceec20a9552d66c77262a485c7493974012fec0d36f`，其 `la --version`、中文帮助和 `PI_OFFLINE=1 la --list-models` 通过。
+
+Linux x64 候选包在独立 tmux PTY 加载包含 12 个 Web Search sources 和 1 个 citation 的真实 Session：`80x24` 折叠态显示来源数量，`Ctrl+O` 后全部来源可见；`80x8` 保留输入框、`LYStar Agent` 标题和快捷栏；`160x36` 展开列表、正文、引用和固定底栏无重叠。鼠标摘要展开与来源链接打开由真实 `LystarTUI` 输入回归验证。`lystar-release-0841-8-candidate` tmux server 和 Session fixture 已删除。
+
+CodeGraph 已同步到 1214 个文件、20232 个节点和 76855 条边，索引无 pending changes；affected 只返回 `assistant-message.test.ts`、`interactive-mode-status.test.ts`、`interactive-tui.test.ts` 和 `lystar-workspace.test.ts`，均已包含在 Coding Agent 全量测试中。当前 Linux 主机没有 MSVC、Windows SDK、ConPTY 或 WebView2 Runtime，Windows x64 原生构建、GUI smoke、MinGit 和 PowerShell 5.1 安装器必须由提交后的 `windows-installer` CI 与 Release Windows job 给出最终证据。
 
 ### `0.84.1-lystar.7` 发布前核验
 

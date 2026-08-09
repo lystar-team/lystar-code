@@ -1,15 +1,18 @@
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { Component, Terminal, TUI } from "@earendil-works/pi-tui";
-import { Container, isViewportTUI, Text } from "@earendil-works/pi-tui";
+import { Container, isViewportTUI, resetCapabilitiesCache, setCapabilities, Text } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import type { TuiMode } from "../src/core/settings-manager.ts";
+import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
 import { LystarWorkspace } from "../src/modes/interactive/components/lystar-workspace.ts";
 import {
 	createInteractiveTui,
 	createInteractiveTuiReference,
 	InteractiveMode,
 } from "../src/modes/interactive/interactive-mode.ts";
+import { LystarTUI } from "../src/modes/interactive/lystar-tui.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 const clipboardMocks = vi.hoisted(() => ({
@@ -158,6 +161,94 @@ describe("createInteractiveTui", () => {
 			expect(workspace.render(terminal.columns)[1]).toContain("line-24");
 		} finally {
 			renderer.stop();
+		}
+	});
+
+	it("expands web search sources without intercepting source links", async () => {
+		initTheme("dark");
+		setCapabilities({ images: null, trueColor: true, hyperlinks: true });
+		const terminal = new RecordingTerminal(80, 10);
+		const openedUrls: string[] = [];
+		const url = "https://example.com/source";
+		const message = {
+			role: "assistant",
+			content: [
+				{
+					type: "webSearchCall",
+					id: "ws_1",
+					status: "completed",
+					action: { type: "search", query: "example", sources: [{ type: "url", url }] },
+				},
+			],
+			timestamp: Date.now(),
+		} as AssistantMessage;
+		const chat = new Container();
+		chat.addChild(new AssistantMessageComponent(message));
+		const header = new Container();
+		header.addChild(new Text("header", 0, 0));
+		const workspace = new LystarWorkspace({
+			getHeight: () => terminal.rows,
+			header,
+			scrollContainers: [chat],
+			bottomContainers: [new Text("editor", 0, 0)],
+			fixedBottomContainers: [],
+			fullscreen: true,
+			scrollbar: "hidden",
+		});
+		type WorkspaceInputContext = {
+			workspace: LystarWorkspace;
+			renderer: LystarTUI;
+			ui: TUI;
+			keybindings: KeybindingsManager;
+			loadPreviousTranscriptPage: () => Promise<void>;
+			componentExpansion: WeakMap<Component, boolean>;
+			toolOutputExpanded: boolean;
+			openSubagentSession: () => void;
+		};
+		const handleWorkspaceInput = (
+			InteractiveMode.prototype as unknown as {
+				handleWorkspaceInput(this: WorkspaceInputContext, data: string): { consume: true } | undefined;
+			}
+		).handleWorkspaceInput;
+		const context = {
+			workspace,
+			renderer: undefined as unknown as LystarTUI,
+			ui: undefined as unknown as TUI,
+			keybindings: new KeybindingsManager(),
+			loadPreviousTranscriptPage: async () => {},
+			componentExpansion: new WeakMap<Component, boolean>(),
+			toolOutputExpanded: false,
+			openSubagentSession: () => {},
+		};
+		const renderer = new LystarTUI(terminal, false, undefined, {
+			openUrl: (value) => openedUrls.push(value),
+			workspaceInputHandler: (data) => handleWorkspaceInput.call(context, data),
+		});
+		context.renderer = renderer;
+		context.ui = renderer;
+		renderer.addChild(workspace);
+
+		renderer.start();
+		try {
+			await terminal.waitForRender();
+			const summaryRow = terminal.getViewport().findIndex((line) => line.includes("已搜索网页"));
+			expect(summaryRow).toBeGreaterThanOrEqual(0);
+			terminal.sendInput(`\x1b[<0;3;${summaryRow + 1}M`);
+			terminal.sendInput(`\x1b[<0;3;${summaryRow + 1}m`);
+			await terminal.waitForRender();
+			expect(terminal.getViewport().some((line) => line.includes("搜索来源"))).toBe(true);
+
+			const sourceRow = terminal.getViewport().findIndex((line) => line.includes("example.com"));
+			const sourceColumn = terminal.getViewport()[sourceRow]?.indexOf("example.com") ?? -1;
+			expect(sourceRow).toBeGreaterThanOrEqual(0);
+			expect(sourceColumn).toBeGreaterThanOrEqual(0);
+			terminal.sendInput(`\x1b[<0;${sourceColumn + 1};${sourceRow + 1}M`);
+			terminal.sendInput(`\x1b[<0;${sourceColumn + 1};${sourceRow + 1}m`);
+			await terminal.waitForRender();
+			expect(openedUrls).toEqual([url]);
+		} finally {
+			renderer.stop();
+			resetCapabilitiesCache();
 		}
 	});
 

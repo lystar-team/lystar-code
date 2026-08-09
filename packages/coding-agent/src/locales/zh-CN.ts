@@ -36,6 +36,7 @@ export const zhCN = {
 	"status.webSearchCompleted": "已搜索网页",
 	"status.webSearchFailed": "网页搜索失败",
 	"status.webSearchSources": "{count} 个来源",
+	"status.webSearchSourceList": "搜索来源：",
 	"status.citations": "引用：",
 	"status.compacting": "正在压缩上下文...",
 	"status.retrying": "正在重试...",

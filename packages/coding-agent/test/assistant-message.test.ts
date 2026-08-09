@@ -92,7 +92,7 @@ describe("AssistantMessageComponent", () => {
 		expect(rendered).not.toContain("◆ 思考过程");
 	});
 
-	test("renders web search status and cited links", () => {
+	test("expands web search sources only from the search summary row", () => {
 		initTheme("dark");
 		const component = new AssistantMessageComponent(
 			createAssistantMessage([
@@ -103,7 +103,10 @@ describe("AssistantMessageComponent", () => {
 					action: {
 						type: "search",
 						query: "OpenAI web search",
-						sources: [{ type: "url", url: "https://developers.openai.com/api/docs/guides/tools-web-search" }],
+						sources: [
+							{ type: "url", url: "https://developers.openai.com/api/docs/guides/tools-web-search" },
+							{ type: "url", url: "https://example.com/uncited-source" },
+						],
 					},
 				},
 				{
@@ -122,10 +125,24 @@ describe("AssistantMessageComponent", () => {
 			]),
 		);
 
-		const rendered = stripAnsi(component.render(100).join("\n"));
-		expect(rendered).toContain("已搜索网页 · 1 个来源");
-		expect(rendered).toContain("引用：");
-		expect(rendered).toContain("OpenAI Web Search");
+		const collapsedLines = component.render(100).map(stripAnsi);
+		const summaryRow = collapsedLines.findIndex((line) => line.includes("已搜索网页"));
+		const citationRow = collapsedLines.findIndex((line) => line.includes("OpenAI Web Search"));
+		expect(collapsedLines.join("\n")).toContain("▸ ⌕ 已搜索网页 · 2 个来源");
+		expect(collapsedLines.join("\n")).not.toContain("搜索来源：");
+		expect(component.isExpansionToggleRow(summaryRow)).toBe(true);
+		expect(component.isExpansionToggleRow(citationRow)).toBe(false);
+
+		component.setExpanded(true);
+		const expandedLines = component.render(100).map(stripAnsi);
+		const sourceListRow = expandedLines.findIndex((line) => line.includes("搜索来源："));
+		const sourceRow = expandedLines.findIndex((line) => line.includes("example.com"));
+		expect(expandedLines.join("\n")).toContain("▾ ⌕ 已搜索网页 · 2 个来源");
+		expect(expandedLines.join("\n")).toContain("搜索来源：");
+		expect(expandedLines.join("\n")).toContain("OpenAI Web Search");
+		expect(expandedLines.join("\n")).toContain("example.com");
+		expect(expandedLines[sourceListRow + 1]).toContain("OpenAI Web Search");
+		expect(component.isExpansionToggleRow(sourceRow)).toBe(false);
 	});
 
 	test("renders length stops with neutral truncation wording", () => {

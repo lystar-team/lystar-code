@@ -716,6 +716,7 @@ export class InteractiveMode {
 
 		this.composer = new WorkspaceComposer({
 			editor: this.editorContainer,
+			brand: APP_TITLE,
 			structuredEditor: this.defaultEditor,
 			fullscreen: tuiMode === "fullscreen",
 			getInfo: () => {
@@ -1097,7 +1098,6 @@ export class InteractiveMode {
 					? ((usage.contextWindow - compaction.reserveTokens) / usage.contextWindow) * 100
 					: 100;
 			return {
-				product: APP_TITLE,
 				path,
 				branch: branch ?? undefined,
 				task: this.getWorkspaceTaskTitle(),
@@ -4781,7 +4781,7 @@ export class InteractiveMode {
 				}
 			}
 		}
-		this.showStatus(`Tool 输出已${expanded ? "展开" : "折叠"}`);
+		this.showStatus(`详情已${expanded ? "展开" : "折叠"}`);
 	}
 
 	private toggleThinkingBlockVisibility(): void {

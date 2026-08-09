@@ -4,6 +4,7 @@
 
 ### LYStar 适配
 
+- `0.84.1-lystar.8` 支持在 TUI 中点击或使用 `Ctrl+O` 展开原生网页搜索的全部来源，并通过终端链接打开原网页；`LYStar Agent` 标题固定显示在全屏输入框右上边框，不再受顶栏宽度降级影响。
 - `0.84.1-lystar.7` 使用当前 `openai-responses` Provider、模型、凭据和 base URL 执行原生网页搜索，保存搜索状态、来源和引用并贯通 Session、TUI、Print、Protocol v2 与 HTML 导出；Windows Shell 统一到托管 MinGit，并增加 ConPTY + WebView2 独立终端、严格离线安装和 Windows 原生发行验收。
 - `0.84.1-lystar.6` 修复 Subagent parallel 卡片数量、实时命令更新和子会话滚动，滚轮与翻页输入不再被主会话截走。
 - `0.84.1-lystar.5` 为 `apply_patch` 增加文件级增删统计和可展开完整 Diff，并将 Subagent 升级为可点击、可继续输入、可在 RPC 回收或重启后恢复的持久子会话。曾手动安装 `~/.pi/agent/extensions/subagent/` 的用户需删除旧目录，避免同名 Extension 覆盖内置新版。
