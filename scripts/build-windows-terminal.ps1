@@ -41,7 +41,7 @@ try {
 call "$VcVars" >nul
 cd /d "$SourceDir"
 rc.exe /nologo /fo "$Resource" "$ResourceScript"
-cl.exe /nologo /std:c++20 /EHsc /utf-8 /O2 /GL /MT /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I "$Include" "$HostSource" "$Resource" /link /LTCG /SUBSYSTEM:WINDOWS /OUT:"$Executable" "$Loader" user32.lib shell32.lib ole32.lib oleaut32.lib advapi32.lib version.lib runtimeobject.lib windowsapp.lib
+cl.exe /nologo /std:c++20 /EHsc /utf-8 /O2 /GL /MT /DUNICODE /D_UNICODE /I "$Include" "$HostSource" "$Resource" /link /LTCG /SUBSYSTEM:WINDOWS /OUT:"$Executable" "$Loader" user32.lib shell32.lib ole32.lib oleaut32.lib advapi32.lib version.lib runtimeobject.lib windowsapp.lib
 "@
     $CommandPath = Join-Path $Temp "build-terminal.cmd"
     [IO.File]::WriteAllText($CommandPath, $Command, [Text.UTF8Encoding]::new($true))
