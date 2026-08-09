@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { NodeExecutionEnv } from "../packages/agent/dist/harness/env/nodejs.js";
@@ -54,7 +54,10 @@ try {
 	const managedEnv = getManagedWindowsEnv({ ...process.env, [pathKey]: pathWithoutSystemGit });
 	const whereGit = spawnSync("where.exe", ["git.exe"], { encoding: "utf8", env: managedEnv, windowsHide: true });
 	const firstGit = whereGit.stdout?.trim().split(/\r?\n/)[0];
-	if (whereGit.status !== 0 || !firstGit?.toLowerCase().startsWith(`${managedRoot.toLowerCase()}\\`)) {
+	const expectedGit = join(managedRoot, "cmd", "git.exe");
+	const resolvedFirstGit = firstGit && existsSync(firstGit) ? realpathSync.native(firstGit).toLowerCase() : "";
+	const resolvedExpectedGit = existsSync(expectedGit) ? realpathSync.native(expectedGit).toLowerCase() : "";
+	if (whereGit.status !== 0 || resolvedFirstGit !== resolvedExpectedGit) {
 		throw new Error(`git.exe did not resolve from managed MinGit first: ${whereGit.stdout || whereGit.stderr}`);
 	}
 

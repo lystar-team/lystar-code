@@ -11,6 +11,7 @@ import {
 	openSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	renameSync,
 	rmSync,
 	statSync,
@@ -399,9 +400,11 @@ function validateManagedWindowsBash(bashPath: string, rootDir: string): void {
 	const env = getManagedMinGitEnv(rootDir);
 	const whereGit = spawnSync("where.exe", ["git.exe"], { encoding: "utf8", env, stdio: "pipe", windowsHide: true });
 	const firstGit = whereGit.stdout?.trim().split(/\r?\n/)[0];
-	const normalizedRoot = `${resolve(rootDir).toLowerCase()}\\`;
-	if (whereGit.error || whereGit.status !== 0 || !firstGit?.toLowerCase().startsWith(normalizedRoot)) {
-		throw new Error(`Managed MinGit validation failed: git.exe resolved outside ${rootDir}`);
+	const expectedGit = join(rootDir, "cmd", "git.exe");
+	const resolvedFirstGit = firstGit && existsSync(firstGit) ? realpathSync.native(firstGit).toLowerCase() : "";
+	const resolvedExpectedGit = existsSync(expectedGit) ? realpathSync.native(expectedGit).toLowerCase() : "";
+	if (whereGit.error || whereGit.status !== 0 || resolvedFirstGit !== resolvedExpectedGit) {
+		throw new Error(`Managed MinGit validation failed: expected ${expectedGit}, resolved ${firstGit ?? "nothing"}`);
 	}
 
 	const result = spawnSync(
