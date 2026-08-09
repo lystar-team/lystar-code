@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-09T06:34:56Z
+最后核验时间：2026-08-09T06:53:30Z
 
 环境：
 
@@ -26,6 +26,12 @@ Linux x64
 Linux x64 候选包在独立 tmux PTY 加载包含 12 个 Web Search sources 和 1 个 citation 的真实 Session：`80x24` 折叠态显示来源数量，`Ctrl+O` 后全部来源可见；`80x8` 保留输入框、`LYStar Agent` 标题和快捷栏；`160x36` 展开列表、正文、引用和固定底栏无重叠。鼠标摘要展开与来源链接打开由真实 `LystarTUI` 输入回归验证。`lystar-release-0841-8-candidate` tmux server 和 Session fixture 已删除。
 
 CodeGraph 已同步到 1214 个文件、20232 个节点和 76855 条边，索引无 pending changes；affected 只返回 `assistant-message.test.ts`、`interactive-mode-status.test.ts`、`interactive-tui.test.ts` 和 `lystar-workspace.test.ts`，均已包含在 Coding Agent 全量测试中。当前 Linux 主机没有 MSVC、Windows SDK、ConPTY 或 WebView2 Runtime，Windows x64 原生构建、GUI smoke、MinGit 和 PowerShell 5.1 安装器必须由提交后的 `windows-installer` CI 与 Release Windows job 给出最终证据。
+
+`main` commit `c711f8c4c204b70a867312759c19f83e44c9eb19` 的 CI run `31299283691` 七个 job 全部成功，覆盖源码核验与构建、Unix 安装器、TUI、AI、Agent Core、Coding Agent 双分片，以及 Windows 原生终端、托管 MinGit 和 PowerShell 5.1 安装器。annotated Tag `v0.84.1-lystar.8` 的 Tag 对象为 `3dfe1e53ecafb09f8d8dd6e8a5abe81af37a6889`，本地和远端解引用后均固定指向该 commit。
+
+Release workflow run `31299456552` 成功，完成 main CI 绑定、版本校验、离线构建、Bun 1.3.9 五平台打包、Windows 原生二进制 smoke、artifact attestation 和公开发布。GitHub Release 于 `2026-08-09T06:46:15Z` 发布，为非草稿、非预发布正式版本，共有 10 个公开资产。公开五平台包重新下载后 `SHA256SUMS` 五项全部通过，文件大小和 SHA 与公开 manifest 一致；公开 Linux x64 包 SHA-256 为 `d79a623a70c078c6090cc9124d2cdd88a79a70740bdc398bb268ea54c75dc7fd`，GitHub Attestations API 返回 1 条 provenance。
+
+本机通过公开 `la update self` 从 `0.84.1-lystar.7` 原子更新到 `0.84.1-lystar.8`，`current` 指向 `.8`，`previous` 保留 `.7`，再次更新显示已是最新版本。安装后的 `/home/yean/.local/bin/la` 在独立 `80x24` tmux PTY 展开 12 个 Web Search sources 并持续显示输入框标题；随后在临时 Git 仓库使用真实 `upstream/gpt-5.6-sol` 返回精确结果 `LYSTAR-0841-8-OK`。本轮 tmux server、Session fixture、临时 Git 仓库和候选 Session 均已删除。
 
 ### `0.84.1-lystar.7` 发布前核验
 
