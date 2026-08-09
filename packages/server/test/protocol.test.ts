@@ -95,8 +95,30 @@ describe("pi-ai protocol bridge", () => {
 		const message = {
 			role: "assistant",
 			content: [
-				{ type: "text", text: "hello" },
+				{
+					type: "text",
+					text: "hello",
+					annotations: [
+						{
+							type: "url_citation",
+							startIndex: 0,
+							endIndex: 5,
+							title: "Example",
+							url: "https://example.test/source",
+						},
+					],
+				},
 				{ type: "thinking", thinking: "hmm", redacted: false },
+				{
+					type: "webSearchCall",
+					id: "search-1",
+					status: "completed",
+					action: {
+						type: "search",
+						query: "example",
+						sources: [{ type: "url", url: "https://example.test/source" }],
+					},
+				},
 				{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "README.md" } },
 			],
 			api: "test-api",
@@ -123,8 +145,30 @@ describe("pi-ai protocol bridge", () => {
 			model: { provider: "test-provider", id: "model-1" },
 		});
 		expect(result.content).toEqual([
-			{ type: "text", text: "hello" },
+			{
+				type: "text",
+				text: "hello",
+				annotations: [
+					{
+						type: "url_citation",
+						startIndex: 0,
+						endIndex: 5,
+						title: "Example",
+						url: "https://example.test/source",
+					},
+				],
+			},
 			{ type: "thinking", thinking: "hmm", redacted: false },
+			{
+				type: "webSearchCall",
+				id: "search-1",
+				status: "completed",
+				action: {
+					type: "search",
+					query: "example",
+					sources: [{ type: "url", url: "https://example.test/source" }],
+				},
+			},
 			{ type: "toolCall", toolCallId: "call-1", toolName: "read", input: { path: "README.md" } },
 		]);
 		assertValidServerPayload(result);

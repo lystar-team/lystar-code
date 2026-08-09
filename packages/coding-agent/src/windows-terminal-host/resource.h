@@ -1,0 +1,1 @@
+#define IDI_LYSTAR 101

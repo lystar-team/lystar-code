@@ -517,6 +517,7 @@ LYStar 不增加 MCP 配置文件、内置管理器或代理 Tool。TUI 负责�
 
 | LYStar | Pi 基线 | Pi commit | MCP Adapter | Session | Extension API |
 |---|---|---|---|---|---|
+| `0.84.1-lystar.7` | `0.84.1` | `53fa77cc...` | `2.12.1` | Pi 原 JSONL 兼容；新增结构化 Web Search call、sources 与 citation | Pi `0.84.1`；远程 wire protocol 升至 v2，新增原生 Web Search 事件与内容类型 |
 | `0.84.1-lystar.6` | `0.84.1` | `53fa77cc...` | `2.12.1` | 与 `.5` 一致；持久 Subagent Session 格式不变 | Pi `0.84.1`；只修正内置 Subagent TUI 状态和 Overlay 输入路由，现有 Tool 与 Extension API 不变 |
 | `0.84.1-lystar.5` | `0.84.1` | `53fa77cc...` | `2.12.1` | Pi 原 JSONL 兼容；Subagent 使用 `parentSession` 持久子会话，旧结果保持只读 | Pi `0.84.1`；内置 Subagent details 增加可选 Session 引用，现有 Tool 与 Extension API 不变 |
 | `0.84.1-lystar.4` | `0.84.1` | `53fa77cc...` | `2.12.1` | Pi 原 JSONL 兼容；完整活动分支分页与渐进恢复 | Pi `0.84.1`；新增 hidden `apply_patch` Tool，其他运行时契约不变 |

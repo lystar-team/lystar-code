@@ -21,6 +21,7 @@ import type {
 	StreamOptions,
 	ThinkingLevel,
 	ToolCall,
+	WebSearchCallContent,
 } from "../types.ts";
 import { appendAssistantMessageDiagnostic, createAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
@@ -66,6 +67,9 @@ export type PiMessagesEvent =
 	| { type: "toolcall_start"; contentIndex: number; id: string; toolName: string }
 	| { type: "toolcall_delta"; contentIndex: number; delta: string }
 	| { type: "toolcall_end"; contentIndex: number; toolCall: ToolCall }
+	| { type: "websearch_start"; contentIndex: number; call: WebSearchCallContent }
+	| { type: "websearch_update"; contentIndex: number; call: WebSearchCallContent }
+	| { type: "websearch_end"; contentIndex: number; call: WebSearchCallContent }
 	| {
 			type: "done";
 			reason: Extract<PiMessagesStopReason, "stop" | "length" | "toolUse">;
@@ -257,6 +261,13 @@ function createEventConverter(model: Model<"pi-messages">) {
 					toolCall: partial.content[event.contentIndex] as ToolCall,
 					partial,
 				};
+			case "websearch_start":
+			case "websearch_update":
+				partial.content[event.contentIndex] = event.call;
+				break;
+			case "websearch_end":
+				partial.content[event.contentIndex] = event.call;
+				return { ...event, partial };
 		}
 
 		return { ...event, partial } as AssistantMessageEvent;

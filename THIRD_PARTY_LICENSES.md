@@ -11,6 +11,7 @@ The standalone bundles also include runtime assets or native modules from these 
 | `@earendil-works/pi-tui` | MIT |
 | `@mariozechner/clipboard` and platform bindings | MIT |
 | `@silvia-odwyer/photon-node` | Apache-2.0 |
+| `@xterm/xterm` and `@xterm/addon-fit` | MIT |
 | `chalk` | MIT |
 | `diff` | BSD-3-Clause |
 | `highlight.js` | BSD-3-Clause |
@@ -18,6 +19,8 @@ The standalone bundles also include runtime assets or native modules from these 
 | `semver` | ISC |
 | `undici` | MIT |
 | `yaml` | ISC |
+| Noto Sans CJK | SIL Open Font License 1.1 |
+| Microsoft WebView2 SDK loader | Microsoft Software License Terms |
 
 `package-lock.json` is the authoritative dependency inventory for the source tree. Release automation must regenerate this file when dependencies change and must review license changes before publishing a bundle.
 

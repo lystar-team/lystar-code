@@ -2,6 +2,7 @@ import { type ExecFileException, execFile, spawnSync } from "child_process";
 import { existsSync, type FSWatcher, readFileSync, type Stats, statSync, unwatchFile, watchFile } from "fs";
 import { dirname, join, resolve } from "path";
 import { closeWatcher, FS_WATCH_RETRY_DELAY_MS, watchWithErrorHandler } from "../utils/fs-watch.ts";
+import { getGitRuntime } from "../utils/shell.ts";
 
 export type GitPaths = {
 	repoDir: string;
@@ -49,10 +50,12 @@ export function findGitPaths(cwd: string): GitPaths | null {
 
 /** Ask git for the current branch. Returns null on detached HEAD or if git is unavailable. */
 function resolveBranchWithGitSync(repoDir: string): string | null {
-	const result = spawnSync("git", ["--no-optional-locks", "symbolic-ref", "--quiet", "--short", "HEAD"], {
+	const git = getGitRuntime();
+	const result = spawnSync(git.command, ["--no-optional-locks", "symbolic-ref", "--quiet", "--short", "HEAD"], {
 		cwd: repoDir,
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "ignore"],
+		env: git.env,
 	});
 	const branch = result.status === 0 ? result.stdout.trim() : "";
 	return branch || null;
@@ -61,12 +64,14 @@ function resolveBranchWithGitSync(repoDir: string): string | null {
 /** Ask git for the current branch asynchronously. Returns null on detached HEAD or if git is unavailable. */
 function resolveBranchWithGitAsync(repoDir: string): Promise<string | null> {
 	return new Promise((resolvePromise) => {
+		const git = getGitRuntime();
 		execFile(
-			"git",
+			git.command,
 			["--no-optional-locks", "symbolic-ref", "--quiet", "--short", "HEAD"],
 			{
 				cwd: repoDir,
 				encoding: "utf8",
+				env: git.env,
 			},
 			(error: ExecFileException | null, stdout: string) => {
 				if (error) {

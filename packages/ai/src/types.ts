@@ -339,6 +339,32 @@ export interface TextContent {
 	type: "text";
 	text: string;
 	textSignature?: string; // e.g., for OpenAI responses, message metadata (legacy id string or TextSignatureV1 JSON)
+	annotations?: UrlCitation[];
+}
+
+export interface UrlCitation {
+	type: "url_citation";
+	startIndex: number;
+	endIndex: number;
+	title: string;
+	url: string;
+}
+
+export interface WebSearchSource {
+	type: "url";
+	url: string;
+}
+
+export type WebSearchAction =
+	| { type: "search"; query?: string; queries?: string[]; sources?: WebSearchSource[] }
+	| { type: "open_page"; url?: string }
+	| { type: "find_in_page"; url: string; pattern: string };
+
+export interface WebSearchCallContent {
+	type: "webSearchCall";
+	id: string;
+	status: "in_progress" | "searching" | "completed" | "failed";
+	action: WebSearchAction;
 }
 
 export interface ThinkingContent {
@@ -412,7 +438,7 @@ export interface UserMessage {
 
 export interface AssistantMessage {
 	role: "assistant";
-	content: (TextContent | ThinkingContent | ToolCall)[];
+	content: (TextContent | ThinkingContent | ToolCall | WebSearchCallContent)[];
 	api: Api;
 	provider: ProviderId;
 	model: string;
@@ -524,6 +550,19 @@ export type AssistantMessageEvent =
 	| { type: "toolcall_start"; contentIndex: number; partial: AssistantMessage }
 	| { type: "toolcall_delta"; contentIndex: number; delta: string; partial: AssistantMessage }
 	| { type: "toolcall_end"; contentIndex: number; toolCall: ToolCall; partial: AssistantMessage }
+	| { type: "websearch_start"; contentIndex: number; call: WebSearchCallContent; partial: AssistantMessage }
+	| {
+			type: "websearch_update";
+			contentIndex: number;
+			call: WebSearchCallContent;
+			partial: AssistantMessage;
+	  }
+	| {
+			type: "websearch_end";
+			contentIndex: number;
+			call: WebSearchCallContent;
+			partial: AssistantMessage;
+	  }
 	| {
 			type: "done";
 			reason: Extract<StopReason, "stop" | "length" | "toolUse" | "deferred">;

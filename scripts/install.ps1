@@ -1,5 +1,10 @@
 ﻿param(
     [string]$Version = "",
+    [string]$MinGitArchive = "",
+    [string]$WebView2Installer = "",
+    [string]$ReleaseArchive = "",
+    [string]$ReleaseManifest = "",
+    [switch]$Offline,
     [switch]$Rollback,
     [switch]$Uninstall
 )
@@ -92,11 +97,43 @@ public static class LYStarEnvironment {
     }
 }
 
+function Test-WebView2Runtime([string]$TerminalHost) {
+    & $TerminalHost --smoke-test
+    return $LASTEXITCODE -eq 0
+}
+
+function Ensure-WebView2Runtime([string]$TerminalHost, [string]$TempDir) {
+    if (Test-WebView2Runtime $TerminalHost) { return }
+
+    $Installer = $WebView2Installer
+    if ($Installer) {
+        $Installer = [IO.Path]::GetFullPath($Installer)
+        if (!(Test-Path $Installer)) { throw "WebView2 离线安装包不存在：$Installer" }
+        Write-Host "正在使用 WebView2 离线安装包：$Installer"
+    }
+    elseif ($Offline) {
+        throw "离线模式缺少 -WebView2Installer，且当前系统没有可用的 WebView2 Runtime。"
+    }
+    else {
+        $Installer = Join-Path $TempDir "MicrosoftEdgeWebView2Setup.exe"
+        Invoke-Download "https://go.microsoft.com/fwlink/p/?LinkId=2124703" $Installer
+    }
+
+    $Process = Start-Process -FilePath $Installer -ArgumentList "/silent", "/install" -Wait -PassThru
+    if ($Process.ExitCode -ne 0 -and $Process.ExitCode -ne 3010) {
+        throw "WebView2 Runtime 安装失败，退出码：$($Process.ExitCode)。可使用 la --attached 临时运行。"
+    }
+    if (!(Test-WebView2Runtime $TerminalHost)) {
+        throw "WebView2 Runtime 安装后仍不可用。可使用 la --attached 临时运行。"
+    }
+}
+
 if ($Uninstall) {
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $Parts = @($UserPath -split ";" | Where-Object { $_ -and $_ -ne $BinDir })
     [Environment]::SetEnvironmentVariable("Path", ($Parts -join ";"), "User")
     Send-EnvironmentChanged
+    Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\LYStar Agent.lnk")
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $InstallRoot
     Write-Host "LYStar Agent 已卸载。用户数据仍保留在 ~/.pi/agent。"
     exit 0
@@ -116,6 +153,9 @@ if ($Rollback) {
 if ($Repository -eq "__LYSTAR_RELEASE_REPOSITORY__") {
     throw "安装器尚未写入 GitHub repository。请使用 release 构建生成的 install.ps1。"
 }
+if ($Offline -and (!$ReleaseManifest -or !$ReleaseArchive -or !$MinGitArchive)) {
+    throw "离线安装必须同时提供 -ReleaseManifest、-ReleaseArchive 和 -MinGitArchive。"
+}
 
 $Headers = @{ "User-Agent" = "LYStar-Agent-Installer" }
 $ManifestUrl = if ($Version) {
@@ -124,7 +164,14 @@ $ManifestUrl = if ($Version) {
 else {
     "https://github.com/$Repository/releases/latest/download/release-manifest.json"
 }
-$Manifest = Invoke-JsonRequest $ManifestUrl $Headers
+$Manifest = if ($ReleaseManifest) {
+    $ResolvedManifest = [IO.Path]::GetFullPath($ReleaseManifest)
+    if (!(Test-Path $ResolvedManifest)) { throw "本地 Release manifest 不存在：$ResolvedManifest" }
+    Get-Content -Raw $ResolvedManifest | ConvertFrom-Json
+}
+else {
+    Invoke-JsonRequest $ManifestUrl $Headers
+}
 if (!$Version) { $Version = [string]$Manifest.version }
 if ($Version -notmatch '^\d+\.\d+\.\d+-lystar\.\d+$') { throw "无效版本：$Version" }
 if ([string]$Manifest.version -ne $Version) { throw "Release manifest 版本不一致。" }
@@ -151,13 +198,27 @@ try {
     $Archive = Join-Path $Temp $Asset
     $Sums = Join-Path $Temp "SHA256SUMS"
     Write-Host "正在安装 LYStar Agent $Version (windows-x64)..."
-    Invoke-Download "$BaseUrl/$Asset" $Archive $ExpectedAssetBytes
-    Invoke-Download "$BaseUrl/SHA256SUMS" $Sums
+    if ($ReleaseArchive) {
+        $ResolvedArchive = [IO.Path]::GetFullPath($ReleaseArchive)
+        if (!(Test-Path $ResolvedArchive)) { throw "本地 Release archive 不存在：$ResolvedArchive" }
+        Copy-Item $ResolvedArchive $Archive
+        if ($ExpectedAssetBytes -gt 0 -and (Get-Item $Archive).Length -ne $ExpectedAssetBytes) {
+            throw "本地 Release archive 文件大小不符。"
+        }
+    }
+    else {
+        Invoke-Download "$BaseUrl/$Asset" $Archive $ExpectedAssetBytes
+    }
 
-    $Pattern = "^([0-9a-fA-F]{64})\s+\*?" + [Regex]::Escape($Asset) + '$'
-    $Match = Get-Content $Sums | Select-String -Pattern $Pattern | Select-Object -First 1
-    if (!$Match) { throw "SHA256SUMS 中缺少 $Asset。" }
-    $Expected = $Match.Matches[0].Groups[1].Value.ToLowerInvariant()
+    $Expected = [string]$AssetInfo.sha256
+    if (!$Expected) {
+        Invoke-Download "$BaseUrl/SHA256SUMS" $Sums
+        $Pattern = "^([0-9a-fA-F]{64})\s+\*?" + [Regex]::Escape($Asset) + '$'
+        $Match = Get-Content $Sums | Select-String -Pattern $Pattern | Select-Object -First 1
+        if (!$Match) { throw "SHA256SUMS 中缺少 $Asset。" }
+        $Expected = $Match.Matches[0].Groups[1].Value
+    }
+    $Expected = $Expected.ToLowerInvariant()
     $Actual = (Get-FileHash -Algorithm SHA256 $Archive).Hash.ToLowerInvariant()
     if ($Expected -ne $Actual) { throw "SHA-256 校验失败。" }
 
@@ -165,10 +226,22 @@ try {
     Expand-Archive -Path $Archive -DestinationPath $Extract
     $Bundle = Join-Path $Extract "lystar-agent"
     $Executable = Join-Path $Bundle "la.exe"
+    $TerminalHost = Join-Path $Bundle "lystar-terminal.exe"
     if (!(Test-Path $Executable)) { throw "发行包缺少 la.exe。" }
-    & $Executable --version | Out-Null
+    if (!(Test-Path $TerminalHost)) { throw "发行包缺少 lystar-terminal.exe。" }
+    Ensure-WebView2Runtime $TerminalHost $Temp
+    $CandidateVersion = (& $Executable --version | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $CandidateVersion -ne $Version) {
+        throw "候选 la.exe 版本校验失败：预期 $Version，实际 $CandidateVersion。"
+    }
     Write-Host "正在检查 LYStar 托管的 MinGit Bash..."
-    & $Executable --ensure-windows-bash | Out-Host
+    $MinGitArgs = @("--ensure-windows-bash")
+    if ($MinGitArchive) {
+        $ResolvedMinGitArchive = [IO.Path]::GetFullPath($MinGitArchive)
+        if (!(Test-Path $ResolvedMinGitArchive)) { throw "MinGit 离线安装包不存在：$ResolvedMinGitArchive" }
+        $MinGitArgs += @("--archive", $ResolvedMinGitArchive, "--offline")
+    }
+    & $Executable @MinGitArgs | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "MinGit Bash 自动安装失败，LYStar 版本未切换。" }
 
     New-Item -ItemType Directory -Force $VersionsDir, $BinDir | Out-Null
@@ -186,6 +259,15 @@ set /p LYSTAR_VERSION=<"%~dp0..\current"
 '@
     [IO.File]::WriteAllText((Join-Path $BinDir "la.cmd"), $Launcher, [Text.UTF8Encoding]::new($false))
 
+    $StartMenuShortcut = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\LYStar Agent.lnk"
+    New-Item -ItemType Directory -Force (Split-Path -Parent $StartMenuShortcut) | Out-Null
+    $Shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($StartMenuShortcut)
+    $Shortcut.TargetPath = Join-Path $BinDir "la.cmd"
+    $Shortcut.WorkingDirectory = [Environment]::GetFolderPath("UserProfile")
+    $Shortcut.IconLocation = "$(Join-Path $Target 'lystar-terminal.exe'),0"
+    $Shortcut.Description = "LYStar Agent"
+    $Shortcut.Save()
+
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $Parts = @($UserPath -split ";" | Where-Object { $_ })
     if ($Parts -notcontains $BinDir) {
@@ -194,7 +276,10 @@ set /p LYSTAR_VERSION=<"%~dp0..\current"
         Write-Host "已把 $BinDir 加入用户 PATH。"
     }
     $env:Path = "$BinDir;$env:Path"
-    & (Join-Path $BinDir "la.cmd") --version | Out-Null
+    $InstalledVersion = (& (Join-Path $BinDir "la.cmd") --version | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $InstalledVersion -ne $Version) {
+        throw "安装后的 la 版本校验失败：预期 $Version，实际 $InstalledVersion。"
+    }
 
     Write-Host "LYStar Agent $Version 已安装到 $Target。"
     Write-Host "新开的终端可直接运行 la；首次使用请执行 /login。"

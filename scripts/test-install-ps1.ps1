@@ -1,5 +1,7 @@
 ﻿param(
-    [switch]$Integration
+    [switch]$Integration,
+    [string]$MinGitArchive = "",
+    [string]$WebView2Installer = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -43,7 +45,16 @@ try {
             '$PSVersionTable.PSVersion.Major -lt 5',
             '[Net.SecurityProtocolType]::Tls12',
             '--ensure-windows-bash',
-            'MinGit Bash 自动安装失败'
+            'MinGit Bash 自动安装失败',
+            'MinGitArchive',
+            'WebView2Installer',
+            'ReleaseArchive',
+            'ReleaseManifest',
+            '[switch]$Offline',
+            'Ensure-WebView2Runtime',
+            'lystar-terminal.exe',
+            'LYStar Agent.lnk',
+            'la --attached'
         )) {
             if (!$Source.Contains($Required)) { throw "$Installer is missing: $Required" }
         }
@@ -73,14 +84,33 @@ try {
     }
 
     if ($Integration) {
+        if (!$MinGitArchive) { throw "Integration test requires -MinGitArchive for offline installation." }
+        $MinGitArchive = [IO.Path]::GetFullPath($MinGitArchive)
+        if (!(Test-Path $MinGitArchive)) { throw "MinGit archive does not exist: $MinGitArchive" }
         $SavedLocalAppData = $env:LOCALAPPDATA
+        $SavedAppData = $env:APPDATA
         $SavedAgentDir = $env:PI_CODING_AGENT_DIR
         $SavedUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
         try {
             $env:LOCALAPPDATA = Join-Path $Temp "local-app-data"
+            $env:APPDATA = Join-Path $Temp "app-data"
             $env:PI_CODING_AGENT_DIR = Join-Path $Temp "agent"
-            $ReleaseInstaller = Join-Path $Temp "install.ps1"
-            & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $ReleaseInstaller
+            $BuiltOutput = Join-Path $Root "packages\coding-agent\binaries"
+            $BuiltArchive = Get-ChildItem -Path $BuiltOutput -Filter "lystar-agent-*-windows-x64.zip" | Select-Object -First 1
+            if (!$BuiltArchive) { throw "Integration test requires a Windows release archive in $BuiltOutput." }
+            $BuiltVersion = [Regex]::Match($BuiltArchive.Name, '^lystar-agent-v(.+)-windows-x64\.zip$').Groups[1].Value
+            & node (Join-Path $Root "scripts/generate-release-metadata.mjs") $BuiltOutput $BuiltVersion "octyean/lystar-agent"
+            if ($LASTEXITCODE -ne 0) { throw "Failed to generate local release metadata." }
+            $ReleaseInstaller = Join-Path $BuiltOutput "install.ps1"
+            $InstallArgs = @(
+                "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $ReleaseInstaller,
+                "-ReleaseArchive", $BuiltArchive.FullName,
+                "-ReleaseManifest", (Join-Path $BuiltOutput "release-manifest.json"),
+                "-MinGitArchive", $MinGitArchive,
+                "-Offline"
+            )
+            if ($WebView2Installer) { $InstallArgs += @("-WebView2Installer", [IO.Path]::GetFullPath($WebView2Installer)) }
+            & powershell.exe @InstallArgs
             if ($LASTEXITCODE -ne 0) { throw "Materialized installer exited with $LASTEXITCODE." }
 
             $InstallRoot = Join-Path $env:LOCALAPPDATA "LYStarAgent"
@@ -98,6 +128,7 @@ try {
         finally {
             [Environment]::SetEnvironmentVariable("Path", $SavedUserPath, "User")
             $env:LOCALAPPDATA = $SavedLocalAppData
+            $env:APPDATA = $SavedAppData
             $env:PI_CODING_AGENT_DIR = $SavedAgentDir
         }
     }

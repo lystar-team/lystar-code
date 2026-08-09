@@ -92,6 +92,42 @@ describe("AssistantMessageComponent", () => {
 		expect(rendered).not.toContain("◆ 思考过程");
 	});
 
+	test("renders web search status and cited links", () => {
+		initTheme("dark");
+		const component = new AssistantMessageComponent(
+			createAssistantMessage([
+				{
+					type: "webSearchCall",
+					id: "ws_1",
+					status: "completed",
+					action: {
+						type: "search",
+						query: "OpenAI web search",
+						sources: [{ type: "url", url: "https://developers.openai.com/api/docs/guides/tools-web-search" }],
+					},
+				},
+				{
+					type: "text",
+					text: "Use web search.",
+					annotations: [
+						{
+							type: "url_citation",
+							startIndex: 4,
+							endIndex: 14,
+							title: "OpenAI Web Search",
+							url: "https://developers.openai.com/api/docs/guides/tools-web-search",
+						},
+					],
+				},
+			]),
+		);
+
+		const rendered = stripAnsi(component.render(100).join("\n"));
+		expect(rendered).toContain("已搜索网页 · 1 个来源");
+		expect(rendered).toContain("引用：");
+		expect(rendered).toContain("OpenAI Web Search");
+	});
+
 	test("renders length stops with neutral truncation wording", () => {
 		initTheme("dark");
 

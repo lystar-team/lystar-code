@@ -2,6 +2,10 @@
 
 ## [0.84.1] - 2026-08-07
 
+### Breaking Changes
+
+- Bumped the remote wire protocol to v2 so assistant snapshots can carry structured web search calls, source metadata, and URL citation annotations. v1 clients and servers are rejected during handshake.
+
 ## [0.84.0] - 2026-08-06
 
 ### Breaking Changes

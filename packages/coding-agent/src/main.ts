@@ -71,6 +71,7 @@ import { SessionOpenCoordinator } from "./session-open-coordinator.ts";
 import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
 import { ensureManagedWindowsBash } from "./utils/tools-manager.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
+import { launchWindowsTerminalHost, shouldLaunchWindowsTerminalHost } from "./utils/windows-terminal.ts";
 
 const EXTENSION_LOAD_FAILURE_HINT = 'Hint: Start without extensions using "pi -ne".';
 
@@ -637,12 +638,17 @@ export async function main(args: string[], options?: MainOptions) {
 		process.env.PI_SKIP_VERSION_CHECK = "1";
 	}
 
-	if (await runAuthCommand(args)) {
-		return;
-	}
-
 	if (process.platform === "win32") {
 		cleanupWindowsSelfUpdateQuarantine(getPackageDir());
+		if (
+			shouldLaunchWindowsTerminalHost(args, {
+				stdinIsTTY: Boolean(process.stdin.isTTY),
+				stdoutIsTTY: Boolean(process.stdout.isTTY),
+			})
+		) {
+			launchWindowsTerminalHost(args);
+			return;
+		}
 	}
 
 	const cwd = process.cwd();
@@ -651,14 +657,56 @@ export async function main(args: string[], options?: MainOptions) {
 	applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher();
 
-	if (args.length === 1 && args[0] === "--ensure-windows-bash") {
-		const bashPath = await ensureManagedWindowsBash(false);
+	if (args.includes("--ensure-windows-bash")) {
+		const archiveIndex = args.indexOf("--archive");
+		const archivePath = archiveIndex >= 0 ? args[archiveIndex + 1] : undefined;
+		const supportedArgs = new Set(["--ensure-windows-bash", "--archive", "--offline"]);
+		const invalidArg = args.find((arg, index) => index !== archiveIndex + 1 && !supportedArgs.has(arg));
+		if (invalidArg || (archiveIndex >= 0 && !archivePath)) {
+			console.error(chalk.red("Error: 用法：la --ensure-windows-bash [--archive <MinGit.zip>] [--offline]"));
+			process.exitCode = 1;
+			return;
+		}
+		const bashPath = await ensureManagedWindowsBash({ silent: false, archivePath });
 		if (!bashPath) {
 			console.error(chalk.red("Error: LYStar 托管 MinGit Bash 安装失败。"));
 			process.exitCode = 1;
 			return;
 		}
 		console.log(bashPath);
+		return;
+	}
+
+	if (args.includes("--windows-terminal-smoke")) {
+		console.log("LYStar 终端自检：中文 ✓ ✗ ✎ ⌕ ≡ ▶ ◆ →");
+		return;
+	}
+
+	if (args.includes("--windows-terminal-ui-smoke")) {
+		console.log("\u001b[38;2;85;194;255mLYStar Agent Windows Terminal\u001b[0m");
+		console.log("┌────────────────────────────────────┐");
+		console.log("│ 中文输入与显示  ✓  ✗  ✎  ⌕  ≡  ▶  ◆  → │");
+		console.log("└────────────────────────────────────┘");
+		await new Promise((resolve) => setTimeout(resolve, 8_000));
+		return;
+	}
+
+	const skipsWindowsShellBootstrap =
+		args.some((arg) => arg === "--version" || arg === "-v" || arg === "--help" || arg === "-h") || args[0] === "list";
+	if (process.platform === "win32" && !skipsWindowsShellBootstrap) {
+		const bashPath = await ensureManagedWindowsBash(true);
+		if (!bashPath) {
+			console.error(
+				chalk.red(
+					"Error: LYStar 托管 MinGit Bash 不可用。请联网重试，或运行 la --ensure-windows-bash --archive <MinGit.zip>。",
+				),
+			);
+			process.exitCode = 1;
+			return;
+		}
+	}
+
+	if (await runAuthCommand(args)) {
 		return;
 	}
 

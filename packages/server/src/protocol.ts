@@ -9,7 +9,9 @@ import {
 	type ModelThinkingLevel,
 	type ToolCall,
 	type ToolResultMessage,
+	type UrlCitation,
 	type UserMessage,
+	type WebSearchCallContent,
 } from "@earendil-works/pi-ai";
 import type {
 	AssistantTranscriptItem,
@@ -35,7 +37,9 @@ type _ProtocolModelInputsFitAi = Assert<ProtocolModelInput extends AiModelInput 
  * model sampling defaults, pricing tiers, and deferred-tool availability remain intentionally
  * server-side.
  */
-type _AiTextContentFieldsAccountedFor = Assert<ExactKeys<AiTextContent, "type" | "text" | "textSignature">>;
+type _AiTextContentFieldsAccountedFor = Assert<
+	ExactKeys<AiTextContent, "type" | "text" | "textSignature" | "annotations">
+>;
 type _AiThinkingContentFieldsAccountedFor = Assert<
 	ExactKeys<
 		Extract<AssistantMessage["content"][number], { type: "thinking" }>,
@@ -46,6 +50,10 @@ type _AiImageContentFieldsAccountedFor = Assert<ExactKeys<AiImageContent, "type"
 type _AiToolCallFieldsAccountedFor = Assert<
 	ExactKeys<ToolCall, "type" | "id" | "name" | "arguments" | "thoughtSignature">
 >;
+type _AiUrlCitationFieldsAccountedFor = Assert<
+	ExactKeys<UrlCitation, "type" | "startIndex" | "endIndex" | "title" | "url">
+>;
+type _AiWebSearchCallFieldsAccountedFor = Assert<ExactKeys<WebSearchCallContent, "type" | "id" | "status" | "action">>;
 type _AiUsageFieldsAccountedFor = Assert<
 	ExactKeys<
 		AiUsage,
@@ -257,7 +265,21 @@ function toProtocolAssistantContent(message: AssistantMessage): AssistantTranscr
 	return message.content.map((part) => {
 		switch (part.type) {
 			case "text":
-				return { type: "text", text: part.text };
+				return {
+					type: "text",
+					text: part.text,
+					...(part.annotations === undefined
+						? {}
+						: {
+								annotations: part.annotations.map((citation) => ({
+									type: "url_citation" as const,
+									startIndex: citation.startIndex,
+									endIndex: citation.endIndex,
+									title: citation.title,
+									url: citation.url,
+								})),
+							}),
+				};
 			case "thinking":
 				return {
 					type: "thinking",
@@ -270,6 +292,13 @@ function toProtocolAssistantContent(message: AssistantMessage): AssistantTranscr
 					toolCallId: identifier(part.id, "Tool call id"),
 					toolName: identifier(part.name, "Tool call name"),
 					input: toProtocolJsonValue(part.arguments),
+				};
+			case "webSearchCall":
+				return {
+					type: "webSearchCall",
+					id: identifier(part.id, "Web search call id"),
+					status: part.status,
+					action: part.action,
 				};
 			default: {
 				const exhaustive: never = part;

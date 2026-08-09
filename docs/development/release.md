@@ -16,13 +16,22 @@ v<Pi版本>-lystar.<修订号>
 2. CI 通过。
 3. `productVersion`、README、兼容矩阵和验证记录一致。
 4. 完成[全部 gate](verification.md)。
-5. 本地构建五平台包并校验 SHA。
+5. Unix runner 构建 macOS/Linux，Windows runner 原生构建 Windows 包。
 
 ```bash
 bash scripts/build-binaries.sh --offline-model-data
-cd packages/coding-agent/binaries
-sha256sum -c SHA256SUMS
 ```
+
+Windows x64 必须在安装了 MSVC Build Tools 的 Windows 主机执行：
+
+```powershell
+npm ci --ignore-scripts
+npm run build:offline
+.\scripts\build-windows-release.ps1 -Repository octyean/lystar-agent
+.\scripts\test-windows-terminal.ps1 -BundleDir .\packages\coding-agent\binaries\windows-x64\lystar-agent
+```
+
+两个 runner 的归档合并后再运行 `generate-release-metadata.mjs` 生成 SHA、manifest 和安装器。Ubuntu 不允许交叉编译 `la.exe`，因为 Bun 的 `--windows-icon` 只在 Windows 构建进程中生效。
 
 产物必须包含：
 
@@ -40,7 +49,24 @@ install.cmd
 VERSION
 ```
 
-核对 manifest 的版本、Pi 版本、仓库、五平台文件、大小和 SHA-256。Linux x64 解压后执行版本、帮助、离线模型列表和真实 PTY smoke。
+核对 manifest 的版本、Pi 版本、仓库、五平台文件、大小和 SHA-256。Linux x64 解压后执行版本、帮助、离线模型列表和真实 PTY smoke。Windows 还必须检查：
+
+- `la.exe` 和 `lystar-terminal.exe` 均带 LYStar ICO。
+- WebView2 SDK 版本和 nupkg SHA-256 固定。
+- `terminal/` 包含 xterm.js、fit addon、Noto Sans CJK 和对应许可证。
+- `lystar-terminal.exe --smoke-test`、ConPTY 窗口、Unicode 截图、resize、键盘输入和退出通过。
+- 清空系统 Git/Bash PATH 后，standalone `la.exe` 的在线、并发和离线 MinGit 初始化通过。
+- 安装器使用本次构建的本地 zip 和 manifest 完成安装、启动、快捷方式和卸载。
+
+更新 Windows Logo 时运行：
+
+```bash
+node scripts/generate-windows-icon.mjs source.png \
+  packages/coding-agent/assets/lystar-windows-icon.png \
+  packages/coding-agent/assets/lystar-windows-icon.ico
+```
+
+ICO 必须包含 `16、20、24、32、40、48、64、128、256` 像素图层。
 
 ## Tag
 

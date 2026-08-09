@@ -1,13 +1,22 @@
 import { existsSync } from "node:fs";
-import { delimiter } from "node:path";
+import { delimiter, resolve } from "node:path";
 import { spawn, spawnSync } from "child_process";
 import { getBinDir } from "../config.ts";
-import { ensureManagedWindowsBash, getManagedWindowsBashPath } from "./tools-manager.ts";
+import {
+	ensureManagedWindowsBash,
+	getManagedWindowsBashPath,
+	getManagedWindowsEnv,
+	getManagedWindowsGitPath,
+} from "./tools-manager.ts";
 
 export interface ShellConfig {
 	shell: string;
 	args: string[];
 	commandTransport?: "argv" | "stdin";
+}
+
+export interface ShellRuntime extends ShellConfig {
+	env: NodeJS.ProcessEnv;
 }
 
 /**
@@ -19,7 +28,13 @@ function isLegacyWslBashPath(path: string): boolean {
 }
 
 function getBashShellConfig(shell: string): ShellConfig {
-	return isLegacyWslBashPath(shell) ? { shell, args: ["-s"], commandTransport: "stdin" } : { shell, args: ["-c"] };
+	if (isLegacyWslBashPath(shell)) return { shell, args: ["-s"], commandTransport: "stdin" };
+	const managedBash = getManagedWindowsBashPath();
+	return process.platform === "win32" &&
+		managedBash &&
+		resolve(shell).toLowerCase() === resolve(managedBash).toLowerCase()
+		? { shell, args: ["--noprofile", "--norc", "-c"] }
+		: { shell, args: ["-c"] };
 }
 
 function findBashOnPath(): string | null {
@@ -127,18 +142,30 @@ export async function ensureShellConfig(customShellPath?: string, silent = true)
 	return managedBash ? getBashShellConfig(managedBash) : getShellConfig();
 }
 
-export function getShellEnv(): NodeJS.ProcessEnv {
+export function getShellEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
 	const binDir = getBinDir();
-	const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
-	const currentPath = process.env[pathKey] ?? "";
+	const pathKey = Object.keys(baseEnv).find((key) => key.toLowerCase() === "path") ?? "PATH";
+	const currentPath = baseEnv[pathKey] ?? "";
 	const pathEntries = currentPath.split(delimiter).filter(Boolean);
-	const hasBinDir = pathEntries.includes(binDir);
+	const hasBinDir = pathEntries.some((entry) => entry.toLowerCase() === binDir.toLowerCase());
 	const updatedPath = hasBinDir ? currentPath : [binDir, currentPath].filter(Boolean).join(delimiter);
 
-	return {
-		...process.env,
+	return getManagedWindowsEnv({
+		...baseEnv,
 		[pathKey]: updatedPath,
-	};
+	});
+}
+
+export function getShellRuntime(customShellPath?: string): ShellRuntime {
+	return { ...getShellConfig(customShellPath), env: getShellEnv() };
+}
+
+export async function resolveShellRuntime(customShellPath?: string, silent = true): Promise<ShellRuntime> {
+	return { ...(await ensureShellConfig(customShellPath, silent)), env: getShellEnv() };
+}
+
+export function getGitRuntime(): { command: string; env: NodeJS.ProcessEnv } {
+	return { command: getManagedWindowsGitPath() ?? "git", env: getShellEnv() };
 }
 
 /**

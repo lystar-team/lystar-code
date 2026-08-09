@@ -35,7 +35,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$PLATFORM" in
-    ""|darwin-arm64|darwin-x64|linux-x64|linux-arm64|windows-x64) ;;
+    ""|darwin-arm64|darwin-x64|linux-x64|linux-arm64) ;;
     *) printf 'Invalid platform: %s\n' "$PLATFORM" >&2; exit 2 ;;
 esac
 if [[ -n "$REPOSITORY" && ! "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
@@ -89,7 +89,7 @@ fi
 if [[ -n "$PLATFORM" ]]; then
     PLATFORMS=("$PLATFORM")
 else
-    PLATFORMS=(darwin-arm64 darwin-x64 linux-x64 linux-arm64 windows-x64)
+    PLATFORMS=(darwin-arm64 darwin-x64 linux-x64 linux-arm64)
 fi
 
 rm -rf "$OUTPUT_DIR"
@@ -108,13 +108,8 @@ for platform in "${PLATFORMS[@]}"; do
 
     # Bun 只有显式收到 worker 入口时，才会把 worker 编入独立可执行文件。
     # 禁用当前目录 bunfig.toml 自动加载，避免项目 preload 在独立程序启动前执行。
-    if [[ "$platform" == windows-* ]]; then
-        run_bun build --compile --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/cli.js ./src/utils/image-resize-worker.ts \
-            --outfile "$OUTPUT_DIR/$platform/la.exe"
-    else
-        run_bun build --compile --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/cli.js ./src/utils/image-resize-worker.ts \
-            --outfile "$OUTPUT_DIR/$platform/la"
-    fi
+    run_bun build --compile --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/cli.js ./src/utils/image-resize-worker.ts \
+        --outfile "$OUTPUT_DIR/$platform/la"
 done
 
 for platform in "${PLATFORMS[@]}"; do
@@ -161,21 +156,13 @@ for platform in "${PLATFORMS[@]}"; do
         mkdir -p "$OUTPUT_DIR/$platform/native/darwin/prebuilds/$platform"
         cp "../tui/native/darwin/prebuilds/$platform/darwin-modifiers.node" \
             "$OUTPUT_DIR/$platform/native/darwin/prebuilds/$platform/"
-    elif [[ "$platform" == windows-x64 ]]; then
-        mkdir -p "$OUTPUT_DIR/$platform/native/win32/prebuilds/win32-x64"
-        cp ../tui/native/win32/prebuilds/win32-x64/win32-console-mode.node \
-            "$OUTPUT_DIR/$platform/native/win32/prebuilds/win32-x64/"
     fi
 done
 
 cd "$OUTPUT_DIR"
 for platform in "${PLATFORMS[@]}"; do
     mv "$platform" lystar-agent
-    if [[ "$platform" == windows-* ]]; then
-        zip -qr "lystar-agent-v${VERSION}-${platform}.zip" lystar-agent
-    else
-        tar -czf "lystar-agent-v${VERSION}-${platform}.tar.gz" lystar-agent
-    fi
+    tar -czf "lystar-agent-v${VERSION}-${platform}.tar.gz" lystar-agent
     mv lystar-agent "$platform"
 done
 

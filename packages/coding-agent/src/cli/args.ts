@@ -47,6 +47,7 @@ export interface Args {
 	noContextFiles?: boolean;
 	listModels?: string | true;
 	offline?: boolean;
+	attached?: boolean;
 	tuiMode?: TuiMode;
 	verbose?: boolean;
 	altScreen?: "auto" | "always" | "never";
@@ -218,6 +219,8 @@ export function parseArgs(args: string[]): Args {
 			result.projectTrustOverride = false;
 		} else if (arg === "--offline") {
 			result.offline = true;
+		} else if (arg === "--attached") {
+			result.attached = true;
 		} else if (arg.startsWith("@")) {
 			result.fileArgs.push(arg.slice(1)); // Remove @ prefix
 		} else if (arg.startsWith("--")) {
@@ -313,6 +316,7 @@ ${chalk.bold("选项：")}
   --approve, -a                  本次运行信任项目本地文件
   --no-approve, -na              本次运行忽略项目本地文件
   --offline                      关闭启动网络请求，等同 PI_OFFLINE=1
+  --attached                     Windows 下在当前终端运行 TUI
   --help, -h                     显示帮助
   --version, -v                  显示版本号
 

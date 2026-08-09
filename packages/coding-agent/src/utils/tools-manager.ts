@@ -15,6 +15,7 @@ import {
 	rmSync,
 	statSync,
 	unlinkSync,
+	utimesSync,
 	writeFileSync,
 } from "fs";
 import { arch, platform } from "os";
@@ -291,17 +292,29 @@ function getManagedMinGitPathEntries(rootDir: string): string[] {
 	return [join(rootDir, "cmd"), join(rootDir, "mingw64", "bin"), join(rootDir, "usr", "bin")];
 }
 
-function getManagedMinGitEnv(rootDir: string): NodeJS.ProcessEnv {
-	const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
-	const currentPath = process.env[pathKey] ?? "";
+function getManagedMinGitEnv(rootDir: string, baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+	const pathKey = Object.keys(baseEnv).find((key) => key.toLowerCase() === "path") ?? "PATH";
+	const currentPath = baseEnv[pathKey] ?? "";
 	const currentEntries = currentPath.split(delimiter).filter(Boolean);
 	const missingEntries = getManagedMinGitPathEntries(rootDir).filter(
 		(candidate) => !currentEntries.some((entry) => entry.toLowerCase() === candidate.toLowerCase()),
 	);
 	return {
-		...process.env,
+		...baseEnv,
 		[pathKey]: [...missingEntries, currentPath].filter(Boolean).join(delimiter),
 	};
+}
+
+export function getManagedWindowsEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+	return platform() === "win32" && getManagedWindowsBashPath()
+		? getManagedMinGitEnv(MANAGED_MINGIT_DIR, baseEnv)
+		: { ...baseEnv };
+}
+
+export function getManagedWindowsGitPath(): string | null {
+	if (!getManagedWindowsBashPath()) return null;
+	const gitPath = join(MANAGED_MINGIT_DIR, "cmd", "git.exe");
+	return existsSync(gitPath) ? gitPath : null;
 }
 
 function addManagedMinGitToPath(rootDir: string): void {
@@ -310,19 +323,57 @@ function addManagedMinGitToPath(rootDir: string): void {
 	process.env[pathKey] = env[pathKey];
 }
 
+function isProcessRunning(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+function readManagedMinGitLock(): { pid?: number; token?: string } {
+	try {
+		const raw = readFileSync(MINGIT_LOCK_PATH, "utf8").trim();
+		if (raw.startsWith("{")) return JSON.parse(raw) as { pid?: number; token?: string };
+		const pid = Number.parseInt(raw, 10);
+		return Number.isFinite(pid) ? { pid } : {};
+	} catch {
+		return {};
+	}
+}
+
 async function acquireManagedMinGitLock(): Promise<() => void> {
 	mkdirSync(TOOLS_DIR, { recursive: true });
 	const deadline = Date.now() + MINGIT_LOCK_TIMEOUT_MS;
 	while (Date.now() < deadline) {
 		try {
+			const token = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 			const fd = openSync(MINGIT_LOCK_PATH, "wx");
-			writeFileSync(fd, `${process.pid}\n`);
+			writeFileSync(
+				fd,
+				`${JSON.stringify({ pid: process.pid, startedAt: Date.now(), version: MINGIT_VERSION, token })}\n`,
+			);
 			closeSync(fd);
-			return () => rmSync(MINGIT_LOCK_PATH, { force: true });
+			const heartbeat = setInterval(() => {
+				try {
+					const now = new Date();
+					utimesSync(MINGIT_LOCK_PATH, now, now);
+				} catch {}
+			}, 30_000);
+			heartbeat.unref();
+			return () => {
+				clearInterval(heartbeat);
+				if (readManagedMinGitLock().token === token) rmSync(MINGIT_LOCK_PATH, { force: true });
+			};
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 			try {
-				if (Date.now() - statSync(MINGIT_LOCK_PATH).mtimeMs > MINGIT_STALE_LOCK_MS) {
+				const lock = readManagedMinGitLock();
+				if (
+					Date.now() - statSync(MINGIT_LOCK_PATH).mtimeMs > MINGIT_STALE_LOCK_MS &&
+					(!lock.pid || !isProcessRunning(lock.pid))
+				) {
 					unlinkSync(MINGIT_LOCK_PATH);
 					continue;
 				}
@@ -363,7 +414,7 @@ function validateManagedWindowsBash(bashPath: string, rootDir: string): void {
 	}
 }
 
-async function downloadManagedWindowsBash(silent: boolean): Promise<string> {
+async function downloadManagedWindowsBash(silent: boolean, localArchivePath?: string): Promise<string> {
 	if (platform() !== "win32" || arch() !== "x64") {
 		throw new Error(`Unsupported managed MinGit platform: ${platform()}/${arch()}`);
 	}
@@ -375,27 +426,38 @@ async function downloadManagedWindowsBash(silent: boolean): Promise<string> {
 	mkdirSync(extractDir, { recursive: true });
 
 	try {
-		const failures: string[] = [];
-		let downloaded = false;
-		for (const url of MINGIT_URLS) {
-			try {
-				rmSync(archivePath, { force: true });
-				await downloadFile(url, archivePath, (sizeBytes) => {
-					if (!silent) {
-						const size = sizeBytes ? `（${formatMegabytes(sizeBytes)}）` : "";
-						console.log(chalk.dim(`正在下载 MinGit Bash${size}...`));
-					}
-				});
-				if (!silent)
-					console.log(chalk.dim(`已下载 MinGit Bash（${formatMegabytes(statSync(archivePath).size)}）。`));
-				if (calculateFileSha256(archivePath) !== MINGIT_SHA256) throw new Error("SHA-256 校验失败");
-				downloaded = true;
-				break;
-			} catch (error) {
-				failures.push(`${url}: ${error instanceof Error ? error.message : String(error)}`);
+		if (localArchivePath) {
+			const resolvedArchivePath = resolve(localArchivePath);
+			if (!existsSync(resolvedArchivePath)) throw new Error(`MinGit 离线包不存在：${resolvedArchivePath}`);
+			copyFileSync(resolvedArchivePath, archivePath);
+			if (!silent) console.log(chalk.dim(`正在使用 MinGit 离线包：${resolvedArchivePath}`));
+		} else {
+			if (isOfflineModeEnabled()) throw new Error("离线模式缺少 --archive 指定的 MinGit 安装包");
+			const failures: string[] = [];
+			let downloaded = false;
+			for (const url of MINGIT_URLS) {
+				try {
+					rmSync(archivePath, { force: true });
+					await downloadFile(url, archivePath, (sizeBytes) => {
+						if (!silent) {
+							const size = sizeBytes ? `（${formatMegabytes(sizeBytes)}）` : "";
+							console.log(chalk.dim(`正在下载 MinGit Bash${size}...`));
+						}
+					});
+					if (!silent)
+						console.log(chalk.dim(`已下载 MinGit Bash（${formatMegabytes(statSync(archivePath).size)}）。`));
+					downloaded = true;
+					break;
+				} catch (error) {
+					failures.push(`${url}: ${error instanceof Error ? error.message : String(error)}`);
+				}
 			}
+			if (!downloaded) throw new Error(`MinGit 下载失败：${failures.join("; ")}`);
 		}
-		if (!downloaded) throw new Error(`MinGit 下载失败：${failures.join("; ")}`);
+		const actualSha256 = calculateFileSha256(archivePath);
+		if (actualSha256 !== MINGIT_SHA256) {
+			throw new Error(`MinGit SHA-256 校验失败：期望 ${MINGIT_SHA256}，实际 ${actualSha256}`);
+		}
 
 		extractZipArchive(archivePath, extractDir, MINGIT_ASSET);
 		const shPath = join(extractDir, "usr", "bin", "sh.exe");
@@ -424,7 +486,7 @@ async function downloadManagedWindowsBash(silent: boolean): Promise<string> {
 	}
 }
 
-async function provisionManagedWindowsBash(silent: boolean): Promise<string> {
+async function provisionManagedWindowsBash(silent: boolean, archivePath?: string): Promise<string> {
 	const releaseLock = await acquireManagedMinGitLock();
 	try {
 		const existing = getManagedWindowsBashPath();
@@ -437,7 +499,7 @@ async function provisionManagedWindowsBash(silent: boolean): Promise<string> {
 				// 锁内重新检查后仍损坏，继续安装。
 			}
 		}
-		const installed = await downloadManagedWindowsBash(silent);
+		const installed = await downloadManagedWindowsBash(silent, archivePath);
 		addManagedMinGitToPath(MANAGED_MINGIT_DIR);
 		return installed;
 	} finally {
@@ -445,8 +507,11 @@ async function provisionManagedWindowsBash(silent: boolean): Promise<string> {
 	}
 }
 
-export async function ensureManagedWindowsBash(silent = false): Promise<string | undefined> {
+export async function ensureManagedWindowsBash(
+	options: boolean | { silent?: boolean; archivePath?: string } = false,
+): Promise<string | undefined> {
 	if (platform() !== "win32") return undefined;
+	const { silent = false, archivePath } = typeof options === "boolean" ? { silent: options } : options;
 	const existing = getManagedWindowsBashPath();
 	if (existing) {
 		try {
@@ -457,9 +522,8 @@ export async function ensureManagedWindowsBash(silent = false): Promise<string |
 			// 损坏或不完整的托管环境会在下面重新安装。
 		}
 	}
-	if (isOfflineModeEnabled()) return undefined;
 
-	managedWindowsBashPromise ??= provisionManagedWindowsBash(silent)
+	managedWindowsBashPromise ??= provisionManagedWindowsBash(silent, archivePath)
 		.then((bashPath) => {
 			if (!silent) console.log(chalk.dim(`MinGit Bash 已安装到 ${bashPath}`));
 			return bashPath;

@@ -1,6 +1,6 @@
 import Type, { type Static } from "typebox";
 
-export const PROTOCOL_VERSION = 1 as const;
+export const PROTOCOL_VERSION = 2 as const;
 
 const IdSchema = Type.String({ minLength: 1 });
 const TimestampSchema = Type.Integer({ minimum: 0 });
@@ -75,6 +75,17 @@ export type ModelMetadata = Static<typeof ModelMetadataSchema>;
 export const TextContentSchema = StrictObject({
 	type: Type.Literal("text"),
 	text: Type.String(),
+	annotations: Type.Optional(
+		Type.Array(
+			StrictObject({
+				type: Type.Literal("url_citation"),
+				startIndex: Type.Integer({ minimum: 0 }),
+				endIndex: Type.Integer({ minimum: 0 }),
+				title: Type.String(),
+				url: Type.String(),
+			}),
+		),
+	),
 });
 export const ThinkingContentSchema = StrictObject({
 	type: Type.Literal("thinking"),
@@ -92,13 +103,41 @@ export const ToolCallContentSchema = StrictObject({
 	toolName: IdSchema,
 	input: JsonValueSchema,
 });
+const WebSearchSourceSchema = StrictObject({ type: Type.Literal("url"), url: Type.String() });
+const WebSearchActionSchema = Type.Union([
+	StrictObject({
+		type: Type.Literal("search"),
+		query: Type.Optional(Type.String()),
+		queries: Type.Optional(Type.Array(Type.String())),
+		sources: Type.Optional(Type.Array(WebSearchSourceSchema)),
+	}),
+	StrictObject({ type: Type.Literal("open_page"), url: Type.Optional(Type.String()) }),
+	StrictObject({ type: Type.Literal("find_in_page"), url: Type.String(), pattern: Type.String() }),
+]);
+export const WebSearchCallContentSchema = StrictObject({
+	type: Type.Literal("webSearchCall"),
+	id: IdSchema,
+	status: Type.Union([
+		Type.Literal("in_progress"),
+		Type.Literal("searching"),
+		Type.Literal("completed"),
+		Type.Literal("failed"),
+	]),
+	action: WebSearchActionSchema,
+});
 export const UserContentSchema = Type.Union([TextContentSchema, ImageContentSchema]);
-export const AssistantContentSchema = Type.Union([TextContentSchema, ThinkingContentSchema, ToolCallContentSchema]);
+export const AssistantContentSchema = Type.Union([
+	TextContentSchema,
+	ThinkingContentSchema,
+	ToolCallContentSchema,
+	WebSearchCallContentSchema,
+]);
 export const ToolContentSchema = Type.Union([TextContentSchema, ImageContentSchema]);
 export type TextContent = Static<typeof TextContentSchema>;
 export type ThinkingContent = Static<typeof ThinkingContentSchema>;
 export type ImageContent = Static<typeof ImageContentSchema>;
 export type ToolCallContent = Static<typeof ToolCallContentSchema>;
+export type WebSearchCallContent = Static<typeof WebSearchCallContentSchema>;
 
 export const UsageSchema = StrictObject({
 	input: Type.Integer({ minimum: 0 }),

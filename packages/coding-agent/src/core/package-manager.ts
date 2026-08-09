@@ -32,6 +32,7 @@ import { CONFIG_DIR_NAME } from "../config.ts";
 import { spawnProcess, spawnProcessSync } from "../utils/child-process.ts";
 import { type GitSource, parseGitUrl } from "../utils/git.ts";
 import { canonicalizePath, isLocalPath, markPathIgnoredByCloudSync, resolvePath } from "../utils/paths.ts";
+import { getGitRuntime } from "../utils/shell.ts";
 import { isStdoutTakenOver } from "./output-guard.ts";
 import { type PiManifest, readPiManifest } from "./pi-manifest.ts";
 import type { PackageSource, SettingsManager } from "./settings-manager.ts";
@@ -2580,11 +2581,11 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private spawnCommand(command: string, args: string[], options?: { cwd?: string }): ChildProcess {
-		const env = getEnv();
-		return spawnProcess(command, args, {
+		const runtime = command === "git" ? getGitRuntime() : { command, env: getEnv() };
+		return spawnProcess(runtime.command, args, {
 			cwd: options?.cwd,
 			stdio: isStdoutTakenOver() ? ["ignore", 2, 2] : "inherit",
-			env,
+			env: runtime.env,
 		});
 	}
 
@@ -2593,9 +2594,10 @@ export class DefaultPackageManager implements PackageManager {
 		args: string[],
 		options?: { cwd?: string; env?: Record<string, string> },
 	): ChildProcessByStdio<null, Readable, Readable> {
-		const baseEnv = getEnv();
+		const runtime = command === "git" ? getGitRuntime() : { command, env: getEnv() };
+		const baseEnv = runtime.env;
 		const env = options?.env ? { ...baseEnv, ...options.env } : baseEnv;
-		return spawnProcess(command, args, {
+		return spawnProcess(runtime.command, args, {
 			cwd: options?.cwd,
 			stdio: ["ignore", "pipe", "pipe"],
 			env,
@@ -2661,11 +2663,11 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private runCommandSync(command: string, args: string[]): string {
-		const env = getEnv();
-		const result = spawnProcessSync(command, args, {
+		const runtime = command === "git" ? getGitRuntime() : { command, env: getEnv() };
+		const result = spawnProcessSync(runtime.command, args, {
 			stdio: ["ignore", "pipe", "pipe"],
 			encoding: "utf-8",
-			env,
+			env: runtime.env,
 		});
 		if (result.error || result.status !== 0) {
 			throw new Error(

@@ -14,6 +14,7 @@ import {
 	type SimpleStreamOptions,
 	type StopReason,
 	type ToolCall,
+	type WebSearchCallContent,
 } from "@earendil-works/pi-ai";
 
 // Create stream class matching ProxyMessageEventStream
@@ -44,6 +45,9 @@ export type ProxyAssistantMessageEvent =
 	| { type: "toolcall_start"; contentIndex: number; id: string; toolName: string }
 	| { type: "toolcall_delta"; contentIndex: number; delta: string }
 	| { type: "toolcall_end"; contentIndex: number }
+	| { type: "websearch_start"; contentIndex: number; call: WebSearchCallContent }
+	| { type: "websearch_update"; contentIndex: number; call: WebSearchCallContent }
+	| { type: "websearch_end"; contentIndex: number; call: WebSearchCallContent }
 	| {
 			type: "done";
 			reason: Extract<StopReason, "stop" | "length" | "toolUse">;
@@ -348,6 +352,12 @@ function processProxyEvent(
 			}
 			return undefined;
 		}
+
+		case "websearch_start":
+		case "websearch_update":
+		case "websearch_end":
+			partial.content[proxyEvent.contentIndex] = proxyEvent.call;
+			return { ...proxyEvent, partial };
 
 		case "done":
 			partial.stopReason = proxyEvent.reason;

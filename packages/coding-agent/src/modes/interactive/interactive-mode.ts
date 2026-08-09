@@ -120,7 +120,7 @@ import { parseGitUrl } from "../../utils/git.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { getCwdRelativePath } from "../../utils/paths.ts";
 import { getPiUserAgent } from "../../utils/pi-user-agent.ts";
-import { killTrackedDetachedChildren } from "../../utils/shell.ts";
+import { getGitRuntime, killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { ensureManagedWindowsBash, ensureTool } from "../../utils/tools-manager.ts";
 import { checkForNewPiVersion, type LatestPiRelease } from "../../utils/version-check.ts";
 import { type AgentWorkbenchAgent, AgentWorkbenchComponent } from "./components/agent-workbench.ts";
@@ -6795,11 +6795,13 @@ export class InteractiveMode {
 	}
 
 	private runGit(args: string[]): string | undefined {
-		const result = spawnSync("git", ["--no-optional-locks", ...args], {
+		const git = getGitRuntime();
+		const result = spawnSync(git.command, ["--no-optional-locks", ...args], {
 			cwd: this.sessionManager.getCwd(),
 			encoding: "utf8",
 			stdio: ["ignore", "pipe", "ignore"],
 			maxBuffer: 16 * 1024 * 1024,
+			env: git.env,
 		});
 		return result.status === 0 ? result.stdout : undefined;
 	}
@@ -6838,13 +6840,15 @@ export class InteractiveMode {
 
 	private async loadWorkspaceDiff(filePath: string): Promise<string | undefined> {
 		return new Promise((resolve) => {
+			const git = getGitRuntime();
 			execFile(
-				"git",
+				git.command,
 				["--no-optional-locks", "diff", "--no-ext-diff", "--unified=3", "HEAD", "--", filePath],
 				{
 					cwd: this.sessionManager.getCwd(),
 					encoding: "utf8",
 					maxBuffer: 16 * 1024 * 1024,
+					env: git.env,
 				},
 				(error, stdout) => resolve(error ? undefined : stdout.trimEnd() || undefined),
 			);

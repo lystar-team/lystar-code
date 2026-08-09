@@ -1,11 +1,11 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-08T14:46:05Z
+最后核验时间：2026-08-09T03:12:47Z
 
 环境：
 
 ```text
-Node.js v22.22.2
+Node.js v22.21.1
 npm 11.11.0
 Bun 1.3.9
 Linux x64
@@ -14,6 +14,22 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### `0.84.1-lystar.7` 发布前核验
+
+发布事实源为 `piConfig.productVersion = 0.84.1-lystar.7`，Pi workspace 包版本继续保持 `0.84.1`。Session JSONL 保持向后兼容；远程 client/server wire protocol 从 v1 升到 v2，旧版本会在握手阶段拒绝混用。
+
+`openai-responses` 原生 `web_search` 已改为结构化保存搜索调用、状态、query/queries、完整 sources 和正文 `url_citation`，并贯通同模型 stateless replay、跨模型私有调用剥离、TUI、Print、HTML 导出和远程 Protocol v2。Provider 流中 `web_search_call` 的 added item 可能暂不包含 `action`；转换边界现使用 `search` 占位，并在 done 或 terminal response 回填完整 action。流失败、`response.failed`、提前 EOF 和迭代异常会把未结束搜索统一收尾为 `failed`。
+
+本机已停用用户级 `~/.pi/agent/extensions/openai-web-search.ts`，备份位于 `~/.pi/agent/extensions-disabled/openai-web-search.ts.disabled-20260809`。源码执行路径未发现固定调用 `gpt-5.6-luna` 或 `openai_web_search`。使用构建后的 `upstream/gpt-5.6-sol` 完成真实搜索，Session `2026-08-09T02-55-55-366Z_019fe472-c7e6-756c-929a-3130ff098b61.jsonl` 保存 1 个 completed `webSearchCall`、12 个 sources 和 1 个 `url_citation`，最终模型仍为 `gpt-5.6-sol`。Print 输出正文和引用；同一 Session 导出的 `/tmp/lystar-web-search-export.html` 解码回查得到 `status=completed`、`sources=12`、`citations=1`。
+
+Windows Shell 统一到 `~/.pi/agent/bin/mingit/` 托管 MinGit 的绝对 Bash/Git 路径和显式环境；安装锁包含 PID、token、heartbeat 和 stale 回收。standalone Windows 交互启动新增 `lystar-terminal.exe`，通过 ConPTY 运行现有 TUI，以 WebView2、xterm.js 和本地 Noto Sans CJK 处理 UTF-8、中文输入、resize、剪贴板、链接、关闭确认、窗口状态和品牌图标。`--version`、`--help`、`--print`、JSON/RPC、管道、auth、安装更新和 `--attached` 保留当前终端。
+
+Windows 发行已从 Ubuntu 交叉构建中拆出，改由 `windows-2025` 使用 MSVC 原生构建带 ICO 的 `la.exe` 和静态 MSVC Runtime 的 `lystar-terminal.exe`；CI 会验证 WebView2 smoke、ConPTY 窗口、Unicode 截图、resize、键盘、图标、托管 MinGit 并发/离线初始化，以及使用本次构建 zip、manifest 和固定 checksum MinGit archive 的 `-Offline` 安装、启动和卸载。安装器会在切换 `current` 前精确校验候选和安装后版本。
+
+Linux 本机显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 完成 `npm run check`、`npm run build:offline` 和全量 `npm test`。结果：脚本 7 项；Agent Core 402 项通过、1 项跳过；AI 104 个 files/873 项通过、25 个 files/825 项跳过；Client 36 项；Coding Agent 234 个 files/2058 项通过、6 个 files/49 项跳过；Evals 23 项；Protocol 147 项；Server 50 项；Telemetry 15 项；SQLite 81 项；TUI 全量通过。`git diff --check`、`bash -n`、Node 脚本语法、PowerShell UTF-8 BOM、shrinkwrap 和 install lock 均通过。CodeGraph 增量同步 43 个文件，`affected` 返回的 Web Search、TUI、Windows Terminal、Protocol 和 Server 五个测试文件均已覆盖。
+
+当前 Linux 主机没有 MSVC、Windows SDK、ConPTY 或 WebView2 Runtime，因此没有把 `host.cpp` 编译、GUI 截图和 PowerShell 5.1 离线安装写成已通过；这些项目必须由提交后的 `windows-installer` CI job 给出最终运行证据。
 
 ### `0.84.1-lystar.6` 发布前核验
 

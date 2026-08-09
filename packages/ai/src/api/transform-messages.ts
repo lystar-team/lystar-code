@@ -124,6 +124,10 @@ export function transformMessages<TApi extends Api>(
 					};
 				}
 
+				if (block.type === "webSearchCall") {
+					return isSameModel ? block : [];
+				}
+
 				if (block.type === "toolCall") {
 					const toolCall = block as ToolCall;
 					let normalizedToolCall: ToolCall = toolCall;

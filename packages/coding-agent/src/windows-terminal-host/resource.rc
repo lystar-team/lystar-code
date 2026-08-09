@@ -1,0 +1,2 @@
+#include "resource.h"
+IDI_LYSTAR ICON "../../assets/lystar-windows-icon.ico"

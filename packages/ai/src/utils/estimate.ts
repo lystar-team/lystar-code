@@ -59,6 +59,8 @@ export function estimateMessageTokens(message: Message): number {
 			chars += block.text.length;
 		} else if (block.type === "thinking") {
 			chars += block.thinking.length;
+		} else if (block.type === "webSearchCall") {
+			chars += block.id.length + safeJsonStringify(block.action).length;
 		} else {
 			chars += block.name.length + safeJsonStringify(block.arguments).length;
 		}
@@ -146,6 +148,8 @@ function estimateMessageTokenUpperBound(message: Message): number {
 			tokens += estimateEncodedTokens(block.text) + estimateEncodedTokens(block.textSignature);
 		} else if (block.type === "thinking") {
 			tokens += estimateEncodedTokens(block.thinking) + estimateEncodedTokens(block.thinkingSignature);
+		} else if (block.type === "webSearchCall") {
+			tokens += estimateEncodedTokens(block.id) + estimateEncodedTokens(safeJsonStringify(block.action));
 		} else {
 			tokens +=
 				estimateEncodedTokens(block.id) +

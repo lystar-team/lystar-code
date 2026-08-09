@@ -27,6 +27,7 @@ import type {
 	Tool,
 	ToolCall,
 	Usage,
+	WebSearchCallContent,
 } from "../types.ts";
 import { appendAssistantMessageDiagnostic, createAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import type { AssistantMessageEventStream } from "../utils/event-stream.ts";
@@ -40,7 +41,12 @@ import {
 	resolveGrammarConstrainedSampling,
 	resolveJsonSchemaStrictSampling,
 } from "./constrained-sampling.ts";
-import { createWebSearchCollector } from "./openai-responses-web-search.ts";
+import {
+	convertWebSearchCall,
+	extractMessageUrlCitations,
+	toResponseUrlCitations,
+	toResponseWebSearchCall,
+} from "./openai-responses-web-search.ts";
 import { transformMessages } from "./transform-messages.ts";
 
 // =============================================================================
@@ -240,11 +246,19 @@ export function convertResponsesMessages<TApi extends Api>(
 					output.push({
 						type: "message",
 						role: "assistant",
-						content: [{ type: "output_text", text: sanitizeSurrogates(textBlock.text), annotations: [] }],
+						content: [
+							{
+								type: "output_text",
+								text: sanitizeSurrogates(textBlock.text),
+								annotations: toResponseUrlCitations(textBlock.annotations),
+							},
+						],
 						status: "completed",
 						id: msgId,
 						phase: parsedSignature?.phase,
 					} satisfies ResponseOutputMessage);
+				} else if (block.type === "webSearchCall") {
+					output.push(toResponseWebSearchCall(block));
 				} else if (block.type === "toolCall") {
 					const toolCall = block as ToolCall;
 					const [callId, itemIdRaw] = toolCall.id.split("|");
@@ -411,6 +425,7 @@ function appendCustomToolCallInput(block: StreamingToolCall, nextInput: string, 
 type ResponsesOutputSlot =
 	| { type: "thinking"; block: ThinkingContent; contentIndex: number }
 	| { type: "text"; block: TextContent; contentIndex: number }
+	| { type: "webSearchCall"; block: WebSearchCallContent; contentIndex: number }
 	| { type: "toolCall"; block: StreamingToolCall; contentIndex: number };
 
 type ToolCallOutputSlot = Extract<ResponsesOutputSlot, { type: "toolCall" }>;
@@ -448,7 +463,9 @@ export async function processResponsesStream<TApi extends Api>(
 	let sawTerminalResponseEvent = false;
 	const outputSlots = new Map<number, ResponsesOutputSlot>();
 	const reasoningBlocksById = new Map<string, ThinkingContent>();
-	const webSearchCollector = createWebSearchCollector(output, stream);
+	const textBlocksByMessageId = new Map<string, TextContent>();
+	const webSearchSlotsById = new Map<string, Extract<ResponsesOutputSlot, { type: "webSearchCall" }>>();
+	const endedWebSearchIds = new Set<string>();
 	const applyMessagePhaseStopReason = (item: ResponseOutputItem): void => {
 		if (item.type === "message" && item.phase === "final_answer") {
 			output.stopReason = "stop";
@@ -490,6 +507,19 @@ export async function processResponsesStream<TApi extends Api>(
 			const slot = { type: "text", block, contentIndex: output.content.length - 1 } satisfies ResponsesOutputSlot;
 			outputSlots.set(outputIndex, slot);
 			stream.push({ type: "text_start", contentIndex: slot.contentIndex, partial: output });
+			return slot;
+		}
+		if (item.type === "web_search_call") {
+			const block = convertWebSearchCall(item);
+			output.content.push(block);
+			const slot = {
+				type: "webSearchCall",
+				block,
+				contentIndex: output.content.length - 1,
+			} satisfies ResponsesOutputSlot;
+			outputSlots.set(outputIndex, slot);
+			webSearchSlotsById.set(item.id, slot);
+			stream.push({ type: "websearch_start", contentIndex: slot.contentIndex, call: slot.block, partial: output });
 			return slot;
 		}
 		if (item.type === "function_call") {
@@ -556,12 +586,82 @@ export async function processResponsesStream<TApi extends Api>(
 			});
 		}
 	};
+	const applyTextAnnotations = (block: TextContent, item: ResponseOutputMessage): void => {
+		const annotations = extractMessageUrlCitations(item);
+		const validAnnotations = annotations.filter((annotation) => annotation.endIndex <= block.text.length);
+		if (validAnnotations.length !== annotations.length) {
+			appendAssistantMessageDiagnostic(
+				output,
+				createAssistantMessageDiagnostic("provider_annotation_invalid", new Error("Invalid URL citation range"), {
+					messageId: item.id,
+					textLength: block.text.length,
+					annotationCount: annotations.length,
+					validAnnotationCount: validAnnotations.length,
+				}),
+			);
+		}
+		if (validAnnotations.length > 0) block.annotations = validAnnotations;
+	};
+	const backfillTextAnnotations = (responseOutput: ResponseOutputItem[]): void => {
+		for (const item of responseOutput) {
+			if (item.type !== "message") continue;
+			const block = textBlocksByMessageId.get(item.id);
+			if (block) applyTextAnnotations(block, item);
+		}
+	};
+	const completeWebSearchSlot = (
+		slot: Extract<ResponsesOutputSlot, { type: "webSearchCall" }>,
+		item: Extract<ResponseOutputItem, { type: "web_search_call" }>,
+	): void => {
+		Object.assign(slot.block, convertWebSearchCall(item));
+		if (endedWebSearchIds.has(item.id)) return;
+		endedWebSearchIds.add(item.id);
+		stream.push({
+			type: "websearch_end",
+			contentIndex: slot.contentIndex,
+			call: slot.block,
+			partial: output,
+		});
+	};
+	const failOpenWebSearchSlots = (): void => {
+		for (const [id, slot] of webSearchSlotsById) {
+			if (endedWebSearchIds.has(id)) continue;
+			slot.block.status = "failed";
+			endedWebSearchIds.add(id);
+			stream.push({
+				type: "websearch_end",
+				contentIndex: slot.contentIndex,
+				call: slot.block,
+				partial: output,
+			});
+		}
+	};
+	const backfillWebSearchCalls = (responseOutput: ResponseOutputItem[]): void => {
+		for (const item of responseOutput) {
+			if (item.type !== "web_search_call") continue;
+			let slot = webSearchSlotsById.get(item.id);
+			if (!slot) {
+				const block = convertWebSearchCall(item);
+				output.content.push(block);
+				slot = { type: "webSearchCall", block, contentIndex: output.content.length - 1 };
+				webSearchSlotsById.set(item.id, slot);
+				stream.push({
+					type: "websearch_start",
+					contentIndex: slot.contentIndex,
+					call: slot.block,
+					partial: output,
+				});
+			}
+			completeWebSearchSlot(slot, item);
+		}
+	};
 	const finalizeResponse = (
 		response: Extract<ResponseStreamEvent, { type: "response.completed" | "response.incomplete" }>["response"],
 	): void => {
 		sawTerminalResponseEvent = true;
 		backfillReasoningSignatures(response.output ?? []);
-		webSearchCollector.finalize(response.output ?? []);
+		backfillTextAnnotations(response.output ?? []);
+		backfillWebSearchCalls(response.output ?? []);
 		if (response?.id) {
 			output.responseId = response.id;
 		}
@@ -603,183 +703,214 @@ export async function processResponsesStream<TApi extends Api>(
 		}
 	};
 
-	for await (const event of observeProviderStream(openaiStream, output)) {
-		webSearchCollector.observe(event);
-		if (event.type === "response.created") {
-			output.responseId = event.response.id;
-		} else if (event.type === "response.output_item.added") {
-			createSlot(event.output_index, event.item);
-		} else if (event.type === "response.reasoning_summary_text.delta") {
-			const slot = getSlot(event.output_index, "thinking");
-			if (!slot) continue;
-			slot.block.thinking += event.delta;
-			stream.push({
-				type: "thinking_delta",
-				contentIndex: slot.contentIndex,
-				delta: event.delta,
-				partial: output,
-			});
-		} else if (event.type === "response.reasoning_summary_part.done") {
-			const slot = getSlot(event.output_index, "thinking");
-			if (!slot) continue;
-			slot.block.thinking += "\n\n";
-			stream.push({
-				type: "thinking_delta",
-				contentIndex: slot.contentIndex,
-				delta: "\n\n",
-				partial: output,
-			});
-		} else if (event.type === "response.reasoning_text.delta") {
-			const slot = getSlot(event.output_index, "thinking");
-			if (!slot) continue;
-			slot.block.thinking += event.delta;
-			stream.push({
-				type: "thinking_delta",
-				contentIndex: slot.contentIndex,
-				delta: event.delta,
-				partial: output,
-			});
-		} else if (event.type === "response.output_text.delta") {
-			const slot = getSlot(event.output_index, "text");
-			if (!slot) continue;
-			slot.block.text += event.delta;
-			stream.push({
-				type: "text_delta",
-				contentIndex: slot.contentIndex,
-				delta: event.delta,
-				partial: output,
-			});
-		} else if (event.type === "response.refusal.delta") {
-			const slot = getSlot(event.output_index, "text");
-			if (!slot) continue;
-			slot.block.text += event.delta;
-			stream.push({
-				type: "text_delta",
-				contentIndex: slot.contentIndex,
-				delta: event.delta,
-				partial: output,
-			});
-		} else if (event.type === "response.function_call_arguments.delta") {
-			const slot = getSlot(event.output_index, "toolCall");
-			if (!slot || slot.block.partialJson === undefined) continue;
-			slot.block.partialJson += event.delta;
-			slot.block.arguments = parseStreamingJson(slot.block.partialJson);
-			pushToolCallDelta(slot, event.delta);
-		} else if (event.type === "response.function_call_arguments.done") {
-			const slot = getSlot(event.output_index, "toolCall");
-			if (!slot || slot.block.partialJson === undefined) continue;
-			const previousPartialJson = slot.block.partialJson;
-			slot.block.partialJson = event.arguments;
-			slot.block.arguments = parseStreamingJson(slot.block.partialJson);
+	try {
+		for await (const event of observeProviderStream(openaiStream, output)) {
+			if (event.type === "response.created") {
+				output.responseId = event.response.id;
+			} else if (event.type === "response.output_item.added") {
+				createSlot(event.output_index, event.item);
+			} else if (event.type === "response.reasoning_summary_text.delta") {
+				const slot = getSlot(event.output_index, "thinking");
+				if (!slot) continue;
+				slot.block.thinking += event.delta;
+				stream.push({
+					type: "thinking_delta",
+					contentIndex: slot.contentIndex,
+					delta: event.delta,
+					partial: output,
+				});
+			} else if (event.type === "response.reasoning_summary_part.done") {
+				const slot = getSlot(event.output_index, "thinking");
+				if (!slot) continue;
+				slot.block.thinking += "\n\n";
+				stream.push({
+					type: "thinking_delta",
+					contentIndex: slot.contentIndex,
+					delta: "\n\n",
+					partial: output,
+				});
+			} else if (event.type === "response.reasoning_text.delta") {
+				const slot = getSlot(event.output_index, "thinking");
+				if (!slot) continue;
+				slot.block.thinking += event.delta;
+				stream.push({
+					type: "thinking_delta",
+					contentIndex: slot.contentIndex,
+					delta: event.delta,
+					partial: output,
+				});
+			} else if (event.type === "response.output_text.delta") {
+				const slot = getSlot(event.output_index, "text");
+				if (!slot) continue;
+				slot.block.text += event.delta;
+				stream.push({
+					type: "text_delta",
+					contentIndex: slot.contentIndex,
+					delta: event.delta,
+					partial: output,
+				});
+			} else if (event.type === "response.refusal.delta") {
+				const slot = getSlot(event.output_index, "text");
+				if (!slot) continue;
+				slot.block.text += event.delta;
+				stream.push({
+					type: "text_delta",
+					contentIndex: slot.contentIndex,
+					delta: event.delta,
+					partial: output,
+				});
+			} else if (event.type === "response.function_call_arguments.delta") {
+				const slot = getSlot(event.output_index, "toolCall");
+				if (!slot || slot.block.partialJson === undefined) continue;
+				slot.block.partialJson += event.delta;
+				slot.block.arguments = parseStreamingJson(slot.block.partialJson);
+				pushToolCallDelta(slot, event.delta);
+			} else if (event.type === "response.function_call_arguments.done") {
+				const slot = getSlot(event.output_index, "toolCall");
+				if (!slot || slot.block.partialJson === undefined) continue;
+				const previousPartialJson = slot.block.partialJson;
+				slot.block.partialJson = event.arguments;
+				slot.block.arguments = parseStreamingJson(slot.block.partialJson);
 
-			if (event.arguments.startsWith(previousPartialJson)) {
-				const delta = event.arguments.slice(previousPartialJson.length);
-				if (delta.length > 0) pushToolCallDelta(slot, delta);
-			}
-		} else if (event.type === "response.custom_tool_call_input.delta") {
-			const slot = getSlot(event.output_index, "toolCall");
-			if (!slot || !slot.block.customInput) continue;
-			pushToolCallDelta(
-				slot,
-				appendCustomToolCallInput(slot.block, getCustomToolCallInput(slot.block) + event.delta, false),
-			);
-		} else if (event.type === "response.custom_tool_call_input.done") {
-			const slot = getSlot(event.output_index, "toolCall");
-			if (!slot || !slot.block.customInput) continue;
-			pushToolCallDelta(slot, appendCustomToolCallInput(slot.block, event.input, true));
-		} else if (event.type === "response.output_item.done") {
-			const item = event.item;
-			applyMessagePhaseStopReason(item);
-			const slot = getOrCreateSlot(event.output_index, item);
-
-			if (item.type === "reasoning" && slot?.type === "thinking") {
-				const summaryText = item.summary?.map((s) => s.text).join("\n\n") || "";
-				const contentText = item.content?.map((c) => c.text).join("\n\n") || "";
-				slot.block.thinking = summaryText || contentText || slot.block.thinking;
-				slot.block.thinkingSignature = JSON.stringify(item);
-				reasoningBlocksById.set(item.id, slot.block);
-				stream.push({
-					type: "thinking_end",
-					contentIndex: slot.contentIndex,
-					content: slot.block.thinking,
-					partial: output,
-				});
-				outputSlots.delete(event.output_index);
-			} else if (item.type === "message" && slot?.type === "text") {
-				slot.block.text = item.content?.map((c) => (c.type === "output_text" ? c.text : c.refusal)).join("") || "";
-				slot.block.textSignature = encodeTextSignatureV1(item.id, item.phase ?? undefined);
-				stream.push({
-					type: "text_end",
-					contentIndex: slot.contentIndex,
-					content: slot.block.text,
-					partial: output,
-				});
-				outputSlots.delete(event.output_index);
-			} else if (
-				item.type === "function_call" &&
-				slot?.type === "toolCall" &&
-				slot.block.partialJson !== undefined
-			) {
-				slot.block.arguments = parseStreamingJson(item.arguments || slot.block.partialJson || "{}");
-				// Finalize in-place and strip the scratch buffer so replay only
-				// carries parsed arguments.
-				delete slot.block.partialJson;
-				stream.push({
-					type: "toolcall_end",
-					contentIndex: slot.contentIndex,
-					toolCall: slot.block,
-					partial: output,
-				});
-				outputSlots.delete(event.output_index);
-			} else if (item.type === "custom_tool_call" && slot?.type === "toolCall" && slot.block.customInput) {
+				if (event.arguments.startsWith(previousPartialJson)) {
+					const delta = event.arguments.slice(previousPartialJson.length);
+					if (delta.length > 0) pushToolCallDelta(slot, delta);
+				}
+			} else if (event.type === "response.custom_tool_call_input.delta") {
+				const slot = getSlot(event.output_index, "toolCall");
+				if (!slot || !slot.block.customInput) continue;
 				pushToolCallDelta(
 					slot,
-					appendCustomToolCallInput(slot.block, item.input ?? getCustomToolCallInput(slot.block), true),
+					appendCustomToolCallInput(slot.block, getCustomToolCallInput(slot.block) + event.delta, false),
 				);
-				delete slot.block.customInput;
+			} else if (event.type === "response.custom_tool_call_input.done") {
+				const slot = getSlot(event.output_index, "toolCall");
+				if (!slot || !slot.block.customInput) continue;
+				pushToolCallDelta(slot, appendCustomToolCallInput(slot.block, event.input, true));
+			} else if (
+				event.type === "response.web_search_call.in_progress" ||
+				event.type === "response.web_search_call.searching" ||
+				event.type === "response.web_search_call.completed"
+			) {
+				const slot = getSlot(event.output_index, "webSearchCall");
+				if (!slot) continue;
+				slot.block.status =
+					event.type === "response.web_search_call.in_progress"
+						? "in_progress"
+						: event.type === "response.web_search_call.searching"
+							? "searching"
+							: "completed";
 				stream.push({
-					type: "toolcall_end",
+					type: "websearch_update",
 					contentIndex: slot.contentIndex,
-					toolCall: slot.block,
+					call: slot.block,
 					partial: output,
 				});
-				outputSlots.delete(event.output_index);
+			} else if (event.type === "response.output_item.done") {
+				const item = event.item;
+				applyMessagePhaseStopReason(item);
+				const slot = getOrCreateSlot(event.output_index, item);
+
+				if (item.type === "web_search_call" && slot?.type === "webSearchCall") {
+					completeWebSearchSlot(slot, item);
+					outputSlots.delete(event.output_index);
+				} else if (item.type === "reasoning" && slot?.type === "thinking") {
+					const summaryText = item.summary?.map((s) => s.text).join("\n\n") || "";
+					const contentText = item.content?.map((c) => c.text).join("\n\n") || "";
+					slot.block.thinking = summaryText || contentText || slot.block.thinking;
+					slot.block.thinkingSignature = JSON.stringify(item);
+					reasoningBlocksById.set(item.id, slot.block);
+					stream.push({
+						type: "thinking_end",
+						contentIndex: slot.contentIndex,
+						content: slot.block.thinking,
+						partial: output,
+					});
+					outputSlots.delete(event.output_index);
+				} else if (item.type === "message" && slot?.type === "text") {
+					slot.block.text =
+						item.content?.map((c) => (c.type === "output_text" ? c.text : c.refusal)).join("") || "";
+					slot.block.textSignature = encodeTextSignatureV1(item.id, item.phase ?? undefined);
+					applyTextAnnotations(slot.block, item);
+					textBlocksByMessageId.set(item.id, slot.block);
+					stream.push({
+						type: "text_end",
+						contentIndex: slot.contentIndex,
+						content: slot.block.text,
+						partial: output,
+					});
+					outputSlots.delete(event.output_index);
+				} else if (
+					item.type === "function_call" &&
+					slot?.type === "toolCall" &&
+					slot.block.partialJson !== undefined
+				) {
+					slot.block.arguments = parseStreamingJson(item.arguments || slot.block.partialJson || "{}");
+					// Finalize in-place and strip the scratch buffer so replay only
+					// carries parsed arguments.
+					delete slot.block.partialJson;
+					stream.push({
+						type: "toolcall_end",
+						contentIndex: slot.contentIndex,
+						toolCall: slot.block,
+						partial: output,
+					});
+					outputSlots.delete(event.output_index);
+				} else if (item.type === "custom_tool_call" && slot?.type === "toolCall" && slot.block.customInput) {
+					pushToolCallDelta(
+						slot,
+						appendCustomToolCallInput(slot.block, item.input ?? getCustomToolCallInput(slot.block), true),
+					);
+					delete slot.block.customInput;
+					stream.push({
+						type: "toolcall_end",
+						contentIndex: slot.contentIndex,
+						toolCall: slot.block,
+						partial: output,
+					});
+					outputSlots.delete(event.output_index);
+				}
+			} else if (event.type === "response.completed" || event.type === "response.incomplete") {
+				finalizeResponse(event.response);
+			} else if (event.type === "error") {
+				const error = createProviderStreamError(
+					`Error Code ${event.code ?? "unknown"}: ${event.message || "Unknown error"}`,
+					event.code,
+				);
+				recordProviderStreamFailure(output, error, {
+					eventType: event.type,
+					providerCode: event.code,
+					providerMessage: event.message,
+					providerParam: event.param,
+				});
+				throw error;
+			} else if (event.type === "response.failed") {
+				sawTerminalResponseEvent = true;
+				output.rawStopReason = event.response?.status;
+				const responseError = event.response?.error;
+				const details = event.response?.incomplete_details;
+				const message = responseError
+					? `${responseError.code || "unknown"}: ${responseError.message || "no message"}`
+					: details?.reason
+						? `incomplete: ${details.reason}`
+						: "Unknown error (no error details in response)";
+				const error = createProviderStreamError(message, responseError?.code);
+				recordProviderStreamFailure(output, error, {
+					eventType: event.type,
+					providerCode: responseError?.code,
+					providerMessage: responseError?.message,
+					incompleteReason: details?.reason,
+				});
+				throw error;
 			}
-		} else if (event.type === "response.completed" || event.type === "response.incomplete") {
-			finalizeResponse(event.response);
-		} else if (event.type === "error") {
-			const error = createProviderStreamError(
-				`Error Code ${event.code ?? "unknown"}: ${event.message || "Unknown error"}`,
-				event.code,
-			);
-			recordProviderStreamFailure(output, error, {
-				eventType: event.type,
-				providerCode: event.code,
-				providerMessage: event.message,
-				providerParam: event.param,
-			});
-			throw error;
-		} else if (event.type === "response.failed") {
-			sawTerminalResponseEvent = true;
-			output.rawStopReason = event.response?.status;
-			const responseError = event.response?.error;
-			const details = event.response?.incomplete_details;
-			const message = responseError
-				? `${responseError.code || "unknown"}: ${responseError.message || "no message"}`
-				: details?.reason
-					? `incomplete: ${details.reason}`
-					: "Unknown error (no error details in response)";
-			const error = createProviderStreamError(message, responseError?.code);
-			recordProviderStreamFailure(output, error, {
-				eventType: event.type,
-				providerCode: responseError?.code,
-				providerMessage: responseError?.message,
-				incompleteReason: details?.reason,
-			});
-			throw error;
 		}
+	} catch (error) {
+		failOpenWebSearchSlots();
+		throw error;
 	}
+	if (sawTerminalResponseEvent) failOpenWebSearchSlots();
 	if (!sawTerminalResponseEvent) {
+		failOpenWebSearchSlots();
 		const error = new Error("OpenAI Responses stream ended before a terminal response event");
 		recordProviderStreamFailure(output, error, { eventType: "premature_eof" });
 		throw error;

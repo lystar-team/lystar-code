@@ -2,6 +2,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Container, Markdown, type MarkdownTheme, Spacer, Text } from "@earendil-works/pi-tui";
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { t } from "../../../locales/zh-CN.ts";
+import { formatMarkdownLinks, getCitationLinks, getWebSearchSourceLinks } from "../../../utils/web-search.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { createMarkdownTransform } from "./markdown-transform.ts";
 
@@ -187,7 +188,10 @@ export class AssistantMessageComponent extends Container {
 		};
 
 		const hasVisibleContent = message.content.some(
-			(c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()),
+			(c) =>
+				(c.type === "text" && c.text.trim()) ||
+				(c.type === "thinking" && c.thinking.trim()) ||
+				c.type === "webSearchCall",
 		);
 
 		if (hasVisibleContent) {
@@ -206,6 +210,34 @@ export class AssistantMessageComponent extends Container {
 						transform: createMarkdownTransform("assistant", this.isStreaming, this.markdownTransformers),
 						codeBlockCollapse,
 					}),
+				);
+				const citations = getCitationLinks(content);
+				if (citations.length > 0) {
+					this.contentContainer.addChild(
+						new Markdown(
+							formatMarkdownLinks(t("status.citations"), citations),
+							this.outputPad,
+							0,
+							this.markdownTheme,
+						),
+					);
+				}
+			} else if (content.type === "webSearchCall") {
+				const sources = getWebSearchSourceLinks(content);
+				const status =
+					content.status === "failed"
+						? t("status.webSearchFailed")
+						: content.status === "completed"
+							? t("status.webSearchCompleted")
+							: t("status.webSearchInProgress");
+				const sourceCount =
+					sources.length > 0 ? ` · ${t("status.webSearchSources", { count: sources.length })}` : "";
+				this.contentContainer.addChild(
+					new Text(
+						theme.fg(content.status === "failed" ? "error" : "thinkingText", `⌕ ${status}${sourceCount}`),
+						this.outputPad,
+						0,
+					),
 				);
 			} else if (content.type === "thinking") {
 				const thinkingBlocks: string[] = [];
@@ -229,7 +261,12 @@ export class AssistantMessageComponent extends Container {
 				// This avoids a superfluous blank line before separately-rendered tool execution blocks.
 				const hasVisibleContentAfter = message.content
 					.slice(i + 1)
-					.some((c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()));
+					.some(
+						(c) =>
+							(c.type === "text" && c.text.trim()) ||
+							(c.type === "thinking" && c.thinking.trim()) ||
+							c.type === "webSearchCall",
+					);
 
 				if (this.hideThinkingBlock) {
 					// Show one static label for each run of thinking blocks when hidden.

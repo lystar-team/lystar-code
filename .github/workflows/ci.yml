@@ -164,7 +164,7 @@ jobs:
 
   windows-installer:
     runs-on: windows-2025
-    timeout-minutes: 15
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -175,17 +175,50 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.9
+
       - name: Install dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Build JavaScript packages
         run: npm run build:offline
 
+      - name: Build Windows standalone release
+        shell: powershell
+        run: .\scripts\build-windows-release.ps1 -Repository "${env:GITHUB_REPOSITORY}"
+
+      - name: Prepare pinned MinGit archive
+        shell: powershell
+        run: |
+          $Archive = Join-Path $env:RUNNER_TEMP "MinGit-2.55.0.3-64-bit.zip"
+          Invoke-WebRequest -UseBasicParsing "https://registry.npmmirror.com/-/binary/git-for-windows/v2.55.0.windows.3/MinGit-2.55.0.3-64-bit.zip" -OutFile $Archive
+          $Expected = "f48e2d2dc74a24454adc6d8fd0ac25bf9c2386f19cfb06202b9465aaad4f9f05"
+          $Actual = (Get-FileHash -Algorithm SHA256 $Archive).Hash.ToLowerInvariant()
+          if ($Actual -ne $Expected) { throw "MinGit archive SHA-256 mismatch: $Actual" }
+          "LYSTAR_MINGIT_ARCHIVE=$Archive" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Test managed MinGit Bash
         shell: powershell
         run: |
           $env:PI_CODING_AGENT_DIR = Join-Path $env:RUNNER_TEMP "lystar-agent"
+          $env:LYSTAR_STANDALONE_DIR = Join-Path $env:GITHUB_WORKSPACE "packages\coding-agent\binaries\windows-x64\lystar-agent"
           node scripts/test-windows-managed-bash.mjs
 
+      - name: Test Windows terminal host and icon
+        shell: powershell
+        run: |
+          $Bundle = "packages/coding-agent/binaries/windows-x64/lystar-agent"
+          .\scripts\test-windows-terminal.ps1 -BundleDir $Bundle -ScreenshotPath "packages/coding-agent/binaries/windows-terminal-smoke.png"
+
+      - name: Upload Windows terminal screenshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-terminal-smoke
+          path: packages/coding-agent/binaries/windows-terminal-smoke.png
+          if-no-files-found: error
+
       - name: Test Windows installer with Windows PowerShell 5.1
-        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-install-ps1.ps1 -Integration
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-install-ps1.ps1 -Integration -MinGitArchive "$env:LYSTAR_MINGIT_ARCHIVE"

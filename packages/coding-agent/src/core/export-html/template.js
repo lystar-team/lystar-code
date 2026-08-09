@@ -297,6 +297,7 @@
         if (Array.isArray(content)) {
           for (const c of content) {
             if (c.type === 'text' && c.text && c.text.trim().length > 0) return true;
+            if (c.type === 'webSearchCall') return true;
           }
         }
         return false;
@@ -306,8 +307,12 @@
         if (typeof content === 'string') return content;
         if (Array.isArray(content)) {
           return content
-            .filter(c => c.type === 'text' && c.text)
-            .map(c => c.text)
+            .map(c => {
+              if (c.type === 'text' && c.text) return c.text;
+              if (c.type !== 'webSearchCall') return '';
+              if (c.action?.type === 'search') return [c.action.query, ...(c.action.queries || [])].filter(Boolean).join(' ');
+              return c.action?.url || '';
+            })
             .join('');
         }
         return '';
@@ -1171,6 +1176,44 @@
         </button>`;
       }
 
+      function webSearchUrls(block) {
+        if (block.action?.type === 'search') return (block.action.sources || []).map(source => source.url);
+        return block.action?.url ? [block.action.url] : [];
+      }
+
+      function renderWebLinks(label, links) {
+        const unique = new Map();
+        for (const link of links) {
+          const href = sanitizeMarkdownUrl(link.url);
+          if (!href || unique.has(href)) continue;
+          unique.set(href, link.title || href);
+        }
+        if (unique.size === 0) return '';
+        return `<div class="web-links"><div class="web-links-label">${escapeHtml(label)}</div><ol>${[...unique]
+          .map(([url, title]) => `<li><a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(title)}</a></li>`)
+          .join('')}</ol></div>`;
+      }
+
+      function renderWebSearchCall(block) {
+        const urls = webSearchUrls(block);
+        const status = block.status === 'failed' ? '网页搜索失败' : block.status === 'completed' ? '已搜索网页' : '正在搜索网页';
+        const sourceCount = urls.length > 0 ? ` · ${urls.length} 个来源` : '';
+        const links = urls.map(url => {
+          try {
+            return { title: new URL(url).hostname, url };
+          } catch {
+            return { title: url, url };
+          }
+        });
+        return `<div class="web-search-call ${block.status === 'failed' ? 'failed' : ''}"><div>⌕ ${escapeHtml(status + sourceCount)}</div>${renderWebLinks('搜索记录', links)}</div>`;
+      }
+
+      function renderCitations(block) {
+        return renderWebLinks('引用', (block.annotations || [])
+          .filter(annotation => annotation.type === 'url_citation')
+          .map(annotation => ({ title: annotation.title, url: annotation.url })));
+      }
+
       function renderEntry(entry) {
         const ts = formatTimestamp(entry.timestamp);
         const tsHtml = ts ? `<div class="message-timestamp">${ts}</div>` : '';
@@ -1245,12 +1288,14 @@
 
             for (const block of msg.content) {
               if (block.type === 'text' && block.text.trim()) {
-                html += `<div class="assistant-text markdown-content">${safeMarkedParse(block.text)}</div>`;
+                html += `<div class="assistant-text markdown-content">${safeMarkedParse(block.text)}</div>${renderCitations(block)}`;
               } else if (block.type === 'thinking' && block.thinking.trim()) {
                 html += `<div class="thinking-block">
                   <div class="thinking-text">${escapeHtml(block.thinking)}</div>
                   <div class="thinking-collapsed">Thinking ...</div>
                 </div>`;
+              } else if (block.type === 'webSearchCall') {
+                html += renderWebSearchCall(block);
               }
             }
 

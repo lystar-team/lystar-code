@@ -89,11 +89,24 @@ function formatOpenAIResponsesError(error: unknown): string {
 }
 
 // OpenAI Responses-specific options
+export interface ResponsesWebSearchOptions {
+	searchContextSize?: "low" | "medium" | "high";
+	allowedDomains?: string[];
+	userLocation?: {
+		type?: "approximate";
+		city?: string;
+		region?: string;
+		country?: string;
+		timezone?: string;
+	};
+}
+
 export interface OpenAIResponsesOptions extends StreamOptions {
 	reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	reasoningSummary?: "auto" | "detailed" | "concise" | null;
 	serviceTier?: ResponseCreateParamsStreaming["service_tier"];
 	toolChoice?: ResponseCreateParamsStreaming["tool_choice"];
+	webSearch?: false | ResponsesWebSearchOptions;
 }
 
 /**
@@ -265,6 +278,9 @@ function buildParams(
 		compat.supportsOpenAIGrammarTools,
 	),
 ) {
+	if (options?.webSearch && !compat.supportsWebSearch) {
+		throw new Error(`Model "${model.provider}/${model.id}" does not support Responses web_search`);
+	}
 	const toolPlacement = splitDeferredTools(context, compat.supportsToolSearch);
 	const messages = convertResponsesMessages(model, context, OPENAI_TOOL_CALL_PROVIDERS, {
 		grammarToolInputProperties,
@@ -328,16 +344,37 @@ function buildParams(
 		if (model.provider === "xai") params.include = ["reasoning.encrypted_content"];
 	}
 
-	if (compat.supportsWebSearch) {
-		params.tools = [...(params.tools ?? []), { type: "web_search" } satisfies OpenAITool];
-		if (!params.include?.includes("web_search_call.action.sources")) {
-			params.include = [...(params.include ?? []), "web_search_call.action.sources"];
-		}
-	}
-
 	// Last so custom keys override the named request fields.
 	if (options?.samplingParams) {
 		Object.assign(params, options.samplingParams);
+	}
+
+	if (compat.supportsWebSearch && options?.webSearch !== false) {
+		const allowedDomains = options?.webSearch?.allowedDomains
+			?.map((domain) => domain.trim().toLowerCase())
+			.filter((domain, index, all) => domain.length > 0 && !/[/:]/u.test(domain) && all.indexOf(domain) === index)
+			.slice(0, 100);
+		const userLocation = options?.webSearch?.userLocation;
+		params.tools = [
+			...(params.tools ?? []),
+			{
+				type: "web_search",
+				search_context_size: options?.webSearch?.searchContextSize,
+				filters: allowedDomains && allowedDomains.length > 0 ? { allowed_domains: allowedDomains } : undefined,
+				user_location: userLocation
+					? {
+							type: "approximate",
+							city: userLocation.city,
+							region: userLocation.region,
+							country: userLocation.country,
+							timezone: userLocation.timezone,
+						}
+					: undefined,
+			} satisfies OpenAITool,
+		];
+		if (!params.include?.includes("web_search_call.action.sources")) {
+			params.include = [...(params.include ?? []), "web_search_call.action.sources"];
+		}
 	}
 
 	return params;

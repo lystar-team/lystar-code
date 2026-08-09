@@ -3,8 +3,8 @@
  * Used by auth-storage.ts and model-registry.ts.
  */
 
-import { execSync, spawnSync } from "child_process";
-import { getShellConfig } from "../utils/shell.ts";
+import { spawnSync } from "child_process";
+import { getShellConfig, getShellEnv } from "../utils/shell.ts";
 
 // Cache for shell command results (persists for process lifetime)
 const commandResultCache = new Map<string, string | undefined>();
@@ -161,6 +161,7 @@ function executeWithConfiguredShell(command: string): { executed: boolean; value
 			stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "ignore"],
 			shell: false,
 			windowsHide: true,
+			env: getShellEnv(),
 		});
 
 		if (result.error) {
@@ -182,27 +183,9 @@ function executeWithConfiguredShell(command: string): { executed: boolean; value
 	}
 }
 
-function executeWithDefaultShell(command: string): string | undefined {
-	try {
-		const output = execSync(command, {
-			encoding: "utf-8",
-			timeout: 10000,
-			stdio: ["ignore", "pipe", "ignore"],
-		});
-		return output.trim() || undefined;
-	} catch {
-		return undefined;
-	}
-}
-
 function executeCommandUncached(commandConfig: string): string | undefined {
 	const command = commandConfig.slice(1);
-	return process.platform === "win32"
-		? (() => {
-				const configuredResult = executeWithConfiguredShell(command);
-				return configuredResult.executed ? configuredResult.value : executeWithDefaultShell(command);
-			})()
-		: executeWithDefaultShell(command);
+	return executeWithConfiguredShell(command).value;
 }
 
 function executeCommand(commandConfig: string): string | undefined {

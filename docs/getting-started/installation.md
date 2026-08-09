@@ -10,7 +10,7 @@ LYStar Agent 的独立发行包已经包含运行所需的 executable、WASM、n
 |---|---|---|
 | macOS | Apple Silicon、Intel x64 | Bash、`curl` 或 `wget`、`tar` |
 | Linux | x64、ARM64 | Bash、`curl` 或 `wget`、`tar` |
-| Windows | x64 | Windows PowerShell 5.1+、安装时可访问 GitHub Release 和 npmmirror |
+| Windows | x64 | Windows PowerShell 5.1+；在线安装需访问 GitHub Release、WebView2 和 MinGit 下载源 |
 
 Windows ARM64 当前没有独立发行包。macOS 和 Windows 包尚未完成平台代码签名，系统可能显示 Gatekeeper 或 SmartScreen 提示。
 
@@ -62,7 +62,19 @@ $cmd="$env:TEMP\lystar-install.cmd"; iwr -UseBasicParsing https://github.com/oct
 
 `install.cmd` 只为本次安装进程使用 `ExecutionPolicy Bypass`，不会修改系统或用户执行策略。安装器下载 Windows x64 发行包和 `SHA256SUMS`，校验后安装到当前用户目录，不要求管理员权限，也不要求预装 Git、Bash、Node.js 或 npm。
 
-安装器还会准备 LYStar 自己管理的 MinGit Bash，默认先从 npmmirror 下载固定版本，失败时回退 Git for Windows 官方 Release；下载内容经过固定 SHA-256 校验和命令自检后才切换 LYStar 版本。托管环境位于 `~/.pi/agent/bin/mingit/`，所有 LYStar 版本共用，不会随每次升级重复占用空间。
+安装器还会：
+
+1. 检测 Microsoft Edge WebView2 Runtime；缺失时按当前用户安装 Evergreen Runtime。
+2. 准备 LYStar 自己管理的 MinGit Bash，默认先从 npmmirror 下载固定版本，失败时回退 Git for Windows 官方 Release。
+3. 校验 MinGit 固定 SHA-256，并验证托管 Bash 和 Git。
+4. 验证 `lystar-terminal.exe`、`la.exe --version` 和本地终端资源。
+5. 全部通过后才切换 LYStar 版本，并创建开始菜单快捷方式。
+
+托管 MinGit 位于 `~/.pi/agent/bin/mingit/`，所有 LYStar 版本共用。交互式 `la` 默认打开 LYStar 独立终端窗口；`la --version`、`--help`、`--print`、JSON/RPC、管道和安装更新命令仍在当前终端运行。需要在当前终端运行 TUI 时使用：
+
+```powershell
+la --attached
+```
 
 ## 验证
 
@@ -132,7 +144,22 @@ Get-FileHash -Algorithm SHA256 .\<下载的归档>
 
 手动安装没有 `current` / `previous` 版本切换。需要 `la update` 和一键回退时使用官方安装器。
 
-手动解压后首次启动 LYStar 时，也会自动补齐托管 MinGit Bash。`PI_OFFLINE=1` 会禁止这次隐式下载；离线环境应先在有网络时运行一次 `la --ensure-windows-bash`。
+手动解压后首次启动 LYStar 时，也会自动补齐托管 MinGit Bash。`PI_OFFLINE=1` 会禁止隐式下载；可以提前准备固定版本的 MinGit zip：
+
+```powershell
+la --ensure-windows-bash --archive .\MinGit-2.55.0.3-64-bit.zip --offline
+```
+
+完全离线安装时，把 Windows 发行包、`release-manifest.json`、MinGit zip、WebView2 Evergreen Standalone Installer 和 `install.ps1` 放在同一台机器，再执行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 `
+  -Offline `
+  -ReleaseArchive .\lystar-agent-v<version>-windows-x64.zip `
+  -ReleaseManifest .\release-manifest.json `
+  -MinGitArchive .\MinGit-2.55.0.3-64-bit.zip `
+  -WebView2Installer .\MicrosoftEdgeWebView2RuntimeInstallerX64.exe
+```
 
 ## 固定版本
 
