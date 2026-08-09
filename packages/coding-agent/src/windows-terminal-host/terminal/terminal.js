@@ -90,9 +90,11 @@
 	const resizeObserver = new ResizeObserver(fit);
 	resizeObserver.observe(terminalElement);
 	window.addEventListener("focus", () => term.focus());
+	fit();
+	term.focus();
+	window.chrome.webview.postMessage("ready");
 	document.fonts.ready.then(() => {
 		fit();
 		term.focus();
-		window.chrome.webview.postMessage("ready");
 	});
 })();
