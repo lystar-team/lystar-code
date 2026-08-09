@@ -98,8 +98,8 @@ public static class LYStarEnvironment {
 }
 
 function Test-WebView2Runtime([string]$TerminalHost) {
-    & $TerminalHost --smoke-test
-    return $LASTEXITCODE -eq 0
+    $Process = Start-Process -FilePath $TerminalHost -ArgumentList "--smoke-test" -Wait -PassThru
+    return $Process.ExitCode -eq 0
 }
 
 function Ensure-WebView2Runtime([string]$TerminalHost, [string]$TempDir) {
