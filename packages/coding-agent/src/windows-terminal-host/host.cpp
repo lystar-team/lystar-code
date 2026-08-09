@@ -380,6 +380,17 @@ void InitializeWebView() {
 									.Get(),
 								&navigationToken);
 
+							EventRegistrationToken navigationCompletedToken{};
+							g_webview->add_NavigationCompleted(
+								Callback<ICoreWebView2NavigationCompletedEventHandler>(
+									[](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT {
+										BOOL successful = FALSE;
+										if (SUCCEEDED(args->get_IsSuccess(&successful)) && successful) StartChild();
+										return S_OK;
+									})
+									.Get(),
+								&navigationCompletedToken);
+
 							EventRegistrationToken newWindowToken{};
 							g_webview->add_NewWindowRequested(
 								Callback<ICoreWebView2NewWindowRequestedEventHandler>(
