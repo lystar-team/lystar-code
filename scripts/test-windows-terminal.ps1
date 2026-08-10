@@ -69,7 +69,7 @@ try {
     if (![LYStarTerminalTestNative]::PostMessage($Handle, 0x8003, [IntPtr]::Zero, [IntPtr]::Zero)) {
         throw "Unable to send terminal smoke input."
     }
-    if (!$Process.WaitForExit(15000)) { throw "Terminal host did not exit after its child process completed." }
+    if (!$Process.WaitForExit(15000)) { throw "Terminal host did not exit after receiving smoke input." }
     if ($Process.ExitCode -ne 0) { throw "Terminal host exited with $($Process.ExitCode)." }
 
     foreach ($Executable in @($CodeExecutable, $HostExecutable)) {

@@ -701,14 +701,16 @@ export async function main(args: string[], options?: MainOptions) {
 			const finish = () => {
 				clearTimeout(timeout);
 				process.stdin.off("data", finish);
+				process.stdin.setRawMode?.(false);
 				process.stdin.pause();
 				resolve();
 			};
-			const timeout = setTimeout(finish, 8_000);
+			const timeout = setTimeout(finish, 30_000);
+			process.stdin.setRawMode?.(true);
 			process.stdin.once("data", finish);
 			process.stdin.resume();
 		});
-		return;
+		process.exit(0);
 	}
 
 	const skipsWindowsShellBootstrap =
