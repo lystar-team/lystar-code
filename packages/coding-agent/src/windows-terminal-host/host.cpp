@@ -24,7 +24,7 @@ constexpr wchar_t kDefaultTitle[] = L"LYStar Code";
 constexpr wchar_t kVirtualHost[] = L"lystar.local";
 constexpr UINT kOutputMessage = WM_APP + 1;
 constexpr UINT kChildExitMessage = WM_APP + 2;
-constexpr UINT kSmokeInputMessage = WM_APP + 3;
+constexpr UINT kSmokeCloseMessage = WM_APP + 3;
 constexpr UINT_PTR kExitTimer = 1;
 
 HWND g_window = nullptr;
@@ -35,7 +35,6 @@ HANDLE g_inputWrite = INVALID_HANDLE_VALUE;
 HANDLE g_outputRead = INVALID_HANDLE_VALUE;
 HANDLE g_childProcess = nullptr;
 HANDLE g_childThread = nullptr;
-DWORD g_childExitCode = 0;
 int g_columns = 120;
 int g_rows = 36;
 bool g_closing = false;
@@ -469,17 +468,15 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 			return 0;
 		}
 		case kChildExitMessage:
-			g_childExitCode = static_cast<DWORD>(wParam);
 			if (g_webview) {
 				const std::wstring event = L"exit:" + std::to_wstring(static_cast<DWORD>(wParam));
 				g_webview->PostWebMessageAsString(event.c_str());
 			}
 			SetTimer(window, kExitTimer, 250, nullptr);
 			return 0;
-		case kSmokeInputMessage:
+		case kSmokeCloseMessage:
 			if (std::find(g_childArgs.begin(), g_childArgs.end(), L"--windows-terminal-ui-smoke") != g_childArgs.end()) {
-				StartChild();
-				WriteInput(L"abc\r");
+				DestroyWindow(window);
 			}
 			return 0;
 		case WM_TIMER:
@@ -582,5 +579,5 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, wchar_t*, int showCommand) {
 		DispatchMessageW(&message);
 	}
 	CoUninitialize();
-	return static_cast<int>(g_childExitCode);
+	return static_cast<int>(message.wParam);
 }

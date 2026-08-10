@@ -67,9 +67,9 @@ try {
     if ($Colors.Count -lt 3) { throw "Terminal screenshot is blank or monochrome: $ScreenshotPath" }
 
     if (![LYStarTerminalTestNative]::PostMessage($Handle, 0x8003, [IntPtr]::Zero, [IntPtr]::Zero)) {
-        throw "Unable to send terminal smoke input."
+        throw "Unable to request terminal smoke shutdown."
     }
-    if (!$Process.WaitForExit(15000)) { throw "Terminal host did not exit after receiving smoke input." }
+    if (!$Process.WaitForExit(15000)) { throw "Terminal host did not exit after the smoke shutdown request." }
     if ($Process.ExitCode -ne 0) { throw "Terminal host exited with $($Process.ExitCode)." }
 
     foreach ($Executable in @($CodeExecutable, $HostExecutable)) {
@@ -77,7 +77,7 @@ try {
         if (!$Icon -or $Icon.Width -lt 16) { throw "Missing executable icon: $Executable" }
         $Icon.Dispose()
     }
-    Write-Host "Windows terminal window, resize, screenshot, ConPTY input/exit, and icons passed: $ScreenshotPath"
+    Write-Host "Windows terminal window, resize, screenshot, shutdown, and icons passed: $ScreenshotPath"
 }
 finally {
     if (!$Process.HasExited) { $Process.Kill() }
