@@ -106,7 +106,9 @@ try {
             $LegacyExtract = Join-Path $Temp "legacy-extract"
             Expand-Archive -Path $BuiltArchive.FullName -DestinationPath $LegacyExtract -Force
             New-Item -ItemType Directory -Force $LegacyDir, (Join-Path $InstallRoot "bin") | Out-Null
-            Copy-Item (Join-Path $LegacyExtract "lystar-agent\lc.exe") (Join-Path $LegacyDir "la.exe")
+            Copy-Item -Recurse (Join-Path $LegacyExtract "lystar-agent\*") $LegacyDir
+            Move-Item (Join-Path $LegacyDir "lc.exe") (Join-Path $LegacyDir "la.exe")
+            Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $LegacyDir "lystar.cmd")
             [IO.File]::WriteAllText((Join-Path $InstallRoot "current"), $LegacyVersion, [Text.UTF8Encoding]::new($false))
             [IO.File]::WriteAllText((Join-Path $InstallRoot "bin\la.cmd"), "@echo off`r`n", [Text.UTF8Encoding]::new($false))
             & node (Join-Path $Root "scripts/generate-release-metadata.mjs") $BuiltOutput $BuiltVersion "octyean/lystar-agent"
@@ -150,11 +152,13 @@ try {
             $DisabledExecutable = "$CurrentExecutable.disabled"
             Move-Item $CurrentExecutable $DisabledExecutable
             try {
-                if ((& $Launcher --version | Out-String).Trim() -ne $BuiltVersion) {
-                    throw "lc.cmd did not fall back to the legacy la.exe."
+                $LegacyLauncherVersion = (& $Launcher --version | Out-String).Trim()
+                if ($LegacyLauncherVersion -ne $BuiltVersion) {
+                    throw "lc.cmd did not fall back to the legacy la.exe: $LegacyLauncherVersion"
                 }
-                if ((& (Join-Path $InstallRoot "bin\lystar.cmd") --version | Out-String).Trim() -ne $BuiltVersion) {
-                    throw "lystar.cmd did not fall back to the legacy la.exe."
+                $LegacyAliasVersion = (& (Join-Path $InstallRoot "bin\lystar.cmd") --version | Out-String).Trim()
+                if ($LegacyAliasVersion -ne $BuiltVersion) {
+                    throw "lystar.cmd did not fall back to the legacy la.exe: $LegacyAliasVersion"
                 }
             }
             finally {
