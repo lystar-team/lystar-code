@@ -38,8 +38,6 @@ try {
     if ($Handle -eq [IntPtr]::Zero) { throw "Terminal host did not create a window." }
 
     [void][LYStarTerminalTestNative]::MoveWindow($Handle, 80, 80, 1000, 700, $true)
-    [void][LYStarTerminalTestNative]::SetForegroundWindow($Handle)
-    [Windows.Forms.SendKeys]::SendWait("abc")
     Start-Sleep -Seconds 2
 
     $Rect = New-Object LYStarTerminalTestNative+RECT
@@ -69,6 +67,8 @@ try {
     $Bitmap.Dispose()
     if ($Colors.Count -lt 3) { throw "Terminal screenshot is blank or monochrome: $ScreenshotPath" }
 
+    [void][LYStarTerminalTestNative]::SetForegroundWindow($Handle)
+    [Windows.Forms.SendKeys]::SendWait("abc{ENTER}")
     if (!$Process.WaitForExit(15000)) { throw "Terminal host did not exit after its child process completed." }
     if ($Process.ExitCode -ne 0) { throw "Terminal host exited with $($Process.ExitCode)." }
 

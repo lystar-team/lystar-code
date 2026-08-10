@@ -697,7 +697,17 @@ export async function main(args: string[], options?: MainOptions) {
 		console.log("┌────────────────────────────────────┐");
 		console.log("│ 中文输入与显示  ✓  ✗  ✎  ⌕  ≡  ▶  ◆  → │");
 		console.log("└────────────────────────────────────┘");
-		await new Promise((resolve) => setTimeout(resolve, 8_000));
+		await new Promise<void>((resolve) => {
+			const finish = () => {
+				clearTimeout(timeout);
+				process.stdin.off("data", finish);
+				process.stdin.pause();
+				resolve();
+			};
+			const timeout = setTimeout(finish, 8_000);
+			process.stdin.once("data", finish);
+			process.stdin.resume();
+		});
 		return;
 	}
 
