@@ -35,6 +35,7 @@ HANDLE g_inputWrite = INVALID_HANDLE_VALUE;
 HANDLE g_outputRead = INVALID_HANDLE_VALUE;
 HANDLE g_childProcess = nullptr;
 HANDLE g_childThread = nullptr;
+DWORD g_childExitCode = 0;
 int g_columns = 120;
 int g_rows = 36;
 bool g_closing = false;
@@ -468,6 +469,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 			return 0;
 		}
 		case kChildExitMessage:
+			g_childExitCode = static_cast<DWORD>(wParam);
 			if (g_webview) {
 				const std::wstring event = L"exit:" + std::to_wstring(static_cast<DWORD>(wParam));
 				g_webview->PostWebMessageAsString(event.c_str());
@@ -580,5 +582,5 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, wchar_t*, int showCommand) {
 		DispatchMessageW(&message);
 	}
 	CoUninitialize();
-	return static_cast<int>(message.wParam);
+	return static_cast<int>(g_childExitCode);
 }
