@@ -19,7 +19,7 @@ $CurrentFile = Join-Path $InstallRoot "current"
 $PreviousFile = Join-Path $InstallRoot "previous"
 
 if ($PSVersionTable.PSVersion.Major -lt 5) {
-    throw "LYStar Agent 安装器需要 PowerShell 5.1 或更高版本。"
+    throw "LYStar Code 安装器需要 PowerShell 5.1 或更高版本。"
 }
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
@@ -121,10 +121,10 @@ function Ensure-WebView2Runtime([string]$TerminalHost, [string]$TempDir) {
 
     $Process = Start-Process -FilePath $Installer -ArgumentList "/silent", "/install" -Wait -PassThru
     if ($Process.ExitCode -ne 0 -and $Process.ExitCode -ne 3010) {
-        throw "WebView2 Runtime 安装失败，退出码：$($Process.ExitCode)。可使用 la --attached 临时运行。"
+        throw "WebView2 Runtime 安装失败，退出码：$($Process.ExitCode)。可使用 lc --attached 临时运行。"
     }
     if (!(Test-WebView2Runtime $TerminalHost)) {
-        throw "WebView2 Runtime 安装后仍不可用。可使用 la --attached 临时运行。"
+        throw "WebView2 Runtime 安装后仍不可用。可使用 lc --attached 临时运行。"
     }
 }
 
@@ -133,14 +133,15 @@ if ($Uninstall) {
     $Parts = @($UserPath -split ";" | Where-Object { $_ -and $_ -ne $BinDir })
     [Environment]::SetEnvironmentVariable("Path", ($Parts -join ";"), "User")
     Send-EnvironmentChanged
+    Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\LYStar Code.lnk")
     Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\LYStar Agent.lnk")
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $InstallRoot
-    Write-Host "LYStar Agent 已卸载。用户数据仍保留在 ~/.pi/agent。"
+    Write-Host "LYStar Code 已卸载。用户数据仍保留在 ~/.pi/agent。"
     exit 0
 }
 
 if ($Rollback) {
-    if (!(Test-Path $PreviousFile)) { throw "没有可回退的 LYStar Agent 版本。" }
+    if (!(Test-Path $PreviousFile)) { throw "没有可回退的 LYStar Code 版本。" }
     $Previous = (Get-Content -Raw $PreviousFile).Trim()
     $Current = if (Test-Path $CurrentFile) { (Get-Content -Raw $CurrentFile).Trim() } else { "" }
     if ($Previous -notmatch '^\d+\.\d+\.\d+-lystar\.\d+$') { throw "previous 版本指针无效。" }
@@ -157,7 +158,7 @@ if ($Offline -and (!$ReleaseManifest -or !$ReleaseArchive -or !$MinGitArchive)) 
     throw "离线安装必须同时提供 -ReleaseManifest、-ReleaseArchive 和 -MinGitArchive。"
 }
 
-$Headers = @{ "User-Agent" = "LYStar-Agent-Installer" }
+$Headers = @{ "User-Agent" = "LYStar-Code-Installer" }
 $ManifestUrl = if ($Version) {
     "https://github.com/$Repository/releases/download/v$Version/release-manifest.json"
 }
@@ -197,7 +198,7 @@ New-Item -ItemType Directory -Force $Temp | Out-Null
 try {
     $Archive = Join-Path $Temp $Asset
     $Sums = Join-Path $Temp "SHA256SUMS"
-    Write-Host "正在安装 LYStar Agent $Version (windows-x64)..."
+    Write-Host "正在安装 LYStar Code $Version (windows-x64)..."
     if ($ReleaseArchive) {
         $ResolvedArchive = [IO.Path]::GetFullPath($ReleaseArchive)
         if (!(Test-Path $ResolvedArchive)) { throw "本地 Release archive 不存在：$ResolvedArchive" }
@@ -225,14 +226,14 @@ try {
     $Extract = Join-Path $Temp "extract"
     Expand-Archive -Path $Archive -DestinationPath $Extract
     $Bundle = Join-Path $Extract "lystar-agent"
-    $Executable = Join-Path $Bundle "la.exe"
+    $Executable = Join-Path $Bundle "lc.exe"
     $TerminalHost = Join-Path $Bundle "lystar-terminal.exe"
-    if (!(Test-Path $Executable)) { throw "发行包缺少 la.exe。" }
+    if (!(Test-Path $Executable)) { throw "发行包缺少 lc.exe。" }
     if (!(Test-Path $TerminalHost)) { throw "发行包缺少 lystar-terminal.exe。" }
     Ensure-WebView2Runtime $TerminalHost $Temp
     $CandidateVersion = (& $Executable --version | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $CandidateVersion -ne $Version) {
-        throw "候选 la.exe 版本校验失败：预期 $Version，实际 $CandidateVersion。"
+        throw "候选 lc.exe 版本校验失败：预期 $Version，实际 $CandidateVersion。"
     }
     Write-Host "正在检查 LYStar 托管的 MinGit Bash..."
     $MinGitArgs = @("--ensure-windows-bash")
@@ -255,17 +256,23 @@ try {
     $Launcher = @'
 @echo off
 set /p LYSTAR_VERSION=<"%~dp0..\current"
-"%~dp0..\versions\%LYSTAR_VERSION%\la.exe" %*
+set "LYSTAR_EXECUTABLE=%~dp0..\versions\%LYSTAR_VERSION%\lc.exe"
+if not exist "%LYSTAR_EXECUTABLE%" set "LYSTAR_EXECUTABLE=%~dp0..\versions\%LYSTAR_VERSION%\la.exe"
+"%LYSTAR_EXECUTABLE%" %*
 '@
-    [IO.File]::WriteAllText((Join-Path $BinDir "la.cmd"), $Launcher, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $BinDir "lc.cmd"), $Launcher, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $BinDir "lystar.cmd"), $Launcher, [Text.UTF8Encoding]::new($false))
+    Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $BinDir "la.cmd")
 
-    $StartMenuShortcut = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\LYStar Agent.lnk"
+    $LegacyStartMenuShortcut = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\LYStar Agent.lnk"
+    Remove-Item -Force -ErrorAction SilentlyContinue $LegacyStartMenuShortcut
+    $StartMenuShortcut = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\LYStar Code.lnk"
     New-Item -ItemType Directory -Force (Split-Path -Parent $StartMenuShortcut) | Out-Null
     $Shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($StartMenuShortcut)
-    $Shortcut.TargetPath = Join-Path $BinDir "la.cmd"
+    $Shortcut.TargetPath = Join-Path $BinDir "lc.cmd"
     $Shortcut.WorkingDirectory = [Environment]::GetFolderPath("UserProfile")
     $Shortcut.IconLocation = "$(Join-Path $Target 'lystar-terminal.exe'),0"
-    $Shortcut.Description = "LYStar Agent"
+    $Shortcut.Description = "LYStar Code"
     $Shortcut.Save()
 
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -276,13 +283,17 @@ set /p LYSTAR_VERSION=<"%~dp0..\current"
         Write-Host "已把 $BinDir 加入用户 PATH。"
     }
     $env:Path = "$BinDir;$env:Path"
-    $InstalledVersion = (& (Join-Path $BinDir "la.cmd") --version | Out-String).Trim()
+    $InstalledVersion = (& (Join-Path $BinDir "lc.cmd") --version | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $InstalledVersion -ne $Version) {
-        throw "安装后的 la 版本校验失败：预期 $Version，实际 $InstalledVersion。"
+        throw "安装后的 lc 版本校验失败：预期 $Version，实际 $InstalledVersion。"
+    }
+    $AliasVersion = (& (Join-Path $BinDir "lystar.cmd") --version | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $AliasVersion -ne $Version) {
+        throw "安装后的 lystar 版本校验失败：预期 $Version，实际 $AliasVersion。"
     }
 
-    Write-Host "LYStar Agent $Version 已安装到 $Target。"
-    Write-Host "新开的终端可直接运行 la；首次使用请执行 /login。"
+    Write-Host "LYStar Code $Version 已安装到 $Target。"
+    Write-Host "新开的终端可直接运行 lc 或 lystar；首次使用请执行 /login。"
 }
 finally {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $Temp

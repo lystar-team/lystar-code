@@ -5,17 +5,17 @@
 先运行：
 
 ```bash
-la --version
+lc --version
 ```
 
 根据结果选择下面的排查路径。
 
-## 找不到 `la`
+## 找不到 `lc`
 
 macOS/Linux：
 
 ```bash
-ls -l ~/.local/bin/la
+ls -l ~/.local/bin/lc
 printf '%s\n' "$PATH"
 ```
 
@@ -23,7 +23,7 @@ printf '%s\n' "$PATH"
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
-la --version
+lc --version
 ```
 
 确认后把同一行写入当前 Shell 的 `~/.zprofile`、`~/.bashrc`、`~/.bash_profile` 或 `~/.profile`，重新打开终端。
@@ -31,7 +31,7 @@ la --version
 Windows：重新打开 PowerShell，再检查：
 
 ```powershell
-Get-Command la
+Get-Command lc
 [Environment]::GetEnvironmentVariable("Path", "User")
 ```
 
@@ -48,14 +48,14 @@ Get-Command la
 - 检查代理是否返回了 HTML 错误页。
 - 多次失败时记录版本、资产文件名和实际 SHA-256。
 
-## `发行包缺少 la` 或版本 smoke 失败
+## `发行包缺少 lc` 或版本 smoke 失败
 
 安装器会在切换 `current` 前停止，原版本仍可用。检查临时目录清理后重新运行；稳定复现时提交版本、系统、架构和完整错误。
 
 ## 无法回退
 
 ```bash
-la update --rollback
+lc update --rollback
 ```
 
 只有通过官方安装器升级且存在 previous 版本时才能回退。手动解压安装没有 previous 指针。
@@ -71,7 +71,7 @@ reset
 再次启动时使用 inline：
 
 ```bash
-la --no-alt-screen --no-mouse
+lc --no-alt-screen --no-mouse
 ```
 
 提交问题时附终端名称、`TERM`、是否在 tmux/Zellij 中、终端尺寸和退出方式。

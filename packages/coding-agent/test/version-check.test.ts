@@ -54,7 +54,7 @@ describe("version checks", () => {
 			`https://github.com/${TEST_REPOSITORY}/releases/latest/download/release-manifest.json`,
 			expect.objectContaining({
 				headers: expect.objectContaining({
-					"User-Agent": expect.stringMatching(/^la\/1\.2\.3 /),
+					"User-Agent": expect.stringMatching(/^lc\/1\.2\.3 /),
 					accept: "application/json",
 				}),
 			}),

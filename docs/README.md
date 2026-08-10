@@ -1,10 +1,10 @@
-# LYStar Agent 文档
+# LYStar Code 文档
 
-这里是 LYStar Agent 的中文用户与维护文档。第一次使用按“安装 -> 快速开始 -> Provider”顺序阅读。
+这里是 LYStar Code 的中文用户与维护文档。第一次使用按“安装 -> 快速开始 -> Provider”顺序阅读。
 
 ## 第一次使用
 
-- [安装 LYStar Agent](getting-started/installation.md)：系统要求、自动安装、手动安装和校验。
+- [安装 LYStar Code](getting-started/installation.md)：系统要求、自动安装、手动安装和校验。
 - [5 分钟快速开始](getting-started/quick-start.md)：启动、登录、首条任务和退出。
 - [Provider 与 API Key](getting-started/providers.md)：订阅登录、API Key 和常用国内 Provider。
 - [中国大陆网络配置](getting-started/mainland-china.md)：GitHub、npm、Git 和模型服务分别处理。

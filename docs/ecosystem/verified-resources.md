@@ -18,7 +18,7 @@
 安装：
 
 ```bash
-la install npm:@tintinweb/pi-tasks@0.7.2
+lc install npm:@tintinweb/pi-tasks@0.7.2
 ```
 
 该 Extension 注册任务创建、查询、更新、输出、停止和执行 Tool，并显示任务 Widget。默认把任务写入项目 `.pi/tasks/`，设置写入 `.pi/tasks-config.json`；可选的 subagent 执行依赖另一个 Extension。
@@ -32,21 +32,21 @@ la install npm:@tintinweb/pi-tasks@0.7.2
 应看到 `View all tasks`、`Create task` 和 `Settings`。也可以运行：
 
 ```bash
-la list
+lc list
 ```
 
 应显示 `npm:@tintinweb/pi-tasks@0.7.2`。本次还执行了上游 8 个测试文件、191 项测试，全部通过。
 
-更新：当前命令锁定 `0.7.2`，`la update --extensions` 不会移动到新版本。确认上游新版本后重新安装明确版本：
+更新：当前命令锁定 `0.7.2`，`lc update --extensions` 不会移动到新版本。确认上游新版本后重新安装明确版本：
 
 ```bash
-la install npm:@tintinweb/pi-tasks@<new-version>
+lc install npm:@tintinweb/pi-tasks@<new-version>
 ```
 
 卸载：
 
 ```bash
-la remove npm:@tintinweb/pi-tasks
+lc remove npm:@tintinweb/pi-tasks
 ```
 
 卸载不会自动删除项目 `.pi/tasks/`、`.pi/tasks-config.json` 或全局 `~/.pi/agent/tasks-config.json`。

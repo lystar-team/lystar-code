@@ -20,7 +20,7 @@ using Microsoft::WRL::ComPtr;
 namespace {
 
 constexpr wchar_t kWindowClass[] = L"LYStarTerminalWindow";
-constexpr wchar_t kDefaultTitle[] = L"LYStar Agent";
+constexpr wchar_t kDefaultTitle[] = L"LYStar Code";
 constexpr wchar_t kVirtualHost[] = L"lystar.local";
 constexpr UINT kOutputMessage = WM_APP + 1;
 constexpr UINT kChildExitMessage = WM_APP + 2;
@@ -228,16 +228,16 @@ bool StartChild() {
 		return false;
 	}
 
-	std::wstring laPath = GetEnvironment(L"LYSTAR_TERMINAL_LA_PATH");
-	if (laPath.empty()) laPath = DirectoryName(ModulePath()) + L"\\la.exe";
-	if (!FileExists(laPath)) {
+	std::wstring codePath = GetEnvironment(L"LYSTAR_TERMINAL_CODE_PATH");
+	if (codePath.empty()) codePath = DirectoryName(ModulePath()) + L"\\lc.exe";
+	if (!FileExists(codePath)) {
 		DeleteProcThreadAttributeList(attributes);
 		HeapFree(GetProcessHeap(), 0, attributes);
-		QueueText(L"\r\n\x1b[31m找不到 la.exe：" + laPath + L"\x1b[0m\r\n");
+		QueueText(L"\r\n\x1b[31m找不到 lc.exe：" + codePath + L"\x1b[0m\r\n");
 		return false;
 	}
 
-	std::wstring commandLine = QuoteArgument(laPath) + L" --attached";
+	std::wstring commandLine = QuoteArgument(codePath) + L" --attached";
 	for (const auto& argument : g_childArgs) commandLine += L" " + QuoteArgument(argument);
 	std::vector<wchar_t> mutableCommand(commandLine.begin(), commandLine.end());
 	mutableCommand.push_back(L'\0');
@@ -248,7 +248,7 @@ bool StartChild() {
 	startup.lpAttributeList = attributes;
 	PROCESS_INFORMATION process{};
 	const BOOL created = CreateProcessW(
-		laPath.c_str(),
+		codePath.c_str(),
 		mutableCommand.data(),
 		nullptr,
 		nullptr,
@@ -261,7 +261,7 @@ bool StartChild() {
 	DeleteProcThreadAttributeList(attributes);
 	HeapFree(GetProcessHeap(), 0, attributes);
 	if (!created) {
-		QueueText(L"\r\n\x1b[31mla.exe 启动失败：" + LastErrorText() + L"\x1b[0m\r\n");
+		QueueText(L"\r\n\x1b[31mlc.exe 启动失败：" + LastErrorText() + L"\x1b[0m\r\n");
 		return false;
 	}
 
@@ -306,7 +306,7 @@ void ShowWebViewError(HRESULT result) {
 	wchar_t message[512]{};
 	swprintf_s(
 		message,
-		L"LYStar 独立终端启动失败（0x%08X）。请安装 Microsoft Edge WebView2 Runtime，或运行 la --attached。",
+		L"LYStar 独立终端启动失败（0x%08X）。请安装 Microsoft Edge WebView2 Runtime，或运行 lc --attached。",
 		static_cast<unsigned>(result));
 	MessageBoxW(g_window, message, kDefaultTitle, MB_OK | MB_ICONERROR);
 	DestroyWindow(g_window);

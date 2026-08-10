@@ -51,7 +51,7 @@ export const zhCN = {
 	"update.instruction": "新版本 {version} 已发布。运行 {command} 更新。",
 	"update.packagesAvailable": "发现 Package 更新",
 	"update.packagesInstruction": "运行 {command} 更新 Pi Package。",
-	"setup.welcome": "欢迎使用 LYStar Agent。",
+	"setup.welcome": "欢迎使用 LYStar Code。",
 	"setup.pickTheme": "选择界面主题",
 	"setup.detectedTheme": "检测到系统主题：{theme}",
 	"setup.dark": "深色",

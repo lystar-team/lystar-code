@@ -7,16 +7,16 @@ The managed archive is pinned to MinGit `2.55.0.3` and a fixed SHA-256. LYStar d
 Run the bootstrap explicitly with:
 
 ```powershell
-la --ensure-windows-bash
+lc --ensure-windows-bash
 ```
 
 Use a verified local archive without network access:
 
 ```powershell
-la --ensure-windows-bash --archive .\MinGit-2.55.0.3-64-bit.zip --offline
+lc --ensure-windows-bash --archive .\MinGit-2.55.0.3-64-bit.zip --offline
 ```
 
-Interactive standalone launches open the Windows-only `lystar-terminal.exe` host, which runs the existing TUI through ConPTY and renders it with local xterm.js and Noto Sans CJK assets. Automation remains attached to the invoking terminal. Use `la --attached` to keep an interactive TUI in PowerShell, CMD, SSH, or an IDE terminal.
+Interactive standalone launches open the Windows-only `lystar-terminal.exe` host, which runs the existing TUI through ConPTY and renders it with local xterm.js and Noto Sans CJK assets. Automation remains attached to the invoking terminal. Use `lc --attached` to keep an interactive TUI in PowerShell, CMD, SSH, or an IDE terminal.
 
 `PI_OFFLINE=1` disables implicit downloads. An explicit `shellPath` still overrides the managed shell:
 

@@ -21,8 +21,9 @@ esac
 release_dir="$tmp/release"
 bundle_dir="$tmp/bundle/lystar-agent"
 mkdir -p "$release_dir" "$bundle_dir"
-printf '%s\n' '#!/usr/bin/env bash' '[[ "${1:-}" == "--version" ]] || exit 2' "printf '%s\\n' '$VERSION'" > "$bundle_dir/la"
-chmod +x "$bundle_dir/la"
+printf '%s\n' '#!/usr/bin/env bash' '[[ "${1:-}" == "--version" ]] || exit 2' "printf '%s\\n' '$VERSION'" > "$bundle_dir/lc"
+chmod +x "$bundle_dir/lc"
+ln -s lc "$bundle_dir/lystar"
 asset="lystar-agent-v${VERSION}-${os}-${arch}.tar.gz"
 tar -czf "$release_dir/$asset" -C "$tmp/bundle" lystar-agent
 node "$ROOT/scripts/generate-release-metadata.mjs" "$release_dir" "$VERSION" "octyean/lystar-agent"
@@ -71,8 +72,13 @@ install_with_curl() {
 
     local install_root="$home/.local/share/lystar-agent"
     [[ "$(readlink "$install_root/current")" == "versions/$VERSION" ]]
-    [[ -x "$install_root/current/la" ]]
-    [[ -L "$home/.local/bin/la" ]]
+    [[ -x "$install_root/current/lc" ]]
+    [[ -x "$install_root/current/lystar" ]]
+    [[ -x "$home/.local/bin/lc" ]]
+    [[ -x "$home/.local/bin/lystar" ]]
+    [[ ! -e "$home/.local/bin/la" ]]
+    [[ "$(HOME="$home" "$home/.local/bin/lc" --version)" == "$VERSION" ]]
+    [[ "$(HOME="$home" "$home/.local/bin/lystar" --version)" == "$VERSION" ]]
     [[ "$(grep -Fxc 'export PATH="$HOME/.local/bin:$PATH"' "$home/.bashrc")" == "1" ]]
 
     HOME="$home" SHELL=/bin/bash FIXTURE_DIR="$release_dir" PATH="$fake_curl_dir:$ORIGINAL_PATH" \
@@ -85,14 +91,14 @@ install_without_path_update() {
     HOME="$home" SHELL=/bin/bash FIXTURE_DIR="$release_dir" PATH="$fake_curl_dir:$ORIGINAL_PATH" \
         bash "$release_dir/install.sh" --no-path-update >/dev/null
     [[ ! -e "$home/.bashrc" ]]
-    [[ -x "$home/.local/share/lystar-agent/current/la" ]]
+    [[ -x "$home/.local/share/lystar-agent/current/lc" ]]
 }
 
 install_with_wget_only() {
     local tool_dir="$tmp/wget-tools"
     mkdir -p "$tool_dir"
     local name
-    for name in bash tar gzip sha256sum awk tr grep uname mktemp rm ln mv mkdir readlink; do
+    for name in bash tar gzip sha256sum awk tr grep uname mktemp rm ln mv mkdir readlink cat chmod; do
         ln -s "$(command -v "$name")" "$tool_dir/$name"
     done
     cat > "$tool_dir/wget" <<'WGET'
@@ -115,7 +121,7 @@ WGET
     local home="$tmp/home-wget"
     HOME="$home" SHELL=/bin/bash FIXTURE_DIR="$release_dir" PATH="$tool_dir" \
         /bin/bash "$release_dir/install.sh" >/dev/null
-    [[ -x "$home/.local/share/lystar-agent/current/la" ]]
+    [[ -x "$home/.local/share/lystar-agent/current/lc" ]]
 }
 
 reject_bad_checksum() {
@@ -131,23 +137,36 @@ reject_bad_checksum() {
     [[ ! -e "$home/.local/share/lystar-agent/current" ]]
 }
 
-check_rollback_and_uninstall() {
+check_upgrade_rollback_and_uninstall() {
     local home="$tmp/home-actions"
     local install_root="$home/.local/share/lystar-agent"
     local bin_dir="$home/.local/bin"
-    mkdir -p "$install_root/versions/1.0.0-lystar.1" "$install_root/versions/1.0.0-lystar.2" "$bin_dir" "$home/.pi/agent"
-    ln -s "versions/1.0.0-lystar.2" "$install_root/current"
-    ln -s "versions/1.0.0-lystar.1" "$install_root/previous"
+    local old_version="0.9.0-lystar.9"
+    mkdir -p "$install_root/versions/$old_version" "$bin_dir" "$home/.pi/agent"
+    printf '%s\n' '#!/usr/bin/env bash' '[[ "${1:-}" == "--version" ]] || exit 2' "printf '%s\\n' '$old_version'" > "$install_root/versions/$old_version/la"
+    chmod +x "$install_root/versions/$old_version/la"
+    ln -s "versions/$old_version" "$install_root/current"
+    ln -s "$install_root/current/la" "$bin_dir/la"
     touch "$home/.pi/agent/settings.json"
 
-    HOME="$home" bash "$ROOT/scripts/install.sh" --rollback >/dev/null
-    [[ "$(readlink "$install_root/current")" == "versions/1.0.0-lystar.1" ]]
-    [[ "$(readlink "$install_root/previous")" == "versions/1.0.0-lystar.2" ]]
+    HOME="$home" SHELL=/bin/bash FIXTURE_DIR="$release_dir" PATH="$fake_curl_dir:$ORIGINAL_PATH" \
+        bash "$release_dir/install.sh" >/dev/null
+    [[ "$(readlink "$install_root/current")" == "versions/$VERSION" ]]
+    [[ "$(readlink "$install_root/previous")" == "versions/$old_version" ]]
+    [[ ! -e "$bin_dir/la" ]]
+    [[ "$(HOME="$home" "$bin_dir/lc" --version)" == "$VERSION" ]]
+    [[ "$(HOME="$home" "$bin_dir/lystar" --version)" == "$VERSION" ]]
 
-    ln -s "$install_root/current/la" "$bin_dir/la"
+    HOME="$home" bash "$release_dir/install.sh" --rollback >/dev/null
+    [[ "$(readlink "$install_root/current")" == "versions/$old_version" ]]
+    [[ "$(readlink "$install_root/previous")" == "versions/$VERSION" ]]
+    [[ "$(HOME="$home" "$bin_dir/lc" --version)" == "$old_version" ]]
+    [[ "$(HOME="$home" "$bin_dir/lystar" --version)" == "$old_version" ]]
+
     HOME="$home" bash "$ROOT/scripts/install.sh" --uninstall >/dev/null
     [[ ! -e "$install_root" ]]
-    [[ ! -e "$bin_dir/la" ]]
+    [[ ! -e "$bin_dir/lc" ]]
+    [[ ! -e "$bin_dir/lystar" ]]
     [[ -e "$home/.pi/agent/settings.json" ]]
 }
 
@@ -155,7 +174,7 @@ install_with_curl
 install_without_path_update
 install_with_wget_only
 reject_bad_checksum
-check_rollback_and_uninstall
+check_upgrade_rollback_and_uninstall
 
 if HOME="$tmp/home-missing-version" bash "$ROOT/scripts/install.sh" --version >/dev/null 2>&1; then
     printf 'installer unexpectedly accepted --version without a value\n' >&2

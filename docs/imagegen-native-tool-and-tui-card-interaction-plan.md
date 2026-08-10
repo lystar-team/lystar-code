@@ -1,4 +1,4 @@
-# LYStar Agent Image Gen 与 TUI 卡片交互修复方案
+# LYStar Code Image Gen 与 TUI 卡片交互修复方案
 
 > 状态：待 Yean 确认
 >
@@ -10,7 +10,7 @@
 
 本次一起处理两类问题：
 
-1. 在 LYStar Agent 中接入 Codex 的 Image Generation Skill，并提供真正由 Agent 调用的原生 `image_gen` Tool。
+1. 在 LYStar Code 中接入 Codex 的 Image Generation Skill，并提供真正由 Agent 调用的原生 `image_gen` Tool。
 2. 清理最近新增 TUI 卡片的点击展开/收缩问题：
    - 部分卡片只能点击第一行。
    - Subagent 独立会话里的 Tool、Diff、长内容等卡片无法点击展开/收缩。
@@ -512,7 +512,7 @@ npm --workspace @earendil-works/pi-tui test
 
 - `git diff --check`
 - Skill 资产在 Node dist、Linux 候选包中的存在性检查。
-- Linux x64 候选包 `la --version`、`--help`、`PI_OFFLINE=1 --list-models`。
+- Linux x64 候选包 `lc --version`、`--help`、`PI_OFFLINE=1 --list-models`。
 - `PI_OFFLINE=1` 启动时不得因 Image Gen 主动联网。
 
 ## 8. 验收标准

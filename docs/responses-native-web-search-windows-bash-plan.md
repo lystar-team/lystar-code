@@ -6,7 +6,7 @@
 >
 > 核对日期：2026-08-09。
 >
-> 代码基线：LYStar Agent `0.84.1-lystar.6`，提交 `bfeb0729a77df1933d043bd89d420ea910c6b381`；Pi 上游本地基线 `9dd90a49711d088b86fdd9b4aea575913a8328a8`。
+> 代码基线：LYStar Code `0.84.1-lystar.6`，提交 `bfeb0729a77df1933d043bd89d420ea910c6b381`；Pi 上游本地基线 `9dd90a49711d088b86fdd9b4aea575913a8328a8`。
 >
 > 官方协议依据：[OpenAI Web search guide](https://developers.openai.com/api/docs/guides/tools-web-search)、[Responses API reference](https://platform.openai.com/docs/api-reference/responses)。仓库当前使用 OpenAI Node SDK `6.26.0`，以下字段和事件同时对照了该版本的 `responses.d.ts`。
 
@@ -28,7 +28,7 @@ LYStar 当前同时存在两条网页搜索链路：
 - 官方 `web_search_call`、搜索状态、`url_citation` 和完整 sources 按结构化数据保存和展示。
 - Windows 继续使用现有托管 MinGit，并把 Bash 路径和环境统一到共享 Shell 运行时，父进程是 PowerShell、CMD、IDE 终端或独立窗口都不影响执行。
 - Windows 交互模式默认由 LYStar 自带终端窗口承载；一次性 CLI、管道、JSON 和 RPC 仍在调用终端返回结果。
-- Windows `la.exe` 和终端窗口使用用户提供的 LYStar Logo；macOS、Linux 的启动和终端行为保持现状。
+- Windows `lc.exe` 和终端窗口使用用户提供的 LYStar Logo；macOS、Linux 的启动和终端行为保持现状。
 
 ## 2. 已验证现状
 
@@ -113,7 +113,7 @@ Windows 缺少 Bash 的基础能力已经完成，相关提交为 `67e5af8f1` �
 - staging 解压、Bash/Git 自检、目录替换和失败恢复。
 - 进程内 Promise 去重和跨进程锁。
 - 托管目录 `~/.pi/agent/bin/mingit/`，多个 LYStar 版本共用。
-- `la --ensure-windows-bash` 显式初始化入口。
+- `lc --ensure-windows-bash` 显式初始化入口。
 - 官方安装器在切换 `current` 版本前执行初始化，失败时不切换版本。
 - 首次交互启动和内建 Bash Tool 会自动补齐环境。
 - `PI_OFFLINE=1` 禁止隐式联网。
@@ -430,7 +430,7 @@ Windows 实施目标：
 
 1. 无论用户从 PowerShell、CMD、Windows Terminal、IDE 终端、开始菜单还是资源管理器启动，LYStar 内部需要 Bash 时都使用同一个托管 MinGit。
 2. Windows 的 Interactive TUI 默认在 LYStar 自己的窗口中运行，不再受父终端字体和控制台能力限制。
-3. `la.exe`、独立窗口、任务栏和快捷方式使用同一 LYStar Logo。
+3. `lc.exe`、独立窗口、任务栏和快捷方式使用同一 LYStar Logo。
 4. macOS 和 Linux 不进入新启动分支，Shell 解析、TUI 和发行产物保持现状。
 
 可行性判断：
@@ -444,7 +444,7 @@ Windows 实施目标：
 
 已验证的外部能力是 ConPTY、WebView2 分发和 Bun `--windows-icon`；基于现有源码作出的工程判断是：独立 host 可以复用现有字符 TUI，不需要重写 Agent 界面，但必须补齐输入、字体、窗口生命周期和发行测试。
 
-“每次运行 `la` 都开窗口”只适用于会进入 TUI 的交互命令。`la --version`、`la --help`、`la --print`、管道输入、`--mode json`、`--mode rpc`、安装、更新和认证输出必须继续在当前终端工作，否则会破坏脚本、CI 和编辑器集成。
+“每次运行 `lc` 都开窗口”只适用于会进入 TUI 的交互命令。`lc --version`、`lc --help`、`lc --print`、管道输入、`--mode json`、`--mode rpc`、安装、更新和认证输出必须继续在当前终端工作，否则会破坏脚本、CI 和编辑器集成。
 
 ### 8.2 统一 Windows Shell 运行时
 
@@ -496,17 +496,17 @@ env.PATH 前缀 = mingit/cmd;mingit/mingw64/bin;mingit/usr/bin
 
 | 调用 | Windows 默认行为 |
 |---|---|
-| `la` | 打开 LYStar 独立窗口 |
-| `la --continue`、`la --resume`、带模型或会话参数的交互启动 | 打开 LYStar 独立窗口，并原样传递参数和 cwd |
-| `la config` 等会创建 TUI 的命令 | 打开 LYStar 独立窗口 |
+| `lc` | 打开 LYStar 独立窗口 |
+| `lc --continue`、`lc --resume`、带模型或会话参数的交互启动 | 打开 LYStar 独立窗口，并原样传递参数和 cwd |
+| `lc config` 等会创建 TUI 的命令 | 打开 LYStar 独立窗口 |
 | 从资源管理器或开始菜单启动 | 直接打开 LYStar 独立窗口 |
-| `la --version`、`la --help`、`la list` | 在当前终端输出 |
-| `la --print`、stdin/stdout 被重定向 | 在当前终端输出 |
+| `lc --version`、`lc --help`、`lc list` | 在当前终端输出 |
+| `lc --print`、stdin/stdout 被重定向 | 在当前终端输出 |
 | `--mode json`、`--mode rpc` | 在当前终端运行 |
 | `install`、`remove`、`update`、非交互 auth 命令 | 在当前终端运行 |
-| `la --attached` | 显式在当前终端运行 TUI，用于 SSH、调试和终端集成 |
+| `lc --attached` | 显式在当前终端运行 TUI，用于 SSH、调试和终端集成 |
 
-启动防循环使用内部环境变量，例如 `LYSTAR_TERMINAL_HOST=1`。独立窗口中的 child `la.exe` 看到该标记后直接进入现有主流程。
+启动防循环使用内部环境变量，例如 `LYSTAR_TERMINAL_HOST=1`。独立窗口中的 child `lc.exe` 看到该标记后直接进入现有主流程。
 
 ### 8.4 独立终端宿主
 
@@ -515,16 +515,16 @@ env.PATH 前缀 = mingit/cmd;mingit/mingw64/bin;mingit/usr/bin
 ```mermaid
 sequenceDiagram
     participant P as PowerShell/CMD/Explorer
-    participant L as la.exe launcher
+    participant L as lc.exe launcher
     participant H as lystar-terminal.exe
     participant C as ConPTY
-    participant A as child la.exe
+    participant A as child lc.exe
 
     P->>L: 启动交互命令
-    L->>H: 参数、cwd、环境、当前 la.exe 路径
+    L->>H: 参数、cwd、环境、当前 lc.exe 路径
     L-->>P: launcher 退出
     H->>C: CreatePseudoConsole
-    H->>A: 在 ConPTY 中启动 child la.exe
+    H->>A: 在 ConPTY 中启动 child lc.exe
     A-->>C: TUI VT 输出
     C-->>H: 字符与控制序列
     H-->>H: xterm.js 渲染
@@ -533,7 +533,7 @@ sequenceDiagram
 
 宿主采用以下组合：
 
-- Windows ConPTY：托管现有字符模式 `la.exe`，保持 TUI 主程序和 Unix 平台逻辑一致。
+- Windows ConPTY：托管现有字符模式 `lc.exe`，保持 TUI 主程序和 Unix 平台逻辑一致。
 - Win32 + WebView2：提供真正属于 LYStar 的桌面窗口。
 - xterm.js：解析 VT 序列并渲染 truecolor、CJK、emoji、IME、鼠标和链接。
 - 本地静态资源：HTML、CSS、JavaScript 和字体随发行包提供，运行时不访问网页。
@@ -563,7 +563,7 @@ sequenceDiagram
 - 默认尺寸按字符网格确定，例如 `120 x 36`，最小 `80 x 24`。
 - 正确处理 Windows DPI 缩放、窗口 resize 和全屏。
 - 记住上次窗口大小和位置，超出当前屏幕时回到主屏可见区域。
-- xterm title change 同步到 Win32 标题栏，默认标题为 `LYStar Agent`。
+- xterm title change 同步到 Win32 标题栏，默认标题为 `LYStar Code`。
 - 支持中文 IME 候选框、Ctrl/Shift/Alt 组合键、Bracketed Paste、SGR Mouse、OSC 8 链接、选择和复制。
 - 关闭窗口时先向 child 发送正常退出信号；仍有任务执行时显示简短确认，超时后再结束进程树。
 
@@ -583,7 +583,7 @@ WebView2 Runtime 是独立终端窗口的系统依赖。Windows 11 包含 Evergr
 
 - 在线安装：检测不到 Runtime 时，以当前用户身份静默运行 Microsoft Evergreen Bootstrapper，不要求管理员权限。
 - 离线安装：允许安装器接收 WebView2 Evergreen Standalone Installer 本地路径。
-- Runtime 安装失败：一次性 CLI 仍可使用；交互启动返回清晰错误并提示 `la --attached` 临时进入当前终端。
+- Runtime 安装失败：一次性 CLI 仍可使用；交互启动返回清晰错误并提示 `lc --attached` 临时进入当前终端。
 - 不随 LYStar 固定打包超过 250 MB 的 Fixed Version Runtime。
 - WebView2 禁止导航到外部页面，禁用生产环境 DevTools、下载和新窗口；外部链接交给默认浏览器。
 
@@ -608,7 +608,7 @@ ICO 至少包含 `16、20、24、32、40、48、64、128、256` 像素版本。�
 
 Bun 支持 `--windows-icon=<ico>`，但当前官方实现要求构建进程本身运行在 Windows。现有 Release workflow 在 Ubuntu 交叉编译全部平台，因此 Windows 产物需要移到 `windows-latest` 构建：
 
-- `la.exe` 编译时传 `--windows-icon`。
+- `lc.exe` 编译时传 `--windows-icon`。
 - `lystar-terminal.exe` 的 Win32 resource 和运行时窗口图标使用同一 ICO。
 - 安装器、开始菜单快捷方式、任务栏和文件资源管理器显示同一图标。
 - Windows CI 提取 exe 关联图标并生成截图，检查 16、32 和 256 像素结果。
@@ -632,8 +632,8 @@ Bun 支持 `--windows-icon=<ico>`，但当前官方实现要求构建进程本�
 下载 LYStar 候选版本
   -> 校验 LYStar release SHA-256
   -> 检测或安装 WebView2 Runtime
-  -> 运行候选 la.exe --version
-  -> 运行候选 la.exe --ensure-windows-bash
+  -> 运行候选 lc.exe --version
+  -> 运行候选 lc.exe --ensure-windows-bash
   -> 校验托管 Bash 和托管 Git
   -> 验证 lystar-terminal.exe 可启动
   -> 写入版本目录
@@ -647,7 +647,7 @@ Bun 支持 `--windows-icon=<ico>`，但当前官方实现要求构建进程本�
 新机器离线入口保持为：
 
 ```powershell
-la --ensure-windows-bash --archive .\MinGit-2.55.0.3-64-bit.zip
+lc --ensure-windows-bash --archive .\MinGit-2.55.0.3-64-bit.zip
 ```
 
 实现要求：
@@ -665,9 +665,9 @@ la --ensure-windows-bash --archive .\MinGit-2.55.0.3-64-bit.zip
 
 Windows CI 必须使用本次提交生成的实际产物：
 
-- 在 `windows-latest` 构建带图标的 `la.exe` 和 `lystar-terminal.exe`。
+- 在 `windows-latest` 构建带图标的 `lc.exe` 和 `lystar-terminal.exe`。
 - 清空系统 Git/Bash 相关 PATH，验证 PowerShell、CMD 和独立窗口三种入口。
-- 通过 `la.exe --ensure-windows-bash` 初始化，再由 Bash Tool 执行命令。
+- 通过 `lc.exe --ensure-windows-bash` 初始化，再由 Bash Tool 执行命令。
 - 启动独立窗口，使用 UI Automation 或截图验证 Logo、字体、中文、图形字符、输入、resize 和退出。
 - 一次性 CLI 断言不会打开新窗口，并保持 stdout、stderr 和退出码。
 - 安装器端到端测试使用本次构建的本地 archive 和 manifest。
@@ -715,7 +715,7 @@ Windows CI 必须使用本次提交生成的实际产物：
 | `packages/coding-agent/package.json`、lockfile | 新增并锁定浏览器端 `@xterm/xterm` 及实际使用的 addon；不加入 `node-pty` |
 | `packages/coding-agent/src/windows-terminal-host/` | 新增 Win32、WebView2、ConPTY host 和本地 xterm.js 页面 |
 | `packages/coding-agent/assets/lystar-windows-icon.png`、`.ico` | 保存用户提供的 Logo 和多尺寸 Windows icon |
-| `scripts/build-binaries.sh`、新增 Windows build 脚本 | Unix 产物留在 Ubuntu；Windows job 编译带 icon 的 `la.exe` 和 terminal host |
+| `scripts/build-binaries.sh`、新增 Windows build 脚本 | Unix 产物留在 Ubuntu；Windows job 编译带 icon 的 `lc.exe` 和 terminal host |
 | `scripts/install.ps1` | 检测 WebView2、准备 MinGit、安装 host、创建品牌快捷方式，全部成功后再切换版本 |
 | `scripts/test-windows-managed-bash.mjs` | 增加 PowerShell/CMD、离线 archive、损坏安装和锁回收测试 |
 | 新增 Windows terminal host 测试 | 覆盖参数分流、ConPTY、Unicode、IME、键盘、resize、窗口关闭和图标 |
@@ -754,7 +754,7 @@ Windows CI 必须使用本次提交生成的实际产物：
 - 先把 Bash、Git、`!command` 和 Agent harness 接到统一 Shell runtime。
 - 增加本地 MinGit archive 和锁加固。
 - 把用户 Logo 制作为多尺寸 ICO，并把 Windows 构建移到 Windows runner。
-- 实现 `la.exe -> lystar-terminal.exe -> ConPTY child la.exe` 启动链路。
+- 实现 `lc.exe -> lystar-terminal.exe -> ConPTY child lc.exe` 启动链路。
 - 接入 xterm.js、本地字体、WebView2 检测和离线安装输入。
 - 使用本次构建产物验证 PowerShell、CMD、独立窗口、一次性 CLI 和安装更新。
 
@@ -798,10 +798,10 @@ Windows CI 必须使用本次提交生成的实际产物：
 
 | 场景 | 预期 |
 |---|---|
-| PowerShell 启动交互 `la` | TUI 出现在 LYStar 独立窗口，PowerShell 不承载界面 |
+| PowerShell 启动交互 `lc` | TUI 出现在 LYStar 独立窗口，PowerShell 不承载界面 |
 | CMD、IDE 终端、开始菜单和资源管理器启动 | 使用同一独立窗口和同一 cwd/参数规则 |
-| `la --attached` | TUI 留在当前终端，便于调试和 SSH |
-| `la --version`、`--help`、`--print`、JSON/RPC | 不打开窗口，stdout/stderr 和退出码正确 |
+| `lc --attached` | TUI 留在当前终端，便于调试和 SSH |
+| `lc --version`、`--help`、`--print`、JSON/RPC | 不打开窗口，stdout/stderr 和退出码正确 |
 | 无系统 Git/Bash 的 Windows x64 | 托管 MinGit 完成初始化，Bash Tool、Git Package 和 `!command` 可用 |
 | 父 PowerShell PATH 不含 Bash/Git | 内部命令仍使用托管绝对路径和环境 |
 | Agent harness 和 Extension Bash | 与内建 Bash Tool 使用同一 runtime |
@@ -817,7 +817,7 @@ Windows CI 必须使用本次提交生成的实际产物：
 | 中文 IME、粘贴和组合键 | 输入完整，不丢修饰键，不重复提交 |
 | 窗口 resize、DPI、全屏 | ConPTY 尺寸和 TUI 布局同步 |
 | 关闭运行中窗口 | 先正常结束并保存 Session，再按超时结束进程树 |
-| `la.exe`、host、任务栏和快捷方式 | 使用用户提供的 LYStar Logo |
+| `lc.exe`、host、任务栏和快捷方式 | 使用用户提供的 LYStar Logo |
 | Windows PowerShell 5.1 | 安装脚本解析和执行通过 |
 | standalone 产物 | Bash、窗口、Logo 和一次性 CLI 全部由本次构建验证 |
 
@@ -843,12 +843,12 @@ Windows CI 必须使用本次提交生成的实际产物：
 必须同时满足：
 
 - Windows x64 用户无需预装 Git、Bash、Node.js、npm 或 Windows Terminal。
-- PowerShell、CMD、IDE 终端、开始菜单和资源管理器启动交互 `la` 时都进入 LYStar 独立窗口。
+- PowerShell、CMD、IDE 终端、开始菜单和资源管理器启动交互 `lc` 时都进入 LYStar 独立窗口。
 - 一次性 CLI、管道、JSON 和 RPC 不打开窗口，自动化兼容性不变。
 - 内建 Bash、Extension Bash、Agent harness、`!command` 和 Git Package 都使用同一托管 Shell runtime。
 - 父终端 PATH、字体和图形能力不影响 Bash 可用性与 TUI 显示。
 - 独立窗口支持 truecolor、中文 IME、项目现有图形字符、链接、鼠标、粘贴和 resize。
-- `la.exe`、terminal host、任务栏和快捷方式使用给定 LYStar Logo。
+- `lc.exe`、terminal host、任务栏和快捷方式使用给定 LYStar Logo。
 - WebView2 和 MinGit 的在线、离线、校验、并发和失败恢复路径都可执行。
 - 任一候选依赖失败时不切换新的 LYStar 版本。
 - Windows CI 使用本次提交生成的 standalone 产物完成 Shell、窗口和 Logo 验证。
@@ -865,7 +865,7 @@ Windows CI 必须使用本次提交生成的实际产物：
 
 ### 13.2 Windows
 
-- 独立窗口宿主异常时可以临时使用 `la --attached`，不改变 Session 和模型配置。
+- 独立窗口宿主异常时可以临时使用 `lc --attached`，不改变 Session 和模型配置。
 - terminal host、xterm.js 或字体回退不得移除统一 Shell runtime；Bash 修复可以独立保留。
 - WebView2 安装失败时保留一次性 CLI，并提示用户使用 attached 模式。
 - 托管 MinGit 更新失败时恢复 `.previous`。
@@ -897,11 +897,11 @@ Windows CI 必须使用本次提交生成的实际产物：
 2. HTTP 请求计数：没有 gpt-5.6-luna 二次请求。
 3. 一段完整流事件：in_progress -> searching -> completed -> cited output。
 4. Session 第二轮重放 payload：包含 web_search_call 和 annotations。
-5. PowerShell、CMD 和开始菜单启动交互 `la` 后出现同一个 LYStar 独立窗口。
+5. PowerShell、CMD 和开始菜单启动交互 `lc` 后出现同一个 LYStar 独立窗口。
 6. 一次性 CLI 没有开窗，stdout、stderr 和退出码保持正确。
 7. 清空系统 Git/Bash PATH 后，内建 Bash、Extension、Agent harness、`!command` 和 Git Package 全部使用托管 MinGit。
 8. 独立窗口中的中文、图形字符、IME、鼠标、链接、resize 和 Session 退出通过真实截图与交互验证。
-9. `la.exe`、terminal host、任务栏和快捷方式显示给定 Logo。
+9. `lc.exe`、terminal host、任务栏和快捷方式显示给定 Logo。
 10. 在线失败不切换版本，MinGit/WebView2 离线输入成功，并发初始化成功。
 ```
 

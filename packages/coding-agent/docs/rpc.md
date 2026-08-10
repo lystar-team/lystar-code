@@ -458,7 +458,7 @@ Response:
 Execute a shell command and add output to conversation context. Output streams as `bash_execution_update` events while the command runs; the response contains the final result.
 
 ```json
-{"id": "req-1", "type": "bash", "command": "ls -la"}
+{"id": "req-1", "type": "bash", "command": "ls -lc"}
 ```
 
 Include an `id` to associate streamed `bash_execution_update` events with this command.
@@ -502,7 +502,7 @@ The `bash` command executes immediately and returns a `BashResult`. Internally, 
 When the next `prompt` command is sent, all messages (including `BashExecutionMessage`) are transformed before being sent to the LLM. The `BashExecutionMessage` is converted to a `UserMessage` with this format:
 
 ````
-Ran `ls -la`
+Ran `ls -lc`
 ```
 total 48
 drwxr-xr-x ...
@@ -978,7 +978,7 @@ Emitted when a tool begins, streams progress, and completes execution.
   "type": "tool_execution_start",
   "toolCallId": "call_abc123",
   "toolName": "bash",
-  "args": {"command": "ls -la"}
+  "args": {"command": "ls -lc"}
 }
 ```
 
@@ -989,7 +989,7 @@ During execution, `tool_execution_update` events stream partial results (e.g., b
   "type": "tool_execution_update",
   "toolCallId": "call_abc123",
   "toolName": "bash",
-  "args": {"command": "ls -la"},
+  "args": {"command": "ls -lc"},
   "partialResult": {
     "content": [{"type": "text", "text": "partial output so far..."}],
     "details": {"truncation": null, "fullOutputPath": null}
@@ -1458,7 +1458,7 @@ Created by the `bash` RPC command (not by LLM tool calls):
 ```json
 {
   "role": "bashExecution",
-  "command": "ls -la",
+  "command": "ls -lc",
   "output": "total 48\ndrwxr-xr-x ...",
   "exitCode": 0,
   "cancelled": false,

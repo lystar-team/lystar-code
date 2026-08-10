@@ -73,9 +73,9 @@ sha256sum -c SHA256SUMS
 Linux x64 包至少运行：
 
 ```bash
-./lystar-agent/la --version
-./lystar-agent/la --help
-PI_OFFLINE=1 ./lystar-agent/la --list-models
+./lystar-agent/lc --version
+./lystar-agent/lc --help
+PI_OFFLINE=1 ./lystar-agent/lc --list-models
 ```
 
 ## 证据边界

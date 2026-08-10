@@ -75,7 +75,7 @@ describe("credential print commands", () => {
 			const stderr = errorSpy.mock.calls.map(([message]) => String(message)).join("\n");
 			expect(stderr).toContain("auth 命令“auth check”不支持参数 --credentails。");
 			expect(stderr).toContain(
-				"可查看“la --help”或“la auth check --provider <provider> [--json] [--credentials] [--no-refresh]”。",
+				"可查看“lc --help”或“lc auth check --provider <provider> [--json] [--credentials] [--no-refresh]”。",
 			);
 			expect(process.exitCode).toBe(1);
 		} finally {

@@ -51,14 +51,14 @@ macOS/Linux：
 
 ```bash
 export DEEPSEEK_API_KEY="<your-api-key>"
-la --provider deepseek
+lc --provider deepseek
 ```
 
 Windows PowerShell：
 
 ```powershell
 $env:DEEPSEEK_API_KEY = "<your-api-key>"
-la --provider deepseek
+lc --provider deepseek
 ```
 
 不要把真实 Key 写入项目 README、`AGENTS.md`、Git 仓库或聊天内容。需要长期保存时优先使用 `/login`；`auth.json` 应保持用户私有。
@@ -74,8 +74,8 @@ la --provider deepseek
 命令行：
 
 ```bash
-la --list-models deepseek
-la --provider deepseek --model <model-id>
+lc --list-models deepseek
+lc --provider deepseek --model <model-id>
 ```
 
 默认 Provider 和模型也可以写入 `~/.pi/agent/settings.json`：
@@ -87,7 +87,7 @@ la --provider deepseek --model <model-id>
 }
 ```
 
-模型 ID 以 `la --list-models` 当前输出为准，不在文档中复制容易过期的完整模型表。
+模型 ID 以 `lc --list-models` 当前输出为准，不在文档中复制容易过期的完整模型表。
 
 ## 自定义兼容服务
 

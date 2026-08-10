@@ -9,12 +9,12 @@ Skill 是按需加载的能力说明，可以携带脚本、参考资料和资�
 ## 安装已打包 Skill
 
 ```bash
-la install npm:<package>
-la install git:github.com/<owner>/<repo>@<tag-or-commit>
-la config
+lc install npm:<package>
+lc install git:github.com/<owner>/<repo>@<tag-or-commit>
+lc config
 ```
 
-用 `la config` 确认 Package 中需要的 Skill 已启用。
+用 `lc config` 确认 Package 中需要的 Skill 已启用。
 
 ## 安装纯 Skill 仓库
 

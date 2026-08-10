@@ -19,7 +19,7 @@ if (process.platform !== "win32") {
 const cwd = mkdtempSync(join(tmpdir(), "lystar-managed-bash-"));
 const cliPath = join(import.meta.dirname, "..", "packages", "coding-agent", "dist", "cli.js");
 const standaloneDir = process.env.LYSTAR_STANDALONE_DIR;
-const cliCommand = standaloneDir ? join(standaloneDir, "la.exe") : process.execPath;
+const cliCommand = standaloneDir ? join(standaloneDir, "lc.exe") : process.execPath;
 const cliPrefix = standaloneDir ? [] : [cliPath];
 const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
 const pathWithoutSystemGit = (process.env[pathKey] ?? "")

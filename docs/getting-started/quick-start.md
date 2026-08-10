@@ -6,8 +6,10 @@
 
 ```bash
 cd /path/to/project
-la
+lc
 ```
+
+`lystar` 是完全等价的完整命令名，后续示例统一使用较短的 `lc`。
 
 LYStar 默认拥有读取、写入、编辑文件和执行 Bash 命令的能力。建议在 Git 仓库中使用，并在较大修改前保留提交。
 
@@ -42,7 +44,7 @@ Provider 和国内模型服务配置见 [Provider 与 API Key](providers.md)。
 需要引用文件时输入 `@` 搜索，或在启动命令中传入：
 
 ```bash
-la @README.md "检查这份安装说明有没有遗漏"
+lc @README.md "检查这份安装说明有没有遗漏"
 ```
 
 ## 常用动作
@@ -54,8 +56,8 @@ la @README.md "检查这份安装说明有没有遗漏"
 | 查看设置 | `/settings` |
 | 中止当前运行 | `Esc` |
 | 展开 Tool 输出 | `Ctrl+O` |
-| 继续最近 Session | `la -c` |
-| 浏览历史 Session | `la -r` |
+| 继续最近 Session | `lc -c` |
+| 浏览历史 Session | `lc -r` |
 | 重新加载资源 | `/reload` |
 | 退出 | `/quit` |
 
@@ -78,9 +80,9 @@ la @README.md "检查这份安装说明有没有遗漏"
 Session 自动保存在 `~/.pi/agent/sessions/`：
 
 ```bash
-la -c
-la -r
-la --name "修复登录问题"
+lc -c
+lc -r
+lc --name "修复登录问题"
 ```
 
 Pi 与 LYStar 可以读取同一数据目录，但不要同时写同一个 Session 文件。

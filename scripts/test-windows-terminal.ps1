@@ -6,8 +6,8 @@
 $ErrorActionPreference = "Stop"
 $BundleDir = [IO.Path]::GetFullPath($BundleDir)
 $HostExecutable = Join-Path $BundleDir "lystar-terminal.exe"
-$LaExecutable = Join-Path $BundleDir "la.exe"
-if (!(Test-Path $HostExecutable) -or !(Test-Path $LaExecutable)) { throw "Windows terminal bundle is incomplete: $BundleDir" }
+$CodeExecutable = Join-Path $BundleDir "lc.exe"
+if (!(Test-Path $HostExecutable) -or !(Test-Path $CodeExecutable)) { throw "Windows terminal bundle is incomplete: $BundleDir" }
 
 $SmokeProcess = Start-Process -FilePath $HostExecutable -ArgumentList "--smoke-test" -Wait -PassThru
 if ($SmokeProcess.ExitCode -ne 0) { throw "Terminal host smoke test failed: $($SmokeProcess.ExitCode)" }
@@ -72,7 +72,7 @@ try {
     if (!$Process.WaitForExit(15000)) { throw "Terminal host did not exit after its child process completed." }
     if ($Process.ExitCode -ne 0) { throw "Terminal host exited with $($Process.ExitCode)." }
 
-    foreach ($Executable in @($LaExecutable, $HostExecutable)) {
+    foreach ($Executable in @($CodeExecutable, $HostExecutable)) {
         $Icon = [Drawing.Icon]::ExtractAssociatedIcon($Executable)
         if (!$Icon -or $Icon.Width -lt 16) { throw "Missing executable icon: $Executable" }
         $Icon.Dispose()

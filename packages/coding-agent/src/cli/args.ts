@@ -267,8 +267,8 @@ ${chalk.bold("命令：")}
   ${APP_NAME} install <source> [-l]     安装 Extension 并写入设置
   ${APP_NAME} remove <source> [-l]      从设置中移除 Extension
   ${APP_NAME} uninstall <source> [-l]   remove 的别名
-  ${APP_NAME} update [source|self|la]   更新 LYStar Agent、Extension 或模型目录
-  ${APP_NAME} update --rollback         回退 LYStar Agent 到上一版本
+  ${APP_NAME} update [source|self|lc|lystar] 更新 LYStar Code、Extension 或模型目录
+  ${APP_NAME} update --rollback         回退 LYStar Code 到上一版本
   ${APP_NAME} list                      列出设置中的 Extension
   ${APP_NAME} config [-l]               打开 Package 资源管理界面，Tab 切换范围
   ${APP_NAME} auth <command>            输出凭据或检查 Provider 是否可用

@@ -2,7 +2,7 @@
 
 [返回文档首页](../README.md)
 
-Pi Package 可以同时携带 Extension、Skill、Prompt Template 和 Theme。LYStar 继续使用 `la install` 和 Pi 的 Package 格式。
+Pi Package 可以同时携带 Extension、Skill、Prompt Template 和 Theme。LYStar 继续使用 `lc install` 和 Pi 的 Package 格式。
 
 > Package 中的 Extension 可以执行任意代码。先阅读源码、依赖和安装脚本，再安装第三方 Package。
 
@@ -11,27 +11,27 @@ Pi Package 可以同时携带 Extension、Skill、Prompt Template 和 Theme。LY
 npm：
 
 ```bash
-la install npm:@scope/package@1.2.3
+lc install npm:@scope/package@1.2.3
 ```
 
 Git：
 
 ```bash
-la install git:github.com/owner/repo@v1.2.3
-la install git:github.com/owner/repo@<commit>
+lc install git:github.com/owner/repo@v1.2.3
+lc install git:github.com/owner/repo@<commit>
 ```
 
 本地目录：
 
 ```bash
-la install /absolute/path/to/package
-la install ./relative/path/to/package
+lc install /absolute/path/to/package
+lc install ./relative/path/to/package
 ```
 
 默认写入用户设置 `~/.pi/agent/settings.json`。项目级安装增加 `-l`：
 
 ```bash
-la install -l ./tools/project-package
+lc install -l ./tools/project-package
 ```
 
 项目级 Package 写入 `.pi/settings.json`，需要信任项目。团队提交项目设置前应锁定版本，并确保新成员能访问来源。
@@ -53,32 +53,32 @@ Git 来源会运行 `git clone`。仓库根目录存在 `package.json` 时还会
 ## 查看和启停
 
 ```bash
-la list
-la config
+lc list
+lc config
 ```
 
-`la config` 可以启用或禁用已安装 Package 中的 Extension、Skill、Prompt 和 Theme。按 `Tab` 切换全局与项目设置。
+`lc config` 可以启用或禁用已安装 Package 中的 Extension、Skill、Prompt 和 Theme。按 `Tab` 切换全局与项目设置。
 
 ## 更新
 
 ```bash
-la update --extensions
-la update npm:@scope/package
-la update --extension git:github.com/owner/repo
+lc update --extensions
+lc update npm:@scope/package
+lc update --extension git:github.com/owner/repo
 ```
 
 带精确 npm 版本的 Package 会保持固定版本。带 tag 或 commit 的 Git Package 只会回到指定 ref，不会自动移动到新 tag。升级固定 ref 时重新安装新来源：
 
 ```bash
-la install git:github.com/owner/repo@v1.3.0
+lc install git:github.com/owner/repo@v1.3.0
 ```
 
 ## 删除
 
 ```bash
-la remove npm:@scope/package
-la remove git:github.com/owner/repo
-la remove -l ./tools/project-package
+lc remove npm:@scope/package
+lc remove git:github.com/owner/repo
+lc remove -l ./tools/project-package
 ```
 
 删除 Package 设置和受管安装目录，不保证删除 Package 自己写入的缓存、凭据或外部程序。残留位置以该 Package 文档为准。
@@ -86,8 +86,8 @@ la remove -l ./tools/project-package
 ## 临时试用
 
 ```bash
-la -e npm:@scope/package
-la -e git:github.com/owner/repo@<commit>
+lc -e npm:@scope/package
+lc -e git:github.com/owner/repo@<commit>
 ```
 
 临时来源只用于当前运行，适合先检查 UI 和命令。高风险 Extension 仍应在容器、虚拟机或无敏感数据的用户环境中验证。

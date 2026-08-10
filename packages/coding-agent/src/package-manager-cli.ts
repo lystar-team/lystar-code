@@ -3,7 +3,7 @@ import { Markdown, type MarkdownTheme } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { selectConfig } from "./cli/config-selector.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
-import { APP_NAME, CONFIG_DIR_NAME, getAgentDir, RELEASE_REPOSITORY, VERSION } from "./config.ts";
+import { APP_NAME, APP_TITLE, CONFIG_DIR_NAME, getAgentDir, RELEASE_REPOSITORY, VERSION } from "./config.ts";
 import type { InlineExtension } from "./core/extensions/types.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
 import { DefaultPackageManager } from "./core/package-manager.ts";
@@ -72,7 +72,7 @@ function getPackageCommandUsage(command: PackageCommand): string {
 		case "remove":
 			return `${APP_NAME} remove <source> [-l] [--approve|--no-approve]`;
 		case "update":
-			return `${APP_NAME} update [source|self|la] [--self|--extensions|--models|--all] [--extension <source>] [--approve|--no-approve] [--force|--rollback]`;
+			return `${APP_NAME} update [source|self|lc|lystar] [--self|--extensions|--models|--all] [--extension <source>] [--approve|--no-approve] [--force|--rollback]`;
 		case "list":
 			return `${APP_NAME} list [--approve|--no-approve]`;
 	}
@@ -140,25 +140,25 @@ function printPackageCommandHelp(command: PackageCommand): void {
 			console.log(`${chalk.bold("用法：")}
   ${getPackageCommandUsage("update")}
 
-更新 LYStar Agent、已安装 Package 或模型目录。
+更新 ${APP_TITLE}、已安装 Package 或模型目录。
 
 选项：
-  --self                  只更新 LYStar Agent，未指定目标时默认使用
+  --self                  只更新 ${APP_TITLE}，未指定目标时默认使用
   --extensions            只更新已安装 Package
   --models                只刷新模型目录
-  --all                   更新 LYStar Agent 和全部 Package
+  --all                   更新 ${APP_TITLE} 和全部 Package
   --extension <source>    只更新一个 Package
   -a, --approve           本次命令信任项目本地文件
   -na, --no-approve       本次命令忽略项目本地文件
-  --rollback              回退到上一个 LYStar Agent 版本
+  --rollback              回退到上一个 ${APP_TITLE} 版本
   --force                 即使版本相同也重新安装
 
 简写：
-  ${APP_NAME} update                只更新 LYStar Agent
-  ${APP_NAME} update --all          更新 LYStar Agent 和全部 Package
+  ${APP_NAME} update                只更新 ${APP_TITLE}
+  ${APP_NAME} update --all          更新 ${APP_TITLE} 和全部 Package
   ${APP_NAME} update --models       只刷新模型目录
   ${APP_NAME} update <source>       更新一个 Package
-  ${APP_NAME} update la             只更新 LYStar Agent，self 是等价写法
+  ${APP_NAME} update lc             只更新 ${APP_TITLE}，lystar 和 self 是等价写法
 `);
 			return;
 
@@ -351,7 +351,8 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 				}
 				updateTarget = { type: "extensions", source: extensionFlagSource };
 			} else if (source) {
-				const sourceIsSelf = source === "self" || source === "la" || source === "pi";
+				const sourceIsSelf =
+					source === "self" || source === "lc" || source === "lystar" || source === "la" || source === "pi";
 				if (sourceIsSelf) {
 					updateTarget = extensionsFlag ? { type: "all" } : { type: "self" };
 				} else {
@@ -472,7 +473,7 @@ async function getSelfUpdatePlan(force: boolean): Promise<SelfUpdatePlan> {
 		};
 	}
 
-	console.log(chalk.green(`LYStar Agent 已是最新版本（v${VERSION}）`));
+	console.log(chalk.green(`${APP_TITLE} 已是最新版本（v${VERSION}）`));
 	return { version: latestRelease.version, shouldRun: false };
 }
 
@@ -764,13 +765,13 @@ export async function handlePackageCommand(
 						throw new Error("当前构建没有配置 LYStar release repository，无法回退版本");
 					}
 					await runLystarInstaller(RELEASE_REPOSITORY, ["--rollback"]);
-					console.log(chalk.green("已回退 LYStar Agent"));
+					console.log(chalk.green(`已回退 ${APP_TITLE}`));
 					return true;
 				}
 				if (options.showExtensionsSkippedNote) {
 					console.log(
 						chalk.dim(
-							`本次仅更新 LYStar Agent；如需同时更新 Extension，请运行 ${APP_NAME} update --extensions。`,
+							`本次仅更新 ${APP_TITLE}；如需同时更新 Extension，请运行 ${APP_NAME} update --extensions。`,
 						),
 					);
 				}
@@ -791,7 +792,7 @@ export async function handlePackageCommand(
 					if (!plan.shouldRun) return true;
 					if (plan.note) printSelfUpdateNote(plan.note);
 					await runLystarInstaller(RELEASE_REPOSITORY, ["--version", plan.version]);
-					console.log(chalk.green(`已将 LYStar Agent 从 ${VERSION} 更新到 ${plan.version}`));
+					console.log(chalk.green(`已将 ${APP_TITLE} 从 ${VERSION} 更新到 ${plan.version}`));
 				}
 				return true;
 			}

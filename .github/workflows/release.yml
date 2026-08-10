@@ -1,4 +1,4 @@
-name: Release LYStar Agent
+name: Release LYStar Code
 
 on:
   push:
@@ -81,6 +81,14 @@ jobs:
         run: |
           test "v$(cat packages/coding-agent/binaries/VERSION)" = "$TAG"
           test "$(find packages/coding-agent/binaries -maxdepth 1 -name '*.tar.gz' | wc -l)" = "4"
+          for archive in packages/coding-agent/binaries/*.tar.gz; do
+            tar -tzf "$archive" > archive-contents.txt
+            grep -Fxq 'lystar-agent/lc' archive-contents.txt
+            grep -Fxq 'lystar-agent/lystar' archive-contents.txt
+            grep -Fxq 'lystar-agent/skills/imagegen/SKILL.md' archive-contents.txt
+            ! grep -Fxq 'lystar-agent/la' archive-contents.txt
+          done
+          rm archive-contents.txt
 
       - name: Upload Unix release artifacts
         uses: actions/upload-artifact@v4
@@ -130,7 +138,10 @@ jobs:
         run: |
           $Version = (Get-Content packages/coding-agent/package.json | ConvertFrom-Json).piConfig.productVersion
           $Bundle = "packages/coding-agent/binaries/windows-x64/lystar-agent"
-          if ((& "$Bundle/la.exe" --version | Out-String).Trim() -ne $Version) { throw "la.exe version mismatch" }
+          if ((& "$Bundle/lc.exe" --version | Out-String).Trim() -ne $Version) { throw "lc.exe version mismatch" }
+          if (!(Test-Path "$Bundle/lystar.cmd")) { throw "lystar.cmd missing" }
+          if (!(Test-Path "$Bundle/skills/imagegen/SKILL.md")) { throw "imagegen skill missing" }
+          if (Test-Path "$Bundle/la.exe") { throw "legacy la.exe must not be shipped" }
           .\scripts\test-windows-terminal.ps1 -BundleDir $Bundle -ScreenshotPath "packages/coding-agent/binaries/windows-terminal-smoke.png"
 
       - name: Upload Windows release artifact

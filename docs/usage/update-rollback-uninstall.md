@@ -7,25 +7,25 @@
 ## 更新 LYStar
 
 ```bash
-la update
+lc update
 ```
 
 只更新应用本体：
 
 ```bash
-la update --self
+lc update --self
 ```
 
 只更新已安装 Package：
 
 ```bash
-la update --extensions
+lc update --extensions
 ```
 
 更新本体和 Package：
 
 ```bash
-la update --all
+lc update --all
 ```
 
 `PI_OFFLINE=1` 或 `--offline` 下不会执行网络更新。
@@ -33,7 +33,7 @@ la update --all
 ## 回退
 
 ```bash
-la update --rollback
+lc update --rollback
 ```
 
 回退会交换 `current` 和 `previous`，不修改 `~/.pi/agent`。没有 previous 版本时命令会停止并说明原因。
@@ -83,7 +83,7 @@ macOS/Linux：
 ~/.local/share/lystar-agent/versions/<version>/
 ~/.local/share/lystar-agent/current
 ~/.local/share/lystar-agent/previous
-~/.local/bin/la
+~/.local/bin/lc
 ```
 
 Windows：
@@ -92,7 +92,7 @@ Windows：
 %LOCALAPPDATA%\LYStarAgent\versions\<version>\
 %LOCALAPPDATA%\LYStarAgent\current
 %LOCALAPPDATA%\LYStarAgent\previous
-%LOCALAPPDATA%\LYStarAgent\bin\la.cmd
+%LOCALAPPDATA%\LYStarAgent\bin\lc.cmd
 ```
 
 网络失败见[网络问题](../troubleshooting/network.md)，版本切换异常见[安装问题](../troubleshooting/installation.md)。

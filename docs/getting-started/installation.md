@@ -1,8 +1,8 @@
-# 安装 LYStar Agent
+# 安装 LYStar Code
 
 [返回文档首页](../README.md)
 
-LYStar Agent 的独立发行包已经包含运行所需的 executable、WASM、native module、主题和导出资源。安装应用本体无需 Node.js、npm 或 Bun。
+LYStar Code 的独立发行包已经包含运行所需的 executable、WASM、native module、主题和导出资源。安装应用本体无需 Node.js、npm 或 Bun。
 
 ## 支持平台
 
@@ -33,9 +33,9 @@ rm install.sh
 1. 识别系统和 CPU 架构。
 2. 从 GitHub Release 读取最新版本。
 3. 下载当前平台归档和 `SHA256SUMS`。
-4. 校验 SHA-256，并运行归档内的 `la --version`。
+4. 校验 SHA-256，并运行归档内的 `lc --version`。
 5. 安装到 `~/.local/share/lystar-agent/versions/<version>/`。
-6. 切换 `current`，在 `~/.local/bin/` 创建 `la`。
+6. 切换 `current`，在 `~/.local/bin/` 创建 `lc` 和 `lystar`。
 7. PATH 缺失时写入当前 Shell 的 profile，并提示重新打开终端。
 
 不希望安装器修改 Shell profile：
@@ -67,23 +67,24 @@ $cmd="$env:TEMP\lystar-install.cmd"; iwr -UseBasicParsing https://github.com/oct
 1. 检测 Microsoft Edge WebView2 Runtime；缺失时按当前用户安装 Evergreen Runtime。
 2. 准备 LYStar 自己管理的 MinGit Bash，默认先从 npmmirror 下载固定版本，失败时回退 Git for Windows 官方 Release。
 3. 校验 MinGit 固定 SHA-256，并验证托管 Bash 和 Git。
-4. 验证 `lystar-terminal.exe`、`la.exe --version` 和本地终端资源。
+4. 验证 `lystar-terminal.exe`、`lc.exe --version` 和本地终端资源。
 5. 全部通过后才切换 LYStar 版本，并创建开始菜单快捷方式。
 
-托管 MinGit 位于 `~/.pi/agent/bin/mingit/`，所有 LYStar 版本共用。交互式 `la` 默认打开 LYStar 独立终端窗口；`la --version`、`--help`、`--print`、JSON/RPC、管道和安装更新命令仍在当前终端运行。需要在当前终端运行 TUI 时使用：
+托管 MinGit 位于 `~/.pi/agent/bin/mingit/`，所有 LYStar 版本共用。`lc` 和 `lystar` 完全等价。交互式命令默认打开 LYStar 独立终端窗口；`lc --version`、`--help`、`--print`、JSON/RPC、管道和安装更新命令仍在当前终端运行。需要在当前终端运行 TUI 时使用：
 
 ```powershell
-la --attached
+lc --attached
 ```
 
 ## 验证
 
 ```bash
-la --version
-la --help
+lc --version
+lc --help
+lystar --version
 ```
 
-`la --version` 应输出 `<Pi版本>-lystar.<修订号>`，例如 `0.82.1-lystar.5`。
+`lc --version` 应输出 `<Pi版本>-lystar.<修订号>`，例如 `0.82.1-lystar.5`。
 
 ## 先审阅安装器再执行
 
@@ -121,8 +122,8 @@ Remove-Item .\install.ps1
 1. 打开 [GitHub Releases](https://github.com/octyean/lystar-agent/releases/latest)。
 2. 下载匹配系统与架构的 `.tar.gz` 或 `.zip`，同时下载 `SHA256SUMS`。
 3. 校验归档 SHA-256。
-4. 解压并运行归档中的 `la --version`。
-5. 将 `la` 或 `la.exe` 所在目录加入 PATH。
+4. 解压并运行归档中的 `lc --version`。
+5. 将 `lc`、`lystar` 或对应 Windows launcher 所在目录加入 PATH。
 
 Linux：
 
@@ -142,12 +143,12 @@ Windows PowerShell：
 Get-FileHash -Algorithm SHA256 .\<下载的归档>
 ```
 
-手动安装没有 `current` / `previous` 版本切换。需要 `la update` 和一键回退时使用官方安装器。
+手动安装没有 `current` / `previous` 版本切换。需要 `lc update` 和一键回退时使用官方安装器。
 
 手动解压后首次启动 LYStar 时，也会自动补齐托管 MinGit Bash。`PI_OFFLINE=1` 会禁止隐式下载；可以提前准备固定版本的 MinGit zip：
 
 ```powershell
-la --ensure-windows-bash --archive .\MinGit-2.55.0.3-64-bit.zip --offline
+lc --ensure-windows-bash --archive .\MinGit-2.55.0.3-64-bit.zip --offline
 ```
 
 完全离线安装时，把 Windows 发行包、`release-manifest.json`、MinGit zip、WebView2 Evergreen Standalone Installer 和 `install.ps1` 放在同一台机器，再执行：

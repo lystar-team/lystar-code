@@ -59,7 +59,7 @@ git merge --no-commit --no-ff <new-pi-commit>
 
 ## 验证
 
-运行全部包测试、安装器测试、离线构建、五平台打包和真实 PTY。还要确认旧 `~/.pi/agent/settings.json`、Session 和项目 `.pi` 可读取，`la -c`、`la -r`、Package、Skill、Extension 和 MCP adapter 行为未变。
+运行全部包测试、安装器测试、离线构建、五平台打包和真实 PTY。还要确认旧 `~/.pi/agent/settings.json`、Session 和项目 `.pi` 可读取，`lc -c`、`lc -r`、Package、Skill、Extension 和 MCP adapter 行为未变。
 
 上游合并提交与 LYStar 适配提交分开：
 
@@ -69,4 +69,4 @@ fix(tui): 适配 Pi vX.Y.Z 全屏布局
 fix(agent): 补齐 Pi vX.Y.Z 中文与兼容
 ```
 
-完整长期边界见[LYStar Agent 建设方案](../lystar-agent-plan.md)。
+完整长期边界见[LYStar Code 建设方案](../lystar-agent-plan.md)。

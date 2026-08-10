@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-10T02:23:17Z
+最后核验时间：2026-08-10T03:35:11Z
 
 环境：
 
@@ -14,6 +14,18 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### `0.84.1-lystar.9` 发布前核验
+
+发布事实源为 `piConfig.productVersion = 0.84.1-lystar.9`，Pi workspace 包版本继续保持 `0.84.1`。用户可见产品名改为 `LYStar Code`，主命令为完全等价的 `lc` 和 `lystar`；仓库 `octyean/lystar-agent`、发行包前缀 `lystar-agent`、安装根目录、`.pi`、`PI_*`、Session JSONL、Protocol 和 Extension API 保持兼容。升级后删除用户级 `la` launcher；新 launcher 回退到 `0.84.1-lystar.8` 或更早版本时会自动执行旧目录中的 `la`/`la.exe`。
+
+本版同时交付原生 `image_gen` Tool、OpenAI API Key/OpenAI Codex OAuth/OpenRouter 图片 Provider、内置 Image Gen Skill、稳定图片落盘与 Session 恢复，以及主会话和 Subagent Overlay 统一卡片点击。真实 `upstream/gpt-5.6-sol` 已调用 `upstream/gpt-image-2` 完成 generations，严格 schema 补齐 `referenced_image_paths=[]` 和 `num_last_images_to_include=0` 时仍按纯文本生成处理；透明背景对照与图片质量数据见下节。
+
+本机发布 gate 已通过：`npm run check`、`npm run build:offline`、Unix 安装器安装/PATH/SHA/升级/回退/卸载/物化测试、TUI 全量、AI 105 个 files/878 项通过且 25 个 files/825 项跳过、Agent Core 20 个 files/402 项通过且 1 项跳过、Coding Agent 235 个 files/2071 项通过且 6 个 files/49 项跳过。当前 Shell 注入的失效 `OPENAI_API_KEY` 会干扰无凭据测试，AI 与 Coding Agent 全量只对测试进程移除了该变量，没有修改用户凭据文件。
+
+使用 Bun `1.3.9` 构建四个 Unix 候选包，`SHA256SUMS` 全部通过；manifest 版本为 `0.84.1-lystar.9`、Pi 版本为 `0.84.1`、仓库为 `octyean/lystar-agent`。Linux x64 候选包 SHA-256 为 `1812da52c7bab3944fe69cc2fcf5d68acf1c7a4164680486cd3e4e4b2de3ba32`，大小为 `46494003` 字节；`lc --version`、`lystar --version` 和 `PI_OFFLINE=1 lc --list-models` 通过。四个归档均包含 `lc`、`lystar`、MIT/第三方许可证和 `skills/imagegen/{SKILL.md,NOTICE.txt,LICENSE.txt}`，且不包含公开 `la` launcher。首次候选检查发现 standalone 归档漏复制 Skill，已在 Unix/Windows 打包责任位置修复，并为 Release workflow 增加硬校验。
+
+Linux x64 候选包在独立 tmux PTY 覆盖 `80x24`、`80x8` 和 `120x36`，输入框持续显示 `LYStar Code`，Composer 与快捷栏无重叠，`/quit` 正常退出。Unix 安装器测试从仅有旧 `la` 的模拟版本升级到 `.9`，确认创建 `lc`/`lystar`、删除公开 `la`，再回退后两个新 launcher 都可调用旧目录的 `la`。Windows 构建、ConPTY/WebView2、PowerShell 5.1 安装及同等升级回退链路尚需提交后的 main CI 和 Release Windows job 给出实机证据。
 
 ### 原生 `image_gen` 与统一卡片交互核验
 

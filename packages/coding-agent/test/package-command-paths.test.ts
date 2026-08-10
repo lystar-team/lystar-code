@@ -360,7 +360,7 @@ describe("package commands", () => {
 
 			const stdout = logSpy.mock.calls.map(([message]) => String(message)).join("\n");
 			expect(stdout).toContain("用法：");
-			expect(stdout).toContain("la install <source> [-l]");
+			expect(stdout).toContain("lc install <source> [-l]");
 			expect(errorSpy).not.toHaveBeenCalled();
 			expect(process.exitCode).toBeUndefined();
 		} finally {
@@ -445,7 +445,7 @@ describe("package commands", () => {
 
 			const stderr = errorSpy.mock.calls.map(([message]) => String(message)).join("\n");
 			expect(stderr).toContain('Unknown option --unknown for "install".');
-			expect(stderr).toContain('Use "la --help" or "la install <source> [-l] [--approve|--no-approve]".');
+			expect(stderr).toContain('Use "lc --help" or "lc install <source> [-l] [--approve|--no-approve]".');
 			expect(process.exitCode).toBe(1);
 		} finally {
 			errorSpy.mockRestore();
@@ -460,7 +460,7 @@ describe("package commands", () => {
 
 			const stderr = errorSpy.mock.calls.map(([message]) => String(message)).join("\n");
 			expect(stderr).toContain("Missing install source.");
-			expect(stderr).toContain("Usage: la install <source> [-l]");
+			expect(stderr).toContain("Usage: lc install <source> [-l]");
 			expect(stderr).not.toContain("at ");
 			expect(process.exitCode).toBe(1);
 		} finally {
@@ -482,7 +482,7 @@ describe("package commands", () => {
 			1,
 			"https://github.com/octyean/lystar-agent/releases/latest/download/release-manifest.json",
 			expect.objectContaining({
-				headers: expect.objectContaining({ "User-Agent": expect.stringMatching(/^la\//) }),
+				headers: expect.objectContaining({ "User-Agent": expect.stringMatching(/^lc\//) }),
 				signal: expect.any(AbortSignal),
 			}),
 		);
@@ -507,7 +507,7 @@ describe("package commands", () => {
 			await expect(runPackageCommandDirectly(["update", "--self"])).resolves.toBeUndefined();
 			expect(fetchMock).toHaveBeenCalledOnce();
 			expect(logSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain(
-				`LYStar Agent 已是最新版本（v${VERSION}）`,
+				`LYStar Code 已是最新版本（v${VERSION}）`,
 			);
 			expect(errorSpy).not.toHaveBeenCalled();
 			expect(process.exitCode).toBeUndefined();
@@ -515,6 +515,18 @@ describe("package commands", () => {
 			if (previousSkipVersionCheck === undefined) delete process.env.PI_SKIP_VERSION_CHECK;
 			else process.env.PI_SKIP_VERSION_CHECK = previousSkipVersionCheck;
 		}
+	});
+
+	it.each(["lc", "lystar"])("treats %s as a self-update target", async (target) => {
+		const fetchMock = vi.fn(async () => Response.json({ version: VERSION }));
+		vi.stubGlobal("fetch", fetchMock);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await expect(runPackageCommandDirectly(["update", target])).resolves.toBeUndefined();
+		expect(fetchMock).toHaveBeenCalledOnce();
+		expect(logSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain(
+			`LYStar Code 已是最新版本（v${VERSION}）`,
+		);
 	});
 
 	it("retries a transient self-update version check", async () => {

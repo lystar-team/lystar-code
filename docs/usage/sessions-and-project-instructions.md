@@ -7,17 +7,17 @@ LYStar 自动保存 Session，并继续使用 Pi 的 JSONL 格式和目录。
 ## Session 命令
 
 ```bash
-la -c
-la -r
-la --name "任务名称"
-la --session <path-or-id>
-la --no-session
+lc -c
+lc -r
+lc --name "任务名称"
+lc --session <path-or-id>
+lc --no-session
 ```
 
 | 命令 | 用途 |
 |---|---|
-| `la -c` | 继续当前目录最近的 Session |
-| `la -r` | 浏览历史 Session |
+| `lc -c` | 继续当前目录最近的 Session |
+| `lc -r` | 浏览历史 Session |
 | `/resume` | 在交互界面选择 Session |
 | `/new` | 新建 Session |
 | `/session` | 查看当前文件、ID 和用量 |

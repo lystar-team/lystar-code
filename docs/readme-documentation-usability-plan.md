@@ -2,7 +2,7 @@
 
 > 状态：已实施。阶段 A、B、C 已完成；阶段 D 需项目方第一方域名和对象存储。
 >
-> 适用基线：LYStar Agent `0.82.1-lystar.3`，Pi `v0.82.1`
+> 适用基线：LYStar Code `0.82.1-lystar.3`，Pi `v0.82.1`
 >
 > 本文保留为 README、安装器和中文文档体系的实施与验收依据。
 
@@ -55,14 +55,14 @@ Windows 安装器只负责安装 LYStar 二进制，不把 `bash` Tool 的可选
 
 ### 1.5 生态安装不能笼统承诺“一键”
 
-现有 `la install` 已经是 Pi Package 的统一入口：
+现有 `lc install` 已经是 Pi Package 的统一入口：
 
 ```bash
-la install npm:<package>
-la install git:github.com/<owner>/<repo>@<ref>
-la remove <source>
-la list
-la update --extensions
+lc install npm:<package>
+lc install git:github.com/<owner>/<repo>@<ref>
+lc remove <source>
+lc list
+lc update --extensions
 ```
 
 真实限制如下：
@@ -70,7 +70,7 @@ la update --extensions
 - `npm:` 来源一定会调用 npm，因此需要 Node.js/npm 或用户配置的 `npmCommand`。
 - `git:` 来源一定会调用 Git。
 - Git 仓库根目录只要存在 `package.json`，安装器还会执行 npm 依赖安装。
-- 单纯兼容 Agent Skills 规范的仓库，不一定符合 Pi Package 的目录或 manifest 约定，不能直接假设 `la install git:...` 后可被发现。
+- 单纯兼容 Agent Skills 规范的仓库，不一定符合 Pi Package 的目录或 manifest 约定，不能直接假设 `lc install git:...` 后可被发现。
 - Extension 拥有当前用户权限，可以执行任意代码；Skill 也可能引导 Agent 执行命令。文档必须把源码审查和权限风险放在安装命令前。
 
 因此，“一键安装”只用于已经过 LYStar 实测、来源固定、安装命令可重复执行的资源。其余资源提供完整教程，不为追求一句命令绕过现有 Package 体系。
@@ -84,7 +84,7 @@ la update --extensions
 5. LYStar 本体安装不依赖 Node.js。源码开发和部分 Package 安装需要 Node.js，两个场景分开写。
 6. 应用安装继续使用现有独立发行包和 `install.sh` / `install.ps1`，不新增安装器框架或图形安装器。
 7. Skill、Extension、Prompt、Theme 继续由 Pi Package 和已有资源目录管理，不新增 LYStar 专属插件协议、商店或配置文件。
-8. 已适配资源的一键入口优先使用 `la install <source>`。只有无法进入 Pi Package 体系的纯 Skill 仓库才提供 `git clone` 教程。
+8. 已适配资源的一键入口优先使用 `lc install <source>`。只有无法进入 Pi Package 体系的纯 Skill 仓库才提供 `git clone` 教程。
 9. 中国大陆用户首期使用 GitHub 官方 Release、标准代理环境变量和 npmmirror。README 不推荐来源不明的 GitHub 加速站。
 10. 国内对象存储镜像只接受项目方自有域名、自有账号和 CI 同步。存储与域名准备完成前，不把第三方镜像写入默认安装器。
 
@@ -156,9 +156,9 @@ docs/
 ### 4.1 第一屏
 
 ````markdown
-# LYStar Agent
+# LYStar Code
 
-LYStar Agent 是基于 Pi 的中文终端编码 Agent，提供中文全屏 TUI，并兼容 Pi 的 Session、Skill、Extension、Package、MCP 和 `.pi` 数据。
+LYStar Code 是基于 Pi 的中文终端编码 Agent，提供中文全屏 TUI，并兼容 Pi 的 Session、Skill、Extension、Package、MCP 和 `.pi` 数据。
 
 支持 macOS、Linux 和 Windows x64。安装独立发行包无需 Node.js。
 
@@ -185,7 +185,7 @@ Windows 安装块下直接写明“需要 Git for Windows 提供 Bash”，并�
 
 README 只保留下面三步：
 
-1. 进入准备处理的项目目录并运行 `la`。
+1. 进入准备处理的项目目录并运行 `lc`。
 2. 执行 `/login`，选择 Provider 并完成登录或填写 API Key。
 3. 输入一条真实任务，例如“阅读这个项目，告诉我如何启动和运行测试”。
 
@@ -239,10 +239,10 @@ README 不放全量快捷键、TUI fallback 规则、JSON 配置示例、构建�
   -> 下载当前平台归档和 SHA256SUMS
   -> 校验 SHA-256
   -> 解压到版本目录
-  -> 运行 la --version 冒烟检查
+  -> 运行 lc --version 冒烟检查
   -> 原子切换 current
   -> 配置 PATH 或给出唯一可执行动作
-  -> 输出 la /login
+  -> 输出 lc /login
 ```
 
 安装器不询问模型、Provider、主题或插件。首次运行继续由 TUI 处理主题和登录。
@@ -258,7 +258,7 @@ README 不放全量快捷键、TUI fallback 规则、JSON 配置示例、构建�
 5. 检测 `$HOME/.local/bin` 是否在 PATH。
 6. PATH 缺失时，按平台和 `$SHELL` 幂等写入一个明确的 PATH 行：zsh 使用 `~/.zprofile`，Linux bash 使用 `~/.bashrc`，macOS bash 使用 `~/.bash_profile`，其他 Shell 使用 `~/.profile`。
 7. 增加 `--no-path-update`，供受管环境禁止修改 shell profile。
-8. 安装结束输出两行：安装版本与位置；“重新打开终端后运行 `la`，首次使用执行 `/login`”。
+8. 安装结束输出两行：安装版本与位置；“重新打开终端后运行 `lc`，首次使用执行 `/login`”。
 9. 错误信息包含失败动作和下一步，不只输出“下载失败”。
 
 PATH 修改只增加 `export PATH="$HOME/.local/bin:$PATH"`，不重排、不覆盖用户原文件。卸载默认不删除这行，避免误删用户原本就需要的 PATH；卸载文档说明可人工移除。
@@ -270,7 +270,7 @@ PATH 修改只增加 `export PATH="$HOME/.local/bin:$PATH"`，不重排、不覆
 3. 保留用户级 PATH 写入；写入后明确提示重新打开终端。
 4. 为 `Invoke-WebRequest` 增加统一超时、重试和可读错误。
 5. 保持 PowerShell 5.1 语法兼容和 UTF-8 BOM，继续执行现有解析 gate。
-6. 安装结束运行发行包内 `la.exe --version`，再切换 `current`。
+6. 安装结束运行发行包内 `lc.exe --version`，再切换 `current`。
 7. 卸载继续保留 `~/.pi/agent`，并在输出中写明数据位置。
 
 ### 5.4 手动安装
@@ -282,7 +282,7 @@ PATH 修改只增加 `export PATH="$HOME/.local/bin:$PATH"`，不重排、不覆
 3. 用系统命令校验 SHA-256。
 4. 解压到用户目录。
 5. 将 executable 所在目录加入 PATH。
-6. 运行 `la --version`。
+6. 运行 `lc --version`。
 
 手动安装不复制一套版本切换逻辑。需要自动更新、回退的用户仍使用官方安装器。
 
@@ -326,14 +326,14 @@ irm https://github.com/octyean/lystar-agent/releases/latest/download/install.ps1
 只对当前命令生效：
 
 ```bash
-npm_config_registry=https://registry.npmmirror.com la install npm:<package>
+npm_config_registry=https://registry.npmmirror.com lc install npm:<package>
 ```
 
 Windows PowerShell：
 
 ```powershell
 $env:npm_config_registry = "https://registry.npmmirror.com"
-la install npm:<package>
+lc install npm:<package>
 ```
 
 全局配置：
@@ -357,7 +357,7 @@ npm config delete registry
 
 ```bash
 HTTPS_PROXY=http://127.0.0.1:7890 \
-  la install git:github.com/<owner>/<repo>@<tag-or-commit>
+  lc install git:github.com/<owner>/<repo>@<tag-or-commit>
 ```
 
 需要全局 Git 代理的用户，再提供 `git config --global http.proxy`、`https.proxy` 及对应 `--unset` 命令。文档明确全局配置会影响其他仓库。
@@ -380,7 +380,7 @@ https://download.<project-domain>/lystar-agent/<version>/...
 - 同步后按 SHA-256 回查，任一文件不一致则不发布国内源。
 - 国内源不重新打包，不生成第二套 manifest。
 - 安装器通过显式 `--source cn` 或文档中的国内源命令选择，首版不静默自动切换下载域名。
-- `la update` 和安装器使用同一下载源选择规则。
+- `lc update` 和安装器使用同一下载源选择规则。
 - 域名、对象存储、TLS、访问日志和凭据轮换均由项目方控制。
 
 这部分需要调整当前“更新只访问 GitHub Release”的项目契约，应单独实施和评审。未准备第一方基础设施前，代理环境变量和 npmmirror 已覆盖首期可实施范围。
@@ -394,18 +394,18 @@ https://download.<project-domain>/lystar-agent/<version>/...
 | 类型 | 用途 | 是否执行代码 | 推荐安装方式 |
 |---|---|---|---|
 | Skill | 给 Agent 增加特定工作方法、脚本和参考资料 | 可能通过 Agent 间接执行脚本 | Pi Package 或放入 `~/.pi/agent/skills/` |
-| Extension | 注册 Tool、命令、事件和 TUI 能力 | 是，拥有当前用户权限 | `la install` 安装经过审查的 Package |
-| Pi Package | 打包 Skill、Extension、Prompt 和 Theme | 取决于包内容 | `la install npm:...` 或 `la install git:...` |
+| Extension | 注册 Tool、命令、事件和 TUI 能力 | 是，拥有当前用户权限 | `lc install` 安装经过审查的 Package |
+| Pi Package | 打包 Skill、Extension、Prompt 和 Theme | 取决于包内容 | `lc install npm:...` 或 `lc install git:...` |
 | MCP | 连接外部工具和服务 | 由对应 Extension/进程决定 | 按已验证的 MCP Extension 文档安装 |
 
 ### 7.2 Package 教程
 
 `docs/ecosystem/packages.md` 必须覆盖：
 
-- 用户级与项目级安装：`la install`、`la install -l`。
+- 用户级与项目级安装：`lc install`、`lc install -l`。
 - `npm:`、`git:`、本地路径三类来源。
 - 锁定 tag 或 commit，避免安装命令随主分支漂移。
-- `la list`、`la config`、`la update --extensions`、`la remove`。
+- `lc list`、`lc config`、`lc update --extensions`、`lc remove`。
 - npm/git 依赖条件和国内网络配置链接。
 - Package 运行权限和源码审查提醒。
 - 安装失败时如何确认缺少 npm、Git、网络或 package manifest。
@@ -414,7 +414,7 @@ https://download.<project-domain>/lystar-agent/<version>/...
 
 `docs/ecosystem/skills.md` 分成三个场景：
 
-1. 安装已打包 Skill：使用 `la install <source>`。
+1. 安装已打包 Skill：使用 `lc install <source>`。
 2. 安装纯 Skill 仓库：克隆到 `~/.pi/agent/skills/<name>` 或项目 `.pi/skills/<name>`。
 3. 自己创建 Skill：目录结构、`SKILL.md` frontmatter、`name`、`description`、相对路径、`/reload` 和 `/skill:<name>` 验证。
 
@@ -426,7 +426,7 @@ https://download.<project-domain>/lystar-agent/<version>/...
 
 - 从经过验证的 Package 安装 Extension。
 - 创建最小单文件 Extension，放入 `~/.pi/agent/extensions/hello.ts`。
-- 使用 `la -e ./hello.ts` 临时验证。
+- 使用 `lc -e ./hello.ts` 临时验证。
 - 使用 `/reload` 加载修改。
 - 注册一个命令或通知的最小例子。
 - 如何禁用、删除和排查加载错误。
@@ -455,7 +455,7 @@ https://download.<project-domain>/lystar-agent/<version>/...
 - 已知限制：当前真实限制
 ```
 
-“一键安装”定义为一条可重复执行的 `la install` 命令，且安装后只需完成资源本身必需的凭据配置。资源存在多个手工复制、修改 JSON 或安装依赖步骤时，归类为“教程安装”。
+“一键安装”定义为一条可重复执行的 `lc install` 命令，且安装后只需完成资源本身必需的凭据配置。资源存在多个手工复制、修改 JSON 或安装依赖步骤时，归类为“教程安装”。
 
 ### 7.6 首批适配候选
 
@@ -474,7 +474,7 @@ https://download.<project-domain>/lystar-agent/<version>/...
 1. 阅读 manifest、安装脚本、依赖和许可证。
 2. 使用锁定 tag 或 commit 安装。
 3. 在临时 HOME 或独立 `PI_CODING_AGENT_DIR` 中验证，避免污染维护者真实配置。
-4. 运行 `la list`，确认资源来源和状态。
+4. 运行 `lc list`，确认资源来源和状态。
 5. 启动真实 TTY，验证加载、核心操作、`/reload` 和退出恢复。
 6. 验证更新、禁用、卸载和残留数据说明。
 7. 分别记录无需 Node、需要 Node、仅支持部分平台等限制。
@@ -519,7 +519,7 @@ scripts/test-install-ps1.ps1
 4. 扩充安装器测试和 PowerShell 5.1 解析 gate。
 5. 用物化后的 Release 安装器做临时 HOME 验证。
 
-完成标准：没有 Node 环境的用户可安装并运行 `la --version`；缺少必需系统工具时，安装器在修改 `current` 前停止并给出唯一下一步。
+完成标准：没有 Node 环境的用户可安装并运行 `lc --version`；缺少必需系统工具时，安装器在修改 `current` 前停止并给出唯一下一步。
 
 ### 阶段 B：重写 README 和中文文档骨架
 
@@ -541,7 +541,7 @@ docs/assets/lystar-tui.png
 2. 从现有 README、`lystar-agent-plan.md`、AGENT_VERIFICATION.md 和上游 docs 提取内容。
 3. 同一事实只保留一个详细说明位置，其他页面使用相对链接。
 4. 在真实 PTY 生成中文 TUI 截图，检查 120x36 和 README 缩放效果。
-5. 检查所有命令统一使用 `la`；引用上游兼容契约时保留 `PI_*`、`.pi` 和公共包名。
+5. 检查所有命令统一使用 `lc`；引用上游兼容契约时保留 `PI_*`、`.pi` 和公共包名。
 
 完成标准：新用户只读 README 和 quick start 可完成安装、登录和首条任务；贡献者能从开发文档找到真实构建与测试入口。
 
@@ -587,7 +587,7 @@ packages/coding-agent/src/utils/version-check.ts
 - 所有相对链接和锚点可解析。
 - README 中不存在 `| sh`。
 - 普通用户安装章节不把 Node.js 列为 LYStar 本体前置。
-- 所有最终用户命令使用 `la`；上游包名、`PI_*` 和 `.pi` 保持原样。
+- 所有最终用户命令使用 `lc`；上游包名、`PI_*` 和 `.pi` 保持原样。
 - README、安装文档、更新文档中的安装命令一致。
 - 文档没有真实 API Key、token、cookie 或用户路径。
 - `documention/` 不存在，用户文档只有 `docs/` 一个根目录。
@@ -599,7 +599,7 @@ packages/coding-agent/src/utils/version-check.ts
 - Linux x64：有 curl、只有 wget、PATH 已存在、PATH 缺失。
 - macOS 脚本静态和归档格式验证；有实机时补 arm64 安装。
 - 固定版本安装、重复安装、升级、回退、卸载。
-- 下载失败、SHA 不匹配、归档缺 executable、`la --version` 失败。
+- 下载失败、SHA 不匹配、归档缺 executable、`lc --version` 失败。
 - 临时 HOME 中 shell profile 不被覆盖，PATH 行不重复。
 - `--no-path-update` 不修改 profile。
 - 用户数据目录 `~/.pi/agent` 始终保留。
@@ -623,8 +623,8 @@ packages/coding-agent/src/utils/version-check.ts
 
 1. 只看第一屏判断系统支持和前置条件。
 2. 执行安装命令。
-3. 重新打开终端，运行 `la --version`。
-4. 运行 `la` 和 `/login`。
+3. 重新打开终端，运行 `lc --version`。
+4. 运行 `lc` 和 `/login`。
 5. 完成一条只读任务。
 6. 找到更新、卸载、中国大陆网络和 Skill 安装文档。
 

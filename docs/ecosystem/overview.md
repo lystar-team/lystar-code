@@ -8,7 +8,7 @@ LYStar 继承 Pi 的资源系统，没有单独的插件商店或 manifest。
 |---|---|---|---|
 | Skill | 给 Agent 增加工作方法、脚本和参考资料 | 可能引导 Agent 执行命令 | Pi Package 或 `skills/` 目录 |
 | Extension | 注册 Tool、命令、事件、Provider 和 TUI | 直接以当前用户权限执行代码 | 经过审查的 Pi Package |
-| Pi Package | 打包 Skill、Extension、Prompt 和 Theme | 取决于包内资源 | `la install <source>` |
+| Pi Package | 打包 Skill、Extension、Prompt 和 Theme | 取决于包内资源 | `lc install <source>` |
 | MCP | 连接外部工具与服务 | 取决于对应进程和 Extension | 已验证的 MCP Extension |
 
 ## 选择安装方式
@@ -16,8 +16,8 @@ LYStar 继承 Pi 的资源系统，没有单独的插件商店或 manifest。
 资源已经发布为 Pi Package：
 
 ```bash
-la install npm:<package>
-la install git:github.com/<owner>/<repo>@<tag-or-commit>
+lc install npm:<package>
+lc install git:github.com/<owner>/<repo>@<tag-or-commit>
 ```
 
 纯 Skill 仓库没有 Pi Package manifest 时，放入 Skill 发现目录：
@@ -29,7 +29,7 @@ git clone <repo> ~/.pi/agent/skills/<name>
 自己开发单文件 Extension 时，先临时加载：
 
 ```bash
-la -e ./my-extension.ts
+lc -e ./my-extension.ts
 ```
 
 ## 依赖判断
@@ -57,10 +57,10 @@ Extension 拥有当前用户权限，可以读写文件、访问网络和执行�
 ## 管理
 
 ```bash
-la list
-la config
-la update --extensions
-la remove <source>
+lc list
+lc config
+lc update --extensions
+lc remove <source>
 ```
 
 - [Pi Package 教程](packages.md)

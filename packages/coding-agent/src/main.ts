@@ -33,7 +33,15 @@ import { listModels } from "./cli/list-models.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import { selectSession } from "./cli/session-picker.ts";
 import { shouldRunFirstTimeSetup, showFirstTimeSetup, showStartupSelector } from "./cli/startup-ui.ts";
-import { APP_NAME, ENV_SESSION_DIR, expandTildePath, getAgentDir, getPackageDir, VERSION } from "./config.ts";
+import {
+	APP_NAME,
+	APP_TITLE,
+	ENV_SESSION_DIR,
+	expandTildePath,
+	getAgentDir,
+	getPackageDir,
+	VERSION,
+} from "./config.ts";
 import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "./core/agent-session-runtime.ts";
 import {
 	type AgentSessionRuntimeDiagnostic,
@@ -663,7 +671,9 @@ export async function main(args: string[], options?: MainOptions) {
 		const supportedArgs = new Set(["--ensure-windows-bash", "--archive", "--offline"]);
 		const invalidArg = args.find((arg, index) => index !== archiveIndex + 1 && !supportedArgs.has(arg));
 		if (invalidArg || (archiveIndex >= 0 && !archivePath)) {
-			console.error(chalk.red("Error: 用法：la --ensure-windows-bash [--archive <MinGit.zip>] [--offline]"));
+			console.error(
+				chalk.red(`Error: 用法：${APP_NAME} --ensure-windows-bash [--archive <MinGit.zip>] [--offline]`),
+			);
 			process.exitCode = 1;
 			return;
 		}
@@ -683,7 +693,7 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	if (args.includes("--windows-terminal-ui-smoke")) {
-		console.log("\u001b[38;2;85;194;255mLYStar Agent Windows Terminal\u001b[0m");
+		console.log(`\u001b[38;2;85;194;255m${APP_TITLE} Windows Terminal\u001b[0m`);
 		console.log("┌────────────────────────────────────┐");
 		console.log("│ 中文输入与显示  ✓  ✗  ✎  ⌕  ≡  ▶  ◆  → │");
 		console.log("└────────────────────────────────────┘");
@@ -698,7 +708,7 @@ export async function main(args: string[], options?: MainOptions) {
 		if (!bashPath) {
 			console.error(
 				chalk.red(
-					"Error: LYStar 托管 MinGit Bash 不可用。请联网重试，或运行 la --ensure-windows-bash --archive <MinGit.zip>。",
+					`Error: LYStar 托管 MinGit Bash 不可用。请联网重试，或运行 ${APP_NAME} --ensure-windows-bash --archive <MinGit.zip>。`,
 				),
 			);
 			process.exitCode = 1;

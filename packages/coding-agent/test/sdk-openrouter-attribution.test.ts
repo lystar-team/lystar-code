@@ -147,7 +147,7 @@ describe("createAgentSession provider attribution headers", () => {
 		const headers = await captureHeaders(createModel("openrouter", "https://openrouter.ai/api/v1"));
 
 		expect(headers?.["HTTP-Referer"]).toBe("https://github.com/octyean/lystar-agent");
-		expect(headers?.["X-OpenRouter-Title"]).toBe("LYStar Agent");
+		expect(headers?.["X-OpenRouter-Title"]).toBe("LYStar Code");
 		expect(headers?.["X-OpenRouter-Categories"]).toBe("cli-agent");
 	});
 
@@ -157,7 +157,7 @@ describe("createAgentSession provider attribution headers", () => {
 		});
 
 		expect(headers?.["HTTP-Referer"]).toBe("https://github.com/octyean/lystar-agent");
-		expect(headers?.["X-OpenRouter-Title"]).toBe("LYStar Agent");
+		expect(headers?.["X-OpenRouter-Title"]).toBe("LYStar Code");
 		expect(headers?.["X-OpenRouter-Categories"]).toBe("cli-agent");
 	});
 
@@ -165,7 +165,7 @@ describe("createAgentSession provider attribution headers", () => {
 		const headers = await captureHeaders(createModel("custom-openrouter", "https://openrouter.ai/api/v1"));
 
 		expect(headers?.["HTTP-Referer"]).toBe("https://github.com/octyean/lystar-agent");
-		expect(headers?.["X-OpenRouter-Title"]).toBe("LYStar Agent");
+		expect(headers?.["X-OpenRouter-Title"]).toBe("LYStar Code");
 		expect(headers?.["X-OpenRouter-Categories"]).toBe("cli-agent");
 	});
 
@@ -173,7 +173,7 @@ describe("createAgentSession provider attribution headers", () => {
 		const headers = await captureHeaders(createModel("custom-openrouter", "not-a-url-openrouter.ai"));
 
 		expect(headers?.["HTTP-Referer"]).toBe("https://github.com/octyean/lystar-agent");
-		expect(headers?.["X-OpenRouter-Title"]).toBe("LYStar Agent");
+		expect(headers?.["X-OpenRouter-Title"]).toBe("LYStar Code");
 		expect(headers?.["X-OpenRouter-Categories"]).toBe("cli-agent");
 	});
 
@@ -196,13 +196,13 @@ describe("createAgentSession provider attribution headers", () => {
 	it("adds default attribution headers for direct NVIDIA NIM endpoints", async () => {
 		const headers = await captureHeaders(createModel("custom-nim", "https://integrate.api.nvidia.com/v1"));
 
-		expect(headers?.["X-BILLING-INVOKE-ORIGIN"]).toBe("LYStar Agent");
+		expect(headers?.["X-BILLING-INVOKE-ORIGIN"]).toBe("LYStar Code");
 	});
 
 	it("adds default attribution headers for the NVIDIA provider", async () => {
 		const headers = await captureHeaders(createModel("nvidia", "https://example.test/v1"));
 
-		expect(headers?.["X-BILLING-INVOKE-ORIGIN"]).toBe("LYStar Agent");
+		expect(headers?.["X-BILLING-INVOKE-ORIGIN"]).toBe("LYStar Code");
 	});
 
 	it("keeps NVIDIA attribution independent from install telemetry", async () => {
@@ -210,7 +210,7 @@ describe("createAgentSession provider attribution headers", () => {
 			telemetryEnabled: false,
 		});
 
-		expect(headers?.["X-BILLING-INVOKE-ORIGIN"]).toBe("LYStar Agent");
+		expect(headers?.["X-BILLING-INVOKE-ORIGIN"]).toBe("LYStar Code");
 	});
 
 	it("lets provider and request headers override NVIDIA NIM defaults", async () => {
@@ -231,7 +231,7 @@ describe("createAgentSession provider attribution headers", () => {
 			createModel("openrouter", "https://openrouter.ai/api/v1", "nvidia/nemotron-3-super-120b-a12b"),
 		);
 
-		expect(headers?.["X-OpenRouter-Title"]).toBe("LYStar Agent");
+		expect(headers?.["X-OpenRouter-Title"]).toBe("LYStar Code");
 		expect(headers?.["X-BILLING-INVOKE-ORIGIN"]).toBeUndefined();
 	});
 
@@ -249,7 +249,7 @@ describe("createAgentSession provider attribution headers", () => {
 		});
 
 		expect(headers?.["x-opencode-session"]).toBe("opencode-session");
-		expect(headers?.["x-opencode-client"]).toBe("la");
+		expect(headers?.["x-opencode-client"]).toBe("lc");
 	});
 
 	it("lets configured OpenCode headers override the defaults", async () => {

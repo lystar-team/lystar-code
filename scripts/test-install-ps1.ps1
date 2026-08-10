@@ -41,6 +41,7 @@ try {
             'ExpectedAssetBytes',
             'Send-EnvironmentChanged',
             'set /p LYSTAR_VERSION=',
+            'versions\%LYSTAR_VERSION%\lc.exe',
             'versions\%LYSTAR_VERSION%\la.exe',
             '$PSVersionTable.PSVersion.Major -lt 5',
             '[Net.SecurityProtocolType]::Tls12',
@@ -53,8 +54,8 @@ try {
             '[switch]$Offline',
             'Ensure-WebView2Runtime',
             'lystar-terminal.exe',
-            'LYStar Agent.lnk',
-            'la --attached'
+            'LYStar Code.lnk',
+            'lc --attached'
         )) {
             if (!$Source.Contains($Required)) { throw "$Installer is missing: $Required" }
         }
@@ -99,6 +100,15 @@ try {
             $BuiltArchive = Get-ChildItem -Path $BuiltOutput -Filter "lystar-agent-*-windows-x64.zip" | Select-Object -First 1
             if (!$BuiltArchive) { throw "Integration test requires a Windows release archive in $BuiltOutput." }
             $BuiltVersion = [Regex]::Match($BuiltArchive.Name, '^lystar-agent-v(.+)-windows-x64\.zip$').Groups[1].Value
+            $InstallRoot = Join-Path $env:LOCALAPPDATA "LYStarAgent"
+            $LegacyVersion = "0.84.1-lystar.8"
+            $LegacyDir = Join-Path $InstallRoot "versions\$LegacyVersion"
+            $LegacyExtract = Join-Path $Temp "legacy-extract"
+            Expand-Archive -Path $BuiltArchive.FullName -DestinationPath $LegacyExtract -Force
+            New-Item -ItemType Directory -Force $LegacyDir, (Join-Path $InstallRoot "bin") | Out-Null
+            Copy-Item (Join-Path $LegacyExtract "lystar-agent\lc.exe") (Join-Path $LegacyDir "la.exe")
+            [IO.File]::WriteAllText((Join-Path $InstallRoot "current"), $LegacyVersion, [Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText((Join-Path $InstallRoot "bin\la.cmd"), "@echo off`r`n", [Text.UTF8Encoding]::new($false))
             & node (Join-Path $Root "scripts/generate-release-metadata.mjs") $BuiltOutput $BuiltVersion "octyean/lystar-agent"
             if ($LASTEXITCODE -ne 0) { throw "Failed to generate local release metadata." }
             $ReleaseInstaller = Join-Path $BuiltOutput "install.ps1"
@@ -113,13 +123,45 @@ try {
             & powershell.exe @InstallArgs
             if ($LASTEXITCODE -ne 0) { throw "Materialized installer exited with $LASTEXITCODE." }
 
-            $InstallRoot = Join-Path $env:LOCALAPPDATA "LYStarAgent"
             $Current = (Get-Content -Raw (Join-Path $InstallRoot "current")).Trim()
-            $Launcher = Join-Path $InstallRoot "bin\la.cmd"
+            $Previous = (Get-Content -Raw (Join-Path $InstallRoot "previous")).Trim()
+            if ($Current -ne $BuiltVersion -or $Previous -ne $LegacyVersion) {
+                throw "Upgrade pointers are invalid: current=$Current previous=$Previous."
+            }
+            $Launcher = Join-Path $InstallRoot "bin\lc.cmd"
             $InstalledVersion = (& $Launcher --version | Out-String).Trim()
             if ($InstalledVersion -ne $Current) {
                 throw "Installed launcher reported '$InstalledVersion', expected '$Current'."
             }
+            $AliasVersion = (& (Join-Path $InstallRoot "bin\lystar.cmd") --version | Out-String).Trim()
+            if ($AliasVersion -ne $Current) {
+                throw "Installed alias reported '$AliasVersion', expected '$Current'."
+            }
+            if (Test-Path (Join-Path $InstallRoot "bin\la.cmd")) {
+                throw "Legacy la.cmd launcher was not removed."
+            }
+
+            & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $ReleaseInstaller -Rollback
+            if ($LASTEXITCODE -ne 0) { throw "Installer rollback to the legacy version failed." }
+            if ((Get-Content -Raw (Join-Path $InstallRoot "current")).Trim() -ne $LegacyVersion) {
+                throw "Rollback did not activate the legacy version."
+            }
+            $CurrentExecutable = Join-Path $InstallRoot "versions\$BuiltVersion\lc.exe"
+            $DisabledExecutable = "$CurrentExecutable.disabled"
+            Move-Item $CurrentExecutable $DisabledExecutable
+            try {
+                if ((& $Launcher --version | Out-String).Trim() -ne $BuiltVersion) {
+                    throw "lc.cmd did not fall back to the legacy la.exe."
+                }
+                if ((& (Join-Path $InstallRoot "bin\lystar.cmd") --version | Out-String).Trim() -ne $BuiltVersion) {
+                    throw "lystar.cmd did not fall back to the legacy la.exe."
+                }
+            }
+            finally {
+                Move-Item $DisabledExecutable $CurrentExecutable
+            }
+            & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $ReleaseInstaller -Rollback
+            if ($LASTEXITCODE -ne 0) { throw "Installer rollback to the current version failed." }
 
             & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $ReleaseInstaller -Uninstall
             if ($LASTEXITCODE -ne 0 -or (Test-Path $InstallRoot)) { throw "Installer uninstall check failed." }

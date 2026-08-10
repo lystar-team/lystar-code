@@ -11,9 +11,9 @@ Extension 是 TypeScript 或 JavaScript 模块，可以注册 Tool、命令、�
 优先通过 Pi Package：
 
 ```bash
-la install git:github.com/<owner>/<repo>@<tag-or-commit>
-la list
-la config
+lc install git:github.com/<owner>/<repo>@<tag-or-commit>
+lc list
+lc config
 ```
 
 npm Package 需要 Node.js/npm；Git Package 需要 Git，仓库带 `package.json` 时还会安装 npm 依赖。
@@ -58,13 +58,13 @@ export default function (pi: ExtensionAPI) {
 开发中的文件可直接加载：
 
 ```bash
-la -e ./hello.ts
+lc -e ./hello.ts
 ```
 
 只加载指定 Extension、忽略自动发现资源：
 
 ```bash
-la --no-extensions -e ./hello.ts
+lc --no-extensions -e ./hello.ts
 ```
 
 ## 发现位置
@@ -83,8 +83,8 @@ la --no-extensions -e ./hello.ts
 Package 内 Extension：
 
 ```bash
-la config
-la remove <source>
+lc config
+lc remove <source>
 ```
 
 本地 Extension：移走对应文件，然后执行 `/reload`。Extension 自己创建的数据、外部程序和凭据不会由 LYStar 自动判断，按 Extension 文档清理。
@@ -95,6 +95,6 @@ la remove <source>
 2. 确认默认导出是接收 `ExtensionAPI` 的函数。
 3. 确认 import 来自 LYStar 内置可用包或本地 `node_modules`。
 4. 检查项目是否已信任。
-5. 临时使用 `la --no-extensions -e ./file.ts` 隔离其他 Extension。
+5. 临时使用 `lc --no-extensions -e ./file.ts` 隔离其他 Extension。
 
 完整事件、Tool、TUI、Session、Provider 和生命周期 API 见 [Pi Extensions](../../packages/coding-agent/docs/extensions.md)，可运行示例见 `packages/coding-agent/examples/extensions/`。

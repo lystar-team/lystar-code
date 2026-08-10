@@ -2,7 +2,7 @@
 
 > 状态：待实施。
 >
-> 实施基线：LYStar Agent `0.82.1-lystar.7`，发布目标：`0.82.1-lystar.8`，Pi `v0.82.1`。
+> 实施基线：LYStar Code `0.82.1-lystar.7`，发布目标：`0.82.1-lystar.8`，Pi `v0.82.1`。
 >
 > 本文记录已经确认的问题、代码根因、实施边界和验收标准。各项改动按依赖关系连续完成，不改变 Session、Extension、Tool、Provider 和 `PI_*` 兼容契约。
 

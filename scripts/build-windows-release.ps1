@@ -23,8 +23,14 @@ New-Item -ItemType Directory -Force $BundleDir, $ReleaseDeps | Out-Null
 try {
     Push-Location $Root
     # Windows CI 安装 baseline Bun；原生编译直接复用当前 runtime，避免再次下载 target executable。
-    & bun build --compile --no-compile-autoload-bunfig --windows-icon=packages/coding-agent/assets/lystar-windows-icon.ico packages/coding-agent/dist/bun/cli.js packages/coding-agent/src/utils/image-resize-worker.ts --outfile (Join-Path $BundleDir "la.exe")
-    if ($LASTEXITCODE -ne 0) { throw "la.exe 构建失败。" }
+    & bun build --compile --no-compile-autoload-bunfig --windows-icon=packages/coding-agent/assets/lystar-windows-icon.ico packages/coding-agent/dist/bun/cli.js packages/coding-agent/src/utils/image-resize-worker.ts --outfile (Join-Path $BundleDir "lc.exe")
+    if ($LASTEXITCODE -ne 0) { throw "lc.exe 构建失败。" }
+
+    $BundleAlias = @'
+@echo off
+"%~dp0lc.exe" %*
+'@
+    [IO.File]::WriteAllText((Join-Path $BundleDir "lystar.cmd"), $BundleAlias, [Text.UTF8Encoding]::new($false))
 
     & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "scripts\build-windows-terminal.ps1") -OutputDir $BundleDir
     if ($LASTEXITCODE -ne 0) { throw "lystar-terminal.exe 构建失败。" }
@@ -43,6 +49,7 @@ try {
     Copy-Item (Join-Path $PackageDir "dist\modes\interactive\theme\*.json") (Join-Path $BundleDir "theme")
     Copy-Item (Join-Path $PackageDir "dist\modes\interactive\assets\*") (Join-Path $BundleDir "assets")
     Copy-Item -Recurse (Join-Path $PackageDir "dist\core\export-html") $BundleDir
+    Copy-Item -Recurse (Join-Path $PackageDir "dist\skills") $BundleDir
     Copy-Item (Join-Path $PackageDir "assets\lystar-windows-icon.png"), (Join-Path $PackageDir "assets\lystar-windows-icon.ico") (Join-Path $BundleDir "assets")
 
     $TerminalSource = Join-Path $PackageDir "src\windows-terminal-host\terminal"

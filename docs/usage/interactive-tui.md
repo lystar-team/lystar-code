@@ -66,10 +66,10 @@ Agent 运行中按 `Enter` 提交的消息会进入 steering 队列，`Alt+Enter
 ## 全屏与兼容模式
 
 ```bash
-la --alt-screen auto
-la --alt-screen always
-la --alt-screen never
-la --no-alt-screen
+lc --alt-screen auto
+lc --alt-screen always
+lc --alt-screen never
+lc --no-alt-screen
 ```
 
 - `auto`：普通终端和常规 tmux 使用全屏；Zellij、tmux control mode、非 TTY 和 `TERM=dumb` 回退 inline。
@@ -79,8 +79,8 @@ la --no-alt-screen
 鼠标覆盖：
 
 ```bash
-la --mouse
-la --no-mouse
+lc --mouse
+lc --no-mouse
 ```
 
 LYStar UI 偏好保存在 `~/.pi/agent/lystar.json`：

@@ -22,6 +22,23 @@ replace_symlink() {
     fi
 }
 
+write_launcher() {
+    local name="$1"
+    local path="$BIN_DIR/$name"
+    local next="${path}.next.$$"
+    cat > "$next" <<'LAUNCHER'
+#!/usr/bin/env bash
+set -e
+current="$HOME/.local/share/lystar-agent/current"
+if [[ -x "$current/lc" ]]; then
+    exec "$current/lc" "$@"
+fi
+exec "$current/la" "$@"
+LAUNCHER
+    chmod +x "$next"
+    mv -f "$next" "$path"
+}
+
 select_downloader() {
     if command -v curl >/dev/null 2>&1; then
         DOWNLOADER="curl"
@@ -102,15 +119,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "$ACTION" == "uninstall" ]]; then
-    rm -f "$BIN_DIR/la"
+    rm -f "$BIN_DIR/lc" "$BIN_DIR/lystar" "$BIN_DIR/la"
     rm -rf "$INSTALL_ROOT"
-    printf 'LYStar Agent 已卸载。用户数据仍保留在 ~/.pi/agent。\n'
+    printf 'LYStar Code 已卸载。用户数据仍保留在 ~/.pi/agent。\n'
     exit 0
 fi
 
 if [[ "$ACTION" == "rollback" ]]; then
     if [[ ! -L "$INSTALL_ROOT/previous" ]]; then
-        printf '没有可回退的 LYStar Agent 版本。\n' >&2
+        printf '没有可回退的 LYStar Code 版本。\n' >&2
         exit 1
     fi
     current_target="$(readlink "$INSTALL_ROOT/current" 2>/dev/null || true)"
@@ -163,7 +180,7 @@ fi
 asset="lystar-agent-v${VERSION}-${os}-${arch}.tar.gz"
 base_url="https://github.com/$REPOSITORY/releases/download/v${VERSION}"
 
-printf '正在下载 LYStar Agent %s (%s-%s)...\n' "$VERSION" "$os" "$arch"
+printf '正在下载 LYStar Code %s (%s-%s)...\n' "$VERSION" "$os" "$arch"
 download "$base_url/$asset" "$tmp/$asset"
 download "$base_url/SHA256SUMS" "$tmp/SHA256SUMS"
 expected="$(awk -v file="$asset" '$2 == file || $2 == "*" file { print $1 }' "$tmp/SHA256SUMS")"
@@ -180,8 +197,9 @@ expected="$(printf '%s' "$expected" | tr '[:upper:]' '[:lower:]')"
 
 mkdir -p "$INSTALL_ROOT/versions" "$BIN_DIR"
 tar -xzf "$tmp/$asset" -C "$tmp"
-[[ -x "$tmp/lystar-agent/la" ]] || { printf '发行包缺少 la。\n' >&2; exit 1; }
-"$tmp/lystar-agent/la" --version >/dev/null
+[[ -x "$tmp/lystar-agent/lc" ]] || { printf '发行包缺少 lc。\n' >&2; exit 1; }
+[[ -x "$tmp/lystar-agent/lystar" ]] || { printf '发行包缺少 lystar。\n' >&2; exit 1; }
+"$tmp/lystar-agent/lc" --version >/dev/null
 
 target="$INSTALL_ROOT/versions/$VERSION"
 if [[ ! -d "$target" ]]; then
@@ -194,8 +212,10 @@ if [[ -n "$current_target" && "$current_target" != "versions/$VERSION" ]]; then
     replace_symlink "$current_target" "$INSTALL_ROOT/previous"
 fi
 replace_symlink "versions/$VERSION" "$INSTALL_ROOT/current"
-ln -sfn "$INSTALL_ROOT/current/la" "$BIN_DIR/la"
+write_launcher "lc"
+write_launcher "lystar"
+rm -f "$BIN_DIR/la"
 
-printf 'LYStar Agent %s 已安装到 %s。\n' "$VERSION" "$target"
+printf 'LYStar Code %s 已安装到 %s。\n' "$VERSION" "$target"
 ensure_path
-printf '首次使用：进入项目目录运行 la，然后执行 /login。\n'
+printf '首次使用：进入项目目录运行 lc 或 lystar，然后执行 /login。\n'

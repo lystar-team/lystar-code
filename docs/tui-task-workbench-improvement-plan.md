@@ -4,7 +4,7 @@
 >
 > 编写日期：2026-08-07。
 >
-> 实施基线：LYStar Agent `0.84.1-lystar.1`，Pi `v0.84.1`。
+> 实施基线：LYStar Code `0.84.1-lystar.1`，Pi `v0.84.1`。
 >
 > 本文只设计 Interactive TUI 的信息结构、交互和显示责任。Session、Agent Runtime、Tool、Extension、Skill、Package、Provider 和 `PI_*` 契约保持不变。
 
@@ -53,7 +53,7 @@ Codex GUI 的 project/thread、并行任务、Diff review 和结果审阅，以�
 - 不复制 Agent Runtime、Todo、后台任务或子 Agent 调度器。
 - 不新增第二套 ANSI renderer、焦点系统或输入系统。
 - 不改变 Tool Call、Tool Result、Extension event 和 renderer API。
-- 不改变 `la` CLI 参数、退出码、模型 ID、Provider ID 和 `PI_*` 环境变量。
+- 不改变 `lc` CLI 参数、退出码、模型 ID、Provider ID 和 `PI_*` 环境变量。
 - 不把第三方 Extension 文案强制翻译或重排。
 
 ### 3.2 责任分配
@@ -634,7 +634,7 @@ Skill      /skill:name
   检查 Provider        正在思考         00:42
 ```
 
-TUI 不自行启动后台守护进程，不扫描其他 `la` 进程，不创建新的调度协议。没有实时状态源时，继续使用 `/resume` 历史会话中心。
+TUI 不自行启动后台守护进程，不扫描其他 `lc` 进程，不创建新的调度协议。没有实时状态源时，继续使用 `/resume` 历史会话中心。
 
 ## 8. 状态与数据设计
 

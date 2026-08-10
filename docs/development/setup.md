@@ -58,7 +58,7 @@ node packages/coding-agent/dist/cli.js --approve
 
 - Provider、Session、Tool、Extension、Skill、Package 和基础 TUI 尽量跟随 Pi。
 - 产品常量、中文 locale、LYStar workspace、安装器、更新器和 Release workflow 由 LYStar 维护。
-- 用户命令固定为 `la`，配置目录继续使用 `.pi`，环境变量继续使用 `PI_*`。
+- 用户命令固定为 `lc` 和 `lystar`，配置目录继续使用 `.pi`，环境变量继续使用 `PI_*`。
 - 不创建第二套 Session、Package、Skill 或 MCP 协议。
 - 直接外部依赖固定精确版本，新增发行依赖时检查许可证。
 

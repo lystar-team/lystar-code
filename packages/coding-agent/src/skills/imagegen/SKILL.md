@@ -5,7 +5,7 @@ description: "Generate or edit raster images with the built-in image_gen tool. U
 
 # Image Generation
 
-> Adapted for LYStar Agent from OpenAI Codex's `imagegen` Skill. This file has been modified to use LYStar's native Tool and packaging paths.
+> Adapted for LYStar Code from OpenAI Codex's `imagegen` Skill. This file has been modified to use LYStar's native Tool and packaging paths.
 
 Use the built-in `image_gen` Tool for normal image generation and editing. Do not create temporary Python or SDK scripts.
 

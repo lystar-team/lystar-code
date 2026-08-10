@@ -54,7 +54,7 @@ Windows 安装器和首次启动会自动准备 LYStar 托管的 MinGit Bash。�
 手动重试：
 
 ```powershell
-la --ensure-windows-bash
+lc --ensure-windows-bash
 ```
 
 ## npm 国内源
@@ -62,14 +62,14 @@ la --ensure-windows-bash
 [npmmirror](https://npmmirror.com/)提供 npm 只读镜像。只对当前安装命令生效：
 
 ```bash
-npm_config_registry=https://registry.npmmirror.com la install npm:<package>
+npm_config_registry=https://registry.npmmirror.com lc install npm:<package>
 ```
 
 Windows PowerShell：
 
 ```powershell
 $env:npm_config_registry = "https://registry.npmmirror.com"
-la install npm:<package>
+lc install npm:<package>
 Remove-Item Env:npm_config_registry
 ```
 
@@ -94,7 +94,7 @@ npm 镜像只处理 npm 包及 git Package 的 npm 依赖，不加速 GitHub Rel
 
 ```bash
 HTTPS_PROXY=http://127.0.0.1:7890 \
-  la install git:github.com/<owner>/<repo>@<tag-or-commit>
+  lc install git:github.com/<owner>/<repo>@<tag-or-commit>
 ```
 
 全局 Git 代理：

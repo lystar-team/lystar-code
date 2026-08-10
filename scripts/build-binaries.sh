@@ -100,7 +100,7 @@ done
 
 cd packages/coding-agent
 for platform in "${PLATFORMS[@]}"; do
-    printf 'Building LYStar Agent %s for %s...\n' "$VERSION" "$platform"
+    printf 'Building LYStar Code %s for %s...\n' "$VERSION" "$platform"
     bun_target="bun-$platform"
     if [[ "$platform" == *-x64 ]]; then
         bun_target="${bun_target}-baseline"
@@ -109,7 +109,8 @@ for platform in "${PLATFORMS[@]}"; do
     # Bun 只有显式收到 worker 入口时，才会把 worker 编入独立可执行文件。
     # 禁用当前目录 bunfig.toml 自动加载，避免项目 preload 在独立程序启动前执行。
     run_bun build --compile --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/cli.js ./src/utils/image-resize-worker.ts \
-        --outfile "$OUTPUT_DIR/$platform/la"
+        --outfile "$OUTPUT_DIR/$platform/lc"
+	ln -s lc "$OUTPUT_DIR/$platform/lystar"
 done
 
 for platform in "${PLATFORMS[@]}"; do
@@ -122,6 +123,7 @@ for platform in "${PLATFORMS[@]}"; do
     cp dist/modes/interactive/theme/*.json "$OUTPUT_DIR/$platform/theme/"
     cp dist/modes/interactive/assets/* "$OUTPUT_DIR/$platform/assets/"
     cp -r dist/core/export-html "$OUTPUT_DIR/$platform/"
+    cp -r dist/skills "$OUTPUT_DIR/$platform/"
     cp -r docs examples "$OUTPUT_DIR/$platform/"
 
     case "$platform" in
@@ -170,8 +172,8 @@ cd "$ROOT_DIR"
 node scripts/generate-release-metadata.mjs "$OUTPUT_DIR" "$VERSION" "$REPOSITORY"
 printf '%s\n' "$VERSION" > "$OUTPUT_DIR/VERSION"
 
-printf '\nLYStar Agent build complete: %s\n' "$OUTPUT_DIR"
+printf '\nLYStar Code build complete: %s\n' "$OUTPUT_DIR"
 find "$OUTPUT_DIR" -maxdepth 1 -type f -printf '  %f\n' 2>/dev/null || ls -1 "$OUTPUT_DIR"
 if [[ -z "$REPOSITORY" ]]; then
-    printf 'Note: pass --repository owner/repo after creating the GitHub repository to enable installers and la update.\n'
+    printf 'Note: pass --repository owner/repo after creating the GitHub repository to enable installers and lc update.\n'
 fi

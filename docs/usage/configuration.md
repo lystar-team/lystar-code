@@ -31,7 +31,7 @@ LYStar 继续使用 Pi 配置目录：
 }
 ```
 
-模型 ID 先通过 `la --list-models` 确认。不要照抄示例中的占位符。
+模型 ID 先通过 `lc --list-models` 确认。不要照抄示例中的占位符。
 
 ## LYStar UI
 
@@ -78,8 +78,8 @@ CLI 参数只覆盖当前运行，优先于 `lystar.json`。
 ## 离线模式
 
 ```bash
-PI_OFFLINE=1 la
-la --offline
+PI_OFFLINE=1 lc
+lc --offline
 ```
 
 离线模式会停止版本检查、远程模型目录、分享和其他非必要网络请求。已经缓存的模型目录、认证和本地资源仍可读取。

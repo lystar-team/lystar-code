@@ -47,7 +47,7 @@
 	term.open(terminalElement);
 	term.onData((data) => window.chrome.webview.postMessage(`input:${data}`));
 	term.onTitleChange((title) => {
-		document.title = title || "LYStar Agent";
+		document.title = title || "LYStar Code";
 		window.chrome.webview.postMessage(`title:${document.title}`);
 	});
 	term.attachCustomKeyEventHandler((event) => {

@@ -1,4 +1,4 @@
-# LYStar Agent 建设方案
+# LYStar Code 建设方案
 
 > 状态：开发基线。按本文连续实施，不设阶段审批。
 >
@@ -6,11 +6,11 @@
 
 ## 1. 产品定义
 
-LYStar Agent 是 Pi 的中文增强发行版，启动命令为 `la`。它沿用 Pi 的 Agent Runtime、Provider、Session、Tool、Skill、Extension、Pi Package、配置格式和数据目录，集中改进安装、中文界面和 Interactive TUI。
+LYStar Code 是 Pi 的中文增强发行版，启动命令为 `lc` 或 `lystar`。它沿用 Pi 的 Agent Runtime、Provider、Session、Tool、Skill、Extension、Pi Package、配置格式和数据目录，集中改进安装、中文界面和 Interactive TUI。
 
 首版必须完整交付：
 
-1. 用户通过 `la` 使用 Pi CLI 的完整能力，现有 `pi` 可以继续安装和运行。
+1. 用户通过等价命令 `lc` 或 `lystar` 使用 Pi CLI 的完整能力，现有 `pi` 可以继续安装和运行。
 2. LYStar 与 Pi 共用 `~/.pi/agent` 和项目 `.pi`，认证、模型、会话、Skill、Extension 与 Pi Package 无需迁移。
 3. LYStar 自有界面使用简体中文，中文输入、宽字符和终端显示稳定。
 4. Interactive TUI 提供全屏工作区、固定输入区、独立滚动、折叠、鼠标和稳定的流式渲染。
@@ -26,8 +26,8 @@ Todo、后台任务、子 Agent 和 MCP 等能力继续由 Pi Extension 提供�
 | 技术路线 | Pi 兼容增强发行版 |
 | 上游 | `earendil-works/pi` |
 | 首个基线 | Pi `v0.82.0` |
-| 命令 | `la` |
-| 展示名 | `LYStar Agent` |
+| 命令 | `lc`、`lystar` |
+| 展示名 | `LYStar Code` |
 | 数据目录 | `~/.pi/agent`、项目 `.pi` |
 | 环境变量 | 保持上游 `PI_*` 语义，不增加同义 `LA_*` 变量 |
 | 发行形式 | 包含 executable 与运行资源的独立发行包 |
@@ -74,7 +74,7 @@ LYStar 不复制 Grok Build 的品牌、图标、文案或实现代码。Grok Bu
 实施仓库以 Pi `v0.82.0` 为初始代码基线：
 
 ```text
-origin    LYStar Agent 仓库
+origin    LYStar Code 仓库
 upstream  https://github.com/earendil-works/pi.git
 main      LYStar 可发布主分支
 ```
@@ -91,7 +91,7 @@ main      LYStar 可发布主分支
   packages/tui 的现有组件和差量 renderer
 
 LYStar 长期维护
-  产品常量与 la 入口
+  产品常量与 lc 入口
   zh-CN 文案目录
   Interactive TUI viewport 与 LYStar 布局组件
   alternate screen、滚动和鼠标适配
@@ -103,12 +103,13 @@ LYStar 长期维护
 
 ### 产品常量
 
-Pi 当前把 `piConfig.name` 同时用于界面名和环境变量前缀，无法同时表达 `la`、`LYStar Agent` 和 `PI_*`。LYStar 增加一个集中式产品常量入口，所有品牌和发行逻辑从这里读取：
+Pi 当前把 `piConfig.name` 同时用于界面名和环境变量前缀，无法同时表达 `lc`、`LYStar Code` 和 `PI_*`。LYStar 增加一个集中式产品常量入口，所有品牌和发行逻辑从这里读取：
 
 | 常量 | 值或来源 |
 |---|---|
-| `cliName` | `la` |
-| `displayName` | `LYStar Agent` |
+| `commandName` | `lc` |
+| `commandAliases` | `lystar`，由 npm bin、发行包和安装器提供 |
+| `displayName` | `LYStar Code` |
 | `configDirName` | `.pi` |
 | `envPrefix` | `PI` |
 | `releaseRepository` | `octyean/lystar-agent`，由 `packages/coding-agent/package.json` 统一提供 |
@@ -121,24 +122,25 @@ Pi 当前把 `piConfig.name` 同时用于界面名和环境变量前缀，无法
 
 ### CLI 契约
 
-`la` 保持 Pi CLI 的参数、退出码、非交互输出结构和资源管理语义：
+`lc` 和 `lystar` 保持相同的 Pi CLI 参数、退出码、非交互输出结构和资源管理语义：
 
 ```bash
-la
-la --version
-la --help
-la -c
-la -r
-la install <source>
-la remove <source>
-la list
-la config
-la update
-la update --extensions
-la update --rollback
+lc
+lc --version
+lc --help
+lc -c
+lc -r
+lc install <source>
+lc remove <source>
+lc list
+lc config
+lc update
+lc update --extensions
+lc update --rollback
+lystar --version
 ```
 
-用户可见的 banner、终端标题、帮助、选择器、状态和 LYStar 自有错误使用 `LYStar Agent`。脚本依赖的参数、退出码、JSON 字段、模型 ID、Tool 名和 Extension API 不翻译、不改名。
+用户可见的 banner、终端标题、帮助、选择器、状态和 LYStar 自有错误使用 `LYStar Code`。脚本依赖的参数、退出码、JSON 字段、模型 ID、Tool 名和 Extension API 不翻译、不改名。
 
 ### 环境变量
 
@@ -186,7 +188,8 @@ Windows  x64
 每个平台的归档至少包含：
 
 ```text
-la / la.exe
+lc / lc.exe
+lystar / lystar.cmd
 package.json
 LICENSE
 THIRD_PARTY_LICENSES.md
@@ -218,8 +221,11 @@ macOS 和 Linux：
 ```text
 ~/.local/share/lystar-agent/versions/<version>/
 ~/.local/share/lystar-agent/current -> versions/<version>/
-~/.local/bin/la -> ../share/lystar-agent/current/la
+~/.local/bin/lc
+~/.local/bin/lystar
 ```
+
+两个 launcher 优先执行当前版本的 `lc`；回退到 `0.84.1-lystar.8` 或更早版本时自动执行旧目录中的 `la`。旧 `~/.local/bin/la` 在升级成功后删除，不再作为公开入口。
 
 Windows：
 
@@ -227,10 +233,10 @@ Windows：
 %LOCALAPPDATA%\LYStarAgent\versions\<version>\
 %LOCALAPPDATA%\LYStarAgent\current
 %LOCALAPPDATA%\LYStarAgent\previous
-%LOCALAPPDATA%\LYStarAgent\bin\la.cmd
+%LOCALAPPDATA%\LYStarAgent\bin\lc.cmd
 ```
 
-`current` 和 `previous` 是只包含版本号的文本文件。Windows 的 `la.cmd` 读取 `current`，校验版本号格式后转发到 `versions\<version>\la.exe`。安装器把稳定的 `bin` 目录加入用户 PATH，不要求管理员权限，不改系统 PATH。
+`current` 和 `previous` 是只包含版本号的文本文件。Windows 的 `lc.cmd` 读取 `current`，校验版本号格式后转发到 `versions\<version>\lc.exe`。安装器把稳定的 `bin` 目录加入用户 PATH，不要求管理员权限，不改系统 PATH。
 
 release workflow 把安装脚本附加到 GitHub latest release，并根据固化后的 `releaseRepository` 生成 README 安装命令：
 
@@ -270,22 +276,22 @@ $cmd="$env:TEMP\lystar-install.cmd"; iwr -UseBasicParsing "https://github.com/${
 
 `assets` 必须覆盖全部发布目标；每项必须有 `file`、64 位十六进制 `sha256` 和大于零的 `size`。CI 校验 manifest、归档文件和 `SHA256SUMS` 一致。
 
-### `la update`
+### `lc update`
 
-`la update` 只更新 LYStar 发行包：
+`lc update` 只更新 LYStar 发行包：
 
 1. 遵守 `PI_OFFLINE`、`HTTPS_PROXY`、`HTTP_PROXY` 和 `NO_PROXY`。
 2. 从 `https://github.com/${PRODUCT.releaseRepository}/releases/latest/download/release-manifest.json` 读取 stable release manifest。
 3. 使用 semver 比较当前版本和目标版本。
 4. 下载到 staging，校验大小和 SHA-256。
-5. 解压并运行 `la --version` 冒烟检查。
+5. 解压并运行 `lc --version` 冒烟检查。
 6. 安装完整版本目录，把原 `current` 记录到 `previous`。
 7. Unix 原子切换 `current` 链接；Windows 原子替换 `current` 版本文件。
 8. 切换失败时继续使用原版本并删除 staging。
 
 首版只有 stable 通道。版本排序先比较 Pi 基线，再比较 `lystar.N`；同一 Pi 基线递增修订号，升级 Pi 基线后从 `lystar.1` 开始。
 
-`la update --rollback` 切回 previous 版本，不改用户数据。只保留 current 和 previous 两个版本。`la update --extensions` 只更新 Pi Package，不触发二进制更新。
+`lc update --rollback` 切回 previous 版本，不改用户数据。只保留 current 和 previous 两个版本。`lc update --extensions` 只更新 Pi Package，不触发二进制更新。
 
 ## 6. 数据兼容与并行使用
 
@@ -328,18 +334,18 @@ LYStar 自己的终端偏好保存在共享数据根下的独立文件，避免�
 - LYStar 只执行其 Pi 基线自带的上游迁移。
 - 读取由更新版 Pi 创建的未知 Session entry 时，保留原始内容；无法安全解释时停止写入并提示使用对应 Pi 版本打开。
 - LYStar 内置主题继续使用 `dark` 和 `light` 名称；用户设置原生 Pi 也能识别。用户自定义主题仍从原路径加载。
-- 同一 Session 不支持被 `pi` 和 `la` 两个进程同时写入。LYStar 自身要阻止两个 `la` 进程写同一 Session，并在检测到锁时提供只读打开或取消选项。
-- Pi Package 的安装、删除和更新不支持多个 `pi`/`la` 进程并发执行。命令开始前给出占用检查，无法确认外部 Pi 状态时明确提示用户关闭其他包管理命令。
+- 同一 Session 不支持被 `pi` 和 `lc` 两个进程同时写入。LYStar 自身要阻止两个 `lc` 进程写同一 Session，并在检测到锁时提供只读打开或取消选项。
+- Pi Package 的安装、删除和更新不支持多个 `pi`/`lc` 进程并发执行。命令开始前给出占用检查，无法确认外部 Pi 状态时明确提示用户关闭其他包管理命令。
 - 二进制更新只切换程序目录，不写 `~/.pi/agent`。
 
-每次发布都要验证三种组合：仅安装 `pi`、仅安装 `la`、同机同时安装 `pi` 和 `la`。
+每次发布都要验证三种组合：仅安装 `pi`、仅安装 `lc`、同机同时安装 `pi` 和 `lc`。
 
 ## 7. Interactive TUI
 
 ### 布局
 
 ```text
-┌ LYStar Agent  项目/会话                         上下文用量 ┐
+┌ LYStar Code  项目/会话                         上下文用量 ┐
 │                                                            │
 │  对话 viewport                                             │
 │  用户任务 / Agent 回复 / 思考 / Tool / Diff / 错误         │
@@ -482,7 +488,7 @@ Skill 命令继续使用 `/skill:name`。LYStar 只汉化自己的浏览、状�
 
 ### Extension 与 Pi Package
 
-- `la install`、`la remove`、`la list`、`la config` 和 `la update --extensions` 继续调用 Pi Package manager。
+- `lc install`、`lc remove`、`lc list`、`lc config` 和 `lc update --extensions` 继续调用 Pi Package manager。
 - npm、git 和本地路径来源的解析、锁文件与配置格式保持上游语义。
 - 第三方 Extension 可以继续注册 Tool、Command、Shortcut、Provider、Footer、Widget、Editor 和自定义 TUI。
 - LYStar 不翻译第三方注册的命令名、Tool 名和正文。
@@ -493,7 +499,7 @@ Skill 命令继续使用 `/skill:name`。LYStar 只汉化自己的浏览、状�
 MCP 继续由 Pi Extension 接入。已经安装在 `~/.pi/agent` 中的 MCP Extension 原样加载，也可以执行：
 
 ```bash
-la install npm:pi-mcp-adapter
+lc install npm:pi-mcp-adapter
 ```
 
 兼容基线使用 `pi-mcp-adapter 2.12.1`，覆盖：
@@ -517,6 +523,7 @@ LYStar 不增加 MCP 配置文件、内置管理器或代理 Tool。TUI 负责�
 
 | LYStar | Pi 基线 | Pi commit | MCP Adapter | Session | Extension API |
 |---|---|---|---|---|---|
+| `0.84.1-lystar.9` | `0.84.1` | `53fa77cc...` | `2.12.1` | Pi 原 JSONL 兼容；原生图片结果继续使用 Tool Result `ImageContent` | Pi `0.84.1`；新增内置 `image_gen` Tool、图片 Provider 和统一卡片交互，产品名改为 LYStar Code，命令改为 `lc`/`lystar`，现有 Extension API 不变 |
 | `0.84.1-lystar.8` | `0.84.1` | `53fa77cc...` | `2.12.1` | 与 `.7` 一致；Web Search sources 与 citation 格式不变 | Pi `0.84.1`；只改进内置 TUI 来源展开、链接命中和产品标题位置，现有 Extension API 不变 |
 | `0.84.1-lystar.7` | `0.84.1` | `53fa77cc...` | `2.12.1` | Pi 原 JSONL 兼容；新增结构化 Web Search call、sources 与 citation | Pi `0.84.1`；远程 wire protocol 升至 v2，新增原生 Web Search 事件与内容类型 |
 | `0.84.1-lystar.6` | `0.84.1` | `53fa77cc...` | `2.12.1` | 与 `.5` 一致；持久 Subagent Session 格式不变 | Pi `0.84.1`；只修正内置 Subagent TUI 状态和 Overlay 输入路由，现有 Tool 与 Extension API 不变 |
@@ -574,7 +581,7 @@ Pi `v0.83.0` 将 TypeBox 升级到 `1.3.7`，删除了 `Type.Base`、`Type.Await
 | 工作项 | 完成标准 |
 |---|---|
 | 仓库基线 | 建立 `origin/upstream`，可重复构建当前 Pi `v0.84.1` 基线 |
-| 产品常量 | `la`、`LYStar Agent`、`.pi`、`PI_*` 和 release repository 各自只有一个事实源 |
+| 产品常量 | `lc`、`lystar`、`LYStar Code`、`.pi`、`PI_*` 和 release repository 各自只有一个事实源 |
 | CLI 品牌 | banner、标题、帮助、版本、错误和示例统一；参数与退出码兼容 |
 | 发行包 | 五个平台归档包含 executable、运行资源、许可证和 manifest |
 | 安装器 | 检测平台、下载、校验、staging 安装、PATH、卸载和失败保留旧版 |
@@ -600,17 +607,17 @@ Pi `v0.83.0` 将 TypeBox 升级到 `1.3.7`，删除了 `Type.Base`、`Type.Await
 ### 基础命令
 
 ```bash
-la --version
-la --help
-la -c
-la -r
-la list
-la config
-la update
-la update --extensions
+lc --version
+lc --help
+lc -c
+lc -r
+lc list
+lc config
+lc update
+lc update --extensions
 ```
 
-验收内容：命令成功、退出码与 Pi 兼容、帮助和 LYStar 错误为中文、非交互结构未改变、`pi` 与 `la` 可以同机运行。
+验收内容：命令成功、退出码与 Pi 兼容、帮助和 LYStar 错误为中文、非交互结构未改变、`pi` 与 `lc` 可以同机运行。
 
 ### 静态与单元验证
 
@@ -652,8 +659,8 @@ SSH
 ### 数据与生态验证
 
 - 用旧 Pi Session 执行继续、恢复、树导航和压缩。
-- `pi` 创建的设置、认证、模型、Skill、Extension 和 Package 可被 `la` 读取。
-- `la` 产生的 Pi 标准数据仍可被同基线 `pi` 读取。
+- `pi` 创建的设置、认证、模型、Skill、Extension 和 Package 可被 `lc` 读取。
+- `lc` 产生的 Pi 标准数据仍可被同基线 `pi` 读取。
 - 未知未来 Session entry 不被 LYStar 重写。
 - 从用户级、项目级和 Package 路径发现 Skill。
 - 安装、禁用、启用和更新一个 Pi Package。
@@ -683,7 +690,7 @@ SSH
 | 汉化漏词或误翻技术内容 | 类型化 catalog、限定扫描范围、PTY 快照和带原因 allowlist |
 | 第三方 Extension UI 失效 | 保持 API 和生命周期；真实测试 Extension 覆盖全部自定义 UI 入口 |
 | 更新中断导致程序不可用 | staging、完整校验、版本目录、原子指针和 previous 回退 |
-| Windows executable 无法原地替换 | executable 只安装到新版本目录，`la.cmd` 通过原子版本指针选择目标 |
+| Windows executable 无法原地替换 | executable 只安装到新版本目录，`lc.cmd` 通过原子版本指针选择目标 |
 | 下载来源被篡改 | 首版使用 SHA-256、GitHub artifact attestation 和受保护 release workflow；公开推广前增加 OS 签名 |
 | Windows 用户误以为安装依赖 Git 或 Bash | 安装器只安装 LYStar 二进制；`bash` Tool 的可选 Shell 依赖在调用时提示 |
 
@@ -699,4 +706,4 @@ SSH
 - Pi 许可证：MIT
 - Grok Build 许可证：Apache-2.0
 
-本文已经固定首版范围、技术边界、安装更新协议、兼容规则和验收条件。开发从仓库基线开始连续推进，全部 gate 通过后一次性交付首个 LYStar Agent release。
+本文已经固定首版范围、技术边界、安装更新协议、兼容规则和验收条件。开发从仓库基线开始连续推进，全部 gate 通过后一次性交付首个 LYStar Code release。
