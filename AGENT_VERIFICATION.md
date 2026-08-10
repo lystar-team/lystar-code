@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-10T22:34:58Z
+最后核验时间：2026-08-10T22:51:01Z
 
 环境：
 
@@ -25,7 +25,13 @@ Linux x64
 
 使用 Bun `1.3.9` 构建 Darwin ARM64/x64 和 Linux ARM64/x64 四个候选包，`SHA256SUMS` 四项全部通过；manifest 版本为 `0.84.1-lystar.11`、Pi 版本为 `0.84.1`、仓库为 `lystar-team/lystar-code`。Linux x64 候选包 SHA-256 为 `2fa22b95f65c5c1ac85ab70a3dc8d342bcaf9baa365419d1720bcbadca07b57c`，大小为 `46507501` 字节；四个归档的 Mach-O/ELF 架构、`lc`/`lystar`、许可证和内置 Image Gen Skill 资源检查通过，Linux x64 的版本、离线模型列表和安装器物化结果正确。候选包在独立 `80x24` tmux PTY 显示 LYStar Code 全屏输入区、快捷栏和离线无模型提示，`/quit` 正常退出；临时 tmux server 已关闭。
 
-当前 Linux 主机没有 MSVC、Windows SDK、ConPTY 或 WebView2 Runtime，Windows x64 原生构建、终端截图、Hover、emoji 宽度、细线光标、滚动手感、托管 MinGit 和 PowerShell 5.1 安装链必须由提交后的 main CI 与 Release Windows job 给出最终证据。具体手机终端应用尚未实机运行，本轮证据覆盖标准 SGR 输入协议和真实 Linux PTY。
+当前 Linux 主机没有 MSVC、Windows SDK、ConPTY 或 WebView2 Runtime；`main` commit `0c39d2e5d8d30c8aaa6845749c9a92a553f69825` 的 CI run `31439093789` 七个 job 全部成功，由 `windows-installer` 完成 Windows x64 原生构建、终端 Host/Icon、托管 MinGit 和 PowerShell 5.1 安装链核验。TUI、AI、Agent Core、Coding Agent 双分片、源码构建和 Unix 安装器同时通过。
+
+annotated Tag `v0.84.1-lystar.11` 的 Tag 对象为 `a38d0938f5bd0c0f878d1826722d640ce9763087`，本地和远端解引用后均固定指向 `0c39d2e5d8d30c8aaa6845749c9a92a553f69825`。Release workflow run `31439421952` 成功，完成同 commit main CI 绑定、Bun 1.3.9 Unix/Windows 原生五平台打包、SHA/manifest 合并、artifact attestation 和公开发布。GitHub Release 于 `2026-08-10T22:47:43Z` 发布，为非草稿、非预发布正式版本，共有 10 个公开资产。
+
+公开五平台包重新下载后 `SHA256SUMS` 五项全部通过，文件大小和 SHA 与公开 manifest 一致；manifest 版本为 `0.84.1-lystar.11`、Pi 版本为 `0.84.1`、仓库为 `lystar-team/lystar-code`。公开 Linux x64 包 SHA-256 为 `6b697a341bbc0ef30107da3a7019e466113df5476deb3876fe7844e397777a82`，大小为 `46499955` 字节；Windows x64 包 SHA-256 为 `7dd63a50608553844ca9e222e334ab69b4895f185b87287aa8580ec78ecb1e3f`，大小为 `64697663` 字节。Unix/Windows 归档的可执行文件、许可证和 Image Gen Skill 资源检查通过，Windows 包不包含旧 `la.exe`；GitHub Attestations API 按 Linux x64 digest 返回 1 条 `application/vnd.dev.sigstore.bundle.v0.3+json` provenance。
+
+本机使用公开 `.10` 的 `lc update --self` 原子更新到 `.11`，`current` 指向 `.11`，`previous` 保留 `.10`，再次执行更新显示已是最新版本。安装后的 `lc` 与 `lystar` 均报告 `0.84.1-lystar.11`；独立 `80x24` tmux PTY 使用现有 `upstream/gpt-5.6-sol` 配置启动完整 LYStar Code 工作区并正常 `/quit`。具体手机终端应用和物理 Windows 桌面交互尚未实机运行，本轮证据覆盖标准 SGR 输入、真实 Linux PTY、Windows CI 原生构建和终端 smoke。
 
 ### `0.84.1-lystar.10` 发布前核验
 
