@@ -9,6 +9,7 @@ export type InteractiveCardAction =
 export interface InteractiveCard extends Component {
 	isExpanded(): boolean;
 	setExpanded(expanded: boolean): void;
+	setHovered?(hovered: boolean): void;
 	/** Default behavior is to toggle the whole card for every rendered row. */
 	getCardClickActionAtRow?(row: number): InteractiveCardAction | undefined;
 	/** Stable key used when a transcript is rebuilt, for example in a live Subagent view. */

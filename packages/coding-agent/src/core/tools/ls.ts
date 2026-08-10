@@ -5,6 +5,7 @@ import nodePath from "path";
 import { type Static, Type } from "typebox";
 import { formatToolSummary, getToolSummary } from "../../modes/interactive/components/tool-summary.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
+import { uiGlyphs } from "../../modes/interactive/ui-glyphs.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { pathExists, resolveToCwd } from "./path-utils.ts";
 import { getTextOutput, renderToolPath, str } from "./render-utils.ts";
@@ -62,7 +63,7 @@ function formatLsCall(
 ): string {
 	const pathDisplay = renderToolPath(str(args?.path), theme, cwd, { emptyFallback: "." });
 	return formatToolSummary({
-		icon: "≡",
+		icon: uiGlyphs.list,
 		subject: pathDisplay,
 		isPartial: options.isPartial,
 		isError: options.isError,

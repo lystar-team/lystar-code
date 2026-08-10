@@ -2,7 +2,7 @@ import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/p
 import { theme } from "../theme/theme.ts";
 import { uiGlyphs } from "../ui-glyphs.ts";
 import { type InteractiveCard, type InteractiveCardAction, resolveInteractiveCardAction } from "./interactive-card.ts";
-import { renderToolDivider } from "./tool-card-layout.ts";
+import { renderCardHover, renderToolDivider } from "./tool-card-layout.ts";
 import type { ToolExecutionComponent } from "./tool-execution.ts";
 
 export interface ToolGroupExpansionTarget {
@@ -19,6 +19,7 @@ interface ToolRange {
 export class ToolExecutionGroupComponent implements Component {
 	private readonly tools: ToolExecutionComponent[] = [];
 	private expanded = true;
+	private hovered = false;
 	private completionHandled = false;
 	private ranges: ToolRange[] = [];
 	private renderVersion = 0;
@@ -38,6 +39,12 @@ export class ToolExecutionGroupComponent implements Component {
 
 	isExpanded(): boolean {
 		return this.expanded;
+	}
+
+	setHovered(hovered: boolean): void {
+		if (this.hovered === hovered) return;
+		this.hovered = hovered;
+		this.renderVersion++;
 	}
 
 	setToolOutputsExpanded(expanded: boolean): void {
@@ -100,6 +107,7 @@ export class ToolExecutionGroupComponent implements Component {
 
 		const lines = [this.renderSummary(width)];
 		if (!this.expanded) return lines;
+		lines.push("");
 
 		for (let index = 0; index < this.tools.length; index++) {
 			const tool = this.tools[index]!;
@@ -134,6 +142,7 @@ export class ToolExecutionGroupComponent implements Component {
 		const right = theme.fg("dim", this.expanded ? uiGlyphs.expanded : uiGlyphs.collapsed);
 		const rightWidth = visibleWidth(right);
 		const fittedLeft = truncateToWidth(left, Math.max(1, width - rightWidth - 1), "…");
-		return `${fittedLeft}${" ".repeat(Math.max(1, width - visibleWidth(fittedLeft) - rightWidth))}${right}`;
+		const line = `${fittedLeft}${" ".repeat(Math.max(1, width - visibleWidth(fittedLeft) - rightWidth))}${right}`;
+		return renderCardHover([line], width, this.hovered)[0] ?? line;
 	}
 }

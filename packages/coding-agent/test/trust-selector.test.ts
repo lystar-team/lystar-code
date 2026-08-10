@@ -3,6 +3,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { TrustSelectorComponent } from "../src/modes/interactive/components/trust-selector.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { uiGlyphs } from "../src/modes/interactive/ui-glyphs.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
 describe("TrustSelectorComponent", () => {
@@ -27,8 +28,8 @@ describe("TrustSelectorComponent", () => {
 
 		expect(output).toContain("已保存：信任（/project）");
 		expect(output).toContain("当前会话：信任");
-		expect(output).toContain("信任此项目 ✓");
-		expect(output).not.toContain("不信任此项目 ✓");
+		expect(output).toContain(`信任此项目 ${uiGlyphs.success}`);
+		expect(output).not.toContain(`不信任此项目 ${uiGlyphs.success}`);
 	});
 
 	it("selects a trust decision", () => {
@@ -72,7 +73,7 @@ describe("TrustSelectorComponent", () => {
 
 		const output = stripAnsi(selector.render(120).join("\n"));
 		expect(output).toContain("已保存：信任（继承自 /parent）");
-		expect(output).toContain("信任上级目录（/parent） ✓");
+		expect(output).toContain(`信任上级目录（/parent） ${uiGlyphs.success}`);
 
 		selector.handleInput("\n");
 

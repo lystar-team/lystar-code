@@ -1,7 +1,13 @@
 import { performance } from "node:perf_hooks";
-import { type Terminal, TuiAltScreen, type TuiAltScreenOptions, type TuiInputListener } from "@earendil-works/pi-tui";
+import {
+	type Terminal,
+	TuiAltScreen,
+	type TuiAltScreenOptions,
+	type TuiInputListener,
+	type TuiStopOptions,
+} from "@earendil-works/pi-tui";
 
-const MIN_FRAME_INTERVAL_MS = 1000 / 30;
+const MIN_FRAME_INTERVAL_MS = 1000 / 60;
 const REPAIR_INTERVAL_MS = 500;
 
 export interface LystarTuiOptions extends TuiAltScreenOptions {
@@ -36,7 +42,11 @@ export class LystarTUI extends TuiAltScreen {
 		options: LystarTuiOptions = {},
 		outputFlow: OutputFlow = process.stdout,
 	) {
-		super(terminal, showHardwareCursor, logDirectory, options);
+		super(terminal, showHardwareCursor, logDirectory, {
+			...options,
+			adaptiveWheelScroll: true,
+			allMouseMotion: true,
+		});
 		this.outputFlow = outputFlow;
 		this.workspaceInputHandler = options.workspaceInputHandler;
 	}
@@ -62,6 +72,16 @@ export class LystarTUI extends TuiAltScreen {
 
 	protected override clearOnFullRedraw(): boolean {
 		return false;
+	}
+
+	protected override beforeTerminalStart(): void {
+		super.beforeTerminalStart();
+		this.terminal.write("\x1b[5 q");
+	}
+
+	protected override beforeTerminalStop(options: TuiStopOptions): void {
+		this.terminal.write("\x1b[0 q");
+		super.beforeTerminalStop(options);
 	}
 
 	override start(): void {

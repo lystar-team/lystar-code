@@ -35,7 +35,7 @@ describe("InteractiveMode compaction events", () => {
 
 		await handleEvent.call(fakeThis, {
 			type: "compaction_end",
-			reason: "manual",
+			reason: "threshold",
 			result: {
 				tokensBefore: 123,
 				summary: "summary",
@@ -55,6 +55,7 @@ describe("InteractiveMode compaction events", () => {
 			}),
 		);
 		expect(fakeThis.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
+		expect(fakeThis.ui.requestRender).toHaveBeenCalledWith(true);
 	});
 
 	test("restores the working indicator when compaction continues the agent run", async () => {
@@ -97,6 +98,7 @@ describe("InteractiveMode compaction events", () => {
 		expect(setWorkingVisible).toHaveBeenCalledWith(true);
 		expect(setProgress).not.toHaveBeenCalledWith(false);
 		expect(fakeThis.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: true });
+		expect(fakeThis.ui.requestRender).toHaveBeenCalledWith(true);
 	});
 
 	test("preserves steering behavior when flushing into an active agent run", async () => {

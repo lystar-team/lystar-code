@@ -48,6 +48,11 @@ export interface Component {
 
 export type TuiInputListenerResult = { consume?: boolean; data?: string } | undefined;
 export type TuiInputListener = (data: string) => TuiInputListenerResult;
+
+export function isTerminalMouseInput(data: string): boolean {
+	return /^\x1b\[<\d+;\d+;\d+[Mm]$/.test(data) || (data.length === 6 && data.startsWith("\x1b[M"));
+}
+
 type PendingOsc11BackgroundQuery = {
 	settled: boolean;
 	resolve: ((rgb: RgbColor | undefined) => void) | undefined;
@@ -995,9 +1000,15 @@ export abstract class TuiBase extends Container implements TUI {
 				return;
 			}
 			this.focusedComponent.handleInput(data);
-			// Keyboard input is latency-sensitive. Avoid the throttled timer path,
-			// where even setTimeout(0) can take a full 16 ms tick on Windows.
-			this.requestImmediateRender();
+			if (isTerminalMouseInput(data)) {
+				// Pointer bursts can contain dozens of events per frame. Keep the latest
+				// component state, then let the renderer draw it once per frame.
+				this.requestRender();
+			} else {
+				// Keyboard input is latency-sensitive. Avoid the throttled timer path,
+				// where even setTimeout(0) can take a full 16 ms tick on Windows.
+				this.requestImmediateRender();
+			}
 		}
 	}
 

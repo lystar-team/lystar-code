@@ -144,6 +144,7 @@ import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
 import { FooterComponent, formatTokens } from "./components/footer.ts";
 import {
 	activateInteractiveCard,
+	type InteractiveCard,
 	isInteractiveCard,
 	resolveInteractiveCardAction,
 	visitInteractiveCards,
@@ -190,7 +191,7 @@ import { editInExternalEditor } from "./external-editor.ts";
 import { loadLystarSettings } from "./lystar-settings.ts";
 import { LystarTUI } from "./lystar-tui.ts";
 import { getModelSearchText } from "./model-search.ts";
-import { parseMouseEvent } from "./mouse.ts";
+import { parseMouseEvent, WheelScrollNormalizer } from "./mouse.ts";
 import {
 	isTuiVisibleSessionEntry,
 	SessionTranscriptSource,
@@ -544,6 +545,8 @@ export class InteractiveMode {
 	private cardExpansionSessionId: string | undefined;
 	private cardExpansion = new Map<string, boolean>();
 	private pendingCardClick: { row: number; column: number; component: Component; componentRow: number } | undefined;
+	private hoveredCard: InteractiveCard | undefined;
+	private readonly wheelScroll = new WheelScrollNormalizer();
 
 	// Thinking block visibility state
 	private hideThinkingBlock = false;
@@ -2944,6 +2947,21 @@ export class InteractiveMode {
 	// Key Handlers
 	// =========================================================================
 
+	private setHoveredCard(card: InteractiveCard | undefined): boolean {
+		const next = card?.setHovered ? card : undefined;
+		if (this.hoveredCard === next) return false;
+		this.hoveredCard?.setHovered?.(false);
+		this.hoveredCard = next;
+		this.hoveredCard?.setHovered?.(true);
+		return true;
+	}
+
+	private updateHoveredCard(row: number): boolean {
+		const hit = this.workspace.getComponentHitAtScreenRow(row);
+		const action = hit ? resolveInteractiveCardAction(hit.component, hit.row) : undefined;
+		return this.setHoveredCard(action?.type === "toggle" ? action.component : undefined);
+	}
+
 	private handleWorkspaceInput(data: string): { consume: true } | undefined {
 		if (!this.workspace.isFullscreen() || this.renderer.hasOverlay()) return undefined;
 
@@ -2951,17 +2969,22 @@ export class InteractiveMode {
 		if (mouse) {
 			if (mouse.shift) {
 				this.pendingCardClick = undefined;
+				if (this.setHoveredCard(undefined)) this.ui.requestRender();
 				return undefined;
 			}
-			if (mouse.button === "wheel-up") {
+			if (mouse.motion && mouse.button !== "left") {
+				if (this.updateHoveredCard(mouse.row)) this.ui.requestRender();
+				return undefined;
+			}
+			if (mouse.button === "wheel-up" || mouse.button === "wheel-down") {
 				this.pendingCardClick = undefined;
-				this.workspace.scrollBy(-this.workspace.getWheelScrollStep());
-				if (this.workspace.isAtTop()) void this.loadPreviousTranscriptPage();
-			} else if (mouse.button === "wheel-down") {
-				this.pendingCardClick = undefined;
-				this.workspace.scrollBy(this.workspace.getWheelScrollStep());
+				this.setHoveredCard(undefined);
+				const lines = this.wheelScroll.getDelta(mouse.button === "wheel-up" ? -1 : 1);
+				this.workspace.scrollBy(lines);
+				if (lines < 0 && this.workspace.isAtTop()) void this.loadPreviousTranscriptPage();
 			} else if (mouse.button === "left" && mouse.motion) {
 				this.pendingCardClick = undefined;
+				this.setHoveredCard(undefined);
 				return undefined;
 			} else if (mouse.button === "left" && mouse.released) {
 				const pending = this.pendingCardClick;
@@ -3361,7 +3384,7 @@ export class InteractiveMode {
 		};
 	}
 
-	private getWorkspaceStatusLabel(): string {
+	private getWorkspaceStatusLabel(): string | undefined {
 		if (this.session.isCompacting) return "压缩中";
 		switch (this.turnActivity?.phase) {
 			case "thinking":
@@ -3380,7 +3403,7 @@ export class InteractiveMode {
 		}
 		if (this.session.isBashRunning) return "执行中";
 		if (this.session.isStreaming) return "思考中";
-		return "等待输入";
+		return undefined;
 	}
 
 	private normalizeTurnFilePath(filePath: string): string {
@@ -3537,7 +3560,7 @@ export class InteractiveMode {
 		}
 		this.turnActivity = undefined;
 		this.activityBar.setState(undefined);
-		this.ui.requestRender();
+		this.ui.requestRender(tools.length > 0);
 	}
 
 	private subscribeToAgent(): void {
@@ -3924,7 +3947,7 @@ export class InteractiveMode {
 				}
 				void this.flushCompactionQueue({ willRetry: event.willRetry });
 				if (this.turnActivity) this.updateActivityBar(event.willRetry ? "thinking" : "waiting");
-				this.ui.requestRender();
+				this.ui.requestRender(true);
 				break;
 			}
 

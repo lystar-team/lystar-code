@@ -19,6 +19,7 @@ import subagentExtension, {
 	steerSubagent,
 } from "../src/extensions/subagent/index.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
+import { uiGlyphs } from "../src/modes/interactive/ui-glyphs.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
 const tempDirs: string[] = [];
@@ -235,7 +236,7 @@ describe("built-in subagent extension", () => {
 			} as never,
 		);
 		const rendered = stripAnsi(component.render(80).join("\n"));
-		expect(rendered).toContain("◆ Subagent · 并行 · 2 个 Agent · 用户级");
+		expect(rendered).toContain(`${uiGlyphs.tool} Subagent · 并行 · 2 个 Agent · 用户级`);
 		expect(rendered).not.toContain("parallel");
 		expect(rendered).not.toContain(" user");
 	});

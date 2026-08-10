@@ -394,7 +394,7 @@ export function createApplyPatchToolDefinition(options?: {
 			const summary = getToolSummary(context.lastComponent);
 			summary.setText(
 				formatToolSummary({
-					icon: uiGlyphs.edit,
+					icon: uiGlyphs.patch,
 					subject: details ? `${details.files.length} 个文件` : "",
 					isPartial: context.isPartial,
 					isError: context.isError,

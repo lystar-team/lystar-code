@@ -9,6 +9,8 @@
 		allowTransparency: false,
 		convertEol: false,
 		cursorBlink: true,
+		cursorStyle: "bar",
+		cursorWidth: 1,
 		fontFamily: '"LYStar Mono CJK", "Cascadia Mono", Consolas, monospace',
 		fontSize: 15,
 		fontWeight: "400",

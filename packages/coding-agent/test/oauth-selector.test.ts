@@ -4,6 +4,7 @@ import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { OAuthSelectorComponent } from "../src/modes/interactive/components/oauth-selector.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { uiGlyphs } from "../src/modes/interactive/ui-glyphs.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
 describe("OAuthSelectorComponent", () => {
@@ -81,7 +82,7 @@ describe("OAuthSelectorComponent", () => {
 
 		const output = stripAnsi(selector.render(120).join("\n"));
 		expect(output).toContain("未配置");
-		expect(output).not.toContain("✓ 已配置");
+		expect(output).not.toContain(`${uiGlyphs.success} 已配置`);
 	});
 
 	it("shows OAuth auth distinctly in the API key selector", () => {
@@ -105,7 +106,7 @@ describe("OAuthSelectorComponent", () => {
 		);
 
 		const output = stripAnsi(selector.render(120).join("\n"));
-		expect(output).toContain("✓ 环境变量：OPENAI_API_KEY");
+		expect(output).toContain(`${uiGlyphs.success} 环境变量：OPENAI_API_KEY`);
 		expect(output).not.toContain("未配置");
 	});
 
@@ -124,7 +125,7 @@ describe("OAuthSelectorComponent", () => {
 			() => {},
 		);
 
-		expect(stripAnsi(selector.render(120).join("\n"))).toContain("✓ key in models.json");
+		expect(stripAnsi(selector.render(120).join("\n"))).toContain(`${uiGlyphs.success} key in models.json`);
 	});
 
 	it("shows models.json command auth as configured", () => {
@@ -142,6 +143,6 @@ describe("OAuthSelectorComponent", () => {
 			() => {},
 		);
 
-		expect(stripAnsi(selector.render(120).join("\n"))).toContain("✓ command in models.json");
+		expect(stripAnsi(selector.render(120).join("\n"))).toContain(`${uiGlyphs.success} command in models.json`);
 	});
 });

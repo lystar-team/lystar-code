@@ -6,6 +6,7 @@ import { dirname } from "path";
 import { type Static, Type } from "typebox";
 import { formatToolSummary, ToolSummary } from "../../modes/interactive/components/tool-summary.ts";
 import { getLanguageFromPath, highlightCode, type Theme } from "../../modes/interactive/theme/theme.ts";
+import { uiGlyphs } from "../../modes/interactive/ui-glyphs.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
 import { resolveToCwd } from "./path-utils.ts";
@@ -195,7 +196,7 @@ function formatWriteCall(
 	const detail = deletions > 0 ? `+${additions} -${deletions}` : `+${additions}`;
 	const successLabel = options.details?.operation === "created" ? "已创建" : "已写入";
 	let text = formatToolSummary({
-		icon: options.details?.operation === "created" ? "+" : "✎",
+		icon: uiGlyphs.write,
 		subject: pathDisplay,
 		isPartial: options.isPartial,
 		isError: options.isError,

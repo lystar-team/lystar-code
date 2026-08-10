@@ -7,6 +7,8 @@ export interface MouseEvent {
 	released: boolean;
 }
 
+export { type WheelDirection, WheelScrollNormalizer } from "@earendil-works/pi-tui";
+
 export function parseMouseEvent(data: string): MouseEvent | undefined {
 	const match = data.match(/^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/);
 	if (!match) return undefined;

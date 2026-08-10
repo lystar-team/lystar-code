@@ -822,6 +822,17 @@ describe("Editor component", () => {
 			assert.strictEqual(visibleWidth(contentLine), width);
 		});
 
+		it("leaves cursor drawing to the terminal when the hardware cursor is enabled", () => {
+			const tui = createTestTUI();
+			tui.setShowHardwareCursor(true);
+			const editor = new Editor(tui, defaultEditorTheme);
+			editor.focused = true;
+			editor.setText("text");
+
+			const contentLine = editor.render(20)[1]!;
+			assert.ok(!contentLine.includes("\x1b[7m"));
+		});
+
 		it("does not exceed terminal width with emoji at wrap boundary", () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 			const width = 11;

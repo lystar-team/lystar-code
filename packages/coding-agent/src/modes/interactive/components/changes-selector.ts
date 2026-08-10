@@ -6,7 +6,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import { parseMouseEvent } from "../mouse.ts";
+import { parseMouseEvent, WheelScrollNormalizer } from "../mouse.ts";
 import { theme } from "../theme/theme.ts";
 import { uiGlyphs } from "../ui-glyphs.ts";
 import { keyText } from "./keybinding-hints.ts";
@@ -52,6 +52,7 @@ export class ChangesSelectorComponent implements Component, Focusable {
 	private lastFileStartIndex = 0;
 	private loadingPath: string | undefined;
 	private readonly loadedWorkspaceDiffs = new Set<string>();
+	private readonly wheelScroll = new WheelScrollNormalizer();
 	private readonly data: ChangesSelectorData;
 	private readonly getHeight: () => number;
 	private readonly requestRender: () => void;
@@ -184,9 +185,12 @@ export class ChangesSelectorComponent implements Component, Focusable {
 		const mouse = parseMouseEvent(data);
 		if (mouse) {
 			if (mouse.shift) return;
-			if (mouse.button === "wheel-up") this.diffScrollTop = Math.max(0, this.diffScrollTop - 3);
-			else if (mouse.button === "wheel-down") this.diffScrollTop += 3;
-			else if (mouse.button === "left" && !mouse.released && !this.fullDiff) {
+			if (mouse.button === "wheel-up" || mouse.button === "wheel-down") {
+				this.diffScrollTop = Math.max(
+					0,
+					this.diffScrollTop + this.wheelScroll.getDelta(mouse.button === "wheel-up" ? -1 : 1),
+				);
+			} else if (mouse.button === "left" && !mouse.released && !this.fullDiff) {
 				const localRow = mouse.row - this.overlayTop;
 				const offset = localRow - this.lastListStart;
 				if (offset >= 0 && offset < this.lastListCount) {

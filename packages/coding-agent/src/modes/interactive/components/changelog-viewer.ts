@@ -6,13 +6,14 @@ import {
 	type MarkdownTheme,
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
-import { parseMouseEvent } from "../mouse.ts";
+import { parseMouseEvent, WheelScrollNormalizer } from "../mouse.ts";
 import { theme } from "../theme/theme.ts";
 import { keyText } from "./keybinding-hints.ts";
 
 export class ChangelogViewerComponent implements Component, Focusable {
 	private _focused = false;
 	private scrollTop = 0;
+	private readonly wheelScroll = new WheelScrollNormalizer();
 	private readonly markdown: Markdown;
 	private readonly getHeight: () => number;
 	private readonly requestRender: () => void;
@@ -71,8 +72,12 @@ export class ChangelogViewerComponent implements Component, Focusable {
 		const mouse = parseMouseEvent(data);
 		if (mouse) {
 			if (mouse.shift) return;
-			if (mouse.button === "wheel-up") this.scrollTop = Math.max(0, this.scrollTop - 3);
-			else if (mouse.button === "wheel-down") this.scrollTop += 3;
+			if (mouse.button === "wheel-up" || mouse.button === "wheel-down") {
+				this.scrollTop = Math.max(
+					0,
+					this.scrollTop + this.wheelScroll.getDelta(mouse.button === "wheel-up" ? -1 : 1),
+				);
+			}
 			this.requestRender();
 			return;
 		}

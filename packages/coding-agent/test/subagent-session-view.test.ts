@@ -100,7 +100,8 @@ describe("SubagentSessionViewComponent", () => {
 		view.handleInput("\x1b[<64;10;4M");
 		expect(view.render(40).join("\n")).toContain("line-27");
 		view.handleInput("\x1b[<65;10;4M");
-		expect(view.render(40).join("\n")).toContain("line-30");
+		expect(view.render(40).join("\n")).toContain("line-28");
+		expect(view.render(40).join("\n")).not.toContain("line-30");
 	});
 
 	it("toggles transcript cards from any card row and preserves state across rebuilds", () => {

@@ -6,6 +6,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
 import { BashExecutionComponent } from "../src/modes/interactive/components/bash-execution.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { uiGlyphs } from "../src/modes/interactive/ui-glyphs.ts";
 
 /** Minimal TUI stub that only exposes terminal.columns */
 function createTuiStub(columns: number): { columns: number; stub: any } {
@@ -43,7 +44,7 @@ describe("BashExecutionComponent width handling (#2569)", () => {
 		expect(collapsed.join("\n")).toContain("$");
 		expect(collapsed.join("\n")).toContain("generate output");
 		expect(collapsed.at(-1)).toContain("─");
-		expect(collapsed.join("\n")).not.toContain("▣");
+		expect(collapsed.join("\n")).not.toContain(uiGlyphs.image);
 		expect(collapsed.join("\n")).not.toContain("line-100");
 		expect(component.isExpanded()).toBe(false);
 

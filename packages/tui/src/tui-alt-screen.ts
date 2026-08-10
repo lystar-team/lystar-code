@@ -26,6 +26,7 @@ import {
 	type Component,
 	CURSOR_MARKER,
 	compositeTuiLine,
+	isTerminalMouseInput,
 	TuiBase,
 	type TuiInputListenerResult,
 	type TuiStopOptions,
@@ -41,6 +42,7 @@ import {
 	stripTerminalSequences,
 	visibleWidth,
 } from "./utils.ts";
+import { WheelScrollNormalizer } from "./wheel-scroll.ts";
 
 const ENTER_ALT_SCREEN = "\x1b[?1049h";
 const EXIT_ALT_SCREEN = "\x1b[?1049l";
@@ -118,8 +120,12 @@ interface ScrollbarTarget {
 export interface TuiAltScreenOptions {
 	/** Number of logical lines moved for each mouse-wheel event. */
 	wheelScrollLines?: number;
+	/** Normalize discrete wheel, precision trackpad, and touch-generated wheel bursts. */
+	adaptiveWheelScroll?: boolean;
 	/** Capture mouse events for viewport scrolling and application-owned text selection. */
 	mouse?: boolean;
+	/** Forward pointer movement without a pressed button. */
+	allMouseMotion?: boolean;
 	/** Open an OSC 8 hyperlink activated with a primary-button click. */
 	openUrl?: (url: string) => void;
 	/** Handle an unmodified secondary-button press for clipboard paste. Currently enabled on Windows only. */
@@ -157,7 +163,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private pressedUrl?: string;
 	private selectionDragged = false;
 	private readonly wheelScrollLines: number;
+	private readonly wheelScrollNormalizer: WheelScrollNormalizer | undefined;
 	private readonly mouseEnabled: boolean;
+	private readonly allMouseMotion: boolean;
 	private readonly openUrl?: (url: string) => void;
 	private lastFullRedrawAt = Number.NEGATIVE_INFINITY;
 	private readonly onRightClickPaste?: () => void;
@@ -178,7 +186,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.implicitScrollView = new ScrollView(this.implicitDocument, { follow: "end", primary: true });
 		this.flashes = new AltScreenFlashContainer(() => this.requestRender());
 		this.wheelScrollLines = Math.max(1, Math.floor(options.wheelScrollLines ?? 1));
+		this.wheelScrollNormalizer = options.adaptiveWheelScroll ? new WheelScrollNormalizer() : undefined;
 		this.mouseEnabled = options.mouse ?? true;
+		this.allMouseMotion = options.allMouseMotion ?? false;
 		this.openUrl = options.openUrl;
 		this.onRightClickPaste = options.onRightClickPaste;
 		this.addInputListener((data) => this.handleViewportInput(data));
@@ -228,6 +238,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	protected override beforeTerminalStart(): void {
+		this.wheelScrollNormalizer?.reset();
 		this.stopSelectionAutoScroll();
 		this.selectionPressActive = false;
 		this.stopScrollbarHover();
@@ -254,12 +265,13 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const term = process.env.TERM?.toLowerCase() ?? "";
 		// Multiplexers can lag when every pointer movement is forwarded. Button-motion
 		// tracking preserves clicks, wheel events, selections, and scrollbar dragging.
-		const mouseSequence =
-			process.env.TMUX !== undefined ||
-			process.env.ZELLIJ !== undefined ||
-			process.env.STY !== undefined ||
-			term.startsWith("tmux") ||
-			term.startsWith("screen")
+		const mouseSequence = this.allMouseMotion
+			? ENABLE_ALL_MOTION_MOUSE
+			: process.env.TMUX !== undefined ||
+					process.env.ZELLIJ !== undefined ||
+					process.env.STY !== undefined ||
+					term.startsWith("tmux") ||
+					term.startsWith("screen")
 				? ENABLE_BUTTON_MOTION_MOUSE
 				: ENABLE_ALL_MOTION_MOUSE;
 		this.terminal.write(
@@ -455,7 +467,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			if (!handled) this.handleSelectionMouseEvent(mouseEvent);
 			return { consume: true };
 		}
-		if (this.isMouseSequence(data)) return { consume: true };
+		if (isTerminalMouseInput(data)) return { consume: true };
 
 		const keybindings = getKeybindings();
 		const isRelease = isKeyRelease(data);
@@ -526,7 +538,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	private routeWheel(event: WheelEvent): void {
-		let remaining = event.direction * this.wheelScrollLines;
+		let remaining = this.wheelScrollNormalizer?.getDelta(event.direction) ?? event.direction * this.wheelScrollLines;
 		const seen = new Set<ScrollView>();
 		for (const scrollView of this.currentLayout ? getScrollViewsAt(this.currentLayout, event.x, event.y) : []) {
 			seen.add(scrollView);
@@ -999,10 +1011,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			const after = sliceByColumn(line, columns.end, Math.max(0, lineWidth - columns.end), true);
 			return `${before}${this.applySelectionHighlight(selected)}${after}`;
 		});
-	}
-
-	private isMouseSequence(data: string): boolean {
-		return /^\x1b\[<\d+;\d+;\d+[Mm]$/.test(data) || (data.length === 6 && data.startsWith("\x1b[M"));
 	}
 
 	private compositeFlashes(screen: string[], width: number, height: number): string[] {

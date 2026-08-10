@@ -384,22 +384,6 @@ describe("LYStar workspace", () => {
 		expect(rendered).not.toContain("widget-");
 	});
 
-	it("uses one-line wheel scrolling at every viewport height", () => {
-		let height = 3;
-		const workspace = new LystarWorkspace({
-			getHeight: () => height,
-			header: textContainer("header"),
-			scrollContainers: [textContainer(...Array.from({ length: 100 }, (_, index) => `line-${index}`))],
-			bottomContainers: [textContainer("editor")],
-			fullscreen: true,
-		});
-
-		for (height of [3, 8, 24, 60]) {
-			workspace.render(80);
-			expect(workspace.getWheelScrollStep()).toBe(1);
-		}
-	});
-
 	it("renders and hides the fullscreen scrollbar", () => {
 		const workspace = new LystarWorkspace({
 			getHeight: () => 8,
@@ -415,7 +399,7 @@ describe("LYStar workspace", () => {
 		expect(stripAnsi(workspace.render(40).join("\n"))).not.toMatch(/[│┃]/);
 	});
 
-	it("moves one line per wheel step through a long history", () => {
+	it("moves by the requested logical lines through a long history", () => {
 		const workspace = new LystarWorkspace({
 			getHeight: () => 24,
 			header: textContainer("header"),
@@ -430,11 +414,11 @@ describe("LYStar workspace", () => {
 		workspace.scrollToTop();
 		expect(topLine()).toBe("line-0");
 		for (let index = 1; index <= 80; index++) {
-			workspace.scrollBy(workspace.getWheelScrollStep());
+			workspace.scrollBy(1);
 			expect(topLine()).toBe(`line-${index}`);
 		}
 		for (let index = 79; index >= 0; index--) {
-			workspace.scrollBy(-workspace.getWheelScrollStep());
+			workspace.scrollBy(-1);
 			expect(topLine()).toBe(`line-${index}`);
 		}
 	});

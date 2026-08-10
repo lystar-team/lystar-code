@@ -13,6 +13,7 @@ import {
 	InteractiveMode,
 } from "../src/modes/interactive/interactive-mode.ts";
 import { LystarTUI } from "../src/modes/interactive/lystar-tui.ts";
+import { WheelScrollNormalizer } from "../src/modes/interactive/mouse.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 const clipboardMocks = vi.hoisted(() => ({
@@ -71,7 +72,9 @@ describe("createInteractiveTui", () => {
 		altTui.start();
 		await altTerminal.waitForRender();
 		expect(altTerminal.writes.some((write) => write.includes("\x1b[?1049h"))).toBe(true);
+		expect(altTerminal.writes.some((write) => write.includes("\x1b[5 q"))).toBe(true);
 		altTui.stop();
+		expect(altTerminal.writes.some((write) => write.includes("\x1b[0 q"))).toBe(true);
 	});
 
 	it("routes LYStar workspace viewport input before the inherited viewport", async () => {
@@ -95,6 +98,7 @@ describe("createInteractiveTui", () => {
 			renderer: ReturnType<typeof createInteractiveTui>;
 			ui: TUI;
 			keybindings: KeybindingsManager;
+			wheelScroll: WheelScrollNormalizer;
 			loadPreviousTranscriptPage: () => Promise<void>;
 		};
 		const handleWorkspaceInput = (
@@ -102,7 +106,7 @@ describe("createInteractiveTui", () => {
 				handleWorkspaceInput(this: WorkspaceInputContext, data: string): { consume: true } | undefined;
 			}
 		).handleWorkspaceInput;
-		const context = {
+		const context = Object.assign(Object.create(InteractiveMode.prototype), {
 			workspace,
 			renderer: undefined as unknown as ReturnType<typeof createInteractiveTui>,
 			ui: undefined as unknown as TUI,
@@ -110,8 +114,9 @@ describe("createInteractiveTui", () => {
 				"tui.altScreen.halfPageUp": "ctrl+u",
 				"tui.altScreen.halfPageDown": "ctrl+d",
 			}),
+			wheelScroll: new WheelScrollNormalizer(),
 			loadPreviousTranscriptPage: async () => {},
-		};
+		}) as WorkspaceInputContext;
 		const renderer = createInteractiveTui({
 			tuiMode: "fullscreen",
 			showHardwareCursor: false,
@@ -132,20 +137,20 @@ describe("createInteractiveTui", () => {
 			terminal.sendInput("\x1b[<64;10;4M");
 			await terminal.waitForRender();
 
-			expect(terminal.getViewport()[1]).toContain("line-23");
+			expect(terminal.getViewport()[1]).toContain("line-21");
 			expect(workspace.isFollowing()).toBe(false);
 
 			terminal.sendInput("\x15");
-			expect(workspace.render(terminal.columns)[1]).toContain("line-20");
+			expect(workspace.render(terminal.columns)[1]).toContain("line-18");
 
 			terminal.sendInput("\x1b[5~");
-			expect(workspace.render(terminal.columns)[1]).toContain("line-16");
+			expect(workspace.render(terminal.columns)[1]).toContain("line-14");
 
 			terminal.sendInput("\x04");
-			expect(workspace.render(terminal.columns)[1]).toContain("line-19");
+			expect(workspace.render(terminal.columns)[1]).toContain("line-17");
 
 			terminal.sendInput("\x1b[6~");
-			expect(workspace.render(terminal.columns)[1]).toContain("line-23");
+			expect(workspace.render(terminal.columns)[1]).toContain("line-21");
 
 			terminal.sendInput("\x1b[H");
 			expect(workspace.render(terminal.columns)[1]).toContain("line-0");
@@ -218,7 +223,7 @@ describe("createInteractiveTui", () => {
 				handleWorkspaceInput(this: WorkspaceInputContext, data: string): { consume: true } | undefined;
 			}
 		).handleWorkspaceInput;
-		const context = {
+		const context = Object.assign(Object.create(InteractiveMode.prototype), {
 			workspace,
 			renderer: undefined as unknown as LystarTUI,
 			ui: undefined as unknown as TUI,
@@ -228,7 +233,7 @@ describe("createInteractiveTui", () => {
 			toolOutputExpanded: false,
 			openSubagentSession: () => {},
 			rememberCardExpansion: () => {},
-		};
+		}) as WorkspaceInputContext;
 		const renderer = new LystarTUI(terminal, false, undefined, {
 			openUrl: (value) => openedUrls.push(value),
 			workspaceInputHandler: (data) => handleWorkspaceInput.call(context, data),

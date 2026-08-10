@@ -167,7 +167,7 @@ describe("LYStar TUI", () => {
 		tui.stop();
 	});
 
-	it("caps paced updates at about 30 frames per second", async () => {
+	it("caps paced updates at about 60 frames per second", async () => {
 		const terminal = new CaptureTerminal();
 		const component = new ChangingComponent();
 		const tui = new LystarTUI(terminal);
@@ -176,16 +176,16 @@ describe("LYStar TUI", () => {
 		await sleep(50);
 		component.renderCount = 0;
 
-		for (let index = 0; index < 12; index++) {
+		for (let index = 0; index < 24; index++) {
 			component.text = `paced-${index}`;
 			tui.requestRender();
-			await sleep(17);
+			await sleep(8);
 		}
 		await sleep(50);
 
 		expect(component.renderCount).toBeGreaterThan(0);
-		expect(component.renderCount).toBeLessThanOrEqual(8);
-		expect(terminal.writes.join("")).toContain("paced-11");
+		expect(component.renderCount).toBeLessThanOrEqual(16);
+		expect(terminal.writes.join("")).toContain("paced-23");
 		tui.stop();
 	});
 });

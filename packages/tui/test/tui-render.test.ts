@@ -130,6 +130,29 @@ describe("TUI render scheduling", () => {
 		assert.deepStrictEqual(component.lines, ["typed"]);
 		tui.stop();
 	});
+
+	it("coalesces high-frequency pointer input into one frame", async () => {
+		const terminal = new VirtualTerminal(40, 10);
+		const tui: TUI = new TuiMainScreen(terminal);
+		const component = new InputComponent();
+		component.lines = ["initial"];
+		tui.addChild(component);
+		tui.setFocus(component);
+		tui.start();
+		tui.renderNow();
+		const renderCountBeforeInput = component.renderCount;
+
+		terminal.sendInput("\x1b[<65;10;4M");
+		await new Promise<void>((resolve) => process.nextTick(resolve));
+		terminal.sendInput("\x1b[<65;10;5M");
+		await new Promise<void>((resolve) => process.nextTick(resolve));
+		terminal.sendInput("\x1b[<65;10;6M");
+		await new Promise((resolve) => setTimeout(resolve, 20));
+
+		assert.strictEqual(component.renderCount, renderCountBeforeInput + 1);
+		assert.deepStrictEqual(component.lines, ["\x1b[<65;10;6M"]);
+		tui.stop();
+	});
 });
 
 describe("TUI debug logging", () => {

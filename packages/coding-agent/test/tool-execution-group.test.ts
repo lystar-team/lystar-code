@@ -50,16 +50,16 @@ describe("ToolExecutionGroupComponent", () => {
 		expect(lines[0]).toContain(uiGlyphs.list);
 		expect(lines[0]).toContain(uiGlyphs.expanded);
 		expect(lines[0]).toContain("正在执行 2 条命令 · 已完成 0/2");
-		expect(lines[2]).toContain("npm test");
-		expect(lines[3]).toContain("─");
-		expect(lines[5]).toContain("git status");
-		expect(lines.every((line) => line.trim().length > 0)).toBe(true);
+		expect(lines[1]).toBe("");
+		expect(lines[3]).toContain("npm test");
+		expect(lines[4]).toContain("─");
+		expect(lines[6]).toContain("git status");
 
 		first.updateResult({ content: [{ type: "text", text: "ok" }], isError: false });
 		lines = group.render(100).map(stripAnsi);
 		expect(lines[0]).toContain("已完成 1/2");
-		expect(lines[2]).toContain("npm test");
-		expect(lines[5]).toContain("git status");
+		expect(lines[3]).toContain("npm test");
+		expect(lines[6]).toContain("git status");
 
 		second.updateResult({ content: [{ type: "text", text: "failed" }], isError: true });
 		lines = group.render(100).map(stripAnsi);
@@ -100,16 +100,18 @@ describe("ToolExecutionGroupComponent", () => {
 		group.render(100);
 
 		expect(group.getExpansionTargetAtRow(0)).toEqual({ component: group, row: 0 });
-		expect(group.getExpansionTargetAtRow(1)).toEqual({ component: first, row: 0 });
-		expect(group.getExpansionTargetAtRow(2)).toEqual({ component: first, row: 1 });
-		expect(group.getExpansionTargetAtRow(3)).toBeUndefined();
-		expect(group.getExpansionTargetAtRow(4)).toEqual({ component: second, row: 0 });
-		expect(group.getExpansionTargetAtRow(5)).toEqual({ component: second, row: 1 });
+		expect(group.getExpansionTargetAtRow(1)).toBeUndefined();
+		expect(group.getExpansionTargetAtRow(2)).toEqual({ component: first, row: 0 });
+		expect(group.getExpansionTargetAtRow(3)).toEqual({ component: first, row: 1 });
+		expect(group.getExpansionTargetAtRow(4)).toBeUndefined();
+		expect(group.getExpansionTargetAtRow(5)).toEqual({ component: second, row: 0 });
+		expect(group.getExpansionTargetAtRow(6)).toEqual({ component: second, row: 1 });
 		expect(group.getCardClickActionAtRow(0)).toEqual({ type: "toggle", component: group });
-		expect(group.getCardClickActionAtRow(1)).toEqual({ type: "toggle", component: first });
+		expect(group.getCardClickActionAtRow(1)).toBeUndefined();
 		expect(group.getCardClickActionAtRow(2)).toEqual({ type: "toggle", component: first });
-		expect(group.getCardClickActionAtRow(3)).toBeUndefined();
-		expect(group.getCardClickActionAtRow(4)).toEqual({ type: "toggle", component: second });
+		expect(group.getCardClickActionAtRow(3)).toEqual({ type: "toggle", component: first });
+		expect(group.getCardClickActionAtRow(4)).toBeUndefined();
+		expect(group.getCardClickActionAtRow(5)).toEqual({ type: "toggle", component: second });
 
 		group.setExpanded(false);
 		expect(group.isExpanded()).toBe(false);

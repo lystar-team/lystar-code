@@ -7,7 +7,7 @@ import {
 	matchesKey,
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
-import { parseMouseEvent } from "../mouse.ts";
+import { parseMouseEvent, WheelScrollNormalizer } from "../mouse.ts";
 import { theme } from "../theme/theme.ts";
 import type { CustomEditor } from "./custom-editor.ts";
 import { activateInteractiveCard, resolveInteractiveCardAction, visitInteractiveCards } from "./interactive-card.ts";
@@ -30,6 +30,7 @@ export class SubagentSessionViewComponent implements Component, Focusable {
 	private lastBodyHeight = 0;
 	private componentRanges: TranscriptComponentRange[] = [];
 	private readonly cardExpansion = new Map<string, boolean>();
+	private readonly wheelScroll = new WheelScrollNormalizer();
 	private pendingCardClick: { row: number; column: number; component: Component; componentRow: number } | undefined;
 	private pendingLinkClick: { row: number; column: number } | undefined;
 	private status: string;
@@ -210,14 +211,10 @@ export class SubagentSessionViewComponent implements Component, Focusable {
 				}
 				return;
 			}
-			if (mouse.button === "wheel-up") {
+			if (mouse.button === "wheel-up" || mouse.button === "wheel-down") {
 				this.pendingCardClick = undefined;
 				this.pendingLinkClick = undefined;
-				this.scrollBy(-3);
-			} else if (mouse.button === "wheel-down") {
-				this.pendingCardClick = undefined;
-				this.pendingLinkClick = undefined;
-				this.scrollBy(3);
+				this.scrollBy(this.wheelScroll.getDelta(mouse.button === "wheel-up" ? -1 : 1));
 			}
 			return;
 		}

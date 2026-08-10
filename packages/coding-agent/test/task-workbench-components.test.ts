@@ -259,10 +259,10 @@ describe("task workbench components", () => {
 		expect(rendered).not.toContain("正在读取 Diff");
 	});
 
-	it("uses real runtime state instead of inferring a task title", () => {
+	it("shows runtime activity and leaves the idle header to the current path", () => {
 		const getWorkspaceStatusLabel = (
 			InteractiveMode.prototype as unknown as {
-				getWorkspaceStatusLabel(this: unknown): string;
+				getWorkspaceStatusLabel(this: unknown): string | undefined;
 			}
 		).getWorkspaceStatusLabel;
 		const context = Object.assign(Object.create(InteractiveMode.prototype), {
@@ -271,12 +271,50 @@ describe("task workbench components", () => {
 			},
 			turnActivity: undefined,
 		});
-		expect(getWorkspaceStatusLabel.call(context)).toBe("等待输入");
+		expect(getWorkspaceStatusLabel.call(context)).toBeUndefined();
 		context.turnActivity = { phase: "runningTool" };
 		expect(getWorkspaceStatusLabel.call(context)).toBe("执行中");
 		context.turnActivity = undefined;
 		context.runtimeHost.session.isStreaming = true;
 		expect(getWorkspaceStatusLabel.call(context)).toBe("思考中");
+	});
+
+	it("updates the hovered interactive card from pointer movement", () => {
+		let hovered = false;
+		const card = {
+			render: () => ["card"],
+			invalidate: () => {},
+			isExpanded: () => false,
+			setExpanded: () => {},
+			setHovered: (value: boolean) => {
+				hovered = value;
+			},
+		};
+		const requestRender = vi.fn();
+		const workspace = {
+			isFullscreen: () => true,
+			getComponentHitAtScreenRow: () => ({ component: card, row: 0 }),
+		};
+		const context = Object.assign(Object.create(InteractiveMode.prototype), {
+			workspace,
+			renderer: { hasOverlay: () => false },
+			ui: { requestRender },
+			hoveredCard: undefined,
+		});
+		const handleWorkspaceInput = (
+			InteractiveMode.prototype as unknown as {
+				handleWorkspaceInput(this: typeof context, data: string): { consume: true } | undefined;
+			}
+		).handleWorkspaceInput;
+
+		expect(handleWorkspaceInput.call(context, "\x1b[<35;3;2M")).toBeUndefined();
+		expect(hovered).toBe(true);
+		expect(requestRender).toHaveBeenCalledOnce();
+
+		workspace.getComponentHitAtScreenRow = () => undefined as never;
+		handleWorkspaceInput.call(context, "\x1b[<35;3;3M");
+		expect(hovered).toBe(false);
+		expect(requestRender).toHaveBeenCalledTimes(2);
 	});
 
 	it("restores stable card expansion within the same session", () => {
@@ -429,6 +467,7 @@ describe("task workbench components", () => {
 		finishTurnActivity.call(context);
 		expect(context.lastTurnFiles).toEqual([{ path: "src/index.ts", additions: 5, deletions: 1 }]);
 		expect(chatContainer.children.filter((child) => child instanceof TurnSummaryComponent)).toHaveLength(1);
+		expect(ui.requestRender).toHaveBeenCalledWith(true);
 		finishTurnActivity.call(context);
 		expect(chatContainer.children.filter((child) => child instanceof TurnSummaryComponent)).toHaveLength(1);
 	});

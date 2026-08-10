@@ -23,6 +23,7 @@ import {
 	resolveInteractiveCardAction,
 } from "./interactive-card.ts";
 import type { SubagentRunTarget } from "./subagent-run.ts";
+import { renderCardHover } from "./tool-card-layout.ts";
 import { formatToolSummary, getToolSummary } from "./tool-summary.ts";
 
 export interface ToolExecutionOptions {
@@ -47,6 +48,7 @@ export class ToolExecutionComponent extends Container {
 	private toolCallId: string;
 	private args: any;
 	private expanded = false;
+	private hovered = false;
 	private showImages: boolean;
 	private imageWidthCells: number;
 	private isPartial = true;
@@ -253,6 +255,12 @@ export class ToolExecutionComponent extends Container {
 		this.updateDisplay();
 	}
 
+	setHovered(hovered: boolean): void {
+		if (this.hovered === hovered) return;
+		this.hovered = hovered;
+		this.renderVersion++;
+	}
+
 	isExpanded(): boolean {
 		return this.expanded;
 	}
@@ -342,12 +350,12 @@ export class ToolExecutionComponent extends Container {
 					lines.push(...imageComponent.render(width));
 				}
 			}
-			const rendered = this.renderExpansionIndicator(lines, width);
+			const rendered = renderCardHover(this.renderExpansionIndicator(lines, width), width, this.hovered);
 			this.lastRenderedLineCount = rendered.length;
 			return rendered;
 		}
 
-		const rendered = this.renderExpansionIndicator(super.render(width), width);
+		const rendered = renderCardHover(this.renderExpansionIndicator(super.render(width), width), width, this.hovered);
 		this.lastRenderedLineCount = rendered.length;
 		return rendered;
 	}

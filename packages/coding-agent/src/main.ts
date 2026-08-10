@@ -688,15 +688,15 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	if (args.includes("--windows-terminal-smoke")) {
-		console.log("LYStar 终端自检：中文 ✓ ✗ ✎ ⌕ ≡ ▶ ◆ →");
+		console.log("LYStar 终端自检：中文 🟢 🔴 ✏️ 🔍 📋 ⏳ ⚙️ →");
 		return;
 	}
 
 	if (args.includes("--windows-terminal-ui-smoke")) {
 		console.log(`\u001b[38;2;85;194;255m${APP_TITLE} Windows Terminal\u001b[0m`);
-		console.log("┌────────────────────────────────────┐");
-		console.log("│ 中文输入与显示  ✓  ✗  ✎  ⌕  ≡  ▶  ◆  → │");
-		console.log("└────────────────────────────────────┘");
+		console.log(`┌${"─".repeat(47)}┐`);
+		console.log("│ 中文输入与显示  🟢  🔴  ✏️  🔍  📋  ⏳  ⚙️  → │");
+		console.log(`└${"─".repeat(47)}┘`);
 		await new Promise((resolve) => setTimeout(resolve, 8_000));
 		return;
 	}

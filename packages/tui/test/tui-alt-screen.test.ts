@@ -162,6 +162,20 @@ describe("TuiAltScreen", () => {
 		tui.stop();
 	});
 
+	it("uses adaptive wheel deltas only when requested", async () => {
+		const terminal = new VirtualTerminal(20, 4);
+		const tui = new TuiAltScreen(terminal, undefined, undefined, { adaptiveWheelScroll: true });
+		tui.addChild(new Text(Array.from({ length: 10 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0));
+		tui.start();
+		await terminal.waitForRender();
+
+		terminal.sendInput("\x1b[<64;1;1M");
+		await terminal.waitForRender();
+		assert.strictEqual(tui.viewportTop, 3);
+
+		tui.stop();
+	});
+
 	it("uses button-motion tracking inside terminal multiplexers", () => {
 		const environmentKeys = ["TMUX", "ZELLIJ", "STY", "TERM"] as const;
 		const previousEnvironment = new Map(environmentKeys.map((key) => [key, process.env[key]]));
@@ -200,6 +214,18 @@ describe("TuiAltScreen", () => {
 				assert.ok(writes.includes("\x1b[?1006h"), `${name} should enable SGR mouse encoding`);
 				tui.stop();
 			}
+
+			for (const key of environmentKeys) delete process.env[key];
+			process.env.TMUX = "/tmp/tmux/default,1,0";
+			const hoverTerminal = new RecordingTerminal();
+			const hoverTui = new TuiAltScreen(hoverTerminal, undefined, undefined, { allMouseMotion: true });
+			hoverTui.start();
+			const hoverWrites = hoverTerminal.events
+				.filter((event): event is { type: "write"; data: string } => event.type === "write")
+				.map((event) => event.data)
+				.join("");
+			assert.ok(hoverWrites.includes("\x1b[?1003h"));
+			hoverTui.stop();
 		} finally {
 			for (const key of environmentKeys) {
 				const value = previousEnvironment.get(key);

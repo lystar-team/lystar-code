@@ -141,3 +141,4 @@ export {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "./utils.ts";
+export { type WheelDirection, WheelScrollNormalizer } from "./wheel-scroll.ts";

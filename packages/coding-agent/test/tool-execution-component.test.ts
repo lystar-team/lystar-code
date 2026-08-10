@@ -11,6 +11,7 @@ import { createApplyPatchToolDefinition } from "../src/extensions/apply-patch/in
 import { SubagentResultComponent } from "../src/modes/interactive/components/subagent-run.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
+import { uiGlyphs } from "../src/modes/interactive/ui-glyphs.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
 function createBaseToolDefinition(name = "custom_tool"): ToolDefinition {
@@ -161,8 +162,8 @@ describe("ToolExecutionComponent parity", () => {
 		const collapsed = stripAnsi(component.render(100).join("\n"));
 		expect(collapsed).toContain("已应用补丁");
 		expect(collapsed).toContain("3 个文件  +2 -2");
-		expect(collapsed).toContain("▸");
-		expect(collapsed).not.toContain("▾");
+		expect(collapsed).toContain(uiGlyphs.collapsed);
+		expect(collapsed).not.toContain(uiGlyphs.expanded);
 		expect(collapsed).toContain("docs/new.md  +1 -0");
 		expect(collapsed).toContain("src/index.ts  +1 -1");
 		expect(collapsed).toContain("src/old.ts  +0 -1");
@@ -418,14 +419,19 @@ describe("ToolExecutionComponent parity", () => {
 		expect(collapsedLines).toHaveLength(2);
 		expect(collapsed).toContain("$ 已运行");
 		expect(collapsed).toContain("generate output");
-		expect(collapsed).toContain("▸");
-		expect(collapsed).not.toContain("▾");
-		expect(collapsed).not.toContain("▣");
+		expect(collapsed).toContain(uiGlyphs.collapsed);
+		expect(collapsed).not.toContain(uiGlyphs.expanded);
+		expect(collapsed).not.toContain(uiGlyphs.image);
 		expect(collapsed).not.toContain("line-100");
 		expect(component.getCardClickActionAtRow(0)?.type).toBe("toggle");
 		expect(component.getCardClickActionAtRow(1)?.type).toBe("toggle");
 		expect(component.getCardClickActionAtRow(99)).toBeUndefined();
 		expect(component.render(80).join("\n")).not.toContain(theme.getBgAnsi("toolSuccessBg"));
+
+		component.setHovered(true);
+		expect(component.render(80).join("\n")).toContain(theme.getBgAnsi("selectedBg"));
+		component.setHovered(false);
+		expect(component.render(80).join("\n")).not.toContain(theme.getBgAnsi("selectedBg"));
 
 		component.setExpanded(true);
 		expect(stripAnsi(component.render(80).join("\n"))).toContain("line-100");
@@ -788,10 +794,10 @@ describe("ToolExecutionComponent parity", () => {
 	}
 
 	for (const scenario of [
-		{ title: "SKILL.md", path: join(process.cwd(), "attio", "SKILL.md"), compact: "[skill] attio  120–329" },
-		{ title: "Pi documentation", path: getReadmePath(), compact: "README.md  120–329" },
+		{ title: "SKILL.md", path: join(process.cwd(), "attio", "SKILL.md"), subject: "[skill] attio" },
+		{ title: "Pi documentation", path: getReadmePath(), subject: "README.md" },
 	] as const) {
-		test(`shows the read line range in compact ${scenario.title} reads before the expand hint`, () => {
+		test(`right-aligns the read line range in compact ${scenario.title} reads`, () => {
 			const component = new ToolExecutionComponent(
 				"read",
 				`tool-compact-range-${scenario.title}`,
@@ -802,8 +808,27 @@ describe("ToolExecutionComponent parity", () => {
 				process.cwd(),
 			);
 
-			const collapsed = stripAnsi(component.render(120).join("\n"));
-			expect(collapsed).toContain(scenario.compact);
+			const lines = component.render(120).map(stripAnsi);
+			expect(lines[1]).toContain(scenario.subject);
+			expect(lines[1]?.trimEnd()).toMatch(/120–329$/);
+			expect(visibleWidth(lines[1] ?? "")).toBe(120);
 		});
 	}
+
+	test("keeps the read basename and line range visible at narrow widths", () => {
+		const component = new ToolExecutionComponent(
+			"read",
+			"tool-narrow-range",
+			{ path: "a/very/long/path/to/settings.json", offset: 1, limit: 2000 },
+			{},
+			createReadToolDefinition(process.cwd()),
+			createFakeTui(),
+			process.cwd(),
+		);
+
+		const subject = stripAnsi(component.render(36)[1] ?? "");
+		expect(subject).toContain("settings.json");
+		expect(subject.trimEnd()).toMatch(/1–2000$/);
+		expect(visibleWidth(subject)).toBe(36);
+	});
 });

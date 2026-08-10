@@ -284,10 +284,6 @@ export class LystarWorkspace implements Component {
 		this.preserveViewportOnNextPrepend = true;
 	}
 
-	getWheelScrollStep(): number {
-		return 1;
-	}
-
 	scrollBy(lines: number): void {
 		if (!this.fullscreen || lines === 0) return;
 		const maxScrollTop = this.getMaxScrollTop();

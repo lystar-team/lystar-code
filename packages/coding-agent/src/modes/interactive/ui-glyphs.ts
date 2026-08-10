@@ -11,6 +11,8 @@ export interface UiGlyphs {
 	list: string;
 	edit: string;
 	file: string;
+	write: string;
+	patch: string;
 	image: string;
 	running: string;
 	open: string;
@@ -18,19 +20,21 @@ export interface UiGlyphs {
 
 const richGlyphs: UiGlyphs = {
 	prompt: "❯",
-	success: "✓",
-	failure: "✗",
-	tool: "◆",
-	expanded: "▾",
-	collapsed: "▸",
+	success: "🟢",
+	failure: "🔴",
+	tool: "⚙️",
+	expanded: "▼",
+	collapsed: "▶",
 	branch: "↳",
 	delta: "±",
-	search: "⌕",
-	list: "≡",
-	edit: "✎",
-	file: "▤",
-	image: "▣",
-	running: "▶",
+	search: "🔍",
+	list: "📋",
+	edit: "✏️",
+	file: "📁",
+	write: "📝",
+	patch: "📝",
+	image: "🏞️",
+	running: "⏳",
 	open: "↗",
 };
 
@@ -47,6 +51,8 @@ const windowsGlyphs: UiGlyphs = {
 	list: "=",
 	edit: "E",
 	file: "F",
+	write: "W",
+	patch: "P",
 	image: "I",
 	running: ">",
 	open: ">",

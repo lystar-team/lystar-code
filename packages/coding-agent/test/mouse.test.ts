@@ -20,6 +20,7 @@ describe("SGR mouse input", () => {
 		expect(parseMouseEvent("\x1b[<4;1;1M")).toMatchObject({ button: "left", shift: true, released: false });
 		expect(parseMouseEvent("\x1b[<0;1;1m")).toMatchObject({ button: "left", released: true });
 		expect(parseMouseEvent("\x1b[<32;2;3M")).toMatchObject({ button: "left", motion: true });
+		expect(parseMouseEvent("\x1b[<35;2;3M")).toMatchObject({ button: "other", motion: true });
 	});
 
 	it("ignores malformed input", () => {

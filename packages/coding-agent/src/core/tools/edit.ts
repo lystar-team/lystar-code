@@ -6,6 +6,7 @@ import { type Static, Type } from "typebox";
 import { renderDiff } from "../../modes/interactive/components/diff.ts";
 import { formatToolSummary, getToolSummary } from "../../modes/interactive/components/tool-summary.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
+import { uiGlyphs } from "../../modes/interactive/ui-glyphs.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import {
 	applyEditsToNormalizedContent,
@@ -226,7 +227,7 @@ function formatEditCall(
 	const pathDisplay = renderToolPath(str(args?.file_path ?? args?.path), theme, cwd);
 	const detail = preview && !("error" in preview) ? `+${preview.additions} -${preview.deletions}` : undefined;
 	return formatToolSummary({
-		icon: "✎",
+		icon: uiGlyphs.edit,
 		subject: pathDisplay,
 		isPartial,
 		isError: isError || Boolean(preview && "error" in preview),

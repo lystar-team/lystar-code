@@ -1,7 +1,7 @@
 import { type Component, sliceByColumn, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { stripAnsi } from "../../../utils/ansi.ts";
 import { theme } from "../theme/theme.ts";
-import { toUiGlyph } from "../ui-glyphs.ts";
+import { toUiGlyph, uiGlyphs } from "../ui-glyphs.ts";
 
 export interface ToolSummaryLabels {
 	running: string;
@@ -16,6 +16,7 @@ export interface ToolSummaryOptions {
 	isError: boolean;
 	labels: ToolSummaryLabels;
 	detail?: string;
+	subjectRight?: string;
 	expanded?: boolean;
 	stacked?: boolean;
 }
@@ -107,7 +108,9 @@ function renderStructuredSummary(options: ToolSummaryOptions, width: number): st
 	const icon = theme.fg(stateColor, toUiGlyph(options.icon));
 	const actionText = theme.bold(theme.fg("text", action));
 	const expansion =
-		options.expanded === undefined ? undefined : theme.fg("dim", toUiGlyph(options.expanded ? "▾" : "▸"));
+		options.expanded === undefined
+			? undefined
+			: theme.fg("dim", toUiGlyph(options.expanded ? uiGlyphs.expanded : uiGlyphs.collapsed));
 	const right = [options.detail ? theme.fg("dim", options.detail) : undefined, expansion]
 		.filter((part): part is string => Boolean(part))
 		.join("  ");
@@ -115,7 +118,17 @@ function renderStructuredSummary(options: ToolSummaryOptions, width: number): st
 	const left = stacked || !options.subject ? `${icon} ${actionText}` : `${icon} ${actionText}  ${options.subject}`;
 	const header = alignSummaryLine(left, right, width);
 	if (!stacked || !options.subject) return [header];
-	return [header, truncateToWidth(`  ${options.subject}`, width, "…")];
+	return [header, alignSummarySubject(options.subject, options.subjectRight ?? "", width)];
+}
+
+function alignSummarySubject(subject: string, right: string, width: number): string {
+	const left = `  ${subject}`;
+	if (!right) return truncateToolSummaryLine(left, width);
+	const rightWidth = visibleWidth(right);
+	if (rightWidth >= width) return truncateToWidth(right, width, "…");
+	const fittedLeft = truncateToolSummaryLine(left, Math.max(1, width - rightWidth - 1));
+	const gap = " ".repeat(Math.max(1, width - visibleWidth(fittedLeft) - rightWidth));
+	return `${fittedLeft}${gap}${right}`;
 }
 
 function alignSummaryLine(left: string, right: string, width: number): string {

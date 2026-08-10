@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
 import { UserMessageComponent } from "../src/modes/interactive/components/user-message.ts";
 import { getMarkdownTheme, initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { uiGlyphs } from "../src/modes/interactive/ui-glyphs.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
@@ -140,8 +141,8 @@ describe("AssistantMessageComponent", () => {
 			.filter((index) => index >= 0);
 		const citationRow = collapsedLines.findIndex((line) => line.includes("OpenAI Web Search"));
 		expect(summaryRows).toHaveLength(2);
-		expect(collapsedLines.join("\n")).toContain("⌕ 已搜索网页 · 2 个来源");
-		expect(collapsedLines.filter((line) => line.includes("▸"))).toHaveLength(2);
+		expect(collapsedLines.join("\n")).toContain(`${uiGlyphs.search} 已搜索网页 · 2 个来源`);
+		expect(collapsedLines.filter((line) => line.includes(uiGlyphs.collapsed))).toHaveLength(2);
 		expect(collapsedLines.join("\n")).not.toContain("来源\n");
 		expect(component.getCardClickActionAtRow(citationRow)).toBeUndefined();
 		expect(component.getCardClickActionAtRow(summaryRows[0] + 1)).toBeUndefined();

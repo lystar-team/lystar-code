@@ -9,7 +9,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { AgentRunState, SingleResult, SubagentSessionRef } from "../../../extensions/subagent/index.ts";
 import { formatSubagentState } from "../../../locales/zh-CN.ts";
-import { parseMouseEvent } from "../mouse.ts";
+import { parseMouseEvent, WheelScrollNormalizer } from "../mouse.ts";
 import { theme } from "../theme/theme.ts";
 
 export interface AgentWorkbenchAgent {
@@ -70,6 +70,7 @@ export class AgentWorkbenchComponent implements Component, Focusable {
 	private lastListCount = 0;
 	private lastAgentStartIndex = 0;
 	private lastListWidth = 0;
+	private readonly wheelScroll = new WheelScrollNormalizer();
 	private readonly data: AgentWorkbenchData;
 	private readonly getAgents: (() => AgentWorkbenchAgent[]) | undefined;
 	private readonly getHeight: () => number;
@@ -296,7 +297,7 @@ export class AgentWorkbenchComponent implements Component, Focusable {
 			if (mouse.shift || mouse.released) return;
 			if (mouse.button === "wheel-up" || mouse.button === "wheel-down") {
 				if (this.detailVisible || (this.lastWideLayout && mouse.column >= this.lastListWidth)) {
-					this.scrollDetail(mouse.button === "wheel-up" ? -3 : 3);
+					this.scrollDetail(this.wheelScroll.getDelta(mouse.button === "wheel-up" ? -1 : 1));
 					this.requestRender();
 				}
 				return;

@@ -18,21 +18,31 @@ describe("UI glyphs", () => {
 			list: "=",
 			edit: "E",
 			file: "F",
+			write: "W",
+			patch: "P",
 			image: "I",
 			running: ">",
 			open: ">",
 		});
 		expect(Object.values(glyphs).every((glyph) => /^[\x20-\x7e]+$/.test(glyph))).toBe(true);
-		expect(toUiGlyph("⌕", "win32")).toBe("?");
+		expect(toUiGlyph("🔍", "win32")).toBe("?");
 		expect(toUiGlyph("custom", "win32")).toBe("custom");
 	});
 
 	it("uses the shared rich glyph profile in the LYStar Windows host", () => {
 		expect(getUiGlyphs("win32", { LYSTAR_TERMINAL_HOST: "1" })).toEqual(getUiGlyphs("linux"));
-		expect(toUiGlyph("⌕", "win32", { LYSTAR_TERMINAL_HOST: "1" })).toBe("⌕");
+		expect(toUiGlyph("🔍", "win32", { LYSTAR_TERMINAL_HOST: "1" })).toBe("🔍");
 	});
 
 	it("keeps the existing compact symbols on Unix terminals", () => {
-		expect(getUiGlyphs("linux")).toMatchObject({ prompt: "❯", success: "✓", expanded: "▾" });
+		expect(getUiGlyphs("linux")).toMatchObject({
+			prompt: "❯",
+			success: "🟢",
+			expanded: "▼",
+			file: "📁",
+			write: "📝",
+			edit: "✏️",
+			patch: "📝",
+		});
 	});
 });

@@ -6,7 +6,7 @@ import { constants } from "fs";
 import { access as fsAccess, readFile as fsReadFile } from "fs/promises";
 import { type Static, Type } from "typebox";
 import { getReadmePath } from "../../config.ts";
-import { formatToolSummary, getToolSummary } from "../../modes/interactive/components/tool-summary.ts";
+import { getToolSummary, type ToolSummaryOptions } from "../../modes/interactive/components/tool-summary.ts";
 import { getLanguageFromPath, highlightCode, type Theme } from "../../modes/interactive/theme/theme.ts";
 import { uiGlyphs } from "../../modes/interactive/ui-glyphs.ts";
 import { processImage } from "../../utils/image-process.ts";
@@ -74,7 +74,7 @@ function formatReadLineRange(args: ReadRenderArgs | undefined, theme: Theme): st
 	if (args?.offset === undefined && args?.limit === undefined) return "";
 	const startLine = args.offset ?? 1;
 	const endLine = args.limit !== undefined ? startLine + args.limit - 1 : "";
-	return theme.fg("warning", `  ${startLine}${endLine ? `–${endLine}` : "+"}`);
+	return theme.fg("warning", `${startLine}${endLine ? `–${endLine}` : "+"}`);
 }
 
 function formatReadCall(
@@ -82,15 +82,16 @@ function formatReadCall(
 	theme: Theme,
 	cwd: string,
 	options: { expanded: boolean; isPartial: boolean; isError: boolean },
-): string {
+): ToolSummaryOptions {
 	const pathDisplay = renderToolPath(str(args?.file_path ?? args?.path), theme, cwd);
-	return formatToolSummary({
+	return {
 		icon: uiGlyphs.file,
-		subject: `${pathDisplay}${formatReadLineRange(args, theme)}`,
+		subject: pathDisplay,
+		subjectRight: formatReadLineRange(args, theme),
 		isPartial: options.isPartial,
 		isError: options.isError,
 		labels: { running: "正在读取", success: "已读取", error: "读取失败" },
-	});
+	};
 }
 
 function trimTrailingEmptyLines(lines: string[]): string[] {
@@ -159,18 +160,19 @@ function formatCompactReadCall(
 	args: ReadRenderArgs | undefined,
 	theme: Theme,
 	options: { expanded: boolean; isPartial: boolean; isError: boolean },
-): string {
+): ToolSummaryOptions {
 	const subject =
 		classification.kind === "skill"
 			? `${theme.fg("customMessageLabel", "[skill]")} ${theme.fg("customMessageText", classification.label)}`
 			: `${theme.fg("accent", classification.label)}`;
-	return formatToolSummary({
+	return {
 		icon: uiGlyphs.file,
-		subject: `${subject}${formatReadLineRange(args, theme)}`,
+		subject,
+		subjectRight: formatReadLineRange(args, theme),
 		isPartial: options.isPartial,
 		isError: options.isError,
 		labels: { running: "正在读取", success: "已读取", error: "读取失败" },
-	});
+	};
 }
 
 function formatReadResult(
@@ -342,7 +344,7 @@ export function createReadToolDefinition(
 				isPartial: context.isPartial,
 				isError: context.isError,
 			};
-			summary.setText(
+			summary.setSummary(
 				classification
 					? formatCompactReadCall(classification, args, theme, options)
 					: formatReadCall(args, theme, context.cwd, options),

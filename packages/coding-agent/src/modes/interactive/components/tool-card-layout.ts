@@ -15,3 +15,11 @@ export function renderToolDivider(width: number, indent = 2): string {
 	const lineWidth = Math.max(1, width - safeIndent * 2);
 	return truncateToWidth(`${" ".repeat(safeIndent)}${theme.fg("toolDivider", "─".repeat(lineWidth))}`, width, "");
 }
+
+export function renderCardHover(lines: string[], width: number, hovered: boolean): string[] {
+	if (!hovered) return lines;
+	return lines.map((line) => {
+		const fitted = truncateToWidth(line, Math.max(1, width), "", true);
+		return theme.bg("selectedBg", `${fitted}${" ".repeat(Math.max(0, width - visibleWidth(fitted)))}`);
+	});
+}
