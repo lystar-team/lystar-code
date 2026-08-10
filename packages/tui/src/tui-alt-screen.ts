@@ -401,6 +401,26 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.flashes.flash(message, durationMs);
 	}
 
+	/** Return the OSC 8 hyperlink at a rendered screen position. */
+	getLinkAtScreenPosition(row: number, column: number): string | undefined {
+		return getOsc8LinkAtColumn(
+			this.previousScreen[Math.max(0, Math.min(this.terminal.rows - 1, row))] ?? "",
+			Math.max(0, Math.min(this.terminal.columns - 1, column)),
+		);
+	}
+
+	/** Open the OSC 8 hyperlink at a rendered screen position. */
+	openLinkAtScreenPosition(row: number, column: number): boolean {
+		const url = this.getLinkAtScreenPosition(row, column);
+		if (!url || !this.openUrl) return false;
+		try {
+			this.openUrl(url);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
 	protected handleViewportInput(data: string): TuiInputListenerResult {
 		if (data === FOCUS_OUT) {
 			const hadActiveSelection = this.selectionPressActive;

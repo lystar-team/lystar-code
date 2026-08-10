@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-09T06:53:30Z
+最后核验时间：2026-08-10T02:23:17Z
 
 环境：
 
@@ -14,6 +14,20 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### 原生 `image_gen` 与统一卡片交互核验
+
+新增 OpenAI API Key、OpenAI Codex OAuth 和 OpenRouter 三条图片生成路径，默认模型为 `gpt-image-2`；`ModelRuntime` 的文本模型与图片模型共用现有 `RuntimeCredentials`。内置隐藏 Extension 同时注册平面 Tool `image_gen` 与内置 `imagegen` Skill，Skill、NOTICE 和 Apache-2.0 完整许可证会复制到 Node/npm 与 Bun binary 资产目录。Tool 支持纯文本生成、最多 5 张本地参考图或最近会话图片，结果原子保存到 `~/.pi/agent/generated_images/<session>/<call>.png`，Session 继续使用现有 Tool Result `ImageContent`，没有修改 JSONL、Protocol 或 Extension API。为兼容会强制补齐 optional Tool 参数的 OpenAI-compatible Provider，`num_last_images_to_include=0` 明确表示纯文本生成，`1..5` 仍表示引用最近会话图片。
+
+图片凭据按请求顺序惰性解析：当前会话使用 `openai-responses`、`openai-completions`、`openai-codex-responses` 或 OpenRouter 时，先复用该 Model Provider 完整解析后的 API key、Header 和 `baseUrl`；当前候选不可用或请求失败后，再依次读取 `openai-codex`、`openai`、`openrouter` 图片凭据。当前候选成功时不会刷新后续 OAuth；中止和内容安全错误不会跨 Provider 重试。Codex 文本入口的 `https://chatgpt.com/backend-api` 会转换为图片入口 `https://chatgpt.com/backend-api/codex`。
+
+TUI 新增统一 `InteractiveCard` 契约。普通卡片默认整卡点击，Tool Group 只负责把行映射到组头或子卡片，Subagent 行动作优先于展开；OSC 8 链接按实际列范围优先，卡片动作延迟到无拖动的鼠标释放，拖动仍进入文本选择。主会话和 Subagent Overlay 共用同一 action resolver；Overlay 记录组件行范围、滚动偏移和稳定卡片 key，实时重建时保留展开状态。`Ctrl+O`、滚轮、PageUp/PageDown、resize、Composer 与旧 Session 行为保持原链路。
+
+`npm run check`、`npm run build:offline`、TUI 全量、Agent Core 全量和 Coding Agent 全量通过。结果：AI 105 个 test files/877 项通过、25 个 files/825 项跳过；Agent Core 20 个 files/402 项通过、1 项跳过；Coding Agent 235 个 files/2067 项通过、6 个 files/49 项跳过；TUI 全量退出码 0。AI 首次全量命令因当前 Shell 注入了失效 `OPENAI_API_KEY`，39 个在线 E2E 返回 401；仅对复跑进程移除该环境变量后全部离线 gate 通过，没有修改凭据文件。2026-08-10 的凭据优先级调整再次通过 `npm run check`、`npm run build:offline`、`image-gen-extension.test.ts` 6 项和 `openai-images.test.ts` 5 项；新增断言覆盖当前 Provider 优先、惰性读取备用凭据、自定义 `baseUrl`、Bearer Key、Provider Header、请求失败后切换 Codex、内容安全错误停止切换，以及 Provider 补齐 `referenced_image_paths=[]`、`num_last_images_to_include=0` 时仍执行纯文本生成。
+
+真实 PTY 使用独立临时 `PI_CODING_AGENT_DIR` 验证：主会话 Bash 卡片经 `Ctrl+O` 展开后，点击第 2 行输出可折叠；从同一卡片拖动选择会显示 `Copied!` 且不触发展开切换；`80x8` 保留 Composer 与快捷栏，`120x36` 无重叠。持久化 Session 中点击 Subagent 行进入 Overlay，展开子会话 Bash 卡片后点击第 2 行输出可折叠；同一 JSONL 追加既有 Tool Result `ImageContent` 后重启，恢复显示 `image_gen` 摘要“已生成图片 one red pixel”。所有本轮 tmux server 和临时 Session 已删除。
+
+2026-08-10 已完成真实图片 Provider 调用。使用当前会话 `upstream/gpt-5.6-sol` 驱动原生 `image_gen`，Provider 按严格 schema 补齐 `referenced_image_paths=[]` 和 `num_last_images_to_include=0` 后，Tool 复用当前 Provider 凭据与网关，通过 `upstream/gpt-image-2` 成功执行 generations，返回 `mode=generate` 并保存 1254×1254 PNG。随后使用与 Codex 官方相同的 `remove_chroma_key.py --auto-key border --soft-matte --transparent-threshold 12 --opaque-threshold 220 --despill` 去除纯绿色背景，并统一缩放到 1024×1024 RGBA：`~/.pi/agent/generated_images/comparison-20260810/lystar-native-transparent.png`。成品边界 alpha 最大值为 0，完全透明像素占 74.0068%，部分透明像素占 0.9890%，无明显绿色残边。对照的 Codex CLI 成品为同目录 `codex-cli-transparent.png`；两条链路均使用 `gpt-image-2` 生成色键背景并运行同一官方去底脚本，构图差异属于模型随机输出。
 
 ### `0.84.1-lystar.8` 发布前核验
 

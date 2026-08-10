@@ -5,6 +5,7 @@ import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/rend
 import { convertToPng } from "../../../utils/image-convert.ts";
 import { theme } from "../theme/theme.ts";
 import { uiGlyphs } from "../ui-glyphs.ts";
+import type { InteractiveCardAction } from "./interactive-card.ts";
 import type { SubagentRunTarget } from "./subagent-run.ts";
 import { formatToolSummary, getToolSummary } from "./tool-summary.ts";
 
@@ -236,8 +237,18 @@ export class ToolExecutionComponent extends Container {
 		this.updateDisplay();
 	}
 
-	isExpansionToggleRow(row: number): boolean {
-		return row >= 0;
+	isExpanded(): boolean {
+		return this.expanded;
+	}
+
+	getCardStateKey(): string {
+		return `tool:${this.toolCallId}`;
+	}
+
+	getCardClickActionAtRow(row: number): InteractiveCardAction | undefined {
+		if (row < 0) return undefined;
+		const target = this.getAgentTargetAtRow(row);
+		return target ? { type: "openSubagent", target } : { type: "toggle", component: this };
 	}
 
 	getAgentTargetAtRow(row: number): ToolExecutionAgentTarget | undefined {

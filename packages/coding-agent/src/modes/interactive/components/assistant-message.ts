@@ -4,6 +4,7 @@ import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { t } from "../../../locales/zh-CN.ts";
 import { formatMarkdownLinks, getCitationLinks, getWebSearchSourceLinks } from "../../../utils/web-search.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
+import type { InteractiveCardAction } from "./interactive-card.ts";
 import { createMarkdownTransform } from "./markdown-transform.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
@@ -74,7 +75,6 @@ export class AssistantMessageComponent extends Container {
 	private hasLongMarkdown = false;
 	private hasWebSearchSources = false;
 	private contentExpanded = false;
-	private webSearchToggleRows = new Set<number>();
 
 	constructor(
 		message?: AssistantMessage,
@@ -131,12 +131,8 @@ export class AssistantMessageComponent extends Container {
 
 	override render(width: number): string[] {
 		const lines: string[] = [];
-		this.webSearchToggleRows.clear();
 		for (const child of this.contentContainer.children) {
 			const childLines = child.render(width);
-			if (child instanceof WebSearchSummaryText && childLines.length > 0) {
-				this.webSearchToggleRows.add(lines.length);
-			}
 			lines.push(...childLines);
 		}
 		if (this.hasToolCalls || lines.length === 0) {
@@ -152,8 +148,13 @@ export class AssistantMessageComponent extends Container {
 		return this.renderVersion;
 	}
 
-	isExpansionToggleRow(row: number): boolean {
-		return this.webSearchToggleRows.has(row);
+	isExpanded(): boolean {
+		return this.contentExpanded;
+	}
+
+	getCardClickActionAtRow(row: number): InteractiveCardAction | undefined {
+		if (row < 0 || (!this.hasLongCodeBlock && !this.hasLongMarkdown && !this.hasWebSearchSources)) return undefined;
+		return { type: "toggle", component: this };
 	}
 
 	setExpanded(expanded: boolean): void {

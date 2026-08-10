@@ -1,10 +1,51 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { Text, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, Text, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
+import type { InteractiveCardAction } from "../src/modes/interactive/components/interactive-card.ts";
 import { SubagentSessionViewComponent } from "../src/modes/interactive/components/subagent-session-view.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 initTheme("dark");
+
+class TestCard implements Component {
+	private expanded = false;
+
+	render(): string[] {
+		return this.expanded ? ["card", "detail"] : ["card"];
+	}
+
+	invalidate(): void {}
+
+	isExpanded(): boolean {
+		return this.expanded;
+	}
+
+	setExpanded(expanded: boolean): void {
+		this.expanded = expanded;
+	}
+
+	getCardStateKey(): string {
+		return "test-card";
+	}
+}
+
+class OpenSubagentCard extends TestCard {
+	getCardClickActionAtRow(row: number): InteractiveCardAction | undefined {
+		return row === 0
+			? {
+					type: "openSubagent",
+					target: {
+						agentId: "worker",
+						agent: "worker",
+						agentSource: "builtin",
+						agentScope: "user",
+						task: "nested",
+						state: "succeeded",
+					},
+				}
+			: undefined;
+	}
+}
 
 describe("SubagentSessionViewComponent", () => {
 	it("renders a bounded transcript and returns to the main session with Esc or the header", () => {
@@ -16,6 +57,9 @@ describe("SubagentSessionViewComponent", () => {
 			getHeight: () => 12,
 			requestRender: () => {},
 			renderMessages: (messages) => messages.map((message, index) => new Text(`${index + 1}:${message.role}`, 0, 0)),
+			onOpenSubagent: () => {},
+			getLinkAtScreenPosition: () => undefined,
+			openLinkAtScreenPosition: () => false,
 			onReturn: () => returned++,
 			onAbort: () => {},
 			overlayTop: 1,
@@ -41,6 +85,9 @@ describe("SubagentSessionViewComponent", () => {
 			getHeight: () => 10,
 			requestRender: () => {},
 			renderMessages: (messages) => messages.map((_, index) => new Text(`line-${index + 1}`, 0, 0)),
+			onOpenSubagent: () => {},
+			getLinkAtScreenPosition: () => undefined,
+			openLinkAtScreenPosition: () => false,
 			onReturn: () => {},
 			onAbort: () => {},
 		});
@@ -54,5 +101,71 @@ describe("SubagentSessionViewComponent", () => {
 		expect(view.render(40).join("\n")).toContain("line-27");
 		view.handleInput("\x1b[<65;10;4M");
 		expect(view.render(40).join("\n")).toContain("line-30");
+	});
+
+	it("toggles transcript cards from any card row and preserves state across rebuilds", () => {
+		const cards: TestCard[] = [];
+		const view = new SubagentSessionViewComponent({
+			agent: "worker",
+			status: "运行中",
+			readOnly: true,
+			getHeight: () => 10,
+			requestRender: () => {},
+			renderMessages: () => {
+				const card = new TestCard();
+				cards.push(card);
+				return [card];
+			},
+			onOpenSubagent: () => {},
+			getLinkAtScreenPosition: () => undefined,
+			openLinkAtScreenPosition: () => false,
+			onReturn: () => {},
+			onAbort: () => {},
+			overlayTop: 1,
+		});
+		const messages = [{ role: "user", content: "x" }] as AgentMessage[];
+		view.setMessages(messages);
+		view.render(40);
+		view.handleInput("\x1b[<0;1;4M");
+		view.handleInput("\x1b[<0;1;4m");
+		expect(cards[0].isExpanded()).toBe(true);
+		expect(view.render(40).join("\n")).toContain("detail");
+
+		view.setMessages(messages);
+		expect(cards[1].isExpanded()).toBe(true);
+	});
+
+	it("opens links before card actions and routes nested Subagent actions", () => {
+		let linkClicks = 0;
+		let openedAgent = "";
+		const card = new OpenSubagentCard();
+		const view = new SubagentSessionViewComponent({
+			agent: "worker",
+			status: "已完成",
+			readOnly: true,
+			getHeight: () => 10,
+			requestRender: () => {},
+			renderMessages: () => [card],
+			onOpenSubagent: (target) => {
+				openedAgent = target.agent;
+			},
+			getLinkAtScreenPosition: () => (linkClicks === 0 ? "https://example.com" : undefined),
+			openLinkAtScreenPosition: () => {
+				linkClicks++;
+				return linkClicks === 1;
+			},
+			onReturn: () => {},
+			onAbort: () => {},
+			overlayTop: 1,
+		});
+		view.setMessages([{ role: "user", content: "x" }] as AgentMessage[]);
+		view.render(40);
+
+		view.handleInput("\x1b[<0;1;4M");
+		view.handleInput("\x1b[<0;1;4m");
+		expect(openedAgent).toBe("");
+		view.handleInput("\x1b[<0;1;4M");
+		view.handleInput("\x1b[<0;1;4m");
+		expect(openedAgent).toBe("worker");
 	});
 });

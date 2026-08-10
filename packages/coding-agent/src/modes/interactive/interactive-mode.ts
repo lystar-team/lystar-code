@@ -142,6 +142,7 @@ import { ExtensionEditorComponent } from "./components/extension-editor.ts";
 import { ExtensionInputComponent } from "./components/extension-input.ts";
 import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
 import { FooterComponent, formatTokens } from "./components/footer.ts";
+import { activateInteractiveCard, resolveInteractiveCardAction } from "./components/interactive-card.ts";
 import { formatKeyText, keyDisplayText } from "./components/keybinding-hints.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { LystarWorkspace, WorkspaceComposer, WorkspaceHeader } from "./components/lystar-workspace.ts";
@@ -534,6 +535,7 @@ export class InteractiveMode {
 
 	// Tool output expansion state
 	private toolOutputExpanded = false;
+	private pendingCardClick: { row: number; column: number; component: Component; componentRow: number } | undefined;
 
 	// Thinking block visibility state
 	private hideThinkingBlock = false;
@@ -549,7 +551,7 @@ export class InteractiveMode {
 	// Agent subscription unsubscribe function
 	private unsubscribe?: () => void;
 	private signalCleanupHandlers: Array<() => void> = [];
-	private componentExpansion = new WeakMap<Component, boolean>();
+
 	private lystarSettingsWarning?: string;
 
 	// Track if editor is in bash mode (text starts with !)
@@ -2938,52 +2940,49 @@ export class InteractiveMode {
 
 		const mouse = parseMouseEvent(data);
 		if (mouse) {
-			if (mouse.shift) return undefined;
+			if (mouse.shift) {
+				this.pendingCardClick = undefined;
+				return undefined;
+			}
 			if (mouse.button === "wheel-up") {
+				this.pendingCardClick = undefined;
 				this.workspace.scrollBy(-this.workspace.getWheelScrollStep());
 				if (this.workspace.isAtTop()) void this.loadPreviousTranscriptPage();
 			} else if (mouse.button === "wheel-down") {
+				this.pendingCardClick = undefined;
 				this.workspace.scrollBy(this.workspace.getWheelScrollStep());
-			} else if (mouse.button === "left" && !mouse.released) {
-				let handled = false;
+			} else if (mouse.button === "left" && mouse.motion) {
+				this.pendingCardClick = undefined;
+				return undefined;
+			} else if (mouse.button === "left" && mouse.released) {
+				const pending = this.pendingCardClick;
+				this.pendingCardClick = undefined;
+				if (pending && pending.row === mouse.row && pending.column === mouse.column) {
+					activateInteractiveCard(pending.component, pending.componentRow, (target) =>
+						this.openSubagentSession(target),
+					);
+					this.ui.requestRender();
+				}
+				return undefined;
+			} else if (mouse.button === "left") {
 				if (this.workspace.isNewContentIndicatorRow(mouse.row)) {
 					this.workspace.scrollToBottom();
-					handled = true;
-				} else {
-					const hit = this.workspace.getComponentHitAtScreenRow(mouse.row);
-					let component = hit?.component;
-					let componentRow = hit?.row ?? -1;
-					if (component instanceof ToolExecutionGroupComponent) {
-						const target = component.getExpansionTargetAtRow(componentRow);
-						component = target?.component;
-						componentRow = target?.row ?? -1;
-					}
-					if (component instanceof ToolExecutionComponent) {
-						const agentTarget = component.getAgentTargetAtRow(componentRow);
-						if (agentTarget) {
-							this.openSubagentSession(agentTarget);
-							handled = true;
-						}
-					}
-					const rowToggle = component as Component & { isExpansionToggleRow?: (row: number) => boolean };
-					if (
-						!handled &&
-						component &&
-						isExpandable(component) &&
-						(rowToggle.isExpansionToggleRow === undefined || rowToggle.isExpansionToggleRow(componentRow))
-					) {
-						const currentExpanded =
-							component instanceof ToolExecutionGroupComponent
-								? component.isExpanded()
-								: (this.componentExpansion.get(component) ?? this.toolOutputExpanded);
-						const expanded = !currentExpanded;
-						this.componentExpansion.set(component, expanded);
-						component.setExpanded(expanded);
-						handled = true;
-					}
+					this.ui.requestRender();
+					return { consume: true };
+				} else if (this.ui instanceof LystarTUI && this.ui.getLinkAtScreenPosition(mouse.row, mouse.column)) {
+					return undefined;
 				}
-				if (!handled) return undefined;
+				const hit = this.workspace.getComponentHitAtScreenRow(mouse.row);
+				if (!hit || !resolveInteractiveCardAction(hit.component, hit.row)) return undefined;
+				this.pendingCardClick = {
+					row: mouse.row,
+					column: mouse.column,
+					component: hit.component,
+					componentRow: hit.row,
+				};
+				return undefined;
 			} else {
+				this.pendingCardClick = undefined;
 				return undefined;
 			}
 			this.ui.requestRender();
@@ -4775,8 +4774,6 @@ export class InteractiveMode {
 				if (child instanceof ToolExecutionGroupComponent) {
 					child.setToolOutputsExpanded(expanded);
 				} else if (isExpandable(child)) {
-					this.componentExpansion ??= new WeakMap<Component, boolean>();
-					this.componentExpansion.set(child, expanded);
 					child.setExpanded(expanded);
 				}
 			}
@@ -6955,6 +6952,11 @@ export class InteractiveMode {
 			requestRender: () => this.ui.requestRender(),
 			renderMessages: (messages) =>
 				this.materializeSubagentMessages(messages, target.session?.cwd ?? this.sessionManager.getCwd()),
+			onOpenSubagent: (nestedTarget) => this.openSubagentSession(nestedTarget),
+			getLinkAtScreenPosition: (row, column) =>
+				this.ui instanceof LystarTUI ? this.ui.getLinkAtScreenPosition(row, column) : undefined,
+			openLinkAtScreenPosition: (row, column) =>
+				this.ui instanceof LystarTUI && this.ui.openLinkAtScreenPosition(row, column),
 			onReturn: close,
 			onAbort: () => {
 				void abortSubagent(target.agentId).catch((error) =>

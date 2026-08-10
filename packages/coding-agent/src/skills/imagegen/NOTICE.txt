@@ -1,0 +1,5 @@
+This Skill is adapted from the OpenAI Codex imagegen Skill:
+https://github.com/openai/codex/tree/main/codex-rs/skills/src/assets/samples/imagegen
+
+The source Skill is licensed under the Apache License, Version 2.0.
+LYStar Agent modifications replace Codex-specific Tool, CLI, path, and packaging instructions.

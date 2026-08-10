@@ -24,6 +24,10 @@ export class CompactionSummaryMessageComponent extends Box {
 		this.updateDisplay();
 	}
 
+	isExpanded(): boolean {
+		return this.expanded;
+	}
+
 	override invalidate(): void {
 		super.invalidate();
 		this.updateDisplay();

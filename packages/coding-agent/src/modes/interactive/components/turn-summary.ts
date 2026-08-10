@@ -118,8 +118,8 @@ export class TurnSummaryComponent extends Box {
 		this.updateDisplay();
 	}
 
-	isExpansionToggleRow(row: number): boolean {
-		return row === 0;
+	isExpanded(): boolean {
+		return this.expanded;
 	}
 
 	override invalidate(): void {

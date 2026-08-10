@@ -195,10 +195,12 @@ describe("ImagesModels", () => {
 		await expect(models.refresh()).resolves.toBeUndefined();
 	});
 
-	it("builtinImagesModels registers the openrouter provider with its catalog", async () => {
+	it("builtinImagesModels registers OpenAI, Codex, and OpenRouter catalogs", async () => {
 		const models = builtinImagesModels({ authContext: fakeAuthContext({ OPENROUTER_API_KEY: "or-key" }) });
 		const providers = models.getProviders();
-		expect(providers.map((p) => p.id)).toEqual(["openrouter"]);
+		expect(providers.map((p) => p.id)).toEqual(["openai-codex", "openai", "openrouter"]);
+		expect(models.getModel("openai-codex", "gpt-image-2")?.api).toBe("openai-images");
+		expect(models.getModel("openai", "gpt-image-2")?.api).toBe("openai-images");
 
 		const list = models.getModels("openrouter");
 		expect(list.length).toBeGreaterThan(0);

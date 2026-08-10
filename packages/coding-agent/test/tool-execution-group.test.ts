@@ -97,6 +97,10 @@ describe("ToolExecutionGroupComponent", () => {
 		expect(group.getExpansionTargetAtRow(1)).toEqual({ component: first, row: 0 });
 		expect(group.getExpansionTargetAtRow(2)).toBeUndefined();
 		expect(group.getExpansionTargetAtRow(3)).toEqual({ component: second, row: 0 });
+		expect(group.getCardClickActionAtRow(0)).toEqual({ type: "toggle", component: group });
+		expect(group.getCardClickActionAtRow(1)).toEqual({ type: "toggle", component: first });
+		expect(group.getCardClickActionAtRow(2)).toBeUndefined();
+		expect(group.getCardClickActionAtRow(3)).toEqual({ type: "toggle", component: second });
 
 		group.setExpanded(false);
 		expect(group.isExpanded()).toBe(false);

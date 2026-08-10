@@ -28,7 +28,7 @@ export type KnownApi =
 
 export type Api = KnownApi | (string & {});
 
-export type KnownImagesApi = "openrouter-images";
+export type KnownImagesApi = "openai-images" | "openrouter-images";
 
 export type ImagesApi = KnownImagesApi | (string & {});
 

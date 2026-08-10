@@ -782,6 +782,32 @@ Content`,
 			expect(skills).toEqual([]);
 		});
 
+		it("should ignore skills discovered by extensions when noSkills is true", async () => {
+			const extensionSkillDir = join(tempDir, "extension-skills", "extension-skill");
+			mkdirSync(extensionSkillDir, { recursive: true });
+			writeFileSync(
+				join(extensionSkillDir, "SKILL.md"),
+				`---
+name: extension-skill
+description: Extension skill
+---
+Content`,
+			);
+
+			const loader = new DefaultResourceLoader({ cwd, agentDir, noSkills: true });
+			await loader.reload();
+			loader.extendResources({
+				skillPaths: [
+					{
+						path: extensionSkillDir,
+						metadata: { source: "extension:test", scope: "temporary", origin: "top-level" },
+					},
+				],
+			});
+
+			expect(loader.getSkills().skills).toEqual([]);
+		});
+
 		it("should still load additional skill paths when noSkills is true", async () => {
 			const customSkillDir = join(tempDir, "custom-skills");
 			mkdirSync(customSkillDir, { recursive: true });

@@ -32,6 +32,10 @@ export class CustomEntryComponent extends Container {
 		}
 	}
 
+	isExpanded(): boolean {
+		return this._expanded;
+	}
+
 	override invalidate(): void {
 		super.invalidate();
 		this.rebuild();

@@ -8,6 +8,7 @@ describe("SGR mouse input", () => {
 			column: 19,
 			row: 4,
 			shift: false,
+			motion: false,
 			released: false,
 		});
 		expect(parseMouseEvent("\x1b[<65;3;9M")?.button).toBe("wheel-down");
@@ -18,6 +19,7 @@ describe("SGR mouse input", () => {
 	it("parses shifted click and release events", () => {
 		expect(parseMouseEvent("\x1b[<4;1;1M")).toMatchObject({ button: "left", shift: true, released: false });
 		expect(parseMouseEvent("\x1b[<0;1;1m")).toMatchObject({ button: "left", released: true });
+		expect(parseMouseEvent("\x1b[<32;2;3M")).toMatchObject({ button: "left", motion: true });
 	});
 
 	it("ignores malformed input", () => {

@@ -3,6 +3,7 @@ export interface MouseEvent {
 	column: number;
 	row: number;
 	shift: boolean;
+	motion: boolean;
 	released: boolean;
 }
 
@@ -39,6 +40,7 @@ export function parseMouseEvent(data: string): MouseEvent | undefined {
 		column,
 		row,
 		shift: (code & 4) !== 0,
+		motion: (code & 32) !== 0,
 		released: match[4] === "m",
 	};
 }

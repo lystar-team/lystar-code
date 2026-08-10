@@ -36,8 +36,8 @@ export class BashExecutionComponent extends Container {
 		this.updateDisplay();
 	}
 
-	isExpansionToggleRow(row: number): boolean {
-		return row >= 0;
+	isExpanded(): boolean {
+		return this.expanded;
 	}
 
 	override invalidate(): void {

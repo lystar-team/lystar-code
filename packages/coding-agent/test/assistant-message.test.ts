@@ -130,8 +130,8 @@ describe("AssistantMessageComponent", () => {
 		const citationRow = collapsedLines.findIndex((line) => line.includes("OpenAI Web Search"));
 		expect(collapsedLines.join("\n")).toContain("▸ ⌕ 已搜索网页 · 2 个来源");
 		expect(collapsedLines.join("\n")).not.toContain("搜索来源：");
-		expect(component.isExpansionToggleRow(summaryRow)).toBe(true);
-		expect(component.isExpansionToggleRow(citationRow)).toBe(false);
+		expect(component.getCardClickActionAtRow(summaryRow)?.type).toBe("toggle");
+		expect(component.getCardClickActionAtRow(citationRow)?.type).toBe("toggle");
 
 		component.setExpanded(true);
 		const expandedLines = component.render(100).map(stripAnsi);
@@ -142,7 +142,7 @@ describe("AssistantMessageComponent", () => {
 		expect(expandedLines.join("\n")).toContain("OpenAI Web Search");
 		expect(expandedLines.join("\n")).toContain("example.com");
 		expect(expandedLines[sourceListRow + 1]).toContain("OpenAI Web Search");
-		expect(component.isExpansionToggleRow(sourceRow)).toBe(false);
+		expect(component.getCardClickActionAtRow(sourceRow)?.type).toBe("toggle");
 	});
 
 	test("renders length stops with neutral truncation wording", () => {

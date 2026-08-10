@@ -1,10 +1,11 @@
 import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
 import { theme } from "../theme/theme.ts";
 import { uiGlyphs } from "../ui-glyphs.ts";
+import { type InteractiveCard, type InteractiveCardAction, resolveInteractiveCardAction } from "./interactive-card.ts";
 import type { ToolExecutionComponent } from "./tool-execution.ts";
 
 export interface ToolGroupExpansionTarget {
-	component: Component & { setExpanded(expanded: boolean): void };
+	component: InteractiveCard;
 	row: number;
 }
 
@@ -46,8 +47,21 @@ export class ToolExecutionGroupComponent implements Component {
 		return this.renderVersion + this.tools.reduce((version, tool) => version + tool.getRenderVersion(), 0);
 	}
 
-	isExpansionToggleRow(row: number): boolean {
-		return this.tools.length > 1 && row === 0;
+	getCardStateKey(): string | undefined {
+		const toolKeys = this.tools.map((tool) => tool.getCardStateKey());
+		return toolKeys.length > 1 ? `tool-group:${toolKeys.join("|")}` : undefined;
+	}
+
+	getChildCards(): readonly ToolExecutionComponent[] {
+		return this.tools;
+	}
+
+	getCardClickActionAtRow(row: number): InteractiveCardAction | undefined {
+		const target = this.getExpansionTargetAtRow(row);
+		if (!target) return undefined;
+		return target.component === this
+			? { type: "toggle", component: this }
+			: resolveInteractiveCardAction(target.component, target.row);
 	}
 
 	getExpansionTargetAtRow(row: number): ToolGroupExpansionTarget | undefined {

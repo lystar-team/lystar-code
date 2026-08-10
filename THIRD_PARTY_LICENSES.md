@@ -11,6 +11,7 @@ The standalone bundles also include runtime assets or native modules from these 
 | `@earendil-works/pi-tui` | MIT |
 | `@mariozechner/clipboard` and platform bindings | MIT |
 | `@silvia-odwyer/photon-node` | Apache-2.0 |
+| OpenAI Codex `imagegen` Skill (adapted) | Apache-2.0 |
 | `@xterm/xterm` and `@xterm/addon-fit` | MIT |
 | `chalk` | MIT |
 | `diff` | BSD-3-Clause |

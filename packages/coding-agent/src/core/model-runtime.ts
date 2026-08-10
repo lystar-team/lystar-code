@@ -17,6 +17,10 @@ import {
 	type DeferredCancelOptions,
 	type DeferredFetchOptions,
 	type DeferredHandle,
+	type ImagesApi,
+	type ImagesContext,
+	type ImagesModel,
+	type ImagesOptions,
 	lazyStream,
 	type Model,
 	type Models,
@@ -29,6 +33,7 @@ import {
 	type ModelsRequestTransforms,
 	type ModelsSimpleStreamOptions,
 	type ModelsStore,
+	type MutableImagesModels,
 	type MutableModels,
 	type Provider,
 	type ProviderHeaders,
@@ -129,6 +134,7 @@ function mergeHeaders(
 /** Configured pi-ai Models collection used by coding-agent and SDK consumers. */
 export class ModelRuntime implements Models {
 	private readonly models: MutableModels;
+	private readonly imageModels: MutableImagesModels;
 	private readonly credentials: RuntimeCredentials;
 	private readonly defaultBuiltins: ReadonlyMap<string, Provider>;
 	private readonly builtins = new Map<string, Provider>();
@@ -166,6 +172,7 @@ export class ModelRuntime implements Models {
 		this.defaultBuiltins = new Map(providers.map((provider) => [provider.id, provider]));
 		for (const [providerId, provider] of this.defaultBuiltins) this.builtins.set(providerId, provider);
 		this.models = createModels({ credentials, modelsStore });
+		this.imageModels = builtinProviderCatalog.builtinImagesModels({ credentials });
 		this.rebuildProviders();
 	}
 
@@ -387,6 +394,22 @@ export class ModelRuntime implements Models {
 
 	getProvider(providerId: string): Provider | undefined {
 		return this.models.getProvider(providerId);
+	}
+
+	getImageModels(providerId?: string): readonly ImagesModel<ImagesApi>[] {
+		return this.imageModels.getModels(providerId);
+	}
+
+	getImageModel(providerId: string, modelId: string): ImagesModel<ImagesApi> | undefined {
+		return this.imageModels.getModel(providerId, modelId);
+	}
+
+	getImageAuth(providerId: string): Promise<AuthResult | undefined> {
+		return this.imageModels.getAuth(providerId);
+	}
+
+	generateImages(model: ImagesModel<ImagesApi>, context: ImagesContext, options?: ImagesOptions) {
+		return this.imageModels.generateImages(model, context, options);
 	}
 
 	getModels(providerId?: string): readonly Model<Api>[] {

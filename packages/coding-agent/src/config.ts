@@ -463,6 +463,14 @@ export function getBundledInteractiveAssetPath(name: string): string {
 	return join(getInteractiveAssetsDir(), name);
 }
 
+/** Get path to bundled skills for source, npm, and Bun binary layouts. */
+export function getBundledSkillsDir(): string {
+	if (isBunBinary) return join(getPackageDir(), "skills");
+	const packageDir = getPackageDir();
+	const srcOrDist = existsSync(join(packageDir, "src")) ? "src" : "dist";
+	return join(packageDir, srcOrDist, "skills");
+}
+
 // =============================================================================
 // App Config (from package.json piConfig)
 // =============================================================================

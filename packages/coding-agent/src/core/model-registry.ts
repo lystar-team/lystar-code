@@ -1,8 +1,13 @@
 import type {
 	Api,
+	AssistantImages,
 	AssistantMessage,
 	AuthResult,
 	Context,
+	ImagesApi,
+	ImagesContext,
+	ImagesModel,
+	ImagesOptions,
 	Model,
 	ModelsApiStreamOptions,
 	ModelsRefreshOptions,
@@ -98,6 +103,26 @@ export class ModelRegistry {
 
 	getProvider(provider: string): Provider | undefined {
 		return this.runtime.getProvider(provider);
+	}
+
+	getImageModels(provider?: string): readonly ImagesModel<ImagesApi>[] {
+		return this.runtime.getImageModels(provider);
+	}
+
+	findImage(provider: string, modelId: string): ImagesModel<ImagesApi> | undefined {
+		return this.runtime.getImageModel(provider, modelId);
+	}
+
+	getImageProviderAuth(provider: string): Promise<AuthResult | undefined> {
+		return this.runtime.getImageAuth(provider);
+	}
+
+	generateImages(
+		model: ImagesModel<ImagesApi>,
+		context: ImagesContext,
+		options?: ImagesOptions,
+	): Promise<AssistantImages> {
+		return this.runtime.generateImages(model, context, options);
 	}
 
 	complete<TApi extends Api>(
