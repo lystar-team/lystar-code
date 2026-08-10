@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-10T11:30:48Z
+最后核验时间：2026-08-10T22:34:58Z
 
 环境：
 
@@ -14,6 +14,18 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### `0.84.1-lystar.11` 发布前核验
+
+发布事实源已更新为 `piConfig.productVersion = 0.84.1-lystar.11`，Pi workspace 包版本继续保持 `0.84.1`，发行仓库保持 `lystar-team/lystar-code`。本版修复 Tool 组完成折叠、自动/手动/溢出压缩后内容大幅收缩留下旧帧、横线和错误滚动标记的问题；同时完善多命令层级间距、`read` 行号范围右对齐、统一 Unicode/emoji 工具图标、空闲当前目录标题、Tool 卡片 Hover 和闪烁细线光标。Session JSONL、Tool 名、Provider、RPC、Protocol 与 Extension API 不变。
+
+滚轮输入统一通过 `WheelScrollNormalizer` 转换为逻辑行：独立滚轮移动 3 行，高频触控板和手机事件按最近事件间隔保留小数余量，方向反转立即清空旧方向状态；LYStar 主工作区、Changes Diff、Changelog、Agent 详情和 Subagent Session 共用同一速度模型。通用 Pi TUI 默认行为保持不变，LYStar 显式启用自适应滚动；鼠标事件按帧合并，键盘保持立即渲染，LYStar 上限为 60 FPS。真实 SGR/PTY 回放确认单个低频事件为 3 行、4 个约 16 ms 连续事件累计 7 行、同批次 5 个重复 tick 累计 4 行、快速反向第一步为 1 行；临时 tmux server 已关闭。
+
+显式使用 Node.js `v22.21.1` 和 `NODE_TLS_REJECT_UNAUTHORIZED=1` 完成 `npm run check`、`npm run build:offline`、Unix 安装器测试和全部发布测试。TUI 全量退出码 0；AI 105 个 test files/878 项通过，25 个 files/825 项跳过；Agent Core 20 个 files/402 项通过、1 项跳过；Coding Agent 237 个 files/2084 项通过，6 个 files/49 项跳过。`git diff --check` 通过，CodeGraph 已同步到 1229 个文件、20619 个节点和 76620 条边，索引无 pending changes。
+
+使用 Bun `1.3.9` 构建 Darwin ARM64/x64 和 Linux ARM64/x64 四个候选包，`SHA256SUMS` 四项全部通过；manifest 版本为 `0.84.1-lystar.11`、Pi 版本为 `0.84.1`、仓库为 `lystar-team/lystar-code`。Linux x64 候选包 SHA-256 为 `2fa22b95f65c5c1ac85ab70a3dc8d342bcaf9baa365419d1720bcbadca07b57c`，大小为 `46507501` 字节；四个归档的 Mach-O/ELF 架构、`lc`/`lystar`、许可证和内置 Image Gen Skill 资源检查通过，Linux x64 的版本、离线模型列表和安装器物化结果正确。候选包在独立 `80x24` tmux PTY 显示 LYStar Code 全屏输入区、快捷栏和离线无模型提示，`/quit` 正常退出；临时 tmux server 已关闭。
+
+当前 Linux 主机没有 MSVC、Windows SDK、ConPTY 或 WebView2 Runtime，Windows x64 原生构建、终端截图、Hover、emoji 宽度、细线光标、滚动手感、托管 MinGit 和 PowerShell 5.1 安装链必须由提交后的 main CI 与 Release Windows job 给出最终证据。具体手机终端应用尚未实机运行，本轮证据覆盖标准 SGR 输入协议和真实 Linux PTY。
 
 ### `0.84.1-lystar.10` 发布前核验
 
