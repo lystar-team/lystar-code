@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-10T03:35:11Z
+最后核验时间：2026-08-10T04:08:56Z
 
 环境：
 
@@ -15,7 +15,7 @@ Linux x64
 
 ## 已通过
 
-### `0.84.1-lystar.9` 发布前核验
+### `0.84.1-lystar.9` 发布与升级核验
 
 发布事实源为 `piConfig.productVersion = 0.84.1-lystar.9`，Pi workspace 包版本继续保持 `0.84.1`。用户可见产品名改为 `LYStar Code`，主命令为完全等价的 `lc` 和 `lystar`；仓库 `octyean/lystar-agent`、发行包前缀 `lystar-agent`、安装根目录、`.pi`、`PI_*`、Session JSONL、Protocol 和 Extension API 保持兼容。升级后删除用户级 `la` launcher；新 launcher 回退到 `0.84.1-lystar.8` 或更早版本时会自动执行旧目录中的 `la`/`la.exe`。
 
@@ -25,7 +25,15 @@ Linux x64
 
 使用 Bun `1.3.9` 构建四个 Unix 候选包，`SHA256SUMS` 全部通过；manifest 版本为 `0.84.1-lystar.9`、Pi 版本为 `0.84.1`、仓库为 `octyean/lystar-agent`。Linux x64 候选包 SHA-256 为 `1812da52c7bab3944fe69cc2fcf5d68acf1c7a4164680486cd3e4e4b2de3ba32`，大小为 `46494003` 字节；`lc --version`、`lystar --version` 和 `PI_OFFLINE=1 lc --list-models` 通过。四个归档均包含 `lc`、`lystar`、MIT/第三方许可证和 `skills/imagegen/{SKILL.md,NOTICE.txt,LICENSE.txt}`，且不包含公开 `la` launcher。首次候选检查发现 standalone 归档漏复制 Skill，已在 Unix/Windows 打包责任位置修复，并为 Release workflow 增加硬校验。
 
-Linux x64 候选包在独立 tmux PTY 覆盖 `80x24`、`80x8` 和 `120x36`，输入框持续显示 `LYStar Code`，Composer 与快捷栏无重叠，`/quit` 正常退出。Unix 安装器测试从仅有旧 `la` 的模拟版本升级到 `.9`，确认创建 `lc`/`lystar`、删除公开 `la`，再回退后两个新 launcher 都可调用旧目录的 `la`。Windows 构建、ConPTY/WebView2、PowerShell 5.1 安装及同等升级回退链路尚需提交后的 main CI 和 Release Windows job 给出实机证据。
+Linux x64 候选包在独立 tmux PTY 覆盖 `80x24`、`80x8` 和 `120x36`，输入框持续显示 `LYStar Code`，Composer 与快捷栏无重叠，`/quit` 正常退出。Unix 安装器测试从仅有旧 `la` 的模拟版本升级到 `.9`，确认创建 `lc`/`lystar`、删除公开 `la`，再回退后两个新 launcher 都可调用旧目录的 `la`。
+
+`main` commit `88070d67edc474a1d8550da6c43e8d3939b41256` 的 CI run `31353683784` 七个 job 全部成功，覆盖源码核验与构建、Unix 安装器、TUI、AI、Agent Core、Coding Agent 双分片，以及 Windows 原生终端、托管 MinGit 和 PowerShell 5.1 安装/升级/回退。首次 CI `31353150090` 通过新增旧版 fixture 暴露 PowerShell 5.1/.NET Framework 不接受 `File.Replace(..., $null)`，已改为同目录备份路径；第二次 CI `31353438172` 证明安装与指针回退成功后，发现测试只复制单个旧 exe、缺少 standalone 资源，已改为完整旧版目录；最终 CI 的 Windows Terminal host 首次发生一次 15 秒退出超时，同 commit 只重跑失败 job 后完整通过，前两次 run 的同一终端步骤也均通过。
+
+annotated Tag `v0.84.1-lystar.9` 的 Tag 对象为 `1f68c240c1bf724c5a43dfd2c28742364c6682a8`，本地和远端解引用后均固定指向 `88070d67edc474a1d8550da6c43e8d3939b41256`。Release workflow run `31354104899` 成功，完成 main CI 绑定、版本校验、Bun 1.3.9 五平台打包、Windows 原生二进制 smoke、artifact attestation 和公开发布。GitHub Release 于 `2026-08-10T04:02:43Z` 发布，为非草稿、非预发布正式版本，共有 10 个上传资产。
+
+公开五平台包重新下载后 `SHA256SUMS` 五项全部通过，文件大小和 SHA 与公开 manifest 一致；Unix 与 Windows 归档均包含 `lc`/`lystar`、Image Gen Skill、NOTICE、Apache-2.0 许可证、MIT 和第三方许可证，且不包含公开 `la`/`la.exe`。公开 Linux x64 包 SHA-256 为 `7eb3e8cb0ecc56cfcec3a0e87c32fc32f364a003e2aff0bef914a40e92a39da2`，大小为 `46493207` 字节；Windows x64 包 SHA-256 为 `1c6b4ab9bcedb2d593bb504acd4cb0e339072ecc73100e2ec45dd6ef08410b76`，大小为 `64690542` 字节。GitHub Attestations API 按 Linux x64 SHA-256 返回 1 条 `application/vnd.dev.sigstore.bundle.v0.3+json` provenance。公开 Linux x64 包的 `lc --version`、`lystar --version`、`PI_OFFLINE=1 lc --list-models` 和 Skill 资源检查通过。
+
+本机使用旧版公开 `la update --self` 从 `0.84.1-lystar.8` 原子更新到 `.9`，`current` 指向 `.9`，`previous` 保留 `.8`，安装后只存在 `~/.local/bin/lc` 和 `~/.local/bin/lystar`，旧 `~/.local/bin/la` 已删除；再次运行 `lc update --self` 显示已是最新版本。随后执行 `lc update --rollback` 切回 `.8`，两个新 launcher 均通过旧目录 `la` 报告 `.8`；再次执行同一命令切回 `.9`，最终 `current=.9`、`previous=.8`。安装后的公开 `lc` 在独立 `80x24` tmux PTY 使用真实 `upstream/gpt-5.6-sol` 返回精确结果 `LYSTAR-CODE-PUBLIC-0841-9-OK`，`lystar` 也以公开安装路径进入显示 `LYStar Code` 的完整 TUI；两次均使用 `--no-session` 并正常 `/quit`，临时 tmux server 和 Git 目录已删除。
 
 ### 原生 `image_gen` 与统一卡片交互核验
 
