@@ -78,7 +78,8 @@ export class WorkspaceActivityBar implements Component {
 	render(width: number): string[] {
 		if (!this.state || width <= 0) return [];
 		const state = this.state;
-		const prefix = theme.bold(theme.fg(state.phase === "cancelled" ? "warning" : "accent", uiGlyphs.tool));
+		const prefixGlyph = state.phase === "runningTool" ? uiGlyphs.running : uiGlyphs.list;
+		const prefix = theme.bold(theme.fg(state.phase === "cancelled" ? "warning" : "accent", prefixGlyph));
 		const label = theme.fg(
 			state.phase === "retrying" || state.phase === "cancelled" ? "warning" : "text",
 			phaseLabel(state),

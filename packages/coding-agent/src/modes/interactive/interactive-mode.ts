@@ -142,7 +142,12 @@ import { ExtensionEditorComponent } from "./components/extension-editor.ts";
 import { ExtensionInputComponent } from "./components/extension-input.ts";
 import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
 import { FooterComponent, formatTokens } from "./components/footer.ts";
-import { activateInteractiveCard, resolveInteractiveCardAction } from "./components/interactive-card.ts";
+import {
+	activateInteractiveCard,
+	isInteractiveCard,
+	resolveInteractiveCardAction,
+	visitInteractiveCards,
+} from "./components/interactive-card.ts";
 import { formatKeyText, keyDisplayText } from "./components/keybinding-hints.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { LystarWorkspace, WorkspaceComposer, WorkspaceHeader } from "./components/lystar-workspace.ts";
@@ -168,7 +173,7 @@ import {
 import type { SubagentRunTarget } from "./components/subagent-run.ts";
 import { SubagentSessionViewComponent } from "./components/subagent-session-view.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
-import { ToolExecutionGroupComponent } from "./components/tool-execution-group.ts";
+import { ToolExecutionStackComponent } from "./components/tool-execution-stack.ts";
 import { TreeSelectorComponent } from "./components/tree-selector.ts";
 import { TrustSelectorComponent } from "./components/trust-selector.ts";
 import {
@@ -248,6 +253,7 @@ type TrackedTurnTool = {
 	name: string;
 	args: unknown;
 	status: "pending" | "running" | "success" | "error" | "cancelled";
+	action?: string;
 	subject?: string;
 	filePath?: string;
 	files?: TurnFileSummary[];
@@ -524,7 +530,7 @@ export class InteractiveMode {
 
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
-	private streamingBashGroup: ToolExecutionGroupComponent | undefined;
+	private streamingToolStack: ToolExecutionStackComponent | undefined;
 	private turnActivity: TurnActivityCollector | undefined;
 	private lastTurnFiles: TurnFileSummary[] = [];
 	private transcriptSource: SessionTranscriptSource | undefined;
@@ -535,6 +541,8 @@ export class InteractiveMode {
 
 	// Tool output expansion state
 	private toolOutputExpanded = false;
+	private cardExpansionSessionId: string | undefined;
+	private cardExpansion = new Map<string, boolean>();
 	private pendingCardClick: { row: number; column: number; component: Component; componentRow: number } | undefined;
 
 	// Thinking block visibility state
@@ -750,12 +758,12 @@ export class InteractiveMode {
 		this.workspace = new LystarWorkspace({
 			getHeight: () => this.ui.terminal.rows,
 			header: this.headerContainer,
-			topStatus: this.activityBar,
 			scrollContainers: [this.loadedResourcesContainer, this.chatContainer],
 			bottomContainers: [
 				this.pendingMessagesContainer,
 				this.statusContainer,
 				this.widgetContainerAbove,
+				this.activityBar,
 				this.composer,
 				this.widgetContainerBelow,
 				this.footerContainer,
@@ -765,6 +773,7 @@ export class InteractiveMode {
 			optionalBottomPriority: [
 				this.statusContainer,
 				this.pendingMessagesContainer,
+				this.activityBar,
 				this.footerContainer,
 				this.widgetContainerAbove,
 				this.widgetContainerBelow,
@@ -1102,7 +1111,7 @@ export class InteractiveMode {
 			return {
 				path,
 				branch: branch ?? undefined,
-				task: this.getWorkspaceTaskTitle(),
+				session: this.getWorkspaceStatusLabel(),
 				context: `上下文 ${percent}  ·  ${used}/${available}`,
 				compactContext: `上下文 ${percent}`,
 				contextWarning: percentValue !== null && percentValue !== undefined && percentValue >= threshold - 5,
@@ -2958,9 +2967,10 @@ export class InteractiveMode {
 				const pending = this.pendingCardClick;
 				this.pendingCardClick = undefined;
 				if (pending && pending.row === mouse.row && pending.column === mouse.column) {
-					activateInteractiveCard(pending.component, pending.componentRow, (target) =>
+					const action = activateInteractiveCard(pending.component, pending.componentRow, (target) =>
 						this.openSubagentSession(target),
 					);
+					if (action?.type === "toggle") this.rememberCardExpansion(action.component);
 					this.ui.requestRender();
 				}
 				return undefined;
@@ -3351,17 +3361,26 @@ export class InteractiveMode {
 		};
 	}
 
-	private getWorkspaceTaskTitle(): string {
-		const sessionName = this.sessionManager.getSessionName()?.trim();
-		if (sessionName) return sessionName;
-		for (const message of this.session.messages) {
-			if (message.role !== "user") continue;
-			const firstLine = this.getUserMessageText(message as Message)
-				.split(/\r?\n/, 1)[0]
-				?.trim();
-			if (firstLine) return firstLine;
+	private getWorkspaceStatusLabel(): string {
+		if (this.session.isCompacting) return "压缩中";
+		switch (this.turnActivity?.phase) {
+			case "thinking":
+				return "思考中";
+			case "runningTool":
+				return "执行中";
+			case "waiting":
+				return "等待模型";
+			case "retrying":
+				return "重试中";
+			case "compacting":
+			case "summarizing":
+				return "压缩中";
+			case "cancelled":
+				return "正在取消";
 		}
-		return "新会话";
+		if (this.session.isBashRunning) return "执行中";
+		if (this.session.isStreaming) return "思考中";
+		return "等待输入";
 	}
 
 	private normalizeTurnFilePath(filePath: string): string {
@@ -3370,7 +3389,11 @@ export class InteractiveMode {
 		return (getCwdRelativePath(absolutePath, cwd) ?? absolutePath).split(path.sep).join("/");
 	}
 
-	private getTrackedToolDisplay(name: string, args: unknown): { subject?: string; filePath?: string } {
+	private getTrackedToolDisplay(
+		name: string,
+		args: unknown,
+	): { action?: string; subject?: string; filePath?: string } {
+		if (name === "apply_patch") return { action: t("tool.applyPatch.running") };
 		if (!args || typeof args !== "object") return {};
 		const values = args as Record<string, unknown>;
 		if (name === "read" || name === "edit" || name === "write") {
@@ -3398,6 +3421,7 @@ export class InteractiveMode {
 			if (args !== undefined) {
 				existing.args = args;
 				const display = this.getTrackedToolDisplay(name, args);
+				existing.action = display.action;
 				existing.subject = display.subject;
 				existing.filePath = display.filePath;
 			}
@@ -3425,7 +3449,7 @@ export class InteractiveMode {
 		const current = running.at(-1);
 		this.activityBar.setState({
 			phase: activity.phase,
-			action: activity.phase === "runningTool" ? current?.name : activity.action,
+			action: activity.phase === "runningTool" ? (current?.action ?? current?.name) : activity.action,
 			subject: activity.phase === "runningTool" && running.length <= 1 ? current?.subject : undefined,
 			startedAt: activity.startedAt,
 			completedTools: tools.filter(
@@ -3532,7 +3556,7 @@ export class InteractiveMode {
 		switch (event.type) {
 			case "agent_start":
 				this.pendingTools.clear();
-				this.streamingBashGroup = undefined;
+				this.streamingToolStack = undefined;
 				this.turnActivity ??= {
 					startedAt: Date.now(),
 					phase: "thinking",
@@ -3603,7 +3627,7 @@ export class InteractiveMode {
 					this.updatePendingMessagesDisplay();
 					this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
-					this.streamingBashGroup = undefined;
+					this.streamingToolStack = undefined;
 					this.streamingComponent = new AssistantMessageComponent(
 						undefined,
 						this.hideThinkingBlock,
@@ -3642,18 +3666,13 @@ export class InteractiveMode {
 									this.sessionManager.getCwd(),
 								);
 								component.setExpanded(this.toolOutputExpanded);
-								if (content.name === "bash") {
-									if (!this.streamingBashGroup) {
-										this.streamingBashGroup = new ToolExecutionGroupComponent();
-										this.streamingBashGroup.setToolOutputsExpanded(this.toolOutputExpanded);
-										this.chatContainer.addChild(new Spacer(1));
-										this.chatContainer.addChild(this.streamingBashGroup);
-									}
-									this.streamingBashGroup.addTool(component);
-								} else {
+								if (!this.streamingToolStack) {
+									this.streamingToolStack = new ToolExecutionStackComponent();
+									this.streamingToolStack.setExpanded(this.toolOutputExpanded);
 									this.chatContainer.addChild(new Spacer(1));
-									this.chatContainer.addChild(component);
+									this.chatContainer.addChild(this.streamingToolStack);
 								}
+								this.streamingToolStack.addTool(component);
 								this.pendingTools.set(content.id, component);
 							} else {
 								const component = this.pendingTools.get(content.id);
@@ -3713,7 +3732,7 @@ export class InteractiveMode {
 					}
 					this.streamingComponent = undefined;
 					this.streamingMessage = undefined;
-					this.streamingBashGroup = undefined;
+					this.streamingToolStack = undefined;
 					this.footer.invalidate();
 				}
 				this.ui.requestRender();
@@ -3744,8 +3763,13 @@ export class InteractiveMode {
 						this.sessionManager.getCwd(),
 					);
 					component.setExpanded(this.toolOutputExpanded);
-					this.chatContainer.addChild(new Spacer(1));
-					this.chatContainer.addChild(component);
+					if (!this.streamingToolStack) {
+						this.streamingToolStack = new ToolExecutionStackComponent();
+						this.streamingToolStack.setExpanded(this.toolOutputExpanded);
+						this.chatContainer.addChild(new Spacer(1));
+						this.chatContainer.addChild(this.streamingToolStack);
+					}
+					this.streamingToolStack.addTool(component);
 					this.pendingTools.set(event.toolCallId, component);
 				}
 				component.markExecutionStarted();
@@ -3827,7 +3851,7 @@ export class InteractiveMode {
 					this.streamingMessage = undefined;
 				}
 				this.pendingTools.clear();
-				this.streamingBashGroup = undefined;
+				this.streamingToolStack = undefined;
 				if (this.turnActivity) {
 					this.updateActivityBar(
 						event.willRetry ? "retrying" : this.turnActivity.cancelled ? "cancelled" : "waiting",
@@ -4138,7 +4162,7 @@ export class InteractiveMode {
 		options: { updateFooter?: boolean; populateHistory?: boolean; cwd?: string; includeCacheMisses?: boolean } = {},
 	): void {
 		this.pendingTools.clear();
-		this.streamingBashGroup = undefined;
+		this.streamingToolStack = undefined;
 		const renderedPendingTools = new Map<string, ToolExecutionComponent>();
 		// Cache-miss notices are not persisted; re-derive them from the full entry
 		// list and re-inject them after the assistant messages that paid for them.
@@ -4163,7 +4187,7 @@ export class InteractiveMode {
 			// Assistant messages need special handling for tool calls
 			if (message.role === "assistant") {
 				this.addMessageToChat(message);
-				let bashGroup: ToolExecutionGroupComponent | undefined;
+				let toolStack: ToolExecutionStackComponent | undefined;
 				// Render tool call components
 				for (const content of message.content) {
 					if (content.type === "toolCall") {
@@ -4180,18 +4204,13 @@ export class InteractiveMode {
 							cwd,
 						);
 						component.setExpanded(this.toolOutputExpanded);
-						if (content.name === "bash") {
-							if (!bashGroup) {
-								bashGroup = new ToolExecutionGroupComponent();
-								bashGroup.setToolOutputsExpanded(this.toolOutputExpanded);
-								this.chatContainer.addChild(new Spacer(1));
-								this.chatContainer.addChild(bashGroup);
-							}
-							bashGroup.addTool(component);
-						} else {
+						if (!toolStack) {
+							toolStack = new ToolExecutionStackComponent();
+							toolStack.setExpanded(this.toolOutputExpanded);
 							this.chatContainer.addChild(new Spacer(1));
-							this.chatContainer.addChild(component);
+							this.chatContainer.addChild(toolStack);
 						}
+						toolStack.addTool(component);
 
 						if (message.stopReason === "aborted" || message.stopReason === "error") {
 							const errorMessage =
@@ -4228,6 +4247,7 @@ export class InteractiveMode {
 		for (const [toolCallId, component] of renderedPendingTools) {
 			this.pendingTools.set(toolCallId, component);
 		}
+		this.restoreCardExpansion(this.chatContainer.children);
 		this.ui.requestRender();
 	}
 
@@ -4376,7 +4396,7 @@ export class InteractiveMode {
 	private materializeSessionEntries(entries: SessionEntry[]): Component[] {
 		const chatContainer = this.chatContainer;
 		const pendingTools = this.pendingTools;
-		const streamingBashGroup = this.streamingBashGroup;
+		const streamingToolStack = this.streamingToolStack;
 		const temporary = new Container();
 		this.chatContainer = temporary;
 		try {
@@ -4385,25 +4405,25 @@ export class InteractiveMode {
 		} finally {
 			this.chatContainer = chatContainer;
 			this.pendingTools = pendingTools;
-			this.streamingBashGroup = streamingBashGroup;
+			this.streamingToolStack = streamingToolStack;
 		}
 	}
 
 	private materializeSubagentMessages(messages: AgentMessage[], cwd: string): Component[] {
 		const chatContainer = this.chatContainer;
 		const pendingTools = this.pendingTools;
-		const streamingBashGroup = this.streamingBashGroup;
+		const streamingToolStack = this.streamingToolStack;
 		const temporary = new Container();
 		this.chatContainer = temporary;
 		this.pendingTools = new Map();
-		this.streamingBashGroup = undefined;
+		this.streamingToolStack = undefined;
 		try {
 			this.renderSessionItems(messages as RenderSessionItem[], { cwd, includeCacheMisses: false });
 			return [...temporary.children];
 		} finally {
 			this.chatContainer = chatContainer;
 			this.pendingTools = pendingTools;
-			this.streamingBashGroup = streamingBashGroup;
+			this.streamingToolStack = streamingToolStack;
 		}
 	}
 
@@ -4770,15 +4790,36 @@ export class InteractiveMode {
 			activeHeader.setExpanded(expanded);
 		}
 		for (const container of [this.loadedResourcesContainer, this.chatContainer]) {
+			visitInteractiveCards(container.children, (card) => {
+				card.setExpanded(expanded);
+				this.rememberCardExpansion(card);
+			});
 			for (const child of container.children) {
-				if (child instanceof ToolExecutionGroupComponent) {
-					child.setToolOutputsExpanded(expanded);
-				} else if (isExpandable(child)) {
-					child.setExpanded(expanded);
-				}
+				if (!isInteractiveCard(child) && isExpandable(child)) child.setExpanded(expanded);
 			}
 		}
 		this.showStatus(`详情已${expanded ? "展开" : "折叠"}`);
+	}
+
+	private syncCardExpansionSession(): void {
+		const sessionId = this.sessionManager.getSessionId();
+		if (this.cardExpansionSessionId === sessionId) return;
+		this.cardExpansionSessionId = sessionId;
+		this.cardExpansion.clear();
+	}
+
+	private rememberCardExpansion(card: { isExpanded(): boolean; getCardStateKey?(): string | undefined }): void {
+		this.syncCardExpansionSession();
+		const key = card.getCardStateKey?.();
+		if (key) this.cardExpansion.set(key, card.isExpanded());
+	}
+
+	private restoreCardExpansion(components: readonly Component[]): void {
+		this.syncCardExpansionSession();
+		visitInteractiveCards(components, (card) => {
+			const key = card.getCardStateKey?.();
+			if (key !== undefined && this.cardExpansion.has(key)) card.setExpanded(this.cardExpansion.get(key)!);
+		});
 	}
 
 	private toggleThinkingBlockVisibility(): void {

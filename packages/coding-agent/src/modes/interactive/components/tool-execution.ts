@@ -1,11 +1,27 @@
-import { Box, type Component, Container, getCapabilities, Image, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
+import {
+	Box,
+	type Component,
+	Container,
+	getCapabilities,
+	Image,
+	Spacer,
+	Text,
+	type TUI,
+	truncateToWidth,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import type { ToolDefinition, ToolRenderContext } from "../../../core/extensions/types.ts";
 import { createAllToolDefinitions, type ToolName } from "../../../core/tools/index.ts";
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
 import { convertToPng } from "../../../utils/image-convert.ts";
 import { theme } from "../theme/theme.ts";
 import { uiGlyphs } from "../ui-glyphs.ts";
-import type { InteractiveCardAction } from "./interactive-card.ts";
+import {
+	type InteractiveCard,
+	type InteractiveCardAction,
+	isInteractiveCard,
+	resolveInteractiveCardAction,
+} from "./interactive-card.ts";
 import type { SubagentRunTarget } from "./subagent-run.ts";
 import { formatToolSummary, getToolSummary } from "./tool-summary.ts";
 
@@ -50,6 +66,7 @@ export class ToolExecutionComponent extends Container {
 	private cancelled = false;
 	private renderVersion = 0;
 	private lastRenderedWidth = 0;
+	private lastRenderedLineCount = 0;
 
 	constructor(
 		toolName: string,
@@ -147,7 +164,6 @@ export class ToolExecutionComponent extends Container {
 			formatToolSummary({
 				icon: uiGlyphs.tool,
 				subject: this.toolName,
-				expanded: this.expanded,
 				isPartial: this.isPartial,
 				isError: this.result?.isError ?? false,
 				labels: { running: "正在执行", success: "已执行", error: "执行失败" },
@@ -245,10 +261,24 @@ export class ToolExecutionComponent extends Container {
 		return `tool:${this.toolCallId}`;
 	}
 
+	getToolName(): string {
+		return this.toolName;
+	}
+
 	getCardClickActionAtRow(row: number): InteractiveCardAction | undefined {
-		if (row < 0) return undefined;
-		const target = this.getAgentTargetAtRow(row);
-		return target ? { type: "openSubagent", target } : { type: "toggle", component: this };
+		if (row < 0 || row >= this.lastRenderedLineCount) return undefined;
+		if (this.lastRenderedWidth > 0) {
+			const callLineCount = this.callRendererComponent?.render(this.lastRenderedWidth).length ?? 0;
+			if (row >= callLineCount && isInteractiveCard(this.resultRendererComponent)) {
+				const action = resolveInteractiveCardAction(this.resultRendererComponent, row - callLineCount);
+				if (action) return action;
+			}
+		}
+		return { type: "toggle", component: this };
+	}
+
+	getChildCards(): readonly InteractiveCard[] {
+		return [this.callRendererComponent, this.resultRendererComponent].filter(isInteractiveCard);
 	}
 
 	getAgentTargetAtRow(row: number): ToolExecutionAgentTarget | undefined {
@@ -290,12 +320,14 @@ export class ToolExecutionComponent extends Container {
 	override render(width: number): string[] {
 		this.lastRenderedWidth = width;
 		if (this.hideComponent) {
+			this.lastRenderedLineCount = 0;
 			return [];
 		}
 
 		if (this.hasRendererDefinition() && this.getRenderShell() === "self") {
 			const contentLines = this.selfRenderContainer.render(width);
 			if (contentLines.length === 0 && this.imageComponents.length === 0) {
+				this.lastRenderedLineCount = 0;
 				return [];
 			}
 
@@ -310,30 +342,35 @@ export class ToolExecutionComponent extends Container {
 					lines.push(...imageComponent.render(width));
 				}
 			}
-			return lines;
+			const rendered = this.renderExpansionIndicator(lines, width);
+			this.lastRenderedLineCount = rendered.length;
+			return rendered;
 		}
 
-		return super.render(width);
+		const rendered = this.renderExpansionIndicator(super.render(width), width);
+		this.lastRenderedLineCount = rendered.length;
+		return rendered;
 	}
 
-	private getBackgroundFn(): (text: string) => string {
-		return this.isPartial
-			? (text: string) => theme.bg("toolPendingBg", text)
-			: this.result?.isError
-				? (text: string) => theme.bg("toolErrorBg", text)
-				: (text: string) => theme.bg("toolSuccessBg", text);
+	private renderExpansionIndicator(lines: string[], width: number): string[] {
+		if (lines.length === 0 || width <= 0) return lines;
+		const indicator = theme.fg("dim", this.expanded ? uiGlyphs.expanded : uiGlyphs.collapsed);
+		const indicatorWidth = visibleWidth(indicator);
+		if (indicatorWidth >= width) return [truncateToWidth(indicator, width, ""), ...lines.slice(1)];
+		const left = truncateToWidth(lines[0] ?? "", Math.max(1, width - indicatorWidth - 1), "…");
+		const gap = " ".repeat(Math.max(1, width - visibleWidth(left) - indicatorWidth));
+		return [`${left}${gap}${indicator}`, ...lines.slice(1)];
 	}
 
 	private updateDisplay(): void {
 		this.renderVersion++;
-		const bgFn = this.getBackgroundFn();
 
 		let hasContent = false;
 		this.hideComponent = false;
 		if (this.hasRendererDefinition()) {
 			const renderContainer = this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox;
 			if (renderContainer instanceof Box) {
-				renderContainer.setBgFn(bgFn);
+				renderContainer.setBgFn((text: string) => text);
 			}
 			renderContainer.clear();
 
@@ -384,7 +421,6 @@ export class ToolExecutionComponent extends Container {
 				}
 			}
 		} else {
-			this.contentText.setCustomBgFn(bgFn);
 			this.contentText.setText(this.formatToolExecution());
 			hasContent = true;
 		}
@@ -403,7 +439,7 @@ export class ToolExecutionComponent extends Container {
 			const caps = getCapabilities();
 			for (let i = 0; i < imageBlocks.length; i++) {
 				const img = imageBlocks[i];
-				if (caps.images && this.showImages && img.data && img.mimeType) {
+				if (caps.images && this.showImages && this.expanded && img.data && img.mimeType) {
 					const converted = this.convertedImages.get(i);
 					const imageData = converted?.data ?? img.data;
 					const imageMimeType = converted?.mimeType ?? img.mimeType;
@@ -437,7 +473,6 @@ export class ToolExecutionComponent extends Container {
 		let text = formatToolSummary({
 			icon: uiGlyphs.tool,
 			subject: this.toolName,
-			expanded: this.expanded,
 			isPartial: this.isPartial,
 			isError: this.result?.isError ?? false,
 			labels: { running: "正在执行", success: "已执行", error: "执行失败" },

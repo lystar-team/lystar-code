@@ -10,6 +10,10 @@ export interface UiGlyphs {
 	search: string;
 	list: string;
 	edit: string;
+	file: string;
+	image: string;
+	running: string;
+	open: string;
 }
 
 const richGlyphs: UiGlyphs = {
@@ -24,6 +28,10 @@ const richGlyphs: UiGlyphs = {
 	search: "⌕",
 	list: "≡",
 	edit: "✎",
+	file: "▤",
+	image: "▣",
+	running: "▶",
+	open: "↗",
 };
 
 const windowsGlyphs: UiGlyphs = {
@@ -31,21 +39,32 @@ const windowsGlyphs: UiGlyphs = {
 	success: "+",
 	failure: "x",
 	tool: "*",
-	expanded: "-",
-	collapsed: "+",
+	expanded: "v",
+	collapsed: ">",
 	branch: ">",
 	delta: "+/-",
 	search: "?",
 	list: "=",
 	edit: "E",
+	file: "F",
+	image: "I",
+	running: ">",
+	open: ">",
 };
 
-export function getUiGlyphs(platform: NodeJS.Platform = process.platform): UiGlyphs {
-	return platform === "win32" ? windowsGlyphs : richGlyphs;
+export function getUiGlyphs(
+	platform: NodeJS.Platform = process.platform,
+	env: NodeJS.ProcessEnv = process.env,
+): UiGlyphs {
+	return platform === "win32" && env.LYSTAR_TERMINAL_HOST !== "1" ? windowsGlyphs : richGlyphs;
 }
 
-export function toUiGlyph(glyph: string, platform: NodeJS.Platform = process.platform): string {
-	if (platform !== "win32") return glyph;
+export function toUiGlyph(
+	glyph: string,
+	platform: NodeJS.Platform = process.platform,
+	env: NodeJS.ProcessEnv = process.env,
+): string {
+	if (platform !== "win32" || env.LYSTAR_TERMINAL_HOST === "1") return glyph;
 	const key = (Object.keys(richGlyphs) as Array<keyof UiGlyphs>).find((name) => richGlyphs[name] === glyph);
 	return key ? windowsGlyphs[key] : glyph;
 }

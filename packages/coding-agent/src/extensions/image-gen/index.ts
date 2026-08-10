@@ -19,6 +19,7 @@ import type { SessionEntry } from "../../core/session-manager.ts";
 import { resolveToCwd } from "../../core/tools/path-utils.ts";
 import { shortenPath } from "../../core/tools/render-utils.ts";
 import { formatToolSummary, getToolSummary } from "../../modes/interactive/components/tool-summary.ts";
+import { uiGlyphs } from "../../modes/interactive/ui-glyphs.ts";
 import { processImage } from "../../utils/image-process.ts";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 
@@ -315,9 +316,8 @@ export function createImageGenToolDefinition(): ToolDefinition<typeof imageGenSc
 			const summary = getToolSummary(context.lastComponent);
 			summary.setText(
 				formatToolSummary({
-					icon: "◫",
+					icon: uiGlyphs.image,
 					subject: args.prompt?.trim() ?? "",
-					expanded: context.expanded,
 					isPartial: context.isPartial,
 					isError: context.isError,
 					labels: { running: "正在生成图片", success: "已生成图片", error: "图片生成失败" },

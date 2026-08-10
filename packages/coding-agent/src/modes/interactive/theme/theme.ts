@@ -38,6 +38,7 @@ const ThemeJsonSchema = Type.Object({
 		border: ColorValueSchema,
 		borderAccent: ColorValueSchema,
 		borderMuted: ColorValueSchema,
+		toolDivider: Type.Optional(ColorValueSchema),
 		success: ColorValueSchema,
 		error: ColorValueSchema,
 		warning: ColorValueSchema,
@@ -112,6 +113,7 @@ export type ThemeColor =
 	| "border"
 	| "borderAccent"
 	| "borderMuted"
+	| "toolDivider"
 	| "success"
 	| "error"
 	| "warning"
@@ -323,11 +325,12 @@ function resolveThemeColors<T extends Record<string, ColorValue>>(
 
 function withThemeColorFallbacks(
 	colors: ThemeJson["colors"],
-): ThemeJson["colors"] & { thinkingMax: ColorValue; scrollbarThumb: ColorValue } {
+): ThemeJson["colors"] & { thinkingMax: ColorValue; scrollbarThumb: ColorValue; toolDivider: ColorValue } {
 	return {
 		...colors,
 		thinkingMax: colors.thinkingMax ?? colors.thinkingXhigh,
 		scrollbarThumb: colors.scrollbarThumb ?? colors.selectedBg,
+		toolDivider: colors.toolDivider ?? colors.borderMuted,
 	};
 }
 

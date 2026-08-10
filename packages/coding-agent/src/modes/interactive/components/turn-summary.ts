@@ -1,7 +1,8 @@
-import { Box, Spacer, Text } from "@earendil-works/pi-tui";
+import { Box, type Component, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { theme } from "../theme/theme.ts";
 import { uiGlyphs } from "../ui-glyphs.ts";
-import { keyText } from "./keybinding-hints.ts";
+import type { InteractiveCardAction } from "./interactive-card.ts";
+import { alignCardExpansion, renderToolDivider } from "./tool-card-layout.ts";
 
 export interface TurnFileSummary {
 	path: string;
@@ -75,7 +76,10 @@ function getOutcome(data: TurnSummaryData): TurnOutcome {
 	return data.outcome ?? (data.cancelled ? "cancelled" : "completed");
 }
 
-export function formatTurnSummary(data: TurnSummaryData): string {
+function formatTurnSummaryVariant(
+	data: TurnSummaryData,
+	options: { compact: boolean; includeCommands: boolean; includeDuration: boolean },
+): string {
 	const duration = formatDuration(data.endedAt - data.startedAt);
 	const parts: string[] = [];
 	const outcome = getOutcome(data);
@@ -92,23 +96,58 @@ export function formatTurnSummary(data: TurnSummaryData): string {
 		parts.push("完成");
 	}
 	if (data.files.length > 0) {
-		parts.push(`修改 ${data.files.length} 个文件`);
+		parts.push(`${options.compact ? "" : "修改 "}${data.files.length} 个文件`);
 		const count = totals(data.files);
-		if (count.known) parts.push(`+${count.additions}/-${count.deletions}`);
+		if (count.known) parts.push(`+${count.additions} -${count.deletions}`);
 	}
-	if (data.commandCount > 0) {
-		parts.push(`命令 ${data.successfulCommands}/${data.commandCount}`);
+	if (options.includeCommands && data.commandCount > 0) {
+		parts.push(
+			options.compact
+				? `${data.successfulCommands}/${data.commandCount} 条命令`
+				: `命令 ${data.successfulCommands}/${data.commandCount}`,
+		);
 	}
-	parts.push(duration);
+	if (options.includeDuration) parts.push(duration);
 	return parts.join(" · ");
+}
+
+export function formatTurnSummary(data: TurnSummaryData): string {
+	return formatTurnSummaryVariant(data, { compact: false, includeCommands: true, includeDuration: true });
+}
+
+class TurnSummaryHeader implements Component {
+	private readonly data: TurnSummaryData;
+
+	constructor(data: TurnSummaryData) {
+		this.data = data;
+	}
+
+	render(width: number): string[] {
+		const outcome = getOutcome(this.data);
+		const color = outcome === "completed" ? "accent" : "warning";
+		const icon = outcome === "completed" ? uiGlyphs.success : uiGlyphs.failure;
+		const prefix = `${theme.bold(theme.fg(color, icon))} `;
+		const available = Math.max(1, width - visibleWidth(prefix));
+		const candidates = [
+			formatTurnSummary(this.data),
+			formatTurnSummaryVariant(this.data, { compact: true, includeCommands: true, includeDuration: true }),
+			formatTurnSummaryVariant(this.data, { compact: true, includeCommands: true, includeDuration: false }),
+			formatTurnSummaryVariant(this.data, { compact: true, includeCommands: false, includeDuration: false }),
+		];
+		const summary = candidates.find((candidate) => visibleWidth(candidate) <= available) ?? candidates.at(-1)!;
+		return [`${prefix}${theme.fg("text", truncateToWidth(summary, available, "…"))}`];
+	}
+
+	invalidate(): void {}
 }
 
 export class TurnSummaryComponent extends Box {
 	private expanded = false;
 	private readonly data: TurnSummaryData;
+	private lastRenderedLineCount = 0;
 
 	constructor(data: TurnSummaryData) {
-		super(1, 0, (text) => theme.bg("customMessageBg", text));
+		super(1, 0, (text) => text);
 		this.data = data;
 		this.updateDisplay();
 	}
@@ -122,6 +161,23 @@ export class TurnSummaryComponent extends Box {
 		return this.expanded;
 	}
 
+	getCardStateKey(): string {
+		return `turn-summary:${this.data.startedAt}`;
+	}
+
+	getCardClickActionAtRow(row: number): InteractiveCardAction | undefined {
+		return row >= 0 && row < this.lastRenderedLineCount - 1 ? { type: "toggle", component: this } : undefined;
+	}
+
+	override render(width: number): string[] {
+		const lines = super.render(width);
+		if (lines.length === 0) return lines;
+		lines[0] = alignCardExpansion(lines[0]!, width, this.expanded);
+		lines.push(renderToolDivider(width));
+		this.lastRenderedLineCount = lines.length;
+		return lines;
+	}
+
 	override invalidate(): void {
 		super.invalidate();
 		this.updateDisplay();
@@ -130,17 +186,7 @@ export class TurnSummaryComponent extends Box {
 	private updateDisplay(): void {
 		this.clear();
 		const outcome = getOutcome(this.data);
-		const hasIssue = outcome !== "completed";
-		const icon = hasIssue ? uiGlyphs.failure : uiGlyphs.success;
-		const color = hasIssue ? "warning" : "accent";
-		const hint = theme.fg("dim", `（${keyText("app.tools.expand")} 展开）`);
-		this.addChild(
-			new Text(
-				`${theme.bold(theme.fg(color, icon))} ${theme.fg("text", formatTurnSummary(this.data))} ${hint}`,
-				0,
-				0,
-			),
-		);
+		this.addChild(new TurnSummaryHeader(this.data));
 		if (!this.expanded) return;
 
 		if (this.data.files.length > 0) {
@@ -148,7 +194,7 @@ export class TurnSummaryComponent extends Box {
 			for (const file of this.data.files) {
 				const count =
 					file.additions !== undefined || file.deletions !== undefined
-						? `  +${file.additions ?? 0}/-${file.deletions ?? 0}`
+						? `  +${file.additions ?? 0} -${file.deletions ?? 0}`
 						: "";
 				this.addChild(
 					new Text(

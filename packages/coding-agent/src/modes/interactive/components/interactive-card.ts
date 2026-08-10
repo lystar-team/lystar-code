@@ -33,7 +33,7 @@ export function resolveInteractiveCardAction(
 	row: number,
 ): InteractiveCardAction | undefined {
 	if (!isInteractiveCard(component) || row < 0) return undefined;
-	return component.getCardClickActionAtRow?.(row) ?? { type: "toggle", component };
+	return component.getCardClickActionAtRow ? component.getCardClickActionAtRow(row) : { type: "toggle", component };
 }
 
 export function activateInteractiveCard(

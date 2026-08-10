@@ -514,9 +514,10 @@ describe("LYStar workspace", () => {
 		const headerLines = header.render(120).map(stripAnsi);
 		const composerLines = composer.render(80).map(stripAnsi);
 
-		expect(headerLines).toHaveLength(1);
+		expect(headerLines).toHaveLength(2);
 		expect(headerLines[0]).toContain("LYStar Code  ·  ~/project  ·  main  ·  任务一");
 		expect(headerLines[0]).toContain("上下文 7.4%  ·  9.5K/128K");
+		expect(headerLines[1]).toContain("─");
 		expect(composerLines[0]).toMatch(/^╭─+ LYStar Code ─╮$/);
 		expect(composerLines[1]).toContain("│❯ 修复登录流程");
 		expect(composerLines[2]).toContain("upstream/claude-sonnet-4");

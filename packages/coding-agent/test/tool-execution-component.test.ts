@@ -1,5 +1,5 @@
 import { join, resolve } from "node:path";
-import { Text, type TUI } from "@earendil-works/pi-tui";
+import { Text, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { beforeAll, describe, expect, test } from "vitest";
 import { getReadmePath } from "../src/config.ts";
@@ -119,11 +119,15 @@ describe("ToolExecutionComponent parity", () => {
 			},
 			isError: false,
 		});
-		component.render(100);
+		const lines = component.render(100).map(stripAnsi);
+		const firstRow = lines.findIndex((line) => line.includes("reader"));
+		const secondRow = lines.findIndex((line) => line.includes("worker"));
 
+		expect(firstRow).toBeGreaterThan(0);
+		expect(secondRow).toBeGreaterThan(firstRow);
 		expect(component.getAgentTargetAtRow(0)).toBeUndefined();
-		expect(component.getAgentTargetAtRow(1)).toMatchObject({ runId: "run-1", agentId: "agent-1" });
-		expect(component.getAgentTargetAtRow(2)).toMatchObject({ runId: "run-1", agentId: "agent-2" });
+		expect(component.getAgentTargetAtRow(firstRow)).toMatchObject({ runId: "run-1", agentId: "agent-1" });
+		expect(component.getAgentTargetAtRow(secondRow)).toMatchObject({ runId: "run-1", agentId: "agent-2" });
 	});
 
 	test("shows apply_patch files and counts by default, then full diffs when expanded", () => {
@@ -155,7 +159,10 @@ describe("ToolExecutionComponent parity", () => {
 		});
 
 		const collapsed = stripAnsi(component.render(100).join("\n"));
-		expect(collapsed).toContain("已应用补丁 3 个文件 +2 -2");
+		expect(collapsed).toContain("已应用补丁");
+		expect(collapsed).toContain("3 个文件  +2 -2");
+		expect(collapsed).toContain("▸");
+		expect(collapsed).not.toContain("▾");
 		expect(collapsed).toContain("docs/new.md  +1 -0");
 		expect(collapsed).toContain("src/index.ts  +1 -1");
 		expect(collapsed).toContain("src/old.ts  +0 -1");
@@ -166,6 +173,39 @@ describe("ToolExecutionComponent parity", () => {
 		expect(expanded).toContain("before");
 		expect(expanded).toContain("after");
 		expect(expanded).toContain("removed");
+	});
+
+	test("keeps apply_patch path counts on one line at narrow widths", () => {
+		const component = new ToolExecutionComponent(
+			"apply_patch",
+			"apply-patch-narrow",
+			{ input: "*** Begin Patch\n*** End Patch" },
+			{},
+			createApplyPatchToolDefinition(),
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult({
+			content: [{ type: "text", text: "Applied patch to 1 file(s)." }],
+			details: {
+				files: [
+					{
+						path: "a/very/long/path/that/does/not/fit/index.mdx",
+						operation: "update",
+						additions: 5,
+						deletions: 3,
+						diff: "- old\n+ new",
+					},
+				],
+			},
+			isError: false,
+		});
+
+		const lines = component.render(40).map(stripAnsi);
+		const fileLine = lines.find((line) => line.includes("index.mdx"));
+		expect(fileLine).toContain("…/index.mdx");
+		expect(fileLine).toContain("+5 -3");
+		expect(fileLine && visibleWidth(fileLine)).toBeLessThanOrEqual(40);
 	});
 
 	test("renders apply_patch failures and legacy file details", () => {
@@ -207,8 +247,8 @@ describe("ToolExecutionComponent parity", () => {
 			process.cwd(),
 		);
 		expect(component.render(120)).toEqual([]);
-		expect(component.getCardClickActionAtRow(0)?.type).toBe("toggle");
-		expect(component.getCardClickActionAtRow(1)?.type).toBe("toggle");
+		expect(component.getCardClickActionAtRow(0)).toBeUndefined();
+		expect(component.getCardClickActionAtRow(1)).toBeUndefined();
 		expect(component.getCardClickActionAtRow(-1)).toBeUndefined();
 
 		component.updateResult(
@@ -257,6 +297,25 @@ describe("ToolExecutionComponent parity", () => {
 		const rendered = stripAnsi(component.render(120).join("\n"));
 		expect(rendered).toContain("正在读取");
 		expect(rendered).toContain("README.md");
+	});
+
+	test("keeps long path basenames visible without adding summary rows", () => {
+		const component = new ToolExecutionComponent(
+			"read",
+			"tool-long-path",
+			{ path: "packages/coding-agent/src/modes/interactive/components/very-long-directory/important-file.ts" },
+			{},
+			createReadToolDefinition(process.cwd()),
+			createFakeTui(),
+			process.cwd(),
+		);
+
+		for (const width of [40, 50, 72, 100]) {
+			const lines = component.render(width).map(stripAnsi);
+			expect(lines).toHaveLength(2);
+			expect(lines[1]).toContain("important-file.ts");
+			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+		}
 	});
 
 	test("bash execute emits an initial empty partial update before output arrives", async () => {
@@ -356,13 +415,17 @@ describe("ToolExecutionComponent parity", () => {
 
 		const collapsedLines = component.render(80);
 		const collapsed = stripAnsi(collapsedLines.join("\n"));
-		expect(collapsedLines).toHaveLength(1);
+		expect(collapsedLines).toHaveLength(2);
 		expect(collapsed).toContain("$ 已运行");
+		expect(collapsed).toContain("generate output");
+		expect(collapsed).toContain("▸");
+		expect(collapsed).not.toContain("▾");
 		expect(collapsed).not.toContain("▣");
 		expect(collapsed).not.toContain("line-100");
 		expect(component.getCardClickActionAtRow(0)?.type).toBe("toggle");
-		expect(component.getCardClickActionAtRow(99)?.type).toBe("toggle");
-		expect(component.render(80).join("\n")).toContain(theme.getBgAnsi("toolSuccessBg"));
+		expect(component.getCardClickActionAtRow(1)?.type).toBe("toggle");
+		expect(component.getCardClickActionAtRow(99)).toBeUndefined();
+		expect(component.render(80).join("\n")).not.toContain(theme.getBgAnsi("toolSuccessBg"));
 
 		component.setExpanded(true);
 		expect(stripAnsi(component.render(80).join("\n"))).toContain("line-100");
@@ -725,8 +788,8 @@ describe("ToolExecutionComponent parity", () => {
 	}
 
 	for (const scenario of [
-		{ title: "SKILL.md", path: join(process.cwd(), "attio", "SKILL.md"), compact: "[skill] attio:120-329" },
-		{ title: "Pi documentation", path: getReadmePath(), compact: "README.md:120-329" },
+		{ title: "SKILL.md", path: join(process.cwd(), "attio", "SKILL.md"), compact: "[skill] attio  120–329" },
+		{ title: "Pi documentation", path: getReadmePath(), compact: "README.md  120–329" },
 	] as const) {
 		test(`shows the read line range in compact ${scenario.title} reads before the expand hint`, () => {
 			const component = new ToolExecutionComponent(

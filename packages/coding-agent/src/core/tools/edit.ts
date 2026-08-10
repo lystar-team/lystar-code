@@ -220,7 +220,6 @@ function formatEditCall(
 	preview: EditPreview | undefined,
 	theme: Theme,
 	cwd: string,
-	expanded: boolean,
 	isPartial: boolean,
 	isError: boolean,
 ): string {
@@ -229,7 +228,6 @@ function formatEditCall(
 	return formatToolSummary({
 		icon: "✎",
 		subject: pathDisplay,
-		expanded,
 		isPartial,
 		isError: isError || Boolean(preview && "error" in preview),
 		labels: { running: "正在编辑", success: "已编辑", error: "编辑失败" },
@@ -266,23 +264,6 @@ function formatEditResult(
 	return undefined;
 }
 
-function getEditHeaderBg(
-	preview: EditPreview | undefined,
-	settledError: boolean | undefined,
-	theme: Theme,
-): (text: string) => string {
-	if (preview) {
-		if ("error" in preview) {
-			return (text: string) => theme.bg("toolErrorBg", text);
-		}
-		return (text: string) => theme.bg("toolSuccessBg", text);
-	}
-	if (settledError) {
-		return (text: string) => theme.bg("toolErrorBg", text);
-	}
-	return (text: string) => theme.bg("toolPendingBg", text);
-}
-
 function buildEditCallComponent(
 	component: EditCallRenderComponent,
 	args: RenderableEditArgs | undefined,
@@ -292,12 +273,10 @@ function buildEditCallComponent(
 ): EditCallRenderComponent {
 	const previewIsError = component.preview && "error" in component.preview;
 	const showPreview = options.expanded || previewIsError;
-	component.setBgFn(getEditHeaderBg(component.preview, component.settledError, theme));
+	component.setBgFn((text) => text);
 	component.clear();
 	const summary = getToolSummary(undefined);
-	summary.setText(
-		formatEditCall(args, component.preview, theme, cwd, options.expanded, options.isPartial, options.isError),
-	);
+	summary.setText(formatEditCall(args, component.preview, theme, cwd, options.isPartial, options.isError));
 	component.addChild(summary);
 
 	if (!component.preview || !showPreview) {

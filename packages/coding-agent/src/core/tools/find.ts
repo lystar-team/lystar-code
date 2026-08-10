@@ -4,7 +4,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { spawn } from "child_process";
 import path from "path";
 import { type Static, Type } from "typebox";
-import { formatToolSummary } from "../../modes/interactive/components/tool-summary.ts";
+import { formatToolSummary, getToolSummary } from "../../modes/interactive/components/tool-summary.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
@@ -85,7 +85,6 @@ function formatFindCall(
 	return formatToolSummary({
 		icon: "⌕",
 		subject,
-		expanded: options.expanded,
 		isPartial: options.isPartial,
 		isError: options.isError,
 		labels: { running: "正在查找", success: "已查找", error: "查找失败" },
@@ -366,15 +365,15 @@ export function createFindToolDefinition(
 			});
 		},
 		renderCall(args, theme, context) {
-			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			text.setText(
+			const summary = getToolSummary(context.lastComponent);
+			summary.setText(
 				formatFindCall(args, theme, {
 					expanded: context.expanded,
 					isPartial: context.isPartial,
 					isError: context.isError,
 				}),
 			);
-			return text;
+			return summary;
 		},
 		renderResult(result, options, theme, context) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);

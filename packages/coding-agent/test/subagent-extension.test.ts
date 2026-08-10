@@ -234,7 +234,47 @@ describe("built-in subagent extension", () => {
 				},
 			} as never,
 		);
-		expect(stripAnsi(component.render(80).join("\n"))).toContain("parallel · 2 个 Agent");
+		const rendered = stripAnsi(component.render(80).join("\n"));
+		expect(rendered).toContain("◆ Subagent · 并行 · 2 个 Agent · 用户级");
+		expect(rendered).not.toContain("parallel");
+		expect(rendered).not.toContain(" user");
+	});
+
+	it("localizes every displayed mode and scope without changing protocol values", async () => {
+		const tool = await loadSubagentTool();
+		const scenarios = [
+			{ mode: "single", scope: "user", expected: "单任务 · 1 个 Agent · 用户级" },
+			{ mode: "parallel", scope: "project", expected: "并行 · 2 个 Agent · 项目级" },
+			{ mode: "chain", scope: "both", expected: "串行 · 2 个 Agent · 用户级 + 项目级" },
+		] as const;
+
+		for (const scenario of scenarios) {
+			const component = tool.renderCall!({ agent: "worker", task: "task", agentScope: scenario.scope }, theme, {
+				resultDetails: {
+					mode: scenario.mode,
+					agentScope: scenario.scope,
+					results: Array.from({ length: scenario.mode === "single" ? 1 : 2 }, () => ({ agent: "worker" })),
+				},
+			} as never);
+			const rendered = stripAnsi(component.render(100).join("\n"));
+			expect(rendered).toContain(scenario.expected);
+			expect(rendered).not.toContain(` ${scenario.mode} `);
+			expect(rendered).not.toContain(` ${scenario.scope}`);
+		}
+	});
+
+	it("returns localized validation errors with unchanged detail enums", async () => {
+		const invalid = await executeWithFauxRpc({});
+		expect(invalid.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("参数无效") });
+		expect((invalid.details as SubagentDetails).mode).toBe("single");
+		expect((invalid.details as SubagentDetails).agentScope).toBe("user");
+
+		const tooMany = await executeWithFauxRpc({
+			tasks: Array.from({ length: 9 }, (_, index) => ({ agent: "worker", task: `task-${index}` })),
+		});
+		expect(tooMany.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("并行任务过多") });
+		expect((tooMany.details as SubagentDetails).mode).toBe("parallel");
+		expect((tooMany.details as SubagentDetails).agentScope).toBe("user");
 	});
 
 	it("publishes each latest parallel command even when the tool finishes in the same event batch", async () => {
@@ -298,7 +338,7 @@ describe("built-in subagent extension", () => {
 				if (shutdown) await shutdown({ type: "session_shutdown", reason: "quit" });
 			}
 			expect(getCurrentSubagentRuns()).toEqual([]);
-			await expect(abortSubagent(snapshot.agentId)).rejects.toThrow("No active subagent registry");
+			await expect(abortSubagent(snapshot.agentId)).rejects.toThrow("当前没有可用的 Subagent 运行记录");
 		} finally {
 			process.argv[1] = originalScript;
 		}
@@ -392,6 +432,6 @@ describe("built-in subagent extension", () => {
 		vi.useFakeTimers();
 		(retained as unknown as { scheduleRetention: () => void }).scheduleRetention();
 		await vi.advanceTimersByTimeAsync(SUBAGENT_RETENTION_MS);
-		await expect(retained.followUp("expired")).rejects.toThrow("no longer available");
+		await expect(retained.followUp("expired")).rejects.toThrow("已不可用");
 	});
 });

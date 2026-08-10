@@ -24,7 +24,10 @@ import { type Static, Type } from "typebox";
 import { CONFIG_DIR_NAME, getAgentDir } from "../../config.ts";
 import type { ExtensionAPI } from "../../core/extensions/types.ts";
 import { withFileMutationQueue } from "../../core/tools/file-mutation-queue.ts";
+import { formatSubagentMode, formatSubagentScope, formatSubagentSource, t } from "../../locales/zh-CN.ts";
 import { SubagentResultComponent } from "../../modes/interactive/components/subagent-run.ts";
+import { getToolSummary } from "../../modes/interactive/components/tool-summary.ts";
+import { uiGlyphs } from "../../modes/interactive/ui-glyphs.ts";
 import type { JsonAgentSessionEvent } from "../../modes/json-event.ts";
 import { RpcClient } from "../../modes/rpc/rpc-client.ts";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
@@ -147,10 +150,10 @@ function getResultOutput(result: SingleResult): string {
 			result.stderr ||
 			result.finalOutput ||
 			getFinalOutput(result.messages ?? []) ||
-			"(no output)"
+			t("subagent.output.empty")
 		);
 	}
-	return result.finalOutput || getFinalOutput(result.messages ?? []) || "(no output)";
+	return result.finalOutput || getFinalOutput(result.messages ?? []) || t("subagent.output.empty");
 }
 
 function serializeResult(result: SingleResult): SingleResult {
@@ -169,7 +172,13 @@ function truncateOutput(output: string): string {
 	while (Buffer.byteLength(truncated, "utf8") > PER_TASK_OUTPUT_CAP) {
 		truncated = truncated.slice(0, -1);
 	}
-	return `${truncated}\n\n[Output truncated: ${byteLength - Buffer.byteLength(truncated, "utf8")} bytes omitted. Full output preserved in tool details.]`;
+	return `${truncated}\n\n[${t("subagent.output.truncated", {
+		bytes: byteLength - Buffer.byteLength(truncated, "utf8"),
+	})}]`;
+}
+
+function formatAvailableAgents(agents: readonly AgentConfig[]): string {
+	return agents.map((agent) => `${agent.name} (${formatSubagentSource(agent.source)})`).join(", ") || "无";
 }
 
 async function mapWithConcurrencyLimit<TIn, TOut>(
@@ -336,7 +345,7 @@ export class SubagentRunController {
 	}
 
 	async start(signal?: AbortSignal): Promise<SingleResult> {
-		if (this.started) throw new Error("Subagent controller already started");
+		if (this.started) throw new Error(t("subagent.error.controllerStarted"));
 		this.started = true;
 		this.unsubscribeEvent = this.client.onEvent((event) => this.handleEvent(event));
 		this.unsubscribeExit = this.client.onExit((error) => this.fail(error));
@@ -348,8 +357,7 @@ export class SubagentRunController {
 				await this.client.newSession(this.options.parentSessionFile);
 			}
 			const state = await this.client.getState();
-			if (!state.sessionFile)
-				throw new Error(`Subagent "${this.options.agentId}" did not create a persistent session.`);
+			if (!state.sessionFile) throw new Error(t("subagent.error.sessionMissing", { agentId: this.options.agentId }));
 			this.result.session = {
 				version: 1,
 				sessionId: state.sessionId,
@@ -371,7 +379,7 @@ export class SubagentRunController {
 	async steer(message: string): Promise<void> {
 		this.assertAvailable();
 		if (!this.isActive())
-			throw new Error(`Subagent "${this.options.agentId}" has already settled; use follow-up instead.`);
+			throw new Error(t("subagent.error.alreadySettledFollowUp", { agentId: this.options.agentId }));
 		await this.client.steer(message);
 		this.updateState("running", "steer");
 	}
@@ -382,7 +390,7 @@ export class SubagentRunController {
 
 	async prompt(message: string): Promise<SingleResult> {
 		this.assertAvailable();
-		if (this.isActive()) throw new Error(`Subagent "${this.options.agentId}" is still active; use steer instead.`);
+		if (this.isActive()) throw new Error(t("subagent.error.stillActiveSteer", { agentId: this.options.agentId }));
 		this.clearRetention();
 		const settled = this.waitForSettled();
 		this.updateState("running", "prompt");
@@ -397,7 +405,7 @@ export class SubagentRunController {
 
 	async abort(): Promise<void> {
 		this.assertAvailable();
-		if (!this.isActive()) throw new Error(`Subagent "${this.options.agentId}" has already settled.`);
+		if (!this.isActive()) throw new Error(t("subagent.error.alreadySettled", { agentId: this.options.agentId }));
 		this.clearRetention();
 		this.updateState("cancelled", "abort");
 		try {
@@ -427,7 +435,7 @@ export class SubagentRunController {
 	}
 
 	private assertAvailable(): void {
-		if (this.disposed) throw new Error(`Subagent "${this.options.agentId}" is no longer available.`);
+		if (this.disposed) throw new Error(t("subagent.error.notAvailable", { agentId: this.options.agentId }));
 	}
 
 	private isActive(): boolean {
@@ -616,9 +624,9 @@ class SubagentRunRegistry {
 let currentSubagentRunRegistry: SubagentRunRegistry | null = null;
 
 function getCurrentSubagentController(agentId: string): SubagentRunController {
-	if (!currentSubagentRunRegistry) throw new Error("No active subagent registry.");
+	if (!currentSubagentRunRegistry) throw new Error(t("subagent.error.noActiveRegistry"));
 	const controller = currentSubagentRunRegistry.get(agentId);
-	if (!controller) throw new Error(`Subagent "${agentId}" is no longer available.`);
+	if (!controller) throw new Error(t("subagent.error.notAvailable", { agentId }));
 	return controller;
 }
 
@@ -684,13 +692,18 @@ export async function continueSubagentSession(descriptor: SubagentSessionDescrip
 		else void current.prompt(message);
 		return;
 	}
-	if (!currentSubagentRunRegistry) throw new Error("No active subagent registry.");
+	if (!currentSubagentRunRegistry) throw new Error(t("subagent.error.noActiveRegistry"));
 
 	const agent = discoverAgents(descriptor.session.cwd, descriptor.agentScope).agents.find(
 		(candidate) => candidate.name === descriptor.agent && candidate.source === descriptor.agentSource,
 	);
 	if (!agent) {
-		throw new Error(`Subagent definition "${descriptor.agent}" (${descriptor.agentSource}) is no longer available.`);
+		throw new Error(
+			t("subagent.error.definitionUnavailable", {
+				agent: descriptor.agent,
+				source: formatSubagentSource(descriptor.agentSource),
+			}),
+		);
 	}
 	const launch = await prepareAgentLaunch(agent, descriptor.session.sessionFile);
 	const invocation = getPiInvocation();
@@ -729,14 +742,14 @@ async function runSingleAgent(
 	const agent = agents.find((candidate) => candidate.name === agentName);
 
 	if (!agent) {
-		const available = agents.map((candidate) => `"${candidate.name}"`).join(", ") || "none";
+		const available = agents.map((candidate) => `"${candidate.name}"`).join(", ") || "无";
 		return {
 			agent: agentName,
 			agentSource: "unknown",
 			task,
 			exitCode: 1,
 			messages: [],
-			stderr: `Unknown agent: "${agentName}". Available agents: ${available}.`,
+			stderr: t("subagent.error.unknownAgent", { agent: agentName, agents: available }),
 			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
 			step,
 			runId,
@@ -762,7 +775,9 @@ async function runSingleAgent(
 		step,
 		onUpdate: () => {
 			onUpdate?.({
-				content: [{ type: "text", text: getFinalOutput(controller.result.messages ?? []) || "(running...)" }],
+				content: [
+					{ type: "text", text: getFinalOutput(controller.result.messages ?? []) || t("subagent.output.running") },
+				],
 				details: makeDetails([controller.result]),
 			});
 		},
@@ -870,12 +885,12 @@ export default function (pi: ExtensionAPI) {
 				});
 
 			if (modeCount !== 1) {
-				const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
+				const available = formatAvailableAgents(agents);
 				return {
 					content: [
 						{
 							type: "text",
-							text: `Invalid parameters. Provide exactly one mode.\nAvailable agents: ${available}`,
+							text: `${t("subagent.error.invalidMode")}\n${t("subagent.error.availableAgents", { agents: available })}`,
 						},
 					],
 					details: makeDetails("single")([]),
@@ -894,14 +909,14 @@ export default function (pi: ExtensionAPI) {
 
 				if (projectAgentsRequested.length > 0) {
 					const names = projectAgentsRequested.map((a) => a.name).join(", ");
-					const dir = discovery.projectAgentsDir ?? "(unknown)";
+					const dir = discovery.projectAgentsDir ?? t("subagent.source.unknown");
 					const ok = await ctx.ui.confirm(
-						"Run project-local agents?",
-						`Agents: ${names}\nSource: ${dir}\n\nProject agents are repo-controlled. Only continue for trusted repositories.`,
+						t("subagent.confirm.projectTitle"),
+						t("subagent.confirm.projectMessage", { agents: names, source: dir }),
 					);
 					if (!ok)
 						return {
-							content: [{ type: "text", text: "Canceled: project-local agents not approved." }],
+							content: [{ type: "text", text: t("subagent.error.projectNotApproved") }],
 							details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]),
 						};
 				}
@@ -954,7 +969,11 @@ export default function (pi: ExtensionAPI) {
 							content: [
 								{
 									type: "text",
-									text: `Chain stopped at step ${i + 1} (${step.agent}): ${truncateOutput(errorMsg)}`,
+									text: t("subagent.error.chainStopped", {
+										step: i + 1,
+										agent: step.agent,
+										error: truncateOutput(errorMsg),
+									}),
 								},
 							],
 							details: makeDetails("chain")(results),
@@ -964,7 +983,7 @@ export default function (pi: ExtensionAPI) {
 					previousOutput = truncateOutput(getFinalOutput(result.messages ?? []));
 				}
 				return {
-					content: [{ type: "text", text: previousOutput || "(no output)" }],
+					content: [{ type: "text", text: previousOutput || t("subagent.output.empty") }],
 					details: makeDetails("chain")(results),
 				};
 			}
@@ -975,7 +994,10 @@ export default function (pi: ExtensionAPI) {
 						content: [
 							{
 								type: "text",
-								text: `Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`,
+								text: t("subagent.error.tooManyParallel", {
+									count: params.tasks.length,
+									max: MAX_PARALLEL_TASKS,
+								}),
 							},
 						],
 						details: makeDetails("parallel")([]),
@@ -1007,7 +1029,14 @@ export default function (pi: ExtensionAPI) {
 						const done = allResults.filter((r) => r.exitCode !== -1).length;
 						onUpdate({
 							content: [
-								{ type: "text", text: `Parallel: ${done}/${allResults.length} done, ${running} running...` },
+								{
+									type: "text",
+									text: t("subagent.progress.parallel", {
+										done,
+										total: allResults.length,
+										running,
+									}),
+								},
 							],
 							details: makeDetails("parallel")([...allResults]),
 						});
@@ -1045,15 +1074,18 @@ export default function (pi: ExtensionAPI) {
 				const summaries = results.map((r) => {
 					const output = truncateOutput(getResultOutput(r));
 					const status = isFailedResult(r)
-						? `failed${r.stopReason && r.stopReason !== "end" ? ` (${r.stopReason})` : ""}`
-						: "completed";
+						? `${t("subagent.result.failed")}${r.stopReason && r.stopReason !== "end" ? `（${r.stopReason}）` : ""}`
+						: t("subagent.result.completed");
 					return `### [${r.agent}] ${status}\n\n${output}`;
 				});
 				return {
 					content: [
 						{
 							type: "text",
-							text: `Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n---\n\n")}`,
+							text: `${t("subagent.result.parallel", {
+								success: successCount,
+								total: results.length,
+							})}\n\n${summaries.join("\n\n---\n\n")}`,
 						},
 					],
 					details: makeDetails("parallel")(results),
@@ -1081,7 +1113,13 @@ export default function (pi: ExtensionAPI) {
 					const errorMsg = getResultOutput(result);
 					return {
 						content: [
-							{ type: "text", text: `Agent ${result.stopReason || "failed"}: ${truncateOutput(errorMsg)}` },
+							{
+								type: "text",
+								text: t("subagent.error.agentFailed", {
+									reason: result.stopReason || t("subagent.result.failed"),
+									error: truncateOutput(errorMsg),
+								}),
+							},
 						],
 						details: makeDetails("single")([result]),
 						isError: true,
@@ -1089,15 +1127,23 @@ export default function (pi: ExtensionAPI) {
 				}
 				return {
 					content: [
-						{ type: "text", text: truncateOutput(getFinalOutput(result.messages ?? [])) || "(no output)" },
+						{
+							type: "text",
+							text: truncateOutput(getFinalOutput(result.messages ?? [])) || t("subagent.output.empty"),
+						},
 					],
 					details: makeDetails("single")([result]),
 				};
 			}
 
-			const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
+			const available = formatAvailableAgents(agents);
 			return {
-				content: [{ type: "text", text: `Invalid parameters. Available agents: ${available}` }],
+				content: [
+					{
+						type: "text",
+						text: `${t("subagent.error.invalidMode")}\n${t("subagent.error.availableAgents", { agents: available })}`,
+					},
+				],
 				details: makeDetails("single")([]),
 			};
 		},
@@ -1116,24 +1162,36 @@ export default function (pi: ExtensionAPI) {
 							: 0;
 			const count =
 				Array.isArray(details?.results) && details.results.length > 0 ? details.results.length : requestedCount;
-			return new Text(
-				`${theme.fg("toolTitle", theme.bold("subagent"))} ${theme.fg("accent", mode)}${theme.fg("muted", ` · ${count} 个 Agent · ${scope}`)}`,
-				0,
-				0,
+			const completed = details?.results?.filter((result) =>
+				["completed", "failed", "cancelled"].includes(result.state ?? ""),
+			).length;
+			const failed = details?.results?.filter((result) => result.state === "failed").length ?? 0;
+			const progress = context.isError
+				? "执行失败"
+				: context.isPartial
+					? `运行中 ${completed ?? 0}/${count}`
+					: failed > 0
+						? `完成 · ${failed} 个失败`
+						: "已完成";
+			const summary = getToolSummary(context.lastComponent);
+			summary.setText(
+				`${theme.fg("toolTitle", uiGlyphs.tool)} ${theme.bold(t("subagent.title"))} · ${theme.fg("accent", formatSubagentMode(mode))}${theme.fg("muted", ` · ${count} 个 Agent · ${formatSubagentScope(scope)} · ${progress}`)}`,
 			);
+			return summary;
 		},
 
 		renderResult(result, _options, _theme, context) {
 			const details = result.details as SubagentDetails | undefined;
 			if (!details || details.results.length === 0) {
 				const text = result.content[0];
-				return new Text(text?.type === "text" ? text.text : "(no output)", 0, 0);
+				return new Text(text?.type === "text" ? text.text : t("subagent.output.empty"), 0, 0);
 			}
 			const component =
 				context.lastComponent instanceof SubagentResultComponent
 					? context.lastComponent
 					: new SubagentResultComponent(details);
 			component.setDetails(details);
+			component.setVisible(context.expanded || context.isError);
 			return component;
 		},
 	});

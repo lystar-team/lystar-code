@@ -6,8 +6,9 @@ import { constants } from "fs";
 import { access as fsAccess, readFile as fsReadFile } from "fs/promises";
 import { type Static, Type } from "typebox";
 import { getReadmePath } from "../../config.ts";
-import { formatToolSummary } from "../../modes/interactive/components/tool-summary.ts";
+import { formatToolSummary, getToolSummary } from "../../modes/interactive/components/tool-summary.ts";
 import { getLanguageFromPath, highlightCode, type Theme } from "../../modes/interactive/theme/theme.ts";
+import { uiGlyphs } from "../../modes/interactive/ui-glyphs.ts";
 import { processImage } from "../../utils/image-process.ts";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
@@ -73,7 +74,7 @@ function formatReadLineRange(args: ReadRenderArgs | undefined, theme: Theme): st
 	if (args?.offset === undefined && args?.limit === undefined) return "";
 	const startLine = args.offset ?? 1;
 	const endLine = args.limit !== undefined ? startLine + args.limit - 1 : "";
-	return theme.fg("warning", `:${startLine}${endLine ? `-${endLine}` : ""}`);
+	return theme.fg("warning", `  ${startLine}${endLine ? `–${endLine}` : "+"}`);
 }
 
 function formatReadCall(
@@ -84,9 +85,8 @@ function formatReadCall(
 ): string {
 	const pathDisplay = renderToolPath(str(args?.file_path ?? args?.path), theme, cwd);
 	return formatToolSummary({
-		icon: "≡",
+		icon: uiGlyphs.file,
 		subject: `${pathDisplay}${formatReadLineRange(args, theme)}`,
-		expanded: options.expanded,
 		isPartial: options.isPartial,
 		isError: options.isError,
 		labels: { running: "正在读取", success: "已读取", error: "读取失败" },
@@ -165,9 +165,8 @@ function formatCompactReadCall(
 			? `${theme.fg("customMessageLabel", "[skill]")} ${theme.fg("customMessageText", classification.label)}`
 			: `${theme.fg("accent", classification.label)}`;
 	return formatToolSummary({
-		icon: "≡",
+		icon: uiGlyphs.file,
 		subject: `${subject}${formatReadLineRange(args, theme)}`,
-		expanded: options.expanded,
 		isPartial: options.isPartial,
 		isError: options.isError,
 		labels: { running: "正在读取", success: "已读取", error: "读取失败" },
@@ -336,19 +335,19 @@ export function createReadToolDefinition(
 			);
 		},
 		renderCall(args, theme, context) {
-			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			const summary = getToolSummary(context.lastComponent);
 			const classification = !context.expanded ? getCompactReadClassification(args, context.cwd) : undefined;
 			const options = {
 				expanded: context.expanded,
 				isPartial: context.isPartial,
 				isError: context.isError,
 			};
-			text.setText(
+			summary.setText(
 				classification
 					? formatCompactReadCall(classification, args, theme, options)
 					: formatReadCall(args, theme, context.cwd, options),
 			);
-			return text;
+			return summary;
 		},
 		renderResult(result, options, theme, context) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);

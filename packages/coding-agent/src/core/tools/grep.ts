@@ -5,7 +5,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { spawn } from "child_process";
 import path from "path";
 import { type Static, Type } from "typebox";
-import { formatToolSummary } from "../../modes/interactive/components/tool-summary.ts";
+import { formatToolSummary, getToolSummary } from "../../modes/interactive/components/tool-summary.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
@@ -89,7 +89,6 @@ function formatGrepCall(
 	return formatToolSummary({
 		icon: "⌕",
 		subject,
-		expanded: options.expanded,
 		isPartial: options.isPartial,
 		isError: options.isError,
 		labels: { running: "正在搜索", success: "已搜索", error: "搜索失败" },
@@ -377,15 +376,15 @@ export function createGrepToolDefinition(
 			});
 		},
 		renderCall(args, theme, context) {
-			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			text.setText(
+			const summary = getToolSummary(context.lastComponent);
+			summary.setText(
 				formatGrepCall(args, theme, {
 					expanded: context.expanded,
 					isPartial: context.isPartial,
 					isError: context.isError,
 				}),
 			);
-			return text;
+			return summary;
 		},
 		renderResult(result, options, theme, context) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);

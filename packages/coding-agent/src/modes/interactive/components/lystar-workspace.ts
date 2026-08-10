@@ -51,6 +51,7 @@ export class WorkspaceHeader implements Component {
 
 	render(width: number): string[] {
 		const state = this.getState();
+		const divider = theme.fg("toolDivider", "─".repeat(Math.max(1, width)));
 		const separator = theme.fg("dim", "  ·  ");
 		const product = state.product ? theme.bold(theme.fg("accent", state.product)) : undefined;
 		const path = theme.fg("muted", state.path);
@@ -61,7 +62,7 @@ export class WorkspaceHeader implements Component {
 		const right = theme.fg(state.contextWarning ? "warning" : "text", contextText);
 		const rightWidth = visibleWidth(right);
 		if (rightWidth >= width) {
-			return [truncateToWidth(right, width, theme.fg("dim", "..."))];
+			return [truncateToWidth(right, width, theme.fg("dim", "...")), divider];
 		}
 
 		const leftMaxWidth = Math.max(0, width - rightWidth - 2);
@@ -78,7 +79,7 @@ export class WorkspaceHeader implements Component {
 			candidates.find((candidate) => visibleWidth(candidate) <= leftMaxWidth) ??
 			truncateToWidth(candidates[0] ?? "", leftMaxWidth, theme.fg("dim", "..."));
 		const gap = " ".repeat(Math.max(0, width - visibleWidth(left) - rightWidth));
-		return [`${left}${gap}${right}`];
+		return [`${left}${gap}${right}`, divider];
 	}
 }
 

@@ -164,12 +164,13 @@ describe("createInteractiveTui", () => {
 		}
 	});
 
-	it("expands web search sources without intercepting source links", async () => {
+	it("expands web search cards independently without intercepting source links", async () => {
 		initTheme("dark");
 		setCapabilities({ images: null, trueColor: true, hyperlinks: true });
-		const terminal = new RecordingTerminal(80, 10);
+		const terminal = new RecordingTerminal(80, 14);
 		const openedUrls: string[] = [];
 		const url = "https://example.com/source";
+		const secondUrl = "https://second.example/source";
 		const message = {
 			role: "assistant",
 			content: [
@@ -178,6 +179,12 @@ describe("createInteractiveTui", () => {
 					id: "ws_1",
 					status: "completed",
 					action: { type: "search", query: "example", sources: [{ type: "url", url }] },
+				},
+				{
+					type: "webSearchCall",
+					id: "ws_2",
+					status: "completed",
+					action: { type: "search", query: "second", sources: [{ type: "url", url: secondUrl }] },
 				},
 			],
 			timestamp: Date.now(),
@@ -204,6 +211,7 @@ describe("createInteractiveTui", () => {
 			componentExpansion: WeakMap<Component, boolean>;
 			toolOutputExpanded: boolean;
 			openSubagentSession: () => void;
+			rememberCardExpansion: () => void;
 		};
 		const handleWorkspaceInput = (
 			InteractiveMode.prototype as unknown as {
@@ -219,6 +227,7 @@ describe("createInteractiveTui", () => {
 			componentExpansion: new WeakMap<Component, boolean>(),
 			toolOutputExpanded: false,
 			openSubagentSession: () => {},
+			rememberCardExpansion: () => {},
 		};
 		const renderer = new LystarTUI(terminal, false, undefined, {
 			openUrl: (value) => openedUrls.push(value),
@@ -236,7 +245,19 @@ describe("createInteractiveTui", () => {
 			terminal.sendInput(`\x1b[<0;3;${summaryRow + 1}M`);
 			terminal.sendInput(`\x1b[<0;3;${summaryRow + 1}m`);
 			await terminal.waitForRender();
-			expect(terminal.getViewport().some((line) => line.includes("搜索来源"))).toBe(true);
+			expect(terminal.getViewport().some((line) => line.includes("example.com"))).toBe(true);
+			expect(terminal.getViewport().some((line) => line.includes("second.example"))).toBe(false);
+
+			const summaryRows = terminal
+				.getViewport()
+				.map((line, index) => (line.includes("已搜索网页") ? index : -1))
+				.filter((index) => index >= 0);
+			const secondSummaryRow = summaryRows.at(-1)!;
+			terminal.sendInput(`\x1b[<0;3;${secondSummaryRow + 1}M`);
+			terminal.sendInput(`\x1b[<0;3;${secondSummaryRow + 1}m`);
+			await terminal.waitForRender();
+			expect(terminal.getViewport().some((line) => line.includes("example.com"))).toBe(true);
+			expect(terminal.getViewport().some((line) => line.includes("second.example"))).toBe(true);
 
 			const sourceRow = terminal.getViewport().findIndex((line) => line.includes("example.com"));
 			const sourceColumn = terminal.getViewport()[sourceRow]?.indexOf("example.com") ?? -1;

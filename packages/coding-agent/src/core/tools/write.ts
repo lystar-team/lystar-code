@@ -1,10 +1,10 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { Container, Text } from "@earendil-works/pi-tui";
+import { type Component, Container, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { diffLines } from "diff";
 import { mkdir as fsMkdir, readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
 import { dirname } from "path";
 import { type Static, Type } from "typebox";
-import { formatToolSummary } from "../../modes/interactive/components/tool-summary.ts";
+import { formatToolSummary, ToolSummary } from "../../modes/interactive/components/tool-summary.ts";
 import { getLanguageFromPath, highlightCode, type Theme } from "../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
@@ -62,11 +62,26 @@ type WriteHighlightCache = {
 	highlightedLines: string[];
 };
 
-class WriteCallRenderComponent extends Text {
+class WriteCallRenderComponent implements Component {
 	cache?: WriteHighlightCache;
+	private readonly summary = new ToolSummary();
+	private bodyLines: string[] = [];
 
-	constructor() {
-		super("", 0, 0);
+	setText(text: string): void {
+		const [header = "", subject = "", ...bodyLines] = text.split("\n");
+		this.summary.setText(subject ? `${header}\n${subject}` : header);
+		this.bodyLines = bodyLines;
+	}
+
+	render(width: number): string[] {
+		return [
+			...this.summary.render(width),
+			...this.bodyLines.map((line) => truncateToWidth(line, Math.max(1, width), "…")),
+		];
+	}
+
+	invalidate(): void {
+		this.summary.invalidate();
 	}
 }
 
@@ -182,7 +197,6 @@ function formatWriteCall(
 	let text = formatToolSummary({
 		icon: options.details?.operation === "created" ? "+" : "✎",
 		subject: pathDisplay,
-		expanded: options.expanded,
 		isPartial: options.isPartial,
 		isError: options.isError,
 		labels: { running: "正在写入", success: successLabel, error: "写入失败" },

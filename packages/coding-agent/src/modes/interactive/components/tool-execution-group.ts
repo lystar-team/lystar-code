@@ -1,7 +1,8 @@
-import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
+import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { theme } from "../theme/theme.ts";
 import { uiGlyphs } from "../ui-glyphs.ts";
 import { type InteractiveCard, type InteractiveCardAction, resolveInteractiveCardAction } from "./interactive-card.ts";
+import { renderToolDivider } from "./tool-card-layout.ts";
 import type { ToolExecutionComponent } from "./tool-execution.ts";
 
 export interface ToolGroupExpansionTarget {
@@ -97,28 +98,28 @@ export class ToolExecutionGroupComponent implements Component {
 		}
 		this.completionHandled = completed;
 
-		const lines = [truncateToWidth(this.renderSummary(), width, "…")];
-		if (!this.expanded) return [...lines, ""];
+		const lines = [this.renderSummary(width)];
+		if (!this.expanded) return lines;
 
-		for (const tool of this.tools) {
+		for (let index = 0; index < this.tools.length; index++) {
+			const tool = this.tools[index]!;
 			const toolLines = tool.render(width);
 			if (toolLines.length === 0) continue;
-			if (this.ranges.length > 0) lines.push("");
 			const start = lines.length;
 			lines.push(...toolLines);
 			this.ranges.push({ component: tool, start, end: lines.length });
+			if (index < this.tools.length - 1) lines.push(renderToolDivider(width, 4));
 		}
 		return lines;
 	}
 
-	private renderSummary(): string {
+	private renderSummary(width: number): string {
 		const statuses = this.tools.map((tool) => tool.getExecutionStatus());
 		const completed = statuses.filter(
 			(status) => status === "success" || status === "error" || status === "cancelled",
 		).length;
 		const failed = statuses.filter((status) => status === "error").length;
 		const cancelled = statuses.filter((status) => status === "cancelled").length;
-		const chevron = this.expanded ? uiGlyphs.expanded : uiGlyphs.collapsed;
 		let text: string;
 		if (completed === this.tools.length) {
 			text = `${this.tools.length} 条命令${cancelled > 0 ? "执行结束" : "执行完成"}`;
@@ -129,6 +130,10 @@ export class ToolExecutionGroupComponent implements Component {
 		} else {
 			text = `准备执行 ${this.tools.length} 条命令`;
 		}
-		return `${theme.fg("dim", chevron)} ${theme.bold(text)}`;
+		const left = `${theme.fg(completed === this.tools.length ? "success" : "warning", uiGlyphs.list)} ${theme.bold(text)}`;
+		const right = theme.fg("dim", this.expanded ? uiGlyphs.expanded : uiGlyphs.collapsed);
+		const rightWidth = visibleWidth(right);
+		const fittedLeft = truncateToWidth(left, Math.max(1, width - rightWidth - 1), "…");
+		return `${fittedLeft}${" ".repeat(Math.max(1, width - visibleWidth(fittedLeft) - rightWidth))}${right}`;
 	}
 }

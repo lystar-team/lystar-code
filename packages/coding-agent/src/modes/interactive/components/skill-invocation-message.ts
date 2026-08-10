@@ -1,7 +1,9 @@
 import { Box, Markdown, type MarkdownTheme, Text } from "@earendil-works/pi-tui";
 import type { ParsedSkillBlock } from "../../../core/agent-session.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
-import { keyText } from "./keybinding-hints.ts";
+import { uiGlyphs } from "../ui-glyphs.ts";
+import type { InteractiveCardAction } from "./interactive-card.ts";
+import { alignCardExpansion, renderToolDivider } from "./tool-card-layout.ts";
 
 /**
  * Component that renders a skill invocation message with collapsed/expanded state.
@@ -12,9 +14,10 @@ export class SkillInvocationMessageComponent extends Box {
 	private expanded = false;
 	private skillBlock: ParsedSkillBlock;
 	private markdownTheme: MarkdownTheme;
+	private lastRenderedLineCount = 0;
 
 	constructor(skillBlock: ParsedSkillBlock, markdownTheme: MarkdownTheme = getMarkdownTheme()) {
-		super(1, 1, (t) => theme.bg("customMessageBg", t));
+		super(1, 0, (text) => text);
 		this.skillBlock = skillBlock;
 		this.markdownTheme = markdownTheme;
 		this.updateDisplay();
@@ -29,6 +32,19 @@ export class SkillInvocationMessageComponent extends Box {
 		return this.expanded;
 	}
 
+	getCardClickActionAtRow(row: number): InteractiveCardAction | undefined {
+		return row >= 0 && row < this.lastRenderedLineCount - 1 ? { type: "toggle", component: this } : undefined;
+	}
+
+	override render(width: number): string[] {
+		const lines = super.render(width);
+		if (lines.length === 0) return lines;
+		lines[0] = alignCardExpansion(lines[0]!, width, this.expanded);
+		lines.push(renderToolDivider(width));
+		this.lastRenderedLineCount = lines.length;
+		return lines;
+	}
+
 	override invalidate(): void {
 		super.invalidate();
 		this.updateDisplay();
@@ -38,21 +54,15 @@ export class SkillInvocationMessageComponent extends Box {
 		this.clear();
 
 		if (this.expanded) {
-			// Expanded: label + skill name header + full content
-			const label = theme.fg("customMessageLabel", `\x1b[1m[skill]\x1b[22m`);
+			const label = theme.bold(theme.fg("customMessageLabel", `${uiGlyphs.tool} Skill · ${this.skillBlock.name}`));
 			this.addChild(new Text(label, 0, 0));
-			const header = `**${this.skillBlock.name}**\n\n`;
 			this.addChild(
-				new Markdown(header + this.skillBlock.content, 0, 0, this.markdownTheme, {
+				new Markdown(this.skillBlock.content, 0, 0, this.markdownTheme, {
 					color: (text: string) => theme.fg("customMessageText", text),
 				}),
 			);
 		} else {
-			// Collapsed: single line - [skill] name (hint to expand)
-			const line =
-				theme.fg("customMessageLabel", `\x1b[1m[skill]\x1b[22m `) +
-				theme.fg("customMessageText", this.skillBlock.name) +
-				theme.fg("dim", `（${keyText("app.tools.expand")} 展开）`);
+			const line = theme.bold(theme.fg("customMessageLabel", `${uiGlyphs.tool} Skill · ${this.skillBlock.name}`));
 			this.addChild(new Text(line, 0, 0));
 		}
 	}

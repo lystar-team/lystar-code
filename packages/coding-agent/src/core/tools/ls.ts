@@ -3,7 +3,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
 import nodePath from "path";
 import { type Static, Type } from "typebox";
-import { formatToolSummary } from "../../modes/interactive/components/tool-summary.ts";
+import { formatToolSummary, getToolSummary } from "../../modes/interactive/components/tool-summary.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { pathExists, resolveToCwd } from "./path-utils.ts";
@@ -64,7 +64,6 @@ function formatLsCall(
 	return formatToolSummary({
 		icon: "≡",
 		subject: pathDisplay,
-		expanded: options.expanded,
 		isPartial: options.isPartial,
 		isError: options.isError,
 		labels: { running: "正在列出", success: "已列出", error: "列出失败" },
@@ -218,15 +217,15 @@ export function createLsToolDefinition(
 			});
 		},
 		renderCall(args, theme, context) {
-			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			text.setText(
+			const summary = getToolSummary(context.lastComponent);
+			summary.setText(
 				formatLsCall(args, theme, context.cwd, {
 					expanded: context.expanded,
 					isPartial: context.isPartial,
 					isError: context.isError,
 				}),
 			);
-			return text;
+			return summary;
 		},
 		renderResult(result, options, theme, context) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);

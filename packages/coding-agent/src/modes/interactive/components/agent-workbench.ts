@@ -8,6 +8,7 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import type { AgentRunState, SingleResult, SubagentSessionRef } from "../../../extensions/subagent/index.ts";
+import { formatSubagentState } from "../../../locales/zh-CN.ts";
 import { parseMouseEvent } from "../mouse.ts";
 import { theme } from "../theme/theme.ts";
 
@@ -37,23 +38,6 @@ function titleFor(agent: AgentWorkbenchAgent, index: number): string {
 		.find((line) => line.trim())
 		?.trim();
 	return title || agent.agent || `agent #${index + 1}`;
-}
-
-function statusLabel(state: AgentRunState): string {
-	switch (state) {
-		case "queued":
-			return "排队中";
-		case "running":
-			return "运行中";
-		case "waiting":
-			return "等待中";
-		case "succeeded":
-			return "已完成";
-		case "failed":
-			return "失败";
-		case "cancelled":
-			return "已取消";
-	}
 }
 
 function isActive(agent: AgentWorkbenchAgent): boolean {
@@ -191,7 +175,7 @@ export class AgentWorkbenchComponent implements Component, Focusable {
 		const selected = index === this.selectedIndex;
 		const marker = selected ? theme.fg("accent", ">") : " ";
 		const name = theme.fg("muted", agent.agent);
-		const status = theme.fg(statusColor(agent.state), statusLabel(agent.state));
+		const status = theme.fg(statusColor(agent.state), formatSubagentState(agent.state));
 		const prefix = `${marker} ${name} `;
 		const titleWidth = Math.max(1, width - visibleWidth(prefix) - visibleWidth(status) - 1);
 		const title = theme.fg(selected ? "text" : "muted", fitToWidth(titleFor(agent, index), titleWidth));
@@ -232,7 +216,7 @@ export class AgentWorkbenchComponent implements Component, Focusable {
 			}
 		};
 		const index = this.selectedIndex;
-		const status = theme.fg(statusColor(selected.state), statusLabel(selected.state));
+		const status = theme.fg(statusColor(selected.state), formatSubagentState(selected.state));
 		append(`${theme.bold(theme.fg("text", titleFor(selected, index)))}  ${status}`);
 		append(selected.agent, "muted");
 		append("任务", "dim");

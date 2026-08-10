@@ -1,11 +1,26 @@
-import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { Container, Markdown, type MarkdownTheme, Spacer, Text } from "@earendil-works/pi-tui";
+import type { AssistantMessage, WebSearchCallContent } from "@earendil-works/pi-ai";
+import {
+	Container,
+	Markdown,
+	type MarkdownTheme,
+	Spacer,
+	Text,
+	truncateToWidth,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { t } from "../../../locales/zh-CN.ts";
-import { formatMarkdownLinks, getCitationLinks, getWebSearchSourceLinks } from "../../../utils/web-search.ts";
+import {
+	formatMarkdownLinks,
+	getCitationLinks,
+	getWebSearchSourceLinks,
+	type WebLink,
+} from "../../../utils/web-search.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
-import type { InteractiveCardAction } from "./interactive-card.ts";
+import { uiGlyphs } from "../ui-glyphs.ts";
+import { type InteractiveCard, type InteractiveCardAction, resolveInteractiveCardAction } from "./interactive-card.ts";
 import { createMarkdownTransform } from "./markdown-transform.ts";
+import { renderToolDivider } from "./tool-card-layout.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
@@ -19,8 +34,97 @@ const LONG_MARKDOWN_TAIL_CHARACTERS = 1024;
 
 type MarkdownFence = { character: string; length: number; start: number };
 type MarkdownFenceRange = { start: number; end: number };
+type WebSearchRange = { component: WebSearchCallComponent; start: number; end: number };
 
-class WebSearchSummaryText extends Text {}
+class WebSearchCallComponent implements InteractiveCard {
+	private call: WebSearchCallContent;
+	private sources: WebLink[];
+	private expanded = false;
+	private outputPad: number;
+	private markdownTheme: MarkdownTheme;
+	private readonly onExpansionChange: () => void;
+	private lastRenderedLineCount = 0;
+
+	constructor(
+		call: WebSearchCallContent,
+		sources: WebLink[],
+		outputPad: number,
+		markdownTheme: MarkdownTheme,
+		onExpansionChange: () => void,
+	) {
+		this.call = call;
+		this.sources = sources;
+		this.outputPad = outputPad;
+		this.markdownTheme = markdownTheme;
+		this.onExpansionChange = onExpansionChange;
+	}
+
+	update(call: WebSearchCallContent, sources: WebLink[], outputPad: number, markdownTheme: MarkdownTheme): void {
+		this.call = call;
+		this.sources = sources;
+		this.outputPad = outputPad;
+		this.markdownTheme = markdownTheme;
+		this.onExpansionChange();
+	}
+
+	isExpanded(): boolean {
+		return this.expanded;
+	}
+
+	setExpanded(expanded: boolean): void {
+		if (this.expanded === expanded) return;
+		this.expanded = expanded;
+		this.onExpansionChange();
+	}
+
+	getCardStateKey(): string {
+		return `web-search:${this.call.id}`;
+	}
+
+	getCardClickActionAtRow(row: number): InteractiveCardAction | undefined {
+		return row >= 0 && row < this.lastRenderedLineCount - 1 && this.sources.length > 0
+			? { type: "toggle", component: this }
+			: undefined;
+	}
+
+	invalidate(): void {}
+
+	render(width: number): string[] {
+		const status =
+			this.call.status === "failed"
+				? t("status.webSearchFailed")
+				: this.call.status === "completed"
+					? t("status.webSearchCompleted")
+					: t("status.webSearchInProgress");
+		const sourceCount =
+			this.sources.length > 0 ? ` · ${t("status.webSearchSources", { count: this.sources.length })}` : "";
+		const left = theme.fg(
+			this.call.status === "failed" ? "error" : this.call.status === "completed" ? "success" : "warning",
+			`${uiGlyphs.search} ${status}${sourceCount}`,
+		);
+		const right =
+			this.sources.length > 0 ? theme.fg("dim", this.expanded ? uiGlyphs.expanded : uiGlyphs.collapsed) : "";
+		const rightWidth = visibleWidth(right);
+		const fittedLeft = truncateToWidth(left, Math.max(1, width - rightWidth - (right ? 1 : 0)), "…");
+		const header = right
+			? `${fittedLeft}${" ".repeat(Math.max(1, width - visibleWidth(fittedLeft) - rightWidth))}${right}`
+			: fittedLeft;
+		const lines = [header];
+		if (this.expanded && this.sources.length > 0) {
+			lines.push(
+				...new Markdown(
+					formatMarkdownLinks(t("status.webSearchSourceList"), this.sources),
+					this.outputPad,
+					0,
+					this.markdownTheme,
+				).render(width),
+			);
+		}
+		lines.push(renderToolDivider(width));
+		this.lastRenderedLineCount = lines.length;
+		return lines;
+	}
+}
 
 function getMarkdownFenceRanges(markdown: string): MarkdownFenceRange[] {
 	const ranges: MarkdownFenceRange[] = [];
@@ -75,6 +179,8 @@ export class AssistantMessageComponent extends Container {
 	private hasLongMarkdown = false;
 	private hasWebSearchSources = false;
 	private contentExpanded = false;
+	private webSearchComponents = new Map<string, WebSearchCallComponent>();
+	private webSearchRanges: WebSearchRange[] = [];
 
 	constructor(
 		message?: AssistantMessage,
@@ -131,9 +237,14 @@ export class AssistantMessageComponent extends Container {
 
 	override render(width: number): string[] {
 		const lines: string[] = [];
+		this.webSearchRanges = [];
 		for (const child of this.contentContainer.children) {
+			const start = lines.length;
 			const childLines = child.render(width);
 			lines.push(...childLines);
+			if (child instanceof WebSearchCallComponent && childLines.length > 0) {
+				this.webSearchRanges.push({ component: child, start, end: lines.length });
+			}
 		}
 		if (this.hasToolCalls || lines.length === 0) {
 			return lines;
@@ -153,19 +264,26 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	getCardClickActionAtRow(row: number): InteractiveCardAction | undefined {
-		if (row < 0 || (!this.hasLongCodeBlock && !this.hasLongMarkdown && !this.hasWebSearchSources)) return undefined;
-		return { type: "toggle", component: this };
+		if (row < 0) return undefined;
+		const webSearchRange = this.webSearchRanges.find((range) => row >= range.start && row < range.end);
+		if (webSearchRange) {
+			return resolveInteractiveCardAction(webSearchRange.component, row - webSearchRange.start);
+		}
+		return this.hasLongCodeBlock || this.hasLongMarkdown ? { type: "toggle", component: this } : undefined;
+	}
+
+	getChildCards(): readonly InteractiveCard[] {
+		return [...this.webSearchComponents.values()];
 	}
 
 	setExpanded(expanded: boolean): void {
-		if (
-			(!this.hasLongCodeBlock && !this.hasLongMarkdown && !this.hasWebSearchSources) ||
-			this.contentExpanded === expanded ||
-			!this.lastMessage
-		) {
-			return;
-		}
+		if ((!this.hasLongCodeBlock && !this.hasLongMarkdown && !this.hasWebSearchSources) || !this.lastMessage) return;
+		const webSearchChanged = [...this.webSearchComponents.values()].some(
+			(component) => component.isExpanded() !== expanded,
+		);
+		if (this.contentExpanded === expanded && !webSearchChanged) return;
 		this.contentExpanded = expanded;
+		for (const component of this.webSearchComponents.values()) component.setExpanded(expanded);
 		this.updateContent(this.lastMessage);
 	}
 
@@ -190,8 +308,31 @@ export class AssistantMessageComponent extends Container {
 		const citations = message.content.flatMap((content) =>
 			content.type === "text" ? getCitationLinks(content) : [],
 		);
-		this.hasWebSearchSources = message.content.some(
-			(content) => content.type === "webSearchCall" && getWebSearchSourceLinks(content, citations).length > 0,
+		const activeWebSearchIds = new Set<string>();
+		for (const content of message.content) {
+			if (content.type !== "webSearchCall") continue;
+			activeWebSearchIds.add(content.id);
+			const sources = getWebSearchSourceLinks(content, citations);
+			const component = this.webSearchComponents.get(content.id);
+			if (component) {
+				component.update(content, sources, this.outputPad, this.markdownTheme);
+			} else {
+				const created = new WebSearchCallComponent(
+					content,
+					sources,
+					this.outputPad,
+					this.markdownTheme,
+					() => this.renderVersion++,
+				);
+				created.setExpanded(this.contentExpanded);
+				this.webSearchComponents.set(content.id, created);
+			}
+		}
+		for (const id of this.webSearchComponents.keys()) {
+			if (!activeWebSearchIds.has(id)) this.webSearchComponents.delete(id);
+		}
+		this.hasWebSearchSources = [...this.webSearchComponents.values()].some(
+			(component) => component.getCardClickActionAtRow(0) !== undefined,
 		);
 		if (!this.hasLongCodeBlock && !this.hasLongMarkdown && !this.hasWebSearchSources) {
 			this.contentExpanded = false;
@@ -250,35 +391,8 @@ export class AssistantMessageComponent extends Container {
 					);
 				}
 			} else if (content.type === "webSearchCall") {
-				const sources = getWebSearchSourceLinks(content, citations);
-				const status =
-					content.status === "failed"
-						? t("status.webSearchFailed")
-						: content.status === "completed"
-							? t("status.webSearchCompleted")
-							: t("status.webSearchInProgress");
-				const sourceCount =
-					sources.length > 0 ? ` · ${t("status.webSearchSources", { count: sources.length })}` : "";
-				this.contentContainer.addChild(
-					new WebSearchSummaryText(
-						theme.fg(
-							content.status === "failed" ? "error" : "thinkingText",
-							`${sources.length > 0 ? (this.contentExpanded ? "▾ " : "▸ ") : ""}⌕ ${status}${sourceCount}`,
-						),
-						this.outputPad,
-						0,
-					),
-				);
-				if (this.contentExpanded && sources.length > 0) {
-					this.contentContainer.addChild(
-						new Markdown(
-							formatMarkdownLinks(t("status.webSearchSourceList"), sources),
-							this.outputPad,
-							0,
-							this.markdownTheme,
-						),
-					);
-				}
+				const component = this.webSearchComponents.get(content.id);
+				if (component) this.contentContainer.addChild(component);
 			} else if (content.type === "thinking") {
 				const thinkingBlocks: string[] = [];
 				for (; i < message.content.length; i++) {

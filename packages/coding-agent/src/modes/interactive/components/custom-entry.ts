@@ -1,8 +1,10 @@
 import type { Component } from "@earendil-works/pi-tui";
-import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
+import { Box, Container, Text } from "@earendil-works/pi-tui";
 import type { EntryRenderer } from "../../../core/extensions/types.ts";
 import type { CustomEntry } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.ts";
+import type { InteractiveCardAction } from "./interactive-card.ts";
+import { alignCardExpansion, renderToolDivider } from "./tool-card-layout.ts";
 
 /**
  * Component that renders a custom session entry from extensions.
@@ -13,6 +15,7 @@ export class CustomEntryComponent extends Container {
 	private renderer: EntryRenderer;
 	private customComponent?: Component;
 	private _expanded = false;
+	private lastRenderedLineCount = 0;
 
 	constructor(entry: CustomEntry<unknown>, renderer: EntryRenderer) {
 		super();
@@ -36,6 +39,23 @@ export class CustomEntryComponent extends Container {
 		return this._expanded;
 	}
 
+	getCardStateKey(): string {
+		return `custom-entry:${this.entry.id}`;
+	}
+
+	getCardClickActionAtRow(row: number): InteractiveCardAction | undefined {
+		return row >= 0 && row < this.lastRenderedLineCount - 1 ? { type: "toggle", component: this } : undefined;
+	}
+
+	override render(width: number): string[] {
+		const lines = super.render(width);
+		if (lines.length === 0) return lines;
+		lines[0] = alignCardExpansion(lines[0]!, width, this._expanded);
+		lines.push(renderToolDivider(width));
+		this.lastRenderedLineCount = lines.length;
+		return lines;
+	}
+
 	override invalidate(): void {
 		super.invalidate();
 		this.rebuild();
@@ -50,7 +70,7 @@ export class CustomEntryComponent extends Container {
 			component = this.renderer(this.entry, { expanded: this._expanded }, theme);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
+			const box = new Box(1, 0, (text) => text);
 			box.addChild(new Text(theme.fg("error", `[${this.entry.customType}] renderer failed: ${message}`), 0, 0));
 			component = box;
 		}
@@ -60,7 +80,6 @@ export class CustomEntryComponent extends Container {
 		}
 
 		this.customComponent = component;
-		this.addChild(new Spacer(1));
 		this.addChild(component);
 	}
 }

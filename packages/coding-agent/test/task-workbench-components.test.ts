@@ -2,10 +2,13 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Container, setKeybindings } from "@earendil-works/pi-tui";
+import { Container, setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
+import { BranchSummaryMessageComponent } from "../src/modes/interactive/components/branch-summary-message.ts";
 import { ChangesSelectorComponent } from "../src/modes/interactive/components/changes-selector.ts";
+import { CompactionSummaryMessageComponent } from "../src/modes/interactive/components/compaction-summary-message.ts";
+import { SkillInvocationMessageComponent } from "../src/modes/interactive/components/skill-invocation-message.ts";
 import {
 	formatTurnSummary,
 	resolveTurnOutcome,
@@ -68,15 +71,107 @@ describe("task workbench components", () => {
 			compacted: false,
 			cancelled: false,
 		};
-		expect(formatTurnSummary(base)).toBe("完成 · 修改 2 个文件 · +6/-1 · 命令 1/2 · 2m14s");
+		expect(formatTurnSummary(base)).toBe("完成 · 修改 2 个文件 · +6 -1 · 命令 1/2 · 2m14s");
 		expect(formatTurnSummary({ ...base, outcome: "failed" })).toBe(
-			"执行失败 · 5 个操作成功 · 1 个操作未完成 · 修改 2 个文件 · +6/-1 · 命令 1/2 · 2m14s",
+			"执行失败 · 5 个操作成功 · 1 个操作未完成 · 修改 2 个文件 · +6 -1 · 命令 1/2 · 2m14s",
 		);
 		expect(formatTurnSummary({ ...base, outcome: "incomplete" })).toBe(
-			"未完成 · 修改 2 个文件 · +6/-1 · 命令 1/2 · 2m14s",
+			"未完成 · 修改 2 个文件 · +6 -1 · 命令 1/2 · 2m14s",
 		);
 		expect(formatTurnSummary({ ...base, outcome: "cancelled", successfulTools: 3 })).toBe(
-			"已取消 · 完成 3/6 个操作 · 修改 2 个文件 · +6/-1 · 命令 1/2 · 2m14s",
+			"已取消 · 完成 3/6 个操作 · 修改 2 个文件 · +6 -1 · 命令 1/2 · 2m14s",
+		);
+	});
+
+	it("keeps turn summaries on one line without repeating the expand shortcut", () => {
+		const summary = new TurnSummaryComponent({
+			startedAt: 0,
+			endedAt: 335_000,
+			outcome: "completed",
+			toolErrors: 1,
+			totalTools: 15,
+			successfulTools: 14,
+			failedTools: 1,
+			cancelledTools: 0,
+			commandCount: 15,
+			successfulCommands: 14,
+			files: [{ path: "src/index.ts", additions: 437, deletions: 0 }],
+			tools: [],
+			retried: false,
+			compacted: false,
+			cancelled: false,
+		});
+
+		for (const width of [40, 60, 80, 120]) {
+			const lines = summary.render(width).map(stripAnsi);
+			expect(lines).toHaveLength(2);
+			expect(visibleWidth(lines[0])).toBeLessThanOrEqual(width);
+			expect(lines[0]).toContain(uiGlyphs.collapsed);
+			expect(lines[1]).toContain("─");
+			expect(lines[0]).not.toContain("Ctrl+O");
+			expect(lines[0]).not.toContain("展开");
+		}
+	});
+
+	it("keeps the global expand hint out of collapsed message cards", () => {
+		const cards = [
+			new SkillInvocationMessageComponent({
+				name: "shuorenhua",
+				location: "/tmp/SKILL.md",
+				content: "instructions",
+				userMessage: undefined,
+			}),
+			new BranchSummaryMessageComponent({
+				role: "branchSummary",
+				summary: "summary",
+				fromId: "entry-1",
+				timestamp: 1,
+			}),
+			new CompactionSummaryMessageComponent({
+				role: "compactionSummary",
+				summary: "summary",
+				tokensBefore: 120_000,
+				timestamp: 1,
+			}),
+		];
+
+		for (const card of cards) {
+			const lines = card.render(80).map(stripAnsi);
+			const rendered = lines.join("\n");
+			expect(rendered).not.toContain("Ctrl+O");
+			expect(rendered).not.toContain("展开）");
+			expect(lines.filter((line) => line.trim())).toHaveLength(2);
+			expect(lines[0]).toContain(uiGlyphs.collapsed);
+			expect(lines[1]).toContain("─");
+		}
+	});
+
+	it("uses the localized apply_patch action in the activity bar", () => {
+		const activityBar = { setState: vi.fn() };
+		const context = Object.assign(Object.create(InteractiveMode.prototype), {
+			turnActivity: {
+				startedAt: 0,
+				phase: "waiting",
+				action: undefined,
+				tools: new Map(),
+				toolOrder: [],
+				queueCount: 0,
+				retried: false,
+				compacted: false,
+				cancelled: false,
+			},
+			activityBar,
+		});
+		const prototype = InteractiveMode.prototype as unknown as {
+			ensureTrackedTool(this: typeof context, id: string, name: string, args: unknown): { status: string };
+			updateActivityBar(this: typeof context, phase?: string): void;
+		};
+		const tool = prototype.ensureTrackedTool.call(context, "patch-1", "apply_patch", { input: "patch" });
+		tool.status = "running";
+		prototype.updateActivityBar.call(context, "runningTool");
+
+		expect(activityBar.setState).toHaveBeenLastCalledWith(
+			expect.objectContaining({ action: "正在应用补丁", runningTools: 1 }),
 		);
 	});
 
@@ -164,23 +259,64 @@ describe("task workbench components", () => {
 		expect(rendered).not.toContain("正在读取 Diff");
 	});
 
-	it("uses the session name, then the first user line, as the task title", () => {
-		const getWorkspaceTaskTitle = (
+	it("uses real runtime state instead of inferring a task title", () => {
+		const getWorkspaceStatusLabel = (
 			InteractiveMode.prototype as unknown as {
-				getWorkspaceTaskTitle(this: unknown): string;
+				getWorkspaceStatusLabel(this: unknown): string;
 			}
-		).getWorkspaceTaskTitle;
+		).getWorkspaceStatusLabel;
 		const context = Object.assign(Object.create(InteractiveMode.prototype), {
 			runtimeHost: {
-				session: {
-					sessionManager: { getSessionName: () => undefined },
-					messages: [{ role: "user", content: "修复登录流程\n并补测试", timestamp: 1 }],
-				},
+				session: { isCompacting: false, isBashRunning: false, isStreaming: false },
 			},
+			turnActivity: undefined,
 		});
-		expect(getWorkspaceTaskTitle.call(context)).toBe("修复登录流程");
-		context.runtimeHost.session.sessionManager.getSessionName = () => "登录修复";
-		expect(getWorkspaceTaskTitle.call(context)).toBe("登录修复");
+		expect(getWorkspaceStatusLabel.call(context)).toBe("等待输入");
+		context.turnActivity = { phase: "runningTool" };
+		expect(getWorkspaceStatusLabel.call(context)).toBe("执行中");
+		context.turnActivity = undefined;
+		context.runtimeHost.session.isStreaming = true;
+		expect(getWorkspaceStatusLabel.call(context)).toBe("思考中");
+	});
+
+	it("restores stable card expansion within the same session", () => {
+		const sessionManager = { getSessionId: () => "session-1" };
+		const context = Object.assign(Object.create(InteractiveMode.prototype), {
+			runtimeHost: { session: { sessionManager } },
+			cardExpansionSessionId: undefined,
+			cardExpansion: new Map<string, boolean>(),
+		});
+		const prototype = InteractiveMode.prototype as unknown as {
+			rememberCardExpansion(this: typeof context, card: TurnSummaryComponent): void;
+			restoreCardExpansion(this: typeof context, cards: TurnSummaryComponent[]): void;
+		};
+		const data = {
+			startedAt: 123,
+			endedAt: 456,
+			totalTools: 0,
+			successfulTools: 0,
+			failedTools: 0,
+			cancelledTools: 0,
+			commandCount: 0,
+			successfulCommands: 0,
+			files: [],
+			tools: [],
+			retried: false,
+			compacted: false,
+			cancelled: false,
+		};
+		const original = new TurnSummaryComponent(data);
+		original.setExpanded(true);
+		prototype.rememberCardExpansion.call(context, original);
+
+		const rebuilt = new TurnSummaryComponent(data);
+		prototype.restoreCardExpansion.call(context, [rebuilt]);
+		expect(rebuilt.isExpanded()).toBe(true);
+
+		sessionManager.getSessionId = () => "session-2";
+		const otherSession = new TurnSummaryComponent(data);
+		prototype.restoreCardExpansion.call(context, [otherSession]);
+		expect(otherSession.isExpanded()).toBe(false);
 	});
 
 	it("keeps startup changelog to one line in fullscreen", () => {

@@ -11,6 +11,8 @@ import {
 } from "../../../core/tools/truncate.ts";
 import { stripAnsi } from "../../../utils/ansi.ts";
 import { theme } from "../theme/theme.ts";
+import type { InteractiveCardAction } from "./interactive-card.ts";
+import { alignCardExpansion, renderToolDivider } from "./tool-card-layout.ts";
 import { formatToolSummary, getToolSummary } from "./tool-summary.ts";
 
 export class BashExecutionComponent extends Container {
@@ -22,6 +24,7 @@ export class BashExecutionComponent extends Container {
 	private fullOutputPath?: string;
 	private expanded = false;
 	private contentBox: Box;
+	private lastRenderedLineCount = 0;
 
 	constructor(command: string, _ui: TUI, _excludeFromContext = false) {
 		super();
@@ -38,6 +41,19 @@ export class BashExecutionComponent extends Container {
 
 	isExpanded(): boolean {
 		return this.expanded;
+	}
+
+	getCardClickActionAtRow(row: number): InteractiveCardAction | undefined {
+		return row >= 0 && row < this.lastRenderedLineCount - 1 ? { type: "toggle", component: this } : undefined;
+	}
+
+	override render(width: number): string[] {
+		const lines = super.render(width);
+		if (lines.length === 0) return lines;
+		lines[0] = alignCardExpansion(lines[0]!, width, this.expanded);
+		lines.push(renderToolDivider(width));
+		this.lastRenderedLineCount = lines.length;
+		return lines;
 	}
 
 	override invalidate(): void {
@@ -85,7 +101,6 @@ export class BashExecutionComponent extends Container {
 			formatToolSummary({
 				icon: "$",
 				subject: this.command,
-				expanded: this.expanded,
 				isPartial,
 				isError,
 				labels: { running: "正在运行", success: successLabel, error: "运行失败" },
@@ -93,13 +108,7 @@ export class BashExecutionComponent extends Container {
 			}),
 		);
 
-		this.contentBox.setBgFn(
-			isPartial
-				? (text) => theme.bg("toolPendingBg", text)
-				: isError
-					? (text) => theme.bg("toolErrorBg", text)
-					: (text) => theme.bg("toolSuccessBg", text),
-		);
+		this.contentBox.setBgFn((text) => text);
 		this.contentBox.clear();
 		this.contentBox.addChild(summary);
 

@@ -230,7 +230,6 @@ function formatBashCall(
 	return formatToolSummary({
 		icon: "$",
 		subject: commandDisplay,
-		expanded: options.expanded,
 		isPartial: options.isPartial,
 		isError: options.isError,
 		labels: { running: "正在运行", success: "已运行", error: "运行失败" },

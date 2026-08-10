@@ -1,11 +1,11 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
-import { Container, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
+import { type Component, Container, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../../src/core/agent-session.ts";
 import type { SessionEntry } from "../../../src/core/session-manager.ts";
 import type { ToolExecutionComponent } from "../../../src/modes/interactive/components/tool-execution.ts";
-import { ToolExecutionGroupComponent } from "../../../src/modes/interactive/components/tool-execution-group.ts";
+import { ToolExecutionStackComponent } from "../../../src/modes/interactive/components/tool-execution-stack.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../../../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../../src/utils/ansi.ts";
@@ -51,6 +51,7 @@ type RenderSessionContextThis = {
 	updateEditorBorderColor(): void;
 	getRegisteredToolDefinition(toolName: string): undefined;
 	addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void;
+	restoreCardExpansion(components: readonly Component[]): void;
 	renderSessionItems: RenderSessionItems;
 };
 
@@ -80,6 +81,7 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 		isInitialized: true,
 		updateEditorBorderColor: vi.fn(),
 		getRegisteredToolDefinition: (_toolName: string) => undefined,
+		restoreCardExpansion: vi.fn(),
 		renderSessionItems: (InteractiveMode.prototype as unknown as { renderSessionItems: RenderSessionItems })
 			.renderSessionItems,
 		addMessageToChat(message: AgentMessage) {
@@ -186,7 +188,7 @@ describe("InteractiveMode.renderSessionEntries", () => {
 		expect(renderChat(fakeThis.chatContainer)).toContain("FINAL_RESULT");
 	});
 
-	test("keeps ordinary tool messages separated by one blank line", () => {
+	test("keeps one section gap before a continuous tool stack", () => {
 		const fakeThis = createFakeInteractiveModeThis();
 		const renderSessionEntries = (
 			InteractiveMode.prototype as unknown as { renderSessionEntries: RenderSessionEntries }
@@ -195,9 +197,9 @@ describe("InteractiveMode.renderSessionEntries", () => {
 		renderSessionEntries.call(fakeThis, createSessionEntries([createAssistantToolBatchMessage()]));
 
 		const spacers = fakeThis.chatContainer.children.filter((component) => component instanceof Spacer);
-		expect(spacers).toHaveLength(2);
+		expect(spacers).toHaveLength(1);
 		expect(fakeThis.chatContainer.children[1]).toBeInstanceOf(Spacer);
-		expect(fakeThis.chatContainer.children[3]).toBeInstanceOf(Spacer);
+		expect(fakeThis.chatContainer.children[2]).toBeInstanceOf(ToolExecutionStackComponent);
 	});
 
 	test("adds spacing when a tool starts before its assistant tool-call message is rendered", async () => {
@@ -223,10 +225,10 @@ describe("InteractiveMode.renderSessionEntries", () => {
 
 		renderSessionEntries.call(fakeThis, createSessionEntries([createAssistantBashBatchMessage()]));
 
-		const group = fakeThis.chatContainer.children.find(
-			(component) => component instanceof ToolExecutionGroupComponent,
+		const stack = fakeThis.chatContainer.children.find(
+			(component) => component instanceof ToolExecutionStackComponent,
 		);
-		expect(group).toBeInstanceOf(ToolExecutionGroupComponent);
+		expect(stack).toBeInstanceOf(ToolExecutionStackComponent);
 		expect(fakeThis.pendingTools.has("bash-1")).toBe(true);
 		expect(fakeThis.pendingTools.has("bash-2")).toBe(true);
 		expect(renderChat(fakeThis.chatContainer)).toContain("准备执行 2 条命令");

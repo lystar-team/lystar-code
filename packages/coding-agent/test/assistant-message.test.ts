@@ -92,57 +92,96 @@ describe("AssistantMessageComponent", () => {
 		expect(rendered).not.toContain("◆ 思考过程");
 	});
 
-	test("expands web search sources only from the search summary row", () => {
+	test("keeps web search cards independently expandable", () => {
 		initTheme("dark");
-		const component = new AssistantMessageComponent(
-			createAssistantMessage([
-				{
-					type: "webSearchCall",
-					id: "ws_1",
-					status: "completed",
-					action: {
-						type: "search",
-						query: "OpenAI web search",
-						sources: [
-							{ type: "url", url: "https://developers.openai.com/api/docs/guides/tools-web-search" },
-							{ type: "url", url: "https://example.com/uncited-source" },
-						],
-					},
-				},
-				{
-					type: "text",
-					text: "Use web search.",
-					annotations: [
-						{
-							type: "url_citation",
-							startIndex: 4,
-							endIndex: 14,
-							title: "OpenAI Web Search",
-							url: "https://developers.openai.com/api/docs/guides/tools-web-search",
-						},
+		const message = createAssistantMessage([
+			{
+				type: "webSearchCall",
+				id: "ws_1",
+				status: "completed",
+				action: {
+					type: "search",
+					query: "OpenAI web search",
+					sources: [
+						{ type: "url", url: "https://developers.openai.com/api/docs/guides/tools-web-search" },
+						{ type: "url", url: "https://first.example/source" },
 					],
 				},
-			]),
-		);
+			},
+			{
+				type: "webSearchCall",
+				id: "ws_2",
+				status: "completed",
+				action: {
+					type: "search",
+					query: "second search",
+					sources: [{ type: "url", url: "https://second.example/source" }],
+				},
+			},
+			{
+				type: "text",
+				text: "Use web search.",
+				annotations: [
+					{
+						type: "url_citation",
+						startIndex: 4,
+						endIndex: 14,
+						title: "OpenAI Web Search",
+						url: "https://developers.openai.com/api/docs/guides/tools-web-search",
+					},
+				],
+			},
+		]);
+		const component = new AssistantMessageComponent(message);
 
 		const collapsedLines = component.render(100).map(stripAnsi);
-		const summaryRow = collapsedLines.findIndex((line) => line.includes("已搜索网页"));
+		const summaryRows = collapsedLines
+			.map((line, index) => (line.includes("已搜索网页") ? index : -1))
+			.filter((index) => index >= 0);
 		const citationRow = collapsedLines.findIndex((line) => line.includes("OpenAI Web Search"));
-		expect(collapsedLines.join("\n")).toContain("▸ ⌕ 已搜索网页 · 2 个来源");
-		expect(collapsedLines.join("\n")).not.toContain("搜索来源：");
-		expect(component.getCardClickActionAtRow(summaryRow)?.type).toBe("toggle");
-		expect(component.getCardClickActionAtRow(citationRow)?.type).toBe("toggle");
+		expect(summaryRows).toHaveLength(2);
+		expect(collapsedLines.join("\n")).toContain("⌕ 已搜索网页 · 2 个来源");
+		expect(collapsedLines.filter((line) => line.includes("▸"))).toHaveLength(2);
+		expect(collapsedLines.join("\n")).not.toContain("来源\n");
+		expect(component.getCardClickActionAtRow(citationRow)).toBeUndefined();
+		expect(component.getCardClickActionAtRow(summaryRows[0] + 1)).toBeUndefined();
+
+		const firstAction = component.getCardClickActionAtRow(summaryRows[0]);
+		expect(firstAction?.type).toBe("toggle");
+		if (firstAction?.type === "toggle") expect(firstAction.component.getCardStateKey?.()).toBe("web-search:ws_1");
+		if (firstAction?.type === "toggle") firstAction.component.setExpanded(true);
+		let rendered = component.render(100).map(stripAnsi);
+		expect(rendered.join("\n")).toContain("first.example");
+		expect(rendered.join("\n")).not.toContain("second.example");
+		const firstSourceRow = rendered.findIndex((line) => line.includes("first.example"));
+		expect(component.getCardClickActionAtRow(firstSourceRow)?.type).toBe("toggle");
+
+		const updatedSummaryRows = rendered
+			.map((line, index) => (line.includes("已搜索网页") ? index : -1))
+			.filter((index) => index >= 0);
+		const secondSummaryRow = updatedSummaryRows.at(-1)!;
+		const secondAction = component.getCardClickActionAtRow(secondSummaryRow);
+		expect(secondAction?.type).toBe("toggle");
+		expect(secondAction).not.toEqual(firstAction);
+		if (secondAction?.type === "toggle") secondAction.component.setExpanded(true);
+		rendered = component.render(100).map(stripAnsi);
+		expect(rendered.join("\n")).toContain("first.example");
+		expect(rendered.join("\n")).toContain("second.example");
+
+		component.updateContent(message);
+		rendered = component.render(100).map(stripAnsi);
+		expect(rendered.join("\n")).toContain("first.example");
+		expect(rendered.join("\n")).toContain("second.example");
+
+		component.setExpanded(false);
+		rendered = component.render(100).map(stripAnsi);
+		expect(rendered.join("\n")).not.toContain("first.example");
+		expect(rendered.join("\n")).not.toContain("second.example");
 
 		component.setExpanded(true);
-		const expandedLines = component.render(100).map(stripAnsi);
-		const sourceListRow = expandedLines.findIndex((line) => line.includes("搜索来源："));
-		const sourceRow = expandedLines.findIndex((line) => line.includes("example.com"));
-		expect(expandedLines.join("\n")).toContain("▾ ⌕ 已搜索网页 · 2 个来源");
-		expect(expandedLines.join("\n")).toContain("搜索来源：");
-		expect(expandedLines.join("\n")).toContain("OpenAI Web Search");
-		expect(expandedLines.join("\n")).toContain("example.com");
-		expect(expandedLines[sourceListRow + 1]).toContain("OpenAI Web Search");
-		expect(component.getCardClickActionAtRow(sourceRow)?.type).toBe("toggle");
+		rendered = component.render(100).map(stripAnsi);
+		expect(rendered.join("\n")).toContain("first.example");
+		expect(rendered.join("\n")).toContain("second.example");
 	});
 
 	test("renders length stops with neutral truncation wording", () => {

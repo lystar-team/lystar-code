@@ -4,6 +4,8 @@ import { Box, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@ear
 import type { MessageRenderer } from "../../../core/extensions/types.ts";
 import type { CustomMessage } from "../../../core/messages.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
+import type { InteractiveCardAction } from "./interactive-card.ts";
+import { alignCardExpansion, renderToolDivider } from "./tool-card-layout.ts";
 
 /**
  * Component that renders a custom message entry from extensions.
@@ -17,6 +19,7 @@ export class CustomMessageComponent extends Container {
 	private markdownTheme: MarkdownTheme;
 	private _expanded = false;
 	private outputPad: number;
+	private lastRenderedLineCount = 0;
 
 	constructor(
 		message: CustomMessage<unknown>,
@@ -30,10 +33,7 @@ export class CustomMessageComponent extends Container {
 		this.markdownTheme = markdownTheme;
 		this.outputPad = outputPad;
 
-		this.addChild(new Spacer(1));
-
-		// Create box with purple background (used for default rendering)
-		this.box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
+		this.box = new Box(1, 0, (text) => text);
 
 		this.rebuild();
 	}
@@ -47,6 +47,23 @@ export class CustomMessageComponent extends Container {
 
 	isExpanded(): boolean {
 		return this._expanded;
+	}
+
+	getCardStateKey(): string {
+		return `custom-message:${this.message.customType}:${this.message.timestamp}`;
+	}
+
+	getCardClickActionAtRow(row: number): InteractiveCardAction | undefined {
+		return row >= 0 && row < this.lastRenderedLineCount - 1 ? { type: "toggle", component: this } : undefined;
+	}
+
+	override render(width: number): string[] {
+		const lines = super.render(width);
+		if (lines.length === 0) return lines;
+		lines[0] = alignCardExpansion(lines[0]!, width, this._expanded);
+		lines.push(renderToolDivider(width));
+		this.lastRenderedLineCount = lines.length;
+		return lines;
 	}
 
 	setOutputPad(outputPad: number): void {
@@ -94,10 +111,6 @@ export class CustomMessageComponent extends Container {
 
 		// Default rendering: label + content
 		const label = theme.fg("customMessageLabel", `\x1b[1m[${this.message.customType}]\x1b[22m`);
-		this.box.addChild(new Text(label, 0, 0));
-		this.box.addChild(new Spacer(1));
-
-		// Extract text content
 		let text: string;
 		if (typeof this.message.content === "string") {
 			text = this.message.content;
@@ -107,6 +120,17 @@ export class CustomMessageComponent extends Container {
 				.map((c) => c.text)
 				.join("\n");
 		}
+		if (!this._expanded) {
+			const preview = text
+				.split(/\r?\n/)
+				.find((line) => line.trim())
+				?.trim();
+			this.box.addChild(new Text(`${label}${preview ? theme.fg("customMessageText", `  ${preview}`) : ""}`, 0, 0));
+			return;
+		}
+
+		this.box.addChild(new Text(label, 0, 0));
+		this.box.addChild(new Spacer(1));
 
 		this.box.addChild(
 			new Markdown(text, 0, 0, this.markdownTheme, {

@@ -36,8 +36,53 @@ export const zhCN = {
 	"status.webSearchCompleted": "已搜索网页",
 	"status.webSearchFailed": "网页搜索失败",
 	"status.webSearchSources": "{count} 个来源",
-	"status.webSearchSourceList": "搜索来源：",
+	"status.webSearchSourceList": "来源",
 	"status.citations": "引用：",
+	"tool.applyPatch.running": "正在应用补丁",
+	"tool.applyPatch.success": "已应用补丁",
+	"tool.applyPatch.error": "应用补丁失败",
+	"subagent.title": "Subagent",
+	"subagent.mode.single": "单任务",
+	"subagent.mode.parallel": "并行",
+	"subagent.mode.chain": "串行",
+	"subagent.scope.user": "用户级",
+	"subagent.scope.project": "项目级",
+	"subagent.scope.both": "用户级 + 项目级",
+	"subagent.source.builtin": "内置",
+	"subagent.source.user": "用户级",
+	"subagent.source.project": "项目级",
+	"subagent.source.unknown": "未知",
+	"subagent.state.queued": "排队中",
+	"subagent.state.running": "运行中",
+	"subagent.state.waiting": "等待中",
+	"subagent.state.succeeded": "已完成",
+	"subagent.state.failed": "失败",
+	"subagent.state.cancelled": "已取消",
+	"subagent.confirm.projectTitle": "运行项目 Agent？",
+	"subagent.confirm.projectMessage":
+		"Agent：{agents}\n来源：{source}\n\n项目 Agent 由仓库控制，只在信任当前仓库时继续。",
+	"subagent.error.projectNotApproved": "已取消：未批准运行项目 Agent。",
+	"subagent.error.invalidMode": "参数无效，请只提供一种执行模式。",
+	"subagent.error.availableAgents": "可用 Agent：{agents}",
+	"subagent.error.tooManyParallel": "并行任务过多（{count} 个），最多允许 {max} 个。",
+	"subagent.error.chainStopped": "串行任务在第 {step} 步停止（{agent}）：{error}",
+	"subagent.error.agentFailed": "Agent 执行失败（{reason}）：{error}",
+	"subagent.error.unknownAgent": '未知 Agent："{agent}"。可用 Agent：{agents}。',
+	"subagent.error.noActiveRegistry": "当前没有可用的 Subagent 运行记录。",
+	"subagent.error.notAvailable": 'Subagent "{agentId}" 已不可用。',
+	"subagent.error.controllerStarted": "Subagent 控制器已经启动。",
+	"subagent.error.sessionMissing": 'Subagent "{agentId}" 未创建持久会话。',
+	"subagent.error.alreadySettledFollowUp": 'Subagent "{agentId}" 已结束，请改用后续任务。',
+	"subagent.error.stillActiveSteer": 'Subagent "{agentId}" 仍在运行，请改用引导消息。',
+	"subagent.error.alreadySettled": 'Subagent "{agentId}" 已结束。',
+	"subagent.error.definitionUnavailable": 'Subagent 定义 "{agent}"（{source}）已不可用。',
+	"subagent.progress.parallel": "并行进度：已完成 {done}/{total}，运行中 {running}",
+	"subagent.result.parallel": "并行结果：成功 {success}/{total}",
+	"subagent.result.completed": "已完成",
+	"subagent.result.failed": "失败",
+	"subagent.output.empty": "（无输出）",
+	"subagent.output.running": "（运行中）",
+	"subagent.output.truncated": "输出已截断：省略 {bytes} 字节，完整内容保留在 Tool details 中。",
 	"status.compacting": "正在压缩上下文...",
 	"status.retrying": "正在重试...",
 	"status.noModel": "未选择模型",
@@ -93,4 +138,53 @@ export function t(key: MessageKey, values: MessageValues = {}): string {
 	return zhCN[key].replace(/\{(\w+)\}/g, (placeholder, name: string) =>
 		Object.hasOwn(values, name) ? String(values[name]) : placeholder,
 	);
+}
+
+const SUBAGENT_MODE_KEYS = {
+	single: "subagent.mode.single",
+	parallel: "subagent.mode.parallel",
+	chain: "subagent.mode.chain",
+} as const satisfies Record<string, MessageKey>;
+
+const SUBAGENT_SCOPE_KEYS = {
+	user: "subagent.scope.user",
+	project: "subagent.scope.project",
+	both: "subagent.scope.both",
+} as const satisfies Record<string, MessageKey>;
+
+const SUBAGENT_SOURCE_KEYS = {
+	builtin: "subagent.source.builtin",
+	user: "subagent.source.user",
+	project: "subagent.source.project",
+	unknown: "subagent.source.unknown",
+} as const satisfies Record<string, MessageKey>;
+
+const SUBAGENT_STATE_KEYS = {
+	queued: "subagent.state.queued",
+	running: "subagent.state.running",
+	waiting: "subagent.state.waiting",
+	succeeded: "subagent.state.succeeded",
+	failed: "subagent.state.failed",
+	cancelled: "subagent.state.cancelled",
+} as const satisfies Record<string, MessageKey>;
+
+function formatMappedValue(value: string, keys: Record<string, MessageKey>): string {
+	const key = Object.hasOwn(keys, value) ? keys[value] : undefined;
+	return key ? t(key) : value;
+}
+
+export function formatSubagentMode(mode: string): string {
+	return formatMappedValue(mode, SUBAGENT_MODE_KEYS);
+}
+
+export function formatSubagentScope(scope: string): string {
+	return formatMappedValue(scope, SUBAGENT_SCOPE_KEYS);
+}
+
+export function formatSubagentSource(source: string): string {
+	return formatMappedValue(source, SUBAGENT_SOURCE_KEYS);
+}
+
+export function formatSubagentState(state: string): string {
+	return formatMappedValue(state, SUBAGENT_STATE_KEYS);
 }

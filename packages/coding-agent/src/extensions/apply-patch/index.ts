@@ -1,6 +1,6 @@
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
-import { Container, Spacer, Text } from "@earendil-works/pi-tui";
+import { basename, dirname } from "node:path";
+import { type Component, Container, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import type { ExtensionAPI, ToolDefinition } from "../../core/extensions/types.ts";
 import {
@@ -14,9 +14,12 @@ import {
 } from "../../core/tools/edit-diff.ts";
 import { withFileMutationQueue } from "../../core/tools/file-mutation-queue.ts";
 import { resolveToCwd } from "../../core/tools/path-utils.ts";
-import { renderToolPath } from "../../core/tools/render-utils.ts";
+import { linkPath, shortenPath } from "../../core/tools/render-utils.ts";
+import { t } from "../../locales/zh-CN.ts";
 import { renderDiff } from "../../modes/interactive/components/diff.ts";
 import { formatToolSummary, getToolSummary } from "../../modes/interactive/components/tool-summary.ts";
+import { theme } from "../../modes/interactive/theme/theme.ts";
+import { toUiGlyph, uiGlyphs } from "../../modes/interactive/ui-glyphs.ts";
 
 const applyPatchSchema = Type.Object({
 	input: Type.String({ description: "Patch text in the *** Begin Patch format." }),
@@ -58,7 +61,36 @@ function formatCounts(additions: number, deletions: number): string {
 function operationIcon(operation: ApplyPatchFileDetails["operation"] | undefined): string {
 	if (operation === "add") return "+";
 	if (operation === "delete") return "-";
-	return "✎";
+	return uiGlyphs.edit;
+}
+
+class ApplyPatchFileRow implements Component {
+	private readonly file: Partial<ApplyPatchFileDetails> & Pick<ApplyPatchFileDetails, "path">;
+	private readonly cwd: string;
+
+	constructor(file: Partial<ApplyPatchFileDetails> & Pick<ApplyPatchFileDetails, "path">, cwd: string) {
+		this.file = file;
+		this.cwd = cwd;
+	}
+
+	render(width: number): string[] {
+		const icon = theme.fg("accent", toUiGlyph(operationIcon(this.file.operation)));
+		const counts = theme.fg("muted", formatCounts(this.file.additions ?? 0, this.file.deletions ?? 0));
+		const prefix = `${icon} `;
+		const suffix = `  ${counts}`;
+		const pathWidth = Math.max(1, width - visibleWidth(prefix) - visibleWidth(suffix));
+		const fullDisplayPath = shortenPath(this.file.path);
+		const compactPath = `…/${basename(fullDisplayPath)}`;
+		const displayPath = truncateToWidth(
+			visibleWidth(fullDisplayPath) <= pathWidth ? fullDisplayPath : compactPath,
+			pathWidth,
+			"…",
+		);
+		const linkedPath = linkPath(theme.fg("accent", displayPath), this.file.path, this.cwd);
+		return [truncateToWidth(`${prefix}${linkedPath}${suffix}`, Math.max(1, width), "")];
+	}
+
+	invalidate(): void {}
 }
 
 function getTextResult(result: { content: Array<{ type: string; text?: string }> }): string {
@@ -362,12 +394,15 @@ export function createApplyPatchToolDefinition(options?: {
 			const summary = getToolSummary(context.lastComponent);
 			summary.setText(
 				formatToolSummary({
-					icon: "✎",
+					icon: uiGlyphs.edit,
 					subject: details ? `${details.files.length} 个文件` : "",
-					expanded: context.expanded,
 					isPartial: context.isPartial,
 					isError: context.isError,
-					labels: { running: "正在应用补丁", success: "已应用补丁", error: "应用补丁失败" },
+					labels: {
+						running: t("tool.applyPatch.running"),
+						success: t("tool.applyPatch.success"),
+						error: t("tool.applyPatch.error"),
+					},
 					detail: details ? formatCounts(additions, deletions) : undefined,
 				}),
 			);
@@ -386,14 +421,7 @@ export function createApplyPatchToolDefinition(options?: {
 				| { files?: Array<Partial<ApplyPatchFileDetails> & Pick<ApplyPatchFileDetails, "path">> }
 				| undefined;
 			for (const file of details?.files ?? []) {
-				const counts = formatCounts(file.additions ?? 0, file.deletions ?? 0);
-				component.addChild(
-					new Text(
-						`${theme.fg("accent", operationIcon(file.operation))} ${renderToolPath(file.path, theme, context.cwd)}${theme.fg("muted", `  ${counts}`)}`,
-						0,
-						0,
-					),
-				);
+				component.addChild(new ApplyPatchFileRow(file, context.cwd));
 				if (context.expanded && file.diff) {
 					component.addChild(new Spacer(1));
 					component.addChild(new Text(renderDiff(file.diff, { filePath: file.path }), 1, 0));
