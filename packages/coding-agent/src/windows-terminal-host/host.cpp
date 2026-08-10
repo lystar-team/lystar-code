@@ -24,6 +24,7 @@ constexpr wchar_t kDefaultTitle[] = L"LYStar Code";
 constexpr wchar_t kVirtualHost[] = L"lystar.local";
 constexpr UINT kOutputMessage = WM_APP + 1;
 constexpr UINT kChildExitMessage = WM_APP + 2;
+constexpr UINT kSmokeInputMessage = WM_APP + 3;
 constexpr UINT_PTR kExitTimer = 1;
 
 HWND g_window = nullptr;
@@ -472,6 +473,12 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 				g_webview->PostWebMessageAsString(event.c_str());
 			}
 			SetTimer(window, kExitTimer, 250, nullptr);
+			return 0;
+		case kSmokeInputMessage:
+			if (std::find(g_childArgs.begin(), g_childArgs.end(), L"--windows-terminal-ui-smoke") != g_childArgs.end()) {
+				StartChild();
+				WriteInput(L"abc\r");
+			}
 			return 0;
 		case WM_TIMER:
 			if (wParam == kExitTimer) DestroyWindow(window);

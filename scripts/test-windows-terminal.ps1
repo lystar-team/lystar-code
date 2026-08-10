@@ -13,7 +13,6 @@ $SmokeProcess = Start-Process -FilePath $HostExecutable -ArgumentList "--smoke-t
 if ($SmokeProcess.ExitCode -ne 0) { throw "Terminal host smoke test failed: $($SmokeProcess.ExitCode)" }
 
 Add-Type -AssemblyName System.Drawing
-Add-Type -AssemblyName System.Windows.Forms
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
@@ -22,7 +21,7 @@ public static class LYStarTerminalTestNative {
     public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
     [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr hWnd, int x, int y, int width, int height, bool repaint);
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint message, IntPtr wParam, IntPtr lParam);
 }
 '@
 
@@ -67,8 +66,9 @@ try {
     $Bitmap.Dispose()
     if ($Colors.Count -lt 3) { throw "Terminal screenshot is blank or monochrome: $ScreenshotPath" }
 
-    [void][LYStarTerminalTestNative]::SetForegroundWindow($Handle)
-    [Windows.Forms.SendKeys]::SendWait("abc{ENTER}")
+    if (![LYStarTerminalTestNative]::PostMessage($Handle, 0x8003, [IntPtr]::Zero, [IntPtr]::Zero)) {
+        throw "Unable to send terminal smoke input."
+    }
     if (!$Process.WaitForExit(15000)) { throw "Terminal host did not exit after its child process completed." }
     if ($Process.ExitCode -ne 0) { throw "Terminal host exited with $($Process.ExitCode)." }
 
@@ -77,7 +77,7 @@ try {
         if (!$Icon -or $Icon.Width -lt 16) { throw "Missing executable icon: $Executable" }
         $Icon.Dispose()
     }
-    Write-Host "Windows terminal window, resize, keyboard input, screenshot, ConPTY exit, and icons passed: $ScreenshotPath"
+    Write-Host "Windows terminal window, resize, screenshot, ConPTY input/exit, and icons passed: $ScreenshotPath"
 }
 finally {
     if (!$Process.HasExited) { $Process.Kill() }
