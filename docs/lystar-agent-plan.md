@@ -112,7 +112,7 @@ Pi 当前把 `piConfig.name` 同时用于界面名和环境变量前缀，无法
 | `displayName` | `LYStar Code` |
 | `configDirName` | `.pi` |
 | `envPrefix` | `PI` |
-| `releaseRepository` | `octyean/lystar-agent`，由 `packages/coding-agent/package.json` 统一提供 |
+| `releaseRepository` | `lystar-team/lystar-code`，由 `packages/coding-agent/package.json` 统一提供 |
 
 构建过程把 `releaseRepository` 固化进产物。CI 的 `GITHUB_REPOSITORY` 或命令行传值与产品常量不一致时直接失败。产品常量不做插件化配置，也不增加运行时覆盖入口。
 
@@ -523,6 +523,7 @@ LYStar 不增加 MCP 配置文件、内置管理器或代理 Tool。TUI 负责�
 
 | LYStar | Pi 基线 | Pi commit | MCP Adapter | Session | Extension API |
 |---|---|---|---|---|---|
+| `0.84.1-lystar.10` | `0.84.1` | `53fa77cc...` | `2.12.1` | Pi 原 JSONL 兼容；卡片展开状态只保存在当前 TUI Session 运行态 | Pi `0.84.1`；统一 Tool、Web Search、摘要与 Subagent 平面卡片交互，发行仓库迁移到 `lystar-team/lystar-code`，现有 Extension API 不变 |
 | `0.84.1-lystar.9` | `0.84.1` | `53fa77cc...` | `2.12.1` | Pi 原 JSONL 兼容；原生图片结果继续使用 Tool Result `ImageContent` | Pi `0.84.1`；新增内置 `image_gen` Tool、图片 Provider 和统一卡片交互，产品名改为 LYStar Code，命令改为 `lc`/`lystar`，现有 Extension API 不变 |
 | `0.84.1-lystar.8` | `0.84.1` | `53fa77cc...` | `2.12.1` | 与 `.7` 一致；Web Search sources 与 citation 格式不变 | Pi `0.84.1`；只改进内置 TUI 来源展开、链接命中和产品标题位置，现有 Extension API 不变 |
 | `0.84.1-lystar.7` | `0.84.1` | `53fa77cc...` | `2.12.1` | Pi 原 JSONL 兼容；新增结构化 Web Search call、sources 与 citation | Pi `0.84.1`；远程 wire protocol 升至 v2，新增原生 Web Search 事件与内容类型 |

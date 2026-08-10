@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-10T04:08:56Z
+最后核验时间：2026-08-10T11:12:32Z
 
 环境：
 
@@ -14,6 +14,18 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### `0.84.1-lystar.10` 发布前核验
+
+发布事实源已更新为 `piConfig.productVersion = 0.84.1-lystar.10` 和 `releaseRepository = lystar-team/lystar-code`，本地 `origin` 同步切换到 `git@github.com:lystar-team/lystar-code.git`。安装器、manifest、自动更新、OpenRouter attribution、当前安装文档和对应测试统一使用新仓库；历史版本验证记录保留当时的旧仓库事实。Pi workspace 包版本继续保持 `0.84.1`，Session JSONL、Tool 名、Provider、RPC、Protocol 与 Extension API 不变。
+
+本版将 Tool、Web Search、Turn/Skill/Branch/Compaction 摘要和 Subagent 统一为平面高密度卡片。连续 Tool 保持原始顺序，只合并相邻 Bash；每张卡片独立展开，灰色分隔线和越界行不可点击，OSC 8 链接优先。Subagent 外层、Agent 行和会话入口分离交互，显示层完成模式、作用域和状态汉化；长路径按 ANSI 可见宽度裁切，Windows 独立宿主使用 rich Unicode，attached 终端保留 ASCII fallback。Session 级展开状态只存在当前运行态，不写入 JSONL。
+
+显式使用 Node.js `v22.21.1` 和 `NODE_TLS_REJECT_UNAUTHORIZED=1` 完成 `npm run check`、`npm run build:offline`、Unix 安装器测试和全部发布测试。TUI 全量退出码 0；AI 105 个 test files/878 项通过，25 个 files/825 项跳过；Agent Core 20 个 files/402 项通过、1 项跳过；Coding Agent 237 个 files/2083 项通过，6 个 files/49 项跳过。仓库迁移相关 3 个测试文件共 49 项通过，`git diff --check` 通过，CodeGraph 已同步且无 pending changes。
+
+使用 Bun `1.3.9` 构建 Darwin ARM64/x64 和 Linux ARM64/x64 四个候选包，`SHA256SUMS` 四项全部通过；manifest 版本为 `0.84.1-lystar.10`、Pi 版本为 `0.84.1`、仓库为 `lystar-team/lystar-code`。Linux x64 候选包 SHA-256 为 `138a82e24891026b5c050c7a762661919b97ef0630addd2bd8fd1881310a10c9`，大小为 `46501253` 字节；`lc --version`、`lystar --version`、`PI_OFFLINE=1 lc --list-models`、许可证和内置 Image Gen Skill 资源检查通过。候选包在独立 `80x24` tmux PTY 显示 LYStar Code 全屏输入区、快捷栏和离线无模型提示，`/quit` 正常退出；临时 tmux server、Session 和解压目录已删除。
+
+当前 Linux 主机没有 MSVC、Windows SDK、ConPTY 或 WebView2 Runtime，Windows x64 原生构建、终端截图、托管 MinGit 和 PowerShell 5.1 安装链必须由提交后的 `windows-installer` CI 与 Release Windows job 给出最终证据。
 
 ### `0.84.1-lystar.9` 发布与升级核验
 

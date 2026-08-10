@@ -37,7 +37,7 @@ Get-Command lc
 
 ## `curl` 或 `wget` 缺失
 
-安装器至少需要一个下载工具。Linux 使用系统包管理器安装 `curl` 或 `wget`；macOS 通常自带 `curl`。也可以在浏览器中从 [GitHub Releases](https://github.com/octyean/lystar-agent/releases/latest) 手动下载。
+安装器至少需要一个下载工具。Linux 使用系统包管理器安装 `curl` 或 `wget`；macOS 通常自带 `curl`。也可以在浏览器中从 [GitHub Releases](https://github.com/lystar-team/lystar-code/releases/latest) 手动下载。
 
 ## SHA-256 校验失败
 

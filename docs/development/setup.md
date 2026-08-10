@@ -21,7 +21,7 @@ Windows 建议使用 Git for Windows 提供 Bash。发行脚本固定 Bun `1.3.9
 ## 获取源码
 
 ```bash
-git clone https://github.com/octyean/lystar-agent.git
+git clone https://github.com/lystar-team/lystar-code.git
 cd lystar-agent
 npm ci --ignore-scripts
 ```

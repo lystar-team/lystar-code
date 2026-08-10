@@ -13,7 +13,7 @@ git fetch upstream --tags --prune
 git show --no-patch --decorate <pi-tag>
 ```
 
-`origin` 应为 `octyean/lystar-agent`，`upstream` 只跟踪 Pi。
+`origin` 应为 `lystar-team/lystar-code`，`upstream` 只跟踪 Pi。
 
 ## 升级前检查
 
@@ -52,7 +52,7 @@ git merge --no-commit --no-ff <new-pi-commit>
 
 - workspace package 版本跟随 Pi tag。
 - `piConfig.productVersion` 设为 `<新 Pi 版本>-lystar.1`。
-- `releaseRepository` 保持 `octyean/lystar-agent`。
+- `releaseRepository` 保持 `lystar-team/lystar-code`。
 - 更新 README、建设方案和兼容矩阵。
 - Session 或 Extension API 变化时增加兼容 fixture 和迁移说明。
 - 检查依赖许可证和发行资产。

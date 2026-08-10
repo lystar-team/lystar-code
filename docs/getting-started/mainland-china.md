@@ -19,7 +19,7 @@ macOS/Linux：
 ```bash
 export HTTPS_PROXY=http://127.0.0.1:7890
 export HTTP_PROXY=http://127.0.0.1:7890
-curl -fsSL https://github.com/octyean/lystar-agent/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/lystar-team/lystar-code/releases/latest/download/install.sh | bash
 unset HTTPS_PROXY HTTP_PROXY
 ```
 
@@ -29,7 +29,7 @@ Windows PowerShell：
 $env:HTTPS_PROXY = "http://127.0.0.1:7890"
 $env:HTTP_PROXY = "http://127.0.0.1:7890"
 $cmd="$env:TEMP\lystar-install.cmd"
-iwr -UseBasicParsing https://github.com/octyean/lystar-agent/releases/latest/download/install.cmd -OutFile $cmd
+iwr -UseBasicParsing https://github.com/lystar-team/lystar-code/releases/latest/download/install.cmd -OutFile $cmd
 & $cmd
 Remove-Item Env:HTTPS_PROXY -ErrorAction SilentlyContinue
 Remove-Item Env:HTTP_PROXY -ErrorAction SilentlyContinue
@@ -121,7 +121,7 @@ Provider API 是否需要代理取决于服务端点。官方提供中国区端�
 
 ## 安全边界
 
-- LYStar Release 以 `octyean/lystar-agent` GitHub Release 为发行事实源。
+- LYStar Release 以 `lystar-team/lystar-code` GitHub Release 为发行事实源。
 - 文档不推荐来源不明的 GitHub 脚本转发或下载加速站。
 - 下载归档后仍需通过官方 `SHA256SUMS` 校验。
 - npm 镜像、Git 代理和模型 Provider 分别配置，不混用一个“镜像源”概念。

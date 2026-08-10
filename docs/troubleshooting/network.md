@@ -7,7 +7,7 @@
 ## GitHub Release
 
 ```bash
-curl -I https://github.com/octyean/lystar-agent/releases/latest
+curl -I https://github.com/lystar-team/lystar-code/releases/latest
 ```
 
 能打开仓库但资产下载超时，设置当前终端代理后重试。完整命令见[中国大陆网络配置](../getting-started/mainland-china.md)。

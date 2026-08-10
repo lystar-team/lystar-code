@@ -480,7 +480,7 @@ describe("package commands", () => {
 
 		expect(fetchMock).toHaveBeenNthCalledWith(
 			1,
-			"https://github.com/octyean/lystar-agent/releases/latest/download/release-manifest.json",
+			"https://github.com/lystar-team/lystar-code/releases/latest/download/release-manifest.json",
 			expect.objectContaining({
 				headers: expect.objectContaining({ "User-Agent": expect.stringMatching(/^lc\//) }),
 				signal: expect.any(AbortSignal),
@@ -488,7 +488,7 @@ describe("package commands", () => {
 		);
 		expect(fetchMock).toHaveBeenNthCalledWith(
 			2,
-			"https://github.com/octyean/lystar-agent/releases/latest/download/install.sh",
+			"https://github.com/lystar-team/lystar-code/releases/latest/download/install.sh",
 			expect.objectContaining({ signal: expect.any(AbortSignal) }),
 		);
 		expect(errorSpy).not.toHaveBeenCalled();

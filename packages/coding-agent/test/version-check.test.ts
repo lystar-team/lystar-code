@@ -123,7 +123,7 @@ describe("version checks", () => {
 
 		await expect(getLatestPiRelease("1.2.3")).resolves.toEqual({ version: "1.2.4" });
 		expect(fetchMock).toHaveBeenCalledWith(
-			"https://github.com/octyean/lystar-agent/releases/latest/download/release-manifest.json",
+			"https://github.com/lystar-team/lystar-code/releases/latest/download/release-manifest.json",
 			expect.any(Object),
 		);
 	});

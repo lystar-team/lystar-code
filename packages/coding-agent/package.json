@@ -7,9 +7,9 @@
 		"commandName": "lc",
 		"displayName": "LYStar Code",
 		"envPrefix": "PI",
-		"productVersion": "0.84.1-lystar.9",
+		"productVersion": "0.84.1-lystar.10",
 		"configDir": ".pi",
-		"releaseRepository": "octyean/lystar-agent"
+		"releaseRepository": "lystar-team/lystar-code"
 	},
 	"bin": {
 		"lc": "dist/cli.js",
@@ -107,7 +107,7 @@
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/octyean/lystar-agent.git",
+		"url": "git+https://github.com/lystar-team/lystar-code.git",
 		"directory": "packages/coding-agent"
 	},
 	"engines": {

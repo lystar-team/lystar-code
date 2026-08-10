@@ -4,6 +4,7 @@
 
 ### LYStar 适配
 
+- `0.84.1-lystar.10` 将 Tool、Web Search、摘要和 Subagent 统一为高密度平面卡片：每张卡片独立展开，连续 Tool 保持原始顺序并使用低对比分隔线，长路径按终端宽度裁切；同时将发行仓库、安装器、自动更新和 OpenRouter attribution 迁移到 `lystar-team/lystar-code`，Session、Extension API 和 Tool 协议保持不变。
 - `0.84.1-lystar.9` 将产品名改为 LYStar Code，主命令改为等价的 `lc` 和 `lystar`；从旧版升级后删除用户级 `la` launcher，新命令在回退到旧版本时仍可自动调用旧目录中的 `la`。新增原生 `image_gen` Tool、OpenAI/Codex/OpenRouter 图片 Provider、内置 Image Gen Skill、稳定图片保存和 Provider 凭据回退，并统一主会话与 Subagent Overlay 的整卡点击、链接优先及拖动选择行为。
 - `0.84.1-lystar.8` 支持在 TUI 中点击或使用 `Ctrl+O` 展开原生网页搜索的全部来源，并通过终端链接打开原网页；`LYStar Agent` 标题固定显示在全屏输入框右上边框，不再受顶栏宽度降级影响。
 - `0.84.1-lystar.7` 使用当前 `openai-responses` Provider、模型、凭据和 base URL 执行原生网页搜索，保存搜索状态、来源和引用并贯通 Session、TUI、Print、Protocol v2 与 HTML 导出；Windows Shell 统一到托管 MinGit，并增加 ConPTY + WebView2 独立终端、严格离线安装和 Windows 原生发行验收。

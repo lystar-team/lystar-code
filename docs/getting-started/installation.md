@@ -17,13 +17,13 @@ Windows ARM64 当前没有独立发行包。macOS 和 Windows 包尚未完成平
 ## macOS / Linux
 
 ```bash
-curl -fsSL https://github.com/octyean/lystar-agent/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/lystar-team/lystar-code/releases/latest/download/install.sh | bash
 ```
 
 系统没有 `curl` 时使用：
 
 ```bash
-wget -qO install.sh https://github.com/octyean/lystar-agent/releases/latest/download/install.sh
+wget -qO install.sh https://github.com/lystar-team/lystar-code/releases/latest/download/install.sh
 bash install.sh
 rm install.sh
 ```
@@ -41,7 +41,7 @@ rm install.sh
 不希望安装器修改 Shell profile：
 
 ```bash
-curl -fsSL https://github.com/octyean/lystar-agent/releases/latest/download/install.sh -o install.sh
+curl -fsSL https://github.com/lystar-team/lystar-code/releases/latest/download/install.sh -o install.sh
 bash install.sh --no-path-update
 rm install.sh
 ```
@@ -57,7 +57,7 @@ export PATH="$HOME/.local/bin:$PATH"
 在 Windows PowerShell 5.1 或更高版本中执行：
 
 ```powershell
-$cmd="$env:TEMP\lystar-install.cmd"; iwr -UseBasicParsing https://github.com/octyean/lystar-agent/releases/latest/download/install.cmd -OutFile $cmd; & $cmd
+$cmd="$env:TEMP\lystar-install.cmd"; iwr -UseBasicParsing https://github.com/lystar-team/lystar-code/releases/latest/download/install.cmd -OutFile $cmd; & $cmd
 ```
 
 `install.cmd` 只为本次安装进程使用 `ExecutionPolicy Bypass`，不会修改系统或用户执行策略。安装器下载 Windows x64 发行包和 `SHA256SUMS`，校验后安装到当前用户目录，不要求管理员权限，也不要求预装 Git、Bash、Node.js 或 npm。
@@ -91,7 +91,7 @@ lystar --version
 macOS/Linux：
 
 ```bash
-curl -fsSL https://github.com/octyean/lystar-agent/releases/latest/download/install.sh -o install.sh
+curl -fsSL https://github.com/lystar-team/lystar-code/releases/latest/download/install.sh -o install.sh
 less install.sh
 bash install.sh
 rm install.sh
@@ -100,7 +100,7 @@ rm install.sh
 Windows：
 
 ```powershell
-$cmd="$env:TEMP\lystar-install.cmd"; iwr -UseBasicParsing https://github.com/octyean/lystar-agent/releases/latest/download/install.cmd -OutFile $cmd
+$cmd="$env:TEMP\lystar-install.cmd"; iwr -UseBasicParsing https://github.com/lystar-team/lystar-code/releases/latest/download/install.cmd -OutFile $cmd
 notepad $cmd
 & $cmd
 Remove-Item $cmd
@@ -109,7 +109,7 @@ Remove-Item $cmd
 `install.cmd` 会下载同一 Release 中的 `install.ps1`。需要直接审阅 PowerShell 主脚本时：
 
 ```powershell
-irm https://github.com/octyean/lystar-agent/releases/latest/download/install.ps1 -OutFile install.ps1
+irm https://github.com/lystar-team/lystar-code/releases/latest/download/install.ps1 -OutFile install.ps1
 notepad install.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 Remove-Item .\install.ps1
@@ -119,7 +119,7 @@ Remove-Item .\install.ps1
 
 公司策略禁止执行网络脚本时：
 
-1. 打开 [GitHub Releases](https://github.com/octyean/lystar-agent/releases/latest)。
+1. 打开 [GitHub Releases](https://github.com/lystar-team/lystar-code/releases/latest)。
 2. 下载匹配系统与架构的 `.tar.gz` 或 `.zip`，同时下载 `SHA256SUMS`。
 3. 校验归档 SHA-256。
 4. 解压并运行归档中的 `lc --version`。

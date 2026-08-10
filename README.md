@@ -13,7 +13,7 @@ LYStar Code 是基于 [Pi](https://github.com/earendil-works/pi) 的中文终端
 ### macOS / Linux
 
 ```bash
-curl -fsSL https://github.com/octyean/lystar-agent/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/lystar-team/lystar-code/releases/latest/download/install.sh | bash
 ```
 
 安装器会识别系统和架构、校验 SHA-256，并安装到 `~/.local/share/lystar-agent/`。没有 Node.js 也可以运行。
@@ -23,7 +23,7 @@ curl -fsSL https://github.com/octyean/lystar-agent/releases/latest/download/inst
 在 Windows PowerShell 5.1 或更高版本中执行：
 
 ```powershell
-$cmd="$env:TEMP\lystar-install.cmd"; iwr -UseBasicParsing https://github.com/octyean/lystar-agent/releases/latest/download/install.cmd -OutFile $cmd; & $cmd
+$cmd="$env:TEMP\lystar-install.cmd"; iwr -UseBasicParsing https://github.com/lystar-team/lystar-code/releases/latest/download/install.cmd -OutFile $cmd; & $cmd
 ```
 
 不需要管理员权限，也不用预装 Git 或 Bash。安装器只下载并校验 LYStar Code 发行包、维护版本指针并自动写入用户 PATH；新开的终端可直接运行 `lc` 或 `lystar`，两个命令完全等价。只有实际使用内建 `bash` Tool 时才需要 Git Bash、WSL、MSYS2、Cygwin 或其他兼容 Bash。

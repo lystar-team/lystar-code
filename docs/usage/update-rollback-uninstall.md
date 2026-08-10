@@ -41,7 +41,7 @@ lc update --rollback
 ## 卸载 macOS / Linux
 
 ```bash
-curl -fsSL https://github.com/octyean/lystar-agent/releases/latest/download/install.sh -o install.sh
+curl -fsSL https://github.com/lystar-team/lystar-code/releases/latest/download/install.sh -o install.sh
 bash install.sh --uninstall
 rm install.sh
 ```
@@ -57,7 +57,7 @@ export PATH="$HOME/.local/bin:$PATH"
 ## 卸载 Windows
 
 ```powershell
-irm https://github.com/octyean/lystar-agent/releases/latest/download/install.ps1 -OutFile install.ps1
+irm https://github.com/lystar-team/lystar-code/releases/latest/download/install.ps1 -OutFile install.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall
 Remove-Item .\install.ps1
 ```

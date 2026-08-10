@@ -67,14 +67,14 @@ lc --version
 优先使用 `install.cmd`，它会给下载后的主脚本启动一个进程级 `ExecutionPolicy Bypass`：
 
 ```powershell
-$cmd="$env:TEMP\lystar-install.cmd"; iwr -UseBasicParsing https://github.com/octyean/lystar-agent/releases/latest/download/install.cmd -OutFile $cmd; & $cmd
+$cmd="$env:TEMP\lystar-install.cmd"; iwr -UseBasicParsing https://github.com/lystar-team/lystar-code/releases/latest/download/install.cmd -OutFile $cmd; & $cmd
 ```
 
 该参数不会修改系统或用户执行策略。若 AppLocker、WDAC 或组织策略禁止启动 PowerShell、CMD 或未签名的 `lc.exe`，安装器会停止；这类策略需要管理员放行。
 
 ## SmartScreen
 
-Windows 发行包尚未配置 Authenticode，SmartScreen 可能提示未知发布者。只从 `octyean/lystar-agent` GitHub Release 下载，并核对 `SHA256SUMS`。公司设备禁止未签名程序时，应交由管理员审核，不绕过组织策略。
+Windows 发行包尚未配置 Authenticode，SmartScreen 可能提示未知发布者。只从 `lystar-team/lystar-code` GitHub Release 下载，并核对 `SHA256SUMS`。公司设备禁止未签名程序时，应交由管理员审核，不绕过组织策略。
 
 ## Windows ARM64
 

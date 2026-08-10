@@ -26,7 +26,7 @@ chmod +x "$bundle_dir/lc"
 ln -s lc "$bundle_dir/lystar"
 asset="lystar-agent-v${VERSION}-${os}-${arch}.tar.gz"
 tar -czf "$release_dir/$asset" -C "$tmp/bundle" lystar-agent
-node "$ROOT/scripts/generate-release-metadata.mjs" "$release_dir" "$VERSION" "octyean/lystar-agent"
+node "$ROOT/scripts/generate-release-metadata.mjs" "$release_dir" "$VERSION" "lystar-team/lystar-code"
 
 node - "$ROOT/scripts/install.ps1" "$release_dir/install.ps1" <<'NODE'
 const fs = require("node:fs");
@@ -37,11 +37,11 @@ for (const path of process.argv.slice(2)) {
     }
 }
 NODE
-grep -F 'REPOSITORY="octyean/lystar-agent"' "$release_dir/install.sh" >/dev/null
+grep -F 'REPOSITORY="lystar-team/lystar-code"' "$release_dir/install.sh" >/dev/null
 grep -F '[[ "$REPOSITORY" == "__LYSTAR_RELEASE_REPOSITORY__" ]]' "$release_dir/install.sh" >/dev/null
-grep -F '$Repository = "octyean/lystar-agent"' "$release_dir/install.ps1" >/dev/null
+grep -F '$Repository = "lystar-team/lystar-code"' "$release_dir/install.ps1" >/dev/null
 grep -F '$Repository -eq "__LYSTAR_RELEASE_REPOSITORY__"' "$release_dir/install.ps1" >/dev/null
-grep -F 'https://github.com/octyean/lystar-agent/releases/latest/download/install.ps1' "$release_dir/install.cmd" >/dev/null
+grep -F 'https://github.com/lystar-team/lystar-code/releases/latest/download/install.ps1' "$release_dir/install.cmd" >/dev/null
 grep -F 'https://github.com/__LYSTAR_RELEASE_REPOSITORY__/releases/latest/download/install.ps1' "$ROOT/scripts/install.cmd" >/dev/null
 
 fake_curl_dir="$tmp/fake-curl"

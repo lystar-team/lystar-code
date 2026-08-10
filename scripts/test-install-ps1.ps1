@@ -11,7 +11,7 @@ $Temp = Join-Path ([IO.Path]::GetTempPath()) ("lystar-installer-test-" + [Guid]:
 New-Item -ItemType Directory -Force $Temp | Out-Null
 
 try {
-    & node (Join-Path $Root "scripts/generate-release-metadata.mjs") $Temp "1.0.0-lystar.1" "octyean/lystar-agent"
+    & node (Join-Path $Root "scripts/generate-release-metadata.mjs") $Temp "1.0.0-lystar.1" "lystar-team/lystar-code"
     if ($LASTEXITCODE -ne 0) { throw "Failed to materialize release installer." }
 
     $Installers = @(
@@ -77,7 +77,7 @@ try {
     if (!$SourceCmd.Contains('https://github.com/__LYSTAR_RELEASE_REPOSITORY__/releases/latest/download/install.ps1')) {
         throw "Source install.cmd must preserve the repository placeholder."
     }
-    if (!$ReleaseCmd.Contains('https://github.com/octyean/lystar-agent/releases/latest/download/install.ps1')) {
+    if (!$ReleaseCmd.Contains('https://github.com/lystar-team/lystar-code/releases/latest/download/install.ps1')) {
         throw "Release install.cmd was not materialized."
     }
     if ($SourceCmd.Contains('Set-ExecutionPolicy')) {
@@ -111,7 +111,7 @@ try {
             Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $LegacyDir "lystar.cmd")
             [IO.File]::WriteAllText((Join-Path $InstallRoot "current"), $LegacyVersion, [Text.UTF8Encoding]::new($false))
             [IO.File]::WriteAllText((Join-Path $InstallRoot "bin\la.cmd"), "@echo off`r`n", [Text.UTF8Encoding]::new($false))
-            & node (Join-Path $Root "scripts/generate-release-metadata.mjs") $BuiltOutput $BuiltVersion "octyean/lystar-agent"
+            & node (Join-Path $Root "scripts/generate-release-metadata.mjs") $BuiltOutput $BuiltVersion "lystar-team/lystar-code"
             if ($LASTEXITCODE -ne 0) { throw "Failed to generate local release metadata." }
             $ReleaseInstaller = Join-Path $BuiltOutput "install.ps1"
             $InstallArgs = @(

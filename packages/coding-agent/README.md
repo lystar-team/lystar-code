@@ -27,6 +27,6 @@ npm run build:offline
 bash scripts/build-binaries.sh --offline-model-data
 ```
 
-发行仓库固定为 `octyean/lystar-agent`。构建脚本会把该地址写入安装器、manifest 和发行包，供安装与更新使用。
+发行仓库固定为 `lystar-team/lystar-code`。构建脚本会把该地址写入安装器、manifest 和发行包，供安装与更新使用。
 
 LYStar Code 当前基于 `earendil-works/pi` `v0.84.1`，上游 commit 为 `53fa77ccd8a279eb87e92294ef3687b03ff80112`，按 MIT License 发行。Grok Build 仅作为全屏 TUI 交互参考，没有复制其源码或资产。

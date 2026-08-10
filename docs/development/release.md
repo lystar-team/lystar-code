@@ -27,7 +27,7 @@ Windows x64 必须在安装了 MSVC Build Tools 的 Windows 主机执行：
 ```powershell
 npm ci --ignore-scripts
 npm run build:offline
-.\scripts\build-windows-release.ps1 -Repository octyean/lystar-agent
+.\scripts\build-windows-release.ps1 -Repository lystar-team/lystar-code
 .\scripts\test-windows-terminal.ps1 -BundleDir .\packages\coding-agent\binaries\windows-x64\lystar-agent
 ```
 
