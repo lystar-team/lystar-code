@@ -72,7 +72,14 @@ function Set-AtomicText([string]$Path, [string]$Value) {
     $Temp = "$Path.next"
     [IO.File]::WriteAllText($Temp, $Value, [Text.UTF8Encoding]::new($false))
     if (Test-Path $Path) {
-        [IO.File]::Replace($Temp, $Path, $null)
+        $Backup = "$Path.backup"
+        Remove-Item -Force -ErrorAction SilentlyContinue $Backup
+        try {
+            [IO.File]::Replace($Temp, $Path, $Backup)
+        }
+        finally {
+            Remove-Item -Force -ErrorAction SilentlyContinue $Backup
+        }
     }
     else {
         Move-Item $Temp $Path
