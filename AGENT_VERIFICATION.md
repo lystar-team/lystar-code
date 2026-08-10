@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-10T11:12:32Z
+最后核验时间：2026-08-10T11:30:48Z
 
 环境：
 
@@ -25,7 +25,13 @@ Linux x64
 
 使用 Bun `1.3.9` 构建 Darwin ARM64/x64 和 Linux ARM64/x64 四个候选包，`SHA256SUMS` 四项全部通过；manifest 版本为 `0.84.1-lystar.10`、Pi 版本为 `0.84.1`、仓库为 `lystar-team/lystar-code`。Linux x64 候选包 SHA-256 为 `138a82e24891026b5c050c7a762661919b97ef0630addd2bd8fd1881310a10c9`，大小为 `46501253` 字节；`lc --version`、`lystar --version`、`PI_OFFLINE=1 lc --list-models`、许可证和内置 Image Gen Skill 资源检查通过。候选包在独立 `80x24` tmux PTY 显示 LYStar Code 全屏输入区、快捷栏和离线无模型提示，`/quit` 正常退出；临时 tmux server、Session 和解压目录已删除。
 
-当前 Linux 主机没有 MSVC、Windows SDK、ConPTY 或 WebView2 Runtime，Windows x64 原生构建、终端截图、托管 MinGit 和 PowerShell 5.1 安装链必须由提交后的 `windows-installer` CI 与 Release Windows job 给出最终证据。
+当前 Linux 主机没有 MSVC、Windows SDK、ConPTY 或 WebView2 Runtime；`main` commit `3ba8ec291d4ae5a06acb36340694509874eccb58` 的 CI run `31383013414` 七个 job 全部成功，由 `windows-installer` 完成 Windows x64 原生构建、终端截图、托管 MinGit、ConPTY/WebView2 和 PowerShell 5.1 安装链核验。TUI、AI、Agent Core、Coding Agent 双分片、源码构建和 Unix 安装器同时通过。
+
+annotated Tag `v0.84.1-lystar.10` 的 Tag 对象为 `5cfda1de418d8a462ceb616e249d055e33564060`，本地和远端解引用后均固定指向 `3ba8ec291d4ae5a06acb36340694509874eccb58`。Release workflow run `31383308138` 成功，完成 main CI 绑定、Bun 1.3.9 Unix/Windows 原生五平台打包、SHA/manifest 合并、artifact attestation 和公开发布。GitHub Release 于 `2026-08-10T11:28:04Z` 发布，为非草稿、非预发布正式版本，共有 10 个公开资产。
+
+公开五平台包重新下载后 `SHA256SUMS` 五项全部通过，文件大小和 SHA 与公开 manifest 一致；manifest 版本为 `0.84.1-lystar.10`、Pi 版本为 `0.84.1`、仓库为 `lystar-team/lystar-code`。公开 Linux x64 包 SHA-256 为 `ea8c1d2025159dd2228b6f49a72f6eae60923156b63972a5c44c5ec121bd4725`，大小为 `46497285` 字节；版本、离线模型列表、许可证和 Image Gen Skill 资源检查通过。GitHub Attestations API 按 `sha256:` digest 返回 1 条 `application/vnd.dev.sigstore.bundle.v0.3+json` provenance。
+
+本机使用公开 `.9` 的 `lc update --self` 原子更新到 `.10`，`current` 指向 `.10`，`previous` 保留 `.9`，再次执行更新显示已是最新版本。安装后的 `lc` 与 `lystar` 均报告 `0.84.1-lystar.10`；独立 `80x24` tmux PTY 使用现有 `upstream/gpt-5.6-sol` 配置启动完整 LYStar Code 工作区并正常 `/quit`。临时公开资产目录以外的 tmux server、Git 仓库和候选解压目录均已删除。
 
 ### `0.84.1-lystar.9` 发布与升级核验
 
