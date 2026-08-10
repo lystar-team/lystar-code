@@ -476,6 +476,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 			return 0;
 		case kSmokeCloseMessage:
 			if (std::find(g_childArgs.begin(), g_childArgs.end(), L"--windows-terminal-ui-smoke") != g_childArgs.end()) {
+				g_closing = true;
+				StopChild(false);
 				DestroyWindow(window);
 			}
 			return 0;
