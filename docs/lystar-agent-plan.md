@@ -523,6 +523,7 @@ LYStar 不增加 MCP 配置文件、内置管理器或代理 Tool。TUI 负责�
 
 | LYStar | Pi 基线 | Pi commit | MCP Adapter | Session | Extension API |
 |---|---|---|---|---|---|
+| `0.84.1-lystar.12` | `0.84.1` | `53fa77cc...` | `2.12.1` | Pi 原 JSONL 兼容；压缩摘要由持久 Session Entry 唯一重建，Thinking 内容继续保存 | Pi `0.84.1`；内置 TUI 增加补丁文件级展开、Thinking 位置设置、实时活动状态和手动滚动锁，现有 Session、Tool、Provider、RPC、Protocol 与 Extension API 不变 |
 | `0.84.1-lystar.11` | `0.84.1` | `53fa77cc...` | `2.12.1` | Pi 原 JSONL 兼容；Tool 折叠、压缩重绘、Hover 和滚动状态只存在当前 TUI 运行态 | Pi `0.84.1`；统一滚轮归一化、鼠标合帧、Tool 卡片显示与终端光标行为，现有 Session、Tool、Provider、RPC、Protocol 与 Extension API 不变 |
 | `0.84.1-lystar.10` | `0.84.1` | `53fa77cc...` | `2.12.1` | Pi 原 JSONL 兼容；卡片展开状态只保存在当前 TUI Session 运行态 | Pi `0.84.1`；统一 Tool、Web Search、摘要与 Subagent 平面卡片交互，发行仓库迁移到 `lystar-team/lystar-code`，现有 Extension API 不变 |
 | `0.84.1-lystar.9` | `0.84.1` | `53fa77cc...` | `2.12.1` | Pi 原 JSONL 兼容；原生图片结果继续使用 Tool Result `ImageContent` | Pi `0.84.1`；新增内置 `image_gen` Tool、图片 Provider 和统一卡片交互，产品名改为 LYStar Code，命令改为 `lc`/`lystar`，现有 Extension API 不变 |

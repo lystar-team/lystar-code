@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-10T22:51:01Z
+最后核验时间：2026-08-11T02:22:30Z
 
 环境：
 
@@ -14,6 +14,18 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### `0.84.1-lystar.12` 发布前核验
+
+发布事实源已更新为 `piConfig.productVersion = 0.84.1-lystar.12`，Pi workspace 包版本继续保持 `0.84.1`，发行仓库保持 `lystar-team/lystar-code`。本版修复上下文压缩摘要重复渲染、缓存分隔线持续累积，以及流式处理期间手动滚动被内容和状态高度变化抢回底部的问题；补丁卡片支持文件清单与单文件 Diff 独立展开，Thinking 可选择左下角实时显示或保留在对话输出中，同时精简空闲等待行并统一 Shell 与命令组图标。Session JSONL、Tool 名、Provider、RPC、Protocol 与 Extension API 不变。
+
+显式使用 Node.js `v22.21.1` 和 `NODE_TLS_REJECT_UNAUTHORIZED=1` 完成 `npm run check`、`npm run build:offline`、Unix 安装器测试和全部发布测试。TUI 全量退出码 0；AI 105 个 test files/878 项通过，25 个 files/825 项跳过；Agent Core 20 个 files/402 项通过、1 项跳过；Coding Agent 237 个 files/2096 项通过，6 个 files/49 项跳过。Coding Agent 首次全量运行发现旧 Bash 图标断言和 reload 夹具缺少 Thinking 展示设置两个测试契约问题，共 3 项失败；修正夹具后先复跑失败文件 10 项，再完整复跑全量通过。`git diff --check` 通过，CodeGraph 已同步到 1229 个文件、20669 个节点和 77018 条边，索引无 pending changes。
+
+使用 Bun `1.3.9` 构建 Darwin ARM64/x64 和 Linux ARM64/x64 四个候选包，`SHA256SUMS` 四项全部通过；manifest 版本为 `0.84.1-lystar.12`、Pi 版本为 `0.84.1`、仓库为 `lystar-team/lystar-code`，四个平台文件名、大小和 SHA-256 与归档一致。Linux x64 候选包 SHA-256 为 `15610d29b24b20bbfbced1ce3408330cf6880b6b153a52ae5d729cdd53965a6e`，大小为 `46510705` 字节；四个归档的 Mach-O/ELF 架构、`lc`/`lystar`、许可证、内置 Image Gen Skill 和安装器物化结果正确，Linux x64 的版本、离线模型列表和中文帮助通过。
+
+源码与构建产物的真实 SGR/PTY 回放确认：用户滚离底部后，流式块反复增减 3 行时连续六帧保持同一历史顶行，滚到真实底部后恢复自动跟随；补丁文件独立展开、Thinking 两种展示位置、命令图标和压缩卡片重绘行为均通过。最终 Linux x64 候选包在隔离配置目录覆盖 `80x24`、`80x8` 和 `120x36`，顶栏、Composer 与快捷栏无重叠，`/quit` 正常退出；临时 tmux server 和配置目录已关闭或删除。
+
+当前 Linux 主机没有 MSVC、Windows SDK、ConPTY 或 WebView2 Runtime；Windows x64 原生构建、终端截图、托管 MinGit 和 PowerShell 5.1 安装链必须由提交后的 main CI 与 Release Windows job 给出最终证据。具体手机终端应用和物理 macOS/Windows 桌面交互尚未实机运行，本轮本地证据覆盖标准 SGR 输入、真实 Linux PTY、四平台 Unix 归档格式与架构。
 
 ### `0.84.1-lystar.11` 发布前核验
 
