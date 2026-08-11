@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-11T02:22:30Z
+最后核验时间：2026-08-11T02:43:06Z
 
 环境：
 
@@ -26,6 +26,14 @@ Linux x64
 源码与构建产物的真实 SGR/PTY 回放确认：用户滚离底部后，流式块反复增减 3 行时连续六帧保持同一历史顶行，滚到真实底部后恢复自动跟随；补丁文件独立展开、Thinking 两种展示位置、命令图标和压缩卡片重绘行为均通过。最终 Linux x64 候选包在隔离配置目录覆盖 `80x24`、`80x8` 和 `120x36`，顶栏、Composer 与快捷栏无重叠，`/quit` 正常退出；临时 tmux server 和配置目录已关闭或删除。
 
 当前 Linux 主机没有 MSVC、Windows SDK、ConPTY 或 WebView2 Runtime；Windows x64 原生构建、终端截图、托管 MinGit 和 PowerShell 5.1 安装链必须由提交后的 main CI 与 Release Windows job 给出最终证据。具体手机终端应用和物理 macOS/Windows 桌面交互尚未实机运行，本轮本地证据覆盖标准 SGR 输入、真实 Linux PTY、四平台 Unix 归档格式与架构。
+
+`main` commit `6d970900dd7efc35d52a1f0ed4d5072f4ee6129d` 的 CI run `31452345719` 七个 job 全部成功；TUI、AI、Agent Core、Coding Agent 双分片、源码构建和 Unix 安装器通过，`windows-installer` 完成 Windows x64 原生构建、托管 MinGit Bash、终端 Host/Icon 与截图，以及 PowerShell 5.1 安装器核验。
+
+annotated Tag `v0.84.1-lystar.12` 的 Tag 对象为 `1c9a16c922b530d98bf648ff1ceb7e31b08fd3ef`，本地和远端解引用后均固定指向 `6d970900dd7efc35d52a1f0ed4d5072f4ee6129d`。Release workflow run `31452701106` 成功，完成同 commit main CI 绑定、Bun 1.3.9 Unix/Windows 原生五平台打包、SHA/manifest 合并、artifact attestation 和公开发布。GitHub Release 于 `2026-08-11T02:37:37Z` 发布，为非草稿、非预发布正式版本，共有 10 个公开资产，包括五个平台包、Unix/PowerShell/CMD 三个安装器、`SHA256SUMS` 和 `release-manifest.json`。
+
+公开五平台包重新下载后 `SHA256SUMS` 五项全部通过，文件大小和 SHA 与公开 manifest 一致；manifest 版本为 `0.84.1-lystar.12`、Pi 版本为 `0.84.1`、仓库为 `lystar-team/lystar-code`。公开 Linux x64 包 SHA-256 为 `96e44540e18992af3f60ed11ebaed398eb5d2d9eac978d8c4751284661763e2a`，大小为 `46503253` 字节；Windows x64 包 SHA-256 为 `61b063741c2ccf1bf9286ab1cec2be7d8b414c8c1213412114225aad190157f4`，大小为 `64699468` 字节。Unix/Windows 归档的可执行入口、许可证和 Image Gen Skill 资源检查通过，Windows 包不包含旧 `la.exe`；GitHub Attestations API 按 Linux x64 digest 返回 1 条 `application/vnd.dev.sigstore.bundle.v0.3+json` provenance。
+
+隔离 HOME 使用公开 `.11` 安装器和 `lc update --self` 原子更新到 `.12`，`current` 指向 `.12`，`previous` 保留 `.11`，再次执行更新显示已是最新版本；安装后的 `lc` 与 `lystar` 均报告 `0.84.1-lystar.12`。公开 Linux x64 包在独立 `80x24` tmux PTY 启动完整 LYStar Code 工作区，`/settings` 返回本地交互界面并正常 `/quit`；按本轮约束未调用任何真实或付费 Provider。临时升级 HOME、PTY 配置目录和 tmux server 已删除或关闭。
 
 ### `0.84.1-lystar.11` 发布前核验
 
