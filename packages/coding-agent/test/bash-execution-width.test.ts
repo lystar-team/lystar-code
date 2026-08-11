@@ -41,7 +41,7 @@ describe("BashExecutionComponent width handling (#2569)", () => {
 
 		const collapsed = component.render(80);
 		expect(collapsed).toHaveLength(3);
-		expect(collapsed.join("\n")).toContain("$");
+		expect(collapsed.join("\n")).toContain(uiGlyphs.tool);
 		expect(collapsed.join("\n")).toContain("generate output");
 		expect(collapsed.at(-1)).toContain("─");
 		expect(collapsed.join("\n")).not.toContain(uiGlyphs.image);

@@ -15,7 +15,7 @@ import {
 	TurnSummaryComponent,
 } from "../src/modes/interactive/components/turn-summary.ts";
 import { WorkspaceActivityBar } from "../src/modes/interactive/components/workspace-activity-bar.ts";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import { getLatestThinkingActivityText, InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { uiGlyphs } from "../src/modes/interactive/ui-glyphs.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
@@ -48,6 +48,42 @@ describe("task workbench components", () => {
 		expect(line).toContain("1m5s");
 		bar.dispose();
 		expect(bar.render(80)).toEqual([]);
+	});
+
+	it("hides waiting activity and keeps the latest thinking tail visible", () => {
+		const bar = new WorkspaceActivityBar(() => undefined);
+		bar.setState({
+			phase: "waiting",
+			startedAt: Date.now(),
+			completedTools: 0,
+			knownTools: 0,
+			queueCount: 0,
+		});
+		expect(bar.render(80)).toEqual([]);
+
+		bar.setState({
+			phase: "thinking",
+			thinking: "正在检查前面的上下文并准备最后结论",
+			startedAt: Date.now(),
+			completedTools: 0,
+			knownTools: 0,
+			queueCount: 0,
+		});
+		const line = stripAnsi(bar.render(24)[0] ?? "");
+		expect(line).toContain("最后结论");
+		expect(line).not.toContain("正在检查");
+		bar.dispose();
+	});
+
+	it("extracts the last non-empty thinking line for live activity", () => {
+		expect(
+			getLatestThinkingActivityText({
+				content: [
+					{ type: "thinking", thinking: "第一行\n\n  第二行  " },
+					{ type: "text", text: "answer" },
+				],
+			} as never),
+		).toBe("第二行");
 	});
 
 	it("formats all final turn outcomes from facts", () => {
@@ -146,6 +182,53 @@ describe("task workbench components", () => {
 		}
 	});
 
+	it("keeps flat card output stable across repeated renders at the same width", () => {
+		const cards = [
+			new TurnSummaryComponent({
+				startedAt: 0,
+				endedAt: 1000,
+				outcome: "completed",
+				totalTools: 1,
+				successfulTools: 1,
+				failedTools: 0,
+				cancelledTools: 0,
+				commandCount: 1,
+				successfulCommands: 1,
+				files: [],
+				tools: [],
+				retried: false,
+				compacted: false,
+				cancelled: false,
+			}),
+			new CompactionSummaryMessageComponent({
+				role: "compactionSummary",
+				summary: "summary",
+				tokensBefore: 120_000,
+				timestamp: 1,
+			}),
+			new BranchSummaryMessageComponent({
+				role: "branchSummary",
+				summary: "summary",
+				fromId: "entry-1",
+				timestamp: 1,
+			}),
+			new SkillInvocationMessageComponent({
+				name: "shuorenhua",
+				location: "/tmp/SKILL.md",
+				content: "instructions",
+				userMessage: undefined,
+			}),
+		];
+
+		for (const card of cards) {
+			const first = [...card.render(80)];
+			for (let index = 0; index < 20; index++) {
+				expect([...card.render(80)]).toEqual(first);
+			}
+			expect(first.map(stripAnsi).filter((line) => line.includes("─"))).toHaveLength(1);
+		}
+	});
+
 	it("uses the localized apply_patch action in the activity bar", () => {
 		const activityBar = { setState: vi.fn() };
 		const context = Object.assign(Object.create(InteractiveMode.prototype), {
@@ -173,6 +256,37 @@ describe("task workbench components", () => {
 		expect(activityBar.setState).toHaveBeenLastCalledWith(
 			expect.objectContaining({ action: "正在应用补丁", runningTools: 1 }),
 		);
+	});
+
+	it("routes thinking text to the activity bar only in activity mode", () => {
+		const activityBar = { setState: vi.fn() };
+		const context = Object.assign(Object.create(InteractiveMode.prototype), {
+			thinkingDisplayMode: "activity",
+			turnActivity: {
+				startedAt: 0,
+				phase: "thinking",
+				thinking: "最新思考内容",
+				tools: new Map(),
+				toolOrder: [],
+				queueCount: 0,
+				retried: false,
+				compacted: false,
+				cancelled: false,
+			},
+			activityBar,
+		});
+		const updateActivityBar = (
+			InteractiveMode.prototype as unknown as {
+				updateActivityBar(this: typeof context, phase?: string): void;
+			}
+		).updateActivityBar;
+
+		updateActivityBar.call(context, "thinking");
+		expect(activityBar.setState).toHaveBeenLastCalledWith(expect.objectContaining({ thinking: "最新思考内容" }));
+
+		context.thinkingDisplayMode = "transcript";
+		updateActivityBar.call(context, "thinking");
+		expect(activityBar.setState).toHaveBeenLastCalledWith(expect.objectContaining({ thinking: undefined }));
 	});
 
 	it("derives final outcomes from settlement facts instead of historical tool errors", () => {
@@ -315,6 +429,54 @@ describe("task workbench components", () => {
 		handleWorkspaceInput.call(context, "\x1b[<35;3;3M");
 		expect(hovered).toBe(false);
 		expect(requestRender).toHaveBeenCalledTimes(2);
+	});
+
+	it("forces a full redraw after a mouse card toggle changes layout height", () => {
+		let expanded = false;
+		const child = {
+			render: () => ["card"],
+			invalidate: () => {},
+			isExpanded: () => expanded,
+			setExpanded: (value: boolean) => {
+				expanded = value;
+			},
+		};
+		const invalidate = vi.fn();
+		const card = {
+			render: () => ["card"],
+			invalidate,
+			isExpanded: () => false,
+			setExpanded: () => {},
+			getCardClickActionAtRow: () => ({ type: "toggle" as const, component: child }),
+		};
+		const requestRender = vi.fn();
+		const rememberCardExpansion = vi.fn();
+		const context = Object.assign(Object.create(InteractiveMode.prototype), {
+			workspace: {
+				isFullscreen: () => true,
+				isNewContentIndicatorRow: () => false,
+				getComponentHitAtScreenRow: () => ({ component: card, row: 0 }),
+			},
+			renderer: { hasOverlay: () => false },
+			ui: { requestRender },
+			pendingCardClick: undefined,
+			hoveredCard: undefined,
+			rememberCardExpansion,
+			openSubagentSession: vi.fn(),
+		});
+		const handleWorkspaceInput = (
+			InteractiveMode.prototype as unknown as {
+				handleWorkspaceInput(this: typeof context, data: string): { consume: true } | undefined;
+			}
+		).handleWorkspaceInput;
+
+		handleWorkspaceInput.call(context, "\x1b[<0;3;2M");
+		handleWorkspaceInput.call(context, "\x1b[<0;3;2m");
+
+		expect(expanded).toBe(true);
+		expect(rememberCardExpansion).toHaveBeenCalledWith(child);
+		expect(invalidate).toHaveBeenCalledOnce();
+		expect(requestRender).toHaveBeenLastCalledWith(true);
 	});
 
 	it("restores stable card expansion within the same session", () => {

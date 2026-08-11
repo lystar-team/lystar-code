@@ -136,6 +136,42 @@ describe("LYStar workspace", () => {
 		expect(workspace.render(60).join("\n")).toContain("line-21");
 	});
 
+	it("keeps manual scroll lock while the activity row appears and disappears", () => {
+		let activityVisible = true;
+		const activity = {
+			render: () => (activityVisible ? ["activity"] : []),
+			invalidate: () => {},
+		};
+		const workspace = new LystarWorkspace({
+			getHeight: () => 8,
+			header: textContainer("header"),
+			scrollContainers: [textContainer(...Array.from({ length: 30 }, (_, index) => `line-${index}`))],
+			bottomContainers: [activity, textContainer("editor")],
+			fixedBottomContainers: [],
+			optionalBottomPriority: [activity],
+			fullscreen: true,
+			scrollbar: "hidden",
+		});
+		const topLine = () => stripAnsi(workspace.render(40)[1] ?? "").trim();
+
+		workspace.render(40);
+		workspace.scrollBy(-1);
+		const lockedTop = topLine();
+		expect(workspace.isFollowing()).toBe(false);
+
+		for (let index = 0; index < 3; index++) {
+			activityVisible = false;
+			expect(topLine()).toBe(lockedTop);
+			expect(workspace.isFollowing()).toBe(false);
+			activityVisible = true;
+			expect(topLine()).toBe(lockedTop);
+			expect(workspace.isFollowing()).toBe(false);
+		}
+
+		workspace.scrollBy(1);
+		expect(workspace.isFollowing()).toBe(true);
+	});
+
 	it("resets the virtual history window when the session changes", () => {
 		const chat = textContainer(...Array.from({ length: 100 }, (_, index) => `old-${index}`));
 		const workspace = new LystarWorkspace({

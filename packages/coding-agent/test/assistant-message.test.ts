@@ -93,6 +93,21 @@ describe("AssistantMessageComponent", () => {
 		expect(rendered).not.toContain("◆ 思考过程");
 	});
 
+	test("can keep thinking out of the transcript while preserving answer text", () => {
+		initTheme("dark");
+		const component = new AssistantMessageComponent(
+			createAssistantMessage([
+				{ type: "thinking", thinking: "只在实时状态显示" },
+				{ type: "text", text: "最终回答" },
+			]),
+		);
+		component.setShowThinking(false);
+
+		const rendered = stripAnsi(component.render(80).join("\n"));
+		expect(rendered).not.toContain("只在实时状态显示");
+		expect(rendered).toContain("最终回答");
+	});
+
 	test("keeps web search cards independently expandable", () => {
 		initTheme("dark");
 		const message = createAssistantMessage([

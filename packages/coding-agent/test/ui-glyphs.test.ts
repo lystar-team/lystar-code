@@ -22,6 +22,7 @@ describe("UI glyphs", () => {
 			patch: "P",
 			image: "I",
 			running: ">",
+			link: "&",
 			open: ">",
 		});
 		expect(Object.values(glyphs).every((glyph) => /^[\x20-\x7e]+$/.test(glyph))).toBe(true);
@@ -43,6 +44,7 @@ describe("UI glyphs", () => {
 			write: "📝",
 			edit: "✏️",
 			patch: "📝",
+			link: "🔗",
 		});
 	});
 });

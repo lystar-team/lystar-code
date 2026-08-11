@@ -1,6 +1,6 @@
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname } from "node:path";
-import { type Component, Container, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Container, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import type { ExtensionAPI, ToolDefinition } from "../../core/extensions/types.ts";
 import {
@@ -14,10 +14,12 @@ import {
 } from "../../core/tools/edit-diff.ts";
 import { withFileMutationQueue } from "../../core/tools/file-mutation-queue.ts";
 import { resolveToCwd } from "../../core/tools/path-utils.ts";
-import { linkPath, shortenPath } from "../../core/tools/render-utils.ts";
+import { shortenPath } from "../../core/tools/render-utils.ts";
 import { t } from "../../locales/zh-CN.ts";
 import { renderDiff } from "../../modes/interactive/components/diff.ts";
-import { formatToolSummary, getToolSummary } from "../../modes/interactive/components/tool-summary.ts";
+import type { InteractiveCard, InteractiveCardAction } from "../../modes/interactive/components/interactive-card.ts";
+import { renderCardHover } from "../../modes/interactive/components/tool-card-layout.ts";
+import { configureToolSummary } from "../../modes/interactive/components/tool-summary.ts";
 import { theme } from "../../modes/interactive/theme/theme.ts";
 import { toUiGlyph, uiGlyphs } from "../../modes/interactive/ui-glyphs.ts";
 
@@ -54,8 +56,8 @@ export interface ApplyPatchDetails {
 
 type ApplyPatchFileDetails = ApplyPatchDetails["files"][number];
 
-function formatCounts(additions: number, deletions: number): string {
-	return `+${additions} -${deletions}`;
+function renderCounts(additions: number, deletions: number): string {
+	return `${theme.fg("success", `+${additions}`)} ${theme.fg("error", `-${deletions}`)}`;
 }
 
 function operationIcon(operation: ApplyPatchFileDetails["operation"] | undefined): string {
@@ -64,20 +66,50 @@ function operationIcon(operation: ApplyPatchFileDetails["operation"] | undefined
 	return uiGlyphs.edit;
 }
 
-class ApplyPatchFileRow implements Component {
-	private readonly file: Partial<ApplyPatchFileDetails> & Pick<ApplyPatchFileDetails, "path">;
-	private readonly cwd: string;
+class ApplyPatchFileCard implements InteractiveCard {
+	private file: Partial<ApplyPatchFileDetails> & Pick<ApplyPatchFileDetails, "path">;
+	private readonly stateKey: string;
+	private expanded = false;
+	private hovered = false;
+	private lastRenderedLineCount = 0;
 
-	constructor(file: Partial<ApplyPatchFileDetails> & Pick<ApplyPatchFileDetails, "path">, cwd: string) {
+	constructor(file: Partial<ApplyPatchFileDetails> & Pick<ApplyPatchFileDetails, "path">, toolCallId: string) {
 		this.file = file;
-		this.cwd = cwd;
+		this.stateKey = `apply-patch-file:${toolCallId}:${file.path}`;
+	}
+
+	update(file: Partial<ApplyPatchFileDetails> & Pick<ApplyPatchFileDetails, "path">): void {
+		this.file = file;
+	}
+
+	isExpanded(): boolean {
+		return this.expanded;
+	}
+
+	setExpanded(expanded: boolean): void {
+		this.expanded = Boolean(this.file.diff) && expanded;
+	}
+
+	setHovered(hovered: boolean): void {
+		this.hovered = hovered;
+	}
+
+	getCardStateKey(): string {
+		return this.stateKey;
+	}
+
+	getCardClickActionAtRow(row: number): InteractiveCardAction | undefined {
+		return this.file.diff && row === 0 && row < this.lastRenderedLineCount
+			? { type: "toggle", component: this }
+			: undefined;
 	}
 
 	render(width: number): string[] {
 		const icon = theme.fg("accent", toUiGlyph(operationIcon(this.file.operation)));
-		const counts = theme.fg("muted", formatCounts(this.file.additions ?? 0, this.file.deletions ?? 0));
+		const counts = renderCounts(this.file.additions ?? 0, this.file.deletions ?? 0);
+		const indicator = this.file.diff ? theme.fg("dim", this.expanded ? uiGlyphs.expanded : uiGlyphs.collapsed) : "";
 		const prefix = `${icon} `;
-		const suffix = `  ${counts}`;
+		const suffix = `  ${counts}${indicator ? `  ${indicator}` : ""}`;
 		const pathWidth = Math.max(1, width - visibleWidth(prefix) - visibleWidth(suffix));
 		const fullDisplayPath = shortenPath(this.file.path);
 		const compactPath = `…/${basename(fullDisplayPath)}`;
@@ -86,11 +118,85 @@ class ApplyPatchFileRow implements Component {
 			pathWidth,
 			"…",
 		);
-		const linkedPath = linkPath(theme.fg("accent", displayPath), this.file.path, this.cwd);
-		return [truncateToWidth(`${prefix}${linkedPath}${suffix}`, Math.max(1, width), "")];
+		const header = truncateToWidth(`${prefix}${theme.fg("accent", displayPath)}${suffix}`, Math.max(1, width), "");
+		const lines = [renderCardHover([header], width, this.hovered)[0] ?? header];
+		if (this.expanded && this.file.diff) {
+			lines.push("");
+			lines.push(...new Text(renderDiff(this.file.diff, { filePath: this.file.path }), 1, 0).render(width));
+		}
+		this.lastRenderedLineCount = lines.length;
+		return lines;
 	}
 
 	invalidate(): void {}
+}
+
+interface ApplyPatchFileRange {
+	component: ApplyPatchFileCard;
+	start: number;
+	end: number;
+}
+
+class ApplyPatchResultComponent implements InteractiveCard {
+	private readonly toolCallId: string;
+	private readonly cards = new Map<string, ApplyPatchFileCard>();
+	private orderedCards: ApplyPatchFileCard[] = [];
+	private ranges: ApplyPatchFileRange[] = [];
+	private visible = false;
+
+	constructor(toolCallId: string) {
+		this.toolCallId = toolCallId;
+	}
+
+	update(files: Array<Partial<ApplyPatchFileDetails> & Pick<ApplyPatchFileDetails, "path">>, visible: boolean): void {
+		const nextCards = new Map<string, ApplyPatchFileCard>();
+		this.orderedCards = files.map((file) => {
+			const card = this.cards.get(file.path) ?? new ApplyPatchFileCard(file, this.toolCallId);
+			card.update(file);
+			nextCards.set(file.path, card);
+			return card;
+		});
+		this.cards.clear();
+		for (const [path, card] of nextCards) this.cards.set(path, card);
+		this.visible = visible;
+	}
+
+	isExpanded(): boolean {
+		return this.orderedCards.length > 0 && this.orderedCards.every((card) => card.isExpanded());
+	}
+
+	setExpanded(expanded: boolean): void {
+		for (const card of this.orderedCards) card.setExpanded(expanded);
+	}
+
+	getCardStateKey(): string {
+		return `apply-patch-result:${this.toolCallId}`;
+	}
+
+	getChildCards(): readonly InteractiveCard[] {
+		return this.orderedCards;
+	}
+
+	getCardClickActionAtRow(row: number): InteractiveCardAction | undefined {
+		const range = this.ranges.find((item) => row >= item.start && row < item.end);
+		return range?.component.getCardClickActionAtRow(row - range.start);
+	}
+
+	render(width: number): string[] {
+		const lines: string[] = [];
+		this.ranges = [];
+		if (!this.visible) return lines;
+		for (const card of this.orderedCards) {
+			const start = lines.length;
+			lines.push(...card.render(width));
+			this.ranges.push({ component: card, start, end: lines.length });
+		}
+		return lines;
+	}
+
+	invalidate(): void {
+		for (const card of this.orderedCards) card.invalidate();
+	}
 }
 
 function getTextResult(result: { content: Array<{ type: string; text?: string }> }): string {
@@ -391,27 +497,23 @@ export function createApplyPatchToolDefinition(options?: {
 			const details = context.resultDetails as ApplyPatchDetails | undefined;
 			const additions = details?.files.reduce((total, file) => total + file.additions, 0) ?? 0;
 			const deletions = details?.files.reduce((total, file) => total + file.deletions, 0) ?? 0;
-			const summary = getToolSummary(context.lastComponent);
-			summary.setText(
-				formatToolSummary({
-					icon: uiGlyphs.patch,
-					subject: details ? `${details.files.length} 个文件` : "",
-					isPartial: context.isPartial,
-					isError: context.isError,
-					labels: {
-						running: t("tool.applyPatch.running"),
-						success: t("tool.applyPatch.success"),
-						error: t("tool.applyPatch.error"),
-					},
-					detail: details ? formatCounts(additions, deletions) : undefined,
-				}),
-			);
-			return summary;
+			return configureToolSummary(context.lastComponent, {
+				icon: uiGlyphs.patch,
+				subject: details ? `${details.files.length} 个文件  ${renderCounts(additions, deletions)}` : "",
+				isPartial: context.isPartial,
+				isError: context.isError,
+				labels: {
+					running: t("tool.applyPatch.running"),
+					success: t("tool.applyPatch.success"),
+					error: t("tool.applyPatch.error"),
+				},
+				stacked: false,
+			});
 		},
-		renderResult(result, _options, theme, context) {
-			const component = (context.lastComponent as Container | undefined) ?? new Container();
-			component.clear();
+		renderResult(result, options, theme, context) {
 			if (context.isError) {
+				const component = context.lastComponent instanceof Container ? context.lastComponent : new Container();
+				component.clear();
 				const message = getTextResult(result);
 				if (message) component.addChild(new Text(theme.fg("error", message), 0, 0));
 				return component;
@@ -420,13 +522,11 @@ export function createApplyPatchToolDefinition(options?: {
 			const details = result.details as
 				| { files?: Array<Partial<ApplyPatchFileDetails> & Pick<ApplyPatchFileDetails, "path">> }
 				| undefined;
-			for (const file of details?.files ?? []) {
-				component.addChild(new ApplyPatchFileRow(file, context.cwd));
-				if (context.expanded && file.diff) {
-					component.addChild(new Spacer(1));
-					component.addChild(new Text(renderDiff(file.diff, { filePath: file.path }), 1, 0));
-				}
-			}
+			const component =
+				context.lastComponent instanceof ApplyPatchResultComponent
+					? context.lastComponent
+					: new ApplyPatchResultComponent(context.toolCallId);
+			component.update(details?.files ?? [], options.expanded);
 			return component;
 		},
 	};

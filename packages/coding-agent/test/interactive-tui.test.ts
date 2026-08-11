@@ -7,6 +7,7 @@ import { KeybindingsManager } from "../src/core/keybindings.ts";
 import type { TuiMode } from "../src/core/settings-manager.ts";
 import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
 import { LystarWorkspace } from "../src/modes/interactive/components/lystar-workspace.ts";
+import { TurnSummaryComponent } from "../src/modes/interactive/components/turn-summary.ts";
 import {
 	createInteractiveTui,
 	createInteractiveTuiReference,
@@ -42,6 +43,20 @@ class RecordingTerminal extends VirtualTerminal implements Terminal {
 		this.stopCount += 1;
 		super.stop();
 	}
+}
+
+class InputSink implements Component {
+	readonly inputs: string[] = [];
+
+	handleInput(data: string): void {
+		this.inputs.push(data);
+	}
+
+	render(_width: number): string[] {
+		return ["editor"];
+	}
+
+	invalidate(): void {}
 }
 
 describe("createInteractiveTui", () => {
@@ -164,6 +179,67 @@ describe("createInteractiveTui", () => {
 
 			terminal.sendInput("\x1b[1;5F");
 			expect(workspace.render(terminal.columns)[1]).toContain("line-24");
+		} finally {
+			renderer.stop();
+		}
+	});
+
+	it("does not grow completed card dividers after arrow keys or text input", async () => {
+		initTheme("dark");
+		const terminal = new RecordingTerminal(80, 24);
+		const chat = new Container();
+		chat.addChild(
+			new TurnSummaryComponent({
+				startedAt: 0,
+				endedAt: 1000,
+				outcome: "completed",
+				totalTools: 1,
+				successfulTools: 1,
+				failedTools: 0,
+				cancelledTools: 0,
+				commandCount: 1,
+				successfulCommands: 1,
+				files: [],
+				tools: [],
+				retried: false,
+				compacted: false,
+				cancelled: false,
+			}),
+		);
+		const input = new InputSink();
+		const inputContainer = new Container();
+		inputContainer.addChild(input);
+		const header = new Container();
+		header.addChild(new Text("header", 0, 0));
+		const workspace = new LystarWorkspace({
+			getHeight: () => terminal.rows,
+			header,
+			scrollContainers: [chat],
+			bottomContainers: [inputContainer],
+			fixedBottomContainers: [],
+			fullscreen: true,
+			scrollbar: "hidden",
+		});
+		const renderer = createInteractiveTui({
+			tuiMode: "fullscreen",
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal,
+		});
+		renderer.addChild(workspace);
+		renderer.setFocus(input);
+		renderer.start();
+
+		try {
+			await terminal.waitForRender();
+			const baseline = [...chat.render(80)];
+			const inputs = ["\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D", "x"];
+			for (const data of inputs) {
+				terminal.sendInput(data);
+				await terminal.waitForRender();
+				expect([...chat.render(80)]).toEqual(baseline);
+			}
+			expect(input.inputs).toEqual(inputs);
 		} finally {
 			renderer.stop();
 		}

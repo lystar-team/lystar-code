@@ -26,10 +26,22 @@ describe("SettingsManager", () => {
 	});
 
 	describe("defaults", () => {
-		it("shows thinking content unless the user explicitly hides it", () => {
+		it("does not fold transcript thinking unless the user explicitly enables it", () => {
 			const manager = SettingsManager.create(projectDir, agentDir);
 
 			expect(manager.getHideThinkingBlock()).toBe(false);
+		});
+
+		it("shows thinking in live activity by default and persists transcript mode", async () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getThinkingDisplayMode()).toBe("activity");
+
+			manager.setThinkingDisplayMode("transcript");
+			await manager.flush();
+
+			expect(manager.getThinkingDisplayMode()).toBe("transcript");
+			const savedSettings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+			expect(savedSettings.thinkingDisplayMode).toBe("transcript");
 		});
 
 		it("uses Codex-style agent retry defaults", () => {

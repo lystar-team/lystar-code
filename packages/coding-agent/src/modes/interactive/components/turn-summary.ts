@@ -2,7 +2,7 @@ import { Box, type Component, Spacer, Text, truncateToWidth, visibleWidth } from
 import { theme } from "../theme/theme.ts";
 import { uiGlyphs } from "../ui-glyphs.ts";
 import type { InteractiveCardAction } from "./interactive-card.ts";
-import { alignCardExpansion, renderToolDivider } from "./tool-card-layout.ts";
+import { renderCardWithDivider } from "./tool-card-layout.ts";
 
 export interface TurnFileSummary {
 	path: string;
@@ -170,10 +170,7 @@ export class TurnSummaryComponent extends Box {
 	}
 
 	override render(width: number): string[] {
-		const lines = super.render(width);
-		if (lines.length === 0) return lines;
-		lines[0] = alignCardExpansion(lines[0]!, width, this.expanded);
-		lines.push(renderToolDivider(width));
+		const lines = renderCardWithDivider(super.render(width), width, this.expanded);
 		this.lastRenderedLineCount = lines.length;
 		return lines;
 	}

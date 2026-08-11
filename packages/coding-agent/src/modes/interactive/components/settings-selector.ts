@@ -17,6 +17,7 @@ import { formatHttpIdleTimeoutMs, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../cor
 import type {
 	DefaultProjectTrust,
 	MermaidRenderingMode,
+	ThinkingDisplayMode,
 	TuiMode,
 	WarningSettings,
 } from "../../../core/settings-manager.ts";
@@ -66,6 +67,7 @@ export interface SettingsConfig {
 	terminalTheme: TerminalTheme;
 	availableThemes: string[];
 	hideThinkingBlock: boolean;
+	thinkingDisplayMode: ThinkingDisplayMode;
 	mermaidRenderingMode: MermaidRenderingMode;
 	showCacheMissNotices: boolean;
 	collapseChangelog: boolean;
@@ -101,6 +103,7 @@ export interface SettingsCallbacks {
 	onThemeChange: (theme: string) => void;
 	onThemePreview?: (theme: string) => void;
 	onHideThinkingBlockChange: (hidden: boolean) => void;
+	onThinkingDisplayModeChange: (mode: ThinkingDisplayMode) => void;
 	onMermaidRenderingModeChange: (mode: MermaidRenderingMode) => void;
 	onShowCacheMissNoticesChange: (shown: boolean) => void;
 	onCollapseChangelogChange: (collapsed: boolean) => void;
@@ -514,6 +517,13 @@ export class SettingsSelectorComponent extends Container {
 				values: HTTP_IDLE_TIMEOUT_CHOICES.map((choice) => choice.label),
 			},
 			{
+				id: "thinking-display",
+				label: "思考内容位置",
+				description: "选择在左下角实时状态或对话输出中显示模型思考",
+				currentValue: config.thinkingDisplayMode,
+				values: ["activity", "transcript"],
+			},
+			{
 				id: "hide-thinking",
 				label: "折叠思考过程",
 				description: "默认只显示思考状态，可随时展开完整内容",
@@ -792,6 +802,9 @@ export class SettingsSelectorComponent extends Container {
 					}
 					case "hide-thinking":
 						callbacks.onHideThinkingBlockChange(newValue === "true");
+						break;
+					case "thinking-display":
+						callbacks.onThinkingDisplayModeChange(newValue as ThinkingDisplayMode);
 						break;
 					case "mermaid-rendering":
 						callbacks.onMermaidRenderingModeChange(newValue as MermaidRenderingMode);

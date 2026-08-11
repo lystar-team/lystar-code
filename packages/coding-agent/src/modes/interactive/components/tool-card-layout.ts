@@ -16,6 +16,11 @@ export function renderToolDivider(width: number, indent = 2): string {
 	return truncateToWidth(`${" ".repeat(safeIndent)}${theme.fg("toolDivider", "─".repeat(lineWidth))}`, width, "");
 }
 
+export function renderCardWithDivider(lines: readonly string[], width: number, expanded: boolean): string[] {
+	if (lines.length === 0) return [];
+	return [alignCardExpansion(lines[0]!, width, expanded), ...lines.slice(1), renderToolDivider(width)];
+}
+
 export function renderCardHover(lines: string[], width: number, hovered: boolean): string[] {
 	if (!hovered) return lines;
 	return lines.map((line) => {

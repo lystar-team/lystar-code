@@ -15,6 +15,7 @@ export interface UiGlyphs {
 	patch: string;
 	image: string;
 	running: string;
+	link: string;
 	open: string;
 }
 
@@ -35,6 +36,7 @@ const richGlyphs: UiGlyphs = {
 	patch: "📝",
 	image: "🏞️",
 	running: "⏳",
+	link: "🔗",
 	open: "↗",
 };
 
@@ -55,6 +57,7 @@ const windowsGlyphs: UiGlyphs = {
 	patch: "P",
 	image: "I",
 	running: ">",
+	link: "&",
 	open: ">",
 };
 

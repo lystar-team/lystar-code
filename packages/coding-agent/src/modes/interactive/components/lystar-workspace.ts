@@ -444,7 +444,6 @@ export class LystarWorkspace implements Component {
 			this.scrollTop = maxScrollTop;
 		} else {
 			this.scrollTop = Math.max(0, Math.min(this.scrollTop, maxScrollTop));
-			if (!this.hasNewerHistory && this.scrollTop >= maxScrollTop) this.following = true;
 		}
 
 		const viewport = this.renderViewport(contentBlocks, this.scrollTop, this.viewportHeight);

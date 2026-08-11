@@ -47,7 +47,7 @@ describe("ToolExecutionGroupComponent", () => {
 		second.markExecutionStarted();
 
 		let lines = group.render(100).map(stripAnsi);
-		expect(lines[0]).toContain(uiGlyphs.list);
+		expect(lines[0]).toContain(uiGlyphs.link);
 		expect(lines[0]).toContain(uiGlyphs.expanded);
 		expect(lines[0]).toContain("正在执行 2 条命令 · 已完成 0/2");
 		expect(lines[1]).toBe("");
@@ -64,6 +64,7 @@ describe("ToolExecutionGroupComponent", () => {
 		second.updateResult({ content: [{ type: "text", text: "failed" }], isError: true });
 		lines = group.render(100).map(stripAnsi);
 		expect(lines).toHaveLength(1);
+		expect(lines[0]).toContain(uiGlyphs.link);
 		expect(lines[0]).toContain("2 条命令执行完成 · 1 条失败");
 		expect(lines[0]).toContain(uiGlyphs.collapsed);
 		expect(group.isExpanded()).toBe(false);
@@ -86,6 +87,7 @@ describe("ToolExecutionGroupComponent", () => {
 		const lines = group.render(100).map(stripAnsi);
 		expect(first.getExecutionStatus()).toBe("cancelled");
 		expect(lines).toHaveLength(1);
+		expect(lines[0]).toContain(uiGlyphs.link);
 		expect(lines[0]).toContain("2 条命令执行结束 · 1 条取消");
 		expect(lines[0]).not.toContain("失败");
 		expect(group.isExpanded()).toBe(false);

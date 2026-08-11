@@ -4,7 +4,7 @@ import type { EntryRenderer } from "../../../core/extensions/types.ts";
 import type { CustomEntry } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.ts";
 import type { InteractiveCardAction } from "./interactive-card.ts";
-import { alignCardExpansion, renderToolDivider } from "./tool-card-layout.ts";
+import { renderCardWithDivider } from "./tool-card-layout.ts";
 
 /**
  * Component that renders a custom session entry from extensions.
@@ -48,10 +48,7 @@ export class CustomEntryComponent extends Container {
 	}
 
 	override render(width: number): string[] {
-		const lines = super.render(width);
-		if (lines.length === 0) return lines;
-		lines[0] = alignCardExpansion(lines[0]!, width, this._expanded);
-		lines.push(renderToolDivider(width));
+		const lines = renderCardWithDivider(super.render(width), width, this._expanded);
 		this.lastRenderedLineCount = lines.length;
 		return lines;
 	}

@@ -5,7 +5,7 @@ import type { MessageRenderer } from "../../../core/extensions/types.ts";
 import type { CustomMessage } from "../../../core/messages.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import type { InteractiveCardAction } from "./interactive-card.ts";
-import { alignCardExpansion, renderToolDivider } from "./tool-card-layout.ts";
+import { renderCardWithDivider } from "./tool-card-layout.ts";
 
 /**
  * Component that renders a custom message entry from extensions.
@@ -58,10 +58,7 @@ export class CustomMessageComponent extends Container {
 	}
 
 	override render(width: number): string[] {
-		const lines = super.render(width);
-		if (lines.length === 0) return lines;
-		lines[0] = alignCardExpansion(lines[0]!, width, this._expanded);
-		lines.push(renderToolDivider(width));
+		const lines = renderCardWithDivider(super.render(width), width, this._expanded);
 		this.lastRenderedLineCount = lines.length;
 		return lines;
 	}

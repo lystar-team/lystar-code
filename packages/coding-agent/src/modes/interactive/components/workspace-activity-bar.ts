@@ -1,4 +1,4 @@
-import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, sliceByColumn, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { theme } from "../theme/theme.ts";
 import { uiGlyphs } from "../ui-glyphs.ts";
 
@@ -20,6 +20,7 @@ export interface WorkspaceActivityState {
 	knownTools: number;
 	queueCount: number;
 	runningTools?: number;
+	thinking?: string;
 }
 
 function formatDuration(ms: number): string {
@@ -31,7 +32,7 @@ function formatDuration(ms: number): string {
 function phaseLabel(state: WorkspaceActivityState): string {
 	switch (state.phase) {
 		case "thinking":
-			return "正在思考";
+			return state.thinking || "正在思考";
 		case "runningTool":
 			if ((state.runningTools ?? 0) > 1) return `${state.runningTools} 个操作并行`;
 			return [state.action, state.subject].filter(Boolean).join(" ") || "正在执行";
@@ -48,6 +49,12 @@ function phaseLabel(state: WorkspaceActivityState): string {
 	}
 }
 
+function truncateFromStart(text: string, width: number): string {
+	if (visibleWidth(text) <= width) return text;
+	if (width <= 1) return "…";
+	return `…${sliceByColumn(text, visibleWidth(text) - width + 1, width - 1, true)}`;
+}
+
 export class WorkspaceActivityBar implements Component {
 	private state: WorkspaceActivityState | undefined;
 	private timer: ReturnType<typeof setInterval> | undefined;
@@ -59,9 +66,10 @@ export class WorkspaceActivityBar implements Component {
 
 	setState(state: WorkspaceActivityState | undefined): void {
 		this.state = state;
-		if (state && !this.timer) {
+		const shouldTick = state !== undefined && state.phase !== "waiting";
+		if (shouldTick && !this.timer) {
 			this.timer = setInterval(this.requestRender, 1000);
-		} else if (!state && this.timer) {
+		} else if (!shouldTick && this.timer) {
 			clearInterval(this.timer);
 			this.timer = undefined;
 		}
@@ -76,14 +84,12 @@ export class WorkspaceActivityBar implements Component {
 	invalidate(): void {}
 
 	render(width: number): string[] {
-		if (!this.state || width <= 0) return [];
+		if (!this.state || width <= 0 || this.state.phase === "waiting") return [];
 		const state = this.state;
 		const prefixGlyph = state.phase === "runningTool" ? uiGlyphs.running : uiGlyphs.list;
 		const prefix = theme.bold(theme.fg(state.phase === "cancelled" ? "warning" : "accent", prefixGlyph));
-		const label = theme.fg(
-			state.phase === "retrying" || state.phase === "cancelled" ? "warning" : "text",
-			phaseLabel(state),
-		);
+		const labelText = phaseLabel(state);
+		const labelColor = state.phase === "retrying" || state.phase === "cancelled" ? "warning" : "text";
 		const progress =
 			state.knownTools > 0
 				? theme.fg("muted", `已完成 ${Math.min(state.completedTools, state.knownTools)}/${state.knownTools}`)
@@ -91,13 +97,21 @@ export class WorkspaceActivityBar implements Component {
 		const queue = state.queueCount > 0 ? theme.fg("muted", `队列 ${state.queueCount}`) : undefined;
 		const elapsed = theme.fg("dim", formatDuration(Date.now() - state.startedAt));
 		const separator = theme.fg("dim", "  ·  ");
-		const main = `${prefix} ${label}`;
-		const suffix = [progress, queue, elapsed].filter((part): part is string => Boolean(part)).join(separator);
-		if (!suffix) return [truncateToWidth(main, width, "")];
-		if (visibleWidth(main) + visibleWidth(suffix) + 2 <= width) {
-			return [`${main}${" ".repeat(width - visibleWidth(main) - visibleWidth(suffix))}${suffix}`];
-		}
-		const compact = [main, elapsed].join(separator);
-		return [truncateToWidth(compact, width, "…")];
+		const fullSuffix = [progress, queue, elapsed].filter((part): part is string => Boolean(part)).join(separator);
+		const suffix = width - visibleWidth(fullSuffix) >= 16 ? fullSuffix : elapsed;
+		const renderMain = (maxWidth: number): string => {
+			const prefixText = `${prefix} `;
+			if (maxWidth <= visibleWidth(prefixText)) return truncateToWidth(prefix, maxWidth, "");
+			const labelWidth = Math.max(1, maxWidth - visibleWidth(prefixText));
+			const fittedLabel =
+				state.phase === "thinking" && state.thinking
+					? truncateFromStart(labelText, labelWidth)
+					: truncateToWidth(labelText, labelWidth, "…");
+			return `${prefixText}${theme.fg(labelColor, fittedLabel)}`;
+		};
+		if (!suffix || visibleWidth(suffix) + 2 >= width) return [renderMain(width)];
+		const main = renderMain(Math.max(1, width - visibleWidth(suffix) - 1));
+		const gap = " ".repeat(Math.max(1, width - visibleWidth(main) - visibleWidth(suffix)));
+		return [`${main}${gap}${suffix}`];
 	}
 }

@@ -88,6 +88,7 @@ type RebindContext = {
 
 type ReloadCommandContext = {
 	hideThinkingBlock: boolean;
+	thinkingDisplayMode: "activity" | "transcript";
 	session: {
 		isStreaming: boolean;
 		isCompacting: boolean;
@@ -99,6 +100,7 @@ type ReloadCommandContext = {
 	settingsManager: {
 		getHttpIdleTimeoutMs: () => number;
 		getHideThinkingBlock: () => boolean;
+		getThinkingDisplayMode: () => "activity" | "transcript";
 		getOutputPad: () => 0 | 1;
 		getEditorPaddingX: () => number;
 		getAutocompleteMaxVisible: () => number;
@@ -157,6 +159,7 @@ function createReloadCommandContext(overrides: ReloadCommandContextOverrides = {
 	const editor = overrides.editor ?? {};
 	return {
 		hideThinkingBlock: overrides.hideThinkingBlock ?? false,
+		thinkingDisplayMode: overrides.thinkingDisplayMode ?? "activity",
 		session: {
 			isStreaming: false,
 			isCompacting: false,
@@ -171,6 +174,7 @@ function createReloadCommandContext(overrides: ReloadCommandContextOverrides = {
 		settingsManager: {
 			getHttpIdleTimeoutMs: () => 0,
 			getHideThinkingBlock: () => false,
+			getThinkingDisplayMode: () => "activity",
 			getOutputPad: () => 1,
 			getEditorPaddingX: () => 1,
 			getAutocompleteMaxVisible: () => 10,
@@ -449,28 +453,32 @@ describe("regression #5943: session_start transient UI", () => {
 		}
 	});
 
-	it("refreshes hideThinkingBlock before rebuilding chat during reload", async () => {
+	it("refreshes transcript presentation settings before rebuilding chat during reload", async () => {
 		initTheme("dark", false);
 		const events: string[] = [];
 		let context: ReloadCommandContext;
 		context = createReloadCommandContext({
-			settingsManager: { getHideThinkingBlock: () => true },
+			settingsManager: {
+				getHideThinkingBlock: () => true,
+				getThinkingDisplayMode: () => "transcript",
+			},
 			session: {
 				reload: async (options) => {
 					events.push("reload");
 					await options?.beforeSessionStart?.();
-					events.push(`start:${context.hideThinkingBlock}`);
+					events.push(`start:${context.hideThinkingBlock}:${context.thinkingDisplayMode}`);
 				},
 			},
 			rebuildChatFromMessages: () => {
-				events.push(`rebuild:${context.hideThinkingBlock}`);
+				events.push(`rebuild:${context.hideThinkingBlock}:${context.thinkingDisplayMode}`);
 			},
 		});
 
 		await interactiveModePrototype.handleReloadCommand.call(context);
 
 		expect(context.hideThinkingBlock).toBe(true);
-		expect(events).toEqual(["reload", "rebuild:true", "start:true"]);
+		expect(context.thinkingDisplayMode).toBe("transcript");
+		expect(events).toEqual(["reload", "rebuild:true:transcript", "start:true:transcript"]);
 	});
 
 	it("keeps the reload blocker focused until async reload completes", async () => {

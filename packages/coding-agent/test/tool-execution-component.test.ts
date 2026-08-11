@@ -131,7 +131,7 @@ describe("ToolExecutionComponent parity", () => {
 		expect(component.getAgentTargetAtRow(secondRow)).toMatchObject({ runId: "run-1", agentId: "agent-2" });
 	});
 
-	test("shows apply_patch files and counts by default, then full diffs when expanded", () => {
+	test("colors apply_patch counts and expands files independently", () => {
 		const component = new ToolExecutionComponent(
 			"apply_patch",
 			"apply-patch-call",
@@ -159,21 +159,52 @@ describe("ToolExecutionComponent parity", () => {
 			isError: false,
 		});
 
-		const collapsed = stripAnsi(component.render(100).join("\n"));
+		const collapsedRaw = component.render(100);
+		const collapsedLines = collapsedRaw.map(stripAnsi);
+		const collapsed = collapsedLines.join("\n");
 		expect(collapsed).toContain("已应用补丁");
 		expect(collapsed).toContain("3 个文件  +2 -2");
+		expect(collapsedRaw[0]).toContain(theme.fg("success", "+2"));
+		expect(collapsedRaw[0]).toContain(theme.fg("error", "-2"));
 		expect(collapsed).toContain(uiGlyphs.collapsed);
 		expect(collapsed).not.toContain(uiGlyphs.expanded);
-		expect(collapsed).toContain("docs/new.md  +1 -0");
-		expect(collapsed).toContain("src/index.ts  +1 -1");
-		expect(collapsed).toContain("src/old.ts  +0 -1");
-		expect(collapsed).not.toContain("before");
+		expect(collapsed).not.toContain("docs/new.md");
 
-		component.setExpanded(true);
+		const outerAction = component.getCardClickActionAtRow(0);
+		expect(outerAction?.type).toBe("toggle");
+		if (outerAction?.type !== "toggle") throw new Error("expected apply_patch outer toggle");
+		outerAction.component.setExpanded(true);
+		const listedRaw = component.render(100);
+		const listedLines = listedRaw.map(stripAnsi);
+		const listed = listedLines.join("\n");
+		expect(listed).toContain("docs/new.md  +1 -0");
+		expect(listed).toContain("src/index.ts  +1 -1");
+		expect(listed).toContain("src/old.ts  +0 -1");
+		const indexRow = listedLines.findIndex((line) => line.includes("src/index.ts"));
+		expect(indexRow).toBeGreaterThanOrEqual(0);
+		expect(listedRaw[indexRow]).toContain(theme.fg("success", "+1"));
+		expect(listedRaw[indexRow]).toContain(theme.fg("error", "-1"));
+		expect(listed).not.toContain("before");
+
+		const action = component.getCardClickActionAtRow(indexRow);
+		expect(action?.type).toBe("toggle");
+		if (action?.type !== "toggle") throw new Error("expected apply_patch file toggle");
+		action.component.setExpanded(true);
+		const oneExpanded = stripAnsi(component.render(100).join("\n"));
+		expect(oneExpanded).toContain("before");
+		expect(oneExpanded).toContain("after");
+		expect(oneExpanded).not.toContain("created");
+		expect(oneExpanded).not.toContain("removed");
+
+		for (const child of component.getChildCards()) child.setExpanded(true);
 		const expanded = stripAnsi(component.render(100).join("\n"));
+		expect(expanded).toContain("created");
 		expect(expanded).toContain("before");
 		expect(expanded).toContain("after");
 		expect(expanded).toContain("removed");
+
+		component.setExpanded(false);
+		expect(stripAnsi(component.render(100).join("\n"))).not.toContain("src/index.ts");
 	});
 
 	test("keeps apply_patch path counts on one line at narrow widths", () => {
@@ -201,6 +232,7 @@ describe("ToolExecutionComponent parity", () => {
 			},
 			isError: false,
 		});
+		component.setExpanded(true);
 
 		const lines = component.render(40).map(stripAnsi);
 		const fileLine = lines.find((line) => line.includes("index.mdx"));
@@ -217,6 +249,7 @@ describe("ToolExecutionComponent parity", () => {
 			details: { files: [{ path: "legacy.ts", additions: 2, deletions: 1, diff: "- 1 old\n+ 1 new" }] },
 			isError: false,
 		});
+		legacy.setExpanded(true);
 		expect(stripAnsi(legacy.render(80).join("\n"))).toContain("legacy.ts  +2 -1");
 
 		const failed = new ToolExecutionComponent("apply_patch", "failed", {}, {}, tool, createFakeTui(), process.cwd());
@@ -417,7 +450,7 @@ describe("ToolExecutionComponent parity", () => {
 		const collapsedLines = component.render(80);
 		const collapsed = stripAnsi(collapsedLines.join("\n"));
 		expect(collapsedLines).toHaveLength(2);
-		expect(collapsed).toContain("$ 已运行");
+		expect(collapsed).toContain(`${uiGlyphs.tool} 已运行`);
 		expect(collapsed).toContain("generate output");
 		expect(collapsed).toContain(uiGlyphs.collapsed);
 		expect(collapsed).not.toContain(uiGlyphs.expanded);

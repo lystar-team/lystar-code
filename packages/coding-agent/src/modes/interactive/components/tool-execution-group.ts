@@ -138,7 +138,7 @@ export class ToolExecutionGroupComponent implements Component {
 		} else {
 			text = `准备执行 ${this.tools.length} 条命令`;
 		}
-		const left = `${theme.fg(completed === this.tools.length ? "success" : "warning", uiGlyphs.list)} ${theme.bold(text)}`;
+		const left = `${theme.fg(completed === this.tools.length ? "success" : "warning", uiGlyphs.link)} ${theme.bold(text)}`;
 		const right = theme.fg("dim", this.expanded ? uiGlyphs.expanded : uiGlyphs.collapsed);
 		const rightWidth = visibleWidth(right);
 		const fittedLeft = truncateToWidth(left, Math.max(1, width - rightWidth - 1), "…");

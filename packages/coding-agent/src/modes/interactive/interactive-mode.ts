@@ -81,7 +81,6 @@ import type {
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
-import { createCompactionSummaryMessage } from "../../core/messages.ts";
 import {
 	defaultModelPerProvider,
 	findExactModelReferenceMatch,
@@ -92,7 +91,7 @@ import { DefaultPackageManager } from "../../core/package-manager.ts";
 import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
 import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from "../../core/session-manager.ts";
-import type { TuiMode } from "../../core/settings-manager.ts";
+import type { ThinkingDisplayMode, TuiMode } from "../../core/settings-manager.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
@@ -268,6 +267,7 @@ type TurnActivityCollector = {
 	startedAt: number;
 	phase: WorkspaceActivityPhase;
 	action?: string;
+	thinking?: string;
 	tools: Map<string, TrackedTurnTool>;
 	toolOrder: string[];
 	queueCount: number;
@@ -281,6 +281,19 @@ type RenderSessionItem = AgentMessage | Extract<SessionEntry, { type: "custom" }
 
 function isCustomSessionEntry(item: RenderSessionItem): item is Extract<SessionEntry, { type: "custom" }> {
 	return "type" in item && item.type === "custom";
+}
+
+export function getLatestThinkingActivityText(message: AssistantMessage): string | undefined {
+	for (let index = message.content.length - 1; index >= 0; index--) {
+		const content = message.content[index];
+		if (content?.type !== "thinking") continue;
+		const lines = content.thinking
+			.split(/\r?\n/)
+			.map((line) => line.trim())
+			.filter(Boolean);
+		return lines.at(-1);
+	}
+	return undefined;
 }
 
 const DEAD_TERMINAL_ERROR_CODES = new Set(["EIO", "EPIPE", "ENOTCONN"]);
@@ -550,6 +563,7 @@ export class InteractiveMode {
 
 	// Thinking block visibility state
 	private hideThinkingBlock = false;
+	private thinkingDisplayMode: ThinkingDisplayMode = "activity";
 	private outputPad = 1;
 	private readonly mermaidMarkdownTransformer: MarkdownTransformer = createMermaidMarkdownTransformer({
 		getMode: () => this.settingsManager.getMermaidRenderingMode(),
@@ -788,6 +802,7 @@ export class InteractiveMode {
 
 		// Load hide thinking block setting
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
+		this.thinkingDisplayMode = this.settingsManager.getThinkingDisplayMode();
 		this.outputPad = this.settingsManager.getOutputPad();
 
 		// Register themes from resource loader and initialize
@@ -2091,6 +2106,7 @@ export class InteractiveMode {
 		this.footer.setSession(this.session);
 		this.footerDataProvider.setCwd(this.sessionManager.getCwd());
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
+		this.thinkingDisplayMode = this.settingsManager.getThinkingDisplayMode();
 		this.outputPad = this.settingsManager.getOutputPad();
 		this.ui.setShowHardwareCursor(this.settingsManager.getShowHardwareCursor());
 		const clearOnShrink = this.settingsManager.getClearOnShrink();
@@ -2993,8 +3009,11 @@ export class InteractiveMode {
 					const action = activateInteractiveCard(pending.component, pending.componentRow, (target) =>
 						this.openSubagentSession(target),
 					);
-					if (action?.type === "toggle") this.rememberCardExpansion(action.component);
-					this.ui.requestRender();
+					if (action?.type === "toggle") {
+						this.rememberCardExpansion(action.component);
+						pending.component.invalidate?.();
+					}
+					this.ui.requestRender(action?.type === "toggle");
 				}
 				return undefined;
 			} else if (mouse.button === "left") {
@@ -3474,6 +3493,7 @@ export class InteractiveMode {
 			phase: activity.phase,
 			action: activity.phase === "runningTool" ? (current?.action ?? current?.name) : activity.action,
 			subject: activity.phase === "runningTool" && running.length <= 1 ? current?.subject : undefined,
+			thinking: this.thinkingDisplayMode === "activity" ? activity.thinking : undefined,
 			startedAt: activity.startedAt,
 			completedTools: tools.filter(
 				(tool) => tool.status === "success" || tool.status === "error" || tool.status === "cancelled",
@@ -3650,6 +3670,10 @@ export class InteractiveMode {
 					this.updatePendingMessagesDisplay();
 					this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
+					if (this.turnActivity) {
+						this.turnActivity.thinking = undefined;
+						this.updateActivityBar("thinking");
+					}
 					this.streamingToolStack = undefined;
 					this.streamingComponent = new AssistantMessageComponent(
 						undefined,
@@ -3658,6 +3682,7 @@ export class InteractiveMode {
 						this.hiddenThinkingLabel,
 						this.outputPad,
 						this.getMarkdownTransformers(),
+						this.thinkingDisplayMode === "transcript",
 					);
 					this.streamingMessage = event.message;
 					this.chatContainer.addChild(this.streamingComponent);
@@ -3670,6 +3695,24 @@ export class InteractiveMode {
 				if (this.streamingComponent && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
 					this.streamingComponent.updateContent(this.streamingMessage, true);
+					if (this.turnActivity) {
+						const streamEvent = event.assistantMessageEvent;
+						if (
+							streamEvent.type === "thinking_start" ||
+							streamEvent.type === "thinking_delta" ||
+							streamEvent.type === "thinking_end"
+						) {
+							this.turnActivity.thinking = getLatestThinkingActivityText(this.streamingMessage);
+							this.updateActivityBar("thinking");
+						} else if (
+							streamEvent.type === "text_start" ||
+							streamEvent.type === "toolcall_start" ||
+							streamEvent.type === "websearch_start"
+						) {
+							this.turnActivity.thinking = undefined;
+							this.updateActivityBar("waiting");
+						}
+					}
 
 					for (const content of this.streamingMessage.content) {
 						if (content.type === "toolCall") {
@@ -3927,15 +3970,7 @@ export class InteractiveMode {
 						this.showStatus("自动压缩已取消");
 					}
 				} else if (event.result) {
-					this.chatContainer.clear();
 					this.rebuildChatFromMessages();
-					this.addMessageToChat(
-						createCompactionSummaryMessage(
-							event.result.summary,
-							event.result.tokensBefore,
-							new Date().toISOString(),
-						),
-					);
 					this.footer.invalidate();
 				} else if (event.errorMessage) {
 					if (event.reason === "manual") {
@@ -4166,6 +4201,7 @@ export class InteractiveMode {
 					this.hiddenThinkingLabel,
 					this.outputPad,
 					this.getMarkdownTransformers(),
+					this.thinkingDisplayMode === "transcript",
 				);
 				this.chatContainer.addChild(assistantComponent);
 				break;
@@ -5197,6 +5233,7 @@ export class InteractiveMode {
 					terminalTheme: this.themeController.getTerminalTheme(),
 					availableThemes: getAvailableThemes(),
 					hideThinkingBlock: this.hideThinkingBlock,
+					thinkingDisplayMode: this.thinkingDisplayMode,
 					mermaidRenderingMode: this.settingsManager.getMermaidRenderingMode(),
 					collapseChangelog: this.settingsManager.getCollapseChangelog(),
 					enableInstallTelemetry: this.settingsManager.getEnableInstallTelemetry(),
@@ -5283,6 +5320,23 @@ export class InteractiveMode {
 						}
 						this.chatContainer.clear();
 						this.rebuildChatFromMessages();
+					},
+					onThinkingDisplayModeChange: (mode) => {
+						this.thinkingDisplayMode = mode;
+						this.settingsManager.setThinkingDisplayMode(mode);
+						const showThinking = mode === "transcript";
+						for (const child of this.chatContainer.children) {
+							if (child instanceof AssistantMessageComponent) child.setShowThinking(showThinking);
+						}
+						this.streamingComponent?.setShowThinking(showThinking);
+						if (this.turnActivity) {
+							this.turnActivity.thinking =
+								mode === "activity" && this.streamingMessage
+									? getLatestThinkingActivityText(this.streamingMessage)
+									: undefined;
+							this.updateActivityBar();
+						}
+						this.ui.requestRender();
 					},
 					onMermaidRenderingModeChange: (mode) => {
 						this.settingsManager.setMermaidRenderingMode(mode);
@@ -6524,6 +6578,7 @@ export class InteractiveMode {
 				return;
 			}
 			this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
+			this.thinkingDisplayMode = this.settingsManager.getThinkingDisplayMode();
 			this.outputPad = this.settingsManager.getOutputPad();
 			this.rebuildChatFromMessages();
 			chatRestoredBeforeSessionStart = true;

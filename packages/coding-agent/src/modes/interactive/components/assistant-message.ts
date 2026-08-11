@@ -167,6 +167,7 @@ function collapseLongMarkdown(markdown: string): string {
 export class AssistantMessageComponent extends Container {
 	private contentContainer: Container;
 	private hideThinkingBlock: boolean;
+	private showThinking: boolean;
 	private markdownTheme: MarkdownTheme;
 	private hiddenThinkingLabel: string;
 	private outputPad: number;
@@ -189,10 +190,12 @@ export class AssistantMessageComponent extends Container {
 		hiddenThinkingLabel = t("status.thinking"),
 		outputPad = 1,
 		markdownTransformers: readonly MarkdownTransformer[] = [],
+		showThinking = true,
 	) {
 		super();
 
 		this.hideThinkingBlock = hideThinkingBlock;
+		this.showThinking = showThinking;
 		this.markdownTheme = markdownTheme;
 		this.hiddenThinkingLabel = hiddenThinkingLabel;
 		this.outputPad = outputPad;
@@ -216,6 +219,13 @@ export class AssistantMessageComponent extends Container {
 
 	setHideThinkingBlock(hide: boolean): void {
 		this.hideThinkingBlock = hide;
+		if (this.lastMessage) {
+			this.updateContent(this.lastMessage);
+		}
+	}
+
+	setShowThinking(show: boolean): void {
+		this.showThinking = show;
 		if (this.lastMessage) {
 			this.updateContent(this.lastMessage);
 		}
@@ -295,14 +305,22 @@ export class AssistantMessageComponent extends Container {
 			!this.isStreaming &&
 			message.content.some((content) => {
 				const markdown =
-					content.type === "text" ? content.text : content.type === "thinking" ? content.thinking : "";
+					content.type === "text"
+						? content.text
+						: this.showThinking && content.type === "thinking"
+							? content.thinking
+							: "";
 				return Markdown.hasClosedCodeBlockOverLineLimit(markdown, CODE_BLOCK_LINE_LIMIT);
 			});
 		this.hasLongMarkdown =
 			!this.isStreaming &&
 			message.content.some((content) => {
 				const markdown =
-					content.type === "text" ? content.text : content.type === "thinking" ? content.thinking : "";
+					content.type === "text"
+						? content.text
+						: this.showThinking && content.type === "thinking"
+							? content.thinking
+							: "";
 				return markdown.length > LONG_MARKDOWN_CHARACTER_LIMIT;
 			});
 		const citations = message.content.flatMap((content) =>
@@ -358,7 +376,7 @@ export class AssistantMessageComponent extends Container {
 		const hasVisibleContent = message.content.some(
 			(c) =>
 				(c.type === "text" && c.text.trim()) ||
-				(c.type === "thinking" && c.thinking.trim()) ||
+				(this.showThinking && c.type === "thinking" && c.thinking.trim()) ||
 				c.type === "webSearchCall",
 		);
 
@@ -410,6 +428,9 @@ export class AssistantMessageComponent extends Container {
 				if (thinkingBlocks.length === 0) {
 					continue;
 				}
+				if (!this.showThinking) {
+					continue;
+				}
 
 				// Add spacing only when another visible assistant content block follows.
 				// This avoids a superfluous blank line before separately-rendered tool execution blocks.
@@ -418,7 +439,7 @@ export class AssistantMessageComponent extends Container {
 					.some(
 						(c) =>
 							(c.type === "text" && c.text.trim()) ||
-							(c.type === "thinking" && c.thinking.trim()) ||
+							(this.showThinking && c.type === "thinking" && c.thinking.trim()) ||
 							c.type === "webSearchCall",
 					);
 

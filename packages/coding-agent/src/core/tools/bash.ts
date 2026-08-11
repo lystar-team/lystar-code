@@ -6,6 +6,7 @@ import { spawn } from "child_process";
 import { type Static, Type } from "typebox";
 import { formatToolSummary, getToolSummary } from "../../modes/interactive/components/tool-summary.ts";
 import { theme } from "../../modes/interactive/theme/theme.ts";
+import { uiGlyphs } from "../../modes/interactive/ui-glyphs.ts";
 import { waitForChildProcess } from "../../utils/child-process.ts";
 import {
 	ensureShellConfig,
@@ -228,7 +229,7 @@ function formatBashCall(
 	const commandDisplay = command === null ? invalidArgText(theme) : command ? command : theme.fg("toolOutput", "...");
 	const detail = [options.duration, timeoutSuffix].filter(Boolean).join("  ");
 	return formatToolSummary({
-		icon: "$",
+		icon: uiGlyphs.tool,
 		subject: commandDisplay,
 		isPartial: options.isPartial,
 		isError: options.isError,
