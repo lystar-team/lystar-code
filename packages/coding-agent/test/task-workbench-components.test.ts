@@ -5,10 +5,12 @@ import { join } from "node:path";
 import { Container, setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
+import { createApplyPatchToolDefinition } from "../src/extensions/apply-patch/index.ts";
 import { BranchSummaryMessageComponent } from "../src/modes/interactive/components/branch-summary-message.ts";
 import { ChangesSelectorComponent } from "../src/modes/interactive/components/changes-selector.ts";
 import { CompactionSummaryMessageComponent } from "../src/modes/interactive/components/compaction-summary-message.ts";
 import { SkillInvocationMessageComponent } from "../src/modes/interactive/components/skill-invocation-message.ts";
+import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import {
 	formatTurnSummary,
 	resolveTurnOutcome,
@@ -16,7 +18,7 @@ import {
 } from "../src/modes/interactive/components/turn-summary.ts";
 import { WorkspaceActivityBar } from "../src/modes/interactive/components/workspace-activity-bar.ts";
 import { getLatestThinkingActivityText, InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { uiGlyphs } from "../src/modes/interactive/ui-glyphs.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
@@ -72,6 +74,37 @@ describe("task workbench components", () => {
 		const line = stripAnsi(bar.render(24)[0] ?? "");
 		expect(line).toContain("最后结论");
 		expect(line).not.toContain("正在检查");
+		expect(visibleWidth(bar.render(24)[0] ?? "")).toBeLessThanOrEqual(24);
+		bar.dispose();
+	});
+
+	it("renders inline Markdown in live thinking without exposing source markers", () => {
+		const bar = new WorkspaceActivityBar(() => undefined);
+		bar.setState({
+			phase: "thinking",
+			thinking: "正在检查 **类型定义** 和 `apply_patch`",
+			startedAt: Date.now(),
+			completedTools: 0,
+			knownTools: 0,
+			queueCount: 0,
+		});
+
+		const raw = bar.render(80)[0] ?? "";
+		const line = stripAnsi(raw);
+		expect(line).toContain("正在检查 类型定义 和 apply_patch");
+		expect(line).not.toContain("**");
+		expect(line).not.toContain("`");
+		expect(raw).toContain(theme.fg("mdCode", "apply_patch"));
+
+		bar.setState({
+			phase: "thinking",
+			thinking: "**正在分析",
+			startedAt: Date.now(),
+			completedTools: 0,
+			knownTools: 0,
+			queueCount: 0,
+		});
+		expect(stripAnsi(bar.render(80)[0] ?? "")).toContain("**正在分析");
 		bar.dispose();
 	});
 
@@ -475,6 +508,76 @@ describe("task workbench components", () => {
 
 		expect(expanded).toBe(true);
 		expect(rememberCardExpansion).toHaveBeenCalledWith(child);
+		expect(invalidate).toHaveBeenCalledOnce();
+		expect(requestRender).toHaveBeenLastCalledWith(true);
+	});
+
+	it("collapses an apply_patch file from its Diff body in the main workspace", () => {
+		const tool = new ToolExecutionComponent(
+			"apply_patch",
+			"main-apply-patch",
+			{ input: "*** Begin Patch\n*** End Patch" },
+			{},
+			createApplyPatchToolDefinition(),
+			{ requestRender: () => {} } as never,
+			process.cwd(),
+		);
+		tool.updateResult({
+			content: [{ type: "text", text: "Applied patch to 1 file(s)." }],
+			details: {
+				files: [
+					{
+						path: "src/index.ts",
+						operation: "update",
+						additions: 1,
+						deletions: 1,
+						diff: "- 1 before\n+ 1 after",
+					},
+				],
+			},
+			isError: false,
+		});
+		tool.setExpanded(true);
+		const fileRow = tool
+			.render(80)
+			.map(stripAnsi)
+			.findIndex((line) => line.includes("src/index.ts"));
+		const fileAction = tool.getCardClickActionAtRow(fileRow);
+		if (fileAction?.type !== "toggle") throw new Error("expected apply_patch file toggle");
+		fileAction.component.setExpanded(true);
+		const detailRow = tool
+			.render(80)
+			.map(stripAnsi)
+			.findIndex((line) => line.includes("before"));
+		const invalidate = vi.spyOn(tool, "invalidate");
+		const requestRender = vi.fn();
+		const rememberCardExpansion = vi.fn();
+		const context = Object.assign(Object.create(InteractiveMode.prototype), {
+			workspace: {
+				isFullscreen: () => true,
+				isNewContentIndicatorRow: () => false,
+				getComponentHitAtScreenRow: () => ({ component: tool, row: detailRow }),
+			},
+			renderer: { hasOverlay: () => false },
+			ui: { requestRender },
+			pendingCardClick: undefined,
+			hoveredCard: undefined,
+			rememberCardExpansion,
+			openSubagentSession: vi.fn(),
+		});
+		const handleWorkspaceInput = (
+			InteractiveMode.prototype as unknown as {
+				handleWorkspaceInput(this: typeof context, data: string): { consume: true } | undefined;
+			}
+		).handleWorkspaceInput;
+
+		handleWorkspaceInput.call(context, "\x1b[<0;3;2M");
+		handleWorkspaceInput.call(context, "\x1b[<0;3;2m");
+
+		expect(tool.isExpanded()).toBe(true);
+		expect(stripAnsi(tool.render(80).join("\n"))).not.toContain("before");
+		expect(stripAnsi(tool.render(80).join("\n"))).toContain("src/index.ts");
+		expect(rememberCardExpansion).toHaveBeenCalledWith(fileAction.component);
 		expect(invalidate).toHaveBeenCalledOnce();
 		expect(requestRender).toHaveBeenLastCalledWith(true);
 	});

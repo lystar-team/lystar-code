@@ -73,10 +73,159 @@ describe("built-in apply_patch extension", () => {
 				dir,
 				patch(["*** Update File: existing.txt", "@@", "-missing", "+replacement", "*** Add File: new.txt", "+new"]),
 			),
-		).rejects.toThrow("Could not find");
+		).rejects.toThrow("Could not apply patch");
 
 		expect(await readFile(join(dir, "existing.txt"), "utf-8")).toBe("original\n");
 		await expect(readFile(join(dir, "new.txt"), "utf-8")).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("uses @@ context to disambiguate repeated code", async () => {
+		const dir = await createTempDir();
+		await writeFile(
+			join(dir, "functions.ts"),
+			"function first() {\n\treturn 1;\n}\n\nfunction second() {\n\treturn 1;\n}\n",
+			"utf-8",
+		);
+
+		await executePatch(
+			dir,
+			patch(["*** Update File: functions.ts", "@@ function second() {", "-\treturn 1;", "+\treturn 2;"]),
+		);
+
+		expect(await readFile(join(dir, "functions.ts"), "utf-8")).toBe(
+			"function first() {\n\treturn 1;\n}\n\nfunction second() {\n\treturn 2;\n}\n",
+		);
+	});
+
+	it("supports consecutive @@ context headers", async () => {
+		const dir = await createTempDir();
+		await writeFile(
+			join(dir, "nested.ts"),
+			"class Example {\n\tfirst() {}\n\tsecond() {\n\t\treturn 1;\n\t}\n}\n",
+			"utf-8",
+		);
+
+		await executePatch(
+			dir,
+			patch([
+				"*** Update File: nested.ts",
+				"@@ class Example {",
+				"@@ \tsecond() {",
+				"-\t\treturn 1;",
+				"+\t\treturn 2;",
+			]),
+		);
+
+		expect(await readFile(join(dir, "nested.ts"), "utf-8")).toContain("\t\treturn 2;");
+	});
+
+	it("locates later hunks only after earlier hunks", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "ordered.txt"), "target\nmiddle\ntarget\n", "utf-8");
+
+		await executePatch(
+			dir,
+			patch([
+				"*** Update File: ordered.txt",
+				"@@",
+				" target",
+				" middle",
+				"+after middle",
+				"@@",
+				" target",
+				"+after second",
+			]),
+		);
+
+		expect(await readFile(join(dir, "ordered.txt"), "utf-8")).toBe(
+			"target\nmiddle\nafter middle\ntarget\nafter second\n",
+		);
+	});
+
+	it("matches context with trailing whitespace without rewriting untouched lines", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "whitespace.txt"), "before   \ntarget  \nafter   \n", "utf-8");
+
+		await executePatch(
+			dir,
+			patch(["*** Update File: whitespace.txt", "@@", " before", "-target", "+changed", " after"]),
+		);
+
+		expect(await readFile(join(dir, "whitespace.txt"), "utf-8")).toBe("before   \nchanged\nafter   \n");
+	});
+
+	it("supports pure additions with a unique context or end-of-file marker", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "insert.txt"), "header\nbody\n", "utf-8");
+
+		await executePatch(
+			dir,
+			patch(["*** Update File: insert.txt", "@@ header", "+after header", "@@", "+footer", "*** End of File"]),
+		);
+
+		expect(await readFile(join(dir, "insert.txt"), "utf-8")).toBe("header\nafter header\nbody\nfooter\n");
+	});
+
+	it("rejects a pure addition without a stable insertion point", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "insert.txt"), "body\n", "utf-8");
+
+		await expect(executePatch(dir, patch(["*** Update File: insert.txt", "@@", "+floating"]))).rejects.toThrow(
+			"only adds lines but has no @@ context or *** End of File marker",
+		);
+		expect(await readFile(join(dir, "insert.txt"), "utf-8")).toBe("body\n");
+	});
+
+	it("requires ambiguous hunks to include stable context", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "duplicate.txt"), "target\nmiddle\ntarget\n", "utf-8");
+
+		await expect(
+			executePatch(dir, patch(["*** Update File: duplicate.txt", "@@", "-target", "+changed"])),
+		).rejects.toThrow("matched 2 locations at lines 1, 3");
+		expect(await readFile(join(dir, "duplicate.txt"), "utf-8")).toBe("target\nmiddle\ntarget\n");
+	});
+
+	it("rejects no-op update hunks without writing", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "noop.txt"), "same\n", "utf-8");
+
+		await expect(executePatch(dir, patch(["*** Update File: noop.txt", "@@", "-same", "+same"]))).rejects.toThrow(
+			"hunk 1 does not change the file",
+		);
+		expect(await readFile(join(dir, "noop.txt"), "utf-8")).toBe("same\n");
+	});
+
+	it("rejects a no-op hunk even when another hunk would change the file", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "mixed-noop.txt"), "same\nchange\n", "utf-8");
+
+		await expect(
+			executePatch(
+				dir,
+				patch(["*** Update File: mixed-noop.txt", "@@", "-same", "+same", "@@", "-change", "+changed"]),
+			),
+		).rejects.toThrow("hunk 1 does not change the file");
+		expect(await readFile(join(dir, "mixed-noop.txt"), "utf-8")).toBe("same\nchange\n");
+	});
+
+	it("rejects a hunk whose fuzzy match already has the requested content", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "fuzzy-noop.txt"), "\u201ctarget\u201d\n", "utf-8");
+
+		await expect(
+			executePatch(dir, patch(["*** Update File: fuzzy-noop.txt", "@@", '-"target"', "+\u201ctarget\u201d"])),
+		).rejects.toThrow("hunk 1 does not change the file");
+		expect(await readFile(join(dir, "fuzzy-noop.txt"), "utf-8")).toBe("\u201ctarget\u201d\n");
+	});
+
+	it("deletes the only line without leaving an empty line", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "empty.txt"), "remove\n", "utf-8");
+
+		await executePatch(dir, patch(["*** Update File: empty.txt", "@@", "-remove"]));
+
+		expect(await readFile(join(dir, "empty.txt"), "utf-8")).toBe("");
 	});
 
 	it("rolls back prior writes when a later write fails", async () => {
@@ -113,6 +262,12 @@ describe("built-in apply_patch extension", () => {
 		expect(tool.promptSnippet).toContain("*** Begin Patch");
 		expect(tool.promptGuidelines).toContain(
 			"Use apply_patch only with the *** Begin Patch format; use edit for exact oldText/newText replacements.",
+		);
+		expect(tool.promptGuidelines).toContain(
+			"For update hunks, include 3 lines of unchanged context before and after each change when possible.",
+		);
+		expect(tool.promptGuidelines).toContain(
+			"Use an @@ function, class, or stable section header when repeated code makes the hunk ambiguous.",
 		);
 		expect(tool.prepareArguments?.({ patch: "*** Begin Patch\n*** End Patch" })).toEqual({
 			input: "*** Begin Patch\n*** End Patch",

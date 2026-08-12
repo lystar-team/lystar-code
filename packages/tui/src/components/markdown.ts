@@ -332,6 +332,14 @@ export class Markdown implements Component {
 		this.invalidate();
 	}
 
+	renderInline(text: string): string {
+		const sentinel = "\uE000";
+		const token = markdownParser.lexer(`${sentinel}${text}`)[0];
+		return token?.type === "paragraph"
+			? this.renderInlineTokens(token.tokens ?? []).replace(sentinel, "")
+			: this.applyDefaultStyle(text);
+	}
+
 	invalidate(): void {
 		this.cachedText = undefined;
 		this.cachedWidth = undefined;

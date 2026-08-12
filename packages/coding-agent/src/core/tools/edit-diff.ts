@@ -31,26 +31,61 @@ export function restoreLineEndings(text: string, ending: "\r\n" | "\n"): string 
  * - Normalize special Unicode spaces to regular space
  */
 export function normalizeForFuzzyMatch(text: string): string {
-	return (
-		text
-			.normalize("NFKC")
-			// Strip trailing whitespace per line
-			.split("\n")
-			.map((line) => line.trimEnd())
-			.join("\n")
-			// Smart single quotes → '
-			.replace(/[\u2018\u2019\u201A\u201B]/g, "'")
-			// Smart double quotes → "
-			.replace(/[\u201C\u201D\u201E\u201F]/g, '"')
-			// Various dashes/hyphens → -
-			// U+2010 hyphen, U+2011 non-breaking hyphen, U+2012 figure dash,
-			// U+2013 en-dash, U+2014 em-dash, U+2015 horizontal bar, U+2212 minus
-			.replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, "-")
-			// Special spaces → regular space
-			// U+00A0 NBSP, U+2002-U+200A various spaces, U+202F narrow NBSP,
-			// U+205F medium math space, U+3000 ideographic space
-			.replace(/[\u00A0\u2002-\u200A\u202F\u205F\u3000]/g, " ")
-	);
+	return text
+		.split("\n")
+		.map((line) => normalizeMatchSegment(line.trimEnd()))
+		.join("\n");
+}
+
+type MatchTier = "trailing" | "trimmed" | "unicode";
+
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+function normalizeMatchSegment(text: string): string {
+	return text
+		.normalize("NFKC")
+		.replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+		.replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+		.replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, "-")
+		.replace(/[\u00A0\u2002-\u200A\u202F\u205F\u3000]/g, " ");
+}
+
+function createMatchView(content: string, tier: MatchTier): MatchView {
+	let text = "";
+	const boundaries: Array<number | undefined> = [0];
+	let lineStart = 0;
+
+	while (lineStart < content.length) {
+		const newline = content.indexOf("\n", lineStart);
+		const lineEnd = newline === -1 ? content.length : newline;
+		const line = content.slice(lineStart, lineEnd);
+		const leading = tier === "trailing" ? 0 : line.length - line.trimStart().length;
+		const trailing = line.trimEnd().length;
+		const keptStart = lineStart + Math.min(leading, trailing);
+		const keptEnd = lineStart + trailing;
+
+		for (const segment of graphemeSegmenter.segment(content.slice(keptStart, keptEnd))) {
+			const originalStart = keptStart + segment.index;
+			const originalEnd = originalStart + segment.segment.length;
+			const normalized = tier === "unicode" ? normalizeMatchSegment(segment.segment) : segment.segment;
+			boundaries[text.length] = originalStart;
+			text += normalized;
+			while (boundaries.length < text.length) boundaries.push(undefined);
+			boundaries.push(originalEnd);
+		}
+
+		if (newline === -1) {
+			boundaries[text.length] = keptEnd;
+			break;
+		}
+		boundaries[text.length] = newline;
+		text += "\n";
+		boundaries.push(newline + 1);
+		lineStart = newline + 1;
+	}
+
+	if (content.length === 0) boundaries[0] = 0;
+	return { text, boundaries };
 }
 
 function splitLinesWithEndings(content: string): string[] {
@@ -67,6 +102,11 @@ interface MatchedEdit {
 	matchIndex: number;
 	matchLength: number;
 	newText: string;
+}
+
+interface MatchView {
+	text: string;
+	boundaries: Array<number | undefined>;
 }
 
 type TextReplacement = Pick<MatchedEdit, "matchIndex" | "matchLength" | "newText">;
@@ -285,11 +325,11 @@ function getLineNumber(offset: number, lineStarts: number[]): number {
 function getNotFoundError(path: string, editIndex: number, totalEdits: number): Error {
 	if (totalEdits === 1) {
 		return new Error(
-			`Could not find the exact text in ${path}. The old text must match exactly including all whitespace and newlines.`,
+			`Could not find the exact text in ${path}. Tried exact matching, whitespace-tolerant matching, and Unicode punctuation normalization.\nNo changes were written. Re-read the target region and retry with unique oldText.`,
 		);
 	}
 	return new Error(
-		`Could not find edits[${editIndex}] in ${path}. The oldText must match exactly including all whitespace and newlines.`,
+		`Could not find edits[${editIndex}] in ${path}. Tried exact matching, whitespace-tolerant matching, and Unicode punctuation normalization.\nNo changes were written. Re-read the target region and retry with unique oldText.`,
 	);
 }
 
@@ -312,20 +352,56 @@ function getEmptyOldTextError(path: string, editIndex: number, totalEdits: numbe
 function getNoChangeError(path: string, totalEdits: number): Error {
 	if (totalEdits === 1) {
 		return new Error(
-			`No changes made to ${path}. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected.`,
+			`No changes made to ${path}. The replacement produced identical content.\nNo changes were written. Re-read the target region and confirm whether the requested change already exists.`,
 		);
 	}
-	return new Error(`No changes made to ${path}. The replacements produced identical content.`);
+	return new Error(
+		`No changes made to ${path}. The replacements produced identical content.\nNo changes were written. Re-read the target regions and confirm whether the requested changes already exist.`,
+	);
+}
+
+function findEditMatch(
+	content: string,
+	oldText: string,
+	path: string,
+	editIndex: number,
+	totalEdits: number,
+): MatchedEdit {
+	const lineStarts = getLineStarts(content);
+	const exactMatches = findAllOccurrences(content, oldText);
+	if (exactMatches.length > 1) throw getDuplicateError(path, editIndex, exactMatches, lineStarts);
+	if (exactMatches.length === 1) {
+		return { editIndex, matchIndex: exactMatches[0], matchLength: oldText.length, newText: "" };
+	}
+
+	for (const tier of ["trailing", "trimmed", "unicode"] as const) {
+		const contentView = createMatchView(content, tier);
+		const matchText = createMatchView(oldText, tier).text;
+		if (!matchText) continue;
+		const matches = findAllOccurrences(contentView.text, matchText).filter(
+			(offset) =>
+				contentView.boundaries[offset] !== undefined &&
+				contentView.boundaries[offset + matchText.length] !== undefined,
+		);
+		const originalOffsets = matches.map((offset) => contentView.boundaries[offset] ?? content.length);
+		if (matches.length > 1) throw getDuplicateError(path, editIndex, originalOffsets, lineStarts);
+		if (matches.length === 1) {
+			const start = contentView.boundaries[matches[0]] ?? content.length;
+			const end = contentView.boundaries[matches[0] + matchText.length] ?? content.length;
+			return { editIndex, matchIndex: start, matchLength: end - start, newText: "" };
+		}
+	}
+
+	throw getNotFoundError(path, editIndex, totalEdits);
 }
 
 /**
  * Apply one or more exact-text replacements to LF-normalized content.
  *
  * All edits are matched against the same original content. Replacements are
- * then applied in reverse order so offsets remain stable. If any edit needs
- * fuzzy matching, the operation runs in fuzzy-normalized content space and then
- * overlays those line-level changes onto the original content so unchanged line
- * blocks keep their original bytes.
+ * then applied in reverse order so offsets remain stable. Each edit chooses its
+ * own matching tier, and fuzzy matches are mapped back to original offsets so
+ * unrelated edits and untouched text keep their original bytes.
  */
 export function applyEditsToNormalizedContent(
 	normalizedContent: string,
@@ -343,31 +419,10 @@ export function applyEditsToNormalizedContent(
 		}
 	}
 
-	const initialMatches = normalizedEdits.map((edit) => fuzzyFindText(normalizedContent, edit.oldText));
-	const usedFuzzyMatch = initialMatches.some((match) => match.usedFuzzyMatch);
-	const replacementBaseContent = usedFuzzyMatch ? normalizeForFuzzyMatch(normalizedContent) : normalizedContent;
-	const replacementLineStarts = getLineStarts(replacementBaseContent);
-
-	const matchedEdits: MatchedEdit[] = [];
-	for (let i = 0; i < normalizedEdits.length; i++) {
-		const edit = normalizedEdits[i];
-		const matchText = usedFuzzyMatch ? normalizeForFuzzyMatch(edit.oldText) : edit.oldText;
-		const matchOffsets = findAllOccurrences(replacementBaseContent, matchText);
-		if (matchOffsets.length === 0) {
-			throw getNotFoundError(path, i, normalizedEdits.length);
-		}
-
-		if (matchOffsets.length > 1) {
-			throw getDuplicateError(path, i, matchOffsets, replacementLineStarts);
-		}
-
-		matchedEdits.push({
-			editIndex: i,
-			matchIndex: matchOffsets[0],
-			matchLength: matchText.length,
-			newText: edit.newText,
-		});
-	}
+	const matchedEdits = normalizedEdits.map((edit, index) => ({
+		...findEditMatch(normalizedContent, edit.oldText, path, index, normalizedEdits.length),
+		newText: edit.newText,
+	}));
 
 	matchedEdits.sort((a, b) => a.matchIndex - b.matchIndex);
 	for (let i = 1; i < matchedEdits.length; i++) {
@@ -381,9 +436,7 @@ export function applyEditsToNormalizedContent(
 	}
 
 	const baseContent = normalizedContent;
-	const newContent = usedFuzzyMatch
-		? applyReplacementsPreservingUnchangedLines(normalizedContent, replacementBaseContent, matchedEdits)
-		: applyReplacements(replacementBaseContent, matchedEdits);
+	const newContent = applyReplacements(normalizedContent, matchedEdits);
 
 	if (baseContent === newContent) {
 		throw getNoChangeError(path, normalizedEdits.length);

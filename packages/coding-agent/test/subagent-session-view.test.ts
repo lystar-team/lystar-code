@@ -1,9 +1,12 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { type Component, Text, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, Text, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
+import { createApplyPatchToolDefinition } from "../src/extensions/apply-patch/index.ts";
 import type { InteractiveCardAction } from "../src/modes/interactive/components/interactive-card.ts";
 import { SubagentSessionViewComponent } from "../src/modes/interactive/components/subagent-session-view.ts";
+import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { stripAnsi } from "../src/utils/ansi.ts";
 
 initTheme("dark");
 
@@ -168,5 +171,69 @@ describe("SubagentSessionViewComponent", () => {
 		view.handleInput("\x1b[<0;1;4M");
 		view.handleInput("\x1b[<0;1;4m");
 		expect(openedAgent).toBe("worker");
+	});
+
+	it("collapses an apply_patch file from its Diff body without collapsing the outer tool", () => {
+		const tool = new ToolExecutionComponent(
+			"apply_patch",
+			"subagent-apply-patch",
+			{ input: "*** Begin Patch\n*** End Patch" },
+			{},
+			createApplyPatchToolDefinition(),
+			{ requestRender: () => {} } as unknown as TUI,
+			process.cwd(),
+		);
+		tool.updateResult({
+			content: [{ type: "text", text: "Applied patch to 1 file(s)." }],
+			details: {
+				files: [
+					{
+						path: "src/index.ts",
+						operation: "update",
+						additions: 1,
+						deletions: 1,
+						diff: "- 1 before\n+ 1 after",
+					},
+				],
+			},
+			isError: false,
+		});
+		tool.setExpanded(true);
+		const fileRow = tool
+			.render(80)
+			.map(stripAnsi)
+			.findIndex((line) => line.includes("src/index.ts"));
+		const fileAction = tool.getCardClickActionAtRow(fileRow);
+		if (fileAction?.type !== "toggle") throw new Error("expected apply_patch file toggle");
+		fileAction.component.setExpanded(true);
+		const detailRow = tool
+			.render(80)
+			.map(stripAnsi)
+			.findIndex((line) => line.includes("before"));
+		expect(detailRow).toBeGreaterThan(fileRow);
+
+		const view = new SubagentSessionViewComponent({
+			agent: "worker",
+			status: "已完成",
+			readOnly: true,
+			getHeight: () => 30,
+			requestRender: () => {},
+			renderMessages: () => [tool],
+			onOpenSubagent: () => {},
+			getLinkAtScreenPosition: () => undefined,
+			openLinkAtScreenPosition: () => false,
+			onReturn: () => {},
+			onAbort: () => {},
+			overlayTop: 1,
+		});
+		view.setMessages([{ role: "user", content: "x" }] as AgentMessage[]);
+		view.render(80);
+		const sgrRow = detailRow + 4;
+		view.handleInput(`\x1b[<0;1;${sgrRow}M`);
+		view.handleInput(`\x1b[<0;1;${sgrRow}m`);
+
+		expect(tool.isExpanded()).toBe(true);
+		expect(stripAnsi(tool.render(80).join("\n"))).not.toContain("before");
+		expect(stripAnsi(tool.render(80).join("\n"))).toContain("src/index.ts");
 	});
 });

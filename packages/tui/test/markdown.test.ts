@@ -38,6 +38,25 @@ function stripAnsi(line: string): string {
 }
 
 describe("Markdown component", () => {
+	describe("Inline rendering", () => {
+		it("renders inline styles without applying block syntax", () => {
+			const markdown = new Markdown("", 0, 0, defaultMarkdownTheme);
+			const rendered = markdown.renderInline("# **bold** `code` ~~old~~");
+
+			assert.strictEqual(stripAnsi(rendered), "# bold code old");
+			assert.ok(rendered.includes(chalk.bold("bold")));
+			assert.ok(rendered.includes(chalk.yellow("code")));
+			assert.ok(rendered.includes(chalk.strikethrough("old")));
+		});
+
+		it("keeps incomplete inline markers readable", () => {
+			const markdown = new Markdown("", 0, 0, defaultMarkdownTheme);
+
+			assert.strictEqual(stripAnsi(markdown.renderInline("**正在分析")), "**正在分析");
+			assert.strictEqual(stripAnsi(markdown.renderInline("~~ old ~~")), "~~ old ~~");
+		});
+	});
+
 	describe("Transforms", () => {
 		it("reports timings for each width and cache hits without rerunning transforms", () => {
 			const profiles: Array<{

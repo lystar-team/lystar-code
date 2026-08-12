@@ -1,5 +1,5 @@
-import { type Component, sliceByColumn, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { theme } from "../theme/theme.ts";
+import { type Component, Markdown, sliceByColumn, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { uiGlyphs } from "../ui-glyphs.ts";
 
 export type WorkspaceActivityPhase =
@@ -49,16 +49,19 @@ function phaseLabel(state: WorkspaceActivityState): string {
 	}
 }
 
-function truncateFromStart(text: string, width: number): string {
+function truncateFromStart(text: string, width: number, ellipsis = "…"): string {
 	if (visibleWidth(text) <= width) return text;
-	if (width <= 1) return "…";
-	return `…${sliceByColumn(text, visibleWidth(text) - width + 1, width - 1, true)}`;
+	if (width <= 1) return truncateToWidth(ellipsis, width, "");
+	return `${ellipsis}${sliceByColumn(text, visibleWidth(text) - width + 1, width - 1, true)}`;
 }
 
 export class WorkspaceActivityBar implements Component {
 	private state: WorkspaceActivityState | undefined;
 	private timer: ReturnType<typeof setInterval> | undefined;
 	private readonly requestRender: () => void;
+	private readonly inlineMarkdown = new Markdown("", 0, 0, getMarkdownTheme(), {
+		color: (text) => theme.fg("text", text),
+	});
 
 	constructor(requestRender: () => void) {
 		this.requestRender = requestRender;
@@ -103,11 +106,11 @@ export class WorkspaceActivityBar implements Component {
 			const prefixText = `${prefix} `;
 			if (maxWidth <= visibleWidth(prefixText)) return truncateToWidth(prefix, maxWidth, "");
 			const labelWidth = Math.max(1, maxWidth - visibleWidth(prefixText));
-			const fittedLabel =
-				state.phase === "thinking" && state.thinking
-					? truncateFromStart(labelText, labelWidth)
-					: truncateToWidth(labelText, labelWidth, "…");
-			return `${prefixText}${theme.fg(labelColor, fittedLabel)}`;
+			if (state.phase === "thinking" && state.thinking) {
+				const label = this.inlineMarkdown.renderInline(labelText);
+				return `${prefixText}${truncateFromStart(label, labelWidth, theme.fg("text", "…"))}`;
+			}
+			return `${prefixText}${theme.fg(labelColor, truncateToWidth(labelText, labelWidth, "…"))}`;
 		};
 		if (!suffix || visibleWidth(suffix) + 2 >= width) return [renderMain(width)];
 		const main = renderMain(Math.max(1, width - visibleWidth(suffix) - 1));

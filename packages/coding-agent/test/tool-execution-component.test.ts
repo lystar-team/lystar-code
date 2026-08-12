@@ -195,6 +195,14 @@ describe("ToolExecutionComponent parity", () => {
 		expect(oneExpanded).toContain("after");
 		expect(oneExpanded).not.toContain("created");
 		expect(oneExpanded).not.toContain("removed");
+		const detailLines = component.render(100).map(stripAnsi);
+		const detailRow = detailLines.findIndex((line) => line.includes("before"));
+		const detailAction = component.getCardClickActionAtRow(detailRow);
+		expect(detailAction).toEqual({ type: "toggle", component: action.component });
+		if (detailAction?.type !== "toggle") throw new Error("expected apply_patch detail toggle");
+		detailAction.component.setExpanded(false);
+		expect(component.isExpanded()).toBe(true);
+		expect(stripAnsi(component.render(100).join("\n"))).not.toContain("before");
 
 		for (const child of component.getChildCards()) child.setExpanded(true);
 		const expanded = stripAnsi(component.render(100).join("\n"));

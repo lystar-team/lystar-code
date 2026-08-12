@@ -1121,6 +1121,21 @@ describe("edit tool fuzzy matching", () => {
 		expect(readFileSync(testFile, "utf-8")).toBe("console.log('world');\nhello universe\n");
 	});
 
+	it("should choose the matching tier independently for each edit", async () => {
+		const testFile = join(testDir, "fuzzy-independent-tiers.txt");
+		writeFileSync(testFile, '\u201ctarget\u201d\n"exact"\n\u201cexact\u201d\n');
+
+		await editTool.execute("test-fuzzy-independent-tiers", {
+			path: testFile,
+			edits: [
+				{ oldText: '"target"', newText: '"changed"' },
+				{ oldText: "\u201cexact\u201d", newText: "precise" },
+			],
+		});
+
+		expect(readFileSync(testFile, "utf-8")).toBe('"changed"\n"exact"\nprecise\n');
+	});
+
 	it("should preserve the correct occurrence when fuzzy replacement equals a nearby line", async () => {
 		const testFile = join(testDir, "fuzzy-preserve-duplicate-line.txt");
 		const originalContent = ["replace me\u0020\u0020\u0020", "after\u0020\u0020\u0020", ""].join("\n");

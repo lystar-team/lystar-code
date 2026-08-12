@@ -4,10 +4,9 @@ import { Container, Text, truncateToWidth, visibleWidth } from "@earendil-works/
 import { type Static, Type } from "typebox";
 import type { ExtensionAPI, ToolDefinition } from "../../core/extensions/types.ts";
 import {
-	applyEditsToNormalizedContent,
 	detectLineEnding,
-	type Edit,
 	generateDiffString,
+	normalizeForFuzzyMatch,
 	normalizeToLF,
 	restoreLineEndings,
 	stripBom,
@@ -29,10 +28,25 @@ const applyPatchSchema = Type.Object({
 
 type ApplyPatchInput = Static<typeof applyPatchSchema>;
 
+type PatchLine = { kind: "context" | "delete" | "add"; text: string };
+
+type UpdateFileChunk = {
+	context?: string;
+	lines: PatchLine[];
+	endOfFile: boolean;
+};
+
 type PatchOperation =
 	| { kind: "add"; path: string; content: string }
-	| { kind: "update"; path: string; edits: Edit[] }
+	| { kind: "update"; path: string; chunks: UpdateFileChunk[] }
 	| { kind: "delete"; path: string };
+
+type LineReplacement = {
+	chunkIndex: number;
+	start: number;
+	deleteCount: number;
+	newLines: string[];
+};
 
 type StagedPatchFile = {
 	operation: PatchOperation;
@@ -99,7 +113,7 @@ class ApplyPatchFileCard implements InteractiveCard {
 	}
 
 	getCardClickActionAtRow(row: number): InteractiveCardAction | undefined {
-		return this.file.diff && row === 0 && row < this.lastRenderedLineCount
+		return this.file.diff && row >= 0 && row < this.lastRenderedLineCount
 			? { type: "toggle", component: this }
 			: undefined;
 	}
@@ -244,13 +258,14 @@ function parseAddFile(lines: string[], start: number, path: string): { operation
 }
 
 function parseUpdateFile(lines: string[], start: number, path: string): { operation: PatchOperation; next: number } {
-	const edits: Edit[] = [];
+	const chunks: UpdateFileChunk[] = [];
 	let index = start;
 	while (index < lines.length && !lines[index].startsWith("*** ")) {
 		if (!lines[index].startsWith("@@")) throw patchError(`Update File ${path} must use @@ sections.`);
+		const context = lines[index] === "@@" ? undefined : lines[index].slice(2).trim() || undefined;
 		index++;
-		const oldText: string[] = [];
-		const newText: string[] = [];
+		const chunkLines: PatchLine[] = [];
+		let endOfFile = false;
 		while (index < lines.length && !lines[index].startsWith("@@") && !lines[index].startsWith("*** ")) {
 			const line = lines[index];
 			if (line.startsWith("\\ No newline at end of file")) {
@@ -260,16 +275,22 @@ function parseUpdateFile(lines: string[], start: number, path: string): { operat
 			if (!/^[ +-]/.test(line)) {
 				throw patchError(`Update File ${path} contains a line without a space, +, or - prefix.`);
 			}
-			const text = line.slice(1);
-			if (line[0] !== "+") oldText.push(text);
-			if (line[0] !== "-") newText.push(text);
+			chunkLines.push({
+				kind: line[0] === " " ? "context" : line[0] === "+" ? "add" : "delete",
+				text: line.slice(1),
+			});
 			index++;
 		}
-		if (oldText.length === 0) throw patchError(`Update File ${path} has a section without original text.`);
-		edits.push({ oldText: oldText.join("\n"), newText: newText.join("\n") });
+		if (lines[index] === "*** End of File") {
+			endOfFile = true;
+			index++;
+			while (lines[index] === "") index++;
+		}
+		if (chunkLines.length === 0 && !context) throw patchError(`Update File ${path} has an empty @@ section.`);
+		chunks.push({ context, lines: chunkLines, endOfFile });
 	}
-	if (edits.length === 0) throw patchError(`Update File ${path} has no @@ sections.`);
-	return { operation: { kind: "update", path, edits }, next: index };
+	if (chunks.length === 0) throw patchError(`Update File ${path} has no @@ sections.`);
+	return { operation: { kind: "update", path, chunks }, next: index };
 }
 
 export function parseApplyPatch(input: string): PatchOperation[] {
@@ -336,6 +357,204 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 	if (signal?.aborted) throw new Error("Operation aborted");
 }
 
+type PatchMatchTier = "exact" | "trailing" | "trimmed" | "unicode";
+
+function normalizePatchLine(line: string, tier: PatchMatchTier): string {
+	if (tier === "exact") return line;
+	if (tier === "trailing") return line.trimEnd();
+	if (tier === "trimmed") return line.trim();
+	return normalizeForFuzzyMatch(line).trim();
+}
+
+function findSequenceCandidates(
+	lines: string[],
+	pattern: string[],
+	start: number,
+	tier: PatchMatchTier,
+	endOfFile: boolean,
+): number[] {
+	if (pattern.length === 0 || pattern.length > lines.length) return [];
+	const lastStart = lines.length - pattern.length;
+	const first = endOfFile ? lastStart : start;
+	const last = endOfFile ? lastStart : lastStart;
+	if (first < start || first < 0) return [];
+	const matches: number[] = [];
+	for (let index = first; index <= last; index++) {
+		let matched = true;
+		for (let patternIndex = 0; patternIndex < pattern.length; patternIndex++) {
+			if (
+				normalizePatchLine(lines[index + patternIndex], tier) !== normalizePatchLine(pattern[patternIndex], tier)
+			) {
+				matched = false;
+				break;
+			}
+		}
+		if (matched) matches.push(index);
+	}
+	return matches;
+}
+
+function findUniqueSequence(
+	lines: string[],
+	pattern: string[],
+	start: number,
+	path: string,
+	label: string,
+	endOfFile = false,
+): number {
+	for (const tier of ["exact", "trailing", "trimmed", "unicode"] as const) {
+		const matches = findSequenceCandidates(lines, pattern, start, tier, endOfFile);
+		if (matches.length === 1) return matches[0];
+		if (matches.length > 1) {
+			const displayedLines = matches.slice(0, 5).map((line) => line + 1);
+			const remaining = matches.length - displayedLines.length;
+			throw new Error(
+				`Could not apply patch to ${path}: ${label} matched ${matches.length} locations at lines ${displayedLines.join(", ")}${remaining > 0 ? ` +${remaining} more` : ""}.\nAdd stable context or an @@ function/class header, then retry.\nNo changes were written.`,
+			);
+		}
+	}
+	throw new Error(
+		`Could not apply patch to ${path}: ${label} was not found starting at line ${start + 1}. Tried exact matching, whitespace-tolerant matching, and Unicode punctuation normalization.\nNo changes were written.`,
+	);
+}
+
+function appendChunkReplacements(
+	replacements: LineReplacement[],
+	chunk: UpdateFileChunk,
+	chunkIndex: number,
+	matchStart: number,
+): void {
+	let sourceLine = matchStart;
+	let pending: LineReplacement | undefined;
+	const flush = (): void => {
+		if (pending) replacements.push(pending);
+		pending = undefined;
+	};
+
+	for (const line of chunk.lines) {
+		if (line.kind === "context") {
+			flush();
+			sourceLine++;
+			continue;
+		}
+		pending ??= { chunkIndex, start: sourceLine, deleteCount: 0, newLines: [] };
+		if (line.kind === "delete") {
+			pending.deleteCount++;
+			sourceLine++;
+		} else {
+			pending.newLines.push(line.text);
+		}
+	}
+	flush();
+}
+
+function chunkChangesContent(originalLines: string[], replacements: LineReplacement[], start: number): boolean {
+	const chunkReplacements = replacements.slice(start);
+	return chunkReplacements.some((replacement) => {
+		const original = originalLines.slice(replacement.start, replacement.start + replacement.deleteCount);
+		return (
+			original.length !== replacement.newLines.length ||
+			original.some((line, index) => line !== replacement.newLines[index])
+		);
+	});
+}
+
+function deriveUpdatedContent(content: string, chunks: UpdateFileChunk[], path: string): string {
+	const hasFinalNewline = content.endsWith("\n");
+	const originalLines = content.length === 0 ? [] : content.split("\n");
+	if (hasFinalNewline) originalLines.pop();
+	const replacements: LineReplacement[] = [];
+	let lineIndex = 0;
+
+	for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+		const chunk = chunks[chunkIndex];
+		if (chunk.lines.length === 0 && chunk.context) {
+			lineIndex =
+				findUniqueSequence(originalLines, [chunk.context], lineIndex, path, `hunk ${chunkIndex + 1} context`) + 1;
+			continue;
+		}
+		const oldChunkLines = chunk.lines.filter((line) => line.kind !== "add").map((line) => line.text);
+		const newChunkLines = chunk.lines.filter((line) => line.kind !== "delete").map((line) => line.text);
+		if (
+			oldChunkLines.length === newChunkLines.length &&
+			oldChunkLines.every((line, index) => line === newChunkLines[index])
+		) {
+			throw new Error(
+				`Could not apply patch to ${path}: hunk ${chunkIndex + 1} does not change the file.\nNo changes were written. Re-read the target region and confirm whether the change already exists.`,
+			);
+		}
+		if (chunk.context) {
+			lineIndex =
+				findUniqueSequence(originalLines, [chunk.context], lineIndex, path, `hunk ${chunkIndex + 1} context`) + 1;
+		}
+
+		const oldLines = oldChunkLines;
+		if (oldLines.length === 0) {
+			if (!chunk.context && !chunk.endOfFile) {
+				throw new Error(
+					`Could not apply patch to ${path}: hunk ${chunkIndex + 1} only adds lines but has no @@ context or *** End of File marker.\nNo changes were written.`,
+				);
+			}
+			const insertionLine = chunk.endOfFile ? originalLines.length : lineIndex;
+			const replacementStart = replacements.length;
+			appendChunkReplacements(replacements, chunk, chunkIndex, insertionLine);
+			if (!chunkChangesContent(originalLines, replacements, replacementStart)) {
+				throw new Error(
+					`Could not apply patch to ${path}: hunk ${chunkIndex + 1} does not change the file.\nNo changes were written. Re-read the target region and confirm whether the change already exists.`,
+				);
+			}
+			lineIndex = insertionLine;
+			continue;
+		}
+
+		const matchStart = findUniqueSequence(
+			originalLines,
+			oldLines,
+			lineIndex,
+			path,
+			`hunk ${chunkIndex + 1}`,
+			chunk.endOfFile,
+		);
+		const replacementStart = replacements.length;
+		appendChunkReplacements(replacements, chunk, chunkIndex, matchStart);
+		if (!chunkChangesContent(originalLines, replacements, replacementStart)) {
+			throw new Error(
+				`Could not apply patch to ${path}: hunk ${chunkIndex + 1} does not change the file.\nNo changes were written. Re-read the target region and confirm whether the change already exists.`,
+			);
+		}
+		lineIndex = matchStart + oldLines.length;
+	}
+
+	const ordered = [...replacements].sort(
+		(left, right) => left.start - right.start || left.chunkIndex - right.chunkIndex,
+	);
+	for (let index = 1; index < ordered.length; index++) {
+		const previous = ordered[index - 1];
+		const current = ordered[index];
+		if (
+			previous.start + previous.deleteCount > current.start ||
+			(previous.start === current.start && (previous.deleteCount === 0 || current.deleteCount === 0))
+		) {
+			throw new Error(
+				`Could not apply patch to ${path}: hunks ${previous.chunkIndex + 1} and ${current.chunkIndex + 1} overlap.\nMerge the nearby changes into one hunk.\nNo changes were written.`,
+			);
+		}
+	}
+
+	const newLines = [...originalLines];
+	for (let index = ordered.length - 1; index >= 0; index--) {
+		const replacement = ordered[index];
+		newLines.splice(replacement.start, replacement.deleteCount, ...replacement.newLines);
+	}
+	const newContent = newLines.length === 0 ? "" : newLines.join("\n") + (hasFinalNewline ? "\n" : "");
+	if (newContent === content) {
+		throw new Error(
+			`Could not apply patch to ${path}: the update produced identical content.\nNo changes were written. Re-read the target region and confirm whether the change already exists.`,
+		);
+	}
+	return newContent;
+}
+
 async function stageFiles(
 	operations: PatchOperation[],
 	cwd: string,
@@ -384,11 +603,8 @@ async function stageFiles(
 
 		const { bom, text } = stripBom(originalContent);
 		const originalEnding = detectLineEnding(text);
-		const { baseContent, newContent } = applyEditsToNormalizedContent(
-			normalizeToLF(text),
-			operation.edits,
-			operation.path,
-		);
+		const baseContent = normalizeToLF(text);
+		const newContent = deriveUpdatedContent(baseContent, operation.chunks, operation.path);
 		const stats = generateDiffString(baseContent, newContent);
 		staged.push({
 			operation,
@@ -454,6 +670,9 @@ export function createApplyPatchToolDefinition(options?: {
 		promptSnippet: "Apply a *** Begin Patch block to add, update, or delete one or more files.",
 		promptGuidelines: [
 			"Use apply_patch only with the *** Begin Patch format; use edit for exact oldText/newText replacements.",
+			"For update hunks, include 3 lines of unchanged context before and after each change when possible.",
+			"Use an @@ function, class, or stable section header when repeated code makes the hunk ambiguous.",
+			"Use separate hunks for distant changes, and re-read the target region before retrying a failed patch.",
 		],
 		parameters: applyPatchSchema,
 		prepareArguments: prepareApplyPatchArguments,

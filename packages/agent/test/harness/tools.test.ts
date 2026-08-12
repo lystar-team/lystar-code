@@ -645,6 +645,27 @@ describe("AgentHarness tools", () => {
 
 			expect(getOrThrow(await context.env.readTextFile("edit.txt"))).toBe("\uFEFFone\r\nTWO\r\n");
 		});
+
+		it("chooses the matching tier independently for each edit", async () => {
+			const context = createContext();
+			getOrThrow(await context.env.writeFile("edit.txt", '\u201ctarget\u201d\n"exact"\n\u201cexact\u201d\n'));
+
+			await createEditTool().execute(
+				"edit-independent-tiers",
+				{
+					path: "edit.txt",
+					edits: [
+						{ oldText: '"target"', newText: '"changed"' },
+						{ oldText: "\u201cexact\u201d", newText: "precise" },
+					],
+				},
+				undefined,
+				undefined,
+				context,
+			);
+
+			expect(getOrThrow(await context.env.readTextFile("edit.txt"))).toBe('"changed"\n"exact"\nprecise\n');
+		});
 	});
 
 	describe("bash", () => {
