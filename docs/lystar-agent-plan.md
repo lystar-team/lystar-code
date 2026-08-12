@@ -523,6 +523,7 @@ LYStar 不增加 MCP 配置文件、内置管理器或代理 Tool。TUI 负责�
 
 | LYStar | Pi 基线 | Pi commit | MCP Adapter | Session | Extension API |
 |---|---|---|---|---|---|
+| `0.84.1-lystar.13` | `0.84.1` | `53fa77cc...` | `2.12.1` | Pi 原 JSONL 兼容；文件修改定位、实时 Thinking 摘要和补丁卡片展开状态不改变持久 Session | Pi `0.84.1`；内置 `edit` 与 `apply_patch` 提升唯一定位和原子写入可靠性，Thinking 活动栏渲染内联 Markdown，补丁子卡正文点击不再触发外层折叠，现有 Tool 名、Provider、RPC、Protocol 与 Extension API 不变 |
 | `0.84.1-lystar.12` | `0.84.1` | `53fa77cc...` | `2.12.1` | Pi 原 JSONL 兼容；压缩摘要由持久 Session Entry 唯一重建，Thinking 内容继续保存 | Pi `0.84.1`；内置 TUI 增加补丁文件级展开、Thinking 位置设置、实时活动状态和手动滚动锁，现有 Session、Tool、Provider、RPC、Protocol 与 Extension API 不变 |
 | `0.84.1-lystar.11` | `0.84.1` | `53fa77cc...` | `2.12.1` | Pi 原 JSONL 兼容；Tool 折叠、压缩重绘、Hover 和滚动状态只存在当前 TUI 运行态 | Pi `0.84.1`；统一滚轮归一化、鼠标合帧、Tool 卡片显示与终端光标行为，现有 Session、Tool、Provider、RPC、Protocol 与 Extension API 不变 |
 | `0.84.1-lystar.10` | `0.84.1` | `53fa77cc...` | `2.12.1` | Pi 原 JSONL 兼容；卡片展开状态只保存在当前 TUI Session 运行态 | Pi `0.84.1`；统一 Tool、Web Search、摘要与 Subagent 平面卡片交互，发行仓库迁移到 `lystar-team/lystar-code`，现有 Extension API 不变 |

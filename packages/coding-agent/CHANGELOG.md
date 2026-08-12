@@ -4,6 +4,7 @@
 
 ### LYStar 适配
 
+- `0.84.1-lystar.13` 提升文件修改可靠性：`edit` 按每个编辑独立选择唯一匹配层级，`apply_patch` 保留结构化 hunk、上下文、顺序和 EOF 语义，并在全部定位及重叠校验后原子写入；实时 Thinking 使用内联 Markdown 渲染，展开的补丁文件正文点击只收起对应子卡片。Session JSONL、Tool 名、Provider、RPC、Protocol 与 Extension API 不变。
 - `0.84.1-lystar.12` 修复上下文压缩摘要重复渲染和缓存分隔线累积，补丁卡片支持文件清单与单文件 Diff 独立展开；新增 Thinking 展示位置设置和左下角实时状态，精简空闲等待行并统一 Shell/命令组图标。用户滚离底部后，流式内容和状态高度变化不再抢回自动跟随。Session、Tool、Provider、RPC、Protocol 与 Extension API 不变。
 - `0.84.1-lystar.11` 修复 Tool 组和上下文压缩后内容收缩残留旧帧，优化命令组层级间距、`read` 行号对齐、工具图标、当前目录标题、卡片 Hover 和闪烁细线光标；滚轮统一使用带小数余量和方向重置的自适应归一化，鼠标、触控板与手机终端共享一致滚动语义，高频鼠标输入按 60 FPS 合并渲染。Session、Tool、Provider、RPC、Protocol 与 Extension API 不变。
 - `0.84.1-lystar.10` 将 Tool、Web Search、摘要和 Subagent 统一为高密度平面卡片：每张卡片独立展开，连续 Tool 保持原始顺序并使用低对比分隔线，长路径按终端宽度裁切；同时将发行仓库、安装器、自动更新和 OpenRouter attribution 迁移到 `lystar-team/lystar-code`，Session、Extension API 和 Tool 协议保持不变。

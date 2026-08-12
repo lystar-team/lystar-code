@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-11T02:43:06Z
+最后核验时间：2026-08-12T14:50:24+08:00
 
 环境：
 
@@ -14,6 +14,18 @@ Linux x64
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
 ## 已通过
+
+### `0.84.1-lystar.13` 发布前核验
+
+发布事实源已更新为 `piConfig.productVersion = 0.84.1-lystar.13`，Pi workspace 包版本继续保持 `0.84.1`，发行仓库保持 `lystar-team/lystar-code`。本版让 Coding Agent 与 Agent Harness 的 `edit` 按每个编辑独立选择唯一匹配层级并映射回原文件偏移；`apply_patch` 保留结构化 hunk、`@@` 上下文、顺序和 EOF 语义，在全部定位、歧义与重叠检查通过后原子写入，逐 hunk no-op 和失败回滚继续保持零写入。实时 Thinking 使用现有 Markdown tokenizer 渲染单行内联样式，展开的补丁文件正文点击只收起对应子卡片。Session JSONL、Tool 名、Provider、RPC、Protocol 与 Extension API 不变，功能提交为 `2cef70681`。
+
+显式使用 Node.js `v22.21.1`、npm `11.11.0` 和 `NODE_TLS_REJECT_UNAUTHORIZED=1` 完成 `npm run check`、`npm run build:offline`、Unix 安装器测试和全部发布测试。TUI 全量退出码 0；AI 105 个 test files/878 项通过，25 个 files/825 项跳过；Agent Core 20 个 files/403 项通过、1 项跳过；Coding Agent 237 个 files/2111 项通过，6 个 files/49 项跳过。Unix 安装器的安装、PATH、校验、失败回滚、卸载和模板物化通过；`git diff --check` 通过。CodeGraph 已同步到 1229 个文件、20707 个节点和 77332 条边，索引无 pending changes。
+
+从 Bun 官方 `bun-v1.3.9` Release 下载 Linux x64 资产，`bun-linux-x64.zip` SHA-256 `4680e80e44e32aa718560ceae85d22ecfbf2efb8f3641782e35e4b7efd65a1aa` 与官方 `SHASUMS256.txt` 一致。使用该 Bun `1.3.9` 构建 Darwin ARM64/x64 和 Linux ARM64/x64 四个候选包，全部编入 3210 个模块，`SHA256SUMS` 四项通过；manifest 版本为 `0.84.1-lystar.13`、Pi 版本为 `0.84.1`、仓库为 `lystar-team/lystar-code`，四个平台文件名、大小和 SHA-256 与实际归档一致。Linux x64 候选包 SHA-256 为 `510704335b7801fa98d67e1ff4ced341b36140fce214025d3dea2adf0402504b`，大小为 `46510448` 字节。
+
+四个归档的 Mach-O/ELF 架构、`lc`/`lystar`、许可证、内置 Image Gen Skill 和旧 `la` 排除检查通过；Linux x64 候选包的 `lc --version`、`lystar --version`、中文帮助和 `PI_OFFLINE=1 lc --list-models` 通过。隔离 HOME 首次启动显示主题向导，按 `Escape` 跳过后进入完整工作区；候选包在独立 `80x24`、`80x8` 和 `120x36` tmux PTY 中均保留品牌、中文输入区和快捷栏，最大行宽分别为 79、79 和 119，没有越界，`/quit` 正常退出，临时 tmux server 已关闭。
+
+当前 Linux 主机没有 MSVC、Windows SDK、ConPTY 或 WebView2 Runtime；Windows x64 原生构建、终端截图、托管 MinGit 和 PowerShell 5.1 安装链必须由本次 release commit 推送后的 main CI 与 Release Windows job 给出最终证据。物理 macOS/Windows 桌面交互本轮未实机运行，本地证据覆盖标准 Linux PTY、四个平台归档格式与架构；正式 tag 只能在同一 release commit 的 main push CI 全部成功后创建。
 
 ### `0.84.1-lystar.12` 发布前核验
 
