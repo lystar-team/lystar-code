@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-12T14:50:24+08:00
+最后核验时间：2026-08-12T15:08:14+08:00
 
 环境：
 
@@ -26,6 +26,14 @@ Linux x64
 四个归档的 Mach-O/ELF 架构、`lc`/`lystar`、许可证、内置 Image Gen Skill 和旧 `la` 排除检查通过；Linux x64 候选包的 `lc --version`、`lystar --version`、中文帮助和 `PI_OFFLINE=1 lc --list-models` 通过。隔离 HOME 首次启动显示主题向导，按 `Escape` 跳过后进入完整工作区；候选包在独立 `80x24`、`80x8` 和 `120x36` tmux PTY 中均保留品牌、中文输入区和快捷栏，最大行宽分别为 79、79 和 119，没有越界，`/quit` 正常退出，临时 tmux server 已关闭。
 
 当前 Linux 主机没有 MSVC、Windows SDK、ConPTY 或 WebView2 Runtime；Windows x64 原生构建、终端截图、托管 MinGit 和 PowerShell 5.1 安装链必须由本次 release commit 推送后的 main CI 与 Release Windows job 给出最终证据。物理 macOS/Windows 桌面交互本轮未实机运行，本地证据覆盖标准 Linux PTY、四个平台归档格式与架构；正式 tag 只能在同一 release commit 的 main push CI 全部成功后创建。
+
+`main` commit `608dcc5b55f88623627395c78b95f43fc4bbda64` 的 CI run `31571711551` 七个 job 全部成功；TUI、AI、Agent Core、Coding Agent 双分片、源码构建和 Unix 安装器通过，`windows-installer` 完成 Windows x64 原生构建、托管 MinGit Bash、终端 Host/Icon 与截图，以及 PowerShell 5.1 安装器核验。
+
+annotated Tag `v0.84.1-lystar.13` 的 Tag 对象为 `13412d6c97579848620632522b662d386f787c42`，本地和远端解引用后均固定指向 `608dcc5b55f88623627395c78b95f43fc4bbda64`。Release workflow run `31571986253` 成功，完成同 commit main CI 绑定、Bun 1.3.9 Unix/Windows 原生五平台打包、SHA/manifest 合并、artifact attestation 和公开发布。GitHub Release 于 `2026-08-12T07:01:03Z` 发布，为非草稿、非预发布正式版本，共有 10 个公开资产，包括五个平台包、Unix/PowerShell/CMD 三个安装器、`SHA256SUMS` 和 `release-manifest.json`。
+
+公开五平台包重新下载后 `SHA256SUMS` 五项全部通过，文件大小和 SHA 与公开 manifest 一致；manifest 版本为 `0.84.1-lystar.13`、Pi 版本为 `0.84.1`、仓库为 `lystar-team/lystar-code`。公开 Linux x64 包 SHA-256 为 `b1a10bb898353f12ceb1355fd5101f20fe09f62bf3fd629dfa05f46033773ba5`，大小为 `46509004` 字节；Windows x64 包 SHA-256 为 `0b11df2bc368bcac96e4f40c5a57bae093b4686a80ac198af7df47af844aeb71`，大小为 `64700837` 字节。Unix/Windows 归档的可执行入口、许可证和 Image Gen Skill 资源检查通过，Windows 包不包含旧 `la.exe`；GitHub Attestations API 按 Linux x64 digest 返回 1 条 `application/vnd.dev.sigstore.bundle.v0.3+json` provenance。
+
+本机通过公开 `lc update --self` 从 `0.84.1-lystar.12` 原子更新到 `0.84.1-lystar.13`；`current` 指向 `.13`，`previous` 保留 `.12`，再次执行更新显示已是最新版本，`lc` 与 `lystar` 均报告 `0.84.1-lystar.13`，旧 `.12` 可执行文件仍可直接运行。安装后的公开版本在独立 `80x24` tmux PTY 中打开完整 LYStar Code 工作区和 `/settings`，最大行宽 79，无越界，`/quit` 正常退出；临时 tmux server 已关闭。
 
 ### `0.84.1-lystar.12` 发布前核验
 
