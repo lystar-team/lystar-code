@@ -2018,7 +2018,7 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "lystar-code-gui"
-version = "0.84.1-lystar-gui.3"
+version = "0.84.1-lystar-gui.4"
 dependencies = [
  "serde",
  "serde_json",

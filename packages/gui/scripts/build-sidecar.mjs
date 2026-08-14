@@ -24,6 +24,9 @@ const repositoryRoot = resolve(guiDir, "../..");
 const codingAgentDir = join(repositoryRoot, "packages/coding-agent");
 const binariesDir = join(guiDir, "src-tauri/binaries");
 const resourcesDir = join(guiDir, "src-tauri/resources");
+const prebuiltRemoteHostsDir = process.env.PI_GUI_PREBUILT_REMOTE_HOSTS_DIR
+	? resolve(process.env.PI_GUI_PREBUILT_REMOTE_HOSTS_DIR)
+	: undefined;
 const hostPayloadHeader = Buffer.from("LYSTAR-GUI-BINARY/1\n");
 const hostPackage = JSON.parse(readFileSync(join(repositoryRoot, "packages/gui-host/package.json"), "utf8"));
 const codingAgentPackage = JSON.parse(readFileSync(join(codingAgentDir, "package.json"), "utf8"));
@@ -193,6 +196,23 @@ async function embedHost(sourcePath, outputPath) {
 	chmodSync(outputPath, 0o644);
 }
 
+function copyPrebuiltHost(platform, target, outputPath) {
+	const sourcePath = join(prebuiltRemoteHostsDir, platform, "lystar-gui-host.bin");
+	const expected = Buffer.concat([hostPayloadHeader, Buffer.from(target.magic, "hex")]);
+	const actual = Buffer.alloc(expected.length);
+	const file = openSync(sourcePath, "r");
+	try {
+		readSync(file, actual, 0, actual.length, 0);
+	} finally {
+		closeSync(file);
+	}
+	if (!actual.equals(expected) || statSync(sourcePath).size < hostPayloadHeader.length + 1024 * 1024) {
+		throw new Error(`invalid prebuilt ${platform} GUI Host payload`);
+	}
+	mkdirSync(dirname(outputPath), { recursive: true });
+	copyFileSync(sourcePath, outputPath);
+}
+
 const requested = process.argv.find((argument) => argument.startsWith("--platform="))?.slice("--platform=".length);
 const platform = requested || currentPlatform();
 const target = platforms[platform];
@@ -213,6 +233,10 @@ await embedHost(outputPath, localHostPath);
 
 for (const [remotePlatform, remoteTarget] of Object.entries(platforms)) {
 	const remoteOutput = join(remoteHostsDir, remotePlatform, "lystar-gui-host.bin");
+	if (prebuiltRemoteHostsDir) {
+		copyPrebuiltHost(remotePlatform, remoteTarget, remoteOutput);
+		continue;
+	}
 	let remoteSource = outputPath;
 	if (remotePlatform !== platform) {
 		remoteSource = join(

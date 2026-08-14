@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-14T18:20:28+08:00
+最后核验时间：2026-08-14T18:50:11+08:00
 
 环境：
 
@@ -34,7 +34,7 @@ WebKitGTK 4.1、GTK 3、Ayatana AppIndicator、librsvg、OpenSSL 开发包、pat
 - 本轮原生退出首次暴露 transport 生命周期缺陷：Tauri `RunEvent::Exit` 和 `close_gui_host` 直接 `kill()` Host 子进程，Host 来不及 `dispose()`，正常标题栏关闭后会留下空的 proper-lockfile 目录。修复后关闭连接只丢弃 stdin/connection，让 EOF 驱动 Host 释放 Runtime 和 writer lock；错误路径仍保留强杀。全新隔离目录复测确认运行中 Session lock 为 1，点击真实标题栏关闭后应用 stderr 为 0 字节、lock 为 0、GUI/Host/Xvfb 残留进程为 0。
 - Linux AppImage 打包首次暴露 Tauri `patchelf` 会改写 Bun 编译的 Host ELF，改写后的 Host 在 `ldd` 和直接执行时段错误。当前构建把本机与五平台远端 Host 包装为带 `LYSTAR-GUI-BINARY/1` 头的不可执行资源，Rust 在本机启动或 SSH 安装前校验头并原子还原原始二进制；AppImage 不再把 Host 当作 ELF 处理。最新 gui.2 Linux x64 AppImage 大小为 `270,002,680` 字节，SHA-256 为 `6d10d611e2bdabf19229a24e4fbcb5e61af89a954f32510b98feead98c5f9f67`。
 - 最新 gui.2 AppImage 已在隔离 XDG、`PI_CODING_AGENT_DIR`、Xvfb、Cinnamon 和 WebKitGTK 下启动。运行时 Host 还原到应用本地数据目录，权限为 `755`、大小 `114,262,566` 字节，SHA-256 与原始 Bun ELF 完全一致；通过 `windowfocus + Alt+F4` 正常关闭后退出码为 `0`、应用 stderr 为 0 字节，Host 进程和 Session lock 均为 0。
-- `gui-v0.84.1-lystar-gui.1` workflow run `31787992387` 没有创建 Release：Linux x64、macOS ARM64/x64 构建成功；Windows x64 因 Node 22 直接 `spawnSync("npm.cmd")` 返回 `EINVAL`，Linux ARM64 因 runner 缺少 `/usr/bin/xdg-open` 失败。gui.2 保留前一修复并通过 main CI run `31790068109`；Release run `31790342771` 中 Linux x64/ARM64、macOS ARM64/x64 均成功，Windows 已越过 npm CLI 启动，但 Bun 在原生 Windows runner 重复下载 `bun-windows-x64-baseline-v1.3.9` 时提取失败，Release 仍未创建。gui.1/gui.2 tag 均保留且不移动。gui.3 让 Windows workflow 直接安装固定 baseline Bun，本机 Host 编译复用当前 Bun，仅交叉编译远端 Host 时继续传 `--target`；本机 `prepare:tauri` 已重新生成五平台 Host 资源并通过 Linux x64 framed Protocol smoke，待新的 main CI 与原生矩阵确认。
+- `gui-v0.84.1-lystar-gui.1` workflow run `31787992387` 没有创建 Release：Linux x64、macOS ARM64/x64 构建成功；Windows x64 因 Node 22 直接 `spawnSync("npm.cmd")` 返回 `EINVAL`，Linux ARM64 因 runner 缺少 `/usr/bin/xdg-open` 失败。gui.2 通过 main CI run `31790068109`；Release run `31790342771` 中 Linux x64/ARM64、macOS ARM64/x64 成功，Windows 在重复提取本机 target 时失败。gui.3 通过 main CI run `31791870560`；Release run `31792226547` 中同四个平台成功，Windows 本机 Host 已成功编译，但随后交叉提取 Darwin ARM64 Bun runtime 失败。gui.1/gui.2/gui.3 tag 均保留且不移动，三个 run 均未创建 Release。gui.4 改为在 Linux x64 独立生成并校验五平台 Remote Host 载荷，原生矩阵只编译本机 Host 并复用同一 artifact。本机已验证预构建载荷复制前后五个平台 SHA-256 完全一致，第二次 sidecar 构建只编译本机 Host；破坏 Darwin ARM64 载荷头后构建按预期拒绝。待新的 main CI 与原生矩阵确认。
 - 新增独立 `.github/workflows/gui-release.yml`，只监听 `gui-v*`，绑定同 commit 的 main CI，并在 `ubuntu-24.04`、`ubuntu-24.04-arm`、`macos-15`、`macos-15-intel`、`windows-2025` 原生 runner 生成 Linux x64/ARM64 AppImage、macOS ARM64/x64 DMG 和 Windows x64 NSIS。Release 固定为 `prerelease`、`latest=false`，生成严格的 `SHA256SUMS`、`gui-release-manifest.json` 和 GitHub provenance；没有正式证书时明确标记 `signed: false` 且不启用自动更新。
 
 当前结论是公开 Beta 候选。本机 Linux 原生 Tauri、真实浏览器工作台、GUI/TUI 只读同步、Session 状态、项目指令、图片、补全、资源链接、Inspector 布局、AppImage 打包、Host 资源还原和正常退出已放行到对应证据层。真实 Linux SSH Remote Host 安装/断线接管、macOS LaunchDaemon、Windows Scheduled Task/named pipe、跨平台系统 WebView、普通模型对话/认证/Extension UI 与原生 Completion 键盘链、正式 updater 公钥、signed stable release set、Apple notarization 和 Windows Authenticode 仍未放行；Linux ARM64、macOS ARM64/x64 和 Windows x64 Beta 资产只在对应 GitHub 原生 runner 构建，不声明实机运行通过。

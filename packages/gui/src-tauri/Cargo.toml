@@ -1,6 +1,6 @@
 [package]
 name = "lystar-code-gui"
-version = "0.84.1-lystar-gui.3"
+version = "0.84.1-lystar-gui.4"
 description = "LYStar Code desktop GUI"
 authors = ["Yean"]
 license = "MIT"
