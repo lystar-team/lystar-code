@@ -74,6 +74,7 @@ jobs:
           - platform: windows-x64
             runner: windows-2025
             bundle: nsis
+            bun_download_url: https://github.com/oven-sh/bun/releases/download/bun-v1.3.9/bun-windows-x64-baseline.zip
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
@@ -90,6 +91,7 @@ jobs:
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
+          bun-download-url: ${{ matrix.bun_download_url }}
 
       - name: Setup Rust
         shell: bash

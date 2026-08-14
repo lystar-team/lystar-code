@@ -1,6 +1,6 @@
 {
 	"name": "@lystar/code-gui-host",
-	"version": "0.84.1-lystar-gui.2",
+	"version": "0.84.1-lystar-gui.3",
 	"description": "LYStar Code GUI Host",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -24,7 +24,7 @@
 	},
 	"dependencies": {
 		"@earendil-works/pi-coding-agent": "0.84.1",
-		"@lystar/code-gui-protocol": "0.84.1-lystar-gui.2"
+		"@lystar/code-gui-protocol": "0.84.1-lystar-gui.3"
 	},
 	"devDependencies": {
 		"@earendil-works/pi-ai": "0.84.1",

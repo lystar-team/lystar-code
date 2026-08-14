@@ -172,7 +172,8 @@ function buildCompiledHost(platform, target, outputPath, bun) {
 		"build",
 		"--compile",
 		"--no-compile-autoload-bunfig",
-		`--target=${target.bun}`,
+		// Windows runner 已安装同版本 baseline Bun，直接复用可避免重复提取正在使用的 target。
+		...(platform === "windows-x64" && currentPlatform() === platform ? [] : [`--target=${target.bun}`]),
 		"../gui-host/dist/cli.js",
 		"./src/utils/image-resize-worker.ts",
 		"--outfile",
