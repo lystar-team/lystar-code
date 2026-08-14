@@ -111,6 +111,7 @@ jobs:
             libfuse2 \
             librsvg2-dev \
             libssl-dev \
+            xdg-utils \
             libwebkit2gtk-4.1-dev \
             libxdo-dev \
             patchelf \

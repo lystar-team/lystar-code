@@ -1,6 +1,6 @@
 {
 	"name": "@lystar/code-gui-protocol",
-	"version": "0.84.1-lystar-gui.1",
+	"version": "0.84.1-lystar-gui.2",
 	"description": "LYStar Code GUI Protocol v1",
 	"type": "module",
 	"main": "./dist/index.js",

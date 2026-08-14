@@ -197,7 +197,9 @@ const platform = requested || currentPlatform();
 const target = platforms[platform];
 if (!target) throw new Error(`unsupported GUI sidecar platform: ${platform}`);
 
-run(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "build:offline"]);
+const npmCli = process.env.npm_execpath;
+if (!npmCli) throw new Error("npm_execpath is required to build the GUI Host");
+run(process.execPath, [npmCli, "run", "build:offline"]);
 prepareResources();
 
 const outputPath = join(binariesDir, `lystar-gui-host-${target.triple}${target.extension ?? ""}`);

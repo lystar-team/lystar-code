@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-14T17:05:13+08:00
+最后核验时间：2026-08-14T17:53:35+08:00
 
 环境：
 
@@ -32,8 +32,9 @@ WebKitGTK 4.1、GTK 3、Ayatana AppIndicator、librsvg、OpenSSL 开发包、pat
 - Playwright 在真实项目、Session、Tool 和 Host 数据下完成 `2816×1640`、`1280×800`、`800×600` 的浅色和深色验收，均无重叠；跟随系统主题实测 canvas 深色为 `#151515`、浅色为 `#ffffff`。最终浏览器 console 无 error 或 warning，仅 React DevTools info；本轮独立 bridge、浏览器和 tmux 已关闭。
 - Linux 原生 Tauri 本轮使用全新 Rust debug build、安装包内 Host 资源、隔离 `PI_CODING_AGENT_DIR`/`XDG_CONFIG_HOME` 和 X11/WebKitGTK 复跑。原生窗口真实恢复输入图片、Tool `read` 图片和 Session 完成/失败状态；图片查看器打开、缩放和关闭有效；“设置-通用”显示项目 `AGENTS.md`，外部改写后点击“重新加载”能立即显示新内容。`@`/`$`/`/` 补全已通过真实浏览器，但隔离 Xvfb 的合成键盘事件无法进入 WebKit textarea，因此不宣称本轮原生键盘验收通过。
 - 本轮原生退出首次暴露 transport 生命周期缺陷：Tauri `RunEvent::Exit` 和 `close_gui_host` 直接 `kill()` Host 子进程，Host 来不及 `dispose()`，正常标题栏关闭后会留下空的 proper-lockfile 目录。修复后关闭连接只丢弃 stdin/connection，让 EOF 驱动 Host 释放 Runtime 和 writer lock；错误路径仍保留强杀。全新隔离目录复测确认运行中 Session lock 为 1，点击真实标题栏关闭后应用 stderr 为 0 字节、lock 为 0、GUI/Host/Xvfb 残留进程为 0。
-- Linux AppImage 打包首次暴露 Tauri `patchelf` 会改写 Bun 编译的 Host ELF，改写后的 Host 在 `ldd` 和直接执行时段错误。当前构建把本机与五平台远端 Host 包装为带 `LYSTAR-GUI-BINARY/1` 头的不可执行资源，Rust 在本机启动或 SSH 安装前校验头并原子还原原始二进制；AppImage 不再把 Host 当作 ELF 处理。最终 Linux x64 AppImage 大小为 `270,010,872` 字节，SHA-256 为 `580ece4b4d1cf10683d8609bd97a5e7747159a367e892802b6fdc34637a5cbe9`。
-- 公开 Beta 候选 AppImage 已在隔离 XDG、`PI_CODING_AGENT_DIR`、Xvfb、Cinnamon 和 WebKitGTK 下启动。运行时 Host 还原到应用本地数据目录，权限为 `755`、大小 `114,262,566` 字节，SHA-256 与原始 Bun ELF 完全一致；正常 `Alt+F4` 退出码为 `0`，运行中和退出后的应用 stderr 均为 0 字节，退出后 Host 进程和 Session lock 均为 0。
+- Linux AppImage 打包首次暴露 Tauri `patchelf` 会改写 Bun 编译的 Host ELF，改写后的 Host 在 `ldd` 和直接执行时段错误。当前构建把本机与五平台远端 Host 包装为带 `LYSTAR-GUI-BINARY/1` 头的不可执行资源，Rust 在本机启动或 SSH 安装前校验头并原子还原原始二进制；AppImage 不再把 Host 当作 ELF 处理。最新 gui.2 Linux x64 AppImage 大小为 `270,002,680` 字节，SHA-256 为 `6d10d611e2bdabf19229a24e4fbcb5e61af89a954f32510b98feead98c5f9f67`。
+- 最新 gui.2 AppImage 已在隔离 XDG、`PI_CODING_AGENT_DIR`、Xvfb、Cinnamon 和 WebKitGTK 下启动。运行时 Host 还原到应用本地数据目录，权限为 `755`、大小 `114,262,566` 字节，SHA-256 与原始 Bun ELF 完全一致；通过 `windowfocus + Alt+F4` 正常关闭后退出码为 `0`、应用 stderr 为 0 字节，Host 进程和 Session lock 均为 0。
+- `gui-v0.84.1-lystar-gui.1` 首次 workflow run `31787992387` 没有创建 Release：Linux x64、macOS ARM64/x64 构建成功；Windows x64 因 Node 22 直接 `spawnSync("npm.cmd")` 返回 `EINVAL`，Linux ARM64 因 runner 缺少 `/usr/bin/xdg-open` 失败。tag 保留且不移动。gui.2 改为使用当前 Node 执行 `npm_execpath` 指向的 npm CLI，并在 Linux runner 安装 `xdg-utils`；本机已重新通过完整 AppImage 构建和退出 smoke，待新的 main CI 与 `gui-v0.84.1-lystar-gui.2` 原生矩阵确认。
 - 新增独立 `.github/workflows/gui-release.yml`，只监听 `gui-v*`，绑定同 commit 的 main CI，并在 `ubuntu-24.04`、`ubuntu-24.04-arm`、`macos-15`、`macos-15-intel`、`windows-2025` 原生 runner 生成 Linux x64/ARM64 AppImage、macOS ARM64/x64 DMG 和 Windows x64 NSIS。Release 固定为 `prerelease`、`latest=false`，生成严格的 `SHA256SUMS`、`gui-release-manifest.json` 和 GitHub provenance；没有正式证书时明确标记 `signed: false` 且不启用自动更新。
 
 当前结论是公开 Beta 候选。本机 Linux 原生 Tauri、真实浏览器工作台、GUI/TUI 只读同步、Session 状态、项目指令、图片、补全、资源链接、Inspector 布局、AppImage 打包、Host 资源还原和正常退出已放行到对应证据层。真实 Linux SSH Remote Host 安装/断线接管、macOS LaunchDaemon、Windows Scheduled Task/named pipe、跨平台系统 WebView、普通模型对话/认证/Extension UI 与原生 Completion 键盘链、正式 updater 公钥、signed stable release set、Apple notarization 和 Windows Authenticode 仍未放行；Linux ARM64、macOS ARM64/x64 和 Windows x64 Beta 资产只在对应 GitHub 原生 runner 构建，不声明实机运行通过。
