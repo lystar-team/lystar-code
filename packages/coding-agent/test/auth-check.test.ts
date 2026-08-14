@@ -23,11 +23,13 @@ async function createRuntime(credentials: AuthStorage | ReadOnlyAuthStorage): Pr
 
 describe("auth check command", () => {
 	beforeEach(() => {
+		vi.stubEnv("OPENAI_API_KEY", "");
 		if (existsSync(tempDir)) rmSync(tempDir, { recursive: true });
 		mkdirSync(tempDir, { recursive: true });
 	});
 
 	afterEach(() => {
+		vi.unstubAllEnvs();
 		if (existsSync(tempDir)) rmSync(tempDir, { recursive: true });
 	});
 

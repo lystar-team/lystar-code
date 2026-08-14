@@ -2,6 +2,24 @@
  * Core modules shared between all run modes.
  */
 
+export { type AuthEvent, type AuthPrompt, type AuthType, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+export {
+	APP_NAME,
+	APP_TITLE,
+	CONFIG_DIR_NAME,
+	getAgentDir,
+	getSessionsDir,
+	PACKAGE_NAME,
+	PACKAGE_VERSION,
+	RELEASE_REPOSITORY,
+	VERSION,
+} from "../config.ts";
+export {
+	formatVersionCheckError,
+	getLatestPiRelease,
+	isNewerPackageVersion,
+	type LatestPiRelease,
+} from "../utils/version-check.ts";
 export {
 	AgentSession,
 	type AgentSessionConfig,
@@ -25,6 +43,7 @@ export {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 } from "./agent-session-services.ts";
+export { AuthStorage, type AuthStorageBackend } from "./auth-storage.ts";
 export { type BashExecutorOptions, type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 export type { CompactionResult } from "./compaction/index.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./event-bus.ts";
@@ -47,6 +66,7 @@ export {
 	type Extension,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
+	type ExtensionCommandContextActions,
 	type ExtensionContext,
 	type ExtensionError,
 	type ExtensionEvent,
@@ -59,6 +79,7 @@ export {
 	type InlineExtension,
 	type LoadExtensionsResult,
 	type MessageRenderer,
+	type ProjectTrustContext,
 	type RegisteredCommand,
 	type SessionBeforeCompactEvent,
 	type SessionBeforeForkEvent,
@@ -77,4 +98,65 @@ export {
 	type TurnStartEvent,
 	type WorkingIndicatorOptions,
 } from "./extensions/index.ts";
+export {
+	ModelConfig,
+	type ModelsJsonModel,
+	type ModelsJsonProvider,
+	saveModelsJsonModel,
+	saveModelsJsonProvider,
+} from "./model-config.ts";
+export {
+	type CreateModelRuntimeOptions,
+	CredentialSynchronizationError,
+	ModelRuntime,
+	type ModelRuntimeAuthOverrides,
+} from "./model-runtime.ts";
+export {
+	DefaultPackageManager,
+	type PackageManager,
+	type PathMetadata,
+	type ResolvedPaths,
+	type ResolvedResource,
+} from "./package-manager.ts";
+export {
+	type AppMode,
+	type ResolveProjectTrustedOptions,
+	resolveProjectTrusted,
+} from "./project-trust.ts";
+export {
+	DefaultResourceLoader,
+	type DefaultResourceLoaderOptions,
+	loadProjectContextFiles,
+	type ResourceLoader,
+	type ResourceLoaderReloadOptions,
+} from "./resource-loader.ts";
+export {
+	type FileEntry,
+	getDefaultSessionDir,
+	type NewSessionOptions,
+	type ReadOnlySessionSnapshot,
+	type ReadonlySessionManager,
+	readSessionSnapshot,
+	type SessionContext,
+	type SessionEntry,
+	type SessionHeader,
+	type SessionInfo,
+	SessionLockCompromisedError,
+	SessionLockedError,
+	SessionManager,
+	type SessionOutcome,
+} from "./session-manager.ts";
+export {
+	type DefaultProjectTrust,
+	type Settings,
+	SettingsManager,
+} from "./settings-manager.ts";
+export { loadSkills, type Skill } from "./skills.ts";
 export { createSyntheticSourceInfo } from "./source-info.ts";
+export {
+	getProjectTrustOptions,
+	hasTrustRequiringProjectResources,
+	type ProjectTrustDecision,
+	type ProjectTrustOption,
+	ProjectTrustStore,
+} from "./trust-manager.ts";

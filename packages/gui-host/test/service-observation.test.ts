@@ -1,0 +1,116 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+	type ClientMessage,
+	encodeServerMessage,
+	type ServerMessage,
+	type SessionSummary,
+} from "@lystar/code-gui-protocol";
+import { afterEach, describe, expect, it } from "vitest";
+import { CodingAgentRuntimeAdapter } from "../src/runtime-adapter.ts";
+import { GuiHostService } from "../src/service.ts";
+
+async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!predicate()) {
+		if (Date.now() >= deadline) throw new Error("Timed out waiting for GUI Host observation event");
+		await new Promise((resolve) => setTimeout(resolve, 40));
+	}
+}
+
+describe("GuiHostService Session observation", () => {
+	const cleanups: Array<() => Promise<void> | void> = [];
+
+	afterEach(async () => {
+		while (cleanups.length > 0) await cleanups.pop()?.();
+	});
+
+	it("observes external writer locks and committed JSONL changes without acquiring the Session", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-observe-"));
+		const agentDir = join(tempDir, "agent");
+		const cwd = join(tempDir, "project");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(cwd, { recursive: true });
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always" }));
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		const service = new GuiHostService(adapter, { agentDir });
+		const messages: ServerMessage[] = [];
+		const connection = service.createConnection(async (message) => {
+			expect(() => encodeServerMessage(message)).not.toThrow();
+			messages.push(message);
+		});
+		cleanups.push(async () => {
+			await connection.close();
+			await service.dispose();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+		const handle = (message: ClientMessage) => connection.handle(message);
+		await handle({ type: "hello", version: 1, clientInstanceId: "desktop-client" });
+		await handle({ type: "request", id: "initial", request: { command: "list_sessions", cwd } });
+
+		const external = await adapter.createSession(cwd, async () => ({ cancelled: true }));
+		cleanups.push(() => external.dispose());
+		await external.runBash("printf first", () => {});
+		const sessionPath = external.sessionPath;
+		await waitFor(() =>
+			messages.some(
+				(message) =>
+					message.type === "event" && message.event.type === "sessions_changed" && message.event.cwd === cwd,
+			),
+		);
+
+		await handle({ type: "request", id: "locked", request: { command: "list_sessions", cwd } });
+		const lockedResponse = messages.find(
+			(message) => message.type === "response" && message.id === "locked" && message.ok,
+		);
+		if (!lockedResponse || lockedResponse.type !== "response" || !lockedResponse.ok) {
+			throw new Error("Missing locked Session response");
+		}
+		const summaries = lockedResponse.result as unknown as SessionSummary[];
+		expect(summaries).toEqual([
+			expect.objectContaining({ path: sessionPath, writeAccess: "locked_externally", activity: "completed" }),
+		]);
+
+		messages.length = 0;
+		await external.runBash("printf second", () => {});
+		await waitFor(() =>
+			messages.some(
+				(message) =>
+					message.type === "event" &&
+					message.event.type === "transcript_changed" &&
+					message.event.sessionPath === sessionPath,
+			),
+		);
+
+		messages.length = 0;
+		await external.dispose();
+		await waitFor(() =>
+			messages.some(
+				(message) =>
+					message.type === "event" && message.event.type === "sessions_changed" && message.event.cwd === cwd,
+			),
+		);
+		await handle({ type: "request", id: "available", request: { command: "list_sessions", cwd } });
+		const availableResponse = messages.find(
+			(message) => message.type === "response" && message.id === "available" && message.ok,
+		);
+		if (!availableResponse || availableResponse.type !== "response" || !availableResponse.ok) {
+			throw new Error("Missing available Session response");
+		}
+		expect(availableResponse.result).toEqual([
+			expect.objectContaining({ path: sessionPath, writeAccess: "available", activity: "completed" }),
+		]);
+
+		messages.length = 0;
+		await adapter.deleteSession(sessionPath);
+		await waitFor(() =>
+			messages.some(
+				(message) =>
+					message.type === "event" &&
+					message.event.type === "session_removed" &&
+					message.event.sessionPath === sessionPath,
+			),
+		);
+	});
+});

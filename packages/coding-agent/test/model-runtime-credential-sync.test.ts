@@ -60,6 +60,27 @@ async function runtimeWithProvider(
 }
 
 describe("ModelRuntime credential synchronization", () => {
+	it("batches native provider registration before one awaited refresh", async () => {
+		let authChecks = 0;
+		const registered = provider("batched");
+		if (registered.auth.apiKey) {
+			registered.auth.apiKey.check = async () => {
+				authChecks++;
+				return { type: "api_key", source: "ambient" };
+			};
+		}
+		const runtime = await ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null });
+		runtime.registerNativeProvider(registered, { refresh: false });
+		await new Promise((resolve) => setImmediate(resolve));
+
+		expect(authChecks).toBe(0);
+		expect(runtime.hasConfiguredAuth(registered.id)).toBe(false);
+
+		await runtime.refresh({ allowNetwork: false });
+		expect(authChecks).toBeGreaterThan(0);
+		expect(runtime.hasConfiguredAuth(registered.id)).toBe(true);
+	});
+
 	it("publishes locally consistent availability before login and logout resolve", async () => {
 		const credentials = AuthStorage.inMemory();
 		const runtime = await runtimeWithProvider(provider("dynamic"), credentials);

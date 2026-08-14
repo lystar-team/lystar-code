@@ -499,10 +499,11 @@ try {
 
 const piConfigName: string | undefined = pkg.piConfig?.name;
 export const PACKAGE_NAME: string = pkg.name || "@earendil-works/pi-coding-agent";
+export const PACKAGE_VERSION: string = pkg.version || "0.0.0";
 export const APP_NAME: string = pkg.piConfig?.commandName || piConfigName || "pi";
 export const APP_TITLE: string = pkg.piConfig?.displayName || (piConfigName ? APP_NAME : "π");
 export const CONFIG_DIR_NAME: string = pkg.piConfig?.configDir || ".pi";
-export const VERSION: string = pkg.piConfig?.productVersion || pkg.version || "0.0.0";
+export const VERSION: string = pkg.piConfig?.productVersion || PACKAGE_VERSION;
 export const RELEASE_REPOSITORY: string | undefined = pkg.piConfig?.releaseRepository?.trim() || undefined;
 
 const envPrefix = pkg.piConfig?.envPrefix || APP_NAME.toUpperCase();

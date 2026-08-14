@@ -362,6 +362,7 @@ export class AgentSession {
 	private _extensionShutdownHandler?: ShutdownHandler;
 	private _extensionErrorListener?: ExtensionErrorListener;
 	private _extensionErrorUnsubscriber?: () => void;
+	private _sessionLockCompromiseUnsubscriber?: () => void;
 
 	private _modelRuntime: ModelRuntime;
 
@@ -391,6 +392,13 @@ export class AgentSession {
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		this._sessionLockCompromiseUnsubscriber = this.sessionManager.onLockCompromised(() => {
+			this.abortRetry();
+			this.abortCompaction();
+			this.abortBranchSummary();
+			this.abortBash();
+			this.agent.abort();
+		});
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -922,6 +930,9 @@ export class AgentSession {
 		);
 		this._disconnectFromAgent();
 		this._eventListeners = [];
+		this._sessionLockCompromiseUnsubscriber?.();
+		this._sessionLockCompromiseUnsubscriber = undefined;
+		this.sessionManager.dispose();
 		cleanupSessionResources(this.sessionId);
 	}
 

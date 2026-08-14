@@ -6,15 +6,20 @@ import {
 	closeSync,
 	createReadStream,
 	existsSync,
+	fsyncSync,
 	mkdirSync,
 	openSync,
 	readdirSync,
 	readSync,
+	realpathSync,
+	renameSync,
 	statSync,
+	unlinkSync,
 	writeFileSync,
 } from "fs";
 import { open, readdir, stat } from "fs/promises";
-import { join, resolve } from "path";
+import { basename, dirname, join, resolve } from "path";
+import lockfile, { type LockOptions } from "proper-lockfile";
 import { createInterface } from "readline";
 import { StringDecoder } from "string_decoder";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
@@ -172,6 +177,8 @@ export interface SessionContext {
 	model: { provider: string; modelId: string } | null;
 }
 
+export type SessionOutcome = "completed" | "failed" | "aborted" | "interrupted";
+
 export interface SessionInfo {
 	path: string;
 	id: string;
@@ -186,6 +193,8 @@ export interface SessionInfo {
 	messageCount: number;
 	firstMessage: string;
 	allMessagesText: string;
+	/** Outcome inferred from the last committed user, assistant, Tool, or Bash message. */
+	lastOutcome?: SessionOutcome;
 }
 
 export type ReadonlySessionManager = Pick<
@@ -205,6 +214,102 @@ export type ReadonlySessionManager = Pick<
 	| "getTree"
 	| "getSessionName"
 >;
+
+export interface ReadOnlySessionSnapshot {
+	readonly header: Readonly<SessionHeader>;
+	readonly entries: readonly Readonly<SessionEntry>[];
+	readonly leafId: string | null;
+}
+
+export class SessionLockedError extends Error {
+	readonly code = "session_locked" as const;
+	readonly retryable = true as const;
+	readonly sessionPath: string;
+
+	constructor(sessionPath: string) {
+		super(`Session is locked by another process: ${sessionPath}`);
+		this.name = "SessionLockedError";
+		this.sessionPath = sessionPath;
+	}
+}
+
+export class SessionLockCompromisedError extends Error {
+	readonly code = "session_lock_compromised" as const;
+	readonly retryable = false as const;
+	readonly sessionPath: string;
+
+	constructor(sessionPath: string, options?: ErrorOptions) {
+		super(`Session writer lock was compromised: ${sessionPath}`, options);
+		this.name = "SessionLockCompromisedError";
+		this.sessionPath = sessionPath;
+	}
+}
+
+const SESSION_LOCK_STALE_MS = 120_000;
+const SESSION_LOCK_UPDATE_MS = 10_000;
+
+function canonicalizeSessionPath(filePath: string): string {
+	const resolvedPath = resolvePath(filePath);
+	if (existsSync(resolvedPath)) {
+		return normalizePath(realpathSync(resolvedPath));
+	}
+	return join(normalizePath(realpathSync(dirname(resolvedPath))), basename(resolvedPath));
+}
+
+function createSessionLockOptions(sessionPath: string, onCompromised: (error: Error) => void): LockOptions {
+	return {
+		stale: SESSION_LOCK_STALE_MS,
+		update: SESSION_LOCK_UPDATE_MS,
+		realpath: false,
+		retries: 0,
+		lockfilePath: `${sessionPath}.lock`,
+		onCompromised,
+	};
+}
+
+function acquireSessionWriterLock(
+	filePath: string,
+	onCompromised: (error: Error) => void,
+): { sessionPath: string; release: () => void } {
+	const sessionPath = canonicalizeSessionPath(filePath);
+	try {
+		return {
+			sessionPath,
+			release: lockfile.lockSync(sessionPath, createSessionLockOptions(sessionPath, onCompromised)),
+		};
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ELOCKED") {
+			throw new SessionLockedError(sessionPath);
+		}
+		throw error;
+	}
+}
+
+function writeSessionEntriesAtomically(filePath: string, entries: readonly FileEntry[]): void {
+	const tempPath = join(dirname(filePath), `.${basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
+	let fd: number | undefined;
+	try {
+		fd = openSync(tempPath, "wx");
+		for (const entry of entries) {
+			writeFileSync(fd, `${JSON.stringify(entry)}\n`);
+		}
+		fsyncSync(fd);
+		closeSync(fd);
+		fd = undefined;
+		renameSync(tempPath, filePath);
+		if (process.platform !== "win32") {
+			const directoryFd = openSync(dirname(filePath), "r");
+			try {
+				fsyncSync(directoryFd);
+			} finally {
+				closeSync(directoryFd);
+			}
+		}
+	} finally {
+		if (fd !== undefined) closeSync(fd);
+		if (existsSync(tempPath)) unlinkSync(tempPath);
+	}
+}
 
 function createSessionId(): string {
 	return uuidv7();
@@ -556,6 +661,30 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 	return entries;
 }
 
+function freezeJsonValue<T>(value: T): Readonly<T> {
+	if (value && typeof value === "object" && !Object.isFrozen(value)) {
+		for (const child of Object.values(value)) freezeJsonValue(child);
+		Object.freeze(value);
+	}
+	return value;
+}
+
+export function readSessionSnapshot(filePath: string): ReadOnlySessionSnapshot {
+	const resolvedFilePath = normalizePath(filePath);
+	const entries = structuredClone(loadEntriesFromFile(resolvedFilePath));
+	const header = entries[0];
+	if (!header || header.type !== "session") {
+		throw new Error(`Session file is not a valid pi session: ${resolvedFilePath}`);
+	}
+	migrateToCurrentVersion(entries);
+	const sessionEntries = entries.slice(1) as SessionEntry[];
+	return freezeJsonValue({
+		header,
+		entries: sessionEntries,
+		leafId: sessionEntries.at(-1)?.id ?? null,
+	});
+}
+
 /**
  * 异步分块读取 Session，避免整个文件解析期间持续占用事件循环。
  * 校验规则与 loadEntriesFromFile() 保持一致。
@@ -733,6 +862,27 @@ function getMessageActivityTime(entry: SessionMessageEntry): number | undefined 
 	return Number.isNaN(t) ? undefined : t;
 }
 
+function getMessageOutcome(message: AgentMessage): SessionOutcome | undefined {
+	switch (message.role) {
+		case "assistant":
+			if (message.stopReason === "stop") return "completed";
+			if (message.stopReason === "error") return "failed";
+			if (message.stopReason === "aborted") return "aborted";
+			return "interrupted";
+		case "bashExecution": {
+			const bash = message as BashExecutionMessage;
+			if (bash.cancelled) return "aborted";
+			if (bash.exitCode === null) return "interrupted";
+			return bash.exitCode === 0 ? "completed" : "failed";
+		}
+		case "user":
+		case "toolResult":
+			return "interrupted";
+		default:
+			return undefined;
+	}
+}
+
 async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 	try {
 		const stats = await stat(filePath);
@@ -742,6 +892,7 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 		const allMessages: string[] = [];
 		let name: string | undefined;
 		let lastActivityTime: number | undefined;
+		let lastOutcome: SessionOutcome | undefined;
 
 		const rl = createInterface({
 			input: createReadStream(filePath, { encoding: "utf8" }),
@@ -765,6 +916,7 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 
 			if (entry.type !== "message") continue;
 			messageCount++;
+			lastOutcome = getMessageOutcome(entry.message) ?? lastOutcome;
 
 			const activityTime = getMessageActivityTime(entry);
 			if (typeof activityTime === "number") {
@@ -807,6 +959,7 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 			messageCount,
 			firstMessage: firstMessage || "(no messages)",
 			allMessagesText: allMessages.join(" "),
+			...(lastOutcome ? { lastOutcome } : {}),
 		};
 	} catch {
 		return null;
@@ -913,6 +1066,15 @@ export class SessionManager {
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
+	private writerLease:
+		| {
+				sessionPath: string;
+				release: () => void;
+				compromised?: SessionLockCompromisedError;
+				onCompromised?: (error: SessionLockCompromisedError) => void;
+		  }
+		| undefined;
+	private lockCompromiseListeners = new Set<(error: SessionLockCompromisedError) => void>();
 
 	private constructor(
 		cwd: string,
@@ -920,7 +1082,7 @@ export class SessionManager {
 		sessionFile: string | undefined,
 		persist: boolean,
 		newSessionOptions?: NewSessionOptions,
-		preloadedFileEntries?: FileEntry[],
+		_preloadedFileEntries?: FileEntry[],
 	) {
 		this.cwd = resolvePath(cwd);
 		this.sessionDir = normalizePath(sessionDir);
@@ -930,10 +1092,115 @@ export class SessionManager {
 		}
 
 		if (sessionFile) {
-			this._setSessionFile(sessionFile, preloadedFileEntries);
+			this._setSessionFile(sessionFile);
 		} else {
 			this.newSession(newSessionOptions);
 		}
+	}
+
+	private _acquireWriterLease(sessionFile: string): NonNullable<SessionManager["writerLease"]> {
+		const sessionPath = canonicalizeSessionPath(sessionFile);
+		let lease: NonNullable<SessionManager["writerLease"]>;
+		const acquired = acquireSessionWriterLock(sessionPath, (cause) => {
+			const error = new SessionLockCompromisedError(sessionPath, { cause });
+			lease.compromised = error;
+			lease.onCompromised?.(error);
+		});
+		lease = { ...acquired };
+		return lease;
+	}
+
+	private _assertWritable(lease = this.writerLease): void {
+		if (!this.persist) return;
+		if (!lease) {
+			throw new Error("Persisted SessionManager does not own a writer lock");
+		}
+		if (lease.compromised) throw lease.compromised;
+	}
+
+	private _releaseWriterLease(lease: NonNullable<SessionManager["writerLease"]> | undefined): void {
+		if (!lease) return;
+		try {
+			lease.release();
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "ERELEASED" && code !== "ENOTACQUIRED") throw error;
+		}
+	}
+
+	private _adoptState(
+		state: {
+			sessionId: string;
+			sessionFile: string;
+			fileEntries: FileEntry[];
+			flushed: boolean;
+		},
+		lease: NonNullable<SessionManager["writerLease"]>,
+	): void {
+		const previousLease = this.writerLease;
+		this.sessionId = state.sessionId;
+		this.sessionFile = state.sessionFile;
+		this.fileEntries = state.fileEntries;
+		this.flushed = state.flushed;
+		lease.onCompromised = (error) => {
+			if (this.writerLease !== lease) return;
+			for (const listener of this.lockCompromiseListeners) listener(error);
+		};
+		this.writerLease = lease;
+		this._buildIndex();
+		if (previousLease !== lease) this._releaseWriterLease(previousLease);
+	}
+
+	private _loadSessionState(
+		sessionFile: string,
+		lease: NonNullable<SessionManager["writerLease"]>,
+	): { sessionId: string; sessionFile: string; fileEntries: FileEntry[]; flushed: boolean } {
+		this._assertWritable(lease);
+		if (!existsSync(sessionFile)) {
+			const timestamp = new Date().toISOString();
+			const sessionId = createSessionId();
+			return {
+				sessionId,
+				sessionFile,
+				fileEntries: [
+					{
+						type: "session",
+						version: CURRENT_SESSION_VERSION,
+						id: sessionId,
+						timestamp,
+						cwd: this.cwd,
+					},
+				],
+				flushed: false,
+			};
+		}
+
+		const fileEntries = loadEntriesFromFile(sessionFile);
+		if (fileEntries.length === 0) {
+			if (statSync(sessionFile).size > 0) {
+				throw new Error(`Session file is not a valid pi session: ${sessionFile}`);
+			}
+			const timestamp = new Date().toISOString();
+			const sessionId = createSessionId();
+			const entries: FileEntry[] = [
+				{
+					type: "session",
+					version: CURRENT_SESSION_VERSION,
+					id: sessionId,
+					timestamp,
+					cwd: this.cwd,
+				},
+			];
+			writeSessionEntriesAtomically(sessionFile, entries);
+			return { sessionId, sessionFile, fileEntries: entries, flushed: true };
+		}
+
+		const header = fileEntries.find((entry) => entry.type === "session") as SessionHeader | undefined;
+		const sessionId = header?.id ?? createSessionId();
+		if (migrateToCurrentVersion(fileEntries)) {
+			writeSessionEntriesAtomically(sessionFile, fileEntries);
+		}
+		return { sessionId, sessionFile, fileEntries, flushed: true };
 	}
 
 	/** Switch to a different session file (used for resume and branching) */
@@ -941,67 +1208,52 @@ export class SessionManager {
 		this._setSessionFile(sessionFile);
 	}
 
-	private _setSessionFile(sessionFile: string, preloadedFileEntries?: FileEntry[]): void {
-		this.sessionFile = resolvePath(sessionFile);
-		if (existsSync(this.sessionFile)) {
-			this.fileEntries = preloadedFileEntries ?? loadEntriesFromFile(this.sessionFile);
+	private _setSessionFile(sessionFile: string): void {
+		const requestedFile = resolvePath(sessionFile);
+		const canonicalFile = canonicalizeSessionPath(requestedFile);
+		if (this.writerLease && canonicalFile === this.writerLease.sessionPath) {
+			this._assertWritable();
+			const state = this._loadSessionState(canonicalFile, this.writerLease);
+			this._adoptState(state, this.writerLease);
+			return;
+		}
 
-			// If file was empty, initialize it with a valid session header. If it was
-			// non-empty but did not parse as a pi session, fail without modifying it.
-			if (this.fileEntries.length === 0) {
-				const explicitPath = this.sessionFile;
-				if (statSync(explicitPath).size > 0) {
-					throw new Error(`Session file is not a valid pi session: ${explicitPath}`);
-				}
-				this.newSession();
-				this.sessionFile = explicitPath;
-				this._rewriteFile();
-				this.flushed = true;
-				return;
-			}
-
-			const header = this.fileEntries.find((e) => e.type === "session") as SessionHeader | undefined;
-			this.sessionId = header?.id ?? createSessionId();
-
-			if (migrateToCurrentVersion(this.fileEntries)) {
-				this._rewriteFile();
-			}
-
-			this._buildIndex();
-			this.flushed = true;
-		} else {
-			const explicitPath = this.sessionFile;
-			this.newSession();
-			this.sessionFile = explicitPath; // preserve explicit path from --session flag
+		const lease = this._acquireWriterLease(canonicalFile);
+		try {
+			this._adoptState(this._loadSessionState(lease.sessionPath, lease), lease);
+		} catch (error) {
+			this._releaseWriterLease(lease);
+			throw error;
 		}
 	}
 
 	newSession(options?: NewSessionOptions): string | undefined {
-		if (options?.id !== undefined) {
-			assertValidSessionId(options.id);
-		}
-		this.sessionId = options?.id ?? createSessionId();
+		if (options?.id !== undefined) assertValidSessionId(options.id);
+		const sessionId = options?.id ?? createSessionId();
 		const timestamp = new Date().toISOString();
 		const header: SessionHeader = {
 			type: "session",
 			version: CURRENT_SESSION_VERSION,
-			id: this.sessionId,
+			id: sessionId,
 			timestamp,
 			cwd: this.cwd,
 			parentSession: options?.parentSession,
 		};
-		this.fileEntries = [header];
-		this.byId.clear();
-		this.labelsById.clear();
-		this.labelTimestampsById.clear();
-		this.leafId = null;
-		this.flushed = false;
 
-		if (this.persist) {
-			const fileTimestamp = timestamp.replace(/[:.]/g, "-");
-			this.sessionFile = join(this.getSessionDir(), `${fileTimestamp}_${this.sessionId}.jsonl`);
+		if (!this.persist) {
+			this.sessionId = sessionId;
+			this.sessionFile = undefined;
+			this.fileEntries = [header];
+			this.flushed = false;
+			this._buildIndex();
+			return undefined;
 		}
-		return this.sessionFile;
+
+		const fileTimestamp = timestamp.replace(/[:.]/g, "-");
+		const sessionFile = join(this.getSessionDir(), `${fileTimestamp}_${sessionId}.jsonl`);
+		const lease = this._acquireWriterLease(sessionFile);
+		this._adoptState({ sessionId, sessionFile, fileEntries: [header], flushed: false }, lease);
+		return sessionFile;
 	}
 
 	private _buildIndex(): void {
@@ -1027,14 +1279,8 @@ export class SessionManager {
 
 	private _rewriteFile(): void {
 		if (!this.persist || !this.sessionFile) return;
-		const fd = openSync(this.sessionFile, "w");
-		try {
-			for (const entry of this.fileEntries) {
-				writeFileSync(fd, `${JSON.stringify(entry)}\n`);
-			}
-		} finally {
-			closeSync(fd);
-		}
+		this._assertWritable();
+		writeSessionEntriesAtomically(this.sessionFile, this.fileEntries);
 	}
 
 	isPersisted(): boolean {
@@ -1061,15 +1307,32 @@ export class SessionManager {
 		return this.sessionFile;
 	}
 
+	onLockCompromised(listener: (error: SessionLockCompromisedError) => void): () => void {
+		this.lockCompromiseListeners.add(listener);
+		if (this.writerLease?.compromised) listener(this.writerLease.compromised);
+		return () => this.lockCompromiseListeners.delete(listener);
+	}
+
+	dispose(): void {
+		const lease = this.writerLease;
+		this.writerLease = undefined;
+		if (lease) lease.onCompromised = undefined;
+		this.lockCompromiseListeners.clear();
+		this._releaseWriterLease(lease);
+	}
+
 	_persist(entry: SessionEntry): void {
 		if (!this.persist || !this.sessionFile) return;
+		this._assertWritable();
 
-		const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
-		if (!hasAssistant) {
+		const hasCompletedEntry = this.fileEntries.some(
+			(e) => e.type === "message" && (e.message.role === "assistant" || e.message.role === "bashExecution"),
+		);
+		if (!hasCompletedEntry) {
 			if (this.flushed) {
 				appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
 			} else {
-				// Mark as not flushed so when assistant arrives, all entries get written
+				// Delay creating empty or user-only sessions until a completed transcript entry exists.
 				this.flushed = false;
 			}
 			return;
@@ -1091,6 +1354,7 @@ export class SessionManager {
 	}
 
 	private _appendEntry(entry: SessionEntry): void {
+		this._assertWritable();
 		this.fileEntries.push(entry);
 		this.byId.set(entry.id, entry);
 		this.leafId = entry.id;
@@ -1453,21 +1717,15 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	/**
-	 * Create a new session file containing only the path from root to the specified leaf.
-	 * Useful for extracting a single conversation path from a branched session.
-	 * Returns the new session file path, or undefined if not persisting.
-	 */
-	createBranchedSession(leafId: string): string | undefined {
+	private _buildBranchedEntries(leafId: string): {
+		header: SessionHeader;
+		entries: SessionEntry[];
+		sessionFile?: string;
+	} {
 		const previousSessionFile = this.sessionFile;
 		const path = this.getBranch(leafId);
-		if (path.length === 0) {
-			throw new Error(`Entry ${leafId} not found`);
-		}
+		if (path.length === 0) throw new Error(`Entry ${leafId} not found`);
 
-		// Filter out LabelEntry from path - we'll recreate them from the resolved map.
-		// Because labels are real tree entries, later entries can be children of labels;
-		// removing labels requires re-chaining the retained path to avoid orphaned subtrees.
 		const pathWithoutLabels: SessionEntry[] = [];
 		let pathParentId: string | null = null;
 		for (const entry of path) {
@@ -1476,88 +1734,106 @@ export class SessionManager {
 			pathParentId = entry.id;
 		}
 
-		const newSessionId = createSessionId();
+		const sessionId = createSessionId();
 		const timestamp = new Date().toISOString();
-		const fileTimestamp = timestamp.replace(/[:.]/g, "-");
-		const newSessionFile = join(this.getSessionDir(), `${fileTimestamp}_${newSessionId}.jsonl`);
-
+		const sessionFile = this.persist
+			? join(this.getSessionDir(), `${timestamp.replace(/[:.]/g, "-")}_${sessionId}.jsonl`)
+			: undefined;
 		const header: SessionHeader = {
 			type: "session",
 			version: CURRENT_SESSION_VERSION,
-			id: newSessionId,
+			id: sessionId,
 			timestamp,
 			cwd: this.cwd,
 			parentSession: this.persist ? previousSessionFile : undefined,
 		};
 
-		// Collect labels for entries in the path
-		const pathEntryIds = new Set(pathWithoutLabels.map((e) => e.id));
-		const labelsToWrite: Array<{ targetId: string; label: string; timestamp: string }> = [];
-		for (const [targetId, label] of this.labelsById) {
-			if (pathEntryIds.has(targetId)) {
-				labelsToWrite.push({ targetId, label, timestamp: this.labelTimestampsById.get(targetId)! });
-			}
-		}
-
-		if (this.persist) {
-			// Build label entries
-			const lastEntryId = pathWithoutLabels[pathWithoutLabels.length - 1]?.id || null;
-			let parentId = lastEntryId;
-			const labelEntries: LabelEntry[] = [];
-			for (const { targetId, label, timestamp: labelTimestamp } of labelsToWrite) {
-				const labelEntry: LabelEntry = {
-					type: "label",
-					id: generateId(new Set(pathEntryIds)),
-					parentId,
-					timestamp: labelTimestamp,
-					targetId,
-					label,
-				};
-				pathEntryIds.add(labelEntry.id);
-				labelEntries.push(labelEntry);
-				parentId = labelEntry.id;
-			}
-
-			this.fileEntries = [header, ...pathWithoutLabels, ...labelEntries];
-			this.sessionId = newSessionId;
-			this.sessionFile = newSessionFile;
-			this._buildIndex();
-
-			// Only write the file now if it contains an assistant message.
-			// Otherwise defer to _persist(), which creates the file on the
-			// first assistant response, matching the newSession() contract
-			// and avoiding the duplicate-header bug when _persist()'s
-			// no-assistant guard later resets flushed to false.
-			const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
-			if (hasAssistant) {
-				this._rewriteFile();
-				this.flushed = true;
-			} else {
-				this.flushed = false;
-			}
-
-			return newSessionFile;
-		}
-
-		// In-memory mode: replace current session with the path + labels
+		const pathEntryIds = new Set(pathWithoutLabels.map((entry) => entry.id));
+		let parentId = pathWithoutLabels.at(-1)?.id ?? null;
 		const labelEntries: LabelEntry[] = [];
-		let parentId = pathWithoutLabels[pathWithoutLabels.length - 1]?.id || null;
-		for (const { targetId, label, timestamp: labelTimestamp } of labelsToWrite) {
+		for (const [targetId, label] of this.labelsById) {
+			if (!pathEntryIds.has(targetId)) continue;
 			const labelEntry: LabelEntry = {
 				type: "label",
-				id: generateId(new Set([...pathEntryIds, ...labelEntries.map((e) => e.id)])),
+				id: generateId(pathEntryIds),
 				parentId,
-				timestamp: labelTimestamp,
+				timestamp: this.labelTimestampsById.get(targetId)!,
 				targetId,
 				label,
 			};
+			pathEntryIds.add(labelEntry.id);
 			labelEntries.push(labelEntry);
 			parentId = labelEntry.id;
 		}
-		this.fileEntries = [header, ...pathWithoutLabels, ...labelEntries];
-		this.sessionId = newSessionId;
-		this._buildIndex();
-		return undefined;
+
+		return { header, entries: [...pathWithoutLabels, ...labelEntries], sessionFile };
+	}
+
+	createBranchedSessionManager(leafId: string): SessionManager {
+		const branched = this._buildBranchedEntries(leafId);
+		if (!this.persist || !branched.sessionFile) {
+			const manager = SessionManager.inMemory(this.cwd);
+			manager.sessionId = branched.header.id;
+			manager.fileEntries = [branched.header, ...branched.entries];
+			manager._buildIndex();
+			return manager;
+		}
+
+		const manager = new SessionManager(this.cwd, this.sessionDir, branched.sessionFile, true);
+		try {
+			manager.sessionId = branched.header.id;
+			manager.fileEntries = [branched.header, ...branched.entries];
+			manager._buildIndex();
+			const hasCompletedEntry = branched.entries.some(
+				(entry) =>
+					entry.type === "message" &&
+					(entry.message.role === "assistant" || entry.message.role === "bashExecution"),
+			);
+			if (hasCompletedEntry) {
+				manager._rewriteFile();
+				manager.flushed = true;
+			} else {
+				manager.flushed = false;
+			}
+			return manager;
+		} catch (error) {
+			manager.dispose();
+			throw error;
+		}
+	}
+
+	/**
+	 * Create a new session containing only the path from root to the specified leaf.
+	 * Persisted managers switch ownership only after the target is locked and prepared.
+	 */
+	createBranchedSession(leafId: string): string | undefined {
+		const branched = this.createBranchedSessionManager(leafId);
+		if (!this.persist) {
+			this.sessionId = branched.sessionId;
+			this.sessionFile = undefined;
+			this.fileEntries = branched.fileEntries;
+			this.flushed = branched.flushed;
+			this._buildIndex();
+			branched.dispose();
+			return undefined;
+		}
+
+		const targetLease = branched.writerLease;
+		if (!targetLease || !branched.sessionFile) {
+			branched.dispose();
+			throw new Error("Persisted branched session is missing its writer lock");
+		}
+		branched.writerLease = undefined;
+		this._adoptState(
+			{
+				sessionId: branched.sessionId,
+				sessionFile: branched.sessionFile,
+				fileEntries: branched.fileEntries,
+				flushed: branched.flushed,
+			},
+			targetLease,
+		);
+		return this.sessionFile;
 	}
 
 	/**
@@ -1632,6 +1908,41 @@ export class SessionManager {
 		return new SessionManager(cwd, dir, undefined, true);
 	}
 
+	static withWriterLock<T>(path: string, operation: () => T): T {
+		let compromised: SessionLockCompromisedError | undefined;
+		const lease = acquireSessionWriterLock(path, (cause) => {
+			compromised = new SessionLockCompromisedError(canonicalizeSessionPath(path), { cause });
+		});
+		let result: T;
+		try {
+			result = operation();
+			if (compromised) throw compromised;
+		} catch (error) {
+			try {
+				lease.release();
+			} catch {
+				// 保留原始操作异常；释放失败不能覆盖根因。
+			}
+			throw error;
+		}
+		try {
+			lease.release();
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "ERELEASED" && code !== "ENOTACQUIRED") throw error;
+		}
+		return result;
+	}
+
+	static isWriterLocked(path: string): boolean {
+		const sessionPath = canonicalizeSessionPath(path);
+		return lockfile.checkSync(sessionPath, {
+			realpath: false,
+			stale: SESSION_LOCK_STALE_MS,
+			lockfilePath: `${sessionPath}.lock`,
+		});
+	}
+
 	/** Create an in-memory session (no file persistence) */
 	static inMemory(cwd: string = process.cwd(), options?: NewSessionOptions): SessionManager {
 		return new SessionManager(cwd, "", undefined, false, options);
@@ -1652,15 +1963,7 @@ export class SessionManager {
 	): SessionManager {
 		const resolvedSourcePath = resolvePath(sourcePath);
 		const resolvedTargetCwd = resolvePath(targetCwd);
-		const sourceEntries = loadEntriesFromFile(resolvedSourcePath);
-		if (sourceEntries.length === 0) {
-			throw new Error(`Cannot fork: source session file is empty or invalid: ${resolvedSourcePath}`);
-		}
-
-		const sourceHeader = sourceEntries.find((e) => e.type === "session") as SessionHeader | undefined;
-		if (!sourceHeader) {
-			throw new Error(`Cannot fork: source session has no header: ${resolvedSourcePath}`);
-		}
+		const sourceSnapshot = readSessionSnapshot(resolvedSourcePath);
 
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(resolvedTargetCwd);
 		if (!existsSync(dir)) {
@@ -1676,7 +1979,6 @@ export class SessionManager {
 		const fileTimestamp = timestamp.replace(/[:.]/g, "-");
 		const newSessionFile = join(dir, `${fileTimestamp}_${newSessionId}.jsonl`);
 
-		// Write new header pointing to source as parent, with updated cwd
 		const newHeader: SessionHeader = {
 			type: "session",
 			version: CURRENT_SESSION_VERSION,
@@ -1685,16 +1987,58 @@ export class SessionManager {
 			cwd: resolvedTargetCwd,
 			parentSession: resolvedSourcePath,
 		};
-		writeFileSync(newSessionFile, `${JSON.stringify(newHeader)}\n`, { flag: "wx" });
-
-		// Copy all non-header entries from source
-		for (const entry of sourceEntries) {
-			if (entry.type !== "session") {
-				appendFileSync(newSessionFile, `${JSON.stringify(entry)}\n`);
-			}
+		const manager = new SessionManager(resolvedTargetCwd, dir, newSessionFile, true);
+		try {
+			manager.sessionId = newSessionId;
+			manager.fileEntries = [newHeader, ...(structuredClone(sourceSnapshot.entries) as SessionEntry[])];
+			manager._buildIndex();
+			manager._rewriteFile();
+			manager.flushed = true;
+			return manager;
+		} catch (error) {
+			manager.dispose();
+			throw error;
 		}
+	}
 
-		return new SessionManager(resolvedTargetCwd, dir, newSessionFile, true);
+	static importFromJsonl(
+		sourcePath: string,
+		destinationPath: string,
+		sessionDir?: string,
+		cwdOverride?: string,
+	): SessionManager {
+		const resolvedSourcePath = resolvePath(sourcePath);
+		const resolvedDestinationPath = resolvePath(destinationPath);
+		const sourceEntries = structuredClone(loadEntriesFromFile(resolvedSourcePath));
+		const header = sourceEntries[0];
+		if (!header || header.type !== "session") {
+			throw new Error(`Session file is not a valid pi session: ${resolvedSourcePath}`);
+		}
+		migrateToCurrentVersion(sourceEntries);
+
+		const cwd = cwdOverride ?? getSessionHeaderCwd(header) ?? process.cwd();
+		const dir = sessionDir ? normalizePath(sessionDir) : dirname(resolvedDestinationPath);
+		if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+
+		const manager = new SessionManager(cwd, dir, undefined, false);
+		manager.persist = true;
+		const lease = manager._acquireWriterLease(resolvedDestinationPath);
+		try {
+			writeSessionEntriesAtomically(lease.sessionPath, sourceEntries);
+			manager._adoptState(
+				{
+					sessionId: header.id,
+					sessionFile: lease.sessionPath,
+					fileEntries: sourceEntries,
+					flushed: true,
+				},
+				lease,
+			);
+			return manager;
+		} catch (error) {
+			manager._releaseWriterLease(lease);
+			throw error;
+		}
 	}
 
 	/**

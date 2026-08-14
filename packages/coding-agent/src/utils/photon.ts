@@ -45,10 +45,11 @@ function pathOrNull(file: PathOrFileDescriptor): string | null {
 function getFallbackWasmPaths(): string[] {
 	const execDir = path.dirname(process.execPath);
 	return [
+		process.env.PI_PHOTON_WASM_PATH,
 		path.join(execDir, WASM_FILENAME),
 		path.join(execDir, "photon", WASM_FILENAME),
 		path.join(process.cwd(), WASM_FILENAME),
-	];
+	].filter((candidate): candidate is string => Boolean(candidate));
 }
 
 function patchPhotonWasmRead(): () => void {

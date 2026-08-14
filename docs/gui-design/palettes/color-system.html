@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LYStar Code GUI 配色系统</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { margin: 0; min-height: 100%; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        color: #0d0d0d;
+        background: #ececec;
+        letter-spacing: 0;
+      }
+      .page { width: 2816px; height: 1640px; display: grid; grid-template-columns: 1fr 1fr; }
+      .theme { padding: 64px; overflow: hidden; }
+      .light { background: #ffffff; color: #0d0d0d; }
+      .dark { background: #151515; color: #f5f5f5; }
+      header { height: 118px; display: flex; align-items: flex-start; justify-content: space-between; border-bottom: 1px solid; }
+      .light header { border-color: #e3e3e3; }
+      .dark header { border-color: #3d3d3d; }
+      h1 { margin: 0; font-size: 36px; line-height: 1.2; font-weight: 600; }
+      .subtitle { margin-top: 12px; font-size: 20px; line-height: 1.5; }
+      .light .subtitle, .light .meta, .light .role { color: #6f6f6f; }
+      .dark .subtitle, .dark .meta, .dark .role { color: #a6a6a6; }
+      .meta { font: 18px/1.5 ui-monospace, "SFMono-Regular", Consolas, monospace; text-align: right; }
+      section { margin-top: 32px; }
+      h2 { margin: 0 0 18px; font-size: 24px; line-height: 1.3; font-weight: 600; }
+      .swatches { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+      .swatch { min-height: 134px; border: 1px solid; border-radius: 8px; overflow: hidden; }
+      .light .swatch { border-color: #e3e3e3; }
+      .dark .swatch { border-color: #3d3d3d; }
+      .chip { height: 76px; border-bottom: 1px solid rgba(127,127,127,.24); }
+      .label { padding: 10px 12px; display: flex; justify-content: space-between; gap: 10px; font-size: 16px; line-height: 1.35; }
+      code { font: 15px/1.35 ui-monospace, "SFMono-Regular", Consolas, monospace; }
+      .states { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+      .state { height: 104px; border: 1px solid; border-radius: 8px; padding: 16px; display: flex; align-items: center; gap: 14px; }
+      .light .state { border-color: #e3e3e3; background: #fff; }
+      .dark .state { border-color: #3d3d3d; background: #1d1d1d; }
+      .dot { width: 14px; height: 14px; border-radius: 999px; flex: 0 0 auto; }
+      .state strong { display: block; font-size: 18px; font-weight: 600; }
+      .state span { display: block; margin-top: 4px; font-size: 15px; }
+      .light .state span { color: #6f6f6f; }
+      .dark .state span { color: #a6a6a6; }
+      .samples { display: grid; grid-template-columns: 1.05fr .95fr; gap: 18px; }
+      .panel { border: 1px solid; border-radius: 8px; overflow: hidden; }
+      .light .panel { border-color: #e3e3e3; }
+      .dark .panel { border-color: #3d3d3d; }
+      .panel-title { height: 48px; padding: 13px 16px; font-size: 17px; font-weight: 600; border-bottom: 1px solid; }
+      .light .panel-title { border-color: #e3e3e3; background: #f6f6f6; }
+      .dark .panel-title { border-color: #3d3d3d; background: #242424; }
+      .diff-line { height: 45px; display: grid; grid-template-columns: 56px 34px 1fr; align-items: center; font: 16px/1.3 ui-monospace, "SFMono-Regular", Consolas, monospace; }
+      .diff-line span { padding: 0 10px; }
+      .light .diff-line.add { color: #08783a; background: #e8f7ee; }
+      .light .diff-line.del { color: #b42318; background: #fdecea; }
+      .dark .diff-line.add { color: #61e39a; background: #173d29; }
+      .dark .diff-line.del { color: #ff8a83; background: #4b211e; }
+      .controls { padding: 18px; display: grid; gap: 16px; }
+      .control-row { display: flex; align-items: center; gap: 14px; }
+      .button, .input, .disabled { height: 40px; border: 1px solid; border-radius: 6px; display: inline-flex; align-items: center; padding: 0 15px; font-size: 16px; }
+      .light .button, .light .input { border-color: #cfcfcf; background: #fff; }
+      .dark .button, .dark .input { border-color: #4d4d4d; background: #1d1d1d; }
+      .input { min-width: 260px; }
+      .focus { outline: 2px solid; outline-offset: 2px; }
+      .light .focus { outline-color: #0169cc; }
+      .dark .focus { outline-color: #4da3ff; }
+      .disabled { opacity: .58; }
+      .light .disabled { color: #a6a6a6; border-color: #e3e3e3; background: #fafafa; }
+      .dark .disabled { color: #6f6f6f; border-color: #3d3d3d; background: #191919; }
+      .contrast { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+      .ratio { min-height: 88px; border: 1px solid; border-radius: 8px; padding: 14px 16px; }
+      .light .ratio { border-color: #e3e3e3; }
+      .dark .ratio { border-color: #3d3d3d; }
+      .ratio strong { display: block; font-size: 25px; }
+      .ratio span { display: block; margin-top: 6px; font-size: 14px; }
+      .light .ratio span { color: #6f6f6f; }
+      .dark .ratio span { color: #a6a6a6; }
+      .foot { margin-top: 28px; padding-top: 18px; border-top: 1px solid; font-size: 16px; line-height: 1.55; }
+      .light .foot { color: #6f6f6f; border-color: #e3e3e3; }
+      .dark .foot { color: #a6a6a6; border-color: #3d3d3d; }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <article class="theme light">
+        <header>
+          <div><h1>浅色主题</h1><div class="subtitle">清晰、安静、连续阅读</div></div>
+          <div class="meta">LYStar Code GUI<br />Design Token v1</div>
+        </header>
+        <section>
+          <h2>表面与文字</h2>
+          <div class="swatches">
+            <div class="swatch"><div class="chip" style="background:#fff"></div><div class="label"><span>Canvas</span><code>#FFFFFF</code></div></div>
+            <div class="swatch"><div class="chip" style="background:#f6f6f6"></div><div class="label"><span>Sidebar</span><code>#F6F6F6</code></div></div>
+            <div class="swatch"><div class="chip" style="background:#f3f3f3"></div><div class="label"><span>Subtle</span><code>#F3F3F3</code></div></div>
+            <div class="swatch"><div class="chip" style="background:#e8e8e8"></div><div class="label"><span>Selected</span><code>#E8E8E8</code></div></div>
+            <div class="swatch"><div class="chip" style="background:#e3e3e3"></div><div class="label"><span>Border</span><code>#E3E3E3</code></div></div>
+            <div class="swatch"><div class="chip" style="background:#0d0d0d"></div><div class="label"><span>Text</span><code>#0D0D0D</code></div></div>
+            <div class="swatch"><div class="chip" style="background:#6f6f6f"></div><div class="label"><span>Secondary</span><code>#6F6F6F</code></div></div>
+            <div class="swatch"><div class="chip" style="background:#0169cc"></div><div class="label"><span>Accent</span><code>#0169CC</code></div></div>
+          </div>
+        </section>
+        <section>
+          <h2>交互与状态</h2>
+          <div class="states">
+            <div class="state"><i class="dot" style="background:#0a9f4a"></i><div><strong>在线 / 成功</strong><span>#0A9F4A</span></div></div>
+            <div class="state"><i class="dot" style="background:#c76a00"></i><div><strong>等待 / 警告</strong><span>#C76A00</span></div></div>
+            <div class="state"><i class="dot" style="background:#d92d20"></i><div><strong>失败 / 删除</strong><span>#D92D20</span></div></div>
+            <div class="state"><i class="dot" style="background:#858585"></i><div><strong>离线 / 未知</strong><span>#858585</span></div></div>
+          </div>
+        </section>
+        <section class="samples">
+          <div class="panel"><div class="panel-title">Diff</div><div class="diff-line add"><span>11</span><span>+</span><span>本机和 SSH 项目使用同一连续列表。</span></div><div class="diff-line del"><span>12</span><span>-</span><span>本机项目和 SSH 项目分别分组。</span></div></div>
+          <div class="panel"><div class="panel-title">焦点与禁用</div><div class="controls"><div class="control-row"><div class="input focus">输入任务或继续说明</div><div class="button">次要命令</div></div><div class="control-row"><div class="disabled">不可用</div><span class="role">禁用状态不承担关键信息</span></div></div></div>
+        </section>
+        <section><h2>对比度</h2><div class="contrast"><div class="ratio"><strong>19.44:1</strong><span>正文 / Canvas</span></div><div class="ratio"><strong>5.02:1</strong><span>次要文字 / Canvas</span></div><div class="ratio"><strong>5.39:1</strong><span>Accent / Canvas</span></div></div></section>
+        <div class="foot">本机项目不显示状态点。SSH 状态同时使用颜色、文字和可访问名称。状态色不用于普通选中项。</div>
+      </article>
+
+      <article class="theme dark">
+        <header>
+          <div><h1>深色主题</h1><div class="subtitle">中性、稳定、避免蓝黑偏色</div></div>
+          <div class="meta">LYStar Code GUI<br />Design Token v1</div>
+        </header>
+        <section>
+          <h2>表面与文字</h2>
+          <div class="swatches">
+            <div class="swatch"><div class="chip" style="background:#151515"></div><div class="label"><span>Canvas</span><code>#151515</code></div></div>
+            <div class="swatch"><div class="chip" style="background:#242424"></div><div class="label"><span>Sidebar</span><code>#242424</code></div></div>
+            <div class="swatch"><div class="chip" style="background:#2b2b2b"></div><div class="label"><span>Subtle</span><code>#2B2B2B</code></div></div>
+            <div class="swatch"><div class="chip" style="background:#333"></div><div class="label"><span>Selected</span><code>#333333</code></div></div>
+            <div class="swatch"><div class="chip" style="background:#3d3d3d"></div><div class="label"><span>Border</span><code>#3D3D3D</code></div></div>
+            <div class="swatch"><div class="chip" style="background:#f5f5f5"></div><div class="label"><span>Text</span><code>#F5F5F5</code></div></div>
+            <div class="swatch"><div class="chip" style="background:#a6a6a6"></div><div class="label"><span>Secondary</span><code>#A6A6A6</code></div></div>
+            <div class="swatch"><div class="chip" style="background:#4da3ff"></div><div class="label"><span>Accent</span><code>#4DA3FF</code></div></div>
+          </div>
+        </section>
+        <section>
+          <h2>交互与状态</h2>
+          <div class="states">
+            <div class="state"><i class="dot" style="background:#39d27d"></i><div><strong>在线 / 成功</strong><span>#39D27D</span></div></div>
+            <div class="state"><i class="dot" style="background:#f59e42"></i><div><strong>等待 / 警告</strong><span>#F59E42</span></div></div>
+            <div class="state"><i class="dot" style="background:#ff6259"></i><div><strong>失败 / 删除</strong><span>#FF6259</span></div></div>
+            <div class="state"><i class="dot" style="background:#858585"></i><div><strong>离线 / 未知</strong><span>#858585</span></div></div>
+          </div>
+        </section>
+        <section class="samples">
+          <div class="panel"><div class="panel-title">Diff</div><div class="diff-line add"><span>11</span><span>+</span><span>本机和 SSH 项目使用同一连续列表。</span></div><div class="diff-line del"><span>12</span><span>-</span><span>本机项目和 SSH 项目分别分组。</span></div></div>
+          <div class="panel"><div class="panel-title">焦点与禁用</div><div class="controls"><div class="control-row"><div class="input focus">输入任务或继续说明</div><div class="button">次要命令</div></div><div class="control-row"><div class="disabled">不可用</div><span class="role">禁用状态不承担关键信息</span></div></div></div>
+        </section>
+        <section><h2>对比度</h2><div class="contrast"><div class="ratio"><strong>16.75:1</strong><span>正文 / Canvas</span></div><div class="ratio"><strong>7.50:1</strong><span>次要文字 / Canvas</span></div><div class="ratio"><strong>6.96:1</strong><span>Accent / Canvas</span></div></div></section>
+        <div class="foot">浅色与深色共用布局、间距和几何，只切换语义 Token。深色不是浅色机械反相。</div>
+      </article>
+    </main>
+  </body>
+</html>

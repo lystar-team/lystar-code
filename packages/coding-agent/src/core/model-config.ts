@@ -1,6 +1,21 @@
 /** Immutable, credential-blind models.json snapshot. */
 
+import { randomUUID } from "node:crypto";
+import {
+	chmodSync,
+	closeSync,
+	existsSync,
+	fsyncSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { readFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import lockfile from "proper-lockfile";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
@@ -214,6 +229,93 @@ export type ModelsJsonModelOverride = Static<typeof ModelOverrideSchema>;
 export type ModelsJsonProvider = Static<typeof ProviderConfigSchema>;
 type ModelsJson = Static<typeof ModelsConfigSchema>;
 
+function parseModelsJson(content: string, path: string): ModelsJson {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(stripJsonComments(content));
+	} catch (error) {
+		throw new Error(
+			`Failed to parse models.json: ${error instanceof Error ? error.message : error}\n\nFile: ${path}`,
+		);
+	}
+	if (!validateModelsConfig.Check(parsed)) {
+		const errors =
+			validateModelsConfig
+				.Errors(parsed)
+				.map((error) => `  - ${formatValidationPath(error)}: ${error.message}`)
+				.join("\n") || "Unknown schema error";
+		throw new Error(`Invalid models.json schema:\n${errors}\n\nFile: ${path}`);
+	}
+	return parsed as ModelsJson;
+}
+
+function writeModelsJson(path: string, config: ModelsJson): void {
+	const directory = dirname(path);
+	mkdirSync(directory, { recursive: true, mode: 0o700 });
+	const temporaryPath = join(directory, `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
+	let file: number | undefined;
+	try {
+		file = openSync(temporaryPath, "wx", 0o600);
+		writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
+		fsyncSync(file);
+		closeSync(file);
+		file = undefined;
+		renameSync(temporaryPath, path);
+		chmodSync(path, 0o600);
+		if (process.platform !== "win32") {
+			const directoryFile = openSync(directory, "r");
+			try {
+				fsyncSync(directoryFile);
+			} finally {
+				closeSync(directoryFile);
+			}
+		}
+	} finally {
+		if (file !== undefined) closeSync(file);
+		if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
+	}
+}
+
+async function updateModelsJson(path: string, update: (config: ModelsJson) => void): Promise<void> {
+	const normalized = normalizePath(path);
+	mkdirSync(dirname(normalized), { recursive: true, mode: 0o700 });
+	if (!existsSync(normalized)) writeModelsJson(normalized, { providers: {} });
+	const release = await lockfile.lock(normalized, { realpath: false });
+	try {
+		const config = parseModelsJson(readFileSync(normalized, "utf-8"), normalized);
+		update(config);
+		if (!validateModelsConfig.Check(config)) throw new Error(`Invalid models.json update\n\nFile: ${normalized}`);
+		writeModelsJson(normalized, config);
+	} finally {
+		await release();
+	}
+}
+
+export async function saveModelsJsonProvider(
+	modelsJsonPath: string,
+	providerId: string,
+	provider: ModelsJsonProvider,
+): Promise<void> {
+	await updateModelsJson(modelsJsonPath, (config) => {
+		config.providers[providerId] = { ...config.providers[providerId], ...structuredClone(provider) };
+	});
+}
+
+export async function saveModelsJsonModel(
+	modelsJsonPath: string,
+	providerId: string,
+	model: ModelsJsonModel,
+): Promise<void> {
+	await updateModelsJson(modelsJsonPath, (config) => {
+		const provider = config.providers[providerId] ?? {};
+		const models = [...(provider.models ?? [])];
+		const index = models.findIndex((candidate) => candidate.id === model.id);
+		if (index >= 0) models[index] = structuredClone(model);
+		else models.push(structuredClone(model));
+		config.providers[providerId] = { ...provider, models };
+	});
+}
+
 function formatValidationPath(error: TLocalizedValidationError): string {
 	if (error.keyword === "required") {
 		const requiredProperties = (error.params as { requiredProperties?: string[] }).requiredProperties;
@@ -257,26 +359,12 @@ export class ModelConfig {
 			);
 		}
 
-		let parsed: unknown;
+		let config: ModelsJson;
 		try {
-			parsed = JSON.parse(stripJsonComments(content));
+			config = parseModelsJson(content, path);
 		} catch (error) {
-			return new ModelConfig(
-				new Map(),
-				`Failed to parse models.json: ${error instanceof Error ? error.message : error}\n\nFile: ${path}`,
-			);
+			return new ModelConfig(new Map(), error instanceof Error ? error.message : String(error));
 		}
-
-		if (!validateModelsConfig.Check(parsed)) {
-			const errors =
-				validateModelsConfig
-					.Errors(parsed)
-					.map((error) => `  - ${formatValidationPath(error)}: ${error.message}`)
-					.join("\n") || "Unknown schema error";
-			return new ModelConfig(new Map(), `Invalid models.json schema:\n${errors}\n\nFile: ${path}`);
-		}
-
-		const config = parsed as ModelsJson;
 		const providers = new Map<string, ModelsJsonProvider>();
 		for (const [providerId, provider] of Object.entries(config.providers)) {
 			providers.set(providerId, deepFreeze(structuredClone(provider)));

@@ -133,6 +133,7 @@ describe("loadEntriesFromFile", () => {
 				const sessionManager = SessionManager.open(file, tempDir, cwdOverride);
 				expect(sessionManager.getSessionId()).toBe(id);
 				expect(sessionManager.getCwd()).toBe(cwdOverride ?? storedCwd);
+				sessionManager.dispose();
 			}
 		}
 	});
@@ -298,8 +299,36 @@ describe("SessionManager custom flat session directory", () => {
 		if (!sessionFile) {
 			throw new Error("Expected persisted session file");
 		}
+		session.dispose();
 		return sessionFile;
 	}
+
+	it("persists a bash-only session and restores its transcript", () => {
+		const session = SessionManager.create(projectA, tempDir);
+		session.appendMessage({
+			role: "bashExecution",
+			command: "printf native-ok",
+			output: "native-ok",
+			exitCode: 0,
+			cancelled: false,
+			truncated: false,
+			timestamp: Date.now(),
+		});
+		const sessionFile = session.getSessionFile();
+		if (!sessionFile) throw new Error("Expected persisted session file");
+		session.dispose();
+
+		const restored = SessionManager.open(sessionFile, tempDir);
+		expect(restored.buildSessionContext().messages).toEqual([
+			expect.objectContaining({
+				role: "bashExecution",
+				command: "printf native-ok",
+				output: "native-ok",
+				exitCode: 0,
+			}),
+		]);
+		restored.dispose();
+	});
 
 	it("scopes current-folder APIs by cwd while listing all flat sessions", async () => {
 		const sessionA = createPersistedSession(projectA, "from A");
@@ -388,6 +417,7 @@ describe("SessionManager.setSessionFile with corrupted files", () => {
 
 		const sm1 = SessionManager.open(emptyFile, tempDir);
 		const sessionId = sm1.getSessionId();
+		sm1.dispose();
 
 		const sm2 = SessionManager.open(emptyFile, tempDir);
 		expect(sm2.getSessionId()).toBe(sessionId);

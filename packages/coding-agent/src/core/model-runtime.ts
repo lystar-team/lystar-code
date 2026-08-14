@@ -396,6 +396,10 @@ export class ModelRuntime implements Models {
 		return this.models.getProvider(providerId);
 	}
 
+	isBuiltinProvider(providerId: string): boolean {
+		return this.defaultBuiltins.has(providerId);
+	}
+
 	getImageModels(providerId?: string): readonly ImagesModel<ImagesApi>[] {
 		return this.imageModels.getModels(providerId);
 	}
@@ -753,16 +757,16 @@ export class ModelRuntime implements Models {
 		return { aborted: result.aborted || (options.signal?.aborted ?? false), errors };
 	}
 
-	registerNativeProvider(provider: Provider): void {
+	registerNativeProvider(provider: Provider, options: { refresh?: boolean } = {}): void {
 		if (!provider.id.trim()) throw new Error("Provider id must not be empty.");
 		this.extensionProviders.delete(provider.id);
 		this.nativeExtensionProviders.set(provider.id, provider);
 		this.recomposeProvider(provider.id);
 		this.updateModelSnapshot();
-		void this.refresh({ allowNetwork: false });
+		if (options.refresh !== false) void this.refresh({ allowNetwork: false });
 	}
 
-	registerProvider(providerId: string, config: ProviderConfigInput): void {
+	registerProvider(providerId: string, config: ProviderConfigInput, options: { refresh?: boolean } = {}): void {
 		// Validate the incoming registration on its own, like the legacy registry:
 		// a broken re-registration must throw without touching the stored config.
 		validateExtensionProvider(providerId, this.builtins.get(providerId), this.config.getProvider(providerId), config);
@@ -797,7 +801,7 @@ export class ModelRuntime implements Models {
 				available: this.snapshot.all.filter((model) => configuredProviders.has(model.provider)),
 			};
 		}
-		void this.refresh({ allowNetwork: false });
+		if (options.refresh !== false) void this.refresh({ allowNetwork: false });
 	}
 
 	unregisterProvider(providerId: string): void {

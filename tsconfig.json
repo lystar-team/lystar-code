@@ -28,6 +28,8 @@
 			"@earendil-works/pi-client/*": ["./packages/client/src/*"],
 			"@earendil-works/pi-server": ["./packages/server/src/index.ts"],
 			"@earendil-works/pi-server/*": ["./packages/server/src/*"],
+			"@lystar/code-gui-protocol": ["./packages/gui-protocol/src/index.ts"],
+			"@lystar/code-gui-host": ["./packages/gui-host/src/index.ts"],
 			"typebox": ["./node_modules/typebox"],
 			"@earendil-works/pi-tui": ["./packages/tui/src/index.ts"],
 			"@earendil-works/pi-tui/*": ["./packages/tui/src/*"],
@@ -36,5 +38,5 @@
 		}
 	},
 	"include": ["packages/*/src/**/*", "packages/*/test/**/*", "packages/session-backends/*/src/**/*", "packages/session-backends/*/test/**/*", "packages/coding-agent/examples/**/*"],
-	"exclude": ["**/dist/**", "packages/coding-agent/examples/extensions/gondolin/**"]
+	"exclude": ["**/dist/**", "packages/gui/**", "packages/coding-agent/examples/extensions/gondolin/**"]
 }

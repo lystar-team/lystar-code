@@ -1,0 +1,176 @@
+import type {
+	AuthType,
+	CompletionItem,
+	CompletionResult,
+	ContentChunk,
+	GitDiff,
+	GitStatus,
+	JsonValue,
+	ModelRef,
+	ProjectInstruction,
+	ProjectResource,
+	SessionActivity,
+	SessionPhase,
+	SessionStateSnapshot,
+	ThinkingLevel,
+} from "@lystar/code-gui-protocol";
+
+export interface RuntimeEvent {
+	type: "progress" | "entry_committed" | "state_changed" | "ui_request";
+	payload: JsonValue;
+}
+
+export interface RuntimeSession {
+	readonly sessionPath: string;
+	getSnapshot(writeAccess: SessionStateSnapshot["writeAccess"]): SessionStateSnapshot;
+	prompt(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void>;
+	runBash(command: string, onChunk: (chunk: string) => void): Promise<JsonValue>;
+	rename(name: string): Promise<void>;
+	setModel(model: ModelRef): Promise<void>;
+	setThinkingLevel(level: ThinkingLevel): Promise<void>;
+	fork(entryId: string, position?: "before" | "at"): Promise<{ sessionPath: string; selectedText?: string }>;
+	abort(): Promise<void>;
+	reloadResources(): Promise<void>;
+	getCompletions(text: string, cursor: number): CompletionResult | undefined;
+	dispose(): Promise<void>;
+	onEvent(listener: (event: RuntimeEvent) => void): () => void;
+}
+
+export interface SessionSummaryBase {
+	path: string;
+	id: string;
+	cwd: string;
+	name?: string;
+	createdAt: number;
+	updatedAt: number;
+	messageCount: number;
+	firstMessage: string;
+	activity: SessionActivity;
+}
+
+export interface ModelSummary {
+	provider: string;
+	id: string;
+	name: string;
+	api: string;
+	reasoning: boolean;
+	input: ("text" | "image")[];
+	contextWindow: number;
+	maxTokens: number;
+	cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+	supportedThinkingLevels: ThinkingLevel[];
+	authenticated: boolean;
+	authMethods: AuthType[];
+	authSource?: string;
+}
+
+export interface ModelProviderSummary {
+	id: string;
+	name: string;
+	authenticated: boolean;
+	authMethods: AuthType[];
+	authSource?: string;
+	modelCount: number;
+	builtIn: boolean;
+	custom: boolean;
+}
+
+export interface ModelProviderInput {
+	provider: string;
+	name?: string;
+	baseUrl: string;
+	api: string;
+}
+
+export interface ProviderModelInput {
+	provider: string;
+	id: string;
+	name?: string;
+	api?: string;
+	baseUrl?: string;
+	reasoning: boolean;
+	input: ("text" | "image")[];
+	contextWindow?: number;
+	maxTokens?: number;
+}
+
+export interface SkillSummary {
+	name: string;
+	description: string;
+	path: string;
+	baseDir: string;
+	source: string;
+	scope: "user" | "project" | "temporary";
+	origin: "package" | "top-level";
+	enabled: boolean;
+	disableModelInvocation: boolean;
+}
+
+export interface RuntimeAdapter {
+	createSession(cwd: string, onUiRequest: UiRequestHandler): Promise<RuntimeSession>;
+	openSession(sessionPath: string, onUiRequest: UiRequestHandler): Promise<RuntimeSession>;
+	inspectSession(sessionPath: string): SessionStateSnapshot;
+	isSessionWriterLocked(sessionPath: string): boolean;
+	deleteSession(sessionPath: string): Promise<void>;
+	listSessions(cwd: string): Promise<SessionSummaryBase[]>;
+	listModels(): Promise<ModelSummary[]>;
+	listModelProviders(): Promise<ModelProviderSummary[]>;
+	addModelProvider(input: ModelProviderInput): Promise<ModelProviderSummary[]>;
+	addProviderModel(input: ProviderModelInput): Promise<ModelSummary[]>;
+	loginModelProvider(provider: string, authType: AuthType, onUiRequest: UiRequestHandler): Promise<ModelSummary[]>;
+	logoutModelProvider(provider: string): Promise<ModelSummary[]>;
+	listSkills(cwd: string, onUiRequest: UiRequestHandler): Promise<{ skills: SkillSummary[]; diagnostics: JsonValue }>;
+	setSkillEnabled(
+		cwd: string,
+		path: string,
+		scope: "user" | "project",
+		enabled: boolean,
+		onUiRequest: UiRequestHandler,
+	): Promise<{ skills: SkillSummary[]; diagnostics: JsonValue }>;
+	listProjectInstructions(cwd: string): ProjectInstruction[];
+	saveProjectInstruction(
+		cwd: string,
+		fileName: "AGENTS.md" | "AGENTS.override.md",
+		content: string,
+		expectedHash?: string,
+	): ProjectInstruction[];
+	completeProjectFiles(cwd: string, query: string, limit: number): CompletionItem[];
+	resolveProjectResource(cwd: string, target: string, line?: number, column?: number): ProjectResource;
+	readProjectResource(cwd: string, path: string, offset: number, limit: number): ContentChunk;
+	getAbout(): JsonValue;
+	getDiagnostics(cwd?: string): Promise<JsonValue>;
+	getGitStatus(cwd: string): Promise<GitStatus>;
+	getGitDiff(cwd: string, path: string | undefined, staged: boolean): Promise<GitDiff>;
+	checkForUpdates(): Promise<JsonValue>;
+}
+
+export interface UiRequest {
+	id: string;
+	kind: "select" | "confirm" | "input" | "secret" | "editor" | "notify";
+	title: string;
+	payload: JsonValue;
+	timeoutMs?: number;
+	signal?: AbortSignal;
+}
+
+export type UiRequestHandler = (request: UiRequest) => Promise<{
+	value?: JsonValue;
+	confirmed?: boolean;
+	cancelled?: boolean;
+}>;
+
+export interface RuntimeStateInput {
+	id: string;
+	path: string;
+	name?: string;
+	cwd: string;
+	createdAt: number;
+	updatedAt: number;
+	phase: SessionPhase;
+	model?: ModelRef;
+	thinkingLevel: ThinkingLevel;
+	leafId: string | null;
+	queuedSteerCount: number;
+	transcriptGeneration: string;
+	transcriptRevision: number;
+}

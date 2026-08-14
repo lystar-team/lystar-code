@@ -1,0 +1,302 @@
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, relative } from "node:path";
+import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
+import { afterEach, describe, expect, it } from "vitest";
+import { CodingAgentRuntimeAdapter } from "../src/runtime-adapter.ts";
+import type { RuntimeEvent, RuntimeSession } from "../src/types.ts";
+
+function eventPayload(event: RuntimeEvent): {
+	items: Array<{ entryId: string; payload: { message?: { role?: string } } }>;
+	transcriptGeneration: string;
+	fromRevision: number;
+	transcriptRevision: number;
+} {
+	return event.payload as {
+		items: Array<{ entryId: string; payload: { message?: { role?: string } } }>;
+		transcriptGeneration: string;
+		fromRevision: number;
+		transcriptRevision: number;
+	};
+}
+
+describe("CodingAgentRuntimeAdapter", () => {
+	const cleanups: Array<() => Promise<void> | void> = [];
+
+	afterEach(async () => {
+		while (cleanups.length > 0) await cleanups.pop()?.();
+	});
+
+	it("persists and restores bash when it is the first transcript entry", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-bash-"));
+		const agentDir = join(tempDir, "agent");
+		const cwd = join(tempDir, "project");
+		for (const dir of [agentDir, cwd]) mkdirSync(dir, { recursive: true });
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always" }));
+
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		let runtime: RuntimeSession | undefined;
+		cleanups.push(async () => {
+			await runtime?.dispose();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+
+		runtime = await adapter.createSession(cwd, async () => ({ cancelled: true }));
+		const events: RuntimeEvent[] = [];
+		runtime.onEvent((event) => events.push(event));
+		await runtime.runBash("printf native-ok", () => {});
+
+		const sessionPath = runtime.sessionPath;
+		expect(existsSync(sessionPath)).toBe(true);
+		expect(adapter.isSessionWriterLocked(sessionPath)).toBe(true);
+		const committed = events.filter((event) => event.type === "entry_committed").map(eventPayload);
+		expect(committed.map((event) => event.items.map((item) => item.payload.message?.role))).toEqual([
+			["bashExecution"],
+		]);
+		const persisted = readFileSync(sessionPath, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as { message?: { role?: string; output?: string } });
+		expect(persisted.find((entry) => entry.message?.role === "bashExecution")?.message?.output).toBe("native-ok");
+		const listed = await adapter.listSessions(cwd);
+		if (!Array.isArray(listed) || !listed[0] || typeof listed[0] !== "object" || Array.isArray(listed[0])) {
+			throw new Error("Expected one listed Session summary");
+		}
+		expect(listed[0].firstMessage).toBe("未命名会话");
+		expect(listed[0].activity).toBe("completed");
+
+		await runtime.dispose();
+		expect(adapter.isSessionWriterLocked(sessionPath)).toBe(false);
+		runtime = await adapter.openSession(sessionPath, async () => ({ cancelled: true }));
+		expect(runtime.getSnapshot("owned").transcriptRevision).toBeGreaterThan(0);
+	});
+
+	it("runs the real Core runtime, persists JSONL, and resumes with continuous transcript revisions", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-runtime-"));
+		const agentDir = join(tempDir, "agent");
+		const cwd = join(tempDir, "project");
+		const faux = registerFauxProvider();
+		faux.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("second")]);
+		const model = faux.getModel();
+		for (const dir of [agentDir, cwd]) mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					[model.provider]: {
+						baseUrl: model.baseUrl,
+						apiKey: "faux-key",
+						api: faux.api,
+						models: [
+							{
+								id: model.id,
+								name: model.name,
+								reasoning: model.reasoning,
+								input: model.input,
+								cost: model.cost,
+								contextWindow: model.contextWindow,
+								maxTokens: model.maxTokens,
+							},
+						],
+					},
+				},
+			}),
+		);
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({
+				defaultProvider: model.provider,
+				defaultModel: model.id,
+				defaultThinkingLevel: "off",
+				defaultProjectTrust: "always",
+			}),
+		);
+
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		let runtime: RuntimeSession | undefined;
+		cleanups.push(async () => {
+			await runtime?.dispose();
+			faux.unregister();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+
+		runtime = await adapter.createSession(cwd, async () => ({ cancelled: true }));
+		const firstEvents: RuntimeEvent[] = [];
+		runtime.onEvent((event) => firstEvents.push(event));
+		expect(runtime.getSnapshot("owned").model).toEqual({ provider: model.provider, id: model.id });
+
+		await runtime.prompt("hello");
+		const sessionPath = runtime.sessionPath;
+		expect(existsSync(sessionPath)).toBe(true);
+		expect(isAbsolute(relative(join(agentDir, "sessions"), sessionPath))).toBe(false);
+		const firstCommitted = firstEvents.filter((event) => event.type === "entry_committed").map(eventPayload);
+		expect(firstCommitted).toHaveLength(1);
+		expect(firstCommitted[0].items.map((item) => item.payload.message?.role)).toEqual(["user", "assistant"]);
+		expect(firstCommitted[0].fromRevision).toBe(0);
+		const firstRevision = firstCommitted[0].transcriptRevision;
+		const firstGeneration = firstCommitted[0].transcriptGeneration;
+		const persistedRoles = readFileSync(sessionPath, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as { message?: { role?: string } })
+			.flatMap((entry) => (entry.message?.role ? [entry.message.role] : []));
+		expect(persistedRoles).toEqual(["user", "assistant"]);
+
+		await runtime.dispose();
+		runtime = await adapter.openSession(sessionPath, async () => ({ cancelled: true }));
+		const resumedEvents: RuntimeEvent[] = [];
+		runtime.onEvent((event) => resumedEvents.push(event));
+		expect(runtime.getSnapshot("owned").model).toEqual({ provider: model.provider, id: model.id });
+		await runtime.prompt("again");
+
+		const resumedCommitted = resumedEvents.filter((event) => event.type === "entry_committed").map(eventPayload);
+		expect(resumedCommitted.map((event) => event.items.map((item) => item.payload.message?.role))).toEqual([
+			["user"],
+			["assistant"],
+		]);
+		expect(resumedCommitted[0].transcriptGeneration).toBe(firstGeneration);
+		expect(resumedCommitted[0].fromRevision).toBe(firstRevision);
+		expect(resumedCommitted[1].fromRevision).toBe(resumedCommitted[0].transcriptRevision);
+		expect(resumedCommitted[1].transcriptRevision).toBeGreaterThan(resumedCommitted[0].transcriptRevision);
+
+		await runtime.rename("GUI 控制契约");
+		await runtime.setModel({ provider: model.provider, id: model.id });
+		const modelSummary = (await adapter.listModels()).find(
+			(candidate) => candidate.provider === model.provider && candidate.id === model.id,
+		);
+		const thinkingLevel = modelSummary?.supportedThinkingLevels.at(-1);
+		if (!thinkingLevel) throw new Error("Model has no supported thinking level");
+		await runtime.setThinkingLevel(thinkingLevel);
+		expect(runtime.getSnapshot("owned")).toMatchObject({
+			name: "GUI 控制契约",
+			model: { provider: model.provider, id: model.id },
+			thinkingLevel,
+		});
+
+		const firstUserEntryId = firstCommitted[0].items.find((item) => item.payload.message?.role === "user")?.entryId;
+		if (!firstUserEntryId) throw new Error("Missing user entry for fork");
+		const originalSessionPath = runtime.sessionPath;
+		const forked = await runtime.fork(firstUserEntryId);
+		const forkedSessionPath = runtime.sessionPath;
+		expect(forked).toEqual({ sessionPath: forkedSessionPath, selectedText: "hello" });
+		expect(forkedSessionPath).not.toBe(originalSessionPath);
+		faux.setResponses([fauxAssistantMessage("forked")]);
+		await runtime.prompt("continue");
+		expect(existsSync(forkedSessionPath)).toBe(true);
+
+		await runtime.dispose();
+		runtime = undefined;
+		await adapter.deleteSession(forkedSessionPath);
+		expect(existsSync(forkedSessionPath)).toBe(false);
+	});
+
+	it("atomically manages project instructions and validates project resources", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-project-"));
+		const agentDir = join(tempDir, "agent");
+		const cwd = join(tempDir, "project");
+		const outside = join(tempDir, "outside.txt");
+		mkdirSync(join(cwd, "src"), { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(join(cwd, "src", "app.ts"), "const first = 1;\nconst second = 2;\n");
+		writeFileSync(outside, "outside\n");
+		cleanups.push(() => rmSync(tempDir, { recursive: true, force: true }));
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+
+		const initial = adapter.listProjectInstructions(cwd);
+		expect(initial.filter((file) => file.editable).map((file) => file.fileName)).toEqual([
+			"AGENTS.override.md",
+			"AGENTS.md",
+		]);
+		expect(initial.every((file) => !file.exists)).toBe(true);
+		const saved = adapter.saveProjectInstruction(cwd, "AGENTS.md", "# Project\n");
+		const agents = saved.find((file) => file.fileName === "AGENTS.md");
+		expect(agents).toMatchObject({ exists: true, active: true, editable: true, content: "# Project\n" });
+		if (!agents?.contentHash) throw new Error("Missing instruction hash");
+		writeFileSync(join(cwd, "AGENTS.md"), "external change\n");
+		expect(() => adapter.saveProjectInstruction(cwd, "AGENTS.md", "stale write\n", agents.contentHash)).toThrow(
+			"外部修改",
+		);
+
+		const resource = adapter.resolveProjectResource(cwd, "src/app.ts:2");
+		expect(resource).toMatchObject({ displayPath: "src/app.ts", kind: "text", line: 2 });
+		const chunk = adapter.readProjectResource(cwd, resource.path, 0, 1024);
+		expect(Buffer.from(chunk.data, "base64").toString("utf8")).toContain("const second = 2");
+		expect(adapter.completeProjectFiles(cwd, "src/app", 10)).toEqual([
+			expect.objectContaining({ value: "@src/app.ts ", label: "src/app.ts", kind: "file" }),
+		]);
+		expect(() => adapter.resolveProjectResource(cwd, outside)).toThrow("项目范围");
+	});
+
+	it("reads structured status and diffs from a real Git repository without changing it", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-git-"));
+		const runGit = (...args: string[]) =>
+			execFileSync("git", args, { cwd: tempDir, encoding: "utf8", env: { ...process.env, LC_ALL: "C" } });
+		cleanups.push(() => rmSync(tempDir, { recursive: true, force: true }));
+		runGit("init", "--initial-branch=main");
+		runGit("config", "user.name", "LYStar Test");
+		runGit("config", "user.email", "lystar@example.invalid");
+		writeFileSync(join(tempDir, "tracked.txt"), "base\n");
+		writeFileSync(join(tempDir, "rename-me.txt"), "rename\n");
+		runGit("add", ".");
+		runGit("commit", "-m", "base");
+		writeFileSync(join(tempDir, "tracked.txt"), "base\nworktree\n");
+		writeFileSync(join(tempDir, "staged.txt"), "staged\n");
+		runGit("add", "staged.txt");
+		runGit("mv", "rename-me.txt", "renamed.txt");
+
+		const adapter = new CodingAgentRuntimeAdapter(join(tempDir, "agent"));
+		const before = await adapter.getGitStatus(tempDir);
+		expect(before).toMatchObject({ root: tempDir, branch: "main", ahead: 0, behind: 0 });
+		expect(before.files).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ path: "tracked.txt", staged: false, unstaged: true }),
+				expect.objectContaining({ path: "staged.txt", staged: true, unstaged: false }),
+				expect.objectContaining({ path: "renamed.txt", originalPath: "rename-me.txt", staged: true }),
+			]),
+		);
+		const worktreeDiff = await adapter.getGitDiff(tempDir, "tracked.txt", false);
+		expect(worktreeDiff).toMatchObject({ path: "tracked.txt", staged: false, additions: 1, deletions: 0 });
+		expect(worktreeDiff.diff).toContain("+worktree");
+		const stagedDiff = await adapter.getGitDiff(tempDir, "staged.txt", true);
+		expect(stagedDiff).toMatchObject({ path: "staged.txt", staged: true, additions: 1, deletions: 0 });
+		expect(stagedDiff.diff).toContain("+staged");
+		expect(await adapter.getGitStatus(tempDir)).toEqual(before);
+	});
+
+	it("routes API key login through a secret UI request and Core credential storage", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-auth-"));
+		const previousOpenAiKey = process.env.OPENAI_API_KEY;
+		delete process.env.OPENAI_API_KEY;
+		cleanups.push(() => {
+			if (previousOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+			else process.env.OPENAI_API_KEY = previousOpenAiKey;
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+
+		const adapter = new CodingAgentRuntimeAdapter(tempDir);
+		const requests: Array<{ kind: string; payload: unknown }> = [];
+		const loggedIn = await adapter.loginModelProvider("openai", "api_key", async (request) => {
+			requests.push({ kind: request.kind, payload: request.payload });
+			return { value: "sk-gui-test" };
+		});
+
+		expect(requests).toMatchObject([
+			{ kind: "secret", payload: { message: "Enter OpenAI API key", placeholder: "" } },
+		]);
+		expect(loggedIn.find((model) => model.provider === "openai")).toMatchObject({
+			authenticated: true,
+			authMethods: ["api_key"],
+			authSource: "stored",
+		});
+		expect(existsSync(join(tempDir, "auth.json"))).toBe(true);
+
+		const loggedOut = await adapter.logoutModelProvider("openai");
+		expect(loggedOut.some((model) => model.provider === "openai")).toBe(false);
+		expect((await adapter.listModelProviders()).find((provider) => provider.id === "openai")).toMatchObject({
+			authenticated: false,
+			authMethods: ["api_key"],
+			builtIn: true,
+		});
+	});
+});

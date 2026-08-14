@@ -11,7 +11,7 @@ import {
 	createAgentSessionServices,
 } from "../../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
-import { SessionManager } from "../../src/core/session-manager.ts";
+import { SessionLockedError, SessionManager } from "../../src/core/session-manager.ts";
 import type {
 	AgentToolResult,
 	ExtensionAPI,
@@ -290,6 +290,26 @@ describe("AgentSessionRuntime characterization", () => {
 		const resumeResult = await runtime.switchSession(otherSessionFile!);
 		expect(resumeResult.cancelled).toBe(true);
 		expect(runtime.session.sessionFile).toBe(originalSessionFile);
+		otherSession.dispose();
+	});
+
+	it("keeps the current runtime when the destination session is locked", async () => {
+		const { runtime, tempDir } = await createRuntimeForTest(() => {});
+		await runtime.session.prompt("hello");
+		const currentSession = runtime.session;
+		const currentSessionFile = currentSession.sessionFile;
+
+		const otherDir = join(tempDir, "locked-target");
+		mkdirSync(otherDir, { recursive: true });
+		const lockedTarget = SessionManager.create(otherDir);
+		lockedTarget.appendMessage({ role: "user", content: "locked", timestamp: Date.now() });
+		lockedTarget.appendMessage(fauxAssistantMessage("locked reply"));
+		const targetSessionFile = lockedTarget.getSessionFile()!;
+
+		await expect(runtime.switchSession(targetSessionFile)).rejects.toBeInstanceOf(SessionLockedError);
+		expect(runtime.session).toBe(currentSession);
+		expect(runtime.session.sessionFile).toBe(currentSessionFile);
+		lockedTarget.dispose();
 	});
 
 	it("emits session_before_fork and session_start and honors cancellation", async () => {
@@ -571,11 +591,9 @@ describe("AgentSessionRuntime characterization", () => {
 			agentDir: tempDir,
 			sessionManager: SessionManager.create(secondDir),
 		});
-		cleanups.push(async () => {
-			await otherRuntime.dispose();
-		});
 		await otherRuntime.session.prompt("other");
 		const otherSessionFile = otherRuntime.session.sessionFile!;
+		await otherRuntime.dispose();
 
 		await runtime.switchSession(otherSessionFile);
 
@@ -644,13 +662,11 @@ describe("AgentSessionRuntime characterization", () => {
 			agentDir: tempDir,
 			sessionManager: SessionManager.create(otherDir),
 		});
-		cleanups.push(async () => {
-			await otherRuntime.dispose();
-		});
 		await otherRuntime.session.setModel(faux.getModel("faux-2")!);
 		otherRuntime.session.setThinkingLevel("off");
 		await otherRuntime.session.prompt("hello");
 		const targetSessionFile = otherRuntime.session.sessionFile!;
+		await otherRuntime.dispose();
 
 		await runtime.switchSession(targetSessionFile);
 

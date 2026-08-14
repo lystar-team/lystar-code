@@ -37,6 +37,7 @@ function createSessionFile(path: string): void {
 		stopReason: "stop",
 		timestamp: Date.now(),
 	});
+	mgr.dispose();
 }
 
 describe("SessionInfo.modified", () => {
@@ -79,5 +80,27 @@ describe("SessionInfo.modified", () => {
 		expect(s).toBeDefined();
 		expect(s!.modified.getTime()).toBe(msgTime);
 		expect(s!.modified.getTime()).not.toBe(before.mtime.getTime());
+		expect(s!.lastOutcome).toBe("completed");
+		mgr.dispose();
+	});
+
+	it("derives a failed outcome from the last committed Bash execution", async () => {
+		const filePath = join(tmpdir(), `pi-session-${Date.now()}-bash-outcome.jsonl`);
+		createSessionFile(filePath);
+		const mgr = SessionManager.open(filePath);
+		mgr.appendMessage({
+			role: "bashExecution",
+			command: "exit 7",
+			output: "",
+			exitCode: 7,
+			cancelled: false,
+			truncated: false,
+			timestamp: Date.now(),
+			excludeFromContext: false,
+		});
+		mgr.dispose();
+
+		const sessions = await SessionManager.list("/tmp", dirname(filePath));
+		expect(sessions.find((session) => session.path === filePath)?.lastOutcome).toBe("failed");
 	});
 });

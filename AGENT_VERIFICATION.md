@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-12T15:08:14+08:00
+最后核验时间：2026-08-14T17:05:13+08:00
 
 环境：
 
@@ -8,12 +8,83 @@
 Node.js v22.21.1
 npm 11.11.0
 Bun 1.3.9
-Linux x64
+Rust 1.97.1
+Cargo 1.97.1
+rustup 1.27.1
+Linux x64 / Debian 13
+WebKitGTK 4.1、GTK 3、Ayatana AppIndicator、librsvg、OpenSSL 开发包、patchelf 已安装
 ```
 
 当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
 
+## 最新 GUI 实现与运行验证
+
+2026-08-14 已在当前 Linux x64 / Debian 13 主机完成最新 GUI、Host、Protocol、Core、真实浏览器和既有 Tauri 本机链路验证，不再沿用此前“只做静态检查”的结论。
+
+- `NODE_TLS_REJECT_UNAUTHORIZED=1 npm run check` 检查 1150 个文件并通过，包含 Biome、依赖固定、TS import、GUI AST 边界、shrinkwrap/install lock、全仓类型检查、GUI 类型检查和 browser smoke；`NODE_TLS_REJECT_UNAUTHORIZED=1 npm run build:offline` 通过。GUI production bundle 为 `1,399.95 kB`，gzip `434.98 kB`，CSS 为 `49.18 kB`，gzip `9.26 kB`，仅保留既有大 chunk warning。
+- 最终聚焦回归为 GUI Protocol 1 个文件 6/6、GUI 2 个文件 7/7、GUI Host 9 个文件 29/29、Coding Agent Session outcome/file/writer lock 3 个文件 32/32。新增集成测试覆盖外部 writer lock、JSONL commit、锁释放、Session 删除、严格出站编码、图片 `contentRef` 及跨 Session 拒绝。
+- GUI/TUI 单 writer 真实链路通过：TUI 创建 703 字节 JSONL 并持有 `.lock` 时，GUI 在 500ms 投影周期内显示“TUI 使用中”、Bash transcript 和只读 Composer；TUI `/quit` 后 GUI 自动取得写权限。Core 由最后提交的 assistant、Bash、user 或 Tool 消息推导 `completed`、`failed`、`aborted`、`interrupted`，Host 在没有 GUI operation journal 状态时使用该结果，最终 Session 显示“已完成”。
+- GUI Host 的成功响应统一经过 `jsonValue()` 规范化，移除 `undefined` 后再按严格 `JsonValueSchema` 编码；修复了 `list_sessions` 响应中 `name: undefined` 导致 sidecar 报 `GuiProtocolValidationError: Invalid GUI server message` 并退出的问题。Protocol 诊断仅包含消息类型、schema 路径和规则，不记录字段值、transcript、图片或凭据。
+- “设置-通用”已成为多项目和项目指令入口。真实 Host 下保存项目根 `AGENTS.md` 成功；外部改写后，旧 SHA-256 内容哈希保存被拒绝并提示“项目指令文件已被外部修改，请重新加载后再保存”。写入使用 UTF-8、临时文件、rename 和目录 `fsync`，只允许项目根 `AGENTS.override.md`、`AGENTS.md`。
+- 输入图片、历史用户图片和 Tool `read` 图片已通过真实 Host 转换为 Session 绑定 `contentRef`，GUI 按需读取缩略图和原图；图片查看器缩放、关闭及 object URL 释放有效。Markdown、Tool 路径、裸路径和 Git Diff 行号统一经过 Host canonicalize、存在性、文件类型和项目边界检查；显式 HTTP/HTTPS/mailto 使用系统 opener，相对路径不会被浏览器 `localhost` 基址误判为外链。
+- Composer 的 `@`、`$`、`/` 补全已接真实 Host/Runtime。大仓库中 `@packages/gui/src/App` 返回 `packages/gui/src/App.tsx`，Tab 插入 `@packages/gui/src/App.tsx `；`$add` 返回真实 `add-llm-provider` Skill；带引号空格路径和目录前缀缩小扫描根均已验证。`/` 只合并 Runtime 命令与真实 GUI handler：`/new`、`/settings`、`/models`、`/changes`。
+- Git Inspector 的宽度和上下分区比例支持鼠标、键盘、双击/按钮恢复并即时持久化。真实仓库中宽度从 480 拖至 604 px，分区比例从 0.34 调至 `0.45492097701149425`，恢复默认回到 `480/0.34`；Diff 行号 `1937` 能打开并定位 `packages/coding-agent/src/core/session-manager.ts`。`800×600` 使用全工作区覆盖并隐藏无意义的宽度拖拽条。
+- Playwright 在真实项目、Session、Tool 和 Host 数据下完成 `2816×1640`、`1280×800`、`800×600` 的浅色和深色验收，均无重叠；跟随系统主题实测 canvas 深色为 `#151515`、浅色为 `#ffffff`。最终浏览器 console 无 error 或 warning，仅 React DevTools info；本轮独立 bridge、浏览器和 tmux 已关闭。
+- Linux 原生 Tauri 本轮使用全新 Rust debug build、安装包内 Host 资源、隔离 `PI_CODING_AGENT_DIR`/`XDG_CONFIG_HOME` 和 X11/WebKitGTK 复跑。原生窗口真实恢复输入图片、Tool `read` 图片和 Session 完成/失败状态；图片查看器打开、缩放和关闭有效；“设置-通用”显示项目 `AGENTS.md`，外部改写后点击“重新加载”能立即显示新内容。`@`/`$`/`/` 补全已通过真实浏览器，但隔离 Xvfb 的合成键盘事件无法进入 WebKit textarea，因此不宣称本轮原生键盘验收通过。
+- 本轮原生退出首次暴露 transport 生命周期缺陷：Tauri `RunEvent::Exit` 和 `close_gui_host` 直接 `kill()` Host 子进程，Host 来不及 `dispose()`，正常标题栏关闭后会留下空的 proper-lockfile 目录。修复后关闭连接只丢弃 stdin/connection，让 EOF 驱动 Host 释放 Runtime 和 writer lock；错误路径仍保留强杀。全新隔离目录复测确认运行中 Session lock 为 1，点击真实标题栏关闭后应用 stderr 为 0 字节、lock 为 0、GUI/Host/Xvfb 残留进程为 0。
+- Linux AppImage 打包首次暴露 Tauri `patchelf` 会改写 Bun 编译的 Host ELF，改写后的 Host 在 `ldd` 和直接执行时段错误。当前构建把本机与五平台远端 Host 包装为带 `LYSTAR-GUI-BINARY/1` 头的不可执行资源，Rust 在本机启动或 SSH 安装前校验头并原子还原原始二进制；AppImage 不再把 Host 当作 ELF 处理。最终 Linux x64 AppImage 大小为 `270,010,872` 字节，SHA-256 为 `580ece4b4d1cf10683d8609bd97a5e7747159a367e892802b6fdc34637a5cbe9`。
+- 公开 Beta 候选 AppImage 已在隔离 XDG、`PI_CODING_AGENT_DIR`、Xvfb、Cinnamon 和 WebKitGTK 下启动。运行时 Host 还原到应用本地数据目录，权限为 `755`、大小 `114,262,566` 字节，SHA-256 与原始 Bun ELF 完全一致；正常 `Alt+F4` 退出码为 `0`，运行中和退出后的应用 stderr 均为 0 字节，退出后 Host 进程和 Session lock 均为 0。
+- 新增独立 `.github/workflows/gui-release.yml`，只监听 `gui-v*`，绑定同 commit 的 main CI，并在 `ubuntu-24.04`、`ubuntu-24.04-arm`、`macos-15`、`macos-15-intel`、`windows-2025` 原生 runner 生成 Linux x64/ARM64 AppImage、macOS ARM64/x64 DMG 和 Windows x64 NSIS。Release 固定为 `prerelease`、`latest=false`，生成严格的 `SHA256SUMS`、`gui-release-manifest.json` 和 GitHub provenance；没有正式证书时明确标记 `signed: false` 且不启用自动更新。
+
+当前结论是公开 Beta 候选。本机 Linux 原生 Tauri、真实浏览器工作台、GUI/TUI 只读同步、Session 状态、项目指令、图片、补全、资源链接、Inspector 布局、AppImage 打包、Host 资源还原和正常退出已放行到对应证据层。真实 Linux SSH Remote Host 安装/断线接管、macOS LaunchDaemon、Windows Scheduled Task/named pipe、跨平台系统 WebView、普通模型对话/认证/Extension UI 与原生 Completion 键盘链、正式 updater 公钥、signed stable release set、Apple notarization 和 Windows Authenticode 仍未放行；Linux ARM64、macOS ARM64/x64 和 Windows x64 Beta 资产只在对应 GitHub 原生 runner 构建，不声明实机运行通过。
+
 ## 已通过
+
+> 本节记录本轮最新实现之前的历史通过证据。凡涉及 GUI/Host/Protocol 文件的旧测试数量、bundle、截图和 sidecar smoke，只能证明当时基线，不能证明上面的最新代码。
+
+### GUI 本机工作台、长 Session 与视觉闸门
+
+本机真实链路使用 React/Vite 页面连接独立 `gui-host` stdio 子进程，没有使用 mock Session。主工作台已按 `docs/gui-design/screens/` 正式稿校准：左栏保持单一连续项目/Session 列表，选中项目和 Session 不再显示蓝色边线或 `box-shadow`，Session 三点按钮默认隐藏，只在 hover、键盘聚焦或菜单打开时显示；顶栏删除未接 `git-inspector` 的假“变更”入口和全局 Host 状态点，Composer 删除页面稿不存在的 Agent/Bash 分段控件。Topbar 标题负责截断，文件夹图标保持 `17px`。
+
+Composer 无附件时只保留输入与 footer 两行，桌面高度为 `140px`、底距 `20px`；`800×600` 为 `120px`、底距 `12px`。存在真实附件时才启用附件行。普通输入继续发送 `prompt`，前缀 `!` 的文本发送 `run_bash`；Bash 模式带图片时前端明确拒绝且不发送请求。
+
+TanStack Virtual 设置 `useFlushSync: false` 后，React 19 不再在 layout lifecycle 中触发 `flushSync was called from inside a lifecycle method`；重新加载、主题切换、抽屉操作和长列表浏览的浏览器控制台均为 0 error / 0 warning。Protocol Client 继续通过 `useSyncExternalStore` 发布不可变 snapshot，虚拟列表、实时投影和 JSONL commit 回读语义不变。
+
+GUI Store 的 transcript 跨页窗口最多保留 600 条，并设置 8 MiB 的 JSON UTF-16 载荷估算预算；加载更早内容时完整保留新页，从较新的尾部淘汰，并恢复原首条滚动锚点。历史窗口收到同 generation commit 时保留当前内容并显示“回到最新”，generation 变化时强制丢弃 rewrite 前缓存并重读尾页；历史状态下的流式文本不会混入旧窗口。
+
+`TranscriptReader` 不再为同时查找 header 和尾 entry 从文件末尾反向扫描完整 JSONL，而是分别读取首个有效 header 和最后一个有效 entry；跨多个 64 KiB 分块的长行只在遇到换行时合并一次。新增回归覆盖 header 前的超长坏行和 256 KiB 有效消息。真实 `127 MiB`、3665 条记录、最大单行约 `3.0 MiB` 的活动 Session，尾页 120 项读取由 `5.67s` 降到 `0.39s`。
+
+新增可复现入口 `npm run benchmark:gui-sessions`，生成 16/64/256 MiB 非稀疏 JSONL，每档执行 2 次 warmup 和 10 次尾页测量。最终单独运行的 p95 分别为 `99.9ms`、`92.3ms`、`102.8ms`；256 MiB `createBranchedSessionManager()` 实际原子写入 `268,435,696` 字节耗时 `1.930s`，相对 Core `120s` stale 有约 `62.2x` 余量。独立 Node 基准进程峰值 RSS 为 `540.1 MiB`，其中同时包含 256 MiB 源 Session、分支条目物化和目标写入，不代表 GUI/WebView 只读总进程树。macOS、Windows 和最慢支持存储仍需复测后才能关闭跨平台 stale 项。
+
+GUI Host 最新全量为 8 个文件、35/35 通过。当前项目 34 个 Session 共约 `259 MiB`，`SessionManager.list()` 仍需约 `2.8s` 构建 TUI 兼容的全文搜索元数据；没有增加第二份持久索引或失效协议。
+
+Host 启动期 V8 profile 的主要热点为开发模式的 TypeBox schema 解析和 `tsx` ESM loader；初始化完成后连续 5 秒采样为 `0.00% CPU` 且 `rchar_delta=0`，已排除空闲死循环。正式 Tauri sidecar 不使用 `tsx` loader。
+
+Playwright 已在真实项目、真实 Session 和真实 Tool 结果加载完成后，重新完成 `2816×1640`、`1280×800`、`800×600` 的浅色和深色六组正式截图：`/tmp/lystar-gui-final-wide-{light,dark}.png`、`/tmp/lystar-gui-final-desktop-{light,dark}.png`、`/tmp/lystar-gui-final-narrow-{light,dark}.png`。三种尺寸均无文档横向或纵向溢出；选中项目和 Session 的 `box-shadow` 为 `none`，Session 三点按钮默认 `opacity=0`，页面不存在 `.segmented-control` 或假“变更”按钮。主题设置真实点击依次写入 `light`、`dark`、`system` 并持久化到 `localStorage["lystar.gui.theme"]`；浅色 canvas 为 `#ffffff`，深色和系统深色为 `#151515`。`800×600` 项目抽屉关闭时位于 `left=-288`，打开后覆盖 `0..288px` 并显示遮罩，关闭后恢复。
+
+设置页在真实 Host 数据上完成桌面和窄窗验收：模型页返回 41 个 Provider，支持按 Provider、模型名和模型 ID 搜索；Skill 页返回 50 项，作用域计数为用户 49、项目 1，支持全部/用户/项目筛选、搜索、启停和真实重新加载。重新加载前后列表稳定，设置页无横纵溢出。通用、外观、模型只读摘要、Skill、诊断和关于使用 Host 结构化数据；连接、认证写入和自动更新继续显示明确阻塞态，没有伪造按钮。设置侧栏只包含返回应用、搜索和真实页面导航，外观页三张预览由当前主题 Token 和 CSS 绘制。
+
+相邻 `toolResult` 只通过现有虚拟行的首尾 class 合并边界，不创建分组数据或改变 transcript 索引。真实长 Session 中 10 个相邻 Tool 显示为 3 个连续区，后续 17 个 Tool 显示为 7 个连续区；展开后 TanStack Virtual 重新测量，滚动容器无溢出。Markdown 链接使用 `marked@18` 的 renderer parser 渲染嵌套 inline token，并继续过滤危险协议；合法嵌套链接和危险目标已有回归。用户可见 Session 锁、journal 损坏和 cursor 失效错误统一依据 `GuiProtocolError.code` 在 Store 映射中文。
+
+同一真实长 Session 在 `800×600` 连续加载 4 页后触发 600 条窗口上限；历史中段 `scrollTop` 约 `35k px` 时，“加载更早内容”和“回到最新”保持吸顶 `top=0`，页面横纵溢出均为 0。点击“回到最新”后只保留尾页入口，内容高度从约 `69.8k px` 收回约 `13.3k px`，`distanceFromBottom=0`。本轮截图为 `/tmp/lystar-gui-transcript-window-history.png`、`/tmp/lystar-gui-transcript-window-narrow.png` 和 `/tmp/lystar-gui-transcript-window-final.png`；浏览器控制台和 Vite/Host 日志均无 error 或 warning。
+
+本轮最新自动验证结果：GUI Protocol 1 个文件、4/4 通过；GUI Host 8 个文件、35/35 通过；GUI 2 个文件、11/11 通过，其中 Store 10 项、Markdown 1 项；Core 模型与 Session 聚焦矩阵 6 个文件、84/84 通过；`auth-check` 10/10 通过；Coding Agent 全量 238 个文件、2115 项通过，6 个文件、49 项跳过。根 `NODE_TLS_REJECT_UNAUTHORIZED=1 npm run check` 检查 1145 个文件并通过，`npm run build:offline`、`git diff --check` 和最终 `npm --workspace @lystar/code-gui run prepare:tauri` 通过；后者包含 updater 完全关闭闸门、最新 GUI production build、Tauri 资源物化、Linux x64 Bun sidecar 格式检查和真实 framed Protocol smoke。最新 GUI bundle 为 `1,323.93 kB`，gzip `417.43 kB`，仍有既有大 chunk warning，留作页面级拆分专项。
+
+此前同一工作区的发布级矩阵已通过 TUI、AI 和 Agent Core 全量；本轮共享 Core 变更位于 Coding Agent `ModelRuntime` 启动注册路径，已由 Coding Agent 全量、根类型检查和离线构建覆盖。
+
+当时产品结论为本机开发版 Alpha。React 工作台、真实 Host、本机 Session、长会话分页和浏览器视觉自动闸门已通过，但浏览器开发版不等同于原生桌面交付。当时未放行：Remote Host 的 systemd/LaunchDaemon/Windows Task 或 Service 平台托管、macOS/Windows 原生 IPC 与 OpenSSH 断线实机、`git-inspector`、模型 OAuth/API key 写契约、原子项目注册表、图片附件端到端、正式 updater 公钥与 signed stable release set、Tauri Rust/WebKitGTK 原生编译，以及三平台安装和系统 WebView 实机。用户私有 IPC、SSH 风格字节 relay、`remote-detach` capability 和 accepted 后断线重连的 Linux 多进程基础链已经实现并通过测试。
+
+### GUI Runtime adapter、边界与 RPC contract 差分
+
+新增 `scripts/check-gui-boundaries.mjs` 并接入根 `npm run check`。该 gate 使用 TypeScript AST 覆盖静态 import/export、import type、动态 `import()` 和 `require()`：只有 `packages/gui-host/src/runtime-adapter.ts` 可通过公开 `@earendil-works/pi-coding-agent/core` 接入 Coding Agent，GUI 不导入 TUI/interactive 私有实现，Core/TUI/Pi Protocol/Client/Server 不反向依赖 GUI。正向检查和“Host 绕过 adapter”“Core 反向导入 GUI”两类临时负向注入均能拦截，临时文件已删除。
+
+`packages/gui-host/test/runtime-rpc-contract.test.ts` 与共享测试 Extension 使用 `node --import tsx packages/coding-agent/src/rpc-entry.ts` 启动真实源码 RPC 子进程，并用相同 Faux Provider 驱动 `CodingAgentRuntimeAdapter`。6/6 contract 覆盖默认模型选择和重开恢复、Tool 事件与 JSONL 角色顺序、`select`/`confirm`/`input`/`editor`/`notify`、流式 abort 与持久化 `stopReason: "aborted"`、项目 Prompt/Skill 发现与展开、Project Trust 隔离，以及 Session 切换后的模型、`high` 思考等级和 transcript 恢复。稳定 Core 语义参与比较，进程调度影响的部分流式文本长度不作为契约。
+
+GUI Store 现有 10/10 回归：3 项覆盖事务式 Session 切换，4 项覆盖 transcript 跨页窗口的 600 条上限、8 MiB JSON UTF-16 载荷估算预算、同 generation commit 保留历史，以及 generation rewrite 强制重读尾页；其余覆盖普通 prompt 与 `!` Bash 路由、Bash 图片拒绝和 Protocol 错误码中文映射。Markdown 另有 1 项回归覆盖嵌套链接和危险协议过滤。测试使用独立 `packages/gui/vitest.config.ts`，不加载开发 Vite WebSocket bridge，运行后不再遗留 `TCPSERVERWRAP` 或等待 10 秒退出。
+
+并行回归曾暴露启动加载 Extension provider 时的模型认证快照竞态：每次注册会触发后台 refresh，服务创建末尾又立即执行受控 refresh，两个 generation 互相作废时 Session 恢复偶发回退用户默认模型。修复位于共享 `ModelRuntime`/`createAgentSessionServices()`：启动批量注册使用 `{ refresh: false }`，全部注册完成后只执行一次 `await refresh()`；运行中的动态注册仍即时刷新。新增 Core 回归验证批量路径不会偷跑后台 availability。真实 `OPENAI_API_KEY` 也曾使 `auth-check` 的“无凭据”用例失去前提，测试现显式隔离并恢复环境变量，生产认证逻辑未改。
+
+最新证据：Runtime/RPC contract 6/6、GUI 11/11、GUI Host 全量 35/35、Core 模型与 Session 聚焦矩阵 84/84、`auth-check` 10/10、Coding Agent 全量 2115 项、根 `npm run check`、离线构建、Biome、AST 边界 gate、`git diff --check` 和最终 sidecar framed smoke 均通过。Runtime 本机总闸门已通过；后续新增 Runtime 能力继续扩展同一 contract fixture。
 
 ### `0.84.1-lystar.13` 发布前核验
 
