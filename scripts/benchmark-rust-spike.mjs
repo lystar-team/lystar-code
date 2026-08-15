@@ -9,7 +9,17 @@ const HOLD_MS = 1_600;
 const STEADY_MS = 1_000;
 const SAMPLE_MS = 5;
 mkdirSync(artifact, { recursive: true });
-for (const file of ["benchmark-ts.jsonl", "benchmark-rust.jsonl", "rss.json"]) rmSync(resolve(artifact, file), { force: true });
+for (const file of ["benchmark-ts.jsonl", "benchmark-rust.jsonl", "rss.json", "gate.json"]) rmSync(resolve(artifact, file), { force: true });
+await run("npm", ["run", "check:rust-spike"]);
+writeFileSync(resolve(artifact, "gate.json"), `${JSON.stringify({
+	toolPageCacheLimit: 400,
+	checks: {
+		protocolGeneration: true,
+		terminalRestore: true,
+		headlessBridge: true,
+		smallTerminalCompatibility: true,
+	},
+})}\n`);
 await run("cargo", ["build", "--release", "-p", "lystar-tui", "--example", "benchmark"]);
 await run("cargo", ["build", "--release", "-p", "lystar-tui"]);
 const rustBenchmark = resolve(root, "target/release/examples/benchmark");
@@ -23,7 +33,7 @@ writeFileSync(resolve(artifact, "rss.json"), `${JSON.stringify(rss)}\n`);
 await run(process.execPath, ["--import", "tsx", "packages/tui/test/render-churn-bench.ts", "--out", resolve(artifact, "benchmark-ts.jsonl")]);
 await run(rustBenchmark, ["--out", resolve(artifact, "benchmark-rust.jsonl")]);
 const compareCode = await run(process.execPath, ["scripts/compare-rust-tui-spike.mjs"], [0, 2]);
-if (compareCode !== 0) process.exitCode = compareCode;
+if (compareCode === 2) process.exitCode = 2;
 
 async function measure(name, command, args) {
 	const child = spawn(command, args, { cwd: root, stdio: ["ignore", "pipe", "inherit"] });

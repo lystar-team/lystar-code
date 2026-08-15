@@ -72,12 +72,13 @@ impl StatefulWidget for TranscriptView<'_> {
             vertical: 1,
             horizontal: 1,
         });
+        let transcript_height = inner.height.saturating_sub(1);
         for (row, item) in self
             .state
             .items
             .iter()
             .skip(self.state.scroll)
-            .take(usize::from(inner.height))
+            .take(usize::from(transcript_height))
             .enumerate()
         {
             let text = truncate_graphemes(
@@ -89,6 +90,14 @@ impl StatefulWidget for TranscriptView<'_> {
                 inner.y + row as u16,
                 text,
                 Style::default().fg(Color::White),
+            );
+        }
+        if inner.height > 0 {
+            buffer.set_string(
+                inner.x,
+                inner.y + inner.height - 1,
+                "> ",
+                Style::default().fg(Color::Cyan),
             );
         }
     }

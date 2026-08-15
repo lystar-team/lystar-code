@@ -19,7 +19,7 @@ run_case() {
     shell) command="'$binary' --shell & child=\$!; echo \$child > '$case_dir/pid'; wait \$child" ;;
     *) exit 2 ;;
   esac
-  tmux -L "$socket" new-session -d -s "$name" -x 80 -y 24 \
+  tmux -L "$socket" new-session -d -s "$name" -x 80 -y 8 \
     "bash -lc 'sleep 0.2; before=\$(stty -g); printf %s \"\$before\" > \"$case_dir/before\"; set +e; $command; status=\$?; after=\$(stty -g); printf %s \"\$after\" > \"$case_dir/after\"; printf %s \"\$status\" > \"$case_dir/status\"; exit \$status'"
   tmux -L "$socket" pipe-pane -o -t "$name" "cat > '$case_dir/output'"
   if [[ -n "$signal" ]]; then

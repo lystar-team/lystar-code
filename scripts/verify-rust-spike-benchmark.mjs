@@ -14,12 +14,18 @@ export function verifyRustSpike({ artifact, report, exitCode }) {
 		ts: readJsonLines(resolve(artifact, "benchmark-ts.jsonl")),
 		rust: readJsonLines(resolve(artifact, "benchmark-rust.jsonl")),
 		rss: JSON.parse(readFileSync(resolve(artifact, "rss.json"), "utf8")),
+		gate: JSON.parse(readFileSync(resolve(artifact, "gate.json"), "utf8")),
 	});
-	const decision = result.go ? "go" : "stop";
-	assert.equal(exitCode, result.go ? 0 : 2, `Rust B0 ${decision} decision does not match benchmark exit code`);
+	assert.equal(exitCode, result.developmentDecision === "go" ? 0 : 2, "Rust B0 development decision does not match benchmark exit code");
 	const content = readFileSync(report, "utf8");
-	assert.match(content, new RegExp(`\\*\\*${result.go ? "Go" : "Stop"}\\*\\*`), "Rust B0 report decision does not match benchmark data");
-	return { decision, failures: result.failures.length };
+	assert.match(content, new RegExp(`developmentDecision: ${result.developmentDecision}`), "Rust B0 development decision does not match benchmark data");
+	assert.match(content, new RegExp(`releaseDecision: ${result.releaseDecision}`), "Rust B0 release decision does not match benchmark data");
+	return {
+		developmentDecision: result.developmentDecision,
+		releaseDecision: result.releaseDecision,
+		developmentFailures: result.developmentFailures.length,
+		releaseFailures: result.releaseFailures.length,
+	};
 }
 
 export function runCli(argv = process.argv.slice(2)) {

@@ -1,7 +1,10 @@
 {
-  "sizes": [[80, 8], [80, 24], [120, 36], [200, 60]],
+  "sizes": [[80, 24], [120, 36], [200, 60]],
+  "compatibilitySize": [80, 8],
   "rounds": 5,
-  "transcriptItems": 10000,
+  "toolRounds": 10000,
+  "toolPageSize": 100,
+  "toolPageCachePages": 4,
   "prefetchViewports": 2,
   "scenarios": [
     { "name": "static-idle", "kind": "idle", "events": 0, "charactersPerEvent": 0, "itemsPerEvent": 0, "scrollLines": 0 },

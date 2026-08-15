@@ -6,7 +6,7 @@ use app::{TranscriptItem, TranscriptView, TranscriptWindow};
 use ratatui::{Terminal, backend::TestBackend};
 
 #[test]
-fn keeps_a_bounded_page_cache_and_renders_unicode_at_small_sizes() {
+fn keeps_a_bounded_tool_window_and_composer_at_small_sizes() {
     let mut transcript = TranscriptWindow::default();
     transcript.extend_page((0..10_000).map(|id| TranscriptItem {
         id,
@@ -24,6 +24,10 @@ fn keeps_a_bounded_page_cache_and_renders_unicode_at_small_sizes() {
         .unwrap();
     let output = terminal.backend().buffer().content();
     assert!(output.iter().any(|cell| cell.symbol() == "中"));
+    assert_eq!(
+        terminal.backend().buffer().cell((1, 6)).unwrap().symbol(),
+        ">"
+    );
 
     terminal
         .resize(ratatui::layout::Rect::new(0, 0, 120, 36))

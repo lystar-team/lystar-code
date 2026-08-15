@@ -12,7 +12,7 @@
 
 ## 0. 实施结果与状态
 
-本方案的 M0-M6 已完成代码实现和本地验收；远端 Actions、受保护环境审批、真实 Provider、跨 OS 实机、Tag、Release、签名与 attestation 均未执行。本节只记录本轮可复查事实，不替代后文的预算、回滚和退出 gate。
+本方案的 M0-M6 已完成代码实现和本地验收；Rust 自有可见 TUI 的整体迁移继续是强制目标。远端 Actions、受保护环境审批、真实 Provider、跨 OS 实机、Tag、Release、签名与 attestation 均未执行。本节只记录本轮可复查事实，不替代后文的预算、回滚和退出 gate。
 
 | 里程碑 | 提交范围 | 本地状态 | 远端或外部状态 |
 | --- | --- | --- | --- |
@@ -22,11 +22,11 @@
 | M3 Tool observe | `2cefffb18`、`e48ca870f`、`8bdc7955e` | taxonomy、fingerprint、Session ledger、observe 事件和诊断已实现 | 真实运行样本与分类统计待远端或后续受控环境采集 |
 | M4 Tool assist/auto | `a67d555dc`、`8823fd697`、`f4973cf47`、`da32a176b`、`9f831f24e`、`6ed4ab5f9` | attempt budget、circuit、后置条件验证、内置 Tool 恢复和模式隔离已实现 | 不运行 live Provider；真实外部副作用恢复待单独受控验证 |
 | M5 错题本 | `d08eb269d`、`e113b158a`、`c216b80d`、`bf5149fc4`、`7bb2a1c27` | candidate、验证、审批、回滚、TTL、审计和 `lc doctor` 已实现 | 真实跨会话 history artifact 与受控审批记录待远端或后续环境验证 |
-| M6 Rust 协议 Spike | `34d6864a5`、`7f350ffa6`、`4598dba20`、`7b9670a94`、`e3d6960aa` | schema 生成、双向 golden、headless bridge、PTY guard、B0 smoke 完成 | B0 Stop：Rust 虽显著降低 RSS，但 input/stream/scroll frame p95 未优于 TypeScript，未满足相对性能门槛；不进入 M7 |
+| M6 Rust 协议 Spike | `34d6864a5`、`7f350ffa6`、`4598dba20`、`7b9670a94`、`e3d6960aa` | schema 生成、双向 golden、headless bridge、PTY guard、B0 smoke 完成 | 保留旧 B0 Stop 数据作为历史基线；Yean 于 2026-08-15 调整判定，绝对预算通过即可进入 B1，相对 CPU/写量仅阻止 M10 默认切换 |
 
 运行模式已落地为 `off`、`observe`、`assist`、`auto`，默认 `assist`；`lc doctor` 和 GUI Host 诊断同步显示当前模式、circuit 与 lesson 状态。`auto` 仍只允许 policy 白名单内的安全恢复动作。
 
-M7-M11 因 M6 的 B0 Stop 按依赖条件终止，本轮不实施，也不记录为遗漏或失败。原 Rust 迁移、性能预算、回滚和删除门槛继续保留，未来只有重开 B0 并满足退出条件后才能恢复后续里程碑。
+M7-M11 重新开放，当前均为待实施，不能写成已完成。2026-08-15 前的 B0 Stop 数据继续作为历史性能基线保留；Yean 于 2026-08-15 明确调整判定：协议生成、终端恢复、headless bridge、80x8 兼容性和绝对预算通过即为 Development Go，可进入 B1；相对 CPU 和终端写量门槛仅为 M10 默认切换的 Release Go。
 
 ## 1. 结论先行
 
@@ -36,9 +36,9 @@ M7-M11 因 M6 的 B0 Stop 按依赖条件终止，本轮不实施，也不记录
 2. Pi 合并稳定后，先治理测试、CI 和发布流水线：删除或重写不能证明真实故障的测试，把 live provider、平台和压力测试移到正确频率，消除重复安装、重复构建和同一 commit 的重复五平台打包。
 3. CI 基线稳定后，在 Agent Tool 执行主链建立统一失败分类、恢复策略、重复失败熔断和 Session 内恢复账本，先覆盖 `apply_patch`、`edit`、`read`、`write`、`grep`、`find`、`ls`。
 4. Tool 恢复链稳定后，再增加跨会话“错题本”。跨会话经验先生成候选，经证据、验证、作用域和版本检查后晋升，不能直接修改基础系统提示。
-5. Rust TUI 采用 `Ratatui + Crossterm`。Node/Bun 继续负责 Agent、Provider、Session、Tool 和 Extension 运行时，Rust 只负责终端输入、布局、渲染和交互。
-6. Rust TUI 必须先通过基准测试和协议 Spike。没有数据证明收益前，不宣布 Rust 已经解决性能问题，也不切换默认前端。
-7. LYStar 自有 TUI 可以全部迁到 Rust，但 Pi Extension API 允许第三方扩展直接创建 TypeScript `Component`、自定义页眉、页脚和编辑器。要保持 Pi 契约兼容，必须保留一个无终端所有权的 TypeScript 兼容渲染桥。除非未来 Pi 正式废弃这类 API，否则不能承诺删除所有 TypeScript TUI 运行时代码。
+5. Rust 自有可见 TUI 必须整体迁到 `Ratatui + Crossterm`。Node/Bun 继续负责 Agent、Provider、Session、Tool 和 Extension 运行时，Rust 只负责终端输入、布局、渲染和交互。
+6. B0 必须先通过协议、终端恢复、headless bridge、80x8 兼容性和绝对预算。相对 CPU 与写量数据继续采集，但只约束 M10 默认切换，不能停止 B1-B9。
+7. Pi Extension API 允许第三方扩展直接创建 TypeScript `Component`、自定义页眉、页脚和编辑器。要保持 Pi 契约兼容，必须保留一个无终端所有权的 TypeScript Tier 3 headless bridge；除非未来 Pi 正式废弃这类 API，否则不能承诺删除所有 TypeScript TUI 运行时代码。
 
 推荐交付顺序：
 
@@ -417,6 +417,8 @@ flowchart LR
 | AgentSession | 对话、队列、compaction、分支、Provider、Tool 状态 |
 | GUI Protocol | 跨进程命令、事件、快照、分页、UI 请求和兼容协商 |
 
+上游可合并边界固定为 Rust crates、LYStar adapter 和 composition root：在这些位置接入 Rust TUI、协议和 sidecar。不得重写 Pi 的 Agent、Session、Provider、Tool 或 Extension 核心；Tier 3 继续由 Node headless bridge 承接 TypeScript Component。
+
 Rust TUI 不得：
 
 - 直接打开或修改 Session JSONL。
@@ -572,14 +574,14 @@ Markdown transformer 仍在 Node Extension runtime 执行。Node 发送变换后
 
 | 场景 | 输入 |
 | --- | --- |
-| 冷启动 | 空 Session、150 条 Session、10,000 条 Session |
-| 编辑器 | 连续输入 300 字符、中文 IME、5,000 字符 paste |
-| 流式 | 20、60、120 chunk/s，含 Thinking 和 Tool Call |
-| 滚动 | 10,000 条 transcript，连续 PageUp/滚轮/拖动 scrollbar |
-| Tool | 5,000 行 Bash、10 个文件 apply_patch diff、嵌套 Subagent |
-| 图片 | 10 张图片，滚动、resize、展开/收起 |
+| 冷启动 | 空 Session、150 条 Session、10,000 个 Tool 调用轮次 |
+| 编辑器 | 连续输入 300 字符、中文 IME、5,000 字符 paste；同一 Session 始终保留 10,000 个 Tool 调用轮次 |
+| 流式 | 20、60、120 次 Tool Result streaming 更新，含长输出、diff、error、image 和 `content_ref` 摘要 |
+| 滚动 | 10,000 个 Tool 调用轮次，连续 PageUp/滚轮/拖动 scrollbar |
+| Tool | 每轮至少一个 `toolCall` 和一个 `toolResult`；workload hash 覆盖 id/name/args/result/status/diff/error 和最终 viewport |
+| 图片 | Tool Result 图片摘要和 `content_ref`，滚动、resize、展开/收起 |
 | Overlay | settings、model、session、search、Extension custom UI |
-| 终端 | `80x8`、`80x24`、`120x36`、`200x60` |
+| 终端 | 性能固定 `80x24`、`120x36`、`200x60`；`80x8` 只验证布局不崩、Composer 底部和退出恢复 |
 
 采集指标：
 
@@ -596,7 +598,7 @@ Markdown transformer 仍在 Node Extension runtime 执行。Node 发送变换后
 
 ### 8.2 候选切换预算
 
-下面是进入默认灰度前的硬门槛。M0 基线完成后可以依据测试机能力调整一次，之后冻结：
+下面是 M10 默认灰度和发布的硬门槛。Development Go 只要求协议生成、终端恢复、headless bridge、80x8 兼容性和绝对预算；M0 基线完成后可以依据测试机能力调整一次，之后冻结：
 
 | 指标 | 候选门槛 |
 | --- | --- |
@@ -613,14 +615,14 @@ Markdown transformer 仍在 Node Extension runtime 执行。Node 发送变换后
 | 终端写量 | 静态 frame 为 0；动态场景低于 TS `v0.84.2` 基线 |
 | 卡顿 | 超过 50 ms 的 UI frame 少于 1%，且无连续 3 帧超标 |
 
-同时满足相对目标：
+同时满足相对目标仅作为 M10 默认切换的 Release Go：
 
 - 输入/滚动 p95 延迟至少比 TS `v0.84.2` 降低 30%，或已经达到绝对预算。
 - frame CPU 时间至少降低 40%。
 - UI 分配量至少降低 60%。
 - 长 transcript 下内存随“可见窗口 + 页缓存”增长，不随完整 Session 线性展开。
 
-若 Rust 只达到相同表现，仍可因崩溃隔离、终端恢复和维护性进入可选前端，但不能以“性能重构完成”名义默认切换。
+若 Rust 只达到相同表现，仍可因崩溃隔离、终端恢复和维护性继续迁移并进入 B1-B9；但不能以“性能重构完成”名义默认切换。
 
 ## 9. Rust TUI 分阶段迁移
 
@@ -631,7 +633,8 @@ Markdown transformer 仍在 Node Extension runtime 执行。Node 发送变换后
 - `Ratatui + Crossterm` 最小全屏程序。
 - 继承 pipe 上的 GUI Protocol handshake。
 - TypeScript/Rust 双向 golden frame。
-- 10,000 条 transcript 的虚拟列表原型。
+- 同一 Session 的 10,000 个 Tool 调用轮次虚拟列表原型；每轮至少含 `toolCall`、`toolResult`，混入长输出、diff、error、image/content_ref 摘要和 streaming 更新。
+- 性能 records 固定 `80x24`、`120x36`、`200x60`；`80x8` 独立验证布局、Composer 底部和退出恢复。
 - 中文、OSC 8、鼠标、resize、Windows ConPTY 的最小验证。
 - TypeScript `Component` headless 兼容桥原型。
 - 与 TS `v0.84.2` 的基准报告。
@@ -640,14 +643,15 @@ Markdown transformer 仍在 Node Extension runtime 执行。Node 发送变换后
 
 - 协议类型可以单源生成。
 - 终端异常退出能恢复 raw mode、alternate screen、cursor 和 mouse。
-- Rust 在输入、滚动、流式场景至少有两项显著收益，没有关键能力阻塞。
 - Extension 兼容桥证明可接收异步 invalidate、输入和 resize。
+- `80x8` 布局不崩、Composer 固定底部且退出恢复；该尺寸不参与性能 records。
+- Rust 满足输入、流式、resize、RSS 等绝对预算。以上全部满足即为 Development Go，可进入 B1。相对 CPU、frame/write 和分配目标保留给 M10 Release Go。
 
 失败处理：
 
 - 若跨语言 schema 无法稳定生成，先修协议，不继续堆 UI。
-- 若 Rust 性能不优于 TS，保留 Spike 结论，停止全量迁移。
-- 若 Extension 任意 Component 无法安全桥接，旧 TS TUI 保持正式支持，Rust 只能作为有限兼容前端。
+- 若 Rust 相对性能不优于 TS，保留数据作为历史基线，继续 B1-B9；仅阻止 M10 默认切换。
+- 若 Extension 任意 Component 无法安全桥接，先补 Tier 3 headless bridge；在桥接完成前保持 TypeScript 兼容路径，但不停止 Rust 自有可见 TUI 迁移。
 
 ### 9.2 B1：Rust Shell 和只读 Transcript
 
@@ -1724,12 +1728,12 @@ release_artifact_bytes{platform}
 | M3 Tool observe | M2 | taxonomy、fingerprint、ledger、metrics | 代码和确定性测试完成；真实 observation 统计待采集 |
 | M4 Tool assist/auto | M3 | circuit、safe retry、apply_patch 恢复 | 代码和故障注入完成；默认 `assist`，外部副作用恢复未做 live 验证 |
 | M5 错题本 | M4 | candidate、审查、TTL、回滚、CLI | 代码和确定性测试完成；真实 history/审批 artifact 待验证 |
-| M6 Rust 协议 Spike | M5 | Ratatui 原型、生成协议、benchmark | B0 smoke、协议和 PTY guard 完成；性能相对门槛未达，正确 Stop |
-| M7 Rust 只读 UI | M6 | transcript、滚动、搜索、Tool 显示 | 因 M6 B0 Stop 终止，不实施 |
-| M8 Rust 交互 UI | M7 | Composer、运行中状态、内置 Overlay | 依赖 M7，终止，不实施 |
-| M9 Extension 兼容 | M8 | Tier 0-3、headless bridge | 依赖 M8，终止，不实施 |
-| M10 默认切换 | M9 | `auto/rust/typescript` 灰度 | 依赖 M9，终止，不实施 |
-| M11 删除旧全屏 UI | M10 | 删除重复 InteractiveMode | 依赖 M10，终止，不实施 |
+| M6 Rust 协议 Spike | M5 | Ratatui 原型、生成协议、benchmark | B0 smoke、协议和 PTY guard 完成；旧相对性能 Stop 数据保留为历史基线，按 Yean 于 2026-08-15 的新判定已满足 Development Go |
+| M7 Rust 只读 UI | M6 | transcript、滚动、搜索、Tool 显示 | 重新开放，待实施；本轮不实现 |
+| M8 Rust 交互 UI | M7 | Composer、运行中状态、内置 Overlay | 重新开放，待实施 |
+| M9 Extension 兼容 | M8 | Tier 0-3、headless bridge | 重新开放，待实施 |
+| M10 默认切换 | M9 | `auto/rust/typescript` 灰度 | 重新开放，待实施；必须满足 Release Go 的相对 CPU/写量门槛 |
+| M11 删除旧全屏 UI | M10 | 删除重复 InteractiveMode | 重新开放，待实施 |
 
 同一时间只允许一个 merge-critical 里程碑修改主链。M3 observe 和性能采集可以后台运行，但不能与 M1 冲突解决或 M8 大规模 UI 迁移混在同一提交中。
 
@@ -1893,13 +1897,13 @@ THIRD_PARTY_LICENSES.md
 
 1. **升级目标**：固定实施 Pi `v0.84.2` 与 LYStar `0.84.2-lystar.1`；后续 Pi Tag 另起升级任务。
 2. **Rust 范围**：Node/Bun 继续负责 runtime；Rust 仅作为可验证的 TUI Spike，任意 TypeScript Component 的 headless bridge 保留兼容边界。
-3. **实施顺序**：按 Pi 升级、CI/测试/发布、Tool 恢复、错题本、Rust Spike 依次实施；M6 Stop 后不推进 Rust 主工程。
+3. **实施顺序**：按 Pi 升级、CI/测试/发布、Tool 恢复、错题本、Rust Spike 依次实施；Rust 自有可见 TUI 强制继续迁移，M7-M11 当前重新开放且待实施，M10 默认切换才受 Release Go 约束。
 4. **错题本晋升**：默认人工批准；仅满足严格证据阈值的纯 guidance lesson 才可受控自动晋升。
 5. **测试与发布 gate**：分层测试、未知影响全量、live/stress 独立、同一 SHA 一次完整五平台矩阵；required deterministic 的 skip 为 0。
 
 ## 24. 实施收口判断
 
-本地可执行开发工作已按 M0-M6 收口：代码、确定性测试、静态检查、离线构建、Unix 安装器、Rust B0 Stop、Linux x64 归档 smoke 和真实 PTY 均有本轮记录。M7-M11 因依赖条件未满足而终止。以下资料保留方案依据和历史证据；远端 CI/Release、受保护审批、真实 Provider、跨 OS 实机、签名和 attestation 不在本地验收范围内。
+本地可执行开发工作已按 M0-M6 收口：代码、确定性测试、静态检查、离线构建、Unix 安装器、Rust B0 历史数据、Linux x64 归档 smoke 和真实 PTY 均有本轮记录。Yean 于 2026-08-15 调整 B0 判定后，M7-M11 已重新开放并待实施；本轮只更新事实源与基准，不实现 M7 产品功能。以下资料保留方案依据和历史证据；远端 CI/Release、受保护审批、真实 Provider、跨 OS 实机、签名和 attestation 不在本地验收范围内。
 
 ### 24.1 本仓库
 
