@@ -273,6 +273,17 @@ jobs:
           printf '%s\n' "$version" > packages/coding-agent/binaries/VERSION
           test "$(find packages/coding-agent/binaries -maxdepth 1 \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)" = "5"
 
+      - name: Verify release checksums, manifest, and public assets
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          (
+            cd packages/coding-agent/binaries
+            sha256sum -c SHA256SUMS
+          )
+          node scripts/generate-release-metadata.mjs --verify packages/coding-agent/binaries "$version" "${GITHUB_REPOSITORY}"
+
       - name: Write CLI release summary
         if: always()
         shell: bash
