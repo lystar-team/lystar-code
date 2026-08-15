@@ -70,12 +70,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Record npm cache restore start
+        id: npm-cache-start
+        shell: bash
+        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Setup Node.js
         id: setup-node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+
+      - name: Record npm cache restore end
+        id: npm-cache-end
+        if: always()
+        shell: bash
+        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Record source job start
         shell: bash
@@ -126,11 +137,12 @@ jobs:
         env:
           PLAN_JSON: ${{ needs.plan.outputs.plan }}
         run: >-
-          node scripts/ci-summary.mjs --suite source --required --plan-json "$PLAN_JSON"
+          node scripts/ci-summary.mjs --suite source --required --no-test-report --plan-json "$PLAN_JSON"
           --timing setup=${{ steps.install.outputs.seconds || 0 }}
           --timing build=${{ steps.build.outputs.seconds || 0 }}
           --timing test=${{ steps.scripts.outputs.seconds || 0 }}
           --timing wall=$(( $(date +%s) - CI_JOB_STARTED ))
+          --timing cache=$(( ${{ steps.npm-cache-end.outputs.seconds || 0 }} - ${{ steps.npm-cache-start.outputs.seconds || 0 }} ))
           --cache-hit npm=${{ steps.setup-node.outputs.cache-hit || 'false' }}
 
   core:
@@ -142,12 +154,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Record npm cache restore start
+        id: npm-cache-start
+        shell: bash
+        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Setup Node.js
         id: setup-node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+
+      - name: Record npm cache restore end
+        id: npm-cache-end
+        if: always()
+        shell: bash
+        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Record core job start
         shell: bash
@@ -200,6 +223,7 @@ jobs:
           --timing setup=${{ steps.install.outputs.seconds || 0 }}
           --timing test=${{ steps.tests.outputs.seconds || 0 }}
           --timing wall=$(( $(date +%s) - CI_JOB_STARTED ))
+          --timing cache=$(( ${{ steps.npm-cache-end.outputs.seconds || 0 }} - ${{ steps.npm-cache-start.outputs.seconds || 0 }} ))
           --cache-hit npm=${{ steps.setup-node.outputs.cache-hit || 'false' }}
 
       - name: Upload core test reports
@@ -222,12 +246,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Record npm cache restore start
+        id: npm-cache-start
+        shell: bash
+        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Setup Node.js
         id: setup-node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+
+      - name: Record npm cache restore end
+        id: npm-cache-end
+        if: always()
+        shell: bash
+        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Record Coding Agent job start
         shell: bash
@@ -265,6 +300,7 @@ jobs:
           --timing setup=${{ steps.install.outputs.seconds || 0 }}
           --timing test=${{ steps.tests.outputs.seconds || 0 }}
           --timing wall=$(( $(date +%s) - CI_JOB_STARTED ))
+          --timing cache=$(( ${{ steps.npm-cache-end.outputs.seconds || 0 }} - ${{ steps.npm-cache-start.outputs.seconds || 0 }} ))
           --cache-hit npm=${{ steps.setup-node.outputs.cache-hit || 'false' }}
 
       - name: Upload Coding Agent test report
@@ -285,6 +321,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Record npm cache restore start
+        id: npm-cache-start
+        shell: powershell
+        run: '"seconds=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append'
+
       - name: Setup Node.js
         id: setup-node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -292,11 +333,22 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
+      - name: Record npm cache restore end
+        id: npm-cache-end
+        if: always()
+        shell: powershell
+        run: '"seconds=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append'
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.3.9
           bun-download-url: https://github.com/oven-sh/bun/releases/download/bun-v1.3.9/bun-windows-x64-baseline.zip
+
+      - name: Record MinGit cache restore start
+        id: mingit-cache-start
+        shell: powershell
+        run: '"seconds=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append'
 
       - name: Restore pinned MinGit archive
         id: mingit-cache
@@ -304,6 +356,12 @@ jobs:
         with:
           path: ${{ runner.temp }}/MinGit-2.55.0.3-64-bit.zip
           key: mingit-2.55.0.3-64-bit-f48e2d2dc74a24454adc6d8fd0ac25bf9c2386f19cfb06202b9465aaad4f9f05
+
+      - name: Record MinGit cache restore end
+        id: mingit-cache-end
+        if: always()
+        shell: powershell
+        run: '"seconds=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append'
 
       - name: Record Windows job start
         shell: powershell
@@ -384,6 +442,7 @@ jobs:
           --timing build=${{ steps.build.outputs.seconds || 0 }}
           --timing test=${{ steps.platform-tests.outputs.seconds || 0 }}
           --timing wall=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [int64]$env:CI_JOB_STARTED)
+          --timing cache=$([int64]${{ steps.npm-cache-end.outputs.seconds || 0 }} - [int64]${{ steps.npm-cache-start.outputs.seconds || 0 }} + [int64]${{ steps.mingit-cache-end.outputs.seconds || 0 }} - [int64]${{ steps.mingit-cache-start.outputs.seconds || 0 }})
           --cache-hit npm=${{ steps.setup-node.outputs.cache-hit || 'false' }}
           --cache-hit mingit=${{ steps.mingit-cache.outputs.cache-hit || 'false' }}
 

@@ -6,39 +6,75 @@ function number(value) {
 	return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 }
 
-export function readTestResult(path) {
-	if (path.endsWith(".tap")) {
-		const report = readFileSync(path, "utf8");
-		const count = (name) => Number(new RegExp(`^# ${name} (\\d+)$`, "m").exec(report)?.[1] ?? 0);
-		return { passed: count("pass"), skipped: count("skipped") + count("todo"), slowestFiles: [], missing: false };
-	}
-	try {
-		const report = JSON.parse(readFileSync(path, "utf8"));
-		return {
-			passed: number(report.numPassedTests),
-			skipped: number(report.numPendingTests) + number(report.numTodoTests),
-			slowestFiles: (report.testResults ?? [])
-				.map((file) => ({
-					file: file.name,
-					duration: (file.assertionResults ?? []).reduce((total, test) => total + number(test.duration), 0),
-				}))
-				.sort((left, right) => right.duration - left.duration),
-			missing: false,
-		};
-	} catch {
-		return { passed: 0, skipped: 0, slowestFiles: [], missing: true };
-	}
+function invalidResult(error) {
+	return { passed: 0, skipped: 0, slowestFiles: [], valid: false, error };
 }
 
-export function summarize({ suite, resultPaths = [], required = false, timings = {}, plan, jobs = [] }) {
+function readTapResult(path) {
+	let report;
+	try {
+		report = readFileSync(path, "utf8");
+	} catch (error) {
+		return invalidResult(error instanceof Error && "code" in error && error.code === "ENOENT" ? "missing" : "unreadable");
+	}
+
+	const summary = {};
+	for (const line of report.split("\n")) {
+		const match = /^# (tests|pass|fail|cancelled|skipped|todo) (\d+)$/.exec(line);
+		if (!match) continue;
+		if (match[1] in summary) return invalidResult("invalid TAP summary");
+		summary[match[1]] = Number(match[2]);
+	}
+	if (["tests", "pass", "fail", "cancelled", "skipped", "todo"].some((name) => !(name in summary))) {
+		return invalidResult("invalid TAP summary");
+	}
+
+	return {
+		passed: summary.pass,
+		skipped: summary.skipped + summary.todo,
+		slowestFiles: [],
+		valid: true,
+	};
+}
+
+export function readTestResult(path) {
+	if (path.endsWith(".tap")) return readTapResult(path);
+
+	let report;
+	try {
+		report = JSON.parse(readFileSync(path, "utf8"));
+	} catch (error) {
+		return invalidResult(error instanceof Error && "code" in error && error.code === "ENOENT" ? "missing" : "invalid JSON");
+	}
+	if (!report || typeof report !== "object") return invalidResult("invalid JSON");
+	return {
+		passed: number(report.numPassedTests),
+		skipped: number(report.numPendingTests) + number(report.numTodoTests),
+		slowestFiles: (Array.isArray(report.testResults) ? report.testResults : [])
+			.map((file) => ({
+				file: file.name,
+				duration: (file.assertionResults ?? []).reduce((total, test) => total + number(test.duration), 0),
+			}))
+			.sort((left, right) => right.duration - left.duration),
+		valid: true,
+	};
+}
+
+export function summarize({ suite, resultPaths = [], required = false, expectReports = resultPaths.length > 0, timings = {}, plan, jobs = [] }) {
 	const results = resultPaths.map(readTestResult);
-	const missingReports = resultPaths.filter((_, index) => results[index].missing);
+	const invalidReports = resultPaths.filter((_, index) => !results[index].valid);
 	const passed = results.reduce((total, result) => total + result.passed, 0);
 	const skipped = results.reduce((total, result) => total + result.skipped, 0);
 	const slowestFiles = results.flatMap((result) => result.slowestFiles).sort((left, right) => right.duration - left.duration).slice(0, 20);
+	if (required && expectReports) {
+		if (resultPaths.length === 0) throw new Error(`${suite} required deterministic suite expected test reports`);
+		const invalidIndex = results.findIndex((result) => !result.valid);
+		if (invalidIndex >= 0) throw new Error(`${suite} required test report ${results[invalidIndex].error}: ${resultPaths[invalidIndex]}`);
+		if (passed === 0) throw new Error(`${suite} required deterministic suite reported zero passed tests`);
+	}
 	if (required && skipped > 0) throw new Error(`${suite} required deterministic suite skipped ${skipped} tests`);
 
-	const selectedGates = Object.entries(plan?.wouldRun ?? {}).filter(([, selected]) => selected).map(([gate]) => gate);
+	const selectedGates = Object.entries(plan?.execution ?? plan?.wouldRun ?? {}).filter(([, selected]) => selected).map(([gate]) => gate);
 	for (const job of jobs) {
 		if (job.result !== "success" && job.gates.some((gate) => selectedGates.includes(gate))) {
 			throw new Error(`required job ${job.name} is ${job.result}`);
@@ -51,7 +87,7 @@ export function summarize({ suite, resultPaths = [], required = false, timings =
 		`- ci_setup_seconds_total: ${number(timings.setup)}`,
 		`- ci_build_seconds_total: ${number(timings.build)}`,
 		`- ci_test_seconds_total: ${number(timings.test)}`,
-		`- ci_cache_restore_seconds: ${timings.cache === undefined ? "unavailable" : number(timings.cache)}`,
+		`- ci_cache_restore_seconds: ${timings.cache === undefined || timings.cache === "unavailable" ? "unavailable" : number(timings.cache)}`,
 		`- test_passed_total{suite=${suite}}: ${passed}`,
 		`- test_skipped_total{suite=${suite}}: ${skipped}`,
 	];
@@ -59,7 +95,7 @@ export function summarize({ suite, resultPaths = [], required = false, timings =
 		lines.push(`- ci_cache_hit{cache=${cache}}: ${hit}`);
 	}
 	for (const file of slowestFiles) lines.push(`- test_slowest_file_ms{suite=${suite},file=${file.file}}: ${file.duration}`);
-	for (const path of missingReports) lines.push(`- test_report_missing{suite=${suite}}: ${path}`);
+	for (const path of invalidReports) lines.push(`- test_report_invalid{suite=${suite}}: ${path}`);
 	if (plan) {
 		lines.push(`- planner_mode: ${plan.mode}`);
 		for (const gate of Object.keys(plan.wouldRun)) {
@@ -79,6 +115,9 @@ function parseArguments(argv) {
 		else if (argument === "--result") options.resultPaths.push(value);
 		else if (argument === "--required") {
 			options.required = true;
+			continue;
+		} else if (argument === "--no-test-report") {
+			options.expectReports = false;
 			continue;
 		} else if (argument === "--plan-json") options.plan = JSON.parse(value);
 		else if (argument === "--timing") {

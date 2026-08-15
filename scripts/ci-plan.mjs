@@ -133,25 +133,36 @@ export function createPlan(changes, mode = "observe") {
 }
 
 export function parseNameStatus(output) {
+	if (output === "") return [];
+
 	const fields = output.split("\0");
+	const terminated = fields.at(-1) === "";
+	if (terminated) fields.pop();
+
 	const changes = [];
-	for (let index = 0; index < fields.length - 1; ) {
+	for (let index = 0; index < fields.length; ) {
 		const status = fields[index++];
-		if (!status) continue;
-		const kind = status[0];
-		if (!kind || !["A", "C", "D", "M", "R", "T"].includes(kind)) {
-			throw new Error(`Unsupported git diff status: ${status}`);
-		}
+		if (!status) throw new Error("Unexpected empty token in git diff output");
+
+		const match = /^(A|D|M|T|[CR]\d{1,3})$/.exec(status);
+		if (!match) throw new Error(`Unsupported git diff status: ${status}`);
+
+		const kind = match[1][0];
 		const firstPath = fields[index++];
-		if (!firstPath) throw new Error(`Missing path for git diff status: ${status}`);
+		if (firstPath === undefined) throw new Error(`Missing path for git diff status: ${status}`);
+		if (!firstPath) throw new Error(`Unexpected empty path token for git diff status: ${status}`);
+
 		if (kind === "R" || kind === "C") {
 			const secondPath = fields[index++];
-			if (!secondPath) throw new Error(`Missing renamed path for git diff status: ${status}`);
+			if (secondPath === undefined) throw new Error(`Missing renamed path for git diff status: ${status}`);
+			if (!secondPath) throw new Error(`Unexpected empty renamed path token for git diff status: ${status}`);
 			changes.push({ path: firstPath, status: kind }, { path: secondPath, status: kind });
 			continue;
 		}
 		changes.push({ path: firstPath, status: kind });
 	}
+
+	if (!terminated) throw new Error("Unterminated git diff --name-status output");
 	return changes;
 }
 

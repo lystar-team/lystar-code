@@ -45,10 +45,13 @@ test("observe keeps every existing required job active", () => {
 	assert.deepEqual(plan.execution, allGates);
 });
 
-test("rename parser classifies both paths and malformed records fail", () => {
+test("rename parser classifies both paths and rejects malformed token streams", () => {
 	assert.deepEqual(parseNameStatus("R100\0packages/coding-agent/src/old.ts\0packages/coding-agent/src/new.ts\0"), [
 		{ path: "packages/coding-agent/src/old.ts", status: "R" },
 		{ path: "packages/coding-agent/src/new.ts", status: "R" },
 	]);
 	assert.throws(() => parseNameStatus("R100\0packages/coding-agent/src/old.ts\0"), /Missing renamed path/);
+	assert.throws(() => parseNameStatus("M\0README.md\0D"), /Missing path for git diff status: D/);
+	assert.throws(() => parseNameStatus("X\0README.md\0"), /Unsupported git diff status/);
+	assert.throws(() => parseNameStatus("M\0README.md\0\0"), /Unexpected empty token/);
 });
