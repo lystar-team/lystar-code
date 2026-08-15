@@ -1,6 +1,6 @@
 # LYStar Code GUI 开发方案
 
-> 状态：Core、GUI Protocol、GUI Host、React 工作台和 Linux 本机 Tauri 已形成公开 Beta；`gui-v0.84.1-lystar-gui.4` 已发布五平台完全未签名安装包、严格 SHA/manifest 和 provenance。`0.84.1-lystar-gui.5` 候选已将 macOS App 与 Darwin Host 改为 ad-hoc code signature，并增加最终 DMG 验签闸门，但尚未 tag、通过 macOS runner 或完成干净 Mac Gatekeeper 验收。Codex 式高密度工作台、两阶段项目切换、Host/项目指令、SSH 完整表单、Host key 确认、远端目录浏览、图片、补全、资源授权、Inspector 和三尺寸双主题视觉闸门已完成源码与本机验证；SSH Remote Host 仍待真实目标验证，Developer ID/notarization 和三平台实机放行不属于当前 Beta 闸门
+> 状态：Core、GUI Protocol、GUI Host、React 工作台和 Linux 本机 Tauri 已形成公开 Beta；`gui-v0.84.1-lystar-gui.5` 已发布五平台安装包、严格 SHA/manifest 和 provenance。macOS App 与 Darwin Host 使用 ad-hoc code signature，正式 DMG 已在 GitHub ARM64/x64 runner 通过签名和架构校验；干净 Mac Gatekeeper、Developer ID/notarization 和三平台完整实机运行仍未放行。Codex 式高密度工作台、两阶段项目切换、Host/项目指令、SSH 完整表单、Host key 确认、远端目录浏览、图片、补全、资源授权、Inspector 和三尺寸双主题视觉闸门已完成源码与本机验证；SSH Remote Host 仍待真实目标验证
 >
 > 日期：2026-08-15
 >
@@ -43,7 +43,7 @@ LYStar Code GUI 定位为跨平台编码 Agent 工作台，沿用 Codex GUI 的�
   -> 三平台发行
 ```
 
-截至 2026-08-14，共享 Session writer lock、通用 `./core` export、独立 GUI Protocol/Host、Runtime contract、React 工作台和既有浏览器视觉闸门已形成开发基线。本轮继续完成 Tauri 本机/SSH 双传输、远端系统探测、五平台 Host 资源构建、完整运行资源上传、三平台托管代码、断线 lease 释放与 operation 接管、原子桌面项目注册表、SSH 项目和最近 Session 缓存，以及真实 `git-inspector`。新增 GUI 能力已经接入同一真实链路：外部 TUI writer 的 500ms 只读观察与释放后接管、Session 运行结果与 TUI 占用状态、输入/历史/Tool 图片、项目 `AGENTS.md` 原子编辑和哈希冲突检测、`@`/`$`/`/` Runtime 补全、受控外链/文件/图片/行号跳转，以及 Inspector 宽度和分区比例持久化。Linux 本机原生 Tauri 已完成 Channel、项目恢复、Project Trust、Git Inspector、Bash JSONL 落盘与重启恢复、图片查看器、项目指令动态重载和正常退出验证。`gui-v0.84.1-lystar-gui.4` 已通过独立 `gui-v*` workflow 在五个原生 runner 生成并公开完全未签名的 Beta 资产，公开 Linux x64 AppImage 已完成下载后真实启动、Host 资源还原、连接和退出回归，CLI Latest Release 仍保持 `v0.84.1-lystar.13`。本地 `0.84.1-lystar-gui.5` 候选已修复 macOS workflow 同时设置 `APPLE_SIGNING_IDENTITY=-` 和 `--no-sign` 的矛盾：macOS App 不再跳过签名，Darwin ARM64/x64 Host 改由对应 macOS runner 原生编译和 ad-hoc 签名，最终 DMG 挂载后校验 App、local Host 与两种 Remote Host；新增 `workflow_dispatch` 允许在创建不可变 tag 前只运行构建和验签，`release` job 仅接受 `gui-v*` tag。该链路尚未在 GitHub macOS runner 和干净 Mac Gatekeeper 上运行。Completion、普通模型对话、认证和 Extension UI 的本轮原生键盘链仍待补齐，SSH Remote Host 和 macOS/Windows 平台托管仍无实机证据。当前准确结论是“`gui.4` 公开 Beta 已发布，`gui.5` 本地候选已完成源码和 Linux 构建验证”，具体完成状态以第 14 节和 `AGENT_VERIFICATION.md` 为准。
+截至 2026-08-15，共享 Session writer lock、通用 `./core` export、独立 GUI Protocol/Host、Runtime contract、React 工作台和既有浏览器视觉闸门已形成开发基线。本轮继续完成 Tauri 本机/SSH 双传输、远端系统探测、五平台 Host 资源构建、完整运行资源上传、三平台托管代码、断线 lease 释放与 operation 接管、原子桌面项目注册表、SSH 项目和最近 Session 缓存，以及真实 `git-inspector`。新增 GUI 能力已经接入同一真实链路：外部 TUI writer 的 500ms 只读观察与释放后接管、Session 运行结果与 TUI 占用状态、输入/历史/Tool 图片、项目 `AGENTS.md` 原子编辑和哈希冲突检测、`@`/`$`/`/` Runtime 补全、受控外链/文件/图片/行号跳转，以及 Inspector 宽度和分区比例持久化。Linux 本机原生 Tauri 已完成 Channel、项目恢复、Project Trust、Git Inspector、Bash JSONL 落盘与重启恢复、图片查看器、项目指令动态重载和正常退出验证。`gui-v0.84.1-lystar-gui.5` 已通过预检 run `31856665307` 和正式发布 run `31859444631` 完成五平台构建；macOS ARM64/x64 的最终 DMG 已挂载并校验 App、local Host 与两种 Darwin Remote Host 的 ad-hoc 签名和架构，正式 Release 已公开 7 个资产。公开 Linux x64 AppImage 已完成 SHA 校验、真实启动、Host 资源还原和正常退出回归，CLI Latest Release 仍保持 `v0.84.1-lystar.13`。Completion、普通模型对话、认证和 Extension UI 的本轮原生键盘链仍待补齐，SSH Remote Host、干净 Mac Gatekeeper 和 macOS/Windows 平台托管仍无实机证据。当前准确结论是“`gui.5` 公开 Beta 已发布并完成 runner 级签名验证，干净 Mac 与其余跨平台实机链路未放行”，具体完成状态以第 14 节和 `AGENT_VERIFICATION.md` 为准。
 
 现有 Pi Protocol v2 会在状态更新时携带完整 transcript，长会话和 SSH 场景无法直接使用。GUI 不修改该上游协议，改由独立 GUI Protocol 解决。
 
@@ -111,10 +111,10 @@ LYStar Code GUI 定位为跨平台编码 Agent 工作台，沿用 Codex GUI 的�
 1. 活动 Runtime 仍会全量物化大 Session；只读 transcript 已完成分页和跨页有界窗口，但 256 MiB 活动 Runtime 的完整 GUI/WebView 进程树基准尚未完成。
 2. Tauri raw IPC、本机 Host、SSH bridge 和远端安装代码已接线；当前 Linux 主机已安装 Rust stable、Cargo、WebKitGTK 4.1、GTK 3、Ayatana AppIndicator、librsvg、OpenSSL 开发包和 `patchelf`。Linux x64 AppImage 已完成真实打包、Host 资源还原、raw Channel、原生 WebKitGTK 窗口、原子桌面状态和正常退出验证；真实 SSH 子进程桥、Linux ARM64、macOS 和 Windows 实机仍待验证。
 3. Linux `systemd --user` + lingering 检查、macOS 带 `UserName` 的 LaunchDaemon、Windows 当前用户 Scheduled Task、完整运行资源 staging/切换/回退和 SSH relay 已实现；三系统 OpenSSH、named pipe、管理员批准、断线继续和重连接管仍无实机证据。
-4. GUI updater 正式公钥、signed `stable-release-set.json`、防回放和联合升级路径尚未实现；无公钥时 updater 按闸门保持完全关闭。独立 Beta Release workflow 已通过 `gui-v0.84.1-lystar-gui.4` 实际发布完全未签名资产，五平台原生构建、严格 manifest、provenance、`prerelease=true` 和 `latest=false` 已确认；本地 `.5` 候选新增的 macOS ad-hoc code signature 只解决社区 Beta 的代码封装完整性和标准 Gatekeeper 手动放行，不替代 Developer ID、notarization 或 updater signature。
+4. GUI updater 正式公钥、signed `stable-release-set.json`、防回放和联合升级路径尚未实现；无公钥时 updater 按闸门保持完全关闭。独立 Beta Release workflow 已通过 `gui-v0.84.1-lystar-gui.5` 实际发布五平台资产，严格 manifest、provenance、`prerelease=true` 和 CLI Latest 未改变均已确认；macOS ad-hoc code signature 只解决社区 Beta 的代码封装完整性和标准 Gatekeeper 手动放行，不替代 Developer ID、notarization 或 updater signature。
 5. 原子桌面项目注册表、最后项目恢复、连接归属和最近 Session 缓存已在 Linux 原生 Tauri 验证；项目切换已改为候选 Host、Session、lease、transcript 和持久化全部成功后才提交的两阶段事务，候选连接或持久化失败不会破坏旧工作区。SSH 项目离线状态、Windows 原子替换和真实远端断线恢复仍未运行。
 6. `git-inspector`、模型 OAuth/API key 写契约、图片附件、项目指令、Session 状态和 Completion 代码已接通；Git Inspector、图片查看器、项目指令动态重载和 sidecar 正常退出已在 Linux 原生 Tauri 验证，其余新增能力已通过真实浏览器与真实 Host，普通模型对话、认证、Extension UI 和原生 Completion 键盘链仍需补齐。
-7. GUI/Host 五平台完全未签名 Beta 安装包已由 `gui-v0.84.1-lystar-gui.4` 在原生 runner 构建并公开；本地 `.5` 候选已为 macOS App 和 Darwin Host 增加 ad-hoc code signature、原生双架构 Host 汇总及最终 DMG 验签，但尚未经过 macOS runner 和干净 Mac Gatekeeper。Developer ID/notarization、Windows Authenticode、正式 updater bundle、系统 WebView 实机和当前及上一支持版本的双向兼容 fixture 尚未完成。
+7. GUI/Host 五平台 Beta 安装包已由 `gui-v0.84.1-lystar-gui.5` 在原生 runner 构建并公开；macOS App 和 Darwin Host 使用 ad-hoc code signature，双架构 Host 汇总及最终 DMG 验签已通过 macOS runner，干净 Mac Gatekeeper 仍未验证。Developer ID/notarization、Windows Authenticode、正式 updater bundle、系统 WebView 实机和当前及上一支持版本的双向兼容 fixture 尚未完成。
 8. `SessionManager.list()` 继续以 JSONL 为唯一事实源，大量 Session 的全文 metadata 构建仍是后续性能专项；本轮不引入第二份持久索引。
 
 这些缺口分别属于平台托管、原生壳、发行安全、剩余业务 capability 和性能演进，不能由 React 展示层或静态 fixture 代替。
@@ -1257,7 +1257,7 @@ Coding Agent 改动只允许两类，并分别提交：
 - [x] 使用公开 SDK 启动 Host，与 `lc --mode rpc` 跑共享 Faux Runtime contract fixture，覆盖模型选择/恢复、Tool、可序列化 Extension UI、事件终止、abort 持久化、资源发现、Skill、Project Trust 和 Session 切换语义。
 - [ ] Tauri raw Channel、本机 Host、SSH 子进程桥、桌面原子配置和五平台 Host 资源构建代码已接线；Linux x64 AppImage 已完成真实构建、Host 载荷还原、Channel、项目状态、Git Inspector 和正常退出 smoke，真实 SSH 子进程桥及 macOS/Windows 实机仍待验证。
 - [ ] 生成 updater 密钥对，配置受保护的 Release environment secret，并完成离线备份恢复演练。
-- [ ] 建立独立 `guiVersion`、`gui-v*` tag 和 stable 通道；Beta tag/Release 已通过 `gui-v0.84.1-lystar-gui.4` 实际发布，现有 TUI `/releases/latest/` 仍指向 `v0.84.1-lystar.13`。正式 stable 通道、签名清单和联合升级仍待实现。
+- [ ] 建立独立 `guiVersion`、`gui-v*` tag 和 stable 通道；最新 Beta tag/Release 已通过 `gui-v0.84.1-lystar-gui.5` 实际发布，现有 TUI `/releases/latest/` 仍指向 `v0.84.1-lystar.13`。正式 stable 通道、updater 签名清单和联合升级仍待实现。
 - [ ] 定义并签名 `stable-release-set.json`，覆盖 GUI/TUI/Runtime 版本、required capabilities、中间可运行组合和 upgrade path。
 - [ ] 实现单调 `setVersion`、本机 version floor、同版本摘要校验和不可变版本路径，验证旧签名清单不能回放。
 - [ ] 在没有 Apple Developer ID、notarization 和 Windows Authenticode 的条件下跑通三平台安装包生成和 updater signature 校验。
@@ -1320,7 +1320,7 @@ Coding Agent 改动只允许两类，并分别提交：
 - [ ] Linux `systemd --user` + lingering、macOS LaunchDaemon + 一次管理员批准、Windows Scheduled Task、本机 IPC、SSH relay、断线 lease 释放和 operation 重连接管代码已实现；无三平台实机证据。
 - [ ] 关闭 SSH、关闭 GUI 和 GUI 自动更新期间的远端任务继续尚未运行验证。
 - [ ] 远程项目持久显示、离线状态、最近 Session、最后项目和点击自动重连代码已实现；Linux 本机 Tauri 的项目和 Session 恢复已验证，真实 SSH 项目恢复仍待验证。
-- [ ] Beta `gui-release.yml` 已通过 `gui-v0.84.1-lystar-gui.4` 跑通五平台原生构建、metadata、provenance 和 prerelease；独立 `gui-ci.yml`、GUI/CLI 兼容组合候选和 stable 指针联合 gate 仍待实现。
+- [ ] Beta `gui-release.yml` 已通过 `gui-v0.84.1-lystar-gui.5` 跑通五平台原生构建、macOS ad-hoc DMG 验签、metadata、provenance 和 prerelease；独立 `gui-ci.yml`、GUI/CLI 兼容组合候选和 stable 指针联合 gate 仍待实现。
 - [ ] 当前无 Apple/Windows 身份证书的 CI 配置通过；以后增加证书变量时不得改变现有 updater 验签协议。
 
 完成标准：三个系统都能安装 GUI；SSH 断线和关闭 GUI 后远端任务继续；现有 CLI Release workflow 未增加 GUI 构建逻辑。
@@ -1508,7 +1508,7 @@ Codex 风格桌面工作台
 + GUI/Host/Runtime 整体签名更新 + GUI/TUI stable 兼容组合自动升级
 ```
 
-结论是 `gui.4` 公开 Beta 已发布，`gui.5` 本地候选已形成。Core、GUI Protocol、GUI Host、Runtime contract、React 工作台和 Linux 原生 Tauri 已形成可公开测试的开发版本；GUI/TUI 只读同步、Session 状态、项目指令、图片、Completion、资源链接和 Inspector 布局已经过真实浏览器/Host 验证。`gui-v0.84.1-lystar-gui.4` 已公开 Linux x64/ARM64 AppImage、macOS ARM64/x64 DMG 和 Windows x64 NSIS，严格 SHA/manifest 和 provenance 已回查；公开 Linux x64 AppImage 的 Host 载荷还原和正常退出已在隔离原生环境复验。`.5` 候选修复了 macOS `--no-sign` 根因，增加 App/Host ad-hoc 签名、Darwin 双架构原生 Host 汇总、最终 DMG 验签和逐平台 manifest 签名事实；当前剩余工作是 GitHub macOS runner 实跑、干净 Mac Gatekeeper 验收、普通模型/认证/Extension UI 与原生 Completion 键盘链、真实 SSH Remote Host、Developer ID/notarization、Windows Authenticode 和三平台实机放行，不再搭建第二套 Host、Protocol、Session 状态或展示型页面。
+结论是 `gui-v0.84.1-lystar-gui.5` 公开 Beta 已发布。Core、GUI Protocol、GUI Host、Runtime contract、React 工作台和 Linux 原生 Tauri 已形成可公开测试的开发版本；GUI/TUI 只读同步、Session 状态、项目指令、图片、Completion、资源链接和 Inspector 布局已经过真实浏览器/Host 验证。该版本已公开 Linux x64/ARM64 AppImage、macOS ARM64/x64 DMG 和 Windows x64 NSIS，严格 SHA/manifest 和 provenance 已回查；macOS 最终 DMG 的 App、local Host 和两种 Darwin Remote Host 已通过 runner 级 ad-hoc 签名及架构验证，公开 Linux x64 AppImage 的 Host 载荷还原和正常退出已在隔离原生环境复验。当前剩余工作是干净 Mac Gatekeeper 验收、普通模型/认证/Extension UI 与原生 Completion 键盘链、真实 SSH Remote Host、Developer ID/notarization、Windows Authenticode 和三平台实机放行，不再搭建第二套 Host、Protocol、Session 状态或展示型页面。
 
 正式发行仍必须通过 Remote Host 三平台实机托管、原生 Tauri/系统 WebView、强制 updater signature、密钥恢复、signed release set 防回放、stable upgrade path 和三平台安装更新联合闸门。GUI 版本标明 bundled Runtime 基线，GUI/TUI 修订号可以不同，也都能独立启动；stable 发布必须给出明确对应组合，跨 Pi 基线时增加数据、Runtime 行为和升级路径契约验证。SSH 断线继续执行、远程项目持久工作区、共享 Session writer lock、GUI/TUI 代码隔离和强制 updater signature 都是首版完成定义，当前不能以静态实现代替运行证据。
 
