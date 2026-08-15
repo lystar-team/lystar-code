@@ -151,10 +151,12 @@ describe("normalizeWindowsShellPath", () => {
 		}
 	});
 
-	it.runIf(process.platform === "win32")("is applied by normal path handling on Windows", () => {
-		expect(normalizePath("/c/Users/example")).toBe("C:\\Users\\example");
-		expect(resolvePath("/mnt/c/Users/example", "D:\\work")).toBe(resolve("C:/Users/example"));
-	});
+	if (process.platform === "win32") {
+		it("is applied by normal path handling on Windows", () => {
+			expect(normalizePath("/c/Users/example")).toBe("C:\\Users\\example");
+			expect(resolvePath("/mnt/c/Users/example", "D:\\work")).toBe(resolve("C:/Users/example"));
+		});
+	}
 });
 
 describe("isLocalPath", () => {

@@ -39,7 +39,7 @@ function readPngDimensions(base64Data: string): { width: number; height: number 
 	return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
 }
 
-const OVERSIZED_PNG_BASE64 = createPng(2400, 4800).toString("base64");
+const OVERSIZED_PNG_BASE64 = createPng(2001, 2).toString("base64");
 
 /** Stands in for extension, MCP bridge, or screenshot tools that return images they produced. */
 const screenshotTool: AgentTool = {

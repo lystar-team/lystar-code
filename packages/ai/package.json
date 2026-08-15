@@ -57,6 +57,7 @@
 		"build": "npm run generate-models && npm run build:offline",
 		"build:offline": "npm run check:model-data && tsgo -p tsconfig.build.json && shx rm -rf dist/providers/data && shx cp -r src/providers/data dist/providers/data",
 		"test": "vitest --run",
+		"test:live": "node -e \"if (process.env.PI_LIVE_TEST !== '1' || !Object.keys(process.env).some((key) => /(?:API_KEY|OAUTH_TOKEN|HF_TOKEN)$/.test(key))) { console.error('AI live tests require PI_LIVE_TEST=1 and at least one provider credential.'); process.exit(1); }\" && PI_TEST_SUITE=live vitest --run",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
 	"dependencies": {
