@@ -1,0 +1,2020 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$title": "LYStar GUI Protocol v1",
+  "$defs": {
+    "JsonValue": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          }
+        },
+        {
+          "type": "object",
+          "patternProperties": {
+            "^.*$": {
+              "$ref": "#/$defs/JsonValue"
+            }
+          }
+        }
+      ],
+      "$id": "JsonValue"
+    },
+    "ClientMessage": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "version",
+            "clientInstanceId"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "hello"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "clientInstanceId": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "id",
+            "request"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "request"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "request": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "command"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "get_snapshot"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "list_sessions"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "query": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "limit"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "read_transcript"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "cursor": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 200
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "clientInstanceId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "create_session"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "clientInstanceId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "acquire_session"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "inspect_session"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "leaseId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "release_session"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "leaseId",
+                    "clientInstanceId",
+                    "clientRequestId",
+                    "text"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "prompt"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "images": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "data",
+                          "mimeType"
+                        ],
+                        "properties": {
+                          "data": {
+                            "type": "string"
+                          },
+                          "mimeType": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "leaseId",
+                    "clientInstanceId",
+                    "clientRequestId",
+                    "commandText"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "run_bash"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "commandText": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "operationId",
+                    "leaseId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "abort_operation"
+                    },
+                    "operationId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "operationId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "get_operation"
+                    },
+                    "operationId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "list_operations"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "list_models"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "list_model_providers"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "provider",
+                    "baseUrl",
+                    "api"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "add_model_provider"
+                    },
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "baseUrl": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "api": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "provider",
+                    "id",
+                    "reasoning",
+                    "input"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "add_provider_model"
+                    },
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "api": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "baseUrl": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "reasoning": {
+                      "type": "boolean"
+                    },
+                    "input": {
+                      "type": "array",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "const": "text"
+                          },
+                          {
+                            "type": "string",
+                            "const": "image"
+                          }
+                        ]
+                      },
+                      "minItems": 1
+                    },
+                    "contextWindow": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "maxTokens": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "provider",
+                    "authType"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "login_model_provider"
+                    },
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "authType": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "api_key"
+                        },
+                        {
+                          "type": "string",
+                          "const": "oauth"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "provider"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "logout_model_provider"
+                    },
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "leaseId",
+                    "name"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "rename_session"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "leaseId",
+                    "model"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "set_session_model"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "model": {
+                      "type": "object",
+                      "required": [
+                        "provider",
+                        "id"
+                      ],
+                      "properties": {
+                        "provider": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "leaseId",
+                    "level"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "set_session_thinking"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "level": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "off"
+                        },
+                        {
+                          "type": "string",
+                          "const": "minimal"
+                        },
+                        {
+                          "type": "string",
+                          "const": "low"
+                        },
+                        {
+                          "type": "string",
+                          "const": "medium"
+                        },
+                        {
+                          "type": "string",
+                          "const": "high"
+                        },
+                        {
+                          "type": "string",
+                          "const": "xhigh"
+                        },
+                        {
+                          "type": "string",
+                          "const": "max"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "leaseId",
+                    "entryId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "fork_session"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "entryId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "position": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "before"
+                        },
+                        {
+                          "type": "string",
+                          "const": "at"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "delete_session"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "list_skills"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "path",
+                    "scope",
+                    "enabled"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "set_skill_enabled"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "scope": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "user"
+                        },
+                        {
+                          "type": "string",
+                          "const": "project"
+                        }
+                      ]
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "list_project_instructions"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "fileName",
+                    "content"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "save_project_instruction"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "fileName": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "AGENTS.md"
+                        },
+                        {
+                          "type": "string",
+                          "const": "AGENTS.override.md"
+                        }
+                      ]
+                    },
+                    "content": {
+                      "type": "string"
+                    },
+                    "expectedHash": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "list_host_instructions"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "fileName",
+                    "content"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "save_host_instruction"
+                    },
+                    "fileName": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "AGENTS.md"
+                        },
+                        {
+                          "type": "string",
+                          "const": "AGENTS.override.md"
+                        }
+                      ]
+                    },
+                    "content": {
+                      "type": "string"
+                    },
+                    "expectedHash": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "list_directories"
+                    },
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "text",
+                    "cursor"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "get_completions"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "cursor": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "get_about"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "get_diagnostics"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "get_connection_status"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "get_git_status"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "staged"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "get_git_diff"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "staged": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "check_for_updates"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "target"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "resolve_project_resource"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "target": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "line": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "column": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "target"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "resolve_external_resource"
+                    },
+                    "target": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "line": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "column": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "path",
+                    "offset",
+                    "limit"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "read_project_resource"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "offset": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 1048576
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "path",
+                    "accessToken",
+                    "offset",
+                    "limit"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "read_external_resource"
+                    },
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "accessToken": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "offset": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 1048576
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "contentRef",
+                    "offset",
+                    "limit"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "read_content"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "contentRef": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "offset": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 1048576
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "id"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "ui_response"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "value": {
+              "$ref": "#/$defs/JsonValue"
+            },
+            "confirmed": {
+              "type": "boolean"
+            },
+            "cancelled": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ServerMessage": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "version",
+            "productVersion",
+            "protocolVersion",
+            "serverInstanceId",
+            "hostInstanceId",
+            "hostStartedAt",
+            "capabilities"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "hello"
+            },
+            "version": {
+              "type": "number",
+              "const": 1
+            },
+            "productVersion": {
+              "type": "string",
+              "minLength": 1
+            },
+            "protocolVersion": {
+              "type": "number",
+              "const": 1
+            },
+            "serverInstanceId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "hostInstanceId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "hostStartedAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "capabilities": {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "session-paging"
+                  },
+                  {
+                    "type": "string",
+                    "const": "session-control"
+                  },
+                  {
+                    "type": "string",
+                    "const": "operation-journal"
+                  },
+                  {
+                    "type": "string",
+                    "const": "project-trust-ui"
+                  },
+                  {
+                    "type": "string",
+                    "const": "models"
+                  },
+                  {
+                    "type": "string",
+                    "const": "models-auth"
+                  },
+                  {
+                    "type": "string",
+                    "const": "skills"
+                  },
+                  {
+                    "type": "string",
+                    "const": "git-inspector"
+                  },
+                  {
+                    "type": "string",
+                    "const": "content-ref"
+                  },
+                  {
+                    "type": "string",
+                    "const": "remote-detach"
+                  },
+                  {
+                    "type": "string",
+                    "const": "about"
+                  },
+                  {
+                    "type": "string",
+                    "const": "diagnostics"
+                  },
+                  {
+                    "type": "string",
+                    "const": "connections"
+                  },
+                  {
+                    "type": "string",
+                    "const": "updates"
+                  },
+                  {
+                    "type": "string",
+                    "const": "session-observation"
+                  },
+                  {
+                    "type": "string",
+                    "const": "project-instructions"
+                  },
+                  {
+                    "type": "string",
+                    "const": "host-instructions"
+                  },
+                  {
+                    "type": "string",
+                    "const": "completion"
+                  },
+                  {
+                    "type": "string",
+                    "const": "project-resources"
+                  },
+                  {
+                    "type": "string",
+                    "const": "directory-browser"
+                  },
+                  {
+                    "type": "string",
+                    "const": "external-resources"
+                  }
+                ]
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "error"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "hello_error"
+            },
+            "error": {
+              "type": "object",
+              "required": [
+                "code",
+                "message"
+              ],
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "message": {
+                  "type": "string"
+                },
+                "retryable": {
+                  "type": "boolean"
+                },
+                "details": {
+                  "$ref": "#/$defs/JsonValue"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "anyOf": [
+            {
+              "type": "object",
+              "required": [
+                "type",
+                "id",
+                "ok",
+                "result"
+              ],
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "response"
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "ok": {
+                  "type": "boolean",
+                  "const": true
+                },
+                "result": {
+                  "$ref": "#/$defs/JsonValue"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": [
+                "type",
+                "id",
+                "ok",
+                "error"
+              ],
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "response"
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "ok": {
+                  "type": "boolean",
+                  "const": false
+                },
+                "error": {
+                  "type": "object",
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "details": {
+                      "$ref": "#/$defs/JsonValue"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "event"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "event"
+            },
+            "event": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "snapshot"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "session_snapshot"
+                    },
+                    "snapshot": {
+                      "type": "object",
+                      "required": [
+                        "id",
+                        "path",
+                        "cwd",
+                        "createdAt",
+                        "updatedAt",
+                        "phase",
+                        "thinkingLevel",
+                        "attached",
+                        "writeAccess",
+                        "revision",
+                        "leafId",
+                        "queuedSteerCount",
+                        "transcriptGeneration",
+                        "transcriptRevision"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "path": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "cwd": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "updatedAt": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "phase": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "const": "idle"
+                            },
+                            {
+                              "type": "string",
+                              "const": "turn"
+                            },
+                            {
+                              "type": "string",
+                              "const": "compaction"
+                            },
+                            {
+                              "type": "string",
+                              "const": "branch_summary"
+                            },
+                            {
+                              "type": "string",
+                              "const": "retry"
+                            },
+                            {
+                              "type": "string",
+                              "const": "waiting_for_input"
+                            },
+                            {
+                              "type": "string",
+                              "const": "interrupted"
+                            }
+                          ]
+                        },
+                        "model": {
+                          "type": "object",
+                          "required": [
+                            "provider",
+                            "id"
+                          ],
+                          "properties": {
+                            "provider": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "id": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "thinkingLevel": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "const": "off"
+                            },
+                            {
+                              "type": "string",
+                              "const": "minimal"
+                            },
+                            {
+                              "type": "string",
+                              "const": "low"
+                            },
+                            {
+                              "type": "string",
+                              "const": "medium"
+                            },
+                            {
+                              "type": "string",
+                              "const": "high"
+                            },
+                            {
+                              "type": "string",
+                              "const": "xhigh"
+                            },
+                            {
+                              "type": "string",
+                              "const": "max"
+                            }
+                          ]
+                        },
+                        "attached": {
+                          "type": "boolean"
+                        },
+                        "writeAccess": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "const": "available"
+                            },
+                            {
+                              "type": "string",
+                              "const": "owned"
+                            },
+                            {
+                              "type": "string",
+                              "const": "controlled_elsewhere"
+                            },
+                            {
+                              "type": "string",
+                              "const": "locked_externally"
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "leafId": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "queuedSteerCount": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "transcriptGeneration": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "transcriptRevision": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "sessionPath"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "session_removed"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "cwd"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "sessions_changed"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "sessionPath"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "transcript_changed"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "sessionPath",
+                    "progress"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "session_progress"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "progress": {
+                      "$ref": "#/$defs/JsonValue"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "sessionPath",
+                    "transcriptGeneration",
+                    "fromRevision",
+                    "toRevision",
+                    "items"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "transcript_committed"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "transcriptGeneration": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "fromRevision": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "toRevision": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "entryId",
+                          "parentId",
+                          "timestamp",
+                          "kind",
+                          "payload"
+                        ],
+                        "properties": {
+                          "entryId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "parentId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "timestamp": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "payload": {
+                            "$ref": "#/$defs/JsonValue"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "operation"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "operation_updated"
+                    },
+                    "operation": {
+                      "type": "object",
+                      "required": [
+                        "operationId",
+                        "clientInstanceId",
+                        "clientRequestId",
+                        "sessionPath",
+                        "type",
+                        "status",
+                        "acceptedAt",
+                        "updatedAt",
+                        "payloadHash"
+                      ],
+                      "properties": {
+                        "operationId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "clientInstanceId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "clientRequestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "sessionPath": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "type": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "status": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "const": "accepted"
+                            },
+                            {
+                              "type": "string",
+                              "const": "running"
+                            },
+                            {
+                              "type": "string",
+                              "const": "waiting_for_input"
+                            },
+                            {
+                              "type": "string",
+                              "const": "completed"
+                            },
+                            {
+                              "type": "string",
+                              "const": "failed"
+                            },
+                            {
+                              "type": "string",
+                              "const": "aborted"
+                            },
+                            {
+                              "type": "string",
+                              "const": "interrupted"
+                            }
+                          ]
+                        },
+                        "acceptedAt": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "updatedAt": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "payloadHash": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "progress": {
+                          "$ref": "#/$defs/JsonValue"
+                        },
+                        "result": {
+                          "$ref": "#/$defs/JsonValue"
+                        },
+                        "error": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "id",
+                    "operationId",
+                    "kind",
+                    "title",
+                    "payload"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "ui_request"
+                    },
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "operationId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "kind": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "select"
+                        },
+                        {
+                          "type": "string",
+                          "const": "confirm"
+                        },
+                        {
+                          "type": "string",
+                          "const": "input"
+                        },
+                        {
+                          "type": "string",
+                          "const": "secret"
+                        },
+                        {
+                          "type": "string",
+                          "const": "editor"
+                        },
+                        {
+                          "type": "string",
+                          "const": "notify"
+                        }
+                      ]
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "payload": {
+                      "$ref": "#/$defs/JsonValue"
+                    },
+                    "timeoutMs": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

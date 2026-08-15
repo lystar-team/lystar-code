@@ -46,6 +46,11 @@ export {
 export type { EditorComponent } from "./editor-component.ts";
 // Fuzzy matching
 export { type FuzzyMatch, fuzzyFilter, fuzzyMatch } from "./fuzzy.ts";
+export {
+	createHeadlessComponentAdapter,
+	type HeadlessComponentAdapter,
+	type HeadlessFrame,
+} from "./headless-adapter.ts";
 // Keybindings
 export {
 	getKeybindings,
