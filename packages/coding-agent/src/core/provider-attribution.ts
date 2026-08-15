@@ -16,15 +16,17 @@ function matchesHost(baseUrl: string, expectedHost: string): boolean {
 	}
 }
 
-function isOpenRouterModel(model: Model<Api>): boolean {
+type ProviderAttributionModel = Pick<Model<Api>, "provider" | "baseUrl">;
+
+function isOpenRouterModel(model: ProviderAttributionModel): boolean {
 	return model.provider === "openrouter" || model.baseUrl.includes(OPENROUTER_HOST);
 }
 
-function isNvidiaNimModel(model: Model<Api>): boolean {
+function isNvidiaNimModel(model: ProviderAttributionModel): boolean {
 	return model.provider === "nvidia" || matchesHost(model.baseUrl, NVIDIA_NIM_HOST);
 }
 
-function isCloudflareModel(model: Model<Api>): boolean {
+function isCloudflareModel(model: ProviderAttributionModel): boolean {
 	return (
 		model.provider === "cloudflare-workers-ai" ||
 		model.provider === "cloudflare-ai-gateway" ||
@@ -33,7 +35,7 @@ function isCloudflareModel(model: Model<Api>): boolean {
 	);
 }
 
-function getDefaultAttributionHeaders(model: Model<Api>): Record<string, string> | undefined {
+export function getProviderAttributionHeaders(model: ProviderAttributionModel): Record<string, string> | undefined {
 	if (isOpenRouterModel(model)) {
 		return {
 			...(RELEASE_REPOSITORY ? { "HTTP-Referer": `https://github.com/${RELEASE_REPOSITORY}` } : {}),
@@ -77,7 +79,7 @@ export function mergeProviderAttributionHeaders(
 ): ProviderHeaders | undefined {
 	const merged: ProviderHeaders = {
 		...getSessionHeaders(model, sessionId),
-		...getDefaultAttributionHeaders(model),
+		...getProviderAttributionHeaders(model),
 	};
 
 	for (const headers of headerSources) {

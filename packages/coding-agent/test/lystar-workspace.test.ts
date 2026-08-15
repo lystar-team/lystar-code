@@ -435,6 +435,22 @@ describe("LYStar workspace", () => {
 		expect(stripAnsi(workspace.render(40).join("\n"))).not.toMatch(/[│┃]/);
 	});
 
+	it("positions search matches one third below the workspace viewport top", () => {
+		const workspace = new LystarWorkspace({
+			getHeight: () => 8,
+			header: textContainer("header"),
+			scrollContainers: [textContainer(...Array.from({ length: 30 }, (_, index) => `line-${index}`))],
+			bottomContainers: [textContainer("editor")],
+			fullscreen: true,
+			scrollbar: "hidden",
+		});
+
+		workspace.render(40);
+		workspace.getAltScreenSearchTarget().scrollTo(20);
+
+		expect(stripAnsi(workspace.render(40)[1] ?? "").trim()).toBe("line-18");
+	});
+
 	it("moves by the requested logical lines through a long history", () => {
 		const workspace = new LystarWorkspace({
 			getHeight: () => 24,

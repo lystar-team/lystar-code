@@ -148,7 +148,7 @@ export interface AltScreenSearchTarget {
 	getLines(): readonly string[];
 	/** Return the logical viewport position within those transcript lines. */
 	getViewport(): { scrollTop: number; viewportHeight: number };
-	/** Move the transcript viewport so a logical transcript row becomes visible. */
+	/** Move the transcript viewport so the matching logical row becomes visible. */
 	scrollTo(row: number): void;
 	/** Return the transcript rectangle in the final terminal screen. */
 	getScreenBox(): { x: number; y: number; width: number; height: number };
@@ -478,7 +478,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return {
 			getLines: () => box.scrollContentLines!,
 			getViewport: () => ({ scrollTop: scrollView.scrollTop, viewportHeight: scrollView.viewportHeight }),
-			scrollTo: (row) => scrollView.scrollTo(row, { disableFollow: true }),
+			scrollTo: (row) =>
+				scrollView.scrollTo(row - Math.floor(scrollView.viewportHeight / 3), { disableFollow: true }),
 			getScreenBox: () => ({ x: box.rect.x, y: box.rect.y, width: box.rect.width, height: box.rect.height }),
 		};
 	}
@@ -585,7 +586,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (!firstSegment || !lastSegment || viewportHeight <= 0) return false;
 		const visibleBottom = scrollTop + viewportHeight - 1;
 		if (firstSegment.row >= scrollTop && lastSegment.row <= visibleBottom) return false;
-		customTarget.scrollTo(firstSegment.row - Math.floor(viewportHeight / 3));
+		customTarget.scrollTo(firstSegment.row);
 		return true;
 	}
 

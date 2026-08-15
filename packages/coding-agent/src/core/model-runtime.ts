@@ -47,6 +47,7 @@ import { operationSignal, raceWithAbortSignal } from "../utils/abort.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
 import { ModelConfig } from "./model-config.ts";
 import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.ts";
+import { getProviderAttributionHeaders } from "./provider-attribution.ts";
 import {
 	type AuthStatus,
 	type CompatibilityRequestConfig,
@@ -413,7 +414,18 @@ export class ModelRuntime implements Models {
 	}
 
 	generateImages(model: ImagesModel<ImagesApi>, context: ImagesContext, options?: ImagesOptions) {
-		return this.imageModels.generateImages(model, context, options);
+		const attributionHeaders = getProviderAttributionHeaders(model);
+		if (!attributionHeaders) return this.imageModels.generateImages(model, context, options);
+
+		const headers = { ...attributionHeaders };
+		for (const [name, value] of Object.entries(model.headers ?? {})) {
+			const lowerName = name.toLowerCase();
+			for (const existingName of Object.keys(headers)) {
+				if (existingName.toLowerCase() === lowerName) delete headers[existingName];
+			}
+			headers[name] = value;
+		}
+		return this.imageModels.generateImages({ ...model, headers }, context, options);
 	}
 
 	getModels(providerId?: string): readonly Model<Api>[] {

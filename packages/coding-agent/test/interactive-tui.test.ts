@@ -1,8 +1,9 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { Component, Terminal, TUI } from "@earendil-works/pi-tui";
+import type { AltScreenSearchTarget, Component, Terminal, TUI } from "@earendil-works/pi-tui";
 import { Container, isViewportTUI, resetCapabilitiesCache, setCapabilities, Text } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
+import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import type { FullscreenExitOutput, TuiMode } from "../src/core/settings-manager.ts";
 import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
@@ -16,6 +17,7 @@ import {
 import { LystarTUI } from "../src/modes/interactive/lystar-tui.ts";
 import { WheelScrollNormalizer } from "../src/modes/interactive/mouse.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { createHarness } from "./test-harness.ts";
 
 const clipboardMocks = vi.hoisted(() => ({
 	copyToClipboard: vi.fn<(text: string) => Promise<void>>(),
@@ -202,12 +204,14 @@ describe("createInteractiveTui", () => {
 			fullscreen: true,
 			scrollbar: "hidden",
 		});
+		const target = workspace.getAltScreenSearchTarget();
+		const scrollTo = vi.fn((row: number) => target.scrollTo(row));
 		const renderer = createInteractiveTui({
 			tuiMode: "fullscreen",
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
 			terminal,
-			workspaceSearchTarget: () => workspace.getAltScreenSearchTarget(),
+			workspaceSearchTarget: () => ({ ...target, scrollTo }),
 		});
 		renderer.addChild(workspace);
 		renderer.start();
@@ -220,6 +224,7 @@ describe("createInteractiveTui", () => {
 				true,
 			);
 			expect(terminal.getViewport().some((line) => line.includes("line-4 needle one"))).toBe(true);
+			expect(scrollTo).toHaveBeenLastCalledWith(4);
 
 			terminal.sendInput("\x07");
 			await terminal.waitForRender();
@@ -227,12 +232,43 @@ describe("createInteractiveTui", () => {
 				true,
 			);
 			expect(terminal.getViewport().some((line) => line.includes("line-20 needle two"))).toBe(true);
+			expect(scrollTo).toHaveBeenLastCalledWith(20);
 
 			terminal.sendInput("\x1b");
 			await terminal.waitForRender();
 			expect(terminal.getViewport().some((line) => line.includes("Find transcript"))).toBe(false);
 		} finally {
 			renderer.stop();
+		}
+	});
+
+	it("wires workspace search into constructed and switched fullscreen renderers", async () => {
+		const harness = await createHarness();
+		const runtimeHost = new AgentSessionRuntime(harness.session, {} as never, async () => {
+			throw new Error("Session replacement is not used by this test");
+		});
+		type InteractiveModeSearchContext = {
+			renderer: ReturnType<typeof createInteractiveTui>;
+			workspace: LystarWorkspace;
+			chatContainer: Container;
+			switchTuiMode(mode: TuiMode, restoreProgress?: boolean, startRenderer?: boolean): boolean;
+		};
+		type SearchableRenderer = { getSearchTarget(): AltScreenSearchTarget | undefined };
+		const mode = new InteractiveMode(runtimeHost, { tuiMode: "fullscreen" });
+		const context = mode as unknown as InteractiveModeSearchContext;
+		context.chatContainer.addChild(new Text("mode-search-needle", 0, 0));
+
+		try {
+			const initialTarget = (context.renderer as unknown as SearchableRenderer).getSearchTarget();
+			expect(initialTarget?.getLines().join("")).toContain("mode-search-needle");
+
+			expect(context.switchTuiMode("regular", false, false)).toBe(true);
+			expect(context.switchTuiMode("fullscreen", false, false)).toBe(true);
+
+			const switchedTarget = (context.renderer as unknown as SearchableRenderer).getSearchTarget();
+			expect(switchedTarget?.getLines().join("")).toContain("mode-search-needle");
+		} finally {
+			harness.cleanup();
 		}
 	});
 
