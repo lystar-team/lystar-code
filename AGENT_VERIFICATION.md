@@ -15,7 +15,18 @@ Linux x64 / Debian 13
 WebKitGTK 4.1、GTK 3、Ayatana AppIndicator、librsvg、OpenSSL 开发包、patchelf 已安装
 ```
 
-当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。最终依赖安装、静态检查、离线构建和五平台打包均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1` 重新执行，日志不再出现关闭 TLS 校验警告；正式发布环境不得设置为 `0`。
+当前交互 Shell 继承了不安全的 `NODE_TLS_REJECT_UNAUTHORIZED=0`。本轮最终静态检查和离线构建均显式使用 `NODE_TLS_REJECT_UNAUTHORIZED=1`；正式发布环境不得设置为 `0`。
+
+## 系统现代化 M0-M6 本地最终验收
+
+最后执行日期：2026-08-15；代码基线为 `ca6805055`，Pi `v0.84.2`，LYStar `0.84.2-lystar.1`。M1 完成 Pi 合并与 LYStar 适配；M2 完成测试分层、planner、预算和单次发布契约；M3 完成 observe taxonomy、fingerprint 与 ledger；M4 完成默认 `assist` 的 circuit、后置条件验证和内置 Tool 恢复；M5 完成 lesson 的 candidate、审批、TTL、回滚和审计；M6 完成协议与 B0 Spike，并因相对性能门槛未达正确 Stop。M7-M11 未实施。
+
+- 最终门禁按顺序执行一次：`npm run test:scripts` 为 34/34、0 skip；`npm --workspace @earendil-works/pi-tui test` 退出码 0（dot reporter 未输出聚合计数）；AI 为 108 files、922/922、0 skip；Coding Agent 为 249 files、2200/2200、0 skip；Agent Core 初次为 23 files、438 pass、1 个 Windows-only skip。随后以提交 `ca6805055` 将该用例移动到 `nodejs-env.windows.test.ts` 和 Windows required job，定向复跑通用文件为 29/29、0 skip，未重跑整个 Core suite。GUI Protocol 1 file、8/8；GUI Host 9 files、31/31；GUI 3 files、11/11，均 0 skip。
+- `npm run check:rust-spike` 通过：schema 无 diff、Rust framing/golden/public API/terminal/transcript 共 11 项、Node compare 5/5、headless adapter 1/1、PTY terminal guard、release build 与两份 B0 smoke 均通过。B0 数据在 80x8 的相同 workload hash 下，Rust RSS 为 4.36-13.41 MiB，低于 TypeScript 174.03-198.82 MiB；但 input300 frame p95 为 3.228ms，对比 TypeScript 0.806ms，stream120 为 3.277ms 对 0.574ms，scroll300 为 3.578ms 对 0.936ms，未满足性能相对门槛，因此停止 Rust 后续 M7-M11。
+- `bash scripts/test-install-sh.sh` 通过。`NODE_TLS_REJECT_UNAUTHORIZED=1 npm run check` 通过 1200 files，`NODE_TLS_REJECT_UNAUTHORIZED=1 npm run build:offline` 通过；GUI bundle 仍有既有大 chunk warning，不是失败。
+- CLI 发行 smoke 执行 `bash scripts/build-binaries.sh --skip-install --skip-build --offline-model-data`。本机 Bash 构建按设计只生成 Darwin ARM64/x64、Linux ARM64/x64 四个 Unix 中间归档，`sha256sum -c SHA256SUMS` 四项通过；中间 manifest 为 `0.84.2-lystar.1`、Pi `0.84.2`、仓库 `lystar-team/lystar-code`，仅含四个 Unix assets。Windows x64 由 Windows runner 的 `build-windows-release.ps1` 生成，五平台 metadata 只会在 Release 汇聚后生成。当前 Linux x64 解包后的 `lc --version`、`lystar --version`、`lc --help`、`PI_OFFLINE=1 lc --list-models` 均通过；其他 OS 未实机。
+- 最终 PTY 使用独立 tmux socket。`80x24` 启动和 `/quit` 正常，`80x8` 保留 Composer 与快捷栏并正常退出；同一 tmux PTY 的 `stty -g` 前后完全一致，应用退出码为 0。未调用 Provider，socket 和隔离配置目录已关闭或删除。
+- 远端未验证：planner 10/20 observe、Actions history artifact、受保护 environment 审批、最近 live/stress/benchmark、Windows/macOS/Linux ARM64 实机、五平台 release、Tag、签名、attestation 与公开 Release。历史 `0.84.1` 和 GUI 发布记录保留在下文，不用来证明本轮 `0.84.2-lystar.1`。
 
 ## 最新 GUI 实现与运行验证
 
