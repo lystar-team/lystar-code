@@ -11,6 +11,7 @@ fn typescript_and_rust_golden_frames_round_trip_through_public_wrappers() {
     for name in [
         "client-hello",
         "client-read-transcript",
+        "client-search-transcript",
         "client-ui-response-missing",
         "client-ui-response-null",
         "client-ui-response-value",

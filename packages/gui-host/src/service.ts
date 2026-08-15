@@ -290,6 +290,17 @@ export class GuiHostService {
 					items: page.items.map((item) => this.contentStore.compactTranscriptItem(sessionPath, item)),
 				});
 			}
+			case "search_transcript": {
+				const sessionPath = canonicalSessionPath(request.sessionPath);
+				return jsonValue(
+					await this.transcriptReader.search(sessionPath, {
+						...request,
+						emptyGeneration: this.runtimes
+							.get(sessionPath)
+							?.getSnapshot(this.writeAccess(sessionPath, connection)).transcriptGeneration,
+					}),
+				);
+			}
 			case "create_session": {
 				this.assertClient(request.clientInstanceId, connection);
 				this.journal.assertWritable();

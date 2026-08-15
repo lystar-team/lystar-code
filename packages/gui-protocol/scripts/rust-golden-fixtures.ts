@@ -7,6 +7,11 @@ export const clientGoldenFixtures: Record<string, ClientMessage> = {
 		id: "request-read-transcript",
 		request: { command: "read_transcript", sessionPath: "/tmp/session.jsonl", limit: 20 },
 	},
+	"client-search-transcript": {
+		type: "request",
+		id: "request-search-transcript",
+		request: { command: "search_transcript", sessionPath: "/tmp/session.jsonl", query: "needle", limit: 20 },
+	},
 	"client-ui-response-missing": { type: "ui_response", id: "ui-response-missing", confirmed: false },
 	"client-ui-response-null": { type: "ui_response", id: "ui-response-null", value: null },
 	"client-ui-response-value": { type: "ui_response", id: "ui-response-value", value: { accepted: true } },

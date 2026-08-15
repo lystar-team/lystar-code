@@ -142,4 +142,84 @@ describe("TranscriptReader", () => {
 		const page = await new TranscriptReader().read(sessionPath, { limit: 2 });
 		expect(page.items.map((item) => item.entryId)).toEqual(["assistant", "result", "leaf"]);
 	});
+
+	it("searches a bounded generation cache without exposing incomplete tails", async () => {
+		write([
+			message("a", null),
+			message("needle", "a", "assistant"),
+			message("needle-second", "needle", "assistant"),
+			message("tail", "needle-second"),
+		]);
+		const reader = new TranscriptReader();
+		const first = await reader.search(sessionPath, { query: "needle", limit: 1 });
+		expect(first.hits).toEqual([
+			expect.objectContaining({
+				entryId: "needle",
+				kind: "message",
+				matches: expect.arrayContaining([{ start: expect.any(Number), end: expect.any(Number) }]),
+			}),
+		]);
+		expect(first.nextCursor).toBeDefined();
+		appendFileSync(sessionPath, JSON.stringify(message("pending", "tail", "assistant")));
+		const incomplete = await reader.search(sessionPath, { query: "pending", limit: 10 });
+		expect(incomplete.hits).toEqual([]);
+		appendFileSync(sessionPath, "\n");
+		const appended = await reader.search(sessionPath, { query: "pending", limit: 10 });
+		expect(appended.hits.map((hit) => hit.entryId)).toEqual(["pending"]);
+
+		const replacement = join(tempDir, "replacement.jsonl");
+		writeFileSync(
+			replacement,
+			`${[header(), message("rewritten", null)].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+		);
+		renameSync(replacement, sessionPath);
+		await expect(
+			reader.search(sessionPath, { query: "needle", cursor: first.nextCursor, limit: 10 }),
+		).rejects.toBeInstanceOf(TranscriptCursorInvalidError);
+	});
+
+	it("keeps 10000 tool rounds pageable and hot searches under 50ms p95", async () => {
+		const entries: Entry[] = [];
+		let parentId: string | null = null;
+		for (let index = 0; index < 10_000; index++) {
+			const callId = `call-${index}`;
+			const assistantId = `assistant-${index}`;
+			const resultId = `result-${index}`;
+			entries.push({
+				...message(assistantId, parentId, "assistant"),
+				message: {
+					role: "assistant",
+					content: [{ type: "toolCall", id: callId, name: "read", arguments: { path: `src/${index}.ts` } }],
+					stopReason: "toolUse",
+					timestamp: index,
+				},
+			});
+			entries.push({
+				...message(resultId, assistantId, "toolResult"),
+				message: {
+					role: "toolResult",
+					toolCallId: callId,
+					toolName: "read",
+					content: [{ type: "text", text: `needle round ${index}` }],
+					isError: false,
+					timestamp: index,
+				},
+			});
+			parentId = resultId;
+		}
+		write(entries);
+		const reader = new TranscriptReader();
+		const tail = await reader.read(sessionPath, { limit: 200 });
+		expect(tail.items).toHaveLength(200);
+		expect(tail.items.at(-1)?.entryId).toBe("result-9999");
+		const samples: number[] = [];
+		for (let index = 0; index < 25; index++) {
+			const started = performance.now();
+			const result = await reader.search(sessionPath, { query: "needle round 9999", limit: 10 });
+			samples.push(performance.now() - started);
+			expect(result.hits.map((hit) => hit.entryId)).toEqual(["result-9999"]);
+		}
+		samples.sort((left, right) => left - right);
+		expect(samples[Math.ceil(samples.length * 0.95) - 1]).toBeLessThanOrEqual(50);
+	});
 });

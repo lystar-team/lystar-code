@@ -231,6 +231,22 @@ describe("GUI Protocol v1", () => {
 		).toBe(true);
 	});
 
+	it("strictly decodes transcript search commands and rejects blank queries or excess limits", () => {
+		const decoder = new ClientMessageDecoder();
+		const valid = {
+			type: "request",
+			id: "search",
+			request: { command: "search_transcript", sessionPath: "/tmp/session.jsonl", query: "needle", limit: 100 },
+		} as const;
+		expect(decoder.push(encodeClientMessage(valid))).toEqual([valid]);
+		for (const request of [
+			{ command: "search_transcript", sessionPath: "/tmp/session.jsonl", query: "", limit: 1 },
+			{ command: "search_transcript", sessionPath: "/tmp/session.jsonl", query: "needle", limit: 101 },
+		]) {
+			expect(() => encodeClientMessage({ type: "request", id: "invalid-search", request } as never)).toThrow();
+		}
+	});
+
 	it("strictly decodes model, project, completion, and resource commands", () => {
 		const decoder = new ClientMessageDecoder();
 		const messages = [

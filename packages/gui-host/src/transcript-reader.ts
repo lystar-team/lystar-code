@@ -1,10 +1,20 @@
 import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { JsonValue, TranscriptItem, TranscriptPage } from "@lystar/code-gui-protocol";
+import type {
+	JsonValue,
+	TranscriptItem,
+	TranscriptPage,
+	TranscriptSearchHit,
+	TranscriptSearchResult,
+} from "@lystar/code-gui-protocol";
 
 const READ_BUFFER_SIZE = 64 * 1024;
 const CURSOR_VERSION = 1;
+const SEARCH_CURSOR_VERSION = 1;
+const SEARCH_CACHE_LIMIT = 8;
+const SEARCH_INDEX_TEXT_LIMIT = 64 * 1024 * 1024;
+const SEARCH_SNIPPET_LENGTH = 320;
 
 type RawEntry = Record<string, unknown> & { type: string; id?: string; parentId?: string | null; timestamp?: string };
 type RewriteGeneration = { size: number; tailHash: string; device: number; inode: number };
@@ -16,6 +26,14 @@ type TranscriptCursor = {
 	offset: number;
 	wantedId: string | null;
 	rewriteGeneration: RewriteGeneration;
+};
+type SearchCursor = { version: number; generation: string; query: string; offset: number };
+type SearchIndexEntry = { entryId: string; kind: string; timestamp: string; text: string; lowerText: string };
+type SearchIndex = {
+	generation: string;
+	transcriptRevision: number;
+	rewriteGeneration: RewriteGeneration;
+	entries: SearchIndexEntry[];
 };
 
 export class TranscriptCursorInvalidError extends Error {
@@ -65,6 +83,28 @@ function decodeCursor(value: string): TranscriptCursor {
 		return cursor;
 	} catch {
 		throw new TranscriptCursorInvalidError("Transcript cursor is malformed");
+	}
+}
+
+function encodeSearchCursor(cursor: SearchCursor): string {
+	return Buffer.from(JSON.stringify(cursor)).toString("base64url");
+}
+
+function decodeSearchCursor(value: string): SearchCursor {
+	try {
+		const cursor = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as SearchCursor;
+		if (
+			cursor.version !== SEARCH_CURSOR_VERSION ||
+			typeof cursor.generation !== "string" ||
+			typeof cursor.query !== "string" ||
+			!Number.isInteger(cursor.offset) ||
+			cursor.offset < 0
+		) {
+			throw new Error("invalid cursor");
+		}
+		return cursor;
+	} catch {
+		throw new TranscriptCursorInvalidError("Transcript search cursor is malformed");
 	}
 }
 
@@ -186,8 +226,32 @@ async function readTailId(handle: Awaited<ReturnType<typeof open>>, completeSize
 	return tailId;
 }
 
+function searchText(entry: RawEntry): string {
+	const payload = JSON.stringify(entry);
+	return payload.length > SEARCH_INDEX_TEXT_LIMIT ? payload.slice(0, SEARCH_INDEX_TEXT_LIMIT) : payload;
+}
+
+function searchHit(entry: SearchIndexEntry, query: string): TranscriptSearchHit | undefined {
+	const first = entry.lowerText.indexOf(query);
+	if (first < 0) return undefined;
+	const start = Math.max(0, first - Math.floor(SEARCH_SNIPPET_LENGTH / 3));
+	const end = Math.min(entry.text.length, start + SEARCH_SNIPPET_LENGTH);
+	const snippet = entry.text.slice(start, end);
+	const lowerSnippet = entry.lowerText.slice(start, end);
+	const matches: Array<{ start: number; end: number }> = [];
+	let cursor = 0;
+	while (matches.length < 16) {
+		const match = lowerSnippet.indexOf(query, cursor);
+		if (match < 0) break;
+		matches.push({ start: match, end: match + query.length });
+		cursor = match + Math.max(query.length, 1);
+	}
+	return { entryId: entry.entryId, kind: entry.kind, timestamp: entry.timestamp, snippet, matches };
+}
+
 export class TranscriptReader {
 	private readonly observed = new Map<string, ObservedGeneration>();
+	private readonly searchIndexes = new Map<string, SearchIndex>();
 
 	async read(
 		sessionPath: string,
@@ -288,5 +352,128 @@ export class TranscriptReader {
 		} finally {
 			await handle.close();
 		}
+	}
+
+	async search(
+		sessionPath: string,
+		options: { query: string; cursor?: string; limit: number; emptyGeneration?: string },
+	): Promise<TranscriptSearchResult> {
+		const query = options.query.trim();
+		if (!query) throw Object.assign(new Error("搜索内容不能为空"), { code: "transcript_search_query_empty" });
+		const resolvedPath = resolve(sessionPath);
+		let index = this.searchIndexes.get(resolvedPath);
+		if (!index || !(await this.isSearchIndexCurrent(resolvedPath, index))) {
+			index = await this.buildSearchIndex(resolvedPath, options.emptyGeneration);
+			this.rememberSearchIndex(resolvedPath, index);
+		}
+		const cursor = options.cursor ? decodeSearchCursor(options.cursor) : undefined;
+		if (cursor && (cursor.generation !== index.generation || cursor.query !== query.toLocaleLowerCase())) {
+			throw new TranscriptCursorInvalidError("Transcript search cursor is no longer valid");
+		}
+		const normalizedQuery = query.toLocaleLowerCase();
+		const hits: TranscriptSearchHit[] = [];
+		let offset = cursor?.offset ?? 0;
+		for (; offset < index.entries.length && hits.length < options.limit; offset++) {
+			const hit = searchHit(index.entries[offset]!, normalizedQuery);
+			if (hit) hits.push(hit);
+		}
+		const nextCursor =
+			offset < index.entries.length
+				? encodeSearchCursor({
+						version: SEARCH_CURSOR_VERSION,
+						generation: index.generation,
+						query: normalizedQuery,
+						offset,
+					})
+				: undefined;
+		return { generation: index.generation, hits, ...(nextCursor ? { nextCursor } : {}) };
+	}
+
+	private async isSearchIndexCurrent(path: string, index: SearchIndex): Promise<boolean> {
+		let handle: Awaited<ReturnType<typeof open>>;
+		try {
+			handle = await open(path, "r");
+		} catch {
+			return false;
+		}
+		try {
+			const stat = await handle.stat();
+			if (stat.dev !== index.rewriteGeneration.device || stat.ino !== index.rewriteGeneration.inode) return false;
+			const completeSize = await findCompleteSize(handle, stat.size);
+			return (
+				completeSize === index.rewriteGeneration.size &&
+				(await hashTail(handle, completeSize)) === index.rewriteGeneration.tailHash
+			);
+		} finally {
+			await handle.close();
+		}
+	}
+
+	private async buildSearchIndex(path: string, emptyGeneration?: string): Promise<SearchIndex> {
+		const page = await this.read(path, { limit: 1, ...(emptyGeneration ? { emptyGeneration } : {}) });
+		if (page.transcriptRevision === 0) {
+			return {
+				generation: page.transcriptGeneration,
+				transcriptRevision: 0,
+				rewriteGeneration: { size: 0, tailHash: "", device: 0, inode: 0 },
+				entries: [],
+			};
+		}
+		const handle = await open(path, "r");
+		try {
+			const stat = await handle.stat();
+			const completeSize = await findCompleteSize(handle, stat.size);
+			const entries = new Map<string, RawEntry>();
+			let tailId: string | null = null;
+			let indexedBytes = 0;
+			await scanForward(handle, completeSize, (line) => {
+				const entry = parseLine(line);
+				if (!entry || entry.type === "session" || typeof entry.id !== "string") return false;
+				entries.set(entry.id, entry);
+				tailId = entry.id;
+				return false;
+			});
+			const visible: RawEntry[] = [];
+			for (let current: string | null = tailId; current; ) {
+				const entry = entries.get(current);
+				if (!entry) break;
+				if (isVisible(entry)) visible.push(entry);
+				current = typeof entry.parentId === "string" ? entry.parentId : null;
+			}
+			visible.reverse();
+			const searchableEntries: SearchIndexEntry[] = [];
+			for (const entry of visible) {
+				if (!entry.id || indexedBytes >= SEARCH_INDEX_TEXT_LIMIT) break;
+				const text = searchText(entry);
+				indexedBytes += Buffer.byteLength(text);
+				searchableEntries.push({
+					entryId: entry.id,
+					kind: entry.type,
+					timestamp: typeof entry.timestamp === "string" ? entry.timestamp : "",
+					text,
+					lowerText: text.toLocaleLowerCase(),
+				});
+			}
+			return {
+				generation: page.transcriptGeneration,
+				transcriptRevision: page.transcriptRevision,
+				rewriteGeneration: {
+					size: completeSize,
+					tailHash: await hashTail(handle, completeSize),
+					device: stat.dev,
+					inode: stat.ino,
+				},
+				entries: searchableEntries,
+			};
+		} finally {
+			await handle.close();
+		}
+	}
+
+	private rememberSearchIndex(path: string, index: SearchIndex): void {
+		this.searchIndexes.delete(path);
+		this.searchIndexes.set(path, index);
+		while (this.searchIndexes.size > SEARCH_CACHE_LIMIT)
+			this.searchIndexes.delete(this.searchIndexes.keys().next().value!);
 	}
 }

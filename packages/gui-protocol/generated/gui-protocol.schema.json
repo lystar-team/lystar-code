@@ -142,6 +142,39 @@
                   "type": "object",
                   "required": [
                     "command",
+                    "sessionPath",
+                    "query",
+                    "limit"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "search_transcript"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "query": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "cursor": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 100
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
                     "cwd",
                     "clientInstanceId"
                   ],

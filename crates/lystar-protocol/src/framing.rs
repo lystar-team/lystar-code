@@ -109,6 +109,10 @@ impl ClientMessage {
     pub fn diagnostic(&self) -> MessageDiagnostic {
         self.0.diagnostic()
     }
+
+    pub fn value(&self) -> &Value {
+        &self.0.raw
+    }
 }
 
 pub struct ServerMessage(DecodedMessage<GeneratedServerMessage>);
@@ -137,6 +141,10 @@ impl ServerMessage {
 
     pub fn diagnostic(&self) -> MessageDiagnostic {
         self.0.diagnostic()
+    }
+
+    pub fn value(&self) -> &Value {
+        &self.0.raw
     }
 }
 

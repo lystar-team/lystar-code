@@ -10,6 +10,8 @@ run_case() {
   local name=$1
   local mode=$2
   local signal=${3:-}
+  local width=${4:-80}
+  local height=${5:-8}
   local case_dir="$root/$name"
   mkdir -p "$case_dir"
   local command
@@ -19,7 +21,7 @@ run_case() {
     shell) command="'$binary' --shell & child=\$!; echo \$child > '$case_dir/pid'; wait \$child" ;;
     *) exit 2 ;;
   esac
-  tmux -L "$socket" new-session -d -s "$name" -x 80 -y 8 \
+  tmux -L "$socket" new-session -d -s "$name" -x "$width" -y "$height" \
     "bash -lc 'sleep 0.2; before=\$(stty -g); printf %s \"\$before\" > \"$case_dir/before\"; set +e; $command; status=\$?; after=\$(stty -g); printf %s \"\$after\" > \"$case_dir/after\"; printf %s \"\$status\" > \"$case_dir/status\"; exit \$status'"
   tmux -L "$socket" pipe-pane -o -t "$name" "cat > '$case_dir/output'"
   if [[ -n "$signal" ]]; then
@@ -42,7 +44,7 @@ run_case() {
   printf '%s status=%s stty=restored\n' "$name" "$status"
 }
 
-run_case eof eof
-run_case panic panic
-run_case sigint shell INT
-run_case sigterm shell TERM
+run_case eof eof "" 80 8
+run_case panic panic "" 80 24
+run_case sigint shell INT 120 36
+run_case sigterm shell TERM 200 60

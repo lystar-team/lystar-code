@@ -3,6 +3,7 @@ import { Check } from "typebox/value";
 
 export const GUI_PROTOCOL_VERSION = 1 as const;
 export const MAX_TRANSCRIPT_PAGE_SIZE = 200;
+export const MAX_TRANSCRIPT_SEARCH_LIMIT = 100;
 
 const Id = Type.String({ minLength: 1 });
 const StrictObject = <const T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
@@ -266,6 +267,28 @@ export const TranscriptPageSchema = StrictObject({
 });
 export type TranscriptPage = Static<typeof TranscriptPageSchema>;
 
+export const TranscriptSearchMatchSchema = StrictObject({
+	start: Type.Integer({ minimum: 0 }),
+	end: Type.Integer({ minimum: 0 }),
+});
+export type TranscriptSearchMatch = Static<typeof TranscriptSearchMatchSchema>;
+
+export const TranscriptSearchHitSchema = StrictObject({
+	entryId: Id,
+	kind: Type.String({ minLength: 1 }),
+	timestamp: Type.String(),
+	snippet: Type.String(),
+	matches: Type.Array(TranscriptSearchMatchSchema),
+});
+export type TranscriptSearchHit = Static<typeof TranscriptSearchHitSchema>;
+
+export const TranscriptSearchResultSchema = StrictObject({
+	generation: Id,
+	hits: Type.Array(TranscriptSearchHitSchema),
+	nextCursor: Type.Optional(Id),
+});
+export type TranscriptSearchResult = Static<typeof TranscriptSearchResultSchema>;
+
 export const OperationStatusSchema = Type.Union([
 	Type.Literal("accepted"),
 	Type.Literal("running"),
@@ -400,6 +423,13 @@ export const CommandSchema = Type.Union([
 		sessionPath: Type.String({ minLength: 1 }),
 		cursor: Type.Optional(Id),
 		limit: Type.Integer({ minimum: 1, maximum: MAX_TRANSCRIPT_PAGE_SIZE }),
+	}),
+	StrictObject({
+		command: Type.Literal("search_transcript"),
+		sessionPath: Type.String({ minLength: 1 }),
+		query: Type.String({ minLength: 1 }),
+		cursor: Type.Optional(Id),
+		limit: Type.Integer({ minimum: 1, maximum: MAX_TRANSCRIPT_SEARCH_LIMIT }),
 	}),
 	StrictObject({
 		command: Type.Literal("create_session"),

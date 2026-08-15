@@ -10,6 +10,7 @@ fn main() {
     for name in [
         "client-hello",
         "client-read-transcript",
+        "client-search-transcript",
         "client-ui-response-missing",
         "client-ui-response-null",
         "client-ui-response-value",

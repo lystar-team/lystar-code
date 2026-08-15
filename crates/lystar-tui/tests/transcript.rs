@@ -2,39 +2,40 @@
 #[allow(dead_code)]
 mod app;
 
-use app::{TranscriptItem, TranscriptView, TranscriptWindow};
+use app::{AppState, ROUND_CACHE_LIMIT, TranscriptItem, TranscriptView};
 use ratatui::{Terminal, backend::TestBackend};
+use serde_json::json;
+
+fn item(id: usize) -> TranscriptItem {
+    TranscriptItem {
+        entry_id: format!("entry-{id}"),
+        kind: "message".to_owned(),
+        timestamp: "2026-08-15T00:00:00Z".to_owned(),
+        payload: json!({ "message": { "role": "user", "content": format!("中文 {id}") } }),
+    }
+}
 
 #[test]
-fn keeps_a_bounded_tool_window_and_composer_at_small_sizes() {
-    let mut transcript = TranscriptWindow::default();
-    transcript.extend_page((0..10_000).map(|id| TranscriptItem {
-        id,
-        text: format!("中文 {id} क्षि \x1b]8;;https://example.test\x07link\x1b]8;;\x07"),
-    }));
-    assert_eq!(transcript.cached_items(), 400);
-    transcript.scroll_by(10_000);
-
-    let backend = TestBackend::new(80, 8);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal
-        .draw(|frame| {
-            frame.render_stateful_widget(TranscriptView::new(&transcript), frame.area(), &mut ())
-        })
-        .unwrap();
-    let output = terminal.backend().buffer().content();
-    assert!(output.iter().any(|cell| cell.symbol() == "中"));
-    assert_eq!(
-        terminal.backend().buffer().cell((1, 6)).unwrap().symbol(),
-        ">"
+fn keeps_a_bounded_round_window_and_status_at_small_sizes() {
+    let mut app = AppState::default();
+    app.transcript.replace_page(
+        (0..10_000).map(item).collect(),
+        "generation-1".to_owned(),
+        1,
+        Some("older".to_owned()),
     );
+    assert_eq!(app.transcript.cached_rounds(), ROUND_CACHE_LIMIT);
+    app.transcript.scroll_by(-10_000);
+    assert!(app.transcript.needs_previous_page());
 
-    terminal
-        .resize(ratatui::layout::Rect::new(0, 0, 120, 36))
-        .unwrap();
-    terminal
-        .draw(|frame| {
-            frame.render_stateful_widget(TranscriptView::new(&transcript), frame.area(), &mut ())
-        })
-        .unwrap();
+    for (width, height) in [(80, 8), (80, 24), (120, 36), (200, 60)] {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| frame.render_widget(TranscriptView::new(&app), frame.area()))
+            .unwrap();
+        let output = terminal.backend().buffer().content();
+        assert!(output.iter().any(|cell| cell.symbol() == "只"));
+        assert!(output.iter().any(|cell| cell.symbol() == "q"));
+    }
 }
