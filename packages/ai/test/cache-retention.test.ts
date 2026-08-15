@@ -2,16 +2,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { stream as streamOpenAICompletions } from "../src/api/openai-completions.ts";
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
-import { getModel, stream } from "../src/compat.ts";
+import { getModel } from "../src/compat.ts";
 import { MODELS } from "../src/models.generated.ts";
-import type { Context, Model } from "../src/types.ts";
-
-class PayloadCaptured extends Error {
-	constructor() {
-		super("payload captured");
-		this.name = "PayloadCaptured";
-	}
-}
+import type { Model } from "../src/types.ts";
+import { makeCacheRetentionContext, stopAfterPayload } from "./cache-retention-test-utils.ts";
 
 interface OpenAICompletionsCachePayload {
 	prompt_cache_key?: string;
@@ -20,13 +14,6 @@ interface OpenAICompletionsCachePayload {
 
 interface OpenAIResponsesCachePayload extends OpenAICompletionsCachePayload {
 	prompt_cache_options?: { mode: "explicit" };
-}
-
-function stopAfterPayload<TPayload>(capture: (payload: TPayload) => void): (payload: unknown) => never {
-	return (payload: unknown): never => {
-		capture(payload as TPayload);
-		throw new PayloadCaptured();
-	};
 }
 
 describe("Cache Retention (PI_CACHE_RETENTION)", () => {
@@ -44,58 +31,9 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 		}
 	});
 
-	const context: Context = {
-		systemPrompt: "You are a helpful assistant.",
-		messages: [{ role: "user", content: "Hello", timestamp: Date.now() }],
-	};
+	const context = makeCacheRetentionContext();
 
 	describe("Anthropic Provider", () => {
-		it.skipIf(!process.env.ANTHROPIC_API_KEY)(
-			"should use default cache TTL (no ttl field) when PI_CACHE_RETENTION is not set",
-			async () => {
-				const model = getModel("anthropic", "claude-haiku-4-5");
-				let capturedPayload: any = null;
-
-				const s = stream(model, context, {
-					onPayload: stopAfterPayload((payload) => {
-						capturedPayload = payload;
-					}),
-				});
-
-				// Consume the stream to trigger the request
-				for await (const _ of s) {
-					// Just consume
-				}
-
-				expect(capturedPayload).not.toBeNull();
-				// System prompt should have cache_control without ttl
-				expect(capturedPayload.system).toBeDefined();
-				expect(capturedPayload.system[0].cache_control).toEqual({ type: "ephemeral" });
-			},
-		);
-
-		it.skipIf(!process.env.ANTHROPIC_API_KEY)("should use 1h cache TTL when PI_CACHE_RETENTION=long", async () => {
-			process.env.PI_CACHE_RETENTION = "long";
-			const model = getModel("anthropic", "claude-haiku-4-5");
-			let capturedPayload: any = null;
-
-			const s = stream(model, context, {
-				onPayload: stopAfterPayload((payload) => {
-					capturedPayload = payload;
-				}),
-			});
-
-			// Consume the stream to trigger the request
-			for await (const _ of s) {
-				// Just consume
-			}
-
-			expect(capturedPayload).not.toBeNull();
-			// System prompt should have cache_control with ttl: "1h"
-			expect(capturedPayload.system).toBeDefined();
-			expect(capturedPayload.system[0].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
-		});
-
 		it("should add ttl for non-api.anthropic.com baseUrl by default", async () => {
 			process.env.PI_CACHE_RETENTION = "long";
 
@@ -240,51 +178,6 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 	});
 
 	describe("OpenAI Responses Provider", () => {
-		it.skipIf(!process.env.OPENAI_API_KEY)(
-			"should not set prompt_cache_retention when PI_CACHE_RETENTION is not set",
-			async () => {
-				const model = getModel("openai", "gpt-4o-mini");
-				let capturedPayload: any = null;
-
-				const s = stream(model, context, {
-					onPayload: stopAfterPayload((payload) => {
-						capturedPayload = payload;
-					}),
-				});
-
-				// Consume the stream to trigger the request
-				for await (const _ of s) {
-					// Just consume
-				}
-
-				expect(capturedPayload).not.toBeNull();
-				expect(capturedPayload.prompt_cache_retention).toBeUndefined();
-			},
-		);
-
-		it.skipIf(!process.env.OPENAI_API_KEY)(
-			"should set prompt_cache_retention to 24h when PI_CACHE_RETENTION=long",
-			async () => {
-				process.env.PI_CACHE_RETENTION = "long";
-				const model = getModel("openai", "gpt-4o-mini");
-				let capturedPayload: any = null;
-
-				const s = stream(model, context, {
-					onPayload: stopAfterPayload((payload) => {
-						capturedPayload = payload;
-					}),
-				});
-
-				// Consume the stream to trigger the request
-				for await (const _ of s) {
-					// Just consume
-				}
-
-				expect(capturedPayload).not.toBeNull();
-				expect(capturedPayload.prompt_cache_retention).toBe("24h");
-			},
-		);
-
 		it("should set prompt_cache_retention for non-api.openai.com baseUrl by default", async () => {
 			process.env.PI_CACHE_RETENTION = "long";
 

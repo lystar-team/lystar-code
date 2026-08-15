@@ -5,13 +5,13 @@ const telemetrySrcIndex = fileURLToPath(new URL("../telemetry/src/index.ts", imp
 
 const LIVE_TEST_FILES = [
 	"test/abort.test.ts",
-	"test/anthropic-eager-tool-input-e2e.test.ts",
-	"test/anthropic-long-cache-retention-e2e.test.ts",
+	"test/anthropic-eager-tool-input.live.test.ts",
+	"test/anthropic-long-cache-retention.live.test.ts",
 	"test/anthropic-opus-4-8-smoke.test.ts",
-	"test/anthropic-thinking-disable.test.ts",
+	"test/anthropic-thinking-disable.live.test.ts",
 	"test/anthropic-tool-name-normalization.test.ts",
-	"test/bedrock-thinking-payload.test.ts",
-	"test/cache-retention.test.ts",
+	"test/bedrock-thinking-payload.live.test.ts",
+	"test/cache-retention.live.test.ts",
 	"test/context-overflow.test.ts",
 	"test/cross-provider-handoff.test.ts",
 	"test/google-thinking-disable.test.ts",

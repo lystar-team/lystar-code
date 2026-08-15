@@ -8,7 +8,7 @@ const TEST_FILES = {
 		"test/agent-session-compaction.test.ts",
 		"test/agent-session-tree-navigation.test.ts",
 		"test/compaction-extensions.test.ts",
-		"test/compaction.test.ts",
+		"test/compaction.live.test.ts",
 		"test/rpc.test.ts",
 	],
 	platform: ["test/bash-close-hang-windows.test.ts"],
