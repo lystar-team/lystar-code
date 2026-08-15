@@ -5,6 +5,17 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      plan_mode:
+        description: Changed-file planner mode
+        required: false
+        default: observe
+        type: choice
+        options: [observe, enforce]
+
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -13,89 +24,134 @@ concurrency:
 env:
   NODE_VERSION: 22.19.0
   NPM_CI_ARGS: --ignore-scripts --no-audit --no-fund
+  CI_PLAN_MODE: ${{ inputs.plan_mode || 'observe' }}
 
 jobs:
-  verify-source:
+  plan:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 5
+    outputs:
+      source: ${{ steps.planner.outputs.source }}
+      core: ${{ steps.planner.outputs.core }}
+      coding: ${{ steps.planner.outputs.coding }}
+      platform: ${{ steps.planner.outputs.platform }}
+      gui: ${{ steps.planner.outputs.gui }}
+      release: ${{ steps.planner.outputs.release }}
+      plan: ${{ steps.planner.outputs.plan }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
+
+      - name: Plan changed-file gates
+        id: planner
+        shell: bash
+        env:
+          CI_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          node scripts/ci-plan.mjs \
+            --base "$CI_BASE" \
+            --head "$GITHUB_SHA" \
+            --mode "$CI_PLAN_MODE" \
+            --github-output "$GITHUB_OUTPUT"
+
+  source:
+    needs: plan
+    if: ${{ always() && (needs.plan.result != 'success' || env.CI_PLAN_MODE == 'observe' || needs.plan.outputs.source == 'true') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        id: setup-node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
-      - name: Install dependencies
-        run: npm ci $NPM_CI_ARGS
+      - name: Record source job start
+        shell: bash
+        run: echo "CI_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
 
-      - name: Test Unix installer
-        run: bash scripts/test-install-sh.sh
+      - name: Install dependencies
+        id: install
+        shell: bash
+        run: |
+          started=$SECONDS
+          npm ci $NPM_CI_ARGS
+          echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
+
+      - name: Test repository scripts
+        id: scripts
+        shell: bash
+        run: |
+          started=$SECONDS
+          npm run test:scripts
+          echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
 
       - name: Verify source
-        run: npm run check
-
-      - name: Build
-        run: npm run build:offline
-
-  test-tui:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-
-      - name: Install fd
+        id: check
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends fd-find
-          sudo ln -s "$(command -v fdfind)" /usr/local/bin/fd
+          started=$SECONDS
+          npm run check
+          echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
 
-      - name: Install dependencies
-        run: npm ci $NPM_CI_ARGS
+      - name: Build offline
+        id: build
+        shell: bash
+        run: |
+          started=$SECONDS
+          npm run build:offline
+          echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
 
-      - name: Test TUI
-        run: npm --workspace @earendil-works/pi-tui test
+      - name: Test Unix installer
+        id: installer
+        shell: bash
+        run: |
+          started=$SECONDS
+          bash scripts/test-install-sh.sh
+          echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
 
-  test-ai:
+      - name: Write source summary
+        if: always()
+        env:
+          PLAN_JSON: ${{ needs.plan.outputs.plan }}
+        run: >-
+          node scripts/ci-summary.mjs --suite source --required --plan-json "$PLAN_JSON"
+          --timing setup=${{ steps.install.outputs.seconds || 0 }}
+          --timing build=${{ steps.build.outputs.seconds || 0 }}
+          --timing test=${{ steps.scripts.outputs.seconds || 0 }}
+          --timing wall=$(( $(date +%s) - CI_JOB_STARTED ))
+          --cache-hit npm=${{ steps.setup-node.outputs.cache-hit || 'false' }}
+
+  core:
+    needs: plan
+    if: ${{ always() && (needs.plan.result != 'success' || env.CI_PLAN_MODE == 'observe' || needs.plan.outputs.core == 'true' || needs.plan.outputs.gui == 'true') }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js
+        id: setup-node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
-      - name: Install dependencies
-        run: npm ci $NPM_CI_ARGS
-
-      - name: Test AI
-        run: npm --workspace @earendil-works/pi-ai test
-
-  test-coding-agent-1:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
+      - name: Record core job start
+        shell: bash
+        run: echo "CI_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Install command-line tools
         run: |
@@ -104,26 +160,78 @@ jobs:
           sudo ln -s "$(command -v fdfind)" /usr/local/bin/fd
 
       - name: Install dependencies
-        run: npm ci $NPM_CI_ARGS
+        id: install
+        shell: bash
+        run: |
+          started=$SECONDS
+          npm ci $NPM_CI_ARGS
+          echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
 
-      - name: Build JavaScript packages
-        run: npm run build:offline
+      - name: Test core deterministic suites
+        id: tests
+        shell: bash
+        run: |
+          started=$SECONDS
+          (cd packages/tui && node --test --test-reporter=tap --test-reporter-destination="$RUNNER_TEMP/ci-tui.tap" test/*.test.ts)
+          npm --workspace @earendil-works/pi-telemetry test -- --reporter=json --outputFile="$RUNNER_TEMP/ci-telemetry.json"
+          npm --workspace @earendil-works/pi-ai test -- --reporter=json --outputFile="$RUNNER_TEMP/ci-ai.json"
+          npm --workspace @earendil-works/pi-agent-core test -- --exclude test/harness/nodejs-env.test.ts --reporter=json --outputFile="$RUNNER_TEMP/ci-agent.json"
+          npm --workspace @earendil-works/pi-protocol test -- --reporter=json --outputFile="$RUNNER_TEMP/ci-protocol.json"
+          npm --workspace @earendil-works/pi-client test -- --reporter=json --outputFile="$RUNNER_TEMP/ci-client.json"
+          npm --workspace @earendil-works/pi-server test -- --reporter=json --outputFile="$RUNNER_TEMP/ci-server.json"
+          npm --workspace @earendil-works/pi-session-backend-sqlite-node test -- --reporter=json --outputFile="$RUNNER_TEMP/ci-session-sqlite.json"
+          npm --workspace @lystar/code-gui-protocol test -- --reporter=json --outputFile="$RUNNER_TEMP/ci-gui-protocol.json"
+          npm --workspace @lystar/code-gui-host test -- --reporter=json --outputFile="$RUNNER_TEMP/ci-gui-host.json"
+          npm --workspace @lystar/code-gui test -- --reporter=json --outputFile="$RUNNER_TEMP/ci-gui.json"
+          echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
 
-      - name: Test Coding Agent shard 1/2
-        run: npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=4 --shard=1/2
+      - name: Write core summary
+        if: always()
+        env:
+          PLAN_JSON: ${{ needs.plan.outputs.plan }}
+        run: >-
+          node scripts/ci-summary.mjs --suite core --required --plan-json "$PLAN_JSON"
+          --result "$RUNNER_TEMP/ci-tui.tap" --result "$RUNNER_TEMP/ci-telemetry.json"
+          --result "$RUNNER_TEMP/ci-ai.json" --result "$RUNNER_TEMP/ci-agent.json"
+          --result "$RUNNER_TEMP/ci-protocol.json" --result "$RUNNER_TEMP/ci-client.json"
+          --result "$RUNNER_TEMP/ci-server.json" --result "$RUNNER_TEMP/ci-session-sqlite.json"
+          --result "$RUNNER_TEMP/ci-gui-protocol.json"
+          --result "$RUNNER_TEMP/ci-gui-host.json" --result "$RUNNER_TEMP/ci-gui.json"
+          --timing setup=${{ steps.install.outputs.seconds || 0 }}
+          --timing test=${{ steps.tests.outputs.seconds || 0 }}
+          --timing wall=$(( $(date +%s) - CI_JOB_STARTED ))
+          --cache-hit npm=${{ steps.setup-node.outputs.cache-hit || 'false' }}
 
-  test-coding-agent-2:
+      - name: Upload core test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: core-vitest-reports
+          path: |
+            ${{ runner.temp }}/ci-*.json
+            ${{ runner.temp }}/ci-tui.tap
+          if-no-files-found: warn
+          retention-days: 7
+
+  coding:
+    needs: plan
+    if: ${{ always() && (needs.plan.result != 'success' || env.CI_PLAN_MODE == 'observe' || needs.plan.outputs.coding == 'true') }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js
+        id: setup-node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+
+      - name: Record Coding Agent job start
+        shell: bash
+        run: echo "CI_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Install command-line tools
         run: |
@@ -132,44 +240,53 @@ jobs:
           sudo ln -s "$(command -v fdfind)" /usr/local/bin/fd
 
       - name: Install dependencies
-        run: npm ci $NPM_CI_ARGS
+        id: install
+        shell: bash
+        run: |
+          started=$SECONDS
+          npm ci $NPM_CI_ARGS
+          echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
 
-      - name: Build JavaScript packages
-        run: npm run build:offline
+      - name: Test Coding Agent deterministic suite
+        id: tests
+        shell: bash
+        run: |
+          started=$SECONDS
+          npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=4 --reporter=json --outputFile="$RUNNER_TEMP/ci-coding-agent.json"
+          echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
 
-      - name: Test Coding Agent shard 2/2
-        run: npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=4 --shard=2/2
+      - name: Write Coding Agent summary
+        if: always()
+        env:
+          PLAN_JSON: ${{ needs.plan.outputs.plan }}
+        run: >-
+          node scripts/ci-summary.mjs --suite coding --required --plan-json "$PLAN_JSON"
+          --result "$RUNNER_TEMP/ci-coding-agent.json"
+          --timing setup=${{ steps.install.outputs.seconds || 0 }}
+          --timing test=${{ steps.tests.outputs.seconds || 0 }}
+          --timing wall=$(( $(date +%s) - CI_JOB_STARTED ))
+          --cache-hit npm=${{ steps.setup-node.outputs.cache-hit || 'false' }}
 
-  test-agent-core:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - name: Upload Coding Agent test report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
+          name: coding-agent-vitest-report
+          path: ${{ runner.temp }}/ci-coding-agent.json
+          if-no-files-found: warn
+          retention-days: 7
 
-      - name: Install dependencies
-        run: npm ci $NPM_CI_ARGS
-
-      - name: Build JavaScript packages
-        run: npm run build:offline
-
-      - name: Test Agent Core
-        run: npm --workspace @earendil-works/pi-agent-core test
-
-  windows-installer:
+  windows:
+    needs: plan
+    if: ${{ always() && (needs.plan.result != 'success' || env.CI_PLAN_MODE == 'observe' || needs.plan.outputs.platform == 'true') }}
     runs-on: windows-2025
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js
+        id: setup-node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -181,21 +298,58 @@ jobs:
           bun-version: 1.3.9
           bun-download-url: https://github.com/oven-sh/bun/releases/download/bun-v1.3.9/bun-windows-x64-baseline.zip
 
-      - name: Install dependencies
-        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Restore pinned MinGit archive
+        id: mingit-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/MinGit-2.55.0.3-64-bit.zip
+          key: mingit-2.55.0.3-64-bit-f48e2d2dc74a24454adc6d8fd0ac25bf9c2386f19cfb06202b9465aaad4f9f05
 
-      - name: Build JavaScript packages
-        run: npm run build:offline
+      - name: Record Windows job start
+        shell: powershell
+        run: '"CI_JOB_STARTED=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append'
+
+      - name: Install dependencies
+        id: install
+        shell: powershell
+        run: |
+          $started = Get-Date
+          npm ci --ignore-scripts --no-audit --no-fund
+          "seconds=$([math]::Round(((Get-Date) - $started).TotalSeconds))" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Test Windows platform suites
+        id: platform-tests
+        shell: powershell
+        run: |
+          $started = Get-Date
+          npm --workspace @earendil-works/pi-coding-agent run test:platform -- --reporter=json --outputFile="$env:RUNNER_TEMP\ci-windows-coding-platform.json"
+          npm --workspace @earendil-works/pi-agent-core test -- test/harness/nodejs-env.test.ts --reporter=json --outputFile="$env:RUNNER_TEMP\ci-windows-agent-platform.json"
+          "seconds=$([math]::Round(((Get-Date) - $started).TotalSeconds))" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Build offline
+        id: build
+        shell: powershell
+        run: |
+          $started = Get-Date
+          npm run build:offline
+          "seconds=$([math]::Round(((Get-Date) - $started).TotalSeconds))" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Build Windows standalone release
         shell: powershell
         run: .\scripts\build-windows-release.ps1 -Repository "${env:GITHUB_REPOSITORY}"
 
-      - name: Prepare pinned MinGit archive
+      - name: Download pinned MinGit archive on cache miss
+        if: steps.mingit-cache.outputs.cache-hit != 'true'
         shell: powershell
         run: |
           $Archive = Join-Path $env:RUNNER_TEMP "MinGit-2.55.0.3-64-bit.zip"
           Invoke-WebRequest -UseBasicParsing "https://registry.npmmirror.com/-/binary/git-for-windows/v2.55.0.windows.3/MinGit-2.55.0.3-64-bit.zip" -OutFile $Archive
+
+      - name: Verify pinned MinGit archive
+        id: mingit
+        shell: powershell
+        run: |
+          $Archive = Join-Path $env:RUNNER_TEMP "MinGit-2.55.0.3-64-bit.zip"
           $Expected = "f48e2d2dc74a24454adc6d8fd0ac25bf9c2386f19cfb06202b9465aaad4f9f05"
           $Actual = (Get-FileHash -Algorithm SHA256 $Archive).Hash.ToLowerInvariant()
           if ($Actual -ne $Expected) { throw "MinGit archive SHA-256 mismatch: $Actual" }
@@ -214,12 +368,56 @@ jobs:
           $Bundle = "packages/coding-agent/binaries/windows-x64/lystar-agent"
           .\scripts\test-windows-terminal.ps1 -BundleDir $Bundle -ScreenshotPath "packages/coding-agent/binaries/windows-terminal-smoke.png"
 
-      - name: Upload Windows terminal screenshot
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-terminal-smoke
-          path: packages/coding-agent/binaries/windows-terminal-smoke.png
-          if-no-files-found: error
-
       - name: Test Windows installer with Windows PowerShell 5.1
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-install-ps1.ps1 -Integration -MinGitArchive "$env:LYSTAR_MINGIT_ARCHIVE"
+
+      - name: Write Windows summary
+        if: always()
+        env:
+          PLAN_JSON: ${{ needs.plan.outputs.plan }}
+        shell: powershell
+        run: >-
+          node scripts/ci-summary.mjs --suite platform --required --plan-json "$env:PLAN_JSON"
+          --result "$env:RUNNER_TEMP\ci-windows-coding-platform.json"
+          --result "$env:RUNNER_TEMP\ci-windows-agent-platform.json"
+          --timing setup=${{ steps.install.outputs.seconds || 0 }}
+          --timing build=${{ steps.build.outputs.seconds || 0 }}
+          --timing test=${{ steps.platform-tests.outputs.seconds || 0 }}
+          --timing wall=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [int64]$env:CI_JOB_STARTED)
+          --cache-hit npm=${{ steps.setup-node.outputs.cache-hit || 'false' }}
+          --cache-hit mingit=${{ steps.mingit-cache.outputs.cache-hit || 'false' }}
+
+      - name: Upload Windows test reports and terminal screenshot
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-platform-evidence
+          path: |
+            ${{ runner.temp }}/ci-windows-*.json
+            packages/coding-agent/binaries/windows-terminal-smoke.png
+          if-no-files-found: warn
+          retention-days: 7
+
+  required:
+    needs: [plan, source, core, coding, windows]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Verify selected required gates
+        env:
+          PLAN_JSON: ${{ needs.plan.outputs.plan }}
+        run: >-
+          node scripts/ci-summary.mjs --suite required --plan-json "$PLAN_JSON"
+          --job source=${{ needs.source.result }}=source
+          --job core=${{ needs.core.result }}=core,gui
+          --job coding=${{ needs.coding.result }}=coding
+          --job windows=${{ needs.windows.result }}=platform
