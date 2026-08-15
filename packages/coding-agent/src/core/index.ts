@@ -7,11 +7,15 @@ export {
 	APP_NAME,
 	APP_TITLE,
 	CONFIG_DIR_NAME,
+	ENV_TOOL_RECOVERY_MODE,
 	getAgentDir,
 	getSessionsDir,
+	getToolRecoveryMode,
 	PACKAGE_NAME,
 	PACKAGE_VERSION,
 	RELEASE_REPOSITORY,
+	type ToolRecoveryMode,
+	ToolRecoveryModeError,
 	VERSION,
 } from "../config.ts";
 export {

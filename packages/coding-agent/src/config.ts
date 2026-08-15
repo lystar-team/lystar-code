@@ -509,6 +509,30 @@ export const RELEASE_REPOSITORY: string | undefined = pkg.piConfig?.releaseRepos
 const envPrefix = pkg.piConfig?.envPrefix || APP_NAME.toUpperCase();
 export const ENV_AGENT_DIR = `${envPrefix}_CODING_AGENT_DIR`;
 export const ENV_SESSION_DIR = `${envPrefix}_CODING_AGENT_SESSION_DIR`;
+export const ENV_TOOL_RECOVERY_MODE = `${envPrefix}_TOOL_RECOVERY_MODE`;
+
+export type ToolRecoveryMode = "off" | "observe" | "assist" | "auto";
+
+const TOOL_RECOVERY_MODES = new Set<ToolRecoveryMode>(["off", "observe", "assist", "auto"]);
+
+export class ToolRecoveryModeError extends Error {
+	readonly code = "invalid_tool_recovery_mode" as const;
+	readonly value: string;
+
+	constructor(value: string) {
+		super(`${ENV_TOOL_RECOVERY_MODE} 必须为 off、observe、assist 或 auto；当前值为 ${JSON.stringify(value)}。`);
+		this.name = "ToolRecoveryModeError";
+		this.value = value;
+	}
+}
+
+/** 只接受精确枚举值，避免环境变量拼写错误静默开启自动恢复。 */
+export function getToolRecoveryMode(env: NodeJS.ProcessEnv = process.env): ToolRecoveryMode {
+	const value = env[ENV_TOOL_RECOVERY_MODE];
+	if (value === undefined) return "assist";
+	if (TOOL_RECOVERY_MODES.has(value as ToolRecoveryMode)) return value as ToolRecoveryMode;
+	throw new ToolRecoveryModeError(value);
+}
 
 export function expandTildePath(path: string): string {
 	return normalizePath(path);

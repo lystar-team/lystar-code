@@ -67,13 +67,13 @@ export interface ToolRecoveryController {
 		context: ToolRecoveryPreflightContext,
 		signal?: AbortSignal,
 	): ToolRecoveryPreflightResult | undefined | Promise<ToolRecoveryPreflightResult | undefined>;
-	/** 仅 assist controller 实现；未实现时保持 M3 observe 行为。 */
+	/** 只有 auto controller 实现；未实现时保持 observe/assist 行为。 */
 	decideAttempt?(
 		observation: ToolRecoveryObservation,
 		signal?: AbortSignal,
 		error?: unknown,
 	): ToolRecoveryAttemptDecision | undefined | Promise<ToolRecoveryAttemptDecision | undefined>;
-	/** assist controller 的退避实现必须可被取消，且不遗留后台 timer。 */
+	/** auto controller 的退避实现必须可被取消，且不遗留后台 timer。 */
 	waitForRetry?(delayMs: number, signal?: AbortSignal): boolean | Promise<boolean>;
 	/** 注入时钟供有界 retry 的测试和 duration 计算使用。 */
 	now?(): number;

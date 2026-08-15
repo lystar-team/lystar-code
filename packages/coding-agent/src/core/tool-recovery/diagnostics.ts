@@ -1,3 +1,4 @@
+import type { ToolRecoveryMode } from "../../config.ts";
 import {
 	getToolRecoveryLessonDiagnostics,
 	type ToolRecoveryLessonCounts,
@@ -17,13 +18,13 @@ export interface ToolRecoveryRuntimeMetrics {
 }
 
 export interface ToolRecoveryRuntimeDiagnostics extends ToolRecoveryRuntimeMetrics {
-	mode: "observe" | "assist";
+	mode: ToolRecoveryMode;
 	activeCircuits: number;
 }
 
 export interface ToolRecoveryDiagnosticSummary {
 	sessionActive: boolean;
-	mode?: "observe" | "assist";
+	mode: ToolRecoveryMode;
 	activeCircuits: number;
 	metrics: Partial<ToolRecoveryRuntimeMetrics>;
 }
@@ -48,11 +49,12 @@ export interface ToolRecoveryDoctorReport {
 }
 
 export function summarizeToolRecoveryDiagnostics(
-	diagnostics?: ToolRecoveryRuntimeDiagnostics,
+	diagnostics: ToolRecoveryRuntimeDiagnostics | undefined,
+	mode: ToolRecoveryMode,
 ): ToolRecoveryDiagnosticSummary {
-	if (!diagnostics) return { sessionActive: false, activeCircuits: 0, metrics: {} };
-	const { mode, activeCircuits, ...metrics } = diagnostics;
-	return { sessionActive: true, mode, activeCircuits, metrics };
+	if (!diagnostics) return { sessionActive: false, mode, activeCircuits: 0, metrics: {} };
+	const { activeCircuits, ...metrics } = diagnostics;
+	return { sessionActive: true, mode: diagnostics.mode, activeCircuits, metrics };
 }
 
 export async function getToolRecoveryDoctorReport(options: {
@@ -62,6 +64,7 @@ export async function getToolRecoveryDoctorReport(options: {
 	cwd: string;
 	agentDir: string;
 	runtimeDiagnostics?: ToolRecoveryRuntimeDiagnostics;
+	recoveryMode: ToolRecoveryMode;
 }): Promise<ToolRecoveryDoctorReport> {
 	return {
 		product: { name: options.productName, version: options.productVersion },
@@ -76,7 +79,7 @@ export async function getToolRecoveryDoctorReport(options: {
 		agentDir: options.agentDir,
 		platform: process.platform,
 		arch: process.arch,
-		recovery: summarizeToolRecoveryDiagnostics(options.runtimeDiagnostics),
+		recovery: summarizeToolRecoveryDiagnostics(options.runtimeDiagnostics, options.recoveryMode),
 		lessons: await getToolRecoveryLessonDiagnostics(options.agentDir),
 		recentConnectionErrors: { available: false, reason: "no_persistent_fact_source" },
 		terminalRepairHistory: { available: false, reason: "no_persistent_fact_source" },

@@ -8,7 +8,7 @@ import { type AgentTool, ToolExecutionError, type ToolRecoveryObservation } from
 import { estimateTextTokens } from "@earendil-works/pi-ai";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, getModel } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
@@ -28,7 +28,7 @@ import {
 	disableToolRecoveryLesson,
 	listToolRecoveryLessons,
 } from "../src/core/tool-recovery/lessons-store.ts";
-import { AssistToolRecoveryController, ObserveOnlyToolRecoveryController } from "../src/core/tool-recovery/policies.ts";
+import { AutoToolRecoveryController, ObserveOnlyToolRecoveryController } from "../src/core/tool-recovery/policies.ts";
 import { parseToolRecoveryRefinerProposal } from "../src/core/tool-recovery/refiner.ts";
 import {
 	adaptToolRecoveryObservation,
@@ -57,6 +57,7 @@ class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMe
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 const CREATED_AT = "2026-08-15T00:00:00.000Z";
+const originalToolRecoveryMode = process.env.PI_TOOL_RECOVERY_MODE;
 const tempDirs: string[] = [];
 
 function createTempDir(): string {
@@ -154,7 +155,13 @@ function assistantMessage(
 	};
 }
 
+beforeEach(() => {
+	delete process.env.PI_TOOL_RECOVERY_MODE;
+});
+
 afterEach(() => {
+	delete process.env.PI_TOOL_RECOVERY_MODE;
+	if (originalToolRecoveryMode !== undefined) process.env.PI_TOOL_RECOVERY_MODE = originalToolRecoveryMode;
 	for (const directory of tempDirs.splice(0)) {
 		rmSync(directory, { recursive: true, force: true });
 	}
@@ -450,10 +457,112 @@ describe("Tool recovery observe ledger", () => {
 		session.dispose();
 	});
 
+	it("separates off, observe, assist, and auto for the same transient read failure", async () => {
+		for (const mode of ["off", "observe", "assist", "auto"] as const) {
+			process.env.PI_TOOL_RECOVERY_MODE = mode;
+			const agentDir = createTempDir();
+			const harness = await createHarness({
+				agentDir,
+				sessionManager: SessionManager.create(agentDir, join(agentDir, "sessions"), { id: `mode-${mode}` }),
+				responses: [{ toolCalls: [{ name: "read", args: { path: "target.txt" } }] }, "done"],
+			});
+			try {
+				const readTool = harness.agent.state.tools.find((tool) => tool.name === "read");
+				if (!readTool) throw new Error("missing builtin read tool");
+				let executions = 0;
+				readTool.execute = async () => {
+					executions++;
+					if (mode === "auto" && executions === 2) {
+						return { content: [{ type: "text", text: "recovered" }], details: {} };
+					}
+					throw registerBuiltInRecoveryError(
+						"read",
+						new ToolExecutionError("timed out", {
+							code: "TIMEOUT",
+							category: "transient",
+							retryable: true,
+						}),
+					);
+				};
+				registerBuiltInToolIdentity(readTool);
+
+				await harness.session.prompt(`run ${mode}`);
+				const diagnostics = harness.session.getToolRecoveryDiagnostics();
+				const ledger = await readSessionRecoveryLedger(agentDir, harness.session.sessionFile!);
+				expect(diagnostics.mode).toBe(mode);
+				if (mode === "off") {
+					expect(executions).toBe(1);
+					expect(diagnostics.toolFailureTotal).toEqual([]);
+					expect(ledger).toEqual([]);
+				} else if (mode === "observe") {
+					expect(executions).toBe(1);
+					expect(diagnostics.toolRecoveryAttemptTotal).toEqual([{ tool: "read", action: "observe", count: 1 }]);
+					expect(ledger).toHaveLength(1);
+				} else if (mode === "assist") {
+					expect(executions).toBe(1);
+					expect(diagnostics.toolRecoveryAttemptTotal).toEqual([
+						{ tool: "read", action: "ask_model_to_rebuild", count: 1 },
+					]);
+					const result = harness.session.messages.find((message) => message.role === "toolResult");
+					expect(result?.role === "toolResult" ? result.content : []).toContainEqual(
+						expect.objectContaining({ type: "text", text: expect.stringContaining("暂时性错误") }),
+					);
+				} else {
+					expect(executions).toBe(2);
+					expect(diagnostics.toolRecoveryAttemptTotal).toEqual([
+						{ tool: "read", action: "retry_same_args", count: 1 },
+					]);
+					expect(diagnostics.toolRecoverySuccessTotal).toEqual([
+						{ tool: "read", action: "retry_same_args", count: 1 },
+					]);
+				}
+			} finally {
+				harness.cleanup();
+			}
+		}
+	});
+
+	it("blocks an identical assist retry within the same Session without rerunning the Tool", async () => {
+		process.env.PI_TOOL_RECOVERY_MODE = "assist";
+		const harness = await createHarness({
+			responses: [
+				{ toolCalls: [{ name: "read", args: { path: "target.txt" } }] },
+				{ toolCalls: [{ name: "read", args: { path: "target.txt" } }] },
+				"done",
+			],
+		});
+		try {
+			const readTool = harness.agent.state.tools.find((tool) => tool.name === "read");
+			if (!readTool) throw new Error("missing builtin read tool");
+			let executions = 0;
+			readTool.execute = async () => {
+				executions++;
+				throw registerBuiltInRecoveryError(
+					"read",
+					new ToolExecutionError("timed out", {
+						code: "TIMEOUT",
+						category: "transient",
+						retryable: true,
+					}),
+				);
+			};
+			registerBuiltInToolIdentity(readTool);
+			await harness.session.prompt("run twice");
+			expect(executions).toBe(1);
+			expect(harness.session.getToolRecoveryDiagnostics()).toMatchObject({
+				mode: "assist",
+				activeCircuits: 1,
+				toolRepeatBlockedTotal: [{ tool: "read", code: "TIMEOUT", count: 1 }],
+			});
+		} finally {
+			harness.cleanup();
+		}
+	});
+
 	it("applies the bounded trusted-read retry policy and opens a Session circuit", async () => {
 		const agentDir = createTempDir();
 		const sessionManager = SessionManager.create(agentDir, join(agentDir, "sessions"), { id: "assist-session" });
-		const controller = new AssistToolRecoveryController({
+		const controller = new AutoToolRecoveryController({
 			agentDir,
 			sessionManager,
 			getTurnId: () => "3",
@@ -500,7 +609,7 @@ describe("Tool recovery observe ledger", () => {
 			["stop", "blocked", 3],
 		]);
 		expect(controller.getDiagnostics()).toMatchObject({
-			mode: "assist",
+			mode: "auto",
 			activeCircuits: 1,
 			toolRecoveryAttemptTotal: [
 				{ tool: "read", action: "retry_same_args", count: 2 },
@@ -514,7 +623,7 @@ describe("Tool recovery observe ledger", () => {
 	it("refuses automatic retry for Bash, writes, third-party Tools, and ordinary errors", async () => {
 		const agentDir = createTempDir();
 		const sessionManager = SessionManager.create(agentDir, join(agentDir, "sessions"), { id: "unsafe-session" });
-		const controller = new AssistToolRecoveryController({ agentDir, sessionManager, getTurnId: () => "4" });
+		const controller = new AutoToolRecoveryController({ agentDir, sessionManager, getTurnId: () => "4" });
 		const builtinBash = createTrustedBuiltInTool("bash");
 		const builtinEdit = createTrustedBuiltInTool("edit");
 		const thirdPartyRead = createTrustedBuiltInTool("read");
@@ -546,6 +655,7 @@ describe("Tool recovery observe ledger", () => {
 	});
 
 	it("runs edit rebuild recovery once per fingerprint across changed call signatures", async () => {
+		process.env.PI_TOOL_RECOVERY_MODE = "auto";
 		for (const scenario of [
 			{ name: "missing", content: "stable\n", oldText: "missing" },
 			{ name: "ambiguous", content: "duplicate\nbody\nduplicate\n", oldText: "duplicate" },
@@ -629,6 +739,7 @@ describe("Tool recovery observe ledger", () => {
 	});
 
 	it("refreshes read target-missing parent evidence without changing the path, but never refreshes permission failures", async () => {
+		process.env.PI_TOOL_RECOVERY_MODE = "auto";
 		const missingHarness = await createHarness({
 			responses: [{ toolCalls: [{ name: "read", args: { path: "missing.txt" } }] }, "after refresh"],
 		});
@@ -746,7 +857,7 @@ describe("Tool recovery observe ledger", () => {
 			expect(failureHarness.session.getToolRecoveryDiagnostics()).toMatchObject({
 				lessonMatchTotal: expect.arrayContaining([expect.objectContaining({ count: 1 })]),
 				lessonSuspendedTotal: [{ lesson: suspended.id, count: 1 }],
-				toolRecoveryAttemptTotal: [{ tool: "read", action: "refresh_context", count: 1 }],
+				toolRecoveryAttemptTotal: [{ tool: "read", action: "stop", count: 1 }],
 			});
 		} finally {
 			failureHarness.cleanup();
@@ -773,6 +884,7 @@ describe("Tool recovery observe ledger", () => {
 	});
 
 	it("calls an explicit refiner only at turn end with sanitized data and rejects unsafe proposals", async () => {
+		process.env.PI_TOOL_RECOVERY_MODE = "auto";
 		const agentDir = createTempDir();
 		const sessionManager = SessionManager.create(agentDir, join(agentDir, "sessions"), { id: "refiner-session" });
 		let refinerCalls = 0;

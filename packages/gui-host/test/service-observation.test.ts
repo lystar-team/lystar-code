@@ -146,9 +146,15 @@ describe("GuiHostService Session observation", () => {
 		);
 		if (!response || response.type !== "response" || !response.ok) throw new Error("Missing diagnostics response");
 		const result = response.result as unknown as {
-			recovery: { sessionActive: boolean; activeCircuits: number; metrics: { toolRecoveryAttemptTotal: unknown[] } };
+			recovery: {
+				mode: string;
+				sessionActive: boolean;
+				activeCircuits: number;
+				metrics: { toolRecoveryAttemptTotal: unknown[] };
+			};
 			lessons: { available: boolean; counts: Record<string, number> };
 		};
+		expect(result.recovery.mode).toBe("assist");
 		expect(result.recovery.sessionActive).toBe(true);
 		expect(result.recovery.activeCircuits).toBe(0);
 		expect(result.recovery.metrics.toolRecoveryAttemptTotal).toEqual([]);

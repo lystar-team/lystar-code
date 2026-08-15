@@ -42,6 +42,7 @@ import {
 	expandTildePath,
 	getAgentDir,
 	getPackageDir,
+	getToolRecoveryMode,
 	VERSION,
 } from "./config.ts";
 import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "./core/agent-session-runtime.ts";
@@ -664,6 +665,13 @@ export async function main(args: string[], options?: MainOptions) {
 	const cwd = process.cwd();
 	const agentDir = getAgentDir();
 	if (await runDoctorCommand(args, { cwd, agentDir })) return;
+	try {
+		getToolRecoveryMode();
+	} catch (error) {
+		console.error(chalk.red(`Error: ${error instanceof Error ? error.message : "恢复模式无效"}`));
+		process.exitCode = 1;
+		return;
+	}
 	const bootstrapSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher();

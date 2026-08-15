@@ -22,7 +22,7 @@ export interface RuntimeEvent {
 }
 
 export interface ToolRecoveryRuntimeDiagnostics {
-	mode: "observe" | "assist";
+	mode: "off" | "observe" | "assist" | "auto";
 	toolFailureTotal: Array<{ tool: string; code: string; count: number }>;
 	toolRecoveryAttemptTotal: Array<{ tool: string; action: string; count: number }>;
 	toolRecoverySuccessTotal: Array<{ tool: string; action: string; count: number }>;

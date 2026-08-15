@@ -6,6 +6,7 @@ import type {
 	ToolRecoveryPreflightContext,
 	ToolRecoveryPreflightResult,
 } from "@earendil-works/pi-agent-core";
+import type { ToolRecoveryMode } from "../../config.ts";
 import type { SessionManager } from "../session-manager.ts";
 import { appendSessionRecoveryLedger, createRecoveryLedgerEntry } from "./ledger.ts";
 import { findMatchingToolRecoveryLessons, recordDeterministicToolRecoveryCandidate } from "./lessons-store.ts";
@@ -41,6 +42,7 @@ async function runToolRecoveryHandler(
 
 const MAX_RECOVERY_RETRIES = 2;
 const RETRYABLE_CODES = new Set(["TIMEOUT", "TRANSPORT_ERROR", "RATE_LIMITED"]);
+const TRUSTED_READ_ONLY_TOOL_NAMES = new Set(["read", "grep", "find", "ls"]);
 const BLOCKED_MESSAGE = "已阻止重复失败，需修改参数、刷新状态、切换工具或请求用户决定。";
 
 type RecoveryAction =
@@ -56,7 +58,7 @@ type AttemptState = { attempt: number; failure: ToolFailure };
 type CircuitState = { attempt: number; failure: ToolFailure };
 
 export interface ToolRecoveryDiagnostics {
-	mode: "observe" | "assist";
+	mode: ToolRecoveryMode;
 	toolFailureTotal: Array<{ tool: string; code: string; count: number }>;
 	toolRecoveryAttemptTotal: Array<{ tool: string; action: RecoveryAction; count: number }>;
 	toolRecoverySuccessTotal: Array<{ tool: string; action: "retry_same_args"; count: number }>;
@@ -67,6 +69,22 @@ export interface ToolRecoveryDiagnostics {
 	lessonSuspendedTotal: Array<{ lesson: string; count: number }>;
 	duration: { count: number; totalMs: number; maxMs: number };
 	activeCircuits: number;
+}
+
+export function createEmptyToolRecoveryDiagnostics(mode: ToolRecoveryMode): ToolRecoveryDiagnostics {
+	return {
+		mode,
+		toolFailureTotal: [],
+		toolRecoveryAttemptTotal: [],
+		toolRecoverySuccessTotal: [],
+		toolRepeatBlockedTotal: [],
+		toolUnsafeRetryBlockedTotal: [],
+		lessonMatchTotal: [],
+		lessonRecoverySuccessTotal: [],
+		lessonSuspendedTotal: [],
+		duration: { count: 0, totalMs: 0, maxMs: 0 },
+		activeCircuits: 0,
+	};
 }
 
 class ToolRecoveryMetrics {
@@ -170,14 +188,15 @@ function circuitKey(callSignature: string, failureFingerprint: string): string {
 	return `${callSignature}\u0000${failureFingerprint}`;
 }
 
-function isSafeRetry(observation: ToolRecoveryObservation): boolean {
+function isSafeRetry(observation: ToolRecoveryObservation, error?: unknown): boolean {
 	const failure = observation.failure;
-	return Boolean(
-		failure &&
-			failure.sideEffect === "read_only" &&
-			failure.retryable &&
-			RETRYABLE_CODES.has(failure.code) &&
-			isTrustedReadOnlyBuiltinTool(observation.toolName, observation.toolRuntimeContext),
+	if (!failure) return false;
+	return (
+		failure.retryable &&
+		RETRYABLE_CODES.has(failure.code) &&
+		(isTrustedReadOnlyBuiltinTool(observation.toolName, observation.toolRuntimeContext) ||
+			(TRUSTED_READ_ONLY_TOOL_NAMES.has(observation.toolName) &&
+				isTrustedBuiltinRecoveryError(observation.toolName, error)))
 	);
 }
 
@@ -325,6 +344,10 @@ abstract class BaseToolRecoveryController implements ToolRecoveryController {
 		}
 	}
 
+	getFailureForToolCall(_toolCallId: string): ToolFailure | undefined {
+		return undefined;
+	}
+
 	abstract preflight(
 		context: ToolRecoveryPreflightContext,
 		signal?: AbortSignal,
@@ -358,8 +381,122 @@ export class ObserveOnlyToolRecoveryController extends BaseToolRecoveryControlle
 	}
 }
 
-/** M4 controller. State is owned by one AgentSession and never crosses Sessions. */
+/** assist 只把确定可恢复的错误转换为模型 guidance，不在 Tool 内部执行恢复动作。 */
 export class AssistToolRecoveryController extends BaseToolRecoveryController {
+	private readonly circuits = new Map<string, CircuitState>();
+	private readonly attempts = new Map<string, AttemptState>();
+
+	getFailureForToolCall(toolCallId: string): ToolFailure | undefined {
+		return Array.from(this.attempts.entries()).find(([key]) => key.startsWith(`${toolCallId}\u0000`))?.[1].failure;
+	}
+
+	async preflight(context: ToolRecoveryPreflightContext): Promise<ToolRecoveryPreflightResult | undefined> {
+		const circuit = Array.from(this.circuits.entries()).find(([key]) =>
+			key.startsWith(`${context.callSignature}\u0000`),
+		);
+		if (!circuit) return;
+		const [, state] = circuit;
+		const observation: ToolRecoveryObservation = {
+			...context,
+			action: "stop",
+			outcome: "blocked",
+			durationMs: 0,
+			failure: state.failure,
+		};
+		this.metrics.recordRepeatBlocked(state.failure);
+		this.metrics.recordDuration(0);
+		await this.append(observation, state.failure, state.attempt, "stop");
+		return { blocked: true, failure: state.failure, message: BLOCKED_MESSAGE };
+	}
+
+	async decideAttempt(
+		observation: ToolRecoveryObservation,
+		signal?: AbortSignal,
+		error?: unknown,
+	): Promise<ToolRecoveryAttemptDecision> {
+		await adaptToolRecoveryObservation(observation, error, signal);
+		const failure = observation.failure!;
+		this.metrics.recordDuration(observation.durationMs);
+		this.metrics.recordFailure(failure);
+		const key = attemptKey(observation.toolCallId, failure.fingerprint);
+		const state = this.attempts.get(key) ?? { attempt: 0, failure };
+		state.attempt++;
+		state.failure = failure;
+		this.attempts.set(key, state);
+
+		if (failure.code === "CANCELLED") {
+			observation.action = "stop";
+			observation.outcome = "cancelled";
+			this.metrics.recordAttempt(observation.toolName, "stop");
+			await this.append(observation, failure, state.attempt, "stop");
+			return { action: { type: "stop", reason: "cancelled" }, observation };
+		}
+
+		let guidance: string | undefined;
+		if (
+			(isTrustedBuiltinTool(observation.toolName, observation.toolRuntimeContext) ||
+				isTrustedBuiltinRecoveryError(observation.toolName, error)) &&
+			!signal?.aborted
+		) {
+			const resolution = await runToolRecoveryHandler(error, signal);
+			if (resolution?.type === "ask_model_to_rebuild") guidance = resolution.guidance;
+		}
+		if (!guidance && isSafeRetry(observation, error)) {
+			guidance = "该只读 Tool 遇到暂时性错误。请在改变参数、刷新状态或改用其他工具后再继续，不要原样重复调用。";
+		}
+
+		if (guidance) {
+			const action = {
+				type: "ask_model_to_rebuild" as const,
+				guidance,
+				replacementResult: { content: [{ type: "text" as const, text: guidance }], details: {} },
+			};
+			observation.action = action.type;
+			observation.outcome = "needs_model";
+			this.metrics.recordAttempt(observation.toolName, action.type);
+			this.circuits.set(circuitKey(observation.callSignature, failure.fingerprint), {
+				attempt: state.attempt,
+				failure,
+			});
+			await this.append(observation, failure, state.attempt, action.type);
+			return { action, observation };
+		}
+
+		observation.action = "stop";
+		observation.outcome = "failure";
+		this.metrics.recordAttempt(observation.toolName, "stop");
+		if (!isSafeRetry(observation, error)) this.metrics.recordUnsafeRetryBlocked(observation.toolName);
+		if (failure.code !== "POST_HOOK_FAILURE") {
+			this.circuits.set(circuitKey(observation.callSignature, failure.fingerprint), {
+				attempt: state.attempt,
+				failure,
+			});
+		}
+		await this.append(observation, failure, state.attempt, "stop");
+		return { action: { type: "stop", reason: "automatic recovery disabled" }, observation };
+	}
+
+	async observe(observation: ToolRecoveryObservation, signal?: AbortSignal, error?: unknown): Promise<void> {
+		this.metrics.recordDuration(observation.durationMs);
+		if (!observation.failure) return;
+		await adaptToolRecoveryObservation(observation, error, signal);
+		const failure = observation.failure;
+		if (!failure) return;
+		this.metrics.recordFailure(failure);
+		observation.action = "stop";
+		observation.outcome = failure.code === "CANCELLED" ? "cancelled" : "failure";
+		this.metrics.recordAttempt(observation.toolName, "stop");
+		const state = this.attempts.get(attemptKey(observation.toolCallId, failure.fingerprint));
+		await this.append(observation, failure, state?.attempt ?? 1, "stop");
+	}
+
+	getDiagnostics(): ToolRecoveryDiagnostics {
+		return this.metrics.snapshot("assist", this.circuits.size);
+	}
+}
+
+/** auto 在 assist 语义之上执行白名单内的安全恢复动作。 */
+export class AutoToolRecoveryController extends BaseToolRecoveryController {
 	private readonly circuits = new Map<string, CircuitState>();
 	private readonly attempts = new Map<string, AttemptState>();
 	private readonly recovered = new Map<string, AttemptState>();
@@ -474,7 +611,7 @@ export class AssistToolRecoveryController extends BaseToolRecoveryController {
 			return { action, observation };
 		}
 
-		if (isSafeRetry(observation) && state.attempt <= MAX_RECOVERY_RETRIES) {
+		if (isSafeRetry(observation, error) && state.attempt <= MAX_RECOVERY_RETRIES) {
 			observation.action = "retry_same_args";
 			observation.outcome = "failure";
 			(observation as ToolRecoveryObservation & { warning?: boolean }).warning = state.attempt === 2;
@@ -487,7 +624,7 @@ export class AssistToolRecoveryController extends BaseToolRecoveryController {
 		observation.action = "stop";
 		observation.outcome = "failure";
 		this.metrics.recordAttempt(observation.toolName, "stop");
-		if (!isSafeRetry(observation)) this.metrics.recordUnsafeRetryBlocked(observation.toolName);
+		if (!isSafeRetry(observation, error)) this.metrics.recordUnsafeRetryBlocked(observation.toolName);
 		if (failure.code !== "POST_HOOK_FAILURE") {
 			this.circuits.set(circuitKey(observation.callSignature, failure.fingerprint), {
 				attempt: state.attempt,
@@ -525,6 +662,6 @@ export class AssistToolRecoveryController extends BaseToolRecoveryController {
 	}
 
 	getDiagnostics(): ToolRecoveryDiagnostics {
-		return this.metrics.snapshot("assist", this.circuits.size);
+		return this.metrics.snapshot("auto", this.circuits.size);
 	}
 }

@@ -9,6 +9,7 @@ import { main } from "../src/main.ts";
 const tempDirs: string[] = [];
 let agentDir: string;
 let originalAgentDir: string | undefined;
+let originalToolRecoveryMode: string | undefined;
 let originalExitCode: typeof process.exitCode;
 
 function createTempDir(): string {
@@ -38,14 +39,18 @@ async function runCli(args: string[]): Promise<{ stdout: string; stderr: string;
 beforeEach(() => {
 	agentDir = createTempDir();
 	originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+	originalToolRecoveryMode = process.env.PI_TOOL_RECOVERY_MODE;
 	originalExitCode = process.exitCode;
 	process.env.PI_CODING_AGENT_DIR = agentDir;
+	delete process.env.PI_TOOL_RECOVERY_MODE;
 	process.exitCode = undefined;
 });
 
 afterEach(() => {
 	if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 	else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+	if (originalToolRecoveryMode === undefined) delete process.env.PI_TOOL_RECOVERY_MODE;
+	else process.env.PI_TOOL_RECOVERY_MODE = originalToolRecoveryMode;
 	process.exitCode = originalExitCode;
 	vi.restoreAllMocks();
 	for (const directory of tempDirs.splice(0)) rmSync(directory, { recursive: true, force: true });
@@ -66,7 +71,7 @@ describe("doctor CLI", () => {
 			lessons: { available: boolean; counts: Record<string, number> };
 			frontend: { implementation: string; modes: string[]; rust: { b0Status: string; integration: string } };
 		};
-		expect(report.recovery).toEqual({ sessionActive: false, activeCircuits: 0, metrics: {} });
+		expect(report.recovery).toEqual({ sessionActive: false, mode: "assist", activeCircuits: 0, metrics: {} });
 		expect(report.lessons).toEqual({
 			available: true,
 			counts: { candidate: 0, verified: 0, active: 0, disabled: 0, expired: 0 },
@@ -75,6 +80,15 @@ describe("doctor CLI", () => {
 			implementation: "typescript",
 			modes: ["regular", "fullscreen"],
 			rust: { b0Status: "stop", integration: "not_integrated" },
+		});
+	});
+
+	it("returns only a structured mode error for invalid recovery configuration", async () => {
+		process.env.PI_TOOL_RECOVERY_MODE = "invalid-mode";
+		const result = await runCli(["doctor", "--json"]);
+		expect(result).toMatchObject({ stderr: "", exitCode: 1 });
+		expect(JSON.parse(result.stdout)).toEqual({
+			error: { code: "invalid_tool_recovery_mode", value: "invalid-mode" },
 		});
 	});
 

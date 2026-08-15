@@ -52,7 +52,7 @@ import {
 	resetApiProviders,
 	streamSimple,
 } from "@earendil-works/pi-ai/compat";
-import { getAgentDir } from "../config.ts";
+import { getAgentDir, getToolRecoveryMode, type ToolRecoveryMode } from "../config.ts";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
@@ -113,7 +113,13 @@ import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { findMatchingToolRecoveryLessons, hashToolRecoveryLessonScope } from "./tool-recovery/lessons-store.ts";
-import { AssistToolRecoveryController, type ToolRecoveryDiagnostics } from "./tool-recovery/policies.ts";
+import {
+	AssistToolRecoveryController,
+	AutoToolRecoveryController,
+	createEmptyToolRecoveryDiagnostics,
+	ObserveOnlyToolRecoveryController,
+	type ToolRecoveryDiagnostics,
+} from "./tool-recovery/policies.ts";
 import type { ToolRecoveryRefiner } from "./tool-recovery/refiner.ts";
 import { registerBuiltInToolIdentity } from "./tool-recovery/registry.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
@@ -381,7 +387,11 @@ export class AgentSession {
 	private _sessionLockCompromiseUnsubscriber?: () => void;
 
 	private _modelRuntime: ModelRuntime;
-	private readonly _toolRecoveryController: AssistToolRecoveryController;
+	private readonly _toolRecoveryMode: ToolRecoveryMode;
+	private readonly _toolRecoveryController?:
+		| ObserveOnlyToolRecoveryController
+		| AssistToolRecoveryController
+		| AutoToolRecoveryController;
 	private readonly _toolRecoveryAgentDir: string;
 	private readonly _toolRecoveryScopeHash: string;
 
@@ -407,15 +417,24 @@ export class AgentSession {
 		this._modelRuntime = config.modelRuntime;
 		this._toolRecoveryAgentDir = config.agentDir ?? getAgentDir();
 		this._toolRecoveryScopeHash = hashToolRecoveryLessonScope(this._cwd);
-		this._toolRecoveryController = new AssistToolRecoveryController({
-			agentDir: this._toolRecoveryAgentDir,
-			sessionManager: this.sessionManager,
-			getTurnId: () => String(this._turnIndex),
-			scopeHash: this._toolRecoveryScopeHash,
-			refiner: config.toolRecoveryRefiner,
-			getUserCorrections: config.getToolRecoveryUserCorrections,
-		});
-		this.agent.toolRecoveryController = this._toolRecoveryController;
+		this._toolRecoveryMode = getToolRecoveryMode();
+		if (this._toolRecoveryMode !== "off") {
+			const controllerOptions = {
+				agentDir: this._toolRecoveryAgentDir,
+				sessionManager: this.sessionManager,
+				getTurnId: () => String(this._turnIndex),
+				scopeHash: this._toolRecoveryScopeHash,
+				refiner: config.toolRecoveryRefiner,
+				getUserCorrections: config.getToolRecoveryUserCorrections,
+			};
+			this._toolRecoveryController =
+				this._toolRecoveryMode === "observe"
+					? new ObserveOnlyToolRecoveryController(controllerOptions)
+					: this._toolRecoveryMode === "auto"
+						? new AutoToolRecoveryController(controllerOptions)
+						: new AssistToolRecoveryController(controllerOptions);
+			this.agent.toolRecoveryController = this._toolRecoveryController;
+		}
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
@@ -562,7 +581,11 @@ export class AgentSession {
 			});
 			const finalIsError = hookResult?.isError ?? isError;
 			let finalContent = normalizedContent;
-			if (finalIsError) {
+			if (
+				finalIsError &&
+				this._toolRecoveryController &&
+				(this._toolRecoveryMode === "assist" || this._toolRecoveryMode === "auto")
+			) {
 				const failure = this._toolRecoveryController.getFailureForToolCall(toolCall.id);
 				if (failure) {
 					try {
@@ -576,6 +599,7 @@ export class AgentSession {
 						const selected: string[] = [];
 						let guidanceText = "相关恢复经验：";
 						for (const lesson of matches.lessons) {
+							if (selected.length >= 3) break;
 							if (selected.includes(lesson.id)) continue;
 							const nextText = `${guidanceText}\n${selected.length + 1}. ${lesson.guidance}`;
 							if (estimateTextTokens(nextText) > 500) continue;
@@ -776,7 +800,7 @@ export class AgentSession {
 		// Emit to extensions first
 		await this._emitExtensionEvent(event);
 		if (event.type === "turn_end") {
-			await this._toolRecoveryController.refineTurn();
+			await this._toolRecoveryController?.refineTurn();
 		}
 
 		// Notify all listeners
@@ -1132,7 +1156,9 @@ export class AgentSession {
 
 	/** Local-only Tool recovery counters. This data is never sent to providers or extensions. */
 	getToolRecoveryDiagnostics(): ToolRecoveryDiagnostics {
-		return this._toolRecoveryController.getDiagnostics();
+		return (
+			this._toolRecoveryController?.getDiagnostics() ?? createEmptyToolRecoveryDiagnostics(this._toolRecoveryMode)
+		);
 	}
 
 	/** Scoped models for cycling (from --models flag) */

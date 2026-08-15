@@ -36,6 +36,7 @@ import {
 	getLatestPiRelease,
 	getSupportedThinkingLevels,
 	getToolRecoveryDoctorReport,
+	getToolRecoveryMode,
 	hasTrustRequiringProjectResources,
 	isNewerPackageVersion,
 	loadProjectContextFiles,
@@ -1236,6 +1237,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			cwd: cwd ?? process.cwd(),
 			agentDir: this.agentDir,
 			runtimeDiagnostics,
+			recoveryMode: getToolRecoveryMode(),
 		});
 		const checks = [
 			{ id: "node", status: "ok", message: `Node.js ${process.version}` },
