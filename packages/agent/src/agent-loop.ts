@@ -818,10 +818,12 @@ async function executePreparedToolCall(
 			}
 			await emitRecoveryObservation(decision.observation, emit);
 			if (decision.action.type !== "retry_same_args") {
+				const replacementResult = decision.action.replacementResult;
 				return {
-					result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
-					isError: true,
-					error,
+					result:
+						replacementResult ?? createErrorToolResult(error instanceof Error ? error.message : String(error)),
+					isError: decision.action.type !== "accept_as_success",
+					error: decision.action.type === "accept_as_success" ? undefined : error,
 					recovery,
 					recoveryFinalized: true,
 				};

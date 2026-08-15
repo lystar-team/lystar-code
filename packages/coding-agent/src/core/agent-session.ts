@@ -2645,6 +2645,9 @@ export class AgentSession {
 
 		if (!this._baseToolsOverride) {
 			for (const tool of wrappedBuiltInTools) registerBuiltInToolIdentity(tool);
+			for (const [index, tool] of wrappedExtensionTools.entries()) {
+				if (allCustomTools[index]?.sourceInfo.source === "builtin") registerBuiltInToolIdentity(tool);
+			}
 		}
 
 		const toolRegistry = new Map(wrappedBuiltInTools.map((tool) => [tool.name, tool]));

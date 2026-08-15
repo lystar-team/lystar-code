@@ -466,8 +466,15 @@ export type AgentEvent =
 			toolCallId: string;
 			toolName: string;
 			failureCode?: string;
-			action: "observe" | "retry_same_args" | "stop";
-			outcome: "success" | "failure" | "recovered" | "blocked" | "cancelled";
+			action:
+				| "observe"
+				| "accept_as_success"
+				| "retry_same_args"
+				| "refresh_context"
+				| "ask_model_to_rebuild"
+				| "require_user"
+				| "stop";
+			outcome: "success" | "failure" | "recovered" | "needs_model" | "blocked" | "cancelled";
 			durationMs: number;
 			callSignature: string;
 			failureFingerprint?: string;

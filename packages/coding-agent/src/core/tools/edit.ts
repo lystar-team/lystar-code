@@ -1,4 +1,5 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { ToolExecutionError, type ToolRecoveryReplacementResult } from "@earendil-works/pi-agent-core";
 import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
 import { constants } from "fs";
 import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
@@ -312,6 +313,81 @@ function setEditPreview(
 	return changed;
 }
 
+const editRecoveryHandlerSymbol = Symbol.for("pi.toolRecoveryHandler");
+
+type EditRecoveryHandler = (context: { signal?: AbortSignal }) => Promise<unknown> | unknown;
+
+function attachEditRecoveryHandler(error: ToolExecutionError, handler: EditRecoveryHandler): ToolExecutionError {
+	Object.defineProperty(error, editRecoveryHandlerSymbol, { value: handler });
+	return error;
+}
+
+function normalizeEditFailure(error: unknown): ToolExecutionError {
+	if (error instanceof ToolExecutionError) return error;
+	const message = error instanceof Error ? error.message : String(error);
+	const code = /Error code: ENOENT|Error code: ENOTDIR/.test(message)
+		? "TARGET_NOT_FOUND"
+		: /^Could not find(?: the exact text| edits\[)/.test(message)
+			? "MATCH_NOT_FOUND"
+			: /^Found \d+ occurrences/.test(message)
+				? "MATCH_AMBIGUOUS"
+				: /^No changes made/.test(message)
+					? "NO_CHANGE"
+					: "UNCLASSIFIED";
+	return new ToolExecutionError(message, {
+		code,
+		category:
+			code === "TARGET_NOT_FOUND" || code === "MATCH_NOT_FOUND" || code === "MATCH_AMBIGUOUS" || code === "NO_CHANGE"
+				? "precondition"
+				: "unknown",
+		retryable: false,
+		details: {},
+	});
+}
+
+function candidateLines(message: string): number[] {
+	const match = message.match(/at lines ([\d, ]+)/);
+	return match ? match[1].split(",").map(Number).filter(Number.isSafeInteger) : [];
+}
+
+function attachEditRecovery(
+	error: ToolExecutionError,
+	absolutePath: string,
+	path: string,
+	ops: EditOperations,
+): ToolExecutionError {
+	if (error.code !== "MATCH_NOT_FOUND" && error.code !== "MATCH_AMBIGUOUS") return error;
+	return attachEditRecoveryHandler(error, async ({ signal }) => {
+		if (signal?.aborted) return { type: "stop", reason: "cancelled" };
+		return await withFileMutationQueue(absolutePath, async () => {
+			if (signal?.aborted) return { type: "stop", reason: "cancelled" } as const;
+			try {
+				const lines = normalizeToLF(stripBom((await ops.readFile(absolutePath)).toString("utf-8")).text).split(
+					"\n",
+				);
+				const start = Math.max(0, (candidateLines(error.message)[0] ?? 1) - 1 - 25);
+				const excerpt = lines.slice(start, start + 200);
+				const replacementResult: ToolRecoveryReplacementResult = {
+					content: [
+						{
+							type: "text",
+							text: `${error.message}\n\n最新 ${path} 第 ${start + 1}-${start + excerpt.length} 行：\n${excerpt.map((line, index) => `${start + index + 1}: ${line}`).join("\n")}\n请基于最新内容重建 oldText。`,
+						},
+					],
+					details: { recovery: { code: error.code, evidenceLines: excerpt.length } },
+				};
+				return {
+					type: "ask_model_to_rebuild",
+					guidance: "请基于最新内容重建 oldText。",
+					replacementResult,
+				} as const;
+			} catch {
+				return undefined;
+			}
+		});
+	});
+}
+
 export function createEditToolDefinition(
 	cwd: string,
 	options?: EditToolOptions,
@@ -332,62 +408,66 @@ export function createEditToolDefinition(
 			const { path, edits } = validateEditInput(input);
 			const absolutePath = resolveToCwd(path, cwd);
 
-			return withFileMutationQueue(absolutePath, async () => {
-				// Do not reject from an abort event listener here: that would release the
-				// mutation queue while an in-flight filesystem operation may still finish.
-				// Checking signal.aborted after each await observes the same aborts while
-				// keeping the queue locked until the current operation has settled.
-				const throwIfAborted = (): void => {
-					if (signal?.aborted) throw new Error("Operation aborted");
-				};
+			try {
+				return await withFileMutationQueue(absolutePath, async () => {
+					// Do not reject from an abort event listener here: that would release the
+					// mutation queue while an in-flight filesystem operation may still finish.
+					// Checking signal.aborted after each await observes the same aborts while
+					// keeping the queue locked until the current operation has settled.
+					const throwIfAborted = (): void => {
+						if (signal?.aborted) throw new Error("Operation aborted");
+					};
 
-				throwIfAborted();
-
-				// Check if file exists.
-				try {
-					await ops.access(absolutePath);
-				} catch (error: unknown) {
 					throwIfAborted();
-					const errorMessage =
-						error instanceof Error && "code" in error ? `Error code: ${error.code}` : String(error);
-					throw new Error(`Could not edit file: ${path}. ${errorMessage}.`);
-				}
-				throwIfAborted();
 
-				// Read the file.
-				const buffer = await ops.readFile(absolutePath);
-				const rawContent = buffer.toString("utf-8");
-				throwIfAborted();
+					// Check if file exists.
+					try {
+						await ops.access(absolutePath);
+					} catch (error: unknown) {
+						throwIfAborted();
+						const errorMessage =
+							error instanceof Error && "code" in error ? `Error code: ${error.code}` : String(error);
+						throw new Error(`Could not edit file: ${path}. ${errorMessage}.`);
+					}
+					throwIfAborted();
 
-				// Strip BOM before matching. The model will not include an invisible BOM in oldText.
-				const { bom, text: content } = stripBom(rawContent);
-				const originalEnding = detectLineEnding(content);
-				const normalizedContent = normalizeToLF(content);
-				const { baseContent, newContent } = applyEditsToNormalizedContent(normalizedContent, edits, path);
-				throwIfAborted();
+					// Read the file.
+					const buffer = await ops.readFile(absolutePath);
+					const rawContent = buffer.toString("utf-8");
+					throwIfAborted();
 
-				const finalContent = bom + restoreLineEndings(newContent, originalEnding);
-				await ops.writeFile(absolutePath, finalContent);
-				throwIfAborted();
+					// Strip BOM before matching. The model will not include an invisible BOM in oldText.
+					const { bom, text: content } = stripBom(rawContent);
+					const originalEnding = detectLineEnding(content);
+					const normalizedContent = normalizeToLF(content);
+					const { baseContent, newContent } = applyEditsToNormalizedContent(normalizedContent, edits, path);
+					throwIfAborted();
 
-				const diffResult = generateDiffString(baseContent, newContent);
-				const patch = generateUnifiedPatch(path, baseContent, newContent);
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Successfully replaced ${edits.length} block(s) in ${path}.`,
+					const finalContent = bom + restoreLineEndings(newContent, originalEnding);
+					await ops.writeFile(absolutePath, finalContent);
+					throwIfAborted();
+
+					const diffResult = generateDiffString(baseContent, newContent);
+					const patch = generateUnifiedPatch(path, baseContent, newContent);
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Successfully replaced ${edits.length} block(s) in ${path}.`,
+							},
+						],
+						details: {
+							diff: diffResult.diff,
+							patch,
+							firstChangedLine: diffResult.firstChangedLine,
+							additions: diffResult.additions,
+							deletions: diffResult.deletions,
 						},
-					],
-					details: {
-						diff: diffResult.diff,
-						patch,
-						firstChangedLine: diffResult.firstChangedLine,
-						additions: diffResult.additions,
-						deletions: diffResult.deletions,
-					},
-				};
-			});
+					};
+				});
+			} catch (error) {
+				throw attachEditRecovery(normalizeEditFailure(error), absolutePath, path, ops);
+			}
 		},
 		renderCall(args, theme, context) {
 			const component = getEditCallRenderComponent(context.state, context.lastComponent);

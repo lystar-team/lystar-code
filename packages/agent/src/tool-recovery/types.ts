@@ -33,13 +33,25 @@ export interface ToolFailure {
 }
 
 export type RecoveryAction =
-	| { type: "accept_as_success"; verification: string }
+	| { type: "accept_as_success"; verification: string; replacementResult: ToolRecoveryReplacementResult }
 	| { type: "retry_same_args"; delayMs: number }
-	| { type: "refresh_context"; adapter: string }
-	| { type: "ask_model_to_rebuild"; guidance: string }
-	| { type: "suggest_alternative_tool"; toolName: string }
-	| { type: "require_user"; reason: string }
-	| { type: "stop"; reason: string };
+	| { type: "refresh_context"; adapter: string; replacementResult: ToolRecoveryReplacementResult }
+	| { type: "ask_model_to_rebuild"; guidance: string; replacementResult: ToolRecoveryReplacementResult }
+	| { type: "require_user"; reason: string; replacementResult?: ToolRecoveryReplacementResult }
+	| { type: "stop"; reason: string; replacementResult?: ToolRecoveryReplacementResult };
+
+export interface ToolRecoveryReplacementResult {
+	content: Array<{ type: "text"; text: string }>;
+	details: Record<string, unknown>;
+	terminate?: boolean;
+}
+
+export type ToolRecoveryResolution =
+	| { type: "accept_as_success"; verification: string; replacementResult: ToolRecoveryReplacementResult }
+	| { type: "refresh_context"; adapter: string; replacementResult: ToolRecoveryReplacementResult }
+	| { type: "ask_model_to_rebuild"; guidance: string; replacementResult: ToolRecoveryReplacementResult }
+	| { type: "require_user"; reason: string; replacementResult?: ToolRecoveryReplacementResult }
+	| { type: "stop"; reason: string; replacementResult?: ToolRecoveryReplacementResult };
 
 export interface ToolExecutionErrorOptions {
 	code: string;

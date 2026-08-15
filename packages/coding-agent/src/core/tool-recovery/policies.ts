@@ -8,13 +8,35 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import type { SessionManager } from "../session-manager.ts";
 import { appendSessionRecoveryLedger, createRecoveryLedgerEntry } from "./ledger.ts";
-import { adaptToolRecoveryObservation, isTrustedReadOnlyBuiltinTool } from "./registry.ts";
+import { adaptToolRecoveryObservation, isTrustedBuiltinTool, isTrustedReadOnlyBuiltinTool } from "./registry.ts";
+
+const toolRecoveryHandlerSymbol = Symbol.for("pi.toolRecoveryHandler");
+type ToolRecoveryResolution = Exclude<ToolRecoveryAttemptDecision["action"], { type: "retry_same_args" }>;
+type ToolRecoveryHandler = (context: {
+	signal?: AbortSignal;
+}) => Promise<ToolRecoveryResolution | undefined> | ToolRecoveryResolution | undefined;
+
+async function runToolRecoveryHandler(
+	error: unknown,
+	signal?: AbortSignal,
+): Promise<ToolRecoveryResolution | undefined> {
+	if (typeof error !== "object" || error === null) return undefined;
+	const handler = (error as { [toolRecoveryHandlerSymbol]?: ToolRecoveryHandler })[toolRecoveryHandlerSymbol];
+	return await handler?.({ signal });
+}
 
 const MAX_RECOVERY_RETRIES = 2;
 const RETRYABLE_CODES = new Set(["TIMEOUT", "TRANSPORT_ERROR", "RATE_LIMITED"]);
 const BLOCKED_MESSAGE = "已阻止重复失败，需修改参数、刷新状态、切换工具或请求用户决定。";
 
-type RecoveryAction = "observe" | "retry_same_args" | "stop";
+type RecoveryAction =
+	| "observe"
+	| "accept_as_success"
+	| "retry_same_args"
+	| "refresh_context"
+	| "ask_model_to_rebuild"
+	| "require_user"
+	| "stop";
 type Counter = Map<string, number>;
 type AttemptState = { attempt: number; failure: ToolFailure };
 type CircuitState = { attempt: number; failure: ToolFailure };
@@ -186,11 +208,13 @@ abstract class BaseToolRecoveryController implements ToolRecoveryController {
 				outcome:
 					observation.outcome === "success" || observation.outcome === "recovered"
 						? "recovered"
-						: observation.outcome === "blocked"
-							? "blocked"
-							: observation.outcome === "cancelled"
-								? "cancelled"
-								: "failed",
+						: observation.outcome === "needs_model"
+							? "needs_model"
+							: observation.outcome === "blocked"
+								? "blocked"
+								: observation.outcome === "cancelled"
+									? "cancelled"
+									: "failed",
 				durationMs: observation.durationMs,
 				createdAt: failure.occurredAt,
 			}),
@@ -235,6 +259,8 @@ export class AssistToolRecoveryController extends BaseToolRecoveryController {
 	private readonly circuits = new Map<string, CircuitState>();
 	private readonly attempts = new Map<string, AttemptState>();
 	private readonly recovered = new Map<string, AttemptState>();
+	private readonly rebuiltFingerprints = new Set<string>();
+	private readonly refreshedFingerprints = new Set<string>();
 
 	async preflight(context: ToolRecoveryPreflightContext): Promise<ToolRecoveryPreflightResult | undefined> {
 		const circuit = Array.from(this.circuits.entries()).find(([key]) =>
@@ -276,6 +302,47 @@ export class AssistToolRecoveryController extends BaseToolRecoveryController {
 			this.metrics.recordAttempt(observation.toolName, "stop");
 			await this.append(observation, failure, state.attempt, "stop");
 			return { action: { type: "stop", reason: "cancelled" }, observation };
+		}
+
+		if (isTrustedBuiltinTool(observation.toolName, observation.toolRuntimeContext) && !signal?.aborted) {
+			const resolution = await runToolRecoveryHandler(error, signal);
+			if (resolution) {
+				const isRepeatRebuild =
+					resolution.type === "ask_model_to_rebuild" && this.rebuiltFingerprints.has(failure.fingerprint);
+				const isRepeatRefresh =
+					resolution.type === "refresh_context" && this.refreshedFingerprints.has(failure.fingerprint);
+				if (!isRepeatRebuild && !isRepeatRefresh) {
+					if (resolution.type === "ask_model_to_rebuild") this.rebuiltFingerprints.add(failure.fingerprint);
+					if (resolution.type === "refresh_context") this.refreshedFingerprints.add(failure.fingerprint);
+					observation.action = resolution.type;
+					observation.outcome = resolution.type === "accept_as_success" ? "recovered" : "needs_model";
+					this.metrics.recordAttempt(observation.toolName, resolution.type);
+					if (resolution.type !== "accept_as_success") {
+						this.circuits.set(circuitKey(observation.callSignature, failure.fingerprint), {
+							attempt: state.attempt,
+							failure,
+						});
+					}
+					await this.append(observation, failure, state.attempt, resolution.type);
+					return { action: resolution, observation };
+				}
+			}
+		}
+
+		if (failure.code === "PATCH_ROLLBACK_FAILED") {
+			const action = {
+				type: "require_user" as const,
+				reason: "补丁写入后的回滚失败，需人工检查已触碰文件。",
+			};
+			observation.action = action.type;
+			observation.outcome = "blocked";
+			this.metrics.recordAttempt(observation.toolName, action.type);
+			this.circuits.set(circuitKey(observation.callSignature, failure.fingerprint), {
+				attempt: state.attempt,
+				failure,
+			});
+			await this.append(observation, failure, state.attempt, action.type);
+			return { action, observation };
 		}
 
 		if (isSafeRetry(observation) && state.attempt <= MAX_RECOVERY_RETRIES) {

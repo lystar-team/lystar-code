@@ -1,5 +1,11 @@
 import { createFailureFingerprint, createToolCallFingerprint, type ToolCallFingerprint } from "./fingerprint.ts";
-import { type RecoveryAction, ToolExecutionError, type ToolFailure, type ToolSideEffect } from "./types.ts";
+import {
+	type RecoveryAction,
+	ToolExecutionError,
+	type ToolFailure,
+	type ToolRecoveryResolution,
+	type ToolSideEffect,
+} from "./types.ts";
 
 export interface ToolRecoveryPreflightContext extends ToolCallFingerprint {
 	toolCallId: string;
@@ -9,8 +15,8 @@ export interface ToolRecoveryPreflightContext extends ToolCallFingerprint {
 	toolRuntimeContext?: unknown;
 }
 
-export type ToolRecoveryEventAction = "observe" | "retry_same_args" | "stop";
-export type ToolRecoveryEventOutcome = "success" | "failure" | "recovered" | "blocked" | "cancelled";
+export type ToolRecoveryEventAction = "observe" | RecoveryAction["type"];
+export type ToolRecoveryEventOutcome = "success" | "failure" | "recovered" | "needs_model" | "blocked" | "cancelled";
 
 export interface ToolRecoveryObservation extends ToolRecoveryPreflightContext {
 	action: ToolRecoveryEventAction;
@@ -28,8 +34,32 @@ export interface ToolRecoveryPreflightResult {
 }
 
 export interface ToolRecoveryAttemptDecision {
-	action: Extract<RecoveryAction, { type: "retry_same_args" | "stop" }>;
+	action: RecoveryAction;
 	observation: ToolRecoveryObservation;
+}
+
+export interface ToolRecoveryHandlerContext {
+	signal?: AbortSignal;
+}
+
+export type ToolRecoveryHandler = (
+	context: ToolRecoveryHandlerContext,
+) => ToolRecoveryResolution | undefined | Promise<ToolRecoveryResolution | undefined>;
+
+const recoveryHandlers = new WeakMap<ToolExecutionError, ToolRecoveryHandler>();
+
+/** 仅为当前失败保留不可持久化的恢复验证入口。 */
+export function attachToolRecoveryHandler(error: ToolExecutionError, handler: ToolRecoveryHandler): ToolExecutionError {
+	recoveryHandlers.set(error, handler);
+	return error;
+}
+
+export async function runToolRecoveryHandler(
+	error: unknown,
+	context: ToolRecoveryHandlerContext,
+): Promise<ToolRecoveryResolution | undefined> {
+	if (!(error instanceof ToolExecutionError)) return undefined;
+	return await recoveryHandlers.get(error)?.(context);
 }
 
 export interface ToolRecoveryController {
@@ -108,7 +138,11 @@ async function createEvidence(
 	if (!details) return {};
 	const evidence: Record<string, string | number | boolean> = {};
 	for (const key of Object.keys(details).sort()) {
-		if (/api[_-]?key|authorization|cookie|credential|password|secret|token|pid|time|requestid|traceid/i.test(key)) {
+		if (
+			/api[_-]?key|authorization|cookie|credential|password|secret|token|pid|time|requestid|traceid|path|patch|content|evidence/i.test(
+				key,
+			)
+		) {
 			continue;
 		}
 		const value = details[key];

@@ -15,6 +15,14 @@ const STABLE_FAILURES = {
 	MATCH_NOT_FOUND: { category: "precondition", retryable: false },
 	MATCH_AMBIGUOUS: { category: "precondition", retryable: false },
 	NO_CHANGE: { category: "precondition", retryable: false },
+	PATCH_PARSE_ERROR: { category: "arguments", retryable: false },
+	PATCH_TARGET_NOT_FOUND: { category: "precondition", retryable: false },
+	PATCH_MATCH_NOT_FOUND: { category: "precondition", retryable: false },
+	PATCH_MATCH_AMBIGUOUS: { category: "precondition", retryable: false },
+	PATCH_NO_CHANGE: { category: "precondition", retryable: false },
+	PATCH_WRITE_CONFLICT: { category: "stale_state", retryable: false },
+	PATCH_WRITE_FAILED: { category: "execution", retryable: false },
+	PATCH_ROLLBACK_FAILED: { category: "execution", retryable: false },
 	STALE_CONTEXT: { category: "stale_state", retryable: false },
 	WRITE_CONFLICT: { category: "stale_state", retryable: false },
 	PERMISSION_DENIED: { category: "permission", retryable: false },
@@ -82,6 +90,10 @@ function getBuiltInToolIdentity(runtimeContext: unknown): BuiltInToolIdentity | 
 
 export function getToolSideEffect(runtimeContext?: unknown): ToolSideEffect {
 	return getBuiltInToolIdentity(runtimeContext)?.sideEffect ?? "unknown";
+}
+
+export function isTrustedBuiltinTool(toolName: string, runtimeContext?: unknown): boolean {
+	return getBuiltInToolIdentity(runtimeContext)?.name === toolName;
 }
 
 /** 自动重试只信任运行时登记过的内置只读 Tool，名称相同的 Extension 不具备该资格。 */

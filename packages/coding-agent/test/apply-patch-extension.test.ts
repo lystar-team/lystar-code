@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ToolExecutionError } from "@earendil-works/pi-agent-core";
 import { afterEach, describe, expect, it } from "vitest";
 import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
@@ -32,7 +33,111 @@ function executePatch(cwd: string, input: string, options?: Parameters<typeof cr
 	} as never);
 }
 
+type PatchRecoveryResult = {
+	type: "accept_as_success" | "ask_model_to_rebuild";
+	verification?: string;
+	replacementResult: { content: Array<{ type: string; text?: string }> };
+};
+
+async function recoverPatchFailure(execute: () => Promise<unknown>): Promise<PatchRecoveryResult | undefined> {
+	try {
+		await execute();
+		throw new Error("expected apply_patch failure");
+	} catch (error) {
+		expect(error).toBeInstanceOf(ToolExecutionError);
+		const handler = (error as { [key: symbol]: (context: unknown) => Promise<unknown> | unknown })[
+			Symbol.for("pi.toolRecoveryHandler")
+		];
+		return (await handler?.({})) as PatchRecoveryResult | undefined;
+	}
+}
+
 describe("built-in apply_patch extension", () => {
+	it("accepts NO_CHANGE only after all postconditions are verified", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "中文.txt"), "\uFEFF\u201ctarget\u201d\r\n", "utf-8");
+		const resolution = await recoverPatchFailure(() =>
+			executePatch(dir, patch(["*** Update File: 中文.txt", "@@", '-"target"', "+\u201ctarget\u201d"])),
+		);
+		expect(resolution).toMatchObject({ type: "accept_as_success", verification: expect.any(String) });
+		expect(resolution?.type === "accept_as_success" ? resolution.replacementResult.content[0]?.text : "").toContain(
+			"已验证 1 个文件",
+		);
+		await expect(
+			recoverPatchFailure(() =>
+				executePatch(dir, patch(["*** Update File: 中文.txt", "@@", "-missing", "+target"])),
+			),
+		).resolves.toMatchObject({ type: "ask_model_to_rebuild" });
+	});
+
+	it("requires every file in a multi-file NO_CHANGE patch to satisfy postconditions", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "a.txt"), "\u201ctarget\u201d\n", "utf-8");
+		await writeFile(join(dir, "b.txt"), "\u201ctarget\u201d\n", "utf-8");
+		const resolution = await recoverPatchFailure(() =>
+			executePatch(
+				dir,
+				patch([
+					"*** Update File: a.txt",
+					"@@",
+					'-"target"',
+					"+\u201ctarget\u201d",
+					"*** Update File: b.txt",
+					"@@",
+					'-"target"',
+					"+\u201ctarget\u201d",
+				]),
+			),
+		);
+		expect(resolution).toMatchObject({ type: "accept_as_success" });
+	});
+
+	it("returns bounded rebuild evidence for missing and ambiguous matches", async () => {
+		const dir = await createTempDir();
+		await writeFile(
+			join(dir, "target.txt"),
+			Array.from({ length: 260 }, (_, index) => `line-${index + 1}`).join("\n"),
+		);
+		const missing = await recoverPatchFailure(() =>
+			executePatch(dir, patch(["*** Update File: target.txt", "@@", "-missing", "+replacement"])),
+		);
+		expect(missing).toMatchObject({ type: "ask_model_to_rebuild" });
+		const missingText =
+			missing?.type === "ask_model_to_rebuild" ? (missing.replacementResult.content[0]?.text ?? "") : "";
+		expect(missingText.split("\n").length).toBeLessThanOrEqual(205);
+
+		await writeFile(join(dir, "ambiguous.txt"), "target\nbody\ntarget\n", "utf-8");
+		const ambiguous = await recoverPatchFailure(() =>
+			executePatch(dir, patch(["*** Update File: ambiguous.txt", "@@", "-target", "+replacement"])),
+		);
+		expect(ambiguous).toMatchObject({ type: "ask_model_to_rebuild" });
+		expect(ambiguous?.type === "ask_model_to_rebuild" ? ambiguous.replacementResult.content[0]?.text : "").toContain(
+			"lines 1, 3",
+		);
+	});
+
+	it("rejects a stale write before any write and reports a stable code", async () => {
+		const dir = await createTempDir();
+		const target = join(dir, "target.txt");
+		await writeFile(target, "before\n", "utf-8");
+		let reads = 0;
+		await expect(
+			executePatch(dir, patch(["*** Update File: target.txt", "@@", "-before", "+after"]), {
+				operations: {
+					readFile: async (path) => {
+						reads++;
+						if (reads === 2) await writeFile(target, "changed\n", "utf-8");
+						return await readFile(path);
+					},
+					mkdir: async () => {},
+					unlink: async () => {},
+					writeFile: async () => {},
+				},
+			}),
+		).rejects.toMatchObject({ code: "PATCH_WRITE_CONFLICT" });
+		expect(await readFile(target, "utf-8")).toBe("changed\n");
+	});
+
 	it("adds, updates, and deletes files with structured details", async () => {
 		const dir = await createTempDir();
 		await writeFile(join(dir, "update.txt"), "before\n", "utf-8");

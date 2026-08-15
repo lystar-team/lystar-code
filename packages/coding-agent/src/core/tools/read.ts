@@ -1,9 +1,10 @@
 import { basename, dirname, isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { ToolExecutionError, type ToolRecoveryReplacementResult } from "@earendil-works/pi-agent-core";
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import { constants } from "fs";
-import { access as fsAccess, readFile as fsReadFile } from "fs/promises";
+import { access as fsAccess, readdir as fsReaddir, readFile as fsReadFile } from "fs/promises";
 import { type Static, Type } from "typebox";
 import { getReadmePath } from "../../config.ts";
 import { getToolSummary, type ToolSummaryOptions } from "../../modes/interactive/components/tool-summary.ts";
@@ -52,6 +53,8 @@ export interface ReadOperations {
 	readFile: (absolutePath: string) => Promise<Buffer>;
 	/** Check if file is readable (throw if not) */
 	access: (absolutePath: string) => Promise<void>;
+	/** Read a bounded parent-directory listing for target-missing recovery. */
+	readDir?: (absolutePath: string) => Promise<string[]>;
 	/** Detect image MIME type, return null or undefined for non-images */
 	detectImageMimeType?: (absolutePath: string) => Promise<string | null | undefined>;
 }
@@ -59,6 +62,7 @@ export interface ReadOperations {
 const defaultReadOperations: ReadOperations = {
 	readFile: (path) => fsReadFile(path),
 	access: (path) => fsAccess(path, constants.R_OK),
+	readDir: (path) => fsReaddir(path),
 	detectImageMimeType: detectSupportedImageMimeTypeFromFile,
 };
 
@@ -211,6 +215,78 @@ function formatReadResult(
 	return text;
 }
 
+const readRecoveryHandlerSymbol = Symbol.for("pi.toolRecoveryHandler");
+
+type ReadRecoveryHandler = (context: { signal?: AbortSignal }) => Promise<unknown> | unknown;
+
+function attachReadRecoveryHandler(error: ToolExecutionError, handler: ReadRecoveryHandler): ToolExecutionError {
+	Object.defineProperty(error, readRecoveryHandlerSymbol, { value: handler });
+	return error;
+}
+
+function normalizeReadFailure(error: unknown): ToolExecutionError {
+	if (error instanceof ToolExecutionError) return error;
+	const code =
+		typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
+			? error.code
+			: undefined;
+	const message = error instanceof Error ? error.message : String(error);
+	if (code === "ENOENT" || code === "ENOTDIR") {
+		return new ToolExecutionError(message, {
+			code: "TARGET_NOT_FOUND",
+			category: "precondition",
+			retryable: false,
+			details: {},
+		});
+	}
+	if (code === "EACCES" || code === "EPERM") {
+		return new ToolExecutionError(message, {
+			code: "PERMISSION_DENIED",
+			category: "permission",
+			retryable: false,
+			details: {},
+		});
+	}
+	if (code === "ABORT_ERR" || (error instanceof DOMException && error.name === "AbortError")) {
+		return new ToolExecutionError("Operation aborted", {
+			code: "CANCELLED",
+			category: "cancelled",
+			retryable: false,
+			details: {},
+		});
+	}
+	return new ToolExecutionError(message, { code: "UNCLASSIFIED", category: "unknown", retryable: false, details: {} });
+}
+
+function attachReadRecovery(
+	error: ToolExecutionError,
+	path: string,
+	cwd: string,
+	ops: ReadOperations,
+): ToolExecutionError {
+	if (error.code !== "TARGET_NOT_FOUND" || !ops.readDir) return error;
+	const parentPath = dirname(resolveToCwd(path, cwd));
+	return attachReadRecoveryHandler(error, async ({ signal }) => {
+		if (signal?.aborted) return { type: "stop", reason: "cancelled" };
+		try {
+			const entries = (await ops.readDir!(parentPath)).slice(0, 200);
+			if (signal?.aborted) return { type: "stop", reason: "cancelled" };
+			const replacementResult: ToolRecoveryReplacementResult = {
+				content: [
+					{
+						type: "text",
+						text: `${error.message}\n\n父目录刷新结果（最多 200 项）：\n${entries.join("\n")}\n请根据目录内容修正 path。`,
+					},
+				],
+				details: { recovery: { code: "TARGET_NOT_FOUND", entryCount: entries.length } },
+			};
+			return { type: "refresh_context", adapter: "read_parent_directory", replacementResult };
+		} catch {
+			return undefined;
+		}
+	});
+}
+
 export function createReadToolDefinition(
 	cwd: string,
 	options?: ReadToolOptions,
@@ -330,9 +406,9 @@ export function createReadToolDefinition(
 							if (aborted) return;
 							signal?.removeEventListener("abort", onAbort);
 							resolve({ content, details });
-						} catch (error: any) {
+						} catch (error: unknown) {
 							signal?.removeEventListener("abort", onAbort);
-							if (!aborted) reject(error);
+							if (!aborted) reject(attachReadRecovery(normalizeReadFailure(error), path, cwd, ops));
 						}
 					})();
 				},

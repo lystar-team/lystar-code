@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname } from "node:path";
+import { ToolExecutionError, type ToolRecoveryReplacementResult } from "@earendil-works/pi-agent-core";
 import { Container, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import type { ExtensionAPI, ToolDefinition } from "../../core/extensions/types.ts";
@@ -21,6 +23,15 @@ import { renderCardHover } from "../../modes/interactive/components/tool-card-la
 import { configureToolSummary } from "../../modes/interactive/components/tool-summary.ts";
 import { theme } from "../../modes/interactive/theme/theme.ts";
 import { toUiGlyph, uiGlyphs } from "../../modes/interactive/ui-glyphs.ts";
+
+const toolRecoveryHandlerSymbol = Symbol.for("pi.toolRecoveryHandler");
+
+type ToolRecoveryHandler = (context: { signal?: AbortSignal }) => Promise<unknown> | unknown;
+
+function attachRecoveryHandler(error: ToolExecutionError, handler: ToolRecoveryHandler): ToolExecutionError {
+	Object.defineProperty(error, toolRecoveryHandlerSymbol, { value: handler });
+	return error;
+}
 
 const applyPatchSchema = Type.Object({
 	input: Type.String({ description: "Patch text in the *** Begin Patch format." }),
@@ -52,6 +63,7 @@ type StagedPatchFile = {
 	operation: PatchOperation;
 	absolutePath: string;
 	originalContent?: string;
+	snapshotHash?: string;
 	content?: string;
 	additions: number;
 	deletions: number;
@@ -239,6 +251,38 @@ function patchError(message: string): Error {
 	return new Error(`Invalid apply_patch input: ${message}`);
 }
 
+function contentHash(content: string | Buffer): string {
+	return createHash("sha256").update(content).digest("hex");
+}
+
+function patchExecutionError(
+	code:
+		| "PATCH_PARSE_ERROR"
+		| "PATCH_TARGET_NOT_FOUND"
+		| "PATCH_MATCH_NOT_FOUND"
+		| "PATCH_MATCH_AMBIGUOUS"
+		| "PATCH_NO_CHANGE"
+		| "PATCH_WRITE_CONFLICT"
+		| "PATCH_WRITE_FAILED"
+		| "PATCH_ROLLBACK_FAILED",
+	message: string,
+	details: Record<string, unknown> = {},
+): ToolExecutionError {
+	return new ToolExecutionError(message, {
+		code,
+		category:
+			code === "PATCH_PARSE_ERROR"
+				? "arguments"
+				: code === "PATCH_WRITE_CONFLICT"
+					? "stale_state"
+					: code === "PATCH_WRITE_FAILED" || code === "PATCH_ROLLBACK_FAILED"
+						? "execution"
+						: "precondition",
+		retryable: false,
+		details,
+	});
+}
+
 function parsePath(header: string, prefix: string): string {
 	const path = header.slice(prefix.length).trim();
 	if (!path) throw patchError(`${prefix.trim()} requires a path.`);
@@ -408,13 +452,21 @@ function findUniqueSequence(
 		if (matches.length > 1) {
 			const displayedLines = matches.slice(0, 5).map((line) => line + 1);
 			const remaining = matches.length - displayedLines.length;
-			throw new Error(
+			throw patchExecutionError(
+				"PATCH_MATCH_AMBIGUOUS",
 				`Could not apply patch to ${path}: ${label} matched ${matches.length} locations at lines ${displayedLines.join(", ")}${remaining > 0 ? ` +${remaining} more` : ""}.\nAdd stable context or an @@ function/class header, then retry.\nNo changes were written.`,
+				{
+					candidateLines: displayedLines,
+					candidateCount: matches.length,
+					constraintHash: contentHash(pattern.join("\n")),
+				},
 			);
 		}
 	}
-	throw new Error(
+	throw patchExecutionError(
+		"PATCH_MATCH_NOT_FOUND",
 		`Could not apply patch to ${path}: ${label} was not found starting at line ${start + 1}. Tried exact matching, whitespace-tolerant matching, and Unicode punctuation normalization.\nNo changes were written.`,
+		{ startLine: start + 1, constraintHash: contentHash(pattern.join("\n")) },
 	);
 }
 
@@ -555,6 +607,168 @@ function deriveUpdatedContent(content: string, chunks: UpdateFileChunk[], path: 
 	return newContent;
 }
 
+function isMissingPathError(error: unknown): boolean {
+	return (
+		typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		((error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ENOTDIR")
+	);
+}
+
+function hasUniquePatchSequence(lines: string[], pattern: string[], start = 0): boolean {
+	return ["exact", "trailing", "trimmed", "unicode"].some(
+		(tier) => findSequenceCandidates(lines, pattern, start, tier as PatchMatchTier, false).length === 1,
+	);
+}
+
+async function verifyPatchPostconditions(
+	operations: PatchOperation[],
+	cwd: string,
+	ops: ApplyPatchOperations,
+	signal: AbortSignal | undefined,
+): Promise<{ verifiedFiles: number; evidence: string } | undefined> {
+	const files = operations
+		.map((operation) => ({ operation, absolutePath: resolveToCwd(operation.path, cwd) }))
+		.sort((left, right) => left.absolutePath.localeCompare(right.absolutePath));
+	const evidence: string[] = [];
+	return await withMutationQueues(
+		files.map((file) => file.absolutePath),
+		async () => {
+			for (const file of files) {
+				throwIfAborted(signal);
+				if (file.operation.kind === "delete") {
+					try {
+						await ops.readFile(file.absolutePath);
+						return undefined;
+					} catch (error) {
+						if (!isMissingPathError(error)) return undefined;
+						evidence.push(`${file.operation.path}: 已不存在`);
+						continue;
+					}
+				}
+				let content: string;
+				try {
+					content = (await ops.readFile(file.absolutePath)).toString("utf-8");
+				} catch {
+					return undefined;
+				}
+				if (file.operation.kind === "add") {
+					if (content !== file.operation.content) return undefined;
+					evidence.push(`${file.operation.path}: 内容摘要 ${contentHash(content)}`);
+					continue;
+				}
+				const lines = normalizeToLF(stripBom(content).text).split("\n");
+				if (lines.at(-1) === "") lines.pop();
+				for (const chunk of file.operation.chunks) {
+					const oldLines = chunk.lines.filter((line) => line.kind !== "add").map((line) => line.text);
+					const newLines = chunk.lines.filter((line) => line.kind !== "delete").map((line) => line.text);
+					if (chunk.context && !hasUniquePatchSequence(lines, [chunk.context])) return undefined;
+					if (newLines.length > 0 && !hasUniquePatchSequence(lines, newLines)) return undefined;
+					if (
+						oldLines.length > 0 &&
+						findSequenceCandidates(lines, oldLines, 0, "exact", chunk.endOfFile).length > 0
+					) {
+						return undefined;
+					}
+				}
+				evidence.push(`${file.operation.path}: 所有 hunk 后置条件成立`);
+			}
+			return { verifiedFiles: files.length, evidence: evidence.join("\n") };
+		},
+	);
+}
+
+function getRecoveryTarget(operations: PatchOperation[], error: Error): PatchOperation | undefined {
+	return operations.find((operation) => error.message.includes(operation.path)) ?? operations[0];
+}
+
+async function readPatchRecoveryEvidence(
+	operations: PatchOperation[],
+	cwd: string,
+	ops: ApplyPatchOperations,
+	error: Error,
+	signal: AbortSignal | undefined,
+): Promise<string> {
+	const target = getRecoveryTarget(operations, error);
+	if (!target || target.kind === "delete") return "未能读取可重建的目标区域。";
+	const absolutePath = resolveToCwd(target.path, cwd);
+	return await withFileMutationQueue(absolutePath, async () => {
+		throwIfAborted(signal);
+		try {
+			const lines = normalizeToLF(stripBom((await ops.readFile(absolutePath)).toString("utf-8")).text).split("\n");
+			const candidates =
+				error instanceof ToolExecutionError && Array.isArray(error.details?.candidateLines)
+					? error.details.candidateLines.filter((line): line is number => typeof line === "number")
+					: [];
+			const start = Math.max(0, (candidates[0] ?? 1) - 1 - 25);
+			const excerpt = lines.slice(start, start + 200);
+			return `最新 ${target.path} 第 ${start + 1}-${start + excerpt.length} 行：\n${excerpt
+				.map((line, index) => `${start + index + 1}: ${line}`)
+				.join("\n")}`;
+		} catch (readError) {
+			return `无法刷新 ${target.path}：${readError instanceof Error ? readError.message : String(readError)}`;
+		}
+	});
+}
+
+function normalizePatchFailure(error: unknown): ToolExecutionError {
+	if (error instanceof ToolExecutionError) return error;
+	const message = error instanceof Error ? error.message : String(error);
+	if (message.startsWith("Invalid apply_patch input:")) return patchExecutionError("PATCH_PARSE_ERROR", message);
+	if (/does not change the file|produced identical content/.test(message))
+		return patchExecutionError("PATCH_NO_CHANGE", message);
+	if (/matched \d+ locations/.test(message)) return patchExecutionError("PATCH_MATCH_AMBIGUOUS", message);
+	if (/was not found starting at line/.test(message)) return patchExecutionError("PATCH_MATCH_NOT_FOUND", message);
+	if (/ENOENT|ENOTDIR/.test(message)) return patchExecutionError("PATCH_TARGET_NOT_FOUND", message);
+	return patchExecutionError("PATCH_WRITE_FAILED", message);
+}
+
+function attachApplyPatchRecovery(
+	error: ToolExecutionError,
+	operations: PatchOperation[],
+	cwd: string,
+	ops: ApplyPatchOperations,
+): ToolExecutionError {
+	return attachRecoveryHandler(error, async ({ signal }) => {
+		if (signal?.aborted) return { type: "stop", reason: "cancelled" };
+		if (error.code === "PATCH_NO_CHANGE") {
+			const verified = await verifyPatchPostconditions(operations, cwd, ops, signal);
+			if (verified) {
+				const replacementResult: ToolRecoveryReplacementResult = {
+					content: [
+						{
+							type: "text",
+							text: `补丁目标状态已经存在，无需再次写入。\n已验证 ${verified.verifiedFiles} 个文件，原失败：PATCH_NO_CHANGE。`,
+						},
+					],
+					details: { files: [], recovery: { verifiedFiles: verified.verifiedFiles, outcome: "already_applied" } },
+				};
+				return { type: "accept_as_success", verification: verified.evidence, replacementResult };
+			}
+		}
+		if (
+			error.code === "PATCH_MATCH_NOT_FOUND" ||
+			error.code === "PATCH_MATCH_AMBIGUOUS" ||
+			error.code === "PATCH_NO_CHANGE"
+		) {
+			const evidence = await readPatchRecoveryEvidence(operations, cwd, ops, error, signal);
+			const replacementResult: ToolRecoveryReplacementResult = {
+				content: [{ type: "text", text: `${error.message}\n\n${evidence}\n请基于最新内容重建 patch。` }],
+				details: {
+					files: [],
+					recovery: { code: error.code, evidenceLines: Math.min(200, evidence.split("\n").length) },
+				},
+			};
+			return { type: "ask_model_to_rebuild", guidance: "请基于最新内容重建 patch。", replacementResult };
+		}
+		if (error.code === "PATCH_ROLLBACK_FAILED") {
+			return { type: "require_user", reason: "补丁写入后的回滚失败，需人工检查已触碰文件。" };
+		}
+		return undefined;
+	});
+}
+
 async function stageFiles(
 	operations: PatchOperation[],
 	cwd: string,
@@ -587,6 +801,7 @@ async function stageFiles(
 		}
 
 		const originalContent = (await ops.readFile(absolutePath)).toString("utf-8");
+		const snapshotHash = contentHash(originalContent);
 		if (operation.kind === "delete") {
 			const { text } = stripBom(originalContent);
 			const stats = generateDiffString(normalizeToLF(text), "");
@@ -594,6 +809,7 @@ async function stageFiles(
 				operation,
 				absolutePath,
 				originalContent,
+				snapshotHash,
 				additions: stats.additions,
 				deletions: stats.deletions,
 				diff: stats.diff,
@@ -610,6 +826,7 @@ async function stageFiles(
 			operation,
 			absolutePath,
 			originalContent,
+			snapshotHash,
 			content: bom + restoreLineEndings(newContent, originalEnding),
 			additions: stats.additions,
 			deletions: stats.deletions,
@@ -619,7 +836,8 @@ async function stageFiles(
 	return staged;
 }
 
-async function rollback(staged: StagedPatchFile[], ops: ApplyPatchOperations): Promise<void> {
+async function rollback(staged: StagedPatchFile[], ops: ApplyPatchOperations): Promise<boolean> {
+	let succeeded = true;
 	for (const file of [...staged].reverse()) {
 		try {
 			if (file.operation.kind === "add") {
@@ -627,7 +845,24 @@ async function rollback(staged: StagedPatchFile[], ops: ApplyPatchOperations): P
 			} else if (file.originalContent !== undefined) {
 				await ops.writeFile(file.absolutePath, file.originalContent);
 			}
-		} catch {}
+		} catch {
+			succeeded = false;
+		}
+	}
+	return succeeded;
+}
+
+async function assertSnapshot(file: StagedPatchFile, ops: ApplyPatchOperations): Promise<void> {
+	try {
+		const current = await ops.readFile(file.absolutePath);
+		if (file.operation.kind === "add" || contentHash(current) !== file.snapshotHash) {
+			throw patchExecutionError("PATCH_WRITE_CONFLICT", "Could not apply patch: target changed before write.", {
+				operation: file.operation.kind,
+			});
+		}
+	} catch (error) {
+		if (file.operation.kind === "add" && isMissingPathError(error)) return;
+		throw error;
 	}
 }
 
@@ -639,6 +874,8 @@ async function applyStagedFiles(
 	const touched: StagedPatchFile[] = [];
 	try {
 		for (const file of staged) {
+			throwIfAborted(signal);
+			await assertSnapshot(file, ops);
 			throwIfAborted(signal);
 			touched.push(file);
 			if (file.operation.kind === "add") {
@@ -652,10 +889,16 @@ async function applyStagedFiles(
 			throwIfAborted(signal);
 		}
 	} catch (error) {
-		await rollback(touched, ops);
-		throw new Error(
-			`Could not apply patch: ${error instanceof Error ? error.message : String(error)}. Changes were rolled back.`,
-		);
+		const rolledBack = await rollback(touched, ops);
+		const message = `Could not apply patch: ${error instanceof Error ? error.message : String(error)}. Changes were rolled back.`;
+		if (!rolledBack) {
+			throw patchExecutionError("PATCH_ROLLBACK_FAILED", `${message} Rollback failed.`, {
+				touchedFiles: touched.length,
+				rollbackFailed: true,
+			});
+		}
+		if (error instanceof ToolExecutionError && error.code === "PATCH_WRITE_CONFLICT") throw error;
+		throw patchExecutionError("PATCH_WRITE_FAILED", message, { touchedFiles: touched.length, rollbackFailed: false });
 	}
 }
 
@@ -677,40 +920,46 @@ export function createApplyPatchToolDefinition(options?: {
 		parameters: applyPatchSchema,
 		prepareArguments: prepareApplyPatchArguments,
 		async execute(_toolCallId, { input }, signal, _onUpdate, ctx) {
-			const operations = parseApplyPatch(input);
-			const files = operations
-				.map((operation) => ({ operation, absolutePath: resolveToCwd(operation.path, ctx.cwd) }))
-				.sort((left, right) => left.absolutePath.localeCompare(right.absolutePath));
-			for (let index = 1; index < files.length; index++) {
-				if (files[index - 1].absolutePath === files[index].absolutePath) {
-					throw new Error(`Invalid apply_patch input: ${files[index].operation.path} is modified more than once.`);
+			let operations: PatchOperation[] = [];
+			try {
+				operations = parseApplyPatch(input);
+				const files = operations
+					.map((operation) => ({ operation, absolutePath: resolveToCwd(operation.path, ctx.cwd) }))
+					.sort((left, right) => left.absolutePath.localeCompare(right.absolutePath));
+				for (let index = 1; index < files.length; index++) {
+					if (files[index - 1].absolutePath === files[index].absolutePath) {
+						throw patchError(`${files[index].operation.path} is modified more than once.`);
+					}
 				}
-			}
 
-			return withMutationQueues(
-				files.map((file) => file.absolutePath),
-				async () => {
-					const staged = await stageFiles(
-						files.map((file) => file.operation),
-						ctx.cwd,
-						ops,
-						signal,
-					);
-					await applyStagedFiles(staged, ops, signal);
-					return {
-						content: [{ type: "text", text: `Applied patch to ${staged.length} file(s).` }],
-						details: {
-							files: staged.map((file) => ({
-								path: file.operation.path,
-								operation: file.operation.kind,
-								additions: file.additions,
-								deletions: file.deletions,
-								diff: file.diff,
-							})),
-						},
-					};
-				},
-			);
+				return await withMutationQueues(
+					files.map((file) => file.absolutePath),
+					async () => {
+						const staged = await stageFiles(
+							files.map((file) => file.operation),
+							ctx.cwd,
+							ops,
+							signal,
+						);
+						await applyStagedFiles(staged, ops, signal);
+						return {
+							content: [{ type: "text", text: `Applied patch to ${staged.length} file(s).` }],
+							details: {
+								files: staged.map((file) => ({
+									path: file.operation.path,
+									operation: file.operation.kind,
+									additions: file.additions,
+									deletions: file.deletions,
+									diff: file.diff,
+								})),
+							},
+						};
+					},
+				);
+			} catch (error) {
+				const failure = normalizePatchFailure(error);
+				throw attachApplyPatchRecovery(failure, operations, ctx.cwd, ops);
+			}
 		},
 		renderCall(_args, _theme, context) {
 			const details = context.resultDetails as ApplyPatchDetails | undefined;

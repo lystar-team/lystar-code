@@ -15,7 +15,14 @@ export interface RecoveryLedgerEntry {
 	failureFingerprint: string;
 	failureCode: string;
 	attempt: number;
-	action: "observe" | "retry_same_args" | "stop";
+	action:
+		| "observe"
+		| "accept_as_success"
+		| "retry_same_args"
+		| "refresh_context"
+		| "ask_model_to_rebuild"
+		| "require_user"
+		| "stop";
 	outcome: "recovered" | "failed" | "needs_model" | "blocked" | "cancelled";
 	durationMs: number;
 	createdAt: string;
@@ -51,7 +58,15 @@ const OUTCOMES = new Set<RecoveryLedgerEntry["outcome"]>([
 	"blocked",
 	"cancelled",
 ]);
-const ACTIONS = new Set<RecoveryLedgerEntry["action"]>(["observe", "retry_same_args", "stop"]);
+const ACTIONS = new Set<RecoveryLedgerEntry["action"]>([
+	"observe",
+	"accept_as_success",
+	"retry_same_args",
+	"refresh_context",
+	"ask_model_to_rebuild",
+	"require_user",
+	"stop",
+]);
 const ledgerQueues = new Map<string, Promise<void>>();
 
 function sha256(value: string): string {
