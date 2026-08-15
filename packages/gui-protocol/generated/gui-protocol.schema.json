@@ -11,7 +11,7 @@
           "type": "boolean"
         },
         {
-          "type": "number"
+          "type": "integer"
         },
         {
           "type": "string"
@@ -1255,7 +1255,7 @@
               "const": "hello"
             },
             "version": {
-              "type": "number",
+              "type": "integer",
               "const": 1
             },
             "productVersion": {
@@ -1263,7 +1263,7 @@
               "minLength": 1
             },
             "protocolVersion": {
-              "type": "number",
+              "type": "integer",
               "const": 1
             },
             "serverInstanceId": {

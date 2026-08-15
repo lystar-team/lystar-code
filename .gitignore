@@ -1,6 +1,7 @@
 node_modules/
 .codegraph/
 dist/
+target/
 .artifacts/
 *.log
 .DS_Store

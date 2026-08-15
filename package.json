@@ -28,7 +28,7 @@
 		"generate:schema": "npm --workspace @lystar/code-gui-protocol run generate:schema",
 		"check:schema": "npm run generate:schema && git diff --exit-code -- packages/gui-protocol/generated/gui-protocol.schema.json crates/lystar-protocol/src/generated.rs",
 		"generate:rust-fixtures": "node --import tsx packages/gui-protocol/scripts/generate-rust-fixtures.mjs && cargo run -p lystar-protocol --example generate_fixtures && node --import tsx packages/gui-protocol/scripts/check-rust-fixtures.mjs",
-		"check:rust-spike": "npm run check:schema && npm run generate:rust-fixtures && git diff --exit-code -- crates/lystar-protocol/tests/fixtures && cargo fmt --check && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace && cargo run -q -p lystar-tui --example benchmark -- 80 24",
+		"check:rust-spike": "npm run check:schema && npm run generate:rust-fixtures && git diff --exit-code -- crates/lystar-protocol/tests/fixtures && cargo fmt --check && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace && node --test --import tsx packages/tui/test/headless-adapter.test.ts && node --import tsx packages/gui-protocol/scripts/rust-handshake-spike.mjs && cargo build --release -p lystar-tui && bash crates/lystar-tui/tests/pty-terminal-guard.sh && cargo run -q -p lystar-tui --release --example benchmark -- 80 24",
 		"generate:models": "npm --prefix packages/ai run generate-models && npm --prefix packages/ai run generate-image-models",
 		"hydrate:model-data": "npm --prefix packages/ai run hydrate-model-data",
 		"check:model-data": "npm --prefix packages/ai run check:model-data",

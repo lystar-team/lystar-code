@@ -5,7 +5,9 @@ use std::panic;
 fn main() {
     let result = panic::catch_unwind(|| match std::env::args().nth(1).as_deref() {
         Some("--pipe-handshake") => terminal::handshake_inherited_pipes(),
-        Some("--shell") => terminal::run_shell(),
+        Some("--shell") => terminal::run_shell(false, false),
+        Some("--shell-pipe") => terminal::run_shell(true, false),
+        Some("--shell-panic") => terminal::run_shell(false, true),
         _ => Ok(()),
     });
     match result {

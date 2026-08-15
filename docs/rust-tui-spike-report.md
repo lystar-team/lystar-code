@@ -2,58 +2,71 @@
 
 日期：2026-08-15
 
-## 机器与版本
+## 实际环境
 
 - Linux x64 / Debian 13
 - Node.js v22.21.1 / npm 11.11.0
 - Rust/Cargo 1.97.1
 - Ratatui 0.30.2 / Crossterm 0.29.0 / Ciborium 0.2.2 / Typify 0.7.0
 
-## 已执行命令
+## 已验证
 
 ```bash
-npm run generate:schema
+npm run check:schema
 node --import tsx packages/gui-protocol/scripts/generate-rust-fixtures.mjs
 cargo run -p lystar-protocol --example generate_fixtures
 node --import tsx packages/gui-protocol/scripts/check-rust-fixtures.mjs
+node --test --import tsx packages/tui/test/headless-adapter.test.ts
+node --import tsx packages/gui-protocol/scripts/rust-handshake-spike.mjs
 cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
-cd packages/tui && node --test test/headless-adapter.test.ts
-node --import tsx packages/gui-protocol/scripts/rust-handshake-spike.mjs
+cargo build --release -p lystar-tui
+bash crates/lystar-tui/tests/pty-terminal-guard.sh
 ```
 
-结果：以上局部 B0 命令通过。Node host 从 Rust 子进程 fd4 读取客户端 hello，使用现有 GUI Protocol CBOR framing 向 fd3 写回 server hello；Rust 以 0 退出。协议消息没有写入 TTY stdout。
+结果：schema、Rust 编译、clippy、8 个 Rust 测试、headless 测试和 Node/Rust handshake 均通过。`target/` 已加入 `.gitignore`，不再作为未跟踪工作区内容出现。
 
-## 协议与终端边界
+## Protocol
 
-- `packages/gui-protocol/src/schemas.ts` 继续是 wire schema 唯一手写来源。
-- 导出脚本把 TypeBox cyclic `JsonValue` 规范化到根 `$defs/JsonValue`，使 Typify 可生成 Rust 类型；TS wire schema 语义未变。
-- Rust framing 使用 4-byte 大端长度前缀、CBOR、16 MiB 上限、增量 decoder；覆盖分片、合帧、截断、超长、decoder failed 和 hello 未知字段。
-- Rust B0 shell 使用 Ratatui/Crossterm 的 raw mode、alternate screen、cursor 与 mouse guard，并通过 Drop 恢复。SIGTERM tmux smoke 后进程结束，但没有可审计的终端状态快照。
+- `decode_client_message` 和 `decode_server_message` 直接反序列化为 Typify 生成的 `ClientMessage`、`ServerMessage`；wire 边界不再返回 `serde_json::Value`。
+- hello 的协议版本与 server response 判别字段在生成消息类型上检查。
+- Rust 专用 schema 将实际 CBOR codec 不支持的 JSON 浮点数规范为整数，否则 Typify 的 `f64` 会重编码成 TS decoder 拒绝的浮点 CBOR。TS wire schema未改。
+- golden 覆盖 client hello、`read_transcript` 的缺失 cursor、ui response、server hello、成功/失败 response、`transcript_committed` 和 `ui_request` event。TS 生成完整对象与 frame；Rust typed decode 后重编码；TS 正式 decoder 对 Rust frame 做完整对象深比较。
 
-## Rust 基准
+### 仍未关闭的 typed protocol 条件
 
-场景：10,000 项输入源、最多 400 项 page cache、300 次滚动。每个固定终端尺寸运行 5 次。单位为毫秒，数据保存在本机 `.artifacts/rust-tui-spike/benchmark-rust.jsonl`，不纳入提交。
+Typify 将 `value?: JsonValue` 生成为 `Option<JsonValue>`。Serde 对该字段的 CBOR `null` 与字段缺失都会反序列化为 `None`，因此无法在生成类型内保留 null presence；重新编码会把 `value: null` 变成缺失字段。测试显式锁定了这个行为，避免把“可接受 null”错误写成“可无损保留 null”。
 
-| 尺寸 | p50 范围 | p95 范围 | p99 范围 | 最大值范围 | bytes | idle frames |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 80x8 | 0.000043-0.000047 | 0.000045-0.000049 | 0.000047-0.000075 | 0.000821-0.001059 | 0 | 0 |
-| 80x24 | 0.000038-0.000045 | 0.000039-0.000048 | 0.000042-0.000056 | 0.000872-0.001149 | 0 | 0 |
-| 120x36 | 0.000040-0.000048 | 0.000041-0.000054 | 0.000047-0.000058 | 0.000770-0.001223 | 0 | 0 |
-| 200x60 | 0.000038-0.000074 | 0.000040-0.000093 | 0.000051-0.000117 | 0.000957-0.001221 | 0 | 0 |
+这不满足 B0 的 optional-vs-null typed decode/round-trip 条件。修复需要给 Typify 生成字段增加 presence-aware 自定义反序列化，或更换能表达三态 optional/null/value 的代码生成路径；两者都超出 B0 允许的最小适配范围。
 
-这些仅衡量 Rust B0 的 page-cache 滚动循环，不含终端 flush、Node host、真实 transcript 解析或 RSS，不能与 TypeScript TUI 直接比较。
+## Headless 与 Handshake
 
-## 未验证项
+- Headless adapter 仅投影 Component，未拥有 TTY；frame 输出 lines、cursor 和按行的 component hit regions。
+- 回归使用真实 `Input` Component 验证输入、cursor、resize 宽度和命中区；扩展风格 footer fixture 验证异步 requestRender、下一帧、dispose exactly once。
+- Node spawn 使用 fd3/fd4 收发 typed hello，并断言 stdout 与成功 stderr 均为空。
 
-- 现有 `render-churn-bench.ts` 尚未扩展为要求的 10k/input/paste/20-60-120 chunk/s/scroll/resize/static JSON 基线，故没有 TS 绝对数据或相对变化。
-- 未取得 panic、child EOF 后终端状态的可审计 PTY snapshot；SIGINT 的 raw-mode 输入路径未实现为退出动作。
-- 未验证 Windows ConPTY、真实 IME、图片、SSH、跨平台 pipe 等价实现。
-- headless adapter 的异步 invalidate、输入、resize 和 dispose 已由最小 Component 测试；未驱动真实 Extension factory。
+## Terminal Guard PTY 证据
+
+`crates/lystar-tui/tests/pty-terminal-guard.sh` 使用本轮唯一 tmux socket 覆盖：
+
+| 路径 | 退出码 | `stty -g` | 收尾序列 |
+| --- | ---: | --- | --- |
+| child fd EOF | 1 | 进入前后相同 | mouse disable / cursor show / leave alt screen |
+| panic | 101 | 进入前后相同 | mouse disable / cursor show / leave alt screen |
+| SIGINT | 0 | 进入前后相同 | mouse disable / cursor show / leave alt screen |
+| SIGTERM | 0 | 进入前后相同 | mouse disable / cursor show / leave alt screen |
+
+`TerminalGuard::enter()` 还增加了 unit fault injection：alternate screen 进入失败时必须恢复 raw mode。
+
+## Benchmark
+
+旧 `benchmark.rs` 只有缓存滚动循环，未实际渲染至内存 terminal，也没有 TS 对照、统一场景、RSS、bytes、idle 或五轮 JSONL。因此它不能作为 B0 性能证据。
+
+本轮没有手填或伪造 benchmark 数据。由于 typed protocol 已出现不可逆 null-presence 缺口，B0 的 Go 前置条件已经失败；在该前置条件失败时继续报告速度/RSS 比较没有决策价值。统一五轮 release Rust/normal Node benchmark 仍未实现，不能宣称输入、滚动或流式任两项达标。
 
 ## B0 结论
 
-**停止，不进入 B1。**
+**Stop，不进入 B1，不迁移默认 TUI。**
 
-协议生成、双向 golden、Node/Rust hello、Rust framing、TestBackend 虚拟 transcript 和 headless adapter 局部测试已通过，但硬退出条件未满足：缺少与合并后 TypeScript 基线等价的五轮机器可读性能数据，且终端 panic/child EOF 恢复没有可审计证据。因此不能宣称输入、滚动、流式三项中有至少两项达到绝对预算或显著优于 TypeScript。
+原因是明确且可重复的：生成 Rust 类型无法保留 full schema 中 optional JsonValue 的 null presence；同时 B0 尚无符合规格的可比五轮 benchmark。headless、fd handshake 和 terminal restore 已通过，但不抵消 protocol 与 performance 两个 Go 前置条件。

@@ -38,6 +38,10 @@ function normalizeJsonValueReferences(value) {
 			.filter(([key]) => key !== "$defs")
 			.map(([key, child]) => [key, normalizeJsonValueReferences(child)]),
 	);
+	if (object.type === "number") object.type = "integer";
+	if (typeof object.const === "number" && object.type === undefined) {
+		object.type = Number.isInteger(object.const) ? "integer" : "number";
+	}
 	return object.$ref === "JsonValue" ? { $ref: "#/$defs/JsonValue" } : object;
 }
 

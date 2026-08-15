@@ -1,24 +1,63 @@
 use std::fs;
 
-use lystar_protocol::{FrameDecoder, decode_client_message, decode_server_message};
+use lystar_protocol::{FrameDecoder, decode_client_message, decode_server_message, encode_frame};
 
 #[test]
-fn decodes_typescript_golden_frames() {
+fn typescript_and_rust_golden_frames_round_trip_as_generated_types() {
     let directory = format!("{}/tests/fixtures", env!("CARGO_MANIFEST_DIR"));
-    let client = fs::read(format!("{directory}/ts-client-hello.frame")).unwrap();
-    let server = fs::read(format!("{directory}/ts-server-hello.frame")).unwrap();
+    for name in [
+        "client-hello",
+        "client-read-transcript",
+        "client-ui-response",
+    ] {
+        let payload = decode_frame(&fs::read(format!("{directory}/ts-{name}.frame")).unwrap());
+        let message = decode_client_message(&payload).unwrap();
+        let rust_payload =
+            decode_frame(&fs::read(format!("{directory}/rust-{name}.frame")).unwrap());
+        let rust_message = decode_client_message(&rust_payload).unwrap();
+        assert_eq!(
+            serde_json::to_value(&rust_message).unwrap(),
+            serde_json::to_value(&message).unwrap(),
+            "client fixture {name}"
+        );
+        let round_trip =
+            decode_client_message(&decode_frame(&encode_frame(&message).unwrap())).unwrap();
+        assert_eq!(
+            serde_json::to_value(&round_trip).unwrap(),
+            serde_json::to_value(&message).unwrap(),
+            "client typed re-encode {name}"
+        );
+    }
+    for name in [
+        "server-hello",
+        "server-response-ok",
+        "server-response-error",
+        "server-event-transcript",
+        "server-event-ui-request",
+    ] {
+        let payload = decode_frame(&fs::read(format!("{directory}/ts-{name}.frame")).unwrap());
+        let message = decode_server_message(&payload).unwrap();
+        let rust_payload =
+            decode_frame(&fs::read(format!("{directory}/rust-{name}.frame")).unwrap());
+        let rust_message = decode_server_message(&rust_payload).unwrap();
+        assert_eq!(
+            serde_json::to_value(&rust_message).unwrap(),
+            serde_json::to_value(&message).unwrap(),
+            "server fixture {name}"
+        );
+        let round_trip =
+            decode_server_message(&decode_frame(&encode_frame(&message).unwrap())).unwrap();
+        assert_eq!(
+            serde_json::to_value(&round_trip).unwrap(),
+            serde_json::to_value(&message).unwrap(),
+            "server typed re-encode {name}"
+        );
+    }
+}
+
+fn decode_frame(frame: &[u8]) -> Vec<u8> {
     let mut decoder = FrameDecoder::default();
-    let client_payload = decoder.push(&client[..5]).unwrap();
-    assert!(client_payload.is_empty());
-    let client_payload = decoder.push(&client[5..]).unwrap().pop().unwrap();
-    assert_eq!(
-        decode_client_message(&client_payload).unwrap()["type"],
-        "hello"
-    );
-    let mut decoder = FrameDecoder::default();
-    let server_payload = decoder.push(&server).unwrap().pop().unwrap();
-    assert_eq!(
-        decode_server_message(&server_payload).unwrap()["protocolVersion"],
-        1
-    );
+    let payload = decoder.push(frame).unwrap().pop().unwrap();
+    decoder.end().unwrap();
+    payload
 }

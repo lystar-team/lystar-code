@@ -12,8 +12,10 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use lystar_protocol::{FrameDecoder, ProtocolError, decode_server_message, encode_frame};
-use serde_json::json;
+use lystar_protocol::{
+    FrameDecoder, ProtocolError, decode_server_message, encode_frame,
+    generated::{ClientMessage, ServerMessage},
+};
 use signal_hook::{
     consts::signal::{SIGINT, SIGTERM},
     flag,
@@ -38,9 +40,14 @@ pub struct TerminalGuard {
 
 impl TerminalGuard {
     pub fn enter() -> Result<Self, io::Error> {
-        enable_raw_mode()?;
-        let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, EnableMouseCapture, Hide)?;
+        enter_terminal(
+            enable_raw_mode,
+            || {
+                let mut stdout = io::stdout();
+                execute!(stdout, EnterAlternateScreen, EnableMouseCapture, Hide)
+            },
+            disable_raw_mode,
+        )?;
         Ok(Self { active: true })
     }
 }
@@ -57,6 +64,24 @@ impl Drop for TerminalGuard {
     }
 }
 
+fn enter_terminal<Enable, Enter, Restore>(
+    enable_raw: Enable,
+    enter_screen: Enter,
+    restore_raw: Restore,
+) -> Result<(), io::Error>
+where
+    Enable: FnOnce() -> Result<(), io::Error>,
+    Enter: FnOnce() -> Result<(), io::Error>,
+    Restore: FnOnce() -> Result<(), io::Error>,
+{
+    enable_raw()?;
+    if let Err(error) = enter_screen() {
+        let _ = restore_raw();
+        return Err(error);
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 pub fn handshake_inherited_pipes() -> Result<(), TuiError> {
     use std::{fs::File, os::fd::FromRawFd};
@@ -64,9 +89,13 @@ pub fn handshake_inherited_pipes() -> Result<(), TuiError> {
     // fd3/4 是 Node spawn 的独立 IPC，不会与 TTY stdout 混用。
     let mut input = unsafe { File::from_raw_fd(3) };
     let mut output = unsafe { File::from_raw_fd(4) };
-    output.write_all(&encode_frame(
-        &json!({"type":"hello", "version":1, "clientInstanceId":"lystar-rust-b0"}),
-    )?)?;
+    let hello: ClientMessage =
+        serde_json::from_str(r#"{"type":"hello","version":1,"clientInstanceId":"lystar-rust-b0"}"#)
+            .map_err(|error| ProtocolError::InvalidMessage {
+                direction: "client",
+                reason: error.to_string(),
+            })?;
+    output.write_all(&encode_frame(&hello)?)?;
     output.flush()?;
     let mut decoder = FrameDecoder::default();
     let mut buffer = [0_u8; 8192];
@@ -78,24 +107,14 @@ pub fn handshake_inherited_pipes() -> Result<(), TuiError> {
         }
         if let Some(frame) = decoder.push(&buffer[..count])?.into_iter().next() {
             let message = decode_server_message(&frame)?;
-            match message.get("type").and_then(serde_json::Value::as_str) {
-                Some("hello") => return Ok(()),
-                Some("hello_error") => {
-                    let reason = message["error"]["message"]
-                        .as_str()
-                        .unwrap_or("unknown host error");
-                    return Err(TuiError::HelloRejected(reason.to_owned()));
-                }
-                Some(kind) => {
-                    return Err(TuiError::HelloRejected(format!(
-                        "expected hello, got {kind}"
-                    )));
-                }
-                None => {
+            match message {
+                ServerMessage::Variant0 { .. } => return Ok(()),
+                ServerMessage::Variant1 { .. } => {
                     return Err(TuiError::HelloRejected(
-                        "host message has no type".to_owned(),
+                        "host returned hello_error".to_owned(),
                     ));
                 }
+                _ => return Err(TuiError::HelloRejected("expected server hello".to_owned())),
             }
         }
     }
@@ -108,13 +127,62 @@ pub fn handshake_inherited_pipes() -> Result<(), TuiError> {
     ))
 }
 
-pub fn run_shell() -> Result<(), TuiError> {
+pub fn run_shell(wait_for_child_eof: bool, panic_after_enter: bool) -> Result<(), TuiError> {
     let shutdown = Arc::new(AtomicBool::new(false));
     flag::register(SIGINT, Arc::clone(&shutdown))?;
     flag::register(SIGTERM, Arc::clone(&shutdown))?;
     let _terminal = TerminalGuard::enter()?;
+    if panic_after_enter {
+        panic!("B0 terminal guard panic probe");
+    }
+    if wait_for_child_eof {
+        return wait_for_protocol_eof(&shutdown);
+    }
     while !shutdown.load(Ordering::Relaxed) {
-        std::thread::sleep(std::time::Duration::from_millis(25));
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn wait_for_protocol_eof(shutdown: &AtomicBool) -> Result<(), TuiError> {
+    use std::{fs::File, os::fd::FromRawFd};
+
+    let mut input = unsafe { File::from_raw_fd(3) };
+    let mut buffer = [0_u8; 1];
+    while !shutdown.load(Ordering::Relaxed) {
+        if input.read(&mut buffer)? == 0 {
+            return Err(TuiError::ChildEof);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn wait_for_protocol_eof(_shutdown: &AtomicBool) -> Result<(), TuiError> {
+    Err(TuiError::HelloRejected(
+        "Windows B0 named-pipe transport is not implemented".to_owned(),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restores_raw_mode_when_entering_the_screen_fails() {
+        let restored = Arc::new(AtomicBool::new(false));
+        let restore = Arc::clone(&restored);
+        let error = enter_terminal(
+            || Ok(()),
+            || Err(io::Error::other("screen failed")),
+            || {
+                restore.store(true, Ordering::Relaxed);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert!(restored.load(Ordering::Relaxed));
+    }
 }
