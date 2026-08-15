@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
+import { appendSessionRecoveryLedger, createRecoveryLedgerEntry } from "../src/core/tool-recovery/ledger.ts";
 import {
 	approveToolRecoveryLesson,
 	autoPromoteToolRecoveryLesson,
@@ -14,11 +15,11 @@ import {
 	getToolRecoveryLessonsPaths,
 	hashToolRecoveryLessonScope,
 	listToolRecoveryLessons,
-	markVerifiedToolRecoveryLesson,
 	pruneToolRecoveryLessons,
 	readToolRecoveryLessonHistory,
 	recordDeterministicToolRecoveryCandidate,
 	rollbackToolRecoveryLesson,
+	runToolRecoveryLessonReplay,
 	ToolRecoveryLessonVersionConflictError,
 	updateToolRecoveryLesson,
 } from "../src/core/tool-recovery/lessons-store.ts";
@@ -42,10 +43,48 @@ function lessonInput(overrides: Record<string, unknown> = {}) {
 		matcher: { toolName: "read", failureCode: "TARGET_NOT_FOUND", fingerprintPrefix: "a".repeat(16) },
 		guidance: "先确认目标是否仍在父目录中。",
 		allowedAction: "guidance" as const,
-		evidence: { occurrences: 3, sessions: 2, recovered: 3, failed: 0 },
+		evidence: { occurrences: 0, sessions: 0, recovered: 0, failed: 0 } as const,
 		expiresAt: FUTURE,
 		...overrides,
 	};
+}
+
+function appendCandidateReceipt(agentDir: string, sessionId: string, outcome: "recovered" | "failed" = "recovered") {
+	const sessionPath = join(agentDir, "sessions", `${sessionId}.jsonl`);
+	mkdirSync(join(agentDir, "sessions"), { recursive: true });
+	writeFileSync(sessionPath, "{}\n");
+	return appendSessionRecoveryLedger(
+		agentDir,
+		sessionPath,
+		createRecoveryLedgerEntry({
+			sessionId,
+			turnId: "turn",
+			toolCallId: `call-${sessionId}-${Math.random()}`,
+			toolName: "read",
+			callSignature: "a".repeat(64),
+			failureFingerprint: "b".repeat(64),
+			failureCode: "TIMEOUT",
+			attempt: 1,
+			action: "retry_same_args",
+			outcome,
+			durationMs: 1,
+			createdAt: NOW.toISOString(),
+		}),
+	);
+}
+
+async function recordCandidateReceipt(
+	agentDir: string,
+	sessionId: string,
+	outcome: "recovered" | "failed" = "recovered",
+) {
+	const receipt = await appendCandidateReceipt(agentDir, sessionId, outcome);
+	if (!receipt) throw new Error("missing ledger receipt");
+	return await recordDeterministicToolRecoveryCandidate(
+		agentDir,
+		{ scopeHash: hashToolRecoveryLessonScope("project-a"), receipt },
+		{ now: NOW },
+	);
 }
 
 afterEach(() => {
@@ -95,8 +134,15 @@ describe("Tool recovery lessons store", () => {
 	it("requires manual approval, disables lessons, expires TTL, and prunes expired or long-suspended lessons", async () => {
 		const agentDir = createTempDir();
 		await expect(
-			createToolRecoveryLesson(agentDir, lessonInput({ status: "active" as never }), { now: NOW }),
-		).rejects.toThrow("只能是 candidate 或 verified");
+			createToolRecoveryLesson(agentDir, lessonInput({ status: "verified" as never }), { now: NOW }),
+		).rejects.toThrow("只能是 candidate");
+		await expect(
+			createToolRecoveryLesson(
+				agentDir,
+				lessonInput({ evidence: { occurrences: 1, sessions: 1, recovered: 1, failed: 0 } as never }),
+				{ now: NOW },
+			),
+		).rejects.toThrow("证据计数");
 
 		const refresh = await createToolRecoveryLesson(agentDir, lessonInput({ allowedAction: "safe_refresh" }), {
 			now: NOW,
@@ -237,22 +283,23 @@ describe("Tool recovery lessons store", () => {
 		]);
 	});
 
-	it("returns active lessons to candidate when behavior changes, while evidence-only updates and shorter TTL retain active", async () => {
+	it("returns active lessons to candidate when behavior changes and rejects caller-supplied evidence", async () => {
 		const agentDir = createTempDir();
 		const created = await createToolRecoveryLesson(agentDir, lessonInput(), { now: NOW });
 		const active = await approveToolRecoveryLesson(agentDir, created.id, created.version, { now: NOW });
-		const evidenceOnly = await updateToolRecoveryLesson(
+		await expect(
+			updateToolRecoveryLesson(
+				agentDir,
+				active.id,
+				active.version,
+				{ evidence: { occurrences: 4, sessions: 2, recovered: 4, failed: 0 } } as never,
+				{ now: NOW },
+			),
+		).rejects.toThrow("receipt");
+		const shortened = await updateToolRecoveryLesson(
 			agentDir,
 			active.id,
 			active.version,
-			{ evidence: { occurrences: 4, sessions: 2, recovered: 4, failed: 0 } },
-			{ now: NOW },
-		);
-		expect(evidenceOnly.status).toBe("active");
-		const shortened = await updateToolRecoveryLesson(
-			agentDir,
-			evidenceOnly.id,
-			evidenceOnly.version,
 			{ expiresAt: "2029-01-01T00:00:00.000Z" },
 			{ now: NOW },
 		);
@@ -264,7 +311,7 @@ describe("Tool recovery lessons store", () => {
 			{ guidance: "先列出父目录，再确认目标。" },
 			{ now: NOW },
 		);
-		expect(changed).toMatchObject({ status: "candidate", version: 5 });
+		expect(changed).toMatchObject({ status: "candidate", version: 4 });
 	});
 
 	it("requires approval again for active TTL extensions and safe_refresh changes", async () => {
@@ -379,117 +426,121 @@ describe("Tool recovery lessons store", () => {
 		for (const forbidden of ["test-secret", "/private", "token="]) expect(bytes).not.toContain(forbidden);
 	});
 
-	it("aggregates deterministic candidates across sessions without retaining raw session IDs", async () => {
+	it("rejects forged or failed ledger receipts and aggregates real receipts across sessions", async () => {
 		const agentDir = createTempDir();
-		const scopeHash = hashToolRecoveryLessonScope("project-a");
-		const input = {
-			scopeHash,
+		await expect(
+			recordDeterministicToolRecoveryCandidate(
+				agentDir,
+				{
+					scopeHash: hashToolRecoveryLessonScope("project-a"),
+					receipt: {
+						entryHash: "a".repeat(64),
+						sessionHash: "b".repeat(64),
+						toolName: "read",
+						failureCode: "TIMEOUT",
+						failureFingerprint: "c".repeat(64),
+						action: "retry_same_args",
+						outcome: "recovered",
+					},
+				} as never,
+				{ now: NOW },
+			),
+		).rejects.toThrow("receipt");
+
+		const duplicatePath = join(agentDir, "sessions", "duplicate.jsonl");
+		mkdirSync(join(agentDir, "sessions"), { recursive: true });
+		writeFileSync(duplicatePath, "{}\n");
+		const duplicateEntry = createRecoveryLedgerEntry({
+			sessionId: "duplicate",
+			turnId: "turn",
+			toolCallId: "duplicate-call",
 			toolName: "read",
+			callSignature: "a".repeat(64),
+			failureFingerprint: "b".repeat(64),
 			failureCode: "TIMEOUT",
-			failureFingerprint: "a".repeat(64),
+			attempt: 1,
 			action: "retry_same_args",
-			sideEffect: "read_only" as const,
-		};
-		const first = await recordDeterministicToolRecoveryCandidate(
-			agentDir,
-			{
-				...input,
-				sessionId: "session-a",
-				outcome: "recovered",
-			},
-			{ now: NOW },
-		);
-		if (!first) throw new Error("missing candidate");
-		const second = await recordDeterministicToolRecoveryCandidate(
-			agentDir,
-			{
-				...input,
-				sessionId: "session-a",
-				outcome: "recovered",
-			},
-			{ now: NOW },
-		);
-		const third = await recordDeterministicToolRecoveryCandidate(
-			agentDir,
-			{
-				...input,
-				sessionId: "session-b",
-				outcome: "failed",
-			},
-			{ now: NOW },
-		);
-		expect(second).toMatchObject({
-			id: first.id,
-			evidence: { occurrences: 2, sessions: 1, recovered: 2, failed: 0 },
+			outcome: "recovered",
+			durationMs: 1,
+			createdAt: NOW.toISOString(),
 		});
+		expect(await appendSessionRecoveryLedger(agentDir, duplicatePath, duplicateEntry)).toBeDefined();
+		const appendFailure = await appendSessionRecoveryLedger(agentDir, duplicatePath, duplicateEntry);
+		expect(appendFailure).toBeUndefined();
+		await expect(
+			recordDeterministicToolRecoveryCandidate(
+				agentDir,
+				{ scopeHash: hashToolRecoveryLessonScope("project-a"), receipt: appendFailure as never },
+				{ now: NOW },
+			),
+		).rejects.toThrow("receipt");
+		expect(await listToolRecoveryLessons(agentDir)).toEqual([]);
+
+		const failedReceipt = await appendCandidateReceipt(agentDir, "failed", "failed");
+		if (!failedReceipt) throw new Error("missing failed receipt");
+		await expect(
+			recordDeterministicToolRecoveryCandidate(
+				agentDir,
+				{ scopeHash: hashToolRecoveryLessonScope("project-a"), receipt: failedReceipt },
+				{ now: NOW },
+			),
+		).resolves.toBeUndefined();
+		expect(await listToolRecoveryLessons(agentDir)).toEqual([]);
+
+		const first = await recordCandidateReceipt(agentDir, "session-a");
+		const second = await recordCandidateReceipt(agentDir, "session-a");
+		const third = await recordCandidateReceipt(agentDir, "session-b");
+		if (!first || !second || !third) throw new Error("missing candidate");
 		expect(third).toMatchObject({
 			id: first.id,
-			evidence: { occurrences: 3, sessions: 2, recovered: 2, failed: 1 },
+			evidence: { occurrences: 3, sessions: 2, recovered: 3, failed: 0 },
 		});
-		expect(await listToolRecoveryLessons(agentDir, { now: NOW })).toHaveLength(1);
 		const paths = getToolRecoveryLessonsPaths(agentDir);
 		const bytes = `${readFileSync(paths.snapshot, "utf8")}\n${readFileSync(paths.history, "utf8")}`;
-		expect(bytes).not.toContain("session-a");
-		expect(bytes).not.toContain("session-b");
+		for (const forbidden of ["session-a", "session-b"]) expect(bytes).not.toContain(forbidden);
 	});
 
-	it("requires replay verification and every automatic promotion gate", async () => {
+	it("only verifies through store-controlled replay and promotes after real receipt thresholds", async () => {
 		const agentDir = createTempDir();
-		const createVerified = async (overrides: Record<string, unknown> = {}) => {
-			const candidate = await createToolRecoveryLesson(
-				agentDir,
-				lessonInput({
-					evidence: { occurrences: 3, sessions: 2, recovered: 3, failed: 0 },
-					...overrides,
-				}),
-				{ now: NOW },
-			);
-			await expect(
-				markVerifiedToolRecoveryLesson(
-					agentDir,
-					candidate.id,
-					candidate.version,
-					{ passed: false, matcherVersion: 1 },
-					{ now: NOW },
-				),
-			).rejects.toThrow("replay");
-			return await markVerifiedToolRecoveryLesson(
-				agentDir,
-				candidate.id,
-				candidate.version,
-				{ passed: true, matcherVersion: 1 },
-				{ now: NOW },
-			);
-		};
+		const candidate = await recordCandidateReceipt(agentDir, "session-a");
+		await recordCandidateReceipt(agentDir, "session-a");
+		const aggregated = await recordCandidateReceipt(agentDir, "session-b");
+		if (!candidate || !aggregated) throw new Error("missing candidate");
 
-		for (const overrides of [
-			{ evidence: { occurrences: 2, sessions: 2, recovered: 3, failed: 0 } },
-			{ evidence: { occurrences: 3, sessions: 1, recovered: 3, failed: 0 } },
-			{ evidence: { occurrences: 3, sessions: 2, recovered: 2, failed: 0 } },
-			{ evidence: { occurrences: 3, sessions: 2, recovered: 3, failed: 1 } },
-			{ allowedAction: "safe_refresh" as const },
-			{ matcher: { toolName: "read", failureCode: "TARGET_NOT_FOUND", toolVersionRange: ">=2.0.0" } },
-		]) {
-			const verified = await createVerified(overrides);
-			await expect(
-				autoPromoteToolRecoveryLesson(agentDir, verified.id, verified.version, {
-					enabled: true,
-					now: NOW,
-					toolVersion: "1.0.0",
-				}),
-			).rejects.toThrow("门槛");
-		}
-
-		const unverified = await createToolRecoveryLesson(
+		const failed = await runToolRecoveryLessonReplay(
 			agentDir,
-			lessonInput({ evidence: { occurrences: 3, sessions: 2, recovered: 3, failed: 0 } }),
+			aggregated.id,
+			async (context) => {
+				expect(context.matcherVersion).toBe(1);
+				expect(context.lessonVersion).toBe(aggregated.version);
+				return false;
+			},
 			{ now: NOW },
 		);
-		await expect(
-			autoPromoteToolRecoveryLesson(agentDir, unverified.id, unverified.version, { enabled: true, now: NOW }),
-		).rejects.toThrow("门槛");
+		expect(failed).toMatchObject({ status: "candidate", version: aggregated.version + 1 });
+		expect((await readToolRecoveryLessonHistory(agentDir)).at(-1)?.action).toBe("verify");
 
-		const verified = await createVerified();
+		await expect(
+			runToolRecoveryLessonReplay(
+				agentDir,
+				failed.id,
+				async (context) => {
+					await updateToolRecoveryLesson(
+						agentDir,
+						context.lesson.id,
+						context.lessonVersion,
+						{ guidance: "回放期间修改。" },
+						{ now: NOW },
+					);
+					return true;
+				},
+				{ now: NOW },
+			),
+		).rejects.toBeInstanceOf(ToolRecoveryLessonVersionConflictError);
+
+		const current = await getToolRecoveryLesson(agentDir, failed.id, { now: NOW });
+		const verified = await runToolRecoveryLessonReplay(agentDir, current.id, async () => true, { now: NOW });
+		expect(verified.status).toBe("verified");
 		await expect(
 			autoPromoteToolRecoveryLesson(agentDir, verified.id, verified.version, { now: NOW }),
 		).rejects.toThrow("未显式开启");

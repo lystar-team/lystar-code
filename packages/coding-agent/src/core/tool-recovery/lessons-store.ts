@@ -1,15 +1,23 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import type { ToolSideEffect } from "@earendil-works/pi-agent-core";
 import lockfile from "proper-lockfile";
 import { satisfies, validRange } from "semver";
+import type { SessionRecoveryLedgerReceipt } from "./ledger.ts";
+import { consumeSessionRecoveryLedgerReceipt } from "./ledger.ts";
 import { isStableFailureCode } from "./registry.ts";
 
 export type ToolRecoveryLessonStatus = "candidate" | "verified" | "active" | "suspended" | "expired";
 export type ToolRecoveryLessonScope = "project" | "global";
 export type ToolRecoveryLessonAction = "guidance" | "safe_refresh";
-export type ToolRecoveryLessonHistoryAction = "create" | "update" | "approve" | "disable" | "rollback" | "prune";
+export type ToolRecoveryLessonHistoryAction =
+	| "create"
+	| "update"
+	| "verify"
+	| "approve"
+	| "disable"
+	| "rollback"
+	| "prune";
 
 export interface ToolRecoveryLessonEvidence {
 	occurrences: number;
@@ -65,13 +73,15 @@ export interface ToolRecoveryLessonsPaths {
 }
 
 export interface CreateToolRecoveryLessonInput {
-	status?: "candidate" | "verified";
+	/** 普通 create 固定为 candidate；非 candidate 状态只由受控状态流转写入。 */
+	status?: "candidate";
 	scope: ToolRecoveryLessonScope;
 	scopeHash?: string;
 	matcher: ToolRecoveryLesson["matcher"];
 	guidance: string;
 	allowedAction: ToolRecoveryLessonAction;
-	evidence: ToolRecoveryLessonEvidence;
+	/** 普通 create 只能创建零证据；账本 receipt 只能由候选聚合消费。 */
+	evidence?: { occurrences: 0; sessions: 0; recovered: 0; failed: 0 };
 	expiresAt: string;
 }
 
@@ -81,7 +91,6 @@ export interface UpdateToolRecoveryLessonInput {
 	matcher?: ToolRecoveryLesson["matcher"];
 	guidance?: string;
 	allowedAction?: ToolRecoveryLessonAction;
-	evidence?: ToolRecoveryLesson["evidence"];
 	expiresAt?: string;
 }
 
@@ -97,20 +106,19 @@ export interface PruneToolRecoveryLessonsOptions extends ToolRecoveryLessonsOpti
 
 export interface DeterministicToolRecoveryCandidateInput {
 	scopeHash: string;
-	sessionId: string;
-	toolName: string;
-	failureCode: string;
-	failureFingerprint: string;
-	action: string;
-	outcome: "recovered" | "failed" | "needs_model" | "blocked" | "cancelled";
-	sideEffect: ToolSideEffect;
+	receipt: SessionRecoveryLedgerReceipt;
 	expiresAt?: string;
 }
 
-export interface ToolRecoveryLessonReplayEvidence {
-	passed: boolean;
+export interface ToolRecoveryLessonReplayContext {
+	lesson: Readonly<ToolRecoveryLesson>;
+	lessonVersion: number;
 	matcherVersion: 1;
 }
+
+export type ToolRecoveryLessonDeterministicRunner = (
+	context: ToolRecoveryLessonReplayContext,
+) => boolean | Promise<boolean>;
 
 export interface AutoPromoteToolRecoveryLessonOptions extends ToolRecoveryLessonsOptions {
 	enabled?: boolean;
@@ -146,6 +154,7 @@ const ACTIONS = new Set<ToolRecoveryLessonAction>(["guidance", "safe_refresh"]);
 const HISTORY_ACTIONS = new Set<ToolRecoveryLessonHistoryAction>([
 	"create",
 	"update",
+	"verify",
 	"approve",
 	"disable",
 	"rollback",
@@ -171,6 +180,7 @@ const HISTORY_KEYS = new Set(["schema", "id", "action", "source", "time", "befor
 const storeQueues = new Map<string, Promise<void>>();
 const DEFAULT_SUSPENDED_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 const DEFAULT_CANDIDATE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const DETERMINISTIC_MATCHER_VERSION = 1 as const;
 const DETERMINISTIC_GUIDANCE = new Map<string, string>([
 	["read\u0000TARGET_NOT_FOUND\u0000refresh_context", "先确认目标仍在父目录中，再决定是否调整路径。"],
 	["read\u0000TIMEOUT\u0000retry_same_args", "短暂超时后先确认调用已结束，再依据当前状态继续。"],
@@ -216,6 +226,21 @@ function isEvidence(value: unknown): value is ToolRecoveryLessonEvidence {
 		value.sessionHashes.every((hash) => typeof hash === "string" && SHA256.test(hash)) &&
 		new Set(value.sessionHashes).size === value.sessionHashes.length &&
 		value.sessionHashes.length === value.sessions
+	);
+}
+
+function emptyEvidence(): ToolRecoveryLessonEvidence {
+	return { occurrences: 0, sessions: 0, recovered: 0, failed: 0 };
+}
+
+function isEmptyEvidence(value: unknown): boolean {
+	return (
+		isEvidence(value) &&
+		value.occurrences === 0 &&
+		value.sessions === 0 &&
+		value.recovered === 0 &&
+		value.failed === 0 &&
+		value.sessionHashes === undefined
 	);
 }
 
@@ -321,11 +346,26 @@ function assertLessonInput(input: CreateToolRecoveryLessonInput | UpdateToolReco
 	if (input.allowedAction !== undefined && !ACTIONS.has(input.allowedAction)) {
 		throw new ToolRecoveryLessonsError("allowedAction 只能是 guidance 或 safe_refresh");
 	}
-	if (input.evidence !== undefined && !isEvidence(input.evidence)) {
-		throw new ToolRecoveryLessonsError("evidence 必须是非负整数计数");
-	}
 	if (input.expiresAt !== undefined && !isTime(input.expiresAt)) {
 		throw new ToolRecoveryLessonsError("expiresAt 必须是 ISO 时间");
+	}
+}
+
+function assertCreateLessonInput(input: CreateToolRecoveryLessonInput): void {
+	assertLessonInput(input);
+	const attempted = input as CreateToolRecoveryLessonInput & { status?: unknown; evidence?: unknown };
+	if (attempted.status !== undefined && attempted.status !== "candidate") {
+		throw new ToolRecoveryLessonsError("新建恢复经验只能是 candidate");
+	}
+	if (attempted.evidence !== undefined && !isEmptyEvidence(attempted.evidence)) {
+		throw new ToolRecoveryLessonsError("普通 create 不能指定恢复证据计数");
+	}
+}
+
+function assertUpdateLessonInput(input: UpdateToolRecoveryLessonInput): void {
+	assertLessonInput(input);
+	if ("evidence" in (input as object)) {
+		throw new ToolRecoveryLessonsError("恢复证据只能由账本 receipt 聚合");
 	}
 }
 
@@ -502,6 +542,9 @@ function replayHistory(entries: ToolRecoveryLessonHistoryEntry[]): ToolRecoveryL
 						entry.before.status !== "candidate" &&
 						entry.before.status !== "verified"))) ||
 			(entry.action === "rollback" && entry.after.status === "active") ||
+			(entry.action === "verify" &&
+				(entry.before.status !== "candidate" ||
+					(entry.after.status !== "candidate" && entry.after.status !== "verified"))) ||
 			(entry.action === "update" &&
 				entry.after.status !== entry.before.status &&
 				!(entry.before.status === "candidate" && entry.after.status === "verified") &&
@@ -663,24 +706,21 @@ export async function createToolRecoveryLesson(
 	input: CreateToolRecoveryLessonInput,
 	options: ToolRecoveryLessonsOptions = {},
 ): Promise<ToolRecoveryLesson> {
-	assertLessonInput(input);
+	assertCreateLessonInput(input);
 	assertScope(input.scope, input.scopeHash);
-	if (input.status !== undefined && input.status !== "candidate" && input.status !== "verified") {
-		throw new ToolRecoveryLessonsError("新建恢复经验只能是 candidate 或 verified");
-	}
 	return await withStoreLock(agentDir, async (paths) => {
 		const snapshot = (await loadStore(paths)).snapshot;
 		const time = nowIso(options);
 		const lesson: ToolRecoveryLesson = {
 			schema: 1,
 			id: randomUUID(),
-			status: input.status ?? "candidate",
+			status: "candidate",
 			scope: input.scope,
 			...(input.scopeHash ? { scopeHash: input.scopeHash } : {}),
 			matcher: structuredClone(input.matcher),
 			guidance: input.guidance.trim(),
 			allowedAction: input.allowedAction,
-			evidence: structuredClone(input.evidence),
+			evidence: input.evidence ? structuredClone(input.evidence) : emptyEvidence(),
 			version: 1,
 			expiresAt: input.expiresAt,
 			createdAt: time,
@@ -727,7 +767,7 @@ export async function updateToolRecoveryLesson(
 	input: UpdateToolRecoveryLessonInput,
 	options: ToolRecoveryLessonsOptions = {},
 ): Promise<ToolRecoveryLesson> {
-	assertLessonInput(input);
+	assertUpdateLessonInput(input);
 	return await withStoreLock(agentDir, async (paths) => {
 		const snapshot = (await loadStore(paths)).snapshot;
 		const current = findLesson(snapshot, id);
@@ -742,7 +782,7 @@ export async function updateToolRecoveryLesson(
 			scope: nextScope,
 			...(nextScopeHash ? { scopeHash: nextScopeHash } : {}),
 			matcher: input.matcher ? structuredClone(input.matcher) : current.matcher,
-			evidence: input.evidence ? structuredClone(input.evidence) : current.evidence,
+			evidence: current.evidence,
 			guidance: input.guidance?.trim() ?? current.guidance,
 			version: current.version + 1,
 			updatedAt: time,
@@ -786,21 +826,38 @@ export async function approveToolRecoveryLesson(
 	});
 }
 
-/** 只有可重放的确定性规则才能把 candidate 标记为 verified。 */
-export async function markVerifiedToolRecoveryLesson(
+/**
+ * Store 在锁外运行确定性回放，随后重新读取快照确认 lesson 与 matcher 没有在回放期间变化。
+ * 回放失败也写入 verify history，但维持 candidate，不能由调用方传入 passed 对象直接升级。
+ */
+export async function runToolRecoveryLessonReplay(
 	agentDir: string,
 	id: string,
-	expectedVersion: number,
-	replayEvidence: ToolRecoveryLessonReplayEvidence,
+	deterministicRunner: ToolRecoveryLessonDeterministicRunner,
 	options: ToolRecoveryLessonsOptions = {},
 ): Promise<ToolRecoveryLesson> {
-	if (replayEvidence.passed !== true || replayEvidence.matcherVersion !== 1) {
-		throw new ToolRecoveryLessonsError("deterministic replay 未通过或 matcher 版本无效");
+	const initial = await getToolRecoveryLesson(agentDir, id, { now: options.now });
+	if (initial.status === "expired") throw new ToolRecoveryLessonsError("已过期的恢复经验不能验证");
+	if (initial.status !== "candidate") throw new ToolRecoveryLessonsError("只有 candidate 恢复经验可以验证");
+
+	let passed = false;
+	try {
+		passed =
+			(await deterministicRunner({
+				lesson: structuredClone(initial),
+				lessonVersion: initial.version,
+				matcherVersion: DETERMINISTIC_MATCHER_VERSION,
+			})) === true;
+	} catch {
+		passed = false;
 	}
+
 	return await withStoreLock(agentDir, async (paths) => {
 		const snapshot = (await loadStore(paths)).snapshot;
 		const current = findLesson(snapshot, id);
-		assertExpectedVersion(current, expectedVersion);
+		if (current.version !== initial.version || JSON.stringify(current.matcher) !== JSON.stringify(initial.matcher)) {
+			throw new ToolRecoveryLessonVersionConflictError(`恢复经验“${id}”在 replay 期间已变化`);
+		}
 		if (effectiveStatus(current, options.now ?? new Date()) === "expired") {
 			throw new ToolRecoveryLessonsError("已过期的恢复经验不能验证");
 		}
@@ -808,12 +865,12 @@ export async function markVerifiedToolRecoveryLesson(
 		const time = nowIso(options);
 		const next: ToolRecoveryLesson = {
 			...current,
-			status: "verified",
+			status: passed ? "verified" : "candidate",
 			version: current.version + 1,
 			updatedAt: time,
 		};
 		snapshot.lessons[snapshot.lessons.indexOf(current)] = next;
-		await commit(paths, snapshot, historyEntry("update", sourceOf(options), time, current, next), options);
+		await commit(paths, snapshot, historyEntry("verify", "replay", time, current, next), options);
 		return presentLesson(next, options.now ?? new Date());
 	});
 }
@@ -887,29 +944,35 @@ export async function disableToolRecoveryLesson(
 	});
 }
 
-function deterministicGuidance(input: DeterministicToolRecoveryCandidateInput): string | undefined {
+function deterministicGuidance(
+	scopeHash: string,
+	evidence: ReturnType<typeof consumeSessionRecoveryLedgerReceipt>,
+): string | undefined {
 	if (
-		!SHA256.test(input.scopeHash) ||
-		!TOOL_NAME.test(input.toolName) ||
-		!isStableFailureCode(input.failureCode) ||
-		!SHA256.test(input.failureFingerprint) ||
-		NON_GENERALIZABLE_FAILURES.has(input.failureCode)
+		!evidence ||
+		!SHA256.test(scopeHash) ||
+		!TOOL_NAME.test(evidence.toolName) ||
+		!isStableFailureCode(evidence.failureCode) ||
+		!SHA256.test(evidence.failureFingerprint) ||
+		NON_GENERALIZABLE_FAILURES.has(evidence.failureCode)
 	) {
 		return undefined;
 	}
-	return DETERMINISTIC_GUIDANCE.get(`${input.toolName}\u0000${input.failureCode}\u0000${input.action}`);
+	return DETERMINISTIC_GUIDANCE.get(`${evidence.toolName}\u0000${evidence.failureCode}\u0000${evidence.action}`);
 }
 
-/** 账本追加成功后才调用。候选只保存摘要、枚举和 hash，不保存 Tool 内容。 */
+/** 只消费一次实际账本 append 生成的 receipt；候选计数和 session hash 一律从 receipt 导出。 */
 export async function recordDeterministicToolRecoveryCandidate(
 	agentDir: string,
 	input: DeterministicToolRecoveryCandidateInput,
 	options: ToolRecoveryLessonsOptions = {},
 ): Promise<ToolRecoveryLesson | undefined> {
-	const guidance = deterministicGuidance(input);
+	if (!SHA256.test(input.scopeHash)) throw new ToolRecoveryLessonsError("scopeHash 必须是 SHA-256 摘要");
+	const receipt = consumeSessionRecoveryLedgerReceipt(input.receipt);
+	if (!receipt) throw new ToolRecoveryLessonsError("恢复候选必须使用实际账本 receipt");
+	const guidance = deterministicGuidance(input.scopeHash, receipt);
 	if (!guidance) return undefined;
-	const fingerprintPrefix = input.failureFingerprint.slice(0, 16);
-	const sessionHash = sha256(input.sessionId);
+	const fingerprintPrefix = receipt.failureFingerprint.slice(0, 16);
 	return await withStoreLock(agentDir, async (paths) => {
 		const snapshot = (await loadStore(paths)).snapshot;
 		const current = snapshot.lessons.find(
@@ -917,11 +980,11 @@ export async function recordDeterministicToolRecoveryCandidate(
 				(lesson.status === "candidate" || lesson.status === "verified") &&
 				lesson.scope === "project" &&
 				lesson.scopeHash === input.scopeHash &&
-				lesson.matcher.toolName === input.toolName &&
-				lesson.matcher.failureCode === input.failureCode &&
+				lesson.matcher.toolName === receipt.toolName &&
+				lesson.matcher.failureCode === receipt.failureCode &&
 				lesson.matcher.fingerprintPrefix === fingerprintPrefix,
 		);
-		if (!current && input.outcome !== "recovered") return undefined;
+		if (!current && receipt.outcome !== "recovered") return undefined;
 		const time = nowIso(options);
 		if (!current) {
 			const expiresAt =
@@ -932,7 +995,7 @@ export async function recordDeterministicToolRecoveryCandidate(
 				status: "candidate",
 				scope: "project",
 				scopeHash: input.scopeHash,
-				matcher: { toolName: input.toolName, failureCode: input.failureCode, fingerprintPrefix },
+				matcher: { toolName: receipt.toolName, failureCode: receipt.failureCode, fingerprintPrefix },
 				guidance,
 				allowedAction: "guidance",
 				evidence: {
@@ -940,7 +1003,7 @@ export async function recordDeterministicToolRecoveryCandidate(
 					sessions: 1,
 					recovered: 1,
 					failed: 0,
-					sessionHashes: [sessionHash],
+					sessionHashes: [receipt.sessionHash],
 				},
 				version: 1,
 				expiresAt,
@@ -959,7 +1022,9 @@ export async function recordDeterministicToolRecoveryCandidate(
 		}
 
 		const sessionHashes = current.evidence.sessionHashes ?? [];
-		const nextSessionHashes = sessionHashes.includes(sessionHash) ? sessionHashes : [...sessionHashes, sessionHash];
+		const nextSessionHashes = sessionHashes.includes(receipt.sessionHash)
+			? sessionHashes
+			: [...sessionHashes, receipt.sessionHash];
 		const next: ToolRecoveryLesson = {
 			...current,
 			evidence: {
@@ -967,8 +1032,8 @@ export async function recordDeterministicToolRecoveryCandidate(
 				sessions: current.evidence.sessionHashes
 					? nextSessionHashes.length
 					: Math.max(current.evidence.sessions, 1),
-				recovered: current.evidence.recovered + (input.outcome === "recovered" ? 1 : 0),
-				failed: current.evidence.failed + (input.outcome === "failed" ? 1 : 0),
+				recovered: current.evidence.recovered + (receipt.outcome === "recovered" ? 1 : 0),
+				failed: current.evidence.failed + (receipt.outcome === "failed" ? 1 : 0),
 				sessionHashes: nextSessionHashes,
 			},
 			version: current.version + 1,

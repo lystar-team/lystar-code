@@ -9,6 +9,5 @@ await createToolRecoveryLesson(agentDir, {
 	matcher: { toolName: "read", failureCode: "TARGET_NOT_FOUND", fingerprintPrefix: "a".repeat(16) },
 	guidance: `确认父目录 ${index}。`,
 	allowedAction: "guidance",
-	evidence: { occurrences: 1, sessions: 1, recovered: 1, failed: 0 },
 	expiresAt: "2030-01-01T00:00:00.000Z",
 });

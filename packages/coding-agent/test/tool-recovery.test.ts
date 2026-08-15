@@ -712,7 +712,6 @@ describe("Tool recovery observe ledger", () => {
 					matcher: { toolName: "read", failureCode: "TARGET_NOT_FOUND" },
 					guidance,
 					allowedAction: "guidance",
-					evidence: { occurrences: 3, sessions: 2, recovered: 3, failed: 0 },
 					expiresAt: "2030-01-01T00:00:00.000Z",
 				},
 				{ now: new Date("2026-08-15T00:00:00.000Z") },

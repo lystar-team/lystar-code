@@ -128,13 +128,11 @@ export async function applyToolRecoveryRefinerProposal(
 		return await createToolRecoveryLesson(
 			agentDir,
 			{
-				status: "candidate",
 				scope: proposal.scope,
 				...(proposal.scope === "project" ? { scopeHash } : {}),
 				matcher: proposal.matcher,
 				guidance: proposal.guidance,
 				allowedAction: proposal.allowedAction,
-				evidence: { occurrences: 0, sessions: 0, recovered: 0, failed: 0 },
 				expiresAt: proposal.expiresAt,
 			},
 			{ source: "refiner" },

@@ -32,6 +32,29 @@ export interface SessionRecoveryLedgerKey {
 	path: string;
 }
 
+/**
+ * 账本成功落盘后才在本进程内生成。结构可读，真实性由模块私有 WeakSet 验证。
+ */
+export interface SessionRecoveryLedgerReceipt {
+	readonly entryHash: string;
+	readonly sessionHash: string;
+	readonly toolName: string;
+	readonly failureCode: string;
+	readonly failureFingerprint: string;
+	readonly action: RecoveryLedgerEntry["action"];
+	readonly outcome: RecoveryLedgerEntry["outcome"];
+}
+
+export interface SessionRecoveryLedgerReceiptEvidence {
+	entryHash: string;
+	sessionHash: string;
+	toolName: string;
+	failureCode: string;
+	failureFingerprint: string;
+	action: RecoveryLedgerEntry["action"];
+	outcome: RecoveryLedgerEntry["outcome"];
+}
+
 const LEDGER_KEYS = [
 	"schema",
 	"id",
@@ -68,6 +91,8 @@ const ACTIONS = new Set<RecoveryLedgerEntry["action"]>([
 	"stop",
 ]);
 const ledgerQueues = new Map<string, Promise<void>>();
+const ledgerReceipts = new WeakSet<SessionRecoveryLedgerReceipt>();
+const consumedLedgerReceipts = new WeakSet<SessionRecoveryLedgerReceipt>();
 
 function sha256(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
@@ -117,6 +142,47 @@ function isLedgerEntry(value: unknown): value is RecoveryLedgerEntry {
 
 function assertLedgerEntry(entry: RecoveryLedgerEntry): void {
 	if (!isLedgerEntry(entry)) throw new Error("Invalid recovery ledger entry");
+}
+
+function createLedgerReceipt(entry: RecoveryLedgerEntry): SessionRecoveryLedgerReceipt {
+	const receipt = Object.freeze({
+		entryHash: sha256(JSON.stringify(entry)),
+		sessionHash: entry.sessionId,
+		toolName: entry.toolName,
+		failureCode: entry.failureCode,
+		failureFingerprint: entry.failureFingerprint,
+		action: entry.action,
+		outcome: entry.outcome,
+	});
+	ledgerReceipts.add(receipt);
+	return receipt;
+}
+
+/**
+ * 只允许候选聚合消费一次由账本实际条目导出的证据，普通对象和重复消费都会被拒绝。
+ */
+export function consumeSessionRecoveryLedgerReceipt(
+	receipt: unknown,
+): SessionRecoveryLedgerReceiptEvidence | undefined {
+	if (
+		typeof receipt !== "object" ||
+		receipt === null ||
+		!ledgerReceipts.has(receipt as SessionRecoveryLedgerReceipt) ||
+		consumedLedgerReceipts.has(receipt as SessionRecoveryLedgerReceipt)
+	) {
+		return undefined;
+	}
+	const verified = receipt as SessionRecoveryLedgerReceipt;
+	consumedLedgerReceipts.add(verified);
+	return {
+		entryHash: verified.entryHash,
+		sessionHash: verified.sessionHash,
+		toolName: verified.toolName,
+		failureCode: verified.failureCode,
+		failureFingerprint: verified.failureFingerprint,
+		action: verified.action,
+		outcome: verified.outcome,
+	};
 }
 
 async function readLedgerContent(path: string): Promise<string> {
@@ -259,7 +325,7 @@ export async function appendSessionRecoveryLedger(
 	agentDir: string,
 	sessionPath: string,
 	entry: RecoveryLedgerEntry,
-): Promise<boolean> {
+): Promise<SessionRecoveryLedgerReceipt | undefined> {
 	assertLedgerEntry(entry);
 	const path = (await ledgerKey(agentDir, sessionPath)).path;
 	await mkdir(dirname(path), { recursive: true });
@@ -267,9 +333,9 @@ export async function appendSessionRecoveryLedger(
 		const release = await acquireLedgerLock(path);
 		try {
 			const entries = await repairLedgerTail(path);
-			if (entries.some((existing) => existing.id === entry.id)) return false;
+			if (entries.some((existing) => existing.id === entry.id)) return undefined;
 			await appendFile(path, `${JSON.stringify(entry)}\n`, "utf8");
-			return true;
+			return createLedgerReceipt(entry);
 		} finally {
 			await release();
 		}

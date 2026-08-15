@@ -28,7 +28,6 @@ function lessonInput(overrides: Record<string, unknown> = {}) {
 		matcher: { toolName: "read", failureCode: "TARGET_NOT_FOUND" },
 		guidance: "先查看父目录。",
 		allowedAction: "guidance" as const,
-		evidence: { occurrences: 3, sessions: 2, recovered: 3, failed: 0 },
 		expiresAt: "2030-01-01T00:00:00.000Z",
 		...overrides,
 	};

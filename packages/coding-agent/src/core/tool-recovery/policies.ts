@@ -247,7 +247,7 @@ abstract class BaseToolRecoveryController implements ToolRecoveryController {
 						: observation.outcome === "cancelled"
 							? "cancelled"
 							: "failed";
-		const appended = await appendSessionRecoveryLedger(
+		const receipt = await appendSessionRecoveryLedger(
 			this.options.agentDir,
 			sessionFile,
 			createRecoveryLedgerEntry({
@@ -265,18 +265,12 @@ abstract class BaseToolRecoveryController implements ToolRecoveryController {
 				createdAt: failure.occurredAt,
 			}),
 		);
-		if (!appended || !this.options.scopeHash) return;
+		if (!receipt || !this.options.scopeHash) return;
 
 		try {
 			const candidate = await recordDeterministicToolRecoveryCandidate(this.options.agentDir, {
 				scopeHash: this.options.scopeHash,
-				sessionId: this.options.sessionManager.getSessionId(),
-				toolName: observation.toolName,
-				failureCode: failure.code,
-				failureFingerprint: failure.fingerprint,
-				action,
-				outcome,
-				sideEffect: failure.sideEffect,
+				receipt,
 			});
 			if (!candidate && this.options.refiner && outcome === "recovered") {
 				this.refinerFailures.push({
