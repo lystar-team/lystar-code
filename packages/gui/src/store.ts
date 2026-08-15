@@ -1,5 +1,6 @@
 import {
 	type AuthType,
+	type Command,
 	type CompletionResult,
 	type ContentChunk,
 	type GitDiff,
@@ -237,6 +238,7 @@ export interface AppSnapshot {
 	settingsPage?: SettingsPage;
 	settingsHostId: SettingsHostId;
 	settingsHostConnected: boolean;
+	settingsHostLoading: boolean;
 	settingsHostError?: string;
 	settingsProjectId?: string;
 	hostInstructions: readonly ProjectInstruction[];
@@ -250,6 +252,7 @@ export interface AppSnapshot {
 const ACTIVE_OPERATION_STATUSES = new Set(["accepted", "running", "waiting_for_input"]);
 const TRANSCRIPT_WINDOW_MAX_ITEMS = 600;
 const TRANSCRIPT_WINDOW_ESTIMATED_BYTES = 8 * 1024 * 1024;
+const HOST_REQUEST_TIMEOUT_MS = 20_000;
 const PROJECTS_KEY = "lystar.gui.projects";
 const CLIENT_ID_KEY = "lystar.gui.client-id";
 const THEME_KEY = "lystar.gui.theme";
@@ -294,6 +297,10 @@ async function waitForClient(client: GuiProtocolClient): Promise<void> {
 			else reject(new Error(snapshot.lastError ?? "GUI 后台服务连接失败"));
 		});
 	});
+}
+
+function requestHost<T>(client: GuiProtocolClient, request: Command, timeoutMessage: string): Promise<T> {
+	return client.request<T>(request, { timeoutMs: HOST_REQUEST_TIMEOUT_MS, timeoutMessage });
 }
 
 function readJson<T>(key: string, fallback: T): T {
@@ -442,12 +449,15 @@ export class GuiAppStore {
 	private startupConnectionError?: string;
 	private settingsPage?: SettingsPage;
 	private settingsHostId: SettingsHostId = "all";
+	private settingsHostLoading = false;
 	private settingsHostError?: string;
 	private settingsProjectId?: string;
 	private hostInstructions: ProjectInstruction[] = [];
 	private settingsConnection?: HostConnection;
 	private settingsConnectionOwned = false;
 	private unsubscribeSettingsEvents?: () => void;
+	private settingsHostRequest = 0;
+	private settingsHostLoad?: { hostId: SettingsHostId; page: SettingsPage; promise: Promise<void> };
 	private sessionAction?: SessionAction;
 	private readonly pendingActions = new Set<string>();
 	private modelAuthProvider?: string;
@@ -457,6 +467,7 @@ export class GuiAppStore {
 	private snapshot: AppSnapshot = this.buildSnapshot();
 	private transcriptRequest = 0;
 	private connectionPromise?: Promise<void>;
+	private projectOpen?: { projectId: string; promise: Promise<void> };
 
 	getSnapshot = (): AppSnapshot => this.snapshot;
 
@@ -607,7 +618,11 @@ export class GuiAppStore {
 		try {
 			await client.connect();
 			await waitForClient(client);
-			const initial = await client.request<HostConnection["initial"]>({ command: "get_snapshot" });
+			const initial = await requestHost<HostConnection["initial"]>(
+				client,
+				{ command: "get_snapshot" },
+				"GUI 后台初始化超时",
+			);
 			return { connectionId, client, initial };
 		} catch (error) {
 			await client.close().catch(() => {});
@@ -686,90 +701,181 @@ export class GuiAppStore {
 		else this.publish();
 	}
 
-	async selectSettingsHost(hostId: SettingsHostId): Promise<void> {
-		await this.disposeSettingsConnection();
+	selectSettingsHost(hostId: SettingsHostId): Promise<void> {
+		const page = this.settingsPage ?? "general";
+		if (this.settingsHostLoad?.hostId === hostId && this.settingsHostLoad.page === page)
+			return this.settingsHostLoad.promise;
+		const requestId = ++this.settingsHostRequest;
+		const promise = this.loadSettingsHost(hostId, page, requestId).finally(() => {
+			if (this.settingsHostLoad?.promise === promise) this.settingsHostLoad = undefined;
+		});
+		this.settingsHostLoad = { hostId, page, promise };
+		return promise;
+	}
+
+	private async loadSettingsHost(hostId: SettingsHostId, page: SettingsPage, requestId: number): Promise<void> {
 		this.settingsHostId = hostId;
+		this.settingsHostLoading = hostId !== "all";
 		this.settingsHostError = undefined;
 		this.settingsProjectId = undefined;
-		this.hostInstructions = [];
+		if (page === "general") {
+			this.hostInstructions = [];
+			this.projectInstructions = [];
+		}
+		if (page === "models") {
+			this.models = [];
+			this.modelProviders = [];
+		}
+		if (page === "skills") {
+			this.skills = [];
+			this.skillDiagnostics = [];
+		}
+		if (page === "diagnostics") this.diagnostics = undefined;
+		if (page === "about") this.about = undefined;
+		this.publish();
 		if (hostId === "all") {
-			this.publish();
+			await this.disposeSettingsConnection();
+			if (requestId === this.settingsHostRequest) {
+				this.settingsHostLoading = false;
+				this.publish();
+			}
 			return;
 		}
+
+		let connection: HostConnection | undefined;
+		let newOwnedConnection = false;
+		let committed = false;
 		try {
-			const connection =
-				hostId === this.activeConnectionId && this.client?.getSnapshot().connected
+			const existing =
+				this.settingsConnection?.connectionId === hostId && this.settingsConnection.client.getSnapshot().connected
+					? this.settingsConnection
+					: undefined;
+			connection =
+				existing ??
+				(hostId === this.activeConnectionId && this.client?.getSnapshot().connected
 					? {
 							connectionId: hostId,
 							client: this.client,
-							initial: await this.client.request<HostConnection["initial"]>({ command: "get_snapshot" }),
+							initial: await requestHost<HostConnection["initial"]>(
+								this.client,
+								{ command: "get_snapshot" },
+								"读取当前 Host 状态超时",
+							),
 						}
-					: await this.createHostConnection(hostId);
-			this.settingsConnection = connection;
-			this.settingsConnectionOwned = connection.client !== this.client;
-			if (this.settingsConnectionOwned) {
-				this.unsubscribeSettingsEvents = connection.client.onEvent(
-					(event) => void this.handleEvent(event, connection.client),
-				);
+					: await this.createHostConnection(hostId));
+			newOwnedConnection = connection !== existing && connection.client !== this.client;
+			if (requestId !== this.settingsHostRequest) {
+				if (newOwnedConnection) await connection.client.close().catch(() => {});
+				return;
 			}
 			const capabilities = connection.client.getSnapshot().hello?.capabilities ?? [];
 			const project =
 				this.projects.find(
 					(candidate) => candidate.connectionId === hostId && candidate.id === this.currentProjectId,
 				) ?? this.projects.find((candidate) => candidate.connectionId === hostId);
+
+			const previousConnection = this.settingsConnection;
+			const previousOwned = this.settingsConnectionOwned;
+			if (previousConnection !== connection) {
+				this.unsubscribeSettingsEvents?.();
+				this.unsubscribeSettingsEvents = undefined;
+				this.settingsConnection = connection;
+				this.settingsConnectionOwned = connection.client !== this.client;
+				if (this.settingsConnectionOwned) {
+					this.unsubscribeSettingsEvents = connection.client.onEvent(
+						(event) => void this.handleEvent(event, connection!.client),
+					);
+				}
+				if (previousOwned) await previousConnection?.client.close().catch(() => {});
+			}
+			committed = true;
 			this.settingsProjectId = project?.id;
-			const [instructions, models, providers, diagnostics, about, skills, projectInstructions] =
-				await Promise.allSettled([
+			this.publish();
+
+			let failure: PromiseRejectedResult | undefined;
+			if (page === "general") {
+				const [instructions, projectInstructions] = await Promise.allSettled([
 					capabilities.includes("host-instructions")
-						? connection.client.request<ProjectInstruction[]>({ command: "list_host_instructions" })
+						? requestHost<ProjectInstruction[]>(
+								connection.client,
+								{ command: "list_host_instructions" },
+								"读取 Host AGENTS.md 超时",
+							)
 						: Promise.resolve([]),
-					capabilities.includes("models")
-						? connection.client.request<ModelSummary[]>({ command: "list_models" })
-						: Promise.resolve([]),
-					capabilities.includes("models")
-						? connection.client.request<ModelProviderSummary[]>({ command: "list_model_providers" })
-						: Promise.resolve([]),
-					capabilities.includes("diagnostics")
-						? connection.client.request<JsonValue>({
-								command: "get_diagnostics",
-								...(project ? { cwd: project.cwd } : {}),
-							})
-						: Promise.resolve(undefined),
-					capabilities.includes("about")
-						? connection.client.request<JsonValue>({ command: "get_about" })
-						: Promise.resolve(undefined),
-					project && capabilities.includes("skills")
-						? connection.client.request<{ skills: SkillSummary[]; diagnostics: JsonValue }>({
-								command: "list_skills",
-								cwd: project.cwd,
-							})
-						: Promise.resolve({ skills: [], diagnostics: [] }),
 					project && capabilities.includes("project-instructions")
-						? connection.client.request<ProjectInstruction[]>({
-								command: "list_project_instructions",
-								cwd: project.cwd,
-							})
+						? requestHost<ProjectInstruction[]>(
+								connection.client,
+								{ command: "list_project_instructions", cwd: project.cwd },
+								"读取项目 AGENTS.md 超时",
+							)
 						: Promise.resolve([]),
 				]);
-			if (instructions.status === "fulfilled") this.hostInstructions = instructions.value;
-			if (models.status === "fulfilled") this.models = models.value;
-			if (providers.status === "fulfilled") this.modelProviders = providers.value;
-			if (diagnostics.status === "fulfilled") this.diagnostics = diagnostics.value;
-			if (about.status === "fulfilled") this.about = about.value;
-			if (skills.status === "fulfilled") {
-				this.skills = skills.value.skills;
-				this.skillDiagnostics = skills.value.diagnostics;
+				if (requestId !== this.settingsHostRequest) return;
+				if (instructions.status === "fulfilled") this.hostInstructions = instructions.value;
+				if (projectInstructions.status === "fulfilled") this.projectInstructions = projectInstructions.value;
+				failure = [instructions, projectInstructions].find((result) => result.status === "rejected");
+			} else if (page === "models") {
+				const [models, providers] = await Promise.allSettled([
+					capabilities.includes("models")
+						? requestHost<ModelSummary[]>(connection.client, { command: "list_models" }, "读取模型列表超时")
+						: Promise.resolve([]),
+					capabilities.includes("models")
+						? requestHost<ModelProviderSummary[]>(
+								connection.client,
+								{ command: "list_model_providers" },
+								"读取模型供应商超时",
+							)
+						: Promise.resolve([]),
+				]);
+				if (requestId !== this.settingsHostRequest) return;
+				if (models.status === "fulfilled") this.models = models.value;
+				if (providers.status === "fulfilled") this.modelProviders = providers.value;
+				failure = [models, providers].find((result) => result.status === "rejected");
+			} else if (page === "skills") {
+				const skills = await Promise.allSettled([
+					project && capabilities.includes("skills")
+						? requestHost<{ skills: SkillSummary[]; diagnostics: JsonValue }>(
+								connection.client,
+								{ command: "list_skills", cwd: project.cwd },
+								"读取技能列表超时",
+							)
+						: Promise.resolve({ skills: [], diagnostics: [] }),
+				]);
+				if (requestId !== this.settingsHostRequest) return;
+				if (skills[0].status === "fulfilled") {
+					this.skills = skills[0].value.skills;
+					this.skillDiagnostics = skills[0].value.diagnostics;
+				} else failure = skills[0];
+			} else if (page === "diagnostics" && capabilities.includes("diagnostics")) {
+				const diagnostics = await Promise.allSettled([
+					requestHost<JsonValue>(
+						connection.client,
+						{ command: "get_diagnostics", ...(project ? { cwd: project.cwd } : {}) },
+						"读取诊断信息超时",
+					),
+				]);
+				if (requestId !== this.settingsHostRequest) return;
+				if (diagnostics[0].status === "fulfilled") this.diagnostics = diagnostics[0].value;
+				else failure = diagnostics[0];
+			} else if (page === "about" && capabilities.includes("about")) {
+				const about = await Promise.allSettled([
+					requestHost<JsonValue>(connection.client, { command: "get_about" }, "读取版本信息超时"),
+				]);
+				if (requestId !== this.settingsHostRequest) return;
+				if (about[0].status === "fulfilled") this.about = about[0].value;
+				else failure = about[0];
 			}
-			if (projectInstructions.status === "fulfilled") this.projectInstructions = projectInstructions.value;
-			const failure = [instructions, models, providers, diagnostics, about, skills, projectInstructions].find(
-				(result) => result.status === "rejected",
-			);
 			if (failure?.status === "rejected") this.settingsHostError = userErrorMessage(failure.reason);
 		} catch (error) {
+			if (!committed && newOwnedConnection) await connection?.client.close().catch(() => {});
+			if (requestId !== this.settingsHostRequest) return;
 			this.settingsHostError = userErrorMessage(error);
 			throw error;
 		} finally {
-			this.publish();
+			if (requestId === this.settingsHostRequest) {
+				this.settingsHostLoading = false;
+				this.publish();
+			}
 		}
 	}
 
@@ -785,14 +891,14 @@ export class GuiAppStore {
 
 	closeSettings(): void {
 		this.settingsPage = undefined;
-		void this.disposeSettingsConnection().then(() => {
-			this.settingsHostId = "all";
-			this.hostInstructions = [];
-			this.settingsHostError = undefined;
-			this.settingsProjectId = undefined;
-			void Promise.allSettled([this.loadHostMetadata(), this.loadSkills(), this.loadProjectInstructions()]);
-			this.publish();
-		});
+		this.settingsHostRequest++;
+		this.settingsHostId = "all";
+		this.settingsHostLoading = false;
+		this.hostInstructions = [];
+		this.settingsHostError = undefined;
+		this.settingsProjectId = undefined;
+		void this.disposeSettingsConnection();
+		void Promise.allSettled([this.loadHostMetadata(), this.loadSkills(), this.loadProjectInstructions()]);
 		this.publish();
 	}
 
@@ -814,42 +920,72 @@ export class GuiAppStore {
 			return {
 				lease: this.lease,
 				snapshot: this.selectedSession,
-				page: await client.request<TranscriptPage>({ command: "read_transcript", sessionPath, limit: 120 }),
+				page: await requestHost<TranscriptPage>(
+					client,
+					{ command: "read_transcript", sessionPath, limit: 120 },
+					"读取会话内容超时",
+				),
 			};
 		}
 		try {
-			const result = await client.request<{ lease: ControlLease; snapshot: SessionStateSnapshot }>({
-				command: "acquire_session",
-				sessionPath,
-				clientInstanceId: client.clientInstanceId,
-			});
+			const result = await requestHost<{ lease: ControlLease; snapshot: SessionStateSnapshot }>(
+				client,
+				{ command: "acquire_session", sessionPath, clientInstanceId: client.clientInstanceId },
+				"取得会话写入权限超时",
+			);
 			try {
 				return {
 					...result,
-					page: await client.request<TranscriptPage>({ command: "read_transcript", sessionPath, limit: 120 }),
+					page: await requestHost<TranscriptPage>(
+						client,
+						{ command: "read_transcript", sessionPath, limit: 120 },
+						"读取会话内容超时",
+					),
 				};
 			} catch (error) {
-				await client
-					.request({
+				await requestHost<void>(
+					client,
+					{
 						command: "release_session",
 						sessionPath: result.snapshot.path,
 						leaseId: result.lease.leaseId,
-					})
-					.catch(() => {});
+					},
+					"释放候选会话写入权限超时",
+				).catch(() => {});
 				throw error;
 			}
 		} catch (error) {
 			if (!isReadOnlySessionError(error)) throw error;
-			const snapshot = await client.request<SessionStateSnapshot>({ command: "inspect_session", sessionPath });
+			const snapshot = await requestHost<SessionStateSnapshot>(
+				client,
+				{ command: "inspect_session", sessionPath },
+				"读取只读会话状态超时",
+			);
 			return {
 				snapshot,
-				page: await client.request<TranscriptPage>({ command: "read_transcript", sessionPath, limit: 120 }),
+				page: await requestHost<TranscriptPage>(
+					client,
+					{ command: "read_transcript", sessionPath, limit: 120 },
+					"读取会话内容超时",
+				),
 				readOnlyError: error,
 			};
 		}
 	}
 
-	async selectProject(projectId: string): Promise<void> {
+	selectProject(projectId: string): Promise<void> {
+		if (this.projectOpen) {
+			if (this.projectOpen.projectId === projectId) return this.projectOpen.promise;
+			return Promise.reject(new Error("另一个项目正在打开，请等待当前操作结束"));
+		}
+		const promise = this.openProject(projectId).finally(() => {
+			if (this.projectOpen?.promise === promise) this.projectOpen = undefined;
+		});
+		this.projectOpen = { projectId, promise };
+		return promise;
+	}
+
+	private async openProject(projectId: string): Promise<void> {
 		const project = this.projects.find((candidate) => candidate.id === projectId);
 		if (!project) throw new Error("未找到项目");
 		if (project.id === this.currentProjectId && this.clientSnapshot?.connected && this.selectedSessionPath) return;
@@ -877,15 +1013,20 @@ export class GuiAppStore {
 				? {
 						connectionId: oldConnectionId,
 						client: oldClient,
-						initial: await oldClient.request<HostConnection["initial"]>({ command: "get_snapshot" }),
+						initial: await requestHost<HostConnection["initial"]>(
+							oldClient,
+							{ command: "get_snapshot" },
+							"读取当前 Host 状态超时",
+						),
 					}
 				: await this.createHostConnection(project.connectionId);
 
 			stage = "sessions";
-			const sessions = await candidate.client.request<SessionSummary[]>({
-				command: "list_sessions",
-				cwd: project.cwd,
-			});
+			const sessions = await requestHost<SessionSummary[]>(
+				candidate.client,
+				{ command: "list_sessions", cwd: project.cwd },
+				"读取项目会话列表超时",
+			);
 			sessions.sort((left, right) => right.updatedAt - left.updatedAt);
 			const activeOperation = candidate.initial.operations.find(
 				(operation) =>
@@ -943,16 +1084,18 @@ export class GuiAppStore {
 			preparedOwnsLease = false;
 
 			if (oldClient && oldLease && switchingSession && !oldOperationActive) {
-				await oldClient
-					.request({
+				await requestHost<void>(
+					oldClient,
+					{
 						command: "release_session",
 						sessionPath: oldSessionPath,
 						leaseId: oldLease.leaseId,
-					})
-					.catch((error) => {
-						this.statusText = `旧会话写入权限释放失败：${userErrorMessage(error)}`;
-						this.publish();
-					});
+					},
+					"释放旧会话写入权限超时",
+				).catch((error) => {
+					this.statusText = `旧会话写入权限释放失败：${userErrorMessage(error)}`;
+					this.publish();
+				});
 			}
 
 			if (!sameHost && oldClient) await oldClient.close().catch(() => {});
@@ -960,13 +1103,15 @@ export class GuiAppStore {
 			if (prepared?.readOnlyError) this.showError(prepared.readOnlyError);
 		} catch (error) {
 			if (preparedOwnsLease && candidate && prepared?.lease) {
-				await candidate.client
-					.request({
+				await requestHost<void>(
+					candidate.client,
+					{
 						command: "release_session",
 						sessionPath: prepared.snapshot.path,
 						leaseId: prepared.lease.leaseId,
-					})
-					.catch(() => {});
+					},
+					"释放候选会话写入权限超时",
+				).catch(() => {});
 			}
 			if (candidate && !sameHost) await candidate.client.close().catch(() => {});
 			this.projectOpenFailures = {
@@ -1230,7 +1375,11 @@ export class GuiAppStore {
 	}
 
 	private settingsRuntime(): { client?: GuiProtocolClient; cwd?: string } {
-		if (this.settingsPage && this.settingsConnection && this.settingsHostId !== "all") {
+		if (
+			this.settingsPage &&
+			this.settingsConnection?.connectionId === this.settingsHostId &&
+			this.settingsHostId !== "all"
+		) {
 			const project = this.projects.find((candidate) => candidate.id === this.settingsProjectId);
 			return { client: this.settingsConnection.client, cwd: project?.cwd };
 		}
@@ -1259,13 +1408,32 @@ export class GuiAppStore {
 	}
 
 	async refreshSkills(): Promise<void> {
-		if (this.settingsConnection && this.settingsHostId !== "all") await this.selectSettingsHost(this.settingsHostId);
-		else await this.loadSkills();
+		const { client, cwd } = this.settingsRuntime();
+		if (!this.settingsPage || !client || !cwd || !this.clientHasCapability(client, "skills")) {
+			await this.loadSkills();
+			return;
+		}
+		const result = await requestHost<{ skills: SkillSummary[]; diagnostics: JsonValue }>(
+			client,
+			{ command: "list_skills", cwd },
+			"重新加载技能超时",
+		);
+		this.skills = result.skills;
+		this.skillDiagnostics = result.diagnostics;
+		this.publish();
 	}
 
 	async refreshModels(): Promise<void> {
-		if (this.settingsConnection && this.settingsHostId !== "all") await this.selectSettingsHost(this.settingsHostId);
-		else await this.loadModelData();
+		const { client } = this.settingsRuntime();
+		if (!this.settingsPage || !client || !this.clientHasCapability(client, "models")) {
+			await this.loadModelData();
+			return;
+		}
+		[this.models, this.modelProviders] = await Promise.all([
+			requestHost<ModelSummary[]>(client, { command: "list_models" }, "重新加载模型超时"),
+			requestHost<ModelProviderSummary[]>(client, { command: "list_model_providers" }, "重新加载模型供应商超时"),
+		]);
+		this.publish();
 	}
 
 	async addModelProvider(provider: ModelProviderInput, model: ProviderModelInput): Promise<void> {
@@ -1409,10 +1577,11 @@ export class GuiAppStore {
 	async refreshProjectInstructions(): Promise<void> {
 		const { client, cwd } = this.settingsRuntime();
 		if (this.settingsPage && client && cwd && this.clientHasCapability(client, "project-instructions")) {
-			this.projectInstructions = await client.request<ProjectInstruction[]>({
-				command: "list_project_instructions",
-				cwd,
-			});
+			this.projectInstructions = await requestHost<ProjectInstruction[]>(
+				client,
+				{ command: "list_project_instructions", cwd },
+				"重新加载项目 AGENTS.md 超时",
+			);
 			this.publish();
 			return;
 		}
@@ -1426,10 +1595,11 @@ export class GuiAppStore {
 		if (!project || !this.settingsConnection) return;
 		this.settingsProjectId = project.id;
 		if (this.clientHasCapability(this.settingsConnection.client, "project-instructions")) {
-			this.projectInstructions = await this.settingsConnection.client.request<ProjectInstruction[]>({
-				command: "list_project_instructions",
-				cwd: project.cwd,
-			});
+			this.projectInstructions = await requestHost<ProjectInstruction[]>(
+				this.settingsConnection.client,
+				{ command: "list_project_instructions", cwd: project.cwd },
+				"读取项目 AGENTS.md 超时",
+			);
 		}
 		this.publish();
 	}
@@ -1437,7 +1607,11 @@ export class GuiAppStore {
 	async refreshHostInstructions(): Promise<void> {
 		const client = this.settingsConnection?.client;
 		if (!client || !this.clientHasCapability(client, "host-instructions")) return;
-		this.hostInstructions = await client.request<ProjectInstruction[]>({ command: "list_host_instructions" });
+		this.hostInstructions = await requestHost<ProjectInstruction[]>(
+			client,
+			{ command: "list_host_instructions" },
+			"重新加载 Host AGENTS.md 超时",
+		);
 		this.publish();
 	}
 
@@ -2249,7 +2423,10 @@ export class GuiAppStore {
 			theme: this.theme,
 			settingsPage: this.settingsPage,
 			settingsHostId: this.settingsHostId,
-			settingsHostConnected: this.settingsConnection?.client.getSnapshot().connected ?? false,
+			settingsHostConnected:
+				this.settingsConnection?.connectionId === this.settingsHostId &&
+				this.settingsConnection.client.getSnapshot().connected,
+			settingsHostLoading: this.settingsHostLoading,
 			settingsHostError: this.settingsHostError,
 			settingsProjectId: this.settingsProjectId,
 			hostInstructions: this.hostInstructions,

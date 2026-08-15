@@ -37,10 +37,10 @@ interface RequestMessage {
 
 type RequestHandler = (message: RequestMessage) => unknown | Promise<unknown>;
 
-function fakeClient(handler: RequestHandler) {
+function fakeClient(handler: RequestHandler, capabilities: string[] = []) {
 	const request = vi.fn(async <T>(message: RequestMessage): Promise<T> => handler(message) as Promise<T>);
 	const close = vi.fn(async () => {});
-	const snapshot = { connected: true, sessions: new Map(), hello: { capabilities: [] } };
+	const snapshot = { connected: true, sessions: new Map(), hello: { capabilities } };
 	const client = {
 		clientInstanceId: crypto.randomUUID(),
 		request,
@@ -193,7 +193,112 @@ describe("project open transaction", () => {
 		expect(old.request).not.toHaveBeenCalledWith(expect.objectContaining({ command: "release_session" }));
 		expect(candidate.request).toHaveBeenCalledWith(
 			expect.objectContaining({ command: "release_session", sessionPath: targetSession.path }),
+			expect.objectContaining({ timeoutMs: 20_000 }),
 		);
 		expect(candidate.close).toHaveBeenCalledOnce();
+	});
+});
+
+describe("settings Host lifecycle", () => {
+	it("deduplicates one Host load and exposes Host and project AGENTS without opening another connection", async () => {
+		let releaseInstructions = () => {};
+		const instructionsReady = new Promise<void>((resolve) => {
+			releaseInstructions = resolve;
+		});
+		const hostInstruction = {
+			path: "/agent/AGENTS.md",
+			fileName: "AGENTS.md",
+			exists: true,
+			active: true,
+			editable: true,
+			content: "host instructions",
+			contentHash: "host-hash",
+		};
+		const projectInstruction = {
+			...hostInstruction,
+			path: "/project/AGENTS.md",
+			content: "project instructions",
+			contentHash: "project-hash",
+		};
+		const remote = fakeClient(
+			async (message) => {
+				if (message.command === "list_host_instructions") {
+					await instructionsReady;
+					return [hostInstruction];
+				}
+				if (message.command === "list_project_instructions") return [projectInstruction];
+				throw new Error(`unexpected command: ${message.command}`);
+			},
+			["host-instructions", "project-instructions"],
+		);
+		const createHostConnection = vi.fn(async () => ({
+			connectionId: "ssh-1",
+			client: remote.client,
+			initial: { sessions: [], operations: [], pendingUiRequests: [] },
+		}));
+		const store = new GuiAppStore();
+		Object.assign(store, {
+			connections: [{ id: "ssh-1", name: "Remote", target: "remote", mode: "alias" }],
+			projects: [{ id: "project", name: "Project", cwd: "/project", connectionId: "ssh-1" }],
+			createHostConnection,
+		});
+
+		const first = store.selectSettingsHost("ssh-1");
+		const second = store.selectSettingsHost("ssh-1");
+		expect(second).toBe(first);
+		expect(createHostConnection).toHaveBeenCalledOnce();
+		releaseInstructions();
+		await first;
+		await store.selectSettingsHost("ssh-1");
+
+		expect(createHostConnection).toHaveBeenCalledOnce();
+		expect(store.getSnapshot()).toMatchObject({
+			settingsHostId: "ssh-1",
+			settingsHostConnected: true,
+			settingsHostLoading: false,
+			hostInstructions: [hostInstruction],
+			projectInstructions: [projectInstruction],
+		});
+		expect(remote.close).not.toHaveBeenCalled();
+	});
+
+	it("closes a superseded Host candidate instead of leaking it", async () => {
+		let releaseFirst = () => {};
+		const firstReady = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+		const firstClient = fakeClient(async () => []);
+		const secondClient = fakeClient(async () => []);
+		const store = new GuiAppStore();
+		Object.assign(store, {
+			connections: [
+				{ id: "ssh-1", name: "First", target: "first", mode: "alias" },
+				{ id: "ssh-2", name: "Second", target: "second", mode: "alias" },
+			],
+			createHostConnection: vi.fn(async (connectionId: string) => {
+				if (connectionId === "ssh-1") {
+					await firstReady;
+					return {
+						connectionId,
+						client: firstClient.client,
+						initial: { sessions: [], operations: [], pendingUiRequests: [] },
+					};
+				}
+				return {
+					connectionId,
+					client: secondClient.client,
+					initial: { sessions: [], operations: [], pendingUiRequests: [] },
+				};
+			}),
+		});
+
+		const first = store.selectSettingsHost("ssh-1");
+		await store.selectSettingsHost("ssh-2");
+		releaseFirst();
+		await first;
+
+		expect(firstClient.close).toHaveBeenCalledOnce();
+		expect(secondClient.close).not.toHaveBeenCalled();
+		expect(store.getSnapshot()).toMatchObject({ settingsHostId: "ssh-2", settingsHostConnected: true });
 	});
 });

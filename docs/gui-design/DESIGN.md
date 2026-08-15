@@ -131,6 +131,7 @@ LYStar Code GUI 是跨平台编码 Agent 工作台。用户需要在同一个窗
 
 ## 窗口与侧栏材质
 
+- 第一行使用固定 `30px` 窗口拖拽区，Logo、侧栏品牌区和主顶栏统一从第二行开始。拖拽区属于窗口框架层，必须高于 Project Trust、设置和其他业务遮罩，并通过 Tauri `startDragging()` 执行原生拖动。
 - macOS 使用原生交通灯、Overlay title bar 和系统 Vibrancy，让侧栏延伸到窗口顶边。
 - Windows 使用集成式最小化、最大化、关闭按钮；系统支持时使用 Mica/Acrylic，关闭透明效果时回退到校准后的实体侧栏。
 - Linux 使用自定义窗口控制和 compositor 支持的透明/模糊效果；不支持时保持同层级实体侧栏，不能因透明能力缺失影响可读性和拖动、最大化、关闭行为。
@@ -142,6 +143,7 @@ LYStar Code GUI 是跨平台编码 Agent 工作台。用户需要在同一个窗
 - 项目切换使用两阶段事务：候选 Host、目录、Session、租约和 transcript 尾页准备成功后，才提交当前项目并持久化最近成功项目。
 - 新项目准备失败时保留旧项目、旧连接、旧租约和旧 transcript；失败项目显示重试、编辑连接、选择目录和复制诊断动作。
 - Session 列表和首个 transcript 尾页是项目打开的关键路径；Skill、AGENTS、Git、模型和诊断属于提交后的独立加载，失败不得阻塞项目和 Session。
+- Host snapshot、Session 列表、lease 和 transcript 请求必须有 deadline；同一项目的重复打开合并为一个事务，另一项目在事务完成前明确拒绝，禁止无限显示“正在打开项目”。
 - 启动恢复失败时进入可操作工作台，禁止只显示错误横幅或持续自动打开失败项目。
 
 ## 响应式

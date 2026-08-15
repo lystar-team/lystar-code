@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "LYStar Code",
-  "version": "0.84.1-lystar-gui.5",
+  "version": "0.84.1-lystar-gui.6",
   "identifier": "com.lystar.code",
   "build": {
     "frontendDist": "../dist",

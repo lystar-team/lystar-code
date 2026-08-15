@@ -26,6 +26,14 @@ export interface TranscriptHead {
 	stale: boolean;
 }
 
+export interface RequestOptions {
+	/** Use 0 only for a command that intentionally has no deadline. */
+	timeoutMs?: number;
+	timeoutMessage?: string;
+}
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
 export interface GuiClientSnapshot {
 	connected: boolean;
 	hello?: ServerHello;
@@ -49,7 +57,14 @@ export class GuiProtocolError extends Error {
 
 export class GuiProtocolClient {
 	private readonly decoder = new ServerMessageDecoder();
-	private readonly pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+	private readonly pending = new Map<
+		string,
+		{
+			resolve: (value: unknown) => void;
+			reject: (error: Error) => void;
+			timeout?: ReturnType<typeof setTimeout>;
+		}
+	>();
 	private readonly listeners = new Set<() => void>();
 	private readonly eventListeners = new Set<(event: ServerEvent) => void>();
 	private readonly sessions = new Map<string, SessionStateSnapshot>();
@@ -93,14 +108,28 @@ export class GuiProtocolClient {
 		);
 	}
 
-	async request<T = unknown>(request: Command): Promise<T> {
+	async request<T = unknown>(request: Command, options: RequestOptions = {}): Promise<T> {
 		const id = globalThis.crypto.randomUUID();
+		const timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 		const result = new Promise<T>((resolve, reject) => {
-			this.pending.set(id, { resolve: (value) => resolve(value as T), reject });
+			const pending = {
+				resolve: (value: unknown) => resolve(value as T),
+				reject,
+				timeout: undefined as ReturnType<typeof setTimeout> | undefined,
+			};
+			if (timeoutMs > 0) {
+				pending.timeout = globalThis.setTimeout(() => {
+					if (!this.pending.delete(id)) return;
+					reject(new Error(options.timeoutMessage ?? `GUI 后台请求超时：${request.command}`));
+				}, timeoutMs);
+			}
+			this.pending.set(id, pending);
 		});
 		try {
 			await this.transport.send(encodeClientMessage({ type: "request", id, request }));
 		} catch (error) {
+			const pending = this.pending.get(id);
+			if (pending?.timeout) globalThis.clearTimeout(pending.timeout);
 			this.pending.delete(id);
 			throw error;
 		}
@@ -146,6 +175,7 @@ export class GuiProtocolClient {
 			const pending = this.pending.get(message.id);
 			if (!pending) return;
 			this.pending.delete(message.id);
+			if (pending.timeout) globalThis.clearTimeout(pending.timeout);
 			if (message.ok) pending.resolve(message.result);
 			else pending.reject(new GuiProtocolError(message.error.code, message.error.message, message.error.retryable));
 			return;
@@ -207,7 +237,10 @@ export class GuiProtocolClient {
 	}
 
 	private handleClose(error?: Error): void {
-		for (const pending of this.pending.values()) pending.reject(error ?? new Error("GUI 后台连接已关闭"));
+		for (const pending of this.pending.values()) {
+			if (pending.timeout) globalThis.clearTimeout(pending.timeout);
+			pending.reject(error ?? new Error("GUI 后台连接已关闭"));
+		}
 		this.pending.clear();
 		this.publish({ connected: false, lastError: error?.message });
 	}

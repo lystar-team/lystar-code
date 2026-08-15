@@ -1,6 +1,6 @@
 # LYStar Code GUI 开发方案
 
-> 状态：Core、GUI Protocol、GUI Host、React 工作台和 Linux 本机 Tauri 已形成公开 Beta；`gui-v0.84.1-lystar-gui.5` 已发布五平台安装包、严格 SHA/manifest 和 provenance。macOS App 与 Darwin Host 使用 ad-hoc code signature，正式 DMG 已在 GitHub ARM64/x64 runner 通过签名和架构校验；干净 Mac Gatekeeper、Developer ID/notarization 和三平台完整实机运行仍未放行。Codex 式高密度工作台、两阶段项目切换、Host/项目指令、SSH 完整表单、Host key 确认、远端目录浏览、图片、补全、资源授权、Inspector 和三尺寸双主题视觉闸门已完成源码与本机验证；SSH Remote Host 仍待真实目标验证
+> 状态：Core、GUI Protocol、GUI Host、React 工作台和 Linux 本机 Tauri 已形成公开 Beta；`gui-v0.84.1-lystar-gui.5` 已发布五平台安装包、严格 SHA/manifest 和 provenance。当前源码为未发布的 `0.84.1-lystar-gui.6` P0 候选，已修复设置 Host 连接泄漏、项目打开无 deadline、AGENTS 加载、窗口拖动层级和 SSH 子进程退出回收，并完成本机浏览器与 Linux Tauri 验证。macOS App 与 Darwin Host 使用 ad-hoc code signature；干净 Mac Gatekeeper、Developer ID/notarization、真实 SSH Remote Host 和三平台完整实机运行仍未放行
 >
 > 日期：2026-08-15
 >
@@ -1286,6 +1286,7 @@ Coding Agent 改动只允许两类，并分别提交：
 
 - [x] 完成浅色、深色、跟随系统主题和主布局。
 - [x] 用户确认的 16 项桌面体验与可靠性整改已完成源码、自动测试和浏览器视觉闸门；其中 P0 项目切换已使用两阶段事务关闭。真实 SSH 目标、macOS 和 Windows 的平台链路仍按各自未完成项单独放行，不能由本机截图替代。
+- [x] `gui.6` P0 候选已关闭设置 Host 连接泄漏与无限等待链：同 Host/同页面请求合并，已连接 Client 复用，跨 Host 过期候选关闭；项目打开同目标合并、不同目标互斥；Host snapshot、Session、lease、transcript 和设置数据均有 20 秒 deadline。真实浏览器已读取本机与项目 AGENTS，Linux Tauri 在 Project Trust 遮罩打开时完成窗口拖动和退出回收。该候选尚未发布。
 - [x] 项目、Session、Tool、Composer 和真实 Git Inspector 已接通；普通输入走 `prompt`，`!` 命令走 `run_bash`，无附件时 Composer 保持两行。Git 状态使用 `porcelain=v2 -z`，Diff 禁用 external diff；Inspector 宽度和上下分区比例可拖拽、键盘调整、恢复默认并持久化，窄屏使用全工作区覆盖。
 - [x] Session 列表显示运行、完成、失败、中断和中性“TUI 使用中”；Composer 在外部 writer 持锁时只读，释放后自动重新获取控制。输入图片、历史图片和 Tool 图片使用 Session 绑定 `contentRef` 按需读取。
 - [x] Composer `@`、`$`、`/` 补全消费 Host/Runtime 候选；大仓库按已输入目录前缀缩小扫描根，`/` 只展示真实 Runtime 命令和 `/new`、`/settings`、`/models`、`/changes` 四个 GUI handler。外链、项目文件、图片、Tool 路径和 Diff 行号统一走 Host 边界校验。
@@ -1299,7 +1300,7 @@ Coding Agent 改动只允许两类，并分别提交：
 
 ### 14.4 本机与无证书更新
 
-- [ ] Tauri Host 载荷、资源物化、启动环境变量、本机/SSH transport 和五平台 Remote Host 资源代码已完成；Linux x64 AppImage、原生窗口、raw Channel、Host 还原和正常退出已通过。Host 以版本头载荷进入安装包，避免 Tauri `patchelf` 改写 Bun ELF；运行或 SSH 安装前校验并原子还原。退出 transport 时先关闭 stdin 让 Host `dispose()` 释放 writer lock，错误路径才强杀；公开 AppImage 隔离复测为退出码 0、stderr=0、lock=0、残留进程=0，最新源码 debug build 为退出码 0、lock=0、子 Host=0，stderr 仅有 Xvfb 缺少 AT-SPI 总线的环境警告。真实 SSH transport 和其他平台实机仍待验证。
+- [ ] Tauri Host 载荷、资源物化、启动环境变量、本机/SSH transport 和五平台 Remote Host 资源代码已完成；Linux x64 AppImage、原生窗口、raw Channel、Host 还原和正常退出已通过。Host 以版本头载荷进入安装包，避免 Tauri `patchelf` 改写 Bun ELF；运行或 SSH 安装前校验并原子还原。本机 Host 和系统 SSH 统一使用标准 Child，关闭 stdin 后最多等待 500ms，再执行 kill/wait；应用退出时同步完成，不依赖随主进程退出的后台线程。`gui.6` 已删除单用途 Tauri shell plugin，隔离 debug build 为退出码 0、stderr=0、lock=0、残留 Host=0。真实 SSH transport 和其他平台实机仍待验证。
 - [x] GUI Protocol Client 已接入真实本机字节桥；开发模式每个 WebSocket 连接对应独立 stdio Host，不使用 mock Session。
 - [ ] 项目、Session、发送、停止、模型、Tool、图片、Extension UI 和 Git Inspector 已接通；Linux 原生项目恢复、Bash 发送/落盘/重启恢复、Git Inspector、图片查看器和项目指令动态重载已通过。Completion、Session 状态和资源链接已通过真实浏览器/Host，普通模型对话、认证、Extension UI 与原生 Completion 键盘链仍待补齐。
 - [x] 完成 transcript 分页、虚拟列表和跨页有界窗口；真实 `800×600` 长 Session 连续加载 4 页后触发 600 条上限，“加载更早内容”和“回到最新”在历史中段吸顶可用，回跳后恢复尾页和底部位置。
@@ -1320,7 +1321,7 @@ Coding Agent 改动只允许两类，并分别提交：
 - [ ] Linux `systemd --user` + lingering、macOS LaunchDaemon + 一次管理员批准、Windows Scheduled Task、本机 IPC、SSH relay、断线 lease 释放和 operation 重连接管代码已实现；无三平台实机证据。
 - [ ] 关闭 SSH、关闭 GUI 和 GUI 自动更新期间的远端任务继续尚未运行验证。
 - [ ] 远程项目持久显示、离线状态、最近 Session、最后项目和点击自动重连代码已实现；Linux 本机 Tauri 的项目和 Session 恢复已验证，真实 SSH 项目恢复仍待验证。
-- [ ] Beta `gui-release.yml` 已通过 `gui-v0.84.1-lystar-gui.5` 跑通五平台原生构建、macOS ad-hoc DMG 验签、metadata、provenance 和 prerelease；独立 `gui-ci.yml`、GUI/CLI 兼容组合候选和 stable 指针联合 gate 仍待实现。
+- [ ] Beta `gui-release.yml` 已通过 `gui-v0.84.1-lystar-gui.5` 跑通五平台原生构建、macOS ad-hoc DMG 验签、metadata、provenance 和 prerelease；`gui.6` 候选删除自动 `gui-preflight/**` 分支触发，避免同一 commit 重复跑两次五平台矩阵，保留显式 `workflow_dispatch`，并增加按平台隔离的 Rust cache。独立 `gui-ci.yml`、GUI/CLI 兼容组合候选和 stable 指针联合 gate 仍待实现。
 - [ ] 当前无 Apple/Windows 身份证书的 CI 配置通过；以后增加证书变量时不得改变现有 updater 验签协议。
 
 完成标准：三个系统都能安装 GUI；SSH 断线和关闭 GUI 后远端任务继续；现有 CLI Release workflow 未增加 GUI 构建逻辑。

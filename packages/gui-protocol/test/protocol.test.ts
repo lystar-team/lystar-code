@@ -178,6 +178,21 @@ describe("GUI Protocol v1", () => {
 		expect(client.getSnapshot().connected).toBe(false);
 	});
 
+	it("removes a request when the host does not respond before its deadline", async () => {
+		const clientTransport = new MemoryTransport();
+		const serverTransport = new MemoryTransport();
+		clientTransport.peer = serverTransport;
+		serverTransport.peer = clientTransport;
+		const client = new GuiProtocolClient(clientTransport, "client");
+		await client.connect();
+
+		await expect(
+			client.request({ command: "get_snapshot" }, { timeoutMs: 5, timeoutMessage: "项目后台响应超时" }),
+		).rejects.toThrow("项目后台响应超时");
+		clientTransport.disconnect(new Error("late disconnect"));
+		expect(client.getSnapshot().connected).toBe(false);
+	});
+
 	it("decodes a readable version error", () => {
 		const [message] = new ServerMessageDecoder().push(
 			encodeServerMessage({

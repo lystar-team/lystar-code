@@ -1,4 +1,5 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import type {
 	CompletionResult,
@@ -1520,6 +1521,16 @@ function GeneralSettings() {
 			</SettingsSection>
 		);
 	}
+	if (snapshot.settingsHostLoading) {
+		return (
+			<SettingsSection title="个性化" description={`${hostName} 的全局和项目指令。`}>
+				<div className="settings-loading" role="status">
+					<LoaderCircle size={17} className="spin" />
+					正在读取 AGENTS.md
+				</div>
+			</SettingsSection>
+		);
+	}
 
 	const save = async () => {
 		if (!selected || (selected.fileName !== "AGENTS.md" && selected.fileName !== "AGENTS.override.md")) return;
@@ -2333,7 +2344,17 @@ export function App() {
 	}, []);
 
 	return (
-		<div className={`app-shell ${snapshot.sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+		<div
+			className={`app-shell ${snapshot.sidebarCollapsed ? "sidebar-collapsed" : ""} ${snapshot.settingsPage ? "settings-open" : ""}`}
+		>
+			<div
+				className="window-drag-strip"
+				aria-hidden="true"
+				onMouseDown={(event) => {
+					if (event.button === 0 && "__TAURI_INTERNALS__" in window)
+						void getCurrentWindow().startDragging().catch(() => {});
+				}}
+			/>
 			<Sidebar mobileOpen={mobileSidebar} closeMobile={() => setMobileSidebar(false)} />
 			<div
 				className={`main-shell ${snapshot.gitInspectorOpen ? "inspector-open" : ""}`}

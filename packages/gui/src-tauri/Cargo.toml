@@ -1,6 +1,6 @@
 [package]
 name = "lystar-code-gui"
-version = "0.84.1-lystar-gui.5"
+version = "0.84.1-lystar-gui.6"
 description = "LYStar Code desktop GUI"
 authors = ["Yean"]
 license = "MIT"
@@ -22,5 +22,4 @@ keyring = "=4.1.5"
 tauri = { version = "=2.11.3", features = [] }
 tauri-plugin-dialog = "=2.7.2"
 tauri-plugin-opener = "=2.5.4"
-tauri-plugin-shell = "=2.3.5"
 window-vibrancy = "=0.6.0"

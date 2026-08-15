@@ -18,11 +18,6 @@ use tauri::{
     ipc::{Channel, InvokeBody, InvokeResponseBody, Request},
     AppHandle, Manager, RunEvent, State,
 };
-use tauri_plugin_shell::{
-    process::{CommandChild, CommandEvent},
-    ShellExt,
-};
-
 const MAX_TRANSPORT_CHUNK: usize = 16 * 1024 * 1024 + 4;
 const MAX_HOST_CONNECTIONS: usize = 4;
 const MAX_DESKTOP_STATE_BYTES: usize = 1024 * 1024;
@@ -84,21 +79,20 @@ struct RemoteSystem {
     arch: String,
 }
 
-struct SshChild {
+struct ProcessChild {
     child: Child,
     stdin: ChildStdin,
 }
 
 enum ManagedConnection {
-    Local(CommandChild),
-    Ssh(SshChild),
+    Local(ProcessChild),
+    Ssh(ProcessChild),
 }
 
 impl ManagedConnection {
     fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
         match self {
-            Self::Local(child) => child.write(bytes).map_err(|error| error.to_string()),
-            Self::Ssh(child) => child
+            Self::Local(child) | Self::Ssh(child) => child
                 .stdin
                 .write_all(bytes)
                 .map_err(|error| error.to_string()),
@@ -107,8 +101,28 @@ impl ManagedConnection {
 
     fn kill(self) -> Result<(), String> {
         match self {
-            Self::Local(child) => child.kill().map_err(|error| error.to_string()),
-            Self::Ssh(mut child) => child.child.kill().map_err(|error| error.to_string()),
+            Self::Local(mut child) | Self::Ssh(mut child) => {
+                child.child.kill().map_err(|error| error.to_string())?;
+                child.child.wait().map_err(|error| error.to_string())?;
+                Ok(())
+            }
+        }
+    }
+
+    fn close(self) {
+        match self {
+            Self::Local(ProcessChild { mut child, stdin })
+            | Self::Ssh(ProcessChild { mut child, stdin }) => {
+                drop(stdin);
+                for _ in 0..10 {
+                    match child.try_wait() {
+                        Ok(Some(_)) | Err(_) => return,
+                        Ok(None) => thread::sleep(std::time::Duration::from_millis(50)),
+                    }
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+            }
         }
     }
 }
@@ -231,7 +245,9 @@ fn remove_connection(app: &AppHandle, connection_id: &str, kill: bool) {
 }
 
 fn close_all_connections(state: &GuiHostState) {
-    drop(std::mem::take(&mut *state.children.lock().unwrap()));
+    for connection in std::mem::take(&mut *state.children.lock().unwrap()).into_values() {
+        connection.close();
+    }
 }
 
 fn assert_connection_limit(state: &GuiHostState) -> Result<(), String> {
@@ -519,7 +535,10 @@ fn host_command(profile: &SshConnectionOptions, platform: &str) -> Result<String
     Ok(command)
 }
 
-fn configure_password_askpass(command: &mut Command, profile: &SshConnectionOptions) -> Result<(), String> {
+fn configure_password_askpass(
+    command: &mut Command,
+    profile: &SshConnectionOptions,
+) -> Result<(), String> {
     let credential_id = profile
         .credential_id
         .as_deref()
@@ -781,60 +800,72 @@ fn open_gui_host(
         .resource_dir()
         .map_err(|error| error.to_string())?;
     let host_path = prepare_local_host(&app, &state)?;
-    let (mut receiver, child) = app
-        .shell()
-        .command(host_path)
+    let mut child = Command::new(host_path)
         .env("PI_GUI_HOST_VERSION", env!("CARGO_PKG_VERSION"))
         .env("PI_PACKAGE_DIR", &resource_dir)
         .env(
             "PI_PHOTON_WASM_PATH",
             resource_dir.join("photon_rs_bg.wasm"),
         )
-        .set_raw_out(true)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| error.to_string())?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "无法打开 GUI 后台标准输入".to_string())?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "无法打开 GUI 后台标准输出".to_string())?;
+    let stderr = bounded_stderr(
+        child
+            .stderr
+            .take()
+            .ok_or_else(|| "无法打开 GUI 后台错误输出".to_string())?,
+    );
 
-    state
-        .children
-        .lock()
-        .unwrap()
-        .insert(connection_id.clone(), ManagedConnection::Local(child));
+    state.children.lock().unwrap().insert(
+        connection_id.clone(),
+        ManagedConnection::Local(ProcessChild { child, stdin }),
+    );
 
     let task_app = app.clone();
     let task_connection_id = connection_id.clone();
-    tauri::async_runtime::spawn(async move {
-        let mut kill = false;
-        while let Some(event) = receiver.recv().await {
-            match event {
-                CommandEvent::Stdout(chunk) => {
-                    if chunk.len() > MAX_TRANSPORT_CHUNK {
-                        kill = true;
-                        let _ = status.send(TransportStatus::Error {
-                            message: "GUI 后台输出超过传输上限".into(),
-                        });
-                        break;
+    thread::spawn(move || {
+        let mut buffer = vec![0_u8; 64 * 1024];
+        loop {
+            match stdout.read(&mut buffer) {
+                Ok(0) => {
+                    let detail = stderr_message(&stderr);
+                    if detail.is_empty() {
+                        let _ = status.send(TransportStatus::Closed);
+                    } else {
+                        let _ = status.send(TransportStatus::Error { message: detail });
                     }
-                    if bytes.send(InvokeResponseBody::Raw(chunk)).is_err() {
-                        kill = true;
-                        break;
+                    remove_connection(&task_app, &task_connection_id, false);
+                    return;
+                }
+                Ok(length) => {
+                    if bytes
+                        .send(InvokeResponseBody::Raw(buffer[..length].to_vec()))
+                        .is_err()
+                    {
+                        remove_connection(&task_app, &task_connection_id, true);
+                        return;
                     }
                 }
-                CommandEvent::Stderr(bytes) => {
-                    eprintln!("GUI Host: {}", String::from_utf8_lossy(&bytes));
+                Err(error) => {
+                    let _ = status.send(TransportStatus::Error {
+                        message: format!("读取 GUI 后台输出失败：{error}"),
+                    });
+                    remove_connection(&task_app, &task_connection_id, true);
+                    return;
                 }
-                CommandEvent::Error(message) => {
-                    kill = true;
-                    let _ = status.send(TransportStatus::Error { message });
-                    break;
-                }
-                CommandEvent::Terminated(_) => {
-                    let _ = status.send(TransportStatus::Closed);
-                    break;
-                }
-                _ => {}
             }
         }
-        remove_connection(&task_app, &task_connection_id, kill);
     });
 
     Ok(connection_id)
@@ -880,7 +911,7 @@ fn open_ssh_host(
 
     state.children.lock().unwrap().insert(
         connection_id.clone(),
-        ManagedConnection::Ssh(SshChild { child, stdin }),
+        ManagedConnection::Ssh(ProcessChild { child, stdin }),
     );
 
     let task_app = app.clone();
@@ -966,7 +997,9 @@ fn write_gui_host(state: State<'_, GuiHostState>, request: Request<'_>) -> Resul
 
 #[tauri::command]
 fn close_gui_host(state: State<'_, GuiHostState>, connection_id: String) -> Result<(), String> {
-    state.children.lock().unwrap().remove(&connection_id);
+    if let Some(connection) = state.children.lock().unwrap().remove(&connection_id) {
+        connection.close();
+    }
     Ok(())
 }
 
@@ -1376,13 +1409,14 @@ mod tests {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(GuiHostState::default())
         .setup(|app| {
             #[cfg(any(target_os = "macos", target_os = "windows"))]
-            let Some(window) = app.get_webview_window("main") else { return Ok(()) };
+            let Some(window) = app.get_webview_window("main") else {
+                return Ok(());
+            };
             #[cfg(target_os = "macos")]
             let _ = window_vibrancy::apply_vibrancy(
                 &window,
@@ -1418,11 +1452,8 @@ pub fn run() {
             let state = app.state::<GuiHostState>();
             close_all_connections(state.inner());
             for credential_id in state.ephemeral_credentials.lock().unwrap().drain() {
-                let _ = credential_entry(&credential_id).and_then(|entry| {
-                    entry
-                        .delete_credential()
-                        .map_err(|error| error.to_string())
-                });
+                let _ = credential_entry(&credential_id)
+                    .and_then(|entry| entry.delete_credential().map_err(|error| error.to_string()));
             }
         }
     });

@@ -8,8 +8,8 @@ export function guiReleaseSigningErrors(workflow, sidecar) {
 	const errors = [];
 	for (const required of [
 		"workflow_dispatch:",
-		'"gui-preflight/**"',
 		'APPLE_SIGNING_IDENTITY: "-"',
+		"actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
 		"PI_GUI_REMOTE_HOST_PLATFORMS: linux-arm64,linux-x64,windows-x64",
 		"prepare-darwin-remote-hosts:",
 		"merge-remote-hosts:",
@@ -18,6 +18,9 @@ export function guiReleaseSigningErrors(workflow, sidecar) {
 		"node packages/gui/scripts/verify-macos-bundle.mjs",
 	]) {
 		if (!workflow.includes(required)) errors.push(`missing GUI release signing contract: ${required}`);
+	}
+	if (workflow.includes('"gui-preflight/**"')) {
+		errors.push("GUI release must not rebuild the same commit through a preflight branch");
 	}
 	const macBuild = workflow.match(
 		/- name: Build native GUI bundle \(macOS ad-hoc signed\)([\s\S]*?)(?=\n\s{6}- name:)/,

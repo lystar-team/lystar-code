@@ -11,7 +11,7 @@ const sidecar = readFileSync(new URL("../packages/gui/scripts/build-sidecar.mjs"
 
 test("GUI release keeps macOS signing enabled", () => {
 	assert.deepEqual(guiReleaseSigningErrors(workflow, sidecar), []);
-	assert.match(workflow, /branches:\n\s+- "gui-preflight\/\*\*"/);
+	assert.doesNotMatch(workflow, /gui-preflight\/\*\*/);
 	const broken = workflow.replace(
 		'run: npm --workspace @lystar/code-gui run tauri -- build --ci --bundles "${{ matrix.bundle }}"',
 		'run: npm --workspace @lystar/code-gui run tauri -- build --ci --no-sign --bundles "${{ matrix.bundle }}"',
@@ -22,6 +22,8 @@ test("GUI release keeps macOS signing enabled", () => {
 		"  release:",
 	);
 	assert.match(guiReleaseSigningErrors(publishingPreflight, sidecar).join("\n"), /only run for gui-v tags/);
+	const duplicatePreflight = workflow.replace('tags:\n      - "gui-v*"', 'branches:\n      - "gui-preflight/**"\n    tags:\n      - "gui-v*"');
+	assert.match(guiReleaseSigningErrors(duplicatePreflight, sidecar).join("\n"), /must not rebuild the same commit/);
 });
 
 test("macOS verifier extracts the signed Host bytes", () => {

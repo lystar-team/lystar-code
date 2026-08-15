@@ -2,8 +2,6 @@ name: Release LYStar Code GUI Beta
 
 on:
   push:
-    branches:
-      - "gui-preflight/**"
     tags:
       - "gui-v*"
   workflow_dispatch:
@@ -209,6 +207,17 @@ jobs:
           rustup default "$RUST_VERSION"
           rustc --version
           cargo --version
+
+      - name: Cache Rust build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            packages/gui/src-tauri/target
+          key: gui-rust-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_VERSION }}-${{ hashFiles('packages/gui/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            gui-rust-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_VERSION }}-
 
       - name: Install Linux WebKitGTK and AppImage dependencies
         if: startsWith(matrix.platform, 'linux-')

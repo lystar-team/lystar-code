@@ -815,7 +815,7 @@
 }
 
 .toast {
-	top: 60px;
+	top: 90px;
 	bottom: auto;
 	z-index: 9;
 }
@@ -833,11 +833,6 @@ body,
 	background: var(--gui-canvas);
 }
 
-:root[data-platform="macos"] .sidebar:not(.collapsed) .brand-bar,
-:root[data-platform="macos"] .settings-brand {
-	padding-left: 78px;
-}
-
 :root[data-platform="macos"] .sidebar.collapsed .brand-bar {
 	visibility: hidden;
 }
@@ -849,10 +844,6 @@ body,
 
 	.sidebar.collapsed {
 		width: 56px;
-	}
-
-	:root[data-platform="macos"] .topbar {
-		padding-left: 78px;
 	}
 
 	.app-shell.sidebar-collapsed .topbar > .icon-button:first-child {

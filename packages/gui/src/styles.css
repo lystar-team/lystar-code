@@ -60,6 +60,17 @@ textarea:disabled {
 	background: var(--gui-canvas);
 }
 
+.window-drag-strip {
+	position: fixed;
+	z-index: 220;
+	top: 0;
+	left: 0;
+	right: 0;
+	height: 30px;
+	background: var(--gui-canvas);
+	user-select: none;
+}
+
 .sidebar {
 	position: relative;
 	z-index: 20;
@@ -68,6 +79,7 @@ textarea:disabled {
 	min-width: 0;
 	min-height: 0;
 	overflow: hidden;
+	padding-top: 30px;
 	border-right: 1px solid var(--gui-border);
 	background: var(--gui-sidebar);
 }
@@ -421,6 +433,7 @@ textarea:disabled {
 	grid-template-rows: 56px minmax(0, 1fr);
 	min-width: 0;
 	min-height: 0;
+	padding-top: 30px;
 }
 
 .topbar {
@@ -492,7 +505,7 @@ textarea:disabled {
 .git-inspector {
 	position: absolute;
 	z-index: 18;
-	top: 56px;
+	top: 86px;
 	right: 0;
 	bottom: 0;
 	display: grid;
@@ -1629,6 +1642,7 @@ textarea:disabled {
 	inset: 0;
 	display: grid;
 	grid-template-columns: 300px minmax(0, 1fr);
+	padding-top: 30px;
 	background: var(--gui-canvas);
 }
 
@@ -2819,7 +2833,7 @@ textarea:disabled {
 }
 
 .connection-banner {
-	top: 12px;
+	top: 38px;
 	left: 50%;
 	transform: translateX(-50%);
 	border-color: var(--gui-error);
