@@ -1,7 +1,7 @@
 use std::fs;
 
 use lystar_protocol::{
-    FrameDecoder, decode_client_message, decode_server_message, encode_frame,
+    DecodedMessage, FrameDecoder, decode_client_message, decode_server_message, encode_frame,
     generated::{ClientMessage, ServerMessage},
 };
 
@@ -10,7 +10,9 @@ fn main() {
     for name in [
         "client-hello",
         "client-read-transcript",
-        "client-ui-response",
+        "client-ui-response-missing",
+        "client-ui-response-null",
+        "client-ui-response-value",
     ] {
         let message = decode_client_fixture(&directory, name);
         write_client_fixture(&directory, name, &message);
@@ -19,58 +21,45 @@ fn main() {
         "server-hello",
         "server-response-ok",
         "server-response-error",
+        "server-response-error-null",
+        "server-response-error-missing",
         "server-event-transcript",
         "server-event-ui-request",
+        "server-event-operation-missing",
+        "server-event-operation-null",
+        "server-event-operation-value",
     ] {
         let message = decode_server_fixture(&directory, name);
         write_server_fixture(&directory, name, &message);
     }
 }
 
-fn decode_client_fixture(directory: &str, name: &str) -> ClientMessage {
+fn decode_client_fixture(directory: &str, name: &str) -> DecodedMessage<ClientMessage> {
     let payload = decode_frame(&fs::read(format!("{directory}/ts-{name}.frame")).unwrap());
     decode_client_message(&payload).unwrap()
 }
 
-fn decode_server_fixture(directory: &str, name: &str) -> ServerMessage {
+fn decode_server_fixture(directory: &str, name: &str) -> DecodedMessage<ServerMessage> {
     let payload = decode_frame(&fs::read(format!("{directory}/ts-{name}.frame")).unwrap());
     decode_server_message(&payload).unwrap()
 }
 
-fn write_client_fixture(directory: &str, name: &str, message: &ClientMessage) {
+fn write_client_fixture(directory: &str, name: &str, message: &DecodedMessage<ClientMessage>) {
     let path = format!("{directory}/rust-{name}.frame");
-    if fs::read(&path)
-        .ok()
-        .and_then(|frame| decode_existing_client(&frame))
-        .is_some_and(|existing| {
-            serde_json::to_value(existing).unwrap() == serde_json::to_value(message).unwrap()
-        })
-    {
+    let encoded = encode_frame(message).unwrap();
+    if fs::read(&path).ok().as_deref() == Some(encoded.as_slice()) {
         return;
     }
-    fs::write(path, encode_frame(message).unwrap()).unwrap();
+    fs::write(path, encoded).unwrap();
 }
 
-fn write_server_fixture(directory: &str, name: &str, message: &ServerMessage) {
+fn write_server_fixture(directory: &str, name: &str, message: &DecodedMessage<ServerMessage>) {
     let path = format!("{directory}/rust-{name}.frame");
-    if fs::read(&path)
-        .ok()
-        .and_then(|frame| decode_existing_server(&frame))
-        .is_some_and(|existing| {
-            serde_json::to_value(existing).unwrap() == serde_json::to_value(message).unwrap()
-        })
-    {
+    let encoded = encode_frame(message).unwrap();
+    if fs::read(&path).ok().as_deref() == Some(encoded.as_slice()) {
         return;
     }
-    fs::write(path, encode_frame(message).unwrap()).unwrap();
-}
-
-fn decode_existing_client(frame: &[u8]) -> Option<ClientMessage> {
-    decode_client_message(&decode_frame(frame)).ok()
-}
-
-fn decode_existing_server(frame: &[u8]) -> Option<ServerMessage> {
-    decode_server_message(&decode_frame(frame)).ok()
+    fs::write(path, encoded).unwrap();
 }
 
 fn decode_frame(frame: &[u8]) -> Vec<u8> {

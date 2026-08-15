@@ -6,6 +6,7 @@ use std::{
     },
 };
 
+use ciborium::{de::from_reader, ser::into_writer, value::Value};
 use crossterm::{
     cursor::{Hide, Show},
     event::{DisableMouseCapture, EnableMouseCapture},
@@ -13,8 +14,8 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use lystar_protocol::{
-    FrameDecoder, ProtocolError, decode_server_message, encode_frame,
-    generated::{ClientMessage, ServerMessage},
+    FrameDecoder, ProtocolError, decode_server_message, encode_frame, generated::ServerMessage,
+    new_client_message,
 };
 use signal_hook::{
     consts::signal::{SIGINT, SIGTERM},
@@ -89,12 +90,15 @@ pub fn handshake_inherited_pipes() -> Result<(), TuiError> {
     // fd3/4 是 Node spawn 的独立 IPC，不会与 TTY stdout 混用。
     let mut input = unsafe { File::from_raw_fd(3) };
     let mut output = unsafe { File::from_raw_fd(4) };
-    let hello: ClientMessage =
-        serde_json::from_str(r#"{"type":"hello","version":1,"clientInstanceId":"lystar-rust-b0"}"#)
-            .map_err(|error| ProtocolError::InvalidMessage {
-                direction: "client",
-                reason: error.to_string(),
-            })?;
+    let mut hello_payload = Vec::new();
+    into_writer(
+        &serde_json::json!({"type":"hello","version":1,"clientInstanceId":"lystar-rust-b0"}),
+        &mut hello_payload,
+    )
+    .map_err(|error| ProtocolError::InvalidCbor(error.to_string()))?;
+    let raw_hello: Value = from_reader(hello_payload.as_slice())
+        .map_err(|error| ProtocolError::InvalidCbor(error.to_string()))?;
+    let hello = new_client_message(raw_hello)?;
     output.write_all(&encode_frame(&hello)?)?;
     output.flush()?;
     let mut decoder = FrameDecoder::default();
@@ -107,7 +111,7 @@ pub fn handshake_inherited_pipes() -> Result<(), TuiError> {
         }
         if let Some(frame) = decoder.push(&buffer[..count])?.into_iter().next() {
             let message = decode_server_message(&frame)?;
-            match message {
+            match message.typed() {
                 ServerMessage::Variant0 { .. } => return Ok(()),
                 ServerMessage::Variant1 { .. } => {
                     return Err(TuiError::HelloRejected(

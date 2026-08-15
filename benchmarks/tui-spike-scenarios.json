@@ -1,0 +1,14 @@
+{
+  "sizes": [[80, 8], [80, 24], [120, 36], [200, 60]],
+  "rounds": 5,
+  "scenarios": [
+    { "name": "static-idle", "kind": "idle", "events": 0 },
+    { "name": "input300", "kind": "input", "events": 300 },
+    { "name": "paste5000", "kind": "paste", "events": 20 },
+    { "name": "stream20", "kind": "stream", "events": 20 },
+    { "name": "stream60", "kind": "stream", "events": 60 },
+    { "name": "stream120", "kind": "stream", "events": 120 },
+    { "name": "scroll300", "kind": "scroll", "events": 300 },
+    { "name": "resize", "kind": "resize", "events": 60 }
+  ]
+}

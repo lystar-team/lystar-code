@@ -1,50 +1,45 @@
-/**
- * Alt-screen render churn benchmark.
- *
- * Measures cumulative JS allocation and wall time for repeated TuiAltScreen
- * frames on a layout mirroring pi's fullscreen interactive mode:
- * VStack [ ScrollView(transcript), dock VStack [status, editor, footer] ].
- *
- * Two scenarios:
- * - static: nothing changes between frames (pure recomposite churn)
- * - editor: one character appended to the editor per frame (doc scenario
- *   "30 editor updates")
- *
- * Allocation is estimated with the V8 sampling heap profiler including
- * objects collected by minor/major GC, i.e. it measures churn, not retention.
- *
- * Run from packages/tui: node test/render-churn-bench.ts
- */
-
-import { Session } from "node:inspector/promises";
+import { appendFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
-import { ScrollView } from "../src/components/scroll-view.ts";
-import { Text } from "../src/components/text.ts";
-import { VStack } from "../src/components/v-stack.ts";
-import type { Terminal } from "../src/terminal.ts";
-import { type Component, Container, CURSOR_MARKER } from "../src/tui.ts";
-import { TuiAltScreen } from "../src/tui-alt-screen.ts";
+import { type Component, Container, type Terminal, Text, TuiAltScreen } from "@earendil-works/pi-tui";
+import {
+	LystarWorkspace,
+	WorkspaceComposer,
+	WorkspaceHeader,
+} from "../../coding-agent/src/modes/interactive/components/lystar-workspace.ts";
+import { initTheme } from "../../coding-agent/src/modes/interactive/theme/theme.ts";
 
-const COLUMNS = 100;
-const ROWS = 30;
-const WARMUP_FRAMES = 20;
-const FRAMES = 300;
-const SAMPLING_INTERVAL = 4096;
+type Scenario = { name: string; kind: "idle" | "input" | "paste" | "stream" | "scroll" | "resize"; events: number };
+type Config = { sizes: Array<[number, number]>; rounds: number; scenarios: Scenario[] };
 
-/** Terminal that discards output; keeps xterm parsing out of the measurement. */
-class NullTerminal implements Terminal {
+type RecordLine = {
+	implementation: "ts";
+	scenario: string;
+	columns: number;
+	rows: number;
+	round: number;
+	frames: number;
+	bytes: number;
+	p50Ms: number;
+	p95Ms: number;
+	p99Ms: number;
+	maxMs: number;
+	rssBytes: number;
+};
+
+class MemoryTerminal implements Terminal {
 	bytesWritten = 0;
+	columns: number;
+	rows: number;
+	constructor(columns: number, rows: number) {
+		this.columns = columns;
+		this.rows = rows;
+	}
 	start(_onInput: (data: string) => void, _onResize: () => void): void {}
 	stop(): void {}
 	async drainInput(): Promise<void> {}
 	write(data: string): void {
-		this.bytesWritten += data.length;
-	}
-	get columns(): number {
-		return COLUMNS;
-	}
-	get rows(): number {
-		return ROWS;
+		this.bytesWritten += Buffer.byteLength(data);
 	}
 	get kittyProtocolActive(): boolean {
 		return false;
@@ -59,145 +54,147 @@ class NullTerminal implements Terminal {
 	setProgress(_active: boolean): void {}
 }
 
-/** Editor stand-in: caches lines per (text, width), re-renders when text changes. */
-class EditorSim implements Component {
-	private text = "";
-	private cachedText?: string;
-	private cachedWidth?: number;
-	private cachedLines?: string[];
-
-	append(char: string): void {
-		this.text += char;
+class MutableText implements Component {
+	private version = 0;
+	private text: string;
+	constructor(text: string) {
+		this.text = text;
 	}
-
-	invalidate(): void {
-		this.cachedText = undefined;
-		this.cachedWidth = undefined;
-		this.cachedLines = undefined;
+	append(value: string): void {
+		this.text += value;
+		this.version++;
 	}
-
+	set(value: string): void {
+		this.text = value;
+		this.version++;
+	}
+	invalidate(): void {}
+	getRenderVersion(): number {
+		return this.version;
+	}
 	render(width: number): string[] {
-		if (this.cachedLines && this.cachedText === this.text && this.cachedWidth === width) {
-			return this.cachedLines;
-		}
-		const border = `\x1b[90m${"─".repeat(Math.max(1, width - 2))}\x1b[39m`;
-		const lines = [border, ` > ${this.text}${CURSOR_MARKER}`, border];
-		this.cachedText = this.text;
-		this.cachedWidth = width;
-		this.cachedLines = lines;
-		return lines;
+		return new Text(this.text, 0, 0).render(width);
 	}
 }
 
-function buildTranscript(): Container {
-	const container = new Container();
-	for (let i = 0; i < 150; i++) {
-		const styled =
-			i % 3 === 0
-				? `\x1b[1m\x1b[36muser ${i}\x1b[39m\x1b[22m message with some \x1b[33mstyled\x1b[39m content padding padding`
-				: `assistant ${i} plain response line with enough text to be representative of a transcript row`;
-		container.addChild(new Text(styled, 1, 0));
-	}
-	return container;
+function percentile(samples: number[], q: number): number {
+	const values = [...samples].sort((a, b) => a - b);
+	return values[Math.min(values.length - 1, Math.ceil(values.length * q) - 1)] ?? 0;
 }
 
-interface SamplingNode {
-	selfSize: number;
-	children: SamplingNode[];
-}
-
-function sumProfile(node: SamplingNode): number {
-	let total = node.selfSize;
-	for (const child of node.children) total += sumProfile(child);
-	return total;
-}
-
-interface ScenarioResult {
-	allocatedBytes: number;
-	elapsedMs: number;
-	bytesWritten: number;
-}
-
-async function runScenario(
-	session: Session,
-	terminal: NullTerminal,
-	tui: TuiAltScreen,
-	frame: (index: number) => void,
-): Promise<ScenarioResult> {
-	const writtenBefore = terminal.bytesWritten;
-	await session.post("HeapProfiler.startSampling", {
-		samplingInterval: SAMPLING_INTERVAL,
-		includeObjectsCollectedByMajorGC: true,
-		includeObjectsCollectedByMinorGC: true,
+function buildWorkspace(columns: number, rows: number) {
+	const terminal = new MemoryTerminal(columns, rows);
+	const tui = new TuiAltScreen(terminal, false, "/tmp/lystar-rust-b0-ts");
+	const source = Array.from(
+		{ length: 10_000 },
+		(_, index) => `assistant ${index.toString().padStart(5, "0")} benchmark transcript line with Chinese 内容`,
+	);
+	const page = new Container();
+	const reloadPage = (offset: number) => {
+		page.clear();
+		for (const line of source.slice(offset, offset + 400)) page.addChild(new MutableText(line));
+	};
+	reloadPage(9_600);
+	const editorText = new MutableText("  ");
+	const editor = new Container();
+	editor.addChild(editorText);
+	const composer = new WorkspaceComposer({
+		editor,
+		fullscreen: true,
+		getInfo: () => ({ primary: "benchmark/model" }),
 	});
-	const start = performance.now();
-	for (let i = 0; i < FRAMES; i++) {
-		frame(i);
-		tui.renderNow();
+	const footer = new Container();
+	footer.addChild(new Text("Ctrl+C: 取消  Enter: 发送", 0, 0));
+	const header = new Container();
+	header.addChild(new WorkspaceHeader(() => ({ path: "~/lystar", context: "B0 benchmark" })));
+	const workspace = new LystarWorkspace({
+		getHeight: () => terminal.rows,
+		header,
+		scrollContainers: [page],
+		bottomContainers: [composer, footer],
+		fixedBottomContainers: [composer, footer],
+		fullscreen: true,
+		scrollbar: "hidden",
+	});
+	tui.setLayoutRoot(workspace);
+	tui.start();
+	for (let index = 0; index < 8; index++) tui.renderNow();
+	terminal.bytesWritten = 0;
+	return { terminal, tui, workspace, editorText, reloadPage };
+}
+
+function runScenario(scenario: Scenario, columns: number, rows: number, round: number): RecordLine {
+	const { terminal, tui, workspace, editorText, reloadPage } = buildWorkspace(columns, rows);
+	if (scenario.kind === "idle") {
+		tui.stop();
+		return {
+			implementation: "ts",
+			scenario: scenario.name,
+			columns,
+			rows,
+			round,
+			frames: 0,
+			bytes: 0,
+			p50Ms: 0,
+			p95Ms: 0,
+			p99Ms: 0,
+			maxMs: 0,
+			rssBytes: process.memoryUsage().rss,
+		};
 	}
-	const elapsedMs = performance.now() - start;
-	const { profile } = await session.post("HeapProfiler.stopSampling");
+	const samples: number[] = [];
+	const batch = Math.max(10, Math.ceil(scenario.events / 20));
+	for (let start = 0; start < scenario.events; start += batch) {
+		const count = Math.min(batch, scenario.events - start);
+		const began = performance.now();
+		for (let index = 0; index < count; index++) {
+			if (scenario.kind === "input") editorText.append(String.fromCharCode(97 + (index % 26)));
+			if (scenario.kind === "paste") editorText.append("x".repeat(5_000));
+			if (scenario.kind === "stream") editorText.append(` stream-${start + index}`);
+			if (scenario.kind === "scroll") {
+				workspace.scrollBy(-1);
+				if ((start + index) % 75 === 0) reloadPage(Math.max(0, 9_600 - start - index));
+			}
+			if (scenario.kind === "resize") {
+				terminal.columns = index % 2 === 0 ? columns : Math.max(20, columns - 4);
+				terminal.rows = index % 2 === 0 ? rows : Math.max(8, rows - 2);
+			}
+			tui.renderNow();
+		}
+		samples.push((performance.now() - began) / count);
+	}
+	const bytes = terminal.bytesWritten;
+	tui.stop();
 	return {
-		allocatedBytes: sumProfile(profile.head as SamplingNode),
-		elapsedMs,
-		bytesWritten: terminal.bytesWritten - writtenBefore,
+		implementation: "ts",
+		scenario: scenario.name,
+		columns,
+		rows,
+		round,
+		frames: scenario.events,
+		bytes,
+		p50Ms: percentile(samples, 0.5),
+		p95Ms: percentile(samples, 0.95),
+		p99Ms: percentile(samples, 0.99),
+		maxMs: Math.max(...samples),
+		rssBytes: process.memoryUsage().rss,
 	};
 }
 
-function report(name: string, result: ScenarioResult): void {
-	const perFrameKiB = result.allocatedBytes / FRAMES / 1024;
-	const totalMiB = result.allocatedBytes / 1024 / 1024;
-	const msPerFrame = result.elapsedMs / FRAMES;
-	console.log(
-		`${name.padEnd(8)} allocated ${totalMiB.toFixed(1).padStart(7)} MiB total  ` +
-			`${perFrameKiB.toFixed(1).padStart(8)} KiB/frame  ` +
-			`${msPerFrame.toFixed(3).padStart(7)} ms/frame  ` +
-			`${(result.bytesWritten / FRAMES).toFixed(0).padStart(6)} written bytes/frame`,
-	);
+const args = process.argv.slice(2);
+const out = resolve(args[args.indexOf("--out") + 1] ?? ".artifacts/rust-tui-spike/benchmark-ts.jsonl");
+const config = JSON.parse(
+	readFileSync(resolve(import.meta.dirname, "../../../benchmarks/tui-spike-scenarios.json"), "utf8"),
+) as Config;
+const smoke = args.includes("--smoke");
+const rounds = smoke ? 1 : config.rounds;
+const sizes = smoke ? config.sizes.slice(0, 1) : config.sizes;
+mkdirSync(resolve(out, ".."), { recursive: true });
+rmSync(out, { force: true });
+initTheme("dark");
+for (let round = 1; round <= rounds; round++) {
+	for (const [columns, rows] of sizes) {
+		for (const scenario of config.scenarios)
+			appendFileSync(out, `${JSON.stringify(runScenario(scenario, columns, rows, round))}\n`);
+	}
 }
-
-async function main(): Promise<void> {
-	const terminal = new NullTerminal();
-	const tui = new TuiAltScreen(terminal, false, "/tmp/pi-tui-bench");
-
-	const transcript = buildTranscript();
-	const editor = new EditorSim();
-	const scrollView = new ScrollView(transcript, {
-		follow: "end",
-		primary: true,
-		overscroll: "chain",
-		scrollbar: "auto",
-	});
-	const status = new Text("\x1b[2mstatus: idle\x1b[22m", 1, 0);
-	const footer = new Text("\x1b[2m~/workspaces/pi  main  100k tokens\x1b[22m", 1, 0);
-	const dock = new VStack([
-		{ component: status, shrink: 1, minSize: 0 },
-		{ component: editor, shrink: 1, minSize: 3 },
-		{ component: footer, shrink: 1, minSize: 1 },
-	]);
-	const root = new VStack([
-		{ component: scrollView, basis: 0, grow: 1, shrink: 1, minSize: 1 },
-		{ component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
-	]);
-	tui.setLayoutRoot(root);
-	tui.start();
-
-	for (let i = 0; i < WARMUP_FRAMES; i++) tui.renderNow();
-
-	const session = new Session();
-	session.connect();
-
-	const staticResult = await runScenario(session, terminal, tui, () => {});
-	const editorResult = await runScenario(session, terminal, tui, (i) => {
-		editor.append(String.fromCharCode(97 + (i % 26)));
-	});
-
-	session.disconnect();
-	tui.stop();
-
-	console.log(`frames=${FRAMES} viewport=${COLUMNS}x${ROWS} transcript=${transcript.render(COLUMNS).length} lines`);
-	report("static", staticResult);
-	report("editor", editorResult);
-}
-
-await main();

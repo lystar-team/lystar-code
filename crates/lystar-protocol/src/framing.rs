@@ -1,11 +1,70 @@
-use ciborium::{de::from_reader, ser::into_writer};
-use serde::{Serialize, de::DeserializeOwned};
+use ciborium::{de::from_reader, ser::into_writer, value::Value};
+use serde::{Serialize, de::DeserializeOwned, ser::Serializer};
 use thiserror::Error;
 
 use crate::generated::{ClientMessage, ServerMessage, ServerMessageVariant2};
 
 pub const MAX_FRAME_LENGTH: usize = 16 * 1024 * 1024;
 const GUI_PROTOCOL_VERSION: u64 = 1;
+
+/// CBOR map field state. `Option<T>` in generated Typify types cannot distinguish
+/// an omitted field from a present CBOR null, so this is read from the validated raw map.
+#[derive(Debug, PartialEq)]
+pub enum FieldPresence<'a> {
+    Missing,
+    Null,
+    Value(&'a Value),
+}
+
+/// A message validated by the generated Typify type while retaining its original CBOR value.
+/// The raw value is private so callers cannot make it disagree with `typed`.
+#[derive(Debug)]
+pub struct DecodedMessage<T> {
+    typed: T,
+    raw: Value,
+}
+
+impl<T> DecodedMessage<T> {
+    pub fn typed(&self) -> &T {
+        &self.typed
+    }
+
+    pub fn raw(&self) -> &Value {
+        &self.raw
+    }
+
+    pub fn presence(&self, path: &[&str]) -> FieldPresence<'_> {
+        let mut current = &self.raw;
+        for key in path {
+            let Value::Map(entries) = current else {
+                return FieldPresence::Missing;
+            };
+            let Some((_, next)) = entries
+                .iter()
+                .find(|(candidate, _)| matches!(candidate, Value::Text(text) if text == key))
+            else {
+                return FieldPresence::Missing;
+            };
+            current = next;
+        }
+        if matches!(current, Value::Null) {
+            FieldPresence::Null
+        } else {
+            FieldPresence::Value(current)
+        }
+    }
+}
+
+// Decoded messages intentionally serialize their raw sidecar. This keeps missing fields,
+// explicit nulls, map order, and CBOR integer representation on a forwarding round trip.
+impl<T> Serialize for DecodedMessage<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.raw.serialize(serializer)
+    }
+}
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ProtocolError {
@@ -38,16 +97,46 @@ pub fn encode_frame<T: Serialize>(message: &T) -> Result<Vec<u8>, ProtocolError>
     Ok(frame)
 }
 
-pub fn decode_client_message(payload: &[u8]) -> Result<ClientMessage, ProtocolError> {
-    let message = decode_payload(payload)?;
-    validate_client_message(&message)?;
-    Ok(message)
+pub fn decode_client_message(
+    payload: &[u8],
+) -> Result<DecodedMessage<ClientMessage>, ProtocolError> {
+    decode_message(payload, validate_client_message)
 }
 
-pub fn decode_server_message(payload: &[u8]) -> Result<ServerMessage, ProtocolError> {
-    let message = decode_payload(payload)?;
-    validate_server_message(&message)?;
-    Ok(message)
+pub fn decode_server_message(
+    payload: &[u8],
+) -> Result<DecodedMessage<ServerMessage>, ProtocolError> {
+    decode_message(payload, validate_server_message)
+}
+
+/// Constructs a new client message only after its raw CBOR value has passed generated-type validation.
+pub fn new_client_message(raw: Value) -> Result<DecodedMessage<ClientMessage>, ProtocolError> {
+    decode_raw_message(raw, validate_client_message)
+}
+
+/// Constructs a new server message only after its raw CBOR value has passed generated-type validation.
+pub fn new_server_message(raw: Value) -> Result<DecodedMessage<ServerMessage>, ProtocolError> {
+    decode_raw_message(raw, validate_server_message)
+}
+
+fn decode_message<T: DeserializeOwned>(
+    payload: &[u8],
+    validate: impl FnOnce(&T) -> Result<(), ProtocolError>,
+) -> Result<DecodedMessage<T>, ProtocolError> {
+    let raw = decode_payload(payload)?;
+    decode_raw_message(raw, validate)
+}
+
+fn decode_raw_message<T: DeserializeOwned>(
+    raw: Value,
+    validate: impl FnOnce(&T) -> Result<(), ProtocolError>,
+) -> Result<DecodedMessage<T>, ProtocolError> {
+    let mut encoded = Vec::new();
+    into_writer(&raw, &mut encoded)
+        .map_err(|error| ProtocolError::InvalidCbor(error.to_string()))?;
+    let typed = decode_payload(&encoded)?;
+    validate(&typed)?;
+    Ok(DecodedMessage { typed, raw })
 }
 
 fn decode_payload<T: DeserializeOwned>(payload: &[u8]) -> Result<T, ProtocolError> {
@@ -151,6 +240,7 @@ impl FrameDecoder {
 
 #[cfg(test)]
 mod tests {
+    use super::FieldPresence;
     use super::*;
     use crate::generated::{ClientMessage, ClientMessageRequest};
     use serde_json::json;
@@ -179,38 +269,54 @@ mod tests {
     }
 
     #[test]
-    fn typed_decode_accepts_optional_and_null_json_value() {
+    fn typed_decode_keeps_optional_json_value_presence_in_the_raw_sidecar() {
         let request = decode_client_message(&client_payload(json!({
             "type":"request", "id":"request-1",
             "request":{"command":"read_transcript", "sessionPath":"/tmp/session", "limit":20}
         })))
         .unwrap();
         assert!(matches!(
-            request,
+            request.typed(),
             ClientMessage::Request {
                 request: ClientMessageRequest::ReadTranscript { cursor: None, .. },
                 ..
             }
         ));
+        assert_eq!(
+            request.presence(&["request", "cursor"]),
+            FieldPresence::Missing
+        );
 
         let null_value = decode_client_message(&client_payload(
             json!({"type":"ui_response", "id":"ui-1", "value":null}),
         ))
         .unwrap();
-        // Typify maps an optional field carrying CBOR null to None; this test
-        // locks the generated-type behavior so the spike cannot claim lossless null preservation.
         assert!(matches!(
-            null_value,
+            null_value.typed(),
             ClientMessage::UiResponse { value: None, .. }
+        ));
+        assert_eq!(null_value.presence(&["value"]), FieldPresence::Null);
+
+        let value = decode_client_message(&client_payload(
+            json!({"type":"ui_response", "id":"ui-2", "value":{"answer":true}}),
+        ))
+        .unwrap();
+        assert!(matches!(
+            value.presence(&["value"]),
+            FieldPresence::Value(_)
         ));
 
         let absent_value =
-            decode_client_message(&client_payload(json!({"type":"ui_response", "id":"ui-2"})))
+            decode_client_message(&client_payload(json!({"type":"ui_response", "id":"ui-3"})))
                 .unwrap();
-        assert!(matches!(
-            absent_value,
-            ClientMessage::UiResponse { value: None, .. }
-        ));
+        assert_eq!(absent_value.presence(&["value"]), FieldPresence::Missing);
+        let encoded = encode_frame(&null_value).unwrap();
+        assert_eq!(
+            decode_client_message(&encoded[4..])
+                .unwrap()
+                .presence(&["value"]),
+            FieldPresence::Null
+        );
     }
 
     #[test]

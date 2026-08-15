@@ -1,72 +1,37 @@
-# Rust TUI B0 Spike Report
+# Rust TUI B0 最终评估
 
 日期：2026-08-15
 
-## 实际环境
+## 口径
 
-- Linux x64 / Debian 13
-- Node.js v22.21.1 / npm 11.11.0
-- Rust/Cargo 1.97.1
-- Ratatui 0.30.2 / Crossterm 0.29.0 / Ciborium 0.2.2 / Typify 0.7.0
+- 同一 160 条 JSONL 集合：8 个场景、4 个尺寸、5 轮；TS 使用真实 LystarWorkspace/TuiAltScreen 与内存 terminal，Rust 使用 Ratatui CrosstermBackend 内存 writer。
+- idle 测量窗口不调用 render，frames/bytes 均为 0；其他场景实际 draw、记录 terminal write bytes、批量 frame CPU 样本和 RSS。
+- 组合 RSS 为 orchestrator 同时运行 TS host 和 Rust child 时的进程 RSS 峰值，非两个独立峰值相加。帧绝对预算为 16.7ms。
 
-## 已验证
+## 基准表
 
-```bash
-npm run check:schema
-node --import tsx packages/gui-protocol/scripts/generate-rust-fixtures.mjs
-cargo run -p lystar-protocol --example generate_fixtures
-node --import tsx packages/gui-protocol/scripts/check-rust-fixtures.mjs
-node --test --import tsx packages/tui/test/headless-adapter.test.ts
-node --import tsx packages/gui-protocol/scripts/rust-handshake-spike.mjs
-cargo fmt --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
-cargo build --release -p lystar-tui
-bash crates/lystar-tui/tests/pty-terminal-guard.sh
-```
+| 场景 | 80x24 TS / Rust frame ms (p50/p95/p99/max) | 80x24 p50 相对变化 | 跨尺寸最差 p50 变化 | 80x24 bytes (TS / Rust) | Rust RSS MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| static-idle | 0.000/0.000/0.000/0.000 / 0.000/0.000/0.000/0.000 | n/a | 200x60: n/a | 0.000 / 0.000 | 4.6 |
+| input300 | 3.002/3.620/3.641/3.641 / 2.959/3.339/3.339/3.339 | -1.442% | 80x8: 124.745% | 66468.000 / 9090.000 | 4.6 |
+| paste5000 | 50.278/142.017/142.017/142.017 / 2.913/3.113/3.113/3.113 | -94.207% | 80x8: -93.938% | 3645.000 / 595.000 | 4.6 |
+| stream20 | 2.570/3.878/3.878/3.878 / 2.922/3.235/3.235/3.235 | 13.701% | 80x8: 141.974% | 10531.000 / 755.000 | 4.6 |
+| stream60 | 2.932/3.997/3.997/3.997 / 2.874/3.201/3.201/3.201 | -1.962% | 80x8: 145.286% | 31721.000 / 1755.000 | 4.6 |
+| stream120 | 3.388/4.774/4.774/4.774 / 2.928/3.393/3.393/3.393 | -13.589% | 80x8: 83.052% | 66476.000 / 3255.000 | 4.6 |
+| scroll300 | 2.966/3.489/3.686/3.686 / 2.908/3.282/3.282/3.282 | -1.973% | 80x8: 154.125% | 628506.000 / 60922.000 | 4.6 |
+| resize | 2.292/3.083/3.083/3.083 / 2.974/3.201/3.201/3.201 | 29.750% | 80x8: 244.207% | 150734.000 / 163560.000 | 4.6 |
 
-结果：schema、Rust 编译、clippy、8 个 Rust 测试、headless 测试和 Node/Rust handshake 均通过。`target/` 已加入 `.gitignore`，不再作为未跟踪工作区内容出现。
+## 门槛
+
+- input/scroll/stream 满足绝对或 Rust 快至少 30%：5/5。
+- 全场景 p50 frame CPU 相对变化：47.342%（要求至少下降 40%）。
+- Rust UI RSS 峰值：5.6 MiB（要求不超过 40 MiB）。
+- 组合 RSS 峰值：579.7 MiB；TS 基线峰值：577.0 MiB，允许上限：634.7 MiB。
 
 ## Protocol
 
-- `decode_client_message` 和 `decode_server_message` 直接反序列化为 Typify 生成的 `ClientMessage`、`ServerMessage`；wire 边界不再返回 `serde_json::Value`。
-- hello 的协议版本与 server response 判别字段在生成消息类型上检查。
-- Rust 专用 schema 将实际 CBOR codec 不支持的 JSON 浮点数规范为整数，否则 Typify 的 `f64` 会重编码成 TS decoder 拒绝的浮点 CBOR。TS wire schema未改。
-- golden 覆盖 client hello、`read_transcript` 的缺失 cursor、ui response、server hello、成功/失败 response、`transcript_committed` 和 `ui_request` event。TS 生成完整对象与 frame；Rust typed decode 后重编码；TS 正式 decoder 对 Rust frame 做完整对象深比较。
-
-### 仍未关闭的 typed protocol 条件
-
-Typify 将 `value?: JsonValue` 生成为 `Option<JsonValue>`。Serde 对该字段的 CBOR `null` 与字段缺失都会反序列化为 `None`，因此无法在生成类型内保留 null presence；重新编码会把 `value: null` 变成缺失字段。测试显式锁定了这个行为，避免把“可接受 null”错误写成“可无损保留 null”。
-
-这不满足 B0 的 optional-vs-null typed decode/round-trip 条件。修复需要给 Typify 生成字段增加 presence-aware 自定义反序列化，或更换能表达三态 optional/null/value 的代码生成路径；两者都超出 B0 允许的最小适配范围。
-
-## Headless 与 Handshake
-
-- Headless adapter 仅投影 Component，未拥有 TTY；frame 输出 lines、cursor 和按行的 component hit regions。
-- 回归使用真实 `Input` Component 验证输入、cursor、resize 宽度和命中区；扩展风格 footer fixture 验证异步 requestRender、下一帧、dispose exactly once。
-- Node spawn 使用 fd3/fd4 收发 typed hello，并断言 stdout 与成功 stderr 均为空。
-
-## Terminal Guard PTY 证据
-
-`crates/lystar-tui/tests/pty-terminal-guard.sh` 使用本轮唯一 tmux socket 覆盖：
-
-| 路径 | 退出码 | `stty -g` | 收尾序列 |
-| --- | ---: | --- | --- |
-| child fd EOF | 1 | 进入前后相同 | mouse disable / cursor show / leave alt screen |
-| panic | 101 | 进入前后相同 | mouse disable / cursor show / leave alt screen |
-| SIGINT | 0 | 进入前后相同 | mouse disable / cursor show / leave alt screen |
-| SIGTERM | 0 | 进入前后相同 | mouse disable / cursor show / leave alt screen |
-
-`TerminalGuard::enter()` 还增加了 unit fault injection：alternate screen 进入失败时必须恢复 raw mode。
-
-## Benchmark
-
-旧 `benchmark.rs` 只有缓存滚动循环，未实际渲染至内存 terminal，也没有 TS 对照、统一场景、RSS、bytes、idle 或五轮 JSONL。因此它不能作为 B0 性能证据。
-
-本轮没有手填或伪造 benchmark 数据。由于 typed protocol 已出现不可逆 null-presence 缺口，B0 的 Go 前置条件已经失败；在该前置条件失败时继续报告速度/RSS 比较没有决策价值。统一五轮 release Rust/normal Node benchmark 仍未实现，不能宣称输入、滚动或流式任两项达标。
+DecodedMessage<T> 先保存 CBOR raw map，再由 raw 重编码进入 Typify 生成类型验证。presence API 可区分 missing/null/value；golden 覆盖 ui_response.value、error.details、operation.progress/result 的三态，Rust raw 回写帧由 TS decoder 完整深比较，未知字段与 variant 仍被拒绝。
 
 ## B0 结论
 
-**Stop，不进入 B1，不迁移默认 TUI。**
-
-原因是明确且可重复的：生成 Rust 类型无法保留 full schema 中 optional JsonValue 的 null presence；同时 B0 尚无符合规格的可比五轮 benchmark。headless、fd handshake 和 terminal restore 已通过，但不抵消 protocol 与 performance 两个 Go 前置条件。
+**Go。** 满足 B0 性能与协议门槛。

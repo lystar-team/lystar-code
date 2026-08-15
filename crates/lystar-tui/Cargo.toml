@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ciborium = "=0.2.2"
 crossterm = "=0.29.0"
 lystar-protocol = { path = "../lystar-protocol" }
 ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm"] }

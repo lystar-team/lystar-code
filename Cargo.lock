@@ -404,6 +404,7 @@ dependencies = [
 name = "lystar-tui"
 version = "0.0.0"
 dependencies = [
+ "ciborium",
  "crossterm",
  "lystar-protocol",
  "ratatui",

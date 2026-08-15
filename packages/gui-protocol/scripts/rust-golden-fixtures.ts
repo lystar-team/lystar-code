@@ -1,4 +1,4 @@
-import type { ClientMessage, ServerMessage } from "../src/index.ts";
+import type { ClientMessage, JsonValue, ServerMessage } from "../src/index.ts";
 
 export const clientGoldenFixtures: Record<string, ClientMessage> = {
 	"client-hello": { type: "hello", version: 1, clientInstanceId: "rust-spike-client" },
@@ -7,8 +7,24 @@ export const clientGoldenFixtures: Record<string, ClientMessage> = {
 		id: "request-read-transcript",
 		request: { command: "read_transcript", sessionPath: "/tmp/session.jsonl", limit: 20 },
 	},
-	"client-ui-response": { type: "ui_response", id: "ui-response", confirmed: false },
+	"client-ui-response-missing": { type: "ui_response", id: "ui-response-missing", confirmed: false },
+	"client-ui-response-null": { type: "ui_response", id: "ui-response-null", value: null },
+	"client-ui-response-value": { type: "ui_response", id: "ui-response-value", value: { accepted: true } },
 };
+
+const operation = (progress: JsonValue | undefined, result: JsonValue | undefined) => ({
+	operationId: "operation-1",
+	clientInstanceId: "client-1",
+	clientRequestId: "request-1",
+	sessionPath: "/tmp/session.jsonl",
+	type: "prompt",
+	status: "running" as const,
+	acceptedAt: 0,
+	updatedAt: 1,
+	payloadHash: "payload-1",
+	...(progress === undefined ? {} : { progress }),
+	...(result === undefined ? {} : { result }),
+});
 
 export const serverGoldenFixtures: Record<string, ServerMessage> = {
 	"server-hello": {
@@ -29,9 +45,21 @@ export const serverGoldenFixtures: Record<string, ServerMessage> = {
 	},
 	"server-response-error": {
 		type: "response",
-		id: "response-error",
+		id: "response-error-value",
 		ok: false,
 		error: { code: "locked", message: "session is locked", retryable: true, details: { owner: null } },
+	},
+	"server-response-error-null": {
+		type: "response",
+		id: "response-error-null",
+		ok: false,
+		error: { code: "locked", message: "session is locked", details: null },
+	},
+	"server-response-error-missing": {
+		type: "response",
+		id: "response-error-missing",
+		ok: false,
+		error: { code: "locked", message: "session is locked" },
 	},
 	"server-event-transcript": {
 		type: "event",
@@ -63,5 +91,17 @@ export const serverGoldenFixtures: Record<string, ServerMessage> = {
 			payload: { choices: [true, null] },
 			timeoutMs: 1000,
 		},
+	},
+	"server-event-operation-missing": {
+		type: "event",
+		event: { type: "operation_updated", operation: operation(undefined, undefined) },
+	},
+	"server-event-operation-null": {
+		type: "event",
+		event: { type: "operation_updated", operation: operation(null, null) },
+	},
+	"server-event-operation-value": {
+		type: "event",
+		event: { type: "operation_updated", operation: operation({ step: 1 }, { done: true }) },
 	},
 };
