@@ -1459,7 +1459,7 @@ GUI 预检和正式发布针对同一个 commit `0d805f26f762ab8ebe02e58462e7702
 | AI | 19.5 秒 | 878 | 825 | 25 个文件 0 项执行、全部 skip |
 | Coding Agent | 96.8 秒 | 2,117 | 49 | 6 个文件 46 项全部 skip，另有 3 项条件 skip |
 
-测试数量不能直接说明质量。AI 默认结果中接近一半用例没有执行，Coding Agent 的 Windows 专项测试也没有在 Linux 分片执行，而当前 Windows job 没有运行该测试文件。
+测试数量不能直接说明质量。AI 默认结果中接近一半用例没有执行，Coding Agent 的 Windows 专项测试已由 Windows platform job 执行；Agent Core 的 Windows-only 文件必须由同一 job 的 `PI_TEST_SUITE=platform` 单独收集，不能留在 Linux default suite。
 
 825 个 AI skip 不是当前墙钟的首要瓶颈：最近 CI 的 AI 测试步骤为 30 秒。拆分它们首先解决的是“没有执行却被计入测试矩阵”的证据问题；主要提速仍来自 Windows 资产缓存、取消重复 build、减少重复 job setup，以及避免同一 SHA 重跑 Rust/Tauri 五平台矩阵。
 
@@ -1526,7 +1526,7 @@ CLI Release 已经等待相同 SHA 的 main CI，没有重新跑全部测试，�
 | 以 `stream`、`abort`、`tokens`、`total-tokens`、`unicode-surrogate`、`image-tool-result`、`tool-call-without-result`、`context-overflow` 为主的 25 个 AI live 文件 | 从默认 suite 移到 `test:live`，再按协议族合并 | 825 项在默认 CI 中全部 skip；共享 OpenAI-compatible transport 的转售 Provider 不需要在每次提交重复同一矩阵 |
 | 每个 Provider 的 live smoke | 按独有协议、鉴权、header、endpoint 或事件格式保留 | Anthropic、OpenAI Responses、OpenAI Completions、Google、Mistral、Bedrock 等独有路径仍需真实验证 |
 | Coding Agent 的 `rpc.test.ts`、旧 AgentSession compaction/branching/tree-navigation/extension live 文件 | 迁到凭据 E2E job，能被 Faux Provider 覆盖的部分改为确定性 contract | 当前 44 个凭据用例在默认 CI 中全部 skip |
-| `bash-close-hang-windows.test.ts` | 加入 Windows job | 2 项 Windows 历史回归在 Linux 全部 skip，当前 Windows installer job 又没有执行它 |
+| `bash-close-hang-windows.test.ts` | 已加入 Windows job | 2 项 Windows 历史回归由 Windows platform job 执行 |
 | Tool 图片单元 + Session 图片集成 | 单元层保留完整算法；Session 层保留一个小型越界 fixture | 保留真实 Photon 路径，删除重复大图计算，不用 mock 代替图片库 |
 | `opens session files larger than Node's max string length` | 保留，移入 G4 stress；Session loader 变更和发布候选触发 | 单项约 5.9 秒且依赖超大 sparse 文件，保护真实大 Session 回归，不适合普通局部 PR |
 | `session-id-readonly.test.ts`、`stdout-cleanliness.test.ts` | 保留 G2，按 CLI/Session/Package 路径触发 | 两文件约 26 秒，但证明真实进程 stdout/stderr、Session 保留和 trust 边界，不能改成自洽 mock |

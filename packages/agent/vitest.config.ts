@@ -6,11 +6,15 @@ const aiSrcIndex = fileURLToPath(new URL("../ai/src/index.ts", import.meta.url))
 const aiSrcCompat = fileURLToPath(new URL("../ai/src/compat.ts", import.meta.url));
 const agentSrcIndex = fileURLToPath(new URL("./src/index.ts", import.meta.url));
 
+const platformSuite = process.env.PI_TEST_SUITE === "platform";
+
 export default defineConfig({
 	test: {
 		globals: true,
 		environment: "node",
 		testTimeout: 30000, // 30 seconds for API calls
+		include: platformSuite ? ["test/**/*.windows.test.ts"] : ["test/**/*.test.ts"],
+		...(platformSuite ? {} : { exclude: ["test/**/*.windows.test.ts"] }),
 		reporters: process.env.GITHUB_ACTIONS ? ["dot", "github-actions"] : ["dot"],
 		silent: "passed-only",
 	},
