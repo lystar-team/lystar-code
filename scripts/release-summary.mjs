@@ -1,4 +1,4 @@
-import { appendFileSync, statSync } from "node:fs";
+import { appendFileSync, statSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 function number(value) {
@@ -14,6 +14,7 @@ export function summarizeRelease({ release, sha, fullMatrixCount, artifacts = []
 		`## Release ${release}`,
 		`- release_full_matrix_count{sha=${sha}}: ${number(fullMatrixCount)}`,
 		`- release_wall_seconds: ${number(timings.wall)}`,
+		`- release_runner_seconds_total: ${number(timings.wall)}`,
 		`- release_build_seconds: ${number(timings.build)}`,
 		`- release_cache_restore_seconds: ${timings.cache === "unavailable" ? "unavailable" : number(timings.cache)}`,
 	];
@@ -26,6 +27,37 @@ export function summarizeRelease({ release, sha, fullMatrixCount, artifacts = []
 		lines.push(`- release_cache_hit{cache=${cache}}: ${hit}`);
 	}
 	return `${lines.join("\n")}\n`;
+}
+
+export function summarizeReleaseMetrics({ release, sha, fullMatrixCount, artifacts = [], timings = {}, cacheHits = {} }) {
+	if (!release) throw new Error("--release is required");
+	if (!sha) throw new Error("--sha is required");
+	const artifactBytes = {};
+	for (const artifact of artifacts) {
+		const size = statSync(artifact.path).size;
+		if (size <= 0) throw new Error(`Release artifact is empty: ${artifact.path}`);
+		artifactBytes[artifact.platform] = size;
+	}
+	return {
+		schemaVersion: 1,
+		kind: "release-job",
+		release,
+		sha,
+		createdAt: new Date().toISOString(),
+		metrics: {
+			release_full_matrix_count: number(fullMatrixCount),
+			release_wall_seconds: number(timings.wall),
+			release_runner_seconds_total: number(timings.wall),
+			release_setup_seconds_total: number(timings.setup),
+			release_build_seconds_total: number(timings.build),
+			release_test_seconds_total: number(timings.test),
+			release_cache_restore_seconds: timings.cache === "unavailable" ? 0 : number(timings.cache),
+			release_artifact_bytes: artifactBytes,
+			release_cache_hit: cacheHits,
+		},
+		artifactBytes,
+		cacheHits,
+	};
 }
 
 function parseArguments(argv) {
@@ -46,14 +78,17 @@ function parseArguments(argv) {
 		} else if (argument === "--cache-hit") {
 			const [cache, hit] = value.split("=", 2);
 			options.cacheHits[cache] = hit;
-		} else throw new Error(`Unknown argument: ${argument}`);
+		} else if (argument === "--json-output") options.jsonOutput = value;
+		else throw new Error(`Unknown argument: ${argument}`);
 		index++;
 	}
 	return options;
 }
 
 export function runCli(argv = process.argv.slice(2)) {
-	const output = summarizeRelease(parseArguments(argv));
+	const options = parseArguments(argv);
+	const output = summarizeRelease(options);
+	if (options.jsonOutput) writeFileSync(options.jsonOutput, `${JSON.stringify(summarizeReleaseMetrics(options), null, 2)}\n`);
 	if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, output);
 	process.stdout.write(output);
 }

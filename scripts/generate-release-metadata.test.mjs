@@ -88,7 +88,12 @@ test("CLI release metadata verifies the final ten public assets", () => {
 test("CLI release workflow verifies final assets before attestation and publishing", () => {
 	const document = parseDocument(workflow);
 	assert.deepEqual(document.errors, []);
-	const steps = document.toJS().jobs.release.steps;
+	const jobs = document.toJS().jobs;
+	const steps = jobs.release.steps;
+	const unixUpload = jobs["build-unix"].steps.find((step) => step.name === "Upload Unix release artifacts");
+	const windowsUpload = jobs["build-windows"].steps.find((step) => step.name === "Upload Windows release artifact");
+	assert.equal(unixUpload.with.path, "packages/coding-agent/binaries/*.tar.gz");
+	assert.equal(windowsUpload.with.path, "packages/coding-agent/binaries/lystar-agent-*-windows-x64.zip");
 	const generated = steps.findIndex((step) => step.name === "Generate release metadata");
 	const verified = steps.findIndex((step) => step.name === "Verify release checksums, manifest, and public assets");
 	const attested = steps.findIndex((step) => step.name === "Attest release artifacts");

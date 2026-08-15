@@ -44,6 +44,9 @@ test("GUI release keeps one protected, dispatch-only five-platform publish flow"
 	);
 	expectContractFailure(unsignedMacBuild, /macOS GUI build must not use --no-sign/);
 
+	const noArtifactUpload = workflow.replace("          path: ${{ runner.temp }}/gui-release/*\n          if-no-files-found: error\n", "");
+	expectContractFailure(noArtifactUpload, /must upload its collected platform artifact/);
+
 	const noManifestCheck = workflow.replace(
 		"node scripts/generate-gui-beta-metadata.mjs gui-release \"$VERSION\" \"$GITHUB_REPOSITORY\"",
 		"true",

@@ -3,7 +3,29 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { summarizeRelease } from "./release-summary.mjs";
+import { summarizeRelease, summarizeReleaseMetrics } from "./release-summary.mjs";
+
+test("release summary also exposes documented metrics as JSON", () => {
+	const directory = mkdtempSync(join(tmpdir(), "lystar-release-summary-"));
+	const artifact = join(directory, "artifact");
+	try {
+		writeFileSync(artifact, "artifact");
+		const metrics = summarizeReleaseMetrics({
+			release: "cli",
+			sha: "abc123",
+			fullMatrixCount: 1,
+			artifacts: [{ platform: "linux-x64", path: artifact }],
+			timings: { wall: 12, build: 8, cache: 1 },
+		});
+		assert.equal(metrics.schemaVersion, 1);
+		assert.equal(metrics.kind, "release-job");
+		assert.equal(metrics.metrics.release_wall_seconds, 12);
+		assert.equal(metrics.metrics.release_runner_seconds_total, 12);
+		assert.equal(metrics.artifactBytes["linux-x64"], 8);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
 
 test("release summary reports matrix, artifact bytes, timings, and cache state", () => {
 	const directory = mkdtempSync(join(tmpdir(), "lystar-release-summary-"));

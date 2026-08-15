@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { summarize } from "./ci-summary.mjs";
+import { summarize, summarizeMetrics } from "./ci-summary.mjs";
 
 function report(passed, skipped, name = "test/example.test.ts") {
 	return JSON.stringify({
@@ -13,6 +13,21 @@ function report(passed, skipped, name = "test/example.test.ts") {
 		testResults: [{ name, assertionResults: [{ duration: 42 }]}],
 	});
 }
+
+test("CI summaries also expose documented metrics as JSON", () => {
+	const metrics = summarizeMetrics({
+		suite: "source",
+		timings: { wall: 12, setup: 3, build: 4, test: 5, cache: 1, cacheHits: { npm: "true" } },
+		skippedByReason: { credential: 1 },
+	});
+	assert.equal(metrics.schemaVersion, 1);
+	assert.equal(metrics.kind, "ci-job");
+	assert.equal(metrics.metrics.ci_wall_seconds, 12);
+	assert.equal(metrics.metrics.ci_runner_seconds_total, 12);
+	assert.equal(metrics.metrics.ci_setup_seconds_total, 3);
+	assert.equal(metrics.metrics.test_skipped_total, 1);
+	assert.equal(metrics.skippedByReason.credential, 1);
+});
 
 test("CI summary reports Vitest and Node TAP totals, slowest file, and planner reason", () => {
 	const directory = mkdtempSync(join(tmpdir(), "ci-summary-"));

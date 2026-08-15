@@ -1,4 +1,4 @@
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 function number(value) {
@@ -60,13 +60,13 @@ export function readTestResult(path) {
 	};
 }
 
-export function summarize({ suite, resultPaths = [], required = false, expectReports = resultPaths.length > 0, timings = {}, plan, jobs = [] }) {
+export function summarize({ suite, resultPaths = [], required = false, assertPassed = false, expectReports = resultPaths.length > 0, timings = {}, plan, jobs = [], skippedByReason = {} }) {
 	const results = resultPaths.map(readTestResult);
 	const invalidReports = resultPaths.filter((_, index) => !results[index].valid);
 	const passed = results.reduce((total, result) => total + result.passed, 0);
-	const skipped = results.reduce((total, result) => total + result.skipped, 0);
+	const skipped = results.reduce((total, result) => total + result.skipped, 0) + Object.values(skippedByReason).reduce((total, value) => total + number(value), 0);
 	const slowestFiles = results.flatMap((result) => result.slowestFiles).sort((left, right) => right.duration - left.duration).slice(0, 20);
-	if (required && expectReports) {
+	if ((required || assertPassed) && expectReports) {
 		if (resultPaths.length === 0) throw new Error(`${suite} required deterministic suite expected test reports`);
 		const invalidIndex = results.findIndex((result) => !result.valid);
 		if (invalidIndex >= 0) throw new Error(`${suite} required test report ${results[invalidIndex].error}: ${resultPaths[invalidIndex]}`);
@@ -84,6 +84,7 @@ export function summarize({ suite, resultPaths = [], required = false, expectRep
 	const lines = [
 		`## CI ${suite}`,
 		`- ci_wall_seconds: ${number(timings.wall)}`,
+		`- ci_runner_seconds_total: ${number(timings.wall)}`,
 		`- ci_setup_seconds_total: ${number(timings.setup)}`,
 		`- ci_build_seconds_total: ${number(timings.build)}`,
 		`- ci_test_seconds_total: ${number(timings.test)}`,
@@ -93,6 +94,9 @@ export function summarize({ suite, resultPaths = [], required = false, expectRep
 	];
 	for (const [cache, hit] of Object.entries(timings.cacheHits ?? {})) {
 		lines.push(`- ci_cache_hit{cache=${cache}}: ${hit}`);
+	}
+	for (const [reason, count] of Object.entries(skippedByReason)) {
+		lines.push(`- test_skipped_total{suite=${suite},reason=${reason}}: ${number(count)}`);
 	}
 	for (const file of slowestFiles) lines.push(`- test_slowest_file_ms{suite=${suite},file=${file.file}}: ${file.duration}`);
 	for (const path of invalidReports) lines.push(`- test_report_invalid{suite=${suite}}: ${path}`);
@@ -107,7 +111,7 @@ export function summarize({ suite, resultPaths = [], required = false, expectRep
 }
 
 function parseArguments(argv) {
-	const options = { resultPaths: [], timings: { cacheHits: {} }, jobs: [] };
+	const options = { resultPaths: [], timings: { cacheHits: {} }, jobs: [], skippedByReason: {} };
 	for (let index = 0; index < argv.length; index++) {
 		const argument = argv[index];
 		const value = argv[index + 1];
@@ -115,6 +119,9 @@ function parseArguments(argv) {
 		else if (argument === "--result") options.resultPaths.push(value);
 		else if (argument === "--required") {
 			options.required = true;
+			continue;
+		} else if (argument === "--assert-passed") {
+			options.assertPassed = true;
 			continue;
 		} else if (argument === "--no-test-report") {
 			options.expectReports = false;
@@ -129,16 +136,50 @@ function parseArguments(argv) {
 		} else if (argument === "--job") {
 			const [name, result, gates] = value.split("=", 3);
 			options.jobs.push({ name, result, gates: gates.split(",") });
-		} else throw new Error(`Unknown argument: ${argument}`);
+		} else if (argument === "--skip") {
+			const [reason, count] = value.split("=", 2);
+			options.skippedByReason[reason] = count;
+		} else if (argument === "--json-output") options.jsonOutput = value;
+		else throw new Error(`Unknown argument: ${argument}`);
 		index++;
 	}
 	if (!options.suite) throw new Error("--suite is required");
 	return options;
 }
 
+export function summarizeMetrics({ suite, resultPaths = [], timings = {}, skippedByReason = {} }) {
+	const results = resultPaths.map(readTestResult);
+	const passed = results.reduce((total, result) => total + result.passed, 0);
+	const skipped = results.reduce((total, result) => total + result.skipped, 0) + Object.values(skippedByReason).reduce((total, value) => total + number(value), 0);
+	const slowestFiles = results.flatMap((result) => result.slowestFiles).sort((left, right) => right.duration - left.duration).slice(0, 20);
+	return {
+		schemaVersion: 1,
+		kind: "ci-job",
+		suite,
+		createdAt: new Date().toISOString(),
+		metrics: {
+			ci_wall_seconds: number(timings.wall),
+			ci_runner_seconds_total: number(timings.wall),
+			ci_setup_seconds_total: number(timings.setup),
+			ci_build_seconds_total: number(timings.build),
+			ci_test_seconds_total: number(timings.test),
+			ci_cache_restore_seconds: timings.cache === "unavailable" ? 0 : number(timings.cache),
+			test_passed_total: passed,
+			test_skipped_total: skipped,
+			test_skipped_total_by_reason: skippedByReason,
+			test_slowest_file_ms: Object.fromEntries(slowestFiles.map((file) => [file.file, file.duration])),
+			ci_cache_hit: timings.cacheHits ?? {},
+		},
+		cacheHits: timings.cacheHits ?? {},
+		skippedByReason,
+		slowestFiles,
+	};
+}
+
 export function runCli(argv = process.argv.slice(2)) {
 	const options = parseArguments(argv);
 	const output = summarize(options);
+	if (options.jsonOutput) writeFileSync(options.jsonOutput, `${JSON.stringify(summarizeMetrics(options), null, 2)}\n`);
 	if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, output);
 	process.stdout.write(output);
 }

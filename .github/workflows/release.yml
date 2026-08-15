@@ -129,7 +129,8 @@ jobs:
             --timing wall=$(( $(date +%s) - ${{ steps.build-start.outputs.seconds || 0 }} )) \
             --timing build=$(( ${{ steps.javascript-build.outputs.seconds || 0 }} + ${{ steps.standalone-build.outputs.seconds || 0 }} )) \
             --timing cache=$(( ${{ steps.cache-end.outputs.seconds || 0 }} - ${{ steps.cache-start.outputs.seconds || 0 }} )) \
-            --cache-hit npm=${{ steps.setup-node.outputs.cache-hit || 'false' }}
+            --cache-hit npm=${{ steps.setup-node.outputs.cache-hit || 'false' }} \
+            --json-output "$RUNNER_TEMP/release-metrics-unix.json"
 
       - name: Upload Unix release artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -137,6 +138,15 @@ jobs:
           name: release-unix
           path: packages/coding-agent/binaries/*.tar.gz
           if-no-files-found: error
+
+      - name: Upload Unix release build metrics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-budget-metrics-unix
+          path: ${{ runner.temp }}/release-metrics-unix.json
+          if-no-files-found: warn
+          retention-days: 7
 
   build-windows:
     needs: verify-ci
@@ -221,7 +231,8 @@ jobs:
             --timing wall=$(( $(date +%s) - ${{ steps.build-start.outputs.seconds || 0 }} )) \
             --timing build=$(( ${{ steps.javascript-build.outputs.seconds || 0 }} + ${{ steps.standalone-build.outputs.seconds || 0 }} )) \
             --timing cache=$(( ${{ steps.cache-end.outputs.seconds || 0 }} - ${{ steps.cache-start.outputs.seconds || 0 }} )) \
-            --cache-hit npm=${{ steps.setup-node.outputs.cache-hit || 'false' }}
+            --cache-hit npm=${{ steps.setup-node.outputs.cache-hit || 'false' }} \
+            --json-output "$RUNNER_TEMP/release-metrics-windows.json"
 
       - name: Upload Windows release artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -230,11 +241,21 @@ jobs:
           path: packages/coding-agent/binaries/lystar-agent-*-windows-x64.zip
           if-no-files-found: error
 
+      - name: Upload Windows release build metrics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-budget-metrics-windows
+          path: ${{ runner.temp }}/release-metrics-windows.json
+          if-no-files-found: warn
+          retention-days: 7
+
   release:
     needs: [build-unix, build-windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
+      actions: read
       contents: write
       id-token: write
       attestations: write
@@ -263,6 +284,13 @@ jobs:
         with:
           name: release-windows
           path: packages/coding-agent/binaries
+
+      - name: Download release build metrics
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-budget-metrics-*
+          path: ${{ runner.temp }}/release-budget-metrics
+          merge-multiple: true
 
       - name: Generate release metadata
         env:
@@ -296,7 +324,37 @@ jobs:
             --artifact "linux-arm64=packages/coding-agent/binaries/lystar-agent-v$version-linux-arm64.tar.gz" \
             --artifact "windows-x64=packages/coding-agent/binaries/lystar-agent-v$version-windows-x64.zip" \
             --timing wall=$(( $(date +%s) - ${{ steps.release-start.outputs.seconds || 0 }} )) \
-            --timing build=0 --timing cache=unavailable
+            --timing build=0 --timing cache=unavailable \
+            --json-output "$RUNNER_TEMP/release-metrics-cli-final.json"
+
+      - name: Diagnose CLI release budget
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          workflow_started=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" --jq .created_at || date -u +%Y-%m-%dT%H:%M:%SZ)
+          inputs=()
+          while IFS= read -r path; do inputs+=(--input "$path"); done < <(find "$RUNNER_TEMP/release-budget-metrics" -name '*.json' -type f | sort)
+          inputs+=(--input "$RUNNER_TEMP/release-metrics-cli-final.json")
+          node scripts/ci-budget.mjs --aggregate --kind release --budget-class cli-release --workflow-start "$workflow_started" "${inputs[@]}" --output "$RUNNER_TEMP/release-budget-metrics.json"
+          node scripts/collect-budget-history.mjs --workflow release.yml --artifact release-budget-metrics --output "$RUNNER_TEMP/release-budget-history"
+          history=()
+          while IFS= read -r path; do history+=(--previous "$path"); done < <(find "$RUNNER_TEMP/release-budget-history" -name '*.json' -type f | sort | head -n 2)
+          node scripts/ci-budget.mjs --current "$RUNNER_TEMP/release-budget-metrics.json" "${history[@]}" --json-output "$RUNNER_TEMP/release-budget-diagnostic.json"
+
+      - name: Upload CLI release budget metrics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-budget-metrics
+          path: |
+            ${{ runner.temp }}/release-metrics-cli-final.json
+            ${{ runner.temp }}/release-budget-metrics.json
+            ${{ runner.temp }}/release-budget-diagnostic.json
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Attest release artifacts
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2

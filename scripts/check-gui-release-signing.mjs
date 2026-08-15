@@ -128,6 +128,10 @@ export function guiReleaseSigningErrors(workflow, sidecar, collector = "") {
 	if (steps(build).filter((candidate) => /\bnpm ci\b/.test(command(candidate))).length !== 1) {
 		errors.push("each GUI build matrix job may install dependencies only once");
 	}
+	const guiArtifactUpload = step(build, "Upload GUI release artifact");
+	if (guiArtifactUpload?.uses !== "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" || guiArtifactUpload?.with?.path !== "${{ runner.temp }}/gui-release/*") {
+		errors.push("GUI build matrix must upload its collected platform artifact");
+	}
 	const rustCache = step(build, "Cache Rust dependencies");
 	const rustCachePaths = typeof rustCache?.with?.path === "string" ? rustCache.with.path : "";
 	if (

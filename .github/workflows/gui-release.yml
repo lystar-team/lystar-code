@@ -368,6 +368,7 @@ jobs:
           --timing cache=$(( ${{ steps.cache-end.outputs.seconds || 0 }} - ${{ steps.cache-start.outputs.seconds || 0 }} ))
           --cache-hit npm=${{ steps.setup-node.outputs.cache-hit || 'false' }}
           --cache-hit rust=${{ steps.rust-cache.outputs.cache-hit || 'false' }}
+          --json-output "$RUNNER_TEMP/gui-release-metrics-${{ matrix.platform }}.json"
 
       - name: Upload GUI release artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -376,6 +377,15 @@ jobs:
           path: ${{ runner.temp }}/gui-release/*
           if-no-files-found: error
 
+      - name: Upload GUI release build metrics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gui-release-budget-metrics-${{ matrix.platform }}
+          path: ${{ runner.temp }}/gui-release-metrics-${{ matrix.platform }}.json
+          if-no-files-found: warn
+          retention-days: 7
+
   publish:
     needs: [verify-ci, build]
     if: needs.verify-ci.outputs.skip != 'true'
@@ -383,6 +393,7 @@ jobs:
     timeout-minutes: 15
     environment: gui-release
     permissions:
+      actions: read
       contents: write
       id-token: write
       attestations: write
@@ -405,6 +416,13 @@ jobs:
         with:
           pattern: gui-beta-*
           path: gui-release
+          merge-multiple: true
+
+      - name: Download GUI release build metrics
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: gui-release-budget-metrics-*
+          path: ${{ runner.temp }}/gui-release-budget-metrics
           merge-multiple: true
 
       - name: Generate GUI beta metadata
@@ -494,3 +512,33 @@ jobs:
           --artifact "windows-x64=gui-release/lystar-code-gui-${{ needs.verify-ci.outputs.version }}-windows-x64.exe"
           --timing wall=$(( $(date +%s) - ${{ steps.publish-start.outputs.seconds || 0 }} ))
           --timing build=0 --timing cache=unavailable
+          --json-output "$RUNNER_TEMP/gui-release-metrics-final.json"
+
+      - name: Diagnose GUI release budget
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          workflow_started=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" --jq .created_at || date -u +%Y-%m-%dT%H:%M:%SZ)
+          inputs=()
+          while IFS= read -r path; do inputs+=(--input "$path"); done < <(find "$RUNNER_TEMP/gui-release-budget-metrics" -name '*.json' -type f | sort)
+          inputs+=(--input "$RUNNER_TEMP/gui-release-metrics-final.json")
+          node scripts/ci-budget.mjs --aggregate --kind release --budget-class gui-release --workflow-start "$workflow_started" "${inputs[@]}" --output "$RUNNER_TEMP/gui-release-budget-metrics.json"
+          node scripts/collect-budget-history.mjs --workflow gui-release.yml --artifact gui-release-budget-metrics --output "$RUNNER_TEMP/gui-release-budget-history"
+          history=()
+          while IFS= read -r path; do history+=(--previous "$path"); done < <(find "$RUNNER_TEMP/gui-release-budget-history" -name '*.json' -type f | sort | head -n 2)
+          node scripts/ci-budget.mjs --current "$RUNNER_TEMP/gui-release-budget-metrics.json" "${history[@]}" --json-output "$RUNNER_TEMP/gui-release-budget-diagnostic.json"
+
+      - name: Upload GUI release budget metrics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gui-release-budget-metrics
+          path: |
+            ${{ runner.temp }}/gui-release-metrics-final.json
+            ${{ runner.temp }}/gui-release-budget-metrics.json
+            ${{ runner.temp }}/gui-release-budget-diagnostic.json
+          if-no-files-found: warn
+          retention-days: 7

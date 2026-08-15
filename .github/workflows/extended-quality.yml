@@ -1,0 +1,198 @@
+name: Extended quality
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Extended quality suite
+        required: true
+        default: non-live-all
+        type: choice
+        options: [ai-live, coding-live, stress, rust-benchmark, non-live-all]
+  schedule:
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extended-quality-${{ github.ref }}-${{ github.event_name }}-${{ inputs.suite || 'scheduled' }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: 22.19.0
+  RUST_VERSION: 1.97.1
+  NPM_CI_ARGS: --ignore-scripts --no-audit --no-fund
+
+jobs:
+  ai-live:
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'ai-live'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: live-provider
+    env:
+      PI_LIVE_TEST: "1"
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_OAUTH_TOKEN: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_OAUTH_TOKEN: ${{ secrets.OPENAI_OAUTH_TOKEN }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci $NPM_CI_ARGS
+
+      - name: Run AI live provider suite
+        shell: bash
+        run: |
+          if [[ -z "$ANTHROPIC_API_KEY$ANTHROPIC_OAUTH_TOKEN$OPENAI_API_KEY$OPENAI_OAUTH_TOKEN$GEMINI_API_KEY$GOOGLE_API_KEY$MISTRAL_API_KEY$OPENROUTER_API_KEY$HF_TOKEN" ]]; then
+            node scripts/ci-summary.mjs --suite ai-live --no-test-report --skip credential=1 --json-output "$RUNNER_TEMP/ai-live-metrics.json"
+            exit 0
+          fi
+          npm --workspace @earendil-works/pi-ai run test:live -- --reporter=json --outputFile="$RUNNER_TEMP/ai-live-report.json"
+          node scripts/ci-summary.mjs --suite ai-live --assert-passed --result "$RUNNER_TEMP/ai-live-report.json" --json-output "$RUNNER_TEMP/ai-live-metrics.json"
+
+      - name: Upload AI live report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: extended-quality-ai-live
+          path: |
+            ${{ runner.temp }}/ai-live-report.json
+            ${{ runner.temp }}/ai-live-metrics.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  coding-live:
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'coding-live'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: live-provider
+    env:
+      PI_LIVE_TEST: "1"
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_OAUTH_TOKEN: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci $NPM_CI_ARGS
+
+      - name: Run Coding Agent live provider suite
+        shell: bash
+        run: |
+          if [[ -z "$ANTHROPIC_API_KEY$ANTHROPIC_OAUTH_TOKEN" ]]; then
+            node scripts/ci-summary.mjs --suite coding-live --no-test-report --skip credential=1 --json-output "$RUNNER_TEMP/coding-live-metrics.json"
+            exit 0
+          fi
+          npm --workspace @earendil-works/pi-coding-agent run test:live -- --reporter=json --outputFile="$RUNNER_TEMP/coding-live-report.json"
+          node scripts/ci-summary.mjs --suite coding-live --assert-passed --result "$RUNNER_TEMP/coding-live-report.json" --json-output "$RUNNER_TEMP/coding-live-metrics.json"
+
+      - name: Upload Coding Agent live report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: extended-quality-coding-live
+          path: |
+            ${{ runner.temp }}/coding-live-report.json
+            ${{ runner.temp }}/coding-live-metrics.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  stress:
+    if: github.event_name == 'schedule' || inputs.suite == 'stress' || inputs.suite == 'non-live-all'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci $NPM_CI_ARGS
+
+      - name: Run stress suite
+        run: |
+          npm --workspace @earendil-works/pi-coding-agent run test:stress -- --reporter=json --outputFile="$RUNNER_TEMP/stress-report.json"
+          node scripts/ci-summary.mjs --suite stress --assert-passed --result "$RUNNER_TEMP/stress-report.json" --json-output "$RUNNER_TEMP/stress-metrics.json"
+
+      - name: Upload stress report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: extended-quality-stress
+          path: |
+            ${{ runner.temp }}/stress-report.json
+            ${{ runner.temp }}/stress-metrics.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  rust-benchmark:
+    if: github.event_name == 'schedule' || inputs.suite == 'rust-benchmark' || inputs.suite == 'non-live-all'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Setup Rust
+        shell: bash
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+          rustc --version
+          cargo --version
+
+      - name: Install dependencies
+        run: npm ci $NPM_CI_ARGS
+
+      - name: Run and verify Rust B0 benchmark
+        shell: bash
+        run: |
+          set +e
+          npm run benchmark:rust-spike
+          benchmark_status=$?
+          set -e
+          node scripts/verify-rust-spike-benchmark.mjs --exit-code "$benchmark_status" > "$RUNNER_TEMP/rust-benchmark-report.json"
+
+      - name: Upload Rust B0 benchmark report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: extended-quality-rust-benchmark
+          path: |
+            .artifacts/rust-tui-spike
+            docs/rust-tui-spike-report.md
+            ${{ runner.temp }}/rust-benchmark-report.json
+          if-no-files-found: warn
+          retention-days: 7

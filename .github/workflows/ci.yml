@@ -144,6 +144,16 @@ jobs:
           --timing wall=$(( $(date +%s) - CI_JOB_STARTED ))
           --timing cache=$(( ${{ steps.npm-cache-end.outputs.seconds || 0 }} - ${{ steps.npm-cache-start.outputs.seconds || 0 }} ))
           --cache-hit npm=${{ steps.setup-node.outputs.cache-hit || 'false' }}
+          --json-output "$RUNNER_TEMP/ci-metrics-source.json"
+
+      - name: Upload source CI metrics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-budget-metrics-source
+          path: ${{ runner.temp }}/ci-metrics-source.json
+          if-no-files-found: warn
+          retention-days: 7
 
   core:
     needs: plan
@@ -225,6 +235,7 @@ jobs:
           --timing wall=$(( $(date +%s) - CI_JOB_STARTED ))
           --timing cache=$(( ${{ steps.npm-cache-end.outputs.seconds || 0 }} - ${{ steps.npm-cache-start.outputs.seconds || 0 }} ))
           --cache-hit npm=${{ steps.setup-node.outputs.cache-hit || 'false' }}
+          --json-output "$RUNNER_TEMP/ci-metrics-core.json"
 
       - name: Upload core test reports
         if: always()
@@ -234,6 +245,15 @@ jobs:
           path: |
             ${{ runner.temp }}/ci-*.json
             ${{ runner.temp }}/ci-tui.tap
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload core CI metrics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-budget-metrics-core
+          path: ${{ runner.temp }}/ci-metrics-core.json
           if-no-files-found: warn
           retention-days: 7
 
@@ -302,6 +322,7 @@ jobs:
           --timing wall=$(( $(date +%s) - CI_JOB_STARTED ))
           --timing cache=$(( ${{ steps.npm-cache-end.outputs.seconds || 0 }} - ${{ steps.npm-cache-start.outputs.seconds || 0 }} ))
           --cache-hit npm=${{ steps.setup-node.outputs.cache-hit || 'false' }}
+          --json-output "$RUNNER_TEMP/ci-metrics-coding.json"
 
       - name: Upload Coding Agent test report
         if: always()
@@ -309,6 +330,15 @@ jobs:
         with:
           name: coding-agent-vitest-report
           path: ${{ runner.temp }}/ci-coding-agent.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload Coding Agent CI metrics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-budget-metrics-coding
+          path: ${{ runner.temp }}/ci-metrics-coding.json
           if-no-files-found: warn
           retention-days: 7
 
@@ -445,6 +475,7 @@ jobs:
           --timing cache=$([int64]${{ steps.npm-cache-end.outputs.seconds || 0 }} - [int64]${{ steps.npm-cache-start.outputs.seconds || 0 }} + [int64]${{ steps.mingit-cache-end.outputs.seconds || 0 }} - [int64]${{ steps.mingit-cache-start.outputs.seconds || 0 }})
           --cache-hit npm=${{ steps.setup-node.outputs.cache-hit || 'false' }}
           --cache-hit mingit=${{ steps.mingit-cache.outputs.cache-hit || 'false' }}
+          --json-output "$env:RUNNER_TEMP\ci-metrics-platform.json"
 
       - name: Upload Windows test reports and terminal screenshot
         if: always()
@@ -457,19 +488,42 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      - name: Upload Windows CI metrics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-budget-metrics-platform
+          path: ${{ runner.temp }}/ci-metrics-platform.json
+          if-no-files-found: warn
+          retention-days: 7
+
   required:
     needs: [plan, source, core, coding, windows]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Record required job start
+        shell: bash
+        run: echo "CI_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download CI job metrics
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: ci-budget-metrics-*
+          path: ${{ runner.temp }}/ci-budget-metrics
+          merge-multiple: true
 
       - name: Verify selected required gates
         env:
@@ -480,3 +534,36 @@ jobs:
           --job core=${{ needs.core.result }}=core,gui
           --job coding=${{ needs.coding.result }}=coding
           --job windows=${{ needs.windows.result }}=platform
+          --timing wall=$(( $(date +%s) - CI_JOB_STARTED ))
+          --json-output "$RUNNER_TEMP/ci-metrics-required.json"
+
+      - name: Diagnose CI budget
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PLAN_JSON: ${{ needs.plan.outputs.plan }}
+        run: |
+          workflow_started=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" --jq .created_at || date -u +%Y-%m-%dT%H:%M:%SZ)
+          budget_class=$(node -e 'const plan = JSON.parse(process.env.PLAN_JSON); console.log(Object.values(plan.wouldRun).some(Boolean) ? "normal-ci" : "docs-required")')
+          inputs=()
+          while IFS= read -r path; do inputs+=(--input "$path"); done < <(find "$RUNNER_TEMP/ci-budget-metrics" -name '*.json' -type f | sort)
+          inputs+=(--input "$RUNNER_TEMP/ci-metrics-required.json")
+          node scripts/ci-budget.mjs --aggregate --kind ci --budget-class "$budget_class" --workflow-start "$workflow_started" "${inputs[@]}" --output "$RUNNER_TEMP/ci-budget-metrics.json"
+          node scripts/collect-budget-history.mjs --workflow ci.yml --artifact ci-budget-metrics --output "$RUNNER_TEMP/ci-budget-history"
+          history=()
+          while IFS= read -r path; do history+=(--previous "$path"); done < <(find "$RUNNER_TEMP/ci-budget-history" -name '*.json' -type f | sort | head -n 2)
+          node scripts/ci-budget.mjs --current "$RUNNER_TEMP/ci-budget-metrics.json" "${history[@]}" --json-output "$RUNNER_TEMP/ci-budget-diagnostic.json"
+
+      - name: Upload CI budget metrics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-budget-metrics
+          path: |
+            ${{ runner.temp }}/ci-metrics-required.json
+            ${{ runner.temp }}/ci-budget-metrics.json
+            ${{ runner.temp }}/ci-budget-diagnostic.json
+          if-no-files-found: warn
+          retention-days: 7
