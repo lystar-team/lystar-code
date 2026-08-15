@@ -281,7 +281,8 @@ ${chalk.bold("命令：")}
   ${APP_NAME} list                      列出设置中的 Extension
   ${APP_NAME} config [-l]               打开 Package 资源管理界面，Tab 切换范围
   ${APP_NAME} auth <command>            输出凭据或检查 Provider 是否可用
-  ${APP_NAME} <command> --help          查看 install/remove/update/config/auth 等命令帮助
+  ${APP_NAME} lessons <command>         查看、审批、停用或回滚 Tool 恢复经验
+  ${APP_NAME} <command> --help          查看 install/remove/update/config/auth/lessons 等命令帮助
 
 ${chalk.bold("选项：")}
   --provider <name>              Provider 名称（默认 google）

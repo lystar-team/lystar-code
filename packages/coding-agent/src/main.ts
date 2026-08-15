@@ -29,6 +29,7 @@ import {
 import { resolveCredentialForPrint } from "./cli/credential-print.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
+import { runLessonsCommand } from "./cli/lessons-command.ts";
 import { listModels } from "./cli/list-models.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import { selectSession } from "./cli/session-picker.ts";
@@ -702,7 +703,9 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	const skipsWindowsShellBootstrap =
-		args.some((arg) => arg === "--version" || arg === "-v" || arg === "--help" || arg === "-h") || args[0] === "list";
+		args.some((arg) => arg === "--version" || arg === "-v" || arg === "--help" || arg === "-h") ||
+		args[0] === "list" ||
+		args[0] === "lessons";
 	if (process.platform === "win32" && !skipsWindowsShellBootstrap) {
 		const bashPath = await ensureManagedWindowsBash(true);
 		if (!bashPath) {
@@ -717,6 +720,10 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	if (await runAuthCommand(args)) {
+		return;
+	}
+
+	if (await runLessonsCommand(args, agentDir)) {
 		return;
 	}
 
