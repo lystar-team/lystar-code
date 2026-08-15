@@ -2,7 +2,7 @@
 
 > 状态：开发基线。按本文连续实施，不设阶段审批。
 >
-> 当前上游基线：2026-08-07；Pi `v0.84.1`，commit `53fa77ccd8a279eb87e92294ef3687b03ff80112`；Grok Build commit `6e386420825bd44ae648c63e7c8cba12fcec9401`。
+> 当前上游基线：2026-08-15；Pi `v0.84.2`，commit `914cf1472e715297caa30db4b9535d534a9eb718`；Grok Build commit `6e386420825bd44ae648c63e7c8cba12fcec9401`。
 
 ## 1. 产品定义
 
@@ -40,7 +40,7 @@ Todo、后台任务、子 Agent 和 MCP 等能力继续由 Pi Extension 提供�
 
 ### Pi
 
-Pi `v0.84.1` 已具备以下基础，LYStar 直接复用：
+Pi `v0.84.2` 已具备以下基础，LYStar 直接复用：
 
 - Bun executable 构建入口和 macOS、Linux、Windows 多架构 CI。
 - Agent Runtime、Provider、Session、Tool、Extension、Skill 和 Package 管理。
@@ -523,6 +523,7 @@ LYStar 不增加 MCP 配置文件、内置管理器或代理 Tool。TUI 负责�
 
 | LYStar | Pi 基线 | Pi commit | MCP Adapter | Session | Extension API |
 |---|---|---|---|---|---|
+| `0.84.2-lystar.1` | `0.84.2` | `914cf147...` | `2.12.1` | Pi 原 JSONL、Provider、Tool、Extension、Skill、Package、Theme 与 GUI Protocol 兼容 | Pi `0.84.2`；合并全屏搜索、默认内置 Tool、主题选择、严格 JSON Schema Tool 采样、Responses 流和 Session 修复，LYStar 保留中文全屏工作区、卡片、图片、更新源与 GUI Runtime 契约 |
 | `0.84.1-lystar.13` | `0.84.1` | `53fa77cc...` | `2.12.1` | Pi 原 JSONL 兼容；文件修改定位、实时 Thinking 摘要和补丁卡片展开状态不改变持久 Session | Pi `0.84.1`；内置 `edit` 与 `apply_patch` 提升唯一定位和原子写入可靠性，Thinking 活动栏渲染内联 Markdown，补丁子卡正文点击不再触发外层折叠，现有 Tool 名、Provider、RPC、Protocol 与 Extension API 不变 |
 | `0.84.1-lystar.12` | `0.84.1` | `53fa77cc...` | `2.12.1` | Pi 原 JSONL 兼容；压缩摘要由持久 Session Entry 唯一重建，Thinking 内容继续保存 | Pi `0.84.1`；内置 TUI 增加补丁文件级展开、Thinking 位置设置、实时活动状态和手动滚动锁，现有 Session、Tool、Provider、RPC、Protocol 与 Extension API 不变 |
 | `0.84.1-lystar.11` | `0.84.1` | `53fa77cc...` | `2.12.1` | Pi 原 JSONL 兼容；Tool 折叠、压缩重绘、Hover 和滚动状态只存在当前 TUI 运行态 | Pi `0.84.1`；统一滚轮归一化、鼠标合帧、Tool 卡片显示与终端光标行为，现有 Session、Tool、Provider、RPC、Protocol 与 Extension API 不变 |
@@ -584,7 +585,7 @@ Pi `v0.83.0` 将 TypeBox 升级到 `1.3.7`，删除了 `Type.Base`、`Type.Await
 
 | 工作项 | 完成标准 |
 |---|---|
-| 仓库基线 | 建立 `origin/upstream`，可重复构建当前 Pi `v0.84.1` 基线 |
+| 仓库基线 | 建立 `origin/upstream`，可重复构建当前 Pi `v0.84.2` 基线 |
 | 产品常量 | `lc`、`lystar`、`LYStar Code`、`.pi`、`PI_*` 和 release repository 各自只有一个事实源 |
 | CLI 品牌 | banner、标题、帮助、版本、错误和示例统一；参数与退出码兼容 |
 | 发行包 | 五个平台归档包含 executable、运行资源、许可证和 manifest |
@@ -701,7 +702,7 @@ SSH
 ## 14. 调研与许可证来源
 
 - Pi 官方仓库：https://github.com/earendil-works/pi
-- Pi 当前基线：`v0.84.1`，commit `53fa77ccd8a279eb87e92294ef3687b03ff80112`
+- Pi 当前基线：`v0.84.2`，commit `914cf1472e715297caa30db4b9535d534a9eb718`
 - Pi 本机文档：`extensions.md`、`tui.md`、`themes.md`、`keybindings.md`、`packages.md`、`skills.md`、`sdk.md`、`rpc.md`、`development.md`、`settings.md`、`session-format.md`、`windows.md`、`tmux.md`
 - Grok Build：https://github.com/xai-org/grok-build
 - Grok Build 调研 commit：`6e386420825bd44ae648c63e7c8cba12fcec9401`

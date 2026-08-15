@@ -1,6 +1,6 @@
 {
 	"name": "@lystar/code-gui-protocol",
-	"version": "0.84.1-lystar-gui.6",
+	"version": "0.84.2-lystar-gui.1",
 	"description": "LYStar Code GUI Protocol v1",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -20,7 +20,7 @@
 		"test": "vitest --run"
 	},
 	"dependencies": {
-		"@earendil-works/pi-protocol": "0.84.1",
+		"@earendil-works/pi-protocol": "0.84.2",
 		"typebox": "1.3.7"
 	},
 	"devDependencies": {

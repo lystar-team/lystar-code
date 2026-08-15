@@ -1,6 +1,6 @@
 # LYStar Code
 
-LYStar Code 是基于 Pi `v0.84.1` 的中文编码 Agent。最终用户命令为 `lc` 和 `lystar`，两者完全等价；继续保留 Pi Runtime、Session、Skill、Extension、Package、MCP、`.pi` 数据和 `PI_*` 环境变量兼容。
+LYStar Code 是基于 Pi `v0.84.2` 的中文编码 Agent。最终用户命令为 `lc` 和 `lystar`，两者完全等价；继续保留 Pi Runtime、Session、Skill、Extension、Package、MCP、`.pi` 数据和 `PI_*` 环境变量兼容。
 
 ## 使用
 
@@ -29,4 +29,4 @@ bash scripts/build-binaries.sh --offline-model-data
 
 发行仓库固定为 `lystar-team/lystar-code`。构建脚本会把该地址写入安装器、manifest 和发行包，供安装与更新使用。
 
-LYStar Code 当前基于 `earendil-works/pi` `v0.84.1`，上游 commit 为 `53fa77ccd8a279eb87e92294ef3687b03ff80112`，按 MIT License 发行。Grok Build 仅作为全屏 TUI 交互参考，没有复制其源码或资产。
+LYStar Code 当前基于 `earendil-works/pi` `v0.84.2`，上游 commit 为 `914cf1472e715297caa30db4b9535d534a9eb718`，按 MIT License 发行。Grok Build 仅作为全屏 TUI 交互参考，没有复制其源码或资产。

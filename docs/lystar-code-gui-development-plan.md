@@ -1,10 +1,10 @@
 # LYStar Code GUI 开发方案
 
-> 状态：Core、GUI Protocol、GUI Host、React 工作台和 Linux 本机 Tauri 已形成公开 Beta；`gui-v0.84.1-lystar-gui.5` 已发布五平台安装包、严格 SHA/manifest 和 provenance。当前源码为未发布的 `0.84.1-lystar-gui.6` P0 候选，已修复设置 Host 连接泄漏、项目打开无 deadline、AGENTS 加载、窗口拖动层级和 SSH 子进程退出回收，并完成本机浏览器与 Linux Tauri 验证。macOS App 与 Darwin Host 使用 ad-hoc code signature；干净 Mac Gatekeeper、Developer ID/notarization、真实 SSH Remote Host 和三平台完整实机运行仍未放行
+> 状态：Core、GUI Protocol、GUI Host、React 工作台和 Linux 本机 Tauri 已形成公开 Beta；`gui-v0.84.1-lystar-gui.5` 已发布五平台安装包、严格 SHA/manifest 和 provenance。当前源码候选为 `0.84.2-lystar-gui.1`，运行时 bundle 已升级到 Pi `v0.84.2`；候选继续包含设置 Host 连接泄漏、项目打开 deadline、AGENTS 加载、窗口拖动层级和 SSH 子进程退出回收修复，并完成本机浏览器与 Linux Tauri 验证。macOS App 与 Darwin Host 使用 ad-hoc code signature；干净 Mac Gatekeeper、Developer ID/notarization、真实 SSH Remote Host 和三平台完整实机运行仍未放行
 >
 > 日期：2026-08-15
 >
-> 基线：LYStar Code `0.84.1-lystar.13`，Pi `v0.84.1`
+> 基线：LYStar Code `0.84.2-lystar.1`，Pi `v0.84.2`
 >
 > 设计参考：`/tmp/cmux-drop-53c821d5-d6b0-4b10-98ec-abe86d3b0f54.png`
 

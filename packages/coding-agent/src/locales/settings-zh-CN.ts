@@ -32,6 +32,7 @@ export const SETTINGS_ZH_CN = {
 	"thinking-display": ["思考内容位置", "选择在左下角实时状态或对话输出中显示模型思考"],
 	transport: ["传输方式", "选择 Provider 的请求传输方式"],
 	"tui-mode": ["界面模式", "切换普通终端和全屏工作区"],
+	"fullscreen-exit-output": ["全屏退出输出", "退出全屏时输出完整对话记录或会话恢复提示"],
 	"fullscreen-scrollbar": ["全屏滚动条", "控制全屏历史区滚动条的显示方式"],
 	"tree-filter-mode": ["会话树筛选", "打开 /tree 时默认显示哪些消息"],
 	warnings: ["警告设置", "配置运行时警告"],
