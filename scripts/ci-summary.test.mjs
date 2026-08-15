@@ -29,6 +29,19 @@ test("CI summaries also expose documented metrics as JSON", () => {
 	assert.equal(metrics.skippedByReason.credential, 1);
 });
 
+test("positive timing summaries reject placeholder machine metrics", () => {
+	assert.throws(
+		() => summarize({ suite: "extended", expectReports: false, requirePositiveTimings: true, timings: { wall: 1, setup: 0, test: 1 } }),
+		/setup timing must be greater than zero/,
+	);
+	assert.doesNotThrow(() => summarize({
+		suite: "extended",
+		expectReports: false,
+		requirePositiveTimings: true,
+		timings: { wall: 0.001, setup: 0.001, test: 0.001 },
+	}));
+});
+
 test("CI summary reports Vitest and Node TAP totals, slowest file, and planner reason", () => {
 	const directory = mkdtempSync(join(tmpdir(), "ci-summary-"));
 	const resultPath = join(directory, "result.json");

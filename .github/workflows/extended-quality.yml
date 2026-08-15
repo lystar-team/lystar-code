@@ -45,24 +45,86 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Record AI live job start
+        id: job-start
+        shell: bash
+        run: echo "nanoseconds=$(date +%s%N)" >> "$GITHUB_OUTPUT"
+
+      - name: Record npm cache restore start
+        id: npm-cache-start
+        shell: bash
+        run: echo "nanoseconds=$(date +%s%N)" >> "$GITHUB_OUTPUT"
+
       - name: Setup Node.js
+        id: setup-node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
-      - name: Install dependencies
-        run: npm ci $NPM_CI_ARGS
+      - name: Record npm cache restore end
+        id: npm-cache-end
+        if: always()
+        shell: bash
+        run: echo "nanoseconds=$(date +%s%N)" >> "$GITHUB_OUTPUT"
 
-      - name: Run AI live provider suite
+      - name: Install dependencies
+        id: install
         shell: bash
         run: |
+          set +e
+          npm ci $NPM_CI_ARGS
+          install_status=$?
+          echo "finished_at=$(date +%s%N)" >> "$GITHUB_OUTPUT"
+          exit "$install_status"
+
+      - name: Run AI live provider suite
+        id: tests
+        shell: bash
+        run: |
+          started_at=$(date +%s%N)
+          set +e
           if [[ -z "$ANTHROPIC_API_KEY$ANTHROPIC_OAUTH_TOKEN$OPENAI_API_KEY$OPENAI_OAUTH_TOKEN$GEMINI_API_KEY$GOOGLE_API_KEY$MISTRAL_API_KEY$OPENROUTER_API_KEY$HF_TOKEN" ]]; then
-            node scripts/ci-summary.mjs --suite ai-live --no-test-report --skip credential=1 --json-output "$RUNNER_TEMP/ai-live-metrics.json"
-            exit 0
+            credential_skipped=true
+            test_status=0
+          else
+            credential_skipped=false
+            npm --workspace @earendil-works/pi-ai run test:live -- --reporter=json --outputFile="$RUNNER_TEMP/ai-live-report.json"
+            test_status=$?
           fi
-          npm --workspace @earendil-works/pi-ai run test:live -- --reporter=json --outputFile="$RUNNER_TEMP/ai-live-report.json"
-          node scripts/ci-summary.mjs --suite ai-live --assert-passed --result "$RUNNER_TEMP/ai-live-report.json" --json-output "$RUNNER_TEMP/ai-live-metrics.json"
+          echo "credential_skipped=$credential_skipped" >> "$GITHUB_OUTPUT"
+          echo "started_at=$started_at" >> "$GITHUB_OUTPUT"
+          echo "finished_at=$(date +%s%N)" >> "$GITHUB_OUTPUT"
+          exit "$test_status"
+
+      - name: Write AI live summary
+        if: always()
+        shell: bash
+        run: |
+          duration() {
+            local started_at="$1" finished_at="$2"
+            if [[ "$started_at" =~ ^[0-9]+$ && "$finished_at" =~ ^[0-9]+$ && "$finished_at" -ge "$started_at" ]]; then
+              awk -v started_at="$started_at" -v finished_at="$finished_at" 'BEGIN { printf "%.9f", (finished_at - started_at) / 1000000000 }'
+            else
+              echo 0
+            fi
+          }
+          now=$(date +%s%N)
+          arguments=(
+            --suite ai-live
+            --require-positive-timings
+            --timing "wall=$(duration '${{ steps.job-start.outputs.nanoseconds || '0' }}' "$now")"
+            --timing "setup=$(duration '${{ steps.job-start.outputs.nanoseconds || '0' }}' '${{ steps.install.outputs.finished_at || '0' }}')"
+            --timing "test=$(duration '${{ steps.tests.outputs.started_at || '0' }}' '${{ steps.tests.outputs.finished_at || '0' }}')"
+            --timing "cache=$(duration '${{ steps.npm-cache-start.outputs.nanoseconds || '0' }}' '${{ steps.npm-cache-end.outputs.nanoseconds || '0' }}')"
+            --cache-hit "npm=${{ steps.setup-node.outputs.cache-hit || 'unavailable' }}"
+          )
+          if [[ "${{ steps.tests.outputs.credential_skipped || 'false' }}" == "true" ]]; then
+            arguments+=(--no-test-report --skip credential=1)
+          else
+            arguments+=(--assert-passed --result "$RUNNER_TEMP/ai-live-report.json")
+          fi
+          node scripts/ci-summary.mjs "${arguments[@]}" --json-output "$RUNNER_TEMP/ai-live-metrics.json"
 
       - name: Upload AI live report
         if: always()
@@ -88,24 +150,86 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Record Coding Agent live job start
+        id: job-start
+        shell: bash
+        run: echo "nanoseconds=$(date +%s%N)" >> "$GITHUB_OUTPUT"
+
+      - name: Record npm cache restore start
+        id: npm-cache-start
+        shell: bash
+        run: echo "nanoseconds=$(date +%s%N)" >> "$GITHUB_OUTPUT"
+
       - name: Setup Node.js
+        id: setup-node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
-      - name: Install dependencies
-        run: npm ci $NPM_CI_ARGS
+      - name: Record npm cache restore end
+        id: npm-cache-end
+        if: always()
+        shell: bash
+        run: echo "nanoseconds=$(date +%s%N)" >> "$GITHUB_OUTPUT"
 
-      - name: Run Coding Agent live provider suite
+      - name: Install dependencies
+        id: install
         shell: bash
         run: |
+          set +e
+          npm ci $NPM_CI_ARGS
+          install_status=$?
+          echo "finished_at=$(date +%s%N)" >> "$GITHUB_OUTPUT"
+          exit "$install_status"
+
+      - name: Run Coding Agent live provider suite
+        id: tests
+        shell: bash
+        run: |
+          started_at=$(date +%s%N)
+          set +e
           if [[ -z "$ANTHROPIC_API_KEY$ANTHROPIC_OAUTH_TOKEN" ]]; then
-            node scripts/ci-summary.mjs --suite coding-live --no-test-report --skip credential=1 --json-output "$RUNNER_TEMP/coding-live-metrics.json"
-            exit 0
+            credential_skipped=true
+            test_status=0
+          else
+            credential_skipped=false
+            npm --workspace @earendil-works/pi-coding-agent run test:live -- --reporter=json --outputFile="$RUNNER_TEMP/coding-live-report.json"
+            test_status=$?
           fi
-          npm --workspace @earendil-works/pi-coding-agent run test:live -- --reporter=json --outputFile="$RUNNER_TEMP/coding-live-report.json"
-          node scripts/ci-summary.mjs --suite coding-live --assert-passed --result "$RUNNER_TEMP/coding-live-report.json" --json-output "$RUNNER_TEMP/coding-live-metrics.json"
+          echo "credential_skipped=$credential_skipped" >> "$GITHUB_OUTPUT"
+          echo "started_at=$started_at" >> "$GITHUB_OUTPUT"
+          echo "finished_at=$(date +%s%N)" >> "$GITHUB_OUTPUT"
+          exit "$test_status"
+
+      - name: Write Coding Agent live summary
+        if: always()
+        shell: bash
+        run: |
+          duration() {
+            local started_at="$1" finished_at="$2"
+            if [[ "$started_at" =~ ^[0-9]+$ && "$finished_at" =~ ^[0-9]+$ && "$finished_at" -ge "$started_at" ]]; then
+              awk -v started_at="$started_at" -v finished_at="$finished_at" 'BEGIN { printf "%.9f", (finished_at - started_at) / 1000000000 }'
+            else
+              echo 0
+            fi
+          }
+          now=$(date +%s%N)
+          arguments=(
+            --suite coding-live
+            --require-positive-timings
+            --timing "wall=$(duration '${{ steps.job-start.outputs.nanoseconds || '0' }}' "$now")"
+            --timing "setup=$(duration '${{ steps.job-start.outputs.nanoseconds || '0' }}' '${{ steps.install.outputs.finished_at || '0' }}')"
+            --timing "test=$(duration '${{ steps.tests.outputs.started_at || '0' }}' '${{ steps.tests.outputs.finished_at || '0' }}')"
+            --timing "cache=$(duration '${{ steps.npm-cache-start.outputs.nanoseconds || '0' }}' '${{ steps.npm-cache-end.outputs.nanoseconds || '0' }}')"
+            --cache-hit "npm=${{ steps.setup-node.outputs.cache-hit || 'unavailable' }}"
+          )
+          if [[ "${{ steps.tests.outputs.credential_skipped || 'false' }}" == "true" ]]; then
+            arguments+=(--no-test-report --skip credential=1)
+          else
+            arguments+=(--assert-passed --result "$RUNNER_TEMP/coding-live-report.json")
+          fi
+          node scripts/ci-summary.mjs "${arguments[@]}" --json-output "$RUNNER_TEMP/coding-live-metrics.json"
 
       - name: Upload Coding Agent live report
         if: always()
@@ -126,19 +250,71 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Record stress job start
+        id: job-start
+        shell: bash
+        run: echo "nanoseconds=$(date +%s%N)" >> "$GITHUB_OUTPUT"
+
+      - name: Record npm cache restore start
+        id: npm-cache-start
+        shell: bash
+        run: echo "nanoseconds=$(date +%s%N)" >> "$GITHUB_OUTPUT"
+
       - name: Setup Node.js
+        id: setup-node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
+      - name: Record npm cache restore end
+        id: npm-cache-end
+        if: always()
+        shell: bash
+        run: echo "nanoseconds=$(date +%s%N)" >> "$GITHUB_OUTPUT"
+
       - name: Install dependencies
-        run: npm ci $NPM_CI_ARGS
+        id: install
+        shell: bash
+        run: |
+          set +e
+          npm ci $NPM_CI_ARGS
+          install_status=$?
+          echo "finished_at=$(date +%s%N)" >> "$GITHUB_OUTPUT"
+          exit "$install_status"
 
       - name: Run stress suite
+        id: tests
+        shell: bash
         run: |
+          started_at=$(date +%s%N)
+          set +e
           npm --workspace @earendil-works/pi-coding-agent run test:stress -- --reporter=json --outputFile="$RUNNER_TEMP/stress-report.json"
-          node scripts/ci-summary.mjs --suite stress --assert-passed --result "$RUNNER_TEMP/stress-report.json" --json-output "$RUNNER_TEMP/stress-metrics.json"
+          test_status=$?
+          echo "started_at=$started_at" >> "$GITHUB_OUTPUT"
+          echo "finished_at=$(date +%s%N)" >> "$GITHUB_OUTPUT"
+          exit "$test_status"
+
+      - name: Write stress summary
+        if: always()
+        shell: bash
+        run: |
+          duration() {
+            local started_at="$1" finished_at="$2"
+            if [[ "$started_at" =~ ^[0-9]+$ && "$finished_at" =~ ^[0-9]+$ && "$finished_at" -ge "$started_at" ]]; then
+              awk -v started_at="$started_at" -v finished_at="$finished_at" 'BEGIN { printf "%.9f", (finished_at - started_at) / 1000000000 }'
+            else
+              echo 0
+            fi
+          }
+          now=$(date +%s%N)
+          node scripts/ci-summary.mjs --suite stress --assert-passed --require-positive-timings --result "$RUNNER_TEMP/stress-report.json" \
+            --timing "wall=$(duration '${{ steps.job-start.outputs.nanoseconds || '0' }}' "$now")" \
+            --timing "setup=$(duration '${{ steps.job-start.outputs.nanoseconds || '0' }}' '${{ steps.install.outputs.finished_at || '0' }}')" \
+            --timing "test=$(duration '${{ steps.tests.outputs.started_at || '0' }}' '${{ steps.tests.outputs.finished_at || '0' }}')" \
+            --timing "cache=$(duration '${{ steps.npm-cache-start.outputs.nanoseconds || '0' }}' '${{ steps.npm-cache-end.outputs.nanoseconds || '0' }}')" \
+            --cache-hit "npm=${{ steps.setup-node.outputs.cache-hit || 'unavailable' }}" \
+            --json-output "$RUNNER_TEMP/stress-metrics.json"
 
       - name: Upload stress report
         if: always()
@@ -159,11 +335,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Record Rust benchmark job start
+        id: job-start
+        shell: bash
+        run: echo "nanoseconds=$(date +%s%N)" >> "$GITHUB_OUTPUT"
+
+      - name: Record npm cache restore start
+        id: npm-cache-start
+        shell: bash
+        run: echo "nanoseconds=$(date +%s%N)" >> "$GITHUB_OUTPUT"
+
       - name: Setup Node.js
+        id: setup-node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+
+      - name: Record npm cache restore end
+        id: npm-cache-end
+        if: always()
+        shell: bash
+        run: echo "nanoseconds=$(date +%s%N)" >> "$GITHUB_OUTPUT"
 
       - name: Setup Rust
         shell: bash
@@ -173,17 +366,84 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Install dependencies
-        run: npm ci $NPM_CI_ARGS
+      - name: Record cargo cache restore start
+        id: cargo-cache-start
+        shell: bash
+        run: echo "nanoseconds=$(date +%s%N)" >> "$GITHUB_OUTPUT"
 
-      - name: Run and verify Rust B0 benchmark
+      - name: Restore Rust dependencies
+        id: cargo-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug/.fingerprint
+            target/debug/build
+            target/debug/deps
+            target/release/.fingerprint
+            target/release/build
+            target/release/deps
+          key: extended-quality-rust-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            extended-quality-rust-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_VERSION }}-
+
+      - name: Record cargo cache restore end
+        id: cargo-cache-end
+        if: always()
+        shell: bash
+        run: echo "nanoseconds=$(date +%s%N)" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        id: install
         shell: bash
         run: |
           set +e
+          npm ci $NPM_CI_ARGS
+          install_status=$?
+          echo "finished_at=$(date +%s%N)" >> "$GITHUB_OUTPUT"
+          exit "$install_status"
+
+      - name: Run and verify Rust B0 benchmark
+        id: tests
+        shell: bash
+        run: |
+          started_at=$(date +%s%N)
+          set +e
           npm run benchmark:rust-spike
           benchmark_status=$?
-          set -e
           node scripts/verify-rust-spike-benchmark.mjs --exit-code "$benchmark_status" > "$RUNNER_TEMP/rust-benchmark-report.json"
+          verify_status=$?
+          echo "started_at=$started_at" >> "$GITHUB_OUTPUT"
+          echo "finished_at=$(date +%s%N)" >> "$GITHUB_OUTPUT"
+          exit "$verify_status"
+
+      - name: Write Rust B0 benchmark summary
+        if: always()
+        shell: bash
+        run: |
+          duration() {
+            local started_at="$1" finished_at="$2"
+            if [[ "$started_at" =~ ^[0-9]+$ && "$finished_at" =~ ^[0-9]+$ && "$finished_at" -ge "$started_at" ]]; then
+              awk -v started_at="$started_at" -v finished_at="$finished_at" 'BEGIN { printf "%.9f", (finished_at - started_at) / 1000000000 }'
+            else
+              echo 0
+            fi
+          }
+          sum() {
+            awk -v left="$1" -v right="$2" 'BEGIN { printf "%.9f", left + right }'
+          }
+          now=$(date +%s%N)
+          npm_cache_seconds=$(duration '${{ steps.npm-cache-start.outputs.nanoseconds || '0' }}' '${{ steps.npm-cache-end.outputs.nanoseconds || '0' }}')
+          cargo_cache_seconds=$(duration '${{ steps.cargo-cache-start.outputs.nanoseconds || '0' }}' '${{ steps.cargo-cache-end.outputs.nanoseconds || '0' }}')
+          node scripts/ci-summary.mjs --suite rust-benchmark --no-test-report --require-positive-timings \
+            --timing "wall=$(duration '${{ steps.job-start.outputs.nanoseconds || '0' }}' "$now")" \
+            --timing "setup=$(duration '${{ steps.job-start.outputs.nanoseconds || '0' }}' '${{ steps.install.outputs.finished_at || '0' }}')" \
+            --timing "test=$(duration '${{ steps.tests.outputs.started_at || '0' }}' '${{ steps.tests.outputs.finished_at || '0' }}')" \
+            --timing "cache=$(sum "$npm_cache_seconds" "$cargo_cache_seconds")" \
+            --cache-hit "npm=${{ steps.setup-node.outputs.cache-hit || 'unavailable' }}" \
+            --cache-hit "cargo=${{ steps.cargo-cache.outputs.cache-hit || 'unavailable' }}" \
+            --json-output "$RUNNER_TEMP/rust-benchmark-metrics.json"
 
       - name: Upload Rust B0 benchmark report
         if: always()
@@ -194,5 +454,6 @@ jobs:
             .artifacts/rust-tui-spike
             docs/rust-tui-spike-report.md
             ${{ runner.temp }}/rust-benchmark-report.json
+            ${{ runner.temp }}/rust-benchmark-metrics.json
           if-no-files-found: warn
           retention-days: 7

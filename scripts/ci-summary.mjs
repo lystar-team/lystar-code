@@ -60,7 +60,7 @@ export function readTestResult(path) {
 	};
 }
 
-export function summarize({ suite, resultPaths = [], required = false, assertPassed = false, expectReports = resultPaths.length > 0, timings = {}, plan, jobs = [], skippedByReason = {} }) {
+export function summarize({ suite, resultPaths = [], required = false, assertPassed = false, expectReports = resultPaths.length > 0, timings = {}, requirePositiveTimings = false, plan, jobs = [], skippedByReason = {} }) {
 	const results = resultPaths.map(readTestResult);
 	const invalidReports = resultPaths.filter((_, index) => !results[index].valid);
 	const passed = results.reduce((total, result) => total + result.passed, 0);
@@ -73,6 +73,11 @@ export function summarize({ suite, resultPaths = [], required = false, assertPas
 		if (passed === 0) throw new Error(`${suite} required deterministic suite reported zero passed tests`);
 	}
 	if (required && skipped > 0) throw new Error(`${suite} required deterministic suite skipped ${skipped} tests`);
+	if (requirePositiveTimings) {
+		for (const timing of ["wall", "setup", "test"]) {
+			if (number(timings[timing]) <= 0) throw new Error(`${suite} ${timing} timing must be greater than zero`);
+		}
+	}
 
 	const selectedGates = Object.entries(plan?.execution ?? plan?.wouldRun ?? {}).filter(([, selected]) => selected).map(([gate]) => gate);
 	for (const job of jobs) {
@@ -122,6 +127,9 @@ function parseArguments(argv) {
 			continue;
 		} else if (argument === "--assert-passed") {
 			options.assertPassed = true;
+			continue;
+		} else if (argument === "--require-positive-timings") {
+			options.requirePositiveTimings = true;
 			continue;
 		} else if (argument === "--no-test-report") {
 			options.expectReports = false;

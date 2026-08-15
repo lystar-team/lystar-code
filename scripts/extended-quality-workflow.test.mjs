@@ -26,9 +26,28 @@ test("extended quality workflow keeps live suites manual and non-live suites sch
 	}
 	for (const name of ["stress", "rust-benchmark"]) assert.match(parsed.jobs[name].if, /github\.event_name == 'schedule'/);
 	assert.match(JSON.stringify(parsed.jobs.stress.steps), /test:stress/);
-	const rustSteps = JSON.stringify(parsed.jobs["rust-benchmark"].steps);
+	assert.doesNotMatch(workflow, /cache-hit \|\| 'false'/);
+
+	for (const name of ["ai-live", "coding-live", "stress", "rust-benchmark"]) {
+		const job = parsed.jobs[name];
+		const setupNode = job.steps.find((step) => step.name === "Setup Node.js");
+		const summary = job.steps.find((step) => step.name.includes("summary"));
+		assert.equal(setupNode.id, "setup-node");
+		assert.match(summary.run, /scripts\/ci-summary\.mjs/);
+		assert.match(summary.run, /--require-positive-timings/);
+		for (const timing of ["wall", "setup", "test", "cache"]) assert.match(summary.run, new RegExp(`--timing "${timing}=`));
+		assert.match(summary.run, /--json-output/);
+		assert.match(summary.run, /--cache-hit "npm=\$\{\{ steps\.setup-node\.outputs\.cache-hit \|\| 'unavailable' \}\}"/);
+		assert.ok(job.steps.some((step) => typeof step.run === "string" && step.run.includes("date +%s%N")));
+	}
+
+	const rustJob = parsed.jobs["rust-benchmark"];
+	const rustSteps = JSON.stringify(rustJob.steps);
 	assert.match(rustSteps, /benchmark:rust-spike/);
 	assert.match(rustSteps, /verify-rust-spike-benchmark/);
 	assert.doesNotMatch(rustSteps, /\|\| true/);
+	assert.equal(rustJob.steps.find((step) => step.name === "Restore Rust dependencies").id, "cargo-cache");
+	assert.match(rustJob.steps.find((step) => step.name.includes("summary")).run, /--cache-hit "cargo=\$\{\{ steps\.cargo-cache\.outputs\.cache-hit \|\| 'unavailable' \}\}"/);
+	assert.match(JSON.stringify(rustJob.steps.find((step) => step.name === "Upload Rust B0 benchmark report").with.path), /rust-benchmark-metrics\.json/);
 	assert.match(workflow, /RUST_VERSION: 1\.97\.1/);
 });
