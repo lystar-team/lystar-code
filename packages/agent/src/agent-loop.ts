@@ -700,8 +700,6 @@ async function executePreparedToolCall(
 	emit: AgentEventSink,
 	toolRecoveryController: ToolRecoveryController | undefined,
 ): Promise<ExecutedToolCallOutcome> {
-	const updateEvents: Promise<void>[] = [];
-	let acceptingUpdates = true;
 	const controller = toolRecoveryController;
 	const now = controller?.now ? () => controller.now!() : Date.now;
 	const recovery = controller
@@ -761,6 +759,8 @@ async function executePreparedToolCall(
 		if (signal?.aborted) {
 			return cancelledToolCallOutcome(recovery);
 		}
+		const updateEvents: Promise<void>[] = [];
+		let acceptingUpdates = true;
 		try {
 			const result = await prepared.tool.execute(
 				prepared.toolCall.id,
@@ -830,7 +830,6 @@ async function executePreparedToolCall(
 				? await controller.waitForRetry(decision.action.delayMs, signal)
 				: !signal?.aborted;
 			if (!shouldContinue || signal?.aborted) return cancelledToolCallOutcome(recovery);
-			acceptingUpdates = true;
 		}
 	}
 }

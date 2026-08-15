@@ -2070,6 +2070,99 @@ describe("Tool recovery observation", () => {
 		expect(response.getCalls()).toBe(2);
 	});
 
+	it("isolates streamed updates from completed retry attempts", async () => {
+		const schema = Type.Object({ value: Type.String() });
+		type ToolUpdate = NonNullable<Parameters<AgentTool<typeof schema>["execute"]>[3]>;
+		let executions = 0;
+		let beforeCalls = 0;
+		let afterCalls = 0;
+		let finalObservations = 0;
+		let firstOnUpdate: ToolUpdate | undefined;
+		let secondOnUpdate: ToolUpdate | undefined;
+		const tool: AgentTool<typeof schema> = {
+			name: "read",
+			label: "Read",
+			description: "Retry update isolation",
+			parameters: schema,
+			async execute(_toolCallId, _params, _signal, onUpdate) {
+				if (!onUpdate) throw new Error("expected update callback");
+				executions++;
+				if (executions === 1) {
+					firstOnUpdate = onUpdate;
+					throw new ToolExecutionError("timed out", {
+						code: "TIMEOUT",
+						category: "transient",
+						retryable: true,
+					});
+				}
+				const previousOnUpdate = firstOnUpdate;
+				if (!previousOnUpdate) throw new Error("missing first attempt update callback");
+				const currentOnUpdate = onUpdate;
+				secondOnUpdate = currentOnUpdate;
+				previousOnUpdate({ content: [{ type: "text", text: "stale" }], details: {} });
+				currentOnUpdate({ content: [{ type: "text", text: "current" }], details: {} });
+				return { content: [{ type: "text", text: "done" }], details: {} };
+			},
+		};
+		const response = createToolCallThenStopStream([
+			{ type: "toolCall", id: "retry-update", name: "read", arguments: { value: "x" } },
+		]);
+		const events: AgentEvent[] = [];
+		const stream = agentLoop(
+			[createUserMessage("run")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{
+				model: createModel(),
+				convertToLlm: identityConverter,
+				beforeToolCall: async () => {
+					beforeCalls++;
+					return undefined;
+				},
+				afterToolCall: async () => {
+					afterCalls++;
+					return undefined;
+				},
+				toolRecoveryController: {
+					preflight: () => undefined,
+					decideAttempt: (observation) => ({
+						action: { type: "retry_same_args", delayMs: 0 },
+						observation: { ...observation, action: "retry_same_args" },
+					}),
+					waitForRetry: async () => true,
+					observe: () => {
+						finalObservations++;
+					},
+				},
+			},
+			undefined,
+			response.streamFn,
+		);
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		// 已结束的 attempt 永久失效，逻辑 Tool Call 完成后也不能再产生 update。
+		firstOnUpdate?.({ content: [{ type: "text", text: "stale after finish" }], details: {} });
+		secondOnUpdate?.({ content: [{ type: "text", text: "current after finish" }], details: {} });
+
+		const updateTexts = events.flatMap((event) => {
+			if (event.type !== "tool_execution_update") return [];
+			return event.partialResult.content.flatMap((content: { type: string; text?: string }) =>
+				content.type === "text" && typeof content.text === "string" ? [content.text] : [],
+			);
+		});
+		expect(updateTexts).toEqual(["current"]);
+		expect({ executions, beforeCalls, afterCalls, finalObservations }).toEqual({
+			executions: 2,
+			beforeCalls: 1,
+			afterCalls: 1,
+			finalObservations: 1,
+		});
+		expect(events.filter((event) => event.type === "tool_execution_start")).toHaveLength(1);
+		expect(events.filter((event) => event.type === "tool_execution_end")).toHaveLength(1);
+		expect(response.getCalls()).toBe(2);
+	});
+
 	it("cancels a retry during backoff without starting another Tool attempt", async () => {
 		const schema = Type.Object({ value: Type.String() });
 		const abortController = new AbortController();
