@@ -25,7 +25,12 @@ import type {
 	PrepareNextTurnContext,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import { type ContextUsageEstimate, contentText, estimateContextTokensUpperBound } from "@earendil-works/pi-ai";
+import {
+	type ContextUsageEstimate,
+	contentText,
+	estimateContextTokensUpperBound,
+	estimateTextTokens,
+} from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
 	AuthResult,
@@ -107,7 +112,9 @@ import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
+import { findMatchingToolRecoveryLessons, hashToolRecoveryLessonScope } from "./tool-recovery/lessons-store.ts";
 import { AssistToolRecoveryController, type ToolRecoveryDiagnostics } from "./tool-recovery/policies.ts";
+import type { ToolRecoveryRefiner } from "./tool-recovery/refiner.ts";
 import { registerBuiltInToolIdentity } from "./tool-recovery/registry.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
@@ -231,6 +238,10 @@ export interface AgentSessionConfig {
 	sessionStartEvent?: SessionStartEvent;
 	/** Global config directory used by local recovery diagnostics and ledger storage. */
 	agentDir?: string;
+	/** Optional offline proposal callback. Omitted by default, so normal sessions add no model calls. */
+	toolRecoveryRefiner?: ToolRecoveryRefiner;
+	/** Explicit caller-provided user corrections for the optional refiner. */
+	getToolRecoveryUserCorrections?: () => readonly string[] | undefined;
 }
 
 export interface ExtensionBindings {
@@ -371,6 +382,8 @@ export class AgentSession {
 
 	private _modelRuntime: ModelRuntime;
 	private readonly _toolRecoveryController: AssistToolRecoveryController;
+	private readonly _toolRecoveryAgentDir: string;
+	private readonly _toolRecoveryScopeHash: string;
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -392,10 +405,15 @@ export class AgentSession {
 		this._customTools = config.customTools ?? [];
 		this._cwd = config.cwd;
 		this._modelRuntime = config.modelRuntime;
+		this._toolRecoveryAgentDir = config.agentDir ?? getAgentDir();
+		this._toolRecoveryScopeHash = hashToolRecoveryLessonScope(this._cwd);
 		this._toolRecoveryController = new AssistToolRecoveryController({
-			agentDir: config.agentDir ?? getAgentDir(),
+			agentDir: this._toolRecoveryAgentDir,
 			sessionManager: this.sessionManager,
 			getTurnId: () => String(this._turnIndex),
+			scopeHash: this._toolRecoveryScopeHash,
+			refiner: config.toolRecoveryRefiner,
+			getUserCorrections: config.getToolRecoveryUserCorrections,
 		});
 		this.agent.toolRecoveryController = this._toolRecoveryController;
 		this._extensionRunnerRef = config.extensionRunnerRef;
@@ -542,15 +560,46 @@ export class AgentSession {
 			const normalizedContent = await normalizeToolResultImages(content, {
 				autoResizeImages: this.settingsManager.getImageAutoResize(),
 			});
+			const finalIsError = hookResult?.isError ?? isError;
+			let finalContent = normalizedContent;
+			if (finalIsError) {
+				const failure = this._toolRecoveryController.getFailureForToolCall(toolCall.id);
+				if (failure) {
+					try {
+						const matches = await findMatchingToolRecoveryLessons(this._toolRecoveryAgentDir, {
+							scopeHash: this._toolRecoveryScopeHash,
+							toolName: toolCall.name,
+							failureCode: failure.code,
+							failureFingerprint: failure.fingerprint,
+						});
+						this._toolRecoveryController.recordSuspendedLessons(matches.suspendedLessonIds);
+						const selected: string[] = [];
+						let guidanceText = "相关恢复经验：";
+						for (const lesson of matches.lessons) {
+							if (selected.includes(lesson.id)) continue;
+							const nextText = `${guidanceText}\n${selected.length + 1}. ${lesson.guidance}`;
+							if (estimateTextTokens(nextText) > 500) continue;
+							guidanceText = nextText;
+							selected.push(lesson.id);
+						}
+						if (selected.length > 0) {
+							finalContent = [...normalizedContent, { type: "text", text: guidanceText }];
+							this._toolRecoveryController.recordLessonMatches(selected);
+						}
+					} catch {
+						// Lesson 查询失败不能改变最终 ToolResult。
+					}
+				}
+			}
 
-			if (!hookResult && normalizedContent === content) {
+			if (!hookResult && finalContent === content) {
 				return undefined;
 			}
 
 			return {
-				content: normalizedContent,
+				content: finalContent,
 				details: hookResult?.details,
-				isError: hookResult?.isError ?? isError,
+				isError: finalIsError,
 				usage: hookResult?.usage,
 			};
 		};
@@ -726,6 +775,9 @@ export class AgentSession {
 
 		// Emit to extensions first
 		await this._emitExtensionEvent(event);
+		if (event.type === "turn_end") {
+			await this._toolRecoveryController.refineTurn();
+		}
 
 		// Notify all listeners
 		this._emit(event.type === "agent_end" ? { ...event, willRetry: this._willRetryAfterAgentEnd(event) } : event);

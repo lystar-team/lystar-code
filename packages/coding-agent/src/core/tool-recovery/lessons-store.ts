@@ -1,14 +1,24 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import type { ToolSideEffect } from "@earendil-works/pi-agent-core";
 import lockfile from "proper-lockfile";
-import { validRange } from "semver";
+import { satisfies, validRange } from "semver";
 import { isStableFailureCode } from "./registry.ts";
 
 export type ToolRecoveryLessonStatus = "candidate" | "verified" | "active" | "suspended" | "expired";
 export type ToolRecoveryLessonScope = "project" | "global";
 export type ToolRecoveryLessonAction = "guidance" | "safe_refresh";
 export type ToolRecoveryLessonHistoryAction = "create" | "update" | "approve" | "disable" | "rollback" | "prune";
+
+export interface ToolRecoveryLessonEvidence {
+	occurrences: number;
+	sessions: number;
+	recovered: number;
+	failed: number;
+	/** 只由确定性候选写入，用于跨 Session 去重；不保存原始 Session ID。 */
+	sessionHashes?: string[];
+}
 
 export interface ToolRecoveryLesson {
 	schema: 1;
@@ -24,12 +34,7 @@ export interface ToolRecoveryLesson {
 	};
 	guidance: string;
 	allowedAction: ToolRecoveryLessonAction;
-	evidence: {
-		occurrences: number;
-		sessions: number;
-		recovered: number;
-		failed: number;
-	};
+	evidence: ToolRecoveryLessonEvidence;
 	version: number;
 	expiresAt: string;
 	createdAt: string;
@@ -66,7 +71,7 @@ export interface CreateToolRecoveryLessonInput {
 	matcher: ToolRecoveryLesson["matcher"];
 	guidance: string;
 	allowedAction: ToolRecoveryLessonAction;
-	evidence: ToolRecoveryLesson["evidence"];
+	evidence: ToolRecoveryLessonEvidence;
 	expiresAt: string;
 }
 
@@ -88,6 +93,42 @@ export interface ToolRecoveryLessonsOptions {
 
 export interface PruneToolRecoveryLessonsOptions extends ToolRecoveryLessonsOptions {
 	suspendedTtlMs?: number;
+}
+
+export interface DeterministicToolRecoveryCandidateInput {
+	scopeHash: string;
+	sessionId: string;
+	toolName: string;
+	failureCode: string;
+	failureFingerprint: string;
+	action: string;
+	outcome: "recovered" | "failed" | "needs_model" | "blocked" | "cancelled";
+	sideEffect: ToolSideEffect;
+	expiresAt?: string;
+}
+
+export interface ToolRecoveryLessonReplayEvidence {
+	passed: boolean;
+	matcherVersion: 1;
+}
+
+export interface AutoPromoteToolRecoveryLessonOptions extends ToolRecoveryLessonsOptions {
+	enabled?: boolean;
+	toolVersion?: string;
+}
+
+export interface FindToolRecoveryLessonsInput {
+	scopeHash: string;
+	toolName: string;
+	failureCode: string;
+	failureFingerprint: string;
+	toolVersion?: string;
+	now?: Date;
+}
+
+export interface FindToolRecoveryLessonsResult {
+	lessons: ToolRecoveryLesson[];
+	suspendedLessonIds: string[];
 }
 
 export class ToolRecoveryLessonsError extends Error {}
@@ -129,6 +170,17 @@ const LESSON_KEYS = new Set([
 const HISTORY_KEYS = new Set(["schema", "id", "action", "source", "time", "before", "after"]);
 const storeQueues = new Map<string, Promise<void>>();
 const DEFAULT_SUSPENDED_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+const DEFAULT_CANDIDATE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const DETERMINISTIC_GUIDANCE = new Map<string, string>([
+	["read\u0000TARGET_NOT_FOUND\u0000refresh_context", "先确认目标仍在父目录中，再决定是否调整路径。"],
+	["read\u0000TIMEOUT\u0000retry_same_args", "短暂超时后先确认调用已结束，再依据当前状态继续。"],
+	["read\u0000TRANSPORT_ERROR\u0000retry_same_args", "连接恢复后先确认当前状态，再继续读取。"],
+	["edit\u0000MATCH_NOT_FOUND\u0000ask_model_to_rebuild", "先读取当前内容，再按最新文本重新组织编辑。"],
+	["edit\u0000MATCH_AMBIGUOUS\u0000ask_model_to_rebuild", "先读取当前内容，再按最新文本重新组织编辑。"],
+	["apply_patch\u0000PATCH_MATCH_NOT_FOUND\u0000ask_model_to_rebuild", "先读取当前内容，再按最新文本重新组织补丁。"],
+	["apply_patch\u0000PATCH_MATCH_AMBIGUOUS\u0000ask_model_to_rebuild", "先读取当前内容，再按最新文本重新组织补丁。"],
+]);
+const NON_GENERALIZABLE_FAILURES = new Set(["UNCLASSIFIED", "PERMISSION_DENIED", "CANCELLED"]);
 
 function sha256(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
@@ -146,15 +198,24 @@ function isTime(value: unknown): value is string {
 	return typeof value === "string" && ISO_TIME.test(value) && Number.isFinite(Date.parse(value));
 }
 
-function isEvidence(value: unknown): value is ToolRecoveryLesson["evidence"] {
+function isEvidence(value: unknown): value is ToolRecoveryLessonEvidence {
 	if (!isRecord(value)) return false;
 	const keys = ["occurrences", "sessions", "recovered", "failed"];
-	return (
-		Object.keys(value).length === keys.length &&
-		keys.every((key) => {
+	if (!Object.keys(value).every((key) => keys.includes(key) || key === "sessionHashes")) return false;
+	if (
+		!keys.every((key) => {
 			const candidate = value[key];
 			return typeof candidate === "number" && Number.isSafeInteger(candidate) && candidate >= 0;
 		})
+	) {
+		return false;
+	}
+	if (value.sessionHashes === undefined) return true;
+	return (
+		Array.isArray(value.sessionHashes) &&
+		value.sessionHashes.every((hash) => typeof hash === "string" && SHA256.test(hash)) &&
+		new Set(value.sessionHashes).size === value.sessionHashes.length &&
+		value.sessionHashes.length === value.sessions
 	);
 }
 
@@ -443,6 +504,7 @@ function replayHistory(entries: ToolRecoveryLessonHistoryEntry[]): ToolRecoveryL
 			(entry.action === "rollback" && entry.after.status === "active") ||
 			(entry.action === "update" &&
 				entry.after.status !== entry.before.status &&
+				!(entry.before.status === "candidate" && entry.after.status === "verified") &&
 				entry.after.status !== "candidate") ||
 			(entry.action === "update" &&
 				behaviorChanged(entry.before, entry.after) &&
@@ -724,6 +786,79 @@ export async function approveToolRecoveryLesson(
 	});
 }
 
+/** 只有可重放的确定性规则才能把 candidate 标记为 verified。 */
+export async function markVerifiedToolRecoveryLesson(
+	agentDir: string,
+	id: string,
+	expectedVersion: number,
+	replayEvidence: ToolRecoveryLessonReplayEvidence,
+	options: ToolRecoveryLessonsOptions = {},
+): Promise<ToolRecoveryLesson> {
+	if (replayEvidence.passed !== true || replayEvidence.matcherVersion !== 1) {
+		throw new ToolRecoveryLessonsError("deterministic replay 未通过或 matcher 版本无效");
+	}
+	return await withStoreLock(agentDir, async (paths) => {
+		const snapshot = (await loadStore(paths)).snapshot;
+		const current = findLesson(snapshot, id);
+		assertExpectedVersion(current, expectedVersion);
+		if (effectiveStatus(current, options.now ?? new Date()) === "expired") {
+			throw new ToolRecoveryLessonsError("已过期的恢复经验不能验证");
+		}
+		if (current.status !== "candidate") throw new ToolRecoveryLessonsError("只有 candidate 恢复经验可以验证");
+		const time = nowIso(options);
+		const next: ToolRecoveryLesson = {
+			...current,
+			status: "verified",
+			version: current.version + 1,
+			updatedAt: time,
+		};
+		snapshot.lessons[snapshot.lessons.indexOf(current)] = next;
+		await commit(paths, snapshot, historyEntry("update", sourceOf(options), time, current, next), options);
+		return presentLesson(next, options.now ?? new Date());
+	});
+}
+
+/** 受控自动晋升默认关闭，safe_refresh 始终保留人工 approve 路径。 */
+export async function autoPromoteToolRecoveryLesson(
+	agentDir: string,
+	id: string,
+	expectedVersion: number,
+	options: AutoPromoteToolRecoveryLessonOptions = {},
+): Promise<ToolRecoveryLesson> {
+	if (options.enabled !== true) throw new ToolRecoveryLessonsError("自动晋升未显式开启");
+	return await withStoreLock(agentDir, async (paths) => {
+		const snapshot = (await loadStore(paths)).snapshot;
+		const current = findLesson(snapshot, id);
+		assertExpectedVersion(current, expectedVersion);
+		if (effectiveStatus(current, options.now ?? new Date()) === "expired") {
+			throw new ToolRecoveryLessonsError("已过期的恢复经验不能自动晋升");
+		}
+		const { evidence, matcher } = current;
+		const versionMatches =
+			matcher.toolVersionRange === undefined ||
+			(options.toolVersion !== undefined && satisfies(options.toolVersion, matcher.toolVersionRange));
+		if (
+			current.status !== "verified" ||
+			current.allowedAction !== "guidance" ||
+			evidence.occurrences < 3 ||
+			evidence.sessions < 2 ||
+			evidence.recovered < 3 ||
+			evidence.failed !== 0 ||
+			(current.scope === "project" && !current.scopeHash) ||
+			!isMatcher(matcher) ||
+			!versionMatches ||
+			hasUnsafeGuidance(current.guidance)
+		) {
+			throw new ToolRecoveryLessonsError("恢复经验未满足自动晋升门槛");
+		}
+		const time = nowIso(options);
+		const next: ToolRecoveryLesson = { ...current, status: "active", version: current.version + 1, updatedAt: time };
+		snapshot.lessons[snapshot.lessons.indexOf(current)] = next;
+		await commit(paths, snapshot, historyEntry("approve", sourceOf(options), time, current, next), options);
+		return presentLesson(next, options.now ?? new Date());
+	});
+}
+
 export async function disableToolRecoveryLesson(
 	agentDir: string,
 	id: string,
@@ -749,6 +884,147 @@ export async function disableToolRecoveryLesson(
 		snapshot.lessons[snapshot.lessons.indexOf(current)] = next;
 		await commit(paths, snapshot, historyEntry("disable", sourceOf(options), time, current, next), options);
 		return presentLesson(next, options.now ?? new Date());
+	});
+}
+
+function deterministicGuidance(input: DeterministicToolRecoveryCandidateInput): string | undefined {
+	if (
+		!SHA256.test(input.scopeHash) ||
+		!TOOL_NAME.test(input.toolName) ||
+		!isStableFailureCode(input.failureCode) ||
+		!SHA256.test(input.failureFingerprint) ||
+		NON_GENERALIZABLE_FAILURES.has(input.failureCode)
+	) {
+		return undefined;
+	}
+	return DETERMINISTIC_GUIDANCE.get(`${input.toolName}\u0000${input.failureCode}\u0000${input.action}`);
+}
+
+/** 账本追加成功后才调用。候选只保存摘要、枚举和 hash，不保存 Tool 内容。 */
+export async function recordDeterministicToolRecoveryCandidate(
+	agentDir: string,
+	input: DeterministicToolRecoveryCandidateInput,
+	options: ToolRecoveryLessonsOptions = {},
+): Promise<ToolRecoveryLesson | undefined> {
+	const guidance = deterministicGuidance(input);
+	if (!guidance) return undefined;
+	const fingerprintPrefix = input.failureFingerprint.slice(0, 16);
+	const sessionHash = sha256(input.sessionId);
+	return await withStoreLock(agentDir, async (paths) => {
+		const snapshot = (await loadStore(paths)).snapshot;
+		const current = snapshot.lessons.find(
+			(lesson) =>
+				(lesson.status === "candidate" || lesson.status === "verified") &&
+				lesson.scope === "project" &&
+				lesson.scopeHash === input.scopeHash &&
+				lesson.matcher.toolName === input.toolName &&
+				lesson.matcher.failureCode === input.failureCode &&
+				lesson.matcher.fingerprintPrefix === fingerprintPrefix,
+		);
+		if (!current && input.outcome !== "recovered") return undefined;
+		const time = nowIso(options);
+		if (!current) {
+			const expiresAt =
+				input.expiresAt ?? new Date((options.now ?? new Date()).getTime() + DEFAULT_CANDIDATE_TTL_MS).toISOString();
+			const lesson: ToolRecoveryLesson = {
+				schema: 1,
+				id: randomUUID(),
+				status: "candidate",
+				scope: "project",
+				scopeHash: input.scopeHash,
+				matcher: { toolName: input.toolName, failureCode: input.failureCode, fingerprintPrefix },
+				guidance,
+				allowedAction: "guidance",
+				evidence: {
+					occurrences: 1,
+					sessions: 1,
+					recovered: 1,
+					failed: 0,
+					sessionHashes: [sessionHash],
+				},
+				version: 1,
+				expiresAt,
+				createdAt: time,
+				updatedAt: time,
+			};
+			if (!isLesson(lesson)) throw new ToolRecoveryLessonsError("确定性候选结构无效");
+			snapshot.lessons.push(lesson);
+			await commit(
+				paths,
+				snapshot,
+				historyEntry("create", sourceOf({ ...options, source: options.source ?? "recovery" }), time, null, lesson),
+				options,
+			);
+			return presentLesson(lesson, options.now ?? new Date());
+		}
+
+		const sessionHashes = current.evidence.sessionHashes ?? [];
+		const nextSessionHashes = sessionHashes.includes(sessionHash) ? sessionHashes : [...sessionHashes, sessionHash];
+		const next: ToolRecoveryLesson = {
+			...current,
+			evidence: {
+				occurrences: current.evidence.occurrences + 1,
+				sessions: current.evidence.sessionHashes
+					? nextSessionHashes.length
+					: Math.max(current.evidence.sessions, 1),
+				recovered: current.evidence.recovered + (input.outcome === "recovered" ? 1 : 0),
+				failed: current.evidence.failed + (input.outcome === "failed" ? 1 : 0),
+				sessionHashes: nextSessionHashes,
+			},
+			version: current.version + 1,
+			updatedAt: time,
+		};
+		if (!isLesson(next)) throw new ToolRecoveryLessonsError("确定性候选更新无效");
+		snapshot.lessons[snapshot.lessons.indexOf(current)] = next;
+		await commit(
+			paths,
+			snapshot,
+			historyEntry("update", sourceOf({ ...options, source: options.source ?? "recovery" }), time, current, next),
+			options,
+		);
+		return presentLesson(next, options.now ?? new Date());
+	});
+}
+
+function lessonMatchesRuntime(lesson: ToolRecoveryLesson, input: FindToolRecoveryLessonsInput, now: Date): boolean {
+	if (effectiveStatus(lesson, now) === "expired") return false;
+	if (lesson.matcher.toolName !== input.toolName || lesson.matcher.failureCode !== input.failureCode) return false;
+	if (lesson.matcher.fingerprintPrefix && !input.failureFingerprint.startsWith(lesson.matcher.fingerprintPrefix))
+		return false;
+	return (
+		lesson.matcher.toolVersionRange === undefined ||
+		(input.toolVersion !== undefined && satisfies(input.toolVersion, lesson.matcher.toolVersionRange))
+	);
+}
+
+/** 查询只返回 active guidance；暂停命中仅供本地 metrics 记录。 */
+export async function findMatchingToolRecoveryLessons(
+	agentDir: string,
+	input: FindToolRecoveryLessonsInput,
+): Promise<FindToolRecoveryLessonsResult> {
+	const now = input.now ?? new Date();
+	return await withStoreLock(agentDir, async (paths) => {
+		const snapshot = (await loadStore(paths)).snapshot;
+		const matching = snapshot.lessons.filter((lesson) => lessonMatchesRuntime(lesson, input, now));
+		const suspendedLessonIds = matching.filter((lesson) => lesson.status === "suspended").map((lesson) => lesson.id);
+		const rank = (lesson: ToolRecoveryLesson) =>
+			(lesson.scope === "project" && lesson.scopeHash === input.scopeHash ? 0 : 2) +
+			(lesson.matcher.fingerprintPrefix ? 0 : 1);
+		const lessons = matching
+			.filter(
+				(lesson) =>
+					lesson.status === "active" &&
+					(lesson.scope === "global" || (lesson.scope === "project" && lesson.scopeHash === input.scopeHash)),
+			)
+			.sort(
+				(left, right) =>
+					rank(left) - rank(right) ||
+					right.updatedAt.localeCompare(left.updatedAt) ||
+					left.id.localeCompare(right.id),
+			)
+			.slice(0, 3)
+			.map((lesson) => presentLesson(lesson, now));
+		return { lessons, suspendedLessonIds };
 	});
 }
 

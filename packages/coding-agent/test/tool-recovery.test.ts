@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { type AgentTool, ToolExecutionError, type ToolRecoveryObservation } from "@earendil-works/pi-agent-core";
+import { estimateTextTokens } from "@earendil-works/pi-ai";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, getModel } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
@@ -21,11 +22,19 @@ import {
 	readSessionRecoveryLedger,
 	removeSessionRecoveryLedger,
 } from "../src/core/tool-recovery/ledger.ts";
+import {
+	approveToolRecoveryLesson,
+	createToolRecoveryLesson,
+	disableToolRecoveryLesson,
+	listToolRecoveryLessons,
+} from "../src/core/tool-recovery/lessons-store.ts";
 import { AssistToolRecoveryController, ObserveOnlyToolRecoveryController } from "../src/core/tool-recovery/policies.ts";
+import { parseToolRecoveryRefinerProposal } from "../src/core/tool-recovery/refiner.ts";
 import {
 	adaptToolRecoveryObservation,
 	classifyToolFailureForTest,
 	getToolSideEffect,
+	registerBuiltInRecoveryError,
 	registerBuiltInToolIdentity,
 } from "../src/core/tool-recovery/registry.ts";
 import { createHarness } from "./test-harness.ts";
@@ -690,6 +699,156 @@ describe("Tool recovery observe ledger", () => {
 			);
 		} finally {
 			permissionHarness.cleanup();
+		}
+	});
+
+	it("injects at most three budgeted active guidance entries only into final failure ToolResults", async () => {
+		const agentDir = createTempDir();
+		const createActive = async (guidance: string) => {
+			const candidate = await createToolRecoveryLesson(
+				agentDir,
+				{
+					scope: "global",
+					matcher: { toolName: "read", failureCode: "TARGET_NOT_FOUND" },
+					guidance,
+					allowedAction: "guidance",
+					evidence: { occurrences: 3, sessions: 2, recovered: 3, failed: 0 },
+					expiresAt: "2030-01-01T00:00:00.000Z",
+				},
+				{ now: new Date("2026-08-15T00:00:00.000Z") },
+			);
+			return await approveToolRecoveryLesson(agentDir, candidate.id, candidate.version, {
+				now: new Date("2026-08-15T00:00:00.000Z"),
+			});
+		};
+		for (let index = 0; index < 4; index++) await createActive(`经验${index}${"甲".repeat(380)}`);
+		const suspended = await createActive("暂停经验。");
+		await disableToolRecoveryLesson(agentDir, suspended.id, suspended.version, {
+			now: new Date("2026-08-15T00:00:00.000Z"),
+		});
+
+		const failureHarness = await createHarness({
+			agentDir,
+			responses: [{ toolCalls: [{ name: "read", args: { path: "missing.txt" } }] }, "after failure"],
+		});
+		try {
+			await failureHarness.session.prompt("read missing");
+			const result = failureHarness.session.messages.find(
+				(message): message is Extract<(typeof failureHarness.session.messages)[number], { role: "toolResult" }> =>
+					message.role === "toolResult",
+			);
+			expect(result?.isError).toBe(true);
+			const injected =
+				result?.content.find((block) => block.type === "text" && block.text.startsWith("相关恢复经验：")) ??
+				undefined;
+			expect(injected?.type === "text" ? injected.text.split("\n").length - 1 : 0).toBeLessThanOrEqual(3);
+			if (injected?.type !== "text") throw new Error("missing injected guidance");
+			expect(estimateTextTokens(injected.text)).toBeLessThanOrEqual(500);
+			expect(failureHarness.session.getToolRecoveryDiagnostics()).toMatchObject({
+				lessonMatchTotal: expect.arrayContaining([expect.objectContaining({ count: 1 })]),
+				lessonSuspendedTotal: [{ lesson: suspended.id, count: 1 }],
+				toolRecoveryAttemptTotal: [{ tool: "read", action: "refresh_context", count: 1 }],
+			});
+		} finally {
+			failureHarness.cleanup();
+		}
+
+		const successHarness = await createHarness({
+			agentDir,
+			responses: [{ toolCalls: [{ name: "read", args: { path: "present.txt" } }] }, "after success"],
+		});
+		try {
+			writeFileSync(join(successHarness.tempDir, "present.txt"), "present");
+			await successHarness.session.prompt("read present");
+			const result = successHarness.session.messages.find(
+				(message): message is Extract<(typeof successHarness.session.messages)[number], { role: "toolResult" }> =>
+					message.role === "toolResult",
+			);
+			expect(result?.isError).toBe(false);
+			expect(result?.content.some((block) => block.type === "text" && block.text.startsWith("相关恢复经验："))).toBe(
+				false,
+			);
+		} finally {
+			successHarness.cleanup();
+		}
+	});
+
+	it("calls an explicit refiner only at turn end with sanitized data and rejects unsafe proposals", async () => {
+		const agentDir = createTempDir();
+		const sessionManager = SessionManager.create(agentDir, join(agentDir, "sessions"), { id: "refiner-session" });
+		let refinerCalls = 0;
+		let refinerInput: unknown;
+		const harness = await createHarness({
+			agentDir,
+			sessionManager,
+			responses: [{ toolCalls: [{ name: "read", args: { path: "/private/test-secret.txt" } }] }, "after recovery"],
+			getToolRecoveryUserCorrections: () => ["这是明确纠正。", "/private/test-secret"],
+			toolRecoveryRefiner: async (input) => {
+				refinerCalls++;
+				refinerInput = input;
+				return {
+					type: "create",
+					scope: "project",
+					matcher: { toolName: "read", failureCode: "RATE_LIMITED" },
+					guidance: "先确认当前状态，再继续读取。",
+					allowedAction: "guidance",
+					expiresAt: "2030-01-01T00:00:00.000Z",
+				};
+			},
+		});
+		try {
+			const readTool = harness.agent.state.tools.find((tool) => tool.name === "read");
+			if (!readTool) throw new Error("missing read tool");
+			readTool.execute = async () => {
+				const error = new ToolExecutionError("rate limited", {
+					code: "RATE_LIMITED",
+					category: "transient",
+					retryable: true,
+				});
+				Object.assign(error, {
+					[Symbol.for("pi.toolRecoveryHandler")]: () => ({
+						type: "accept_as_success",
+						replacementResult: { content: [{ type: "text", text: "recovered" }], details: {} },
+					}),
+				});
+				throw registerBuiltInRecoveryError("read", error);
+			};
+			await harness.session.prompt("never leak /private/test-secret");
+			expect(harness.session.getToolRecoveryDiagnostics().toolRecoveryAttemptTotal).toEqual([
+				{ tool: "read", action: "accept_as_success", count: 1 },
+			]);
+			expect(refinerCalls).toBe(1);
+			expect(refinerInput).toMatchObject({
+				failures: [{ code: "RATE_LIMITED", action: "accept_as_success", outcome: "recovered" }],
+				userCorrections: ["这是明确纠正。"],
+			});
+			const serialized = JSON.stringify(refinerInput);
+			for (const forbidden of ["test-secret", "/private", "never leak", "path", "thinking"]) {
+				expect(serialized).not.toContain(forbidden);
+			}
+			expect(await listToolRecoveryLessons(agentDir)).toHaveLength(1);
+		} finally {
+			harness.cleanup();
+		}
+
+		for (const proposal of [
+			{ type: "approve", id: "anything" },
+			{ type: "retry_same_args" },
+			{ type: "create", body: "正文", scope: "project" },
+		]) {
+			expect(parseToolRecoveryRefinerProposal(proposal)).toBeUndefined();
+		}
+		const defaultCalls = 0;
+		const defaultHarness = await createHarness({
+			agentDir,
+			sessionManager: SessionManager.create(agentDir, join(agentDir, "sessions"), { id: "default-refiner-session" }),
+			responses: ["done"],
+		});
+		try {
+			await defaultHarness.session.prompt("plain turn");
+			expect(defaultCalls).toBe(0);
+		} finally {
+			defaultHarness.cleanup();
 		}
 	});
 

@@ -16,6 +16,7 @@ import { DefaultResourceLoader } from "./resource-loader.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { time } from "./timings.ts";
+import type { ToolRecoveryRefiner } from "./tool-recovery/refiner.ts";
 import {
 	createBashTool,
 	createCodingTools,
@@ -84,6 +85,10 @@ export interface CreateAgentSessionOptions {
 	settingsManager?: SettingsManager;
 	/** Session start event metadata for extension runtime startup. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Optional offline proposal callback. Normal creation leaves this undefined. */
+	toolRecoveryRefiner?: ToolRecoveryRefiner;
+	/** Explicit user corrections that may be included in sanitized refiner input. */
+	getToolRecoveryUserCorrections?: () => readonly string[] | undefined;
 }
 
 /** Result from createAgentSession */
@@ -390,6 +395,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		excludedToolNames,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
+		toolRecoveryRefiner: options.toolRecoveryRefiner,
+		getToolRecoveryUserCorrections: options.getToolRecoveryUserCorrections,
 		agentDir,
 	});
 	const extensionsResult = resourceLoader.getExtensions();

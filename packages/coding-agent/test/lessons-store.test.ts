@@ -6,14 +6,18 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	approveToolRecoveryLesson,
+	autoPromoteToolRecoveryLesson,
 	createToolRecoveryLesson,
 	disableToolRecoveryLesson,
+	findMatchingToolRecoveryLessons,
 	getToolRecoveryLesson,
 	getToolRecoveryLessonsPaths,
 	hashToolRecoveryLessonScope,
 	listToolRecoveryLessons,
+	markVerifiedToolRecoveryLesson,
 	pruneToolRecoveryLessons,
 	readToolRecoveryLessonHistory,
+	recordDeterministicToolRecoveryCandidate,
 	rollbackToolRecoveryLesson,
 	ToolRecoveryLessonVersionConflictError,
 	updateToolRecoveryLesson,
@@ -373,5 +377,171 @@ describe("Tool recovery lessons store", () => {
 		const paths = getToolRecoveryLessonsPaths(agentDir);
 		const bytes = `${readFileSync(paths.snapshot, "utf8")}\n${readFileSync(paths.history, "utf8")}`;
 		for (const forbidden of ["test-secret", "/private", "token="]) expect(bytes).not.toContain(forbidden);
+	});
+
+	it("aggregates deterministic candidates across sessions without retaining raw session IDs", async () => {
+		const agentDir = createTempDir();
+		const scopeHash = hashToolRecoveryLessonScope("project-a");
+		const input = {
+			scopeHash,
+			toolName: "read",
+			failureCode: "TIMEOUT",
+			failureFingerprint: "a".repeat(64),
+			action: "retry_same_args",
+			sideEffect: "read_only" as const,
+		};
+		const first = await recordDeterministicToolRecoveryCandidate(
+			agentDir,
+			{
+				...input,
+				sessionId: "session-a",
+				outcome: "recovered",
+			},
+			{ now: NOW },
+		);
+		if (!first) throw new Error("missing candidate");
+		const second = await recordDeterministicToolRecoveryCandidate(
+			agentDir,
+			{
+				...input,
+				sessionId: "session-a",
+				outcome: "recovered",
+			},
+			{ now: NOW },
+		);
+		const third = await recordDeterministicToolRecoveryCandidate(
+			agentDir,
+			{
+				...input,
+				sessionId: "session-b",
+				outcome: "failed",
+			},
+			{ now: NOW },
+		);
+		expect(second).toMatchObject({
+			id: first.id,
+			evidence: { occurrences: 2, sessions: 1, recovered: 2, failed: 0 },
+		});
+		expect(third).toMatchObject({
+			id: first.id,
+			evidence: { occurrences: 3, sessions: 2, recovered: 2, failed: 1 },
+		});
+		expect(await listToolRecoveryLessons(agentDir, { now: NOW })).toHaveLength(1);
+		const paths = getToolRecoveryLessonsPaths(agentDir);
+		const bytes = `${readFileSync(paths.snapshot, "utf8")}\n${readFileSync(paths.history, "utf8")}`;
+		expect(bytes).not.toContain("session-a");
+		expect(bytes).not.toContain("session-b");
+	});
+
+	it("requires replay verification and every automatic promotion gate", async () => {
+		const agentDir = createTempDir();
+		const createVerified = async (overrides: Record<string, unknown> = {}) => {
+			const candidate = await createToolRecoveryLesson(
+				agentDir,
+				lessonInput({
+					evidence: { occurrences: 3, sessions: 2, recovered: 3, failed: 0 },
+					...overrides,
+				}),
+				{ now: NOW },
+			);
+			await expect(
+				markVerifiedToolRecoveryLesson(
+					agentDir,
+					candidate.id,
+					candidate.version,
+					{ passed: false, matcherVersion: 1 },
+					{ now: NOW },
+				),
+			).rejects.toThrow("replay");
+			return await markVerifiedToolRecoveryLesson(
+				agentDir,
+				candidate.id,
+				candidate.version,
+				{ passed: true, matcherVersion: 1 },
+				{ now: NOW },
+			);
+		};
+
+		for (const overrides of [
+			{ evidence: { occurrences: 2, sessions: 2, recovered: 3, failed: 0 } },
+			{ evidence: { occurrences: 3, sessions: 1, recovered: 3, failed: 0 } },
+			{ evidence: { occurrences: 3, sessions: 2, recovered: 2, failed: 0 } },
+			{ evidence: { occurrences: 3, sessions: 2, recovered: 3, failed: 1 } },
+			{ allowedAction: "safe_refresh" as const },
+			{ matcher: { toolName: "read", failureCode: "TARGET_NOT_FOUND", toolVersionRange: ">=2.0.0" } },
+		]) {
+			const verified = await createVerified(overrides);
+			await expect(
+				autoPromoteToolRecoveryLesson(agentDir, verified.id, verified.version, {
+					enabled: true,
+					now: NOW,
+					toolVersion: "1.0.0",
+				}),
+			).rejects.toThrow("门槛");
+		}
+
+		const unverified = await createToolRecoveryLesson(
+			agentDir,
+			lessonInput({ evidence: { occurrences: 3, sessions: 2, recovered: 3, failed: 0 } }),
+			{ now: NOW },
+		);
+		await expect(
+			autoPromoteToolRecoveryLesson(agentDir, unverified.id, unverified.version, { enabled: true, now: NOW }),
+		).rejects.toThrow("门槛");
+
+		const verified = await createVerified();
+		await expect(
+			autoPromoteToolRecoveryLesson(agentDir, verified.id, verified.version, { now: NOW }),
+		).rejects.toThrow("未显式开启");
+		expect(
+			await autoPromoteToolRecoveryLesson(agentDir, verified.id, verified.version, { enabled: true, now: NOW }),
+		).toMatchObject({ status: "active" });
+	});
+
+	it("sorts active project lessons before global lessons and excludes mismatched versions, TTL, and suspended lessons", async () => {
+		const agentDir = createTempDir();
+		const scopeHash = hashToolRecoveryLessonScope("project-a");
+		const createActive = async (input: Record<string, unknown>) => {
+			const candidate = await createToolRecoveryLesson(agentDir, lessonInput(input), { now: NOW });
+			return await approveToolRecoveryLesson(agentDir, candidate.id, candidate.version, { now: NOW });
+		};
+		const projectExact = await createActive({ guidance: "项目精确。" });
+		const projectBroad = await createActive({
+			matcher: { toolName: "read", failureCode: "TARGET_NOT_FOUND" },
+			guidance: "项目通用。",
+		});
+		const globalExact = await createActive({
+			scope: "global",
+			scopeHash: undefined,
+			guidance: "全局精确。",
+		});
+		await createActive({
+			scope: "global",
+			scopeHash: undefined,
+			matcher: { toolName: "read", failureCode: "TARGET_NOT_FOUND" },
+			guidance: "全局通用。",
+		});
+		const suspended = await createActive({
+			scope: "global",
+			scopeHash: undefined,
+			guidance: "暂停经验。",
+		});
+		await disableToolRecoveryLesson(agentDir, suspended.id, suspended.version, { now: NOW });
+		await createActive({
+			matcher: { toolName: "read", failureCode: "TARGET_NOT_FOUND", toolVersionRange: ">=2.0.0" },
+			guidance: "版本不匹配。",
+		});
+		await createToolRecoveryLesson(agentDir, lessonInput({ expiresAt: "2020-01-01T00:00:00.000Z" }), { now: NOW });
+
+		const matched = await findMatchingToolRecoveryLessons(agentDir, {
+			scopeHash,
+			toolName: "read",
+			failureCode: "TARGET_NOT_FOUND",
+			failureFingerprint: "a".repeat(64),
+			toolVersion: "1.0.0",
+			now: NOW,
+		});
+		expect(matched.lessons.map((lesson) => lesson.id)).toEqual([projectExact.id, projectBroad.id, globalExact.id]);
+		expect(matched.suspendedLessonIds).toEqual([suspended.id]);
 	});
 });

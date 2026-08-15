@@ -8,6 +8,15 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import type { SessionManager } from "../session-manager.ts";
 import { appendSessionRecoveryLedger, createRecoveryLedgerEntry } from "./ledger.ts";
+import { findMatchingToolRecoveryLessons, recordDeterministicToolRecoveryCandidate } from "./lessons-store.ts";
+import {
+	applyToolRecoveryRefinerProposal,
+	findToolRecoveryRefinerLessons,
+	parseToolRecoveryRefinerProposal,
+	sanitizeToolRecoveryUserCorrections,
+	type ToolRecoveryRefiner,
+	type ToolRecoveryRefinerFailure,
+} from "./refiner.ts";
 import {
 	adaptToolRecoveryObservation,
 	isTrustedBuiltinRecoveryError,
@@ -53,6 +62,9 @@ export interface ToolRecoveryDiagnostics {
 	toolRecoverySuccessTotal: Array<{ tool: string; action: "retry_same_args"; count: number }>;
 	toolRepeatBlockedTotal: Array<{ tool: string; code: string; count: number }>;
 	toolUnsafeRetryBlockedTotal: Array<{ tool: string; count: number }>;
+	lessonMatchTotal: Array<{ lesson: string; count: number }>;
+	lessonRecoverySuccessTotal: Array<{ lesson: string; count: number }>;
+	lessonSuspendedTotal: Array<{ lesson: string; count: number }>;
 	duration: { count: number; totalMs: number; maxMs: number };
 	activeCircuits: number;
 }
@@ -63,6 +75,9 @@ class ToolRecoveryMetrics {
 	private readonly successes: Counter = new Map();
 	private readonly repeatBlocked: Counter = new Map();
 	private readonly unsafeRetryBlocked: Counter = new Map();
+	private readonly lessonMatches: Counter = new Map();
+	private readonly lessonRecoverySuccesses: Counter = new Map();
+	private readonly lessonSuspended: Counter = new Map();
 	private durationCount = 0;
 	private durationTotalMs = 0;
 	private durationMaxMs = 0;
@@ -93,6 +108,18 @@ class ToolRecoveryMetrics {
 		increment(this.unsafeRetryBlocked, toolName);
 	}
 
+	recordLessonMatch(lessonId: string): void {
+		increment(this.lessonMatches, lessonId);
+	}
+
+	recordLessonRecoverySuccess(lessonId: string): void {
+		increment(this.lessonRecoverySuccesses, lessonId);
+	}
+
+	recordLessonSuspended(lessonId: string): void {
+		increment(this.lessonSuspended, lessonId);
+	}
+
 	snapshot(mode: ToolRecoveryDiagnostics["mode"], activeCircuits: number): ToolRecoveryDiagnostics {
 		const unpack = (entries: Counter) =>
 			Array.from(entries, ([key, count]) => {
@@ -116,6 +143,9 @@ class ToolRecoveryMetrics {
 			toolUnsafeRetryBlockedTotal: Array.from(this.unsafeRetryBlocked, ([tool, count]) => ({ tool, count })).sort(
 				(a, b) => a.tool.localeCompare(b.tool),
 			),
+			lessonMatchTotal: lessonEntries(this.lessonMatches),
+			lessonRecoverySuccessTotal: lessonEntries(this.lessonRecoverySuccesses),
+			lessonSuspendedTotal: lessonEntries(this.lessonSuspended),
 			duration: { count: this.durationCount, totalMs: this.durationTotalMs, maxMs: this.durationMaxMs },
 			activeCircuits,
 		};
@@ -124,6 +154,12 @@ class ToolRecoveryMetrics {
 
 function increment(counter: Counter, key: string): void {
 	counter.set(key, (counter.get(key) ?? 0) + 1);
+}
+
+function lessonEntries(counter: Counter): Array<{ lesson: string; count: number }> {
+	return Array.from(counter, ([lesson, count]) => ({ lesson, count })).sort((left, right) =>
+		left.lesson.localeCompare(right.lesson),
+	);
 }
 
 function attemptKey(toolCallId: string, failureFingerprint: string): string {
@@ -169,6 +205,9 @@ interface ControllerOptions {
 	agentDir: string;
 	sessionManager: SessionManager;
 	getTurnId: () => string;
+	scopeHash?: string;
+	refiner?: ToolRecoveryRefiner;
+	getUserCorrections?: () => readonly string[] | undefined;
 	now?: () => number;
 	sleep?: (delayMs: number, signal?: AbortSignal) => Promise<boolean>;
 }
@@ -176,6 +215,7 @@ interface ControllerOptions {
 abstract class BaseToolRecoveryController implements ToolRecoveryController {
 	protected readonly options: ControllerOptions;
 	protected readonly metrics = new ToolRecoveryMetrics();
+	private readonly refinerFailures: ToolRecoveryRefinerFailure[] = [];
 
 	constructor(options: ControllerOptions) {
 		this.options = options;
@@ -197,7 +237,17 @@ abstract class BaseToolRecoveryController implements ToolRecoveryController {
 	): Promise<void> {
 		const sessionFile = this.options.sessionManager.getSessionFile();
 		if (!sessionFile) return;
-		await appendSessionRecoveryLedger(
+		const outcome =
+			observation.outcome === "success" || observation.outcome === "recovered"
+				? "recovered"
+				: observation.outcome === "needs_model"
+					? "needs_model"
+					: observation.outcome === "blocked"
+						? "blocked"
+						: observation.outcome === "cancelled"
+							? "cancelled"
+							: "failed";
+		const appended = await appendSessionRecoveryLedger(
 			this.options.agentDir,
 			sessionFile,
 			createRecoveryLedgerEntry({
@@ -210,20 +260,75 @@ abstract class BaseToolRecoveryController implements ToolRecoveryController {
 				failureCode: failure.code,
 				attempt,
 				action,
-				outcome:
-					observation.outcome === "success" || observation.outcome === "recovered"
-						? "recovered"
-						: observation.outcome === "needs_model"
-							? "needs_model"
-							: observation.outcome === "blocked"
-								? "blocked"
-								: observation.outcome === "cancelled"
-									? "cancelled"
-									: "failed",
+				outcome,
 				durationMs: observation.durationMs,
 				createdAt: failure.occurredAt,
 			}),
 		);
+		if (!appended || !this.options.scopeHash) return;
+
+		try {
+			const candidate = await recordDeterministicToolRecoveryCandidate(this.options.agentDir, {
+				scopeHash: this.options.scopeHash,
+				sessionId: this.options.sessionManager.getSessionId(),
+				toolName: observation.toolName,
+				failureCode: failure.code,
+				failureFingerprint: failure.fingerprint,
+				action,
+				outcome,
+				sideEffect: failure.sideEffect,
+			});
+			if (!candidate && this.options.refiner && outcome === "recovered") {
+				this.refinerFailures.push({
+					code: failure.code,
+					category: failure.category,
+					fingerprint: failure.fingerprint,
+					action,
+					outcome,
+				});
+			}
+			if (outcome === "recovered") {
+				const matches = await findMatchingToolRecoveryLessons(this.options.agentDir, {
+					scopeHash: this.options.scopeHash,
+					toolName: observation.toolName,
+					failureCode: failure.code,
+					failureFingerprint: failure.fingerprint,
+				});
+				for (const lesson of matches.lessons) this.metrics.recordLessonRecoverySuccess(lesson.id);
+			}
+		} catch {
+			// Candidate 与 metrics 不能影响已经完成的 Tool recovery。
+		}
+	}
+
+	recordLessonMatches(lessonIds: readonly string[]): void {
+		for (const lessonId of new Set(lessonIds)) this.metrics.recordLessonMatch(lessonId);
+	}
+
+	recordSuspendedLessons(lessonIds: readonly string[]): void {
+		for (const lessonId of new Set(lessonIds)) this.metrics.recordLessonSuspended(lessonId);
+	}
+
+	async refineTurn(): Promise<void> {
+		if (!this.options.refiner || !this.options.scopeHash || this.refinerFailures.length === 0) return;
+		const failures = this.refinerFailures.splice(0);
+		try {
+			const relatedLessons = await findToolRecoveryRefinerLessons(
+				this.options.agentDir,
+				this.options.scopeHash,
+				failures,
+			);
+			const output = await this.options.refiner({
+				scopeHash: this.options.scopeHash,
+				failures,
+				relatedLessons,
+				userCorrections: sanitizeToolRecoveryUserCorrections(this.options.getUserCorrections?.()),
+			});
+			const proposal = parseToolRecoveryRefinerProposal(output);
+			if (proposal) await applyToolRecoveryRefinerProposal(this.options.agentDir, this.options.scopeHash, proposal);
+		} catch {
+			// Refiner 是可选的离线建议，不得让 turn 失败或改变 Tool 结果。
+		}
 	}
 
 	abstract preflight(
@@ -267,6 +372,10 @@ export class AssistToolRecoveryController extends BaseToolRecoveryController {
 	private readonly rebuiltFingerprints = new Map<string, number>();
 	private readonly closedFingerprints = new Set<string>();
 	private readonly refreshedFingerprints = new Set<string>();
+
+	getFailureForToolCall(toolCallId: string): ToolFailure | undefined {
+		return Array.from(this.attempts.entries()).find(([key]) => key.startsWith(`${toolCallId}\u0000`))?.[1].failure;
+	}
 
 	async preflight(context: ToolRecoveryPreflightContext): Promise<ToolRecoveryPreflightResult | undefined> {
 		const circuit = Array.from(this.circuits.entries()).find(([key]) =>

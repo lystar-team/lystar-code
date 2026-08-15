@@ -32,6 +32,7 @@ import { AuthStorage } from "../src/core/auth-storage.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import type { Settings } from "../src/core/settings-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import type { ToolRecoveryRefiner } from "../src/core/tool-recovery/refiner.ts";
 import type { InlineExtension, ResourceLoader } from "../src/index.ts";
 import {
 	type CreateTestExtensionsResultInput,
@@ -343,6 +344,13 @@ export interface HarnessOptions {
 	resourceLoader?: ResourceLoader;
 	/** Inline extensions to load into the session resource loader. */
 	extensionFactories?: Array<InlineExtension | CreateTestExtensionsResultInput>;
+	/** Isolated local recovery directory for lessons and ledger tests. */
+	agentDir?: string;
+	/** Explicit optional refiner used by recovery lifecycle tests. */
+	toolRecoveryRefiner?: ToolRecoveryRefiner;
+	getToolRecoveryUserCorrections?: () => readonly string[] | undefined;
+	/** Optional persistent manager when ledger-backed lifecycle behavior is under test. */
+	sessionManager?: SessionManager;
 }
 
 export interface Harness {
@@ -388,7 +396,7 @@ async function createHarnessWithResourceLoader(
 		streamFn: streamFn,
 	});
 
-	const sessionManager = SessionManager.inMemory();
+	const sessionManager = options.sessionManager ?? SessionManager.inMemory();
 	const settingsManager = SettingsManager.create(tempDir, tempDir);
 
 	if (options.settings) {
@@ -425,6 +433,9 @@ async function createHarnessWithResourceLoader(
 		modelRuntime: getModelRuntime(modelRegistry),
 		resourceLoader,
 		baseToolsOverride: options.baseToolsOverride,
+		agentDir: options.agentDir,
+		toolRecoveryRefiner: options.toolRecoveryRefiner,
+		getToolRecoveryUserCorrections: options.getToolRecoveryUserCorrections,
 	});
 
 	const events: AgentSessionEvent[] = [];
