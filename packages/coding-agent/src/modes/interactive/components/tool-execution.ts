@@ -22,9 +22,12 @@ import {
 	isInteractiveCard,
 	resolveInteractiveCardAction,
 } from "./interactive-card.ts";
+import { keyHint } from "./keybinding-hints.ts";
 import type { SubagentRunTarget } from "./subagent-run.ts";
 import { renderCardHover } from "./tool-card-layout.ts";
-import { formatToolSummary, getToolSummary } from "./tool-summary.ts";
+import { formatToolSummary } from "./tool-summary.ts";
+
+const FALLBACK_PREVIEW_LINES = 10;
 
 export interface ToolExecutionOptions {
 	showImages?: boolean;
@@ -176,17 +179,18 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private createResultFallback(): Component | undefined {
-		if (!this.expanded && !this.result?.isError) return undefined;
 		const output = this.getTextOutput();
 		if (!output) {
 			return undefined;
 		}
-		if (!this.expanded) {
-			const summary = getToolSummary(undefined);
-			summary.setText(theme.fg("error", output.split("\n").find((line) => line.trim()) ?? output));
-			return summary;
+		const lines = output.split("\n");
+		const displayLines = this.expanded ? lines : lines.slice(0, FALLBACK_PREVIEW_LINES);
+		const remaining = lines.length - displayLines.length;
+		let text = displayLines.map((line) => theme.fg("toolOutput", line)).join("\n");
+		if (remaining > 0) {
+			text += `${theme.fg("muted", `\n...（还有 ${remaining} 行，`)} ${keyHint("app.tools.expand", "展开")}${theme.fg("muted", "）")}`;
 		}
-		return new Text(theme.fg("toolOutput", output), 0, 0);
+		return new Text(text, 0, 0);
 	}
 
 	updateArgs(args: any): void {

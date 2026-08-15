@@ -14,25 +14,31 @@ describe("SettingsSelectorComponent", () => {
 		setKeybindings(new KeybindingsManager());
 	});
 
-	it("cycles through fullscreen scrollbar modes", () => {
-		const onChange = vi.fn();
-		const selector = new SettingsSelectorComponent(
-			{
-				fullscreenScrollbar: "auto",
-				warnings: {},
-				availableThinkingLevels: [],
-				availableThemes: [],
-			} as unknown as SettingsConfig,
-			{ onFullscreenScrollbarChange: onChange } as unknown as SettingsCallbacks,
-		);
-		const settingsList = selector.getSettingsList();
+	it("cycles through fullscreen settings", () => {
+		const onExitOutputChange = vi.fn();
+		const onScrollbarChange = vi.fn();
+		const config = {
+			fullscreenExitOutput: "transcript",
+			fullscreenScrollbar: "auto",
+			warnings: {},
+			availableThinkingLevels: [],
+			availableThemes: [],
+		} as unknown as SettingsConfig;
+		const callbacks = {
+			onFullscreenExitOutputChange: onExitOutputChange,
+			onFullscreenScrollbarChange: onScrollbarChange,
+		} as unknown as SettingsCallbacks;
 
-		for (const character of "全屏滚动条") settingsList.handleInput(character);
-		settingsList.handleInput("\r");
-		settingsList.handleInput("\r");
-		settingsList.handleInput("\r");
+		const cycle = (label: string, count: number) => {
+			const list = new SettingsSelectorComponent(config, callbacks).getSettingsList();
+			for (const character of label) list.handleInput(character);
+			for (let i = 0; i < count; i++) list.handleInput("\r");
+		};
 
-		expect(onChange.mock.calls.flat()).toEqual(["always", "hidden", "auto"]);
+		cycle("全屏退出输出", 2);
+		expect(onExitOutputChange.mock.calls.flat()).toEqual(["resume-hint", "transcript"]);
+		cycle("全屏滚动条", 3);
+		expect(onScrollbarChange.mock.calls.flat()).toEqual(["always", "hidden", "auto"]);
 	});
 
 	it("cycles through thinking display locations", () => {

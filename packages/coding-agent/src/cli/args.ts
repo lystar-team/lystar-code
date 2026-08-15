@@ -43,6 +43,7 @@ export interface Args {
 	promptTemplates?: string[];
 	noPromptTemplates?: boolean;
 	themes?: string[];
+	useTheme?: string;
 	noThemes?: boolean;
 	noContextFiles?: boolean;
 	listModels?: string | true;
@@ -166,6 +167,14 @@ export function parseArgs(args: string[]): Args {
 		} else if (arg === "--theme" && i + 1 < args.length) {
 			result.themes = result.themes ?? [];
 			result.themes.push(args[++i]);
+		} else if (arg === "--use-theme") {
+			const themeName = args[i + 1];
+			if (themeName === undefined || themeName.startsWith("-")) {
+				result.diagnostics.push({ type: "error", message: "--use-theme requires a theme name" });
+			} else {
+				result.useTheme = themeName;
+				i++;
+			}
 		} else if (arg === "--no-skills" || arg === "-ns") {
 			result.noSkills = true;
 		} else if (arg === "--no-prompt-templates" || arg === "-np") {
@@ -304,6 +313,7 @@ ${chalk.bold("选项：")}
   --prompt-template <path>       加载 Prompt Template 文件或目录，可重复使用
   --no-prompt-templates, -np     关闭 Prompt Template 自动发现和加载
   --theme <path>                 加载 Theme 文件或目录，可重复使用
+  --use-theme <name[/name]>      本次运行使用指定交互主题
   --no-themes                    关闭 Theme 自动发现和加载
   --no-context-files, -nc        关闭 AGENTS.md 和 CLAUDE.md 自动发现
   --export <file>                导出会话为 HTML 后退出

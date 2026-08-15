@@ -422,10 +422,10 @@ async function refreshModelCatalogs(agentDir: string): Promise<void> {
 			const details = Array.from(result.errors, ([provider, error]) => `${provider}: ${error.message}`).join("; ");
 			throw new Error(`模型目录刷新失败：${details}`);
 		}
+		console.log(chalk.green("模型目录已刷新"));
 	} finally {
 		clearTimeout(timeout);
 	}
-	console.log(chalk.green("模型目录已刷新"));
 }
 
 function printSelfUpdateNote(note: string): void {
