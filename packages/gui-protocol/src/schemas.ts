@@ -41,8 +41,11 @@ export const CapabilitySchema = Type.Union([
 	Type.Literal("updates"),
 	Type.Literal("session-observation"),
 	Type.Literal("project-instructions"),
+	Type.Literal("host-instructions"),
 	Type.Literal("completion"),
 	Type.Literal("project-resources"),
+	Type.Literal("directory-browser"),
+	Type.Literal("external-resources"),
 ]);
 export type Capability = Static<typeof CapabilitySchema>;
 
@@ -243,6 +246,21 @@ export const ProjectInstructionSchema = StrictObject({
 });
 export type ProjectInstruction = Static<typeof ProjectInstructionSchema>;
 
+export const HostDirectoryEntrySchema = StrictObject({
+	name: Type.String({ minLength: 1 }),
+	path: Type.String({ minLength: 1 }),
+	hidden: Type.Boolean(),
+});
+export type HostDirectoryEntry = Static<typeof HostDirectoryEntrySchema>;
+
+export const HostDirectoryListingSchema = StrictObject({
+	path: Type.String({ minLength: 1 }),
+	home: Type.String({ minLength: 1 }),
+	parent: Type.Optional(Type.String({ minLength: 1 })),
+	entries: Type.Array(HostDirectoryEntrySchema),
+});
+export type HostDirectoryListing = Static<typeof HostDirectoryListingSchema>;
+
 export const CompletionItemSchema = StrictObject({
 	value: Type.String({ minLength: 1 }),
 	label: Type.String({ minLength: 1 }),
@@ -273,6 +291,7 @@ export const ProjectResourceSchema = StrictObject({
 	byteLength: Type.Integer({ minimum: 0 }),
 	line: Type.Optional(Type.Integer({ minimum: 1 })),
 	column: Type.Optional(Type.Integer({ minimum: 1 })),
+	accessToken: Type.Optional(Id),
 });
 export type ProjectResource = Static<typeof ProjectResourceSchema>;
 
@@ -393,6 +412,14 @@ export const CommandSchema = Type.Union([
 		content: Type.String(),
 		expectedHash: Type.Optional(Id),
 	}),
+	StrictObject({ command: Type.Literal("list_host_instructions") }),
+	StrictObject({
+		command: Type.Literal("save_host_instruction"),
+		fileName: Type.Union([Type.Literal("AGENTS.md"), Type.Literal("AGENTS.override.md")]),
+		content: Type.String(),
+		expectedHash: Type.Optional(Id),
+	}),
+	StrictObject({ command: Type.Literal("list_directories"), path: Type.Optional(Type.String({ minLength: 1 })) }),
 	StrictObject({
 		command: Type.Literal("get_completions"),
 		cwd: Type.String({ minLength: 1 }),
@@ -419,9 +446,22 @@ export const CommandSchema = Type.Union([
 		column: Type.Optional(Type.Integer({ minimum: 1 })),
 	}),
 	StrictObject({
+		command: Type.Literal("resolve_external_resource"),
+		target: Type.String({ minLength: 1 }),
+		line: Type.Optional(Type.Integer({ minimum: 1 })),
+		column: Type.Optional(Type.Integer({ minimum: 1 })),
+	}),
+	StrictObject({
 		command: Type.Literal("read_project_resource"),
 		cwd: Type.String({ minLength: 1 }),
 		path: Type.String({ minLength: 1 }),
+		offset: Type.Integer({ minimum: 0 }),
+		limit: Type.Integer({ minimum: 1, maximum: 1024 * 1024 }),
+	}),
+	StrictObject({
+		command: Type.Literal("read_external_resource"),
+		path: Type.String({ minLength: 1 }),
+		accessToken: Id,
 		offset: Type.Integer({ minimum: 0 }),
 		limit: Type.Integer({ minimum: 1, maximum: 1024 * 1024 }),
 	}),

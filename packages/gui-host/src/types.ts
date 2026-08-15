@@ -5,6 +5,7 @@ import type {
 	ContentChunk,
 	GitDiff,
 	GitStatus,
+	HostDirectoryListing,
 	JsonValue,
 	ModelRef,
 	ProjectInstruction,
@@ -134,9 +135,18 @@ export interface RuntimeAdapter {
 		content: string,
 		expectedHash?: string,
 	): ProjectInstruction[];
+	listHostInstructions(): ProjectInstruction[];
+	saveHostInstruction(
+		fileName: "AGENTS.md" | "AGENTS.override.md",
+		content: string,
+		expectedHash?: string,
+	): ProjectInstruction[];
+	listDirectories(path?: string): HostDirectoryListing;
 	completeProjectFiles(cwd: string, query: string, limit: number): CompletionItem[];
 	resolveProjectResource(cwd: string, target: string, line?: number, column?: number): ProjectResource;
 	readProjectResource(cwd: string, path: string, offset: number, limit: number): ContentChunk;
+	resolveExternalResource(target: string, line?: number, column?: number): ProjectResource;
+	readExternalResource(path: string, accessToken: string, offset: number, limit: number): ContentChunk;
 	getAbout(): JsonValue;
 	getDiagnostics(cwd?: string): Promise<JsonValue>;
 	getGitStatus(cwd: string): Promise<GitStatus>;

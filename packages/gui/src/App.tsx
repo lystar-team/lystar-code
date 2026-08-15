@@ -1,4 +1,5 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { open } from "@tauri-apps/plugin-dialog";
 import type {
 	CompletionResult,
 	ContentReference,
@@ -13,6 +14,7 @@ import {
 	ArrowLeft,
 	ArrowRight,
 	ArrowUp,
+	Archive,
 	Bot,
 	Brain,
 	Check,
@@ -22,9 +24,12 @@ import {
 	Cloud,
 	Code2,
 	Copy,
+	Eye,
+	EyeOff,
 	FileText,
 	Folder,
 	FolderOpen,
+	FolderUp,
 	GitBranch,
 	Image as ImageIcon,
 	Info,
@@ -34,7 +39,10 @@ import {
 	Menu,
 	MessageSquarePlus,
 	MoreHorizontal,
-	Paperclip,
+	PanelLeftClose,
+	PanelLeftOpen,
+	Pencil,
+	Pin,
 	Plus,
 	RefreshCw,
 	RotateCcw,
@@ -63,6 +71,7 @@ import {
 	type ModelProviderSummary,
 	type ModelSummary,
 	type PendingUiRequest,
+	type ProjectSummary,
 	type ProviderModelInput,
 	type SessionSummary,
 	type SettingsPage,
@@ -87,7 +96,7 @@ const SETTINGS: Array<{
 	icon: LucideIcon;
 	group: "main" | "capability";
 }> = [
-	{ id: "general", label: "通用", icon: Settings, group: "main" },
+	{ id: "general", label: "个性化", icon: Settings, group: "main" },
 	{ id: "appearance", label: "外观", icon: Sun, group: "main" },
 	{ id: "connections", label: "连接", icon: Cloud, group: "main" },
 	{ id: "models", label: "模型与认证", icon: KeyRound, group: "main" },
@@ -308,80 +317,141 @@ function IconButton({
 	);
 }
 
+function CloseButton({ label = "关闭", onClick }: { label?: string; onClick: () => void }) {
+	return <button className="close-button" type="button" aria-label={label} title={label} onClick={onClick}><X size={16} /></button>;
+}
+
 function Sidebar({ mobileOpen, closeMobile }: { mobileOpen: boolean; closeMobile: () => void }) {
 	const snapshot = useSyncExternalStore(guiStore.subscribe, guiStore.getSnapshot);
 	const [query, setQuery] = useState("");
+	const [showArchived, setShowArchived] = useState(false);
 	const searchInput = useRef<HTMLInputElement>(null);
-	const sessions = snapshot.sessions.filter((session) => sessionTitle(session).toLowerCase().includes(query.toLowerCase()));
+	const normalizedQuery = query.trim().toLowerCase();
+	const sessions = snapshot.sessions.filter((session) => sessionTitle(session).toLowerCase().includes(normalizedQuery));
+	const projects = snapshot.projects
+		.filter((project) => !project.archived && (!normalizedQuery || `${project.name} ${project.cwd}`.toLowerCase().includes(normalizedQuery) || project.id === snapshot.currentProjectId))
+		.sort((left, right) => Number(right.pinned) - Number(left.pinned));
+	const archived = snapshot.projects.filter((project) => project.archived);
 
 	return (
 		<>
 			{mobileOpen && <button className="sidebar-scrim" aria-label="关闭项目列表" type="button" onClick={closeMobile} />}
-			<aside className={`sidebar ${mobileOpen ? "is-open" : ""}`}>
+			<aside className={`sidebar ${mobileOpen ? "is-open" : ""} ${snapshot.sidebarCollapsed ? "collapsed" : ""}`}>
 				<div className="brand-bar">
 					<div className="brand-mark" aria-hidden="true">
 						<img className="brand-mark-light" src={logoLight} alt="" />
 						<img className="brand-mark-dark" src={logoDark} alt="" />
 					</div>
-					<strong>LYStar Code</strong>
-					<IconButton label="搜索会话" onClick={() => searchInput.current?.focus()}>
-						<Search size={17} />
+					{!snapshot.sidebarCollapsed && <strong>LYStar Code</strong>}
+					<IconButton label={snapshot.sidebarCollapsed ? "展开侧栏" : "收起侧栏"} onClick={() => guiStore.toggleSidebar()}>
+						{snapshot.sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
 					</IconButton>
 				</div>
-				<button className="sidebar-command" type="button" disabled={!snapshot.currentCwd} onClick={() => run(guiStore.createSession())}>
-					<MessageSquarePlus size={16} />
-					新会话
-				</button>
-				<label className="search-field">
-					<Search size={16} />
-					<input ref={searchInput} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索会话" />
-				</label>
-				<div className="sidebar-section-label">项目</div>
-				<div className="project-list">
-					{snapshot.projects.map((project) => {
-						const current = project.id === snapshot.currentProjectId;
-						const connection = snapshot.connections.find((candidate) => candidate.id === project.connectionId);
-						const remote = project.connectionId !== "local";
-						const remoteStatus = current && snapshot.connected
-							? "已连接"
-							: snapshot.connectionProbes[project.connectionId]?.hostStatus?.reachable === true
-								? "后台可用"
-								: "离线";
-						return (
-							<div key={project.id}>
-								<div className={`project-row-wrap ${current ? "selected" : ""}`}>
-									<button
-										className="project-row"
-										type="button"
-										title={remote ? `${connection?.name ?? "SSH"} · ${project.cwd}` : project.cwd}
-										onClick={() => {
-											run(guiStore.selectProject(project.id));
-											closeMobile();
-										}}
-									>
-										{remote ? <Cloud size={16} /> : current ? <FolderOpen size={16} /> : <Folder size={16} />}
-										<span className="project-row-label"><span>{project.name}</span>{remote && <small>{connection?.name ?? "SSH"} · {remoteStatus}</small>}</span>
-									</button>
-									{!current && <IconButton label="移除项目" onClick={() => { if (window.confirm(`从列表移除项目“${project.name}”？`)) run(guiStore.removeProject(project.id)); }}><X size={14} /></IconButton>}
+				{snapshot.sidebarCollapsed ? (
+					<>
+						<IconButton label="新会话" disabled={!snapshot.currentCwd} onClick={() => run(guiStore.createSession())}><MessageSquarePlus size={17} /></IconButton>
+						<div className="collapsed-sidebar-spacer" />
+						<IconButton label="设置" onClick={() => guiStore.openSettings()}><Settings size={17} /></IconButton>
+					</>
+				) : (
+					<>
+						<button className="sidebar-command" type="button" disabled={!snapshot.currentCwd} onClick={() => run(guiStore.createSession())}>
+							<MessageSquarePlus size={16} />
+							新会话
+						</button>
+						<label className="search-field">
+							<Search size={16} />
+							<input ref={searchInput} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索项目和会话" />
+						</label>
+						<div className="sidebar-section-label"><span>项目</span><button type="button" title="打开项目" onClick={() => run(guiStore.chooseProject())}><Plus size={14} /></button></div>
+						<div className="project-list">
+							{projects.map((project) => (
+								<ProjectItem key={project.id} project={project} sessions={sessions} closeMobile={closeMobile} />
+							))}
+							{projects.length === 0 && <div className="sidebar-empty">未找到项目</div>}
+							{archived.length > 0 && (
+								<div className="archived-projects">
+									<button type="button" onClick={() => setShowArchived((value) => !value)}><Archive size={13} />已归档 <span>{archived.length}</span><ChevronRight size={13} className={showArchived ? "expanded" : ""} /></button>
+									{showArchived && archived.map((project) => <ProjectItem key={project.id} project={project} sessions={[]} closeMobile={closeMobile} />)}
 								</div>
-								{current && (
-									<div className="session-list">
-										{sessions.map((session) => (
-											<SessionRow key={session.path} session={session} closeMobile={closeMobile} />
-										))}
-										{sessions.length === 0 && <div className="sidebar-empty">暂无会话</div>}
-									</div>
-								)}
-							</div>
-						);
-					})}
-				</div>
-				<button className="settings-entry" type="button" onClick={() => guiStore.openSettings()}>
-					<Settings size={17} />
-					设置
-				</button>
+							)}
+						</div>
+						<button className="settings-entry" type="button" onClick={() => guiStore.openSettings()}>
+							<Settings size={17} />
+							设置
+						</button>
+					</>
+				)}
 			</aside>
 		</>
+	);
+}
+
+function ProjectItem({ project, sessions, closeMobile }: { project: ProjectSummary; sessions: SessionSummary[]; closeMobile: () => void }) {
+	const snapshot = useSyncExternalStore(guiStore.subscribe, guiStore.getSnapshot);
+	const [menuOpen, setMenuOpen] = useState(false);
+	const current = project.id === snapshot.currentProjectId;
+	const connection = snapshot.connections.find((candidate) => candidate.id === project.connectionId);
+	const remote = project.connectionId !== "local";
+	const failure = snapshot.projectOpenFailures[project.id];
+	const remoteStatus = failure
+		? "连接失败"
+		: current && snapshot.connected
+			? "已连接"
+			: snapshot.connectionProbes[project.connectionId]?.connected
+				? "后台可用"
+				: "离线";
+	const update = (change: Partial<Pick<ProjectSummary, "name" | "pinned" | "color" | "archived">>) =>
+		guiStore.updateProject(project.id, {
+			name: change.name ?? project.name,
+			pinned: change.pinned ?? project.pinned,
+			color: change.color === undefined ? project.color : change.color,
+			archived: change.archived ?? project.archived,
+		});
+	const openProject = async () => {
+		if (project.archived) await update({ archived: false });
+		await guiStore.selectProject(project.id);
+		closeMobile();
+	};
+	return (
+		<div className={`project-item ${project.color ? `project-color-${project.color}` : ""}`}>
+			<div className={`project-row-wrap ${current ? "selected" : ""} ${failure ? "failed" : ""}`}>
+				<button className="project-row" type="button" onClick={() => run(openProject())}>
+					{remote ? <Cloud size={16} /> : current ? <FolderOpen size={16} /> : <Folder size={16} />}
+					<span className="project-row-label"><span>{project.name}</span>{remote && <small>{connection?.name ?? "SSH"}</small>}</span>
+				</button>
+				<div className="project-row-actions">
+					{remote && <span className={`remote-status-dot ${failure ? "error" : current && snapshot.connected ? "online" : "offline"}`} title={remoteStatus} />}
+					{current && <IconButton label="新会话" onClick={() => run(guiStore.createSession())}><Plus size={14} /></IconButton>}
+					<IconButton label="项目操作" onClick={() => setMenuOpen((value) => !value)}><MoreHorizontal size={15} /></IconButton>
+				</div>
+				<div className="project-hover-card">
+					<strong>{project.name}</strong>
+					<span>{remote ? connection?.name ?? "SSH" : "本机"} · {remote ? remoteStatus : "可用"}</span>
+					<code>{project.cwd}</code>
+					<span>{project.recentSessions?.length ?? 0} 个最近会话</span>
+				</div>
+				{menuOpen && (
+					<div className="row-menu project-menu">
+						<button type="button" onClick={() => { run(update({ pinned: !project.pinned })); setMenuOpen(false); }}><Pin size={14} />{project.pinned ? "取消置顶" : "置顶"}</button>
+						<button type="button" onClick={() => { const name = window.prompt("项目名称", project.name); if (name) run(update({ name })); setMenuOpen(false); }}><Pencil size={14} />重命名</button>
+						<div className="project-color-menu" aria-label="项目颜色">
+							{([undefined, "red", "orange", "green", "blue", "purple", "gray"] as const).map((color) => <button key={color ?? "none"} type="button" className={`color-swatch ${color ?? "none"} ${project.color === color ? "selected" : ""}`} aria-label={color ? `设为${color}` : "清除颜色"} onClick={() => run(update({ color }))} />)}
+						</div>
+						{remote && <button type="button" onClick={() => { guiStore.openSettings("connections"); setMenuOpen(false); }}><Settings size={14} />连接设置</button>}
+						<button type="button" disabled={current} onClick={() => { run(update({ archived: !project.archived })); setMenuOpen(false); }}><Archive size={14} />{project.archived ? "恢复项目" : "归档"}</button>
+						<button className="danger" type="button" disabled={current} onClick={() => { if (window.confirm(`从列表移除项目“${project.name}”？`)) run(guiStore.removeProject(project.id)); setMenuOpen(false); }}><X size={14} />移除</button>
+					</div>
+				)}
+			</div>
+			{failure && <div className="project-open-error"><AlertCircle size={13} /><span title={failure.message}>{failure.message}</span><button type="button" onClick={() => run(guiStore.selectProject(project.id))}>重试</button>{remote && <button type="button" onClick={() => guiStore.openSettings("connections")}>连接设置</button>}</div>}
+			{current && (
+				<div className="session-list">
+					{sessions.map((session) => <SessionRow key={session.path} session={session} closeMobile={closeMobile} />)}
+					{sessions.length === 0 && <div className="sidebar-empty">暂无会话</div>}
+				</div>
+			)}
+		</div>
 	);
 }
 
@@ -401,9 +471,9 @@ function SessionRow({ session, closeMobile }: { session: SessionSummary; closeMo
 					closeMobile();
 				}}
 			>
-				<span className={`session-state ${state.className}`} title={state.label} aria-label={state.label} />
 				<span>{sessionTitle(session)}</span>
 				<time>{relativeTime(session.updatedAt)}</time>
+				<span className={`session-state ${state.className}`} title={state.label} aria-label={state.label} />
 			</button>
 			<IconButton label="会话操作" onClick={() => setMenuOpen((value) => !value)}>
 				<MoreHorizontal size={15} />
@@ -443,8 +513,8 @@ function Topbar({ openMobile }: { openMobile: () => void }) {
 	const session = snapshot.sessions.find((candidate) => candidate.path === snapshot.selectedSessionPath);
 	return (
 		<header className="topbar">
-			<IconButton label="打开项目列表" onClick={openMobile}>
-				<Menu size={18} />
+			<IconButton label={snapshot.sidebarCollapsed ? "展开侧栏" : "打开项目列表"} onClick={snapshot.sidebarCollapsed ? () => guiStore.toggleSidebar() : openMobile}>
+				{snapshot.sidebarCollapsed ? <PanelLeftOpen size={18} /> : <Menu size={18} />}
 			</IconButton>
 			<Folder size={17} />
 			<div className="topbar-title" title={snapshot.currentCwd}>
@@ -503,12 +573,14 @@ function Transcript() {
 	const virtualizer = useVirtualizer({
 		count: items.length,
 		getScrollElement: () => parent.current,
+		getItemKey: (index) => items[index]?.key ?? index,
 		estimateSize: () => 120,
 		overscan: 8,
 		useFlushSync: false,
 	});
 
 	useEffect(() => {
+		virtualizer.measure();
 		const previousSessionPath = previousTranscriptSessionPath.current;
 		const previousFirst = previousFirstEntryId.current;
 		const firstEntryId = snapshot.transcript[0]?.entryId;
@@ -520,7 +592,7 @@ function Transcript() {
 		previousFirstEntryId.current = firstEntryId;
 		if (anchorIndex > 0) virtualizer.scrollToIndex(anchorIndex, { align: "start" });
 		else if (items.length > 0) virtualizer.scrollToIndex(items.length - 1, { align: "end" });
-	}, [items.length, rows, snapshot.selectedSessionPath, snapshot.transcript, virtualizer]);
+	}, [items.length, rows, snapshot.selectedSessionPath, snapshot.transcriptGeneration, virtualizer]);
 
 	if (!snapshot.currentCwd) {
 		return (
@@ -661,7 +733,7 @@ function TranscriptImage({ image }: { image: TranscriptImageView }) {
 							<IconButton label="缩小" disabled={zoom <= 0.5} onClick={() => setZoom((value) => Math.max(0.5, value - 0.25))}><ZoomOut size={16} /></IconButton>
 							<button type="button" onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button>
 							<IconButton label="放大" disabled={zoom >= 4} onClick={() => setZoom((value) => Math.min(4, value + 0.25))}><ZoomIn size={16} /></IconButton>
-							<IconButton label="关闭图片" onClick={() => { setOpen(false); setZoom(1); }}><X size={17} /></IconButton>
+							<CloseButton label="关闭图片" onClick={() => { setOpen(false); setZoom(1); }} />
 						</div>
 					</header>
 					<div className="image-viewer-canvas"><img src={source} alt="会话图片大图" style={{ transform: `scale(${zoom})` }} /></div>
@@ -680,6 +752,9 @@ function TranscriptEntry({ item }: { item: TranscriptItem }) {
 	const role = transcriptRole(item);
 	const text = transcriptText(item);
 	const images = transcriptImages(item);
+	if (item.kind === "compaction" || item.kind === "branch_summary") {
+		return <CompactSummary text={text} branch={item.kind === "branch_summary"} />;
+	}
 	if (role === "user") return <UserMessage text={text} images={images} />;
 	if (role === "assistant") return <AssistantMessage text={text} entryId={item.entryId} images={images} />;
 	if (role === "toolResult") return <ToolResult item={item} />;
@@ -688,6 +763,23 @@ function TranscriptEntry({ item }: { item: TranscriptItem }) {
 			<Info size={14} />
 			<span>{text || item.kind}</span>
 		</div>
+	);
+}
+
+function CompactSummary({ text, branch }: { text: string; branch: boolean }) {
+	return (
+		<details className="compact-summary">
+			<summary>
+				<Brain size={15} />
+				<strong>{branch ? "分支摘要" : "上下文摘要"}</strong>
+				<span>{text.length > 0 ? `${text.length.toLocaleString("zh-CN")} 字符` : "无内容"}</span>
+			</summary>
+			{text && (
+				<div className="compact-summary-content">
+					<Markdown text={text} onOpenResource={(target) => run(guiStore.openResource(target))} />
+				</div>
+			)}
+		</details>
 	);
 }
 
@@ -990,16 +1082,37 @@ function BashGroup({
 	);
 }
 
+const MAX_COMPOSER_IMAGES = 5;
+const MAX_COMPOSER_IMAGE_BYTES = 4 * 1024 * 1024;
+const MAX_COMPOSER_IMAGE_TOTAL_BYTES = 10 * 1024 * 1024;
+
+function readComposerImage(file: File): Promise<{ id: string; data: string; mimeType: string; name: string; size: number }> {
+	return new Promise((resolve, reject) => {
+		const reader = new FileReader();
+		reader.onerror = () => reject(reader.error ?? new Error(`无法读取图片：${file.name}`));
+		reader.onload = () => {
+			const data = String(reader.result).split(",")[1];
+			if (!data) reject(new Error(`无法读取图片：${file.name}`));
+			else resolve({ id: crypto.randomUUID(), name: file.name, mimeType: file.type, data, size: file.size });
+		};
+		reader.readAsDataURL(file);
+	});
+}
+
 function Composer() {
 	const snapshot = useSyncExternalStore(guiStore.subscribe, guiStore.getSnapshot);
 	const [text, setText] = useState("");
-	const [images, setImages] = useState<Array<{ data: string; mimeType: string; name: string }>>([]);
+	const [images, setImages] = useState<Array<{ id: string; data: string; mimeType: string; name: string; size: number }>>([]);
+	const [actionOpen, setActionOpen] = useState(false);
 	const [modelOpen, setModelOpen] = useState(false);
+	const [modelSearch, setModelSearch] = useState("");
 	const [thinkingOpen, setThinkingOpen] = useState(false);
+	const [dragActive, setDragActive] = useState(false);
 	const [completion, setCompletion] = useState<CompletionResult>();
 	const [completionIndex, setCompletionIndex] = useState(0);
 	const [cursor, setCursor] = useState(0);
 	const textarea = useRef<HTMLTextAreaElement>(null);
+	const imageInput = useRef<HTMLInputElement>(null);
 	const completionRequest = useRef(0);
 	const running = !!snapshot.currentOperation && ACTIVE_STATUSES.has(snapshot.currentOperation.status);
 	const writable = !!snapshot.lease && snapshot.capabilities.includes("session-control");
@@ -1009,11 +1122,38 @@ function Composer() {
 		(model) => model.provider === snapshot.selectedSession?.model?.provider && model.id === snapshot.selectedSession?.model?.id,
 	);
 	const thinkingLevels = selectedModel?.supportedThinkingLevels ?? ["off"];
+	const imageCapable = selectedModel?.input.includes("image") === true;
+	const visibleModels = snapshot.models.filter((model) =>
+		`${model.name} ${model.provider} ${model.id}`.toLowerCase().includes(modelSearch.trim().toLowerCase()),
+	);
+	const modelGroups = visibleModels.reduce<Array<{ provider: string; models: ModelSummary[] }>>((groups, model) => {
+		const group = groups.find((candidate) => candidate.provider === model.provider);
+		if (group) group.models.push(model);
+		else groups.push({ provider: model.provider, models: [model] });
+		return groups;
+	}, []);
 	const disabledReason = !snapshot.selectedSessionPath
 		? "先打开或新建会话"
 		: !snapshot.lease
 			? "该会话正在其他进程中使用"
 			: undefined;
+
+	const importImages = async (files: readonly File[]) => {
+		if (!writable || bashCommand) return;
+		if (!imageCapable) throw new Error("当前模型不支持图片输入");
+		const candidates = files.filter((file) => file.type.startsWith("image/"));
+		if (candidates.length === 0) return;
+		if (images.length + candidates.length > MAX_COMPOSER_IMAGES) {
+			throw new Error(`一次最多添加 ${MAX_COMPOSER_IMAGES} 张图片`);
+		}
+		const oversized = candidates.find((file) => file.size > MAX_COMPOSER_IMAGE_BYTES);
+		if (oversized) throw new Error(`${oversized.name} 超过 4 MiB 上限`);
+		const total =
+			images.reduce((sum, image) => sum + image.size, 0) + candidates.reduce((sum, file) => sum + file.size, 0);
+		if (total > MAX_COMPOSER_IMAGE_TOTAL_BYTES) throw new Error("图片附件总大小超过 10 MiB 上限");
+		const imported = await Promise.all(candidates.map(readComposerImage));
+		setImages((current) => [...current, ...imported]);
+	};
 
 	useEffect(() => {
 		const before = text.slice(0, cursor);
@@ -1057,8 +1197,40 @@ function Composer() {
 		});
 	};
 
+	const insertAtCursor = (value: string) => {
+		const next = `${text.slice(0, cursor)}${value}${text.slice(cursor)}`;
+		const nextCursor = cursor + value.length;
+		setText(next);
+		setCursor(nextCursor);
+		setActionOpen(false);
+		requestAnimationFrame(() => {
+			textarea.current?.focus();
+			textarea.current?.setSelectionRange(nextCursor, nextCursor);
+		});
+	};
+
 	return (
-		<div className={`composer ${writable ? "" : "read-only"} ${images.length > 0 ? "has-attachments" : ""}`} title={disabledReason}>
+		<div
+			className={`composer ${writable ? "" : "read-only"} ${images.length > 0 ? "has-attachments" : ""} ${dragActive ? "drag-active" : ""}`}
+			title={disabledReason}
+			onDragEnter={(event) => {
+				if ([...event.dataTransfer.items].some((item) => item.kind === "file")) {
+					event.preventDefault();
+					setDragActive(true);
+				}
+			}}
+			onDragOver={(event) => {
+				if (dragActive) event.preventDefault();
+			}}
+			onDragLeave={(event) => {
+				if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragActive(false);
+			}}
+			onDrop={(event) => {
+				event.preventDefault();
+				setDragActive(false);
+				run(importImages([...event.dataTransfer.files]));
+			}}
+		>
 			{completion && (
 				<div className="completion-menu" role="listbox" aria-label="输入补全">
 					{completion.items.map((item, index) => (
@@ -1078,10 +1250,10 @@ function Composer() {
 			{images.length > 0 && (
 				<div className="attachment-list">
 					{images.map((image) => (
-						<span key={image.name}>
+						<span key={image.id}>
 							<img src={`data:${image.mimeType};base64,${image.data}`} alt="" />
 							<small title={image.name}>{image.name}</small>
-							<button type="button" aria-label={`移除 ${image.name}`} onClick={() => setImages((items) => items.filter((item) => item !== image))}>
+							<button type="button" aria-label={`移除 ${image.name}`} onClick={() => setImages((items) => items.filter((item) => item.id !== image.id))}>
 								<X size={12} />
 							</button>
 						</span>
@@ -1098,6 +1270,15 @@ function Composer() {
 					setCursor(event.target.selectionStart);
 				}}
 				onSelect={(event) => setCursor(event.currentTarget.selectionStart)}
+				onPaste={(event) => {
+					const files = [...event.clipboardData.items].flatMap((item) => {
+						const file = item.kind === "file" && item.type.startsWith("image/") ? item.getAsFile() : null;
+						return file ? [file] : [];
+					});
+					if (files.length === 0) return;
+					if (!event.clipboardData.getData("text/plain")) event.preventDefault();
+					run(importImages(files));
+				}}
 				onKeyDown={(event) => {
 					if (completion) {
 						if (event.key === "ArrowDown") {
@@ -1129,68 +1310,95 @@ function Composer() {
 			/>
 			<div className="composer-footer">
 				<div className="composer-left">
-					<label className="icon-button" title="添加图片">
-						<Paperclip size={17} />
+					<div className="menu-trigger-wrap">
+						<button
+							className="icon-button"
+							type="button"
+							aria-label="添加内容"
+							title="添加内容"
+							disabled={!writable || bashCommand}
+							onClick={() => setActionOpen((value) => !value)}
+						>
+							<Plus size={17} />
+						</button>
+						{actionOpen && (
+							<div className="popover-menu composer-action-menu">
+								<button type="button" disabled={!imageCapable} onClick={() => imageInput.current?.click()}>
+									<ImageIcon size={15} />
+									<span><strong>添加图片</strong><small>{imageCapable ? "选择、粘贴或拖放" : "当前模型不支持图片"}</small></span>
+								</button>
+								<button type="button" onClick={() => insertAtCursor("@") }>
+									<FileText size={15} />
+									<span><strong>引用项目文件</strong><small>输入文件名并选择路径</small></span>
+								</button>
+								<button type="button" onClick={() => insertAtCursor("!") }>
+									<Terminal size={15} />
+									<span><strong>运行 Bash</strong><small>将本条输入作为命令执行</small></span>
+								</button>
+							</div>
+						)}
 						<input
+							ref={imageInput}
 							hidden
 							type="file"
 							accept="image/*"
 							multiple
-							disabled={!writable || bashCommand}
+							disabled={!writable || bashCommand || !imageCapable}
 							onChange={(event) => {
-								const files = [...(event.target.files ?? [])].slice(0, 5 - images.length);
-								for (const file of files) {
-									const reader = new FileReader();
-									reader.onload = () => {
-										const result = String(reader.result);
-										setImages((items) => [...items, { name: file.name, mimeType: file.type, data: result.split(",")[1] ?? "" }]);
-									};
-									reader.readAsDataURL(file);
-								}
+								run(importImages([...(event.target.files ?? [])]));
 								event.target.value = "";
+								setActionOpen(false);
 							}}
 						/>
-					</label>
+					</div>
 					{!writable && snapshot.selectedSessionPath && <span className="permission-warning"><ShieldAlert size={14} />只读</span>}
 					{invalidAttachments && <span className="permission-warning"><ShieldAlert size={14} />Bash 命令不能包含图片</span>}
 				</div>
 				<div className="composer-right">
 					<div className="menu-trigger-wrap">
-						<button className="text-trigger" type="button" disabled={!writable || running} onClick={() => setModelOpen((value) => !value)}>
-							{selectedModel?.name ?? snapshot.selectedSession?.model?.id ?? "选择模型"}
+						<button className="text-trigger model-trigger" type="button" disabled={!writable || running} onClick={() => setModelOpen((value) => !value)}>
+							<span>{selectedModel?.name ?? snapshot.selectedSession?.model?.id ?? "选择模型"}</span>
+							<small>{THINKING_LABELS[snapshot.selectedSession?.thinkingLevel ?? "off"]}</small>
 							<ChevronDown size={13} />
 						</button>
 						{modelOpen && (
-							<div className="popover-menu model-menu">
-								{snapshot.models.map((model) => (
-									<button
-										key={`${model.provider}/${model.id}`}
-										type="button"
-										disabled={!model.authenticated}
-										onClick={() => {
-											run(guiStore.setModel({ provider: model.provider, id: model.id }));
-											setModelOpen(false);
-										}}
-									>
-										<span>{model.name}</span>
-										<small>{model.provider}</small>
+							<div className="popover-menu model-menu unified-model-menu">
+								<label className="model-search"><Search size={14} /><input autoFocus value={modelSearch} onChange={(event) => setModelSearch(event.target.value)} placeholder="搜索模型" /></label>
+								<div className="model-menu-list">
+									{modelGroups.map((group) => (
+										<div className="model-provider-group" key={group.provider}>
+											<div className="model-provider-label">{group.provider}</div>
+											{group.models.map((model) => (
+												<button
+													key={`${model.provider}/${model.id}`}
+													type="button"
+													className={selectedModel?.provider === model.provider && selectedModel.id === model.id ? "selected" : ""}
+													disabled={!model.authenticated}
+													title={`${model.provider}/${model.id}`}
+													onClick={() => {
+														run(guiStore.setModel({ provider: model.provider, id: model.id }));
+														setModelOpen(false);
+													}}
+												>
+													<span><strong>{model.name}</strong><small>{model.id}</small></span>
+													{selectedModel?.provider === model.provider && selectedModel.id === model.id && <Check size={14} />}
+												</button>
+											))}
+										</div>
+									))}
+									{modelGroups.length === 0 && <div className="menu-empty">未找到模型</div>}
+								</div>
+								<button className="thinking-toggle" type="button" onClick={() => setThinkingOpen((value) => !value)}>
+									<Brain size={14} />
+									<span>推理强度</span>
+									<strong>{THINKING_LABELS[snapshot.selectedSession?.thinkingLevel ?? "off"]}</strong>
+									<ChevronRight size={14} className={thinkingOpen ? "expanded" : ""} />
+								</button>
+								{thinkingOpen && <div className="thinking-levels">{thinkingLevels.map((level) => (
+									<button key={level} type="button" className={snapshot.selectedSession?.thinkingLevel === level ? "selected" : ""} onClick={() => { run(guiStore.setThinkingLevel(level)); setThinkingOpen(false); setModelOpen(false); }}>
+										{THINKING_LABELS[level]}{snapshot.selectedSession?.thinkingLevel === level && <Check size={13} />}
 									</button>
-								))}
-							</div>
-						)}
-					</div>
-					<div className="menu-trigger-wrap">
-						<button className="text-trigger" type="button" disabled={!writable || running} onClick={() => setThinkingOpen((value) => !value)}>
-							<Brain size={14} />
-							{THINKING_LABELS[snapshot.selectedSession?.thinkingLevel ?? "off"]}
-						</button>
-						{thinkingOpen && (
-							<div className="popover-menu thinking-menu">
-								{thinkingLevels.map((level) => (
-									<button key={level} type="button" onClick={() => { run(guiStore.setThinkingLevel(level)); setThinkingOpen(false); }}>
-										{THINKING_LABELS[level]}
-									</button>
-								))}
+								))}</div>}
 							</div>
 						)}
 					</div>
@@ -1239,6 +1447,14 @@ function SettingsView() {
 					<ArrowLeft size={17} />
 					<span>返回应用</span>
 				</button>
+				<label className="settings-host-selector">
+					<span>Host</span>
+					<select value={snapshot.settingsHostId} onChange={(event) => run(guiStore.selectSettingsHost(event.target.value))}>
+						<option value="all">所有设置</option>
+						<option value="local">本机</option>
+						{snapshot.connections.map((connection) => <option key={connection.id} value={connection.id}>{connection.name}</option>)}
+					</select>
+				</label>
 				<label className="search-field settings-nav-search">
 					<Search size={16} />
 					<input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索设置" />
@@ -1251,6 +1467,7 @@ function SettingsView() {
 				</nav>
 			</aside>
 			<main className="settings-content">
+				{snapshot.settingsHostError && <div className="settings-host-error"><AlertCircle size={15} /><span>{snapshot.settingsHostError}</span><button type="button" onClick={() => run(guiStore.selectSettingsHost(snapshot.settingsHostId))}>重试</button></div>}
 				<SettingsPageContent page={page} />
 			</main>
 		</div>
@@ -1271,30 +1488,45 @@ function SettingsPageContent({ page }: { page: SettingsPage }) {
 
 function GeneralSettings() {
 	const snapshot = useSyncExternalStore(guiStore.subscribe, guiStore.getSnapshot);
-	const [selectedPath, setSelectedPath] = useState<string>();
+	const [scope, setScope] = useState<"host" | string>("host");
+	const [fileName, setFileName] = useState<"AGENTS.md" | "AGENTS.override.md">("AGENTS.md");
 	const [content, setContent] = useState("");
 	const [saving, setSaving] = useState(false);
-	const selected = snapshot.projectInstructions.find((file) => file.path === selectedPath);
+	const hostProjects = snapshot.projects.filter((project) => project.connectionId === snapshot.settingsHostId && !project.archived);
+	const files = scope === "host" ? snapshot.hostInstructions : snapshot.projectInstructions;
+	const selected = files.find((file) => file.fileName === fileName && file.editable) ?? files.find((file) => file.editable);
+	const inherited = scope === "host" ? [] : snapshot.projectInstructions.filter((file) => !file.editable);
+	const hostName = snapshot.settingsHostId === "local"
+		? "本机"
+		: snapshot.connections.find((connection) => connection.id === snapshot.settingsHostId)?.name ?? "Host";
 
 	useEffect(() => {
-		const current = snapshot.projectInstructions.find((file) => file.path === selectedPath);
-		if (current) return;
-		const next =
-			snapshot.projectInstructions.find((file) => file.editable && file.active) ??
-			snapshot.projectInstructions.find((file) => file.editable && file.fileName === "AGENTS.md") ??
-			snapshot.projectInstructions[0];
-		setSelectedPath(next?.path);
-	}, [selectedPath, snapshot.currentProjectId, snapshot.projectInstructions]);
+		setScope("host");
+		setFileName("AGENTS.md");
+	}, [snapshot.settingsHostId]);
 
 	useEffect(() => {
 		setContent(selected?.content ?? "");
-	}, [selected?.content, selected?.contentHash, selected?.path]);
+		if (selected?.fileName === "AGENTS.md" || selected?.fileName === "AGENTS.override.md") setFileName(selected.fileName);
+	}, [selected?.content, selected?.contentHash, selected?.fileName, selected?.path]);
+
+	if (snapshot.settingsHostId === "all") {
+		return (
+			<SettingsSection title="个性化" description="从左侧选择本机或一台 SSH Host，编辑该运行环境实际使用的指令。">
+				<div className="all-hosts-overview">
+					<button type="button" onClick={() => run(guiStore.selectSettingsHost("local"))}><Folder size={17} /><span><strong>本机</strong><small>本机全局 AGENTS 与项目指令</small></span><ArrowRight size={15} /></button>
+					{snapshot.connections.map((connection) => <button key={connection.id} type="button" onClick={() => run(guiStore.selectSettingsHost(connection.id))}><Cloud size={17} /><span><strong>{connection.name}</strong><small>{connection.target}</small></span><ArrowRight size={15} /></button>)}
+				</div>
+			</SettingsSection>
+		);
+	}
 
 	const save = async () => {
-		if (!selected?.editable || (selected.fileName !== "AGENTS.md" && selected.fileName !== "AGENTS.override.md")) return;
+		if (!selected || (selected.fileName !== "AGENTS.md" && selected.fileName !== "AGENTS.override.md")) return;
 		setSaving(true);
 		try {
-			await guiStore.saveProjectInstruction(selected.fileName, content, selected.contentHash);
+			if (scope === "host") await guiStore.saveHostInstruction(selected.fileName, content, selected.contentHash);
+			else await guiStore.saveProjectInstruction(selected.fileName, content, selected.contentHash);
 		} catch (error) {
 			guiStore.showError(error);
 		} finally {
@@ -1303,47 +1535,28 @@ function GeneralSettings() {
 	};
 
 	return (
-		<SettingsSection title="通用" description="管理桌面项目和当前项目的指令文件。">
-			<div className="general-settings-layout">
-				<section className="project-manager" aria-label="桌面项目">
-					<header><strong>项目</strong><button type="button" onClick={() => run(guiStore.chooseProject())}><Plus size={15} />添加项目</button></header>
-					<div className="project-manager-list">
-						{snapshot.projects.map((project) => {
-							const current = project.id === snapshot.currentProjectId;
-							const connection = snapshot.connections.find((candidate) => candidate.id === project.connectionId);
-							return (
-								<div key={project.id} className={current ? "selected" : ""}>
-									<button type="button" title={project.cwd} onClick={() => run(guiStore.selectProject(project.id))}>
-										{project.connectionId === "local" ? <Folder size={16} /> : <Cloud size={16} />}
-										<span><strong>{project.name}</strong><small>{project.connectionId === "local" ? project.cwd : `${connection?.name ?? "SSH"} · ${project.cwd}`}</small></span>
-									</button>
-									{!current && <IconButton label="移除项目" onClick={() => { if (window.confirm(`从列表移除项目“${project.name}”？`)) run(guiStore.removeProject(project.id)); }}><X size={14} /></IconButton>}
-								</div>
-							);
-						})}
+		<SettingsSection title="个性化" description={`${hostName} 的全局和项目指令。`}>
+			<div className="instruction-workspace">
+				<div className="settings-toolbar instruction-scope-toolbar">
+					<label><span>作用域</span><select value={scope} onChange={(event) => {
+						const value = event.target.value;
+						setScope(value);
+						if (value !== "host") run(guiStore.selectSettingsProject(value));
+					}}><option value="host">{hostName} 全局指令</option>{hostProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+					<div className="segmented-control" aria-label="指令文件">
+						<button type="button" className={fileName === "AGENTS.md" ? "selected" : ""} onClick={() => setFileName("AGENTS.md")}>AGENTS.md</button>
+						<button type="button" className={fileName === "AGENTS.override.md" ? "selected" : ""} onClick={() => setFileName("AGENTS.override.md")}>Override</button>
 					</div>
-				</section>
-				<section className="instruction-manager" aria-label="项目指令">
-					<header><div><strong>项目指令</strong><small>{snapshot.currentCwd ?? "尚未打开项目"}</small></div><button type="button" disabled={!snapshot.currentCwd} onClick={() => run(guiStore.refreshProjectInstructions())}><RefreshCw size={15} />重新加载</button></header>
-					<div className="instruction-body">
-						<nav>
-							{snapshot.projectInstructions.map((file) => (
-								<button key={file.path} type="button" className={file.path === selectedPath ? "selected" : ""} onClick={() => setSelectedPath(file.path)}>
-									<FileText size={15} />
-									<span><strong>{file.fileName}</strong><small>{file.exists ? file.active ? "当前生效" : "未生效" : "尚未创建"}{!file.editable ? " · 继承" : ""}</small></span>
-								</button>
-							))}
-						</nav>
-						<div className="instruction-editor">
-							{selected ? (
-								<>
-									<header><div><strong>{selected.fileName}</strong><small title={selected.path}>{selected.path}</small></div>{selected.editable && <button type="button" disabled={saving || content === (selected.content ?? "")} onClick={() => void save()}><Save size={15} />{saving ? "正在保存" : selected.exists ? "保存" : "创建"}</button>}</header>
-									<textarea value={content} readOnly={!selected.editable} spellCheck={false} onChange={(event) => setContent(event.target.value)} />
-								</>
-							) : <div className="settings-empty">当前项目没有可管理的指令文件</div>}
-						</div>
-					</div>
-				</section>
+					<button type="button" onClick={() => run(scope === "host" ? guiStore.refreshHostInstructions() : guiStore.refreshProjectInstructions())}><RefreshCw size={15} />重新加载</button>
+				</div>
+				<div className="instruction-editor single">
+					<header>
+						<div><strong>{selected?.fileName ?? fileName}</strong><small title={selected?.path}>{selected?.path ?? "保存后创建"}</small></div>
+						<button type="button" disabled={!selected || saving || content === (selected.content ?? "")} onClick={() => void save()}><Save size={15} />{saving ? "正在保存" : selected?.exists ? "保存" : "创建"}</button>
+					</header>
+					<textarea value={content} disabled={!snapshot.settingsHostConnected} spellCheck={false} onChange={(event) => setContent(event.target.value)} />
+				</div>
+				{inherited.length > 0 && <details className="instruction-sources"><summary><FileText size={14} />生效来源 <span>{inherited.length + 1}</span></summary><div>{inherited.map((file) => <div key={file.path}><strong>{file.fileName}</strong><code>{file.path}</code></div>)}</div></details>}
 			</div>
 		</SettingsSection>
 	);
@@ -1380,10 +1593,16 @@ function SshConnectionDialog({
 	connection?: SshConnectionProfile;
 	onClose: () => void;
 }) {
+	const [mode, setMode] = useState<SshConnectionProfile["mode"]>(connection?.mode ?? "alias");
 	const [name, setName] = useState(connection?.name ?? "");
 	const [target, setTarget] = useState(connection?.target ?? "");
+	const [user, setUser] = useState(connection?.user ?? "");
+	const [port, setPort] = useState(String(connection?.port ?? 22));
+	const [authMethod, setAuthMethod] = useState<SshConnectionProfile["authMethod"]>(connection?.authMethod ?? "agent");
+	const [identityFile, setIdentityFile] = useState(connection?.identityFile ?? "");
+	const [password, setPassword] = useState("");
+	const [rememberPassword, setRememberPassword] = useState(connection?.rememberPassword === true);
 	const [platform, setPlatform] = useState<SshConnectionProfile["platform"]>(connection?.platform ?? "auto");
-	const [defaultCwd, setDefaultCwd] = useState(connection?.defaultCwd ?? "");
 	const [hostCommand, setHostCommand] = useState(connection?.hostCommand ?? "");
 	const [busy, setBusy] = useState(false);
 	const submit = async (event: React.FormEvent) => {
@@ -1394,12 +1613,20 @@ function SshConnectionDialog({
 				id: connection?.id,
 				name,
 				target,
+				mode,
+				user: mode === "direct" ? user || undefined : undefined,
+				port: mode === "direct" ? Number(port) : undefined,
+				authMethod,
+				identityFile: authMethod === "key" ? identityFile || undefined : undefined,
 				platform,
-				defaultCwd: defaultCwd || undefined,
 				hostCommand: hostCommand || undefined,
 			});
-			onClose();
+			if (authMethod === "password") {
+				if (!password && !connection?.rememberPassword) throw new Error("请输入 SSH 密码");
+				if (password) await guiStore.setSshPassword(saved.id, password, rememberPassword);
+			}
 			await guiStore.probeSshProfile(saved.id);
+			onClose();
 		} catch (error) {
 			guiStore.showError(error);
 		} finally {
@@ -1408,30 +1635,54 @@ function SshConnectionDialog({
 	};
 	return (
 		<div className="modal-scrim">
-			<div className="ui-dialog provider-dialog" role="dialog" aria-modal="true" aria-labelledby="ssh-dialog-title">
-				<header><div><h2 id="ssh-dialog-title">{connection ? "编辑 SSH 连接" : "添加 SSH 连接"}</h2><p>认证由 OpenSSH、ssh-agent 和系统 known_hosts 处理。</p></div><IconButton label="关闭" onClick={onClose}><X size={16} /></IconButton></header>
+			<div className="ui-dialog ssh-dialog" role="dialog" aria-modal="true" aria-labelledby="ssh-dialog-title">
+				<header><div><h2 id="ssh-dialog-title">{connection ? "编辑 SSH 连接" : "添加 SSH 连接"}</h2><p>连接由系统 OpenSSH 发起，Host key 写入系统 known_hosts。</p></div><CloseButton onClick={onClose} /></header>
 				<form className="provider-form connection-form" onSubmit={submit}>
-					<label><span>连接名称</span><input required value={name} onChange={(event) => setName(event.target.value)} placeholder="例如生产服务器" /></label>
-					<label><span>SSH 目标</span><input required value={target} onChange={(event) => setTarget(event.target.value)} placeholder="~/.ssh/config 别名或 user@host" /></label>
+					<label className="wide"><span>连接名称</span><input required value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 Yean Debian PC" /></label>
+					<div className="segmented-control wide" aria-label="连接方式"><button type="button" className={mode === "alias" ? "selected" : ""} onClick={() => setMode("alias")}>SSH Config</button><button type="button" className={mode === "direct" ? "selected" : ""} onClick={() => setMode("direct")}>直接连接</button></div>
+					<label className={mode === "alias" ? "wide" : ""}><span>{mode === "alias" ? "Host 别名" : "主机"}</span><input required value={target} onChange={(event) => setTarget(event.target.value)} placeholder={mode === "alias" ? "例如 yean-debian" : "例如 192.168.1.20"} /></label>
+					{mode === "direct" && <label><span>用户</span><input value={user} onChange={(event) => setUser(event.target.value)} placeholder="例如 yean" /></label>}
+					{mode === "direct" && <label><span>端口</span><input type="number" min="1" max="65535" value={port} onChange={(event) => setPort(event.target.value)} /></label>}
+					<label><span>认证方式</span><select value={authMethod} onChange={(event) => setAuthMethod(event.target.value as SshConnectionProfile["authMethod"])}><option value="agent">ssh-agent / 配置</option><option value="key">私钥文件</option><option value="password">密码</option></select></label>
+					{authMethod === "key" && <label className="wide"><span>私钥文件</span><div className="path-input"><input required value={identityFile} onChange={(event) => setIdentityFile(event.target.value)} placeholder="~/.ssh/id_ed25519" /><button type="button" onClick={() => void open({ multiple: false, directory: false, title: "选择 SSH 私钥" }).then((path) => { if (typeof path === "string") setIdentityFile(path); })}>选择</button></div></label>}
+					{authMethod === "password" && <><label className="wide"><span>密码</span><input type="password" autoComplete="off" value={password} onChange={(event) => setPassword(event.target.value)} placeholder={connection?.rememberPassword ? "留空继续使用系统凭据库中的密码" : "输入 SSH 密码"} /></label><label className="checkbox-row wide"><input type="checkbox" checked={rememberPassword} onChange={(event) => setRememberPassword(event.target.checked)} /><span>记住密码到系统凭据库</span></label></>}
 					<label><span>远端系统</span><select value={platform} onChange={(event) => setPlatform(event.target.value as SshConnectionProfile["platform"])}><option value="auto">自动检测</option><option value="linux">Linux</option><option value="darwin">macOS</option><option value="windows">Windows</option></select></label>
-					<label className="wide"><span>默认项目路径</span><input value={defaultCwd} onChange={(event) => setDefaultCwd(event.target.value)} placeholder="例如 /srv/project" /></label>
-					<label className="wide"><span>远端后台命令</span><input value={hostCommand} onChange={(event) => setHostCommand(event.target.value)} placeholder="留空时按远端系统使用默认安装位置" /></label>
-					<div className="dialog-actions wide"><button type="button" onClick={onClose}>取消</button><button className="primary" type="submit" disabled={busy}>{busy ? "正在保存" : "保存并测试"}</button></div>
+					<details className="advanced-fields wide"><summary>高级</summary><label><span>远端后台命令</span><input value={hostCommand} onChange={(event) => setHostCommand(event.target.value)} placeholder="留空使用默认安装位置" /></label></details>
+					<div className="dialog-actions wide"><button type="button" onClick={onClose}>取消</button><button className="primary" type="submit" disabled={busy}>{busy ? "正在连接" : "保存并测试"}</button></div>
 				</form>
 			</div>
 		</div>
 	);
 }
 
+function directoryBreadcrumbs(path: string): Array<{ label: string; path: string }> {
+	const normalized = path.replaceAll("\\", "/");
+	const drive = /^[A-Za-z]:/.exec(normalized)?.[0];
+	const parts = normalized.replace(/^[A-Za-z]:\/?|^\//, "").split("/").filter(Boolean);
+	const result: Array<{ label: string; path: string }> = [{ label: drive ?? "/", path: drive ? `${drive}/` : "/" }];
+	for (const part of parts) {
+		const parent = result.at(-1)?.path ?? "/";
+		result.push({ label: part, path: `${parent.replace(/\/$/, "")}/${part}` });
+	}
+	return result;
+}
+
 function RemoteProjectDialog({ connection, onClose }: { connection: SshConnectionProfile; onClose: () => void }) {
-	const [cwd, setCwd] = useState(connection.defaultCwd ?? "");
+	const snapshot = useSyncExternalStore(guiStore.subscribe, guiStore.getSnapshot);
 	const [name, setName] = useState("");
 	const [busy, setBusy] = useState(false);
-	const submit = async (event: React.FormEvent) => {
-		event.preventDefault();
+	const browser = snapshot.remoteDirectoryBrowser?.connectionId === connection.id ? snapshot.remoteDirectoryBrowser : undefined;
+	const listing = browser?.listing;
+	useEffect(() => {
+		void guiStore.openRemoteDirectoryBrowser(connection.id, connection.defaultCwd);
+		return () => { void guiStore.closeRemoteDirectoryBrowser(); };
+	}, [connection.defaultCwd, connection.id]);
+	const close = () => { void guiStore.closeRemoteDirectoryBrowser(); onClose(); };
+	const submit = async () => {
+		if (!listing) return;
 		setBusy(true);
 		try {
-			await guiStore.addRemoteProject(connection.id, cwd, name || undefined);
+			await guiStore.addRemoteProject(connection.id, listing.path, name || undefined);
 			onClose();
 		} catch (error) {
 			guiStore.showError(error);
@@ -1439,15 +1690,24 @@ function RemoteProjectDialog({ connection, onClose }: { connection: SshConnectio
 			setBusy(false);
 		}
 	};
+	const entries = listing?.entries.filter((entry) => browser?.showHidden || !entry.hidden) ?? [];
 	return (
 		<div className="modal-scrim">
-			<div className="ui-dialog" role="dialog" aria-modal="true" aria-labelledby="remote-project-title">
-				<header><div><h2 id="remote-project-title">添加远端项目</h2><p>{connection.name} · {connection.target}</p></div><IconButton label="关闭" onClick={onClose}><X size={16} /></IconButton></header>
-				<form className="provider-form connection-form" onSubmit={submit}>
-					<label className="wide"><span>远端项目路径</span><input required value={cwd} onChange={(event) => setCwd(event.target.value)} placeholder="例如 /srv/project" /></label>
-					<label className="wide"><span>项目名称</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="默认使用路径末级名称" /></label>
-					<div className="dialog-actions wide"><button type="button" onClick={onClose}>取消</button><button className="primary" type="submit" disabled={busy}>{busy ? "正在打开" : "添加并打开"}</button></div>
-				</form>
+			<div className="ui-dialog remote-browser-dialog" role="dialog" aria-modal="true" aria-labelledby="remote-project-title">
+				<header><div><h2 id="remote-project-title">选择远端项目</h2><p>{connection.name} · {connection.user ? `${connection.user}@` : ""}{connection.target}</p></div><CloseButton onClick={close} /></header>
+				<div className="remote-browser-toolbar">
+					<IconButton label="Home" disabled={!listing || browser?.loading} onClick={() => listing && run(guiStore.navigateRemoteDirectory(listing.home))}><FolderOpen size={16} /></IconButton>
+					<IconButton label="上级目录" disabled={!listing?.parent || browser?.loading} onClick={() => listing?.parent && run(guiStore.navigateRemoteDirectory(listing.parent))}><FolderUp size={16} /></IconButton>
+					<div className="directory-breadcrumbs">{listing && directoryBreadcrumbs(listing.path).map((part) => <button key={part.path} type="button" title={part.path} onClick={() => run(guiStore.navigateRemoteDirectory(part.path))}>{part.label}</button>)}</div>
+					<IconButton label={browser?.showHidden ? "隐藏隐藏目录" : "显示隐藏目录"} onClick={() => guiStore.toggleRemoteHiddenDirectories()}>{browser?.showHidden ? <EyeOff size={16} /> : <Eye size={16} />}</IconButton>
+				</div>
+				<div className="remote-directory-list">
+					{browser?.loading && <div className="settings-empty"><LoaderCircle size={18} className="spin" />正在读取目录</div>}
+					{browser?.error && <div className="remote-browser-error"><AlertCircle size={17} /><strong>无法读取远端目录</strong><p>{browser.error}</p><button type="button" onClick={() => run(guiStore.openRemoteDirectoryBrowser(connection.id))}><RefreshCw size={14} />重试</button></div>}
+					{!browser?.loading && !browser?.error && entries.map((entry) => <button key={entry.path} type="button" onClick={() => run(guiStore.navigateRemoteDirectory(entry.path))}><Folder size={16} /><span>{entry.name}</span><ChevronRight size={14} /></button>)}
+					{!browser?.loading && !browser?.error && entries.length === 0 && <div className="settings-empty">当前目录没有子目录</div>}
+				</div>
+				<div className="remote-browser-footer"><label><span>项目名称</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="默认使用目录名称" /></label><div><code title={listing?.path}>{listing?.path ?? "尚未选择目录"}</code><button type="button" onClick={close}>取消</button><button className="primary" type="button" disabled={!listing || busy || browser?.loading} onClick={() => void submit()}>{busy ? "正在打开" : "选择当前目录"}</button></div></div>
 			</div>
 		</div>
 	);
@@ -1460,7 +1720,7 @@ function ConnectionsSettings() {
 	const status = snapshot.connectionStatus;
 	const loading = snapshot.pendingActions.includes("connections");
 	return (
-		<SettingsSection title="连接" description="本机与 SSH 项目共用同一工作台；SSH 认证继续使用系统 OpenSSH。">
+		<SettingsSection title="连接" description="通过系统 OpenSSH 管理远端 Host；密码仅进入会话内存或系统凭据库。">
 			<div className="settings-toolbar compact">
 				<strong>后台连接</strong>
 				<div className="settings-toolbar-actions">
@@ -1479,7 +1739,7 @@ function ConnectionsSettings() {
 				{snapshot.connections.map((connection) => {
 					const probe = snapshot.connectionProbes[connection.id];
 					const active = snapshot.activeConnectionId === connection.id;
-					const reachable = active ? snapshot.connected : probe?.hostStatus?.reachable === true;
+					const reachable = active ? snapshot.connected : probe?.connected === true;
 					const busy = snapshot.pendingActions.includes(`ssh-probe:${connection.id}`) || snapshot.pendingActions.includes(`ssh-install:${connection.id}`);
 					const stateLabel = busy
 						? "检查中"
@@ -1496,7 +1756,7 @@ function ConnectionsSettings() {
 						<div className={`connection-entry ${active ? "selected" : ""}`} key={connection.id}>
 							<div className="connection-row">
 								<Cloud size={18} />
-								<div><strong>{connection.name}</strong><p>{connection.target}{connection.defaultCwd ? ` · ${connection.defaultCwd}` : ""}</p>{probe?.message && <small>{probe.message}</small>}{connection.hostCommand && <small>自定义后台命令由用户自行部署</small>}</div>
+								<div><strong>{connection.name}</strong><p>{connection.user ? `${connection.user}@` : ""}{connection.target}{connection.port && connection.port !== 22 ? `:${connection.port}` : ""} · {connection.authMethod === "password" ? connection.rememberPassword ? "密码（系统凭据库）" : "密码" : connection.authMethod === "key" ? "私钥" : "ssh-agent"}</p>{probe?.message && <small>{probe.message}</small>}{connection.hostCommand && <small>自定义后台命令由用户自行部署</small>}</div>
 								<span className={`status-pill ${reachable ? "success" : probe ? "warning" : ""}`}>{stateLabel}</span>
 							</div>
 							<div className="connection-actions">
@@ -1585,7 +1845,7 @@ function ProviderAddDialog({ providers, onClose }: { providers: readonly ModelPr
 	return (
 		<div className="modal-scrim">
 			<div className="ui-dialog provider-dialog" role="dialog" aria-modal="true" aria-labelledby="provider-dialog-title">
-				<header><div><h2 id="provider-dialog-title">添加供应商</h2><p>添加后完成认证，供应商才会出现在主列表。</p></div><IconButton label="关闭" onClick={onClose}><X size={16} /></IconButton></header>
+				<header><div><h2 id="provider-dialog-title">添加供应商</h2><p>添加后完成认证，供应商才会出现在主列表。</p></div><CloseButton onClick={onClose} /></header>
 				<div className="dialog-tabs">
 					<button type="button" className={mode === "builtin" ? "selected" : ""} onClick={() => setMode("builtin")}>内置供应商</button>
 					<button type="button" className={mode === "custom" ? "selected" : ""} onClick={() => setMode("custom")}>自定义供应商</button>
@@ -1659,7 +1919,7 @@ function ProviderModelDialog({ provider, onClose }: { provider: ModelProviderSum
 	return (
 		<div className="modal-scrim">
 			<div className="ui-dialog provider-dialog" role="dialog" aria-modal="true" aria-labelledby="model-dialog-title">
-				<header><div><h2 id="model-dialog-title">添加模型</h2><p>{provider.name}</p></div><IconButton label="关闭" onClick={onClose}><X size={16} /></IconButton></header>
+				<header><div><h2 id="model-dialog-title">添加模型</h2><p>{provider.name}</p></div><CloseButton onClick={onClose} /></header>
 				<form className="provider-form" onSubmit={submit}>
 					<label><span>模型 ID</span><input required value={id} onChange={(event) => setId(event.target.value)} /></label>
 					<label><span>模型名称</span><input value={name} onChange={(event) => setName(event.target.value)} /></label>
@@ -1926,7 +2186,7 @@ function GitInspector() {
 			/>
 			<header>
 				<div><strong>工作区变更</strong>{status && <span>{status.branch ?? "分离 HEAD"}{status.upstream ? ` · ${status.upstream}` : ""}{status.ahead || status.behind ? ` · ↑${status.ahead} ↓${status.behind}` : ""}</span>}</div>
-				<div><IconButton label="恢复默认布局" onClick={() => run(guiStore.resetInspectorLayout())}><RotateCcw size={15} /></IconButton><IconButton label="刷新变更" disabled={loadingStatus} onClick={() => run(guiStore.refreshGitStatus())}><RefreshCw size={15} className={loadingStatus ? "spin" : ""} /></IconButton><IconButton label="关闭变更" onClick={() => guiStore.closeGitInspector()}><X size={16} /></IconButton></div>
+				<div><IconButton label="恢复默认布局" onClick={() => run(guiStore.resetInspectorLayout())}><RotateCcw size={15} /></IconButton><IconButton label="刷新变更" disabled={loadingStatus} onClick={() => run(guiStore.refreshGitStatus())}><RefreshCw size={15} className={loadingStatus ? "spin" : ""} /></IconButton><CloseButton label="关闭变更" onClick={() => guiStore.closeGitInspector()} /></div>
 			</header>
 			{!status && loadingStatus && <div className="settings-loading"><LoaderCircle size={16} className="spin" />正在读取 Git 状态</div>}
 			{status && status.files.length === 0 && <div className="settings-empty">工作区没有未提交变更</div>}
@@ -1982,7 +2242,7 @@ function ResourceViewer() {
 				<div>{viewer.resource.kind === "image" ? <ImageIcon size={17} /> : <FileText size={17} />}<span><strong>{viewer.resource.displayPath}</strong>{viewer.resource.line && <small>第 {viewer.resource.line} 行{viewer.resource.column ? `，第 ${viewer.resource.column} 列` : ""}</small>}</span></div>
 				<div>
 					{viewer.resource.kind === "image" && <><IconButton label="缩小" disabled={zoom <= 0.5} onClick={() => setZoom((value) => Math.max(0.5, value - 0.25))}><ZoomOut size={16} /></IconButton><button type="button" onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button><IconButton label="放大" disabled={zoom >= 4} onClick={() => setZoom((value) => Math.min(4, value + 0.25))}><ZoomIn size={16} /></IconButton></>}
-					<IconButton label="关闭文件" onClick={() => guiStore.closeResource()}><X size={17} /></IconButton>
+					<CloseButton label="关闭文件" onClick={() => guiStore.closeResource()} />
 				</div>
 			</header>
 			{viewer.resource.kind === "image" && viewer.url ? (
@@ -2027,6 +2287,40 @@ function UiRequestDialog({ request }: { request: PendingUiRequest }) {
 	);
 }
 
+function HostKeyConfirmationDialog() {
+	const snapshot = useSyncExternalStore(guiStore.subscribe, guiStore.getSnapshot);
+	const pending = snapshot.pendingHostKey;
+	if (!pending) return null;
+	return (
+		<div className="modal-scrim topmost">
+			<div className="ui-dialog host-key-dialog" role="alertdialog" aria-modal="true" aria-labelledby="host-key-title">
+				<header><div><h2 id="host-key-title">确认 SSH Host key</h2><p>{pending.profileName} · {pending.status.host}:{pending.status.port}</p></div><ShieldAlert size={20} /></header>
+				<div className="host-key-fingerprints">{pending.status.fingerprints.map((fingerprint) => <code key={fingerprint}>{fingerprint}</code>)}</div>
+				<div className="dialog-actions"><button type="button" onClick={() => run(guiStore.respondToHostKeyConfirmation(false))}>取消</button><button className="primary" type="button" onClick={() => run(guiStore.respondToHostKeyConfirmation(true))}>信任并继续</button></div>
+			</div>
+		</div>
+	);
+}
+
+function ExternalResourceDialog() {
+	const snapshot = useSyncExternalStore(guiStore.subscribe, guiStore.getSnapshot);
+	const pending = snapshot.pendingExternalResource;
+	if (!pending) return null;
+	const project = snapshot.projects.find((candidate) => candidate.id === pending.matchingProjectId);
+	return (
+		<div className="modal-scrim topmost">
+			<div className="ui-dialog" role="dialog" aria-modal="true" aria-labelledby="external-resource-title">
+				<header><div><h2 id="external-resource-title">文件位于当前项目之外</h2><p title={pending.target}>{pending.target}</p></div><ShieldAlert size={20} /></header>
+				<div className="dialog-actions">
+					<button type="button" onClick={() => run(guiStore.resolveExternalResource("cancel"))}>取消</button>
+					{project && <button type="button" onClick={() => run(guiStore.resolveExternalResource("switch"))}>切换到 {project.name}</button>}
+					<button className="primary" type="button" onClick={() => run(guiStore.resolveExternalResource("view"))}>仅本次查看</button>
+				</div>
+			</div>
+		</div>
+	);
+}
+
 export function App() {
 	const snapshot = useSyncExternalStore(guiStore.subscribe, guiStore.getSnapshot);
 	const [mobileSidebar, setMobileSidebar] = useState(false);
@@ -2039,7 +2333,7 @@ export function App() {
 	}, []);
 
 	return (
-		<div className="app-shell">
+		<div className={`app-shell ${snapshot.sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
 			<Sidebar mobileOpen={mobileSidebar} closeMobile={() => setMobileSidebar(false)} />
 			<div
 				className={`main-shell ${snapshot.gitInspectorOpen ? "inspector-open" : ""}`}
@@ -2052,6 +2346,8 @@ export function App() {
 			{snapshot.settingsPage && <SettingsView />}
 			<ResourceViewer />
 			{snapshot.pendingUi[0] && <UiRequestDialog request={snapshot.pendingUi[0]} />}
+			<ExternalResourceDialog />
+			<HostKeyConfirmationDialog />
 			{snapshot.toast && <button className="toast" type="button" onClick={() => guiStore.clearToast()}><AlertCircle size={16} />{snapshot.toast}<X size={14} /></button>}
 			{snapshot.connectionError && !snapshot.connected && <div className="connection-banner"><Unplug size={15} />{snapshot.connectionError}</div>}
 		</div>

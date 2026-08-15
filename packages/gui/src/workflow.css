@@ -1,0 +1,912 @@
+/* Codex-style desktop workflow overrides. Keep structure and dimensions here; colors stay in tokens.css. */
+.app-shell {
+	transition: grid-template-columns var(--gui-motion-panel) ease;
+}
+
+.app-shell.sidebar-collapsed {
+	grid-template-columns: 56px minmax(0, 1fr);
+}
+
+.sidebar,
+.settings-sidebar {
+	background: color-mix(in srgb, var(--gui-sidebar) 88%, transparent);
+	-webkit-backdrop-filter: blur(24px) saturate(135%);
+	backdrop-filter: blur(24px) saturate(135%);
+}
+
+.sidebar.collapsed {
+	grid-template-rows: 56px 44px minmax(0, 1fr) 52px;
+	place-items: stretch center;
+}
+
+.sidebar.collapsed .brand-bar {
+	justify-content: center;
+	width: 56px;
+	padding: 0;
+}
+
+.sidebar.collapsed .brand-mark {
+	display: none;
+}
+
+.sidebar.collapsed > .icon-button {
+	align-self: center;
+}
+
+.collapsed-sidebar-spacer {
+	min-height: 0;
+}
+
+.brand-bar {
+	padding-right: 8px;
+}
+
+.brand-bar > .icon-button {
+	flex: 0 0 30px;
+	width: 30px;
+	height: 30px;
+}
+
+.sidebar-section-label {
+	align-items: center;
+	justify-content: space-between;
+	padding: 0 10px 2px 16px;
+}
+
+.sidebar-section-label > button,
+.project-open-error button {
+	display: grid;
+	place-items: center;
+	padding: 0;
+	border: 0;
+	border-radius: var(--gui-radius-sm);
+	background: transparent;
+	cursor: pointer;
+}
+
+.sidebar-section-label > button {
+	width: 24px;
+	height: 24px;
+}
+
+.sidebar-section-label > button:hover,
+.close-button:hover {
+	background: var(--gui-surface-hover);
+}
+
+.project-list {
+	padding-inline: 8px;
+}
+
+.project-item,
+.project-row-wrap {
+	position: relative;
+}
+
+.project-row-wrap {
+	grid-template-columns: minmax(0, 1fr) auto;
+	width: 100%;
+}
+
+.project-row-wrap:hover {
+	background: var(--gui-surface-hover);
+}
+
+.project-row-wrap.failed {
+	box-shadow: inset 2px 0 var(--gui-error);
+}
+
+.project-row-actions {
+	display: flex;
+	align-items: center;
+	gap: 1px;
+	padding-right: 3px;
+}
+
+.project-row-actions > .icon-button {
+	flex-basis: 26px;
+	width: 26px;
+	height: 26px;
+	opacity: 0;
+}
+
+.project-row-wrap:hover .project-row-actions > .icon-button,
+.project-row-wrap:focus-within .project-row-actions > .icon-button {
+	opacity: 1;
+}
+
+.remote-status-dot {
+	display: block;
+	flex: 0 0 8px;
+	width: 8px;
+	height: 8px;
+	margin-inline: 4px;
+	border: 1px solid var(--gui-border-strong);
+	border-radius: 50%;
+	background: var(--gui-text-muted);
+}
+
+.remote-status-dot.online {
+	border-color: var(--gui-success);
+	background: var(--gui-success);
+}
+
+.remote-status-dot.error {
+	border-color: var(--gui-error);
+	background: var(--gui-error);
+}
+
+.project-hover-card {
+	position: absolute;
+	z-index: 55;
+	top: calc(100% + 3px);
+	left: 4px;
+	display: none;
+	width: calc(100% - 8px);
+	padding: 9px 10px;
+	border: 1px solid var(--gui-border-strong);
+	border-radius: var(--gui-radius-md);
+	background: var(--gui-surface);
+	box-shadow: var(--gui-shadow-overlay);
+}
+
+.project-row-wrap:hover .project-hover-card {
+	display: grid;
+	gap: 3px;
+}
+
+.project-hover-card span,
+.project-hover-card code {
+	overflow: hidden;
+	color: var(--gui-text-muted);
+	font-size: 11px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.project-menu {
+	top: 38px;
+	right: 2px;
+	width: 188px;
+}
+
+.project-color-menu {
+	display: flex;
+	gap: 7px;
+	padding: 7px 8px;
+	border-block: 1px solid var(--gui-divider);
+}
+
+.project-color-menu .color-swatch {
+	min-height: 18px;
+	width: 18px;
+	height: 18px;
+	padding: 0;
+	border: 2px solid transparent;
+	border-radius: 50%;
+	background: var(--gui-border-strong);
+}
+
+.project-color-menu .color-swatch.red { background: var(--gui-error); }
+.project-color-menu .color-swatch.orange { background: var(--gui-warning); }
+.project-color-menu .color-swatch.green { background: var(--gui-success); }
+.project-color-menu .color-swatch.blue { background: var(--gui-accent); }
+.project-color-menu .color-swatch.purple { background: #8b6fc2; }
+.project-color-menu .color-swatch.gray { background: var(--gui-text-muted); }
+.project-color-menu .color-swatch.none { background: transparent; border-color: var(--gui-border-strong); }
+.project-color-menu .color-swatch.selected { outline: 1px solid var(--gui-text); outline-offset: 2px; }
+.project-color-red .project-row { box-shadow: inset 2px 0 var(--gui-error); }
+.project-color-orange .project-row { box-shadow: inset 2px 0 var(--gui-warning); }
+.project-color-green .project-row { box-shadow: inset 2px 0 var(--gui-success); }
+.project-color-blue .project-row { box-shadow: inset 2px 0 var(--gui-accent); }
+.project-color-purple .project-row { box-shadow: inset 2px 0 #8b6fc2; }
+.project-color-gray .project-row { box-shadow: inset 2px 0 var(--gui-text-muted); }
+
+.project-open-error {
+	display: grid;
+	grid-template-columns: 14px minmax(0, 1fr) auto auto;
+	align-items: center;
+	gap: 5px;
+	min-height: 30px;
+	padding: 3px 5px 5px 10px;
+	color: var(--gui-error);
+	font-size: 11px;
+}
+
+.project-open-error span {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.project-open-error button {
+	color: inherit;
+}
+
+.session-list {
+	margin-left: 0;
+}
+
+.session-row-wrap {
+	width: 100%;
+}
+
+.session-row {
+	grid-template-columns: minmax(0, 1fr) auto 10px;
+	padding-left: 36px;
+}
+
+.session-row-wrap > .icon-button {
+	margin-right: 3px;
+}
+
+.session-state {
+	justify-self: end;
+}
+
+.archived-projects > button {
+	display: grid;
+	grid-template-columns: 16px minmax(0, 1fr) auto 14px;
+	align-items: center;
+	gap: 6px;
+	width: 100%;
+	min-height: 34px;
+	padding: 0 9px;
+	border: 0;
+	background: transparent;
+	color: var(--gui-text-muted);
+	font-size: 12px;
+	text-align: left;
+	cursor: pointer;
+}
+
+.archived-projects .expanded {
+	transform: rotate(90deg);
+}
+
+.topbar {
+	background: color-mix(in srgb, var(--gui-canvas) 94%, transparent);
+	-webkit-backdrop-filter: blur(18px) saturate(120%);
+	backdrop-filter: blur(18px) saturate(120%);
+}
+
+:root[data-platform="macos"] .app-shell.sidebar-collapsed .topbar > .icon-button:first-child {
+	display: inline-grid;
+}
+
+.close-button {
+	display: grid;
+	place-items: center;
+	flex: 0 0 30px;
+	width: 30px;
+	height: 30px;
+	padding: 0;
+	border: 0;
+	border-radius: var(--gui-radius-sm);
+	background: transparent;
+	color: var(--gui-text-secondary);
+	cursor: pointer;
+}
+
+.ui-dialog > header {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 16px;
+}
+
+.ui-dialog > header h2 {
+	margin: 0 0 3px;
+}
+
+.ui-dialog > header p {
+	margin: 0;
+	color: var(--gui-text-secondary);
+}
+
+.bash-command + .bash-command {
+	margin-top: 8px;
+	padding-top: 8px;
+	border-top: 1px solid var(--gui-divider);
+}
+
+.compact-summary {
+	margin-block: 8px;
+	border: 1px solid var(--gui-border);
+	border-radius: var(--gui-radius-md);
+	background: var(--gui-surface-subtle);
+}
+
+.composer.drag-active {
+	border-color: var(--gui-accent);
+}
+
+.composer-drop-overlay {
+	position: absolute;
+	z-index: 15;
+	inset: 6px;
+	display: grid;
+	place-items: center;
+	border: 1px dashed var(--gui-accent);
+	border-radius: var(--gui-radius-md);
+	background: color-mix(in srgb, var(--gui-surface) 92%, transparent);
+	color: var(--gui-accent);
+	font-weight: 600;
+	pointer-events: none;
+}
+
+.composer-action-menu {
+	bottom: 38px;
+	left: 0;
+	width: 228px;
+}
+
+.composer-action-menu button {
+	display: grid;
+	grid-template-columns: 18px minmax(0, 1fr);
+	justify-content: stretch;
+}
+
+.composer-action-menu button + button {
+	margin-top: 3px;
+}
+
+.composer-action-menu button > span {
+	display: grid;
+	min-width: 0;
+}
+
+.composer-action-menu button strong,
+.composer-action-menu button small {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.composer-action-menu button small {
+	color: var(--gui-text-muted);
+	font-size: 11px;
+}
+
+.unified-model-menu {
+	right: 0;
+	bottom: 38px;
+	display: grid;
+	grid-template-rows: auto minmax(0, 1fr) auto auto;
+	width: min(440px, calc(100vw - 32px));
+	max-height: 430px;
+	overflow: hidden;
+}
+
+.model-search {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	height: 34px;
+	margin: 2px 2px 5px;
+	padding: 0 8px;
+	border: 1px solid var(--gui-border);
+	border-radius: var(--gui-radius-sm);
+	color: var(--gui-text-muted);
+}
+
+.model-search input {
+	min-width: 0;
+	width: 100%;
+	border: 0;
+	outline: 0;
+	background: transparent;
+	color: var(--gui-text);
+}
+
+.model-menu-list {
+	min-height: 0;
+	overflow: auto;
+}
+
+.model-provider-group + .model-provider-group {
+	margin-top: 6px;
+	padding-top: 6px;
+	border-top: 1px solid var(--gui-divider);
+}
+
+.model-provider-label {
+	padding: 5px 9px;
+	color: var(--gui-text-muted);
+	font-size: 11px;
+	font-weight: 600;
+}
+
+.model-provider-group > button {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) 14px;
+}
+
+.model-provider-group > button > span {
+	display: grid;
+	min-width: 0;
+}
+
+.model-provider-group > button strong,
+.model-provider-group > button small {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.model-provider-group > button small {
+	color: var(--gui-text-muted);
+	font-size: 11px;
+}
+
+.thinking-toggle {
+	display: grid !important;
+	grid-template-columns: 18px minmax(0, 1fr) auto 14px;
+	border-top: 1px solid var(--gui-divider) !important;
+}
+
+.thinking-toggle strong {
+	font-weight: 500;
+}
+
+.thinking-levels {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	gap: 3px;
+	padding: 4px;
+}
+
+.thinking-levels button {
+	justify-content: center;
+	min-width: 0;
+}
+
+.settings-sidebar {
+	grid-template-rows: 72px 44px 62px 52px minmax(0, 1fr);
+}
+
+.settings-host-selector {
+	display: grid;
+	gap: 4px;
+	padding: 7px 12px;
+}
+
+.settings-host-selector > span,
+.instruction-scope-toolbar > label > span {
+	color: var(--gui-text-muted);
+	font-size: 11px;
+}
+
+.settings-host-selector select,
+.instruction-scope-toolbar select {
+	width: 100%;
+	height: 32px;
+	padding: 0 28px 0 8px;
+	border: 1px solid var(--gui-border);
+	border-radius: var(--gui-radius-sm);
+	background: var(--gui-surface);
+	color: var(--gui-text);
+}
+
+.settings-host-error {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: min(100%, 1080px);
+	min-height: 38px;
+	margin: 0 auto 18px;
+	padding: 7px 10px;
+	border: 1px solid var(--gui-error);
+	border-radius: var(--gui-radius-md);
+	background: var(--gui-error-subtle);
+	color: var(--gui-error);
+}
+
+.settings-host-error span {
+	flex: 1;
+}
+
+.settings-host-error button {
+	border: 0;
+	background: transparent;
+	color: inherit;
+	cursor: pointer;
+}
+
+.all-hosts-overview {
+	border-top: 1px solid var(--gui-divider);
+}
+
+.all-hosts-overview > button {
+	display: grid;
+	grid-template-columns: 22px minmax(0, 1fr) 16px;
+	align-items: center;
+	gap: 10px;
+	width: 100%;
+	min-height: 58px;
+	padding: 8px 10px;
+	border: 0;
+	border-bottom: 1px solid var(--gui-divider);
+	border-radius: 0;
+	background: transparent;
+	text-align: left;
+	cursor: pointer;
+}
+
+.all-hosts-overview > button:hover {
+	background: var(--gui-surface-hover);
+}
+
+.all-hosts-overview > button > span {
+	display: grid;
+}
+
+.all-hosts-overview small {
+	color: var(--gui-text-muted);
+}
+
+.instruction-workspace {
+	display: grid;
+	grid-template-rows: auto minmax(440px, 1fr) auto;
+	min-height: 560px;
+	border-block: 1px solid var(--gui-divider);
+}
+
+.instruction-scope-toolbar {
+	display: flex;
+	align-items: end;
+	gap: 10px;
+	padding: 10px 0;
+}
+
+.instruction-scope-toolbar > label {
+	display: grid;
+	flex: 1;
+	gap: 4px;
+}
+
+.segmented-control {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	padding: 2px;
+	border: 1px solid var(--gui-border);
+	border-radius: var(--gui-radius-md);
+	background: var(--gui-surface-subtle);
+}
+
+.segmented-control > button {
+	min-height: 28px;
+	padding: 0 9px;
+	border: 0;
+	border-radius: var(--gui-radius-sm);
+	background: transparent;
+	cursor: pointer;
+}
+
+.segmented-control > button.selected {
+	background: var(--gui-surface);
+	box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
+}
+
+.instruction-editor.single {
+	grid-template-rows: 48px minmax(0, 1fr);
+	border-top: 1px solid var(--gui-divider);
+}
+
+.instruction-editor.single > textarea {
+	min-height: 420px;
+	border-bottom: 1px solid var(--gui-divider);
+}
+
+.instruction-sources summary {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	min-height: 38px;
+	cursor: pointer;
+}
+
+.instruction-sources summary span {
+	color: var(--gui-text-muted);
+}
+
+.instruction-sources > div > div {
+	display: grid;
+	grid-template-columns: 180px minmax(0, 1fr);
+	gap: 10px;
+	padding: 7px 0;
+	border-top: 1px solid var(--gui-divider);
+}
+
+.instruction-sources code {
+	overflow: hidden;
+	color: var(--gui-text-muted);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.ssh-dialog {
+	display: grid;
+	grid-template-rows: auto minmax(0, 1fr);
+	width: min(680px, calc(100vw - 32px));
+	max-height: calc(100vh - 32px);
+	overflow: hidden;
+}
+
+.ssh-dialog .connection-form {
+	min-height: 0;
+	overflow-y: auto;
+	padding-right: 4px;
+	scrollbar-gutter: stable;
+}
+
+.path-input {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	gap: 6px;
+}
+
+.checkbox-row {
+	display: flex !important;
+	align-items: center;
+	gap: 8px;
+}
+
+.checkbox-row input {
+	width: 16px;
+	height: 16px;
+}
+
+.advanced-fields {
+	border-top: 1px solid var(--gui-divider);
+}
+
+.advanced-fields summary {
+	padding: 8px 0;
+	cursor: pointer;
+}
+
+.advanced-fields label {
+	display: grid;
+	gap: 5px;
+}
+
+.remote-browser-dialog {
+	display: grid;
+	grid-template-rows: auto 44px minmax(260px, 52vh) auto;
+	width: min(760px, calc(100vw - 32px));
+	max-height: calc(100vh - 40px);
+}
+
+.remote-browser-toolbar {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 5px 10px;
+	border-bottom: 1px solid var(--gui-divider);
+}
+
+.directory-breadcrumbs {
+	display: flex;
+	flex: 1;
+	min-width: 0;
+	overflow-x: auto;
+}
+
+.directory-breadcrumbs button {
+	flex: 0 0 auto;
+	min-height: 28px;
+	padding: 0 7px;
+	border: 0;
+	border-radius: var(--gui-radius-sm);
+	background: transparent;
+	cursor: pointer;
+}
+
+.directory-breadcrumbs button + button::before {
+	content: "/";
+	margin-right: 7px;
+	color: var(--gui-text-muted);
+}
+
+.remote-directory-list {
+	min-height: 0;
+	overflow: auto;
+	padding: 5px 8px;
+}
+
+.remote-directory-list > button {
+	display: grid;
+	grid-template-columns: 20px minmax(0, 1fr) 16px;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	min-height: 38px;
+	padding: 0 9px;
+	border: 0;
+	border-radius: var(--gui-radius-sm);
+	background: transparent;
+	text-align: left;
+	cursor: pointer;
+}
+
+.remote-directory-list > button:hover {
+	background: var(--gui-surface-hover);
+}
+
+.remote-directory-list > button span {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.remote-browser-error {
+	display: grid;
+	justify-items: center;
+	gap: 7px;
+	padding: 40px 20px;
+	text-align: center;
+}
+
+.remote-browser-error p {
+	margin: 0;
+	color: var(--gui-text-secondary);
+}
+
+.remote-browser-footer {
+	display: grid;
+	gap: 10px;
+	padding: 12px;
+	border-top: 1px solid var(--gui-divider);
+}
+
+.remote-browser-footer label {
+	display: grid;
+	grid-template-columns: 100px minmax(0, 1fr);
+	align-items: center;
+	gap: 10px;
+}
+
+.remote-browser-footer input {
+	height: 34px;
+	padding: 0 9px;
+	border: 1px solid var(--gui-border);
+	border-radius: var(--gui-radius-sm);
+	background: var(--gui-surface);
+	color: var(--gui-text);
+}
+
+.remote-browser-footer > div {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 8px;
+}
+
+.remote-browser-footer code {
+	flex: 1;
+	overflow: hidden;
+	color: var(--gui-text-muted);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.host-key-dialog {
+	width: min(560px, calc(100vw - 32px));
+}
+
+.host-key-fingerprints {
+	display: grid;
+	gap: 6px;
+	padding: 14px 18px;
+}
+
+.host-key-fingerprints code {
+	overflow-wrap: anywhere;
+	padding: 8px;
+	border: 1px solid var(--gui-border);
+	border-radius: var(--gui-radius-sm);
+	background: var(--gui-surface-subtle);
+}
+
+.modal-scrim.topmost {
+	z-index: 180;
+}
+
+.toast {
+	top: 60px;
+	bottom: auto;
+	z-index: 9;
+}
+
+html,
+body,
+#root,
+.app-shell,
+.settings-view {
+	background: transparent;
+}
+
+.main-shell,
+.settings-content {
+	background: var(--gui-canvas);
+}
+
+:root[data-platform="macos"] .sidebar:not(.collapsed) .brand-bar,
+:root[data-platform="macos"] .settings-brand {
+	padding-left: 78px;
+}
+
+:root[data-platform="macos"] .sidebar.collapsed .brand-bar {
+	visibility: hidden;
+}
+
+@media (max-width: 899px) {
+	.app-shell.sidebar-collapsed {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.sidebar.collapsed {
+		width: 56px;
+	}
+
+	:root[data-platform="macos"] .topbar {
+		padding-left: 78px;
+	}
+
+	.app-shell.sidebar-collapsed .topbar > .icon-button:first-child {
+		display: inline-grid;
+	}
+
+	.settings-view {
+		grid-template-columns: 232px minmax(0, 1fr);
+	}
+
+	.settings-content {
+		padding-inline: 22px;
+	}
+
+	.instruction-scope-toolbar {
+		align-items: stretch;
+		flex-wrap: wrap;
+	}
+}
+
+@media (max-width: 719px) {
+	.project-row-actions > .icon-button {
+		opacity: 1;
+	}
+
+	.settings-view {
+		grid-template-columns: 190px minmax(0, 1fr);
+	}
+
+	.settings-sidebar {
+		grid-template-rows: 64px 44px 62px 52px minmax(0, 1fr);
+	}
+
+	.settings-brand {
+		padding-inline: 10px;
+	}
+
+	.settings-content {
+		padding: 22px 16px 40px;
+	}
+
+	.settings-section h1 {
+		font-size: 21px;
+	}
+
+	.instruction-workspace {
+		min-height: 480px;
+	}
+
+	.instruction-editor.single > textarea {
+		min-height: 340px;
+	}
+
+	.thinking-levels {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+}

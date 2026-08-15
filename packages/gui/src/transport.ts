@@ -73,6 +73,11 @@ class TauriByteTransport implements ByteTransport {
 				? await invoke<string>("open_ssh_host", {
 						profile: {
 							target: target.profile.target,
+							...(target.profile.user ? { user: target.profile.user } : {}),
+							...(target.profile.port ? { port: target.profile.port } : {}),
+							authMethod: target.profile.authMethod ?? "agent",
+							...(target.profile.identityFile ? { identityFile: target.profile.identityFile } : {}),
+							...(target.profile.credentialId ? { credentialId: target.profile.credentialId } : {}),
 							platform: target.profile.platform ?? "auto",
 							...(target.profile.hostCommand ? { hostCommand: target.profile.hostCommand } : {}),
 						},

@@ -58,6 +58,13 @@ try {
 		{ channel: manifest.channel, signed: manifest.signed, version: manifest.version, repository: manifest.repository },
 		{ channel: "beta", signed: false, version, repository },
 	);
+	assert.deepEqual(manifest.signing, {
+		"linux-x64": { codeSignature: "none" },
+		"linux-arm64": { codeSignature: "none" },
+		"darwin-arm64": { codeSignature: "adhoc", notarized: false },
+		"darwin-x64": { codeSignature: "adhoc", notarized: false },
+		"windows-x64": { codeSignature: "none" },
+	});
 	assert.deepEqual(Object.keys(manifest.assets), Object.keys(assets));
 
 	const sums = readFileSync(join(successDir, "SHA256SUMS"), "utf8").trim().split("\n");

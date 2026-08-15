@@ -1,6 +1,6 @@
 # AGENT_VERIFICATION
 
-最后核验时间：2026-08-14T19:23:00+08:00
+最后核验时间：2026-08-15
 
 环境：
 
@@ -19,18 +19,24 @@ WebKitGTK 4.1、GTK 3、Ayatana AppIndicator、librsvg、OpenSSL 开发包、pat
 
 ## 最新 GUI 实现与运行验证
 
-2026-08-14 已在当前 Linux x64 / Debian 13 主机完成最新 GUI、Host、Protocol、Core、真实浏览器和既有 Tauri 本机链路验证，不再沿用此前“只做静态检查”的结论。
+2026-08-15 已在当前 Linux x64 / Debian 13 主机完成最新 GUI、Host、Protocol、Core、真实浏览器、既有 Tauri 本机链路和 `gui.5` macOS 发行链静态/本机构建验证，不再沿用此前“只做静态检查”的结论。
 
-- `NODE_TLS_REJECT_UNAUTHORIZED=1 npm run check` 检查 1150 个文件并通过，包含 Biome、依赖固定、TS import、GUI AST 边界、shrinkwrap/install lock、全仓类型检查、GUI 类型检查和 browser smoke；`NODE_TLS_REJECT_UNAUTHORIZED=1 npm run build:offline` 通过。GUI production bundle 为 `1,399.95 kB`，gzip `434.98 kB`，CSS 为 `49.18 kB`，gzip `9.26 kB`，仅保留既有大 chunk warning。
-- 最终聚焦回归为 GUI Protocol 1 个文件 6/6、GUI 2 个文件 7/7、GUI Host 9 个文件 29/29、Coding Agent Session outcome/file/writer lock 3 个文件 32/32。新增集成测试覆盖外部 writer lock、JSONL commit、锁释放、Session 删除、严格出站编码、图片 `contentRef` 及跨 Session 拒绝。
+- `0.84.1-lystar-gui.5` 已作为候选统一写入 GUI、GUI Host、GUI Protocol、Tauri 和 Cargo 版本事实源，尚未 tag 或发布；当前公开版本仍是 `gui-v0.84.1-lystar-gui.4`。macOS workflow 已删除与 `APPLE_SIGNING_IDENTITY=-` 冲突的 `tauri build --no-sign`，App 改为 ad-hoc code signature；Darwin ARM64/x64 GUI Host 分别在对应 macOS runner 原生编译并 ad-hoc 签名，再与 Linux/Windows Host 汇总给五个平台安装包。最终 DMG 会被挂载，App、local Host 和两种 Darwin Remote Host 必须通过 `codesign --verify --deep/--strict`、`Signature=adhoc` 和 `lipo -archs` 校验。workflow 新增 `workflow_dispatch` 预检入口，手动运行只构建和验签，`release` job 仅在 `refs/tags/gui-v*` 下执行，因此可以在创建不可变 tag 前取得 macOS runner 证据。manifest 保留整体 `signed:false` 兼容字段，同时新增逐平台 `signing`，明确 macOS 为 `adhoc/notarized:false`、Linux/Windows 为 `none`。
+- 新增 `npm run check:gui-release` 和 `scripts/gui-release-signing.test.mjs`，会阻止 macOS build 重新出现 `--no-sign`，并验证 Host payload 头部提取。Linux 本机使用 `PI_GUI_REMOTE_HOST_PLATFORMS=linux-x64 npm --workspace @lystar/code-gui run prepare:tauri` 完成 production build、Bun Host framed Protocol smoke 和资源物化，最终 `remote-hosts` 只包含 `linux-x64/lystar-gui-host.bin`，大小 `114,270,640` 字节。GUI Protocol `6/6`、GUI Host `30/30`、GUI `9/9`、根脚本 `9/9` 和 GUI metadata 回归通过；`cargo check`、最终 `NODE_TLS_REJECT_UNAUTHORIZED=1 npm run check` 与 `NODE_TLS_REJECT_UNAUTHORIZED=1 npm run build:offline` 通过。当前 Linux 环境不能执行 `codesign`、挂载 macOS DMG 或制造 Safari/Chrome quarantine，因此 `.5` 的 macOS runner 签名结果、干净 Mac 的“仍要打开”流程及无需 `xattr` 启动仍属于发布前未验证项。
+
+- 最新源码通过 `npm --workspace @lystar/code-gui run check`、`npm run check:gui-boundaries`、`git diff --check`、`cargo check --manifest-path packages/gui/src-tauri/Cargo.toml`、GUI/Host/Protocol production build，以及最终根 `NODE_TLS_REJECT_UNAUTHORIZED=1 npm run check` 和 `NODE_TLS_REJECT_UNAUTHORIZED=1 npm run build:offline`。GUI production bundle 为 `1,434.08 kB`，gzip `443.56 kB`，CSS 为 `64.13 kB`，gzip `11.57 kB`，仅保留既有大 chunk warning。
+- 最新聚焦回归为 GUI Protocol 1 个文件 6/6、GUI 3 个文件 9/9、GUI Host 9 个文件 30/30。GUI 新增两项事务回归：候选 Host 的 `list_sessions` 失败，以及候选工作区全部准备完成后 `desktop-state.json` 持久化失败；两种情况下旧项目、旧 Session、旧 transcript 和旧 writer lease 均保持不变，候选 lease/Host 会被释放。
+- 项目打开改为完整两阶段事务：候选 Host、Session、writer lease、transcript 尾页和桌面状态全部成功后才提交新工作区；`lastProjectId` 只记录最近成功项目。旧 lease 在新工作区提交后释放，释放失败只显示可重试错误，不回滚已经成功的新工作区。Skill、AGENTS、Git、模型和诊断继续作为提交后的辅助加载，不阻塞项目切换。
 - GUI/TUI 单 writer 真实链路通过：TUI 创建 703 字节 JSONL 并持有 `.lock` 时，GUI 在 500ms 投影周期内显示“TUI 使用中”、Bash transcript 和只读 Composer；TUI `/quit` 后 GUI 自动取得写权限。Core 由最后提交的 assistant、Bash、user 或 Tool 消息推导 `completed`、`failed`、`aborted`、`interrupted`，Host 在没有 GUI operation journal 状态时使用该结果，最终 Session 显示“已完成”。
 - GUI Host 的成功响应统一经过 `jsonValue()` 规范化，移除 `undefined` 后再按严格 `JsonValueSchema` 编码；修复了 `list_sessions` 响应中 `name: undefined` 导致 sidecar 报 `GuiProtocolValidationError: Invalid GUI server message` 并退出的问题。Protocol 诊断仅包含消息类型、schema 路径和规则，不记录字段值、transcript、图片或凭据。
-- “设置-通用”已成为多项目和项目指令入口。真实 Host 下保存项目根 `AGENTS.md` 成功；外部改写后，旧 SHA-256 内容哈希保存被拒绝并提示“项目指令文件已被外部修改，请重新加载后再保存”。写入使用 UTF-8、临时文件、rename 和目录 `fsync`，只允许项目根 `AGENTS.override.md`、`AGENTS.md`。
+- “设置-个性化”已成为 Host/项目指令入口。设置页使用独立临时 Host Client，切换本机或 SSH Host 不改变当前聊天连接、Session 或 writer lease；真实 Host 下保存项目根 `AGENTS.md` 成功，外部改写后旧 SHA-256 内容哈希保存被拒绝。写入使用 UTF-8、临时文件、rename 和目录 `fsync`，只允许 Host 或项目范围内的 `AGENTS.override.md`、`AGENTS.md`。
 - 输入图片、历史用户图片和 Tool `read` 图片已通过真实 Host 转换为 Session 绑定 `contentRef`，GUI 按需读取缩略图和原图；图片查看器缩放、关闭及 object URL 释放有效。Markdown、Tool 路径、裸路径和 Git Diff 行号统一经过 Host canonicalize、存在性、文件类型和项目边界检查；显式 HTTP/HTTPS/mailto 使用系统 opener，相对路径不会被浏览器 `localhost` 基址误判为外链。
 - Composer 的 `@`、`$`、`/` 补全已接真实 Host/Runtime。大仓库中 `@packages/gui/src/App` 返回 `packages/gui/src/App.tsx`，Tab 插入 `@packages/gui/src/App.tsx `；`$add` 返回真实 `add-llm-provider` Skill；带引号空格路径和目录前缀缩小扫描根均已验证。`/` 只合并 Runtime 命令与真实 GUI handler：`/new`、`/settings`、`/models`、`/changes`。
 - Git Inspector 的宽度和上下分区比例支持鼠标、键盘、双击/按钮恢复并即时持久化。真实仓库中宽度从 480 拖至 604 px，分区比例从 0.34 调至 `0.45492097701149425`，恢复默认回到 `480/0.34`；Diff 行号 `1937` 能打开并定位 `packages/coding-agent/src/core/session-manager.ts`。`800×600` 使用全工作区覆盖并隐藏无意义的宽度拖拽条。
-- Playwright 在真实项目、Session、Tool 和 Host 数据下完成 `2816×1640`、`1280×800`、`800×600` 的浅色和深色验收，均无重叠；跟随系统主题实测 canvas 深色为 `#151515`、浅色为 `#ffffff`。最终浏览器 console 无 error 或 warning，仅 React DevTools info；本轮独立 bridge、浏览器和 tmux 已关闭。
-- Linux 原生 Tauri 本轮使用全新 Rust debug build、安装包内 Host 资源、隔离 `PI_CODING_AGENT_DIR`/`XDG_CONFIG_HOME` 和 X11/WebKitGTK 复跑。原生窗口真实恢复输入图片、Tool `read` 图片和 Session 完成/失败状态；图片查看器打开、缩放和关闭有效；“设置-通用”显示项目 `AGENTS.md`，外部改写后点击“重新加载”能立即显示新内容。`@`/`$`/`/` 补全已通过真实浏览器，但隔离 Xvfb 的合成键盘事件无法进入 WebKit textarea，因此不宣称本轮原生键盘验收通过。
+- Playwright 在真实项目、Session、Tool 和 Host 数据下重新完成 `2816×1640`、`1280×800`、`800×600` 的浅色和深色验收；最新截图使用 `/tmp/lystar-gui-16-main-{2816,1280,800}-{light,dark}.png`，并覆盖 `800×600` 设置页、SSH alias/直接连接密码表单、Host key 指纹确认、远端目录正常/隐藏目录/错误态、项目外资源、项目打开失败恢复、模型菜单和 Composer 内容菜单。页面文档级横纵溢出均为 0；直接连接密码表单限制在 `16..584px` 视口范围，表单内部滚动后底部操作可达；Toast 与模型菜单保持 7px 间距且低于 Composer、侧栏、设置和弹窗层级。
+- 图片粘贴与拖放使用真实 `ClipboardEvent`/`DragEvent` 和 `DataTransfer` 验证，分别生成 `clipboard.png`、`dropped.png` 附件；侧栏收起后 grid 为 `56px 1224px`，重载后仍保持收起，证明 `desktop-state.json` 持久化有效。Compact 专用摘要在长 Session 中可折叠/展开，展开前后 `scrollTop=2328` 保持不变，虚拟列表重新测量高度。
+- Linux 原生 Tauri 使用全新 Rust debug build、安装包内 Host 资源、隔离 `PI_CODING_AGENT_DIR`/`XDG_CONFIG_HOME` 和 X11/WebKitGTK 复跑。标准 `WM_PROTOCOLS/WM_DELETE_WINDOW` 正常关闭前运行中 Session lock 为 1，关闭后退出码为 0、lock 为 0、Tauri 子 Host 为 0；完整 stderr 为 119 字节，仅包含无完整桌面总线的 Xvfb `Can't connect to a11y bus` 环境警告，没有应用错误。原生窗口截图为 `/tmp/lystar-gui-16-native3-session.png`。`@`/`$`/`/` 补全已通过真实浏览器，但隔离 Xvfb 的合成键盘事件无法进入 WebKit textarea，因此不宣称本轮原生键盘验收通过。
+- SSH 设置已覆盖 SSH Config/直接连接、用户、端口、ssh-agent、私钥、密码、系统凭据库和远端系统选择；未知 Host key 展示 SHA-256 指纹并要求显式确认。远端目录浏览器的面包屑、Home、上级目录、隐藏目录、错误重试和当前目录选择已用可控 Host 状态完成浏览器验收；真实 OpenSSH、密码/私钥认证、远端 Host 安装和断线恢复仍需要可登录的 SSH 目标，不以可控状态截图代替实机结论。
 - 本轮原生退出首次暴露 transport 生命周期缺陷：Tauri `RunEvent::Exit` 和 `close_gui_host` 直接 `kill()` Host 子进程，Host 来不及 `dispose()`，正常标题栏关闭后会留下空的 proper-lockfile 目录。修复后关闭连接只丢弃 stdin/connection，让 EOF 驱动 Host 释放 Runtime 和 writer lock；错误路径仍保留强杀。全新隔离目录复测确认运行中 Session lock 为 1，点击真实标题栏关闭后应用 stderr 为 0 字节、lock 为 0、GUI/Host/Xvfb 残留进程为 0。
 - Linux AppImage 打包首次暴露 Tauri `patchelf` 会改写 Bun 编译的 Host ELF，改写后的 Host 在 `ldd` 和直接执行时段错误。当前构建把本机与五平台远端 Host 包装为带 `LYSTAR-GUI-BINARY/1` 头的不可执行资源，Rust 在本机启动或 SSH 安装前校验头并原子还原原始二进制；AppImage 不再把 Host 当作 ELF 处理。gui.2 本机候选 Linux x64 AppImage 大小为 `270,002,680` 字节，SHA-256 为 `6d10d611e2bdabf19229a24e4fbcb5e61af89a954f32510b98feead98c5f9f67`。
 - gui.2 本机候选 AppImage 已在隔离 XDG、`PI_CODING_AGENT_DIR`、Xvfb、Cinnamon 和 WebKitGTK 下启动。运行时 Host 还原到应用本地数据目录，权限为 `755`、大小 `114,262,566` 字节，SHA-256 与原始 Bun ELF 完全一致；通过 `windowfocus + Alt+F4` 正常关闭后退出码为 `0`、应用 stderr 为 0 字节，Host 进程和 Session lock 均为 0。

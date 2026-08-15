@@ -223,9 +223,38 @@ describe("CodingAgentRuntimeAdapter", () => {
 		const chunk = adapter.readProjectResource(cwd, resource.path, 0, 1024);
 		expect(Buffer.from(chunk.data, "base64").toString("utf8")).toContain("const second = 2");
 		expect(adapter.completeProjectFiles(cwd, "src/app", 10)).toEqual([
-			expect.objectContaining({ value: "@src/app.ts ", label: "src/app.ts", kind: "file" }),
+			expect.objectContaining({ value: "@src/app.ts ", label: "app.ts", description: "src", kind: "file" }),
 		]);
 		expect(() => adapter.resolveProjectResource(cwd, outside)).toThrow("项目范围");
+	});
+
+	it("manages Host instructions, directory browsing, and one-time external resource grants", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-scoped-settings-"));
+		const agentDir = join(tempDir, "agent");
+		const browseRoot = join(tempDir, "browse");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(join(browseRoot, "visible"), { recursive: true });
+		mkdirSync(join(browseRoot, ".hidden"), { recursive: true });
+		const outside = join(tempDir, "outside.txt");
+		writeFileSync(outside, "external content\n");
+		cleanups.push(() => rmSync(tempDir, { recursive: true, force: true }));
+
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		const created = adapter.saveHostInstruction("AGENTS.md", "# Host\n");
+		const agents = created.find((file) => file.fileName === "AGENTS.md");
+		expect(agents).toMatchObject({ exists: true, active: true, editable: true, content: "# Host\n" });
+		if (!agents?.contentHash) throw new Error("Missing Host instruction hash");
+		adapter.saveHostInstruction("AGENTS.md", "# Updated Host\n", agents.contentHash);
+		expect(adapter.listDirectories(browseRoot).entries).toEqual([
+			expect.objectContaining({ name: ".hidden", hidden: true }),
+			expect.objectContaining({ name: "visible", hidden: false }),
+		]);
+
+		const resource = adapter.resolveExternalResource(outside);
+		if (!resource.accessToken) throw new Error("Missing external resource token");
+		const chunk = adapter.readExternalResource(resource.path, resource.accessToken, 0, 1024);
+		expect(Buffer.from(chunk.data, "base64").toString("utf8")).toBe("external content\n");
+		expect(() => adapter.readExternalResource(resource.path, "invalid", 0, 1024)).toThrow("授权已失效");
 	});
 
 	it("reads structured status and diffs from a real Git repository without changing it", async () => {

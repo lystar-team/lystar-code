@@ -7,6 +7,13 @@ export interface SshConnectionProfile {
 	id: string;
 	name: string;
 	target: string;
+	mode?: "alias" | "direct";
+	user?: string;
+	port?: number;
+	authMethod?: "agent" | "key" | "password";
+	identityFile?: string;
+	credentialId?: string;
+	rememberPassword?: boolean;
 	platform?: "auto" | "linux" | "darwin" | "windows";
 	defaultCwd?: string;
 	hostCommand?: string;
@@ -29,6 +36,7 @@ export interface CachedSessionSummary {
 export interface DesktopLayout {
 	inspectorWidth: number;
 	inspectorSplit: number;
+	sidebarCollapsed?: boolean;
 }
 
 export interface DesktopProject {
@@ -36,6 +44,9 @@ export interface DesktopProject {
 	name: string;
 	cwd: string;
 	connectionId: "local" | string;
+	pinned?: boolean;
+	color?: "red" | "orange" | "green" | "blue" | "purple" | "gray";
+	archived?: boolean;
 	recentSessions?: CachedSessionSummary[];
 }
 
@@ -57,6 +68,14 @@ export interface SshProbeResult {
 	message?: string;
 }
 
+export interface SshHostKeyStatus {
+	host: string;
+	port: number;
+	known: boolean;
+	fingerprints: string[];
+	trustToken?: string;
+}
+
 function string(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
@@ -72,10 +91,22 @@ function normalizeConnection(value: unknown): SshConnectionProfile | undefined {
 		source.platform === "linux" || source.platform === "darwin" || source.platform === "windows"
 			? source.platform
 			: "auto";
+	const port =
+		typeof source.port === "number" && Number.isInteger(source.port) && source.port >= 1 && source.port <= 65535
+			? source.port
+			: undefined;
+	const authMethod = source.authMethod === "key" || source.authMethod === "password" ? source.authMethod : "agent";
 	return {
 		id,
 		name,
 		target,
+		mode: source.mode === "direct" ? "direct" : "alias",
+		...(string(source.user) ? { user: string(source.user) } : {}),
+		...(port ? { port } : {}),
+		authMethod,
+		...(string(source.identityFile) ? { identityFile: string(source.identityFile) } : {}),
+		...(string(source.credentialId) ? { credentialId: string(source.credentialId) } : {}),
+		...(source.rememberPassword === true ? { rememberPassword: true } : {}),
 		platform,
 		...(string(source.defaultCwd) ? { defaultCwd: string(source.defaultCwd) } : {}),
 		...(string(source.hostCommand) ? { hostCommand: string(source.hostCommand) } : {}),
@@ -93,7 +124,19 @@ function normalizeProject(value: unknown): DesktopProject | undefined {
 	const recentSessions = Array.isArray(source.recentSessions)
 		? source.recentSessions.flatMap((item) => normalizeSession(item) ?? [])
 		: [];
-	return { id, name, cwd, connectionId, ...(recentSessions.length > 0 ? { recentSessions } : {}) };
+	const color = ["red", "orange", "green", "blue", "purple", "gray"].includes(String(source.color))
+		? (source.color as DesktopProject["color"])
+		: undefined;
+	return {
+		id,
+		name,
+		cwd,
+		connectionId,
+		...(source.pinned === true ? { pinned: true } : {}),
+		...(color ? { color } : {}),
+		...(source.archived === true ? { archived: true } : {}),
+		...(recentSessions.length > 0 ? { recentSessions } : {}),
+	};
 }
 
 function normalizeSession(value: unknown): CachedSessionSummary | undefined {
@@ -156,6 +199,7 @@ function normalizeState(value: unknown): DesktopState {
 					layout: {
 						inspectorWidth: Math.min(900, Math.max(320, inspectorWidth)),
 						inspectorSplit: Math.min(0.8, Math.max(0.2, inspectorSplit)),
+						...(layoutSource?.sidebarCollapsed === true ? { sidebarCollapsed: true } : {}),
 					},
 				}
 			: {}),
@@ -177,12 +221,46 @@ export async function saveDesktopState(state: DesktopState): Promise<void> {
 	else localStorage.setItem(BROWSER_STATE_KEY, JSON.stringify(normalized));
 }
 
-function profileInput(profile: SshConnectionProfile): { target: string; platform: string; hostCommand?: string } {
+function profileInput(profile: SshConnectionProfile): {
+	target: string;
+	platform: string;
+	user?: string;
+	port?: number;
+	authMethod: string;
+	identityFile?: string;
+	credentialId?: string;
+	hostCommand?: string;
+} {
 	return {
 		target: profile.target,
 		platform: profile.platform ?? "auto",
+		...(profile.user ? { user: profile.user } : {}),
+		...(profile.port ? { port: profile.port } : {}),
+		authMethod: profile.authMethod ?? "agent",
+		...(profile.identityFile ? { identityFile: profile.identityFile } : {}),
+		...(profile.credentialId ? { credentialId: profile.credentialId } : {}),
 		...(profile.hostCommand ? { hostCommand: profile.hostCommand } : {}),
 	};
+}
+
+export async function storeSshPassword(profileId: string, password: string, remember: boolean): Promise<string> {
+	if (!isTauri()) throw new Error("SSH 密码只在桌面应用中可用");
+	return invoke<string>("store_ssh_password", { profileId, password, remember });
+}
+
+export async function deleteSshPassword(credentialId: string): Promise<void> {
+	if (!isTauri()) return;
+	await invoke("delete_ssh_password", { credentialId });
+}
+
+export async function inspectSshHostKey(profile: SshConnectionProfile): Promise<SshHostKeyStatus> {
+	if (!isTauri()) throw new Error("SSH Host key 检查只在桌面应用中可用");
+	return invoke<SshHostKeyStatus>("inspect_ssh_host_key", { profile: profileInput(profile) });
+}
+
+export async function trustSshHostKey(trustToken: string): Promise<void> {
+	if (!isTauri()) throw new Error("SSH Host key 确认只在桌面应用中可用");
+	await invoke("trust_ssh_host_key", { trustToken });
 }
 
 export async function probeSshConnection(profile: SshConnectionProfile): Promise<SshProbeResult> {

@@ -15,6 +15,7 @@ import {
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -60,6 +61,7 @@ import type {
 	GitDiff,
 	GitFileStatus,
 	GitStatus,
+	HostDirectoryListing,
 	JsonValue,
 	ModelRef,
 	ProjectInstruction,
@@ -157,6 +159,15 @@ function canonicalProjectFile(cwd: string, input: string): { root: string; path:
 	return { root, path };
 }
 
+function canonicalExternalFile(input: string): string {
+	if (!isAbsolute(input))
+		throw Object.assign(new Error("项目外文件必须使用绝对路径"), { code: "resource_path_invalid" });
+	if (!existsSync(input)) throw Object.assign(new Error(`文件不存在：${input}`), { code: "resource_not_found" });
+	const path = realpathSync(input);
+	if (!statSync(path).isFile()) throw Object.assign(new Error("目标不是普通文件"), { code: "resource_not_file" });
+	return path;
+}
+
 function atomicWriteUtf8(path: string, content: string): void {
 	const temporaryPath = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
 	let file: number | undefined;
@@ -195,6 +206,30 @@ function fileMimeType(path: string): { kind: "text" | "image"; mimeType: string 
 		closeSync(file);
 	}
 	return { kind: "text", mimeType: "text/plain; charset=utf-8" };
+}
+
+function readResourceFile(path: string, offset: number, limit: number): ContentChunk {
+	const stat = statSync(path);
+	if (stat.size > PROJECT_RESOURCE_MAX_BYTES)
+		throw Object.assign(new Error("文件超过 32 MiB 的桌面查看上限"), { code: "resource_too_large" });
+	if (offset > stat.size) throw Object.assign(new Error("文件读取位置超出范围"), { code: "resource_offset_invalid" });
+	const nextOffset = Math.min(stat.size, offset + limit);
+	const file = openSync(path, "r");
+	try {
+		const bytes = Buffer.allocUnsafe(nextOffset - offset);
+		const bytesRead = readSync(file, bytes, 0, bytes.length, offset);
+		return {
+			contentRef: createHash("sha256").update(path).digest("hex"),
+			offset,
+			nextOffset: offset + bytesRead,
+			byteLength: stat.size,
+			data: bytes.subarray(0, bytesRead).toString("base64"),
+			encoding: "base64",
+			done: offset + bytesRead === stat.size,
+		};
+	} finally {
+		closeSync(file);
+	}
 }
 
 async function git(cwd: string, args: string[]): Promise<string> {
@@ -690,6 +725,7 @@ export function getGuiAgentDir(): string {
 
 export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	private readonly agentDir: string;
+	private readonly externalResourceGrants = new Map<string, { path: string; expiresAt: number }>();
 	private modelRuntimePromise?: Promise<ModelRuntime>;
 
 	constructor(agentDir = getAgentDir()) {
@@ -834,6 +870,76 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		return this.listProjectInstructions(root);
 	}
 
+	listHostInstructions(): ProjectInstruction[] {
+		const root = canonicalDirectory(this.agentDir);
+		const activeFile = PROJECT_INSTRUCTION_NAMES.map((fileName) => join(root, fileName)).find(existsSync);
+		return PROJECT_INSTRUCTION_NAMES.map((fileName) => {
+			const path = join(root, fileName);
+			if (!existsSync(path)) return { path, fileName, exists: false, active: false, editable: true };
+			const canonicalPath = realpathSync(path);
+			if (!isInside(root, canonicalPath) || dirname(canonicalPath) !== root || !statSync(canonicalPath).isFile()) {
+				throw Object.assign(new Error("Host 指令文件越过配置目录边界"), { code: "instruction_path_invalid" });
+			}
+			const content = readFileSync(canonicalPath, "utf8");
+			return {
+				path: canonicalPath,
+				fileName,
+				exists: true,
+				active: activeFile === path,
+				editable: true,
+				content,
+				contentHash: contentHash(content),
+			};
+		});
+	}
+
+	saveHostInstruction(
+		fileName: "AGENTS.md" | "AGENTS.override.md",
+		content: string,
+		expectedHash?: string,
+	): ProjectInstruction[] {
+		const root = canonicalDirectory(this.agentDir);
+		const path = join(root, fileName);
+		if (existsSync(path)) {
+			const canonicalPath = realpathSync(path);
+			if (!isInside(root, canonicalPath) || dirname(canonicalPath) !== root || !statSync(canonicalPath).isFile()) {
+				throw Object.assign(new Error("Host 指令文件越过配置目录边界"), { code: "instruction_path_invalid" });
+			}
+			const currentHash = contentHash(readFileSync(canonicalPath, "utf8"));
+			if (!expectedHash || currentHash !== expectedHash) {
+				throw Object.assign(new Error("Host 指令文件已被外部修改，请重新加载后再保存"), {
+					code: "instruction_conflict",
+					retryable: true,
+				});
+			}
+		} else if (expectedHash) {
+			throw Object.assign(new Error("Host 指令文件已被外部删除，请重新加载后再保存"), {
+				code: "instruction_conflict",
+				retryable: true,
+			});
+		}
+		atomicWriteUtf8(path, content);
+		return this.listHostInstructions();
+	}
+
+	listDirectories(path?: string): HostDirectoryListing {
+		const home = canonicalDirectory(homedir());
+		const current = canonicalDirectory(path ?? home);
+		const entries = readdirSync(current, { withFileTypes: true }).flatMap((entry) => {
+			const candidate = join(current, entry.name);
+			try {
+				const canonicalPath = realpathSync(candidate);
+				if (!statSync(canonicalPath).isDirectory()) return [];
+				return [{ name: entry.name, path: canonicalPath, hidden: entry.name.startsWith(".") }];
+			} catch {
+				return [];
+			}
+		});
+		entries.sort((left, right) => left.name.localeCompare(right.name));
+		const parent = dirname(current);
+		return { path: current, home, ...(parent !== current ? { parent } : {}), entries };
+	}
+
 	completeProjectFiles(cwd: string, query: string, limit: number): CompletionItem[] {
 		const root = canonicalDirectory(cwd);
 		const normalizedQuery = query.replaceAll("\\", "/").replace(/^\.\//, "");
@@ -871,7 +977,8 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 					: `@${displayPath}${entry.isDirectory() ? "/" : ""}`;
 				matches.push({
 					value: `${quoted}${entry.isDirectory() ? "" : " "}`,
-					label: displayPath,
+					label: entry.name,
+					description: dirname(displayPath) === "." ? "项目根目录" : dirname(displayPath),
 					kind: entry.isDirectory() ? "directory" : "file",
 				});
 				if (matches.length >= limit) break;
@@ -899,29 +1006,40 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	}
 
 	readProjectResource(cwd: string, path: string, offset: number, limit: number): ContentChunk {
-		const resolved = canonicalProjectFile(cwd, path);
-		const stat = statSync(resolved.path);
-		if (stat.size > PROJECT_RESOURCE_MAX_BYTES)
+		return readResourceFile(canonicalProjectFile(cwd, path).path, offset, limit);
+	}
+
+	resolveExternalResource(target: string, line?: number, column?: number): ProjectResource {
+		const parsed = splitResourceTarget(target.trim().replace(/^file:\/\//, ""));
+		const path = canonicalExternalFile(parsed.path);
+		const stat = statSync(path);
+		if (stat.size > PROJECT_RESOURCE_MAX_BYTES) {
 			throw Object.assign(new Error("文件超过 32 MiB 的桌面查看上限"), { code: "resource_too_large" });
-		if (offset > stat.size)
-			throw Object.assign(new Error("文件读取位置超出范围"), { code: "resource_offset_invalid" });
-		const nextOffset = Math.min(stat.size, offset + limit);
-		const file = openSync(resolved.path, "r");
-		try {
-			const bytes = Buffer.allocUnsafe(nextOffset - offset);
-			const bytesRead = readSync(file, bytes, 0, bytes.length, offset);
-			return {
-				contentRef: createHash("sha256").update(resolved.path).digest("hex"),
-				offset,
-				nextOffset: offset + bytesRead,
-				byteLength: stat.size,
-				data: bytes.subarray(0, bytesRead).toString("base64"),
-				encoding: "base64",
-				done: offset + bytesRead === stat.size,
-			};
-		} finally {
-			closeSync(file);
 		}
+		const accessToken = randomUUID();
+		this.externalResourceGrants.set(accessToken, { path, expiresAt: Date.now() + 10 * 60_000 });
+		return {
+			path,
+			displayPath: path,
+			...fileMimeType(path),
+			byteLength: stat.size,
+			...((line ?? parsed.line) ? { line: line ?? parsed.line } : {}),
+			...((column ?? parsed.column) ? { column: column ?? parsed.column } : {}),
+			accessToken,
+		};
+	}
+
+	readExternalResource(path: string, accessToken: string, offset: number, limit: number): ContentChunk {
+		const grant = this.externalResourceGrants.get(accessToken);
+		const canonicalPath = canonicalExternalFile(path);
+		if (!grant || grant.expiresAt < Date.now() || grant.path !== canonicalPath) {
+			this.externalResourceGrants.delete(accessToken);
+			throw Object.assign(new Error("项目外文件授权已失效，请重新确认"), {
+				code: "external_resource_grant_invalid",
+				retryable: true,
+			});
+		}
+		return readResourceFile(canonicalPath, offset, limit);
 	}
 
 	async listModels(): Promise<ModelSummary[]> {

@@ -186,6 +186,13 @@ function buildCompiledHost(platform, target, outputPath, bun) {
 	run(bun.command, bunArgs, { cwd: codingAgentDir });
 	if (platform !== "windows-x64") chmodSync(outputPath, 0o755);
 	validateBinary(outputPath, platform, target);
+	if (platform.startsWith("darwin-") && process.platform === "darwin") {
+		const identity = process.env.APPLE_SIGNING_IDENTITY ?? "-";
+		const signArgs = ["--force", "--sign", identity];
+		if (identity === "-") signArgs.push("--timestamp=none");
+		run("codesign", [...signArgs, outputPath]);
+		run("codesign", ["--verify", "--strict", "--verbose=2", outputPath]);
+	}
 }
 
 async function embedHost(sourcePath, outputPath) {
@@ -217,6 +224,12 @@ const requested = process.argv.find((argument) => argument.startsWith("--platfor
 const platform = requested || currentPlatform();
 const target = platforms[platform];
 if (!target) throw new Error(`unsupported GUI sidecar platform: ${platform}`);
+const remotePlatforms = process.env.PI_GUI_REMOTE_HOST_PLATFORMS
+	? process.env.PI_GUI_REMOTE_HOST_PLATFORMS.split(",").filter(Boolean)
+	: Object.keys(platforms);
+for (const remotePlatform of remotePlatforms) {
+	if (!platforms[remotePlatform]) throw new Error(`unsupported remote GUI Host platform: ${remotePlatform}`);
+}
 
 const npmCli = process.env.npm_execpath;
 if (!npmCli) throw new Error("npm_execpath is required to build the GUI Host");
@@ -231,7 +244,8 @@ buildCompiledHost(platform, target, outputPath, bun);
 const localHostPath = join(resourcesDir, "local-host", "lystar-gui-host.bin");
 await embedHost(outputPath, localHostPath);
 
-for (const [remotePlatform, remoteTarget] of Object.entries(platforms)) {
+for (const remotePlatform of remotePlatforms) {
+	const remoteTarget = platforms[remotePlatform];
 	const remoteOutput = join(remoteHostsDir, remotePlatform, "lystar-gui-host.bin");
 	if (prebuiltRemoteHostsDir) {
 		copyPrebuiltHost(remotePlatform, remoteTarget, remoteOutput);

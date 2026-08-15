@@ -37,9 +37,9 @@ button {
 
 button:focus-visible,
 input:focus-visible,
+select:focus-visible,
 textarea:focus-visible,
-summary:focus-visible,
-label:has(input:focus-visible) {
+summary:focus-visible {
 	outline: var(--gui-focus-ring-width) solid var(--gui-focus-ring);
 	outline-offset: 1px;
 }
@@ -1335,6 +1335,44 @@ textarea:disabled {
 	align-items: center;
 	gap: 8px;
 	min-height: 36px;
+	color: var(--gui-text-secondary);
+}
+
+.compact-summary {
+	border-block: 1px solid var(--gui-border);
+	background: var(--gui-surface-subtle);
+}
+
+.compact-summary > summary {
+	display: grid;
+	grid-template-columns: 18px auto 1fr;
+	align-items: center;
+	gap: 8px;
+	min-height: 40px;
+	padding: 0 12px;
+	cursor: pointer;
+	list-style: none;
+	color: var(--gui-text-secondary);
+}
+
+.compact-summary > summary::-webkit-details-marker {
+	display: none;
+}
+
+.compact-summary > summary strong {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--gui-text);
+}
+
+.compact-summary > summary span {
+	justify-self: end;
+	font-size: 12px;
+	color: var(--gui-text-muted);
+}
+
+.compact-summary-content {
+	padding: 4px 12px 14px 38px;
 	color: var(--gui-text-secondary);
 }
 

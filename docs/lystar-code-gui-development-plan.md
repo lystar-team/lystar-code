@@ -1,8 +1,8 @@
 # LYStar Code GUI 开发方案
 
-> 状态：Core、GUI Protocol、GUI Host、React 工作台和 Linux 本机 Tauri 已形成公开 Beta；`gui-v0.84.1-lystar-gui.4` 已发布五平台未签名安装包、严格 SHA/manifest 和 provenance，GUI/TUI 只读同步、Session 状态、项目指令、图片、补全、资源链接和 Inspector 布局已通过真实浏览器/Host 验证，公开 Linux x64 AppImage、Host 资源还原和正常退出已完成真实原生回归，SSH Remote Host 仍待真实目标验证，正式签名更新和三平台实机放行不属于本次 Beta 闸门
+> 状态：Core、GUI Protocol、GUI Host、React 工作台和 Linux 本机 Tauri 已形成公开 Beta；`gui-v0.84.1-lystar-gui.4` 已发布五平台完全未签名安装包、严格 SHA/manifest 和 provenance。`0.84.1-lystar-gui.5` 候选已将 macOS App 与 Darwin Host 改为 ad-hoc code signature，并增加最终 DMG 验签闸门，但尚未 tag、通过 macOS runner 或完成干净 Mac Gatekeeper 验收。Codex 式高密度工作台、两阶段项目切换、Host/项目指令、SSH 完整表单、Host key 确认、远端目录浏览、图片、补全、资源授权、Inspector 和三尺寸双主题视觉闸门已完成源码与本机验证；SSH Remote Host 仍待真实目标验证，Developer ID/notarization 和三平台实机放行不属于当前 Beta 闸门
 >
-> 日期：2026-08-14
+> 日期：2026-08-15
 >
 > 基线：LYStar Code `0.84.1-lystar.13`，Pi `v0.84.1`
 >
@@ -43,7 +43,7 @@ LYStar Code GUI 定位为跨平台编码 Agent 工作台，沿用 Codex GUI 的�
   -> 三平台发行
 ```
 
-截至 2026-08-14，共享 Session writer lock、通用 `./core` export、独立 GUI Protocol/Host、Runtime contract、React 工作台和既有浏览器视觉闸门已形成开发基线。本轮继续完成 Tauri 本机/SSH 双传输、远端系统探测、五平台 Host 资源构建、完整运行资源上传、三平台托管代码、断线 lease 释放与 operation 接管、原子桌面项目注册表、SSH 项目和最近 Session 缓存，以及真实 `git-inspector`。新增 GUI 能力已经接入同一真实链路：外部 TUI writer 的 500ms 只读观察与释放后接管、Session 运行结果与 TUI 占用状态、输入/历史/Tool 图片、项目 `AGENTS.md` 原子编辑和哈希冲突检测、`@`/`$`/`/` Runtime 补全、受控外链/文件/图片/行号跳转，以及 Inspector 宽度和分区比例持久化。Linux 本机原生 Tauri 已完成 Channel、项目恢复、Project Trust、Git Inspector、Bash JSONL 落盘与重启恢复、图片查看器、项目指令动态重载和正常退出验证。`gui-v0.84.1-lystar-gui.4` 已通过独立 `gui-v*` workflow 在五个原生 runner 生成并公开未签名 Beta 资产，公开 Linux x64 AppImage 已完成下载后真实启动、Host 资源还原、连接和退出回归，CLI Latest Release 仍保持 `v0.84.1-lystar.13`。Completion、普通模型对话、认证和 Extension UI 的本轮原生键盘链仍待补齐，SSH Remote Host 和 macOS/Windows 平台托管仍无实机证据。当前准确结论是“公开 Beta 已发布”，具体完成状态以第 14 节和 `AGENT_VERIFICATION.md` 为准。
+截至 2026-08-14，共享 Session writer lock、通用 `./core` export、独立 GUI Protocol/Host、Runtime contract、React 工作台和既有浏览器视觉闸门已形成开发基线。本轮继续完成 Tauri 本机/SSH 双传输、远端系统探测、五平台 Host 资源构建、完整运行资源上传、三平台托管代码、断线 lease 释放与 operation 接管、原子桌面项目注册表、SSH 项目和最近 Session 缓存，以及真实 `git-inspector`。新增 GUI 能力已经接入同一真实链路：外部 TUI writer 的 500ms 只读观察与释放后接管、Session 运行结果与 TUI 占用状态、输入/历史/Tool 图片、项目 `AGENTS.md` 原子编辑和哈希冲突检测、`@`/`$`/`/` Runtime 补全、受控外链/文件/图片/行号跳转，以及 Inspector 宽度和分区比例持久化。Linux 本机原生 Tauri 已完成 Channel、项目恢复、Project Trust、Git Inspector、Bash JSONL 落盘与重启恢复、图片查看器、项目指令动态重载和正常退出验证。`gui-v0.84.1-lystar-gui.4` 已通过独立 `gui-v*` workflow 在五个原生 runner 生成并公开完全未签名的 Beta 资产，公开 Linux x64 AppImage 已完成下载后真实启动、Host 资源还原、连接和退出回归，CLI Latest Release 仍保持 `v0.84.1-lystar.13`。本地 `0.84.1-lystar-gui.5` 候选已修复 macOS workflow 同时设置 `APPLE_SIGNING_IDENTITY=-` 和 `--no-sign` 的矛盾：macOS App 不再跳过签名，Darwin ARM64/x64 Host 改由对应 macOS runner 原生编译和 ad-hoc 签名，最终 DMG 挂载后校验 App、local Host 与两种 Remote Host；新增 `workflow_dispatch` 允许在创建不可变 tag 前只运行构建和验签，`release` job 仅接受 `gui-v*` tag。该链路尚未在 GitHub macOS runner 和干净 Mac Gatekeeper 上运行。Completion、普通模型对话、认证和 Extension UI 的本轮原生键盘链仍待补齐，SSH Remote Host 和 macOS/Windows 平台托管仍无实机证据。当前准确结论是“`gui.4` 公开 Beta 已发布，`gui.5` 本地候选已完成源码和 Linux 构建验证”，具体完成状态以第 14 节和 `AGENT_VERIFICATION.md` 为准。
 
 现有 Pi Protocol v2 会在状态更新时携带完整 transcript，长会话和 SSH 场景无法直接使用。GUI 不修改该上游协议，改由独立 GUI Protocol 解决。
 
@@ -78,7 +78,7 @@ LYStar Code GUI 定位为跨平台编码 Agent 工作台，沿用 Codex GUI 的�
 | 模型 | Provider、模型、思考强度、认证状态、登录/退出 |
 | Skill | 按用户/项目作用域搜索、查看、启停和诊断已发现 Skill |
 | Extension | 选择、确认、输入、编辑器、通知、状态和文字 Widget |
-| 设置 | 通用、外观、连接、模型与认证、Skill、自动更新、诊断、关于 |
+| 设置 | 个性化、外观、连接、模型与认证、Skill、自动更新、诊断、关于 |
 
 ### 2.3 首版不做
 
@@ -111,10 +111,10 @@ LYStar Code GUI 定位为跨平台编码 Agent 工作台，沿用 Codex GUI 的�
 1. 活动 Runtime 仍会全量物化大 Session；只读 transcript 已完成分页和跨页有界窗口，但 256 MiB 活动 Runtime 的完整 GUI/WebView 进程树基准尚未完成。
 2. Tauri raw IPC、本机 Host、SSH bridge 和远端安装代码已接线；当前 Linux 主机已安装 Rust stable、Cargo、WebKitGTK 4.1、GTK 3、Ayatana AppIndicator、librsvg、OpenSSL 开发包和 `patchelf`。Linux x64 AppImage 已完成真实打包、Host 资源还原、raw Channel、原生 WebKitGTK 窗口、原子桌面状态和正常退出验证；真实 SSH 子进程桥、Linux ARM64、macOS 和 Windows 实机仍待验证。
 3. Linux `systemd --user` + lingering 检查、macOS 带 `UserName` 的 LaunchDaemon、Windows 当前用户 Scheduled Task、完整运行资源 staging/切换/回退和 SSH relay 已实现；三系统 OpenSSH、named pipe、管理员批准、断线继续和重连接管仍无实机证据。
-4. GUI updater 正式公钥、signed `stable-release-set.json`、防回放和联合升级路径尚未实现；无公钥时 updater 按闸门保持完全关闭。独立无签名 Beta Release workflow 已通过 `gui-v0.84.1-lystar-gui.4` 实际发布，五平台原生构建、严格 manifest、provenance、`prerelease=true` 和 `latest=false` 已确认。
-5. 原子桌面项目注册表、最后项目恢复、连接归属和最近 Session 缓存已在 Linux 原生 Tauri 验证；SSH 项目离线状态、Windows 原子替换和真实远端断线恢复仍未运行。
+4. GUI updater 正式公钥、signed `stable-release-set.json`、防回放和联合升级路径尚未实现；无公钥时 updater 按闸门保持完全关闭。独立 Beta Release workflow 已通过 `gui-v0.84.1-lystar-gui.4` 实际发布完全未签名资产，五平台原生构建、严格 manifest、provenance、`prerelease=true` 和 `latest=false` 已确认；本地 `.5` 候选新增的 macOS ad-hoc code signature 只解决社区 Beta 的代码封装完整性和标准 Gatekeeper 手动放行，不替代 Developer ID、notarization 或 updater signature。
+5. 原子桌面项目注册表、最后项目恢复、连接归属和最近 Session 缓存已在 Linux 原生 Tauri 验证；项目切换已改为候选 Host、Session、lease、transcript 和持久化全部成功后才提交的两阶段事务，候选连接或持久化失败不会破坏旧工作区。SSH 项目离线状态、Windows 原子替换和真实远端断线恢复仍未运行。
 6. `git-inspector`、模型 OAuth/API key 写契约、图片附件、项目指令、Session 状态和 Completion 代码已接通；Git Inspector、图片查看器、项目指令动态重载和 sidecar 正常退出已在 Linux 原生 Tauri 验证，其余新增能力已通过真实浏览器与真实 Host，普通模型对话、认证、Extension UI 和原生 Completion 键盘链仍需补齐。
-7. GUI/Host 五平台无签名 Beta 安装包已由 `gui-v0.84.1-lystar-gui.4` 在原生 runner 构建并公开；签名资产、正式 updater bundle、系统 WebView 实机和当前及上一支持版本的双向兼容 fixture 尚未完成。
+7. GUI/Host 五平台完全未签名 Beta 安装包已由 `gui-v0.84.1-lystar-gui.4` 在原生 runner 构建并公开；本地 `.5` 候选已为 macOS App 和 Darwin Host 增加 ad-hoc code signature、原生双架构 Host 汇总及最终 DMG 验签，但尚未经过 macOS runner 和干净 Mac Gatekeeper。Developer ID/notarization、Windows Authenticode、正式 updater bundle、系统 WebView 实机和当前及上一支持版本的双向兼容 fixture 尚未完成。
 8. `SessionManager.list()` 继续以 JSONL 为唯一事实源，大量 Session 的全文 metadata 构建仍是后续性能专项；本轮不引入第二份持久索引。
 
 这些缺口分别属于平台托管、原生壳、发行安全、剩余业务 capability 和性能演进，不能由 React 展示层或静态 fixture 代替。
@@ -606,7 +606,15 @@ GUI 只保存非敏感信息：
 interface SshConnectionConfig {
   id: string;
   name: string;
-  target: string;           // ~/.ssh/config alias 或 user@host
+  mode: "alias" | "direct";
+  target: string;           // ~/.ssh/config alias 或主机
+  user?: string;
+  port?: number;
+  authMethod: "agent" | "key" | "password";
+  identityFile?: string;
+  credentialId?: string;    // 系统凭据库引用，不是密码
+  rememberPassword?: boolean;
+  platform?: "auto" | "linux" | "darwin" | "windows";
   defaultCwd?: string;
 }
 ```
@@ -619,9 +627,9 @@ interface SshConnectionConfig {
 - ProxyJump。
 - known_hosts 和系统 host key 校验。
 
-首版不保存 SSH 密码，也不自建 keyboard-interactive 界面。
+密码只保存在当前应用会话内存或系统凭据库，不能进入 `desktop-state.json`、GUI Protocol、日志、命令参数或普通环境明文。Tauri 使用受限 AskPass helper 按凭据引用读取密码；临时凭据在应用退出时删除，勾选“记住密码”时只保留系统凭据库条目和非敏感引用。
 
-SSH 使用 `BatchMode=yes` 和有界连接超时，只支持无需本轮交互的 key/ssh-agent 认证。未知 host key、加密私钥未进入 agent、密码或 keyboard-interactive 场景快速失败并显示 OpenSSH stderr；用户先在系统终端完成 host key 确认和 agent 配置后重试。
+ssh-agent 和私钥认证使用 `BatchMode=yes`；密码认证使用单次 AskPass、`NumberOfPasswordPrompts=1` 和受限认证方法。未知 Host key 先通过 `ssh-keyscan`/`ssh-keygen` 获取 SHA-256 指纹，GUI 显式展示并确认后写入系统 `known_hosts`，禁止关闭严格校验。
 
 ### 8.2 连接流程
 
@@ -647,7 +655,7 @@ Windows 查找顺序：
 ### 8.3 stdio 约束
 
 - SSH 使用 `-T`，禁止分配 PTY。
-- 使用 `BatchMode=yes`、`ConnectTimeout`、`ServerAliveInterval` 和 `ServerAliveCountMax`，避免认证、半开连接和断网永久悬挂。
+- ssh-agent/私钥使用 `BatchMode=yes`；密码使用单次 AskPass。所有模式都设置 `ConnectTimeout`、`ServerAliveInterval` 和 `ServerAliveCountMax`，避免认证、半开连接和断网永久悬挂。
 - stdout 只输出协议字节。
 - 日志和诊断写 stderr。
 - 协议前输出固定 magic preface。
@@ -674,50 +682,44 @@ Windows 查找顺序：
 所有通过 SSH 打开的项目都写入本机 GUI 工作区注册表，行为与本机最近项目一致。退出 GUI、SSH 离线、远端 Host 停止或本机更新后，项目仍保留在侧栏。
 
 ```ts
-interface GuiWorkspaceState {
+interface DesktopState {
   version: 1;
-  clientInstanceId: string;
   connections: SshConnectionConfig[];
   projects: Array<{
     id: string;
     connectionId: string | "local";
     cwd: string;
-    displayName: string;
-    pinned: boolean;
-    lastOpenedAt: number;
-    lastSessionId?: string;
-    recentSessions: Array<{
-      id: string;
-      title: string;
-      updatedAt: number;
-    }>;
+    name: string;
+    pinned?: boolean;
+    color?: "red" | "orange" | "green" | "blue" | "purple" | "gray";
+    archived?: boolean;
+    recentSessions?: CachedSessionSummary[];
   }>;
   selectedProjectId?: string;
-  selectedSessionId?: string;
-  lastUpdateCheckAt?: number;
-  updateState?: {
-    highestAcceptedSetVersion: number;
-    highestAcceptedSetSha256: string;
-    pendingTargetSetVersion?: number;
-    completedSteps?: Array<"gui" | "tui" | "remote-host">;
+  layout?: {
+    inspectorWidth: number;
+    inspectorSplit: number;
+    sidebarCollapsed?: boolean;
   };
 }
 ```
 
 规则：
 
-- 文件固定为 `~/.pi/agent/lystar-gui.json`，原子写入并使用进程内串行更新。
+- 文件固定为 Tauri 应用配置目录下的 `desktop-state.json`，原子写入并使用进程内串行更新；浏览器开发模式使用同结构 localStorage fallback。
 - 远程项目身份由 `connectionId + 规范化 cwd` 确定；重复打开更新原记录，不增加重复项目。
 - 只保存连接非敏感配置、远端路径、展示名、排序和最近 Session ID，不复制 transcript、凭据或远端文件。
 - GUI 启动先从本地注册表恢复完整侧栏，再异步连接；离线项目保持可见并显示离线状态。
 - 点击离线项目会连接对应 SSH、恢复 `lastSessionId` 并刷新远端 metadata；Session 不存在时保留项目并进入 Session 选择页。
+- 项目切换先准备候选 Host、Session、writer lease 和 transcript 尾页，再持久化候选 `selectedProjectId`；全部成功后才替换当前 UI 和释放旧 lease。任一步失败都关闭候选资源并保留旧项目、旧 Session、旧 transcript 和旧 lease。
+- `selectedProjectId` 只表示最近完整成功的项目；失败目标不能污染启动恢复。Skill、AGENTS、Git、模型和诊断在项目提交后独立加载，失败只影响对应辅助面板。
 - 远端路径不存在、权限变化或 Host 不可用时标记“不可访问”，不能自动从侧栏删除。
 - “从列表移除”只删除本机 GUI 注册记录，不删除远端目录、Session 或 Host 数据。
 - 每个项目最多保存 20 个最近 Session 的 ID、标题和更新时间，用于离线展示和恢复定位；连接后以远端 Server 返回为准。
 - 连接配置改名不改变项目身份；删除连接配置前列出关联项目并二次确认，删除后也不触碰远端数据。
 - 本机和 SSH 项目进入同一个连续项目列表，不按连接类型拆组。项目按置顶和最近打开时间排序，当前项目的最近 Session 直接在项目行下展开。
 - 本机项目行只显示项目名称；SSH 项目行右侧显示所属连接名和连接状态点。离线时保留连接名，状态点改为灰色或错误色，不能让远程项目看起来像本机目录。
-- `updateState` 只保存 release set 防回放 floor 和未完成升级步骤，不保存下载资产或签名私钥；字段缺失时以当前 GUI 内置的最低 release set 版本初始化。
+- release set 防回放 floor 和未完成升级步骤属于更新器独立状态，不混入项目注册表；任何状态都不保存下载资产、密码或签名私钥。
 
 ## 9. GUI 信息结构
 
@@ -742,7 +744,7 @@ interface GuiWorkspaceState {
 
 默认宽度 `320px`，可以折叠：
 
-- LYStar Logo、`LYStar Code` 品牌和主题菜单。
+- LYStar Logo、`LYStar Code` 品牌和侧栏收起按钮；收起状态进入 `desktop-state.json`。
 - 新会话。
 - Session 搜索。
 - 单一项目列表，本机和 SSH 项目按最近使用顺序混排。
@@ -834,8 +836,9 @@ interface GuiWorkspaceState {
 
 ### 9.8 设置与状态页
 
-设置使用固定左侧分类和右侧连续内容，分类为通用、外观、连接、模型与认证、Skill、自动更新、诊断、关于。页面只显示 Host 返回的结构化状态和可执行动作，WebView 不直接读取 `auth.json`、`settings.json`、Package 路径清单或版本文件。
+设置使用固定左侧分类和右侧连续内容，分类为个性化、外观、连接、模型与认证、Skill、自动更新、诊断、关于。左侧先选择“所有设置”、本机或某个 SSH Host；设置 Host 使用独立临时 Client，不切换当前项目、不释放当前 Session lease。页面只显示 Host 返回的结构化状态和可执行动作，WebView 不直接读取 `auth.json`、`settings.json`、Package 路径清单或版本文件。
 
+- 个性化页按 Host/项目作用域编辑 `AGENTS.md` 与 `AGENTS.override.md`，显示继承来源，并使用 UTF-8、原子保存和 SHA-256 冲突检测；远端离线时只提示重连，不缓存盲写。
 - 模型与认证按 Provider 组织认证状态、来源、可用模型和登录/退出；API key 不回显，OAuth 使用系统浏览器。
 - Skill 只管理当前 Runtime 发现的 Skill，支持全部/用户/项目筛选、搜索、行级启停、Project Trust 限制和诊断。Extension、MCP、Prompt Template 和远程市场不混入 Skill 页。
 - 自动更新先显示当前结论、目标版本、进度、阻塞和唯一下一动作；signature、`setVersion`、组件顺序和完整 upgrade path 默认折叠到更新详情。
@@ -1279,23 +1282,24 @@ Coding Agent 改动只允许两类，并分别提交：
 
 ### 14.3 GUI 页面
 
-本机 React 工作台已在真实 GUI Host 上通过浏览器自动闸门，并完成 Linux 原生 Tauri 的本机 Session、Bash transcript、项目恢复、Git Inspector、图片查看器、项目指令动态重载和 sidecar 正常退出 smoke；新增 GUI/TUI 只读同步、Session 状态、Completion、受控资源链接和 Inspector 布局已通过真实浏览器/Host。本节完整产品能力仍受 Remote Host、普通模型/认证/Extension UI 和原生 Completion 键盘回归，以及正式 updater capability 限制。
+本机 React 工作台已在真实 GUI Host 上通过浏览器自动闸门，并完成 Linux 原生 Tauri 的本机 Session、Bash transcript、项目恢复、Git Inspector、图片查看器、项目指令动态重载和 sidecar 正常退出 smoke。Codex 式侧栏、项目操作、独立 Host 设置、两阶段项目切换、SSH 完整表单、Host key 确认、远端目录浏览、一次性项目外资源授权、图片粘贴/拖放、Compact 专用摘要、模型/思考强度菜单和 Inspector 布局已完成浏览器验收。本节完整产品能力仍受 Remote Host、普通模型/认证/Extension UI 和原生 Completion 键盘回归，以及正式 updater capability 限制。
 
 - [x] 完成浅色、深色、跟随系统主题和主布局。
+- [x] 用户确认的 16 项桌面体验与可靠性整改已完成源码、自动测试和浏览器视觉闸门；其中 P0 项目切换已使用两阶段事务关闭。真实 SSH 目标、macOS 和 Windows 的平台链路仍按各自未完成项单独放行，不能由本机截图替代。
 - [x] 项目、Session、Tool、Composer 和真实 Git Inspector 已接通；普通输入走 `prompt`，`!` 命令走 `run_bash`，无附件时 Composer 保持两行。Git 状态使用 `porcelain=v2 -z`，Diff 禁用 external diff；Inspector 宽度和上下分区比例可拖拽、键盘调整、恢复默认并持久化，窄屏使用全工作区覆盖。
 - [x] Session 列表显示运行、完成、失败、中断和中性“TUI 使用中”；Composer 在外部 writer 持锁时只读，释放后自动重新获取控制。输入图片、历史图片和 Tool 图片使用 Session 绑定 `contentRef` 按需读取。
 - [x] Composer `@`、`$`、`/` 补全消费 Host/Runtime 候选；大仓库按已输入目录前缀缩小扫描根，`/` 只展示真实 Runtime 命令和 `/new`、`/settings`、`/models`、`/changes` 四个 GUI handler。外链、项目文件、图片、Tool 路径和 Diff 行号统一走 Host 边界校验。
-- [x] 通用设置已重做为多项目和项目指令入口；只开放项目根 `AGENTS.override.md`、`AGENTS.md`，使用 UTF-8、原子 rename、目录 `fsync` 和 SHA-256 内容哈希冲突检测。外部改写后的旧哈希保存会被明确拒绝。
-- [x] 通用、外观、模型只读摘要与搜索、Skill、诊断和关于已接真实 Host；Skill 支持全部/用户/项目筛选、搜索、启停和重新加载。
-- [ ] 连接、模型 OAuth/API key 登录退出已完成代码接线；自动更新仍因正式 updater 公钥和 signed stable release set 缺失保持安装关闭。最新连接与认证链本轮未运行验证。
-- [ ] 本机/SSH 项目注册表、最后项目、连接归属、离线状态和最近 Session 已使用 Tauri 原子文件持久化；Linux 本机项目、最近 Session 和最后项目恢复已验证，浏览器 fallback 保留 localStorage，SSH 离线恢复仍待真实目标验证。
-- [x] 完成 `2816×1640`、`1280×800`、`800×600` 的浅色和深色六组正式截图；跟随系统主题持久化和系统深色 Token 单独验证，`800×600` 抽屉关闭态和打开覆盖态均已验证。
+- [x] 个性化设置已重做为 Host/项目指令入口；设置页 Host Client 与聊天连接解耦，只开放 `AGENTS.override.md`、`AGENTS.md`，使用 UTF-8、原子 rename、目录 `fsync` 和 SHA-256 内容哈希冲突检测。外部改写后的旧哈希保存会被明确拒绝。
+- [x] 个性化、外观、连接、模型摘要与搜索、Skill、诊断和关于已接真实 Host；Skill 支持全部/用户/项目筛选、搜索、启停和重新加载。连接页已覆盖 SSH Config/直接连接、用户、端口、Agent/私钥/密码、系统凭据库、Host key 确认和结构化远端目录浏览。
+- [ ] 模型 OAuth/API key 登录退出已完成代码接线；自动更新仍因正式 updater 公钥和 signed stable release set 缺失保持安装关闭。普通模型登录和 Extension UI 的最终业务链仍待运行验证。
+- [ ] 本机/SSH 项目注册表、最后项目、连接归属、离线状态和最近 Session 已使用 Tauri 原子文件持久化；Linux 本机项目、最近 Session、最后项目和侧栏收起重载恢复已验证。项目打开使用两阶段事务，候选 `list_sessions` 或 `desktop-state.json` 写入失败均有回归；真实 SSH 离线恢复仍待目标机验证。
+- [x] 完成 `2816×1640`、`1280×800`、`800×600` 的浅色和深色六组正式截图；跟随系统主题持久化和系统深色 Token 单独验证，`800×600` 抽屉、设置、SSH 密码表单、Host key、远端目录、项目失败、外部资源、模型菜单和 Composer 菜单均已验证。
 
 完成标准：界面具备完整操作结构和窄窗口适配，所有状态来自 GUI Protocol 或契约 fixture；底层未通过 capability gate 的入口不显示。
 
 ### 14.4 本机与无证书更新
 
-- [ ] Tauri Host 载荷、资源物化、启动环境变量、本机/SSH transport 和五平台 Remote Host 资源代码已完成；Linux x64 AppImage、原生窗口、raw Channel、Host 还原和正常退出已通过。Host 以版本头载荷进入安装包，避免 Tauri `patchelf` 改写 Bun ELF；运行或 SSH 安装前校验并原子还原。退出 transport 时先关闭 stdin 让 Host `dispose()` 释放 writer lock，错误路径才强杀；隔离复测为退出码 0、stderr=0、lock=0、残留进程=0。真实 SSH transport 和其他平台实机仍待验证。
+- [ ] Tauri Host 载荷、资源物化、启动环境变量、本机/SSH transport 和五平台 Remote Host 资源代码已完成；Linux x64 AppImage、原生窗口、raw Channel、Host 还原和正常退出已通过。Host 以版本头载荷进入安装包，避免 Tauri `patchelf` 改写 Bun ELF；运行或 SSH 安装前校验并原子还原。退出 transport 时先关闭 stdin 让 Host `dispose()` 释放 writer lock，错误路径才强杀；公开 AppImage 隔离复测为退出码 0、stderr=0、lock=0、残留进程=0，最新源码 debug build 为退出码 0、lock=0、子 Host=0，stderr 仅有 Xvfb 缺少 AT-SPI 总线的环境警告。真实 SSH transport 和其他平台实机仍待验证。
 - [x] GUI Protocol Client 已接入真实本机字节桥；开发模式每个 WebSocket 连接对应独立 stdio Host，不使用 mock Session。
 - [ ] 项目、Session、发送、停止、模型、Tool、图片、Extension UI 和 Git Inspector 已接通；Linux 原生项目恢复、Bash 发送/落盘/重启恢复、Git Inspector、图片查看器和项目指令动态重载已通过。Completion、Session 状态和资源链接已通过真实浏览器/Host，普通模型对话、认证、Extension UI 与原生 Completion 键盘链仍待补齐。
 - [x] 完成 transcript 分页、虚拟列表和跨页有界窗口；真实 `800×600` 长 Session 连续加载 4 页后触发 600 条上限，“加载更早内容”和“回到最新”在历史中段吸顶可用，回跳后恢复尾页和底部位置。
@@ -1382,22 +1386,22 @@ npm run build:offline
 
 Playwright 截图已覆盖并通过本机工作台浏览器视觉自动闸门：
 
-- `2816×1640`、`1280×800`、`800×600` 的浅色和深色，共 6 张正式工作台截图；跟随系统主题另验证持久化和系统深色 Token。
-- `800×600` 默认工作态、侧栏抽屉打开/关闭覆盖状态和固定 Composer。
+- `2816×1640`、`1280×800`、`800×600` 的浅色和深色，共 6 张最新工作台截图；跟随系统主题另验证持久化和系统深色 Token。
+- `800×600` 默认工作态、侧栏抽屉打开/关闭、设置、SSH alias/直接连接密码表单、Host key、远端目录、项目打开失败、项目外资源、模型菜单、Composer 菜单和固定 Composer。
 - 三种尺寸均无文档横向或纵向溢出；Composer 桌面高度 `140px`、窄窗 `120px`，始终位于 Workspace 内。
 - 深浅主题布局几何一致；跟随系统在系统深色媒体偏好下使用深色 Token。
-- 长中文 Session 标题由标题区域截断，文件夹图标保持 `17px`；真实 `git-inspector` 入口已实现，但新增面板尚未重新执行三尺寸视觉验收。
-- 单一连续项目/Session 列表、低对比选中态、默认隐藏的 Session 三点按钮、连续 Tool 区和 Composer 同屏；浏览器控制台为 0 error / 0 warning。
-- 设置页在真实 Host 数据上验证 41 个 Provider、50 个 Skill（用户 49、项目 1），模型搜索、Skill 作用域筛选、搜索和重新加载均可用，桌面与窄窗无溢出。
+- 长中文 Session 标题由标题区域截断，文件夹图标保持 `17px`；真实 `git-inspector` 已完成三尺寸视觉验收。
+- 单一连续项目/Session 列表、低对比选中态、默认隐藏的 Session 三点按钮、连续 Tool 区、Compact 摘要和 Composer 同屏；浏览器控制台为 0 error / 0 warning。
+- 图片粘贴与拖放已用真实 `ClipboardEvent`/`DragEvent` 验证；侧栏收起状态重载后保持。SSH 密码长表单在 `800×600` 内部滚动，关闭按钮和底部操作均可达；Toast 不遮挡 Composer、菜单、设置或弹窗。
+- 设置页在真实 Host 数据上验证 Provider、Skill、Host/项目 AGENTS 和连接状态；模型搜索、Skill 作用域筛选、Host 切换、指令冲突重载和连接表单可用，桌面与窄窗无溢出。
 - 真实长 Session 在 `800×600` 连续加载 4 页后触发 600 条窗口上限；历史中段滚动约 `35k px` 时导航保持吸顶 `top=0`，页面无横纵溢出。点击“回到最新”后滚动回到底部，内容高度由约 `69.8k px` 收回约 `13.3k px`。
 
 仍需覆盖：
 
-- Inspector 与真实 Diff。
 - 模型 OAuth/API key 认证操作。
 - updater 完整状态机。
-- Remote Host、SSH 断线和远端恢复状态。
-- macOS、Linux Tauri 和 Windows 原生 WebView 实机截图。
+- 真实 Remote Host、SSH 认证/断线和远端恢复状态；当前远端目录、Host key 和外部资源弹窗只完成可控状态验收。
+- macOS 和 Windows 原生 WebView 实机截图；Linux Tauri 已完成本机原生窗口验收。
 
 ### 15.3 三平台实机
 
@@ -1504,7 +1508,7 @@ Codex 风格桌面工作台
 + GUI/Host/Runtime 整体签名更新 + GUI/TUI stable 兼容组合自动升级
 ```
 
-结论是公开 Beta 已发布。Core、GUI Protocol、GUI Host、Runtime contract、React 工作台和 Linux 原生 Tauri 已形成可公开测试的开发版本；GUI/TUI 只读同步、Session 状态、项目指令、图片、Completion、资源链接和 Inspector 布局已经过真实浏览器/Host 验证。`gui-v0.84.1-lystar-gui.4` 已公开 Linux x64/ARM64 AppImage、macOS ARM64/x64 DMG 和 Windows x64 NSIS，严格 SHA/manifest 和 provenance 已回查；公开 Linux x64 AppImage 的 Host 载荷还原和正常退出已在隔离原生环境复验。当前剩余工作是普通模型/认证/Extension UI 与原生 Completion 键盘链、真实 SSH Remote Host、正式签名更新和三平台实机放行，不再搭建第二套 Host、Protocol、Session 状态或展示型页面。
+结论是 `gui.4` 公开 Beta 已发布，`gui.5` 本地候选已形成。Core、GUI Protocol、GUI Host、Runtime contract、React 工作台和 Linux 原生 Tauri 已形成可公开测试的开发版本；GUI/TUI 只读同步、Session 状态、项目指令、图片、Completion、资源链接和 Inspector 布局已经过真实浏览器/Host 验证。`gui-v0.84.1-lystar-gui.4` 已公开 Linux x64/ARM64 AppImage、macOS ARM64/x64 DMG 和 Windows x64 NSIS，严格 SHA/manifest 和 provenance 已回查；公开 Linux x64 AppImage 的 Host 载荷还原和正常退出已在隔离原生环境复验。`.5` 候选修复了 macOS `--no-sign` 根因，增加 App/Host ad-hoc 签名、Darwin 双架构原生 Host 汇总、最终 DMG 验签和逐平台 manifest 签名事实；当前剩余工作是 GitHub macOS runner 实跑、干净 Mac Gatekeeper 验收、普通模型/认证/Extension UI 与原生 Completion 键盘链、真实 SSH Remote Host、Developer ID/notarization、Windows Authenticode 和三平台实机放行，不再搭建第二套 Host、Protocol、Session 状态或展示型页面。
 
 正式发行仍必须通过 Remote Host 三平台实机托管、原生 Tauri/系统 WebView、强制 updater signature、密钥恢复、signed release set 防回放、stable upgrade path 和三平台安装更新联合闸门。GUI 版本标明 bundled Runtime 基线，GUI/TUI 修订号可以不同，也都能独立启动；stable 发布必须给出明确对应组合，跨 Pi 基线时增加数据、Runtime 行为和升级路径契约验证。SSH 断线继续执行、远程项目持久工作区、共享 Session writer lock、GUI/TUI 代码隔离和强制 updater signature 都是首版完成定义，当前不能以静态实现代替运行证据。
 

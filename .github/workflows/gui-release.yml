@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "gui-v*"
+  workflow_dispatch:
 
 permissions:
   actions: read
@@ -31,6 +32,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Verify GUI tag version
+        if: startsWith(github.ref, 'refs/tags/gui-v')
         env:
           TAG: ${{ github.ref_name }}
         run: test "gui-v$(node -p "require('./packages/gui/package.json').version")" = "$TAG"
@@ -76,18 +78,91 @@ jobs:
         run: npm ci $NPM_CI_ARGS
 
       - name: Build GUI Remote Hosts
+        env:
+          PI_GUI_REMOTE_HOST_PLATFORMS: linux-arm64,linux-x64,windows-x64
         run: npm --workspace @lystar/code-gui run prepare:tauri
 
       - name: Upload GUI Remote Hosts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: gui-remote-hosts
+          name: gui-remote-hosts-portable
           path: packages/gui/src-tauri/resources/remote-hosts
           if-no-files-found: error
           retention-days: 1
 
+  prepare-darwin-remote-hosts:
+    needs: verify-ci
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            runner: macos-15
+          - platform: darwin-x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        run: npm ci $NPM_CI_ARGS
+
+      - name: Build ad-hoc signed Darwin GUI Host
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+          PI_GUI_REMOTE_HOST_PLATFORMS: ${{ matrix.platform }}
+        run: npm --workspace @lystar/code-gui run prepare:tauri
+
+      - name: Upload Darwin GUI Host
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gui-remote-hosts-${{ matrix.platform }}
+          path: packages/gui/src-tauri/resources/remote-hosts
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-remote-hosts:
+    needs: [prepare-remote-hosts, prepare-darwin-remote-hosts]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Download GUI Remote Hosts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: gui-remote-hosts-*
+          path: ${{ runner.temp }}/gui-remote-hosts
+          merge-multiple: true
+
+      - name: Verify GUI Remote Host set
+        shell: bash
+        run: |
+          for platform in linux-arm64 linux-x64 darwin-arm64 darwin-x64 windows-x64; do
+            test -s "$RUNNER_TEMP/gui-remote-hosts/$platform/lystar-gui-host.bin"
+          done
+
+      - name: Upload merged GUI Remote Hosts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gui-remote-hosts
+          path: ${{ runner.temp }}/gui-remote-hosts
+          if-no-files-found: error
+          retention-days: 1
+
   build:
-    needs: [verify-ci, prepare-remote-hosts]
+    needs: [verify-ci, merge-remote-hosts]
     strategy:
       fail-fast: false
       matrix:
@@ -166,18 +241,45 @@ jobs:
           name: gui-remote-hosts
           path: ${{ runner.temp }}/gui-remote-hosts
 
-      - name: Build native GUI bundle
+      - name: Build native GUI bundle (macOS ad-hoc signed)
+        if: startsWith(matrix.platform, 'darwin-')
+        shell: bash
+        env:
+          PI_GUI_PREBUILT_REMOTE_HOSTS_DIR: ${{ runner.temp }}/gui-remote-hosts
+        run: npm --workspace @lystar/code-gui run tauri -- build --ci --bundles "${{ matrix.bundle }}"
+
+      - name: Build native GUI bundle (unsigned platforms)
+        if: ${{ !startsWith(matrix.platform, 'darwin-') }}
         shell: bash
         env:
           PI_GUI_PREBUILT_REMOTE_HOSTS_DIR: ${{ runner.temp }}/gui-remote-hosts
         run: npm --workspace @lystar/code-gui run tauri -- build --ci --no-sign --bundles "${{ matrix.bundle }}"
 
+      - name: Verify macOS ad-hoc signed DMG
+        if: startsWith(matrix.platform, 'darwin-')
+        shell: bash
+        run: |
+          shopt -s nullglob
+          dmgs=(packages/gui/src-tauri/target/release/bundle/dmg/*.dmg)
+          test "${#dmgs[@]}" -eq 1
+          mount_dir=$(mktemp -d)
+          cleanup() {
+            hdiutil detach "$mount_dir" -quiet 2>/dev/null || true
+            rmdir "$mount_dir" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          hdiutil attach "${dmgs[0]}" -readonly -nobrowse -mountpoint "$mount_dir"
+          apps=("$mount_dir"/*.app)
+          test "${#apps[@]}" -eq 1
+          node packages/gui/scripts/verify-macos-bundle.mjs "${apps[0]}"
+          hdiutil detach "$mount_dir" -quiet
+          trap - EXIT
+          rmdir "$mount_dir"
+
       - name: Collect GUI release artifact
         shell: bash
-        env:
-          GUI_VERSION: ${{ github.ref_name }}
         run: |
-          version="${GUI_VERSION#gui-v}"
+          version=$(node -p 'require("./packages/gui/package.json").version')
           node scripts/collect-gui-beta-artifact.mjs \
             packages/gui/src-tauri/target/release/bundle \
             "$RUNNER_TEMP/gui-release" \
@@ -192,6 +294,7 @@ jobs:
           if-no-files-found: error
 
   release:
+    if: startsWith(github.ref, 'refs/tags/gui-v')
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -234,7 +337,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           version="${TAG#gui-v}"
-          notes=$'这是 LYStar Code GUI 的首个公开 Beta，安装包未签名，仅供测试。\n\nmacOS Gatekeeper 和 Windows SmartScreen 可能拦截或警告；本 Beta 不提供自动更新。Linux x64 已完成真实 AppImage 启动、Host 连接和正常退出验证；Linux ARM64、macOS ARM64/x64、Windows x64 仅通过对应 GitHub 原生 runner 构建，不声明实机运行通过。'
+          notes=$'这是 LYStar Code GUI 的 Beta 修复版。macOS App 与 GUI Host 使用 ad-hoc code signature，未使用 Developer ID 且未经过 Apple notarization；首次打开仍可能需要在“系统设置 > 隐私与安全性”中选择“仍要打开”，不要求执行终端 xattr。Windows 安装包未签名，可能触发 SmartScreen；本 Beta 不提供自动更新。Linux x64 已完成真实 AppImage 启动、Host 连接和正常退出验证；Linux ARM64、macOS ARM64/x64、Windows x64 已通过对应 GitHub 原生 runner 构建，其中 macOS 最终 DMG 已通过 App 与 Host 签名校验，但尚不声明三平台完整实机运行通过。'
           gh release create "$TAG" \
             --verify-tag \
             --prerelease \

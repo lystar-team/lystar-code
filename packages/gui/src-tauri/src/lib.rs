@@ -1,5 +1,6 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
+    env,
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
@@ -28,6 +29,7 @@ const MAX_DESKTOP_STATE_BYTES: usize = 1024 * 1024;
 const MAX_SSH_STDERR_BYTES: usize = 64 * 1024;
 const REMOTE_PREFACE: &[u8] = b"LYSTAR-GUI-HOST/1\n";
 const HOST_PAYLOAD_HEADER: &[u8] = b"LYSTAR-GUI-BINARY/1\n";
+const SSH_CREDENTIAL_SERVICE: &str = "com.lystar.code.ssh";
 
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -40,6 +42,11 @@ enum TransportStatus {
 #[serde(rename_all = "camelCase")]
 struct SshConnectionOptions {
     target: String,
+    user: Option<String>,
+    port: Option<u16>,
+    auth_method: Option<String>,
+    identity_file: Option<String>,
+    credential_id: Option<String>,
     platform: Option<String>,
     host_command: Option<String>,
 }
@@ -54,6 +61,22 @@ struct SshProbeResult {
     host_installed: bool,
     host_status: Option<Value>,
     message: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SshHostKeyStatus {
+    host: String,
+    port: u16,
+    known: bool,
+    fingerprints: Vec<String>,
+    trust_token: Option<String>,
+}
+
+struct PendingHostKey {
+    host: String,
+    port: u16,
+    lines: Vec<String>,
 }
 
 struct RemoteSystem {
@@ -95,6 +118,99 @@ struct GuiHostState {
     next_connection_id: AtomicU64,
     children: Mutex<HashMap<String, ManagedConnection>>,
     local_host: Mutex<Option<PathBuf>>,
+    ephemeral_credentials: Mutex<HashSet<String>>,
+    pending_host_keys: Mutex<HashMap<String, PendingHostKey>>,
+}
+
+fn credential_entry(credential_id: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(SSH_CREDENTIAL_SERVICE, credential_id).map_err(|error| error.to_string())
+}
+
+fn validate_credential_id(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 180
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+    {
+        return Err("SSH 凭据标识无效".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn store_ssh_password(
+    state: State<'_, GuiHostState>,
+    profile_id: String,
+    password: String,
+    remember: bool,
+) -> Result<String, String> {
+    validate_credential_id(&profile_id)?;
+    if password.is_empty() || password.len() > 16 * 1024 {
+        return Err("SSH 密码为空或超过长度上限".into());
+    }
+    let credential_id = if remember {
+        format!("profile-{profile_id}")
+    } else {
+        format!(
+            "session-{profile_id}-{}",
+            state.next_connection_id.fetch_add(1, Ordering::Relaxed) + 1
+        )
+    };
+    credential_entry(&credential_id)?
+        .set_password(&password)
+        .map_err(|error| format!("无法写入系统凭据库：{error}"))?;
+    if !remember {
+        state
+            .ephemeral_credentials
+            .lock()
+            .unwrap()
+            .insert(credential_id.clone());
+    }
+    Ok(credential_id)
+}
+
+#[tauri::command]
+fn delete_ssh_password(
+    state: State<'_, GuiHostState>,
+    credential_id: String,
+) -> Result<(), String> {
+    validate_credential_id(&credential_id)?;
+    state
+        .ephemeral_credentials
+        .lock()
+        .unwrap()
+        .remove(&credential_id);
+    match credential_entry(&credential_id)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!("无法删除系统凭据：{error}")),
+    }
+}
+
+pub fn run_ssh_askpass() -> bool {
+    let Ok(credential_id) = env::var("LYSTAR_SSH_ASKPASS_CREDENTIAL") else {
+        return false;
+    };
+    let prompt = env::args().nth(1).unwrap_or_default().to_ascii_lowercase();
+    if prompt.contains("yes/no") || prompt.contains("authenticity of host") {
+        eprintln!("SSH Host key 尚未确认");
+        return true;
+    }
+    let password = credential_entry(&credential_id).and_then(|entry| {
+        entry
+            .get_password()
+            .map_err(|error| format!("无法读取系统凭据：{error}"))
+    });
+    match password {
+        Ok(password) => {
+            print!("{password}");
+            true
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            true
+        }
+    }
 }
 
 fn next_connection_id(state: &GuiHostState) -> String {
@@ -207,6 +323,178 @@ fn validate_ssh_target(target: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn ssh_config_destination(profile: &SshConnectionOptions) -> Result<(String, u16), String> {
+    validate_ssh_target(&profile.target)?;
+    let mut command = Command::new("ssh");
+    command.arg("-G");
+    if let Some(user) = profile.user.as_deref() {
+        command.args(["-l", user]);
+    }
+    if let Some(port) = profile.port {
+        command.args(["-p", &port.to_string()]);
+    }
+    let output = command
+        .arg(&profile.target)
+        .output()
+        .map_err(|error| format!("无法读取 OpenSSH 配置：{error}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    let mut host = profile.target.clone();
+    let mut port = profile.port.unwrap_or(22);
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if let Some((key, value)) = line.split_once(' ') {
+            match key {
+                "hostname" if !value.trim().is_empty() => host = value.trim().to_string(),
+                "port" => port = value.trim().parse().unwrap_or(port),
+                "hostkeyalias" if !value.trim().is_empty() => host = value.trim().to_string(),
+                _ => {}
+            }
+        }
+    }
+    Ok((host, port))
+}
+
+fn ssh_home_dir() -> Result<PathBuf, String> {
+    env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .map(PathBuf::from)
+        .ok_or_else(|| "无法确定用户主目录".to_string())
+}
+
+fn known_hosts_lookup(host: &str, port: u16) -> String {
+    if port == 22 {
+        host.to_string()
+    } else {
+        format!("[{host}]:{port}")
+    }
+}
+
+#[tauri::command]
+fn inspect_ssh_host_key(
+    state: State<'_, GuiHostState>,
+    profile: SshConnectionOptions,
+) -> Result<SshHostKeyStatus, String> {
+    let (host, port) = ssh_config_destination(&profile)?;
+    let known_hosts = ssh_home_dir()?.join(".ssh").join("known_hosts");
+    let lookup = known_hosts_lookup(&host, port);
+    let known = known_hosts.is_file()
+        && Command::new("ssh-keygen")
+            .args(["-F", &lookup, "-f"])
+            .arg(&known_hosts)
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+    if known {
+        return Ok(SshHostKeyStatus {
+            host,
+            port,
+            known: true,
+            fingerprints: Vec::new(),
+            trust_token: None,
+        });
+    }
+
+    let scan = Command::new("ssh-keyscan")
+        .args(["-T", "10", "-p", &port.to_string(), &host])
+        .output()
+        .map_err(|error| format!("无法启动 ssh-keyscan：{error}"))?;
+    let lines = String::from_utf8_lossy(&scan.stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        let detail = String::from_utf8_lossy(&scan.stderr).trim().to_string();
+        return Err(if detail.is_empty() {
+            "未能读取远端 SSH Host key".into()
+        } else {
+            detail
+        });
+    }
+
+    let mut fingerprint_process = Command::new("ssh-keygen")
+        .args(["-lf", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("无法启动 ssh-keygen：{error}"))?;
+    fingerprint_process
+        .stdin
+        .take()
+        .ok_or_else(|| "无法写入 ssh-keygen".to_string())?
+        .write_all(format!("{}\n", lines.join("\n")).as_bytes())
+        .map_err(|error| error.to_string())?;
+    let fingerprints = String::from_utf8_lossy(
+        &fingerprint_process
+            .wait_with_output()
+            .map_err(|error| error.to_string())?
+            .stdout,
+    )
+    .lines()
+    .map(str::to_string)
+    .collect::<Vec<_>>();
+    let trust_token = format!(
+        "host-key-{}",
+        state.next_connection_id.fetch_add(1, Ordering::Relaxed) + 1
+    );
+    state.pending_host_keys.lock().unwrap().insert(
+        trust_token.clone(),
+        PendingHostKey {
+            host: host.clone(),
+            port,
+            lines,
+        },
+    );
+    Ok(SshHostKeyStatus {
+        host,
+        port,
+        known: false,
+        fingerprints,
+        trust_token: Some(trust_token),
+    })
+}
+
+#[tauri::command]
+fn trust_ssh_host_key(state: State<'_, GuiHostState>, trust_token: String) -> Result<(), String> {
+    let pending = state
+        .pending_host_keys
+        .lock()
+        .unwrap()
+        .remove(&trust_token)
+        .ok_or_else(|| "SSH Host key 确认已失效".to_string())?;
+    let ssh_dir = ssh_home_dir()?.join(".ssh");
+    fs::create_dir_all(&ssh_dir).map_err(|error| error.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&ssh_dir, fs::Permissions::from_mode(0o700))
+            .map_err(|error| error.to_string())?;
+    }
+    let path = ssh_dir.join("known_hosts");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|error| error.to_string())?;
+    writeln!(
+        file,
+        "# LYStar Code confirmed {}:{}",
+        pending.host, pending.port
+    )
+    .map_err(|error| error.to_string())?;
+    for line in pending.lines {
+        writeln!(file, "{line}").map_err(|error| error.to_string())?;
+    }
+    file.sync_all().map_err(|error| error.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 fn validate_host_command(command: &str) -> Result<(), String> {
     if command.is_empty()
         || command.len() > 512
@@ -231,28 +519,139 @@ fn host_command(profile: &SshConnectionOptions, platform: &str) -> Result<String
     Ok(command)
 }
 
-fn ssh_base_args() -> Vec<&'static str> {
-    vec![
+fn configure_password_askpass(command: &mut Command, profile: &SshConnectionOptions) -> Result<(), String> {
+    let credential_id = profile
+        .credential_id
+        .as_deref()
+        .ok_or_else(|| "密码认证需要先输入 SSH 密码".to_string())?;
+    validate_credential_id(credential_id)?;
+    let executable = env::current_exe().map_err(|error| error.to_string())?;
+    command
+        .env("SSH_ASKPASS", executable)
+        .env("SSH_ASKPASS_REQUIRE", "force")
+        .env("LYSTAR_SSH_ASKPASS_CREDENTIAL", credential_id);
+    if env::var_os("DISPLAY").is_none() {
+        command.env("DISPLAY", "lystar-ssh-askpass");
+    }
+    Ok(())
+}
+
+fn configure_ssh(command: &mut Command, profile: &SshConnectionOptions) -> Result<(), String> {
+    validate_ssh_target(&profile.target)?;
+    command.args([
         "-T",
-        "-o",
-        "BatchMode=yes",
         "-o",
         "ConnectTimeout=10",
         "-o",
         "ServerAliveInterval=15",
         "-o",
         "ServerAliveCountMax=3",
-    ]
+    ]);
+    if let Some(user) = profile.user.as_deref() {
+        if user.is_empty()
+            || user.len() > 128
+            || !user
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+        {
+            return Err("SSH 用户名无效".into());
+        }
+        command.args(["-l", user]);
+    }
+    if let Some(port) = profile.port {
+        command.args(["-p", &port.to_string()]);
+    }
+    if let Some(identity_file) = profile.identity_file.as_deref() {
+        if identity_file.is_empty() || identity_file.len() > 4096 {
+            return Err("SSH 密钥路径无效".into());
+        }
+        command.args(["-i", identity_file]);
+    }
+    match profile.auth_method.as_deref().unwrap_or("agent") {
+        "agent" => {
+            command.args(["-o", "BatchMode=yes"]);
+        }
+        "key" => {
+            if profile.identity_file.is_none() {
+                return Err("密钥认证需要选择私钥文件".into());
+            }
+            command.args(["-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes"]);
+        }
+        "password" => {
+            command.args([
+                "-o",
+                "BatchMode=no",
+                "-o",
+                "NumberOfPasswordPrompts=1",
+                "-o",
+                "PubkeyAuthentication=no",
+                "-o",
+                "PreferredAuthentications=password,keyboard-interactive",
+            ]);
+            configure_password_askpass(command, profile)?;
+        }
+        _ => return Err("SSH 认证方式无效".into()),
+    }
+    command.arg(&profile.target);
+    Ok(())
+}
+
+fn configure_scp(command: &mut Command, profile: &SshConnectionOptions) -> Result<String, String> {
+    validate_ssh_target(&profile.target)?;
+    command.args(["-r", "-q", "-o", "ConnectTimeout=10"]);
+    if let Some(port) = profile.port {
+        command.args(["-P", &port.to_string()]);
+    }
+    if let Some(identity_file) = profile.identity_file.as_deref() {
+        command.args(["-i", identity_file]);
+    }
+    match profile.auth_method.as_deref().unwrap_or("agent") {
+        "agent" => {
+            command.args(["-o", "BatchMode=yes"]);
+        }
+        "key" => {
+            if profile.identity_file.is_none() {
+                return Err("密钥认证需要选择私钥文件".into());
+            }
+            command.args(["-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes"]);
+        }
+        "password" => {
+            command.args([
+                "-o",
+                "BatchMode=no",
+                "-o",
+                "NumberOfPasswordPrompts=1",
+                "-o",
+                "PubkeyAuthentication=no",
+                "-o",
+                "PreferredAuthentications=password,keyboard-interactive",
+            ]);
+            configure_password_askpass(command, profile)?;
+        }
+        _ => return Err("SSH 认证方式无效".into()),
+    }
+    if let Some(user) = profile.user.as_deref() {
+        if user.is_empty()
+            || user.len() > 128
+            || !user
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+        {
+            return Err("SSH 用户名无效".into());
+        }
+        Ok(format!("{user}@{}", profile.target))
+    } else {
+        Ok(profile.target.clone())
+    }
 }
 
 fn ssh_remote_output(
     profile: &SshConnectionOptions,
     remote_args: &[&str],
 ) -> Result<std::process::Output, String> {
-    validate_ssh_target(&profile.target)?;
-    Command::new("ssh")
-        .args(ssh_base_args())
-        .arg(&profile.target)
+    let mut command = Command::new("ssh");
+    configure_ssh(&mut command, profile)?;
+    command
         .args(remote_args)
         .output()
         .map_err(|error| format!("无法启动 OpenSSH：{error}"))
@@ -455,8 +854,7 @@ fn open_ssh_host(
     let command = host_command(&profile, &platform)?;
     let connection_id = next_connection_id(&state);
     let mut process = Command::new("ssh");
-    process.args(ssh_base_args());
-    process.arg(&profile.target);
+    configure_ssh(&mut process, &profile)?;
     append_host_command(&mut process, &platform, &command, &["connect", "--stdio"]);
     process
         .stdin(Stdio::piped())
@@ -579,7 +977,7 @@ fn host_output(
 ) -> Result<std::process::Output, String> {
     let executable = host_command(profile, platform)?;
     let mut command = Command::new("ssh");
-    command.args(ssh_base_args()).arg(&profile.target);
+    configure_ssh(&mut command, profile)?;
     append_host_command(&mut command, platform, &executable, remote_args);
     command
         .output()
@@ -757,10 +1155,10 @@ fn scp_runtime(
     destination: &str,
 ) -> Result<(), String> {
     let mut command = Command::new("scp");
-    command.args(["-r", "-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]);
+    let target = configure_scp(&mut command, profile)?;
     command.args(sources);
     let output = command
-        .arg(format!("{}:{destination}/", profile.target))
+        .arg(format!("{target}:{destination}/"))
         .output()
         .map_err(|error| format!("无法启动 SCP：{error}"))?;
     if output.status.success() {
@@ -982,6 +1380,22 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(GuiHostState::default())
+        .setup(|app| {
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let Some(window) = app.get_webview_window("main") else { return Ok(()) };
+            #[cfg(target_os = "macos")]
+            let _ = window_vibrancy::apply_vibrancy(
+                &window,
+                window_vibrancy::NSVisualEffectMaterial::Sidebar,
+                Some(window_vibrancy::NSVisualEffectState::FollowsWindowActiveState),
+                None,
+            );
+            #[cfg(target_os = "windows")]
+            let _ = window_vibrancy::apply_mica(&window, None);
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            let _ = app;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             open_gui_host,
             open_ssh_host,
@@ -989,6 +1403,10 @@ pub fn run() {
             close_gui_host,
             probe_ssh_connection,
             install_ssh_host,
+            inspect_ssh_host_key,
+            trust_ssh_host_key,
+            store_ssh_password,
+            delete_ssh_password,
             load_desktop_state,
             save_desktop_state
         ])
@@ -997,7 +1415,15 @@ pub fn run() {
 
     app.run(|app, event| {
         if matches!(event, RunEvent::Exit) {
-            close_all_connections(app.state::<GuiHostState>().inner());
+            let state = app.state::<GuiHostState>();
+            close_all_connections(state.inner());
+            for credential_id in state.ephemeral_credentials.lock().unwrap().drain() {
+                let _ = credential_entry(&credential_id).and_then(|entry| {
+                    entry
+                        .delete_credential()
+                        .map_err(|error| error.to_string())
+                });
+            }
         }
     });
 }

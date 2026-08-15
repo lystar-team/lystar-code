@@ -82,6 +82,13 @@ for (const { platform, file } of expectedAssets) {
 const manifest = {
 	channel: "beta",
 	signed: false,
+	signing: {
+		"linux-x64": { codeSignature: "none" },
+		"linux-arm64": { codeSignature: "none" },
+		"darwin-arm64": { codeSignature: "adhoc", notarized: false },
+		"darwin-x64": { codeSignature: "adhoc", notarized: false },
+		"windows-x64": { codeSignature: "none" },
+	},
 	version,
 	repository,
 	assets,

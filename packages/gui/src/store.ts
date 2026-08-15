@@ -7,6 +7,7 @@ import {
 	type GuiClientSnapshot,
 	GuiProtocolClient,
 	GuiProtocolError,
+	type HostDirectoryListing,
 	type JsonValue,
 	type ModelRef,
 	type OperationSnapshot,
@@ -24,12 +25,17 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
 	type DesktopProject,
+	deleteSshPassword,
+	inspectSshHostKey,
 	installSshHost,
 	loadDesktopState,
 	probeSshConnection,
 	type SshConnectionProfile,
+	type SshHostKeyStatus,
 	type SshProbeResult,
 	saveDesktopState,
+	storeSshPassword,
+	trustSshHostKey,
 } from "./desktop-state.ts";
 import { createByteTransport } from "./transport.ts";
 
@@ -45,6 +51,7 @@ export type SettingsPage =
 	| "update"
 	| "diagnostics"
 	| "about";
+export type SettingsHostId = "all" | "local" | string;
 
 export type ProjectSummary = DesktopProject;
 export type { SshConnectionProfile, SshProbeResult };
@@ -141,6 +148,32 @@ export interface ResourceViewer {
 	url?: string;
 }
 
+export interface ProjectOpenFailure {
+	stage: "connect" | "sessions" | "session" | "transcript";
+	message: string;
+}
+
+export interface PendingHostKeyConfirmation {
+	profileId: string;
+	profileName: string;
+	status: SshHostKeyStatus;
+}
+
+export interface RemoteDirectoryBrowser {
+	connectionId: string;
+	listing?: HostDirectoryListing;
+	loading: boolean;
+	error?: string;
+	showHidden: boolean;
+}
+
+export interface PendingExternalResource {
+	target: string;
+	line?: number;
+	column?: number;
+	matchingProjectId?: string;
+}
+
 export interface SkillSummary {
 	name: string;
 	description: string;
@@ -160,6 +193,10 @@ export interface AppSnapshot {
 	connectionError?: string;
 	capabilities: readonly string[];
 	projects: readonly ProjectSummary[];
+	projectOpenFailures: Readonly<Record<string, ProjectOpenFailure>>;
+	pendingHostKey?: PendingHostKeyConfirmation;
+	remoteDirectoryBrowser?: RemoteDirectoryBrowser;
+	pendingExternalResource?: PendingExternalResource;
 	connections: readonly SshConnectionProfile[];
 	connectionProbes: Readonly<Record<string, SshProbeResult>>;
 	activeConnectionId: "local" | string;
@@ -170,6 +207,7 @@ export interface AppSnapshot {
 	selectedSession?: SessionStateSnapshot;
 	lease?: ControlLease;
 	transcript: readonly TranscriptItem[];
+	transcriptGeneration?: string;
 	previousCursor?: string;
 	hasMorePrevious: boolean;
 	hasMoreRecent: boolean;
@@ -186,6 +224,7 @@ export interface AppSnapshot {
 	gitStatus?: GitStatus;
 	gitDiff?: GitDiff;
 	gitInspectorOpen: boolean;
+	sidebarCollapsed: boolean;
 	inspectorWidth: number;
 	inspectorSplit: number;
 	resourceViewer?: ResourceViewer;
@@ -196,6 +235,11 @@ export interface AppSnapshot {
 	toast?: string;
 	theme: ThemeMode;
 	settingsPage?: SettingsPage;
+	settingsHostId: SettingsHostId;
+	settingsHostConnected: boolean;
+	settingsHostError?: string;
+	settingsProjectId?: string;
+	hostInstructions: readonly ProjectInstruction[];
 	sessionAction?: SessionAction;
 	pendingActions: readonly string[];
 	modelAuthProvider?: string;
@@ -215,6 +259,42 @@ const GUI_COMMANDS: CompletionResult["items"] = [
 	{ value: "/models ", label: "models", description: "打开模型与认证", kind: "command" },
 	{ value: "/changes ", label: "changes", description: "打开工作区变更", kind: "command" },
 ];
+
+interface HostConnection {
+	connectionId: "local" | string;
+	client: GuiProtocolClient;
+	initial: {
+		sessions: SessionStateSnapshot[];
+		operations: OperationSnapshot[];
+		pendingUiRequests: PendingUiRequest[];
+	};
+}
+
+interface PreparedSession {
+	lease?: ControlLease;
+	snapshot: SessionStateSnapshot;
+	page: TranscriptPage;
+	readOnlyError?: unknown;
+}
+
+async function waitForClient(client: GuiProtocolClient): Promise<void> {
+	if (client.getSnapshot().connected) return;
+	await new Promise<void>((resolve, reject) => {
+		let unsubscribe = () => {};
+		const timeout = window.setTimeout(() => {
+			unsubscribe();
+			reject(new Error(client.getSnapshot().lastError ?? "GUI 后台服务连接超时"));
+		}, 10_000);
+		unsubscribe = client.subscribe(() => {
+			const snapshot = client.getSnapshot();
+			if (!snapshot.connected && !snapshot.lastError) return;
+			window.clearTimeout(timeout);
+			unsubscribe();
+			if (snapshot.connected) resolve();
+			else reject(new Error(snapshot.lastError ?? "GUI 后台服务连接失败"));
+		});
+	});
+}
 
 function readJson<T>(key: string, fallback: T): T {
 	try {
@@ -312,8 +392,14 @@ export class GuiAppStore {
 	private unsubscribeEvents?: () => void;
 	private readonly listeners = new Set<() => void>();
 	private projects: ProjectSummary[] = [];
+	private projectOpenFailures: Record<string, ProjectOpenFailure> = {};
 	private connections: SshConnectionProfile[] = [];
+	private readonly sessionCredentialIds = new Map<string, string>();
 	private connectionProbes: Record<string, SshProbeResult> = {};
+	private pendingHostKey?: PendingHostKeyConfirmation;
+	private pendingHostKeyResolver?: { resolve(): void; reject(error: Error): void };
+	private directoryConnection?: HostConnection;
+	private remoteDirectoryBrowser?: RemoteDirectoryBrowser;
 	private activeConnectionId: "local" | string = "local";
 	private currentProjectId?: string;
 	private lastProjectId?: string;
@@ -325,6 +411,7 @@ export class GuiAppStore {
 	private skills: SkillSummary[] = [];
 	private projectInstructions: ProjectInstruction[] = [];
 	private pendingUi: PendingUiRequest[] = [];
+	private readonly pendingUiClients = new Map<string, GuiProtocolClient>();
 	private lease?: ControlLease;
 	private selectedSessionPath?: string;
 	private selectedSession?: SessionStateSnapshot;
@@ -345,12 +432,22 @@ export class GuiAppStore {
 	private gitStatus?: GitStatus;
 	private gitDiff?: GitDiff;
 	private gitInspectorOpen = false;
+	private sidebarCollapsed = false;
 	private inspectorWidth = 480;
 	private inspectorSplit = 0.34;
 	private resourceViewer?: ResourceViewer;
+	private pendingExternalResource?: PendingExternalResource;
 	private statusText?: string;
 	private toast?: string;
+	private startupConnectionError?: string;
 	private settingsPage?: SettingsPage;
+	private settingsHostId: SettingsHostId = "all";
+	private settingsHostError?: string;
+	private settingsProjectId?: string;
+	private hostInstructions: ProjectInstruction[] = [];
+	private settingsConnection?: HostConnection;
+	private settingsConnectionOwned = false;
+	private unsubscribeSettingsEvents?: () => void;
 	private sessionAction?: SessionAction;
 	private readonly pendingActions = new Set<string>();
 	private modelAuthProvider?: string;
@@ -378,23 +475,40 @@ export class GuiAppStore {
 
 	private async openConnection(): Promise<void> {
 		await this.loadRegistry();
-		const initialProject = this.projects.find((project) => project.id === this.lastProjectId) ?? this.projects[0];
-		this.activeConnectionId = initialProject?.connectionId ?? "local";
-		if (initialProject) {
-			this.currentProjectId = initialProject.id;
-			this.currentCwd = initialProject.cwd;
-			this.sessions = [...(initialProject.recentSessions ?? [])];
-			this.publish();
-		}
-		await this.connectCurrentHost();
 		const defaultCwd = import.meta.env.DEV ? __LYSTAR_GUI_DEFAULT_CWD__ : "";
 		if (defaultCwd && this.projects.length === 0) {
 			const project = await this.addProject(defaultCwd, "local");
 			await this.selectProject(project.id);
-		} else if (initialProject) {
-			await this.selectProject(initialProject.id);
+			return;
 		}
-		this.publish();
+
+		const initialProject = this.projects.find((project) => project.id === this.lastProjectId) ?? this.projects[0];
+		if (initialProject) {
+			try {
+				await this.selectProject(initialProject.id);
+				return;
+			} catch {}
+		}
+
+		const localFallback = this.projects.find(
+			(project) => project.connectionId === "local" && project.id !== initialProject?.id,
+		);
+		if (localFallback) {
+			try {
+				await this.selectProject(localFallback.id);
+				return;
+			} catch {}
+		}
+
+		try {
+			const connection = await this.createHostConnection("local");
+			this.activateHostConnection(connection);
+			this.startupConnectionError = undefined;
+			void this.loadHostMetadata();
+		} catch (error) {
+			this.startupConnectionError = userErrorMessage(error);
+			this.publish();
+		}
 	}
 
 	private async loadRegistry(): Promise<void> {
@@ -405,6 +519,7 @@ export class GuiAppStore {
 		this.lastProjectId = state.selectedProjectId;
 		this.inspectorWidth = state.layout?.inspectorWidth ?? 480;
 		this.inspectorSplit = state.layout?.inspectorSplit ?? 0.34;
+		this.sidebarCollapsed = state.layout?.sidebarCollapsed === true;
 		if (this.projects.length === 0) {
 			const legacy = readJson<Array<{ cwd: string; name: string }>>(PROJECTS_KEY, []);
 			this.projects = legacy.flatMap((project) =>
@@ -424,48 +539,109 @@ export class GuiAppStore {
 		this.registryLoaded = true;
 	}
 
-	private async persistRegistry(): Promise<void> {
-		const selectedProjectId = this.currentProjectId ?? this.lastProjectId;
+	private async persistRegistry(selectedProjectId = this.lastProjectId, projects = this.projects): Promise<void> {
 		await saveDesktopState({
 			version: 1,
 			connections: this.connections,
-			projects: this.projects,
+			projects,
 			...(selectedProjectId ? { selectedProjectId } : {}),
-			layout: { inspectorWidth: this.inspectorWidth, inspectorSplit: this.inspectorSplit },
+			layout: {
+				inspectorWidth: this.inspectorWidth,
+				inspectorSplit: this.inspectorSplit,
+				...(this.sidebarCollapsed ? { sidebarCollapsed: true } : {}),
+			},
 		});
 	}
 
-	private async connectCurrentHost(): Promise<void> {
-		const profile =
-			this.activeConnectionId === "local"
-				? undefined
-				: this.connections.find((connection) => connection.id === this.activeConnectionId);
-		if (this.activeConnectionId !== "local" && !profile) throw new Error("未找到 SSH 连接配置");
+	private usableSshProfile(profile: SshConnectionProfile): SshConnectionProfile {
+		const credentialId =
+			this.sessionCredentialIds.get(profile.id) ?? (profile.rememberPassword ? profile.credentialId : undefined);
+		if ((profile.authMethod ?? "agent") === "password" && !credentialId) {
+			throw new Error(`SSH 连接“${profile.name}”需要输入密码`);
+		}
+		return { ...profile, ...(credentialId ? { credentialId } : {}) };
+	}
+
+	private async ensureSshHostKey(profile: SshConnectionProfile): Promise<void> {
+		if (!isTauri()) return;
+		const status = await inspectSshHostKey(profile);
+		if (status.known) return;
+		if (!status.trustToken || status.fingerprints.length === 0) {
+			throw new Error("远端未返回可确认的 SSH Host key 指纹");
+		}
+		await new Promise<void>((resolve, reject) => {
+			this.pendingHostKey = { profileId: profile.id, profileName: profile.name, status };
+			this.pendingHostKeyResolver = { resolve, reject };
+			this.publish();
+		});
+	}
+
+	async respondToHostKeyConfirmation(confirmed: boolean): Promise<void> {
+		const pending = this.pendingHostKey;
+		const resolver = this.pendingHostKeyResolver;
+		if (!pending || !resolver) return;
+		this.pendingHostKey = undefined;
+		this.pendingHostKeyResolver = undefined;
+		try {
+			if (!confirmed || !pending.status.trustToken) throw new Error("已取消 SSH Host key 确认");
+			await trustSshHostKey(pending.status.trustToken);
+			resolver.resolve();
+		} catch (error) {
+			resolver.reject(error instanceof Error ? error : new Error(String(error)));
+		} finally {
+			this.publish();
+		}
+	}
+
+	private async createHostConnection(connectionId: "local" | string): Promise<HostConnection> {
+		const storedProfile =
+			connectionId === "local" ? undefined : this.connections.find((connection) => connection.id === connectionId);
+		if (connectionId !== "local" && !storedProfile) throw new Error("未找到 SSH 连接配置");
+		const profile = storedProfile ? this.usableSshProfile(storedProfile) : undefined;
+		if (profile) await this.ensureSshHostKey(profile);
 		const transport = await createByteTransport(profile ? { kind: "ssh", profile } : { kind: "local" });
-		const clientKey = `${CLIENT_ID_KEY}:${this.activeConnectionId}`;
+		const clientKey = `${CLIENT_ID_KEY}:${connectionId}`;
 		const clientInstanceId = localStorage.getItem(clientKey) || crypto.randomUUID();
 		localStorage.setItem(clientKey, clientInstanceId);
 		const client = new GuiProtocolClient(transport, clientInstanceId);
-		this.client = client;
-		this.clientSnapshot = client.getSnapshot();
-		this.unsubscribeClient = client.subscribe(() => {
-			if (this.client !== client) return;
-			this.clientSnapshot = client.getSnapshot();
+		try {
+			await client.connect();
+			await waitForClient(client);
+			const initial = await client.request<HostConnection["initial"]>({ command: "get_snapshot" });
+			return { connectionId, client, initial };
+		} catch (error) {
+			await client.close().catch(() => {});
+			throw error;
+		}
+	}
+
+	private activateHostConnection(connection: HostConnection): void {
+		this.unsubscribeClient?.();
+		this.unsubscribeEvents?.();
+		this.activeConnectionId = connection.connectionId;
+		this.client = connection.client;
+		this.clientSnapshot = connection.client.getSnapshot();
+		this.pendingUi = connection.initial.pendingUiRequests;
+		this.unsubscribeClient = connection.client.subscribe(() => {
+			if (this.client !== connection.client) return;
+			this.clientSnapshot = connection.client.getSnapshot();
 			if (this.selectedSessionPath)
 				this.selectedSession = this.clientSnapshot.sessions.get(this.selectedSessionPath) ?? this.selectedSession;
 			this.publish();
 		});
-		this.unsubscribeEvents = client.onEvent((event) => void this.handleEvent(event));
-		await client.connect();
-		await this.waitUntilConnected();
-		const initial = await client.request<{
-			sessions: SessionStateSnapshot[];
-			operations: OperationSnapshot[];
-			pendingUiRequests: PendingUiRequest[];
-		}>({ command: "get_snapshot" });
-		this.pendingUi = initial.pendingUiRequests;
-		this.currentOperation = initial.operations.find((operation) => ACTIVE_OPERATION_STATUSES.has(operation.status));
-		await Promise.all([this.loadModelData(), this.loadAbout(), this.loadDiagnostics(), this.loadConnectionStatus()]);
+		this.unsubscribeEvents = connection.client.onEvent((event) => void this.handleEvent(event));
+	}
+
+	private async loadHostMetadata(): Promise<void> {
+		const results = await Promise.allSettled([
+			this.loadModelData(),
+			this.loadAbout(),
+			this.loadDiagnostics(),
+			this.loadConnectionStatus(),
+		]);
+		const failed = results.find((result) => result.status === "rejected");
+		if (failed?.status === "rejected") this.statusText = `部分 Host 信息加载失败：${userErrorMessage(failed.reason)}`;
+		this.publish();
 	}
 
 	private async disconnectCurrentHost(detachRemoteOperation = false): Promise<void> {
@@ -496,30 +672,127 @@ export class GuiAppStore {
 		this.publish();
 	}
 
+	toggleSidebar(): void {
+		this.sidebarCollapsed = !this.sidebarCollapsed;
+		this.publish();
+		void this.persistRegistry();
+	}
+
 	openSettings(page: SettingsPage = "general"): void {
 		this.settingsPage = page;
-		const load =
-			page === "general"
-				? this.loadProjectInstructions()
-				: page === "connections"
-					? this.loadConnectionStatus()
-					: page === "models"
-						? this.loadModels()
-						: page === "skills"
-							? this.loadSkills()
-							: page === "update"
-								? this.checkForUpdates()
-								: page === "diagnostics"
-									? this.loadDiagnostics()
-									: page === "about"
-										? this.loadAbout()
-										: undefined;
-		if (load) void load.catch((error) => this.showError(error));
-		this.publish();
+		const hostScoped = ["general", "models", "skills", "diagnostics", "about"].includes(page);
+		const target = hostScoped && this.settingsHostId === "all" ? this.activeConnectionId : this.settingsHostId;
+		if (target !== "all") void this.selectSettingsHost(target).catch((error) => this.showError(error));
+		else this.publish();
+	}
+
+	async selectSettingsHost(hostId: SettingsHostId): Promise<void> {
+		await this.disposeSettingsConnection();
+		this.settingsHostId = hostId;
+		this.settingsHostError = undefined;
+		this.settingsProjectId = undefined;
+		this.hostInstructions = [];
+		if (hostId === "all") {
+			this.publish();
+			return;
+		}
+		try {
+			const connection =
+				hostId === this.activeConnectionId && this.client?.getSnapshot().connected
+					? {
+							connectionId: hostId,
+							client: this.client,
+							initial: await this.client.request<HostConnection["initial"]>({ command: "get_snapshot" }),
+						}
+					: await this.createHostConnection(hostId);
+			this.settingsConnection = connection;
+			this.settingsConnectionOwned = connection.client !== this.client;
+			if (this.settingsConnectionOwned) {
+				this.unsubscribeSettingsEvents = connection.client.onEvent(
+					(event) => void this.handleEvent(event, connection.client),
+				);
+			}
+			const capabilities = connection.client.getSnapshot().hello?.capabilities ?? [];
+			const project =
+				this.projects.find(
+					(candidate) => candidate.connectionId === hostId && candidate.id === this.currentProjectId,
+				) ?? this.projects.find((candidate) => candidate.connectionId === hostId);
+			this.settingsProjectId = project?.id;
+			const [instructions, models, providers, diagnostics, about, skills, projectInstructions] =
+				await Promise.allSettled([
+					capabilities.includes("host-instructions")
+						? connection.client.request<ProjectInstruction[]>({ command: "list_host_instructions" })
+						: Promise.resolve([]),
+					capabilities.includes("models")
+						? connection.client.request<ModelSummary[]>({ command: "list_models" })
+						: Promise.resolve([]),
+					capabilities.includes("models")
+						? connection.client.request<ModelProviderSummary[]>({ command: "list_model_providers" })
+						: Promise.resolve([]),
+					capabilities.includes("diagnostics")
+						? connection.client.request<JsonValue>({
+								command: "get_diagnostics",
+								...(project ? { cwd: project.cwd } : {}),
+							})
+						: Promise.resolve(undefined),
+					capabilities.includes("about")
+						? connection.client.request<JsonValue>({ command: "get_about" })
+						: Promise.resolve(undefined),
+					project && capabilities.includes("skills")
+						? connection.client.request<{ skills: SkillSummary[]; diagnostics: JsonValue }>({
+								command: "list_skills",
+								cwd: project.cwd,
+							})
+						: Promise.resolve({ skills: [], diagnostics: [] }),
+					project && capabilities.includes("project-instructions")
+						? connection.client.request<ProjectInstruction[]>({
+								command: "list_project_instructions",
+								cwd: project.cwd,
+							})
+						: Promise.resolve([]),
+				]);
+			if (instructions.status === "fulfilled") this.hostInstructions = instructions.value;
+			if (models.status === "fulfilled") this.models = models.value;
+			if (providers.status === "fulfilled") this.modelProviders = providers.value;
+			if (diagnostics.status === "fulfilled") this.diagnostics = diagnostics.value;
+			if (about.status === "fulfilled") this.about = about.value;
+			if (skills.status === "fulfilled") {
+				this.skills = skills.value.skills;
+				this.skillDiagnostics = skills.value.diagnostics;
+			}
+			if (projectInstructions.status === "fulfilled") this.projectInstructions = projectInstructions.value;
+			const failure = [instructions, models, providers, diagnostics, about, skills, projectInstructions].find(
+				(result) => result.status === "rejected",
+			);
+			if (failure?.status === "rejected") this.settingsHostError = userErrorMessage(failure.reason);
+		} catch (error) {
+			this.settingsHostError = userErrorMessage(error);
+			throw error;
+		} finally {
+			this.publish();
+		}
+	}
+
+	private async disposeSettingsConnection(): Promise<void> {
+		this.unsubscribeSettingsEvents?.();
+		this.unsubscribeSettingsEvents = undefined;
+		const connection = this.settingsConnection;
+		const owned = this.settingsConnectionOwned;
+		this.settingsConnection = undefined;
+		this.settingsConnectionOwned = false;
+		if (owned) await connection?.client.close().catch(() => {});
 	}
 
 	closeSettings(): void {
 		this.settingsPage = undefined;
+		void this.disposeSettingsConnection().then(() => {
+			this.settingsHostId = "all";
+			this.hostInstructions = [];
+			this.settingsHostError = undefined;
+			this.settingsProjectId = undefined;
+			void Promise.allSettled([this.loadHostMetadata(), this.loadSkills(), this.loadProjectInstructions()]);
+			this.publish();
+		});
 		this.publish();
 	}
 
@@ -536,46 +809,176 @@ export class GuiAppStore {
 		await this.selectProject(project.id);
 	}
 
+	private async prepareSession(client: GuiProtocolClient, sessionPath: string): Promise<PreparedSession> {
+		if (client === this.client && this.selectedSessionPath === sessionPath && this.lease && this.selectedSession) {
+			return {
+				lease: this.lease,
+				snapshot: this.selectedSession,
+				page: await client.request<TranscriptPage>({ command: "read_transcript", sessionPath, limit: 120 }),
+			};
+		}
+		try {
+			const result = await client.request<{ lease: ControlLease; snapshot: SessionStateSnapshot }>({
+				command: "acquire_session",
+				sessionPath,
+				clientInstanceId: client.clientInstanceId,
+			});
+			try {
+				return {
+					...result,
+					page: await client.request<TranscriptPage>({ command: "read_transcript", sessionPath, limit: 120 }),
+				};
+			} catch (error) {
+				await client
+					.request({
+						command: "release_session",
+						sessionPath: result.snapshot.path,
+						leaseId: result.lease.leaseId,
+					})
+					.catch(() => {});
+				throw error;
+			}
+		} catch (error) {
+			if (!isReadOnlySessionError(error)) throw error;
+			const snapshot = await client.request<SessionStateSnapshot>({ command: "inspect_session", sessionPath });
+			return {
+				snapshot,
+				page: await client.request<TranscriptPage>({ command: "read_transcript", sessionPath, limit: 120 }),
+				readOnlyError: error,
+			};
+		}
+	}
+
 	async selectProject(projectId: string): Promise<void> {
 		const project = this.projects.find((candidate) => candidate.id === projectId);
 		if (!project) throw new Error("未找到项目");
 		if (project.id === this.currentProjectId && this.clientSnapshot?.connected && this.selectedSessionPath) return;
+
+		const oldClient = this.client;
+		const oldConnectionId = this.activeConnectionId;
+		const oldSessionPath = this.selectedSessionPath;
+		const oldLease = this.lease;
+		const oldOperation = this.currentOperation;
+		const sameHost =
+			oldClient !== undefined && this.clientSnapshot?.connected === true && project.connectionId === oldConnectionId;
+		const oldOperationActive = oldOperation && ACTIVE_OPERATION_STATUSES.has(oldOperation.status);
+		if (oldOperationActive && (sameHost || oldConnectionId === "local")) {
+			throw new Error("当前任务仍在运行，停止后再切换项目");
+		}
+
 		this.sessionAction = { kind: "project" };
-		this.publish();
+		this.setBusy(true);
+		let stage: ProjectOpenFailure["stage"] = "connect";
+		let candidate: HostConnection | undefined;
+		let prepared: PreparedSession | undefined;
+		let preparedOwnsLease = false;
 		try {
-			this.lastProjectId = project.id;
-			await this.persistRegistry();
-			if (project.connectionId !== this.activeConnectionId || !this.clientSnapshot?.connected) {
-				if (this.client) await this.disconnectCurrentHost(this.activeConnectionId !== "local");
-				this.resetProjectView();
-				this.activeConnectionId = project.connectionId;
-				this.currentOperation = undefined;
-				this.pendingUi = [];
-				await this.connectCurrentHost();
-			} else {
-				await this.releaseCurrentSession();
+			candidate = sameHost
+				? {
+						connectionId: oldConnectionId,
+						client: oldClient,
+						initial: await oldClient.request<HostConnection["initial"]>({ command: "get_snapshot" }),
+					}
+				: await this.createHostConnection(project.connectionId);
+
+			stage = "sessions";
+			const sessions = await candidate.client.request<SessionSummary[]>({
+				command: "list_sessions",
+				cwd: project.cwd,
+			});
+			sessions.sort((left, right) => right.updatedAt - left.updatedAt);
+			const activeOperation = candidate.initial.operations.find(
+				(operation) =>
+					ACTIVE_OPERATION_STATUSES.has(operation.status) &&
+					sessions.some((session) => session.path === operation.sessionPath),
+			);
+			const initialSession =
+				(activeOperation && sessions.find((session) => session.path === activeOperation.sessionPath)) ??
+				sessions[0];
+			if (initialSession) {
+				stage = "session";
+				prepared = await this.prepareSession(candidate.client, initialSession.path);
+				preparedOwnsLease = prepared.lease !== undefined && prepared.lease !== oldLease;
+				stage = "transcript";
 			}
+
+			const switchingSession = oldSessionPath && oldSessionPath !== prepared?.snapshot.path;
+			const updatedProjects = this.projects.map((candidateProject) =>
+				candidateProject.id === project.id
+					? { ...candidateProject, recentSessions: sessions.slice(0, 100) }
+					: candidateProject,
+			);
+			await this.persistRegistry(project.id, updatedProjects);
+
+			if (!sameHost) this.activateHostConnection(candidate);
+			else {
+				this.clientSnapshot = candidate.client.getSnapshot();
+				this.pendingUi = candidate.initial.pendingUiRequests;
+			}
+			this.activeConnectionId = project.connectionId;
 			this.currentProjectId = project.id;
 			this.currentCwd = project.cwd;
-			this.sessions = [...(project.recentSessions ?? [])];
-			this.resetSessionView();
+			this.sessions = sessions;
+			this.currentOperation = activeOperation;
+			this.skills = [];
+			this.skillDiagnostics = [];
+			this.projectInstructions = [];
+			this.gitStatus = undefined;
+			this.gitDiff = undefined;
+			this.gitInspectorOpen = false;
+			if (prepared) {
+				this.transcriptRequest++;
+				this.lease = prepared.lease;
+				this.selectedSessionPath = prepared.snapshot.path;
+				this.selectedSession = prepared.snapshot;
+				this.applyTranscriptPage(prepared.page);
+			} else {
+				this.resetSessionView();
+			}
+			this.lastProjectId = project.id;
+			delete this.projectOpenFailures[project.id];
+			this.projects = updatedProjects;
+			this.startupConnectionError = undefined;
 			this.publish();
-			await Promise.all([this.refreshSessions(), this.loadSkills(), this.loadProjectInstructions()]);
-			const activeSession =
-				this.currentOperation && ACTIVE_OPERATION_STATUSES.has(this.currentOperation.status)
-					? this.sessions.find((session) => session.path === this.currentOperation?.sessionPath)
-					: undefined;
-			const initialSession = activeSession ?? this.sessions[0];
-			if (initialSession) await this.acquireSession(initialSession.path);
+			preparedOwnsLease = false;
+
+			if (oldClient && oldLease && switchingSession && !oldOperationActive) {
+				await oldClient
+					.request({
+						command: "release_session",
+						sessionPath: oldSessionPath,
+						leaseId: oldLease.leaseId,
+					})
+					.catch((error) => {
+						this.statusText = `旧会话写入权限释放失败：${userErrorMessage(error)}`;
+						this.publish();
+					});
+			}
+
+			if (!sameHost && oldClient) await oldClient.close().catch(() => {});
+			void Promise.allSettled([this.loadSkills(), this.loadProjectInstructions(), this.loadHostMetadata()]);
+			if (prepared?.readOnlyError) this.showError(prepared.readOnlyError);
 		} catch (error) {
-			this.currentProjectId = project.id;
-			this.currentCwd = project.cwd;
-			this.sessions = [...(project.recentSessions ?? [])];
-			this.showError(error);
+			if (preparedOwnsLease && candidate && prepared?.lease) {
+				await candidate.client
+					.request({
+						command: "release_session",
+						sessionPath: prepared.snapshot.path,
+						leaseId: prepared.lease.leaseId,
+					})
+					.catch(() => {});
+			}
+			if (candidate && !sameHost) await candidate.client.close().catch(() => {});
+			this.projectOpenFailures = {
+				...this.projectOpenFailures,
+				[project.id]: { stage, message: userErrorMessage(error) },
+			};
+			this.startupConnectionError = this.currentProjectId ? undefined : userErrorMessage(error);
+			this.publish();
 			throw error;
 		} finally {
 			this.sessionAction = undefined;
-			this.publish();
+			this.setBusy(false);
 		}
 	}
 
@@ -667,7 +1070,7 @@ export class GuiAppStore {
 			result = undefined;
 		} catch (error) {
 			if (result) await this.releaseLease(result.snapshot.path, result.lease).catch(() => {});
-			this.showError(error);
+			throw error;
 		} finally {
 			this.sessionAction = undefined;
 			this.setBusy(false);
@@ -826,13 +1229,26 @@ export class GuiAppStore {
 		this.publish();
 	}
 
+	private settingsRuntime(): { client?: GuiProtocolClient; cwd?: string } {
+		if (this.settingsPage && this.settingsConnection && this.settingsHostId !== "all") {
+			const project = this.projects.find((candidate) => candidate.id === this.settingsProjectId);
+			return { client: this.settingsConnection.client, cwd: project?.cwd };
+		}
+		return { client: this.client, cwd: this.currentCwd };
+	}
+
+	private clientHasCapability(client: GuiProtocolClient | undefined, capability: string): boolean {
+		return client?.getSnapshot().hello?.capabilities.includes(capability as never) === true;
+	}
+
 	async toggleSkill(skill: SkillSummary): Promise<void> {
-		if (!this.client || !this.currentCwd || skill.scope === "temporary") return;
+		const { client, cwd } = this.settingsRuntime();
+		if (!client || !cwd || skill.scope === "temporary") return;
 		const scope = skill.scope;
 		await this.withAction(`skill:${skill.path}`, async () => {
-			const result = await this.client!.request<{ skills: SkillSummary[]; diagnostics: JsonValue }>({
+			const result = await client.request<{ skills: SkillSummary[]; diagnostics: JsonValue }>({
 				command: "set_skill_enabled",
-				cwd: this.currentCwd!,
+				cwd,
 				path: skill.path,
 				scope,
 				enabled: !skill.enabled,
@@ -843,43 +1259,48 @@ export class GuiAppStore {
 	}
 
 	async refreshSkills(): Promise<void> {
-		await this.loadSkills();
+		if (this.settingsConnection && this.settingsHostId !== "all") await this.selectSettingsHost(this.settingsHostId);
+		else await this.loadSkills();
 	}
 
 	async refreshModels(): Promise<void> {
-		await this.loadModelData();
+		if (this.settingsConnection && this.settingsHostId !== "all") await this.selectSettingsHost(this.settingsHostId);
+		else await this.loadModelData();
 	}
 
 	async addModelProvider(provider: ModelProviderInput, model: ProviderModelInput): Promise<void> {
-		if (!this.client || !this.hasCapability("models-auth")) return;
+		const { client } = this.settingsRuntime();
+		if (!client || !this.clientHasCapability(client, "models-auth")) return;
 		await this.withAction("models", async () => {
-			this.modelProviders = await this.client!.request<ModelProviderSummary[]>({
+			this.modelProviders = await client.request<ModelProviderSummary[]>({
 				command: "add_model_provider",
 				...provider,
 			});
-			this.models = await this.client!.request<ModelSummary[]>({ command: "add_provider_model", ...model });
+			this.models = await client.request<ModelSummary[]>({ command: "add_provider_model", ...model });
 		});
 		await this.loginModelProvider(provider.provider, "api_key");
 	}
 
 	async addProviderModel(model: ProviderModelInput): Promise<void> {
-		if (!this.client || !this.hasCapability("models")) return;
+		const { client } = this.settingsRuntime();
+		if (!client || !this.clientHasCapability(client, "models")) return;
 		this.models = await this.withAction("models", () =>
-			this.client!.request<ModelSummary[]>({ command: "add_provider_model", ...model }),
+			client.request<ModelSummary[]>({ command: "add_provider_model", ...model }),
 		);
 		this.publish();
 	}
 
 	async loginModelProvider(provider: string, authType: AuthType): Promise<void> {
-		if (!this.client || !this.hasCapability("models-auth")) return;
+		const { client } = this.settingsRuntime();
+		if (!client || !this.clientHasCapability(client, "models-auth")) return;
 		this.modelAuthProvider = provider;
 		this.modelAuthStatus = authType === "oauth" ? "正在打开认证页面" : "等待输入认证信息";
 		this.publish();
 		try {
 			this.models = await this.withAction(`model-auth:${provider}`, () =>
-				this.client!.request<ModelSummary[]>({ command: "login_model_provider", provider, authType }),
+				client.request<ModelSummary[]>({ command: "login_model_provider", provider, authType }),
 			);
-			await this.loadModelProviders();
+			this.modelProviders = await client.request<ModelProviderSummary[]>({ command: "list_model_providers" });
 			this.modelAuthStatus = "认证已完成";
 		} finally {
 			this.modelAuthProvider = undefined;
@@ -888,15 +1309,16 @@ export class GuiAppStore {
 	}
 
 	async logoutModelProvider(provider: string): Promise<void> {
-		if (!this.client || !this.hasCapability("models-auth")) return;
+		const { client } = this.settingsRuntime();
+		if (!client || !this.clientHasCapability(client, "models-auth")) return;
 		this.modelAuthProvider = provider;
 		this.modelAuthStatus = "正在移除已保存的认证";
 		this.publish();
 		try {
 			this.models = await this.withAction(`model-auth:${provider}`, () =>
-				this.client!.request<ModelSummary[]>({ command: "logout_model_provider", provider }),
+				client.request<ModelSummary[]>({ command: "logout_model_provider", provider }),
 			);
-			await this.loadModelProviders();
+			this.modelProviders = await client.request<ModelProviderSummary[]>({ command: "list_model_providers" });
 			this.modelAuthStatus = "已移除保存的认证";
 		} finally {
 			this.modelAuthProvider = undefined;
@@ -909,7 +1331,11 @@ export class GuiAppStore {
 	}
 
 	async refreshDiagnostics(): Promise<void> {
-		await this.loadDiagnostics();
+		const { client, cwd } = this.settingsRuntime();
+		if (client && this.clientHasCapability(client, "diagnostics")) {
+			this.diagnostics = await client.request<JsonValue>({ command: "get_diagnostics", ...(cwd ? { cwd } : {}) });
+			this.publish();
+		} else await this.loadDiagnostics();
 	}
 
 	async openGitInspector(): Promise<void> {
@@ -981,7 +1407,63 @@ export class GuiAppStore {
 	}
 
 	async refreshProjectInstructions(): Promise<void> {
+		const { client, cwd } = this.settingsRuntime();
+		if (this.settingsPage && client && cwd && this.clientHasCapability(client, "project-instructions")) {
+			this.projectInstructions = await client.request<ProjectInstruction[]>({
+				command: "list_project_instructions",
+				cwd,
+			});
+			this.publish();
+			return;
+		}
 		await this.loadProjectInstructions();
+	}
+
+	async selectSettingsProject(projectId: string): Promise<void> {
+		const project = this.projects.find(
+			(candidate) => candidate.id === projectId && candidate.connectionId === this.settingsHostId,
+		);
+		if (!project || !this.settingsConnection) return;
+		this.settingsProjectId = project.id;
+		if (this.clientHasCapability(this.settingsConnection.client, "project-instructions")) {
+			this.projectInstructions = await this.settingsConnection.client.request<ProjectInstruction[]>({
+				command: "list_project_instructions",
+				cwd: project.cwd,
+			});
+		}
+		this.publish();
+	}
+
+	async refreshHostInstructions(): Promise<void> {
+		const client = this.settingsConnection?.client;
+		if (!client || !this.clientHasCapability(client, "host-instructions")) return;
+		this.hostInstructions = await client.request<ProjectInstruction[]>({ command: "list_host_instructions" });
+		this.publish();
+	}
+
+	async saveHostInstruction(
+		fileName: "AGENTS.md" | "AGENTS.override.md",
+		content: string,
+		expectedHash?: string,
+	): Promise<void> {
+		const client = this.settingsConnection?.client;
+		if (!client || !this.clientHasCapability(client, "host-instructions")) return;
+		try {
+			this.hostInstructions = await client.request<ProjectInstruction[]>({
+				command: "save_host_instruction",
+				fileName,
+				content,
+				expectedHash,
+			});
+			this.toast = `${fileName} 已保存到当前 Host`;
+		} catch (error) {
+			if (error instanceof GuiProtocolError && error.code === "instruction_conflict") {
+				await this.refreshHostInstructions();
+			}
+			throw error;
+		} finally {
+			this.publish();
+		}
 	}
 
 	async saveProjectInstruction(
@@ -989,11 +1471,12 @@ export class GuiAppStore {
 		content: string,
 		expectedHash?: string,
 	): Promise<void> {
-		if (!this.client || !this.currentCwd || !this.hasCapability("project-instructions")) return;
+		const { client, cwd } = this.settingsRuntime();
+		if (!client || !cwd || !this.clientHasCapability(client, "project-instructions")) return;
 		try {
-			this.projectInstructions = await this.client.request<ProjectInstruction[]>({
+			this.projectInstructions = await client.request<ProjectInstruction[]>({
 				command: "save_project_instruction",
-				cwd: this.currentCwd,
+				cwd,
 				fileName,
 				content,
 				expectedHash,
@@ -1001,7 +1484,7 @@ export class GuiAppStore {
 			this.toast = `${fileName} 已保存并重新加载`;
 		} catch (error) {
 			if (error instanceof GuiProtocolError && error.code === "instruction_conflict") {
-				await this.loadProjectInstructions();
+				await this.refreshProjectInstructions();
 			}
 			throw error;
 		} finally {
@@ -1032,14 +1515,59 @@ export class GuiAppStore {
 		if (!this.client || !this.currentCwd || !this.hasCapability("project-resources")) {
 			throw new Error("当前后台不支持打开项目文件");
 		}
+		try {
+			const resource = await this.client.request<ProjectResource>({
+				command: "resolve_project_resource",
+				cwd: this.currentCwd,
+				target,
+				line,
+				column,
+			});
+			await this.showResource(resource);
+		} catch (error) {
+			if (!(error instanceof GuiProtocolError) || error.code !== "resource_outside_project") throw error;
+			const normalized = target.replaceAll("\\", "/");
+			const matchingProject = this.projects.find(
+				(project) =>
+					project.connectionId === this.activeConnectionId &&
+					(normalized === project.cwd.replaceAll("\\", "/") ||
+						normalized.startsWith(`${project.cwd.replaceAll("\\", "/").replace(/\/$/, "")}/`)),
+			);
+			this.pendingExternalResource = {
+				target,
+				...(line ? { line } : {}),
+				...(column ? { column } : {}),
+				...(matchingProject ? { matchingProjectId: matchingProject.id } : {}),
+			};
+			this.publish();
+		}
+	}
+
+	async resolveExternalResource(action: "view" | "switch" | "cancel"): Promise<void> {
+		const pending = this.pendingExternalResource;
+		this.pendingExternalResource = undefined;
+		this.publish();
+		if (!pending || action === "cancel") return;
+		if (action === "switch") {
+			if (!pending.matchingProjectId) return;
+			await this.selectProject(pending.matchingProjectId);
+			await this.openResource(pending.target, pending.line, pending.column);
+			return;
+		}
+		if (!this.client || !this.hasCapability("external-resources")) {
+			throw new Error("当前后台不支持一次性查看项目外文件");
+		}
 		const resource = await this.client.request<ProjectResource>({
-			command: "resolve_project_resource",
-			cwd: this.currentCwd,
-			target,
-			line,
-			column,
+			command: "resolve_external_resource",
+			target: pending.target,
+			line: pending.line,
+			column: pending.column,
 		});
-		const bytes = await this.readProjectResourceBytes(resource.path);
+		await this.showResource(resource);
+	}
+
+	private async showResource(resource: ProjectResource): Promise<void> {
+		const bytes = await this.readResourceBytes(resource);
 		if (resource.kind === "image") {
 			const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 			const url = URL.createObjectURL(new Blob([buffer], { type: resource.mimeType }));
@@ -1087,19 +1615,27 @@ export class GuiAppStore {
 		}
 	}
 
-	private async readProjectResourceBytes(path: string): Promise<Uint8Array> {
-		if (!this.client || !this.currentCwd) throw new Error("GUI 后台服务尚未连接");
+	private async readResourceBytes(resource: ProjectResource): Promise<Uint8Array> {
+		if (!this.client || (!resource.accessToken && !this.currentCwd)) throw new Error("GUI 后台服务尚未连接");
 		const parts: Uint8Array[] = [];
 		let offset = 0;
 		let total = 0;
 		while (true) {
-			const chunk = await this.client.request<ContentChunk>({
-				command: "read_project_resource",
-				cwd: this.currentCwd,
-				path,
-				offset,
-				limit: 1024 * 1024,
-			});
+			const chunk = resource.accessToken
+				? await this.client.request<ContentChunk>({
+						command: "read_external_resource",
+						path: resource.path,
+						accessToken: resource.accessToken,
+						offset,
+						limit: 1024 * 1024,
+					})
+				: await this.client.request<ContentChunk>({
+						command: "read_project_resource",
+						cwd: this.currentCwd!,
+						path: resource.path,
+						offset,
+						limit: 1024 * 1024,
+					});
 			if (chunk.nextOffset <= offset && !chunk.done) throw new Error("后台服务返回了无效的文件分块");
 			const bytes = Uint8Array.from(atob(chunk.data), (character) => character.charCodeAt(0));
 			parts.push(bytes);
@@ -1125,29 +1661,81 @@ export class GuiAppStore {
 		request: PendingUiRequest,
 		response: { value?: JsonValue; confirmed?: boolean; cancelled?: boolean },
 	): Promise<void> {
-		await this.client?.respondToUi(request.id, response);
+		await (this.pendingUiClients.get(request.id) ?? this.client)?.respondToUi(request.id, response);
+		this.pendingUiClients.delete(request.id);
 		this.pendingUi = this.pendingUi.filter((candidate) => candidate.id !== request.id);
 		this.publish();
 	}
 
 	async saveSshConnection(input: Omit<SshConnectionProfile, "id"> & { id?: string }): Promise<SshConnectionProfile> {
+		const existing = input.id ? this.connections.find((connection) => connection.id === input.id) : undefined;
 		const connection: SshConnectionProfile = {
 			id: input.id ?? crypto.randomUUID(),
 			name: input.name.trim(),
 			target: input.target.trim(),
+			mode: input.mode ?? "alias",
+			...(input.user?.trim() ? { user: input.user.trim() } : {}),
+			...(input.port ? { port: input.port } : {}),
+			authMethod: input.authMethod ?? "agent",
+			...(input.identityFile?.trim() ? { identityFile: input.identityFile.trim() } : {}),
+			...((input.authMethod ?? "agent") === "password" && existing?.credentialId
+				? { credentialId: existing.credentialId, ...(existing.rememberPassword ? { rememberPassword: true } : {}) }
+				: {}),
 			platform: input.platform ?? "auto",
 			...(input.defaultCwd?.trim() ? { defaultCwd: input.defaultCwd.trim() } : {}),
 			...(input.hostCommand?.trim() ? { hostCommand: input.hostCommand.trim() } : {}),
 		};
-		if (!connection.name || !connection.target) throw new Error("连接名称和 SSH 目标不能为空");
+		if (!connection.name || !connection.target) throw new Error("连接名称和 SSH 主机不能为空");
+		if (
+			connection.port !== undefined &&
+			(!Number.isInteger(connection.port) || connection.port < 1 || connection.port > 65535)
+		) {
+			throw new Error("SSH 端口必须在 1 到 65535 之间");
+		}
+		if (connection.authMethod === "key" && !connection.identityFile) throw new Error("密钥认证需要选择私钥文件");
 		const duplicate = this.connections.find(
-			(candidate) => candidate.target === connection.target && candidate.id !== connection.id,
+			(candidate) =>
+				candidate.target === connection.target &&
+				(candidate.user ?? "") === (connection.user ?? "") &&
+				(candidate.port ?? 22) === (connection.port ?? 22) &&
+				candidate.id !== connection.id,
 		);
 		if (duplicate) throw new Error(`SSH 目标已由“${duplicate.name}”使用`);
+		if (existing?.credentialId && connection.authMethod !== "password") {
+			await deleteSshPassword(existing.credentialId).catch(() => {});
+			this.sessionCredentialIds.delete(connection.id);
+		}
 		this.connections = [connection, ...this.connections.filter((candidate) => candidate.id !== connection.id)];
 		await this.persistRegistry();
 		this.publish();
 		return connection;
+	}
+
+	async setSshPassword(connectionId: string, password: string, remember: boolean): Promise<void> {
+		const connection = this.connections.find((candidate) => candidate.id === connectionId);
+		if (!connection) throw new Error("未找到 SSH 连接配置");
+		const previousCredentialId = connection.credentialId;
+		const credentialId = await storeSshPassword(connectionId, password, remember);
+		if (previousCredentialId && previousCredentialId !== credentialId) {
+			await deleteSshPassword(previousCredentialId).catch(() => {});
+		}
+		if (remember) {
+			this.sessionCredentialIds.delete(connectionId);
+			this.connections = this.connections.map((candidate) =>
+				candidate.id === connectionId
+					? { ...candidate, credentialId, rememberPassword: true, authMethod: "password" }
+					: candidate,
+			);
+			await this.persistRegistry();
+		} else {
+			this.sessionCredentialIds.set(connectionId, credentialId);
+			this.connections = this.connections.map((candidate) =>
+				candidate.id === connectionId
+					? { ...candidate, authMethod: "password", credentialId: undefined, rememberPassword: undefined }
+					: candidate,
+			);
+		}
+		this.publish();
 	}
 
 	async removeSshConnection(connectionId: string): Promise<void> {
@@ -1155,15 +1743,21 @@ export class GuiAppStore {
 		if (this.projects.some((project) => project.connectionId === connectionId)) {
 			throw new Error("该 SSH 连接仍有关联项目，请先移除这些项目");
 		}
-		this.connections = this.connections.filter((connection) => connection.id !== connectionId);
+		const connection = this.connections.find((candidate) => candidate.id === connectionId);
+		const credentialId = this.sessionCredentialIds.get(connectionId) ?? connection?.credentialId;
+		if (credentialId) await deleteSshPassword(credentialId).catch(() => {});
+		this.sessionCredentialIds.delete(connectionId);
+		this.connections = this.connections.filter((candidate) => candidate.id !== connectionId);
 		delete this.connectionProbes[connectionId];
 		await this.persistRegistry();
 		this.publish();
 	}
 
 	async probeSshProfile(connectionId: string): Promise<SshProbeResult> {
-		const profile = this.connections.find((connection) => connection.id === connectionId);
-		if (!profile) throw new Error("未找到 SSH 连接配置");
+		const storedProfile = this.connections.find((connection) => connection.id === connectionId);
+		if (!storedProfile) throw new Error("未找到 SSH 连接配置");
+		const profile = this.usableSshProfile(storedProfile);
+		await this.ensureSshHostKey(profile);
 		const result = await this.withAction(`ssh-probe:${connectionId}`, () => probeSshConnection(profile));
 		this.connectionProbes = { ...this.connectionProbes, [connectionId]: result };
 		if (result.platform === "linux" || result.platform === "darwin" || result.platform === "windows") {
@@ -1179,8 +1773,10 @@ export class GuiAppStore {
 	}
 
 	async installSshProfile(connectionId: string, sourcePath?: string): Promise<SshProbeResult> {
-		const profile = this.connections.find((connection) => connection.id === connectionId);
-		if (!profile) throw new Error("未找到 SSH 连接配置");
+		const storedProfile = this.connections.find((connection) => connection.id === connectionId);
+		if (!storedProfile) throw new Error("未找到 SSH 连接配置");
+		const profile = this.usableSshProfile(storedProfile);
+		await this.ensureSshHostKey(profile);
 		const result = await this.withAction(`ssh-install:${connectionId}`, () => installSshHost(profile, sourcePath));
 		this.connectionProbes = { ...this.connectionProbes, [connectionId]: result };
 		this.publish();
@@ -1197,11 +1793,96 @@ export class GuiAppStore {
 		if (typeof selected === "string") await this.installSshProfile(connectionId, selected);
 	}
 
+	async openRemoteDirectoryBrowser(connectionId: string, path?: string): Promise<void> {
+		await this.closeRemoteDirectoryBrowser();
+		this.remoteDirectoryBrowser = { connectionId, loading: true, showHidden: false };
+		this.publish();
+		try {
+			const connection = await this.createHostConnection(connectionId);
+			const listing = await connection.client.request<HostDirectoryListing>({
+				command: "list_directories",
+				...(path ? { path } : {}),
+			});
+			this.directoryConnection = connection;
+			this.remoteDirectoryBrowser = { connectionId, listing, loading: false, showHidden: false };
+		} catch (error) {
+			this.remoteDirectoryBrowser = {
+				connectionId,
+				loading: false,
+				showHidden: false,
+				error: userErrorMessage(error),
+			};
+		}
+		this.publish();
+	}
+
+	async navigateRemoteDirectory(path: string): Promise<void> {
+		if (!this.directoryConnection || !this.remoteDirectoryBrowser) return;
+		this.remoteDirectoryBrowser = { ...this.remoteDirectoryBrowser, loading: true, error: undefined };
+		this.publish();
+		try {
+			const listing = await this.directoryConnection.client.request<HostDirectoryListing>({
+				command: "list_directories",
+				path,
+			});
+			this.remoteDirectoryBrowser = { ...this.remoteDirectoryBrowser, listing, loading: false };
+		} catch (error) {
+			this.remoteDirectoryBrowser = {
+				...this.remoteDirectoryBrowser,
+				loading: false,
+				error: userErrorMessage(error),
+			};
+		}
+		this.publish();
+	}
+
+	toggleRemoteHiddenDirectories(): void {
+		if (!this.remoteDirectoryBrowser) return;
+		this.remoteDirectoryBrowser = {
+			...this.remoteDirectoryBrowser,
+			showHidden: !this.remoteDirectoryBrowser.showHidden,
+		};
+		this.publish();
+	}
+
+	async closeRemoteDirectoryBrowser(): Promise<void> {
+		const connection = this.directoryConnection;
+		this.directoryConnection = undefined;
+		this.remoteDirectoryBrowser = undefined;
+		this.publish();
+		await connection?.client.close().catch(() => {});
+	}
+
 	async addRemoteProject(connectionId: string, cwd: string, name?: string): Promise<void> {
 		if (!this.connections.some((connection) => connection.id === connectionId))
 			throw new Error("未找到 SSH 连接配置");
+		await this.closeRemoteDirectoryBrowser();
 		const project = await this.addProject(cwd.trim(), connectionId, name?.trim());
 		await this.selectProject(project.id);
+	}
+
+	async updateProject(
+		projectId: string,
+		update: Pick<ProjectSummary, "name" | "pinned" | "color" | "archived">,
+	): Promise<void> {
+		const project = this.projects.find((candidate) => candidate.id === projectId);
+		if (!project) throw new Error("未找到项目");
+		if (update.archived && projectId === this.currentProjectId) throw new Error("当前项目不能归档，请先切换项目");
+		const name = update.name.trim();
+		if (!name) throw new Error("项目名称不能为空");
+		this.projects = this.projects.map((candidate) =>
+			candidate.id === projectId
+				? {
+						...candidate,
+						name,
+						pinned: update.pinned || undefined,
+						color: update.color,
+						archived: update.archived || undefined,
+					}
+				: candidate,
+		);
+		await this.persistRegistry();
+		this.publish();
 	}
 
 	async removeProject(projectId: string): Promise<void> {
@@ -1225,6 +1906,9 @@ export class GuiAppStore {
 			cwd,
 			name: name || existing?.name || projectName(cwd),
 			connectionId,
+			...(existing?.pinned ? { pinned: true } : {}),
+			...(existing?.color ? { color: existing.color } : {}),
+			...(existing?.archived ? { archived: true } : {}),
 			...(existing?.recentSessions ? { recentSessions: existing.recentSessions } : {}),
 		};
 		this.projects = [project, ...this.projects.filter((candidate) => candidate.id !== project.id)];
@@ -1245,19 +1929,6 @@ export class GuiAppStore {
 		this.hasMoreRecent = false;
 		this.browsingHistory = false;
 		this.liveText = "";
-	}
-
-	private resetProjectView(): void {
-		this.currentProjectId = undefined;
-		this.currentCwd = undefined;
-		this.sessions = [];
-		this.skills = [];
-		this.skillDiagnostics = [];
-		this.projectInstructions = [];
-		this.gitStatus = undefined;
-		this.gitDiff = undefined;
-		this.gitInspectorOpen = false;
-		this.resetSessionView();
 	}
 
 	private async refreshSessions(): Promise<void> {
@@ -1404,7 +2075,7 @@ export class GuiAppStore {
 		this.publish();
 	}
 
-	private async handleEvent(event: ServerEvent): Promise<void> {
+	private async handleEvent(event: ServerEvent, sourceClient = this.client): Promise<void> {
 		if (event.type === "sessions_changed" && event.cwd === this.currentCwd) {
 			await this.refreshSessions();
 			if (this.selectedSessionPath && !this.lease) {
@@ -1495,8 +2166,9 @@ export class GuiAppStore {
 					this.modelAuthStatus = `设备码：${payload.userCode}`;
 					await openExternalUrl(payload.verificationUri);
 				}
-				await this.client?.respondToUi(event.id, { confirmed: true });
+				await sourceClient?.respondToUi(event.id, { confirmed: true });
 			} else {
+				if (sourceClient) this.pendingUiClients.set(event.id, sourceClient);
 				this.pendingUi = [...this.pendingUi.filter((candidate) => candidate.id !== event.id), event];
 			}
 		}
@@ -1518,25 +2190,6 @@ export class GuiAppStore {
 		return this.clientSnapshot?.hello?.capabilities.includes(capability as never) === true;
 	}
 
-	private waitUntilConnected(): Promise<void> {
-		if (this.clientSnapshot?.connected) return Promise.resolve();
-		const client = this.client;
-		if (!client) return Promise.reject(new Error("GUI 后台客户端尚未初始化"));
-		return new Promise((resolve, reject) => {
-			let unsubscribe = () => {};
-			const timeout = window.setTimeout(() => {
-				unsubscribe();
-				reject(new Error(this.clientSnapshot?.lastError ?? "GUI 后台服务连接超时"));
-			}, 10_000);
-			unsubscribe = client.subscribe(() => {
-				if (!this.clientSnapshot?.connected) return;
-				window.clearTimeout(timeout);
-				unsubscribe();
-				resolve();
-			});
-		});
-	}
-
 	showError(error: unknown): void {
 		this.toast = userErrorMessage(error);
 		this.publish();
@@ -1550,9 +2203,13 @@ export class GuiAppStore {
 	private buildSnapshot(): AppSnapshot {
 		return {
 			connected: this.clientSnapshot?.connected ?? false,
-			connectionError: this.clientSnapshot?.lastError,
+			connectionError: this.clientSnapshot?.lastError ?? this.startupConnectionError,
 			capabilities: this.clientSnapshot?.hello?.capabilities ?? [],
 			projects: this.projects,
+			projectOpenFailures: this.projectOpenFailures,
+			pendingHostKey: this.pendingHostKey,
+			remoteDirectoryBrowser: this.remoteDirectoryBrowser,
+			pendingExternalResource: this.pendingExternalResource,
 			connections: this.connections,
 			connectionProbes: this.connectionProbes,
 			activeConnectionId: this.activeConnectionId,
@@ -1563,6 +2220,7 @@ export class GuiAppStore {
 			selectedSession: this.selectedSession,
 			lease: this.lease,
 			transcript: this.transcript,
+			transcriptGeneration: this.transcriptGeneration,
 			previousCursor: this.previousCursor,
 			hasMorePrevious: this.hasMorePrevious,
 			hasMoreRecent: this.hasMoreRecent,
@@ -1579,6 +2237,7 @@ export class GuiAppStore {
 			gitStatus: this.gitStatus,
 			gitDiff: this.gitDiff,
 			gitInspectorOpen: this.gitInspectorOpen,
+			sidebarCollapsed: this.sidebarCollapsed,
 			inspectorWidth: this.inspectorWidth,
 			inspectorSplit: this.inspectorSplit,
 			resourceViewer: this.resourceViewer,
@@ -1589,6 +2248,11 @@ export class GuiAppStore {
 			toast: this.toast,
 			theme: this.theme,
 			settingsPage: this.settingsPage,
+			settingsHostId: this.settingsHostId,
+			settingsHostConnected: this.settingsConnection?.client.getSnapshot().connected ?? false,
+			settingsHostError: this.settingsHostError,
+			settingsProjectId: this.settingsProjectId,
+			hostInstructions: this.hostInstructions,
 			sessionAction: this.sessionAction,
 			pendingActions: [...this.pendingActions],
 			modelAuthProvider: this.modelAuthProvider,

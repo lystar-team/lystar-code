@@ -35,8 +35,11 @@ const BASE_CAPABILITIES: Capability[] = [
 	"updates",
 	"session-observation",
 	"project-instructions",
+	"host-instructions",
 	"completion",
 	"project-resources",
+	"directory-browser",
+	"external-resources",
 ];
 
 const ACTIVE_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>(["accepted", "running", "waiting_for_input"]);
@@ -539,6 +542,16 @@ export class GuiHostService {
 				}
 				return jsonValue(result);
 			}
+			case "list_host_instructions":
+				return jsonValue(this.adapter.listHostInstructions());
+			case "save_host_instruction": {
+				this.journal.assertWritable();
+				const result = this.adapter.saveHostInstruction(request.fileName, request.content, request.expectedHash);
+				for (const runtime of this.runtimes.values()) await runtime.reloadResources();
+				return jsonValue(result);
+			}
+			case "list_directories":
+				return jsonValue(this.adapter.listDirectories(request.path));
 			case "get_completions": {
 				const sessionPath = request.sessionPath ? canonicalSessionPath(request.sessionPath) : undefined;
 				const runtime = sessionPath ? this.runtimes.get(sessionPath) : undefined;
@@ -580,8 +593,12 @@ export class GuiHostService {
 				return this.adapter.checkForUpdates();
 			case "resolve_project_resource":
 				return this.adapter.resolveProjectResource(request.cwd, request.target, request.line, request.column);
+			case "resolve_external_resource":
+				return this.adapter.resolveExternalResource(request.target, request.line, request.column);
 			case "read_project_resource":
 				return this.adapter.readProjectResource(request.cwd, request.path, request.offset, request.limit);
+			case "read_external_resource":
+				return this.adapter.readExternalResource(request.path, request.accessToken, request.offset, request.limit);
 			case "read_content":
 				return this.contentStore.read(
 					canonicalSessionPath(request.sessionPath),

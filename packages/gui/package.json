@@ -1,6 +1,6 @@
 {
 	"name": "@lystar/code-gui",
-	"version": "0.84.1-lystar-gui.4",
+	"version": "0.84.1-lystar-gui.5",
 	"description": "LYStar Code desktop GUI",
 	"type": "module",
 	"private": true,
@@ -15,7 +15,7 @@
 		"tauri": "tauri"
 	},
 	"dependencies": {
-		"@lystar/code-gui-protocol": "0.84.1-lystar-gui.4",
+		"@lystar/code-gui-protocol": "0.84.1-lystar-gui.5",
 		"@tanstack/react-virtual": "3.14.9",
 		"@tauri-apps/api": "2.11.1",
 		"@tauri-apps/plugin-dialog": "2.7.2",
