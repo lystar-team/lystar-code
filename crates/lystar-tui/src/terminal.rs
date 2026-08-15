@@ -14,7 +14,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use lystar_protocol::{
-    FrameDecoder, ProtocolError, decode_server_message, encode_frame, generated::ServerMessage,
+    FrameDecoder, ProtocolError, ServerMessage, decode_server_message, encode_client_message,
     new_client_message,
 };
 use signal_hook::{
@@ -99,7 +99,7 @@ pub fn handshake_inherited_pipes() -> Result<(), TuiError> {
     let raw_hello: Value = from_reader(hello_payload.as_slice())
         .map_err(|error| ProtocolError::InvalidCbor(error.to_string()))?;
     let hello = new_client_message(raw_hello)?;
-    output.write_all(&encode_frame(&hello)?)?;
+    output.write_all(&encode_client_message(&hello)?)?;
     output.flush()?;
     let mut decoder = FrameDecoder::default();
     let mut buffer = [0_u8; 8192];

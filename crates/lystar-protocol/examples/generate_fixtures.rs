@@ -1,8 +1,8 @@
 use std::fs;
 
 use lystar_protocol::{
-    DecodedMessage, FrameDecoder, decode_client_message, decode_server_message, encode_frame,
-    generated::{ClientMessage, ServerMessage},
+    ClientMessage, DecodedMessage, FrameDecoder, ServerMessage, decode_client_message,
+    decode_server_message, encode_client_message, encode_server_message,
 };
 
 fn main() {
@@ -46,7 +46,7 @@ fn decode_server_fixture(directory: &str, name: &str) -> DecodedMessage<ServerMe
 
 fn write_client_fixture(directory: &str, name: &str, message: &DecodedMessage<ClientMessage>) {
     let path = format!("{directory}/rust-{name}.frame");
-    let encoded = encode_frame(message).unwrap();
+    let encoded = encode_client_message(message).unwrap();
     if fs::read(&path).ok().as_deref() == Some(encoded.as_slice()) {
         return;
     }
@@ -55,7 +55,7 @@ fn write_client_fixture(directory: &str, name: &str, message: &DecodedMessage<Cl
 
 fn write_server_fixture(directory: &str, name: &str, message: &DecodedMessage<ServerMessage>) {
     let path = format!("{directory}/rust-{name}.frame");
-    let encoded = encode_frame(message).unwrap();
+    let encoded = encode_server_message(message).unwrap();
     if fs::read(&path).ok().as_deref() == Some(encoded.as_slice()) {
         return;
     }

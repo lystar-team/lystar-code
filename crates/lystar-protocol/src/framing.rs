@@ -83,7 +83,7 @@ pub enum ProtocolError {
     },
 }
 
-pub fn encode_frame<T: Serialize>(message: &T) -> Result<Vec<u8>, ProtocolError> {
+fn encode_frame<T: Serialize>(message: &T) -> Result<Vec<u8>, ProtocolError> {
     let mut payload = Vec::new();
     into_writer(message, &mut payload)
         .map_err(|error| ProtocolError::InvalidCbor(error.to_string()))?;
@@ -95,6 +95,20 @@ pub fn encode_frame<T: Serialize>(message: &T) -> Result<Vec<u8>, ProtocolError>
     frame.extend_from_slice(&length.to_be_bytes());
     frame.extend_from_slice(&payload);
     Ok(frame)
+}
+
+/// Encodes a client message that has already passed generated-type and protocol validation.
+pub fn encode_client_message(
+    message: &DecodedMessage<ClientMessage>,
+) -> Result<Vec<u8>, ProtocolError> {
+    encode_frame(message)
+}
+
+/// Encodes a server message that has already passed generated-type and protocol validation.
+pub fn encode_server_message(
+    message: &DecodedMessage<ServerMessage>,
+) -> Result<Vec<u8>, ProtocolError> {
+    encode_frame(message)
 }
 
 pub fn decode_client_message(
@@ -242,7 +256,7 @@ impl FrameDecoder {
 mod tests {
     use super::FieldPresence;
     use super::*;
-    use crate::generated::{ClientMessage, ClientMessageRequest};
+    use crate::{ClientMessage, ClientMessageRequest};
     use serde_json::json;
 
     fn client_payload(value: serde_json::Value) -> Vec<u8> {

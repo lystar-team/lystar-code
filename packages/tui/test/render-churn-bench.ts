@@ -1,16 +1,26 @@
 import { appendFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
-import { type Component, Container, type Terminal, Text, TuiAltScreen } from "@earendil-works/pi-tui";
-import {
-	LystarWorkspace,
-	WorkspaceComposer,
-	WorkspaceHeader,
-} from "../../coding-agent/src/modes/interactive/components/lystar-workspace.ts";
+import { type Component, Container, type Terminal, TuiAltScreen } from "@earendil-works/pi-tui";
+import { LystarWorkspace } from "../../coding-agent/src/modes/interactive/components/lystar-workspace.ts";
 import { initTheme } from "../../coding-agent/src/modes/interactive/theme/theme.ts";
 
-type Scenario = { name: string; kind: "idle" | "input" | "paste" | "stream" | "scroll" | "resize"; events: number };
-type Config = { sizes: Array<[number, number]>; rounds: number; scenarios: Scenario[] };
+type ScenarioKind = "idle" | "input" | "paste" | "stream" | "scroll" | "resize";
+type Scenario = {
+	name: string;
+	kind: ScenarioKind;
+	events: number;
+	charactersPerEvent: number;
+	itemsPerEvent: number;
+	scrollLines: number;
+};
+type Config = {
+	sizes: Array<[number, number]>;
+	rounds: number;
+	transcriptItems: number;
+	prefetchViewports: number;
+	scenarios: Scenario[];
+};
 
 type RecordLine = {
 	implementation: "ts";
@@ -18,12 +28,20 @@ type RecordLine = {
 	columns: number;
 	rows: number;
 	round: number;
+	events: number;
 	frames: number;
-	bytes: number;
-	p50Ms: number;
-	p95Ms: number;
-	p99Ms: number;
-	maxMs: number;
+	workUnits: number;
+	renderedItems: number;
+	bytesP50: number;
+	bytesP95: number;
+	bytesP99: number;
+	bytesMax: number;
+	bytesTotal: number;
+	frameP50Ms: number;
+	frameP95Ms: number;
+	frameP99Ms: number;
+	frameMaxMs: number;
+	frameTotalMs: number;
 	rssBytes: number;
 };
 
@@ -54,7 +72,7 @@ class MemoryTerminal implements Terminal {
 	setProgress(_active: boolean): void {}
 }
 
-class MutableText implements Component {
+class MutableLine implements Component {
 	private version = 0;
 	private text: string;
 	constructor(text: string) {
@@ -64,16 +82,12 @@ class MutableText implements Component {
 		this.text += value;
 		this.version++;
 	}
-	set(value: string): void {
-		this.text = value;
-		this.version++;
-	}
 	invalidate(): void {}
 	getRenderVersion(): number {
 		return this.version;
 	}
 	render(width: number): string[] {
-		return new Text(this.text, 0, 0).render(width);
+		return [this.text.slice(Math.max(0, this.text.length - Math.max(1, width)))];
 	}
 }
 
@@ -82,37 +96,28 @@ function percentile(samples: number[], q: number): number {
 	return values[Math.min(values.length - 1, Math.ceil(values.length * q) - 1)] ?? 0;
 }
 
-function buildWorkspace(columns: number, rows: number) {
+function visibleItems(rows: number, prefetchViewports: number, itemCount: number): number {
+	const viewport = Math.max(1, rows - 1);
+	return Math.min(itemCount, viewport * (1 + prefetchViewports));
+}
+
+function buildWorkspace(columns: number, rows: number, itemCount: number) {
 	const terminal = new MemoryTerminal(columns, rows);
 	const tui = new TuiAltScreen(terminal, false, "/tmp/lystar-rust-b0-ts");
-	const source = Array.from(
-		{ length: 10_000 },
-		(_, index) => `assistant ${index.toString().padStart(5, "0")} benchmark transcript line with Chinese 内容`,
-	);
 	const page = new Container();
-	const reloadPage = (offset: number) => {
-		page.clear();
-		for (const line of source.slice(offset, offset + 400)) page.addChild(new MutableText(line));
-	};
-	reloadPage(9_600);
-	const editorText = new MutableText("  ");
-	const editor = new Container();
-	editor.addChild(editorText);
-	const composer = new WorkspaceComposer({
-		editor,
-		fullscreen: true,
-		getInfo: () => ({ primary: "benchmark/model" }),
-	});
-	const footer = new Container();
-	footer.addChild(new Text("Ctrl+C: 取消  Enter: 发送", 0, 0));
-	const header = new Container();
-	header.addChild(new WorkspaceHeader(() => ({ path: "~/lystar", context: "B0 benchmark" })));
+	const transcript = Array.from(
+		{ length: itemCount },
+		(_, index) =>
+			new MutableLine(`assistant ${index.toString().padStart(5, "0")} benchmark transcript line with Chinese 内容`),
+	);
+	for (const item of transcript) page.addChild(item);
+	const editor = new MutableLine("> ");
 	const workspace = new LystarWorkspace({
 		getHeight: () => terminal.rows,
-		header,
+		header: new Container(),
 		scrollContainers: [page],
-		bottomContainers: [composer, footer],
-		fixedBottomContainers: [composer, footer],
+		bottomContainers: [editor],
+		fixedBottomContainers: [editor],
 		fullscreen: true,
 		scrollbar: "hidden",
 	});
@@ -120,11 +125,11 @@ function buildWorkspace(columns: number, rows: number) {
 	tui.start();
 	for (let index = 0; index < 8; index++) tui.renderNow();
 	terminal.bytesWritten = 0;
-	return { terminal, tui, workspace, editorText, reloadPage };
+	return { terminal, tui, workspace, page, transcript, editor };
 }
 
-function runScenario(scenario: Scenario, columns: number, rows: number, round: number): RecordLine {
-	const { terminal, tui, workspace, editorText, reloadPage } = buildWorkspace(columns, rows);
+function runScenario(scenario: Scenario, columns: number, rows: number, round: number, config: Config): RecordLine {
+	const { terminal, tui, workspace, page, transcript, editor } = buildWorkspace(columns, rows, config.transcriptItems);
 	if (scenario.kind === "idle") {
 		tui.stop();
 		return {
@@ -133,59 +138,93 @@ function runScenario(scenario: Scenario, columns: number, rows: number, round: n
 			columns,
 			rows,
 			round,
+			events: 0,
 			frames: 0,
-			bytes: 0,
-			p50Ms: 0,
-			p95Ms: 0,
-			p99Ms: 0,
-			maxMs: 0,
+			workUnits: 0,
+			renderedItems: 0,
+			bytesP50: 0,
+			bytesP95: 0,
+			bytesP99: 0,
+			bytesMax: 0,
+			bytesTotal: 0,
+			frameP50Ms: 0,
+			frameP95Ms: 0,
+			frameP99Ms: 0,
+			frameMaxMs: 0,
+			frameTotalMs: 0,
 			rssBytes: process.memoryUsage().rss,
 		};
 	}
-	const samples: number[] = [];
-	const batch = Math.max(10, Math.ceil(scenario.events / 20));
-	for (let start = 0; start < scenario.events; start += batch) {
-		const count = Math.min(batch, scenario.events - start);
-		const began = performance.now();
-		for (let index = 0; index < count; index++) {
-			if (scenario.kind === "input") editorText.append(String.fromCharCode(97 + (index % 26)));
-			if (scenario.kind === "paste") editorText.append("x".repeat(5_000));
-			if (scenario.kind === "stream") editorText.append(` stream-${start + index}`);
-			if (scenario.kind === "scroll") {
-				workspace.scrollBy(-1);
-				if ((start + index) % 75 === 0) reloadPage(Math.max(0, 9_600 - start - index));
-			}
-			if (scenario.kind === "resize") {
-				terminal.columns = index % 2 === 0 ? columns : Math.max(20, columns - 4);
-				terminal.rows = index % 2 === 0 ? rows : Math.max(8, rows - 2);
-			}
-			tui.renderNow();
+	const frames: number[] = [];
+	const bytes: number[] = [];
+	let workUnits = 0;
+	let renderedItems = 0;
+	for (let index = 0; index < scenario.events; index++) {
+		const mutation = `${scenario.kind}-${index}:`.padEnd(scenario.charactersPerEvent, "x");
+		if (scenario.kind === "input" || scenario.kind === "paste") editor.append(mutation);
+		if (scenario.kind === "stream") {
+			const item = new MutableLine(mutation);
+			transcript.push(item);
+			page.addChild(item);
 		}
-		samples.push((performance.now() - began) / count);
+		if (scenario.kind === "scroll") workspace.scrollBy(-scenario.scrollLines);
+		if (scenario.kind === "resize") {
+			terminal.columns = index % 2 === 0 ? columns : Math.max(20, columns - 4);
+			terminal.rows = index % 2 === 0 ? rows : Math.max(8, rows - 2);
+		}
+		const beforeBytes = terminal.bytesWritten;
+		const began = performance.now();
+		tui.renderNow();
+		frames.push(performance.now() - began);
+		bytes.push(terminal.bytesWritten - beforeBytes);
+		workUnits +=
+			scenario.charactersPerEvent +
+			scenario.itemsPerEvent +
+			scenario.scrollLines +
+			(scenario.kind === "resize" ? 1 : 0);
+		renderedItems += visibleItems(terminal.rows, config.prefetchViewports, transcript.length);
 	}
-	const bytes = terminal.bytesWritten;
-	tui.stop();
-	return {
+	const record: RecordLine = {
 		implementation: "ts",
 		scenario: scenario.name,
 		columns,
 		rows,
 		round,
-		frames: scenario.events,
-		bytes,
-		p50Ms: percentile(samples, 0.5),
-		p95Ms: percentile(samples, 0.95),
-		p99Ms: percentile(samples, 0.99),
-		maxMs: Math.max(...samples),
+		events: scenario.events,
+		frames: frames.length,
+		workUnits,
+		renderedItems,
+		bytesP50: percentile(bytes, 0.5),
+		bytesP95: percentile(bytes, 0.95),
+		bytesP99: percentile(bytes, 0.99),
+		bytesMax: Math.max(...bytes),
+		bytesTotal: bytes.reduce((total, value) => total + value, 0),
+		frameP50Ms: percentile(frames, 0.5),
+		frameP95Ms: percentile(frames, 0.95),
+		frameP99Ms: percentile(frames, 0.99),
+		frameMaxMs: Math.max(...frames),
+		frameTotalMs: frames.reduce((total, value) => total + value, 0),
 		rssBytes: process.memoryUsage().rss,
 	};
+	tui.stop();
+	return record;
 }
 
 const args = process.argv.slice(2);
-const out = resolve(args[args.indexOf("--out") + 1] ?? ".artifacts/rust-tui-spike/benchmark-ts.jsonl");
 const config = JSON.parse(
 	readFileSync(resolve(import.meta.dirname, "../../../benchmarks/tui-spike-scenarios.json"), "utf8"),
 ) as Config;
+const holdIndex = args.indexOf("--rss-hold-ms");
+const holdMs = holdIndex < 0 ? undefined : Number(args[holdIndex + 1]);
+if (holdMs !== undefined) {
+	initTheme("dark");
+	const { tui } = buildWorkspace(120, 36, config.transcriptItems);
+	console.log("READY");
+	await new Promise((resolveHold) => setTimeout(resolveHold, holdMs));
+	tui.stop();
+	process.exit(0);
+}
+const out = resolve(args[args.indexOf("--out") + 1] ?? ".artifacts/rust-tui-spike/benchmark-ts.jsonl");
 const smoke = args.includes("--smoke");
 const rounds = smoke ? 1 : config.rounds;
 const sizes = smoke ? config.sizes.slice(0, 1) : config.sizes;
@@ -195,6 +234,6 @@ initTheme("dark");
 for (let round = 1; round <= rounds; round++) {
 	for (const [columns, rows] of sizes) {
 		for (const scenario of config.scenarios)
-			appendFileSync(out, `${JSON.stringify(runScenario(scenario, columns, rows, round))}\n`);
+			appendFileSync(out, `${JSON.stringify(runScenario(scenario, columns, rows, round, config))}\n`);
 	}
 }

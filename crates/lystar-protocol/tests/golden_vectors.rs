@@ -1,7 +1,8 @@
 use std::fs;
 
 use lystar_protocol::{
-    FieldPresence, FrameDecoder, decode_client_message, decode_server_message, encode_frame,
+    DecodedMessage, FieldPresence, FrameDecoder, decode_client_message, decode_server_message,
+    encode_client_message, encode_server_message,
 };
 
 #[test]
@@ -25,11 +26,12 @@ fn typescript_and_rust_golden_frames_round_trip_as_generated_types() {
             "client fixture {name}"
         );
         assert_eq!(
-            encode_frame(&message).unwrap(),
+            encode_client_message(&message).unwrap(),
             fs::read(format!("{directory}/ts-{name}.frame")).unwrap()
         );
         let round_trip =
-            decode_client_message(&decode_frame(&encode_frame(&message).unwrap())).unwrap();
+            decode_client_message(&decode_frame(&encode_client_message(&message).unwrap()))
+                .unwrap();
         assert_eq!(
             serde_json::to_value(round_trip.typed()).unwrap(),
             serde_json::to_value(message.typed()).unwrap(),
@@ -60,11 +62,12 @@ fn typescript_and_rust_golden_frames_round_trip_as_generated_types() {
             "server fixture {name}"
         );
         assert_eq!(
-            encode_frame(&message).unwrap(),
+            encode_server_message(&message).unwrap(),
             fs::read(format!("{directory}/ts-{name}.frame")).unwrap()
         );
         let round_trip =
-            decode_server_message(&decode_frame(&encode_frame(&message).unwrap())).unwrap();
+            decode_server_message(&decode_frame(&encode_server_message(&message).unwrap()))
+                .unwrap();
         assert_eq!(
             serde_json::to_value(round_trip.typed()).unwrap(),
             serde_json::to_value(message.typed()).unwrap(),
@@ -74,7 +77,7 @@ fn typescript_and_rust_golden_frames_round_trip_as_generated_types() {
     }
 }
 
-fn assert_presence<T>(name: &str, message: &lystar_protocol::DecodedMessage<T>) {
+fn assert_presence<T>(name: &str, message: &DecodedMessage<T>) {
     let (path, expected) = match name {
         "client-ui-response-missing" => (&["value"][..], "missing"),
         "client-ui-response-null" => (&["value"][..], "null"),

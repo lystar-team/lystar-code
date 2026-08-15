@@ -1,64 +1,192 @@
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const root = process.cwd();
-const artifact = resolve(root, ".artifacts/rust-tui-spike");
-const ts = read(resolve(artifact, "benchmark-ts.jsonl"));
-const rust = read(resolve(artifact, "benchmark-rust.jsonl"));
-const key = (row) => `${row.scenario}/${row.columns}x${row.rows}/${row.round}`;
-assert.equal(ts.length, rust.length, "two implementations emitted different record counts");
-assert.deepEqual(new Set(ts.map(key)), new Set(rust.map(key)), "scenario/size/round sets differ");
-for (const row of [...ts, ...rust]) {
-	for (const field of ["frames", "bytes", "p50Ms", "p95Ms", "p99Ms", "maxMs", "rssBytes"]) assert.notEqual(row[field], null, `${key(row)} ${field} is null`);
-	if (row.scenario !== "static-idle") {
-		assert(row.frames > 0 && row.bytes > 0 && row.p50Ms > 0 && row.rssBytes > 0, `${key(row)} has hand-filled zero`);
-	} else assert.equal(row.frames + row.bytes, 0, `${key(row)} idle rendered`);
+const NON_IDLE_KINDS = new Map([
+	["input300", "input"], ["paste5000", "input"], ["stream20", "stream"], ["stream60", "stream"],
+	["stream120", "stream"], ["scroll300", "scroll"], ["resize", "resize"],
+]);
+const REQUIRED_METRICS = [
+	"events", "frames", "workUnits", "renderedItems", "bytesP50", "bytesP95", "bytesP99", "bytesMax", "bytesTotal",
+	"frameP50Ms", "frameP95Ms", "frameP99Ms", "frameMaxMs", "frameTotalMs", "rssBytes",
+];
+
+export function evaluate({ ts, rust, rss }) {
+	validateRows(ts, "ts");
+	validateRows(rust, "rust");
+	const key = (row) => `${row.scenario}/${row.columns}x${row.rows}/${row.round}`;
+	assert.equal(ts.length, rust.length, "two implementations emitted different record counts");
+	assert.deepEqual(new Set(ts.map(key)), new Set(rust.map(key)), "scenario/size/round sets differ");
+	const rustByKey = new Map(rust.map((row) => [key(row), row]));
+	for (const tsRow of ts) {
+		const rustRow = rustByKey.get(key(tsRow));
+		assert(rustRow, `missing Rust record ${key(tsRow)}`);
+		for (const field of ["events", "frames", "workUnits", "renderedItems"]) {
+			assert.equal(rustRow[field], tsRow[field], `${key(tsRow)} workload ${field} differs`);
+		}
+	}
+	const scenarios = [...new Set(ts.map((row) => row.scenario))];
+	const sizes = [...new Set(ts.map((row) => `${row.columns}x${row.rows}`))];
+	for (const rows of [ts, rust]) {
+		for (const scenario of scenarios) for (const size of sizes) {
+			assert.equal(rows.filter((row) => row.scenario === scenario && `${row.columns}x${row.rows}` === size).length, 5, `${scenario}/${size} lacks five rounds`);
+		}
+	}
+	validateRss(rss);
+	const summaries = new Map();
+	const failures = [];
+	for (const scenario of scenarios) {
+		for (const size of sizes) {
+			const tsSummary = summarize(ts.filter((row) => row.scenario === scenario && `${row.columns}x${row.rows}` === size));
+			const rustSummary = summarize(rust.filter((row) => row.scenario === scenario && `${row.columns}x${row.rows}` === size));
+			const entry = { scenario, size, ts: tsSummary, rust: rustSummary, failures: [] };
+			if (scenario !== "static-idle") {
+				if (rustSummary.frameP95Ms > 8) entry.failures.push(`frame p95 ${format(rustSummary.frameP95Ms)}ms > 8ms`);
+				if (rustSummary.frameP99Ms > 16) entry.failures.push(`frame p99 ${format(rustSummary.frameP99Ms)}ms > 16ms`);
+				const kind = NON_IDLE_KINDS.get(scenario);
+				if (kind === "input" && (rustSummary.frameP95Ms > 16 || rustSummary.frameP99Ms > 33)) entry.failures.push("input/paste budget failed");
+				if (kind === "stream" && rustSummary.frameP95Ms > 33) entry.failures.push("stream visible-update budget failed");
+				if (kind === "resize" && rustSummary.frameP95Ms > 50) entry.failures.push("resize budget failed");
+			}
+			if (entry.failures.length > 0) failures.push(`${scenario}/${size}: ${entry.failures.join(", ")}`);
+			summaries.set(`${scenario}/${size}`, entry);
+		}
+	}
+	const categoryPasses = [];
+	for (const [category, categoryScenarios] of [["input", ["input300", "paste5000"]], ["scroll", ["scroll300"]], ["stream", ["stream20", "stream60", "stream120"]]]) {
+		const categoryFailures = [];
+		for (const scenario of categoryScenarios) for (const size of sizes) {
+			const entry = summaries.get(`${scenario}/${size}`);
+			const faster = entry.rust.frameP95Ms <= entry.ts.frameP95Ms * 0.7;
+			const fewerBytes = entry.rust.bytesP95 <= entry.ts.bytesP95 * 0.7;
+			if (entry.failures.length > 0 || (!faster && !fewerBytes)) categoryFailures.push(`${scenario}/${size}`);
+		}
+		categoryPasses.push({ category, pass: categoryFailures.length === 0, failures: categoryFailures });
+		if (categoryFailures.length > 0) failures.push(`${category} relative gate: ${categoryFailures.join(", ")}`);
+	}
+	const cpu = sizes.map((size) => {
+		const total = (rows) => rows.filter((row) => row.scenario !== "static-idle" && `${row.columns}x${row.rows}` === size)
+			.reduce((sum, row) => sum + row.frameTotalMs, 0);
+		const tsTotal = total(ts);
+		const rustTotal = total(rust);
+		const reduction = tsTotal === 0 ? Number.NEGATIVE_INFINITY : 1 - rustTotal / tsTotal;
+		if (reduction < 0.4) failures.push(`CPU ${size}: ${format(reduction * 100)}% < 40%`);
+		return { size, tsTotal, rustTotal, reduction };
+	});
+	const rustRss = rss.rust;
+	const tsRss = rss.ts;
+	const combinedRss = rss.combined;
+	if (rustRss.p95Bytes > 40 * 1024 * 1024) failures.push(`Rust RSS p95 ${miB(rustRss.p95Bytes)} MiB > 40 MiB`);
+	if (combinedRss.p95Bytes > tsRss.p95Bytes * 1.1) failures.push(`combined RSS p95 ${miB(combinedRss.p95Bytes)} MiB > TS baseline 110% (${miB(tsRss.p95Bytes * 1.1)} MiB)`);
+	const passedCategories = categoryPasses.filter((entry) => entry.pass).length;
+	if (passedCategories < 2) failures.push(`relative gate only ${passedCategories}/3 categories pass`);
+	const go = failures.length === 0;
+	return { go, failures, summaries: [...summaries.values()], categoryPasses, cpu, rss, report: report({ go, failures, summaries: [...summaries.values()], categoryPasses, cpu, rss }) };
 }
-for (const rows of [ts, rust]) {
-	for (const scenario of new Set(rows.map((row) => row.scenario))) for (const size of new Set(rows.map((row) => `${row.columns}x${row.rows}`))) {
-		assert.equal(rows.filter((row) => row.scenario === scenario && `${row.columns}x${row.rows}` === size).length, 5, `${scenario}/${size} lacks five rounds`);
+
+function validateRows(rows, label) {
+	assert(rows.length > 0, `${label} emitted no benchmark records`);
+	for (const row of rows) {
+		for (const field of REQUIRED_METRICS) assert(Number.isFinite(row[field]), `${label} ${row.scenario}/${row.columns}x${row.rows}/${row.round} ${field} is missing or non-numeric`);
+		if (row.scenario === "static-idle") {
+			assert.equal(row.events + row.frames + row.bytesTotal, 0, `${label} idle rendered or wrote bytes`);
+			continue;
+		}
+		assert(row.events > 0 && row.frames === row.events, `${label} ${row.scenario} did not emit one frame per event`);
+		assert(row.workUnits >= 0 && row.renderedItems > 0, `${label} ${row.scenario} has placeholder workload metrics`);
+		for (const field of ["bytesP50", "bytesP95", "bytesP99", "bytesMax", "bytesTotal"]) assert(row[field] > 0, `${label} ${row.scenario} ${field} is a placeholder`);
 	}
 }
-const rows = [];
-const decisions = [];
-for (const scenario of new Set(ts.map((row) => row.scenario))) {
-	const sizes = [...new Set(ts.map((row) => `${row.columns}x${row.rows}`))];
-	const summaries = sizes.map((size) => {
-		const a = summary(ts.filter((row) => row.scenario === scenario && `${row.columns}x${row.rows}` === size));
-		const b = summary(rust.filter((row) => row.scenario === scenario && `${row.columns}x${row.rows}` === size));
-		return { size, ts: a, rust: b, change: scenario === "static-idle" ? null : (b.p50Ms / a.p50Ms - 1) * 100 };
-	});
-	const at80 = summaries.find((item) => item.size === "80x24");
-	const worst = summaries.reduce((current, item) => current.change === null || (item.change !== null && item.change > current.change) ? item : current);
-	if (scenario !== "static-idle") decisions.push({ scenario, pass: at80.rust.p50Ms <= 16.7 || at80.change <= -30 });
-	rows.push(`| ${scenario} | ${timings(at80.ts)} / ${timings(at80.rust)} | ${at80.change === null ? "n/a" : `${format(at80.change)}%`} | ${worst.size}: ${worst.change === null ? "n/a" : `${format(worst.change)}%`} | ${format(at80.ts.bytes)} / ${format(at80.rust.bytes)} | ${miB(at80.rust.rssBytes)} |`);
-}
-const inputScrollStreamPasses = decisions.filter((item) => /^(input300|scroll300|stream)/.test(item.scenario) && item.pass).length;
-const tsCpu = median(ts.filter((row) => row.scenario !== "static-idle").map((row) => row.p50Ms));
-const rustCpu = median(rust.filter((row) => row.scenario !== "static-idle").map((row) => row.p50Ms));
-const cpuDrop = (1 - rustCpu / tsCpu) * 100;
-const rustRss = Math.max(...rust.map((row) => row.rssBytes));
-const tsRss = Math.max(...ts.map((row) => row.rssBytes));
-const combined = JSON.parse(readFileSync(resolve(artifact, "combined-rss.json"), "utf8")).combinedRssBytes;
-const go = inputScrollStreamPasses >= 2 && cpuDrop >= 40 && rustRss <= 40 * 1024 * 1024 && combined <= tsRss * 1.1;
-const report = `# Rust TUI B0 最终评估\n\n日期：2026-08-15\n\n## 口径\n\n- 同一 ${ts.length} 条 JSONL 集合：8 个场景、4 个尺寸、5 轮；TS 使用真实 LystarWorkspace/TuiAltScreen 与内存 terminal，Rust 使用 Ratatui CrosstermBackend 内存 writer。\n- idle 测量窗口不调用 render，frames/bytes 均为 0；其他场景实际 draw、记录 terminal write bytes、批量 frame CPU 样本和 RSS。\n- 组合 RSS 为 orchestrator 同时运行 TS host 和 Rust child 时的进程 RSS 峰值，非两个独立峰值相加。帧绝对预算为 16.7ms。\n\n## 基准表\n\n| 场景 | 80x24 TS / Rust frame ms (p50/p95/p99/max) | 80x24 p50 相对变化 | 跨尺寸最差 p50 变化 | 80x24 bytes (TS / Rust) | Rust RSS MiB |\n| --- | ---: | ---: | ---: | ---: | ---: |\n${rows.join("\n")}\n\n## 门槛\n\n- input/scroll/stream 满足绝对或 Rust 快至少 30%：${inputScrollStreamPasses}/5。\n- 全场景 p50 frame CPU 相对变化：${format(cpuDrop)}%（要求至少下降 40%）。\n- Rust UI RSS 峰值：${miB(rustRss)} MiB（要求不超过 40 MiB）。\n- 组合 RSS 峰值：${miB(combined)} MiB；TS 基线峰值：${miB(tsRss)} MiB，允许上限：${miB(tsRss * 1.1)} MiB。\n\n## Protocol\n\nDecodedMessage<T> 先保存 CBOR raw map，再由 raw 重编码进入 Typify 生成类型验证。presence API 可区分 missing/null/value；golden 覆盖 ui_response.value、error.details、operation.progress/result 的三态，Rust raw 回写帧由 TS decoder 完整深比较，未知字段与 variant 仍被拒绝。\n\n## B0 结论\n\n**${go ? "Go" : "Stop"}。** ${go ? "满足 B0 性能与协议门槛。" : "协议已无损，但性能门槛未满足，不能迁移默认 TUI 或进入 B1。"}\n`;
-writeFileSync(resolve(root, "docs/rust-tui-spike-report.md"), report);
-if (!go) process.exitCode = 2;
 
-function read(path) { return readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse); }
-function median(values) { return [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]; }
-function summary(rows) {
+function validateRss(rss) {
+	for (const name of ["ts", "rust", "combined"]) {
+		const value = rss?.[name];
+		assert(value && Array.isArray(value.samples) && value.samples.length >= 100, `${name} RSS lacks one-second steady samples`);
+		for (const field of ["p50Bytes", "p95Bytes", "maxBytes"]) assert(Number.isFinite(value[field]) && value[field] > 0, `${name} RSS ${field} is missing`);
+	}
+}
+
+function summarize(rows) {
 	return {
-		p50Ms: percentile(rows.map((row) => row.p50Ms), 0.5),
-		p95Ms: percentile(rows.map((row) => row.p95Ms), 0.95),
-		p99Ms: percentile(rows.map((row) => row.p99Ms), 0.99),
-		maxMs: Math.max(...rows.map((row) => row.maxMs)),
-		bytes: median(rows.map((row) => row.bytes)),
-		rssBytes: Math.max(...rows.map((row) => row.rssBytes)),
+		bytesP50: percentile(rows.map((row) => row.bytesP50), 0.5), bytesP95: percentile(rows.map((row) => row.bytesP95), 0.95),
+		bytesP99: percentile(rows.map((row) => row.bytesP99), 0.99), bytesMax: Math.max(...rows.map((row) => row.bytesMax)),
+		bytesTotal: rows.reduce((total, row) => total + row.bytesTotal, 0),
+		frameP50Ms: percentile(rows.map((row) => row.frameP50Ms), 0.5), frameP95Ms: percentile(rows.map((row) => row.frameP95Ms), 0.95),
+		frameP99Ms: percentile(rows.map((row) => row.frameP99Ms), 0.99), frameMaxMs: Math.max(...rows.map((row) => row.frameMaxMs)),
+		frameTotalMs: rows.reduce((total, row) => total + row.frameTotalMs, 0),
 	};
 }
+
+function report({ go, failures, summaries, categoryPasses, cpu, rss }) {
+	const rows = summaries.map((entry) => `| ${entry.scenario} | ${entry.size} | ${timings(entry.ts)} | ${timings(entry.rust)} | ${format(entry.rust.bytesP95)} | ${format(entry.ts.bytesP95)} | ${entry.failures.length ? entry.failures.join("; ") : "通过"} |`);
+	const categoryRows = categoryPasses.map((entry) => `| ${entry.category} | ${entry.pass ? "通过" : `未通过：${entry.failures.join(", ")}`} |`);
+	const cpuRows = cpu.map((entry) => `| ${entry.size} | ${format(entry.tsTotal)} | ${format(entry.rustTotal)} | ${format(entry.reduction * 100)}% | ${entry.reduction >= 0.4 ? "通过" : "未通过"} |`);
+	return `# Rust TUI B0 最终评估
+
+日期：2026-08-15
+
+## 可比口径
+
+- 5 轮、4 个尺寸、8 个场景。TS 使用真实 \`LystarWorkspace\`、\`TuiAltScreen\` 和 10,000 项 transcript；Rust 使用相同场景 JSON、相同 10,000 项、相同视口加 2 倍视口预取窗口。
+- 每个事件各自触发一次 backend render/write；JSONL 记录单帧 frame 与 bytes 的 p50/p95/p99/max/total，以及实际事件数、workUnits、renderedItems。idle 不调用 render，frame/bytes 均为 0。
+- RSS 先 warmup，再保持至少 1 秒，以不超过 10ms 的间隔采样目标 PID 与其 child tree。TS、Rust、\`GuiHostService\`+完成 typed handshake 的 Rust child 分开报告；不计 orchestrator、npm 或 cargo。
+
+## 全尺寸门槛
+
+| 场景 | 尺寸 | TS frame ms p50/p95/p99/max | Rust frame ms p50/p95/p99/max | Rust bytes p95 | TS bytes p95 | 绝对预算 |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+${rows.join("\n")}
+
+## 相对与 CPU 门槛
+
+| 类别 | 全尺寸相对门槛 |
+| --- | --- |
+${categoryRows.join("\n")}
+
+| 尺寸 | TS 非 idle 总 frame CPU ms | Rust 非 idle 总 frame CPU ms | 降低 | 40% 门槛 |
+| --- | ---: | ---: | ---: | --- |
+${cpuRows.join("\n")}
+
+## RSS
+
+| 目标 | steady p50 MiB | steady p95 MiB | steady max MiB |
+| --- | ---: | ---: | ---: |
+| TS baseline | ${miB(rss.ts.p50Bytes)} | ${miB(rss.ts.p95Bytes)} | ${miB(rss.ts.maxBytes)} |
+| Rust child | ${miB(rss.rust.p50Bytes)} | ${miB(rss.rust.p95Bytes)} | ${miB(rss.rust.maxBytes)} |
+| GuiHostService + Rust child | ${miB(rss.combined.p50Bytes)} | ${miB(rss.combined.p95Bytes)} | ${miB(rss.combined.maxBytes)} |
+
+## 未达项
+
+${failures.length === 0 ? "无。" : failures.map((failure) => `- ${failure}`).join("\n")}
+
+## Protocol
+
+公开编码只接受 \`DecodedMessage<ClientMessage>\` 或 \`DecodedMessage<ServerMessage>\`；通用 \`encode_frame<T>\` 与 generated module 都不再从 crate 根导出。\`new_client_message\` / \`new_server_message\` 仍是构造原始 CBOR 后的验证入口，FrameDecoder 的低层测试保留在模块内部。
+
+## B0 结论
+
+**${go ? "Go" : "Stop"}。** ${go ? "所有尺寸的等价性、绝对预算、相对门槛、总 frame CPU 和 RSS 均满足。" : "存在未达项；不调整阈值、不删场景，也不进入 B1。"}
+`;
+}
+
+function read(path) {
+	return readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
+}
 function percentile(values, q) { return [...values].sort((a, b) => a - b)[Math.min(values.length - 1, Math.ceil(values.length * q) - 1)]; }
-function timings(value) { return [value.p50Ms, value.p95Ms, value.p99Ms, value.maxMs].map(format).join("/"); }
+function timings(value) { return [value.frameP50Ms, value.frameP95Ms, value.frameP99Ms, value.frameMaxMs].map(format).join("/"); }
 function format(value) { return Number(value).toFixed(3); }
 function miB(value) { return (value / 1024 / 1024).toFixed(1); }
+
+const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+	const root = process.cwd();
+	const artifact = resolve(process.env.RUST_TUI_SPIKE_ARTIFACT ?? resolve(root, ".artifacts/rust-tui-spike"));
+	const result = evaluate({
+		ts: read(resolve(artifact, "benchmark-ts.jsonl")),
+		rust: read(resolve(artifact, "benchmark-rust.jsonl")),
+		rss: JSON.parse(readFileSync(resolve(artifact, "rss.json"), "utf8")),
+	});
+	writeFileSync(resolve(root, "docs/rust-tui-spike-report.md"), result.report);
+	if (!result.go) process.exitCode = 2;
+}

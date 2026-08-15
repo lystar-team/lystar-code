@@ -6,7 +6,8 @@ use std::{
     io::{self, Write},
     path::PathBuf,
     rc::Rc,
-    time::Instant,
+    thread,
+    time::{Duration, Instant},
 };
 
 use ratatui::{
@@ -15,7 +16,7 @@ use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::{Color, Style},
-    widgets::{Block, Borders, Widget},
+    widgets::Widget,
 };
 use serde_json::{Value, json};
 use unicode_width::UnicodeWidthStr;
@@ -35,7 +36,7 @@ impl Write for CountingWriter {
         let mut stats = self.stats.borrow_mut();
         stats.bytes += buf.len();
         for byte in buf {
-            stats.hash = stats.hash.wrapping_mul(16777619) ^ u64::from(*byte);
+            stats.hash = stats.hash.wrapping_mul(16_777_619) ^ u64::from(*byte);
         }
         Ok(buf.len())
     }
@@ -49,17 +50,18 @@ struct BenchApp<'a> {
     page: &'a [String],
     editor: &'a str,
     scroll: usize,
+    prefetch_viewports: usize,
 }
 
 impl Widget for BenchApp<'_> {
     fn render(self, area: Rect, buffer: &mut Buffer) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title("LYStar Rust B0");
-        let inner = block.inner(area);
-        block.render(area, buffer);
-        let footer = 3_u16.min(inner.height);
-        let viewport = inner.height.saturating_sub(footer);
+        let viewport = area.height.saturating_sub(1);
+        let rendered = self
+            .page
+            .iter()
+            .skip(self.scroll)
+            .take(usize::from(viewport) * (1 + self.prefetch_viewports));
+        black_box(rendered.fold(0_usize, |total, line| total.saturating_add(line.len())));
         for (row, line) in self
             .page
             .iter()
@@ -68,29 +70,18 @@ impl Widget for BenchApp<'_> {
             .enumerate()
         {
             buffer.set_string(
-                inner.x,
-                inner.y + row as u16,
-                truncate(line, usize::from(inner.width)),
+                area.x,
+                area.y + row as u16,
+                truncate(line, usize::from(area.width)),
                 Style::default().fg(Color::White),
             );
         }
-        if footer > 0 {
-            let editor_row = inner.y + viewport;
-            buffer.set_string(
-                inner.x,
-                editor_row,
-                truncate(&format!("> {}", self.editor), usize::from(inner.width)),
-                Style::default().fg(Color::Cyan),
-            );
-            if footer > 1 {
-                buffer.set_string(
-                    inner.x,
-                    editor_row + 1,
-                    truncate("Enter: send  Ctrl+C: cancel", usize::from(inner.width)),
-                    Style::default().fg(Color::DarkGray),
-                );
-            }
-        }
+        buffer.set_string(
+            area.x,
+            area.y + viewport,
+            truncate(self.editor, usize::from(area.width)),
+            Style::default().fg(Color::Cyan),
+        );
     }
 }
 
@@ -133,8 +124,73 @@ fn scenario_config() -> Value {
         .unwrap()
 }
 
+fn string_field<'a>(value: &'a Value, name: &str) -> &'a str {
+    value[name].as_str().unwrap()
+}
+
+fn number_field(value: &Value, name: &str) -> usize {
+    value[name].as_u64().unwrap() as usize
+}
+
+fn visible_items(rows: u16, prefetch_viewports: usize, item_count: usize) -> usize {
+    let viewport = usize::from(rows.saturating_sub(1)).max(1);
+    item_count.min(viewport * (1 + prefetch_viewports))
+}
+
+fn benchmark_page(item_count: usize) -> Vec<String> {
+    (0..item_count)
+        .map(|id| format!("assistant {id:05} benchmark transcript line with Chinese 内容"))
+        .collect()
+}
+
+fn draw(
+    terminal: &mut Terminal<CrosstermBackend<CountingWriter>>,
+    page: &[String],
+    editor: &str,
+    scroll: usize,
+    prefetch_viewports: usize,
+) {
+    terminal
+        .draw(|frame| {
+            frame.render_widget(
+                BenchApp {
+                    page,
+                    editor,
+                    scroll,
+                    prefetch_viewports,
+                },
+                frame.area(),
+            )
+        })
+        .unwrap();
+}
+
+fn hold_rss(config: &Value, hold_ms: u64) {
+    let item_count = number_field(config, "transcriptItems");
+    let prefetch_viewports = number_field(config, "prefetchViewports");
+    let stats = Rc::new(RefCell::new(WriterStats { bytes: 0, hash: 0 }));
+    let backend = CrosstermBackend::new(CountingWriter {
+        stats: Rc::clone(&stats),
+    });
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.resize(Rect::new(0, 0, 120, 36)).unwrap();
+    let page = benchmark_page(item_count);
+    let scroll = page.len().saturating_sub(35);
+    for _ in 0..8 {
+        draw(&mut terminal, &page, "> steady", scroll, prefetch_viewports);
+    }
+    black_box(stats.borrow().hash);
+    println!("READY");
+    thread::sleep(Duration::from_millis(hold_ms));
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
+    let config = scenario_config();
+    if let Some(index) = args.iter().position(|value| value == "--rss-hold-ms") {
+        hold_rss(&config, args[index + 1].parse().unwrap());
+        return;
+    }
     let out = args
         .iter()
         .position(|value| value == "--out")
@@ -143,7 +199,6 @@ fn main() {
         .unwrap_or_else(|| PathBuf::from(".artifacts/rust-tui-spike/benchmark-rust.jsonl"));
     fs::create_dir_all(out.parent().unwrap()).unwrap();
     File::create(&out).unwrap();
-    let config = scenario_config();
     let smoke = args.iter().any(|value| value == "--smoke");
     let rounds = if smoke {
         1
@@ -152,96 +207,128 @@ fn main() {
     };
     let sizes = config["sizes"].as_array().unwrap();
     let scenarios = config["scenarios"].as_array().unwrap();
-    let source: Vec<String> = (0..10_000)
-        .map(|id| format!("assistant {id:05} benchmark transcript line with Chinese 内容"))
-        .collect();
+    let item_count = number_field(&config, "transcriptItems");
+    let prefetch_viewports = number_field(&config, "prefetchViewports");
 
     for round in 1..=rounds {
         for size in sizes.iter().take(if smoke { 1 } else { sizes.len() }) {
             let columns = size[0].as_u64().unwrap() as u16;
             let rows = size[1].as_u64().unwrap() as u16;
             for scenario in scenarios {
-                let name = scenario["name"].as_str().unwrap();
-                let kind = scenario["kind"].as_str().unwrap();
-                let events = scenario["events"].as_u64().unwrap() as usize;
+                let name = string_field(scenario, "name");
+                let kind = string_field(scenario, "kind");
+                let events = number_field(scenario, "events");
+                let characters_per_event = number_field(scenario, "charactersPerEvent");
+                let items_per_event = number_field(scenario, "itemsPerEvent");
+                let scroll_lines = number_field(scenario, "scrollLines");
                 let stats = Rc::new(RefCell::new(WriterStats { bytes: 0, hash: 0 }));
                 let backend = CrosstermBackend::new(CountingWriter {
                     stats: Rc::clone(&stats),
                 });
                 let mut terminal = Terminal::new(backend).unwrap();
                 terminal.resize(Rect::new(0, 0, columns, rows)).unwrap();
-                let mut page: Vec<String> = source[9_600..].to_vec();
-                let mut editor = String::new();
-                terminal
-                    .draw(|frame| {
-                        frame.render_widget(
-                            BenchApp {
-                                page: &page,
-                                editor: &editor,
-                                scroll: 0,
-                            },
-                            frame.area(),
-                        )
-                    })
-                    .unwrap();
+                let mut current_rows = rows;
+                let mut page = benchmark_page(item_count);
+                let mut editor = String::from("> ");
+                let mut scroll = page
+                    .len()
+                    .saturating_sub(usize::from(current_rows.saturating_sub(1)));
+                let mut following = true;
+                for _ in 0..8 {
+                    draw(&mut terminal, &page, &editor, scroll, prefetch_viewports);
+                }
                 stats.borrow_mut().bytes = 0;
                 if kind == "idle" {
-                    let line = json!({"implementation":"rust","scenario":name,"columns":columns,"rows":rows,"round":round,"frames":0,"bytes":0,"p50Ms":0.0,"p95Ms":0.0,"p99Ms":0.0,"maxMs":0.0,"rssBytes":rss_bytes()});
-                    append(&out, &line);
+                    append(
+                        &out,
+                        &json!({
+                            "implementation":"rust", "scenario":name, "columns":columns, "rows":rows, "round":round,
+                            "events":0, "frames":0, "workUnits":0, "renderedItems":0,
+                            "bytesP50":0, "bytesP95":0, "bytesP99":0, "bytesMax":0, "bytesTotal":0,
+                            "frameP50Ms":0.0, "frameP95Ms":0.0, "frameP99Ms":0.0, "frameMaxMs":0.0, "frameTotalMs":0.0,
+                            "rssBytes":rss_bytes()
+                        }),
+                    );
                     continue;
                 }
-                let batch = events.div_ceil(20).max(10);
-                let mut samples = Vec::new();
-                let mut scroll = 0_usize;
-                for start in (0..events).step_by(batch) {
-                    let count = (events - start).min(batch);
-                    let began = Instant::now();
-                    for index in 0..count {
-                        match kind {
-                            "input" => editor.push(char::from(b'a' + (index % 26) as u8)),
-                            "paste" => editor.push_str(&"x".repeat(5_000)),
-                            "stream" => editor.push_str(&format!(" stream-{}", start + index)),
-                            "scroll" => {
-                                scroll = (scroll + 1).min(page.len().saturating_sub(1));
-                                if (start + index) % 75 == 0 {
-                                    page =
-                                        source[9_600usize.saturating_sub(start + index)..].to_vec();
-                                }
+                let mut frame_samples = Vec::with_capacity(events);
+                let mut byte_samples = Vec::with_capacity(events);
+                let mut work_units = 0_usize;
+                let mut rendered_items = 0_usize;
+                for index in 0..events {
+                    let mutation = format!("{kind}-{index}:")
+                        .chars()
+                        .chain(std::iter::repeat('x'))
+                        .take(characters_per_event)
+                        .collect::<String>();
+                    match kind {
+                        "input" | "paste" => editor.push_str(&mutation),
+                        "stream" => {
+                            page.push(mutation);
+                            if following {
+                                scroll = page
+                                    .len()
+                                    .saturating_sub(usize::from(current_rows.saturating_sub(1)));
                             }
-                            "resize" => {
-                                let width = if index % 2 == 0 {
-                                    columns
-                                } else {
-                                    columns.saturating_sub(4).max(20)
-                                };
-                                let height = if index % 2 == 0 {
-                                    rows
-                                } else {
-                                    rows.saturating_sub(2).max(8)
-                                };
-                                terminal.resize(Rect::new(0, 0, width, height)).unwrap();
-                            }
-                            _ => unreachable!(),
                         }
-                        terminal
-                            .draw(|frame| {
-                                frame.render_widget(
-                                    BenchApp {
-                                        page: &page,
-                                        editor: &editor,
-                                        scroll,
-                                    },
-                                    frame.area(),
-                                )
-                            })
-                            .unwrap();
+                        "scroll" => {
+                            scroll = scroll.saturating_sub(scroll_lines);
+                            following = false;
+                        }
+                        "resize" => {
+                            let width = if index % 2 == 0 {
+                                columns
+                            } else {
+                                columns.saturating_sub(4).max(20)
+                            };
+                            current_rows = if index % 2 == 0 {
+                                rows
+                            } else {
+                                rows.saturating_sub(2).max(8)
+                            };
+                            terminal
+                                .resize(Rect::new(0, 0, width, current_rows))
+                                .unwrap();
+                            if following {
+                                scroll = page
+                                    .len()
+                                    .saturating_sub(usize::from(current_rows.saturating_sub(1)));
+                            }
+                        }
+                        _ => unreachable!(),
                     }
-                    samples.push(began.elapsed().as_secs_f64() * 1000.0 / count as f64);
+                    let before_bytes = stats.borrow().bytes;
+                    let began = Instant::now();
+                    draw(&mut terminal, &page, &editor, scroll, prefetch_viewports);
+                    frame_samples.push(began.elapsed().as_secs_f64() * 1000.0);
+                    byte_samples.push((stats.borrow().bytes - before_bytes) as f64);
+                    work_units += characters_per_event
+                        + items_per_event
+                        + scroll_lines
+                        + usize::from(kind == "resize");
+                    rendered_items += visible_items(current_rows, prefetch_viewports, page.len());
                 }
                 black_box(stats.borrow().hash);
-                let mut sorted = samples.clone();
-                let line = json!({"implementation":"rust","scenario":name,"columns":columns,"rows":rows,"round":round,"frames":events,"bytes":stats.borrow().bytes,"p50Ms":percentile(&mut sorted,0.5),"p95Ms":percentile(&mut samples.clone(),0.95),"p99Ms":percentile(&mut samples.clone(),0.99),"maxMs":samples.iter().copied().fold(0.0,f64::max),"rssBytes":rss_bytes()});
-                append(&out, &line);
+                let mut frames_for_p50 = frame_samples.clone();
+                let mut frames_for_p95 = frame_samples.clone();
+                let mut frames_for_p99 = frame_samples.clone();
+                let mut bytes_for_p50 = byte_samples.clone();
+                let mut bytes_for_p95 = byte_samples.clone();
+                let mut bytes_for_p99 = byte_samples.clone();
+                append(
+                    &out,
+                    &json!({
+                        "implementation":"rust", "scenario":name, "columns":columns, "rows":rows, "round":round,
+                        "events":events, "frames":frame_samples.len(), "workUnits":work_units, "renderedItems":rendered_items,
+                        "bytesP50":percentile(&mut bytes_for_p50, 0.5), "bytesP95":percentile(&mut bytes_for_p95, 0.95),
+                        "bytesP99":percentile(&mut bytes_for_p99, 0.99), "bytesMax":byte_samples.iter().copied().fold(0.0, f64::max),
+                        "bytesTotal":byte_samples.iter().sum::<f64>(),
+                        "frameP50Ms":percentile(&mut frames_for_p50, 0.5), "frameP95Ms":percentile(&mut frames_for_p95, 0.95),
+                        "frameP99Ms":percentile(&mut frames_for_p99, 0.99), "frameMaxMs":frame_samples.iter().copied().fold(0.0, f64::max),
+                        "frameTotalMs":frame_samples.iter().sum::<f64>(),
+                        "rssBytes":rss_bytes()
+                    }),
+                );
             }
         }
     }
