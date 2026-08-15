@@ -83,6 +83,7 @@ export interface UpdateToolRecoveryLessonInput {
 export interface ToolRecoveryLessonsOptions {
 	now?: Date;
 	source?: string;
+	onHistorySynced?: () => void | Promise<void>;
 }
 
 export interface PruneToolRecoveryLessonsOptions extends ToolRecoveryLessonsOptions {
@@ -381,9 +382,6 @@ function parseHistory(content: string): { entries: ToolRecoveryLessonHistoryEntr
 }
 
 async function appendHistory(paths: ToolRecoveryLessonsPaths, entry: ToolRecoveryLessonHistoryEntry): Promise<void> {
-	const content = await readText(paths.history);
-	const parsed = parseHistory(content);
-	if (parsed.repairedContent !== content) await writeAtomically(paths.history, parsed.repairedContent);
 	const file = await open(paths.history, "a", 0o600);
 	try {
 		await file.writeFile(`${JSON.stringify(entry)}\n`, "utf8");
@@ -393,23 +391,125 @@ async function appendHistory(paths: ToolRecoveryLessonsPaths, entry: ToolRecover
 	}
 }
 
-async function readSnapshot(paths: ToolRecoveryLessonsPaths): Promise<ToolRecoveryLessonsSnapshot> {
-	const content = await readText(paths.snapshot);
-	if (content.length === 0) return emptySnapshot();
-	try {
-		const parsed = JSON.parse(content);
-		if (!isSnapshot(parsed)) throw new Error("invalid lessons snapshot");
-		return parsed;
-	} catch {
-		const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-		const backup = join(paths.directory, `lessons.corrupt-${timestamp}.json`);
-		try {
-			await rename(paths.snapshot, backup);
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+function equalLessons(left: ToolRecoveryLesson, right: ToolRecoveryLesson): boolean {
+	return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function replayHistory(entries: ToolRecoveryLessonHistoryEntry[]): ToolRecoveryLessonsSnapshot {
+	const lessons: ToolRecoveryLesson[] = [];
+	const entryIds = new Set<string>();
+	for (const entry of entries) {
+		if (entryIds.has(entry.id)) throw new ToolRecoveryLessonsError("history.jsonl 包含重复记录 ID");
+		entryIds.add(entry.id);
+
+		if (entry.action === "create") {
+			if (
+				!entry.after ||
+				entry.before ||
+				entry.after.version !== 1 ||
+				(entry.after.status !== "candidate" && entry.after.status !== "verified") ||
+				lessons.some((lesson) => lesson.id === entry.after?.id)
+			) {
+				throw new ToolRecoveryLessonsError("history.jsonl create 记录无效");
+			}
+			lessons.push(structuredClone(entry.after));
+			continue;
 		}
-		return emptySnapshot();
+
+		if (!entry.before) throw new ToolRecoveryLessonsError(`history.jsonl ${entry.action} 记录缺少旧快照`);
+		const index = lessons.findIndex((lesson) => lesson.id === entry.before?.id);
+		if (index === -1 || !equalLessons(lessons[index], entry.before)) {
+			throw new ToolRecoveryLessonsError("history.jsonl 记录与前序状态不一致");
+		}
+		if (entry.action === "prune") {
+			if (entry.after) throw new ToolRecoveryLessonsError("history.jsonl prune 记录无效");
+			lessons.splice(index, 1);
+			continue;
+		}
+		if (!entry.after || entry.after.id !== entry.before.id || entry.after.version !== entry.before.version + 1) {
+			throw new ToolRecoveryLessonsError(`history.jsonl ${entry.action} 记录无效`);
+		}
+		if (
+			(entry.action === "approve" &&
+				(entry.after.status !== "active" ||
+					(entry.before.status !== "candidate" &&
+						entry.before.status !== "verified" &&
+						entry.before.status !== "suspended"))) ||
+			(entry.action === "disable" &&
+				(entry.after.status !== "suspended" ||
+					(entry.before.status !== "active" &&
+						entry.before.status !== "candidate" &&
+						entry.before.status !== "verified"))) ||
+			(entry.action === "rollback" && entry.after.status === "active") ||
+			(entry.action === "update" &&
+				entry.after.status !== entry.before.status &&
+				entry.after.status !== "candidate") ||
+			(entry.action === "update" &&
+				behaviorChanged(entry.before, entry.after) &&
+				(entry.before.status === "active" ||
+					entry.before.status === "suspended" ||
+					effectiveStatus(entry.before, new Date(entry.time)) === "expired") &&
+				entry.after.status !== "candidate")
+		) {
+			throw new ToolRecoveryLessonsError(`history.jsonl ${entry.action} 状态转换无效`);
+		}
+		lessons[index] = structuredClone(entry.after);
 	}
+	return { schema: 1, lessons };
+}
+
+async function preserveCorruptSnapshot(paths: ToolRecoveryLessonsPaths): Promise<void> {
+	const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+	const backup = join(paths.directory, `lessons.corrupt-${timestamp}-${randomUUID()}.json`);
+	try {
+		await rename(paths.snapshot, backup);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+}
+
+async function readStoredSnapshot(
+	paths: ToolRecoveryLessonsPaths,
+): Promise<{ snapshot: ToolRecoveryLessonsSnapshot; missing: boolean; corrupted: boolean }> {
+	let content: string;
+	try {
+		content = await readText(paths.snapshot);
+	} catch {
+		await preserveCorruptSnapshot(paths);
+		return { snapshot: emptySnapshot(), missing: false, corrupted: true };
+	}
+	if (content.length === 0) return { snapshot: emptySnapshot(), missing: true, corrupted: false };
+	try {
+		const snapshot = JSON.parse(content);
+		if (!isSnapshot(snapshot)) throw new Error("invalid lessons snapshot");
+		return { snapshot, missing: false, corrupted: false };
+	} catch {
+		await preserveCorruptSnapshot(paths);
+		return { snapshot: emptySnapshot(), missing: false, corrupted: true };
+	}
+}
+
+async function loadStore(
+	paths: ToolRecoveryLessonsPaths,
+): Promise<{ snapshot: ToolRecoveryLessonsSnapshot; history: ToolRecoveryLessonHistoryEntry[] }> {
+	const stored = await readStoredSnapshot(paths);
+	const rawHistory = await readText(paths.history);
+	const parsedHistory = parseHistory(rawHistory);
+	if (parsedHistory.repairedContent !== rawHistory)
+		await writeAtomically(paths.history, parsedHistory.repairedContent);
+	const replayed = replayHistory(parsedHistory.entries);
+
+	if (parsedHistory.entries.length === 0) {
+		return { snapshot: stored.snapshot, history: parsedHistory.entries };
+	}
+	if (
+		stored.corrupted ||
+		stored.missing ||
+		JSON.stringify(stored.snapshot.lessons) !== JSON.stringify(replayed.lessons)
+	) {
+		await writeAtomically(paths.snapshot, `${JSON.stringify(replayed, null, 2)}\n`);
+	}
+	return { snapshot: replayed, history: parsedHistory.entries };
 }
 
 async function withStoreLock<T>(
@@ -460,13 +560,26 @@ function historyEntry(
 	return { schema: 1, id: randomUUID(), action, source, time, before, after };
 }
 
+function behaviorChanged(current: ToolRecoveryLesson, next: ToolRecoveryLesson): boolean {
+	return (
+		current.scope !== next.scope ||
+		current.scopeHash !== next.scopeHash ||
+		JSON.stringify(current.matcher) !== JSON.stringify(next.matcher) ||
+		current.guidance !== next.guidance ||
+		current.allowedAction !== next.allowedAction ||
+		Date.parse(next.expiresAt) > Date.parse(current.expiresAt)
+	);
+}
+
 async function commit(
 	paths: ToolRecoveryLessonsPaths,
 	snapshot: ToolRecoveryLessonsSnapshot,
-	entry: ToolRecoveryLessonHistoryEntry,
+	entries: ToolRecoveryLessonHistoryEntry | ToolRecoveryLessonHistoryEntry[],
+	options: ToolRecoveryLessonsOptions,
 ): Promise<void> {
+	for (const entry of Array.isArray(entries) ? entries : [entries]) await appendHistory(paths, entry);
+	await options.onHistorySynced?.();
 	await writeAtomically(paths.snapshot, `${JSON.stringify(snapshot, null, 2)}\n`);
-	await appendHistory(paths, entry);
 }
 
 export function hashToolRecoveryLessonScope(value: string): string {
@@ -494,7 +607,7 @@ export async function createToolRecoveryLesson(
 		throw new ToolRecoveryLessonsError("新建恢复经验只能是 candidate 或 verified");
 	}
 	return await withStoreLock(agentDir, async (paths) => {
-		const snapshot = await readSnapshot(paths);
+		const snapshot = (await loadStore(paths)).snapshot;
 		const time = nowIso(options);
 		const lesson: ToolRecoveryLesson = {
 			schema: 1,
@@ -513,7 +626,7 @@ export async function createToolRecoveryLesson(
 		};
 		if (!isLesson(lesson)) throw new ToolRecoveryLessonsError("lesson 结构无效");
 		snapshot.lessons.push(lesson);
-		await commit(paths, snapshot, historyEntry("create", sourceOf(options), time, null, lesson));
+		await commit(paths, snapshot, historyEntry("create", sourceOf(options), time, null, lesson), options);
 		return presentLesson(lesson, options.now ?? new Date());
 	});
 }
@@ -525,7 +638,7 @@ export async function listToolRecoveryLessons(
 	if (options.status !== undefined && !STATUS.has(options.status)) throw new ToolRecoveryLessonsError("status 无效");
 	return await withStoreLock(agentDir, async (paths) => {
 		const now = options.now ?? new Date();
-		return (await readSnapshot(paths)).lessons
+		return (await loadStore(paths)).snapshot.lessons
 			.map((lesson) => presentLesson(lesson, now))
 			.filter((lesson) => !options.status || lesson.status === options.status);
 	});
@@ -537,12 +650,12 @@ export async function getToolRecoveryLesson(
 	options: { now?: Date } = {},
 ): Promise<ToolRecoveryLesson> {
 	return await withStoreLock(agentDir, async (paths) =>
-		presentLesson(findLesson(await readSnapshot(paths), id), options.now ?? new Date()),
+		presentLesson(findLesson((await loadStore(paths)).snapshot, id), options.now ?? new Date()),
 	);
 }
 
 export async function readToolRecoveryLessonHistory(agentDir: string): Promise<ToolRecoveryLessonHistoryEntry[]> {
-	return await withStoreLock(agentDir, async (paths) => parseHistory(await readText(paths.history)).entries);
+	return await withStoreLock(agentDir, async (paths) => (await loadStore(paths)).history);
 }
 
 export async function updateToolRecoveryLesson(
@@ -554,7 +667,7 @@ export async function updateToolRecoveryLesson(
 ): Promise<ToolRecoveryLesson> {
 	assertLessonInput(input);
 	return await withStoreLock(agentDir, async (paths) => {
-		const snapshot = await readSnapshot(paths);
+		const snapshot = (await loadStore(paths)).snapshot;
 		const current = findLesson(snapshot, id);
 		assertExpectedVersion(current, expectedVersion);
 		const nextScope = input.scope ?? current.scope;
@@ -573,9 +686,17 @@ export async function updateToolRecoveryLesson(
 			updatedAt: time,
 		};
 		if (nextScopeHash === undefined) delete next.scopeHash;
+		if (
+			behaviorChanged(current, next) &&
+			(current.status === "active" ||
+				current.status === "suspended" ||
+				effectiveStatus(current, options.now ?? new Date()) === "expired")
+		) {
+			next.status = "candidate";
+		}
 		if (!isLesson(next)) throw new ToolRecoveryLessonsError("lesson 更新后结构无效");
 		snapshot.lessons[snapshot.lessons.indexOf(current)] = next;
-		await commit(paths, snapshot, historyEntry("update", sourceOf(options), time, current, next));
+		await commit(paths, snapshot, historyEntry("update", sourceOf(options), time, current, next), options);
 		return presentLesson(next, options.now ?? new Date());
 	});
 }
@@ -587,18 +708,18 @@ export async function approveToolRecoveryLesson(
 	options: ToolRecoveryLessonsOptions = {},
 ): Promise<ToolRecoveryLesson> {
 	return await withStoreLock(agentDir, async (paths) => {
-		const snapshot = await readSnapshot(paths);
+		const snapshot = (await loadStore(paths)).snapshot;
 		const current = findLesson(snapshot, id);
 		assertExpectedVersion(current, expectedVersion);
 		if (effectiveStatus(current, options.now ?? new Date()) === "expired")
 			throw new ToolRecoveryLessonsError("已过期的恢复经验不能批准");
-		if (current.status !== "candidate" && current.status !== "verified") {
-			throw new ToolRecoveryLessonsError("只有 candidate 或 verified 恢复经验可以批准");
+		if (current.status !== "candidate" && current.status !== "verified" && current.status !== "suspended") {
+			throw new ToolRecoveryLessonsError("只有 candidate、verified 或 suspended 恢复经验可以批准");
 		}
 		const time = nowIso(options);
 		const next: ToolRecoveryLesson = { ...current, status: "active", version: current.version + 1, updatedAt: time };
 		snapshot.lessons[snapshot.lessons.indexOf(current)] = next;
-		await commit(paths, snapshot, historyEntry("approve", sourceOf(options), time, current, next));
+		await commit(paths, snapshot, historyEntry("approve", sourceOf(options), time, current, next), options);
 		return presentLesson(next, options.now ?? new Date());
 	});
 }
@@ -610,7 +731,7 @@ export async function disableToolRecoveryLesson(
 	options: ToolRecoveryLessonsOptions = {},
 ): Promise<ToolRecoveryLesson> {
 	return await withStoreLock(agentDir, async (paths) => {
-		const snapshot = await readSnapshot(paths);
+		const snapshot = (await loadStore(paths)).snapshot;
 		const current = findLesson(snapshot, id);
 		assertExpectedVersion(current, expectedVersion);
 		if (effectiveStatus(current, options.now ?? new Date()) === "expired")
@@ -626,7 +747,7 @@ export async function disableToolRecoveryLesson(
 			updatedAt: time,
 		};
 		snapshot.lessons[snapshot.lessons.indexOf(current)] = next;
-		await commit(paths, snapshot, historyEntry("disable", sourceOf(options), time, current, next));
+		await commit(paths, snapshot, historyEntry("disable", sourceOf(options), time, current, next), options);
 		return presentLesson(next, options.now ?? new Date());
 	});
 }
@@ -638,23 +759,23 @@ export async function rollbackToolRecoveryLesson(
 	options: ToolRecoveryLessonsOptions = {},
 ): Promise<ToolRecoveryLesson> {
 	return await withStoreLock(agentDir, async (paths) => {
-		const history = parseHistory(await readText(paths.history)).entries;
+		const { snapshot, history } = await loadStore(paths);
 		const target = history.find((entry) => entry.id === historyId);
 		if (!target) throw new ToolRecoveryLessonsError(`未找到历史记录“${historyId}”`);
 		if (!target.before) throw new ToolRecoveryLessonsError("这条历史记录没有可恢复的旧快照");
-		const snapshot = await readSnapshot(paths);
 		const current = findLesson(snapshot, target.before.id);
 		assertExpectedVersion(current, expectedVersion);
 		const time = nowIso(options);
 		const next: ToolRecoveryLesson = {
 			...structuredClone(target.before),
+			status: target.before.status === "active" ? "candidate" : target.before.status,
 			version: current.version + 1,
 			updatedAt: time,
 			rollbackOf: historyId,
 		};
 		if (!isLesson(next)) throw new ToolRecoveryLessonsError("回滚后的 lesson 结构无效");
 		snapshot.lessons[snapshot.lessons.indexOf(current)] = next;
-		await commit(paths, snapshot, historyEntry("rollback", sourceOf(options), time, current, next));
+		await commit(paths, snapshot, historyEntry("rollback", sourceOf(options), time, current, next), options);
 		return presentLesson(next, options.now ?? new Date());
 	});
 }
@@ -669,7 +790,7 @@ export async function pruneToolRecoveryLessons(
 	}
 	const source = sourceOf(options);
 	return await withStoreLock(agentDir, async (paths) => {
-		const snapshot = await readSnapshot(paths);
+		const snapshot = (await loadStore(paths)).snapshot;
 		const now = options.now ?? new Date();
 		const time = now.toISOString();
 		const removed = snapshot.lessons.filter(
@@ -679,10 +800,12 @@ export async function pruneToolRecoveryLessons(
 		);
 		if (removed.length === 0) return 0;
 		snapshot.lessons = snapshot.lessons.filter((lesson) => !removed.includes(lesson));
-		await writeAtomically(paths.snapshot, `${JSON.stringify(snapshot, null, 2)}\n`);
-		for (const lesson of removed) {
-			await appendHistory(paths, historyEntry("prune", source, time, lesson, null));
-		}
+		await commit(
+			paths,
+			snapshot,
+			removed.map((lesson) => historyEntry("prune", source, time, lesson, null)),
+			options,
+		);
 		return removed.length;
 	});
 }

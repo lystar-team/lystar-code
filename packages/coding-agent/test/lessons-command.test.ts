@@ -87,7 +87,10 @@ describe("lessons CLI", () => {
 		);
 		if (!disableHistory) throw new Error("missing disable history");
 		const rolledBack = await runCli(["lessons", "rollback", disableHistory.id, "--version", "3"]);
-		expect(rolledBack).toMatchObject({ stdout: expect.stringContaining("已回滚"), exitCode: undefined });
+		expect(rolledBack).toMatchObject({
+			stdout: expect.stringContaining("当前状态为 candidate，需再次批准"),
+			exitCode: undefined,
+		});
 
 		await createToolRecoveryLesson(agentDir, lessonInput({ expiresAt: "2020-01-01T00:00:00.000Z" }));
 		const pruned = await runCli(["lessons", "prune"]);
@@ -95,6 +98,10 @@ describe("lessons CLI", () => {
 	});
 
 	it("reports empty data and command errors with nonzero exit codes", async () => {
+		const help = await runCli(["lessons", "help"]);
+		expect(help.stdout).toContain("suspended 可以重新批准");
+		expect(help.stdout).toContain("回滚到 active 会改为 candidate");
+
 		expect(await runCli(["lessons", "list"])).toMatchObject({ stdout: "没有保存的恢复经验。", exitCode: undefined });
 		expect(await runCli(["lessons", "prune"])).toMatchObject({
 			stdout: "没有可清理的恢复经验。",

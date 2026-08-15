@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -136,20 +136,79 @@ describe("Tool recovery lessons store", () => {
 		).toEqual(["create", "update"]);
 	});
 
-	it("preserves a corrupted snapshot before starting from an empty snapshot", async () => {
+	it("preserves a corrupted snapshot and reconstructs it from history", async () => {
 		const agentDir = createTempDir();
+		const created = await createToolRecoveryLesson(agentDir, lessonInput(), { now: NOW });
 		const paths = getToolRecoveryLessonsPaths(agentDir);
-		mkdirSync(paths.directory, { recursive: true });
 		writeFileSync(paths.snapshot, '{"broken"');
 
-		expect(await listToolRecoveryLessons(agentDir)).toEqual([]);
+		expect(await listToolRecoveryLessons(agentDir, { now: NOW })).toEqual([created]);
 		const backup = readdirSync(paths.directory).find(
 			(name) => name.startsWith("lessons.corrupt-") && name.endsWith(".json"),
 		);
 		expect(backup).toBeDefined();
 		expect(readFileSync(join(paths.directory, backup!), "utf8")).toBe('{"broken"');
-		await createToolRecoveryLesson(agentDir, lessonInput(), { now: NOW });
-		expect(existsSync(paths.snapshot)).toBe(true);
+		expect(JSON.parse(readFileSync(paths.snapshot, "utf8"))).toMatchObject({ lessons: [created] });
+	});
+
+	it("appends and syncs history before a snapshot failure, then restores on reopen", async () => {
+		const agentDir = createTempDir();
+		const created = await createToolRecoveryLesson(agentDir, lessonInput(), { now: NOW });
+		const paths = getToolRecoveryLessonsPaths(agentDir);
+		await expect(
+			updateToolRecoveryLesson(
+				agentDir,
+				created.id,
+				created.version,
+				{ guidance: "重新读取父目录。" },
+				{
+					now: NOW,
+					onHistorySynced: () => {
+						throw new Error("snapshot write fault");
+					},
+				},
+			),
+		).rejects.toThrow("snapshot write fault");
+
+		expect(JSON.parse(readFileSync(paths.snapshot, "utf8"))).toMatchObject({ lessons: [{ version: 1 }] });
+		expect(
+			readFileSync(paths.history, "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line).action),
+		).toEqual(["create", "update"]);
+		expect((await readToolRecoveryLessonHistory(agentDir)).map((entry) => entry.action)).toEqual([
+			"create",
+			"update",
+		]);
+		expect(await getToolRecoveryLesson(agentDir, created.id, { now: NOW })).toMatchObject({
+			guidance: "重新读取父目录。",
+			version: 2,
+		});
+		expect(JSON.parse(readFileSync(paths.snapshot, "utf8"))).toMatchObject({ lessons: [{ version: 2 }] });
+	});
+
+	it("drops an uncommitted truncated history tail and repairs a snapshot that had advanced past it", async () => {
+		const agentDir = createTempDir();
+		const created = await createToolRecoveryLesson(agentDir, lessonInput(), { now: NOW });
+		const updated = await updateToolRecoveryLesson(
+			agentDir,
+			created.id,
+			created.version,
+			{ guidance: "不应保留的建议。" },
+			{ now: NOW },
+		);
+		const paths = getToolRecoveryLessonsPaths(agentDir);
+		const [create] = readFileSync(paths.history, "utf8").trim().split("\n");
+		writeFileSync(paths.history, `${create}\n{"truncated"`);
+
+		expect(await getToolRecoveryLesson(agentDir, created.id, { now: NOW })).toMatchObject({
+			guidance: created.guidance,
+			version: created.version,
+		});
+		expect(readFileSync(paths.history, "utf8").trim().split("\n")).toHaveLength(1);
+		expect(JSON.parse(readFileSync(paths.snapshot, "utf8"))).toMatchObject({ lessons: [{ version: 1 }] });
+		expect(updated.version).toBe(2);
 	});
 
 	it("rolls back a history entry as a new version without deleting history", async () => {
@@ -172,6 +231,119 @@ describe("Tool recovery lessons store", () => {
 			"update",
 			"rollback",
 		]);
+	});
+
+	it("returns active lessons to candidate when behavior changes, while evidence-only updates and shorter TTL retain active", async () => {
+		const agentDir = createTempDir();
+		const created = await createToolRecoveryLesson(agentDir, lessonInput(), { now: NOW });
+		const active = await approveToolRecoveryLesson(agentDir, created.id, created.version, { now: NOW });
+		const evidenceOnly = await updateToolRecoveryLesson(
+			agentDir,
+			active.id,
+			active.version,
+			{ evidence: { occurrences: 4, sessions: 2, recovered: 4, failed: 0 } },
+			{ now: NOW },
+		);
+		expect(evidenceOnly.status).toBe("active");
+		const shortened = await updateToolRecoveryLesson(
+			agentDir,
+			evidenceOnly.id,
+			evidenceOnly.version,
+			{ expiresAt: "2029-01-01T00:00:00.000Z" },
+			{ now: NOW },
+		);
+		expect(shortened.status).toBe("active");
+		const changed = await updateToolRecoveryLesson(
+			agentDir,
+			shortened.id,
+			shortened.version,
+			{ guidance: "先列出父目录，再确认目标。" },
+			{ now: NOW },
+		);
+		expect(changed).toMatchObject({ status: "candidate", version: 5 });
+	});
+
+	it("requires approval again for active TTL extensions and safe_refresh changes", async () => {
+		const agentDir = createTempDir();
+		const refresh = await createToolRecoveryLesson(
+			agentDir,
+			lessonInput({ allowedAction: "safe_refresh", expiresAt: "2027-01-01T00:00:00.000Z" }),
+			{ now: NOW },
+		);
+		const active = await approveToolRecoveryLesson(agentDir, refresh.id, refresh.version, { now: NOW });
+		const extended = await updateToolRecoveryLesson(
+			agentDir,
+			active.id,
+			active.version,
+			{ expiresAt: "2028-01-01T00:00:00.000Z" },
+			{ now: NOW },
+		);
+		expect(extended.status).toBe("candidate");
+		const reapproved = await approveToolRecoveryLesson(agentDir, extended.id, extended.version, { now: NOW });
+		const changedRefresh = await updateToolRecoveryLesson(
+			agentDir,
+			reapproved.id,
+			reapproved.version,
+			{ guidance: "仅在已验证的刷新后重试。" },
+			{ now: NOW },
+		);
+		expect(changedRefresh.status).toBe("candidate");
+	});
+
+	it("allows suspended approval, but requires expired lessons to be revalidated before approval", async () => {
+		const agentDir = createTempDir();
+		const created = await createToolRecoveryLesson(agentDir, lessonInput(), { now: NOW });
+		const active = await approveToolRecoveryLesson(agentDir, created.id, created.version, { now: NOW });
+		const suspended = await disableToolRecoveryLesson(agentDir, active.id, active.version, { now: NOW });
+		expect(await approveToolRecoveryLesson(agentDir, suspended.id, suspended.version, { now: NOW })).toMatchObject({
+			status: "active",
+		});
+
+		const expired = await createToolRecoveryLesson(agentDir, lessonInput({ expiresAt: "2020-01-01T00:00:00.000Z" }), {
+			now: NOW,
+		});
+		await expect(approveToolRecoveryLesson(agentDir, expired.id, expired.version, { now: NOW })).rejects.toThrow(
+			"已过期",
+		);
+		const revalidated = await updateToolRecoveryLesson(
+			agentDir,
+			expired.id,
+			expired.version,
+			{ expiresAt: FUTURE },
+			{ now: NOW },
+		);
+		expect(revalidated.status).toBe("candidate");
+		expect(
+			await approveToolRecoveryLesson(agentDir, revalidated.id, revalidated.version, { now: NOW }),
+		).toMatchObject({
+			status: "active",
+		});
+	});
+
+	it("rolls back an active state as a candidate requiring approval", async () => {
+		const agentDir = createTempDir();
+		const created = await createToolRecoveryLesson(agentDir, lessonInput(), { now: NOW });
+		const active = await approveToolRecoveryLesson(agentDir, created.id, created.version, { now: NOW });
+		const suspended = await disableToolRecoveryLesson(agentDir, active.id, active.version, { now: NOW });
+		const disable = (await readToolRecoveryLessonHistory(agentDir)).find((entry) => entry.action === "disable");
+		if (!disable) throw new Error("missing disable history");
+
+		expect(await rollbackToolRecoveryLesson(agentDir, disable.id, suspended.version, { now: NOW })).toMatchObject({
+			status: "candidate",
+			version: 4,
+			rollbackOf: disable.id,
+		});
+	});
+
+	it("rejects middle history corruption without replacing the history file", async () => {
+		const agentDir = createTempDir();
+		await createToolRecoveryLesson(agentDir, lessonInput(), { now: NOW });
+		const paths = getToolRecoveryLessonsPaths(agentDir);
+		const raw = readFileSync(paths.history, "utf8");
+		writeFileSync(paths.history, `{"broken"\n${raw}`);
+
+		await expect(listToolRecoveryLessons(agentDir, { now: NOW })).rejects.toThrow("中间记录损坏");
+		expect(readFileSync(paths.history, "utf8")).toContain('{"broken"');
 	});
 
 	it("rejects sensitive guidance and writes no raw paths or test secrets", async () => {

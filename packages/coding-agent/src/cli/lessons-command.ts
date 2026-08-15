@@ -56,7 +56,7 @@ export function printLessonsCommandHelp(): void {
   ${APP_NAME} lessons rollback <history-id> [--version <version>]
   ${APP_NAME} lessons prune
 
-approve 是人工审批入口。safe_refresh 只能通过 approve 进入 active。--version 可避免覆盖已被其他会话修改的恢复经验。`);
+approve 是人工审批入口。safe_refresh 只能通过 approve 进入 active；suspended 可以重新批准。过期经验必须先更新为 candidate 再批准；回滚到 active 会改为 candidate，需再次 approve。--version 可避免覆盖已被其他会话修改的恢复经验。`);
 }
 
 export function parseLessonsCommand(args: string[]): LessonsCommand | undefined {
@@ -164,7 +164,11 @@ export async function runLessonsCommand(args: string[], agentDir = getAgentDir()
 			case "rollback": {
 				const version = command.version ?? (await rollbackVersion(agentDir, command.historyId));
 				const lesson = await rollbackToolRecoveryLesson(agentDir, command.historyId, version, { source: "cli" });
-				console.log(`已回滚恢复经验“${lesson.id}”到历史记录“${command.historyId}”。`);
+				console.log(
+					lesson.status === "candidate"
+						? `已回滚恢复经验“${lesson.id}”到历史记录“${command.historyId}”，当前状态为 candidate，需再次批准。`
+						: `已回滚恢复经验“${lesson.id}”到历史记录“${command.historyId}”。`,
+				);
 				return true;
 			}
 			case "prune": {
