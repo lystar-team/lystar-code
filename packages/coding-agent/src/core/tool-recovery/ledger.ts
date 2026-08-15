@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, mkdir, open, readdir, readFile, realpath, rm, stat } from "node:fs/promises";
+import { appendFile, mkdir, open, readdir, readFile, realpath, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import lockfile from "proper-lockfile";
+import { isStableFailureCode } from "./registry.ts";
 
 export interface RecoveryLedgerEntry {
 	schema: 1;
@@ -18,6 +19,10 @@ export interface RecoveryLedgerEntry {
 	outcome: "recovered" | "failed" | "needs_model" | "blocked" | "cancelled";
 	durationMs: number;
 	createdAt: string;
+}
+
+export interface SessionRecoveryLedgerKey {
+	path: string;
 }
 
 const LEDGER_KEYS = [
@@ -38,6 +43,7 @@ const LEDGER_KEYS = [
 ] as const;
 const SHA256 = /^[a-f0-9]{64}$/;
 const SAFE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
+const TOOL_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
 const OUTCOMES = new Set<RecoveryLedgerEntry["outcome"]>([
 	"recovered",
 	"failed",
@@ -65,17 +71,17 @@ function isLedgerEntry(value: unknown): value is RecoveryLedgerEntry {
 		typeof entry.id === "string" &&
 		SAFE_IDENTIFIER.test(entry.id) &&
 		typeof entry.sessionId === "string" &&
-		SAFE_IDENTIFIER.test(entry.sessionId) &&
+		SHA256.test(entry.sessionId) &&
 		typeof entry.turnId === "string" &&
-		SAFE_IDENTIFIER.test(entry.turnId) &&
+		SHA256.test(entry.turnId) &&
 		typeof entry.toolCallId === "string" &&
-		SAFE_IDENTIFIER.test(entry.toolCallId) &&
+		SHA256.test(entry.toolCallId) &&
 		typeof entry.toolName === "string" &&
-		SAFE_IDENTIFIER.test(entry.toolName) &&
+		TOOL_NAME.test(entry.toolName) &&
 		typeof entry.callSignature === "string" &&
 		typeof entry.failureFingerprint === "string" &&
 		typeof entry.failureCode === "string" &&
-		SAFE_IDENTIFIER.test(entry.failureCode) &&
+		isStableFailureCode(entry.failureCode) &&
 		typeof entry.attempt === "number" &&
 		Number.isSafeInteger(entry.attempt) &&
 		entry.attempt >= 1 &&
@@ -93,33 +99,74 @@ function isLedgerEntry(value: unknown): value is RecoveryLedgerEntry {
 }
 
 function assertLedgerEntry(entry: RecoveryLedgerEntry): void {
-	if (!isLedgerEntry(entry)) {
-		throw new Error("Invalid recovery ledger entry");
+	if (!isLedgerEntry(entry)) throw new Error("Invalid recovery ledger entry");
+}
+
+async function readLedgerContent(path: string): Promise<string> {
+	try {
+		return await readFile(path, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+		throw error;
 	}
 }
 
-async function parseLedger(path: string): Promise<RecoveryLedgerEntry[]> {
-	let content: string;
-	try {
-		content = await readFile(path, "utf8");
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-		throw error;
-	}
-	const lines = content.split("\n");
-	if (lines[lines.length - 1] === "") lines.pop();
+function parseLedgerContent(content: string): { entries: RecoveryLedgerEntry[]; repairedContent: string } {
+	if (content.length === 0) return { entries: [], repairedContent: content };
 	const entries: RecoveryLedgerEntry[] = [];
-	for (let index = 0; index < lines.length; index++) {
+	let offset = 0;
+	let validEnd = 0;
+	while (offset < content.length) {
+		const newline = content.indexOf("\n", offset);
+		const end = newline === -1 ? content.length : newline;
+		const line = content.slice(offset, end);
+		const nextOffset = newline === -1 ? content.length : newline + 1;
+		if (line.length === 0 && nextOffset === content.length)
+			return { entries, repairedContent: content.slice(0, validEnd) };
 		try {
-			const entry = JSON.parse(lines[index]!);
+			const entry = JSON.parse(line);
 			if (!isLedgerEntry(entry)) throw new Error("Invalid recovery ledger entry");
 			entries.push(entry);
-		} catch (error) {
-			if (index === lines.length - 1) continue;
-			throw error;
+			validEnd = newline === -1 ? content.length : nextOffset;
+			offset = nextOffset;
+		} catch {
+			// 只允许修复最后一个损坏尾部，不能跳过中间损坏后继续解释账本。
+			const remainder = content.slice(nextOffset);
+			if (remainder.split("\n").some((candidate) => candidate.length > 0)) {
+				throw new Error("Invalid recovery ledger entry");
+			}
+			return { entries, repairedContent: content.slice(0, validEnd) };
 		}
 	}
-	return entries;
+	return { entries, repairedContent: content.endsWith("\n") ? content : `${content}\n` };
+}
+
+async function parseLedger(path: string): Promise<RecoveryLedgerEntry[]> {
+	return parseLedgerContent(await readLedgerContent(path)).entries;
+}
+
+async function rewriteLedgerAtomically(path: string, content: string): Promise<void> {
+	const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+	const file = await open(temporaryPath, "wx");
+	try {
+		await file.writeFile(content, "utf8");
+		await file.sync();
+	} finally {
+		await file.close();
+	}
+	try {
+		await rename(temporaryPath, path);
+	} catch (error) {
+		await rm(temporaryPath, { force: true });
+		throw error;
+	}
+}
+
+async function repairLedgerTail(path: string): Promise<RecoveryLedgerEntry[]> {
+	const content = await readLedgerContent(path);
+	const parsed = parseLedgerContent(content);
+	if (parsed.repairedContent !== content) await rewriteLedgerAtomically(path, parsed.repairedContent);
+	return parsed.entries;
 }
 
 async function canonicalSessionPath(sessionPath: string): Promise<string> {
@@ -131,9 +178,9 @@ async function canonicalSessionPath(sessionPath: string): Promise<string> {
 	}
 }
 
-async function ledgerPath(agentDir: string, sessionPath: string): Promise<string> {
+async function ledgerKey(agentDir: string, sessionPath: string): Promise<SessionRecoveryLedgerKey> {
 	const canonicalPath = await canonicalSessionPath(sessionPath);
-	return join(resolve(agentDir), "tool-recovery", "sessions", `${sha256(canonicalPath)}.jsonl`);
+	return { path: join(resolve(agentDir), "tool-recovery", "sessions", `${sha256(canonicalPath)}.jsonl`) };
 }
 
 async function withLedgerQueue<T>(path: string, operation: () => Promise<T>): Promise<T> {
@@ -161,37 +208,7 @@ async function acquireLedgerLock(path: string): Promise<() => Promise<void>> {
 	});
 }
 
-export async function getSessionRecoveryLedgerPath(agentDir: string, sessionPath: string): Promise<string> {
-	return await ledgerPath(agentDir, sessionPath);
-}
-
-export async function readSessionRecoveryLedger(agentDir: string, sessionPath: string): Promise<RecoveryLedgerEntry[]> {
-	return await parseLedger(await ledgerPath(agentDir, sessionPath));
-}
-
-export async function appendSessionRecoveryLedger(
-	agentDir: string,
-	sessionPath: string,
-	entry: RecoveryLedgerEntry,
-): Promise<boolean> {
-	assertLedgerEntry(entry);
-	const path = await ledgerPath(agentDir, sessionPath);
-	await mkdir(dirname(path), { recursive: true });
-	return await withLedgerQueue(path, async () => {
-		const release = await acquireLedgerLock(path);
-		try {
-			const entries = await parseLedger(path);
-			if (entries.some((existing) => existing.id === entry.id)) return false;
-			await appendFile(path, `${JSON.stringify(entry)}\n`, "utf8");
-			return true;
-		} finally {
-			await release();
-		}
-	});
-}
-
-export async function removeSessionRecoveryLedger(agentDir: string, sessionPath: string): Promise<void> {
-	const path = await ledgerPath(agentDir, sessionPath);
+async function removeLedgerPath(path: string): Promise<void> {
 	try {
 		await withLedgerQueue(path, async () => {
 			const release = await acquireLedgerLock(path);
@@ -204,6 +221,61 @@ export async function removeSessionRecoveryLedger(agentDir: string, sessionPath:
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 	}
+}
+
+export async function getSessionRecoveryLedgerKey(
+	agentDir: string,
+	sessionPath: string,
+): Promise<SessionRecoveryLedgerKey> {
+	return await ledgerKey(agentDir, sessionPath);
+}
+
+export async function getSessionRecoveryLedgerPath(agentDir: string, sessionPath: string): Promise<string> {
+	return (await ledgerKey(agentDir, sessionPath)).path;
+}
+
+export async function readSessionRecoveryLedger(agentDir: string, sessionPath: string): Promise<RecoveryLedgerEntry[]> {
+	return await parseLedger((await ledgerKey(agentDir, sessionPath)).path);
+}
+
+export async function appendSessionRecoveryLedger(
+	agentDir: string,
+	sessionPath: string,
+	entry: RecoveryLedgerEntry,
+): Promise<boolean> {
+	assertLedgerEntry(entry);
+	const path = (await ledgerKey(agentDir, sessionPath)).path;
+	await mkdir(dirname(path), { recursive: true });
+	return await withLedgerQueue(path, async () => {
+		const release = await acquireLedgerLock(path);
+		try {
+			const entries = await repairLedgerTail(path);
+			if (entries.some((existing) => existing.id === entry.id)) return false;
+			await appendFile(path, `${JSON.stringify(entry)}\n`, "utf8");
+			return true;
+		} finally {
+			await release();
+		}
+	});
+}
+
+export async function removeSessionRecoveryLedger(agentDir: string, sessionPath: string): Promise<void> {
+	await removeLedgerPath((await ledgerKey(agentDir, sessionPath)).path);
+}
+
+/**
+ * 删除会话前固定账本 key，成功删除会话后才在同一账本队列和锁内清理账本。
+ * 回调抛错时保留账本，避免删除失败造成恢复证据丢失。
+ */
+export async function deleteSessionWithRecoveryLedger<T>(
+	agentDir: string,
+	sessionPath: string,
+	deleteSession: () => Promise<T> | T,
+): Promise<T> {
+	const key = await ledgerKey(agentDir, sessionPath);
+	const result = await deleteSession();
+	await removeLedgerPath(key.path);
+	return result;
 }
 
 async function collectSessionLedgerNames(agentDir: string): Promise<Set<string>> {
@@ -235,16 +307,28 @@ export async function cleanupOrphanRecoveryLedgers(
 	const now = options.now ?? Date.now();
 	const ttlMs = options.ttlMs ?? 30 * 24 * 60 * 60 * 1000;
 	const directory = join(resolve(agentDir), "tool-recovery", "sessions");
-	const knownLedgers = await collectSessionLedgerNames(agentDir);
 	let removed = 0;
 	try {
 		const files = await readdir(directory, { withFileTypes: true });
 		for (const file of files) {
-			if (!file.isFile() || !/^[a-f0-9]{64}\.jsonl$/.test(file.name) || knownLedgers.has(file.name)) continue;
+			if (!file.isFile() || !/^[a-f0-9]{64}\.jsonl$/.test(file.name)) continue;
 			const path = join(directory, file.name);
 			if (now - (await stat(path)).mtimeMs < ttlMs) continue;
-			await rm(path, { force: true });
-			removed++;
+			await withLedgerQueue(path, async () => {
+				const release = await acquireLedgerLock(path);
+				try {
+					const latest = await stat(path).catch((error: NodeJS.ErrnoException) =>
+						error.code === "ENOENT" ? undefined : Promise.reject(error),
+					);
+					if (!latest || now - latest.mtimeMs < ttlMs) return;
+					// 等待同一账本锁后再扫描真实 Session 根，避免删除刚恢复活动的账本。
+					if ((await collectSessionLedgerNames(agentDir)).has(file.name)) return;
+					await rm(path, { force: true });
+					removed++;
+				} finally {
+					await release();
+				}
+			});
 		}
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
@@ -254,11 +338,15 @@ export async function cleanupOrphanRecoveryLedgers(
 }
 
 function opaqueIdentifier(value: string): string {
-	return SAFE_IDENTIFIER.test(value) ? value : sha256(value);
+	return sha256(value);
+}
+
+function normalizeToolName(value: string): string {
+	return TOOL_NAME.test(value) ? value : "unknown";
 }
 
 function normalizeFailureCode(value: string): string {
-	return /^[A-Z][A-Z_]{0,63}$/.test(value) ? value : "UNCLASSIFIED";
+	return isStableFailureCode(value) ? value : "UNCLASSIFIED";
 }
 
 export function createRecoveryLedgerEntry(
@@ -274,7 +362,7 @@ export function createRecoveryLedgerEntry(
 		sessionId: opaqueIdentifier(input.sessionId),
 		turnId: opaqueIdentifier(input.turnId),
 		toolCallId: opaqueIdentifier(input.toolCallId),
-		toolName: opaqueIdentifier(input.toolName),
+		toolName: normalizeToolName(input.toolName),
 		callSignature: input.callSignature,
 		failureFingerprint: input.failureFingerprint,
 		failureCode: normalizeFailureCode(input.failureCode),

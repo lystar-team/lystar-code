@@ -108,6 +108,7 @@ import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { ObserveOnlyToolRecoveryController, type ToolRecoveryDiagnostics } from "./tool-recovery/policies.ts";
+import { registerBuiltInToolIdentity } from "./tool-recovery/registry.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
@@ -2641,6 +2642,10 @@ export class AgentSession {
 				})),
 			runner,
 		);
+
+		if (!this._baseToolsOverride) {
+			for (const tool of wrappedBuiltInTools) registerBuiltInToolIdentity(tool);
+		}
 
 		const toolRegistry = new Map(wrappedBuiltInTools.map((tool) => [tool.name, tool]));
 		for (const tool of wrappedExtensionTools as AgentTool[]) {

@@ -14,8 +14,7 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { KeybindingsManager } from "../../../core/keybindings.ts";
-import type { SessionInfo, SessionListProgress } from "../../../core/session-manager.ts";
-import { removeSessionRecoveryLedger } from "../../../core/tool-recovery/ledger.ts";
+import { type SessionInfo, type SessionListProgress, SessionManager } from "../../../core/session-manager.ts";
 import { canonicalizePath as _canonicalizePath } from "../../../utils/paths.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
@@ -834,35 +833,37 @@ export class SessionSelectorComponent extends Container implements Focusable {
 
 		// Handle session deletion
 		this.sessionList.onDeleteSession = async (sessionPath: string) => {
-			const result = await deleteSessionFile(sessionPath);
-
-			if (result.ok) {
-				if (this.recoveryAgentDir) {
-					try {
-						await removeSessionRecoveryLedger(this.recoveryAgentDir, sessionPath);
-					} catch {
-						// Session 已删除，恢复账本清理失败不能改变删除结果。
-					}
-				}
-				if (this.currentSessions) {
-					this.currentSessions = this.currentSessions.filter((s) => s.path !== sessionPath);
-				}
-				if (this.allSessions) {
-					this.allSessions = this.allSessions.filter((s) => s.path !== sessionPath);
-				}
-
-				const sessions = this.scope === "all" ? (this.allSessions ?? []) : (this.currentSessions ?? []);
-				const showCwd = this.scope === "all";
-				this.sessionList.setSessions(sessions, showCwd);
-
-				const msg = result.method === "trash" ? "会话已移到回收站" : "会话已删除";
-				this.header.setStatusMessage({ type: "info", message: msg }, 2000);
-				await this.refreshSessionsAfterMutation();
-			} else {
-				const errorMessage = result.error ?? "未知错误";
-				this.header.setStatusMessage({ type: "error", message: `删除失败：${errorMessage}` }, 3000);
+			let result: { ok: boolean; method: "trash" | "unlink"; error?: string };
+			try {
+				const deleteFile = async () => {
+					const outcome = await deleteSessionFile(sessionPath);
+					if (!outcome.ok) throw new Error(outcome.error ?? "未知错误");
+					return outcome;
+				};
+				result = this.recoveryAgentDir
+					? await SessionManager.deleteSessionWithRecoveryLedger(this.recoveryAgentDir, sessionPath, deleteFile)
+					: await deleteFile();
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				this.header.setStatusMessage({ type: "error", message: `删除失败：${message}` }, 3000);
+				this.requestRender();
+				return;
 			}
 
+			if (this.currentSessions) {
+				this.currentSessions = this.currentSessions.filter((s) => s.path !== sessionPath);
+			}
+			if (this.allSessions) {
+				this.allSessions = this.allSessions.filter((s) => s.path !== sessionPath);
+			}
+
+			const sessions = this.scope === "all" ? (this.allSessions ?? []) : (this.currentSessions ?? []);
+			const showCwd = this.scope === "all";
+			this.sessionList.setSessions(sessions, showCwd);
+
+			const msg = result.method === "trash" ? "会话已移到回收站" : "会话已删除";
+			this.header.setStatusMessage({ type: "info", message: msg }, 2000);
+			await this.refreshSessionsAfterMutation();
 			this.requestRender();
 		};
 

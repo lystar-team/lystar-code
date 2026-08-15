@@ -31,6 +31,7 @@ import {
 	createCompactionSummaryMessage,
 	createCustomMessage,
 } from "./messages.ts";
+import { deleteSessionWithRecoveryLedger } from "./tool-recovery/ledger.ts";
 
 export const CURRENT_SESSION_VERSION = 3;
 const ASYNC_SESSION_READ_BUFFER_SIZE = 64 * 1024;
@@ -1932,6 +1933,14 @@ export class SessionManager {
 			if (code !== "ERELEASED" && code !== "ENOTACQUIRED") throw error;
 		}
 		return result;
+	}
+
+	static async deleteSessionWithRecoveryLedger<T>(
+		agentDir: string,
+		sessionPath: string,
+		deleteSession: () => Promise<T> | T,
+	): Promise<T> {
+		return await deleteSessionWithRecoveryLedger(agentDir, sessionPath, deleteSession);
 	}
 
 	static isWriterLocked(path: string): boolean {

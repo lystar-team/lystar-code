@@ -782,7 +782,9 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	}
 
 	async deleteSession(sessionPath: string): Promise<void> {
-		SessionManager.withWriterLock(sessionPath, () => unlinkSync(sessionPath));
+		await SessionManager.deleteSessionWithRecoveryLedger(this.agentDir, sessionPath, () =>
+			SessionManager.withWriterLock(sessionPath, () => unlinkSync(sessionPath)),
+		);
 	}
 
 	async listSessions(cwd: string): Promise<SessionSummaryBase[]> {

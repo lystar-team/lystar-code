@@ -1959,7 +1959,11 @@ describe("Tool recovery observation", () => {
 				model: createModel(),
 				convertToLlm: identityConverter,
 				afterToolCall: async () => {
-					throw new Error("after hook failed");
+					throw new ToolExecutionError("Command timed out after 1 seconds", {
+						code: "TIMEOUT",
+						category: "transient",
+						retryable: true,
+					});
 				},
 				toolRecoveryController: new ObserveToolRecoveryController((observation) => {
 					observations.push(observation);
@@ -1970,10 +1974,11 @@ describe("Tool recovery observation", () => {
 		).result();
 		expect(executions).toBe(1);
 		expect(observations[0]?.failure?.code).toBe("POST_HOOK_FAILURE");
+		expect(observations[0]?.failure?.retryable).toBe(false);
 		const toolResult = messages.find((message) => message.role === "toolResult");
 		expect(toolResult?.role === "toolResult" ? toolResult.content : []).toContainEqual({
 			type: "text",
-			text: "after hook failed",
+			text: "Command timed out after 1 seconds",
 		});
 	});
 

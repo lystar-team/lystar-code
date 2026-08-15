@@ -701,7 +701,13 @@ async function executePreparedToolCall(
 	let acceptingUpdates = true;
 	const controller = toolRecoveryController;
 	const recovery = controller
-		? await createToolRecoveryCall(prepared.toolCall.id, prepared.toolCall.name, prepared.args)
+		? await createToolRecoveryCall(
+				prepared.toolCall.id,
+				prepared.toolCall.name,
+				prepared.args,
+				"unknown",
+				prepared.tool.runtimeContext,
+			)
 		: undefined;
 
 	if (recovery && controller) {

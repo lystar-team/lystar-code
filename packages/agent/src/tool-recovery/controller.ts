@@ -5,6 +5,8 @@ export interface ToolRecoveryPreflightContext extends ToolCallFingerprint {
 	toolCallId: string;
 	toolName: string;
 	sideEffect: ToolSideEffect;
+	/** 当前执行 Tool 的仅进程内身份，禁止持久化或透传到事件。 */
+	toolRuntimeContext?: unknown;
 }
 
 export interface ToolRecoveryObservation extends ToolRecoveryPreflightContext {
@@ -50,11 +52,13 @@ export async function createToolRecoveryCall(
 	toolName: string,
 	args: unknown,
 	sideEffect: ToolSideEffect = "unknown",
+	toolRuntimeContext?: unknown,
 ): Promise<ToolRecoveryCall> {
 	return {
 		toolCallId,
 		toolName,
 		sideEffect,
+		...(toolRuntimeContext === undefined ? {} : { toolRuntimeContext }),
 		...(await createToolCallFingerprint(toolName, args)),
 		startedAt: Date.now(),
 	};

@@ -1,10 +1,15 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setKeybindings } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import type { SessionInfo } from "../src/core/session-manager.ts";
+import {
+	appendSessionRecoveryLedger,
+	createRecoveryLedgerEntry,
+	getSessionRecoveryLedgerPath,
+} from "../src/core/tool-recovery/ledger.ts";
 import { SessionSelectorComponent } from "../src/modes/interactive/components/session-selector.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
@@ -28,6 +33,14 @@ async function flushPromises(): Promise<void> {
 	await new Promise<void>((resolve) => {
 		setImmediate(resolve);
 	});
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!predicate()) {
+		if (Date.now() >= deadline) throw new Error("Timed out waiting for session selector deletion");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
 }
 
 function stripAnsi(text: string): string {
@@ -182,6 +195,48 @@ describe("session selector path/delete interactions", () => {
 		list.handleInput("\r");
 		expect(confirmationChanges).toEqual([sessions[0]!.path, null]);
 		expect(deletedPath).toBe(sessions[0]!.path);
+	});
+
+	it("routes CLI and interactive selectors through the shared recovery-ledger deletion path", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "pi-session-selector-delete-"));
+		tempDirs.push(agentDir);
+		const sessionPath = join(agentDir, "sessions", "delete-me.jsonl");
+		mkdirSync(dirname(sessionPath), { recursive: true });
+		writeFileSync(sessionPath, "{}\n");
+		await appendSessionRecoveryLedger(
+			agentDir,
+			sessionPath,
+			createRecoveryLedgerEntry({
+				sessionId: "selector-session",
+				turnId: "0",
+				toolCallId: "selector-call",
+				toolName: "read",
+				callSignature: "a".repeat(64),
+				failureFingerprint: "b".repeat(64),
+				failureCode: "PERMISSION_DENIED",
+				attempt: 1,
+				action: "observe",
+				outcome: "failed",
+				durationMs: 1,
+				createdAt: "2026-08-15T00:00:00.000Z",
+			}),
+		);
+		const ledgerPath = await getSessionRecoveryLedgerPath(agentDir, sessionPath);
+		const selector = new SessionSelectorComponent(
+			async () => [makeSession({ id: "delete-me", path: sessionPath })],
+			async () => [],
+			() => {},
+			() => {},
+			() => {},
+			() => {},
+			{ keybindings, recoveryAgentDir: agentDir },
+		);
+		await flushPromises();
+		const list = selector.getSessionList();
+		list.handleInput(CTRL_D);
+		list.handleInput("\r");
+		await waitFor(() => !existsSync(sessionPath));
+		expect(existsSync(ledgerPath)).toBe(false);
 	});
 
 	it("does not switch scope back to All when All load resolves after toggling back to Current", async () => {

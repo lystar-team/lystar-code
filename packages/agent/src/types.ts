@@ -415,6 +415,10 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
 		onUpdate?: AgentToolUpdateCallback<TDetails>,
 	) => Promise<AgentToolResult<TDetails>>;
 	/**
+	 * 仅供运行时适配器使用的不可持久化上下文。不得写入事件、Session 或外部协议。
+	 */
+	runtimeContext?: unknown;
+	/**
 	 * Per-tool execution mode override.
 	 * - "sequential": this tool must execute one at a time with other tool calls.
 	 * - "parallel": this tool can execute concurrently with other tool calls.

@@ -1,7 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { AgentTool, ToolRecoveryObservation } from "@earendil-works/pi-agent-core";
+import { promisify } from "node:util";
+import { type AgentTool, ToolExecutionError, type ToolRecoveryObservation } from "@earendil-works/pi-agent-core";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, getModel } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
@@ -13,12 +16,20 @@ import {
 	appendSessionRecoveryLedger,
 	cleanupOrphanRecoveryLedgers,
 	createRecoveryLedgerEntry,
+	deleteSessionWithRecoveryLedger,
 	getSessionRecoveryLedgerPath,
 	readSessionRecoveryLedger,
 	removeSessionRecoveryLedger,
 } from "../src/core/tool-recovery/ledger.ts";
 import { ObserveOnlyToolRecoveryController } from "../src/core/tool-recovery/policies.ts";
-import { classifyToolFailureForTest, getToolSideEffect } from "../src/core/tool-recovery/registry.ts";
+import {
+	adaptToolRecoveryObservation,
+	classifyToolFailureForTest,
+	getToolSideEffect,
+	registerBuiltInToolIdentity,
+} from "../src/core/tool-recovery/registry.ts";
+
+const execFileAsync = promisify(execFile);
 
 class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
 	constructor() {
@@ -45,6 +56,10 @@ function createTempDir(): string {
 	return directory;
 }
 
+function sha256(value: string): string {
+	return createHash("sha256").update(value).digest("hex");
+}
+
 function createLedgerEntry(id: string, overrides: Partial<Parameters<typeof createRecoveryLedgerEntry>[0]> = {}) {
 	return createRecoveryLedgerEntry({
 		sessionId: "session-1",
@@ -63,7 +78,7 @@ function createLedgerEntry(id: string, overrides: Partial<Parameters<typeof crea
 	});
 }
 
-function createObservation(toolCallId: string): ToolRecoveryObservation {
+function createObservation(toolCallId: string, toolRuntimeContext?: unknown): ToolRecoveryObservation {
 	return {
 		toolCallId,
 		toolName: "read",
@@ -72,6 +87,7 @@ function createObservation(toolCallId: string): ToolRecoveryObservation {
 		action: "observe",
 		outcome: "failure",
 		durationMs: 3,
+		...(toolRuntimeContext === undefined ? {} : { toolRuntimeContext }),
 		failure: {
 			schema: 1,
 			toolName: "read",
@@ -85,6 +101,20 @@ function createObservation(toolCallId: string): ToolRecoveryObservation {
 			occurredAt: CREATED_AT,
 		},
 	};
+}
+
+function createTrustedBuiltInTool(name: "read" | "bash" | "edit"): AgentTool {
+	const tool: AgentTool = {
+		name,
+		label: name,
+		description: `test ${name}`,
+		parameters: Type.Object({}),
+		async execute() {
+			return { content: [], details: {} };
+		},
+	};
+	registerBuiltInToolIdentity(tool);
+	return tool;
 }
 
 function assistantMessage(
@@ -117,17 +147,27 @@ afterEach(() => {
 });
 
 describe("Tool recovery observe ledger", () => {
-	it("classifies every built-in side effect and keeps unknown tools unclassified", () => {
-		expect(getToolSideEffect("read")).toBe("read_only");
-		expect(getToolSideEffect("grep")).toBe("read_only");
-		expect(getToolSideEffect("find")).toBe("read_only");
-		expect(getToolSideEffect("ls")).toBe("read_only");
-		expect(getToolSideEffect("edit")).toBe("conditional_write");
-		expect(getToolSideEffect("write")).toBe("conditional_write");
-		expect(getToolSideEffect("apply_patch")).toBe("conditional_write");
-		expect(getToolSideEffect("bash")).toBe("unknown");
-		expect(getToolSideEffect("third_party")).toBe("unknown");
-		expect(classifyToolFailureForTest({ toolName: "third_party", error: new Error("permission denied") })).toEqual({
+	it("uses only explicitly registered builtin Tool identities for side effects", () => {
+		const builtinRead = createTrustedBuiltInTool("read");
+		const builtinEdit = createTrustedBuiltInTool("edit");
+		expect(getToolSideEffect(builtinRead.runtimeContext)).toBe("read_only");
+		expect(getToolSideEffect(builtinEdit.runtimeContext)).toBe("conditional_write");
+		expect(
+			classifyToolFailureForTest({
+				toolName: "read",
+				runtimeContext: builtinRead.runtimeContext,
+				error: Object.assign(new Error("no access"), { code: "EACCES" }),
+			}),
+		).toMatchObject({ code: "PERMISSION_DENIED", sideEffect: "read_only" });
+
+		const thirdPartyRead = createTrustedBuiltInTool("read");
+		thirdPartyRead.runtimeContext = undefined;
+		expect(
+			classifyToolFailureForTest({
+				toolName: "read",
+				error: Object.assign(new Error("no access"), { code: "EACCES" }),
+			}),
+		).toEqual({
 			code: "UNCLASSIFIED",
 			category: "unknown",
 			retryable: false,
@@ -135,25 +175,23 @@ describe("Tool recovery observe ledger", () => {
 		});
 	});
 
-	it("maps only structured and narrow built-in failure forms", () => {
+	it("maps narrow raw failures only for registered builtin Tools", () => {
+		const builtinRead = createTrustedBuiltInTool("read");
+		const builtinBash = createTrustedBuiltInTool("bash");
 		expect(
 			classifyToolFailureForTest({
 				toolName: "read",
-				error: Object.assign(new Error("no access"), { code: "EACCES" }),
-			}),
-		).toMatchObject({ code: "PERMISSION_DENIED", category: "permission", retryable: false });
-		expect(
-			classifyToolFailureForTest({
-				toolName: "read",
+				runtimeContext: builtinRead.runtimeContext,
 				error: Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }),
 			}),
 		).toMatchObject({ code: "TIMEOUT", category: "transient", retryable: true });
 		expect(
-			classifyToolFailureForTest({ toolName: "bash", error: new Error("output\n\nCommand exited with code 7") }),
+			classifyToolFailureForTest({
+				toolName: "bash",
+				runtimeContext: builtinBash.runtimeContext,
+				error: new Error("output\n\nCommand exited with code 7"),
+			}),
 		).toMatchObject({ code: "PROCESS_EXIT_NONZERO", category: "execution", retryable: false });
-		expect(
-			classifyToolFailureForTest({ toolName: "bash", error: new Error("Command timed out after 1 seconds") }),
-		).toMatchObject({ code: "TIMEOUT", category: "transient", retryable: false });
 		const abort = new AbortController();
 		abort.abort();
 		expect(
@@ -164,7 +202,30 @@ describe("Tool recovery observe ledger", () => {
 		});
 	});
 
-	it("uses a stable non-path ledger filename and appends safely across concurrent writers", async () => {
+	it("preserves POST_HOOK_FAILURE even when the hook error resembles a timeout", async () => {
+		const observation = createObservation("post-hook");
+		observation.failure = {
+			...observation.failure!,
+			code: "POST_HOOK_FAILURE",
+			category: "execution",
+			retryable: true,
+		};
+		await adaptToolRecoveryObservation(
+			observation,
+			new ToolExecutionError("Command timed out after 1 seconds", {
+				code: "TIMEOUT",
+				category: "transient",
+				retryable: true,
+			}),
+		);
+		expect(observation.failure).toMatchObject({
+			code: "POST_HOOK_FAILURE",
+			category: "execution",
+			retryable: false,
+		});
+	});
+
+	it("uses a stable non-path ledger filename and serializes same-process appenders", async () => {
 		const agentDir = createTempDir();
 		const sessionPath = join(agentDir, "sessions", "project", "session.jsonl");
 		mkdirSync(dirname(sessionPath), { recursive: true });
@@ -182,38 +243,80 @@ describe("Tool recovery observe ledger", () => {
 		expect(await readSessionRecoveryLedger(agentDir, sessionPath)).toHaveLength(12);
 	});
 
-	it("ignores only a truncated final JSONL entry and does not apply duplicate IDs", async () => {
+	it("keeps all entries when independent Node processes append the same ledger", async () => {
+		const agentDir = createTempDir();
+		const sessionPath = join(agentDir, "sessions", "session.jsonl");
+		const worker = join(import.meta.dirname, "fixtures", "recovery-ledger-worker.ts");
+		await Promise.all(
+			Array.from({ length: 8 }, (_, index) =>
+				execFileAsync(process.execPath, ["--import", "tsx", worker, agentDir, sessionPath, String(index)]),
+			),
+		);
+		const entries = await readSessionRecoveryLedger(agentDir, sessionPath);
+		expect(entries).toHaveLength(8);
+		expect(new Set(entries.map((entry) => entry.toolCallId))).toHaveLength(8);
+	});
+
+	it("atomically repairs a truncated ledger tail before appending", async () => {
 		const agentDir = createTempDir();
 		const sessionPath = join(agentDir, "sessions", "session.jsonl");
 		mkdirSync(dirname(sessionPath), { recursive: true });
 		writeFileSync(sessionPath, "{}\n");
-		const entry = createLedgerEntry("same");
-		expect(await appendSessionRecoveryLedger(agentDir, sessionPath, entry)).toBe(true);
-		expect(await appendSessionRecoveryLedger(agentDir, sessionPath, entry)).toBe(false);
+		const first = createLedgerEntry("first");
+		const second = createLedgerEntry("second");
+		await appendSessionRecoveryLedger(agentDir, sessionPath, first);
 		const path = await getSessionRecoveryLedgerPath(agentDir, sessionPath);
-		writeFileSync(path, '{"truncated"', { flag: "a" });
-		const entries = await readSessionRecoveryLedger(agentDir, sessionPath);
-		expect(entries).toHaveLength(1);
-		expect(entries[0]?.id).toBe(entry.id);
+		writeFileSync(path, '{"truncated"\n', { flag: "a" });
+		await appendSessionRecoveryLedger(agentDir, sessionPath, second);
+
+		const raw = readFileSync(path, "utf8");
+		const parsed = raw
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as { id: string });
+		expect(parsed.map((entry) => entry.id)).toEqual([first.id, second.id]);
+		expect(await readSessionRecoveryLedger(agentDir, sessionPath)).toHaveLength(2);
 	});
 
-	it("only TTL-cleans orphan ledgers and removes a deleted session ledger", async () => {
+	it("scans canonical Session paths under the ledger lock and keeps a concurrent live append", async () => {
 		const agentDir = createTempDir();
 		const sessionPath = join(agentDir, "sessions", "live.jsonl");
-		const orphanPath = join(agentDir, "sessions", "orphan.jsonl");
 		mkdirSync(dirname(sessionPath), { recursive: true });
 		writeFileSync(sessionPath, "{}\n");
-		writeFileSync(orphanPath, "{}\n");
-		await appendSessionRecoveryLedger(agentDir, sessionPath, createLedgerEntry("live"));
-		await appendSessionRecoveryLedger(agentDir, orphanPath, createLedgerEntry("orphan"));
-		rmSync(orphanPath);
-		expect(await cleanupOrphanRecoveryLedgers(agentDir, { ttlMs: 0 })).toBe(1);
-		expect(await readSessionRecoveryLedger(agentDir, sessionPath)).toHaveLength(1);
-		await removeSessionRecoveryLedger(agentDir, sessionPath);
-		expect(existsSync(await getSessionRecoveryLedgerPath(agentDir, sessionPath))).toBe(false);
+		await appendSessionRecoveryLedger(agentDir, sessionPath, createLedgerEntry("first"));
+		await Promise.all([
+			cleanupOrphanRecoveryLedgers(agentDir, { ttlMs: 0 }),
+			appendSessionRecoveryLedger(agentDir, sessionPath, createLedgerEntry("second")),
+		]);
+		expect(await readSessionRecoveryLedger(agentDir, sessionPath)).toHaveLength(2);
 	});
 
-	it("never persists paths, URL credentials, query values, patch content, or secrets", async () => {
+	it("cleans only orphaned ledgers and removes aliases through the shared deletion transaction", async () => {
+		const agentDir = createTempDir();
+		const realSessions = join(agentDir, "real-sessions");
+		const aliasA = join(agentDir, "sessions-a");
+		const aliasB = join(agentDir, "sessions-b");
+		mkdirSync(realSessions, { recursive: true });
+		symlinkSync(realSessions, aliasA);
+		symlinkSync(realSessions, aliasB);
+		const sessionA = join(aliasA, "session.jsonl");
+		const sessionB = join(aliasB, "session.jsonl");
+		writeFileSync(sessionA, "{}\n");
+		await appendSessionRecoveryLedger(agentDir, sessionA, createLedgerEntry("live"));
+		const ledgerPath = await getSessionRecoveryLedgerPath(agentDir, sessionA);
+
+		await deleteSessionWithRecoveryLedger(agentDir, sessionB, () => unlinkSync(sessionB));
+		expect(existsSync(sessionA)).toBe(false);
+		expect(existsSync(ledgerPath)).toBe(false);
+
+		const orphanSession = join(realSessions, "orphan.jsonl");
+		writeFileSync(orphanSession, "{}\n");
+		await appendSessionRecoveryLedger(agentDir, orphanSession, createLedgerEntry("orphan"));
+		unlinkSync(orphanSession);
+		expect(await cleanupOrphanRecoveryLedgers(agentDir, { ttlMs: 0 })).toBe(1);
+	});
+
+	it("hashes every session identifier and persists no raw paths, URLs, or secrets", async () => {
 		const agentDir = createTempDir();
 		const secret = "super-secret-token";
 		const sessionPath = join(agentDir, "sessions", "sensitive", "session.jsonl");
@@ -223,17 +326,22 @@ describe("Tool recovery observe ledger", () => {
 			sessionId: sessionPath,
 			turnId: "/absolute/turn",
 			toolCallId: "https://alice:password@example.invalid/path?token=secret#hash",
-			toolName: "apply_patch",
+			toolName: "https://bad.example/",
 			failureCode: secret,
 		});
+		expect(entry.sessionId).toBe(sha256(sessionPath));
+		expect(entry.turnId).toBe(sha256("/absolute/turn"));
+		expect(entry.toolCallId).toBe(sha256("https://alice:password@example.invalid/path?token=secret#hash"));
+		expect(entry.toolName).toBe("unknown");
+		expect(entry.failureCode).toBe("UNCLASSIFIED");
 		await appendSessionRecoveryLedger(agentDir, sessionPath, entry);
-		const content = JSON.stringify(await readSessionRecoveryLedger(agentDir, sessionPath));
-		for (const forbidden of [sessionPath, "alice", "password", "token=secret", "*** Begin Patch", secret]) {
-			expect(content).not.toContain(forbidden);
+		const bytes = readFileSync(await getSessionRecoveryLedgerPath(agentDir, sessionPath), "utf8");
+		for (const forbidden of [sessionPath, "alice", "password", "token=secret", "#hash", "*** Begin Patch", secret]) {
+			expect(bytes).not.toContain(forbidden);
 		}
 	});
 
-	it("isolates parallel tool calls and emits local observe-only diagnostics", async () => {
+	it("does not trust a third-party Tool injected under the builtin read name", async () => {
 		const agentDir = createTempDir();
 		const sessionManager = SessionManager.create(agentDir, join(agentDir, "sessions"), { id: "parallel-session" });
 		const sessionPath = sessionManager.getSessionFile()!;
@@ -242,31 +350,17 @@ describe("Tool recovery observe ledger", () => {
 			sessionManager,
 			getTurnId: () => "7",
 		});
-		await Promise.all([
-			controller.observe(
-				createObservation("call-one"),
-				undefined,
-				Object.assign(new Error("denied"), { code: "EACCES" }),
-			),
-			controller.observe(
-				createObservation("call-two"),
-				undefined,
-				Object.assign(new Error("denied"), { code: "EACCES" }),
-			),
-		]);
+		await controller.observe(
+			createObservation("third-party-read"),
+			undefined,
+			Object.assign(new Error("denied"), { code: "EACCES" }),
+		);
 		const entries = await readSessionRecoveryLedger(agentDir, sessionPath);
-		expect(entries.map((entry) => entry.toolCallId).sort()).toEqual(["call-one", "call-two"]);
-		expect(entries.map((entry) => entry.attempt)).toEqual([1, 1]);
-		expect(controller.getDiagnostics()).toMatchObject({
-			mode: "observe",
-			toolFailureTotal: [{ tool: "read", code: "PERMISSION_DENIED", count: 2 }],
-			toolRecoveryAttemptTotal: [{ tool: "read", action: "observe", count: 2 }],
-			activeCircuits: 0,
-		});
+		expect(entries[0]).toMatchObject({ failureCode: "UNCLASSIFIED", toolName: "read" });
 		sessionManager.dispose();
 	});
 
-	it("injects the controller into AgentSession and leaves the Pi Session JSONL unchanged", async () => {
+	it("injects the controller into AgentSession without changing Session JSONL", async () => {
 		const root = createTempDir();
 		const agentDir = join(root, "agent");
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
@@ -284,7 +378,7 @@ describe("Tool recovery observe ledger", () => {
 			modelRuntime,
 			sessionManager,
 		});
-		const failingRead: AgentTool = {
+		const thirdPartyRead: AgentTool = {
 			name: "read",
 			label: "read",
 			description: "test read failure",
@@ -293,7 +387,7 @@ describe("Tool recovery observe ledger", () => {
 				throw Object.assign(new Error("denied"), { code: "EACCES" });
 			},
 		};
-		session.agent.state.tools = [failingRead];
+		session.agent.state.tools = [thirdPartyRead];
 		let request = 0;
 		session.agent.streamFunction = () => {
 			const stream = new MockAssistantStream();
@@ -325,13 +419,23 @@ describe("Tool recovery observe ledger", () => {
 		const sessionFile = session.sessionFile!;
 		const ledger = await readSessionRecoveryLedger(agentDir, sessionFile);
 		expect(ledger).toHaveLength(1);
-		expect(ledger[0]).toMatchObject({ toolName: "read", failureCode: "PERMISSION_DENIED", action: "observe" });
+		expect(ledger[0]).toMatchObject({ toolName: "read", failureCode: "UNCLASSIFIED", action: "observe" });
 		expect(session.getToolRecoveryDiagnostics().toolFailureTotal).toEqual([
-			{ tool: "read", code: "PERMISSION_DENIED", count: 1 },
+			{ tool: "read", code: "UNCLASSIFIED", count: 1 },
 		]);
 		const sessionJsonl = readFileSync(sessionFile, "utf8");
 		expect(sessionJsonl).not.toContain("tool_recovery_observe");
 		expect(sessionJsonl).toContain("/private/project/secret.ts");
 		session.dispose();
+	});
+
+	it("removes a ledger after an explicit direct cleanup call", async () => {
+		const agentDir = createTempDir();
+		const sessionPath = join(agentDir, "sessions", "session.jsonl");
+		mkdirSync(dirname(sessionPath), { recursive: true });
+		writeFileSync(sessionPath, "{}\n");
+		await appendSessionRecoveryLedger(agentDir, sessionPath, createLedgerEntry("cleanup"));
+		await removeSessionRecoveryLedger(agentDir, sessionPath);
+		expect(existsSync(await getSessionRecoveryLedgerPath(agentDir, sessionPath))).toBe(false);
 	});
 });

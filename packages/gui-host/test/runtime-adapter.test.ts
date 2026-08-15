@@ -4,6 +4,11 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
+import {
+	appendSessionRecoveryLedger,
+	createRecoveryLedgerEntry,
+	getSessionRecoveryLedgerPath,
+} from "../../coding-agent/src/core/tool-recovery/ledger.ts";
 import { CodingAgentRuntimeAdapter } from "../src/runtime-adapter.ts";
 import type { RuntimeEvent, RuntimeSession } from "../src/types.ts";
 
@@ -187,8 +192,28 @@ describe("CodingAgentRuntimeAdapter", () => {
 
 		await runtime.dispose();
 		runtime = undefined;
+		await appendSessionRecoveryLedger(
+			agentDir,
+			forkedSessionPath,
+			createRecoveryLedgerEntry({
+				sessionId: "gui-session",
+				turnId: "0",
+				toolCallId: "gui-call",
+				toolName: "read",
+				callSignature: "a".repeat(64),
+				failureFingerprint: "b".repeat(64),
+				failureCode: "PERMISSION_DENIED",
+				attempt: 1,
+				action: "observe",
+				outcome: "failed",
+				durationMs: 1,
+				createdAt: "2026-08-15T00:00:00.000Z",
+			}),
+		);
+		const ledgerPath = await getSessionRecoveryLedgerPath(agentDir, forkedSessionPath);
 		await adapter.deleteSession(forkedSessionPath);
 		expect(existsSync(forkedSessionPath)).toBe(false);
+		expect(existsSync(ledgerPath)).toBe(false);
 	});
 
 	it("atomically manages project instructions and validates project resources", () => {

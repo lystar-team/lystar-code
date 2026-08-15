@@ -1,4 +1,5 @@
 import {
+	type AgentTool,
 	createFailureFingerprint,
 	ToolExecutionError,
 	type ToolFailure,
@@ -35,8 +36,22 @@ type ClassifiedFailure = {
 	retryable: boolean;
 };
 
-const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
-const CONDITIONAL_WRITE_TOOLS = new Set(["edit", "write", "apply_patch"]);
+type BuiltInToolIdentity = {
+	name: string;
+	sideEffect: ToolSideEffect;
+};
+
+const BUILT_IN_SIDE_EFFECTS: Readonly<Record<string, ToolSideEffect>> = {
+	read: "read_only",
+	grep: "read_only",
+	find: "read_only",
+	ls: "read_only",
+	edit: "conditional_write",
+	write: "conditional_write",
+	apply_patch: "conditional_write",
+	bash: "unknown",
+};
+const builtInToolIdentities = new WeakMap<object, BuiltInToolIdentity>();
 const PERMISSION_CODES = new Set(["EACCES", "EPERM"]);
 const TIMEOUT_CODES = new Set(["ETIMEDOUT", "ETIME"]);
 const TRANSPORT_CODES = new Set([
@@ -50,10 +65,23 @@ const TRANSPORT_CODES = new Set([
 ]);
 const RESOURCE_CODES = new Set(["EDQUOT", "EFBIG", "EMFILE", "ENFILE", "ENOMEM", "ENOSPC"]);
 
-export function getToolSideEffect(toolName: string): ToolSideEffect {
-	if (READ_ONLY_TOOLS.has(toolName)) return "read_only";
-	if (CONDITIONAL_WRITE_TOOLS.has(toolName)) return "conditional_write";
-	return "unknown";
+/** 将当前运行时生成的内置 Tool 实例标记为可信，扩展无法通过名称伪造该身份。 */
+export function registerBuiltInToolIdentity(tool: AgentTool): void {
+	const sideEffect = BUILT_IN_SIDE_EFFECTS[tool.name];
+	if (sideEffect === undefined) return;
+	const runtimeContext = {};
+	builtInToolIdentities.set(runtimeContext, { name: tool.name, sideEffect });
+	tool.runtimeContext = runtimeContext;
+}
+
+function getBuiltInToolIdentity(runtimeContext: unknown): BuiltInToolIdentity | undefined {
+	return typeof runtimeContext === "object" && runtimeContext !== null
+		? builtInToolIdentities.get(runtimeContext)
+		: undefined;
+}
+
+export function getToolSideEffect(runtimeContext?: unknown): ToolSideEffect {
+	return getBuiltInToolIdentity(runtimeContext)?.sideEffect ?? "unknown";
 }
 
 export function isStableFailureCode(code: string): code is StableFailureCode {
@@ -95,10 +123,10 @@ function classifyBashError(error: unknown): ClassifiedFailure | undefined {
 
 function classifyError(
 	error: unknown,
-	sideEffect: ToolSideEffect,
-	toolName: string,
+	identity: BuiltInToolIdentity | undefined,
 	signal: AbortSignal | undefined,
 ): ClassifiedFailure {
+	const sideEffect = identity?.sideEffect ?? "unknown";
 	if (error instanceof ToolExecutionError && isStableFailureCode(error.code)) {
 		return classifyStable(error.code, sideEffect, error.retryable);
 	}
@@ -107,13 +135,16 @@ function classifyError(
 		return classifyStable("CANCELLED", sideEffect);
 	}
 
+	// 名称不是身份。只有实际注册过的内置 Tool 才能将底层错误映射为稳定分类。
+	if (!identity) return classifyStable("UNCLASSIFIED", sideEffect);
+
 	const code = errorCode(error);
 	if (code && isStableFailureCode(code)) return classifyStable(code, sideEffect);
 	if (code && PERMISSION_CODES.has(code)) return classifyStable("PERMISSION_DENIED", sideEffect);
 	if (code && TIMEOUT_CODES.has(code)) return classifyStable("TIMEOUT", sideEffect);
 	if (code && TRANSPORT_CODES.has(code)) return classifyStable("TRANSPORT_ERROR", sideEffect);
 	if (code && RESOURCE_CODES.has(code)) return classifyStable("RESOURCE_EXHAUSTED", sideEffect);
-	if (toolName === "bash") return classifyBashError(error) ?? classifyStable("UNCLASSIFIED", sideEffect);
+	if (identity.name === "bash") return classifyBashError(error) ?? classifyStable("UNCLASSIFIED", sideEffect);
 	return classifyStable("UNCLASSIFIED", sideEffect);
 }
 
@@ -122,12 +153,20 @@ export async function adaptToolRecoveryObservation(
 	error: unknown,
 	signal?: AbortSignal,
 ): Promise<void> {
-	const sideEffect = getToolSideEffect(observation.toolName);
+	const identity = getBuiltInToolIdentity(observation.toolRuntimeContext);
+	const sideEffect = identity?.sideEffect ?? "unknown";
 	observation.sideEffect = sideEffect;
 	const failure = observation.failure;
 	if (!failure) return;
 
-	const classified = classifyError(error, sideEffect, observation.toolName, signal);
+	// Agent core 已经对非 UNCLASSIFIED 的稳定错误完成归一化。adapter 不读取错误文本覆盖它。
+	if (failure.code !== "UNCLASSIFIED" && isStableFailureCode(failure.code)) {
+		failure.sideEffect = sideEffect;
+		if (failure.code === "POST_HOOK_FAILURE") failure.retryable = false;
+		return;
+	}
+
+	const classified = classifyError(error, identity, signal);
 	failure.code = classified.code;
 	failure.category = classified.category;
 	failure.sideEffect = sideEffect;
@@ -144,8 +183,9 @@ export function classifyToolFailureForTest(input: {
 	toolName: string;
 	error: unknown;
 	signal?: AbortSignal;
+	runtimeContext?: unknown;
 }): Pick<ToolFailure, "code" | "category" | "retryable" | "sideEffect"> {
-	const sideEffect = getToolSideEffect(input.toolName);
-	const classified = classifyError(input.error, sideEffect, input.toolName, input.signal);
-	return { ...classified, sideEffect };
+	const identity = getBuiltInToolIdentity(input.runtimeContext);
+	const classified = classifyError(input.error, identity, input.signal);
+	return { ...classified, sideEffect: identity?.sideEffect ?? "unknown" };
 }
