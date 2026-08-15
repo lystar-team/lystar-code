@@ -141,5 +141,8 @@ export * from "./proxy.ts";
 export * from "./search/index.ts";
 // Stream defaults
 export { setDefaultStreamFn } from "./stream-fn.ts";
+export * from "./tool-recovery/controller.ts";
+export * from "./tool-recovery/fingerprint.ts";
+export * from "./tool-recovery/types.ts";
 // Types
 export * from "./types.ts";

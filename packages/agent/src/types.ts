@@ -14,6 +14,7 @@ import type {
 	Usage,
 } from "@earendil-works/pi-ai";
 import type { Static, TSchema } from "typebox";
+import type { ToolRecoveryController } from "./tool-recovery/controller.ts";
 
 /**
  * Stream function used by the agent loop. `Models.streamSimple` satisfies
@@ -277,6 +278,12 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	toolExecution?: ToolExecutionMode;
 
 	/**
+	 * 仅观察的恢复控制器，仅在 schema 校验和 `beforeToolCall` 放行后调用，
+	 * 不能阻断或重试 Tool Call。
+	 */
+	toolRecoveryController?: ToolRecoveryController;
+
+	/**
 	 * Called before a tool is executed, after arguments have been validated.
 	 *
 	 * Return `{ block: true }` to prevent execution. The loop emits an error tool result instead.
@@ -449,4 +456,16 @@ export type AgentEvent =
 	// Tool execution lifecycle
 	| { type: "tool_execution_start"; toolCallId: string; toolName: string; args: any }
 	| { type: "tool_execution_update"; toolCallId: string; toolName: string; args: any; partialResult: any }
-	| { type: "tool_execution_end"; toolCallId: string; toolName: string; result: any; isError: boolean };
+	| { type: "tool_execution_end"; toolCallId: string; toolName: string; result: any; isError: boolean }
+	| {
+			type: "tool_recovery_observe";
+			toolCallId: string;
+			toolName: string;
+			failureCode?: string;
+			action: "observe";
+			outcome: "success" | "failure";
+			durationMs: number;
+			callSignature: string;
+			failureFingerprint?: string;
+			targetHash?: string;
+	  };

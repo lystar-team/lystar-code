@@ -9,6 +9,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import { runAgentLoop, runAgentLoopContinue } from "./agent-loop.ts";
 import { getDefaultStreamFn } from "./stream-fn.ts";
+import type { ToolRecoveryController } from "./tool-recovery/controller.ts";
 import type {
 	AfterToolCallContext,
 	AfterToolCallResult,
@@ -122,6 +123,7 @@ export interface AgentOptions {
 	transport?: Transport;
 	maxRetryDelayMs?: number;
 	toolExecution?: ToolExecutionMode;
+	toolRecoveryController?: ToolRecoveryController;
 }
 
 class PendingMessageQueue {
@@ -216,6 +218,8 @@ export class Agent {
 	public maxRetryDelayMs?: number;
 	/** Tool execution strategy for assistant messages that contain multiple tool calls. */
 	public toolExecution: ToolExecutionMode;
+	/** 归一化 Tool 恢复结果的仅观察控制器。 */
+	public toolRecoveryController?: ToolRecoveryController;
 
 	constructor(options: AgentOptions) {
 		// Older compiled consumers may omit options or streamFn even though the current API requires them.
@@ -241,6 +245,7 @@ export class Agent {
 		this.transport = runtimeOptions.transport ?? "auto";
 		this.maxRetryDelayMs = runtimeOptions.maxRetryDelayMs;
 		this.toolExecution = runtimeOptions.toolExecution ?? "parallel";
+		this.toolRecoveryController = runtimeOptions.toolRecoveryController;
 	}
 
 	/**
@@ -463,6 +468,7 @@ export class Agent {
 			thinkingBudgets: this.thinkingBudgets,
 			maxRetryDelayMs: this.maxRetryDelayMs,
 			toolExecution: this.toolExecution,
+			toolRecoveryController: this.toolRecoveryController,
 			beforeToolCall: this.beforeToolCall,
 			afterToolCall: this.afterToolCall,
 			prepareRequest: prepareRequest ? async (context) => await prepareRequest(context, this.signal) : undefined,

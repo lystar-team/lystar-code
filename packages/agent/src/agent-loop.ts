@@ -11,6 +11,12 @@ import {
 	validateToolArguments,
 } from "@earendil-works/pi-ai";
 import { getDefaultStreamFn } from "./stream-fn.ts";
+import type { ToolRecoveryController } from "./tool-recovery/controller.ts";
+import {
+	createToolRecoveryCall,
+	createToolRecoveryObservation,
+	type ToolRecoveryCall,
+} from "./tool-recovery/controller.ts";
 import type {
 	AgentContext,
 	AgentEvent,
@@ -468,7 +474,7 @@ async function executeToolCallsSequential(
 				isError: preparation.isError,
 			};
 		} else {
-			const executed = await executePreparedToolCall(preparation, signal, emit);
+			const executed = await executePreparedToolCall(preparation, signal, emit, config.toolRecoveryController);
 			finalized = await finalizeExecutedToolCall(
 				currentContext,
 				assistantMessage,
@@ -476,6 +482,7 @@ async function executeToolCallsSequential(
 				executed,
 				config,
 				signal,
+				emit,
 			);
 		}
 
@@ -530,7 +537,7 @@ async function executeToolCallsParallel(
 		}
 
 		finalizedCalls.push(async () => {
-			const executed = await executePreparedToolCall(preparation, signal, emit);
+			const executed = await executePreparedToolCall(preparation, signal, emit, config.toolRecoveryController);
 			const finalized = await finalizeExecutedToolCall(
 				currentContext,
 				assistantMessage,
@@ -538,6 +545,7 @@ async function executeToolCallsParallel(
 				executed,
 				config,
 				signal,
+				emit,
 			);
 			await emitToolExecutionEnd(finalized, emit);
 			return finalized;
@@ -579,6 +587,8 @@ type ImmediateToolCallOutcome = {
 type ExecutedToolCallOutcome = {
 	result: AgentToolResult<any>;
 	isError: boolean;
+	error?: unknown;
+	recovery?: ToolRecoveryCall;
 };
 
 type FinalizedToolCallOutcome = {
@@ -685,9 +695,22 @@ async function executePreparedToolCall(
 	prepared: PreparedToolCall,
 	signal: AbortSignal | undefined,
 	emit: AgentEventSink,
+	toolRecoveryController: ToolRecoveryController | undefined,
 ): Promise<ExecutedToolCallOutcome> {
 	const updateEvents: Promise<void>[] = [];
 	let acceptingUpdates = true;
+	const controller = toolRecoveryController;
+	const recovery = controller
+		? await createToolRecoveryCall(prepared.toolCall.id, prepared.toolCall.name, prepared.args)
+		: undefined;
+
+	if (recovery && controller) {
+		try {
+			await controller.preflight(recovery, signal);
+		} catch {
+			// Recovery 观察不能改变逻辑 Tool Call。
+		}
+	}
 
 	try {
 		const result = await prepared.tool.execute(
@@ -711,13 +734,15 @@ async function executePreparedToolCall(
 		);
 		acceptingUpdates = false;
 		await Promise.all(updateEvents);
-		return { result, isError: false };
+		return { result, isError: false, recovery };
 	} catch (error) {
 		acceptingUpdates = false;
 		await Promise.all(updateEvents);
 		return {
 			result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
 			isError: true,
+			error,
+			recovery,
 		};
 	} finally {
 		acceptingUpdates = false;
@@ -731,9 +756,12 @@ async function finalizeExecutedToolCall(
 	executed: ExecutedToolCallOutcome,
 	config: AgentLoopConfig,
 	signal: AbortSignal | undefined,
+	emit: AgentEventSink,
 ): Promise<FinalizedToolCallOutcome> {
 	let result = executed.result;
 	let isError = executed.isError;
+	let recoveryError = executed.error;
+	let recoveryPhase: "execution" | "post_hook" = "execution";
 
 	if (config.afterToolCall) {
 		try {
@@ -749,6 +777,7 @@ async function finalizeExecutedToolCall(
 				signal,
 			);
 			if (afterResult) {
+				const afterMarkedError = afterResult.isError === true && !isError;
 				result = {
 					...result,
 					content: afterResult.content ?? result.content,
@@ -757,18 +786,69 @@ async function finalizeExecutedToolCall(
 					terminate: afterResult.terminate ?? result.terminate,
 				};
 				isError = afterResult.isError ?? isError;
+				if (afterMarkedError) {
+					recoveryError = undefined;
+					recoveryPhase = "post_hook";
+				}
 			}
 		} catch (error) {
 			result = createErrorToolResult(error instanceof Error ? error.message : String(error));
 			isError = true;
+			recoveryError = error;
+			recoveryPhase = "post_hook";
 		}
 	}
 
-	return {
+	const finalized = {
 		toolCall: prepared.toolCall,
 		result,
 		isError,
 	};
+	await observeFinalizedToolCall(
+		finalized,
+		executed.recovery,
+		recoveryError,
+		recoveryPhase,
+		config.toolRecoveryController,
+		signal,
+		emit,
+	);
+	return finalized;
+}
+
+async function observeFinalizedToolCall(
+	finalized: FinalizedToolCallOutcome,
+	recovery: ToolRecoveryCall | undefined,
+	error: unknown,
+	phase: "execution" | "post_hook",
+	toolRecoveryController: ToolRecoveryController | undefined,
+	signal: AbortSignal | undefined,
+	emit: AgentEventSink,
+): Promise<void> {
+	if (!toolRecoveryController || !recovery) return;
+	const observation = await createToolRecoveryObservation({
+		call: recovery,
+		isError: finalized.isError,
+		error,
+		phase,
+	});
+	try {
+		await toolRecoveryController.observe(observation, signal);
+	} catch {
+		// Recovery 观察不能改变逻辑 Tool Call。
+	}
+	await emit({
+		type: "tool_recovery_observe",
+		toolCallId: observation.toolCallId,
+		toolName: observation.toolName,
+		...(observation.failure ? { failureCode: observation.failure.code } : {}),
+		action: observation.action,
+		outcome: observation.outcome,
+		durationMs: observation.durationMs,
+		callSignature: observation.callSignature,
+		...(observation.failure ? { failureFingerprint: observation.failure.fingerprint } : {}),
+		...(observation.targetHash ? { targetHash: observation.targetHash } : {}),
+	});
 }
 
 function createErrorToolResult(message: string): AgentToolResult<any> {
