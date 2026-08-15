@@ -2,6 +2,8 @@ name: Release LYStar Code GUI Beta
 
 on:
   push:
+    branches:
+      - "gui-preflight/**"
     tags:
       - "gui-v*"
   workflow_dispatch:

@@ -11,6 +11,7 @@ const sidecar = readFileSync(new URL("../packages/gui/scripts/build-sidecar.mjs"
 
 test("GUI release keeps macOS signing enabled", () => {
 	assert.deepEqual(guiReleaseSigningErrors(workflow, sidecar), []);
+	assert.match(workflow, /branches:\n\s+- "gui-preflight\/\*\*"/);
 	const broken = workflow.replace(
 		'run: npm --workspace @lystar/code-gui run tauri -- build --ci --bundles "${{ matrix.bundle }}"',
 		'run: npm --workspace @lystar/code-gui run tauri -- build --ci --no-sign --bundles "${{ matrix.bundle }}"',

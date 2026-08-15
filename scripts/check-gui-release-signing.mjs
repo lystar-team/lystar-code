@@ -8,6 +8,7 @@ export function guiReleaseSigningErrors(workflow, sidecar) {
 	const errors = [];
 	for (const required of [
 		"workflow_dispatch:",
+		'"gui-preflight/**"',
 		'APPLE_SIGNING_IDENTITY: "-"',
 		"PI_GUI_REMOTE_HOST_PLATFORMS: linux-arm64,linux-x64,windows-x64",
 		"prepare-darwin-remote-hosts:",
