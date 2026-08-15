@@ -72,6 +72,22 @@ export interface ToolRecoveryLessonsPaths {
 	lock: string;
 }
 
+export interface ToolRecoveryLessonCounts {
+	candidate: number;
+	verified: number;
+	active: number;
+	disabled: number;
+	expired: number;
+}
+
+export type ToolRecoveryLessonStoreDiagnostic =
+	| { available: true; counts: ToolRecoveryLessonCounts }
+	| {
+			available: false;
+			counts: ToolRecoveryLessonCounts;
+			error: { code: "lesson_store_unreadable" | "lesson_store_corrupt" };
+	  };
+
 export interface CreateToolRecoveryLessonInput {
 	/** 普通 create 固定为 candidate；非 candidate 状态只由受控状态流转写入。 */
 	status?: "candidate";
@@ -699,6 +715,66 @@ export function getToolRecoveryLessonsPaths(agentDir: string): ToolRecoveryLesso
 		history: join(directory, "history.jsonl"),
 		lock: join(directory, "lock"),
 	};
+}
+
+function emptyLessonCounts(): ToolRecoveryLessonCounts {
+	return { candidate: 0, verified: 0, active: 0, disabled: 0, expired: 0 };
+}
+
+function countLessons(lessons: readonly ToolRecoveryLesson[], now: Date): ToolRecoveryLessonCounts {
+	const counts = emptyLessonCounts();
+	for (const lesson of lessons) {
+		switch (effectiveStatus(lesson, now)) {
+			case "candidate":
+				counts.candidate++;
+				break;
+			case "verified":
+				counts.verified++;
+				break;
+			case "active":
+				counts.active++;
+				break;
+			case "suspended":
+				counts.disabled++;
+				break;
+			case "expired":
+				counts.expired++;
+				break;
+		}
+	}
+	return counts;
+}
+
+/**
+ * 仅用于诊断的 Store 读取：不加锁、不修复截断记录，也不写入快照或备份文件。
+ * 写入中的短暂不一致以 history 为准，损坏数据则明确返回不可用状态。
+ */
+export async function getToolRecoveryLessonDiagnostics(
+	agentDir: string,
+	options: { now?: Date } = {},
+): Promise<ToolRecoveryLessonStoreDiagnostic> {
+	const paths = getToolRecoveryLessonsPaths(agentDir);
+	try {
+		const [snapshotContent, historyContent] = await Promise.all([readText(paths.snapshot), readText(paths.history)]);
+		let snapshot = emptySnapshot();
+		if (snapshotContent.length > 0) {
+			const parsedSnapshot = JSON.parse(snapshotContent);
+			if (!isSnapshot(parsedSnapshot)) throw new ToolRecoveryLessonsError("invalid lessons snapshot");
+			snapshot = parsedSnapshot;
+		}
+		const parsedHistory = parseHistory(historyContent);
+		if (parsedHistory.repairedContent !== historyContent)
+			throw new ToolRecoveryLessonsError("truncated lessons history");
+		const lessons =
+			parsedHistory.entries.length > 0 ? replayHistory(parsedHistory.entries).lessons : snapshot.lessons;
+		return { available: true, counts: countLessons(lessons, options.now ?? new Date()) };
+	} catch {
+		return {
+			available: false,
+			counts: emptyLessonCounts(),
+			error: { code: "lesson_store_corrupt" },
+		};
+	}
 }
 
 export async function createToolRecoveryLesson(

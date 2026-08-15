@@ -113,4 +113,48 @@ describe("GuiHostService Session observation", () => {
 			),
 		);
 	});
+
+	it("returns active runtime recovery diagnostics through get_diagnostics", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-diagnostics-"));
+		const agentDir = join(tempDir, "agent");
+		const cwd = join(tempDir, "project");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(cwd, { recursive: true });
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always" }));
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		const service = new GuiHostService(adapter, { agentDir });
+		const messages: ServerMessage[] = [];
+		const connection = service.createConnection(async (message) => {
+			messages.push(message);
+		});
+		cleanups.push(async () => {
+			await connection.close();
+			await service.dispose();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+		const handle = (message: ClientMessage) => connection.handle(message);
+		await handle({ type: "hello", version: 1, clientInstanceId: "diagnostics-client" });
+		await handle({
+			type: "request",
+			id: "create",
+			request: { command: "create_session", cwd, clientInstanceId: "diagnostics-client" },
+		});
+		await handle({ type: "request", id: "diagnostics", request: { command: "get_diagnostics", cwd } });
+
+		const response = messages.find(
+			(message) => message.type === "response" && message.id === "diagnostics" && message.ok,
+		);
+		if (!response || response.type !== "response" || !response.ok) throw new Error("Missing diagnostics response");
+		const result = response.result as unknown as {
+			recovery: { sessionActive: boolean; activeCircuits: number; metrics: { toolRecoveryAttemptTotal: unknown[] } };
+			lessons: { available: boolean; counts: Record<string, number> };
+		};
+		expect(result.recovery.sessionActive).toBe(true);
+		expect(result.recovery.activeCircuits).toBe(0);
+		expect(result.recovery.metrics.toolRecoveryAttemptTotal).toEqual([]);
+		expect(result.lessons).toEqual({
+			available: true,
+			counts: { candidate: 0, verified: 0, active: 0, disabled: 0, expired: 0 },
+		});
+	});
 });

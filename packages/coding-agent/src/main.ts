@@ -27,6 +27,7 @@ import {
 	validateAuthCommandArgs,
 } from "./cli/auth-command.ts";
 import { resolveCredentialForPrint } from "./cli/credential-print.ts";
+import { runDoctorCommand } from "./cli/doctor-command.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { runLessonsCommand } from "./cli/lessons-command.ts";
@@ -662,6 +663,7 @@ export async function main(args: string[], options?: MainOptions) {
 
 	const cwd = process.cwd();
 	const agentDir = getAgentDir();
+	if (await runDoctorCommand(args, { cwd, agentDir })) return;
 	const bootstrapSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher();
@@ -705,7 +707,8 @@ export async function main(args: string[], options?: MainOptions) {
 	const skipsWindowsShellBootstrap =
 		args.some((arg) => arg === "--version" || arg === "-v" || arg === "--help" || arg === "-h") ||
 		args[0] === "list" ||
-		args[0] === "lessons";
+		args[0] === "lessons" ||
+		args[0] === "doctor";
 	if (process.platform === "win32" && !skipsWindowsShellBootstrap) {
 		const bashPath = await ensureManagedWindowsBash(true);
 		if (!bashPath) {

@@ -6,6 +6,7 @@ import {
 	encodeServerMessage,
 	GUI_PROTOCOL_VERSION,
 	GuiProtocolClient,
+	isDiagnostics,
 	ServerMessageDecoder,
 } from "../src/index.ts";
 
@@ -213,6 +214,21 @@ describe("GUI Protocol v1", () => {
 				event: { type: "operation_updated", operation: {} },
 			} as never),
 		).toThrow("Invalid GUI server message (event:operation_updated");
+	});
+
+	it("accepts legacy diagnostics and optional recovery fields", () => {
+		expect(isDiagnostics({ checks: [], platform: "linux", arch: "x64" })).toBe(true);
+		expect(
+			isDiagnostics({
+				checks: [],
+				recovery: { sessionActive: false, activeCircuits: 0, metrics: {} },
+				lessons: {
+					available: false,
+					counts: { candidate: 0, verified: 0, active: 0, disabled: 0, expired: 0 },
+					error: { code: "lesson_store_corrupt" },
+				},
+			}),
+		).toBe(true);
 	});
 
 	it("strictly decodes model, project, completion, and resource commands", () => {

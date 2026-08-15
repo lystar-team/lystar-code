@@ -21,6 +21,20 @@ export interface RuntimeEvent {
 	payload: JsonValue;
 }
 
+export interface ToolRecoveryRuntimeDiagnostics {
+	mode: "observe" | "assist";
+	toolFailureTotal: Array<{ tool: string; code: string; count: number }>;
+	toolRecoveryAttemptTotal: Array<{ tool: string; action: string; count: number }>;
+	toolRecoverySuccessTotal: Array<{ tool: string; action: string; count: number }>;
+	toolRepeatBlockedTotal: Array<{ tool: string; code: string; count: number }>;
+	toolUnsafeRetryBlockedTotal: Array<{ tool: string; count: number }>;
+	lessonMatchTotal: Array<{ lesson: string; count: number }>;
+	lessonRecoverySuccessTotal: Array<{ lesson: string; count: number }>;
+	lessonSuspendedTotal: Array<{ lesson: string; count: number }>;
+	duration: { count: number; totalMs: number; maxMs: number };
+	activeCircuits: number;
+}
+
 export interface RuntimeSession {
 	readonly sessionPath: string;
 	getSnapshot(writeAccess: SessionStateSnapshot["writeAccess"]): SessionStateSnapshot;
@@ -33,6 +47,7 @@ export interface RuntimeSession {
 	abort(): Promise<void>;
 	reloadResources(): Promise<void>;
 	getCompletions(text: string, cursor: number): CompletionResult | undefined;
+	getToolRecoveryDiagnostics(): ToolRecoveryRuntimeDiagnostics;
 	dispose(): Promise<void>;
 	onEvent(listener: (event: RuntimeEvent) => void): () => void;
 }
@@ -148,7 +163,7 @@ export interface RuntimeAdapter {
 	resolveExternalResource(target: string, line?: number, column?: number): ProjectResource;
 	readExternalResource(path: string, accessToken: string, offset: number, limit: number): ContentChunk;
 	getAbout(): JsonValue;
-	getDiagnostics(cwd?: string): Promise<JsonValue>;
+	getDiagnostics(cwd?: string, runtimeDiagnostics?: ToolRecoveryRuntimeDiagnostics): Promise<JsonValue>;
 	getGitStatus(cwd: string): Promise<GitStatus>;
 	getGitDiff(cwd: string, path: string | undefined, staged: boolean): Promise<GitDiff>;
 	checkForUpdates(): Promise<JsonValue>;

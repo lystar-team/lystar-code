@@ -570,8 +570,12 @@ export class GuiHostService {
 			}
 			case "get_about":
 				return this.adapter.getAbout();
-			case "get_diagnostics":
-				return this.adapter.getDiagnostics(request.cwd);
+			case "get_diagnostics": {
+				const runtime = [...this.runtimes.values()].find(
+					(candidate) => !request.cwd || resolve(candidate.getSnapshot("available").cwd) === resolve(request.cwd),
+				);
+				return this.adapter.getDiagnostics(request.cwd, runtime?.getToolRecoveryDiagnostics());
+			}
 			case "get_connection_status":
 				return {
 					connected: true,

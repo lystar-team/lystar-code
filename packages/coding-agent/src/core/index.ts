@@ -154,6 +154,19 @@ export {
 export { loadSkills, type Skill } from "./skills.ts";
 export { createSyntheticSourceInfo } from "./source-info.ts";
 export {
+	getToolRecoveryDoctorReport,
+	summarizeToolRecoveryDiagnostics,
+	type ToolRecoveryDiagnosticSummary,
+	type ToolRecoveryDoctorReport,
+	type ToolRecoveryRuntimeDiagnostics,
+	type ToolRecoveryRuntimeMetrics,
+} from "./tool-recovery/diagnostics.ts";
+export {
+	getToolRecoveryLessonDiagnostics,
+	type ToolRecoveryLessonCounts,
+	type ToolRecoveryLessonStoreDiagnostic,
+} from "./tool-recovery/lessons-store.ts";
+export {
 	getProjectTrustOptions,
 	hasTrustRequiringProjectResources,
 	type ProjectTrustDecision,

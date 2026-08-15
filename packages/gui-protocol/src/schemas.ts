@@ -24,6 +24,99 @@ const JsonValueRecursiveSchema = Type.Cyclic(
 );
 export const JsonValueSchema = Type.Unsafe<JsonValue>(JsonValueRecursiveSchema);
 
+const DiagnosticToolCodeCountSchema = StrictObject({
+	tool: Type.String({ minLength: 1 }),
+	code: Type.String({ minLength: 1 }),
+	count: Type.Integer({ minimum: 0 }),
+});
+const DiagnosticToolActionCountSchema = StrictObject({
+	tool: Type.String({ minLength: 1 }),
+	action: Type.String({ minLength: 1 }),
+	count: Type.Integer({ minimum: 0 }),
+});
+const DiagnosticLessonCountSchema = StrictObject({ lesson: Id, count: Type.Integer({ minimum: 0 }) });
+const DiagnosticToolCountSchema = StrictObject({
+	tool: Type.String({ minLength: 1 }),
+	count: Type.Integer({ minimum: 0 }),
+});
+
+export const ToolRecoveryDiagnosticsSchema = StrictObject({
+	sessionActive: Type.Boolean(),
+	mode: Type.Optional(Type.Union([Type.Literal("observe"), Type.Literal("assist")])),
+	activeCircuits: Type.Integer({ minimum: 0 }),
+	metrics: StrictObject({
+		toolFailureTotal: Type.Optional(Type.Array(DiagnosticToolCodeCountSchema)),
+		toolRecoveryAttemptTotal: Type.Optional(Type.Array(DiagnosticToolActionCountSchema)),
+		toolRecoverySuccessTotal: Type.Optional(Type.Array(DiagnosticToolActionCountSchema)),
+		toolRepeatBlockedTotal: Type.Optional(Type.Array(DiagnosticToolCodeCountSchema)),
+		toolUnsafeRetryBlockedTotal: Type.Optional(Type.Array(DiagnosticToolCountSchema)),
+		lessonMatchTotal: Type.Optional(Type.Array(DiagnosticLessonCountSchema)),
+		lessonRecoverySuccessTotal: Type.Optional(Type.Array(DiagnosticLessonCountSchema)),
+		lessonSuspendedTotal: Type.Optional(Type.Array(DiagnosticLessonCountSchema)),
+		duration: Type.Optional(
+			StrictObject({
+				count: Type.Integer({ minimum: 0 }),
+				totalMs: Type.Number({ minimum: 0 }),
+				maxMs: Type.Number({ minimum: 0 }),
+			}),
+		),
+	}),
+});
+export type ToolRecoveryDiagnostics = Static<typeof ToolRecoveryDiagnosticsSchema>;
+
+export const DiagnosticsSchema = StrictObject({
+	checks: Type.Optional(
+		Type.Array(
+			StrictObject({
+				id: Type.String({ minLength: 1 }),
+				status: Type.String({ minLength: 1 }),
+				message: Type.String(),
+			}),
+		),
+	),
+	product: Type.Optional(
+		StrictObject({ name: Type.String({ minLength: 1 }), version: Type.String({ minLength: 1 }) }),
+	),
+	frontend: Type.Optional(
+		StrictObject({
+			implementation: Type.String({ minLength: 1 }),
+			modes: Type.Array(Type.String({ minLength: 1 })),
+			rust: StrictObject({ b0Status: Type.String({ minLength: 1 }), integration: Type.String({ minLength: 1 }) }),
+		}),
+	),
+	nodeVersion: Type.Optional(Type.String({ minLength: 1 })),
+	guiProtocolVersion: Type.Optional(Type.Integer({ minimum: 0 })),
+	cwd: Type.Optional(Type.String({ minLength: 1 })),
+	agentDir: Type.Optional(Type.String({ minLength: 1 })),
+	platform: Type.Optional(Type.String({ minLength: 1 })),
+	arch: Type.Optional(Type.String({ minLength: 1 })),
+	recovery: Type.Optional(ToolRecoveryDiagnosticsSchema),
+	lessons: Type.Optional(
+		StrictObject({
+			available: Type.Boolean(),
+			counts: StrictObject({
+				candidate: Type.Integer({ minimum: 0 }),
+				verified: Type.Integer({ minimum: 0 }),
+				active: Type.Integer({ minimum: 0 }),
+				disabled: Type.Integer({ minimum: 0 }),
+				expired: Type.Integer({ minimum: 0 }),
+			}),
+			error: Type.Optional(StrictObject({ code: Type.String({ minLength: 1 }) })),
+		}),
+	),
+	recentConnectionErrors: Type.Optional(
+		StrictObject({ available: Type.Boolean(), reason: Type.Optional(Type.String({ minLength: 1 })) }),
+	),
+	terminalRepairHistory: Type.Optional(
+		StrictObject({ available: Type.Boolean(), reason: Type.Optional(Type.String({ minLength: 1 })) }),
+	),
+});
+export type Diagnostics = Static<typeof DiagnosticsSchema>;
+
+export function isDiagnostics(value: unknown): value is Diagnostics {
+	return Check(DiagnosticsSchema, value);
+}
+
 export const CapabilitySchema = Type.Union([
 	Type.Literal("session-paging"),
 	Type.Literal("session-control"),

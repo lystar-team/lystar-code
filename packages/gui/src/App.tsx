@@ -2101,6 +2101,23 @@ function DiagnosticsSettings() {
 					: [];
 			})
 		: [];
+	const recovery = record(value?.recovery);
+	const product = record(value?.product);
+	const frontend = record(value?.frontend);
+	const lessonCounts = record(record(value?.lessons)?.counts);
+	const metrics = record(recovery?.metrics);
+	const attempts = Array.isArray(metrics?.toolRecoveryAttemptTotal)
+		? metrics.toolRecoveryAttemptTotal.flatMap((item) => {
+				const metric = record(item);
+				return typeof metric?.tool === "string" && typeof metric.action === "string" && typeof metric.count === "number"
+					? [`${metric.tool}/${metric.action}=${metric.count}`]
+					: [];
+			})
+		: [];
+	const unavailable = (value: unknown) => {
+		const item = record(value);
+		return item?.available === false ? (typeof item.reason === "string" ? `不可用：${item.reason}` : "不可用") : "可用";
+	};
 	const problems = checks.filter((check) => check.status !== "ok").length;
 	return (
 		<SettingsSection title="诊断" description="检查本机、会话与后台环境；诊断信息不包含凭据和完整提示词。">
@@ -2122,6 +2139,15 @@ function DiagnosticsSettings() {
 				{checks.length === 0 && <div className="settings-loading"><LoaderCircle size={16} className="spin" />正在读取诊断结果</div>}
 			</div>
 			<div className="key-value-list diagnostic-environment">
+				<div><strong>产品</strong><span>{typeof product?.name === "string" ? product.name : "-"} {typeof product?.version === "string" ? product.version : ""}</span></div>
+				<div><strong>前端</strong><span>{typeof frontend?.implementation === "string" ? frontend.implementation : "-"}</span></div>
+				<div><strong>GUI Protocol</strong><span>{typeof value?.guiProtocolVersion === "number" ? value.guiProtocolVersion : "-"}</span></div>
+				<div><strong>恢复模式</strong><span>{typeof recovery?.mode === "string" ? recovery.mode : recovery?.sessionActive === false ? "无活跃会话（仅当前进程）" : "-"}</span></div>
+				<div><strong>活跃熔断</strong><span>{typeof recovery?.activeCircuits === "number" ? recovery.activeCircuits : "-"}</span></div>
+				<div><strong>恢复动作</strong><span>{attempts.length > 0 ? attempts.join("，") : "无"}</span></div>
+				<div><strong>恢复经验</strong><span>{lessonCounts ? `候选 ${lessonCounts.candidate ?? 0}，已验证 ${lessonCounts.verified ?? 0}，启用 ${lessonCounts.active ?? 0}，停用 ${lessonCounts.disabled ?? 0}，过期 ${lessonCounts.expired ?? 0}` : "-"}</span></div>
+				<div><strong>最近连接错误</strong><span>{unavailable(value?.recentConnectionErrors)}</span></div>
+				<div><strong>终端修复历史</strong><span>{unavailable(value?.terminalRepairHistory)}</span></div>
 				<div><strong>平台</strong><span>{typeof value?.platform === "string" ? value.platform : "-"}</span></div>
 				<div><strong>架构</strong><span>{typeof value?.arch === "string" ? value.arch : "-"}</span></div>
 			</div>

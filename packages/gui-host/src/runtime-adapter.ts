@@ -35,6 +35,7 @@ import {
 	getDefaultSessionDir,
 	getLatestPiRelease,
 	getSupportedThinkingLevels,
+	getToolRecoveryDoctorReport,
 	hasTrustRequiringProjectResources,
 	isNewerPackageVersion,
 	loadProjectContextFiles,
@@ -70,6 +71,7 @@ import type {
 	ThinkingLevel,
 	TranscriptItem,
 } from "@lystar/code-gui-protocol";
+import { GUI_PROTOCOL_VERSION } from "@lystar/code-gui-protocol";
 import type {
 	ModelProviderInput,
 	ModelProviderSummary,
@@ -80,6 +82,7 @@ import type {
 	RuntimeSession,
 	SessionSummaryBase,
 	SkillSummary,
+	ToolRecoveryRuntimeDiagnostics,
 	UiRequest,
 	UiRequestHandler,
 } from "./types.ts";
@@ -641,6 +644,10 @@ class CoreRuntimeSession implements RuntimeSession {
 				kind: "skill" as const,
 			}));
 		return { prefixStart: cursor - prefix.length, prefixEnd: cursor, items };
+	}
+
+	getToolRecoveryDiagnostics(): ToolRecoveryRuntimeDiagnostics {
+		return this.runtime.session.getToolRecoveryDiagnostics();
 	}
 
 	async dispose(): Promise<void> {
@@ -1213,7 +1220,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			productVersion: VERSION,
 			piVersion: PACKAGE_VERSION,
 			hostVersion: HOST_VERSION,
-			protocolVersion: 1,
+			protocolVersion: GUI_PROTOCOL_VERSION,
 			releaseRepository: RELEASE_REPOSITORY ?? null,
 			agentDir: this.agentDir,
 			sessionsDir: join(this.agentDir, "sessions"),
@@ -1221,13 +1228,21 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		};
 	}
 
-	async getDiagnostics(cwd?: string): Promise<JsonValue> {
+	async getDiagnostics(cwd?: string, runtimeDiagnostics?: ToolRecoveryRuntimeDiagnostics): Promise<JsonValue> {
+		const report = await getToolRecoveryDoctorReport({
+			productName: APP_TITLE,
+			productVersion: VERSION,
+			guiProtocolVersion: GUI_PROTOCOL_VERSION,
+			cwd: cwd ?? process.cwd(),
+			agentDir: this.agentDir,
+			runtimeDiagnostics,
+		});
 		const checks = [
 			{ id: "node", status: "ok", message: `Node.js ${process.version}` },
 			{ id: "agent-dir", status: existsSync(this.agentDir) ? "ok" : "warning", message: this.agentDir },
 			...(cwd ? [{ id: "cwd", status: existsSync(cwd) ? "ok" : "error", message: cwd }] : []),
 		];
-		return { checks, platform: process.platform, arch: process.arch };
+		return jsonValue({ ...report, checks });
 	}
 
 	async getGitStatus(cwd: string): Promise<GitStatus> {
