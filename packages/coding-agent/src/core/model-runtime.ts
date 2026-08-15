@@ -5,6 +5,7 @@ import {
 	type AssistantMessage,
 	type AssistantMessageEventStream,
 	type AuthCheck,
+	type AuthContext,
 	type AuthInteraction,
 	type AuthOperationOptions,
 	type AuthResult,
@@ -76,6 +77,8 @@ export interface CreateModelRuntimeOptions {
 	modelsPath?: string | null;
 	modelsStore?: ModelsStore;
 	modelsStorePath?: string;
+	/** Auth environment and filesystem access. Defaults to pi-ai's process-backed context. */
+	authContext?: AuthContext;
 	/** Allow create() to refresh model catalogs over the network. Defaults to false. */
 	allowModelNetwork?: boolean;
 	/** Timeout for the create-time network model refresh. */
@@ -163,6 +166,7 @@ export class ModelRuntime implements Models {
 		config: ModelConfig,
 		modelsPath: string | undefined,
 		modelsStore: ModelsStore,
+		authContext: AuthContext | undefined,
 		providers: readonly Provider[],
 		modelNetworkEnabled: boolean,
 	) {
@@ -172,8 +176,8 @@ export class ModelRuntime implements Models {
 		this.modelNetworkEnabled = modelNetworkEnabled;
 		this.defaultBuiltins = new Map(providers.map((provider) => [provider.id, provider]));
 		for (const [providerId, provider] of this.defaultBuiltins) this.builtins.set(providerId, provider);
-		this.models = createModels({ credentials, modelsStore });
-		this.imageModels = builtinProviderCatalog.builtinImagesModels({ credentials });
+		this.models = createModels({ credentials, modelsStore, authContext });
+		this.imageModels = builtinProviderCatalog.builtinImagesModels({ credentials, authContext });
 		this.rebuildProviders();
 	}
 
@@ -200,6 +204,7 @@ export class ModelRuntime implements Models {
 			config,
 			modelsPath,
 			modelsStore,
+			options.authContext,
 			providers,
 			process.env.PI_OFFLINE === undefined,
 		);
