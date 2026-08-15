@@ -8,22 +8,58 @@ import { guiReleaseSigningErrors } from "./check-gui-release-signing.mjs";
 
 const workflow = readFileSync(new URL("../.github/workflows/gui-release.yml", import.meta.url), "utf8");
 const sidecar = readFileSync(new URL("../packages/gui/scripts/build-sidecar.mjs", import.meta.url), "utf8");
+const collector = readFileSync(new URL("./collect-gui-beta-artifact.mjs", import.meta.url), "utf8");
 
-test("GUI release keeps macOS signing enabled", () => {
-	assert.deepEqual(guiReleaseSigningErrors(workflow, sidecar), []);
-	assert.doesNotMatch(workflow, /gui-preflight\/\*\*/);
-	const broken = workflow.replace(
-		'run: npm --workspace @lystar/code-gui run tauri -- build --ci --bundles "${{ matrix.bundle }}"',
-		'run: npm --workspace @lystar/code-gui run tauri -- build --ci --no-sign --bundles "${{ matrix.bundle }}"',
+function expectContractFailure(broken, pattern) {
+	assert.match(guiReleaseSigningErrors(broken, sidecar, collector).join("\n"), pattern);
+}
+
+test("GUI release keeps one protected, dispatch-only five-platform publish flow", () => {
+	assert.deepEqual(guiReleaseSigningErrors(workflow, sidecar, collector), []);
+
+	const tagTrigger = workflow.replace(
+		"on:\n  workflow_dispatch:",
+		'on:\n  push:\n    tags:\n      - "gui-v*"\n  workflow_dispatch:',
 	);
-	assert.match(guiReleaseSigningErrors(broken, sidecar).join("\n"), /must not use --no-sign/);
-	const publishingPreflight = workflow.replace(
-		"  release:\n    if: startsWith(github.ref, 'refs/tags/gui-v')",
-		"  release:",
+	expectContractFailure(tagTrigger, /only use workflow_dispatch|must not be triggered by gui-v tags/);
+
+	const earlyTag = workflow.replace(
+		"      - name: Generate GUI beta metadata",
+		"      - name: Create annotated GUI tag early\n        run: git tag -a early -m early\n\n      - name: Generate GUI beta metadata",
 	);
-	assert.match(guiReleaseSigningErrors(publishingPreflight, sidecar).join("\n"), /only run for gui-v tags/);
-	const duplicatePreflight = workflow.replace('tags:\n      - "gui-v*"', 'branches:\n      - "gui-preflight/**"\n    tags:\n      - "gui-v*"');
-	assert.match(guiReleaseSigningErrors(duplicatePreflight, sidecar).join("\n"), /must not rebuild the same commit/);
+	expectContractFailure(earlyTag, /annotated tag must be created only in the publish job|tag must be created after/);
+
+	const noEnvironment = workflow.replace("    environment: gui-release\n", "");
+	expectContractFailure(noEnvironment, /require the gui-release environment approval/);
+
+	const duplicateMatrix = workflow.replace(
+		"          - platform: linux-arm64\n            runner: ubuntu-24.04-arm",
+		"          - platform: linux-x64\n            runner: ubuntu-24.04\n            bundle: appimage\n            extension: AppImage\n          - platform: linux-arm64\n            runner: ubuntu-24.04-arm",
+	);
+	expectContractFailure(duplicateMatrix, /build matrix must contain each platform exactly once/);
+
+	const unsignedMacBuild = workflow.replace(
+		'run: |\n          started=$SECONDS\n          npm --workspace @lystar/code-gui run tauri -- build --ci --bundles "${{ matrix.bundle }}"',
+		'run: |\n          started=$SECONDS\n          npm --workspace @lystar/code-gui run tauri -- build --ci --no-sign --bundles "${{ matrix.bundle }}"',
+	);
+	expectContractFailure(unsignedMacBuild, /macOS GUI build must not use --no-sign/);
+
+	const noManifestCheck = workflow.replace(
+		"node scripts/generate-gui-beta-metadata.mjs gui-release \"$VERSION\" \"$GITHUB_REPOSITORY\"",
+		"true",
+	);
+	expectContractFailure(noManifestCheck, /must verify artifacts, SHA256SUMS, and manifest/);
+
+	const noAttestation = workflow.replace(
+		"actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be",
+		"actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+	);
+	expectContractFailure(noAttestation, /must attest release artifacts and manifest/);
+
+	assert.match(
+		guiReleaseSigningErrors(workflow, sidecar, collector.replace("PE machine mismatch", "removed")).join("\n"),
+		/checked for Linux ELF and Windows PE architectures/,
+	);
 });
 
 test("macOS verifier extracts the signed Host bytes", () => {

@@ -1,16 +1,14 @@
 name: Release LYStar Code GUI Beta
 
 on:
-  push:
-    tags:
-      - "gui-v*"
   workflow_dispatch:
 
 permissions:
-  actions: read
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
+
+concurrency:
+  group: gui-release-${{ github.sha }}
+  cancel-in-progress: false
 
 env:
   NODE_VERSION: 22.19.0
@@ -22,6 +20,13 @@ jobs:
   verify-ci:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      version: ${{ steps.gui-version.outputs.version }}
+      tag: ${{ steps.gui-version.outputs.tag }}
+      skip: ${{ steps.existing-release.outputs.skip }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,13 +36,31 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Verify GUI tag version
-        if: startsWith(github.ref, 'refs/tags/gui-v')
+      - name: Read GUI version from the selected ref
+        id: gui-version
+        shell: bash
+        run: |
+          version=$(node -p "require('./packages/gui/package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=gui-v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Skip an already published GUI version
+        id: existing-release
+        shell: bash
         env:
-          TAG: ${{ github.ref_name }}
-        run: test "gui-v$(node -p "require('./packages/gui/package.json').version")" = "$TAG"
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.gui-version.outputs.tag }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1 || \
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "GUI tag or release already exists: $TAG" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
 
       - name: Wait for successful main CI for this commit
+        if: steps.existing-release.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -57,6 +80,7 @@ jobs:
 
   prepare-remote-hosts:
     needs: verify-ci
+    if: needs.verify-ci.outputs.skip != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -92,6 +116,7 @@ jobs:
 
   prepare-darwin-remote-hosts:
     needs: verify-ci
+    if: needs.verify-ci.outputs.skip != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -135,7 +160,8 @@ jobs:
           retention-days: 1
 
   merge-remote-hosts:
-    needs: [prepare-remote-hosts, prepare-darwin-remote-hosts]
+    needs: [verify-ci, prepare-remote-hosts, prepare-darwin-remote-hosts]
+    if: needs.verify-ci.outputs.skip != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -163,6 +189,7 @@ jobs:
 
   build:
     needs: [verify-ci, merge-remote-hosts]
+    if: needs.verify-ci.outputs.skip != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -170,25 +197,41 @@ jobs:
           - platform: linux-x64
             runner: ubuntu-24.04
             bundle: appimage
+            extension: AppImage
           - platform: linux-arm64
             runner: ubuntu-24.04-arm
             bundle: appimage
+            extension: AppImage
           - platform: darwin-arm64
             runner: macos-15
             bundle: dmg
+            extension: dmg
           - platform: darwin-x64
             runner: macos-15-intel
             bundle: dmg
+            extension: dmg
           - platform: windows-x64
             runner: windows-2025
             bundle: nsis
+            extension: exe
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Record GUI build start
+        id: build-start
+        shell: bash
+        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: Record cache restore start
+        id: cache-start
+        shell: bash
+        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Setup Node.js
+        id: setup-node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -208,16 +251,26 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Cache Rust build
+      - name: Cache Rust dependencies
+        id: rust-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            packages/gui/src-tauri/target
+            packages/gui/src-tauri/target/release/.fingerprint
+            packages/gui/src-tauri/target/release/build
+            packages/gui/src-tauri/target/release/deps
+            packages/gui/src-tauri/target/release/incremental
           key: gui-rust-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_VERSION }}-${{ hashFiles('packages/gui/src-tauri/Cargo.lock') }}
           restore-keys: |
             gui-rust-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_VERSION }}-
+
+      - name: Record cache restore end
+        id: cache-end
+        if: always()
+        shell: bash
+        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Install Linux WebKitGTK and AppImage dependencies
         if: startsWith(matrix.platform, 'linux-')
@@ -253,18 +306,26 @@ jobs:
           path: ${{ runner.temp }}/gui-remote-hosts
 
       - name: Build native GUI bundle (macOS ad-hoc signed)
+        id: bundle
         if: startsWith(matrix.platform, 'darwin-')
         shell: bash
         env:
           PI_GUI_PREBUILT_REMOTE_HOSTS_DIR: ${{ runner.temp }}/gui-remote-hosts
-        run: npm --workspace @lystar/code-gui run tauri -- build --ci --bundles "${{ matrix.bundle }}"
+        run: |
+          started=$SECONDS
+          npm --workspace @lystar/code-gui run tauri -- build --ci --bundles "${{ matrix.bundle }}"
+          echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
 
       - name: Build native GUI bundle (unsigned platforms)
+        id: bundle-unsigned
         if: ${{ !startsWith(matrix.platform, 'darwin-') }}
         shell: bash
         env:
           PI_GUI_PREBUILT_REMOTE_HOSTS_DIR: ${{ runner.temp }}/gui-remote-hosts
-        run: npm --workspace @lystar/code-gui run tauri -- build --ci --no-sign --bundles "${{ matrix.bundle }}"
+        run: |
+          started=$SECONDS
+          npm --workspace @lystar/code-gui run tauri -- build --ci --no-sign --bundles "${{ matrix.bundle }}"
+          echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
 
       - name: Verify macOS ad-hoc signed DMG
         if: startsWith(matrix.platform, 'darwin-')
@@ -290,12 +351,23 @@ jobs:
       - name: Collect GUI release artifact
         shell: bash
         run: |
-          version=$(node -p 'require("./packages/gui/package.json").version')
           node scripts/collect-gui-beta-artifact.mjs \
             packages/gui/src-tauri/target/release/bundle \
             "$RUNNER_TEMP/gui-release" \
-            "$version" \
+            "${{ needs.verify-ci.outputs.version }}" \
             "${{ matrix.platform }}"
+
+      - name: Write GUI build summary
+        if: always()
+        shell: bash
+        run: >-
+          node scripts/release-summary.mjs --release gui --sha "$GITHUB_SHA"
+          --artifact "${{ matrix.platform }}=$RUNNER_TEMP/gui-release/lystar-code-gui-${{ needs.verify-ci.outputs.version }}-${{ matrix.platform }}.${{ matrix.extension }}"
+          --timing wall=$(( $(date +%s) - ${{ steps.build-start.outputs.seconds || 0 }} ))
+          --timing build=$(( ${{ steps.bundle.outputs.seconds || 0 }} + ${{ steps.bundle-unsigned.outputs.seconds || 0 }} ))
+          --timing cache=$(( ${{ steps.cache-end.outputs.seconds || 0 }} - ${{ steps.cache-start.outputs.seconds || 0 }} ))
+          --cache-hit npm=${{ steps.setup-node.outputs.cache-hit || 'false' }}
+          --cache-hit rust=${{ steps.rust-cache.outputs.cache-hit || 'false' }}
 
       - name: Upload GUI release artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -304,14 +376,24 @@ jobs:
           path: ${{ runner.temp }}/gui-release/*
           if-no-files-found: error
 
-  release:
-    if: startsWith(github.ref, 'refs/tags/gui-v')
-    needs: build
+  publish:
+    needs: [verify-ci, build]
+    if: needs.verify-ci.outputs.skip != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    environment: gui-release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Record publish start
+        id: publish-start
+        shell: bash
+        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -327,10 +409,31 @@ jobs:
 
       - name: Generate GUI beta metadata
         env:
-          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.verify-ci.outputs.version }}
+        run: node scripts/generate-gui-beta-metadata.mjs gui-release "$VERSION" "$GITHUB_REPOSITORY"
+
+      - name: Verify GUI release artifacts and manifest
+        env:
+          VERSION: ${{ needs.verify-ci.outputs.version }}
         run: |
-          version="${TAG#gui-v}"
-          node scripts/generate-gui-beta-metadata.mjs gui-release "$version" "$GITHUB_REPOSITORY"
+          test "$(find gui-release -maxdepth 1 -type f \( -name '*.AppImage' -o -name '*.dmg' -o -name '*.exe' \) | wc -l)" = "5"
+          sha256sum -c gui-release/SHA256SUMS
+          node --input-type=module <<'NODE'
+          import { readFileSync, statSync } from "node:fs";
+          const manifest = JSON.parse(readFileSync("gui-release/gui-release-manifest.json", "utf8"));
+          const expected = ["linux-x64", "linux-arm64", "darwin-arm64", "darwin-x64", "windows-x64"];
+          if (manifest.version !== process.env.VERSION || manifest.repository !== process.env.GITHUB_REPOSITORY) {
+            throw new Error("GUI release manifest version or repository mismatch");
+          }
+          if (JSON.stringify(Object.keys(manifest.assets)) !== JSON.stringify(expected)) {
+            throw new Error("GUI release manifest platform set mismatch");
+          }
+          for (const asset of Object.values(manifest.assets)) {
+            if (statSync(`gui-release/${asset.file}`).size !== asset.size) {
+              throw new Error(`GUI release manifest size mismatch: ${asset.file}`);
+            }
+          }
+          NODE
 
       - name: Attest GUI release artifacts
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
@@ -342,21 +445,52 @@ jobs:
             gui-release/SHA256SUMS
             gui-release/gui-release-manifest.json
 
+      - name: Create annotated GUI tag
+        env:
+          TAG: ${{ needs.verify-ci.outputs.tag }}
+          VERSION: ${{ needs.verify-ci.outputs.version }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Refusing to move existing GUI tag: $TAG" >&2
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "LYStar Code GUI Beta $VERSION" "$GITHUB_SHA"
+          git push origin "refs/tags/$TAG"
+
       - name: Publish GitHub prerelease
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.verify-ci.outputs.tag }}
+          VERSION: ${{ needs.verify-ci.outputs.version }}
         run: |
-          version="${TAG#gui-v}"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Refusing to overwrite existing GUI release: $TAG" >&2
+            exit 1
+          fi
           notes=$'这是 LYStar Code GUI 的 Beta 修复版。macOS App 与 GUI Host 使用 ad-hoc code signature，未使用 Developer ID 且未经过 Apple notarization；首次打开仍可能需要在“系统设置 > 隐私与安全性”中选择“仍要打开”，不要求执行终端 xattr。Windows 安装包未签名，可能触发 SmartScreen；本 Beta 不提供自动更新。Linux x64 已完成真实 AppImage 启动、Host 连接和正常退出验证；Linux ARM64、macOS ARM64/x64、Windows x64 已通过对应 GitHub 原生 runner 构建，其中 macOS 最终 DMG 已通过 App 与 Host 签名校验，但尚不声明三平台完整实机运行通过。'
           gh release create "$TAG" \
             --verify-tag \
             --prerelease \
             --latest=false \
-            --title "LYStar Code GUI Beta $version" \
+            --title "LYStar Code GUI Beta $VERSION" \
             --notes "$notes" \
             gui-release/*.AppImage \
             gui-release/*.dmg \
             gui-release/*.exe \
             gui-release/SHA256SUMS \
             gui-release/gui-release-manifest.json
+
+      - name: Write GUI publish summary
+        if: always()
+        shell: bash
+        run: >-
+          node scripts/release-summary.mjs --release gui --sha "$GITHUB_SHA" --full-matrix-count 1
+          --artifact "linux-x64=gui-release/lystar-code-gui-${{ needs.verify-ci.outputs.version }}-linux-x64.AppImage"
+          --artifact "linux-arm64=gui-release/lystar-code-gui-${{ needs.verify-ci.outputs.version }}-linux-arm64.AppImage"
+          --artifact "darwin-arm64=gui-release/lystar-code-gui-${{ needs.verify-ci.outputs.version }}-darwin-arm64.dmg"
+          --artifact "darwin-x64=gui-release/lystar-code-gui-${{ needs.verify-ci.outputs.version }}-darwin-x64.dmg"
+          --artifact "windows-x64=gui-release/lystar-code-gui-${{ needs.verify-ci.outputs.version }}-windows-x64.exe"
+          --timing wall=$(( $(date +%s) - ${{ steps.publish-start.outputs.seconds || 0 }} ))
+          --timing build=0 --timing cache=unavailable

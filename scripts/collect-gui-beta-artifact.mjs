@@ -55,6 +55,27 @@ if (candidates.length !== 1) {
 	);
 }
 
+function verifyBundleArchitecture(path, platform) {
+	const bytes = readFileSync(path);
+	if (platform.startsWith("linux-")) {
+		if (bytes.subarray(0, 4).toString() !== "\u007fELF") throw new Error(`Expected an ELF GUI bundle for ${platform}`);
+		const expected = platform === "linux-x64" ? 0x3e : 0xb7;
+		const actual = bytes.readUInt16LE(18);
+		if (actual !== expected) throw new Error(`ELF machine mismatch for ${platform}: ${actual}`);
+	}
+	if (platform === "windows-x64") {
+		if (bytes.subarray(0, 2).toString() !== "MZ") throw new Error("Expected a PE GUI bundle for windows-x64");
+		const headerOffset = bytes.readUInt32LE(0x3c);
+		if (bytes.subarray(headerOffset, headerOffset + 4).toString() !== "PE\0\0") {
+			throw new Error("Invalid PE signature for windows-x64 GUI bundle");
+		}
+		const actual = bytes.readUInt16LE(headerOffset + 4);
+		if (actual !== 0x8664) throw new Error(`PE machine mismatch for windows-x64: ${actual}`);
+	}
+}
+
+verifyBundleArchitecture(candidates[0], platform);
+
 const outputDir = resolve(outputArg);
 mkdirSync(outputDir, { recursive: true });
 const outputPath = join(outputDir, `lystar-code-gui-${version}-${platform}.${extension}`);

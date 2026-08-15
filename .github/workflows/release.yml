@@ -6,10 +6,7 @@ on:
       - "v*-lystar.*"
 
 permissions:
-  actions: read
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 env:
   NODE_VERSION: 22.19.0
@@ -19,6 +16,9 @@ jobs:
   verify-ci:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
     steps:
       - name: Wait for successful main CI for this commit
         env:
@@ -46,11 +46,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Record Unix build start
+        id: build-start
+        shell: bash
+        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: Record npm cache restore start
+        id: cache-start
+        shell: bash
+        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Setup Node.js
+        id: setup-node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+
+      - name: Record npm cache restore end
+        id: cache-end
+        if: always()
+        shell: bash
+        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -66,14 +83,23 @@ jobs:
         run: npm ci $NPM_CI_ARGS
 
       - name: Build JavaScript packages
-        run: npm run build:offline
+        id: javascript-build
+        shell: bash
+        run: |
+          started=$SECONDS
+          npm run build:offline
+          echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
 
       - name: Build Unix standalone bundles
+        id: standalone-build
+        shell: bash
         run: |
+          started=$SECONDS
           bash scripts/build-binaries.sh \
             --skip-install \
             --skip-build \
             --repository "${GITHUB_REPOSITORY}"
+          echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
 
       - name: Verify Unix release artifacts
         env:
@@ -90,8 +116,23 @@ jobs:
           done
           rm archive-contents.txt
 
+      - name: Write Unix release build summary
+        if: always()
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          node scripts/release-summary.mjs --release cli --sha "$GITHUB_SHA" \
+            --artifact "darwin-arm64=packages/coding-agent/binaries/lystar-agent-v$version-darwin-arm64.tar.gz" \
+            --artifact "darwin-x64=packages/coding-agent/binaries/lystar-agent-v$version-darwin-x64.tar.gz" \
+            --artifact "linux-x64=packages/coding-agent/binaries/lystar-agent-v$version-linux-x64.tar.gz" \
+            --artifact "linux-arm64=packages/coding-agent/binaries/lystar-agent-v$version-linux-arm64.tar.gz" \
+            --timing wall=$(( $(date +%s) - ${{ steps.build-start.outputs.seconds || 0 }} )) \
+            --timing build=$(( ${{ steps.javascript-build.outputs.seconds || 0 }} + ${{ steps.standalone-build.outputs.seconds || 0 }} )) \
+            --timing cache=$(( ${{ steps.cache-end.outputs.seconds || 0 }} - ${{ steps.cache-start.outputs.seconds || 0 }} )) \
+            --cache-hit npm=${{ steps.setup-node.outputs.cache-hit || 'false' }}
+
       - name: Upload Unix release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-unix
           path: packages/coding-agent/binaries/*.tar.gz
@@ -105,11 +146,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Record Windows build start
+        id: build-start
+        shell: bash
+        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: Record npm cache restore start
+        id: cache-start
+        shell: bash
+        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Setup Node.js
+        id: setup-node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+
+      - name: Record npm cache restore end
+        id: cache-end
+        if: always()
+        shell: bash
+        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -127,11 +185,20 @@ jobs:
         run: npm ci $env:NPM_CI_ARGS
 
       - name: Build JavaScript packages
-        run: npm run build:offline
+        id: javascript-build
+        shell: powershell
+        run: |
+          $started = Get-Date
+          npm run build:offline
+          "seconds=$([math]::Round(((Get-Date) - $started).TotalSeconds))" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Build Windows standalone bundle
+        id: standalone-build
         shell: powershell
-        run: .\scripts\build-windows-release.ps1 -Repository "${env:GITHUB_REPOSITORY}"
+        run: |
+          $started = Get-Date
+          .\scripts\build-windows-release.ps1 -Repository "${env:GITHUB_REPOSITORY}"
+          "seconds=$([math]::Round(((Get-Date) - $started).TotalSeconds))" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Verify Windows binaries
         shell: powershell
@@ -144,8 +211,20 @@ jobs:
           if (Test-Path "$Bundle/la.exe") { throw "legacy la.exe must not be shipped" }
           .\scripts\test-windows-terminal.ps1 -BundleDir $Bundle -ScreenshotPath "packages/coding-agent/binaries/windows-terminal-smoke.png"
 
+      - name: Write Windows release build summary
+        if: always()
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          node scripts/release-summary.mjs --release cli --sha "$GITHUB_SHA" \
+            --artifact "windows-x64=packages/coding-agent/binaries/lystar-agent-v$version-windows-x64.zip" \
+            --timing wall=$(( $(date +%s) - ${{ steps.build-start.outputs.seconds || 0 }} )) \
+            --timing build=$(( ${{ steps.javascript-build.outputs.seconds || 0 }} + ${{ steps.standalone-build.outputs.seconds || 0 }} )) \
+            --timing cache=$(( ${{ steps.cache-end.outputs.seconds || 0 }} - ${{ steps.cache-start.outputs.seconds || 0 }} )) \
+            --cache-hit npm=${{ steps.setup-node.outputs.cache-hit || 'false' }}
+
       - name: Upload Windows release artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-windows
           path: packages/coding-agent/binaries/lystar-agent-*-windows-x64.zip
@@ -155,9 +234,18 @@ jobs:
     needs: [build-unix, build-windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Record release start
+        id: release-start
+        shell: bash
+        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -165,13 +253,13 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Download Unix artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: release-unix
           path: packages/coding-agent/binaries
 
       - name: Download Windows artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: release-windows
           path: packages/coding-agent/binaries
@@ -184,6 +272,20 @@ jobs:
           node scripts/generate-release-metadata.mjs packages/coding-agent/binaries "$version" "${GITHUB_REPOSITORY}"
           printf '%s\n' "$version" > packages/coding-agent/binaries/VERSION
           test "$(find packages/coding-agent/binaries -maxdepth 1 \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)" = "5"
+
+      - name: Write CLI release summary
+        if: always()
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          node scripts/release-summary.mjs --release cli --sha "$GITHUB_SHA" --full-matrix-count 1 \
+            --artifact "darwin-arm64=packages/coding-agent/binaries/lystar-agent-v$version-darwin-arm64.tar.gz" \
+            --artifact "darwin-x64=packages/coding-agent/binaries/lystar-agent-v$version-darwin-x64.tar.gz" \
+            --artifact "linux-x64=packages/coding-agent/binaries/lystar-agent-v$version-linux-x64.tar.gz" \
+            --artifact "linux-arm64=packages/coding-agent/binaries/lystar-agent-v$version-linux-arm64.tar.gz" \
+            --artifact "windows-x64=packages/coding-agent/binaries/lystar-agent-v$version-windows-x64.zip" \
+            --timing wall=$(( $(date +%s) - ${{ steps.release-start.outputs.seconds || 0 }} )) \
+            --timing build=0 --timing cache=unavailable
 
       - name: Attest release artifacts
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
