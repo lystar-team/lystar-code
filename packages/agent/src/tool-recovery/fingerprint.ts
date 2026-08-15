@@ -26,6 +26,8 @@ function normalizeUrl(value: string): string | undefined {
 	if (!/^https?:\/\//i.test(value)) return undefined;
 	try {
 		const url = new URL(value);
+		url.username = "";
+		url.password = "";
 		url.search = "";
 		url.hash = "";
 		return url.toString();

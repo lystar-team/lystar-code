@@ -6038,6 +6038,7 @@ export class InteractiveMode {
 					},
 					showRenameHint: true,
 					keybindings: this.keybindings,
+					recoveryAgentDir: this.runtimeHost.services.agentDir,
 				},
 
 				this.sessionManager.getSessionFile(),

@@ -833,7 +833,7 @@ async function observeFinalizedToolCall(
 		phase,
 	});
 	try {
-		await toolRecoveryController.observe(observation, signal);
+		await toolRecoveryController.observe(observation, signal, error);
 	} catch {
 		// Recovery 观察不能改变逻辑 Tool Call。
 	}

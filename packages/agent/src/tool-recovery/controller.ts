@@ -16,21 +16,28 @@ export interface ToolRecoveryObservation extends ToolRecoveryPreflightContext {
 
 export interface ToolRecoveryController {
 	preflight(context: ToolRecoveryPreflightContext, signal?: AbortSignal): void | Promise<void>;
-	observe(observation: ToolRecoveryObservation, signal?: AbortSignal): void | Promise<void>;
+	/** `error` 仅供当前进程内的 adapter 分类，禁止写入 Agent event、Session 或 ledger。 */
+	observe(observation: ToolRecoveryObservation, signal?: AbortSignal, error?: unknown): void | Promise<void>;
 }
 
 /** 默认观察控制器，不改变 Tool 执行和最终结果。 */
 export class ObserveToolRecoveryController implements ToolRecoveryController {
-	private readonly onObserve?: (observation: ToolRecoveryObservation, signal?: AbortSignal) => void | Promise<void>;
+	private readonly onObserve?: (
+		observation: ToolRecoveryObservation,
+		signal?: AbortSignal,
+		error?: unknown,
+	) => void | Promise<void>;
 
-	constructor(onObserve?: (observation: ToolRecoveryObservation, signal?: AbortSignal) => void | Promise<void>) {
+	constructor(
+		onObserve?: (observation: ToolRecoveryObservation, signal?: AbortSignal, error?: unknown) => void | Promise<void>,
+	) {
 		this.onObserve = onObserve;
 	}
 
 	preflight(_context: ToolRecoveryPreflightContext, _signal?: AbortSignal): void {}
 
-	observe(observation: ToolRecoveryObservation, signal?: AbortSignal): void | Promise<void> {
-		return this.onObserve?.(observation, signal);
+	observe(observation: ToolRecoveryObservation, signal?: AbortSignal, error?: unknown): void | Promise<void> {
+		return this.onObserve?.(observation, signal, error);
 	}
 }
 

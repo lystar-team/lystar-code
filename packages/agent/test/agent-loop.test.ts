@@ -1717,6 +1717,27 @@ describe("Tool recovery observation", () => {
 		expect(canonical).not.toContain("token=first");
 	});
 
+	it("removes URL credentials while retaining absolute target distinctions only in target hashes", async () => {
+		const privateUrl = await createToolCallFingerprint("read", {
+			url: "https://alice:password@example.invalid/a?token=first#fragment",
+		});
+		const scrubbedUrl = await createToolCallFingerprint("read", {
+			url: "https://bob:other@example.invalid/a?token=second#other",
+		});
+		const firstPath = await createToolCallFingerprint("read", { path: "/private/one.ts" });
+		const secondPath = await createToolCallFingerprint("read", { path: "/private/two.ts" });
+		expect(privateUrl.targetHash).toBe(scrubbedUrl.targetHash);
+		expect(firstPath.targetHash).not.toBe(secondPath.targetHash);
+		const canonical = canonicalJson({
+			path: "/private/one.ts",
+			url: "https://alice:password@example.invalid/a?token=x",
+		});
+		expect(canonical).not.toContain("/private/one.ts");
+		expect(canonical).not.toContain("alice");
+		expect(canonical).not.toContain("password");
+		expect(canonical).not.toContain("token=x");
+	});
+
 	it("changes target and failure fingerprints when the target changes", async () => {
 		const first = await createToolCallFingerprint("read", { path: "src/first.ts" });
 		const second = await createToolCallFingerprint("read", { path: "src/second.ts" });

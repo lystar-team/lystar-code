@@ -390,6 +390,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		excludedToolNames,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
+		agentDir,
 	});
 	const extensionsResult = resourceLoader.getExtensions();
 

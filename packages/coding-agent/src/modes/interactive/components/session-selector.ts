@@ -15,6 +15,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { SessionInfo, SessionListProgress } from "../../../core/session-manager.ts";
+import { removeSessionRecoveryLedger } from "../../../core/tool-recovery/ledger.ts";
 import { canonicalizePath as _canonicalizePath } from "../../../utils/paths.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
@@ -710,6 +711,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	private allSessionsLoader: SessionsLoader;
 	private requestRender: () => void;
 	private renameSession?: (sessionPath: string, currentName: string | undefined) => Promise<void>;
+	private recoveryAgentDir?: string;
 	private currentLoading = false;
 	private allLoading = false;
 	private allLoadSeq = 0;
@@ -757,6 +759,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			renameSession?: (sessionPath: string, currentName: string | undefined) => Promise<void>;
 			showRenameHint?: boolean;
 			keybindings?: KeybindingsManager;
+			recoveryAgentDir?: string;
 		},
 		currentSessionFilePath?: string,
 	) {
@@ -768,6 +771,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		this.header = new SessionSelectorHeader(this.scope, this.sortMode, this.nameFilter, this.requestRender);
 		const renameSession = options?.renameSession;
 		this.renameSession = renameSession;
+		this.recoveryAgentDir = options?.recoveryAgentDir;
 		this.canRename = !!renameSession;
 		this.header.setShowRenameHint(options?.showRenameHint ?? this.canRename);
 
@@ -833,6 +837,13 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			const result = await deleteSessionFile(sessionPath);
 
 			if (result.ok) {
+				if (this.recoveryAgentDir) {
+					try {
+						await removeSessionRecoveryLedger(this.recoveryAgentDir, sessionPath);
+					} catch {
+						// Session 已删除，恢复账本清理失败不能改变删除结果。
+					}
+				}
 				if (this.currentSessions) {
 					this.currentSessions = this.currentSessions.filter((s) => s.path !== sessionPath);
 				}

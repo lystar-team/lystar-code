@@ -47,6 +47,7 @@ import {
 	resetApiProviders,
 	streamSimple,
 } from "@earendil-works/pi-ai/compat";
+import { getAgentDir } from "../config.ts";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
@@ -106,6 +107,7 @@ import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
+import { ObserveOnlyToolRecoveryController, type ToolRecoveryDiagnostics } from "./tool-recovery/policies.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
@@ -226,6 +228,8 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Global config directory used by local recovery diagnostics and ledger storage. */
+	agentDir?: string;
 }
 
 export interface ExtensionBindings {
@@ -365,6 +369,7 @@ export class AgentSession {
 	private _sessionLockCompromiseUnsubscriber?: () => void;
 
 	private _modelRuntime: ModelRuntime;
+	private readonly _toolRecoveryController: ObserveOnlyToolRecoveryController;
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -386,6 +391,12 @@ export class AgentSession {
 		this._customTools = config.customTools ?? [];
 		this._cwd = config.cwd;
 		this._modelRuntime = config.modelRuntime;
+		this._toolRecoveryController = new ObserveOnlyToolRecoveryController({
+			agentDir: config.agentDir ?? getAgentDir(),
+			sessionManager: this.sessionManager,
+			getTurnId: () => String(this._turnIndex),
+		});
+		this.agent.toolRecoveryController = this._toolRecoveryController;
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
@@ -686,6 +697,10 @@ export class AgentSession {
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
+		// M3 的恢复观察仅供本地诊断，不进入 Extension、订阅者、Session JSONL 或模型上下文。
+		if (event.type === "tool_recovery_observe") {
+			return;
+		}
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
@@ -1060,6 +1075,11 @@ export class AgentSession {
 	/** Current session display name, if set */
 	get sessionName(): string | undefined {
 		return this.sessionManager.getSessionName();
+	}
+
+	/** Local-only Tool recovery counters. This data is never sent to providers or extensions. */
+	getToolRecoveryDiagnostics(): ToolRecoveryDiagnostics {
+		return this._toolRecoveryController.getDiagnostics();
 	}
 
 	/** Scoped models for cycling (from --models flag) */
