@@ -11,6 +11,7 @@ const REQUIRED_METRICS = [
 	"events", "frames", "workUnits", "renderedItems", "bytesP50", "bytesP95", "bytesP99", "bytesMax", "bytesTotal",
 	"frameP50Ms", "frameP95Ms", "frameP99Ms", "frameMaxMs", "frameTotalMs", "rssBytes",
 ];
+const WORKLOAD_HASH = /^[a-f0-9]{64}$/;
 
 export function evaluate({ ts, rust, rss }) {
 	validateRows(ts, "ts");
@@ -25,6 +26,7 @@ export function evaluate({ ts, rust, rss }) {
 		for (const field of ["events", "frames", "workUnits", "renderedItems"]) {
 			assert.equal(rustRow[field], tsRow[field], `${key(tsRow)} workload ${field} differs`);
 		}
+		assert.equal(rustRow.workloadHash, tsRow.workloadHash, `${key(tsRow)} workloadHash differs`);
 	}
 	const scenarios = [...new Set(ts.map((row) => row.scenario))];
 	const sizes = [...new Set(ts.map((row) => `${row.columns}x${row.rows}`))];
@@ -89,6 +91,7 @@ function validateRows(rows, label) {
 	assert(rows.length > 0, `${label} emitted no benchmark records`);
 	for (const row of rows) {
 		for (const field of REQUIRED_METRICS) assert(Number.isFinite(row[field]), `${label} ${row.scenario}/${row.columns}x${row.rows}/${row.round} ${field} is missing or non-numeric`);
+		assert(WORKLOAD_HASH.test(row.workloadHash), `${label} ${row.scenario}/${row.columns}x${row.rows}/${row.round} workloadHash is missing or invalid`);
 		if (row.scenario === "static-idle") {
 			assert.equal(row.events + row.frames + row.bytesTotal, 0, `${label} idle rendered or wrote bytes`);
 			continue;
@@ -115,11 +118,18 @@ function summarize(rows) {
 		frameP50Ms: percentile(rows.map((row) => row.frameP50Ms), 0.5), frameP95Ms: percentile(rows.map((row) => row.frameP95Ms), 0.95),
 		frameP99Ms: percentile(rows.map((row) => row.frameP99Ms), 0.99), frameMaxMs: Math.max(...rows.map((row) => row.frameMaxMs)),
 		frameTotalMs: rows.reduce((total, row) => total + row.frameTotalMs, 0),
+		workloadHash: commonWorkloadHash(rows),
 	};
 }
 
+function commonWorkloadHash(rows) {
+	const hashes = new Set(rows.map((row) => row.workloadHash));
+	assert.equal(hashes.size, 1, `${rows[0].scenario}/${rows[0].columns}x${rows[0].rows} workloadHash differs across rounds`);
+	return rows[0].workloadHash;
+}
+
 function report({ go, failures, summaries, categoryPasses, cpu, rss }) {
-	const rows = summaries.map((entry) => `| ${entry.scenario} | ${entry.size} | ${timings(entry.ts)} | ${timings(entry.rust)} | ${format(entry.rust.bytesP95)} | ${format(entry.ts.bytesP95)} | ${entry.failures.length ? entry.failures.join("; ") : "通过"} |`);
+	const rows = summaries.map((entry) => `| ${entry.scenario} | ${entry.size} | ${timings(entry.ts)} | ${timings(entry.rust)} | ${format(entry.rust.bytesP95)} | ${format(entry.ts.bytesP95)} | ${entry.ts.workloadHash} | ${entry.failures.length ? entry.failures.join("; ") : "通过"} |`);
 	const categoryRows = categoryPasses.map((entry) => `| ${entry.category} | ${entry.pass ? "通过" : `未通过：${entry.failures.join(", ")}`} |`);
 	const cpuRows = cpu.map((entry) => `| ${entry.size} | ${format(entry.tsTotal)} | ${format(entry.rustTotal)} | ${format(entry.reduction * 100)}% | ${entry.reduction >= 0.4 ? "通过" : "未通过"} |`);
 	return `# Rust TUI B0 最终评估
@@ -130,12 +140,13 @@ function report({ go, failures, summaries, categoryPasses, cpu, rss }) {
 
 - 5 轮、4 个尺寸、8 个场景。TS 使用真实 \`LystarWorkspace\`、\`TuiAltScreen\` 和 10,000 项 transcript；Rust 使用相同场景 JSON、相同 10,000 项、相同视口加 2 倍视口预取窗口。
 - 每个事件各自触发一次 backend render/write；JSONL 记录单帧 frame 与 bytes 的 p50/p95/p99/max/total，以及实际事件数、workUnits、renderedItems。idle 不调用 render，frame/bytes 均为 0。
+- 每个 JSONL 行都包含 \`workloadHash\`。它对最终 editor 文本、transcript 的 id/content、实际窗口和最终尺寸做稳定 SHA-256；同一场景、尺寸、轮次的 TS/Rust hash 必须完全一致，任一轮不一致即比较失败。
 - RSS 先 warmup，再保持至少 1 秒，以不超过 10ms 的间隔采样目标 PID 与其 child tree。TS、Rust、\`GuiHostService\`+完成 typed handshake 的 Rust child 分开报告；不计 orchestrator、npm 或 cargo。
 
 ## 全尺寸门槛
 
-| 场景 | 尺寸 | TS frame ms p50/p95/p99/max | Rust frame ms p50/p95/p99/max | Rust bytes p95 | TS bytes p95 | 绝对预算 |
-| --- | --- | ---: | ---: | ---: | ---: | --- |
+| 场景 | 尺寸 | TS frame ms p50/p95/p99/max | Rust frame ms p50/p95/p99/max | Rust bytes p95 | TS bytes p95 | Workload SHA-256 | 绝对预算 |
+| --- | --- | ---: | ---: | ---: | ---: | --- | --- |
 ${rows.join("\n")}
 
 ## 相对与 CPU 门槛
@@ -162,7 +173,7 @@ ${failures.length === 0 ? "无。" : failures.map((failure) => `- ${failure}`).j
 
 ## Protocol
 
-公开编码只接受 \`DecodedMessage<ClientMessage>\` 或 \`DecodedMessage<ServerMessage>\`；通用 \`encode_frame<T>\` 与 generated module 都不再从 crate 根导出。\`new_client_message\` / \`new_server_message\` 仍是构造原始 CBOR 后的验证入口，FrameDecoder 的低层测试保留在模块内部。
+公开 \`ClientMessage\` / \`ServerMessage\` 是 opaque wrapper，内部 generated Typify 类型与 decoded holder 均为 crate 私有。公开面只保留受控 decode/new/encode、presence、message kind、protocol version 和只读诊断投影；没有 \`Serialize\`、inner、generated 或 raw 可变引用入口。generated 类型的精确匹配只在 crate 内部 unit tests 中覆盖。
 
 ## B0 结论
 

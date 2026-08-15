@@ -11,6 +11,7 @@ crossterm = "=0.29.0"
 lystar-protocol = { path = "../lystar-protocol" }
 ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm"] }
 serde_json = "=1.0.151"
+sha2 = "=0.10.9"
 signal-hook = "=0.3.18"
 thiserror = "=2.0.20"
 unicode-segmentation = "=1.12.0"

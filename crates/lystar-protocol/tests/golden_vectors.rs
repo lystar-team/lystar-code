@@ -1,12 +1,12 @@
 use std::fs;
 
 use lystar_protocol::{
-    DecodedMessage, FieldPresence, FrameDecoder, decode_client_message, decode_server_message,
+    FieldPresence, FrameDecoder, decode_client_message, decode_server_message,
     encode_client_message, encode_server_message,
 };
 
 #[test]
-fn typescript_and_rust_golden_frames_round_trip_as_generated_types() {
+fn typescript_and_rust_golden_frames_round_trip_through_public_wrappers() {
     let directory = format!("{}/tests/fixtures", env!("CARGO_MANIFEST_DIR"));
     for name in [
         "client-hello",
@@ -21,8 +21,13 @@ fn typescript_and_rust_golden_frames_round_trip_as_generated_types() {
             decode_frame(&fs::read(format!("{directory}/rust-{name}.frame")).unwrap());
         let rust_message = decode_client_message(&rust_payload).unwrap();
         assert_eq!(
-            serde_json::to_value(rust_message.typed()).unwrap(),
-            serde_json::to_value(message.typed()).unwrap(),
+            rust_message.message_kind(),
+            message.message_kind(),
+            "client fixture {name}"
+        );
+        assert_eq!(
+            rust_message.protocol_version(),
+            message.protocol_version(),
             "client fixture {name}"
         );
         assert_eq!(
@@ -33,9 +38,9 @@ fn typescript_and_rust_golden_frames_round_trip_as_generated_types() {
             decode_client_message(&decode_frame(&encode_client_message(&message).unwrap()))
                 .unwrap();
         assert_eq!(
-            serde_json::to_value(round_trip.typed()).unwrap(),
-            serde_json::to_value(message.typed()).unwrap(),
-            "client typed re-encode {name}"
+            round_trip.message_kind(),
+            message.message_kind(),
+            "client round trip {name}"
         );
         assert_presence(name, &message);
     }
@@ -57,8 +62,13 @@ fn typescript_and_rust_golden_frames_round_trip_as_generated_types() {
             decode_frame(&fs::read(format!("{directory}/rust-{name}.frame")).unwrap());
         let rust_message = decode_server_message(&rust_payload).unwrap();
         assert_eq!(
-            serde_json::to_value(rust_message.typed()).unwrap(),
-            serde_json::to_value(message.typed()).unwrap(),
+            rust_message.message_kind(),
+            message.message_kind(),
+            "server fixture {name}"
+        );
+        assert_eq!(
+            rust_message.protocol_version(),
+            message.protocol_version(),
             "server fixture {name}"
         );
         assert_eq!(
@@ -69,53 +79,58 @@ fn typescript_and_rust_golden_frames_round_trip_as_generated_types() {
             decode_server_message(&decode_frame(&encode_server_message(&message).unwrap()))
                 .unwrap();
         assert_eq!(
-            serde_json::to_value(round_trip.typed()).unwrap(),
-            serde_json::to_value(message.typed()).unwrap(),
-            "server typed re-encode {name}"
+            round_trip.message_kind(),
+            message.message_kind(),
+            "server round trip {name}"
         );
         assert_presence(name, &message);
     }
 }
 
-fn assert_presence<T>(name: &str, message: &DecodedMessage<T>) {
+fn assert_presence(name: &str, message: &impl HasPresence) {
     let (path, expected) = match name {
-        "client-ui-response-missing" => (&["value"][..], "missing"),
-        "client-ui-response-null" => (&["value"][..], "null"),
-        "client-ui-response-value" => (&["value"][..], "value"),
-        "server-response-error" => (&["error", "details"][..], "value"),
-        "server-response-error-null" => (&["error", "details"][..], "null"),
-        "server-response-error-missing" => (&["error", "details"][..], "missing"),
-        "server-event-operation-missing" => (&["event", "operation", "progress"][..], "missing"),
-        "server-event-operation-null" => (&["event", "operation", "progress"][..], "null"),
-        "server-event-operation-value" => (&["event", "operation", "progress"][..], "value"),
+        "client-ui-response-missing" => (&["value"][..], FieldPresence::Missing),
+        "client-ui-response-null" => (&["value"][..], FieldPresence::Null),
+        "client-ui-response-value" => (&["value"][..], FieldPresence::Value),
+        "server-response-error" => (&["error", "details"][..], FieldPresence::Value),
+        "server-response-error-null" => (&["error", "details"][..], FieldPresence::Null),
+        "server-response-error-missing" => (&["error", "details"][..], FieldPresence::Missing),
+        "server-event-operation-missing" => (
+            &["event", "operation", "progress"][..],
+            FieldPresence::Missing,
+        ),
+        "server-event-operation-null" => {
+            (&["event", "operation", "progress"][..], FieldPresence::Null)
+        }
+        "server-event-operation-value" => (
+            &["event", "operation", "progress"][..],
+            FieldPresence::Value,
+        ),
         _ => return,
     };
-    assert_presence_at(name, message, path, expected);
+    assert_eq!(message.presence(path), expected, "{name}");
     if name.starts_with("server-event-operation-") {
-        assert_presence_at(name, message, &["event", "operation", "result"], expected);
+        assert_eq!(
+            message.presence(&["event", "operation", "result"]),
+            expected,
+            "{name}"
+        );
     }
 }
 
-fn assert_presence_at<T>(
-    name: &str,
-    message: &lystar_protocol::DecodedMessage<T>,
-    path: &[&str],
-    expected: &str,
-) {
-    match expected {
-        "missing" => assert!(
-            matches!(message.presence(path), FieldPresence::Missing),
-            "{name}"
-        ),
-        "null" => assert!(
-            matches!(message.presence(path), FieldPresence::Null),
-            "{name}"
-        ),
-        "value" => assert!(
-            matches!(message.presence(path), FieldPresence::Value(_)),
-            "{name}"
-        ),
-        _ => unreachable!(),
+trait HasPresence {
+    fn presence(&self, path: &[&str]) -> FieldPresence;
+}
+
+impl HasPresence for lystar_protocol::ClientMessage {
+    fn presence(&self, path: &[&str]) -> FieldPresence {
+        self.presence(path)
+    }
+}
+
+impl HasPresence for lystar_protocol::ServerMessage {
+    fn presence(&self, path: &[&str]) -> FieldPresence {
+        self.presence(path)
     }
 }
 

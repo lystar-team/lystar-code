@@ -19,6 +19,7 @@ use ratatui::{
     widgets::Widget,
 };
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use unicode_width::UnicodeWidthStr;
 
 struct WriterStats {
@@ -46,8 +47,13 @@ impl Write for CountingWriter {
     }
 }
 
+struct TranscriptLine {
+    id: usize,
+    content: String,
+}
+
 struct BenchApp<'a> {
-    page: &'a [String],
+    page: &'a [TranscriptLine],
     editor: &'a str,
     scroll: usize,
     prefetch_viewports: usize,
@@ -61,7 +67,9 @@ impl Widget for BenchApp<'_> {
             .iter()
             .skip(self.scroll)
             .take(usize::from(viewport) * (1 + self.prefetch_viewports));
-        black_box(rendered.fold(0_usize, |total, line| total.saturating_add(line.len())));
+        black_box(rendered.fold(0_usize, |total, line| {
+            total.saturating_add(line.content.len())
+        }));
         for (row, line) in self
             .page
             .iter()
@@ -72,7 +80,7 @@ impl Widget for BenchApp<'_> {
             buffer.set_string(
                 area.x,
                 area.y + row as u16,
-                truncate(line, usize::from(area.width)),
+                truncate(&line.content, usize::from(area.width)),
                 Style::default().fg(Color::White),
             );
         }
@@ -137,15 +145,43 @@ fn visible_items(rows: u16, prefetch_viewports: usize, item_count: usize) -> usi
     item_count.min(viewport * (1 + prefetch_viewports))
 }
 
-fn benchmark_page(item_count: usize) -> Vec<String> {
+fn benchmark_page(item_count: usize) -> Vec<TranscriptLine> {
     (0..item_count)
-        .map(|id| format!("assistant {id:05} benchmark transcript line with Chinese 内容"))
+        .map(|id| TranscriptLine {
+            id,
+            content: format!("assistant {id:05} benchmark transcript line with Chinese 内容"),
+        })
         .collect()
+}
+
+fn mutation(kind: &str, index: usize, character_count: usize) -> String {
+    format!("{kind}-{index}:")
+        .chars()
+        .chain(std::iter::repeat('x'))
+        .take(character_count)
+        .collect()
+}
+
+fn workload_hash(
+    editor: &str,
+    page: &[TranscriptLine],
+    scroll: usize,
+    rows: u16,
+    columns: u16,
+) -> String {
+    let window_end = page.len().min(scroll + usize::from(rows.saturating_sub(1)));
+    let state = json!({
+        "editor": editor,
+        "size": { "columns": columns, "rows": rows },
+        "transcript": page.iter().map(|line| json!({ "content": line.content, "id": line.id })).collect::<Vec<_>>(),
+        "window": { "end": window_end, "start": scroll },
+    });
+    format!("{:x}", Sha256::digest(serde_json::to_vec(&state).unwrap()))
 }
 
 fn draw(
     terminal: &mut Terminal<CrosstermBackend<CountingWriter>>,
-    page: &[String],
+    page: &[TranscriptLine],
     editor: &str,
     scroll: usize,
     prefetch_viewports: usize,
@@ -228,6 +264,7 @@ fn main() {
                 let mut terminal = Terminal::new(backend).unwrap();
                 terminal.resize(Rect::new(0, 0, columns, rows)).unwrap();
                 let mut current_rows = rows;
+                let mut current_columns = columns;
                 let mut page = benchmark_page(item_count);
                 let mut editor = String::from("> ");
                 let mut scroll = page
@@ -246,7 +283,8 @@ fn main() {
                             "events":0, "frames":0, "workUnits":0, "renderedItems":0,
                             "bytesP50":0, "bytesP95":0, "bytesP99":0, "bytesMax":0, "bytesTotal":0,
                             "frameP50Ms":0.0, "frameP95Ms":0.0, "frameP99Ms":0.0, "frameMaxMs":0.0, "frameTotalMs":0.0,
-                            "rssBytes":rss_bytes()
+                            "rssBytes":rss_bytes(),
+                            "workloadHash": workload_hash(&editor, &page, scroll, current_rows, current_columns),
                         }),
                     );
                     continue;
@@ -256,15 +294,14 @@ fn main() {
                 let mut work_units = 0_usize;
                 let mut rendered_items = 0_usize;
                 for index in 0..events {
-                    let mutation = format!("{kind}-{index}:")
-                        .chars()
-                        .chain(std::iter::repeat('x'))
-                        .take(characters_per_event)
-                        .collect::<String>();
+                    let mutation = mutation(kind, index, characters_per_event);
                     match kind {
                         "input" | "paste" => editor.push_str(&mutation),
                         "stream" => {
-                            page.push(mutation);
+                            page.push(TranscriptLine {
+                                id: page.len(),
+                                content: mutation,
+                            });
                             if following {
                                 scroll = page
                                     .len()
@@ -276,7 +313,7 @@ fn main() {
                             following = false;
                         }
                         "resize" => {
-                            let width = if index % 2 == 0 {
+                            current_columns = if index % 2 == 0 {
                                 columns
                             } else {
                                 columns.saturating_sub(4).max(20)
@@ -287,7 +324,7 @@ fn main() {
                                 rows.saturating_sub(2).max(8)
                             };
                             terminal
-                                .resize(Rect::new(0, 0, width, current_rows))
+                                .resize(Rect::new(0, 0, current_columns, current_rows))
                                 .unwrap();
                             if following {
                                 scroll = page
@@ -326,7 +363,8 @@ fn main() {
                         "frameP50Ms":percentile(&mut frames_for_p50, 0.5), "frameP95Ms":percentile(&mut frames_for_p95, 0.95),
                         "frameP99Ms":percentile(&mut frames_for_p99, 0.99), "frameMaxMs":frame_samples.iter().copied().fold(0.0, f64::max),
                         "frameTotalMs":frame_samples.iter().sum::<f64>(),
-                        "rssBytes":rss_bytes()
+                        "rssBytes":rss_bytes(),
+                        "workloadHash": workload_hash(&editor, &page, scroll, current_rows, current_columns),
                     }),
                 );
             }

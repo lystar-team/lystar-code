@@ -1,39 +1,51 @@
+use std::fmt;
+
 use ciborium::{de::from_reader, ser::into_writer, value::Value};
-use serde::{Serialize, de::DeserializeOwned, ser::Serializer};
+use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
-use crate::generated::{ClientMessage, ServerMessage, ServerMessageVariant2};
+use crate::generated::{
+    ClientMessage as GeneratedClientMessage, ServerMessage as GeneratedServerMessage,
+    ServerMessageVariant2,
+};
 
 pub const MAX_FRAME_LENGTH: usize = 16 * 1024 * 1024;
 const GUI_PROTOCOL_VERSION: u64 = 1;
 
-/// CBOR map field state. `Option<T>` in generated Typify types cannot distinguish
-/// an omitted field from a present CBOR null, so this is read from the validated raw map.
-#[derive(Debug, PartialEq)]
-pub enum FieldPresence<'a> {
+/// CBOR map field state. Typify maps an omitted optional field and an explicit null to None.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FieldPresence {
     Missing,
     Null,
-    Value(&'a Value),
+    Value,
 }
 
-/// A message validated by the generated Typify type while retaining its original CBOR value.
-/// The raw value is private so callers cannot make it disagree with `typed`.
+/// Read-only message metadata suitable for diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageDiagnostic {
+    message_kind: String,
+    protocol_version: Option<u64>,
+}
+
+impl MessageDiagnostic {
+    pub fn message_kind(&self) -> &str {
+        &self.message_kind
+    }
+
+    pub fn protocol_version(&self) -> Option<u64> {
+        self.protocol_version
+    }
+}
+
 #[derive(Debug)]
-pub struct DecodedMessage<T> {
+struct DecodedMessage<T> {
+    #[allow(dead_code)]
     typed: T,
     raw: Value,
 }
 
 impl<T> DecodedMessage<T> {
-    pub fn typed(&self) -> &T {
-        &self.typed
-    }
-
-    pub fn raw(&self) -> &Value {
-        &self.raw
-    }
-
-    pub fn presence(&self, path: &[&str]) -> FieldPresence<'_> {
+    fn presence(&self, path: &[&str]) -> FieldPresence {
         let mut current = &self.raw;
         for key in path {
             let Value::Map(entries) = current else {
@@ -50,19 +62,81 @@ impl<T> DecodedMessage<T> {
         if matches!(current, Value::Null) {
             FieldPresence::Null
         } else {
-            FieldPresence::Value(current)
+            FieldPresence::Value
+        }
+    }
+
+    fn message_kind(&self) -> &str {
+        top_level_text(&self.raw, "type").expect("validated message has a type")
+    }
+
+    fn protocol_version(&self) -> Option<u64> {
+        top_level_u64(&self.raw, "protocolVersion").or_else(|| top_level_u64(&self.raw, "version"))
+    }
+
+    fn diagnostic(&self) -> MessageDiagnostic {
+        MessageDiagnostic {
+            message_kind: self.message_kind().to_owned(),
+            protocol_version: self.protocol_version(),
         }
     }
 }
 
-// Decoded messages intentionally serialize their raw sidecar. This keeps missing fields,
-// explicit nulls, map order, and CBOR integer representation on a forwarding round trip.
-impl<T> Serialize for DecodedMessage<T> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        self.raw.serialize(serializer)
+pub struct ClientMessage(DecodedMessage<GeneratedClientMessage>);
+
+impl fmt::Debug for ClientMessage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ClientMessage")
+            .field("diagnostic", &self.diagnostic())
+            .finish()
+    }
+}
+
+impl ClientMessage {
+    pub fn presence(&self, path: &[&str]) -> FieldPresence {
+        self.0.presence(path)
+    }
+
+    pub fn message_kind(&self) -> &str {
+        self.0.message_kind()
+    }
+
+    pub fn protocol_version(&self) -> Option<u64> {
+        self.0.protocol_version()
+    }
+
+    pub fn diagnostic(&self) -> MessageDiagnostic {
+        self.0.diagnostic()
+    }
+}
+
+pub struct ServerMessage(DecodedMessage<GeneratedServerMessage>);
+
+impl fmt::Debug for ServerMessage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ServerMessage")
+            .field("diagnostic", &self.diagnostic())
+            .finish()
+    }
+}
+
+impl ServerMessage {
+    pub fn presence(&self, path: &[&str]) -> FieldPresence {
+        self.0.presence(path)
+    }
+
+    pub fn message_kind(&self) -> &str {
+        self.0.message_kind()
+    }
+
+    pub fn protocol_version(&self) -> Option<u64> {
+        self.0.protocol_version()
+    }
+
+    pub fn diagnostic(&self) -> MessageDiagnostic {
+        self.0.diagnostic()
     }
 }
 
@@ -97,40 +171,28 @@ fn encode_frame<T: Serialize>(message: &T) -> Result<Vec<u8>, ProtocolError> {
     Ok(frame)
 }
 
-/// Encodes a client message that has already passed generated-type and protocol validation.
-pub fn encode_client_message(
-    message: &DecodedMessage<ClientMessage>,
-) -> Result<Vec<u8>, ProtocolError> {
-    encode_frame(message)
+pub fn encode_client_message(message: &ClientMessage) -> Result<Vec<u8>, ProtocolError> {
+    encode_frame(&message.0.raw)
 }
 
-/// Encodes a server message that has already passed generated-type and protocol validation.
-pub fn encode_server_message(
-    message: &DecodedMessage<ServerMessage>,
-) -> Result<Vec<u8>, ProtocolError> {
-    encode_frame(message)
+pub fn encode_server_message(message: &ServerMessage) -> Result<Vec<u8>, ProtocolError> {
+    encode_frame(&message.0.raw)
 }
 
-pub fn decode_client_message(
-    payload: &[u8],
-) -> Result<DecodedMessage<ClientMessage>, ProtocolError> {
-    decode_message(payload, validate_client_message)
+pub fn decode_client_message(payload: &[u8]) -> Result<ClientMessage, ProtocolError> {
+    decode_message(payload, validate_client_message).map(ClientMessage)
 }
 
-pub fn decode_server_message(
-    payload: &[u8],
-) -> Result<DecodedMessage<ServerMessage>, ProtocolError> {
-    decode_message(payload, validate_server_message)
+pub fn decode_server_message(payload: &[u8]) -> Result<ServerMessage, ProtocolError> {
+    decode_message(payload, validate_server_message).map(ServerMessage)
 }
 
-/// Constructs a new client message only after its raw CBOR value has passed generated-type validation.
-pub fn new_client_message(raw: Value) -> Result<DecodedMessage<ClientMessage>, ProtocolError> {
-    decode_raw_message(raw, validate_client_message)
+pub fn new_client_message(raw: Value) -> Result<ClientMessage, ProtocolError> {
+    decode_raw_message(raw, validate_client_message).map(ClientMessage)
 }
 
-/// Constructs a new server message only after its raw CBOR value has passed generated-type validation.
-pub fn new_server_message(raw: Value) -> Result<DecodedMessage<ServerMessage>, ProtocolError> {
-    decode_raw_message(raw, validate_server_message)
+pub fn new_server_message(raw: Value) -> Result<ServerMessage, ProtocolError> {
+    decode_raw_message(raw, validate_server_message).map(ServerMessage)
 }
 
 fn decode_message<T: DeserializeOwned>(
@@ -157,8 +219,28 @@ fn decode_payload<T: DeserializeOwned>(payload: &[u8]) -> Result<T, ProtocolErro
     from_reader(payload).map_err(|error| ProtocolError::InvalidCbor(error.to_string()))
 }
 
-fn validate_client_message(message: &ClientMessage) -> Result<(), ProtocolError> {
-    if let ClientMessage::Hello { version, .. } = message
+fn top_level_text<'a>(raw: &'a Value, name: &str) -> Option<&'a str> {
+    let Value::Map(entries) = raw else {
+        return None;
+    };
+    entries.iter().find_map(|(key, value)| match (key, value) {
+        (Value::Text(key), Value::Text(value)) if key == name => Some(value.as_str()),
+        _ => None,
+    })
+}
+
+fn top_level_u64(raw: &Value, name: &str) -> Option<u64> {
+    let Value::Map(entries) = raw else {
+        return None;
+    };
+    entries.iter().find_map(|(key, value)| match (key, value) {
+        (Value::Text(key), Value::Integer(value)) if key == name => u64::try_from(*value).ok(),
+        _ => None,
+    })
+}
+
+fn validate_client_message(message: &GeneratedClientMessage) -> Result<(), ProtocolError> {
+    if let GeneratedClientMessage::Hello { version, .. } = message
         && *version != GUI_PROTOCOL_VERSION
     {
         return Err(invalid_message("client", "unsupported protocol version"));
@@ -166,9 +248,9 @@ fn validate_client_message(message: &ClientMessage) -> Result<(), ProtocolError>
     Ok(())
 }
 
-fn validate_server_message(message: &ServerMessage) -> Result<(), ProtocolError> {
+fn validate_server_message(message: &GeneratedServerMessage) -> Result<(), ProtocolError> {
     match message {
-        ServerMessage::Variant0 {
+        GeneratedServerMessage::Variant0 {
             type_,
             version,
             protocol_version,
@@ -183,15 +265,15 @@ fn validate_server_message(message: &ServerMessage) -> Result<(), ProtocolError>
                 return Err(invalid_message("server", "unsupported protocol version"));
             }
         }
-        ServerMessage::Variant1 { type_, .. } if type_ != "hello_error" => {
+        GeneratedServerMessage::Variant1 { type_, .. } if type_ != "hello_error" => {
             return Err(invalid_message("server", "unknown message variant"));
         }
-        ServerMessage::Variant2(response) => match response {
+        GeneratedServerMessage::Variant2(response) => match response {
             ServerMessageVariant2::Variant0 { type_, ok, .. } if type_ == "response" && *ok => {}
             ServerMessageVariant2::Variant1 { type_, ok, .. } if type_ == "response" && !*ok => {}
             _ => return Err(invalid_message("server", "invalid response variant")),
         },
-        ServerMessage::Variant3 { type_, .. } if type_ != "event" => {
+        GeneratedServerMessage::Variant3 { type_, .. } if type_ != "event" => {
             return Err(invalid_message("server", "unknown message variant"));
         }
         _ => {}
@@ -254,9 +336,8 @@ impl FrameDecoder {
 
 #[cfg(test)]
 mod tests {
-    use super::FieldPresence;
     use super::*;
-    use crate::{ClientMessage, ClientMessageRequest};
+    use crate::generated::ClientMessageRequest;
     use serde_json::json;
 
     fn client_payload(value: serde_json::Value) -> Vec<u8> {
@@ -283,53 +364,67 @@ mod tests {
     }
 
     #[test]
-    fn typed_decode_keeps_optional_json_value_presence_in_the_raw_sidecar() {
+    fn generated_types_are_checked_only_inside_the_crate() {
         let request = decode_client_message(&client_payload(json!({
             "type":"request", "id":"request-1",
             "request":{"command":"read_transcript", "sessionPath":"/tmp/session", "limit":20}
         })))
         .unwrap();
         assert!(matches!(
-            request.typed(),
-            ClientMessage::Request {
+            request.0.typed,
+            GeneratedClientMessage::Request {
                 request: ClientMessageRequest::ReadTranscript { cursor: None, .. },
                 ..
             }
         ));
-        assert_eq!(
-            request.presence(&["request", "cursor"]),
-            FieldPresence::Missing
-        );
 
         let null_value = decode_client_message(&client_payload(
             json!({"type":"ui_response", "id":"ui-1", "value":null}),
         ))
         .unwrap();
         assert!(matches!(
-            null_value.typed(),
-            ClientMessage::UiResponse { value: None, .. }
+            null_value.0.typed,
+            GeneratedClientMessage::UiResponse { value: None, .. }
         ));
         assert_eq!(null_value.presence(&["value"]), FieldPresence::Null);
+    }
+
+    #[test]
+    fn public_wrapper_preserves_presence_and_diagnostics() {
+        let request = decode_client_message(&client_payload(json!({
+            "type":"request", "id":"request-1",
+            "request":{"command":"read_transcript", "sessionPath":"/tmp/session", "limit":20}
+        })))
+        .unwrap();
+        assert_eq!(
+            request.presence(&["request", "cursor"]),
+            FieldPresence::Missing
+        );
+        assert_eq!(request.message_kind(), "request");
+        assert_eq!(request.protocol_version(), None);
+        assert_eq!(request.diagnostic().message_kind(), "request");
+
+        let hello = decode_client_message(&client_payload(
+            json!({"type":"hello", "version":1, "clientInstanceId":"client"}),
+        ))
+        .unwrap();
+        assert_eq!(hello.protocol_version(), Some(1));
+        assert_eq!(hello.diagnostic().protocol_version(), Some(1));
+        assert!(!format!("{hello:?}").contains("raw"));
+        assert!(!format!("{hello:?}").contains("typed"));
 
         let value = decode_client_message(&client_payload(
             json!({"type":"ui_response", "id":"ui-2", "value":{"answer":true}}),
         ))
         .unwrap();
-        assert!(matches!(
-            value.presence(&["value"]),
-            FieldPresence::Value(_)
-        ));
+        assert_eq!(value.presence(&["value"]), FieldPresence::Value);
 
-        let absent_value =
-            decode_client_message(&client_payload(json!({"type":"ui_response", "id":"ui-3"})))
-                .unwrap();
-        assert_eq!(absent_value.presence(&["value"]), FieldPresence::Missing);
-        let encoded = encode_frame(&null_value).unwrap();
+        let encoded = encode_client_message(&value).unwrap();
         assert_eq!(
             decode_client_message(&encoded[4..])
                 .unwrap()
                 .presence(&["value"]),
-            FieldPresence::Null
+            FieldPresence::Value
         );
     }
 

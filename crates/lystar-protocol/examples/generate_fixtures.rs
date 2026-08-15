@@ -1,8 +1,8 @@
 use std::fs;
 
 use lystar_protocol::{
-    ClientMessage, DecodedMessage, FrameDecoder, ServerMessage, decode_client_message,
-    decode_server_message, encode_client_message, encode_server_message,
+    ClientMessage, FrameDecoder, ServerMessage, decode_client_message, decode_server_message,
+    encode_client_message, encode_server_message,
 };
 
 fn main() {
@@ -34,17 +34,17 @@ fn main() {
     }
 }
 
-fn decode_client_fixture(directory: &str, name: &str) -> DecodedMessage<ClientMessage> {
+fn decode_client_fixture(directory: &str, name: &str) -> ClientMessage {
     let payload = decode_frame(&fs::read(format!("{directory}/ts-{name}.frame")).unwrap());
     decode_client_message(&payload).unwrap()
 }
 
-fn decode_server_fixture(directory: &str, name: &str) -> DecodedMessage<ServerMessage> {
+fn decode_server_fixture(directory: &str, name: &str) -> ServerMessage {
     let payload = decode_frame(&fs::read(format!("{directory}/ts-{name}.frame")).unwrap());
     decode_server_message(&payload).unwrap()
 }
 
-fn write_client_fixture(directory: &str, name: &str, message: &DecodedMessage<ClientMessage>) {
+fn write_client_fixture(directory: &str, name: &str, message: &ClientMessage) {
     let path = format!("{directory}/rust-{name}.frame");
     let encoded = encode_client_message(message).unwrap();
     if fs::read(&path).ok().as_deref() == Some(encoded.as_slice()) {
@@ -53,7 +53,7 @@ fn write_client_fixture(directory: &str, name: &str, message: &DecodedMessage<Cl
     fs::write(path, encoded).unwrap();
 }
 
-fn write_server_fixture(directory: &str, name: &str, message: &DecodedMessage<ServerMessage>) {
+fn write_server_fixture(directory: &str, name: &str, message: &ServerMessage) {
     let path = format!("{directory}/rust-{name}.frame");
     let encoded = encode_server_message(message).unwrap();
     if fs::read(&path).ok().as_deref() == Some(encoded.as_slice()) {

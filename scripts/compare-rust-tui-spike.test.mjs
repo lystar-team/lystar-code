@@ -22,6 +22,7 @@ function rows(implementation) {
 		frameMaxMs: events ? implementation === "rust" ? 12 : 16 : 0,
 		frameTotalMs: events ? (implementation === "rust" ? 4 : 10) * events : 0,
 		rssBytes: 20 * 1024 * 1024,
+		workloadHash: "a".repeat(64),
 	}))));
 }
 
@@ -39,6 +40,13 @@ test("workUnits mismatch fails comparison", () => {
 	const rust = rows("rust");
 	rust[0].workUnits++;
 	assert.throws(() => evaluate({ ts, rust, rss: rss() }), /workload workUnits differs/);
+});
+
+test("workloadHash mismatch fails comparison when metadata still matches", () => {
+	const ts = rows("ts");
+	const rust = rows("rust");
+	rust[0].workloadHash = "b".repeat(64);
+	assert.throws(() => evaluate({ ts, rust, rss: rss() }), /workloadHash differs/);
 });
 
 test("one size regression makes Go false", () => {

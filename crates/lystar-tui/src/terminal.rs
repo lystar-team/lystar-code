@@ -14,8 +14,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use lystar_protocol::{
-    FrameDecoder, ProtocolError, ServerMessage, decode_server_message, encode_client_message,
-    new_client_message,
+    FrameDecoder, ProtocolError, decode_server_message, encode_client_message, new_client_message,
 };
 use signal_hook::{
     consts::signal::{SIGINT, SIGTERM},
@@ -111,15 +110,15 @@ pub fn handshake_inherited_pipes() -> Result<(), TuiError> {
         }
         if let Some(frame) = decoder.push(&buffer[..count])?.into_iter().next() {
             let message = decode_server_message(&frame)?;
-            match message.typed() {
-                ServerMessage::Variant0 { .. } => return Ok(()),
-                ServerMessage::Variant1 { .. } => {
-                    return Err(TuiError::HelloRejected(
-                        "host returned hello_error".to_owned(),
-                    ));
-                }
-                _ => return Err(TuiError::HelloRejected("expected server hello".to_owned())),
+            if message.message_kind() == "hello" {
+                return Ok(());
             }
+            if message.message_kind() == "hello_error" {
+                return Err(TuiError::HelloRejected(
+                    "host returned hello_error".to_owned(),
+                ));
+            }
+            return Err(TuiError::HelloRejected("expected server hello".to_owned()));
         }
     }
 }

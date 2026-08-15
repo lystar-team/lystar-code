@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -43,6 +44,7 @@ type RecordLine = {
 	frameMaxMs: number;
 	frameTotalMs: number;
 	rssBytes: number;
+	workloadHash: string;
 };
 
 class MemoryTerminal implements Terminal {
@@ -75,12 +77,17 @@ class MemoryTerminal implements Terminal {
 class MutableLine implements Component {
 	private version = 0;
 	private text: string;
-	constructor(text: string) {
+	readonly id: number;
+	constructor(id: number, text: string) {
+		this.id = id;
 		this.text = text;
 	}
 	append(value: string): void {
 		this.text += value;
 		this.version++;
+	}
+	snapshot(): string {
+		return this.text;
 	}
 	invalidate(): void {}
 	getRenderVersion(): number {
@@ -101,6 +108,26 @@ function visibleItems(rows: number, prefetchViewports: number, itemCount: number
 	return Math.min(itemCount, viewport * (1 + prefetchViewports));
 }
 
+function mutationForEvent(kind: ScenarioKind, index: number, characterCount: number): string {
+	return `${kind}-${index}:`.slice(0, characterCount).padEnd(characterCount, "x");
+}
+
+function workloadHash(
+	editor: MutableLine,
+	transcript: MutableLine[],
+	workspace: LystarWorkspace,
+	terminal: MemoryTerminal,
+): string {
+	const { scrollTop, viewportHeight } = workspace.getAltScreenSearchTarget().getViewport();
+	const state = {
+		editor: editor.snapshot(),
+		size: { columns: terminal.columns, rows: terminal.rows },
+		transcript: transcript.map((line) => ({ content: line.snapshot(), id: line.id })),
+		window: { end: Math.min(transcript.length, scrollTop + viewportHeight), start: scrollTop },
+	};
+	return createHash("sha256").update(JSON.stringify(state)).digest("hex");
+}
+
 function buildWorkspace(columns: number, rows: number, itemCount: number) {
 	const terminal = new MemoryTerminal(columns, rows);
 	const tui = new TuiAltScreen(terminal, false, "/tmp/lystar-rust-b0-ts");
@@ -108,10 +135,13 @@ function buildWorkspace(columns: number, rows: number, itemCount: number) {
 	const transcript = Array.from(
 		{ length: itemCount },
 		(_, index) =>
-			new MutableLine(`assistant ${index.toString().padStart(5, "0")} benchmark transcript line with Chinese 内容`),
+			new MutableLine(
+				index,
+				`assistant ${index.toString().padStart(5, "0")} benchmark transcript line with Chinese 内容`,
+			),
 	);
 	for (const item of transcript) page.addChild(item);
-	const editor = new MutableLine("> ");
+	const editor = new MutableLine(-1, "> ");
 	const workspace = new LystarWorkspace({
 		getHeight: () => terminal.rows,
 		header: new Container(),
@@ -131,6 +161,7 @@ function buildWorkspace(columns: number, rows: number, itemCount: number) {
 function runScenario(scenario: Scenario, columns: number, rows: number, round: number, config: Config): RecordLine {
 	const { terminal, tui, workspace, page, transcript, editor } = buildWorkspace(columns, rows, config.transcriptItems);
 	if (scenario.kind === "idle") {
+		const hash = workloadHash(editor, transcript, workspace, terminal);
 		tui.stop();
 		return {
 			implementation: "ts",
@@ -153,6 +184,7 @@ function runScenario(scenario: Scenario, columns: number, rows: number, round: n
 			frameMaxMs: 0,
 			frameTotalMs: 0,
 			rssBytes: process.memoryUsage().rss,
+			workloadHash: hash,
 		};
 	}
 	const frames: number[] = [];
@@ -160,10 +192,10 @@ function runScenario(scenario: Scenario, columns: number, rows: number, round: n
 	let workUnits = 0;
 	let renderedItems = 0;
 	for (let index = 0; index < scenario.events; index++) {
-		const mutation = `${scenario.kind}-${index}:`.padEnd(scenario.charactersPerEvent, "x");
+		const mutation = mutationForEvent(scenario.kind, index, scenario.charactersPerEvent);
 		if (scenario.kind === "input" || scenario.kind === "paste") editor.append(mutation);
 		if (scenario.kind === "stream") {
-			const item = new MutableLine(mutation);
+			const item = new MutableLine(transcript.length, mutation);
 			transcript.push(item);
 			page.addChild(item);
 		}
@@ -205,6 +237,7 @@ function runScenario(scenario: Scenario, columns: number, rows: number, round: n
 		frameMaxMs: Math.max(...frames),
 		frameTotalMs: frames.reduce((total, value) => total + value, 0),
 		rssBytes: process.memoryUsage().rss,
+		workloadHash: workloadHash(editor, transcript, workspace, terminal),
 	};
 	tui.stop();
 	return record;
