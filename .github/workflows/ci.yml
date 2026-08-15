@@ -208,7 +208,7 @@ jobs:
           (cd packages/tui && node --test --test-reporter=tap --test-reporter-destination="$RUNNER_TEMP/ci-tui.tap" test/*.test.ts)
           npm --workspace @earendil-works/pi-telemetry test -- --reporter=json --outputFile="$RUNNER_TEMP/ci-telemetry.json"
           npm --workspace @earendil-works/pi-ai test -- --reporter=json --outputFile="$RUNNER_TEMP/ci-ai.json"
-          npm --workspace @earendil-works/pi-agent-core test -- --exclude test/harness/nodejs-env.test.ts --reporter=json --outputFile="$RUNNER_TEMP/ci-agent.json"
+          npm --workspace @earendil-works/pi-agent-core test -- --reporter=json --outputFile="$RUNNER_TEMP/ci-agent.json"
           npm --workspace @earendil-works/pi-protocol test -- --reporter=json --outputFile="$RUNNER_TEMP/ci-protocol.json"
           npm --workspace @earendil-works/pi-client test -- --reporter=json --outputFile="$RUNNER_TEMP/ci-client.json"
           npm --workspace @earendil-works/pi-server test -- --reporter=json --outputFile="$RUNNER_TEMP/ci-server.json"
@@ -411,7 +411,7 @@ jobs:
         run: |
           $started = Get-Date
           npm --workspace @earendil-works/pi-coding-agent run test:platform -- --reporter=json --outputFile="$env:RUNNER_TEMP\ci-windows-coding-platform.json"
-          npm --workspace @earendil-works/pi-agent-core test -- test/harness/nodejs-env.test.ts --reporter=json --outputFile="$env:RUNNER_TEMP\ci-windows-agent-platform.json"
+          npm --workspace @earendil-works/pi-agent-core test -- test/harness/nodejs-env.windows.test.ts --reporter=json --outputFile="$env:RUNNER_TEMP\ci-windows-agent-platform.json"
           "seconds=$([math]::Round(((Get-Date) - $started).TotalSeconds))" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Build offline

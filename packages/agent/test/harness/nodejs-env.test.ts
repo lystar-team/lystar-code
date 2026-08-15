@@ -1,5 +1,3 @@
-import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
 import { access, chmod, realpath, symlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -29,33 +27,6 @@ function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout?: () => void)
 			},
 		);
 	});
-}
-
-function toBashSingleQuotedArg(value: string): string {
-	return `'${value.replace(/\\/g, "/").replace(/'/g, `'"'"'`)}'`;
-}
-
-function createInheritedStdioCommand(pidFile: string): string {
-	return (
-		'node -e "' +
-		"const fs=require('fs');" +
-		"const {spawn}=require('child_process');" +
-		"const child=spawn(process.execPath,['-e','setTimeout(()=>{},60000)'],{stdio:'inherit',detached:true});" +
-		"fs.writeFileSync(process.argv[1], String(child.pid));" +
-		"child.unref();" +
-		"console.log('child-exiting');" +
-		'" ' +
-		toBashSingleQuotedArg(pidFile)
-	);
-}
-
-function cleanupDetachedChild(pidFile: string): void {
-	if (!existsSync(pidFile)) return;
-	const pid = Number.parseInt(readFileSync(pidFile, "utf8").trim(), 10);
-	if (!Number.isFinite(pid) || pid <= 0) return;
-	try {
-		execFileSync("taskkill", ["/F", "/T", "/PID", String(pid)], { stdio: "ignore" });
-	} catch {}
 }
 
 afterEach(async () => {
@@ -375,29 +346,6 @@ describe("NodeExecutionEnv", () => {
 			}
 		}
 	});
-
-	it.skipIf(process.platform !== "win32")(
-		"settles after the shell exits when a detached descendant retains inherited stdio",
-		async () => {
-			const root = createTempDir();
-			const pidFile = join(root, "grandchild.pid");
-			const env = new NodeExecutionEnv({ cwd: root });
-			const controller = new AbortController();
-			try {
-				const result = getOrThrow(
-					await withTimeout(
-						env.exec(createInheritedStdioCommand(pidFile), { abortSignal: controller.signal }),
-						3000,
-						() => controller.abort(),
-					),
-				);
-				expect(result.stdout).toContain("child-exiting");
-			} finally {
-				controller.abort();
-				cleanupDetachedChild(pidFile);
-			}
-		},
-	);
 
 	it("cleanup terminates active shell processes", async () => {
 		const root = createTempDir();
