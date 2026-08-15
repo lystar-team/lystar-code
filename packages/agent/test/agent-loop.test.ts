@@ -13,6 +13,8 @@ import {
 	canonicalJson,
 	createFailureFingerprint,
 	createToolCallFingerprint,
+	createToolRecoveryCall,
+	createToolRecoveryObservation,
 	ObserveToolRecoveryController,
 	setDefaultStreamFn,
 	ToolExecutionError,
@@ -1747,6 +1749,141 @@ describe("Tool recovery observation", () => {
 		).not.toBe(
 			await createFailureFingerprint({ toolName: "read", code: "TARGET_NOT_FOUND", targetHash: second.targetHash }),
 		);
+	});
+
+	it("uses only explicit stable constraints for failure fingerprints", async () => {
+		const firstCall = await createToolRecoveryCall(
+			"first",
+			"apply_patch",
+			{ path: "src/target.ts" },
+			"conditional_write",
+		);
+		const secondCall = await createToolRecoveryCall(
+			"second",
+			"apply_patch",
+			{ path: "src/target.ts" },
+			"conditional_write",
+		);
+		const createObservation = async (call: typeof firstCall, details: Record<string, unknown>, contextHash: string) =>
+			await createToolRecoveryObservation({
+				call,
+				isError: true,
+				error: new ToolExecutionError("patch match failed", {
+					code: "PATCH_MATCH_NOT_FOUND",
+					category: "precondition",
+					retryable: false,
+					details,
+					fingerprintConstraint: { hunkHeaderHash: "header-a", contextHash },
+				}),
+			});
+
+		const first = await createObservation(
+			firstCall,
+			{
+				candidateLines: [12],
+				mtimeMs: 1,
+				snapshot: "first snapshot",
+				evidence: "first evidence",
+			},
+			"context-a",
+		);
+		const movedCandidate = await createObservation(
+			secondCall,
+			{
+				candidateLines: [91],
+				mtimeMs: 2,
+				snapshot: "second snapshot",
+				evidence: "second evidence",
+			},
+			"context-a",
+		);
+		expect(first.failure?.fingerprint).toBe(movedCandidate.failure?.fingerprint);
+
+		const changedTargetCall = await createToolRecoveryCall(
+			"third",
+			"apply_patch",
+			{ path: "src/other.ts" },
+			"conditional_write",
+		);
+		const changedTarget = await createObservation(changedTargetCall, { candidateLines: [12] }, "context-a");
+		const changedContext = await createObservation(secondCall, { candidateLines: [12] }, "context-b");
+		expect(first.failure?.fingerprint).not.toBe(changedTarget.failure?.fingerprint);
+		expect(first.failure?.fingerprint).not.toBe(changedContext.failure?.fingerprint);
+	});
+
+	it("keeps before, after, execution end, and ToolResult singular for recovery resolutions", async () => {
+		const schema = Type.Object({ value: Type.String() });
+		for (const action of [
+			{
+				type: "accept_as_success" as const,
+				verification: "verified",
+				replacementResult: { content: [{ type: "text" as const, text: "accepted" }], details: {} },
+			},
+			{
+				type: "ask_model_to_rebuild" as const,
+				guidance: "rebuild",
+				replacementResult: { content: [{ type: "text" as const, text: "rebuild" }], details: {} },
+			},
+			{
+				type: "refresh_context" as const,
+				adapter: "read_parent_directory",
+				replacementResult: { content: [{ type: "text" as const, text: "refresh" }], details: {} },
+			},
+		]) {
+			let beforeCalls = 0;
+			let afterCalls = 0;
+			let executions = 0;
+			const tool: AgentTool<typeof schema> = {
+				name: "failing",
+				label: "Failing",
+				description: "Fault injection tool",
+				parameters: schema,
+				async execute() {
+					executions++;
+					throw new ToolExecutionError("failed", {
+						code: "MATCH_NOT_FOUND",
+						category: "precondition",
+						retryable: false,
+					});
+				},
+			};
+			const response = createToolCallThenStopStream([
+				{ type: "toolCall", id: `call-${action.type}`, name: "failing", arguments: { value: "x" } },
+			]);
+			const events: AgentEvent[] = [];
+			const stream = agentLoop(
+				[createUserMessage("run")],
+				{ systemPrompt: "", messages: [], tools: [tool] },
+				{
+					model: createModel(),
+					convertToLlm: identityConverter,
+					beforeToolCall: async () => {
+						beforeCalls++;
+						return undefined;
+					},
+					afterToolCall: async () => {
+						afterCalls++;
+						return undefined;
+					},
+					toolRecoveryController: {
+						preflight: () => undefined,
+						decideAttempt: (observation) => {
+							observation.action = action.type;
+							observation.outcome = action.type === "accept_as_success" ? "recovered" : "needs_model";
+							return { action, observation };
+						},
+						observe: () => {},
+					},
+				},
+				undefined,
+				response.streamFn,
+			);
+			for await (const event of stream) events.push(event);
+			const messages = await stream.result();
+			expect({ beforeCalls, afterCalls, executions }).toEqual({ beforeCalls: 1, afterCalls: 1, executions: 1 });
+			expect(events.filter((event) => event.type === "tool_execution_end")).toHaveLength(1);
+			expect(messages.filter((message) => message.role === "toolResult")).toHaveLength(1);
+		}
 	});
 
 	it("keeps ToolExecutionError fields available to recovery", () => {

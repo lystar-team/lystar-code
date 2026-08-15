@@ -1,3 +1,5 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Text, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -213,6 +215,50 @@ describe("ToolExecutionComponent parity", () => {
 
 		component.setExpanded(false);
 		expect(stripAnsi(component.render(100).join("\n"))).not.toContain("src/index.ts");
+	});
+
+	test("replays persisted apply_patch details after the current target is deleted", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-apply-patch-history-"));
+		const path = join(cwd, "history.ts");
+		try {
+			writeFileSync(path, "before\n");
+			const persisted = JSON.parse(
+				JSON.stringify({
+					content: [{ type: "text", text: "Applied patch to 1 file(s)." }],
+					details: {
+						files: [
+							{
+								path: "history.ts",
+								operation: "update",
+								additions: 1,
+								deletions: 1,
+								diff: "- 1 before\n+ 1 after",
+							},
+						],
+					},
+					isError: false,
+				}),
+			);
+			rmSync(path);
+			const component = new ToolExecutionComponent(
+				"apply_patch",
+				"historical-apply-patch",
+				{ input: "*** Begin Patch\n*** End Patch" },
+				{},
+				createApplyPatchToolDefinition(),
+				createFakeTui(),
+				cwd,
+			);
+			component.updateResult(persisted, false);
+			component.setExpanded(true);
+			component.getChildCards()[0]?.setExpanded(true);
+			const rendered = stripAnsi(component.render(80).join("\n"));
+			expect(rendered).toContain("history.ts  +1 -1");
+			expect(rendered).toContain("before");
+			expect(rendered).toContain("after");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
 	});
 
 	test("keeps apply_patch path counts on one line at narrow widths", () => {

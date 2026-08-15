@@ -58,6 +58,10 @@ export interface ToolExecutionErrorOptions {
 	category: ToolFailureCategory;
 	retryable: boolean;
 	details?: Record<string, unknown>;
+	/** 仅包含稳定哈希或枚举，供 failure fingerprint 使用。 */
+	fingerprintConstraint?: unknown;
+	/** 已哈希的目标标识，覆盖从调用参数提取的 targetHash。 */
+	failureTargetHash?: string;
 	cause?: Error;
 }
 
@@ -66,6 +70,8 @@ export class ToolExecutionError extends Error {
 	public readonly category: ToolFailureCategory;
 	public readonly retryable: boolean;
 	public readonly details?: Record<string, unknown>;
+	public readonly fingerprintConstraint?: unknown;
+	public readonly failureTargetHash?: string;
 
 	constructor(message: string, options: ToolExecutionErrorOptions) {
 		super(message, options.cause === undefined ? undefined : { cause: options.cause });
@@ -74,5 +80,7 @@ export class ToolExecutionError extends Error {
 		this.category = options.category;
 		this.retryable = options.retryable;
 		this.details = options.details;
+		this.fingerprintConstraint = options.fingerprintConstraint;
+		this.failureTargetHash = options.failureTargetHash;
 	}
 }

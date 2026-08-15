@@ -15,6 +15,7 @@ import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
 import { getExperimentalToolSampling } from "../experimental.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import { registerBuiltInRecoveryError } from "../tool-recovery/registry.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
 import { getTextOutput, renderToolPath, replaceTabs, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -220,6 +221,7 @@ const readRecoveryHandlerSymbol = Symbol.for("pi.toolRecoveryHandler");
 type ReadRecoveryHandler = (context: { signal?: AbortSignal }) => Promise<unknown> | unknown;
 
 function attachReadRecoveryHandler(error: ToolExecutionError, handler: ReadRecoveryHandler): ToolExecutionError {
+	registerBuiltInRecoveryError("read", error);
 	Object.defineProperty(error, readRecoveryHandlerSymbol, { value: handler });
 	return error;
 }

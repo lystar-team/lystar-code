@@ -1,13 +1,15 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { ToolExecutionError } from "@earendil-works/pi-agent-core";
 import { afterEach, describe, expect, it } from "vitest";
 import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
+import { resolveToCwd } from "../src/core/tools/path-utils.ts";
 import applyPatchExtension, {
 	type ApplyPatchDetails,
 	createApplyPatchToolDefinition,
+	parseApplyPatch,
 } from "../src/extensions/apply-patch/index.ts";
 import { builtInExtensions } from "../src/extensions/index.ts";
 
@@ -33,23 +35,35 @@ function executePatch(cwd: string, input: string, options?: Parameters<typeof cr
 	} as never);
 }
 
-type PatchRecoveryResult = {
-	type: "accept_as_success" | "ask_model_to_rebuild";
-	verification?: string;
-	replacementResult: { content: Array<{ type: string; text?: string }> };
-};
+type PatchRecoveryResult =
+	| {
+			type: "accept_as_success";
+			verification: string;
+			replacementResult: { content: Array<{ type: string; text?: string }> };
+	  }
+	| {
+			type: "ask_model_to_rebuild";
+			guidance: string;
+			replacementResult: { content: Array<{ type: string; text?: string }> };
+	  }
+	| { type: "require_user"; reason: string };
 
-async function recoverPatchFailure(execute: () => Promise<unknown>): Promise<PatchRecoveryResult | undefined> {
+async function capturePatchFailure(execute: () => Promise<unknown>): Promise<ToolExecutionError> {
 	try {
 		await execute();
 		throw new Error("expected apply_patch failure");
 	} catch (error) {
 		expect(error).toBeInstanceOf(ToolExecutionError);
-		const handler = (error as { [key: symbol]: (context: unknown) => Promise<unknown> | unknown })[
-			Symbol.for("pi.toolRecoveryHandler")
-		];
-		return (await handler?.({})) as PatchRecoveryResult | undefined;
+		return error as ToolExecutionError;
 	}
+}
+
+async function recoverPatchFailure(execute: () => Promise<unknown>): Promise<PatchRecoveryResult | undefined> {
+	const error = await capturePatchFailure(execute);
+	const handler = (error as unknown as { [key: symbol]: (context: unknown) => Promise<unknown> | unknown })[
+		Symbol.for("pi.toolRecoveryHandler")
+	];
+	return (await handler?.({})) as PatchRecoveryResult | undefined;
 }
 
 describe("built-in apply_patch extension", () => {
@@ -90,6 +104,114 @@ describe("built-in apply_patch extension", () => {
 			),
 		);
 		expect(resolution).toMatchObject({ type: "accept_as_success" });
+	});
+
+	it("requires a complete ordered post-image before accepting PATCH_NO_CHANGE", async () => {
+		const dir = await createTempDir();
+		const target = join(dir, "target.txt");
+		const input = patch([
+			"*** Update File: target.txt",
+			"@@",
+			" anchor-one",
+			'-"one"',
+			"+\u201cone\u201d",
+			"@@",
+			" anchor-two",
+			'-"two"',
+			"+\u201ctwo\u201d",
+		]);
+		await writeFile(target, "anchor-one\n\u201cone\u201d\nanchor-two\n\u201ctwo\u201d\n", "utf-8");
+		const failure = await capturePatchFailure(() => executePatch(dir, input));
+		await writeFile(target, "anchor-two\n\u201ctwo\u201d\nanchor-one\nother\n\u201cone\u201d\n", "utf-8");
+
+		const handler = (failure as unknown as { [key: symbol]: (context: unknown) => Promise<unknown> | unknown })[
+			Symbol.for("pi.toolRecoveryHandler")
+		];
+		await expect(handler?.({})).resolves.toMatchObject({ type: "ask_model_to_rebuild" });
+	});
+
+	it("rejects PATCH_NO_CHANGE acceptance when the verified snapshot changes before finalize", async () => {
+		const dir = await createTempDir();
+		const target = join(dir, "target.txt");
+		await writeFile(target, "anchor\n\u201ctarget\u201d\n", "utf-8");
+		let verifyReads = false;
+		let reads = 0;
+		const operations = {
+			readFile: async (path: string) => {
+				if (verifyReads && ++reads === 2) await writeFile(path, "changed\n", "utf-8");
+				return await readFile(path);
+			},
+			mkdir: async () => {},
+			unlink: async (path: string) => await rm(path),
+			writeFile: async (path: string, content: string) => await writeFile(path, content, "utf-8"),
+		};
+		const failure = await capturePatchFailure(() =>
+			executePatch(
+				dir,
+				patch(["*** Update File: target.txt", "@@", " anchor", '-"target"', "+\u201ctarget\u201d"]),
+				{ operations },
+			),
+		);
+		verifyReads = true;
+		reads = 0;
+		const handler = (failure as unknown as { [key: symbol]: (context: unknown) => Promise<unknown> | unknown })[
+			Symbol.for("pi.toolRecoveryHandler")
+		];
+		await expect(handler?.({})).resolves.toMatchObject({ type: "ask_model_to_rebuild" });
+		expect(await readFile(target, "utf-8")).toBe("changed\n");
+	});
+
+	it("parses Windows separators and drive paths without writing them on Linux", () => {
+		const path = "C:\\项目\\中文.txt";
+		const operations = parseApplyPatch(patch([`*** Update File: ${path}`, "@@", "-before", "+after"]));
+		expect(operations).toEqual([expect.objectContaining({ kind: "update", path })]);
+		expect(resolveToCwd(path, "/workspace")).toBe(
+			process.platform === "win32" ? resolve(path) : resolve("/workspace", path),
+		);
+	});
+
+	it("reports per-file rollback failure without claiming rollback succeeded", async () => {
+		const dir = await createTempDir();
+		const first = join(dir, "a.txt");
+		const second = join(dir, "b.txt");
+		await writeFile(first, "one\n", "utf-8");
+		await writeFile(second, "two\n", "utf-8");
+		const failure = await capturePatchFailure(() =>
+			executePatch(
+				dir,
+				patch(["*** Update File: a.txt", "@@", "-one", "+ONE", "*** Update File: b.txt", "@@", "-two", "+TWO"]),
+				{
+					operations: {
+						readFile,
+						mkdir: async () => {},
+						unlink: async (path) => await rm(path),
+						writeFile: async (path, content) => {
+							if (path === second && content === "TWO\n") throw new Error("injected write failure");
+							if (path === first && content === "one\n") throw new Error("injected rollback failure");
+							await writeFile(path, content, "utf-8");
+						},
+					},
+				},
+			),
+		);
+		expect(failure).toMatchObject({ code: "PATCH_ROLLBACK_FAILED" });
+		expect(failure.message).toContain("Rollback failed");
+		expect(failure.message).not.toContain("Changes were rolled back");
+		expect(failure.message).toContain("a.txt: 回滚失败");
+		expect(failure.message).toContain("b.txt: 已恢复原内容");
+		expect(failure.details).toEqual({
+			touchedFileCount: 2,
+			rollbackStatuses: [
+				{ operation: "update", status: "restored" },
+				{ operation: "update", status: "failed" },
+			],
+		});
+		expect(await readFile(first, "utf-8")).toBe("ONE\n");
+		expect(await readFile(second, "utf-8")).toBe("two\n");
+		const handler = (failure as unknown as { [key: symbol]: (context: unknown) => Promise<unknown> | unknown })[
+			Symbol.for("pi.toolRecoveryHandler")
+		];
+		await expect(handler?.({})).resolves.toMatchObject({ type: "require_user" });
 	});
 
 	it("returns bounded rebuild evidence for missing and ambiguous matches", async () => {

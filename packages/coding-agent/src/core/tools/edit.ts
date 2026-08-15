@@ -10,6 +10,7 @@ import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { uiGlyphs } from "../../modes/interactive/ui-glyphs.ts";
 import { getExperimentalToolSampling } from "../experimental.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
+import { registerBuiltInRecoveryError } from "../tool-recovery/registry.ts";
 import {
 	applyEditsToNormalizedContent,
 	computeEditsDiff,
@@ -318,6 +319,7 @@ const editRecoveryHandlerSymbol = Symbol.for("pi.toolRecoveryHandler");
 type EditRecoveryHandler = (context: { signal?: AbortSignal }) => Promise<unknown> | unknown;
 
 function attachEditRecoveryHandler(error: ToolExecutionError, handler: EditRecoveryHandler): ToolExecutionError {
+	registerBuiltInRecoveryError("edit", error);
 	Object.defineProperty(error, editRecoveryHandlerSymbol, { value: handler });
 	return error;
 }

@@ -28,6 +28,7 @@ import {
 	getToolSideEffect,
 	registerBuiltInToolIdentity,
 } from "../src/core/tool-recovery/registry.ts";
+import { createHarness } from "./test-harness.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -533,6 +534,163 @@ describe("Tool recovery observe ledger", () => {
 			{ tool: "read", count: 2 },
 		]);
 		sessionManager.dispose();
+	});
+
+	it("runs edit rebuild recovery once per fingerprint across changed call signatures", async () => {
+		for (const scenario of [
+			{ name: "missing", content: "stable\n", oldText: "missing" },
+			{ name: "ambiguous", content: "duplicate\nbody\nduplicate\n", oldText: "duplicate" },
+		] as const) {
+			const harness = await createHarness({
+				responses: [
+					{
+						toolCalls: [
+							{
+								name: "edit",
+								args: { path: "target.txt", edits: [{ oldText: scenario.oldText, newText: "first" }] },
+							},
+						],
+					},
+					"after first",
+					{
+						toolCalls: [
+							{
+								name: "edit",
+								args: { path: "target.txt", edits: [{ oldText: scenario.oldText, newText: "second" }] },
+							},
+						],
+					},
+					"after second",
+					{
+						toolCalls: [
+							{
+								name: "edit",
+								args: { path: "target.txt", edits: [{ oldText: scenario.oldText, newText: "third" }] },
+							},
+						],
+					},
+					"after third",
+				],
+			});
+			try {
+				writeFileSync(join(harness.tempDir, "target.txt"), scenario.content);
+				const activeEdit = harness.agent.state.tools.find((tool) => tool.name === "edit");
+				expect(getToolSideEffect(activeEdit?.runtimeContext)).toBe("conditional_write");
+				let directError: unknown;
+				try {
+					await activeEdit?.execute("direct", {
+						path: "target.txt",
+						edits: [{ oldText: scenario.oldText, newText: "direct" }],
+					});
+				} catch (error) {
+					directError = error;
+				}
+				expect(directError).toBeInstanceOf(ToolExecutionError);
+				const directHandler = (
+					directError as unknown as {
+						[key: symbol]: (context: Record<string, never>) => Promise<unknown>;
+					}
+				)[Symbol.for("pi.toolRecoveryHandler")];
+				expect(directHandler).toBeTypeOf("function");
+				expect(await directHandler({})).toMatchObject({ type: "ask_model_to_rebuild" });
+				await harness.session.prompt("first");
+				await harness.session.prompt("second");
+				await harness.session.prompt("third");
+
+				const diagnostics = harness.session.getToolRecoveryDiagnostics();
+				expect(diagnostics.toolRecoveryAttemptTotal).toEqual([
+					{ tool: "edit", action: "ask_model_to_rebuild", count: 1 },
+					{ tool: "edit", action: "stop", count: 2 },
+				]);
+				const firstResult = harness.session.messages.find(
+					(message): message is Extract<(typeof harness.session.messages)[number], { role: "toolResult" }> =>
+						message.role === "toolResult",
+				);
+				const evidence =
+					firstResult?.content
+						.filter((content): content is { type: "text"; text: string } => content.type === "text")
+						.map((content) => content.text)
+						.join("\n") ?? "";
+				expect(evidence.match(/^\d+: /gm)?.length ?? 0).toBeLessThanOrEqual(200);
+				expect(evidence).toContain("最新 target.txt");
+			} finally {
+				harness.cleanup();
+			}
+		}
+	});
+
+	it("refreshes read target-missing parent evidence without changing the path, but never refreshes permission failures", async () => {
+		const missingHarness = await createHarness({
+			responses: [{ toolCalls: [{ name: "read", args: { path: "missing.txt" } }] }, "after refresh"],
+		});
+		try {
+			for (let index = 0; index < 220; index++) {
+				writeFileSync(join(missingHarness.tempDir, `entry-${index}.txt`), "x");
+			}
+			const activeRead = missingHarness.agent.state.tools.find((tool) => tool.name === "read");
+			expect(getToolSideEffect(activeRead?.runtimeContext)).toBe("read_only");
+			let directError: unknown;
+			try {
+				await activeRead?.execute("direct", { path: "missing.txt" });
+			} catch (error) {
+				directError = error;
+			}
+			expect(directError).toBeInstanceOf(ToolExecutionError);
+			const directHandler = (
+				directError as unknown as {
+					[key: symbol]: (context: Record<string, never>) => Promise<unknown>;
+				}
+			)[Symbol.for("pi.toolRecoveryHandler")];
+			expect(directHandler).toBeTypeOf("function");
+			expect(await directHandler({})).toMatchObject({ type: "refresh_context" });
+			await missingHarness.session.prompt("read missing");
+			const result = missingHarness.session.messages.find(
+				(message): message is Extract<(typeof missingHarness.session.messages)[number], { role: "toolResult" }> =>
+					message.role === "toolResult",
+			);
+			const evidence =
+				result?.content
+					.filter((content): content is { type: "text"; text: string } => content.type === "text")
+					.map((content) => content.text)
+					.join("\n") ?? "";
+			expect(evidence).toContain("父目录刷新结果");
+			expect(evidence.match(/^entry-\d+\.txt$/gm)?.length ?? 0).toBe(200);
+			expect(missingHarness.session.getToolRecoveryDiagnostics().toolRecoveryAttemptTotal).toEqual([
+				{ tool: "read", action: "refresh_context", count: 1 },
+			]);
+			const assistant = missingHarness.session.messages.find((message) => message.role === "assistant");
+			expect(
+				assistant?.role === "assistant"
+					? assistant.content.find((content) => content.type === "toolCall")?.arguments
+					: undefined,
+			).toMatchObject({ path: "missing.txt" });
+		} finally {
+			missingHarness.cleanup();
+		}
+
+		const permissionHarness = await createHarness({
+			responses: [{ toolCalls: [{ name: "read", args: { path: "private.txt" } }] }, "after permission"],
+		});
+		try {
+			const readTool = permissionHarness.agent.state.tools.find((tool) => tool.name === "read");
+			if (!readTool) throw new Error("missing builtin read tool");
+			readTool.execute = async () => {
+				throw new ToolExecutionError("permission denied", {
+					code: "PERMISSION_DENIED",
+					category: "permission",
+					retryable: false,
+				});
+			};
+			await permissionHarness.session.prompt("read private");
+			expect(permissionHarness.session.getToolRecoveryDiagnostics().toolRecoveryAttemptTotal).toEqual([
+				{ tool: "read", action: "stop", count: 1 },
+			]);
+			expect(permissionHarness.session.getToolRecoveryDiagnostics().toolRecoveryAttemptTotal).not.toContainEqual(
+				expect.objectContaining({ action: "refresh_context" }),
+			);
+		} finally {
+			permissionHarness.cleanup();
+		}
 	});
 
 	it("removes a ledger after an explicit direct cleanup call", async () => {

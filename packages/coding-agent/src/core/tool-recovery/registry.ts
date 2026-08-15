@@ -60,6 +60,7 @@ const BUILT_IN_SIDE_EFFECTS: Readonly<Record<string, ToolSideEffect>> = {
 	bash: "unknown",
 };
 const builtInToolIdentities = new WeakMap<object, BuiltInToolIdentity>();
+const builtInRecoveryErrors = new WeakMap<object, string>();
 const PERMISSION_CODES = new Set(["EACCES", "EPERM"]);
 const TIMEOUT_CODES = new Set(["ETIMEDOUT", "ETIME"]);
 const TRANSPORT_CODES = new Set([
@@ -94,6 +95,16 @@ export function getToolSideEffect(runtimeContext?: unknown): ToolSideEffect {
 
 export function isTrustedBuiltinTool(toolName: string, runtimeContext?: unknown): boolean {
 	return getBuiltInToolIdentity(runtimeContext)?.name === toolName;
+}
+
+/** 运行中保留内置 Tool 产生错误的来源身份，避免请求上下文重建时丢失 runtimeContext。 */
+export function registerBuiltInRecoveryError(toolName: string, error: ToolExecutionError): ToolExecutionError {
+	if (BUILT_IN_SIDE_EFFECTS[toolName] !== undefined) builtInRecoveryErrors.set(error, toolName);
+	return error;
+}
+
+export function isTrustedBuiltinRecoveryError(toolName: string, error: unknown): boolean {
+	return typeof error === "object" && error !== null && builtInRecoveryErrors.get(error) === toolName;
 }
 
 /** 自动重试只信任运行时登记过的内置只读 Tool，名称相同的 Extension 不具备该资格。 */
@@ -193,12 +204,14 @@ export async function adaptToolRecoveryObservation(
 	failure.category = classified.category;
 	failure.sideEffect = sideEffect;
 	failure.retryable = classified.retryable;
+	const failureTargetHash = failure.targetHash ?? observation.targetHash;
 	failure.fingerprint = await createFailureFingerprint({
 		toolName: observation.toolName,
 		code: classified.code,
-		targetHash: observation.targetHash,
-		constraint: failure.evidence,
+		targetHash: failureTargetHash,
+		constraint: error instanceof ToolExecutionError ? error.fingerprintConstraint : undefined,
 	});
+	if (failureTargetHash) failure.targetHash = failureTargetHash;
 }
 
 export function classifyToolFailureForTest(input: {

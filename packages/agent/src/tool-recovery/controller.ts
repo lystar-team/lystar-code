@@ -166,6 +166,7 @@ async function createFailure(
 	const category = phase === "post_hook" ? "execution" : (executionError?.category ?? "unknown");
 	const retryable = phase === "execution" && (executionError?.retryable ?? false);
 	const details = executionError?.details;
+	const targetHash = executionError?.failureTargetHash ?? call.targetHash;
 	return {
 		schema: 1,
 		toolName: call.toolName,
@@ -176,11 +177,11 @@ async function createFailure(
 		fingerprint: await createFailureFingerprint({
 			toolName: call.toolName,
 			code,
-			targetHash: call.targetHash,
-			constraint: details,
+			targetHash,
+			constraint: executionError?.fingerprintConstraint,
 		}),
 		callSignature: call.callSignature,
-		...(call.targetHash ? { targetHash: call.targetHash } : {}),
+		...(targetHash ? { targetHash } : {}),
 		evidence: await createEvidence(details),
 		occurredAt: new Date().toISOString(),
 	};

@@ -8,7 +8,12 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import type { SessionManager } from "../session-manager.ts";
 import { appendSessionRecoveryLedger, createRecoveryLedgerEntry } from "./ledger.ts";
-import { adaptToolRecoveryObservation, isTrustedBuiltinTool, isTrustedReadOnlyBuiltinTool } from "./registry.ts";
+import {
+	adaptToolRecoveryObservation,
+	isTrustedBuiltinRecoveryError,
+	isTrustedBuiltinTool,
+	isTrustedReadOnlyBuiltinTool,
+} from "./registry.ts";
 
 const toolRecoveryHandlerSymbol = Symbol.for("pi.toolRecoveryHandler");
 type ToolRecoveryResolution = Exclude<ToolRecoveryAttemptDecision["action"], { type: "retry_same_args" }>;
@@ -259,7 +264,8 @@ export class AssistToolRecoveryController extends BaseToolRecoveryController {
 	private readonly circuits = new Map<string, CircuitState>();
 	private readonly attempts = new Map<string, AttemptState>();
 	private readonly recovered = new Map<string, AttemptState>();
-	private readonly rebuiltFingerprints = new Set<string>();
+	private readonly rebuiltFingerprints = new Map<string, number>();
+	private readonly closedFingerprints = new Set<string>();
 	private readonly refreshedFingerprints = new Set<string>();
 
 	async preflight(context: ToolRecoveryPreflightContext): Promise<ToolRecoveryPreflightResult | undefined> {
@@ -304,15 +310,35 @@ export class AssistToolRecoveryController extends BaseToolRecoveryController {
 			return { action: { type: "stop", reason: "cancelled" }, observation };
 		}
 
-		if (isTrustedBuiltinTool(observation.toolName, observation.toolRuntimeContext) && !signal?.aborted) {
+		if (this.closedFingerprints.has(failure.fingerprint)) {
+			observation.action = "stop";
+			observation.outcome = "failure";
+			this.metrics.recordAttempt(observation.toolName, "stop");
+			this.circuits.set(circuitKey(observation.callSignature, failure.fingerprint), {
+				attempt: state.attempt,
+				failure,
+			});
+			await this.append(observation, failure, state.attempt, "stop");
+			return { action: { type: "stop", reason: "rebuild budget exhausted" }, observation };
+		}
+
+		if (
+			(isTrustedBuiltinTool(observation.toolName, observation.toolRuntimeContext) ||
+				isTrustedBuiltinRecoveryError(observation.toolName, error)) &&
+			!signal?.aborted
+		) {
 			const resolution = await runToolRecoveryHandler(error, signal);
 			if (resolution) {
-				const isRepeatRebuild =
-					resolution.type === "ask_model_to_rebuild" && this.rebuiltFingerprints.has(failure.fingerprint);
+				const rebuildAttempt = this.rebuiltFingerprints.get(failure.fingerprint) ?? 0;
+				const isRepeatRebuild = resolution.type === "ask_model_to_rebuild" && rebuildAttempt >= 1;
 				const isRepeatRefresh =
 					resolution.type === "refresh_context" && this.refreshedFingerprints.has(failure.fingerprint);
-				if (!isRepeatRebuild && !isRepeatRefresh) {
-					if (resolution.type === "ask_model_to_rebuild") this.rebuiltFingerprints.add(failure.fingerprint);
+				if (isRepeatRebuild) {
+					this.closedFingerprints.add(failure.fingerprint);
+				} else if (!isRepeatRefresh) {
+					if (resolution.type === "ask_model_to_rebuild") {
+						this.rebuiltFingerprints.set(failure.fingerprint, rebuildAttempt + 1);
+					}
 					if (resolution.type === "refresh_context") this.refreshedFingerprints.add(failure.fingerprint);
 					observation.action = resolution.type;
 					observation.outcome = resolution.type === "accept_as_success" ? "recovered" : "needs_model";

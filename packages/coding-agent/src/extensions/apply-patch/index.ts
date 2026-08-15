@@ -5,6 +5,7 @@ import { ToolExecutionError, type ToolRecoveryReplacementResult } from "@earendi
 import { Container, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import type { ExtensionAPI, ToolDefinition } from "../../core/extensions/types.ts";
+import { registerBuiltInRecoveryError } from "../../core/tool-recovery/registry.ts";
 import {
 	detectLineEnding,
 	generateDiffString,
@@ -29,6 +30,7 @@ const toolRecoveryHandlerSymbol = Symbol.for("pi.toolRecoveryHandler");
 type ToolRecoveryHandler = (context: { signal?: AbortSignal }) => Promise<unknown> | unknown;
 
 function attachRecoveryHandler(error: ToolExecutionError, handler: ToolRecoveryHandler): ToolExecutionError {
+	registerBuiltInRecoveryError("apply_patch", error);
 	Object.defineProperty(error, toolRecoveryHandlerSymbol, { value: handler });
 	return error;
 }
@@ -255,6 +257,32 @@ function contentHash(content: string | Buffer): string {
 	return createHash("sha256").update(content).digest("hex");
 }
 
+function hunkFingerprintConstraint(chunk: UpdateFileChunk): Record<string, string | undefined> {
+	const context = chunk.lines.filter((line) => line.kind === "context").map((line) => line.text);
+	const oldLines = chunk.lines.filter((line) => line.kind !== "add").map((line) => line.text);
+	const newLines = chunk.lines.filter((line) => line.kind !== "delete").map((line) => line.text);
+	return {
+		headerHash: chunk.context ? contentHash(chunk.context) : undefined,
+		contextHash: context.length > 0 ? contentHash(context.join("\n")) : undefined,
+		oldHash: contentHash(oldLines.join("\n")),
+		newHash: contentHash(newLines.join("\n")),
+	};
+}
+
+function noChangePatchError(path: string, chunk: UpdateFileChunk, chunkIndex: number): ToolExecutionError {
+	return patchExecutionError(
+		"PATCH_NO_CHANGE",
+		`Could not apply patch to ${path}: hunk ${chunkIndex + 1} does not change the file.\nNo changes were written. Re-read the target region and confirm whether the change already exists.`,
+		{ targetPath: path, fingerprintConstraint: hunkFingerprintConstraint(chunk) },
+	);
+}
+
+type PatchFailureOptions = {
+	details?: Record<string, unknown>;
+	fingerprintConstraint?: unknown;
+	targetPath?: string;
+};
+
 function patchExecutionError(
 	code:
 		| "PATCH_PARSE_ERROR"
@@ -266,7 +294,7 @@ function patchExecutionError(
 		| "PATCH_WRITE_FAILED"
 		| "PATCH_ROLLBACK_FAILED",
 	message: string,
-	details: Record<string, unknown> = {},
+	options: PatchFailureOptions = {},
 ): ToolExecutionError {
 	return new ToolExecutionError(message, {
 		code,
@@ -279,7 +307,9 @@ function patchExecutionError(
 						? "execution"
 						: "precondition",
 		retryable: false,
-		details,
+		details: options.details,
+		fingerprintConstraint: options.fingerprintConstraint,
+		failureTargetHash: options.targetPath ? contentHash(options.targetPath) : undefined,
 	});
 }
 
@@ -456,9 +486,13 @@ function findUniqueSequence(
 				"PATCH_MATCH_AMBIGUOUS",
 				`Could not apply patch to ${path}: ${label} matched ${matches.length} locations at lines ${displayedLines.join(", ")}${remaining > 0 ? ` +${remaining} more` : ""}.\nAdd stable context or an @@ function/class header, then retry.\nNo changes were written.`,
 				{
-					candidateLines: displayedLines,
-					candidateCount: matches.length,
-					constraintHash: contentHash(pattern.join("\n")),
+					details: {
+						candidateLines: displayedLines,
+						candidateCount: matches.length,
+						constraintHash: contentHash(pattern.join("\n")),
+					},
+					fingerprintConstraint: { constraintHash: contentHash(pattern.join("\n")) },
+					targetPath: path,
 				},
 			);
 		}
@@ -466,7 +500,11 @@ function findUniqueSequence(
 	throw patchExecutionError(
 		"PATCH_MATCH_NOT_FOUND",
 		`Could not apply patch to ${path}: ${label} was not found starting at line ${start + 1}. Tried exact matching, whitespace-tolerant matching, and Unicode punctuation normalization.\nNo changes were written.`,
-		{ startLine: start + 1, constraintHash: contentHash(pattern.join("\n")) },
+		{
+			details: { startLine: start + 1, constraintHash: contentHash(pattern.join("\n")) },
+			fingerprintConstraint: { constraintHash: contentHash(pattern.join("\n")) },
+			targetPath: path,
+		},
 	);
 }
 
@@ -531,9 +569,7 @@ function deriveUpdatedContent(content: string, chunks: UpdateFileChunk[], path: 
 			oldChunkLines.length === newChunkLines.length &&
 			oldChunkLines.every((line, index) => line === newChunkLines[index])
 		) {
-			throw new Error(
-				`Could not apply patch to ${path}: hunk ${chunkIndex + 1} does not change the file.\nNo changes were written. Re-read the target region and confirm whether the change already exists.`,
-			);
+			throw noChangePatchError(path, chunk, chunkIndex);
 		}
 		if (chunk.context) {
 			lineIndex =
@@ -551,9 +587,7 @@ function deriveUpdatedContent(content: string, chunks: UpdateFileChunk[], path: 
 			const replacementStart = replacements.length;
 			appendChunkReplacements(replacements, chunk, chunkIndex, insertionLine);
 			if (!chunkChangesContent(originalLines, replacements, replacementStart)) {
-				throw new Error(
-					`Could not apply patch to ${path}: hunk ${chunkIndex + 1} does not change the file.\nNo changes were written. Re-read the target region and confirm whether the change already exists.`,
-				);
+				throw noChangePatchError(path, chunk, chunkIndex);
 			}
 			lineIndex = insertionLine;
 			continue;
@@ -570,9 +604,7 @@ function deriveUpdatedContent(content: string, chunks: UpdateFileChunk[], path: 
 		const replacementStart = replacements.length;
 		appendChunkReplacements(replacements, chunk, chunkIndex, matchStart);
 		if (!chunkChangesContent(originalLines, replacements, replacementStart)) {
-			throw new Error(
-				`Could not apply patch to ${path}: hunk ${chunkIndex + 1} does not change the file.\nNo changes were written. Re-read the target region and confirm whether the change already exists.`,
-			);
+			throw noChangePatchError(path, chunk, chunkIndex);
 		}
 		lineIndex = matchStart + oldLines.length;
 	}
@@ -600,8 +632,13 @@ function deriveUpdatedContent(content: string, chunks: UpdateFileChunk[], path: 
 	}
 	const newContent = newLines.length === 0 ? "" : newLines.join("\n") + (hasFinalNewline ? "\n" : "");
 	if (newContent === content) {
-		throw new Error(
+		throw patchExecutionError(
+			"PATCH_NO_CHANGE",
 			`Could not apply patch to ${path}: the update produced identical content.\nNo changes were written. Re-read the target region and confirm whether the change already exists.`,
+			{
+				targetPath: path,
+				fingerprintConstraint: { hunks: chunks.map(hunkFingerprintConstraint) },
+			},
 		);
 	}
 	return newContent;
@@ -616,10 +653,42 @@ function isMissingPathError(error: unknown): boolean {
 	);
 }
 
-function hasUniquePatchSequence(lines: string[], pattern: string[], start = 0): boolean {
-	return ["exact", "trailing", "trimmed", "unicode"].some(
-		(tier) => findSequenceCandidates(lines, pattern, start, tier as PatchMatchTier, false).length === 1,
-	);
+type VerifiedPatchSnapshot = {
+	absolutePath: string;
+	kind: "content" | "missing";
+	hash?: string;
+};
+
+function findUniquePatchSequence(
+	lines: string[],
+	pattern: string[],
+	start: number,
+	endOfFile: boolean,
+): number | undefined {
+	for (const tier of ["exact", "trailing", "trimmed", "unicode"] as const) {
+		const matches = findSequenceCandidates(lines, pattern, start, tier, endOfFile);
+		if (matches.length === 1) return matches[0];
+		if (matches.length > 1) return undefined;
+	}
+	return undefined;
+}
+
+function verifiesUpdatePostImage(lines: string[], chunks: UpdateFileChunk[]): boolean {
+	let nextStart = 0;
+	for (const chunk of chunks) {
+		let searchStart = nextStart;
+		if (chunk.context) {
+			const headerStart = findUniquePatchSequence(lines, [chunk.context], searchStart, false);
+			if (headerStart === undefined) return false;
+			searchStart = headerStart + 1;
+		}
+		const postLines = chunk.lines.filter((line) => line.kind !== "delete").map((line) => line.text);
+		if (postLines.length === 0) return false;
+		const postStart = findUniquePatchSequence(lines, postLines, searchStart, chunk.endOfFile);
+		if (postStart === undefined || postStart < searchStart) return false;
+		nextStart = postStart + postLines.length;
+	}
+	return true;
 }
 
 async function verifyPatchPostconditions(
@@ -635,6 +704,7 @@ async function verifyPatchPostconditions(
 	return await withMutationQueues(
 		files.map((file) => file.absolutePath),
 		async () => {
+			const snapshots: VerifiedPatchSnapshot[] = [];
 			for (const file of files) {
 				throwIfAborted(signal);
 				if (file.operation.kind === "delete") {
@@ -643,6 +713,7 @@ async function verifyPatchPostconditions(
 						return undefined;
 					} catch (error) {
 						if (!isMissingPathError(error)) return undefined;
+						snapshots.push({ absolutePath: file.absolutePath, kind: "missing" });
 						evidence.push(`${file.operation.path}: 已不存在`);
 						continue;
 					}
@@ -655,24 +726,25 @@ async function verifyPatchPostconditions(
 				}
 				if (file.operation.kind === "add") {
 					if (content !== file.operation.content) return undefined;
+					snapshots.push({ absolutePath: file.absolutePath, kind: "content", hash: contentHash(content) });
 					evidence.push(`${file.operation.path}: 内容摘要 ${contentHash(content)}`);
 					continue;
 				}
 				const lines = normalizeToLF(stripBom(content).text).split("\n");
 				if (lines.at(-1) === "") lines.pop();
-				for (const chunk of file.operation.chunks) {
-					const oldLines = chunk.lines.filter((line) => line.kind !== "add").map((line) => line.text);
-					const newLines = chunk.lines.filter((line) => line.kind !== "delete").map((line) => line.text);
-					if (chunk.context && !hasUniquePatchSequence(lines, [chunk.context])) return undefined;
-					if (newLines.length > 0 && !hasUniquePatchSequence(lines, newLines)) return undefined;
-					if (
-						oldLines.length > 0 &&
-						findSequenceCandidates(lines, oldLines, 0, "exact", chunk.endOfFile).length > 0
-					) {
-						return undefined;
-					}
-				}
+				if (!verifiesUpdatePostImage(lines, file.operation.chunks)) return undefined;
+				snapshots.push({ absolutePath: file.absolutePath, kind: "content", hash: contentHash(content) });
 				evidence.push(`${file.operation.path}: 所有 hunk 后置条件成立`);
+			}
+
+			for (const snapshot of snapshots) {
+				throwIfAborted(signal);
+				try {
+					const current = await ops.readFile(snapshot.absolutePath);
+					if (snapshot.kind !== "content" || contentHash(current) !== snapshot.hash) return undefined;
+				} catch (error) {
+					if (snapshot.kind !== "missing" || !isMissingPathError(error)) return undefined;
+				}
 			}
 			return { verifiedFiles: files.length, evidence: evidence.join("\n") };
 		},
@@ -836,9 +908,20 @@ async function stageFiles(
 	return staged;
 }
 
-async function rollback(staged: StagedPatchFile[], ops: ApplyPatchOperations): Promise<boolean> {
-	let succeeded = true;
+type RollbackStatus = {
+	path: string;
+	operation: PatchOperation["kind"];
+	status: "restored" | "removed" | "failed";
+};
+
+async function rollback(staged: StagedPatchFile[], ops: ApplyPatchOperations): Promise<RollbackStatus[]> {
+	const statuses: RollbackStatus[] = [];
 	for (const file of [...staged].reverse()) {
+		const status: RollbackStatus = {
+			path: file.operation.path,
+			operation: file.operation.kind,
+			status: file.operation.kind === "add" ? "removed" : "restored",
+		};
 		try {
 			if (file.operation.kind === "add") {
 				await ops.unlink(file.absolutePath);
@@ -846,10 +929,11 @@ async function rollback(staged: StagedPatchFile[], ops: ApplyPatchOperations): P
 				await ops.writeFile(file.absolutePath, file.originalContent);
 			}
 		} catch {
-			succeeded = false;
+			status.status = "failed";
 		}
+		statuses.push(status);
 	}
-	return succeeded;
+	return statuses;
 }
 
 async function assertSnapshot(file: StagedPatchFile, ops: ApplyPatchOperations): Promise<void> {
@@ -857,7 +941,8 @@ async function assertSnapshot(file: StagedPatchFile, ops: ApplyPatchOperations):
 		const current = await ops.readFile(file.absolutePath);
 		if (file.operation.kind === "add" || contentHash(current) !== file.snapshotHash) {
 			throw patchExecutionError("PATCH_WRITE_CONFLICT", "Could not apply patch: target changed before write.", {
-				operation: file.operation.kind,
+				details: { operation: file.operation.kind },
+				targetPath: file.operation.path,
 			});
 		}
 	} catch (error) {
@@ -889,16 +974,35 @@ async function applyStagedFiles(
 			throwIfAborted(signal);
 		}
 	} catch (error) {
-		const rolledBack = await rollback(touched, ops);
-		const message = `Could not apply patch: ${error instanceof Error ? error.message : String(error)}. Changes were rolled back.`;
-		if (!rolledBack) {
-			throw patchExecutionError("PATCH_ROLLBACK_FAILED", `${message} Rollback failed.`, {
-				touchedFiles: touched.length,
-				rollbackFailed: true,
-			});
+		const rollbackStatuses = await rollback(touched, ops);
+		const rollbackFailed = rollbackStatuses.some((status) => status.status === "failed");
+		if (rollbackFailed) {
+			const statusText = rollbackStatuses
+				.map((status) =>
+					status.status === "failed"
+						? `- ${status.path}: 回滚失败，必须人工检查。`
+						: `- ${status.path}: 已${status.status === "removed" ? "移除新增文件" : "恢复原内容"}。`,
+				)
+				.join("\n");
+			throw patchExecutionError(
+				"PATCH_ROLLBACK_FAILED",
+				`Could not apply patch: ${error instanceof Error ? error.message : String(error)}. Rollback failed; manually inspect every touched file:\n${statusText}`,
+				{
+					details: {
+						touchedFileCount: touched.length,
+						rollbackStatuses: rollbackStatuses.map(({ operation, status }) => ({ operation, status })),
+					},
+				},
+			);
 		}
+		const message = `Could not apply patch: ${error instanceof Error ? error.message : String(error)}. Changes were rolled back.`;
 		if (error instanceof ToolExecutionError && error.code === "PATCH_WRITE_CONFLICT") throw error;
-		throw patchExecutionError("PATCH_WRITE_FAILED", message, { touchedFiles: touched.length, rollbackFailed: false });
+		throw patchExecutionError("PATCH_WRITE_FAILED", message, {
+			details: {
+				touchedFileCount: touched.length,
+				rollbackStatuses: rollbackStatuses.map(({ operation, status }) => ({ operation, status })),
+			},
+		});
 	}
 }
 
