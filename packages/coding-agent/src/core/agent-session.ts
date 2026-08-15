@@ -107,7 +107,7 @@ import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
-import { ObserveOnlyToolRecoveryController, type ToolRecoveryDiagnostics } from "./tool-recovery/policies.ts";
+import { AssistToolRecoveryController, type ToolRecoveryDiagnostics } from "./tool-recovery/policies.ts";
 import { registerBuiltInToolIdentity } from "./tool-recovery/registry.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
@@ -370,7 +370,7 @@ export class AgentSession {
 	private _sessionLockCompromiseUnsubscriber?: () => void;
 
 	private _modelRuntime: ModelRuntime;
-	private readonly _toolRecoveryController: ObserveOnlyToolRecoveryController;
+	private readonly _toolRecoveryController: AssistToolRecoveryController;
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -392,7 +392,7 @@ export class AgentSession {
 		this._customTools = config.customTools ?? [];
 		this._cwd = config.cwd;
 		this._modelRuntime = config.modelRuntime;
-		this._toolRecoveryController = new ObserveOnlyToolRecoveryController({
+		this._toolRecoveryController = new AssistToolRecoveryController({
 			agentDir: config.agentDir ?? getAgentDir(),
 			sessionManager: this.sessionManager,
 			getTurnId: () => String(this._turnIndex),

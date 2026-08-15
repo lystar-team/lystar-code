@@ -1,77 +1,175 @@
-import type { ToolRecoveryController, ToolRecoveryObservation } from "@earendil-works/pi-agent-core";
+import type {
+	ToolFailure,
+	ToolRecoveryAttemptDecision,
+	ToolRecoveryController,
+	ToolRecoveryObservation,
+	ToolRecoveryPreflightContext,
+	ToolRecoveryPreflightResult,
+} from "@earendil-works/pi-agent-core";
 import type { SessionManager } from "../session-manager.ts";
 import { appendSessionRecoveryLedger, createRecoveryLedgerEntry } from "./ledger.ts";
-import { adaptToolRecoveryObservation } from "./registry.ts";
+import { adaptToolRecoveryObservation, isTrustedReadOnlyBuiltinTool } from "./registry.ts";
+
+const MAX_RECOVERY_RETRIES = 2;
+const RETRYABLE_CODES = new Set(["TIMEOUT", "TRANSPORT_ERROR", "RATE_LIMITED"]);
+const BLOCKED_MESSAGE = "已阻止重复失败，需修改参数、刷新状态、切换工具或请求用户决定。";
+
+type RecoveryAction = "observe" | "retry_same_args" | "stop";
+type Counter = Map<string, number>;
+type AttemptState = { attempt: number; failure: ToolFailure };
+type CircuitState = { attempt: number; failure: ToolFailure };
 
 export interface ToolRecoveryDiagnostics {
-	mode: "observe";
+	mode: "observe" | "assist";
 	toolFailureTotal: Array<{ tool: string; code: string; count: number }>;
-	toolRecoveryAttemptTotal: Array<{ tool: string; action: "observe"; count: number }>;
+	toolRecoveryAttemptTotal: Array<{ tool: string; action: RecoveryAction; count: number }>;
+	toolRecoverySuccessTotal: Array<{ tool: string; action: "retry_same_args"; count: number }>;
+	toolRepeatBlockedTotal: Array<{ tool: string; code: string; count: number }>;
+	toolUnsafeRetryBlockedTotal: Array<{ tool: string; count: number }>;
 	duration: { count: number; totalMs: number; maxMs: number };
-	activeCircuits: 0;
+	activeCircuits: number;
 }
 
 class ToolRecoveryMetrics {
-	private readonly failures = new Map<string, number>();
-	private readonly attempts = new Map<string, number>();
+	private readonly failures: Counter = new Map();
+	private readonly attempts: Counter = new Map();
+	private readonly successes: Counter = new Map();
+	private readonly repeatBlocked: Counter = new Map();
+	private readonly unsafeRetryBlocked: Counter = new Map();
 	private durationCount = 0;
 	private durationTotalMs = 0;
 	private durationMaxMs = 0;
 
-	record(observation: ToolRecoveryObservation): void {
-		const attemptKey = `${observation.toolName}\u0000observe`;
-		this.attempts.set(attemptKey, (this.attempts.get(attemptKey) ?? 0) + 1);
+	recordDuration(durationMs: number): void {
 		this.durationCount++;
-		this.durationTotalMs += observation.durationMs;
-		this.durationMaxMs = Math.max(this.durationMaxMs, observation.durationMs);
-		if (!observation.failure) return;
-		const failureKey = `${observation.toolName}\u0000${observation.failure.code}`;
-		this.failures.set(failureKey, (this.failures.get(failureKey) ?? 0) + 1);
+		this.durationTotalMs += durationMs;
+		this.durationMaxMs = Math.max(this.durationMaxMs, durationMs);
 	}
 
-	snapshot(): ToolRecoveryDiagnostics {
-		const unpack = (entries: Map<string, number>) =>
+	recordFailure(failure: ToolFailure): void {
+		increment(this.failures, `${failure.toolName}\u0000${failure.code}`);
+	}
+
+	recordAttempt(toolName: string, action: RecoveryAction): void {
+		increment(this.attempts, `${toolName}\u0000${action}`);
+	}
+
+	recordSuccess(toolName: string): void {
+		increment(this.successes, `${toolName}\u0000retry_same_args`);
+	}
+
+	recordRepeatBlocked(failure: ToolFailure): void {
+		increment(this.repeatBlocked, `${failure.toolName}\u0000${failure.code}`);
+	}
+
+	recordUnsafeRetryBlocked(toolName: string): void {
+		increment(this.unsafeRetryBlocked, toolName);
+	}
+
+	snapshot(mode: ToolRecoveryDiagnostics["mode"], activeCircuits: number): ToolRecoveryDiagnostics {
+		const unpack = (entries: Counter) =>
 			Array.from(entries, ([key, count]) => {
 				const [tool, code] = key.split("\u0000");
 				return { tool: tool!, code: code!, count };
 			}).sort((left, right) => left.tool.localeCompare(right.tool) || left.code.localeCompare(right.code));
 		return {
-			mode: "observe",
+			mode,
 			toolFailureTotal: unpack(this.failures),
-			toolRecoveryAttemptTotal: unpack(this.attempts).map(({ tool, count }) => ({ tool, action: "observe", count })),
+			toolRecoveryAttemptTotal: unpack(this.attempts).map(({ tool, code, count }) => ({
+				tool,
+				action: code as RecoveryAction,
+				count,
+			})),
+			toolRecoverySuccessTotal: unpack(this.successes).map(({ tool, count }) => ({
+				tool,
+				action: "retry_same_args",
+				count,
+			})),
+			toolRepeatBlockedTotal: unpack(this.repeatBlocked),
+			toolUnsafeRetryBlockedTotal: Array.from(this.unsafeRetryBlocked, ([tool, count]) => ({ tool, count })).sort(
+				(a, b) => a.tool.localeCompare(b.tool),
+			),
 			duration: { count: this.durationCount, totalMs: this.durationTotalMs, maxMs: this.durationMaxMs },
-			activeCircuits: 0,
+			activeCircuits,
 		};
 	}
 }
 
-export class ObserveOnlyToolRecoveryController implements ToolRecoveryController {
-	private readonly options: {
-		agentDir: string;
-		sessionManager: SessionManager;
-		getTurnId: () => string;
-	};
-	private readonly metrics = new ToolRecoveryMetrics();
-	private readonly observations = new Map<string, number>();
-	private readonly circuits = new Map<string, number>();
+function increment(counter: Counter, key: string): void {
+	counter.set(key, (counter.get(key) ?? 0) + 1);
+}
 
-	constructor(options: { agentDir: string; sessionManager: SessionManager; getTurnId: () => string }) {
+function attemptKey(toolCallId: string, failureFingerprint: string): string {
+	return `${toolCallId}\u0000${failureFingerprint}`;
+}
+
+function circuitKey(callSignature: string, failureFingerprint: string): string {
+	return `${callSignature}\u0000${failureFingerprint}`;
+}
+
+function isSafeRetry(observation: ToolRecoveryObservation): boolean {
+	const failure = observation.failure;
+	return Boolean(
+		failure &&
+			failure.sideEffect === "read_only" &&
+			failure.retryable &&
+			RETRYABLE_CODES.has(failure.code) &&
+			isTrustedReadOnlyBuiltinTool(observation.toolName, observation.toolRuntimeContext),
+	);
+}
+
+function retryDelayMs(attempt: number): number {
+	return 100 * 2 ** (attempt - 1);
+}
+
+function defaultSleep(delayMs: number, signal?: AbortSignal): Promise<boolean> {
+	if (signal?.aborted) return Promise.resolve(false);
+	return new Promise((resolve) => {
+		const timer = setTimeout(finish, delayMs);
+		const onAbort = () => {
+			clearTimeout(timer);
+			finish(false);
+		};
+		function finish(value = true): void {
+			signal?.removeEventListener("abort", onAbort);
+			resolve(value);
+		}
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+interface ControllerOptions {
+	agentDir: string;
+	sessionManager: SessionManager;
+	getTurnId: () => string;
+	now?: () => number;
+	sleep?: (delayMs: number, signal?: AbortSignal) => Promise<boolean>;
+}
+
+abstract class BaseToolRecoveryController implements ToolRecoveryController {
+	protected readonly options: ControllerOptions;
+	protected readonly metrics = new ToolRecoveryMetrics();
+
+	constructor(options: ControllerOptions) {
 		this.options = options;
 	}
 
-	preflight(): void {}
+	now(): number {
+		return (this.options.now ?? Date.now)();
+	}
 
-	async observe(observation: ToolRecoveryObservation, signal?: AbortSignal, error?: unknown): Promise<void> {
-		await adaptToolRecoveryObservation(observation, error, signal);
-		this.metrics.record(observation);
-		const failure = observation.failure;
+	async waitForRetry(delayMs: number, signal?: AbortSignal): Promise<boolean> {
+		return await (this.options.sleep ?? defaultSleep)(delayMs, signal);
+	}
+
+	protected async append(
+		observation: ToolRecoveryObservation,
+		failure: ToolFailure,
+		attempt: number,
+		action: RecoveryAction,
+	): Promise<void> {
 		const sessionFile = this.options.sessionManager.getSessionFile();
-		if (!failure || !sessionFile) return;
-
-		const key = `${observation.toolCallId}\u0000${failure.fingerprint}`;
-		const attempt = (this.observations.get(key) ?? 0) + 1;
-		this.observations.set(key, attempt);
-		this.circuits.set(`${observation.callSignature}\u0000${failure.fingerprint}`, attempt);
+		if (!sessionFile) return;
 		await appendSessionRecoveryLedger(
 			this.options.agentDir,
 			sessionFile,
@@ -84,15 +182,153 @@ export class ObserveOnlyToolRecoveryController implements ToolRecoveryController
 				failureFingerprint: failure.fingerprint,
 				failureCode: failure.code,
 				attempt,
-				action: "observe",
-				outcome: failure.code === "CANCELLED" ? "cancelled" : "failed",
+				action,
+				outcome:
+					observation.outcome === "success" || observation.outcome === "recovered"
+						? "recovered"
+						: observation.outcome === "blocked"
+							? "blocked"
+							: observation.outcome === "cancelled"
+								? "cancelled"
+								: "failed",
 				durationMs: observation.durationMs,
 				createdAt: failure.occurredAt,
 			}),
 		);
 	}
 
+	abstract preflight(
+		context: ToolRecoveryPreflightContext,
+		signal?: AbortSignal,
+	): ToolRecoveryPreflightResult | undefined | Promise<ToolRecoveryPreflightResult | undefined>;
+	abstract observe(observation: ToolRecoveryObservation, signal?: AbortSignal, error?: unknown): void | Promise<void>;
+}
+
+/** M3 compatibility controller. It never blocks or retries. */
+export class ObserveOnlyToolRecoveryController extends BaseToolRecoveryController {
+	private readonly observations = new Map<string, number>();
+
+	preflight(): undefined {
+		return undefined;
+	}
+
+	async observe(observation: ToolRecoveryObservation, signal?: AbortSignal, error?: unknown): Promise<void> {
+		await adaptToolRecoveryObservation(observation, error, signal);
+		this.metrics.recordDuration(observation.durationMs);
+		const failure = observation.failure;
+		if (!failure) return;
+		this.metrics.recordFailure(failure);
+		this.metrics.recordAttempt(observation.toolName, "observe");
+		const key = attemptKey(observation.toolCallId, failure.fingerprint);
+		const attempt = (this.observations.get(key) ?? 0) + 1;
+		this.observations.set(key, attempt);
+		await this.append(observation, failure, attempt, "observe");
+	}
+
 	getDiagnostics(): ToolRecoveryDiagnostics {
-		return this.metrics.snapshot();
+		return this.metrics.snapshot("observe", 0);
+	}
+}
+
+/** M4 controller. State is owned by one AgentSession and never crosses Sessions. */
+export class AssistToolRecoveryController extends BaseToolRecoveryController {
+	private readonly circuits = new Map<string, CircuitState>();
+	private readonly attempts = new Map<string, AttemptState>();
+	private readonly recovered = new Map<string, AttemptState>();
+
+	async preflight(context: ToolRecoveryPreflightContext): Promise<ToolRecoveryPreflightResult | undefined> {
+		const circuit = Array.from(this.circuits.entries()).find(([key]) =>
+			key.startsWith(`${context.callSignature}\u0000`),
+		);
+		if (!circuit) return;
+		const [, state] = circuit;
+		const observation: ToolRecoveryObservation = {
+			...context,
+			action: "stop",
+			outcome: "blocked",
+			durationMs: 0,
+			failure: state.failure,
+		};
+		this.metrics.recordRepeatBlocked(state.failure);
+		this.metrics.recordDuration(0);
+		await this.append(observation, state.failure, state.attempt, "stop");
+		return { blocked: true, failure: state.failure, message: BLOCKED_MESSAGE };
+	}
+
+	async decideAttempt(
+		observation: ToolRecoveryObservation,
+		signal?: AbortSignal,
+		error?: unknown,
+	): Promise<ToolRecoveryAttemptDecision> {
+		await adaptToolRecoveryObservation(observation, error, signal);
+		const failure = observation.failure!;
+		this.metrics.recordDuration(observation.durationMs);
+		this.metrics.recordFailure(failure);
+		const key = attemptKey(observation.toolCallId, failure.fingerprint);
+		const state = this.attempts.get(key) ?? { attempt: 0, failure };
+		state.attempt++;
+		state.failure = failure;
+		this.attempts.set(key, state);
+
+		if (failure.code === "CANCELLED") {
+			observation.action = "stop";
+			observation.outcome = "cancelled";
+			this.metrics.recordAttempt(observation.toolName, "stop");
+			await this.append(observation, failure, state.attempt, "stop");
+			return { action: { type: "stop", reason: "cancelled" }, observation };
+		}
+
+		if (isSafeRetry(observation) && state.attempt <= MAX_RECOVERY_RETRIES) {
+			observation.action = "retry_same_args";
+			observation.outcome = "failure";
+			(observation as ToolRecoveryObservation & { warning?: boolean }).warning = state.attempt === 2;
+			this.recovered.set(observation.toolCallId, state);
+			this.metrics.recordAttempt(observation.toolName, "retry_same_args");
+			await this.append(observation, failure, state.attempt, "retry_same_args");
+			return { action: { type: "retry_same_args", delayMs: retryDelayMs(state.attempt) }, observation };
+		}
+
+		observation.action = "stop";
+		observation.outcome = "failure";
+		this.metrics.recordAttempt(observation.toolName, "stop");
+		if (!isSafeRetry(observation)) this.metrics.recordUnsafeRetryBlocked(observation.toolName);
+		if (failure.code !== "POST_HOOK_FAILURE") {
+			this.circuits.set(circuitKey(observation.callSignature, failure.fingerprint), {
+				attempt: state.attempt,
+				failure,
+			});
+		}
+		await this.append(observation, failure, state.attempt, "stop");
+		return { action: { type: "stop", reason: "retry policy denied" }, observation };
+	}
+
+	async observe(observation: ToolRecoveryObservation, signal?: AbortSignal, error?: unknown): Promise<void> {
+		if (observation.outcome === "success") {
+			const state = this.recovered.get(observation.toolCallId);
+			this.metrics.recordDuration(observation.durationMs);
+			if (!state) return;
+			this.recovered.delete(observation.toolCallId);
+			observation.action = "retry_same_args";
+			observation.outcome = "recovered";
+			observation.failure = state.failure;
+			this.metrics.recordSuccess(observation.toolName);
+			await this.append(observation, state.failure, state.attempt + 1, "retry_same_args");
+			return;
+		}
+
+		await adaptToolRecoveryObservation(observation, error, signal);
+		const failure = observation.failure;
+		if (!failure) return;
+		this.metrics.recordDuration(observation.durationMs);
+		this.metrics.recordFailure(failure);
+		observation.action = "stop";
+		observation.outcome = failure.code === "CANCELLED" ? "cancelled" : "failure";
+		this.metrics.recordAttempt(observation.toolName, "stop");
+		const state = this.attempts.get(attemptKey(observation.toolCallId, failure.fingerprint));
+		await this.append(observation, failure, state?.attempt ?? 1, "stop");
+	}
+
+	getDiagnostics(): ToolRecoveryDiagnostics {
+		return this.metrics.snapshot("assist", this.circuits.size);
 	}
 }

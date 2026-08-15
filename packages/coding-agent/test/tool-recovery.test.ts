@@ -21,7 +21,7 @@ import {
 	readSessionRecoveryLedger,
 	removeSessionRecoveryLedger,
 } from "../src/core/tool-recovery/ledger.ts";
-import { ObserveOnlyToolRecoveryController } from "../src/core/tool-recovery/policies.ts";
+import { AssistToolRecoveryController, ObserveOnlyToolRecoveryController } from "../src/core/tool-recovery/policies.ts";
 import {
 	adaptToolRecoveryObservation,
 	classifyToolFailureForTest,
@@ -78,10 +78,14 @@ function createLedgerEntry(id: string, overrides: Partial<Parameters<typeof crea
 	});
 }
 
-function createObservation(toolCallId: string, toolRuntimeContext?: unknown): ToolRecoveryObservation {
+function createObservation(
+	toolCallId: string,
+	toolRuntimeContext?: unknown,
+	toolName = "read",
+): ToolRecoveryObservation {
 	return {
 		toolCallId,
-		toolName: "read",
+		toolName,
 		callSignature: HASH_A,
 		sideEffect: "unknown",
 		action: "observe",
@@ -360,7 +364,7 @@ describe("Tool recovery observe ledger", () => {
 		sessionManager.dispose();
 	});
 
-	it("injects the controller into AgentSession without changing Session JSONL", async () => {
+	it("injects an assist controller into AgentSession without changing Session JSONL", async () => {
 		const root = createTempDir();
 		const agentDir = join(root, "agent");
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
@@ -419,14 +423,116 @@ describe("Tool recovery observe ledger", () => {
 		const sessionFile = session.sessionFile!;
 		const ledger = await readSessionRecoveryLedger(agentDir, sessionFile);
 		expect(ledger).toHaveLength(1);
-		expect(ledger[0]).toMatchObject({ toolName: "read", failureCode: "UNCLASSIFIED", action: "observe" });
-		expect(session.getToolRecoveryDiagnostics().toolFailureTotal).toEqual([
-			{ tool: "read", code: "UNCLASSIFIED", count: 1 },
-		]);
+		expect(ledger[0]).toMatchObject({
+			toolName: "read",
+			failureCode: "UNCLASSIFIED",
+			action: "stop",
+			outcome: "failed",
+		});
+		expect(session.getToolRecoveryDiagnostics()).toMatchObject({
+			mode: "assist",
+			activeCircuits: 1,
+			toolUnsafeRetryBlockedTotal: [{ tool: "read", count: 1 }],
+		});
 		const sessionJsonl = readFileSync(sessionFile, "utf8");
 		expect(sessionJsonl).not.toContain("tool_recovery_observe");
 		expect(sessionJsonl).toContain("/private/project/secret.ts");
 		session.dispose();
+	});
+
+	it("applies the bounded trusted-read retry policy and opens a Session circuit", async () => {
+		const agentDir = createTempDir();
+		const sessionManager = SessionManager.create(agentDir, join(agentDir, "sessions"), { id: "assist-session" });
+		const controller = new AssistToolRecoveryController({
+			agentDir,
+			sessionManager,
+			getTurnId: () => "3",
+			now: () => 10,
+			sleep: async () => {
+				throw new Error("policy tests must not sleep");
+			},
+		});
+		const builtinRead = createTrustedBuiltInTool("read");
+		const transient = Object.assign(new Error("timed out"), { code: "ETIMEDOUT" });
+		const decisions = [];
+		for (let attempt = 1; attempt <= 3; attempt++) {
+			decisions.push(
+				await controller.decideAttempt(createObservation("same", builtinRead.runtimeContext), undefined, transient),
+			);
+		}
+		expect(decisions.map((decision) => decision.action.type)).toEqual(["retry_same_args", "retry_same_args", "stop"]);
+		expect(decisions[1]?.observation.warning).toBe(true);
+		const failure = decisions[2]?.observation.failure;
+		if (!failure) throw new Error("missing final failure");
+		await expect(
+			controller.preflight({
+				toolCallId: "next",
+				toolName: "read",
+				callSignature: HASH_A,
+				sideEffect: "unknown",
+				toolRuntimeContext: builtinRead.runtimeContext,
+			}),
+		).resolves.toMatchObject({ blocked: true, failure: { code: "TIMEOUT", fingerprint: failure.fingerprint } });
+		await expect(
+			controller.preflight({
+				toolCallId: "changed",
+				toolName: "read",
+				callSignature: "c".repeat(64),
+				sideEffect: "unknown",
+				toolRuntimeContext: builtinRead.runtimeContext,
+			}),
+		).resolves.toBeUndefined();
+		const ledger = await readSessionRecoveryLedger(agentDir, sessionManager.getSessionFile()!);
+		expect(ledger.map((entry) => [entry.action, entry.outcome, entry.attempt])).toEqual([
+			["retry_same_args", "failed", 1],
+			["retry_same_args", "failed", 2],
+			["stop", "failed", 3],
+			["stop", "blocked", 3],
+		]);
+		expect(controller.getDiagnostics()).toMatchObject({
+			mode: "assist",
+			activeCircuits: 1,
+			toolRecoveryAttemptTotal: [
+				{ tool: "read", action: "retry_same_args", count: 2 },
+				{ tool: "read", action: "stop", count: 1 },
+			],
+			toolRepeatBlockedTotal: [{ tool: "read", code: "TIMEOUT", count: 1 }],
+		});
+		sessionManager.dispose();
+	});
+
+	it("refuses automatic retry for Bash, writes, third-party Tools, and ordinary errors", async () => {
+		const agentDir = createTempDir();
+		const sessionManager = SessionManager.create(agentDir, join(agentDir, "sessions"), { id: "unsafe-session" });
+		const controller = new AssistToolRecoveryController({ agentDir, sessionManager, getTurnId: () => "4" });
+		const builtinBash = createTrustedBuiltInTool("bash");
+		const builtinEdit = createTrustedBuiltInTool("edit");
+		const thirdPartyRead = createTrustedBuiltInTool("read");
+		thirdPartyRead.runtimeContext = undefined;
+		for (const [id, tool, error] of [
+			["bash", builtinBash, Object.assign(new Error("timeout"), { code: "ETIMEDOUT" })],
+			["edit", builtinEdit, Object.assign(new Error("timeout"), { code: "ETIMEDOUT" })],
+			["third-party", thirdPartyRead, Object.assign(new Error("timeout"), { code: "ETIMEDOUT" })],
+			["ordinary", thirdPartyRead, new Error("ordinary")],
+		] as const) {
+			const decision = await controller.decideAttempt(
+				createObservation(id, tool.runtimeContext, tool.name),
+				undefined,
+				error,
+			);
+			expect(decision.action.type).toBe("stop");
+		}
+		expect(controller.getDiagnostics().toolRecoveryAttemptTotal).toEqual([
+			{ tool: "bash", action: "stop", count: 1 },
+			{ tool: "edit", action: "stop", count: 1 },
+			{ tool: "read", action: "stop", count: 2 },
+		]);
+		expect(controller.getDiagnostics().toolUnsafeRetryBlockedTotal).toEqual([
+			{ tool: "bash", count: 1 },
+			{ tool: "edit", count: 1 },
+			{ tool: "read", count: 2 },
+		]);
+		sessionManager.dispose();
 	});
 
 	it("removes a ledger after an explicit direct cleanup call", async () => {

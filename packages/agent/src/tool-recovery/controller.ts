@@ -1,5 +1,5 @@
 import { createFailureFingerprint, createToolCallFingerprint, type ToolCallFingerprint } from "./fingerprint.ts";
-import { ToolExecutionError, type ToolFailure, type ToolSideEffect } from "./types.ts";
+import { type RecoveryAction, ToolExecutionError, type ToolFailure, type ToolSideEffect } from "./types.ts";
 
 export interface ToolRecoveryPreflightContext extends ToolCallFingerprint {
 	toolCallId: string;
@@ -9,15 +9,44 @@ export interface ToolRecoveryPreflightContext extends ToolCallFingerprint {
 	toolRuntimeContext?: unknown;
 }
 
+export type ToolRecoveryEventAction = "observe" | "retry_same_args" | "stop";
+export type ToolRecoveryEventOutcome = "success" | "failure" | "recovered" | "blocked" | "cancelled";
+
 export interface ToolRecoveryObservation extends ToolRecoveryPreflightContext {
-	action: "observe";
-	outcome: "success" | "failure";
+	action: ToolRecoveryEventAction;
+	outcome: ToolRecoveryEventOutcome;
 	durationMs: number;
+	/** 第二次相同内部失败进入 warning，但不会改变 logical Tool 生命周期。 */
+	warning?: boolean;
 	failure?: ToolFailure;
 }
 
+export interface ToolRecoveryPreflightResult {
+	blocked: true;
+	failure: ToolFailure;
+	message: string;
+}
+
+export interface ToolRecoveryAttemptDecision {
+	action: Extract<RecoveryAction, { type: "retry_same_args" | "stop" }>;
+	observation: ToolRecoveryObservation;
+}
+
 export interface ToolRecoveryController {
-	preflight(context: ToolRecoveryPreflightContext, signal?: AbortSignal): void | Promise<void>;
+	preflight(
+		context: ToolRecoveryPreflightContext,
+		signal?: AbortSignal,
+	): ToolRecoveryPreflightResult | undefined | Promise<ToolRecoveryPreflightResult | undefined>;
+	/** 仅 assist controller 实现；未实现时保持 M3 observe 行为。 */
+	decideAttempt?(
+		observation: ToolRecoveryObservation,
+		signal?: AbortSignal,
+		error?: unknown,
+	): ToolRecoveryAttemptDecision | undefined | Promise<ToolRecoveryAttemptDecision | undefined>;
+	/** assist controller 的退避实现必须可被取消，且不遗留后台 timer。 */
+	waitForRetry?(delayMs: number, signal?: AbortSignal): boolean | Promise<boolean>;
+	/** 注入时钟供有界 retry 的测试和 duration 计算使用。 */
+	now?(): number;
 	/** `error` 仅供当前进程内的 adapter 分类，禁止写入 Agent event、Session 或 ledger。 */
 	observe(observation: ToolRecoveryObservation, signal?: AbortSignal, error?: unknown): void | Promise<void>;
 }
@@ -36,7 +65,9 @@ export class ObserveToolRecoveryController implements ToolRecoveryController {
 		this.onObserve = onObserve;
 	}
 
-	preflight(_context: ToolRecoveryPreflightContext, _signal?: AbortSignal): void {}
+	preflight(_context: ToolRecoveryPreflightContext, _signal?: AbortSignal): undefined {
+		return undefined;
+	}
 
 	observe(observation: ToolRecoveryObservation, signal?: AbortSignal, error?: unknown): void | Promise<void> {
 		return this.onObserve?.(observation, signal, error);
@@ -53,6 +84,7 @@ export async function createToolRecoveryCall(
 	args: unknown,
 	sideEffect: ToolSideEffect = "unknown",
 	toolRuntimeContext?: unknown,
+	now: () => number = Date.now,
 ): Promise<ToolRecoveryCall> {
 	return {
 		toolCallId,
@@ -60,7 +92,7 @@ export async function createToolRecoveryCall(
 		sideEffect,
 		...(toolRuntimeContext === undefined ? {} : { toolRuntimeContext }),
 		...(await createToolCallFingerprint(toolName, args)),
-		startedAt: Date.now(),
+		startedAt: now(),
 	};
 }
 
@@ -125,6 +157,7 @@ export async function createToolRecoveryObservation(input: {
 	isError: boolean;
 	error?: unknown;
 	phase?: "execution" | "post_hook";
+	now?: () => number;
 }): Promise<ToolRecoveryObservation> {
 	const failure = input.isError ? await createFailure(input.call, input.error, input.phase ?? "execution") : undefined;
 	return {
@@ -135,7 +168,7 @@ export async function createToolRecoveryObservation(input: {
 		sideEffect: input.call.sideEffect,
 		action: "observe",
 		outcome: failure ? "failure" : "success",
-		durationMs: Math.max(0, Date.now() - input.call.startedAt),
+		durationMs: Math.max(0, (input.now ?? Date.now)() - input.call.startedAt),
 		...(failure ? { failure } : {}),
 	};
 }

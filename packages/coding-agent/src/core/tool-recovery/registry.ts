@@ -84,6 +84,16 @@ export function getToolSideEffect(runtimeContext?: unknown): ToolSideEffect {
 	return getBuiltInToolIdentity(runtimeContext)?.sideEffect ?? "unknown";
 }
 
+/** 自动重试只信任运行时登记过的内置只读 Tool，名称相同的 Extension 不具备该资格。 */
+export function isTrustedReadOnlyBuiltinTool(toolName: string, runtimeContext?: unknown): boolean {
+	const identity = getBuiltInToolIdentity(runtimeContext);
+	return (
+		identity?.name === toolName &&
+		identity.sideEffect === "read_only" &&
+		(toolName === "read" || toolName === "grep" || toolName === "find" || toolName === "ls")
+	);
+}
+
 export function isStableFailureCode(code: string): code is StableFailureCode {
 	return Object.hasOwn(STABLE_FAILURES, code);
 }

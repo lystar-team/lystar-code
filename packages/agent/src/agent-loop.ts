@@ -15,8 +15,11 @@ import type { ToolRecoveryController } from "./tool-recovery/controller.ts";
 import {
 	createToolRecoveryCall,
 	createToolRecoveryObservation,
+	type ToolRecoveryAttemptDecision,
 	type ToolRecoveryCall,
+	type ToolRecoveryObservation,
 } from "./tool-recovery/controller.ts";
+import { ToolExecutionError } from "./tool-recovery/types.ts";
 import type {
 	AgentContext,
 	AgentEvent,
@@ -458,16 +461,15 @@ async function executeToolCallsSequential(
 	const messages: ToolResultMessage[] = [];
 
 	for (const toolCall of toolCalls) {
-		await emit({
-			type: "tool_execution_start",
-			toolCallId: toolCall.id,
-			toolName: toolCall.name,
-			args: toolCall.arguments,
-		});
-
 		const preparation = await prepareToolCall(currentContext, assistantMessage, toolCall, config, signal);
 		let finalized: FinalizedToolCallOutcome;
 		if (preparation.kind === "immediate") {
+			await emit({
+				type: "tool_execution_start",
+				toolCallId: toolCall.id,
+				toolName: toolCall.name,
+				args: toolCall.arguments,
+			});
 			finalized = {
 				toolCall,
 				result: preparation.result,
@@ -514,15 +516,14 @@ async function executeToolCallsParallel(
 	const finalizedCalls: FinalizedToolCallEntry[] = [];
 
 	for (const toolCall of toolCalls) {
-		await emit({
-			type: "tool_execution_start",
-			toolCallId: toolCall.id,
-			toolName: toolCall.name,
-			args: toolCall.arguments,
-		});
-
 		const preparation = await prepareToolCall(currentContext, assistantMessage, toolCall, config, signal);
 		if (preparation.kind === "immediate") {
+			await emit({
+				type: "tool_execution_start",
+				toolCallId: toolCall.id,
+				toolName: toolCall.name,
+				args: toolCall.arguments,
+			});
 			const finalized = {
 				toolCall,
 				result: preparation.result,
@@ -589,6 +590,8 @@ type ExecutedToolCallOutcome = {
 	isError: boolean;
 	error?: unknown;
 	recovery?: ToolRecoveryCall;
+	/** failure 已由 assist policy 记账时，最终 observe 不能重复写入。 */
+	recoveryFinalized?: boolean;
 };
 
 type FinalizedToolCallOutcome = {
@@ -700,6 +703,7 @@ async function executePreparedToolCall(
 	const updateEvents: Promise<void>[] = [];
 	let acceptingUpdates = true;
 	const controller = toolRecoveryController;
+	const now = controller?.now ? () => controller.now!() : Date.now;
 	const recovery = controller
 		? await createToolRecoveryCall(
 				prepared.toolCall.id,
@@ -707,52 +711,137 @@ async function executePreparedToolCall(
 				prepared.args,
 				"unknown",
 				prepared.tool.runtimeContext,
+				now,
 			)
 		: undefined;
 
 	if (recovery && controller) {
 		try {
-			await controller.preflight(recovery, signal);
+			const preflight = await controller.preflight(recovery, signal);
+			if (preflight?.blocked) {
+				const observation: ToolRecoveryObservation = {
+					...recovery,
+					action: "stop",
+					outcome: "blocked",
+					durationMs: Math.max(0, now() - recovery.startedAt),
+					failure: preflight.failure,
+				};
+				await emitRecoveryObservation(observation, emit);
+				await emit({
+					type: "tool_execution_start",
+					toolCallId: prepared.toolCall.id,
+					toolName: prepared.toolCall.name,
+					args: prepared.toolCall.arguments,
+				});
+				return {
+					result: createErrorToolResult(preflight.message),
+					isError: true,
+					error: new ToolExecutionError(preflight.message, {
+						code: preflight.failure.code,
+						category: preflight.failure.category,
+						retryable: false,
+					}),
+					recovery,
+					recoveryFinalized: true,
+				};
+			}
 		} catch {
-			// Recovery 观察不能改变逻辑 Tool Call。
+			// M3 observe controller 和第三方 controller 的 preflight 不能改变逻辑 Tool Call。
 		}
 	}
 
-	try {
-		const result = await prepared.tool.execute(
-			prepared.toolCall.id,
-			prepared.args as never,
-			signal,
-			(partialResult) => {
-				if (!acceptingUpdates) return;
-				updateEvents.push(
-					Promise.resolve(
-						emit({
-							type: "tool_execution_update",
-							toolCallId: prepared.toolCall.id,
-							toolName: prepared.toolCall.name,
-							args: prepared.toolCall.arguments,
-							partialResult,
-						}),
-					),
-				);
-			},
-		);
-		acceptingUpdates = false;
-		await Promise.all(updateEvents);
-		return { result, isError: false, recovery };
-	} catch (error) {
-		acceptingUpdates = false;
-		await Promise.all(updateEvents);
-		return {
-			result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
-			isError: true,
-			error,
-			recovery,
-		};
-	} finally {
-		acceptingUpdates = false;
+	await emit({
+		type: "tool_execution_start",
+		toolCallId: prepared.toolCall.id,
+		toolName: prepared.toolCall.name,
+		args: prepared.toolCall.arguments,
+	});
+
+	for (;;) {
+		if (signal?.aborted) {
+			return cancelledToolCallOutcome(recovery);
+		}
+		try {
+			const result = await prepared.tool.execute(
+				prepared.toolCall.id,
+				prepared.args as never,
+				signal,
+				(partialResult) => {
+					if (!acceptingUpdates) return;
+					updateEvents.push(
+						Promise.resolve(
+							emit({
+								type: "tool_execution_update",
+								toolCallId: prepared.toolCall.id,
+								toolName: prepared.toolCall.name,
+								args: prepared.toolCall.arguments,
+								partialResult,
+							}),
+						),
+					);
+				},
+			);
+			acceptingUpdates = false;
+			await Promise.all(updateEvents);
+			return { result, isError: false, recovery };
+		} catch (error) {
+			acceptingUpdates = false;
+			await Promise.all(updateEvents);
+			if (!recovery || !controller?.decideAttempt) {
+				return {
+					result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+					isError: true,
+					error,
+					recovery,
+				};
+			}
+
+			const observation = await createToolRecoveryObservation({
+				call: recovery,
+				isError: true,
+				error,
+				now,
+			});
+			let decision: ToolRecoveryAttemptDecision | undefined;
+			try {
+				decision = await controller.decideAttempt(observation, signal, error);
+			} catch {
+				decision = undefined;
+			}
+			if (!decision) {
+				return {
+					result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+					isError: true,
+					error,
+					recovery,
+				};
+			}
+			await emitRecoveryObservation(decision.observation, emit);
+			if (decision.action.type !== "retry_same_args") {
+				return {
+					result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+					isError: true,
+					error,
+					recovery,
+					recoveryFinalized: true,
+				};
+			}
+			const shouldContinue = controller.waitForRetry
+				? await controller.waitForRetry(decision.action.delayMs, signal)
+				: !signal?.aborted;
+			if (!shouldContinue || signal?.aborted) return cancelledToolCallOutcome(recovery);
+			acceptingUpdates = true;
+		}
 	}
+}
+
+function cancelledToolCallOutcome(recovery: ToolRecoveryCall | undefined): ExecutedToolCallOutcome {
+	const error = new ToolExecutionError("Operation aborted", {
+		code: "CANCELLED",
+		category: "cancelled",
+		retryable: false,
+	});
+	return { result: createErrorToolResult(error.message), isError: true, error, recovery };
 }
 
 async function finalizeExecutedToolCall(
@@ -818,6 +907,7 @@ async function finalizeExecutedToolCall(
 		config.toolRecoveryController,
 		signal,
 		emit,
+		executed.recoveryFinalized === true,
 	);
 	return finalized;
 }
@@ -830,19 +920,25 @@ async function observeFinalizedToolCall(
 	toolRecoveryController: ToolRecoveryController | undefined,
 	signal: AbortSignal | undefined,
 	emit: AgentEventSink,
+	alreadyRecorded: boolean,
 ): Promise<void> {
-	if (!toolRecoveryController || !recovery) return;
+	if (!toolRecoveryController || !recovery || (alreadyRecorded && phase === "execution")) return;
 	const observation = await createToolRecoveryObservation({
 		call: recovery,
 		isError: finalized.isError,
 		error,
 		phase,
+		now: toolRecoveryController.now ? () => toolRecoveryController.now!() : undefined,
 	});
 	try {
 		await toolRecoveryController.observe(observation, signal, error);
 	} catch {
-		// Recovery 观察不能改变逻辑 Tool Call。
+		// M3 observe controller 不能改变逻辑 Tool Call。
 	}
+	await emitRecoveryObservation(observation, emit);
+}
+
+async function emitRecoveryObservation(observation: ToolRecoveryObservation, emit: AgentEventSink): Promise<void> {
 	await emit({
 		type: "tool_recovery_observe",
 		toolCallId: observation.toolCallId,
@@ -853,6 +949,7 @@ async function observeFinalizedToolCall(
 		durationMs: observation.durationMs,
 		callSignature: observation.callSignature,
 		...(observation.failure ? { failureFingerprint: observation.failure.fingerprint } : {}),
+		...(observation.warning ? { warning: true } : {}),
 		...(observation.targetHash ? { targetHash: observation.targetHash } : {}),
 	});
 }

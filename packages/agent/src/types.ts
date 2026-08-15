@@ -278,8 +278,8 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	toolExecution?: ToolExecutionMode;
 
 	/**
-	 * 仅观察的恢复控制器，仅在 schema 校验和 `beforeToolCall` 放行后调用，
-	 * 不能阻断或重试 Tool Call。
+	 * 恢复控制器。仅实现 `preflight`/`observe` 时保持 M3 observe-only；
+	 * assist controller 才可返回有界重试或 circuit preflight 阻断。
 	 */
 	toolRecoveryController?: ToolRecoveryController;
 
@@ -466,10 +466,11 @@ export type AgentEvent =
 			toolCallId: string;
 			toolName: string;
 			failureCode?: string;
-			action: "observe";
-			outcome: "success" | "failure";
+			action: "observe" | "retry_same_args" | "stop";
+			outcome: "success" | "failure" | "recovered" | "blocked" | "cancelled";
 			durationMs: number;
 			callSignature: string;
 			failureFingerprint?: string;
+			warning?: boolean;
 			targetHash?: string;
 	  };

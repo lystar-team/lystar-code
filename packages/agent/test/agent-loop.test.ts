@@ -1840,6 +1840,7 @@ describe("Tool recovery observation", () => {
 				toolRecoveryController: {
 					preflight: () => {
 						preflights++;
+						return undefined;
 					},
 					observe: (observation) => {
 						observations.push(observation);
@@ -1914,6 +1915,7 @@ describe("Tool recovery observation", () => {
 				toolRecoveryController: {
 					preflight: () => {
 						recoveryCalls++;
+						return undefined;
 					},
 					observe: () => {
 						recoveryCalls++;
@@ -1980,6 +1982,156 @@ describe("Tool recovery observation", () => {
 			type: "text",
 			text: "Command timed out after 1 seconds",
 		});
+	});
+
+	it("retries a bounded assist decision without duplicating hooks or logical Tool events", async () => {
+		const schema = Type.Object({ value: Type.String() });
+		let executions = 0;
+		let beforeCalls = 0;
+		let afterCalls = 0;
+		const delays: number[] = [];
+		const tool: AgentTool<typeof schema> = {
+			name: "read",
+			label: "Read",
+			description: "Fault injection read",
+			parameters: schema,
+			async execute() {
+				executions++;
+				if (executions < 3) {
+					throw new ToolExecutionError("timed out", {
+						code: "TIMEOUT",
+						category: "transient",
+						retryable: true,
+					});
+				}
+				return { content: [{ type: "text", text: "recovered" }], details: {} };
+			},
+		};
+		const recoveryEvents: Array<Extract<AgentEvent, { type: "tool_recovery_observe" }>> = [];
+		const response = createToolCallThenStopStream([
+			{ type: "toolCall", id: "retry-call", name: "read", arguments: { value: "x" } },
+		]);
+		const stream = agentLoop(
+			[createUserMessage("run")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{
+				model: createModel(),
+				convertToLlm: identityConverter,
+				beforeToolCall: async () => {
+					beforeCalls++;
+					return undefined;
+				},
+				afterToolCall: async () => {
+					afterCalls++;
+					return undefined;
+				},
+				toolRecoveryController: {
+					preflight: () => undefined,
+					decideAttempt: (observation) => {
+						const retry = executions < 3;
+						observation.action = retry ? "retry_same_args" : "stop";
+						observation.warning = executions === 2;
+						return {
+							action: retry
+								? { type: "retry_same_args", delayMs: executions * 10 }
+								: { type: "stop", reason: "budget" },
+							observation,
+						};
+					},
+					waitForRetry: async (delayMs) => {
+						delays.push(delayMs);
+						return true;
+					},
+					observe: (observation) => {
+						if (observation.outcome === "success") {
+							observation.action = "retry_same_args";
+							observation.outcome = "recovered";
+						}
+					},
+				},
+			},
+			undefined,
+			response.streamFn,
+		);
+		for await (const event of stream) {
+			if (event.type === "tool_recovery_observe") recoveryEvents.push(event);
+		}
+		expect({ executions, beforeCalls, afterCalls, delays }).toEqual({
+			executions: 3,
+			beforeCalls: 1,
+			afterCalls: 1,
+			delays: [10, 20],
+		});
+		expect(recoveryEvents.map((event) => [event.action, event.outcome, event.warning ?? false])).toEqual([
+			["retry_same_args", "failure", false],
+			["retry_same_args", "failure", true],
+			["retry_same_args", "recovered", false],
+		]);
+		expect(response.getCalls()).toBe(2);
+	});
+
+	it("cancels a retry during backoff without starting another Tool attempt", async () => {
+		const schema = Type.Object({ value: Type.String() });
+		const abortController = new AbortController();
+		let executions = 0;
+		let beforeCalls = 0;
+		let afterCalls = 0;
+		const observations: ToolRecoveryObservation[] = [];
+		const tool: AgentTool<typeof schema> = {
+			name: "read",
+			label: "Read",
+			description: "Abort fault injection read",
+			parameters: schema,
+			async execute() {
+				executions++;
+				throw new ToolExecutionError("timed out", {
+					code: "TIMEOUT",
+					category: "transient",
+					retryable: true,
+				});
+			},
+		};
+		const response = createToolCallThenStopStream([
+			{ type: "toolCall", id: "abort-call", name: "read", arguments: { value: "x" } },
+		]);
+		const events: AgentEvent[] = [];
+		const stream = agentLoop(
+			[createUserMessage("run")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{
+				model: createModel(),
+				convertToLlm: identityConverter,
+				beforeToolCall: async () => {
+					beforeCalls++;
+					return undefined;
+				},
+				afterToolCall: async () => {
+					afterCalls++;
+					return undefined;
+				},
+				toolRecoveryController: {
+					preflight: () => undefined,
+					decideAttempt: (observation) => ({
+						action: { type: "retry_same_args", delayMs: 10 },
+						observation: { ...observation, action: "retry_same_args" },
+					}),
+					waitForRetry: async (_delayMs, signal) => {
+						abortController.abort();
+						return signal?.aborted !== true;
+					},
+					observe: (observation) => {
+						observations.push(observation);
+					},
+				},
+			},
+			abortController.signal,
+			response.streamFn,
+		);
+		for await (const event of stream) events.push(event);
+		expect({ executions, beforeCalls, afterCalls }).toEqual({ executions: 1, beforeCalls: 1, afterCalls: 1 });
+		expect(observations.at(-1)?.failure?.code).toBe("CANCELLED");
+		expect(events.filter((event) => event.type === "tool_execution_start")).toHaveLength(1);
+		expect(events.filter((event) => event.type === "tool_execution_end")).toHaveLength(1);
 	});
 
 	it("keeps parallel observations isolated by tool call", async () => {

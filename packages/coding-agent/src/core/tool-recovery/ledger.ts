@@ -15,7 +15,7 @@ export interface RecoveryLedgerEntry {
 	failureFingerprint: string;
 	failureCode: string;
 	attempt: number;
-	action: "observe";
+	action: "observe" | "retry_same_args" | "stop";
 	outcome: "recovered" | "failed" | "needs_model" | "blocked" | "cancelled";
 	durationMs: number;
 	createdAt: string;
@@ -51,6 +51,7 @@ const OUTCOMES = new Set<RecoveryLedgerEntry["outcome"]>([
 	"blocked",
 	"cancelled",
 ]);
+const ACTIONS = new Set<RecoveryLedgerEntry["action"]>(["observe", "retry_same_args", "stop"]);
 const ledgerQueues = new Map<string, Promise<void>>();
 
 function sha256(value: string): string {
@@ -85,7 +86,8 @@ function isLedgerEntry(value: unknown): value is RecoveryLedgerEntry {
 		typeof entry.attempt === "number" &&
 		Number.isSafeInteger(entry.attempt) &&
 		entry.attempt >= 1 &&
-		entry.action === "observe" &&
+		typeof entry.action === "string" &&
+		ACTIONS.has(entry.action as RecoveryLedgerEntry["action"]) &&
 		typeof entry.outcome === "string" &&
 		OUTCOMES.has(entry.outcome as RecoveryLedgerEntry["outcome"]) &&
 		typeof entry.durationMs === "number" &&
