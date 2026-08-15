@@ -11,6 +11,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import type { AssistantMessage, ImageContent, Message, Model } from "@earendil-works/pi-ai/compat";
 import type {
+	AltScreenSearchTarget,
 	AutocompleteItem,
 	AutocompleteProvider,
 	EditorComponent,
@@ -439,6 +440,7 @@ interface InteractiveTuiOptions {
 	logDirectory: string;
 	mouse?: boolean;
 	workspaceInputHandler?: TuiInputListener;
+	workspaceSearchTarget?: () => AltScreenSearchTarget | undefined;
 	terminal?: Terminal;
 	onRightClickPaste?: () => void;
 }
@@ -453,6 +455,7 @@ export function createInteractiveTui(options: InteractiveTuiOptions): TuiMainScr
 			searchMatchStyle: (text) => theme.underline(styleSearchMatch(text)),
 			searchCurrentMatchStyle: (text) => theme.bold(theme.inverse(styleSearchMatch(text))),
 			openUrl: openBrowser,
+			searchTarget: options.workspaceSearchTarget,
 			workspaceInputHandler: options.workspaceInputHandler,
 			onRightClickPaste: options.onRightClickPaste,
 			copySelection: async (text) => {
@@ -717,6 +720,7 @@ export class InteractiveMode {
 			logDirectory: getAgentDir(),
 			mouse: this.fullscreenMouse,
 			workspaceInputHandler: (data) => this.handleWorkspaceInput(data),
+			workspaceSearchTarget: () => this.workspace?.getAltScreenSearchTarget?.(),
 			onRightClickPaste: this.onRightClickPaste,
 		});
 		this.ui = createInteractiveTuiReference(() => this.renderer);
@@ -1058,6 +1062,7 @@ export class InteractiveMode {
 			logDirectory: getAgentDir(),
 			mouse: this.fullscreenMouse,
 			workspaceInputHandler: (data) => this.handleWorkspaceInput(data),
+			workspaceSearchTarget: () => this.workspace?.getAltScreenSearchTarget?.(),
 			terminal,
 			onRightClickPaste: this.onRightClickPaste,
 		});

@@ -184,6 +184,58 @@ describe("createInteractiveTui", () => {
 		}
 	});
 
+	it("searches the LYStar workspace transcript with the inherited overlay and scrolls between matches", async () => {
+		initTheme("dark");
+		const terminal = new RecordingTerminal(50, 8);
+		const chat = new Container();
+		for (let index = 0; index < 30; index++) {
+			const text = index === 4 ? "line-4 needle one" : index === 20 ? "line-20 needle two" : `line-${index}`;
+			chat.addChild(new Text(text, 0, 0));
+		}
+		const header = new Container();
+		header.addChild(new Text("header", 0, 0));
+		const workspace = new LystarWorkspace({
+			getHeight: () => terminal.rows,
+			header,
+			scrollContainers: [chat],
+			bottomContainers: [new Text("editor", 0, 0)],
+			fullscreen: true,
+			scrollbar: "hidden",
+		});
+		const renderer = createInteractiveTui({
+			tuiMode: "fullscreen",
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal,
+			workspaceSearchTarget: () => workspace.getAltScreenSearchTarget(),
+		});
+		renderer.addChild(workspace);
+		renderer.start();
+		try {
+			await terminal.waitForRender();
+			terminal.sendInput("\x1b[102;6u");
+			terminal.sendInput("needle");
+			await terminal.waitForRender();
+			expect(terminal.getViewport().some((line) => line.includes("Find transcript") && line.includes("1/2"))).toBe(
+				true,
+			);
+			expect(terminal.getViewport().some((line) => line.includes("line-4 needle one"))).toBe(true);
+
+			terminal.sendInput("\x07");
+			await terminal.waitForRender();
+			expect(terminal.getViewport().some((line) => line.includes("Find transcript") && line.includes("2/2"))).toBe(
+				true,
+			);
+			expect(terminal.getViewport().some((line) => line.includes("line-20 needle two"))).toBe(true);
+
+			terminal.sendInput("\x1b");
+			await terminal.waitForRender();
+			expect(terminal.getViewport().some((line) => line.includes("Find transcript"))).toBe(false);
+		} finally {
+			renderer.stop();
+		}
+	});
+
 	it("does not grow completed card dividers after arrow keys or text input", async () => {
 		initTheme("dark");
 		const terminal = new RecordingTerminal(80, 24);

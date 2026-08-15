@@ -143,6 +143,17 @@ interface SearchHighlightRange {
 	current: boolean;
 }
 
+export interface AltScreenSearchTarget {
+	/** Return the currently materialized transcript lines without reading more history. */
+	getLines(): readonly string[];
+	/** Return the logical viewport position within those transcript lines. */
+	getViewport(): { scrollTop: number; viewportHeight: number };
+	/** Move the transcript viewport so a logical transcript row becomes visible. */
+	scrollTo(row: number): void;
+	/** Return the transcript rectangle in the final terminal screen. */
+	getScreenBox(): { x: number; y: number; width: number; height: number };
+}
+
 export interface TuiAltScreenOptions {
 	/** Number of logical lines moved for each mouse-wheel event. */
 	wheelScrollLines?: number;
@@ -152,6 +163,8 @@ export interface TuiAltScreenOptions {
 	mouse?: boolean;
 	/** Forward pointer movement without a pressed button. */
 	allMouseMotion?: boolean;
+	/** Resolve a custom transcript target for layouts that do not use ScrollView. */
+	searchTarget?: () => AltScreenSearchTarget | undefined;
 	/** Style a non-current transcript search match. */
 	searchMatchStyle?: (text: string) => string;
 	/** Style the current transcript search match. */
@@ -202,6 +215,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private readonly wheelScrollNormalizer: WheelScrollNormalizer | undefined;
 	private readonly mouseEnabled: boolean;
 	private readonly allMouseMotion: boolean;
+	private readonly searchTarget: (() => AltScreenSearchTarget | undefined) | undefined;
 	private readonly searchMatchStyle: (text: string) => string;
 	private readonly searchCurrentMatchStyle: (text: string) => string;
 	private readonly openUrl?: (url: string) => void;
@@ -228,6 +242,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.wheelScrollNormalizer = options.adaptiveWheelScroll ? new WheelScrollNormalizer() : undefined;
 		this.mouseEnabled = options.mouse ?? true;
 		this.allMouseMotion = options.allMouseMotion ?? false;
+		this.searchTarget = options.searchTarget;
 		this.searchMatchStyle = options.searchMatchStyle ?? ((text) => `\x1b[4m${text}\x1b[24m`);
 		this.searchCurrentMatchStyle = options.searchCurrentMatchStyle ?? ((text) => `\x1b[1;7m${text}\x1b[22;27m`);
 		this.openUrl = options.openUrl;
@@ -451,6 +466,23 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 	}
 
+	private getSearchTarget(layout = this.currentLayout): AltScreenSearchTarget | undefined {
+		return this.searchTarget?.() ?? this.getDefaultSearchTarget(layout);
+	}
+
+	private getDefaultSearchTarget(layout = this.currentLayout): AltScreenSearchTarget | undefined {
+		if (!layout) return undefined;
+		const scrollView = layout.primaryScrollView ?? this.implicitScrollView;
+		const box = getScrollViewBox(layout, scrollView);
+		if (!box?.scrollContentLines) return undefined;
+		return {
+			getLines: () => box.scrollContentLines!,
+			getViewport: () => ({ scrollTop: scrollView.scrollTop, viewportHeight: scrollView.viewportHeight }),
+			scrollTo: (row) => scrollView.scrollTo(row, { disableFollow: true }),
+			getScreenBox: () => ({ x: box.rect.x, y: box.rect.y, width: box.rect.width, height: box.rect.height }),
+		};
+	}
+
 	private openSearch(): void {
 		if (this.activeSearch) {
 			this.activeSearch.overlay?.focus();
@@ -462,7 +494,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			query: "",
 			matches: [],
 			selectedIndex: -1,
-			anchorRow: this.getPrimaryScrollView().scrollTop,
+			anchorRow: this.searchTarget?.()?.getViewport().scrollTop ?? this.getPrimaryScrollView().scrollTop,
 			selectionMode: "query",
 		};
 		this.activeSearch = search;
@@ -486,7 +518,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const search = this.activeSearch;
 		if (!search || query === search.query) return;
 		const selected = search.matches[search.selectedIndex];
-		search.anchorRow = selected?.segments[0]?.row ?? this.getPrimaryScrollView().scrollTop;
+		search.anchorRow =
+			selected?.segments[0]?.row ??
+			this.searchTarget?.()?.getViewport().scrollTop ??
+			this.getPrimaryScrollView().scrollTop;
 		search.query = query;
 		search.selectionMode = "query";
 		search.component.setResult(-1, 0);
@@ -503,6 +538,58 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private refreshSearch(layout: LayoutFrame): boolean {
 		const search = this.activeSearch;
 		if (!search) return false;
+		const customTarget = this.searchTarget?.();
+		if (!customTarget) return this.refreshDefaultSearch(search, layout);
+		if (!search.query.trim()) {
+			search.matches = [];
+			search.selectedIndex = -1;
+			search.selectedKey = undefined;
+			search.selectionMode = "retain";
+			search.component.setResult(-1, 0);
+			return false;
+		}
+
+		const shouldRevealSelection = search.selectionMode !== "retain";
+		const matches = findAltScreenSearchMatches(customTarget.getLines(), search.query);
+		const exactIndex = search.selectedKey
+			? matches.findIndex((match) => getAltScreenSearchMatchKey(match) === search.selectedKey)
+			: -1;
+		let selectedIndex = -1;
+		if (matches.length > 0) {
+			if (search.selectionMode === "query") {
+				selectedIndex = matches.findIndex((match) => (match.segments[0]?.row ?? 0) >= search.anchorRow);
+				if (selectedIndex < 0) selectedIndex = 0;
+			} else if (search.selectionMode === "next") {
+				const baseIndex = exactIndex >= 0 ? exactIndex : Math.min(search.selectedIndex, matches.length - 1);
+				selectedIndex = baseIndex < 0 ? 0 : (baseIndex + 1) % matches.length;
+			} else if (search.selectionMode === "previous") {
+				const baseIndex = exactIndex >= 0 ? exactIndex : Math.min(search.selectedIndex, matches.length - 1);
+				selectedIndex = baseIndex < 0 ? matches.length - 1 : (baseIndex - 1 + matches.length) % matches.length;
+			} else {
+				selectedIndex =
+					exactIndex >= 0 ? exactIndex : Math.min(Math.max(0, search.selectedIndex), matches.length - 1);
+			}
+		}
+
+		search.matches = matches;
+		search.selectedIndex = selectedIndex;
+		search.selectedKey = selectedIndex >= 0 ? getAltScreenSearchMatchKey(matches[selectedIndex]!) : undefined;
+		search.selectionMode = "retain";
+		search.component.setResult(selectedIndex, matches.length);
+		if (!shouldRevealSelection) return false;
+
+		const selected = matches[selectedIndex];
+		const firstSegment = selected?.segments[0];
+		const lastSegment = selected?.segments[selected.segments.length - 1];
+		const { scrollTop, viewportHeight } = customTarget.getViewport();
+		if (!firstSegment || !lastSegment || viewportHeight <= 0) return false;
+		const visibleBottom = scrollTop + viewportHeight - 1;
+		if (firstSegment.row >= scrollTop && lastSegment.row <= visibleBottom) return false;
+		customTarget.scrollTo(firstSegment.row - Math.floor(viewportHeight / 3));
+		return true;
+	}
+
+	private refreshDefaultSearch(search: ActiveSearch, layout: LayoutFrame): boolean {
 		const scrollView = layout.primaryScrollView ?? this.implicitScrollView;
 		const box = getScrollViewBox(layout, scrollView);
 		const lines = box?.scrollContentLines;
@@ -1162,28 +1249,22 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	private applySearchHighlights(screen: string[], layout: LayoutFrame): string[] {
 		const search = this.activeSearch;
-		if (!search || search.selectedIndex < 0 || search.matches.length === 0) return screen;
-		const scrollView = layout.primaryScrollView ?? this.implicitScrollView;
-		const box = getScrollViewBox(layout, scrollView);
-		if (!box) return screen;
+		const target = this.getSearchTarget(layout);
+		if (!search || !target || search.selectedIndex < 0 || search.matches.length === 0) return screen;
 
 		const rangesByRow = new Map<number, SearchHighlightRange[]>();
-		const scrollbarColumn = getScrollbarGeometry(box)?.column;
-		const minRow = Math.max(0, box.rect.y, box.clip.y);
-		const maxRow = Math.min(screen.length, box.rect.y + box.rect.height, box.clip.y + box.clip.height);
-		const minColumn = Math.max(0, box.rect.x, box.clip.x);
-		const maxColumn = Math.min(
-			this.terminal.columns,
-			box.rect.x + box.rect.width,
-			box.clip.x + box.clip.width,
-			scrollbarColumn ?? Number.POSITIVE_INFINITY,
-		);
+		const box = target.getScreenBox();
+		const { scrollTop } = target.getViewport();
+		const minRow = Math.max(0, box.y);
+		const maxRow = Math.min(screen.length, box.y + box.height);
+		const minColumn = Math.max(0, box.x);
+		const maxColumn = Math.min(this.terminal.columns, box.x + box.width);
 		for (let matchIndex = 0; matchIndex < search.matches.length; matchIndex++) {
 			for (const segment of search.matches[matchIndex]!.segments) {
-				const row = box.rect.y + segment.row - scrollView.scrollTop;
+				const row = box.y + segment.row - scrollTop;
 				if (row < minRow || row >= maxRow) continue;
-				const startCol = Math.max(minColumn, box.rect.x + segment.startCol);
-				const endCol = Math.min(maxColumn, box.rect.x + segment.endCol);
+				const startCol = Math.max(minColumn, box.x + segment.startCol);
+				const endCol = Math.min(maxColumn, box.x + segment.endCol);
 				if (endCol <= startCol) continue;
 				const ranges = rangesByRow.get(row) ?? [];
 				ranges.push({ startCol, endCol, current: matchIndex === search.selectedIndex });

@@ -1,4 +1,4 @@
-import type { Component, ScrollViewScrollbar } from "@earendil-works/pi-tui";
+import type { AltScreenSearchTarget, Component, ScrollViewScrollbar } from "@earendil-works/pi-tui";
 import { type Container, sliceByColumn, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { t } from "../../../locales/zh-CN.ts";
 import { stripAnsi } from "../../../utils/ansi.ts";
@@ -19,6 +19,14 @@ interface RenderedComponentRange {
 interface RenderedComponentBlock extends RenderedComponentRange {
 	index: number;
 	lines: string[];
+}
+
+interface WorkspaceSearchDocument {
+	width: number;
+	components: Component[];
+	versions: Array<number | undefined>;
+	lines: string[];
+	ranges: Array<{ start: number; end: number }>;
 }
 
 interface RenderVersionedComponent extends Component {
@@ -222,6 +230,10 @@ export class LystarWorkspace implements Component {
 	private indicatorRow = -1;
 	private lastContentHeight = 0;
 	private preserveViewportOnNextPrepend = false;
+	private contentRenderWidth = 1;
+	private contentPadding = 0;
+	private searchDocument: WorkspaceSearchDocument | undefined;
+	private searchJump: { componentIndex: number; row: number } | undefined;
 
 	constructor(options: WorkspaceOptions) {
 		this.options = options;
@@ -242,6 +254,7 @@ export class LystarWorkspace implements Component {
 		// 历史组件进入窗口时再按代刷新，避免主题切换同步重建完整会话。
 		this.invalidationGeneration++;
 		this.blockCache = new Map();
+		this.searchDocument = undefined;
 	}
 
 	setScrollbar(scrollbar: ScrollViewScrollbar): void {
@@ -273,6 +286,8 @@ export class LystarWorkspace implements Component {
 		this.preserveViewportOnNextPrepend = false;
 		this.blockCache = new Map();
 		this.componentInvalidationGeneration = new WeakMap();
+		this.searchDocument = undefined;
+		this.searchJump = undefined;
 	}
 
 	isAtTop(): boolean {
@@ -321,6 +336,61 @@ export class LystarWorkspace implements Component {
 		this.scrollTop = this.getMaxScrollTop();
 	}
 
+	getAltScreenSearchTarget(): AltScreenSearchTarget {
+		return {
+			getLines: () => this.getSearchDocument().lines,
+			getViewport: () => {
+				const document = this.getSearchDocument();
+				const start = document.ranges[this.historyStartIndex]?.start ?? 0;
+				return { scrollTop: start + this.scrollTop, viewportHeight: this.viewportHeight };
+			},
+			scrollTo: (row) => this.scrollToSearchRow(row),
+			getScreenBox: () => ({
+				x: this.contentPadding,
+				y: this.viewportScreenTop,
+				width: this.contentRenderWidth,
+				height: this.viewportHeight,
+			}),
+		};
+	}
+
+	private getSearchDocument(): WorkspaceSearchDocument {
+		const components = this.getScrollComponents();
+		const versions = components.map((component) =>
+			isRenderVersioned(component) ? component.getRenderVersion() : undefined,
+		);
+		const cached = this.searchDocument;
+		if (
+			cached &&
+			cached.width === this.contentRenderWidth &&
+			cached.components.length === components.length &&
+			cached.components.every((component, index) => component === components[index]) &&
+			cached.versions.every((version, index) => version === versions[index])
+		) {
+			return cached;
+		}
+
+		const lines: string[] = [];
+		const ranges: Array<{ start: number; end: number }> = [];
+		for (const component of components) {
+			const start = lines.length;
+			lines.push(...component.render(this.contentRenderWidth));
+			ranges.push({ start, end: lines.length });
+		}
+		const document = { width: this.contentRenderWidth, components: [...components], versions, lines, ranges };
+		this.searchDocument = document;
+		return document;
+	}
+
+	private scrollToSearchRow(row: number): void {
+		const document = this.getSearchDocument();
+		const targetRow = Math.max(0, Math.min(Math.max(0, document.lines.length - 1), row));
+		const componentIndex = document.ranges.findIndex((range) => targetRow >= range.start && targetRow < range.end);
+		if (componentIndex < 0) return;
+		this.searchJump = { componentIndex, row: targetRow - document.ranges[componentIndex]!.start };
+		this.following = false;
+	}
+
 	getComponentAtScreenRow(row: number): Component | undefined {
 		return this.getComponentHitAtScreenRow(row)?.component;
 	}
@@ -344,6 +414,8 @@ export class LystarWorkspace implements Component {
 			? Math.min(this.options.horizontalPadding ?? 2, Math.max(0, Math.floor((width - 1) / 2)))
 			: 0;
 		const renderWidth = Math.max(1, width - horizontalPadding * 2);
+		this.contentRenderWidth = renderWidth;
+		this.contentPadding = horizontalPadding;
 		const headerLines = this.options.header.render(renderWidth);
 		const topStatusLines = this.options.topStatus?.render(renderWidth) ?? [];
 		const bottomSections = this.options.bottomContainers.map((component) => ({
@@ -512,6 +584,7 @@ export class LystarWorkspace implements Component {
 		}
 
 		this.scrollComponents = this.options.scrollContainers.flatMap((container) => container.children);
+		this.searchDocument = undefined;
 		this.scrollContainerSnapshots = this.options.scrollContainers.map((container) => ({
 			children: container.children,
 			length: container.children.length,
@@ -585,7 +658,25 @@ export class LystarWorkspace implements Component {
 		let start: number;
 		let end: number;
 		let jumpedToTop = false;
-		if (
+		const searchJump = this.searchJump;
+		if (searchJump) {
+			start = searchJump.componentIndex;
+			let beforeHeight = 0;
+			while (start > 0 && beforeHeight < bufferHeight) {
+				start--;
+				beforeHeight += renderComponent(components[start]!).length;
+			}
+			const targetRow = beforeHeight + searchJump.row;
+			end = searchJump.componentIndex + 1;
+			let includedHeight =
+				targetRow + renderComponent(components[searchJump.componentIndex]!).length - searchJump.row;
+			while (end < components.length && includedHeight < targetRow + viewportHeight + bufferHeight) {
+				includedHeight += renderComponent(components[end]!).length;
+				end++;
+			}
+			this.scrollTop = Math.max(0, targetRow - Math.floor(viewportHeight / 3));
+			this.searchJump = undefined;
+		} else if (
 			this.following ||
 			this.historyEndIndex <= this.historyStartIndex ||
 			this.historyEndIndex > components.length
