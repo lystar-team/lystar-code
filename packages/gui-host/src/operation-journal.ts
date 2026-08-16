@@ -18,6 +18,7 @@ import {
 	type JsonValue,
 	type OperationSnapshot,
 	type OperationStatus,
+	type SessionProgress,
 } from "@lystar/code-gui-protocol";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -102,7 +103,7 @@ export class OperationJournal {
 	update(
 		operationId: string,
 		status: OperationStatus,
-		options?: { progress?: JsonValue; result?: JsonValue; error?: string },
+		options?: { progress?: SessionProgress; result?: JsonValue; error?: string },
 	): OperationSnapshot {
 		this.assertWritable();
 		const current = this.byId.get(operationId);

@@ -1,4 +1,4 @@
-import type { ClientMessage, JsonValue, ServerMessage } from "../src/index.ts";
+import type { ClientMessage, JsonValue, ServerMessage, SessionProgress } from "../src/index.ts";
 
 export const clientGoldenFixtures: Record<string, ClientMessage> = {
 	"client-hello": { type: "hello", version: 1, clientInstanceId: "rust-spike-client" },
@@ -17,7 +17,7 @@ export const clientGoldenFixtures: Record<string, ClientMessage> = {
 	"client-ui-response-value": { type: "ui_response", id: "ui-response-value", value: { accepted: true } },
 };
 
-const operation = (progress: JsonValue | undefined, result: JsonValue | undefined) => ({
+const operation = (progress: SessionProgress | undefined, result: JsonValue | undefined) => ({
 	operationId: "operation-1",
 	clientInstanceId: "client-1",
 	clientRequestId: "request-1",
@@ -101,12 +101,8 @@ export const serverGoldenFixtures: Record<string, ServerMessage> = {
 		type: "event",
 		event: { type: "operation_updated", operation: operation(undefined, undefined) },
 	},
-	"server-event-operation-null": {
-		type: "event",
-		event: { type: "operation_updated", operation: operation(null, null) },
-	},
 	"server-event-operation-value": {
 		type: "event",
-		event: { type: "operation_updated", operation: operation({ step: 1 }, { done: true }) },
+		event: { type: "operation_updated", operation: operation({ type: "status", status: "step 1" }, { done: true }) },
 	},
 };

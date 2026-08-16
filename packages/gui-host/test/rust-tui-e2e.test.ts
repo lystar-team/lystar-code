@@ -192,15 +192,24 @@ async function sampleRss(pid: number): Promise<number[]> {
 class FakeRuntimeSession implements RuntimeSession {
 	readonly events = new EventEmitter();
 	readonly sessionPath: string;
+	readonly prompts: string[] = [];
+	readonly steers: string[] = [];
+	readonly followUps: string[] = [];
+	clearQueueCount = 0;
+	abortCount = 0;
+	holdPrompt = false;
+	private resolvePrompt?: () => void;
 	private readonly snapshot = {
 		id: "m7-runtime",
 		cwd: "/tmp",
 		createdAt: 0,
 		updatedAt: 0,
-		phase: "idle" as const,
+		phase: "idle" as "idle" | "turn",
+		activity: "idle" as "idle" | "running",
 		thinkingLevel: "off" as const,
 		leafId: null,
 		queuedSteerCount: 0,
+		queuedFollowUpCount: 0,
 		transcriptGeneration: "m7-runtime-generation",
 		transcriptRevision: 0,
 	};
@@ -212,7 +221,23 @@ class FakeRuntimeSession implements RuntimeSession {
 	getSnapshot(writeAccess: "available" | "owned" | "controlled_elsewhere" | "locked_externally") {
 		return { ...this.snapshot, path: this.sessionPath, attached: true, writeAccess, revision: 0 };
 	}
-	async prompt(): Promise<void> {}
+	async prompt(text: string): Promise<void> {
+		this.prompts.push(text);
+		if (this.holdPrompt)
+			await new Promise<void>((resolve) => {
+				this.resolvePrompt = resolve;
+			});
+	}
+	async steer(text: string): Promise<void> {
+		this.steers.push(text);
+	}
+	async followUp(text: string): Promise<void> {
+		this.followUps.push(text);
+	}
+	async clearQueue(): Promise<{ steering: string[]; followUp: string[] }> {
+		this.clearQueueCount++;
+		return { steering: [], followUp: [] };
+	}
 	async runBash(): Promise<JsonValue> {
 		return {};
 	}
@@ -222,7 +247,11 @@ class FakeRuntimeSession implements RuntimeSession {
 	async fork(): Promise<{ sessionPath: string }> {
 		return { sessionPath: this.sessionPath };
 	}
-	async abort(): Promise<void> {}
+	async abort(): Promise<void> {
+		this.abortCount++;
+		this.resolvePrompt?.();
+		this.resolvePrompt = undefined;
+	}
 	async reloadResources(): Promise<void> {}
 	getCompletions() {
 		return undefined;
@@ -248,6 +277,11 @@ class FakeRuntimeSession implements RuntimeSession {
 	onEvent(listener: (event: RuntimeEvent) => void): () => void {
 		this.events.on("runtime", listener);
 		return () => this.events.off("runtime", listener);
+	}
+	setRunning(running: boolean): void {
+		this.snapshot.activity = running ? "running" : "idle";
+		this.snapshot.phase = running ? "turn" : "idle";
+		this.emit({ type: "state_changed", payload: {} });
 	}
 	emit(event: RuntimeEvent): void {
 		this.events.emit("runtime", event);
@@ -356,15 +390,6 @@ async function startTui(
 	});
 	cleanups.push(() => control.close());
 	await control.handle({ type: "hello", version: 1, clientInstanceId: "m7-runtime-controller" });
-	await control.handle({
-		type: "request",
-		id: "acquire-runtime",
-		request: { command: "acquire_session", sessionPath, clientInstanceId: "m7-runtime-controller" },
-	});
-	assert.ok(
-		controlMessages.some((message) => message.type === "response" && message.id === "acquire-runtime" && message.ok),
-		"Host did not grant the runtime control lease",
-	);
 
 	const decoder = new ClientMessageDecoder();
 	const outputBuffer = Buffer.allocUnsafe(64 * 1024);
@@ -607,6 +632,118 @@ describe("Rust read-only TUI fd bridge", () => {
 			}
 		}
 	}, 90_000);
+
+	it("submits prompt once, routes streaming input, projects typed Tool state, and journals clear queue", async () => {
+		const tui = await startTui(4, { width: 80, height: 24 }, "interactive");
+		try {
+			await waitForInitialPage(tui);
+			await waitFor(async () => {
+				await tui.pump();
+				return tui.serverMessages.some(
+					(message) => message.type === "response" && message.id.startsWith("acquire-") && message.ok,
+				);
+			}, "Host did not return the Rust lease");
+			tui.sendLiteral("first prompt");
+			tui.send("Enter");
+			await waitFor(async () => {
+				await tui.pump();
+				return tui.runtime.prompts.length === 1;
+			}, "Enter did not invoke prompt exactly once");
+			assert.deepEqual(tui.runtime.prompts, ["first prompt"]);
+
+			tui.runtime.setRunning(true);
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			tui.sendLiteral("steer now");
+			tui.send("Enter");
+			await waitFor(async () => {
+				await tui.pump();
+				return tui.runtime.steers.length === 1;
+			}, "streaming Enter did not invoke steer");
+			tui.sendLiteral("follow later");
+			tui.send("M-Enter");
+			await waitFor(async () => {
+				await tui.pump();
+				return tui.runtime.followUps.length === 1;
+			}, "Alt+Enter did not invoke follow_up");
+
+			tui.runtime.emit({ type: "progress", payload: { type: "assistant_delta", text: "live assistant" } });
+			tui.runtime.emit({ type: "progress", payload: { type: "thinking_delta", text: "live thinking" } });
+			tui.runtime.emit({
+				type: "progress",
+				payload: { type: "tool_start", toolCallId: "live-call", name: "read", summary: "src/live.ts" },
+			});
+			tui.runtime.emit({
+				type: "progress",
+				payload: { type: "tool_update", toolCallId: "live-call", name: "read", summary: "reading" },
+			});
+			await waitFor(() => tui.pane().includes("Tool read"), "typed Tool progress is not visible in Composer");
+
+			tui.runtime.setRunning(false);
+			tui.runtime.holdPrompt = true;
+			tui.sendLiteral("abort prompt");
+			tui.send("Enter");
+			await waitFor(async () => {
+				await tui.pump();
+				return tui.runtime.prompts.length === 2;
+			}, "pending prompt was not accepted");
+			tui.send("Escape");
+			await waitFor(async () => {
+				await tui.pump();
+				return tui.runtime.abortCount === 1;
+			}, "Esc did not abort the active operation");
+			tui.runtime.holdPrompt = false;
+
+			const clientInstanceId = `lystar-rust-m8-${tui.panePid()}`;
+			const clear = {
+				type: "request" as const,
+				id: "clear-first",
+				request: {
+					command: "clear_queue" as const,
+					sessionPath: tui.sessionPath,
+					leaseId: "",
+					clientInstanceId,
+					clientRequestId: "clear-once",
+				},
+			};
+			const snapshot = tui.serverMessages.find(
+				(message) =>
+					message.type === "event" &&
+					message.event.type === "session_snapshot" &&
+					message.event.snapshot.writeAccess === "owned",
+			);
+			assert.ok(snapshot, "missing owned snapshot for Rust lease");
+			const acquire = tui.serverMessages.find(
+				(message) => message.type === "response" && message.id.startsWith("acquire-") && message.ok,
+			);
+			assert.ok(acquire && acquire.type === "response" && acquire.ok, "missing Rust acquire response");
+			const leaseId = (acquire.result as { lease: { leaseId: string } }).lease.leaseId;
+			const retryPrompt = {
+				type: "request" as const,
+				id: "prompt-first",
+				request: {
+					command: "prompt" as const,
+					sessionPath: tui.sessionPath,
+					leaseId,
+					clientInstanceId,
+					clientRequestId: "response-lost-prompt",
+					text: "retry once",
+				},
+			};
+			await tui.connection.handle(retryPrompt);
+			await tui.connection.handle({ ...retryPrompt, id: "prompt-retry" });
+			await waitFor(
+				() => tui.runtime.prompts.filter((text) => text === "retry once").length === 1,
+				"prompt retry was not journal-idempotent",
+			);
+
+			clear.request.leaseId = leaseId;
+			await tui.connection.handle(clear);
+			await tui.connection.handle({ ...clear, id: "clear-retry" });
+			await waitFor(() => tui.runtime.clearQueueCount === 1, "clear_queue retry was not journal-idempotent");
+		} finally {
+			tui.closeProtocol();
+		}
+	}, 60_000);
 
 	it("records five 10k-tool first-frame, RSS, and older-page samples", async () => {
 		const firstFrameMs: number[] = [];

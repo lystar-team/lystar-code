@@ -1,6 +1,10 @@
 use std::collections::{HashMap, VecDeque};
 
-use lystar_protocol::{ToolCall, TranscriptItem, TranscriptViewItem};
+use crate::editor::EditorState;
+use lystar_protocol::{
+    OperationSnapshot, SessionProgress, SessionSnapshot, ToolCall, TranscriptItem,
+    TranscriptViewItem,
+};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -397,14 +401,156 @@ pub struct SearchHit {
     pub snippet: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveTool {
+    pub name: String,
+    pub summary: String,
+    pub status: String,
+}
+
 #[derive(Debug, Default)]
 pub struct AppState {
     pub transcript: TranscriptWindow,
     pub search: SearchState,
+    pub editor: EditorState,
+    pub snapshot: Option<SessionSnapshot>,
+    pub lease_id: Option<String>,
+    pub operation: Option<OperationSnapshot>,
+    pub live_tools: HashMap<String, LiveTool>,
+    pub assistant_stream: String,
+    pub thinking_stream: String,
     pub disconnected: Option<String>,
 }
 
 impl AppState {
+    pub fn apply_lease(&mut self, lease_id: String, snapshot: SessionSnapshot) {
+        self.lease_id = Some(lease_id);
+        self.snapshot = Some(snapshot);
+    }
+
+    pub fn apply_snapshot(&mut self, snapshot: SessionSnapshot) {
+        self.snapshot = Some(snapshot);
+    }
+
+    pub fn apply_operation(&mut self, operation: OperationSnapshot) {
+        self.operation = Some(operation);
+    }
+
+    pub fn apply_progress(&mut self, progress: SessionProgress) {
+        match progress {
+            SessionProgress::AssistantDelta { text } => self.assistant_stream.push_str(&text),
+            SessionProgress::ThinkingDelta { text } => self.thinking_stream.push_str(&text),
+            SessionProgress::ToolStart {
+                tool_call_id,
+                name,
+                summary,
+            } => {
+                self.live_tools.insert(
+                    tool_call_id,
+                    LiveTool {
+                        name,
+                        summary: summary.unwrap_or_default(),
+                        status: "运行中".to_owned(),
+                    },
+                );
+            }
+            SessionProgress::ToolUpdate {
+                tool_call_id,
+                name,
+                summary,
+            } => {
+                self.live_tools.insert(
+                    tool_call_id,
+                    LiveTool {
+                        name,
+                        summary,
+                        status: "运行中".to_owned(),
+                    },
+                );
+            }
+            SessionProgress::ToolEnd {
+                tool_call_id,
+                name,
+                status,
+                summary,
+            } => {
+                self.live_tools.insert(
+                    tool_call_id,
+                    LiveTool {
+                        name,
+                        summary,
+                        status,
+                    },
+                );
+            }
+            SessionProgress::QueueUpdate {
+                steering_count,
+                follow_up_count,
+            } => {
+                if let Some(snapshot) = &mut self.snapshot {
+                    snapshot.queued_steer_count = steering_count;
+                    snapshot.queued_follow_up_count = follow_up_count;
+                }
+            }
+            SessionProgress::Phase { phase } => {
+                if let Some(snapshot) = &mut self.snapshot {
+                    snapshot.phase = phase;
+                }
+            }
+            SessionProgress::Status { status, .. } => self.transcript.status = status,
+            SessionProgress::Usage { usage } => {
+                if let Some(elapsed) = usage.elapsed_ms {
+                    self.transcript.status = format!("运行 {}ms", elapsed);
+                }
+            }
+        }
+    }
+
+    pub fn clear_live_after_commit(&mut self, items: &[TranscriptItem]) {
+        for item in items {
+            if let TranscriptViewItem::ToolResult { call_id, .. } = &item.view {
+                self.live_tools.remove(call_id);
+            }
+        }
+        self.assistant_stream.clear();
+        self.thinking_stream.clear();
+    }
+
+    pub fn composer_height(&self, total_height: u16) -> u16 {
+        if total_height <= 8 { 4 } else { 6 }
+    }
+
+    pub fn is_streaming(&self) -> bool {
+        self.snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.activity == "running")
+            || self
+                .operation
+                .as_ref()
+                .is_some_and(|operation| operation.status == "running")
+    }
+
+    pub fn footer_status(&self) -> String {
+        let Some(snapshot) = &self.snapshot else {
+            return "未获取会话租约".to_owned();
+        };
+        let model = snapshot
+            .model
+            .as_ref()
+            .map_or("无模型".to_owned(), |model| {
+                format!("{}/{}", model.provider, model.id)
+            });
+        format!(
+            "{} 队列 {}/{} {} 思考 {} {}",
+            snapshot.phase,
+            snapshot.queued_steer_count,
+            snapshot.queued_follow_up_count,
+            model,
+            snapshot.thinking_level,
+            snapshot.cwd
+        )
+    }
+
     pub fn open_search(&mut self) {
         self.search.open = true;
         self.search.status.clear();
@@ -607,7 +753,7 @@ impl Widget for TranscriptView<'_> {
             buffer,
             area.x,
             status_y,
-            &format!("只读  |  {status}  |  q 退出"),
+            &format!("{status}  |  {}", self.state.footer_status()),
             usize::from(area.width),
             Style::default().fg(if self.state.disconnected.is_some() {
                 Color::Red
@@ -643,6 +789,104 @@ impl Widget for TranscriptView<'_> {
             );
         }
     }
+}
+
+pub struct ComposerView<'a> {
+    state: &'a AppState,
+}
+
+impl<'a> ComposerView<'a> {
+    pub fn new(state: &'a AppState) -> Self {
+        Self { state }
+    }
+}
+
+impl Widget for ComposerView<'_> {
+    fn render(self, area: Rect, buffer: &mut Buffer) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let width = usize::from(area.width);
+        put_line(
+            buffer,
+            area.x,
+            area.y,
+            "─",
+            width,
+            Style::default().fg(Color::DarkGray),
+        );
+        let visible_lines = usize::from(area.height.saturating_sub(3)).max(1);
+        let (cursor_line, cursor_column) = self.state.editor.cursor_line_column();
+        let start_line = self.state.editor.scroll_line();
+        for (line_index, line) in self
+            .state
+            .editor
+            .lines()
+            .enumerate()
+            .skip(start_line)
+            .take(visible_lines)
+        {
+            let mut rendered = line.to_owned();
+            if line_index == cursor_line {
+                let byte = line
+                    .grapheme_indices(true)
+                    .nth(cursor_column)
+                    .map_or(line.len(), |(index, _)| index);
+                rendered.insert(byte, '|');
+            }
+            put_line(
+                buffer,
+                area.x,
+                area.y + 1 + u16::try_from(line_index - start_line).unwrap_or(0),
+                &rendered,
+                width,
+                Style::default().fg(Color::White),
+            );
+        }
+        if let Some(tool) = self.state.live_tools.values().next() {
+            put_line(
+                buffer,
+                area.x,
+                area.y + area.height.saturating_sub(2),
+                &format!("Tool {} {} {}", tool.name, tool.status, tool.summary),
+                width,
+                Style::default().fg(Color::Cyan),
+            );
+        }
+        let shortcuts = if self.state.is_streaming() {
+            "Enter 引导  Alt+Enter 后续  Esc 停止  Ctrl+O Tool"
+        } else {
+            "Enter 提交  Shift+Enter 换行  Ctrl+F 搜索  Ctrl+O Tool"
+        };
+        put_line(
+            buffer,
+            area.x,
+            area.y + area.height.saturating_sub(1),
+            shortcuts,
+            width,
+            Style::default().fg(Color::DarkGray),
+        );
+    }
+}
+
+pub fn transcript_area(state: &AppState, area: Rect) -> Rect {
+    Rect::new(
+        area.x,
+        area.y,
+        area.width,
+        area.height
+            .saturating_sub(state.composer_height(area.height)),
+    )
+}
+
+pub fn composer_area(state: &AppState, area: Rect) -> Rect {
+    let transcript = transcript_area(state, area);
+    Rect::new(
+        area.x,
+        area.y + transcript.height,
+        area.width,
+        area.height.saturating_sub(transcript.height),
+    )
 }
 
 fn group_rounds(items: Vec<TranscriptItem>) -> Vec<TranscriptRound> {

@@ -12,13 +12,14 @@ import type {
 	ProjectResource,
 	SessionActivity,
 	SessionPhase,
+	SessionProgress,
 	SessionStateSnapshot,
 	ThinkingLevel,
 } from "@lystar/code-gui-protocol";
 
 export interface RuntimeEvent {
 	type: "progress" | "entry_committed" | "state_changed" | "ui_request";
-	payload: JsonValue;
+	payload: JsonValue | SessionProgress;
 }
 
 export interface ToolRecoveryRuntimeDiagnostics {
@@ -39,6 +40,9 @@ export interface RuntimeSession {
 	readonly sessionPath: string;
 	getSnapshot(writeAccess: SessionStateSnapshot["writeAccess"]): SessionStateSnapshot;
 	prompt(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void>;
+	steer(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void>;
+	followUp(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void>;
+	clearQueue(): Promise<{ steering: string[]; followUp: string[] }>;
 	runBash(command: string, onChunk: (chunk: string) => void): Promise<JsonValue>;
 	rename(name: string): Promise<void>;
 	setModel(model: ModelRef): Promise<void>;
@@ -192,10 +196,12 @@ export interface RuntimeStateInput {
 	createdAt: number;
 	updatedAt: number;
 	phase: SessionPhase;
+	activity: SessionActivity;
 	model?: ModelRef;
 	thinkingLevel: ThinkingLevel;
 	leafId: string | null;
 	queuedSteerCount: number;
+	queuedFollowUpCount: number;
 	transcriptGeneration: string;
 	transcriptRevision: number;
 }

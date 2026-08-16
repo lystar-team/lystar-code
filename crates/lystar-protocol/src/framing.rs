@@ -258,6 +258,50 @@ pub fn encode_search_transcript_request(
     }))
 }
 
+pub fn encode_acquire_session_request(
+    id: &str,
+    session_path: &str,
+    client_instance_id: &str,
+) -> Result<Vec<u8>, ProtocolError> {
+    encode_client_value(serde_json::json!({
+        "type": "request", "id": id,
+        "request": { "command": "acquire_session", "sessionPath": session_path, "clientInstanceId": client_instance_id },
+    }))
+}
+
+pub fn encode_queue_request(
+    id: &str,
+    command: &str,
+    session_path: &str,
+    lease_id: &str,
+    client_instance_id: &str,
+    client_request_id: &str,
+    text: Option<&str>,
+) -> Result<Vec<u8>, ProtocolError> {
+    let mut request = serde_json::json!({
+        "command": command,
+        "sessionPath": session_path,
+        "leaseId": lease_id,
+        "clientInstanceId": client_instance_id,
+        "clientRequestId": client_request_id,
+    });
+    if let Some(text) = text {
+        request["text"] = serde_json::Value::String(text.to_owned());
+    }
+    encode_client_value(serde_json::json!({ "type": "request", "id": id, "request": request }))
+}
+
+pub fn encode_abort_operation_request(
+    id: &str,
+    operation_id: &str,
+    lease_id: &str,
+) -> Result<Vec<u8>, ProtocolError> {
+    encode_client_value(serde_json::json!({
+        "type": "request", "id": id,
+        "request": { "command": "abort_operation", "operationId": operation_id, "leaseId": lease_id },
+    }))
+}
+
 fn encode_client_value(value: serde_json::Value) -> Result<Vec<u8>, ProtocolError> {
     let cbor = serde_json::from_value(value)
         .map_err(|error| ProtocolError::InvalidCbor(error.to_string()))?;

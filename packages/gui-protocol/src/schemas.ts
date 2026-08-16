@@ -173,6 +173,68 @@ export const SessionPhaseSchema = Type.Union([
 ]);
 export type SessionPhase = Static<typeof SessionPhaseSchema>;
 
+export const SessionActivitySchema = Type.Union([
+	Type.Literal("idle"),
+	Type.Literal("running"),
+	Type.Literal("waiting_for_input"),
+	Type.Literal("completed"),
+	Type.Literal("failed"),
+	Type.Literal("aborted"),
+	Type.Literal("interrupted"),
+]);
+export type SessionActivity = Static<typeof SessionActivitySchema>;
+
+export const UsageProgressSchema = StrictObject({
+	inputTokens: Type.Optional(Type.Integer({ minimum: 0 })),
+	outputTokens: Type.Optional(Type.Integer({ minimum: 0 })),
+	cacheReadTokens: Type.Optional(Type.Integer({ minimum: 0 })),
+	cacheWriteTokens: Type.Optional(Type.Integer({ minimum: 0 })),
+	elapsedMs: Type.Optional(Type.Integer({ minimum: 0 })),
+});
+export type UsageProgress = Static<typeof UsageProgressSchema>;
+
+const ProgressTextSchema = Type.String({ maxLength: 16 * 1024 });
+export const SessionProgressSchema = Type.Union([
+	StrictObject({ type: Type.Literal("assistant_delta"), text: ProgressTextSchema }),
+	StrictObject({ type: Type.Literal("thinking_delta"), text: ProgressTextSchema }),
+	StrictObject({
+		type: Type.Literal("tool_start"),
+		toolCallId: Id,
+		name: Type.String({ minLength: 1, maxLength: 256 }),
+		summary: Type.Optional(ProgressTextSchema),
+	}),
+	StrictObject({
+		type: Type.Literal("tool_update"),
+		toolCallId: Id,
+		name: Type.String({ minLength: 1, maxLength: 256 }),
+		summary: ProgressTextSchema,
+	}),
+	StrictObject({
+		type: Type.Literal("tool_end"),
+		toolCallId: Id,
+		name: Type.String({ minLength: 1, maxLength: 256 }),
+		status: Type.Union([Type.Literal("success"), Type.Literal("error")]),
+		summary: ProgressTextSchema,
+	}),
+	StrictObject({
+		type: Type.Literal("queue_update"),
+		steeringCount: Type.Integer({ minimum: 0 }),
+		followUpCount: Type.Integer({ minimum: 0 }),
+	}),
+	StrictObject({ type: Type.Literal("phase"), phase: SessionPhaseSchema }),
+	StrictObject({
+		type: Type.Literal("status"),
+		status: Type.String({ minLength: 1, maxLength: 1024 }),
+		truncated: Type.Optional(Type.Boolean()),
+	}),
+	StrictObject({ type: Type.Literal("usage"), usage: UsageProgressSchema }),
+]);
+export type SessionProgress = Static<typeof SessionProgressSchema>;
+
+export function isSessionProgress(value: unknown): value is SessionProgress {
+	return Check(SessionProgressSchema, value);
+}
+
 export const WriteAccessSchema = Type.Union([
 	Type.Literal("available"),
 	Type.Literal("owned"),
@@ -188,6 +250,7 @@ export const SessionStateSnapshotSchema = StrictObject({
 	createdAt: Type.Integer({ minimum: 0 }),
 	updatedAt: Type.Integer({ minimum: 0 }),
 	phase: SessionPhaseSchema,
+	activity: SessionActivitySchema,
 	model: Type.Optional(ModelRefSchema),
 	thinkingLevel: ThinkingLevelSchema,
 	attached: Type.Boolean(),
@@ -195,21 +258,11 @@ export const SessionStateSnapshotSchema = StrictObject({
 	revision: Type.Integer({ minimum: 0 }),
 	leafId: Type.Union([Id, Type.Null()]),
 	queuedSteerCount: Type.Integer({ minimum: 0 }),
+	queuedFollowUpCount: Type.Integer({ minimum: 0 }),
 	transcriptGeneration: Id,
 	transcriptRevision: Type.Integer({ minimum: 0 }),
 });
 export type SessionStateSnapshot = Static<typeof SessionStateSnapshotSchema>;
-
-export const SessionActivitySchema = Type.Union([
-	Type.Literal("idle"),
-	Type.Literal("running"),
-	Type.Literal("waiting_for_input"),
-	Type.Literal("completed"),
-	Type.Literal("failed"),
-	Type.Literal("aborted"),
-	Type.Literal("interrupted"),
-]);
-export type SessionActivity = Static<typeof SessionActivitySchema>;
 
 export const SessionSummarySchema = StrictObject({
 	path: Type.String({ minLength: 1 }),
@@ -453,6 +506,8 @@ export const ProjectResourceSchema = StrictObject({
 });
 export type ProjectResource = Static<typeof ProjectResourceSchema>;
 
+const ImageInputSchema = StrictObject({ data: Type.String(), mimeType: Type.String({ minLength: 1 }) });
+
 export const CommandSchema = Type.Union([
 	StrictObject({ command: Type.Literal("get_snapshot") }),
 	StrictObject({
@@ -497,7 +552,32 @@ export const CommandSchema = Type.Union([
 		clientInstanceId: Id,
 		clientRequestId: Id,
 		text: Type.String(),
-		images: Type.Optional(Type.Array(StrictObject({ data: Type.String(), mimeType: Type.String({ minLength: 1 }) }))),
+		images: Type.Optional(Type.Array(ImageInputSchema)),
+	}),
+	StrictObject({
+		command: Type.Literal("steer"),
+		sessionPath: Type.String({ minLength: 1 }),
+		leaseId: Id,
+		clientInstanceId: Id,
+		clientRequestId: Id,
+		text: Type.String(),
+		images: Type.Optional(Type.Array(ImageInputSchema)),
+	}),
+	StrictObject({
+		command: Type.Literal("follow_up"),
+		sessionPath: Type.String({ minLength: 1 }),
+		leaseId: Id,
+		clientInstanceId: Id,
+		clientRequestId: Id,
+		text: Type.String(),
+		images: Type.Optional(Type.Array(ImageInputSchema)),
+	}),
+	StrictObject({
+		command: Type.Literal("clear_queue"),
+		sessionPath: Type.String({ minLength: 1 }),
+		leaseId: Id,
+		clientInstanceId: Id,
+		clientRequestId: Id,
 	}),
 	StrictObject({
 		command: Type.Literal("run_bash"),
@@ -689,7 +769,7 @@ export const ServerEventSchema = Type.Union([
 	StrictObject({
 		type: Type.Literal("session_progress"),
 		sessionPath: Type.String({ minLength: 1 }),
-		progress: JsonValueSchema,
+		progress: SessionProgressSchema,
 	}),
 	StrictObject({
 		type: Type.Literal("transcript_committed"),

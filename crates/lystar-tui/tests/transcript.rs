@@ -1,8 +1,14 @@
+#[path = "../src/editor.rs"]
+#[allow(dead_code)]
+mod editor;
+
 #[path = "../src/app.rs"]
 #[allow(dead_code)]
 mod app;
 
-use app::{AppState, ROUND_CACHE_LIMIT, TranscriptView};
+use app::{
+    AppState, ComposerView, ROUND_CACHE_LIMIT, TranscriptView, composer_area, transcript_area,
+};
 use lystar_protocol::{TranscriptItem, TranscriptViewItem};
 use ratatui::{Terminal, backend::TestBackend};
 
@@ -34,10 +40,14 @@ fn keeps_a_bounded_round_window_and_status_at_small_sizes() {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| frame.render_widget(TranscriptView::new(&app), frame.area()))
+            .draw(|frame| {
+                let area = frame.area();
+                frame.render_widget(TranscriptView::new(&app), transcript_area(&app, area));
+                frame.render_widget(ComposerView::new(&app), composer_area(&app, area));
+            })
             .unwrap();
         let output = terminal.backend().buffer().content();
-        assert!(output.iter().any(|cell| cell.symbol() == "只"));
-        assert!(output.iter().any(|cell| cell.symbol() == "q"));
+        assert!(output.iter().any(|cell| cell.symbol() == "未"));
+        assert!(output.iter().any(|cell| cell.symbol() == "E"));
     }
 }

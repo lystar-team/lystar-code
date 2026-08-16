@@ -45,14 +45,15 @@ fn typescript_and_rust_golden_frames_round_trip_through_public_wrappers() {
         "server-event-transcript",
         "server-event-ui-request",
         "server-event-operation-missing",
-        "server-event-operation-null",
         "server-event-operation-value",
     ] {
         let payload = decode_frame(&fs::read(format!("{directory}/ts-{name}.frame")).unwrap());
-        let message = decode_server_message(&payload).unwrap();
+        let message = decode_server_message(&payload)
+            .unwrap_or_else(|error| panic!("typescript server fixture {name}: {error}"));
         let rust_payload =
             decode_frame(&fs::read(format!("{directory}/rust-{name}.frame")).unwrap());
-        let rust_message = decode_server_message(&rust_payload).unwrap();
+        let rust_message = decode_server_message(&rust_payload)
+            .unwrap_or_else(|error| panic!("server fixture {name}: {error}"));
         assert_eq!(
             rust_message.message_kind(),
             message.message_kind(),
@@ -85,9 +86,6 @@ fn assert_presence(name: &str, message: &impl HasPresence) {
             &["event", "operation", "progress"][..],
             FieldPresence::Missing,
         ),
-        "server-event-operation-null" => {
-            (&["event", "operation", "progress"][..], FieldPresence::Null)
-        }
         "server-event-operation-value" => (
             &["event", "operation", "progress"][..],
             FieldPresence::Value,

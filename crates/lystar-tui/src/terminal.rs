@@ -20,7 +20,8 @@ use crossterm::{
 };
 use lystar_protocol::{
     FrameDecoder, ProtocolError, ReadOnlyEvent, ReadOnlyMessage, ReadOnlyResponse,
-    TranscriptRequestContext, decode_server_message, encode_client_hello,
+    TranscriptRequestContext, decode_server_message, encode_abort_operation_request,
+    encode_acquire_session_request, encode_client_hello, encode_queue_request,
     encode_read_transcript_request, encode_search_transcript_request,
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
@@ -30,7 +31,9 @@ use signal_hook::{
 };
 use thiserror::Error;
 
-use crate::app::{AppState, SearchHit, TranscriptView, VisibleLink};
+use crate::app::{
+    AppState, ComposerView, SearchHit, TranscriptView, VisibleLink, composer_area, transcript_area,
+};
 
 const INITIAL_PAGE_LIMIT: u64 = 200;
 const PAGE_LIMIT: u64 = 200;
@@ -106,13 +109,13 @@ struct ProtocolPipe {
 
 #[cfg(unix)]
 impl ProtocolPipe {
-    fn connect() -> Result<Self, TuiError> {
+    fn connect(client_instance_id: &str) -> Result<Self, TuiError> {
         use std::{fs::File, os::fd::FromRawFd, thread};
 
         // fd3/4 仅承载 Host 的 framed protocol，Session 文件始终由 Host 读取。
         let input = unsafe { File::from_raw_fd(3) };
         let mut output = unsafe { File::from_raw_fd(4) };
-        output.write_all(&encode_client_hello("lystar-rust-m7")?)?;
+        output.write_all(&encode_client_hello(client_instance_id)?)?;
         output.flush()?;
         let (sender, inbound) = mpsc::sync_channel(64);
         thread::spawn(move || read_protocol(input, sender));
@@ -221,13 +224,9 @@ fn render_active_osc8_link(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &AppState,
 ) -> Result<(), io::Error> {
-    let size = terminal.size()?;
-    let Some(region) = TranscriptView::new(app).visible_link(ratatui::layout::Rect::new(
-        0,
-        0,
-        size.width,
-        size.height,
-    )) else {
+    let area = terminal.size()?;
+    let full = ratatui::layout::Rect::new(0, 0, area.width, area.height);
+    let Some(region) = TranscriptView::new(app).visible_link(transcript_area(app, full)) else {
         return Ok(());
     };
     write_visible_osc8_link(terminal.backend_mut().writer_mut(), &region)
@@ -235,7 +234,7 @@ fn render_active_osc8_link(
 
 #[cfg(unix)]
 pub fn handshake_inherited_pipes() -> Result<(), TuiError> {
-    let _pipe = ProtocolPipe::connect()?;
+    let _pipe = ProtocolPipe::connect("lystar-rust-handshake")?;
     Ok(())
 }
 
@@ -251,8 +250,16 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
     let shutdown = Arc::new(AtomicBool::new(false));
     flag::register(SIGINT, Arc::clone(&shutdown))?;
     flag::register(SIGTERM, Arc::clone(&shutdown))?;
-    let mut pipe = ProtocolPipe::connect()?;
+    let client_instance_id = std::env::var("PI_RUST_TUI_CLIENT_INSTANCE_ID")
+        .unwrap_or_else(|_| format!("lystar-rust-m8-{}", std::process::id()));
+    let mut pipe = ProtocolPipe::connect(&client_instance_id)?;
     let mut request_sequence = 0_u64;
+    request_acquire(
+        &mut pipe,
+        session_path,
+        &client_instance_id,
+        &mut request_sequence,
+    )?;
     request_transcript(
         &mut pipe,
         session_path,
@@ -268,7 +275,11 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
     trace("terminal_ready");
     let mut app = AppState::default();
     loop {
-        terminal.draw(|frame| frame.render_widget(TranscriptView::new(&app), frame.area()))?;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            frame.render_widget(TranscriptView::new(&app), transcript_area(&app, area));
+            frame.render_widget(ComposerView::new(&app), composer_area(&app, area));
+        })?;
         trace("frame_rendered");
         if app.transcript.cached_rounds() > 0 {
             trace("frame_rendered_nonempty");
@@ -289,8 +300,11 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                 &mut request_sequence,
             ) {
                 app.disconnected = Some(format!("连接已关闭: {error}"));
-                terminal
-                    .draw(|frame| frame.render_widget(TranscriptView::new(&app), frame.area()))?;
+                terminal.draw(|frame| {
+                    let area = frame.area();
+                    frame.render_widget(TranscriptView::new(&app), transcript_area(&app, area));
+                    frame.render_widget(ComposerView::new(&app), composer_area(&app, area));
+                })?;
                 render_active_osc8_link(&mut terminal, &app)?;
                 return Err(error);
             }
@@ -304,11 +318,13 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                         key.modifiers,
                         &mut pipe,
                         session_path,
+                        &client_instance_id,
                         &mut request_sequence,
                     )? {
                         return Ok(());
                     }
                 }
+                Event::Paste(text) => app.editor.insert(&text),
                 Event::Mouse(mouse) => match mouse.kind {
                     MouseEventKind::ScrollUp => app.transcript.scroll_by(-3),
                     MouseEventKind::ScrollDown => app.transcript.scroll_by(3),
@@ -331,7 +347,12 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                     ) {
                         app.disconnected = Some(format!("连接已关闭: {error}"));
                         terminal.draw(|frame| {
-                            frame.render_widget(TranscriptView::new(&app), frame.area())
+                            let area = frame.area();
+                            frame.render_widget(
+                                TranscriptView::new(&app),
+                                transcript_area(&app, area),
+                            );
+                            frame.render_widget(ComposerView::new(&app), composer_area(&app, area));
                         })?;
                         render_active_osc8_link(&mut terminal, &app)?;
                         return Err(error);
@@ -388,6 +409,21 @@ fn process_inbound_message(
 }
 
 #[cfg(unix)]
+fn request_acquire(
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    client_instance_id: &str,
+    sequence: &mut u64,
+) -> Result<(), TuiError> {
+    *sequence += 1;
+    pipe.request(&encode_acquire_session_request(
+        &format!("acquire-{sequence}"),
+        session_path,
+        client_instance_id,
+    )?)
+}
+
+#[cfg(unix)]
 fn request_transcript(
     pipe: &mut ProtocolPipe,
     session_path: &str,
@@ -437,6 +473,7 @@ fn handle_key(
     modifiers: KeyModifiers,
     pipe: &mut ProtocolPipe,
     session_path: &str,
+    client_instance_id: &str,
     sequence: &mut u64,
 ) -> Result<bool, TuiError> {
     if app.search.open {
@@ -457,7 +494,7 @@ fn handle_key(
             KeyCode::Up => app.search.selected = app.search.selected.saturating_sub(1),
             KeyCode::Down => {
                 app.search.selected =
-                    (app.search.selected + 1).min(app.search.hits.len().saturating_sub(1));
+                    (app.search.selected + 1).min(app.search.hits.len().saturating_sub(1))
             }
             KeyCode::Backspace => {
                 app.search.query.pop();
@@ -470,12 +507,29 @@ fn handle_key(
         }
         return Ok(false);
     }
-    match code {
-        KeyCode::Char('q') => return Ok(true),
-        KeyCode::Char('/') => {
-            app.open_search();
-            trace("search_open");
+
+    if matches!(code, KeyCode::Esc)
+        || (matches!(code, KeyCode::Char('c')) && modifiers.contains(KeyModifiers::CONTROL))
+    {
+        if let (Some(operation), Some(lease_id)) = (&app.operation, &app.lease_id)
+            && matches!(
+                operation.status.as_str(),
+                "accepted" | "running" | "waiting_for_input"
+            )
+        {
+            *sequence += 1;
+            pipe.request(&encode_abort_operation_request(
+                &format!("abort-{sequence}"),
+                &operation.operation_id,
+                lease_id,
+            )?)?;
+            app.transcript.status = "正在停止".to_owned();
         }
+        return Ok(false);
+    }
+
+    match code {
+        KeyCode::Char('q') if app.editor.is_empty() => return Ok(true),
         KeyCode::Char('f') if modifiers.contains(KeyModifiers::CONTROL) => {
             app.open_search();
             trace("search_open");
@@ -483,27 +537,107 @@ fn handle_key(
         KeyCode::Char('o') if modifiers.contains(KeyModifiers::CONTROL) => {
             app.transcript.toggle_current_tool()
         }
-        KeyCode::Up => app.transcript.scroll_by(-1),
-        KeyCode::Down => app.transcript.scroll_by(1),
+        KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => app.editor.clear(),
+        KeyCode::Char('z') if modifiers.contains(KeyModifiers::CONTROL) => app.editor.undo(),
+        KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => app.editor.redo(),
+        KeyCode::Char('j') if modifiers.contains(KeyModifiers::CONTROL) => app.editor.insert("\n"),
+        KeyCode::Enter if modifiers.contains(KeyModifiers::SHIFT) => app.editor.insert("\n"),
+        KeyCode::Enter => submit_editor(
+            app,
+            pipe,
+            session_path,
+            client_instance_id,
+            sequence,
+            modifiers.contains(KeyModifiers::ALT),
+        )?,
+        KeyCode::Backspace => app.editor.backspace(),
+        KeyCode::Delete => app.editor.delete(),
+        KeyCode::Left => app.editor.move_left(),
+        KeyCode::Right => app.editor.move_right(),
+        KeyCode::Home => {
+            app.editor.move_home();
+            if app.editor.is_empty() {
+                trace("key_home");
+                app.transcript.current = 0;
+                app.transcript.scroll = 0;
+            }
+        }
+        KeyCode::End => {
+            app.editor.move_end();
+            if app.editor.is_empty() {
+                trace("key_end");
+                let last = app.transcript.cached_rounds().saturating_sub(1);
+                app.transcript.current = last;
+                app.transcript.scroll = last;
+            }
+        }
+        KeyCode::Up if app.editor.at_first_line() => {
+            app.editor.history_previous();
+        }
+        KeyCode::Down if app.editor.at_last_line() => {
+            app.editor.history_next();
+        }
+        KeyCode::Up => app.editor.move_up(),
+        KeyCode::Down => app.editor.move_down(),
         KeyCode::PageUp => {
             trace("key_page_up");
             app.transcript.scroll_by(-20);
         }
         KeyCode::PageDown => app.transcript.scroll_by(20),
-        KeyCode::Home => {
-            trace("key_home");
-            app.transcript.current = 0;
-            app.transcript.scroll = 0;
-        }
-        KeyCode::End => {
-            trace("key_end");
-            let last = app.transcript.cached_rounds().saturating_sub(1);
-            app.transcript.current = last;
-            app.transcript.scroll = last;
+        KeyCode::Char(character)
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            app.editor.insert(&character.to_string())
         }
         _ => {}
     }
     Ok(false)
+}
+
+#[cfg(unix)]
+fn submit_editor(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    client_instance_id: &str,
+    sequence: &mut u64,
+    follow_up: bool,
+) -> Result<(), TuiError> {
+    let Some(lease_id) = app.lease_id.as_deref() else {
+        app.transcript.status = "正在获取会话租约".to_owned();
+        return Ok(());
+    };
+    let Some(text) = app.editor.submit() else {
+        return Ok(());
+    };
+    *sequence += 1;
+    let request_id = format!("composer-{sequence}");
+    let command = if follow_up {
+        "follow_up"
+    } else if app.is_streaming() {
+        "steer"
+    } else {
+        "prompt"
+    };
+    pipe.request(&encode_queue_request(
+        &format!("command-{sequence}"),
+        command,
+        session_path,
+        lease_id,
+        client_instance_id,
+        &request_id,
+        Some(&text),
+    )?)?;
+    app.transcript.status = if command == "prompt" {
+        "已提交"
+    } else if command == "steer" {
+        "已加入引导队列"
+    } else {
+        "已加入后续队列"
+    }
+    .to_owned();
+    trace(command);
+    Ok(())
 }
 
 fn apply_server_message(
@@ -573,6 +707,22 @@ fn apply_response(app: &mut AppState, response: &ReadOnlyResponse) -> Result<boo
             );
             trace("search_applied");
         }
+        ReadOnlyResponse::SessionLease {
+            lease_id, snapshot, ..
+        } => {
+            app.apply_lease(lease_id.clone(), snapshot.clone());
+            app.transcript.status = "已获取会话租约".to_owned();
+        }
+        ReadOnlyResponse::Operation {
+            operation,
+            duplicate,
+            ..
+        } => {
+            app.apply_operation(operation.clone());
+            if *duplicate {
+                app.transcript.status = "已确认已有请求".to_owned();
+            }
+        }
         ReadOnlyResponse::TranscriptPage { .. }
         | ReadOnlyResponse::SearchResult { .. }
         | ReadOnlyResponse::Other { .. } => {}
@@ -612,20 +762,31 @@ fn apply_event(
                 trace("reload_requested");
                 return Ok(true);
             }
+            app.clear_live_after_commit(items);
             app.transcript.streaming_preview = None;
             trace("append_applied");
             Ok(false)
         }
         ReadOnlyEvent::SessionProgress {
             session_path: event_path,
-            preview,
+            progress,
         } if event_path == session_path => {
-            app.transcript.streaming_preview = Some(preview.clone());
+            app.apply_progress(progress.clone());
+            Ok(false)
+        }
+        ReadOnlyEvent::SessionSnapshot { snapshot } if snapshot.path == session_path => {
+            app.apply_snapshot(snapshot.clone());
+            Ok(false)
+        }
+        ReadOnlyEvent::OperationUpdated { operation } if operation.session_path == session_path => {
+            app.apply_operation(operation.clone());
             Ok(false)
         }
         ReadOnlyEvent::TranscriptChanged { .. }
         | ReadOnlyEvent::TranscriptCommitted { .. }
         | ReadOnlyEvent::SessionProgress { .. }
+        | ReadOnlyEvent::SessionSnapshot { .. }
+        | ReadOnlyEvent::OperationUpdated { .. }
         | ReadOnlyEvent::Other => Ok(false),
     }
 }

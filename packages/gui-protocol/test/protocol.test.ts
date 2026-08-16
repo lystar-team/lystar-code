@@ -96,12 +96,14 @@ describe("GUI Protocol v1", () => {
 						createdAt: 1,
 						updatedAt: 1,
 						phase: "idle",
+						activity: "idle",
 						thinkingLevel: "off",
 						attached: true,
 						writeAccess: "owned",
 						revision: 1,
 						leafId: null,
 						queuedSteerCount: 0,
+						queuedFollowUpCount: 0,
 						transcriptGeneration: "generation",
 						transcriptRevision: 0,
 					},
@@ -245,6 +247,49 @@ describe("GUI Protocol v1", () => {
 		]) {
 			expect(() => encodeClientMessage({ type: "request", id: "invalid-search", request } as never)).toThrow();
 		}
+	});
+
+	it("strictly decodes interactive queue commands and typed progress", () => {
+		const decoder = new ClientMessageDecoder();
+		for (const request of [
+			{
+				command: "steer",
+				sessionPath: "/tmp/session.jsonl",
+				leaseId: "lease",
+				clientInstanceId: "client",
+				clientRequestId: "steer-1",
+				text: "调整",
+			},
+			{
+				command: "follow_up",
+				sessionPath: "/tmp/session.jsonl",
+				leaseId: "lease",
+				clientInstanceId: "client",
+				clientRequestId: "follow-1",
+				text: "继续",
+			},
+			{
+				command: "clear_queue",
+				sessionPath: "/tmp/session.jsonl",
+				leaseId: "lease",
+				clientInstanceId: "client",
+				clientRequestId: "clear-1",
+			},
+		] as const) {
+			expect(
+				decoder.push(encodeClientMessage({ type: "request", id: request.clientRequestId, request })),
+			).toHaveLength(1);
+		}
+		expect(() =>
+			encodeServerMessage({
+				type: "event",
+				event: {
+					type: "session_progress",
+					sessionPath: "/tmp/session.jsonl",
+					progress: { type: "unknown_runtime", raw: "no" },
+				},
+			} as never),
+		).toThrow();
 	});
 
 	it("strictly decodes model, project, completion, and resource commands", () => {

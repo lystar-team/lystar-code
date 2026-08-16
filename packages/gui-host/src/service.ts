@@ -6,10 +6,12 @@ import {
 	type ClientMessage,
 	type CompletionResult,
 	GUI_PROTOCOL_VERSION,
+	isSessionProgress,
 	type JsonValue,
 	type OperationSnapshot,
 	type ServerEvent,
 	type ServerMessage,
+	type SessionProgress,
 	type SessionStateSnapshot,
 	type SessionSummary,
 	type TranscriptItem,
@@ -45,7 +47,6 @@ const BASE_CAPABILITIES: Capability[] = [
 ];
 
 const ACTIVE_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>(["accepted", "running", "waiting_for_input"]);
-const MAX_SESSION_PROGRESS_BYTES = 8 * 1024;
 const TERMINAL_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>([
 	"completed",
 	"failed",
@@ -53,18 +54,18 @@ const TERMINAL_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>([
 	"interrupted",
 ]);
 
-function projectSessionProgress(value: JsonValue): JsonValue {
+function projectSessionProgress(value: JsonValue | SessionProgress): SessionProgress {
+	if (isSessionProgress(value)) return value;
 	const serialized = JSON.stringify(value);
-	if (Buffer.byteLength(serialized) <= MAX_SESSION_PROGRESS_BYTES) return value;
-	const prefix = { type: "progress_preview", truncated: true, preview: "" };
-	const budget = Math.max(0, MAX_SESSION_PROGRESS_BYTES - Buffer.byteLength(JSON.stringify(prefix)));
-	let preview = Buffer.from(serialized)
-		.subarray(0, budget)
+	const preview = Buffer.from(serialized)
+		.subarray(0, 1024)
 		.toString("utf8")
 		.replace(/\uFFFD$/u, "");
-	while (Buffer.byteLength(JSON.stringify({ ...prefix, preview })) > MAX_SESSION_PROGRESS_BYTES)
-		preview = preview.slice(0, -1);
-	return { ...prefix, preview };
+	return {
+		type: "status",
+		status: preview || "运行状态已更新",
+		...(serialized.length > preview.length ? { truncated: true } : {}),
+	};
 }
 
 interface ClientConnection {
@@ -408,6 +409,36 @@ export class GuiHostService {
 					},
 					afterResponse,
 				);
+			case "steer":
+				return this.acceptQueueOperation(
+					connection,
+					request,
+					{ text: request.text, images: request.images ?? [] },
+					async (runtime) => {
+						await runtime.steer(request.text, request.images);
+						return {};
+					},
+					afterResponse,
+				);
+			case "follow_up":
+				return this.acceptQueueOperation(
+					connection,
+					request,
+					{ text: request.text, images: request.images ?? [] },
+					async (runtime) => {
+						await runtime.followUp(request.text, request.images);
+						return {};
+					},
+					afterResponse,
+				);
+			case "clear_queue":
+				return this.acceptQueueOperation(
+					connection,
+					request,
+					{},
+					async (runtime) => jsonValue(await runtime.clearQueue()),
+					afterResponse,
+				);
 			case "run_bash":
 				return this.acceptOperation(
 					connection,
@@ -415,7 +446,13 @@ export class GuiHostService {
 					{ commandText: request.commandText },
 					async (runtime, operation) => {
 						return runtime.runBash(request.commandText, (chunk) => {
-							this.updateOperation(operation.operationId, "running", { progress: { chunk } });
+							this.updateOperation(operation.operationId, "running", {
+								progress: {
+									type: "status",
+									status: chunk.slice(0, 1024),
+									...(chunk.length > 1024 ? { truncated: true } : {}),
+								},
+							});
 						});
 					},
 					afterResponse,
@@ -740,6 +777,52 @@ export class GuiHostService {
 		}
 	}
 
+	private async runQueueOperation(
+		runtime: RuntimeSession,
+		operation: OperationSnapshot,
+		run: (runtime: RuntimeSession) => Promise<JsonValue>,
+	): Promise<void> {
+		try {
+			this.updateOperation(operation.operationId, "running");
+			const result = await run(runtime);
+			this.updateOperation(operation.operationId, "completed", { result });
+		} catch (error) {
+			this.updateOperation(operation.operationId, "failed", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	private async acceptQueueOperation(
+		connection: ClientConnection,
+		request: Extract<
+			Extract<ClientMessage, { type: "request" }>["request"],
+			{ command: "steer" | "follow_up" | "clear_queue" }
+		>,
+		payload: JsonValue,
+		run: (runtime: RuntimeSession) => Promise<JsonValue>,
+		afterResponse: (action: () => void) => void,
+	): Promise<JsonValue> {
+		this.assertClient(request.clientInstanceId, connection);
+		this.journal.assertWritable();
+		const sessionPath = canonicalSessionPath(request.sessionPath);
+		this.leases.assert(sessionPath, request.leaseId, request.clientInstanceId);
+		const runtime = this.runtimes.get(sessionPath);
+		if (!runtime) throw Object.assign(new Error("尚未获取会话运行时"), { code: "session_not_acquired" });
+		const payloadHash = hashOperationPayload({ command: request.command, sessionPath, payload });
+		const existing = this.journal.find(request.clientInstanceId, request.clientRequestId, payloadHash);
+		if (existing) return { operation: existing, duplicate: true };
+		const accepted = this.journal.accept({
+			clientInstanceId: request.clientInstanceId,
+			clientRequestId: request.clientRequestId,
+			sessionPath,
+			type: request.command,
+			payloadHash,
+		});
+		afterResponse(() => void this.runQueueOperation(runtime, accepted.operation, run));
+		return { operation: accepted.operation, duplicate: false };
+	}
+
 	private async acceptOperation(
 		connection: ClientConnection,
 		request: Extract<Extract<ClientMessage, { type: "request" }>["request"], { command: "prompt" | "run_bash" }>,
@@ -810,7 +893,7 @@ export class GuiHostService {
 	private updateOperation(
 		operationId: string,
 		status: OperationSnapshot["status"],
-		options?: { progress?: JsonValue; result?: JsonValue; error?: string },
+		options?: { progress?: SessionProgress; result?: JsonValue; error?: string },
 	): OperationSnapshot {
 		const current = this.journal.get(operationId);
 		if (current && TERMINAL_OPERATION_STATUSES.has(current.status)) return current;

@@ -145,6 +145,101 @@ pub struct TranscriptSearchResult {
     pub next_cursor: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageProgress {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cache_read_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+    pub elapsed_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SessionProgress {
+    AssistantDelta {
+        text: String,
+    },
+    ThinkingDelta {
+        text: String,
+    },
+    ToolStart {
+        #[serde(rename = "toolCallId")]
+        tool_call_id: String,
+        name: String,
+        summary: Option<String>,
+    },
+    ToolUpdate {
+        #[serde(rename = "toolCallId")]
+        tool_call_id: String,
+        name: String,
+        summary: String,
+    },
+    ToolEnd {
+        #[serde(rename = "toolCallId")]
+        tool_call_id: String,
+        name: String,
+        status: String,
+        summary: String,
+    },
+    QueueUpdate {
+        #[serde(rename = "steeringCount")]
+        steering_count: u64,
+        #[serde(rename = "followUpCount")]
+        follow_up_count: u64,
+    },
+    Phase {
+        phase: String,
+    },
+    Status {
+        status: String,
+        truncated: Option<bool>,
+    },
+    Usage {
+        usage: UsageProgress,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSnapshot {
+    pub id: String,
+    pub path: String,
+    pub cwd: String,
+    pub phase: String,
+    pub activity: String,
+    pub thinking_level: String,
+    pub attached: bool,
+    pub write_access: String,
+    pub revision: u64,
+    pub queued_steer_count: u64,
+    pub queued_follow_up_count: u64,
+    pub transcript_generation: String,
+    pub transcript_revision: u64,
+    pub model: Option<ModelRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ModelRef {
+    pub provider: String,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationSnapshot {
+    pub operation_id: String,
+    pub client_instance_id: String,
+    pub client_request_id: String,
+    pub session_path: String,
+    #[serde(rename = "type")]
+    pub operation_type: String,
+    pub status: String,
+    pub progress: Option<SessionProgress>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadOnlyResponse {
     TranscriptPage {
@@ -154,6 +249,16 @@ pub enum ReadOnlyResponse {
     SearchResult {
         id: String,
         result: TranscriptSearchResult,
+    },
+    SessionLease {
+        id: String,
+        lease_id: String,
+        snapshot: SessionSnapshot,
+    },
+    Operation {
+        id: String,
+        operation: OperationSnapshot,
+        duplicate: bool,
     },
     Error {
         id: String,
@@ -166,6 +271,9 @@ pub enum ReadOnlyResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadOnlyEvent {
+    SessionSnapshot {
+        snapshot: SessionSnapshot,
+    },
     TranscriptChanged {
         session_path: String,
     },
@@ -178,7 +286,10 @@ pub enum ReadOnlyEvent {
     },
     SessionProgress {
         session_path: String,
-        preview: String,
+        progress: SessionProgress,
+    },
+    OperationUpdated {
+        operation: OperationSnapshot,
     },
     Other,
 }
@@ -230,13 +341,32 @@ fn parse_response(raw: &Value) -> Result<ReadOnlyMessage, ProtocolError> {
             result: parse_projection(result)?,
         }));
     }
+    if let (Some(lease), Some(snapshot)) = (result.get("lease"), result.get("snapshot")) {
+        return Ok(ReadOnlyMessage::Response(ReadOnlyResponse::SessionLease {
+            id,
+            lease_id: required_text(lease, &["leaseId"])?.to_owned(),
+            snapshot: parse_projection(snapshot)?,
+        }));
+    }
+    if let Some(operation) = result.get("operation") {
+        return Ok(ReadOnlyMessage::Response(ReadOnlyResponse::Operation {
+            id,
+            operation: parse_projection(operation)?,
+            duplicate: result
+                .get("duplicate")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        }));
+    }
     Ok(ReadOnlyMessage::Response(ReadOnlyResponse::Other { id }))
 }
 
 fn parse_event(raw: &Value) -> Result<ReadOnlyMessage, ProtocolError> {
     let event = required_value(raw, &["event"])?;
-    let event_type = required_text(event, &["type"])?;
-    let parsed = match event_type {
+    let parsed = match required_text(event, &["type"])? {
+        "session_snapshot" => ReadOnlyEvent::SessionSnapshot {
+            snapshot: parse_projection(required_value(event, &["snapshot"])?)?,
+        },
         "transcript_changed" => ReadOnlyEvent::TranscriptChanged {
             session_path: required_text(event, &["sessionPath"])?.to_owned(),
         },
@@ -249,7 +379,10 @@ fn parse_event(raw: &Value) -> Result<ReadOnlyMessage, ProtocolError> {
         },
         "session_progress" => ReadOnlyEvent::SessionProgress {
             session_path: required_text(event, &["sessionPath"])?.to_owned(),
-            preview: progress_preview(required_value(event, &["progress"])?)?,
+            progress: parse_projection(required_value(event, &["progress"])?)?,
+        },
+        "operation_updated" => ReadOnlyEvent::OperationUpdated {
+            operation: parse_projection(required_value(event, &["operation"])?)?,
         },
         _ => ReadOnlyEvent::Other,
     };
@@ -263,45 +396,25 @@ fn required_value<'a>(value: &'a Value, path: &[&str]) -> Result<&'a Value, Prot
     }
     Ok(current)
 }
-
 fn required_text<'a>(value: &'a Value, path: &[&str]) -> Result<&'a str, ProtocolError> {
     required_value(value, path)?
         .as_str()
         .ok_or_else(|| invalid_projection(path))
 }
-
 fn required_u64(value: &Value, path: &[&str]) -> Result<u64, ProtocolError> {
     required_value(value, path)?
         .as_u64()
         .ok_or_else(|| invalid_projection(path))
 }
-
 fn parse_projection<T: for<'de> Deserialize<'de>>(value: &Value) -> Result<T, ProtocolError> {
     serde_json::from_value(value.clone()).map_err(|error| ProtocolError::InvalidMessage {
         direction: "server",
         reason: error.to_string(),
     })
 }
-
 fn invalid_projection(path: &[&str]) -> ProtocolError {
     ProtocolError::InvalidMessage {
         direction: "server",
         reason: format!("missing or invalid projection field {}", path.join(".")),
     }
-}
-
-fn progress_preview(value: &Value) -> Result<String, ProtocolError> {
-    let serialized =
-        serde_json::to_string(value).map_err(|error| ProtocolError::InvalidMessage {
-            direction: "server",
-            reason: error.to_string(),
-        })?;
-    if serialized.len() <= MAX_PROGRESS_PREVIEW_BYTES {
-        return Ok(serialized);
-    }
-    let mut end = MAX_PROGRESS_PREVIEW_BYTES;
-    while !serialized.is_char_boundary(end) {
-        end -= 1;
-    }
-    Ok(serialized[..end].to_owned())
 }

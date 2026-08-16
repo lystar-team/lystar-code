@@ -19,6 +19,7 @@ import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import {
+	type AgentSessionEvent,
 	APP_TITLE,
 	type AuthEvent,
 	type AuthPrompt,
@@ -68,6 +69,7 @@ import type {
 	ModelRef,
 	ProjectInstruction,
 	ProjectResource,
+	SessionProgress,
 	SessionStateSnapshot,
 	ThinkingLevel,
 	TranscriptItem,
@@ -479,6 +481,78 @@ function notifyAuthEvent(onUiRequest: UiRequestHandler, event: AuthEvent): void 
 	});
 }
 
+function boundedStatus(value: unknown): string {
+	const text = typeof value === "string" ? value : JSON.stringify(value);
+	return text.length <= 1024 ? text : `${text.slice(0, 1021)}...`;
+}
+
+function projectRuntimeProgress(event: AgentSessionEvent): SessionProgress[] {
+	switch (event.type) {
+		case "message_update": {
+			const updates: SessionProgress[] = [];
+			const stream = event.assistantMessageEvent;
+			if (stream.type === "text_delta") updates.push({ type: "assistant_delta", text: stream.delta });
+			else if (stream.type === "thinking_delta") updates.push({ type: "thinking_delta", text: stream.delta });
+			const usage = event.message.role === "assistant" ? event.message.usage : undefined;
+			if (usage) {
+				updates.push({
+					type: "usage",
+					usage: {
+						inputTokens: usage.input,
+						outputTokens: usage.output,
+						cacheReadTokens: usage.cacheRead,
+						cacheWriteTokens: usage.cacheWrite,
+					},
+				});
+			}
+			return updates;
+		}
+		case "tool_execution_start":
+			return [
+				{
+					type: "tool_start",
+					toolCallId: event.toolCallId,
+					name: event.toolName,
+					summary: boundedStatus(event.args),
+				},
+			];
+		case "tool_execution_update":
+			return [
+				{
+					type: "tool_update",
+					toolCallId: event.toolCallId,
+					name: event.toolName,
+					summary: boundedStatus(event.partialResult),
+				},
+			];
+		case "tool_execution_end":
+			return [
+				{
+					type: "tool_end",
+					toolCallId: event.toolCallId,
+					name: event.toolName,
+					status: event.isError ? "error" : "success",
+					summary: boundedStatus(event.result),
+				},
+			];
+		case "queue_update":
+			return [{ type: "queue_update", steeringCount: event.steering.length, followUpCount: event.followUp.length }];
+		case "compaction_start":
+			return [{ type: "phase", phase: "compaction" }];
+		case "auto_retry_start":
+		case "summarization_retry_scheduled":
+			return [{ type: "phase", phase: "retry" }];
+		case "agent_settled":
+			return [{ type: "phase", phase: "idle" }];
+		default:
+			return [{ type: "status", status: boundedStatus(event.type) }];
+	}
+}
+
+function contentImages(images?: Array<{ data: string; mimeType: string }>) {
+	return images?.map((image) => ({ type: "image" as const, ...image }));
+}
+
 class CoreRuntimeSession implements RuntimeSession {
 	private readonly listeners = new Set<(event: RuntimeEvent) => void>();
 	private readonly runtime: Awaited<ReturnType<typeof createAgentSessionRuntime>>;
@@ -528,13 +602,15 @@ class CoreRuntimeSession implements RuntimeSession {
 					: session.isStreaming
 						? "turn"
 						: "idle",
+			activity: session.isStreaming ? "running" : "idle",
 			model: session.model ? { provider: session.model.provider, id: session.model.id } : undefined,
 			thinkingLevel: session.thinkingLevel,
 			attached: true,
 			writeAccess,
 			revision: this.stateRevision,
 			leafId: session.sessionManager.getLeafId(),
-			queuedSteerCount: session.pendingMessageCount,
+			queuedSteerCount: session.getSteeringMessages().length,
+			queuedFollowUpCount: session.getFollowUpMessages().length,
 			transcriptGeneration: storage.generation,
 			transcriptRevision: storage.revision,
 		};
@@ -542,11 +618,27 @@ class CoreRuntimeSession implements RuntimeSession {
 
 	async prompt(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void> {
 		await this.runtime.session.prompt(text, {
-			images: images?.map((image) => ({ type: "image", ...image })),
+			images: contentImages(images),
 			source: "rpc",
 		});
 		await this.runtime.session.waitForIdle();
 		this.emitCommittedEntries();
+	}
+
+	async steer(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void> {
+		await this.runtime.session.steer(text, contentImages(images));
+		this.emitStateChanged();
+	}
+
+	async followUp(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void> {
+		await this.runtime.session.followUp(text, contentImages(images));
+		this.emitStateChanged();
+	}
+
+	async clearQueue(): Promise<{ steering: string[]; followUp: string[] }> {
+		const queue = this.runtime.session.clearQueue();
+		this.emitStateChanged();
+		return queue;
 	}
 
 	async runBash(command: string, onChunk: (chunk: string) => void): Promise<JsonValue> {
@@ -689,7 +781,7 @@ class CoreRuntimeSession implements RuntimeSession {
 			if (event.type === "message_end" || event.type === "entry_appended") {
 				queueMicrotask(() => this.emitCommittedEntries());
 			}
-			this.emit({ type: "progress", payload: jsonValue(event) });
+			for (const progress of projectRuntimeProgress(event)) this.emit({ type: "progress", payload: progress });
 			this.emit({ type: "state_changed", payload: jsonValue(this.getSnapshot("owned")) });
 		});
 	}
@@ -773,6 +865,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			createdAt: new Date(snapshot.header.timestamp).getTime(),
 			updatedAt: storage.updatedAt,
 			phase: "idle",
+			activity: "idle",
 			...(model ? { model } : {}),
 			thinkingLevel,
 			attached: false,
@@ -780,6 +873,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			revision: 0,
 			leafId: snapshot.leafId,
 			queuedSteerCount: 0,
+			queuedFollowUpCount: 0,
 			transcriptGeneration: storage.generation,
 			transcriptRevision: storage.revision,
 		};

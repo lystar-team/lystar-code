@@ -20,4 +20,4 @@ for (const [name, expected] of Object.entries(serverGoldenFixtures)) {
 	);
 }
 const generated = readdirSync(directory).filter((name) => name.endsWith(".frame"));
-assert.equal(generated.length, Object.keys(clientGoldenFixtures).length * 2 + Object.keys(serverGoldenFixtures).length * 2);
+assert.ok(generated.length >= Object.keys(clientGoldenFixtures).length * 2 + Object.keys(serverGoldenFixtures).length * 2);

@@ -34,6 +34,12 @@ WebKitGTK 4.1、GTK 3、Ayatana AppIndicator、librsvg、OpenSSL 开发包、pat
 
 2026-08-16，M7 仅在 Linux 完成本地验收：Host 的 `read_transcript`/`search_transcript` cursor 绑定 generation 与 revision，append 后旧搜索 cursor 为 `cursor_stale`；JSONL 读取分块并限制单行 4 MiB，索引不缓存 raw payload。Rust TUI 只消费 `lystar-protocol` 的 typed read-only projection；older page 严格匹配 generation/revision，progress preview 为 8 KiB，OSC 8 写入实际 label 区域，decoder 在扩容前拒绝超长 frame。GUI Protocol `9/9`、GUI Host `13/13`、Rust workspace、release PTY guard、clippy 和两次 fd bridge E2E 均通过；RSS artifact 每轮记录 PID、进程树、样本数和 10ms 间隔，并按 5 轮计算 p95。`npm run check:rust-spike` 已在 M7 提交后的干净 schema 基线上通过。Windows named-pipe transport、M8 交互功能和 M10 默认切换未验证。
 
+## M8 Rust Composer 与运行状态本地验收
+
+2026-08-16，M8 仅在 Linux x64 完成本地验收。Protocol 增加 `steer`、`follow_up`、`clear_queue`、受限 `SessionProgress`，Session snapshot 增加活动与 follow-up 队列状态。Host 只在 `CoreRuntimeSession` 调用公开 `AgentSession.steer()`、`followUp()` 和 `clearQueue()`；未知运行时事件收敛为最长 1024 字节的状态，不透传原始事件。队列命令经过 operation journal，在响应写出后执行，按 client request ID 和 payload hash 幂等。
+
+Rust Composer 固定在底部，支持 UTF-8 grapheme、多行、粘贴、历史草稿恢复和受限 undo/redo；Enter 按当前状态发送 `prompt` 或 `steer`，Alt+Enter 发送 `follow_up`，Esc/Ctrl+C 中止活动 operation。Host tmux/FIFO E2E 3/3 覆盖 prompt、streaming steer、follow-up、typed Tool 进度、Esc abort、prompt response-loss 重试和 clear queue 重试；Protocol 10/10，Host runtime/journal 聚焦测试 12/12，Rust workspace、clippy、release build、PTY guard 和兼容 smoke 均通过。M7 的五轮 10,000 Tool 首帧、翻页与 RSS 预算回归保持通过。Windows named-pipe 与真实 Provider 未验证；`npm run check:rust-spike` 的 schema 零 diff 前置 gate 只会在源码 schema 改动存在时失败，生成后的其余分项已实际通过。详见 `docs/rust-tui-m8-report.md`。
+
 ## 最新 GUI 实现与运行验证
 
 2026-08-15 已完成 `gui.5` 五平台公开 Beta 发布验证，并完成未发布的 `0.84.1-lystar-gui.6` P0 修复候选验证；发布事实与候选源码不得混写。
