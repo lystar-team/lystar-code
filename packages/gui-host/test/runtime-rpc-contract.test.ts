@@ -129,25 +129,37 @@ function asRecord(value: unknown): JsonRecord | undefined {
 	return typeof value === "object" && value !== null ? (value as JsonRecord) : undefined;
 }
 
-function normalizeCoreEvents(records: unknown[]): string[] {
-	const normalized: string[] = [];
-	for (const value of records) {
+function normalizeSessionProgress(events: unknown[]): string[] {
+	return events.flatMap((value) => {
 		const event = asRecord(value);
-		if (!event || typeof event.type !== "string") continue;
-		if (["agent_start", "turn_start", "turn_end", "agent_end", "agent_settled"].includes(event.type)) {
-			normalized.push(event.type);
-			continue;
+		if (!event || typeof event.type !== "string") return [];
+		switch (event.type) {
+			case "tool_start":
+				return typeof event.name === "string" ? [`tool_start:${event.name}`] : [];
+			case "tool_end":
+				return typeof event.name === "string" && typeof event.status === "string"
+					? [`tool_end:${event.name}:${event.status}`]
+					: [];
+			case "phase":
+				return typeof event.phase === "string" ? [`phase:${event.phase}`] : [];
+			default:
+				return [];
 		}
-		if (event.type === "message_end") {
-			const role = asRecord(event.message)?.role;
-			if (typeof role === "string") normalized.push(`message_end:${role}`);
-			continue;
+	});
+}
+
+function normalizeRpcSessionProgress(records: unknown[]): string[] {
+	return records.flatMap((value) => {
+		const event = asRecord(value);
+		if (!event || typeof event.type !== "string") return [];
+		if (event.type === "tool_execution_start" && typeof event.toolName === "string") {
+			return [`tool_start:${event.toolName}`];
 		}
-		if (event.type === "tool_execution_start" || event.type === "tool_execution_end") {
-			if (typeof event.toolName === "string") normalized.push(`${event.type}:${event.toolName}`);
+		if (event.type === "tool_execution_end" && typeof event.toolName === "string") {
+			return [`tool_end:${event.toolName}:${event.isError === true ? "error" : "success"}`];
 		}
-	}
-	return normalized;
+		return event.type === "agent_settled" ? ["phase:idle"] : [];
+	});
 }
 
 function transcriptSummary(path: string): TranscriptSummary {
@@ -457,7 +469,7 @@ async function runRpcToolContract(workspace: Workspace): Promise<ToolContract> {
 	if (typeof sessionPath !== "string") throw new Error("RPC session was not persisted");
 	const result = {
 		model: modelRef(initialState.model),
-		events: normalizeCoreEvents(rpc.records.slice(eventStart)),
+		events: normalizeRpcSessionProgress(rpc.records.slice(eventStart)),
 		transcript: transcriptSummary(sessionPath),
 	};
 	await rpc.stop();
@@ -481,7 +493,9 @@ async function runGuiToolContract(workspace: Workspace): Promise<ToolContract> {
 	const sessionPath = runtime.sessionPath;
 	const result = {
 		model,
-		events: normalizeCoreEvents(events.filter((event) => event.type === "progress").map((event) => event.payload)),
+		events: normalizeSessionProgress(
+			events.filter((event) => event.type === "progress").map((event) => event.payload),
+		),
 		transcript: transcriptSummary(sessionPath),
 	};
 	await runtime.dispose();
@@ -562,7 +576,6 @@ async function runRpcAbortContract(workspace: Workspace): Promise<AbortContract>
 		await rpc.waitFor((record) => record.type === "response" && record.id === "prompt", eventStart)
 	).record;
 	expect(promptResponse.success).toBe(true);
-	await rpc.waitFor((record) => record.type === "message_update", eventStart);
 	const abortResponse = await rpc.request({ id: "abort", type: "abort" });
 	expect(abortResponse.success).toBe(true);
 	await rpc.waitFor((record) => record.type === "agent_settled", eventStart);
@@ -570,7 +583,7 @@ async function runRpcAbortContract(workspace: Workspace): Promise<AbortContract>
 	if (typeof state.sessionFile !== "string") throw new Error("RPC aborted session was not persisted");
 	const transcript = transcriptSummary(state.sessionFile);
 	const result = {
-		events: normalizeCoreEvents(rpc.records.slice(eventStart)),
+		events: normalizeRpcSessionProgress(rpc.records.slice(eventStart)),
 		transcript: { roles: transcript.roles, lastAssistantStopReason: transcript.lastAssistantStopReason },
 	};
 	await rpc.stop();
@@ -585,14 +598,16 @@ async function runGuiAbortContract(workspace: Workspace): Promise<AbortContract>
 	const events: RuntimeEvent[] = [];
 	runtime.onEvent((event) => events.push(event));
 	const prompt = runtime.prompt("stream");
-	while (!events.some((event) => event.type === "progress" && asRecord(event.payload)?.type === "message_update")) {
+	while (!events.some((event) => event.type === "progress" && asRecord(event.payload)?.type === "assistant_delta")) {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
 	await runtime.abort();
 	await prompt;
 	const transcript = transcriptSummary(runtime.sessionPath);
 	const result = {
-		events: normalizeCoreEvents(events.filter((event) => event.type === "progress").map((event) => event.payload)),
+		events: normalizeSessionProgress(
+			events.filter((event) => event.type === "progress").map((event) => event.payload),
+		),
 		transcript: { roles: transcript.roles, lastAssistantStopReason: transcript.lastAssistantStopReason },
 	};
 	await runtime.dispose();
@@ -679,6 +694,6 @@ describe("CodingAgentRuntimeAdapter RPC contract", () => {
 
 		expect(gui).toEqual(rpc);
 		expect(gui.transcript.lastAssistantStopReason).toBe("aborted");
-		expect(gui.events.at(-1)).toBe("agent_settled");
+		expect(gui.events.at(-1)).toBe("phase:idle");
 	}, 30_000);
 });

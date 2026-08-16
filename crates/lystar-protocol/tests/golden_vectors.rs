@@ -1,104 +1,135 @@
 use std::fs;
 
-use lystar_protocol::{FieldPresence, FrameDecoder, decode_client_message, decode_server_message};
+use lystar_protocol::{
+    B3Command, FieldPresence, FrameDecoder, decode_client_message, decode_server_message,
+};
+use serde::Deserialize;
+use serde_json::Value;
+
+#[derive(Deserialize)]
+struct FixtureManifest {
+    fixtures: Vec<Fixture>,
+}
+
+#[derive(Deserialize)]
+struct Fixture {
+    name: String,
+    direction: String,
+    message: Value,
+    #[serde(rename = "b3Command")]
+    b3_command: Option<String>,
+    presence: Option<Presence>,
+}
+
+#[derive(Deserialize)]
+struct Presence {
+    path: Vec<String>,
+    state: String,
+}
 
 #[test]
-fn typescript_and_rust_golden_frames_round_trip_through_public_wrappers() {
+fn typescript_and_rust_frames_match_the_shared_semantic_matrix() {
     let directory = format!("{}/tests/fixtures", env!("CARGO_MANIFEST_DIR"));
-    for name in [
-        "client-hello",
-        "client-read-transcript",
-        "client-search-transcript",
-        "client-ui-response-missing",
-        "client-ui-response-null",
-        "client-ui-response-value",
-    ] {
-        let payload = decode_frame(&fs::read(format!("{directory}/ts-{name}.frame")).unwrap());
-        let message = decode_client_message(&payload).unwrap();
-        let rust_payload =
-            decode_frame(&fs::read(format!("{directory}/rust-{name}.frame")).unwrap());
-        let rust_message = decode_client_message(&rust_payload).unwrap();
-        assert_eq!(
-            rust_message.message_kind(),
-            message.message_kind(),
-            "client fixture {name}"
-        );
-        assert_eq!(
-            rust_message.protocol_version(),
-            message.protocol_version(),
-            "client fixture {name}"
-        );
-        let round_trip = decode_client_message(&payload).unwrap();
-        assert_eq!(
-            round_trip.message_kind(),
-            message.message_kind(),
-            "client round trip {name}"
-        );
-        assert_presence(name, &message);
-    }
-    for name in [
-        "server-hello",
-        "server-response-ok",
-        "server-response-error",
-        "server-response-error-null",
-        "server-response-error-missing",
-        "server-event-transcript",
-        "server-event-ui-request",
-        "server-event-operation-missing",
-        "server-event-operation-value",
-        "server-event-progress-status",
-    ] {
-        let payload = decode_frame(&fs::read(format!("{directory}/ts-{name}.frame")).unwrap());
-        let message = decode_server_message(&payload)
-            .unwrap_or_else(|error| panic!("typescript server fixture {name}: {error}"));
-        let rust_payload =
-            decode_frame(&fs::read(format!("{directory}/rust-{name}.frame")).unwrap());
-        let rust_message = decode_server_message(&rust_payload)
-            .unwrap_or_else(|error| panic!("server fixture {name}: {error}"));
-        assert_eq!(
-            rust_message.message_kind(),
-            message.message_kind(),
-            "server fixture {name}"
-        );
-        assert_eq!(
-            rust_message.protocol_version(),
-            message.protocol_version(),
-            "server fixture {name}"
-        );
-        let round_trip = decode_server_message(&payload).unwrap();
-        assert_eq!(
-            round_trip.message_kind(),
-            message.message_kind(),
-            "server round trip {name}"
-        );
-        assert_presence(name, &message);
+    let source = format!(
+        "{}/../../packages/gui-protocol/scripts/fixtures/semantic.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let manifest: FixtureManifest = serde_json::from_slice(&fs::read(source).unwrap()).unwrap();
+
+    for fixture in manifest.fixtures {
+        let typescript = fs::read(format!("{directory}/ts-{}.frame", fixture.name)).unwrap();
+        let rust = fs::read(format!("{directory}/rust-{}.frame", fixture.name)).unwrap();
+        match fixture.direction.as_str() {
+            "client" => {
+                let typescript = decode_client_message(&decode_frame(&typescript)).unwrap();
+                let rust = decode_client_message(&decode_frame(&rust)).unwrap();
+                assert_eq!(
+                    as_json(typescript.value()),
+                    fixture.message,
+                    "TS client fixture {}",
+                    fixture.name
+                );
+                assert_eq!(
+                    as_json(rust.value()),
+                    fixture.message,
+                    "Rust client fixture {}",
+                    fixture.name
+                );
+                if let Some(command) = fixture.b3_command.as_deref() {
+                    assert_eq!(
+                        typescript.b3_command(),
+                        B3Command::from_wire(command),
+                        "TS client B3 fixture {}",
+                        fixture.name
+                    );
+                    assert_eq!(
+                        rust.b3_command(),
+                        B3Command::from_wire(command),
+                        "Rust client B3 fixture {}",
+                        fixture.name
+                    );
+                }
+                if let Some(presence) = &fixture.presence {
+                    assert_presence(&fixture.name, &typescript, presence);
+                    assert_presence(&fixture.name, &rust, presence);
+                }
+            }
+            "server" => {
+                let typescript = decode_server_message(&decode_frame(&typescript)).unwrap();
+                let rust = decode_server_message(&decode_frame(&rust)).unwrap();
+                assert_eq!(
+                    as_json(typescript.value()),
+                    fixture.message,
+                    "TS server fixture {}",
+                    fixture.name
+                );
+                assert_eq!(
+                    as_json(rust.value()),
+                    fixture.message,
+                    "Rust server fixture {}",
+                    fixture.name
+                );
+                if let Some(command) = fixture.b3_command.as_deref().and_then(B3Command::from_wire)
+                {
+                    assert!(
+                        typescript.decode_b3_result(command).is_ok(),
+                        "TS B3 fixture {}",
+                        fixture.name
+                    );
+                    assert!(
+                        rust.decode_b3_result(command).is_ok(),
+                        "Rust B3 fixture {}",
+                        fixture.name
+                    );
+                }
+                if let Some(presence) = &fixture.presence {
+                    assert_presence(&fixture.name, &typescript, presence);
+                    assert_presence(&fixture.name, &rust, presence);
+                }
+            }
+            _ => panic!("fixture {} has an invalid direction", fixture.name),
+        }
     }
 }
 
-fn assert_presence(name: &str, message: &impl HasPresence) {
-    let (path, expected) = match name {
-        "client-ui-response-missing" => (&["value"][..], FieldPresence::Missing),
-        "client-ui-response-null" => (&["value"][..], FieldPresence::Null),
-        "client-ui-response-value" => (&["value"][..], FieldPresence::Value),
-        "server-response-error" => (&["error", "details"][..], FieldPresence::Value),
-        "server-response-error-null" => (&["error", "details"][..], FieldPresence::Null),
-        "server-response-error-missing" => (&["error", "details"][..], FieldPresence::Missing),
-        "server-event-operation-missing" => (
-            &["event", "operation", "progress"][..],
-            FieldPresence::Missing,
-        ),
-        "server-event-operation-value" => (
-            &["event", "operation", "progress"][..],
-            FieldPresence::Value,
-        ),
-        _ => return,
+fn as_json(value: &ciborium::value::Value) -> Value {
+    serde_json::to_value(value).unwrap()
+}
+
+fn assert_presence(name: &str, message: &impl HasPresence, presence: &Presence) {
+    let path = presence.path.iter().map(String::as_str).collect::<Vec<_>>();
+    let expected = match presence.state.as_str() {
+        "missing" => FieldPresence::Missing,
+        "null" => FieldPresence::Null,
+        "value" => FieldPresence::Value,
+        _ => panic!("fixture {name} has an invalid presence state"),
     };
-    assert_eq!(message.presence(path), expected, "{name}");
-    if name.starts_with("server-event-operation-") {
+    assert_eq!(message.presence(&path), expected, "{name}");
+    if path.as_slice() == ["event", "operation", "progress"] {
         assert_eq!(
             message.presence(&["event", "operation", "result"]),
             expected,
-            "{name}"
+            "{name} result presence"
         );
     }
 }

@@ -4,7 +4,9 @@ use ciborium::{de::from_reader, ser::into_writer, value::Value};
 use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
-use crate::generated::ClientMessage as GeneratedClientMessage;
+use crate::generated::{
+    ClientMessage as GeneratedClientMessage, ServerMessage as GeneratedServerMessage,
+};
 
 pub const MAX_FRAME_LENGTH: usize = 16 * 1024 * 1024;
 const GUI_PROTOCOL_VERSION: u64 = 1;
@@ -107,12 +109,17 @@ impl ClientMessage {
         self.0.diagnostic()
     }
 
+    pub(crate) fn json(&self) -> Result<serde_json::Value, ProtocolError> {
+        serde_json::to_value(&self.0.raw)
+            .map_err(|error| ProtocolError::InvalidCbor(error.to_string()))
+    }
+
     pub fn value(&self) -> &Value {
         &self.0.raw
     }
 }
 
-pub struct ServerMessage(DecodedMessage<Value>);
+pub struct ServerMessage(DecodedMessage<GeneratedServerMessage>);
 
 impl fmt::Debug for ServerMessage {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -190,7 +197,16 @@ pub fn decode_client_message(payload: &[u8]) -> Result<ClientMessage, ProtocolEr
 }
 
 pub fn decode_server_message(payload: &[u8]) -> Result<ServerMessage, ProtocolError> {
-    decode_message::<Value>(payload, validate_server_message).map(ServerMessage)
+    let raw = decode_payload(payload)?;
+    // Typify's internally-tagged generated ServerMessage is decoded through serde_json.
+    // This preserves the CBOR raw sidecar while avoiding ciborium's untagged-enum limitation.
+    let typed = serde_json::from_value(
+        serde_json::to_value(&raw)
+            .map_err(|error| ProtocolError::InvalidCbor(error.to_string()))?,
+    )
+    .map_err(|error| invalid_message("server", error.to_string()))?;
+    validate_server_message(&raw)?;
+    Ok(ServerMessage(DecodedMessage { typed, raw }))
 }
 
 pub fn encode_client_hello(client_instance_id: &str) -> Result<Vec<u8>, ProtocolError> {
@@ -366,26 +382,13 @@ fn validate_client_message(message: &GeneratedClientMessage) -> Result<(), Proto
 }
 
 fn validate_server_message(message: &Value) -> Result<(), ProtocolError> {
-    match top_level_text(message, "type") {
-        Some("hello") => {
-            if top_level_u64(message, "version") != Some(GUI_PROTOCOL_VERSION)
-                || top_level_u64(message, "protocolVersion") != Some(GUI_PROTOCOL_VERSION)
-            {
-                return Err(invalid_message("server", "unsupported protocol version"));
-            }
-        }
-        Some("hello_error") => {}
-        Some("response") if matches!(map_value(message, "ok"), Some(Value::Bool(_))) => {}
-        Some("event")
-            if map_value(message, "event")
-                .and_then(|event| top_level_text(event, "type"))
-                .is_some() => {}
-        _ => {
-            return Err(invalid_message(
-                "server",
-                "unknown or malformed message variant",
-            ));
-        }
+    // ServerMessage 的完整 variant、必填字段和 unknown field 由 generated 类型反序列化校验。
+    // raw sidecar 只保留 optional 的 missing/null/value 区分和 hello 版本诊断。
+    if top_level_text(message, "type") == Some("hello")
+        && (top_level_u64(message, "version") != Some(GUI_PROTOCOL_VERSION)
+            || top_level_u64(message, "protocolVersion") != Some(GUI_PROTOCOL_VERSION))
+    {
+        return Err(invalid_message("server", "unsupported protocol version"));
     }
     Ok(())
 }
@@ -550,12 +553,26 @@ mod tests {
     #[test]
     fn rejects_unknown_fields_unknown_variants_and_bad_hello_versions() {
         for value in [
+            json!({"type":"hello", "version":0, "clientInstanceId":"client"}),
+            json!({"type":"hello", "version":2, "clientInstanceId":"client"}),
+            json!({"type":"hello", "version":1}),
             json!({"type":"hello", "version":1, "clientInstanceId":"client", "extra":true}),
             json!({"type":"future", "id":"1"}),
-            json!({"type":"hello", "version":2, "clientInstanceId":"client"}),
         ] {
             assert!(matches!(
                 decode_client_message(&client_payload(value)),
+                Err(ProtocolError::InvalidCbor(_) | ProtocolError::InvalidMessage { .. })
+            ));
+        }
+        for value in [
+            json!({"type":"event", "event":{"type":"sessions_changed", "cwd":"/tmp", "extra":true}}),
+            json!({"type":"event", "event":{"type":"future"}}),
+            json!({"type":"hello", "version":0, "protocolVersion":1, "productVersion":"test", "serverInstanceId":"server", "hostInstanceId":"host", "hostStartedAt":0, "capabilities":[]}),
+            json!({"type":"hello", "version":1, "protocolVersion":2, "productVersion":"test", "serverInstanceId":"server", "hostInstanceId":"host", "hostStartedAt":0, "capabilities":[]}),
+            json!({"type":"hello", "version":1, "protocolVersion":1, "serverInstanceId":"server", "hostInstanceId":"host", "hostStartedAt":0, "capabilities":[]}),
+        ] {
+            assert!(matches!(
+                decode_server_message(&client_payload(value)),
                 Err(ProtocolError::InvalidCbor(_) | ProtocolError::InvalidMessage { .. })
             ));
         }

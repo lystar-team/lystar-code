@@ -93,14 +93,22 @@ class CborReader {
 				return true;
 			case 22:
 				return null;
+			case 25: {
+				const bytes = this.readBytes(2);
+				const bits = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint16(0, false);
+				return this.finiteFloat(decodeFloat16(bits));
+			}
+			case 26: {
+				const bytes = this.readBytes(4);
+				return this.finiteFloat(
+					new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getFloat32(0, false),
+				);
+			}
 			case 27: {
 				const bytes = this.readBytes(8);
-				const value = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getFloat64(0, false);
-				if (!Number.isFinite(value)) throw new CborError("Decoded CBOR number must be finite");
-				if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
-					throw new CborError("Decoded CBOR integer is outside the safe range");
-				}
-				return value;
+				return this.finiteFloat(
+					new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getFloat64(0, false),
+				);
 			}
 			case 31:
 				throw new CborError("CBOR break marker is not supported");
@@ -109,6 +117,13 @@ class CborReader {
 		}
 	}
 
+	private finiteFloat(value: number): number {
+		if (!Number.isFinite(value)) throw new CborError("Decoded CBOR number must be finite");
+		if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
+			throw new CborError("Decoded CBOR integer is outside the safe range");
+		}
+		return value;
+	}
 	private readLength(additionalInformation: number, kind: string, limit: number): number {
 		if (additionalInformation === 31) throw new CborError(`Indefinite-length CBOR ${kind}s are not supported`);
 		const length = this.readArgument(additionalInformation);
@@ -155,6 +170,15 @@ class CborReader {
 		this.offset += length;
 		return value;
 	}
+}
+
+function decodeFloat16(bits: number): number {
+	const sign = bits & 0x8000 ? -1 : 1;
+	const exponent = (bits >>> 10) & 0x1f;
+	const fraction = bits & 0x03ff;
+	if (exponent === 0) return sign * 2 ** -14 * (fraction / 1024);
+	if (exponent === 31) return fraction === 0 ? sign * Number.POSITIVE_INFINITY : Number.NaN;
+	return sign * 2 ** (exponent - 15) * (1 + fraction / 1024);
 }
 
 /** Decodes exactly one item from the protocol's strict RFC 8949 subset. */

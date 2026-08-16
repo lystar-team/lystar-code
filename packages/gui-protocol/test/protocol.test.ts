@@ -1,3 +1,4 @@
+import { encodeCbor, encodeFrame } from "@earendil-works/pi-protocol";
 import { describe, expect, it } from "vitest";
 import {
 	assertB3CommandResult,
@@ -233,6 +234,67 @@ describe("GUI Protocol v1", () => {
 				},
 			}),
 		).toBe(true);
+	});
+
+	it("keeps client hello version validation in the handshake while server messages reject incompatible versions", () => {
+		const fraction = {
+			type: "response" as const,
+			id: "fraction",
+			ok: true as const,
+			result: { value: 1.5 },
+		};
+		expect(new ServerMessageDecoder().push(encodeServerMessage(fraction))).toEqual([fraction]);
+		for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+			expect(() => encodeServerMessage({ ...fraction, result: { value } } as never)).toThrow();
+		}
+		for (const version of [0, 2]) {
+			const hello = { type: "hello" as const, version, clientInstanceId: "client" };
+			expect(new ClientMessageDecoder().push(encodeClientMessage(hello))).toEqual([hello]);
+		}
+	});
+
+	it("rejects missing and unknown fields during decode", () => {
+		const unchecked = (value: unknown) => encodeFrame(encodeCbor(value));
+		for (const value of [
+			{ type: "hello", version: 1 },
+			{ type: "hello", version: 1, clientInstanceId: "client", extra: true },
+		]) {
+			expect(() => new ClientMessageDecoder().push(unchecked(value))).toThrow();
+		}
+		for (const value of [
+			{
+				type: "hello",
+				version: 0,
+				protocolVersion: 1,
+				productVersion: "test",
+				serverInstanceId: "server",
+				hostInstanceId: "host",
+				hostStartedAt: 0,
+				capabilities: [],
+			},
+			{
+				type: "hello",
+				version: 1,
+				protocolVersion: 2,
+				productVersion: "test",
+				serverInstanceId: "server",
+				hostInstanceId: "host",
+				hostStartedAt: 0,
+				capabilities: [],
+			},
+			{
+				type: "hello",
+				version: 1,
+				protocolVersion: 1,
+				serverInstanceId: "server",
+				hostInstanceId: "host",
+				hostStartedAt: 0,
+				capabilities: [],
+			},
+			{ type: "event", event: { type: "sessions_changed", cwd: "/tmp", extra: true } },
+		]) {
+			expect(() => new ServerMessageDecoder().push(unchecked(value))).toThrow();
+		}
 	});
 
 	it("strictly decodes transcript search commands and rejects blank queries or excess limits", () => {

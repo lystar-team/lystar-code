@@ -1,6 +1,6 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	hashOperationPayload,
@@ -132,6 +132,55 @@ describe("OperationJournal", () => {
 		expect(journal.get(expired.operationId)).toBeUndefined();
 		expect(journal.list()).toEqual([current]);
 		expect(new OperationJournal(path).list()).toEqual([current]);
+	});
+
+	it("cleans temporary files and leaves a reopenable journal when compaction rename or directory fsync fails", () => {
+		for (const failurePoint of ["rename", "directory fsync"] as const) {
+			const path = journalPath();
+			const expired = {
+				operationId: "expired-operation",
+				clientInstanceId: "expired-client",
+				clientRequestId: "expired-request",
+				sessionPath: "/tmp/expired.jsonl",
+				type: "prompt",
+				status: "completed",
+				acceptedAt: 1,
+				updatedAt: 1,
+				payloadHash: "expired-hash",
+				result: "x".repeat(16 * 1024 * 1024),
+			};
+			writeFileSync(path, `${JSON.stringify(expired)}\n`);
+			const journal = new OperationJournal(path, {
+				compactFileOperations:
+					failurePoint === "rename"
+						? {
+								rename: () => {
+									throw new Error("rename failed");
+								},
+								fsyncParentDirectory: () => undefined,
+							}
+						: {
+								rename: renameSync,
+								fsyncParentDirectory: () => {
+									throw new Error("directory fsync failed");
+								},
+							},
+			});
+
+			expect(() =>
+				journal.accept({
+					clientInstanceId: "current-client",
+					clientRequestId: "current-request",
+					sessionPath: "/tmp/current.jsonl",
+					type: "prompt",
+					payloadHash: "current-hash",
+				}),
+			).toThrow(failurePoint === "rename" ? "rename failed" : "directory fsync failed");
+
+			const reopened = new OperationJournal(path);
+			expect(reopened.find("current-client", "current-request", "current-hash")?.status).toBe("accepted");
+			expect(readdirSync(dirname(path)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+		}
 	});
 
 	it("refuses writes when a journal record fails the protocol schema", () => {

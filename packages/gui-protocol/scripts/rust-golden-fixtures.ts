@@ -1,116 +1,80 @@
-import type { ClientMessage, JsonValue, ServerMessage, SessionProgress } from "../src/index.ts";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import {
+	parseClientMessage,
+	parseServerMessage,
+	type ClientMessage,
+	type ServerMessage,
+} from "../src/index.ts";
 
-export const clientGoldenFixtures: Record<string, ClientMessage> = {
-	"client-hello": { type: "hello", version: 1, clientInstanceId: "rust-spike-client" },
-	"client-read-transcript": {
-		type: "request",
-		id: "request-read-transcript",
-		request: { command: "read_transcript", sessionPath: "/tmp/session.jsonl", limit: 20 },
-	},
-	"client-search-transcript": {
-		type: "request",
-		id: "request-search-transcript",
-		request: { command: "search_transcript", sessionPath: "/tmp/session.jsonl", query: "needle", limit: 20 },
-	},
-	"client-ui-response-missing": { type: "ui_response", id: "ui-response-missing", confirmed: false },
-	"client-ui-response-null": { type: "ui_response", id: "ui-response-null", value: null },
-	"client-ui-response-value": { type: "ui_response", id: "ui-response-value", value: { accepted: true } },
+export type GoldenDirection = "client" | "server";
+export type GoldenPresence = { path: string[]; state: "missing" | "null" | "value" };
+export type ClientGoldenFixture = {
+	name: string;
+	direction: "client";
+	message: ClientMessage;
+	b3Command?: string;
+	presence?: GoldenPresence;
 };
+export type ServerGoldenFixture = {
+	name: string;
+	direction: "server";
+	message: ServerMessage;
+	b3Command?: string;
+	presence?: GoldenPresence;
+};
+export type GoldenFixture = ClientGoldenFixture | ServerGoldenFixture;
 
-const operation = (progress: SessionProgress | undefined, result: JsonValue | undefined) => ({
-	operationId: "operation-1",
-	clientInstanceId: "client-1",
-	clientRequestId: "request-1",
-	sessionPath: "/tmp/session.jsonl",
-	type: "prompt",
-	status: "running" as const,
-	acceptedAt: 0,
-	updatedAt: 1,
-	payloadHash: "payload-1",
-	...(progress === undefined ? {} : { progress }),
-	...(result === undefined ? {} : { result }),
+const fixturePath = resolve(import.meta.dirname, "fixtures/semantic.json");
+const parsed: unknown = JSON.parse(readFileSync(fixturePath, "utf8"));
+
+if (!parsed || typeof parsed !== "object" || !Array.isArray((parsed as { fixtures?: unknown }).fixtures)) {
+	throw new Error(`Invalid semantic fixture manifest: ${fixturePath}`);
+}
+
+const names = new Set<string>();
+export const goldenFixtures: GoldenFixture[] = (parsed as { fixtures: unknown[] }).fixtures.map((value, index) => {
+	if (!value || typeof value !== "object") throw new Error(`Fixture ${index} must be an object`);
+	const fixture = value as Record<string, unknown>;
+	if (typeof fixture.name !== "string" || fixture.name.length === 0 || names.has(fixture.name)) {
+		throw new Error(`Fixture ${index} has an invalid or duplicate name`);
+	}
+	names.add(fixture.name);
+	if (fixture.direction !== "client" && fixture.direction !== "server") {
+		throw new Error(`Fixture ${fixture.name} has an invalid direction`);
+	}
+	const presence = parsePresence(fixture.presence, fixture.name);
+	if (fixture.b3Command !== undefined && typeof fixture.b3Command !== "string") {
+		throw new Error(`Fixture ${fixture.name} has an invalid B3 command`);
+	}
+	if (fixture.direction === "client") {
+		return {
+			name: fixture.name,
+			direction: "client",
+			message: parseClientMessage(fixture.message),
+			...(typeof fixture.b3Command === "string" ? { b3Command: fixture.b3Command } : {}),
+			...(presence ? { presence } : {}),
+		};
+	}
+	return {
+		name: fixture.name,
+		direction: "server",
+		message: parseServerMessage(fixture.message),
+		...(typeof fixture.b3Command === "string" ? { b3Command: fixture.b3Command } : {}),
+		...(presence ? { presence } : {}),
+	};
 });
 
-export const serverGoldenFixtures: Record<string, ServerMessage> = {
-	"server-hello": {
-		type: "hello",
-		version: 1,
-		productVersion: "rust-spike",
-		protocolVersion: 1,
-		serverInstanceId: "node-host",
-		hostInstanceId: "node-host",
-		hostStartedAt: 0,
-		capabilities: ["session-paging"],
-	},
-	"server-response-ok": {
-		type: "response",
-		id: "response-ok",
-		ok: true,
-		result: { nested: [null, { number: 1, value: "deep" }] },
-	},
-	"server-response-error": {
-		type: "response",
-		id: "response-error-value",
-		ok: false,
-		error: { code: "locked", message: "session is locked", retryable: true, details: { owner: null } },
-	},
-	"server-response-error-null": {
-		type: "response",
-		id: "response-error-null",
-		ok: false,
-		error: { code: "locked", message: "session is locked", details: null },
-	},
-	"server-response-error-missing": {
-		type: "response",
-		id: "response-error-missing",
-		ok: false,
-		error: { code: "locked", message: "session is locked" },
-	},
-	"server-event-transcript": {
-		type: "event",
-		event: {
-			type: "transcript_committed",
-			sessionPath: "/tmp/session.jsonl",
-			transcriptGeneration: "generation-1",
-			fromRevision: 0,
-			toRevision: 1,
-			items: [
-				{
-					entryId: "entry-1",
-					parentId: null,
-					timestamp: "2026-08-15T00:00:00.000Z",
-					kind: "message",
-					payload: { role: "assistant", content: ["hello", null] },
-				},
-			],
-		},
-	},
-	"server-event-ui-request": {
-		type: "event",
-		event: {
-			type: "ui_request",
-			id: "ui-request",
-			operationId: "operation-1",
-			kind: "confirm",
-			title: "Confirm",
-			payload: { choices: [true, null] },
-			timeoutMs: 1000,
-		},
-	},
-	"server-event-operation-missing": {
-		type: "event",
-		event: { type: "operation_updated", operation: operation(undefined, undefined) },
-	},
-	"server-event-operation-value": {
-		type: "event",
-		event: { type: "operation_updated", operation: operation({ type: "status", status: "step 1" }, { done: true }) },
-	},
-	"server-event-progress-status": {
-		type: "event",
-		event: {
-			type: "session_progress",
-			sessionPath: "/tmp/session.jsonl",
-			progress: { type: "status", status: "状态更新" },
-		},
-	},
-};
+function parsePresence(value: unknown, name: string): GoldenPresence | undefined {
+	if (value === undefined) return undefined;
+	if (!value || typeof value !== "object") throw new Error(`Fixture ${name} has an invalid presence assertion`);
+	const presence = value as Record<string, unknown>;
+	if (
+		!Array.isArray(presence.path) ||
+		presence.path.some((part) => typeof part !== "string") ||
+		(presence.state !== "missing" && presence.state !== "null" && presence.state !== "value")
+	) {
+		throw new Error(`Fixture ${name} has an invalid presence assertion`);
+	}
+	return { path: presence.path, state: presence.state };
+}

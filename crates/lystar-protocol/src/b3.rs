@@ -1,7 +1,7 @@
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::{ProtocolError, ServerMessage};
+use crate::{ClientMessage, ProtocolError, ServerMessage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum B3Command {
@@ -22,6 +22,42 @@ pub enum B3Command {
     ContinueSubagent,
     ReadClipboardText,
     WriteClipboardText,
+}
+
+impl B3Command {
+    pub fn from_wire(command: &str) -> Option<Self> {
+        Some(match command {
+            "list_settings" => Self::ListSettings,
+            "set_setting" => Self::SetSetting,
+            "get_project_trust" => Self::GetProjectTrust,
+            "set_project_trust" => Self::SetProjectTrust,
+            "list_packages" => Self::ListPackages,
+            "install_package" => Self::InstallPackage,
+            "remove_package" => Self::RemovePackage,
+            "update_packages" => Self::UpdatePackages,
+            "get_session_tree" => Self::GetSessionTree,
+            "set_entry_label" => Self::SetEntryLabel,
+            "navigate_session_tree" => Self::NavigateSessionTree,
+            "list_subagents" => Self::ListSubagents,
+            "read_subagent" => Self::ReadSubagent,
+            "abort_subagent" => Self::AbortSubagent,
+            "continue_subagent" => Self::ContinueSubagent,
+            "read_clipboard_text" => Self::ReadClipboardText,
+            "write_clipboard_text" => Self::WriteClipboardText,
+            _ => return None,
+        })
+    }
+}
+
+impl ClientMessage {
+    pub fn b3_command(&self) -> Option<B3Command> {
+        self.json()
+            .ok()?
+            .get("request")?
+            .get("command")?
+            .as_str()
+            .and_then(B3Command::from_wire)
+    }
 }
 
 #[derive(Debug)]

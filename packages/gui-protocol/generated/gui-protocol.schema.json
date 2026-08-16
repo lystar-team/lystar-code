@@ -11,7 +11,7 @@
           "type": "boolean"
         },
         {
-          "type": "integer"
+          "type": "number"
         },
         {
           "type": "string"
@@ -2040,6 +2040,282 @@
         }
       ]
     },
+    "ServerSessionProgress": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "text"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "assistant_delta"
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 16384
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "text"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "thinking_delta"
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 16384
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "toolCallId",
+            "name"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "tool_start"
+            },
+            "toolCallId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "summary": {
+              "type": "string",
+              "maxLength": 16384
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "toolCallId",
+            "name",
+            "summary"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "tool_update"
+            },
+            "toolCallId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "summary": {
+              "type": "string",
+              "maxLength": 16384
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "toolCallId",
+            "name",
+            "status",
+            "summary"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "tool_end"
+            },
+            "toolCallId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "status": {
+              "$ref": "#/$defs/ToolEndStatus"
+            },
+            "summary": {
+              "type": "string",
+              "maxLength": 16384
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "steeringCount",
+            "followUpCount"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "queue_update"
+            },
+            "steeringCount": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "followUpCount": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "phase"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "phase"
+            },
+            "phase": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "idle"
+                },
+                {
+                  "type": "string",
+                  "const": "turn"
+                },
+                {
+                  "type": "string",
+                  "const": "compaction"
+                },
+                {
+                  "type": "string",
+                  "const": "branch_summary"
+                },
+                {
+                  "type": "string",
+                  "const": "retry"
+                },
+                {
+                  "type": "string",
+                  "const": "waiting_for_input"
+                },
+                {
+                  "type": "string",
+                  "const": "interrupted"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "status"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "status"
+            },
+            "status": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "usage"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "usage"
+            },
+            "usage": {
+              "type": "object",
+              "properties": {
+                "inputTokens": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "outputTokens": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cacheReadTokens": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cacheWriteTokens": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "elapsedMs": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ToolEndStatus": {
+      "anyOf": [
+        {
+          "type": "string",
+          "const": "success"
+        },
+        {
+          "type": "string",
+          "const": "error"
+        }
+      ]
+    },
     "ServerMessage": {
       "anyOf": [
         {
@@ -2617,277 +2893,7 @@
                       "minLength": 1
                     },
                     "progress": {
-                      "anyOf": [
-                        {
-                          "type": "object",
-                          "required": [
-                            "type",
-                            "text"
-                          ],
-                          "properties": {
-                            "type": {
-                              "type": "string",
-                              "const": "assistant_delta"
-                            },
-                            "text": {
-                              "type": "string",
-                              "maxLength": 16384
-                            }
-                          },
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "object",
-                          "required": [
-                            "type",
-                            "text"
-                          ],
-                          "properties": {
-                            "type": {
-                              "type": "string",
-                              "const": "thinking_delta"
-                            },
-                            "text": {
-                              "type": "string",
-                              "maxLength": 16384
-                            }
-                          },
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "object",
-                          "required": [
-                            "type",
-                            "toolCallId",
-                            "name"
-                          ],
-                          "properties": {
-                            "type": {
-                              "type": "string",
-                              "const": "tool_start"
-                            },
-                            "toolCallId": {
-                              "type": "string",
-                              "minLength": 1,
-                              "maxLength": 4096
-                            },
-                            "name": {
-                              "type": "string",
-                              "minLength": 1,
-                              "maxLength": 256
-                            },
-                            "summary": {
-                              "type": "string",
-                              "maxLength": 16384
-                            }
-                          },
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "object",
-                          "required": [
-                            "type",
-                            "toolCallId",
-                            "name",
-                            "summary"
-                          ],
-                          "properties": {
-                            "type": {
-                              "type": "string",
-                              "const": "tool_update"
-                            },
-                            "toolCallId": {
-                              "type": "string",
-                              "minLength": 1,
-                              "maxLength": 4096
-                            },
-                            "name": {
-                              "type": "string",
-                              "minLength": 1,
-                              "maxLength": 256
-                            },
-                            "summary": {
-                              "type": "string",
-                              "maxLength": 16384
-                            }
-                          },
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "object",
-                          "required": [
-                            "type",
-                            "toolCallId",
-                            "name",
-                            "status",
-                            "summary"
-                          ],
-                          "properties": {
-                            "type": {
-                              "type": "string",
-                              "const": "tool_end"
-                            },
-                            "toolCallId": {
-                              "type": "string",
-                              "minLength": 1,
-                              "maxLength": 4096
-                            },
-                            "name": {
-                              "type": "string",
-                              "minLength": 1,
-                              "maxLength": 256
-                            },
-                            "status": {
-                              "anyOf": [
-                                {
-                                  "type": "string",
-                                  "const": "success"
-                                },
-                                {
-                                  "type": "string",
-                                  "const": "error"
-                                }
-                              ]
-                            },
-                            "summary": {
-                              "type": "string",
-                              "maxLength": 16384
-                            }
-                          },
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "object",
-                          "required": [
-                            "type",
-                            "steeringCount",
-                            "followUpCount"
-                          ],
-                          "properties": {
-                            "type": {
-                              "type": "string",
-                              "const": "queue_update"
-                            },
-                            "steeringCount": {
-                              "type": "integer",
-                              "minimum": 0
-                            },
-                            "followUpCount": {
-                              "type": "integer",
-                              "minimum": 0
-                            }
-                          },
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "object",
-                          "required": [
-                            "type",
-                            "phase"
-                          ],
-                          "properties": {
-                            "type": {
-                              "type": "string",
-                              "const": "phase"
-                            },
-                            "phase": {
-                              "anyOf": [
-                                {
-                                  "type": "string",
-                                  "const": "idle"
-                                },
-                                {
-                                  "type": "string",
-                                  "const": "turn"
-                                },
-                                {
-                                  "type": "string",
-                                  "const": "compaction"
-                                },
-                                {
-                                  "type": "string",
-                                  "const": "branch_summary"
-                                },
-                                {
-                                  "type": "string",
-                                  "const": "retry"
-                                },
-                                {
-                                  "type": "string",
-                                  "const": "waiting_for_input"
-                                },
-                                {
-                                  "type": "string",
-                                  "const": "interrupted"
-                                }
-                              ]
-                            }
-                          },
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "object",
-                          "required": [
-                            "type",
-                            "status"
-                          ],
-                          "properties": {
-                            "type": {
-                              "type": "string",
-                              "const": "status"
-                            },
-                            "status": {
-                              "type": "string",
-                              "minLength": 1,
-                              "maxLength": 1024
-                            },
-                            "truncated": {
-                              "type": "boolean"
-                            }
-                          },
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "object",
-                          "required": [
-                            "type",
-                            "usage"
-                          ],
-                          "properties": {
-                            "type": {
-                              "type": "string",
-                              "const": "usage"
-                            },
-                            "usage": {
-                              "type": "object",
-                              "properties": {
-                                "inputTokens": {
-                                  "type": "integer",
-                                  "minimum": 0
-                                },
-                                "outputTokens": {
-                                  "type": "integer",
-                                  "minimum": 0
-                                },
-                                "cacheReadTokens": {
-                                  "type": "integer",
-                                  "minimum": 0
-                                },
-                                "cacheWriteTokens": {
-                                  "type": "integer",
-                                  "minimum": 0
-                                },
-                                "elapsedMs": {
-                                  "type": "integer",
-                                  "minimum": 0
-                                }
-                              },
-                              "additionalProperties": false
-                            }
-                          },
-                          "additionalProperties": false
-                        }
-                      ]
+                      "$ref": "#/$defs/ServerSessionProgress"
                     }
                   },
                   "additionalProperties": false

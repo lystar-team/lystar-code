@@ -1,20 +1,17 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { encodeClientMessage, encodeServerMessage } from "../src/index.ts";
-import { clientGoldenFixtures, serverGoldenFixtures } from "./rust-golden-fixtures.ts";
+import { goldenFixtures } from "./rust-golden-fixtures.ts";
 
 const directory = resolve(import.meta.dirname, "../../../crates/lystar-protocol/tests/fixtures");
 mkdirSync(directory, { recursive: true });
-for (const [name, message] of Object.entries(clientGoldenFixtures)) {
-	writeIfChanged(resolve(directory, `ts-${name}.frame`), encodeClientMessage(message));
-}
-for (const [name, message] of Object.entries(serverGoldenFixtures)) {
-	writeIfChanged(resolve(directory, `ts-${name}.frame`), encodeServerMessage(message));
+for (const fixture of goldenFixtures) {
+	const frame = fixture.direction === "client" ? encodeClientMessage(fixture.message) : encodeServerMessage(fixture.message);
+	writeIfChanged(resolve(directory, `ts-${fixture.name}.frame`), frame);
 }
 
 function writeIfChanged(path, content) {
-	const bytes = Buffer.from(content);
-	if (!Buffer.from(readFileSyncSafe(path)).equals(bytes)) writeFileSync(path, bytes);
+	if (!Buffer.from(readFileSyncSafe(path)).equals(content)) writeFileSync(path, content);
 }
 
 function readFileSyncSafe(path) {

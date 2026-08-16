@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { encodeCbor, encodeFrame } from "@earendil-works/pi-protocol";
 import { encodeClientMessage, type ServerMessage, ServerMessageDecoder } from "@lystar/code-gui-protocol";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -143,23 +144,27 @@ describe("GUI Host stdio process", () => {
 		child.stdin.end();
 	}, 20_000);
 
-	it("returns a readable version error over the framed process transport", async () => {
-		const child = startHost();
-		await waitForReady(child);
-		const reading = readMessages(child, 1);
-		child.stdin.write(encodeClientMessage({ type: "hello", version: 2, clientInstanceId: "client" }));
-		const [message] = await reading;
+	it.each([0, 2])(
+		"returns a readable version error over the framed process transport for v%i",
+		async (version) => {
+			const child = startHost();
+			await waitForReady(child);
+			const reading = readMessages(child, 1);
+			child.stdin.write(encodeFrame(encodeCbor({ type: "hello", version, clientInstanceId: "client" })));
+			const [message] = await reading;
 
-		expect(message).toEqual({
-			type: "hello_error",
-			error: {
-				code: "version",
-				message: "GUI Protocol 2 is unsupported; Host requires 1",
-				retryable: false,
-			},
-		});
-		child.stdin.end();
-	}, 20_000);
+			expect(message).toEqual({
+				type: "hello_error",
+				error: {
+					code: "version",
+					message: `GUI Protocol ${version} is unsupported; Host requires 1`,
+					retryable: false,
+				},
+			});
+			child.stdin.end();
+		},
+		20_000,
+	);
 
 	it("processes UI responses while a request waits for consecutive authentication prompts", async () => {
 		const child = startHost();

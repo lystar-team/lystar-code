@@ -1,30 +1,33 @@
 use std::fs;
 
+use ciborium::ser::into_writer;
+use serde::Deserialize;
+use serde_json::Value;
+
+#[derive(Deserialize)]
+struct FixtureManifest {
+    fixtures: Vec<Fixture>,
+}
+
+#[derive(Deserialize)]
+struct Fixture {
+    name: String,
+    message: Value,
+}
+
 fn main() {
     let directory = format!("{}/tests/fixtures", env!("CARGO_MANIFEST_DIR"));
-    for name in [
-        "client-hello",
-        "client-read-transcript",
-        "client-search-transcript",
-        "client-ui-response-missing",
-        "client-ui-response-null",
-        "client-ui-response-value",
-        "server-hello",
-        "server-response-ok",
-        "server-response-error",
-        "server-response-error-null",
-        "server-response-error-missing",
-        "server-event-transcript",
-        "server-event-ui-request",
-        "server-event-operation-missing",
-        "server-event-operation-null",
-        "server-event-operation-value",
-        "server-event-progress-status",
-    ] {
-        let source = format!("{directory}/ts-{name}.frame");
-        let target = format!("{directory}/rust-{name}.frame");
-        if fs::read(&target).ok().as_deref() != fs::read(&source).ok().as_deref() {
-            fs::copy(source, target).unwrap();
-        }
+    let source = format!(
+        "{}/../../packages/gui-protocol/scripts/fixtures/semantic.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let manifest: FixtureManifest = serde_json::from_slice(&fs::read(source).unwrap()).unwrap();
+    for fixture in manifest.fixtures {
+        let mut payload = Vec::new();
+        let cbor: ciborium::value::Value = serde_json::from_value(fixture.message).unwrap();
+        into_writer(&cbor, &mut payload).unwrap();
+        let mut frame = (payload.len() as u32).to_be_bytes().to_vec();
+        frame.extend(payload);
+        fs::write(format!("{directory}/rust-{}.frame", fixture.name), frame).unwrap();
     }
 }

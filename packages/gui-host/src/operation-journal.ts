@@ -63,14 +63,26 @@ function requestKey(clientInstanceId: string, clientRequestId: string): string {
 	return `${clientInstanceId}\0${clientRequestId}`;
 }
 
+type CompactFileOperations = {
+	rename(from: string, to: string): void;
+	fsyncParentDirectory(path: string): void;
+};
+
+const defaultCompactFileOperations: CompactFileOperations = {
+	rename: renameSync,
+	fsyncParentDirectory,
+};
+
 export class OperationJournal {
 	readonly path: string;
 	private readonly byId = new Map<string, OperationSnapshot>();
 	private readonly byRequest = new Map<string, OperationSnapshot>();
 	private corruptError?: OperationJournalCorruptError;
+	private readonly compactFileOperations: CompactFileOperations;
 
-	constructor(path: string) {
+	constructor(path: string, options: { compactFileOperations?: CompactFileOperations } = {}) {
 		this.path = path;
+		this.compactFileOperations = options.compactFileOperations ?? defaultCompactFileOperations;
 		this.load();
 	}
 
@@ -191,6 +203,7 @@ export class OperationJournal {
 				operation.updatedAt >= cutoff || ["accepted", "running", "waiting_for_input"].includes(operation.status),
 		);
 		const tempPath = join(dirname(this.path), `.${basename(this.path)}.${process.pid}.${randomUUID()}.tmp`);
+		let renamed = false;
 		try {
 			const fd = openSync(tempPath, "wx", 0o600);
 			try {
@@ -202,12 +215,26 @@ export class OperationJournal {
 			} finally {
 				closeSync(fd);
 			}
-			renameSync(tempPath, this.path);
-			this.byId.clear();
-			this.byRequest.clear();
-			for (const operation of kept) this.index(operation);
+			this.compactFileOperations.rename(tempPath, this.path);
+			renamed = true;
+			this.compactFileOperations.fsyncParentDirectory(this.path);
 		} finally {
 			if (existsSync(tempPath)) unlinkSync(tempPath);
+			if (renamed) {
+				this.byId.clear();
+				this.byRequest.clear();
+				for (const operation of kept) this.index(operation);
+			}
 		}
+	}
+}
+
+function fsyncParentDirectory(path: string): void {
+	if (process.platform === "win32") return;
+	const directory = openSync(dirname(path), "r");
+	try {
+		fsyncSync(directory);
+	} finally {
+		closeSync(directory);
 	}
 }

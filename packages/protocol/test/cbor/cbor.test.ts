@@ -117,6 +117,13 @@ describe("CBOR codec", () => {
 		expect(() => encodeCbor(tooDeep)).toThrow(/depth/i);
 	});
 
+	test("round-trips finite floating point values across all supported widths", () => {
+		expect(decodeCbor(fromHex("f93c00"))).toBe(1);
+		expect(decodeCbor(fromHex("fa3fc00000"))).toBe(1.5);
+		expect(decodeCbor(fromHex("fb3ff8000000000000"))).toBe(1.5);
+		expect(decodeCbor(encodeCbor(1.5))).toBe(1.5);
+	});
+
 	test.each([
 		["empty input", ""],
 		["truncated integer", "18"],
@@ -129,9 +136,8 @@ describe("CBOR codec", () => {
 		["undefined", "f7"],
 		["unsupported simple value", "e0"],
 		["break outside an indefinite item", "ff"],
-		["float16", "f93c00"],
-		["float32", "fa3f800000"],
 		["positive infinity", "fb7ff0000000000000"],
+		["negative infinity", "fbfff0000000000000"],
 		["NaN", "fb7ff8000000000000"],
 		["truncated float64", "fb3ff00000"],
 		["truncated byte string", "44010203"],

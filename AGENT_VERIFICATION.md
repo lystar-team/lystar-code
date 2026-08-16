@@ -40,6 +40,10 @@ WebKitGTK 4.1、GTK 3、Ayatana AppIndicator、librsvg、OpenSSL 开发包、pat
 
 Rust Composer 固定在底部，支持 UTF-8 grapheme、多行、粘贴、历史草稿恢复和受限 undo/redo；Enter 按当前状态发送 `prompt` 或 `steer`，Alt+Enter 发送 `follow_up`，Esc/Ctrl+C 中止活动 operation。Host response-drop/reacquire E2E 覆盖首次 prompt accepted 回包 reject/断连、相同 `clientInstanceId` 新连接 hello/acquire、相同请求重发、并发同请求、payload 冲突、active steer/follow_up/clear_queue 掉回包重试及 idle 边界；Runtime 各操作恰好一次，journal 均 `completed`。正式 `AppState`/`EditorState`/`TranscriptView` M8 benchmark 共 30 条 JSONL（`80x24`、`120x36`、`200x60`，input300/paste5000，各 5 轮），缓存固定 `400/800/63,191 bytes`、regroup 不变；input p95 3.721-3.932 ms、p99 4.083-4.327 ms，paste p95 4.836-5.229 ms、p99 同值，RSS p95 22.898-22.906 MiB，均通过 M8 预算。真实 tmux 80x8 用 10 行按键输入覆盖 Composer 边框、光标、错误 Tool 行和快捷栏，三尺寸 resize 往返及 `stty` 恢复通过。GUI Protocol `10/10`、Host runtime/journal 与 Rust fd bridge `18/18`、Rust workspace、clippy、release build、PTY guard、`npm run benchmark:rust-m8`、verifier 和 `npm run check:rust-spike` 均通过。Windows named-pipe 与真实 Provider 未验证；详见 `docs/rust-tui-m8-report.md`。
 
+## 协议互操作与 journal durability 本地验收
+
+2026-08-16，Linux x64 上新增共享 semantic JSON 的 TS/Rust 双向 frame 矩阵：双方独立以 CBOR 编码 17 个 B3 command request、17 个 B3 successful response、9 种 `SessionProgress`、8 类 `ServerEvent` 与 optional missing/null/value，并对完整 message JSON 语义比较；Rust 对 TS B3 response 调用 `decode_b3_result`，TS 对 Rust B3 response 按 command result schema 校验。client/server hello 的 0/2、缺字段、unknown field，以及 CBOR `NaN`/正负 Infinity 均有负向回归。`OperationJournal.compact()` 在 rename 后 fsync 父目录，Windows 跳过目录 fsync；rename 或目录 fsync 失败均清理 temp，journal 可重开。此项只证明 B3 的 wire/schema 互操作，不表示 B3 runtime command 已完整实现或对外完成。
+
 ## 最新 GUI 实现与运行验证
 
 2026-08-15 已完成 `gui.5` 五平台公开 Beta 发布验证，并完成未发布的 `0.84.1-lystar-gui.6` P0 修复候选验证；发布事实与候选源码不得混写。
