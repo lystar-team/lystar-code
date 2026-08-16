@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
+	assertB3CommandResult,
 	type Capability,
 	type ClientMessage,
 	type CompletionResult,
@@ -44,6 +45,7 @@ const BASE_CAPABILITIES: Capability[] = [
 	"project-resources",
 	"directory-browser",
 	"external-resources",
+	"rust-workspace-b3",
 ];
 
 const ACTIVE_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>(["accepted", "running", "waiting_for_input"]);
@@ -53,6 +55,26 @@ const TERMINAL_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>([
 	"aborted",
 	"interrupted",
 ]);
+
+const B3_COMMANDS = {
+	list_settings: true,
+	set_setting: true,
+	get_project_trust: true,
+	set_project_trust: true,
+	list_packages: true,
+	install_package: true,
+	remove_package: true,
+	update_packages: true,
+	get_session_tree: true,
+	set_entry_label: true,
+	navigate_session_tree: true,
+	list_subagents: true,
+	read_subagent: true,
+	abort_subagent: true,
+	continue_subagent: true,
+	read_clipboard_text: true,
+	write_clipboard_text: true,
+} as const;
 
 function projectSessionProgress(value: JsonValue | SessionProgress): SessionProgress {
 	if (isSessionProgress(value)) return value;
@@ -258,6 +280,9 @@ export class GuiHostService {
 					afterResponse = action;
 				}),
 			);
+			if (message.request.command in B3_COMMANDS) {
+				assertB3CommandResult(message.request.command as keyof typeof B3_COMMANDS, result);
+			}
 		} catch (error) {
 			await connection.send({ type: "response", id: message.id, ok: false, error: protocolError(error) });
 			return;
@@ -672,6 +697,91 @@ export class GuiHostService {
 					request.offset,
 					request.limit,
 				);
+			case "list_settings": {
+				const sessionPath = canonicalSessionPath(request.sessionPath);
+				return this.runtimes.get(sessionPath)?.listSettings() ?? this.adapter.listSettings(sessionPath);
+			}
+			case "set_setting": {
+				this.assertClient(request.clientInstanceId, connection);
+				const { runtime } = this.assertSessionControl(request.sessionPath, request.leaseId, connection);
+				return runtime.setSetting(request.id, request.value);
+			}
+			case "get_project_trust":
+				return this.adapter.getProjectTrust(request.cwd);
+			case "set_project_trust": {
+				this.assertClient(request.clientInstanceId, connection);
+				this.journal.assertWritable();
+				const result = await this.adapter.setProjectTrust(request.cwd, request.trusted);
+				for (const runtime of this.runtimes.values()) {
+					if (resolve(runtime.getSnapshot("available").cwd) === resolve(request.cwd))
+						await runtime.reloadResources();
+				}
+				return result;
+			}
+			case "list_packages":
+				return this.adapter.listPackages(request.cwd);
+			case "install_package":
+				this.assertClient(request.clientInstanceId, connection);
+				this.journal.assertWritable();
+				return this.adapter.installPackage(request.cwd, request.source, request.scope);
+			case "remove_package":
+				this.assertClient(request.clientInstanceId, connection);
+				this.journal.assertWritable();
+				return this.adapter.removePackage(request.cwd, request.source, request.scope);
+			case "update_packages":
+				this.assertClient(request.clientInstanceId, connection);
+				this.journal.assertWritable();
+				return this.adapter.updatePackages(request.cwd, request.source);
+			case "get_session_tree": {
+				const sessionPath = canonicalSessionPath(request.sessionPath);
+				const runtime = await this.ensureRuntime(sessionPath, this.createUiRequestHandler(`tree:${connection.id}`));
+				return runtime.getSessionTree();
+			}
+			case "set_entry_label": {
+				this.assertClient(request.clientInstanceId, connection);
+				const { runtime } = this.assertSessionControl(request.sessionPath, request.leaseId, connection);
+				await runtime.setEntryLabel(request.entryId, request.label);
+				return { changed: true };
+			}
+			case "navigate_session_tree": {
+				this.assertClient(request.clientInstanceId, connection);
+				const { runtime } = this.assertSessionControl(request.sessionPath, request.leaseId, connection);
+				return runtime.navigateSessionTree(request.entryId, request.summarize === true);
+			}
+			case "list_subagents": {
+				const sessionPath = canonicalSessionPath(request.sessionPath);
+				const runtime = await this.ensureRuntime(
+					sessionPath,
+					this.createUiRequestHandler(`subagent:${connection.id}`),
+				);
+				return runtime.listSubagents();
+			}
+			case "read_subagent": {
+				const sessionPath = canonicalSessionPath(request.sessionPath);
+				const runtime = await this.ensureRuntime(
+					sessionPath,
+					this.createUiRequestHandler(`subagent:${connection.id}`),
+				);
+				return runtime.readSubagent(request.agentId);
+			}
+			case "abort_subagent": {
+				this.assertClient(request.clientInstanceId, connection);
+				const { runtime } = this.assertSessionControl(request.sessionPath, request.leaseId, connection);
+				await runtime.abortSubagent(request.agentId);
+				return { changed: true, message: "已请求停止 Subagent" };
+			}
+			case "continue_subagent": {
+				this.assertClient(request.clientInstanceId, connection);
+				const { runtime } = this.assertSessionControl(request.sessionPath, request.leaseId, connection);
+				await runtime.continueSubagent(request.agentId, request.text);
+				return { changed: true, message: "已继续 Subagent" };
+			}
+			case "read_clipboard_text":
+				return this.adapter.readClipboardText();
+			case "write_clipboard_text":
+				this.assertClient(request.clientInstanceId, connection);
+				this.journal.assertWritable();
+				return this.adapter.writeClipboardText(request.text);
 		}
 	}
 

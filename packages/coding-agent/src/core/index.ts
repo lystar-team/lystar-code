@@ -19,6 +19,17 @@ export {
 	VERSION,
 } from "../config.ts";
 export {
+	abortSubagent,
+	continueSubagentSession,
+	getCurrentSubagentRuns,
+	type SingleResult as SubagentSingleResult,
+	type SubagentDetails,
+	type SubagentRunSnapshot,
+	type SubagentSessionDescriptor,
+	type SubagentSessionRef,
+} from "../extensions/subagent/index.ts";
+export { copyToClipboard, readClipboardText } from "../utils/clipboard.ts";
+export {
 	formatVersionCheckError,
 	getLatestPiRelease,
 	isNewerPackageVersion,
@@ -102,6 +113,14 @@ export {
 	type TurnStartEvent,
 	type WorkingIndicatorOptions,
 } from "./extensions/index.ts";
+export {
+	getLystarSetting,
+	LYSTAR_SETTINGS_CATALOG,
+	type LystarSettingDefinition,
+	type LystarSettingKind,
+	type LystarSettingValue,
+	SETTINGS_SELECTOR_PERSISTENT_IDS,
+} from "./lystar-settings-catalog.ts";
 export {
 	ModelConfig,
 	type ModelsJsonModel,

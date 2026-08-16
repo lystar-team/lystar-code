@@ -140,6 +140,7 @@ export const CapabilitySchema = Type.Union([
 	Type.Literal("project-resources"),
 	Type.Literal("directory-browser"),
 	Type.Literal("external-resources"),
+	Type.Literal("rust-workspace-b3"),
 ]);
 export type Capability = Static<typeof CapabilitySchema>;
 
@@ -506,6 +507,147 @@ export const ProjectResourceSchema = StrictObject({
 });
 export type ProjectResource = Static<typeof ProjectResourceSchema>;
 
+export const SettingKindSchema = Type.Union([
+	Type.Literal("boolean"),
+	Type.Literal("enum"),
+	Type.Literal("integer"),
+	Type.Literal("string"),
+]);
+export const SettingValueSchema = Type.Union([Type.Boolean(), Type.Integer(), Type.String()]);
+export const SettingSummarySchema = StrictObject({
+	id: Id,
+	label: Type.String({ minLength: 1 }),
+	description: Type.Optional(Type.String()),
+	kind: SettingKindSchema,
+	value: SettingValueSchema,
+	options: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+	scope: Type.Union([Type.Literal("global"), Type.Literal("project")]),
+	readOnly: Type.Boolean(),
+	restartRequired: Type.Boolean(),
+});
+export type SettingSummary = Static<typeof SettingSummarySchema>;
+
+export const ProjectTrustSchema = StrictObject({
+	cwd: Type.String({ minLength: 1 }),
+	trusted: Type.Union([Type.Boolean(), Type.Null()]),
+});
+export type ProjectTrust = Static<typeof ProjectTrustSchema>;
+
+export const PackageScopeSchema = Type.Union([Type.Literal("user"), Type.Literal("project")]);
+export const PackageSummarySchema = StrictObject({
+	source: Type.String({ minLength: 1 }),
+	scope: PackageScopeSchema,
+	filtered: Type.Boolean(),
+	installedPath: Type.Optional(Type.String({ minLength: 1 })),
+});
+export type PackageSummary = Static<typeof PackageSummarySchema>;
+
+export const SessionTreeNodeSchema = StrictObject({
+	id: Id,
+	parentId: Type.Union([Id, Type.Null()]),
+	kind: Type.String({ minLength: 1 }),
+	label: Type.Optional(Type.String()),
+	timestamp: Type.String({ minLength: 1 }),
+	preview: Type.String({ maxLength: 4096 }),
+	isLeaf: Type.Boolean(),
+	depth: Type.Integer({ minimum: 0 }),
+});
+export type SessionTreeNode = Static<typeof SessionTreeNodeSchema>;
+
+export const SubagentSnapshotSchema = StrictObject({
+	runId: Id,
+	agentId: Id,
+	agent: Type.String({ minLength: 1 }),
+	agentSource: Type.Union([
+		Type.Literal("builtin"),
+		Type.Literal("user"),
+		Type.Literal("project"),
+		Type.Literal("unknown"),
+	]),
+	task: Type.String(),
+	state: Type.Union([
+		Type.Literal("queued"),
+		Type.Literal("running"),
+		Type.Literal("waiting"),
+		Type.Literal("succeeded"),
+		Type.Literal("failed"),
+		Type.Literal("cancelled"),
+	]),
+	currentAction: Type.Optional(Type.String()),
+	startedAt: Type.Integer({ minimum: 0 }),
+	updatedAt: Type.Integer({ minimum: 0 }),
+	elapsedMs: Type.Integer({ minimum: 0 }),
+	controllable: Type.Boolean(),
+	session: Type.Optional(
+		StrictObject({
+			version: Type.Literal(1),
+			sessionId: Id,
+			sessionFile: Type.String({ minLength: 1 }),
+			parentSessionFile: Type.Optional(Type.String({ minLength: 1 })),
+			cwd: Type.String({ minLength: 1 }),
+			createdAt: Type.Integer({ minimum: 0 }),
+		}),
+	),
+});
+export type SubagentSnapshot = Static<typeof SubagentSnapshotSchema>;
+
+export const ListSettingsResultSchema = Type.Array(SettingSummarySchema);
+export const SetSettingResultSchema = StrictObject({ setting: SettingSummarySchema, requiresRestart: Type.Boolean() });
+export const GetProjectTrustResultSchema = ProjectTrustSchema;
+export const SetProjectTrustResultSchema = ProjectTrustSchema;
+export const ListPackagesResultSchema = Type.Array(PackageSummarySchema);
+export const PackageMutationResultSchema = StrictObject({
+	changed: Type.Boolean(),
+	message: Type.String({ minLength: 1 }),
+});
+export const SessionTreeResultSchema = Type.Array(SessionTreeNodeSchema);
+export const SetEntryLabelResultSchema = StrictObject({ changed: Type.Boolean() });
+export const NavigateSessionTreeResultSchema = StrictObject({
+	editorText: Type.Optional(Type.String()),
+	cancelled: Type.Boolean(),
+	newLeafId: Type.Optional(Id),
+});
+export const ListSubagentsResultSchema = Type.Array(SubagentSnapshotSchema);
+export const ReadSubagentResultSchema = StrictObject({
+	transcript: Type.Optional(SubagentSnapshotSchema),
+	live: Type.Optional(SubagentSnapshotSchema),
+});
+export const SubagentMutationResultSchema = StrictObject({
+	changed: Type.Boolean(),
+	message: Type.String({ minLength: 1 }),
+});
+export const ClipboardReadResultSchema = StrictObject({
+	capability: Type.Boolean(),
+	text: Type.Optional(Type.String()),
+});
+export const ClipboardWriteResultSchema = StrictObject({ capability: Type.Boolean(), changed: Type.Boolean() });
+
+export const B3CommandResultSchemas = {
+	list_settings: ListSettingsResultSchema,
+	set_setting: SetSettingResultSchema,
+	get_project_trust: GetProjectTrustResultSchema,
+	set_project_trust: SetProjectTrustResultSchema,
+	list_packages: ListPackagesResultSchema,
+	install_package: PackageMutationResultSchema,
+	remove_package: PackageMutationResultSchema,
+	update_packages: PackageMutationResultSchema,
+	get_session_tree: SessionTreeResultSchema,
+	set_entry_label: SetEntryLabelResultSchema,
+	navigate_session_tree: NavigateSessionTreeResultSchema,
+	list_subagents: ListSubagentsResultSchema,
+	read_subagent: ReadSubagentResultSchema,
+	abort_subagent: SubagentMutationResultSchema,
+	continue_subagent: SubagentMutationResultSchema,
+	read_clipboard_text: ClipboardReadResultSchema,
+	write_clipboard_text: ClipboardWriteResultSchema,
+} as const;
+
+export function assertB3CommandResult(command: keyof typeof B3CommandResultSchemas, value: unknown): void {
+	if (!Check(B3CommandResultSchemas[command], value)) {
+		throw Object.assign(new Error(`命令 ${command} 返回了不符合协议的结果`), { code: "invalid_command_result" });
+	}
+}
+
 const ImageInputSchema = StrictObject({ data: Type.String(), mimeType: Type.String({ minLength: 1 }) });
 
 export const CommandSchema = Type.Union([
@@ -717,6 +859,93 @@ export const CommandSchema = Type.Union([
 		contentRef: Id,
 		offset: Type.Integer({ minimum: 0 }),
 		limit: Type.Integer({ minimum: 1, maximum: 1024 * 1024 }),
+	}),
+	StrictObject({ command: Type.Literal("list_settings"), sessionPath: Type.String({ minLength: 1 }) }),
+	StrictObject({
+		command: Type.Literal("set_setting"),
+		sessionPath: Type.String({ minLength: 1 }),
+		leaseId: Id,
+		clientInstanceId: Id,
+		clientRequestId: Id,
+		id: Id,
+		value: SettingValueSchema,
+	}),
+	StrictObject({ command: Type.Literal("get_project_trust"), cwd: Type.String({ minLength: 1 }) }),
+	StrictObject({
+		command: Type.Literal("set_project_trust"),
+		cwd: Type.String({ minLength: 1 }),
+		trusted: Type.Boolean(),
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
+	StrictObject({ command: Type.Literal("list_packages"), cwd: Type.String({ minLength: 1 }) }),
+	StrictObject({
+		command: Type.Literal("install_package"),
+		cwd: Type.String({ minLength: 1 }),
+		source: Type.String({ minLength: 1 }),
+		scope: PackageScopeSchema,
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
+	StrictObject({
+		command: Type.Literal("remove_package"),
+		cwd: Type.String({ minLength: 1 }),
+		source: Type.String({ minLength: 1 }),
+		scope: PackageScopeSchema,
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
+	StrictObject({
+		command: Type.Literal("update_packages"),
+		cwd: Type.String({ minLength: 1 }),
+		source: Type.Optional(Type.String({ minLength: 1 })),
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
+	StrictObject({ command: Type.Literal("get_session_tree"), sessionPath: Type.String({ minLength: 1 }) }),
+	StrictObject({
+		command: Type.Literal("set_entry_label"),
+		sessionPath: Type.String({ minLength: 1 }),
+		leaseId: Id,
+		entryId: Id,
+		label: Type.Optional(Type.String({ maxLength: 1024 })),
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
+	StrictObject({
+		command: Type.Literal("navigate_session_tree"),
+		sessionPath: Type.String({ minLength: 1 }),
+		leaseId: Id,
+		entryId: Id,
+		summarize: Type.Optional(Type.Boolean()),
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
+	StrictObject({ command: Type.Literal("list_subagents"), sessionPath: Type.String({ minLength: 1 }) }),
+	StrictObject({ command: Type.Literal("read_subagent"), sessionPath: Type.String({ minLength: 1 }), agentId: Id }),
+	StrictObject({
+		command: Type.Literal("abort_subagent"),
+		sessionPath: Type.String({ minLength: 1 }),
+		leaseId: Id,
+		agentId: Id,
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
+	StrictObject({
+		command: Type.Literal("continue_subagent"),
+		sessionPath: Type.String({ minLength: 1 }),
+		leaseId: Id,
+		agentId: Id,
+		text: Type.String({ minLength: 1 }),
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
+	StrictObject({ command: Type.Literal("read_clipboard_text") }),
+	StrictObject({
+		command: Type.Literal("write_clipboard_text"),
+		text: Type.String({ maxLength: 4 * 1024 * 1024 }),
+		clientInstanceId: Id,
+		clientRequestId: Id,
 	}),
 ]);
 export type Command = Static<typeof CommandSchema>;

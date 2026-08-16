@@ -23,8 +23,11 @@ import {
 	APP_TITLE,
 	type AuthEvent,
 	type AuthPrompt,
+	abortSubagent,
 	CONFIG_DIR_NAME,
 	type CreateAgentSessionRuntimeFactory,
+	continueSubagentSession,
+	copyToClipboard,
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
@@ -33,13 +36,16 @@ import {
 	type ExtensionUIContext,
 	formatVersionCheckError,
 	getAgentDir,
+	getCurrentSubagentRuns,
 	getDefaultSessionDir,
 	getLatestPiRelease,
+	getLystarSetting,
 	getSupportedThinkingLevels,
 	getToolRecoveryDoctorReport,
 	getToolRecoveryMode,
 	hasTrustRequiringProjectResources,
 	isNewerPackageVersion,
+	LYSTAR_SETTINGS_CATALOG,
 	loadProjectContextFiles,
 	loadSkills,
 	ModelConfig,
@@ -47,11 +53,14 @@ import {
 	PACKAGE_VERSION,
 	ProjectTrustStore,
 	RELEASE_REPOSITORY,
+	readClipboardText,
 	readSessionSnapshot,
 	resolveProjectTrusted,
 	type SessionEntry,
 	SessionManager,
 	SettingsManager,
+	type SubagentDetails,
+	type SubagentRunSnapshot,
 	saveModelsJsonModel,
 	saveModelsJsonProvider,
 	VERSION,
@@ -67,10 +76,15 @@ import type {
 	HostDirectoryListing,
 	JsonValue,
 	ModelRef,
+	PackageSummary,
 	ProjectInstruction,
 	ProjectResource,
+	ProjectTrust,
 	SessionProgress,
 	SessionStateSnapshot,
+	SessionTreeNode,
+	SettingSummary,
+	SubagentSnapshot,
 	ThinkingLevel,
 	TranscriptItem,
 } from "@lystar/code-gui-protocol";
@@ -322,6 +336,91 @@ function parseGitStatus(root: string, output: string): GitStatus {
 
 function jsonValue(value: unknown): JsonValue {
 	return JSON.parse(JSON.stringify(value)) as JsonValue;
+}
+
+function settingSummary(id: string, settings: SettingsManager): SettingSummary {
+	const definition = getLystarSetting(id);
+	if (!definition) throw Object.assign(new Error(`未知设置：${id}`), { code: "setting_not_found" });
+	return {
+		id: definition.id,
+		label: definition.label,
+		...(definition.description ? { description: definition.description } : {}),
+		kind: definition.kind,
+		value: definition.get(settings),
+		...(definition.options ? { options: definition.options } : {}),
+		scope: definition.scope,
+		readOnly: definition.readOnly === true,
+		restartRequired: definition.restartRequired === true,
+	};
+}
+
+function sessionTree(sessionManager: SessionManager): SessionTreeNode[] {
+	const walk = (nodes: ReturnType<SessionManager["getTree"]>, depth: number): SessionTreeNode[] =>
+		nodes.flatMap((node) => {
+			const entry = node.entry;
+			const raw = entry.type === "message" ? entry.message : entry;
+			const preview = JSON.stringify(raw).slice(0, 4096);
+			return [
+				{
+					id: entry.id,
+					parentId: entry.parentId,
+					kind: entry.type,
+					...(node.label ? { label: node.label } : {}),
+					timestamp: entry.timestamp,
+					preview,
+					isLeaf: sessionManager.getLeafId() === entry.id,
+					depth,
+				},
+				...walk(node.children, depth + 1),
+			];
+		});
+	return walk(sessionManager.getTree(), 0);
+}
+
+function transcriptSubagents(entries: SessionEntry[]): SubagentSnapshot[] {
+	const snapshots: SubagentSnapshot[] = [];
+	for (const entry of entries) {
+		if (entry.type !== "message" || entry.message.role !== "toolResult" || entry.message.toolName !== "subagent")
+			continue;
+		const details = entry.message.details as Partial<SubagentDetails> | undefined;
+		if (!Array.isArray(details?.results)) continue;
+		for (let index = 0; index < details.results.length; index++) {
+			const result = details.results[index];
+			if (!result?.agentId || !result.agent || !result.runId) continue;
+			snapshots.push({
+				runId: result.runId,
+				agentId: result.agentId,
+				agent: result.agent,
+				agentSource: result.agentSource ?? "unknown",
+				task: result.task,
+				state: result.state ?? "succeeded",
+				...(result.currentAction ? { currentAction: result.currentAction } : {}),
+				startedAt: result.startedAt ?? Date.parse(entry.timestamp),
+				updatedAt: result.updatedAt ?? Date.parse(entry.timestamp),
+				elapsedMs: result.elapsedMs ?? 0,
+				controllable: false,
+				...(result.session ? { session: result.session } : {}),
+			});
+		}
+	}
+	return snapshots;
+}
+
+function liveSubagent(snapshot: SubagentRunSnapshot): SubagentSnapshot {
+	return {
+		runId: snapshot.runId,
+		agentId: snapshot.agentId,
+		agent: snapshot.agent,
+		agentSource: snapshot.agentSource,
+		task: snapshot.task,
+		state: snapshot.state,
+		...(snapshot.currentAction ? { currentAction: snapshot.currentAction } : {}),
+		startedAt: snapshot.startedAt,
+		updatedAt: snapshot.updatedAt,
+		elapsedMs: snapshot.elapsedMs,
+		controllable: snapshot.controllable,
+		...(snapshot.session ? { session: snapshot.session } : {}),
+	};
 }
 
 function entryItem(entry: SessionEntry): TranscriptItem {
@@ -614,6 +713,89 @@ class CoreRuntimeSession implements RuntimeSession {
 			transcriptGeneration: storage.generation,
 			transcriptRevision: storage.revision,
 		};
+	}
+
+	listSettings(): SettingSummary[] {
+		return LYSTAR_SETTINGS_CATALOG.map((setting) =>
+			settingSummary(setting.id, this.runtime.services.settingsManager),
+		);
+	}
+
+	async setSetting(
+		id: string,
+		value: boolean | number | string,
+	): Promise<{ setting: SettingSummary; requiresRestart: boolean }> {
+		const definition = getLystarSetting(id);
+		if (!definition) throw Object.assign(new Error(`未知设置：${id}`), { code: "setting_not_found" });
+		definition.set(this.runtime.services.settingsManager, value);
+		await this.runtime.services.settingsManager.flush();
+		this.emitStateChanged();
+		const setting = settingSummary(id, this.runtime.services.settingsManager);
+		return { setting, requiresRestart: setting.restartRequired };
+	}
+
+	getSessionTree(): SessionTreeNode[] {
+		return sessionTree(this.runtime.session.sessionManager);
+	}
+
+	async setEntryLabel(entryId: string, label?: string): Promise<void> {
+		this.runtime.session.sessionManager.appendLabelChange(entryId, label?.trim() || undefined);
+		this.emitCommittedEntries();
+	}
+
+	async navigateSessionTree(
+		entryId: string,
+		summarize: boolean,
+	): Promise<{ editorText?: string; cancelled: boolean; newLeafId?: string }> {
+		const result = await this.runtime.session.navigateTree(entryId, { summarize });
+		this.emitCommittedEntries();
+		return {
+			...(result.editorText ? { editorText: result.editorText } : {}),
+			cancelled: result.cancelled,
+			...(this.runtime.session.sessionManager.getLeafId()
+				? { newLeafId: this.runtime.session.sessionManager.getLeafId()! }
+				: {}),
+		};
+	}
+
+	listSubagents(): SubagentSnapshot[] {
+		const committed = transcriptSubagents(this.runtime.session.sessionManager.getEntries());
+		const live = new Map(getCurrentSubagentRuns().map((snapshot) => [snapshot.agentId, liveSubagent(snapshot)]));
+		return committed.map((snapshot) => live.get(snapshot.agentId) ?? snapshot);
+	}
+
+	readSubagent(agentId: string): { transcript?: SubagentSnapshot; live?: SubagentSnapshot } {
+		const transcript = transcriptSubagents(this.runtime.session.sessionManager.getEntries()).find(
+			(snapshot) => snapshot.agentId === agentId,
+		);
+		const live = getCurrentSubagentRuns().find((snapshot) => snapshot.agentId === agentId);
+		return {
+			...(transcript ? { transcript } : {}),
+			...(live && transcript?.runId === live.runId ? { live: liveSubagent(live) } : {}),
+		};
+	}
+
+	async abortSubagent(agentId: string): Promise<void> {
+		if (!this.readSubagent(agentId).transcript)
+			throw Object.assign(new Error("Subagent 不属于当前会话"), { code: "subagent_not_found" });
+		await abortSubagent(agentId);
+	}
+
+	async continueSubagent(agentId: string, text: string): Promise<void> {
+		const transcript = this.readSubagent(agentId).transcript;
+		if (!transcript?.session)
+			throw Object.assign(new Error("Subagent 会话不可继续"), { code: "subagent_not_continuable" });
+		await continueSubagentSession(
+			{
+				agentId,
+				agent: transcript.agent,
+				agentSource: transcript.agentSource,
+				task: transcript.task,
+				agentScope: "both",
+				session: transcript.session,
+			},
+			text,
+		);
 	}
 
 	async prompt(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void> {
@@ -1391,6 +1573,89 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				retryable: true,
 			});
 		}
+	}
+
+	listSettings(sessionPath: string): SettingSummary[] {
+		const manager = SessionManager.open(sessionPath);
+		const settings = this.settingsForCwd(manager.getCwd());
+		return LYSTAR_SETTINGS_CATALOG.map((setting) => settingSummary(setting.id, settings));
+	}
+
+	getProjectTrust(cwd: string): ProjectTrust {
+		const root = canonicalDirectory(cwd);
+		return { cwd: root, trusted: new ProjectTrustStore(this.agentDir).get(root) };
+	}
+
+	async setProjectTrust(cwd: string, trusted: boolean): Promise<ProjectTrust> {
+		const root = canonicalDirectory(cwd);
+		new ProjectTrustStore(this.agentDir).set(root, trusted);
+		return { cwd: root, trusted };
+	}
+
+	listPackages(cwd: string): PackageSummary[] {
+		const root = canonicalDirectory(cwd);
+		return new DefaultPackageManager({
+			cwd: root,
+			agentDir: this.agentDir,
+			settingsManager: this.settingsForCwd(root),
+		}).listConfiguredPackages();
+	}
+
+	async installPackage(
+		cwd: string,
+		source: string,
+		scope: "user" | "project",
+	): Promise<{ changed: boolean; message: string }> {
+		const root = canonicalDirectory(cwd);
+		await new DefaultPackageManager({
+			cwd: root,
+			agentDir: this.agentDir,
+			settingsManager: this.settingsForCwd(root),
+		}).installAndPersist(source, { local: scope === "project" });
+		return { changed: true, message: `已安装 ${source}` };
+	}
+
+	async removePackage(
+		cwd: string,
+		source: string,
+		scope: "user" | "project",
+	): Promise<{ changed: boolean; message: string }> {
+		const root = canonicalDirectory(cwd);
+		const changed = await new DefaultPackageManager({
+			cwd: root,
+			agentDir: this.agentDir,
+			settingsManager: this.settingsForCwd(root),
+		}).removeAndPersist(source, { local: scope === "project" });
+		return { changed, message: changed ? `已移除 ${source}` : `未找到 ${source}` };
+	}
+
+	async updatePackages(cwd: string, source?: string): Promise<{ changed: boolean; message: string }> {
+		const root = canonicalDirectory(cwd);
+		if (process.env.PI_OFFLINE)
+			throw Object.assign(new Error("离线模式下不能更新包"), { code: "offline", retryable: false });
+		await new DefaultPackageManager({
+			cwd: root,
+			agentDir: this.agentDir,
+			settingsManager: this.settingsForCwd(root),
+		}).update(source);
+		return { changed: true, message: source ? `已更新 ${source}` : "已更新配置包" };
+	}
+
+	async readClipboardText(): Promise<{ capability: boolean; text?: string }> {
+		const text = await readClipboardText();
+		return { capability: true, ...(text ? { text } : {}) };
+	}
+
+	async writeClipboardText(text: string): Promise<{ capability: boolean; changed: boolean }> {
+		await copyToClipboard(text);
+		return { capability: true, changed: true };
+	}
+
+	private settingsForCwd(cwd: string): SettingsManager {
+		const trustStore = new ProjectTrustStore(this.agentDir);
+		return SettingsManager.create(cwd, this.agentDir, {
+			projectTrusted: !hasTrustRequiringProjectResources(cwd) || trustStore.get(cwd) === true,
+		});
 	}
 
 	private async createRuntime(

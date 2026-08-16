@@ -8,12 +8,17 @@ import type {
 	HostDirectoryListing,
 	JsonValue,
 	ModelRef,
+	PackageSummary,
 	ProjectInstruction,
 	ProjectResource,
+	ProjectTrust,
 	SessionActivity,
 	SessionPhase,
 	SessionProgress,
 	SessionStateSnapshot,
+	SessionTreeNode,
+	SettingSummary,
+	SubagentSnapshot,
 	ThinkingLevel,
 } from "@lystar/code-gui-protocol";
 
@@ -39,6 +44,21 @@ export interface ToolRecoveryRuntimeDiagnostics {
 export interface RuntimeSession {
 	readonly sessionPath: string;
 	getSnapshot(writeAccess: SessionStateSnapshot["writeAccess"]): SessionStateSnapshot;
+	listSettings(): SettingSummary[];
+	setSetting(
+		id: string,
+		value: boolean | number | string,
+	): Promise<{ setting: SettingSummary; requiresRestart: boolean }>;
+	getSessionTree(): SessionTreeNode[];
+	setEntryLabel(entryId: string, label?: string): Promise<void>;
+	navigateSessionTree(
+		entryId: string,
+		summarize: boolean,
+	): Promise<{ editorText?: string; cancelled: boolean; newLeafId?: string }>;
+	listSubagents(): SubagentSnapshot[];
+	readSubagent(agentId: string): { transcript?: SubagentSnapshot; live?: SubagentSnapshot };
+	abortSubagent(agentId: string): Promise<void>;
+	continueSubagent(agentId: string, text: string): Promise<void>;
 	prompt(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void>;
 	steer(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void>;
 	followUp(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void>;
@@ -171,6 +191,23 @@ export interface RuntimeAdapter {
 	getGitStatus(cwd: string): Promise<GitStatus>;
 	getGitDiff(cwd: string, path: string | undefined, staged: boolean): Promise<GitDiff>;
 	checkForUpdates(): Promise<JsonValue>;
+	listSettings(sessionPath: string): SettingSummary[];
+	getProjectTrust(cwd: string): ProjectTrust;
+	setProjectTrust(cwd: string, trusted: boolean): Promise<ProjectTrust>;
+	listPackages(cwd: string): PackageSummary[];
+	installPackage(
+		cwd: string,
+		source: string,
+		scope: "user" | "project",
+	): Promise<{ changed: boolean; message: string }>;
+	removePackage(
+		cwd: string,
+		source: string,
+		scope: "user" | "project",
+	): Promise<{ changed: boolean; message: string }>;
+	updatePackages(cwd: string, source?: string): Promise<{ changed: boolean; message: string }>;
+	readClipboardText(): Promise<{ capability: boolean; text?: string }>;
+	writeClipboardText(text: string): Promise<{ capability: boolean; changed: boolean }>;
 }
 
 export interface UiRequest {

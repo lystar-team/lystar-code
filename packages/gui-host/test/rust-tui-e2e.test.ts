@@ -222,6 +222,27 @@ class FakeRuntimeSession implements RuntimeSession {
 	getSnapshot(writeAccess: "available" | "owned" | "controlled_elsewhere" | "locked_externally") {
 		return { ...this.snapshot, path: this.sessionPath, attached: true, writeAccess, revision: 0 };
 	}
+	listSettings() {
+		return [];
+	}
+	async setSetting() {
+		return { setting: undefined as never, requiresRestart: false };
+	}
+	getSessionTree() {
+		return [];
+	}
+	async setEntryLabel(): Promise<void> {}
+	async navigateSessionTree() {
+		return { cancelled: false };
+	}
+	listSubagents() {
+		return [];
+	}
+	readSubagent() {
+		return {};
+	}
+	async abortSubagent(): Promise<void> {}
+	async continueSubagent(): Promise<void> {}
 	async prompt(text: string): Promise<void> {
 		this.prompts.push(text);
 		if (this.holdPrompt)

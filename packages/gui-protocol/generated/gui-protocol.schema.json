@@ -1398,6 +1398,532 @@
                     }
                   },
                   "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "list_settings"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "leaseId",
+                    "clientInstanceId",
+                    "clientRequestId",
+                    "id",
+                    "value"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "set_setting"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "value": {
+                      "anyOf": [
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "get_project_trust"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "trusted",
+                    "clientInstanceId",
+                    "clientRequestId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "set_project_trust"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "trusted": {
+                      "type": "boolean"
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "list_packages"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "source",
+                    "scope",
+                    "clientInstanceId",
+                    "clientRequestId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "install_package"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "source": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "scope": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "user"
+                        },
+                        {
+                          "type": "string",
+                          "const": "project"
+                        }
+                      ]
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "source",
+                    "scope",
+                    "clientInstanceId",
+                    "clientRequestId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "remove_package"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "source": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "scope": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "user"
+                        },
+                        {
+                          "type": "string",
+                          "const": "project"
+                        }
+                      ]
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "clientInstanceId",
+                    "clientRequestId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "update_packages"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "source": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "get_session_tree"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "leaseId",
+                    "entryId",
+                    "clientInstanceId",
+                    "clientRequestId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "set_entry_label"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "entryId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "label": {
+                      "type": "string",
+                      "maxLength": 1024
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "leaseId",
+                    "entryId",
+                    "clientInstanceId",
+                    "clientRequestId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "navigate_session_tree"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "entryId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "summarize": {
+                      "type": "boolean"
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "list_subagents"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "agentId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "read_subagent"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "agentId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "leaseId",
+                    "agentId",
+                    "clientInstanceId",
+                    "clientRequestId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "abort_subagent"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "agentId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "leaseId",
+                    "agentId",
+                    "text",
+                    "clientInstanceId",
+                    "clientRequestId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "continue_subagent"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "agentId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "read_clipboard_text"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "text",
+                    "clientInstanceId",
+                    "clientRequestId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "write_clipboard_text"
+                    },
+                    "text": {
+                      "type": "string",
+                      "maxLength": 4194304
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
                 }
               ]
             }
@@ -1563,6 +2089,10 @@
                   {
                     "type": "string",
                     "const": "external-resources"
+                  },
+                  {
+                    "type": "string",
+                    "const": "rust-workspace-b3"
                   }
                 ]
               }
