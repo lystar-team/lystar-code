@@ -29,6 +29,7 @@ export {
 	type SubagentSessionRef,
 } from "../extensions/subagent/index.ts";
 export { copyToClipboard, readClipboardText } from "../utils/clipboard.ts";
+export { readClipboardImage } from "../utils/clipboard-image.ts";
 export {
 	formatVersionCheckError,
 	getLatestPiRelease,

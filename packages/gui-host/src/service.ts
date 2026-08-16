@@ -88,6 +88,8 @@ const B3_COMMANDS = {
 	abort_subagent: true,
 	continue_subagent: true,
 	read_clipboard_text: true,
+	read_clipboard_image: true,
+	read_project_image: true,
 	write_clipboard_text: true,
 	render_rich_text: true,
 	read_image_content: true,
@@ -1030,6 +1032,10 @@ export class GuiHostService {
 			}
 			case "read_clipboard_text":
 				return this.adapter.readClipboardText();
+			case "read_clipboard_image":
+				return this.adapter.readClipboardImage();
+			case "read_project_image":
+				return this.adapter.readProjectImage(canonicalProjectCwd(request.cwd), request.path);
 			case "write_clipboard_text":
 				return this.executeJournaledWrite(connection, {
 					command: request.command,

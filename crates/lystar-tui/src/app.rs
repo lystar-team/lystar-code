@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    fmt,
     time::{Duration, Instant},
 };
 
@@ -599,6 +600,30 @@ pub fn merge_subagents(
     snapshots
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct ComposerAttachment {
+    pub name: String,
+    pub source: String,
+    pub mime_type: String,
+    pub byte_length: usize,
+    pub content_hash: String,
+    pub base64: String,
+}
+
+impl fmt::Debug for ComposerAttachment {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ComposerAttachment")
+            .field("name", &self.name)
+            .field("source", &self.source)
+            .field("mime_type", &self.mime_type)
+            .field("byte_length", &self.byte_length)
+            .field("content_hash", &self.content_hash)
+            .field("base64", &"[redacted]")
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardDescriptor {
     pub capability: bool,
@@ -887,6 +912,10 @@ pub enum PendingIntent {
     ClipboardRead {
         insert: bool,
     },
+    ProjectImage {
+        source: String,
+    },
+    ClipboardImage,
     ClipboardMutation {
         toast: String,
     },
@@ -1016,6 +1045,8 @@ pub struct AppState {
     pub subagents: Vec<SubagentDescriptor>,
     pub subagent_parent_path: Option<String>,
     pub clipboard: Option<ClipboardDescriptor>,
+    pub attachments: Vec<ComposerAttachment>,
+    pub pending_attachment_submits: HashMap<String, Vec<String>>,
     pub subagent_detail: Option<SubagentDescriptor>,
     pub settings: Vec<SettingDescriptor>,
     pub models: Vec<ModelDescriptor>,
@@ -1052,6 +1083,81 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub fn add_attachment(&mut self, attachment: ComposerAttachment) -> Result<bool, &'static str> {
+        if self
+            .attachments
+            .iter()
+            .any(|item| item.content_hash == attachment.content_hash)
+        {
+            return Ok(false);
+        }
+        if self.attachments.len() >= 8 {
+            return Err("最多可添加 8 张图片");
+        }
+        if self
+            .attachments
+            .iter()
+            .map(|item| item.byte_length)
+            .sum::<usize>()
+            + attachment.byte_length
+            > 16 * 1024 * 1024
+        {
+            return Err("图片总大小不能超过 16 MiB");
+        }
+        self.attachments.push(attachment);
+        Ok(true)
+    }
+
+    pub fn remove_attachment(&mut self, index: usize) -> bool {
+        if index >= self.attachments.len() {
+            return false;
+        }
+        self.attachments.remove(index);
+        true
+    }
+
+    pub fn clear_attachments(&mut self) {
+        self.attachments.clear();
+    }
+
+    pub fn attachment_summary(&self, compact: bool) -> Option<String> {
+        (!self.attachments.is_empty()).then(|| {
+            if compact {
+                return format!("图片 {}", self.attachments.len());
+            }
+            let names = self
+                .attachments
+                .iter()
+                .take(2)
+                .map(|item| item.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let more = self.attachments.len().saturating_sub(2);
+            format!(
+                "图片 {}: {}{}",
+                self.attachments.len(),
+                names,
+                if more > 0 {
+                    format!(" +{more}")
+                } else {
+                    String::new()
+                }
+            )
+        })
+    }
+
+    pub fn acknowledge_attachment_submit(&mut self, request_id: &str) {
+        let Some(hashes) = self.pending_attachment_submits.remove(request_id) else {
+            return;
+        };
+        self.attachments
+            .retain(|attachment| !hashes.contains(&attachment.content_hash));
+    }
+
+    pub fn reject_attachment_submit(&mut self, request_id: &str) {
+        self.pending_attachment_submits.remove(request_id);
+    }
+
     pub fn active_session_path(&self) -> Option<&str> {
         self.active_session
             .as_ref()
@@ -2524,12 +2630,14 @@ impl Widget for ComposerView<'_> {
             );
         }
         let tool_line = live_tool_line(&self.state.live_tools, width);
-        if !tool_line.is_empty() {
+        let attachment_line = self.state.attachment_summary(area.height <= 4);
+        let status_line = attachment_line.unwrap_or(tool_line);
+        if !status_line.is_empty() {
             put_line(
                 buffer,
                 area.x,
                 area.y + area.height.saturating_sub(2),
-                &tool_line,
+                &status_line,
                 width,
                 Style::default().fg(Color::Cyan),
             );
@@ -3096,6 +3204,26 @@ mod tests {
         assert_eq!(app.current_overlay_action().as_deref(), Some("tree:1"));
         app.select_tree_visible(1, true);
         assert_eq!(app.current_overlay_action().as_deref(), Some("tree:1"));
+    }
+
+    #[test]
+    fn bounds_dedupes_and_redacts_composer_attachments() {
+        let mut app = AppState::default();
+        let attachment = ComposerAttachment {
+            name: "sample.png".to_owned(),
+            source: "sample.png".to_owned(),
+            mime_type: "image/png".to_owned(),
+            byte_length: 4,
+            content_hash: "hash".to_owned(),
+            base64: "secret-image".to_owned(),
+        };
+        assert_eq!(app.add_attachment(attachment.clone()), Ok(true));
+        assert_eq!(app.add_attachment(attachment.clone()), Ok(false));
+        assert!(!format!("{attachment:?}").contains("secret-image"));
+        app.pending_attachment_submits
+            .insert("request".to_owned(), vec!["hash".to_owned()]);
+        app.acknowledge_attachment_submit("request");
+        assert!(app.attachments.is_empty());
     }
 
     #[test]

@@ -1,5 +1,6 @@
 import type {
 	AuthType,
+	ClipboardImageReadResult,
 	CompletionItem,
 	CompletionResult,
 	ContentChunk,
@@ -12,6 +13,7 @@ import type {
 	ProjectInstruction,
 	ProjectResource,
 	ProjectTrust,
+	ReadProjectImageResult,
 	RenderRichTextResult,
 	RichTextMessageType,
 	SessionActivity,
@@ -220,6 +222,8 @@ export interface RuntimeAdapter {
 		scope: "user" | "project",
 	): Promise<{ changed: boolean; message: string }>;
 	updatePackages(cwd: string, source?: string): Promise<{ changed: boolean; message: string }>;
+	readProjectImage(cwd: string, path: string): ReadProjectImageResult;
+	readClipboardImage(): Promise<ClipboardImageReadResult>;
 	readClipboardText(): Promise<{ capability: boolean; text?: string }>;
 	writeClipboardText(text: string): Promise<{ capability: boolean; changed: boolean }>;
 	renderRichText?(sessionPath: string, request: RichTextRenderRequest): RenderRichTextResult;

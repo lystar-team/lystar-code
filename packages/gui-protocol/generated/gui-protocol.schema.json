@@ -2210,6 +2210,42 @@
                 {
                   "type": "object",
                   "required": [
+                    "command"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "read_clipboard_image"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "path"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "read_project_image"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
                     "command",
                     "text",
                     "clientInstanceId",
@@ -6231,6 +6267,102 @@
         "text": {
           "type": "string",
           "maxLength": 1048576
+        }
+      },
+      "additionalProperties": false
+    },
+    "B3ReadClipboardImageResult": {
+      "type": "object",
+      "required": [
+        "capability",
+        "available"
+      ],
+      "properties": {
+        "capability": {
+          "type": "boolean"
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "mimeType": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "image/png"
+            },
+            {
+              "type": "string",
+              "const": "image/jpeg"
+            },
+            {
+              "type": "string",
+              "const": "image/webp"
+            },
+            {
+              "type": "string",
+              "const": "image/gif"
+            }
+          ]
+        },
+        "data": {
+          "type": "string",
+          "maxLength": 6291456
+        },
+        "byteLength": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4194304
+        },
+        "contentHash": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      },
+      "additionalProperties": false
+    },
+    "B3ReadProjectImageResult": {
+      "type": "object",
+      "required": [
+        "mimeType",
+        "base64",
+        "byteLength",
+        "contentHash"
+      ],
+      "properties": {
+        "mimeType": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "image/png"
+            },
+            {
+              "type": "string",
+              "const": "image/jpeg"
+            },
+            {
+              "type": "string",
+              "const": "image/webp"
+            },
+            {
+              "type": "string",
+              "const": "image/gif"
+            }
+          ]
+        },
+        "base64": {
+          "type": "string",
+          "maxLength": 6291456
+        },
+        "byteLength": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4194304
+        },
+        "contentHash": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
         }
       },
       "additionalProperties": false

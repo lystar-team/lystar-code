@@ -35,9 +35,9 @@ use thiserror::Error;
 
 use crate::{
     app::{
-        AppState, B3Request, ChangesTab, ClipboardDescriptor, ComposerView, ConfirmOverlay,
-        DetailOverlay, GitDiffDescriptor, GitFileDescriptor, GitStatusDescriptor, InputFocus,
-        InstructionDescriptor, ListOverlay, ModelDescriptor, OverlayItem, OverlayLink,
+        AppState, B3Request, ChangesTab, ClipboardDescriptor, ComposerAttachment, ComposerView,
+        ConfirmOverlay, DetailOverlay, GitDiffDescriptor, GitFileDescriptor, GitStatusDescriptor,
+        InputFocus, InstructionDescriptor, ListOverlay, ModelDescriptor, OverlayItem, OverlayLink,
         OverlayOrigin, OverlayState, PackageDescriptor, PendingIntent, ProjectTrustDescriptor,
         ProviderDescriptor, ReadonlySessionView, SearchHit, SessionRestorePoint, SessionSummary,
         SessionTreeNode, SettingDescriptor, SkillDescriptor, SubagentDescriptor, TextEditorOverlay,
@@ -1096,6 +1096,17 @@ fn handle_key(
         KeyCode::Char('f') if modifiers.contains(KeyModifiers::CONTROL) => {
             app.open_search();
             trace("search_open");
+        }
+        KeyCode::Char('v') if modifiers.contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT) => {
+            request_b3(
+                app,
+                pipe,
+                sequence,
+                B3Command::ReadClipboardImage,
+                serde_json::Map::new(),
+                PendingIntent::ClipboardImage,
+            )?;
+            request_clipboard_read(app, pipe, sequence, true)?;
         }
         KeyCode::Char('v') if modifiers.contains(KeyModifiers::CONTROL) => {
             request_clipboard_read(app, pipe, sequence, true)?;
@@ -3893,6 +3904,47 @@ fn submit_editor(
     let Some(text) = app.editor.submit() else {
         return Ok(());
     };
+    if let Some(path) = text
+        .strip_prefix("/attach ")
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        let cwd = app.active_session_cwd().unwrap_or_default().to_owned();
+        return request_b3(
+            app,
+            pipe,
+            sequence,
+            B3Command::ReadProjectImage,
+            serde_json::json!({ "cwd": cwd, "path": path })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            PendingIntent::ProjectImage {
+                source: path.to_owned(),
+            },
+        );
+    }
+    if text.trim() == "/attachments" {
+        let items = app
+            .attachments
+            .iter()
+            .enumerate()
+            .map(|(index, attachment)| OverlayItem {
+                label: attachment.name.clone(),
+                detail: format!("{} {} bytes", attachment.mime_type, attachment.byte_length),
+                action: format!("attachment:{index}"),
+            })
+            .collect();
+        app.open_overlay(OverlayState::List(ListOverlay {
+            title: "图片附件".to_owned(),
+            origin: OverlayOrigin::User,
+            items,
+            selected: 0,
+            filter: String::new(),
+            status: "d 删除  D 清空  Esc 返回".to_owned(),
+        }));
+        return Ok(());
+    }
     if let Some(command) = builtin_slash_command(&text) {
         open_workbench(
             app,
@@ -3914,14 +3966,26 @@ fn submit_editor(
     } else {
         "prompt"
     };
+    let images = app.attachments.iter().map(|attachment| serde_json::json!({ "data": attachment.base64, "mimeType": attachment.mime_type })).collect::<Vec<_>>();
+    let response_id = format!("command-{sequence}");
+    if !images.is_empty() {
+        app.pending_attachment_submits.insert(
+            response_id.clone(),
+            app.attachments
+                .iter()
+                .map(|attachment| attachment.content_hash.clone())
+                .collect(),
+        );
+    }
     pipe.request(&encode_queue_request(
-        &format!("command-{sequence}"),
+        &response_id,
         command,
         session_path,
         lease_id,
         client_instance_id,
         &request_id,
         Some(&text),
+        Some(&images),
     )?)?;
     app.transcript.status = if command == "prompt" {
         "已提交"
@@ -3955,6 +4019,17 @@ fn apply_server_message(
     .map(str::to_owned);
     if let Some(id) = &page_response_id {
         trace_id("host_response_received", id);
+    }
+    if raw.get("type").and_then(serde_json::Value::as_str) == Some("response")
+        && let Some(id) = raw.get("id").and_then(serde_json::Value::as_str)
+        && app.pending_attachment_submits.contains_key(id)
+    {
+        if raw.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+            app.acknowledge_attachment_submit(id);
+        } else {
+            app.reject_attachment_submit(id);
+        }
+        return Ok(false);
     }
     if raw.get("type").and_then(serde_json::Value::as_str) == Some("event")
         && raw
@@ -4338,6 +4413,63 @@ fn apply_server_message(
                 } else {
                     app.clipboard = Some(clipboard.clone());
                     app.replace_overlay(clipboard_overlay(&clipboard));
+                }
+            }
+            PendingIntent::ProjectImage { source } => {
+                let object = result
+                    .as_object()
+                    .ok_or_else(|| TuiError::InvalidResponse("图片响应无效".to_owned()))?;
+                let mime_type = required_string(object, "mimeType")?;
+                let base64 = required_string(object, "base64")?;
+                let byte_length = usize::try_from(required_u64(object, "byteLength")?)
+                    .map_err(|_| TuiError::InvalidResponse("图片大小无效".to_owned()))?;
+                let content_hash = required_string(object, "contentHash")?;
+                let name = std::path::Path::new(&source)
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or(&source)
+                    .to_owned();
+                match app.add_attachment(ComposerAttachment {
+                    name,
+                    source,
+                    mime_type,
+                    byte_length,
+                    content_hash,
+                    base64,
+                }) {
+                    Ok(true) => app.set_toast("已添加图片附件"),
+                    Ok(false) => app.set_toast("图片已在附件中"),
+                    Err(message) => app.set_overlay_error(message),
+                }
+            }
+            PendingIntent::ClipboardImage => {
+                let object = result
+                    .as_object()
+                    .ok_or_else(|| TuiError::InvalidResponse("剪贴板图片响应无效".to_owned()))?;
+                if !object
+                    .get("available")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    app.set_toast("剪贴板中没有图片");
+                    return Ok(false);
+                }
+                let mime_type = required_string(object, "mimeType")?;
+                let base64 = required_string(object, "data")?;
+                let byte_length = usize::try_from(required_u64(object, "byteLength")?)
+                    .map_err(|_| TuiError::InvalidResponse("图片大小无效".to_owned()))?;
+                let content_hash = required_string(object, "contentHash")?;
+                match app.add_attachment(ComposerAttachment {
+                    name: "clipboard-image".to_owned(),
+                    source: "clipboard".to_owned(),
+                    mime_type,
+                    byte_length,
+                    content_hash,
+                    base64,
+                }) {
+                    Ok(true) => app.set_toast("已添加剪贴板图片"),
+                    Ok(false) => app.set_toast("图片已在附件中"),
+                    Err(message) => app.set_overlay_error(message),
                 }
             }
             PendingIntent::ClipboardMutation { toast } => {

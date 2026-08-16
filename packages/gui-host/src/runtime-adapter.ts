@@ -53,6 +53,7 @@ import {
 	PACKAGE_VERSION,
 	ProjectTrustStore,
 	RELEASE_REPOSITORY,
+	readClipboardImage,
 	readClipboardText,
 	readSessionSnapshot,
 	renderTerminalRichText,
@@ -68,6 +69,7 @@ import {
 } from "@earendil-works/pi-coding-agent/core";
 import type {
 	AuthType,
+	ClipboardImageReadResult,
 	CompletionItem,
 	CompletionResult,
 	ContentChunk,
@@ -81,6 +83,7 @@ import type {
 	ProjectInstruction,
 	ProjectResource,
 	ProjectTrust,
+	ReadProjectImageResult,
 	SessionProgress,
 	SessionStateSnapshot,
 	SessionTreeNode,
@@ -133,7 +136,7 @@ const IMAGE_MIME_TYPES: Readonly<Record<string, string>> = {
 	".webp": "image/webp",
 };
 
-function contentHash(content: string): string {
+function contentHash(content: string | Uint8Array): string {
 	return createHash("sha256").update(content).digest("hex");
 }
 
@@ -212,6 +215,28 @@ function atomicWriteUtf8(path: string, content: string): void {
 		if (file !== undefined) closeSync(file);
 		if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
 	}
+}
+
+function imageMimeType(bytes: Uint8Array): "image/png" | "image/jpeg" | "image/webp" | "image/gif" | undefined {
+	if (
+		bytes.length >= 8 &&
+		bytes.subarray(0, 8).every((byte, index) => byte === [137, 80, 78, 71, 13, 10, 26, 10][index])
+	)
+		return "image/png";
+	if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+	if (
+		bytes.length >= 12 &&
+		Buffer.from(bytes.subarray(0, 4)).toString("ascii") === "RIFF" &&
+		Buffer.from(bytes.subarray(8, 12)).toString("ascii") === "WEBP"
+	)
+		return "image/webp";
+	if (
+		bytes.length >= 6 &&
+		(Buffer.from(bytes.subarray(0, 6)).toString("ascii") === "GIF87a" ||
+			Buffer.from(bytes.subarray(0, 6)).toString("ascii") === "GIF89a")
+	)
+		return "image/gif";
+	return undefined;
 }
 
 function fileMimeType(path: string): { kind: "text" | "image"; mimeType: string } {
@@ -1734,6 +1759,41 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			settingsManager: this.settingsForCwd(root),
 		}).update(source);
 		return { changed: true, message: source ? `已更新 ${source}` : "已更新配置包" };
+	}
+
+	readProjectImage(cwd: string, path: string): ReadProjectImageResult {
+		const resolved = canonicalProjectFile(cwd, path);
+		const stat = statSync(resolved.path);
+		if (stat.size > 4 * 1024 * 1024)
+			throw Object.assign(new Error("图片超过 4 MiB 限制"), { code: "image_too_large", retryable: false });
+		const bytes = new Uint8Array(readFileSync(resolved.path));
+		const mimeType = imageMimeType(bytes);
+		if (!mimeType)
+			throw Object.assign(new Error("目标不是支持的图片"), { code: "image_type_unsupported", retryable: false });
+		return {
+			mimeType,
+			base64: Buffer.from(bytes).toString("base64"),
+			byteLength: bytes.length,
+			contentHash: contentHash(bytes),
+		};
+	}
+
+	async readClipboardImage(): Promise<ClipboardImageReadResult> {
+		const image = await readClipboardImage();
+		if (!image) return { capability: true, available: false };
+		if (image.bytes.length > 4 * 1024 * 1024)
+			throw Object.assign(new Error("剪贴板图片超过 4 MiB 限制"), { code: "image_too_large", retryable: false });
+		const mimeType = imageMimeType(image.bytes);
+		if (!mimeType)
+			throw Object.assign(new Error("剪贴板图片类型不受支持"), { code: "image_type_unsupported", retryable: false });
+		return {
+			capability: true,
+			available: true,
+			mimeType,
+			data: Buffer.from(image.bytes).toString("base64"),
+			byteLength: image.bytes.length,
+			contentHash: contentHash(image.bytes),
+		};
 	}
 
 	async readClipboardText(): Promise<{ capability: boolean; text?: string }> {

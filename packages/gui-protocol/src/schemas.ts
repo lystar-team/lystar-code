@@ -763,6 +763,36 @@ export const ReadImageContentResultSchema = StrictObject({
 });
 export type ReadImageContentResult = Static<typeof ReadImageContentResultSchema>;
 
+export const ReadProjectImageResultSchema = StrictObject({
+	mimeType: Type.Union([
+		Type.Literal("image/png"),
+		Type.Literal("image/jpeg"),
+		Type.Literal("image/webp"),
+		Type.Literal("image/gif"),
+	]),
+	base64: Type.String({ maxLength: 6 * 1024 * 1024 }),
+	byteLength: Type.Integer({ minimum: 0, maximum: 4 * 1024 * 1024 }),
+	contentHash: Id,
+});
+export type ReadProjectImageResult = Static<typeof ReadProjectImageResultSchema>;
+
+export const ClipboardImageReadResultSchema = StrictObject({
+	capability: Type.Boolean(),
+	available: Type.Boolean(),
+	mimeType: Type.Optional(
+		Type.Union([
+			Type.Literal("image/png"),
+			Type.Literal("image/jpeg"),
+			Type.Literal("image/webp"),
+			Type.Literal("image/gif"),
+		]),
+	),
+	data: Type.Optional(Type.String({ maxLength: 6 * 1024 * 1024 })),
+	byteLength: Type.Optional(Type.Integer({ minimum: 0, maximum: 4 * 1024 * 1024 })),
+	contentHash: Type.Optional(Id),
+});
+export type ClipboardImageReadResult = Static<typeof ClipboardImageReadResultSchema>;
+
 export const B3CommandResultSchemas = {
 	list_skills: ListSkillsResultSchema,
 	set_skill_enabled: SetSkillEnabledResultSchema,
@@ -795,6 +825,8 @@ export const B3CommandResultSchemas = {
 	abort_subagent: SubagentMutationResultSchema,
 	continue_subagent: SubagentMutationResultSchema,
 	read_clipboard_text: ClipboardReadResultSchema,
+	read_clipboard_image: ClipboardImageReadResultSchema,
+	read_project_image: ReadProjectImageResultSchema,
 	write_clipboard_text: ClipboardWriteResultSchema,
 	render_rich_text: RenderRichTextResultSchema,
 	read_image_content: ReadImageContentResultSchema,
@@ -1150,6 +1182,12 @@ export const CommandSchema = Type.Union([
 		contentRef: Id,
 	}),
 	StrictObject({ command: Type.Literal("read_clipboard_text") }),
+	StrictObject({ command: Type.Literal("read_clipboard_image") }),
+	StrictObject({
+		command: Type.Literal("read_project_image"),
+		cwd: Type.String({ minLength: 1 }),
+		path: Type.String({ minLength: 1 }),
+	}),
 	StrictObject({
 		command: Type.Literal("write_clipboard_text"),
 		text: B3Text,

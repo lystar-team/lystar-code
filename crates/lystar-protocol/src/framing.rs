@@ -329,6 +329,7 @@ pub fn encode_session_write_request(
     encode_client_value(serde_json::json!({ "type": "request", "id": id, "request": request }))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn encode_queue_request(
     id: &str,
     command: &str,
@@ -337,6 +338,7 @@ pub fn encode_queue_request(
     client_instance_id: &str,
     client_request_id: &str,
     text: Option<&str>,
+    images: Option<&[serde_json::Value]>,
 ) -> Result<Vec<u8>, ProtocolError> {
     let mut request = serde_json::json!({
         "command": command,
@@ -347,6 +349,9 @@ pub fn encode_queue_request(
     });
     if let Some(text) = text {
         request["text"] = serde_json::Value::String(text.to_owned());
+    }
+    if let Some(images) = images {
+        request["images"] = serde_json::Value::Array(images.to_vec());
     }
     encode_client_value(serde_json::json!({ "type": "request", "id": id, "request": request }))
 }
