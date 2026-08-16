@@ -2334,6 +2334,161 @@
                     }
                   },
                   "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "componentId",
+                    "generation",
+                    "data"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "extension_component_input"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "componentId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "generation": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "data": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "width",
+                    "height"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "extension_component_resize"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "width": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 500
+                    },
+                    "height": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 500
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "componentId",
+                    "generation"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "extension_component_dispose"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "componentId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "generation": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "componentId",
+                    "generation"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "extension_component_custom_result"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "componentId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "generation": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "value": {
+                      "$ref": "#/$defs/JsonValue"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "componentId",
+                    "generation"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "extension_component_custom_cancel"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "componentId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "generation": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false
                 }
               ]
             }
@@ -4166,6 +4321,472 @@
                         }
                       },
                       "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "sessionPath",
+                    "componentId",
+                    "generation",
+                    "placement",
+                    "visible",
+                    "frame"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "extension_component_mount"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "componentId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "generation": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "placement": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "widget_above"
+                        },
+                        {
+                          "type": "string",
+                          "const": "widget_below"
+                        },
+                        {
+                          "type": "string",
+                          "const": "header"
+                        },
+                        {
+                          "type": "string",
+                          "const": "footer"
+                        },
+                        {
+                          "type": "string",
+                          "const": "custom_overlay"
+                        }
+                      ]
+                    },
+                    "visible": {
+                      "type": "boolean"
+                    },
+                    "overlayOptions": {
+                      "type": "object",
+                      "properties": {
+                        "width": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 500
+                            },
+                            {
+                              "type": "string",
+                              "maxLength": 16
+                            }
+                          ]
+                        },
+                        "maxHeight": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 500
+                            },
+                            {
+                              "type": "string",
+                              "maxLength": 16
+                            }
+                          ]
+                        },
+                        "anchor": {
+                          "type": "string",
+                          "maxLength": 32
+                        },
+                        "row": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 500
+                            },
+                            {
+                              "type": "string",
+                              "maxLength": 16
+                            }
+                          ]
+                        },
+                        "col": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 500
+                            },
+                            {
+                              "type": "string",
+                              "maxLength": 16
+                            }
+                          ]
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "frame": {
+                      "type": "object",
+                      "required": [
+                        "componentId",
+                        "revision",
+                        "width",
+                        "height",
+                        "lines",
+                        "hitRegions"
+                      ],
+                      "properties": {
+                        "componentId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 4096
+                        },
+                        "revision": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "width": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 500
+                        },
+                        "height": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 500
+                        },
+                        "lines": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "maxLength": 524288
+                          },
+                          "maxItems": 500
+                        },
+                        "cursor": {
+                          "type": "object",
+                          "required": [
+                            "row",
+                            "column"
+                          ],
+                          "properties": {
+                            "row": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 500
+                            },
+                            "column": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 10000
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "hitRegions": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "kind",
+                              "row",
+                              "column",
+                              "width"
+                            ],
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "component"
+                              },
+                              "row": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 500
+                              },
+                              "column": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 10000
+                              },
+                              "width": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 10000
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "maxItems": 500
+                        },
+                        "desiredSize": {
+                          "type": "object",
+                          "properties": {
+                            "width": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 500
+                            },
+                            "height": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 500
+                            }
+                          },
+                          "additionalProperties": false
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "sessionPath",
+                    "componentId",
+                    "generation",
+                    "frame"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "extension_component_frame"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "componentId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "generation": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "frame": {
+                      "type": "object",
+                      "required": [
+                        "componentId",
+                        "revision",
+                        "width",
+                        "height",
+                        "lines",
+                        "hitRegions"
+                      ],
+                      "properties": {
+                        "componentId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 4096
+                        },
+                        "revision": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "width": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 500
+                        },
+                        "height": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 500
+                        },
+                        "lines": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "maxLength": 524288
+                          },
+                          "maxItems": 500
+                        },
+                        "cursor": {
+                          "type": "object",
+                          "required": [
+                            "row",
+                            "column"
+                          ],
+                          "properties": {
+                            "row": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 500
+                            },
+                            "column": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 10000
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "hitRegions": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "kind",
+                              "row",
+                              "column",
+                              "width"
+                            ],
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "component"
+                              },
+                              "row": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 500
+                              },
+                              "column": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 10000
+                              },
+                              "width": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 10000
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "maxItems": 500
+                        },
+                        "desiredSize": {
+                          "type": "object",
+                          "properties": {
+                            "width": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 500
+                            },
+                            "height": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 500
+                            }
+                          },
+                          "additionalProperties": false
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "sessionPath",
+                    "componentId",
+                    "generation",
+                    "visible"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "extension_component_invalidate"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "componentId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "generation": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "visible": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "sessionPath",
+                    "componentId",
+                    "generation",
+                    "reason"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "extension_component_unmount"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "componentId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "generation": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "reason": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "replace"
+                        },
+                        {
+                          "type": "string",
+                          "const": "clear"
+                        },
+                        {
+                          "type": "string",
+                          "const": "dispose"
+                        },
+                        {
+                          "type": "string",
+                          "const": "error"
+                        },
+                        {
+                          "type": "string",
+                          "const": "done"
+                        },
+                        {
+                          "type": "string",
+                          "const": "cancel"
+                        }
+                      ]
                     }
                   },
                   "additionalProperties": false
@@ -7490,6 +8111,66 @@
         "data": {
           "type": "string",
           "maxLength": 256
+        }
+      },
+      "additionalProperties": false
+    },
+    "B3ExtensionComponentInputResult": {
+      "type": "object",
+      "required": [
+        "accepted"
+      ],
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "B3ExtensionComponentResizeResult": {
+      "type": "object",
+      "required": [
+        "accepted"
+      ],
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "B3ExtensionComponentDisposeResult": {
+      "type": "object",
+      "required": [
+        "accepted"
+      ],
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "B3ExtensionComponentCustomResultResult": {
+      "type": "object",
+      "required": [
+        "accepted"
+      ],
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "B3ExtensionComponentCustomCancelResult": {
+      "type": "object",
+      "required": [
+        "accepted"
+      ],
+      "properties": {
+        "accepted": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false

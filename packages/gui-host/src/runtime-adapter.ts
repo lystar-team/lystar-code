@@ -1040,6 +1040,32 @@ class CoreRuntimeSession implements RuntimeSession {
 		return this.extensionUi.dispatchTerminalInput(data);
 	}
 
+	dispatchExtensionComponentInput(componentId: string, generation: number, data: string): boolean {
+		return this.extensionUi.dispatchComponentInput(componentId, generation, data) !== undefined;
+	}
+
+	resizeExtensionComponents(width: number, height: number): boolean {
+		this.extensionUi.resizeComponents(width, height);
+		return true;
+	}
+
+	disposeExtensionComponent(componentId: string, generation: number): boolean {
+		return this.extensionUi.disposeComponent(componentId, generation);
+	}
+
+	completeExtensionCustom(
+		componentId: string,
+		generation: number,
+		value: JsonValue | undefined,
+		cancelled: boolean,
+	): boolean {
+		return this.extensionUi.completeCustom(componentId, generation, value, cancelled);
+	}
+
+	publishExtensionComponents(): void {
+		this.extensionUi.publishComponentSnapshot();
+	}
+
 	onEvent(listener: (event: RuntimeEvent) => void): () => void {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
@@ -1061,7 +1087,7 @@ class CoreRuntimeSession implements RuntimeSession {
 			reload: () => session.reload(),
 		};
 		await session.bindExtensions({
-			uiContext: this.extensionUi.context() as ExtensionUIContext,
+			uiContext: this.extensionUi.context() as unknown as ExtensionUIContext,
 			mode: "rpc",
 			commandContextActions,
 			abortHandler: () => void this.abort(),

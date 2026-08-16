@@ -88,6 +88,16 @@ export interface RuntimeSession {
 	getExtensionUiSnapshot?(): ExtensionUiState;
 	updateExtensionEditorState?(text: string, generation: number): number;
 	dispatchExtensionTerminalInput?(data: string): Promise<ExtensionTerminalInputResult>;
+	dispatchExtensionComponentInput?(componentId: string, generation: number, data: string): boolean;
+	resizeExtensionComponents?(width: number, height: number): boolean;
+	disposeExtensionComponent?(componentId: string, generation: number): boolean;
+	completeExtensionCustom?(
+		componentId: string,
+		generation: number,
+		value: JsonValue | undefined,
+		cancelled: boolean,
+	): boolean;
+	publishExtensionComponents?(): void;
 	getToolRecoveryDiagnostics(): ToolRecoveryRuntimeDiagnostics;
 	dispose(): Promise<void>;
 	onEvent(listener: (event: RuntimeEvent) => void): () => void;

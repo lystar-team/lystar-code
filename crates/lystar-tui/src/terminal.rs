@@ -5205,6 +5205,7 @@ fn extension_state(value: &serde_json::Value) -> Result<ExtensionUiState, TuiErr
             .get("terminalInputListenerCount")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0),
+        components: std::collections::BTreeMap::new(),
     })
 }
 

@@ -6,6 +6,7 @@ import {
 	type Capability,
 	type ClientMessage,
 	type CompletionResult,
+	type ExtensionComponentFrame,
 	type ExtensionUiState,
 	GUI_PROTOCOL_VERSION,
 	isSessionProgress,
@@ -98,6 +99,11 @@ const B3_COMMANDS = {
 	get_completions: true,
 	extension_editor_state: true,
 	extension_terminal_input: true,
+	extension_component_input: true,
+	extension_component_resize: true,
+	extension_component_dispose: true,
+	extension_component_custom_result: true,
+	extension_component_custom_cancel: true,
 } as const;
 
 function projectSessionProgress(value: JsonValue | SessionProgress): SessionProgress {
@@ -565,6 +571,43 @@ export class GuiHostService {
 				const runtime = this.runtimes.get(sessionPath);
 				if (!runtime) throw Object.assign(new Error("尚未获取会话运行时"), { code: "session_not_acquired" });
 				return runtime.dispatchExtensionTerminalInput?.(request.data) ?? { consume: false };
+			}
+			case "extension_component_input": {
+				const sessionPath = canonicalSessionPath(request.sessionPath);
+				const runtime = this.runtimes.get(sessionPath);
+				if (!runtime) throw Object.assign(new Error("尚未获取会话运行时"), { code: "session_not_acquired" });
+				return {
+					accepted:
+						runtime.dispatchExtensionComponentInput?.(request.componentId, request.generation, request.data) ===
+						true,
+				};
+			}
+			case "extension_component_resize": {
+				const sessionPath = canonicalSessionPath(request.sessionPath);
+				const runtime = this.runtimes.get(sessionPath);
+				if (!runtime) throw Object.assign(new Error("尚未获取会话运行时"), { code: "session_not_acquired" });
+				return { accepted: runtime.resizeExtensionComponents?.(request.width, request.height) === true };
+			}
+			case "extension_component_dispose": {
+				const sessionPath = canonicalSessionPath(request.sessionPath);
+				const runtime = this.runtimes.get(sessionPath);
+				if (!runtime) throw Object.assign(new Error("尚未获取会话运行时"), { code: "session_not_acquired" });
+				return { accepted: runtime.disposeExtensionComponent?.(request.componentId, request.generation) === true };
+			}
+			case "extension_component_custom_result":
+			case "extension_component_custom_cancel": {
+				const sessionPath = canonicalSessionPath(request.sessionPath);
+				const runtime = this.runtimes.get(sessionPath);
+				if (!runtime) throw Object.assign(new Error("尚未获取会话运行时"), { code: "session_not_acquired" });
+				return {
+					accepted:
+						runtime.completeExtensionCustom?.(
+							request.componentId,
+							request.generation,
+							request.command === "extension_component_custom_result" ? request.value : undefined,
+							request.command === "extension_component_custom_cancel",
+						) === true,
+				};
 			}
 			case "list_models":
 				return jsonValue(await this.adapter.listModels());
@@ -1411,7 +1454,10 @@ export class GuiHostService {
 		if (existing) throw new Error(`Session runtime is already attached: ${sessionPath}`);
 		this.runtimes.set(sessionPath, runtime);
 		const extensionUi = runtime.getExtensionUiSnapshot?.();
-		if (extensionUi) void this.broadcast({ type: "extension_ui_snapshot", sessionPath, state: extensionUi });
+		if (extensionUi) {
+			void this.broadcast({ type: "extension_ui_snapshot", sessionPath, state: extensionUi });
+			runtime.publishExtensionComponents?.();
+		}
 		this.runtimeUnsubscribers.set(
 			sessionPath,
 			runtime.onEvent((event) => {
@@ -1442,13 +1488,65 @@ export class GuiHostService {
 						| {
 								type: "editor_action";
 								action: { action: "paste" | "set"; text: string; revision: number };
+						  }
+						| {
+								type: "component_mount";
+								componentId: string;
+								generation: number;
+								placement: "widget_above" | "widget_below" | "header" | "footer" | "custom_overlay";
+								visible: boolean;
+								overlayOptions?: JsonValue;
+								frame: ExtensionComponentFrame;
+						  }
+						| { type: "component_frame"; componentId: string; generation: number; frame: ExtensionComponentFrame }
+						| { type: "component_invalidate"; componentId: string; generation: number; visible: boolean }
+						| {
+								type: "component_unmount";
+								componentId: string;
+								generation: number;
+								reason: "replace" | "clear" | "dispose" | "error" | "done" | "cancel";
 						  };
 					if (payload.type === "snapshot") {
 						void this.broadcast({ type: "extension_ui_snapshot", sessionPath, state: payload.state });
 					} else if (payload.type === "delta") {
 						void this.broadcast({ type: "extension_ui_delta", sessionPath, delta: payload.delta });
-					} else {
+					} else if (payload.type === "editor_action") {
 						void this.broadcast({ type: "extension_editor_action", sessionPath, action: payload.action });
+					} else if (payload.type === "component_mount") {
+						void this.broadcast({
+							type: "extension_component_mount",
+							sessionPath,
+							componentId: payload.componentId,
+							generation: payload.generation,
+							placement: payload.placement,
+							visible: payload.visible,
+							...(payload.overlayOptions ? { overlayOptions: payload.overlayOptions as never } : {}),
+							frame: payload.frame,
+						});
+					} else if (payload.type === "component_frame") {
+						void this.broadcast({
+							type: "extension_component_frame",
+							sessionPath,
+							componentId: payload.componentId,
+							generation: payload.generation,
+							frame: payload.frame,
+						});
+					} else if (payload.type === "component_invalidate") {
+						void this.broadcast({
+							type: "extension_component_invalidate",
+							sessionPath,
+							componentId: payload.componentId,
+							generation: payload.generation,
+							visible: payload.visible,
+						});
+					} else {
+						void this.broadcast({
+							type: "extension_component_unmount",
+							sessionPath,
+							componentId: payload.componentId,
+							generation: payload.generation,
+							reason: payload.reason,
+						});
 					}
 				} else {
 					void this.broadcast({

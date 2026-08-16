@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Input } from "../src/components/input.ts";
-import { createHeadlessComponentAdapter } from "../src/headless-adapter.ts";
+import { createHeadlessComponentAdapter, createHeadlessTuiFacade } from "../src/headless-adapter.ts";
 import { CURSOR_MARKER } from "../src/tui.ts";
 
 class AsyncExtensionFooterFixture {
@@ -62,4 +62,17 @@ test("headless adapter renders a real input and extension-style async component"
 	adapter.dispose();
 	assert.equal(component.disposeCalls, 1);
 	assert.deepEqual(adapter.requestRender().lines, []);
+});
+
+test("headless facade rejects terminal ownership without writing a terminal", () => {
+	const violations: string[] = [];
+	const tui = createHeadlessTuiFacade({
+		componentId: "ownership-test",
+		width: 80,
+		height: 24,
+		onRequestRender: () => {},
+		onTerminalOwnershipViolation: (violation) => violations.push(violation.operation),
+	});
+	assert.throws(() => tui.terminal.write("\\x1b[2J"), { code: "terminal_ownership_violation" });
+	assert.deepEqual(violations, ["write"]);
 });

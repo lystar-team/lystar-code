@@ -1090,6 +1090,24 @@ pub struct ExtensionWidget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionComponentState {
+    pub component_id: String,
+    pub generation: u64,
+    pub revision: u64,
+    pub placement: String,
+    pub visible: bool,
+    pub lines: Vec<String>,
+    pub cursor: Option<(u16, u16)>,
+    pub hit_regions: Vec<(u16, u16, u16)>,
+}
+
+impl ExtensionComponentState {
+    fn accepts(&self, generation: u64, revision: u64) -> bool {
+        self.generation == generation && revision >= self.revision
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtensionUiState {
     pub revision: u64,
     pub statuses: BTreeMap<String, String>,
@@ -1101,6 +1119,7 @@ pub struct ExtensionUiState {
     pub hidden_thinking_label: Option<String>,
     pub title: Option<String>,
     pub terminal_input_listener_count: u64,
+    pub components: BTreeMap<String, ExtensionComponentState>,
 }
 
 impl Default for ExtensionUiState {
@@ -1121,6 +1140,7 @@ impl Default for ExtensionUiState {
             hidden_thinking_label: None,
             title: None,
             terminal_input_listener_count: 0,
+            components: BTreeMap::new(),
         }
     }
 }
@@ -2173,7 +2193,9 @@ impl AppState {
             .widgets
             .iter()
             .map(|widget| widget.lines.len())
-            .sum::<usize>();
+            .sum::<usize>()
+            + self.extension_component_lines("widget_above").len()
+            + self.extension_component_lines("widget_below").len();
         u16::try_from(lines.min(8))
             .unwrap_or(8)
             .min(total_height.saturating_sub(8))
@@ -2185,7 +2207,9 @@ impl AppState {
             .widgets
             .iter()
             .map(|widget| widget.lines.len())
-            .sum::<usize>();
+            .sum::<usize>()
+            + self.extension_component_lines("widget_above").len()
+            + self.extension_component_lines("widget_below").len();
         let visible_budget = budget.saturating_sub(usize::from(total > budget));
         let mut above = Vec::new();
         let mut below = Vec::new();
@@ -2208,7 +2232,117 @@ impl AppState {
                 }
             }
         }
+        for component_placement in ["widget_above", "widget_below"] {
+            let target = if component_placement == "widget_above" {
+                "above"
+            } else {
+                "below"
+            };
+            for line in self.extension_component_lines(component_placement) {
+                if above.len().saturating_add(below.len()) >= visible_budget {
+                    return (above, below, total.saturating_sub(visible_budget));
+                }
+                if target == "above" {
+                    above.push(line);
+                } else {
+                    below.push(line);
+                }
+            }
+        }
         (above, below, 0)
+    }
+
+    pub fn extension_component_lines(&self, placement: &str) -> Vec<&str> {
+        self.extension_ui
+            .components
+            .values()
+            .filter(|component| component.visible && component.placement == placement)
+            .flat_map(|component| component.lines.iter().map(String::as_str))
+            .collect()
+    }
+
+    pub fn apply_extension_component_mount(&mut self, component: ExtensionComponentState) -> bool {
+        if self
+            .extension_ui
+            .components
+            .get(&component.component_id)
+            .is_some_and(|current| current.generation > component.generation)
+        {
+            return false;
+        }
+        self.extension_ui
+            .components
+            .insert(component.component_id.clone(), component);
+        true
+    }
+
+    pub fn apply_extension_component_frame(
+        &mut self,
+        component_id: &str,
+        generation: u64,
+        revision: u64,
+        lines: Vec<String>,
+        cursor: Option<(u16, u16)>,
+        hit_regions: Vec<(u16, u16, u16)>,
+    ) -> bool {
+        let Some(component) = self.extension_ui.components.get_mut(component_id) else {
+            return false;
+        };
+        if !component.accepts(generation, revision) {
+            return false;
+        }
+        component.revision = revision;
+        component.lines = lines;
+        component.cursor = cursor;
+        component.hit_regions = hit_regions;
+        true
+    }
+
+    pub fn apply_extension_component_visibility(
+        &mut self,
+        component_id: &str,
+        generation: u64,
+        visible: bool,
+    ) -> bool {
+        let Some(component) = self.extension_ui.components.get_mut(component_id) else {
+            return false;
+        };
+        if component.generation != generation {
+            return false;
+        }
+        component.visible = visible;
+        true
+    }
+
+    pub fn remove_extension_component(&mut self, component_id: &str, generation: u64) -> bool {
+        if self
+            .extension_ui
+            .components
+            .get(component_id)
+            .is_some_and(|component| component.generation == generation)
+        {
+            self.extension_ui.components.remove(component_id);
+            return true;
+        }
+        false
+    }
+
+    pub fn active_extension_overlay(&self) -> Option<&ExtensionComponentState> {
+        self.extension_ui
+            .components
+            .values()
+            .find(|component| component.visible && component.placement == "custom_overlay")
+    }
+
+    pub fn extension_header_lines(&self, budget: usize) -> Vec<&str> {
+        self.extension_component_lines("header")
+            .into_iter()
+            .take(budget)
+            .collect()
+    }
+
+    pub fn extension_footer_line(&self) -> Option<&str> {
+        self.extension_component_lines("footer").into_iter().next()
     }
 
     pub fn apply_extension_ui_snapshot(&mut self, state: ExtensionUiState) -> bool {
@@ -2287,13 +2421,17 @@ impl AppState {
                 format!("{}/{}", model.provider, model.id)
             });
         let extension_status = self
-            .extension_ui
-            .statuses
-            .values()
-            .filter(|value| !value.is_empty())
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(" | ");
+            .extension_footer_line()
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                self.extension_ui
+                    .statuses
+                    .values()
+                    .filter(|value| !value.is_empty())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            });
         format!(
             "{} 队列 {}/{} {} 思考 {} {}{}",
             snapshot.phase,

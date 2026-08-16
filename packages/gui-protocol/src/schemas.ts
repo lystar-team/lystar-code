@@ -820,6 +820,57 @@ const ExtensionUiStateSchema = StrictObject({
 	terminalInputListenerCount: Type.Integer({ minimum: 0, maximum: 128 }),
 });
 export type ExtensionUiState = Static<typeof ExtensionUiStateSchema>;
+
+export const ExtensionComponentPlacementSchema = Type.Union([
+	Type.Literal("widget_above"),
+	Type.Literal("widget_below"),
+	Type.Literal("header"),
+	Type.Literal("footer"),
+	Type.Literal("custom_overlay"),
+]);
+export type ExtensionComponentPlacement = Static<typeof ExtensionComponentPlacementSchema>;
+const ExtensionComponentCursorSchema = StrictObject({
+	row: Type.Integer({ minimum: 0, maximum: 500 }),
+	column: Type.Integer({ minimum: 0, maximum: 10_000 }),
+});
+const ExtensionComponentHitRegionSchema = StrictObject({
+	kind: Type.Literal("component"),
+	row: Type.Integer({ minimum: 0, maximum: 500 }),
+	column: Type.Integer({ minimum: 0, maximum: 10_000 }),
+	width: Type.Integer({ minimum: 0, maximum: 10_000 }),
+});
+export const ExtensionComponentFrameSchema = StrictObject({
+	componentId: Id,
+	revision: Type.Integer({ minimum: 0 }),
+	width: Type.Integer({ minimum: 1, maximum: 500 }),
+	height: Type.Integer({ minimum: 1, maximum: 500 }),
+	lines: Type.Array(Type.String({ maxLength: 512 * 1024 }), { maxItems: 500 }),
+	cursor: Type.Optional(ExtensionComponentCursorSchema),
+	hitRegions: Type.Array(ExtensionComponentHitRegionSchema, { maxItems: 500 }),
+	desiredSize: Type.Optional(
+		StrictObject({
+			width: Type.Optional(Type.Integer({ minimum: 1, maximum: 500 })),
+			height: Type.Optional(Type.Integer({ minimum: 1, maximum: 500 })),
+		}),
+	),
+});
+export type ExtensionComponentFrame = Static<typeof ExtensionComponentFrameSchema>;
+const ExtensionComponentOverlayOptionsSchema = StrictObject({
+	width: Type.Optional(Type.Union([Type.Integer({ minimum: 1, maximum: 500 }), Type.String({ maxLength: 16 })])),
+	maxHeight: Type.Optional(Type.Union([Type.Integer({ minimum: 1, maximum: 500 }), Type.String({ maxLength: 16 })])),
+	anchor: Type.Optional(Type.String({ maxLength: 32 })),
+	row: Type.Optional(Type.Union([Type.Integer({ minimum: 0, maximum: 500 }), Type.String({ maxLength: 16 })])),
+	col: Type.Optional(Type.Union([Type.Integer({ minimum: 0, maximum: 500 }), Type.String({ maxLength: 16 })])),
+});
+const ExtensionComponentUnmountReasonSchema = Type.Union([
+	Type.Literal("replace"),
+	Type.Literal("clear"),
+	Type.Literal("dispose"),
+	Type.Literal("error"),
+	Type.Literal("done"),
+	Type.Literal("cancel"),
+]);
+const ExtensionComponentResultSchema = StrictObject({ accepted: Type.Boolean() });
 const ExtensionUiDeltaSchema = StrictObject({
 	revision: Type.Integer({ minimum: 0 }),
 	statuses: Type.Optional(Type.Array(ExtensionUiStatusSchema, { maxItems: 128 })),
@@ -884,6 +935,11 @@ export const B3CommandResultSchemas = {
 	get_diagnostics: DiagnosticsSchema,
 	extension_editor_state: StrictObject({ revision: Type.Integer({ minimum: 0 }) }),
 	extension_terminal_input: ExtensionTerminalInputResultSchema,
+	extension_component_input: ExtensionComponentResultSchema,
+	extension_component_resize: ExtensionComponentResultSchema,
+	extension_component_dispose: ExtensionComponentResultSchema,
+	extension_component_custom_result: ExtensionComponentResultSchema,
+	extension_component_custom_cancel: ExtensionComponentResultSchema,
 } as const;
 
 export function assertB3CommandResult(command: keyof typeof B3CommandResultSchemas, value: unknown): void {
@@ -1259,6 +1315,38 @@ export const CommandSchema = Type.Union([
 		sessionPath: Type.String({ minLength: 1 }),
 		data: Type.String({ minLength: 1, maxLength: 256 }),
 	}),
+	StrictObject({
+		command: Type.Literal("extension_component_input"),
+		sessionPath: Type.String({ minLength: 1 }),
+		componentId: Id,
+		generation: Type.Integer({ minimum: 0 }),
+		data: Type.String({ minLength: 1, maxLength: 256 }),
+	}),
+	StrictObject({
+		command: Type.Literal("extension_component_resize"),
+		sessionPath: Type.String({ minLength: 1 }),
+		width: Type.Integer({ minimum: 1, maximum: 500 }),
+		height: Type.Integer({ minimum: 1, maximum: 500 }),
+	}),
+	StrictObject({
+		command: Type.Literal("extension_component_dispose"),
+		sessionPath: Type.String({ minLength: 1 }),
+		componentId: Id,
+		generation: Type.Integer({ minimum: 0 }),
+	}),
+	StrictObject({
+		command: Type.Literal("extension_component_custom_result"),
+		sessionPath: Type.String({ minLength: 1 }),
+		componentId: Id,
+		generation: Type.Integer({ minimum: 0 }),
+		value: Type.Optional(JsonValueSchema),
+	}),
+	StrictObject({
+		command: Type.Literal("extension_component_custom_cancel"),
+		sessionPath: Type.String({ minLength: 1 }),
+		componentId: Id,
+		generation: Type.Integer({ minimum: 0 }),
+	}),
 ]);
 export type Command = Static<typeof CommandSchema>;
 
@@ -1344,6 +1432,37 @@ export const ServerEventSchema = Type.Union([
 		type: Type.Literal("extension_editor_action"),
 		sessionPath: Type.String({ minLength: 1 }),
 		action: ExtensionEditorActionSchema,
+	}),
+	StrictObject({
+		type: Type.Literal("extension_component_mount"),
+		sessionPath: Type.String({ minLength: 1 }),
+		componentId: Id,
+		generation: Type.Integer({ minimum: 0 }),
+		placement: ExtensionComponentPlacementSchema,
+		visible: Type.Boolean(),
+		overlayOptions: Type.Optional(ExtensionComponentOverlayOptionsSchema),
+		frame: ExtensionComponentFrameSchema,
+	}),
+	StrictObject({
+		type: Type.Literal("extension_component_frame"),
+		sessionPath: Type.String({ minLength: 1 }),
+		componentId: Id,
+		generation: Type.Integer({ minimum: 0 }),
+		frame: ExtensionComponentFrameSchema,
+	}),
+	StrictObject({
+		type: Type.Literal("extension_component_invalidate"),
+		sessionPath: Type.String({ minLength: 1 }),
+		componentId: Id,
+		generation: Type.Integer({ minimum: 0 }),
+		visible: Type.Boolean(),
+	}),
+	StrictObject({
+		type: Type.Literal("extension_component_unmount"),
+		sessionPath: Type.String({ minLength: 1 }),
+		componentId: Id,
+		generation: Type.Integer({ minimum: 0 }),
+		reason: ExtensionComponentUnmountReasonSchema,
 	}),
 ]);
 export type ServerEvent = Static<typeof ServerEventSchema>;
