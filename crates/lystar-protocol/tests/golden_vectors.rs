@@ -46,6 +46,7 @@ fn typescript_and_rust_golden_frames_round_trip_through_public_wrappers() {
         "server-event-ui-request",
         "server-event-operation-missing",
         "server-event-operation-value",
+        "server-event-progress-status",
     ] {
         let payload = decode_frame(&fs::read(format!("{directory}/ts-{name}.frame")).unwrap());
         let message = decode_server_message(&payload)

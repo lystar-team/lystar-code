@@ -19,6 +19,7 @@ fn main() {
         "server-event-operation-missing",
         "server-event-operation-null",
         "server-event-operation-value",
+        "server-event-progress-status",
     ] {
         let source = format!("{directory}/ts-{name}.frame");
         let target = format!("{directory}/rust-{name}.frame");

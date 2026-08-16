@@ -1,15 +1,7 @@
-#[path = "../src/editor.rs"]
-#[allow(dead_code)]
-mod editor;
-
-#[path = "../src/app.rs"]
-#[allow(dead_code)]
-mod app;
-
-use app::{
+use lystar_protocol::{TranscriptItem, TranscriptViewItem};
+use lystar_tui::app::{
     AppState, ComposerView, ROUND_CACHE_LIMIT, TranscriptView, composer_area, transcript_area,
 };
-use lystar_protocol::{TranscriptItem, TranscriptViewItem};
 use ratatui::{Terminal, backend::TestBackend};
 
 fn item(id: usize) -> TranscriptItem {

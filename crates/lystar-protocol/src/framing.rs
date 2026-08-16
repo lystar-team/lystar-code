@@ -4,10 +4,7 @@ use ciborium::{de::from_reader, ser::into_writer, value::Value};
 use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
-use crate::generated::{
-    ClientMessage as GeneratedClientMessage, ServerMessage as GeneratedServerMessage,
-    ServerMessageVariant2,
-};
+use crate::generated::ClientMessage as GeneratedClientMessage;
 
 pub const MAX_FRAME_LENGTH: usize = 16 * 1024 * 1024;
 const GUI_PROTOCOL_VERSION: u64 = 1;
@@ -115,7 +112,7 @@ impl ClientMessage {
     }
 }
 
-pub struct ServerMessage(DecodedMessage<GeneratedServerMessage>);
+pub struct ServerMessage(DecodedMessage<Value>);
 
 impl fmt::Debug for ServerMessage {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -146,10 +143,6 @@ impl ServerMessage {
     pub(crate) fn json(&self) -> Result<serde_json::Value, ProtocolError> {
         serde_json::to_value(&self.0.raw)
             .map_err(|error| ProtocolError::InvalidCbor(error.to_string()))
-    }
-
-    pub(crate) fn generated(&self) -> &GeneratedServerMessage {
-        &self.0.typed
     }
 
     pub fn value(&self) -> &Value {
@@ -197,7 +190,7 @@ pub fn decode_client_message(payload: &[u8]) -> Result<ClientMessage, ProtocolEr
 }
 
 pub fn decode_server_message(payload: &[u8]) -> Result<ServerMessage, ProtocolError> {
-    decode_message(payload, validate_server_message).map(ServerMessage)
+    decode_message::<Value>(payload, validate_server_message).map(ServerMessage)
 }
 
 pub fn encode_client_hello(client_instance_id: &str) -> Result<Vec<u8>, ProtocolError> {
@@ -336,14 +329,21 @@ fn decode_payload<T: DeserializeOwned>(payload: &[u8]) -> Result<T, ProtocolErro
     from_reader(payload).map_err(|error| ProtocolError::InvalidCbor(error.to_string()))
 }
 
-fn top_level_text<'a>(raw: &'a Value, name: &str) -> Option<&'a str> {
+fn map_value<'a>(raw: &'a Value, name: &str) -> Option<&'a Value> {
     let Value::Map(entries) = raw else {
         return None;
     };
-    entries.iter().find_map(|(key, value)| match (key, value) {
-        (Value::Text(key), Value::Text(value)) if key == name => Some(value.as_str()),
+    entries.iter().find_map(|(key, value)| match key {
+        Value::Text(key) if key == name => Some(value),
         _ => None,
     })
+}
+
+fn top_level_text<'a>(raw: &'a Value, name: &str) -> Option<&'a str> {
+    match map_value(raw, name) {
+        Some(Value::Text(value)) => Some(value),
+        _ => None,
+    }
 }
 
 fn top_level_u64(raw: &Value, name: &str) -> Option<u64> {
@@ -365,35 +365,27 @@ fn validate_client_message(message: &GeneratedClientMessage) -> Result<(), Proto
     Ok(())
 }
 
-fn validate_server_message(message: &GeneratedServerMessage) -> Result<(), ProtocolError> {
-    match message {
-        GeneratedServerMessage::Variant0 {
-            type_,
-            version,
-            protocol_version,
-            ..
-        } => {
-            if type_ != "hello" {
-                return Err(invalid_message("server", "unknown message variant"));
-            }
-            if *version != GUI_PROTOCOL_VERSION as i64
-                || *protocol_version != GUI_PROTOCOL_VERSION as i64
+fn validate_server_message(message: &Value) -> Result<(), ProtocolError> {
+    match top_level_text(message, "type") {
+        Some("hello") => {
+            if top_level_u64(message, "version") != Some(GUI_PROTOCOL_VERSION)
+                || top_level_u64(message, "protocolVersion") != Some(GUI_PROTOCOL_VERSION)
             {
                 return Err(invalid_message("server", "unsupported protocol version"));
             }
         }
-        GeneratedServerMessage::Variant1 { type_, .. } if type_ != "hello_error" => {
-            return Err(invalid_message("server", "unknown message variant"));
+        Some("hello_error") => {}
+        Some("response") if matches!(map_value(message, "ok"), Some(Value::Bool(_))) => {}
+        Some("event")
+            if map_value(message, "event")
+                .and_then(|event| top_level_text(event, "type"))
+                .is_some() => {}
+        _ => {
+            return Err(invalid_message(
+                "server",
+                "unknown or malformed message variant",
+            ));
         }
-        GeneratedServerMessage::Variant2(response) => match response {
-            ServerMessageVariant2::Variant0 { type_, ok, .. } if type_ == "response" && *ok => {}
-            ServerMessageVariant2::Variant1 { type_, ok, .. } if type_ == "response" && !*ok => {}
-            _ => return Err(invalid_message("server", "invalid response variant")),
-        },
-        GeneratedServerMessage::Variant3 { type_, .. } if type_ != "event" => {
-            return Err(invalid_message("server", "unknown message variant"));
-        }
-        _ => {}
     }
     Ok(())
 }

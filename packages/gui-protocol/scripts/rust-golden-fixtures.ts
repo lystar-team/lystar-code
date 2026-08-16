@@ -105,4 +105,12 @@ export const serverGoldenFixtures: Record<string, ServerMessage> = {
 		type: "event",
 		event: { type: "operation_updated", operation: operation({ type: "status", status: "step 1" }, { done: true }) },
 	},
+	"server-event-progress-status": {
+		type: "event",
+		event: {
+			type: "session_progress",
+			sessionPath: "/tmp/session.jsonl",
+			progress: { type: "status", status: "状态更新" },
+		},
+	},
 };

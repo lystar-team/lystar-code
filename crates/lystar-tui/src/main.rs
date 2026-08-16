@@ -1,8 +1,6 @@
-mod app;
-mod editor;
-mod terminal;
-
 use std::panic;
+
+use lystar_tui::terminal;
 
 fn main() {
     let result = panic::catch_unwind(|| match std::env::args().nth(1).as_deref() {

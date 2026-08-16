@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import {
+	type ClientMessage,
 	ClientMessageDecoder,
 	encodeServerMessage,
 	type JsonValue,
@@ -323,6 +324,9 @@ interface StartedTui {
 	send(...keys: string[]): void;
 	sendLiteral(text: string): void;
 	panePid(): number;
+	clientInstanceId: string;
+	sttyBeforePath: string;
+	sttyAfterPath: string;
 	closeProtocol(): void;
 }
 
@@ -340,6 +344,8 @@ async function startTui(
 	const toRust = join(directory, "to-rust.fifo");
 	const fromRust = join(directory, "from-rust.fifo");
 	const tracePath = join(artifactDirectory, "rust-trace.log");
+	const sttyBeforePath = join(artifactDirectory, "stty-before");
+	const sttyAfterPath = join(artifactDirectory, "stty-after");
 	writeFileSync(sessionPath, sessionEntries(rounds));
 	run("/usr/bin/mkfifo", [toRust, fromRust]);
 
@@ -354,8 +360,9 @@ async function startTui(
 
 	const socket = `lystar-m7-${process.pid}-${Date.now()}-${label}`;
 	sockets.add(socket);
+	const clientInstanceId = `lystar-rust-m8-${socket}`;
 	const binary = join(repositoryRoot, "target/release/lystar-tui");
-	const command = `exec 3<${shellQuote(toRust)} 4>${shellQuote(fromRust)}; exec env PI_RUST_TUI_TRACE=1 ${shellQuote(binary)} --run ${shellQuote(sessionPath)} 2>${shellQuote(tracePath)}`;
+	const command = `exec 3<${shellQuote(toRust)} 4>${shellQuote(fromRust)}; before=$(stty -g); printf %s "$before" > ${shellQuote(sttyBeforePath)}; env PI_RUST_TUI_TRACE=1 PI_RUST_TUI_CLIENT_INSTANCE_ID=${shellQuote(clientInstanceId)} ${shellQuote(binary)} --run ${shellQuote(sessionPath)} 2>${shellQuote(tracePath)}; status=$?; after=$(stty -g); printf %s "$after" > ${shellQuote(sttyAfterPath)}; exit $status`;
 	run("tmux", [
 		"-L",
 		socket,
@@ -439,6 +446,9 @@ async function startTui(
 		send,
 		sendLiteral,
 		panePid,
+		clientInstanceId,
+		sttyBeforePath,
+		sttyAfterPath,
 		closeProtocol,
 	};
 }
@@ -633,113 +643,400 @@ describe("Rust read-only TUI fd bridge", () => {
 		}
 	}, 90_000);
 
-	it("submits prompt once, routes streaming input, projects typed Tool state, and journals clear queue", async () => {
-		const tui = await startTui(4, { width: 80, height: 24 }, "interactive");
-		try {
-			await waitForInitialPage(tui);
-			await waitFor(async () => {
-				await tui.pump();
-				return tui.serverMessages.some(
+	it("submits prompt once, routes streaming input, projects typed Tool state, and journals clear queue twice", async () => {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const tui = await startTui(4, { width: 80, height: 24 }, `interactive-${attempt + 1}`);
+			try {
+				await waitForInitialPage(tui);
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.serverMessages.some(
+						(message) => message.type === "response" && message.id.startsWith("acquire-") && message.ok,
+					);
+				}, "Host did not return the Rust lease");
+				tui.sendLiteral("first prompt");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.runtime.prompts.length === 1;
+				}, "Enter did not invoke prompt exactly once");
+				assert.deepEqual(tui.runtime.prompts, ["first prompt"]);
+
+				tui.runtime.setRunning(true);
+				await new Promise((resolve) => setTimeout(resolve, 30));
+				tui.sendLiteral("steer now");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.runtime.steers.length === 1;
+				}, "streaming Enter did not invoke steer");
+				tui.sendLiteral("follow later");
+				tui.send("M-Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.runtime.followUps.length === 1;
+				}, "Alt+Enter did not invoke follow_up");
+
+				tui.runtime.emit({ type: "progress", payload: { type: "assistant_delta", text: "live assistant" } });
+				tui.runtime.emit({ type: "progress", payload: { type: "thinking_delta", text: "live thinking" } });
+				tui.runtime.emit({
+					type: "progress",
+					payload: { type: "tool_start", toolCallId: "live-call", name: "read", summary: "src/live.ts" },
+				});
+				tui.runtime.emit({
+					type: "progress",
+					payload: { type: "tool_update", toolCallId: "live-call", name: "read", summary: "reading" },
+				});
+				await waitFor(() => tui.pane().includes("Tool read"), "typed Tool progress is not visible in Composer");
+
+				tui.runtime.setRunning(false);
+				tui.runtime.holdPrompt = true;
+				tui.sendLiteral("abort prompt");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.runtime.prompts.length === 2;
+				}, "pending prompt was not accepted");
+				tui.send("Escape");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.runtime.abortCount === 1;
+				}, "Esc did not abort the active operation");
+				tui.runtime.holdPrompt = false;
+
+				const clientInstanceId = tui.clientInstanceId;
+				const clear = {
+					type: "request" as const,
+					id: "clear-first",
+					request: {
+						command: "clear_queue" as const,
+						sessionPath: tui.sessionPath,
+						leaseId: "",
+						clientInstanceId,
+						clientRequestId: "clear-once",
+					},
+				};
+				const snapshot = tui.serverMessages.find(
+					(message) =>
+						message.type === "event" &&
+						message.event.type === "session_snapshot" &&
+						message.event.snapshot.writeAccess === "owned",
+				);
+				assert.ok(snapshot, "missing owned snapshot for Rust lease");
+				const acquire = tui.serverMessages.find(
 					(message) => message.type === "response" && message.id.startsWith("acquire-") && message.ok,
 				);
-			}, "Host did not return the Rust lease");
-			tui.sendLiteral("first prompt");
-			tui.send("Enter");
-			await waitFor(async () => {
-				await tui.pump();
-				return tui.runtime.prompts.length === 1;
-			}, "Enter did not invoke prompt exactly once");
-			assert.deepEqual(tui.runtime.prompts, ["first prompt"]);
+				assert.ok(acquire && acquire.type === "response" && acquire.ok, "missing Rust acquire response");
+				const leaseId = (acquire.result as { lease: { leaseId: string } }).lease.leaseId;
+				const retryPrompt = {
+					type: "request" as const,
+					id: "prompt-first",
+					request: {
+						command: "prompt" as const,
+						sessionPath: tui.sessionPath,
+						leaseId,
+						clientInstanceId,
+						clientRequestId: "response-lost-prompt",
+						text: "retry once",
+					},
+				};
+				await tui.connection.handle(retryPrompt);
+				await tui.connection.handle({ ...retryPrompt, id: "prompt-retry" });
+				await waitFor(
+					() => tui.runtime.prompts.filter((text) => text === "retry once").length === 1,
+					"prompt retry was not journal-idempotent",
+				);
 
-			tui.runtime.setRunning(true);
-			await new Promise((resolve) => setTimeout(resolve, 30));
-			tui.sendLiteral("steer now");
-			tui.send("Enter");
-			await waitFor(async () => {
-				await tui.pump();
-				return tui.runtime.steers.length === 1;
-			}, "streaming Enter did not invoke steer");
-			tui.sendLiteral("follow later");
-			tui.send("M-Enter");
-			await waitFor(async () => {
-				await tui.pump();
-				return tui.runtime.followUps.length === 1;
-			}, "Alt+Enter did not invoke follow_up");
+				clear.request.leaseId = leaseId;
+				await tui.connection.handle(clear);
+				await tui.connection.handle({ ...clear, id: "clear-retry" });
+				await waitFor(() => tui.runtime.clearQueueCount === 1, "clear_queue retry was not journal-idempotent");
+			} finally {
+				tui.closeProtocol();
+			}
+		}
+	}, 120_000);
 
-			tui.runtime.emit({ type: "progress", payload: { type: "assistant_delta", text: "live assistant" } });
-			tui.runtime.emit({ type: "progress", payload: { type: "thinking_delta", text: "live thinking" } });
+	it("reacquires a new lease after a dropped response without repeating Host operations", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "lystar-rust-m8-reacquire-"));
+		directories.add(directory);
+		const sessionPath = join(directory, "session.jsonl");
+		writeFileSync(sessionPath, sessionEntries(1));
+		const runtime = new FakeRuntimeSession(sessionPath);
+		const service = new GuiHostService(createAdapter(runtime), { agentDir: directory });
+		cleanups.push(() => service.dispose());
+		const clientInstanceId = "m8-reacquire-client";
+
+		const acquire = async (
+			messages: ServerMessage[],
+			connection: ReturnType<GuiHostService["createConnection"]>,
+			id: string,
+		) => {
+			await connection.handle({ type: "hello", version: 1, clientInstanceId });
+			await connection.handle({
+				type: "request",
+				id,
+				request: { command: "acquire_session", sessionPath, clientInstanceId },
+			});
+			const response = messages.find((message) => message.type === "response" && message.id === id);
+			assert.ok(response && response.type === "response" && response.ok, `missing ${id} lease response`);
+			return (response.result as { lease: { leaseId: string } }).lease.leaseId;
+		};
+		const responseFor = (messages: ServerMessage[], id: string) => {
+			const response = messages.find((message) => message.type === "response" && message.id === id);
+			assert.ok(response && response.type === "response", `missing ${id} response`);
+			return response;
+		};
+
+		const droppedMessages: ServerMessage[] = [];
+		let dropped = false;
+		const first = service.createConnection(async (message) => {
+			droppedMessages.push(message);
+			if (message.type === "response" && message.id === "prompt-first") {
+				dropped = true;
+				throw new Error("simulated response drop");
+			}
+		});
+		const firstLease = await acquire(droppedMessages, first, "acquire-first");
+		const prompt = {
+			type: "request" as const,
+			id: "prompt-first",
+			request: {
+				command: "prompt" as const,
+				sessionPath,
+				leaseId: firstLease,
+				clientInstanceId,
+				clientRequestId: "prompt-response-drop",
+				text: "only once after reacquire",
+			},
+		};
+		await first.handle(prompt);
+		assert.ok(dropped, "the accepted prompt response was not rejected");
+		assert.deepEqual(runtime.prompts, [], "prompt ran before its accepted response was delivered");
+		await first.close();
+
+		const retryMessages: ServerMessage[] = [];
+		const retry = service.createConnection(async (message) => {
+			retryMessages.push(message);
+		});
+		const retryLease = await acquire(retryMessages, retry, "acquire-retry");
+		await retry.handle({ ...prompt, id: "prompt-retry", request: { ...prompt.request, leaseId: retryLease } });
+		await waitFor(() => runtime.prompts.length === 1, "reacquired prompt did not run");
+		assert.deepEqual(runtime.prompts, ["only once after reacquire"]);
+		const promptRetry = responseFor(retryMessages, "prompt-retry");
+		assert.ok(promptRetry.ok, "reacquired prompt was rejected");
+		assert.equal((promptRetry.result as { duplicate: boolean }).duplicate, true);
+
+		await Promise.all([
+			retry.handle({
+				type: "request",
+				id: "prompt-concurrent-a",
+				request: {
+					command: "prompt",
+					sessionPath,
+					leaseId: retryLease,
+					clientInstanceId,
+					clientRequestId: "prompt-concurrent",
+					text: "concurrent once",
+				},
+			}),
+			retry.handle({
+				type: "request",
+				id: "prompt-concurrent-b",
+				request: {
+					command: "prompt",
+					sessionPath,
+					leaseId: retryLease,
+					clientInstanceId,
+					clientRequestId: "prompt-concurrent",
+					text: "concurrent once",
+				},
+			}),
+		]);
+		await waitFor(
+			() => runtime.prompts.filter((text) => text === "concurrent once").length === 1,
+			"concurrent prompt was not idempotent",
+		);
+		await retry.handle({
+			type: "request",
+			id: "prompt-payload-conflict",
+			request: {
+				command: "prompt",
+				sessionPath,
+				leaseId: retryLease,
+				clientInstanceId,
+				clientRequestId: "prompt-concurrent",
+				text: "different payload",
+			},
+		});
+		const conflict = responseFor(retryMessages, "prompt-payload-conflict");
+		assert.ok(!conflict.ok && conflict.error.code === "operation_payload_mismatch");
+
+		const retryQueueAfterDrop = async (
+			requestBase: Extract<
+				Extract<ClientMessage, { type: "request" }>["request"],
+				{ command: "steer" | "follow_up" | "clear_queue" }
+			>,
+		) => {
+			const command = requestBase.command;
+			runtime.setRunning(command !== "clear_queue");
+			const firstMessages: ServerMessage[] = [];
+			let queueDropped = false;
+			const queueFirst = service.createConnection(async (message) => {
+				firstMessages.push(message);
+				if (message.type === "response" && message.id === `${command}-first`) {
+					queueDropped = true;
+					throw new Error("simulated queue response drop");
+				}
+			});
+			const queueLease = await acquire(firstMessages, queueFirst, `${command}-acquire-first`);
+			const request = {
+				type: "request" as const,
+				id: `${command}-first`,
+				request: { ...requestBase, leaseId: queueLease },
+			} satisfies ClientMessage;
+			await queueFirst.handle(request);
+			assert.ok(queueDropped, `${command} response was not dropped`);
+			await queueFirst.close();
+			const queueRetryMessages: ServerMessage[] = [];
+			const queueRetry = service.createConnection(async (message) => {
+				queueRetryMessages.push(message);
+			});
+			const queueRetryLease = await acquire(queueRetryMessages, queueRetry, `${command}-acquire-retry`);
+			await queueRetry.handle({
+				...request,
+				id: `${command}-retry`,
+				request: { ...request.request, leaseId: queueRetryLease },
+			});
+			const response = responseFor(queueRetryMessages, `${command}-retry`);
+			assert.ok(response.ok, `${command} retry was rejected`);
+			const result = response.result as { duplicate: boolean; operation: { status: string } };
+			assert.equal(result.duplicate, true, `${command} retry did not return the existing operation`);
+			assert.equal(result.operation.status, "completed", `${command} journal did not finish`);
+			await queueRetry.close();
+			return queueRetryLease;
+		};
+
+		let currentLease = await retryQueueAfterDrop({
+			command: "steer",
+			sessionPath,
+			leaseId: "",
+			clientInstanceId,
+			clientRequestId: "steer-response-drop",
+			text: "steer once",
+		});
+		currentLease = await retryQueueAfterDrop({
+			command: "follow_up",
+			sessionPath,
+			leaseId: "",
+			clientInstanceId,
+			clientRequestId: "follow_up-response-drop",
+			text: "follow once",
+		});
+		currentLease = await retryQueueAfterDrop({
+			command: "clear_queue",
+			sessionPath,
+			leaseId: "",
+			clientInstanceId,
+			clientRequestId: "clear_queue-response-drop",
+		});
+		assert.deepEqual(runtime.steers, ["steer once"]);
+		assert.deepEqual(runtime.followUps, ["follow once"]);
+		assert.equal(runtime.clearQueueCount, 1);
+
+		runtime.setRunning(false);
+		for (const command of ["steer", "follow_up"] as const) {
+			await retry.handle({
+				type: "request",
+				id: `${command}-idle`,
+				request: {
+					command,
+					sessionPath,
+					leaseId: currentLease,
+					clientInstanceId,
+					clientRequestId: `${command}-idle`,
+					text: "not accepted while idle",
+				},
+			});
+			const response = responseFor(retryMessages, `${command}-idle`);
+			assert.ok(!response.ok && response.error.code === "session_not_active");
+		}
+		await retry.handle({
+			type: "request",
+			id: "clear-idle",
+			request: {
+				command: "clear_queue",
+				sessionPath,
+				leaseId: currentLease,
+				clientInstanceId,
+				clientRequestId: "clear-idle",
+			},
+		});
+		const clearIdle = responseFor(retryMessages, "clear-idle");
+		assert.ok(clearIdle.ok, "clear_queue must remain available while idle");
+		assert.equal(runtime.clearQueueCount, 2);
+
+		await retry.handle({ type: "request", id: "operations", request: { command: "list_operations", sessionPath } });
+		const operations = responseFor(retryMessages, "operations");
+		assert.ok(operations.ok, "operation journal query failed");
+		const journal = operations.result as Array<{ clientRequestId: string; status: string }>;
+		for (const requestId of [
+			"prompt-response-drop",
+			"prompt-concurrent",
+			"steer-response-drop",
+			"follow_up-response-drop",
+			"clear_queue-response-drop",
+			"clear-idle",
+		]) {
+			assert.equal(journal.find((operation) => operation.clientRequestId === requestId)?.status, "completed");
+		}
+		await retry.close();
+	}, 30_000);
+
+	it("keeps a ten-line Composer, status, and shortcuts within 80x8 after resize", async () => {
+		const tui = await startTui(4, { width: 80, height: 8 }, "composer-80x8");
+		try {
+			await waitForInitialPage(tui);
 			tui.runtime.emit({
 				type: "progress",
-				payload: { type: "tool_start", toolCallId: "live-call", name: "read", summary: "src/live.ts" },
+				payload: { type: "tool_start", toolCallId: "small-error", name: "read", summary: "错误区域仍可见" },
 			});
-			tui.runtime.emit({
-				type: "progress",
-				payload: { type: "tool_update", toolCallId: "live-call", name: "read", summary: "reading" },
-			});
-			await waitFor(() => tui.pane().includes("Tool read"), "typed Tool progress is not visible in Composer");
-
-			tui.runtime.setRunning(false);
-			tui.runtime.holdPrompt = true;
-			tui.sendLiteral("abort prompt");
-			tui.send("Enter");
-			await waitFor(async () => {
-				await tui.pump();
-				return tui.runtime.prompts.length === 2;
-			}, "pending prompt was not accepted");
-			tui.send("Escape");
-			await waitFor(async () => {
-				await tui.pump();
-				return tui.runtime.abortCount === 1;
-			}, "Esc did not abort the active operation");
-			tui.runtime.holdPrompt = false;
-
-			const clientInstanceId = `lystar-rust-m8-${tui.panePid()}`;
-			const clear = {
-				type: "request" as const,
-				id: "clear-first",
-				request: {
-					command: "clear_queue" as const,
-					sessionPath: tui.sessionPath,
-					leaseId: "",
-					clientInstanceId,
-					clientRequestId: "clear-once",
-				},
-			};
-			const snapshot = tui.serverMessages.find(
-				(message) =>
-					message.type === "event" &&
-					message.event.type === "session_snapshot" &&
-					message.event.snapshot.writeAccess === "owned",
+			for (let line = 0; line < 10; line++) {
+				tui.sendLiteral(`line-${line + 1}`);
+				if (line < 9) tui.send("C-j");
+			}
+			await waitFor(() => tui.pane().includes("line-10|"), "Composer cursor did not remain visible at 80x8");
+			const small = tui.pane();
+			writeFileSync(join(tui.artifactDirectory, "80x8-multiline.txt"), small);
+			const lines = small.split("\n").slice(0, 8);
+			const border = lines.findIndex((line) => line.includes("─"));
+			const cursor = lines.findIndex((line) => line.includes("line-10|"));
+			const shortcuts = lines.findIndex((line) => line.includes("Enter 提交"));
+			const error = lines.findIndex((line) => line.includes("错误区域"));
+			assert.equal(lines.length, 8, "80x8 capture must stay within eight rows");
+			assert.ok(border >= 0 && cursor > border && error > cursor && shortcuts > error, "80x8 regions overlap");
+			assert.ok(
+				lines.every((line) => [...line].length <= 80),
+				"80x8 multiline Composer exceeds its width",
 			);
-			assert.ok(snapshot, "missing owned snapshot for Rust lease");
-			const acquire = tui.serverMessages.find(
-				(message) => message.type === "response" && message.id.startsWith("acquire-") && message.ok,
-			);
-			assert.ok(acquire && acquire.type === "response" && acquire.ok, "missing Rust acquire response");
-			const leaseId = (acquire.result as { lease: { leaseId: string } }).lease.leaseId;
-			const retryPrompt = {
-				type: "request" as const,
-				id: "prompt-first",
-				request: {
-					command: "prompt" as const,
-					sessionPath: tui.sessionPath,
-					leaseId,
-					clientInstanceId,
-					clientRequestId: "response-lost-prompt",
-					text: "retry once",
-				},
-			};
-			await tui.connection.handle(retryPrompt);
-			await tui.connection.handle({ ...retryPrompt, id: "prompt-retry" });
+
+			for (const [width, height] of [
+				[80, 24],
+				[120, 36],
+				[200, 60],
+			] as const) {
+				tui.resize(width, height);
+				await waitFor(() => tui.pane().split("\n").length >= height, `${width}x${height} did not render`);
+				writeFileSync(join(tui.artifactDirectory, `${width}x${height}-multiline.txt`), tui.pane());
+			}
+			tui.resize(80, 8);
+			await waitFor(() => tui.pane().includes("Enter 提交"), "80x8 shortcuts did not return after resize");
+			tui.closeProtocol();
 			await waitFor(
-				() => tui.runtime.prompts.filter((text) => text === "retry once").length === 1,
-				"prompt retry was not journal-idempotent",
+				() => spawnSync("tmux", ["-L", tui.socket, "has-session", "-t", "tui"]).status !== 0,
+				"Rust TUI did not exit after the 80x8 multiline check",
 			);
-
-			clear.request.leaseId = leaseId;
-			await tui.connection.handle(clear);
-			await tui.connection.handle({ ...clear, id: "clear-retry" });
-			await waitFor(() => tui.runtime.clearQueueCount === 1, "clear_queue retry was not journal-idempotent");
+			assert.equal(readFileSync(tui.sttyBeforePath, "utf8"), readFileSync(tui.sttyAfterPath, "utf8"));
 		} finally {
 			tui.closeProtocol();
 		}

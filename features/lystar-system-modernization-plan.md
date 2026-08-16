@@ -12,7 +12,7 @@
 
 ## 0. 实施结果与状态
 
-本方案的 M0-M6 已完成代码实现和本地验收；Rust 自有可见 TUI 的整体迁移继续是强制目标。远端 Actions、受保护环境审批、真实 Provider、跨 OS 实机、Tag、Release、签名与 attestation 均未执行。本节只记录本轮可复查事实，不替代后文的预算、回滚和退出 gate。
+本方案的 M0-M8 已完成代码实现和本地验收；Rust 自有可见 TUI 的整体迁移继续是强制目标。远端 Actions、受保护环境审批、真实 Provider、跨 OS 实机、Tag、Release、签名与 attestation 均未执行。本节只记录本轮可复查事实，不替代后文的预算、回滚和退出 gate。
 
 | 里程碑 | 提交范围 | 本地状态 | 远端或外部状态 |
 | --- | --- | --- | --- |
@@ -26,7 +26,7 @@
 
 运行模式已落地为 `off`、`observe`、`assist`、`auto`，默认 `assist`；`lc doctor` 和 GUI Host 诊断同步显示当前模式、circuit 与 lesson 状态。`auto` 仍只允许 policy 白名单内的安全恢复动作。
 
-M7 已完成本地 Linux 只读 Transcript 验收；M8-M11 仍待实施。2026-08-15 前的 B0 Stop 数据继续作为历史性能基线保留；Yean 于 2026-08-15 明确调整判定：协议生成、终端恢复、headless bridge、80x8 兼容性和绝对预算通过即为 Development Go，可进入 B1；相对 CPU 和终端写量门槛仅为 M10 默认切换的 Release Go。
+M7 已完成本地 Linux 只读 Transcript 验收；M8 已完成 Linux x64 Composer、运行中状态、Host response-drop/reacquire E2E、正式组件基准和 80x8 多行 PTY 验收。M9-M11 仍待实施。2026-08-15 前的 B0 Stop 数据继续作为历史性能基线保留；Yean 于 2026-08-15 明确调整判定：协议生成、终端恢复、headless bridge、80x8 兼容性和绝对预算通过即为 Development Go，可进入 B1；相对 CPU 和终端写量门槛仅为 M10 默认切换的 Release Go。
 
 ## 1. 结论先行
 
@@ -1730,7 +1730,7 @@ release_artifact_bytes{platform}
 | M5 错题本 | M4 | candidate、审查、TTL、回滚、CLI | 代码和确定性测试完成；真实 history/审批 artifact 待验证 |
 | M6 Rust 协议 Spike | M5 | Ratatui 原型、生成协议、benchmark | B0 smoke、协议和 PTY guard 完成；旧相对性能 Stop 数据保留为历史基线，按 Yean 于 2026-08-15 的新判定已满足 Development Go |
 | M7 Rust 只读 UI | M6 | transcript、滚动、搜索、Tool 显示 | Linux 本地验收完成：typed projection、严格分页/revision、搜索 cursor 失效、8 KiB progress preview、OSC 8、fd bridge E2E 与 RSS artifact 已覆盖；Windows named-pipe transport 留待 M10 |
-| M8 Rust 交互 UI | M7 | Composer、运行中状态、内置 Overlay | 重新开放，待实施 |
+| M8 Rust 交互 UI | M7 | Composer、运行中状态、内置 Overlay | Linux x64 本地验收完成：两连接 response-drop/reacquire 幂等、正式 `AppState`/`EditorState`/`TranscriptView` 基准、80x8 多行 PTY、状态 progress wire regression 均通过；M9 前不扩展 Extension Overlay |
 | M9 Extension 兼容 | M8 | Tier 0-3、headless bridge | 重新开放，待实施 |
 | M10 默认切换 | M9 | `auto/rust/typescript` 灰度 | 重新开放，待实施；必须满足 Release Go 的相对 CPU/写量门槛 |
 | M11 删除旧全屏 UI | M10 | 删除重复 InteractiveMode | 重新开放，待实施 |
@@ -1897,13 +1897,13 @@ THIRD_PARTY_LICENSES.md
 
 1. **升级目标**：固定实施 Pi `v0.84.2` 与 LYStar `0.84.2-lystar.1`；后续 Pi Tag 另起升级任务。
 2. **Rust 范围**：Node/Bun 继续负责 runtime；Rust 仅作为可验证的 TUI Spike，任意 TypeScript Component 的 headless bridge 保留兼容边界。
-3. **实施顺序**：按 Pi 升级、CI/测试/发布、Tool 恢复、错题本、Rust Spike 依次实施；Rust 自有可见 TUI 强制继续迁移，M7-M11 当前重新开放且待实施，M10 默认切换才受 Release Go 约束。
+3. **实施顺序**：按 Pi 升级、CI/测试/发布、Tool 恢复、错题本、Rust Spike 依次实施；Rust 自有可见 TUI 强制继续迁移，M7-M8 已完成本地 Linux 验收，M9-M11 继续实施，M10 默认切换才受 Release Go 约束。
 4. **错题本晋升**：默认人工批准；仅满足严格证据阈值的纯 guidance lesson 才可受控自动晋升。
 5. **测试与发布 gate**：分层测试、未知影响全量、live/stress 独立、同一 SHA 一次完整五平台矩阵；required deterministic 的 skip 为 0。
 
 ## 24. 实施收口判断
 
-本地可执行开发工作已按 M0-M7 收口：M7 的 Linux 只读 Transcript 具备协议、确定性测试、fd bridge E2E、RSS artifact、release PTY 与终端恢复记录；Windows named-pipe transport 仍留给 M10。M8-M11 不在本轮范围。远端 CI/Release、受保护审批、真实 Provider、跨 OS 实机、签名和 attestation 不在本地验收范围内。
+本地可执行开发工作已按 M0-M8 收口：M8 的 Linux x64 Composer 具备 response-drop/reacquire operation journal E2E、真实组件编辑基准、80x8 多行 PTY、状态 progress wire regression、fd bridge 与终端恢复记录；Windows named-pipe transport 仍留给 M10。M9-M11 不在本轮范围。远端 CI/Release、受保护审批、真实 Provider、跨 OS 实机、签名和 attestation 不在本地验收范围内。
 
 ### 24.1 本仓库
 

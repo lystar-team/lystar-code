@@ -1,7 +1,6 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::generated::{ServerMessage as GeneratedServerMessage, ServerMessageVariant2};
 use crate::{ProtocolError, ServerMessage};
 
 pub const MAX_PROGRESS_PREVIEW_BYTES: usize = 8 * 1024;
@@ -305,21 +304,18 @@ pub enum ReadOnlyMessage {
 impl ServerMessage {
     pub fn read_only(&self) -> Result<ReadOnlyMessage, ProtocolError> {
         let raw = self.json()?;
-        match self.generated() {
-            GeneratedServerMessage::Variant0 { .. } => Ok(ReadOnlyMessage::Hello),
-            GeneratedServerMessage::Variant1 { .. } => Ok(ReadOnlyMessage::HelloError {
+        match required_text(&raw, &["type"])? {
+            "hello" => Ok(ReadOnlyMessage::Hello),
+            "hello_error" => Ok(ReadOnlyMessage::HelloError {
                 message: required_text(&raw, &["error", "message"])?.to_owned(),
             }),
-            GeneratedServerMessage::Variant2(response) => match response {
-                ServerMessageVariant2::Variant0 { .. } => parse_response(&raw),
-                ServerMessageVariant2::Variant1 { .. } => {
-                    Ok(ReadOnlyMessage::Response(ReadOnlyResponse::Error {
-                        id: required_text(&raw, &["id"])?.to_owned(),
-                        message: required_text(&raw, &["error", "message"])?.to_owned(),
-                    }))
-                }
-            },
-            GeneratedServerMessage::Variant3 { .. } => parse_event(&raw),
+            "response" if required_bool(&raw, &["ok"])? => parse_response(&raw),
+            "response" => Ok(ReadOnlyMessage::Response(ReadOnlyResponse::Error {
+                id: required_text(&raw, &["id"])?.to_owned(),
+                message: required_text(&raw, &["error", "message"])?.to_owned(),
+            })),
+            "event" => parse_event(&raw),
+            _ => Err(invalid_projection(&["type"])),
         }
     }
 }
@@ -399,6 +395,11 @@ fn required_value<'a>(value: &'a Value, path: &[&str]) -> Result<&'a Value, Prot
 fn required_text<'a>(value: &'a Value, path: &[&str]) -> Result<&'a str, ProtocolError> {
     required_value(value, path)?
         .as_str()
+        .ok_or_else(|| invalid_projection(path))
+}
+fn required_bool(value: &Value, path: &[&str]) -> Result<bool, ProtocolError> {
+    required_value(value, path)?
+        .as_bool()
         .ok_or_else(|| invalid_projection(path))
 }
 fn required_u64(value: &Value, path: &[&str]) -> Result<u64, ProtocolError> {
