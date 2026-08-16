@@ -121,6 +121,7 @@ function sessionEntries(rounds: number): string {
 interface TraceEvent {
 	event: string;
 	atMs: number;
+	id?: string;
 }
 
 function readTrace(path: string): TraceEvent[] {
@@ -128,8 +129,8 @@ function readTrace(path: string): TraceEvent[] {
 		return readFileSync(path, "utf8")
 			.split("\n")
 			.flatMap((line) => {
-				const match = /trace=([^\s]+) at_ms=(\d+)/.exec(line);
-				return match ? [{ event: match[1], atMs: Number(match[2]) }] : [];
+				const match = /trace=([^\s]+) at_ms=(\d+)(?: id=([^\s]+))?/.exec(line);
+				return match ? [{ event: match[1], atMs: Number(match[2]), ...(match[3] ? { id: match[3] } : {}) }] : [];
 			});
 	} catch {
 		return [];
@@ -140,6 +141,67 @@ function percentile(values: readonly number[], q: number): number {
 	assert.ok(values.length > 0, "cannot calculate percentile of an empty series");
 	const sorted = [...values].sort((left, right) => left - right);
 	return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * q) - 1)];
+}
+
+function pageMetric(tui: StartedTui, id: string, wroteAt: number) {
+	const traces = tui.traces();
+	const traceIndex = (event: string, start = 0) =>
+		traces.findIndex((candidate, index) => index >= start && candidate.event === event && candidate.id === id);
+	const receivedIndex = traceIndex("host_response_received");
+	const decodeStartIndex = traceIndex("page_decode_start", receivedIndex + 1);
+	const decodeEndIndex = traceIndex("page_decode_end", decodeStartIndex + 1);
+	const applyStartIndex = traceIndex("page_apply_start", decodeEndIndex + 1);
+	const applyEndIndex = traceIndex("page_apply_end", applyStartIndex + 1);
+	assert.ok(receivedIndex >= 0, `${id} is missing host_response_received`);
+	assert.ok(decodeStartIndex >= 0 && decodeEndIndex >= 0, `${id} is missing page decode trace`);
+	assert.ok(applyStartIndex >= 0 && applyEndIndex >= 0, `${id} is missing page apply trace`);
+	const drawStartIndex = traces.findIndex(
+		(candidate, index) => index > applyEndIndex && candidate.event === "draw_start",
+	);
+	const drawEndIndex = traces.findIndex(
+		(candidate, index) => index > drawStartIndex && candidate.event === "draw_end",
+	);
+	assert.ok(drawStartIndex >= 0 && drawEndIndex >= 0, `${id} is missing post-apply draw trace`);
+	const received = traces[receivedIndex];
+	const decodeStart = traces[decodeStartIndex];
+	const decodeEnd = traces[decodeEndIndex];
+	const applyStart = traces[applyStartIndex];
+	const applyEnd = traces[applyEndIndex];
+	const drawStart = traces[drawStartIndex];
+	const drawEnd = traces[drawEndIndex];
+	return {
+		id,
+		hostToReceiveMs: received.atMs - wroteAt,
+		decodeMs: decodeEnd.atMs - decodeStart.atMs,
+		applyMs: applyEnd.atMs - applyStart.atMs,
+		decodeApplyMs: applyEnd.atMs - decodeStart.atMs,
+		drawMs: drawEnd.atMs - drawStart.atMs,
+		endToFrameMs: drawEnd.atMs - applyEnd.atMs,
+		decodeApplyDrawMs: drawEnd.atMs - decodeStart.atMs,
+	};
+}
+
+function processCpuMilliseconds(pid: number): number {
+	const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+	const fields = stat
+		.slice(stat.lastIndexOf(")") + 2)
+		.trim()
+		.split(/\s+/);
+	return (Number(fields[11]) + Number(fields[12])) * 10;
+}
+
+function processTreeCpuMilliseconds(pid: number): number {
+	return processTreePids(pid).reduce((total, child) => {
+		try {
+			return total + processCpuMilliseconds(child);
+		} catch {
+			return total;
+		}
+	}, 0);
+}
+
+function monotonicMs(): number {
+	return Number(process.hrtime.bigint() / 1_000_000n);
 }
 
 function rssTree(pid: number): number {
@@ -205,6 +267,10 @@ class FakeRuntimeSession implements RuntimeSession {
 	thinkingWrites: string[] = [];
 	loginCount = 0;
 	logoutCount = 0;
+	clipboardWrites: string[] = [];
+	authResponses: string[] = [];
+	private authNotificationGate: Promise<void> = Promise.resolve();
+	private releaseAuthNotificationGate?: () => void;
 	private readonly settings: Record<string, boolean | number | string> = {
 		autocompact: false,
 		"response-mode": "one",
@@ -384,6 +450,18 @@ class FakeRuntimeSession implements RuntimeSession {
 		this.events.on("runtime", listener);
 		return () => this.events.off("runtime", listener);
 	}
+	releaseAuthNotifications(): void {
+		this.releaseAuthNotificationGate?.();
+		this.releaseAuthNotificationGate = undefined;
+	}
+	pauseAfterDeviceCode(): void {
+		this.authNotificationGate = new Promise<void>((resolve) => {
+			this.releaseAuthNotificationGate = resolve;
+		});
+	}
+	async waitAfterDeviceCode(): Promise<void> {
+		await this.authNotificationGate;
+	}
 	setRunning(running: boolean): void {
 		this.snapshot.activity = running ? "running" : "idle";
 		this.snapshot.phase = running ? "turn" : "idle";
@@ -463,30 +541,67 @@ function createAdapter(runtime: FakeRuntimeSession): RuntimeAdapter {
 			},
 		],
 		loginModelProvider: async (_provider: string, _authType: AuthType, onUiRequest: UiRequestHandler) => {
-			await onUiRequest({
+			const select = await onUiRequest({
 				id: "login-select",
 				kind: "select",
 				title: "认证区域",
-				payload: { options: [{ label: "中国", value: "cn" }] },
+				payload: { options: [{ id: "region-cn", label: "中国", description: "中国大陆节点" }] },
 			});
-			await onUiRequest({
+			const input = await onUiRequest({
 				id: "login-input",
 				kind: "input",
 				title: "认证输入",
 				payload: { value: "" },
 			});
+			const secret = await onUiRequest({
+				id: "login-secret",
+				kind: "secret",
+				title: "认证密钥",
+				payload: { value: "" },
+			});
+			runtime.authResponses.push(String(select.value), String(input.value), String(secret.value));
 			await onUiRequest({
+				id: "login-auth-url",
+				kind: "notify",
+				title: "模型认证",
+				payload: { method: "auth_url", url: "https://example.test/auth", instructions: "在浏览器完成授权" },
+			});
+			await onUiRequest({
+				id: "login-device-code",
+				kind: "notify",
+				title: "模型认证",
+				payload: {
+					method: "auth_device_code",
+					userCode: "ABCD-EFGH",
+					verificationUri: "https://example.test/device",
+					intervalSeconds: 5,
+					expiresInSeconds: 600,
+				},
+			});
+			await runtime.waitAfterDeviceCode();
+			await onUiRequest({
+				id: "login-progress",
+				kind: "notify",
+				title: "模型认证",
+				payload: { method: "auth_progress", message: "正在等待授权完成" },
+			});
+			const confirm = await onUiRequest({
 				id: "login-confirm",
 				kind: "confirm",
 				title: "认证确认",
 				payload: { message: "确认认证？" },
 			});
+			assert.equal(confirm.confirmed, true);
 			runtime.loginCount++;
 			return fakeModels();
 		},
 		logoutModelProvider: async () => {
 			runtime.logoutCount++;
 			return fakeModels();
+		},
+		writeClipboardText: async (text: string) => {
+			runtime.clipboardWrites.push(text);
+			return { capability: true, changed: true };
 		},
 		openSession: async (sessionPath: string) => {
 			assert.equal(sessionPath, runtime.sessionPath);
@@ -593,7 +708,7 @@ async function startTui(
 			return;
 		}
 		writeAll(input, encodeServerMessage(message));
-		if (message.type === "response") responseWrites.set(message.id, Date.now());
+		if (message.type === "response") responseWrites.set(message.id, Math.floor(monotonicMs() / 10) * 10);
 	});
 	cleanups.push(() => connection.close());
 	const controlMessages: ServerMessage[] = [];
@@ -632,7 +747,7 @@ async function startTui(
 		run("tmux", ["-L", socket, "resize-window", "-t", "tui", "-x", String(width), "-y", String(height)]);
 	};
 	const send = (...keys: string[]) => run("tmux", ["-L", socket, "send-keys", "-t", "tui", ...keys]);
-	const sendLiteral = (text: string) => run("tmux", ["-L", socket, "send-keys", "-t", "tui", "-l", text]);
+	const sendLiteral = (text: string) => run("tmux", ["-L", socket, "send-keys", "-t", "tui", "-l", "--", text]);
 	const panePid = () =>
 		Number(run("tmux", ["-L", socket, "display-message", "-p", "-t", "tui", "#{pane_pid}"]).trim());
 	const closeProtocol = () => closeDescriptor(input);
@@ -1057,6 +1172,39 @@ describe("Rust read-only TUI fd bridge", () => {
 					);
 				}, "secret UI kind did not return a value");
 
+				inject("editor-1", "editor", { prefill: "before" });
+				await waitFor(() => tui.pane().includes("before"), "editor request did not render");
+				tui.sendLiteral("-edited");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.clientMessages.some(
+						(message) =>
+							message.type === "ui_response" && message.id === "editor-1" && message.value === "before-edited",
+					);
+				}, "editor UI kind did not return a value");
+
+				inject("notify-device-1", "notify", {
+					method: "auth_device_code",
+					userCode: "ABCD-EFGH",
+					verificationUri: "https://example.test/device",
+					intervalSeconds: 5,
+					expiresInSeconds: 600,
+				});
+				await waitFor(() => tui.pane().includes("ABCD-EFGH"), "device code notify did not render");
+				tui.send("c");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.runtime.clipboardWrites.includes("ABCD-EFGH");
+				}, "device code copy did not reach Host clipboard write");
+				assert.ok(
+					!tui.clientMessages.some(
+						(message) => message.type === "ui_response" && message.id === "notify-device-1",
+					),
+					"notify must not be cancelled or await a UI response",
+				);
+				tui.send("Escape");
+
 				tui.resize(80, 8);
 				await waitFor(() => tui.pane().includes("Enter 提交"), "80x8 Composer did not render before overlay test");
 				tui.send("C-p");
@@ -1161,8 +1309,8 @@ describe("Rust read-only TUI fd bridge", () => {
 				}, "thinking setting did not reach the Host");
 
 				await waitFor(() => tui.pane().includes("Enter 提交"), "thinking selection did not close the overlay");
-				tui.send("Escape");
 				await openSlash("/login", "登录测试", "list_model_providers");
+				tui.runtime.pauseAfterDeviceCode();
 				tui.send("Down", "Enter");
 				await waitFor(() => tui.pane().includes("API Key"), "login method list did not render");
 				tui.send("Enter");
@@ -1170,40 +1318,91 @@ describe("Rust read-only TUI fd bridge", () => {
 					await tui.pump();
 					return tui.requests.some((request) => request.command === "login_model_provider");
 				}, "login command did not reach the Host");
-				await waitFor(() => tui.pane().includes("中国"), "Host select UI request did not render");
+				await waitFor(() => tui.pane().includes("中国大陆节点"), "id/label/description select did not render");
 				tui.send("Enter");
 				await waitFor(async () => {
 					await tui.pump();
 					return tui.clientMessages.some(
-						(message) => message.type === "ui_response" && message.id === "login-select",
+						(message) =>
+							message.type === "ui_response" && message.id === "login-select" && message.value === "region-cn",
 					);
-				}, "Host did not receive select response");
+				}, "Host did not receive the select id response");
 				await waitFor(() => tui.pane().includes("认证输入"), "Host input UI request did not render");
-				tui.sendLiteral("secret-value");
+				tui.sendLiteral("input-value");
 				tui.send("Enter");
 				await waitFor(async () => {
 					await tui.pump();
 					return tui.clientMessages.some(
-						(message) => message.type === "ui_response" && message.id === "login-input",
+						(message) =>
+							message.type === "ui_response" && message.id === "login-input" && message.value === "input-value",
+					);
+				}, "Host did not receive input response");
+				await waitFor(() => tui.pane().includes("认证密钥"), "Host secret UI request did not render");
+				tui.sendLiteral("credential-secret");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.clientMessages.some(
+						(message) =>
+							message.type === "ui_response" &&
+							message.id === "login-secret" &&
+							message.value === "credential-secret",
 					);
 				}, "Host did not receive secret response");
+				await waitFor(() => tui.pane().includes("ABCD-EFGH"), "device code notify did not render");
+				await waitFor(
+					() => tui.traces().filter((event) => event.event === "ui_notify").length >= 2,
+					"auth notifications were not traced",
+				);
+				tui.send("c");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.runtime.clipboardWrites.includes("ABCD-EFGH");
+				}, "device code copy did not call Host writeClipboardText");
+				assert.ok(
+					!["login-auth-url", "login-device-code"].some((id) =>
+						tui.clientMessages.some((message) => message.type === "ui_response" && message.id === id),
+					),
+					"notify must not cancel the auth flow",
+				);
+				tui.runtime.releaseAuthNotifications();
 				await waitFor(() => tui.pane().includes("确认认证？"), "Host confirm UI request did not render");
+				tui.dropNextB3Response();
 				tui.send("Enter");
 				await waitFor(async () => {
 					await tui.pump();
 					return tui.runtime.loginCount === 1;
 				}, "login did not complete exactly once");
-				const loginRefreshId = tui.requests
-					.filter((request) => request.command === "list_model_providers")
-					.at(-1)?.id;
-				assert.ok(loginRefreshId, "missing provider refresh after login");
+				assert.deepEqual(tui.runtime.authResponses, ["region-cn", "input-value", "credential-secret"]);
+				for (let index = 0; index < 3; index++) {
+					tui.send("Escape");
+					await new Promise((resolve) => setTimeout(resolve, 50));
+				}
 				await waitFor(
-					() => tui.responseWrites.has(loginRefreshId),
-					"Host did not answer provider refresh after login",
+					() => tui.pane().includes("登录测试"),
+					"auth notifications did not return to the provider list",
 				);
-				await new Promise((resolve) => setTimeout(resolve, 200));
-				assert.ok(!tui.pane().includes("secret-value"), "secret UI input was rendered in plain text");
-				assert.ok(tui.requests.some((request) => request.command === "login_model_provider"));
+				await new Promise((resolve) => setTimeout(resolve, 3_200));
+				tui.send("r");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.requests.filter((request) => request.command === "login_model_provider").length >= 2;
+				}, "dropped login response was not retried");
+				await waitFor(() => tui.runtime.loginCount === 1, "login retry duplicated the Host login");
+				await waitFor(() => tui.pane().includes("登录测试"), "provider list did not recover after login retry");
+				const trace = readFileSync(tui.tracePath, "utf8");
+				assert.ok(!trace.includes("credential-secret"), "credential leaked into Rust trace artifact");
+				assert.ok(!tui.pane().includes("credential-secret"), "credential was rendered in plain text");
+
+				tui.send("d");
+				await waitFor(() => tui.pane().includes("确认退出"), "logout confirm did not render");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.runtime.logoutCount === 1;
+				}, "logout did not execute exactly once");
+				assert.equal(tui.runtime.loginCount, 1);
+				assert.equal(tui.runtime.logoutCount, 1);
 
 				tui.resize(80, 8);
 				await waitFor(() => tui.pane().includes("Enter 提交"), "80x8 did not recover composer after workbenches");
@@ -1499,83 +1698,121 @@ describe("Rust read-only TUI fd bridge", () => {
 		}
 	}, 60_000);
 
-	it("records five 10k-tool first-frame, RSS, and older-page samples", async () => {
+	it("records three 10k-tool older-page runs with 25 end-to-frame samples each", async () => {
 		const firstFrameMs: number[] = [];
-		const scrollMs: number[] = [];
 		const rssSamples: number[] = [];
-		const rssRounds: Array<{
-			round: number;
-			panePid: number;
-			targetPids: number[];
-			sampleCount: number;
-			intervalMs: number;
-			samples: number[];
+		const runs: Array<{
+			run: number;
+			samples: ReturnType<typeof pageMetric>[];
+			endToFrameP95Ms: number;
+			decodeApplyDrawP95Ms: number;
 		}> = [];
 		const artifactDirectory = join(artifactRoot, `perf-${process.pid}-${Date.now()}`);
 		mkdirSync(artifactDirectory, { recursive: true });
-		for (let round = 0; round < 5; round++) {
-			const tui = await startTui(10_000, { width: 120, height: 36 }, `perf-${round + 1}`);
-			try {
-				const initial = await waitForInitialPage(tui);
-				const wroteAt = tui.responseWrites.get(initial.responseId);
-				assert.ok(wroteAt, "Host did not timestamp the initial page write");
-				const initialFrame = await waitForTrace(tui, "frame_rendered_nonempty");
-				const rendered = initialFrame.find((event) => event.atMs >= wroteAt);
-				assert.ok(rendered, "Rust did not render a nonempty frame after the initial response write");
-				firstFrameMs.push(rendered.atMs - wroteAt);
-
-				const panePid = tui.panePid();
-				const samples = await sampleRss(panePid);
-				rssSamples.push(...samples);
-				rssRounds.push({
-					round: round + 1,
-					panePid,
-					targetPids: processTreePids(panePid),
-					sampleCount: samples.length,
-					intervalMs: 10,
-					samples,
-				});
-				for (let scroll = 0; scroll < 5; scroll++) {
-					const requestsBefore = tui.requests.filter((request) => request.id.startsWith("older-")).length;
-					const pagesBefore = tui.traces().filter((event) => event.event === "page_applied").length;
-					tui.send("Home");
-					await waitForTrace(tui, "key_home", scroll + 1);
+		for (let run = 0; run < 3; run++) {
+			const samples: ReturnType<typeof pageMetric>[] = [];
+			for (let round = 0; round < 5; round++) {
+				const tui = await startTui(10_000, { width: 120, height: 36 }, `perf-${run + 1}-${round + 1}`);
+				try {
+					const initial = await waitForInitialPage(tui);
+					const initialWroteAt = tui.responseWrites.get(initial.responseId);
+					assert.ok(initialWroteAt !== undefined, "Host did not timestamp the initial page write");
 					await waitFor(async () => {
 						await tui.pump();
-						return tui.requests.filter((request) => request.id.startsWith("older-")).length > requestsBefore;
-					}, "Home did not produce an older transcript request");
-					const olderResponse = [...tui.responseWrites.entries()].filter(([id]) => id.startsWith("older-")).at(-1);
-					assert.ok(olderResponse, "Host did not finish writing the older page response");
-					await waitForTrace(tui, "page_applied", pagesBefore + 1);
-					const framesBefore = tui.traces().filter((event) => event.event === "frame_rendered_nonempty").length;
-					const frames = await waitForTrace(tui, "frame_rendered_nonempty", framesBefore + 1);
-					const frame = frames.at(-1) as TraceEvent;
-					scrollMs.push(frame.atMs - olderResponse[1]);
+						const traces = tui.traces();
+						const applied = traces.findIndex(
+							(event) => event.event === "page_apply_end" && event.id === initial.responseId,
+						);
+						return applied >= 0 && traces.slice(applied + 1).some((event) => event.event === "draw_end");
+					}, "initial page did not reach draw_end");
+					const initialMetric = pageMetric(tui, initial.responseId, initialWroteAt);
+					firstFrameMs.push(initialMetric.hostToReceiveMs + initialMetric.decodeApplyDrawMs);
+
+					const panePid = tui.panePid();
+					rssSamples.push(...(await sampleRss(panePid)));
+					for (let scroll = 0; scroll < 5; scroll++) {
+						const requestsBefore = tui.requests.filter((request) => request.id.startsWith("older-")).length;
+						tui.send("Home");
+						await waitFor(async () => {
+							await tui.pump();
+							return tui.requests.filter((request) => request.id.startsWith("older-")).length > requestsBefore;
+						}, "Home did not produce an older transcript request");
+						const response = [...tui.responseWrites.entries()].filter(([id]) => id.startsWith("older-")).at(-1);
+						assert.ok(response, "Host did not finish writing the older page response");
+						const [responseId, wroteAt] = response;
+						await waitFor(async () => {
+							await tui.pump();
+							const traces = tui.traces();
+							const applied = traces.findIndex(
+								(event) => event.event === "page_apply_end" && event.id === responseId,
+							);
+							return applied >= 0 && traces.slice(applied + 1).some((event) => event.event === "draw_end");
+						}, `${responseId} did not reach draw_end`);
+						samples.push(pageMetric(tui, responseId, wroteAt));
+					}
+					writeCapture(tui, `120x36-run-${run + 1}-round-${round + 1}`, 120);
+					tui.closeProtocol();
+					await waitFor(
+						() => spawnSync("tmux", ["-L", tui.socket, "has-session", "-t", "tui"]).status !== 0,
+						"Rust TUI did not exit after the performance protocol EOF",
+					);
+				} finally {
+					tui.closeProtocol();
 				}
-				writeCapture(tui, `120x36-round-${round + 1}`, 120);
-				tui.closeProtocol();
-				await waitFor(
-					() => spawnSync("tmux", ["-L", tui.socket, "has-session", "-t", "tui"]).status !== 0,
-					"Rust TUI did not exit after the performance protocol EOF",
-				);
-			} finally {
-				tui.closeProtocol();
 			}
+			assert.equal(samples.length, 25, `run ${run + 1} did not produce 25 older-page samples`);
+			const endToFrameP95Ms = percentile(
+				samples.map((sample) => sample.hostToReceiveMs + sample.decodeApplyDrawMs),
+				0.95,
+			);
+			const decodeApplyDrawP95Ms = percentile(
+				samples.map((sample) => sample.decodeApplyDrawMs),
+				0.95,
+			);
+			assert.ok(
+				endToFrameP95Ms <= 50,
+				`run ${run + 1} older-page end-to-frame p95 ${endToFrameP95Ms}ms exceeds 50ms`,
+			);
+			assert.ok(
+				decodeApplyDrawP95Ms <= 16,
+				`run ${run + 1} older-page decode+apply+draw p95 ${decodeApplyDrawP95Ms}ms exceeds 16ms`,
+			);
+			runs.push({ run: run + 1, samples, endToFrameP95Ms, decodeApplyDrawP95Ms });
 		}
 		const metrics = {
 			firstFrameMs,
 			firstFrameP95Ms: percentile(firstFrameMs, 0.95),
-			rssRounds,
 			rssSamples,
 			rssP95Bytes: percentile(rssSamples, 0.95),
-			scrollMs,
-			scrollP95Ms: percentile(scrollMs, 0.95),
+			runs,
 		};
 		writeFileSync(join(artifactDirectory, "metrics.json"), `${JSON.stringify(metrics, null, 2)}\n`);
 		assert.ok(metrics.firstFrameP95Ms <= 100, `first nonempty frame p95 ${metrics.firstFrameP95Ms}ms exceeds 100ms`);
 		assert.ok(metrics.rssP95Bytes <= 40 * 1024 * 1024, `Rust pane RSS p95 ${metrics.rssP95Bytes} exceeds 40MiB`);
-		assert.ok(metrics.scrollP95Ms <= 50, `older-page frame p95 ${metrics.scrollP95Ms}ms exceeds 50ms`);
-	}, 180_000);
+	}, 480_000);
+
+	it("uses a 16ms idle wait without drawing frames or burning CPU", async () => {
+		const tui = await startTui(4, { width: 80, height: 24 }, "idle-poll");
+		try {
+			await waitForInitialPage(tui);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const panePid = tui.panePid();
+			const beforePolls = tui.traces().filter((event) => event.event === "idle_poll").length;
+			const beforeFrames = tui.traces().filter((event) => event.event === "draw_end").length;
+			const beforeCpuMs = processTreeCpuMilliseconds(panePid);
+			await new Promise((resolve) => setTimeout(resolve, 2_000));
+			const idlePolls = tui.traces().filter((event) => event.event === "idle_poll").length - beforePolls;
+			const idleFrames = tui.traces().filter((event) => event.event === "draw_end").length - beforeFrames;
+			const cpuMs = processTreeCpuMilliseconds(panePid) - beforeCpuMs;
+			const metrics = { durationMs: 2_000, idlePolls, idleFrames, cpuMs };
+			writeFileSync(join(tui.artifactDirectory, "idle-metrics.json"), `${JSON.stringify(metrics, null, 2)}\n`);
+			assert.ok(idlePolls >= 80 && idlePolls <= 150, `expected about 125 idle 16ms waits, got ${idlePolls}`);
+			assert.equal(idleFrames, 0, `idle loop rendered ${idleFrames} unexpected frames`);
+			assert.ok(cpuMs <= 200, `idle CPU ${cpuMs}ms exceeds smoke budget`);
+		} finally {
+			tui.closeProtocol();
+		}
+	}, 30_000);
 });
 
 function readInitialMetadata(tui: StartedTui): { generation: string; revision: number } {

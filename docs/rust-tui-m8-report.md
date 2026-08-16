@@ -17,13 +17,13 @@
 - Rust 只消费 Host 返回的 B3 descriptor/result：设置包含显示值、整数边界、scope、只读和重启标记；模型包含认证可用性、推理能力和支持的思考级别；Provider 包含认证方式。Rust 不读取 settings/auth/model 文件，也不持久化认证输入。
 - 设置支持布尔切换、枚举选择、整数边界校验、字符串编辑和只读拦截；所有写入经既有 session/host operation journal，并保留原始 B3 payload 以便超时后按 `r` 重试。同一 `clientRequestId` 的重试不会重复执行 Host 写入。
 - 模型切换与思考强度使用 `set_session_model`、`set_session_thinking`；未认证模型仍显示，但不能选择。思考级别以中文显示，并按当前模型 capability 禁用不支持的选项。
-- 登录先选择 Provider 与认证方式，再通过 Host `ui_request` 依次桥接 select、input/secret、confirm。密文编辑器仅渲染掩码，认证值只通过单次 `ui_response` 交给 Host。
+- 登录先选择 Provider 与认证方式，再通过 Host `ui_request` 依次桥接 select、input/secret、notify、confirm。select option 优先返回 `value`、其次 `id`，展示 `label` 与 `description`；`editor` 使用既有文本编辑器。`notify` 只显示受限的认证链接、设备码或进度详情，并在 Rust 本地按请求 ID 仅确认一次，不建立 pending UI request 或取消认证；设备码可通过 Host journal 化的 `write_clipboard_text` 复制。密文编辑器仅渲染掩码，认证值只通过单次 `ui_response` 交给 Host。
 
 ## Rust 工作台 Overlay 基础
 
 - Overlay stack 提供 List、Detail、TextEditor、Confirm 四个原语，打开时保存 composer 焦点，关闭或断连后恢复；支持 toast、错误、pending request generation 和 stale response 丢弃。
 - Ctrl+P 命令面板只接入 `/help`、`/about`、`/doctor`。前者本地显示；后两者经 `encode_b3_request` 发送 typed `get_about`、`get_diagnostics`，结果先按 B3 schema 校验再渲染。`/settings` 等未接入 slash 保持普通 prompt。
-- Host 事件 `ui_request` 通过 `ui_response` 桥接 select、confirm、input；未知 kind 会返回 cancelled，不让请求悬挂。
+- Host 事件 `ui_request` 通过 `ui_response` 桥接 select、confirm、input、secret、editor；认证 `notify` 直接显示本地受限详情，未知 kind 才返回 cancelled，不让请求悬挂。
 
 ## 验证命令
 
@@ -50,7 +50,7 @@ node --import tsx packages/tui/test/render-churn-bench.ts --smoke --out /tmp/lys
 cargo run -q -p lystar-tui --release --example benchmark -- --smoke --out /tmp/lystar-rust-b0-smoke.jsonl
 ```
 
-GUI Protocol 聚焦测试为 `13/13`，Rust protocol/TUI workspace 为 `30/30`。Host runtime/journal 与 Rust fd bridge tmux/FIFO 覆盖 B3 设置写入掉响应后按原请求重试、模型与思考 session 写入、登录的 select/input/confirm 桥接和 80×8 恢复。Host 两连接 E2E 让首次 prompt accepted 回包真实 reject 并关闭连接；新连接复用相同 `clientInstanceId`，重新 hello/acquire 后按相同 `clientRequestId` 重发，Fake Runtime 的 prompt 恰好一次，journal 终态 `completed`。steer、follow_up、clear_queue 同样覆盖首次运行完成后掉回包、重连复发和 existing completed；并发 prompt 恰好一次，相同 ID 不同 payload 返回 `operation_payload_mismatch`，idle steer/follow_up 返回 `session_not_active`，idle clear_queue 可用。
+GUI Protocol 聚焦测试为 `13/13`，Rust protocol/TUI workspace 为 `30/30`。Host runtime/journal 与 Rust fd bridge tmux/FIFO 现在为 `8/8`：B3 设置写入掉响应后按原请求重试、模型与思考 session 写入，以及 fake-auth 的 `select(id) -> input -> secret -> auth_url/device_code/progress notify -> confirm -> completed`。认证 E2E 断言登录和登出各一次、登录 B3 回包丢失后同一请求重试不会重复调用 Host、设备码复制经 Host、Rust trace 与 artifact 不含密文。另有三组 10,000 Tool rounds 的 older-page 测量，每组五轮、每轮五个分页样本：每组 `end-to-frame` p95 为 `30ms`，`decode+apply+draw` p95 为 `10ms`，RSS p95 为 `16.285 MiB`；空闲两秒为 124 次 16ms 等待、0 帧和 10ms 进程树 CPU。
 
 `projectRuntimeProgress` 继续使用真实 `AgentSessionEvent` 结构覆盖 assistant、thinking、tool start/update/end、queue_update、usage 以及最长 1024 字节的未投影状态。新的 TypeScript status golden frame 覆盖此前会导致 Rust decoder 退出的 `session_progress.status`。
 
@@ -60,15 +60,15 @@ GUI Protocol 聚焦测试为 `13/13`，Rust protocol/TUI workspace 为 `30/30`�
 
 | 场景 | 尺寸 | event-to-frame p50/p95/p99/max ms | bytes p95 | RSS p95 MiB |
 | --- | --- | ---: | ---: | ---: |
-| input300 | 80x24 | 2.882 / 5.298 / 7.250 / 7.738 | 48 | 22.898 |
-| input300 | 120x36 | 2.943 / 3.548 / 3.860 / 4.081 | 48 | 22.902 |
-| input300 | 200x60 | 3.114 / 3.883 / 4.174 / 4.520 | 48 | 22.910 |
-| paste5000 | 80x24 | 4.252 / 5.021 / 5.021 / 5.021 | 260 | 22.902 |
-| paste5000 | 120x36 | 4.758 / 4.843 / 4.843 / 4.843 | 299 | 22.910 |
-| paste5000 | 200x60 | 4.846 / 5.771 / 5.771 / 5.771 | 299 | 22.910 |
-| palette_open | 80x24 | 3.371 / 3.526 / 3.526 / 3.526 | 2,484 | 22.902 |
-| palette_open | 120x36 | 3.698 / 3.977 / 3.977 / 3.977 | 2,484 | 22.910 |
-| palette_open | 200x60 | 4.243 / 4.472 / 4.472 / 4.472 | 2,484 | 22.910 |
+| input300 | 80x24 | 2.815 / 3.300 / 3.585 / 4.010 | 48 | 22.957 |
+| input300 | 120x36 | 2.871 / 3.516 / 3.747 / 3.981 | 48 | 22.961 |
+| input300 | 200x60 | 3.023 / 3.481 / 3.815 / 4.347 | 48 | 22.961 |
+| paste5000 | 80x24 | 4.020 / 4.884 / 4.884 / 4.884 | 260 | 22.961 |
+| paste5000 | 120x36 | 4.318 / 4.550 / 4.550 / 4.550 | 299 | 22.961 |
+| paste5000 | 200x60 | 4.256 / 4.421 / 4.421 / 4.421 | 299 | 22.965 |
+| palette_open | 80x24 | 3.239 / 3.579 / 3.579 / 3.579 | 2,484 | 22.961 |
+| palette_open | 120x36 | 3.578 / 4.223 / 4.223 / 4.223 | 2,484 | 22.961 |
+| palette_open | 200x60 | 3.858 / 4.653 / 4.653 / 4.653 | 2,484 | 22.965 |
 
 `palette_open` 以一次 Ctrl+P 等价的 overlay open 和首帧 draw 为口径，p95 不超过 16 ms，RSS p95 不超过 180 MiB；verifier 会拒绝缺轮次、paste events/characters 不符、palette 指标超限、regroup 改变、0/null 指标、缓存超限或预算超限。
 

@@ -5,7 +5,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, SyncSender},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crossterm::{
@@ -33,9 +33,9 @@ use thiserror::Error;
 
 use crate::app::{
     AppState, B3Request, ComposerView, ConfirmOverlay, DetailOverlay, InputFocus, ListOverlay,
-    ModelDescriptor, OverlayItem, OverlayState, PendingIntent, ProviderDescriptor, SearchHit,
-    SettingDescriptor, TextEditorOverlay, TranscriptView, UiRequest, UiRequestKind, VisibleLink,
-    WorkbenchOverlayView, WorkbenchTarget, composer_area, transcript_area,
+    ModelDescriptor, OverlayItem, OverlayLink, OverlayState, PendingIntent, ProviderDescriptor,
+    SearchHit, SettingDescriptor, TextEditorOverlay, TranscriptView, UiRequest, UiRequestKind,
+    VisibleLink, WorkbenchOverlayView, WorkbenchTarget, composer_area, transcript_area,
 };
 
 const INITIAL_PAGE_LIMIT: u64 = 200;
@@ -186,11 +186,31 @@ fn read_protocol(mut input: std::fs::File, sender: SyncSender<Result<ServerMessa
 
 fn trace(event: &str) {
     if std::env::var_os("PI_RUST_TUI_TRACE").is_some() {
-        let at_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_millis());
-        eprintln!("lystar-rust-tui trace={event} at_ms={at_ms}");
+        eprintln!("lystar-rust-tui trace={event} at_ms={}", monotonic_millis());
     }
+}
+
+fn trace_id(event: &str, id: &str) {
+    if std::env::var_os("PI_RUST_TUI_TRACE").is_some() {
+        eprintln!(
+            "lystar-rust-tui trace={event} at_ms={} id={id}",
+            monotonic_millis()
+        );
+    }
+}
+
+fn monotonic_millis() -> u128 {
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(seconds) = std::fs::read_to_string("/proc/uptime")
+            .ok()
+            .and_then(|uptime| uptime.split_whitespace().next()?.parse::<f64>().ok())
+        {
+            return (seconds * 1_000.0) as u128;
+        }
+    }
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_millis()
 }
 
 fn trace_cache(app: &AppState) {
@@ -227,7 +247,10 @@ fn render_active_osc8_link(
 ) -> Result<(), io::Error> {
     let area = terminal.size()?;
     let full = ratatui::layout::Rect::new(0, 0, area.width, area.height);
-    let Some(region) = TranscriptView::new(app).visible_link(transcript_area(app, full)) else {
+    let Some(region) = WorkbenchOverlayView::new(app)
+        .visible_link(full)
+        .or_else(|| TranscriptView::new(app).visible_link(transcript_area(app, full)))
+    else {
         return Ok(());
     };
     write_visible_osc8_link(terminal.backend_mut().writer_mut(), &region)
@@ -275,52 +298,52 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
     let mut terminal = Terminal::new(backend)?;
     trace("terminal_ready");
     let mut app = AppState::default();
+    app.mark_page_load_pending();
+    let mut dirty = true;
+    let mut timeout_notified = false;
     loop {
-        let area = terminal.size()?;
-        let full = ratatui::layout::Rect::new(0, 0, area.width, area.height);
-        app.prepare_composer(composer_area(&app, full));
-        app.set_timeout_notice();
-        terminal.draw(|frame| {
-            let area = frame.area();
-            frame.render_widget(TranscriptView::new(&app), transcript_area(&app, area));
-            frame.render_widget(ComposerView::new(&app), composer_area(&app, area));
-            frame.render_widget(WorkbenchOverlayView::new(&app), area);
-        })?;
-        trace("frame_rendered");
-        if app.transcript.cached_rounds() > 0 {
-            trace("frame_rendered_nonempty");
+        if dirty {
+            let area = terminal.size()?;
+            let full = ratatui::layout::Rect::new(0, 0, area.width, area.height);
+            app.prepare_composer(composer_area(&app, full));
+            trace("draw_start");
+            terminal.draw(|frame| {
+                let area = frame.area();
+                frame.render_widget(TranscriptView::new(&app), transcript_area(&app, area));
+                frame.render_widget(ComposerView::new(&app), composer_area(&app, area));
+                frame.render_widget(WorkbenchOverlayView::new(&app), area);
+            })?;
+            trace("draw_end");
+            trace("frame_rendered");
+            if app.transcript.cached_rounds() > 0 {
+                trace("frame_rendered_nonempty");
+            }
+            render_active_osc8_link(&mut terminal, &app)?;
+            trace_cache(&app);
+            dirty = false;
         }
-        render_active_osc8_link(&mut terminal, &app)?;
-        trace_cache(&app);
         if shutdown.load(Ordering::Relaxed) {
             return Ok(());
         }
+
+        let mut state_changed = false;
         let mut handled_message = false;
-        while let Ok(message) = pipe.inbound.try_recv() {
-            handled_message = true;
-            if let Err(error) = process_inbound_message(
-                &mut app,
-                message,
-                &mut pipe,
-                session_path,
-                &client_instance_id,
-                &mut request_sequence,
-            ) {
-                app.disconnected = Some(format!("连接已关闭: {error}"));
-                app.clear_transient();
-                app.clear_overlay_transient();
-                let area = terminal.size()?;
-                app.prepare_composer(composer_area(
-                    &app,
-                    ratatui::layout::Rect::new(0, 0, area.width, area.height),
-                ));
-                terminal.draw(|frame| {
-                    let area = frame.area();
-                    frame.render_widget(TranscriptView::new(&app), transcript_area(&app, area));
-                    frame.render_widget(ComposerView::new(&app), composer_area(&app, area));
-                })?;
-                render_active_osc8_link(&mut terminal, &app)?;
-                return Err(error);
+        loop {
+            match pipe.inbound.try_recv() {
+                Ok(message) => {
+                    process_inbound_message(
+                        &mut app,
+                        message,
+                        &mut pipe,
+                        session_path,
+                        &client_instance_id,
+                        &mut request_sequence,
+                    )?;
+                    handled_message = true;
+                    state_changed = true;
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => return Err(TuiError::ChildEof),
             }
         }
         if event::poll(Duration::ZERO)? {
@@ -337,57 +360,67 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                     )? {
                         return Ok(());
                     }
+                    state_changed = true;
                 }
-                Event::Paste(text) => app.editor.insert(&text),
+                Event::Paste(text) => {
+                    app.editor.insert(&text);
+                    state_changed = true;
+                }
                 Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollUp => app.transcript.scroll_by(-3),
-                    MouseEventKind::ScrollDown => app.transcript.scroll_by(3),
+                    MouseEventKind::ScrollUp => {
+                        app.transcript.scroll_by(-3);
+                        state_changed = true;
+                    }
+                    MouseEventKind::ScrollDown => {
+                        app.transcript.scroll_by(3);
+                        state_changed = true;
+                    }
                     _ => {}
                 },
                 Event::Resize(_, _) => {
                     terminal.autoresize()?;
+                    state_changed = true;
                 }
                 _ => {}
             }
         } else if !handled_message {
-            match pipe.inbound.recv_timeout(Duration::from_millis(16)) {
+            let pending_work = app.has_pending_work();
+            if !pending_work {
+                trace("idle_poll");
+            }
+            match pipe
+                .inbound
+                .recv_timeout(Duration::from_millis(if pending_work { 2 } else { 16 }))
+            {
                 Ok(message) => {
-                    if let Err(error) = process_inbound_message(
+                    process_inbound_message(
                         &mut app,
                         message,
                         &mut pipe,
                         session_path,
                         &client_instance_id,
                         &mut request_sequence,
-                    ) {
-                        app.disconnected = Some(format!("连接已关闭: {error}"));
-                        app.clear_transient();
-                        app.clear_overlay_transient();
-                        let area = terminal.size()?;
-                        app.prepare_composer(composer_area(
-                            &app,
-                            ratatui::layout::Rect::new(0, 0, area.width, area.height),
-                        ));
-                        terminal.draw(|frame| {
-                            let area = frame.area();
-                            frame.render_widget(
-                                TranscriptView::new(&app),
-                                transcript_area(&app, area),
-                            );
-                            frame.render_widget(ComposerView::new(&app), composer_area(&app, area));
-                        })?;
-                        render_active_osc8_link(&mut terminal, &app)?;
-                        return Err(error);
-                    }
+                    )?;
+                    state_changed = true;
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => return Err(TuiError::ChildEof),
             }
         }
+        if app.timed_out_b3_request().is_some() {
+            if !timeout_notified {
+                app.set_timeout_notice();
+                state_changed = true;
+                timeout_notified = true;
+            }
+        } else {
+            timeout_notified = false;
+        }
         if app.transcript.needs_previous_page()
             || app.search.pending_jump.is_some() && !app.transcript.loading_previous
         {
             if let Some(cursor) = app.transcript.take_previous_cursor() {
+                app.mark_page_load_pending();
                 request_transcript(
                     &mut pipe,
                     session_path,
@@ -400,11 +433,14 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                     }),
                     &mut request_sequence,
                 )?;
+                state_changed = true;
             } else if app.search.pending_jump.is_some() {
                 app.search.status = "目标不在当前可分页记录中".to_owned();
                 app.search.pending_jump = None;
+                state_changed = true;
             }
         }
+        dirty |= state_changed;
     }
 }
 
@@ -433,6 +469,7 @@ fn process_inbound_message(
         client_instance_id,
         request_sequence,
     )? {
+        app.mark_page_load_pending();
         request_transcript(pipe, session_path, None, true, None, request_sequence)?;
     }
     Ok(())
@@ -709,6 +746,31 @@ fn handle_overlay_key(
                 app.overlay_insert("r");
             }
         }
+        KeyCode::Char('c') if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+            if let Some(text) = app.overlay_copy_text() {
+                let client_request_id = format!("clipboard:{}", sequence.saturating_add(1));
+                app.mark_write_pending();
+                request_b3(
+                    app,
+                    pipe,
+                    sequence,
+                    B3Command::WriteClipboardText,
+                    serde_json::json!({
+                        "text": text,
+                        "clientInstanceId": client_instance_id,
+                        "clientRequestId": client_request_id,
+                    })
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+                    PendingIntent::ClipboardMutation {
+                        toast: "设备码已复制".to_owned(),
+                    },
+                )?;
+            } else {
+                app.overlay_insert("c");
+            }
+        }
         KeyCode::Char('d') if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
             if let Some(index) = app
                 .current_overlay_action()
@@ -871,6 +933,8 @@ fn open_workbench(
             ],
             scroll: 0,
             status: "Esc 返回".to_owned(),
+            link: None,
+            copy_text: None,
         }));
         return Ok(());
     }
@@ -935,6 +999,8 @@ fn open_workbench(
         lines: vec!["正在读取".to_owned()],
         scroll: 0,
         status: "请稍候".to_owned(),
+        link: None,
+        copy_text: None,
     }));
     request_b3(app, pipe, sequence, command, payload, intent)
 }
@@ -1316,7 +1382,7 @@ fn activate_workbench_action(
     };
     let (value, confirmed) = match (request.kind, action) {
         (UiRequestKind::Confirm, "ui:confirm") => (None, Some(true)),
-        (UiRequestKind::Input | UiRequestKind::Secret, "ui:input") => {
+        (UiRequestKind::Input | UiRequestKind::Secret | UiRequestKind::Editor, "ui:input") => {
             let value = match app.overlay() {
                 Some(OverlayState::TextEditor(editor)) => {
                     serde_json::Value::String(editor.value.clone())
@@ -1408,6 +1474,15 @@ fn apply_server_message(
     sequence: &mut u64,
 ) -> Result<bool, TuiError> {
     let raw = message.json().map_err(TuiError::from)?;
+    let page_response_id = (raw.get("type").and_then(serde_json::Value::as_str)
+        == Some("response"))
+    .then(|| raw.get("id").and_then(serde_json::Value::as_str))
+    .flatten()
+    .filter(|id| id.starts_with("initial-") || id.starts_with("older-"))
+    .map(str::to_owned);
+    if let Some(id) = &page_response_id {
+        trace_id("host_response_received", id);
+    }
     if raw.get("type").and_then(serde_json::Value::as_str) == Some("event")
         && raw
             .get("event")
@@ -1427,13 +1502,27 @@ fn apply_server_message(
             .get("payload")
             .cloned()
             .unwrap_or(serde_json::Value::Null);
+        let title = event
+            .get("title")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("需要输入");
         let kind = match event.get("kind").and_then(serde_json::Value::as_str) {
             Some("select") => UiRequestKind::Select,
             Some("confirm") => UiRequestKind::Confirm,
             Some("input") => UiRequestKind::Input,
             Some("secret") => UiRequestKind::Secret,
+            Some("editor") => UiRequestKind::Editor,
+            Some("notify") => {
+                if app.mark_ui_responded(id) {
+                    app.open_overlay(OverlayState::Detail(ui_notify_detail(title, &payload)));
+                    trace("ui_notify");
+                }
+                return Ok(false);
+            }
             Some(kind) => {
-                app.set_overlay_error(format!("不支持的输入类型: {kind}"));
+                let message = format!("不支持的输入类型: {kind}");
+                app.set_overlay_error(message.clone());
+                app.transcript.status = message;
                 if app.cancel_unknown_ui_request(id) {
                     pipe.request(&encode_ui_response(id, None, None, Some(true))?)?;
                 }
@@ -1441,16 +1530,13 @@ fn apply_server_message(
             }
             None => {
                 app.set_overlay_error("输入请求缺少类型");
+                app.transcript.status = "输入请求缺少类型".to_owned();
                 if app.cancel_unknown_ui_request(id) {
                     pipe.request(&encode_ui_response(id, None, None, Some(true))?)?;
                 }
                 return Ok(false);
             }
         };
-        let title = event
-            .get("title")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("需要输入");
         if !app.register_ui_request(UiRequest {
             id: id.to_owned(),
             kind,
@@ -1475,7 +1561,7 @@ fn apply_server_message(
                 confirm_action: "ui:confirm".to_owned(),
                 status: String::new(),
             })),
-            UiRequestKind::Input | UiRequestKind::Secret => {
+            UiRequestKind::Input | UiRequestKind::Secret | UiRequestKind::Editor => {
                 let value = payload
                     .get("value")
                     .or_else(|| payload.get("prefill"))
@@ -1518,6 +1604,17 @@ fn apply_server_message(
                 selected_key,
                 filter,
             } => apply_workbench_load(app, target, selected_key, filter, result)?,
+            PendingIntent::ClipboardMutation { toast } => {
+                if result
+                    .get("capability")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    app.set_toast(toast);
+                } else {
+                    app.set_overlay_error("Host 不支持剪贴板写入");
+                }
+            }
             PendingIntent::SettingMutation {
                 selected_key,
                 filter,
@@ -1576,10 +1673,113 @@ fn apply_server_message(
         }
         return Ok(false);
     }
-    match message.read_only().map_err(TuiError::from)? {
+    let read_only = if let Some(id) = &page_response_id {
+        trace_id("page_decode_start", id);
+        let decoded = message.read_only().map_err(TuiError::from)?;
+        trace_id("page_decode_end", id);
+        decoded
+    } else {
+        message.read_only().map_err(TuiError::from)?
+    };
+    match read_only {
         ReadOnlyMessage::Response(response) => apply_response(app, &response),
         ReadOnlyMessage::Event(event) => apply_event(app, &event, session_path),
         ReadOnlyMessage::Hello | ReadOnlyMessage::HelloError { .. } => Ok(false),
+    }
+}
+
+fn ui_notify_detail(title: &str, payload: &serde_json::Value) -> DetailOverlay {
+    const FIELD_LIMIT: usize = 512;
+    const LINE_LIMIT: usize = 12;
+    let bounded = |value: &str| {
+        if value.len() <= FIELD_LIMIT {
+            return value.to_owned();
+        }
+        let mut output = String::new();
+        for character in value.chars() {
+            if output.len() + character.len_utf8() > FIELD_LIMIT.saturating_sub(3) {
+                break;
+            }
+            output.push(character);
+        }
+        format!("{output}...")
+    };
+    let value = |key: &str| {
+        payload
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(bounded)
+    };
+    let method = payload
+        .get("method")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let mut lines = Vec::new();
+    let mut link = None;
+    let mut copy_text = None;
+    match method {
+        "auth_url" => {
+            if let Some(instructions) = value("instructions") {
+                lines.push(instructions);
+            }
+            if let Some(url) = value("url") {
+                let line = format!("认证链接: {url}");
+                link = Some(OverlayLink {
+                    line: lines.len(),
+                    label: url.clone(),
+                    href: url,
+                });
+                lines.push(line);
+            }
+        }
+        "auth_device_code" => {
+            if let Some(code) = value("userCode") {
+                lines.push(format!("设备码: {code}"));
+                copy_text = Some(code);
+            }
+            if let Some(url) = value("verificationUri") {
+                let line = format!("验证地址: {url}");
+                link = Some(OverlayLink {
+                    line: lines.len(),
+                    label: url.clone(),
+                    href: url,
+                });
+                lines.push(line);
+            }
+            for key in ["intervalSeconds", "expiresInSeconds"] {
+                if let Some(number) = payload.get(key).and_then(serde_json::Value::as_u64) {
+                    lines.push(format!("{key}: {number}"));
+                }
+            }
+        }
+        "auth_progress" | "auth_info" => {
+            if let Some(message) = value("message") {
+                lines.push(message);
+            }
+        }
+        _ => {
+            for key in ["message", "text", "status", "key"] {
+                if let Some(message) = value(key) {
+                    lines.push(format!("{key}: {message}"));
+                }
+            }
+        }
+    }
+    if lines.is_empty() {
+        lines.push("认证状态已更新".to_owned());
+    }
+    lines.truncate(LINE_LIMIT);
+    DetailOverlay {
+        title: title.to_owned(),
+        lines,
+        scroll: 0,
+        status: if copy_text.is_some() {
+            "c 复制设备码，Esc 返回".to_owned()
+        } else {
+            "Esc 返回".to_owned()
+        },
+        link,
+        copy_text,
     }
 }
 
@@ -1589,6 +1789,8 @@ fn apply_workbench_result(app: &mut AppState, title: String, result: serde_json:
         lines: pretty_json_lines(&result),
         scroll: 0,
         status: "Esc 返回".to_owned(),
+        link: None,
+        copy_text: None,
     }));
 }
 
@@ -2018,14 +2220,19 @@ fn ui_select_items(payload: &serde_json::Value) -> Vec<OverlayItem> {
             let value = option
                 .get("value")
                 .and_then(serde_json::Value::as_str)
+                .or_else(|| option.get("id").and_then(serde_json::Value::as_str))
                 .or_else(|| option.as_str())?;
             let label = option
                 .get("label")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(value);
+            let detail = option
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
             Some(OverlayItem {
                 label: label.to_owned(),
-                detail: String::new(),
+                detail: detail.to_owned(),
                 action: format!("ui:select:{value}"),
             })
         })
@@ -2052,6 +2259,7 @@ fn pretty_json_lines(value: &serde_json::Value) -> Vec<String> {
 fn apply_response(app: &mut AppState, response: &ReadOnlyResponse) -> Result<bool, TuiError> {
     match response {
         ReadOnlyResponse::Error { message, .. } => {
+            app.clear_page_load_pending();
             app.transcript.status = message.clone();
             app.transcript.loading_previous = false;
         }
@@ -2064,12 +2272,15 @@ fn apply_response(app: &mut AppState, response: &ReadOnlyResponse) -> Result<boo
                 return Ok(true);
             }
             if id.starts_with("initial-") {
+                trace_id("page_apply_start", id);
+                app.clear_page_load_pending();
                 app.transcript.replace_page(
                     page.items.clone(),
                     page.transcript_generation.clone(),
                     page.transcript_revision,
                     page.previous_cursor.clone(),
                 );
+                trace_id("page_apply_end", id);
                 trace("page_applied");
             } else {
                 let context = page.request_context.as_ref();
@@ -2083,9 +2294,12 @@ fn apply_response(app: &mut AppState, response: &ReadOnlyResponse) -> Result<boo
                     trace("reload_requested");
                     return Ok(true);
                 }
+                trace_id("page_apply_start", id);
+                app.clear_page_load_pending();
                 app.transcript
                     .prepend_page(page.items.clone(), page.previous_cursor.clone());
                 app.resolve_pending_jump();
+                trace_id("page_apply_end", id);
                 trace("page_applied");
             }
         }
@@ -2290,10 +2504,36 @@ mod tests {
     #[test]
     fn builds_select_items_from_host_payload() {
         let items = ui_select_items(&serde_json::json!({
-            "options": [{"label":"Beta", "value":"beta"}, "alpha"]
+            "options": [
+                {"id":"region-cn", "label":"中国", "description":"中国大陆节点"},
+                {"label":"Beta", "value":"beta"},
+                "alpha"
+            ]
         }));
-        assert_eq!(items[0].label, "Beta");
-        assert_eq!(items[0].action, "ui:select:beta");
-        assert_eq!(items[1].action, "ui:select:alpha");
+        assert_eq!(items[0].label, "中国");
+        assert_eq!(items[0].detail, "中国大陆节点");
+        assert_eq!(items[0].action, "ui:select:region-cn");
+        assert_eq!(items[1].action, "ui:select:beta");
+        assert_eq!(items[2].action, "ui:select:alpha");
+    }
+
+    #[test]
+    fn renders_bounded_auth_notifications_with_copy_and_osc8_link() {
+        let detail = ui_notify_detail(
+            "模型认证",
+            &serde_json::json!({
+                "method":"auth_device_code",
+                "userCode":"ABCD-EFGH",
+                "verificationUri":"https://example.test/device",
+                "intervalSeconds":5,
+                "expiresInSeconds":600
+            }),
+        );
+        assert_eq!(detail.copy_text.as_deref(), Some("ABCD-EFGH"));
+        assert_eq!(
+            detail.link.as_ref().map(|link| link.href.as_str()),
+            Some("https://example.test/device")
+        );
+        assert!(detail.status.contains('c'));
     }
 }

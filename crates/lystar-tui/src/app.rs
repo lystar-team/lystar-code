@@ -404,11 +404,20 @@ pub struct ListOverlay {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverlayLink {
+    pub line: usize,
+    pub label: String,
+    pub href: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetailOverlay {
     pub title: String,
     pub lines: Vec<String>,
     pub scroll: usize,
     pub status: String,
+    pub link: Option<OverlayLink>,
+    pub copy_text: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -494,6 +503,9 @@ pub enum PendingIntent {
     Overlay {
         target: String,
     },
+    ClipboardMutation {
+        toast: String,
+    },
     WorkbenchLoad {
         target: WorkbenchTarget,
         selected_key: Option<String>,
@@ -535,6 +547,7 @@ pub enum UiRequestKind {
     Confirm,
     Input,
     Secret,
+    Editor,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -606,6 +619,7 @@ pub struct AppState {
     pub models: Vec<ModelDescriptor>,
     pub providers: Vec<ProviderDescriptor>,
     pub write_pending: bool,
+    pub page_load_pending: bool,
     pub pending_requests: HashMap<String, PendingRequest>,
     pub request_generation: u64,
     pub active_ui_request: Option<UiRequest>,
@@ -774,6 +788,7 @@ impl AppState {
             PendingIntent::SettingMutation { .. }
                 | PendingIntent::SessionMutation { .. }
                 | PendingIntent::AuthMutation { .. }
+                | PendingIntent::ClipboardMutation { .. }
         ) {
             self.write_pending = false;
         }
@@ -799,6 +814,28 @@ impl AppState {
             pending.started_at = Instant::now();
         }
         Some((id, request))
+    }
+
+    pub fn mark_page_load_pending(&mut self) {
+        self.page_load_pending = true;
+    }
+
+    pub fn clear_page_load_pending(&mut self) {
+        self.page_load_pending = false;
+    }
+
+    pub fn has_pending_work(&self) -> bool {
+        self.page_load_pending
+            || self.transcript.loading_previous
+            || !self.pending_requests.is_empty()
+            || self.is_active_operation()
+    }
+
+    pub fn overlay_copy_text(&self) -> Option<String> {
+        match self.overlay() {
+            Some(OverlayState::Detail(detail)) => detail.copy_text.clone(),
+            _ => None,
+        }
     }
 
     pub fn set_overlay_error(&mut self, message: impl Into<String>) {
@@ -867,8 +904,12 @@ impl AppState {
         Some(request)
     }
 
-    pub fn cancel_unknown_ui_request(&mut self, id: &str) -> bool {
+    pub fn mark_ui_responded(&mut self, id: &str) -> bool {
         self.responded_ui_requests.insert(id.to_owned())
+    }
+
+    pub fn cancel_unknown_ui_request(&mut self, id: &str) -> bool {
+        self.mark_ui_responded(id)
     }
 
     fn list_matches(list: &ListOverlay, index: usize) -> bool {
@@ -1107,6 +1148,50 @@ impl<'a> WorkbenchOverlayView<'a> {
     }
 }
 
+fn overlay_rect(area: Rect) -> Option<Rect> {
+    if area.width < 8 || area.height < 4 {
+        return None;
+    }
+    let width = area.width.saturating_sub(4).clamp(8, 96);
+    let height = area.height.saturating_sub(2).clamp(4, 28);
+    Some(Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    ))
+}
+
+impl WorkbenchOverlayView<'_> {
+    pub fn visible_link(&self, area: Rect) -> Option<VisibleLink> {
+        let OverlayState::Detail(detail) = self.state.overlay()? else {
+            return None;
+        };
+        let link = detail.link.as_ref()?;
+        let overlay = overlay_rect(area)?;
+        let visible = usize::from(overlay.height.saturating_sub(4));
+        if link.line < detail.scroll || link.line >= detail.scroll.saturating_add(visible) {
+            return None;
+        }
+        let line = detail.lines.get(link.line)?;
+        let offset = line.find(&link.label)?;
+        let label = truncate_graphemes(
+            &line[offset..],
+            usize::from(overlay.width.saturating_sub(4))
+                .saturating_sub(UnicodeWidthStr::width(&line[..offset])),
+        );
+        if label.is_empty() {
+            return None;
+        }
+        Some(VisibleLink {
+            column: overlay.x + 2 + u16::try_from(UnicodeWidthStr::width(&line[..offset])).ok()?,
+            row: overlay.y + 1 + u16::try_from(link.line - detail.scroll).ok()?,
+            label,
+            href: link.href.clone(),
+        })
+    }
+}
+
 impl Widget for WorkbenchOverlayView<'_> {
     fn render(self, area: Rect, buffer: &mut Buffer) {
         if let Some(toast) = &self.state.toast {
@@ -1132,13 +1217,13 @@ impl Widget for WorkbenchOverlayView<'_> {
             }
             return;
         };
-        if area.width < 8 || area.height < 4 {
+        let Some(overlay_rect) = overlay_rect(area) else {
             return;
-        }
-        let width = area.width.saturating_sub(4).clamp(8, 96);
-        let height = area.height.saturating_sub(2).clamp(4, 28);
-        let x = area.x + area.width.saturating_sub(width) / 2;
-        let y = area.y + area.height.saturating_sub(height) / 2;
+        };
+        let width = overlay_rect.width;
+        let height = overlay_rect.height;
+        let x = overlay_rect.x;
+        let y = overlay_rect.y;
         for row in 0..height {
             let line = if row == 0 || row == height.saturating_sub(1) {
                 "─".repeat(usize::from(width))
@@ -1778,12 +1863,16 @@ mod tests {
             lines: vec![],
             scroll: 0,
             status: String::new(),
+            link: None,
+            copy_text: None,
         }));
         app.open_overlay(OverlayState::Detail(DetailOverlay {
             title: "二层".to_owned(),
             lines: vec![],
             scroll: 0,
             status: String::new(),
+            link: None,
+            copy_text: None,
         }));
         assert_eq!(app.input_focus, InputFocus::Overlay);
         app.close_overlay();
@@ -1837,6 +1926,8 @@ mod tests {
             lines: (0..30).map(|value| value.to_string()).collect(),
             scroll: 0,
             status: String::new(),
+            link: None,
+            copy_text: None,
         }));
         app.overlay_page(1);
         assert_eq!(
