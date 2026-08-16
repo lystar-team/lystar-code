@@ -134,6 +134,24 @@
                       "type": "integer",
                       "minimum": 1,
                       "maximum": 200
+                    },
+                    "context": {
+                      "type": "object",
+                      "properties": {
+                        "generation": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "revision": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "cursor": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "additionalProperties": false
                     }
                   },
                   "additionalProperties": false
@@ -1866,6 +1884,238 @@
                           },
                           "payload": {
                             "$ref": "#/$defs/JsonValue"
+                          },
+                          "view": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "required": [
+                                  "type",
+                                  "text"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "user"
+                                  },
+                                  "text": {
+                                    "type": "string",
+                                    "maxLength": 16384
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "type",
+                                  "text"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "assistant"
+                                  },
+                                  "text": {
+                                    "type": "string",
+                                    "maxLength": 16384
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "type",
+                                  "text"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "thinking"
+                                  },
+                                  "text": {
+                                    "type": "string",
+                                    "maxLength": 16384
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "type",
+                                  "calls"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "tool_call"
+                                  },
+                                  "calls": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "required": [
+                                        "id",
+                                        "name",
+                                        "summary"
+                                      ],
+                                      "properties": {
+                                        "id": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        "name": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 256
+                                        },
+                                        "summary": {
+                                          "type": "string",
+                                          "maxLength": 16384
+                                        },
+                                        "href": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 4096
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    "maxItems": 32
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "type",
+                                  "callId",
+                                  "name",
+                                  "status",
+                                  "summary"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "tool_result"
+                                  },
+                                  "callId": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "name": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  "status": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "const": "success"
+                                      },
+                                      {
+                                        "type": "string",
+                                        "const": "error"
+                                      }
+                                    ]
+                                  },
+                                  "summary": {
+                                    "type": "string",
+                                    "maxLength": 16384
+                                  },
+                                  "detail": {
+                                    "type": "string",
+                                    "maxLength": 16384
+                                  },
+                                  "contentRef": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "type",
+                                  "text"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "bash"
+                                  },
+                                  "text": {
+                                    "type": "string",
+                                    "maxLength": 16384
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "type",
+                                  "text"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "custom"
+                                  },
+                                  "text": {
+                                    "type": "string",
+                                    "maxLength": 16384
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "type",
+                                  "title",
+                                  "text"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "summary"
+                                  },
+                                  "title": {
+                                    "type": "string",
+                                    "maxLength": 16384
+                                  },
+                                  "text": {
+                                    "type": "string",
+                                    "maxLength": 16384
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "type",
+                                  "text"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "system"
+                                  },
+                                  "text": {
+                                    "type": "string",
+                                    "maxLength": 16384
+                                  }
+                                },
+                                "additionalProperties": false
+                              }
+                            ]
                           }
                         },
                         "additionalProperties": false

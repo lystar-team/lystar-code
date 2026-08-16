@@ -226,12 +226,50 @@ export const SessionSummarySchema = StrictObject({
 });
 export type SessionSummary = Static<typeof SessionSummarySchema>;
 
+const TranscriptViewTextSchema = Type.String({ maxLength: 16 * 1024 });
+const TranscriptToolCallSchema = StrictObject({
+	id: Id,
+	name: Type.String({ minLength: 1, maxLength: 256 }),
+	summary: TranscriptViewTextSchema,
+	href: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+});
+
+// Host 投影是 Rust 终端的唯一 transcript 输入；payload 仅保留给既有 GUI 兼容路径。
+export const TranscriptViewItemSchema = Type.Union([
+	StrictObject({ type: Type.Literal("user"), text: TranscriptViewTextSchema }),
+	StrictObject({ type: Type.Literal("assistant"), text: TranscriptViewTextSchema }),
+	StrictObject({ type: Type.Literal("thinking"), text: TranscriptViewTextSchema }),
+	StrictObject({ type: Type.Literal("tool_call"), calls: Type.Array(TranscriptToolCallSchema, { maxItems: 32 }) }),
+	StrictObject({
+		type: Type.Literal("tool_result"),
+		callId: Id,
+		name: Type.String({ minLength: 1, maxLength: 256 }),
+		status: Type.Union([Type.Literal("success"), Type.Literal("error")]),
+		summary: TranscriptViewTextSchema,
+		detail: Type.Optional(TranscriptViewTextSchema),
+		contentRef: Type.Optional(Id),
+	}),
+	StrictObject({ type: Type.Literal("bash"), text: TranscriptViewTextSchema }),
+	StrictObject({ type: Type.Literal("custom"), text: TranscriptViewTextSchema }),
+	StrictObject({ type: Type.Literal("summary"), title: TranscriptViewTextSchema, text: TranscriptViewTextSchema }),
+	StrictObject({ type: Type.Literal("system"), text: TranscriptViewTextSchema }),
+]);
+export type TranscriptViewItem = Static<typeof TranscriptViewItemSchema>;
+
+export const TranscriptRequestContextSchema = StrictObject({
+	generation: Type.Optional(Id),
+	revision: Type.Optional(Type.Integer({ minimum: 0 })),
+	cursor: Type.Optional(Id),
+});
+export type TranscriptRequestContext = Static<typeof TranscriptRequestContextSchema>;
+
 export const TranscriptItemSchema = StrictObject({
 	entryId: Id,
 	parentId: Type.Union([Id, Type.Null()]),
 	timestamp: Type.String(),
 	kind: Type.String({ minLength: 1 }),
 	payload: JsonValueSchema,
+	view: Type.Optional(TranscriptViewItemSchema),
 });
 export type TranscriptItem = Static<typeof TranscriptItemSchema>;
 
@@ -264,6 +302,8 @@ export const TranscriptPageSchema = StrictObject({
 	leafId: Type.Union([Id, Type.Null()]),
 	transcriptGeneration: Id,
 	transcriptRevision: Type.Integer({ minimum: 0 }),
+	complete: Type.Boolean(),
+	requestContext: Type.Optional(TranscriptRequestContextSchema),
 });
 export type TranscriptPage = Static<typeof TranscriptPageSchema>;
 
@@ -284,6 +324,8 @@ export type TranscriptSearchHit = Static<typeof TranscriptSearchHitSchema>;
 
 export const TranscriptSearchResultSchema = StrictObject({
 	generation: Id,
+	transcriptRevision: Type.Integer({ minimum: 0 }),
+	complete: Type.Boolean(),
 	hits: Type.Array(TranscriptSearchHitSchema),
 	nextCursor: Type.Optional(Id),
 });
@@ -423,6 +465,7 @@ export const CommandSchema = Type.Union([
 		sessionPath: Type.String({ minLength: 1 }),
 		cursor: Type.Optional(Id),
 		limit: Type.Integer({ minimum: 1, maximum: MAX_TRANSCRIPT_PAGE_SIZE }),
+		context: Type.Optional(TranscriptRequestContextSchema),
 	}),
 	StrictObject({
 		command: Type.Literal("search_transcript"),

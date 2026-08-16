@@ -12,10 +12,12 @@ import {
 	type ServerMessage,
 	type SessionStateSnapshot,
 	type SessionSummary,
+	type TranscriptItem,
 } from "@lystar/code-gui-protocol";
 import { ContentStore } from "./content-store.ts";
 import { LeaseManager } from "./lease-manager.ts";
 import { hashOperationPayload, OperationJournal, OperationJournalCorruptError } from "./operation-journal.ts";
+import { projectTranscriptItem } from "./transcript-projection.ts";
 import { TranscriptReader } from "./transcript-reader.ts";
 import type { RuntimeAdapter, RuntimeSession, UiRequestHandler } from "./types.ts";
 
@@ -43,12 +45,27 @@ const BASE_CAPABILITIES: Capability[] = [
 ];
 
 const ACTIVE_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>(["accepted", "running", "waiting_for_input"]);
+const MAX_SESSION_PROGRESS_BYTES = 8 * 1024;
 const TERMINAL_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>([
 	"completed",
 	"failed",
 	"aborted",
 	"interrupted",
 ]);
+
+function projectSessionProgress(value: JsonValue): JsonValue {
+	const serialized = JSON.stringify(value);
+	if (Buffer.byteLength(serialized) <= MAX_SESSION_PROGRESS_BYTES) return value;
+	const prefix = { type: "progress_preview", truncated: true, preview: "" };
+	const budget = Math.max(0, MAX_SESSION_PROGRESS_BYTES - Buffer.byteLength(JSON.stringify(prefix)));
+	let preview = Buffer.from(serialized)
+		.subarray(0, budget)
+		.toString("utf8")
+		.replace(/\uFFFD$/u, "");
+	while (Buffer.byteLength(JSON.stringify({ ...prefix, preview })) > MAX_SESSION_PROGRESS_BYTES)
+		preview = preview.slice(0, -1);
+	return { ...prefix, preview };
+}
 
 interface ClientConnection {
 	id: string;
@@ -287,7 +304,8 @@ export class GuiHostService {
 				});
 				return jsonValue({
 					...page,
-					items: page.items.map((item) => this.contentStore.compactTranscriptItem(sessionPath, item)),
+					requestContext: request.context,
+					items: page.items.map((item) => this.projectTranscriptItem(sessionPath, item)),
 				});
 			}
 			case "search_transcript": {
@@ -646,6 +664,11 @@ export class GuiHostService {
 		});
 	}
 
+	private projectTranscriptItem(sessionPath: string, item: TranscriptItem) {
+		const compact = this.contentStore.compactTranscriptItem(sessionPath, item);
+		return { ...compact, view: projectTranscriptItem(compact) };
+	}
+
 	private rememberSessionFacts(cwd: string, sessions: readonly SessionSummary[]): void {
 		this.watchedSessionFacts.set(
 			cwd,
@@ -820,13 +843,13 @@ export class GuiHostService {
 						transcriptGeneration: payload.transcriptGeneration,
 						fromRevision: payload.fromRevision,
 						toRevision: payload.transcriptRevision,
-						items: payload.items.map((item) => this.contentStore.compactTranscriptItem(sessionPath, item)),
+						items: payload.items.map((item) => this.projectTranscriptItem(sessionPath, item)),
 					});
 				} else {
 					void this.broadcast({
 						type: "session_progress",
 						sessionPath,
-						progress: event.payload,
+						progress: projectSessionProgress(event.payload),
 					});
 				}
 			}),

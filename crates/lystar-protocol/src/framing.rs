@@ -143,6 +143,15 @@ impl ServerMessage {
         self.0.diagnostic()
     }
 
+    pub(crate) fn json(&self) -> Result<serde_json::Value, ProtocolError> {
+        serde_json::to_value(&self.0.raw)
+            .map_err(|error| ProtocolError::InvalidCbor(error.to_string()))
+    }
+
+    pub(crate) fn generated(&self) -> &GeneratedServerMessage {
+        &self.0.typed
+    }
+
     pub fn value(&self) -> &Value {
         &self.0.raw
     }
@@ -183,10 +192,6 @@ pub fn encode_client_message(message: &ClientMessage) -> Result<Vec<u8>, Protoco
     encode_frame(&message.0.raw)
 }
 
-pub fn encode_server_message(message: &ServerMessage) -> Result<Vec<u8>, ProtocolError> {
-    encode_frame(&message.0.raw)
-}
-
 pub fn decode_client_message(payload: &[u8]) -> Result<ClientMessage, ProtocolError> {
     decode_message(payload, validate_client_message).map(ClientMessage)
 }
@@ -195,12 +200,72 @@ pub fn decode_server_message(payload: &[u8]) -> Result<ServerMessage, ProtocolEr
     decode_message(payload, validate_server_message).map(ServerMessage)
 }
 
-pub fn new_client_message(raw: Value) -> Result<ClientMessage, ProtocolError> {
-    decode_raw_message(raw, validate_client_message).map(ClientMessage)
+pub fn encode_client_hello(client_instance_id: &str) -> Result<Vec<u8>, ProtocolError> {
+    encode_client_value(serde_json::json!({
+        "type": "hello",
+        "version": GUI_PROTOCOL_VERSION,
+        "clientInstanceId": client_instance_id,
+    }))
 }
 
-pub fn new_server_message(raw: Value) -> Result<ServerMessage, ProtocolError> {
-    decode_raw_message(raw, validate_server_message).map(ServerMessage)
+pub fn encode_read_transcript_request(
+    id: &str,
+    session_path: &str,
+    limit: u64,
+    cursor: Option<&str>,
+    context: Option<&crate::TranscriptRequestContext>,
+) -> Result<Vec<u8>, ProtocolError> {
+    let mut request = serde_json::json!({
+        "command": "read_transcript",
+        "sessionPath": session_path,
+        "limit": limit,
+    });
+    if let Some(cursor) = cursor {
+        request["cursor"] = serde_json::Value::String(cursor.to_owned());
+    }
+    if let Some(context) = context {
+        let mut value = serde_json::Map::new();
+        if let Some(generation) = &context.generation {
+            value.insert(
+                "generation".to_owned(),
+                serde_json::Value::String(generation.clone()),
+            );
+        }
+        if let Some(revision) = context.revision {
+            value.insert("revision".to_owned(), serde_json::Value::from(revision));
+        }
+        if let Some(cursor) = &context.cursor {
+            value.insert(
+                "cursor".to_owned(),
+                serde_json::Value::String(cursor.clone()),
+            );
+        }
+        request["context"] = serde_json::Value::Object(value);
+    }
+    encode_client_value(serde_json::json!({ "type": "request", "id": id, "request": request }))
+}
+
+pub fn encode_search_transcript_request(
+    id: &str,
+    session_path: &str,
+    query: &str,
+    limit: u64,
+) -> Result<Vec<u8>, ProtocolError> {
+    encode_client_value(serde_json::json!({
+        "type": "request",
+        "id": id,
+        "request": { "command": "search_transcript", "sessionPath": session_path, "query": query, "limit": limit },
+    }))
+}
+
+fn encode_client_value(value: serde_json::Value) -> Result<Vec<u8>, ProtocolError> {
+    let cbor = serde_json::from_value(value)
+        .map_err(|error| ProtocolError::InvalidCbor(error.to_string()))?;
+    encode_client_message(&new_client_message(cbor)?)
+}
+
+pub fn new_client_message(raw: Value) -> Result<ClientMessage, ProtocolError> {
+    decode_raw_message(raw, validate_client_message).map(ClientMessage)
 }
 
 fn decode_message<T: DeserializeOwned>(
@@ -306,6 +371,16 @@ impl FrameDecoder {
     pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<Vec<u8>>, ProtocolError> {
         if self.failed {
             return Err(ProtocolError::DecoderFailed);
+        }
+        if self.pending.len() < 4 && self.pending.len() + chunk.len() >= 4 {
+            let mut prefix = [0_u8; 4];
+            let pending_len = self.pending.len();
+            prefix[..pending_len].copy_from_slice(&self.pending);
+            prefix[pending_len..].copy_from_slice(&chunk[..4 - pending_len]);
+            if u32::from_be_bytes(prefix) as usize > MAX_FRAME_LENGTH {
+                self.failed = true;
+                return Err(ProtocolError::FrameTooLarge);
+            }
         }
         self.pending.extend_from_slice(chunk);
         let mut frames = Vec::new();

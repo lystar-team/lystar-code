@@ -30,6 +30,10 @@ WebKitGTK 4.1、GTK 3、Ayatana AppIndicator、librsvg、OpenSSL 开发包、pat
 - 最终 PTY 使用独立 tmux socket。`80x24` 启动和 `/quit` 正常，`80x8` 保留 Composer 与快捷栏并正常退出；同一 tmux PTY 的 `stty -g` 前后完全一致，应用退出码为 0。未调用 Provider，socket 和隔离配置目录已关闭或删除。
 - 远端未验证：planner 10/20 observe、Actions history artifact、受保护 environment 审批、最近 live/stress/benchmark、Windows/macOS/Linux ARM64 实机、五平台 release、Tag、签名、attestation 与公开 Release。历史 `0.84.1` 和 GUI 发布记录保留在下文，不用来证明本轮 `0.84.2-lystar.1`。
 
+## M7 Rust 只读工作台本地验收
+
+2026-08-16，M7 仅在 Linux 完成本地验收：Host 的 `read_transcript`/`search_transcript` cursor 绑定 generation 与 revision，append 后旧搜索 cursor 为 `cursor_stale`；JSONL 读取分块并限制单行 4 MiB，索引不缓存 raw payload。Rust TUI 只消费 `lystar-protocol` 的 typed read-only projection；older page 严格匹配 generation/revision，progress preview 为 8 KiB，OSC 8 写入实际 label 区域，decoder 在扩容前拒绝超长 frame。GUI Protocol `9/9`、GUI Host `13/13`、Rust workspace、release PTY guard、clippy 和两次 fd bridge E2E 均通过；RSS artifact 每轮记录 PID、进程树、样本数和 10ms 间隔，并按 5 轮计算 p95。`npm run check:rust-spike` 已在 M7 提交后的干净 schema 基线上通过。Windows named-pipe transport、M8 交互功能和 M10 默认切换未验证。
+
 ## 最新 GUI 实现与运行验证
 
 2026-08-15 已完成 `gui.5` 五平台公开 Beta 发布验证，并完成未发布的 `0.84.1-lystar-gui.6` P0 修复候选验证；发布事实与候选源码不得混写。

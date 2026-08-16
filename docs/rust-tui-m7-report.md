@@ -1,23 +1,17 @@
 # Rust M7 只读工作台核验
 
-核验日期：2026-08-15。
+核验日期：2026-08-16。范围仅限 M7 的 Rust 只读 Transcript；不包含 Composer、Tool 执行、Overlay、Session 切换或设置修改。Windows named-pipe transport 留给 M10，不能由本报告推断为已验证。
 
 ## 已验证
 
-- 协议：`search_transcript` 由 TypeBox schema 单源生成 Rust 类型与 TS/Rust 双向 golden。请求要求非空 `query`，`limit` 上限为 100；结果只包含 generation、命中摘要和下页 cursor。
-- Host：`TranscriptReader` 对完整 JSONL 尾、append、rewrite 和 cursor 失效保持原有语义。搜索索引按 `path + generation` 缓存，最多保留 8 个 Session、总文本上限 64 MiB；JSONL 变更后重建。Rust 不接收完整 Session。
-- 10,000 Tool rounds：Host 回归生成 20,000 条 Tool call/result JSONL 记录，尾页为 200 条，热搜索连续 25 次的 p95 断言为 `<= 50ms`。首次建索引不计入热搜索阈值。
-- Rust：`--run <sessionPath>` 使用 fd3/fd4 完成 typed hello，发起初始 `read_transcript(limit=200)`；窗口最多保留 400 个 Tool round。revision gap、generation 改变和 `transcript_changed` 会清缓存并重读；`session_progress` 只显示未提交预览。
-- E2E：tmux + FIFO 的真实 fd bridge 验证 Rust hello、Node `GuiHostService` 初始分页与 pipe EOF。该测试没有直接读取 Session 文件。
-- PTY：release 二进制在 `80x8`、`80x24`、`120x36`、`200x60` 下覆盖 EOF、panic、SIGINT、SIGTERM，四例 `stty` 均恢复。
+- 协议：`read_transcript` 的 `context` 绑定 generation、revision、cursor；`search_transcript` cursor 绑定 generation、revision、query 与 mode。append 后旧搜索 cursor 返回 `cursor_stale`，重新搜索结果保持顺序、唯一和完整。
+- Host：JSONL 前向和反向扫描分块进行，单行超过 4 MiB 在累积前以 `transcript_line_too_large` 失败；搜索索引缓存只保留投影文本，不保留完整 raw JSON payload。10,000 Tool rounds 覆盖完整分页与搜索遍历。
+- Rust 边界：TUI 只消费 `lystar-protocol` 的 `ReadOnlyMessage`、`ReadOnlyResponse` 和 `ReadOnlyEvent` 投影；generated wire types、generic frame encoder 与 `serde_json::Value` 解析不进入 TUI。FrameDecoder 在扩容前拒绝超过 `MAX_FRAME_LENGTH` 的首帧。
+- 一致性：旧页请求必须同时匹配 request/current generation 和 revision；旧 revision、未来 revision 均拒绝并触发 reload。prepend 保持 revision，commit/reload 清空 stream preview。
+- 渲染：`session_progress` 预览在 Host 与 Rust 边界均限制为 8 KiB，诊断记录 preview 与总缓存字节。OSC 8 用实际渲染出的链接 label 的列、行覆盖，不再固定写入 `(1,1)`。
+- Linux E2E：正式 `GuiHostService`、Unix fd3/fd4 bridge、tmux 和 FIFO 覆盖 hello、初始页、翻页、搜索、append、EOF 与退出。性能 artifact 每轮记录 RSS 样本、round、pane PID、进程树 PID、样本数和 10ms 间隔，按 5 轮计算 p95。
 
-## 数据边界
-
-- 内存：Rust 单元测试验证 transcript round cache 严格不超过 400。此轮没有采集 M7 真实交互进程的 RSS；不得用 B0 benchmark RSS 代替 M7 RSS。
-- 首屏：E2E 验证 Host 收到初始 `read_transcript(limit=200)`，没有采集端到端首屏耗时。
-- 输入注入：隔离 tmux/FIFO bridge 已验证 hello、初始页和 EOF。tmux 向该隔离 pane 注入滚动和搜索键未形成稳定测试证据，因此滚动、搜索、append 的状态转换目前由 Rust 单元测试与 Host 集成测试覆盖，不把它们写成完整 PTY E2E 结论。
-
-## 执行入口
+## 本轮命令
 
 ```bash
 npm --workspace @lystar/code-gui-protocol exec vitest -- --run test/protocol.test.ts
@@ -27,4 +21,12 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
 cargo build --release -p lystar-tui
 bash crates/lystar-tui/tests/pty-terminal-guard.sh target/release/lystar-tui
+npm run check:rust-spike
 ```
+
+前六项已在 Linux 执行通过：GUI Protocol `9/9`，GUI Host `13/13`，Rust workspace 全部测试通过，release PTY guard 覆盖 EOF、panic、SIGINT、SIGTERM 且 `stty` 恢复。提交后的 `npm run check:rust-spike` 已完整通过。
+
+## 未验证
+
+- Windows named-pipe transport、Windows/macOS 实机和 M10 默认切换未验证。
+- 不做真实 Provider 调用；M7 不包含 Composer、Tool、Overlay、Extension 交互和 Session/设置操作。

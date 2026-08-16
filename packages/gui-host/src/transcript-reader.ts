@@ -9,15 +9,27 @@ import type {
 	TranscriptSearchResult,
 } from "@lystar/code-gui-protocol";
 
+import { projectTranscriptItem } from "./transcript-projection.ts";
+
 const READ_BUFFER_SIZE = 64 * 1024;
-const CURSOR_VERSION = 1;
-const SEARCH_CURSOR_VERSION = 1;
+const MAX_JSONL_LINE_BYTES = 4 * 1024 * 1024;
+const CURSOR_VERSION = 2;
+const SEARCH_CURSOR_VERSION = 3;
+const OBSERVED_GENERATION_LIMIT = 16;
 const SEARCH_CACHE_LIMIT = 8;
-const SEARCH_INDEX_TEXT_LIMIT = 64 * 1024 * 1024;
+const SEARCH_CACHE_BYTES = 32 * 1024 * 1024;
+const SEARCH_CACHE_ENTRY_BYTES = 256 * 1024;
 const SEARCH_SNIPPET_LENGTH = 320;
 
 type RawEntry = Record<string, unknown> & { type: string; id?: string; parentId?: string | null; timestamp?: string };
-type RewriteGeneration = { size: number; tailHash: string; device: number; inode: number };
+type RewriteGeneration = {
+	size: number;
+	device: number;
+	inode: number;
+	mtimeMs: number;
+	ctimeMs: number;
+	contentHash: string;
+};
 type ObservedGeneration = RewriteGeneration & { generation: string; sessionId: string };
 type TranscriptCursor = {
 	version: number;
@@ -27,22 +39,41 @@ type TranscriptCursor = {
 	wantedId: string | null;
 	rewriteGeneration: RewriteGeneration;
 };
-type SearchCursor = { version: number; generation: string; query: string; offset: number };
+type SearchCursor = {
+	version: number;
+	generation: string;
+	transcriptRevision: number;
+	query: string;
+	offset: number;
+	mode: "cached" | "stream";
+};
 type SearchIndexEntry = { entryId: string; kind: string; timestamp: string; text: string; lowerText: string };
 type SearchIndex = {
 	generation: string;
 	transcriptRevision: number;
 	rewriteGeneration: RewriteGeneration;
+	mode: "cached" | "stream";
 	entries: SearchIndexEntry[];
+	bytes: number;
 };
 
 export class TranscriptCursorInvalidError extends Error {
-	readonly code = "transcript_cursor_invalid" as const;
+	readonly code = "cursor_stale" as const;
 	readonly retryable = true as const;
 
 	constructor(message = "Transcript cursor is no longer valid; read the tail again") {
 		super(message);
 		this.name = "TranscriptCursorInvalidError";
+	}
+}
+
+export class TranscriptLineTooLargeError extends Error {
+	readonly code = "transcript_line_too_large" as const;
+	readonly retryable = false as const;
+
+	constructor() {
+		super(`Transcript JSONL line exceeds the ${MAX_JSONL_LINE_BYTES} byte limit`);
+		this.name = "TranscriptLineTooLargeError";
 	}
 }
 
@@ -96,9 +127,12 @@ function decodeSearchCursor(value: string): SearchCursor {
 		if (
 			cursor.version !== SEARCH_CURSOR_VERSION ||
 			typeof cursor.generation !== "string" ||
+			!Number.isInteger(cursor.transcriptRevision) ||
+			cursor.transcriptRevision < 0 ||
 			typeof cursor.query !== "string" ||
 			!Number.isInteger(cursor.offset) ||
-			cursor.offset < 0
+			cursor.offset < 0 ||
+			(cursor.mode !== "cached" && cursor.mode !== "stream")
 		) {
 			throw new Error("invalid cursor");
 		}
@@ -127,15 +161,31 @@ async function findCompleteSize(handle: Awaited<ReturnType<typeof open>>, size: 
 	return 0;
 }
 
-async function hashTail(handle: Awaited<ReturnType<typeof open>>, size: number): Promise<string> {
-	const length = Math.min(READ_BUFFER_SIZE, size);
-	return createHash("sha256")
-		.update(await readAt(handle, size - length, length))
-		.digest("base64url");
+async function hashPrefix(handle: Awaited<ReturnType<typeof open>>, size: number): Promise<string> {
+	const hash = createHash("sha256");
+	for (let offset = 0; offset < size; offset += READ_BUFFER_SIZE) {
+		hash.update(await readAt(handle, offset, Math.min(READ_BUFFER_SIZE, size - offset)));
+	}
+	return hash.digest("base64url");
 }
 
 function fileGeneration(sessionId: string, stat: { dev: number; ino: number; birthtimeMs: number }): string {
 	return `${sessionId}:${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
+}
+
+function finishLine(chunks: readonly Buffer[], length: number, segment: Buffer, prepend = false): Buffer {
+	const total = length + segment.length;
+	if (total > MAX_JSONL_LINE_BYTES) throw new TranscriptLineTooLargeError();
+	if (length === 0) return segment;
+	return Buffer.concat(prepend ? [segment, ...chunks] : [...chunks, segment], total);
+}
+
+function appendLineSegment(chunks: Buffer[], length: number, segment: Buffer, prepend = false): number {
+	const total = length + segment.length;
+	if (total > MAX_JSONL_LINE_BYTES) throw new TranscriptLineTooLargeError();
+	if (prepend) chunks.unshift(segment);
+	else chunks.push(segment);
+	return total;
 }
 
 async function scanForward(
@@ -152,8 +202,7 @@ async function scanForward(
 		for (let index = 0; index < chunk.length; index++) {
 			if (chunk[index] !== 0x0a) continue;
 			const segment = chunk.subarray(lineStart, index);
-			const line =
-				pendingLength === 0 ? segment : Buffer.concat([...pending, segment], pendingLength + segment.length);
+			const line = finishLine(pending, pendingLength, segment);
 			pending = [];
 			pendingLength = 0;
 			if (onLine(line)) return;
@@ -161,8 +210,7 @@ async function scanForward(
 		}
 		if (lineStart < chunk.length) {
 			const segment = chunk.subarray(lineStart);
-			pending.push(segment);
-			pendingLength += segment.length;
+			pendingLength = appendLineSegment(pending, pendingLength, segment);
 		}
 		start += chunk.length;
 	}
@@ -183,8 +231,7 @@ async function scanReverse(
 		for (let index = chunk.length - 1; index >= 0; index--) {
 			if (chunk[index] !== 0x0a) continue;
 			const segment = chunk.subarray(index + 1, lineEnd);
-			const line =
-				pendingLength === 0 ? segment : Buffer.concat([segment, ...pending], segment.length + pendingLength);
+			const line = finishLine(pending, pendingLength, segment, true);
 			pending = [];
 			pendingLength = 0;
 			if (onLine(line, start + index)) return start + index;
@@ -192,12 +239,14 @@ async function scanReverse(
 		}
 		if (lineEnd > 0) {
 			const segment = chunk.subarray(0, lineEnd);
-			pending.unshift(segment);
-			pendingLength += segment.length;
+			pendingLength = appendLineSegment(pending, pendingLength, segment, true);
 		}
 		end = start;
 	}
-	if (pendingLength > 0) onLine(Buffer.concat(pending, pendingLength), 0);
+	if (pendingLength > 0) {
+		if (pendingLength > MAX_JSONL_LINE_BYTES) throw new TranscriptLineTooLargeError();
+		onLine(Buffer.concat(pending, pendingLength), 0);
+	}
 	return 0;
 }
 
@@ -227,8 +276,15 @@ async function readTailId(handle: Awaited<ReturnType<typeof open>>, completeSize
 }
 
 function searchText(entry: RawEntry): string {
-	const payload = JSON.stringify(entry);
-	return payload.length > SEARCH_INDEX_TEXT_LIMIT ? payload.slice(0, SEARCH_INDEX_TEXT_LIMIT) : payload;
+	return JSON.stringify(
+		projectTranscriptItem({
+			entryId: entry.id ?? "",
+			parentId: typeof entry.parentId === "string" ? entry.parentId : null,
+			timestamp: typeof entry.timestamp === "string" ? entry.timestamp : "",
+			kind: entry.type,
+			payload: entry as JsonValue,
+		}),
+	);
 }
 
 function searchHit(entry: SearchIndexEntry, query: string): TranscriptSearchHit | undefined {
@@ -249,9 +305,25 @@ function searchHit(entry: SearchIndexEntry, query: string): TranscriptSearchHit 
 	return { entryId: entry.entryId, kind: entry.kind, timestamp: entry.timestamp, snippet, matches };
 }
 
+function searchEntry(entry: RawEntry, query: string): TranscriptSearchHit | undefined {
+	if (!entry.id) return undefined;
+	const text = JSON.stringify(entry);
+	return searchHit(
+		{
+			entryId: entry.id,
+			kind: entry.type,
+			timestamp: typeof entry.timestamp === "string" ? entry.timestamp : "",
+			text,
+			lowerText: text.toLocaleLowerCase(),
+		},
+		query,
+	);
+}
+
 export class TranscriptReader {
 	private readonly observed = new Map<string, ObservedGeneration>();
 	private readonly searchIndexes = new Map<string, SearchIndex>();
+	private searchCacheBytes = 0;
 
 	async read(
 		sessionPath: string,
@@ -270,41 +342,59 @@ export class TranscriptReader {
 				leafId: null,
 				transcriptGeneration: options.emptyGeneration,
 				transcriptRevision: 0,
+				complete: true,
 			};
 		}
 		try {
 			const stat = await handle.stat();
 			const completeSize = await findCompleteSize(handle, stat.size);
-			const [header, persistedTailId] = await Promise.all([
-				readHeader(handle, completeSize),
-				readTailId(handle, completeSize),
-			]);
+			const header = await readHeader(handle, completeSize);
 			if (!header || typeof header.id !== "string") throw new Error("Session file has no valid header");
-			const tailHash = await hashTail(handle, completeSize);
-			const rewriteGeneration = { size: completeSize, tailHash, device: stat.dev, inode: stat.ino };
+			const previous = this.remembered(this.observed, resolvedPath);
+			const unchangedSincePrevious =
+				previous?.sessionId === header.id &&
+				previous.device === stat.dev &&
+				previous.inode === stat.ino &&
+				previous.size === completeSize &&
+				previous.mtimeMs === stat.mtimeMs &&
+				previous.ctimeMs === stat.ctimeMs;
+			const contentHash = unchangedSincePrevious ? previous.contentHash : await hashPrefix(handle, completeSize);
+			const persistedTailId = cursor ? null : await readTailId(handle, completeSize);
+			const rewriteGeneration: RewriteGeneration = {
+				size: completeSize,
+				device: stat.dev,
+				inode: stat.ino,
+				mtimeMs: stat.mtimeMs,
+				ctimeMs: stat.ctimeMs,
+				contentHash,
+			};
 			if (cursor) {
-				if (cursor.sessionId !== header.id || completeSize < cursor.rewriteGeneration.size)
+				if (cursor.sessionId !== header.id || completeSize < cursor.rewriteGeneration.size) {
 					throw new TranscriptCursorInvalidError();
+				}
 				if (cursor.rewriteGeneration.device !== stat.dev || cursor.rewriteGeneration.inode !== stat.ino) {
 					throw new TranscriptCursorInvalidError();
 				}
-				if ((await hashTail(handle, cursor.rewriteGeneration.size)) !== cursor.rewriteGeneration.tailHash) {
-					throw new TranscriptCursorInvalidError();
+				if (
+					cursor.rewriteGeneration.size !== completeSize ||
+					cursor.rewriteGeneration.mtimeMs !== stat.mtimeMs ||
+					cursor.rewriteGeneration.ctimeMs !== stat.ctimeMs
+				) {
+					if ((await hashPrefix(handle, cursor.rewriteGeneration.size)) !== cursor.rewriteGeneration.contentHash) {
+						throw new TranscriptCursorInvalidError();
+					}
 				}
 			}
-			const previous = this.observed.get(resolvedPath);
 			const sameFile =
 				previous?.sessionId === header.id && previous.device === stat.dev && previous.inode === stat.ino;
 			const appendOnly =
-				sameFile && completeSize >= previous.size && (await hashTail(handle, previous.size)) === previous.tailHash;
+				sameFile &&
+				completeSize >= previous.size &&
+				(unchangedSincePrevious || (await hashPrefix(handle, previous.size)) === previous.contentHash);
 			const baseGeneration = fileGeneration(header.id, stat);
 			const generation =
-				!previous || appendOnly
-					? (previous?.generation ?? baseGeneration)
-					: sameFile
-						? `${baseGeneration}:${tailHash}`
-						: baseGeneration;
-			this.observed.set(resolvedPath, { ...rewriteGeneration, generation, sessionId: header.id });
+				!previous || appendOnly ? (previous?.generation ?? baseGeneration) : `${baseGeneration}:${contentHash}`;
+			this.rememberObserved(resolvedPath, { ...rewriteGeneration, generation, sessionId: header.id });
 			const leafId = cursor?.leafId ?? persistedTailId;
 			if (!leafId) {
 				return {
@@ -313,6 +403,7 @@ export class TranscriptReader {
 					leafId: null,
 					transcriptGeneration: generation,
 					transcriptRevision: completeSize,
+					complete: true,
 				};
 			}
 			const items: RawEntry[] = [];
@@ -348,6 +439,7 @@ export class TranscriptReader {
 				leafId,
 				transcriptGeneration: generation,
 				transcriptRevision: completeSize,
+				complete: true,
 			};
 		} finally {
 			await handle.close();
@@ -361,32 +453,111 @@ export class TranscriptReader {
 		const query = options.query.trim();
 		if (!query) throw Object.assign(new Error("搜索内容不能为空"), { code: "transcript_search_query_empty" });
 		const resolvedPath = resolve(sessionPath);
-		let index = this.searchIndexes.get(resolvedPath);
+		let index = this.remembered(this.searchIndexes, resolvedPath);
 		if (!index || !(await this.isSearchIndexCurrent(resolvedPath, index))) {
 			index = await this.buildSearchIndex(resolvedPath, options.emptyGeneration);
 			this.rememberSearchIndex(resolvedPath, index);
 		}
+		const normalizedQuery = query.toLocaleLowerCase();
 		const cursor = options.cursor ? decodeSearchCursor(options.cursor) : undefined;
-		if (cursor && (cursor.generation !== index.generation || cursor.query !== query.toLocaleLowerCase())) {
+		if (
+			cursor &&
+			(cursor.generation !== index.generation ||
+				cursor.transcriptRevision !== index.transcriptRevision ||
+				cursor.query !== normalizedQuery ||
+				cursor.mode !== index.mode)
+		) {
 			throw new TranscriptCursorInvalidError("Transcript search cursor is no longer valid");
 		}
-		const normalizedQuery = query.toLocaleLowerCase();
+		if (index.mode === "stream") {
+			return this.searchFromDisk(resolvedPath, index, normalizedQuery, cursor?.offset ?? 0, options.limit);
+		}
 		const hits: TranscriptSearchHit[] = [];
 		let offset = cursor?.offset ?? 0;
 		for (; offset < index.entries.length && hits.length < options.limit; offset++) {
 			const hit = searchHit(index.entries[offset]!, normalizedQuery);
 			if (hit) hits.push(hit);
 		}
-		const nextCursor =
-			offset < index.entries.length
-				? encodeSearchCursor({
-						version: SEARCH_CURSOR_VERSION,
-						generation: index.generation,
-						query: normalizedQuery,
-						offset,
-					})
-				: undefined;
-		return { generation: index.generation, hits, ...(nextCursor ? { nextCursor } : {}) };
+		let hasMore = false;
+		for (let probe = offset; probe < index.entries.length; probe++) {
+			if (searchHit(index.entries[probe]!, normalizedQuery)) {
+				hasMore = true;
+				break;
+			}
+		}
+		return {
+			generation: index.generation,
+			transcriptRevision: index.transcriptRevision,
+			complete: true,
+			hits,
+			...(hasMore
+				? {
+						nextCursor: encodeSearchCursor({
+							version: SEARCH_CURSOR_VERSION,
+							generation: index.generation,
+							transcriptRevision: index.transcriptRevision,
+							query: normalizedQuery,
+							offset,
+							mode: "cached",
+						}),
+					}
+				: {}),
+		};
+	}
+
+	private async searchFromDisk(
+		path: string,
+		index: SearchIndex,
+		query: string,
+		skipMatches: number,
+		limit: number,
+	): Promise<TranscriptSearchResult> {
+		if (index.transcriptRevision === 0) {
+			return { generation: index.generation, transcriptRevision: 0, complete: true, hits: [] };
+		}
+		const handle = await open(path, "r");
+		try {
+			const tailId = await readTailId(handle, index.transcriptRevision);
+			let wantedId = tailId;
+			let seenMatches = 0;
+			const hits: TranscriptSearchHit[] = [];
+			let hasMore = false;
+			await scanReverse(handle, index.transcriptRevision, (line) => {
+				const entry = parseLine(line);
+				if (!entry || entry.type === "session" || !entry.id || entry.id !== wantedId) return false;
+				wantedId = typeof entry.parentId === "string" ? entry.parentId : null;
+				if (!isVisible(entry)) return false;
+				const hit = searchEntry(entry, query);
+				if (!hit) return false;
+				if (seenMatches++ < skipMatches) return false;
+				if (hits.length < limit) {
+					hits.push(hit);
+					return false;
+				}
+				hasMore = true;
+				return true;
+			});
+			return {
+				generation: index.generation,
+				transcriptRevision: index.transcriptRevision,
+				complete: true,
+				hits,
+				...(hasMore
+					? {
+							nextCursor: encodeSearchCursor({
+								version: SEARCH_CURSOR_VERSION,
+								generation: index.generation,
+								transcriptRevision: index.transcriptRevision,
+								query,
+								offset: skipMatches + hits.length,
+								mode: "stream",
+							}),
+						}
+					: {}),
+			};
+		} finally {
+			await handle.close();
+		}
 	}
 
 	private async isSearchIndexCurrent(path: string, index: SearchIndex): Promise<boolean> {
@@ -394,15 +565,22 @@ export class TranscriptReader {
 		try {
 			handle = await open(path, "r");
 		} catch {
-			return false;
+			return index.transcriptRevision === 0;
 		}
 		try {
 			const stat = await handle.stat();
 			if (stat.dev !== index.rewriteGeneration.device || stat.ino !== index.rewriteGeneration.inode) return false;
 			const completeSize = await findCompleteSize(handle, stat.size);
+			if (
+				completeSize === index.rewriteGeneration.size &&
+				stat.mtimeMs === index.rewriteGeneration.mtimeMs &&
+				stat.ctimeMs === index.rewriteGeneration.ctimeMs
+			) {
+				return true;
+			}
 			return (
 				completeSize === index.rewriteGeneration.size &&
-				(await hashTail(handle, completeSize)) === index.rewriteGeneration.tailHash
+				(await hashPrefix(handle, completeSize)) === index.rewriteGeneration.contentHash
 			);
 		} finally {
 			await handle.close();
@@ -415,65 +593,89 @@ export class TranscriptReader {
 			return {
 				generation: page.transcriptGeneration,
 				transcriptRevision: 0,
-				rewriteGeneration: { size: 0, tailHash: "", device: 0, inode: 0 },
+				rewriteGeneration: { size: 0, device: 0, inode: 0, mtimeMs: 0, ctimeMs: 0, contentHash: "" },
+				mode: "cached",
 				entries: [],
+				bytes: 0,
 			};
 		}
 		const handle = await open(path, "r");
 		try {
 			const stat = await handle.stat();
 			const completeSize = await findCompleteSize(handle, stat.size);
-			const entries = new Map<string, RawEntry>();
-			let tailId: string | null = null;
-			let indexedBytes = 0;
-			await scanForward(handle, completeSize, (line) => {
+			const tailId = await readTailId(handle, completeSize);
+			let wantedId = tailId;
+			let bytes = 0;
+			let cacheable = true;
+			const entries: SearchIndexEntry[] = [];
+			await scanReverse(handle, completeSize, (line) => {
 				const entry = parseLine(line);
-				if (!entry || entry.type === "session" || typeof entry.id !== "string") return false;
-				entries.set(entry.id, entry);
-				tailId = entry.id;
-				return false;
-			});
-			const visible: RawEntry[] = [];
-			for (let current: string | null = tailId; current; ) {
-				const entry = entries.get(current);
-				if (!entry) break;
-				if (isVisible(entry)) visible.push(entry);
-				current = typeof entry.parentId === "string" ? entry.parentId : null;
-			}
-			visible.reverse();
-			const searchableEntries: SearchIndexEntry[] = [];
-			for (const entry of visible) {
-				if (!entry.id || indexedBytes >= SEARCH_INDEX_TEXT_LIMIT) break;
+				if (!entry || entry.type === "session" || !entry.id || entry.id !== wantedId) return false;
+				wantedId = typeof entry.parentId === "string" ? entry.parentId : null;
+				if (!isVisible(entry) || !cacheable) return false;
 				const text = searchText(entry);
-				indexedBytes += Buffer.byteLength(text);
-				searchableEntries.push({
+				const entryBytes = Buffer.byteLength(text);
+				if (entryBytes > SEARCH_CACHE_ENTRY_BYTES || bytes + entryBytes * 2 > SEARCH_CACHE_BYTES) {
+					cacheable = false;
+					return false;
+				}
+				bytes += entryBytes * 2;
+				entries.push({
 					entryId: entry.id,
 					kind: entry.type,
 					timestamp: typeof entry.timestamp === "string" ? entry.timestamp : "",
 					text,
 					lowerText: text.toLocaleLowerCase(),
 				});
-			}
+				return false;
+			});
 			return {
 				generation: page.transcriptGeneration,
 				transcriptRevision: page.transcriptRevision,
 				rewriteGeneration: {
 					size: completeSize,
-					tailHash: await hashTail(handle, completeSize),
 					device: stat.dev,
 					inode: stat.ino,
+					mtimeMs: stat.mtimeMs,
+					ctimeMs: stat.ctimeMs,
+					contentHash: await hashPrefix(handle, completeSize),
 				},
-				entries: searchableEntries,
+				mode: cacheable ? "cached" : "stream",
+				entries: cacheable ? entries.reverse() : [],
+				bytes: cacheable ? bytes : 0,
 			};
 		} finally {
 			await handle.close();
 		}
 	}
 
+	private remembered<T>(cache: Map<string, T>, path: string): T | undefined {
+		const value = cache.get(path);
+		if (value !== undefined) {
+			cache.delete(path);
+			cache.set(path, value);
+		}
+		return value;
+	}
+
+	private rememberObserved(path: string, generation: ObservedGeneration): void {
+		this.observed.delete(path);
+		this.observed.set(path, generation);
+		while (this.observed.size > OBSERVED_GENERATION_LIMIT) this.observed.delete(this.observed.keys().next().value!);
+	}
+
 	private rememberSearchIndex(path: string, index: SearchIndex): void {
+		const previous = this.searchIndexes.get(path);
+		if (previous) this.searchCacheBytes -= previous.bytes;
 		this.searchIndexes.delete(path);
 		this.searchIndexes.set(path, index);
-		while (this.searchIndexes.size > SEARCH_CACHE_LIMIT)
-			this.searchIndexes.delete(this.searchIndexes.keys().next().value!);
+		this.searchCacheBytes += index.bytes;
+		while (this.searchIndexes.size > SEARCH_CACHE_LIMIT || this.searchCacheBytes > SEARCH_CACHE_BYTES) {
+			const oldest = this.searchIndexes.keys().next().value;
+			if (typeof oldest !== "string") break;
+			const removed = this.searchIndexes.get(oldest);
+			if (removed) this.searchCacheBytes -= removed.bytes;
+			this.searchIndexes.delete(oldest);
+		}
 	}
 }

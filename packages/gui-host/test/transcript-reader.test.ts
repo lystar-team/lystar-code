@@ -1,4 +1,4 @@
-import { appendFileSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -90,6 +90,7 @@ describe("TranscriptReader", () => {
 			leafId: null,
 			transcriptGeneration: "session-1",
 			transcriptRevision: 0,
+			complete: true,
 		});
 	});
 
@@ -178,6 +179,95 @@ describe("TranscriptReader", () => {
 		).rejects.toBeInstanceOf(TranscriptCursorInvalidError);
 	});
 
+	it("rejects search cursors after either matching or nonmatching appends", async () => {
+		for (const [id, text] of [
+			["matching", "needle matching"],
+			["nonmatching", "other content"],
+		] as const) {
+			write([
+				message("root", null, "assistant"),
+				message("needle-one", "root", "assistant"),
+				message("needle-two", "needle-one", "assistant"),
+			]);
+			const reader = new TranscriptReader();
+			const first = await reader.search(sessionPath, { query: "needle", limit: 1 });
+			expect(first.nextCursor).toBeDefined();
+			appendFileSync(
+				sessionPath,
+				`${JSON.stringify({ ...message(id, "needle-two", "assistant"), message: { role: "assistant", content: text, timestamp: 1 } })}\n`,
+			);
+			await expect(
+				reader.search(sessionPath, { query: "needle", cursor: first.nextCursor, limit: 1 }),
+			).rejects.toMatchObject({
+				code: "cursor_stale",
+			});
+
+			const entryIds: string[] = [];
+			let page = await reader.search(sessionPath, { query: "needle", limit: 1 });
+			while (true) {
+				entryIds.push(...page.hits.map((hit) => hit.entryId));
+				if (!page.nextCursor) break;
+				page = await reader.search(sessionPath, { query: "needle", cursor: page.nextCursor, limit: 1 });
+			}
+			expect(entryIds).toEqual(id === "matching" ? ["needle-one", "needle-two", id] : ["needle-one", "needle-two"]);
+			expect(new Set(entryIds).size).toBe(entryIds.length);
+		}
+	});
+
+	it("rejects a JSONL line before accumulating beyond the configured bound", async () => {
+		writeFileSync(sessionPath, `${"x".repeat(4 * 1024 * 1024 + 1)}\n${JSON.stringify(header())}\n`);
+		await expect(new TranscriptReader().read(sessionPath, { limit: 1 })).rejects.toMatchObject({
+			code: "transcript_line_too_large",
+		});
+	});
+
+	it("invalidates cursors and search state after an in-place same-length early rewrite", async () => {
+		write([message("aaaa", null), message("bbbb", "aaaa"), message("cccc", "bbbb")]);
+		const reader = new TranscriptReader();
+		const page = await reader.read(sessionPath, { limit: 1 });
+		const search = await reader.search(sessionPath, { query: "user", limit: 1 });
+		expect(search.nextCursor).toBeDefined();
+		const beforeSize = readFileSync(sessionPath, "utf8").length;
+		const original = JSON.stringify(message("aaaa", null));
+		const replacement = JSON.stringify(message("zzzz", null));
+		expect(replacement).toHaveLength(original.length);
+		const body = `${[header(), JSON.parse(replacement), message("bbbb", "zzzz"), message("cccc", "bbbb")]
+			.map((entry) => JSON.stringify(entry))
+			.join("\n")}\n`;
+		expect(body).toHaveLength(beforeSize);
+		writeFileSync(sessionPath, body);
+		await expect(reader.read(sessionPath, { cursor: page.previousCursor, limit: 10 })).rejects.toBeInstanceOf(
+			TranscriptCursorInvalidError,
+		);
+		await expect(
+			reader.search(sessionPath, { query: "user", cursor: search.nextCursor, limit: 10 }),
+		).rejects.toBeInstanceOf(TranscriptCursorInvalidError);
+	});
+
+	it("keeps oversized raw Tool payloads out of the cached search projection", async () => {
+		write([message("large", null, "assistant"), message("tail", "large")]);
+		const oversized = `${"x".repeat(300 * 1024)} disk-needle`;
+		writeFileSync(
+			sessionPath,
+			`${[
+				header(),
+				{
+					...message("large", null, "assistant"),
+					message: { role: "assistant", content: oversized, timestamp: 1 },
+				},
+				message("tail", "large"),
+			]
+				.map((entry) => JSON.stringify(entry))
+				.join("\n")}\n`,
+		);
+		const result = await new TranscriptReader().search(sessionPath, { query: "disk-needle", limit: 10 });
+		expect(result.complete).toBe(true);
+		expect(result.hits).toEqual([]);
+		expect((await new TranscriptReader().search(sessionPath, { query: "assistant", limit: 10 })).hits).toEqual([
+			expect.objectContaining({ entryId: "large" }),
+		]);
+	});
+
 	it("keeps 10000 tool rounds pageable and hot searches under 50ms p95", async () => {
 		const entries: Entry[] = [];
 		let parentId: string | null = null;
@@ -212,6 +302,31 @@ describe("TranscriptReader", () => {
 		const tail = await reader.read(sessionPath, { limit: 200 });
 		expect(tail.items).toHaveLength(200);
 		expect(tail.items.at(-1)?.entryId).toBe("result-9999");
+
+		const readIds: string[] = [];
+		let readPage = tail;
+		while (true) {
+			readIds.unshift(...readPage.items.map((item) => item.entryId));
+			if (!readPage.previousCursor) break;
+			readPage = await reader.read(sessionPath, { cursor: readPage.previousCursor, limit: 200 });
+		}
+		expect(readIds).toEqual(entries.map((entry) => entry.id));
+		expect(new Set(readIds).size).toBe(readIds.length);
+
+		const searchIds: string[] = [];
+		let searchPage = await reader.search(sessionPath, { query: "needle round", limit: 137 });
+		while (true) {
+			searchIds.push(...searchPage.hits.map((hit) => hit.entryId));
+			if (!searchPage.nextCursor) break;
+			searchPage = await reader.search(sessionPath, {
+				query: "needle round",
+				cursor: searchPage.nextCursor,
+				limit: 137,
+			});
+		}
+		expect(searchIds).toEqual(Array.from({ length: 10_000 }, (_, index) => `result-${index}`));
+		expect(new Set(searchIds).size).toBe(searchIds.length);
+
 		const samples: number[] = [];
 		for (let index = 0; index < 25; index++) {
 			const started = performance.now();
@@ -221,5 +336,5 @@ describe("TranscriptReader", () => {
 		}
 		samples.sort((left, right) => left - right);
 		expect(samples[Math.ceil(samples.length * 0.95) - 1]).toBeLessThanOrEqual(50);
-	});
+	}, 30_000);
 });

@@ -26,7 +26,7 @@
 
 运行模式已落地为 `off`、`observe`、`assist`、`auto`，默认 `assist`；`lc doctor` 和 GUI Host 诊断同步显示当前模式、circuit 与 lesson 状态。`auto` 仍只允许 policy 白名单内的安全恢复动作。
 
-M7-M11 重新开放，当前均为待实施，不能写成已完成。2026-08-15 前的 B0 Stop 数据继续作为历史性能基线保留；Yean 于 2026-08-15 明确调整判定：协议生成、终端恢复、headless bridge、80x8 兼容性和绝对预算通过即为 Development Go，可进入 B1；相对 CPU 和终端写量门槛仅为 M10 默认切换的 Release Go。
+M7 已完成本地 Linux 只读 Transcript 验收；M8-M11 仍待实施。2026-08-15 前的 B0 Stop 数据继续作为历史性能基线保留；Yean 于 2026-08-15 明确调整判定：协议生成、终端恢复、headless bridge、80x8 兼容性和绝对预算通过即为 Development Go，可进入 B1；相对 CPU 和终端写量门槛仅为 M10 默认切换的 Release Go。
 
 ## 1. 结论先行
 
@@ -1729,7 +1729,7 @@ release_artifact_bytes{platform}
 | M4 Tool assist/auto | M3 | circuit、safe retry、apply_patch 恢复 | 代码和故障注入完成；默认 `assist`，外部副作用恢复未做 live 验证 |
 | M5 错题本 | M4 | candidate、审查、TTL、回滚、CLI | 代码和确定性测试完成；真实 history/审批 artifact 待验证 |
 | M6 Rust 协议 Spike | M5 | Ratatui 原型、生成协议、benchmark | B0 smoke、协议和 PTY guard 完成；旧相对性能 Stop 数据保留为历史基线，按 Yean 于 2026-08-15 的新判定已满足 Development Go |
-| M7 Rust 只读 UI | M6 | transcript、滚动、搜索、Tool 显示 | 重新开放，待实施；本轮不实现 |
+| M7 Rust 只读 UI | M6 | transcript、滚动、搜索、Tool 显示 | Linux 本地验收完成：typed projection、严格分页/revision、搜索 cursor 失效、8 KiB progress preview、OSC 8、fd bridge E2E 与 RSS artifact 已覆盖；Windows named-pipe transport 留待 M10 |
 | M8 Rust 交互 UI | M7 | Composer、运行中状态、内置 Overlay | 重新开放，待实施 |
 | M9 Extension 兼容 | M8 | Tier 0-3、headless bridge | 重新开放，待实施 |
 | M10 默认切换 | M9 | `auto/rust/typescript` 灰度 | 重新开放，待实施；必须满足 Release Go 的相对 CPU/写量门槛 |
@@ -1903,7 +1903,7 @@ THIRD_PARTY_LICENSES.md
 
 ## 24. 实施收口判断
 
-本地可执行开发工作已按 M0-M6 收口：代码、确定性测试、静态检查、离线构建、Unix 安装器、Rust B0 历史数据、Linux x64 归档 smoke 和真实 PTY 均有本轮记录。Yean 于 2026-08-15 调整 B0 判定后，M7-M11 已重新开放并待实施；本轮只更新事实源与基准，不实现 M7 产品功能。以下资料保留方案依据和历史证据；远端 CI/Release、受保护审批、真实 Provider、跨 OS 实机、签名和 attestation 不在本地验收范围内。
+本地可执行开发工作已按 M0-M7 收口：M7 的 Linux 只读 Transcript 具备协议、确定性测试、fd bridge E2E、RSS artifact、release PTY 与终端恢复记录；Windows named-pipe transport 仍留给 M10。M8-M11 不在本轮范围。远端 CI/Release、受保护审批、真实 Provider、跨 OS 实机、签名和 attestation 不在本地验收范围内。
 
 ### 24.1 本仓库
 
