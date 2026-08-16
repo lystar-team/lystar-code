@@ -25,11 +25,11 @@ const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_JOURNAL_BYTES = 16 * 1024 * 1024;
 
 export class OperationPayloadMismatchError extends Error {
-	readonly code = "operation_payload_mismatch" as const;
+	readonly code = "operation_request_conflict" as const;
 	readonly retryable = false as const;
 
 	constructor() {
-		super("The same client request ID was reused with a different payload");
+		super("同一客户端请求 ID 不能用于不同载荷");
 		this.name = "OperationPayloadMismatchError";
 	}
 }

@@ -36,6 +36,11 @@ export interface RequestOptions {
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
+/** 只在创建一项用户逻辑写入动作时调用；重试必须复用返回值。 */
+export function createClientRequestId(): string {
+	return globalThis.crypto.randomUUID();
+}
+
 export interface GuiClientSnapshot {
 	connected: boolean;
 	hello?: ServerHello;
@@ -111,7 +116,7 @@ export class GuiProtocolClient {
 	}
 
 	async request<T = unknown>(request: Command, options: RequestOptions = {}): Promise<T> {
-		const id = globalThis.crypto.randomUUID();
+		const id = createClientRequestId();
 		const timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 		const result = new Promise<T>((resolve, reject) => {
 			const pending = {

@@ -891,7 +891,7 @@ describe("Rust read-only TUI fd bridge", () => {
 			},
 		});
 		const conflict = responseFor(retryMessages, "prompt-payload-conflict");
-		assert.ok(!conflict.ok && conflict.error.code === "operation_payload_mismatch");
+		assert.ok(!conflict.ok && conflict.error.code === "operation_request_conflict");
 
 		const retryQueueAfterDrop = async (
 			requestBase: Extract<

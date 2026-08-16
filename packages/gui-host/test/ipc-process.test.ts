@@ -181,7 +181,12 @@ describe.runIf(process.platform !== "win32")("GUI Host persistent IPC", () => {
 			encodeClientMessage({
 				type: "request",
 				id: "create",
-				request: { command: "create_session", cwd: agentDir, clientInstanceId: "client" },
+				request: {
+					command: "create_session",
+					cwd: agentDir,
+					clientInstanceId: "client",
+					clientRequestId: "create-session",
+				},
 			}),
 		);
 		const create = await withTimeout("create Session", first.waitFor(response("create")));

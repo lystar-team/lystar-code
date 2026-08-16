@@ -144,6 +144,71 @@
       "message": { "type": "request", "id": "b3-write-clipboard-text", "request": { "command": "write_clipboard_text", "text": "复制文本", "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
     },
     {
+      "name": "client-write-create-session",
+      "direction": "client",
+      "message": { "type": "request", "id": "write-create-session", "request": { "command": "create_session", "cwd": "/tmp/project", "clientInstanceId": "client-1", "clientRequestId": "write-1" } }
+    },
+    {
+      "name": "client-write-add-model-provider",
+      "direction": "client",
+      "message": { "type": "request", "id": "write-add-model-provider", "request": { "command": "add_model_provider", "provider": "custom", "baseUrl": "https://example.invalid", "api": "openai-completions", "clientInstanceId": "client-1", "clientRequestId": "write-2" } }
+    },
+    {
+      "name": "client-write-add-provider-model",
+      "direction": "client",
+      "message": { "type": "request", "id": "write-add-provider-model", "request": { "command": "add_provider_model", "provider": "custom", "id": "model", "reasoning": false, "input": ["text"], "clientInstanceId": "client-1", "clientRequestId": "write-3" } }
+    },
+    {
+      "name": "client-write-login-model-provider",
+      "direction": "client",
+      "message": { "type": "request", "id": "write-login-model-provider", "request": { "command": "login_model_provider", "provider": "custom", "authType": "api_key", "clientInstanceId": "client-1", "clientRequestId": "write-4" } }
+    },
+    {
+      "name": "client-write-logout-model-provider",
+      "direction": "client",
+      "message": { "type": "request", "id": "write-logout-model-provider", "request": { "command": "logout_model_provider", "provider": "custom", "clientInstanceId": "client-1", "clientRequestId": "write-5" } }
+    },
+    {
+      "name": "client-write-rename-session",
+      "direction": "client",
+      "message": { "type": "request", "id": "write-rename-session", "request": { "command": "rename_session", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "name": "重命名", "clientInstanceId": "client-1", "clientRequestId": "write-6" } }
+    },
+    {
+      "name": "client-write-set-session-model",
+      "direction": "client",
+      "message": { "type": "request", "id": "write-set-session-model", "request": { "command": "set_session_model", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "model": { "provider": "custom", "id": "model" }, "clientInstanceId": "client-1", "clientRequestId": "write-7" } }
+    },
+    {
+      "name": "client-write-set-session-thinking",
+      "direction": "client",
+      "message": { "type": "request", "id": "write-set-session-thinking", "request": { "command": "set_session_thinking", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "level": "off", "clientInstanceId": "client-1", "clientRequestId": "write-8" } }
+    },
+    {
+      "name": "client-write-fork-session",
+      "direction": "client",
+      "message": { "type": "request", "id": "write-fork-session", "request": { "command": "fork_session", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "entryId": "entry-1", "clientInstanceId": "client-1", "clientRequestId": "write-9" } }
+    },
+    {
+      "name": "client-write-delete-session",
+      "direction": "client",
+      "message": { "type": "request", "id": "write-delete-session", "request": { "command": "delete_session", "cwd": "/tmp/project", "sessionPath": "/tmp/session.jsonl", "clientInstanceId": "client-1", "clientRequestId": "write-10" } }
+    },
+    {
+      "name": "client-write-set-skill-enabled",
+      "direction": "client",
+      "message": { "type": "request", "id": "write-set-skill-enabled", "request": { "command": "set_skill_enabled", "cwd": "/tmp/project", "path": "/tmp/skill.md", "scope": "project", "enabled": true, "clientInstanceId": "client-1", "clientRequestId": "write-11" } }
+    },
+    {
+      "name": "client-write-save-project-instruction",
+      "direction": "client",
+      "message": { "type": "request", "id": "write-save-project-instruction", "request": { "command": "save_project_instruction", "cwd": "/tmp/project", "fileName": "AGENTS.md", "content": "# Project", "clientInstanceId": "client-1", "clientRequestId": "write-12" } }
+    },
+    {
+      "name": "client-write-save-host-instruction",
+      "direction": "client",
+      "message": { "type": "request", "id": "write-save-host-instruction", "request": { "command": "save_host_instruction", "fileName": "AGENTS.md", "content": "# Host", "clientInstanceId": "client-1", "clientRequestId": "write-13" } }
+    },
+    {
       "name": "server-hello",
       "direction": "server",
       "message": { "type": "hello", "version": 1, "productVersion": "rust-spike", "protocolVersion": 1, "serverInstanceId": "node-host", "hostInstanceId": "node-host", "hostStartedAt": 0, "capabilities": ["session-paging"] }

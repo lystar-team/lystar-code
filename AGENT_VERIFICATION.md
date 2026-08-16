@@ -1,5 +1,7 @@
 # AGENT_VERIFICATION
 
+最新补充：GUI 所有 write 幂等 foundation 已完成。旧写命令与 B3 快速写统一使用 operation journal 和按 scope 串行队列；本项不表示 B3 UI 已完成。
+
 最后核验时间：2026-08-15
 
 环境：

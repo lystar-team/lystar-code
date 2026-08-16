@@ -178,7 +178,13 @@ describe("GUI Host stdio process", () => {
 				encodeClientMessage({
 					type: "request",
 					id: "login",
-					request: { command: "login_model_provider", provider: "test", authType: "api_key" },
+					request: {
+						command: "login_model_provider",
+						provider: "test",
+						authType: "api_key",
+						clientInstanceId: "client",
+						clientRequestId: "login",
+					},
 				}),
 			),
 		);

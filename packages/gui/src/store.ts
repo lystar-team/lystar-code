@@ -3,6 +3,7 @@ import {
 	type Command,
 	type CompletionResult,
 	type ContentChunk,
+	createClientRequestId,
 	type GitDiff,
 	type GitStatus,
 	type GuiClientSnapshot,
@@ -1141,6 +1142,7 @@ export class GuiAppStore {
 				command: "create_session",
 				cwd: this.currentCwd,
 				clientInstanceId: this.client.clientInstanceId,
+				clientRequestId: createClientRequestId(),
 			});
 			try {
 				await this.releaseLease(previousSessionPath, previousLease);
@@ -1273,7 +1275,7 @@ export class GuiAppStore {
 		const commandText = value.startsWith("!") ? value.slice(1).trim() : undefined;
 		if (commandText !== undefined && !commandText) return;
 		if (commandText !== undefined && images?.length) throw new Error("Bash 命令不能包含图片附件");
-		const clientRequestId = crypto.randomUUID();
+		const clientRequestId = createClientRequestId();
 		const result =
 			commandText !== undefined
 				? await this.client.request<{ operation: OperationSnapshot }>({
@@ -1320,6 +1322,8 @@ export class GuiAppStore {
 			sessionPath: this.selectedSession.path,
 			leaseId: this.lease.leaseId,
 			name: name.trim(),
+			clientInstanceId: this.client.clientInstanceId,
+			clientRequestId: createClientRequestId(),
 		});
 		await this.refreshSessions();
 		this.publish();
@@ -1328,7 +1332,13 @@ export class GuiAppStore {
 	async deleteSession(sessionPath: string): Promise<void> {
 		if (!this.client) return;
 		if (this.selectedSessionPath === sessionPath) await this.releaseCurrentSession();
-		await this.client.request({ command: "delete_session", sessionPath });
+		await this.client.request({
+			command: "delete_session",
+			cwd: this.currentCwd ?? this.selectedSession?.cwd ?? ".",
+			sessionPath,
+			clientInstanceId: this.client.clientInstanceId,
+			clientRequestId: createClientRequestId(),
+		});
 		await this.refreshSessions();
 		if (this.sessions[0]) await this.acquireSession(this.sessions[0].path);
 		this.publish();
@@ -1345,6 +1355,8 @@ export class GuiAppStore {
 			sessionPath: this.selectedSession.path,
 			leaseId: this.lease.leaseId,
 			entryId,
+			clientInstanceId: this.client.clientInstanceId,
+			clientRequestId: createClientRequestId(),
 		});
 		this.lease = result.lease;
 		this.selectedSessionPath = result.snapshot.path;
@@ -1359,6 +1371,8 @@ export class GuiAppStore {
 			sessionPath: this.selectedSession.path,
 			leaseId: this.lease.leaseId,
 			model,
+			clientInstanceId: this.client.clientInstanceId,
+			clientRequestId: createClientRequestId(),
 		});
 		this.publish();
 	}
@@ -1370,6 +1384,8 @@ export class GuiAppStore {
 			sessionPath: this.selectedSession.path,
 			leaseId: this.lease.leaseId,
 			level,
+			clientInstanceId: this.client.clientInstanceId,
+			clientRequestId: createClientRequestId(),
 		});
 		this.publish();
 	}
@@ -1401,6 +1417,8 @@ export class GuiAppStore {
 				path: skill.path,
 				scope,
 				enabled: !skill.enabled,
+				clientInstanceId: client.clientInstanceId,
+				clientRequestId: createClientRequestId(),
 			});
 			this.skills = result.skills;
 			this.skillDiagnostics = result.diagnostics;
@@ -1443,8 +1461,15 @@ export class GuiAppStore {
 			this.modelProviders = await client.request<ModelProviderSummary[]>({
 				command: "add_model_provider",
 				...provider,
+				clientInstanceId: client.clientInstanceId,
+				clientRequestId: createClientRequestId(),
 			});
-			this.models = await client.request<ModelSummary[]>({ command: "add_provider_model", ...model });
+			this.models = await client.request<ModelSummary[]>({
+				command: "add_provider_model",
+				...model,
+				clientInstanceId: client.clientInstanceId,
+				clientRequestId: createClientRequestId(),
+			});
 		});
 		await this.loginModelProvider(provider.provider, "api_key");
 	}
@@ -1453,7 +1478,12 @@ export class GuiAppStore {
 		const { client } = this.settingsRuntime();
 		if (!client || !this.clientHasCapability(client, "models")) return;
 		this.models = await this.withAction("models", () =>
-			client.request<ModelSummary[]>({ command: "add_provider_model", ...model }),
+			client.request<ModelSummary[]>({
+				command: "add_provider_model",
+				...model,
+				clientInstanceId: client.clientInstanceId,
+				clientRequestId: createClientRequestId(),
+			}),
 		);
 		this.publish();
 	}
@@ -1466,7 +1496,13 @@ export class GuiAppStore {
 		this.publish();
 		try {
 			this.models = await this.withAction(`model-auth:${provider}`, () =>
-				client.request<ModelSummary[]>({ command: "login_model_provider", provider, authType }),
+				client.request<ModelSummary[]>({
+					command: "login_model_provider",
+					provider,
+					authType,
+					clientInstanceId: client.clientInstanceId,
+					clientRequestId: createClientRequestId(),
+				}),
 			);
 			this.modelProviders = await client.request<ModelProviderSummary[]>({ command: "list_model_providers" });
 			this.modelAuthStatus = "认证已完成";
@@ -1484,7 +1520,12 @@ export class GuiAppStore {
 		this.publish();
 		try {
 			this.models = await this.withAction(`model-auth:${provider}`, () =>
-				client.request<ModelSummary[]>({ command: "logout_model_provider", provider }),
+				client.request<ModelSummary[]>({
+					command: "logout_model_provider",
+					provider,
+					clientInstanceId: client.clientInstanceId,
+					clientRequestId: createClientRequestId(),
+				}),
 			);
 			this.modelProviders = await client.request<ModelProviderSummary[]>({ command: "list_model_providers" });
 			this.modelAuthStatus = "已移除保存的认证";
@@ -1628,6 +1669,8 @@ export class GuiAppStore {
 				fileName,
 				content,
 				expectedHash,
+				clientInstanceId: client.clientInstanceId,
+				clientRequestId: createClientRequestId(),
 			});
 			this.toast = `${fileName} 已保存到当前 Host`;
 		} catch (error) {
@@ -1654,6 +1697,8 @@ export class GuiAppStore {
 				fileName,
 				content,
 				expectedHash,
+				clientInstanceId: client.clientInstanceId,
+				clientRequestId: createClientRequestId(),
 			});
 			this.toast = `${fileName} 已保存并重新加载`;
 		} catch (error) {

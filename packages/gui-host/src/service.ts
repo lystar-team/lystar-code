@@ -130,6 +130,10 @@ function canonicalSessionPath(sessionPath: string): string {
 	return join(realpathSync(dirname(resolvedPath)), basename(resolvedPath));
 }
 
+function canonicalProjectCwd(cwd: string): string {
+	return realpathSync(resolve(cwd));
+}
+
 function jsonValue(value: unknown): JsonValue {
 	return JSON.parse(JSON.stringify(value)) as JsonValue;
 }
@@ -153,7 +157,8 @@ export class GuiHostService {
 	private readonly runtimeUnsubscribers = new Map<string, () => void>();
 	private readonly activeOperationBySession = new Map<string, string>();
 	private readonly scheduledOperations = new Set<string>();
-	private readonly b3WritePromises = new Map<string, Promise<JsonValue>>();
+	private readonly journalWritePromises = new Map<string, Promise<JsonValue>>();
+	private readonly writeScopeQueues = new Map<string, Promise<void>>();
 	private readonly snapshotRevisions = new Map<string, number>();
 	private readonly pendingUi = new Map<string, PendingUiRequest>();
 	private readonly leases = new LeaseManager();
@@ -318,8 +323,9 @@ export class GuiHostService {
 					),
 				});
 			case "list_sessions": {
-				const sessions = await this.listSessionSummaries(request.cwd, connection);
-				this.rememberSessionFacts(request.cwd, sessions);
+				const cwd = canonicalProjectCwd(request.cwd);
+				const sessions = await this.listSessionSummaries(cwd, connection);
+				this.rememberSessionFacts(cwd, sessions);
 				if (!request.query) return sessions;
 				const query = request.query.toLowerCase();
 				return sessions.filter((session) => JSON.stringify(session).toLowerCase().includes(query));
@@ -349,34 +355,42 @@ export class GuiHostService {
 				);
 			}
 			case "create_session": {
-				this.assertClient(request.clientInstanceId, connection);
-				this.journal.assertWritable();
-				const controlOperationId = `control:${connection.clientInstanceId}`;
-				let sessionPath: string | undefined;
-				const runtime = await this.adapter.createSession(
-					request.cwd,
-					this.createUiRequestHandler(
-						() =>
-							sessionPath
-								? (this.activeOperationBySession.get(sessionPath) ?? controlOperationId)
-								: controlOperationId,
-						() => sessionPath,
-						request.clientInstanceId,
-					),
-				);
-				sessionPath = canonicalSessionPath(runtime.sessionPath);
-				let lease: ReturnType<LeaseManager["acquire"]> | undefined;
-				try {
-					lease = this.leases.acquire(sessionPath, request.clientInstanceId);
-					this.attachRuntime(runtime);
-					await this.sendSessionSnapshots(runtime);
-					return jsonValue({ lease, snapshot: this.runtimeSnapshot(runtime, "owned") });
-				} catch (error) {
-					if (lease) this.leases.release(sessionPath, lease.leaseId);
-					if (this.runtimes.get(sessionPath) === runtime) await this.disposeRuntime(sessionPath);
-					else await runtime.dispose();
-					throw error;
-				}
+				const cwd = canonicalProjectCwd(request.cwd);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `session-collection:${cwd}`,
+					payload: { cwd },
+					run: async () => {
+						let sessionPath: string | undefined;
+						const controlOperationId = `control:${request.clientInstanceId}`;
+						const runtime = await this.adapter.createSession(
+							cwd,
+							this.createUiRequestHandler(
+								() =>
+									sessionPath
+										? (this.activeOperationBySession.get(sessionPath) ?? controlOperationId)
+										: controlOperationId,
+								() => sessionPath,
+								request.clientInstanceId,
+							),
+						);
+						sessionPath = canonicalSessionPath(runtime.sessionPath);
+						let lease: ReturnType<LeaseManager["acquire"]> | undefined;
+						try {
+							lease = this.leases.acquire(sessionPath, request.clientInstanceId);
+							this.attachRuntime(runtime);
+							await this.sendSessionSnapshots(runtime);
+							return jsonValue({ lease, snapshot: this.runtimeSnapshot(runtime, "owned") });
+						} catch (error) {
+							if (lease) this.leases.release(sessionPath, lease.leaseId);
+							if (this.runtimes.get(sessionPath) === runtime) await this.disposeRuntime(sessionPath);
+							else await runtime.dispose();
+							throw error;
+						}
+					},
+				});
 			}
 			case "acquire_session": {
 				this.assertClient(request.clientInstanceId, connection);
@@ -508,92 +522,158 @@ export class GuiHostService {
 			case "list_model_providers":
 				return jsonValue(await this.adapter.listModelProviders());
 			case "add_model_provider":
-				this.journal.assertWritable();
-				return jsonValue(await this.adapter.addModelProvider(request));
 			case "add_provider_model":
-				this.journal.assertWritable();
-				return jsonValue(await this.adapter.addProviderModel(request));
 			case "login_model_provider":
-				this.journal.assertWritable();
-				return jsonValue(
-					await this.adapter.loginModelProvider(
-						request.provider,
-						request.authType,
-						this.createUiRequestHandler(`models-auth:${connection.id}`, undefined, connection.clientInstanceId),
-					),
-				);
-			case "logout_model_provider":
-				this.journal.assertWritable();
-				return jsonValue(await this.adapter.logoutModelProvider(request.provider));
+			case "logout_model_provider": {
+				const provider = request.provider;
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `provider:${provider}`,
+					payload: request,
+					run: async () => {
+						switch (request.command) {
+							case "add_model_provider":
+								return jsonValue(await this.adapter.addModelProvider(request));
+							case "add_provider_model":
+								return jsonValue(await this.adapter.addProviderModel(request));
+							case "login_model_provider":
+								return jsonValue(
+									await this.adapter.loginModelProvider(
+										request.provider,
+										request.authType,
+										this.createUiRequestHandler(
+											`models-auth:${request.clientRequestId}`,
+											undefined,
+											request.clientInstanceId,
+										),
+									),
+								);
+							case "logout_model_provider":
+								return jsonValue(await this.adapter.logoutModelProvider(request.provider));
+						}
+					},
+				});
+			}
 			case "rename_session": {
-				const { runtime } = this.assertSessionControl(request.sessionPath, request.leaseId, connection);
-				await runtime.rename(request.name);
-				await this.sendSessionSnapshots(runtime);
-				return this.runtimeSnapshot(runtime, "owned");
+				const sessionPath = canonicalSessionPath(request.sessionPath);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `session:${sessionPath}`,
+					payload: { sessionPath, name: request.name },
+					run: async () => {
+						const { runtime } = this.assertSessionControl(sessionPath, request.leaseId, connection);
+						await runtime.rename(request.name);
+						await this.sendSessionSnapshots(runtime);
+						return this.runtimeSnapshot(runtime, "owned");
+					},
+				});
 			}
 			case "set_session_model": {
-				const { runtime } = this.assertSessionControl(request.sessionPath, request.leaseId, connection);
-				await runtime.setModel(request.model);
-				await this.sendSessionSnapshots(runtime);
-				return this.runtimeSnapshot(runtime, "owned");
+				const sessionPath = canonicalSessionPath(request.sessionPath);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `session:${sessionPath}`,
+					payload: { sessionPath, model: request.model },
+					run: async () => {
+						const { runtime } = this.assertSessionControl(sessionPath, request.leaseId, connection);
+						await runtime.setModel(request.model);
+						await this.sendSessionSnapshots(runtime);
+						return this.runtimeSnapshot(runtime, "owned");
+					},
+				});
 			}
 			case "set_session_thinking": {
-				const { runtime } = this.assertSessionControl(request.sessionPath, request.leaseId, connection);
-				await runtime.setThinkingLevel(request.level);
-				await this.sendSessionSnapshots(runtime);
-				return this.runtimeSnapshot(runtime, "owned");
+				const sessionPath = canonicalSessionPath(request.sessionPath);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `session:${sessionPath}`,
+					payload: { sessionPath, level: request.level },
+					run: async () => {
+						const { runtime } = this.assertSessionControl(sessionPath, request.leaseId, connection);
+						await runtime.setThinkingLevel(request.level);
+						await this.sendSessionSnapshots(runtime);
+						return this.runtimeSnapshot(runtime, "owned");
+					},
+				});
 			}
 			case "fork_session": {
-				const { runtime, sessionPath } = this.assertSessionControl(
-					request.sessionPath,
-					request.leaseId,
-					connection,
-				);
-				this.detachRuntimeProjection(sessionPath);
-				let result: Awaited<ReturnType<RuntimeSession["fork"]>> | undefined;
-				let failure: unknown;
-				try {
-					result = await runtime.fork(request.entryId, request.position);
-				} catch (error) {
-					failure = error;
-				}
-				const nextSessionPath = canonicalSessionPath(runtime.sessionPath);
-				if (nextSessionPath !== sessionPath) {
-					this.leases.move(sessionPath, nextSessionPath, request.leaseId);
-					this.snapshotRevisions.delete(sessionPath);
-					await this.broadcast({ type: "session_removed", sessionPath });
-				}
-				this.attachRuntime(runtime);
-				await this.sendSessionSnapshots(runtime);
-				if (failure) throw failure;
-				if (!result) throw new Error("会话分叉未返回结果");
-				return jsonValue({
-					lease: this.leases.get(nextSessionPath),
-					snapshot: this.runtimeSnapshot(runtime, "owned"),
-					selectedText: result.selectedText,
+				const sessionPath = canonicalSessionPath(request.sessionPath);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `session:${sessionPath}`,
+					payload: {
+						sessionPath,
+						entryId: request.entryId,
+						...(request.position ? { position: request.position } : {}),
+					},
+					run: async () => {
+						const { runtime } = this.assertSessionControl(sessionPath, request.leaseId, connection);
+						this.detachRuntimeProjection(sessionPath);
+						let result: Awaited<ReturnType<RuntimeSession["fork"]>> | undefined;
+						let failure: unknown;
+						try {
+							result = await runtime.fork(request.entryId, request.position);
+						} catch (error) {
+							failure = error;
+						}
+						const nextSessionPath = canonicalSessionPath(runtime.sessionPath);
+						if (nextSessionPath !== sessionPath) {
+							this.leases.move(sessionPath, nextSessionPath, request.leaseId);
+							this.snapshotRevisions.delete(sessionPath);
+							await this.broadcast({ type: "session_removed", sessionPath });
+						}
+						this.attachRuntime(runtime);
+						await this.sendSessionSnapshots(runtime);
+						if (failure) throw failure;
+						if (!result) throw new Error("会话分叉未返回结果");
+						return jsonValue({
+							lease: this.leases.get(nextSessionPath),
+							snapshot: this.runtimeSnapshot(runtime, "owned"),
+							selectedText: result.selectedText,
+						});
+					},
 				});
 			}
 			case "delete_session": {
-				this.journal.assertWritable();
+				const cwd = canonicalProjectCwd(request.cwd);
 				const sessionPath = canonicalSessionPath(request.sessionPath);
-				if (this.runtimes.has(sessionPath) || this.leases.get(sessionPath)) {
-					throw Object.assign(new Error("会话当前仍被占用"), {
-						code: "session_attached",
-						retryable: true,
-					});
-				}
-				if (this.journal.list(sessionPath).some((operation) => ACTIVE_OPERATION_STATUSES.has(operation.status))) {
-					throw Object.assign(new Error("会话存在正在执行的任务"), {
-						code: "session_operation_active",
-						retryable: true,
-					});
-				}
-				if (!existsSync(sessionPath)) {
-					throw Object.assign(new Error("未找到会话"), { code: "not_found" });
-				}
-				await this.adapter.deleteSession(sessionPath);
-				await this.broadcast({ type: "session_removed", sessionPath });
-				return { deleted: true };
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `session-collection:${cwd}`,
+					payload: { cwd, sessionPath },
+					run: async () => {
+						if (this.runtimes.has(sessionPath) || this.leases.get(sessionPath)) {
+							throw Object.assign(new Error("会话当前仍被占用"), {
+								code: "session_attached",
+								retryable: true,
+							});
+						}
+						if (
+							this.journal.list(sessionPath).some((operation) => ACTIVE_OPERATION_STATUSES.has(operation.status))
+						) {
+							throw Object.assign(new Error("会话存在正在执行的任务"), {
+								code: "session_operation_active",
+								retryable: true,
+							});
+						}
+						if (!existsSync(sessionPath)) throw Object.assign(new Error("未找到会话"), { code: "not_found" });
+						await this.adapter.deleteSession(sessionPath);
+						await this.broadcast({ type: "session_removed", sessionPath });
+						return { deleted: true };
+					},
+				});
 			}
 			case "list_skills":
 				this.journal.assertWritable();
@@ -603,41 +683,83 @@ export class GuiHostService {
 						this.createUiRequestHandler(`skills:${connection.id}`, undefined, connection.clientInstanceId),
 					),
 				);
-			case "set_skill_enabled":
-				this.journal.assertWritable();
-				return jsonValue(
-					await this.adapter.setSkillEnabled(
-						request.cwd,
-						request.path,
-						request.scope,
-						request.enabled,
-						this.createUiRequestHandler(`skills:${connection.id}`, undefined, connection.clientInstanceId),
-					),
-				);
+			case "set_skill_enabled": {
+				const cwd = canonicalProjectCwd(request.cwd);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `project:${cwd}`,
+					payload: { cwd, path: request.path, scope: request.scope, enabled: request.enabled },
+					run: async () =>
+						jsonValue(
+							await this.adapter.setSkillEnabled(
+								cwd,
+								request.path,
+								request.scope,
+								request.enabled,
+								this.createUiRequestHandler(
+									`skills:${request.clientRequestId}`,
+									undefined,
+									request.clientInstanceId,
+								),
+							),
+						),
+				});
+			}
 			case "list_project_instructions":
-				return jsonValue(this.adapter.listProjectInstructions(request.cwd));
+				return jsonValue(this.adapter.listProjectInstructions(canonicalProjectCwd(request.cwd)));
 			case "save_project_instruction": {
-				this.journal.assertWritable();
-				const result = this.adapter.saveProjectInstruction(
-					request.cwd,
-					request.fileName,
-					request.content,
-					request.expectedHash,
-				);
-				for (const runtime of this.runtimes.values()) {
-					if (resolve(runtime.getSnapshot("available").cwd) === resolve(request.cwd))
-						await runtime.reloadResources();
-				}
-				return jsonValue(result);
+				const cwd = canonicalProjectCwd(request.cwd);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `project:${cwd}`,
+					payload: {
+						cwd,
+						fileName: request.fileName,
+						content: request.content,
+						...(request.expectedHash ? { expectedHash: request.expectedHash } : {}),
+					},
+					run: async () => {
+						const result = this.adapter.saveProjectInstruction(
+							cwd,
+							request.fileName,
+							request.content,
+							request.expectedHash,
+						);
+						for (const runtime of this.runtimes.values()) {
+							if (canonicalProjectCwd(runtime.getSnapshot("available").cwd) === cwd)
+								await runtime.reloadResources();
+						}
+						return jsonValue(result);
+					},
+				});
 			}
 			case "list_host_instructions":
 				return jsonValue(this.adapter.listHostInstructions());
-			case "save_host_instruction": {
-				this.journal.assertWritable();
-				const result = this.adapter.saveHostInstruction(request.fileName, request.content, request.expectedHash);
-				for (const runtime of this.runtimes.values()) await runtime.reloadResources();
-				return jsonValue(result);
-			}
+			case "save_host_instruction":
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: "host:instructions",
+					payload: {
+						fileName: request.fileName,
+						content: request.content,
+						...(request.expectedHash ? { expectedHash: request.expectedHash } : {}),
+					},
+					run: async () => {
+						const result = this.adapter.saveHostInstruction(
+							request.fileName,
+							request.content,
+							request.expectedHash,
+						);
+						for (const runtime of this.runtimes.values()) await runtime.reloadResources();
+						return jsonValue(result);
+					},
+				});
 			case "list_directories":
 				return jsonValue(this.adapter.listDirectories(request.path));
 			case "get_completions": {
@@ -659,10 +781,11 @@ export class GuiHostService {
 			case "get_about":
 				return this.adapter.getAbout();
 			case "get_diagnostics": {
+				const cwd = request.cwd ? canonicalProjectCwd(request.cwd) : undefined;
 				const runtime = [...this.runtimes.values()].find(
-					(candidate) => !request.cwd || resolve(candidate.getSnapshot("available").cwd) === resolve(request.cwd),
+					(candidate) => !cwd || canonicalProjectCwd(candidate.getSnapshot("available").cwd) === cwd,
 				);
-				return this.adapter.getDiagnostics(request.cwd, runtime?.getToolRecoveryDiagnostics());
+				return this.adapter.getDiagnostics(cwd, runtime?.getToolRecoveryDiagnostics());
 			}
 			case "get_connection_status":
 				return {
@@ -708,63 +831,68 @@ export class GuiHostService {
 					request.leaseId,
 					connection,
 				);
-				return this.executeB3Write(connection, {
+				const setting = runtime.listSettings().find((candidate) => candidate.id === request.id);
+				const scope =
+					setting?.scope === "global"
+						? "host:settings"
+						: `project:${canonicalProjectCwd(runtime.getSnapshot("available").cwd)}`;
+				return this.executeJournaledWrite(connection, {
 					command: request.command,
 					clientInstanceId: request.clientInstanceId,
 					clientRequestId: request.clientRequestId,
-					scope: sessionPath,
-					payload: { id: request.id, value: request.value },
+					scope,
+					payload: { sessionPath, id: request.id, value: request.value },
 					run: () => runtime.setSetting(request.id, request.value),
 				});
 			}
 			case "get_project_trust":
-				return this.adapter.getProjectTrust(request.cwd);
+				return this.adapter.getProjectTrust(canonicalProjectCwd(request.cwd));
 			case "set_project_trust": {
-				const cwd = resolve(request.cwd);
-				return this.executeB3Write(connection, {
+				const cwd = canonicalProjectCwd(request.cwd);
+				return this.executeJournaledWrite(connection, {
 					command: request.command,
 					clientInstanceId: request.clientInstanceId,
 					clientRequestId: request.clientRequestId,
-					scope: `host:trust:${cwd}`,
+					scope: `project:${cwd}`,
 					payload: { cwd, trusted: request.trusted },
 					run: async () => {
 						const result = await this.adapter.setProjectTrust(cwd, request.trusted);
 						for (const runtime of this.runtimes.values()) {
-							if (resolve(runtime.getSnapshot("available").cwd) === cwd) await runtime.reloadResources();
+							if (canonicalProjectCwd(runtime.getSnapshot("available").cwd) === cwd)
+								await runtime.reloadResources();
 						}
 						return result;
 					},
 				});
 			}
 			case "list_packages":
-				return this.adapter.listPackages(request.cwd);
+				return this.adapter.listPackages(canonicalProjectCwd(request.cwd));
 			case "install_package":
-				return this.executeB3Write(connection, {
+			case "remove_package": {
+				const cwd = canonicalProjectCwd(request.cwd);
+				return this.executeJournaledWrite(connection, {
 					command: request.command,
 					clientInstanceId: request.clientInstanceId,
 					clientRequestId: request.clientRequestId,
-					scope: `host:packages:${resolve(request.cwd)}`,
-					payload: { cwd: resolve(request.cwd), source: request.source, scope: request.scope },
-					run: () => this.adapter.installPackage(request.cwd, request.source, request.scope),
+					scope: request.scope === "user" ? "host:packages" : `project:${cwd}`,
+					payload: { cwd, source: request.source, scope: request.scope },
+					run: () =>
+						request.command === "install_package"
+							? this.adapter.installPackage(cwd, request.source, request.scope)
+							: this.adapter.removePackage(cwd, request.source, request.scope),
 				});
-			case "remove_package":
-				return this.executeB3Write(connection, {
+			}
+			case "update_packages": {
+				const cwd = canonicalProjectCwd(request.cwd);
+				return this.executeJournaledWrite(connection, {
 					command: request.command,
 					clientInstanceId: request.clientInstanceId,
 					clientRequestId: request.clientRequestId,
-					scope: `host:packages:${resolve(request.cwd)}`,
-					payload: { cwd: resolve(request.cwd), source: request.source, scope: request.scope },
-					run: () => this.adapter.removePackage(request.cwd, request.source, request.scope),
+					scope: `project:${cwd}`,
+					payload: { cwd, ...(request.source ? { source: request.source } : {}) },
+					run: () => this.adapter.updatePackages(cwd, request.source),
 				});
-			case "update_packages":
-				return this.executeB3Write(connection, {
-					command: request.command,
-					clientInstanceId: request.clientInstanceId,
-					clientRequestId: request.clientRequestId,
-					scope: `host:packages:${resolve(request.cwd)}`,
-					payload: { cwd: resolve(request.cwd), ...(request.source ? { source: request.source } : {}) },
-					run: () => this.adapter.updatePackages(request.cwd, request.source),
-				});
+			}
 			case "get_session_tree": {
 				const sessionPath = canonicalSessionPath(request.sessionPath);
 				return this.adapter.getSessionTree(sessionPath);
@@ -775,11 +903,11 @@ export class GuiHostService {
 					request.leaseId,
 					connection,
 				);
-				return this.executeB3Write(connection, {
+				return this.executeJournaledWrite(connection, {
 					command: request.command,
 					clientInstanceId: request.clientInstanceId,
 					clientRequestId: request.clientRequestId,
-					scope: sessionPath,
+					scope: `session:${sessionPath}`,
 					payload: { entryId: request.entryId, ...(request.label ? { label: request.label } : {}) },
 					run: async () => {
 						await runtime.setEntryLabel(request.entryId, request.label);
@@ -793,11 +921,11 @@ export class GuiHostService {
 					request.leaseId,
 					connection,
 				);
-				return this.executeB3Write(connection, {
+				return this.executeJournaledWrite(connection, {
 					command: request.command,
 					clientInstanceId: request.clientInstanceId,
 					clientRequestId: request.clientRequestId,
-					scope: sessionPath,
+					scope: `session:${sessionPath}`,
 					payload: { entryId: request.entryId, summarize: request.summarize === true },
 					run: () => runtime.navigateSessionTree(request.entryId, request.summarize === true),
 				});
@@ -822,11 +950,11 @@ export class GuiHostService {
 					request.leaseId,
 					connection,
 				);
-				return this.executeB3Write(connection, {
+				return this.executeJournaledWrite(connection, {
 					command: request.command,
 					clientInstanceId: request.clientInstanceId,
 					clientRequestId: request.clientRequestId,
-					scope: sessionPath,
+					scope: `session:${sessionPath}`,
 					payload: { agentId: request.agentId },
 					run: async () => {
 						await runtime.abortSubagent(request.agentId);
@@ -840,11 +968,11 @@ export class GuiHostService {
 					request.leaseId,
 					connection,
 				);
-				return this.executeB3Write(connection, {
+				return this.executeJournaledWrite(connection, {
 					command: request.command,
 					clientInstanceId: request.clientInstanceId,
 					clientRequestId: request.clientRequestId,
-					scope: sessionPath,
+					scope: `session:${sessionPath}`,
 					payload: { agentId: request.agentId, text: request.text },
 					run: async () => {
 						await runtime.continueSubagent(request.agentId, request.text);
@@ -855,7 +983,7 @@ export class GuiHostService {
 			case "read_clipboard_text":
 				return this.adapter.readClipboardText();
 			case "write_clipboard_text":
-				return this.executeB3Write(connection, {
+				return this.executeJournaledWrite(connection, {
 					command: request.command,
 					clientInstanceId: request.clientInstanceId,
 					clientRequestId: request.clientRequestId,
@@ -964,10 +1092,10 @@ export class GuiHostService {
 		}
 	}
 
-	private async executeB3Write(
+	private async executeJournaledWrite(
 		connection: ClientConnection,
 		input: {
-			command: keyof typeof B3_COMMANDS;
+			command: string;
 			clientInstanceId: string;
 			clientRequestId: string;
 			scope: string;
@@ -980,10 +1108,13 @@ export class GuiHostService {
 		const payloadHash = hashOperationPayload({ command: input.command, scope: input.scope, payload: input.payload });
 		const existing = this.journal.find(input.clientInstanceId, input.clientRequestId, payloadHash);
 		if (existing) {
-			const pending = this.b3WritePromises.get(existing.operationId);
+			const pending = this.journalWritePromises.get(existing.operationId);
 			if (pending) return pending;
 			if (existing.status === "completed" && existing.result !== undefined) return existing.result;
-			throw Object.assign(new Error(existing.error ?? "此前请求未完成"), { code: "b3_write_failed" });
+			throw Object.assign(new Error(existing.error ?? "此前写入未完成"), {
+				code: "operation_failed",
+				retryable: false,
+			});
 		}
 		const accepted = this.journal.accept({
 			clientInstanceId: input.clientInstanceId,
@@ -992,7 +1123,7 @@ export class GuiHostService {
 			type: input.command,
 			payloadHash,
 		});
-		const execution = (async () => {
+		const execution = this.enqueueWriteScope(input.scope, async () => {
 			try {
 				this.updateOperation(accepted.operation.operationId, "running");
 				const result = await input.run();
@@ -1003,11 +1134,24 @@ export class GuiHostService {
 					error: error instanceof Error ? error.message : String(error),
 				});
 				throw error;
-			} finally {
-				this.b3WritePromises.delete(accepted.operation.operationId);
 			}
-		})();
-		this.b3WritePromises.set(accepted.operation.operationId, execution);
+		});
+		this.journalWritePromises.set(accepted.operation.operationId, execution);
+		void execution.finally(() => this.journalWritePromises.delete(accepted.operation.operationId)).catch(() => {});
+		return execution;
+	}
+
+	private enqueueWriteScope<T>(scope: string, run: () => Promise<T>): Promise<T> {
+		const previous = this.writeScopeQueues.get(scope) ?? Promise.resolve();
+		const execution = previous.catch(() => {}).then(run);
+		const tail = execution.then(
+			() => undefined,
+			() => undefined,
+		);
+		this.writeScopeQueues.set(scope, tail);
+		void tail.then(() => {
+			if (this.writeScopeQueues.get(scope) === tail) this.writeScopeQueues.delete(scope);
+		});
 		return execution;
 	}
 

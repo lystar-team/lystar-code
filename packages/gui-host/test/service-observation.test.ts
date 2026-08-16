@@ -137,7 +137,12 @@ describe("GuiHostService Session observation", () => {
 		await handle({
 			type: "request",
 			id: "create",
-			request: { command: "create_session", cwd, clientInstanceId: "diagnostics-client" },
+			request: {
+				command: "create_session",
+				cwd,
+				clientInstanceId: "diagnostics-client",
+				clientRequestId: "create",
+			},
 		});
 		await handle({ type: "request", id: "diagnostics", request: { command: "get_diagnostics", cwd } });
 

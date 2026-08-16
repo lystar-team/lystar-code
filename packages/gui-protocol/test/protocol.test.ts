@@ -399,7 +399,13 @@ describe("GUI Protocol v1", () => {
 			{
 				type: "request",
 				id: "login",
-				request: { command: "login_model_provider", provider: "openai", authType: "api_key" },
+				request: {
+					command: "login_model_provider",
+					provider: "openai",
+					authType: "api_key",
+					clientInstanceId: "client",
+					clientRequestId: "login-1",
+				},
 			},
 			{ type: "request", id: "connections", request: { command: "get_connection_status" } },
 			{ type: "request", id: "updates", request: { command: "check_for_updates" } },
@@ -434,6 +440,8 @@ describe("GUI Protocol v1", () => {
 					command: "login_model_provider",
 					provider: "openai",
 					authType: "password" as "api_key",
+					clientInstanceId: "client",
+					clientRequestId: "invalid-login",
 				},
 			}),
 		).toThrow();
