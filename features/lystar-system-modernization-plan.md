@@ -26,7 +26,7 @@
 
 运行模式已落地为 `off`、`observe`、`assist`、`auto`，默认 `assist`；`lc doctor` 和 GUI Host 诊断同步显示当前模式、circuit 与 lesson 状态。`auto` 仍只允许 policy 白名单内的安全恢复动作。
 
-M7 已完成本地 Linux 只读 Transcript 验收；M8 已完成 Linux x64 Composer、运行中状态、Host response-drop/reacquire E2E、正式组件基准和 80x8 多行 PTY 验收。GUI 所有 write 幂等 foundation 已完成：旧写命令与 B3 快速写共用 operation journal 和 scope 串行队列。B3 Settings foundation 现已统一 TypeScript descriptor catalog，`/settings` 与 GUI Host `list_settings`/`set_setting` 共用设置元数据和读写校验；此项仍不表示 Rust B3 UI 已完成。M9-M11 仍待实施。2026-08-15 前的 B0 Stop 数据继续作为历史性能基线保留；Yean 于 2026-08-15 明确调整判定：协议生成、终端恢复、headless bridge、80x8 兼容性和绝对预算通过即为 Development Go，可进入 B1；相对 CPU 和终端写量门槛仅为 M10 默认切换的 Release Go。
+M7 已完成本地 Linux 只读 Transcript 验收；M8 已完成 Linux x64 Composer、运行中状态、Host response-drop/reacquire E2E、正式组件基准和 80x8 多行 PTY 验收。2026-08-16 新增的 B3 工作台专项提供两轮 Host-Rust tmux/FIFO 会话与只读验收，以及正式 `AppState`/`TranscriptWindow`/Tree 75 条基准：会话 A->B 的 release/acquire、失败回取 A、双失败后的 Host 无 lease、只读不获取 lease 和 80x8 Sessions 返回 Composer 已有本地证据；Tree open/filter 已进入基准。Tree 的 label/clear、navigate、fork 和错误后重试仍未获得完整外部 FIFO 矩阵，不能把 B3 工作台写成全部完成。GUI 所有 write 幂等 foundation 已完成：旧写命令与 B3 快速写共用 operation journal 和 scope 串行队列。B3 Settings foundation 现已统一 TypeScript descriptor catalog，`/settings` 与 GUI Host `list_settings`/`set_setting` 共用设置元数据和读写校验；此项仍不表示 Rust B3 UI 已完成。M9-M11 仍待实施。2026-08-15 前的 B0 Stop 数据继续作为历史性能基线保留；Yean 于 2026-08-15 明确调整判定：协议生成、终端恢复、headless bridge、80x8 兼容性和绝对预算通过即为 Development Go，可进入 B1；相对 CPU 和终端写量门槛仅为 M10 默认切换的 Release Go。
 
 ## 1. 结论先行
 

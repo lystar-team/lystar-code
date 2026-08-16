@@ -1,5 +1,7 @@
 # AGENT_VERIFICATION
 
+最新补充：Rust B3 会话工作台专项在 Linux x64 新增 Host-Rust tmux/FIFO 两轮验收和 75 条 benchmark verifier。会话切换覆盖 A->B 的严格 release/acquire、B 失败回取 A、双失败后直接回查 Host `LeaseManager` 为 0 及 `q` 后仍为 0；只读 `v` 覆盖初始/older/search/scroll、无额外 `openSession`/lease/`.lock` 和关闭后主 transcript commit 可见。`npm run benchmark:rust-b3-workbench` 生成 75 条（5 场景 x 3 尺寸 x 5 轮），最大 p95/p99 为 5.304ms，RSS p95 为 25.680MiB，缓存两侧固定 400 rounds，regroup 不变。Tree open/filter 已进入正式 AppState benchmark；完整 Tree label/clear、navigate、fork、错误重试的外部 FIFO 矩阵仍未声明完成。详见 `docs/rust-tui-b3-workbench-report.md`。
+
 最新补充：Rust B3 会话与分支工作台已接入 `/sessions`、`/tree` 和 Ctrl+P。会话切换按 release old lease -> acquire target 处理，失败时重新获取原会话并恢复本地状态；只读视图使用独立 TranscriptWindow，不获取租约。`cargo test -p lystar-tui`、Host-Rust fd bridge tmux/FIFO `8/8`、`runtime-adapter.test.ts` `8/8` 及现有 10,000 Tool rounds benchmark verifier 已于 2026-08-16 本地通过。Windows named-pipe、真实 Provider、非 Linux 平台和独立 10,000 会话列表基准未验证。
 
 最新补充：B3 Settings 已统一为 TypeScript descriptor catalog。`/settings`、GUI Host `list_settings`/`set_setting` 复用同一 id、中文文案、类型、范围、scope 和 restartRequired；主题、警告分组与数值输入只保留交互职责。该 foundation 不包含 Rust B3 UI，且不改变 B0/M10 性能阈值。

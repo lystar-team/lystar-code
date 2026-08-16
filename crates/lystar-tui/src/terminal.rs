@@ -3927,9 +3927,11 @@ fn apply_response(app: &mut AppState, response: &ReadOnlyResponse) -> Result<boo
                     if pending.generation == app.session_generation
                         && app.active_session_path() == Some(pending.session_path.as_str()) =>
                 {
+                    trace_id("page_apply_start", id);
                     if !page.complete {
                         app.clear_for_reload("记录页未完整返回，正在重新读取");
                         trace("reload_requested");
+                        trace_id("page_apply_end", id);
                         return Ok(true);
                     }
                     if pending.kind == TranscriptRequestKind::Initial {
@@ -3956,10 +3958,14 @@ fn apply_response(app: &mut AppState, response: &ReadOnlyResponse) -> Result<boo
                     } else {
                         app.clear_for_reload("更早记录已过期，正在重新读取");
                         trace("reload_requested");
+                        trace_id("page_apply_end", id);
                         return Ok(true);
                     }
+                    trace_id("page_apply_end", id);
+                    trace("page_applied");
                 }
                 TranscriptViewKind::Readonly => {
+                    trace_id("page_apply_start", id);
                     let Some(view) = app.readonly_view.as_mut() else {
                         return Ok(false);
                     };
@@ -3997,6 +4003,8 @@ fn apply_response(app: &mut AppState, response: &ReadOnlyResponse) -> Result<boo
                     }
                     view.status = format!("{} 轮", view.transcript.cached_rounds());
                     refresh_readonly_overlay(app);
+                    trace_id("page_apply_end", id);
+                    trace("page_applied");
                 }
                 _ => {}
             }
@@ -4024,6 +4032,7 @@ fn apply_response(app: &mut AppState, response: &ReadOnlyResponse) -> Result<boo
                         && app.active_session_path() == Some(pending.session_path.as_str()) =>
                 {
                     app.set_search_results(hits);
+                    trace("search_applied");
                 }
                 TranscriptViewKind::Readonly => {
                     if let Some(view) = app.readonly_view.as_mut()
@@ -4034,6 +4043,7 @@ fn apply_response(app: &mut AppState, response: &ReadOnlyResponse) -> Result<boo
                         view.search.hits = hits;
                         view.search.status = format!("{} 个结果", view.search.hits.len());
                         refresh_readonly_overlay(app);
+                        trace("search_applied");
                     }
                 }
                 _ => {}

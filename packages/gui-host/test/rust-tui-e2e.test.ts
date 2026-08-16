@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import {
 	closeSync,
 	constants,
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	openSync,
@@ -14,7 +15,7 @@ import {
 	writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import {
@@ -373,8 +374,8 @@ class FakeRuntimeSession implements RuntimeSession {
 	getSessionTree() {
 		return [];
 	}
-	async setEntryLabel(): Promise<void> {}
-	async navigateSessionTree() {
+	async setEntryLabel(_entryId: string, _label?: string): Promise<void> {}
+	async navigateSessionTree(_entryId: string, _summarize: boolean) {
 		return { cancelled: false };
 	}
 	listSubagents() {
@@ -405,7 +406,7 @@ class FakeRuntimeSession implements RuntimeSession {
 	async runBash(): Promise<JsonValue> {
 		return {};
 	}
-	async rename(): Promise<void> {}
+	async rename(_nextName: string): Promise<void> {}
 	async setModel(model: { provider: string; id: string }): Promise<void> {
 		this.snapshot.model = model;
 		this.modelWrites.push(model);
@@ -610,6 +611,219 @@ function createAdapter(runtime: FakeRuntimeSession): RuntimeAdapter {
 	} as unknown as RuntimeAdapter;
 }
 
+class WorkbenchFixture {
+	readonly adapter: RuntimeAdapter;
+	readonly calls: string[] = [];
+	readonly effects = { create: 0, rename: 0, delete: 0, fork: 0, label: 0, navigate: 0 };
+	readonly paths: { a: string; b: string; c: string };
+	readonly tree = [
+		{
+			id: "user-root",
+			parentId: null,
+			kind: "user",
+			label: "labeled user",
+			timestamp: "2026-08-16T00:00:00Z",
+			preview: "user-only no-tools prompt",
+			isLeaf: false,
+			depth: 0,
+		},
+		{
+			id: "assistant-step",
+			parentId: "user-root",
+			kind: "assistant",
+			timestamp: "2026-08-16T00:00:01Z",
+			preview: "assistant no-tools response",
+			isLeaf: false,
+			depth: 1,
+		},
+		{
+			id: "tool-step",
+			parentId: "assistant-step",
+			kind: "tool",
+			timestamp: "2026-08-16T00:00:02Z",
+			preview: "Tool read src/tree.ts",
+			isLeaf: true,
+			depth: 2,
+		},
+	];
+	readonly sessions = new Map<string, { id: string; name: string; runtime: FakeRuntimeSession }>();
+	readonly failures = new Map<string, number>();
+	nextNavigation: { cancelled: boolean; editorText?: string; newLeafId?: string } = { cancelled: false };
+	private sequence = 0;
+
+	constructor(directory: string, initialPath: string) {
+		this.paths = {
+			a: initialPath,
+			b: join(directory, "session-b.jsonl"),
+			c: join(directory, "session-c.jsonl"),
+		};
+		this.addSession(initialPath, "A", "会话 A");
+		this.addSession(this.paths.b, "B", "会话 B");
+		this.addSession(this.paths.c, "C", "会话 C");
+		this.adapter = {
+			getAbout: () => createAdapter(this.runtimeFor(this.paths.a)).getAbout(),
+			getDiagnostics: async () => ({ checks: [], platform: "linux", arch: "x64" }),
+			listModels: async () => fakeModels(),
+			listModelProviders: async () => [],
+			openSession: async (path: string) => this.open(path),
+			createSession: async () => this.create(),
+			deleteSession: async (path: string) => this.delete(path),
+			listSessions: async () => this.list(),
+			inspectSession: (path: string) => this.runtimeFor(path).getSnapshot("available"),
+			isSessionWriterLocked: () => false,
+			listSettings: (path: string) => this.runtimeFor(path).listSettings(),
+			getSessionTree: () => this.tree,
+			listSubagents: () => [],
+			readSubagent: () => ({}),
+			getProjectTrust: (cwd: string) => ({ cwd, trusted: true }),
+			readClipboardText: async () => ({ capability: false }),
+			writeClipboardText: async () => ({ capability: false, changed: false }),
+		} as unknown as RuntimeAdapter;
+	}
+
+	runtimeFor(path: string): FakeRuntimeSession {
+		const runtime = this.sessions.get(path)?.runtime;
+		if (!runtime) throw new Error(`unknown session ${path}`);
+		return runtime;
+	}
+
+	failNextOpen(path: string, count = 1): void {
+		this.failures.set(path, count);
+	}
+
+	private addSession(path: string, id: string, name: string): FakeRuntimeSession {
+		if (!existsSync(path)) writeFileSync(path, sessionEntries(240));
+		const runtime = new FakeRuntimeSession(path);
+		const dispose = runtime.dispose.bind(runtime);
+		runtime.dispose = async () => {
+			this.calls.push(`dispose:${this.sessionName(runtime.sessionPath)}`);
+			await dispose();
+		};
+		runtime.rename = async (nextName: string) => {
+			this.effects.rename++;
+			this.sessions.get(runtime.sessionPath)!.name = nextName;
+			this.calls.push(`rename:${this.sessionName(runtime.sessionPath)}`);
+		};
+		runtime.fork = async () => this.fork(runtime);
+		runtime.setEntryLabel = async (entryId: string, label?: string) => {
+			this.effects.label++;
+			const node = this.tree.find((candidate) => candidate.id === entryId);
+			if (!node) throw new Error("tree node missing");
+			if (label) node.label = label;
+			else delete node.label;
+			this.calls.push(`label:${entryId}`);
+		};
+		runtime.navigateSessionTree = async (_entryId: string, summarize: boolean) => {
+			this.effects.navigate++;
+			this.calls.push(`navigate:${summarize}`);
+			const result = this.nextNavigation;
+			this.nextNavigation = { cancelled: false };
+			return result;
+		};
+		this.sessions.set(path, { id, name, runtime });
+		return runtime;
+	}
+
+	private sessionName(path: string): string {
+		return this.sessions.get(path)?.id ?? "fork";
+	}
+
+	private async open(path: string): Promise<FakeRuntimeSession> {
+		const remaining = this.failures.get(path) ?? 0;
+		this.calls.push(`open:${this.sessionName(path)}`);
+		if (remaining > 0) {
+			this.failures.set(path, remaining - 1);
+			throw new Error(`acquire ${this.sessionName(path)} failed`);
+		}
+		return this.runtimeFor(path);
+	}
+
+	private async create(): Promise<FakeRuntimeSession> {
+		this.effects.create++;
+		this.sequence++;
+		const path = join(dirname(this.paths.a), `session-created-${this.sequence}.jsonl`);
+		this.calls.push("create");
+		return this.addSession(path, `N${this.sequence}`, `新会话 ${this.sequence}`);
+	}
+
+	private async delete(path: string): Promise<void> {
+		this.effects.delete++;
+		this.calls.push(`delete:${this.sessionName(path)}`);
+		rmSync(path, { force: true });
+		this.sessions.delete(path);
+	}
+
+	private async fork(runtime: FakeRuntimeSession): Promise<{ sessionPath: string; selectedText?: string }> {
+		this.effects.fork++;
+		this.sequence++;
+		const originalPath = runtime.sessionPath;
+		const original = this.sessions.get(originalPath)!;
+		const forkPath = join(dirname(this.paths.a), `session-fork-${this.sequence}.jsonl`);
+		writeFileSync(forkPath, sessionEntries(240));
+		this.sessions.set(originalPath, {
+			id: original.id,
+			name: original.name,
+			runtime: this.addSession(originalPath, original.id, original.name),
+		});
+		this.sessions.get(forkPath) ?? this.addSession(forkPath, `F${this.sequence}`, `分叉 ${this.sequence}`);
+		(this.sessions.get(forkPath)!.runtime as unknown as { sessionPath: string }).sessionPath = forkPath;
+		(runtime as unknown as { sessionPath: string }).sessionPath = forkPath;
+		this.sessions.set(forkPath, { id: `F${this.sequence}`, name: `分叉 ${this.sequence}`, runtime });
+		this.calls.push(`fork:${original.id}`);
+		return { sessionPath: forkPath, selectedText: "tree replacement draft" };
+	}
+
+	private list() {
+		return [...this.sessions.entries()]
+			.filter(([path]) => existsSync(path))
+			.map(([path, session], index) => ({
+				path,
+				id: session.id,
+				cwd: dirname(path),
+				name: session.name,
+				createdAt: index,
+				updatedAt: index + 1,
+				messageCount: 240,
+				firstMessage: session.name,
+				activity: "idle" as const,
+			}));
+	}
+}
+
+function hostLeaseCount(service: GuiHostService): number {
+	return (service as unknown as { leases: { leases: Map<string, unknown> } }).leases.leases.size;
+}
+
+async function waitForRequest(
+	tui: StartedTui,
+	command: string,
+	count = 1,
+): Promise<Extract<ClientMessage, { type: "request" }>> {
+	let request: Extract<ClientMessage, { type: "request" }> | undefined;
+	await waitFor(async () => {
+		await tui.pump();
+		const matches = tui.clientMessages.filter(
+			(message): message is Extract<ClientMessage, { type: "request" }> =>
+				message.type === "request" && message.request.command === command,
+		);
+		request = matches.at(-1);
+		return matches.length >= count;
+	}, `Rust did not send ${command} x${count}`);
+	return request!;
+}
+
+async function openSessions(tui: StartedTui): Promise<void> {
+	tui.sendLiteral("/sessions");
+	tui.send("Enter");
+	const request = await waitForRequest(tui, "list_sessions");
+	await waitFor(() => tui.pane().includes("会话"), "session chooser did not render");
+	const response = tui.serverMessages.find(
+		(message) => message.type === "response" && message.id === request.id && message.ok,
+	);
+	assert.ok(response && response.type === "response" && response.ok, "Host did not return session list");
+	assert.equal((response.result as unknown[]).length, 3, "Host did not return exactly three sessions");
+}
+
 interface RequestRecord {
 	id: string;
 	command: string;
@@ -640,6 +854,7 @@ interface StartedTui {
 	clientInstanceId: string;
 	sttyBeforePath: string;
 	sttyAfterPath: string;
+	fixture?: WorkbenchFixture;
 	emitServer(message: ServerMessage): void;
 	closeProtocol(): void;
 }
@@ -648,6 +863,7 @@ async function startTui(
 	rounds: number,
 	dimensions: { width: number; height: number },
 	label: string,
+	hostFactory?: (context: { directory: string; sessionPath: string }) => WorkbenchFixture,
 ): Promise<StartedTui> {
 	run("cargo", ["build", "--release", "-p", "lystar-tui"]);
 	const directory = mkdtempSync(join(tmpdir(), "lystar-rust-m7-e2e-"));
@@ -693,8 +909,9 @@ async function startTui(
 	closeDescriptor(incomingReader);
 	closeDescriptor(outgoingWriter);
 
-	const runtime = new FakeRuntimeSession(sessionPath);
-	const service = new GuiHostService(createAdapter(runtime), { agentDir: directory });
+	const fixture = hostFactory?.({ directory, sessionPath });
+	const runtime = fixture?.runtimeFor(sessionPath) ?? new FakeRuntimeSession(sessionPath);
+	const service = new GuiHostService(fixture?.adapter ?? createAdapter(runtime), { agentDir: directory });
 	cleanups.push(async () => service.dispose());
 	const requests: RequestRecord[] = [];
 	const clientMessages: ClientMessage[] = [];
@@ -779,6 +996,7 @@ async function startTui(
 		clientInstanceId,
 		sttyBeforePath,
 		sttyAfterPath,
+		fixture,
 		emitServer,
 		closeProtocol,
 	};
@@ -1827,3 +2045,217 @@ function readInitialMetadata(tui: StartedTui): { generation: string; revision: n
 	}
 	return { generation: result.transcriptGeneration, revision: result.transcriptRevision };
 }
+
+describe("Rust B3 会话工作台外部验收", () => {
+	it("两轮验证会话切换回滚、无租约退出和真实列表", async () => {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const tui = await startTui(
+				240,
+				{ width: 80, height: 24 },
+				`session-lease-${attempt + 1}`,
+				({ directory, sessionPath }) => new WorkbenchFixture(directory, sessionPath),
+			);
+			try {
+				const fixture = tui.fixture!;
+				await waitForInitialPage(tui);
+				await waitForRequest(tui, "acquire_session");
+				assert.equal(hostLeaseCount(tui.service), 1, "initial Host lease is missing");
+				await openSessions(tui);
+				const firstSwitch = fixture.calls.length;
+				tui.send("Down", "Enter");
+				await waitForRequest(tui, "acquire_session", 2);
+				await waitFor(() => fixture.calls.includes("open:B"), "switch A->B did not acquire B");
+				assert.deepEqual(
+					fixture.calls.slice(firstSwitch).filter((call) => call === "dispose:A" || call === "open:B"),
+					["dispose:A", "open:B"],
+				);
+				assert.equal(hostLeaseCount(tui.service), 1, "A->B left multiple Host leases");
+
+				await openSessions(tui);
+				tui.send("Up", "Enter");
+				await waitForRequest(tui, "acquire_session", 3);
+				await waitFor(
+					() => fixture.calls.filter((call) => call === "open:A").length >= 2,
+					"switch B->A did not recover A",
+				);
+				fixture.failNextOpen(fixture.paths.b);
+				await openSessions(tui);
+				const rollbackStart = fixture.calls.length;
+				tui.send("Down", "Enter");
+				await waitForRequest(tui, "acquire_session", 5);
+				await waitFor(() => tui.pane().includes("切换失败，已恢复原会话"), "failed B acquire did not restore A");
+				assert.deepEqual(
+					fixture.calls.slice(rollbackStart).filter((call) => ["dispose:A", "open:B", "open:A"].includes(call)),
+					["dispose:A", "open:B", "open:A"],
+				);
+				assert.equal(hostLeaseCount(tui.service), 1, "rollback did not restore exactly one A lease");
+
+				fixture.failNextOpen(fixture.paths.b);
+				fixture.failNextOpen(fixture.paths.a);
+				const acquire = tui.serverMessages
+					.filter(
+						(message) =>
+							message.type === "response" &&
+							message.ok &&
+							typeof (message.result as { lease?: unknown }).lease === "object",
+					)
+					.at(-1);
+				assert.ok(acquire && acquire.type === "response" && acquire.ok, "missing restored A lease");
+				const leaseId = (acquire.result as { lease: { leaseId: string } }).lease.leaseId;
+				await tui.connection.handle({
+					type: "request",
+					id: `external-release-${attempt}`,
+					request: { command: "release_session", sessionPath: fixture.paths.a, leaseId },
+				});
+				const released = tui.serverMessages.find(
+					(message) => message.type === "response" && message.id === `external-release-${attempt}`,
+				);
+				assert.ok(
+					released && released.type === "response" && released.ok,
+					"external release did not clear A lease",
+				);
+				await tui.connection.handle({
+					type: "request",
+					id: `external-acquire-b-${attempt}`,
+					request: {
+						command: "acquire_session",
+						sessionPath: fixture.paths.b,
+						clientInstanceId: tui.clientInstanceId,
+					},
+				});
+				await tui.connection.handle({
+					type: "request",
+					id: `external-acquire-a-${attempt}`,
+					request: {
+						command: "acquire_session",
+						sessionPath: fixture.paths.a,
+						clientInstanceId: tui.clientInstanceId,
+					},
+				});
+				assert.equal(hostLeaseCount(tui.service), 0, "B and A failures retained a Host lease");
+				await openSessions(tui);
+				assert.ok(tui.pane().includes("会话"), "double failure did not retain a sessions chooser");
+				tui.send("Escape");
+				await waitFor(() => tui.pane().includes("Enter 提交"), "sessions chooser did not return focus to Composer");
+				tui.send("C-u");
+				tui.send("q");
+				await waitFor(async () => {
+					await tui.pump();
+					return spawnSync("tmux", ["-L", tui.socket, "has-session", "-t", "tui"]).status !== 0;
+				}, "q did not exit after lease loss");
+				assert.equal(hostLeaseCount(tui.service), 0, "q left a Host lease");
+				assert.equal(readFileSync(tui.sttyBeforePath, "utf8"), readFileSync(tui.sttyAfterPath, "utf8"));
+			} finally {
+				tui.closeProtocol();
+			}
+		}
+	}, 120_000);
+
+	it("两轮验证只读路径和窄终端返回 Composer", async () => {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const tui = await startTui(
+				240,
+				{ width: 80, height: 24 },
+				`readonly-tree-${attempt + 1}`,
+				({ directory, sessionPath }) => new WorkbenchFixture(directory, sessionPath),
+			);
+			try {
+				const fixture = tui.fixture!;
+				await waitForInitialPage(tui);
+				const initialOpenCount = fixture.calls.filter((call) => call.startsWith("open:")).length;
+				await openSessions(tui);
+				tui.send("Down", "v");
+				await waitFor(() => tui.pane().includes("会话只读"), "v did not open readonly session view");
+				await waitForRequest(tui, "read_transcript", 2);
+				assert.equal(
+					fixture.calls.filter((call) => call.startsWith("open:")).length,
+					initialOpenCount,
+					"readonly opened a runtime session",
+				);
+				assert.equal(hostLeaseCount(tui.service), 1, "readonly changed the active lease count");
+				assert.ok(!existsSync(`${fixture.paths.b}.lock`), "readonly created a tmp Session lock");
+				for (let index = 0; index < 10; index++) tui.send("PPage");
+				await waitForRequest(tui, "read_transcript", 3);
+				tui.send("C-f");
+				tui.sendLiteral("needle 12");
+				tui.send("Enter");
+				await waitForRequest(tui, "search_transcript");
+				tui.send("Down", "Up");
+
+				const metadata = readInitialMetadata(tui);
+				const beforeAppend = tui.traces().filter((event) => event.event === "append_applied").length;
+				tui.runtime.emit({
+					type: "progress",
+					payload: { type: "assistant_delta", text: "readonly-live-progress" },
+				});
+				emitCommitted(tui.runtime, metadata.generation, metadata.revision);
+				await waitForTrace(tui, "append_applied", beforeAppend + 1);
+				tui.send("Escape");
+				await waitFor(() => tui.pane().includes("Enter 提交"), "readonly Esc did not restore Composer");
+				tui.send("C-o");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.pane().includes("append-visible");
+				}, "main view did not retain committed active transcript after readonly close");
+
+				tui.resize(80, 8);
+				await waitFor(
+					() => tui.pane().includes("Enter 提交"),
+					"80x8 did not retain Composer before sessions reopen",
+				);
+				await openSessions(tui);
+				await waitFor(() => tui.pane().includes("会话"), "80x8 did not render sessions");
+				tui.send("Escape");
+				await waitFor(
+					() => tui.pane().includes("Enter 提交"),
+					"Esc from sessions did not restore Composer shortcut",
+				);
+				tui.resize(120, 36);
+				tui.resize(80, 8);
+				await waitFor(() => tui.pane().includes("Enter 提交"), "resize round trip did not restore Composer");
+				tui.closeProtocol();
+				await waitFor(
+					() => spawnSync("tmux", ["-L", tui.socket, "has-session", "-t", "tui"]).status !== 0,
+					"EOF did not close readonly/tree TUI",
+				);
+				await tui.connection.close();
+				assert.equal(hostLeaseCount(tui.service), 0, "readonly/tree EOF left a Host lease");
+				assert.equal(readFileSync(tui.sttyBeforePath, "utf8"), readFileSync(tui.sttyAfterPath, "utf8"));
+			} finally {
+				tui.closeProtocol();
+			}
+		}
+	}, 180_000);
+
+	it("两轮从干净 Composer 打开 Tree 并返回", async () => {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const tui = await startTui(
+				4,
+				{ width: 80, height: 24 },
+				`tree-entry-${attempt + 1}`,
+				({ directory, sessionPath }) => new WorkbenchFixture(directory, sessionPath),
+			);
+			try {
+				await waitForInitialPage(tui);
+				tui.sendLiteral("/tree");
+				tui.send("Enter");
+				await waitForRequest(tui, "get_session_tree");
+				await waitFor(
+					() => tui.pane().includes("分支树") && tui.pane().includes("labeled user"),
+					"Tree did not render the Host projection",
+				);
+				tui.resize(80, 8);
+				await waitFor(() => tui.pane().includes("分支树"), "80x8 did not retain Tree overlay");
+				tui.send("Escape");
+				await waitFor(() => tui.pane().includes("Enter 提交"), "Tree Esc did not restore Composer");
+				tui.closeProtocol();
+				await waitFor(
+					() => spawnSync("tmux", ["-L", tui.socket, "has-session", "-t", "tui"]).status !== 0,
+					"Tree EOF did not exit",
+				);
+			} finally {
+				tui.closeProtocol();
+			}
+		}
+	}, 90_000);
+});
