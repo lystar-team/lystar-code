@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { assertB3CommandResult } from "@lystar/code-gui-protocol";
 import { afterEach, describe, expect, it } from "vitest";
@@ -404,6 +405,67 @@ describe("CodingAgentRuntimeAdapter", () => {
 		expect(stagedDiff).toMatchObject({ path: "staged.txt", staged: true, additions: 1, deletions: 0 });
 		expect(stagedDiff.diff).toContain("+staged");
 		expect(await adapter.getGitStatus(tempDir)).toEqual(before);
+	});
+
+	it("bridges a real Extension Tier1 UI state, editor mirror, and terminal input", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-extension-ui-"));
+		const agentDir = join(tempDir, "agent");
+		const cwd = join(tempDir, "project");
+		for (const dir of [agentDir, cwd]) mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({
+				defaultProvider: "lystar-contract-faux",
+				defaultModel: "contract-1",
+				defaultThinkingLevel: "off",
+				defaultProjectTrust: "always",
+				extensions: [fileURLToPath(new URL("./fixtures/runtime-contract-extension.ts", import.meta.url))],
+			}),
+		);
+		let runtime: RuntimeSession | undefined;
+		cleanups.push(async () => {
+			await runtime?.dispose();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+		runtime = await new CodingAgentRuntimeAdapter(agentDir).createSession(cwd, async () => ({ cancelled: true }));
+		const events: RuntimeEvent[] = [];
+		runtime.onEvent((event) => events.push(event));
+
+		await runtime.prompt("/contract-rust-ui");
+		const snapshot = runtime.getExtensionUiSnapshot?.();
+		expect(snapshot).toMatchObject({
+			statuses: [{ key: "contract", text: "ready" }],
+			widgets: [{ key: "contract", placement: "below", lines: ["extension widget", "second line"] }],
+			terminalInputListenerCount: 1,
+		});
+		const extensionEvents = events
+			.filter((event) => event.type === "extension_ui")
+			.map((event) => event.payload as { type?: string; delta?: Record<string, unknown> });
+		expect(extensionEvents).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					type: "delta",
+					delta: expect.objectContaining({ workingMessage: "extension working" }),
+				}),
+				expect.objectContaining({
+					type: "delta",
+					delta: expect.objectContaining({ hiddenThinkingLabel: "extension thinking" }),
+				}),
+				expect.objectContaining({ type: "delta", delta: expect.objectContaining({ title: "Extension Contract" }) }),
+				expect.objectContaining({ type: "editor_action" }),
+			]),
+		);
+		expect(runtime.updateExtensionEditorState?.("host editor", 1)).toBe(snapshot?.revision);
+		await expect(runtime.dispatchExtensionTerminalInput?.("\u001b[A")).resolves.toEqual({
+			consume: false,
+			data: "up",
+		});
+		await runtime.reloadResources();
+		expect(runtime.getExtensionUiSnapshot?.()).toMatchObject({
+			statuses: [],
+			widgets: [],
+			terminalInputListenerCount: 0,
+		});
 	});
 
 	it("routes API key login through a secret UI request and Core credential storage", async () => {

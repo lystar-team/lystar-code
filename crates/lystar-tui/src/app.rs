@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fmt,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
@@ -1083,6 +1083,55 @@ pub struct SearchHit {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionWidget {
+    pub key: String,
+    pub placement: String,
+    pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionUiState {
+    pub revision: u64,
+    pub statuses: BTreeMap<String, String>,
+    pub widgets: Vec<ExtensionWidget>,
+    pub working_message: Option<String>,
+    pub working_visible: bool,
+    pub working_frames: Vec<String>,
+    pub working_interval_ms: u64,
+    pub hidden_thinking_label: Option<String>,
+    pub title: Option<String>,
+    pub terminal_input_listener_count: u64,
+}
+
+impl Default for ExtensionUiState {
+    fn default() -> Self {
+        Self {
+            revision: 0,
+            statuses: BTreeMap::new(),
+            widgets: Vec::new(),
+            working_message: None,
+            working_visible: true,
+            working_frames: vec![
+                "-".to_owned(),
+                "\\".to_owned(),
+                "|".to_owned(),
+                "/".to_owned(),
+            ],
+            working_interval_ms: 120,
+            hidden_thinking_label: None,
+            title: None,
+            terminal_input_listener_count: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingTerminalInput {
+    pub data: String,
+    pub started_at: Instant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveTool {
     pub name: String,
     pub summary: String,
@@ -1154,6 +1203,11 @@ pub struct AppState {
     workspace_generations: HashMap<String, u64>,
     pub active_ui_request: Option<UiRequest>,
     responded_ui_requests: HashSet<String>,
+    pub extension_ui: ExtensionUiState,
+    pub pending_terminal_inputs: HashMap<String, PendingTerminalInput>,
+    editor_generation: u64,
+    synced_editor_text: String,
+    synced_editor_cursor: usize,
     composer_width: u16,
 }
 
@@ -2106,7 +2160,80 @@ impl AppState {
     }
 
     pub fn composer_height(&self, total_height: u16) -> u16 {
-        if total_height <= 8 { 4 } else { 6 }
+        let base: u16 = if total_height <= 8 { 4 } else { 6 };
+        base.saturating_add(self.extension_widget_budget(total_height))
+    }
+
+    pub fn extension_widget_budget(&self, total_height: u16) -> u16 {
+        if total_height <= 8 {
+            return 0;
+        }
+        let lines = self
+            .extension_ui
+            .widgets
+            .iter()
+            .map(|widget| widget.lines.len())
+            .sum::<usize>();
+        u16::try_from(lines.min(8))
+            .unwrap_or(8)
+            .min(total_height.saturating_sub(8))
+    }
+
+    pub fn extension_widgets(&self, placement: &str, budget: usize) -> Vec<&ExtensionWidget> {
+        let mut used: usize = 0;
+        self.extension_ui
+            .widgets
+            .iter()
+            .filter(|widget| widget.placement == placement)
+            .filter(|widget| {
+                let next = used.saturating_add(widget.lines.len());
+                if next > budget {
+                    return false;
+                }
+                used = next;
+                true
+            })
+            .collect()
+    }
+
+    pub fn apply_extension_ui_snapshot(&mut self, state: ExtensionUiState) -> bool {
+        if state.revision < self.extension_ui.revision {
+            return false;
+        }
+        self.extension_ui = state;
+        true
+    }
+
+    pub fn apply_extension_editor_action(
+        &mut self,
+        action: &str,
+        text: &str,
+        revision: u64,
+    ) -> bool {
+        if revision < self.extension_ui.revision || text.len() > crate::editor::MAX_EDITOR_BYTES {
+            return false;
+        }
+        if action == "paste" {
+            self.editor.insert(text);
+        } else if action == "set" {
+            self.editor.replace(text);
+        } else {
+            return false;
+        }
+        self.extension_ui.revision = revision;
+        true
+    }
+
+    pub fn take_editor_state_update(&mut self) -> Option<(String, usize, u64)> {
+        let text = self.editor.text();
+        let cursor = self.editor.cursor();
+        if text == self.synced_editor_text && cursor == self.synced_editor_cursor {
+            return None;
+        }
+        self.editor_generation = self.editor_generation.saturating_add(1);
+        self.synced_editor_text = text.to_owned();
+        self.synced_editor_cursor = cursor;
+        Some((text.to_owned(), cursor, self.editor_generation))
     }
 
     pub fn is_active_operation(&self) -> bool {
@@ -2144,14 +2271,27 @@ impl AppState {
             .map_or("无模型".to_owned(), |model| {
                 format!("{}/{}", model.provider, model.id)
             });
+        let extension_status = self
+            .extension_ui
+            .statuses
+            .values()
+            .filter(|value| !value.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" | ");
         format!(
-            "{} 队列 {}/{} {} 思考 {} {}",
+            "{} 队列 {}/{} {} 思考 {} {}{}",
             snapshot.phase,
             snapshot.queued_steer_count,
             snapshot.queued_follow_up_count,
             model,
             snapshot.thinking_level,
-            snapshot.cwd
+            snapshot.cwd,
+            if extension_status.is_empty() {
+                String::new()
+            } else {
+                format!(" | {extension_status}")
+            }
         )
     }
 
@@ -2760,15 +2900,50 @@ impl Widget for ComposerView<'_> {
             return;
         }
         let width = usize::from(area.width);
+        let widget_budget = usize::from(self.state.extension_widget_budget(area.height));
+        let above = self.state.extension_widgets("above", widget_budget);
+        let above_lines = above
+            .iter()
+            .flat_map(|widget| widget.lines.iter())
+            .collect::<Vec<_>>();
+        let below = self
+            .state
+            .extension_widgets("below", widget_budget.saturating_sub(above_lines.len()));
+        let below_lines = below
+            .iter()
+            .flat_map(|widget| widget.lines.iter())
+            .collect::<Vec<_>>();
+        let mut row = area.y;
+        for line in above_lines {
+            put_line(
+                buffer,
+                area.x,
+                row,
+                line,
+                width,
+                Style::default().fg(Color::Cyan),
+            );
+            row = row.saturating_add(1);
+        }
         put_line(
             buffer,
             area.x,
-            area.y,
+            row,
             "─",
             width,
             Style::default().fg(Color::DarkGray),
         );
-        let visible_lines = usize::from(area.height.saturating_sub(3)).max(1);
+        row = row.saturating_add(1);
+        let reserved = u16::try_from(below_lines.len())
+            .unwrap_or(u16::MAX)
+            .saturating_add(2);
+        let visible_lines = usize::from(
+            area.y
+                .saturating_add(area.height)
+                .saturating_sub(row)
+                .saturating_sub(reserved),
+        )
+        .max(1);
         let start_line = self.state.editor.scroll_line();
         for (line_index, rendered) in self
             .state
@@ -2782,20 +2957,60 @@ impl Widget for ComposerView<'_> {
             put_line(
                 buffer,
                 area.x,
-                area.y + 1 + u16::try_from(line_index - start_line).unwrap_or(0),
+                row + u16::try_from(line_index - start_line).unwrap_or(0),
                 rendered,
                 width,
                 Style::default().fg(Color::White),
             );
         }
+        row = row.saturating_add(u16::try_from(visible_lines).unwrap_or(u16::MAX));
+        let status_y = area.y + area.height.saturating_sub(2);
+        for line in below_lines {
+            if row >= status_y {
+                break;
+            }
+            put_line(
+                buffer,
+                area.x,
+                row,
+                line,
+                width,
+                Style::default().fg(Color::Cyan),
+            );
+            row = row.saturating_add(1);
+        }
         let tool_line = live_tool_line(&self.state.live_tools, width);
         let attachment_line = self.state.attachment_summary(area.height <= 4);
-        let status_line = attachment_line.unwrap_or(tool_line);
+        let working = if self.state.is_active_operation() && self.state.extension_ui.working_visible
+        {
+            let frames = &self.state.extension_ui.working_frames;
+            let frame = if frames.is_empty() {
+                ""
+            } else {
+                let elapsed = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                &frames[((elapsed / self.state.extension_ui.working_interval_ms.max(16)) as usize)
+                    % frames.len()]
+            };
+            Some(format!(
+                "{frame} {}",
+                self.state
+                    .extension_ui
+                    .working_message
+                    .as_deref()
+                    .unwrap_or("运行中")
+            ))
+        } else {
+            None
+        };
+        let status_line = attachment_line.or(working).unwrap_or(tool_line);
         if !status_line.is_empty() {
             put_line(
                 buffer,
                 area.x,
-                area.y + area.height.saturating_sub(2),
+                status_y,
                 &status_line,
                 width,
                 Style::default().fg(Color::Cyan),

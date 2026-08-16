@@ -35,6 +35,10 @@ impl EditorState {
         &self.text
     }
 
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
     pub fn is_empty(&self) -> bool {
         self.text.is_empty()
     }

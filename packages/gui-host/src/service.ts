@@ -6,6 +6,7 @@ import {
 	type Capability,
 	type ClientMessage,
 	type CompletionResult,
+	type ExtensionUiState,
 	GUI_PROTOCOL_VERSION,
 	isSessionProgress,
 	type JsonValue,
@@ -46,6 +47,7 @@ const BASE_CAPABILITIES: Capability[] = [
 	"directory-browser",
 	"external-resources",
 	"rust-workspace-b3",
+	"rust-extension-ui",
 ];
 
 const ACTIVE_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>(["accepted", "running", "waiting_for_input"]);
@@ -94,6 +96,8 @@ const B3_COMMANDS = {
 	render_rich_text: true,
 	read_image_content: true,
 	get_completions: true,
+	extension_editor_state: true,
+	extension_terminal_input: true,
 } as const;
 
 function projectSessionProgress(value: JsonValue | SessionProgress): SessionProgress {
@@ -550,6 +554,18 @@ export class GuiHostService {
 			}
 			case "list_operations":
 				return this.journal.list(request.sessionPath ? canonicalSessionPath(request.sessionPath) : undefined);
+			case "extension_editor_state": {
+				const sessionPath = canonicalSessionPath(request.sessionPath);
+				const runtime = this.runtimes.get(sessionPath);
+				if (!runtime) throw Object.assign(new Error("尚未获取会话运行时"), { code: "session_not_acquired" });
+				return { revision: runtime.updateExtensionEditorState?.(request.text, request.generation) ?? 0 };
+			}
+			case "extension_terminal_input": {
+				const sessionPath = canonicalSessionPath(request.sessionPath);
+				const runtime = this.runtimes.get(sessionPath);
+				if (!runtime) throw Object.assign(new Error("尚未获取会话运行时"), { code: "session_not_acquired" });
+				return runtime.dispatchExtensionTerminalInput?.(request.data) ?? { consume: false };
+			}
 			case "list_models":
 				return jsonValue(await this.adapter.listModels());
 			case "list_model_providers":
@@ -1394,6 +1410,8 @@ export class GuiHostService {
 		if (existing === runtime) return;
 		if (existing) throw new Error(`Session runtime is already attached: ${sessionPath}`);
 		this.runtimes.set(sessionPath, runtime);
+		const extensionUi = runtime.getExtensionUiSnapshot?.();
+		if (extensionUi) void this.broadcast({ type: "extension_ui_snapshot", sessionPath, state: extensionUi });
 		this.runtimeUnsubscribers.set(
 			sessionPath,
 			runtime.onEvent((event) => {
@@ -1414,6 +1432,24 @@ export class GuiHostService {
 						toRevision: payload.transcriptRevision,
 						items: payload.items.map((item) => this.projectTranscriptItem(sessionPath, item)),
 					});
+				} else if (event.type === "extension_ui") {
+					const payload = event.payload as
+						| { type: "snapshot"; state: ExtensionUiState }
+						| {
+								type: "delta";
+								delta: Omit<Partial<ExtensionUiState>, "revision"> & { revision: number };
+						  }
+						| {
+								type: "editor_action";
+								action: { action: "paste" | "set"; text: string; revision: number };
+						  };
+					if (payload.type === "snapshot") {
+						void this.broadcast({ type: "extension_ui_snapshot", sessionPath, state: payload.state });
+					} else if (payload.type === "delta") {
+						void this.broadcast({ type: "extension_ui_delta", sessionPath, delta: payload.delta });
+					} else {
+						void this.broadcast({ type: "extension_editor_action", sessionPath, action: payload.action });
+					}
 				} else {
 					void this.broadcast({
 						type: "session_progress",

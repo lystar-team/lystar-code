@@ -93,6 +93,7 @@ import type {
 	TranscriptItem,
 } from "@lystar/code-gui-protocol";
 import { GUI_PROTOCOL_VERSION } from "@lystar/code-gui-protocol";
+import { ExtensionUiBridge } from "./extension-ui-bridge.ts";
 import type {
 	ModelProviderInput,
 	ModelProviderSummary,
@@ -703,7 +704,7 @@ function contentImages(images?: Array<{ data: string; mimeType: string }>) {
 class CoreRuntimeSession implements RuntimeSession {
 	private readonly listeners = new Set<(event: RuntimeEvent) => void>();
 	private readonly runtime: Awaited<ReturnType<typeof createAgentSessionRuntime>>;
-	private readonly onUiRequest: UiRequestHandler;
+	private readonly extensionUi: ExtensionUiBridge;
 	private unsubscribe?: () => void;
 	private stateRevision = 0;
 	private committedEntryCount = 0;
@@ -713,7 +714,17 @@ class CoreRuntimeSession implements RuntimeSession {
 
 	constructor(runtime: Awaited<ReturnType<typeof createAgentSessionRuntime>>, onUiRequest: UiRequestHandler) {
 		this.runtime = runtime;
-		this.onUiRequest = onUiRequest;
+		this.extensionUi = new ExtensionUiBridge(
+			onUiRequest,
+			(event) => this.emit({ type: "extension_ui", payload: jsonValue(event) }),
+			(error) =>
+				this.runtime.session.extensionRunner.emitError({
+					extensionPath: "rust-extension-ui",
+					event: error.event,
+					error: error.error,
+					...(error.stack ? { stack: error.stack } : {}),
+				}),
+		);
 	}
 
 	get sessionPath(): string {
@@ -939,6 +950,7 @@ class CoreRuntimeSession implements RuntimeSession {
 
 	async reloadResources(): Promise<void> {
 		await this.runtime.session.reload();
+		this.extensionUi.reset();
 		this.emitStateChanged();
 	}
 
@@ -1012,7 +1024,20 @@ class CoreRuntimeSession implements RuntimeSession {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.unsubscribe?.();
+		this.extensionUi.dispose();
 		await this.runtime.dispose();
+	}
+
+	getExtensionUiSnapshot() {
+		return this.extensionUi.snapshot();
+	}
+
+	updateExtensionEditorState(text: string, generation: number): number {
+		return this.extensionUi.updateEditorState(text, generation);
+	}
+
+	async dispatchExtensionTerminalInput(data: string) {
+		return this.extensionUi.dispatchTerminalInput(data);
 	}
 
 	onEvent(listener: (event: RuntimeEvent) => void): () => void {
@@ -1022,6 +1047,7 @@ class CoreRuntimeSession implements RuntimeSession {
 
 	private async bindCurrentSession(): Promise<void> {
 		this.unsubscribe?.();
+		this.extensionUi.reset();
 		const session = this.runtime.session;
 		const unsupportedSessionChange = async () => {
 			throw new Error("LYStar GUI 后台不支持由扩展替换会话");
@@ -1035,7 +1061,7 @@ class CoreRuntimeSession implements RuntimeSession {
 			reload: () => session.reload(),
 		};
 		await session.bindExtensions({
-			uiContext: createUiContext(this.onUiRequest),
+			uiContext: this.extensionUi.context() as ExtensionUIContext,
 			mode: "rpc",
 			commandContextActions,
 			abortHandler: () => void this.abort(),

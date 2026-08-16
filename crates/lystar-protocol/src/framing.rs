@@ -380,6 +380,38 @@ pub fn encode_b3_request(
     encode_client_value(serde_json::json!({ "type": "request", "id": id, "request": request }))
 }
 
+pub fn encode_extension_editor_state_request(
+    id: &str,
+    session_path: &str,
+    text: &str,
+    cursor: usize,
+    generation: u64,
+    ack_revision: Option<u64>,
+) -> Result<Vec<u8>, ProtocolError> {
+    let mut request = serde_json::json!({
+        "command": "extension_editor_state",
+        "sessionPath": session_path,
+        "text": text,
+        "cursor": cursor,
+        "generation": generation,
+    });
+    if let Some(ack_revision) = ack_revision {
+        request["ackRevision"] = serde_json::Value::from(ack_revision);
+    }
+    encode_client_value(serde_json::json!({ "type": "request", "id": id, "request": request }))
+}
+
+pub fn encode_extension_terminal_input_request(
+    id: &str,
+    session_path: &str,
+    data: &str,
+) -> Result<Vec<u8>, ProtocolError> {
+    encode_client_value(serde_json::json!({
+        "type": "request", "id": id,
+        "request": { "command": "extension_terminal_input", "sessionPath": session_path, "data": data },
+    }))
+}
+
 pub fn encode_ui_response(
     id: &str,
     value: Option<serde_json::Value>,

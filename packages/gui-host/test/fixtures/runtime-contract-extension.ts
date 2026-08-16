@@ -62,4 +62,18 @@ export default function runtimeContractExtension(pi: ExtensionAPI): void {
 			ctx.ui.notify(JSON.stringify({ selected, confirmed, input, edited }), "info");
 		},
 	});
+	pi.registerCommand("contract-rust-ui", {
+		description: "Exercise Rust Tier1 Extension UI state and raw input bridge",
+		handler: async (_args, ctx) => {
+			ctx.ui.setStatus("contract", "ready");
+			ctx.ui.setWidget("contract", ["extension widget", "second line"], { placement: "belowEditor" });
+			ctx.ui.setWorkingMessage("extension working");
+			ctx.ui.setWorkingIndicator({ frames: [".", "o"], intervalMs: 40 });
+			ctx.ui.setHiddenThinkingLabel("extension thinking");
+			ctx.ui.setTitle("Extension Contract");
+			ctx.ui.onTerminalInput((data) => (data === "\u001b[A" ? { data: "up" } : undefined));
+			ctx.ui.setEditorText("extension editor");
+			ctx.ui.notify("rust ui ready", "info");
+		},
+	});
 }

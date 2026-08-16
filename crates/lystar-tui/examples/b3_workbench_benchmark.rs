@@ -13,9 +13,10 @@ use std::{
 use lystar_protocol::{ToolCall, TranscriptItem, TranscriptViewItem};
 use lystar_tui::{
     app::{
-        AppState, ComposerAttachment, ComposerView, DetailOverlay, ListOverlay, OverlayItem,
-        OverlayOrigin, OverlayState, ReadonlySessionView, SessionTreeNode, TranscriptView,
-        WorkbenchOverlayView, composer_area, transcript_area,
+        AppState, ComposerAttachment, ComposerView, DetailOverlay, ExtensionUiState,
+        ExtensionWidget, ListOverlay, OverlayItem, OverlayOrigin, OverlayState,
+        ReadonlySessionView, SessionTreeNode, TranscriptView, WorkbenchOverlayView, composer_area,
+        transcript_area,
     },
     editor::EditorState,
 };
@@ -338,6 +339,26 @@ fn apply_scenario(app: &mut AppState, scenario: &str) {
             copy_text: None,
         })),
         "regular_scroll" => app.transcript.scroll_by(-20),
+        "extension_ui" => {
+            app.extension_ui = ExtensionUiState {
+                revision: 1,
+                statuses: [("extension".to_owned(), "ready".to_owned())]
+                    .into_iter()
+                    .collect(),
+                widgets: vec![ExtensionWidget {
+                    key: "benchmark".to_owned(),
+                    placement: "above".to_owned(),
+                    lines: vec!["Extension widget".to_owned(), "80x8 safe".to_owned()],
+                }],
+                working_message: Some("Extension working".to_owned()),
+                working_visible: true,
+                working_frames: vec![".".to_owned(), "o".to_owned()],
+                working_interval_ms: 40,
+                hidden_thinking_label: Some("Extension thinking".to_owned()),
+                title: Some("Extension benchmark".to_owned()),
+                terminal_input_listener_count: 1,
+            };
+        }
         "readonly_open" => open_readonly(app),
         "older_scroll" => {
             app.readonly_view

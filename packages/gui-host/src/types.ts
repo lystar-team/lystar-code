@@ -4,6 +4,8 @@ import type {
 	CompletionItem,
 	CompletionResult,
 	ContentChunk,
+	ExtensionTerminalInputResult,
+	ExtensionUiState,
 	GitDiff,
 	GitStatus,
 	HostDirectoryListing,
@@ -27,7 +29,7 @@ import type {
 } from "@lystar/code-gui-protocol";
 
 export interface RuntimeEvent {
-	type: "progress" | "entry_committed" | "state_changed" | "ui_request";
+	type: "progress" | "entry_committed" | "state_changed" | "ui_request" | "extension_ui";
 	payload: JsonValue | SessionProgress;
 }
 
@@ -83,6 +85,9 @@ export interface RuntimeSession {
 	reloadResources(): Promise<void>;
 	getCompletions(text: string, cursor: number): CompletionResult | undefined;
 	renderRichText?(request: RichTextRenderRequest): RenderRichTextResult;
+	getExtensionUiSnapshot?(): ExtensionUiState;
+	updateExtensionEditorState?(text: string, generation: number): number;
+	dispatchExtensionTerminalInput?(data: string): Promise<ExtensionTerminalInputResult>;
 	getToolRecoveryDiagnostics(): ToolRecoveryRuntimeDiagnostics;
 	dispose(): Promise<void>;
 	onEvent(listener: (event: RuntimeEvent) => void): () => void;

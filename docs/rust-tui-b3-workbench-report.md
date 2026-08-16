@@ -2,6 +2,12 @@
 
 核验日期：2026-08-16。范围是 Linux x64 上的 Rust TUI、GUI Host 和 Unix fd3/fd4 FIFO bridge；Runtime 使用 fake adapter，Session 使用真实临时 JSONL。未调用真实 Provider，未访问网络。
 
+## Extension Tier0/1
+
+Rust TUI 已通过 GUI Host 的 `ExtensionUIContext` bridge 接入 Tier0/1：现有通用 Tool card 继续渲染 Extension Tool 的 `content`、`details`、`error` 和图片元数据；Tier1 支持 `select`、`confirm`、`input`、`editor`、`notify`、status、working、文本 Widget、title、编辑器镜像和 terminal input listener。状态通过有界 `extension_ui_snapshot`/`extension_ui_delta`/`extension_editor_action` 事件同步，编辑器和原始终端输入通过 request/response 回传。重载、Session 切换和 dispose 会清空 bridge 状态；listener 存在时 key、paste、滚轮和 resize 走带超时的回传，超时或断连后回退本地输入，不能阻塞 Composer。
+
+`custom()`、Header/Footer Component、Editor Component 和 autocomplete provider 仍属于 Tier3，Host 通过通知给出 `Tier3 bridge pending` 诊断，不伪装为可用。真实 Extension fixture 已覆盖状态、Widget、working/title 事件、编辑器动作和 terminal listener；工作台基准新增 `extension_ui`，在 80x24、120x36、200x60 各五轮共 15 条记录。最新一次 `extension_ui` p95 为 2.918ms 至 3.429ms，RSS p95 约 27.25 MiB。
+
 ## B3 最终补充：Rust 运行模式与退出输出
 
 本轮在 Linux x64 完成 Rust TUI 的 `--run <session> --mode auto|fullscreen|regular --exit-output transcript|resume-hint`。旧 `--run <session>` 参数仍可用。`auto` 先读取 `PI_TUI_MODE`，再根据 stdin/stdout TTY、`TERM=dumb` 和 alternate-screen 能力决定模式；Coding Agent 的 LYStar-owned launch options helper 只把 SettingsManager 的 `tui-mode` 与 `fullscreen-exit-output` 映射为 Rust argv，不改 Node `InteractiveMode` 默认路径。

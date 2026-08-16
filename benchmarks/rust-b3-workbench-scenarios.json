@@ -17,6 +17,7 @@
     { "name": "regular_input", "mode": "regular" },
     { "name": "regular_overlay", "mode": "regular" },
     { "name": "regular_scroll", "mode": "regular" },
+    { "name": "extension_ui" },
     { "name": "readonly_open" },
     { "name": "older_scroll" },
     { "name": "search" },

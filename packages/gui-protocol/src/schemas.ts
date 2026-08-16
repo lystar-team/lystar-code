@@ -142,6 +142,7 @@ export const CapabilitySchema = Type.Union([
 	Type.Literal("directory-browser"),
 	Type.Literal("external-resources"),
 	Type.Literal("rust-workspace-b3"),
+	Type.Literal("rust-extension-ui"),
 ]);
 export type Capability = Static<typeof CapabilitySchema>;
 
@@ -794,6 +795,53 @@ export const ClipboardImageReadResultSchema = StrictObject({
 });
 export type ClipboardImageReadResult = Static<typeof ClipboardImageReadResultSchema>;
 
+const ExtensionUiStatusSchema = StrictObject({
+	key: Id,
+	text: Type.String({ maxLength: 4096 }),
+});
+const ExtensionUiWidgetSchema = StrictObject({
+	key: Id,
+	placement: Type.Union([Type.Literal("above"), Type.Literal("below")]),
+	lines: Type.Array(Type.String({ maxLength: 4096 }), { maxItems: 32 }),
+});
+const ExtensionWorkingIndicatorSchema = StrictObject({
+	frames: Type.Array(Type.String({ maxLength: 256 }), { maxItems: 32 }),
+	intervalMs: Type.Integer({ minimum: 16, maximum: 60_000 }),
+});
+const ExtensionUiStateSchema = StrictObject({
+	revision: Type.Integer({ minimum: 0 }),
+	statuses: Type.Array(ExtensionUiStatusSchema, { maxItems: 128 }),
+	widgets: Type.Array(ExtensionUiWidgetSchema, { maxItems: 64 }),
+	workingMessage: Type.Union([Type.String({ maxLength: 4096 }), Type.Null()]),
+	workingVisible: Type.Boolean(),
+	workingIndicator: ExtensionWorkingIndicatorSchema,
+	hiddenThinkingLabel: Type.Union([Type.String({ maxLength: 4096 }), Type.Null()]),
+	title: Type.Union([Type.String({ maxLength: 4096 }), Type.Null()]),
+	terminalInputListenerCount: Type.Integer({ minimum: 0, maximum: 128 }),
+});
+export type ExtensionUiState = Static<typeof ExtensionUiStateSchema>;
+const ExtensionUiDeltaSchema = StrictObject({
+	revision: Type.Integer({ minimum: 0 }),
+	statuses: Type.Optional(Type.Array(ExtensionUiStatusSchema, { maxItems: 128 })),
+	widgets: Type.Optional(Type.Array(ExtensionUiWidgetSchema, { maxItems: 64 })),
+	workingMessage: Type.Optional(Type.Union([Type.String({ maxLength: 4096 }), Type.Null()])),
+	workingVisible: Type.Optional(Type.Boolean()),
+	workingIndicator: Type.Optional(ExtensionWorkingIndicatorSchema),
+	hiddenThinkingLabel: Type.Optional(Type.Union([Type.String({ maxLength: 4096 }), Type.Null()])),
+	title: Type.Optional(Type.Union([Type.String({ maxLength: 4096 }), Type.Null()])),
+	terminalInputListenerCount: Type.Optional(Type.Integer({ minimum: 0, maximum: 128 })),
+});
+const ExtensionEditorActionSchema = StrictObject({
+	action: Type.Union([Type.Literal("paste"), Type.Literal("set")]),
+	text: Type.String({ maxLength: 64 * 1024 }),
+	revision: Type.Integer({ minimum: 0 }),
+});
+const ExtensionTerminalInputResultSchema = StrictObject({
+	consume: Type.Boolean(),
+	data: Type.Optional(Type.String({ maxLength: 256 })),
+});
+export type ExtensionTerminalInputResult = Static<typeof ExtensionTerminalInputResultSchema>;
+
 export const B3CommandResultSchemas = {
 	list_skills: ListSkillsResultSchema,
 	set_skill_enabled: SetSkillEnabledResultSchema,
@@ -834,6 +882,8 @@ export const B3CommandResultSchemas = {
 	read_image_content: ReadImageContentResultSchema,
 	get_about: AboutResultSchema,
 	get_diagnostics: DiagnosticsSchema,
+	extension_editor_state: StrictObject({ revision: Type.Integer({ minimum: 0 }) }),
+	extension_terminal_input: ExtensionTerminalInputResultSchema,
 } as const;
 
 export function assertB3CommandResult(command: keyof typeof B3CommandResultSchemas, value: unknown): void {
@@ -1196,6 +1246,19 @@ export const CommandSchema = Type.Union([
 		clientInstanceId: Id,
 		clientRequestId: Id,
 	}),
+	StrictObject({
+		command: Type.Literal("extension_editor_state"),
+		sessionPath: Type.String({ minLength: 1 }),
+		text: Type.String({ maxLength: 64 * 1024 }),
+		cursor: Type.Integer({ minimum: 0, maximum: 64 * 1024 }),
+		generation: Type.Integer({ minimum: 0 }),
+		ackRevision: Type.Optional(Type.Integer({ minimum: 0 })),
+	}),
+	StrictObject({
+		command: Type.Literal("extension_terminal_input"),
+		sessionPath: Type.String({ minLength: 1 }),
+		data: Type.String({ minLength: 1, maxLength: 256 }),
+	}),
 ]);
 export type Command = Static<typeof CommandSchema>;
 
@@ -1266,6 +1329,21 @@ export const ServerEventSchema = Type.Union([
 		title: Type.String(),
 		payload: JsonValueSchema,
 		timeoutMs: Type.Optional(Type.Integer({ minimum: 1 })),
+	}),
+	StrictObject({
+		type: Type.Literal("extension_ui_snapshot"),
+		sessionPath: Type.String({ minLength: 1 }),
+		state: ExtensionUiStateSchema,
+	}),
+	StrictObject({
+		type: Type.Literal("extension_ui_delta"),
+		sessionPath: Type.String({ minLength: 1 }),
+		delta: ExtensionUiDeltaSchema,
+	}),
+	StrictObject({
+		type: Type.Literal("extension_editor_action"),
+		sessionPath: Type.String({ minLength: 1 }),
+		action: ExtensionEditorActionSchema,
 	}),
 ]);
 export type ServerEvent = Static<typeof ServerEventSchema>;

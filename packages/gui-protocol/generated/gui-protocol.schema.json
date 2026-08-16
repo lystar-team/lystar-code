@@ -2272,6 +2272,68 @@
                     }
                   },
                   "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "text",
+                    "cursor",
+                    "generation"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "extension_editor_state"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "text": {
+                      "type": "string",
+                      "maxLength": 65536
+                    },
+                    "cursor": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 65536
+                    },
+                    "generation": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "ackRevision": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "data"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "extension_terminal_input"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "data": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  },
+                  "additionalProperties": false
                 }
               ]
             }
@@ -2720,6 +2782,10 @@
                   {
                     "type": "string",
                     "const": "rust-workspace-b3"
+                  },
+                  {
+                    "type": "string",
+                    "const": "rust-extension-ui"
                   }
                 ]
               }
@@ -3724,6 +3790,382 @@
                     "timeoutMs": {
                       "type": "integer",
                       "minimum": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "sessionPath",
+                    "state"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "extension_ui_snapshot"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "state": {
+                      "type": "object",
+                      "required": [
+                        "revision",
+                        "statuses",
+                        "widgets",
+                        "workingMessage",
+                        "workingVisible",
+                        "workingIndicator",
+                        "hiddenThinkingLabel",
+                        "title",
+                        "terminalInputListenerCount"
+                      ],
+                      "properties": {
+                        "revision": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "statuses": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "key",
+                              "text"
+                            ],
+                            "properties": {
+                              "key": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 4096
+                              },
+                              "text": {
+                                "type": "string",
+                                "maxLength": 4096
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "maxItems": 128
+                        },
+                        "widgets": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "key",
+                              "placement",
+                              "lines"
+                            ],
+                            "properties": {
+                              "key": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 4096
+                              },
+                              "placement": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "const": "above"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "below"
+                                  }
+                                ]
+                              },
+                              "lines": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "maxLength": 4096
+                                },
+                                "maxItems": 32
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "maxItems": 64
+                        },
+                        "workingMessage": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "workingVisible": {
+                          "type": "boolean"
+                        },
+                        "workingIndicator": {
+                          "type": "object",
+                          "required": [
+                            "frames",
+                            "intervalMs"
+                          ],
+                          "properties": {
+                            "frames": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 256
+                              },
+                              "maxItems": 32
+                            },
+                            "intervalMs": {
+                              "type": "integer",
+                              "minimum": 16,
+                              "maximum": 60000
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "hiddenThinkingLabel": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "title": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "terminalInputListenerCount": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 128
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "sessionPath",
+                    "delta"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "extension_ui_delta"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "delta": {
+                      "type": "object",
+                      "required": [
+                        "revision"
+                      ],
+                      "properties": {
+                        "revision": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "statuses": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "key",
+                              "text"
+                            ],
+                            "properties": {
+                              "key": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 4096
+                              },
+                              "text": {
+                                "type": "string",
+                                "maxLength": 4096
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "maxItems": 128
+                        },
+                        "widgets": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "key",
+                              "placement",
+                              "lines"
+                            ],
+                            "properties": {
+                              "key": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 4096
+                              },
+                              "placement": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "const": "above"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "below"
+                                  }
+                                ]
+                              },
+                              "lines": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "maxLength": 4096
+                                },
+                                "maxItems": 32
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "maxItems": 64
+                        },
+                        "workingMessage": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "workingVisible": {
+                          "type": "boolean"
+                        },
+                        "workingIndicator": {
+                          "type": "object",
+                          "required": [
+                            "frames",
+                            "intervalMs"
+                          ],
+                          "properties": {
+                            "frames": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 256
+                              },
+                              "maxItems": 32
+                            },
+                            "intervalMs": {
+                              "type": "integer",
+                              "minimum": 16,
+                              "maximum": 60000
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "hiddenThinkingLabel": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "title": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "terminalInputListenerCount": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 128
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "sessionPath",
+                    "action"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "extension_editor_action"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "action": {
+                      "type": "object",
+                      "required": [
+                        "action",
+                        "text",
+                        "revision"
+                      ],
+                      "properties": {
+                        "action": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "const": "paste"
+                            },
+                            {
+                              "type": "string",
+                              "const": "set"
+                            }
+                          ]
+                        },
+                        "text": {
+                          "type": "string",
+                          "maxLength": 65536
+                        },
+                        "revision": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "additionalProperties": false
                     }
                   },
                   "additionalProperties": false
@@ -7019,6 +7461,35 @@
             }
           },
           "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "B3ExtensionEditorStateResult": {
+      "type": "object",
+      "required": [
+        "revision"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "B3ExtensionTerminalInputResult": {
+      "type": "object",
+      "required": [
+        "consume"
+      ],
+      "properties": {
+        "consume": {
+          "type": "boolean"
+        },
+        "data": {
+          "type": "string",
+          "maxLength": 256
         }
       },
       "additionalProperties": false

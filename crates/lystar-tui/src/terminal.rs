@@ -24,8 +24,9 @@ use lystar_protocol::{
     B3Command, FrameDecoder, ProtocolError, ReadOnlyEvent, ReadOnlyMessage, ReadOnlyResponse,
     ServerMessage, TranscriptRequestContext, TranscriptViewItem, decode_server_message,
     encode_abort_operation_request, encode_acquire_session_request, encode_b3_request,
-    encode_client_hello, encode_create_session_request, encode_list_sessions_request,
-    encode_queue_request, encode_read_transcript_request, encode_release_session_request,
+    encode_client_hello, encode_create_session_request, encode_extension_editor_state_request,
+    encode_extension_terminal_input_request, encode_list_sessions_request, encode_queue_request,
+    encode_read_transcript_request, encode_release_session_request,
     encode_search_transcript_request, encode_session_write_request, encode_ui_response,
 };
 use ratatui::{Terminal, TerminalOptions, Viewport, backend::CrosstermBackend};
@@ -39,11 +40,12 @@ use crate::{
     app::{
         AppState, B3Request, ChangesTab, ClipboardDescriptor, ClipboardReadTarget,
         ComposerAttachment, ComposerCompletion, ComposerCompletionItem, ComposerView,
-        ConfirmOverlay, DetailOverlay, GitDiffDescriptor, GitFileDescriptor, GitStatusDescriptor,
-        InputFocus, InstructionDescriptor, ListOverlay, ModelDescriptor, OverlayItem, OverlayLink,
-        OverlayOrigin, OverlayState, PackageDescriptor, PendingIntent, ProjectTrustDescriptor,
-        ProviderDescriptor, ReadonlySessionView, SearchHit, SessionRestorePoint, SessionSummary,
-        SessionTreeNode, SettingDescriptor, SkillDescriptor, SubagentDescriptor, TextEditorOverlay,
+        ConfirmOverlay, DetailOverlay, ExtensionUiState, ExtensionWidget, GitDiffDescriptor,
+        GitFileDescriptor, GitStatusDescriptor, InputFocus, InstructionDescriptor, ListOverlay,
+        ModelDescriptor, OverlayItem, OverlayLink, OverlayOrigin, OverlayState, PackageDescriptor,
+        PendingIntent, PendingTerminalInput, ProjectTrustDescriptor, ProviderDescriptor,
+        ReadonlySessionView, SearchHit, SessionRestorePoint, SessionSummary, SessionTreeNode,
+        SettingDescriptor, SkillDescriptor, SubagentDescriptor, TextEditorOverlay,
         TranscriptRequestKind, TranscriptView, TranscriptViewKind, TreeFilter, UiRequest,
         UiRequestKind, UpdateDescriptor, VisibleLink, WorkbenchOverlayView, WorkbenchTarget,
         composer_area, transcript_area, transcript_images,
@@ -55,6 +57,7 @@ const INITIAL_PAGE_LIMIT: u64 = 200;
 const PAGE_LIMIT: u64 = 200;
 const SEARCH_LIMIT: u64 = 50;
 const EXIT_TRANSCRIPT_PAGE_LIMIT: u64 = 200;
+const EXTENSION_INPUT_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalMode {
@@ -892,7 +895,21 @@ fn run_session(
         if event::poll(Duration::ZERO)? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if handle_key(
+                    if app.extension_ui.terminal_input_listener_count > 0
+                        && app.input_focus == InputFocus::Composer
+                        && let Some(data) = raw_key(key.code, key.modifiers)
+                    {
+                        let active_path =
+                            app.active_session_path().unwrap_or(session_path).to_owned();
+                        request_extension_terminal_input(
+                            &mut app,
+                            pipe,
+                            &active_path,
+                            &mut request_sequence,
+                            data,
+                        )?;
+                        state_changed = true;
+                    } else if handle_key(
                         &mut app,
                         key.code,
                         key.modifiers,
@@ -909,40 +926,83 @@ fn run_session(
                         )?;
                         release_active_session(&app, pipe, &mut request_sequence)?;
                         return Ok(());
+                    } else {
+                        state_changed = true;
                     }
-                    state_changed = true;
                 }
                 Event::Paste(text) => {
-                    if app.input_focus == InputFocus::Overlay {
+                    if app.extension_ui.terminal_input_listener_count > 0
+                        && app.input_focus == InputFocus::Composer
+                        && text.len().saturating_add(12) <= 256
+                    {
+                        let active_path =
+                            app.active_session_path().unwrap_or(session_path).to_owned();
+                        request_extension_terminal_input(
+                            &mut app,
+                            pipe,
+                            &active_path,
+                            &mut request_sequence,
+                            format!("\x1b[200~{text}\x1b[201~"),
+                        )?;
+                    } else if app.input_focus == InputFocus::Overlay {
                         app.overlay_insert(&text);
                     } else {
                         app.editor.insert(&text);
                     }
                     state_changed = true;
                 }
-                Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollUp => {
-                        if let Some(view) = readonly_view_mut(&mut app) {
-                            view.transcript.scroll_by(-3);
-                        } else {
-                            app.transcript.scroll_by(-3);
-                        }
+                Event::Mouse(mouse) => {
+                    if app.extension_ui.terminal_input_listener_count > 0
+                        && app.input_focus == InputFocus::Composer
+                        && let Some(data) = raw_mouse(mouse.kind, mouse.column, mouse.row)
+                    {
+                        let active_path =
+                            app.active_session_path().unwrap_or(session_path).to_owned();
+                        request_extension_terminal_input(
+                            &mut app,
+                            pipe,
+                            &active_path,
+                            &mut request_sequence,
+                            data,
+                        )?;
                         state_changed = true;
-                    }
-                    MouseEventKind::ScrollDown => {
-                        if let Some(view) = readonly_view_mut(&mut app) {
-                            view.transcript.scroll_by(3);
-                        } else {
-                            app.transcript.scroll_by(3);
+                    } else {
+                        match mouse.kind {
+                            MouseEventKind::ScrollUp => {
+                                if let Some(view) = readonly_view_mut(&mut app) {
+                                    view.transcript.scroll_by(-3);
+                                } else {
+                                    app.transcript.scroll_by(-3);
+                                }
+                                state_changed = true;
+                            }
+                            MouseEventKind::ScrollDown => {
+                                if let Some(view) = readonly_view_mut(&mut app) {
+                                    view.transcript.scroll_by(3);
+                                } else {
+                                    app.transcript.scroll_by(3);
+                                }
+                                state_changed = true;
+                            }
+                            _ => {}
                         }
-                        state_changed = true;
                     }
-                    _ => {}
-                },
-                Event::Resize(_, _) => {
+                }
+                Event::Resize(columns, rows) => {
                     terminal.autoresize()?;
                     app.invalidate_rich_text();
                     app.invalidate_images();
+                    if app.extension_ui.terminal_input_listener_count > 0 {
+                        let active_path =
+                            app.active_session_path().unwrap_or(session_path).to_owned();
+                        request_extension_terminal_input(
+                            &mut app,
+                            pipe,
+                            &active_path,
+                            &mut request_sequence,
+                            format!("\x1b[8;{rows};{columns}t"),
+                        )?;
+                    }
                     state_changed = true;
                 }
                 _ => {}
@@ -976,6 +1036,34 @@ fn run_session(
                 }
             }
         }
+        if !app.pending_terminal_inputs.is_empty() {
+            let expired = app
+                .pending_terminal_inputs
+                .iter()
+                .filter(|(_, pending)| pending.started_at.elapsed() >= EXTENSION_INPUT_TIMEOUT)
+                .map(|(id, pending)| (id.clone(), pending.data.clone()))
+                .collect::<Vec<_>>();
+            for (id, data) in expired {
+                app.pending_terminal_inputs.remove(&id);
+                app.set_toast("终端输入 bridge 超时，已回退本地输入");
+                let active_path = app.active_session_path().unwrap_or(session_path).to_owned();
+                if apply_extension_raw_input(
+                    &mut app,
+                    &data,
+                    pipe,
+                    &active_path,
+                    client_instance_id,
+                    &mut request_sequence,
+                    &mut session_flow,
+                    &mut quit_requested,
+                )? {
+                    quit_requested = true;
+                }
+                state_changed = true;
+            }
+        }
+        let active_path = app.active_session_path().unwrap_or(session_path).to_owned();
+        request_extension_editor_state(&mut app, pipe, &active_path, &mut request_sequence)?;
         if quit_requested && session_flow.is_none() {
             image_sidecar.clear(
                 terminal.backend_mut().writer_mut(),
@@ -1242,6 +1330,159 @@ fn request_search(
         query,
         SEARCH_LIMIT,
     )?)
+}
+
+fn request_extension_editor_state(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    sequence: &mut u64,
+) -> Result<(), TuiError> {
+    let Some((text, cursor, generation)) = app.take_editor_state_update() else {
+        return Ok(());
+    };
+    *sequence += 1;
+    pipe.request(&encode_extension_editor_state_request(
+        &format!("extension-editor-{sequence}"),
+        session_path,
+        &text,
+        cursor,
+        generation,
+        None,
+    )?)
+}
+
+fn request_extension_terminal_input(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    sequence: &mut u64,
+    data: String,
+) -> Result<(), TuiError> {
+    if data.is_empty() || data.len() > 256 {
+        return Ok(());
+    }
+    *sequence += 1;
+    let id = format!("extension-input-{sequence}");
+    app.pending_terminal_inputs.insert(
+        id.clone(),
+        PendingTerminalInput {
+            data: data.clone(),
+            started_at: Instant::now(),
+        },
+    );
+    pipe.request(&encode_extension_terminal_input_request(
+        &id,
+        session_path,
+        &data,
+    )?)
+}
+
+fn raw_key(code: KeyCode, modifiers: KeyModifiers) -> Option<String> {
+    let value = match code {
+        KeyCode::Char(character)
+            if modifiers.contains(KeyModifiers::CONTROL) && character.is_ascii() =>
+        {
+            let upper = character.to_ascii_uppercase() as u8;
+            ((upper & 0x1f) as char).to_string()
+        }
+        KeyCode::Char(character)
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            character.to_string()
+        }
+        KeyCode::Enter => "\r".to_owned(),
+        KeyCode::Tab => "\t".to_owned(),
+        KeyCode::Backspace => "\x7f".to_owned(),
+        KeyCode::Esc => "\x1b".to_owned(),
+        KeyCode::Up => "\x1b[A".to_owned(),
+        KeyCode::Down => "\x1b[B".to_owned(),
+        KeyCode::Right => "\x1b[C".to_owned(),
+        KeyCode::Left => "\x1b[D".to_owned(),
+        KeyCode::Home => "\x1b[H".to_owned(),
+        KeyCode::End => "\x1b[F".to_owned(),
+        KeyCode::PageUp => "\x1b[5~".to_owned(),
+        KeyCode::PageDown => "\x1b[6~".to_owned(),
+        KeyCode::Delete => "\x1b[3~".to_owned(),
+        KeyCode::F(number @ 1..=4) => {
+            format!("\x1bO{}", ["P", "Q", "R", "S"][(number - 1) as usize])
+        }
+        KeyCode::F(number @ 5..=12) => format!(
+            "\x1b[{}~",
+            [15, 17, 18, 19, 20, 21, 23, 24][(number - 5) as usize]
+        ),
+        _ => return None,
+    };
+    Some(value)
+}
+
+fn raw_mouse(kind: MouseEventKind, column: u16, row: u16) -> Option<String> {
+    let code = match kind {
+        MouseEventKind::ScrollUp => 64,
+        MouseEventKind::ScrollDown => 65,
+        _ => return None,
+    };
+    Some(format!(
+        "\x1b[<{code};{};{}M",
+        column.saturating_add(1),
+        row.saturating_add(1)
+    ))
+}
+
+fn apply_extension_raw_input(
+    app: &mut AppState,
+    data: &str,
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    client_instance_id: &str,
+    sequence: &mut u64,
+    session_flow: &mut Option<SessionFlow>,
+    quit_requested: &mut bool,
+) -> Result<bool, TuiError> {
+    if let Some(text) = data
+        .strip_prefix("\x1b[200~")
+        .and_then(|value| value.strip_suffix("\x1b[201~"))
+    {
+        app.editor.insert(text);
+        return Ok(false);
+    }
+    let (code, modifiers) = match data {
+        "\r" | "\n" => (KeyCode::Enter, KeyModifiers::NONE),
+        "\t" => (KeyCode::Tab, KeyModifiers::NONE),
+        "\x7f" => (KeyCode::Backspace, KeyModifiers::NONE),
+        "\x1b" => (KeyCode::Esc, KeyModifiers::NONE),
+        "\x1b[A" => (KeyCode::Up, KeyModifiers::NONE),
+        "\x1b[B" => (KeyCode::Down, KeyModifiers::NONE),
+        "\x1b[C" => (KeyCode::Right, KeyModifiers::NONE),
+        "\x1b[D" => (KeyCode::Left, KeyModifiers::NONE),
+        "\x1b[H" => (KeyCode::Home, KeyModifiers::NONE),
+        "\x1b[F" => (KeyCode::End, KeyModifiers::NONE),
+        "\x1b[5~" => (KeyCode::PageUp, KeyModifiers::NONE),
+        "\x1b[6~" => (KeyCode::PageDown, KeyModifiers::NONE),
+        "\x1b[3~" => (KeyCode::Delete, KeyModifiers::NONE),
+        value if value.chars().count() == 1 => {
+            let character = value.chars().next().unwrap_or_default();
+            if character.is_ascii_control() {
+                return Ok(false);
+            }
+            (KeyCode::Char(character), KeyModifiers::NONE)
+        }
+        _ => {
+            app.editor.insert(data);
+            return Ok(false);
+        }
+    };
+    handle_key(
+        app,
+        code,
+        modifiers,
+        pipe,
+        session_path,
+        client_instance_id,
+        sequence,
+        session_flow,
+        quit_requested,
+    )
 }
 
 #[cfg(unix)]
@@ -4785,6 +5026,193 @@ fn submit_editor(
     Ok(())
 }
 
+fn extension_statuses(
+    value: &serde_json::Value,
+) -> Result<std::collections::BTreeMap<String, String>, TuiError> {
+    value
+        .as_array()
+        .ok_or_else(|| TuiError::InvalidResponse("Extension UI 缺少状态".to_owned()))?
+        .iter()
+        .map(|item| {
+            Ok((
+                item.get("key")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| TuiError::InvalidResponse("Extension 状态键无效".to_owned()))?
+                    .to_owned(),
+                item.get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| TuiError::InvalidResponse("Extension 状态文本无效".to_owned()))?
+                    .to_owned(),
+            ))
+        })
+        .collect()
+}
+
+fn extension_widgets(value: &serde_json::Value) -> Result<Vec<ExtensionWidget>, TuiError> {
+    value
+        .as_array()
+        .ok_or_else(|| TuiError::InvalidResponse("Extension UI 缺少小部件".to_owned()))?
+        .iter()
+        .map(|item| {
+            Ok(ExtensionWidget {
+                key: item
+                    .get("key")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| TuiError::InvalidResponse("Extension 小部件键无效".to_owned()))?
+                    .to_owned(),
+                placement: item
+                    .get("placement")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        TuiError::InvalidResponse("Extension 小部件位置无效".to_owned())
+                    })?
+                    .to_owned(),
+                lines: item
+                    .get("lines")
+                    .and_then(serde_json::Value::as_array)
+                    .ok_or_else(|| {
+                        TuiError::InvalidResponse("Extension 小部件内容无效".to_owned())
+                    })?
+                    .iter()
+                    .map(|line| {
+                        line.as_str().map(str::to_owned).ok_or_else(|| {
+                            TuiError::InvalidResponse("Extension 小部件行无效".to_owned())
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            })
+        })
+        .collect()
+}
+
+fn extension_state(value: &serde_json::Value) -> Result<ExtensionUiState, TuiError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| TuiError::InvalidResponse("Extension UI 状态无效".to_owned()))?;
+    let statuses = extension_statuses(
+        object
+            .get("statuses")
+            .ok_or_else(|| TuiError::InvalidResponse("Extension UI 缺少状态".to_owned()))?,
+    )?;
+    let widgets = extension_widgets(
+        object
+            .get("widgets")
+            .ok_or_else(|| TuiError::InvalidResponse("Extension UI 缺少小部件".to_owned()))?,
+    )?;
+    let indicator = object
+        .get("workingIndicator")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| TuiError::InvalidResponse("Extension UI 缺少指示器".to_owned()))?;
+    Ok(ExtensionUiState {
+        revision: object
+            .get("revision")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+        statuses,
+        widgets,
+        working_message: object
+            .get("workingMessage")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        working_visible: object
+            .get("workingVisible")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true),
+        working_frames: indicator
+            .get("frames")
+            .and_then(serde_json::Value::as_array)
+            .map(|frames| {
+                frames
+                    .iter()
+                    .filter_map(|frame| frame.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        working_interval_ms: indicator
+            .get("intervalMs")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(120)
+            .max(16),
+        hidden_thinking_label: object
+            .get("hiddenThinkingLabel")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        title: object
+            .get("title")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        terminal_input_listener_count: object
+            .get("terminalInputListenerCount")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+    })
+}
+
+fn apply_extension_delta(app: &mut AppState, value: &serde_json::Value) -> Result<(), TuiError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| TuiError::InvalidResponse("Extension UI 增量无效".to_owned()))?;
+    let revision = object
+        .get("revision")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    if revision < app.extension_ui.revision {
+        return Ok(());
+    }
+    let mut state = app.extension_ui.clone();
+    state.revision = revision;
+    if let Some(statuses) = object.get("statuses") {
+        state.statuses = extension_statuses(statuses)?;
+    }
+    if let Some(widgets) = object.get("widgets") {
+        state.widgets = extension_widgets(widgets)?;
+    }
+    if let Some(message) = object.get("workingMessage") {
+        state.working_message = message.as_str().map(str::to_owned);
+    }
+    if let Some(visible) = object
+        .get("workingVisible")
+        .and_then(serde_json::Value::as_bool)
+    {
+        state.working_visible = visible;
+    }
+    if let Some(indicator) = object.get("workingIndicator") {
+        let parsed = extension_state(&serde_json::json!({
+            "revision": revision, "statuses": [], "widgets": [], "workingMessage": state.working_message,
+            "workingVisible": state.working_visible, "workingIndicator": indicator,
+            "hiddenThinkingLabel": state.hidden_thinking_label, "title": state.title,
+            "terminalInputListenerCount": state.terminal_input_listener_count,
+        }))?;
+        state.working_frames = parsed.working_frames;
+        state.working_interval_ms = parsed.working_interval_ms;
+    }
+    if let Some(label) = object.get("hiddenThinkingLabel") {
+        state.hidden_thinking_label = label.as_str().map(str::to_owned);
+    }
+    if let Some(title) = object.get("title") {
+        state.title = title.as_str().map(str::to_owned);
+    }
+    if let Some(count) = object
+        .get("terminalInputListenerCount")
+        .and_then(serde_json::Value::as_u64)
+    {
+        state.terminal_input_listener_count = count;
+    }
+    app.apply_extension_ui_snapshot(state);
+    Ok(())
+}
+
+fn write_extension_title(title: &str) {
+    let sanitized = title
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect::<String>();
+    if !sanitized.is_empty() {
+        let _ = io::stdout().write_all(format!("\x1b]0;{sanitized}\x07").as_bytes());
+        let _ = io::stdout().flush();
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn apply_server_message(
     app: &mut AppState,
@@ -4797,6 +5225,91 @@ fn apply_server_message(
     quit_requested: &mut bool,
 ) -> Result<bool, TuiError> {
     let raw = message.json().map_err(TuiError::from)?;
+    if raw.get("type").and_then(serde_json::Value::as_str) == Some("event") {
+        let event = raw.get("event").and_then(serde_json::Value::as_object);
+        let active_path = app.active_session_path().unwrap_or(session_path);
+        if let Some(event) = event
+            && event.get("sessionPath").and_then(serde_json::Value::as_str) == Some(active_path)
+        {
+            match event.get("type").and_then(serde_json::Value::as_str) {
+                Some("extension_ui_snapshot") => {
+                    let state =
+                        extension_state(event.get("state").unwrap_or(&serde_json::Value::Null))?;
+                    if let Some(title) = &state.title {
+                        write_extension_title(title);
+                    }
+                    app.apply_extension_ui_snapshot(state);
+                    return Ok(false);
+                }
+                Some("extension_ui_delta") => {
+                    let title = event
+                        .get("delta")
+                        .and_then(|delta| delta.get("title"))
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned);
+                    apply_extension_delta(
+                        app,
+                        event.get("delta").unwrap_or(&serde_json::Value::Null),
+                    )?;
+                    if let Some(title) = title {
+                        write_extension_title(&title);
+                    }
+                    return Ok(false);
+                }
+                Some("extension_editor_action") => {
+                    let action = event
+                        .get("action")
+                        .and_then(serde_json::Value::as_object)
+                        .ok_or_else(|| TuiError::InvalidResponse("编辑器动作无效".to_owned()))?;
+                    let kind = action
+                        .get("action")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default();
+                    let text = action
+                        .get("text")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default();
+                    let revision = action
+                        .get("revision")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0);
+                    app.apply_extension_editor_action(kind, text, revision);
+                    return Ok(false);
+                }
+                _ => {}
+            }
+        }
+    }
+    if raw.get("type").and_then(serde_json::Value::as_str) == Some("response")
+        && let Some(id) = raw.get("id").and_then(serde_json::Value::as_str)
+        && let Some(pending) = app.pending_terminal_inputs.remove(id)
+    {
+        let consume = raw
+            .get("result")
+            .and_then(|result| result.get("consume"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if !consume {
+            let data = raw
+                .get("result")
+                .and_then(|result| result.get("data"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(&pending.data);
+            if apply_extension_raw_input(
+                app,
+                data,
+                pipe,
+                session_path,
+                client_instance_id,
+                sequence,
+                session_flow,
+                quit_requested,
+            )? {
+                *quit_requested = true;
+            }
+        }
+        return Ok(false);
+    }
     let page_response_id = (raw.get("type").and_then(serde_json::Value::as_str)
         == Some("response"))
     .then(|| raw.get("id").and_then(serde_json::Value::as_str))
