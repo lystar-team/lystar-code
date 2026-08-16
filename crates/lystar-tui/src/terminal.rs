@@ -275,6 +275,9 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
     trace("terminal_ready");
     let mut app = AppState::default();
     loop {
+        let area = terminal.size()?;
+        let full = ratatui::layout::Rect::new(0, 0, area.width, area.height);
+        app.prepare_composer(composer_area(&app, full));
         terminal.draw(|frame| {
             let area = frame.area();
             frame.render_widget(TranscriptView::new(&app), transcript_area(&app, area));
@@ -300,6 +303,12 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                 &mut request_sequence,
             ) {
                 app.disconnected = Some(format!("连接已关闭: {error}"));
+                app.clear_transient();
+                let area = terminal.size()?;
+                app.prepare_composer(composer_area(
+                    &app,
+                    ratatui::layout::Rect::new(0, 0, area.width, area.height),
+                ));
                 terminal.draw(|frame| {
                     let area = frame.area();
                     frame.render_widget(TranscriptView::new(&app), transcript_area(&app, area));
@@ -346,6 +355,12 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                         &mut request_sequence,
                     ) {
                         app.disconnected = Some(format!("连接已关闭: {error}"));
+                        app.clear_transient();
+                        let area = terminal.size()?;
+                        app.prepare_composer(composer_area(
+                            &app,
+                            ratatui::layout::Rect::new(0, 0, area.width, area.height),
+                        ));
                         terminal.draw(|frame| {
                             let area = frame.area();
                             frame.render_widget(
@@ -571,10 +586,10 @@ fn handle_key(
                 app.transcript.scroll = last;
             }
         }
-        KeyCode::Up if app.editor.at_first_line() => {
+        KeyCode::Up if app.editor.at_first_visual_line_start(app.composer_width()) => {
             app.editor.history_previous();
         }
-        KeyCode::Down if app.editor.at_last_line() => {
+        KeyCode::Down if app.editor.at_last_visual_line(app.composer_width()) => {
             app.editor.history_next();
         }
         KeyCode::Up => app.editor.move_up(),
@@ -614,7 +629,7 @@ fn submit_editor(
     let request_id = format!("composer-{sequence}");
     let command = if follow_up {
         "follow_up"
-    } else if app.is_streaming() {
+    } else if app.is_active_operation() {
         "steer"
     } else {
         "prompt"

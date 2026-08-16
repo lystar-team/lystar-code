@@ -130,6 +130,7 @@ export class GuiHostService {
 	private readonly runtimes = new Map<string, RuntimeSession>();
 	private readonly runtimeUnsubscribers = new Map<string, () => void>();
 	private readonly activeOperationBySession = new Map<string, string>();
+	private readonly scheduledOperations = new Set<string>();
 	private readonly snapshotRevisions = new Map<string, number>();
 	private readonly pendingUi = new Map<string, PendingUiRequest>();
 	private readonly leases = new LeaseManager();
@@ -263,8 +264,9 @@ export class GuiHostService {
 		}
 		try {
 			await connection.send({ type: "response", id: message.id, ok: true, result });
-		} finally {
 			afterResponse?.();
+		} catch {
+			// 回包失败时不启动 accepted operation；同一请求在重新取得租约后可安全补调度。
 		}
 	}
 
@@ -418,7 +420,6 @@ export class GuiHostService {
 						await runtime.steer(request.text, request.images);
 						return {};
 					},
-					afterResponse,
 				);
 			case "follow_up":
 				return this.acceptQueueOperation(
@@ -429,15 +430,10 @@ export class GuiHostService {
 						await runtime.followUp(request.text, request.images);
 						return {};
 					},
-					afterResponse,
 				);
 			case "clear_queue":
-				return this.acceptQueueOperation(
-					connection,
-					request,
-					{},
-					async (runtime) => jsonValue(await runtime.clearQueue()),
-					afterResponse,
+				return this.acceptQueueOperation(connection, request, {}, async (runtime) =>
+					jsonValue(await runtime.clearQueue()),
 				);
 			case "run_bash":
 				return this.acceptOperation(
@@ -781,13 +777,13 @@ export class GuiHostService {
 		runtime: RuntimeSession,
 		operation: OperationSnapshot,
 		run: (runtime: RuntimeSession) => Promise<JsonValue>,
-	): Promise<void> {
+	): Promise<OperationSnapshot> {
 		try {
 			this.updateOperation(operation.operationId, "running");
 			const result = await run(runtime);
-			this.updateOperation(operation.operationId, "completed", { result });
+			return this.updateOperation(operation.operationId, "completed", { result });
 		} catch (error) {
-			this.updateOperation(operation.operationId, "failed", {
+			return this.updateOperation(operation.operationId, "failed", {
 				error: error instanceof Error ? error.message : String(error),
 			});
 		}
@@ -801,7 +797,6 @@ export class GuiHostService {
 		>,
 		payload: JsonValue,
 		run: (runtime: RuntimeSession) => Promise<JsonValue>,
-		afterResponse: (action: () => void) => void,
 	): Promise<JsonValue> {
 		this.assertClient(request.clientInstanceId, connection);
 		this.journal.assertWritable();
@@ -812,6 +807,12 @@ export class GuiHostService {
 		const payloadHash = hashOperationPayload({ command: request.command, sessionPath, payload });
 		const existing = this.journal.find(request.clientInstanceId, request.clientRequestId, payloadHash);
 		if (existing) return { operation: existing, duplicate: true };
+		if (request.command !== "clear_queue" && !this.isRuntimeActive(runtime)) {
+			throw Object.assign(new Error("会话当前不接受引导或后续消息"), {
+				code: "session_not_active",
+				retryable: false,
+			});
+		}
 		const accepted = this.journal.accept({
 			clientInstanceId: request.clientInstanceId,
 			clientRequestId: request.clientRequestId,
@@ -819,8 +820,17 @@ export class GuiHostService {
 			type: request.command,
 			payloadHash,
 		});
-		afterResponse(() => void this.runQueueOperation(runtime, accepted.operation, run));
-		return { operation: accepted.operation, duplicate: false };
+		const operation = await this.runQueueOperation(runtime, accepted.operation, run);
+		return { operation, duplicate: false };
+	}
+
+	private isRuntimeActive(runtime: RuntimeSession): boolean {
+		const snapshot = runtime.getSnapshot("owned");
+		return (
+			snapshot.activity === "running" ||
+			snapshot.activity === "waiting_for_input" ||
+			["turn", "compaction", "retry", "waiting_for_input"].includes(snapshot.phase)
+		);
 	}
 
 	private async acceptOperation(
@@ -842,7 +852,10 @@ export class GuiHostService {
 			payload,
 		});
 		const existing = this.journal.find(request.clientInstanceId, request.clientRequestId, payloadHash);
-		if (existing) return { operation: existing, duplicate: true };
+		if (existing) {
+			if (existing.status === "accepted") afterResponse(() => this.scheduleOperation(runtime, existing, run));
+			return { operation: existing, duplicate: true };
+		}
 		const activeOperationId = this.activeOperationBySession.get(sessionPath);
 		if (activeOperationId) {
 			throw Object.assign(new Error("会话已有正在执行的任务"), {
@@ -858,8 +871,20 @@ export class GuiHostService {
 			payloadHash,
 		});
 		this.activeOperationBySession.set(sessionPath, accepted.operation.operationId);
-		afterResponse(() => void this.runOperation(runtime, accepted.operation, run).catch(() => {}));
+		afterResponse(() => this.scheduleOperation(runtime, accepted.operation, run));
 		return { operation: accepted.operation, duplicate: false };
+	}
+
+	private scheduleOperation(
+		runtime: RuntimeSession,
+		operation: OperationSnapshot,
+		run: (runtime: RuntimeSession, operation: OperationSnapshot) => Promise<JsonValue>,
+	): void {
+		if (operation.status !== "accepted" || this.scheduledOperations.has(operation.operationId)) return;
+		this.scheduledOperations.add(operation.operationId);
+		void this.runOperation(runtime, operation, run)
+			.catch(() => {})
+			.finally(() => this.scheduledOperations.delete(operation.operationId));
 	}
 
 	private async runOperation(

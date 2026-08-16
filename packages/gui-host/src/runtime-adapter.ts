@@ -486,7 +486,7 @@ function boundedStatus(value: unknown): string {
 	return text.length <= 1024 ? text : `${text.slice(0, 1021)}...`;
 }
 
-function projectRuntimeProgress(event: AgentSessionEvent): SessionProgress[] {
+export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgress[] {
 	switch (event.type) {
 		case "message_update": {
 			const updates: SessionProgress[] = [];

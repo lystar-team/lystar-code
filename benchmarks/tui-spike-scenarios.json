@@ -9,7 +9,7 @@
   "scenarios": [
     { "name": "static-idle", "kind": "idle", "events": 0, "charactersPerEvent": 0, "itemsPerEvent": 0, "scrollLines": 0 },
     { "name": "input300", "kind": "input", "events": 300, "charactersPerEvent": 1, "itemsPerEvent": 0, "scrollLines": 0 },
-    { "name": "paste5000", "kind": "paste", "events": 20, "charactersPerEvent": 5000, "itemsPerEvent": 0, "scrollLines": 0 },
+    { "name": "paste5000", "kind": "paste", "events": 1, "charactersPerEvent": 5000, "itemsPerEvent": 0, "scrollLines": 0 },
     { "name": "stream20", "kind": "stream", "events": 20, "charactersPerEvent": 48, "itemsPerEvent": 1, "scrollLines": 0 },
     { "name": "stream60", "kind": "stream", "events": 60, "charactersPerEvent": 48, "itemsPerEvent": 1, "scrollLines": 0 },
     { "name": "stream120", "kind": "stream", "events": 120, "charactersPerEvent": 48, "itemsPerEvent": 1, "scrollLines": 0 },

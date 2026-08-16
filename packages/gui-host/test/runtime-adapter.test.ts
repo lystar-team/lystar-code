@@ -4,12 +4,13 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
+import type { AgentSessionEvent } from "../../coding-agent/src/core/agent-session.ts";
 import {
 	appendSessionRecoveryLedger,
 	createRecoveryLedgerEntry,
 	getSessionRecoveryLedgerPath,
 } from "../../coding-agent/src/core/tool-recovery/ledger.ts";
-import { CodingAgentRuntimeAdapter } from "../src/runtime-adapter.ts";
+import { CodingAgentRuntimeAdapter, projectRuntimeProgress } from "../src/runtime-adapter.ts";
 import type { RuntimeEvent, RuntimeSession } from "../src/types.ts";
 
 function eventPayload(event: RuntimeEvent): {
@@ -28,6 +29,68 @@ function eventPayload(event: RuntimeEvent): {
 
 describe("CodingAgentRuntimeAdapter", () => {
 	const cleanups: Array<() => Promise<void> | void> = [];
+
+	it("projects real AgentSessionEvent variants into bounded typed progress", () => {
+		const toolStart: Extract<AgentSessionEvent, { type: "tool_execution_start" }> = {
+			type: "tool_execution_start",
+			toolCallId: "call-1",
+			toolName: "read",
+			args: { path: "src/app.ts" },
+		};
+		const toolUpdate: Extract<AgentSessionEvent, { type: "tool_execution_update" }> = {
+			type: "tool_execution_update",
+			toolCallId: "call-1",
+			toolName: "read",
+			args: { path: "src/app.ts" },
+			partialResult: { output: "partial" },
+		};
+		const toolEnd: Extract<AgentSessionEvent, { type: "tool_execution_end" }> = {
+			type: "tool_execution_end",
+			toolCallId: "call-1",
+			toolName: "read",
+			result: { output: "done" },
+			isError: false,
+		};
+		const queue: Extract<AgentSessionEvent, { type: "queue_update" }> = {
+			type: "queue_update",
+			steering: ["steer"],
+			followUp: ["follow"],
+		};
+		const assistant = {
+			type: "message_update",
+			message: {
+				role: "assistant",
+				usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 },
+			},
+			assistantMessageEvent: { type: "text_delta", delta: "answer" },
+		} as AgentSessionEvent;
+		const thinking = {
+			...assistant,
+			assistantMessageEvent: { type: "thinking_delta", delta: "reason" },
+		} as AgentSessionEvent;
+
+		expect(projectRuntimeProgress(toolStart)).toEqual([
+			expect.objectContaining({ type: "tool_start", toolCallId: "call-1", name: "read" }),
+		]);
+		expect(projectRuntimeProgress(toolUpdate)).toEqual([
+			expect.objectContaining({ type: "tool_update", toolCallId: "call-1", name: "read" }),
+		]);
+		expect(projectRuntimeProgress(toolEnd)).toEqual([
+			expect.objectContaining({ type: "tool_end", toolCallId: "call-1", status: "success" }),
+		]);
+		expect(projectRuntimeProgress(queue)).toEqual([{ type: "queue_update", steeringCount: 1, followUpCount: 1 }]);
+		expect(projectRuntimeProgress(assistant)).toEqual([
+			{ type: "assistant_delta", text: "answer" },
+			{ type: "usage", usage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4 } },
+		]);
+		expect(projectRuntimeProgress(thinking)).toEqual([
+			{ type: "thinking_delta", text: "reason" },
+			{ type: "usage", usage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4 } },
+		]);
+		expect(projectRuntimeProgress({ type: "session_info_changed", name: "x".repeat(2_000) })).toEqual([
+			expect.objectContaining({ type: "status", status: "session_info_changed" }),
+		]);
+	});
 
 	afterEach(async () => {
 		while (cleanups.length > 0) await cleanups.pop()?.();

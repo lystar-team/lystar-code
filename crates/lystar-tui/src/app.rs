@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use crate::editor::EditorState;
 use lystar_protocol::{
@@ -416,10 +416,11 @@ pub struct AppState {
     pub snapshot: Option<SessionSnapshot>,
     pub lease_id: Option<String>,
     pub operation: Option<OperationSnapshot>,
-    pub live_tools: HashMap<String, LiveTool>,
+    pub live_tools: BTreeMap<String, LiveTool>,
     pub assistant_stream: String,
     pub thinking_stream: String,
     pub disconnected: Option<String>,
+    composer_width: u16,
 }
 
 impl AppState {
@@ -433,7 +434,14 @@ impl AppState {
     }
 
     pub fn apply_operation(&mut self, operation: OperationSnapshot) {
+        let terminal = matches!(
+            operation.status.as_str(),
+            "aborted" | "interrupted" | "failed"
+        );
         self.operation = Some(operation);
+        if terminal {
+            self.clear_transient();
+        }
     }
 
     pub fn apply_progress(&mut self, progress: SessionProgress) {
@@ -468,20 +476,8 @@ impl AppState {
                     },
                 );
             }
-            SessionProgress::ToolEnd {
-                tool_call_id,
-                name,
-                status,
-                summary,
-            } => {
-                self.live_tools.insert(
-                    tool_call_id,
-                    LiveTool {
-                        name,
-                        summary,
-                        status,
-                    },
-                );
+            SessionProgress::ToolEnd { tool_call_id, .. } => {
+                self.live_tools.remove(&tool_call_id);
             }
             SessionProgress::QueueUpdate {
                 steering_count,
@@ -520,14 +516,29 @@ impl AppState {
         if total_height <= 8 { 4 } else { 6 }
     }
 
-    pub fn is_streaming(&self) -> bool {
-        self.snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.activity == "running")
-            || self
-                .operation
-                .as_ref()
-                .is_some_and(|operation| operation.status == "running")
+    pub fn is_active_operation(&self) -> bool {
+        self.snapshot.as_ref().is_some_and(|snapshot| {
+            matches!(snapshot.activity.as_str(), "running" | "waiting_for_input")
+                || matches!(
+                    snapshot.phase.as_str(),
+                    "turn" | "compaction" | "branch_summary" | "retry" | "waiting_for_input"
+                )
+        }) || self.operation.as_ref().is_some_and(|operation| {
+            matches!(
+                operation.status.as_str(),
+                "accepted" | "running" | "waiting_for_input"
+            )
+        })
+    }
+
+    pub fn composer_width(&self) -> u16 {
+        self.composer_width
+    }
+
+    pub fn prepare_composer(&mut self, area: Rect) {
+        self.composer_width = area.width;
+        self.editor
+            .ensure_cursor_visible(area.width, area.height.saturating_sub(3).max(1));
     }
 
     pub fn footer_status(&self) -> String {
@@ -559,11 +570,18 @@ impl AppState {
         self.search.open = false;
         self.search.status.clear();
     }
+    pub fn clear_transient(&mut self) {
+        self.assistant_stream.clear();
+        self.thinking_stream.clear();
+        self.live_tools.clear();
+    }
+
     pub fn clear_for_reload(&mut self, reason: impl Into<String>) {
         self.transcript.clear_for_reload(reason);
         self.search.hits.clear();
         self.search.selected = 0;
         self.search.pending_jump = None;
+        self.clear_transient();
     }
     pub fn set_search_results(&mut self, hits: Vec<SearchHit>) {
         self.search.selected = 0;
@@ -816,44 +834,37 @@ impl Widget for ComposerView<'_> {
             Style::default().fg(Color::DarkGray),
         );
         let visible_lines = usize::from(area.height.saturating_sub(3)).max(1);
-        let (cursor_line, cursor_column) = self.state.editor.cursor_line_column();
         let start_line = self.state.editor.scroll_line();
-        for (line_index, line) in self
+        for (line_index, rendered) in self
             .state
             .editor
-            .lines()
+            .visual_lines_with_cursor(area.width)
+            .iter()
             .enumerate()
             .skip(start_line)
             .take(visible_lines)
         {
-            let mut rendered = line.to_owned();
-            if line_index == cursor_line {
-                let byte = line
-                    .grapheme_indices(true)
-                    .nth(cursor_column)
-                    .map_or(line.len(), |(index, _)| index);
-                rendered.insert(byte, '|');
-            }
             put_line(
                 buffer,
                 area.x,
                 area.y + 1 + u16::try_from(line_index - start_line).unwrap_or(0),
-                &rendered,
+                rendered,
                 width,
                 Style::default().fg(Color::White),
             );
         }
-        if let Some(tool) = self.state.live_tools.values().next() {
+        let tool_line = live_tool_line(&self.state.live_tools, width);
+        if !tool_line.is_empty() {
             put_line(
                 buffer,
                 area.x,
                 area.y + area.height.saturating_sub(2),
-                &format!("Tool {} {} {}", tool.name, tool.status, tool.summary),
+                &tool_line,
                 width,
                 Style::default().fg(Color::Cyan),
             );
         }
-        let shortcuts = if self.state.is_streaming() {
+        let shortcuts = if self.state.is_active_operation() {
             "Enter 引导  Alt+Enter 后续  Esc 停止  Ctrl+O Tool"
         } else {
             "Enter 提交  Shift+Enter 换行  Ctrl+F 搜索  Ctrl+O Tool"
@@ -930,6 +941,29 @@ fn render_scrollbar(area: Rect, buffer: &mut Buffer, total: usize, current: usiz
     }
 }
 
+fn live_tool_line(tools: &BTreeMap<String, LiveTool>, width: usize) -> String {
+    let mut line = String::new();
+    let mut hidden = 0;
+    for tool in tools.values() {
+        let item = format!("Tool {} {} {}", tool.name, tool.status, tool.summary);
+        let separator = if line.is_empty() { "" } else { " | " };
+        let candidate = line.clone() + separator + &item;
+        if UnicodeWidthStr::width(candidate.as_str()) <= width {
+            line.push_str(separator);
+            line.push_str(&item);
+        } else {
+            hidden += 1;
+        }
+    }
+    if hidden > 0 {
+        let more = format!(" +{hidden}");
+        while !line.is_empty() && UnicodeWidthStr::width((line.clone() + &more).as_str()) > width {
+            line.pop();
+        }
+        line.push_str(&more);
+    }
+    line
+}
 fn put_line(buffer: &mut Buffer, x: u16, y: u16, text: &str, width: usize, style: Style) {
     buffer.set_string(x, y, truncate_graphemes(text, width), style);
 }
