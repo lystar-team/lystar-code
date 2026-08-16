@@ -1503,6 +1503,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 					origin: resource.metadata.origin,
 					enabled: resource.enabled,
 					disableModelInvocation: skill.disableModelInvocation,
+					eligible: resource.metadata.scope === "user" || resource.metadata.scope === "project",
 				});
 			}
 		}
@@ -1591,7 +1592,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			installEnabled: false,
 			installBlockedReason: "正式 Tauri updater 公钥尚未配置，当前只支持检查版本。",
 		};
-		if (process.env.PI_OFFLINE) return { ...base, status: "offline", latestVersion: null };
+		if (process.env.PI_OFFLINE) return { ...base, status: "offline", latestVersion: null, url: null };
 		try {
 			const release = await getLatestPiRelease(VERSION, { repository: RELEASE_REPOSITORY, retry: true });
 			return {
@@ -1604,6 +1605,10 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				latestVersion: release?.version ?? null,
 				packageName: release?.packageName ?? null,
 				note: release?.note ?? null,
+				url:
+					release && RELEASE_REPOSITORY
+						? `https://github.com/${RELEASE_REPOSITORY}/releases/tag/v${release.version}`
+						: null,
 			};
 		} catch (error) {
 			throw Object.assign(new Error(formatVersionCheckError(error)), {
@@ -1635,13 +1640,26 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 
 	getProjectTrust(cwd: string): ProjectTrust {
 		const root = canonicalDirectory(cwd);
-		return { cwd: root, trusted: new ProjectTrustStore(this.agentDir).get(root) };
+		const trusted = new ProjectTrustStore(this.agentDir).get(root);
+		const resourceRisk = hasTrustRequiringProjectResources(root);
+		return {
+			cwd: root,
+			trusted,
+			resourceRisk,
+			reason: resourceRisk
+				? trusted === true
+					? "项目资源已信任"
+					: trusted === false
+						? "项目资源被明确设为不信任"
+						: "项目包含需信任资源，尚未选择"
+				: "项目没有需信任资源",
+		};
 	}
 
 	async setProjectTrust(cwd: string, trusted: boolean): Promise<ProjectTrust> {
 		const root = canonicalDirectory(cwd);
 		new ProjectTrustStore(this.agentDir).set(root, trusted);
-		return { cwd: root, trusted };
+		return this.getProjectTrust(root);
 	}
 
 	listPackages(cwd: string): PackageSummary[] {

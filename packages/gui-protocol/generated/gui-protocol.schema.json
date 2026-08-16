@@ -3523,6 +3523,587 @@
         }
       ]
     },
+    "B3ListSkillsResult": {
+      "type": "object",
+      "required": [
+        "skills",
+        "diagnostics"
+      ],
+      "properties": {
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "description",
+              "path",
+              "baseDir",
+              "source",
+              "scope",
+              "origin",
+              "enabled",
+              "disableModelInvocation",
+              "eligible"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 16384
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "baseDir": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "source": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "scope": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "user"
+                  },
+                  {
+                    "type": "string",
+                    "const": "project"
+                  },
+                  {
+                    "type": "string",
+                    "const": "temporary"
+                  }
+                ]
+              },
+              "origin": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "package"
+                  },
+                  {
+                    "type": "string",
+                    "const": "top-level"
+                  }
+                ]
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "disableModelInvocation": {
+                "type": "boolean"
+              },
+              "eligible": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 10000
+        },
+        "diagnostics": {
+          "$ref": "#/$defs/JsonValue"
+        }
+      },
+      "additionalProperties": false
+    },
+    "B3SetSkillEnabledResult": {
+      "type": "object",
+      "required": [
+        "skills",
+        "diagnostics"
+      ],
+      "properties": {
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "description",
+              "path",
+              "baseDir",
+              "source",
+              "scope",
+              "origin",
+              "enabled",
+              "disableModelInvocation",
+              "eligible"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 16384
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "baseDir": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "source": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "scope": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "user"
+                  },
+                  {
+                    "type": "string",
+                    "const": "project"
+                  },
+                  {
+                    "type": "string",
+                    "const": "temporary"
+                  }
+                ]
+              },
+              "origin": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "package"
+                  },
+                  {
+                    "type": "string",
+                    "const": "top-level"
+                  }
+                ]
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "disableModelInvocation": {
+                "type": "boolean"
+              },
+              "eligible": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 10000
+        },
+        "diagnostics": {
+          "$ref": "#/$defs/JsonValue"
+        }
+      },
+      "additionalProperties": false
+    },
+    "B3ListProjectInstructionsResult": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "fileName",
+          "exists",
+          "active",
+          "editable"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fileName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "exists": {
+            "type": "boolean"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "editable": {
+            "type": "boolean"
+          },
+          "content": {
+            "type": "string"
+          },
+          "contentHash": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "additionalProperties": false
+      },
+      "maxItems": 32
+    },
+    "B3SaveProjectInstructionResult": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "fileName",
+          "exists",
+          "active",
+          "editable"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fileName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "exists": {
+            "type": "boolean"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "editable": {
+            "type": "boolean"
+          },
+          "content": {
+            "type": "string"
+          },
+          "contentHash": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "additionalProperties": false
+      },
+      "maxItems": 32
+    },
+    "B3ListHostInstructionsResult": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "fileName",
+          "exists",
+          "active",
+          "editable"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fileName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "exists": {
+            "type": "boolean"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "editable": {
+            "type": "boolean"
+          },
+          "content": {
+            "type": "string"
+          },
+          "contentHash": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "additionalProperties": false
+      },
+      "maxItems": 32
+    },
+    "B3SaveHostInstructionResult": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "fileName",
+          "exists",
+          "active",
+          "editable"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fileName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "exists": {
+            "type": "boolean"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "editable": {
+            "type": "boolean"
+          },
+          "content": {
+            "type": "string"
+          },
+          "contentHash": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "additionalProperties": false
+      },
+      "maxItems": 32
+    },
+    "B3GetGitStatusResult": {
+      "type": "object",
+      "required": [
+        "root",
+        "ahead",
+        "behind",
+        "files"
+      ],
+      "properties": {
+        "root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "branch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "upstream": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ahead": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "behind": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "path",
+              "indexStatus",
+              "worktreeStatus",
+              "staged",
+              "unstaged",
+              "untracked",
+              "conflicted"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "originalPath": {
+                "type": "string",
+                "minLength": 1
+              },
+              "indexStatus": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1
+              },
+              "worktreeStatus": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1
+              },
+              "staged": {
+                "type": "boolean"
+              },
+              "unstaged": {
+                "type": "boolean"
+              },
+              "untracked": {
+                "type": "boolean"
+              },
+              "conflicted": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "B3GetGitDiffResult": {
+      "type": "object",
+      "required": [
+        "staged",
+        "diff",
+        "additions",
+        "deletions"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "staged": {
+          "type": "boolean"
+        },
+        "diff": {
+          "type": "string"
+        },
+        "additions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "deletions": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "B3CheckForUpdatesResult": {
+      "type": "object",
+      "required": [
+        "currentVersion",
+        "checkedAt",
+        "repository",
+        "installEnabled",
+        "installBlockedReason",
+        "status",
+        "latestVersion"
+      ],
+      "properties": {
+        "currentVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "checkedAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "repository": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "installEnabled": {
+          "type": "boolean"
+        },
+        "installBlockedReason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "available"
+            },
+            {
+              "type": "string",
+              "const": "current"
+            },
+            {
+              "type": "string",
+              "const": "unavailable"
+            },
+            {
+              "type": "string",
+              "const": "offline"
+            }
+          ]
+        },
+        "latestVersion": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "packageName": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 16384
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "B3ListSettingsResult": {
       "type": "array",
       "items": {
@@ -4727,7 +5308,9 @@
       "type": "object",
       "required": [
         "cwd",
-        "trusted"
+        "trusted",
+        "reason",
+        "resourceRisk"
       ],
       "properties": {
         "cwd": {
@@ -4744,6 +5327,14 @@
               "type": "null"
             }
           ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "resourceRisk": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false
@@ -4752,7 +5343,9 @@
       "type": "object",
       "required": [
         "cwd",
-        "trusted"
+        "trusted",
+        "reason",
+        "resourceRisk"
       ],
       "properties": {
         "cwd": {
@@ -4769,6 +5362,14 @@
               "type": "null"
             }
           ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "resourceRisk": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false

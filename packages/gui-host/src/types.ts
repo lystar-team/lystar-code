@@ -144,6 +144,7 @@ export interface SkillSummary {
 	origin: "package" | "top-level";
 	enabled: boolean;
 	disableModelInvocation: boolean;
+	eligible: boolean;
 }
 
 export interface RuntimeAdapter {

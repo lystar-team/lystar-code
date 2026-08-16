@@ -4,7 +4,19 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const SIZES = new Set(["80x24", "120x36", "200x60"]);
-const SCENARIOS = new Set(["readonly_open", "older_scroll", "search", "tree_open", "tree_filter"]);
+const SCENARIOS = new Set([
+	"readonly_open",
+	"older_scroll",
+	"search",
+	"tree_open",
+	"tree_filter",
+	"changes_filter_detail",
+	"skills_open",
+	"trust_open",
+	"instructions_open",
+	"packages_open",
+	"update_open",
+]);
 const ROUNDS = new Set([1, 2, 3, 4, 5]);
 const CACHE_LIMITS = { rounds: 400, items: 800, bytes: 4 * 1024 * 1024 };
 const TIMING_FIELDS = [
@@ -21,7 +33,7 @@ const BYTE_FIELDS = ["bytesP50", "bytesP95", "bytesP99", "bytesMax", "bytesTotal
 const RSS_FIELDS = ["rssP50Bytes", "rssP95Bytes", "rssP99Bytes", "rssMaxBytes"];
 
 export function verifyRustB3Workbench(records) {
-	assert.equal(records.length, 75, "B3 workbench benchmark must emit exactly 5 scenarios x 3 sizes x 5 rounds");
+	assert.equal(records.length, 165, "B3 workbench benchmark must emit exactly 11 scenarios x 3 sizes x 5 rounds");
 	const seen = new Set();
 	for (const row of records) {
 		const key = `${row.scenario}/${row.columns}x${row.rows}/${row.round}`;

@@ -34,12 +34,14 @@ use signal_hook::{
 use thiserror::Error;
 
 use crate::app::{
-    AppState, B3Request, ComposerView, ConfirmOverlay, DetailOverlay, InputFocus, ListOverlay,
-    ModelDescriptor, OverlayItem, OverlayLink, OverlayOrigin, OverlayState, PendingIntent,
-    ProviderDescriptor, ReadonlySessionView, SearchHit, SessionRestorePoint, SessionSummary,
-    SessionTreeNode, SettingDescriptor, TextEditorOverlay, TranscriptRequestKind, TranscriptView,
-    TranscriptViewKind, TreeFilter, UiRequest, UiRequestKind, VisibleLink, WorkbenchOverlayView,
-    WorkbenchTarget, composer_area, transcript_area,
+    AppState, B3Request, ChangesTab, ComposerView, ConfirmOverlay, DetailOverlay,
+    GitDiffDescriptor, GitFileDescriptor, GitStatusDescriptor, InputFocus, InstructionDescriptor,
+    ListOverlay, ModelDescriptor, OverlayItem, OverlayLink, OverlayOrigin, OverlayState,
+    PackageDescriptor, PendingIntent, ProjectTrustDescriptor, ProviderDescriptor,
+    ReadonlySessionView, SearchHit, SessionRestorePoint, SessionSummary, SessionTreeNode,
+    SettingDescriptor, SkillDescriptor, TextEditorOverlay, TranscriptRequestKind, TranscriptView,
+    TranscriptViewKind, TreeFilter, UiRequest, UiRequestKind, UpdateDescriptor, VisibleLink,
+    WorkbenchOverlayView, WorkbenchTarget, composer_area, transcript_area,
 };
 
 const INITIAL_PAGE_LIMIT: u64 = 200;
@@ -468,7 +470,11 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                     state_changed = true;
                 }
                 Event::Paste(text) => {
-                    app.editor.insert(&text);
+                    if app.input_focus == InputFocus::Overlay {
+                        app.overlay_insert(&text);
+                    } else {
+                        app.editor.insert(&text);
+                    }
                     state_changed = true;
                 }
                 Event::Mouse(mouse) => match mouse.kind {
@@ -965,6 +971,12 @@ fn handle_key(
             title: "命令面板".to_owned(),
             origin: OverlayOrigin::User,
             items: [
+                ("changes", "变更"),
+                ("skills", "技能"),
+                ("trust", "项目信任"),
+                ("instructions", "指令"),
+                ("packages", "包"),
+                ("update", "更新检查"),
                 ("sessions", "会话"),
                 ("tree", "分支树"),
                 ("help", "帮助"),
@@ -1105,6 +1117,12 @@ fn handle_key(
 
 fn builtin_slash_command(text: &str) -> Option<&'static str> {
     match text.trim() {
+        "/changes" => Some("changes"),
+        "/skills" => Some("skills"),
+        "/trust" => Some("trust"),
+        "/instructions" => Some("instructions"),
+        "/packages" => Some("packages"),
+        "/update" => Some("update"),
         "/about" => Some("about"),
         "/doctor" => Some("doctor"),
         "/help" => Some("help"),
@@ -1155,6 +1173,178 @@ fn handle_overlay_key(
         KeyCode::PageDown => app.overlay_page(1),
         KeyCode::Home => app.overlay_home_end(false),
         KeyCode::End => app.overlay_home_end(true),
+        KeyCode::Tab if matches!(app.overlay(), Some(OverlayState::List(list)) if list.title.starts_with("变更 [")) =>
+        {
+            app.changes_tab = match app.changes_tab {
+                ChangesTab::Staged => ChangesTab::Unstaged,
+                ChangesTab::Unstaged => ChangesTab::All,
+                ChangesTab::All => ChangesTab::Staged,
+            };
+            let filter = match app.overlay() {
+                Some(OverlayState::List(list)) => list.filter.clone(),
+                _ => String::new(),
+            };
+            app.replace_overlay(changes_overlay(app, None, filter));
+        }
+        KeyCode::Tab if matches!(app.overlay(), Some(OverlayState::List(list)) if list.title.starts_with("指令 [")) =>
+        {
+            let filter = match app.overlay() {
+                Some(OverlayState::List(list)) => list.filter.clone(),
+                _ => String::new(),
+            };
+            let target = if matches!(app.overlay(), Some(OverlayState::List(list)) if list.title == "指令 [项目]")
+            {
+                WorkbenchTarget::InstructionsHost
+            } else {
+                WorkbenchTarget::InstructionsProject
+            };
+            request_workspace_load(app, pipe, sequence, target, None, filter)?;
+        }
+        KeyCode::Char('o')
+            if modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(app.overlay(), Some(OverlayState::Detail(detail)) if detail.title == "变更详情") =>
+        {
+            app.change_detail_expanded = !app.change_detail_expanded;
+            app.replace_overlay(change_detail_overlay(app));
+        }
+        KeyCode::Char('r')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && matches!(app.overlay(), Some(OverlayState::List(list)) if list.title.starts_with("变更 [")) =>
+        {
+            let filter = match app.overlay() {
+                Some(OverlayState::List(list)) => list.filter.clone(),
+                _ => String::new(),
+            };
+            request_workspace_load(app, pipe, sequence, WorkbenchTarget::Changes, None, filter)?;
+        }
+        KeyCode::Char('r')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && matches!(app.overlay(), Some(OverlayState::List(list)) if list.title == "技能") =>
+        {
+            let filter = match app.overlay() {
+                Some(OverlayState::List(list)) => list.filter.clone(),
+                _ => String::new(),
+            };
+            request_workspace_load(app, pipe, sequence, WorkbenchTarget::Skills, None, filter)?;
+        }
+        KeyCode::Char('r')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && matches!(app.overlay(), Some(OverlayState::List(list)) if list.title.starts_with("指令 [")) =>
+        {
+            let (target, filter) = match app.overlay() {
+                Some(OverlayState::List(list)) => (
+                    if list.title == "指令 [项目]" {
+                        WorkbenchTarget::InstructionsProject
+                    } else {
+                        WorkbenchTarget::InstructionsHost
+                    },
+                    list.filter.clone(),
+                ),
+                _ => (WorkbenchTarget::InstructionsProject, String::new()),
+            };
+            request_workspace_load(app, pipe, sequence, target, None, filter)?;
+        }
+        KeyCode::Char('r')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && matches!(app.overlay(), Some(OverlayState::List(list)) if list.title == "包") =>
+        {
+            let filter = match app.overlay() {
+                Some(OverlayState::List(list)) => list.filter.clone(),
+                _ => String::new(),
+            };
+            request_workspace_load(app, pipe, sequence, WorkbenchTarget::Packages, None, filter)?;
+        }
+        KeyCode::Char('r')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && matches!(app.overlay(), Some(OverlayState::Detail(detail)) if detail.title == "更新检查") =>
+        {
+            request_workspace_load(
+                app,
+                pipe,
+                sequence,
+                WorkbenchTarget::Update,
+                None,
+                String::new(),
+            )?;
+        }
+        KeyCode::Char('t')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && matches!(app.overlay(), Some(OverlayState::List(list)) if list.title == "项目信任") =>
+        {
+            activate_workbench_action(
+                app,
+                "trust:toggle",
+                pipe,
+                session_path,
+                client_instance_id,
+                sequence,
+                session_flow,
+            )?;
+        }
+        KeyCode::Char('i')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && matches!(app.overlay(), Some(OverlayState::List(list)) if list.title == "包") =>
+        {
+            app.open_overlay(OverlayState::TextEditor(TextEditorOverlay {
+                title: "安装包来源".to_owned(),
+                value: String::new(),
+                cursor: 0,
+                save_action: "package-install-source".to_owned(),
+                status: "Enter 选择作用域，Shift+Enter 换行，Esc 取消".to_owned(),
+                secret: false,
+            }));
+        }
+        KeyCode::Char('d')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && matches!(app.overlay(), Some(OverlayState::List(list)) if list.title == "包") =>
+        {
+            if let Some(index) = app
+                .current_overlay_action()
+                .as_deref()
+                .and_then(|action| action.strip_prefix("package:"))
+                .and_then(|value| value.parse::<usize>().ok())
+            {
+                app.open_overlay(OverlayState::Confirm(ConfirmOverlay {
+                    title: "删除包".to_owned(),
+                    message: "确认移除当前包配置？".to_owned(),
+                    confirm_action: format!("package-remove:{index}"),
+                    status: String::new(),
+                }));
+            }
+        }
+        KeyCode::Char('u')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && matches!(app.overlay(), Some(OverlayState::List(list)) if list.title == "包") =>
+        {
+            if let Some(action) = app.current_overlay_action() {
+                activate_workbench_action(
+                    app,
+                    &format!("package-update:{action}"),
+                    pipe,
+                    session_path,
+                    client_instance_id,
+                    sequence,
+                    session_flow,
+                )?;
+            }
+        }
+        KeyCode::Char('U')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && matches!(app.overlay(), Some(OverlayState::List(list)) if list.title == "包") =>
+        {
+            activate_workbench_action(
+                app,
+                "package-update-all",
+                pipe,
+                session_path,
+                client_instance_id,
+                sequence,
+                session_flow,
+            )?;
+        }
+        KeyCode::Left => app.overlay_move_left(),
+        KeyCode::Right => app.overlay_move_right(),
+        KeyCode::Enter if modifiers.contains(KeyModifiers::SHIFT) => app.overlay_insert_newline(),
         KeyCode::Tab => {}
         KeyCode::Char('d') if modifiers == KeyModifiers::CONTROL => {
             set_tree_filter(app, TreeFilter::Default);
@@ -1571,6 +1761,104 @@ fn list_context(app: &AppState, title: &str) -> (String, Option<String>) {
 }
 
 #[cfg(unix)]
+fn request_workspace_load(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    sequence: &mut u64,
+    target: WorkbenchTarget,
+    selected_key: Option<String>,
+    filter: String,
+) -> Result<(), TuiError> {
+    let cwd = app
+        .active_session_cwd()
+        .filter(|cwd| !cwd.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| TuiError::InvalidResponse("尚未获取项目目录".to_owned()))?;
+    let (command, payload, title, key) = match target {
+        WorkbenchTarget::Changes => (
+            B3Command::GetGitStatus,
+            serde_json::json!({ "cwd": cwd })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            "变更",
+            "changes",
+        ),
+        WorkbenchTarget::Skills => (
+            B3Command::ListSkills,
+            serde_json::json!({ "cwd": cwd })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            "技能",
+            "skills",
+        ),
+        WorkbenchTarget::Trust => (
+            B3Command::GetProjectTrust,
+            serde_json::json!({ "cwd": cwd })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            "项目信任",
+            "trust",
+        ),
+        WorkbenchTarget::InstructionsProject => (
+            B3Command::ListProjectInstructions,
+            serde_json::json!({ "cwd": cwd })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            "指令 [项目]",
+            "instructions:project",
+        ),
+        WorkbenchTarget::InstructionsHost => (
+            B3Command::ListHostInstructions,
+            serde_json::Map::new(),
+            "指令 [本机]",
+            "instructions:host",
+        ),
+        WorkbenchTarget::Packages => (
+            B3Command::ListPackages,
+            serde_json::json!({ "cwd": cwd })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            "包",
+            "packages",
+        ),
+        WorkbenchTarget::Update => (
+            B3Command::CheckForUpdates,
+            serde_json::Map::new(),
+            "更新检查",
+            "update",
+        ),
+        _ => return Ok(()),
+    };
+    app.replace_workspace_overlay(
+        key,
+        OverlayState::Detail(DetailOverlay {
+            title: title.to_owned(),
+            lines: vec!["正在读取".to_owned()],
+            scroll: 0,
+            status: "请稍候".to_owned(),
+            link: None,
+            copy_text: None,
+        }),
+    );
+    request_b3(
+        app,
+        pipe,
+        sequence,
+        command,
+        payload,
+        PendingIntent::WorkbenchLoad {
+            target,
+            selected_key,
+            filter,
+        },
+    )
+}
+
 fn request_settings(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,
@@ -1697,6 +1985,99 @@ fn open_workbench(
         }));
         return Ok(());
     }
+    if matches!(
+        target,
+        "changes" | "skills" | "trust" | "instructions" | "packages" | "update"
+    ) {
+        let cwd = app
+            .active_session_cwd()
+            .filter(|cwd| !cwd.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| TuiError::InvalidResponse("尚未获取项目目录".to_owned()))?;
+        let (command, payload, workbench_target, title, key) = match target {
+            "changes" => (
+                B3Command::GetGitStatus,
+                serde_json::json!({ "cwd": cwd })
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+                WorkbenchTarget::Changes,
+                "变更",
+                "changes",
+            ),
+            "skills" => (
+                B3Command::ListSkills,
+                serde_json::json!({ "cwd": cwd })
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+                WorkbenchTarget::Skills,
+                "技能",
+                "skills",
+            ),
+            "trust" => (
+                B3Command::GetProjectTrust,
+                serde_json::json!({ "cwd": cwd })
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+                WorkbenchTarget::Trust,
+                "项目信任",
+                "trust",
+            ),
+            "instructions" => (
+                B3Command::ListProjectInstructions,
+                serde_json::json!({ "cwd": cwd })
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+                WorkbenchTarget::InstructionsProject,
+                "指令 [项目]",
+                "instructions:project",
+            ),
+            "packages" => (
+                B3Command::ListPackages,
+                serde_json::json!({ "cwd": cwd })
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+                WorkbenchTarget::Packages,
+                "包",
+                "packages",
+            ),
+            "update" => (
+                B3Command::CheckForUpdates,
+                serde_json::Map::new(),
+                WorkbenchTarget::Update,
+                "更新检查",
+                "update",
+            ),
+            _ => unreachable!(),
+        };
+        app.open_workspace_overlay(
+            key,
+            OverlayState::Detail(DetailOverlay {
+                title: title.to_owned(),
+                lines: vec!["正在读取".to_owned()],
+                scroll: 0,
+                status: "请稍候".to_owned(),
+                link: None,
+                copy_text: None,
+            }),
+        );
+        return request_b3(
+            app,
+            pipe,
+            sequence,
+            command,
+            payload,
+            PendingIntent::WorkbenchLoad {
+                target: workbench_target,
+                selected_key: None,
+                filter: String::new(),
+            },
+        );
+    }
     let (command, payload, intent, title) = match target {
         "settings" => (
             B3Command::ListSettings,
@@ -1800,6 +2181,444 @@ fn activate_workbench_action(
     if action.starts_with("disabled:") {
         app.set_overlay_error(action.trim_start_matches("disabled:"));
         return Ok(());
+    }
+    if let Some(index) = action
+        .strip_prefix("change:")
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        let Some(file) = app
+            .git_status
+            .as_ref()
+            .and_then(|status| status.files.get(index))
+            .cloned()
+        else {
+            app.set_overlay_error("变更列表已刷新，请重新选择");
+            return Ok(());
+        };
+        let cwd = app
+            .active_session_cwd()
+            .filter(|cwd| !cwd.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| TuiError::InvalidResponse("尚未获取项目目录".to_owned()))?;
+        app.open_workspace_overlay(
+            "changes:detail",
+            OverlayState::Detail(DetailOverlay {
+                title: "变更详情".to_owned(),
+                lines: vec!["正在读取 Diff".to_owned()],
+                scroll: 0,
+                status: "请稍候".to_owned(),
+                link: None,
+                copy_text: None,
+            }),
+        );
+        return request_b3(
+            app,
+            pipe,
+            sequence,
+            B3Command::GetGitDiff,
+            serde_json::json!({ "cwd": cwd, "path": file.path, "staged": file.staged })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            PendingIntent::ChangeDetail,
+        );
+    }
+    if let Some(index) = action
+        .strip_prefix("skill:")
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        let Some(skill) = app.skills.get(index) else {
+            app.set_overlay_error("技能列表已刷新，请重新选择");
+            return Ok(());
+        };
+        if !skill.eligible {
+            app.set_overlay_error("此 Skill 不支持修改启用状态");
+            return Ok(());
+        }
+        app.open_overlay(OverlayState::List(ListOverlay {
+            title: format!("{} 作用域", skill.name),
+            origin: OverlayOrigin::User,
+            items: ["user", "project"]
+                .into_iter()
+                .map(|scope| OverlayItem {
+                    label: if scope == "user" { "用户" } else { "项目" }.to_owned(),
+                    detail: if skill.scope == scope {
+                        "当前来源"
+                    } else {
+                        "写入 override"
+                    }
+                    .to_owned(),
+                    action: format!("skill-toggle:{index}:{scope}"),
+                })
+                .collect(),
+            selected: if skill.scope == "project" { 1 } else { 0 },
+            filter: String::new(),
+            status: "Enter 切换启用状态，Esc 返回".to_owned(),
+        }));
+        return Ok(());
+    }
+    if let Some(value) = action.strip_prefix("skill-toggle:") {
+        let Some((index, scope)) = value.rsplit_once(':') else {
+            app.set_overlay_error("技能作用域无效");
+            return Ok(());
+        };
+        let Ok(index) = index.parse::<usize>() else {
+            app.set_overlay_error("技能作用域无效");
+            return Ok(());
+        };
+        let Some(skill) = app.skills.get(index).cloned() else {
+            app.set_overlay_error("技能列表已刷新，请重新选择");
+            return Ok(());
+        };
+        let scope = scope.to_owned();
+        if !matches!(scope.as_str(), "user" | "project") {
+            app.set_overlay_error("技能作用域无效");
+            return Ok(());
+        }
+        app.close_overlay();
+        let filter = list_context(app, "技能").0;
+        let cwd = app
+            .active_session_cwd()
+            .filter(|cwd| !cwd.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| TuiError::InvalidResponse("尚未获取项目目录".to_owned()))?;
+        app.mark_write_pending();
+        return request_b3(
+            app,
+            pipe,
+            sequence,
+            B3Command::SetSkillEnabled,
+            serde_json::json!({
+                "cwd": cwd,
+                "path": skill.path,
+                "scope": scope,
+                "enabled": !skill.enabled,
+                "clientInstanceId": client_instance_id,
+                "clientRequestId": format!("skill:{}:{}:{}", index, scope, sequence.saturating_add(1)),
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+            PendingIntent::SkillMutation {
+                selected_key: format!("skill:{index}"),
+                filter,
+            },
+        );
+    }
+    if action == "trust:toggle" {
+        let target = !app
+            .trust
+            .as_ref()
+            .and_then(|trust| trust.trusted)
+            .unwrap_or(false);
+        let mut message = if target {
+            "确认信任此项目？项目级资源将可加载。".to_owned()
+        } else {
+            "确认取消信任此项目？项目级资源将停止加载。".to_owned()
+        };
+        if !target
+            && (app.is_active_operation()
+                || app.trust.as_ref().is_some_and(|trust| trust.resource_risk))
+        {
+            message.push_str(" 当前有运行任务或项目资源，取消信任会影响后续资源加载。");
+        }
+        app.open_overlay(OverlayState::Confirm(ConfirmOverlay {
+            title: "项目信任".to_owned(),
+            message,
+            confirm_action: format!("trust-set:{target}"),
+            status: String::new(),
+        }));
+        return Ok(());
+    }
+    if let Some(target) = action.strip_prefix("trust-set:") {
+        let trusted = match target {
+            "true" => true,
+            "false" => false,
+            _ => {
+                app.set_overlay_error("信任状态无效");
+                return Ok(());
+            }
+        };
+        app.close_overlay();
+        let cwd = app
+            .active_session_cwd()
+            .filter(|cwd| !cwd.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| TuiError::InvalidResponse("尚未获取项目目录".to_owned()))?;
+        app.mark_write_pending();
+        return request_b3(
+            app,
+            pipe,
+            sequence,
+            B3Command::SetProjectTrust,
+            serde_json::json!({
+                "cwd": cwd,
+                "trusted": trusted,
+                "clientInstanceId": client_instance_id,
+                "clientRequestId": format!("trust:{trusted}:{}", sequence.saturating_add(1)),
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+            PendingIntent::TrustMutation,
+        );
+    }
+    if let Some(scope) = action.strip_prefix("instruction-conflict-reload:") {
+        let target = match scope {
+            "project" => WorkbenchTarget::InstructionsProject,
+            "host" => WorkbenchTarget::InstructionsHost,
+            _ => {
+                app.set_overlay_error("指令冲突作用域无效");
+                return Ok(());
+            }
+        };
+        app.close_overlay();
+        return request_workspace_load(app, pipe, sequence, target, None, String::new());
+    }
+    if action == "instruction-conflict-discard" {
+        app.close_overlay();
+        app.set_toast("已放弃保存，未覆盖外部修改");
+        return Ok(());
+    }
+    if let Some(value) = action.strip_prefix("instruction:") {
+        let mut values = value.split(':');
+        let (Some(scope), Some(index)) = (values.next(), values.next()) else {
+            app.set_overlay_error("指令选择无效");
+            return Ok(());
+        };
+        let Ok(index) = index.parse::<usize>() else {
+            app.set_overlay_error("指令选择无效");
+            return Ok(());
+        };
+        let instructions = if scope == "project" {
+            &app.project_instructions
+        } else {
+            &app.host_instructions
+        };
+        let Some(instruction) = instructions.get(index) else {
+            app.set_overlay_error("指令列表已刷新，请重新选择");
+            return Ok(());
+        };
+        app.open_overlay(OverlayState::TextEditor(TextEditorOverlay {
+            title: format!("编辑 {}", instruction.file_name),
+            value: instruction.content.clone().unwrap_or_default(),
+            cursor: instruction.content.as_ref().map_or(0, String::len),
+            save_action: format!("instruction-save:{scope}:{index}"),
+            status: "Enter 保存，Shift+Enter 换行，Esc 取消".to_owned(),
+            secret: false,
+        }));
+        return Ok(());
+    }
+    if let Some(value) = action.strip_prefix("instruction-save:") {
+        let mut values = value.split(':');
+        let (Some(scope), Some(index)) = (values.next(), values.next()) else {
+            app.set_overlay_error("指令保存无效");
+            return Ok(());
+        };
+        let Ok(index) = index.parse::<usize>() else {
+            app.set_overlay_error("指令保存无效");
+            return Ok(());
+        };
+        let content = match app.overlay() {
+            Some(OverlayState::TextEditor(editor)) => editor.value.clone(),
+            _ => String::new(),
+        };
+        let instructions = if scope == "project" {
+            &app.project_instructions
+        } else {
+            &app.host_instructions
+        };
+        let Some(instruction) = instructions.get(index).cloned() else {
+            app.set_overlay_error("指令列表已刷新，请重新选择");
+            return Ok(());
+        };
+        app.close_overlay();
+        let target = if scope == "project" {
+            WorkbenchTarget::InstructionsProject
+        } else {
+            WorkbenchTarget::InstructionsHost
+        };
+        let filter = list_context(
+            app,
+            if scope == "project" {
+                "指令 [项目]"
+            } else {
+                "指令 [本机]"
+            },
+        )
+        .0;
+        let cwd = app.active_session_cwd().unwrap_or_default();
+        let command = if scope == "project" {
+            B3Command::SaveProjectInstruction
+        } else {
+            B3Command::SaveHostInstruction
+        };
+        let mut payload = serde_json::json!({
+            "fileName": instruction.file_name,
+            "content": content,
+            "clientInstanceId": client_instance_id,
+            "clientRequestId": format!("instruction:{scope}:{}", sequence.saturating_add(1)),
+        })
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+        if scope == "project" {
+            payload.insert("cwd".to_owned(), serde_json::Value::String(cwd.to_owned()));
+        }
+        if let Some(hash) = instruction.content_hash {
+            payload.insert("expectedHash".to_owned(), serde_json::Value::String(hash));
+        }
+        app.mark_write_pending();
+        return request_b3(
+            app,
+            pipe,
+            sequence,
+            command,
+            payload,
+            PendingIntent::InstructionMutation {
+                target,
+                selected_key: format!("instruction:{scope}:{index}"),
+                filter,
+            },
+        );
+    }
+    if action == "package-install-source" {
+        let source = match app.overlay() {
+            Some(OverlayState::TextEditor(editor)) => editor.value.trim().to_owned(),
+            _ => String::new(),
+        };
+        if source.is_empty() {
+            app.set_overlay_error("请输入包来源");
+            return Ok(());
+        }
+        app.pending_package_source = Some(source);
+        app.close_overlay();
+        app.open_overlay(OverlayState::List(ListOverlay {
+            title: "安装包作用域".to_owned(),
+            origin: OverlayOrigin::User,
+            items: vec![
+                OverlayItem {
+                    label: "用户".to_owned(),
+                    detail: "写入用户配置".to_owned(),
+                    action: "package-install:user".to_owned(),
+                },
+                OverlayItem {
+                    label: "项目".to_owned(),
+                    detail: "写入项目配置".to_owned(),
+                    action: "package-install:project".to_owned(),
+                },
+            ],
+            selected: 0,
+            filter: String::new(),
+            status: "Enter 安装，Esc 返回".to_owned(),
+        }));
+        return Ok(());
+    }
+    if let Some(scope) = action.strip_prefix("package-install:") {
+        let Some(source) = app.pending_package_source.take() else {
+            app.set_overlay_error("包来源已丢失，请重新输入");
+            return Ok(());
+        };
+        if !matches!(scope, "user" | "project") {
+            app.set_overlay_error("包作用域无效");
+            return Ok(());
+        }
+        app.close_overlay();
+        let filter = list_context(app, "包").0;
+        let cwd = app
+            .active_session_cwd()
+            .filter(|cwd| !cwd.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| TuiError::InvalidResponse("尚未获取项目目录".to_owned()))?;
+        app.mark_write_pending();
+        return request_b3(
+            app,
+            pipe,
+            sequence,
+            B3Command::InstallPackage,
+            serde_json::json!({
+                "cwd": cwd, "source": source, "scope": scope,
+                "clientInstanceId": client_instance_id,
+                "clientRequestId": format!("package-install:{}:{}", scope, sequence.saturating_add(1)),
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+            PendingIntent::PackageMutation { selected_key: None, filter, toast: "包已安装".to_owned() },
+        );
+    }
+    if let Some(index) = action
+        .strip_prefix("package-remove:")
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        let Some(package) = app.packages.get(index).cloned() else {
+            app.set_overlay_error("包列表已刷新，请重新选择");
+            return Ok(());
+        };
+        app.close_overlay();
+        let filter = list_context(app, "包").0;
+        let cwd = app
+            .active_session_cwd()
+            .filter(|cwd| !cwd.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| TuiError::InvalidResponse("尚未获取项目目录".to_owned()))?;
+        app.mark_write_pending();
+        return request_b3(
+            app,
+            pipe,
+            sequence,
+            B3Command::RemovePackage,
+            serde_json::json!({
+                "cwd": cwd, "source": package.source, "scope": package.scope,
+                "clientInstanceId": client_instance_id,
+                "clientRequestId": format!("package-remove:{}", sequence.saturating_add(1)),
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+            PendingIntent::PackageMutation {
+                selected_key: None,
+                filter,
+                toast: "包已移除".to_owned(),
+            },
+        );
+    }
+    if action == "package-update-all" || action.starts_with("package-update:package:") {
+        let source = action
+            .strip_prefix("package-update:package:")
+            .and_then(|value| value.parse::<usize>().ok())
+            .and_then(|index| app.packages.get(index))
+            .map(|package| package.source.clone());
+        let filter = list_context(app, "包").0;
+        let cwd = app
+            .active_session_cwd()
+            .filter(|cwd| !cwd.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| TuiError::InvalidResponse("尚未获取项目目录".to_owned()))?;
+        let mut payload = serde_json::json!({
+            "cwd": cwd,
+            "clientInstanceId": client_instance_id,
+            "clientRequestId": format!("package-update:{}", sequence.saturating_add(1)),
+        })
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+        if let Some(source) = source {
+            payload.insert("source".to_owned(), serde_json::Value::String(source));
+        }
+        app.mark_write_pending();
+        return request_b3(
+            app,
+            pipe,
+            sequence,
+            B3Command::UpdatePackages,
+            payload,
+            PendingIntent::PackageMutation {
+                selected_key: None,
+                filter,
+                toast: "包已更新".to_owned(),
+            },
+        );
     }
     if let Some(index) = action
         .strip_prefix("session:")
@@ -2619,9 +3438,44 @@ fn apply_server_message(
         && let Some(id) = raw.get("id").and_then(serde_json::Value::as_str)
         && let Some(pending) = app.take_pending(id)
     {
+        if !app.pending_workspace_is_current(&pending) {
+            return Ok(false);
+        }
         if raw.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
             if matches!(&pending.intent, PendingIntent::TreeNavigate { .. }) {
                 app.pending_editor_replace = None;
+            }
+            if let PendingIntent::InstructionMutation { target, .. } = &pending.intent
+                && raw
+                    .get("error")
+                    .and_then(|value| value.get("code"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("instruction_conflict")
+            {
+                let scope = if *target == WorkbenchTarget::InstructionsProject {
+                    "project"
+                } else {
+                    "host"
+                };
+                app.open_overlay(OverlayState::List(ListOverlay {
+                    title: "指令冲突".to_owned(),
+                    origin: OverlayOrigin::User,
+                    items: vec![
+                        OverlayItem {
+                            label: "重新加载".to_owned(),
+                            detail: "读取外部修改后的内容，不覆盖现有文件".to_owned(),
+                            action: format!("instruction-conflict-reload:{scope}"),
+                        },
+                        OverlayItem {
+                            label: "放弃保存".to_owned(),
+                            detail: "保留磁盘上的外部版本".to_owned(),
+                            action: "instruction-conflict-discard".to_owned(),
+                        },
+                    ],
+                    selected: 0,
+                    filter: String::new(),
+                    status: "Enter 选择，Esc 返回".to_owned(),
+                }));
             }
             app.set_overlay_error(
                 raw.get("error")
@@ -2634,6 +3488,69 @@ fn apply_server_message(
         let result = message.validated_b3_result_value(pending.request.command)?;
         match pending.intent {
             PendingIntent::Overlay { target } => apply_workbench_result(app, target, result),
+            PendingIntent::ChangeDetail => {
+                app.change_detail = Some(parse_git_diff(&result)?);
+                app.change_detail_expanded = false;
+                app.replace_overlay(change_detail_overlay(app));
+            }
+            PendingIntent::SkillMutation {
+                selected_key,
+                filter,
+            } => {
+                app.skills = parse_skills(&result)?;
+                app.replace_overlay(skills_overlay(&app.skills, Some(&selected_key), filter));
+                app.set_toast("技能启用状态已更新");
+            }
+            PendingIntent::TrustMutation => {
+                app.trust = Some(parse_trust(&result)?);
+                app.replace_overlay(trust_overlay(app));
+                app.set_toast("项目信任已更新");
+            }
+            PendingIntent::InstructionMutation {
+                target,
+                selected_key,
+                filter,
+            } => {
+                let instructions = parse_instructions(&result)?;
+                if target == WorkbenchTarget::InstructionsProject {
+                    app.project_instructions = instructions;
+                    app.replace_overlay(instructions_overlay(
+                        &app.project_instructions,
+                        "项目",
+                        Some(&selected_key),
+                        filter,
+                    ));
+                } else {
+                    app.host_instructions = instructions;
+                    app.replace_overlay(instructions_overlay(
+                        &app.host_instructions,
+                        "本机",
+                        Some(&selected_key),
+                        filter,
+                    ));
+                }
+                app.set_toast("指令已保存");
+            }
+            PendingIntent::PackageMutation {
+                selected_key,
+                filter,
+                toast,
+            } => {
+                let message = result
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(&toast)
+                    .to_owned();
+                app.set_toast(message);
+                request_workspace_load(
+                    app,
+                    pipe,
+                    sequence,
+                    WorkbenchTarget::Packages,
+                    selected_key,
+                    filter,
+                )?;
+            }
             PendingIntent::WorkbenchLoad {
                 target,
                 selected_key,
@@ -3351,6 +4268,48 @@ fn apply_workbench_load(
     result: serde_json::Value,
 ) -> Result<(), TuiError> {
     match target {
+        WorkbenchTarget::Changes => {
+            app.git_status = Some(parse_git_status(&result)?);
+            app.replace_overlay(changes_overlay(app, selected_key.as_deref(), filter));
+        }
+        WorkbenchTarget::Skills => {
+            app.skills = parse_skills(&result)?;
+            app.replace_overlay(skills_overlay(&app.skills, selected_key.as_deref(), filter));
+        }
+        WorkbenchTarget::Trust => {
+            app.trust = Some(parse_trust(&result)?);
+            app.replace_overlay(trust_overlay(app));
+        }
+        WorkbenchTarget::InstructionsProject => {
+            app.project_instructions = parse_instructions(&result)?;
+            app.replace_overlay(instructions_overlay(
+                &app.project_instructions,
+                "项目",
+                selected_key.as_deref(),
+                filter,
+            ));
+        }
+        WorkbenchTarget::InstructionsHost => {
+            app.host_instructions = parse_instructions(&result)?;
+            app.replace_overlay(instructions_overlay(
+                &app.host_instructions,
+                "本机",
+                selected_key.as_deref(),
+                filter,
+            ));
+        }
+        WorkbenchTarget::Packages => {
+            app.packages = parse_packages(&result)?;
+            app.replace_overlay(packages_overlay(
+                &app.packages,
+                selected_key.as_deref(),
+                filter,
+            ));
+        }
+        WorkbenchTarget::Update => {
+            app.update = Some(parse_update(&result)?);
+            app.replace_overlay(update_overlay(app));
+        }
         WorkbenchTarget::Settings => {
             app.settings = parse_settings(&result)?;
             app.replace_overlay(settings_overlay(
@@ -3391,6 +4350,303 @@ fn apply_workbench_load(
         }
     }
     Ok(())
+}
+
+fn changes_tab_label(tab: ChangesTab) -> &'static str {
+    match tab {
+        ChangesTab::Staged => "已暂存",
+        ChangesTab::Unstaged => "未暂存",
+        ChangesTab::All => "全部",
+    }
+}
+
+fn changes_overlay(app: &AppState, selected_key: Option<&str>, filter: String) -> OverlayState {
+    let status = app.git_status.as_ref();
+    let items = status
+        .map(|status| {
+            status
+                .files
+                .iter()
+                .enumerate()
+                .filter(|(_, file)| match app.changes_tab {
+                    ChangesTab::Staged => file.staged,
+                    ChangesTab::Unstaged => file.unstaged || file.untracked || file.conflicted,
+                    ChangesTab::All => true,
+                })
+                .map(|(index, file)| {
+                    let mut flags = format!(
+                        "index:{} worktree:{}",
+                        file.index_status, file.worktree_status
+                    );
+                    if file.conflicted {
+                        flags.push_str(" 冲突");
+                    } else if file.untracked {
+                        flags.push_str(" 未跟踪");
+                    }
+                    OverlayItem {
+                        label: file.path.clone(),
+                        detail: flags,
+                        action: format!("change:{index}"),
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let selected = selected_key
+        .and_then(|key| items.iter().position(|item| item.action == key))
+        .unwrap_or(0);
+    let detail = status.map_or_else(
+        || "正在读取".to_owned(),
+        |status| {
+            format!(
+                "{}  upstream:{}  ahead:{} behind:{}",
+                status.branch.as_deref().unwrap_or("detached"),
+                status.upstream.as_deref().unwrap_or("无"),
+                status.ahead,
+                status.behind
+            )
+        },
+    );
+    OverlayState::List(ListOverlay {
+        title: format!("变更 [{}]", changes_tab_label(app.changes_tab)),
+        origin: OverlayOrigin::User,
+        items,
+        selected,
+        filter,
+        status: format!("{detail}  Tab 切换  Enter 查看  r 刷新"),
+    })
+}
+
+fn change_detail_overlay(app: &AppState) -> OverlayState {
+    let diff = app.change_detail.as_ref().expect("change detail exists");
+    let mut lines = vec![format!(
+        "{}  {}  +{} -{}",
+        diff.path.as_deref().unwrap_or("全部变更"),
+        if diff.staged {
+            "已暂存"
+        } else {
+            "未暂存"
+        },
+        diff.additions,
+        diff.deletions
+    )];
+    if app.change_detail_expanded {
+        lines.extend(diff.diff.lines().map(str::to_owned));
+    } else if !diff.diff.is_empty() {
+        lines.push("Diff 已摘要，按 Ctrl+O 展开".to_owned());
+    }
+    OverlayState::Detail(DetailOverlay {
+        title: "变更详情".to_owned(),
+        lines,
+        scroll: 0,
+        status: if app.change_detail_expanded {
+            "Ctrl+O 摘要  Esc 返回".to_owned()
+        } else {
+            "Ctrl+O 展开  Esc 返回".to_owned()
+        },
+        link: None,
+        copy_text: None,
+    })
+}
+
+fn skills_overlay(
+    skills: &[SkillDescriptor],
+    selected_key: Option<&str>,
+    filter: String,
+) -> OverlayState {
+    let items = skills
+        .iter()
+        .enumerate()
+        .map(|(index, skill)| OverlayItem {
+            label: skill.name.clone(),
+            detail: format!(
+                "{}  {}  {}  {}",
+                skill.source,
+                skill.scope,
+                if skill.enabled {
+                    "已启用"
+                } else {
+                    "已禁用"
+                },
+                skill.description
+            ),
+            action: if skill.eligible {
+                format!("skill:{index}")
+            } else {
+                "disabled:临时 Skill 不支持修改启用状态".to_owned()
+            },
+        })
+        .collect::<Vec<_>>();
+    let selected = selected_key
+        .and_then(|key| items.iter().position(|item| item.action == key))
+        .unwrap_or(0);
+    OverlayState::List(ListOverlay {
+        title: "技能".to_owned(),
+        origin: OverlayOrigin::User,
+        items,
+        selected,
+        filter,
+        status: "Enter 选择作用域并切换，输入筛选，r 刷新".to_owned(),
+    })
+}
+
+fn trust_overlay(app: &AppState) -> OverlayState {
+    let trust = app.trust.as_ref();
+    let trusted = trust.and_then(|value| value.trusted);
+    let state = match trusted {
+        Some(true) => "已信任",
+        Some(false) => "不信任",
+        None => "未选择",
+    };
+    let detail = trust.map_or_else(
+        || "正在读取".to_owned(),
+        |value| {
+            format!(
+                "{}  风险:{}  {}",
+                value.cwd,
+                if value.resource_risk { "有" } else { "无" },
+                value.reason
+            )
+        },
+    );
+    OverlayState::List(ListOverlay {
+        title: "项目信任".to_owned(),
+        origin: OverlayOrigin::User,
+        items: vec![OverlayItem {
+            label: state.to_owned(),
+            detail,
+            action: "trust:toggle".to_owned(),
+        }],
+        selected: 0,
+        filter: String::new(),
+        status: "t 或 Enter 切换，需确认".to_owned(),
+    })
+}
+
+fn instructions_overlay(
+    instructions: &[InstructionDescriptor],
+    scope: &str,
+    selected_key: Option<&str>,
+    filter: String,
+) -> OverlayState {
+    let scope_key = if scope == "项目" { "project" } else { "host" };
+    let items = instructions
+        .iter()
+        .enumerate()
+        .map(|(index, instruction)| OverlayItem {
+            label: instruction.file_name.clone(),
+            detail: format!(
+                "{} {} {} {}",
+                if instruction.exists {
+                    "存在"
+                } else {
+                    "不存在"
+                },
+                if instruction.active {
+                    "生效"
+                } else {
+                    "未生效"
+                },
+                if instruction.editable {
+                    "可编辑"
+                } else {
+                    "只读"
+                },
+                instruction.path
+            ),
+            action: if instruction.editable {
+                format!("instruction:{scope_key}:{index}")
+            } else {
+                "disabled:此指令文件不允许编辑".to_owned()
+            },
+        })
+        .collect::<Vec<_>>();
+    let selected = selected_key
+        .and_then(|key| items.iter().position(|item| item.action == key))
+        .unwrap_or(0);
+    OverlayState::List(ListOverlay {
+        title: format!("指令 [{scope}]"),
+        origin: OverlayOrigin::User,
+        items,
+        selected,
+        filter,
+        status: "Tab 切换项目/本机，Enter 完整编辑，r 刷新".to_owned(),
+    })
+}
+
+fn packages_overlay(
+    packages: &[PackageDescriptor],
+    selected_key: Option<&str>,
+    filter: String,
+) -> OverlayState {
+    let items = packages
+        .iter()
+        .enumerate()
+        .map(|(index, package)| OverlayItem {
+            label: package.source.clone(),
+            detail: format!(
+                "{}  {}  {}",
+                package.scope,
+                package.installed_path.as_deref().unwrap_or("未解析"),
+                if package.filtered {
+                    "已过滤"
+                } else {
+                    "已配置"
+                }
+            ),
+            action: format!("package:{index}"),
+        })
+        .collect::<Vec<_>>();
+    let selected = selected_key
+        .and_then(|key| items.iter().position(|item| item.action == key))
+        .unwrap_or(0);
+    OverlayState::List(ListOverlay {
+        title: "包".to_owned(),
+        origin: OverlayOrigin::User,
+        items,
+        selected,
+        filter,
+        status: "i 安装  d 删除  u 更新当前  U 更新全部  r 刷新".to_owned(),
+    })
+}
+
+fn update_overlay(app: &AppState) -> OverlayState {
+    let update = app.update.as_ref().expect("update exists");
+    let mut lines = vec![format!("当前: {}", update.current_version)];
+    lines.push(format!(
+        "最新: {}  状态: {}",
+        update.latest_version.as_deref().unwrap_or("未知"),
+        update.status
+    ));
+    if let Some(url) = &update.url {
+        lines.push(format!("地址: {url}"));
+    }
+    if let Some(note) = &update.note {
+        lines.push(format!("说明: {}", bounded_text(note, 1024)));
+    }
+    lines.push(format!("仅检查版本: {}", update.install_blocked_reason));
+    OverlayState::Detail(DetailOverlay {
+        title: "更新检查".to_owned(),
+        lines,
+        scroll: 0,
+        status: "r 重新检查  Esc 返回".to_owned(),
+        link: None,
+        copy_text: None,
+    })
+}
+
+fn bounded_text(value: &str, max: usize) -> String {
+    if value.len() <= max {
+        return value.to_owned();
+    }
+    let mut output = String::new();
+    for character in value.chars() {
+        if output.len() + character.len_utf8() > max.saturating_sub(3) {
+            break;
+        }
+        output.push(character);
+    }
+    format!("{output}...")
 }
 
 fn settings_overlay(
@@ -3731,6 +4987,178 @@ fn parse_sessions(value: &serde_json::Value) -> Result<Vec<SessionSummary>, TuiE
         .collect()
 }
 
+fn parse_git_status(value: &serde_json::Value) -> Result<GitStatusDescriptor, TuiError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| TuiError::InvalidResponse("变更响应无效".to_owned()))?;
+    let files = object
+        .get("files")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| TuiError::InvalidResponse("变更响应缺少 files".to_owned()))?
+        .iter()
+        .map(|entry| {
+            let entry = entry
+                .as_object()
+                .ok_or_else(|| TuiError::InvalidResponse("变更条目无效".to_owned()))?;
+            Ok::<GitFileDescriptor, TuiError>(GitFileDescriptor {
+                path: required_string(entry, "path")?,
+                original_path: entry
+                    .get("originalPath")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                index_status: required_string(entry, "indexStatus")?,
+                worktree_status: required_string(entry, "worktreeStatus")?,
+                staged: required_bool(entry, "staged")?,
+                unstaged: required_bool(entry, "unstaged")?,
+                untracked: required_bool(entry, "untracked")?,
+                conflicted: required_bool(entry, "conflicted")?,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(GitStatusDescriptor {
+        root: required_string(object, "root")?,
+        branch: object
+            .get("branch")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        upstream: object
+            .get("upstream")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        ahead: required_u64(object, "ahead")?,
+        behind: required_u64(object, "behind")?,
+        files,
+    })
+}
+
+fn parse_git_diff(value: &serde_json::Value) -> Result<GitDiffDescriptor, TuiError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| TuiError::InvalidResponse("Diff 响应无效".to_owned()))?;
+    Ok(GitDiffDescriptor {
+        path: object
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        staged: required_bool(object, "staged")?,
+        diff: required_string(object, "diff")?,
+        additions: required_u64(object, "additions")?,
+        deletions: required_u64(object, "deletions")?,
+    })
+}
+
+fn parse_skills(value: &serde_json::Value) -> Result<Vec<SkillDescriptor>, TuiError> {
+    value
+        .get("skills")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| TuiError::InvalidResponse("技能响应缺少 skills".to_owned()))?
+        .iter()
+        .map(|entry| {
+            let entry = entry
+                .as_object()
+                .ok_or_else(|| TuiError::InvalidResponse("技能条目无效".to_owned()))?;
+            Ok(SkillDescriptor {
+                name: required_string(entry, "name")?,
+                description: required_string(entry, "description")?,
+                path: required_string(entry, "path")?,
+                source: required_string(entry, "source")?,
+                scope: required_string(entry, "scope")?,
+                enabled: required_bool(entry, "enabled")?,
+                eligible: required_bool(entry, "eligible")?,
+            })
+        })
+        .collect()
+}
+
+fn parse_instructions(value: &serde_json::Value) -> Result<Vec<InstructionDescriptor>, TuiError> {
+    value
+        .as_array()
+        .ok_or_else(|| TuiError::InvalidResponse("指令响应不是列表".to_owned()))?
+        .iter()
+        .map(|entry| {
+            let entry = entry
+                .as_object()
+                .ok_or_else(|| TuiError::InvalidResponse("指令条目无效".to_owned()))?;
+            Ok(InstructionDescriptor {
+                path: required_string(entry, "path")?,
+                file_name: required_string(entry, "fileName")?,
+                exists: required_bool(entry, "exists")?,
+                active: required_bool(entry, "active")?,
+                editable: required_bool(entry, "editable")?,
+                content: entry
+                    .get("content")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                content_hash: entry
+                    .get("contentHash")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+            })
+        })
+        .collect()
+}
+
+fn parse_trust(value: &serde_json::Value) -> Result<ProjectTrustDescriptor, TuiError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| TuiError::InvalidResponse("信任响应无效".to_owned()))?;
+    Ok(ProjectTrustDescriptor {
+        cwd: required_string(object, "cwd")?,
+        trusted: match object.get("trusted") {
+            Some(serde_json::Value::Bool(value)) => Some(*value),
+            Some(serde_json::Value::Null) => None,
+            _ => return Err(TuiError::InvalidResponse("信任状态无效".to_owned())),
+        },
+        reason: required_string(object, "reason")?,
+        resource_risk: required_bool(object, "resourceRisk")?,
+    })
+}
+
+fn parse_packages(value: &serde_json::Value) -> Result<Vec<PackageDescriptor>, TuiError> {
+    value
+        .as_array()
+        .ok_or_else(|| TuiError::InvalidResponse("包响应不是列表".to_owned()))?
+        .iter()
+        .map(|entry| {
+            let entry = entry
+                .as_object()
+                .ok_or_else(|| TuiError::InvalidResponse("包条目无效".to_owned()))?;
+            Ok(PackageDescriptor {
+                source: required_string(entry, "source")?,
+                scope: required_string(entry, "scope")?,
+                filtered: required_bool(entry, "filtered")?,
+                installed_path: entry
+                    .get("installedPath")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+            })
+        })
+        .collect()
+}
+
+fn parse_update(value: &serde_json::Value) -> Result<UpdateDescriptor, TuiError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| TuiError::InvalidResponse("更新响应无效".to_owned()))?;
+    Ok(UpdateDescriptor {
+        current_version: required_string(object, "currentVersion")?,
+        latest_version: object
+            .get("latestVersion")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        status: required_string(object, "status")?,
+        url: object
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        note: object
+            .get("note")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        install_blocked_reason: required_string(object, "installBlockedReason")?,
+    })
+}
+
 fn parse_tree(value: &serde_json::Value) -> Result<Vec<SessionTreeNode>, TuiError> {
     value
         .as_array()
@@ -3929,6 +5357,26 @@ fn required_string(
         .get(key)
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned)
+        .ok_or_else(|| TuiError::InvalidResponse(format!("响应缺少 {key}")))
+}
+
+fn required_bool(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<bool, TuiError> {
+    object
+        .get(key)
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| TuiError::InvalidResponse(format!("响应缺少 {key}")))
+}
+
+fn required_u64(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<u64, TuiError> {
+    object
+        .get(key)
+        .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| TuiError::InvalidResponse(format!("响应缺少 {key}")))
 }
 

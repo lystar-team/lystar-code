@@ -614,7 +614,18 @@ function createAdapter(runtime: FakeRuntimeSession): RuntimeAdapter {
 class WorkbenchFixture {
 	readonly adapter: RuntimeAdapter;
 	readonly calls: string[] = [];
-	readonly effects = { create: 0, rename: 0, delete: 0, fork: 0, label: 0, navigate: 0 };
+	readonly effects = {
+		create: 0,
+		rename: 0,
+		delete: 0,
+		fork: 0,
+		label: 0,
+		navigate: 0,
+		skill: 0,
+		trust: 0,
+		instruction: 0,
+		package: 0,
+	};
 	readonly paths: { a: string; b: string; c: string };
 	readonly tree = [
 		{
@@ -651,6 +662,11 @@ class WorkbenchFixture {
 	nextNavigation: { cancelled: boolean; editorText?: string; newLeafId?: string } = { cancelled: false };
 	labelFailures = 0;
 	navigationFailures = 0;
+	instructionConflicts = 0;
+	packageFailures = 0;
+	private skillEnabled = true;
+	private trusted = true;
+	private packageSources = ["npm:fixture"];
 	private sequence = 0;
 
 	constructor(directory: string, initialPath: string) {
@@ -677,7 +693,184 @@ class WorkbenchFixture {
 			getSessionTree: () => this.tree,
 			listSubagents: () => [],
 			readSubagent: () => ({}),
-			getProjectTrust: (cwd: string) => ({ cwd, trusted: true }),
+			getProjectTrust: (cwd: string) => ({
+				cwd,
+				trusted: this.trusted,
+				reason: this.trusted ? "项目资源已信任" : "项目资源被明确设为不信任",
+				resourceRisk: true,
+			}),
+			setProjectTrust: async (cwd: string, trusted: boolean) => {
+				this.effects.trust++;
+				this.trusted = trusted;
+				return {
+					cwd,
+					trusted,
+					reason: trusted ? "项目资源已信任" : "项目资源被明确设为不信任",
+					resourceRisk: true,
+				};
+			},
+			listSkills: async () => ({
+				skills: [
+					{
+						name: "fixture-skill",
+						description: "fixture skill description",
+						path: "/tmp/fixture-skill/SKILL.md",
+						baseDir: "/tmp/fixture-skill",
+						source: "fixture",
+						scope: "project" as const,
+						origin: "top-level" as const,
+						enabled: this.skillEnabled,
+						disableModelInvocation: false,
+						eligible: true,
+					},
+				],
+				diagnostics: [],
+			}),
+			setSkillEnabled: async (_cwd: string, _path: string, _scope: "user" | "project", enabled: boolean) => {
+				this.effects.skill++;
+				this.skillEnabled = enabled;
+				return this.adapter.listSkills("", async () => ({ cancelled: true }));
+			},
+			listProjectInstructions: (cwd: string) => [
+				{
+					path: join(cwd, "AGENTS.md"),
+					fileName: "AGENTS.md",
+					exists: true,
+					active: true,
+					editable: true,
+					content: "项目指令",
+					contentHash: "fixture-project-hash",
+				},
+			],
+			saveProjectInstruction: async (
+				cwd: string,
+				_fileName: "AGENTS.md" | "AGENTS.override.md",
+				content: string,
+			) => {
+				if (this.instructionConflicts > 0) {
+					this.instructionConflicts--;
+					throw Object.assign(new Error("项目指令文件已被外部修改，请重新加载后再保存"), {
+						code: "instruction_conflict",
+						retryable: true,
+					});
+				}
+				this.effects.instruction++;
+				return [
+					{
+						path: join(cwd, "AGENTS.md"),
+						fileName: "AGENTS.md",
+						exists: true,
+						active: true,
+						editable: true,
+						content,
+						contentHash: "fixture-project-hash-next",
+					},
+				];
+			},
+			listHostInstructions: () => [
+				{
+					path: "/tmp/host/AGENTS.md",
+					fileName: "AGENTS.md",
+					exists: true,
+					active: true,
+					editable: true,
+					content: "本机指令",
+					contentHash: "fixture-host-hash",
+				},
+			],
+			saveHostInstruction: async (_fileName: "AGENTS.md" | "AGENTS.override.md", content: string) => {
+				this.effects.instruction++;
+				return [
+					{
+						path: "/tmp/host/AGENTS.md",
+						fileName: "AGENTS.md",
+						exists: true,
+						active: true,
+						editable: true,
+						content,
+						contentHash: "fixture-host-hash-next",
+					},
+				];
+			},
+			getGitStatus: async (cwd: string) => ({
+				root: cwd,
+				branch: "fixture",
+				upstream: "origin/fixture",
+				ahead: 1,
+				behind: 2,
+				files: [
+					{
+						path: "staged.ts",
+						indexStatus: "M",
+						worktreeStatus: ".",
+						staged: true,
+						unstaged: false,
+						untracked: false,
+						conflicted: false,
+					},
+					{
+						path: "unstaged.ts",
+						indexStatus: ".",
+						worktreeStatus: "M",
+						staged: false,
+						unstaged: true,
+						untracked: false,
+						conflicted: false,
+					},
+					{
+						path: "conflict.ts",
+						indexStatus: "U",
+						worktreeStatus: "U",
+						staged: true,
+						unstaged: true,
+						untracked: false,
+						conflicted: true,
+					},
+				],
+			}),
+			getGitDiff: async (_cwd: string, path: string | undefined, staged: boolean) => ({
+				...(path ? { path } : {}),
+				staged,
+				additions: 2,
+				deletions: 1,
+				diff: `diff --git a/${path ?? "all"} b/${path ?? "all"}\n+added\n-removed`,
+			}),
+			checkForUpdates: async () => ({
+				currentVersion: "0.84.2",
+				checkedAt: 1,
+				repository: "lystar-team/lystar-code",
+				installEnabled: false,
+				installBlockedReason: "当前只支持检查版本。",
+				status: "available",
+				latestVersion: "0.84.3",
+				note: "fixture update note",
+				url: "https://example.test/release",
+			}),
+			listPackages: () =>
+				this.packageSources.map((source) => ({
+					source,
+					scope: "project" as const,
+					filtered: false,
+					installedPath: "/tmp/fixture-package",
+				})),
+			installPackage: async (_cwd: string, source: string) => {
+				this.effects.package++;
+				this.packageSources.push(source);
+				return { changed: true, message: `已安装 ${source}` };
+			},
+			removePackage: async (_cwd: string, source: string) => {
+				this.effects.package++;
+				this.packageSources = this.packageSources.filter((item) => item !== source);
+				return { changed: true, message: `已移除 ${source}` };
+			},
+			updatePackages: async () => {
+				if (this.packageFailures > 0) {
+					this.packageFailures--;
+					throw Object.assign(new Error("离线模式下不能更新包"), { code: "offline", retryable: false });
+				}
+				this.effects.package++;
+				return { changed: true, message: "已更新配置包" };
+			},
 			readClipboardText: async () => ({ capability: false }),
 			writeClipboardText: async () => ({ capability: false, changed: false }),
 		} as unknown as RuntimeAdapter;
@@ -1654,6 +1847,184 @@ describe("Rust read-only TUI fd bridge", () => {
 			}
 		}
 	}, 180_000);
+
+	it("通过 tmux/FIFO 两轮操作六个项目工作台 Overlay", async () => {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const tui = await startTui(
+				4,
+				{ width: 80, height: 24 },
+				`b3-project-workbenches-${attempt + 1}`,
+				({ directory, sessionPath }) => new WorkbenchFixture(directory, sessionPath),
+			);
+			try {
+				await waitForInitialPage(tui);
+				const fixture = tui.fixture!;
+				const openSlash = async (command: string, marker: string, b3Command: string) => {
+					const count = tui.requests.filter((request) => request.command === b3Command).length;
+					tui.sendLiteral(command);
+					tui.send("Enter");
+					await waitFor(async () => {
+						await tui.pump();
+						return tui.requests.filter((request) => request.command === b3Command).length > count;
+					}, `${command} did not reach the Host`);
+					await waitFor(
+						() => tui.pane().includes(marker),
+						() => `${command} did not render Host data: ${JSON.stringify(tui.pane())}`,
+					);
+				};
+
+				await openSlash("/changes", "staged.ts", "get_git_status");
+				tui.send("Tab");
+				await waitFor(() => tui.pane().includes("变更 [已暂存]"), "changes Tab did not select staged files");
+				tui.send("Tab");
+				await waitFor(() => tui.pane().includes("变更 [未暂存]"), "changes Tab did not select unstaged files");
+				tui.send("Tab");
+				await waitFor(() => tui.pane().includes("变更 [全部]"), "changes Tab did not select all files");
+				tui.sendLiteral("unstaged");
+				await waitFor(() => tui.pane().includes("unstaged.ts"), "changes filter did not keep matching file");
+				tui.send("Enter");
+				await waitForRequest(tui, "get_git_diff");
+				await waitFor(() => tui.pane().includes("变更详情"), "changes detail did not render");
+				tui.send("C-o");
+				await waitFor(() => tui.pane().includes("diff --git"), "changes detail did not expand diff");
+				tui.send("Escape");
+				await waitFor(() => tui.pane().includes("变更 [全部]"), "changes detail did not return to list");
+				tui.send("Escape");
+				await waitFor(() => tui.pane().includes("Enter 提交"), "changes list did not close before next overlay");
+
+				await openSlash("/skills", "fixture-skill", "list_skills");
+				tui.send("Enter");
+				await waitFor(() => tui.pane().includes("fixture-skill 作用域"), "skill scope selector did not render");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return fixture.effects.skill === 1;
+				}, "skill toggle did not write through Host");
+				await waitFor(() => tui.pane().includes("已禁用"), "skill toggle result did not refresh list");
+				tui.send("Escape");
+				await waitFor(() => tui.pane().includes("Enter 提交"), "skills list did not close before trust");
+
+				await openSlash("/trust", "项目资源已信任", "get_project_trust");
+				tui.send("t");
+				await waitFor(() => tui.pane().includes("确认取消信任此项目"), "trust warning confirmation did not render");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return fixture.effects.trust === 1;
+				}, "trust confirmation did not write through Host");
+				await waitFor(
+					() => tui.pane().includes("项目资源被明确设为不信任"),
+					"trust result did not refresh canonical state",
+				);
+				tui.send("Escape");
+				await waitFor(() => tui.pane().includes("Enter 提交"), "trust list did not close before instructions");
+
+				await openSlash("/instructions", "AGENTS.md", "list_project_instructions");
+				tui.send("Tab");
+				const hostInstructionRequest = await waitForRequest(tui, "list_host_instructions");
+				await waitFor(
+					() => tui.responseWrites.has(hostInstructionRequest.id),
+					"Host did not answer host instruction list",
+				);
+				await waitFor(
+					() => tui.pane().includes("/tmp/host/AGENTS.md"),
+					() =>
+						`instruction scope Tab did not render host instructions: ${JSON.stringify({ pane: tui.pane(), responses: tui.serverMessages.filter((message) => message.type === "response" && message.id === hostInstructionRequest.id) })}`,
+				);
+				tui.send("Enter");
+				await waitFor(() => tui.pane().includes("编辑 AGENTS.md"), "host instruction editor did not render");
+				tui.sendLiteral(" 更新");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return fixture.effects.instruction === 1;
+				}, "host instruction save did not write through Host");
+				tui.send("Escape");
+				await waitFor(
+					() => tui.pane().includes("Enter 提交"),
+					"host instructions did not close before conflict test",
+				);
+
+				await openSlash("/instructions", "AGENTS.md", "list_project_instructions");
+				fixture.instructionConflicts = 1;
+				tui.send("Enter");
+				await waitFor(() => tui.pane().includes("编辑 AGENTS.md"), "project instruction editor did not render");
+				tui.sendLiteral(" 更新");
+				tui.send("Enter");
+				const conflictRequest = await waitForRequest(tui, "save_project_instruction");
+				await waitFor(
+					() => tui.responseWrites.has(conflictRequest.id),
+					"Host did not respond to instruction conflict",
+				);
+				await waitFor(
+					() => tui.pane().includes("重新加载"),
+					() => `instruction expectedHash conflict did not render recovery: ${JSON.stringify(tui.pane())}`,
+				);
+				tui.send("Enter");
+				await waitFor(
+					() => tui.pane().includes("指令 [项目]"),
+					"instruction conflict reload did not restore project list",
+				);
+				tui.send("Escape");
+				await waitFor(
+					() => tui.pane().includes("Enter 提交"),
+					"project instructions did not close before packages",
+				);
+
+				await openSlash("/packages", "npm:fixture", "list_packages");
+				tui.send("i");
+				await waitFor(() => tui.pane().includes("安装包来源"), "package install editor did not render");
+				tui.sendLiteral("npm:added");
+				tui.send("Enter");
+				await waitFor(() => tui.pane().includes("安装包作用域"), "package scope selector did not render");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return fixture.effects.package === 1;
+				}, "package install did not write through Host");
+				const packageRefresh = await waitForRequest(tui, "list_packages", 2);
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.responseWrites.has(packageRefresh.id) && tui.pane().includes("npm:added");
+				}, "package install did not refresh list");
+				tui.send("d");
+				await waitFor(
+					() => tui.pane().includes("确认移除当前包配置"),
+					"package delete confirmation did not render",
+				);
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return fixture.effects.package === 2;
+				}, "package delete did not write through Host");
+				const packageDeleteRefresh = await waitForRequest(tui, "list_packages", 3);
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.responseWrites.has(packageDeleteRefresh.id) && tui.pane().includes("包");
+				}, "package delete did not refresh list before update");
+				tui.send("U");
+				await waitFor(async () => {
+					await tui.pump();
+					return fixture.effects.package === 3;
+				}, "package update did not write through Host");
+				tui.send("Escape");
+				await waitFor(() => tui.pane().includes("Enter 提交"), "packages list did not close before update");
+
+				await openSlash("/update", "0.84.3", "check_for_updates");
+				await waitFor(() => tui.pane().includes("0.84.3"), "update check did not render latest version");
+				assert.ok(!tui.pane().includes("立即更新"), "update overlay exposed in-TUI self update");
+				tui.send("r");
+				await waitForRequest(tui, "check_for_updates", 2);
+				tui.resize(80, 8);
+				await waitFor(
+					() => tui.pane().includes("更新检查") || tui.pane().includes("Enter 提交"),
+					"80x8 did not render project workbench",
+				);
+			} finally {
+				tui.closeProtocol();
+			}
+		}
+	}, 240_000);
 
 	it("reacquires a new lease after a dropped response without repeating Host operations", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "lystar-rust-m8-reacquire-"));

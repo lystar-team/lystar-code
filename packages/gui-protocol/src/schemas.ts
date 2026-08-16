@@ -452,6 +452,21 @@ export function isOperationSnapshot(value: unknown): value is OperationSnapshot 
 	return Check(OperationSnapshotSchema, value);
 }
 
+export const SkillScopeSchema = Type.Union([Type.Literal("user"), Type.Literal("project"), Type.Literal("temporary")]);
+export const SkillSummarySchema = StrictObject({
+	name: Type.String({ minLength: 1, maxLength: 4096 }),
+	description: Type.String({ maxLength: 16 * 1024 }),
+	path: Type.String({ minLength: 1, maxLength: 4096 }),
+	baseDir: Type.String({ minLength: 1, maxLength: 4096 }),
+	source: Type.String({ minLength: 1, maxLength: 4096 }),
+	scope: SkillScopeSchema,
+	origin: Type.Union([Type.Literal("package"), Type.Literal("top-level")]),
+	enabled: Type.Boolean(),
+	disableModelInvocation: Type.Boolean(),
+	eligible: Type.Boolean(),
+});
+export type SkillSummary = Static<typeof SkillSummarySchema>;
+
 export const GitFileStatusSchema = StrictObject({
 	path: Type.String({ minLength: 1 }),
 	originalPath: Type.Optional(Type.String({ minLength: 1 })),
@@ -569,6 +584,8 @@ export type SettingSummary = Static<typeof SettingSummarySchema>;
 export const ProjectTrustSchema = StrictObject({
 	cwd: Type.String({ minLength: 1, maxLength: 4096 }),
 	trusted: Type.Union([Type.Boolean(), Type.Null()]),
+	reason: Type.String({ minLength: 1, maxLength: 16 * 1024 }),
+	resourceRisk: Type.Boolean(),
 });
 export type ProjectTrust = Static<typeof ProjectTrustSchema>;
 
@@ -642,6 +659,35 @@ export const AboutResultSchema = StrictObject({
 	configDirName: Type.String({ minLength: 1 }),
 });
 
+export const ListSkillsResultSchema = StrictObject({
+	skills: Type.Array(SkillSummarySchema, { maxItems: 10_000 }),
+	diagnostics: JsonValueSchema,
+});
+export const SetSkillEnabledResultSchema = ListSkillsResultSchema;
+export const ListProjectInstructionsResultSchema = Type.Array(ProjectInstructionSchema, { maxItems: 32 });
+export const SaveProjectInstructionResultSchema = ListProjectInstructionsResultSchema;
+export const ListHostInstructionsResultSchema = Type.Array(ProjectInstructionSchema, { maxItems: 32 });
+export const SaveHostInstructionResultSchema = ListHostInstructionsResultSchema;
+export const UpdateStatusSchema = StrictObject({
+	currentVersion: Type.String({ minLength: 1, maxLength: 4096 }),
+	checkedAt: Type.Integer({ minimum: 0 }),
+	repository: Type.Union([Type.String({ minLength: 1, maxLength: 4096 }), Type.Null()]),
+	installEnabled: Type.Boolean(),
+	installBlockedReason: Type.String({ minLength: 1, maxLength: 16 * 1024 }),
+	status: Type.Union([
+		Type.Literal("available"),
+		Type.Literal("current"),
+		Type.Literal("unavailable"),
+		Type.Literal("offline"),
+	]),
+	latestVersion: Type.Union([Type.String({ minLength: 1, maxLength: 4096 }), Type.Null()]),
+	packageName: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 4096 }), Type.Null()])),
+	note: Type.Optional(Type.Union([Type.String({ maxLength: 16 * 1024 }), Type.Null()])),
+	url: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 4096 }), Type.Null()])),
+});
+export const GetGitStatusResultSchema = GitStatusSchema;
+export const GetGitDiffResultSchema = GitDiffSchema;
+export const CheckForUpdatesResultSchema = UpdateStatusSchema;
 export const ListSettingsResultSchema = Type.Array(SettingSummarySchema, { maxItems: 1000 });
 export const SetSettingResultSchema = StrictObject({ setting: SettingSummarySchema, requiresRestart: Type.Boolean() });
 export const ListModelsResultSchema = Type.Array(ModelSummarySchema, { maxItems: 10_000 });
@@ -680,6 +726,15 @@ export const ClipboardReadResultSchema = StrictObject({
 export const ClipboardWriteResultSchema = StrictObject({ capability: Type.Boolean(), changed: Type.Boolean() });
 
 export const B3CommandResultSchemas = {
+	list_skills: ListSkillsResultSchema,
+	set_skill_enabled: SetSkillEnabledResultSchema,
+	list_project_instructions: ListProjectInstructionsResultSchema,
+	save_project_instruction: SaveProjectInstructionResultSchema,
+	list_host_instructions: ListHostInstructionsResultSchema,
+	save_host_instruction: SaveHostInstructionResultSchema,
+	get_git_status: GetGitStatusResultSchema,
+	get_git_diff: GetGitDiffResultSchema,
+	check_for_updates: CheckForUpdatesResultSchema,
 	list_settings: ListSettingsResultSchema,
 	set_setting: SetSettingResultSchema,
 	list_models: ListModelsResultSchema,

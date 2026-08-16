@@ -28,12 +28,18 @@ use serde_json::json;
 const TOOL_ROUNDS: usize = 10_000;
 const BENCHMARK_ROUNDS: usize = 5;
 const SIZES: [(u16, u16); 3] = [(80, 24), (120, 36), (200, 60)];
-const SCENARIOS: [&str; 5] = [
+const SCENARIOS: [&str; 11] = [
     "readonly_open",
     "older_scroll",
     "search",
     "tree_open",
     "tree_filter",
+    "changes_filter_detail",
+    "skills_open",
+    "trust_open",
+    "instructions_open",
+    "packages_open",
+    "update_open",
 ];
 
 struct WriterStats {
@@ -234,6 +240,52 @@ fn apply_scenario(app: &mut AppState, scenario: &str) {
         }
         "tree_open" => open_tree(app, String::new()),
         "tree_filter" => open_tree(app, "labeled user".to_owned()),
+        "changes_filter_detail" => open_changes_detail(app),
+        "skills_open" => open_workbench_list(
+            app,
+            "技能",
+            vec![OverlayItem {
+                label: "fixture-skill".to_owned(),
+                detail: "project  已启用  fixture skill description".to_owned(),
+                action: "skill:0".to_owned(),
+            }],
+            "fixture",
+            "Enter 选择作用域，r 刷新",
+        ),
+        "trust_open" => open_workbench_list(
+            app,
+            "项目信任",
+            vec![OverlayItem {
+                label: "已信任".to_owned(),
+                detail: "/tmp/project  风险:有  项目资源已信任".to_owned(),
+                action: "trust:toggle".to_owned(),
+            }],
+            String::new(),
+            "t 切换信任状态",
+        ),
+        "instructions_open" => open_workbench_list(
+            app,
+            "指令 [项目]",
+            vec![OverlayItem {
+                label: "AGENTS.md".to_owned(),
+                detail: "存在 生效 可编辑 /tmp/project/AGENTS.md".to_owned(),
+                action: "instruction:project:0".to_owned(),
+            }],
+            "AGENTS",
+            "Tab 切换项目/本机，Enter 完整编辑",
+        ),
+        "packages_open" => open_workbench_list(
+            app,
+            "包",
+            vec![OverlayItem {
+                label: "npm:fixture".to_owned(),
+                detail: "project  /tmp/project/.pi/packages/fixture  已配置".to_owned(),
+                action: "package:0".to_owned(),
+            }],
+            "fixture",
+            "i 安装  d 删除  u 更新  U 更新全部",
+        ),
+        "update_open" => open_update(app),
         _ => unreachable!("unknown scenario"),
     }
 }
@@ -286,6 +338,63 @@ fn open_tree(app: &mut AppState, filter: String) {
         filter,
         status: "Enter 跳转  s 摘要跳转  l 标签  v 只读  f 分叉  n/p 标签".to_owned(),
     }));
+}
+
+fn open_workbench_list(
+    app: &mut AppState,
+    title: &str,
+    items: Vec<OverlayItem>,
+    filter: impl Into<String>,
+    status: &str,
+) {
+    app.open_workspace_overlay(
+        format!("benchmark:{title}"),
+        OverlayState::List(ListOverlay {
+            title: title.to_owned(),
+            origin: OverlayOrigin::User,
+            items,
+            selected: 0,
+            filter: filter.into(),
+            status: status.to_owned(),
+        }),
+    );
+}
+
+fn open_changes_detail(app: &mut AppState) {
+    app.open_workspace_overlay(
+        "benchmark:changes:detail",
+        OverlayState::Detail(DetailOverlay {
+            title: "变更详情".to_owned(),
+            lines: vec![
+                "src/unstaged.ts  未暂存  +2 -1".to_owned(),
+                "diff --git a/src/unstaged.ts b/src/unstaged.ts".to_owned(),
+                "+added".to_owned(),
+                "-removed".to_owned(),
+            ],
+            scroll: 0,
+            status: "筛选: unstaged  Ctrl+O 摘要  Esc 返回".to_owned(),
+            link: None,
+            copy_text: None,
+        }),
+    );
+}
+
+fn open_update(app: &mut AppState) {
+    app.open_workspace_overlay(
+        "benchmark:update",
+        OverlayState::Detail(DetailOverlay {
+            title: "更新检查".to_owned(),
+            lines: vec![
+                "当前: 0.84.2".to_owned(),
+                "最新: 0.84.3".to_owned(),
+                "fixture update note".to_owned(),
+            ],
+            scroll: 0,
+            status: "仅检查版本，TUI 内不执行更新。r 重新检查".to_owned(),
+            link: None,
+            copy_text: None,
+        }),
+    );
 }
 
 fn draw(benchmark: &mut BenchmarkApp) -> usize {

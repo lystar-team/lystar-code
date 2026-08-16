@@ -40,8 +40,22 @@ function record(scenario, columns, rows, round) {
 	};
 }
 
+const SCENARIOS = [
+	"readonly_open",
+	"older_scroll",
+	"search",
+	"tree_open",
+	"tree_filter",
+	"changes_filter_detail",
+	"skills_open",
+	"trust_open",
+	"instructions_open",
+	"packages_open",
+	"update_open",
+];
+
 function validRecords() {
-	return ["readonly_open", "older_scroll", "search", "tree_open", "tree_filter"].flatMap((scenario) =>
+	return SCENARIOS.flatMap((scenario) =>
 		[
 			[80, 24],
 			[120, 36],
@@ -52,8 +66,8 @@ function validRecords() {
 
 test("B3 workbench verifier accepts the complete five-round matrix", () => {
 	const result = verifyRustB3Workbench(validRecords());
-	assert.equal(result.records, 75);
-	assert.equal(result.summaries.length, 15);
+	assert.equal(result.records, 165);
+	assert.equal(result.summaries.length, 33);
 });
 
 test("B3 workbench verifier rejects missing rounds, cache growth, regrouping, and budget failures", () => {

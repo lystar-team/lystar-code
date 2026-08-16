@@ -417,13 +417,13 @@
       "name": "server-b3-get-project-trust",
       "direction": "server",
       "b3Command": "get_project_trust",
-      "message": { "type": "response", "id": "b3-get-project-trust", "ok": true, "result": { "cwd": "/tmp/project", "trusted": true } }
+      "message": { "type": "response", "id": "b3-get-project-trust", "ok": true, "result": { "cwd": "/tmp/project", "trusted": true, "reason": "项目资源已信任", "resourceRisk": true } }
     },
     {
       "name": "server-b3-set-project-trust",
       "direction": "server",
       "b3Command": "set_project_trust",
-      "message": { "type": "response", "id": "b3-set-project-trust", "ok": true, "result": { "cwd": "/tmp/project", "trusted": false } }
+      "message": { "type": "response", "id": "b3-set-project-trust", "ok": true, "result": { "cwd": "/tmp/project", "trusted": false, "reason": "项目资源被明确设为不信任", "resourceRisk": true } }
     },
     {
       "name": "server-b3-list-packages",

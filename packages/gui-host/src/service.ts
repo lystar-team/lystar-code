@@ -57,6 +57,15 @@ const TERMINAL_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>([
 ]);
 
 const B3_COMMANDS = {
+	list_skills: true,
+	set_skill_enabled: true,
+	list_project_instructions: true,
+	save_project_instruction: true,
+	list_host_instructions: true,
+	save_host_instruction: true,
+	get_git_status: true,
+	get_git_diff: true,
+	check_for_updates: true,
 	list_settings: true,
 	set_setting: true,
 	list_models: true,
@@ -729,7 +738,7 @@ export class GuiHostService {
 						...(request.expectedHash ? { expectedHash: request.expectedHash } : {}),
 					},
 					run: async () => {
-						const result = this.adapter.saveProjectInstruction(
+						const result = await this.adapter.saveProjectInstruction(
 							cwd,
 							request.fileName,
 							request.content,
@@ -757,7 +766,7 @@ export class GuiHostService {
 						...(request.expectedHash ? { expectedHash: request.expectedHash } : {}),
 					},
 					run: async () => {
-						const result = this.adapter.saveHostInstruction(
+						const result = await this.adapter.saveHostInstruction(
 							request.fileName,
 							request.content,
 							request.expectedHash,

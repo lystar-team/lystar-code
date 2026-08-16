@@ -5,6 +5,15 @@ use crate::{ClientMessage, ProtocolError, ServerMessage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum B3Command {
+    ListSkills,
+    SetSkillEnabled,
+    ListProjectInstructions,
+    SaveProjectInstruction,
+    ListHostInstructions,
+    SaveHostInstruction,
+    GetGitStatus,
+    GetGitDiff,
+    CheckForUpdates,
     ListSettings,
     SetSetting,
     ListModels,
@@ -35,6 +44,15 @@ pub enum B3Command {
 impl B3Command {
     pub fn from_wire(command: &str) -> Option<Self> {
         Some(match command {
+            "list_skills" => Self::ListSkills,
+            "set_skill_enabled" => Self::SetSkillEnabled,
+            "list_project_instructions" => Self::ListProjectInstructions,
+            "save_project_instruction" => Self::SaveProjectInstruction,
+            "list_host_instructions" => Self::ListHostInstructions,
+            "save_host_instruction" => Self::SaveHostInstruction,
+            "get_git_status" => Self::GetGitStatus,
+            "get_git_diff" => Self::GetGitDiff,
+            "check_for_updates" => Self::CheckForUpdates,
             "list_settings" => Self::ListSettings,
             "set_setting" => Self::SetSetting,
             "list_models" => Self::ListModels,
@@ -66,6 +84,15 @@ impl B3Command {
 
     pub fn wire(self) -> &'static str {
         match self {
+            Self::ListSkills => "list_skills",
+            Self::SetSkillEnabled => "set_skill_enabled",
+            Self::ListProjectInstructions => "list_project_instructions",
+            Self::SaveProjectInstruction => "save_project_instruction",
+            Self::ListHostInstructions => "list_host_instructions",
+            Self::SaveHostInstruction => "save_host_instruction",
+            Self::GetGitStatus => "get_git_status",
+            Self::GetGitDiff => "get_git_diff",
+            Self::CheckForUpdates => "check_for_updates",
             Self::ListSettings => "list_settings",
             Self::SetSetting => "set_setting",
             Self::ListModels => "list_models",
@@ -108,6 +135,15 @@ impl ClientMessage {
 
 #[derive(Debug)]
 pub enum B3Result {
+    ListSkills(crate::generated::B3ListSkillsResult),
+    SetSkillEnabled(crate::generated::B3SetSkillEnabledResult),
+    ListProjectInstructions(crate::generated::B3ListProjectInstructionsResult),
+    SaveProjectInstruction(crate::generated::B3SaveProjectInstructionResult),
+    ListHostInstructions(crate::generated::B3ListHostInstructionsResult),
+    SaveHostInstruction(crate::generated::B3SaveHostInstructionResult),
+    GetGitStatus(crate::generated::B3GetGitStatusResult),
+    GetGitDiff(crate::generated::B3GetGitDiffResult),
+    CheckForUpdates(crate::generated::B3CheckForUpdatesResult),
     ListSettings(crate::generated::B3ListSettingsResult),
     SetSetting(crate::generated::B3SetSettingResult),
     ListModels(crate::generated::B3ListModelsResult),
@@ -139,6 +175,19 @@ impl ServerMessage {
     pub fn decode_b3_result(&self, command: B3Command) -> Result<B3Result, ProtocolError> {
         let result = self.b3_result_value()?;
         match command {
+            B3Command::ListSkills => Ok(B3Result::ListSkills(decode(result)?)),
+            B3Command::SetSkillEnabled => Ok(B3Result::SetSkillEnabled(decode(result)?)),
+            B3Command::ListProjectInstructions => {
+                Ok(B3Result::ListProjectInstructions(decode(result)?))
+            }
+            B3Command::SaveProjectInstruction => {
+                Ok(B3Result::SaveProjectInstruction(decode(result)?))
+            }
+            B3Command::ListHostInstructions => Ok(B3Result::ListHostInstructions(decode(result)?)),
+            B3Command::SaveHostInstruction => Ok(B3Result::SaveHostInstruction(decode(result)?)),
+            B3Command::GetGitStatus => Ok(B3Result::GetGitStatus(decode(result)?)),
+            B3Command::GetGitDiff => Ok(B3Result::GetGitDiff(decode(result)?)),
+            B3Command::CheckForUpdates => Ok(B3Result::CheckForUpdates(decode(result)?)),
             B3Command::ListSettings => Ok(B3Result::ListSettings(decode(result)?)),
             B3Command::SetSetting => Ok(B3Result::SetSetting(decode(result)?)),
             B3Command::ListModels => Ok(B3Result::ListModels(decode(result)?)),
@@ -240,6 +289,14 @@ mod tests {
 
     #[test]
     fn recognizes_only_declared_b3_commands() {
+        assert_eq!(
+            B3Command::from_wire("list_skills"),
+            Some(B3Command::ListSkills)
+        );
+        assert_eq!(
+            B3Command::from_wire("check_for_updates"),
+            Some(B3Command::CheckForUpdates)
+        );
         assert_eq!(B3Command::from_wire("get_about"), Some(B3Command::GetAbout));
         assert_eq!(
             B3Command::from_wire("get_diagnostics"),

@@ -500,6 +500,99 @@ pub struct ProviderDescriptor {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitFileDescriptor {
+    pub path: String,
+    pub original_path: Option<String>,
+    pub index_status: String,
+    pub worktree_status: String,
+    pub staged: bool,
+    pub unstaged: bool,
+    pub untracked: bool,
+    pub conflicted: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ChangesTab {
+    Staged,
+    Unstaged,
+    #[default]
+    All,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitStatusDescriptor {
+    pub root: String,
+    pub branch: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: u64,
+    pub behind: u64,
+    pub files: Vec<GitFileDescriptor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitDiffDescriptor {
+    pub path: Option<String>,
+    pub staged: bool,
+    pub diff: String,
+    pub additions: u64,
+    pub deletions: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillDescriptor {
+    pub name: String,
+    pub description: String,
+    pub path: String,
+    pub source: String,
+    pub scope: String,
+    pub enabled: bool,
+    pub eligible: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstructionDescriptor {
+    pub path: String,
+    pub file_name: String,
+    pub exists: bool,
+    pub active: bool,
+    pub editable: bool,
+    pub content: Option<String>,
+    pub content_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectTrustDescriptor {
+    pub cwd: String,
+    pub trusted: Option<bool>,
+    pub reason: String,
+    pub resource_risk: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageDescriptor {
+    pub source: String,
+    pub scope: String,
+    pub filtered: bool,
+    pub installed_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateDescriptor {
+    pub current_version: String,
+    pub latest_version: Option<String>,
+    pub status: String,
+    pub url: Option<String>,
+    pub note: Option<String>,
+    pub install_blocked_reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceOverlayGeneration {
+    pub key: String,
+    pub generation: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionSummary {
     pub path: String,
     pub id: String,
@@ -543,6 +636,8 @@ pub struct SessionRestorePoint {
     pub assistant_stream: String,
     pub thinking_stream: String,
     pub overlays: Vec<OverlayState>,
+    pub workspace_overlay_stack: Vec<Option<WorkspaceOverlayGeneration>>,
+    pub workspace_generations: HashMap<String, u64>,
     pub input_focus: InputFocus,
     pub focus_before_overlay: Option<InputFocus>,
 }
@@ -586,6 +681,13 @@ pub enum WorkbenchTarget {
     Login,
     Sessions,
     Tree,
+    Changes,
+    Skills,
+    Trust,
+    InstructionsProject,
+    InstructionsHost,
+    Packages,
+    Update,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -608,6 +710,22 @@ pub struct B3Request {
 pub enum PendingIntent {
     Overlay {
         target: String,
+    },
+    ChangeDetail,
+    SkillMutation {
+        selected_key: String,
+        filter: String,
+    },
+    TrustMutation,
+    InstructionMutation {
+        target: WorkbenchTarget,
+        selected_key: String,
+        filter: String,
+    },
+    PackageMutation {
+        selected_key: Option<String>,
+        filter: String,
+        toast: String,
     },
     ClipboardMutation {
         toast: String,
@@ -643,7 +761,7 @@ pub enum PendingIntent {
 #[derive(Debug, Clone)]
 pub struct PendingRequest {
     pub intent: PendingIntent,
-    pub generation: u64,
+    pub workspace: Option<WorkspaceOverlayGeneration>,
     pub request: B3Request,
     pub started_at: Instant,
 }
@@ -738,12 +856,24 @@ pub struct AppState {
     pub settings: Vec<SettingDescriptor>,
     pub models: Vec<ModelDescriptor>,
     pub providers: Vec<ProviderDescriptor>,
+    pub git_status: Option<GitStatusDescriptor>,
+    pub changes_tab: ChangesTab,
+    pub change_detail: Option<GitDiffDescriptor>,
+    pub change_detail_expanded: bool,
+    pub skills: Vec<SkillDescriptor>,
+    pub trust: Option<ProjectTrustDescriptor>,
+    pub project_instructions: Vec<InstructionDescriptor>,
+    pub host_instructions: Vec<InstructionDescriptor>,
+    pub packages: Vec<PackageDescriptor>,
+    pub pending_package_source: Option<String>,
+    pub update: Option<UpdateDescriptor>,
     pub write_pending: bool,
     pub pending_editor_replace: Option<String>,
     pub page_load_pending: bool,
     pub pending_requests: HashMap<String, PendingRequest>,
     pub pending_transcript_requests: HashMap<String, TranscriptPendingRequest>,
-    pub request_generation: u64,
+    workspace_overlay_stack: Vec<Option<WorkspaceOverlayGeneration>>,
+    workspace_generations: HashMap<String, u64>,
     pub active_ui_request: Option<UiRequest>,
     responded_ui_requests: HashSet<String>,
     composer_width: u16,
@@ -796,6 +926,8 @@ impl AppState {
             assistant_stream: self.assistant_stream.clone(),
             thinking_stream: self.thinking_stream.clone(),
             overlays: self.overlays.clone(),
+            workspace_overlay_stack: self.workspace_overlay_stack.clone(),
+            workspace_generations: self.workspace_generations.clone(),
             input_focus: self.input_focus,
             focus_before_overlay: self.focus_before_overlay,
         }
@@ -813,6 +945,8 @@ impl AppState {
         self.assistant_stream = restore.assistant_stream;
         self.thinking_stream = restore.thinking_stream;
         self.overlays = restore.overlays;
+        self.workspace_overlay_stack = restore.workspace_overlay_stack;
+        self.workspace_generations = restore.workspace_generations;
         self.input_focus = restore.input_focus;
         self.focus_before_overlay = restore.focus_before_overlay;
     }
@@ -996,12 +1130,46 @@ impl AppState {
         }
         self.overlay_error = None;
         self.overlays.push(overlay);
+        self.workspace_overlay_stack.push(None);
+    }
+
+    pub fn open_workspace_overlay(&mut self, key: impl Into<String>, overlay: OverlayState) {
+        let key = key.into();
+        let generation = self.workspace_generations.entry(key.clone()).or_default();
+        *generation = generation.saturating_add(1);
+        let workspace = WorkspaceOverlayGeneration {
+            key,
+            generation: *generation,
+        };
+        self.open_overlay(overlay);
+        if let Some(slot) = self.workspace_overlay_stack.last_mut() {
+            *slot = Some(workspace);
+        }
+    }
+
+    pub fn replace_workspace_overlay(&mut self, key: impl Into<String>, overlay: OverlayState) {
+        let key = key.into();
+        let generation = self.workspace_generations.entry(key.clone()).or_default();
+        *generation = generation.saturating_add(1);
+        let workspace = WorkspaceOverlayGeneration {
+            key,
+            generation: *generation,
+        };
+        if self.overlays.is_empty() {
+            self.open_workspace_overlay(workspace.key, overlay);
+            return;
+        }
+        self.replace_overlay(overlay);
+        if let Some(slot) = self.workspace_overlay_stack.last_mut() {
+            *slot = Some(workspace);
+        }
     }
 
     pub fn close_overlay(&mut self) -> bool {
         if self.overlays.pop().is_none() {
             return false;
         }
+        self.workspace_overlay_stack.pop();
         self.overlay_error = None;
         if self.overlays.is_empty() {
             self.input_focus = self
@@ -1017,6 +1185,7 @@ impl AppState {
         self.invalidate_transcript_requests(TranscriptViewKind::Active);
         self.invalidate_transcript_requests(TranscriptViewKind::Readonly);
         self.overlays.clear();
+        self.workspace_overlay_stack.clear();
         self.active_ui_request = None;
         self.overlay_error = None;
         self.input_focus = self
@@ -1041,26 +1210,35 @@ impl AppState {
         }
     }
 
-    pub fn begin_request(&mut self, id: String, request: B3Request, intent: PendingIntent) -> u64 {
-        self.request_generation = self.request_generation.saturating_add(1);
-        let generation = self.request_generation;
+    pub fn begin_request(&mut self, id: String, request: B3Request, intent: PendingIntent) {
+        let workspace = self.workspace_overlay_stack.last().cloned().flatten();
         self.pending_requests.insert(
             id,
             PendingRequest {
                 intent,
-                generation,
+                workspace,
                 request,
                 started_at: Instant::now(),
             },
         );
-        generation
+    }
+
+    pub fn pending_workspace_is_current(&self, pending: &PendingRequest) -> bool {
+        let Some(expected) = &pending.workspace else {
+            return true;
+        };
+        self.workspace_overlay_stack.last().and_then(Option::as_ref) == Some(expected)
     }
 
     pub fn take_pending(&mut self, id: &str) -> Option<PendingRequest> {
         let pending = self.pending_requests.remove(id)?;
         if matches!(
             pending.intent,
-            PendingIntent::SettingMutation { .. }
+            PendingIntent::SkillMutation { .. }
+                | PendingIntent::TrustMutation
+                | PendingIntent::InstructionMutation { .. }
+                | PendingIntent::PackageMutation { .. }
+                | PendingIntent::SettingMutation { .. }
                 | PendingIntent::SessionMutation { .. }
                 | PendingIntent::TreeMutation { .. }
                 | PendingIntent::TreeNavigate { .. }
@@ -1080,7 +1258,6 @@ impl AppState {
     }
 
     pub fn invalidate_pending(&mut self) {
-        self.request_generation = self.request_generation.saturating_add(1);
         self.pending_requests.clear();
         self.pending_transcript_requests.clear();
         self.pending_editor_replace = None;
@@ -1345,6 +1522,36 @@ impl AppState {
                 detail.scroll = detail.scroll.saturating_add_signed(delta * 10)
             }
             _ => {}
+        }
+    }
+
+    pub fn overlay_move_left(&mut self) {
+        if let Some(OverlayState::TextEditor(editor)) = self.overlay_mut()
+            && editor.cursor > 0
+        {
+            let mut cursor = editor.cursor - 1;
+            while !editor.value.is_char_boundary(cursor) {
+                cursor -= 1;
+            }
+            editor.cursor = cursor;
+        }
+    }
+
+    pub fn overlay_move_right(&mut self) {
+        if let Some(OverlayState::TextEditor(editor)) = self.overlay_mut()
+            && editor.cursor < editor.value.len()
+        {
+            let mut cursor = editor.cursor + 1;
+            while cursor < editor.value.len() && !editor.value.is_char_boundary(cursor) {
+                cursor += 1;
+            }
+            editor.cursor = cursor;
+        }
+    }
+
+    pub fn overlay_insert_newline(&mut self) {
+        if matches!(self.overlay(), Some(OverlayState::TextEditor(_))) {
+            self.overlay_insert("\n");
         }
     }
 
@@ -2219,6 +2426,53 @@ mod tests {
     }
 
     #[test]
+    fn rejects_stale_responses_per_workspace_overlay_generation() {
+        let detail = |title: &str| {
+            OverlayState::Detail(DetailOverlay {
+                title: title.to_owned(),
+                lines: vec![],
+                scroll: 0,
+                status: String::new(),
+                link: None,
+                copy_text: None,
+            })
+        };
+        let request = |command| B3Request {
+            command,
+            payload: serde_json::Map::new(),
+        };
+        let mut app = AppState::default();
+
+        app.open_workspace_overlay("changes", detail("变更"));
+        app.begin_request(
+            "changes-old".to_owned(),
+            request(lystar_protocol::B3Command::GetGitStatus),
+            PendingIntent::WorkbenchLoad {
+                target: WorkbenchTarget::Changes,
+                selected_key: None,
+                filter: String::new(),
+            },
+        );
+        let changes_old = app.pending_requests.get("changes-old").unwrap().clone();
+        app.replace_workspace_overlay("changes", detail("变更"));
+        assert!(!app.pending_workspace_is_current(&changes_old));
+
+        app.open_workspace_overlay("skills", detail("技能"));
+        app.begin_request(
+            "skills-old".to_owned(),
+            request(lystar_protocol::B3Command::ListSkills),
+            PendingIntent::WorkbenchLoad {
+                target: WorkbenchTarget::Skills,
+                selected_key: None,
+                filter: String::new(),
+            },
+        );
+        let skills_old = app.pending_requests.get("skills-old").unwrap().clone();
+        app.replace_workspace_overlay("skills", detail("技能"));
+        assert!(!app.pending_workspace_is_current(&skills_old));
+    }
+
+    #[test]
     fn filters_lists_and_edits_text_without_fake_actions() {
         let mut app = AppState::default();
         app.open_overlay(OverlayState::List(ListOverlay {
@@ -2454,39 +2708,60 @@ mod tests {
     }
 
     #[test]
-    fn invalidates_stale_pending_responses_and_clears_disconnect_state() {
+    fn keeps_parallel_pending_requests_and_rejects_closed_overlay_responses() {
         let mut app = AppState::default();
-        let first = app.begin_request(
+        app.open_workspace_overlay(
+            "skills",
+            OverlayState::Detail(DetailOverlay {
+                title: "技能".to_owned(),
+                lines: vec![],
+                scroll: 0,
+                status: String::new(),
+                link: None,
+                copy_text: None,
+            }),
+        );
+        app.begin_request(
             "first".to_owned(),
             B3Request {
-                command: lystar_protocol::B3Command::GetAbout,
+                command: lystar_protocol::B3Command::ListSkills,
                 payload: serde_json::Map::new(),
             },
-            PendingIntent::Overlay {
-                target: "关于".to_owned(),
+            PendingIntent::WorkbenchLoad {
+                target: WorkbenchTarget::Skills,
+                selected_key: None,
+                filter: String::new(),
             },
         );
-        let second = app.begin_request(
+        app.open_workspace_overlay(
+            "trust",
+            OverlayState::Detail(DetailOverlay {
+                title: "项目信任".to_owned(),
+                lines: vec![],
+                scroll: 0,
+                status: String::new(),
+                link: None,
+                copy_text: None,
+            }),
+        );
+        app.begin_request(
             "second".to_owned(),
             B3Request {
-                command: lystar_protocol::B3Command::GetDiagnostics,
+                command: lystar_protocol::B3Command::GetProjectTrust,
                 payload: serde_json::Map::new(),
             },
-            PendingIntent::Overlay {
-                target: "诊断".to_owned(),
+            PendingIntent::WorkbenchLoad {
+                target: WorkbenchTarget::Trust,
+                selected_key: None,
+                filter: String::new(),
             },
         );
-        assert!(first < second);
-        assert_ne!(
-            app.take_pending("first").unwrap().generation,
-            app.request_generation
-        );
-        app.open_overlay(OverlayState::Confirm(ConfirmOverlay {
-            title: "确认".to_owned(),
-            message: String::new(),
-            confirm_action: "ui:confirm".to_owned(),
-            status: String::new(),
-        }));
+        let first = app.take_pending("first").unwrap();
+        let second = app.take_pending("second").unwrap();
+        assert!(!app.pending_workspace_is_current(&first));
+        assert!(app.pending_workspace_is_current(&second));
+        app.close_overlay();
+        assert!(!app.pending_workspace_is_current(&second));
         app.clear_overlay_transient();
         assert!(app.pending_requests.is_empty());
         assert!(app.overlays.is_empty());
