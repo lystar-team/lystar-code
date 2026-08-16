@@ -2,30 +2,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { rustB3WorkbenchManifest } from "./rust-b3-workbench-manifest.mjs";
 
-const SIZES = new Set(["80x24", "120x36", "200x60"]);
-const SCENARIOS = new Set([
-	"readonly_open",
-	"older_scroll",
-	"search",
-	"tree_open",
-	"tree_filter",
-	"changes_filter_detail",
-	"skills_open",
-	"trust_open",
-	"instructions_open",
-	"packages_open",
-	"update_open",
-	"subagents_open",
-	"subagent_detail",
-	"subagent_nested",
-	"clipboard_open",
-	"clipboard_insert",
-	"attachments_open",
-	"attachment_preview",
-]);
-const ROUNDS = new Set([1, 2, 3, 4, 5]);
-const CACHE_LIMITS = { rounds: 400, items: 800, bytes: 4 * 1024 * 1024 };
+const SIZES = new Set(rustB3WorkbenchManifest.sizes.map(([columns, rows]) => `${columns}x${rows}`));
+const SCENARIOS = new Set(rustB3WorkbenchManifest.scenarios.map(({ name }) => name));
+const ROUNDS = new Set(Array.from({ length: rustB3WorkbenchManifest.rounds }, (_, index) => index + 1));
+const CACHE_LIMITS = rustB3WorkbenchManifest.cacheLimits;
+const RECORD_COUNT = SCENARIOS.size * SIZES.size * ROUNDS.size;
 const TIMING_FIELDS = [
 	"eventToFrameP50Ms",
 	"eventToFrameP95Ms",
@@ -40,7 +23,11 @@ const BYTE_FIELDS = ["bytesP50", "bytesP95", "bytesP99", "bytesMax", "bytesTotal
 const RSS_FIELDS = ["rssP50Bytes", "rssP95Bytes", "rssP99Bytes", "rssMaxBytes"];
 
 export function verifyRustB3Workbench(records) {
-	assert.equal(records.length, 270, "B3 workbench benchmark must emit exactly 18 scenarios x 3 sizes x 5 rounds");
+	assert.equal(
+		records.length,
+		RECORD_COUNT,
+		`B3 workbench benchmark must emit exactly ${SCENARIOS.size} scenarios x ${SIZES.size} sizes x ${ROUNDS.size} rounds`,
+	);
 	const seen = new Set();
 	for (const row of records) {
 		const key = `${row.scenario}/${row.columns}x${row.rows}/${row.round}`;
@@ -64,13 +51,13 @@ export function verifyRustB3Workbench(records) {
 }
 
 function validateRow(row, key) {
-	assert.equal(row.implementation, "rust-b3-workbench", `${key} has the wrong implementation`);
+	assert.equal(row.implementation, rustB3WorkbenchManifest.implementation, `${key} has the wrong implementation`);
 	assert(SCENARIOS.has(row.scenario), `${key} has an unsupported scenario`);
 	assert(SIZES.has(`${row.columns}x${row.rows}`), `${key} has an unsupported size`);
 	assert(ROUNDS.has(row.round), `${key} has an invalid round`);
 	assert.equal(row.metric, "event_to_frame_ms", `${key} has the wrong frame metric`);
-	assert.equal(row.activeToolRounds, 10_000, `${key} did not build 10,000 active Tool rounds`);
-	assert.equal(row.readonlyToolRounds, 10_000, `${key} did not build 10,000 readonly Tool rounds`);
+	assert.equal(row.activeToolRounds, rustB3WorkbenchManifest.toolRounds, `${key} did not build ${rustB3WorkbenchManifest.toolRounds.toLocaleString()} active Tool rounds`);
+	assert.equal(row.readonlyToolRounds, rustB3WorkbenchManifest.toolRounds, `${key} did not build ${rustB3WorkbenchManifest.toolRounds.toLocaleString()} readonly Tool rounds`);
 	for (const prefix of ["active", "readonly"]) {
 		assert(Number.isInteger(row[`${prefix}CachedRounds`]) && row[`${prefix}CachedRounds`] > 0 && row[`${prefix}CachedRounds`] <= CACHE_LIMITS.rounds, `${key} ${prefix} cached rounds is invalid`);
 		assert(Number.isInteger(row[`${prefix}CachedItems`]) && row[`${prefix}CachedItems`] > 0 && row[`${prefix}CachedItems`] <= CACHE_LIMITS.items, `${key} ${prefix} cached items is invalid`);
@@ -78,6 +65,7 @@ function validateRow(row, key) {
 	}
 	assert.equal(row.transcriptRegroupBefore, row.transcriptRegroupAfter, `${key} regrouped the active transcript`);
 	assert(typeof row.transcriptRegroupBefore === "string" && row.transcriptRegroupBefore.length > 0, `${key} has no regroup evidence`);
+	assertNoAttachmentBase64(row, key);
 	for (const field of [...TIMING_FIELDS, ...BYTE_FIELDS, ...RSS_FIELDS]) {
 		assert(Number.isFinite(row[field]) && row[field] > 0, `${key} ${field} is null, zero, or invalid`);
 	}
@@ -87,6 +75,19 @@ function validateRow(row, key) {
 	assert(row.eventToFrameP95Ms <= 50, `${key} event-to-frame p95 exceeds 50ms`);
 	assert(row.eventToFrameP99Ms <= 75, `${key} event-to-frame p99 exceeds 75ms`);
 	assert(row.rssP95Bytes <= 180 * 1024 * 1024, `${key} RSS p95 exceeds 180MiB`);
+}
+
+function assertNoAttachmentBase64(value, key, path = "record") {
+	if (Array.isArray(value)) {
+		for (const [index, child] of value.entries()) assertNoAttachmentBase64(child, key, `${path}[${index}]`);
+		return;
+	}
+	if (value === null || typeof value !== "object") return;
+	for (const [field, child] of Object.entries(value)) {
+		const fieldPath = `${path}.${field}`;
+		assert(!field.toLowerCase().includes("base64"), `${key} leaks attachment base64 at ${fieldPath}`);
+		assertNoAttachmentBase64(child, key, fieldPath);
+	}
 }
 
 function summarize(records, scenario, size) {

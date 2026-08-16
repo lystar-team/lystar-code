@@ -1,0 +1,31 @@
+{
+  "implementation": "rust-b3-workbench",
+  "sizes": [[80, 24], [120, 36], [200, 60]],
+  "rounds": 5,
+  "toolRounds": 10000,
+  "cacheLimits": {
+    "rounds": 400,
+    "items": 800,
+    "bytes": 4194304
+  },
+  "scenarios": [
+    { "name": "readonly_open" },
+    { "name": "older_scroll" },
+    { "name": "search" },
+    { "name": "tree_open" },
+    { "name": "tree_filter" },
+    { "name": "changes_filter_detail" },
+    { "name": "skills_open" },
+    { "name": "trust_open" },
+    { "name": "instructions_open" },
+    { "name": "packages_open" },
+    { "name": "update_open" },
+    { "name": "subagents_open" },
+    { "name": "subagent_detail" },
+    { "name": "subagent_nested" },
+    { "name": "clipboard_open" },
+    { "name": "clipboard_insert" },
+    { "name": "attachments_open" },
+    { "name": "attachment_preview" }
+  ]
+}

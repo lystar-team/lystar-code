@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { rustB3WorkbenchManifest } from "./rust-b3-workbench-manifest.mjs";
 import { verifyRustB3Workbench } from "./verify-rust-b3-workbench-benchmark.mjs";
 
 function record(scenario, columns, rows, round) {
 	return {
-		implementation: "rust-b3-workbench",
+		implementation: rustB3WorkbenchManifest.implementation,
 		scenario,
 		columns,
 		rows,
@@ -27,63 +28,67 @@ function record(scenario, columns, rows, round) {
 		rssP95Bytes: 2,
 		rssP99Bytes: 3,
 		rssMaxBytes: 4,
-		activeToolRounds: 10_000,
-		readonlyToolRounds: 10_000,
-		activeCachedRounds: 400,
-		activeCachedItems: 800,
+		activeToolRounds: rustB3WorkbenchManifest.toolRounds,
+		readonlyToolRounds: rustB3WorkbenchManifest.toolRounds,
+		activeCachedRounds: rustB3WorkbenchManifest.cacheLimits.rounds,
+		activeCachedItems: rustB3WorkbenchManifest.cacheLimits.items,
 		activeCachedUtf8Bytes: 1024,
-		readonlyCachedRounds: 400,
-		readonlyCachedItems: 800,
+		readonlyCachedRounds: rustB3WorkbenchManifest.cacheLimits.rounds,
+		readonlyCachedItems: rustB3WorkbenchManifest.cacheLimits.items,
 		readonlyCachedUtf8Bytes: 1024,
 		transcriptRegroupBefore: "400:active-tool-call-09600:active-tool-result-09999",
 		transcriptRegroupAfter: "400:active-tool-call-09600:active-tool-result-09999",
 	};
 }
 
-const SCENARIOS = [
-	"readonly_open",
-	"older_scroll",
-	"search",
-	"tree_open",
-	"tree_filter",
-	"changes_filter_detail",
-	"skills_open",
-	"trust_open",
-	"instructions_open",
-	"packages_open",
-	"update_open",
-];
-
 function validRecords() {
-	return SCENARIOS.flatMap((scenario) =>
-		[
-			[80, 24],
-			[120, 36],
-			[200, 60],
-		].flatMap(([columns, rows]) => [1, 2, 3, 4, 5].map((round) => record(scenario, columns, rows, round))),
+	return rustB3WorkbenchManifest.scenarios.flatMap(({ name: scenario }) =>
+		rustB3WorkbenchManifest.sizes.flatMap(([columns, rows]) =>
+			Array.from({ length: rustB3WorkbenchManifest.rounds }, (_, index) => record(scenario, columns, rows, index + 1)),
+		),
 	);
 }
 
-test("B3 workbench verifier accepts the complete five-round matrix", () => {
+test("B3 workbench verifier accepts the complete manifest matrix", () => {
 	const result = verifyRustB3Workbench(validRecords());
-	assert.equal(result.records, 165);
-	assert.equal(result.summaries.length, 33);
+	assert.equal(
+		result.records,
+		rustB3WorkbenchManifest.scenarios.length * rustB3WorkbenchManifest.sizes.length * rustB3WorkbenchManifest.rounds,
+	);
+	assert.equal(result.summaries.length, rustB3WorkbenchManifest.scenarios.length * rustB3WorkbenchManifest.sizes.length);
 });
 
-test("B3 workbench verifier rejects missing rounds, cache growth, regrouping, and budget failures", () => {
+test("B3 workbench verifier rejects incomplete, duplicate, over-budget, regrouped, and leaked attachment records", () => {
+	const scenario = rustB3WorkbenchManifest.scenarios[0].name;
+	const [columns, rows] = rustB3WorkbenchManifest.sizes[0];
 	for (const mutate of [
-		(records) => records.slice(1),
-		(records) => ({ ...records[0], readonlyCachedRounds: 401 }),
-		(records) => ({ ...records[0], transcriptRegroupAfter: "changed" }),
-		(records) => ({ ...records[0], eventToFrameP99Ms: 76 }),
-		(records) => ({ ...records[0], rssP95Bytes: 180 * 1024 * 1024 + 1 }),
+		(records) => records.filter((row) => row.scenario !== scenario),
+		(records) => records.filter((row) => !(row.scenario === scenario && row.columns === columns && row.rows === rows && row.round === rustB3WorkbenchManifest.rounds)),
+		(records) => {
+			records[1] = { ...records[1], round: records[0].round };
+			return records;
+		},
+		(records) => {
+			records[0] = { ...records[0], readonlyCachedRounds: rustB3WorkbenchManifest.cacheLimits.rounds + 1 };
+			return records;
+		},
+		(records) => {
+			records[0] = { ...records[0], transcriptRegroupAfter: "changed" };
+			return records;
+		},
+		(records) => {
+			records[0] = { ...records[0], eventToFrameP99Ms: 76 };
+			return records;
+		},
+		(records) => {
+			records[0] = { ...records[0], rssP95Bytes: 180 * 1024 * 1024 + 1 };
+			return records;
+		},
+		(records) => {
+			records[0] = { ...records[0], attachment: { base64: "fixture-image-base64" } };
+			return records;
+		},
 	]) {
-		const records = validRecords();
-		const changed = mutate(records);
-		if (Array.isArray(changed)) assert.throws(() => verifyRustB3Workbench(changed));
-		else {
-			records[0] = changed;
-			assert.throws(() => verifyRustB3Workbench(records));
-		}
+		assert.throws(() => verifyRustB3Workbench(mutate(validRecords())));
 	}
 });

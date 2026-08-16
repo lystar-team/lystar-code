@@ -12,42 +12,33 @@ use std::{
 use lystar_protocol::{ToolCall, TranscriptItem, TranscriptViewItem};
 use lystar_tui::{
     app::{
-        AppState, ComposerAttachment, ComposerView, DetailOverlay, ListOverlay, OverlayItem,
-        OverlayOrigin, OverlayState, ReadonlySessionView, SessionTreeNode, TranscriptView,
-        WorkbenchOverlayView, composer_area, transcript_area,
+        composer_area, transcript_area, AppState, ComposerAttachment, ComposerView, DetailOverlay,
+        ListOverlay, OverlayItem, OverlayOrigin, OverlayState, ReadonlySessionView,
+        SessionTreeNode, TranscriptView, WorkbenchOverlayView,
     },
     editor::EditorState,
 };
 use ratatui::{
-    Terminal,
     backend::{CrosstermBackend, TestBackend},
     layout::Rect,
+    Terminal,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 
-const TOOL_ROUNDS: usize = 10_000;
-const BENCHMARK_ROUNDS: usize = 5;
-const SIZES: [(u16, u16); 3] = [(80, 24), (120, 36), (200, 60)];
-const SCENARIOS: [&str; 18] = [
-    "readonly_open",
-    "older_scroll",
-    "search",
-    "tree_open",
-    "tree_filter",
-    "changes_filter_detail",
-    "skills_open",
-    "trust_open",
-    "instructions_open",
-    "packages_open",
-    "update_open",
-    "subagents_open",
-    "subagent_detail",
-    "subagent_nested",
-    "clipboard_open",
-    "clipboard_insert",
-    "attachments_open",
-    "attachment_preview",
-];
+struct BenchmarkConfig {
+    implementation: String,
+    sizes: Vec<(u16, u16)>,
+    rounds: usize,
+    tool_rounds: usize,
+    cache_limits: CacheLimits,
+    scenarios: Vec<String>,
+}
+
+struct CacheLimits {
+    rounds: usize,
+    items: usize,
+    bytes: usize,
+}
 
 struct WriterStats {
     bytes: usize,
@@ -82,17 +73,61 @@ struct BenchmarkApp {
 }
 
 fn main() {
+    let config = benchmark_config();
     let out = parse_output_path();
     fs::create_dir_all(out.parent().expect("benchmark output has a parent")).unwrap();
     File::create(&out).unwrap();
 
-    for round in 1..=BENCHMARK_ROUNDS {
-        for (columns, rows) in SIZES {
-            for scenario in SCENARIOS {
-                run_case(&out, round, columns, rows, scenario);
+    for round in 1..=config.rounds {
+        for &(columns, rows) in &config.sizes {
+            for scenario in &config.scenarios {
+                run_case(&out, round, columns, rows, scenario, &config);
             }
         }
     }
+}
+
+fn benchmark_config() -> BenchmarkConfig {
+    let value: Value = serde_json::from_str(
+        &fs::read_to_string("benchmarks/rust-b3-workbench-scenarios.json").unwrap(),
+    )
+    .unwrap();
+    let cache_limits = &value["cacheLimits"];
+    BenchmarkConfig {
+        implementation: string_field(&value, "implementation").to_owned(),
+        sizes: value["sizes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|size| {
+                (
+                    size[0].as_u64().unwrap() as u16,
+                    size[1].as_u64().unwrap() as u16,
+                )
+            })
+            .collect(),
+        rounds: number_field(&value, "rounds"),
+        tool_rounds: number_field(&value, "toolRounds"),
+        cache_limits: CacheLimits {
+            rounds: number_field(cache_limits, "rounds"),
+            items: number_field(cache_limits, "items"),
+            bytes: number_field(cache_limits, "bytes"),
+        },
+        scenarios: value["scenarios"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|scenario| string_field(scenario, "name").to_owned())
+            .collect(),
+    }
+}
+
+fn string_field<'a>(value: &'a Value, name: &str) -> &'a str {
+    value[name].as_str().unwrap()
+}
+
+fn number_field(value: &Value, name: &str) -> usize {
+    value[name].as_u64().unwrap() as usize
 }
 
 fn parse_output_path() -> PathBuf {
@@ -102,8 +137,15 @@ fn parse_output_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".artifacts/rust-tui-b3-workbench/benchmark.jsonl"))
 }
 
-fn run_case(out: &PathBuf, round: usize, columns: u16, rows: u16, scenario: &str) {
-    let mut benchmark = setup(columns, rows);
+fn run_case(
+    out: &PathBuf,
+    round: usize,
+    columns: u16,
+    rows: u16,
+    scenario: &str,
+    config: &BenchmarkConfig,
+) {
+    let mut benchmark = setup(columns, rows, config.tool_rounds);
     let regroup_before = regroup_signature(&benchmark.app);
     let started = Instant::now();
     apply_scenario(&mut benchmark.app, scenario);
@@ -125,21 +167,21 @@ fn run_case(out: &PathBuf, round: usize, columns: u16, rows: u16, scenario: &str
         .transcript
         .diagnostics();
     assert!(
-        active.cached_rounds <= 400
-            && active.cached_items <= 800
-            && active.cached_utf8_bytes <= 4 * 1024 * 1024
+        active.cached_rounds <= config.cache_limits.rounds
+            && active.cached_items <= config.cache_limits.items
+            && active.cached_utf8_bytes <= config.cache_limits.bytes
     );
     assert!(
-        readonly.cached_rounds <= 400
-            && readonly.cached_items <= 800
-            && readonly.cached_utf8_bytes <= 4 * 1024 * 1024
+        readonly.cached_rounds <= config.cache_limits.rounds
+            && readonly.cached_items <= config.cache_limits.items
+            && readonly.cached_utf8_bytes <= config.cache_limits.bytes
     );
     assert!(bytes > 0 && rss > 0);
 
     append(
         out,
         json!({
-            "implementation": "rust-b3-workbench",
+            "implementation": config.implementation,
             "scenario": scenario,
             "columns": columns,
             "rows": rows,
@@ -162,8 +204,8 @@ fn run_case(out: &PathBuf, round: usize, columns: u16, rows: u16, scenario: &str
             "rssP95Bytes": rss,
             "rssP99Bytes": rss,
             "rssMaxBytes": rss,
-            "activeToolRounds": TOOL_ROUNDS,
-            "readonlyToolRounds": TOOL_ROUNDS,
+            "activeToolRounds": config.tool_rounds,
+            "readonlyToolRounds": config.tool_rounds,
             "activeCachedRounds": active.cached_rounds,
             "activeCachedItems": active.cached_items,
             "activeCachedUtf8Bytes": active.cached_utf8_bytes,
@@ -176,11 +218,11 @@ fn run_case(out: &PathBuf, round: usize, columns: u16, rows: u16, scenario: &str
     );
 }
 
-fn setup(columns: u16, rows: u16) -> BenchmarkApp {
+fn setup(columns: u16, rows: u16, tool_rounds: usize) -> BenchmarkApp {
     let mut app = AppState::default();
     app.editor = EditorState::default();
     app.transcript.replace_page(
-        tool_items("active"),
+        tool_items("active", tool_rounds),
         "b3-active-generation".to_owned(),
         1,
         Some("older-active".to_owned()),
@@ -192,7 +234,7 @@ fn setup(columns: u16, rows: u16) -> BenchmarkApp {
         ..ReadonlySessionView::default()
     };
     readonly.transcript.replace_page(
-        tool_items("readonly"),
+        tool_items("readonly", tool_rounds),
         "b3-readonly-generation".to_owned(),
         1,
         Some("older-readonly".to_owned()),
@@ -563,9 +605,9 @@ fn draw(benchmark: &mut BenchmarkApp) -> usize {
     stats.bytes - before
 }
 
-fn tool_items(prefix: &str) -> Vec<TranscriptItem> {
-    let mut items = Vec::with_capacity(TOOL_ROUNDS * 2);
-    for index in 0..TOOL_ROUNDS {
+fn tool_items(prefix: &str, tool_rounds: usize) -> Vec<TranscriptItem> {
+    let mut items = Vec::with_capacity(tool_rounds * 2);
+    for index in 0..tool_rounds {
         let id = format!("{prefix}-call-{index:05}");
         let name = ["read", "grep", "apply_patch", "bash", "image_gen"][index % 5].to_owned();
         items.push(TranscriptItem {
