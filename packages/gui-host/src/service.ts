@@ -153,6 +153,7 @@ export class GuiHostService {
 	private readonly runtimeUnsubscribers = new Map<string, () => void>();
 	private readonly activeOperationBySession = new Map<string, string>();
 	private readonly scheduledOperations = new Set<string>();
+	private readonly b3WritePromises = new Map<string, Promise<JsonValue>>();
 	private readonly snapshotRevisions = new Map<string, number>();
 	private readonly pendingUi = new Map<string, PendingUiRequest>();
 	private readonly leases = new LeaseManager();
@@ -702,86 +703,166 @@ export class GuiHostService {
 				return this.runtimes.get(sessionPath)?.listSettings() ?? this.adapter.listSettings(sessionPath);
 			}
 			case "set_setting": {
-				this.assertClient(request.clientInstanceId, connection);
-				const { runtime } = this.assertSessionControl(request.sessionPath, request.leaseId, connection);
-				return runtime.setSetting(request.id, request.value);
+				const { runtime, sessionPath } = this.assertSessionControl(
+					request.sessionPath,
+					request.leaseId,
+					connection,
+				);
+				return this.executeB3Write(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: sessionPath,
+					payload: { id: request.id, value: request.value },
+					run: () => runtime.setSetting(request.id, request.value),
+				});
 			}
 			case "get_project_trust":
 				return this.adapter.getProjectTrust(request.cwd);
 			case "set_project_trust": {
-				this.assertClient(request.clientInstanceId, connection);
-				this.journal.assertWritable();
-				const result = await this.adapter.setProjectTrust(request.cwd, request.trusted);
-				for (const runtime of this.runtimes.values()) {
-					if (resolve(runtime.getSnapshot("available").cwd) === resolve(request.cwd))
-						await runtime.reloadResources();
-				}
-				return result;
+				const cwd = resolve(request.cwd);
+				return this.executeB3Write(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `host:trust:${cwd}`,
+					payload: { cwd, trusted: request.trusted },
+					run: async () => {
+						const result = await this.adapter.setProjectTrust(cwd, request.trusted);
+						for (const runtime of this.runtimes.values()) {
+							if (resolve(runtime.getSnapshot("available").cwd) === cwd) await runtime.reloadResources();
+						}
+						return result;
+					},
+				});
 			}
 			case "list_packages":
 				return this.adapter.listPackages(request.cwd);
 			case "install_package":
-				this.assertClient(request.clientInstanceId, connection);
-				this.journal.assertWritable();
-				return this.adapter.installPackage(request.cwd, request.source, request.scope);
+				return this.executeB3Write(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `host:packages:${resolve(request.cwd)}`,
+					payload: { cwd: resolve(request.cwd), source: request.source, scope: request.scope },
+					run: () => this.adapter.installPackage(request.cwd, request.source, request.scope),
+				});
 			case "remove_package":
-				this.assertClient(request.clientInstanceId, connection);
-				this.journal.assertWritable();
-				return this.adapter.removePackage(request.cwd, request.source, request.scope);
+				return this.executeB3Write(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `host:packages:${resolve(request.cwd)}`,
+					payload: { cwd: resolve(request.cwd), source: request.source, scope: request.scope },
+					run: () => this.adapter.removePackage(request.cwd, request.source, request.scope),
+				});
 			case "update_packages":
-				this.assertClient(request.clientInstanceId, connection);
-				this.journal.assertWritable();
-				return this.adapter.updatePackages(request.cwd, request.source);
+				return this.executeB3Write(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `host:packages:${resolve(request.cwd)}`,
+					payload: { cwd: resolve(request.cwd), ...(request.source ? { source: request.source } : {}) },
+					run: () => this.adapter.updatePackages(request.cwd, request.source),
+				});
 			case "get_session_tree": {
 				const sessionPath = canonicalSessionPath(request.sessionPath);
-				const runtime = await this.ensureRuntime(sessionPath, this.createUiRequestHandler(`tree:${connection.id}`));
-				return runtime.getSessionTree();
+				return this.adapter.getSessionTree(sessionPath);
 			}
 			case "set_entry_label": {
-				this.assertClient(request.clientInstanceId, connection);
-				const { runtime } = this.assertSessionControl(request.sessionPath, request.leaseId, connection);
-				await runtime.setEntryLabel(request.entryId, request.label);
-				return { changed: true };
+				const { runtime, sessionPath } = this.assertSessionControl(
+					request.sessionPath,
+					request.leaseId,
+					connection,
+				);
+				return this.executeB3Write(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: sessionPath,
+					payload: { entryId: request.entryId, ...(request.label ? { label: request.label } : {}) },
+					run: async () => {
+						await runtime.setEntryLabel(request.entryId, request.label);
+						return { changed: true };
+					},
+				});
 			}
 			case "navigate_session_tree": {
-				this.assertClient(request.clientInstanceId, connection);
-				const { runtime } = this.assertSessionControl(request.sessionPath, request.leaseId, connection);
-				return runtime.navigateSessionTree(request.entryId, request.summarize === true);
+				const { runtime, sessionPath } = this.assertSessionControl(
+					request.sessionPath,
+					request.leaseId,
+					connection,
+				);
+				return this.executeB3Write(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: sessionPath,
+					payload: { entryId: request.entryId, summarize: request.summarize === true },
+					run: () => runtime.navigateSessionTree(request.entryId, request.summarize === true),
+				});
 			}
 			case "list_subagents": {
 				const sessionPath = canonicalSessionPath(request.sessionPath);
-				const runtime = await this.ensureRuntime(
-					sessionPath,
-					this.createUiRequestHandler(`subagent:${connection.id}`),
-				);
-				return runtime.listSubagents();
+				const runtime = this.runtimes.get(sessionPath);
+				return runtime && this.sessionWriteAccess(sessionPath, connection) === "owned"
+					? runtime.listSubagents()
+					: this.adapter.listSubagents(sessionPath);
 			}
 			case "read_subagent": {
 				const sessionPath = canonicalSessionPath(request.sessionPath);
-				const runtime = await this.ensureRuntime(
-					sessionPath,
-					this.createUiRequestHandler(`subagent:${connection.id}`),
-				);
-				return runtime.readSubagent(request.agentId);
+				const runtime = this.runtimes.get(sessionPath);
+				return runtime && this.sessionWriteAccess(sessionPath, connection) === "owned"
+					? runtime.readSubagent(request.agentId)
+					: this.adapter.readSubagent(sessionPath, request.agentId);
 			}
 			case "abort_subagent": {
-				this.assertClient(request.clientInstanceId, connection);
-				const { runtime } = this.assertSessionControl(request.sessionPath, request.leaseId, connection);
-				await runtime.abortSubagent(request.agentId);
-				return { changed: true, message: "已请求停止 Subagent" };
+				const { runtime, sessionPath } = this.assertSessionControl(
+					request.sessionPath,
+					request.leaseId,
+					connection,
+				);
+				return this.executeB3Write(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: sessionPath,
+					payload: { agentId: request.agentId },
+					run: async () => {
+						await runtime.abortSubagent(request.agentId);
+						return { changed: true, message: "已请求停止 Subagent" };
+					},
+				});
 			}
 			case "continue_subagent": {
-				this.assertClient(request.clientInstanceId, connection);
-				const { runtime } = this.assertSessionControl(request.sessionPath, request.leaseId, connection);
-				await runtime.continueSubagent(request.agentId, request.text);
-				return { changed: true, message: "已继续 Subagent" };
+				const { runtime, sessionPath } = this.assertSessionControl(
+					request.sessionPath,
+					request.leaseId,
+					connection,
+				);
+				return this.executeB3Write(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: sessionPath,
+					payload: { agentId: request.agentId, text: request.text },
+					run: async () => {
+						await runtime.continueSubagent(request.agentId, request.text);
+						return { changed: true, message: "已继续 Subagent" };
+					},
+				});
 			}
 			case "read_clipboard_text":
 				return this.adapter.readClipboardText();
 			case "write_clipboard_text":
-				this.assertClient(request.clientInstanceId, connection);
-				this.journal.assertWritable();
-				return this.adapter.writeClipboardText(request.text);
+				return this.executeB3Write(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: "host:clipboard",
+					payload: { text: request.text },
+					run: () => this.adapter.writeClipboardText(request.text),
+				});
 		}
 	}
 
@@ -881,6 +962,53 @@ export class GuiHostService {
 		} finally {
 			this.pollingSessions = false;
 		}
+	}
+
+	private async executeB3Write(
+		connection: ClientConnection,
+		input: {
+			command: keyof typeof B3_COMMANDS;
+			clientInstanceId: string;
+			clientRequestId: string;
+			scope: string;
+			payload: JsonValue;
+			run: () => Promise<JsonValue>;
+		},
+	): Promise<JsonValue> {
+		this.assertClient(input.clientInstanceId, connection);
+		this.journal.assertWritable();
+		const payloadHash = hashOperationPayload({ command: input.command, scope: input.scope, payload: input.payload });
+		const existing = this.journal.find(input.clientInstanceId, input.clientRequestId, payloadHash);
+		if (existing) {
+			const pending = this.b3WritePromises.get(existing.operationId);
+			if (pending) return pending;
+			if (existing.status === "completed" && existing.result !== undefined) return existing.result;
+			throw Object.assign(new Error(existing.error ?? "此前请求未完成"), { code: "b3_write_failed" });
+		}
+		const accepted = this.journal.accept({
+			clientInstanceId: input.clientInstanceId,
+			clientRequestId: input.clientRequestId,
+			sessionPath: input.scope,
+			type: input.command,
+			payloadHash,
+		});
+		const execution = (async () => {
+			try {
+				this.updateOperation(accepted.operation.operationId, "running");
+				const result = await input.run();
+				this.updateOperation(accepted.operation.operationId, "completed", { result });
+				return result;
+			} catch (error) {
+				this.updateOperation(accepted.operation.operationId, "failed", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+				throw error;
+			} finally {
+				this.b3WritePromises.delete(accepted.operation.operationId);
+			}
+		})();
+		this.b3WritePromises.set(accepted.operation.operationId, execution);
+		return execution;
 	}
 
 	private async runQueueOperation(

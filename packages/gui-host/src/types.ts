@@ -192,6 +192,9 @@ export interface RuntimeAdapter {
 	getGitDiff(cwd: string, path: string | undefined, staged: boolean): Promise<GitDiff>;
 	checkForUpdates(): Promise<JsonValue>;
 	listSettings(sessionPath: string): SettingSummary[];
+	getSessionTree(sessionPath: string): SessionTreeNode[];
+	listSubagents(sessionPath: string): SubagentSnapshot[];
+	readSubagent(sessionPath: string, agentId: string): { transcript?: SubagentSnapshot };
 	getProjectTrust(cwd: string): ProjectTrust;
 	setProjectTrust(cwd: string, trusted: boolean): Promise<ProjectTrust>;
 	listPackages(cwd: string): PackageSummary[];

@@ -354,30 +354,49 @@ function settingSummary(id: string, settings: SettingsManager): SettingSummary {
 	};
 }
 
-function sessionTree(sessionManager: SessionManager): SessionTreeNode[] {
-	const walk = (nodes: ReturnType<SessionManager["getTree"]>, depth: number): SessionTreeNode[] =>
-		nodes.flatMap((node) => {
-			const entry = node.entry;
-			const raw = entry.type === "message" ? entry.message : entry;
-			const preview = JSON.stringify(raw).slice(0, 4096);
-			return [
-				{
-					id: entry.id,
-					parentId: entry.parentId,
-					kind: entry.type,
-					...(node.label ? { label: node.label } : {}),
-					timestamp: entry.timestamp,
-					preview,
-					isLeaf: sessionManager.getLeafId() === entry.id,
-					depth,
-				},
-				...walk(node.children, depth + 1),
-			];
+function sessionTree(entries: readonly SessionEntry[], leafId: string | null): SessionTreeNode[] {
+	const labels = new Map<string, string | undefined>();
+	for (const entry of entries) {
+		if (entry.type === "label") labels.set(entry.targetId, entry.label);
+	}
+	const byId = new Map(entries.map((entry) => [entry.id, entry]));
+	const children = new Map<string, SessionEntry[]>();
+	const roots: SessionEntry[] = [];
+	for (const entry of entries) {
+		if (entry.parentId && entry.parentId !== entry.id && byId.has(entry.parentId)) {
+			const siblings = children.get(entry.parentId) ?? [];
+			siblings.push(entry);
+			children.set(entry.parentId, siblings);
+		} else {
+			roots.push(entry);
+		}
+	}
+	const output: SessionTreeNode[] = [];
+	const stack = roots
+		.sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp))
+		.map((entry) => ({ entry, depth: 0 }));
+	while (stack.length > 0) {
+		const { entry, depth } = stack.pop()!;
+		const raw = entry.type === "message" ? entry.message : entry;
+		output.push({
+			id: entry.id,
+			parentId: entry.parentId,
+			kind: entry.type,
+			...(labels.get(entry.id) ? { label: labels.get(entry.id) } : {}),
+			timestamp: entry.timestamp,
+			preview: JSON.stringify(raw).slice(0, 4096),
+			isLeaf: leafId === entry.id,
+			depth,
 		});
-	return walk(sessionManager.getTree(), 0);
+		const descendants = children.get(entry.id) ?? [];
+		for (const child of descendants.sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp))) {
+			stack.push({ entry: child, depth: depth + 1 });
+		}
+	}
+	return output;
 }
 
-function transcriptSubagents(entries: SessionEntry[]): SubagentSnapshot[] {
+function transcriptSubagents(entries: readonly SessionEntry[]): SubagentSnapshot[] {
 	const snapshots: SubagentSnapshot[] = [];
 	for (const entry of entries) {
 		if (entry.type !== "message" || entry.message.role !== "toolResult" || entry.message.toolName !== "subagent")
@@ -735,7 +754,10 @@ class CoreRuntimeSession implements RuntimeSession {
 	}
 
 	getSessionTree(): SessionTreeNode[] {
-		return sessionTree(this.runtime.session.sessionManager);
+		return sessionTree(
+			this.runtime.session.sessionManager.getEntries(),
+			this.runtime.session.sessionManager.getLeafId(),
+		);
 	}
 
 	async setEntryLabel(entryId: string, label?: string): Promise<void> {
@@ -1576,9 +1598,23 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	}
 
 	listSettings(sessionPath: string): SettingSummary[] {
-		const manager = SessionManager.open(sessionPath);
-		const settings = this.settingsForCwd(manager.getCwd());
+		const snapshot = readSessionSnapshot(sessionPath);
+		const settings = this.settingsForCwd(snapshot.header.cwd);
 		return LYSTAR_SETTINGS_CATALOG.map((setting) => settingSummary(setting.id, settings));
+	}
+
+	getSessionTree(sessionPath: string): SessionTreeNode[] {
+		const snapshot = readSessionSnapshot(sessionPath);
+		return sessionTree(snapshot.entries, snapshot.leafId);
+	}
+
+	listSubagents(sessionPath: string): SubagentSnapshot[] {
+		return transcriptSubagents(readSessionSnapshot(sessionPath).entries);
+	}
+
+	readSubagent(sessionPath: string, agentId: string): { transcript?: SubagentSnapshot } {
+		const transcript = this.listSubagents(sessionPath).find((snapshot) => snapshot.agentId === agentId);
+		return transcript ? { transcript } : {};
 	}
 
 	getProjectTrust(cwd: string): ProjectTrust {

@@ -14,6 +14,7 @@ import {
 	Text,
 } from "@earendil-works/pi-tui";
 import { formatHttpIdleTimeoutMs, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
+import { getLystarSetting } from "../../../core/lystar-settings-catalog.ts";
 import type {
 	DefaultProjectTrust,
 	FullscreenExitOutput,
@@ -49,7 +50,13 @@ const THINKING_DESCRIPTIONS: Record<ThinkingLevel, string> = {
 	max: "最大强度思考",
 };
 
-const DEFAULT_PROJECT_TRUST_VALUES: DefaultProjectTrust[] = ["ask", "always", "never"];
+const DEFAULT_PROJECT_TRUST_VALUES = catalogValues("default-project-trust") as DefaultProjectTrust[];
+
+function catalogValues(id: string): string[] {
+	const setting = getLystarSetting(id);
+	if (!setting?.options) throw new Error(`设置 ${id} 缺少选项定义`);
+	return setting.options;
+}
 
 export interface SettingsConfig {
 	autoCompact: boolean;
@@ -495,21 +502,21 @@ export class SettingsSelectorComponent extends Container {
 				description:
 					"Enter while streaming queues steering messages. 'one-at-a-time': deliver one, wait for response. 'all': deliver all at once.",
 				currentValue: config.steeringMode,
-				values: ["one-at-a-time", "all"],
+				values: catalogValues("steering-mode"),
 			},
 			{
 				id: "follow-up-mode",
 				label: "Follow-up mode",
 				description: `${followUpKey} queues follow-up messages until agent stops. 'one-at-a-time': deliver one, wait for response. 'all': deliver all at once.`,
 				currentValue: config.followUpMode,
-				values: ["one-at-a-time", "all"],
+				values: catalogValues("follow-up-mode"),
 			},
 			{
 				id: "transport",
 				label: "Transport",
 				description: "Preferred transport for providers that support multiple transports",
 				currentValue: config.transport,
-				values: ["sse", "websocket", "websocket-cached", "auto"],
+				values: catalogValues("transport"),
 			},
 			{
 				id: "http-idle-timeout",
@@ -524,7 +531,7 @@ export class SettingsSelectorComponent extends Container {
 				label: "思考内容位置",
 				description: "选择在左下角实时状态或对话输出中显示模型思考",
 				currentValue: config.thinkingDisplayMode,
-				values: ["activity", "transcript"],
+				values: catalogValues("thinking-display"),
 			},
 			{
 				id: "hide-thinking",
@@ -538,7 +545,7 @@ export class SettingsSelectorComponent extends Container {
 				label: "Mermaid diagrams",
 				description: "Render Mermaid code blocks as Unicode diagrams",
 				currentValue: config.mermaidRenderingMode,
-				values: ["off", "final", "streaming"],
+				values: catalogValues("mermaid-rendering"),
 			},
 			{
 				id: "cache-miss-notices",
@@ -573,14 +580,14 @@ export class SettingsSelectorComponent extends Container {
 				label: "Double-escape action",
 				description: "Action when pressing Escape twice with empty editor",
 				currentValue: config.doubleEscapeAction,
-				values: ["tree", "fork", "none"],
+				values: catalogValues("double-escape-action"),
 			},
 			{
 				id: "tree-filter-mode",
 				label: "Tree filter mode",
 				description: "Default filter when opening /tree",
 				currentValue: config.treeFilterMode,
-				values: ["default", "no-tools", "user-only", "labeled-only", "all"],
+				values: catalogValues("tree-filter-mode"),
 			},
 			{
 				id: "warnings",
@@ -624,21 +631,21 @@ export class SettingsSelectorComponent extends Container {
 				label: "TUI mode",
 				description: "Interface layout; fullscreen mode is experimental",
 				currentValue: config.tuiMode,
-				values: ["regular", "fullscreen"],
+				values: catalogValues("tui-mode"),
 			},
 			{
 				id: "fullscreen-exit-output",
 				label: "Fullscreen exit output",
 				description: "Print the transcript or only a session resume hint when exiting fullscreen mode",
 				currentValue: config.fullscreenExitOutput,
-				values: ["transcript", "resume-hint"],
+				values: catalogValues("fullscreen-exit-output"),
 			},
 			{
 				id: "fullscreen-scrollbar",
 				label: "Fullscreen scrollbar",
 				description: "Scrollbar behavior in fullscreen mode; has no effect in regular mode",
 				currentValue: config.fullscreenScrollbar,
-				values: ["auto", "always", "hidden"],
+				values: catalogValues("fullscreen-scrollbar"),
 			},
 			{
 				id: "theme",

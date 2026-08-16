@@ -1,8 +1,11 @@
+mod b3;
 mod framing;
 mod read_only;
 
 #[allow(dead_code, clippy::all)]
 mod generated;
+
+pub use b3::{B3Command, B3Result};
 
 pub use framing::{
     ClientMessage, FieldPresence, FrameDecoder, MAX_FRAME_LENGTH, MessageDiagnostic, ProtocolError,

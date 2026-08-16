@@ -5,7 +5,8 @@ export const GUI_PROTOCOL_VERSION = 1 as const;
 export const MAX_TRANSCRIPT_PAGE_SIZE = 200;
 export const MAX_TRANSCRIPT_SEARCH_LIMIT = 100;
 
-const Id = Type.String({ minLength: 1 });
+const Id = Type.String({ minLength: 1, maxLength: 4096 });
+const B3Text = Type.String({ maxLength: 1024 * 1024 });
 const StrictObject = <const T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
 	Type.Object(properties, { additionalProperties: false });
 
@@ -516,11 +517,11 @@ export const SettingKindSchema = Type.Union([
 export const SettingValueSchema = Type.Union([Type.Boolean(), Type.Integer(), Type.String()]);
 export const SettingSummarySchema = StrictObject({
 	id: Id,
-	label: Type.String({ minLength: 1 }),
-	description: Type.Optional(Type.String()),
+	label: Type.String({ minLength: 1, maxLength: 4096 }),
+	description: Type.Optional(Type.String({ maxLength: 16 * 1024 })),
 	kind: SettingKindSchema,
 	value: SettingValueSchema,
-	options: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+	options: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 1000 })),
 	scope: Type.Union([Type.Literal("global"), Type.Literal("project")]),
 	readOnly: Type.Boolean(),
 	restartRequired: Type.Boolean(),
@@ -528,26 +529,26 @@ export const SettingSummarySchema = StrictObject({
 export type SettingSummary = Static<typeof SettingSummarySchema>;
 
 export const ProjectTrustSchema = StrictObject({
-	cwd: Type.String({ minLength: 1 }),
+	cwd: Type.String({ minLength: 1, maxLength: 4096 }),
 	trusted: Type.Union([Type.Boolean(), Type.Null()]),
 });
 export type ProjectTrust = Static<typeof ProjectTrustSchema>;
 
 export const PackageScopeSchema = Type.Union([Type.Literal("user"), Type.Literal("project")]);
 export const PackageSummarySchema = StrictObject({
-	source: Type.String({ minLength: 1 }),
+	source: Type.String({ minLength: 1, maxLength: 4096 }),
 	scope: PackageScopeSchema,
 	filtered: Type.Boolean(),
-	installedPath: Type.Optional(Type.String({ minLength: 1 })),
+	installedPath: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
 });
 export type PackageSummary = Static<typeof PackageSummarySchema>;
 
 export const SessionTreeNodeSchema = StrictObject({
 	id: Id,
 	parentId: Type.Union([Id, Type.Null()]),
-	kind: Type.String({ minLength: 1 }),
-	label: Type.Optional(Type.String()),
-	timestamp: Type.String({ minLength: 1 }),
+	kind: Type.String({ minLength: 1, maxLength: 256 }),
+	label: Type.Optional(Type.String({ maxLength: 16 * 1024 })),
+	timestamp: Type.String({ minLength: 1, maxLength: 4096 }),
 	preview: Type.String({ maxLength: 4096 }),
 	isLeaf: Type.Boolean(),
 	depth: Type.Integer({ minimum: 0 }),
@@ -557,14 +558,14 @@ export type SessionTreeNode = Static<typeof SessionTreeNodeSchema>;
 export const SubagentSnapshotSchema = StrictObject({
 	runId: Id,
 	agentId: Id,
-	agent: Type.String({ minLength: 1 }),
+	agent: Type.String({ minLength: 1, maxLength: 4096 }),
 	agentSource: Type.Union([
 		Type.Literal("builtin"),
 		Type.Literal("user"),
 		Type.Literal("project"),
 		Type.Literal("unknown"),
 	]),
-	task: Type.String(),
+	task: B3Text,
 	state: Type.Union([
 		Type.Literal("queued"),
 		Type.Literal("running"),
@@ -573,7 +574,7 @@ export const SubagentSnapshotSchema = StrictObject({
 		Type.Literal("failed"),
 		Type.Literal("cancelled"),
 	]),
-	currentAction: Type.Optional(Type.String()),
+	currentAction: Type.Optional(Type.String({ maxLength: 16 * 1024 })),
 	startedAt: Type.Integer({ minimum: 0 }),
 	updatedAt: Type.Integer({ minimum: 0 }),
 	elapsedMs: Type.Integer({ minimum: 0 }),
@@ -582,43 +583,43 @@ export const SubagentSnapshotSchema = StrictObject({
 		StrictObject({
 			version: Type.Literal(1),
 			sessionId: Id,
-			sessionFile: Type.String({ minLength: 1 }),
-			parentSessionFile: Type.Optional(Type.String({ minLength: 1 })),
-			cwd: Type.String({ minLength: 1 }),
+			sessionFile: Type.String({ minLength: 1, maxLength: 4096 }),
+			parentSessionFile: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+			cwd: Type.String({ minLength: 1, maxLength: 4096 }),
 			createdAt: Type.Integer({ minimum: 0 }),
 		}),
 	),
 });
 export type SubagentSnapshot = Static<typeof SubagentSnapshotSchema>;
 
-export const ListSettingsResultSchema = Type.Array(SettingSummarySchema);
+export const ListSettingsResultSchema = Type.Array(SettingSummarySchema, { maxItems: 1000 });
 export const SetSettingResultSchema = StrictObject({ setting: SettingSummarySchema, requiresRestart: Type.Boolean() });
 export const GetProjectTrustResultSchema = ProjectTrustSchema;
 export const SetProjectTrustResultSchema = ProjectTrustSchema;
-export const ListPackagesResultSchema = Type.Array(PackageSummarySchema);
+export const ListPackagesResultSchema = Type.Array(PackageSummarySchema, { maxItems: 1000 });
 export const PackageMutationResultSchema = StrictObject({
 	changed: Type.Boolean(),
-	message: Type.String({ minLength: 1 }),
+	message: Type.String({ minLength: 1, maxLength: 16 * 1024 }),
 });
-export const SessionTreeResultSchema = Type.Array(SessionTreeNodeSchema);
+export const SessionTreeResultSchema = Type.Array(SessionTreeNodeSchema, { maxItems: 10_000 });
 export const SetEntryLabelResultSchema = StrictObject({ changed: Type.Boolean() });
 export const NavigateSessionTreeResultSchema = StrictObject({
-	editorText: Type.Optional(Type.String()),
+	editorText: Type.Optional(B3Text),
 	cancelled: Type.Boolean(),
 	newLeafId: Type.Optional(Id),
 });
-export const ListSubagentsResultSchema = Type.Array(SubagentSnapshotSchema);
+export const ListSubagentsResultSchema = Type.Array(SubagentSnapshotSchema, { maxItems: 1000 });
 export const ReadSubagentResultSchema = StrictObject({
 	transcript: Type.Optional(SubagentSnapshotSchema),
 	live: Type.Optional(SubagentSnapshotSchema),
 });
 export const SubagentMutationResultSchema = StrictObject({
 	changed: Type.Boolean(),
-	message: Type.String({ minLength: 1 }),
+	message: Type.String({ minLength: 1, maxLength: 16 * 1024 }),
 });
 export const ClipboardReadResultSchema = StrictObject({
 	capability: Type.Boolean(),
-	text: Type.Optional(Type.String()),
+	text: Type.Optional(B3Text),
 });
 export const ClipboardWriteResultSchema = StrictObject({ capability: Type.Boolean(), changed: Type.Boolean() });
 
@@ -881,24 +882,24 @@ export const CommandSchema = Type.Union([
 	StrictObject({ command: Type.Literal("list_packages"), cwd: Type.String({ minLength: 1 }) }),
 	StrictObject({
 		command: Type.Literal("install_package"),
-		cwd: Type.String({ minLength: 1 }),
-		source: Type.String({ minLength: 1 }),
+		cwd: Type.String({ minLength: 1, maxLength: 4096 }),
+		source: Type.String({ minLength: 1, maxLength: 4096 }),
 		scope: PackageScopeSchema,
 		clientInstanceId: Id,
 		clientRequestId: Id,
 	}),
 	StrictObject({
 		command: Type.Literal("remove_package"),
-		cwd: Type.String({ minLength: 1 }),
-		source: Type.String({ minLength: 1 }),
+		cwd: Type.String({ minLength: 1, maxLength: 4096 }),
+		source: Type.String({ minLength: 1, maxLength: 4096 }),
 		scope: PackageScopeSchema,
 		clientInstanceId: Id,
 		clientRequestId: Id,
 	}),
 	StrictObject({
 		command: Type.Literal("update_packages"),
-		cwd: Type.String({ minLength: 1 }),
-		source: Type.Optional(Type.String({ minLength: 1 })),
+		cwd: Type.String({ minLength: 1, maxLength: 4096 }),
+		source: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
 		clientInstanceId: Id,
 		clientRequestId: Id,
 	}),
@@ -936,14 +937,14 @@ export const CommandSchema = Type.Union([
 		sessionPath: Type.String({ minLength: 1 }),
 		leaseId: Id,
 		agentId: Id,
-		text: Type.String({ minLength: 1 }),
+		text: B3Text,
 		clientInstanceId: Id,
 		clientRequestId: Id,
 	}),
 	StrictObject({ command: Type.Literal("read_clipboard_text") }),
 	StrictObject({
 		command: Type.Literal("write_clipboard_text"),
-		text: Type.String({ maxLength: 4 * 1024 * 1024 }),
+		text: B3Text,
 		clientInstanceId: Id,
 		clientRequestId: Id,
 	}),

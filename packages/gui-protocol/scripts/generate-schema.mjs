@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { ClientMessageSchema, JsonValueSchema, ServerMessageSchema } from "../src/schemas.ts";
+import {
+	B3CommandResultSchemas,
+	ClientMessageSchema,
+	JsonValueSchema,
+	ServerMessageSchema,
+} from "../src/schemas.ts";
 
 const schemaPath = resolve(import.meta.dirname, "../generated/gui-protocol.schema.json");
 const generatedRustPath = resolve(import.meta.dirname, "../../../crates/lystar-protocol/src/generated.rs");
@@ -14,6 +19,12 @@ const schema = {
 		JsonValue: normalizeJsonValueReferences(jsonValueDefinition),
 		ClientMessage: normalizeJsonValueReferences(ClientMessageSchema),
 		ServerMessage: normalizeJsonValueReferences(ServerMessageSchema),
+		...Object.fromEntries(
+			Object.entries(B3CommandResultSchemas).map(([command, result]) => [
+				`B3${command.replace(/(^|_)([a-z])/g, (_, __, character) => character.toUpperCase())}Result`,
+				normalizeJsonValueReferences(result),
+			]),
+		),
 	},
 };
 const json = `${JSON.stringify(schema, null, 2)}\n`;

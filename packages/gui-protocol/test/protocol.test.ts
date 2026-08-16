@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+	assertB3CommandResult,
+	B3CommandResultSchemas,
 	type ByteTransport,
 	ClientMessageDecoder,
 	encodeClientMessage,
@@ -247,6 +249,43 @@ describe("GUI Protocol v1", () => {
 		]) {
 			expect(() => encodeClientMessage({ type: "request", id: "invalid-search", request } as never)).toThrow();
 		}
+	});
+
+	it("rejects B3 oversized clipboard, tree, package, and settings payloads", () => {
+		const decoder = new ClientMessageDecoder();
+		expect(() =>
+			decoder.push(
+				encodeClientMessage({
+					type: "request",
+					id: "clipboard-overflow",
+					request: {
+						command: "write_clipboard_text",
+						text: "x".repeat(1024 * 1024 + 1),
+						clientInstanceId: "client",
+						clientRequestId: "overflow",
+					},
+				}),
+			),
+		).toThrow();
+		expect(() =>
+			assertB3CommandResult(
+				"get_session_tree",
+				Array.from({ length: 10_001 }, () => ({})),
+			),
+		).toThrow();
+		expect(() =>
+			assertB3CommandResult(
+				"list_packages",
+				Array.from({ length: 1001 }, () => ({})),
+			),
+		).toThrow();
+		expect(() =>
+			assertB3CommandResult(
+				"list_settings",
+				Array.from({ length: 1001 }, () => ({})),
+			),
+		).toThrow();
+		expect(B3CommandResultSchemas.write_clipboard_text).toBeDefined();
 	});
 
 	it("strictly decodes interactive queue commands and typed progress", () => {
