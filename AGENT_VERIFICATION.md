@@ -1,8 +1,10 @@
 # AGENT_VERIFICATION
 
+最新补充：B3 Settings 已统一为 TypeScript descriptor catalog。`/settings`、GUI Host `list_settings`/`set_setting` 复用同一 id、中文文案、类型、范围、scope 和 restartRequired；主题、警告分组与数值输入只保留交互职责。该 foundation 不包含 Rust B3 UI，且不改变 B0/M10 性能阈值。
+
 最新补充：GUI 所有 write 幂等 foundation 已完成。旧写命令与 B3 快速写统一使用 operation journal 和按 scope 串行队列；本项不表示 B3 UI 已完成。
 
-最后核验时间：2026-08-15
+最后核验时间：2026-08-16
 
 环境：
 

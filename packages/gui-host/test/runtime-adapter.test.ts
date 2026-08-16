@@ -5,6 +5,8 @@ import { isAbsolute, join, relative } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentSessionEvent } from "../../coding-agent/src/core/agent-session.ts";
+import { getLystarSetting, LYSTAR_SETTINGS_CATALOG } from "../../coding-agent/src/core/lystar-settings-catalog.ts";
+import { SettingsManager } from "../../coding-agent/src/core/settings-manager.ts";
 import {
 	appendSessionRecoveryLedger,
 	createRecoveryLedgerEntry,
@@ -94,6 +96,28 @@ describe("CodingAgentRuntimeAdapter", () => {
 
 	afterEach(async () => {
 		while (cleanups.length > 0) await cleanups.pop()?.();
+	});
+
+	it("lists and writes the same catalog descriptors used by the selector", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-settings-"));
+		const agentDir = join(tempDir, "agent");
+		const cwd = join(tempDir, "project");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(cwd, { recursive: true });
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always" }));
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		const runtime = await adapter.createSession(cwd, async () => ({ cancelled: true }));
+		cleanups.push(async () => {
+			await runtime.dispose();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+
+		expect(runtime.listSettings().map((setting) => setting.id)).toEqual(
+			LYSTAR_SETTINGS_CATALOG.map((setting) => setting.id),
+		);
+		const result = await runtime.setSetting("http-idle-timeout", 0);
+		expect(result.setting).toMatchObject({ id: "http-idle-timeout", value: 0 });
+		expect(getLystarSetting("http-idle-timeout")?.get(SettingsManager.create(cwd, agentDir))).toBe(0);
 	});
 
 	it("persists and restores bash when it is the first transcript entry", async () => {

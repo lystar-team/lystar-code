@@ -786,8 +786,28 @@ export class SettingsManager {
 		return this.settings.compaction?.reserveTokens ?? 16384;
 	}
 
+	setCompactionReserveTokens(reserveTokens: number): void {
+		if (!Number.isSafeInteger(reserveTokens) || reserveTokens < 0) {
+			throw new Error(`Invalid compaction.reserveTokens setting: ${String(reserveTokens)}`);
+		}
+		this.globalSettings.compaction ??= {};
+		this.globalSettings.compaction.reserveTokens = reserveTokens;
+		this.markModified("compaction", "reserveTokens");
+		this.save();
+	}
+
 	getCompactionKeepRecentTokens(): number {
 		return this.settings.compaction?.keepRecentTokens ?? 20000;
+	}
+
+	setCompactionKeepRecentTokens(keepRecentTokens: number): void {
+		if (!Number.isSafeInteger(keepRecentTokens) || keepRecentTokens < 0) {
+			throw new Error(`Invalid compaction.keepRecentTokens setting: ${String(keepRecentTokens)}`);
+		}
+		this.globalSettings.compaction ??= {};
+		this.globalSettings.compaction.keepRecentTokens = keepRecentTokens;
+		this.markModified("compaction", "keepRecentTokens");
+		this.save();
 	}
 
 	getCompactionSettings(): { enabled: boolean; reserveTokens: number; keepRecentTokens: number } {
@@ -830,6 +850,26 @@ export class SettingsManager {
 		};
 	}
 
+	setRetryMaxRetries(maxRetries: number): void {
+		if (!Number.isSafeInteger(maxRetries) || maxRetries < 0) {
+			throw new Error(`Invalid retry.maxRetries setting: ${String(maxRetries)}`);
+		}
+		this.globalSettings.retry ??= {};
+		this.globalSettings.retry.maxRetries = maxRetries;
+		this.markModified("retry", "maxRetries");
+		this.save();
+	}
+
+	setRetryBaseDelayMs(baseDelayMs: number): void {
+		if (!Number.isSafeInteger(baseDelayMs) || baseDelayMs < 0) {
+			throw new Error(`Invalid retry.baseDelayMs setting: ${String(baseDelayMs)}`);
+		}
+		this.globalSettings.retry ??= {};
+		this.globalSettings.retry.baseDelayMs = baseDelayMs;
+		this.markModified("retry", "baseDelayMs");
+		this.save();
+	}
+
 	getHttpIdleTimeoutMs(): number {
 		return parseTimeoutSetting(this.settings.httpIdleTimeoutMs, "httpIdleTimeoutMs") ?? DEFAULT_HTTP_IDLE_TIMEOUT_MS;
 	}
@@ -868,15 +908,24 @@ export class SettingsManager {
 	}
 
 	getExternalEditorCommand(): string {
-		const configuredEditor = this.settings.externalEditor;
-		if (typeof configuredEditor === "string" && configuredEditor.trim() !== "") {
-			return configuredEditor;
-		}
+		const configuredEditor = this.getConfiguredExternalEditorCommand();
+		if (configuredEditor) return configuredEditor;
 		const environmentEditor = process.env.VISUAL || process.env.EDITOR;
 		if (environmentEditor) {
 			return environmentEditor;
 		}
 		return process.platform === "win32" ? "notepad" : "nano";
+	}
+
+	getConfiguredExternalEditorCommand(): string | undefined {
+		const configuredEditor = this.settings.externalEditor;
+		return typeof configuredEditor === "string" && configuredEditor.trim() !== "" ? configuredEditor : undefined;
+	}
+
+	setExternalEditorCommand(command: string | undefined): void {
+		this.globalSettings.externalEditor = command;
+		this.markModified("externalEditor");
+		this.save();
 	}
 
 	setHideThinkingBlock(hide: boolean): void {
@@ -1284,6 +1333,12 @@ export class SettingsManager {
 
 	getCodeBlockIndent(): string {
 		return this.settings.markdown?.codeBlockIndent ?? "  ";
+	}
+
+	setCodeBlockIndent(indent: string): void {
+		this.globalSettings.markdown = { ...this.globalSettings.markdown, codeBlockIndent: indent };
+		this.markModified("markdown", "codeBlockIndent");
+		this.save();
 	}
 
 	getShowMarkdownCodeBlockFences(): boolean {

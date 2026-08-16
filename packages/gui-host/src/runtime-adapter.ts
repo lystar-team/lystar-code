@@ -347,9 +347,9 @@ function settingSummary(id: string, settings: SettingsManager): SettingSummary {
 		...(definition.description ? { description: definition.description } : {}),
 		kind: definition.kind,
 		value: definition.get(settings),
-		...(definition.options ? { options: definition.options } : {}),
+		...(definition.options ? { options: definition.options.map(String) } : {}),
 		scope: definition.scope,
-		readOnly: definition.readOnly === true,
+		readOnly: false,
 		restartRequired: definition.restartRequired === true,
 	};
 }
@@ -747,6 +747,20 @@ class CoreRuntimeSession implements RuntimeSession {
 		const definition = getLystarSetting(id);
 		if (!definition) throw Object.assign(new Error(`未知设置：${id}`), { code: "setting_not_found" });
 		definition.set(this.runtime.services.settingsManager, value);
+		switch (id) {
+			case "autocompact":
+				this.runtime.session.setAutoCompactionEnabled(value as boolean);
+				break;
+			case "steering-mode":
+				this.runtime.session.setSteeringMode(value as "all" | "one-at-a-time");
+				break;
+			case "follow-up-mode":
+				this.runtime.session.setFollowUpMode(value as "all" | "one-at-a-time");
+				break;
+			case "transport":
+				this.runtime.session.agent.transport = value as "auto" | "sse" | "websocket" | "websocket-cached";
+				break;
+		}
 		await this.runtime.services.settingsManager.flush();
 		this.emitStateChanged();
 		const setting = settingSummary(id, this.runtime.services.settingsManager);
