@@ -210,7 +210,62 @@ describe("GUI Host stdio process", () => {
 			type: "response",
 			id: "login",
 			ok: true,
-			result: [{ method: "bearer-token", secret: "secret-value" }],
+			result: [
+				{
+					provider: "test",
+					id: "test-model",
+					name: "Test Model",
+					api: "openai-completions",
+					reasoning: false,
+					input: ["text"],
+					contextWindow: 128000,
+					maxTokens: 4096,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					supportedThinkingLevels: ["off"],
+					authenticated: true,
+					authMethods: ["api_key", "oauth"],
+					authSource: "test",
+				},
+			],
+		});
+		expect(JSON.stringify(login)).not.toContain("secret-value");
+		child.stdin.end();
+	}, 20_000);
+
+	it("returns the same model projection after an OAuth login", async () => {
+		const child = startHost();
+		await waitForReady(child);
+		const reading = readMessages(child, 5);
+		child.stdin.write(
+			coalesce(
+				encodeClientMessage({ type: "hello", version: 1, clientInstanceId: "client" }),
+				encodeClientMessage({
+					type: "request",
+					id: "oauth-login",
+					request: {
+						command: "login_model_provider",
+						provider: "test",
+						authType: "oauth",
+						clientInstanceId: "client",
+						clientRequestId: "oauth-login",
+					},
+				}),
+			),
+		);
+		const messages = await reading;
+		expect(messages.find((message) => message.type === "event" && message.event.type === "ui_request")).toMatchObject(
+			{
+				type: "event",
+				event: { type: "ui_request", kind: "notify", id: "stdio-oauth-notify" },
+			},
+		);
+		expect(messages.find((message) => message.type === "response" && message.id === "oauth-login")).toMatchObject({
+			type: "response",
+			id: "oauth-login",
+			ok: true,
+			result: [
+				expect.objectContaining({ provider: "test", authenticated: true, authMethods: ["api_key", "oauth"] }),
+			],
 		});
 		child.stdin.end();
 	}, 20_000);

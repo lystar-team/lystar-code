@@ -3,6 +3,23 @@ import { GuiHostService } from "../../src/service.ts";
 import { runStdioHost } from "../../src/stdio.ts";
 
 const agentDir = process.argv[2];
+const loggedInModels = [
+	{
+		provider: "test",
+		id: "test-model",
+		name: "Test Model",
+		api: "openai-completions",
+		reasoning: false,
+		input: ["text"],
+		contextWindow: 128000,
+		maxTokens: 4096,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		supportedThinkingLevels: ["off"],
+		authenticated: true,
+		authMethods: ["api_key", "oauth"],
+		authSource: "test",
+	},
+];
 
 const adapter = {
 	async createSession() {
@@ -20,7 +37,16 @@ const adapter = {
 	async listModels() {
 		return [];
 	},
-	async loginModelProvider(_provider, _authType, onUiRequest) {
+	async loginModelProvider(_provider, authType, onUiRequest) {
+		if (authType === "oauth") {
+			await onUiRequest({
+				id: "stdio-oauth-notify",
+				kind: "notify",
+				title: "模型认证",
+				payload: { method: "auth_url", url: "https://example.test/oauth" },
+			});
+			return loggedInModels;
+		}
 		const method = await onUiRequest({
 			id: "stdio-auth-method",
 			kind: "select",
@@ -30,13 +56,14 @@ const adapter = {
 				options: [{ id: "bearer-token", label: "Bearer token" }],
 			},
 		});
-		const secret = await onUiRequest({
+		await onUiRequest({
 			id: "stdio-auth-secret",
 			kind: "secret",
 			title: "模型认证",
 			payload: { message: "输入令牌" },
 		});
-		return [{ method: method.value, secret: secret.value }];
+		if (method.cancelled) throw new Error("认证已取消");
+		return loggedInModels;
 	},
 	async logoutModelProvider() {
 		return [];

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
+import { assertB3CommandResult } from "@lystar/code-gui-protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentSessionEvent } from "../../coding-agent/src/core/agent-session.ts";
 import { getLystarSetting, LYSTAR_SETTINGS_CATALOG } from "../../coding-agent/src/core/lystar-settings-catalog.ts";
@@ -425,6 +426,12 @@ describe("CodingAgentRuntimeAdapter", () => {
 		expect(requests).toMatchObject([
 			{ kind: "secret", payload: { message: "Enter OpenAI API key", placeholder: "" } },
 		]);
+		expect(() => assertB3CommandResult("login_model_provider", loggedIn)).not.toThrow();
+		expect(JSON.stringify(loggedIn)).not.toContain("sk-gui-test");
+		const automaticRouter = loggedIn.find(
+			(model) => model.provider === "openrouter" && model.id === "openrouter/auto",
+		);
+		expect(automaticRouter?.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 		expect(loggedIn.find((model) => model.provider === "openai")).toMatchObject({
 			authenticated: true,
 			authMethods: ["api_key"],

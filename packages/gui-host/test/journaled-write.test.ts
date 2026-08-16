@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ClientMessage, ServerMessage } from "@lystar/code-gui-protocol";
@@ -237,7 +237,7 @@ function setup() {
 		await service.dispose();
 		rmSync(directory, { recursive: true, force: true });
 	});
-	return { service, cwd, sessionPath, counts };
+	return { directory, service, cwd, sessionPath, counts };
 }
 
 async function connection(service: GuiHostService, clientInstanceId = "client", dropResponse = false) {
@@ -480,6 +480,35 @@ describe("GuiHostService journaled writes", () => {
 		});
 		expect(started).toContain("after-failure");
 	});
+	it("replays a completed login after a response drop without duplicating credentials", async () => {
+		const setupValue = setup();
+		const payload = request("login_model_provider", setupValue.cwd, setupValue.sessionPath, "", "dropped-login");
+		const first = await connection(setupValue.service, "client", true);
+		const pending = first.handle({ type: "request", id: "first", request: payload } as ClientMessage);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const ui = first.messages.find((message) => message.type === "event" && message.event.type === "ui_request");
+		if (ui?.type !== "event" || ui.event.type !== "ui_request") throw new Error("Missing login UI request");
+		await first.handle({ type: "ui_response", id: ui.event.id, value: "credential-secret" });
+		await pending;
+		await first.close();
+
+		const retry = await connection(setupValue.service);
+		await Promise.all([
+			retry.handle({ type: "request", id: "retry-a", request: payload } as ClientMessage),
+			retry.handle({ type: "request", id: "retry-b", request: payload } as ClientMessage),
+		]);
+		expect(setupValue.counts.login_model_provider).toBe(1);
+		expect(retry.messages.some((message) => message.type === "event" && message.event.type === "ui_request")).toBe(
+			false,
+		);
+		expect(
+			retry.messages.filter((message) => message.type === "response" && message.ok).map((message) => message.result),
+		).toEqual([[], []]);
+		expect(readFileSync(join(setupValue.directory, "host", "operations.jsonl"), "utf8")).not.toContain(
+			"credential-secret",
+		);
+	});
+
 	it("records a failed login and does not replay its UI request", async () => {
 		const setupValue = setup();
 		const first = await connection(setupValue.service);
@@ -490,6 +519,10 @@ describe("GuiHostService journaled writes", () => {
 		if (ui?.type === "event" && ui.event.type === "ui_request")
 			await first.handle({ type: "ui_response", id: ui.event.id, cancelled: true });
 		await pending;
+		expect(first.messages.find((message) => message.type === "response" && message.id === "first")).toMatchObject({
+			ok: false,
+			error: { code: "auth_cancelled" },
+		});
 		const retry = await connection(setupValue.service);
 		await retry.handle({ type: "request", id: "retry", request: payload } as ClientMessage);
 		expect(setupValue.counts.login_model_provider).toBe(1);

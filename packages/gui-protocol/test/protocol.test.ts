@@ -350,6 +350,29 @@ describe("GUI Protocol v1", () => {
 		expect(B3CommandResultSchemas.write_clipboard_text).toBeDefined();
 	});
 
+	it("keeps login results as strict model projections without credentials", () => {
+		const result = [
+			{
+				provider: "faux",
+				id: "test",
+				name: "Faux Test",
+				api: "openai-completions",
+				reasoning: false,
+				input: ["text"],
+				contextWindow: 128000,
+				maxTokens: 4096,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				supportedThinkingLevels: ["off"],
+				authenticated: true,
+				authMethods: ["api_key", "oauth"],
+			},
+		];
+		expect(() => assertB3CommandResult("login_model_provider", result)).not.toThrow();
+		expect(() =>
+			assertB3CommandResult("login_model_provider", [{ method: "bearer-token", secret: "credential-secret" }]),
+		).toThrow("不符合协议");
+	});
+
 	it("strictly decodes interactive queue commands and typed progress", () => {
 		const decoder = new ClientMessageDecoder();
 		for (const request of [

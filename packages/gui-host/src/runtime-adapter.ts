@@ -1442,7 +1442,12 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				input: model.input,
 				contextWindow: model.contextWindow,
 				maxTokens: model.maxTokens,
-				cost: model.cost,
+				cost: {
+					input: Math.max(0, model.cost.input),
+					output: Math.max(0, model.cost.output),
+					cacheRead: Math.max(0, model.cost.cacheRead),
+					cacheWrite: Math.max(0, model.cost.cacheWrite),
+				},
 				supportedThinkingLevels: getSupportedThinkingLevels(model),
 				...provider,
 			};
