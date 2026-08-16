@@ -30,6 +30,7 @@ import {
 	type ThinkingLevel,
 } from "@lystar/code-gui-protocol";
 import { afterEach, describe, it } from "vitest";
+import { CodingAgentRuntimeAdapter } from "../src/runtime-adapter.ts";
 import { GuiHostService } from "../src/service.ts";
 import type { RuntimeAdapter, RuntimeEvent, RuntimeSession, UiRequestHandler } from "../src/types.ts";
 
@@ -1153,6 +1154,7 @@ async function openSubagents(tui: StartedTui): Promise<void> {
 interface RequestRecord {
 	id: string;
 	command: string;
+	receivedAt: number;
 }
 
 interface StartedTui {
@@ -1188,26 +1190,34 @@ interface StartedTui {
 	closeProtocol(): void;
 }
 
+interface RealRuntimeHost {
+	adapter: RuntimeAdapter;
+	agentDir: string;
+	sessionPath: string;
+}
+
 async function startTui(
 	rounds: number,
 	dimensions: { width: number; height: number },
 	label: string,
 	hostFactory?: (context: { directory: string; sessionPath: string }) => WorkbenchFixture,
 	runOptions: { mode?: "auto" | "fullscreen" | "regular"; exitOutput?: "transcript" | "resume-hint" } = {},
+	runtimeHostFactory?: (context: { directory: string }) => Promise<RealRuntimeHost>,
 ): Promise<StartedTui> {
 	run("cargo", ["build", "--release", "-p", "lystar-tui"]);
 	const directory = mkdtempSync(join(tmpdir(), "lystar-rust-m7-e2e-"));
 	directories.add(directory);
 	const artifactDirectory = join(artifactRoot, `${label}-${process.pid}-${Date.now()}`);
 	mkdirSync(artifactDirectory, { recursive: true });
-	const sessionPath = join(directory, "session.jsonl");
+	const runtimeHost = await runtimeHostFactory?.({ directory });
+	const sessionPath = runtimeHost?.sessionPath ?? join(directory, "session.jsonl");
 	const toRust = join(directory, "to-rust.fifo");
 	const fromRust = join(directory, "from-rust.fifo");
 	const tracePath = join(artifactDirectory, "rust-trace.log");
 	const sttyBeforePath = join(artifactDirectory, "stty-before");
 	const sttyAfterPath = join(artifactDirectory, "stty-after");
 	const rawOutputPath = join(artifactDirectory, "terminal-output.raw");
-	writeFileSync(sessionPath, sessionEntries(rounds));
+	if (!runtimeHost) writeFileSync(sessionPath, sessionEntries(rounds));
 	run("/usr/bin/mkfifo", [toRust, fromRust]);
 
 	const incomingReader = openSync(toRust, constants.O_RDONLY | constants.O_NONBLOCK);
@@ -1243,7 +1253,9 @@ async function startTui(
 
 	const fixture = hostFactory?.({ directory, sessionPath });
 	const runtime = fixture?.runtimeFor(sessionPath) ?? new FakeRuntimeSession(sessionPath);
-	const service = new GuiHostService(fixture?.adapter ?? createAdapter(runtime), { agentDir: directory });
+	const service = new GuiHostService(runtimeHost?.adapter ?? fixture?.adapter ?? createAdapter(runtime), {
+		agentDir: runtimeHost?.agentDir ?? directory,
+	});
 	cleanups.push(async () => service.dispose());
 	const requests: RequestRecord[] = [];
 	const clientMessages: ClientMessage[] = [];
@@ -1281,7 +1293,8 @@ async function startTui(
 			if (bytesRead === 0) return;
 			for (const message of decoder.push(outputBuffer.subarray(0, bytesRead))) {
 				clientMessages.push(message);
-				if (message.type === "request") requests.push({ id: message.id, command: message.request.command });
+				if (message.type === "request")
+					requests.push({ id: message.id, command: message.request.command, receivedAt: monotonicMs() });
 				if (message.type === "request" && message.request.command === "login_model_provider") {
 					void connection.handle(message);
 				} else {
@@ -1637,6 +1650,169 @@ describe("Rust read-only TUI fd bridge", () => {
 				await tui.connection.handle(clear);
 				await tui.connection.handle({ ...clear, id: "clear-retry" });
 				await waitFor(() => tui.runtime.clearQueueCount === 1, "clear_queue retry was not journal-idempotent");
+			} finally {
+				tui.closeProtocol();
+			}
+		}
+	}, 120_000);
+
+	it("drives the real CodingAgentRuntimeAdapter Extension UI over fd3/fd4 twice", async () => {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const tui = await startTui(
+				0,
+				{ width: 80, height: 8 },
+				`extension-runtime-${attempt + 1}`,
+				undefined,
+				{},
+				async ({ directory }) => {
+					const agentDir = join(directory, "agent");
+					const cwd = join(directory, "project");
+					mkdirSync(agentDir, { recursive: true });
+					mkdirSync(cwd, { recursive: true });
+					writeFileSync(
+						join(agentDir, "settings.json"),
+						JSON.stringify({
+							defaultProvider: "lystar-contract-faux",
+							defaultModel: "contract-1",
+							defaultThinkingLevel: "off",
+							defaultProjectTrust: "always",
+							extensions: [fileURLToPath(new URL("./fixtures/runtime-contract-extension.ts", import.meta.url))],
+							retry: { enabled: false },
+						}),
+					);
+					const adapter = new CodingAgentRuntimeAdapter(agentDir);
+					const runtime = await adapter.createSession(cwd, async () => ({ cancelled: true }));
+					const sessionPath = runtime.sessionPath;
+					await runtime.dispose();
+					return { adapter, agentDir, sessionPath };
+				},
+			);
+			try {
+				await waitForInitialPage(tui);
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.serverMessages.some(
+						(message) => message.type === "response" && message.id.startsWith("acquire-") && message.ok,
+					);
+				}, "real runtime did not acquire the Rust lease");
+				await waitFor(() => tui.pane().includes("Enter 提交"), "80x8 did not retain the composer shortcut");
+				const beforeInput = tui.requests.filter((request) => request.command === "extension_terminal_input").length;
+				tui.sendLiteral("idle");
+				await new Promise((resolve) => setTimeout(resolve, 80));
+				await tui.pump();
+				assert.equal(
+					tui.requests.filter((request) => request.command === "extension_terminal_input").length,
+					beforeInput,
+					"idle input without a listener must not round-trip",
+				);
+				tui.send("C-u");
+				tui.sendLiteral("/contract-rust-ui-malicious");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.rawOutput().includes("title]0;injected31m");
+				}, "sanitized malicious Extension text did not reach the terminal");
+				assert.ok(
+					!tui.rawOutput().includes("\u001b]0;injected"),
+					"Extension control sequence reached the terminal",
+				);
+				tui.send("Escape");
+				await waitFor(() => !tui.pane().includes("认证状态已更新"), "malicious notify did not close");
+				tui.send("C-u");
+				await new Promise((resolve) => setTimeout(resolve, 20));
+
+				tui.sendLiteral("/contract-rust-ui");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.pane().includes("Extension Select");
+				}, "real Extension select did not render");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.pane().includes("Proceed?");
+				}, "real Extension confirm did not render");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.pane().includes("Extension Input");
+				}, "real Extension input did not render");
+				tui.sendLiteral("typed");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.pane().includes("before");
+				}, "real Extension editor did not render");
+				tui.sendLiteral("-edited");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.pane().includes("rust ui ready alpha/true/typed/before-edited");
+				}, "real Extension notify did not render");
+				tui.send("Escape");
+
+				tui.resize(80, 24);
+				await waitFor(
+					() => tui.pane().includes("extension widget"),
+					"Extension widget did not render after resize",
+				);
+				assert.ok(tui.rawOutput().includes("ready"), "Extension status did not reach the terminal");
+				tui.send("Up");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.pane().includes("up");
+				}, "terminal listener rewrite did not reach the editor");
+
+				const inputCount = tui.requests.filter((request) => request.command === "extension_terminal_input").length;
+				for (let sample = 0; sample < 200; sample++) {
+					tui.sendLiteral("x");
+					await waitFor(
+						async () => {
+							await tui.pump();
+							const requests = tui.requests.filter((request) => request.command === "extension_terminal_input");
+							const applied = tui.traces().filter((event) => event.event === "extension_input_applied");
+							return requests.length >= inputCount + sample + 1 && applied.length >= inputCount + sample + 1;
+						},
+						`Extension input sample ${sample} did not complete`,
+						1_000,
+					);
+				}
+				const inputRequests = tui.requests
+					.filter((request) => request.command === "extension_terminal_input")
+					.slice(inputCount);
+				const applied = tui
+					.traces()
+					.filter((event) => event.event === "extension_input_applied" && event.id)
+					.slice(inputCount);
+				assert.equal(inputRequests.length, 200, "terminal listener request count drifted");
+				assert.equal(applied.length, 200, "terminal listener apply count drifted");
+				assert.equal(
+					new Set(applied.map((event) => event.id)).size,
+					200,
+					"terminal listener applied a response twice",
+				);
+				const receivedAt = new Map(inputRequests.map((request) => [request.id, request.receivedAt]));
+				const samples = applied.map((event) => {
+					const receipt = receivedAt.get(event.id!);
+					assert.notEqual(receipt, undefined, `Rust applied unknown input response ${event.id}`);
+					return event.atMs - receipt!;
+				});
+				const p95 = percentile(samples, 0.95);
+				const p99 = percentile(samples, 0.99);
+				writeFileSync(
+					join(tui.artifactDirectory, "extension-input-perf.json"),
+					`${JSON.stringify({ sampleCount: samples.length, p95, p99, fallbackSamples: 0, duplicateApplications: 0 })}\n`,
+				);
+				assert.ok(p95 <= 16, `input p95 ${p95}ms exceeds 16ms`);
+				assert.ok(p99 <= 33, `input p99 ${p99}ms exceeds 33ms`);
+				assert.ok(!tui.rawOutput().includes("终端输入 bridge 超时"), "input fallback sample was not isolated");
+
+				tui.closeProtocol();
+				await waitFor(
+					() => spawnSync("tmux", ["-L", tui.socket, "has-session", "-t", "tui"]).status !== 0,
+					"Rust TUI did not exit after real Host EOF",
+				);
+				assert.ok(tui.rawOutput().includes("\u001b]0;\u0007"), "EOF did not clear the Extension title");
 			} finally {
 				tui.closeProtocol();
 			}
@@ -2296,6 +2472,10 @@ describe("Rust read-only TUI fd bridge", () => {
 				await waitForRequest(tui, "read_clipboard_image", imageReads + 1);
 				await waitFor(() => tui.pane().includes("图片剪贴板: image/png"), "mixed clipboard preview did not render");
 				tui.send("Escape");
+				await waitFor(
+					() => !tui.pane().includes("图片剪贴板") && tui.pane().includes("Enter 提交"),
+					"clipboard overlay did not restore Composer",
+				);
 
 				tui.sendLiteral('/attach "images/中文');
 				tui.send("Tab");

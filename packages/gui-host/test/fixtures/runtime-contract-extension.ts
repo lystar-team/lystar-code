@@ -71,9 +71,28 @@ export default function runtimeContractExtension(pi: ExtensionAPI): void {
 			ctx.ui.setWorkingIndicator({ frames: [".", "o"], intervalMs: 40 });
 			ctx.ui.setHiddenThinkingLabel("extension thinking");
 			ctx.ui.setTitle("Extension Contract");
-			ctx.ui.onTerminalInput((data) => (data === "\u001b[A" ? { data: "up" } : undefined));
+			ctx.ui.onTerminalInput((data) => {
+				if (data === "x") return { consume: true };
+				return data === "\u001b[A" ? { data: "up" } : undefined;
+			});
 			ctx.ui.setEditorText("extension editor");
-			ctx.ui.notify("rust ui ready", "info");
+			ctx.ui.pasteToEditor(" paste");
+			const selected = await ctx.ui.select("Extension Select", ["alpha", "beta"]);
+			const confirmed = await ctx.ui.confirm("Extension Confirm", "Proceed?");
+			const input = await ctx.ui.input("Extension Input", "value");
+			const edited = await ctx.ui.editor("Extension Editor", "before");
+			ctx.ui.notify(`rust ui ready ${selected}/${confirmed}/${input}/${edited}`, "info");
+		},
+	});
+	pi.registerCommand("contract-rust-ui-malicious", {
+		description: "Exercise terminal control sanitization",
+		handler: async (_args, ctx) => {
+			const control = "\u001b]0;injected\u0007\u009b31m";
+			ctx.ui.setStatus(`status${control}`, `value${control}`);
+			ctx.ui.setWidget("malicious", [`widget${control}`]);
+			ctx.ui.setWorkingMessage(`working${control}`);
+			ctx.ui.setTitle(`title${control}`);
+			ctx.ui.notify(`notify${control}`, "warning");
 		},
 	});
 }

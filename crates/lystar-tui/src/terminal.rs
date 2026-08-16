@@ -48,7 +48,8 @@ use crate::{
         SettingDescriptor, SkillDescriptor, SubagentDescriptor, TextEditorOverlay,
         TranscriptRequestKind, TranscriptView, TranscriptViewKind, TreeFilter, UiRequest,
         UiRequestKind, UpdateDescriptor, VisibleLink, WorkbenchOverlayView, WorkbenchTarget,
-        composer_area, transcript_area, transcript_images,
+        composer_area_with_widget_budget, transcript_area, transcript_area_with_widget_budget,
+        transcript_images,
     },
     image::{CachedImage, ImageSidecar, TerminalImageProtocol, current_terminal_image_protocol},
 };
@@ -463,8 +464,32 @@ fn trace_cache(app: &AppState) {
     }
 }
 
+fn sanitize_terminal_text(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect()
+}
+
+fn sanitize_osc8_href(value: &str) -> Option<&str> {
+    if value.is_empty()
+        || value.chars().any(char::is_control)
+        || value.chars().any(char::is_whitespace)
+    {
+        return None;
+    }
+    (value.starts_with("https://")
+        || value.starts_with("http://")
+        || value.starts_with("mailto:")
+        || value.starts_with("file://"))
+    .then_some(value)
+}
+
 fn osc8_link(href: &str, text: &str) -> String {
-    let href = href.replace(['\u{1b}', '\u{7}'], "");
+    let Some(href) = sanitize_osc8_href(href) else {
+        return String::new();
+    };
+    let text = sanitize_terminal_text(text);
     format!("\x1b]8;;{href}\x1b\\{text}\x1b]8;;\x1b\\")
 }
 
@@ -772,6 +797,20 @@ pub fn run_with_options(session_path: &str, options: RunOptions) -> Result<(), T
     result
 }
 
+fn clear_terminal_extension_output(
+    app: &mut AppState,
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    image_sidecar: &mut ImageSidecar,
+) -> Result<(), io::Error> {
+    image_sidecar.clear(
+        terminal.backend_mut().writer_mut(),
+        std::env::var_os("TMUX").is_some(),
+    )?;
+    write_extension_title(None);
+    app.extension_ui = ExtensionUiState::default();
+    Ok(())
+}
+
 #[cfg(unix)]
 fn run_session(
     session_path: &str,
@@ -836,12 +875,20 @@ fn run_session(
         if dirty {
             let area = terminal.size()?;
             let full = ratatui::layout::Rect::new(0, 0, area.width, area.height);
-            app.prepare_composer(composer_area(&app, full));
+            let widget_budget = app.extension_widget_budget(full.height);
+            let composer = composer_area_with_widget_budget(full, widget_budget);
+            app.prepare_composer(composer);
             trace("draw_start");
             terminal.draw(|frame| {
                 let area = frame.area();
-                frame.render_widget(TranscriptView::new(&app), transcript_area(&app, area));
-                frame.render_widget(ComposerView::new(&app), composer_area(&app, area));
+                frame.render_widget(
+                    TranscriptView::new(&app),
+                    transcript_area_with_widget_budget(area, widget_budget),
+                );
+                frame.render_widget(
+                    ComposerView::with_widget_budget(&app, usize::from(widget_budget)),
+                    composer_area_with_widget_budget(area, widget_budget),
+                );
                 frame.render_widget(WorkbenchOverlayView::new(&app), area);
             })?;
             trace("draw_end");
@@ -859,10 +906,7 @@ fn run_session(
             dirty = false;
         }
         if shutdown.load(Ordering::Relaxed) {
-            image_sidecar.clear(
-                terminal.backend_mut().writer_mut(),
-                std::env::var_os("TMUX").is_some(),
-            )?;
+            clear_terminal_extension_output(&mut app, &mut terminal, &mut image_sidecar)?;
             release_active_session(&app, pipe, &mut request_sequence)?;
             return Ok(());
         }
@@ -872,7 +916,7 @@ fn run_session(
         loop {
             match pipe.inbound.try_recv() {
                 Ok(message) => {
-                    process_inbound_message(
+                    if let Err(error) = process_inbound_message(
                         &mut app,
                         message,
                         pipe,
@@ -881,13 +925,21 @@ fn run_session(
                         &mut request_sequence,
                         &mut session_flow,
                         &mut quit_requested,
-                    )?;
+                    ) {
+                        clear_terminal_extension_output(
+                            &mut app,
+                            &mut terminal,
+                            &mut image_sidecar,
+                        )?;
+                        return Err(error);
+                    }
                     handled_message = true;
                     state_changed = true;
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     app.clear_connection_state("Host 连接已断开");
+                    clear_terminal_extension_output(&mut app, &mut terminal, &mut image_sidecar)?;
                     return Err(TuiError::ChildEof);
                 }
             }
@@ -920,9 +972,10 @@ fn run_session(
                         &mut session_flow,
                         &mut quit_requested,
                     )? {
-                        image_sidecar.clear(
-                            terminal.backend_mut().writer_mut(),
-                            std::env::var_os("TMUX").is_some(),
+                        clear_terminal_extension_output(
+                            &mut app,
+                            &mut terminal,
+                            &mut image_sidecar,
                         )?;
                         release_active_session(&app, pipe, &mut request_sequence)?;
                         return Ok(());
@@ -1017,7 +1070,7 @@ fn run_session(
                 .recv_timeout(Duration::from_millis(if pending_work { 2 } else { 16 }))
             {
                 Ok(message) => {
-                    process_inbound_message(
+                    if let Err(error) = process_inbound_message(
                         &mut app,
                         message,
                         pipe,
@@ -1026,12 +1079,20 @@ fn run_session(
                         &mut request_sequence,
                         &mut session_flow,
                         &mut quit_requested,
-                    )?;
+                    ) {
+                        clear_terminal_extension_output(
+                            &mut app,
+                            &mut terminal,
+                            &mut image_sidecar,
+                        )?;
+                        return Err(error);
+                    }
                     state_changed = true;
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     app.clear_connection_state("Host 连接已断开");
+                    clear_terminal_extension_output(&mut app, &mut terminal, &mut image_sidecar)?;
                     return Err(TuiError::ChildEof);
                 }
             }
@@ -1065,10 +1126,7 @@ fn run_session(
         let active_path = app.active_session_path().unwrap_or(session_path).to_owned();
         request_extension_editor_state(&mut app, pipe, &active_path, &mut request_sequence)?;
         if quit_requested && session_flow.is_none() {
-            image_sidecar.clear(
-                terminal.backend_mut().writer_mut(),
-                std::env::var_os("TMUX").is_some(),
-            )?;
+            clear_terminal_extension_output(&mut app, &mut terminal, &mut image_sidecar)?;
             return Ok(());
         }
         if app.timed_out_b3_request().is_some() || app.timed_out_attachment_submit().is_some() {
@@ -1364,6 +1422,7 @@ fn request_extension_terminal_input(
     }
     *sequence += 1;
     let id = format!("extension-input-{sequence}");
+    trace_id("extension_input_requested", &id);
     app.pending_terminal_inputs.insert(
         id.clone(),
         PendingTerminalInput {
@@ -1429,6 +1488,7 @@ fn raw_mouse(kind: MouseEventKind, column: u16, row: u16) -> Option<String> {
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_extension_raw_input(
     app: &mut AppState,
     data: &str,
@@ -5202,15 +5262,14 @@ fn apply_extension_delta(app: &mut AppState, value: &serde_json::Value) -> Resul
     Ok(())
 }
 
-fn write_extension_title(title: &str) {
-    let sanitized = title
-        .chars()
-        .filter(|character| !character.is_control())
-        .collect::<String>();
-    if !sanitized.is_empty() {
-        let _ = io::stdout().write_all(format!("\x1b]0;{sanitized}\x07").as_bytes());
-        let _ = io::stdout().flush();
-    }
+fn extension_title_osc(title: Option<&str>) -> String {
+    let sanitized = title.map(sanitize_terminal_text).unwrap_or_default();
+    format!("\x1b]0;{sanitized}\x07")
+}
+
+fn write_extension_title(title: Option<&str>) {
+    let _ = io::stdout().write_all(extension_title_osc(title).as_bytes());
+    let _ = io::stdout().flush();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5235,24 +5294,21 @@ fn apply_server_message(
                 Some("extension_ui_snapshot") => {
                     let state =
                         extension_state(event.get("state").unwrap_or(&serde_json::Value::Null))?;
-                    if let Some(title) = &state.title {
-                        write_extension_title(title);
-                    }
+                    write_extension_title(state.title.as_deref());
                     app.apply_extension_ui_snapshot(state);
                     return Ok(false);
                 }
                 Some("extension_ui_delta") => {
-                    let title = event
+                    let title_updated = event
                         .get("delta")
-                        .and_then(|delta| delta.get("title"))
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_owned);
+                        .and_then(serde_json::Value::as_object)
+                        .is_some_and(|delta| delta.contains_key("title"));
                     apply_extension_delta(
                         app,
                         event.get("delta").unwrap_or(&serde_json::Value::Null),
                     )?;
-                    if let Some(title) = title {
-                        write_extension_title(&title);
+                    if title_updated {
+                        write_extension_title(app.extension_ui.title.as_deref());
                     }
                     return Ok(false);
                 }
@@ -5284,6 +5340,7 @@ fn apply_server_message(
         && let Some(id) = raw.get("id").and_then(serde_json::Value::as_str)
         && let Some(pending) = app.pending_terminal_inputs.remove(id)
     {
+        trace_id("extension_input_applied", id);
         let consume = raw
             .get("result")
             .and_then(|result| result.get("consume"))
@@ -8418,6 +8475,20 @@ mod tests {
         let linked = osc8_link("file:///tmp/example.rs", "example.rs");
         assert!(linked.contains("\x1b]8;;file:///tmp/example.rs\x1b\\example.rs\x1b]8;;\x1b\\"));
         assert!(!"ordinary text".contains("\x1b]8;;"));
+    }
+
+    #[test]
+    fn rejects_control_injection_in_osc8_and_clears_extension_titles() {
+        assert_eq!(osc8_link("https://example.test/\u{1b}]0;bad", "label"), "");
+        assert_eq!(
+            osc8_link("https://example.test/path", "label\u{1b}]0;bad\u{7}"),
+            "\x1b]8;;https://example.test/path\x1b\\label]0;bad\x1b]8;;\x1b\\"
+        );
+        assert_eq!(
+            extension_title_osc(Some("title\u{1b}]0;bad\u{7}")),
+            "\x1b]0;title]0;bad\x07"
+        );
+        assert_eq!(extension_title_osc(None), "\x1b]0;\x07");
     }
 
     #[test]

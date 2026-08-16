@@ -62,12 +62,27 @@ export type ExtensionUiBridgeEvent =
 	| { type: "delta"; delta: ExtensionUiDelta }
 	| { type: "editor_action"; action: { action: "paste" | "set"; text: string; revision: number } };
 
+function sanitizeTerminalText(value: string, limit = 4096, allow: { newline?: boolean; tab?: boolean } = {}): string {
+	let output = "";
+	for (const character of value) {
+		if (character === "\n" && allow.newline) output += character;
+		else if (character === "\t" && allow.tab) output += character;
+		else if (!character.match(/[\u0000-\u001f\u007f-\u009f]/)) output += character;
+		if (output.length >= limit) break;
+	}
+	return output;
+}
+
 function bounded(value: string, limit = 4096): string {
-	return value.length <= limit ? value : value.slice(0, limit);
+	return sanitizeTerminalText(value, limit);
+}
+
+function boundedRawInput(value: string): string {
+	return value.length <= 256 ? value : value.slice(0, 256);
 }
 
 function boundedEditor(value: string): string {
-	return value.length <= MAX_EDITOR_BYTES ? value : value.slice(0, MAX_EDITOR_BYTES);
+	return sanitizeTerminalText(value, MAX_EDITOR_BYTES, { newline: true, tab: true });
 }
 
 /**
@@ -123,7 +138,12 @@ export class ExtensionUiBridge {
 			},
 			confirm: async (title, message, opts) => {
 				if (opts?.signal?.aborted) return false;
-				const result = await request("confirm", title, { message: bounded(message) }, opts?.timeout);
+				const result = await request(
+					"confirm",
+					title,
+					{ message: sanitizeTerminalText(message, 4096, { newline: true }) },
+					opts?.timeout,
+				);
 				return result.cancelled ? false : result.confirmed === true;
 			},
 			input: async (title, placeholder, opts) => {
@@ -218,11 +238,11 @@ export class ExtensionUiBridge {
 	}
 
 	async dispatchTerminalInput(data: string): Promise<{ consume: boolean; data?: string }> {
-		let next = bounded(data, 256);
+		let next = boundedRawInput(data);
 		for (const handler of this.terminalInputHandlers) {
 			try {
 				const result = handler(next);
-				if (result?.data !== undefined) next = bounded(result.data, 256);
+				if (result?.data !== undefined) next = boundedRawInput(result.data);
 				if (result?.consume) return { consume: true };
 			} catch (error) {
 				const candidate = error instanceof Error ? error : new Error(String(error));
@@ -233,6 +253,7 @@ export class ExtensionUiBridge {
 	}
 
 	reset(): void {
+		if (this.disposed) return;
 		this.statuses.clear();
 		this.widgets.clear();
 		this.terminalInputHandlers.clear();
@@ -243,16 +264,14 @@ export class ExtensionUiBridge {
 		this.title = null;
 		this.editorText = "";
 		this.editorGeneration = 0;
-		if (!this.disposed) {
-			this.revision++;
-			this.publish({ type: "snapshot", state: this.snapshot() });
-		}
+		this.revision++;
+		this.publish({ type: "snapshot", state: this.snapshot() });
 	}
 
 	dispose(): void {
 		if (this.disposed) return;
-		this.disposed = true;
 		this.reset();
+		this.disposed = true;
 	}
 
 	private addTerminalInputHandler(handler: TerminalInputHandler): () => void {
@@ -295,6 +314,13 @@ export class ExtensionUiBridge {
 
 	private update(delta: Omit<ExtensionUiDelta, "revision">): void {
 		if (this.disposed || Object.keys(delta).length === 0) return;
+		if ("workingMessage" in delta) this.workingMessage = delta.workingMessage ?? null;
+		if ("workingVisible" in delta) this.workingVisible = delta.workingVisible ?? true;
+		if ("workingIndicator" in delta && delta.workingIndicator) {
+			this.workingIndicator = { ...delta.workingIndicator };
+		}
+		if ("hiddenThinkingLabel" in delta) this.hiddenThinkingLabel = delta.hiddenThinkingLabel ?? null;
+		if ("title" in delta) this.title = delta.title ?? null;
 		this.revision++;
 		this.publish({ type: "delta", delta: { revision: this.revision, ...delta } });
 	}

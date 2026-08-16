@@ -2179,21 +2179,36 @@ impl AppState {
             .min(total_height.saturating_sub(8))
     }
 
-    pub fn extension_widgets(&self, placement: &str, budget: usize) -> Vec<&ExtensionWidget> {
-        let mut used: usize = 0;
-        self.extension_ui
+    pub fn extension_widget_lines(&self, budget: usize) -> (Vec<&str>, Vec<&str>, usize) {
+        let total = self
+            .extension_ui
             .widgets
             .iter()
-            .filter(|widget| widget.placement == placement)
-            .filter(|widget| {
-                let next = used.saturating_add(widget.lines.len());
-                if next > budget {
-                    return false;
+            .map(|widget| widget.lines.len())
+            .sum::<usize>();
+        let visible_budget = budget.saturating_sub(usize::from(total > budget));
+        let mut above = Vec::new();
+        let mut below = Vec::new();
+        for placement in ["above", "below"] {
+            for widget in self
+                .extension_ui
+                .widgets
+                .iter()
+                .filter(|widget| widget.placement == placement)
+            {
+                for line in &widget.lines {
+                    if above.len().saturating_add(below.len()) >= visible_budget {
+                        return (above, below, total.saturating_sub(visible_budget));
+                    }
+                    if placement == "above" {
+                        above.push(line.as_str());
+                    } else {
+                        below.push(line.as_str());
+                    }
                 }
-                used = next;
-                true
-            })
-            .collect()
+            }
+        }
+        (above, below, 0)
     }
 
     pub fn apply_extension_ui_snapshot(&mut self, state: ExtensionUiState) -> bool {
@@ -2886,11 +2901,19 @@ impl Widget for TranscriptView<'_> {
 
 pub struct ComposerView<'a> {
     state: &'a AppState,
+    widget_budget: usize,
 }
 
 impl<'a> ComposerView<'a> {
     pub fn new(state: &'a AppState) -> Self {
-        Self { state }
+        Self::with_widget_budget(state, 0)
+    }
+
+    pub fn with_widget_budget(state: &'a AppState, widget_budget: usize) -> Self {
+        Self {
+            state,
+            widget_budget,
+        }
     }
 }
 
@@ -2900,19 +2923,8 @@ impl Widget for ComposerView<'_> {
             return;
         }
         let width = usize::from(area.width);
-        let widget_budget = usize::from(self.state.extension_widget_budget(area.height));
-        let above = self.state.extension_widgets("above", widget_budget);
-        let above_lines = above
-            .iter()
-            .flat_map(|widget| widget.lines.iter())
-            .collect::<Vec<_>>();
-        let below = self
-            .state
-            .extension_widgets("below", widget_budget.saturating_sub(above_lines.len()));
-        let below_lines = below
-            .iter()
-            .flat_map(|widget| widget.lines.iter())
-            .collect::<Vec<_>>();
+        let (above_lines, below_lines, hidden_lines) =
+            self.state.extension_widget_lines(self.widget_budget);
         let mut row = area.y;
         for line in above_lines {
             put_line(
@@ -2934,9 +2946,13 @@ impl Widget for ComposerView<'_> {
             Style::default().fg(Color::DarkGray),
         );
         row = row.saturating_add(1);
-        let reserved = u16::try_from(below_lines.len())
-            .unwrap_or(u16::MAX)
-            .saturating_add(2);
+        let reserved = u16::try_from(
+            below_lines
+                .len()
+                .saturating_add(usize::from(hidden_lines > 0)),
+        )
+        .unwrap_or(u16::MAX)
+        .saturating_add(2);
         let visible_lines = usize::from(
             area.y
                 .saturating_add(area.height)
@@ -2978,6 +2994,16 @@ impl Widget for ComposerView<'_> {
                 Style::default().fg(Color::Cyan),
             );
             row = row.saturating_add(1);
+        }
+        if hidden_lines > 0 && row < status_y {
+            put_line(
+                buffer,
+                area.x,
+                row,
+                &format!("… 还有 {hidden_lines} 行小部件内容"),
+                width,
+                Style::default().fg(Color::DarkGray),
+            );
         }
         let tool_line = live_tool_line(&self.state.live_tools, width);
         let attachment_line = self.state.attachment_summary(area.height <= 4);
@@ -3032,24 +3058,33 @@ impl Widget for ComposerView<'_> {
     }
 }
 
-pub fn transcript_area(state: &AppState, area: Rect) -> Rect {
+pub fn transcript_area_with_widget_budget(area: Rect, widget_budget: u16) -> Rect {
+    let base: u16 = if area.height <= 8 { 4 } else { 6 };
     Rect::new(
         area.x,
         area.y,
         area.width,
         area.height
-            .saturating_sub(state.composer_height(area.height)),
+            .saturating_sub(base.saturating_add(widget_budget)),
     )
 }
 
-pub fn composer_area(state: &AppState, area: Rect) -> Rect {
-    let transcript = transcript_area(state, area);
+pub fn composer_area_with_widget_budget(area: Rect, widget_budget: u16) -> Rect {
+    let transcript = transcript_area_with_widget_budget(area, widget_budget);
     Rect::new(
         area.x,
         area.y + transcript.height,
         area.width,
         area.height.saturating_sub(transcript.height),
     )
+}
+
+pub fn transcript_area(state: &AppState, area: Rect) -> Rect {
+    transcript_area_with_widget_budget(area, state.extension_widget_budget(area.height))
+}
+
+pub fn composer_area(state: &AppState, area: Rect) -> Rect {
+    composer_area_with_widget_budget(area, state.extension_widget_budget(area.height))
 }
 
 fn group_rounds(items: Vec<TranscriptItem>) -> Vec<TranscriptRound> {
@@ -3128,7 +3163,10 @@ fn put_rich_line(
         if used >= width {
             break;
         }
-        let text = truncate_graphemes(&span.text, width.saturating_sub(used));
+        let text = truncate_graphemes(
+            &sanitize_render_text(&span.text),
+            width.saturating_sub(used),
+        );
         let text_width = UnicodeWidthStr::width(text.as_str());
         buffer.set_string(
             x.saturating_add(u16::try_from(used).unwrap_or(u16::MAX)),
@@ -3140,8 +3178,15 @@ fn put_rich_line(
     }
 }
 
+fn sanitize_render_text(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_control())
+        .collect()
+}
+
 fn put_line(buffer: &mut Buffer, x: u16, y: u16, text: &str, width: usize, style: Style) {
-    buffer.set_string(x, y, truncate_graphemes(text, width), style);
+    let text = sanitize_render_text(text);
+    buffer.set_string(x, y, truncate_graphemes(&text, width), style);
 }
 
 pub fn truncate_graphemes(input: &str, width: usize) -> String {
@@ -3171,6 +3216,40 @@ mod tests {
             },
         }
     }
+    #[test]
+    fn extension_widget_budget_is_computed_once_and_preserves_line_order() {
+        let mut app = AppState::default();
+        app.extension_ui.widgets = vec![
+            ExtensionWidget {
+                key: "above".to_owned(),
+                placement: "above".to_owned(),
+                lines: vec!["a1".to_owned(), "a2".to_owned(), "a3".to_owned()],
+            },
+            ExtensionWidget {
+                key: "below".to_owned(),
+                placement: "below".to_owned(),
+                lines: vec![
+                    "b1".to_owned(),
+                    "b2".to_owned(),
+                    "b3".to_owned(),
+                    "b4".to_owned(),
+                ],
+            },
+        ];
+
+        assert_eq!(app.extension_widget_budget(8), 0);
+        assert_eq!(app.composer_height(8), 4);
+        assert_eq!(
+            app.extension_widget_lines(0),
+            (Vec::<&str>::new(), Vec::<&str>::new(), 7)
+        );
+
+        let (above, below, hidden) = app.extension_widget_lines(4);
+        assert_eq!(above, vec!["a1", "a2", "a3"]);
+        assert!(below.is_empty());
+        assert_eq!(hidden, 4);
+    }
+
     #[test]
     fn state_merge_dedupes_sorts_and_keeps_live_snapshot() {
         let committed = SubagentDescriptor {

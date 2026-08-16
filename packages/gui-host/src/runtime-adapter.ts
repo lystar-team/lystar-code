@@ -1023,8 +1023,8 @@ class CoreRuntimeSession implements RuntimeSession {
 	async dispose(): Promise<void> {
 		if (this.disposed) return;
 		this.disposed = true;
-		this.unsubscribe?.();
 		this.extensionUi.dispose();
+		this.unsubscribe?.();
 		await this.runtime.dispose();
 	}
 
@@ -1046,8 +1046,8 @@ class CoreRuntimeSession implements RuntimeSession {
 	}
 
 	private async bindCurrentSession(): Promise<void> {
-		this.unsubscribe?.();
 		this.extensionUi.reset();
+		this.unsubscribe?.();
 		const session = this.runtime.session;
 		const unsupportedSessionChange = async () => {
 			throw new Error("LYStar GUI 后台不支持由扩展替换会话");
