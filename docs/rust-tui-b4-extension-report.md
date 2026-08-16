@@ -18,14 +18,18 @@ Extension fixture 实际渲染 SGR 文本，Host bridge 与 `pi-tui` headless ad
 
 custom `done()` 和 `Esc` 都由 Host 发出 `extension_component_unmount`，Rust 清除活动 overlay 并恢复 Composer；footer 同一生命周期中 replace 后会卸载旧 generation、挂载新 generation。组件 input 异常由 Host 卸载并报告，不把异常传播到 terminal 进程；该隔离路径由 `extension-ui-bridge.test.ts` 覆盖。
 
-## 基准
+## Invalidate 合并与基准
 
-执行：`cargo run -p lystar-tui --example b3_workbench_benchmark --release`
+`packages/tui/test/headless-adapter.test.ts` 新增并实际执行：
 
-输出 `.artifacts/rust-tui-b3-workbench/benchmark.jsonl` 共 345 条记录，覆盖 `80x24`、`120x36`、`200x60`，5 轮和 23 个 workbench 场景。四个 regular 场景在 15 个尺寸/轮次组合中均为 `invalidIdleFrames=0`；最后一条记录的 event-to-frame 为 `3.774ms`，RSS 为 `28,602,368` bytes。基准同时断言 transcript regroup signature、rich text cache 上限和输出字节非零。
+- 1000 次同步 `requestRender()` 不同步调用 `component.render()`，初始 frame 加调度 frame 最多 2 次。
+- 1000 次在约 500ms 内均匀触发时，frame 数不超过 `ceil(elapsed / 16.67ms) + 2`。
+- `input()` 立即生成一帧；`dispose()` 清除未到期 timer；两个组件各自可以生成 frame，不被另一个脏组件阻塞。
+
+`packages/gui-host/test/extension-ui-bridge.test.ts` 同时覆盖 bridge 的组件级 dirty set、单个 unref timer、input 即时 frame 和 unmount 后 timer 清理。`requestRender()` 只标脏并返回上一个 frame；`renderNow()` 是显式立即渲染路径，初次 mount、input、resize 和 show 使用它，普通 invalidate/requestRender 统一经过 60fps 合并。
 
 ## 未验证项
 
-- 没有单独采集“高频 `requestRender()` invalidate storm”的 p95/p99；常规 benchmark 的 idle 无额外帧只能证明静态 idle，不代表 storm 吞吐。
+- 尚未实现并运行真实 Host-Rust 组件 storm 的 3 尺寸 x 5 轮 artifact/verifier，因此没有可报告的真实 request-to-Rust-frame p95/p99、CPU/RSS、Host publish、Rust apply 统计。headless 的 1000 次单测不能代替该数据。
 - 未实机验证 Windows named pipe、Kitty/iTerm2 图片终端和真实外部 Provider。
 - 本轮 E2E 使用 faux provider；不宣称真实模型流式输出下的 Extension Component 时延。

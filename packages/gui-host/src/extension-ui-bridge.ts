@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import type { ExtensionUiState, JsonValue } from "@lystar/code-gui-protocol";
 import type { UiRequestHandler } from "./types.ts";
 
@@ -35,7 +36,7 @@ type HeadlessFrame = {
 type HeadlessComponentAdapter = {
 	input(data: string): HeadlessFrame;
 	resize(width: number, height: number): HeadlessFrame;
-	requestRender(): HeadlessFrame;
+	requestRender(): void;
 	render(): HeadlessFrame;
 	dispose(): void;
 };
@@ -121,6 +122,7 @@ const MAX_EDITOR_BYTES = 64 * 1024;
 const DEFAULT_INDICATOR = { frames: ["-", "\\", "|", "/"], intervalMs: 120 };
 const COMPONENT_WIDTH = 500;
 const COMPONENT_HEIGHT = 500;
+const FRAME_INTERVAL_MS = 1000 / 60;
 
 type TerminalInputHandler = (data: string) => { consume?: boolean; data?: string } | undefined;
 type ExtensionUiDelta = Omit<Partial<ExtensionUiState>, "revision"> & { revision: number };
@@ -253,7 +255,7 @@ function createHeadlessComponentAdapter(
 		generation: number;
 		width: number;
 		height: number;
-		onFrame: (frame: HeadlessFrame) => void;
+		onRequestRender: () => void;
 	},
 ): HeadlessComponentAdapter {
 	let width = boundedDimension(options.width);
@@ -275,23 +277,20 @@ function createHeadlessComponentAdapter(
 			hitRegions: lines.map((_, row) => ({ kind: "component", row, column: 0, width })),
 		};
 	};
-	const publish = () => {
-		const frame = render();
-		options.onFrame(frame);
-		return frame;
-	};
 	return {
 		render,
-		requestRender: publish,
+		requestRender: () => {
+			if (!disposed) options.onRequestRender();
+		},
 		input: (data) => {
 			component.handleInput?.(data);
-			return publish();
+			return render();
 		},
 		resize: (nextWidth, nextHeight) => {
 			width = boundedDimension(nextWidth);
 			height = boundedDimension(nextHeight);
 			component.width = width;
-			return publish();
+			return render();
 		},
 		dispose: () => {
 			if (disposed) return;
@@ -308,6 +307,9 @@ export class ExtensionUiBridge {
 	private readonly terminalInputHandlers = new Set<TerminalInputHandler>();
 	private readonly components = new Map<string, ComponentMount>();
 	private readonly widgetComponents = new Map<string, string>();
+	private readonly componentDirty = new Map<string, number>();
+	private readonly componentFrameAt = new Map<string, number>();
+	private componentFrameTimer: ReturnType<typeof setTimeout> | undefined;
 	private readonly onUiRequest: UiRequestHandler;
 	private readonly publish: (event: ExtensionUiBridgeEvent) => void;
 	private readonly reportError: (error: { event: string; error: string; stack?: string }) => void;
@@ -426,6 +428,8 @@ export class ExtensionUiBridge {
 
 	publishComponentSnapshot(): void {
 		for (const mount of this.components.values()) {
+			const frame = mount.adapter.render();
+			this.recordComponentFrame(mount, frame);
 			this.publish({
 				type: "component_mount",
 				componentId: mount.componentId,
@@ -433,7 +437,7 @@ export class ExtensionUiBridge {
 				placement: mount.placement,
 				visible: mount.visible,
 				...(mount.overlayOptions ? { overlayOptions: mount.overlayOptions as unknown as JsonValue } : {}),
-				frame: mount.adapter.render(),
+				frame,
 			});
 		}
 	}
@@ -464,7 +468,7 @@ export class ExtensionUiBridge {
 		if (!mount || mount.generation !== generation || !mount.visible) return undefined;
 		try {
 			const frame = mount.adapter.input(boundedRawInput(data));
-			this.publish({ type: "component_frame", componentId, generation, frame });
+			this.publishComponentFrame(mount, frame);
 			return frame;
 		} catch (error) {
 			this.unmount(componentId, "error");
@@ -482,12 +486,7 @@ export class ExtensionUiBridge {
 			mount.height = height;
 			try {
 				const frame = mount.adapter.resize(width, height);
-				this.publish({
-					type: "component_frame",
-					componentId: mount.componentId,
-					generation: mount.generation,
-					frame,
-				});
+				this.publishComponentFrame(mount, frame);
 			} catch (error) {
 				this.unmount(mount.componentId, "error");
 				this.reportException("component_resize", error);
@@ -599,11 +598,7 @@ export class ExtensionUiBridge {
 				generation,
 				width: 80,
 				height: 24,
-				onFrame: (frame) => {
-					const mount = this.components.get(componentId);
-					if (mount?.generation === generation && mount.visible)
-						this.publish({ type: "component_frame", componentId, generation, frame });
-				},
+				onRequestRender: () => this.scheduleComponentFrame(componentId, generation),
 			});
 			const mount: ComponentMount = {
 				componentId,
@@ -616,13 +611,15 @@ export class ExtensionUiBridge {
 			};
 			this.components.set(componentId, mount);
 			afterMount?.(componentId);
+			const frame = adapter.render();
+			this.recordComponentFrame(mount, frame);
 			this.publish({
 				type: "component_mount",
 				componentId,
 				generation,
 				placement,
 				visible: true,
-				frame: adapter.render(),
+				frame,
 			});
 			return componentId;
 		} catch (error) {
@@ -671,11 +668,7 @@ export class ExtensionUiBridge {
 						generation,
 						width: 80,
 						height: 24,
-						onFrame: (frame) => {
-							const mount = this.components.get(componentId);
-							if (mount?.generation === generation && mount.visible)
-								this.publish({ type: "component_frame", componentId, generation, frame });
-						},
+						onRequestRender: () => this.scheduleComponentFrame(componentId, generation),
 					});
 					const componentOverlayOptions = { ...overlayOptions, overlay: options?.overlay !== false };
 					const mount: ComponentMount = {
@@ -700,7 +693,7 @@ export class ExtensionUiBridge {
 						show: () => {
 							mount.visible = true;
 							this.publish({ type: "component_invalidate", componentId, generation, visible: true });
-							this.publish({ type: "component_frame", componentId, generation, frame: adapter!.render() });
+							this.publishComponentFrame(mount, adapter!.render());
 						},
 						setHidden: (hidden: boolean) => (hidden ? handle.hide() : handle.show()),
 						isHidden: () => !mount.visible,
@@ -713,6 +706,8 @@ export class ExtensionUiBridge {
 					} catch (error) {
 						this.reportException("component_handle", error);
 					}
+					const frame = adapter.render();
+					this.recordComponentFrame(mount, frame);
 					this.publish({
 						type: "component_mount",
 						componentId,
@@ -720,7 +715,7 @@ export class ExtensionUiBridge {
 						placement: mount.placement,
 						visible: true,
 						...(mount.overlayOptions ? { overlayOptions: mount.overlayOptions as unknown as JsonValue } : {}),
-						frame: adapter.render(),
+						frame,
 					});
 				})
 				.catch((error) => {
@@ -730,6 +725,66 @@ export class ExtensionUiBridge {
 		});
 	}
 
+	private publishComponentFrame(mount: ComponentMount, frame: HeadlessFrame): void {
+		this.recordComponentFrame(mount, frame);
+		this.publish({
+			type: "component_frame",
+			componentId: mount.componentId,
+			generation: mount.generation,
+			frame,
+		});
+	}
+
+	private recordComponentFrame(mount: ComponentMount, _frame: HeadlessFrame): void {
+		this.componentDirty.delete(mount.componentId);
+		this.componentFrameAt.set(mount.componentId, performance.now());
+		this.rescheduleComponentFrames();
+	}
+
+	private scheduleComponentFrame(componentId: string, generation: number): void {
+		const mount = this.components.get(componentId);
+		if (this.disposed || !mount || mount.generation !== generation || !mount.visible) return;
+		this.componentDirty.set(componentId, generation);
+		this.rescheduleComponentFrames();
+	}
+
+	private rescheduleComponentFrames(): void {
+		if (this.componentFrameTimer || this.componentDirty.size === 0 || this.disposed) return;
+		const now = performance.now();
+		let delay = FRAME_INTERVAL_MS;
+		for (const componentId of this.componentDirty.keys()) {
+			const elapsed = now - (this.componentFrameAt.get(componentId) ?? 0);
+			delay = Math.min(delay, Math.max(0, FRAME_INTERVAL_MS - elapsed));
+		}
+		this.componentFrameTimer = setTimeout(() => this.flushComponentFrames(), delay);
+		this.componentFrameTimer.unref?.();
+	}
+
+	private flushComponentFrames(): void {
+		this.componentFrameTimer = undefined;
+		if (this.disposed) return;
+		const now = performance.now();
+		for (const [componentId, generation] of [...this.componentDirty]) {
+			const mount = this.components.get(componentId);
+			if (!mount || mount.generation !== generation || !mount.visible) {
+				this.componentDirty.delete(componentId);
+				continue;
+			}
+			if (now - (this.componentFrameAt.get(componentId) ?? 0) < FRAME_INTERVAL_MS) continue;
+			this.publishComponentFrame(mount, mount.adapter.render());
+		}
+		this.rescheduleComponentFrames();
+	}
+
+	private clearComponentFrame(componentId: string): void {
+		this.componentDirty.delete(componentId);
+		this.componentFrameAt.delete(componentId);
+		if (this.componentDirty.size === 0 && this.componentFrameTimer) {
+			clearTimeout(this.componentFrameTimer);
+			this.componentFrameTimer = undefined;
+		}
+	}
+
 	private unmount(
 		componentId: string,
 		reason: Extract<ExtensionUiBridgeEvent, { type: "component_unmount" }>["reason"],
@@ -737,6 +792,7 @@ export class ExtensionUiBridge {
 		const mount = this.components.get(componentId);
 		if (!mount) return;
 		this.components.delete(componentId);
+		this.clearComponentFrame(componentId);
 		for (const [key, value] of this.widgetComponents) if (value === componentId) this.widgetComponents.delete(key);
 		try {
 			mount.adapter.dispose();

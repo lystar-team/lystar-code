@@ -203,6 +203,7 @@ export class GuiHostService {
 	private readonly journalWritePromises = new Map<string, Promise<JsonValue>>();
 	private readonly writeScopeQueues = new Map<string, Promise<void>>();
 	private readonly snapshotRevisions = new Map<string, number>();
+	private readonly extensionEditorRevisions = new Map<string, number>();
 	private readonly pendingUi = new Map<string, PendingUiRequest>();
 	private readonly leases = new LeaseManager();
 	private readonly transcriptReader = new TranscriptReader();
@@ -561,53 +562,108 @@ export class GuiHostService {
 			case "list_operations":
 				return this.journal.list(request.sessionPath ? canonicalSessionPath(request.sessionPath) : undefined);
 			case "extension_editor_state": {
-				const sessionPath = canonicalSessionPath(request.sessionPath);
-				const runtime = this.runtimes.get(sessionPath);
-				if (!runtime) throw Object.assign(new Error("尚未获取会话运行时"), { code: "session_not_acquired" });
-				return { revision: runtime.updateExtensionEditorState?.(request.text, request.generation) ?? 0 };
+				const { runtime, sessionPath } = this.assertExtensionSession(connection, request);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `extension:${sessionPath}`,
+					payload: { sessionPath, revision: request.revision, text: request.text, cursor: request.cursor },
+					run: async () => {
+						const key = `${sessionPath}:${request.leaseId}:${request.clientInstanceId}`;
+						const previous = this.extensionEditorRevisions.get(key) ?? -1;
+						if (request.revision <= previous) {
+							throw Object.assign(new Error("编辑器状态修订已过期"), { code: "stale_editor_revision" });
+						}
+						this.extensionEditorRevisions.set(key, request.revision);
+						return { revision: runtime.updateExtensionEditorState?.(request.text, request.revision) ?? 0 };
+					},
+				});
 			}
 			case "extension_terminal_input": {
-				const sessionPath = canonicalSessionPath(request.sessionPath);
-				const runtime = this.runtimes.get(sessionPath);
-				if (!runtime) throw Object.assign(new Error("尚未获取会话运行时"), { code: "session_not_acquired" });
-				return runtime.dispatchExtensionTerminalInput?.(request.data) ?? { consume: false };
+				const { runtime, sessionPath } = this.assertExtensionSession(connection, request);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `extension:${sessionPath}`,
+					payload: { sessionPath, data: request.data },
+					run: async () => runtime.dispatchExtensionTerminalInput?.(request.data) ?? { consume: false },
+				});
 			}
 			case "extension_component_input": {
-				const sessionPath = canonicalSessionPath(request.sessionPath);
-				const runtime = this.runtimes.get(sessionPath);
-				if (!runtime) throw Object.assign(new Error("尚未获取会话运行时"), { code: "session_not_acquired" });
-				return {
-					accepted:
-						runtime.dispatchExtensionComponentInput?.(request.componentId, request.generation, request.data) ===
-						true,
-				};
+				const { runtime, sessionPath } = this.assertExtensionSession(connection, request);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `extension:${sessionPath}`,
+					payload: {
+						sessionPath,
+						componentId: request.componentId,
+						generation: request.generation,
+						data: request.data,
+					},
+					run: async () => ({
+						accepted:
+							runtime.dispatchExtensionComponentInput?.(
+								request.componentId,
+								request.generation,
+								request.data,
+							) === true,
+					}),
+				});
 			}
 			case "extension_component_resize": {
-				const sessionPath = canonicalSessionPath(request.sessionPath);
-				const runtime = this.runtimes.get(sessionPath);
-				if (!runtime) throw Object.assign(new Error("尚未获取会话运行时"), { code: "session_not_acquired" });
-				return { accepted: runtime.resizeExtensionComponents?.(request.width, request.height) === true };
+				const { runtime, sessionPath } = this.assertExtensionSession(connection, request);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `extension:${sessionPath}`,
+					payload: { sessionPath, width: request.width, height: request.height },
+					run: async () => ({
+						accepted: runtime.resizeExtensionComponents?.(request.width, request.height) === true,
+					}),
+				});
 			}
 			case "extension_component_dispose": {
-				const sessionPath = canonicalSessionPath(request.sessionPath);
-				const runtime = this.runtimes.get(sessionPath);
-				if (!runtime) throw Object.assign(new Error("尚未获取会话运行时"), { code: "session_not_acquired" });
-				return { accepted: runtime.disposeExtensionComponent?.(request.componentId, request.generation) === true };
+				const { runtime, sessionPath } = this.assertExtensionSession(connection, request);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `extension:${sessionPath}`,
+					payload: { sessionPath, componentId: request.componentId, generation: request.generation },
+					run: async () => ({
+						accepted: runtime.disposeExtensionComponent?.(request.componentId, request.generation) === true,
+					}),
+				});
 			}
 			case "extension_component_custom_result":
 			case "extension_component_custom_cancel": {
-				const sessionPath = canonicalSessionPath(request.sessionPath);
-				const runtime = this.runtimes.get(sessionPath);
-				if (!runtime) throw Object.assign(new Error("尚未获取会话运行时"), { code: "session_not_acquired" });
-				return {
-					accepted:
-						runtime.completeExtensionCustom?.(
-							request.componentId,
-							request.generation,
-							request.command === "extension_component_custom_result" ? request.value : undefined,
-							request.command === "extension_component_custom_cancel",
-						) === true,
-				};
+				const { runtime, sessionPath } = this.assertExtensionSession(connection, request);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `extension:${sessionPath}`,
+					payload: {
+						sessionPath,
+						componentId: request.componentId,
+						generation: request.generation,
+						...(request.command === "extension_component_custom_result" ? { value: request.value } : {}),
+					},
+					run: async () => ({
+						accepted:
+							runtime.completeExtensionCustom?.(
+								request.componentId,
+								request.generation,
+								request.command === "extension_component_custom_result" ? request.value : undefined,
+								request.command === "extension_component_custom_cancel",
+							) === true,
+					}),
+				});
 			}
 			case "list_models":
 				return jsonValue(await this.adapter.listModels());
@@ -1619,6 +1675,19 @@ export class GuiHostService {
 		const runtime = this.runtimes.get(sessionPath);
 		this.detachRuntimeProjection(sessionPath);
 		await runtime?.dispose();
+	}
+
+	private assertExtensionSession(
+		connection: ClientConnection,
+		request: { sessionPath: string; leaseId: string; clientInstanceId: string },
+	): { runtime: RuntimeSession; sessionPath: string } {
+		this.assertClient(request.clientInstanceId, connection);
+		this.journal.assertWritable();
+		const sessionPath = canonicalSessionPath(request.sessionPath);
+		this.leases.assert(sessionPath, request.leaseId, connection.clientInstanceId);
+		const runtime = this.runtimes.get(sessionPath);
+		if (!runtime) throw Object.assign(new Error("尚未获取会话运行时"), { code: "session_not_acquired" });
+		return { runtime, sessionPath };
 	}
 
 	private assertSessionControl(

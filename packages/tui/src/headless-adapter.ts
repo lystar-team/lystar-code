@@ -29,6 +29,7 @@ export interface HeadlessComponentAdapter {
 	resize(width: number, height: number): HeadlessFrame;
 	requestRender(): HeadlessFrame;
 	invalidate(): HeadlessFrame;
+	renderNow(): HeadlessFrame;
 	render(): HeadlessFrame;
 	dispose(): void;
 }
@@ -221,10 +222,12 @@ export function createHeadlessComponentAdapter(
 	let invalidationScheduled = false;
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let lastFrameAt = 0;
-	const render = (): HeadlessFrame => {
-		if (disposed) {
-			return { componentId, revision, width, height, lines: [], hitRegions: [] };
-		}
+	let lastFrame: HeadlessFrame = { componentId, revision, width, height, lines: [], hitRegions: [] };
+	const renderNow = (): HeadlessFrame => {
+		if (disposed) return { componentId, revision, width, height, lines: [], hitRegions: [] };
+		if (timer) clearTimeout(timer);
+		timer = undefined;
+		scheduled = false;
 		const cursorMarkerLength = CURSOR_MARKER.length;
 		let cursor: HeadlessFrame["cursor"];
 		let bytes = 0;
@@ -242,10 +245,10 @@ export function createHeadlessComponentAdapter(
 			bytes = nextBytes;
 			lines.push(visible);
 		}
-		revision++;
-		return {
+		lastFrameAt = performance.now();
+		lastFrame = {
 			componentId,
-			revision,
+			revision: ++revision,
 			width,
 			height,
 			lines,
@@ -255,9 +258,10 @@ export function createHeadlessComponentAdapter(
 				? { desiredSize: { width: clampDimension((component as unknown as { width: number }).width) } }
 				: {}),
 		};
+		return lastFrame;
 	};
 	const schedule = () => {
-		if (disposed) return;
+		if (disposed || scheduled) return;
 		if (!invalidationScheduled) {
 			invalidationScheduled = true;
 			queueMicrotask(() => {
@@ -265,45 +269,43 @@ export function createHeadlessComponentAdapter(
 				if (!disposed) options.onInvalidate?.();
 			});
 		}
-		if (scheduled) return;
+		scheduled = true;
 		const delay = Math.max(0, FRAME_INTERVAL_MS - (performance.now() - lastFrameAt));
 		timer = setTimeout(() => {
+			timer = undefined;
 			scheduled = false;
-			lastFrameAt = performance.now();
-			const frame = render();
-			options.onFrame?.(frame);
+			if (!disposed) options.onFrame?.(renderNow());
 		}, delay);
+		timer.unref?.();
 	};
 	return {
 		input(data) {
 			if (!disposed) component.handleInput?.(data);
-			const frame = render();
-			schedule();
-			return frame;
+			return renderNow();
 		},
 		resize(nextWidth, nextHeight) {
 			width = clampDimension(nextWidth);
 			height = clampDimension(nextHeight);
-			const frame = render();
-			schedule();
-			return frame;
+			return renderNow();
 		},
 		requestRender() {
-			const frame = render();
+			if (disposed) return { componentId, revision, width, height, lines: [], hitRegions: [] };
 			schedule();
-			return frame;
+			return lastFrame;
 		},
 		invalidate() {
-			if (!disposed) component.invalidate();
-			const frame = render();
+			if (disposed) return { componentId, revision, width, height, lines: [], hitRegions: [] };
+			component.invalidate();
 			schedule();
-			return frame;
+			return lastFrame;
 		},
-		render,
+		render: renderNow,
+		renderNow,
 		dispose() {
 			if (disposed) return;
 			disposed = true;
 			if (timer) clearTimeout(timer);
+			timer = undefined;
 			component.dispose?.();
 		},
 	};

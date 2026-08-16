@@ -69,6 +69,57 @@ describe("ExtensionUiBridge", () => {
 		expect(errors).toEqual(["component_input"]);
 	});
 
+	it("coalesces component invalidations without delaying independent components", async () => {
+		const events: ExtensionUiBridgeEvent[] = [];
+		const bridge = new ExtensionUiBridge(
+			async () => ({ cancelled: true }),
+			(event) => events.push(event),
+			() => {},
+		);
+		const ui = bridge.context();
+		const renderCounts = new Map<string, number>();
+		const tuis = new Map<string, { requestRender(): void }>();
+		const factory = (label: string) => (tui: { requestRender(): void }) => {
+			tuis.set(label, tui);
+			return {
+				render: () => {
+					renderCounts.set(label, (renderCounts.get(label) ?? 0) + 1);
+					return [label];
+				},
+				invalidate: () => {},
+				handleInput: () => tui.requestRender(),
+			};
+		};
+		ui.setHeader(factory("header"));
+		ui.setFooter(factory("footer"));
+		for (let index = 0; index < 1_000; index++) tuis.get("header")?.requestRender();
+		expect(renderCounts.get("header")).toBe(1);
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		expect(renderCounts.get("header") ?? 0).toBeLessThanOrEqual(2);
+		tuis.get("footer")?.requestRender();
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		expect(renderCounts.get("footer")).toBe(2);
+
+		const header = events.find((event) => event.type === "component_mount" && event.componentId === "header");
+		if (!header || header.type !== "component_mount") throw new Error("header did not mount");
+		const beforeInput = events.filter(
+			(event) => event.type === "component_frame" && event.componentId === "header",
+		).length;
+		bridge.dispatchComponentInput(header.componentId, header.generation, "x");
+		expect(events.filter((event) => event.type === "component_frame" && event.componentId === "header").length).toBe(
+			beforeInput + 1,
+		);
+		tuis.get("header")?.requestRender();
+		ui.setHeader(undefined);
+		const framesBeforeDispose = events.filter(
+			(event) => event.type === "component_frame" && event.componentId === "header",
+		).length;
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		expect(events.filter((event) => event.type === "component_frame" && event.componentId === "header")).toHaveLength(
+			framesBeforeDispose,
+		);
+	});
+
 	it("keeps raw terminal listener sequences intact while bounding them", async () => {
 		const bridge = new ExtensionUiBridge(
 			async () => ({ cancelled: true }),

@@ -2278,9 +2278,12 @@
                   "required": [
                     "command",
                     "sessionPath",
+                    "leaseId",
+                    "clientInstanceId",
+                    "clientRequestId",
                     "text",
                     "cursor",
-                    "generation"
+                    "revision"
                   ],
                   "properties": {
                     "command": {
@@ -2291,6 +2294,21 @@
                       "type": "string",
                       "minLength": 1
                     },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
                     "text": {
                       "type": "string",
                       "maxLength": 65536
@@ -2300,7 +2318,7 @@
                       "minimum": 0,
                       "maximum": 65536
                     },
-                    "generation": {
+                    "revision": {
                       "type": "integer",
                       "minimum": 0
                     },
@@ -2316,6 +2334,9 @@
                   "required": [
                     "command",
                     "sessionPath",
+                    "leaseId",
+                    "clientInstanceId",
+                    "clientRequestId",
                     "data"
                   ],
                   "properties": {
@@ -2326,6 +2347,21 @@
                     "sessionPath": {
                       "type": "string",
                       "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
                     },
                     "data": {
                       "type": "string",
@@ -2340,6 +2376,9 @@
                   "required": [
                     "command",
                     "sessionPath",
+                    "leaseId",
+                    "clientInstanceId",
+                    "clientRequestId",
                     "componentId",
                     "generation",
                     "data"
@@ -2352,6 +2391,21 @@
                     "sessionPath": {
                       "type": "string",
                       "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
                     },
                     "componentId": {
                       "type": "string",
@@ -2375,6 +2429,9 @@
                   "required": [
                     "command",
                     "sessionPath",
+                    "leaseId",
+                    "clientInstanceId",
+                    "clientRequestId",
                     "width",
                     "height"
                   ],
@@ -2386,6 +2443,21 @@
                     "sessionPath": {
                       "type": "string",
                       "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
                     },
                     "width": {
                       "type": "integer",
@@ -2405,6 +2477,9 @@
                   "required": [
                     "command",
                     "sessionPath",
+                    "leaseId",
+                    "clientInstanceId",
+                    "clientRequestId",
                     "componentId",
                     "generation"
                   ],
@@ -2416,6 +2491,21 @@
                     "sessionPath": {
                       "type": "string",
                       "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
                     },
                     "componentId": {
                       "type": "string",
@@ -2434,6 +2524,9 @@
                   "required": [
                     "command",
                     "sessionPath",
+                    "leaseId",
+                    "clientInstanceId",
+                    "clientRequestId",
                     "componentId",
                     "generation"
                   ],
@@ -2445,6 +2538,21 @@
                     "sessionPath": {
                       "type": "string",
                       "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
                     },
                     "componentId": {
                       "type": "string",
@@ -2466,6 +2574,9 @@
                   "required": [
                     "command",
                     "sessionPath",
+                    "leaseId",
+                    "clientInstanceId",
+                    "clientRequestId",
                     "componentId",
                     "generation"
                   ],
@@ -2477,6 +2588,21 @@
                     "sessionPath": {
                       "type": "string",
                       "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
                     },
                     "componentId": {
                       "type": "string",

@@ -383,6 +383,8 @@ pub fn encode_b3_request(
 pub fn encode_extension_component_input_request(
     id: &str,
     session_path: &str,
+    lease_id: &str,
+    client_instance_id: &str,
     component_id: &str,
     generation: u64,
     data: &str,
@@ -391,6 +393,7 @@ pub fn encode_extension_component_input_request(
         "type": "request", "id": id,
         "request": {
             "command": "extension_component_input", "sessionPath": session_path,
+            "leaseId": lease_id, "clientInstanceId": client_instance_id, "clientRequestId": id,
             "componentId": component_id, "generation": generation, "data": data,
         },
     }))
@@ -399,6 +402,8 @@ pub fn encode_extension_component_input_request(
 pub fn encode_extension_component_resize_request(
     id: &str,
     session_path: &str,
+    lease_id: &str,
+    client_instance_id: &str,
     width: u16,
     height: u16,
 ) -> Result<Vec<u8>, ProtocolError> {
@@ -406,6 +411,7 @@ pub fn encode_extension_component_resize_request(
         "type": "request", "id": id,
         "request": {
             "command": "extension_component_resize", "sessionPath": session_path,
+            "leaseId": lease_id, "clientInstanceId": client_instance_id, "clientRequestId": id,
             "width": width, "height": height,
         },
     }))
@@ -414,6 +420,8 @@ pub fn encode_extension_component_resize_request(
 pub fn encode_extension_component_result_request(
     id: &str,
     session_path: &str,
+    lease_id: &str,
+    client_instance_id: &str,
     component_id: &str,
     generation: u64,
     value: serde_json::Value,
@@ -422,6 +430,7 @@ pub fn encode_extension_component_result_request(
         "type": "request", "id": id,
         "request": {
             "command": "extension_component_custom_result", "sessionPath": session_path,
+            "leaseId": lease_id, "clientInstanceId": client_instance_id, "clientRequestId": id,
             "componentId": component_id, "generation": generation, "value": value,
         },
     }))
@@ -430,6 +439,8 @@ pub fn encode_extension_component_result_request(
 pub fn encode_extension_component_cancel_request(
     id: &str,
     session_path: &str,
+    lease_id: &str,
+    client_instance_id: &str,
     component_id: &str,
     generation: u64,
 ) -> Result<Vec<u8>, ProtocolError> {
@@ -437,25 +448,32 @@ pub fn encode_extension_component_cancel_request(
         "type": "request", "id": id,
         "request": {
             "command": "extension_component_custom_cancel", "sessionPath": session_path,
+            "leaseId": lease_id, "clientInstanceId": client_instance_id, "clientRequestId": id,
             "componentId": component_id, "generation": generation,
         },
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn encode_extension_editor_state_request(
     id: &str,
     session_path: &str,
+    lease_id: &str,
+    client_instance_id: &str,
     text: &str,
     cursor: usize,
-    generation: u64,
+    revision: u64,
     ack_revision: Option<u64>,
 ) -> Result<Vec<u8>, ProtocolError> {
     let mut request = serde_json::json!({
         "command": "extension_editor_state",
         "sessionPath": session_path,
+        "leaseId": lease_id,
+        "clientInstanceId": client_instance_id,
+        "clientRequestId": id,
         "text": text,
         "cursor": cursor,
-        "generation": generation,
+        "revision": revision,
     });
     if let Some(ack_revision) = ack_revision {
         request["ackRevision"] = serde_json::Value::from(ack_revision);
@@ -466,11 +484,16 @@ pub fn encode_extension_editor_state_request(
 pub fn encode_extension_terminal_input_request(
     id: &str,
     session_path: &str,
+    lease_id: &str,
+    client_instance_id: &str,
     data: &str,
 ) -> Result<Vec<u8>, ProtocolError> {
     encode_client_value(serde_json::json!({
         "type": "request", "id": id,
-        "request": { "command": "extension_terminal_input", "sessionPath": session_path, "data": data },
+        "request": {
+            "command": "extension_terminal_input", "sessionPath": session_path,
+            "leaseId": lease_id, "clientInstanceId": client_instance_id, "clientRequestId": id, "data": data,
+        },
     }))
 }
 

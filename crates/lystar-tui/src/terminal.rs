@@ -986,8 +986,10 @@ fn run_session(
         } else if last_component_size != Some((size.width, size.height)) {
             let active_path = app.active_session_path().unwrap_or(session_path).to_owned();
             request_extension_component_resize(
+                &app,
                 pipe,
                 &active_path,
+                client_instance_id,
                 &mut request_sequence,
                 size.width,
                 size.height,
@@ -1006,8 +1008,10 @@ fn run_session(
                             app.active_session_path().unwrap_or(session_path).to_owned();
                         if key.code == KeyCode::Esc {
                             request_extension_component_cancel(
+                                &app,
                                 pipe,
                                 &active_path,
+                                client_instance_id,
                                 &mut request_sequence,
                                 &component_id,
                                 generation,
@@ -1017,6 +1021,7 @@ fn run_session(
                                 &mut app,
                                 pipe,
                                 &active_path,
+                                client_instance_id,
                                 &mut request_sequence,
                                 &component_id,
                                 generation,
@@ -1034,6 +1039,7 @@ fn run_session(
                             &mut app,
                             pipe,
                             &active_path,
+                            client_instance_id,
                             &mut request_sequence,
                             data,
                         )?;
@@ -1072,6 +1078,7 @@ fn run_session(
                                 &mut app,
                                 pipe,
                                 &active_path,
+                                client_instance_id,
                                 &mut request_sequence,
                                 &component_id,
                                 generation,
@@ -1088,6 +1095,7 @@ fn run_session(
                             &mut app,
                             pipe,
                             &active_path,
+                            client_instance_id,
                             &mut request_sequence,
                             format!("\x1b[200~{text}\x1b[201~"),
                         )?;
@@ -1128,6 +1136,7 @@ fn run_session(
                             &mut app,
                             pipe,
                             &active_path,
+                            client_instance_id,
                             &mut request_sequence,
                             &component_id,
                             generation,
@@ -1144,6 +1153,7 @@ fn run_session(
                             &mut app,
                             pipe,
                             &active_path,
+                            client_instance_id,
                             &mut request_sequence,
                             data,
                         )?;
@@ -1250,7 +1260,13 @@ fn run_session(
             }
         }
         let active_path = app.active_session_path().unwrap_or(session_path).to_owned();
-        request_extension_editor_state(&mut app, pipe, &active_path, &mut request_sequence)?;
+        request_extension_editor_state(
+            &mut app,
+            pipe,
+            &active_path,
+            client_instance_id,
+            &mut request_sequence,
+        )?;
         if quit_requested && session_flow.is_none() {
             clear_terminal_extension_output(&mut app, &mut terminal, &mut image_sidecar)?;
             return Ok(());
@@ -1520,31 +1536,42 @@ fn request_extension_editor_state(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,
     session_path: &str,
+    client_instance_id: &str,
     sequence: &mut u64,
 ) -> Result<(), TuiError> {
-    let Some((text, cursor, generation)) = app.take_editor_state_update() else {
+    let Some(lease_id) = app.lease_id.clone() else {
+        return Ok(());
+    };
+    let Some((text, cursor, revision)) = app.take_editor_state_update() else {
         return Ok(());
     };
     *sequence += 1;
     pipe.request(&encode_extension_editor_state_request(
         &format!("extension-editor-{sequence}"),
         session_path,
+        &lease_id,
+        client_instance_id,
         &text,
         cursor,
-        generation,
-        None,
+        revision,
+        Some(app.extension_ui.revision),
     )?)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn request_extension_component_input(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,
     session_path: &str,
+    client_instance_id: &str,
     sequence: &mut u64,
     component_id: &str,
     generation: u64,
     data: String,
 ) -> Result<bool, TuiError> {
+    let Some(lease_id) = app.lease_id.as_deref() else {
+        return Ok(false);
+    };
     if data.is_empty()
         || data.len() > 256
         || app.has_pending_component_input(component_id, generation, &data)
@@ -1566,6 +1593,8 @@ fn request_extension_component_input(
     pipe.request(&encode_extension_component_input_request(
         &id,
         session_path,
+        lease_id,
+        client_instance_id,
         component_id,
         generation,
         &data,
@@ -1574,32 +1603,46 @@ fn request_extension_component_input(
 }
 
 fn request_extension_component_resize(
+    app: &AppState,
     pipe: &mut ProtocolPipe,
     session_path: &str,
+    client_instance_id: &str,
     sequence: &mut u64,
     width: u16,
     height: u16,
 ) -> Result<(), TuiError> {
+    let Some(lease_id) = app.lease_id.as_deref() else {
+        return Ok(());
+    };
     *sequence += 1;
     pipe.request(&encode_extension_component_resize_request(
         &format!("component-resize-{sequence}"),
         session_path,
+        lease_id,
+        client_instance_id,
         width.clamp(1, 500),
         height.clamp(1, 500),
     )?)
 }
 
 fn request_extension_component_cancel(
+    app: &AppState,
     pipe: &mut ProtocolPipe,
     session_path: &str,
+    client_instance_id: &str,
     sequence: &mut u64,
     component_id: &str,
     generation: u64,
 ) -> Result<(), TuiError> {
+    let Some(lease_id) = app.lease_id.as_deref() else {
+        return Ok(());
+    };
     *sequence += 1;
     pipe.request(&encode_extension_component_cancel_request(
         &format!("component-cancel-{sequence}"),
         session_path,
+        lease_id,
+        client_instance_id,
         component_id,
         generation,
     )?)
@@ -1609,9 +1652,13 @@ fn request_extension_terminal_input(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,
     session_path: &str,
+    client_instance_id: &str,
     sequence: &mut u64,
     data: String,
 ) -> Result<(), TuiError> {
+    let Some(lease_id) = app.lease_id.as_deref() else {
+        return Ok(());
+    };
     if data.is_empty() || data.len() > 256 {
         return Ok(());
     }
@@ -1628,6 +1675,8 @@ fn request_extension_terminal_input(
     pipe.request(&encode_extension_terminal_input_request(
         &id,
         session_path,
+        lease_id,
+        client_instance_id,
         &data,
     )?)
 }
@@ -5322,6 +5371,7 @@ fn component_overlay_options(
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn parse_component_frame(
     component_id: &str,
     value: &serde_json::Value,
@@ -5833,6 +5883,11 @@ fn apply_server_message(
         && let Some(id) = raw.get("id").and_then(serde_json::Value::as_str)
         && let Some(pending) = app.take_component_input(id)
     {
+        let invalid_lease = raw
+            .get("error")
+            .and_then(|error| error.get("code"))
+            .and_then(serde_json::Value::as_str)
+            == Some("invalid_session_lease");
         if raw.get("ok").and_then(serde_json::Value::as_bool) != Some(true)
             || raw
                 .get("result")
@@ -5840,7 +5895,13 @@ fn apply_server_message(
                 .and_then(serde_json::Value::as_bool)
                 != Some(true)
         {
-            app.set_toast("组件输入被 Host 拒绝，可按 Esc 取消");
+            if invalid_lease {
+                app.clear_active_lease();
+                app.clear_extension_components();
+                app.set_toast("组件输入租约已失效，已清除待处理输入");
+            } else {
+                app.set_toast("组件输入被 Host 拒绝，可按 Esc 取消");
+            }
         } else {
             trace_id("component_input_accepted", &pending.component_id);
         }
@@ -5858,6 +5919,21 @@ fn apply_server_message(
         && let Some(id) = raw.get("id").and_then(serde_json::Value::as_str)
         && let Some(pending) = app.pending_terminal_inputs.remove(id)
     {
+        let invalid_lease = raw
+            .get("error")
+            .and_then(|error| error.get("code"))
+            .and_then(serde_json::Value::as_str)
+            == Some("invalid_session_lease");
+        if raw.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+            if invalid_lease {
+                app.clear_active_lease();
+                app.clear_extension_components();
+                app.set_toast("终端输入租约已失效，未执行回退输入");
+            } else {
+                app.set_toast("终端输入被 Host 拒绝");
+            }
+            return Ok(false);
+        }
         trace_id("extension_input_applied", id);
         let consume = raw
             .get("result")
