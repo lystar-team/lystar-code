@@ -534,13 +534,39 @@ pub struct SessionRestorePoint {
     pub live_tools: BTreeMap<String, LiveTool>,
     pub assistant_stream: String,
     pub thinking_stream: String,
+    pub overlays: Vec<OverlayState>,
+    pub input_focus: InputFocus,
+    pub focus_before_overlay: Option<InputFocus>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscriptViewKind {
+    Active,
+    Readonly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscriptRequestKind {
+    Initial,
+    Older,
+    Search,
+}
+
+#[derive(Debug, Clone)]
+pub struct TranscriptPendingRequest {
+    pub view: TranscriptViewKind,
+    pub kind: TranscriptRequestKind,
+    pub session_path: String,
+    pub generation: u64,
+    pub context: Option<lystar_protocol::TranscriptRequestContext>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct ReadonlySessionView {
     pub path: String,
+    pub generation: u64,
     pub transcript: TranscriptWindow,
-    pub query: String,
+    pub search: SearchState,
     pub status: String,
 }
 
@@ -583,8 +609,12 @@ pub enum PendingIntent {
     },
     TreeMutation {
         selected_key: String,
+        filter: String,
     },
-    TreeNavigate,
+    TreeNavigate {
+        selected_key: String,
+        filter: String,
+    },
     AuthMutation {
         selected_key: Option<String>,
         filter: String,
@@ -690,8 +720,10 @@ pub struct AppState {
     pub models: Vec<ModelDescriptor>,
     pub providers: Vec<ProviderDescriptor>,
     pub write_pending: bool,
+    pub pending_editor_replace: Option<String>,
     pub page_load_pending: bool,
     pub pending_requests: HashMap<String, PendingRequest>,
+    pub pending_transcript_requests: HashMap<String, TranscriptPendingRequest>,
     pub request_generation: u64,
     pub active_ui_request: Option<UiRequest>,
     responded_ui_requests: HashSet<String>,
@@ -713,6 +745,7 @@ impl AppState {
 
     pub fn begin_active_session(&mut self, path: String, cwd: String) -> u64 {
         self.session_generation = self.session_generation.saturating_add(1);
+        self.invalidate_transcript_requests(TranscriptViewKind::Active);
         self.active_session = Some(ActiveSessionContext {
             path,
             lease_id: None,
@@ -743,6 +776,9 @@ impl AppState {
             live_tools: self.live_tools.clone(),
             assistant_stream: self.assistant_stream.clone(),
             thinking_stream: self.thinking_stream.clone(),
+            overlays: self.overlays.clone(),
+            input_focus: self.input_focus,
+            focus_before_overlay: self.focus_before_overlay,
         }
     }
 
@@ -757,6 +793,65 @@ impl AppState {
         self.live_tools = restore.live_tools;
         self.assistant_stream = restore.assistant_stream;
         self.thinking_stream = restore.thinking_stream;
+        self.overlays = restore.overlays;
+        self.input_focus = restore.input_focus;
+        self.focus_before_overlay = restore.focus_before_overlay;
+    }
+
+    pub fn clear_active_session(&mut self, reason: impl Into<String>) {
+        self.active_session = None;
+        self.lease_id = None;
+        self.snapshot = None;
+        self.operation = None;
+        self.invalidate_transcript_requests(TranscriptViewKind::Active);
+        self.clear_for_reload(reason);
+    }
+
+    pub fn clear_connection_state(&mut self, reason: impl Into<String>) {
+        self.clear_active_lease();
+        self.page_load_pending = false;
+        self.transcript.loading_previous = false;
+        if let Some(view) = &mut self.readonly_view {
+            view.transcript.loading_previous = false;
+        }
+        self.disconnected = Some(reason.into());
+    }
+
+    pub fn clear_active_lease(&mut self) {
+        self.lease_id = None;
+        if let Some(context) = &mut self.active_session {
+            context.lease_id = None;
+        }
+    }
+
+    pub fn begin_transcript_request(
+        &mut self,
+        id: String,
+        view: TranscriptViewKind,
+        kind: TranscriptRequestKind,
+        session_path: String,
+        generation: u64,
+        context: Option<lystar_protocol::TranscriptRequestContext>,
+    ) {
+        self.pending_transcript_requests.insert(
+            id,
+            TranscriptPendingRequest {
+                view,
+                kind,
+                session_path,
+                generation,
+                context,
+            },
+        );
+    }
+
+    pub fn take_transcript_request(&mut self, id: &str) -> Option<TranscriptPendingRequest> {
+        self.pending_transcript_requests.remove(id)
+    }
+
+    pub fn invalidate_transcript_requests(&mut self, view: TranscriptViewKind) {
+        self.pending_transcript_requests
+            .retain(|_, request| request.view != view);
     }
 
     pub fn commit_session_switch(
@@ -888,6 +983,8 @@ impl AppState {
 
     pub fn clear_overlay_transient(&mut self) {
         self.invalidate_pending();
+        self.invalidate_transcript_requests(TranscriptViewKind::Active);
+        self.invalidate_transcript_requests(TranscriptViewKind::Readonly);
         self.overlays.clear();
         self.active_ui_request = None;
         self.overlay_error = None;
@@ -934,6 +1031,8 @@ impl AppState {
             pending.intent,
             PendingIntent::SettingMutation { .. }
                 | PendingIntent::SessionMutation { .. }
+                | PendingIntent::TreeMutation { .. }
+                | PendingIntent::TreeNavigate { .. }
                 | PendingIntent::AuthMutation { .. }
                 | PendingIntent::ClipboardMutation { .. }
         ) {
@@ -952,6 +1051,8 @@ impl AppState {
     pub fn invalidate_pending(&mut self) {
         self.request_generation = self.request_generation.saturating_add(1);
         self.pending_requests.clear();
+        self.pending_transcript_requests.clear();
+        self.pending_editor_replace = None;
         self.write_pending = false;
     }
 
@@ -974,7 +1075,12 @@ impl AppState {
     pub fn has_pending_work(&self) -> bool {
         self.page_load_pending
             || self.transcript.loading_previous
+            || self
+                .readonly_view
+                .as_ref()
+                .is_some_and(|view| view.transcript.loading_previous)
             || !self.pending_requests.is_empty()
+            || !self.pending_transcript_requests.is_empty()
             || self.is_active_operation()
     }
 
@@ -1077,6 +1183,59 @@ impl AppState {
             .unwrap_or(0);
     }
 
+    pub fn tree_visible_indices(&self) -> Vec<usize> {
+        let Some(OverlayState::List(list)) = self.overlay() else {
+            return Vec::new();
+        };
+        if list.title != "分支树" {
+            return Vec::new();
+        }
+        list.items
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| Self::list_matches(list, *index))
+            .filter_map(|(_, item)| item.action.strip_prefix("tree:")?.parse::<usize>().ok())
+            .collect()
+    }
+
+    pub fn select_tree_visible(&mut self, delta: isize, labelled_only: bool) {
+        let visible = self
+            .tree_visible_indices()
+            .into_iter()
+            .filter(|index| {
+                !labelled_only
+                    || self
+                        .tree
+                        .get(*index)
+                        .is_some_and(|node| node.label.is_some())
+            })
+            .collect::<Vec<_>>();
+        let Some(current) = self
+            .current_overlay_action()
+            .as_deref()
+            .and_then(|action| action.strip_prefix("tree:"))
+            .and_then(|value| value.parse::<usize>().ok())
+        else {
+            return;
+        };
+        let Some(position) = visible.iter().position(|index| *index == current) else {
+            return;
+        };
+        let next = position
+            .saturating_add_signed(delta)
+            .min(visible.len().saturating_sub(1));
+        let Some(target) = visible.get(next) else {
+            return;
+        };
+        if let Some(OverlayState::List(list)) = self.overlay_mut()
+            && let Some(selected) = list
+                .items
+                .iter()
+                .position(|item| item.action == format!("tree:{target}"))
+        {
+            list.selected = selected;
+        }
+    }
     pub fn move_overlay_selection(&mut self, delta: isize) {
         let Some(OverlayState::List(list)) = self.overlay_mut() else {
             return;
@@ -2121,6 +2280,117 @@ mod tests {
             vec!["保留的草稿|".to_owned()]
         );
         assert!(matches!(app.overlay(), Some(OverlayState::Detail(_))));
+    }
+
+    #[test]
+    fn keeps_tree_actions_on_visible_nodes_after_filtering() {
+        let mut app = AppState {
+            tree: vec![
+                SessionTreeNode {
+                    id: "root".to_owned(),
+                    parent_id: None,
+                    kind: "message".to_owned(),
+                    label: Some("根".to_owned()),
+                    timestamp: String::new(),
+                    preview: "root".to_owned(),
+                    is_leaf: false,
+                    depth: 0,
+                },
+                SessionTreeNode {
+                    id: "target".to_owned(),
+                    parent_id: Some("root".to_owned()),
+                    kind: "message".to_owned(),
+                    label: Some("目标".to_owned()),
+                    timestamp: String::new(),
+                    preview: "needle".to_owned(),
+                    is_leaf: true,
+                    depth: 1,
+                },
+                SessionTreeNode {
+                    id: "other".to_owned(),
+                    parent_id: Some("root".to_owned()),
+                    kind: "message".to_owned(),
+                    label: Some("其他".to_owned()),
+                    timestamp: String::new(),
+                    preview: "other".to_owned(),
+                    is_leaf: true,
+                    depth: 1,
+                },
+            ],
+            ..AppState::default()
+        };
+        app.open_overlay(OverlayState::List(ListOverlay {
+            title: "分支树".to_owned(),
+            items: app
+                .tree
+                .iter()
+                .enumerate()
+                .map(|(index, node)| OverlayItem {
+                    label: node.label.clone().unwrap_or_default(),
+                    detail: node.preview.clone(),
+                    action: format!("tree:{index}"),
+                })
+                .collect(),
+            selected: 1,
+            filter: "needle".to_owned(),
+            status: String::new(),
+        }));
+        assert_eq!(app.tree_visible_indices(), vec![1]);
+        assert_eq!(app.current_overlay_action().as_deref(), Some("tree:1"));
+        app.select_tree_visible(1, true);
+        assert_eq!(app.current_overlay_action().as_deref(), Some("tree:1"));
+    }
+
+    #[test]
+    fn tracks_transcript_requests_per_view_path_and_generation() {
+        let mut app = AppState::default();
+        app.begin_active_session("/tmp/active.jsonl".to_owned(), "/tmp".to_owned());
+        app.begin_transcript_request(
+            "active-1".to_owned(),
+            TranscriptViewKind::Active,
+            TranscriptRequestKind::Initial,
+            "/tmp/active.jsonl".to_owned(),
+            app.session_generation,
+            None,
+        );
+        app.readonly_view = Some(ReadonlySessionView {
+            path: "/tmp/readonly.jsonl".to_owned(),
+            generation: 7,
+            ..ReadonlySessionView::default()
+        });
+        app.begin_transcript_request(
+            "readonly-1".to_owned(),
+            TranscriptViewKind::Readonly,
+            TranscriptRequestKind::Search,
+            "/tmp/readonly.jsonl".to_owned(),
+            7,
+            None,
+        );
+        app.invalidate_transcript_requests(TranscriptViewKind::Readonly);
+        assert!(app.pending_transcript_requests.contains_key("active-1"));
+        assert!(!app.pending_transcript_requests.contains_key("readonly-1"));
+    }
+    #[test]
+    fn clears_connection_lease_without_discarding_retryable_request() {
+        let mut app = AppState::default();
+        app.begin_active_session("/tmp/session.jsonl".to_owned(), "/tmp".to_owned());
+        app.lease_id = Some("lease".to_owned());
+        app.active_session.as_mut().unwrap().lease_id = Some("lease".to_owned());
+        app.begin_request(
+            "pending".to_owned(),
+            B3Request {
+                command: lystar_protocol::B3Command::GetAbout,
+                payload: serde_json::Map::new(),
+            },
+            PendingIntent::Overlay {
+                target: "关于".to_owned(),
+            },
+        );
+        app.clear_connection_state("断线");
+        assert!(app.lease_id.is_none());
+        assert!(app.active_session.as_ref().unwrap().lease_id.is_none());
+        assert!(app.pending_requests.contains_key("pending"));
+        assert_eq!(app.disconnected.as_deref(), Some("断线"));
     }
 
     #[test]

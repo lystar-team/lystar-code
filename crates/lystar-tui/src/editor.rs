@@ -60,6 +60,17 @@ impl EditorState {
         self.after_move();
     }
 
+    pub fn replace(&mut self, text: &str) {
+        let text = truncate_utf8(text, MAX_EDITOR_BYTES);
+        if self.text == text {
+            return;
+        }
+        self.record_edit();
+        self.text = text.to_owned();
+        self.cursor = self.text.len();
+        self.after_move();
+    }
+
     pub fn backspace(&mut self) {
         let Some(start) = self.previous_grapheme_boundary() else {
             return;

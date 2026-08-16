@@ -37,8 +37,9 @@ use crate::app::{
     AppState, B3Request, ComposerView, ConfirmOverlay, DetailOverlay, InputFocus, ListOverlay,
     ModelDescriptor, OverlayItem, OverlayLink, OverlayState, PendingIntent, ProviderDescriptor,
     ReadonlySessionView, SearchHit, SessionRestorePoint, SessionSummary, SessionTreeNode,
-    SettingDescriptor, TextEditorOverlay, TranscriptView, UiRequest, UiRequestKind, VisibleLink,
-    WorkbenchOverlayView, WorkbenchTarget, composer_area, transcript_area,
+    SettingDescriptor, TextEditorOverlay, TranscriptRequestKind, TranscriptView,
+    TranscriptViewKind, UiRequest, UiRequestKind, VisibleLink, WorkbenchOverlayView,
+    WorkbenchTarget, composer_area, transcript_area,
 };
 
 const INITIAL_PAGE_LIMIT: u64 = 200;
@@ -60,7 +61,12 @@ pub enum TuiError {
 }
 
 #[derive(Debug)]
-enum SessionFlow {
+enum SessionTransition {
+    InitialAcquiring {
+        id: String,
+        path: String,
+        generation: u64,
+    },
     List {
         id: String,
         selected_path: Option<String>,
@@ -78,6 +84,7 @@ enum SessionFlow {
         id: String,
         path: String,
         replace: bool,
+        generation: u64,
     },
     SwitchReleasing {
         id: String,
@@ -129,7 +136,12 @@ enum SessionFlow {
         restore: SessionRestorePoint,
         reason: String,
     },
+    QuitReleasing {
+        id: String,
+    },
 }
+
+type SessionFlow = SessionTransition;
 
 pub struct TerminalGuard {
     active: bool,
@@ -354,20 +366,27 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
     let mut pipe = ProtocolPipe::connect(&client_instance_id)?;
     let mut request_sequence = 0_u64;
     let mut app = AppState::default();
-    app.begin_active_session(session_path.to_owned(), String::new());
-    let mut session_flow = None;
-    request_acquire(
+    let generation = app.begin_active_session(session_path.to_owned(), String::new());
+    let acquire_id = request_acquire(
         &mut pipe,
         session_path,
         &client_instance_id,
         &mut request_sequence,
     )?;
+    let mut session_flow = Some(SessionFlow::InitialAcquiring {
+        id: acquire_id,
+        path: session_path.to_owned(),
+        generation,
+    });
+    let mut quit_requested = false;
     request_transcript(
+        &mut app,
         &mut pipe,
         session_path,
         None,
         true,
         None,
+        TranscriptViewKind::Active,
         &mut request_sequence,
     )?;
 
@@ -417,12 +436,16 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                         &client_instance_id,
                         &mut request_sequence,
                         &mut session_flow,
+                        &mut quit_requested,
                     )?;
                     handled_message = true;
                     state_changed = true;
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => return Err(TuiError::ChildEof),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    app.clear_connection_state("Host 连接已断开");
+                    return Err(TuiError::ChildEof);
+                }
             }
         }
         if event::poll(Duration::ZERO)? {
@@ -437,6 +460,7 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                         &client_instance_id,
                         &mut request_sequence,
                         &mut session_flow,
+                        &mut quit_requested,
                     )? {
                         release_active_session(&app, &mut pipe, &mut request_sequence)?;
                         return Ok(());
@@ -449,11 +473,19 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                 }
                 Event::Mouse(mouse) => match mouse.kind {
                     MouseEventKind::ScrollUp => {
-                        app.transcript.scroll_by(-3);
+                        if let Some(view) = readonly_view_mut(&mut app) {
+                            view.transcript.scroll_by(-3);
+                        } else {
+                            app.transcript.scroll_by(-3);
+                        }
                         state_changed = true;
                     }
                     MouseEventKind::ScrollDown => {
-                        app.transcript.scroll_by(3);
+                        if let Some(view) = readonly_view_mut(&mut app) {
+                            view.transcript.scroll_by(3);
+                        } else {
+                            app.transcript.scroll_by(3);
+                        }
                         state_changed = true;
                     }
                     _ => {}
@@ -482,14 +514,22 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                         &client_instance_id,
                         &mut request_sequence,
                         &mut session_flow,
+                        &mut quit_requested,
                     )?;
                     state_changed = true;
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => return Err(TuiError::ChildEof),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    app.clear_connection_state("Host 连接已断开");
+                    return Err(TuiError::ChildEof);
+                }
             }
         }
+        if quit_requested && session_flow.is_none() {
+            return Ok(());
+        }
         if app.timed_out_b3_request().is_some() {
+            app.clear_connection_state("Host 请求超时，已清除本地租约");
             if !timeout_notified {
                 app.set_timeout_notice();
                 state_changed = true;
@@ -502,17 +542,21 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
             || app.search.pending_jump.is_some() && !app.transcript.loading_previous
         {
             if let Some(cursor) = app.transcript.take_previous_cursor() {
+                let active_path = app.active_session_path().unwrap_or(session_path).to_owned();
+                let context = TranscriptRequestContext {
+                    generation: app.transcript.generation.clone(),
+                    revision: Some(app.transcript.revision),
+                    cursor: Some(cursor.clone()),
+                };
                 app.mark_page_load_pending();
                 request_transcript(
+                    &mut app,
                     &mut pipe,
-                    app.active_session_path().unwrap_or(session_path),
-                    Some(cursor.clone()),
+                    &active_path,
+                    Some(cursor),
                     false,
-                    Some(TranscriptRequestContext {
-                        generation: app.transcript.generation.clone(),
-                        revision: Some(app.transcript.revision),
-                        cursor: Some(cursor),
-                    }),
+                    Some(context),
+                    TranscriptViewKind::Active,
                     &mut request_sequence,
                 )?;
                 state_changed = true;
@@ -521,6 +565,43 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                 app.search.pending_jump = None;
                 state_changed = true;
             }
+        }
+        if let Some((path, cursor, context)) = app.readonly_view.as_mut().and_then(|view| {
+            if view.transcript.needs_previous_page()
+                || view.search.pending_jump.is_some() && !view.transcript.loading_previous
+            {
+                let cursor = view.transcript.take_previous_cursor()?;
+                Some((
+                    view.path.clone(),
+                    cursor.clone(),
+                    TranscriptRequestContext {
+                        generation: view.transcript.generation.clone(),
+                        revision: Some(view.transcript.revision),
+                        cursor: Some(cursor),
+                    },
+                ))
+            } else {
+                None
+            }
+        }) {
+            request_transcript(
+                &mut app,
+                &mut pipe,
+                &path,
+                Some(cursor),
+                false,
+                Some(context),
+                TranscriptViewKind::Readonly,
+                &mut request_sequence,
+            )?;
+            state_changed = true;
+        } else if let Some(view) = app.readonly_view.as_mut()
+            && view.search.pending_jump.is_some()
+            && !view.transcript.loading_previous
+        {
+            view.search.status = "目标不在当前可分页记录中".to_owned();
+            view.search.pending_jump = None;
+            state_changed = true;
         }
         dirty |= state_changed;
     }
@@ -534,6 +615,7 @@ pub fn run(_session_path: &str) -> Result<(), TuiError> {
 }
 
 #[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
 fn process_inbound_message(
     app: &mut AppState,
     message: Result<ServerMessage, TuiError>,
@@ -542,6 +624,7 @@ fn process_inbound_message(
     client_instance_id: &str,
     request_sequence: &mut u64,
     session_flow: &mut Option<SessionFlow>,
+    quit_requested: &mut bool,
 ) -> Result<(), TuiError> {
     let message = message?;
     if apply_server_message(
@@ -552,14 +635,18 @@ fn process_inbound_message(
         client_instance_id,
         request_sequence,
         session_flow,
+        quit_requested,
     )? {
+        let active_path = app.active_session_path().unwrap_or(session_path).to_owned();
         app.mark_page_load_pending();
         request_transcript(
+            app,
             pipe,
-            app.active_session_path().unwrap_or(session_path),
+            &active_path,
             None,
             true,
             None,
+            TranscriptViewKind::Active,
             request_sequence,
         )?;
     }
@@ -592,27 +679,50 @@ fn request_acquire(
     session_path: &str,
     client_instance_id: &str,
     sequence: &mut u64,
-) -> Result<(), TuiError> {
+) -> Result<String, TuiError> {
     *sequence += 1;
+    let id = format!("acquire-{sequence}");
     pipe.request(&encode_acquire_session_request(
-        &format!("acquire-{sequence}"),
+        &id,
         session_path,
         client_instance_id,
-    )?)
+    )?)?;
+    Ok(id)
 }
 
 #[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
 fn request_transcript(
+    app: &mut AppState,
     pipe: &mut ProtocolPipe,
     session_path: &str,
     cursor: Option<String>,
     replace: bool,
     context: Option<TranscriptRequestContext>,
+    view: TranscriptViewKind,
     sequence: &mut u64,
 ) -> Result<(), TuiError> {
     *sequence += 1;
     trace("read_transcript");
     let id = format!("{}-{sequence}", if replace { "initial" } else { "older" });
+    app.begin_transcript_request(
+        id.clone(),
+        view,
+        if replace {
+            TranscriptRequestKind::Initial
+        } else {
+            TranscriptRequestKind::Older
+        },
+        session_path.to_owned(),
+        match view {
+            TranscriptViewKind::Active => app.session_generation,
+            TranscriptViewKind::Readonly => app
+                .readonly_view
+                .as_ref()
+                .map_or(0, |readonly| readonly.generation),
+        },
+        context.clone(),
+    );
     pipe.request(&encode_read_transcript_request(
         &id,
         session_path,
@@ -628,20 +738,154 @@ fn request_transcript(
 
 #[cfg(unix)]
 fn request_search(
+    app: &mut AppState,
     pipe: &mut ProtocolPipe,
     session_path: &str,
     query: &str,
+    view: TranscriptViewKind,
     sequence: &mut u64,
 ) -> Result<(), TuiError> {
     *sequence += 1;
     trace("search_transcript");
     let id = format!("search-{sequence}");
+    app.begin_transcript_request(
+        id.clone(),
+        view,
+        TranscriptRequestKind::Search,
+        session_path.to_owned(),
+        match view {
+            TranscriptViewKind::Active => app.session_generation,
+            TranscriptViewKind::Readonly => app
+                .readonly_view
+                .as_ref()
+                .map_or(0, |readonly| readonly.generation),
+        },
+        None,
+    );
     pipe.request(&encode_search_transcript_request(
         &id,
         session_path,
         query,
         SEARCH_LIMIT,
     )?)
+}
+
+#[cfg(unix)]
+fn is_readonly_overlay(app: &AppState) -> bool {
+    matches!(app.overlay(), Some(OverlayState::Detail(detail)) if detail.title == "会话只读")
+}
+
+#[cfg(unix)]
+fn readonly_view_mut(app: &mut AppState) -> Option<&mut ReadonlySessionView> {
+    is_readonly_overlay(app)
+        .then_some(app.readonly_view.as_mut())
+        .flatten()
+}
+
+#[cfg(unix)]
+fn refresh_readonly_overlay(app: &mut AppState) {
+    if let Some(view) = app.readonly_view.clone()
+        && is_readonly_overlay(app)
+    {
+        app.replace_overlay(readonly_overlay(&view));
+    }
+}
+
+#[cfg(unix)]
+fn handle_readonly_key(
+    app: &mut AppState,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    pipe: &mut ProtocolPipe,
+    sequence: &mut u64,
+) -> Result<bool, TuiError> {
+    let mut search_request = None;
+    let mut close_view = false;
+    if let Some(view) = readonly_view_mut(app) {
+        if view.search.open {
+            match code {
+                KeyCode::Esc => view.search.open = false,
+                KeyCode::Enter => {
+                    if view.search.query.trim().is_empty() {
+                        view.search.status = "请输入搜索内容".to_owned();
+                    } else if let Some(entry_id) = view
+                        .search
+                        .hits
+                        .get(view.search.selected)
+                        .map(|hit| hit.entry_id.clone())
+                    {
+                        if view.transcript.jump_to(&entry_id) {
+                            view.search.status = "已跳转".to_owned();
+                        } else {
+                            view.search.pending_jump = Some(entry_id);
+                            view.search.status = "正在加载目标记录".to_owned();
+                        }
+                    } else {
+                        search_request = Some((view.path.clone(), view.search.query.clone()));
+                    }
+                }
+                KeyCode::Up => view.search.selected = view.search.selected.saturating_sub(1),
+                KeyCode::Down => {
+                    view.search.selected =
+                        (view.search.selected + 1).min(view.search.hits.len().saturating_sub(1));
+                }
+                KeyCode::Backspace => {
+                    view.search.query.pop();
+                    view.search.hits.clear();
+                    view.search.selected = 0;
+                }
+                KeyCode::Char(character) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                    view.search.query.push(character);
+                    view.search.hits.clear();
+                    view.search.selected = 0;
+                }
+                _ => {}
+            }
+        } else {
+            match code {
+                KeyCode::Esc => close_view = true,
+                KeyCode::Char('f') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    view.search.open = true;
+                    view.search.status.clear();
+                }
+                KeyCode::Char('o') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    view.transcript.toggle_current_tool();
+                }
+                KeyCode::Up => view.transcript.scroll_by(-1),
+                KeyCode::Down => view.transcript.scroll_by(1),
+                KeyCode::PageUp => view.transcript.scroll_by(-20),
+                KeyCode::PageDown => view.transcript.scroll_by(20),
+                KeyCode::Home => {
+                    view.transcript.current = 0;
+                    view.transcript.scroll = 0;
+                }
+                KeyCode::End => {
+                    let last = view.transcript.cached_rounds().saturating_sub(1);
+                    view.transcript.current = last;
+                    view.transcript.scroll = last;
+                }
+                _ => {}
+            }
+        }
+    }
+    if close_view {
+        app.readonly_view = None;
+        app.invalidate_transcript_requests(TranscriptViewKind::Readonly);
+        app.close_overlay();
+        return Ok(false);
+    }
+    if let Some((path, query)) = search_request {
+        request_search(
+            app,
+            pipe,
+            &path,
+            &query,
+            TranscriptViewKind::Readonly,
+            sequence,
+        )?;
+    }
+    refresh_readonly_overlay(app);
+    Ok(false)
 }
 
 #[cfg(unix)]
@@ -655,8 +899,12 @@ fn handle_key(
     client_instance_id: &str,
     sequence: &mut u64,
     session_flow: &mut Option<SessionFlow>,
+    quit_requested: &mut bool,
 ) -> Result<bool, TuiError> {
     let session_path = app.active_session_path().unwrap_or(session_path).to_owned();
+    if is_readonly_overlay(app) {
+        return handle_readonly_key(app, code, modifiers, pipe, sequence);
+    }
     if app.search.open {
         match code {
             KeyCode::Esc => {
@@ -669,7 +917,14 @@ fn handle_key(
                 } else if app.select_search_result().is_none() {
                     let query = app.search.query.clone();
                     trace("search_submit");
-                    request_search(pipe, &session_path, &query, sequence)?;
+                    request_search(
+                        app,
+                        pipe,
+                        &session_path,
+                        &query,
+                        TranscriptViewKind::Active,
+                        sequence,
+                    )?;
                 }
             }
             KeyCode::Up => app.search.selected = app.search.selected.saturating_sub(1),
@@ -751,7 +1006,23 @@ fn handle_key(
     }
 
     match code {
-        KeyCode::Char('q') if app.editor.is_empty() => return Ok(true),
+        KeyCode::Char('q') if app.editor.is_empty() => {
+            *quit_requested = true;
+            if session_flow.is_some() {
+                return Ok(false);
+            }
+            let Some(lease_id) = app.lease_id.clone() else {
+                return Ok(true);
+            };
+            *sequence += 1;
+            let id = format!("quit-release-{sequence}");
+            *session_flow = Some(SessionFlow::QuitReleasing { id: id.clone() });
+            pipe.request(&encode_release_session_request(
+                &id,
+                &session_path,
+                &lease_id,
+            )?)?;
+        }
         KeyCode::Char('f') if modifiers.contains(KeyModifiers::CONTROL) => {
             app.open_search();
             trace("search_open");
@@ -850,6 +1121,11 @@ fn handle_overlay_key(
                 pipe.request(&encode_ui_response(&request.id, None, None, Some(true))?)?;
                 app.set_toast("已取消输入");
             }
+            if matches!(app.overlay(), Some(OverlayState::Detail(detail)) if detail.title == "会话只读")
+            {
+                app.readonly_view = None;
+                app.invalidate_transcript_requests(TranscriptViewKind::Readonly);
+            }
             app.close_overlay();
         }
         KeyCode::Up => app.move_overlay_selection(-1),
@@ -924,36 +1200,13 @@ fn handle_overlay_key(
             if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                 && matches!(app.overlay(), Some(OverlayState::List(list)) if list.title == "分支树") =>
         {
-            let start = app
-                .current_overlay_action()
-                .as_deref()
-                .and_then(|action| action.strip_prefix("tree:"))
-                .and_then(|value| value.parse::<usize>().ok())
-                .unwrap_or(0);
-            if let Some(index) =
-                ((start + 1)..app.tree.len()).find(|index| app.tree[*index].label.is_some())
-                && let Some(OverlayState::List(list)) = app.overlay_mut()
-            {
-                list.selected = index;
-            }
+            app.select_tree_visible(1, true);
         }
         KeyCode::Char('p')
             if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                 && matches!(app.overlay(), Some(OverlayState::List(list)) if list.title == "分支树") =>
         {
-            let start = app
-                .current_overlay_action()
-                .as_deref()
-                .and_then(|action| action.strip_prefix("tree:"))
-                .and_then(|value| value.parse::<usize>().ok())
-                .unwrap_or(0);
-            if let Some(index) = (0..start)
-                .rev()
-                .find(|index| app.tree[*index].label.is_some())
-                && let Some(OverlayState::List(list)) = app.overlay_mut()
-            {
-                list.selected = index;
-            }
+            app.select_tree_visible(-1, true);
         }
         KeyCode::Char('v') if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
             if let Some(index) = app
@@ -964,15 +1217,21 @@ fn handle_overlay_key(
                 && let Some(session) = app.sessions.get(index)
             {
                 let path = session.path.clone();
+                let generation = app
+                    .readonly_view
+                    .as_ref()
+                    .map_or(1, |readonly| readonly.generation.saturating_add(1));
                 *sequence += 1;
                 let id = format!("readonly-initial-{sequence}");
                 *session_flow = Some(SessionFlow::Readonly {
                     id: id.clone(),
                     path: path.clone(),
                     replace: true,
+                    generation,
                 });
                 app.readonly_view = Some(ReadonlySessionView {
                     path: path.clone(),
+                    generation,
                     status: "正在读取".to_owned(),
                     ..ReadonlySessionView::default()
                 });
@@ -984,6 +1243,14 @@ fn handle_overlay_key(
                     link: None,
                     copy_text: None,
                 }));
+                app.begin_transcript_request(
+                    id.clone(),
+                    TranscriptViewKind::Readonly,
+                    TranscriptRequestKind::Initial,
+                    path.clone(),
+                    generation,
+                    None,
+                );
                 pipe.request(&encode_read_transcript_request(
                     &id,
                     &path,
@@ -998,15 +1265,21 @@ fn handle_overlay_key(
                 .and_then(|value| value.parse::<usize>().ok())
             {
                 let path = session_path.to_owned();
+                let generation = app
+                    .readonly_view
+                    .as_ref()
+                    .map_or(1, |readonly| readonly.generation.saturating_add(1));
                 *sequence += 1;
                 let id = format!("readonly-initial-{sequence}");
                 *session_flow = Some(SessionFlow::Readonly {
                     id: id.clone(),
                     path: path.clone(),
                     replace: true,
+                    generation,
                 });
                 app.readonly_view = Some(ReadonlySessionView {
                     path: path.clone(),
+                    generation,
                     status: format!(
                         "定位 {}",
                         app.tree
@@ -1024,6 +1297,14 @@ fn handle_overlay_key(
                     link: None,
                     copy_text: None,
                 }));
+                app.begin_transcript_request(
+                    id.clone(),
+                    TranscriptViewKind::Readonly,
+                    TranscriptRequestKind::Initial,
+                    path.clone(),
+                    generation,
+                    None,
+                );
                 pipe.request(&encode_read_transcript_request(
                     &id,
                     &path,
@@ -1447,6 +1728,14 @@ fn activate_workbench_action(
         app.set_overlay_error("正在写入，请稍候");
         return Ok(());
     }
+    if action == "tree-replace-editor" {
+        if let Some(text) = app.pending_editor_replace.take() {
+            app.editor.replace(&text);
+            app.clear_overlay_transient();
+            app.set_toast("已替换输入草稿");
+        }
+        return Ok(());
+    }
     if action.starts_with("disabled:") {
         app.set_overlay_error(action.trim_start_matches("disabled:"));
         return Ok(());
@@ -1617,7 +1906,9 @@ fn activate_workbench_action(
             app.set_overlay_error("尚未获取会话租约");
             return Ok(());
         };
+        let (filter, _) = list_context(app, "分支树");
         app.close_overlay();
+        app.mark_write_pending();
         let mut payload = serde_json::json!({
             "sessionPath": session_path, "leaseId": lease_id, "entryId": node.id,
             "clientInstanceId": client_instance_id, "clientRequestId": format!("tree-label:{sequence}"),
@@ -1633,6 +1924,7 @@ fn activate_workbench_action(
             payload,
             PendingIntent::TreeMutation {
                 selected_key: node.id,
+                filter,
             },
         );
     }
@@ -1648,6 +1940,7 @@ fn activate_workbench_action(
             app.set_overlay_error("尚未获取会话租约");
             return Ok(());
         };
+        let (filter, selected_key) = list_context(app, "分支树");
         app.mark_write_pending();
         return request_b3(
             app, pipe, sequence, B3Command::NavigateSessionTree,
@@ -1655,7 +1948,10 @@ fn activate_workbench_action(
                 "sessionPath": session_path, "leaseId": lease_id, "entryId": node.id, "summarize": true,
                 "clientInstanceId": client_instance_id, "clientRequestId": format!("tree-summary:{sequence}"),
             }).as_object().cloned().unwrap_or_default(),
-            PendingIntent::TreeNavigate,
+            PendingIntent::TreeNavigate {
+                selected_key: selected_key.unwrap_or(node.id),
+                filter,
+            },
         );
     }
     if let Some(index) = action
@@ -1674,6 +1970,7 @@ fn activate_workbench_action(
             app.set_overlay_error("当前会话正在运行，不能切换分支");
             return Ok(());
         }
+        let (filter, selected_key) = list_context(app, "分支树");
         app.mark_write_pending();
         return request_b3(
             app,
@@ -1684,7 +1981,10 @@ fn activate_workbench_action(
                 "sessionPath": session_path, "leaseId": lease_id, "entryId": node.id,
                 "clientInstanceId": client_instance_id, "clientRequestId": format!("tree-navigate:{sequence}"),
             }).as_object().cloned().unwrap_or_default(),
-            PendingIntent::TreeNavigate,
+            PendingIntent::TreeNavigate {
+                selected_key: selected_key.unwrap_or(node.id),
+                filter,
+            },
         );
     }
     if let Some(id) = action.strip_prefix("setting-toggle:") {
@@ -2122,6 +2422,7 @@ fn submit_editor(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_server_message(
     app: &mut AppState,
     message: &ServerMessage,
@@ -2130,6 +2431,7 @@ fn apply_server_message(
     client_instance_id: &str,
     sequence: &mut u64,
     session_flow: &mut Option<SessionFlow>,
+    quit_requested: &mut bool,
 ) -> Result<bool, TuiError> {
     let raw = message.json().map_err(TuiError::from)?;
     let page_response_id = (raw.get("type").and_then(serde_json::Value::as_str)
@@ -2238,9 +2540,15 @@ fn apply_server_message(
         }
         return Ok(false);
     }
-    if let Some(outcome) =
-        apply_session_flow(app, &raw, pipe, client_instance_id, sequence, session_flow)?
-    {
+    if let Some(outcome) = apply_session_flow(
+        app,
+        &raw,
+        pipe,
+        client_instance_id,
+        sequence,
+        session_flow,
+        quit_requested,
+    )? {
         return Ok(outcome);
     }
     if raw.get("type").and_then(serde_json::Value::as_str) == Some("response")
@@ -2251,6 +2559,9 @@ fn apply_server_message(
             return Ok(false);
         }
         if raw.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
+            if matches!(&pending.intent, PendingIntent::TreeNavigate { .. }) {
+                app.pending_editor_replace = None;
+            }
             app.set_overlay_error(
                 raw.get("error")
                     .and_then(|value| value.get("message"))
@@ -2313,7 +2624,10 @@ fn apply_server_message(
                 }
                 app.set_toast(toast);
             }
-            PendingIntent::TreeMutation { selected_key } => {
+            PendingIntent::TreeMutation {
+                selected_key,
+                filter,
+            } => {
                 request_b3(
                     app,
                     pipe,
@@ -2326,13 +2640,37 @@ fn apply_server_message(
                     PendingIntent::WorkbenchLoad {
                         target: WorkbenchTarget::Tree,
                         selected_key: Some(selected_key),
-                        filter: String::new(),
+                        filter,
                     },
                 )?;
             }
-            PendingIntent::TreeNavigate => {
+            PendingIntent::TreeNavigate {
+                selected_key: _,
+                filter: _,
+            } => {
+                if result
+                    .get("cancelled")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    app.pending_editor_replace = None;
+                    app.close_overlay();
+                    app.set_toast("已取消分支切换");
+                    return Ok(false);
+                }
                 if let Some(text) = result.get("editorText").and_then(serde_json::Value::as_str) {
-                    app.editor.insert(text);
+                    if app.editor.is_empty() {
+                        app.editor.replace(text);
+                    } else {
+                        app.pending_editor_replace = Some(text.to_owned());
+                        app.open_overlay(OverlayState::Confirm(ConfirmOverlay {
+                            title: "替换输入草稿".to_owned(),
+                            message: "分支带回了新的输入内容，确认替换当前草稿？".to_owned(),
+                            confirm_action: "tree-replace-editor".to_owned(),
+                            status: String::new(),
+                        }));
+                        return Ok(false);
+                    }
                 }
                 app.clear_overlay_transient();
                 app.set_toast("已切换分支");
@@ -2386,6 +2724,7 @@ fn apply_session_flow(
     client_instance_id: &str,
     sequence: &mut u64,
     session_flow: &mut Option<SessionFlow>,
+    quit_requested: &mut bool,
 ) -> Result<Option<bool>, TuiError> {
     let Some(id) = raw.get("id").and_then(serde_json::Value::as_str) else {
         return Ok(None);
@@ -2394,7 +2733,8 @@ fn apply_session_flow(
         return Ok(None);
     };
     let expected = match &flow {
-        SessionFlow::List { id, .. }
+        SessionFlow::InitialAcquiring { id, .. }
+        | SessionFlow::List { id, .. }
         | SessionFlow::Rename { id, .. }
         | SessionFlow::Fork { id, .. }
         | SessionFlow::Readonly { id, .. }
@@ -2407,7 +2747,8 @@ fn apply_session_flow(
         | SessionFlow::DeleteReleasing { id, .. }
         | SessionFlow::DeleteRemoving { id, .. }
         | SessionFlow::DeleteAcquiring { id, .. }
-        | SessionFlow::DeleteRollback { id, .. } => id,
+        | SessionFlow::DeleteRollback { id, .. }
+        | SessionFlow::QuitReleasing { id, .. } => id,
     };
     if id != expected {
         *session_flow = Some(flow);
@@ -2425,6 +2766,35 @@ fn apply_session_flow(
         .cloned()
         .unwrap_or(serde_json::Value::Null);
     match flow {
+        SessionFlow::InitialAcquiring {
+            path, generation, ..
+        } => {
+            if !success {
+                app.clear_active_lease();
+                app.set_overlay_error(error);
+                return Ok(Some(false));
+            }
+            if app.active_session_path() != Some(path.as_str())
+                || app.session_generation != generation
+            {
+                return Ok(Some(false));
+            }
+            let (lease_id, snapshot) = parse_lease_snapshot(&result)?;
+            if *quit_requested {
+                *sequence += 1;
+                let id = format!("quit-release-{sequence}");
+                *session_flow = Some(SessionFlow::QuitReleasing { id: id.clone() });
+                pipe.request(&encode_release_session_request(
+                    &id,
+                    &snapshot.path,
+                    &lease_id,
+                )?)?;
+                return Ok(Some(false));
+            }
+            app.apply_active_lease(lease_id, snapshot);
+            app.transcript.status = "已获取会话租约".to_owned();
+            Ok(Some(false))
+        }
         SessionFlow::List { selected_path, .. } => {
             if !success {
                 app.set_overlay_error(error);
@@ -2456,9 +2826,23 @@ fn apply_session_flow(
             app.set_toast(toast);
             Ok(Some(true))
         }
-        SessionFlow::Readonly { path, replace, .. } => {
+        SessionFlow::Readonly {
+            path,
+            replace,
+            generation,
+            ..
+        } => {
             if !success {
                 app.set_overlay_error(error);
+                return Ok(Some(false));
+            }
+            let Some(pending) = app.take_transcript_request(id) else {
+                return Ok(Some(false));
+            };
+            if pending.view != TranscriptViewKind::Readonly
+                || pending.generation != generation
+                || pending.session_path != path
+            {
                 return Ok(Some(false));
             }
             let page: lystar_protocol::TranscriptPage = serde_json::from_value(result)
@@ -2470,11 +2854,8 @@ fn apply_session_flow(
                         path: path.clone(),
                         ..ReadonlySessionView::default()
                     });
-                if view.path != path {
-                    *view = ReadonlySessionView {
-                        path: path.clone(),
-                        ..ReadonlySessionView::default()
-                    };
+                if view.path != path || view.generation != generation {
+                    return Ok(Some(false));
                 }
                 if replace {
                     view.transcript.replace_page(
@@ -2500,6 +2881,7 @@ fn apply_session_flow(
                 app.set_overlay_error(error);
                 return Ok(Some(false));
             }
+            app.clear_active_lease();
             *sequence += 1;
             let id = format!("session-acquire-{sequence}");
             *session_flow = Some(SessionFlow::SwitchAcquiring {
@@ -2519,6 +2901,17 @@ fn apply_session_flow(
         } => {
             if success {
                 let (lease_id, snapshot) = parse_lease_snapshot(&result)?;
+                if *quit_requested {
+                    *sequence += 1;
+                    let id = format!("quit-release-{sequence}");
+                    *session_flow = Some(SessionFlow::QuitReleasing { id: id.clone() });
+                    pipe.request(&encode_release_session_request(
+                        &id,
+                        &snapshot.path,
+                        &lease_id,
+                    )?)?;
+                    return Ok(Some(false));
+                }
                 app.commit_session_switch(target.path, lease_id, snapshot);
                 app.set_toast("已切换会话");
                 return Ok(Some(true));
@@ -2557,6 +2950,8 @@ fn apply_session_flow(
                 app.apply_active_lease(lease_id, snapshot);
                 app.set_overlay_error(format!("切换失败，已恢复原会话: {reason}"));
             } else {
+                app.clear_active_session("切换失败且原会话恢复失败");
+                app.replace_overlay(session_overlay(&app.sessions, None));
                 app.set_overlay_error(format!("切换失败且原会话恢复失败: {error}"));
             }
             Ok(Some(false))
@@ -2598,6 +2993,7 @@ fn apply_session_flow(
             ..
         } => {
             if success {
+                app.clear_active_lease();
                 app.commit_session_switch(path, lease_id, snapshot);
                 app.set_toast("已新建会话");
                 return Ok(Some(true));
@@ -2630,6 +3026,7 @@ fn apply_session_flow(
                 app.set_overlay_error(error);
                 return Ok(Some(false));
             }
+            app.clear_active_lease();
             let path = restore
                 .context
                 .as_ref()
@@ -2685,10 +3082,7 @@ fn apply_session_flow(
                 return Ok(Some(false));
             }
             let Some(target) = target else {
-                app.active_session = None;
-                app.lease_id = None;
-                app.snapshot = None;
-                app.clear_for_reload("当前会话已删除");
+                app.clear_active_session("当前会话已删除");
                 app.clear_overlay_transient();
                 return Ok(Some(false));
             };
@@ -2707,7 +3101,9 @@ fn apply_session_flow(
         }
         SessionFlow::DeleteAcquiring { target, .. } => {
             if !success {
-                app.set_overlay_error(error);
+                app.clear_active_session("当前会话已删除，无法切换目标会话");
+                app.replace_overlay(session_overlay(&app.sessions, None));
+                app.set_overlay_error(format!("当前会话已删除，无法切换目标会话: {error}"));
                 return Ok(Some(false));
             }
             let (lease_id, snapshot) = parse_lease_snapshot(&result)?;
@@ -2724,8 +3120,18 @@ fn apply_session_flow(
                 app.apply_active_lease(lease_id, snapshot);
                 app.set_overlay_error(format!("删除失败，已恢复原会话: {reason}"));
             } else {
+                app.clear_active_session("删除失败且原会话恢复失败");
+                app.replace_overlay(session_overlay(&app.sessions, None));
                 app.set_overlay_error(format!("删除失败且原会话恢复失败: {error}"));
             }
+            Ok(Some(false))
+        }
+        SessionFlow::QuitReleasing { .. } => {
+            if !success {
+                app.set_overlay_error(format!("退出时释放会话失败: {error}"));
+            }
+            app.clear_active_lease();
+            *quit_requested = true;
             Ok(Some(false))
         }
     }
@@ -3248,6 +3654,10 @@ fn parse_tree(value: &serde_json::Value) -> Result<Vec<SessionTreeNode>, TuiErro
 
 fn readonly_overlay(view: &ReadonlySessionView) -> OverlayState {
     let mut lines = vec![format!("只读  {}", view.path)];
+    if view.search.open {
+        lines.push(format!("搜索: {}", view.search.query));
+        lines.push(view.search.status.clone());
+    }
     lines.extend(view.transcript.rounds().iter().flat_map(|round| {
         let mut lines = vec![round.summary()];
         if round.expanded {
@@ -3259,7 +3669,11 @@ fn readonly_overlay(view: &ReadonlySessionView) -> OverlayState {
         title: "会话只读".to_owned(),
         lines,
         scroll: 0,
-        status: format!("只读  {}  Esc 返回", view.status),
+        status: if view.search.open {
+            "Enter 搜索或跳转  Esc 关闭搜索".to_owned()
+        } else {
+            format!("只读  {}  Ctrl+F 搜索  Esc 返回", view.status)
+        },
         link: None,
         copy_text: None,
     })
@@ -3471,71 +3885,159 @@ fn pretty_json_lines(value: &serde_json::Value) -> Vec<String> {
 
 fn apply_response(app: &mut AppState, response: &ReadOnlyResponse) -> Result<bool, TuiError> {
     match response {
-        ReadOnlyResponse::Error { message, .. } => {
-            app.clear_page_load_pending();
-            app.transcript.status = message.clone();
-            app.transcript.loading_previous = false;
-        }
-        ReadOnlyResponse::TranscriptPage { id, page }
-            if id.starts_with("initial-") || id.starts_with("older-") =>
-        {
-            if !page.complete {
-                app.clear_for_reload("记录页未完整返回，正在重新读取");
-                trace("reload_requested");
-                return Ok(true);
-            }
-            if id.starts_with("initial-") {
-                trace_id("page_apply_start", id);
-                app.clear_page_load_pending();
-                app.transcript.replace_page(
-                    page.items.clone(),
-                    page.transcript_generation.clone(),
-                    page.transcript_revision,
-                    page.previous_cursor.clone(),
-                );
-                trace_id("page_apply_end", id);
-                trace("page_applied");
-            } else {
-                let context = page.request_context.as_ref();
-                if !app.transcript.accepts_previous_page(
-                    &page.transcript_generation,
-                    page.transcript_revision,
-                    context.and_then(|value| value.generation.as_deref()),
-                    context.and_then(|value| value.revision),
-                ) {
-                    app.clear_for_reload("更早记录已过期，正在重新读取");
-                    trace("reload_requested");
-                    return Ok(true);
+        ReadOnlyResponse::Error { id, message } => {
+            let Some(pending) = app.take_transcript_request(id) else {
+                return Ok(false);
+            };
+            match pending.view {
+                TranscriptViewKind::Active
+                    if pending.generation == app.session_generation
+                        && app.active_session_path() == Some(pending.session_path.as_str()) =>
+                {
+                    app.clear_page_load_pending();
+                    app.transcript.status = message.clone();
+                    app.transcript.loading_previous = false;
                 }
-                trace_id("page_apply_start", id);
-                app.clear_page_load_pending();
-                app.transcript
-                    .prepend_page(page.items.clone(), page.previous_cursor.clone());
-                app.resolve_pending_jump();
-                trace_id("page_apply_end", id);
-                trace("page_applied");
+                TranscriptViewKind::Readonly => {
+                    if let Some(view) = app.readonly_view.as_mut()
+                        && view.path == pending.session_path
+                        && view.generation == pending.generation
+                    {
+                        view.status = message.clone();
+                        view.transcript.status = message.clone();
+                        view.transcript.loading_previous = false;
+                        refresh_readonly_overlay(app);
+                    }
+                }
+                _ => {}
             }
         }
-        ReadOnlyResponse::SearchResult { id, result } if id.starts_with("search-") => {
-            app.set_search_results(
-                result
-                    .hits
-                    .iter()
-                    .map(|hit| SearchHit {
-                        entry_id: hit.entry_id.clone(),
-                        kind: hit.kind.clone(),
-                        timestamp: hit.timestamp.clone(),
-                        snippet: hit.snippet.clone(),
-                    })
-                    .collect(),
-            );
-            trace("search_applied");
+        ReadOnlyResponse::TranscriptPage { id, page } => {
+            let Some(pending) = app.take_transcript_request(id) else {
+                return Ok(false);
+            };
+            if !matches!(
+                pending.kind,
+                TranscriptRequestKind::Initial | TranscriptRequestKind::Older
+            ) {
+                return Ok(false);
+            }
+            match pending.view {
+                TranscriptViewKind::Active
+                    if pending.generation == app.session_generation
+                        && app.active_session_path() == Some(pending.session_path.as_str()) =>
+                {
+                    if !page.complete {
+                        app.clear_for_reload("记录页未完整返回，正在重新读取");
+                        trace("reload_requested");
+                        return Ok(true);
+                    }
+                    if pending.kind == TranscriptRequestKind::Initial {
+                        app.clear_page_load_pending();
+                        app.transcript.replace_page(
+                            page.items.clone(),
+                            page.transcript_generation.clone(),
+                            page.transcript_revision,
+                            page.previous_cursor.clone(),
+                        );
+                    } else if app.transcript.accepts_previous_page(
+                        &page.transcript_generation,
+                        page.transcript_revision,
+                        pending
+                            .context
+                            .as_ref()
+                            .and_then(|value| value.generation.as_deref()),
+                        pending.context.as_ref().and_then(|value| value.revision),
+                    ) {
+                        app.clear_page_load_pending();
+                        app.transcript
+                            .prepend_page(page.items.clone(), page.previous_cursor.clone());
+                        app.resolve_pending_jump();
+                    } else {
+                        app.clear_for_reload("更早记录已过期，正在重新读取");
+                        trace("reload_requested");
+                        return Ok(true);
+                    }
+                }
+                TranscriptViewKind::Readonly => {
+                    let Some(view) = app.readonly_view.as_mut() else {
+                        return Ok(false);
+                    };
+                    if view.path != pending.session_path || view.generation != pending.generation {
+                        return Ok(false);
+                    }
+                    if !page.complete {
+                        view.transcript.clear_for_reload("记录页未完整返回");
+                    } else if pending.kind == TranscriptRequestKind::Initial {
+                        view.transcript.replace_page(
+                            page.items.clone(),
+                            page.transcript_generation.clone(),
+                            page.transcript_revision,
+                            page.previous_cursor.clone(),
+                        );
+                    } else if view.transcript.accepts_previous_page(
+                        &page.transcript_generation,
+                        page.transcript_revision,
+                        pending
+                            .context
+                            .as_ref()
+                            .and_then(|value| value.generation.as_deref()),
+                        pending.context.as_ref().and_then(|value| value.revision),
+                    ) {
+                        view.transcript
+                            .prepend_page(page.items.clone(), page.previous_cursor.clone());
+                        if let Some(entry_id) = view.search.pending_jump.clone()
+                            && view.transcript.jump_to(&entry_id)
+                        {
+                            view.search.pending_jump = None;
+                            view.search.status = "已跳转".to_owned();
+                        }
+                    } else {
+                        view.transcript.clear_for_reload("更早记录已过期");
+                    }
+                    view.status = format!("{} 轮", view.transcript.cached_rounds());
+                    refresh_readonly_overlay(app);
+                }
+                _ => {}
+            }
         }
-        ReadOnlyResponse::SessionLease {
-            lease_id, snapshot, ..
-        } => {
-            app.apply_active_lease(lease_id.clone(), snapshot.clone());
-            app.transcript.status = "已获取会话租约".to_owned();
+        ReadOnlyResponse::SearchResult { id, result } => {
+            let Some(pending) = app.take_transcript_request(id) else {
+                return Ok(false);
+            };
+            if pending.kind != TranscriptRequestKind::Search {
+                return Ok(false);
+            }
+            let hits = result
+                .hits
+                .iter()
+                .map(|hit| SearchHit {
+                    entry_id: hit.entry_id.clone(),
+                    kind: hit.kind.clone(),
+                    timestamp: hit.timestamp.clone(),
+                    snippet: hit.snippet.clone(),
+                })
+                .collect();
+            match pending.view {
+                TranscriptViewKind::Active
+                    if pending.generation == app.session_generation
+                        && app.active_session_path() == Some(pending.session_path.as_str()) =>
+                {
+                    app.set_search_results(hits);
+                }
+                TranscriptViewKind::Readonly => {
+                    if let Some(view) = app.readonly_view.as_mut()
+                        && view.path == pending.session_path
+                        && view.generation == pending.generation
+                    {
+                        view.search.selected = 0;
+                        view.search.hits = hits;
+                        view.search.status = format!("{} 个结果", view.search.hits.len());
+                        refresh_readonly_overlay(app);
+                    }
+                }
+                _ => {}
+            }
         }
         ReadOnlyResponse::Operation {
             operation,
@@ -3547,9 +4049,7 @@ fn apply_response(app: &mut AppState, response: &ReadOnlyResponse) -> Result<boo
                 app.transcript.status = "已确认已有请求".to_owned();
             }
         }
-        ReadOnlyResponse::TranscriptPage { .. }
-        | ReadOnlyResponse::SearchResult { .. }
-        | ReadOnlyResponse::Other { .. } => {}
+        ReadOnlyResponse::SessionLease { .. } | ReadOnlyResponse::Other { .. } => {}
     }
     Ok(false)
 }
@@ -3657,6 +4157,47 @@ fn wait_for_protocol_eof(_shutdown: &AtomicBool) -> Result<(), TuiError> {
 mod tests {
     use super::*;
 
+    fn item(id: &str) -> lystar_protocol::TranscriptItem {
+        lystar_protocol::TranscriptItem {
+            entry_id: id.to_owned(),
+            timestamp: String::new(),
+            view: lystar_protocol::TranscriptViewItem::User {
+                text: id.to_owned(),
+            },
+        }
+    }
+
+    fn page(
+        items: Vec<lystar_protocol::TranscriptItem>,
+        cursor: Option<&str>,
+    ) -> lystar_protocol::TranscriptPage {
+        lystar_protocol::TranscriptPage {
+            items,
+            previous_cursor: cursor.map(str::to_owned),
+            has_more_previous: cursor.is_some(),
+            transcript_generation: "g1".to_owned(),
+            transcript_revision: 1,
+            complete: true,
+            request_context: None,
+        }
+    }
+
+    fn snapshot_value(path: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": "session", "path": path, "cwd": "/tmp", "phase": "idle", "activity": "idle",
+            "thinkingLevel": "off", "attached": false, "writeAccess": "owned", "revision": 1,
+            "queuedSteerCount": 0, "queuedFollowUpCount": 0, "transcriptGeneration": "g1",
+            "transcriptRevision": 1, "model": null
+        })
+    }
+
+    fn test_pipe() -> ProtocolPipe {
+        let path = std::env::temp_dir().join(format!("lystar-tui-test-{}", std::process::id()));
+        let output = std::fs::File::create(path).unwrap();
+        let (_sender, inbound) = mpsc::sync_channel(1);
+        ProtocolPipe { output, inbound }
+    }
+
     #[test]
     fn restores_raw_mode_when_entering_the_screen_fails() {
         let restored = Arc::new(AtomicBool::new(false));
@@ -3728,6 +4269,275 @@ mod tests {
         assert_eq!(items[0].action, "ui:select:region-cn");
         assert_eq!(items[1].action, "ui:select:beta");
         assert_eq!(items[2].action, "ui:select:alpha");
+    }
+
+    #[test]
+    fn applies_readonly_pages_search_and_rejects_stale_responses() {
+        let mut app = AppState::default();
+        app.readonly_view = Some(ReadonlySessionView {
+            path: "/tmp/readonly.jsonl".to_owned(),
+            generation: 7,
+            ..ReadonlySessionView::default()
+        });
+        app.open_overlay(readonly_overlay(app.readonly_view.as_ref().unwrap()));
+        app.begin_transcript_request(
+            "readonly-initial".to_owned(),
+            TranscriptViewKind::Readonly,
+            TranscriptRequestKind::Initial,
+            "/tmp/readonly.jsonl".to_owned(),
+            7,
+            None,
+        );
+        apply_response(
+            &mut app,
+            &ReadOnlyResponse::TranscriptPage {
+                id: "readonly-initial".to_owned(),
+                page: page(vec![item("tail")], Some("older")),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            app.readonly_view
+                .as_ref()
+                .unwrap()
+                .transcript
+                .cached_rounds(),
+            1
+        );
+
+        let context = TranscriptRequestContext {
+            generation: Some("g1".to_owned()),
+            revision: Some(1),
+            cursor: Some("older".to_owned()),
+        };
+        app.begin_transcript_request(
+            "readonly-older".to_owned(),
+            TranscriptViewKind::Readonly,
+            TranscriptRequestKind::Older,
+            "/tmp/readonly.jsonl".to_owned(),
+            7,
+            Some(context),
+        );
+        apply_response(
+            &mut app,
+            &ReadOnlyResponse::TranscriptPage {
+                id: "readonly-older".to_owned(),
+                page: page(vec![item("older")], None),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            app.readonly_view
+                .as_ref()
+                .unwrap()
+                .transcript
+                .cached_rounds(),
+            2
+        );
+
+        app.begin_transcript_request(
+            "readonly-search".to_owned(),
+            TranscriptViewKind::Readonly,
+            TranscriptRequestKind::Search,
+            "/tmp/readonly.jsonl".to_owned(),
+            7,
+            None,
+        );
+        apply_response(
+            &mut app,
+            &ReadOnlyResponse::SearchResult {
+                id: "readonly-search".to_owned(),
+                result: lystar_protocol::TranscriptSearchResult {
+                    generation: "g1".to_owned(),
+                    transcript_revision: 1,
+                    complete: true,
+                    hits: vec![lystar_protocol::TranscriptSearchHit {
+                        entry_id: "tail".to_owned(),
+                        kind: "user".to_owned(),
+                        timestamp: String::new(),
+                        snippet: "tail".to_owned(),
+                    }],
+                    next_cursor: None,
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(app.readonly_view.as_ref().unwrap().search.hits.len(), 1);
+
+        app.begin_transcript_request(
+            "readonly-stale".to_owned(),
+            TranscriptViewKind::Readonly,
+            TranscriptRequestKind::Initial,
+            "/tmp/readonly.jsonl".to_owned(),
+            6,
+            None,
+        );
+        apply_response(
+            &mut app,
+            &ReadOnlyResponse::TranscriptPage {
+                id: "readonly-stale".to_owned(),
+                page: page(vec![item("stale")], None),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            app.readonly_view
+                .as_ref()
+                .unwrap()
+                .transcript
+                .cached_rounds(),
+            2
+        );
+    }
+
+    #[test]
+    fn keeps_active_events_running_behind_readonly_view() {
+        let mut app = AppState::default();
+        app.begin_active_session("/tmp/active.jsonl".to_owned(), "/tmp".to_owned());
+        app.transcript
+            .replace_page(vec![item("before")], "g1".to_owned(), 1, None);
+        app.readonly_view = Some(ReadonlySessionView {
+            path: "/tmp/readonly.jsonl".to_owned(),
+            generation: 1,
+            ..ReadonlySessionView::default()
+        });
+        apply_event(
+            &mut app,
+            &ReadOnlyEvent::SessionProgress {
+                session_path: "/tmp/active.jsonl".to_owned(),
+                progress: lystar_protocol::SessionProgress::AssistantDelta {
+                    text: "running".to_owned(),
+                },
+            },
+            "/tmp/active.jsonl",
+        )
+        .unwrap();
+        apply_event(
+            &mut app,
+            &ReadOnlyEvent::TranscriptCommitted {
+                session_path: "/tmp/active.jsonl".to_owned(),
+                transcript_generation: "g1".to_owned(),
+                from_revision: 1,
+                to_revision: 2,
+                items: vec![item("after")],
+            },
+            "/tmp/active.jsonl",
+        )
+        .unwrap();
+        assert_eq!(app.assistant_stream, "");
+        assert_eq!(app.transcript.cached_rounds(), 2);
+        assert_eq!(
+            app.readonly_view
+                .as_ref()
+                .unwrap()
+                .transcript
+                .cached_rounds(),
+            0
+        );
+    }
+
+    #[test]
+    fn session_transitions_clear_released_leases_and_reject_stale_acquires() {
+        let mut app = AppState::default();
+        app.begin_active_session("/tmp/old.jsonl".to_owned(), "/tmp".to_owned());
+        let old_snapshot = serde_json::from_value(snapshot_value("/tmp/old.jsonl")).unwrap();
+        app.apply_active_lease("old-lease".to_owned(), old_snapshot);
+        let restore = app.restore_point();
+        let target = SessionSummary {
+            path: "/tmp/new.jsonl".to_owned(),
+            id: "new".to_owned(),
+            cwd: "/tmp".to_owned(),
+            name: None,
+            updated_at: 1,
+            first_message: "new".to_owned(),
+            activity: "idle".to_owned(),
+        };
+        let mut pipe = test_pipe();
+        let mut sequence = 10;
+        let mut quit = false;
+        let mut flow = Some(SessionFlow::SwitchReleasing {
+            id: "release".to_owned(),
+            target: target.clone(),
+            restore: restore.clone(),
+        });
+        apply_session_flow(
+            &mut app,
+            &serde_json::json!({"id":"release","ok":true,"result":{}}),
+            &mut pipe,
+            "client",
+            &mut sequence,
+            &mut flow,
+            &mut quit,
+        )
+        .unwrap();
+        assert!(app.lease_id.is_none());
+        assert!(app.active_session.as_ref().unwrap().lease_id.is_none());
+
+        let mut flow = Some(SessionFlow::SwitchAcquiring {
+            id: "acquire".to_owned(),
+            target: target.clone(),
+            restore: restore.clone(),
+        });
+        apply_session_flow(&mut app, &serde_json::json!({"id":"acquire","ok":true,"result":{"lease":{"leaseId":"new-lease"},"snapshot":snapshot_value("/tmp/new.jsonl")}}), &mut pipe, "client", &mut sequence, &mut flow, &mut quit).unwrap();
+        assert_eq!(app.active_session_path(), Some("/tmp/new.jsonl"));
+        assert_eq!(app.lease_id.as_deref(), Some("new-lease"));
+
+        let mut flow = Some(SessionFlow::SwitchRollback {
+            id: "rollback".to_owned(),
+            restore: restore.clone(),
+            reason: "target failed".to_owned(),
+        });
+        apply_session_flow(
+            &mut app,
+            &serde_json::json!({"id":"rollback","ok":false,"error":{"message":"old failed"}}),
+            &mut pipe,
+            "client",
+            &mut sequence,
+            &mut flow,
+            &mut quit,
+        )
+        .unwrap();
+        assert!(app.active_session.is_none());
+        assert!(app.lease_id.is_none());
+
+        app.begin_active_session("/tmp/delete.jsonl".to_owned(), "/tmp".to_owned());
+        let mut flow = Some(SessionFlow::DeleteRemoving {
+            id: "delete".to_owned(),
+            restore,
+            target: None,
+        });
+        apply_session_flow(
+            &mut app,
+            &serde_json::json!({"id":"delete","ok":true,"result":{}}),
+            &mut pipe,
+            "client",
+            &mut sequence,
+            &mut flow,
+            &mut quit,
+        )
+        .unwrap();
+        assert!(app.active_session.is_none());
+
+        app.begin_active_session("/tmp/initial.jsonl".to_owned(), "/tmp".to_owned());
+        let generation = app.session_generation;
+        let mut flow = Some(SessionFlow::InitialAcquiring {
+            id: "expected".to_owned(),
+            path: "/tmp/initial.jsonl".to_owned(),
+            generation,
+        });
+        let outcome = apply_session_flow(&mut app, &serde_json::json!({"id":"stale","ok":true,"result":{"lease":{"leaseId":"stale"},"snapshot":snapshot_value("/tmp/initial.jsonl")}}), &mut pipe, "client", &mut sequence, &mut flow, &mut quit).unwrap();
+        assert!(outcome.is_none());
+        assert!(app.lease_id.is_none());
+
+        quit = true;
+        let mut flow = Some(SessionFlow::SwitchAcquiring {
+            id: "quit-acquire".to_owned(),
+            target,
+            restore: app.restore_point(),
+        });
+        apply_session_flow(&mut app, &serde_json::json!({"id":"quit-acquire","ok":true,"result":{"lease":{"leaseId":"quit-lease"},"snapshot":snapshot_value("/tmp/new.jsonl")}}), &mut pipe, "client", &mut sequence, &mut flow, &mut quit).unwrap();
+        assert!(matches!(flow, Some(SessionFlow::QuitReleasing { .. })));
+        assert!(app.lease_id.is_none());
     }
 
     #[test]
