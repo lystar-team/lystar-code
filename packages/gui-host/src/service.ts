@@ -944,7 +944,11 @@ export class GuiHostService {
 				const runtime = [...this.runtimes.values()].find(
 					(candidate) => !cwd || canonicalProjectCwd(candidate.getSnapshot("available").cwd) === cwd,
 				);
-				return this.adapter.getDiagnostics(cwd, runtime?.getToolRecoveryDiagnostics());
+				const diagnostics = await this.adapter.getDiagnostics(cwd, runtime?.getToolRecoveryDiagnostics());
+				const componentDiagnostics = runtime?.getExtensionComponentDiagnostics?.();
+				return componentDiagnostics
+					? { ...(diagnostics as Record<string, JsonValue>), extensionComponents: componentDiagnostics }
+					: diagnostics;
 			}
 			case "get_connection_status":
 				return {

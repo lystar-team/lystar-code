@@ -86,6 +86,7 @@ export interface RuntimeSession {
 	getCompletions(text: string, cursor: number): CompletionResult | undefined;
 	renderRichText?(request: RichTextRenderRequest): RenderRichTextResult;
 	getExtensionUiSnapshot?(): ExtensionUiState;
+	getExtensionComponentDiagnostics?(): JsonValue;
 	updateExtensionEditorState?(text: string, generation: number): number;
 	dispatchExtensionTerminalInput?(data: string): Promise<ExtensionTerminalInputResult>;
 	dispatchExtensionComponentInput?(componentId: string, generation: number, data: string): boolean;

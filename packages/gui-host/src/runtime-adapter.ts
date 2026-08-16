@@ -1032,6 +1032,10 @@ class CoreRuntimeSession implements RuntimeSession {
 		return this.extensionUi.snapshot();
 	}
 
+	getExtensionComponentDiagnostics(): JsonValue {
+		return jsonValue(this.extensionUi.getComponentDiagnostics());
+	}
+
 	updateExtensionEditorState(text: string, generation: number): number {
 		return this.extensionUi.updateEditorState(text, generation);
 	}

@@ -8,6 +8,7 @@ type Component = {
 	handleInput?(data: string): void;
 	invalidate(): void;
 	dispose?(): void;
+	getFinalState?(): number | undefined;
 	width?: number;
 };
 type TUI = {
@@ -61,6 +62,7 @@ interface ComponentMount {
 	generation: number;
 	placement: ComponentPlacement;
 	adapter: HeadlessComponentAdapter;
+	component: Component;
 	width: number;
 	height: number;
 	visible: boolean;
@@ -300,6 +302,47 @@ function createHeadlessComponentAdapter(
 	};
 }
 
+export interface ExtensionComponentDiagnostics {
+	componentId: string;
+	generation: number;
+	revision: number;
+	renderCount: number;
+	publishCount: number;
+	coalescedCount: number;
+	lastFinalState: number | null;
+	invalidations: Array<{ invalidateRequestedAt: number; publishedAt?: number; revision?: number }>;
+}
+
+interface ComponentDiagnosticState extends ExtensionComponentDiagnostics {}
+
+const MAX_COMPONENT_DIAGNOSTIC_INVALIDATIONS = 10_000;
+
+function monotonicMilliseconds(): number {
+	return Number(process.hrtime.bigint()) / 1_000_000;
+}
+
+function numericFinalState(component: Component): number | null {
+	try {
+		const value = component.getFinalState?.();
+		return typeof value === "number" && Number.isFinite(value) ? value : null;
+	} catch {
+		return null;
+	}
+}
+
+function componentDiagnostic(mount: ComponentMount): ComponentDiagnosticState {
+	return {
+		componentId: mount.componentId,
+		generation: mount.generation,
+		revision: 0,
+		renderCount: 0,
+		publishCount: 0,
+		coalescedCount: 0,
+		lastFinalState: null,
+		invalidations: [],
+	};
+}
+
 /** Rust TUI ExtensionUIContext bridge. Node only renders Components and never owns a terminal. */
 export class ExtensionUiBridge {
 	private readonly statuses = new Map<string, string>();
@@ -309,6 +352,7 @@ export class ExtensionUiBridge {
 	private readonly widgetComponents = new Map<string, string>();
 	private readonly componentDirty = new Map<string, number>();
 	private readonly componentFrameAt = new Map<string, number>();
+	private readonly componentDiagnostics = new Map<string, ComponentDiagnosticState>();
 	private componentFrameTimer: ReturnType<typeof setTimeout> | undefined;
 	private readonly onUiRequest: UiRequestHandler;
 	private readonly publish: (event: ExtensionUiBridgeEvent) => void;
@@ -424,6 +468,15 @@ export class ExtensionUiBridge {
 
 	publishSnapshot(): void {
 		if (!this.disposed) this.publish({ type: "snapshot", state: this.snapshot() });
+	}
+
+	getComponentDiagnostics(): { components: ExtensionComponentDiagnostics[] } {
+		return {
+			components: [...this.componentDiagnostics.values()].map((diagnostic) => ({
+				...diagnostic,
+				invalidations: diagnostic.invalidations.map((invalidation) => ({ ...invalidation })),
+			})),
+		};
 	}
 
 	publishComponentSnapshot(): void {
@@ -605,11 +658,13 @@ export class ExtensionUiBridge {
 				generation,
 				placement,
 				adapter,
+				component,
 				width: 80,
 				height: 24,
 				visible: true,
 			};
 			this.components.set(componentId, mount);
+			this.componentDiagnostics.set(componentId, componentDiagnostic(mount));
 			afterMount?.(componentId);
 			const frame = adapter.render();
 			this.recordComponentFrame(mount, frame);
@@ -676,6 +731,7 @@ export class ExtensionUiBridge {
 						generation,
 						placement: "custom_overlay",
 						adapter,
+						component,
 						width: 80,
 						height: 24,
 						visible: true,
@@ -685,6 +741,7 @@ export class ExtensionUiBridge {
 						customResolve: resolve,
 					};
 					this.components.set(componentId, mount);
+					this.componentDiagnostics.set(componentId, componentDiagnostic(mount));
 					const handle = {
 						hide: () => {
 							mount.visible = false;
@@ -735,15 +792,35 @@ export class ExtensionUiBridge {
 		});
 	}
 
-	private recordComponentFrame(mount: ComponentMount, _frame: HeadlessFrame): void {
+	private recordComponentFrame(mount: ComponentMount, frame: HeadlessFrame): void {
 		this.componentDirty.delete(mount.componentId);
 		this.componentFrameAt.set(mount.componentId, performance.now());
+		const diagnostic = this.componentDiagnostics.get(mount.componentId);
+		if (diagnostic?.generation === mount.generation) {
+			const publishedAt = monotonicMilliseconds();
+			diagnostic.revision = frame.revision;
+			diagnostic.renderCount++;
+			diagnostic.publishCount++;
+			diagnostic.lastFinalState = numericFinalState(mount.component);
+			for (const invalidation of diagnostic.invalidations) {
+				if (invalidation.publishedAt === undefined) {
+					invalidation.publishedAt = publishedAt;
+					invalidation.revision = frame.revision;
+				}
+			}
+		}
 		this.rescheduleComponentFrames();
 	}
 
 	private scheduleComponentFrame(componentId: string, generation: number): void {
 		const mount = this.components.get(componentId);
 		if (this.disposed || !mount || mount.generation !== generation || !mount.visible) return;
+		const diagnostic = this.componentDiagnostics.get(componentId);
+		if (diagnostic?.generation === generation) {
+			if (this.componentDirty.get(componentId) === generation) diagnostic.coalescedCount++;
+			diagnostic.invalidations.push({ invalidateRequestedAt: monotonicMilliseconds() });
+			if (diagnostic.invalidations.length > MAX_COMPONENT_DIAGNOSTIC_INVALIDATIONS) diagnostic.invalidations.shift();
+		}
 		this.componentDirty.set(componentId, generation);
 		this.rescheduleComponentFrames();
 	}

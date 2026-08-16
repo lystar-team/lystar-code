@@ -35,6 +35,35 @@ class ContractComponent {
 	}
 }
 
+class StormComponent {
+	private value = 0;
+	private readonly tui: { requestRender(): void };
+
+	constructor(tui: { requestRender(): void }) {
+		this.tui = tui;
+	}
+
+	render(_width: number): string[] {
+		return [`storm final ${this.value}`];
+	}
+
+	invalidate(): void {}
+
+	getFinalState(): number {
+		return this.value;
+	}
+
+	start(onDone: () => void): void {
+		for (let index = 1; index <= 1_000; index++) {
+			setTimeout(() => {
+				this.value = index;
+				this.tui.requestRender();
+				if (index === 1_000) onDone();
+			}, index / 2);
+		}
+	}
+}
+
 export default function runtimeContractExtension(pi: ExtensionAPI): void {
 	const faux = fauxProvider({
 		api: "lystar-contract-faux-api",
@@ -146,6 +175,17 @@ export default function runtimeContractExtension(pi: ExtensionAPI): void {
 		handler: async () => {
 			componentHandle?.hide();
 			setTimeout(() => componentHandle?.setHidden(false), 20);
+		},
+	});
+	pi.registerCommand("contract-components-storm", {
+		description: "Exercise a real 1000-invalidate Extension Component storm",
+		handler: async (_args, ctx) => {
+			let component: StormComponent | undefined;
+			ctx.ui.setHeader((tui) => {
+				component = new StormComponent(tui);
+				return component;
+			});
+			component?.start(() => ctx.ui.setStatus("component-storm", "done"));
 		},
 	});
 	pi.registerCommand("contract-rust-ui-malicious", {

@@ -440,18 +440,37 @@ fn trace_id(event: &str, id: &str) {
     }
 }
 
-fn monotonic_millis() -> u128 {
+fn trace_component_frame_applied(component_id: &str, revision: u64) {
+    if std::env::var_os("PI_RUST_TUI_TRACE").is_some() {
+        eprintln!(
+            "lystar-rust-tui trace=extension_component_frame_applied componentId={component_id} revision={revision} at_ms={}",
+            monotonic_millis()
+        );
+    }
+}
+
+fn monotonic_millis() -> f64 {
     #[cfg(target_os = "linux")]
     {
-        if let Some(seconds) = std::fs::read_to_string("/proc/uptime")
-            .ok()
-            .and_then(|uptime| uptime.split_whitespace().next()?.parse::<f64>().ok())
-        {
-            return (seconds * 1_000.0) as u128;
+        #[repr(C)]
+        struct Timespec {
+            tv_sec: i64,
+            tv_nsec: i64,
+        }
+        unsafe extern "C" {
+            fn clock_gettime(clock_id: i32, time: *mut Timespec) -> i32;
+        }
+        let mut time = Timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: clock_gettime writes exactly one Timespec to the valid local pointer.
+        if unsafe { clock_gettime(1, &mut time) } == 0 {
+            return time.tv_sec as f64 * 1_000.0 + time.tv_nsec as f64 / 1_000_000.0;
         }
     }
     static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-    START.get_or_init(Instant::now).elapsed().as_millis()
+    START.get_or_init(Instant::now).elapsed().as_secs_f64() * 1_000.0
 }
 
 fn trace_cache(app: &AppState) {
@@ -5803,7 +5822,7 @@ fn apply_server_message(
                         if let Some(component) = app.extension_ui.components.get_mut(component_id) {
                             component.desired_size = desired_size;
                         }
-                        trace_id("component_frame_applied", component_id);
+                        trace_component_frame_applied(component_id, revision);
                     }
                     return Ok(false);
                 }

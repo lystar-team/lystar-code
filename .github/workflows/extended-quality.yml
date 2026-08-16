@@ -8,7 +8,7 @@ on:
         required: true
         default: non-live-all
         type: choice
-        options: [ai-live, coding-live, stress, rust-benchmark, non-live-all]
+        options: [ai-live, coding-live, stress, rust-benchmark, rust-component-benchmark, non-live-all]
   schedule:
     - cron: "17 5 * * 1"
 
@@ -328,7 +328,7 @@ jobs:
           retention-days: 7
 
   rust-benchmark:
-    if: github.event_name == 'schedule' || inputs.suite == 'rust-benchmark' || inputs.suite == 'non-live-all'
+    if: github.event_name == 'schedule' || inputs.suite == 'rust-benchmark' || inputs.suite == 'rust-component-benchmark' || inputs.suite == 'non-live-all'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -404,21 +404,27 @@ jobs:
           echo "finished_at=$(date +%s%N)" >> "$GITHUB_OUTPUT"
           exit "$install_status"
 
-      - name: Run and verify Rust B0 benchmark
+      - name: Run and verify Rust benchmark
         id: tests
         shell: bash
         run: |
           started_at=$(date +%s%N)
           set +e
-          npm run benchmark:rust-spike
-          benchmark_status=$?
-          node scripts/verify-rust-spike-benchmark.mjs --exit-code "$benchmark_status" > "$RUNNER_TEMP/rust-benchmark-report.json"
+          if [[ "${{ inputs.suite }}" == "rust-component-benchmark" ]]; then
+            npm run benchmark:rust-extension-component-storm
+            benchmark_status=$?
+            node scripts/verify-rust-extension-component-storm.mjs --exit-code "$benchmark_status" > "$RUNNER_TEMP/rust-benchmark-report.json"
+          else
+            npm run benchmark:rust-spike
+            benchmark_status=$?
+            node scripts/verify-rust-spike-benchmark.mjs --exit-code "$benchmark_status" > "$RUNNER_TEMP/rust-benchmark-report.json"
+          fi
           verify_status=$?
           echo "started_at=$started_at" >> "$GITHUB_OUTPUT"
           echo "finished_at=$(date +%s%N)" >> "$GITHUB_OUTPUT"
           exit "$verify_status"
 
-      - name: Write Rust B0 benchmark summary
+      - name: Write Rust benchmark summary
         if: always()
         shell: bash
         run: |
@@ -445,13 +451,14 @@ jobs:
             --cache-hit "cargo=${{ steps.cargo-cache.outputs.cache-hit || 'unavailable' }}" \
             --json-output "$RUNNER_TEMP/rust-benchmark-metrics.json"
 
-      - name: Upload Rust B0 benchmark report
+      - name: Upload Rust benchmark report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: extended-quality-rust-benchmark
           path: |
             .artifacts/rust-tui-spike
+            .artifacts/rust-tui-extension-component-storm
             docs/rust-tui-spike-report.md
             ${{ runner.temp }}/rust-benchmark-report.json
             ${{ runner.temp }}/rust-benchmark-metrics.json

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
+	appendFileSync,
 	closeSync,
 	constants,
 	existsSync,
@@ -36,6 +37,7 @@ import type { RuntimeAdapter, RuntimeEvent, RuntimeSession, UiRequestHandler } f
 
 const repositoryRoot = fileURLToPath(new URL("../../..", import.meta.url));
 const artifactRoot = join(repositoryRoot, ".artifacts", "rust-tui-m7");
+let releaseTuiBuilt = false;
 const sockets = new Set<string>();
 const directories = new Set<string>();
 const descriptors = new Set<number>();
@@ -126,6 +128,8 @@ interface TraceEvent {
 	event: string;
 	atMs: number;
 	id?: string;
+	componentId?: string;
+	revision?: number;
 }
 
 function readTrace(path: string): TraceEvent[] {
@@ -133,8 +137,21 @@ function readTrace(path: string): TraceEvent[] {
 		return readFileSync(path, "utf8")
 			.split("\n")
 			.flatMap((line) => {
-				const match = /trace=([^\s]+) at_ms=(\d+)(?: id=([^\s]+))?/.exec(line);
-				return match ? [{ event: match[1], atMs: Number(match[2]), ...(match[3] ? { id: match[3] } : {}) }] : [];
+				const event = /trace=([^\s]+)/.exec(line)?.[1];
+				const atMs = /at_ms=([\d.]+)/.exec(line)?.[1];
+				if (!event || !atMs) return [];
+				const id = /\sid=([^\s]+)/.exec(line)?.[1];
+				const componentId = /\scomponentId=([^\s]+)/.exec(line)?.[1];
+				const revision = /\srevision=(\d+)/.exec(line)?.[1];
+				return [
+					{
+						event,
+						atMs: Number(atMs),
+						...(id ? { id } : {}),
+						...(componentId ? { componentId } : {}),
+						...(revision ? { revision: Number(revision) } : {}),
+					},
+				];
 			});
 	} catch {
 		return [];
@@ -1168,6 +1185,7 @@ interface StartedTui {
 	runtime: FakeRuntimeSession;
 	connection: ReturnType<GuiHostService["createConnection"]>;
 	control: ReturnType<GuiHostService["createConnection"]>;
+	controlMessages: ServerMessage[];
 	clientMessages: ClientMessage[];
 	serverMessages: ServerMessage[];
 	requests: RequestRecord[];
@@ -1205,7 +1223,10 @@ async function startTui(
 	runOptions: { mode?: "auto" | "fullscreen" | "regular"; exitOutput?: "transcript" | "resume-hint" } = {},
 	runtimeHostFactory?: (context: { directory: string }) => Promise<RealRuntimeHost>,
 ): Promise<StartedTui> {
-	run("cargo", ["build", "--release", "-p", "lystar-tui"]);
+	if (!releaseTuiBuilt) {
+		run("cargo", ["build", "--release", "-p", "lystar-tui"]);
+		releaseTuiBuilt = true;
+	}
 	const directory = mkdtempSync(join(tmpdir(), "lystar-rust-m7-e2e-"));
 	directories.add(directory);
 	const artifactDirectory = join(artifactRoot, `${label}-${process.pid}-${Date.now()}`);
@@ -1334,6 +1355,7 @@ async function startTui(
 		runtime,
 		connection,
 		control,
+		controlMessages,
 		requests,
 		clientMessages,
 		serverMessages,
@@ -1400,6 +1422,102 @@ function writeCapture(tui: StartedTui, name: string, width: number, requireConte
 	writeFileSync(join(tui.artifactDirectory, `${name}.txt`), capture);
 	if (requireContent) assertPaneFits(capture, width);
 }
+
+type StormComponentDiagnostics = {
+	componentId: string;
+	generation: number;
+	revision: number;
+	renderCount: number;
+	publishCount: number;
+	coalescedCount: number;
+	lastFinalState: number | null;
+	invalidations: Array<{ invalidateRequestedAt: number; publishedAt?: number; revision?: number }>;
+};
+
+function timingSummary(samples: readonly number[]) {
+	assert.ok(samples.length > 0, "storm timing series is empty");
+	return {
+		p50Ms: percentile(samples, 0.5),
+		p95Ms: percentile(samples, 0.95),
+		p99Ms: percentile(samples, 0.99),
+		maxMs: Math.max(...samples),
+	};
+}
+
+async function readStormDiagnostics(tui: StartedTui): Promise<StormComponentDiagnostics> {
+	const id = `storm-diagnostics-${Date.now()}`;
+	await tui.control.handle({ type: "request", id, request: { command: "get_diagnostics" } });
+	const response = tui.controlMessages.find(
+		(message) => message.type === "response" && message.id === id && message.ok,
+	);
+	if (!response || response.type !== "response" || !response.ok)
+		throw new Error("Host did not return component diagnostics");
+	const components = (response.result as { extensionComponents?: { components?: StormComponentDiagnostics[] } })
+		.extensionComponents?.components;
+	const component = components?.find((candidate) => candidate.componentId === "header");
+	if (!component) throw new Error("Host diagnostics has no storm header component");
+	return component;
+}
+
+function startProcessTreeSampling(pid: number) {
+	const rssSamples = [rssTree(pid)];
+	const cpuStartedAt = processTreeCpuMilliseconds(pid);
+	const timer = setInterval(() => rssSamples.push(rssTree(pid)), 10);
+	return {
+		stop: () => {
+			clearInterval(timer);
+			return {
+				rssP95Bytes: percentile(rssSamples, 0.95),
+				rssMaxBytes: Math.max(...rssSamples),
+				cpuMs: Math.max(0, processTreeCpuMilliseconds(pid) - cpuStartedAt),
+				sampleCount: rssSamples.length,
+			};
+		},
+	};
+}
+
+function createContractRuntimeHost(directory: string): Promise<RealRuntimeHost> {
+	return (async () => {
+		const agentDir = join(directory, "agent");
+		const cwd = join(directory, "project");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(cwd, { recursive: true });
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({
+				defaultProvider: "lystar-contract-faux",
+				defaultModel: "contract-1",
+				defaultThinkingLevel: "off",
+				defaultProjectTrust: "always",
+				extensions: [fileURLToPath(new URL("./fixtures/runtime-contract-extension.ts", import.meta.url))],
+			}),
+		);
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		const runtime = await adapter.createSession(cwd, async () => ({ cancelled: true }));
+		const sessionPath = runtime.sessionPath;
+		await runtime.dispose();
+		return { adapter, agentDir, sessionPath };
+	})();
+}
+
+function componentStormBenchmarkConfig() {
+	const artifact = process.env.LYSTAR_EXTENSION_COMPONENT_STORM_ARTIFACT;
+	if (!artifact) return undefined;
+	return {
+		artifact,
+		rounds: process.env.LYSTAR_EXTENSION_COMPONENT_STORM_SMOKE === "1" ? 1 : 5,
+		sizes:
+			process.env.LYSTAR_EXTENSION_COMPONENT_STORM_SMOKE === "1"
+				? [{ width: 80, height: 24 }]
+				: [
+						{ width: 80, height: 24 },
+						{ width: 120, height: 36 },
+						{ width: 200, height: 60 },
+					],
+	};
+}
+
+const componentStormBenchmark = componentStormBenchmarkConfig();
 
 function emitCommitted(runtime: FakeRuntimeSession, generation: string, fromRevision: number): void {
 	runtime.emit({
@@ -1950,6 +2068,139 @@ describe("Rust read-only TUI fd bridge", () => {
 			}
 		}
 	}, 180_000);
+
+	(componentStormBenchmark ? it : it.skip)(
+		"benchmarks real Extension Component invalidate storms through Host and Rust",
+		async () => {
+			for (const dimensions of componentStormBenchmark!.sizes) {
+				for (let round = 1; round <= componentStormBenchmark!.rounds; round++) {
+					const tui = await startTui(
+						0,
+						dimensions,
+						`extension-component-storm-${dimensions.width}x${dimensions.height}-${round}`,
+						undefined,
+						{},
+						async ({ directory }) => createContractRuntimeHost(directory),
+					);
+					try {
+						await waitForInitialPage(tui);
+						await waitFor(async () => {
+							await tui.pump();
+							return tui.serverMessages.some(
+								(message) => message.type === "response" && message.id.startsWith("acquire-") && message.ok,
+							);
+						}, "storm runtime did not acquire the Rust lease");
+
+						const traceStart = tui.traces().length;
+						const activeStartedAt = monotonicMs();
+						const activeMetrics = startProcessTreeSampling(tui.panePid());
+						tui.sendLiteral("/contract-components-storm");
+						tui.send("Enter");
+						await waitFor(
+							async () => {
+								await tui.pump();
+								return tui.pane().includes("storm final 1000");
+							},
+							"Rust did not display final storm state",
+							20_000,
+						);
+						const activeElapsedMs = monotonicMs() - activeStartedAt;
+						const active = activeMetrics.stop();
+						const diagnostics = await readStormDiagnostics(tui);
+						const stormInvalidations = diagnostics.invalidations;
+						assert.equal(stormInvalidations.length, 1_000, "Host did not record all storm invalidations");
+						assert.equal(diagnostics.lastFinalState, 1_000, "Host diagnostics lost the final component state");
+						assert.ok(
+							stormInvalidations.every(
+								(invalidation) => invalidation.publishedAt !== undefined && invalidation.revision !== undefined,
+							),
+							"a storm invalidation was not assigned to its covering publish revision",
+						);
+						const firstInvalidateAt = stormInvalidations[0]!.invalidateRequestedAt;
+						const lastPublishedAt = stormInvalidations.at(-1)!.publishedAt!;
+						const elapsedMs = lastPublishedAt - firstInvalidateAt;
+						const frameBudget = Math.ceil(elapsedMs / (1_000 / 60)) + 2;
+						assert.ok(
+							diagnostics.renderCount <= frameBudget,
+							`render count ${diagnostics.renderCount} exceeds ${frameBudget}`,
+						);
+						assert.ok(
+							diagnostics.publishCount <= frameBudget,
+							`publish count ${diagnostics.publishCount} exceeds ${frameBudget}`,
+						);
+						assert.ok(diagnostics.coalescedCount > 0, "storm did not coalesce any invalidations");
+
+						const rustFrames = tui
+							.traces()
+							.slice(traceStart)
+							.filter(
+								(trace) =>
+									trace.event === "extension_component_frame_applied" &&
+									trace.componentId === diagnostics.componentId &&
+									trace.revision !== undefined,
+							)
+							.map((trace) => ({
+								componentId: trace.componentId!,
+								revision: trace.revision!,
+								appliedAt: trace.atMs,
+							}));
+						assert.ok(rustFrames.length > 0, "Rust emitted no component frame apply trace");
+						const appliedByRevision = new Map(rustFrames.map((frame) => [frame.revision, frame.appliedAt]));
+						const invalidateToPublish = stormInvalidations.map(
+							(invalidation) => invalidation.publishedAt! - invalidation.invalidateRequestedAt,
+						);
+						const publishToApply = stormInvalidations.map((invalidation) => {
+							const appliedAt = appliedByRevision.get(invalidation.revision!);
+							assert.notEqual(appliedAt, undefined, `Rust trace is missing revision ${invalidation.revision}`);
+							return appliedAt! - invalidation.publishedAt!;
+						});
+						const endToEnd = stormInvalidations.map(
+							(_invalidation, index) => invalidateToPublish[index]! + publishToApply[index]!,
+						);
+						const idleTraceCount = tui
+							.traces()
+							.filter((trace) => trace.event === "extension_component_frame_applied").length;
+						const idleMetrics = startProcessTreeSampling(tui.panePid());
+						await new Promise((resolve) => setTimeout(resolve, 500));
+						await tui.pump();
+						const idle = idleMetrics.stop();
+						const idleComponentFrames =
+							tui.traces().filter((trace) => trace.event === "extension_component_frame_applied").length -
+							idleTraceCount;
+						assert.equal(idleComponentFrames, 0, "idle control applied component frames after the storm");
+
+						const record = {
+							schemaVersion: 1,
+							scenario: "extension_component_storm",
+							columns: dimensions.width,
+							rows: dimensions.height,
+							round,
+							componentId: diagnostics.componentId,
+							generation: diagnostics.generation,
+							finalState: diagnostics.lastFinalState,
+							elapsedMs,
+							activeElapsedMs,
+							hostDiagnostics: diagnostics,
+							rustFrames,
+							invalidateToPublish: timingSummary(invalidateToPublish),
+							publishToApply: timingSummary(publishToApply),
+							endToEnd: timingSummary(endToEnd),
+							process: {
+								pid: tui.panePid(),
+								processTreePids: processTreePids(tui.panePid()),
+								active,
+								idle: { ...idle, componentFrames: idleComponentFrames },
+							},
+						};
+						appendFileSync(componentStormBenchmark!.artifact, `${JSON.stringify(record)}\n`);
+					} finally {
+						tui.closeProtocol();
+					}
+				}
+			}
+		},
+		300_000,
+	);
 
 	it("opens the command palette, renders typed about and diagnostics, and bridges injected UI requests twice", async () => {
 		for (let attempt = 0; attempt < 2; attempt++) {

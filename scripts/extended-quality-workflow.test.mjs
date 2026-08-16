@@ -10,7 +10,14 @@ test("extended quality workflow keeps live suites manual and non-live suites sch
 	const document = parseDocument(workflow);
 	assert.deepEqual(document.errors, []);
 	const parsed = document.toJS();
-	assert.deepEqual(parsed.on.workflow_dispatch.inputs.suite.options, ["ai-live", "coding-live", "stress", "rust-benchmark", "non-live-all"]);
+	assert.deepEqual(parsed.on.workflow_dispatch.inputs.suite.options, [
+		"ai-live",
+		"coding-live",
+		"stress",
+		"rust-benchmark",
+		"rust-component-benchmark",
+		"non-live-all",
+	]);
 	assert.equal(parsed.on.schedule.length, 1);
 	assert.equal(parsed.permissions.contents, "read");
 	assert.equal(parsed.concurrency["cancel-in-progress"], false);
@@ -44,10 +51,13 @@ test("extended quality workflow keeps live suites manual and non-live suites sch
 	const rustJob = parsed.jobs["rust-benchmark"];
 	const rustSteps = JSON.stringify(rustJob.steps);
 	assert.match(rustSteps, /benchmark:rust-spike/);
+	assert.match(rustSteps, /benchmark:rust-extension-component-storm/);
 	assert.match(rustSteps, /verify-rust-spike-benchmark/);
+	assert.match(rustSteps, /verify-rust-extension-component-storm/);
+	assert.match(rustJob.if, /rust-component-benchmark/);
 	assert.doesNotMatch(rustSteps, /\|\| true/);
 	assert.equal(rustJob.steps.find((step) => step.name === "Restore Rust dependencies").id, "cargo-cache");
 	assert.match(rustJob.steps.find((step) => step.name.includes("summary")).run, /--cache-hit "cargo=\$\{\{ steps\.cargo-cache\.outputs\.cache-hit \|\| 'unavailable' \}\}"/);
-	assert.match(JSON.stringify(rustJob.steps.find((step) => step.name === "Upload Rust B0 benchmark report").with.path), /rust-benchmark-metrics\.json/);
+	assert.match(JSON.stringify(rustJob.steps.find((step) => step.name === "Upload Rust benchmark report").with.path), /rust-benchmark-metrics\.json/);
 	assert.match(workflow, /RUST_VERSION: 1\.97\.1/);
 });
