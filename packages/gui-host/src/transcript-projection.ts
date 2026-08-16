@@ -21,6 +21,7 @@ function text(value: JsonValue | undefined): string {
 				.map((part) => {
 					const item = record(part);
 					if (!item) return typeof part === "string" ? part : "";
+					if (item.type === "image") return typeof item.alt === "string" ? item.alt : "";
 					if (typeof item.text === "string") return item.text;
 					if (item.type === "content_ref")
 						return typeof item.previewHead === "string" ? item.previewHead : "内容引用";
@@ -54,6 +55,37 @@ function contentRef(value: JsonValue | undefined): string | undefined {
 	return undefined;
 }
 
+function imageMetadata(value: JsonValue | undefined): Array<{
+	contentRef: string;
+	mimeType: string;
+	byteLength: number;
+	alt?: string;
+}> {
+	if (!Array.isArray(value)) return [];
+	const images: Array<{ contentRef: string; mimeType: string; byteLength: number; alt?: string }> = [];
+	for (const part of value) {
+		const item = record(part);
+		if (item?.type !== "image") continue;
+		const reference = record(item.data);
+		if (reference?.type !== "content_ref" || typeof reference.contentRef !== "string") continue;
+		const mimeType =
+			typeof item.mimeType === "string"
+				? item.mimeType
+				: typeof reference.mimeType === "string"
+					? reference.mimeType
+					: undefined;
+		const byteLength = reference.byteLength;
+		if (!mimeType || typeof byteLength !== "number" || !Number.isSafeInteger(byteLength) || byteLength < 0) continue;
+		images.push({
+			contentRef: reference.contentRef,
+			mimeType,
+			byteLength,
+			...(typeof item.alt === "string" ? { alt: item.alt } : {}),
+		});
+	}
+	return images;
+}
+
 function message(item: TranscriptItem): JsonRecord | undefined {
 	return record(record(item.payload)?.message);
 }
@@ -63,7 +95,10 @@ export function projectTranscriptItem(item: TranscriptItem): TranscriptViewItem 
 	const entryMessage = message(item);
 	const role = entryMessage?.role;
 	const content = entryMessage?.content ?? payload?.text;
-	if (role === "user") return { type: "user", text: text(content) };
+	const images = imageMetadata(content);
+	if (role === "user") {
+		return { type: "user", text: text(content), ...(images.length > 0 ? { images } : {}) };
+	}
 	if (role === "thinking") return { type: "thinking", text: text(content) };
 	if (role === "toolResult" && entryMessage) {
 		const isError = entryMessage?.isError === true;
@@ -75,6 +110,7 @@ export function projectTranscriptItem(item: TranscriptItem): TranscriptViewItem 
 			summary: text(content),
 			...(text(content) ? { detail: text(content) } : {}),
 			...(contentRef(content) ? { contentRef: contentRef(content) } : {}),
+			...(images.length > 0 ? { images } : {}),
 		};
 	}
 	if (role === "assistant") {
@@ -100,7 +136,7 @@ export function projectTranscriptItem(item: TranscriptItem): TranscriptViewItem 
 					})
 			: [];
 		if (calls.length > 0) return { type: "tool_call", calls };
-		return { type: "assistant", text: text(content) };
+		return { type: "assistant", text: text(content), ...(images.length > 0 ? { images } : {}) };
 	}
 	if (item.kind === "compaction") return { type: "summary", title: "上下文压缩", text: text(payload) };
 	if (item.kind === "branch_summary") return { type: "summary", title: "分支摘要", text: text(payload) };

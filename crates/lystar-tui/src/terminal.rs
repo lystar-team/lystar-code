@@ -20,10 +20,10 @@ use crossterm::{
 };
 use lystar_protocol::{
     B3Command, FrameDecoder, ProtocolError, ReadOnlyEvent, ReadOnlyMessage, ReadOnlyResponse,
-    ServerMessage, TranscriptRequestContext, decode_server_message, encode_abort_operation_request,
-    encode_acquire_session_request, encode_b3_request, encode_client_hello,
-    encode_create_session_request, encode_list_sessions_request, encode_queue_request,
-    encode_read_transcript_request, encode_release_session_request,
+    ServerMessage, TranscriptRequestContext, TranscriptViewItem, decode_server_message,
+    encode_abort_operation_request, encode_acquire_session_request, encode_b3_request,
+    encode_client_hello, encode_create_session_request, encode_list_sessions_request,
+    encode_queue_request, encode_read_transcript_request, encode_release_session_request,
     encode_search_transcript_request, encode_session_write_request, encode_ui_response,
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
@@ -33,16 +33,19 @@ use signal_hook::{
 };
 use thiserror::Error;
 
-use crate::app::{
-    AppState, B3Request, ChangesTab, ClipboardDescriptor, ComposerView, ConfirmOverlay,
-    DetailOverlay, GitDiffDescriptor, GitFileDescriptor, GitStatusDescriptor, InputFocus,
-    InstructionDescriptor, ListOverlay, ModelDescriptor, OverlayItem, OverlayLink, OverlayOrigin,
-    OverlayState, PackageDescriptor, PendingIntent, ProjectTrustDescriptor, ProviderDescriptor,
-    ReadonlySessionView, SearchHit, SessionRestorePoint, SessionSummary, SessionTreeNode,
-    SettingDescriptor, SkillDescriptor, SubagentDescriptor, TextEditorOverlay,
-    TranscriptRequestKind, TranscriptView, TranscriptViewKind, TreeFilter, UiRequest,
-    UiRequestKind, UpdateDescriptor, VisibleLink, WorkbenchOverlayView, WorkbenchTarget,
-    composer_area, transcript_area,
+use crate::{
+    app::{
+        AppState, B3Request, ChangesTab, ClipboardDescriptor, ComposerView, ConfirmOverlay,
+        DetailOverlay, GitDiffDescriptor, GitFileDescriptor, GitStatusDescriptor, InputFocus,
+        InstructionDescriptor, ListOverlay, ModelDescriptor, OverlayItem, OverlayLink,
+        OverlayOrigin, OverlayState, PackageDescriptor, PendingIntent, ProjectTrustDescriptor,
+        ProviderDescriptor, ReadonlySessionView, SearchHit, SessionRestorePoint, SessionSummary,
+        SessionTreeNode, SettingDescriptor, SkillDescriptor, SubagentDescriptor, TextEditorOverlay,
+        TranscriptRequestKind, TranscriptView, TranscriptViewKind, TreeFilter, UiRequest,
+        UiRequestKind, UpdateDescriptor, VisibleLink, WorkbenchOverlayView, WorkbenchTarget,
+        composer_area, transcript_area, transcript_images,
+    },
+    image::{CachedImage, ImageSidecar, current_terminal_image_protocol},
 };
 
 const INITIAL_PAGE_LIMIT: u64 = 200;
@@ -396,6 +399,7 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
     let _terminal_guard = TerminalGuard::enter()?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
+    let mut image_sidecar = ImageSidecar::new(current_terminal_image_protocol());
     trace("terminal_ready");
     app.mark_page_load_pending();
     let mut dirty = true;
@@ -418,10 +422,21 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                 trace("frame_rendered_nonempty");
             }
             render_active_osc8_link(&mut terminal, &app)?;
+            image_sidecar.draw_after_frame(
+                terminal.backend_mut().writer_mut(),
+                (!app.overlays.is_empty())
+                    .then(Vec::new)
+                    .unwrap_or_else(|| visible_cached_images(&app)),
+                std::env::var_os("TMUX").is_some(),
+            )?;
             trace_cache(&app);
             dirty = false;
         }
         if shutdown.load(Ordering::Relaxed) {
+            image_sidecar.clear(
+                terminal.backend_mut().writer_mut(),
+                std::env::var_os("TMUX").is_some(),
+            )?;
             release_active_session(&app, &mut pipe, &mut request_sequence)?;
             return Ok(());
         }
@@ -465,6 +480,10 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                         &mut session_flow,
                         &mut quit_requested,
                     )? {
+                        image_sidecar.clear(
+                            terminal.backend_mut().writer_mut(),
+                            std::env::var_os("TMUX").is_some(),
+                        )?;
                         release_active_session(&app, &mut pipe, &mut request_sequence)?;
                         return Ok(());
                     }
@@ -499,6 +518,8 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                 },
                 Event::Resize(_, _) => {
                     terminal.autoresize()?;
+                    app.invalidate_rich_text();
+                    app.invalidate_images();
                     state_changed = true;
                 }
                 _ => {}
@@ -533,6 +554,10 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
             }
         }
         if quit_requested && session_flow.is_none() {
+            image_sidecar.clear(
+                terminal.backend_mut().writer_mut(),
+                std::env::var_os("TMUX").is_some(),
+            )?;
             return Ok(());
         }
         if app.timed_out_b3_request().is_some() {
@@ -608,6 +633,21 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
             view.search.status = "目标不在当前可分页记录中".to_owned();
             view.search.pending_jump = None;
             state_changed = true;
+        }
+        if let Some(active_path) = app.active_session_path().map(str::to_owned) {
+            let width = terminal.size()?.width.saturating_sub(3).clamp(1, 500);
+            if request_visible_rich_text(
+                &mut app,
+                &mut pipe,
+                &active_path,
+                width,
+                &mut request_sequence,
+            )? {
+                state_changed = true;
+            }
+            if request_visible_images(&mut app, &mut pipe, &active_path, &mut request_sequence)? {
+                state_changed = true;
+            }
         }
         dirty |= state_changed;
     }
@@ -1975,6 +2015,119 @@ fn request_b3(
     let request = B3Request { command, payload };
     app.begin_request(id.clone(), request.clone(), intent);
     pipe.request(&encode_b3_request(&id, request.command, request.payload)?)
+}
+
+#[cfg(unix)]
+fn visible_cached_images(app: &AppState) -> Vec<CachedImage> {
+    app.transcript
+        .rounds()
+        .iter()
+        .skip(app.transcript.scroll)
+        .take(8)
+        .flat_map(|round| round.items.iter())
+        .flat_map(transcript_images)
+        .filter_map(|image| app.image_cache.get(&image.content_ref).cloned())
+        .collect()
+}
+
+#[cfg(unix)]
+fn request_visible_images(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    sequence: &mut u64,
+) -> Result<bool, TuiError> {
+    let pending = app
+        .pending_image_requests
+        .values()
+        .map(|request| request.content_ref.clone())
+        .collect::<Vec<_>>();
+    let candidates = app
+        .transcript
+        .rounds()
+        .iter()
+        .skip(app.transcript.scroll)
+        .take(8)
+        .flat_map(|round| round.items.iter())
+        .flat_map(transcript_images)
+        .filter(|image| {
+            !app.image_cache.get(&image.content_ref).is_some()
+                && !pending.contains(&image.content_ref)
+                && !app.failed_images.contains(&image.content_ref)
+        })
+        .collect::<Vec<_>>();
+    let mut requested = false;
+    for image in candidates {
+        *sequence += 1;
+        let id = format!("read-image-content-{sequence}");
+        app.begin_image_request(id.clone(), image.content_ref.clone());
+        pipe.request(&encode_b3_request(
+            &id,
+            B3Command::ReadImageContent,
+            serde_json::json!({ "sessionPath": session_path, "contentRef": image.content_ref })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+        )?)?;
+        requested = true;
+    }
+    Ok(requested)
+}
+
+#[cfg(unix)]
+fn request_visible_rich_text(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    width: u16,
+    sequence: &mut u64,
+) -> Result<bool, TuiError> {
+    let is_streaming = app.is_active_operation();
+    let pending = app
+        .pending_rich_text_requests
+        .values()
+        .map(|request| request.key.clone())
+        .collect::<Vec<_>>();
+    let candidates = app
+        .transcript
+        .rounds()
+        .iter()
+        .skip(app.transcript.scroll)
+        .take(8)
+        .filter(|round| !round.is_tool_round())
+        .filter_map(|round| {
+            let item = round.items.first()?;
+            let streaming =
+                matches!(&item.view, TranscriptViewItem::Assistant { .. }) && is_streaming;
+            let (key, message_type, text) = AppState::rich_text_key(item, width, streaming)?;
+            (!app.rich_text_cache.get(&key).is_some()
+                && !pending.contains(&key)
+                && !app.failed_rich_text.contains(&key))
+            .then(|| (key, message_type.to_owned(), text.to_owned()))
+        })
+        .collect::<Vec<_>>();
+    let mut requested = false;
+    for (key, message_type, text) in candidates {
+        *sequence += 1;
+        let id = format!("render-rich-text-{sequence}");
+        app.begin_rich_text_request(id.clone(), key);
+        pipe.request(&encode_b3_request(
+            &id,
+            B3Command::RenderRichText,
+            serde_json::json!({
+                "text": text,
+                "width": width,
+                "messageType": message_type,
+                "isStreaming": is_streaming,
+                "sessionPath": session_path,
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+        )?)?;
+        requested = true;
+    }
+    Ok(requested)
 }
 
 #[cfg(unix)]
@@ -3914,6 +4067,93 @@ fn apply_server_message(
     }
     if raw.get("type").and_then(serde_json::Value::as_str) == Some("response")
         && let Some(id) = raw.get("id").and_then(serde_json::Value::as_str)
+        && let Some(pending) = app.take_image_request(id)
+    {
+        if pending.generation != app.image_generation {
+            return Ok(false);
+        }
+        if raw.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+            app.mark_image_failed(pending.content_ref);
+            app.transcript.status = "图片读取失败，已保留占位".to_owned();
+            return Ok(false);
+        }
+        let result = message.validated_b3_result_value(B3Command::ReadImageContent)?;
+        let object = result
+            .as_object()
+            .ok_or_else(|| TuiError::InvalidResponse("图片响应无效".to_owned()))?;
+        let content_ref = object
+            .get("contentRef")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| TuiError::InvalidResponse("图片响应缺少引用".to_owned()))?;
+        let mime_type = object
+            .get("mimeType")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| TuiError::InvalidResponse("图片响应缺少 MIME".to_owned()))?;
+        let byte_length = object
+            .get("byteLength")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| TuiError::InvalidResponse("图片响应缺少长度".to_owned()))?;
+        let data = object
+            .get("data")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| TuiError::InvalidResponse("图片响应缺少数据".to_owned()))?;
+        if content_ref != pending.content_ref
+            || !mime_type.starts_with("image/")
+            || byte_length > 4 * 1024 * 1024
+        {
+            app.mark_image_failed(pending.content_ref);
+            app.transcript.status = "图片数据无效，已保留占位".to_owned();
+            return Ok(false);
+        }
+        app.image_cache.insert(CachedImage {
+            content_ref: content_ref.to_owned(),
+            mime_type: mime_type.to_owned(),
+            byte_length: usize::try_from(byte_length).unwrap_or(usize::MAX),
+            base64: data.to_owned(),
+        });
+        return Ok(false);
+    }
+    if raw.get("type").and_then(serde_json::Value::as_str) == Some("response")
+        && let Some(id) = raw.get("id").and_then(serde_json::Value::as_str)
+        && let Some(pending) = app.take_rich_text_request(id)
+    {
+        if pending.generation != app.rich_text_generation {
+            return Ok(false);
+        }
+        if raw.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+            app.mark_rich_text_failed(pending.key);
+            app.transcript.status = "富文本渲染失败，已保留纯文本".to_owned();
+            return Ok(false);
+        }
+        let result = message.validated_b3_result_value(B3Command::RenderRichText)?;
+        let object = result
+            .as_object()
+            .ok_or_else(|| TuiError::InvalidResponse("富文本响应无效".to_owned()))?;
+        let content_hash = object
+            .get("contentHash")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| TuiError::InvalidResponse("富文本响应缺少内容哈希".to_owned()))?;
+        if content_hash != pending.key.content_hash {
+            app.mark_rich_text_failed(pending.key);
+            return Ok(false);
+        }
+        let lines = object
+            .get("lines")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| TuiError::InvalidResponse("富文本响应缺少行".to_owned()))?
+            .iter()
+            .map(|line| {
+                line.as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| TuiError::InvalidResponse("富文本行无效".to_owned()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        app.rich_text_cache
+            .insert(pending.key, crate::rich_text::parse_ansi_lines(&lines));
+        return Ok(false);
+    }
+    if raw.get("type").and_then(serde_json::Value::as_str) == Some("response")
+        && let Some(id) = raw.get("id").and_then(serde_json::Value::as_str)
         && let Some(pending) = app.take_pending(id)
     {
         if !app.pending_workspace_is_current(&pending) {
@@ -4115,6 +4355,7 @@ fn apply_server_message(
                 selected_key,
                 filter,
             } => {
+                app.invalidate_rich_text();
                 if result
                     .get("requiresRestart")
                     .and_then(serde_json::Value::as_bool)
@@ -6393,6 +6634,8 @@ fn apply_event(
                 trace("reload_requested");
                 return Ok(true);
             }
+            app.invalidate_rich_text();
+            app.invalidate_images();
             app.clear_live_after_commit(items);
             app.transcript.streaming_preview = None;
             trace("append_applied");
@@ -6470,6 +6713,7 @@ mod tests {
             timestamp: String::new(),
             view: lystar_protocol::TranscriptViewItem::User {
                 text: id.to_owned(),
+                images: None,
             },
         }
     }

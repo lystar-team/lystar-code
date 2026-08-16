@@ -2,6 +2,14 @@
 
 核验日期：2026-08-16。范围是 Linux x64 上的 Rust TUI、GUI Host 和 Unix fd3/fd4 FIFO bridge；Runtime 使用 fake adapter，Session 使用真实临时 JSONL。未调用真实 Provider，未访问网络。
 
+## 富文本与图片补充
+
+Rust B3 transcript 已通过 typed `render_rich_text` 与 `read_image_content` 接入 Host。Host 使用 Coding Agent 的 `Markdown`、当前主题、Mermaid 和 active runtime Extension markdown transformers 渲染 ANSI 行；没有向 TTY 写入控制序列。Rust 解析 ANSI SGR/OSC 8 为 Ratatui spans，按可见区最多预取 8 条记录，rich text 缓存限制为 256 entries / 16 MiB，失败或未知序列回退纯文本。Session 切换、transcript commit 和 resize 会失效对应缓存。
+
+图片在 transcript projection 中只保留 `contentRef`、MIME、字节数和可选 alt，不传 base64。Rust 在可见区按需读取，图片缓存限制为 16 entries / 32 MiB；读取失败、引用过期、超限和未知终端都保留 `[图片 MIME 字节数]` 占位。TTY sidecar 只由 Rust 处理 Kitty、iTerm2 和 tmux passthrough，滚动、resize、overlay 或退出时会清理 Kitty 图像；Node 不生成图片 escape sequence。
+
+本轮已实际执行：GUI Protocol `13/13`，Host content store/projection `1/1`，Rust TUI `34/34`，Rust Host build，Host-Rust tmux/FIFO 全量 E2E `13/13`，以及 `npm run benchmark:rust-b3-workbench` 的 240 records verifier。该基准的最大 end-to-frame p95 为 `5.057ms`，RSS p95 为 `28,434,432` bytes（约 27.12 MiB），active/readonly cache rounds 仍为 `400/400`。Kitty、iTerm2 和 Windows named pipe 没有实机终端验证。
+
 ## 本轮证据
 
 - `packages/gui-host/test/rust-tui-e2e.test.ts` 的完整 fd bridge E2E 连续执行两轮，均为 `13/13`。每轮使用新的临时 JSONL、FIFO、tmux socket 与 artifact；新增 Subagent 路径覆盖 `/subagents` 的 committed/live 列表、嵌套详情/只读记录、运行态停止确认、已结束继续、掉 B3 回包后的幂等重试，以及 `/clipboard` 的 capability、文本预览、插入、预览复制、输入框写入和上下文复制。既有项目工作台路径继续覆盖 `/changes` 的 Tab、筛选、Diff 摘要/展开与刷新，`/skills` 的作用域切换与 journaled write，`/trust` 的 canonical cwd、风险提示与确认切换，`/instructions` 的项目/本机浏览编辑、`expectedHash` 冲突重新加载，`/packages` 的安装、删除、更新，以及仅检查版本的 `/update`。

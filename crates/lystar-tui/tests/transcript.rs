@@ -10,6 +10,7 @@ fn item(id: usize) -> TranscriptItem {
         timestamp: "2026-08-16T00:00:00Z".to_owned(),
         view: TranscriptViewItem::User {
             text: format!("中文 {id}"),
+            images: None,
         },
     }
 }

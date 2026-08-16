@@ -12,6 +12,8 @@ import type {
 	ProjectInstruction,
 	ProjectResource,
 	ProjectTrust,
+	RenderRichTextResult,
+	RichTextMessageType,
 	SessionActivity,
 	SessionPhase,
 	SessionProgress,
@@ -39,6 +41,13 @@ export interface ToolRecoveryRuntimeDiagnostics {
 	lessonSuspendedTotal: Array<{ lesson: string; count: number }>;
 	duration: { count: number; totalMs: number; maxMs: number };
 	activeCircuits: number;
+}
+
+export interface RichTextRenderRequest {
+	text: string;
+	width: number;
+	messageType: RichTextMessageType;
+	isStreaming: boolean;
 }
 
 export interface RuntimeSession {
@@ -71,6 +80,7 @@ export interface RuntimeSession {
 	abort(): Promise<void>;
 	reloadResources(): Promise<void>;
 	getCompletions(text: string, cursor: number): CompletionResult | undefined;
+	renderRichText?(request: RichTextRenderRequest): RenderRichTextResult;
 	getToolRecoveryDiagnostics(): ToolRecoveryRuntimeDiagnostics;
 	dispose(): Promise<void>;
 	onEvent(listener: (event: RuntimeEvent) => void): () => void;
@@ -212,6 +222,7 @@ export interface RuntimeAdapter {
 	updatePackages(cwd: string, source?: string): Promise<{ changed: boolean; message: string }>;
 	readClipboardText(): Promise<{ capability: boolean; text?: string }>;
 	writeClipboardText(text: string): Promise<{ capability: boolean; changed: boolean }>;
+	renderRichText?(sessionPath: string, request: RichTextRenderRequest): RenderRichTextResult;
 }
 
 export interface UiRequest {

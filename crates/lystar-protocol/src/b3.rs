@@ -39,6 +39,8 @@ pub enum B3Command {
     WriteClipboardText,
     GetAbout,
     GetDiagnostics,
+    RenderRichText,
+    ReadImageContent,
 }
 
 impl B3Command {
@@ -78,6 +80,8 @@ impl B3Command {
             "write_clipboard_text" => Self::WriteClipboardText,
             "get_about" => Self::GetAbout,
             "get_diagnostics" => Self::GetDiagnostics,
+            "render_rich_text" => Self::RenderRichText,
+            "read_image_content" => Self::ReadImageContent,
             _ => return None,
         })
     }
@@ -118,6 +122,8 @@ impl B3Command {
             Self::WriteClipboardText => "write_clipboard_text",
             Self::GetAbout => "get_about",
             Self::GetDiagnostics => "get_diagnostics",
+            Self::RenderRichText => "render_rich_text",
+            Self::ReadImageContent => "read_image_content",
         }
     }
 }
@@ -169,6 +175,8 @@ pub enum B3Result {
     WriteClipboardText(crate::generated::B3WriteClipboardTextResult),
     GetAbout(crate::generated::B3GetAboutResult),
     GetDiagnostics(crate::generated::B3GetDiagnosticsResult),
+    RenderRichText(crate::generated::B3RenderRichTextResult),
+    ReadImageContent(crate::generated::B3ReadImageContentResult),
 }
 
 impl ServerMessage {
@@ -213,6 +221,8 @@ impl ServerMessage {
             B3Command::WriteClipboardText => Ok(B3Result::WriteClipboardText(decode(result)?)),
             B3Command::GetAbout => Ok(B3Result::GetAbout(decode(result)?)),
             B3Command::GetDiagnostics => Ok(B3Result::GetDiagnostics(decode(result)?)),
+            B3Command::RenderRichText => Ok(B3Result::RenderRichText(decode(result)?)),
+            B3Command::ReadImageContent => Ok(B3Result::ReadImageContent(decode(result)?)),
         }
     }
 

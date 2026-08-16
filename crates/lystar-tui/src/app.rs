@@ -3,7 +3,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::editor::EditorState;
+use crate::{
+    editor::EditorState,
+    image::{ImageCache, image_placeholder},
+    rich_text::{RenderedRichText, RichTextCache, RichTextKey},
+};
 use lystar_protocol::{
     OperationSnapshot, SessionProgress, SessionSnapshot, ToolCall, TranscriptItem,
     TranscriptViewItem,
@@ -14,6 +18,7 @@ use ratatui::{
     style::{Color, Style},
     widgets::Widget,
 };
+use sha2::{Digest, Sha256};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -22,6 +27,26 @@ pub const ITEM_CACHE_LIMIT: usize = 800;
 pub const UTF8_CACHE_LIMIT: usize = 4 * 1024 * 1024;
 pub const B3_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const OLDER_PAGE_THRESHOLD: usize = 2;
+
+#[derive(Debug, Clone)]
+pub struct ImageDescriptor {
+    pub content_ref: String,
+    pub mime_type: String,
+    pub byte_length: u64,
+    pub alt: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct ImagePendingRequest {
+    pub content_ref: String,
+    pub generation: u64,
+}
+
+#[derive(Debug)]
+pub struct RichTextPendingRequest {
+    pub key: RichTextKey,
+    pub generation: u64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptRound {
@@ -54,7 +79,7 @@ impl TranscriptRound {
         self.entry_ids.iter().any(|candidate| candidate == entry_id)
     }
 
-    fn is_tool_round(&self) -> bool {
+    pub fn is_tool_round(&self) -> bool {
         !self.tool_call_ids.is_empty()
     }
 
@@ -158,8 +183,8 @@ fn tool_result_summary(item: &TranscriptItem) -> Option<String> {
 
 fn item_summary(item: &TranscriptItem) -> String {
     match &item.view {
-        TranscriptViewItem::User { text } => format!("用户  {text}"),
-        TranscriptViewItem::Assistant { text } => format!("助手  {text}"),
+        TranscriptViewItem::User { text, .. } => format!("用户  {text}"),
+        TranscriptViewItem::Assistant { text, .. } => format!("助手  {text}"),
         TranscriptViewItem::Thinking { text } => format!("思考  {text}"),
         TranscriptViewItem::Bash { text } => format!("Bash  {text}"),
         TranscriptViewItem::Custom { text } => format!("自定义  {text}"),
@@ -168,6 +193,42 @@ fn item_summary(item: &TranscriptItem) -> String {
         TranscriptViewItem::ToolCall { .. } | TranscriptViewItem::ToolResult { .. } => {
             "Tool".to_owned()
         }
+    }
+}
+
+pub fn transcript_images(item: &TranscriptItem) -> Vec<ImageDescriptor> {
+    let images = match &item.view {
+        TranscriptViewItem::User { images, .. }
+        | TranscriptViewItem::Assistant { images, .. }
+        | TranscriptViewItem::ToolResult { images, .. } => images.as_deref().unwrap_or_default(),
+        _ => &[],
+    };
+    images
+        .iter()
+        .map(|image| ImageDescriptor {
+            content_ref: image.content_ref.clone(),
+            mime_type: image.mime_type.clone(),
+            byte_length: image.byte_length,
+            alt: image.alt.clone(),
+        })
+        .collect()
+}
+
+fn rich_text_source(item: &TranscriptItem) -> Option<(&'static str, &str)> {
+    match &item.view {
+        TranscriptViewItem::User { text, .. } => Some(("user", text)),
+        TranscriptViewItem::Assistant { text, .. } => Some(("assistant", text)),
+        TranscriptViewItem::Custom { text } | TranscriptViewItem::Bash { text } => {
+            Some(("custom", text))
+        }
+        TranscriptViewItem::Summary { text, .. } => Some(("summary", text)),
+        TranscriptViewItem::ToolResult {
+            detail: Some(text), ..
+        } => Some(("custom", text)),
+        TranscriptViewItem::Thinking { text } => Some(("assistant", text)),
+        TranscriptViewItem::System { text } => Some(("custom", text)),
+        TranscriptViewItem::ToolCall { .. }
+        | TranscriptViewItem::ToolResult { detail: None, .. } => None,
     }
 }
 
@@ -377,7 +438,7 @@ impl TranscriptWindow {
             .rev()
             .flat_map(|round| round.items.iter().rev())
             .find_map(|item| match &item.view {
-                TranscriptViewItem::Assistant { text } => Some(text.clone()),
+                TranscriptViewItem::Assistant { text, .. } => Some(text.clone()),
                 _ => None,
             })
     }
@@ -975,6 +1036,14 @@ pub struct AppState {
     pub page_load_pending: bool,
     pub pending_requests: HashMap<String, PendingRequest>,
     pub pending_transcript_requests: HashMap<String, TranscriptPendingRequest>,
+    pub rich_text_cache: RichTextCache,
+    pub pending_rich_text_requests: HashMap<String, RichTextPendingRequest>,
+    pub failed_rich_text: HashSet<RichTextKey>,
+    pub rich_text_generation: u64,
+    pub image_cache: ImageCache,
+    pub pending_image_requests: HashMap<String, ImagePendingRequest>,
+    pub failed_images: HashSet<String>,
+    pub image_generation: u64,
     workspace_overlay_stack: Vec<Option<WorkspaceOverlayGeneration>>,
     workspace_generations: HashMap<String, u64>,
     pub active_ui_request: Option<UiRequest>,
@@ -998,6 +1067,8 @@ impl AppState {
     pub fn begin_active_session(&mut self, path: String, cwd: String) -> u64 {
         self.session_generation = self.session_generation.saturating_add(1);
         self.invalidate_transcript_requests(TranscriptViewKind::Active);
+        self.invalidate_rich_text();
+        self.invalidate_images();
         self.active_session = Some(ActiveSessionContext {
             path,
             lease_id: None,
@@ -1060,7 +1131,9 @@ impl AppState {
         self.snapshot = None;
         self.operation = None;
         self.invalidate_transcript_requests(TranscriptViewKind::Active);
-        self.clear_for_reload(reason);
+        self.invalidate_rich_text();
+        self.invalidate_images();
+        self.transcript.clear_for_reload(reason);
     }
 
     pub fn clear_connection_state(&mut self, reason: impl Into<String>) {
@@ -1078,6 +1151,79 @@ impl AppState {
         if let Some(context) = &mut self.active_session {
             context.lease_id = None;
         }
+    }
+
+    pub fn mark_image_failed(&mut self, content_ref: String) {
+        self.failed_images.insert(content_ref);
+    }
+
+    pub fn begin_image_request(&mut self, id: String, content_ref: String) {
+        self.pending_image_requests.insert(
+            id,
+            ImagePendingRequest {
+                content_ref,
+                generation: self.image_generation,
+            },
+        );
+    }
+
+    pub fn take_image_request(&mut self, id: &str) -> Option<ImagePendingRequest> {
+        self.pending_image_requests.remove(id)
+    }
+
+    pub fn invalidate_images(&mut self) {
+        self.image_generation = self.image_generation.saturating_add(1);
+        self.pending_image_requests.clear();
+        self.failed_images.clear();
+        self.image_cache.clear();
+    }
+
+    pub fn mark_rich_text_failed(&mut self, key: RichTextKey) {
+        self.failed_rich_text.insert(key);
+    }
+
+    pub fn begin_rich_text_request(&mut self, id: String, key: RichTextKey) {
+        self.pending_rich_text_requests.insert(
+            id,
+            RichTextPendingRequest {
+                key,
+                generation: self.rich_text_generation,
+            },
+        );
+    }
+
+    pub fn take_rich_text_request(&mut self, id: &str) -> Option<RichTextPendingRequest> {
+        self.pending_rich_text_requests.remove(id)
+    }
+
+    pub fn invalidate_rich_text(&mut self) {
+        self.rich_text_generation = self.rich_text_generation.saturating_add(1);
+        self.rich_text_cache.clear();
+        self.pending_rich_text_requests.clear();
+        self.failed_rich_text.clear();
+    }
+
+    pub fn rich_text_for(&self, key: &RichTextKey) -> Option<&RenderedRichText> {
+        self.rich_text_cache.get(key)
+    }
+
+    pub fn rich_text_key(
+        item: &TranscriptItem,
+        width: u16,
+        is_streaming: bool,
+    ) -> Option<(RichTextKey, &'static str, &str)> {
+        let (message_type, text) = rich_text_source(item)?;
+        let content_hash = format!("{:x}", Sha256::digest(text.as_bytes()));
+        Some((
+            RichTextKey {
+                entry_id: item.entry_id.clone(),
+                content_hash,
+                width,
+                is_streaming,
+            },
+            message_type,
+            text,
+        ))
     }
 
     pub fn begin_transcript_request(
@@ -2049,10 +2195,22 @@ impl<'a> TranscriptView<'a> {
         Self { state }
     }
 
+    fn rendered_round(&self, round: &TranscriptRound, width: u16) -> Option<&RenderedRichText> {
+        if round.is_tool_round() {
+            return None;
+        }
+        let item = round.items.first()?;
+        let streaming = matches!(item.view, TranscriptViewItem::Assistant { .. })
+            && self.state.is_active_operation();
+        let (key, _, _) = AppState::rich_text_key(item, width, streaming)?;
+        self.state.rich_text_for(&key)
+    }
+
     pub fn visible_link(&self, area: Rect) -> Option<VisibleLink> {
         let search_height = u16::from(self.state.search.open).saturating_mul(2);
         let content_height = area.height.saturating_sub(1 + search_height);
         let width = usize::from(area.width.saturating_sub(1));
+        let rich_width = area.width.saturating_sub(3);
         let mut row = 0_u16;
         for (index, round) in self
             .state
@@ -2076,6 +2234,26 @@ impl<'a> TranscriptView<'a> {
                 " "
             };
             let line = format!("{marker}{expansion} {}", round.summary());
+            if !round.is_tool_round()
+                && index == self.state.transcript.current
+                && let Some(rendered) = self.rendered_round(round, rich_width)
+            {
+                for rich_line in &rendered.lines {
+                    if let Some(span) = rich_line.spans.iter().find(|span| span.href.is_some()) {
+                        let label = truncate_graphemes(&span.text, usize::from(rich_width));
+                        if !label.is_empty() {
+                            return Some(VisibleLink {
+                                column: area.x + 2,
+                                row: area.y + row,
+                                label,
+                                href: span.href.clone().unwrap_or_default(),
+                            });
+                        }
+                    }
+                    row = row.saturating_add(1);
+                }
+                continue;
+            }
             if index == self.state.transcript.current {
                 let (href, label) = round.hyperlink()?;
                 let visible_line = truncate_graphemes(&line, width);
@@ -2095,7 +2273,23 @@ impl<'a> TranscriptView<'a> {
                     href: href.to_owned(),
                 });
             }
-            row += 1;
+            row = row.saturating_add(
+                self.rendered_round(round, rich_width)
+                    .map_or(1, |rendered| {
+                        u16::try_from(rendered.lines.len().max(1)).unwrap_or(u16::MAX)
+                    }),
+            );
+            row = row.saturating_add(
+                u16::try_from(
+                    round
+                        .items
+                        .iter()
+                        .map(transcript_images)
+                        .map(|images| images.len() * 3)
+                        .sum::<usize>(),
+                )
+                .unwrap_or(u16::MAX),
+            );
             if round.expanded {
                 row = row
                     .saturating_add(u16::try_from(round.detail_lines().len()).unwrap_or(u16::MAX));
@@ -2114,6 +2308,7 @@ impl Widget for TranscriptView<'_> {
         let status_y = area.y + area.height.saturating_sub(1);
         let content_height = area.height.saturating_sub(1 + search_height);
         let width = usize::from(area.width.saturating_sub(1));
+        let rich_width = area.width.saturating_sub(3);
         let mut row = 0_u16;
         for (index, round) in self
             .state
@@ -2143,15 +2338,65 @@ impl Widget for TranscriptView<'_> {
             } else {
                 Color::White
             };
-            put_line(
-                buffer,
-                area.x,
-                area.y + row,
-                &format!("{marker}{expansion} {}", round.summary()),
-                width,
-                Style::default().fg(color),
-            );
-            row += 1;
+            if let Some(rendered) = self.rendered_round(round, rich_width) {
+                for (line_index, line) in rendered.lines.iter().enumerate() {
+                    if row >= content_height {
+                        break;
+                    }
+                    let prefix = if line_index == 0 {
+                        format!("{marker}{expansion} ")
+                    } else {
+                        "  ".to_owned()
+                    };
+                    put_line(
+                        buffer,
+                        area.x,
+                        area.y + row,
+                        &prefix,
+                        width,
+                        Style::default().fg(color),
+                    );
+                    put_rich_line(
+                        buffer,
+                        area.x + 2,
+                        area.y + row,
+                        line,
+                        usize::from(rich_width),
+                    );
+                    row += 1;
+                }
+            } else {
+                put_line(
+                    buffer,
+                    area.x,
+                    area.y + row,
+                    &format!("{marker}{expansion} {}", round.summary()),
+                    width,
+                    Style::default().fg(color),
+                );
+                row += 1;
+            }
+            for image in round.items.iter().flat_map(transcript_images) {
+                for placeholder_row in 0..3 {
+                    if row >= content_height {
+                        break;
+                    }
+                    let value = if placeholder_row == 0 {
+                        image_placeholder(&image.mime_type, image.byte_length)
+                    } else {
+                        String::new()
+                    };
+                    put_line(
+                        buffer,
+                        area.x + 2,
+                        area.y + row,
+                        &value,
+                        usize::from(rich_width),
+                        Style::default().fg(Color::DarkGray),
+                    );
+                    row += 1;
+                }
+            }
             if round.expanded {
                 for detail in round.detail_lines() {
                     if row >= content_height {
@@ -2389,6 +2634,30 @@ fn live_tool_line(tools: &BTreeMap<String, LiveTool>, width: usize) -> String {
     }
     line
 }
+fn put_rich_line(
+    buffer: &mut Buffer,
+    x: u16,
+    y: u16,
+    line: &crate::rich_text::RichLine,
+    width: usize,
+) {
+    let mut used = 0;
+    for span in &line.spans {
+        if used >= width {
+            break;
+        }
+        let text = truncate_graphemes(&span.text, width.saturating_sub(used));
+        let text_width = UnicodeWidthStr::width(text.as_str());
+        buffer.set_string(
+            x.saturating_add(u16::try_from(used).unwrap_or(u16::MAX)),
+            y,
+            text,
+            span.style,
+        );
+        used = used.saturating_add(text_width);
+    }
+}
+
 fn put_line(buffer: &mut Buffer, x: u16, y: u16, text: &str, width: usize, style: Style) {
     buffer.set_string(x, y, truncate_graphemes(text, width), style);
 }
@@ -2416,6 +2685,7 @@ mod tests {
             timestamp: String::new(),
             view: TranscriptViewItem::User {
                 text: text.to_owned(),
+                images: None,
             },
         }
     }
@@ -2507,6 +2777,7 @@ mod tests {
                 summary: "done".to_owned(),
                 detail: None,
                 content_ref: None,
+                images: None,
             },
         };
         let mut window = TranscriptWindow::default();

@@ -317,6 +317,13 @@ export const SessionSummarySchema = StrictObject({
 export type SessionSummary = Static<typeof SessionSummarySchema>;
 
 const TranscriptViewTextSchema = Type.String({ maxLength: 16 * 1024 });
+const TranscriptImageSchema = StrictObject({
+	contentRef: Id,
+	mimeType: Type.String({ minLength: 1, maxLength: 256 }),
+	byteLength: Type.Integer({ minimum: 0 }),
+	alt: Type.Optional(Type.String({ maxLength: 4096 })),
+});
+export type TranscriptImage = Static<typeof TranscriptImageSchema>;
 const TranscriptToolCallSchema = StrictObject({
 	id: Id,
 	name: Type.String({ minLength: 1, maxLength: 256 }),
@@ -326,8 +333,16 @@ const TranscriptToolCallSchema = StrictObject({
 
 // Host 投影是 Rust 终端的唯一 transcript 输入；payload 仅保留给既有 GUI 兼容路径。
 export const TranscriptViewItemSchema = Type.Union([
-	StrictObject({ type: Type.Literal("user"), text: TranscriptViewTextSchema }),
-	StrictObject({ type: Type.Literal("assistant"), text: TranscriptViewTextSchema }),
+	StrictObject({
+		type: Type.Literal("user"),
+		text: TranscriptViewTextSchema,
+		images: Type.Optional(Type.Array(TranscriptImageSchema, { maxItems: 32 })),
+	}),
+	StrictObject({
+		type: Type.Literal("assistant"),
+		text: TranscriptViewTextSchema,
+		images: Type.Optional(Type.Array(TranscriptImageSchema, { maxItems: 32 })),
+	}),
 	StrictObject({ type: Type.Literal("thinking"), text: TranscriptViewTextSchema }),
 	StrictObject({ type: Type.Literal("tool_call"), calls: Type.Array(TranscriptToolCallSchema, { maxItems: 32 }) }),
 	StrictObject({
@@ -338,6 +353,7 @@ export const TranscriptViewItemSchema = Type.Union([
 		summary: TranscriptViewTextSchema,
 		detail: Type.Optional(TranscriptViewTextSchema),
 		contentRef: Type.Optional(Id),
+		images: Type.Optional(Type.Array(TranscriptImageSchema, { maxItems: 32 })),
 	}),
 	StrictObject({ type: Type.Literal("bash"), text: TranscriptViewTextSchema }),
 	StrictObject({ type: Type.Literal("custom"), text: TranscriptViewTextSchema }),
@@ -725,6 +741,28 @@ export const ClipboardReadResultSchema = StrictObject({
 });
 export const ClipboardWriteResultSchema = StrictObject({ capability: Type.Boolean(), changed: Type.Boolean() });
 
+export const RichTextMessageTypeSchema = Type.Union([
+	Type.Literal("user"),
+	Type.Literal("assistant"),
+	Type.Literal("custom"),
+	Type.Literal("summary"),
+]);
+export type RichTextMessageType = Static<typeof RichTextMessageTypeSchema>;
+
+export const RenderRichTextResultSchema = StrictObject({
+	lines: Type.Array(Type.String({ maxLength: 1024 * 1024 }), { maxItems: 5000 }),
+	contentHash: Id,
+});
+export type RenderRichTextResult = Static<typeof RenderRichTextResultSchema>;
+
+export const ReadImageContentResultSchema = StrictObject({
+	contentRef: Id,
+	mimeType: Type.String({ minLength: 1, maxLength: 256 }),
+	byteLength: Type.Integer({ minimum: 0, maximum: 4 * 1024 * 1024 }),
+	data: Type.String({ maxLength: 6 * 1024 * 1024 }),
+});
+export type ReadImageContentResult = Static<typeof ReadImageContentResultSchema>;
+
 export const B3CommandResultSchemas = {
 	list_skills: ListSkillsResultSchema,
 	set_skill_enabled: SetSkillEnabledResultSchema,
@@ -758,6 +796,8 @@ export const B3CommandResultSchemas = {
 	continue_subagent: SubagentMutationResultSchema,
 	read_clipboard_text: ClipboardReadResultSchema,
 	write_clipboard_text: ClipboardWriteResultSchema,
+	render_rich_text: RenderRichTextResultSchema,
+	read_image_content: ReadImageContentResultSchema,
 	get_about: AboutResultSchema,
 	get_diagnostics: DiagnosticsSchema,
 } as const;
@@ -1095,6 +1135,19 @@ export const CommandSchema = Type.Union([
 		text: B3Text,
 		clientInstanceId: Id,
 		clientRequestId: Id,
+	}),
+	StrictObject({
+		command: Type.Literal("render_rich_text"),
+		text: Type.String({ maxLength: 256 * 1024 }),
+		width: Type.Integer({ minimum: 1, maximum: 500 }),
+		messageType: RichTextMessageTypeSchema,
+		isStreaming: Type.Boolean(),
+		sessionPath: Type.Optional(Type.String({ minLength: 1 })),
+	}),
+	StrictObject({
+		command: Type.Literal("read_image_content"),
+		sessionPath: Type.String({ minLength: 1 }),
+		contentRef: Id,
 	}),
 	StrictObject({ command: Type.Literal("read_clipboard_text") }),
 	StrictObject({

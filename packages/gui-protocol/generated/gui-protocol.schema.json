@@ -2120,6 +2120,83 @@
                 {
                   "type": "object",
                   "required": [
+                    "command",
+                    "text",
+                    "width",
+                    "messageType",
+                    "isStreaming"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "render_rich_text"
+                    },
+                    "text": {
+                      "type": "string",
+                      "maxLength": 262144
+                    },
+                    "width": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 500
+                    },
+                    "messageType": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "user"
+                        },
+                        {
+                          "type": "string",
+                          "const": "assistant"
+                        },
+                        {
+                          "type": "string",
+                          "const": "custom"
+                        },
+                        {
+                          "type": "string",
+                          "const": "summary"
+                        }
+                      ]
+                    },
+                    "isStreaming": {
+                      "type": "boolean"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "contentRef"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "read_image_content"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "contentRef": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
                     "command"
                   ],
                   "properties": {
@@ -3140,6 +3217,39 @@
                                   "text": {
                                     "type": "string",
                                     "maxLength": 16384
+                                  },
+                                  "images": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "required": [
+                                        "contentRef",
+                                        "mimeType",
+                                        "byteLength"
+                                      ],
+                                      "properties": {
+                                        "contentRef": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 4096
+                                        },
+                                        "mimeType": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 256
+                                        },
+                                        "byteLength": {
+                                          "type": "integer",
+                                          "minimum": 0
+                                        },
+                                        "alt": {
+                                          "type": "string",
+                                          "maxLength": 4096
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    "maxItems": 32
                                   }
                                 },
                                 "additionalProperties": false
@@ -3158,6 +3268,39 @@
                                   "text": {
                                     "type": "string",
                                     "maxLength": 16384
+                                  },
+                                  "images": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "required": [
+                                        "contentRef",
+                                        "mimeType",
+                                        "byteLength"
+                                      ],
+                                      "properties": {
+                                        "contentRef": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 4096
+                                        },
+                                        "mimeType": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 256
+                                        },
+                                        "byteLength": {
+                                          "type": "integer",
+                                          "minimum": 0
+                                        },
+                                        "alt": {
+                                          "type": "string",
+                                          "maxLength": 4096
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    "maxItems": 32
                                   }
                                 },
                                 "additionalProperties": false
@@ -3276,6 +3419,39 @@
                                     "type": "string",
                                     "minLength": 1,
                                     "maxLength": 4096
+                                  },
+                                  "images": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "required": [
+                                        "contentRef",
+                                        "mimeType",
+                                        "byteLength"
+                                      ],
+                                      "properties": {
+                                        "contentRef": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 4096
+                                        },
+                                        "mimeType": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 256
+                                        },
+                                        "byteLength": {
+                                          "type": "integer",
+                                          "minimum": 0
+                                        },
+                                        "alt": {
+                                          "type": "string",
+                                          "maxLength": 4096
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    "maxItems": 32
                                   }
                                 },
                                 "additionalProperties": false
@@ -6071,6 +6247,60 @@
         },
         "changed": {
           "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "B3RenderRichTextResult": {
+      "type": "object",
+      "required": [
+        "lines",
+        "contentHash"
+      ],
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 1048576
+          },
+          "maxItems": 5000
+        },
+        "contentHash": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      },
+      "additionalProperties": false
+    },
+    "B3ReadImageContentResult": {
+      "type": "object",
+      "required": [
+        "contentRef",
+        "mimeType",
+        "byteLength",
+        "data"
+      ],
+      "properties": {
+        "contentRef": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "mimeType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "byteLength": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4194304
+        },
+        "data": {
+          "type": "string",
+          "maxLength": 6291456
         }
       },
       "additionalProperties": false

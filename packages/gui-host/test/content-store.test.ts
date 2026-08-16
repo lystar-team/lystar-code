@@ -1,6 +1,7 @@
 import type { TranscriptItem } from "@lystar/code-gui-protocol";
 import { describe, expect, it } from "vitest";
 import { ContentStore } from "../src/content-store.ts";
+import { projectTranscriptItem } from "../src/transcript-projection.ts";
 
 function imageItem(data: string): TranscriptItem {
 	return {
@@ -27,6 +28,16 @@ describe("ContentStore images", () => {
 		expect(reference).toMatchObject({ mimeType: "image/png" });
 		const chunk = store.read("/tmp/session-a.jsonl", reference.contentRef, 0, 1024);
 		expect(Buffer.from(chunk.data, "base64")).toEqual(bytes);
-		expect(() => store.read("/tmp/session-b.jsonl", reference.contentRef, 0, 1024)).toThrow("does not belong");
+		expect(store.readImage("/tmp/session-a.jsonl", reference.contentRef)).toMatchObject({
+			mimeType: "image/png",
+			byteLength: bytes.length,
+			data: bytes.toString("base64"),
+		});
+		expect(() => store.readImage("/tmp/session-b.jsonl", reference.contentRef)).toThrow("does not belong");
+		expect(projectTranscriptItem(compacted)).toEqual({
+			type: "user",
+			text: "",
+			images: [{ contentRef: reference.contentRef, mimeType: "image/png", byteLength: bytes.length }],
+		});
 	});
 });

@@ -55,6 +55,7 @@ import {
 	RELEASE_REPOSITORY,
 	readClipboardText,
 	readSessionSnapshot,
+	renderTerminalRichText,
 	resolveProjectTrusted,
 	type SessionEntry,
 	SessionManager,
@@ -94,6 +95,7 @@ import type {
 	ModelProviderSummary,
 	ModelSummary,
 	ProviderModelInput,
+	RichTextRenderRequest,
 	RuntimeAdapter,
 	RuntimeEvent,
 	RuntimeSession,
@@ -971,6 +973,16 @@ class CoreRuntimeSession implements RuntimeSession {
 		return this.runtime.session.getToolRecoveryDiagnostics();
 	}
 
+	renderRichText(request: RichTextRenderRequest) {
+		return renderTerminalRichText({
+			...request,
+			themeName: this.runtime.services.settingsManager.getTheme(),
+			mermaidMode: this.runtime.services.settingsManager.getMermaidRenderingMode(),
+			showCodeBlockFences: this.runtime.services.settingsManager.getShowMarkdownCodeBlockFences(),
+			markdownTransformers: this.runtime.session.extensionRunner.getMarkdownTransformers(),
+		});
+	}
+
 	async dispose(): Promise<void> {
 		if (this.disposed) return;
 		this.disposed = true;
@@ -1732,6 +1744,17 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	async writeClipboardText(text: string): Promise<{ capability: boolean; changed: boolean }> {
 		await copyToClipboard(text);
 		return { capability: true, changed: true };
+	}
+
+	renderRichText(sessionPath: string, request: RichTextRenderRequest) {
+		const snapshot = readSessionSnapshot(sessionPath);
+		const settings = this.settingsForCwd(snapshot.header.cwd);
+		return renderTerminalRichText({
+			...request,
+			themeName: settings.getTheme(),
+			mermaidMode: settings.getMermaidRenderingMode(),
+			showCodeBlockFences: settings.getShowMarkdownCodeBlockFences(),
+		});
 	}
 
 	private settingsForCwd(cwd: string): SettingsManager {

@@ -550,6 +550,7 @@ fn tool_items(prefix: &str) -> Vec<TranscriptItem> {
                 content_ref: index
                     .is_multiple_of(43)
                     .then(|| format!("content_ref://tool/{prefix}/{index:05}")),
+                images: None,
             },
         });
     }

@@ -89,6 +89,8 @@ const B3_COMMANDS = {
 	continue_subagent: true,
 	read_clipboard_text: true,
 	write_clipboard_text: true,
+	render_rich_text: true,
+	read_image_content: true,
 } as const;
 
 function projectSessionProgress(value: JsonValue | SessionProgress): SessionProgress {
@@ -836,6 +838,37 @@ export class GuiHostService {
 					request.offset,
 					request.limit,
 				);
+			case "render_rich_text": {
+				const requestedPath = request.sessionPath ? canonicalSessionPath(request.sessionPath) : undefined;
+				const runtime = requestedPath
+					? this.runtimes.get(requestedPath)
+					: [...this.runtimes.values()].find(
+							(candidate) =>
+								this.sessionWriteAccess(canonicalSessionPath(candidate.sessionPath), connection) === "owned",
+						);
+				const renderer =
+					runtime?.renderRichText &&
+					this.sessionWriteAccess(canonicalSessionPath(runtime.sessionPath), connection) === "owned"
+						? runtime.renderRichText.bind(runtime)
+						: requestedPath && this.adapter.renderRichText
+							? (input: Parameters<NonNullable<RuntimeAdapter["renderRichText"]>>[1]) =>
+									this.adapter.renderRichText!(requestedPath, input)
+							: undefined;
+				if (!renderer) {
+					throw Object.assign(new Error("富文本渲染需要当前会话"), {
+						code: "rich_text_session_required",
+						retryable: false,
+					});
+				}
+				return renderer({
+					text: request.text,
+					width: request.width,
+					messageType: request.messageType,
+					isStreaming: request.isStreaming,
+				});
+			}
+			case "read_image_content":
+				return this.contentStore.readImage(canonicalSessionPath(request.sessionPath), request.contentRef);
 			case "list_settings": {
 				const sessionPath = canonicalSessionPath(request.sessionPath);
 				return this.runtimes.get(sessionPath)?.listSettings() ?? this.adapter.listSettings(sessionPath);

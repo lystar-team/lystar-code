@@ -11,6 +11,7 @@ const REFERENCE_TTL_MS = 15 * 60 * 1000;
 interface StoredContent {
 	bytes: Buffer;
 	sessionPath: string;
+	mimeType: string;
 	expiresAt: number;
 }
 
@@ -75,6 +76,37 @@ export class ContentStore {
 		};
 	}
 
+	readImage(
+		sessionPath: string,
+		contentRef: string,
+	): {
+		contentRef: string;
+		mimeType: string;
+		byteLength: number;
+		data: string;
+	} {
+		const entry = this.entry(sessionPath, contentRef);
+		if (!entry.mimeType.startsWith("image/")) {
+			throw Object.assign(new Error("Content reference is not an image"), {
+				code: "image_content_not_image",
+				retryable: false,
+			});
+		}
+		if (entry.bytes.length > 4 * 1024 * 1024) {
+			throw Object.assign(new Error("Image content exceeds the 4 MiB display limit"), {
+				code: "image_content_too_large",
+				retryable: false,
+			});
+		}
+		entry.expiresAt = Date.now() + REFERENCE_TTL_MS;
+		return {
+			contentRef,
+			mimeType: entry.mimeType,
+			byteLength: entry.bytes.length,
+			data: entry.bytes.toString("base64"),
+		};
+	}
+
 	clear(): void {
 		this.entries.clear();
 		this.totalBytes = 0;
@@ -124,7 +156,12 @@ export class ContentStore {
 			this.delete(oldest);
 		}
 		const contentRef = randomUUID();
-		this.entries.set(contentRef, { bytes, sessionPath, expiresAt: Date.now() + REFERENCE_TTL_MS });
+		this.entries.set(contentRef, {
+			bytes,
+			sessionPath,
+			mimeType,
+			expiresAt: Date.now() + REFERENCE_TTL_MS,
+		});
 		this.totalBytes += bytes.length;
 		return {
 			type: "content_ref",
@@ -138,6 +175,24 @@ export class ContentStore {
 			lineCount: text === undefined ? 0 : lineCount(text),
 			mimeType,
 		};
+	}
+
+	private entry(sessionPath: string, contentRef: string): StoredContent {
+		this.evictExpired();
+		const entry = this.entries.get(contentRef);
+		if (!entry) {
+			throw Object.assign(new Error("Content reference is missing or expired"), {
+				code: "content_ref_expired",
+				retryable: true,
+			});
+		}
+		if (entry.sessionPath !== sessionPath) {
+			throw Object.assign(new Error("Content reference does not belong to this Session"), {
+				code: "content_ref_session_mismatch",
+				retryable: false,
+			});
+		}
+		return entry;
 	}
 
 	private evictExpired(): void {

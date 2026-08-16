@@ -14,13 +14,24 @@ pub struct ToolCall {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptImage {
+    pub content_ref: String,
+    pub mime_type: String,
+    pub byte_length: u64,
+    pub alt: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TranscriptViewItem {
     User {
         text: String,
+        images: Option<Vec<TranscriptImage>>,
     },
     Assistant {
         text: String,
+        images: Option<Vec<TranscriptImage>>,
     },
     Thinking {
         text: String,
@@ -37,6 +48,7 @@ pub enum TranscriptViewItem {
         detail: Option<String>,
         #[serde(rename = "contentRef")]
         content_ref: Option<String>,
+        images: Option<Vec<TranscriptImage>>,
     },
     Bash {
         text: String,
@@ -56,9 +68,10 @@ pub enum TranscriptViewItem {
 impl TranscriptViewItem {
     pub fn utf8_len(&self) -> usize {
         match self {
-            Self::User { text }
-            | Self::Assistant { text }
-            | Self::Thinking { text }
+            Self::User { text, images } | Self::Assistant { text, images } => {
+                text.len() + images.as_deref().map_or(0, image_utf8_len)
+            }
+            Self::Thinking { text }
             | Self::Bash { text }
             | Self::Custom { text }
             | Self::System { text } => text.len(),
@@ -78,6 +91,7 @@ impl TranscriptViewItem {
                 summary,
                 detail,
                 content_ref,
+                images,
             } => {
                 call_id.len()
                     + name.len()
@@ -85,10 +99,23 @@ impl TranscriptViewItem {
                     + summary.len()
                     + detail.as_ref().map_or(0, String::len)
                     + content_ref.as_ref().map_or(0, String::len)
+                    + images.as_deref().map_or(0, image_utf8_len)
             }
             Self::Summary { title, text } => title.len() + text.len(),
         }
     }
+}
+
+fn image_utf8_len(images: &[TranscriptImage]) -> usize {
+    images
+        .iter()
+        .map(|image| {
+            image.content_ref.len()
+                + image.mime_type.len()
+                + image.byte_length.to_string().len()
+                + image.alt.as_ref().map_or(0, String::len)
+        })
+        .sum()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

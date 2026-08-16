@@ -154,6 +154,12 @@ export {
 	type ResourceLoaderReloadOptions,
 } from "./resource-loader.ts";
 export {
+	type RichTextMessageType,
+	type RichTextRenderOptions,
+	type RichTextRenderResult,
+	renderTerminalRichText,
+} from "./rich-text-renderer.ts";
+export {
 	type FileEntry,
 	getDefaultSessionDir,
 	type NewSessionOptions,
@@ -174,7 +180,7 @@ export {
 	type Settings,
 	SettingsManager,
 } from "./settings-manager.ts";
-export { loadSkills, type Skill } from "./skills.ts";
+export { type LoadSkillsOptions, type LoadSkillsResult, loadSkills } from "./skills.ts";
 export { createSyntheticSourceInfo } from "./source-info.ts";
 export {
 	getToolRecoveryDoctorReport,
