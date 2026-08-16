@@ -72,7 +72,13 @@ impl TranscriptRound {
                 .items
                 .iter()
                 .flat_map(tool_calls)
-                .map(|call| format!("Tool {} {}", call.name, call.summary))
+                .map(|call| {
+                    if call.name == "subagent" {
+                        format!("Subagent {}  Ctrl+O 打开工作台", call.summary)
+                    } else {
+                        format!("Tool {} {}", call.name, call.summary)
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(" | ");
             let results = self
@@ -351,6 +357,31 @@ impl TranscriptWindow {
             .map(String::as_str)
     }
 
+    pub fn current_tool_is_subagent(&self) -> bool {
+        self.rounds.get(self.current).is_some_and(|round| {
+            round
+                .items
+                .iter()
+                .flat_map(tool_calls)
+                .any(|call| call.name == "subagent")
+        })
+    }
+
+    pub fn selected_summary(&self) -> Option<String> {
+        self.rounds.get(self.current).map(TranscriptRound::summary)
+    }
+
+    pub fn last_assistant_text(&self) -> Option<String> {
+        self.rounds
+            .iter()
+            .rev()
+            .flat_map(|round| round.items.iter().rev())
+            .find_map(|item| match &item.view {
+                TranscriptViewItem::Assistant { text } => Some(text.clone()),
+                _ => None,
+            })
+    }
+
     pub fn cached_rounds(&self) -> usize {
         self.rounds.len()
     }
@@ -459,6 +490,58 @@ pub enum OverlayState {
     Detail(DetailOverlay),
     TextEditor(TextEditorOverlay),
     Confirm(ConfirmOverlay),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentDescriptor {
+    pub parent_session_path: String,
+    pub run_id: String,
+    pub agent_id: String,
+    pub name: String,
+    pub source: String,
+    pub task: String,
+    pub state: String,
+    pub current_action: Option<String>,
+    pub started_at: u64,
+    pub updated_at: u64,
+    pub elapsed_ms: u64,
+    pub controllable: bool,
+    pub session_file: Option<String>,
+    pub session_cwd: Option<String>,
+}
+
+pub fn merge_subagents(
+    committed: impl IntoIterator<Item = SubagentDescriptor>,
+    live: impl IntoIterator<Item = SubagentDescriptor>,
+) -> Vec<SubagentDescriptor> {
+    let mut merged = BTreeMap::new();
+    for snapshot in committed {
+        merged.insert(
+            (snapshot.run_id.clone(), snapshot.agent_id.clone()),
+            snapshot,
+        );
+    }
+    for snapshot in live {
+        merged.insert(
+            (snapshot.run_id.clone(), snapshot.agent_id.clone()),
+            snapshot,
+        );
+    }
+    let mut snapshots = merged.into_values().collect::<Vec<_>>();
+    snapshots.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| left.run_id.cmp(&right.run_id))
+            .then_with(|| left.agent_id.cmp(&right.agent_id))
+    });
+    snapshots
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipboardDescriptor {
+    pub capability: bool,
+    pub text: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -688,6 +771,8 @@ pub enum WorkbenchTarget {
     InstructionsHost,
     Packages,
     Update,
+    Subagents,
+    Clipboard,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -726,6 +811,20 @@ pub enum PendingIntent {
         selected_key: Option<String>,
         filter: String,
         toast: String,
+    },
+    SubagentRead {
+        parent_session_path: String,
+        selected_key: String,
+        filter: String,
+    },
+    SubagentMutation {
+        parent_session_path: String,
+        selected_key: String,
+        filter: String,
+        toast: String,
+    },
+    ClipboardRead {
+        insert: bool,
     },
     ClipboardMutation {
         toast: String,
@@ -853,6 +952,10 @@ pub struct AppState {
     focus_before_overlay: Option<InputFocus>,
     pub toast: Option<String>,
     pub overlay_error: Option<String>,
+    pub subagents: Vec<SubagentDescriptor>,
+    pub subagent_parent_path: Option<String>,
+    pub clipboard: Option<ClipboardDescriptor>,
+    pub subagent_detail: Option<SubagentDescriptor>,
     pub settings: Vec<SettingDescriptor>,
     pub models: Vec<ModelDescriptor>,
     pub providers: Vec<ProviderDescriptor>,
@@ -1243,6 +1346,7 @@ impl AppState {
                 | PendingIntent::TreeMutation { .. }
                 | PendingIntent::TreeNavigate { .. }
                 | PendingIntent::AuthMutation { .. }
+                | PendingIntent::SubagentMutation { .. }
                 | PendingIntent::ClipboardMutation { .. }
         ) {
             self.write_pending = false;
@@ -1295,8 +1399,20 @@ impl AppState {
     pub fn overlay_copy_text(&self) -> Option<String> {
         match self.overlay() {
             Some(OverlayState::Detail(detail)) => detail.copy_text.clone(),
+            Some(OverlayState::List(list)) => list
+                .items
+                .get(list.selected)
+                .map(|item| format!("{}  {}", item.label, item.detail)),
             _ => None,
         }
+    }
+
+    pub fn context_copy_text(&self) -> Option<String> {
+        self.readonly_view
+            .as_ref()
+            .and_then(|view| view.transcript.selected_summary())
+            .or_else(|| self.transcript.selected_summary())
+            .or_else(|| self.transcript.last_assistant_text())
     }
 
     pub fn set_overlay_error(&mut self, message: impl Into<String>) {
@@ -2303,6 +2419,62 @@ mod tests {
             },
         }
     }
+    #[test]
+    fn state_merge_dedupes_sorts_and_keeps_live_snapshot() {
+        let committed = SubagentDescriptor {
+            parent_session_path: "/tmp/main.jsonl".to_owned(),
+            run_id: "run-b".to_owned(),
+            agent_id: "agent-b".to_owned(),
+            name: "committed".to_owned(),
+            source: "builtin".to_owned(),
+            task: "task".to_owned(),
+            state: "succeeded".to_owned(),
+            current_action: None,
+            started_at: 1,
+            updated_at: 2,
+            elapsed_ms: 1,
+            controllable: false,
+            session_file: None,
+            session_cwd: None,
+        };
+        let mut live = committed.clone();
+        live.name = "live".to_owned();
+        live.state = "running".to_owned();
+        live.updated_at = 4;
+        let mut second = committed.clone();
+        second.run_id = "run-a".to_owned();
+        second.agent_id = "agent-a".to_owned();
+        second.updated_at = 3;
+        let snapshots = merge_subagents([committed, second], [live]);
+        assert_eq!(snapshots.len(), 2);
+        assert_eq!(snapshots[0].name, "live");
+        assert_eq!(snapshots[0].state, "running");
+        assert_eq!(snapshots[1].run_id, "run-a");
+    }
+
+    #[test]
+    fn context_copy_prefers_readonly_selection_then_active_view() {
+        let mut app = AppState::default();
+        app.transcript
+            .replace_page(vec![user("active", "active text")], "g".to_owned(), 1, None);
+        assert_eq!(
+            app.context_copy_text().as_deref(),
+            Some("用户  active text")
+        );
+        let mut readonly = ReadonlySessionView::default();
+        readonly.transcript.replace_page(
+            vec![user("readonly", "readonly text")],
+            "g".to_owned(),
+            1,
+            None,
+        );
+        app.readonly_view = Some(readonly);
+        assert_eq!(
+            app.context_copy_text().as_deref(),
+            Some("用户  readonly text")
+        );
+    }
+
     #[test]
     fn pairs_every_tool_call_on_page_boundaries() {
         let call = TranscriptItem {

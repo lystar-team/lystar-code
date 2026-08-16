@@ -28,7 +28,7 @@ use serde_json::json;
 const TOOL_ROUNDS: usize = 10_000;
 const BENCHMARK_ROUNDS: usize = 5;
 const SIZES: [(u16, u16); 3] = [(80, 24), (120, 36), (200, 60)];
-const SCENARIOS: [&str; 11] = [
+const SCENARIOS: [&str; 16] = [
     "readonly_open",
     "older_scroll",
     "search",
@@ -40,6 +40,11 @@ const SCENARIOS: [&str; 11] = [
     "instructions_open",
     "packages_open",
     "update_open",
+    "subagents_open",
+    "subagent_detail",
+    "subagent_nested",
+    "clipboard_open",
+    "clipboard_insert",
 ];
 
 struct WriterStats {
@@ -286,8 +291,78 @@ fn apply_scenario(app: &mut AppState, scenario: &str) {
             "i 安装  d 删除  u 更新  U 更新全部",
         ),
         "update_open" => open_update(app),
+        "subagents_open" => open_subagents(app),
+        "subagent_detail" => open_subagent_detail(app),
+        "subagent_nested" => {
+            open_subagent_detail(app);
+            open_subagents(app);
+        }
+        "clipboard_open" => open_clipboard(app, false),
+        "clipboard_insert" => open_clipboard(app, true),
         _ => unreachable!("unknown scenario"),
     }
+}
+
+fn open_subagents(app: &mut AppState) {
+    open_workbench_list(
+        app,
+        "Subagent",
+        vec![
+            OverlayItem {
+                label: "fixture-running".to_owned(),
+                detail: "run:fixture-live  live  running  24ms  read src/lib.rs".to_owned(),
+                action: "subagent:0".to_owned(),
+            },
+            OverlayItem {
+                label: "fixture-completed".to_owned(),
+                detail: "run:fixture-done  transcript  succeeded  12ms".to_owned(),
+                action: "subagent:1".to_owned(),
+            },
+        ],
+        "fixture",
+        "Enter 详情  a 停止运行项  c 继续已结束项  r 刷新",
+    );
+}
+
+fn open_subagent_detail(app: &mut AppState) {
+    app.open_workspace_overlay(
+        "benchmark:subagent:detail",
+        OverlayState::Detail(DetailOverlay {
+            title: "Subagent 详情".to_owned(),
+            lines: vec![
+                "runId: fixture-live".to_owned(),
+                "状态: running".to_owned(),
+                "任务: benchmark fixture task".to_owned(),
+                "当前 Tool: read src/lib.rs".to_owned(),
+                "session path: /tmp/fixture-subagent.jsonl".to_owned(),
+            ],
+            scroll: 0,
+            status: "Enter 查看嵌套 Subagent  v 只读记录  Esc 返回".to_owned(),
+            link: None,
+            copy_text: None,
+        }),
+    );
+}
+
+fn open_clipboard(app: &mut AppState, inserted: bool) {
+    if inserted {
+        app.editor.insert("clipboard fixture text");
+    }
+    app.open_workspace_overlay(
+        "benchmark:clipboard",
+        OverlayState::Detail(DetailOverlay {
+            title: "剪贴板".to_owned(),
+            lines: vec![
+                "文本剪贴板: 支持".to_owned(),
+                "图片剪贴板: 不支持（本批不读取图片字节）".to_owned(),
+                "预览: clipboard fixture text".to_owned(),
+            ],
+            scroll: 0,
+            status: "i 插入输入框  w 写入输入框  c 复制预览  Esc 返回".to_owned(),
+            link: None,
+            copy_text: Some("clipboard fixture text".to_owned()),
+        }),
+    );
 }
 
 fn open_readonly(app: &mut AppState) {

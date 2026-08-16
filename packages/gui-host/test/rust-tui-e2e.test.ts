@@ -25,6 +25,7 @@ import {
 	encodeServerMessage,
 	type JsonValue,
 	type ServerMessage,
+	type SubagentSnapshot,
 	type ThinkingLevel,
 } from "@lystar/code-gui-protocol";
 import { afterEach, describe, it } from "vitest";
@@ -269,6 +270,10 @@ class FakeRuntimeSession implements RuntimeSession {
 	loginCount = 0;
 	logoutCount = 0;
 	clipboardWrites: string[] = [];
+	clipboardText = "clipboard fixture text";
+	subagentAbortCount = 0;
+	subagentContinue: string[] = [];
+	subagents: SubagentSnapshot[];
 	authResponses: string[] = [];
 	private authNotificationGate: Promise<void> = Promise.resolve();
 	private releaseAuthNotificationGate?: () => void;
@@ -299,6 +304,35 @@ class FakeRuntimeSession implements RuntimeSession {
 
 	constructor(sessionPath: string) {
 		this.sessionPath = sessionPath;
+		this.subagents = [
+			{
+				runId: "run-live",
+				agentId: "agent-live",
+				agent: "fixture-running",
+				agentSource: "builtin",
+				task: "live fixture task",
+				state: "running",
+				currentAction: "read src/live.ts",
+				startedAt: 1,
+				updatedAt: 20,
+				elapsedMs: 20,
+				controllable: true,
+				session: { version: 1, sessionId: "child-live", sessionFile: sessionPath, cwd: "/tmp", createdAt: 1 },
+			},
+			{
+				runId: "run-done",
+				agentId: "agent-done",
+				agent: "fixture-completed",
+				agentSource: "project",
+				task: "completed fixture task",
+				state: "succeeded",
+				startedAt: 2,
+				updatedAt: 10,
+				elapsedMs: 8,
+				controllable: true,
+				session: { version: 1, sessionId: "child-done", sessionFile: sessionPath, cwd: "/tmp", createdAt: 2 },
+			},
+		];
 	}
 
 	getSnapshot(writeAccess: "available" | "owned" | "controlled_elsewhere" | "locked_externally") {
@@ -379,13 +413,34 @@ class FakeRuntimeSession implements RuntimeSession {
 		return { cancelled: false };
 	}
 	listSubagents() {
-		return [];
+		return this.subagents;
 	}
-	readSubagent() {
-		return {};
+	readSubagent(agentId: string) {
+		const transcript = this.subagents.find((snapshot) => snapshot.agentId === agentId);
+		return transcript ? { transcript } : {};
 	}
-	async abortSubagent(): Promise<void> {}
-	async continueSubagent(): Promise<void> {}
+	async abortSubagent(agentId: string): Promise<void> {
+		const snapshot = this.subagents.find((candidate) => candidate.agentId === agentId);
+		if (!snapshot || !["queued", "running", "waiting"].includes(snapshot.state))
+			throw new Error("subagent not running");
+		this.subagentAbortCount++;
+		this.subagents = this.subagents.map((candidate) =>
+			candidate.agentId === agentId
+				? { ...candidate, state: "cancelled", updatedAt: candidate.updatedAt + 1 }
+				: candidate,
+		);
+	}
+	async continueSubagent(agentId: string, text: string): Promise<void> {
+		const snapshot = this.subagents.find((candidate) => candidate.agentId === agentId);
+		if (!snapshot || ["queued", "running", "waiting"].includes(snapshot.state))
+			throw new Error("subagent not complete");
+		this.subagentContinue.push(text);
+		this.subagents = this.subagents.map((candidate) =>
+			candidate.agentId === agentId
+				? { ...candidate, state: "running", updatedAt: candidate.updatedAt + 1 }
+				: candidate,
+		);
+	}
 	async prompt(text: string): Promise<void> {
 		this.prompts.push(text);
 		if (this.holdPrompt)
@@ -600,6 +655,7 @@ function createAdapter(runtime: FakeRuntimeSession): RuntimeAdapter {
 			runtime.logoutCount++;
 			return fakeModels();
 		},
+		readClipboardText: async () => ({ capability: true, text: runtime.clipboardText }),
 		writeClipboardText: async (text: string) => {
 			runtime.clipboardWrites.push(text);
 			return { capability: true, changed: true };
@@ -1026,6 +1082,14 @@ async function openSessions(tui: StartedTui): Promise<void> {
 	);
 	assert.ok(response && response.type === "response" && response.ok, "Host did not return session list");
 	assert.equal((response.result as unknown[]).length, 3, "Host did not return exactly three sessions");
+}
+
+async function openSubagents(tui: StartedTui): Promise<void> {
+	const count = tui.requests.filter((request) => request.command === "list_subagents").length;
+	tui.sendLiteral("/subagents");
+	tui.send("Enter");
+	await waitForRequest(tui, "list_subagents", count + 1);
+	await waitFor(() => tui.pane().includes("fixture-running"), "Subagent list did not render");
 }
 
 interface RequestRecord {
@@ -2025,6 +2089,98 @@ describe("Rust read-only TUI fd bridge", () => {
 			}
 		}
 	}, 240_000);
+
+	it("通过 tmux/FIFO 两轮运行 Subagent 工作台和文本剪贴板", async () => {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const tui = await startTui(4, { width: 80, height: 24 }, `subagent-clipboard-${attempt + 1}`);
+			try {
+				await waitForInitialPage(tui);
+				const leasesBefore = hostLeaseCount(tui.service);
+				await openSubagents(tui);
+				assert.ok(tui.pane().includes("fixture-completed"), "completed Subagent is missing");
+				tui.send("Enter");
+				await waitForRequest(tui, "read_subagent");
+				await waitFor(() => tui.pane().includes("Subagent 详情"), "Subagent detail did not render");
+				tui.send("Enter");
+				await waitForRequest(tui, "list_subagents", 2);
+				await waitFor(() => tui.pane().includes("fixture-running"), "nested Subagent list did not render");
+				tui.send("Escape");
+				await waitFor(() => tui.pane().includes("Subagent 详情"), "nested Esc did not return to detail");
+				tui.send("v");
+				await waitForRequest(tui, "read_transcript", 2);
+				await waitFor(() => tui.pane().includes("会话只读"), "Subagent readonly transcript did not render");
+				assert.equal(hostLeaseCount(tui.service), leasesBefore, "readonly Subagent view acquired a lease");
+				tui.send("Escape", "Escape", "Escape");
+				await waitFor(() => tui.pane().includes("fixture-running"), "Subagent list did not return");
+
+				tui.send("Down", "c");
+				await waitFor(() => tui.pane().includes("继续 fixture-completed"), "continue editor did not render");
+				tui.sendLiteral("continue once");
+				tui.dropNextB3Response();
+				tui.send("Enter");
+				await waitFor(
+					async () => {
+						await tui.pump();
+						return tui.runtime.subagentContinue.length === 1;
+					},
+					() =>
+						`continue did not reach Host: ${JSON.stringify({ pane: tui.pane(), requests: tui.requests, writes: tui.runtime.subagentContinue })}`,
+				);
+				await waitFor(
+					() => tui.pane().includes("请求超时，按 r 重试"),
+					"dropped continue response was not retryable",
+				);
+				tui.send("r");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.requests.filter((request) => request.command === "continue_subagent").length >= 2;
+				}, "continue retry did not leave Rust");
+				await waitFor(() => tui.runtime.subagentContinue.length === 1, "continue retry duplicated Host work");
+				await waitForRequest(tui, "list_subagents", 3);
+				await waitFor(() => tui.pane().includes("fixture-completed"), "continue refresh did not restore list");
+
+				tui.send("a");
+				await waitFor(() => tui.pane().includes("确认停止 fixture-completed"), "abort confirmation did not render");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.runtime.subagentAbortCount === 1;
+				}, "abort did not reach Host");
+				assert.equal(tui.runtime.subagentContinue.length, 1, "abort changed continue count");
+				tui.send("Escape");
+				await waitFor(() => tui.pane().includes("Enter 提交"), "Subagent overlay did not close");
+
+				tui.sendLiteral("/clipboard");
+				tui.send("Enter");
+				await waitForRequest(tui, "read_clipboard_text");
+				await waitFor(() => tui.pane().includes("图片剪贴板: 不支持"), "clipboard capability did not render");
+				tui.send("i");
+				tui.send("w");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.runtime.clipboardWrites.includes("clipboard fixture text");
+				}, "clipboard insert/write did not reach Host");
+				tui.send("c");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.runtime.clipboardWrites.filter((text) => text === "clipboard fixture text").length >= 2;
+				}, "clipboard preview copy did not reach Host");
+				tui.send("Escape");
+				const readCount = tui.requests.filter((request) => request.command === "read_clipboard_text").length;
+				tui.send("C-S-v");
+				await waitForRequest(tui, "read_clipboard_text", readCount + 1);
+				tui.send("C-y");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.runtime.clipboardWrites.length >= 3;
+				}, "context copy did not reach Host");
+				tui.resize(80, 8);
+				await waitFor(() => tui.pane().includes("Enter 提交"), "80x8 did not recover Composer after clipboard");
+			} finally {
+				tui.closeProtocol();
+			}
+		}
+	}, 180_000);
 
 	it("reacquires a new lease after a dropped response without repeating Host operations", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "lystar-rust-m8-reacquire-"));

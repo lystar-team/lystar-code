@@ -16,6 +16,11 @@ const SCENARIOS = new Set([
 	"instructions_open",
 	"packages_open",
 	"update_open",
+	"subagents_open",
+	"subagent_detail",
+	"subagent_nested",
+	"clipboard_open",
+	"clipboard_insert",
 ]);
 const ROUNDS = new Set([1, 2, 3, 4, 5]);
 const CACHE_LIMITS = { rounds: 400, items: 800, bytes: 4 * 1024 * 1024 };
@@ -33,7 +38,7 @@ const BYTE_FIELDS = ["bytesP50", "bytesP95", "bytesP99", "bytesMax", "bytesTotal
 const RSS_FIELDS = ["rssP50Bytes", "rssP95Bytes", "rssP99Bytes", "rssMaxBytes"];
 
 export function verifyRustB3Workbench(records) {
-	assert.equal(records.length, 165, "B3 workbench benchmark must emit exactly 11 scenarios x 3 sizes x 5 rounds");
+	assert.equal(records.length, 240, "B3 workbench benchmark must emit exactly 16 scenarios x 3 sizes x 5 rounds");
 	const seen = new Set();
 	for (const row of records) {
 		const key = `${row.scenario}/${row.columns}x${row.rows}/${row.round}`;

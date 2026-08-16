@@ -798,8 +798,16 @@ class CoreRuntimeSession implements RuntimeSession {
 
 	listSubagents(): SubagentSnapshot[] {
 		const committed = transcriptSubagents(this.runtime.session.sessionManager.getEntries());
-		const live = new Map(getCurrentSubagentRuns().map((snapshot) => [snapshot.agentId, liveSubagent(snapshot)]));
-		return committed.map((snapshot) => live.get(snapshot.agentId) ?? snapshot);
+		const live = getCurrentSubagentRuns().map(liveSubagent);
+		const merged = new Map<string, SubagentSnapshot>();
+		for (const snapshot of committed) merged.set(`${snapshot.runId}:${snapshot.agentId}`, snapshot);
+		for (const snapshot of live) merged.set(`${snapshot.runId}:${snapshot.agentId}`, snapshot);
+		return [...merged.values()].sort(
+			(left, right) =>
+				right.updatedAt - left.updatedAt ||
+				left.runId.localeCompare(right.runId) ||
+				left.agentId.localeCompare(right.agentId),
+		);
 	}
 
 	readSubagent(agentId: string): { transcript?: SubagentSnapshot; live?: SubagentSnapshot } {
@@ -1630,7 +1638,12 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	}
 
 	listSubagents(sessionPath: string): SubagentSnapshot[] {
-		return transcriptSubagents(readSessionSnapshot(sessionPath).entries);
+		return transcriptSubagents(readSessionSnapshot(sessionPath).entries).sort(
+			(left, right) =>
+				right.updatedAt - left.updatedAt ||
+				left.runId.localeCompare(right.runId) ||
+				left.agentId.localeCompare(right.agentId),
+		);
 	}
 
 	readSubagent(sessionPath: string, agentId: string): { transcript?: SubagentSnapshot } {

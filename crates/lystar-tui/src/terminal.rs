@@ -34,14 +34,15 @@ use signal_hook::{
 use thiserror::Error;
 
 use crate::app::{
-    AppState, B3Request, ChangesTab, ComposerView, ConfirmOverlay, DetailOverlay,
-    GitDiffDescriptor, GitFileDescriptor, GitStatusDescriptor, InputFocus, InstructionDescriptor,
-    ListOverlay, ModelDescriptor, OverlayItem, OverlayLink, OverlayOrigin, OverlayState,
-    PackageDescriptor, PendingIntent, ProjectTrustDescriptor, ProviderDescriptor,
+    AppState, B3Request, ChangesTab, ClipboardDescriptor, ComposerView, ConfirmOverlay,
+    DetailOverlay, GitDiffDescriptor, GitFileDescriptor, GitStatusDescriptor, InputFocus,
+    InstructionDescriptor, ListOverlay, ModelDescriptor, OverlayItem, OverlayLink, OverlayOrigin,
+    OverlayState, PackageDescriptor, PendingIntent, ProjectTrustDescriptor, ProviderDescriptor,
     ReadonlySessionView, SearchHit, SessionRestorePoint, SessionSummary, SessionTreeNode,
-    SettingDescriptor, SkillDescriptor, TextEditorOverlay, TranscriptRequestKind, TranscriptView,
-    TranscriptViewKind, TreeFilter, UiRequest, UiRequestKind, UpdateDescriptor, VisibleLink,
-    WorkbenchOverlayView, WorkbenchTarget, composer_area, transcript_area,
+    SettingDescriptor, SkillDescriptor, SubagentDescriptor, TextEditorOverlay,
+    TranscriptRequestKind, TranscriptView, TranscriptViewKind, TreeFilter, UiRequest,
+    UiRequestKind, UpdateDescriptor, VisibleLink, WorkbenchOverlayView, WorkbenchTarget,
+    composer_area, transcript_area,
 };
 
 const INITIAL_PAGE_LIMIT: u64 = 200;
@@ -971,6 +972,8 @@ fn handle_key(
             title: "命令面板".to_owned(),
             origin: OverlayOrigin::User,
             items: [
+                ("subagents", "Subagent"),
+                ("clipboard", "剪贴板"),
                 ("changes", "变更"),
                 ("skills", "技能"),
                 ("trust", "项目信任"),
@@ -1054,6 +1057,37 @@ fn handle_key(
             app.open_search();
             trace("search_open");
         }
+        KeyCode::Char('v') if modifiers.contains(KeyModifiers::CONTROL) => {
+            request_clipboard_read(app, pipe, sequence, true)?;
+        }
+        KeyCode::Char('y') if modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(text) = app.context_copy_text() {
+                request_clipboard_write(
+                    app,
+                    pipe,
+                    client_instance_id,
+                    sequence,
+                    text,
+                    "已复制上下文",
+                )?;
+            } else {
+                app.set_overlay_error("当前没有可复制的文本");
+            }
+        }
+        KeyCode::Char('o')
+            if modifiers.contains(KeyModifiers::CONTROL)
+                && app.transcript.current_tool_is_subagent() =>
+        {
+            open_workbench(
+                app,
+                "subagents",
+                pipe,
+                &session_path,
+                client_instance_id,
+                sequence,
+                session_flow,
+            )?;
+        }
         KeyCode::Char('o') if modifiers.contains(KeyModifiers::CONTROL) => {
             app.transcript.toggle_current_tool()
         }
@@ -1117,6 +1151,8 @@ fn handle_key(
 
 fn builtin_slash_command(text: &str) -> Option<&'static str> {
     match text.trim() {
+        "/subagents" => Some("subagents"),
+        "/clipboard" => Some("clipboard"),
         "/changes" => Some("changes"),
         "/skills" => Some("skills"),
         "/trust" => Some("trust"),
@@ -1134,6 +1170,57 @@ fn builtin_slash_command(text: &str) -> Option<&'static str> {
         "/login" => Some("login"),
         _ => None,
     }
+}
+
+#[cfg(unix)]
+fn open_readonly_session(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    sequence: &mut u64,
+    session_flow: &mut Option<SessionFlow>,
+    path: String,
+) -> Result<(), TuiError> {
+    let generation = app
+        .readonly_view
+        .as_ref()
+        .map_or(1, |readonly| readonly.generation.saturating_add(1));
+    *sequence += 1;
+    let id = format!("readonly-initial-{sequence}");
+    *session_flow = Some(SessionFlow::Readonly {
+        id: id.clone(),
+        path: path.clone(),
+        replace: true,
+        generation,
+    });
+    app.readonly_view = Some(ReadonlySessionView {
+        path: path.clone(),
+        generation,
+        status: "正在读取".to_owned(),
+        ..ReadonlySessionView::default()
+    });
+    app.open_overlay(OverlayState::Detail(DetailOverlay {
+        title: "会话只读".to_owned(),
+        lines: vec!["正在读取".to_owned()],
+        scroll: 0,
+        status: "只读".to_owned(),
+        link: None,
+        copy_text: None,
+    }));
+    app.begin_transcript_request(
+        id.clone(),
+        TranscriptViewKind::Readonly,
+        TranscriptRequestKind::Initial,
+        path.clone(),
+        generation,
+        None,
+    );
+    pipe.request(&encode_read_transcript_request(
+        &id,
+        &path,
+        INITIAL_PAGE_LIMIT,
+        None,
+        None,
+    )?)
 }
 
 #[cfg(unix)]
@@ -1173,6 +1260,154 @@ fn handle_overlay_key(
         KeyCode::PageDown => app.overlay_page(1),
         KeyCode::Home => app.overlay_home_end(false),
         KeyCode::End => app.overlay_home_end(true),
+        KeyCode::Char('v') if modifiers.contains(KeyModifiers::CONTROL) => {
+            request_clipboard_read(app, pipe, sequence, true)?;
+        }
+        KeyCode::Char('y') if modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(text) = app.context_copy_text() {
+                request_clipboard_write(
+                    app,
+                    pipe,
+                    client_instance_id,
+                    sequence,
+                    text,
+                    "已复制上下文",
+                )?;
+            } else {
+                app.set_overlay_error("当前没有可复制的文本");
+            }
+        }
+        KeyCode::Char('r')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && matches!(app.overlay(), Some(OverlayState::List(list)) if list.title == "Subagent")
+                && app.timed_out_b3_request().is_none() =>
+        {
+            let filter = match app.overlay() {
+                Some(OverlayState::List(list)) => list.filter.clone(),
+                _ => String::new(),
+            };
+            let parent = app
+                .subagent_parent_path
+                .clone()
+                .unwrap_or_else(|| session_path.to_owned());
+            request_subagents(app, pipe, sequence, parent, None, filter)?;
+        }
+        KeyCode::Char('a')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && matches!(app.overlay(), Some(OverlayState::List(list)) if list.title == "Subagent") =>
+        {
+            if let Some(index) = app
+                .current_overlay_action()
+                .as_deref()
+                .and_then(|action| action.strip_prefix("subagent:"))
+                .and_then(|value| value.parse::<usize>().ok())
+                && let Some(snapshot) = app.subagents.get(index)
+            {
+                if !snapshot.controllable || !subagent_running(&snapshot.state) {
+                    app.set_overlay_error("当前 Subagent 不能停止");
+                } else if app.active_session_path() != Some(snapshot.parent_session_path.as_str()) {
+                    app.set_overlay_error("只允许控制当前会话的 Subagent");
+                } else {
+                    app.open_overlay(OverlayState::Confirm(ConfirmOverlay {
+                        title: "停止 Subagent".to_owned(),
+                        message: format!("确认停止 {}？", snapshot.name),
+                        confirm_action: format!("subagent-abort:{index}"),
+                        status: String::new(),
+                    }));
+                }
+            }
+        }
+        KeyCode::Char('c')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && matches!(app.overlay(), Some(OverlayState::List(list)) if list.title == "Subagent") =>
+        {
+            if let Some(index) = app
+                .current_overlay_action()
+                .as_deref()
+                .and_then(|action| action.strip_prefix("subagent:"))
+                .and_then(|value| value.parse::<usize>().ok())
+                && let Some(snapshot) = app.subagents.get(index)
+            {
+                if subagent_running(&snapshot.state) || snapshot.session_file.is_none() {
+                    app.set_overlay_error("运行中的或无持久会话的 Subagent 不能继续");
+                } else if app.active_session_path() != Some(snapshot.parent_session_path.as_str()) {
+                    app.set_overlay_error("只允许控制当前会话的 Subagent");
+                } else {
+                    app.open_overlay(OverlayState::TextEditor(TextEditorOverlay {
+                        title: format!("继续 {}", snapshot.name),
+                        value: String::new(),
+                        cursor: 0,
+                        save_action: format!("subagent-continue:{index}"),
+                        status: "Enter 继续，Shift+Enter 换行，Esc 取消".to_owned(),
+                        secret: false,
+                    }));
+                }
+            }
+        }
+        KeyCode::Char('i')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && matches!(app.overlay(), Some(OverlayState::Detail(detail)) if detail.title == "剪贴板") =>
+        {
+            if let Some(text) = app
+                .clipboard
+                .as_ref()
+                .and_then(|clipboard| clipboard.text.as_deref())
+            {
+                app.editor.insert(text);
+                app.set_toast("已插入剪贴板文本");
+            } else {
+                app.set_overlay_error("剪贴板没有文本");
+            }
+        }
+        KeyCode::Char('w')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && matches!(app.overlay(), Some(OverlayState::Detail(detail)) if detail.title == "剪贴板") =>
+        {
+            request_clipboard_write(
+                app,
+                pipe,
+                client_instance_id,
+                sequence,
+                app.editor.text().to_owned(),
+                "已写入剪贴板",
+            )?;
+        }
+        KeyCode::Char('v')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && matches!(app.overlay(), Some(OverlayState::Detail(detail)) if detail.title == "Subagent 详情") =>
+        {
+            if let Some(path) = app
+                .subagent_detail
+                .as_ref()
+                .and_then(|snapshot| snapshot.session_file.clone())
+            {
+                open_readonly_session(app, pipe, sequence, session_flow, path)?;
+            } else {
+                app.set_overlay_error("Subagent 没有持久 Session");
+            }
+        }
+        KeyCode::Enter if matches!(app.overlay(), Some(OverlayState::Detail(detail)) if detail.title == "Subagent 详情") => {
+            if let Some(path) = app
+                .subagent_detail
+                .as_ref()
+                .and_then(|snapshot| snapshot.session_file.clone())
+            {
+                app.open_workspace_overlay(
+                    format!("subagents:{path}"),
+                    OverlayState::Detail(DetailOverlay {
+                        title: "Subagent".to_owned(),
+                        lines: vec!["正在读取嵌套 Subagent".to_owned()],
+                        scroll: 0,
+                        status: "请稍候".to_owned(),
+                        link: None,
+                        copy_text: None,
+                    }),
+                );
+                request_subagents(app, pipe, sequence, path, None, String::new())?;
+            } else {
+                app.set_overlay_error("Subagent 没有持久 Session");
+            }
+        }
         KeyCode::Tab if matches!(app.overlay(), Some(OverlayState::List(list)) if list.title.starts_with("变更 [")) =>
         {
             app.changes_tab = match app.changes_tab {
@@ -1743,6 +1978,95 @@ fn request_b3(
 }
 
 #[cfg(unix)]
+fn request_subagents(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    sequence: &mut u64,
+    parent_session_path: String,
+    selected_key: Option<String>,
+    filter: String,
+) -> Result<(), TuiError> {
+    app.subagent_parent_path = Some(parent_session_path.clone());
+    app.replace_workspace_overlay(
+        format!("subagents:{parent_session_path}"),
+        OverlayState::Detail(DetailOverlay {
+            title: "Subagent".to_owned(),
+            lines: vec!["正在读取 Subagent".to_owned()],
+            scroll: 0,
+            status: "请稍候".to_owned(),
+            link: None,
+            copy_text: None,
+        }),
+    );
+    request_b3(
+        app,
+        pipe,
+        sequence,
+        B3Command::ListSubagents,
+        serde_json::json!({ "sessionPath": parent_session_path })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+        PendingIntent::WorkbenchLoad {
+            target: WorkbenchTarget::Subagents,
+            selected_key,
+            filter,
+        },
+    )
+}
+
+#[cfg(unix)]
+fn request_clipboard_read(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    sequence: &mut u64,
+    insert: bool,
+) -> Result<(), TuiError> {
+    request_b3(
+        app,
+        pipe,
+        sequence,
+        B3Command::ReadClipboardText,
+        serde_json::Map::new(),
+        PendingIntent::ClipboardRead { insert },
+    )
+}
+
+#[cfg(unix)]
+fn request_clipboard_write(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    client_instance_id: &str,
+    sequence: &mut u64,
+    text: String,
+    toast: &str,
+) -> Result<(), TuiError> {
+    if text.is_empty() {
+        app.set_overlay_error("没有可写入剪贴板的文本");
+        return Ok(());
+    }
+    let client_request_id = format!("clipboard:{}", sequence.saturating_add(1));
+    app.mark_write_pending();
+    request_b3(
+        app,
+        pipe,
+        sequence,
+        B3Command::WriteClipboardText,
+        serde_json::json!({
+            "text": text,
+            "clientInstanceId": client_instance_id,
+            "clientRequestId": client_request_id,
+        })
+        .as_object()
+        .cloned()
+        .unwrap_or_default(),
+        PendingIntent::ClipboardMutation {
+            toast: toast.to_owned(),
+        },
+    )
+}
+
+#[cfg(unix)]
 fn list_context(app: &AppState, title: &str) -> (String, Option<String>) {
     app.overlays
         .iter()
@@ -1952,6 +2276,30 @@ fn open_workbench(
         }));
         return pipe.request(&encode_list_sessions_request(&id, session_path, None)?);
     }
+    if target == "subagents" {
+        return request_subagents(
+            app,
+            pipe,
+            sequence,
+            session_path.to_owned(),
+            None,
+            String::new(),
+        );
+    }
+    if target == "clipboard" {
+        app.open_workspace_overlay(
+            "clipboard",
+            OverlayState::Detail(DetailOverlay {
+                title: "剪贴板".to_owned(),
+                lines: vec!["正在读取文本剪贴板".to_owned()],
+                scroll: 0,
+                status: "请稍候".to_owned(),
+                link: None,
+                copy_text: None,
+            }),
+        );
+        return request_clipboard_read(app, pipe, sequence, false);
+    }
     if target == "tree" {
         return request_b3(
             app,
@@ -1974,7 +2322,8 @@ fn open_workbench(
             title: "帮助".to_owned(),
             lines: vec![
                 "Ctrl+P 打开命令面板".to_owned(),
-                "/sessions 会话，/tree 分支树，/settings 设置，/model 模型，/thinking 思考，/login 登录".to_owned(),
+                "/subagents Subagent，/clipboard 剪贴板，/sessions 会话，/tree 分支树，/settings 设置，/model 模型，/thinking 思考，/login 登录".to_owned(),
+                "Ctrl+Shift+V 读取并插入剪贴板，Ctrl+Y 复制当前上下文".to_owned(),
                 "/help 显示此帮助，/about 显示版本与运行目录，/doctor 显示诊断结果".to_owned(),
                 "Esc 返回；方向键、PageUp/PageDown、Home/End 可浏览详情".to_owned(),
             ],
@@ -2164,6 +2513,135 @@ fn activate_workbench_action(
             client_instance_id,
             sequence,
             session_flow,
+        );
+    }
+    if let Some(index) = action
+        .strip_prefix("subagent:")
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        let Some(snapshot) = app.subagents.get(index).cloned() else {
+            app.set_overlay_error("Subagent 列表已刷新，请重新选择");
+            return Ok(());
+        };
+        let filter = list_context(app, "Subagent").0;
+        return request_b3(
+            app,
+            pipe,
+            sequence,
+            B3Command::ReadSubagent,
+            serde_json::json!({
+                "sessionPath": snapshot.parent_session_path,
+                "agentId": snapshot.agent_id,
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+            PendingIntent::SubagentRead {
+                parent_session_path: snapshot.parent_session_path,
+                selected_key: format!("subagent:{index}"),
+                filter,
+            },
+        );
+    }
+    if let Some(index) = action
+        .strip_prefix("subagent-abort:")
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        let Some(snapshot) = app.subagents.get(index).cloned() else {
+            app.set_overlay_error("Subagent 列表已刷新，请重新选择");
+            return Ok(());
+        };
+        if !snapshot.controllable || !subagent_running(&snapshot.state) {
+            app.set_overlay_error("当前 Subagent 不能停止");
+            return Ok(());
+        }
+        let Some(lease_id) = app.lease_id.clone() else {
+            app.set_overlay_error("尚未获取会话租约");
+            return Ok(());
+        };
+        if app.active_session_path() != Some(snapshot.parent_session_path.as_str()) {
+            app.set_overlay_error("只允许控制当前会话的 Subagent");
+            return Ok(());
+        }
+        let filter = list_context(app, "Subagent").0;
+        app.close_overlay();
+        app.mark_write_pending();
+        return request_b3(
+            app,
+            pipe,
+            sequence,
+            B3Command::AbortSubagent,
+            serde_json::json!({
+                "sessionPath": snapshot.parent_session_path,
+                "leaseId": lease_id,
+                "agentId": snapshot.agent_id,
+                "clientInstanceId": client_instance_id,
+                "clientRequestId": format!("subagent-abort:{}:{}", snapshot.agent_id, sequence.saturating_add(1)),
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+            PendingIntent::SubagentMutation {
+                parent_session_path: snapshot.parent_session_path,
+                selected_key: format!("subagent:{index}"),
+                filter,
+                toast: "已请求停止 Subagent".to_owned(),
+            },
+        );
+    }
+    if let Some(index) = action
+        .strip_prefix("subagent-continue:")
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        let text = match app.overlay() {
+            Some(OverlayState::TextEditor(editor)) => editor.value.trim().to_owned(),
+            _ => String::new(),
+        };
+        let Some(snapshot) = app.subagents.get(index).cloned() else {
+            app.set_overlay_error("Subagent 列表已刷新，请重新选择");
+            return Ok(());
+        };
+        if subagent_running(&snapshot.state) || snapshot.session_file.is_none() {
+            app.set_overlay_error("运行中的 Subagent 不能继续");
+            return Ok(());
+        }
+        if text.is_empty() {
+            app.set_overlay_error("继续内容不能为空");
+            return Ok(());
+        }
+        let Some(lease_id) = app.lease_id.clone() else {
+            app.set_overlay_error("尚未获取会话租约");
+            return Ok(());
+        };
+        if app.active_session_path() != Some(snapshot.parent_session_path.as_str()) {
+            app.set_overlay_error("只允许控制当前会话的 Subagent");
+            return Ok(());
+        }
+        let filter = list_context(app, "Subagent").0;
+        app.close_overlay();
+        app.mark_write_pending();
+        return request_b3(
+            app,
+            pipe,
+            sequence,
+            B3Command::ContinueSubagent,
+            serde_json::json!({
+                "sessionPath": snapshot.parent_session_path,
+                "leaseId": lease_id,
+                "agentId": snapshot.agent_id,
+                "text": text,
+                "clientInstanceId": client_instance_id,
+                "clientRequestId": format!("subagent-continue:{}:{}", snapshot.agent_id, sequence.saturating_add(1)),
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+            PendingIntent::SubagentMutation {
+                parent_session_path: snapshot.parent_session_path,
+                selected_key: format!("subagent:{index}"),
+                filter,
+                toast: "已继续 Subagent".to_owned(),
+            },
         );
     }
     if app.write_pending && !action.starts_with("ui:") {
@@ -3556,6 +4034,72 @@ fn apply_server_message(
                 selected_key,
                 filter,
             } => apply_workbench_load(app, target, selected_key, filter, result)?,
+            PendingIntent::SubagentRead {
+                parent_session_path,
+                selected_key: _,
+                filter: _,
+            } => {
+                let object = result
+                    .as_object()
+                    .ok_or_else(|| TuiError::InvalidResponse("Subagent 详情响应无效".to_owned()))?;
+                let committed = object
+                    .get("transcript")
+                    .map(|value| parse_subagent(value, &parent_session_path))
+                    .transpose()?;
+                let live = object
+                    .get("live")
+                    .map(|value| parse_subagent(value, &parent_session_path))
+                    .transpose()?;
+                let snapshot = match (committed, live) {
+                    (Some(committed), Some(live)) => {
+                        crate::app::merge_subagents([committed], [live])
+                            .into_iter()
+                            .next()
+                    }
+                    (Some(snapshot), None) | (None, Some(snapshot)) => Some(snapshot),
+                    (None, None) => None,
+                }
+                .ok_or_else(|| TuiError::InvalidResponse("Subagent 不存在或已过期".to_owned()))?;
+                app.subagent_detail = Some(snapshot.clone());
+                app.open_overlay(subagent_detail_overlay(&snapshot));
+            }
+            PendingIntent::SubagentMutation {
+                parent_session_path,
+                selected_key,
+                filter,
+                toast,
+            } => {
+                app.set_toast(
+                    result
+                        .get("message")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or(&toast),
+                );
+                request_subagents(
+                    app,
+                    pipe,
+                    sequence,
+                    parent_session_path,
+                    Some(selected_key),
+                    filter,
+                )?;
+            }
+            PendingIntent::ClipboardRead { insert } => {
+                let clipboard = parse_clipboard(&result)?;
+                if !clipboard.capability {
+                    app.set_overlay_error("Host 不支持文本剪贴板");
+                } else if insert {
+                    if let Some(text) = clipboard.text.as_deref() {
+                        app.editor.insert(text);
+                        app.set_toast("已插入剪贴板文本");
+                    } else {
+                        app.set_toast("剪贴板没有文本");
+                    }
+                } else {
+                    app.clipboard = Some(clipboard.clone());
+                    app.replace_overlay(clipboard_overlay(&clipboard));
+                }
+            }
             PendingIntent::ClipboardMutation { toast } => {
                 if result
                     .get("capability")
@@ -4310,6 +4854,19 @@ fn apply_workbench_load(
             app.update = Some(parse_update(&result)?);
             app.replace_overlay(update_overlay(app));
         }
+        WorkbenchTarget::Subagents => {
+            let parent_session_path = app.subagent_parent_path.clone().unwrap_or_default();
+            app.subagents = parse_subagents(&result, &parent_session_path)?;
+            app.replace_overlay(subagents_overlay(
+                &app.subagents,
+                selected_key.as_deref(),
+                filter,
+                app.active_session_path(),
+            ));
+        }
+        WorkbenchTarget::Clipboard => {
+            return Err(TuiError::InvalidResponse("剪贴板响应路由错误".to_owned()));
+        }
         WorkbenchTarget::Settings => {
             app.settings = parse_settings(&result)?;
             app.replace_overlay(settings_overlay(
@@ -4607,6 +5164,120 @@ fn packages_overlay(
         selected,
         filter,
         status: "i 安装  d 删除  u 更新当前  U 更新全部  r 刷新".to_owned(),
+    })
+}
+
+fn subagent_running(state: &str) -> bool {
+    matches!(state, "queued" | "running" | "waiting")
+}
+
+fn subagents_overlay(
+    snapshots: &[SubagentDescriptor],
+    selected_key: Option<&str>,
+    filter: String,
+    active_session_path: Option<&str>,
+) -> OverlayState {
+    let items = snapshots
+        .iter()
+        .enumerate()
+        .map(|(index, snapshot)| {
+            let mut detail = format!(
+                "run:{}  {}  {}  {}ms",
+                snapshot.run_id, snapshot.source, snapshot.state, snapshot.elapsed_ms
+            );
+            if let Some(action) = &snapshot.current_action {
+                detail.push_str(&format!("  {action}"));
+            }
+            OverlayItem {
+                label: snapshot.name.clone(),
+                detail,
+                action: format!("subagent:{index}"),
+            }
+        })
+        .collect::<Vec<_>>();
+    let selected = selected_key
+        .and_then(|key| items.iter().position(|item| item.action == key))
+        .unwrap_or(0);
+    let controllable = snapshots.iter().any(|snapshot| {
+        snapshot.parent_session_path == active_session_path.unwrap_or_default()
+            && snapshot.controllable
+            && (subagent_running(&snapshot.state) || snapshot.session_file.is_some())
+    });
+    OverlayState::List(ListOverlay {
+        title: "Subagent".to_owned(),
+        origin: OverlayOrigin::User,
+        items,
+        selected,
+        filter,
+        status: if controllable {
+            "Enter 详情  a 停止运行项  c 继续已结束项  r 刷新".to_owned()
+        } else {
+            "Enter 详情  r 刷新".to_owned()
+        },
+    })
+}
+
+fn subagent_detail_overlay(snapshot: &SubagentDescriptor) -> OverlayState {
+    let mut lines = vec![
+        format!("runId: {}", snapshot.run_id),
+        format!("agentId: {}", snapshot.agent_id),
+        format!("名称: {}", snapshot.name),
+        format!("来源: {}", snapshot.source),
+        format!("状态: {}", snapshot.state),
+        format!("任务: {}", bounded_text(&snapshot.task, 4096)),
+        format!("更新时间: {}", snapshot.updated_at),
+        format!("耗时: {}ms", snapshot.elapsed_ms),
+    ];
+    if let Some(action) = &snapshot.current_action {
+        lines.push(format!("当前 Tool: {}", bounded_text(action, 4096)));
+    }
+    if let Some(cwd) = &snapshot.session_cwd {
+        lines.push(format!("session cwd: {cwd}"));
+    }
+    if let Some(path) = &snapshot.session_file {
+        lines.push(format!("session path: {path}"));
+    } else {
+        lines.push("未提供持久 Session，显示状态摘要".to_owned());
+    }
+    OverlayState::Detail(DetailOverlay {
+        title: "Subagent 详情".to_owned(),
+        lines,
+        scroll: 0,
+        status: if snapshot.session_file.is_some() {
+            "Enter 查看嵌套 Subagent  v 只读记录  Esc 返回".to_owned()
+        } else {
+            "Esc 返回".to_owned()
+        },
+        link: None,
+        copy_text: None,
+    })
+}
+
+fn clipboard_preview(text: &str) -> String {
+    bounded_text(text, 1024).replace('\n', "\\n")
+}
+
+fn clipboard_overlay(clipboard: &ClipboardDescriptor) -> OverlayState {
+    let mut lines = vec![format!(
+        "文本剪贴板: {}",
+        if clipboard.capability {
+            "支持"
+        } else {
+            "不支持"
+        }
+    )];
+    lines.push("图片剪贴板: 不支持（本批不读取图片字节）".to_owned());
+    lines.push(match &clipboard.text {
+        Some(text) => format!("预览: {}", clipboard_preview(text)),
+        None => "预览: 空或 Host 未返回文本".to_owned(),
+    });
+    OverlayState::Detail(DetailOverlay {
+        title: "剪贴板".to_owned(),
+        lines,
+        scroll: 0,
+        status: "i 插入输入框  w 写入输入框  c 复制预览  Esc 返回".to_owned(),
+        link: None,
+        copy_text: clipboard.text.clone(),
     })
 }
 
@@ -5347,6 +6018,67 @@ fn parse_providers(value: &serde_json::Value) -> Result<Vec<ProviderDescriptor>,
             })
         })
         .collect()
+}
+
+fn parse_subagents(
+    value: &serde_json::Value,
+    parent_session_path: &str,
+) -> Result<Vec<SubagentDescriptor>, TuiError> {
+    let snapshots = value
+        .as_array()
+        .ok_or_else(|| TuiError::InvalidResponse("Subagent 响应不是列表".to_owned()))?
+        .iter()
+        .map(|entry| parse_subagent(entry, parent_session_path))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(snapshots)
+}
+
+fn parse_subagent(
+    value: &serde_json::Value,
+    parent_session_path: &str,
+) -> Result<SubagentDescriptor, TuiError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| TuiError::InvalidResponse("Subagent 条目无效".to_owned()))?;
+    let session = object.get("session").and_then(serde_json::Value::as_object);
+    Ok(SubagentDescriptor {
+        parent_session_path: parent_session_path.to_owned(),
+        run_id: required_string(object, "runId")?,
+        agent_id: required_string(object, "agentId")?,
+        name: required_string(object, "agent")?,
+        source: required_string(object, "agentSource")?,
+        task: required_string(object, "task")?,
+        state: required_string(object, "state")?,
+        current_action: object
+            .get("currentAction")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        started_at: required_u64(object, "startedAt")?,
+        updated_at: required_u64(object, "updatedAt")?,
+        elapsed_ms: required_u64(object, "elapsedMs")?,
+        controllable: required_bool(object, "controllable")?,
+        session_file: session
+            .and_then(|value| value.get("sessionFile"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        session_cwd: session
+            .and_then(|value| value.get("cwd"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
+fn parse_clipboard(value: &serde_json::Value) -> Result<ClipboardDescriptor, TuiError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| TuiError::InvalidResponse("剪贴板响应无效".to_owned()))?;
+    Ok(ClipboardDescriptor {
+        capability: required_bool(object, "capability")?,
+        text: object
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+    })
 }
 
 fn required_string(
