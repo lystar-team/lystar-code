@@ -164,6 +164,41 @@ export type AuthType = Static<typeof AuthTypeSchema>;
 
 export const ModelInputSchema = Type.Union([Type.Literal("text"), Type.Literal("image")]);
 
+const ModelCostSchema = StrictObject({
+	input: Type.Number({ minimum: 0 }),
+	output: Type.Number({ minimum: 0 }),
+	cacheRead: Type.Number({ minimum: 0 }),
+	cacheWrite: Type.Number({ minimum: 0 }),
+});
+export const ModelSummarySchema = StrictObject({
+	provider: Id,
+	id: Id,
+	name: Type.String({ minLength: 1, maxLength: 4096 }),
+	api: Type.String({ minLength: 1, maxLength: 4096 }),
+	reasoning: Type.Boolean(),
+	input: Type.Array(ModelInputSchema, { minItems: 1, maxItems: 8 }),
+	contextWindow: Type.Integer({ minimum: 1 }),
+	maxTokens: Type.Integer({ minimum: 1 }),
+	cost: ModelCostSchema,
+	supportedThinkingLevels: Type.Array(ThinkingLevelSchema, { maxItems: 7 }),
+	authenticated: Type.Boolean(),
+	authMethods: Type.Array(AuthTypeSchema, { maxItems: 2 }),
+	authSource: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+});
+export type ModelSummary = Static<typeof ModelSummarySchema>;
+
+export const ModelProviderSummarySchema = StrictObject({
+	id: Id,
+	name: Type.String({ minLength: 1, maxLength: 4096 }),
+	authenticated: Type.Boolean(),
+	authMethods: Type.Array(AuthTypeSchema, { maxItems: 2 }),
+	authSource: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+	modelCount: Type.Integer({ minimum: 0 }),
+	builtIn: Type.Boolean(),
+	custom: Type.Boolean(),
+});
+export type ModelProviderSummary = Static<typeof ModelProviderSummarySchema>;
+
 export const SessionPhaseSchema = Type.Union([
 	Type.Literal("idle"),
 	Type.Literal("turn"),
@@ -521,7 +556,10 @@ export const SettingSummarySchema = StrictObject({
 	description: Type.Optional(Type.String({ maxLength: 16 * 1024 })),
 	kind: SettingKindSchema,
 	value: SettingValueSchema,
+	displayValue: Type.String({ minLength: 1, maxLength: 4096 }),
 	options: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 1000 })),
+	minimum: Type.Optional(Type.Integer()),
+	maximum: Type.Optional(Type.Integer()),
 	scope: Type.Union([Type.Literal("global"), Type.Literal("project")]),
 	readOnly: Type.Boolean(),
 	restartRequired: Type.Boolean(),
@@ -606,6 +644,12 @@ export const AboutResultSchema = StrictObject({
 
 export const ListSettingsResultSchema = Type.Array(SettingSummarySchema, { maxItems: 1000 });
 export const SetSettingResultSchema = StrictObject({ setting: SettingSummarySchema, requiresRestart: Type.Boolean() });
+export const ListModelsResultSchema = Type.Array(ModelSummarySchema, { maxItems: 10_000 });
+export const ListModelProvidersResultSchema = Type.Array(ModelProviderSummarySchema, { maxItems: 1_000 });
+export const SetSessionModelResultSchema = SessionStateSnapshotSchema;
+export const SetSessionThinkingResultSchema = SessionStateSnapshotSchema;
+export const LoginModelProviderResultSchema = ListModelsResultSchema;
+export const LogoutModelProviderResultSchema = ListModelsResultSchema;
 export const GetProjectTrustResultSchema = ProjectTrustSchema;
 export const SetProjectTrustResultSchema = ProjectTrustSchema;
 export const ListPackagesResultSchema = Type.Array(PackageSummarySchema, { maxItems: 1000 });
@@ -638,6 +682,12 @@ export const ClipboardWriteResultSchema = StrictObject({ capability: Type.Boolea
 export const B3CommandResultSchemas = {
 	list_settings: ListSettingsResultSchema,
 	set_setting: SetSettingResultSchema,
+	list_models: ListModelsResultSchema,
+	list_model_providers: ListModelProvidersResultSchema,
+	set_session_model: SetSessionModelResultSchema,
+	set_session_thinking: SetSessionThinkingResultSchema,
+	login_model_provider: LoginModelProviderResultSchema,
+	logout_model_provider: LogoutModelProviderResultSchema,
 	get_project_trust: GetProjectTrustResultSchema,
 	set_project_trust: SetProjectTrustResultSchema,
 	list_packages: ListPackagesResultSchema,

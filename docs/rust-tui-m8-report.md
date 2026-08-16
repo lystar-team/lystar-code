@@ -11,6 +11,14 @@
 - Rust TUI 使用固定底部 Composer，支持 UTF-8 grapheme 编辑、多行、光标移动、删除、粘贴、64 KiB 输入上限、200 条历史、100 步 undo/redo。Enter 根据运行状态发出 `prompt` 或 `steer`，Alt+Enter 发出 `follow_up`，Esc/Ctrl+C 中止活动 operation。
 - 实时 assistant/thinking/tool 进度保存在 Rust 状态中；Tool 以 `toolCallId` 关联，最终 transcript commit 不会由进度层重复追加。
 
+## B3 设置、模型与认证工作台
+
+- Ctrl+P 命令面板及精确 slash 拦截已接入 `/settings`、`/model`、`/thinking`、`/login`；带额外文本或后缀的 slash 不会被截获，仍作为普通 prompt。
+- Rust 只消费 Host 返回的 B3 descriptor/result：设置包含显示值、整数边界、scope、只读和重启标记；模型包含认证可用性、推理能力和支持的思考级别；Provider 包含认证方式。Rust 不读取 settings/auth/model 文件，也不持久化认证输入。
+- 设置支持布尔切换、枚举选择、整数边界校验、字符串编辑和只读拦截；所有写入经既有 session/host operation journal，并保留原始 B3 payload 以便超时后按 `r` 重试。同一 `clientRequestId` 的重试不会重复执行 Host 写入。
+- 模型切换与思考强度使用 `set_session_model`、`set_session_thinking`；未认证模型仍显示，但不能选择。思考级别以中文显示，并按当前模型 capability 禁用不支持的选项。
+- 登录先选择 Provider 与认证方式，再通过 Host `ui_request` 依次桥接 select、input/secret、confirm。密文编辑器仅渲染掩码，认证值只通过单次 `ui_response` 交给 Host。
+
 ## Rust 工作台 Overlay 基础
 
 - Overlay stack 提供 List、Detail、TextEditor、Confirm 四个原语，打开时保存 composer 焦点，关闭或断连后恢复；支持 toast、错误、pending request generation 和 stale response 丢弃。
@@ -42,7 +50,7 @@ node --import tsx packages/tui/test/render-churn-bench.ts --smoke --out /tmp/lys
 cargo run -q -p lystar-tui --release --example benchmark -- --smoke --out /tmp/lystar-rust-b0-smoke.jsonl
 ```
 
-GUI Protocol 聚焦测试为 `10/10`，Host runtime/journal 与 Rust fd bridge tmux/FIFO 为 `18/18`。Host 两连接 E2E 让首次 prompt accepted 回包真实 reject 并关闭连接；新连接复用相同 `clientInstanceId`，重新 hello/acquire 后按相同 `clientRequestId` 重发，Fake Runtime 的 prompt 恰好一次，journal 终态 `completed`。steer、follow_up、clear_queue 同样覆盖首次运行完成后掉回包、重连复发和 existing completed；并发 prompt 恰好一次，相同 ID 不同 payload 返回 `operation_payload_mismatch`，idle steer/follow_up 返回 `session_not_active`，idle clear_queue 可用。
+GUI Protocol 聚焦测试为 `13/13`，Rust protocol/TUI workspace 为 `30/30`。Host runtime/journal 与 Rust fd bridge tmux/FIFO 覆盖 B3 设置写入掉响应后按原请求重试、模型与思考 session 写入、登录的 select/input/confirm 桥接和 80×8 恢复。Host 两连接 E2E 让首次 prompt accepted 回包真实 reject 并关闭连接；新连接复用相同 `clientInstanceId`，重新 hello/acquire 后按相同 `clientRequestId` 重发，Fake Runtime 的 prompt 恰好一次，journal 终态 `completed`。steer、follow_up、clear_queue 同样覆盖首次运行完成后掉回包、重连复发和 existing completed；并发 prompt 恰好一次，相同 ID 不同 payload 返回 `operation_payload_mismatch`，idle steer/follow_up 返回 `session_not_active`，idle clear_queue 可用。
 
 `projectRuntimeProgress` 继续使用真实 `AgentSessionEvent` 结构覆盖 assistant、thinking、tool start/update/end、queue_update、usage 以及最长 1024 字节的未投影状态。新的 TypeScript status golden frame 覆盖此前会导致 Rust decoder 退出的 `session_progress.status`。
 

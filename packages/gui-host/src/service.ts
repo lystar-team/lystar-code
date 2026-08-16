@@ -59,6 +59,12 @@ const TERMINAL_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>([
 const B3_COMMANDS = {
 	list_settings: true,
 	set_setting: true,
+	list_models: true,
+	list_model_providers: true,
+	set_session_model: true,
+	set_session_thinking: true,
+	login_model_provider: true,
+	logout_model_provider: true,
 	get_project_trust: true,
 	set_project_trust: true,
 	list_packages: true,
@@ -287,7 +293,7 @@ export class GuiHostService {
 				}),
 			);
 			if (message.request.command in B3_COMMANDS) {
-				assertB3CommandResult(message.request.command as keyof typeof B3_COMMANDS, result);
+				assertB3CommandResult(message.request.command as Parameters<typeof assertB3CommandResult>[0], result);
 			}
 		} catch (error) {
 			await connection.send({ type: "response", id: message.id, ok: false, error: protocolError(error) });

@@ -18,15 +18,17 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import {
+	type AuthType,
 	type ClientMessage,
 	ClientMessageDecoder,
 	encodeServerMessage,
 	type JsonValue,
 	type ServerMessage,
+	type ThinkingLevel,
 } from "@lystar/code-gui-protocol";
 import { afterEach, describe, it } from "vitest";
 import { GuiHostService } from "../src/service.ts";
-import type { RuntimeAdapter, RuntimeEvent, RuntimeSession } from "../src/types.ts";
+import type { RuntimeAdapter, RuntimeEvent, RuntimeSession, UiRequestHandler } from "../src/types.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../../..", import.meta.url));
 const artifactRoot = join(repositoryRoot, ".artifacts", "rust-tui-m7");
@@ -198,6 +200,18 @@ class FakeRuntimeSession implements RuntimeSession {
 	readonly followUps: string[] = [];
 	clearQueueCount = 0;
 	abortCount = 0;
+	settingWrites: Array<{ id: string; value: boolean | number | string }> = [];
+	modelWrites: Array<{ provider: string; id: string }> = [];
+	thinkingWrites: string[] = [];
+	loginCount = 0;
+	logoutCount = 0;
+	private readonly settings: Record<string, boolean | number | string> = {
+		autocompact: false,
+		"response-mode": "one",
+		"retry-limit": 2,
+		label: "old",
+		readonly: "locked",
+	};
 	holdPrompt = false;
 	private resolvePrompt?: () => void;
 	private readonly snapshot = {
@@ -207,7 +221,8 @@ class FakeRuntimeSession implements RuntimeSession {
 		updatedAt: 0,
 		phase: "idle" as "idle" | "turn",
 		activity: "idle" as "idle" | "running",
-		thinkingLevel: "off" as const,
+		thinkingLevel: "off" as ThinkingLevel,
+		model: { provider: "faux", id: "fast" },
 		leafId: null,
 		queuedSteerCount: 0,
 		queuedFollowUpCount: 0,
@@ -223,10 +238,71 @@ class FakeRuntimeSession implements RuntimeSession {
 		return { ...this.snapshot, path: this.sessionPath, attached: true, writeAccess, revision: 0 };
 	}
 	listSettings() {
-		return [];
+		return [
+			{
+				id: "autocompact",
+				label: "自动压缩",
+				kind: "boolean" as const,
+				value: this.settings.autocompact as boolean,
+				displayValue: this.settings.autocompact ? "开启" : "关闭",
+				scope: "global" as const,
+				readOnly: false,
+				restartRequired: false,
+			},
+			{
+				id: "response-mode",
+				label: "响应模式",
+				kind: "enum" as const,
+				value: this.settings["response-mode"] as string,
+				displayValue: this.settings["response-mode"] === "all" ? "全部" : "逐条",
+				options: ["one", "all"],
+				scope: "global" as const,
+				readOnly: false,
+				restartRequired: false,
+			},
+			{
+				id: "retry-limit",
+				label: "重试次数",
+				kind: "integer" as const,
+				value: this.settings["retry-limit"] as number,
+				displayValue: String(this.settings["retry-limit"]),
+				minimum: 1,
+				maximum: 5,
+				scope: "global" as const,
+				readOnly: false,
+				restartRequired: true,
+			},
+			{
+				id: "label",
+				label: "会话标签",
+				kind: "string" as const,
+				value: this.settings.label as string,
+				displayValue: this.settings.label as string,
+				scope: "project" as const,
+				readOnly: false,
+				restartRequired: false,
+			},
+			{
+				id: "readonly",
+				label: "只读设置",
+				kind: "string" as const,
+				value: this.settings.readonly as string,
+				displayValue: this.settings.readonly as string,
+				scope: "global" as const,
+				readOnly: true,
+				restartRequired: false,
+			},
+		];
 	}
-	async setSetting() {
-		return { setting: undefined as never, requiresRestart: false };
+	async setSetting(id: string, value: boolean | number | string) {
+		const setting = this.listSettings().find((candidate) => candidate.id === id);
+		if (!setting || setting.readOnly) throw new Error("setting unavailable");
+		this.settings[id] = value;
+		this.settingWrites.push({ id, value });
+		return {
+			setting: this.listSettings().find((candidate) => candidate.id === id)!,
+			requiresRestart: setting.restartRequired,
+		};
 	}
 	getSessionTree() {
 		return [];
@@ -264,8 +340,16 @@ class FakeRuntimeSession implements RuntimeSession {
 		return {};
 	}
 	async rename(): Promise<void> {}
-	async setModel(): Promise<void> {}
-	async setThinkingLevel(): Promise<void> {}
+	async setModel(model: { provider: string; id: string }): Promise<void> {
+		this.snapshot.model = model;
+		this.modelWrites.push(model);
+		this.emit({ type: "state_changed", payload: {} });
+	}
+	async setThinkingLevel(level: ThinkingLevel): Promise<void> {
+		this.snapshot.thinkingLevel = level;
+		this.thinkingWrites.push(level);
+		this.emit({ type: "state_changed", payload: {} });
+	}
 	async fork(): Promise<{ sessionPath: string }> {
 		return { sessionPath: this.sessionPath };
 	}
@@ -310,6 +394,39 @@ class FakeRuntimeSession implements RuntimeSession {
 	}
 }
 
+function fakeModels() {
+	return [
+		{
+			provider: "faux",
+			id: "fast",
+			name: "Faux Fast",
+			api: "openai-completions",
+			reasoning: true,
+			input: ["text"],
+			contextWindow: 128_000,
+			maxTokens: 4_096,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			supportedThinkingLevels: ["off", "low", "high"],
+			authenticated: true,
+			authMethods: ["api_key"],
+		},
+		{
+			provider: "locked",
+			id: "offline",
+			name: "Locked Offline",
+			api: "openai-completions",
+			reasoning: false,
+			input: ["text", "image"],
+			contextWindow: 32_000,
+			maxTokens: 2_048,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			supportedThinkingLevels: [],
+			authenticated: false,
+			authMethods: ["api_key"],
+		},
+	];
+}
+
 function createAdapter(runtime: FakeRuntimeSession): RuntimeAdapter {
 	return {
 		getAbout: () => ({
@@ -324,6 +441,53 @@ function createAdapter(runtime: FakeRuntimeSession): RuntimeAdapter {
 			configDirName: ".pi",
 		}),
 		getDiagnostics: async () => ({ checks: [], platform: "linux", arch: "x64" }),
+		listModels: async () => fakeModels(),
+		listModelProviders: async () => [
+			{
+				id: "faux",
+				name: "Faux",
+				authenticated: true,
+				authMethods: ["api_key"],
+				modelCount: 1,
+				builtIn: true,
+				custom: false,
+			},
+			{
+				id: "login",
+				name: "登录测试",
+				authenticated: runtime.loginCount > runtime.logoutCount,
+				authMethods: ["api_key", "oauth"],
+				modelCount: 1,
+				builtIn: false,
+				custom: true,
+			},
+		],
+		loginModelProvider: async (_provider: string, _authType: AuthType, onUiRequest: UiRequestHandler) => {
+			await onUiRequest({
+				id: "login-select",
+				kind: "select",
+				title: "认证区域",
+				payload: { options: [{ label: "中国", value: "cn" }] },
+			});
+			await onUiRequest({
+				id: "login-input",
+				kind: "input",
+				title: "认证输入",
+				payload: { value: "" },
+			});
+			await onUiRequest({
+				id: "login-confirm",
+				kind: "confirm",
+				title: "认证确认",
+				payload: { message: "确认认证？" },
+			});
+			runtime.loginCount++;
+			return fakeModels();
+		},
+		logoutModelProvider: async () => {
+			runtime.logoutCount++;
+			return fakeModels();
+		},
 		openSession: async (sessionPath: string) => {
 			assert.equal(sessionPath, runtime.sessionPath);
 			return runtime;
@@ -350,6 +514,7 @@ interface StartedTui {
 	serverMessages: ServerMessage[];
 	requests: RequestRecord[];
 	responseWrites: Map<string, number>;
+	dropNextB3Response(): void;
 	pump(): Promise<void>;
 	traces(): TraceEvent[];
 	pane(): string;
@@ -420,8 +585,13 @@ async function startTui(
 	const clientMessages: ClientMessage[] = [];
 	const serverMessages: ServerMessage[] = [];
 	const responseWrites = new Map<string, number>();
+	let dropNextB3Response = false;
 	const connection = service.createConnection(async (message: ServerMessage) => {
 		serverMessages.push(message);
+		if (message.type === "response" && dropNextB3Response) {
+			dropNextB3Response = false;
+			return;
+		}
 		writeAll(input, encodeServerMessage(message));
 		if (message.type === "response") responseWrites.set(message.id, Date.now());
 	});
@@ -448,7 +618,11 @@ async function startTui(
 			for (const message of decoder.push(outputBuffer.subarray(0, bytesRead))) {
 				clientMessages.push(message);
 				if (message.type === "request") requests.push({ id: message.id, command: message.request.command });
-				await connection.handle(message);
+				if (message.type === "request" && message.request.command === "login_model_provider") {
+					void connection.handle(message);
+				} else {
+					await connection.handle(message);
+				}
 			}
 		}
 	};
@@ -477,6 +651,9 @@ async function startTui(
 		clientMessages,
 		serverMessages,
 		responseWrites,
+		dropNextB3Response: () => {
+			dropNextB3Response = true;
+		},
 		pump,
 		traces,
 		pane,
@@ -803,12 +980,15 @@ describe("Rust read-only TUI fd bridge", () => {
 				await waitForInitialPage(tui);
 				tui.send("C-p");
 				await waitFor(() => tui.pane().includes("命令面板"), "Ctrl+P did not open the command palette");
-				assert.ok(!tui.pane().includes("/settings"), "command palette includes an unconnected command");
+				for (const command of ["/settings", "/model", "/thinking", "/login"]) {
+					assert.ok(tui.pane().includes(command), `command palette is missing ${command}`);
+				}
+				tui.sendLiteral("/help");
 				tui.send("Enter");
 				await waitFor(() => tui.pane().includes("/about 显示版本与运行目录"), "Help did not render local keys");
 				tui.send("Escape");
 				await waitFor(() => tui.pane().includes("命令面板"), "Help overlay did not close to the command palette");
-				tui.send("Escape");
+				tui.send("Escape", "Escape");
 				await waitFor(() => !tui.pane().includes("命令面板"), "command palette did not close");
 
 				for (const [command, marker] of [
@@ -865,14 +1045,17 @@ describe("Rust read-only TUI fd bridge", () => {
 					);
 				}, "Host did not receive input response");
 
-				inject("unknown-1", "secret", {});
+				inject("secret-1", "secret", {});
+				await waitFor(() => tui.pane().includes("请求 secret-1"), "secret request did not render");
+				tui.sendLiteral("masked");
+				tui.send("Enter");
 				await waitFor(async () => {
 					await tui.pump();
 					return tui.clientMessages.some(
 						(message) =>
-							message.type === "ui_response" && message.id === "unknown-1" && message.cancelled === true,
+							message.type === "ui_response" && message.id === "secret-1" && message.value === "masked",
 					);
-				}, "unknown UI kind was not cancelled");
+				}, "secret UI kind did not return a value");
 
 				tui.resize(80, 8);
 				await waitFor(() => tui.pane().includes("Enter 提交"), "80x8 Composer did not render before overlay test");
@@ -896,6 +1079,140 @@ describe("Rust read-only TUI fd bridge", () => {
 			}
 		}
 	}, 120_000);
+
+	it("通过 Host B3 处理设置、模型、思考和登录工作台，重试不会重复写入", async () => {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const tui = await startTui(4, { width: 80, height: 24 }, `b3-workbenches-${attempt + 1}`);
+			try {
+				await waitForInitialPage(tui);
+				const openSlash = async (command: string, marker: string, b3Command: string) => {
+					const requestCount = tui.requests.filter((request) => request.command === b3Command).length;
+					tui.sendLiteral(command);
+					tui.send("Enter");
+					await waitFor(async () => {
+						await tui.pump();
+						return tui.requests.filter((request) => request.command === b3Command).length > requestCount;
+					}, `${command} did not reach the Host`);
+					await waitFor(() => tui.pane().includes(marker), `${command} did not render Host data`);
+				};
+
+				await openSlash("/settings", "自动压缩", "list_settings");
+				tui.dropNextB3Response();
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.runtime.settingWrites.length === 1;
+				}, "boolean setting did not write once");
+				await new Promise((resolve) => setTimeout(resolve, 3_200));
+				tui.send("r");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.requests.filter((request) => request.command === "set_setting").length >= 2;
+				}, "timed out setting write was not retried");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.runtime.settingWrites.length === 1;
+				}, "setting retry repeated the Host write");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.requests.filter((request) => request.command === "list_settings").length >= 2;
+				}, "setting retry did not refresh the settings list");
+				await new Promise((resolve) => setTimeout(resolve, 100));
+				await waitFor(() => tui.pane().includes("自动压缩"), "setting list did not recover after retry");
+
+				tui.send("Down", "Enter");
+				await waitFor(() => tui.pane().includes("all"), "enum setting editor did not open");
+				tui.send("Down", "Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.runtime.settingWrites.some((write) => write.value === "all");
+				}, "enum setting did not save");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.requests.filter((request) => request.command === "list_settings").length >= 3;
+				}, "enum setting did not refresh the list");
+				const enumRefreshId = tui.requests.filter((request) => request.command === "list_settings").at(-1)?.id;
+				assert.ok(enumRefreshId, "missing enum settings refresh request");
+				await waitFor(() => tui.responseWrites.has(enumRefreshId), "Host did not answer enum settings refresh");
+				await new Promise((resolve) => setTimeout(resolve, 200));
+				assert.equal(tui.runtime.settingWrites.length, 2, "settings writes were not journaled exactly once");
+
+				tui.send("Escape");
+				await new Promise((resolve) => setTimeout(resolve, 100));
+				await openSlash("/model", "Faux Fast", "list_models");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.runtime.modelWrites.length === 1;
+				}, "model selection did not reach the Host");
+				const modelWriteRequest = tui.requests
+					.filter((request) => request.command === "set_session_model")
+					.at(-1)?.id;
+				assert.ok(modelWriteRequest, "missing model write request");
+				await waitFor(() => tui.responseWrites.has(modelWriteRequest), "Host did not answer model selection");
+				await new Promise((resolve) => setTimeout(resolve, 200));
+				assert.equal(tui.runtime.modelWrites.length, 1, "model selection wrote more than once");
+
+				await openSlash("/thinking", "关闭", "list_models");
+				tui.send("Down", "Down", "Down", "Down", "Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.runtime.thinkingWrites.includes("high");
+				}, "thinking setting did not reach the Host");
+
+				await waitFor(() => tui.pane().includes("Enter 提交"), "thinking selection did not close the overlay");
+				tui.send("Escape");
+				await openSlash("/login", "登录测试", "list_model_providers");
+				tui.send("Down", "Enter");
+				await waitFor(() => tui.pane().includes("API Key"), "login method list did not render");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.requests.some((request) => request.command === "login_model_provider");
+				}, "login command did not reach the Host");
+				await waitFor(() => tui.pane().includes("中国"), "Host select UI request did not render");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.clientMessages.some(
+						(message) => message.type === "ui_response" && message.id === "login-select",
+					);
+				}, "Host did not receive select response");
+				await waitFor(() => tui.pane().includes("认证输入"), "Host input UI request did not render");
+				tui.sendLiteral("secret-value");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.clientMessages.some(
+						(message) => message.type === "ui_response" && message.id === "login-input",
+					);
+				}, "Host did not receive secret response");
+				await waitFor(() => tui.pane().includes("确认认证？"), "Host confirm UI request did not render");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.runtime.loginCount === 1;
+				}, "login did not complete exactly once");
+				const loginRefreshId = tui.requests
+					.filter((request) => request.command === "list_model_providers")
+					.at(-1)?.id;
+				assert.ok(loginRefreshId, "missing provider refresh after login");
+				await waitFor(
+					() => tui.responseWrites.has(loginRefreshId),
+					"Host did not answer provider refresh after login",
+				);
+				await new Promise((resolve) => setTimeout(resolve, 200));
+				assert.ok(!tui.pane().includes("secret-value"), "secret UI input was rendered in plain text");
+				assert.ok(tui.requests.some((request) => request.command === "login_model_provider"));
+
+				tui.resize(80, 8);
+				await waitFor(() => tui.pane().includes("Enter 提交"), "80x8 did not recover composer after workbenches");
+				tui.resize(120, 36);
+			} finally {
+				tui.closeProtocol();
+			}
+		}
+	}, 180_000);
 
 	it("reacquires a new lease after a dropped response without repeating Host operations", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "lystar-rust-m8-reacquire-"));

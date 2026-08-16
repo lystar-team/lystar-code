@@ -32,9 +32,10 @@ use signal_hook::{
 use thiserror::Error;
 
 use crate::app::{
-    AppState, ComposerView, ConfirmOverlay, DetailOverlay, InputFocus, ListOverlay, OverlayItem,
-    OverlayState, PendingIntent, SearchHit, TextEditorOverlay, TranscriptView, UiRequest,
-    UiRequestKind, VisibleLink, WorkbenchOverlayView, composer_area, transcript_area,
+    AppState, B3Request, ComposerView, ConfirmOverlay, DetailOverlay, InputFocus, ListOverlay,
+    ModelDescriptor, OverlayItem, OverlayState, PendingIntent, ProviderDescriptor, SearchHit,
+    SettingDescriptor, TextEditorOverlay, TranscriptView, UiRequest, UiRequestKind, VisibleLink,
+    WorkbenchOverlayView, WorkbenchTarget, composer_area, transcript_area,
 };
 
 const INITIAL_PAGE_LIMIT: u64 = 200;
@@ -278,6 +279,7 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
         let area = terminal.size()?;
         let full = ratatui::layout::Rect::new(0, 0, area.width, area.height);
         app.prepare_composer(composer_area(&app, full));
+        app.set_timeout_notice();
         terminal.draw(|frame| {
             let area = frame.area();
             frame.render_widget(TranscriptView::new(&app), transcript_area(&app, area));
@@ -301,6 +303,7 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                 message,
                 &mut pipe,
                 session_path,
+                &client_instance_id,
                 &mut request_sequence,
             ) {
                 app.disconnected = Some(format!("连接已关闭: {error}"));
@@ -354,6 +357,7 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                         message,
                         &mut pipe,
                         session_path,
+                        &client_instance_id,
                         &mut request_sequence,
                     ) {
                         app.disconnected = Some(format!("连接已关闭: {error}"));
@@ -417,10 +421,18 @@ fn process_inbound_message(
     message: Result<ServerMessage, TuiError>,
     pipe: &mut ProtocolPipe,
     session_path: &str,
+    client_instance_id: &str,
     request_sequence: &mut u64,
 ) -> Result<(), TuiError> {
     let message = message?;
-    if apply_server_message(app, &message, session_path, pipe)? {
+    if apply_server_message(
+        app,
+        &message,
+        session_path,
+        pipe,
+        client_instance_id,
+        request_sequence,
+    )? {
         request_transcript(pipe, session_path, None, true, None, request_sequence)?;
     }
     Ok(())
@@ -529,14 +541,22 @@ fn handle_key(
     if matches!(code, KeyCode::Char('p')) && modifiers.contains(KeyModifiers::CONTROL) {
         app.open_overlay(OverlayState::List(ListOverlay {
             title: "命令面板".to_owned(),
-            items: [("help", "帮助"), ("about", "关于"), ("doctor", "诊断")]
-                .into_iter()
-                .map(|(target, detail)| OverlayItem {
-                    label: format!("/{target}"),
-                    detail: detail.to_owned(),
-                    action: format!("open:{target}"),
-                })
-                .collect(),
+            items: [
+                ("help", "帮助"),
+                ("settings", "设置"),
+                ("model", "模型"),
+                ("thinking", "思考"),
+                ("login", "登录"),
+                ("about", "关于"),
+                ("doctor", "诊断"),
+            ]
+            .into_iter()
+            .map(|(target, detail)| OverlayItem {
+                label: format!("/{target}"),
+                detail: detail.to_owned(),
+                action: format!("open:{target}"),
+            })
+            .collect(),
             selected: 0,
             filter: String::new(),
             status: "输入筛选，Enter 打开".to_owned(),
@@ -647,6 +667,10 @@ fn builtin_slash_command(text: &str) -> Option<&'static str> {
         "/about" => Some("about"),
         "/doctor" => Some("doctor"),
         "/help" => Some("help"),
+        "/settings" => Some("settings"),
+        "/model" => Some("model"),
+        "/thinking" => Some("thinking"),
+        "/login" => Some("login"),
         _ => None,
     }
 }
@@ -677,6 +701,32 @@ fn handle_overlay_key(
         KeyCode::End => app.overlay_home_end(true),
         KeyCode::Tab => {}
 
+        KeyCode::Char('r') if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+            if let Some((id, request)) = app.restart_timed_out_b3_request() {
+                pipe.request(&encode_b3_request(&id, request.command, request.payload)?)?;
+                app.set_toast("正在重试请求");
+            } else {
+                app.overlay_insert("r");
+            }
+        }
+        KeyCode::Char('d') if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+            if let Some(index) = app
+                .current_overlay_action()
+                .as_deref()
+                .and_then(|action| action.strip_prefix("login-provider:"))
+                .and_then(|value| value.parse::<usize>().ok())
+                && let Some(provider) = app.providers.get(index)
+            {
+                app.open_overlay(OverlayState::Confirm(ConfirmOverlay {
+                    title: "退出登录".to_owned(),
+                    message: format!("确认退出 {}？", provider.name),
+                    confirm_action: format!("auth-logout:{index}"),
+                    status: "d 仅在登录列表可用".to_owned(),
+                }));
+            } else {
+                app.overlay_insert("d");
+            }
+        }
         KeyCode::Backspace => app.overlay_backspace(),
         KeyCode::Enter => {
             if let Some(action) = app.current_overlay_action() {
@@ -701,11 +751,112 @@ fn handle_overlay_key(
 }
 
 #[cfg(unix)]
+fn request_b3(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    sequence: &mut u64,
+    command: B3Command,
+    payload: serde_json::Map<String, serde_json::Value>,
+    intent: PendingIntent,
+) -> Result<(), TuiError> {
+    *sequence += 1;
+    let id = format!("{}:{sequence}", command.wire());
+    let request = B3Request { command, payload };
+    app.begin_request(id.clone(), request.clone(), intent);
+    pipe.request(&encode_b3_request(&id, request.command, request.payload)?)
+}
+
+#[cfg(unix)]
+fn list_context(app: &AppState, title: &str) -> (String, Option<String>) {
+    app.overlays
+        .iter()
+        .rev()
+        .find_map(|overlay| match overlay {
+            OverlayState::List(list) if list.title == title => (
+                list.filter.clone(),
+                list.items
+                    .get(list.selected)
+                    .map(|item| item.action.clone()),
+            )
+                .into(),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(unix)]
+fn request_settings(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    sequence: &mut u64,
+    selected_key: Option<String>,
+    filter: String,
+) -> Result<(), TuiError> {
+    request_b3(
+        app,
+        pipe,
+        sequence,
+        B3Command::ListSettings,
+        serde_json::json!({ "sessionPath": session_path })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+        PendingIntent::WorkbenchLoad {
+            target: WorkbenchTarget::Settings,
+            selected_key,
+            filter,
+        },
+    )
+}
+
+#[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
+fn request_setting_write(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    client_instance_id: &str,
+    sequence: &mut u64,
+    id: &str,
+    value: serde_json::Value,
+    filter: String,
+) -> Result<(), TuiError> {
+    let Some(lease_id) = app.lease_id.clone() else {
+        app.set_overlay_error("尚未获取会话租约");
+        return Ok(());
+    };
+    let client_request_id = format!("setting:{id}:{}", sequence.saturating_add(1));
+    app.mark_write_pending();
+    request_b3(
+        app,
+        pipe,
+        sequence,
+        B3Command::SetSetting,
+        serde_json::json!({
+            "sessionPath": session_path,
+            "leaseId": lease_id,
+            "clientInstanceId": client_instance_id,
+            "clientRequestId": client_request_id,
+            "id": id,
+            "value": value,
+        })
+        .as_object()
+        .cloned()
+        .unwrap_or_default(),
+        PendingIntent::SettingMutation {
+            selected_key: id.to_owned(),
+            filter,
+        },
+    )
+}
+
+#[cfg(unix)]
 fn open_workbench(
     app: &mut AppState,
     target: &str,
     pipe: &mut ProtocolPipe,
-    _session_path: &str,
+    session_path: &str,
     _client_instance_id: &str,
     sequence: &mut u64,
 ) -> Result<(), TuiError> {
@@ -714,19 +865,69 @@ fn open_workbench(
             title: "帮助".to_owned(),
             lines: vec![
                 "Ctrl+P 打开命令面板".to_owned(),
-                "/help 显示此帮助".to_owned(),
-                "/about 显示版本与运行目录".to_owned(),
-                "/doctor 显示诊断结果".to_owned(),
-                "Esc 关闭；方向键、PageUp/PageDown、Home/End 可浏览详情".to_owned(),
+                "/settings 设置，/model 模型，/thinking 思考，/login 登录".to_owned(),
+                "/help 显示此帮助，/about 显示版本与运行目录，/doctor 显示诊断结果".to_owned(),
+                "Esc 返回；方向键、PageUp/PageDown、Home/End 可浏览详情".to_owned(),
             ],
             scroll: 0,
             status: "Esc 返回".to_owned(),
         }));
         return Ok(());
     }
-    let (command, title) = match target {
-        "about" => (B3Command::GetAbout, "关于"),
-        "doctor" => (B3Command::GetDiagnostics, "诊断"),
+    let (command, payload, intent, title) = match target {
+        "settings" => (
+            B3Command::ListSettings,
+            serde_json::json!({ "sessionPath": session_path })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            PendingIntent::WorkbenchLoad {
+                target: WorkbenchTarget::Settings,
+                selected_key: None,
+                filter: String::new(),
+            },
+            "设置",
+        ),
+        "model" => (
+            B3Command::ListModels,
+            serde_json::Map::new(),
+            PendingIntent::WorkbenchLoad {
+                target: WorkbenchTarget::Model,
+                selected_key: None,
+                filter: String::new(),
+            },
+            "模型",
+        ),
+        "thinking" => (
+            B3Command::ListModels,
+            serde_json::Map::new(),
+            PendingIntent::WorkbenchLoad {
+                target: WorkbenchTarget::Thinking,
+                selected_key: None,
+                filter: String::new(),
+            },
+            "思考",
+        ),
+        "login" => (
+            B3Command::ListModelProviders,
+            serde_json::Map::new(),
+            PendingIntent::WorkbenchLoad {
+                target: WorkbenchTarget::Login,
+                selected_key: None,
+                filter: String::new(),
+            },
+            "登录",
+        ),
+        "about" => (B3Command::GetAbout, serde_json::Map::new(), PendingIntent::Overlay { target: "关于".to_owned() }, "关于"),
+        "doctor" => (
+            B3Command::GetDiagnostics,
+            serde_json::json!({ "cwd": app.snapshot.as_ref().map(|snapshot| snapshot.cwd.clone()) })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            PendingIntent::Overlay { target: "诊断".to_owned() },
+            "诊断",
+        ),
         _ => return Ok(()),
     };
     app.open_overlay(OverlayState::Detail(DetailOverlay {
@@ -735,26 +936,7 @@ fn open_workbench(
         scroll: 0,
         status: "请稍候".to_owned(),
     }));
-    *sequence += 1;
-    let id = format!("{}:{sequence}", command.wire());
-    app.begin_request(
-        id.clone(),
-        PendingIntent::Overlay {
-            target: title.to_owned(),
-            command,
-        },
-    );
-    let request = if command == B3Command::GetDiagnostics {
-        let cwd = app.snapshot.as_ref().map(|snapshot| snapshot.cwd.clone());
-        serde_json::json!({"cwd":cwd})
-    } else {
-        serde_json::json!({})
-    };
-    pipe.request(&encode_b3_request(
-        &id,
-        command,
-        request.as_object().cloned().unwrap_or_default(),
-    )?)
+    request_b3(app, pipe, sequence, command, payload, intent)
 }
 
 #[cfg(unix)]
@@ -776,12 +958,365 @@ fn activate_workbench_action(
             sequence,
         );
     }
+    if app.write_pending && !action.starts_with("ui:") {
+        app.set_overlay_error("正在写入，请稍候");
+        return Ok(());
+    }
+    if action.starts_with("disabled:") {
+        app.set_overlay_error(action.trim_start_matches("disabled:"));
+        return Ok(());
+    }
+    if let Some(id) = action.strip_prefix("setting-toggle:") {
+        let Some(setting) = app.setting(id).cloned() else {
+            app.set_overlay_error("设置已刷新，请重新选择");
+            return Ok(());
+        };
+        let Some(value) = setting.value.as_bool() else {
+            app.set_overlay_error("设置类型不匹配");
+            return Ok(());
+        };
+        let (filter, _) = list_context(app, "设置");
+        return request_setting_write(
+            app,
+            pipe,
+            session_path,
+            client_instance_id,
+            sequence,
+            id,
+            serde_json::Value::Bool(!value),
+            filter,
+        );
+    }
+    if let Some(id) = action.strip_prefix("setting-enum:") {
+        let Some(setting) = app.setting(id).cloned() else {
+            app.set_overlay_error("设置已刷新，请重新选择");
+            return Ok(());
+        };
+        if setting.read_only {
+            app.set_overlay_error("此设置为只读");
+            return Ok(());
+        }
+        app.open_overlay(OverlayState::List(ListOverlay {
+            title: format!("{} 选项", setting.label),
+            items: setting
+                .options
+                .iter()
+                .enumerate()
+                .map(|(index, value)| OverlayItem {
+                    label: value.clone(),
+                    detail: if setting.value.as_str() == Some(value) {
+                        "当前".to_owned()
+                    } else {
+                        String::new()
+                    },
+                    action: format!("setting-option:{id}:{index}"),
+                })
+                .collect(),
+            selected: setting
+                .options
+                .iter()
+                .position(|value| setting.value.as_str() == Some(value))
+                .unwrap_or(0),
+            filter: String::new(),
+            status: "Enter 保存，Esc 返回".to_owned(),
+        }));
+        return Ok(());
+    }
+    if let Some(pair) = action.strip_prefix("setting-option:") {
+        let Some((id, index)) = pair.rsplit_once(':') else {
+            app.set_overlay_error("设置选项无效");
+            return Ok(());
+        };
+        let Ok(index) = index.parse::<usize>() else {
+            app.set_overlay_error("设置选项无效");
+            return Ok(());
+        };
+        let Some(setting) = app.setting(id).cloned() else {
+            app.set_overlay_error("设置已刷新，请重新选择");
+            return Ok(());
+        };
+        let Some(value) = setting.options.get(index).cloned() else {
+            app.set_overlay_error("设置选项无效");
+            return Ok(());
+        };
+        app.close_overlay();
+        let (filter, _) = list_context(app, "设置");
+        return request_setting_write(
+            app,
+            pipe,
+            session_path,
+            client_instance_id,
+            sequence,
+            id,
+            serde_json::Value::String(value),
+            filter,
+        );
+    }
+    if let Some(id) = action.strip_prefix("setting-text:") {
+        let Some(setting) = app.setting(id).cloned() else {
+            app.set_overlay_error("设置已刷新，请重新选择");
+            return Ok(());
+        };
+        if !matches!(app.overlay(), Some(OverlayState::TextEditor(_))) {
+            let value = match &setting.value {
+                serde_json::Value::String(value) => value.clone(),
+                serde_json::Value::Number(value) => value.to_string(),
+                _ => String::new(),
+            };
+            app.open_overlay(OverlayState::TextEditor(TextEditorOverlay {
+                title: setting.label,
+                cursor: value.len(),
+                value,
+                save_action: action.to_owned(),
+                status: match (setting.minimum, setting.maximum) {
+                    (Some(minimum), Some(maximum)) => {
+                        format!("输入范围 {minimum}..{maximum}，Enter 保存，Esc 返回")
+                    }
+                    _ => "Enter 保存，Esc 返回".to_owned(),
+                },
+                secret: false,
+            }));
+            return Ok(());
+        }
+        let value = match app.overlay() {
+            Some(OverlayState::TextEditor(editor)) => editor.value.clone(),
+            _ => String::new(),
+        };
+        let value = if setting.kind == "integer" {
+            let Ok(value) = value.parse::<i64>() else {
+                app.set_overlay_error("请输入整数");
+                return Ok(());
+            };
+            if setting.minimum.is_some_and(|minimum| value < minimum)
+                || setting.maximum.is_some_and(|maximum| value > maximum)
+            {
+                app.set_overlay_error("输入超出设置范围");
+                return Ok(());
+            }
+            serde_json::Value::from(value)
+        } else {
+            serde_json::Value::String(value)
+        };
+        app.close_overlay();
+        let (filter, _) = list_context(app, "设置");
+        return request_setting_write(
+            app,
+            pipe,
+            session_path,
+            client_instance_id,
+            sequence,
+            id,
+            value,
+            filter,
+        );
+    }
+    if let Some(index) = action
+        .strip_prefix("model:")
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        let Some(model) = app.models.get(index).cloned() else {
+            app.set_overlay_error("模型列表已刷新，请重新选择");
+            return Ok(());
+        };
+        if !model.configured {
+            app.set_overlay_error("该模型不可用：Provider 未完成认证");
+            return Ok(());
+        }
+        let Some(lease_id) = app.lease_id.clone() else {
+            app.set_overlay_error("尚未获取会话租约");
+            return Ok(());
+        };
+        let client_request_id = format!(
+            "model:{}:{}:{}",
+            model.provider,
+            model.id,
+            sequence.saturating_add(1)
+        );
+        app.mark_write_pending();
+        return request_b3(
+            app,
+            pipe,
+            sequence,
+            B3Command::SetSessionModel,
+            serde_json::json!({
+                "sessionPath": session_path,
+                "leaseId": lease_id,
+                "clientInstanceId": client_instance_id,
+                "clientRequestId": client_request_id,
+                "model": { "provider": model.provider, "id": model.id },
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+            PendingIntent::SessionMutation {
+                toast: "已切换模型".to_owned(),
+                close_overlay: true,
+            },
+        );
+    }
+    if let Some(level) = action.strip_prefix("thinking:") {
+        let model = match app.model_supports_reasoning() {
+            Ok(model) => model,
+            Err(reason) => {
+                app.set_overlay_error(reason);
+                return Ok(());
+            }
+        };
+        if !model
+            .supported_thinking_levels
+            .iter()
+            .any(|candidate| candidate == level)
+        {
+            app.set_overlay_error("当前模型不支持此思考强度");
+            return Ok(());
+        }
+        let Some(lease_id) = app.lease_id.clone() else {
+            app.set_overlay_error("尚未获取会话租约");
+            return Ok(());
+        };
+        let client_request_id = format!("thinking:{level}:{}", sequence.saturating_add(1));
+        app.mark_write_pending();
+        return request_b3(
+            app,
+            pipe,
+            sequence,
+            B3Command::SetSessionThinking,
+            serde_json::json!({
+                "sessionPath": session_path,
+                "leaseId": lease_id,
+                "clientInstanceId": client_instance_id,
+                "clientRequestId": client_request_id,
+                "level": level,
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+            PendingIntent::SessionMutation {
+                toast: "已更新思考强度".to_owned(),
+                close_overlay: true,
+            },
+        );
+    }
+    if let Some(index) = action
+        .strip_prefix("login-provider:")
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        let Some(provider) = app.providers.get(index).cloned() else {
+            app.set_overlay_error("Provider 列表已刷新，请重新选择");
+            return Ok(());
+        };
+        if provider.auth_methods.is_empty() {
+            app.set_overlay_error("该 Provider 没有可用认证方式");
+            return Ok(());
+        }
+        app.open_overlay(OverlayState::List(ListOverlay {
+            title: format!("{} 登录方式", provider.name),
+            items: provider
+                .auth_methods
+                .iter()
+                .enumerate()
+                .map(|(auth_index, method)| OverlayItem {
+                    label: if method == "api_key" {
+                        "API Key".to_owned()
+                    } else {
+                        "OAuth".to_owned()
+                    },
+                    detail: String::new(),
+                    action: format!("auth-login:{index}:{auth_index}"),
+                })
+                .collect(),
+            selected: 0,
+            filter: String::new(),
+            status: "Enter 登录，Esc 返回".to_owned(),
+        }));
+        return Ok(());
+    }
+    if let Some(pair) = action.strip_prefix("auth-login:") {
+        let Some((provider_index, auth_index)) = pair.split_once(':') else {
+            app.set_overlay_error("认证方式无效");
+            return Ok(());
+        };
+        let (Ok(provider_index), Ok(auth_index)) =
+            (provider_index.parse::<usize>(), auth_index.parse::<usize>())
+        else {
+            app.set_overlay_error("认证方式无效");
+            return Ok(());
+        };
+        let Some(provider) = app.providers.get(provider_index).cloned() else {
+            app.set_overlay_error("Provider 列表已刷新，请重新选择");
+            return Ok(());
+        };
+        let Some(auth_type) = provider.auth_methods.get(auth_index).cloned() else {
+            app.set_overlay_error("认证方式无效");
+            return Ok(());
+        };
+        app.close_overlay();
+        let (filter, _) = list_context(app, "登录");
+        let client_request_id = format!(
+            "login:{}:{}:{}",
+            provider.id,
+            auth_type,
+            sequence.saturating_add(1)
+        );
+        app.mark_write_pending();
+        return request_b3(
+            app,
+            pipe,
+            sequence,
+            B3Command::LoginModelProvider,
+            serde_json::json!({
+                "provider": provider.id,
+                "authType": auth_type,
+                "clientInstanceId": client_instance_id,
+                "clientRequestId": client_request_id,
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+            PendingIntent::AuthMutation {
+                selected_key: Some(provider.id),
+                filter,
+                toast: "认证已更新".to_owned(),
+            },
+        );
+    }
+    if let Some(index) = action
+        .strip_prefix("auth-logout:")
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        let Some(provider) = app.providers.get(index).cloned() else {
+            app.set_overlay_error("Provider 列表已刷新，请重新选择");
+            return Ok(());
+        };
+        let (filter, _) = list_context(app, "登录");
+        let client_request_id = format!("logout:{}:{}", provider.id, sequence.saturating_add(1));
+        app.mark_write_pending();
+        return request_b3(
+            app,
+            pipe,
+            sequence,
+            B3Command::LogoutModelProvider,
+            serde_json::json!({
+                "provider": provider.id,
+                "clientInstanceId": client_instance_id,
+                "clientRequestId": client_request_id,
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+            PendingIntent::AuthMutation {
+                selected_key: Some(provider.id),
+                filter,
+                toast: "已退出登录".to_owned(),
+            },
+        );
+    }
     let Some(request) = app.take_ui_response() else {
         return Ok(());
     };
     let (value, confirmed) = match (request.kind, action) {
         (UiRequestKind::Confirm, "ui:confirm") => (None, Some(true)),
-        (UiRequestKind::Input, "ui:input") => {
+        (UiRequestKind::Input | UiRequestKind::Secret, "ui:input") => {
             let value = match app.overlay() {
                 Some(OverlayState::TextEditor(editor)) => {
                     serde_json::Value::String(editor.value.clone())
@@ -869,6 +1404,8 @@ fn apply_server_message(
     message: &ServerMessage,
     session_path: &str,
     pipe: &mut ProtocolPipe,
+    _client_instance_id: &str,
+    sequence: &mut u64,
 ) -> Result<bool, TuiError> {
     let raw = message.json().map_err(TuiError::from)?;
     if raw.get("type").and_then(serde_json::Value::as_str) == Some("event")
@@ -894,6 +1431,7 @@ fn apply_server_message(
             Some("select") => UiRequestKind::Select,
             Some("confirm") => UiRequestKind::Confirm,
             Some("input") => UiRequestKind::Input,
+            Some("secret") => UiRequestKind::Secret,
             Some(kind) => {
                 app.set_overlay_error(format!("不支持的输入类型: {kind}"));
                 if app.cancel_unknown_ui_request(id) {
@@ -937,7 +1475,7 @@ fn apply_server_message(
                 confirm_action: "ui:confirm".to_owned(),
                 status: String::new(),
             })),
-            UiRequestKind::Input => {
+            UiRequestKind::Input | UiRequestKind::Secret => {
                 let value = payload
                     .get("value")
                     .or_else(|| payload.get("prefill"))
@@ -950,6 +1488,7 @@ fn apply_server_message(
                     value,
                     save_action: "ui:input".to_owned(),
                     status: "Enter 提交，Esc 取消".to_owned(),
+                    secret: kind == UiRequestKind::Secret,
                 }));
             }
         }
@@ -971,9 +1510,70 @@ fn apply_server_message(
             );
             return Ok(false);
         }
-        let PendingIntent::Overlay { target, command } = pending.intent;
-        let result = message.validated_b3_result_value(command)?;
-        apply_workbench_result(app, target, result);
+        let result = message.validated_b3_result_value(pending.request.command)?;
+        match pending.intent {
+            PendingIntent::Overlay { target } => apply_workbench_result(app, target, result),
+            PendingIntent::WorkbenchLoad {
+                target,
+                selected_key,
+                filter,
+            } => apply_workbench_load(app, target, selected_key, filter, result)?,
+            PendingIntent::SettingMutation {
+                selected_key,
+                filter,
+            } => {
+                if result
+                    .get("requiresRestart")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    app.set_toast("设置已保存，重启后生效");
+                } else {
+                    app.set_toast("设置已保存");
+                }
+                request_settings(
+                    app,
+                    pipe,
+                    session_path,
+                    sequence,
+                    Some(selected_key),
+                    filter,
+                )?;
+            }
+            PendingIntent::SessionMutation {
+                toast,
+                close_overlay,
+            } => {
+                let snapshot = serde_json::from_value(result).map_err(|error| {
+                    TuiError::InvalidResponse(format!("会话状态响应无效: {error}"))
+                })?;
+                app.apply_snapshot(snapshot);
+                if close_overlay {
+                    app.close_overlay();
+                }
+                app.set_toast(toast);
+            }
+            PendingIntent::AuthMutation {
+                selected_key,
+                filter,
+                toast,
+            } => {
+                app.models = parse_models(&result)?;
+                app.set_toast(toast);
+                request_b3(
+                    app,
+                    pipe,
+                    sequence,
+                    B3Command::ListModelProviders,
+                    serde_json::Map::new(),
+                    PendingIntent::WorkbenchLoad {
+                        target: WorkbenchTarget::Login,
+                        selected_key,
+                        filter,
+                    },
+                )?;
+            }
+        }
         return Ok(false);
     }
     match message.read_only().map_err(TuiError::from)? {
@@ -990,6 +1590,420 @@ fn apply_workbench_result(app: &mut AppState, title: String, result: serde_json:
         scroll: 0,
         status: "Esc 返回".to_owned(),
     }));
+}
+
+fn apply_workbench_load(
+    app: &mut AppState,
+    target: WorkbenchTarget,
+    selected_key: Option<String>,
+    filter: String,
+    result: serde_json::Value,
+) -> Result<(), TuiError> {
+    match target {
+        WorkbenchTarget::Settings => {
+            app.settings = parse_settings(&result)?;
+            app.replace_overlay(settings_overlay(
+                &app.settings,
+                selected_key.as_deref(),
+                filter,
+            ));
+        }
+        WorkbenchTarget::Model => {
+            app.models = parse_models(&result)?;
+            app.replace_overlay(model_overlay(app, selected_key.as_deref(), filter));
+        }
+        WorkbenchTarget::Thinking => {
+            app.models = parse_models(&result)?;
+            app.replace_overlay(thinking_overlay(app));
+        }
+        WorkbenchTarget::Login => {
+            app.providers = parse_providers(&result)?;
+            app.replace_overlay(login_overlay(
+                &app.providers,
+                selected_key.as_deref(),
+                filter,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn settings_overlay(
+    settings: &[SettingDescriptor],
+    selected_key: Option<&str>,
+    filter: String,
+) -> OverlayState {
+    let items = settings
+        .iter()
+        .map(|setting| {
+            let scope = if setting.scope == "global" {
+                "全局"
+            } else {
+                "项目"
+            };
+            let mut detail = format!("{}  {}", setting.display_value, scope);
+            if setting.restart_required {
+                detail.push_str("  重启后生效");
+            }
+            if setting.read_only {
+                detail.push_str("  只读");
+            }
+            let action = if setting.read_only {
+                "disabled:此设置为只读".to_owned()
+            } else {
+                match setting.kind.as_str() {
+                    "boolean" => format!("setting-toggle:{}", setting.id),
+                    "enum" => format!("setting-enum:{}", setting.id),
+                    "integer" | "string" => format!("setting-text:{}", setting.id),
+                    _ => "disabled:不支持的设置类型".to_owned(),
+                }
+            };
+            OverlayItem {
+                label: setting.label.clone(),
+                detail,
+                action,
+            }
+        })
+        .collect::<Vec<_>>();
+    let selected = selected_key
+        .and_then(|id| settings.iter().position(|setting| setting.id == id))
+        .unwrap_or(0);
+    OverlayState::List(ListOverlay {
+        title: "设置".to_owned(),
+        items,
+        selected,
+        filter,
+        status: "Enter 修改，输入筛选，Esc 返回".to_owned(),
+    })
+}
+
+fn model_overlay(app: &AppState, selected_key: Option<&str>, filter: String) -> OverlayState {
+    let current = app
+        .snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.model.as_ref());
+    let items = app
+        .models
+        .iter()
+        .enumerate()
+        .map(|(index, model)| {
+            let current_marker = current.is_some_and(|selected| {
+                selected.provider == model.provider && selected.id == model.id
+            });
+            let detail = format!(
+                "{}/{}  输入:{}  上下文:{}  推理:{}  {}{}",
+                model.provider,
+                model.id,
+                model.input.join("+"),
+                model.context_window,
+                if model.reasoning {
+                    "支持"
+                } else {
+                    "不支持"
+                },
+                if model.configured {
+                    "已认证"
+                } else {
+                    "未认证"
+                },
+                if current_marker { "  当前" } else { "" },
+            );
+            OverlayItem {
+                label: model.name.clone(),
+                detail,
+                action: if model.configured {
+                    format!("model:{index}")
+                } else {
+                    "disabled:该模型不可用，Provider 未完成认证".to_owned()
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    let selected = selected_key
+        .and_then(|key| {
+            app.models
+                .iter()
+                .position(|model| format!("{}/{}", model.provider, model.id) == key)
+        })
+        .or_else(|| {
+            current.and_then(|selected| {
+                app.models.iter().position(|model| {
+                    model.provider == selected.provider && model.id == selected.id
+                })
+            })
+        })
+        .unwrap_or(0);
+    OverlayState::List(ListOverlay {
+        title: "模型".to_owned(),
+        items,
+        selected,
+        filter,
+        status: "Enter 切换模型，输入筛选，Esc 返回".to_owned(),
+    })
+}
+
+fn thinking_level_label(level: &str) -> &'static str {
+    match level {
+        "off" => "关闭",
+        "minimal" => "最少",
+        "low" => "低",
+        "medium" => "中",
+        "high" => "高",
+        "xhigh" => "极高",
+        "max" => "最大",
+        _ => "未知",
+    }
+}
+
+fn thinking_overlay(app: &AppState) -> OverlayState {
+    const LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+    let current = app
+        .snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.thinking_level.as_str())
+        .unwrap_or("off");
+    match app.model_supports_reasoning() {
+        Ok(model) => OverlayState::List(ListOverlay {
+            title: "思考".to_owned(),
+            items: LEVELS
+                .into_iter()
+                .map(|level| OverlayItem {
+                    label: thinking_level_label(level).to_owned(),
+                    detail: if level == current {
+                        "当前".to_owned()
+                    } else {
+                        String::new()
+                    },
+                    action: if model
+                        .supported_thinking_levels
+                        .iter()
+                        .any(|candidate| candidate == level)
+                    {
+                        format!("thinking:{level}")
+                    } else {
+                        "disabled:当前模型不支持此思考强度".to_owned()
+                    },
+                })
+                .collect(),
+            selected: LEVELS
+                .iter()
+                .position(|level| *level == current)
+                .unwrap_or(0),
+            filter: String::new(),
+            status: "Enter 保存，Esc 返回".to_owned(),
+        }),
+        Err(reason) => OverlayState::List(ListOverlay {
+            title: "思考".to_owned(),
+            items: vec![OverlayItem {
+                label: "当前模型不可用".to_owned(),
+                detail: reason.clone(),
+                action: format!("disabled:{reason}"),
+            }],
+            selected: 0,
+            filter: String::new(),
+            status: "Esc 返回".to_owned(),
+        }),
+    }
+}
+
+fn login_overlay(
+    providers: &[ProviderDescriptor],
+    selected_key: Option<&str>,
+    filter: String,
+) -> OverlayState {
+    let items = providers
+        .iter()
+        .enumerate()
+        .map(|(index, provider)| OverlayItem {
+            label: provider.name.clone(),
+            detail: format!(
+                "{}  认证:{}  模型:{}{}",
+                provider.id,
+                if provider.configured {
+                    "已配置"
+                } else {
+                    "未配置"
+                },
+                provider.model_count,
+                if provider.auth_methods.is_empty() {
+                    "  无认证方式".to_owned()
+                } else {
+                    format!("  {}", provider.auth_methods.join("/"))
+                },
+            ),
+            action: if provider.auth_methods.is_empty() {
+                "disabled:该 Provider 没有可用认证方式".to_owned()
+            } else {
+                format!("login-provider:{index}")
+            },
+        })
+        .collect::<Vec<_>>();
+    let selected = selected_key
+        .and_then(|id| providers.iter().position(|provider| provider.id == id))
+        .unwrap_or(0);
+    OverlayState::List(ListOverlay {
+        title: "登录".to_owned(),
+        items,
+        selected,
+        filter,
+        status: "Enter 选择认证方式，d 退出登录，Esc 返回".to_owned(),
+    })
+}
+
+fn parse_settings(value: &serde_json::Value) -> Result<Vec<SettingDescriptor>, TuiError> {
+    value
+        .as_array()
+        .ok_or_else(|| TuiError::InvalidResponse("设置响应不是列表".to_owned()))?
+        .iter()
+        .map(|entry| {
+            let object = entry
+                .as_object()
+                .ok_or_else(|| TuiError::InvalidResponse("设置条目无效".to_owned()))?;
+            Ok(SettingDescriptor {
+                id: required_string(object, "id")?,
+                label: required_string(object, "label")?,
+                description: object
+                    .get("description")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                kind: required_string(object, "kind")?,
+                value: object
+                    .get("value")
+                    .cloned()
+                    .ok_or_else(|| TuiError::InvalidResponse("设置缺少 value".to_owned()))?,
+                display_value: required_string(object, "displayValue")?,
+                options: object
+                    .get("options")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|options| {
+                        options
+                            .iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                minimum: object.get("minimum").and_then(serde_json::Value::as_i64),
+                maximum: object.get("maximum").and_then(serde_json::Value::as_i64),
+                scope: required_string(object, "scope")?,
+                read_only: object
+                    .get("readOnly")
+                    .and_then(serde_json::Value::as_bool)
+                    .ok_or_else(|| TuiError::InvalidResponse("设置缺少 readOnly".to_owned()))?,
+                restart_required: object
+                    .get("restartRequired")
+                    .and_then(serde_json::Value::as_bool)
+                    .ok_or_else(|| {
+                        TuiError::InvalidResponse("设置缺少 restartRequired".to_owned())
+                    })?,
+            })
+        })
+        .collect()
+}
+
+fn parse_models(value: &serde_json::Value) -> Result<Vec<ModelDescriptor>, TuiError> {
+    value
+        .as_array()
+        .ok_or_else(|| TuiError::InvalidResponse("模型响应不是列表".to_owned()))?
+        .iter()
+        .map(|entry| {
+            let object = entry
+                .as_object()
+                .ok_or_else(|| TuiError::InvalidResponse("模型条目无效".to_owned()))?;
+            Ok(ModelDescriptor {
+                provider: required_string(object, "provider")?,
+                id: required_string(object, "id")?,
+                name: required_string(object, "name")?,
+                reasoning: object
+                    .get("reasoning")
+                    .and_then(serde_json::Value::as_bool)
+                    .ok_or_else(|| TuiError::InvalidResponse("模型缺少 reasoning".to_owned()))?,
+                input: required_string_array(object, "input")?,
+                context_window: object
+                    .get("contextWindow")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or_else(|| {
+                        TuiError::InvalidResponse("模型缺少 contextWindow".to_owned())
+                    })?,
+                configured: object
+                    .get("authenticated")
+                    .and_then(serde_json::Value::as_bool)
+                    .ok_or_else(|| {
+                        TuiError::InvalidResponse("模型缺少 authenticated".to_owned())
+                    })?,
+                supported_thinking_levels: required_string_array(
+                    object,
+                    "supportedThinkingLevels",
+                )?,
+            })
+        })
+        .collect()
+}
+
+fn parse_providers(value: &serde_json::Value) -> Result<Vec<ProviderDescriptor>, TuiError> {
+    value
+        .as_array()
+        .ok_or_else(|| TuiError::InvalidResponse("Provider 响应不是列表".to_owned()))?
+        .iter()
+        .map(|entry| {
+            let object = entry
+                .as_object()
+                .ok_or_else(|| TuiError::InvalidResponse("Provider 条目无效".to_owned()))?;
+            Ok(ProviderDescriptor {
+                id: required_string(object, "id")?,
+                name: required_string(object, "name")?,
+                configured: object
+                    .get("authenticated")
+                    .and_then(serde_json::Value::as_bool)
+                    .ok_or_else(|| {
+                        TuiError::InvalidResponse("Provider 缺少 authenticated".to_owned())
+                    })?,
+                auth_methods: required_string_array(object, "authMethods")?,
+                auth_source: object
+                    .get("authSource")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                model_count: object
+                    .get("modelCount")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or_else(|| {
+                        TuiError::InvalidResponse("Provider 缺少 modelCount".to_owned())
+                    })?,
+            })
+        })
+        .collect()
+}
+
+fn required_string(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<String, TuiError> {
+    object
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| TuiError::InvalidResponse(format!("响应缺少 {key}")))
+}
+
+fn required_string_array(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Vec<String>, TuiError> {
+    object
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .map(|value| {
+                    value.as_str().map(str::to_owned).ok_or_else(|| {
+                        TuiError::InvalidResponse(format!("响应 {key} 包含非字符串"))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .ok_or_else(|| TuiError::InvalidResponse(format!("响应缺少 {key}")))?
 }
 
 fn ui_select_items(payload: &serde_json::Value) -> Vec<OverlayItem> {
@@ -1257,12 +2271,20 @@ mod tests {
     }
 
     #[test]
-    fn intercepts_only_the_three_connected_slash_commands() {
-        assert_eq!(builtin_slash_command("/help"), Some("help"));
-        assert_eq!(builtin_slash_command(" /about "), Some("about"));
-        assert_eq!(builtin_slash_command("/doctor"), Some("doctor"));
-        assert_eq!(builtin_slash_command("/settings"), None);
+    fn intercepts_only_connected_slash_commands() {
+        for (input, target) in [
+            ("/help", "help"),
+            (" /about ", "about"),
+            ("/doctor", "doctor"),
+            ("/settings", "settings"),
+            ("/model", "model"),
+            ("/thinking", "thinking"),
+            ("/login", "login"),
+        ] {
+            assert_eq!(builtin_slash_command(input), Some(target));
+        }
         assert_eq!(builtin_slash_command("/about later"), None);
+        assert_eq!(builtin_slash_command("/settings-now"), None);
     }
 
     #[test]

@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    time::{Duration, Instant},
+};
 
 use crate::editor::EditorState;
 use lystar_protocol::{
@@ -17,6 +20,7 @@ use unicode_width::UnicodeWidthStr;
 pub const ROUND_CACHE_LIMIT: usize = 400;
 pub const ITEM_CACHE_LIMIT: usize = 800;
 pub const UTF8_CACHE_LIMIT: usize = 4 * 1024 * 1024;
+pub const B3_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const OLDER_PAGE_THRESHOLD: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -414,6 +418,7 @@ pub struct TextEditorOverlay {
     pub cursor: usize,
     pub save_action: String,
     pub status: String,
+    pub secret: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -432,6 +437,91 @@ pub enum OverlayState {
     Confirm(ConfirmOverlay),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingDescriptor {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub kind: String,
+    pub value: serde_json::Value,
+    pub display_value: String,
+    pub options: Vec<String>,
+    pub minimum: Option<i64>,
+    pub maximum: Option<i64>,
+    pub scope: String,
+    pub read_only: bool,
+    pub restart_required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelDescriptor {
+    pub provider: String,
+    pub id: String,
+    pub name: String,
+    pub reasoning: bool,
+    pub input: Vec<String>,
+    pub context_window: u64,
+    pub configured: bool,
+    pub supported_thinking_levels: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderDescriptor {
+    pub id: String,
+    pub name: String,
+    pub configured: bool,
+    pub auth_methods: Vec<String>,
+    pub auth_source: Option<String>,
+    pub model_count: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkbenchTarget {
+    Settings,
+    Model,
+    Thinking,
+    Login,
+}
+
+#[derive(Debug, Clone)]
+pub struct B3Request {
+    pub command: lystar_protocol::B3Command,
+    pub payload: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingIntent {
+    Overlay {
+        target: String,
+    },
+    WorkbenchLoad {
+        target: WorkbenchTarget,
+        selected_key: Option<String>,
+        filter: String,
+    },
+    SettingMutation {
+        selected_key: String,
+        filter: String,
+    },
+    SessionMutation {
+        toast: String,
+        close_overlay: bool,
+    },
+    AuthMutation {
+        selected_key: Option<String>,
+        filter: String,
+        toast: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingRequest {
+    pub intent: PendingIntent,
+    pub generation: u64,
+    pub request: B3Request,
+    pub started_at: Instant,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum InputFocus {
     #[default]
@@ -444,6 +534,7 @@ pub enum UiRequestKind {
     Select,
     Confirm,
     Input,
+    Secret,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -452,18 +543,10 @@ pub struct UiRequest {
     pub kind: UiRequestKind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PendingIntent {
-    Overlay {
-        target: String,
-        command: lystar_protocol::B3Command,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingRequest {
-    pub intent: PendingIntent,
-    pub generation: u64,
+impl UiRequest {
+    pub fn secret(&self) -> bool {
+        matches!(self.kind, UiRequestKind::Secret)
+    }
 }
 
 impl OverlayState {
@@ -519,6 +602,10 @@ pub struct AppState {
     focus_before_overlay: Option<InputFocus>,
     pub toast: Option<String>,
     pub overlay_error: Option<String>,
+    pub settings: Vec<SettingDescriptor>,
+    pub models: Vec<ModelDescriptor>,
+    pub providers: Vec<ProviderDescriptor>,
+    pub write_pending: bool,
     pub pending_requests: HashMap<String, PendingRequest>,
     pub request_generation: u64,
     pub active_ui_request: Option<UiRequest>,
@@ -665,25 +752,94 @@ impl AppState {
         }
     }
 
-    pub fn begin_request(&mut self, id: String, intent: PendingIntent) -> u64 {
+    pub fn begin_request(&mut self, id: String, request: B3Request, intent: PendingIntent) -> u64 {
         self.request_generation = self.request_generation.saturating_add(1);
         let generation = self.request_generation;
-        self.pending_requests
-            .insert(id, PendingRequest { intent, generation });
+        self.pending_requests.insert(
+            id,
+            PendingRequest {
+                intent,
+                generation,
+                request,
+                started_at: Instant::now(),
+            },
+        );
         generation
     }
 
     pub fn take_pending(&mut self, id: &str) -> Option<PendingRequest> {
-        self.pending_requests.remove(id)
+        let pending = self.pending_requests.remove(id)?;
+        if matches!(
+            pending.intent,
+            PendingIntent::SettingMutation { .. }
+                | PendingIntent::SessionMutation { .. }
+                | PendingIntent::AuthMutation { .. }
+        ) {
+            self.write_pending = false;
+        }
+        Some(pending)
+    }
+
+    pub fn timed_out_b3_request(&self) -> Option<(String, B3Request)> {
+        self.pending_requests.iter().find_map(|(id, pending)| {
+            (pending.started_at.elapsed() >= B3_REQUEST_TIMEOUT)
+                .then(|| (id.clone(), pending.request.clone()))
+        })
     }
 
     pub fn invalidate_pending(&mut self) {
         self.request_generation = self.request_generation.saturating_add(1);
         self.pending_requests.clear();
+        self.write_pending = false;
+    }
+
+    pub fn restart_timed_out_b3_request(&mut self) -> Option<(String, B3Request)> {
+        let (id, request) = self.timed_out_b3_request()?;
+        if let Some(pending) = self.pending_requests.get_mut(&id) {
+            pending.started_at = Instant::now();
+        }
+        Some((id, request))
     }
 
     pub fn set_overlay_error(&mut self, message: impl Into<String>) {
         self.overlay_error = Some(message.into());
+    }
+
+    pub fn setting(&self, id: &str) -> Option<&SettingDescriptor> {
+        self.settings.iter().find(|setting| setting.id == id)
+    }
+
+    pub fn model_supports_reasoning(&self) -> Result<&ModelDescriptor, String> {
+        let snapshot = self
+            .snapshot
+            .as_ref()
+            .ok_or_else(|| "尚未获取会话状态".to_owned())?;
+        let model = snapshot
+            .model
+            .as_ref()
+            .ok_or_else(|| "当前会话没有选择模型".to_owned())?;
+        let descriptor = self
+            .models
+            .iter()
+            .find(|candidate| candidate.provider == model.provider && candidate.id == model.id)
+            .ok_or_else(|| "当前模型不可用或未完成认证".to_owned())?;
+        if !descriptor.configured {
+            return Err("当前模型未完成认证".to_owned());
+        }
+        if !descriptor.reasoning {
+            return Err("当前模型不支持思考强度".to_owned());
+        }
+        Ok(descriptor)
+    }
+
+    pub fn mark_write_pending(&mut self) {
+        self.write_pending = true;
+    }
+
+    pub fn set_timeout_notice(&mut self) {
+        if self.timed_out_b3_request().is_some() {
+            self.set_overlay_error("请求超时，按 r 重试");
+        }
     }
 
     pub fn set_toast(&mut self, message: impl Into<String>) {
@@ -1080,7 +1236,16 @@ impl Widget for WorkbenchOverlayView<'_> {
                 );
             }
             OverlayState::TextEditor(editor) => {
-                for (row, line) in editor.value.lines().take(visible).enumerate() {
+                let displayed = if editor.secret {
+                    editor
+                        .value
+                        .graphemes(true)
+                        .map(|_| "*")
+                        .collect::<String>()
+                } else {
+                    editor.value.clone()
+                };
+                for (row, line) in displayed.lines().take(visible).enumerate() {
                     put_line(
                         buffer,
                         x + 2,
@@ -1657,6 +1822,7 @@ mod tests {
             cursor: 1,
             save_action: "ui:input".to_owned(),
             status: String::new(),
+            secret: false,
         }));
         app.overlay_insert("中");
         app.overlay_backspace();
@@ -1697,16 +1863,22 @@ mod tests {
         let mut app = AppState::default();
         let first = app.begin_request(
             "first".to_owned(),
+            B3Request {
+                command: lystar_protocol::B3Command::GetAbout,
+                payload: serde_json::Map::new(),
+            },
             PendingIntent::Overlay {
                 target: "关于".to_owned(),
-                command: lystar_protocol::B3Command::GetAbout,
             },
         );
         let second = app.begin_request(
             "second".to_owned(),
+            B3Request {
+                command: lystar_protocol::B3Command::GetDiagnostics,
+                payload: serde_json::Map::new(),
+            },
             PendingIntent::Overlay {
                 target: "诊断".to_owned(),
-                command: lystar_protocol::B3Command::GetDiagnostics,
             },
         );
         assert!(first < second);

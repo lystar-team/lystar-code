@@ -50,6 +50,7 @@ class FakeRuntime implements RuntimeSession {
 				label: "项目设置",
 				kind: "boolean" as const,
 				value: true,
+				displayValue: "开启",
 				scope: "project" as const,
 				readOnly: false,
 				restartRequired: false,

@@ -3532,6 +3532,7 @@
           "label",
           "kind",
           "value",
+          "displayValue",
           "scope",
           "readOnly",
           "restartRequired"
@@ -3584,6 +3585,11 @@
               }
             ]
           },
+          "displayValue": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
           "options": {
             "type": "array",
             "items": {
@@ -3592,6 +3598,12 @@
               "maxLength": 4096
             },
             "maxItems": 1000
+          },
+          "minimum": {
+            "type": "integer"
+          },
+          "maximum": {
+            "type": "integer"
           },
           "scope": {
             "anyOf": [
@@ -3630,6 +3642,7 @@
             "label",
             "kind",
             "value",
+            "displayValue",
             "scope",
             "readOnly",
             "restartRequired"
@@ -3682,6 +3695,11 @@
                 }
               ]
             },
+            "displayValue": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
             "options": {
               "type": "array",
               "items": {
@@ -3690,6 +3708,12 @@
                 "maxLength": 4096
               },
               "maxItems": 1000
+            },
+            "minimum": {
+              "type": "integer"
+            },
+            "maximum": {
+              "type": "integer"
             },
             "scope": {
               "anyOf": [
@@ -3717,6 +3741,987 @@
         }
       },
       "additionalProperties": false
+    },
+    "B3ListModelsResult": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "provider",
+          "id",
+          "name",
+          "api",
+          "reasoning",
+          "input",
+          "contextWindow",
+          "maxTokens",
+          "cost",
+          "supportedThinkingLevels",
+          "authenticated",
+          "authMethods"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "api": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "reasoning": {
+            "type": "boolean"
+          },
+          "input": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "text"
+                },
+                {
+                  "type": "string",
+                  "const": "image"
+                }
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 8
+          },
+          "contextWindow": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "maxTokens": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "cost": {
+            "type": "object",
+            "required": [
+              "input",
+              "output",
+              "cacheRead",
+              "cacheWrite"
+            ],
+            "properties": {
+              "input": {
+                "type": "number",
+                "minimum": 0
+              },
+              "output": {
+                "type": "number",
+                "minimum": 0
+              },
+              "cacheRead": {
+                "type": "number",
+                "minimum": 0
+              },
+              "cacheWrite": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          "supportedThinkingLevels": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "off"
+                },
+                {
+                  "type": "string",
+                  "const": "minimal"
+                },
+                {
+                  "type": "string",
+                  "const": "low"
+                },
+                {
+                  "type": "string",
+                  "const": "medium"
+                },
+                {
+                  "type": "string",
+                  "const": "high"
+                },
+                {
+                  "type": "string",
+                  "const": "xhigh"
+                },
+                {
+                  "type": "string",
+                  "const": "max"
+                }
+              ]
+            },
+            "maxItems": 7
+          },
+          "authenticated": {
+            "type": "boolean"
+          },
+          "authMethods": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "api_key"
+                },
+                {
+                  "type": "string",
+                  "const": "oauth"
+                }
+              ]
+            },
+            "maxItems": 2
+          },
+          "authSource": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "additionalProperties": false
+      },
+      "maxItems": 10000
+    },
+    "B3ListModelProvidersResult": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "authenticated",
+          "authMethods",
+          "modelCount",
+          "builtIn",
+          "custom"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "authenticated": {
+            "type": "boolean"
+          },
+          "authMethods": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "api_key"
+                },
+                {
+                  "type": "string",
+                  "const": "oauth"
+                }
+              ]
+            },
+            "maxItems": 2
+          },
+          "authSource": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "modelCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "builtIn": {
+            "type": "boolean"
+          },
+          "custom": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "maxItems": 1000
+    },
+    "B3SetSessionModelResult": {
+      "type": "object",
+      "required": [
+        "id",
+        "path",
+        "cwd",
+        "createdAt",
+        "updatedAt",
+        "phase",
+        "activity",
+        "thinkingLevel",
+        "attached",
+        "writeAccess",
+        "revision",
+        "leafId",
+        "queuedSteerCount",
+        "queuedFollowUpCount",
+        "transcriptGeneration",
+        "transcriptRevision"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "updatedAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "phase": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "idle"
+            },
+            {
+              "type": "string",
+              "const": "turn"
+            },
+            {
+              "type": "string",
+              "const": "compaction"
+            },
+            {
+              "type": "string",
+              "const": "branch_summary"
+            },
+            {
+              "type": "string",
+              "const": "retry"
+            },
+            {
+              "type": "string",
+              "const": "waiting_for_input"
+            },
+            {
+              "type": "string",
+              "const": "interrupted"
+            }
+          ]
+        },
+        "activity": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "idle"
+            },
+            {
+              "type": "string",
+              "const": "running"
+            },
+            {
+              "type": "string",
+              "const": "waiting_for_input"
+            },
+            {
+              "type": "string",
+              "const": "completed"
+            },
+            {
+              "type": "string",
+              "const": "failed"
+            },
+            {
+              "type": "string",
+              "const": "aborted"
+            },
+            {
+              "type": "string",
+              "const": "interrupted"
+            }
+          ]
+        },
+        "model": {
+          "type": "object",
+          "required": [
+            "provider",
+            "id"
+          ],
+          "properties": {
+            "provider": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "additionalProperties": false
+        },
+        "thinkingLevel": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "off"
+            },
+            {
+              "type": "string",
+              "const": "minimal"
+            },
+            {
+              "type": "string",
+              "const": "low"
+            },
+            {
+              "type": "string",
+              "const": "medium"
+            },
+            {
+              "type": "string",
+              "const": "high"
+            },
+            {
+              "type": "string",
+              "const": "xhigh"
+            },
+            {
+              "type": "string",
+              "const": "max"
+            }
+          ]
+        },
+        "attached": {
+          "type": "boolean"
+        },
+        "writeAccess": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "available"
+            },
+            {
+              "type": "string",
+              "const": "owned"
+            },
+            {
+              "type": "string",
+              "const": "controlled_elsewhere"
+            },
+            {
+              "type": "string",
+              "const": "locked_externally"
+            }
+          ]
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "leafId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "queuedSteerCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queuedFollowUpCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "transcriptGeneration": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "transcriptRevision": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "B3SetSessionThinkingResult": {
+      "type": "object",
+      "required": [
+        "id",
+        "path",
+        "cwd",
+        "createdAt",
+        "updatedAt",
+        "phase",
+        "activity",
+        "thinkingLevel",
+        "attached",
+        "writeAccess",
+        "revision",
+        "leafId",
+        "queuedSteerCount",
+        "queuedFollowUpCount",
+        "transcriptGeneration",
+        "transcriptRevision"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "updatedAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "phase": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "idle"
+            },
+            {
+              "type": "string",
+              "const": "turn"
+            },
+            {
+              "type": "string",
+              "const": "compaction"
+            },
+            {
+              "type": "string",
+              "const": "branch_summary"
+            },
+            {
+              "type": "string",
+              "const": "retry"
+            },
+            {
+              "type": "string",
+              "const": "waiting_for_input"
+            },
+            {
+              "type": "string",
+              "const": "interrupted"
+            }
+          ]
+        },
+        "activity": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "idle"
+            },
+            {
+              "type": "string",
+              "const": "running"
+            },
+            {
+              "type": "string",
+              "const": "waiting_for_input"
+            },
+            {
+              "type": "string",
+              "const": "completed"
+            },
+            {
+              "type": "string",
+              "const": "failed"
+            },
+            {
+              "type": "string",
+              "const": "aborted"
+            },
+            {
+              "type": "string",
+              "const": "interrupted"
+            }
+          ]
+        },
+        "model": {
+          "type": "object",
+          "required": [
+            "provider",
+            "id"
+          ],
+          "properties": {
+            "provider": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "additionalProperties": false
+        },
+        "thinkingLevel": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "off"
+            },
+            {
+              "type": "string",
+              "const": "minimal"
+            },
+            {
+              "type": "string",
+              "const": "low"
+            },
+            {
+              "type": "string",
+              "const": "medium"
+            },
+            {
+              "type": "string",
+              "const": "high"
+            },
+            {
+              "type": "string",
+              "const": "xhigh"
+            },
+            {
+              "type": "string",
+              "const": "max"
+            }
+          ]
+        },
+        "attached": {
+          "type": "boolean"
+        },
+        "writeAccess": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "available"
+            },
+            {
+              "type": "string",
+              "const": "owned"
+            },
+            {
+              "type": "string",
+              "const": "controlled_elsewhere"
+            },
+            {
+              "type": "string",
+              "const": "locked_externally"
+            }
+          ]
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "leafId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "queuedSteerCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queuedFollowUpCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "transcriptGeneration": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "transcriptRevision": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "B3LoginModelProviderResult": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "provider",
+          "id",
+          "name",
+          "api",
+          "reasoning",
+          "input",
+          "contextWindow",
+          "maxTokens",
+          "cost",
+          "supportedThinkingLevels",
+          "authenticated",
+          "authMethods"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "api": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "reasoning": {
+            "type": "boolean"
+          },
+          "input": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "text"
+                },
+                {
+                  "type": "string",
+                  "const": "image"
+                }
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 8
+          },
+          "contextWindow": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "maxTokens": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "cost": {
+            "type": "object",
+            "required": [
+              "input",
+              "output",
+              "cacheRead",
+              "cacheWrite"
+            ],
+            "properties": {
+              "input": {
+                "type": "number",
+                "minimum": 0
+              },
+              "output": {
+                "type": "number",
+                "minimum": 0
+              },
+              "cacheRead": {
+                "type": "number",
+                "minimum": 0
+              },
+              "cacheWrite": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          "supportedThinkingLevels": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "off"
+                },
+                {
+                  "type": "string",
+                  "const": "minimal"
+                },
+                {
+                  "type": "string",
+                  "const": "low"
+                },
+                {
+                  "type": "string",
+                  "const": "medium"
+                },
+                {
+                  "type": "string",
+                  "const": "high"
+                },
+                {
+                  "type": "string",
+                  "const": "xhigh"
+                },
+                {
+                  "type": "string",
+                  "const": "max"
+                }
+              ]
+            },
+            "maxItems": 7
+          },
+          "authenticated": {
+            "type": "boolean"
+          },
+          "authMethods": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "api_key"
+                },
+                {
+                  "type": "string",
+                  "const": "oauth"
+                }
+              ]
+            },
+            "maxItems": 2
+          },
+          "authSource": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "additionalProperties": false
+      },
+      "maxItems": 10000
+    },
+    "B3LogoutModelProviderResult": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "provider",
+          "id",
+          "name",
+          "api",
+          "reasoning",
+          "input",
+          "contextWindow",
+          "maxTokens",
+          "cost",
+          "supportedThinkingLevels",
+          "authenticated",
+          "authMethods"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "api": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "reasoning": {
+            "type": "boolean"
+          },
+          "input": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "text"
+                },
+                {
+                  "type": "string",
+                  "const": "image"
+                }
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 8
+          },
+          "contextWindow": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "maxTokens": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "cost": {
+            "type": "object",
+            "required": [
+              "input",
+              "output",
+              "cacheRead",
+              "cacheWrite"
+            ],
+            "properties": {
+              "input": {
+                "type": "number",
+                "minimum": 0
+              },
+              "output": {
+                "type": "number",
+                "minimum": 0
+              },
+              "cacheRead": {
+                "type": "number",
+                "minimum": 0
+              },
+              "cacheWrite": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          "supportedThinkingLevels": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "off"
+                },
+                {
+                  "type": "string",
+                  "const": "minimal"
+                },
+                {
+                  "type": "string",
+                  "const": "low"
+                },
+                {
+                  "type": "string",
+                  "const": "medium"
+                },
+                {
+                  "type": "string",
+                  "const": "high"
+                },
+                {
+                  "type": "string",
+                  "const": "xhigh"
+                },
+                {
+                  "type": "string",
+                  "const": "max"
+                }
+              ]
+            },
+            "maxItems": 7
+          },
+          "authenticated": {
+            "type": "boolean"
+          },
+          "authMethods": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "api_key"
+                },
+                {
+                  "type": "string",
+                  "const": "oauth"
+                }
+              ]
+            },
+            "maxItems": 2
+          },
+          "authSource": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "additionalProperties": false
+      },
+      "maxItems": 10000
     },
     "B3GetProjectTrustResult": {
       "type": "object",

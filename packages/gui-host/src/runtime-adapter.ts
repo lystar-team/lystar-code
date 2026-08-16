@@ -347,7 +347,9 @@ function settingSummary(id: string, settings: SettingsManager): SettingSummary {
 		...(definition.description ? { description: definition.description } : {}),
 		kind: definition.kind,
 		value: definition.get(settings),
+		displayValue: definition.format(definition.get(settings)),
 		...(definition.options ? { options: definition.options.map(String) } : {}),
+		...(definition.range ? { minimum: definition.range.min, maximum: definition.range.max } : {}),
 		scope: definition.scope,
 		readOnly: false,
 		restartRequired: definition.restartRequired === true,
@@ -1381,24 +1383,24 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				}),
 			),
 		);
-		return runtime.getModels().flatMap((model) => {
-			const provider = providers.get(model.provider);
-			if (!provider?.authenticated) return [];
-			return [
-				{
-					provider: model.provider,
-					id: model.id,
-					name: model.name,
-					api: model.api,
-					reasoning: model.reasoning,
-					input: model.input,
-					contextWindow: model.contextWindow,
-					maxTokens: model.maxTokens,
-					cost: model.cost,
-					supportedThinkingLevels: getSupportedThinkingLevels(model),
-					...provider,
-				},
-			];
+		return runtime.getModels().map((model) => {
+			const provider = providers.get(model.provider) ?? {
+				authenticated: false,
+				authMethods: [] as AuthType[],
+			};
+			return {
+				provider: model.provider,
+				id: model.id,
+				name: model.name,
+				api: model.api,
+				reasoning: model.reasoning,
+				input: model.input,
+				contextWindow: model.contextWindow,
+				maxTokens: model.maxTokens,
+				cost: model.cost,
+				supportedThinkingLevels: getSupportedThinkingLevels(model),
+				...provider,
+			};
 		});
 	}
 
