@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import type { ExtensionUiState, JsonValue } from "@lystar/code-gui-protocol";
+import { KeybindingsManager } from "../../coding-agent/src/core/keybindings.ts";
 import type { UiRequestHandler } from "./types.ts";
 
 type Component = {
@@ -10,6 +11,23 @@ type Component = {
 	dispose?(): void;
 	getFinalState?(): number | undefined;
 	width?: number;
+};
+type EditorComponent = Component & {
+	setText?(text: string): void;
+	getText?(): string;
+	onSubmit?: (text: string) => void;
+	onChange?: (text: string) => void;
+	borderColor?: unknown;
+	setPaddingX?(padding: number): void;
+	getPaddingX?(): number;
+	setAutocompleteMaxVisible?(maxVisible: number): void;
+	getAutocompleteMaxVisible?(): number;
+	setAutocompleteProvider?(provider: unknown): void;
+	actionHandlers?: Map<string, () => void>;
+	onEscape?: () => void;
+	onCtrlD?: () => void;
+	onPasteImage?: () => void;
+	onExtensionShortcut?: (data: string) => boolean;
 };
 type TUI = {
 	terminal: { columns: number; rows: number; write(data: string): never };
@@ -55,7 +73,31 @@ type CustomFactory = (
 	done: (result: JsonValue) => void,
 ) => (Component & { dispose?(): void }) | Promise<Component & { dispose?(): void }>;
 
-type ComponentPlacement = "widget_above" | "widget_below" | "header" | "footer" | "custom_overlay";
+type EditorCompletion = {
+	prefixStart: number;
+	prefixEnd: number;
+	items: Array<{ value: string; label: string; description?: string }>;
+};
+type EditorAutocompleteProvider = {
+	triggerCharacters?: string[];
+	getSuggestions(
+		lines: string[],
+		cursorLine: number,
+		cursorCol: number,
+		options: { signal: AbortSignal; force?: boolean },
+	): Promise<{ items: Array<{ value: string; label: string; description?: string }>; prefix: string } | null>;
+	applyCompletion(
+		lines: string[],
+		cursorLine: number,
+		cursorCol: number,
+		item: { value: string },
+		prefix: string,
+	): { lines: string[]; cursorLine: number; cursorCol: number };
+};
+type EditorAutocompleteFactory = (current: EditorAutocompleteProvider) => EditorAutocompleteProvider;
+type EditorFactory = (tui: TUI, theme: unknown, keybindings: unknown) => EditorComponent;
+
+type ComponentPlacement = "widget_above" | "widget_below" | "header" | "footer" | "custom_overlay" | "editor";
 
 interface ComponentMount {
 	componentId: string;
@@ -111,7 +153,7 @@ interface ExtensionUiContextBridge {
 	editor(title: string, prefill?: string): Promise<string | undefined>;
 	addAutocompleteProvider(...args: unknown[]): void;
 	setEditorComponent(factory: unknown): void;
-	getEditorComponent(): undefined;
+	getEditorComponent(): unknown;
 	theme: unknown;
 	getAllThemes(): unknown[];
 	getTheme(...args: unknown[]): undefined;
@@ -121,6 +163,16 @@ interface ExtensionUiContextBridge {
 }
 
 const MAX_EDITOR_BYTES = 64 * 1024;
+const HEADLESS_EDITOR_THEME = {
+	borderColor: (text: string) => text,
+	selectList: {
+		selectedPrefix: (text: string) => text,
+		selectedText: (text: string) => text,
+		description: (text: string) => text,
+		scrollInfo: (text: string) => text,
+		noMatch: (text: string) => text,
+	},
+};
 const DEFAULT_INDICATOR = { frames: ["-", "\\", "|", "/"], intervalMs: 120 };
 const COMPONENT_WIDTH = 500;
 const COMPONENT_HEIGHT = 500;
@@ -133,6 +185,8 @@ export type ExtensionUiBridgeEvent =
 	| { type: "snapshot"; state: ExtensionUiState }
 	| { type: "delta"; delta: ExtensionUiDelta }
 	| { type: "editor_action"; action: { action: "paste" | "set"; text: string; revision: number } }
+	| { type: "editor_submit"; text: string; revision: number }
+	| { type: "editor_app_action"; action: string; data?: string; revision: number }
 	| {
 			type: "component_mount";
 			componentId: string;
@@ -355,6 +409,9 @@ export class ExtensionUiBridge {
 	private readonly componentDiagnostics = new Map<string, ComponentDiagnosticState>();
 	private componentFrameTimer: ReturnType<typeof setTimeout> | undefined;
 	private readonly onUiRequest: UiRequestHandler;
+	private readonly editorKeybindings = KeybindingsManager.create();
+	private readonly getCompletions?: (text: string, cursor: number) => EditorCompletion | undefined;
+	private readonly autocompleteProviderFactories: EditorAutocompleteFactory[] = [];
 	private readonly publish: (event: ExtensionUiBridgeEvent) => void;
 	private readonly reportError: (error: { event: string; error: string; stack?: string }) => void;
 	private revision = 0;
@@ -366,16 +423,20 @@ export class ExtensionUiBridge {
 	private title: string | null = null;
 	private editorText = "";
 	private editorGeneration = 0;
+	private editorComponentId: string | undefined;
+	private editorFactory: EditorFactory | undefined;
 	private disposed = false;
 
 	constructor(
 		onUiRequest: UiRequestHandler,
 		publish: (event: ExtensionUiBridgeEvent) => void,
 		reportError: (error: { event: string; error: string; stack?: string }) => void,
+		getCompletions?: (text: string, cursor: number) => EditorCompletion | undefined,
 	) {
 		this.onUiRequest = onUiRequest;
 		this.publish = publish;
 		this.reportError = reportError;
+		this.getCompletions = getCompletions;
 	}
 
 	context(): ExtensionUiContextBridge {
@@ -432,11 +493,9 @@ export class ExtensionUiBridge {
 				const result = await request("editor", title, { prefill: boundedEditor(prefill ?? "") });
 				return result.cancelled ? undefined : typeof result.value === "string" ? result.value : undefined;
 			},
-			addAutocompleteProvider: () => this.notifyUnsupported("addAutocompleteProvider"),
-			setEditorComponent: (factory) => {
-				if (factory) this.notifyUnsupported("setEditorComponent");
-			},
-			getEditorComponent: () => undefined,
+			addAutocompleteProvider: (...args) => this.addAutocompleteProvider(args[0]),
+			setEditorComponent: (factory) => this.setEditorComponent(factory),
+			getEditorComponent: () => this.editorFactory,
 			get theme() {
 				return {
 					fg: (_color: string, text: string) => text,
@@ -566,6 +625,8 @@ export class ExtensionUiBridge {
 	reset(): void {
 		if (this.disposed) return;
 		for (const componentId of [...this.components.keys()]) this.unmount(componentId, "clear");
+		this.editorComponentId = undefined;
+		this.editorFactory = undefined;
 		this.statuses.clear();
 		this.widgets.clear();
 		this.widgetComponents.clear();
@@ -585,6 +646,150 @@ export class ExtensionUiBridge {
 		if (this.disposed) return;
 		this.reset();
 		this.disposed = true;
+	}
+
+	private setEditorComponent(factory: unknown): void {
+		const previousId = this.editorComponentId;
+		if (previousId) {
+			const previous = this.components.get(previousId)?.component as EditorComponent | undefined;
+			const text = previous?.getText?.();
+			if (typeof text === "string") this.editorText = boundedEditor(text);
+			this.unmount(previousId, "replace");
+			this.editorComponentId = undefined;
+		}
+		this.editorFactory = typeof factory === "function" ? (factory as EditorFactory) : undefined;
+		if (!this.editorFactory || this.disposed) {
+			if (!this.disposed) this.publishEditorAction("set", this.editorText);
+			return;
+		}
+		const componentId = "editor";
+		const generation = ++this.componentGeneration;
+		let adapter: HeadlessComponentAdapter | undefined;
+		const facade = createHeadlessTuiFacade({
+			componentId,
+			width: 80,
+			height: 24,
+			onRequestRender: () => adapter?.requestRender(),
+			onTerminalOwnershipViolation: (violation) => this.reportTerminalViolation(violation),
+		});
+		try {
+			const editor = this.editorFactory(facade, HEADLESS_EDITOR_THEME, this.editorKeybindings);
+			editor.onChange = (text) => {
+				this.editorText = boundedEditor(text);
+				this.publishEditorAction("set", this.editorText);
+			};
+			editor.onSubmit = (text) => {
+				this.editorText = "";
+				this.revision++;
+				this.publish({ type: "editor_submit", text: boundedEditor(text), revision: this.revision });
+			};
+			editor.setText?.(this.editorText);
+			if (editor.setPaddingX) editor.setPaddingX(1);
+			if (editor.setAutocompleteProvider) editor.setAutocompleteProvider(this.editorAutocompleteProvider());
+			if (editor.actionHandlers instanceof Map) {
+				for (const action of [
+					"app.clear",
+					"app.suspend",
+					"app.thinking.cycle",
+					"app.model.cycleForward",
+					"app.model.cycleBackward",
+					"app.model.select",
+					"app.tools.expand",
+					"app.thinking.toggle",
+					"app.editor.external",
+					"app.message.copy",
+					"app.message.followUp",
+					"app.message.dequeue",
+					"app.session.new",
+					"app.session.tree",
+					"app.session.fork",
+					"app.session.resume",
+				])
+					editor.actionHandlers.set(action, () => this.publishEditorAppAction(action));
+				if (!editor.onEscape) editor.onEscape = () => this.publishEditorAppAction("app.interrupt");
+				if (!editor.onCtrlD) editor.onCtrlD = () => this.publishEditorAppAction("app.exit");
+				if (!editor.onPasteImage)
+					editor.onPasteImage = () => this.publishEditorAppAction("app.clipboard.pasteImage");
+				if (!editor.onExtensionShortcut)
+					editor.onExtensionShortcut = (data) => {
+						this.publishEditorAppAction("extension_shortcut", data);
+						return true;
+					};
+			}
+			adapter = createHeadlessComponentAdapter(editor, {
+				componentId,
+				generation,
+				width: 80,
+				height: 24,
+				onRequestRender: () => this.scheduleComponentFrame(componentId, generation),
+			});
+			const mount: ComponentMount = {
+				componentId,
+				generation,
+				placement: "editor",
+				adapter,
+				component: editor,
+				width: 80,
+				height: 24,
+				visible: true,
+			};
+			this.components.set(componentId, mount);
+			this.componentDiagnostics.set(componentId, componentDiagnostic(mount));
+			this.editorComponentId = componentId;
+			const frame = adapter.render();
+			this.recordComponentFrame(mount, frame);
+			this.publish({ type: "component_mount", componentId, generation, placement: "editor", visible: true, frame });
+		} catch (error) {
+			this.editorFactory = undefined;
+			this.reportException("editor_factory", error);
+			this.publishEditorAction("set", this.editorText);
+		}
+	}
+
+	private addAutocompleteProvider(factory: unknown): void {
+		if (typeof factory !== "function") return;
+		this.autocompleteProviderFactories.push(factory as EditorAutocompleteFactory);
+		const editor = this.editorComponentId
+			? (this.components.get(this.editorComponentId)?.component as EditorComponent | undefined)
+			: undefined;
+		editor?.setAutocompleteProvider?.(this.editorAutocompleteProvider());
+	}
+
+	private editorAutocompleteProvider(): EditorAutocompleteProvider {
+		const base: EditorAutocompleteProvider = {
+			triggerCharacters: ["@", "$"],
+			getSuggestions: async (lines, cursorLine, cursorCol, options) => {
+				if (options.signal.aborted || !this.getCompletions) return null;
+				const prefixLines = lines.slice(0, cursorLine);
+				const text = [...prefixLines, lines[cursorLine] ?? "", ...lines.slice(cursorLine + 1)].join("\n");
+				const cursor = prefixLines.reduce((length, line) => length + line.length + 1, 0) + cursorCol;
+				const result = this.getCompletions(text, cursor);
+				if (options.signal.aborted || !result) return null;
+				return {
+					items: result.items,
+					prefix: text.slice(result.prefixStart, result.prefixEnd),
+				};
+			},
+			applyCompletion: (lines, cursorLine, cursorCol, item, prefix) => {
+				const current = lines[cursorLine] ?? "";
+				const start = Math.max(0, cursorCol - prefix.length);
+				const next = [...lines];
+				next[cursorLine] = `${current.slice(0, start)}${item.value}${current.slice(cursorCol)}`;
+				return { lines: next, cursorLine, cursorCol: start + item.value.length };
+			},
+		};
+		return this.autocompleteProviderFactories.reduce((provider, factory) => factory(provider), base);
+	}
+
+	private publishEditorAppAction(action: string, data?: string): void {
+		if (this.disposed) return;
+		this.revision++;
+		this.publish({
+			type: "editor_app_action",
+			action: bounded(action, 128),
+			...(data ? { data: boundedRawInput(data) } : {}),
+			revision: this.revision,
+		});
 	}
 
 	private setWidget(
@@ -909,8 +1114,10 @@ export class ExtensionUiBridge {
 
 	private publishEditorAction(action: "paste" | "set", text: string): void {
 		if (this.disposed) return;
+		const value = boundedEditor(text);
+		this.editorText = action === "paste" ? boundedEditor(`${this.editorText}${value}`) : value;
 		this.revision++;
-		this.publish({ type: "editor_action", action: { action, text: boundedEditor(text), revision: this.revision } });
+		this.publish({ type: "editor_action", action: { action, text: value, revision: this.revision } });
 	}
 
 	private widgetsSnapshot(): ExtensionUiState["widgets"] {
@@ -926,15 +1133,6 @@ export class ExtensionUiBridge {
 		if ("title" in delta) this.title = delta.title ?? null;
 		this.revision++;
 		this.publish({ type: "delta", delta: { revision: this.revision, ...delta } });
-	}
-
-	private notifyUnsupported(method: string): void {
-		void this.onUiRequest({
-			id: randomUUID(),
-			kind: "notify",
-			title: "当前 Rust TUI 未支持该扩展能力",
-			payload: { method },
-		});
 	}
 
 	private reportTerminalViolation(violation: HeadlessTerminalOwnershipViolation): void {

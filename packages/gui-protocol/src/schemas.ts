@@ -827,6 +827,7 @@ export const ExtensionComponentPlacementSchema = Type.Union([
 	Type.Literal("header"),
 	Type.Literal("footer"),
 	Type.Literal("custom_overlay"),
+	Type.Literal("editor"),
 ]);
 export type ExtensionComponentPlacement = Static<typeof ExtensionComponentPlacementSchema>;
 const ExtensionComponentCursorSchema = StrictObject({
@@ -886,6 +887,15 @@ const ExtensionUiDeltaSchema = StrictObject({
 const ExtensionEditorActionSchema = StrictObject({
 	action: Type.Union([Type.Literal("paste"), Type.Literal("set")]),
 	text: Type.String({ maxLength: 64 * 1024 }),
+	revision: Type.Integer({ minimum: 0 }),
+});
+const ExtensionEditorSubmitSchema = StrictObject({
+	text: Type.String({ maxLength: 64 * 1024 }),
+	revision: Type.Integer({ minimum: 0 }),
+});
+const ExtensionEditorAppActionSchema = StrictObject({
+	action: Type.String({ minLength: 1, maxLength: 128 }),
+	data: Type.Optional(Type.String({ maxLength: 256 })),
 	revision: Type.Integer({ minimum: 0 }),
 });
 const ExtensionTerminalInputResultSchema = StrictObject({
@@ -1454,6 +1464,16 @@ export const ServerEventSchema = Type.Union([
 		type: Type.Literal("extension_editor_action"),
 		sessionPath: Type.String({ minLength: 1 }),
 		action: ExtensionEditorActionSchema,
+	}),
+	StrictObject({
+		type: Type.Literal("extension_editor_submit"),
+		sessionPath: Type.String({ minLength: 1 }),
+		submit: ExtensionEditorSubmitSchema,
+	}),
+	StrictObject({
+		type: Type.Literal("extension_editor_app_action"),
+		sessionPath: Type.String({ minLength: 1 }),
+		action: ExtensionEditorAppActionSchema,
 	}),
 	StrictObject({
 		type: Type.Literal("extension_component_mount"),

@@ -4456,6 +4456,85 @@
                   "required": [
                     "type",
                     "sessionPath",
+                    "submit"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "extension_editor_submit"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "submit": {
+                      "type": "object",
+                      "required": [
+                        "text",
+                        "revision"
+                      ],
+                      "properties": {
+                        "text": {
+                          "type": "string",
+                          "maxLength": 65536
+                        },
+                        "revision": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "sessionPath",
+                    "action"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "extension_editor_app_action"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "action": {
+                      "type": "object",
+                      "required": [
+                        "action",
+                        "revision"
+                      ],
+                      "properties": {
+                        "action": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        "data": {
+                          "type": "string",
+                          "maxLength": 256
+                        },
+                        "revision": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "sessionPath",
                     "componentId",
                     "generation",
                     "placement",
@@ -4501,6 +4580,10 @@
                         {
                           "type": "string",
                           "const": "custom_overlay"
+                        },
+                        {
+                          "type": "string",
+                          "const": "editor"
                         }
                       ]
                     },

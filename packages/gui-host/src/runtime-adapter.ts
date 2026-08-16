@@ -724,6 +724,7 @@ class CoreRuntimeSession implements RuntimeSession {
 					error: error.error,
 					...(error.stack ? { stack: error.stack } : {}),
 				}),
+			(text, cursor) => this.getCompletions(text, cursor),
 		);
 	}
 

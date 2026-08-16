@@ -2328,6 +2328,13 @@ impl AppState {
             .collect()
     }
 
+    pub fn active_extension_editor(&self) -> Option<&ExtensionComponentState> {
+        self.extension_ui
+            .components
+            .values()
+            .find(|component| component.visible && component.placement == "editor")
+    }
+
     pub fn apply_extension_component_mount(&mut self, component: ExtensionComponentState) -> bool {
         if self
             .extension_ui
@@ -2500,8 +2507,10 @@ impl AppState {
 
     pub fn prepare_composer(&mut self, area: Rect) {
         self.composer_width = area.width;
-        self.editor
-            .ensure_cursor_visible(area.width, area.height.saturating_sub(3).max(1));
+        if self.active_extension_editor().is_none() {
+            self.editor
+                .ensure_cursor_visible(area.width, area.height.saturating_sub(3).max(1));
+        }
     }
 
     pub fn footer_status(&self) -> String {
@@ -3201,24 +3210,32 @@ impl Widget for ComposerView<'_> {
                 .saturating_sub(reserved),
         )
         .max(1);
-        let start_line = self.state.editor.scroll_line();
-        for (line_index, rendered) in self
+        let editor_lines = self
             .state
-            .editor
-            .visual_lines_with_cursor(area.width)
-            .iter()
-            .enumerate()
-            .skip(start_line)
-            .take(visible_lines)
-        {
-            put_line(
-                buffer,
-                area.x,
-                row + u16::try_from(line_index - start_line).unwrap_or(0),
-                rendered,
-                width,
-                Style::default().fg(Color::White),
-            );
+            .active_extension_editor()
+            .map(|component| component.lines.clone())
+            .unwrap_or_else(|| {
+                self.state
+                    .editor
+                    .visual_lines_with_cursor(area.width)
+                    .into_iter()
+                    .skip(self.state.editor.scroll_line())
+                    .collect()
+            });
+        for (line_index, rendered) in editor_lines.iter().enumerate().take(visible_lines) {
+            let target_row = row + u16::try_from(line_index).unwrap_or(0);
+            if self.state.active_extension_editor().is_some() {
+                put_ansi_line(buffer, area.x, target_row, rendered, width);
+            } else {
+                put_line(
+                    buffer,
+                    area.x,
+                    target_row,
+                    rendered,
+                    width,
+                    Style::default().fg(Color::White),
+                );
+            }
         }
         row = row.saturating_add(u16::try_from(visible_lines).unwrap_or(u16::MAX));
         let status_y = area.y + area.height.saturating_sub(2);

@@ -120,6 +120,60 @@ describe("ExtensionUiBridge", () => {
 		);
 	});
 
+	it("mounts custom editors with the mirrored draft and restores native text after unmount", () => {
+		const events: ExtensionUiBridgeEvent[] = [];
+		const bridge = new ExtensionUiBridge(
+			async () => ({ cancelled: true }),
+			(event) => events.push(event),
+			() => {},
+		);
+		const ui = bridge.context();
+		ui.setEditorText("draft");
+		let disposed = 0;
+		let editor:
+			| {
+					text: string;
+					setText(text: string): void;
+					getText(): string;
+					onChange?: (text: string) => void;
+					onSubmit?: (text: string) => void;
+					render(): string[];
+					invalidate(): void;
+					dispose(): void;
+			  }
+			| undefined;
+		const factory = () => {
+			editor = {
+				text: "",
+				setText(text) {
+					this.text = text;
+				},
+				getText() {
+					return this.text;
+				},
+				render: () => [editor?.text ?? ""],
+				invalidate: () => {},
+				dispose: () => {
+					disposed++;
+				},
+			};
+			return editor;
+		};
+		ui.setEditorComponent(factory);
+		expect(editor?.text).toBe("draft");
+		const mount = events.find((event) => event.type === "component_mount" && event.placement === "editor");
+		expect(mount).toBeDefined();
+		editor?.onChange?.("two\nlines");
+		expect(events.at(-1)).toEqual(
+			expect.objectContaining({ type: "editor_action", action: expect.objectContaining({ text: "two\nlines" }) }),
+		);
+		editor?.onSubmit?.("submit");
+		expect(events.at(-1)).toEqual(expect.objectContaining({ type: "editor_submit", text: "submit" }));
+		ui.setEditorComponent(undefined);
+		expect(disposed).toBe(1);
+		expect(events.some((event) => event.type === "component_unmount" && event.reason === "replace")).toBe(true);
+	});
+
 	it("keeps raw terminal listener sequences intact while bounding them", async () => {
 		const bridge = new ExtensionUiBridge(
 			async () => ({ cancelled: true }),

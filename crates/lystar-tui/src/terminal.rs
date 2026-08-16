@@ -933,6 +933,17 @@ fn run_session(
                             rect.y.saturating_add(inset).saturating_add(row),
                         ));
                     }
+                } else if let Some(component) = app.active_extension_editor() {
+                    let composer = composer_area_with_widget_budget(area, widget_budget);
+                    if let Some((row, column)) = component.cursor
+                        && row.saturating_add(1) < composer.height.saturating_sub(2)
+                        && column < composer.width
+                    {
+                        frame.set_cursor_position((
+                            composer.x.saturating_add(column),
+                            composer.y.saturating_add(1).saturating_add(row),
+                        ));
+                    }
                 } else {
                     frame.render_widget(WorkbenchOverlayView::new(&app), area);
                 }
@@ -947,6 +958,10 @@ fn run_session(
                 .active_extension_overlay()
                 .and_then(|component| component.cursor)
                 .is_some()
+                || app
+                    .active_extension_editor()
+                    .and_then(|component| component.cursor)
+                    .is_some()
             {
                 execute!(terminal.backend_mut().writer_mut(), Show)?;
             } else {
@@ -1019,13 +1034,18 @@ fn run_session(
         if event::poll(Duration::ZERO)? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    let component = app
+                    let overlay_component = app
                         .active_extension_overlay()
                         .map(|component| (component.component_id.clone(), component.generation));
+                    let is_overlay_component = overlay_component.is_some();
+                    let component = overlay_component.or_else(|| {
+                        app.active_extension_editor()
+                            .map(|component| (component.component_id.clone(), component.generation))
+                    });
                     if let Some((component_id, generation)) = component {
                         let active_path =
                             app.active_session_path().unwrap_or(session_path).to_owned();
-                        if key.code == KeyCode::Esc {
+                        if is_overlay_component && key.code == KeyCode::Esc {
                             request_extension_component_cancel(
                                 &app,
                                 pipe,
@@ -1088,6 +1108,7 @@ fn run_session(
                 Event::Paste(text) => {
                     let component = app
                         .active_extension_overlay()
+                        .or_else(|| app.active_extension_editor())
                         .map(|component| (component.component_id.clone(), component.generation));
                     if let Some((component_id, generation)) = component {
                         if text.len().saturating_add(12) <= 256 {
@@ -5713,9 +5734,10 @@ fn apply_server_message(
     let raw = message.json().map_err(TuiError::from)?;
     if raw.get("type").and_then(serde_json::Value::as_str) == Some("event") {
         let event = raw.get("event").and_then(serde_json::Value::as_object);
-        let active_path = app.active_session_path().unwrap_or(session_path);
+        let active_path = app.active_session_path().unwrap_or(session_path).to_owned();
         if let Some(event) = event
-            && event.get("sessionPath").and_then(serde_json::Value::as_str) == Some(active_path)
+            && event.get("sessionPath").and_then(serde_json::Value::as_str)
+                == Some(active_path.as_str())
         {
             match event.get("type").and_then(serde_json::Value::as_str) {
                 Some("extension_ui_snapshot") => {
@@ -5767,6 +5789,7 @@ fn apply_server_message(
                                     | "header"
                                     | "footer"
                                     | "custom_overlay"
+                                    | "editor"
                             )
                         })
                         .ok_or_else(|| {
@@ -5871,6 +5894,79 @@ fn apply_server_message(
                         })?;
                     if app.remove_extension_component(component_id, generation) {
                         trace_id("component_unmount_applied", component_id);
+                    }
+                    return Ok(false);
+                }
+                Some("extension_editor_submit") => {
+                    let submit = event
+                        .get("submit")
+                        .and_then(serde_json::Value::as_object)
+                        .ok_or_else(|| {
+                            TuiError::InvalidResponse("自定义编辑器提交无效".to_owned())
+                        })?;
+                    let text = submit
+                        .get("text")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| {
+                            TuiError::InvalidResponse("自定义编辑器提交缺少文本".to_owned())
+                        })?;
+                    let revision = submit
+                        .get("revision")
+                        .and_then(serde_json::Value::as_u64)
+                        .ok_or_else(|| {
+                            TuiError::InvalidResponse("自定义编辑器提交缺少修订".to_owned())
+                        })?;
+                    if app.apply_extension_editor_action("set", text, revision) {
+                        submit_editor(
+                            app,
+                            pipe,
+                            &active_path,
+                            client_instance_id,
+                            sequence,
+                            false,
+                            session_flow,
+                        )?;
+                    }
+                    return Ok(false);
+                }
+                Some("extension_editor_app_action") => {
+                    let action = event
+                        .get("action")
+                        .and_then(serde_json::Value::as_object)
+                        .ok_or_else(|| {
+                            TuiError::InvalidResponse("自定义编辑器动作无效".to_owned())
+                        })?;
+                    let name = action
+                        .get("action")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default();
+                    match name {
+                        "app.interrupt" | "app.clear" => {
+                            handle_key(
+                                app,
+                                KeyCode::Esc,
+                                KeyModifiers::NONE,
+                                pipe,
+                                session_path,
+                                client_instance_id,
+                                sequence,
+                                session_flow,
+                                quit_requested,
+                            )?;
+                        }
+                        "app.exit" => *quit_requested = true,
+                        "app.message.followUp" => {
+                            submit_editor(
+                                app,
+                                pipe,
+                                &active_path,
+                                client_instance_id,
+                                sequence,
+                                true,
+                                session_flow,
+                            )?;
+                        }
+                        _ => app.set_toast("自定义编辑器动作已接收"),
                     }
                     return Ok(false);
                 }

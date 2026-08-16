@@ -1549,6 +1549,8 @@ export class GuiHostService {
 								type: "editor_action";
 								action: { action: "paste" | "set"; text: string; revision: number };
 						  }
+						| { type: "editor_submit"; text: string; revision: number }
+						| { type: "editor_app_action"; action: string; data?: string; revision: number }
 						| {
 								type: "component_mount";
 								componentId: string;
@@ -1572,6 +1574,22 @@ export class GuiHostService {
 						void this.broadcast({ type: "extension_ui_delta", sessionPath, delta: payload.delta });
 					} else if (payload.type === "editor_action") {
 						void this.broadcast({ type: "extension_editor_action", sessionPath, action: payload.action });
+					} else if (payload.type === "editor_submit") {
+						void this.broadcast({
+							type: "extension_editor_submit",
+							sessionPath,
+							submit: { text: payload.text, revision: payload.revision },
+						});
+					} else if (payload.type === "editor_app_action") {
+						void this.broadcast({
+							type: "extension_editor_app_action",
+							sessionPath,
+							action: {
+								action: payload.action,
+								...(payload.data ? { data: payload.data } : {}),
+								revision: payload.revision,
+							},
+						});
 					} else if (payload.type === "component_mount") {
 						void this.broadcast({
 							type: "extension_component_mount",
