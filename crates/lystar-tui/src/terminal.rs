@@ -21,8 +21,10 @@ use crossterm::{
 use lystar_protocol::{
     B3Command, FrameDecoder, ProtocolError, ReadOnlyEvent, ReadOnlyMessage, ReadOnlyResponse,
     ServerMessage, TranscriptRequestContext, decode_server_message, encode_abort_operation_request,
-    encode_acquire_session_request, encode_b3_request, encode_client_hello, encode_queue_request,
-    encode_read_transcript_request, encode_search_transcript_request, encode_ui_response,
+    encode_acquire_session_request, encode_b3_request, encode_client_hello,
+    encode_create_session_request, encode_list_sessions_request, encode_queue_request,
+    encode_read_transcript_request, encode_release_session_request,
+    encode_search_transcript_request, encode_session_write_request, encode_ui_response,
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use signal_hook::{
@@ -34,8 +36,9 @@ use thiserror::Error;
 use crate::app::{
     AppState, B3Request, ComposerView, ConfirmOverlay, DetailOverlay, InputFocus, ListOverlay,
     ModelDescriptor, OverlayItem, OverlayLink, OverlayState, PendingIntent, ProviderDescriptor,
-    SearchHit, SettingDescriptor, TextEditorOverlay, TranscriptView, UiRequest, UiRequestKind,
-    VisibleLink, WorkbenchOverlayView, WorkbenchTarget, composer_area, transcript_area,
+    ReadonlySessionView, SearchHit, SessionRestorePoint, SessionSummary, SessionTreeNode,
+    SettingDescriptor, TextEditorOverlay, TranscriptView, UiRequest, UiRequestKind, VisibleLink,
+    WorkbenchOverlayView, WorkbenchTarget, composer_area, transcript_area,
 };
 
 const INITIAL_PAGE_LIMIT: u64 = 200;
@@ -54,6 +57,78 @@ pub enum TuiError {
     HelloRejected(String),
     #[error("host protocol response is malformed: {0}")]
     InvalidResponse(String),
+}
+
+#[derive(Debug)]
+enum SessionFlow {
+    List {
+        id: String,
+        selected_path: Option<String>,
+    },
+    Rename {
+        id: String,
+        index: usize,
+        name: String,
+    },
+    Fork {
+        id: String,
+        toast: String,
+    },
+    Readonly {
+        id: String,
+        path: String,
+        replace: bool,
+    },
+    SwitchReleasing {
+        id: String,
+        target: SessionSummary,
+        restore: SessionRestorePoint,
+    },
+    SwitchAcquiring {
+        id: String,
+        target: SessionSummary,
+        restore: SessionRestorePoint,
+    },
+    SwitchRollback {
+        id: String,
+        restore: SessionRestorePoint,
+        reason: String,
+    },
+    CreateStarting {
+        id: String,
+        restore: SessionRestorePoint,
+    },
+    CreateReleasingOld {
+        id: String,
+        path: String,
+        lease_id: String,
+        snapshot: lystar_protocol::SessionSnapshot,
+        restore: SessionRestorePoint,
+    },
+    CreateCleanup {
+        id: String,
+        restore: SessionRestorePoint,
+        reason: String,
+    },
+    DeleteReleasing {
+        id: String,
+        restore: SessionRestorePoint,
+        target: Option<SessionSummary>,
+    },
+    DeleteRemoving {
+        id: String,
+        restore: SessionRestorePoint,
+        target: Option<SessionSummary>,
+    },
+    DeleteAcquiring {
+        id: String,
+        target: SessionSummary,
+    },
+    DeleteRollback {
+        id: String,
+        restore: SessionRestorePoint,
+        reason: String,
+    },
 }
 
 pub struct TerminalGuard {
@@ -278,6 +353,9 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
         .unwrap_or_else(|_| format!("lystar-rust-m8-{}", std::process::id()));
     let mut pipe = ProtocolPipe::connect(&client_instance_id)?;
     let mut request_sequence = 0_u64;
+    let mut app = AppState::default();
+    app.begin_active_session(session_path.to_owned(), String::new());
+    let mut session_flow = None;
     request_acquire(
         &mut pipe,
         session_path,
@@ -297,7 +375,6 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     trace("terminal_ready");
-    let mut app = AppState::default();
     app.mark_page_load_pending();
     let mut dirty = true;
     let mut timeout_notified = false;
@@ -323,6 +400,7 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
             dirty = false;
         }
         if shutdown.load(Ordering::Relaxed) {
+            release_active_session(&app, &mut pipe, &mut request_sequence)?;
             return Ok(());
         }
 
@@ -338,6 +416,7 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                         session_path,
                         &client_instance_id,
                         &mut request_sequence,
+                        &mut session_flow,
                     )?;
                     handled_message = true;
                     state_changed = true;
@@ -357,7 +436,9 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                         session_path,
                         &client_instance_id,
                         &mut request_sequence,
+                        &mut session_flow,
                     )? {
+                        release_active_session(&app, &mut pipe, &mut request_sequence)?;
                         return Ok(());
                     }
                     state_changed = true;
@@ -400,6 +481,7 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                         session_path,
                         &client_instance_id,
                         &mut request_sequence,
+                        &mut session_flow,
                     )?;
                     state_changed = true;
                 }
@@ -423,7 +505,7 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                 app.mark_page_load_pending();
                 request_transcript(
                     &mut pipe,
-                    session_path,
+                    app.active_session_path().unwrap_or(session_path),
                     Some(cursor.clone()),
                     false,
                     Some(TranscriptRequestContext {
@@ -459,6 +541,7 @@ fn process_inbound_message(
     session_path: &str,
     client_instance_id: &str,
     request_sequence: &mut u64,
+    session_flow: &mut Option<SessionFlow>,
 ) -> Result<(), TuiError> {
     let message = message?;
     if apply_server_message(
@@ -468,11 +551,39 @@ fn process_inbound_message(
         pipe,
         client_instance_id,
         request_sequence,
+        session_flow,
     )? {
         app.mark_page_load_pending();
-        request_transcript(pipe, session_path, None, true, None, request_sequence)?;
+        request_transcript(
+            pipe,
+            app.active_session_path().unwrap_or(session_path),
+            None,
+            true,
+            None,
+            request_sequence,
+        )?;
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn release_active_session(
+    app: &AppState,
+    pipe: &mut ProtocolPipe,
+    sequence: &mut u64,
+) -> Result<(), TuiError> {
+    let Some(context) = &app.active_session else {
+        return Ok(());
+    };
+    let Some(lease_id) = context.lease_id.as_deref() else {
+        return Ok(());
+    };
+    *sequence += 1;
+    pipe.request(&encode_release_session_request(
+        &format!("release-on-exit-{sequence}"),
+        &context.path,
+        lease_id,
+    )?)
 }
 
 #[cfg(unix)]
@@ -534,6 +645,7 @@ fn request_search(
 }
 
 #[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
 fn handle_key(
     app: &mut AppState,
     code: KeyCode,
@@ -542,7 +654,9 @@ fn handle_key(
     session_path: &str,
     client_instance_id: &str,
     sequence: &mut u64,
+    session_flow: &mut Option<SessionFlow>,
 ) -> Result<bool, TuiError> {
+    let session_path = app.active_session_path().unwrap_or(session_path).to_owned();
     if app.search.open {
         match code {
             KeyCode::Esc => {
@@ -555,7 +669,7 @@ fn handle_key(
                 } else if app.select_search_result().is_none() {
                     let query = app.search.query.clone();
                     trace("search_submit");
-                    request_search(pipe, session_path, &query, sequence)?;
+                    request_search(pipe, &session_path, &query, sequence)?;
                 }
             }
             KeyCode::Up => app.search.selected = app.search.selected.saturating_sub(1),
@@ -579,6 +693,8 @@ fn handle_key(
         app.open_overlay(OverlayState::List(ListOverlay {
             title: "命令面板".to_owned(),
             items: [
+                ("sessions", "会话"),
+                ("tree", "分支树"),
                 ("help", "帮助"),
                 ("settings", "设置"),
                 ("model", "模型"),
@@ -607,9 +723,10 @@ fn handle_key(
             code,
             modifiers,
             pipe,
-            session_path,
+            &session_path,
             client_instance_id,
             sequence,
+            session_flow,
         );
     }
 
@@ -650,10 +767,11 @@ fn handle_key(
         KeyCode::Enter => submit_editor(
             app,
             pipe,
-            session_path,
+            &session_path,
             client_instance_id,
             sequence,
             modifiers.contains(KeyModifiers::ALT),
+            session_flow,
         )?,
         KeyCode::Backspace => app.editor.backspace(),
         KeyCode::Delete => app.editor.delete(),
@@ -704,6 +822,8 @@ fn builtin_slash_command(text: &str) -> Option<&'static str> {
         "/about" => Some("about"),
         "/doctor" => Some("doctor"),
         "/help" => Some("help"),
+        "/sessions" => Some("sessions"),
+        "/tree" => Some("tree"),
         "/settings" => Some("settings"),
         "/model" => Some("model"),
         "/thinking" => Some("thinking"),
@@ -713,6 +833,7 @@ fn builtin_slash_command(text: &str) -> Option<&'static str> {
 }
 
 #[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
 fn handle_overlay_key(
     app: &mut AppState,
     code: KeyCode,
@@ -721,6 +842,7 @@ fn handle_overlay_key(
     session_path: &str,
     client_instance_id: &str,
     sequence: &mut u64,
+    session_flow: &mut Option<SessionFlow>,
 ) -> Result<bool, TuiError> {
     match code {
         KeyCode::Esc => {
@@ -738,7 +860,13 @@ fn handle_overlay_key(
         KeyCode::End => app.overlay_home_end(true),
         KeyCode::Tab => {}
 
-        KeyCode::Char('r') if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+        KeyCode::Char('r')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && !app
+                    .current_overlay_action()
+                    .as_deref()
+                    .is_some_and(|action| action.starts_with("session:")) =>
+        {
             if let Some((id, request)) = app.restart_timed_out_b3_request() {
                 pipe.request(&encode_b3_request(&id, request.command, request.payload)?)?;
                 app.set_toast("正在重试请求");
@@ -771,8 +899,261 @@ fn handle_overlay_key(
                 app.overlay_insert("c");
             }
         }
+        KeyCode::Char('n')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && matches!(app.overlay(), Some(OverlayState::List(list)) if list.title == "会话") =>
+        {
+            if app.is_active_operation() || session_flow.is_some() {
+                app.set_overlay_error("当前会话正在运行，不能切换");
+            } else {
+                *sequence += 1;
+                let id = format!("session-create-{sequence}");
+                *session_flow = Some(SessionFlow::CreateStarting {
+                    id: id.clone(),
+                    restore: app.restore_point(),
+                });
+                pipe.request(&encode_create_session_request(
+                    &id,
+                    session_path,
+                    client_instance_id,
+                    &format!("create:{sequence}"),
+                )?)?;
+            }
+        }
+        KeyCode::Char('n')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && matches!(app.overlay(), Some(OverlayState::List(list)) if list.title == "分支树") =>
+        {
+            let start = app
+                .current_overlay_action()
+                .as_deref()
+                .and_then(|action| action.strip_prefix("tree:"))
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(0);
+            if let Some(index) =
+                ((start + 1)..app.tree.len()).find(|index| app.tree[*index].label.is_some())
+                && let Some(OverlayState::List(list)) = app.overlay_mut()
+            {
+                list.selected = index;
+            }
+        }
+        KeyCode::Char('p')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && matches!(app.overlay(), Some(OverlayState::List(list)) if list.title == "分支树") =>
+        {
+            let start = app
+                .current_overlay_action()
+                .as_deref()
+                .and_then(|action| action.strip_prefix("tree:"))
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(0);
+            if let Some(index) = (0..start)
+                .rev()
+                .find(|index| app.tree[*index].label.is_some())
+                && let Some(OverlayState::List(list)) = app.overlay_mut()
+            {
+                list.selected = index;
+            }
+        }
+        KeyCode::Char('v') if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+            if let Some(index) = app
+                .current_overlay_action()
+                .as_deref()
+                .and_then(|action| action.strip_prefix("session:"))
+                .and_then(|value| value.parse::<usize>().ok())
+                && let Some(session) = app.sessions.get(index)
+            {
+                let path = session.path.clone();
+                *sequence += 1;
+                let id = format!("readonly-initial-{sequence}");
+                *session_flow = Some(SessionFlow::Readonly {
+                    id: id.clone(),
+                    path: path.clone(),
+                    replace: true,
+                });
+                app.readonly_view = Some(ReadonlySessionView {
+                    path: path.clone(),
+                    status: "正在读取".to_owned(),
+                    ..ReadonlySessionView::default()
+                });
+                app.open_overlay(OverlayState::Detail(DetailOverlay {
+                    title: "会话只读".to_owned(),
+                    lines: vec!["正在读取".to_owned()],
+                    scroll: 0,
+                    status: "只读".to_owned(),
+                    link: None,
+                    copy_text: None,
+                }));
+                pipe.request(&encode_read_transcript_request(
+                    &id,
+                    &path,
+                    INITIAL_PAGE_LIMIT,
+                    None,
+                    None,
+                )?)?;
+            } else if let Some(index) = app
+                .current_overlay_action()
+                .as_deref()
+                .and_then(|action| action.strip_prefix("tree:"))
+                .and_then(|value| value.parse::<usize>().ok())
+            {
+                let path = session_path.to_owned();
+                *sequence += 1;
+                let id = format!("readonly-initial-{sequence}");
+                *session_flow = Some(SessionFlow::Readonly {
+                    id: id.clone(),
+                    path: path.clone(),
+                    replace: true,
+                });
+                app.readonly_view = Some(ReadonlySessionView {
+                    path: path.clone(),
+                    status: format!(
+                        "定位 {}",
+                        app.tree
+                            .get(index)
+                            .map(|node| node.id.as_str())
+                            .unwrap_or_default()
+                    ),
+                    ..ReadonlySessionView::default()
+                });
+                app.open_overlay(OverlayState::Detail(DetailOverlay {
+                    title: "会话只读".to_owned(),
+                    lines: vec!["正在读取".to_owned()],
+                    scroll: 0,
+                    status: "只读".to_owned(),
+                    link: None,
+                    copy_text: None,
+                }));
+                pipe.request(&encode_read_transcript_request(
+                    &id,
+                    &path,
+                    INITIAL_PAGE_LIMIT,
+                    None,
+                    None,
+                )?)?;
+            } else {
+                app.overlay_insert("v");
+            }
+        }
+        KeyCode::Char('r')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && app
+                    .current_overlay_action()
+                    .as_deref()
+                    .is_some_and(|action| action.starts_with("session:")) =>
+        {
+            let index = app
+                .current_overlay_action()
+                .as_deref()
+                .and_then(|action| action.strip_prefix("session:"))
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(0);
+            if let Some(session) = app.sessions.get(index) {
+                let value = session
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| session.first_message.clone());
+                app.open_overlay(OverlayState::TextEditor(TextEditorOverlay {
+                    title: "重命名会话".to_owned(),
+                    cursor: value.len(),
+                    value,
+                    save_action: format!("session-rename:{index}"),
+                    status: "Enter 保存，Esc 返回".to_owned(),
+                    secret: false,
+                }));
+            }
+        }
+        KeyCode::Char('f') if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+            if app
+                .current_overlay_action()
+                .as_deref()
+                .is_some_and(|action| action.starts_with("session:"))
+            {
+                app.open_overlay(OverlayState::Confirm(ConfirmOverlay {
+                    title: "分叉会话".to_owned(),
+                    message: "确认从当前选中记录创建并切换会话？".to_owned(),
+                    confirm_action: "session-fork-current".to_owned(),
+                    status: String::new(),
+                }));
+            } else if let Some(index) = app
+                .current_overlay_action()
+                .as_deref()
+                .and_then(|action| action.strip_prefix("tree:"))
+                .and_then(|value| value.parse::<usize>().ok())
+            {
+                app.open_overlay(OverlayState::Confirm(ConfirmOverlay {
+                    title: "分叉会话".to_owned(),
+                    message: "确认从分支树选中记录创建并切换会话？".to_owned(),
+                    confirm_action: format!("tree-fork:{index}"),
+                    status: String::new(),
+                }));
+            } else {
+                app.overlay_insert("f");
+            }
+        }
+        KeyCode::Char('l')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && app
+                    .current_overlay_action()
+                    .as_deref()
+                    .is_some_and(|action| action.starts_with("tree:")) =>
+        {
+            let index = app
+                .current_overlay_action()
+                .as_deref()
+                .and_then(|action| action.strip_prefix("tree:"))
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(0);
+            if let Some(node) = app.tree.get(index) {
+                let value = node.label.clone().unwrap_or_default();
+                app.open_overlay(OverlayState::TextEditor(TextEditorOverlay {
+                    title: "编辑标签".to_owned(),
+                    cursor: value.len(),
+                    value,
+                    save_action: format!("tree-label:{index}"),
+                    status: "留空可清除标签，Enter 保存".to_owned(),
+                    secret: false,
+                }));
+            }
+        }
+        KeyCode::Char('s')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && app
+                    .current_overlay_action()
+                    .as_deref()
+                    .is_some_and(|action| action.starts_with("tree:")) =>
+        {
+            let index = app
+                .current_overlay_action()
+                .as_deref()
+                .and_then(|action| action.strip_prefix("tree:"))
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(0);
+            app.open_overlay(OverlayState::Confirm(ConfirmOverlay {
+                title: "摘要跳转".to_owned(),
+                message: "跳转前生成分支摘要？".to_owned(),
+                confirm_action: format!("tree-summary:{index}"),
+                status: String::new(),
+            }));
+        }
         KeyCode::Char('d') if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
             if let Some(index) = app
+                .current_overlay_action()
+                .as_deref()
+                .and_then(|action| action.strip_prefix("session:"))
+                .and_then(|value| value.parse::<usize>().ok())
+                && app
+                    .sessions
+                    .get(index)
+                    .is_some_and(|session| Some(session.path.as_str()) == app.active_session_path())
+            {
+                app.open_overlay(OverlayState::Confirm(ConfirmOverlay {
+                    title: "删除会话".to_owned(),
+                    message: "确认删除当前会话？".to_owned(),
+                    confirm_action: "session-delete-current".to_owned(),
+                    status: String::new(),
+                }));
+            } else if let Some(index) = app
                 .current_overlay_action()
                 .as_deref()
                 .and_then(|action| action.strip_prefix("login-provider:"))
@@ -799,6 +1180,7 @@ fn handle_overlay_key(
                     session_path,
                     client_instance_id,
                     sequence,
+                    session_flow,
                 )?;
             }
         }
@@ -921,13 +1303,48 @@ fn open_workbench(
     session_path: &str,
     _client_instance_id: &str,
     sequence: &mut u64,
+    session_flow: &mut Option<SessionFlow>,
 ) -> Result<(), TuiError> {
+    if target == "sessions" {
+        *sequence += 1;
+        let id = format!("sessions-list-{sequence}");
+        *session_flow = Some(SessionFlow::List {
+            id: id.clone(),
+            selected_path: app.active_session_path().map(str::to_owned),
+        });
+        app.open_overlay(OverlayState::Detail(DetailOverlay {
+            title: "会话".to_owned(),
+            lines: vec!["正在读取会话".to_owned()],
+            scroll: 0,
+            status: "请稍候".to_owned(),
+            link: None,
+            copy_text: None,
+        }));
+        return pipe.request(&encode_list_sessions_request(&id, session_path, None)?);
+    }
+    if target == "tree" {
+        return request_b3(
+            app,
+            pipe,
+            sequence,
+            B3Command::GetSessionTree,
+            serde_json::json!({ "sessionPath": session_path })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            PendingIntent::WorkbenchLoad {
+                target: WorkbenchTarget::Tree,
+                selected_key: None,
+                filter: String::new(),
+            },
+        );
+    }
     if target == "help" {
         app.open_overlay(OverlayState::Detail(DetailOverlay {
             title: "帮助".to_owned(),
             lines: vec![
                 "Ctrl+P 打开命令面板".to_owned(),
-                "/settings 设置，/model 模型，/thinking 思考，/login 登录".to_owned(),
+                "/sessions 会话，/tree 分支树，/settings 设置，/model 模型，/thinking 思考，/login 登录".to_owned(),
                 "/help 显示此帮助，/about 显示版本与运行目录，/doctor 显示诊断结果".to_owned(),
                 "Esc 返回；方向键、PageUp/PageDown、Home/End 可浏览详情".to_owned(),
             ],
@@ -1013,6 +1430,7 @@ fn activate_workbench_action(
     session_path: &str,
     client_instance_id: &str,
     sequence: &mut u64,
+    session_flow: &mut Option<SessionFlow>,
 ) -> Result<(), TuiError> {
     if let Some(target) = action.strip_prefix("open:") {
         return open_workbench(
@@ -1022,6 +1440,7 @@ fn activate_workbench_action(
             session_path,
             client_instance_id,
             sequence,
+            session_flow,
         );
     }
     if app.write_pending && !action.starts_with("ui:") {
@@ -1031,6 +1450,242 @@ fn activate_workbench_action(
     if action.starts_with("disabled:") {
         app.set_overlay_error(action.trim_start_matches("disabled:"));
         return Ok(());
+    }
+    if let Some(index) = action
+        .strip_prefix("session:")
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        let Some(target) = app.sessions.get(index).cloned() else {
+            app.set_overlay_error("会话列表已刷新，请重新选择");
+            return Ok(());
+        };
+        if target.path == session_path {
+            app.close_overlay();
+            return Ok(());
+        }
+        if app.is_active_operation() || session_flow.is_some() {
+            app.set_overlay_error("当前会话正在运行，不能切换");
+            return Ok(());
+        }
+        let Some(lease_id) = app.lease_id.clone() else {
+            app.set_overlay_error("尚未获取会话租约");
+            return Ok(());
+        };
+        let restore = app.restore_point();
+        *sequence += 1;
+        let id = format!("session-release-{sequence}");
+        *session_flow = Some(SessionFlow::SwitchReleasing {
+            id: id.clone(),
+            target,
+            restore,
+        });
+        return pipe.request(&encode_release_session_request(
+            &id,
+            session_path,
+            &lease_id,
+        )?);
+    }
+    if let Some(index) = action
+        .strip_prefix("session-rename:")
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        let Some(session) = app.sessions.get(index) else {
+            app.set_overlay_error("会话列表已刷新，请重新选择");
+            return Ok(());
+        };
+        let name = match app.overlay() {
+            Some(OverlayState::TextEditor(editor)) => editor.value.clone(),
+            _ => String::new(),
+        };
+        let Some(lease_id) = app.lease_id.clone() else {
+            app.set_overlay_error("尚未获取会话租约");
+            return Ok(());
+        };
+        if session.path != session_path {
+            app.set_overlay_error("只能重命名当前会话");
+            return Ok(());
+        }
+        *sequence += 1;
+        let id = format!("session-rename-{sequence}");
+        *session_flow = Some(SessionFlow::Rename {
+            id: id.clone(),
+            index,
+            name: name.clone(),
+        });
+        app.close_overlay();
+        return pipe.request(&encode_session_write_request(
+            &id,
+            "rename_session",
+            serde_json::json!({
+                "sessionPath": session_path, "leaseId": lease_id, "name": name,
+                "clientInstanceId": client_instance_id, "clientRequestId": format!("rename:{sequence}"),
+            }).as_object().cloned().unwrap_or_default(),
+        )?);
+    }
+    if action == "session-delete-current" {
+        if app.is_active_operation() || session_flow.is_some() {
+            app.set_overlay_error("当前会话正在运行，不能删除");
+            return Ok(());
+        }
+        let Some(lease_id) = app.lease_id.clone() else {
+            app.set_overlay_error("尚未获取会话租约");
+            return Ok(());
+        };
+        let restore = app.restore_point();
+        let target = app
+            .sessions
+            .iter()
+            .find(|session| session.path != session_path)
+            .cloned();
+        *sequence += 1;
+        let id = format!("session-delete-release-{sequence}");
+        *session_flow = Some(SessionFlow::DeleteReleasing {
+            id: id.clone(),
+            restore,
+            target,
+        });
+        return pipe.request(&encode_release_session_request(
+            &id,
+            session_path,
+            &lease_id,
+        )?);
+    }
+    if action == "session-fork-current" {
+        let Some(entry_id) = app.transcript.current_entry_id().map(str::to_owned) else {
+            app.set_overlay_error("当前没有可分叉的记录");
+            return Ok(());
+        };
+        let Some(lease_id) = app.lease_id.clone() else {
+            app.set_overlay_error("尚未获取会话租约");
+            return Ok(());
+        };
+        *sequence += 1;
+        let id = format!("session-fork-{sequence}");
+        *session_flow = Some(SessionFlow::Fork {
+            id: id.clone(),
+            toast: "已创建并切换分叉会话".to_owned(),
+        });
+        return pipe.request(&encode_session_write_request(
+            &id,
+            "fork_session",
+            serde_json::json!({
+                "sessionPath": session_path, "leaseId": lease_id, "entryId": entry_id,
+                "clientInstanceId": client_instance_id, "clientRequestId": format!("fork:{sequence}"),
+            }).as_object().cloned().unwrap_or_default(),
+        )?);
+    }
+    if let Some(index) = action
+        .strip_prefix("tree-fork:")
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        let Some(node) = app.tree.get(index) else {
+            app.set_overlay_error("分支树已刷新，请重新选择");
+            return Ok(());
+        };
+        let Some(lease_id) = app.lease_id.clone() else {
+            app.set_overlay_error("尚未获取会话租约");
+            return Ok(());
+        };
+        *sequence += 1;
+        let id = format!("tree-fork-{sequence}");
+        *session_flow = Some(SessionFlow::Fork {
+            id: id.clone(),
+            toast: "已创建并切换分叉会话".to_owned(),
+        });
+        return pipe.request(&encode_session_write_request(
+            &id,
+            "fork_session",
+            serde_json::json!({
+                "sessionPath": session_path, "leaseId": lease_id, "entryId": node.id,
+                "clientInstanceId": client_instance_id, "clientRequestId": format!("tree-fork:{sequence}"),
+            }).as_object().cloned().unwrap_or_default(),
+        )?);
+    }
+    if let Some(index) = action
+        .strip_prefix("tree-label:")
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        let Some(node) = app.tree.get(index).cloned() else {
+            app.set_overlay_error("分支树已刷新，请重新选择");
+            return Ok(());
+        };
+        let label = match app.overlay() {
+            Some(OverlayState::TextEditor(editor)) => editor.value.trim().to_owned(),
+            _ => String::new(),
+        };
+        let Some(lease_id) = app.lease_id.clone() else {
+            app.set_overlay_error("尚未获取会话租约");
+            return Ok(());
+        };
+        app.close_overlay();
+        let mut payload = serde_json::json!({
+            "sessionPath": session_path, "leaseId": lease_id, "entryId": node.id,
+            "clientInstanceId": client_instance_id, "clientRequestId": format!("tree-label:{sequence}"),
+        }).as_object().cloned().unwrap_or_default();
+        if !label.is_empty() {
+            payload.insert("label".to_owned(), serde_json::Value::String(label));
+        }
+        return request_b3(
+            app,
+            pipe,
+            sequence,
+            B3Command::SetEntryLabel,
+            payload,
+            PendingIntent::TreeMutation {
+                selected_key: node.id,
+            },
+        );
+    }
+    if let Some(index) = action
+        .strip_prefix("tree-summary:")
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        let Some(node) = app.tree.get(index).cloned() else {
+            app.set_overlay_error("分支树已刷新，请重新选择");
+            return Ok(());
+        };
+        let Some(lease_id) = app.lease_id.clone() else {
+            app.set_overlay_error("尚未获取会话租约");
+            return Ok(());
+        };
+        app.mark_write_pending();
+        return request_b3(
+            app, pipe, sequence, B3Command::NavigateSessionTree,
+            serde_json::json!({
+                "sessionPath": session_path, "leaseId": lease_id, "entryId": node.id, "summarize": true,
+                "clientInstanceId": client_instance_id, "clientRequestId": format!("tree-summary:{sequence}"),
+            }).as_object().cloned().unwrap_or_default(),
+            PendingIntent::TreeNavigate,
+        );
+    }
+    if let Some(index) = action
+        .strip_prefix("tree:")
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        let Some(node) = app.tree.get(index).cloned() else {
+            app.set_overlay_error("分支树已刷新，请重新选择");
+            return Ok(());
+        };
+        let Some(lease_id) = app.lease_id.clone() else {
+            app.set_overlay_error("尚未获取会话租约");
+            return Ok(());
+        };
+        if app.is_active_operation() {
+            app.set_overlay_error("当前会话正在运行，不能切换分支");
+            return Ok(());
+        }
+        app.mark_write_pending();
+        return request_b3(
+            app,
+            pipe,
+            sequence,
+            B3Command::NavigateSessionTree,
+            serde_json::json!({
+                "sessionPath": session_path, "leaseId": lease_id, "entryId": node.id,
+                "clientInstanceId": client_instance_id, "clientRequestId": format!("tree-navigate:{sequence}"),
+            }).as_object().cloned().unwrap_or_default(),
+            PendingIntent::TreeNavigate,
+        );
     }
     if let Some(id) = action.strip_prefix("setting-toggle:") {
         let Some(setting) = app.setting(id).cloned() else {
@@ -1416,6 +2071,7 @@ fn submit_editor(
     client_instance_id: &str,
     sequence: &mut u64,
     follow_up: bool,
+    session_flow: &mut Option<SessionFlow>,
 ) -> Result<(), TuiError> {
     let Some(lease_id) = app.lease_id.as_deref() else {
         app.transcript.status = "正在获取会话租约".to_owned();
@@ -1432,6 +2088,7 @@ fn submit_editor(
             session_path,
             client_instance_id,
             sequence,
+            session_flow,
         )?;
         return Ok(());
     }
@@ -1470,8 +2127,9 @@ fn apply_server_message(
     message: &ServerMessage,
     session_path: &str,
     pipe: &mut ProtocolPipe,
-    _client_instance_id: &str,
+    client_instance_id: &str,
     sequence: &mut u64,
+    session_flow: &mut Option<SessionFlow>,
 ) -> Result<bool, TuiError> {
     let raw = message.json().map_err(TuiError::from)?;
     let page_response_id = (raw.get("type").and_then(serde_json::Value::as_str)
@@ -1580,6 +2238,11 @@ fn apply_server_message(
         }
         return Ok(false);
     }
+    if let Some(outcome) =
+        apply_session_flow(app, &raw, pipe, client_instance_id, sequence, session_flow)?
+    {
+        return Ok(outcome);
+    }
     if raw.get("type").and_then(serde_json::Value::as_str) == Some("response")
         && let Some(id) = raw.get("id").and_then(serde_json::Value::as_str)
         && let Some(pending) = app.take_pending(id)
@@ -1650,6 +2313,31 @@ fn apply_server_message(
                 }
                 app.set_toast(toast);
             }
+            PendingIntent::TreeMutation { selected_key } => {
+                request_b3(
+                    app,
+                    pipe,
+                    sequence,
+                    B3Command::GetSessionTree,
+                    serde_json::json!({ "sessionPath": session_path })
+                        .as_object()
+                        .cloned()
+                        .unwrap_or_default(),
+                    PendingIntent::WorkbenchLoad {
+                        target: WorkbenchTarget::Tree,
+                        selected_key: Some(selected_key),
+                        filter: String::new(),
+                    },
+                )?;
+            }
+            PendingIntent::TreeNavigate => {
+                if let Some(text) = result.get("editorText").and_then(serde_json::Value::as_str) {
+                    app.editor.insert(text);
+                }
+                app.clear_overlay_transient();
+                app.set_toast("已切换分支");
+                return Ok(true);
+            }
             PendingIntent::AuthMutation {
                 selected_key,
                 filter,
@@ -1683,9 +2371,383 @@ fn apply_server_message(
     };
     match read_only {
         ReadOnlyMessage::Response(response) => apply_response(app, &response),
-        ReadOnlyMessage::Event(event) => apply_event(app, &event, session_path),
+        ReadOnlyMessage::Event(event) => {
+            let active_path = app.active_session_path().unwrap_or(session_path).to_owned();
+            apply_event(app, &event, &active_path)
+        }
         ReadOnlyMessage::Hello | ReadOnlyMessage::HelloError { .. } => Ok(false),
     }
+}
+
+fn apply_session_flow(
+    app: &mut AppState,
+    raw: &serde_json::Value,
+    pipe: &mut ProtocolPipe,
+    client_instance_id: &str,
+    sequence: &mut u64,
+    session_flow: &mut Option<SessionFlow>,
+) -> Result<Option<bool>, TuiError> {
+    let Some(id) = raw.get("id").and_then(serde_json::Value::as_str) else {
+        return Ok(None);
+    };
+    let Some(flow) = session_flow.take() else {
+        return Ok(None);
+    };
+    let expected = match &flow {
+        SessionFlow::List { id, .. }
+        | SessionFlow::Rename { id, .. }
+        | SessionFlow::Fork { id, .. }
+        | SessionFlow::Readonly { id, .. }
+        | SessionFlow::SwitchReleasing { id, .. }
+        | SessionFlow::SwitchAcquiring { id, .. }
+        | SessionFlow::SwitchRollback { id, .. }
+        | SessionFlow::CreateStarting { id, .. }
+        | SessionFlow::CreateReleasingOld { id, .. }
+        | SessionFlow::CreateCleanup { id, .. }
+        | SessionFlow::DeleteReleasing { id, .. }
+        | SessionFlow::DeleteRemoving { id, .. }
+        | SessionFlow::DeleteAcquiring { id, .. }
+        | SessionFlow::DeleteRollback { id, .. } => id,
+    };
+    if id != expected {
+        *session_flow = Some(flow);
+        return Ok(None);
+    }
+    let success = raw.get("ok").and_then(serde_json::Value::as_bool) == Some(true);
+    let error = raw
+        .get("error")
+        .and_then(|value| value.get("message"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("会话操作失败")
+        .to_owned();
+    let result = raw
+        .get("result")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    match flow {
+        SessionFlow::List { selected_path, .. } => {
+            if !success {
+                app.set_overlay_error(error);
+                return Ok(Some(false));
+            }
+            app.sessions = parse_sessions(&result)?;
+            app.replace_overlay(session_overlay(&app.sessions, selected_path.as_deref()));
+            Ok(Some(false))
+        }
+        SessionFlow::Rename { index, name, .. } => {
+            if !success {
+                app.set_overlay_error(error);
+                return Ok(Some(false));
+            }
+            if let Some(session) = app.sessions.get_mut(index) {
+                session.name = (!name.trim().is_empty()).then_some(name);
+            }
+            app.replace_overlay(session_overlay(&app.sessions, app.active_session_path()));
+            app.set_toast("已重命名会话");
+            Ok(Some(false))
+        }
+        SessionFlow::Fork { toast, .. } => {
+            if !success {
+                app.set_overlay_error(error);
+                return Ok(Some(false));
+            }
+            let (lease_id, snapshot) = parse_lease_snapshot(&result)?;
+            app.commit_session_switch(snapshot.path.clone(), lease_id, snapshot);
+            app.set_toast(toast);
+            Ok(Some(true))
+        }
+        SessionFlow::Readonly { path, replace, .. } => {
+            if !success {
+                app.set_overlay_error(error);
+                return Ok(Some(false));
+            }
+            let page: lystar_protocol::TranscriptPage = serde_json::from_value(result)
+                .map_err(|error| TuiError::InvalidResponse(format!("只读记录响应无效: {error}")))?;
+            let view_snapshot = {
+                let view = app
+                    .readonly_view
+                    .get_or_insert_with(|| ReadonlySessionView {
+                        path: path.clone(),
+                        ..ReadonlySessionView::default()
+                    });
+                if view.path != path {
+                    *view = ReadonlySessionView {
+                        path: path.clone(),
+                        ..ReadonlySessionView::default()
+                    };
+                }
+                if replace {
+                    view.transcript.replace_page(
+                        page.items,
+                        page.transcript_generation,
+                        page.transcript_revision,
+                        page.previous_cursor,
+                    );
+                } else {
+                    view.transcript
+                        .prepend_page(page.items, page.previous_cursor);
+                }
+                view.status = format!("{} 轮", view.transcript.cached_rounds());
+                view.clone()
+            };
+            app.replace_overlay(readonly_overlay(&view_snapshot));
+            Ok(Some(false))
+        }
+        SessionFlow::SwitchReleasing {
+            target, restore, ..
+        } => {
+            if !success {
+                app.set_overlay_error(error);
+                return Ok(Some(false));
+            }
+            *sequence += 1;
+            let id = format!("session-acquire-{sequence}");
+            *session_flow = Some(SessionFlow::SwitchAcquiring {
+                id: id.clone(),
+                target: target.clone(),
+                restore,
+            });
+            pipe.request(&encode_acquire_session_request(
+                &id,
+                &target.path,
+                client_instance_id,
+            )?)?;
+            Ok(Some(false))
+        }
+        SessionFlow::SwitchAcquiring {
+            target, restore, ..
+        } => {
+            if success {
+                let (lease_id, snapshot) = parse_lease_snapshot(&result)?;
+                app.commit_session_switch(target.path, lease_id, snapshot);
+                app.set_toast("已切换会话");
+                return Ok(Some(true));
+            }
+            let mut restore_for_reacquire = restore.clone();
+            let old_path = restore_for_reacquire
+                .context
+                .as_ref()
+                .map(|context| context.path.clone())
+                .ok_or_else(|| TuiError::InvalidResponse("切换缺少原会话".to_owned()))?;
+            if let Some(context) = &mut restore_for_reacquire.context {
+                context.lease_id = None;
+            }
+            restore_for_reacquire.lease_id = None;
+            app.restore_session(restore_for_reacquire);
+            *sequence += 1;
+            let id = format!("session-rollback-{sequence}");
+            *session_flow = Some(SessionFlow::SwitchRollback {
+                id: id.clone(),
+                restore,
+                reason: error,
+            });
+            pipe.request(&encode_acquire_session_request(
+                &id,
+                &old_path,
+                client_instance_id,
+            )?)?;
+            Ok(Some(false))
+        }
+        SessionFlow::SwitchRollback {
+            restore, reason, ..
+        } => {
+            if success {
+                let (lease_id, snapshot) = parse_lease_snapshot(&result)?;
+                app.restore_session(restore);
+                app.apply_active_lease(lease_id, snapshot);
+                app.set_overlay_error(format!("切换失败，已恢复原会话: {reason}"));
+            } else {
+                app.set_overlay_error(format!("切换失败且原会话恢复失败: {error}"));
+            }
+            Ok(Some(false))
+        }
+        SessionFlow::CreateStarting { restore, .. } => {
+            if !success {
+                app.set_overlay_error(error);
+                return Ok(Some(false));
+            }
+            let (lease_id, snapshot) = parse_lease_snapshot(&result)?;
+            let old = restore
+                .context
+                .as_ref()
+                .and_then(|context| context.lease_id.clone());
+            let old_path = restore.context.as_ref().map(|context| context.path.clone());
+            if let (Some(old_lease), Some(old_path)) = (old, old_path) {
+                *sequence += 1;
+                let id = format!("session-create-release-{sequence}");
+                *session_flow = Some(SessionFlow::CreateReleasingOld {
+                    id: id.clone(),
+                    path: snapshot.path.clone(),
+                    lease_id,
+                    snapshot,
+                    restore,
+                });
+                pipe.request(&encode_release_session_request(&id, &old_path, &old_lease)?)?;
+                Ok(Some(false))
+            } else {
+                app.commit_session_switch(snapshot.path.clone(), lease_id, snapshot);
+                app.set_toast("已新建会话");
+                Ok(Some(true))
+            }
+        }
+        SessionFlow::CreateReleasingOld {
+            path,
+            lease_id,
+            snapshot,
+            restore,
+            ..
+        } => {
+            if success {
+                app.commit_session_switch(path, lease_id, snapshot);
+                app.set_toast("已新建会话");
+                return Ok(Some(true));
+            }
+            *sequence += 1;
+            let id = format!("session-create-cleanup-{sequence}");
+            *session_flow = Some(SessionFlow::CreateCleanup {
+                id: id.clone(),
+                restore,
+                reason: error,
+            });
+            pipe.request(&encode_release_session_request(
+                &id,
+                &snapshot.path,
+                &lease_id,
+            )?)?;
+            Ok(Some(false))
+        }
+        SessionFlow::CreateCleanup {
+            restore, reason, ..
+        } => {
+            app.restore_session(restore);
+            app.set_overlay_error(format!("新建会话后无法释放原会话: {reason}"));
+            Ok(Some(false))
+        }
+        SessionFlow::DeleteReleasing {
+            restore, target, ..
+        } => {
+            if !success {
+                app.set_overlay_error(error);
+                return Ok(Some(false));
+            }
+            let path = restore
+                .context
+                .as_ref()
+                .map(|context| context.path.clone())
+                .ok_or_else(|| TuiError::InvalidResponse("删除缺少会话路径".to_owned()))?;
+            let cwd = restore
+                .context
+                .as_ref()
+                .map(|context| context.cwd.clone())
+                .unwrap_or_default();
+            *sequence += 1;
+            let id = format!("session-delete-{sequence}");
+            *session_flow = Some(SessionFlow::DeleteRemoving {
+                id: id.clone(),
+                restore,
+                target,
+            });
+            pipe.request(&encode_session_write_request(
+                &id,
+                "delete_session",
+                serde_json::json!({
+                    "cwd": cwd, "sessionPath": path,
+                    "clientInstanceId": client_instance_id,
+                    "clientRequestId": format!("delete:{sequence}"),
+                })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            )?)?;
+            Ok(Some(false))
+        }
+        SessionFlow::DeleteRemoving {
+            restore, target, ..
+        } => {
+            if !success {
+                let path = restore
+                    .context
+                    .as_ref()
+                    .map(|context| context.path.clone())
+                    .unwrap_or_default();
+                *sequence += 1;
+                let id = format!("session-delete-rollback-{sequence}");
+                *session_flow = Some(SessionFlow::DeleteRollback {
+                    id: id.clone(),
+                    restore,
+                    reason: error,
+                });
+                pipe.request(&encode_acquire_session_request(
+                    &id,
+                    &path,
+                    client_instance_id,
+                )?)?;
+                return Ok(Some(false));
+            }
+            let Some(target) = target else {
+                app.active_session = None;
+                app.lease_id = None;
+                app.snapshot = None;
+                app.clear_for_reload("当前会话已删除");
+                app.clear_overlay_transient();
+                return Ok(Some(false));
+            };
+            *sequence += 1;
+            let id = format!("session-delete-acquire-{sequence}");
+            *session_flow = Some(SessionFlow::DeleteAcquiring {
+                id: id.clone(),
+                target: target.clone(),
+            });
+            pipe.request(&encode_acquire_session_request(
+                &id,
+                &target.path,
+                client_instance_id,
+            )?)?;
+            Ok(Some(false))
+        }
+        SessionFlow::DeleteAcquiring { target, .. } => {
+            if !success {
+                app.set_overlay_error(error);
+                return Ok(Some(false));
+            }
+            let (lease_id, snapshot) = parse_lease_snapshot(&result)?;
+            app.commit_session_switch(target.path, lease_id, snapshot);
+            app.set_toast("已删除会话并切换");
+            Ok(Some(true))
+        }
+        SessionFlow::DeleteRollback {
+            restore, reason, ..
+        } => {
+            if success {
+                let (lease_id, snapshot) = parse_lease_snapshot(&result)?;
+                app.restore_session(restore);
+                app.apply_active_lease(lease_id, snapshot);
+                app.set_overlay_error(format!("删除失败，已恢复原会话: {reason}"));
+            } else {
+                app.set_overlay_error(format!("删除失败且原会话恢复失败: {error}"));
+            }
+            Ok(Some(false))
+        }
+    }
+}
+
+fn parse_lease_snapshot(
+    result: &serde_json::Value,
+) -> Result<(String, lystar_protocol::SessionSnapshot), TuiError> {
+    let lease_id = result
+        .get("lease")
+        .and_then(|lease| lease.get("leaseId"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| TuiError::InvalidResponse("会话响应缺少 leaseId".to_owned()))?;
+    let snapshot = serde_json::from_value(
+        result
+            .get("snapshot")
+            .cloned()
+            .ok_or_else(|| TuiError::InvalidResponse("会话响应缺少 snapshot".to_owned()))?,
+    )
+    .map_err(|error| TuiError::InvalidResponse(format!("会话状态响应无效: {error}")))?;
+    Ok((lease_id, snapshot))
 }
 
 fn ui_notify_detail(title: &str, payload: &serde_json::Value) -> DetailOverlay {
@@ -1824,6 +2886,15 @@ fn apply_workbench_load(
                 &app.providers,
                 selected_key.as_deref(),
                 filter,
+            ));
+        }
+        WorkbenchTarget::Tree => {
+            app.tree = parse_tree(&result)?;
+            app.replace_overlay(tree_overlay(&app.tree, selected_key.as_deref(), filter));
+        }
+        WorkbenchTarget::Sessions => {
+            return Err(TuiError::InvalidResponse(
+                "会话工作台响应路由错误".to_owned(),
             ));
         }
     }
@@ -2049,6 +3120,148 @@ fn login_overlay(
         selected,
         filter,
         status: "Enter 选择认证方式，d 退出登录，Esc 返回".to_owned(),
+    })
+}
+
+fn session_overlay(sessions: &[SessionSummary], selected_path: Option<&str>) -> OverlayState {
+    let selected = selected_path
+        .and_then(|path| sessions.iter().position(|session| session.path == path))
+        .unwrap_or(0);
+    OverlayState::List(ListOverlay {
+        title: "会话".to_owned(),
+        items: sessions
+            .iter()
+            .enumerate()
+            .map(|(index, session)| OverlayItem {
+                label: session
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| session.first_message.clone()),
+                detail: format!(
+                    "{}  {}  {}",
+                    session.path, session.activity, session.updated_at
+                ),
+                action: format!("session:{index}"),
+            })
+            .collect(),
+        selected,
+        filter: String::new(),
+        status: "n 新建  Enter 切换  v 只读  r 重命名  d 删除  f 分叉".to_owned(),
+    })
+}
+
+fn tree_overlay(
+    nodes: &[SessionTreeNode],
+    selected_key: Option<&str>,
+    filter: String,
+) -> OverlayState {
+    let selected = selected_key
+        .and_then(|id| nodes.iter().position(|node| node.id == id))
+        .unwrap_or_else(|| nodes.iter().position(|node| node.is_leaf).unwrap_or(0));
+    OverlayState::List(ListOverlay {
+        title: "分支树".to_owned(),
+        items: nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| OverlayItem {
+                label: format!(
+                    "{}{} {}",
+                    "  ".repeat(node.depth),
+                    if node.is_leaf { "*" } else { "-" },
+                    node.label.as_deref().unwrap_or(&node.kind)
+                ),
+                detail: format!("{}  {}", node.timestamp, node.preview),
+                action: format!("tree:{index}"),
+            })
+            .collect(),
+        selected,
+        filter,
+        status: "Enter 跳转  s 摘要跳转  l 标签  v 只读  f 分叉  n/p 标签".to_owned(),
+    })
+}
+
+fn parse_sessions(value: &serde_json::Value) -> Result<Vec<SessionSummary>, TuiError> {
+    value
+        .as_array()
+        .ok_or_else(|| TuiError::InvalidResponse("会话响应不是列表".to_owned()))?
+        .iter()
+        .map(|entry| {
+            let object = entry
+                .as_object()
+                .ok_or_else(|| TuiError::InvalidResponse("会话条目无效".to_owned()))?;
+            Ok(SessionSummary {
+                path: required_string(object, "path")?,
+                id: required_string(object, "id")?,
+                cwd: required_string(object, "cwd")?,
+                name: object
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                updated_at: object
+                    .get("updatedAt")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or_else(|| TuiError::InvalidResponse("会话缺少 updatedAt".to_owned()))?,
+                first_message: required_string(object, "firstMessage")?,
+                activity: required_string(object, "activity")?,
+            })
+        })
+        .collect()
+}
+
+fn parse_tree(value: &serde_json::Value) -> Result<Vec<SessionTreeNode>, TuiError> {
+    value
+        .as_array()
+        .ok_or_else(|| TuiError::InvalidResponse("分支树响应不是列表".to_owned()))?
+        .iter()
+        .map(|entry| {
+            let object = entry
+                .as_object()
+                .ok_or_else(|| TuiError::InvalidResponse("分支树条目无效".to_owned()))?;
+            Ok(SessionTreeNode {
+                id: required_string(object, "id")?,
+                parent_id: object
+                    .get("parentId")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                kind: required_string(object, "kind")?,
+                label: object
+                    .get("label")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                timestamp: required_string(object, "timestamp")?,
+                preview: required_string(object, "preview")?,
+                is_leaf: object
+                    .get("isLeaf")
+                    .and_then(serde_json::Value::as_bool)
+                    .ok_or_else(|| TuiError::InvalidResponse("分支树缺少 isLeaf".to_owned()))?,
+                depth: usize::try_from(
+                    object
+                        .get("depth")
+                        .and_then(serde_json::Value::as_u64)
+                        .ok_or_else(|| TuiError::InvalidResponse("分支树缺少 depth".to_owned()))?,
+                )
+                .map_err(|_| TuiError::InvalidResponse("分支树 depth 无效".to_owned()))?,
+            })
+        })
+        .collect()
+}
+
+fn readonly_overlay(view: &ReadonlySessionView) -> OverlayState {
+    let mut lines = vec![format!("只读  {}", view.path)];
+    lines.extend(view.transcript.rounds().iter().flat_map(|round| {
+        let mut lines = vec![round.summary()];
+        if round.expanded {
+            lines.extend(round.detail_lines());
+        }
+        lines
+    }));
+    OverlayState::Detail(DetailOverlay {
+        title: "会话只读".to_owned(),
+        lines,
+        scroll: 0,
+        status: format!("只读  {}  Esc 返回", view.status),
+        link: None,
+        copy_text: None,
     })
 }
 
@@ -2321,7 +3534,7 @@ fn apply_response(app: &mut AppState, response: &ReadOnlyResponse) -> Result<boo
         ReadOnlyResponse::SessionLease {
             lease_id, snapshot, ..
         } => {
-            app.apply_lease(lease_id.clone(), snapshot.clone());
+            app.apply_active_lease(lease_id.clone(), snapshot.clone());
             app.transcript.status = "已获取会话租约".to_owned();
         }
         ReadOnlyResponse::Operation {

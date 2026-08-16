@@ -66,7 +66,7 @@ impl TranscriptRound {
         self.items.len()
     }
 
-    fn summary(&self) -> String {
+    pub fn summary(&self) -> String {
         if self.is_tool_round() {
             let calls = self
                 .items
@@ -93,7 +93,7 @@ impl TranscriptRound {
             .unwrap_or_else(|| "空记录".to_owned())
     }
 
-    fn detail_lines(&self) -> Vec<String> {
+    pub fn detail_lines(&self) -> Vec<String> {
         self.items
             .iter()
             .flat_map(|item| match &item.view {
@@ -174,7 +174,7 @@ pub struct TranscriptDiagnostics {
     pub total_utf8_bytes: usize,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct TranscriptWindow {
     rounds: VecDeque<TranscriptRound>,
     pub scroll: usize,
@@ -344,6 +344,13 @@ impl TranscriptWindow {
         self.previous_cursor.clone()
     }
 
+    pub fn current_entry_id(&self) -> Option<&str> {
+        self.rounds
+            .get(self.current)
+            .and_then(|round| round.entry_ids.first())
+            .map(String::as_str)
+    }
+
     pub fn cached_rounds(&self) -> usize {
         self.rounds.len()
     }
@@ -484,12 +491,67 @@ pub struct ProviderDescriptor {
     pub model_count: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionSummary {
+    pub path: String,
+    pub id: String,
+    pub cwd: String,
+    pub name: Option<String>,
+    pub updated_at: u64,
+    pub first_message: String,
+    pub activity: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionTreeNode {
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub kind: String,
+    pub label: Option<String>,
+    pub timestamp: String,
+    pub preview: String,
+    pub is_leaf: bool,
+    pub depth: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveSessionContext {
+    pub path: String,
+    pub lease_id: Option<String>,
+    pub generation: u64,
+    pub cwd: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionRestorePoint {
+    pub context: Option<ActiveSessionContext>,
+    pub transcript: TranscriptWindow,
+    pub search: SearchState,
+    pub editor: EditorState,
+    pub snapshot: Option<SessionSnapshot>,
+    pub lease_id: Option<String>,
+    pub operation: Option<OperationSnapshot>,
+    pub live_tools: BTreeMap<String, LiveTool>,
+    pub assistant_stream: String,
+    pub thinking_stream: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ReadonlySessionView {
+    pub path: String,
+    pub transcript: TranscriptWindow,
+    pub query: String,
+    pub status: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkbenchTarget {
     Settings,
     Model,
     Thinking,
     Login,
+    Sessions,
+    Tree,
 }
 
 #[derive(Debug, Clone)]
@@ -519,6 +581,10 @@ pub enum PendingIntent {
         toast: String,
         close_overlay: bool,
     },
+    TreeMutation {
+        selected_key: String,
+    },
+    TreeNavigate,
     AuthMutation {
         selected_key: Option<String>,
         filter: String,
@@ -573,7 +639,7 @@ impl OverlayState {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct SearchState {
     pub open: bool,
     pub query: String,
@@ -600,6 +666,11 @@ pub struct LiveTool {
 
 #[derive(Debug, Default)]
 pub struct AppState {
+    pub active_session: Option<ActiveSessionContext>,
+    pub sessions: Vec<SessionSummary>,
+    pub tree: Vec<SessionTreeNode>,
+    pub readonly_view: Option<ReadonlySessionView>,
+    pub session_generation: u64,
     pub transcript: TranscriptWindow,
     pub search: SearchState,
     pub editor: EditorState,
@@ -628,6 +699,82 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub fn active_session_path(&self) -> Option<&str> {
+        self.active_session
+            .as_ref()
+            .map(|context| context.path.as_str())
+    }
+
+    pub fn active_session_cwd(&self) -> Option<&str> {
+        self.active_session
+            .as_ref()
+            .map(|context| context.cwd.as_str())
+    }
+
+    pub fn begin_active_session(&mut self, path: String, cwd: String) -> u64 {
+        self.session_generation = self.session_generation.saturating_add(1);
+        self.active_session = Some(ActiveSessionContext {
+            path,
+            lease_id: None,
+            generation: self.session_generation,
+            cwd,
+        });
+        self.session_generation
+    }
+
+    pub fn apply_active_lease(&mut self, lease_id: String, snapshot: SessionSnapshot) {
+        if let Some(context) = &mut self.active_session {
+            context.path = snapshot.path.clone();
+            context.cwd = snapshot.cwd.clone();
+            context.lease_id = Some(lease_id.clone());
+        }
+        self.apply_lease(lease_id, snapshot);
+    }
+
+    pub fn restore_point(&self) -> SessionRestorePoint {
+        SessionRestorePoint {
+            context: self.active_session.clone(),
+            transcript: self.transcript.clone(),
+            search: self.search.clone(),
+            editor: self.editor.clone(),
+            snapshot: self.snapshot.clone(),
+            lease_id: self.lease_id.clone(),
+            operation: self.operation.clone(),
+            live_tools: self.live_tools.clone(),
+            assistant_stream: self.assistant_stream.clone(),
+            thinking_stream: self.thinking_stream.clone(),
+        }
+    }
+
+    pub fn restore_session(&mut self, restore: SessionRestorePoint) {
+        self.active_session = restore.context;
+        self.transcript = restore.transcript;
+        self.search = restore.search;
+        self.editor = restore.editor;
+        self.snapshot = restore.snapshot;
+        self.lease_id = restore.lease_id;
+        self.operation = restore.operation;
+        self.live_tools = restore.live_tools;
+        self.assistant_stream = restore.assistant_stream;
+        self.thinking_stream = restore.thinking_stream;
+    }
+
+    pub fn commit_session_switch(
+        &mut self,
+        path: String,
+        lease_id: String,
+        snapshot: SessionSnapshot,
+    ) {
+        self.begin_active_session(path, snapshot.cwd.clone());
+        self.apply_active_lease(lease_id, snapshot);
+        self.transcript.clear_for_reload("正在读取最新记录");
+        self.search = SearchState::default();
+        self.editor.clear();
+        self.operation = None;
+        self.clear_transient();
+        self.clear_overlay_transient();
+    }
+
     pub fn apply_lease(&mut self, lease_id: String, snapshot: SessionSnapshot) {
         self.lease_id = Some(lease_id);
         self.snapshot = Some(snapshot);
@@ -1947,6 +2094,33 @@ mod tests {
             id: "ui-1".to_owned(),
             kind: UiRequestKind::Confirm
         }));
+    }
+
+    #[test]
+    fn restores_session_context_after_a_failed_switch() {
+        let mut app = AppState::default();
+        app.begin_active_session("/tmp/original.jsonl".to_owned(), "/tmp".to_owned());
+        app.lease_id = Some("old-lease".to_owned());
+        app.editor.insert("保留的草稿");
+        app.open_overlay(OverlayState::Detail(DetailOverlay {
+            title: "会话".to_owned(),
+            lines: vec!["原有覆盖层".to_owned()],
+            scroll: 0,
+            status: String::new(),
+            link: None,
+            copy_text: None,
+        }));
+        let restore = app.restore_point();
+        app.begin_active_session("/tmp/target.jsonl".to_owned(), "/tmp".to_owned());
+        app.clear_for_reload("读取目标");
+        app.restore_session(restore);
+        assert_eq!(app.active_session_path(), Some("/tmp/original.jsonl"));
+        assert_eq!(app.lease_id.as_deref(), Some("old-lease"));
+        assert_eq!(
+            app.editor.visual_lines_with_cursor(80),
+            vec!["保留的草稿|".to_owned()]
+        );
+        assert!(matches!(app.overlay(), Some(OverlayState::Detail(_))));
     }
 
     #[test]

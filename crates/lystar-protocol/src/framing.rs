@@ -278,6 +278,57 @@ pub fn encode_acquire_session_request(
     }))
 }
 
+pub fn encode_list_sessions_request(
+    id: &str,
+    cwd: &str,
+    query: Option<&str>,
+) -> Result<Vec<u8>, ProtocolError> {
+    let mut request = serde_json::json!({ "command": "list_sessions", "cwd": cwd });
+    if let Some(query) = query {
+        request["query"] = serde_json::Value::String(query.to_owned());
+    }
+    encode_client_value(serde_json::json!({ "type": "request", "id": id, "request": request }))
+}
+
+pub fn encode_create_session_request(
+    id: &str,
+    cwd: &str,
+    client_instance_id: &str,
+    client_request_id: &str,
+) -> Result<Vec<u8>, ProtocolError> {
+    encode_client_value(serde_json::json!({
+        "type": "request", "id": id,
+        "request": {
+            "command": "create_session", "cwd": cwd,
+            "clientInstanceId": client_instance_id, "clientRequestId": client_request_id,
+        },
+    }))
+}
+
+pub fn encode_release_session_request(
+    id: &str,
+    session_path: &str,
+    lease_id: &str,
+) -> Result<Vec<u8>, ProtocolError> {
+    encode_client_value(serde_json::json!({
+        "type": "request", "id": id,
+        "request": { "command": "release_session", "sessionPath": session_path, "leaseId": lease_id },
+    }))
+}
+
+pub fn encode_session_write_request(
+    id: &str,
+    command: &str,
+    request: serde_json::Map<String, serde_json::Value>,
+) -> Result<Vec<u8>, ProtocolError> {
+    let mut request = request;
+    request.insert(
+        "command".to_owned(),
+        serde_json::Value::String(command.to_owned()),
+    );
+    encode_client_value(serde_json::json!({ "type": "request", "id": id, "request": request }))
+}
+
 pub fn encode_queue_request(
     id: &str,
     command: &str,

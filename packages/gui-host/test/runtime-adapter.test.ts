@@ -433,7 +433,10 @@ describe("CodingAgentRuntimeAdapter", () => {
 		expect(existsSync(join(tempDir, "auth.json"))).toBe(true);
 
 		const loggedOut = await adapter.logoutModelProvider("openai");
-		expect(loggedOut.some((model) => model.provider === "openai")).toBe(false);
+		expect(loggedOut.find((model) => model.provider === "openai")).toMatchObject({
+			authenticated: false,
+			authMethods: ["api_key"],
+		});
 		expect((await adapter.listModelProviders()).find((provider) => provider.id === "openai")).toMatchObject({
 			authenticated: false,
 			authMethods: ["api_key"],

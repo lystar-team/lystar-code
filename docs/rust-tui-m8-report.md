@@ -11,9 +11,13 @@
 - Rust TUI 使用固定底部 Composer，支持 UTF-8 grapheme 编辑、多行、光标移动、删除、粘贴、64 KiB 输入上限、200 条历史、100 步 undo/redo。Enter 根据运行状态发出 `prompt` 或 `steer`，Alt+Enter 发出 `follow_up`，Esc/Ctrl+C 中止活动 operation。
 - 实时 assistant/thinking/tool 进度保存在 Rust 状态中；Tool 以 `toolCallId` 关联，最终 transcript commit 不会由进度层重复追加。
 
-## B3 设置、模型与认证工作台
+## B3 设置、模型、认证、会话与分支工作台
 
-- Ctrl+P 命令面板及精确 slash 拦截已接入 `/settings`、`/model`、`/thinking`、`/login`；带额外文本或后缀的 slash 不会被截获，仍作为普通 prompt。
+- Ctrl+P 命令面板及精确 slash 拦截已接入 `/settings`、`/model`、`/thinking`、`/login`、`/sessions`、`/tree`；带额外文本或后缀的 slash 不会被截获，仍作为普通 prompt。
+- 会话 Overlay 由 Host 的 `list_sessions`、`create_session`、`rename_session`、`delete_session`、`fork_session`、`acquire_session`、`release_session` 驱动。切换严格按 release old lease -> acquire target 执行；目标获取失败时重新获取原会话并恢复 transcript、editor、scroll 和 overlay，失效 generation 的响应不会写入新会话。
+- 新建会话先由 Host 创建并获取新租约，再释放旧租约；旧租约释放失败时释放新租约并恢复原会话。删除当前会话先释放租约、再删除、最后获取另一会话；删除失败时会重新获取原会话。退出 TUI 时会释放当前租约。
+- `v` 打开的只读会话视图只调用 `read_transcript`，使用独立 `TranscriptWindow` 保存分页和滚动，不 acquire、不 `ensureRuntime`，也不修改主会话。
+- Tree Overlay 使用 `get_session_tree`、`set_entry_label`、`navigate_session_tree`：支持输入筛选、标签编辑、带确认的摘要跳转、从选中记录分叉，以及 `n` / `p` 在标签间跳转。
 - Rust 只消费 Host 返回的 B3 descriptor/result：设置包含显示值、整数边界、scope、只读和重启标记；模型包含认证可用性、推理能力和支持的思考级别；Provider 包含认证方式。Rust 不读取 settings/auth/model 文件，也不持久化认证输入。
 - 设置支持布尔切换、枚举选择、整数边界校验、字符串编辑和只读拦截；所有写入经既有 session/host operation journal，并保留原始 B3 payload 以便超时后按 `r` 重试。同一 `clientRequestId` 的重试不会重复执行 Host 写入。
 - 模型切换与思考强度使用 `set_session_model`、`set_session_thinking`；未认证模型仍显示，但不能选择。思考级别以中文显示，并按当前模型 capability 禁用不支持的选项。
@@ -22,7 +26,7 @@
 ## Rust 工作台 Overlay 基础
 
 - Overlay stack 提供 List、Detail、TextEditor、Confirm 四个原语，打开时保存 composer 焦点，关闭或断连后恢复；支持 toast、错误、pending request generation 和 stale response 丢弃。
-- Ctrl+P 命令面板只接入 `/help`、`/about`、`/doctor`。前者本地显示；后两者经 `encode_b3_request` 发送 typed `get_about`、`get_diagnostics`，结果先按 B3 schema 校验再渲染。`/settings` 等未接入 slash 保持普通 prompt。
+- Ctrl+P 命令面板接入 `/help`、`/about`、`/doctor`、`/settings`、`/model`、`/thinking`、`/login`、`/sessions` 与 `/tree`。前者本地显示；`/about`、`/doctor` 和工作台数据经 typed B3 或 Host 会话协议校验后渲染。
 - Host 事件 `ui_request` 通过 `ui_response` 桥接 select、confirm、input、secret、editor；认证 `notify` 直接显示本地受限详情，未知 kind 才返回 cancelled，不让请求悬挂。
 
 ## 验证命令

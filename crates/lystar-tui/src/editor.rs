@@ -13,7 +13,7 @@ struct EditorSnapshot {
     cursor: usize,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct EditorState {
     text: String,
     cursor: usize,

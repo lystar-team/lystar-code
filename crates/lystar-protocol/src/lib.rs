@@ -10,8 +10,10 @@ pub use b3::{B3Command, B3Result};
 pub use framing::{
     ClientMessage, FieldPresence, FrameDecoder, MAX_FRAME_LENGTH, MessageDiagnostic, ProtocolError,
     ServerMessage, decode_client_message, decode_server_message, encode_abort_operation_request,
-    encode_acquire_session_request, encode_b3_request, encode_client_hello, encode_queue_request,
-    encode_read_transcript_request, encode_search_transcript_request, encode_ui_response,
+    encode_acquire_session_request, encode_b3_request, encode_client_hello,
+    encode_create_session_request, encode_list_sessions_request, encode_queue_request,
+    encode_read_transcript_request, encode_release_session_request,
+    encode_search_transcript_request, encode_session_write_request, encode_ui_response,
 };
 
 pub use read_only::{

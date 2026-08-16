@@ -1,5 +1,7 @@
 # AGENT_VERIFICATION
 
+最新补充：Rust B3 会话与分支工作台已接入 `/sessions`、`/tree` 和 Ctrl+P。会话切换按 release old lease -> acquire target 处理，失败时重新获取原会话并恢复本地状态；只读视图使用独立 TranscriptWindow，不获取租约。`cargo test -p lystar-tui`、Host-Rust fd bridge tmux/FIFO `8/8`、`runtime-adapter.test.ts` `8/8` 及现有 10,000 Tool rounds benchmark verifier 已于 2026-08-16 本地通过。Windows named-pipe、真实 Provider、非 Linux 平台和独立 10,000 会话列表基准未验证。
+
 最新补充：B3 Settings 已统一为 TypeScript descriptor catalog。`/settings`、GUI Host `list_settings`/`set_setting` 复用同一 id、中文文案、类型、范围、scope 和 restartRequired；主题、警告分组与数值输入只保留交互职责。该 foundation 不包含 Rust B3 UI，且不改变 B0/M10 性能阈值。
 
 最新补充：GUI 所有 write 幂等 foundation 已完成。旧写命令与 B3 快速写统一使用 operation journal 和按 scope 串行队列；本项不表示 B3 UI 已完成。
