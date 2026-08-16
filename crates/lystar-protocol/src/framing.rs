@@ -147,7 +147,7 @@ impl ServerMessage {
         self.0.diagnostic()
     }
 
-    pub(crate) fn json(&self) -> Result<serde_json::Value, ProtocolError> {
+    pub fn json(&self) -> Result<serde_json::Value, ProtocolError> {
         serde_json::to_value(&self.0.raw)
             .map_err(|error| ProtocolError::InvalidCbor(error.to_string()))
     }
@@ -309,6 +309,43 @@ pub fn encode_abort_operation_request(
         "type": "request", "id": id,
         "request": { "command": "abort_operation", "operationId": operation_id, "leaseId": lease_id },
     }))
+}
+
+pub fn encode_b3_request(
+    id: &str,
+    command: crate::B3Command,
+    request: serde_json::Map<String, serde_json::Value>,
+) -> Result<Vec<u8>, ProtocolError> {
+    let mut request = request;
+    request.insert(
+        "command".to_owned(),
+        serde_json::Value::String(command.wire().to_owned()),
+    );
+    encode_client_value(serde_json::json!({ "type": "request", "id": id, "request": request }))
+}
+
+pub fn encode_ui_response(
+    id: &str,
+    value: Option<serde_json::Value>,
+    confirmed: Option<bool>,
+    cancelled: Option<bool>,
+) -> Result<Vec<u8>, ProtocolError> {
+    let mut response = serde_json::Map::new();
+    response.insert(
+        "type".to_owned(),
+        serde_json::Value::String("ui_response".to_owned()),
+    );
+    response.insert("id".to_owned(), serde_json::Value::String(id.to_owned()));
+    if let Some(value) = value {
+        response.insert("value".to_owned(), value);
+    }
+    if let Some(confirmed) = confirmed {
+        response.insert("confirmed".to_owned(), serde_json::Value::Bool(confirmed));
+    }
+    if let Some(cancelled) = cancelled {
+        response.insert("cancelled".to_owned(), serde_json::Value::Bool(cancelled));
+    }
+    encode_client_value(serde_json::Value::Object(response))
 }
 
 fn encode_client_value(value: serde_json::Value) -> Result<Vec<u8>, ProtocolError> {

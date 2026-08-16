@@ -9,9 +9,9 @@ function record(scenario, columns, rows, round) {
 		columns,
 		rows,
 		round,
-		metric: "event_to_frame_ms",
+		metric: scenario === "palette_open" ? "open_to_frame_ms" : "event_to_frame_ms",
 		events: scenario === "input300" ? 300 : 1,
-		characters: scenario === "input300" ? 300 : 5_000,
+		characters: scenario === "input300" ? 300 : scenario === "paste5000" ? 5_000 : 0,
 		frames: scenario === "input300" ? 300 : 1,
 		eventToFrameP50Ms: 1,
 		eventToFrameP95Ms: 2,
@@ -40,7 +40,7 @@ function record(scenario, columns, rows, round) {
 }
 
 function validRecords() {
-	return ["input300", "paste5000"].flatMap((scenario) =>
+	return ["input300", "paste5000", "palette_open"].flatMap((scenario) =>
 		[
 			[80, 24],
 			[120, 36],
@@ -51,8 +51,8 @@ function validRecords() {
 
 test("M8 verifier accepts the complete five-round benchmark matrix", () => {
 	const result = verifyRustM8(validRecords());
-	assert.equal(result.records, 30);
-	assert.equal(result.summaries.length, 6);
+	assert.equal(result.records, 45);
+	assert.equal(result.summaries.length, 9);
 });
 
 test("M8 verifier rejects missing rounds, paste batching errors, regrouping, and zero metrics", () => {

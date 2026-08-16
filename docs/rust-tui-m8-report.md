@@ -11,7 +11,13 @@
 - Rust TUI 使用固定底部 Composer，支持 UTF-8 grapheme 编辑、多行、光标移动、删除、粘贴、64 KiB 输入上限、200 条历史、100 步 undo/redo。Enter 根据运行状态发出 `prompt` 或 `steer`，Alt+Enter 发出 `follow_up`，Esc/Ctrl+C 中止活动 operation。
 - 实时 assistant/thinking/tool 进度保存在 Rust 状态中；Tool 以 `toolCallId` 关联，最终 transcript commit 不会由进度层重复追加。
 
-## 实际验证
+## Rust 工作台 Overlay 基础
+
+- Overlay stack 提供 List、Detail、TextEditor、Confirm 四个原语，打开时保存 composer 焦点，关闭或断连后恢复；支持 toast、错误、pending request generation 和 stale response 丢弃。
+- Ctrl+P 命令面板只接入 `/help`、`/about`、`/doctor`。前者本地显示；后两者经 `encode_b3_request` 发送 typed `get_about`、`get_diagnostics`，结果先按 B3 schema 校验再渲染。`/settings` 等未接入 slash 保持普通 prompt。
+- Host 事件 `ui_request` 通过 `ui_response` 桥接 select、confirm、input；未知 kind 会返回 cancelled，不让请求悬挂。
+
+## 验证命令
 
 ```bash
 npm --workspace @lystar/code-gui-protocol exec vitest -- --run test/protocol.test.ts
@@ -42,22 +48,25 @@ GUI Protocol 聚焦测试为 `10/10`，Host runtime/journal 与 Rust fd bridge t
 
 ## 正式 Editor 基准
 
-`npm run benchmark:rust-m8` 生成 `.artifacts/rust-tui-m8/benchmark.jsonl`。每个 record 使用正式 `AppState`、`EditorState`、`TranscriptView`、`ComposerView`、Ratatui `TestBackend` 和 `CrosstermBackend<CountingWriter>`；10,000 个 Tool rounds 的 setup 不计时。全部 30 条记录均为三尺寸、两场景、每组五轮；缓存固定 `400 rounds / 800 items / 63,191 bytes`，`transcriptRegroupBefore` 与 `transcriptRegroupAfter` 均为 `400:tool-call-09600:tool-result-09999`。
+`npm run benchmark:rust-m8` 生成 `.artifacts/rust-tui-m8/benchmark.jsonl`。每个 record 使用正式 `AppState`、`EditorState`、`TranscriptView`、`ComposerView`、Ratatui `TestBackend` 和 `CrosstermBackend<CountingWriter>`；10,000 个 Tool rounds 的 setup 不计时。全部 45 条记录均为三尺寸、三场景、每组五轮；缓存固定 `400 rounds / 800 items / 63,191 bytes`，`transcriptRegroupBefore` 与 `transcriptRegroupAfter` 均为 `400:tool-call-09600:tool-result-09999`。
 
 | 场景 | 尺寸 | event-to-frame p50/p95/p99/max ms | bytes p95 | RSS p95 MiB |
 | --- | --- | ---: | ---: | ---: |
-| input300 | 80x24 | 2.979 / 3.721 / 4.083 / 4.604 | 48 | 22.898 |
-| input300 | 120x36 | 3.042 / 3.932 / 4.327 / 7.015 | 48 | 22.898 |
-| input300 | 200x60 | 3.195 / 3.865 / 4.318 / 6.132 | 48 | 22.902 |
-| paste5000 | 80x24 | 4.349 / 4.836 / 4.836 / 4.836 | 260 | 22.898 |
-| paste5000 | 120x36 | 4.580 / 5.229 / 5.229 / 5.229 | 299 | 22.902 |
-| paste5000 | 200x60 | 4.675 / 5.214 / 5.214 / 5.214 | 299 | 22.906 |
+| input300 | 80x24 | 2.882 / 5.298 / 7.250 / 7.738 | 48 | 22.898 |
+| input300 | 120x36 | 2.943 / 3.548 / 3.860 / 4.081 | 48 | 22.902 |
+| input300 | 200x60 | 3.114 / 3.883 / 4.174 / 4.520 | 48 | 22.910 |
+| paste5000 | 80x24 | 4.252 / 5.021 / 5.021 / 5.021 | 260 | 22.902 |
+| paste5000 | 120x36 | 4.758 / 4.843 / 4.843 / 4.843 | 299 | 22.910 |
+| paste5000 | 200x60 | 4.846 / 5.771 / 5.771 / 5.771 | 299 | 22.910 |
+| palette_open | 80x24 | 3.371 / 3.526 / 3.526 / 3.526 | 2,484 | 22.902 |
+| palette_open | 120x36 | 3.698 / 3.977 / 3.977 / 3.977 | 2,484 | 22.910 |
+| palette_open | 200x60 | 4.243 / 4.472 / 4.472 / 4.472 | 2,484 | 22.910 |
 
-input300 的每个单字符 insert 都执行一次 layout 和 draw；paste5000 仅一个 paste 事件、5,000 个字符、一次 draw。所有 group 的 event-to-frame p95 不超过 16 ms、p99 不超过 33 ms；同一指标作为 frame 口径时 p95 不超过 8 ms、p99 不超过 16 ms。verifier 会拒绝缺轮次、paste events/characters 不符、regroup 改变、0/null 指标、缓存超限或预算超限。
+`palette_open` 以一次 Ctrl+P 等价的 overlay open 和首帧 draw 为口径，p95 不超过 16 ms，RSS p95 不超过 180 MiB；verifier 会拒绝缺轮次、paste events/characters 不符、palette 指标超限、regroup 改变、0/null 指标、缓存超限或预算超限。
 
 真实 tmux 80x8 验收走 10 行按键输入路径，捕获中 Transcript 错误 Tool 行、Composer 边框、光标、运行状态和快捷栏均在 8 行内且顺序不重叠；resize 到 80x24、120x36、200x60 后再回 80x8 仍可见，退出前后 `stty -g` 完全相同。M8 Host↔Rust E2E 的完整交互流重复两次。
 
-`npm run check:rust-spike` 已实际通过：schema 生成后零 diff、fixture、Rust formatting/clippy/test、B0 smoke、协议握手、release build 和 PTY guard 均通过；它不是预期失败的 gate。
+`npm run check:rust-spike` 本轮已执行 schema 生成，但脚本内的 `git diff --exit-code` 会把尚未提交的 generated schema/`generated.rs` 视为工作区差异并退出 1；提交前无法用它证明完整 gate 已通过。
 
 ## 未验证边界
 

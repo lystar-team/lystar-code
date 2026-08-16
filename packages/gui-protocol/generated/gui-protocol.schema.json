@@ -3500,32 +3500,8 @@
                       "maxLength": 4096
                     },
                     "kind": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "const": "select"
-                        },
-                        {
-                          "type": "string",
-                          "const": "confirm"
-                        },
-                        {
-                          "type": "string",
-                          "const": "input"
-                        },
-                        {
-                          "type": "string",
-                          "const": "secret"
-                        },
-                        {
-                          "type": "string",
-                          "const": "editor"
-                        },
-                        {
-                          "type": "string",
-                          "const": "notify"
-                        }
-                      ]
+                      "type": "string",
+                      "minLength": 1
                     },
                     "title": {
                       "type": "string"
@@ -4489,6 +4465,520 @@
         },
         "changed": {
           "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "B3GetAboutResult": {
+      "type": "object",
+      "required": [
+        "productName",
+        "productVersion",
+        "piVersion",
+        "hostVersion",
+        "protocolVersion",
+        "releaseRepository",
+        "agentDir",
+        "sessionsDir",
+        "configDirName"
+      ],
+      "properties": {
+        "productName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "productVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "piVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hostVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "protocolVersion": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "releaseRepository": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "agentDir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionsDir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "configDirName": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "B3GetDiagnosticsResult": {
+      "type": "object",
+      "properties": {
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "status",
+              "message"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "status": {
+                "type": "string",
+                "minLength": 1
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "product": {
+          "type": "object",
+          "required": [
+            "name",
+            "version"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "frontend": {
+          "type": "object",
+          "required": [
+            "implementation",
+            "modes",
+            "rust"
+          ],
+          "properties": {
+            "implementation": {
+              "type": "string",
+              "minLength": 1
+            },
+            "modes": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "rust": {
+              "type": "object",
+              "required": [
+                "b0Status",
+                "integration"
+              ],
+              "properties": {
+                "b0Status": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "integration": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "nodeVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "guiProtocolVersion": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentDir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "platform": {
+          "type": "string",
+          "minLength": 1
+        },
+        "arch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "recovery": {
+          "type": "object",
+          "required": [
+            "sessionActive",
+            "activeCircuits",
+            "metrics"
+          ],
+          "properties": {
+            "sessionActive": {
+              "type": "boolean"
+            },
+            "mode": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "observe"
+                },
+                {
+                  "type": "string",
+                  "const": "assist"
+                }
+              ]
+            },
+            "activeCircuits": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "metrics": {
+              "type": "object",
+              "properties": {
+                "toolFailureTotal": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "tool",
+                      "code",
+                      "count"
+                    ],
+                    "properties": {
+                      "tool": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "code": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "count": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "toolRecoveryAttemptTotal": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "tool",
+                      "action",
+                      "count"
+                    ],
+                    "properties": {
+                      "tool": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "action": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "count": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "toolRecoverySuccessTotal": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "tool",
+                      "action",
+                      "count"
+                    ],
+                    "properties": {
+                      "tool": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "action": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "count": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "toolRepeatBlockedTotal": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "tool",
+                      "code",
+                      "count"
+                    ],
+                    "properties": {
+                      "tool": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "code": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "count": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "toolUnsafeRetryBlockedTotal": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "tool",
+                      "count"
+                    ],
+                    "properties": {
+                      "tool": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "count": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "lessonMatchTotal": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "lesson",
+                      "count"
+                    ],
+                    "properties": {
+                      "lesson": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      },
+                      "count": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "lessonRecoverySuccessTotal": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "lesson",
+                      "count"
+                    ],
+                    "properties": {
+                      "lesson": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      },
+                      "count": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "lessonSuspendedTotal": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "lesson",
+                      "count"
+                    ],
+                    "properties": {
+                      "lesson": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      },
+                      "count": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "duration": {
+                  "type": "object",
+                  "required": [
+                    "count",
+                    "totalMs",
+                    "maxMs"
+                  ],
+                  "properties": {
+                    "count": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "totalMs": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "maxMs": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "lessons": {
+          "type": "object",
+          "required": [
+            "available",
+            "counts"
+          ],
+          "properties": {
+            "available": {
+              "type": "boolean"
+            },
+            "counts": {
+              "type": "object",
+              "required": [
+                "candidate",
+                "verified",
+                "active",
+                "disabled",
+                "expired"
+              ],
+              "properties": {
+                "candidate": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "verified": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "active": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "disabled": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "expired": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            },
+            "error": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "recentConnectionErrors": {
+          "type": "object",
+          "required": [
+            "available"
+          ],
+          "properties": {
+            "available": {
+              "type": "boolean"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "terminalRepairHistory": {
+          "type": "object",
+          "required": [
+            "available"
+          ],
+          "properties": {
+            "available": {
+              "type": "boolean"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

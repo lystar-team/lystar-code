@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const SIZES = new Set(["80x24", "120x36", "200x60"]);
-const SCENARIOS = new Set(["input300", "paste5000"]);
+const SCENARIOS = new Set(["input300", "paste5000", "palette_open"]);
 const ROUNDS = new Set([1, 2, 3, 4, 5]);
 const LIMITS = { rounds: 400, items: 800, bytes: 4 * 1024 * 1024 };
 const TIMING_FIELDS = [
@@ -21,7 +21,7 @@ const BYTE_FIELDS = ["bytesP50", "bytesP95", "bytesP99", "bytesMax", "bytesTotal
 const RSS_FIELDS = ["rssP50Bytes", "rssP95Bytes", "rssP99Bytes", "rssMaxBytes"];
 
 export function verifyRustM8(records) {
-	assert.equal(records.length, 30, "M8 benchmark must emit exactly 2 scenarios x 3 sizes x 5 rounds");
+	assert.equal(records.length, 45, "M8 benchmark must emit exactly 3 scenarios x 3 sizes x 5 rounds");
 	const seen = new Set();
 	for (const row of records) {
 		const key = `${row.scenario}/${row.columns}x${row.rows}/${row.round}`;
@@ -49,7 +49,7 @@ function validateRow(row, key) {
 	assert(SCENARIOS.has(row.scenario), `${key} has an unsupported scenario`);
 	assert(SIZES.has(`${row.columns}x${row.rows}`), `${key} has an unsupported size`);
 	assert(ROUNDS.has(row.round), `${key} has an invalid round`);
-	assert.equal(row.metric, "event_to_frame_ms", `${key} must name the frame metric`);
+	assert.equal(row.metric, row.scenario === "palette_open" ? "open_to_frame_ms" : "event_to_frame_ms", `${key} has the wrong frame metric`);
 	assert.equal(row.toolRounds, 10_000, `${key} did not build 10,000 Tool rounds`);
 	assert(Number.isInteger(row.cachedRounds) && row.cachedRounds > 0 && row.cachedRounds <= LIMITS.rounds, `${key} cachedRounds is invalid`);
 	assert(Number.isInteger(row.cachedItems) && row.cachedItems > 0 && row.cachedItems <= LIMITS.items, `${key} cachedItems is invalid`);
@@ -66,9 +66,14 @@ function validateRow(row, key) {
 	if (row.scenario === "input300") {
 		assert.equal(row.events, 300, `${key} input300 must have 300 insert events`);
 		assert.equal(row.characters, 300, `${key} input300 must insert 300 characters`);
-	} else {
+	} else if (row.scenario === "paste5000") {
 		assert.equal(row.events, 1, `${key} paste5000 must be one paste event`);
 		assert.equal(row.characters, 5_000, `${key} paste5000 must insert 5,000 characters`);
+	} else {
+		assert.equal(row.events, 1, `${key} palette_open must have one open event`);
+		assert.equal(row.characters, 0, `${key} palette_open must not alter editor text`);
+		assert(row.eventToFrameP95Ms <= 16, `${key} palette open-to-frame p95 exceeds 16ms`);
+		assert(row.rssP95Bytes <= 180 * 1024 * 1024, `${key} palette RSS p95 exceeds 180MiB`);
 	}
 	assert(row.eventToFrameP95Ms <= 16, `${key} input event-to-frame p95 exceeds 16ms`);
 	assert(row.eventToFrameP99Ms <= 33, `${key} input event-to-frame p99 exceeds 33ms`);

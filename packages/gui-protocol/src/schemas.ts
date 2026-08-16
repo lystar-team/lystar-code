@@ -592,6 +592,18 @@ export const SubagentSnapshotSchema = StrictObject({
 });
 export type SubagentSnapshot = Static<typeof SubagentSnapshotSchema>;
 
+export const AboutResultSchema = StrictObject({
+	productName: Type.String({ minLength: 1 }),
+	productVersion: Type.String({ minLength: 1 }),
+	piVersion: Type.String({ minLength: 1 }),
+	hostVersion: Type.String({ minLength: 1 }),
+	protocolVersion: Type.Integer({ minimum: 0 }),
+	releaseRepository: Type.Union([Type.String({ minLength: 1 }), Type.Null()]),
+	agentDir: Type.String({ minLength: 1 }),
+	sessionsDir: Type.String({ minLength: 1 }),
+	configDirName: Type.String({ minLength: 1 }),
+});
+
 export const ListSettingsResultSchema = Type.Array(SettingSummarySchema, { maxItems: 1000 });
 export const SetSettingResultSchema = StrictObject({ setting: SettingSummarySchema, requiresRestart: Type.Boolean() });
 export const GetProjectTrustResultSchema = ProjectTrustSchema;
@@ -641,6 +653,8 @@ export const B3CommandResultSchemas = {
 	continue_subagent: SubagentMutationResultSchema,
 	read_clipboard_text: ClipboardReadResultSchema,
 	write_clipboard_text: ClipboardWriteResultSchema,
+	get_about: AboutResultSchema,
+	get_diagnostics: DiagnosticsSchema,
 } as const;
 
 export function assertB3CommandResult(command: keyof typeof B3CommandResultSchemas, value: unknown): void {
@@ -1050,14 +1064,7 @@ export const ServerEventSchema = Type.Union([
 		type: Type.Literal("ui_request"),
 		id: Id,
 		operationId: Id,
-		kind: Type.Union([
-			Type.Literal("select"),
-			Type.Literal("confirm"),
-			Type.Literal("input"),
-			Type.Literal("secret"),
-			Type.Literal("editor"),
-			Type.Literal("notify"),
-		]),
+		kind: Type.String({ minLength: 1 }),
 		title: Type.String(),
 		payload: JsonValueSchema,
 		timeoutMs: Type.Optional(Type.Integer({ minimum: 1 })),

@@ -312,7 +312,18 @@ class FakeRuntimeSession implements RuntimeSession {
 
 function createAdapter(runtime: FakeRuntimeSession): RuntimeAdapter {
 	return {
-		getAbout: () => ({ productVersion: "m7-e2e" }),
+		getAbout: () => ({
+			productName: "LYStar Code",
+			productVersion: "m8-e2e",
+			piVersion: "0.84.2",
+			hostVersion: "test-host",
+			protocolVersion: 1,
+			releaseRepository: null,
+			agentDir: "/tmp/agent",
+			sessionsDir: "/tmp/agent/sessions",
+			configDirName: ".pi",
+		}),
+		getDiagnostics: async () => ({ checks: [], platform: "linux", arch: "x64" }),
 		openSession: async (sessionPath: string) => {
 			assert.equal(sessionPath, runtime.sessionPath);
 			return runtime;
@@ -335,8 +346,9 @@ interface StartedTui {
 	runtime: FakeRuntimeSession;
 	connection: ReturnType<GuiHostService["createConnection"]>;
 	control: ReturnType<GuiHostService["createConnection"]>;
-	requests: RequestRecord[];
+	clientMessages: ClientMessage[];
 	serverMessages: ServerMessage[];
+	requests: RequestRecord[];
 	responseWrites: Map<string, number>;
 	pump(): Promise<void>;
 	traces(): TraceEvent[];
@@ -348,6 +360,7 @@ interface StartedTui {
 	clientInstanceId: string;
 	sttyBeforePath: string;
 	sttyAfterPath: string;
+	emitServer(message: ServerMessage): void;
 	closeProtocol(): void;
 }
 
@@ -404,6 +417,7 @@ async function startTui(
 	const service = new GuiHostService(createAdapter(runtime), { agentDir: directory });
 	cleanups.push(async () => service.dispose());
 	const requests: RequestRecord[] = [];
+	const clientMessages: ClientMessage[] = [];
 	const serverMessages: ServerMessage[] = [];
 	const responseWrites = new Map<string, number>();
 	const connection = service.createConnection(async (message: ServerMessage) => {
@@ -432,6 +446,7 @@ async function startTui(
 			}
 			if (bytesRead === 0) return;
 			for (const message of decoder.push(outputBuffer.subarray(0, bytesRead))) {
+				clientMessages.push(message);
 				if (message.type === "request") requests.push({ id: message.id, command: message.request.command });
 				await connection.handle(message);
 			}
@@ -447,6 +462,7 @@ async function startTui(
 	const panePid = () =>
 		Number(run("tmux", ["-L", socket, "display-message", "-p", "-t", "tui", "#{pane_pid}"]).trim());
 	const closeProtocol = () => closeDescriptor(input);
+	const emitServer = (message: ServerMessage) => writeAll(input, encodeServerMessage(message));
 	return {
 		directory,
 		artifactDirectory,
@@ -458,6 +474,7 @@ async function startTui(
 		connection,
 		control,
 		requests,
+		clientMessages,
 		serverMessages,
 		responseWrites,
 		pump,
@@ -470,6 +487,7 @@ async function startTui(
 		clientInstanceId,
 		sttyBeforePath,
 		sttyAfterPath,
+		emitServer,
 		closeProtocol,
 	};
 }
@@ -772,6 +790,107 @@ describe("Rust read-only TUI fd bridge", () => {
 				await tui.connection.handle(clear);
 				await tui.connection.handle({ ...clear, id: "clear-retry" });
 				await waitFor(() => tui.runtime.clearQueueCount === 1, "clear_queue retry was not journal-idempotent");
+			} finally {
+				tui.closeProtocol();
+			}
+		}
+	}, 120_000);
+
+	it("opens the command palette, renders typed about and diagnostics, and bridges injected UI requests twice", async () => {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const tui = await startTui(4, { width: 80, height: 24 }, `b3-foundation-${attempt + 1}`);
+			try {
+				await waitForInitialPage(tui);
+				tui.send("C-p");
+				await waitFor(() => tui.pane().includes("命令面板"), "Ctrl+P did not open the command palette");
+				assert.ok(!tui.pane().includes("/settings"), "command palette includes an unconnected command");
+				tui.send("Enter");
+				await waitFor(() => tui.pane().includes("/about 显示版本与运行目录"), "Help did not render local keys");
+				tui.send("Escape");
+				await waitFor(() => tui.pane().includes("命令面板"), "Help overlay did not close to the command palette");
+				tui.send("Escape");
+				await waitFor(() => !tui.pane().includes("命令面板"), "command palette did not close");
+
+				for (const [command, marker] of [
+					["/about", "productName"],
+					["/doctor", "checks"],
+				] as const) {
+					tui.sendLiteral(command);
+					tui.send("Enter");
+					await waitFor(async () => {
+						await tui.pump();
+						return tui.requests.some(
+							(request) => request.command === (command === "/about" ? "get_about" : "get_diagnostics"),
+						);
+					}, `${command} did not reach the Host`);
+					await waitFor(() => tui.pane().includes(marker), `${command} result did not render as a detail overlay`);
+					tui.send("Escape");
+					await waitFor(() => !tui.pane().includes(marker), `${command} detail overlay did not close`);
+				}
+
+				const inject = (id: string, kind: string, payload: JsonValue) =>
+					tui.emitServer({
+						type: "event",
+						event: { type: "ui_request", id, operationId: `op-${id}`, kind, title: `请求 ${id}`, payload },
+					});
+				inject("select-1", "select", { options: [{ label: "Beta", value: "beta" }] });
+				await waitFor(() => tui.pane().includes("Beta"), "select request did not render");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.clientMessages.some(
+						(message) => message.type === "ui_response" && message.id === "select-1" && message.value === "beta",
+					);
+				}, "Host did not receive select response");
+
+				inject("confirm-1", "confirm", { message: "继续？" });
+				await waitFor(() => tui.pane().includes("继续？"), "confirm request did not render");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.clientMessages.some(
+						(message) =>
+							message.type === "ui_response" && message.id === "confirm-1" && message.confirmed === true,
+					);
+				}, "Host did not receive confirm response");
+
+				inject("input-1", "input", { value: "pre" });
+				await waitFor(() => tui.pane().includes("pre"), "input request did not render");
+				tui.sendLiteral("fix");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.clientMessages.some(
+						(message) => message.type === "ui_response" && message.id === "input-1" && message.value === "prefix",
+					);
+				}, "Host did not receive input response");
+
+				inject("unknown-1", "secret", {});
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.clientMessages.some(
+						(message) =>
+							message.type === "ui_response" && message.id === "unknown-1" && message.cancelled === true,
+					);
+				}, "unknown UI kind was not cancelled");
+
+				tui.resize(80, 8);
+				await waitFor(() => tui.pane().includes("Enter 提交"), "80x8 Composer did not render before overlay test");
+				tui.send("C-p");
+				await waitFor(() => tui.pane().includes("命令面板"), "80x8 did not render command palette");
+				tui.send("Escape");
+				await waitFor(
+					() => tui.pane().includes("Enter 提交"),
+					"Composer shortcuts did not return after overlay close",
+				);
+				tui.resize(120, 36);
+				tui.resize(80, 8);
+				tui.closeProtocol();
+				await waitFor(
+					() => spawnSync("tmux", ["-L", tui.socket, "has-session", "-t", "tui"]).status !== 0,
+					"Rust TUI did not exit after B3 foundation verification",
+				);
+				assert.equal(readFileSync(tui.sttyBeforePath, "utf8"), readFileSync(tui.sttyAfterPath, "utf8"));
 			} finally {
 				tui.closeProtocol();
 			}

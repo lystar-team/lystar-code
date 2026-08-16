@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use crate::editor::EditorState;
 use lystar_protocol::{
@@ -383,6 +383,100 @@ impl TranscriptWindow {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverlayItem {
+    pub label: String,
+    pub detail: String,
+    pub action: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListOverlay {
+    pub title: String,
+    pub items: Vec<OverlayItem>,
+    pub selected: usize,
+    pub filter: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetailOverlay {
+    pub title: String,
+    pub lines: Vec<String>,
+    pub scroll: usize,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextEditorOverlay {
+    pub title: String,
+    pub value: String,
+    pub cursor: usize,
+    pub save_action: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfirmOverlay {
+    pub title: String,
+    pub message: String,
+    pub confirm_action: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OverlayState {
+    List(ListOverlay),
+    Detail(DetailOverlay),
+    TextEditor(TextEditorOverlay),
+    Confirm(ConfirmOverlay),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum InputFocus {
+    #[default]
+    Composer,
+    Overlay,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiRequestKind {
+    Select,
+    Confirm,
+    Input,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UiRequest {
+    pub id: String,
+    pub kind: UiRequestKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingIntent {
+    Overlay {
+        target: String,
+        command: lystar_protocol::B3Command,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingRequest {
+    pub intent: PendingIntent,
+    pub generation: u64,
+}
+
+impl OverlayState {
+    pub fn title(&self) -> &str {
+        match self {
+            Self::List(value) => &value.title,
+            Self::Detail(value) => &value.title,
+            Self::TextEditor(value) => &value.title,
+            Self::Confirm(value) => &value.title,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct SearchState {
     pub open: bool,
@@ -420,6 +514,15 @@ pub struct AppState {
     pub assistant_stream: String,
     pub thinking_stream: String,
     pub disconnected: Option<String>,
+    pub overlays: Vec<OverlayState>,
+    pub input_focus: InputFocus,
+    focus_before_overlay: Option<InputFocus>,
+    pub toast: Option<String>,
+    pub overlay_error: Option<String>,
+    pub pending_requests: HashMap<String, PendingRequest>,
+    pub request_generation: u64,
+    pub active_ui_request: Option<UiRequest>,
+    responded_ui_requests: HashSet<String>,
     composer_width: u16,
 }
 
@@ -510,6 +613,228 @@ impl AppState {
         }
         self.assistant_stream.clear();
         self.thinking_stream.clear();
+    }
+
+    pub fn open_overlay(&mut self, overlay: OverlayState) {
+        if self.overlays.is_empty() {
+            self.focus_before_overlay = Some(self.input_focus);
+            self.input_focus = InputFocus::Overlay;
+        }
+        self.overlay_error = None;
+        self.overlays.push(overlay);
+    }
+
+    pub fn close_overlay(&mut self) -> bool {
+        if self.overlays.pop().is_none() {
+            return false;
+        }
+        self.overlay_error = None;
+        if self.overlays.is_empty() {
+            self.input_focus = self
+                .focus_before_overlay
+                .take()
+                .unwrap_or(InputFocus::Composer);
+        }
+        true
+    }
+
+    pub fn clear_overlay_transient(&mut self) {
+        self.invalidate_pending();
+        self.overlays.clear();
+        self.active_ui_request = None;
+        self.overlay_error = None;
+        self.input_focus = self
+            .focus_before_overlay
+            .take()
+            .unwrap_or(InputFocus::Composer);
+    }
+
+    pub fn overlay_mut(&mut self) -> Option<&mut OverlayState> {
+        self.overlays.last_mut()
+    }
+
+    pub fn overlay(&self) -> Option<&OverlayState> {
+        self.overlays.last()
+    }
+
+    pub fn replace_overlay(&mut self, overlay: OverlayState) {
+        if let Some(current) = self.overlays.last_mut() {
+            *current = overlay;
+        } else {
+            self.open_overlay(overlay);
+        }
+    }
+
+    pub fn begin_request(&mut self, id: String, intent: PendingIntent) -> u64 {
+        self.request_generation = self.request_generation.saturating_add(1);
+        let generation = self.request_generation;
+        self.pending_requests
+            .insert(id, PendingRequest { intent, generation });
+        generation
+    }
+
+    pub fn take_pending(&mut self, id: &str) -> Option<PendingRequest> {
+        self.pending_requests.remove(id)
+    }
+
+    pub fn invalidate_pending(&mut self) {
+        self.request_generation = self.request_generation.saturating_add(1);
+        self.pending_requests.clear();
+    }
+
+    pub fn set_overlay_error(&mut self, message: impl Into<String>) {
+        self.overlay_error = Some(message.into());
+    }
+
+    pub fn set_toast(&mut self, message: impl Into<String>) {
+        self.toast = Some(message.into());
+    }
+
+    pub fn register_ui_request(&mut self, request: UiRequest) -> bool {
+        if self.responded_ui_requests.contains(&request.id)
+            || self
+                .active_ui_request
+                .as_ref()
+                .is_some_and(|active| active.id == request.id)
+        {
+            return false;
+        }
+        self.active_ui_request = Some(request);
+        true
+    }
+
+    pub fn take_ui_response(&mut self) -> Option<UiRequest> {
+        let request = self.active_ui_request.take()?;
+        if !self.responded_ui_requests.insert(request.id.clone()) {
+            return None;
+        }
+        Some(request)
+    }
+
+    pub fn cancel_unknown_ui_request(&mut self, id: &str) -> bool {
+        self.responded_ui_requests.insert(id.to_owned())
+    }
+
+    fn list_matches(list: &ListOverlay, index: usize) -> bool {
+        list.items.get(index).is_some_and(|item| {
+            list.filter.is_empty()
+                || format!("{} {}", item.label, item.detail)
+                    .to_lowercase()
+                    .contains(&list.filter.to_lowercase())
+        })
+    }
+
+    fn normalize_list_selection(list: &mut ListOverlay) {
+        if Self::list_matches(list, list.selected) {
+            return;
+        }
+        list.selected = (0..list.items.len())
+            .find(|index| Self::list_matches(list, *index))
+            .unwrap_or(0);
+    }
+
+    pub fn move_overlay_selection(&mut self, delta: isize) {
+        let Some(OverlayState::List(list)) = self.overlay_mut() else {
+            return;
+        };
+        let matches = (0..list.items.len())
+            .filter(|index| Self::list_matches(list, *index))
+            .collect::<Vec<_>>();
+        let Some(position) = matches.iter().position(|index| *index == list.selected) else {
+            Self::normalize_list_selection(list);
+            return;
+        };
+        let next = position
+            .saturating_add_signed(delta)
+            .min(matches.len().saturating_sub(1));
+        list.selected = matches[next];
+    }
+
+    pub fn current_overlay_action(&self) -> Option<String> {
+        match self.overlay() {
+            Some(OverlayState::List(list)) if Self::list_matches(list, list.selected) => list
+                .items
+                .get(list.selected)
+                .map(|item| item.action.clone()),
+            Some(OverlayState::TextEditor(editor)) => Some(editor.save_action.clone()),
+            Some(OverlayState::Confirm(confirm)) => Some(confirm.confirm_action.clone()),
+            Some(OverlayState::Detail(_)) | Some(OverlayState::List(_)) | None => None,
+        }
+    }
+
+    pub fn overlay_insert(&mut self, value: &str) {
+        match self.overlay_mut() {
+            Some(OverlayState::List(list)) => {
+                list.filter.push_str(value);
+                Self::normalize_list_selection(list);
+            }
+            Some(OverlayState::TextEditor(editor)) => {
+                editor.value.insert_str(editor.cursor, value);
+                editor.cursor += value.len();
+            }
+            _ => {}
+        }
+    }
+
+    pub fn overlay_backspace(&mut self) {
+        match self.overlay_mut() {
+            Some(OverlayState::List(list)) => {
+                list.filter.pop();
+                Self::normalize_list_selection(list);
+            }
+            Some(OverlayState::TextEditor(editor)) if editor.cursor > 0 => {
+                let mut start = editor.cursor - 1;
+                while !editor.value.is_char_boundary(start) {
+                    start -= 1;
+                }
+                editor.value.drain(start..editor.cursor);
+                editor.cursor = start;
+            }
+            _ => {}
+        }
+    }
+
+    pub fn overlay_page(&mut self, delta: isize) {
+        match self.overlay_mut() {
+            Some(OverlayState::List(list)) => {
+                let matches = (0..list.items.len())
+                    .filter(|index| Self::list_matches(list, *index))
+                    .collect::<Vec<_>>();
+                if let Some(position) = matches.iter().position(|index| *index == list.selected) {
+                    let next = position
+                        .saturating_add_signed(delta * 10)
+                        .min(matches.len().saturating_sub(1));
+                    list.selected = matches[next];
+                }
+            }
+            Some(OverlayState::Detail(detail)) => {
+                detail.scroll = detail.scroll.saturating_add_signed(delta * 10)
+            }
+            _ => {}
+        }
+    }
+
+    pub fn overlay_home_end(&mut self, end: bool) {
+        match self.overlay_mut() {
+            Some(OverlayState::List(list)) => {
+                let matches = (0..list.items.len())
+                    .filter(|index| Self::list_matches(list, *index))
+                    .collect::<Vec<_>>();
+                list.selected = if end {
+                    matches.last().copied().unwrap_or(0)
+                } else {
+                    matches.first().copied().unwrap_or(0)
+                };
+            }
+            Some(OverlayState::Detail(detail)) => {
+                detail.scroll = if end {
+                    detail.lines.len().saturating_sub(1)
+                } else {
+                    0
+                }
+            }
+            _ => {}
+        }
     }
 
     pub fn composer_height(&self, total_height: u16) -> u16 {
@@ -614,6 +939,196 @@ pub struct VisibleLink {
     pub row: u16,
     pub label: String,
     pub href: String,
+}
+
+pub struct WorkbenchOverlayView<'a> {
+    state: &'a AppState,
+}
+
+impl<'a> WorkbenchOverlayView<'a> {
+    pub fn new(state: &'a AppState) -> Self {
+        Self { state }
+    }
+}
+
+impl Widget for WorkbenchOverlayView<'_> {
+    fn render(self, area: Rect, buffer: &mut Buffer) {
+        if let Some(toast) = &self.state.toast {
+            put_line(
+                buffer,
+                area.x.saturating_add(1),
+                area.y,
+                toast,
+                usize::from(area.width.saturating_sub(2)),
+                Style::default().fg(Color::Yellow),
+            );
+        }
+        let Some(overlay) = self.state.overlay() else {
+            if let Some(error) = &self.state.overlay_error {
+                put_line(
+                    buffer,
+                    area.x.saturating_add(1),
+                    area.y.saturating_add(1),
+                    error,
+                    usize::from(area.width.saturating_sub(2)),
+                    Style::default().fg(Color::Red),
+                );
+            }
+            return;
+        };
+        if area.width < 8 || area.height < 4 {
+            return;
+        }
+        let width = area.width.saturating_sub(4).clamp(8, 96);
+        let height = area.height.saturating_sub(2).clamp(4, 28);
+        let x = area.x + area.width.saturating_sub(width) / 2;
+        let y = area.y + area.height.saturating_sub(height) / 2;
+        for row in 0..height {
+            let line = if row == 0 || row == height.saturating_sub(1) {
+                "─".repeat(usize::from(width))
+            } else {
+                format!("│{}│", " ".repeat(usize::from(width.saturating_sub(2))))
+            };
+            put_line(
+                buffer,
+                x,
+                y + row,
+                &line,
+                usize::from(width),
+                Style::default().fg(Color::Cyan),
+            );
+        }
+        put_line(
+            buffer,
+            x + 1,
+            y,
+            overlay.title(),
+            usize::from(width.saturating_sub(2)),
+            Style::default().fg(Color::Yellow),
+        );
+        let inner_width = usize::from(width.saturating_sub(4));
+        let visible = usize::from(height.saturating_sub(4));
+        match overlay {
+            OverlayState::List(list) => {
+                let filtered = list
+                    .items
+                    .iter()
+                    .filter(|item| {
+                        list.filter.is_empty()
+                            || format!("{} {}", item.label, item.detail)
+                                .to_lowercase()
+                                .contains(&list.filter.to_lowercase())
+                    })
+                    .collect::<Vec<_>>();
+                for (row, item) in filtered.iter().take(visible).enumerate() {
+                    let selected = list
+                        .items
+                        .iter()
+                        .position(|candidate| candidate.action == item.action)
+                        == Some(list.selected);
+                    put_line(
+                        buffer,
+                        x + 2,
+                        y + 1 + u16::try_from(row).unwrap_or(0),
+                        &format!(
+                            "{} {}  {}",
+                            if selected { ">" } else { " " },
+                            item.label,
+                            item.detail
+                        ),
+                        inner_width,
+                        Style::default().fg(if selected {
+                            Color::White
+                        } else {
+                            Color::DarkGray
+                        }),
+                    );
+                }
+                put_line(
+                    buffer,
+                    x + 2,
+                    y + height.saturating_sub(2),
+                    &format!("{}  {}", list.filter, list.status),
+                    inner_width,
+                    Style::default().fg(Color::DarkGray),
+                );
+            }
+            OverlayState::Detail(detail) => {
+                for (row, line) in detail
+                    .lines
+                    .iter()
+                    .skip(detail.scroll)
+                    .take(visible)
+                    .enumerate()
+                {
+                    put_line(
+                        buffer,
+                        x + 2,
+                        y + 1 + u16::try_from(row).unwrap_or(0),
+                        line,
+                        inner_width,
+                        Style::default().fg(Color::White),
+                    );
+                }
+                put_line(
+                    buffer,
+                    x + 2,
+                    y + height.saturating_sub(2),
+                    &detail.status,
+                    inner_width,
+                    Style::default().fg(Color::DarkGray),
+                );
+            }
+            OverlayState::TextEditor(editor) => {
+                for (row, line) in editor.value.lines().take(visible).enumerate() {
+                    put_line(
+                        buffer,
+                        x + 2,
+                        y + 1 + u16::try_from(row).unwrap_or(0),
+                        line,
+                        inner_width,
+                        Style::default().fg(Color::White),
+                    );
+                }
+                put_line(
+                    buffer,
+                    x + 2,
+                    y + height.saturating_sub(2),
+                    &editor.status,
+                    inner_width,
+                    Style::default().fg(Color::DarkGray),
+                );
+            }
+            OverlayState::Confirm(confirm) => {
+                put_line(
+                    buffer,
+                    x + 2,
+                    y + 2,
+                    &confirm.message,
+                    inner_width,
+                    Style::default().fg(Color::White),
+                );
+                put_line(
+                    buffer,
+                    x + 2,
+                    y + height.saturating_sub(2),
+                    &format!("Enter 确认  Esc 取消  {}", confirm.status),
+                    inner_width,
+                    Style::default().fg(Color::Yellow),
+                );
+            }
+        }
+        if let Some(error) = &self.state.overlay_error {
+            put_line(
+                buffer,
+                x + 2,
+                y + height.saturating_sub(3),
+                error,
+                inner_width,
+                Style::default().fg(Color::Red),
+            );
+        }
+    }
 }
 
 pub struct TranscriptView<'a> {
@@ -1088,5 +1603,126 @@ mod tests {
         assert!(!window.accepts_previous_page("g", 1, Some("g"), Some(2)));
         assert!(!window.accepts_previous_page("g", 3, Some("g"), Some(2)));
         assert!(window.accepts_previous_page("g", 2, Some("g"), Some(2)));
+    }
+
+    #[test]
+    fn restores_composer_focus_after_nested_overlays() {
+        let mut app = AppState::default();
+        app.open_overlay(OverlayState::Detail(DetailOverlay {
+            title: "一层".to_owned(),
+            lines: vec![],
+            scroll: 0,
+            status: String::new(),
+        }));
+        app.open_overlay(OverlayState::Detail(DetailOverlay {
+            title: "二层".to_owned(),
+            lines: vec![],
+            scroll: 0,
+            status: String::new(),
+        }));
+        assert_eq!(app.input_focus, InputFocus::Overlay);
+        app.close_overlay();
+        assert_eq!(app.input_focus, InputFocus::Overlay);
+        app.close_overlay();
+        assert_eq!(app.input_focus, InputFocus::Composer);
+    }
+
+    #[test]
+    fn filters_lists_and_edits_text_without_fake_actions() {
+        let mut app = AppState::default();
+        app.open_overlay(OverlayState::List(ListOverlay {
+            title: "命令面板".to_owned(),
+            items: vec![
+                OverlayItem {
+                    label: "/help".to_owned(),
+                    detail: "帮助".to_owned(),
+                    action: "open:help".to_owned(),
+                },
+                OverlayItem {
+                    label: "/doctor".to_owned(),
+                    detail: "诊断".to_owned(),
+                    action: "open:doctor".to_owned(),
+                },
+            ],
+            selected: 0,
+            filter: String::new(),
+            status: String::new(),
+        }));
+        app.overlay_insert("诊");
+        assert_eq!(app.current_overlay_action().as_deref(), Some("open:doctor"));
+        app.close_overlay();
+        app.open_overlay(OverlayState::TextEditor(TextEditorOverlay {
+            title: "输入".to_owned(),
+            value: "a".to_owned(),
+            cursor: 1,
+            save_action: "ui:input".to_owned(),
+            status: String::new(),
+        }));
+        app.overlay_insert("中");
+        app.overlay_backspace();
+        assert_eq!(app.current_overlay_action().as_deref(), Some("ui:input"));
+    }
+
+    #[test]
+    fn scrolls_detail_and_confirms_ui_request_once() {
+        let mut app = AppState::default();
+        app.open_overlay(OverlayState::Detail(DetailOverlay {
+            title: "详情".to_owned(),
+            lines: (0..30).map(|value| value.to_string()).collect(),
+            scroll: 0,
+            status: String::new(),
+        }));
+        app.overlay_page(1);
+        assert_eq!(
+            match app.overlay() {
+                Some(OverlayState::Detail(detail)) => detail.scroll,
+                _ => 0,
+            },
+            10
+        );
+        assert!(app.register_ui_request(UiRequest {
+            id: "ui-1".to_owned(),
+            kind: UiRequestKind::Confirm
+        }));
+        assert!(app.take_ui_response().is_some());
+        assert!(app.take_ui_response().is_none());
+        assert!(!app.register_ui_request(UiRequest {
+            id: "ui-1".to_owned(),
+            kind: UiRequestKind::Confirm
+        }));
+    }
+
+    #[test]
+    fn invalidates_stale_pending_responses_and_clears_disconnect_state() {
+        let mut app = AppState::default();
+        let first = app.begin_request(
+            "first".to_owned(),
+            PendingIntent::Overlay {
+                target: "关于".to_owned(),
+                command: lystar_protocol::B3Command::GetAbout,
+            },
+        );
+        let second = app.begin_request(
+            "second".to_owned(),
+            PendingIntent::Overlay {
+                target: "诊断".to_owned(),
+                command: lystar_protocol::B3Command::GetDiagnostics,
+            },
+        );
+        assert!(first < second);
+        assert_ne!(
+            app.take_pending("first").unwrap().generation,
+            app.request_generation
+        );
+        app.open_overlay(OverlayState::Confirm(ConfirmOverlay {
+            title: "确认".to_owned(),
+            message: String::new(),
+            confirm_action: "ui:confirm".to_owned(),
+            status: String::new(),
+        }));
+        app.clear_overlay_transient();
+        assert!(app.pending_requests.is_empty());
+        assert!(app.overlays.is_empty());
+        assert_eq!(app.input_focus, InputFocus::Composer);
     }
 }

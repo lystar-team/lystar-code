@@ -12,8 +12,9 @@ use std::{
 use lystar_protocol::{ToolCall, TranscriptItem, TranscriptViewItem};
 use lystar_tui::{
     app::{
-        AppState, ComposerView, ITEM_CACHE_LIMIT, ROUND_CACHE_LIMIT, TranscriptView,
-        UTF8_CACHE_LIMIT, composer_area, transcript_area,
+        AppState, ComposerView, ITEM_CACHE_LIMIT, ListOverlay, OverlayItem, OverlayState,
+        ROUND_CACHE_LIMIT, TranscriptView, UTF8_CACHE_LIMIT, WorkbenchOverlayView, composer_area,
+        transcript_area,
     },
     editor::EditorState,
 };
@@ -77,6 +78,7 @@ fn main() {
                 1,
                 &"p".repeat(5_000),
             );
+            run_palette_case(&out, round, columns, rows);
         }
     }
 }
@@ -178,6 +180,55 @@ fn run_case(
     );
 }
 
+fn run_palette_case(out: &PathBuf, round: usize, columns: u16, rows: u16) {
+    let mut benchmark = setup(columns, rows);
+    let regroup_before = regroup_signature(&benchmark.app);
+    benchmark.app.open_overlay(OverlayState::List(ListOverlay {
+        title: "命令面板".to_owned(),
+        items: vec![
+            OverlayItem {
+                label: "/help".to_owned(),
+                detail: "帮助".to_owned(),
+                action: "open:help".to_owned(),
+            },
+            OverlayItem {
+                label: "/about".to_owned(),
+                detail: "关于".to_owned(),
+                action: "open:about".to_owned(),
+            },
+            OverlayItem {
+                label: "/doctor".to_owned(),
+                detail: "诊断".to_owned(),
+                action: "open:doctor".to_owned(),
+            },
+        ],
+        selected: 0,
+        filter: String::new(),
+        status: "输入筛选，Enter 打开".to_owned(),
+    }));
+    let started = Instant::now();
+    let bytes = draw(&mut benchmark);
+    let elapsed = started.elapsed().as_secs_f64() * 1_000.0;
+    let rss = rss_bytes();
+    benchmark.app.close_overlay();
+    assert_eq!(regroup_before, regroup_signature(&benchmark.app));
+    append(
+        out,
+        json!({
+            "implementation":"rust-m8", "scenario":"palette_open", "columns":columns, "rows":rows,
+            "round":round, "metric":"open_to_frame_ms", "events":1, "characters":0, "frames":1,
+            "eventToFrameP50Ms":elapsed, "eventToFrameP95Ms":elapsed, "eventToFrameP99Ms":elapsed, "eventToFrameMaxMs":elapsed,
+            "frameP50Ms":elapsed, "frameP95Ms":elapsed, "frameP99Ms":elapsed, "frameMaxMs":elapsed,
+            "bytesP50":bytes, "bytesP95":bytes, "bytesP99":bytes, "bytesMax":bytes, "bytesTotal":bytes,
+            "rssP50Bytes":rss, "rssP95Bytes":rss, "rssP99Bytes":rss, "rssMaxBytes":rss,
+            "toolRounds":TOOL_ROUNDS, "cachedRounds":benchmark.app.transcript.diagnostics().cached_rounds,
+            "cachedItems":benchmark.app.transcript.diagnostics().cached_items,
+            "cachedUtf8Bytes":benchmark.app.transcript.diagnostics().cached_utf8_bytes,
+            "transcriptRegroupBefore":regroup_before, "transcriptRegroupAfter":regroup_signature(&benchmark.app),
+        }),
+    );
+}
+
 fn setup(columns: u16, rows: u16) -> BenchmarkApp {
     let mut app = AppState::default();
     app.editor = EditorState::default();
@@ -237,6 +288,7 @@ fn draw(benchmark: &mut BenchmarkApp) -> usize {
                 ComposerView::new(&benchmark.app),
                 composer_area(&benchmark.app, area),
             );
+            frame.render_widget(WorkbenchOverlayView::new(&benchmark.app), area);
         })
         .unwrap();
     black_box(benchmark.visual.backend().buffer().content().len());
@@ -254,6 +306,7 @@ fn draw(benchmark: &mut BenchmarkApp) -> usize {
                 ComposerView::new(&benchmark.app),
                 composer_area(&benchmark.app, area),
             );
+            frame.render_widget(WorkbenchOverlayView::new(&benchmark.app), area);
         })
         .unwrap();
     let stats = benchmark.writer_stats.borrow();

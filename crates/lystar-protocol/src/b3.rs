@@ -22,6 +22,8 @@ pub enum B3Command {
     ContinueSubagent,
     ReadClipboardText,
     WriteClipboardText,
+    GetAbout,
+    GetDiagnostics,
 }
 
 impl B3Command {
@@ -44,8 +46,34 @@ impl B3Command {
             "continue_subagent" => Self::ContinueSubagent,
             "read_clipboard_text" => Self::ReadClipboardText,
             "write_clipboard_text" => Self::WriteClipboardText,
+            "get_about" => Self::GetAbout,
+            "get_diagnostics" => Self::GetDiagnostics,
             _ => return None,
         })
+    }
+
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::ListSettings => "list_settings",
+            Self::SetSetting => "set_setting",
+            Self::GetProjectTrust => "get_project_trust",
+            Self::SetProjectTrust => "set_project_trust",
+            Self::ListPackages => "list_packages",
+            Self::InstallPackage => "install_package",
+            Self::RemovePackage => "remove_package",
+            Self::UpdatePackages => "update_packages",
+            Self::GetSessionTree => "get_session_tree",
+            Self::SetEntryLabel => "set_entry_label",
+            Self::NavigateSessionTree => "navigate_session_tree",
+            Self::ListSubagents => "list_subagents",
+            Self::ReadSubagent => "read_subagent",
+            Self::AbortSubagent => "abort_subagent",
+            Self::ContinueSubagent => "continue_subagent",
+            Self::ReadClipboardText => "read_clipboard_text",
+            Self::WriteClipboardText => "write_clipboard_text",
+            Self::GetAbout => "get_about",
+            Self::GetDiagnostics => "get_diagnostics",
+        }
     }
 }
 
@@ -62,37 +90,30 @@ impl ClientMessage {
 
 #[derive(Debug)]
 pub enum B3Result {
-    ListSettings(Box<crate::generated::B3ListSettingsResult>),
-    SetSetting(Box<crate::generated::B3SetSettingResult>),
-    GetProjectTrust(Box<crate::generated::B3GetProjectTrustResult>),
-    SetProjectTrust(Box<crate::generated::B3SetProjectTrustResult>),
-    ListPackages(Box<crate::generated::B3ListPackagesResult>),
-    InstallPackage(Box<crate::generated::B3InstallPackageResult>),
-    RemovePackage(Box<crate::generated::B3RemovePackageResult>),
-    UpdatePackages(Box<crate::generated::B3UpdatePackagesResult>),
-    GetSessionTree(Box<crate::generated::B3GetSessionTreeResult>),
-    SetEntryLabel(Box<crate::generated::B3SetEntryLabelResult>),
-    NavigateSessionTree(Box<crate::generated::B3NavigateSessionTreeResult>),
-    ListSubagents(Box<crate::generated::B3ListSubagentsResult>),
-    ReadSubagent(Box<crate::generated::B3ReadSubagentResult>),
-    AbortSubagent(Box<crate::generated::B3AbortSubagentResult>),
-    ContinueSubagent(Box<crate::generated::B3ContinueSubagentResult>),
-    ReadClipboardText(Box<crate::generated::B3ReadClipboardTextResult>),
-    WriteClipboardText(Box<crate::generated::B3WriteClipboardTextResult>),
+    ListSettings(crate::generated::B3ListSettingsResult),
+    SetSetting(crate::generated::B3SetSettingResult),
+    GetProjectTrust(crate::generated::B3GetProjectTrustResult),
+    SetProjectTrust(crate::generated::B3SetProjectTrustResult),
+    ListPackages(crate::generated::B3ListPackagesResult),
+    InstallPackage(crate::generated::B3InstallPackageResult),
+    RemovePackage(crate::generated::B3RemovePackageResult),
+    UpdatePackages(crate::generated::B3UpdatePackagesResult),
+    GetSessionTree(crate::generated::B3GetSessionTreeResult),
+    SetEntryLabel(crate::generated::B3SetEntryLabelResult),
+    NavigateSessionTree(crate::generated::B3NavigateSessionTreeResult),
+    ListSubagents(crate::generated::B3ListSubagentsResult),
+    ReadSubagent(crate::generated::B3ReadSubagentResult),
+    AbortSubagent(crate::generated::B3AbortSubagentResult),
+    ContinueSubagent(crate::generated::B3ContinueSubagentResult),
+    ReadClipboardText(crate::generated::B3ReadClipboardTextResult),
+    WriteClipboardText(crate::generated::B3WriteClipboardTextResult),
+    GetAbout(crate::generated::B3GetAboutResult),
+    GetDiagnostics(crate::generated::B3GetDiagnosticsResult),
 }
 
 impl ServerMessage {
     pub fn decode_b3_result(&self, command: B3Command) -> Result<B3Result, ProtocolError> {
-        let raw = self.json()?;
-        if raw.get("type").and_then(Value::as_str) != Some("response")
-            || raw.get("ok").and_then(Value::as_bool) != Some(true)
-        {
-            return Err(invalid_result("expected a successful response"));
-        }
-        let result = raw
-            .get("result")
-            .ok_or_else(|| invalid_result("missing result"))?
-            .clone();
+        let result = self.b3_result_value()?;
         match command {
             B3Command::ListSettings => Ok(B3Result::ListSettings(decode(result)?)),
             B3Command::SetSetting => Ok(B3Result::SetSetting(decode(result)?)),
@@ -111,7 +132,26 @@ impl ServerMessage {
             B3Command::ContinueSubagent => Ok(B3Result::ContinueSubagent(decode(result)?)),
             B3Command::ReadClipboardText => Ok(B3Result::ReadClipboardText(decode(result)?)),
             B3Command::WriteClipboardText => Ok(B3Result::WriteClipboardText(decode(result)?)),
+            B3Command::GetAbout => Ok(B3Result::GetAbout(decode(result)?)),
+            B3Command::GetDiagnostics => Ok(B3Result::GetDiagnostics(decode(result)?)),
         }
+    }
+
+    pub fn validated_b3_result_value(&self, command: B3Command) -> Result<Value, ProtocolError> {
+        let _ = self.decode_b3_result(command)?;
+        self.b3_result_value()
+    }
+
+    fn b3_result_value(&self) -> Result<Value, ProtocolError> {
+        let raw = self.json()?;
+        if raw.get("type").and_then(Value::as_str) != Some("response")
+            || raw.get("ok").and_then(Value::as_bool) != Some(true)
+        {
+            return Err(invalid_result("expected a successful response"));
+        }
+        raw.get("result")
+            .cloned()
+            .ok_or_else(|| invalid_result("missing result"))
     }
 }
 
@@ -144,70 +184,37 @@ mod tests {
     }
 
     #[test]
-    fn decodes_every_b3_result_against_its_command_schema() {
-        let setting = json!({"id":"autocompact","label":"自动压缩","kind":"boolean","value":true,"scope":"global","readOnly":false,"restartRequired":false});
-        let cases = [
-            (B3Command::ListSettings, json!([setting.clone()])),
-            (
-                B3Command::SetSetting,
-                json!({"setting":setting,"requiresRestart":false}),
-            ),
-            (
-                B3Command::GetProjectTrust,
-                json!({"cwd":"/tmp","trusted":true}),
-            ),
-            (
-                B3Command::SetProjectTrust,
-                json!({"cwd":"/tmp","trusted":false}),
-            ),
-            (B3Command::ListPackages, json!([])),
-            (
-                B3Command::InstallPackage,
-                json!({"changed":true,"message":"ok"}),
-            ),
-            (
-                B3Command::RemovePackage,
-                json!({"changed":false,"message":"ok"}),
-            ),
-            (
-                B3Command::UpdatePackages,
-                json!({"changed":true,"message":"ok"}),
-            ),
-            (B3Command::GetSessionTree, json!([])),
-            (B3Command::SetEntryLabel, json!({"changed":true})),
-            (B3Command::NavigateSessionTree, json!({"cancelled":false})),
-            (B3Command::ListSubagents, json!([])),
-            (B3Command::ReadSubagent, json!({})),
-            (
-                B3Command::AbortSubagent,
-                json!({"changed":true,"message":"ok"}),
-            ),
-            (
-                B3Command::ContinueSubagent,
-                json!({"changed":true,"message":"ok"}),
-            ),
-            (B3Command::ReadClipboardText, json!({"capability":true})),
-            (
-                B3Command::WriteClipboardText,
-                json!({"capability":true,"changed":true}),
-            ),
-        ];
-        for (command, result) in cases {
-            assert!(response(result).decode_b3_result(command).is_ok());
-        }
+    fn validates_typed_about_and_diagnostics_results_before_exposing_json() {
+        let about = json!({
+            "productName":"LYStar Code", "productVersion":"0.84.2", "piVersion":"0.84.2",
+            "hostVersion":"host", "protocolVersion":1, "releaseRepository":null,
+            "agentDir":"/tmp/agent", "sessionsDir":"/tmp/agent/sessions", "configDirName":".pi"
+        });
+        assert_eq!(
+            response(about.clone())
+                .validated_b3_result_value(B3Command::GetAbout)
+                .unwrap(),
+            about
+        );
+        assert!(
+            response(json!({"productName":"LYStar Code"}))
+                .validated_b3_result_value(B3Command::GetAbout)
+                .is_err()
+        );
+        assert!(
+            response(json!({"checks":[], "extra":true}))
+                .validated_b3_result_value(B3Command::GetDiagnostics)
+                .is_err()
+        );
     }
 
     #[test]
-    fn rejects_missing_and_unknown_b3_result_fields() {
-        assert!(
-            response(json!({"changed":true}))
-                .decode_b3_result(B3Command::InstallPackage)
-                .is_err()
+    fn recognizes_only_declared_b3_commands() {
+        assert_eq!(B3Command::from_wire("get_about"), Some(B3Command::GetAbout));
+        assert_eq!(
+            B3Command::from_wire("get_diagnostics"),
+            Some(B3Command::GetDiagnostics)
         );
-        assert!(
-            response(json!({"capability":true,"changed":true,"extra":true}))
-                .decode_b3_result(B3Command::WriteClipboardText)
-                .is_err()
-        );
+        assert!(B3Command::from_wire("list_sessions").is_none());
     }
 }

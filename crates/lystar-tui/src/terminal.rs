@@ -19,10 +19,10 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use lystar_protocol::{
-    FrameDecoder, ProtocolError, ReadOnlyEvent, ReadOnlyMessage, ReadOnlyResponse,
-    TranscriptRequestContext, decode_server_message, encode_abort_operation_request,
-    encode_acquire_session_request, encode_client_hello, encode_queue_request,
-    encode_read_transcript_request, encode_search_transcript_request,
+    B3Command, FrameDecoder, ProtocolError, ReadOnlyEvent, ReadOnlyMessage, ReadOnlyResponse,
+    ServerMessage, TranscriptRequestContext, decode_server_message, encode_abort_operation_request,
+    encode_acquire_session_request, encode_b3_request, encode_client_hello, encode_queue_request,
+    encode_read_transcript_request, encode_search_transcript_request, encode_ui_response,
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use signal_hook::{
@@ -32,7 +32,9 @@ use signal_hook::{
 use thiserror::Error;
 
 use crate::app::{
-    AppState, ComposerView, SearchHit, TranscriptView, VisibleLink, composer_area, transcript_area,
+    AppState, ComposerView, ConfirmOverlay, DetailOverlay, InputFocus, ListOverlay, OverlayItem,
+    OverlayState, PendingIntent, SearchHit, TextEditorOverlay, TranscriptView, UiRequest,
+    UiRequestKind, VisibleLink, WorkbenchOverlayView, composer_area, transcript_area,
 };
 
 const INITIAL_PAGE_LIMIT: u64 = 200;
@@ -104,7 +106,7 @@ where
 #[cfg(unix)]
 struct ProtocolPipe {
     output: std::fs::File,
-    inbound: Receiver<Result<ReadOnlyMessage, TuiError>>,
+    inbound: Receiver<Result<ServerMessage, TuiError>>,
 }
 
 #[cfg(unix)]
@@ -121,11 +123,13 @@ impl ProtocolPipe {
         thread::spawn(move || read_protocol(input, sender));
         let pipe = Self { output, inbound };
         match pipe.inbound.recv_timeout(Duration::from_secs(10)) {
-            Ok(Ok(ReadOnlyMessage::Hello)) => Ok(pipe),
-            Ok(Ok(ReadOnlyMessage::HelloError { .. })) => Err(TuiError::HelloRejected(
-                "host returned hello_error".to_owned(),
-            )),
-            Ok(Ok(_)) => Err(TuiError::HelloRejected("expected server hello".to_owned())),
+            Ok(Ok(message)) => match message.read_only().map_err(TuiError::from)? {
+                ReadOnlyMessage::Hello => Ok(pipe),
+                ReadOnlyMessage::HelloError { .. } => Err(TuiError::HelloRejected(
+                    "host returned hello_error".to_owned(),
+                )),
+                _ => Err(TuiError::HelloRejected("expected server hello".to_owned())),
+            },
             Ok(Err(error)) => Err(error),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 Err(TuiError::HelloRejected("host hello timed out".to_owned()))
@@ -142,7 +146,7 @@ impl ProtocolPipe {
 }
 
 #[cfg(unix)]
-fn read_protocol(mut input: std::fs::File, sender: SyncSender<Result<ReadOnlyMessage, TuiError>>) {
+fn read_protocol(mut input: std::fs::File, sender: SyncSender<Result<ServerMessage, TuiError>>) {
     let mut decoder = FrameDecoder::default();
     let mut buffer = [0_u8; 8192];
     loop {
@@ -159,11 +163,7 @@ fn read_protocol(mut input: std::fs::File, sender: SyncSender<Result<ReadOnlyMes
                 Ok(frames) => {
                     for frame in frames {
                         if sender
-                            .send(
-                                decode_server_message(&frame)
-                                    .and_then(|message| message.read_only())
-                                    .map_err(TuiError::from),
-                            )
+                            .send(decode_server_message(&frame).map_err(TuiError::from))
                             .is_err()
                         {
                             return;
@@ -282,6 +282,7 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
             let area = frame.area();
             frame.render_widget(TranscriptView::new(&app), transcript_area(&app, area));
             frame.render_widget(ComposerView::new(&app), composer_area(&app, area));
+            frame.render_widget(WorkbenchOverlayView::new(&app), area);
         })?;
         trace("frame_rendered");
         if app.transcript.cached_rounds() > 0 {
@@ -304,6 +305,7 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
             ) {
                 app.disconnected = Some(format!("连接已关闭: {error}"));
                 app.clear_transient();
+                app.clear_overlay_transient();
                 let area = terminal.size()?;
                 app.prepare_composer(composer_area(
                     &app,
@@ -356,6 +358,7 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                     ) {
                         app.disconnected = Some(format!("连接已关闭: {error}"));
                         app.clear_transient();
+                        app.clear_overlay_transient();
                         let area = terminal.size()?;
                         app.prepare_composer(composer_area(
                             &app,
@@ -411,13 +414,13 @@ pub fn run(_session_path: &str) -> Result<(), TuiError> {
 #[cfg(unix)]
 fn process_inbound_message(
     app: &mut AppState,
-    message: Result<ReadOnlyMessage, TuiError>,
+    message: Result<ServerMessage, TuiError>,
     pipe: &mut ProtocolPipe,
     session_path: &str,
     request_sequence: &mut u64,
 ) -> Result<(), TuiError> {
     let message = message?;
-    if apply_server_message(app, &message, session_path)? {
+    if apply_server_message(app, &message, session_path, pipe)? {
         request_transcript(pipe, session_path, None, true, None, request_sequence)?;
     }
     Ok(())
@@ -523,6 +526,36 @@ fn handle_key(
         return Ok(false);
     }
 
+    if matches!(code, KeyCode::Char('p')) && modifiers.contains(KeyModifiers::CONTROL) {
+        app.open_overlay(OverlayState::List(ListOverlay {
+            title: "命令面板".to_owned(),
+            items: [("help", "帮助"), ("about", "关于"), ("doctor", "诊断")]
+                .into_iter()
+                .map(|(target, detail)| OverlayItem {
+                    label: format!("/{target}"),
+                    detail: detail.to_owned(),
+                    action: format!("open:{target}"),
+                })
+                .collect(),
+            selected: 0,
+            filter: String::new(),
+            status: "输入筛选，Enter 打开".to_owned(),
+        }));
+        return Ok(false);
+    }
+
+    if app.input_focus == InputFocus::Overlay {
+        return handle_overlay_key(
+            app,
+            code,
+            modifiers,
+            pipe,
+            session_path,
+            client_instance_id,
+            sequence,
+        );
+    }
+
     if matches!(code, KeyCode::Esc)
         || (matches!(code, KeyCode::Char('c')) && modifiers.contains(KeyModifiers::CONTROL))
     {
@@ -609,6 +642,171 @@ fn handle_key(
     Ok(false)
 }
 
+fn builtin_slash_command(text: &str) -> Option<&'static str> {
+    match text.trim() {
+        "/about" => Some("about"),
+        "/doctor" => Some("doctor"),
+        "/help" => Some("help"),
+        _ => None,
+    }
+}
+
+#[cfg(unix)]
+fn handle_overlay_key(
+    app: &mut AppState,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    client_instance_id: &str,
+    sequence: &mut u64,
+) -> Result<bool, TuiError> {
+    match code {
+        KeyCode::Esc => {
+            if let Some(request) = app.take_ui_response() {
+                pipe.request(&encode_ui_response(&request.id, None, None, Some(true))?)?;
+                app.set_toast("已取消输入");
+            }
+            app.close_overlay();
+        }
+        KeyCode::Up => app.move_overlay_selection(-1),
+        KeyCode::Down => app.move_overlay_selection(1),
+        KeyCode::PageUp => app.overlay_page(-1),
+        KeyCode::PageDown => app.overlay_page(1),
+        KeyCode::Home => app.overlay_home_end(false),
+        KeyCode::End => app.overlay_home_end(true),
+        KeyCode::Tab => {}
+
+        KeyCode::Backspace => app.overlay_backspace(),
+        KeyCode::Enter => {
+            if let Some(action) = app.current_overlay_action() {
+                activate_workbench_action(
+                    app,
+                    &action,
+                    pipe,
+                    session_path,
+                    client_instance_id,
+                    sequence,
+                )?;
+            }
+        }
+        KeyCode::Char(value)
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            app.overlay_insert(&value.to_string())
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+#[cfg(unix)]
+fn open_workbench(
+    app: &mut AppState,
+    target: &str,
+    pipe: &mut ProtocolPipe,
+    _session_path: &str,
+    _client_instance_id: &str,
+    sequence: &mut u64,
+) -> Result<(), TuiError> {
+    if target == "help" {
+        app.open_overlay(OverlayState::Detail(DetailOverlay {
+            title: "帮助".to_owned(),
+            lines: vec![
+                "Ctrl+P 打开命令面板".to_owned(),
+                "/help 显示此帮助".to_owned(),
+                "/about 显示版本与运行目录".to_owned(),
+                "/doctor 显示诊断结果".to_owned(),
+                "Esc 关闭；方向键、PageUp/PageDown、Home/End 可浏览详情".to_owned(),
+            ],
+            scroll: 0,
+            status: "Esc 返回".to_owned(),
+        }));
+        return Ok(());
+    }
+    let (command, title) = match target {
+        "about" => (B3Command::GetAbout, "关于"),
+        "doctor" => (B3Command::GetDiagnostics, "诊断"),
+        _ => return Ok(()),
+    };
+    app.open_overlay(OverlayState::Detail(DetailOverlay {
+        title: title.to_owned(),
+        lines: vec!["正在读取".to_owned()],
+        scroll: 0,
+        status: "请稍候".to_owned(),
+    }));
+    *sequence += 1;
+    let id = format!("{}:{sequence}", command.wire());
+    app.begin_request(
+        id.clone(),
+        PendingIntent::Overlay {
+            target: title.to_owned(),
+            command,
+        },
+    );
+    let request = if command == B3Command::GetDiagnostics {
+        let cwd = app.snapshot.as_ref().map(|snapshot| snapshot.cwd.clone());
+        serde_json::json!({"cwd":cwd})
+    } else {
+        serde_json::json!({})
+    };
+    pipe.request(&encode_b3_request(
+        &id,
+        command,
+        request.as_object().cloned().unwrap_or_default(),
+    )?)
+}
+
+#[cfg(unix)]
+fn activate_workbench_action(
+    app: &mut AppState,
+    action: &str,
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    client_instance_id: &str,
+    sequence: &mut u64,
+) -> Result<(), TuiError> {
+    if let Some(target) = action.strip_prefix("open:") {
+        return open_workbench(
+            app,
+            target,
+            pipe,
+            session_path,
+            client_instance_id,
+            sequence,
+        );
+    }
+    let Some(request) = app.take_ui_response() else {
+        return Ok(());
+    };
+    let (value, confirmed) = match (request.kind, action) {
+        (UiRequestKind::Confirm, "ui:confirm") => (None, Some(true)),
+        (UiRequestKind::Input, "ui:input") => {
+            let value = match app.overlay() {
+                Some(OverlayState::TextEditor(editor)) => {
+                    serde_json::Value::String(editor.value.clone())
+                }
+                _ => serde_json::Value::String(String::new()),
+            };
+            (Some(value), None)
+        }
+        (UiRequestKind::Select, action) if action.starts_with("ui:select:") => (
+            Some(serde_json::Value::String(
+                action.trim_start_matches("ui:select:").to_owned(),
+            )),
+            None,
+        ),
+        _ => {
+            app.set_overlay_error("输入类型与当前操作不匹配");
+            return Ok(());
+        }
+    };
+    pipe.request(&encode_ui_response(&request.id, value, confirmed, None)?)?;
+    app.close_overlay();
+    app.set_toast("已提交输入");
+    Ok(())
+}
+
 #[cfg(unix)]
 fn submit_editor(
     app: &mut AppState,
@@ -625,6 +823,17 @@ fn submit_editor(
     let Some(text) = app.editor.submit() else {
         return Ok(());
     };
+    if let Some(command) = builtin_slash_command(&text) {
+        open_workbench(
+            app,
+            command,
+            pipe,
+            session_path,
+            client_instance_id,
+            sequence,
+        )?;
+        return Ok(());
+    }
     *sequence += 1;
     let request_id = format!("composer-{sequence}");
     let command = if follow_up {
@@ -657,14 +866,173 @@ fn submit_editor(
 
 fn apply_server_message(
     app: &mut AppState,
-    message: &ReadOnlyMessage,
+    message: &ServerMessage,
     session_path: &str,
+    pipe: &mut ProtocolPipe,
 ) -> Result<bool, TuiError> {
-    match message {
-        ReadOnlyMessage::Response(response) => apply_response(app, response),
-        ReadOnlyMessage::Event(event) => apply_event(app, event, session_path),
+    let raw = message.json().map_err(TuiError::from)?;
+    if raw.get("type").and_then(serde_json::Value::as_str) == Some("event")
+        && raw
+            .get("event")
+            .and_then(|value| value.get("type"))
+            .and_then(serde_json::Value::as_str)
+            == Some("ui_request")
+    {
+        let event = raw
+            .get("event")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| TuiError::InvalidResponse("ui_request 缺少事件内容".to_owned()))?;
+        let id = event
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| TuiError::InvalidResponse("ui_request 缺少 id".to_owned()))?;
+        let payload = event
+            .get("payload")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let kind = match event.get("kind").and_then(serde_json::Value::as_str) {
+            Some("select") => UiRequestKind::Select,
+            Some("confirm") => UiRequestKind::Confirm,
+            Some("input") => UiRequestKind::Input,
+            Some(kind) => {
+                app.set_overlay_error(format!("不支持的输入类型: {kind}"));
+                if app.cancel_unknown_ui_request(id) {
+                    pipe.request(&encode_ui_response(id, None, None, Some(true))?)?;
+                }
+                return Ok(false);
+            }
+            None => {
+                app.set_overlay_error("输入请求缺少类型");
+                if app.cancel_unknown_ui_request(id) {
+                    pipe.request(&encode_ui_response(id, None, None, Some(true))?)?;
+                }
+                return Ok(false);
+            }
+        };
+        let title = event
+            .get("title")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("需要输入");
+        if !app.register_ui_request(UiRequest {
+            id: id.to_owned(),
+            kind,
+        }) {
+            return Ok(false);
+        }
+        match kind {
+            UiRequestKind::Select => app.open_overlay(OverlayState::List(ListOverlay {
+                title: title.to_owned(),
+                items: ui_select_items(&payload),
+                selected: 0,
+                filter: String::new(),
+                status: "方向键选择，Enter 提交，Esc 取消".to_owned(),
+            })),
+            UiRequestKind::Confirm => app.open_overlay(OverlayState::Confirm(ConfirmOverlay {
+                title: title.to_owned(),
+                message: payload
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("确认继续此操作？")
+                    .to_owned(),
+                confirm_action: "ui:confirm".to_owned(),
+                status: String::new(),
+            })),
+            UiRequestKind::Input => {
+                let value = payload
+                    .get("value")
+                    .or_else(|| payload.get("prefill"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                app.open_overlay(OverlayState::TextEditor(TextEditorOverlay {
+                    title: title.to_owned(),
+                    cursor: value.len(),
+                    value,
+                    save_action: "ui:input".to_owned(),
+                    status: "Enter 提交，Esc 取消".to_owned(),
+                }));
+            }
+        }
+        return Ok(false);
+    }
+    if raw.get("type").and_then(serde_json::Value::as_str) == Some("response")
+        && let Some(id) = raw.get("id").and_then(serde_json::Value::as_str)
+        && let Some(pending) = app.take_pending(id)
+    {
+        if pending.generation != app.request_generation {
+            return Ok(false);
+        }
+        if raw.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
+            app.set_overlay_error(
+                raw.get("error")
+                    .and_then(|value| value.get("message"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("工作台请求失败"),
+            );
+            return Ok(false);
+        }
+        let PendingIntent::Overlay { target, command } = pending.intent;
+        let result = message.validated_b3_result_value(command)?;
+        apply_workbench_result(app, target, result);
+        return Ok(false);
+    }
+    match message.read_only().map_err(TuiError::from)? {
+        ReadOnlyMessage::Response(response) => apply_response(app, &response),
+        ReadOnlyMessage::Event(event) => apply_event(app, &event, session_path),
         ReadOnlyMessage::Hello | ReadOnlyMessage::HelloError { .. } => Ok(false),
     }
+}
+
+fn apply_workbench_result(app: &mut AppState, title: String, result: serde_json::Value) {
+    app.replace_overlay(OverlayState::Detail(DetailOverlay {
+        title,
+        lines: pretty_json_lines(&result),
+        scroll: 0,
+        status: "Esc 返回".to_owned(),
+    }));
+}
+
+fn ui_select_items(payload: &serde_json::Value) -> Vec<OverlayItem> {
+    let options = payload
+        .get("options")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let items = options
+        .into_iter()
+        .filter_map(|option| {
+            let value = option
+                .get("value")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| option.as_str())?;
+            let label = option
+                .get("label")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(value);
+            Some(OverlayItem {
+                label: label.to_owned(),
+                detail: String::new(),
+                action: format!("ui:select:{value}"),
+            })
+        })
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        vec![OverlayItem {
+            label: "无可选项".to_owned(),
+            detail: String::new(),
+            action: "ui:select:".to_owned(),
+        }]
+    } else {
+        items
+    }
+}
+
+fn pretty_json_lines(value: &serde_json::Value) -> Vec<String> {
+    serde_json::to_string_pretty(value)
+        .unwrap_or_else(|_| "无法格式化结果".to_owned())
+        .lines()
+        .map(str::to_owned)
+        .collect()
 }
 
 fn apply_response(app: &mut AppState, response: &ReadOnlyResponse) -> Result<bool, TuiError> {
@@ -886,5 +1254,24 @@ mod tests {
         let linked = osc8_link("file:///tmp/example.rs", "example.rs");
         assert!(linked.contains("\x1b]8;;file:///tmp/example.rs\x1b\\example.rs\x1b]8;;\x1b\\"));
         assert!(!"ordinary text".contains("\x1b]8;;"));
+    }
+
+    #[test]
+    fn intercepts_only_the_three_connected_slash_commands() {
+        assert_eq!(builtin_slash_command("/help"), Some("help"));
+        assert_eq!(builtin_slash_command(" /about "), Some("about"));
+        assert_eq!(builtin_slash_command("/doctor"), Some("doctor"));
+        assert_eq!(builtin_slash_command("/settings"), None);
+        assert_eq!(builtin_slash_command("/about later"), None);
+    }
+
+    #[test]
+    fn builds_select_items_from_host_payload() {
+        let items = ui_select_items(&serde_json::json!({
+            "options": [{"label":"Beta", "value":"beta"}, "alpha"]
+        }));
+        assert_eq!(items[0].label, "Beta");
+        assert_eq!(items[0].action, "ui:select:beta");
+        assert_eq!(items[1].action, "ui:select:alpha");
     }
 }
