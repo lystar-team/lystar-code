@@ -118,6 +118,24 @@ pub fn parse_ansi_lines(lines: &[String]) -> RenderedRichText {
     }
 }
 
+pub fn plain_ansi_line(line: &str) -> String {
+    parse_ansi_line(line).plain()
+}
+
+pub fn sanitize_osc8_href(value: &str) -> Option<&str> {
+    if value.is_empty()
+        || value.chars().any(char::is_control)
+        || value.chars().any(char::is_whitespace)
+    {
+        return None;
+    }
+    (value.starts_with("https://")
+        || value.starts_with("http://")
+        || value.starts_with("mailto:")
+        || value.starts_with("file://"))
+    .then_some(value)
+}
+
 fn parse_ansi_line(input: &str) -> RichLine {
     let bytes = input.as_bytes();
     let mut index = 0;
@@ -162,7 +180,7 @@ fn parse_ansi_line(input: &str) -> RichLine {
                 }
                 let sequence = &input[start..index];
                 if let Some(target) = sequence.strip_prefix("8;;") {
-                    href = (!target.is_empty()).then(|| target.to_owned());
+                    href = sanitize_osc8_href(target).map(str::to_owned);
                 }
                 if bytes.get(index) == Some(&0x07) {
                     index += 1;
@@ -290,6 +308,15 @@ mod tests {
         assert_eq!(spans[0].style.fg, Some(Color::Rgb(1, 2, 3)));
         assert_eq!(spans[2].href.as_deref(), Some("https://example.test"));
         assert_eq!(value.lines[0].plain(), "Bold link");
+    }
+
+    #[test]
+    fn rejects_unsafe_osc8_targets() {
+        let value = parse_ansi_lines(&[
+            "\u{1b}]8;;javascript:alert(1)\u{1b}\\bad\u{1b}]8;;\u{1b}\\".to_owned(),
+        ]);
+        assert_eq!(value.lines[0].plain(), "bad");
+        assert!(value.lines[0].spans[0].href.is_none());
     }
 
     #[test]

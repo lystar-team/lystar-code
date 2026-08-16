@@ -1154,6 +1154,7 @@ async function openSubagents(tui: StartedTui): Promise<void> {
 interface RequestRecord {
 	id: string;
 	command: string;
+	data?: string;
 	receivedAt: number;
 }
 
@@ -1294,7 +1295,14 @@ async function startTui(
 			for (const message of decoder.push(outputBuffer.subarray(0, bytesRead))) {
 				clientMessages.push(message);
 				if (message.type === "request")
-					requests.push({ id: message.id, command: message.request.command, receivedAt: monotonicMs() });
+					requests.push({
+						id: message.id,
+						command: message.request.command,
+						...("data" in message.request && typeof message.request.data === "string"
+							? { data: message.request.data }
+							: {}),
+						receivedAt: monotonicMs(),
+					});
 				if (message.type === "request" && message.request.command === "login_model_provider") {
 					void connection.handle(message);
 				} else {
@@ -1818,6 +1826,130 @@ describe("Rust read-only TUI fd bridge", () => {
 			}
 		}
 	}, 120_000);
+
+	it("drives real Extension Components through Rust mount, input, visibility, completion, and cancellation twice", async () => {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const tui = await startTui(
+				0,
+				{ width: 80, height: 8 },
+				`extension-components-${attempt + 1}`,
+				undefined,
+				{},
+				async ({ directory }) => {
+					const agentDir = join(directory, "agent");
+					const cwd = join(directory, "project");
+					mkdirSync(agentDir, { recursive: true });
+					mkdirSync(cwd, { recursive: true });
+					writeFileSync(
+						join(agentDir, "settings.json"),
+						JSON.stringify({
+							defaultProvider: "lystar-contract-faux",
+							defaultModel: "contract-1",
+							defaultThinkingLevel: "off",
+							defaultProjectTrust: "always",
+							extensions: [fileURLToPath(new URL("./fixtures/runtime-contract-extension.ts", import.meta.url))],
+						}),
+					);
+					const adapter = new CodingAgentRuntimeAdapter(agentDir);
+					const runtime = await adapter.createSession(cwd, async () => ({ cancelled: true }));
+					const sessionPath = runtime.sessionPath;
+					await runtime.dispose();
+					return { adapter, agentDir, sessionPath };
+				},
+			);
+			try {
+				await waitForInitialPage(tui);
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.serverMessages.some(
+						(message) => message.type === "response" && message.id.startsWith("acquire-") && message.ok,
+					);
+				}, "component runtime did not acquire the Rust lease");
+
+				const open = async () => {
+					tui.send("C-u");
+					tui.sendLiteral("/contract-components");
+					tui.send("Enter");
+					await waitFor(async () => {
+						await tui.pump();
+						return tui.pane().includes("component overlay");
+					}, "Rust did not render the custom Extension Component");
+				};
+				await open();
+				assert.ok(tui.pane().includes("Ctrl+O Tool"), "80x8 component overlay lost Composer shortcuts");
+				const inputBefore = tui.requests.filter(
+					(request) => request.command === "extension_component_input",
+				).length;
+				tui.sendLiteral("a");
+				await waitFor(async () => {
+					await tui.pump();
+					return (
+						tui.requests.filter((request) => request.command === "extension_component_input").length ===
+						inputBefore + 1
+					);
+				}, "component key did not reach Host");
+				await waitFor(
+					() => tui.pane().includes("component overlay a"),
+					"component frame did not update after input",
+				);
+				tui.send("h");
+				await waitForTrace(tui, "component_visibility_applied", 2);
+				await waitFor(
+					() => tui.pane().includes("component overlay"),
+					"component hide/show did not restore the frame",
+				);
+				tui.send("Up");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.requests.some(
+						(request) => request.command === "extension_component_input" && request.data === "\u001b[A",
+					);
+				}, "Rust did not preserve the arrow key as a raw component input sequence");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.traces().some((event) => event.event === "component_unmount_applied");
+				}, "component completion did not unmount the custom overlay");
+				tui.resize(80, 24);
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.requests.some((request) => request.command === "extension_component_resize");
+				}, "component resize did not reach Host");
+				await waitFor(
+					() =>
+						tui.pane().includes("component header") &&
+						tui.pane().includes("component footer replace") &&
+						tui.pane().includes("component above") &&
+						tui.pane().includes("component below"),
+					"component header, footer, and widgets did not render after resize",
+				);
+
+				tui.resize(80, 8);
+				await open();
+				const unmountsBeforeCancel = tui
+					.traces()
+					.filter((event) => event.event === "component_unmount_applied").length;
+				tui.send("Escape");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.requests.some((request) => request.command === "extension_component_custom_cancel");
+				}, "Esc did not send extension_component_custom_cancel");
+				await waitFor(
+					() =>
+						tui.traces().filter((event) => event.event === "component_unmount_applied").length >
+						unmountsBeforeCancel,
+					"Esc cancellation did not unmount the custom component",
+				);
+				await waitFor(() => tui.pane().includes("Ctrl+O Tool"), "Esc cancellation did not restore the Composer");
+				await waitFor(
+					() => tui.pane().includes("Enter 提交"),
+					"Esc cancellation did not return control to the Composer",
+				);
+			} finally {
+				tui.closeProtocol();
+			}
+		}
+	}, 180_000);
 
 	it("opens the command palette, renders typed about and diagnostics, and bridges injected UI requests twice", async () => {
 		for (let attempt = 0; attempt < 2; attempt++) {

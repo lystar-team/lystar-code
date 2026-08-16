@@ -357,6 +357,7 @@ fn apply_scenario(app: &mut AppState, scenario: &str) {
                 hidden_thinking_label: Some("Extension thinking".to_owned()),
                 title: Some("Extension benchmark".to_owned()),
                 terminal_input_listener_count: 1,
+                components: Default::default(),
             };
         }
         "readonly_open" => open_readonly(app),

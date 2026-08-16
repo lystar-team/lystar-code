@@ -147,6 +147,48 @@ export type ExtensionUiBridgeEvent =
 			reason: "replace" | "clear" | "dispose" | "error" | "done" | "cancel";
 	  };
 
+function sanitizeComponentFrameLine(value: string, limit = 4096): string {
+	let output = "";
+	let index = 0;
+	while (index < value.length && output.length < limit) {
+		const character = value[index]!;
+		if (character !== "\x1b") {
+			if (character >= " " && character !== "\x7f") output += character;
+			index++;
+			continue;
+		}
+		const next = value[index + 1];
+		if (next === "[") {
+			const end = value.slice(index + 2).search(/[@-~]/);
+			if (end >= 0) {
+				const finish = index + 2 + end;
+				const sequence = value.slice(index, finish + 1);
+				if (value[finish] === "m" && /^\x1b\[[0-9;?]*m$/.test(sequence)) output += sequence;
+				index = finish + 1;
+				continue;
+			}
+		}
+		if (next === "]") {
+			const bell = value.indexOf("\x07", index + 2);
+			const st = value.indexOf("\x1b\\", index + 2);
+			const end = bell >= 0 && (st < 0 || bell < st) ? bell : st;
+			if (end >= 0) {
+				const content = value.slice(index + 2, end);
+				if (
+					content === "8;;" ||
+					/^8;;(?:https:\/\/|http:\/\/|mailto:|file:\/\/)[^\s\x00-\x1f\x7f-\x9f]+$/.test(content)
+				) {
+					output += `\x1b]${content}\x1b\\`;
+				}
+				index = end + (end === st ? 2 : 1);
+				continue;
+			}
+		}
+		index++;
+	}
+	return output;
+}
+
 function sanitizeTerminalText(value: string, limit = 4096, allow: { newline?: boolean; tab?: boolean } = {}): string {
 	let output = "";
 	for (const character of value) {
@@ -223,7 +265,7 @@ function createHeadlessComponentAdapter(
 		const lines = component
 			.render(width)
 			.slice(0, Math.min(height, 500))
-			.map((line) => sanitizeTerminalText(String(line), 4096));
+			.map((line) => sanitizeComponentFrameLine(String(line), 4096));
 		return {
 			componentId: options.componentId,
 			revision: ++revision,
@@ -635,15 +677,18 @@ export class ExtensionUiBridge {
 								this.publish({ type: "component_frame", componentId, generation, frame });
 						},
 					});
+					const componentOverlayOptions = { ...overlayOptions, overlay: options?.overlay !== false };
 					const mount: ComponentMount = {
 						componentId,
 						generation,
-						placement: options?.overlay === false ? "widget_above" : "custom_overlay",
+						placement: "custom_overlay",
 						adapter,
 						width: 80,
 						height: 24,
 						visible: true,
-						...(overlayOptions ? { overlayOptions } : {}),
+						...(Object.keys(componentOverlayOptions).length > 0
+							? { overlayOptions: componentOverlayOptions }
+							: {}),
 						customResolve: resolve,
 					};
 					this.components.set(componentId, mount);
@@ -674,7 +719,7 @@ export class ExtensionUiBridge {
 						generation,
 						placement: mount.placement,
 						visible: true,
-						...(overlayOptions ? { overlayOptions: overlayOptions as unknown as JsonValue } : {}),
+						...(mount.overlayOptions ? { overlayOptions: mount.overlayOptions as unknown as JsonValue } : {}),
 						frame: adapter.render(),
 					});
 				})

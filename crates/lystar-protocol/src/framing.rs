@@ -380,6 +380,68 @@ pub fn encode_b3_request(
     encode_client_value(serde_json::json!({ "type": "request", "id": id, "request": request }))
 }
 
+pub fn encode_extension_component_input_request(
+    id: &str,
+    session_path: &str,
+    component_id: &str,
+    generation: u64,
+    data: &str,
+) -> Result<Vec<u8>, ProtocolError> {
+    encode_client_value(serde_json::json!({
+        "type": "request", "id": id,
+        "request": {
+            "command": "extension_component_input", "sessionPath": session_path,
+            "componentId": component_id, "generation": generation, "data": data,
+        },
+    }))
+}
+
+pub fn encode_extension_component_resize_request(
+    id: &str,
+    session_path: &str,
+    width: u16,
+    height: u16,
+) -> Result<Vec<u8>, ProtocolError> {
+    encode_client_value(serde_json::json!({
+        "type": "request", "id": id,
+        "request": {
+            "command": "extension_component_resize", "sessionPath": session_path,
+            "width": width, "height": height,
+        },
+    }))
+}
+
+pub fn encode_extension_component_result_request(
+    id: &str,
+    session_path: &str,
+    component_id: &str,
+    generation: u64,
+    value: serde_json::Value,
+) -> Result<Vec<u8>, ProtocolError> {
+    encode_client_value(serde_json::json!({
+        "type": "request", "id": id,
+        "request": {
+            "command": "extension_component_custom_result", "sessionPath": session_path,
+            "componentId": component_id, "generation": generation, "value": value,
+        },
+    }))
+}
+
+pub fn encode_extension_component_cancel_request(
+    id: &str,
+    session_path: &str,
+    component_id: &str,
+    generation: u64,
+) -> Result<Vec<u8>, ProtocolError> {
+    encode_client_value(serde_json::json!({
+        "type": "request", "id": id,
+        "request": {
+            "command": "extension_component_custom_cancel", "sessionPath": session_path,
+            "componentId": component_id, "generation": generation,
+        },
+    }))
+}
+
 pub fn encode_extension_editor_state_request(
     id: &str,
     session_path: &str,

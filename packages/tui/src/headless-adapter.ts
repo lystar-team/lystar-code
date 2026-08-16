@@ -45,6 +45,48 @@ function clampDimension(value: number): number {
 	return Number.isFinite(value) ? Math.max(0, Math.min(10_000, Math.floor(value))) : 0;
 }
 
+export function sanitizeHeadlessFrameLine(value: string, limit = 4096): string {
+	let output = "";
+	let index = 0;
+	while (index < value.length && output.length < limit) {
+		const character = value[index]!;
+		if (character !== "\x1b") {
+			if (character >= " " && character !== "\x7f") output += character;
+			index++;
+			continue;
+		}
+		const next = value[index + 1];
+		if (next === "[") {
+			const end = value.slice(index + 2).search(/[@-~]/);
+			if (end >= 0) {
+				const finish = index + 2 + end;
+				const sequence = value.slice(index, finish + 1);
+				if (value[finish] === "m" && /^\x1b\[[0-9;?]*m$/.test(sequence)) output += sequence;
+				index = finish + 1;
+				continue;
+			}
+		}
+		if (next === "]") {
+			const bell = value.indexOf("\x07", index + 2);
+			const st = value.indexOf("\x1b\\", index + 2);
+			const end = bell >= 0 && (st < 0 || bell < st) ? bell : st;
+			if (end >= 0) {
+				const content = value.slice(index + 2, end);
+				if (
+					content === "8;;" ||
+					/^8;;(?:https:\/\/|http:\/\/|mailto:|file:\/\/)[^\s\x00-\x1f\x7f-\x9f]+$/.test(content)
+				) {
+					output += `\x1b]${content}\x1b\\`;
+				}
+				index = end + (end === st ? 2 : 1);
+				continue;
+			}
+		}
+		index++;
+	}
+	return output;
+}
+
 function ownershipError(options: HeadlessTuiFacadeOptions, operation: string): never {
 	options.onTerminalOwnershipViolation?.({
 		type: "terminal_ownership_violation",
@@ -190,7 +232,10 @@ export function createHeadlessComponentAdapter(
 		for (const line of component.render(width)) {
 			if (lines.length >= Math.min(height, MAX_FRAME_LINES)) break;
 			const marker = line.indexOf(CURSOR_MARKER);
-			const visible = marker === -1 ? line : line.slice(0, marker) + line.slice(marker + cursorMarkerLength);
+			const visible = sanitizeHeadlessFrameLine(
+				marker === -1 ? line : line.slice(0, marker) + line.slice(marker + cursorMarkerLength),
+				MAX_FRAME_BYTES,
+			);
 			const nextBytes = bytes + Buffer.byteLength(visible);
 			if (nextBytes > MAX_FRAME_BYTES) break;
 			if (marker !== -1 && !cursor) cursor = { row: lines.length, column: visibleWidth(line.slice(0, marker)) };

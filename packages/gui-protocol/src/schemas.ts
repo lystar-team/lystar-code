@@ -861,6 +861,7 @@ const ExtensionComponentOverlayOptionsSchema = StrictObject({
 	anchor: Type.Optional(Type.String({ maxLength: 32 })),
 	row: Type.Optional(Type.Union([Type.Integer({ minimum: 0, maximum: 500 }), Type.String({ maxLength: 16 })])),
 	col: Type.Optional(Type.Union([Type.Integer({ minimum: 0, maximum: 500 }), Type.String({ maxLength: 16 })])),
+	overlay: Type.Optional(Type.Boolean()),
 });
 const ExtensionComponentUnmountReasonSchema = Type.Union([
 	Type.Literal("replace"),

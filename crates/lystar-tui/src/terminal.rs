@@ -24,10 +24,12 @@ use lystar_protocol::{
     B3Command, FrameDecoder, ProtocolError, ReadOnlyEvent, ReadOnlyMessage, ReadOnlyResponse,
     ServerMessage, TranscriptRequestContext, TranscriptViewItem, decode_server_message,
     encode_abort_operation_request, encode_acquire_session_request, encode_b3_request,
-    encode_client_hello, encode_create_session_request, encode_extension_editor_state_request,
-    encode_extension_terminal_input_request, encode_list_sessions_request, encode_queue_request,
-    encode_read_transcript_request, encode_release_session_request,
-    encode_search_transcript_request, encode_session_write_request, encode_ui_response,
+    encode_client_hello, encode_create_session_request, encode_extension_component_cancel_request,
+    encode_extension_component_input_request, encode_extension_component_resize_request,
+    encode_extension_editor_state_request, encode_extension_terminal_input_request,
+    encode_list_sessions_request, encode_queue_request, encode_read_transcript_request,
+    encode_release_session_request, encode_search_transcript_request, encode_session_write_request,
+    encode_ui_response,
 };
 use ratatui::{Terminal, TerminalOptions, Viewport, backend::CrosstermBackend};
 use signal_hook::{
@@ -40,15 +42,17 @@ use crate::{
     app::{
         AppState, B3Request, ChangesTab, ClipboardDescriptor, ClipboardReadTarget,
         ComposerAttachment, ComposerCompletion, ComposerCompletionItem, ComposerView,
-        ConfirmOverlay, DetailOverlay, ExtensionUiState, ExtensionWidget, GitDiffDescriptor,
-        GitFileDescriptor, GitStatusDescriptor, InputFocus, InstructionDescriptor, ListOverlay,
-        ModelDescriptor, OverlayItem, OverlayLink, OverlayOrigin, OverlayState, PackageDescriptor,
-        PendingIntent, PendingTerminalInput, ProjectTrustDescriptor, ProviderDescriptor,
-        ReadonlySessionView, SearchHit, SessionRestorePoint, SessionSummary, SessionTreeNode,
-        SettingDescriptor, SkillDescriptor, SubagentDescriptor, TextEditorOverlay,
-        TranscriptRequestKind, TranscriptView, TranscriptViewKind, TreeFilter, UiRequest,
-        UiRequestKind, UpdateDescriptor, VisibleLink, WorkbenchOverlayView, WorkbenchTarget,
-        composer_area_with_widget_budget, transcript_area, transcript_area_with_widget_budget,
+        ConfirmOverlay, DetailOverlay, ExtensionComponentOverlayOptions,
+        ExtensionComponentOverlayView, ExtensionComponentState, ExtensionUiState, ExtensionWidget,
+        GitDiffDescriptor, GitFileDescriptor, GitStatusDescriptor, InputFocus,
+        InstructionDescriptor, ListOverlay, ModelDescriptor, OverlayItem, OverlayLink,
+        OverlayOrigin, OverlayState, PackageDescriptor, PendingIntent, PendingTerminalInput,
+        ProjectTrustDescriptor, ProviderDescriptor, ReadonlySessionView, SearchHit,
+        SessionRestorePoint, SessionSummary, SessionTreeNode, SettingDescriptor, SkillDescriptor,
+        SubagentDescriptor, TextEditorOverlay, TranscriptRequestKind, TranscriptView,
+        TranscriptViewKind, TreeFilter, UiRequest, UiRequestKind, UpdateDescriptor, VisibleLink,
+        WorkbenchOverlayView, WorkbenchTarget, composer_area_with_widget_budget,
+        extension_component_rect, transcript_area, transcript_area_with_widget_budget,
         transcript_images,
     },
     image::{CachedImage, ImageSidecar, TerminalImageProtocol, current_terminal_image_protocol},
@@ -871,6 +875,7 @@ fn run_session(
     app.mark_page_load_pending();
     let mut dirty = true;
     let mut timeout_notified = false;
+    let mut last_component_size: Option<(u16, u16)> = None;
     loop {
         if dirty {
             let area = terminal.size()?;
@@ -889,7 +894,29 @@ fn run_session(
                     ComposerView::with_widget_budget(&app, usize::from(widget_budget)),
                     composer_area_with_widget_budget(area, widget_budget),
                 );
-                frame.render_widget(WorkbenchOverlayView::new(&app), area);
+                if let Some(component) = app.active_extension_overlay() {
+                    let rect = extension_component_rect(&app, component, area);
+                    frame.render_widget(
+                        ExtensionComponentOverlayView::new(&app, component, area),
+                        area,
+                    );
+                    if let Some((row, column)) = component.cursor
+                        && row < rect.height
+                        && column < rect.width
+                    {
+                        let inset = u16::from(
+                            component.overlay_options.overlay
+                                && rect.width >= 2
+                                && rect.height >= 3,
+                        );
+                        frame.set_cursor_position((
+                            rect.x.saturating_add(inset).saturating_add(column),
+                            rect.y.saturating_add(inset).saturating_add(row),
+                        ));
+                    }
+                } else {
+                    frame.render_widget(WorkbenchOverlayView::new(&app), area);
+                }
             })?;
             trace("draw_end");
             trace("frame_rendered");
@@ -897,6 +924,15 @@ fn run_session(
                 trace("frame_rendered_nonempty");
             }
             render_active_osc8_link(&mut terminal, &app)?;
+            if app
+                .active_extension_overlay()
+                .and_then(|component| component.cursor)
+                .is_some()
+            {
+                execute!(terminal.backend_mut().writer_mut(), Show)?;
+            } else {
+                execute!(terminal.backend_mut().writer_mut(), Hide)?;
+            }
             image_sidecar.draw_after_frame(
                 terminal.backend_mut().writer_mut(),
                 visible_cached_images(&app),
@@ -944,10 +980,51 @@ fn run_session(
                 }
             }
         }
+        let size = terminal.size()?;
+        if app.extension_ui.components.is_empty() {
+            last_component_size = None;
+        } else if last_component_size != Some((size.width, size.height)) {
+            let active_path = app.active_session_path().unwrap_or(session_path).to_owned();
+            request_extension_component_resize(
+                pipe,
+                &active_path,
+                &mut request_sequence,
+                size.width,
+                size.height,
+            )?;
+            last_component_size = Some((size.width, size.height));
+            state_changed = true;
+        }
         if event::poll(Duration::ZERO)? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if app.extension_ui.terminal_input_listener_count > 0
+                    let component = app
+                        .active_extension_overlay()
+                        .map(|component| (component.component_id.clone(), component.generation));
+                    if let Some((component_id, generation)) = component {
+                        let active_path =
+                            app.active_session_path().unwrap_or(session_path).to_owned();
+                        if key.code == KeyCode::Esc {
+                            request_extension_component_cancel(
+                                pipe,
+                                &active_path,
+                                &mut request_sequence,
+                                &component_id,
+                                generation,
+                            )?;
+                        } else if let Some(data) = raw_key(key.code, key.modifiers) {
+                            request_extension_component_input(
+                                &mut app,
+                                pipe,
+                                &active_path,
+                                &mut request_sequence,
+                                &component_id,
+                                generation,
+                                data,
+                            )?;
+                        }
+                        state_changed = true;
+                    } else if app.extension_ui.terminal_input_listener_count > 0
                         && app.input_focus == InputFocus::Composer
                         && let Some(data) = raw_key(key.code, key.modifiers)
                     {
@@ -984,7 +1061,24 @@ fn run_session(
                     }
                 }
                 Event::Paste(text) => {
-                    if app.extension_ui.terminal_input_listener_count > 0
+                    let component = app
+                        .active_extension_overlay()
+                        .map(|component| (component.component_id.clone(), component.generation));
+                    if let Some((component_id, generation)) = component {
+                        if text.len().saturating_add(12) <= 256 {
+                            let active_path =
+                                app.active_session_path().unwrap_or(session_path).to_owned();
+                            request_extension_component_input(
+                                &mut app,
+                                pipe,
+                                &active_path,
+                                &mut request_sequence,
+                                &component_id,
+                                generation,
+                                format!("\x1b[200~{text}\x1b[201~"),
+                            )?;
+                        }
+                    } else if app.extension_ui.terminal_input_listener_count > 0
                         && app.input_focus == InputFocus::Composer
                         && text.len().saturating_add(12) <= 256
                     {
@@ -1005,7 +1099,42 @@ fn run_session(
                     state_changed = true;
                 }
                 Event::Mouse(mouse) => {
-                    if app.extension_ui.terminal_input_listener_count > 0
+                    let component = app.active_extension_overlay().and_then(|component| {
+                        let area = terminal.size().ok()?;
+                        let full = ratatui::layout::Rect::new(0, 0, area.width, area.height);
+                        let rect = extension_component_rect(&app, component, full);
+                        let inset = u16::from(
+                            component.overlay_options.overlay
+                                && rect.width >= 2
+                                && rect.height >= 3,
+                        );
+                        let local_row = mouse.row.checked_sub(rect.y.saturating_add(inset))?;
+                        let local_column =
+                            mouse.column.checked_sub(rect.x.saturating_add(inset))?;
+                        app.component_hit(
+                            &component.component_id,
+                            component.generation,
+                            local_row,
+                            local_column,
+                        )
+                        .then(|| (component.component_id.clone(), component.generation))
+                    });
+                    if let Some((component_id, generation)) = component
+                        && let Some(data) = raw_mouse(mouse.kind, mouse.column, mouse.row)
+                    {
+                        let active_path =
+                            app.active_session_path().unwrap_or(session_path).to_owned();
+                        request_extension_component_input(
+                            &mut app,
+                            pipe,
+                            &active_path,
+                            &mut request_sequence,
+                            &component_id,
+                            generation,
+                            data,
+                        )?;
+                        state_changed = true;
+                    } else if app.extension_ui.terminal_input_listener_count > 0
                         && app.input_focus == InputFocus::Composer
                         && let Some(data) = raw_mouse(mouse.kind, mouse.column, mouse.row)
                     {
@@ -1041,21 +1170,11 @@ fn run_session(
                         }
                     }
                 }
-                Event::Resize(columns, rows) => {
+                Event::Resize(_columns, _rows) => {
                     terminal.autoresize()?;
                     app.invalidate_rich_text();
                     app.invalidate_images();
-                    if app.extension_ui.terminal_input_listener_count > 0 {
-                        let active_path =
-                            app.active_session_path().unwrap_or(session_path).to_owned();
-                        request_extension_terminal_input(
-                            &mut app,
-                            pipe,
-                            &active_path,
-                            &mut request_sequence,
-                            format!("\x1b[8;{rows};{columns}t"),
-                        )?;
-                    }
+                    last_component_size = None;
                     state_changed = true;
                 }
                 _ => {}
@@ -1120,6 +1239,13 @@ fn run_session(
                 )? {
                     quit_requested = true;
                 }
+                state_changed = true;
+            }
+        }
+        for id in app.timed_out_component_inputs(EXTENSION_INPUT_TIMEOUT) {
+            if let Some(pending) = app.take_component_input(&id) {
+                app.set_toast("组件输入 bridge 超时，可按 Esc 取消");
+                trace_id("component_input_timeout", &pending.component_id);
                 state_changed = true;
             }
         }
@@ -1410,6 +1536,75 @@ fn request_extension_editor_state(
     )?)
 }
 
+fn request_extension_component_input(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    sequence: &mut u64,
+    component_id: &str,
+    generation: u64,
+    data: String,
+) -> Result<bool, TuiError> {
+    if data.is_empty()
+        || data.len() > 256
+        || app.has_pending_component_input(component_id, generation, &data)
+    {
+        return Ok(false);
+    }
+    *sequence += 1;
+    let id = format!("component-input-{sequence}");
+    app.pending_component_inputs.insert(
+        id.clone(),
+        crate::app::PendingComponentInput {
+            component_id: component_id.to_owned(),
+            generation,
+            data: data.clone(),
+            started_at: Instant::now(),
+        },
+    );
+    trace_id("component_input_requested", &id);
+    pipe.request(&encode_extension_component_input_request(
+        &id,
+        session_path,
+        component_id,
+        generation,
+        &data,
+    )?)?;
+    Ok(true)
+}
+
+fn request_extension_component_resize(
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    sequence: &mut u64,
+    width: u16,
+    height: u16,
+) -> Result<(), TuiError> {
+    *sequence += 1;
+    pipe.request(&encode_extension_component_resize_request(
+        &format!("component-resize-{sequence}"),
+        session_path,
+        width.clamp(1, 500),
+        height.clamp(1, 500),
+    )?)
+}
+
+fn request_extension_component_cancel(
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    sequence: &mut u64,
+    component_id: &str,
+    generation: u64,
+) -> Result<(), TuiError> {
+    *sequence += 1;
+    pipe.request(&encode_extension_component_cancel_request(
+        &format!("component-cancel-{sequence}"),
+        session_path,
+        component_id,
+        generation,
+    )?)
+}
+
 fn request_extension_terminal_input(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,
@@ -1476,13 +1671,18 @@ fn raw_key(code: KeyCode, modifiers: KeyModifiers) -> Option<String> {
 }
 
 fn raw_mouse(kind: MouseEventKind, column: u16, row: u16) -> Option<String> {
-    let code = match kind {
-        MouseEventKind::ScrollUp => 64,
-        MouseEventKind::ScrollDown => 65,
-        _ => return None,
+    let (code, suffix) = match kind {
+        MouseEventKind::Down(_) => (0, 'M'),
+        MouseEventKind::Up(_) => (3, 'm'),
+        MouseEventKind::Drag(_) => (32, 'M'),
+        MouseEventKind::Moved => (35, 'M'),
+        MouseEventKind::ScrollUp => (64, 'M'),
+        MouseEventKind::ScrollDown => (65, 'M'),
+        MouseEventKind::ScrollLeft => (66, 'M'),
+        MouseEventKind::ScrollRight => (67, 'M'),
     };
     Some(format!(
-        "\x1b[<{code};{};{}M",
+        "\x1b[<{code};{};{}{suffix}",
         column.saturating_add(1),
         row.saturating_add(1)
     ))
@@ -5086,6 +5286,163 @@ fn submit_editor(
     Ok(())
 }
 
+fn component_line(value: &str) -> String {
+    // Parser 丢弃未知控制序列；保留原 SGR/OSC8 只供 Ratatui 的同一 parser 重新投影。
+    let _ = crate::rich_text::parse_ansi_lines(&[value.to_owned()]);
+    value.chars().take(524_288).collect()
+}
+
+fn component_dimension_value(value: Option<&serde_json::Value>) -> Option<String> {
+    match value? {
+        serde_json::Value::Number(number) => Some(number.to_string()),
+        serde_json::Value::String(value) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn component_overlay_options(
+    value: Option<&serde_json::Value>,
+) -> ExtensionComponentOverlayOptions {
+    let Some(object) = value.and_then(serde_json::Value::as_object) else {
+        return ExtensionComponentOverlayOptions::default();
+    };
+    ExtensionComponentOverlayOptions {
+        width: component_dimension_value(object.get("width")),
+        max_height: component_dimension_value(object.get("maxHeight")),
+        anchor: object
+            .get("anchor")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        row: component_dimension_value(object.get("row")),
+        column: component_dimension_value(object.get("col")),
+        overlay: object
+            .get("overlay")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true),
+    }
+}
+
+fn parse_component_frame(
+    component_id: &str,
+    value: &serde_json::Value,
+) -> Result<
+    (
+        u64,
+        Vec<String>,
+        Option<(u16, u16)>,
+        Vec<(u16, u16, u16)>,
+        Option<(u16, u16)>,
+    ),
+    TuiError,
+> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| TuiError::InvalidResponse("Extension component frame 无效".to_owned()))?;
+    if object
+        .get("componentId")
+        .and_then(serde_json::Value::as_str)
+        != Some(component_id)
+    {
+        return Err(TuiError::InvalidResponse(
+            "Extension componentId 不匹配".to_owned(),
+        ));
+    }
+    let revision = object
+        .get("revision")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| TuiError::InvalidResponse("Extension component revision 无效".to_owned()))?;
+    let width = object
+        .get("width")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|value| (1..=500).contains(value))
+        .ok_or_else(|| TuiError::InvalidResponse("Extension component 宽度无效".to_owned()))?;
+    let height = object
+        .get("height")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|value| (1..=500).contains(value))
+        .ok_or_else(|| TuiError::InvalidResponse("Extension component 高度无效".to_owned()))?;
+    let lines = object
+        .get("lines")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| TuiError::InvalidResponse("Extension component 行无效".to_owned()))?
+        .iter()
+        .take(usize::try_from(height).unwrap_or(500))
+        .map(|line| {
+            line.as_str().map(component_line).ok_or_else(|| {
+                TuiError::InvalidResponse("Extension component 行文本无效".to_owned())
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let cursor = object
+        .get("cursor")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|cursor| {
+            Some((
+                u16::try_from(cursor.get("row")?.as_u64()?).ok()?,
+                u16::try_from(cursor.get("column")?.as_u64()?).ok()?,
+            ))
+        });
+    let hit_regions = object
+        .get("hitRegions")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| TuiError::InvalidResponse("Extension component 命中区无效".to_owned()))?
+        .iter()
+        .take(500)
+        .filter_map(|region| {
+            let region = region.as_object()?;
+            let row = u16::try_from(region.get("row")?.as_u64()?).ok()?;
+            let column = u16::try_from(region.get("column")?.as_u64()?).ok()?;
+            let region_width = u16::try_from(region.get("width")?.as_u64()?).ok()?;
+            (row < height as u16 && column < width as u16 && region_width > 0).then_some((
+                row,
+                column,
+                region_width.min(width as u16 - column),
+            ))
+        })
+        .collect();
+    let desired_size = object
+        .get("desiredSize")
+        .and_then(serde_json::Value::as_object)
+        .map(|size| {
+            let desired_width = size
+                .get("width")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| u16::try_from(value).ok())
+                .unwrap_or(width as u16);
+            let desired_height = size
+                .get("height")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| u16::try_from(value).ok())
+                .unwrap_or(height as u16);
+            (desired_width.clamp(1, 500), desired_height.clamp(1, 500))
+        });
+    Ok((revision, lines, cursor, hit_regions, desired_size))
+}
+
+fn extension_component_state(
+    component_id: &str,
+    generation: u64,
+    placement: &str,
+    visible: bool,
+    overlay_options: ExtensionComponentOverlayOptions,
+    frame: &serde_json::Value,
+) -> Result<ExtensionComponentState, TuiError> {
+    let (revision, lines, cursor, hit_regions, desired_size) =
+        parse_component_frame(component_id, frame)?;
+    Ok(ExtensionComponentState {
+        component_id: component_id.to_owned(),
+        generation,
+        revision,
+        placement: placement.to_owned(),
+        visible,
+        lines,
+        cursor,
+        hit_regions,
+        desired_size,
+        overlay_options,
+    })
+}
+
 fn extension_statuses(
     value: &serde_json::Value,
 ) -> Result<std::collections::BTreeMap<String, String>, TuiError> {
@@ -5313,6 +5670,141 @@ fn apply_server_message(
                     }
                     return Ok(false);
                 }
+                Some("extension_component_mount") => {
+                    let component_id = event
+                        .get("componentId")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| {
+                            TuiError::InvalidResponse(
+                                "Extension component mount 缺少 id".to_owned(),
+                            )
+                        })?;
+                    let generation = event
+                        .get("generation")
+                        .and_then(serde_json::Value::as_u64)
+                        .ok_or_else(|| {
+                            TuiError::InvalidResponse(
+                                "Extension component mount 缺少 generation".to_owned(),
+                            )
+                        })?;
+                    let placement = event
+                        .get("placement")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|placement| {
+                            matches!(
+                                *placement,
+                                "widget_above"
+                                    | "widget_below"
+                                    | "header"
+                                    | "footer"
+                                    | "custom_overlay"
+                            )
+                        })
+                        .ok_or_else(|| {
+                            TuiError::InvalidResponse("Extension component 位置无效".to_owned())
+                        })?;
+                    let visible = event
+                        .get("visible")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    let component = extension_component_state(
+                        component_id,
+                        generation,
+                        placement,
+                        visible,
+                        component_overlay_options(event.get("overlayOptions")),
+                        event.get("frame").unwrap_or(&serde_json::Value::Null),
+                    )?;
+                    if app.apply_extension_component_mount(component) {
+                        trace_id("component_mount_applied", component_id);
+                    }
+                    return Ok(false);
+                }
+                Some("extension_component_frame") => {
+                    let component_id = event
+                        .get("componentId")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| {
+                            TuiError::InvalidResponse(
+                                "Extension component frame 缺少 id".to_owned(),
+                            )
+                        })?;
+                    let generation = event
+                        .get("generation")
+                        .and_then(serde_json::Value::as_u64)
+                        .ok_or_else(|| {
+                            TuiError::InvalidResponse(
+                                "Extension component frame 缺少 generation".to_owned(),
+                            )
+                        })?;
+                    let (revision, lines, cursor, hit_regions, desired_size) =
+                        parse_component_frame(
+                            component_id,
+                            event.get("frame").unwrap_or(&serde_json::Value::Null),
+                        )?;
+                    if app.apply_extension_component_frame(
+                        component_id,
+                        generation,
+                        revision,
+                        lines,
+                        cursor,
+                        hit_regions,
+                    ) {
+                        if let Some(component) = app.extension_ui.components.get_mut(component_id) {
+                            component.desired_size = desired_size;
+                        }
+                        trace_id("component_frame_applied", component_id);
+                    }
+                    return Ok(false);
+                }
+                Some("extension_component_invalidate") => {
+                    let component_id = event
+                        .get("componentId")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| {
+                            TuiError::InvalidResponse(
+                                "Extension component invalidate 缺少 id".to_owned(),
+                            )
+                        })?;
+                    let generation = event
+                        .get("generation")
+                        .and_then(serde_json::Value::as_u64)
+                        .ok_or_else(|| {
+                            TuiError::InvalidResponse(
+                                "Extension component invalidate 缺少 generation".to_owned(),
+                            )
+                        })?;
+                    let visible = event
+                        .get("visible")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    if app.apply_extension_component_visibility(component_id, generation, visible) {
+                        trace_id("component_visibility_applied", component_id);
+                    }
+                    return Ok(false);
+                }
+                Some("extension_component_unmount") => {
+                    let component_id = event
+                        .get("componentId")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| {
+                            TuiError::InvalidResponse(
+                                "Extension component unmount 缺少 id".to_owned(),
+                            )
+                        })?;
+                    let generation = event
+                        .get("generation")
+                        .and_then(serde_json::Value::as_u64)
+                        .ok_or_else(|| {
+                            TuiError::InvalidResponse(
+                                "Extension component unmount 缺少 generation".to_owned(),
+                            )
+                        })?;
+                    if app.remove_extension_component(component_id, generation) {
+                        trace_id("component_unmount_applied", component_id);
+                    }
+                    return Ok(false);
+                }
                 Some("extension_editor_action") => {
                     let action = event
                         .get("action")
@@ -5336,6 +5828,31 @@ fn apply_server_message(
                 _ => {}
             }
         }
+    }
+    if raw.get("type").and_then(serde_json::Value::as_str) == Some("response")
+        && let Some(id) = raw.get("id").and_then(serde_json::Value::as_str)
+        && let Some(pending) = app.take_component_input(id)
+    {
+        if raw.get("ok").and_then(serde_json::Value::as_bool) != Some(true)
+            || raw
+                .get("result")
+                .and_then(|result| result.get("accepted"))
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+        {
+            app.set_toast("组件输入被 Host 拒绝，可按 Esc 取消");
+        } else {
+            trace_id("component_input_accepted", &pending.component_id);
+        }
+        return Ok(false);
+    }
+    if raw.get("type").and_then(serde_json::Value::as_str) == Some("response")
+        && let Some(id) = raw.get("id").and_then(serde_json::Value::as_str)
+        && id.starts_with("component-cancel-")
+        && raw.get("ok").and_then(serde_json::Value::as_bool) != Some(true)
+    {
+        app.set_toast("组件取消失败，可重试或退出");
+        return Ok(false);
     }
     if raw.get("type").and_then(serde_json::Value::as_str) == Some("response")
         && let Some(id) = raw.get("id").and_then(serde_json::Value::as_str)

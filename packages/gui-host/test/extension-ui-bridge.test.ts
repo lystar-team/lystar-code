@@ -40,6 +40,35 @@ describe("ExtensionUiBridge", () => {
 		expect(events).toHaveLength(6);
 	});
 
+	it("unmounts a failing component input without escaping into the terminal bridge", async () => {
+		const events: ExtensionUiBridgeEvent[] = [];
+		const errors: string[] = [];
+		const bridge = new ExtensionUiBridge(
+			async () => ({ cancelled: true }),
+			(event) => events.push(event),
+			(error) => errors.push(error.event),
+		);
+		void bridge.context().custom(() => ({
+			render: () => ["failing component"],
+			invalidate: () => {},
+			handleInput: () => {
+				throw new Error("fixture failure");
+			},
+		}));
+		await new Promise<void>((resolve) => queueMicrotask(() => resolve()));
+		const mount = events.find((event) => event.type === "component_mount");
+		if (!mount || mount.type !== "component_mount") throw new Error("component did not mount");
+
+		expect(bridge.dispatchComponentInput(mount.componentId, mount.generation, "x")).toBeUndefined();
+		expect(events.at(-1)).toEqual({
+			type: "component_unmount",
+			componentId: mount.componentId,
+			generation: mount.generation,
+			reason: "error",
+		});
+		expect(errors).toEqual(["component_input"]);
+	});
+
 	it("keeps raw terminal listener sequences intact while bounding them", async () => {
 		const bridge = new ExtensionUiBridge(
 			async () => ({ cancelled: true }),

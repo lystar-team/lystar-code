@@ -7,7 +7,7 @@ use std::{
 use crate::{
     editor::EditorState,
     image::{ImageCache, image_placeholder},
-    rich_text::{RenderedRichText, RichTextCache, RichTextKey},
+    rich_text::{RenderedRichText, RichTextCache, RichTextKey, parse_ansi_lines, plain_ansi_line},
 };
 use lystar_protocol::{
     OperationSnapshot, SessionProgress, SessionSnapshot, ToolCall, TranscriptItem,
@@ -1090,6 +1090,29 @@ pub struct ExtensionWidget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionComponentOverlayOptions {
+    pub width: Option<String>,
+    pub max_height: Option<String>,
+    pub anchor: Option<String>,
+    pub row: Option<String>,
+    pub column: Option<String>,
+    pub overlay: bool,
+}
+
+impl Default for ExtensionComponentOverlayOptions {
+    fn default() -> Self {
+        Self {
+            width: None,
+            max_height: None,
+            anchor: None,
+            row: None,
+            column: None,
+            overlay: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtensionComponentState {
     pub component_id: String,
     pub generation: u64,
@@ -1099,6 +1122,16 @@ pub struct ExtensionComponentState {
     pub lines: Vec<String>,
     pub cursor: Option<(u16, u16)>,
     pub hit_regions: Vec<(u16, u16, u16)>,
+    pub desired_size: Option<(u16, u16)>,
+    pub overlay_options: ExtensionComponentOverlayOptions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingComponentInput {
+    pub component_id: String,
+    pub generation: u64,
+    pub data: String,
+    pub started_at: Instant,
 }
 
 impl ExtensionComponentState {
@@ -1225,6 +1258,7 @@ pub struct AppState {
     responded_ui_requests: HashSet<String>,
     pub extension_ui: ExtensionUiState,
     pub pending_terminal_inputs: HashMap<String, PendingTerminalInput>,
+    pub pending_component_inputs: HashMap<String, PendingComponentInput>,
     editor_generation: u64,
     synced_editor_text: String,
     synced_editor_cursor: usize,
@@ -1404,6 +1438,7 @@ impl AppState {
         self.invalidate_transcript_requests(TranscriptViewKind::Active);
         self.invalidate_rich_text();
         self.invalidate_images();
+        self.clear_extension_components();
         self.active_session = Some(ActiveSessionContext {
             path,
             lease_id: None,
@@ -1469,6 +1504,7 @@ impl AppState {
         self.invalidate_rich_text();
         self.invalidate_images();
         self.transcript.clear_for_reload(reason);
+        self.clear_extension_components();
     }
 
     pub fn clear_connection_state(&mut self, reason: impl Into<String>) {
@@ -1479,6 +1515,36 @@ impl AppState {
             view.transcript.loading_previous = false;
         }
         self.disconnected = Some(reason.into());
+    }
+
+    pub fn clear_extension_components(&mut self) {
+        self.extension_ui.components.clear();
+        self.pending_component_inputs.clear();
+    }
+
+    pub fn has_pending_component_input(
+        &self,
+        component_id: &str,
+        generation: u64,
+        data: &str,
+    ) -> bool {
+        self.pending_component_inputs.values().any(|pending| {
+            pending.component_id == component_id
+                && pending.generation == generation
+                && pending.data == data
+        })
+    }
+
+    pub fn timed_out_component_inputs(&self, timeout: Duration) -> Vec<String> {
+        self.pending_component_inputs
+            .iter()
+            .filter(|(_, pending)| pending.started_at.elapsed() >= timeout)
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    pub fn take_component_input(&mut self, id: &str) -> Option<PendingComponentInput> {
+        self.pending_component_inputs.remove(id)
     }
 
     pub fn clear_active_lease(&mut self) {
@@ -1604,6 +1670,7 @@ impl AppState {
         self.editor.clear();
         self.operation = None;
         self.clear_transient();
+        self.clear_extension_components();
         self.clear_overlay_transient();
     }
 
@@ -2266,7 +2333,7 @@ impl AppState {
             .extension_ui
             .components
             .get(&component.component_id)
-            .is_some_and(|current| current.generation > component.generation)
+            .is_some_and(|current| current.generation >= component.generation)
         {
             return false;
         }
@@ -2296,6 +2363,30 @@ impl AppState {
         component.cursor = cursor;
         component.hit_regions = hit_regions;
         true
+    }
+
+    pub fn component_hit(
+        &self,
+        component_id: &str,
+        generation: u64,
+        row: u16,
+        column: u16,
+    ) -> bool {
+        self.extension_ui
+            .components
+            .get(component_id)
+            .is_some_and(|component| {
+                component.generation == generation
+                    && component.visible
+                    && component
+                        .hit_regions
+                        .iter()
+                        .any(|(region_row, region_column, width)| {
+                            row == *region_row
+                                && column >= *region_column
+                                && column < region_column.saturating_add(*width)
+                        })
+            })
     }
 
     pub fn apply_extension_component_visibility(
@@ -2341,8 +2432,11 @@ impl AppState {
             .collect()
     }
 
-    pub fn extension_footer_line(&self) -> Option<&str> {
-        self.extension_component_lines("footer").into_iter().next()
+    pub fn extension_footer_line(&self) -> Option<String> {
+        self.extension_component_lines("footer")
+            .into_iter()
+            .next()
+            .map(plain_ansi_line)
     }
 
     pub fn apply_extension_ui_snapshot(&mut self, state: ExtensionUiState) -> bool {
@@ -2411,6 +2505,9 @@ impl AppState {
     }
 
     pub fn footer_status(&self) -> String {
+        if let Some(footer) = self.extension_footer_line() {
+            return footer;
+        }
         let Some(snapshot) = &self.snapshot else {
             return "未获取会话租约".to_owned();
         };
@@ -2421,17 +2518,13 @@ impl AppState {
                 format!("{}/{}", model.provider, model.id)
             });
         let extension_status = self
-            .extension_footer_line()
-            .map(str::to_owned)
-            .unwrap_or_else(|| {
-                self.extension_ui
-                    .statuses
-                    .values()
-                    .filter(|value| !value.is_empty())
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(" | ")
-            });
+            .extension_ui
+            .statuses
+            .values()
+            .filter(|value| !value.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" | ");
         format!(
             "{} 队列 {}/{} {} 思考 {} {}{}",
             snapshot.phase,
@@ -2864,7 +2957,24 @@ impl Widget for TranscriptView<'_> {
         }
         let search_height = u16::from(self.state.search.open).saturating_mul(2);
         let status_y = area.y + area.height.saturating_sub(1);
-        let content_height = area.height.saturating_sub(1 + search_height);
+        let header_lines = self
+            .state
+            .extension_header_lines(usize::from(area.height.saturating_sub(1 + search_height)));
+        let header_height = u16::try_from(header_lines.len()).unwrap_or(u16::MAX);
+        for (index, line) in header_lines.iter().enumerate() {
+            put_ansi_line(
+                buffer,
+                area.x,
+                area.y + u16::try_from(index).unwrap_or(u16::MAX),
+                line,
+                usize::from(area.width),
+            );
+        }
+        let content_y = area.y.saturating_add(header_height);
+        let content_height = area
+            .height
+            .saturating_sub(1 + search_height)
+            .saturating_sub(header_height);
         let width = usize::from(area.width.saturating_sub(1));
         let rich_width = area.width.saturating_sub(3);
         let mut row = 0_u16;
@@ -2909,7 +3019,7 @@ impl Widget for TranscriptView<'_> {
                     put_line(
                         buffer,
                         area.x,
-                        area.y + row,
+                        content_y + row,
                         &prefix,
                         width,
                         Style::default().fg(color),
@@ -2917,7 +3027,7 @@ impl Widget for TranscriptView<'_> {
                     put_rich_line(
                         buffer,
                         area.x + 2,
-                        area.y + row,
+                        content_y + row,
                         line,
                         usize::from(rich_width),
                     );
@@ -2927,7 +3037,7 @@ impl Widget for TranscriptView<'_> {
                 put_line(
                     buffer,
                     area.x,
-                    area.y + row,
+                    content_y + row,
                     &format!("{marker}{expansion} {}", round.summary()),
                     width,
                     Style::default().fg(color),
@@ -2947,7 +3057,7 @@ impl Widget for TranscriptView<'_> {
                     put_line(
                         buffer,
                         area.x + 2,
-                        area.y + row,
+                        content_y + row,
                         &value,
                         usize::from(rich_width),
                         Style::default().fg(Color::DarkGray),
@@ -2963,7 +3073,7 @@ impl Widget for TranscriptView<'_> {
                     put_line(
                         buffer,
                         area.x,
-                        area.y + row,
+                        content_y + row,
                         &format!("   {detail}"),
                         width,
                         Style::default().fg(Color::DarkGray),
@@ -2978,7 +3088,7 @@ impl Widget for TranscriptView<'_> {
             put_line(
                 buffer,
                 area.x,
-                area.y + row,
+                content_y + row,
                 &format!("~ {preview}"),
                 width,
                 Style::default().fg(Color::Yellow),
@@ -3065,14 +3175,7 @@ impl Widget for ComposerView<'_> {
             self.state.extension_widget_lines(self.widget_budget);
         let mut row = area.y;
         for line in above_lines {
-            put_line(
-                buffer,
-                area.x,
-                row,
-                line,
-                width,
-                Style::default().fg(Color::Cyan),
-            );
+            put_ansi_line(buffer, area.x, row, line, width);
             row = row.saturating_add(1);
         }
         put_line(
@@ -3123,14 +3226,7 @@ impl Widget for ComposerView<'_> {
             if row >= status_y {
                 break;
             }
-            put_line(
-                buffer,
-                area.x,
-                row,
-                line,
-                width,
-                Style::default().fg(Color::Cyan),
-            );
+            put_ansi_line(buffer, area.x, row, line, width);
             row = row.saturating_add(1);
         }
         if hidden_lines > 0 && row < status_y {
@@ -3193,6 +3289,174 @@ impl Widget for ComposerView<'_> {
             width,
             Style::default().fg(Color::DarkGray),
         );
+    }
+}
+
+pub struct ExtensionComponentOverlayView<'a> {
+    state: &'a AppState,
+    component: &'a ExtensionComponentState,
+    area: Rect,
+}
+
+impl<'a> ExtensionComponentOverlayView<'a> {
+    pub fn new(state: &'a AppState, component: &'a ExtensionComponentState, area: Rect) -> Self {
+        Self {
+            state,
+            component,
+            area,
+        }
+    }
+}
+
+pub fn extension_component_rect(
+    state: &AppState,
+    component: &ExtensionComponentState,
+    area: Rect,
+) -> Rect {
+    let widget_budget = state.extension_widget_budget(area.height);
+    let workspace = transcript_area_with_widget_budget(area, widget_budget);
+    if !component.overlay_options.overlay {
+        return workspace;
+    }
+    let requested_width = component
+        .overlay_options
+        .width
+        .as_deref()
+        .and_then(|value| component_dimension(value, workspace.width));
+    let requested_height = component
+        .overlay_options
+        .max_height
+        .as_deref()
+        .and_then(|value| component_dimension(value, workspace.height));
+    let width = requested_width
+        .or_else(|| component.desired_size.map(|size| size.0))
+        .unwrap_or(
+            component
+                .lines
+                .iter()
+                .map(|line| UnicodeWidthStr::width(plain_ansi_line(line).as_str()) as u16)
+                .max()
+                .unwrap_or(1)
+                .saturating_add(2),
+        )
+        .clamp(1, workspace.width.max(1));
+    let height = requested_height
+        .or_else(|| component.desired_size.map(|size| size.1))
+        .unwrap_or(
+            u16::try_from(component.lines.len())
+                .unwrap_or(u16::MAX)
+                .saturating_add(2),
+        )
+        .clamp(1, workspace.height.max(1));
+    let mut x = workspace.x + workspace.width.saturating_sub(width) / 2;
+    let mut y = workspace.y + workspace.height.saturating_sub(height) / 2;
+    match component.overlay_options.anchor.as_deref() {
+        Some("top") => y = workspace.y,
+        Some("bottom") => y = workspace.y + workspace.height.saturating_sub(height),
+        Some("left") => x = workspace.x,
+        Some("right") => x = workspace.x + workspace.width.saturating_sub(width),
+        Some("top-left") => {
+            x = workspace.x;
+            y = workspace.y;
+        }
+        Some("top-right") => {
+            x = workspace.x + workspace.width.saturating_sub(width);
+            y = workspace.y;
+        }
+        Some("bottom-left") => {
+            x = workspace.x;
+            y = workspace.y + workspace.height.saturating_sub(height);
+        }
+        Some("bottom-right") => {
+            x = workspace.x + workspace.width.saturating_sub(width);
+            y = workspace.y + workspace.height.saturating_sub(height);
+        }
+        _ => {}
+    }
+    if let Some(column) = component
+        .overlay_options
+        .column
+        .as_deref()
+        .and_then(|value| component_dimension(value, workspace.width))
+    {
+        x = workspace
+            .x
+            .saturating_add(column)
+            .min(workspace.x + workspace.width.saturating_sub(width));
+    }
+    if let Some(row) = component
+        .overlay_options
+        .row
+        .as_deref()
+        .and_then(|value| component_dimension(value, workspace.height))
+    {
+        y = workspace
+            .y
+            .saturating_add(row)
+            .min(workspace.y + workspace.height.saturating_sub(height));
+    }
+    Rect::new(x, y, width, height)
+}
+
+fn component_dimension(value: &str, available: u16) -> Option<u16> {
+    if let Some(percent) = value
+        .strip_suffix('%')
+        .and_then(|value| value.parse::<u16>().ok())
+    {
+        return Some(available.saturating_mul(percent.min(100)) / 100);
+    }
+    value.parse::<u16>().ok()
+}
+
+impl Widget for ExtensionComponentOverlayView<'_> {
+    fn render(self, _area: Rect, buffer: &mut Buffer) {
+        let rect = extension_component_rect(self.state, self.component, self.area);
+        let framed = self.component.overlay_options.overlay && rect.width >= 2 && rect.height >= 3;
+        if framed {
+            for row in 0..rect.height {
+                let edge = row == 0 || row == rect.height.saturating_sub(1);
+                let border = if edge {
+                    "─".repeat(usize::from(rect.width))
+                } else {
+                    format!(
+                        "│{}│",
+                        " ".repeat(usize::from(rect.width.saturating_sub(2)))
+                    )
+                };
+                put_line(
+                    buffer,
+                    rect.x,
+                    rect.y + row,
+                    &border,
+                    usize::from(rect.width),
+                    Style::default().fg(Color::Cyan),
+                );
+            }
+        }
+        let x = rect.x.saturating_add(u16::from(framed));
+        let y = rect.y.saturating_add(u16::from(framed));
+        let width = rect.width.saturating_sub(u16::from(framed) * 2);
+        let height = rect.height.saturating_sub(u16::from(framed) * 2);
+        let visible = usize::from(height);
+        for (index, line) in self.component.lines.iter().take(visible).enumerate() {
+            put_ansi_line(
+                buffer,
+                x,
+                y + u16::try_from(index).unwrap_or(u16::MAX),
+                line,
+                usize::from(width),
+            );
+        }
+        if self.component.lines.len() > visible && height > 0 {
+            put_line(
+                buffer,
+                x,
+                y + height.saturating_sub(1),
+                "… 内容已裁切",
+                usize::from(width),
+                Style::default().fg(Color::DarkGray),
+            );
+        }
     }
 }
 
@@ -3320,6 +3584,13 @@ fn sanitize_render_text(text: &str) -> String {
     text.chars()
         .filter(|character| !character.is_control())
         .collect()
+}
+
+fn put_ansi_line(buffer: &mut Buffer, x: u16, y: u16, text: &str, width: usize) {
+    let rendered = parse_ansi_lines(&[text.to_owned()]);
+    if let Some(line) = rendered.lines.first() {
+        put_rich_line(buffer, x, y, line, width);
+    }
 }
 
 fn put_line(buffer: &mut Buffer, x: u16, y: u16, text: &str, width: usize, style: Style) {

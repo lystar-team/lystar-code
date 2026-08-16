@@ -3,6 +3,37 @@ import { Type } from "typebox";
 import type { ExtensionAPI } from "../../src/runtime-adapter.ts";
 
 const scenario = process.env.LYSTAR_GUI_CONTRACT_SCENARIO ?? "text";
+let componentHandle: { hide(): void; setHidden(hidden: boolean): void } | undefined;
+
+class ContractComponent {
+	private value = "ready";
+	private readonly tui: { requestRender(): void };
+	private readonly label: string;
+	private readonly done: ((value: unknown) => void) | undefined;
+
+	constructor(tui: { requestRender(): void }, label: string, done?: (value: unknown) => void) {
+		this.tui = tui;
+		this.label = label;
+		this.done = done;
+	}
+
+	render(_width: number): string[] {
+		return [`\u001b[1;36m${this.label}\u001b[0m ${this.value}`, "component interactive"];
+	}
+
+	invalidate(): void {}
+
+	handleInput(data: string): void {
+		if (data === "x") throw new Error("component fixture throw");
+		if (data === "h") {
+			componentHandle?.hide();
+			setTimeout(() => componentHandle?.setHidden(false), 20);
+		} else if (data.startsWith("\u001b[<")) this.value = "mouse";
+		else if (data === "\r") this.done?.({ value: this.value });
+		else this.value = data === "\u001b[A" ? "up" : data;
+		this.tui.requestRender();
+	}
+}
 
 export default function runtimeContractExtension(pi: ExtensionAPI): void {
 	const faux = fauxProvider({
@@ -82,6 +113,39 @@ export default function runtimeContractExtension(pi: ExtensionAPI): void {
 			const input = await ctx.ui.input("Extension Input", "value");
 			const edited = await ctx.ui.editor("Extension Editor", "before");
 			ctx.ui.notify(`rust ui ready ${selected}/${confirmed}/${input}/${edited}`, "info");
+		},
+	});
+	pi.registerCommand("contract-components", {
+		description: "Exercise Rust Component bridge lifecycle and input",
+		handler: async (_args, ctx) => {
+			ctx.ui.setHeader((tui) => new ContractComponent(tui, "component header"));
+			ctx.ui.setFooter((tui) => new ContractComponent(tui, "component footer"));
+			setTimeout(() => ctx.ui.setFooter((tui) => new ContractComponent(tui, "component footer replace")), 30);
+			ctx.ui.setWidget("component-above", (tui) => new ContractComponent(tui, "component above"));
+			ctx.ui.setWidget("component-below", (tui) => new ContractComponent(tui, "component below"), {
+				placement: "belowEditor",
+			});
+			const result = await ctx.ui.custom(
+				(tui, _theme, _keybindings, done) => {
+					const component = new ContractComponent(tui, "component overlay", done);
+					setTimeout(() => tui.requestRender(), 20);
+					return component;
+				},
+				{
+					overlayOptions: { width: "60%", maxHeight: "50%", anchor: "top-left" },
+					onHandle: (handle) => {
+						componentHandle = handle as unknown as { hide(): void; setHidden(hidden: boolean): void };
+					},
+				},
+			);
+			ctx.ui.setStatus("component-result", JSON.stringify(result));
+		},
+	});
+	pi.registerCommand("contract-components-hide", {
+		description: "Hide then show the active Rust Component",
+		handler: async () => {
+			componentHandle?.hide();
+			setTimeout(() => componentHandle?.setHidden(false), 20);
 		},
 	});
 	pi.registerCommand("contract-rust-ui-malicious", {

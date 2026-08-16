@@ -52,6 +52,7 @@ export {
 	type HeadlessComponentAdapter,
 	type HeadlessFrame,
 	type HeadlessTerminalOwnershipViolation,
+	sanitizeHeadlessFrameLine,
 } from "./headless-adapter.ts";
 // Keybindings
 export {
