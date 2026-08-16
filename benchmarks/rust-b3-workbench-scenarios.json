@@ -8,7 +8,15 @@
     "items": 800,
     "bytes": 4194304
   },
+  "regularIdle": {
+    "durationSeconds": 2,
+    "maxInvalidFrames": 0
+  },
   "scenarios": [
+    { "name": "regular_initial", "mode": "regular" },
+    { "name": "regular_input", "mode": "regular" },
+    { "name": "regular_overlay", "mode": "regular" },
+    { "name": "regular_scroll", "mode": "regular" },
     { "name": "readonly_open" },
     { "name": "older_scroll" },
     { "name": "search" },

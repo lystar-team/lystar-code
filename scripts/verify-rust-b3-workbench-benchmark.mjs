@@ -6,6 +6,10 @@ import { rustB3WorkbenchManifest } from "./rust-b3-workbench-manifest.mjs";
 
 const SIZES = new Set(rustB3WorkbenchManifest.sizes.map(([columns, rows]) => `${columns}x${rows}`));
 const SCENARIOS = new Set(rustB3WorkbenchManifest.scenarios.map(({ name }) => name));
+const SCENARIO_MODES = new Map(
+	rustB3WorkbenchManifest.scenarios.map(({ name, mode = "fullscreen" }) => [name, mode]),
+);
+const REGULAR_IDLE = rustB3WorkbenchManifest.regularIdle;
 const ROUNDS = new Set(Array.from({ length: rustB3WorkbenchManifest.rounds }, (_, index) => index + 1));
 const CACHE_LIMITS = rustB3WorkbenchManifest.cacheLimits;
 const RECORD_COUNT = SCENARIOS.size * SIZES.size * ROUNDS.size;
@@ -56,6 +60,15 @@ function validateRow(row, key) {
 	assert(SIZES.has(`${row.columns}x${row.rows}`), `${key} has an unsupported size`);
 	assert(ROUNDS.has(row.round), `${key} has an invalid round`);
 	assert.equal(row.metric, "event_to_frame_ms", `${key} has the wrong frame metric`);
+	const terminalMode = SCENARIO_MODES.get(row.scenario);
+	assert.equal(row.terminalMode, terminalMode, `${key} has the wrong terminal mode`);
+	if (terminalMode === "regular") {
+		assert.equal(row.idleDurationMs, REGULAR_IDLE.durationSeconds * 1_000, `${key} did not cover the regular idle window`);
+		assert.equal(row.invalidIdleFrames, REGULAR_IDLE.maxInvalidFrames, `${key} rendered during regular idle`);
+	} else {
+		assert.equal(row.idleDurationMs, 0, `${key} unexpectedly recorded regular idle time`);
+		assert.equal(row.invalidIdleFrames, 0, `${key} has invalid idle frames`);
+	}
 	assert.equal(row.activeToolRounds, rustB3WorkbenchManifest.toolRounds, `${key} did not build ${rustB3WorkbenchManifest.toolRounds.toLocaleString()} active Tool rounds`);
 	assert.equal(row.readonlyToolRounds, rustB3WorkbenchManifest.toolRounds, `${key} did not build ${rustB3WorkbenchManifest.toolRounds.toLocaleString()} readonly Tool rounds`);
 	for (const prefix of ["active", "readonly"]) {

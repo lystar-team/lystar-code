@@ -2,6 +2,14 @@
 
 核验日期：2026-08-16。范围是 Linux x64 上的 Rust TUI、GUI Host 和 Unix fd3/fd4 FIFO bridge；Runtime 使用 fake adapter，Session 使用真实临时 JSONL。未调用真实 Provider，未访问网络。
 
+## B3 最终补充：Rust 运行模式与退出输出
+
+本轮在 Linux x64 完成 Rust TUI 的 `--run <session> --mode auto|fullscreen|regular --exit-output transcript|resume-hint`。旧 `--run <session>` 参数仍可用。`auto` 先读取 `PI_TUI_MODE`，再根据 stdin/stdout TTY、`TERM=dumb` 和 alternate-screen 能力决定模式；Coding Agent 的 LYStar-owned launch options helper 只把 SettingsManager 的 `tui-mode` 与 `fullscreen-exit-output` 映射为 Rust argv，不改 Node `InteractiveMode` 默认路径。
+
+fullscreen 进入 alternate screen、启用 mouse 和 cursor guard；regular 使用 raw mode、隐藏 cursor 和 Ratatui `Viewport::Inline`，不进入 alternate screen、不启 mouse，图片保留文本元数据 fallback。EOF、panic、SIGINT、SIGTERM、启动中断与 Host 关闭路径均恢复终端；regular 不清除已有 scrollback。Linux PTY guard 已覆盖两种模式的四类生命周期，共 8 个用例，逐项确认 `stty -g` 恢复，regular 输出不含 alternate-screen 或 mouse escape sequence。
+
+fullscreen 正常退出会先释放 Host lease、恢复终端，再按 `exit-output` 写 stdout。`resume-hint` 输出中文恢复提示和 shell-safe quoted `lc -r <sessionPath>`，不含 ANSI。`transcript` 以每页最多 200 条读取完整 Host transcript，磁盘临时页反向流式输出以控制内存，并保留 Tool、Diff、summary 与图片元数据；读取失败回退 resume hint，临时目录会被删除。tmux/FIFO E2E 连续两轮使用 620 条记录验证跨 UI cache 的完整时序回放、3 页以上分页、lease 为 0、`stty` 恢复，以及 regular 的 80x8 -> 120x36 resize、overlay、scrollback 与无重复退出提示。
+
 ## 富文本与图片补充
 
 Rust B3 transcript 已通过 typed `render_rich_text` 与 `read_image_content` 接入 Host。Host 使用 Coding Agent 的 `Markdown`、当前主题、Mermaid 和 active runtime Extension markdown transformers 渲染 ANSI 行；没有向 TTY 写入控制序列。Rust 解析 ANSI SGR/OSC 8 为 Ratatui spans，按可见区最多预取 8 条记录，rich text 缓存限制为 256 entries / 16 MiB，失败或未知序列回退纯文本。Session 切换、transcript commit 和 resize 会失效对应缓存。
@@ -28,7 +36,7 @@ npm run benchmark:rust-b3-workbench
 npm run benchmark:rust-b3-workbench:verify
 ```
 
-基准使用正式 `AppState`、`TranscriptWindow`、`TranscriptView`、`WorkbenchOverlayView`、Ratatui `TestBackend` 和 `CrosstermBackend<CountingWriter>`。每条 record 在计时前建立 active 10,000 Tool rounds 与 readonly 10,000 Tool rounds；两侧均受 `400 rounds / 800 items / 4 MiB` 缓存上限约束。三尺寸、十八场景、五轮共 270 条 JSONL record，新增 `attachments_open` 与 `attachment_preview`；verifier 严格检查数量、轮次、缓存、regroup、p95/p99/RSS 预算。
+基准使用正式 `AppState`、`TranscriptWindow`、`TranscriptView`、`WorkbenchOverlayView`、Ratatui `TestBackend` 和 `CrosstermBackend<CountingWriter>`。每条 record 在计时前建立 active 10,000 Tool rounds 与 readonly 10,000 Tool rounds；两侧均受 `400 rounds / 800 items / 4 MiB` 缓存上限约束。三尺寸、二十二场景、五轮共 330 条 JSONL record，其中 `regular_initial`、`regular_input`、`regular_overlay` 和 `regular_scroll` 使用 Ratatui `Viewport::Inline`；每个 regular record 还验证 2 秒空闲窗口没有额外写帧。最新实测全矩阵最大 end-to-frame p95 为 `5.380481ms`，RSS p95 为 `28,651,520` bytes（约 27.32 MiB），active/readonly cache rounds 仍为 `400/400`。verifier 同时校验场景模式、regular idle 时间/0 invalid frame、数量、轮次、缓存、regroup、p95/p99/RSS 预算。
 
 | 场景 | 尺寸 | p50 / p95 / p99 / max ms | bytes p95 | RSS p95 MiB | active / readonly cache rounds |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -48,7 +56,7 @@ npm run benchmark:rust-b3-workbench:verify
 | tree_filter | 120x36 | 3.605 / 4.166 / 4.166 / 4.166 | 2,448 | 25.805 | 400 / 400 |
 | tree_filter | 200x60 | 4.099 / 4.611 / 4.611 / 4.611 | 2,448 | 25.805 | 400 / 400 |
 
-新增附件场景的逐尺寸数据保留在 `.artifacts/rust-tui-b3-workbench/benchmark.jsonl`；最新数值以本轮 `npm run benchmark:rust-b3-workbench:verify` 输出为准。
+新增 regular 场景的逐尺寸数据保留在 `.artifacts/rust-tui-b3-workbench/benchmark.jsonl`；最新数值以本轮 `npm run benchmark:rust-b3-workbench:verify` 输出为准。
 
 ## 运行边界
 

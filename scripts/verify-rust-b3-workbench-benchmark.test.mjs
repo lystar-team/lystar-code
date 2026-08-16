@@ -4,9 +4,11 @@ import { rustB3WorkbenchManifest } from "./rust-b3-workbench-manifest.mjs";
 import { verifyRustB3Workbench } from "./verify-rust-b3-workbench-benchmark.mjs";
 
 function record(scenario, columns, rows, round) {
+	const mode = rustB3WorkbenchManifest.scenarios.find(({ name }) => name === scenario)?.mode ?? "fullscreen";
 	return {
 		implementation: rustB3WorkbenchManifest.implementation,
 		scenario,
+		terminalMode: mode,
 		columns,
 		rows,
 		round,
@@ -38,6 +40,8 @@ function record(scenario, columns, rows, round) {
 		readonlyCachedUtf8Bytes: 1024,
 		transcriptRegroupBefore: "400:active-tool-call-09600:active-tool-result-09999",
 		transcriptRegroupAfter: "400:active-tool-call-09600:active-tool-result-09999",
+		idleDurationMs: mode === "regular" ? rustB3WorkbenchManifest.regularIdle.durationSeconds * 1_000 : 0,
+		invalidIdleFrames: 0,
 	};
 }
 
@@ -82,6 +86,11 @@ test("B3 workbench verifier rejects incomplete, duplicate, over-budget, regroupe
 		},
 		(records) => {
 			records[0] = { ...records[0], rssP95Bytes: 180 * 1024 * 1024 + 1 };
+			return records;
+		},
+		(records) => {
+			const regular = records.find((row) => row.terminalMode === "regular");
+			regular.invalidIdleFrames = 1;
 			return records;
 		},
 		(records) => {

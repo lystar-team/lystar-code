@@ -1,5 +1,7 @@
 use std::{
-    io::{self, Read, Write},
+    fs::{self, File, OpenOptions},
+    io::{self, IsTerminal, Read, Write},
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -26,7 +28,7 @@ use lystar_protocol::{
     encode_queue_request, encode_read_transcript_request, encode_release_session_request,
     encode_search_transcript_request, encode_session_write_request, encode_ui_response,
 };
-use ratatui::{Terminal, backend::CrosstermBackend};
+use ratatui::{Terminal, TerminalOptions, Viewport, backend::CrosstermBackend};
 use signal_hook::{
     consts::signal::{SIGINT, SIGTERM},
     flag,
@@ -46,12 +48,112 @@ use crate::{
         UiRequestKind, UpdateDescriptor, VisibleLink, WorkbenchOverlayView, WorkbenchTarget,
         composer_area, transcript_area, transcript_images,
     },
-    image::{CachedImage, ImageSidecar, current_terminal_image_protocol},
+    image::{CachedImage, ImageSidecar, TerminalImageProtocol, current_terminal_image_protocol},
 };
 
 const INITIAL_PAGE_LIMIT: u64 = 200;
 const PAGE_LIMIT: u64 = 200;
 const SEARCH_LIMIT: u64 = 50;
+const EXIT_TRANSCRIPT_PAGE_LIMIT: u64 = 200;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalMode {
+    Auto,
+    Fullscreen,
+    Regular,
+}
+
+impl TerminalMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "auto" => Some(Self::Auto),
+            "fullscreen" => Some(Self::Fullscreen),
+            "regular" => Some(Self::Regular),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Fullscreen => "fullscreen",
+            Self::Regular => "regular",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitOutput {
+    Transcript,
+    ResumeHint,
+}
+
+impl ExitOutput {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "transcript" => Some(Self::Transcript),
+            "resume-hint" => Some(Self::ResumeHint),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunOptions {
+    pub mode: TerminalMode,
+    pub exit_output: ExitOutput,
+}
+
+impl Default for RunOptions {
+    fn default() -> Self {
+        Self {
+            mode: TerminalMode::Auto,
+            exit_output: ExitOutput::Transcript,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TerminalModeContext {
+    stdout_tty: bool,
+    stdin_tty: bool,
+    term: Option<String>,
+    env_mode: Option<TerminalMode>,
+}
+
+fn terminal_mode_context() -> TerminalModeContext {
+    TerminalModeContext {
+        stdout_tty: io::stdout().is_terminal(),
+        stdin_tty: io::stdin().is_terminal(),
+        term: std::env::var("TERM").ok(),
+        env_mode: std::env::var("PI_TUI_MODE")
+            .ok()
+            .as_deref()
+            .and_then(TerminalMode::parse),
+    }
+}
+
+fn resolve_terminal_mode(requested: TerminalMode, context: TerminalModeContext) -> TerminalMode {
+    if requested != TerminalMode::Auto {
+        return requested;
+    }
+    if let Some(mode @ (TerminalMode::Fullscreen | TerminalMode::Regular)) = context.env_mode {
+        return mode;
+    }
+    let alternate_capable = context
+        .term
+        .as_deref()
+        .is_some_and(|term| !term.is_empty() && term != "dumb");
+    if context.stdout_tty && context.stdin_tty && alternate_capable {
+        TerminalMode::Fullscreen
+    } else {
+        TerminalMode::Regular
+    }
+}
+
+fn inline_viewport_height(rows: u16) -> u16 {
+    rows.clamp(3, 24)
+}
 
 #[derive(Debug, Error)]
 pub enum TuiError {
@@ -59,6 +161,8 @@ pub enum TuiError {
     Io(#[from] io::Error),
     #[error(transparent)]
     Protocol(#[from] ProtocolError),
+    #[error("{mode} 模式无法启用终端原始输入：{message}")]
+    TerminalSetup { mode: &'static str, message: String },
     #[error("host closed the protocol pipe before hello")]
     ChildEof,
     #[error("host rejected the Rust frontend: {0}")]
@@ -151,35 +255,70 @@ enum SessionTransition {
 type SessionFlow = SessionTransition;
 
 pub struct TerminalGuard {
-    active: bool,
+    raw: bool,
+    alternate: bool,
+    mouse: bool,
+    cursor_hidden: bool,
 }
 
 impl TerminalGuard {
-    pub fn enter() -> Result<Self, io::Error> {
-        enter_terminal(
-            enable_raw_mode,
-            || {
-                let mut stdout = io::stdout();
-                execute!(stdout, EnterAlternateScreen, EnableMouseCapture, Hide)
-            },
-            disable_raw_mode,
-        )?;
-        Ok(Self { active: true })
+    pub fn enter(mode: TerminalMode) -> Result<Self, io::Error> {
+        let mut guard = Self {
+            raw: false,
+            alternate: false,
+            mouse: false,
+            cursor_hidden: false,
+        };
+        enable_raw_mode()?;
+        guard.raw = true;
+
+        let setup = (|| -> Result<(), io::Error> {
+            let mut stdout = io::stdout();
+            if mode == TerminalMode::Fullscreen {
+                execute!(stdout, EnterAlternateScreen)?;
+                guard.alternate = true;
+                execute!(stdout, EnableMouseCapture)?;
+                guard.mouse = true;
+            }
+            execute!(stdout, Hide)?;
+            guard.cursor_hidden = true;
+            Ok(())
+        })();
+        if let Err(error) = setup {
+            guard.restore();
+            return Err(error);
+        }
+        Ok(guard)
+    }
+
+    fn restore(&mut self) {
+        let mut stdout = io::stdout();
+        if self.cursor_hidden {
+            let _ = execute!(stdout, Show);
+            self.cursor_hidden = false;
+        }
+        if self.mouse {
+            let _ = execute!(stdout, DisableMouseCapture);
+            self.mouse = false;
+        }
+        if self.alternate {
+            let _ = execute!(stdout, LeaveAlternateScreen);
+            self.alternate = false;
+        }
+        if self.raw {
+            let _ = disable_raw_mode();
+            self.raw = false;
+        }
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        if !self.active {
-            return;
-        }
-        let mut stdout = io::stdout();
-        let _ = execute!(stdout, DisableMouseCapture, Show, LeaveAlternateScreen);
-        let _ = disable_raw_mode();
-        self.active = false;
+        self.restore();
     }
 }
 
+#[cfg(test)]
 fn enter_terminal<Enable, Enter, Restore>(
     enable_raw: Enable,
     enter_screen: Enter,
@@ -350,6 +489,249 @@ fn render_active_osc8_link(
     write_visible_osc8_link(terminal.backend_mut().writer_mut(), &region)
 }
 
+struct ExitTranscriptTemp {
+    directory: PathBuf,
+    pages: usize,
+}
+
+impl ExitTranscriptTemp {
+    fn new() -> Result<Self, TuiError> {
+        for attempt in 0..1_024_u16 {
+            let directory = std::env::temp_dir().join(format!(
+                "lystar-rust-tui-exit-{}-{}-{attempt}",
+                std::process::id(),
+                monotonic_millis()
+            ));
+            match fs::create_dir(&directory) {
+                Ok(()) => {
+                    return Ok(Self {
+                        directory,
+                        pages: 0,
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(TuiError::InvalidResponse(
+            "无法创建退出记录临时目录".to_owned(),
+        ))
+    }
+
+    fn write_page(&mut self, items: &[lystar_protocol::TranscriptItem]) -> Result<(), TuiError> {
+        let path = self.directory.join(format!("{:08}.txt", self.pages));
+        self.pages = self.pages.saturating_add(1);
+        let mut page = File::create(path)?;
+        for item in items {
+            page.write_all(transcript_plain_text(item).as_bytes())?;
+        }
+        page.flush()?;
+        Ok(())
+    }
+
+    fn stream_reverse(&self, output: &mut impl Write) -> Result<(), TuiError> {
+        for page in (0..self.pages).rev() {
+            let mut input = OpenOptions::new()
+                .read(true)
+                .open(self.directory.join(format!("{:08}.txt", page)))?;
+            io::copy(&mut input, output)?;
+        }
+        output.flush()?;
+        Ok(())
+    }
+}
+
+impl Drop for ExitTranscriptTemp {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.directory);
+    }
+}
+
+fn transcript_images_plain(images: Option<&[lystar_protocol::TranscriptImage]>) -> String {
+    images
+        .unwrap_or_default()
+        .iter()
+        .map(|image| {
+            format!(
+                "[图片 {} {}B contentRef:{}{}]",
+                image.mime_type,
+                image.byte_length,
+                image.content_ref,
+                image
+                    .alt
+                    .as_deref()
+                    .map_or(String::new(), |alt| format!(" alt:{alt}"))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn transcript_plain_text(item: &lystar_protocol::TranscriptItem) -> String {
+    let header = format!("\n[{} {}]\n", item.timestamp, item.entry_id);
+    let body = match &item.view {
+        TranscriptViewItem::User { text, images } => {
+            format!(
+                "用户:\n{text}\n{}",
+                transcript_images_plain(images.as_deref())
+            )
+        }
+        TranscriptViewItem::Assistant { text, images } => {
+            format!(
+                "助手:\n{text}\n{}",
+                transcript_images_plain(images.as_deref())
+            )
+        }
+        TranscriptViewItem::Thinking { text } => format!("思考:\n{text}"),
+        TranscriptViewItem::Bash { text } => format!("Bash:\n{text}"),
+        TranscriptViewItem::Custom { text } => format!("自定义:\n{text}"),
+        TranscriptViewItem::Summary { title, text } => format!("摘要 {title}:\n{text}"),
+        TranscriptViewItem::System { text } => format!("系统:\n{text}"),
+        TranscriptViewItem::ToolCall { calls } => calls
+            .iter()
+            .map(|call| {
+                format!(
+                    "Tool 调用 {} {}{}",
+                    call.name,
+                    call.summary,
+                    call.href
+                        .as_deref()
+                        .map_or(String::new(), |href| format!("\n链接: {href}"))
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        TranscriptViewItem::ToolResult {
+            call_id,
+            name,
+            status,
+            summary,
+            detail,
+            content_ref,
+            images,
+        } => format!(
+            "Tool 结果 {name} ({status}) callId:{call_id}\n摘要: {summary}{}{}{}",
+            detail
+                .as_deref()
+                .map_or(String::new(), |value| format!("\n{value}")),
+            content_ref
+                .as_deref()
+                .map_or(String::new(), |value| format!("\ncontentRef: {value}")),
+            if images.as_deref().is_some_and(|value| !value.is_empty()) {
+                format!("\n{}", transcript_images_plain(images.as_deref()))
+            } else {
+                String::new()
+            }
+        ),
+    };
+    format!("{header}{body}\n")
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn write_resume_hint(
+    output: &mut impl Write,
+    session_path: &str,
+    failure: Option<&str>,
+) -> Result<(), TuiError> {
+    if let Some(failure) = failure {
+        writeln!(output, "{failure}")?;
+    }
+    writeln!(output, "会话已保存，可使用以下命令恢复：")?;
+    writeln!(output, "lc -r {}", shell_quote(session_path))?;
+    output.flush()?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn request_exit_transcript_page(
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    request_id: &str,
+    cursor: Option<&str>,
+    context: Option<&TranscriptRequestContext>,
+) -> Result<lystar_protocol::TranscriptPage, TuiError> {
+    pipe.request(&encode_read_transcript_request(
+        request_id,
+        session_path,
+        EXIT_TRANSCRIPT_PAGE_LIMIT,
+        cursor,
+        context,
+    )?)?;
+    loop {
+        match pipe.inbound.recv_timeout(Duration::from_secs(3)) {
+            Ok(Ok(message)) => match message.read_only()? {
+                ReadOnlyMessage::Response(ReadOnlyResponse::TranscriptPage { id, page })
+                    if id == request_id =>
+                {
+                    if !page.complete {
+                        return Err(TuiError::InvalidResponse("退出记录页未完整返回".to_owned()));
+                    }
+                    return Ok(page);
+                }
+                ReadOnlyMessage::Response(ReadOnlyResponse::Error { id, message })
+                    if id == request_id =>
+                {
+                    return Err(TuiError::InvalidResponse(message));
+                }
+                _ => {}
+            },
+            Ok(Err(error)) => return Err(error),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                return Err(TuiError::InvalidResponse("读取退出记录超时".to_owned()));
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(TuiError::ChildEof),
+        }
+    }
+}
+
+#[cfg(unix)]
+fn emit_exit_output(
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    output: ExitOutput,
+) -> Result<(), TuiError> {
+    if output == ExitOutput::ResumeHint {
+        return write_resume_hint(&mut io::stdout(), session_path, None);
+    }
+    let mut temporary = ExitTranscriptTemp::new()?;
+    let mut cursor: Option<String> = None;
+    let mut generation = None;
+    let mut revision = None;
+    let mut page_number = 0_u64;
+    loop {
+        page_number = page_number.saturating_add(1);
+        let request_id = format!("exit-transcript-{page_number}");
+        let context = cursor.as_ref().map(|cursor| TranscriptRequestContext {
+            generation: generation.clone(),
+            revision,
+            cursor: Some(cursor.clone()),
+        });
+        let page = request_exit_transcript_page(
+            pipe,
+            session_path,
+            &request_id,
+            cursor.as_deref(),
+            context.as_ref(),
+        )?;
+        if page.items.len() > EXIT_TRANSCRIPT_PAGE_LIMIT as usize {
+            return Err(TuiError::InvalidResponse(
+                "退出记录页超过 200 条".to_owned(),
+            ));
+        }
+        temporary.write_page(&page.items)?;
+        generation = Some(page.transcript_generation);
+        revision = Some(page.transcript_revision);
+        cursor = page.previous_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    temporary.stream_reverse(&mut io::stdout())
+}
+
 #[cfg(unix)]
 pub fn handshake_inherited_pipes() -> Result<(), TuiError> {
     let _pipe = ProtocolPipe::connect("lystar-rust-handshake")?;
@@ -365,19 +747,49 @@ pub fn handshake_inherited_pipes() -> Result<(), TuiError> {
 
 #[cfg(unix)]
 pub fn run(session_path: &str) -> Result<(), TuiError> {
-    let shutdown = Arc::new(AtomicBool::new(false));
-    flag::register(SIGINT, Arc::clone(&shutdown))?;
-    flag::register(SIGTERM, Arc::clone(&shutdown))?;
+    run_with_options(session_path, RunOptions::default())
+}
+
+#[cfg(unix)]
+pub fn run_with_options(session_path: &str, options: RunOptions) -> Result<(), TuiError> {
+    let mode = resolve_terminal_mode(options.mode, terminal_mode_context());
     let client_instance_id = std::env::var("PI_RUST_TUI_CLIENT_INSTANCE_ID")
         .unwrap_or_else(|_| format!("lystar-rust-m8-{}", std::process::id()));
     let mut pipe = ProtocolPipe::connect(&client_instance_id)?;
+    let result = run_session(session_path, mode, &client_instance_id, &mut pipe);
+    if mode == TerminalMode::Fullscreen
+        && let Err(error) = emit_exit_output(&mut pipe, session_path, options.exit_output)
+    {
+        write_resume_hint(
+            &mut io::stdout(),
+            session_path,
+            Some(&format!("读取完整记录失败：{error}")),
+        )?;
+    }
+    result
+}
+
+#[cfg(unix)]
+fn run_session(
+    session_path: &str,
+    mode: TerminalMode,
+    client_instance_id: &str,
+    pipe: &mut ProtocolPipe,
+) -> Result<(), TuiError> {
+    let shutdown = Arc::new(AtomicBool::new(false));
+    flag::register(SIGINT, Arc::clone(&shutdown))?;
+    flag::register(SIGTERM, Arc::clone(&shutdown))?;
+    let _terminal_guard = TerminalGuard::enter(mode).map_err(|error| TuiError::TerminalSetup {
+        mode: mode.name(),
+        message: error.to_string(),
+    })?;
     let mut request_sequence = 0_u64;
     let mut app = AppState::default();
     let generation = app.begin_active_session(session_path.to_owned(), String::new());
     let acquire_id = request_acquire(
-        &mut pipe,
+        pipe,
         session_path,
-        &client_instance_id,
+        client_instance_id,
         &mut request_sequence,
     )?;
     let mut session_flow = Some(SessionFlow::InitialAcquiring {
@@ -388,7 +800,7 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
     let mut quit_requested = false;
     request_transcript(
         &mut app,
-        &mut pipe,
+        pipe,
         session_path,
         None,
         true,
@@ -397,10 +809,22 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
         &mut request_sequence,
     )?;
 
-    let _terminal_guard = TerminalGuard::enter()?;
     let backend = CrosstermBackend::new(io::stdout());
-    let mut terminal = Terminal::new(backend)?;
-    let mut image_sidecar = ImageSidecar::new(current_terminal_image_protocol());
+    let mut terminal = match mode {
+        TerminalMode::Fullscreen => Terminal::new(backend)?,
+        TerminalMode::Regular => Terminal::with_options(
+            backend,
+            TerminalOptions {
+                viewport: Viewport::Inline(inline_viewport_height(crossterm::terminal::size()?.1)),
+            },
+        )?,
+        TerminalMode::Auto => unreachable!("terminal mode must be resolved before rendering"),
+    };
+    let mut image_sidecar = ImageSidecar::new(if mode == TerminalMode::Fullscreen {
+        current_terminal_image_protocol()
+    } else {
+        TerminalImageProtocol::Unknown
+    });
     trace("terminal_ready");
     app.mark_page_load_pending();
     let mut dirty = true;
@@ -436,7 +860,7 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                 terminal.backend_mut().writer_mut(),
                 std::env::var_os("TMUX").is_some(),
             )?;
-            release_active_session(&app, &mut pipe, &mut request_sequence)?;
+            release_active_session(&app, pipe, &mut request_sequence)?;
             return Ok(());
         }
 
@@ -448,9 +872,9 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                     process_inbound_message(
                         &mut app,
                         message,
-                        &mut pipe,
+                        pipe,
                         session_path,
-                        &client_instance_id,
+                        client_instance_id,
                         &mut request_sequence,
                         &mut session_flow,
                         &mut quit_requested,
@@ -472,9 +896,9 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                         &mut app,
                         key.code,
                         key.modifiers,
-                        &mut pipe,
+                        pipe,
                         session_path,
-                        &client_instance_id,
+                        client_instance_id,
                         &mut request_sequence,
                         &mut session_flow,
                         &mut quit_requested,
@@ -483,7 +907,7 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                             terminal.backend_mut().writer_mut(),
                             std::env::var_os("TMUX").is_some(),
                         )?;
-                        release_active_session(&app, &mut pipe, &mut request_sequence)?;
+                        release_active_session(&app, pipe, &mut request_sequence)?;
                         return Ok(());
                     }
                     state_changed = true;
@@ -536,9 +960,9 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                     process_inbound_message(
                         &mut app,
                         message,
-                        &mut pipe,
+                        pipe,
                         session_path,
-                        &client_instance_id,
+                        client_instance_id,
                         &mut request_sequence,
                         &mut session_flow,
                         &mut quit_requested,
@@ -581,7 +1005,7 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
                 app.mark_page_load_pending();
                 request_transcript(
                     &mut app,
-                    &mut pipe,
+                    pipe,
                     &active_path,
                     Some(cursor),
                     false,
@@ -616,7 +1040,7 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
         }) {
             request_transcript(
                 &mut app,
-                &mut pipe,
+                pipe,
                 &path,
                 Some(cursor),
                 false,
@@ -637,14 +1061,14 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
             let width = terminal.size()?.width.saturating_sub(3).clamp(1, 500);
             if request_visible_rich_text(
                 &mut app,
-                &mut pipe,
+                pipe,
                 &active_path,
                 width,
                 &mut request_sequence,
             )? {
                 state_changed = true;
             }
-            if request_visible_images(&mut app, &mut pipe, &active_path, &mut request_sequence)? {
+            if request_visible_images(&mut app, pipe, &active_path, &mut request_sequence)? {
                 state_changed = true;
             }
         }
@@ -653,10 +1077,15 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
 }
 
 #[cfg(not(unix))]
-pub fn run(_session_path: &str) -> Result<(), TuiError> {
+pub fn run_with_options(_session_path: &str, _options: RunOptions) -> Result<(), TuiError> {
     Err(TuiError::HelloRejected(
         "Windows named-pipe transport is not implemented".to_owned(),
     ))
+}
+
+#[cfg(not(unix))]
+pub fn run(_session_path: &str) -> Result<(), TuiError> {
+    run_with_options(_session_path, RunOptions::default())
 }
 
 #[cfg(unix)]
@@ -7276,10 +7705,22 @@ fn apply_event(
 }
 
 pub fn run_shell(wait_for_child_eof: bool, panic_after_enter: bool) -> Result<(), TuiError> {
+    run_shell_with_mode(
+        wait_for_child_eof,
+        panic_after_enter,
+        TerminalMode::Fullscreen,
+    )
+}
+
+pub fn run_shell_with_mode(
+    wait_for_child_eof: bool,
+    panic_after_enter: bool,
+    mode: TerminalMode,
+) -> Result<(), TuiError> {
     let shutdown = Arc::new(AtomicBool::new(false));
     flag::register(SIGINT, Arc::clone(&shutdown))?;
     flag::register(SIGTERM, Arc::clone(&shutdown))?;
-    let _terminal = TerminalGuard::enter()?;
+    let _terminal = TerminalGuard::enter(mode)?;
     if panic_after_enter {
         panic!("terminal guard panic probe");
     }
@@ -7357,6 +7798,73 @@ mod tests {
         let output = std::fs::File::create(path).unwrap();
         let (_sender, inbound) = mpsc::sync_channel(1);
         ProtocolPipe { output, inbound }
+    }
+
+    #[test]
+    fn resolves_auto_mode_from_environment_and_terminal_capability() {
+        let regular = TerminalModeContext {
+            stdout_tty: true,
+            stdin_tty: true,
+            term: Some("dumb".to_owned()),
+            env_mode: None,
+        };
+        assert_eq!(
+            resolve_terminal_mode(TerminalMode::Auto, regular),
+            TerminalMode::Regular
+        );
+        let fullscreen = TerminalModeContext {
+            stdout_tty: true,
+            stdin_tty: true,
+            term: Some("xterm-256color".to_owned()),
+            env_mode: None,
+        };
+        assert_eq!(
+            resolve_terminal_mode(TerminalMode::Auto, fullscreen),
+            TerminalMode::Fullscreen
+        );
+        let env_regular = TerminalModeContext {
+            stdout_tty: true,
+            stdin_tty: true,
+            term: Some("xterm-256color".to_owned()),
+            env_mode: Some(TerminalMode::Regular),
+        };
+        assert_eq!(
+            resolve_terminal_mode(TerminalMode::Auto, env_regular),
+            TerminalMode::Regular
+        );
+        assert_eq!(inline_viewport_height(8), 8);
+        assert_eq!(inline_viewport_height(60), 24);
+    }
+
+    #[test]
+    fn resume_hint_quotes_shell_paths_and_transcript_projection_keeps_metadata() {
+        let mut hint = Vec::new();
+        write_resume_hint(&mut hint, "/tmp/a'b.jsonl", None).unwrap();
+        assert_eq!(
+            String::from_utf8(hint).unwrap(),
+            "会话已保存，可使用以下命令恢复：\nlc -r '/tmp/a'\"'\"'b.jsonl'\n"
+        );
+        let projected = transcript_plain_text(&lystar_protocol::TranscriptItem {
+            entry_id: "tool-result".to_owned(),
+            timestamp: "2026-08-16T00:00:00Z".to_owned(),
+            view: TranscriptViewItem::ToolResult {
+                call_id: "call-1".to_owned(),
+                name: "apply_patch".to_owned(),
+                status: "success".to_owned(),
+                summary: "更新文件".to_owned(),
+                detail: Some("diff --git a/a b/a".to_owned()),
+                content_ref: Some("content_ref://tool/1".to_owned()),
+                images: Some(vec![lystar_protocol::TranscriptImage {
+                    content_ref: "content_ref://image/1".to_owned(),
+                    mime_type: "image/png".to_owned(),
+                    byte_length: 42,
+                    alt: Some("预览".to_owned()),
+                }]),
+            },
+        });
+        assert!(projected.contains("diff --git"));
+        assert!(projected.contains("contentRef: content_ref://tool/1"));
+        assert!(projected.contains("图片 image/png 42B contentRef:content_ref://image/1 alt:预览"));
     }
 
     #[test]

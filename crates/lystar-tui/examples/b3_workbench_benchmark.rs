@@ -6,24 +6,30 @@ use std::{
     io::{self, Write},
     path::PathBuf,
     rc::Rc,
-    time::Instant,
+    thread::sleep,
+    time::{Duration, Instant},
 };
 
 use lystar_protocol::{ToolCall, TranscriptItem, TranscriptViewItem};
 use lystar_tui::{
     app::{
-        composer_area, transcript_area, AppState, ComposerAttachment, ComposerView, DetailOverlay,
-        ListOverlay, OverlayItem, OverlayOrigin, OverlayState, ReadonlySessionView,
-        SessionTreeNode, TranscriptView, WorkbenchOverlayView,
+        AppState, ComposerAttachment, ComposerView, DetailOverlay, ListOverlay, OverlayItem,
+        OverlayOrigin, OverlayState, ReadonlySessionView, SessionTreeNode, TranscriptView,
+        WorkbenchOverlayView, composer_area, transcript_area,
     },
     editor::EditorState,
 };
 use ratatui::{
+    Terminal, TerminalOptions, Viewport,
     backend::{CrosstermBackend, TestBackend},
     layout::Rect,
-    Terminal,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
+
+struct BenchmarkScenario {
+    name: String,
+    mode: String,
+}
 
 struct BenchmarkConfig {
     implementation: String,
@@ -31,7 +37,13 @@ struct BenchmarkConfig {
     rounds: usize,
     tool_rounds: usize,
     cache_limits: CacheLimits,
-    scenarios: Vec<String>,
+    regular_idle: RegularIdle,
+    scenarios: Vec<BenchmarkScenario>,
+}
+
+struct RegularIdle {
+    duration: Duration,
+    max_invalid_frames: usize,
 }
 
 struct CacheLimits {
@@ -113,11 +125,20 @@ fn benchmark_config() -> BenchmarkConfig {
             items: number_field(cache_limits, "items"),
             bytes: number_field(cache_limits, "bytes"),
         },
+        regular_idle: RegularIdle {
+            duration: Duration::from_secs(
+                number_field(&value["regularIdle"], "durationSeconds") as u64
+            ),
+            max_invalid_frames: number_field(&value["regularIdle"], "maxInvalidFrames"),
+        },
         scenarios: value["scenarios"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|scenario| string_field(scenario, "name").to_owned())
+            .map(|scenario| BenchmarkScenario {
+                name: string_field(scenario, "name").to_owned(),
+                mode: scenario["mode"].as_str().unwrap_or("fullscreen").to_owned(),
+            })
             .collect(),
     }
 }
@@ -142,15 +163,27 @@ fn run_case(
     round: usize,
     columns: u16,
     rows: u16,
-    scenario: &str,
+    scenario: &BenchmarkScenario,
     config: &BenchmarkConfig,
 ) {
-    let mut benchmark = setup(columns, rows, config.tool_rounds);
+    let mut benchmark = setup(
+        columns,
+        rows,
+        config.tool_rounds,
+        scenario.mode == "regular",
+    );
     let regroup_before = regroup_signature(&benchmark.app);
     let started = Instant::now();
-    apply_scenario(&mut benchmark.app, scenario);
+    apply_scenario(&mut benchmark.app, &scenario.name);
     let bytes = draw(&mut benchmark);
     let elapsed = started.elapsed().as_secs_f64() * 1_000.0;
+    let invalid_idle_frames = if scenario.mode == "regular" {
+        let invalid = assert_regular_idle(&mut benchmark, config.regular_idle.duration);
+        assert!(invalid <= config.regular_idle.max_invalid_frames);
+        invalid
+    } else {
+        0
+    };
     let rss = rss_bytes();
     let regroup_after = regroup_signature(&benchmark.app);
 
@@ -182,7 +215,8 @@ fn run_case(
         out,
         json!({
             "implementation": config.implementation,
-            "scenario": scenario,
+            "scenario": scenario.name,
+            "terminalMode": scenario.mode,
             "columns": columns,
             "rows": rows,
             "round": round,
@@ -214,11 +248,13 @@ fn run_case(
             "readonlyCachedUtf8Bytes": readonly.cached_utf8_bytes,
             "transcriptRegroupBefore": regroup_before,
             "transcriptRegroupAfter": regroup_after,
+            "idleDurationMs": if scenario.mode == "regular" { config.regular_idle.duration.as_millis() } else { 0 },
+            "invalidIdleFrames": invalid_idle_frames,
         }),
     );
 }
 
-fn setup(columns: u16, rows: u16, tool_rounds: usize) -> BenchmarkApp {
+fn setup(columns: u16, rows: u16, tool_rounds: usize, regular: bool) -> BenchmarkApp {
     let mut app = AppState::default();
     app.editor = EditorState::default();
     app.transcript.replace_page(
@@ -242,7 +278,18 @@ fn setup(columns: u16, rows: u16, tool_rounds: usize) -> BenchmarkApp {
     app.readonly_view = Some(readonly);
     app.tree = tree_nodes();
 
-    let visual = Terminal::new(TestBackend::new(columns, rows)).unwrap();
+    let viewport = if regular {
+        Viewport::Inline(rows)
+    } else {
+        Viewport::Fullscreen
+    };
+    let visual = Terminal::with_options(
+        TestBackend::new(columns, rows),
+        TerminalOptions {
+            viewport: viewport.clone(),
+        },
+    )
+    .unwrap();
     let writer_stats = Rc::new(RefCell::new(WriterStats { bytes: 0, hash: 0 }));
     let writer = Terminal::new(CrosstermBackend::new(CountingWriter {
         stats: Rc::clone(&writer_stats),
@@ -269,8 +316,28 @@ fn setup(columns: u16, rows: u16, tool_rounds: usize) -> BenchmarkApp {
     benchmark
 }
 
+fn assert_regular_idle(benchmark: &mut BenchmarkApp, duration: Duration) -> usize {
+    let frames_before = benchmark.writer_stats.borrow().bytes;
+    let deadline = Instant::now() + duration;
+    while Instant::now() < deadline {
+        sleep(Duration::from_millis(16));
+    }
+    usize::from(benchmark.writer_stats.borrow().bytes != frames_before)
+}
+
 fn apply_scenario(app: &mut AppState, scenario: &str) {
     match scenario {
+        "regular_initial" => {}
+        "regular_input" => app.editor.insert("regular inline benchmark input"),
+        "regular_overlay" => app.open_overlay(OverlayState::Detail(DetailOverlay {
+            title: "帮助".to_owned(),
+            lines: vec!["regular inline overlay".to_owned()],
+            scroll: 0,
+            status: "Esc 返回".to_owned(),
+            link: None,
+            copy_text: None,
+        })),
+        "regular_scroll" => app.transcript.scroll_by(-20),
         "readonly_open" => open_readonly(app),
         "older_scroll" => {
             app.readonly_view

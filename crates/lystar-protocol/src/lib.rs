@@ -18,7 +18,7 @@ pub use framing::{
 
 pub use read_only::{
     MAX_PROGRESS_PREVIEW_BYTES, ModelRef, OperationSnapshot, ReadOnlyEvent, ReadOnlyMessage,
-    ReadOnlyResponse, SessionProgress, SessionSnapshot, ToolCall, TranscriptItem, TranscriptPage,
-    TranscriptRequestContext, TranscriptSearchHit, TranscriptSearchResult, TranscriptViewItem,
-    UsageProgress,
+    ReadOnlyResponse, SessionProgress, SessionSnapshot, ToolCall, TranscriptImage, TranscriptItem,
+    TranscriptPage, TranscriptRequestContext, TranscriptSearchHit, TranscriptSearchResult,
+    TranscriptViewItem, UsageProgress,
 };

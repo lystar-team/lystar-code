@@ -17,8 +17,11 @@ run_case() {
   local command
   case "$mode" in
     eof) command="exec 3</dev/null; '$binary' --shell-pipe" ;;
+    eof_regular) command="exec 3</dev/null; '$binary' --shell-pipe-regular" ;;
     panic) command="'$binary' --shell-panic" ;;
+    panic_regular) command="'$binary' --shell-panic-regular" ;;
     shell) command="'$binary' --shell & child=\$!; echo \$child > '$case_dir/pid'; wait \$child" ;;
+    shell_regular) command="'$binary' --shell-regular & child=\$!; echo \$child > '$case_dir/pid'; wait \$child" ;;
     *) exit 2 ;;
   esac
   tmux -L "$socket" new-session -d -s "$name" -x "$width" -y "$height" \
@@ -39,8 +42,13 @@ run_case() {
     sigint|sigterm) [[ "$status" == 0 ]] ;;
   esac
   tail -c 2048 "$case_dir/output" | grep -aFq $'\033[?25h'
-  tail -c 2048 "$case_dir/output" | grep -aFq $'\033[?1049l'
-  tail -c 2048 "$case_dir/output" | grep -aFq $'\033[?1000l'
+  if [[ "$mode" == *_regular ]]; then
+    ! tail -c 2048 "$case_dir/output" | grep -aFq $'\033[?1049'
+    ! tail -c 2048 "$case_dir/output" | grep -aFq $'\033[?1000'
+  else
+    tail -c 2048 "$case_dir/output" | grep -aFq $'\033[?1049l'
+    tail -c 2048 "$case_dir/output" | grep -aFq $'\033[?1000l'
+  fi
   printf '%s status=%s stty=restored\n' "$name" "$status"
 }
 
@@ -48,3 +56,7 @@ run_case eof eof "" 80 8
 run_case panic panic "" 80 24
 run_case sigint shell INT 120 36
 run_case sigterm shell TERM 200 60
+run_case eof_regular eof_regular "" 80 8
+run_case panic_regular panic_regular "" 80 24
+run_case sigint_regular shell_regular INT 120 36
+run_case sigterm_regular shell_regular TERM 200 60

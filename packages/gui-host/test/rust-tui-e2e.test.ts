@@ -8,6 +8,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	openSync,
+	readdirSync,
 	readFileSync,
 	readSync,
 	rmSync,
@@ -1129,6 +1130,11 @@ async function openSessions(tui: StartedTui): Promise<void> {
 	tui.send("Enter");
 	const request = await waitForRequest(tui, "list_sessions", count + 1);
 	await waitFor(() => tui.pane().includes("会话"), "session chooser did not render");
+	await waitFor(
+		() =>
+			tui.serverMessages.some((message) => message.type === "response" && message.id === request.id && message.ok),
+		"Host did not return session list",
+	);
 	const response = tui.serverMessages.find(
 		(message) => message.type === "response" && message.id === request.id && message.ok,
 	);
@@ -1174,6 +1180,9 @@ interface StartedTui {
 	clientInstanceId: string;
 	sttyBeforePath: string;
 	sttyAfterPath: string;
+	rawOutputPath: string;
+	rawOutput(): string;
+	paneHistory(): string;
 	fixture?: WorkbenchFixture;
 	emitServer(message: ServerMessage): void;
 	closeProtocol(): void;
@@ -1184,6 +1193,7 @@ async function startTui(
 	dimensions: { width: number; height: number },
 	label: string,
 	hostFactory?: (context: { directory: string; sessionPath: string }) => WorkbenchFixture,
+	runOptions: { mode?: "auto" | "fullscreen" | "regular"; exitOutput?: "transcript" | "resume-hint" } = {},
 ): Promise<StartedTui> {
 	run("cargo", ["build", "--release", "-p", "lystar-tui"]);
 	const directory = mkdtempSync(join(tmpdir(), "lystar-rust-m7-e2e-"));
@@ -1196,6 +1206,7 @@ async function startTui(
 	const tracePath = join(artifactDirectory, "rust-trace.log");
 	const sttyBeforePath = join(artifactDirectory, "stty-before");
 	const sttyAfterPath = join(artifactDirectory, "stty-after");
+	const rawOutputPath = join(artifactDirectory, "terminal-output.raw");
 	writeFileSync(sessionPath, sessionEntries(rounds));
 	run("/usr/bin/mkfifo", [toRust, fromRust]);
 
@@ -1212,7 +1223,7 @@ async function startTui(
 	sockets.add(socket);
 	const clientInstanceId = `lystar-rust-m8-${socket}`;
 	const binary = join(repositoryRoot, "target/release/lystar-tui");
-	const command = `exec 3<${shellQuote(toRust)} 4>${shellQuote(fromRust)}; before=$(stty -g); printf %s "$before" > ${shellQuote(sttyBeforePath)}; env PI_RUST_TUI_TRACE=1 PI_RUST_TUI_CLIENT_INSTANCE_ID=${shellQuote(clientInstanceId)} ${shellQuote(binary)} --run ${shellQuote(sessionPath)} 2>${shellQuote(tracePath)}; status=$?; after=$(stty -g); printf %s "$after" > ${shellQuote(sttyAfterPath)}; exit $status`;
+	const command = `exec 3<${shellQuote(toRust)} 4>${shellQuote(fromRust)}; before=$(stty -g); printf %s "$before" > ${shellQuote(sttyBeforePath)}; env PI_RUST_TUI_TRACE=1 PI_RUST_TUI_CLIENT_INSTANCE_ID=${shellQuote(clientInstanceId)} ${shellQuote(binary)} --run ${shellQuote(sessionPath)} --mode ${shellQuote(runOptions.mode ?? "auto")} --exit-output ${shellQuote(runOptions.exitOutput ?? "transcript")} 2>${shellQuote(tracePath)}; status=$?; after=$(stty -g); printf %s "$after" > ${shellQuote(sttyAfterPath)}; exit $status`;
 	run("tmux", [
 		"-L",
 		socket,
@@ -1226,6 +1237,7 @@ async function startTui(
 		String(dimensions.height),
 		command,
 	]);
+	run("tmux", ["-L", socket, "pipe-pane", "-o", "-t", "tui", `cat > ${shellQuote(rawOutputPath)}`]);
 	closeDescriptor(incomingReader);
 	closeDescriptor(outgoingWriter);
 
@@ -1280,6 +1292,8 @@ async function startTui(
 	};
 	const traces = () => readTrace(tracePath);
 	const pane = () => run("tmux", ["-L", socket, "capture-pane", "-p", "-t", "tui"]);
+	const paneHistory = () => run("tmux", ["-L", socket, "capture-pane", "-p", "-S", "-2000", "-t", "tui"]);
+	const rawOutput = () => (existsSync(rawOutputPath) ? readFileSync(rawOutputPath, "utf8") : "");
 	const resize = (width: number, height: number) => {
 		run("tmux", ["-L", socket, "resize-window", "-t", "tui", "-x", String(width), "-y", String(height)]);
 	};
@@ -1316,6 +1330,9 @@ async function startTui(
 		clientInstanceId,
 		sttyBeforePath,
 		sttyAfterPath,
+		rawOutputPath,
+		rawOutput,
+		paneHistory,
 		fixture,
 		emitServer,
 		closeProtocol,
@@ -3151,6 +3168,93 @@ describe("Rust B3 会话工作台外部验收", () => {
 				assert.equal(hostLeaseCount(tui.service), 0, "Tree exit left a Host lease");
 			} finally {
 				tui.closeProtocol();
+			}
+		}
+	}, 240_000);
+
+	it("streams complete fullscreen exit transcript and preserves regular scrollback", async () => {
+		const exitTemporaryDirectories = new Set(
+			readdirSync(tmpdir()).filter((name) => name.startsWith("lystar-rust-tui-exit-")),
+		);
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const fullscreen = await startTui(
+				620,
+				{ width: 80, height: 24 },
+				`exit-transcript-${attempt + 1}`,
+				undefined,
+				{ mode: "fullscreen", exitOutput: "transcript" },
+			);
+			try {
+				await waitForInitialPage(fullscreen);
+				fullscreen.send("q");
+				await waitFor(
+					async () => {
+						await fullscreen.pump();
+						return spawnSync("tmux", ["-L", fullscreen.socket, "has-session", "-t", "tui"]).status !== 0;
+					},
+					"fullscreen exit did not complete",
+					30_000,
+				);
+				await waitFor(
+					() => fullscreen.rawOutput().includes("needle 0") && fullscreen.rawOutput().includes("needle 619"),
+					"fullscreen exit transcript did not include pages outside the UI cache",
+				);
+				const transcript = fullscreen.rawOutput();
+				assert.ok(
+					transcript.indexOf("needle 0") < transcript.lastIndexOf("needle 619"),
+					"fullscreen exit transcript order is not chronological",
+				);
+				assert.ok(
+					fullscreen.requests.filter((request) => request.id.startsWith("exit-transcript-")).length >= 3,
+					"fullscreen exit did not page through the complete transcript",
+				);
+				assert.equal(
+					readFileSync(fullscreen.sttyBeforePath, "utf8"),
+					readFileSync(fullscreen.sttyAfterPath, "utf8"),
+				);
+				assert.equal(hostLeaseCount(fullscreen.service), 0, "fullscreen exit left a Host lease");
+				assert.deepEqual(
+					readdirSync(tmpdir())
+						.filter((name) => name.startsWith("lystar-rust-tui-exit-"))
+						.sort(),
+					[...exitTemporaryDirectories].sort(),
+					"fullscreen exit left transcript temporary pages behind",
+				);
+			} finally {
+				fullscreen.closeProtocol();
+			}
+
+			const regular = await startTui(240, { width: 80, height: 8 }, `regular-${attempt + 1}`, undefined, {
+				mode: "regular",
+				exitOutput: "resume-hint",
+			});
+			try {
+				await waitForInitialPage(regular);
+				regular.sendLiteral("/help");
+				regular.send("Enter");
+				regular.resize(120, 36);
+				await waitFor(() => regular.pane().includes("帮助"), "regular overlay did not survive resize");
+				regular.send("Escape");
+				await waitFor(() => regular.pane().includes("Enter 提交"), "regular overlay did not close");
+				const regularHistory = regular.paneHistory();
+				regular.send("q");
+				await waitFor(
+					async () => {
+						await regular.pump();
+						return spawnSync("tmux", ["-L", regular.socket, "has-session", "-t", "tui"]).status !== 0;
+					},
+					"regular exit did not complete",
+					30_000,
+				);
+				const raw = regular.rawOutput();
+				assert.doesNotMatch(raw, /\x1b\[\?1049[hl]/, "regular mode entered or left the alternate screen");
+				assert.doesNotMatch(raw, /\x1b\[\?1000[hl]/, "regular mode enabled mouse capture");
+				assert.ok(regularHistory.includes("needle"), "regular mode did not retain transcript scrollback");
+				assert.ok(!raw.includes("会话已保存，可使用以下命令恢复"), "regular exit printed a duplicate resume hint");
+				assert.equal(readFileSync(regular.sttyBeforePath, "utf8"), readFileSync(regular.sttyAfterPath, "utf8"));
+				assert.equal(hostLeaseCount(regular.service), 0, "regular exit left a Host lease");
+			} finally {
+				regular.closeProtocol();
 			}
 		}
 	}, 240_000);
