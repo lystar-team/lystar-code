@@ -602,6 +602,7 @@ pub fn merge_subagents(
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct ComposerAttachment {
+    pub id: u64,
     pub name: String,
     pub source: String,
     pub mime_type: String,
@@ -614,6 +615,7 @@ impl fmt::Debug for ComposerAttachment {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ComposerAttachment")
+            .field("id", &self.id)
             .field("name", &self.name)
             .field("source", &self.source)
             .field("mime_type", &self.mime_type)
@@ -622,6 +624,65 @@ impl fmt::Debug for ComposerAttachment {
             .field("base64", &"[redacted]")
             .finish()
     }
+}
+
+#[derive(Clone)]
+pub struct PendingAttachmentSubmit {
+    pub command: String,
+    pub session_path: String,
+    pub lease_id: String,
+    pub client_instance_id: String,
+    pub client_request_id: String,
+    pub text: String,
+    pub attachments: Vec<ComposerAttachment>,
+    pub started_at: Instant,
+}
+
+impl fmt::Debug for PendingAttachmentSubmit {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PendingAttachmentSubmit")
+            .field("command", &self.command)
+            .field("session_path", &self.session_path)
+            .field("lease_id", &"[redacted]")
+            .field("client_instance_id", &self.client_instance_id)
+            .field("client_request_id", &self.client_request_id)
+            .field("text", &self.text)
+            .field("attachments", &self.attachments)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComposerCompletionItem {
+    pub value: String,
+    pub label: String,
+    pub description: Option<String>,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComposerCompletion {
+    pub text: String,
+    pub prefix_start: usize,
+    pub prefix_end: usize,
+    pub items: Vec<ComposerCompletionItem>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardReadTarget {
+    Insert,
+    Overlay,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClipboardReadState {
+    pub generation: u64,
+    pub target: ClipboardReadTarget,
+    pub text: Option<ClipboardDescriptor>,
+    pub image: Option<ComposerAttachment>,
+    pub text_done: bool,
+    pub image_done: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -912,6 +973,15 @@ pub enum PendingIntent {
     ClipboardRead {
         insert: bool,
     },
+    ClipboardBothText {
+        generation: u64,
+    },
+    ClipboardBothImage {
+        generation: u64,
+    },
+    AttachCompletion {
+        text: String,
+    },
     ProjectImage {
         source: String,
     },
@@ -1046,7 +1116,12 @@ pub struct AppState {
     pub subagent_parent_path: Option<String>,
     pub clipboard: Option<ClipboardDescriptor>,
     pub attachments: Vec<ComposerAttachment>,
-    pub pending_attachment_submits: HashMap<String, Vec<String>>,
+    pub pending_attachment_submits: HashMap<String, PendingAttachmentSubmit>,
+    pub attachment_preview: Option<String>,
+    pub composer_completion: Option<ComposerCompletion>,
+    pub clipboard_read_generation: u64,
+    pub clipboard_read: Option<ClipboardReadState>,
+    next_attachment_id: u64,
     pub subagent_detail: Option<SubagentDescriptor>,
     pub settings: Vec<SettingDescriptor>,
     pub models: Vec<ModelDescriptor>,
@@ -1108,16 +1183,86 @@ impl AppState {
         Ok(true)
     }
 
+    pub fn new_attachment(
+        &mut self,
+        name: String,
+        source: String,
+        mime_type: String,
+        byte_length: usize,
+        content_hash: String,
+        base64: String,
+    ) -> ComposerAttachment {
+        self.next_attachment_id = self.next_attachment_id.saturating_add(1);
+        ComposerAttachment {
+            id: self.next_attachment_id,
+            name,
+            source,
+            mime_type,
+            byte_length,
+            content_hash,
+            base64,
+        }
+    }
+
+    pub fn begin_attachment_submit(
+        &mut self,
+        response_id: String,
+        submit: PendingAttachmentSubmit,
+    ) {
+        self.pending_attachment_submits.insert(response_id, submit);
+    }
+
+    pub fn timed_out_attachment_submit(&self) -> Option<(String, PendingAttachmentSubmit)> {
+        self.pending_attachment_submits
+            .iter()
+            .find(|(_, submit)| submit.started_at.elapsed() >= B3_REQUEST_TIMEOUT)
+            .map(|(id, submit)| (id.clone(), submit.clone()))
+    }
+
+    pub fn restart_timed_out_attachment_submit(
+        &mut self,
+    ) -> Option<(String, PendingAttachmentSubmit)> {
+        let (id, submit) = self.timed_out_attachment_submit()?;
+        if let Some(pending) = self.pending_attachment_submits.get_mut(&id) {
+            pending.started_at = Instant::now();
+        }
+        Some((id, submit))
+    }
+
+    pub fn begin_clipboard_read(&mut self, target: ClipboardReadTarget) -> u64 {
+        self.clipboard_read_generation = self.clipboard_read_generation.saturating_add(1);
+        let generation = self.clipboard_read_generation;
+        self.clipboard_read = Some(ClipboardReadState {
+            generation,
+            target,
+            text: None,
+            image: None,
+            text_done: false,
+            image_done: false,
+        });
+        generation
+    }
+
+    pub fn attachment_by_hash(&self, content_hash: &str) -> Option<&ComposerAttachment> {
+        self.attachments
+            .iter()
+            .find(|attachment| attachment.content_hash == content_hash)
+    }
+
     pub fn remove_attachment(&mut self, index: usize) -> bool {
         if index >= self.attachments.len() {
             return false;
         }
-        self.attachments.remove(index);
+        let attachment = self.attachments.remove(index);
+        if self.attachment_preview.as_deref() == Some(attachment.content_hash.as_str()) {
+            self.attachment_preview = None;
+        }
         true
     }
 
     pub fn clear_attachments(&mut self) {
         self.attachments.clear();
+        self.attachment_preview = None;
     }
 
     pub fn attachment_summary(&self, compact: bool) -> Option<String> {
@@ -1147,11 +1292,21 @@ impl AppState {
     }
 
     pub fn acknowledge_attachment_submit(&mut self, request_id: &str) {
-        let Some(hashes) = self.pending_attachment_submits.remove(request_id) else {
+        let Some(submit) = self.pending_attachment_submits.remove(request_id) else {
             return;
         };
-        self.attachments
-            .retain(|attachment| !hashes.contains(&attachment.content_hash));
+        self.attachments.retain(|attachment| {
+            !submit.attachments.iter().any(|frozen| {
+                frozen.id == attachment.id && frozen.content_hash == attachment.content_hash
+            })
+        });
+        if self
+            .attachment_preview
+            .as_deref()
+            .is_some_and(|hash| self.attachment_by_hash(hash).is_none())
+        {
+            self.attachment_preview = None;
+        }
     }
 
     pub fn reject_attachment_submit(&mut self, request_id: &str) {
@@ -1539,6 +1694,9 @@ impl AppState {
         self.invalidate_pending();
         self.invalidate_transcript_requests(TranscriptViewKind::Active);
         self.invalidate_transcript_requests(TranscriptViewKind::Readonly);
+        self.attachment_preview = None;
+        self.composer_completion = None;
+        self.clipboard_read = None;
         self.overlays.clear();
         self.workspace_overlay_stack.clear();
         self.active_ui_request = None;
@@ -1645,6 +1803,7 @@ impl AppState {
                 .is_some_and(|view| view.transcript.loading_previous)
             || !self.pending_requests.is_empty()
             || !self.pending_transcript_requests.is_empty()
+            || !self.pending_attachment_submits.is_empty()
             || self.is_active_operation()
     }
 
@@ -1703,7 +1862,7 @@ impl AppState {
     }
 
     pub fn set_timeout_notice(&mut self) {
-        if self.timed_out_b3_request().is_some() {
+        if self.timed_out_b3_request().is_some() || self.timed_out_attachment_submit().is_some() {
             self.set_overlay_error("请求超时，按 r 重试");
         }
     }
@@ -3207,23 +3366,43 @@ mod tests {
     }
 
     #[test]
-    fn bounds_dedupes_and_redacts_composer_attachments() {
+    fn bounds_dedupes_and_keeps_new_composer_attachments_after_submit() {
         let mut app = AppState::default();
-        let attachment = ComposerAttachment {
-            name: "sample.png".to_owned(),
-            source: "sample.png".to_owned(),
-            mime_type: "image/png".to_owned(),
-            byte_length: 4,
-            content_hash: "hash".to_owned(),
-            base64: "secret-image".to_owned(),
-        };
+        let attachment = app.new_attachment(
+            "sample.png".to_owned(),
+            "sample.png".to_owned(),
+            "image/png".to_owned(),
+            4,
+            "hash".to_owned(),
+            "secret-image".to_owned(),
+        );
         assert_eq!(app.add_attachment(attachment.clone()), Ok(true));
         assert_eq!(app.add_attachment(attachment.clone()), Ok(false));
         assert!(!format!("{attachment:?}").contains("secret-image"));
-        app.pending_attachment_submits
-            .insert("request".to_owned(), vec!["hash".to_owned()]);
+        app.begin_attachment_submit(
+            "request".to_owned(),
+            PendingAttachmentSubmit {
+                command: "prompt".to_owned(),
+                session_path: "/tmp/session.jsonl".to_owned(),
+                lease_id: "lease".to_owned(),
+                client_instance_id: "client".to_owned(),
+                client_request_id: "request".to_owned(),
+                text: "prompt".to_owned(),
+                attachments: vec![attachment],
+                started_at: Instant::now(),
+            },
+        );
+        let later = app.new_attachment(
+            "later.png".to_owned(),
+            "later.png".to_owned(),
+            "image/png".to_owned(),
+            4,
+            "later-hash".to_owned(),
+            "later-image".to_owned(),
+        );
+        assert_eq!(app.add_attachment(later.clone()), Ok(true));
         app.acknowledge_attachment_submit("request");
-        assert!(app.attachments.is_empty());
+        assert_eq!(app.attachments, vec![later]);
     }
 
     #[test]

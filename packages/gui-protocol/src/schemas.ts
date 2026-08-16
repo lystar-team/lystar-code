@@ -704,6 +704,7 @@ export const UpdateStatusSchema = StrictObject({
 export const GetGitStatusResultSchema = GitStatusSchema;
 export const GetGitDiffResultSchema = GitDiffSchema;
 export const CheckForUpdatesResultSchema = UpdateStatusSchema;
+export const GetCompletionsResultSchema = CompletionResultSchema;
 export const ListSettingsResultSchema = Type.Array(SettingSummarySchema, { maxItems: 1000 });
 export const SetSettingResultSchema = StrictObject({ setting: SettingSummarySchema, requiresRestart: Type.Boolean() });
 export const ListModelsResultSchema = Type.Array(ModelSummarySchema, { maxItems: 10_000 });
@@ -802,6 +803,7 @@ export const B3CommandResultSchemas = {
 	save_host_instruction: SaveHostInstructionResultSchema,
 	get_git_status: GetGitStatusResultSchema,
 	get_git_diff: GetGitDiffResultSchema,
+	get_completions: GetCompletionsResultSchema,
 	check_for_updates: CheckForUpdatesResultSchema,
 	list_settings: ListSettingsResultSchema,
 	set_setting: SetSettingResultSchema,

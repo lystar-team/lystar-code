@@ -93,6 +93,7 @@ const B3_COMMANDS = {
 	write_clipboard_text: true,
 	render_rich_text: true,
 	read_image_content: true,
+	get_completions: true,
 } as const;
 
 function projectSessionProgress(value: JsonValue | SessionProgress): SessionProgress {
@@ -165,6 +166,19 @@ function projectFileCompletion(text: string, cursor: number): { prefixStart: num
 		prefixStart: cursor - match[1].length,
 		query: match[1].startsWith('@"') ? match[1].slice(2) : match[1].slice(1),
 	};
+}
+
+function attachFileCompletion(text: string, cursor: number): { prefixStart: number; query: string } | undefined {
+	const before = text.slice(0, cursor);
+	const match = /^\/attach\s+(?:"([^"]*)|([^\n]*))$/.exec(before);
+	if (!match) return undefined;
+	const query = match[1] ?? match[2] ?? "";
+	return { prefixStart: cursor - query.length - (match[1] === undefined ? 0 : 1), query };
+}
+
+function attachCompletionValue(value: string): string {
+	const candidate = value.startsWith("@") ? value.slice(1).trimEnd() : value;
+	return candidate.startsWith('"') && candidate.endsWith('"') ? candidate.slice(1, -1) : candidate;
 }
 
 export class GuiHostService {
@@ -784,6 +798,17 @@ export class GuiHostService {
 			case "get_completions": {
 				const sessionPath = request.sessionPath ? canonicalSessionPath(request.sessionPath) : undefined;
 				const runtime = sessionPath ? this.runtimes.get(sessionPath) : undefined;
+				const attachmentQuery = attachFileCompletion(request.text, request.cursor);
+				if (attachmentQuery) {
+					const files = this.adapter
+						.completeProjectFiles(request.cwd, attachmentQuery.query, 40)
+						.map((item) => ({ ...item, value: attachCompletionValue(item.value) }));
+					return jsonValue({
+						prefixStart: attachmentQuery.prefixStart,
+						prefixEnd: request.cursor,
+						items: files,
+					} satisfies CompletionResult);
+				}
 				const runtimeResult = runtime?.getCompletions(request.text, request.cursor);
 				const fileQuery = projectFileCompletion(request.text, request.cursor);
 				if (!fileQuery) {

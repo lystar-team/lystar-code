@@ -4205,6 +4205,78 @@
       },
       "additionalProperties": false
     },
+    "B3GetCompletionsResult": {
+      "type": "object",
+      "required": [
+        "prefixStart",
+        "prefixEnd",
+        "items"
+      ],
+      "properties": {
+        "prefixStart": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "prefixEnd": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "value",
+              "label",
+              "kind"
+            ],
+            "properties": {
+              "value": {
+                "type": "string",
+                "minLength": 1
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": {
+                "type": "string"
+              },
+              "kind": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "file"
+                  },
+                  {
+                    "type": "string",
+                    "const": "directory"
+                  },
+                  {
+                    "type": "string",
+                    "const": "skill"
+                  },
+                  {
+                    "type": "string",
+                    "const": "prompt"
+                  },
+                  {
+                    "type": "string",
+                    "const": "extension"
+                  },
+                  {
+                    "type": "string",
+                    "const": "command"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "B3CheckForUpdatesResult": {
       "type": "object",
       "required": [

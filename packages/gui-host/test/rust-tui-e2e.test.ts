@@ -656,6 +656,32 @@ function createAdapter(runtime: FakeRuntimeSession): RuntimeAdapter {
 			return fakeModels();
 		},
 		readClipboardText: async () => ({ capability: true, text: runtime.clipboardText }),
+		readClipboardImage: async () => ({
+			capability: true,
+			available: true,
+			mimeType: "image/png",
+			byteLength: 68,
+			contentHash: "fixture-clipboard-image",
+			data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL8WAAAAABJRU5ErkJggg==",
+		}),
+		completeProjectFiles: (_cwd: string, query: string) =>
+			[
+				{ value: "images/", label: "images/", kind: "directory" as const },
+				{
+					value: "images/中文 图片.png",
+					label: "images/中文 图片.png",
+					description: "fixture PNG",
+					kind: "file" as const,
+				},
+			]
+				.filter((item) => item.value.includes(query))
+				.slice(0, 40),
+		readProjectImage: async (_cwd: string, path: string) => ({
+			mimeType: "image/png",
+			byteLength: 68,
+			contentHash: `fixture-project-${path}`,
+			base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL8WAAAAABJRU5ErkJggg==",
+		}),
 		writeClipboardText: async (text: string) => {
 			runtime.clipboardWrites.push(text);
 			return { capability: true, changed: true };
@@ -927,7 +953,33 @@ class WorkbenchFixture {
 				this.effects.package++;
 				return { changed: true, message: "已更新配置包" };
 			},
-			readClipboardText: async () => ({ capability: false }),
+			readClipboardText: async () => ({ capability: true, text: "fixture clipboard text" }),
+			readClipboardImage: async () => ({
+				capability: true,
+				available: true,
+				mimeType: "image/png",
+				byteLength: 68,
+				contentHash: "fixture-clipboard-image",
+				data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL8WAAAAABJRU5ErkJggg==",
+			}),
+			completeProjectFiles: (_cwd: string, query: string) =>
+				[
+					{ value: "images/", label: "images/", kind: "directory" as const },
+					{
+						value: "images/中文 图片.png",
+						label: "images/中文 图片.png",
+						description: "fixture PNG",
+						kind: "file" as const,
+					},
+				]
+					.filter((item) => item.value.includes(query))
+					.slice(0, 40),
+			readProjectImage: async (_cwd: string, path: string) => ({
+				mimeType: "image/png",
+				byteLength: 68,
+				contentHash: `fixture-project-${path}`,
+				base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL8WAAAAABJRU5ErkJggg==",
+			}),
 			writeClipboardText: async () => ({ capability: false, changed: false }),
 		} as unknown as RuntimeAdapter;
 	}
@@ -2152,8 +2204,8 @@ describe("Rust read-only TUI fd bridge", () => {
 
 				tui.sendLiteral("/clipboard");
 				tui.send("Enter");
-				await waitForRequest(tui, "read_clipboard_text");
-				await waitFor(() => tui.pane().includes("图片剪贴板: 不支持"), "clipboard capability did not render");
+				await waitForRequest(tui, "read_clipboard_image");
+				await waitFor(() => tui.pane().includes("图片剪贴板: image/png"), "clipboard image did not render");
 				tui.send("i");
 				tui.send("w");
 				await waitFor(async () => {
@@ -2176,6 +2228,82 @@ describe("Rust read-only TUI fd bridge", () => {
 				}, "context copy did not reach Host");
 				tui.resize(80, 8);
 				await waitFor(() => tui.pane().includes("Enter 提交"), "80x8 did not recover Composer after clipboard");
+			} finally {
+				tui.closeProtocol();
+			}
+		}
+	}, 180_000);
+
+	it("通过 tmux/FIFO 两轮验收图片附件、补全和冻结重试", async () => {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const tui = await startTui(4, { width: 80, height: 8 }, `attachments-${attempt + 1}`);
+			try {
+				await waitForInitialPage(tui);
+				const completionCount = tui.requests.filter((request) => request.command === "get_completions").length;
+				tui.sendLiteral('/attach "images/中文');
+				tui.send("Tab");
+				await waitForRequest(tui, "get_completions", completionCount + 1);
+				await waitFor(() => tui.pane().includes("添加图片"), "image completion did not render");
+				tui.send("Enter");
+				await waitForRequest(tui, "read_project_image");
+				await waitFor(() => tui.pane().includes("图片 1"), "completed image was not attached");
+
+				tui.sendLiteral("/attachments");
+				tui.send("Enter");
+				await waitFor(() => tui.pane().includes("图片附件"), "attachment list did not render at 80x8");
+				tui.send("Enter");
+				await waitFor(() => tui.pane().includes("图片预览"), "attachment preview did not render");
+				tui.send("Escape");
+				await waitFor(() => tui.pane().includes("图片附件"), "preview Esc did not return to attachment list");
+				tui.send("d");
+				await waitFor(
+					() => tui.pane().includes("删除图片附件"),
+					"attachment deletion did not require confirmation",
+				);
+				tui.send("Enter");
+				await waitFor(
+					() => tui.pane().includes("没有图片附件") || tui.pane().includes("Enter 提交"),
+					"attachment was not deleted",
+				);
+				tui.send("Escape");
+				await waitFor(
+					() => !tui.pane().includes("图片附件") && tui.pane().includes("Enter 提交"),
+					() => `attachment list did not return to Composer: ${tui.pane()}`,
+				);
+
+				const textReads = tui.requests.filter((request) => request.command === "read_clipboard_text").length;
+				const imageReads = tui.requests.filter((request) => request.command === "read_clipboard_image").length;
+				tui.sendLiteral("/clipboard");
+				tui.send("Enter");
+				await waitForRequest(tui, "read_clipboard_text", textReads + 1);
+				await waitForRequest(tui, "read_clipboard_image", imageReads + 1);
+				await waitFor(() => tui.pane().includes("图片剪贴板: image/png"), "mixed clipboard preview did not render");
+				tui.send("Escape");
+
+				tui.sendLiteral('/attach "images/中文');
+				tui.send("Tab");
+				await waitForRequest(tui, "get_completions", completionCount + 2);
+				tui.send("Enter");
+				await waitForRequest(tui, "read_project_image", 2);
+				await waitFor(() => tui.pane().includes("图片 1"), "second frozen image was not attached");
+
+				tui.dropNextB3Response();
+				tui.send("Escape");
+				tui.sendLiteral("frozen retry");
+				tui.send("Enter");
+				await waitFor(
+					() => tui.pane().includes("请求超时，按 r 重试"),
+					"dropped attachment prompt did not become retryable",
+					10_000,
+				);
+				const prompts = tui.requests.filter((request) => request.command === "prompt").length;
+				tui.send("C-r");
+				await waitForRequest(tui, "prompt", prompts + 1);
+				await waitFor(() => tui.runtime.prompts.length === 1, "frozen retry duplicated Host prompt");
+				await waitFor(
+					() => tui.pane().includes("图片 0") || tui.pane().includes("Enter 提交"),
+					"frozen attachment was not cleared after acknowledgement",
+				);
 			} finally {
 				tui.closeProtocol();
 			}

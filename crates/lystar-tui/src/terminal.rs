@@ -35,7 +35,8 @@ use thiserror::Error;
 
 use crate::{
     app::{
-        AppState, B3Request, ChangesTab, ClipboardDescriptor, ComposerAttachment, ComposerView,
+        AppState, B3Request, ChangesTab, ClipboardDescriptor, ClipboardReadTarget,
+        ComposerAttachment, ComposerCompletion, ComposerCompletionItem, ComposerView,
         ConfirmOverlay, DetailOverlay, GitDiffDescriptor, GitFileDescriptor, GitStatusDescriptor,
         InputFocus, InstructionDescriptor, ListOverlay, ModelDescriptor, OverlayItem, OverlayLink,
         OverlayOrigin, OverlayState, PackageDescriptor, PendingIntent, ProjectTrustDescriptor,
@@ -424,9 +425,7 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
             render_active_osc8_link(&mut terminal, &app)?;
             image_sidecar.draw_after_frame(
                 terminal.backend_mut().writer_mut(),
-                (!app.overlays.is_empty())
-                    .then(Vec::new)
-                    .unwrap_or_else(|| visible_cached_images(&app)),
+                visible_cached_images(&app),
                 std::env::var_os("TMUX").is_some(),
             )?;
             trace_cache(&app);
@@ -560,7 +559,7 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
             )?;
             return Ok(());
         }
-        if app.timed_out_b3_request().is_some() {
+        if app.timed_out_b3_request().is_some() || app.timed_out_attachment_submit().is_some() {
             if !timeout_notified {
                 app.set_timeout_notice();
                 state_changed = true;
@@ -1097,16 +1096,11 @@ fn handle_key(
             app.open_search();
             trace("search_open");
         }
+        KeyCode::Char('V') if modifiers.contains(KeyModifiers::CONTROL) => {
+            request_clipboard_both(app, pipe, sequence, ClipboardReadTarget::Insert)?;
+        }
         KeyCode::Char('v') if modifiers.contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT) => {
-            request_b3(
-                app,
-                pipe,
-                sequence,
-                B3Command::ReadClipboardImage,
-                serde_json::Map::new(),
-                PendingIntent::ClipboardImage,
-            )?;
-            request_clipboard_read(app, pipe, sequence, true)?;
+            request_clipboard_both(app, pipe, sequence, ClipboardReadTarget::Insert)?;
         }
         KeyCode::Char('v') if modifiers.contains(KeyModifiers::CONTROL) => {
             request_clipboard_read(app, pipe, sequence, true)?;
@@ -1144,8 +1138,34 @@ fn handle_key(
         }
         KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => app.editor.clear(),
         KeyCode::Char('z') if modifiers.contains(KeyModifiers::CONTROL) => app.editor.undo(),
-        KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => app.editor.redo(),
+        KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some((id, submit)) = app.restart_timed_out_attachment_submit() {
+                let images = submit
+                    .attachments
+                    .iter()
+                    .map(|attachment| {
+                        serde_json::json!({ "data": attachment.base64, "mimeType": attachment.mime_type })
+                    })
+                    .collect::<Vec<_>>();
+                pipe.request(&encode_queue_request(
+                    &id,
+                    &submit.command,
+                    &submit.session_path,
+                    &submit.lease_id,
+                    &submit.client_instance_id,
+                    &submit.client_request_id,
+                    Some(&submit.text),
+                    Some(&images),
+                )?)?;
+                app.set_toast("正在重试提交");
+            } else {
+                app.editor.redo();
+            }
+        }
         KeyCode::Char('j') if modifiers.contains(KeyModifiers::CONTROL) => app.editor.insert("\n"),
+        KeyCode::Tab if app.editor.text().starts_with("/attach ") => {
+            request_attach_completion(app, pipe, sequence)?;
+        }
         KeyCode::Enter if modifiers.contains(KeyModifiers::SHIFT) => app.editor.insert("\n"),
         KeyCode::Enter => submit_editor(
             app,
@@ -1303,6 +1323,10 @@ fn handle_overlay_key(
                 app.readonly_view = None;
                 app.invalidate_transcript_requests(TranscriptViewKind::Readonly);
             }
+            if matches!(app.overlay(), Some(OverlayState::Detail(detail)) if detail.title == "图片预览")
+            {
+                app.attachment_preview = None;
+            }
             app.close_overlay();
         }
         KeyCode::Up => app.move_overlay_selection(-1),
@@ -1311,6 +1335,12 @@ fn handle_overlay_key(
         KeyCode::PageDown => app.overlay_page(1),
         KeyCode::Home => app.overlay_home_end(false),
         KeyCode::End => app.overlay_home_end(true),
+        KeyCode::Char('V') if modifiers.contains(KeyModifiers::CONTROL) => {
+            request_clipboard_both(app, pipe, sequence, ClipboardReadTarget::Insert)?;
+        }
+        KeyCode::Char('v') if modifiers.contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT) => {
+            request_clipboard_both(app, pipe, sequence, ClipboardReadTarget::Insert)?;
+        }
         KeyCode::Char('v') if modifiers.contains(KeyModifiers::CONTROL) => {
             request_clipboard_read(app, pipe, sequence, true)?;
         }
@@ -1579,6 +1609,39 @@ fn handle_overlay_key(
                 status: "Enter 选择作用域，Shift+Enter 换行，Esc 取消".to_owned(),
                 secret: false,
             }));
+        }
+        KeyCode::Char('d')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && matches!(app.overlay(), Some(OverlayState::List(list)) if list.title == "图片附件") =>
+        {
+            if let Some(index) = app
+                .current_overlay_action()
+                .as_deref()
+                .and_then(|action| action.strip_prefix("attachment:"))
+                .and_then(|value| value.parse::<usize>().ok())
+            {
+                app.open_overlay(OverlayState::Confirm(ConfirmOverlay {
+                    title: "删除图片附件".to_owned(),
+                    message: "确认删除当前图片附件？".to_owned(),
+                    confirm_action: format!("attachment-remove:{index}"),
+                    status: String::new(),
+                }));
+            }
+        }
+        KeyCode::Char('D')
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && matches!(app.overlay(), Some(OverlayState::List(list)) if list.title == "图片附件") =>
+        {
+            if app.attachments.is_empty() {
+                app.set_toast("没有可清空的图片附件");
+            } else {
+                app.open_overlay(OverlayState::Confirm(ConfirmOverlay {
+                    title: "清空图片附件".to_owned(),
+                    message: "确认清空全部图片附件？".to_owned(),
+                    confirm_action: "attachment-clear".to_owned(),
+                    status: String::new(),
+                }));
+            }
         }
         KeyCode::Char('d')
             if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -2030,15 +2093,32 @@ fn request_b3(
 
 #[cfg(unix)]
 fn visible_cached_images(app: &AppState) -> Vec<CachedImage> {
-    app.transcript
-        .rounds()
-        .iter()
-        .skip(app.transcript.scroll)
-        .take(8)
-        .flat_map(|round| round.items.iter())
-        .flat_map(transcript_images)
-        .filter_map(|image| app.image_cache.get(&image.content_ref).cloned())
-        .collect()
+    let mut visible = app
+        .attachment_preview
+        .as_deref()
+        .and_then(|hash| app.attachment_by_hash(hash))
+        .map(|attachment| CachedImage {
+            content_ref: format!("attachment:{}", attachment.id),
+            mime_type: attachment.mime_type.clone(),
+            byte_length: attachment.byte_length,
+            base64: attachment.base64.clone(),
+        })
+        .into_iter()
+        .collect::<Vec<_>>();
+    if !visible.is_empty() {
+        return visible;
+    }
+    visible.extend(
+        app.transcript
+            .rounds()
+            .iter()
+            .skip(app.transcript.scroll)
+            .take(8)
+            .flat_map(|round| round.items.iter())
+            .flat_map(transcript_images)
+            .filter_map(|image| app.image_cache.get(&image.content_ref).cloned()),
+    );
+    visible
 }
 
 #[cfg(unix)]
@@ -2194,6 +2274,163 @@ fn request_clipboard_read(
         serde_json::Map::new(),
         PendingIntent::ClipboardRead { insert },
     )
+}
+
+#[cfg(unix)]
+fn request_clipboard_both(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    sequence: &mut u64,
+    target: ClipboardReadTarget,
+) -> Result<(), TuiError> {
+    let generation = app.begin_clipboard_read(target);
+    request_b3(
+        app,
+        pipe,
+        sequence,
+        B3Command::ReadClipboardText,
+        serde_json::Map::new(),
+        PendingIntent::ClipboardBothText { generation },
+    )?;
+    request_b3(
+        app,
+        pipe,
+        sequence,
+        B3Command::ReadClipboardImage,
+        serde_json::Map::new(),
+        PendingIntent::ClipboardBothImage { generation },
+    )
+}
+
+#[cfg(unix)]
+fn request_attach_completion(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    sequence: &mut u64,
+) -> Result<(), TuiError> {
+    let text = app.editor.text().to_owned();
+    let Some(cwd) = app.active_session_cwd().filter(|cwd| !cwd.is_empty()) else {
+        app.set_overlay_error("尚未获取项目目录");
+        return Ok(());
+    };
+    request_b3(
+        app,
+        pipe,
+        sequence,
+        B3Command::GetCompletions,
+        serde_json::json!({
+            "cwd": cwd,
+            "sessionPath": app.active_session_path(),
+            "text": text,
+            "cursor": app.editor.text().encode_utf16().count(),
+        })
+        .as_object()
+        .cloned()
+        .unwrap_or_default(),
+        PendingIntent::AttachCompletion { text },
+    )
+}
+
+#[cfg(unix)]
+fn utf16_offset_to_byte(value: &str, offset: usize) -> Option<usize> {
+    let mut units = 0;
+    for (index, character) in value.char_indices() {
+        if units == offset {
+            return Some(index);
+        }
+        units = units.saturating_add(character.len_utf16());
+        if units > offset {
+            return None;
+        }
+    }
+    (units == offset).then_some(value.len())
+}
+
+#[cfg(unix)]
+fn finish_clipboard_both(app: &mut AppState) {
+    let Some(state) = app.clipboard_read.clone() else {
+        return;
+    };
+    if !state.text_done || !state.image_done {
+        return;
+    }
+    let text = state.text.and_then(|clipboard| clipboard.text);
+    let image = state.image;
+    match state.target {
+        ClipboardReadTarget::Overlay => {
+            let clipboard = ClipboardDescriptor {
+                capability: true,
+                text: text.clone(),
+            };
+            app.clipboard = Some(clipboard.clone());
+            app.replace_overlay(clipboard_overlay(&clipboard, image.as_ref()));
+        }
+        ClipboardReadTarget::Insert => match (text, image) {
+            (None, None) => app.set_toast("剪贴板没有可插入内容"),
+            (Some(text), None) => {
+                app.editor.insert(&text);
+                app.set_toast("已插入剪贴板文本");
+            }
+            (None, Some(image)) => match app.add_attachment(image) {
+                Ok(true) => app.set_toast("已添加剪贴板图片"),
+                Ok(false) => app.set_toast("图片已在附件中"),
+                Err(message) => app.set_overlay_error(message),
+            },
+            (Some(_), Some(_)) => {
+                app.open_overlay(OverlayState::List(ListOverlay {
+                    title: "选择剪贴板内容".to_owned(),
+                    origin: OverlayOrigin::User,
+                    items: vec![
+                        OverlayItem {
+                            label: "插入文本".to_owned(),
+                            detail: "在当前光标位置插入文本".to_owned(),
+                            action: "clipboard-select:text".to_owned(),
+                        },
+                        OverlayItem {
+                            label: "添加图片".to_owned(),
+                            detail: "添加为图片附件".to_owned(),
+                            action: "clipboard-select:image".to_owned(),
+                        },
+                        OverlayItem {
+                            label: "两者".to_owned(),
+                            detail: "插入文本并添加图片".to_owned(),
+                            action: "clipboard-select:both".to_owned(),
+                        },
+                    ],
+                    selected: 0,
+                    filter: String::new(),
+                    status: "Enter 选择，Esc 取消".to_owned(),
+                }));
+            }
+        },
+    }
+}
+
+#[cfg(unix)]
+fn attach_overlay(app: &AppState) -> OverlayState {
+    OverlayState::List(ListOverlay {
+        title: "图片附件".to_owned(),
+        origin: OverlayOrigin::User,
+        items: app
+            .attachments
+            .iter()
+            .enumerate()
+            .map(|(index, attachment)| OverlayItem {
+                label: attachment.name.clone(),
+                detail: format!(
+                    "{}  {}  {} B  #{}",
+                    attachment.source,
+                    attachment.mime_type,
+                    attachment.byte_length,
+                    &attachment.content_hash[..attachment.content_hash.len().min(12)]
+                ),
+                action: format!("attachment:{index}"),
+            })
+            .collect(),
+        selected: 0,
+        filter: String::new(),
+        status: "Enter 预览  d 删除  D 清空  Esc 返回".to_owned(),
+    })
 }
 
 #[cfg(unix)]
@@ -2455,14 +2692,14 @@ fn open_workbench(
             "clipboard",
             OverlayState::Detail(DetailOverlay {
                 title: "剪贴板".to_owned(),
-                lines: vec!["正在读取文本剪贴板".to_owned()],
+                lines: vec!["正在读取剪贴板".to_owned()],
                 scroll: 0,
                 status: "请稍候".to_owned(),
                 link: None,
                 copy_text: None,
             }),
         );
-        return request_clipboard_read(app, pipe, sequence, false);
+        return request_clipboard_both(app, pipe, sequence, ClipboardReadTarget::Overlay);
     }
     if target == "tree" {
         return request_b3(
@@ -2668,6 +2905,123 @@ fn activate_workbench_action(
     sequence: &mut u64,
     session_flow: &mut Option<SessionFlow>,
 ) -> Result<(), TuiError> {
+    if let Some(index) = action
+        .strip_prefix("attachment-completion:")
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        let Some(completion) = app.composer_completion.clone() else {
+            app.set_overlay_error("补全结果已失效，请重试");
+            return Ok(());
+        };
+        let Some(item) = completion.items.get(index) else {
+            app.set_overlay_error("补全项已失效，请重试");
+            return Ok(());
+        };
+        let next = format!(
+            "{}{}{}",
+            &completion.text[..completion.prefix_start],
+            item.value,
+            &completion.text[completion.prefix_end..]
+        );
+        app.editor.replace(&next);
+        app.composer_completion = None;
+        app.close_overlay();
+        if item.kind == "directory" {
+            request_attach_completion(app, pipe, sequence)?;
+            return Ok(());
+        }
+        let path = item.value.trim_end_matches('/').to_owned();
+        app.editor.clear();
+        let cwd = app.active_session_cwd().unwrap_or_default().to_owned();
+        return request_b3(
+            app,
+            pipe,
+            sequence,
+            B3Command::ReadProjectImage,
+            serde_json::json!({ "cwd": cwd, "path": path })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            PendingIntent::ProjectImage {
+                source: item.value.clone(),
+            },
+        );
+    }
+    if let Some(index) = action
+        .strip_prefix("attachment:")
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        let Some(attachment) = app.attachments.get(index) else {
+            app.set_overlay_error("附件列表已刷新，请重新选择");
+            return Ok(());
+        };
+        app.attachment_preview = Some(attachment.content_hash.clone());
+        app.open_overlay(OverlayState::Detail(DetailOverlay {
+            title: "图片预览".to_owned(),
+            lines: vec![
+                format!("名称: {}", attachment.name),
+                format!("来源: {}", attachment.source),
+                format!("MIME: {}", attachment.mime_type),
+                format!("大小: {} B", attachment.byte_length),
+                format!("哈希: {}", attachment.content_hash),
+                format!("[图片 {} {}]", attachment.mime_type, attachment.byte_length),
+            ],
+            scroll: 0,
+            status: "Esc 返回".to_owned(),
+            link: None,
+            copy_text: None,
+        }));
+        return Ok(());
+    }
+    if let Some(index) = action
+        .strip_prefix("attachment-remove:")
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        if app.remove_attachment(index) {
+            app.close_overlay();
+            app.replace_overlay(attach_overlay(app));
+            app.set_toast("已删除图片附件");
+        } else {
+            app.set_overlay_error("附件列表已刷新，请重新选择");
+        }
+        return Ok(());
+    }
+    if action == "attachment-clear" {
+        app.clear_attachments();
+        app.close_overlay();
+        app.close_overlay();
+        app.set_toast("已清空图片附件");
+        return Ok(());
+    }
+    if let Some(target) = action.strip_prefix("clipboard-select:") {
+        let Some(state) = app.clipboard_read.clone() else {
+            app.set_overlay_error("剪贴板读取结果已失效");
+            return Ok(());
+        };
+        let text = state.text.and_then(|item| item.text);
+        let image = state.image;
+        if matches!(target, "text" | "both")
+            && let Some(text) = text
+        {
+            app.editor.insert(&text);
+        }
+        if matches!(target, "image" | "both")
+            && let Some(image) = image
+        {
+            match app.add_attachment(image) {
+                Ok(true) => {}
+                Ok(false) => app.set_toast("图片已在附件中"),
+                Err(message) => app.set_overlay_error(message),
+            }
+        }
+        app.close_overlay();
+        app.set_toast(match target {
+            "text" => "已插入剪贴板文本",
+            "image" => "已添加剪贴板图片",
+            _ => "已插入文本并添加图片",
+        });
+        return Ok(());
+    }
     if let Some(target) = action.strip_prefix("open:") {
         return open_workbench(
             app,
@@ -3888,6 +4242,20 @@ fn activate_workbench_action(
 }
 
 #[cfg(unix)]
+fn attachment_path(text: &str) -> Option<String> {
+    let path = text.strip_prefix("/attach ")?.trim();
+    if path.is_empty() {
+        return None;
+    }
+    Some(
+        path.strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+            .unwrap_or(path)
+            .to_owned(),
+    )
+}
+
+#[cfg(unix)]
 fn submit_editor(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,
@@ -3897,18 +4265,14 @@ fn submit_editor(
     follow_up: bool,
     session_flow: &mut Option<SessionFlow>,
 ) -> Result<(), TuiError> {
-    let Some(lease_id) = app.lease_id.as_deref() else {
+    let Some(lease_id) = app.lease_id.clone() else {
         app.transcript.status = "正在获取会话租约".to_owned();
         return Ok(());
     };
     let Some(text) = app.editor.submit() else {
         return Ok(());
     };
-    if let Some(path) = text
-        .strip_prefix("/attach ")
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-    {
+    if let Some(path) = attachment_path(&text) {
         let cwd = app.active_session_cwd().unwrap_or_default().to_owned();
         return request_b3(
             app,
@@ -3925,24 +4289,7 @@ fn submit_editor(
         );
     }
     if text.trim() == "/attachments" {
-        let items = app
-            .attachments
-            .iter()
-            .enumerate()
-            .map(|(index, attachment)| OverlayItem {
-                label: attachment.name.clone(),
-                detail: format!("{} {} bytes", attachment.mime_type, attachment.byte_length),
-                action: format!("attachment:{index}"),
-            })
-            .collect();
-        app.open_overlay(OverlayState::List(ListOverlay {
-            title: "图片附件".to_owned(),
-            origin: OverlayOrigin::User,
-            items,
-            selected: 0,
-            filter: String::new(),
-            status: "d 删除  D 清空  Esc 返回".to_owned(),
-        }));
+        app.open_overlay(attach_overlay(app));
         return Ok(());
     }
     if let Some(command) = builtin_slash_command(&text) {
@@ -3966,22 +4313,32 @@ fn submit_editor(
     } else {
         "prompt"
     };
-    let images = app.attachments.iter().map(|attachment| serde_json::json!({ "data": attachment.base64, "mimeType": attachment.mime_type })).collect::<Vec<_>>();
+    let attachments = app.attachments.clone();
+    let images = attachments
+        .iter()
+        .map(|attachment| serde_json::json!({ "data": attachment.base64, "mimeType": attachment.mime_type }))
+        .collect::<Vec<_>>();
     let response_id = format!("command-{sequence}");
-    if !images.is_empty() {
-        app.pending_attachment_submits.insert(
+    if !attachments.is_empty() {
+        app.begin_attachment_submit(
             response_id.clone(),
-            app.attachments
-                .iter()
-                .map(|attachment| attachment.content_hash.clone())
-                .collect(),
+            crate::app::PendingAttachmentSubmit {
+                command: command.to_owned(),
+                session_path: session_path.to_owned(),
+                lease_id: lease_id.clone(),
+                client_instance_id: client_instance_id.to_owned(),
+                client_request_id: request_id.clone(),
+                text: text.clone(),
+                attachments,
+                started_at: Instant::now(),
+            },
         );
     }
     pipe.request(&encode_queue_request(
         &response_id,
         command,
         session_path,
-        lease_id,
+        &lease_id,
         client_instance_id,
         &request_id,
         Some(&text),
@@ -4412,7 +4769,121 @@ fn apply_server_message(
                     }
                 } else {
                     app.clipboard = Some(clipboard.clone());
-                    app.replace_overlay(clipboard_overlay(&clipboard));
+                    app.replace_overlay(clipboard_overlay(&clipboard, None));
+                }
+            }
+            PendingIntent::ClipboardBothText { generation } => {
+                let clipboard = parse_clipboard(&result)?;
+                if let Some(state) = app.clipboard_read.as_mut()
+                    && state.generation == generation
+                {
+                    state.text = clipboard.capability.then_some(clipboard);
+                    state.text_done = true;
+                }
+                finish_clipboard_both(app);
+            }
+            PendingIntent::ClipboardBothImage { generation } => {
+                let object = result
+                    .as_object()
+                    .ok_or_else(|| TuiError::InvalidResponse("剪贴板图片响应无效".to_owned()))?;
+                let image =
+                    if object
+                        .get("capability")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false)
+                        && object
+                            .get("available")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false)
+                    {
+                        Some(app.new_attachment(
+                            "clipboard-image".to_owned(),
+                            "clipboard".to_owned(),
+                            required_string(object, "mimeType")?,
+                            usize::try_from(required_u64(object, "byteLength")?).map_err(|_| {
+                                TuiError::InvalidResponse("图片大小无效".to_owned())
+                            })?,
+                            required_string(object, "contentHash")?,
+                            required_string(object, "data")?,
+                        ))
+                    } else {
+                        None
+                    };
+                if let Some(state) = app.clipboard_read.as_mut()
+                    && state.generation == generation
+                {
+                    state.image = image;
+                    state.image_done = true;
+                }
+                finish_clipboard_both(app);
+            }
+            PendingIntent::AttachCompletion { text } => {
+                let object = result
+                    .as_object()
+                    .ok_or_else(|| TuiError::InvalidResponse("补全响应无效".to_owned()))?;
+                let prefix_start = usize::try_from(required_u64(object, "prefixStart")?)
+                    .ok()
+                    .and_then(|offset| utf16_offset_to_byte(&text, offset))
+                    .ok_or_else(|| TuiError::InvalidResponse("补全起始位置无效".to_owned()))?;
+                let prefix_end = usize::try_from(required_u64(object, "prefixEnd")?)
+                    .ok()
+                    .and_then(|offset| utf16_offset_to_byte(&text, offset))
+                    .ok_or_else(|| TuiError::InvalidResponse("补全结束位置无效".to_owned()))?;
+                let items = object
+                    .get("items")
+                    .and_then(serde_json::Value::as_array)
+                    .ok_or_else(|| TuiError::InvalidResponse("补全响应缺少候选".to_owned()))?
+                    .iter()
+                    .filter_map(|item| {
+                        let object = item.as_object()?;
+                        let kind = object.get("kind")?.as_str()?;
+                        if !matches!(kind, "file" | "directory") {
+                            return None;
+                        }
+                        Some(ComposerCompletionItem {
+                            value: object.get("value")?.as_str()?.to_owned(),
+                            label: object.get("label")?.as_str()?.to_owned(),
+                            description: object
+                                .get("description")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_owned),
+                            kind: kind.to_owned(),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                if items.is_empty() {
+                    app.set_toast("没有匹配的项目图片文件");
+                } else {
+                    app.composer_completion = Some(ComposerCompletion {
+                        text,
+                        prefix_start,
+                        prefix_end,
+                        items: items.clone(),
+                    });
+                    app.open_overlay(OverlayState::List(ListOverlay {
+                        title: "添加图片".to_owned(),
+                        origin: OverlayOrigin::User,
+                        items: items
+                            .iter()
+                            .enumerate()
+                            .map(|(index, item)| OverlayItem {
+                                label: item.label.clone(),
+                                detail: format!(
+                                    "{}{}",
+                                    if item.kind == "directory" {
+                                        "目录  "
+                                    } else {
+                                        "文件  "
+                                    },
+                                    item.description.clone().unwrap_or_default()
+                                ),
+                                action: format!("attachment-completion:{index}"),
+                            })
+                            .collect(),
+                        selected: 0,
+                        filter: String::new(),
+                        status: "Enter 选择，目录会继续补全，Esc 返回".to_owned(),
+                    }));
                 }
             }
             PendingIntent::ProjectImage { source } => {
@@ -4429,14 +4900,9 @@ fn apply_server_message(
                     .and_then(|value| value.to_str())
                     .unwrap_or(&source)
                     .to_owned();
-                match app.add_attachment(ComposerAttachment {
-                    name,
-                    source,
-                    mime_type,
-                    byte_length,
-                    content_hash,
-                    base64,
-                }) {
+                let attachment =
+                    app.new_attachment(name, source, mime_type, byte_length, content_hash, base64);
+                match app.add_attachment(attachment) {
                     Ok(true) => app.set_toast("已添加图片附件"),
                     Ok(false) => app.set_toast("图片已在附件中"),
                     Err(message) => app.set_overlay_error(message),
@@ -4459,14 +4925,15 @@ fn apply_server_message(
                 let byte_length = usize::try_from(required_u64(object, "byteLength")?)
                     .map_err(|_| TuiError::InvalidResponse("图片大小无效".to_owned()))?;
                 let content_hash = required_string(object, "contentHash")?;
-                match app.add_attachment(ComposerAttachment {
-                    name: "clipboard-image".to_owned(),
-                    source: "clipboard".to_owned(),
+                let attachment = app.new_attachment(
+                    "clipboard-image".to_owned(),
+                    "clipboard".to_owned(),
                     mime_type,
                     byte_length,
                     content_hash,
                     base64,
-                }) {
+                );
+                match app.add_attachment(attachment) {
                     Ok(true) => app.set_toast("已添加剪贴板图片"),
                     Ok(false) => app.set_toast("图片已在附件中"),
                     Err(message) => app.set_overlay_error(message),
@@ -5630,7 +6097,10 @@ fn clipboard_preview(text: &str) -> String {
     bounded_text(text, 1024).replace('\n', "\\n")
 }
 
-fn clipboard_overlay(clipboard: &ClipboardDescriptor) -> OverlayState {
+fn clipboard_overlay(
+    clipboard: &ClipboardDescriptor,
+    image: Option<&ComposerAttachment>,
+) -> OverlayState {
     let mut lines = vec![format!(
         "文本剪贴板: {}",
         if clipboard.capability {
@@ -5639,7 +6109,15 @@ fn clipboard_overlay(clipboard: &ClipboardDescriptor) -> OverlayState {
             "不支持"
         }
     )];
-    lines.push("图片剪贴板: 不支持（本批不读取图片字节）".to_owned());
+    lines.push(match image {
+        Some(image) => format!(
+            "图片剪贴板: {} {} B #{}",
+            image.mime_type,
+            image.byte_length,
+            &image.content_hash[..image.content_hash.len().min(12)]
+        ),
+        None => "图片剪贴板: 没有图片".to_owned(),
+    });
     lines.push(match &clipboard.text {
         Some(text) => format!("预览: {}", clipboard_preview(text)),
         None => "预览: 空或 Host 未返回文本".to_owned(),

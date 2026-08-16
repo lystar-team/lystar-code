@@ -12,9 +12,9 @@ use std::{
 use lystar_protocol::{ToolCall, TranscriptItem, TranscriptViewItem};
 use lystar_tui::{
     app::{
-        AppState, ComposerView, DetailOverlay, ListOverlay, OverlayItem, OverlayOrigin,
-        OverlayState, ReadonlySessionView, SessionTreeNode, TranscriptView, WorkbenchOverlayView,
-        composer_area, transcript_area,
+        AppState, ComposerAttachment, ComposerView, DetailOverlay, ListOverlay, OverlayItem,
+        OverlayOrigin, OverlayState, ReadonlySessionView, SessionTreeNode, TranscriptView,
+        WorkbenchOverlayView, composer_area, transcript_area,
     },
     editor::EditorState,
 };
@@ -28,7 +28,7 @@ use serde_json::json;
 const TOOL_ROUNDS: usize = 10_000;
 const BENCHMARK_ROUNDS: usize = 5;
 const SIZES: [(u16, u16); 3] = [(80, 24), (120, 36), (200, 60)];
-const SCENARIOS: [&str; 16] = [
+const SCENARIOS: [&str; 18] = [
     "readonly_open",
     "older_scroll",
     "search",
@@ -45,6 +45,8 @@ const SCENARIOS: [&str; 16] = [
     "subagent_nested",
     "clipboard_open",
     "clipboard_insert",
+    "attachments_open",
+    "attachment_preview",
 ];
 
 struct WriterStats {
@@ -299,6 +301,8 @@ fn apply_scenario(app: &mut AppState, scenario: &str) {
         }
         "clipboard_open" => open_clipboard(app, false),
         "clipboard_insert" => open_clipboard(app, true),
+        "attachments_open" => open_attachments(app, false),
+        "attachment_preview" => open_attachments(app, true),
         _ => unreachable!("unknown scenario"),
     }
 }
@@ -344,6 +348,50 @@ fn open_subagent_detail(app: &mut AppState) {
     );
 }
 
+fn open_attachments(app: &mut AppState, preview: bool) {
+    let attachment = ComposerAttachment {
+        id: 1,
+        name: "fixture image.png".to_owned(),
+        source: "images/fixture image.png".to_owned(),
+        mime_type: "image/png".to_owned(),
+        byte_length: 68,
+        content_hash: "fixture-image-hash".to_owned(),
+        base64: "fixture-image-base64".to_owned(),
+    };
+    app.add_attachment(attachment.clone()).unwrap();
+    if preview {
+        app.attachment_preview = Some(attachment.content_hash.clone());
+        app.open_workspace_overlay(
+            "benchmark:attachment:preview",
+            OverlayState::Detail(DetailOverlay {
+                title: "图片预览".to_owned(),
+                lines: vec![
+                    format!("名称: {}", attachment.name),
+                    format!("MIME: {}", attachment.mime_type),
+                    format!("大小: {} B", attachment.byte_length),
+                    format!("哈希: {}", attachment.content_hash),
+                ],
+                scroll: 0,
+                status: "Esc 返回".to_owned(),
+                link: None,
+                copy_text: None,
+            }),
+        );
+        return;
+    }
+    open_workbench_list(
+        app,
+        "图片附件",
+        vec![OverlayItem {
+            label: attachment.name,
+            detail: "project  image/png  68 B  #fixture-imag".to_owned(),
+            action: "attachment:0".to_owned(),
+        }],
+        String::new(),
+        "Enter 预览  d 删除  D 清空",
+    );
+}
+
 fn open_clipboard(app: &mut AppState, inserted: bool) {
     if inserted {
         app.editor.insert("clipboard fixture text");
@@ -354,7 +402,7 @@ fn open_clipboard(app: &mut AppState, inserted: bool) {
             title: "剪贴板".to_owned(),
             lines: vec![
                 "文本剪贴板: 支持".to_owned(),
-                "图片剪贴板: 不支持（本批不读取图片字节）".to_owned(),
+                "图片剪贴板: image/png 68 B #fixture-clip".to_owned(),
                 "预览: clipboard fixture text".to_owned(),
             ],
             scroll: 0,
