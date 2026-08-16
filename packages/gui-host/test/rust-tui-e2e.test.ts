@@ -65,12 +65,12 @@ afterEach(async () => {
 
 async function waitFor(
 	predicate: () => boolean | Promise<boolean>,
-	message: string,
+	message: string | (() => string),
 	timeoutMs = 10_000,
 ): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	while (!(await predicate())) {
-		if (Date.now() >= deadline) throw new Error(message);
+		if (Date.now() >= deadline) throw new Error(typeof message === "function" ? message() : message);
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
 }
@@ -649,6 +649,8 @@ class WorkbenchFixture {
 	readonly sessions = new Map<string, { id: string; name: string; runtime: FakeRuntimeSession }>();
 	readonly failures = new Map<string, number>();
 	nextNavigation: { cancelled: boolean; editorText?: string; newLeafId?: string } = { cancelled: false };
+	labelFailures = 0;
+	navigationFailures = 0;
 	private sequence = 0;
 
 	constructor(directory: string, initialPath: string) {
@@ -706,6 +708,10 @@ class WorkbenchFixture {
 		};
 		runtime.fork = async () => this.fork(runtime);
 		runtime.setEntryLabel = async (entryId: string, label?: string) => {
+			if (this.labelFailures > 0) {
+				this.labelFailures--;
+				throw new Error("label failed");
+			}
 			this.effects.label++;
 			const node = this.tree.find((candidate) => candidate.id === entryId);
 			if (!node) throw new Error("tree node missing");
@@ -714,6 +720,10 @@ class WorkbenchFixture {
 			this.calls.push(`label:${entryId}`);
 		};
 		runtime.navigateSessionTree = async (_entryId: string, summarize: boolean) => {
+			if (this.navigationFailures > 0) {
+				this.navigationFailures--;
+				throw new Error("navigate failed");
+			}
 			this.effects.navigate++;
 			this.calls.push(`navigate:${summarize}`);
 			const result = this.nextNavigation;
@@ -813,9 +823,10 @@ async function waitForRequest(
 }
 
 async function openSessions(tui: StartedTui): Promise<void> {
+	const count = tui.requests.filter((request) => request.command === "list_sessions").length;
 	tui.sendLiteral("/sessions");
 	tui.send("Enter");
-	const request = await waitForRequest(tui, "list_sessions");
+	const request = await waitForRequest(tui, "list_sessions", count + 1);
 	await waitFor(() => tui.pane().includes("会话"), "session chooser did not render");
 	const response = tui.serverMessages.find(
 		(message) => message.type === "response" && message.id === request.id && message.ok,
@@ -1469,7 +1480,10 @@ describe("Rust read-only TUI fd bridge", () => {
 					await tui.pump();
 					return tui.runtime.settingWrites.length === 1;
 				}, "boolean setting did not write once");
-				await new Promise((resolve) => setTimeout(resolve, 3_200));
+				await waitFor(
+					() => tui.pane().includes("请求超时，按 r 重试"),
+					"dropped setting response did not become retryable",
+				);
 				tui.send("r");
 				await waitFor(async () => {
 					await tui.pump();
@@ -1479,28 +1493,38 @@ describe("Rust read-only TUI fd bridge", () => {
 					await tui.pump();
 					return tui.runtime.settingWrites.length === 1;
 				}, "setting retry repeated the Host write");
-				await waitFor(async () => {
-					await tui.pump();
-					return tui.requests.filter((request) => request.command === "list_settings").length >= 2;
-				}, "setting retry did not refresh the settings list");
-				await new Promise((resolve) => setTimeout(resolve, 100));
-				await waitFor(() => tui.pane().includes("自动压缩"), "setting list did not recover after retry");
+				const booleanRefresh = await waitForRequest(tui, "list_settings", 2);
+				await waitFor(() => tui.responseWrites.has(booleanRefresh.id), "Host did not answer settings refresh");
+				await waitFor(
+					() => tui.pane().includes("开启"),
+					"Rust did not apply the refreshed boolean setting before the next edit",
+				);
 
-				tui.send("Down", "Enter");
-				await waitFor(() => tui.pane().includes("all"), "enum setting editor did not open");
-				tui.send("Down", "Enter");
+				const enumWritesBefore = tui.requests.filter((request) => request.command === "set_setting").length;
+				tui.send("Down");
+				await waitFor(() => tui.pane().includes("> 响应模式"), "settings selection did not move to enum");
+				tui.send("Enter");
+				await waitFor(() => tui.pane().includes("> one"), "enum setting editor did not select its current value");
+				tui.send("Down");
+				await waitFor(() => tui.pane().includes("> all"), "enum selection did not move to all");
+				tui.send("Enter");
+				await waitFor(
+					async () => {
+						await tui.pump();
+						return (
+							tui.requests.filter((request) => request.command === "set_setting").length >= enumWritesBefore + 1
+						);
+					},
+					() =>
+						`enum setting request did not leave Rust: ${JSON.stringify({ requests: tui.requests, pane: tui.pane() })}`,
+				);
 				await waitFor(async () => {
 					await tui.pump();
 					return tui.runtime.settingWrites.some((write) => write.value === "all");
 				}, "enum setting did not save");
-				await waitFor(async () => {
-					await tui.pump();
-					return tui.requests.filter((request) => request.command === "list_settings").length >= 3;
-				}, "enum setting did not refresh the list");
-				const enumRefreshId = tui.requests.filter((request) => request.command === "list_settings").at(-1)?.id;
-				assert.ok(enumRefreshId, "missing enum settings refresh request");
-				await waitFor(() => tui.responseWrites.has(enumRefreshId), "Host did not answer enum settings refresh");
-				await new Promise((resolve) => setTimeout(resolve, 200));
+				const enumRefresh = await waitForRequest(tui, "list_settings", 3);
+				await waitFor(() => tui.responseWrites.has(enumRefresh.id), "Host did not answer enum settings refresh");
+				await waitFor(() => tui.pane().includes("全部"), "Rust did not apply the refreshed enum setting");
 				assert.equal(tui.runtime.settingWrites.length, 2, "settings writes were not journaled exactly once");
 
 				tui.send("Escape");
@@ -2061,6 +2085,9 @@ describe("Rust B3 会话工作台外部验收", () => {
 				await waitForRequest(tui, "acquire_session");
 				assert.equal(hostLeaseCount(tui.service), 1, "initial Host lease is missing");
 				await openSessions(tui);
+				tui.send("q");
+				await waitFor(() => tui.pane().includes("q  n 新建"), "normal sessions chooser did not filter q");
+				tui.send("BSpace");
 				const firstSwitch = fixture.calls.length;
 				tui.send("Down", "Enter");
 				await waitForRequest(tui, "acquire_session", 2);
@@ -2092,58 +2119,20 @@ describe("Rust B3 会话工作台外部验收", () => {
 
 				fixture.failNextOpen(fixture.paths.b);
 				fixture.failNextOpen(fixture.paths.a);
-				const acquire = tui.serverMessages
-					.filter(
-						(message) =>
-							message.type === "response" &&
-							message.ok &&
-							typeof (message.result as { lease?: unknown }).lease === "object",
-					)
-					.at(-1);
-				assert.ok(acquire && acquire.type === "response" && acquire.ok, "missing restored A lease");
-				const leaseId = (acquire.result as { lease: { leaseId: string } }).lease.leaseId;
-				await tui.connection.handle({
-					type: "request",
-					id: `external-release-${attempt}`,
-					request: { command: "release_session", sessionPath: fixture.paths.a, leaseId },
-				});
-				const released = tui.serverMessages.find(
-					(message) => message.type === "response" && message.id === `external-release-${attempt}`,
+				tui.send("Enter");
+				await waitForRequest(tui, "acquire_session", 7);
+				await waitFor(
+					() => tui.pane().includes("切换失败且原会话恢复失败"),
+					"double failure did not open the recovery sessions chooser",
 				);
-				assert.ok(
-					released && released.type === "response" && released.ok,
-					"external release did not clear A lease",
-				);
-				await tui.connection.handle({
-					type: "request",
-					id: `external-acquire-b-${attempt}`,
-					request: {
-						command: "acquire_session",
-						sessionPath: fixture.paths.b,
-						clientInstanceId: tui.clientInstanceId,
-					},
-				});
-				await tui.connection.handle({
-					type: "request",
-					id: `external-acquire-a-${attempt}`,
-					request: {
-						command: "acquire_session",
-						sessionPath: fixture.paths.a,
-						clientInstanceId: tui.clientInstanceId,
-					},
-				});
 				assert.equal(hostLeaseCount(tui.service), 0, "B and A failures retained a Host lease");
-				await openSessions(tui);
-				assert.ok(tui.pane().includes("会话"), "double failure did not retain a sessions chooser");
-				tui.send("Escape");
-				await waitFor(() => tui.pane().includes("Enter 提交"), "sessions chooser did not return focus to Composer");
-				tui.send("C-u");
 				tui.send("q");
 				await waitFor(async () => {
 					await tui.pump();
 					return spawnSync("tmux", ["-L", tui.socket, "has-session", "-t", "tui"]).status !== 0;
-				}, "q did not exit after lease loss");
-				assert.equal(hostLeaseCount(tui.service), 0, "q left a Host lease");
+				}, "q did not exit from the recovery sessions chooser");
+				await tui.connection.close();
+				assert.equal(hostLeaseCount(tui.service), 0, "Host connection close left a lease after q exit");
 				assert.equal(readFileSync(tui.sttyBeforePath, "utf8"), readFileSync(tui.sttyAfterPath, "utf8"));
 			} finally {
 				tui.closeProtocol();
@@ -2191,7 +2180,11 @@ describe("Rust B3 会话工作台外部验收", () => {
 				emitCommitted(tui.runtime, metadata.generation, metadata.revision);
 				await waitForTrace(tui, "append_applied", beforeAppend + 1);
 				tui.send("Escape");
-				await waitFor(() => tui.pane().includes("Enter 提交"), "readonly Esc did not restore Composer");
+				await waitFor(() => !tui.pane().includes("搜索: needle 12"), "readonly search Esc did not close search");
+				tui.send("Escape");
+				await waitFor(() => tui.pane().includes("n 新建"), "readonly Esc did not return to sessions chooser");
+				tui.send("Escape");
+				await waitFor(() => !tui.pane().includes("n 新建"), "sessions Esc did not restore Composer");
 				tui.send("C-o");
 				await waitFor(async () => {
 					await tui.pump();
@@ -2227,35 +2220,283 @@ describe("Rust B3 会话工作台外部验收", () => {
 		}
 	}, 180_000);
 
-	it("两轮从干净 Composer 打开 Tree 并返回", async () => {
+	it("两轮验证 Tree 筛选、写入、导航、分叉和错误重试", async () => {
 		for (let attempt = 0; attempt < 2; attempt++) {
 			const tui = await startTui(
 				4,
 				{ width: 80, height: 24 },
-				`tree-entry-${attempt + 1}`,
+				`tree-actions-${attempt + 1}`,
 				({ directory, sessionPath }) => new WorkbenchFixture(directory, sessionPath),
 			);
 			try {
+				const fixture = tui.fixture!;
+				const openTree = async () => {
+					const count = tui.requests.filter((request) => request.command === "get_session_tree").length;
+					tui.send("C-p");
+					await waitFor(() => tui.pane().includes("命令面板"), "command palette did not open Tree");
+					tui.sendLiteral("/tree");
+					tui.send("Enter");
+					const treeRequest = await waitForRequest(tui, "get_session_tree", count + 1);
+					await waitFor(() => tui.responseWrites.has(treeRequest.id), "Host did not answer Tree request");
+					await waitFor(() => tui.pane().includes("分支树"), "Tree did not render");
+				};
 				await waitForInitialPage(tui);
-				tui.sendLiteral("/tree");
-				tui.send("Enter");
-				await waitForRequest(tui, "get_session_tree");
+				await openTree();
 				await waitFor(
-					() => tui.pane().includes("分支树") && tui.pane().includes("labeled user"),
+					() => tui.pane().includes("labeled user") && tui.pane().includes("Tool read src/tree.ts"),
 					"Tree did not render the Host projection",
 				);
-				tui.resize(80, 8);
-				await waitFor(() => tui.pane().includes("分支树"), "80x8 did not retain Tree overlay");
+
+				tui.send("C-t");
+				await waitFor(
+					() => tui.pane().includes("[no-tools]") && !tui.pane().includes("Tool read src/tree.ts"),
+					"no-tools filter did not hide the tool entry",
+				);
+				tui.send("C-u");
+				await waitFor(
+					() => tui.pane().includes("[user-only]") && tui.pane().includes("user-only no-tools prompt"),
+					"user-only filter did not preserve the user mapping",
+				);
+				tui.send("C-l");
+				await waitFor(
+					() => tui.pane().includes("[labeled-only]") && tui.pane().includes("labeled user"),
+					"labeled-only filter did not preserve labeled entry mapping",
+				);
+				tui.send("C-a");
+				await waitFor(
+					() => tui.pane().includes("[all]") && tui.pane().includes("Tool read src/tree.ts"),
+					"all filter did not restore the complete Tree",
+				);
+
+				tui.send("l");
+				await waitFor(
+					() => tui.pane().includes("编辑标签"),
+					"l did not open label editor for the selected Tree node",
+				);
+				tui.sendLiteral("tool-tag");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return fixture.effects.label === 1;
+				}, "label write did not reach Host exactly once");
+				const treeRefreshAfterLabel = await waitForRequest(tui, "get_session_tree", 2);
+				await waitFor(
+					() => tui.responseWrites.has(treeRefreshAfterLabel.id),
+					"Host did not answer Tree refresh after label",
+				);
+				await waitFor(
+					() => tui.pane().includes("tool-tag") && tui.pane().includes("[all]"),
+					"Tree refresh did not preserve filter and selected entry after label",
+				);
+				tui.send("l");
+				await waitFor(() => tui.pane().includes("tool-tag"), "label editor did not retain the current label");
+				tui.send(...Array.from({ length: 8 }, () => "BSpace"));
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return fixture.effects.label === 2;
+				}, "empty label did not clear through Host");
+				const treeRefreshAfterClear = await waitForRequest(tui, "get_session_tree", 3);
+				await waitFor(
+					() => tui.responseWrites.has(treeRefreshAfterClear.id),
+					"Host did not answer Tree refresh after clear",
+				);
+				await waitFor(() => !tui.pane().includes("tool-tag"), "cleared Tree label remained visible after refresh");
+
+				fixture.nextNavigation = { cancelled: true, editorText: "cancelled draft" };
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return fixture.effects.navigate === 1;
+				}, "cancelled Tree navigation did not reach Host");
+				await waitFor(
+					() => tui.pane().includes("Enter 提交"),
+					"cancelled Tree navigation did not return to Composer",
+				);
+				assert.ok(!tui.pane().includes("cancelled draft"), "cancelled navigation changed Composer text");
+
+				fixture.nextNavigation = { cancelled: false, editorText: "tree replacement draft" };
+				await openTree();
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return fixture.effects.navigate === 2;
+				}, "Tree navigation did not reach Host");
+				await waitFor(
+					() => tui.pane().includes("tree replacement draft"),
+					"empty Composer did not receive Tree editor text",
+				);
+
+				fixture.nextNavigation = { cancelled: false, editorText: "replacement after confirm" };
+				await openTree();
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return fixture.effects.navigate === 3;
+				}, "Tree replacement navigation did not reach Host");
+				await waitFor(
+					() => tui.pane().includes("替换输入草稿"),
+					"nonempty Composer did not request replacement confirmation",
+				);
 				tui.send("Escape");
-				await waitFor(() => tui.pane().includes("Enter 提交"), "Tree Esc did not restore Composer");
+				await waitFor(() => tui.pane().includes("分支树"), "cancelled replacement did not return to Tree");
+				tui.send("Escape");
+				await waitFor(
+					() => tui.pane().includes("tree replacement draft"),
+					"cancelled replacement changed Composer text",
+				);
+				fixture.nextNavigation = { cancelled: false, editorText: "replacement after confirm" };
+				await openTree();
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return fixture.effects.navigate === 4;
+				}, "confirmed replacement navigation did not reach Host");
+				await waitFor(() => tui.pane().includes("替换输入草稿"), "replacement confirmation did not reopen");
+				tui.send("Enter");
+				await waitFor(
+					() => tui.pane().includes("replacement after confirm"),
+					"confirmed Tree replacement did not update Composer",
+				);
+
+				fixture.nextNavigation = { cancelled: true };
+				await openTree();
+				tui.send("s");
+				await waitFor(() => tui.pane().includes("摘要跳转"), "s did not open summarize confirmation");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return fixture.calls.includes("navigate:true");
+				}, "summarize navigation did not send summarize=true to Host");
+				await waitFor(
+					() => tui.pane().includes("已取消分支"),
+					"summarize navigation did not finish before the next Tree action",
+				);
+
+				fixture.navigationFailures = 1;
+				await openTree();
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.pane().includes("navigate failed");
+				}, "navigate error did not return to Tree");
+				fixture.nextNavigation = { cancelled: false, editorText: "retry navigation draft" };
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return fixture.effects.navigate === 6;
+				}, "navigate retry did not reach Host");
+				await waitFor(
+					() => tui.pane().includes("替换输入草稿"),
+					"navigate retry did not complete before the next Tree action",
+				);
+				tui.send("Enter");
+				await waitFor(
+					() => tui.pane().includes("retry navigation draft"),
+					"navigate retry did not apply editor replacement",
+				);
+
+				fixture.labelFailures = 1;
+				await openTree();
+				tui.send("l");
+				tui.sendLiteral("retry-label");
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.pane().includes("label failed");
+				}, "label error did not return to Tree");
+				tui.send("l");
+				tui.sendLiteral("retry-label");
+				tui.send("Enter");
+				const treeRequestsBeforeRetryLabel = tui.requests.filter(
+					(request) => request.command === "get_session_tree",
+				).length;
+				await waitFor(async () => {
+					await tui.pump();
+					return fixture.effects.label === 3;
+				}, "label retry did not reach Host");
+				const treeRefreshAfterRetryLabel = await waitForRequest(
+					tui,
+					"get_session_tree",
+					treeRequestsBeforeRetryLabel + 1,
+				);
+				await waitFor(
+					() => tui.responseWrites.has(treeRefreshAfterRetryLabel.id),
+					"Host did not answer Tree refresh after label retry",
+				);
+				await waitFor(
+					() => tui.pane().includes("retry-label"),
+					"label error left pending state that blocked retry",
+				);
+
+				const labelsBeforeDrop = fixture.effects.label;
+				const labelRequestsBeforeDrop = tui.requests.filter(
+					(request) => request.command === "set_entry_label",
+				).length;
+				const treeRequestsBeforeDrop = tui.requests.filter(
+					(request) => request.command === "get_session_tree",
+				).length;
+				await openTree();
+				tui.send("l");
+				tui.sendLiteral("dropped-label");
+				tui.dropNextB3Response();
+				tui.send("Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return fixture.effects.label === labelsBeforeDrop + 1;
+				}, "dropped label response did not execute Host write");
+				await waitFor(
+					() => tui.pane().includes("请求超时，按 r 重试"),
+					"dropped label response did not become retryable",
+				);
+				tui.send("r");
+				await waitForRequest(tui, "set_entry_label", labelRequestsBeforeDrop + 2);
+				await waitFor(
+					() => fixture.effects.label === labelsBeforeDrop + 1,
+					"label retry repeated Host side effect",
+				);
+				const treeRefreshAfterDroppedLabel = await waitForRequest(
+					tui,
+					"get_session_tree",
+					treeRequestsBeforeDrop + 2,
+				);
+				await waitFor(
+					() => tui.responseWrites.has(treeRefreshAfterDroppedLabel.id),
+					"Host did not answer Tree refresh after dropped-label retry",
+				);
+				await waitFor(() => tui.pane().includes("dropped-label"), "retried label did not refresh Tree");
+
+				tui.send("f");
+				await waitFor(() => tui.pane().includes("分叉会话"), "f did not request Tree fork confirmation");
+				tui.send("Escape");
+				assert.equal(fixture.effects.fork, 0, "cancelled Tree fork called Host");
+				tui.send("f", "Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return fixture.effects.fork === 1;
+				}, "confirmed Tree fork did not run exactly once");
+				await waitFor(
+					() => tui.pane().includes("已创建并切换分叉会话"),
+					"confirmed Tree fork did not switch session",
+				);
+
+				tui.resize(80, 8);
+				await waitFor(
+					() => tui.pane().includes("分支树") || tui.pane().includes("Enter 提交"),
+					"80x8 Tree path did not render",
+				);
+				tui.send("Escape");
+				await waitFor(() => tui.pane().includes("Enter 提交"), "80x8 Tree close did not restore Composer");
 				tui.closeProtocol();
 				await waitFor(
 					() => spawnSync("tmux", ["-L", tui.socket, "has-session", "-t", "tui"]).status !== 0,
 					"Tree EOF did not exit",
 				);
+				await tui.connection.close();
+				assert.equal(hostLeaseCount(tui.service), 0, "Tree exit left a Host lease");
 			} finally {
 				tui.closeProtocol();
 			}
 		}
-	}, 90_000);
+	}, 240_000);
 });

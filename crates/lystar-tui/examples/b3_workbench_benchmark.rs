@@ -12,9 +12,9 @@ use std::{
 use lystar_protocol::{ToolCall, TranscriptItem, TranscriptViewItem};
 use lystar_tui::{
     app::{
-        AppState, ComposerView, DetailOverlay, ListOverlay, OverlayItem, OverlayState,
-        ReadonlySessionView, SessionTreeNode, TranscriptView, WorkbenchOverlayView, composer_area,
-        transcript_area,
+        AppState, ComposerView, DetailOverlay, ListOverlay, OverlayItem, OverlayOrigin,
+        OverlayState, ReadonlySessionView, SessionTreeNode, TranscriptView, WorkbenchOverlayView,
+        composer_area, transcript_area,
     },
     editor::EditorState,
 };
@@ -280,6 +280,7 @@ fn open_tree(app: &mut AppState, filter: String) {
         .collect();
     app.open_overlay(OverlayState::List(ListOverlay {
         title: "分支树".to_owned(),
+        origin: OverlayOrigin::User,
         items,
         selected: 0,
         filter,

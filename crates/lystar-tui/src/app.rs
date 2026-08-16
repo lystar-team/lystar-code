@@ -401,9 +401,17 @@ pub struct OverlayItem {
     pub action: String,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OverlayOrigin {
+    #[default]
+    User,
+    RecoverySession,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListOverlay {
     pub title: String,
+    pub origin: OverlayOrigin,
     pub items: Vec<OverlayItem>,
     pub selected: usize,
     pub filter: String,
@@ -580,7 +588,17 @@ pub enum WorkbenchTarget {
     Tree,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TreeFilter {
+    #[default]
+    Default,
+    NoTools,
+    UserOnly,
+    LabeledOnly,
+    All,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct B3Request {
     pub command: lystar_protocol::B3Command,
     pub payload: serde_json::Map<String, serde_json::Value>,
@@ -699,6 +717,7 @@ pub struct AppState {
     pub active_session: Option<ActiveSessionContext>,
     pub sessions: Vec<SessionSummary>,
     pub tree: Vec<SessionTreeNode>,
+    pub tree_filter: TreeFilter,
     pub readonly_view: Option<ReadonlySessionView>,
     pub session_generation: u64,
     pub transcript: TranscriptWindow,
@@ -956,6 +975,18 @@ impl AppState {
         }
         self.assistant_stream.clear();
         self.thinking_stream.clear();
+    }
+
+    pub fn is_recovery_session_chooser(&self) -> bool {
+        self.active_session.is_none()
+            && self.lease_id.is_none()
+            && matches!(
+                self.overlay(),
+                Some(OverlayState::List(ListOverlay {
+                    origin: OverlayOrigin::RecoverySession,
+                    ..
+                }))
+            )
     }
 
     pub fn open_overlay(&mut self, overlay: OverlayState) {
@@ -2192,6 +2223,7 @@ mod tests {
         let mut app = AppState::default();
         app.open_overlay(OverlayState::List(ListOverlay {
             title: "命令面板".to_owned(),
+            origin: OverlayOrigin::User,
             items: vec![
                 OverlayItem {
                     label: "/help".to_owned(),
@@ -2222,6 +2254,33 @@ mod tests {
         app.overlay_insert("中");
         app.overlay_backspace();
         assert_eq!(app.current_overlay_action().as_deref(), Some("ui:input"));
+    }
+
+    #[test]
+    fn distinguishes_recovery_sessions_q_exit_from_normal_filtering() {
+        let mut app = AppState::default();
+        app.open_overlay(OverlayState::List(ListOverlay {
+            title: "会话".to_owned(),
+            origin: OverlayOrigin::RecoverySession,
+            items: vec![],
+            selected: 0,
+            filter: String::new(),
+            status: String::new(),
+        }));
+        assert!(app.is_recovery_session_chooser());
+
+        app.close_overlay();
+        app.open_overlay(OverlayState::List(ListOverlay {
+            title: "会话".to_owned(),
+            origin: OverlayOrigin::User,
+            items: vec![],
+            selected: 0,
+            filter: String::new(),
+            status: String::new(),
+        }));
+        assert!(!app.is_recovery_session_chooser());
+        app.overlay_insert("q");
+        assert!(matches!(app.overlay(), Some(OverlayState::List(list)) if list.filter == "q"));
     }
 
     #[test]
@@ -2321,6 +2380,7 @@ mod tests {
         };
         app.open_overlay(OverlayState::List(ListOverlay {
             title: "分支树".to_owned(),
+            origin: OverlayOrigin::User,
             items: app
                 .tree
                 .iter()

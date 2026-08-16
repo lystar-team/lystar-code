@@ -12,9 +12,9 @@ use std::{
 use lystar_protocol::{ToolCall, TranscriptItem, TranscriptViewItem};
 use lystar_tui::{
     app::{
-        AppState, ComposerView, ITEM_CACHE_LIMIT, ListOverlay, OverlayItem, OverlayState,
-        ROUND_CACHE_LIMIT, TranscriptView, UTF8_CACHE_LIMIT, WorkbenchOverlayView, composer_area,
-        transcript_area,
+        AppState, ComposerView, ITEM_CACHE_LIMIT, ListOverlay, OverlayItem, OverlayOrigin,
+        OverlayState, ROUND_CACHE_LIMIT, TranscriptView, UTF8_CACHE_LIMIT, WorkbenchOverlayView,
+        composer_area, transcript_area,
     },
     editor::EditorState,
 };
@@ -185,6 +185,7 @@ fn run_palette_case(out: &PathBuf, round: usize, columns: u16, rows: u16) {
     let regroup_before = regroup_signature(&benchmark.app);
     benchmark.app.open_overlay(OverlayState::List(ListOverlay {
         title: "命令面板".to_owned(),
+        origin: OverlayOrigin::User,
         items: vec![
             OverlayItem {
                 label: "/help".to_owned(),

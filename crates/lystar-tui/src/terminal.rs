@@ -35,10 +35,10 @@ use thiserror::Error;
 
 use crate::app::{
     AppState, B3Request, ComposerView, ConfirmOverlay, DetailOverlay, InputFocus, ListOverlay,
-    ModelDescriptor, OverlayItem, OverlayLink, OverlayState, PendingIntent, ProviderDescriptor,
-    ReadonlySessionView, SearchHit, SessionRestorePoint, SessionSummary, SessionTreeNode,
-    SettingDescriptor, TextEditorOverlay, TranscriptRequestKind, TranscriptView,
-    TranscriptViewKind, UiRequest, UiRequestKind, VisibleLink, WorkbenchOverlayView,
+    ModelDescriptor, OverlayItem, OverlayLink, OverlayOrigin, OverlayState, PendingIntent,
+    ProviderDescriptor, ReadonlySessionView, SearchHit, SessionRestorePoint, SessionSummary,
+    SessionTreeNode, SettingDescriptor, TextEditorOverlay, TranscriptRequestKind, TranscriptView,
+    TranscriptViewKind, TreeFilter, UiRequest, UiRequestKind, VisibleLink, WorkbenchOverlayView,
     WorkbenchTarget, composer_area, transcript_area,
 };
 
@@ -529,7 +529,6 @@ pub fn run(session_path: &str) -> Result<(), TuiError> {
             return Ok(());
         }
         if app.timed_out_b3_request().is_some() {
-            app.clear_connection_state("Host 请求超时，已清除本地租约");
             if !timeout_notified {
                 app.set_timeout_notice();
                 state_changed = true;
@@ -902,6 +901,23 @@ fn handle_key(
     quit_requested: &mut bool,
 ) -> Result<bool, TuiError> {
     let session_path = app.active_session_path().unwrap_or(session_path).to_owned();
+    if matches!(code, KeyCode::Char('c')) && modifiers.contains(KeyModifiers::CONTROL) {
+        if let (Some(operation), Some(lease_id)) = (&app.operation, &app.lease_id)
+            && matches!(
+                operation.status.as_str(),
+                "accepted" | "running" | "waiting_for_input"
+            )
+        {
+            *sequence += 1;
+            pipe.request(&encode_abort_operation_request(
+                &format!("abort-{sequence}"),
+                &operation.operation_id,
+                lease_id,
+            )?)?;
+            app.transcript.status = "正在停止".to_owned();
+        }
+        return Ok(false);
+    }
     if is_readonly_overlay(app) {
         return handle_readonly_key(app, code, modifiers, pipe, sequence);
     }
@@ -947,6 +963,7 @@ fn handle_key(
     if matches!(code, KeyCode::Char('p')) && modifiers.contains(KeyModifiers::CONTROL) {
         app.open_overlay(OverlayState::List(ListOverlay {
             title: "命令面板".to_owned(),
+            origin: OverlayOrigin::User,
             items: [
                 ("sessions", "会话"),
                 ("tree", "分支树"),
@@ -985,9 +1002,7 @@ fn handle_key(
         );
     }
 
-    if matches!(code, KeyCode::Esc)
-        || (matches!(code, KeyCode::Char('c')) && modifiers.contains(KeyModifiers::CONTROL))
-    {
+    if matches!(code, KeyCode::Esc) {
         if let (Some(operation), Some(lease_id)) = (&app.operation, &app.lease_id)
             && matches!(
                 operation.status.as_str(),
@@ -1115,6 +1130,12 @@ fn handle_overlay_key(
     sequence: &mut u64,
     session_flow: &mut Option<SessionFlow>,
 ) -> Result<bool, TuiError> {
+    if matches!(code, KeyCode::Char('q'))
+        && !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        && app.is_recovery_session_chooser()
+    {
+        return Ok(true);
+    }
     match code {
         KeyCode::Esc => {
             if let Some(request) = app.take_ui_response() {
@@ -1135,6 +1156,21 @@ fn handle_overlay_key(
         KeyCode::Home => app.overlay_home_end(false),
         KeyCode::End => app.overlay_home_end(true),
         KeyCode::Tab => {}
+        KeyCode::Char('d') if modifiers == KeyModifiers::CONTROL => {
+            set_tree_filter(app, TreeFilter::Default);
+        }
+        KeyCode::Char('t') if modifiers == KeyModifiers::CONTROL => {
+            set_tree_filter(app, TreeFilter::NoTools);
+        }
+        KeyCode::Char('u') if modifiers == KeyModifiers::CONTROL => {
+            set_tree_filter(app, TreeFilter::UserOnly);
+        }
+        KeyCode::Char('l') if modifiers == KeyModifiers::CONTROL => {
+            set_tree_filter(app, TreeFilter::LabeledOnly);
+        }
+        KeyCode::Char('a') if modifiers == KeyModifiers::CONTROL => {
+            set_tree_filter(app, TreeFilter::All);
+        }
 
         KeyCode::Char('r')
             if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -1473,6 +1509,31 @@ fn handle_overlay_key(
         _ => {}
     }
     Ok(false)
+}
+
+#[cfg(unix)]
+fn set_tree_filter(app: &mut AppState, tree_filter: TreeFilter) {
+    let Some(OverlayState::List(list)) = app.overlay() else {
+        return;
+    };
+    if list.title != "分支树" {
+        return;
+    }
+    let filter = list.filter.clone();
+    let selected_key = list
+        .items
+        .get(list.selected)
+        .and_then(|item| item.action.strip_prefix("tree:"))
+        .and_then(|index| index.parse::<usize>().ok())
+        .and_then(|index| app.tree.get(index))
+        .map(|node| node.id.clone());
+    app.tree_filter = tree_filter;
+    app.replace_overlay(tree_overlay(
+        &app.tree,
+        selected_key.as_deref(),
+        filter,
+        tree_filter,
+    ));
 }
 
 #[cfg(unix)]
@@ -2019,6 +2080,7 @@ fn activate_workbench_action(
         }
         app.open_overlay(OverlayState::List(ListOverlay {
             title: format!("{} 选项", setting.label),
+            origin: OverlayOrigin::User,
             items: setting
                 .options
                 .iter()
@@ -2232,6 +2294,7 @@ fn activate_workbench_action(
         }
         app.open_overlay(OverlayState::List(ListOverlay {
             title: format!("{} 登录方式", provider.name),
+            origin: OverlayOrigin::User,
             items: provider
                 .auth_methods
                 .iter()
@@ -2506,6 +2569,7 @@ fn apply_server_message(
         match kind {
             UiRequestKind::Select => app.open_overlay(OverlayState::List(ListOverlay {
                 title: title.to_owned(),
+                origin: OverlayOrigin::User,
                 items: ui_select_items(&payload),
                 selected: 0,
                 filter: String::new(),
@@ -2555,9 +2619,6 @@ fn apply_server_message(
         && let Some(id) = raw.get("id").and_then(serde_json::Value::as_str)
         && let Some(pending) = app.take_pending(id)
     {
-        if pending.generation != app.request_generation {
-            return Ok(false);
-        }
         if raw.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
             if matches!(&pending.intent, PendingIntent::TreeNavigate { .. }) {
                 app.pending_editor_replace = None;
@@ -2801,7 +2862,11 @@ fn apply_session_flow(
                 return Ok(Some(false));
             }
             app.sessions = parse_sessions(&result)?;
-            app.replace_overlay(session_overlay(&app.sessions, selected_path.as_deref()));
+            app.replace_overlay(session_overlay(
+                &app.sessions,
+                selected_path.as_deref(),
+                OverlayOrigin::User,
+            ));
             Ok(Some(false))
         }
         SessionFlow::Rename { index, name, .. } => {
@@ -2812,7 +2877,11 @@ fn apply_session_flow(
             if let Some(session) = app.sessions.get_mut(index) {
                 session.name = (!name.trim().is_empty()).then_some(name);
             }
-            app.replace_overlay(session_overlay(&app.sessions, app.active_session_path()));
+            app.replace_overlay(session_overlay(
+                &app.sessions,
+                app.active_session_path(),
+                OverlayOrigin::User,
+            ));
             app.set_toast("已重命名会话");
             Ok(Some(false))
         }
@@ -2951,7 +3020,11 @@ fn apply_session_flow(
                 app.set_overlay_error(format!("切换失败，已恢复原会话: {reason}"));
             } else {
                 app.clear_active_session("切换失败且原会话恢复失败");
-                app.replace_overlay(session_overlay(&app.sessions, None));
+                app.replace_overlay(session_overlay(
+                    &app.sessions,
+                    None,
+                    OverlayOrigin::RecoverySession,
+                ));
                 app.set_overlay_error(format!("切换失败且原会话恢复失败: {error}"));
             }
             Ok(Some(false))
@@ -3102,7 +3175,11 @@ fn apply_session_flow(
         SessionFlow::DeleteAcquiring { target, .. } => {
             if !success {
                 app.clear_active_session("当前会话已删除，无法切换目标会话");
-                app.replace_overlay(session_overlay(&app.sessions, None));
+                app.replace_overlay(session_overlay(
+                    &app.sessions,
+                    None,
+                    OverlayOrigin::RecoverySession,
+                ));
                 app.set_overlay_error(format!("当前会话已删除，无法切换目标会话: {error}"));
                 return Ok(Some(false));
             }
@@ -3121,7 +3198,11 @@ fn apply_session_flow(
                 app.set_overlay_error(format!("删除失败，已恢复原会话: {reason}"));
             } else {
                 app.clear_active_session("删除失败且原会话恢复失败");
-                app.replace_overlay(session_overlay(&app.sessions, None));
+                app.replace_overlay(session_overlay(
+                    &app.sessions,
+                    None,
+                    OverlayOrigin::RecoverySession,
+                ));
                 app.set_overlay_error(format!("删除失败且原会话恢复失败: {error}"));
             }
             Ok(Some(false))
@@ -3296,7 +3377,12 @@ fn apply_workbench_load(
         }
         WorkbenchTarget::Tree => {
             app.tree = parse_tree(&result)?;
-            app.replace_overlay(tree_overlay(&app.tree, selected_key.as_deref(), filter));
+            app.replace_overlay(tree_overlay(
+                &app.tree,
+                selected_key.as_deref(),
+                filter,
+                app.tree_filter,
+            ));
         }
         WorkbenchTarget::Sessions => {
             return Err(TuiError::InvalidResponse(
@@ -3349,6 +3435,7 @@ fn settings_overlay(
         .unwrap_or(0);
     OverlayState::List(ListOverlay {
         title: "设置".to_owned(),
+        origin: OverlayOrigin::User,
         items,
         selected,
         filter,
@@ -3414,6 +3501,7 @@ fn model_overlay(app: &AppState, selected_key: Option<&str>, filter: String) -> 
         .unwrap_or(0);
     OverlayState::List(ListOverlay {
         title: "模型".to_owned(),
+        origin: OverlayOrigin::User,
         items,
         selected,
         filter,
@@ -3444,6 +3532,7 @@ fn thinking_overlay(app: &AppState) -> OverlayState {
     match app.model_supports_reasoning() {
         Ok(model) => OverlayState::List(ListOverlay {
             title: "思考".to_owned(),
+            origin: OverlayOrigin::User,
             items: LEVELS
                 .into_iter()
                 .map(|level| OverlayItem {
@@ -3473,6 +3562,7 @@ fn thinking_overlay(app: &AppState) -> OverlayState {
         }),
         Err(reason) => OverlayState::List(ListOverlay {
             title: "思考".to_owned(),
+            origin: OverlayOrigin::User,
             items: vec![OverlayItem {
                 label: "当前模型不可用".to_owned(),
                 detail: reason.clone(),
@@ -3522,6 +3612,7 @@ fn login_overlay(
         .unwrap_or(0);
     OverlayState::List(ListOverlay {
         title: "登录".to_owned(),
+        origin: OverlayOrigin::User,
         items,
         selected,
         filter,
@@ -3529,12 +3620,17 @@ fn login_overlay(
     })
 }
 
-fn session_overlay(sessions: &[SessionSummary], selected_path: Option<&str>) -> OverlayState {
+fn session_overlay(
+    sessions: &[SessionSummary],
+    selected_path: Option<&str>,
+    origin: OverlayOrigin,
+) -> OverlayState {
     let selected = selected_path
         .and_then(|path| sessions.iter().position(|session| session.path == path))
         .unwrap_or(0);
     OverlayState::List(ListOverlay {
         title: "会话".to_owned(),
+        origin,
         items: sessions
             .iter()
             .enumerate()
@@ -3560,15 +3656,34 @@ fn tree_overlay(
     nodes: &[SessionTreeNode],
     selected_key: Option<&str>,
     filter: String,
+    tree_filter: TreeFilter,
 ) -> OverlayState {
+    let visible = nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| match tree_filter {
+            TreeFilter::Default | TreeFilter::All => true,
+            TreeFilter::NoTools => node.kind != "tool",
+            TreeFilter::UserOnly => node.kind == "user",
+            TreeFilter::LabeledOnly => node.label.is_some(),
+        })
+        .collect::<Vec<_>>();
     let selected = selected_key
-        .and_then(|id| nodes.iter().position(|node| node.id == id))
-        .unwrap_or_else(|| nodes.iter().position(|node| node.is_leaf).unwrap_or(0));
+        .and_then(|id| visible.iter().position(|(_, node)| node.id == id))
+        .or_else(|| visible.iter().position(|(_, node)| node.is_leaf))
+        .unwrap_or(0);
+    let mode = match tree_filter {
+        TreeFilter::Default => "default",
+        TreeFilter::NoTools => "no-tools",
+        TreeFilter::UserOnly => "user-only",
+        TreeFilter::LabeledOnly => "labeled-only",
+        TreeFilter::All => "all",
+    };
     OverlayState::List(ListOverlay {
         title: "分支树".to_owned(),
-        items: nodes
-            .iter()
-            .enumerate()
+        origin: OverlayOrigin::User,
+        items: visible
+            .into_iter()
             .map(|(index, node)| OverlayItem {
                 label: format!(
                     "{}{} {}",
@@ -3582,7 +3697,9 @@ fn tree_overlay(
             .collect(),
         selected,
         filter,
-        status: "Enter 跳转  s 摘要跳转  l 标签  v 只读  f 分叉  n/p 标签".to_owned(),
+        status: format!(
+            "[{mode}] Ctrl+D 默认 Ctrl+T 无工具 Ctrl+U 用户 Ctrl+L 标签 Ctrl+A 全部  Enter 跳转 s 摘要 l 标签 f 分叉"
+        ),
     })
 }
 
