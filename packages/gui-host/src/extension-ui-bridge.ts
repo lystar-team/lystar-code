@@ -583,7 +583,7 @@ export class ExtensionUiBridge {
 		const editor = this.editorComponentId
 			? (this.components.get(this.editorComponentId)?.component as EditorComponent | undefined)
 			: undefined;
-		editor?.setText?.(this.editorText);
+		if (editor?.getText?.() !== this.editorText) editor?.setText?.(this.editorText);
 		return this.revision;
 	}
 
@@ -610,6 +610,13 @@ export class ExtensionUiBridge {
 		const input = boundedRawInput(data);
 		try {
 			const frame = mount.adapter.input(input);
+			if (mount.placement === "editor") {
+				const text = boundedEditor((mount.component as EditorComponent).getText?.() ?? this.editorText);
+				if (text !== this.editorText) {
+					this.editorText = text;
+					this.publishEditorAction("set", text);
+				}
+			}
 			this.publishComponentFrame(mount, frame);
 			this.recordComponentInput(mount, receivedAt, frame.revision, Buffer.byteLength(input, "utf8"));
 			return this.componentInputAppAction ? { appAction: this.componentInputAppAction } : {};

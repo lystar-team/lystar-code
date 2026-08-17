@@ -44,6 +44,14 @@ const directories = new Set<string>();
 const descriptors = new Set<number>();
 const cleanups: Array<() => Promise<void> | void> = [];
 
+type GuiRequestMessage = Extract<ClientMessage, { type: "request" }>;
+type PromptRequestMessage = GuiRequestMessage & {
+	request: Extract<GuiRequestMessage["request"], { command: "prompt" }>;
+};
+type ClipboardWriteRequestMessage = GuiRequestMessage & {
+	request: Extract<GuiRequestMessage["request"], { command: "write_clipboard_text" }>;
+};
+
 function run(command: string, args: string[]): string {
 	const result = spawnSync(command, args, { cwd: repositoryRoot, encoding: "utf8" });
 	assert.equal(result.status, 0, result.stderr);
@@ -1173,11 +1181,14 @@ async function openSubagents(tui: StartedTui): Promise<void> {
 	await waitFor(() => tui.pane().includes("fixture-running"), "Subagent list did not render");
 }
 
-function assertCustomEditorArtifactSafe(artifactDirectory: string): void {
+function assertCustomEditorArtifactSafe(artifactDirectory: string, forbiddenTexts: readonly string[] = []): void {
 	for (const name of readdirSync(artifactDirectory)) {
 		const path = join(artifactDirectory, name);
 		const contents = readFileSync(path, "utf8");
 		assert.doesNotMatch(contents, /预置草稿|命令草稿|ultrathink/i, `artifact contains editor text: ${name}`);
+		for (const text of forbiddenTexts) {
+			assert.ok(!contents.includes(text), `artifact contains editor text: ${name}`);
+		}
 		assert.doesNotMatch(
 			contents,
 			/base64|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]+ KEY-----/i,
@@ -1551,6 +1562,203 @@ async function readOperations(tui: StartedTui): Promise<OperationRecord[]> {
 	return response.result as OperationRecord[];
 }
 
+function customEditorFrames(tui: StartedTui) {
+	return tui.serverMessages.flatMap((message) => {
+		if (message.type !== "event") return [];
+		const event = message.event;
+		if (!("componentId" in event) || event.componentId !== "editor") return [];
+		if (event.type !== "extension_component_mount" && event.type !== "extension_component_frame") return [];
+		return [event.frame];
+	});
+}
+
+function customEditorActions(tui: StartedTui) {
+	return tui.serverMessages.flatMap((message) => {
+		if (message.type !== "event") return [];
+		const event = message.event;
+		if (event.type !== "extension_editor_action" || !("action" in event)) return [];
+		return [event.action];
+	});
+}
+
+function customEditorStateUpdates(tui: StartedTui): Array<{ text: string; cursor: number }> {
+	return tui.clientMessages.flatMap((message) =>
+		message.type === "request" && message.request.command === "extension_editor_state"
+			? [{ text: message.request.text, cursor: message.request.cursor }]
+			: [],
+	);
+}
+
+function customEditorStateTexts(tui: StartedTui): string[] {
+	return customEditorStateUpdates(tui).map((state) => state.text);
+}
+
+function customEditorPromptRequests(tui: StartedTui): PromptRequestMessage[] {
+	return tui.clientMessages.filter(
+		(message) => message.type === "request" && message.request.command === "prompt",
+	) as PromptRequestMessage[];
+}
+
+function contractStatusCounter(tui: StartedTui, key: "completionCalls" | "completionAborts" | "responseCalls"): number {
+	const matches = [...JSON.stringify(tui.serverMessages).matchAll(new RegExp(`${key}=(\\d+)`, "g"))];
+	return Number(matches.at(-1)?.[1] ?? 0);
+}
+
+function operationUpdateStatuses(tui: StartedTui, operationId: string): string[] {
+	return tui.serverMessages.flatMap((message) =>
+		message.type === "event" &&
+		message.event.type === "operation_updated" &&
+		message.event.operation.operationId === operationId
+			? [message.event.operation.status]
+			: [],
+	);
+}
+
+async function waitForOperationStatus(
+	tui: StartedTui,
+	operationId: string,
+	status: "completed" | "failed",
+): Promise<void> {
+	await waitFor(async () => {
+		await tui.pump();
+		const journal = await readOperations(tui);
+		return (
+			journal.some((operation) => operation.operationId === operationId && operation.status === status) &&
+			operationUpdateStatuses(tui, operationId).includes(status)
+		);
+	}, `operation ${operationId} did not reach ${status} in the Host journal and Rust event stream`);
+}
+
+async function releaseDeferredCustomEditorSubmit(tui: StartedTui, key: "C-e" | "C-l"): Promise<void> {
+	const data = key === "C-e" ? "\u0005" : "\u000c";
+	const before = tui.requests.filter(
+		(request) => request.command === "extension_component_input" && request.data === data,
+	).length;
+	tui.send(key);
+	await waitFor(async () => {
+		await tui.pump();
+		return (
+			tui.requests.filter((request) => request.command === "extension_component_input" && request.data === data)
+				.length > before
+		);
+	}, "CustomEditor did not explicitly release the deferred faux response");
+}
+
+async function waitForCustomEditor(tui: StartedTui): Promise<void> {
+	await waitFor(async () => {
+		await tui.pump();
+		return customEditorFrames(tui).length > 0;
+	}, "CustomEditor did not mount");
+}
+
+async function clearCustomEditor(tui: StartedTui): Promise<void> {
+	const before = tui.serverMessages.filter(
+		(message) =>
+			message.type === "event" &&
+			message.event.type === "extension_editor_action" &&
+			message.event.action.action === "set" &&
+			message.event.action.text === "",
+	).length;
+	tui.send("C-c");
+	await waitFor(async () => {
+		await tui.pump();
+		return (
+			tui.serverMessages.filter(
+				(message) =>
+					message.type === "event" &&
+					message.event.type === "extension_editor_action" &&
+					message.event.action.action === "set" &&
+					message.event.action.text === "",
+			).length > before
+		);
+	}, "CustomEditor clear did not update its Host mirror");
+}
+
+async function typeInCustomEditor(tui: StartedTui, text: string): Promise<void> {
+	let expected = "";
+	for (const character of text) {
+		const before = tui.serverMessages.filter(
+			(message) =>
+				message.type === "event" &&
+				message.event.type === "extension_editor_action" &&
+				message.event.action.action === "set" &&
+				message.event.action.text === `${expected}${character}`,
+		).length;
+		tui.sendLiteral(character);
+		expected += character;
+		await waitFor(
+			async () => {
+				await tui.pump();
+				return (
+					tui.serverMessages.filter(
+						(message) =>
+							message.type === "event" &&
+							message.event.type === "extension_editor_action" &&
+							message.event.action.action === "set" &&
+							message.event.action.text === expected,
+					).length > before
+				);
+			},
+			`CustomEditor did not mirror ${JSON.stringify(expected)}`,
+		);
+	}
+}
+
+async function armDeferredCustomEditorSubmit(
+	tui: StartedTui,
+	key: "C-a" | "C-s",
+	text: string,
+): Promise<OperationRecord> {
+	const responseCallsBefore = contractStatusCounter(tui, "responseCalls");
+	tui.send(key);
+	await waitFor(async () => {
+		await tui.pump();
+		return tui.requests.some(
+			(request) =>
+				request.command === "extension_component_input" && request.data === (key === "C-a" ? "\u0001" : "\u0013"),
+		);
+	}, "CustomEditor did not arm deferred response");
+	await clearCustomEditor(tui);
+	await typeInCustomEditor(tui, text);
+	tui.send("Enter");
+	const prompt = await waitForRequest(tui, "prompt");
+	let operation: OperationRecord | undefined;
+	await waitFor(async () => {
+		await tui.pump();
+		const accepted = tui.serverMessages.find(
+			(message) =>
+				message.type === "response" &&
+				message.id === prompt.id &&
+				message.ok &&
+				(message.result as { operation?: OperationRecord }).operation?.type === "prompt",
+		);
+		if (!accepted || accepted.type !== "response" || !accepted.ok) return false;
+		operation = (accepted.result as { operation: OperationRecord }).operation;
+		return operation.status === "accepted";
+	}, "CustomEditor prompt was not accepted");
+	await waitFor(async () => {
+		await tui.pump();
+		return (
+			operationUpdateStatuses(tui, operation!.operationId).includes("running") &&
+			(await readOperations(tui)).some(
+				(candidate) => candidate.operationId === operation!.operationId && candidate.status === "running",
+			) &&
+			contractStatusCounter(tui, "responseCalls") > responseCallsBefore
+		);
+	}, "CustomEditor prompt did not reach running deferred faux response");
+	return operation!;
+}
+
+async function pasteCustomEditorImage(tui: StartedTui, expectedCount: number): Promise<void> {
+	const reads = tui.requests.filter((request) => request.command === "read_clipboard_image").length;
+	tui.send("C-v");
+	await waitForRequest(tui, "read_clipboard_image", reads + 1);
+	await waitFor(
+		() => tui.pane().includes(`图片 ${expectedCount}`),
+		`clipboard image did not produce attachment ${expectedCount}`,
+	);
+}
+
 function startProcessTreeSampling(pid: number) {
 	const rssSamples = [rssTree(pid)];
 	const cpuStartedAt = processTreeCpuMilliseconds(pid);
@@ -1632,6 +1840,7 @@ function createCustomEditorContractRuntimeHost(directory: string): Promise<RealR
 			}),
 		);
 		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		let clipboardImageReads = 0;
 		(
 			adapter as unknown as {
 				readClipboardImage(): Promise<{
@@ -1643,14 +1852,17 @@ function createCustomEditorContractRuntimeHost(directory: string): Promise<RealR
 					data: string;
 				}>;
 			}
-		).readClipboardImage = async () => ({
-			capability: true,
-			available: true,
-			mimeType: "image/png",
-			byteLength: 68,
-			contentHash: "custom-editor-clipboard-png",
-			data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL8WAAAAABJRU5ErkJggg==",
-		});
+		).readClipboardImage = async () => {
+			clipboardImageReads++;
+			return {
+				capability: true,
+				available: true,
+				mimeType: "image/png",
+				byteLength: 68,
+				contentHash: `custom-editor-clipboard-png-${clipboardImageReads}`,
+				data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL8WAAAAABJRU5ErkJggg==",
+			};
+		};
 		const runtime = await adapter.createSession(cwd, async () => ({ cancelled: true }));
 		const sessionPath = runtime.sessionPath;
 		await runtime.dispose();
@@ -2424,15 +2636,20 @@ describe("Rust read-only TUI fd bridge", () => {
 						const inputBeforeUnicode = tui.requests.filter(
 							(request) => request.command === "extension_component_input",
 						).length;
+						const unicode = "中文🙂e\u0301";
 						tui.send("C-c");
-						tui.sendLiteral("中文🙂e\u0301");
+						tui.sendLiteral(unicode);
 						await waitFor(async () => {
 							await tui.pump();
 							return (
 								tui.requests.filter((request) => request.command === "extension_component_input").length >
-									inputBeforeUnicode && tui.pane().includes("中文🙂")
+									inputBeforeUnicode &&
+								tui.pane().includes("中文🙂") &&
+								customEditorStateUpdates(tui).some(
+									(update) => update.text === unicode && update.cursor === Buffer.byteLength(unicode, "utf8"),
+								)
 							);
-						}, "Unicode committed text did not reach CustomEditor");
+						}, "Unicode committed text or cursor did not reach CustomEditor");
 						tui.send("Left", "Backspace", "S-Enter");
 
 						const paste = "甲".repeat(Number(process.env.LYSTAR_CUSTOM_EDITOR_PASTE_CHARS ?? 5_000));
@@ -2758,7 +2975,7 @@ describe("Rust read-only TUI fd bridge", () => {
 			}
 		}, 120_000);
 
-		it("C recovery-attachments：真实 PNG、剪贴板图片、冻结重试与清理", async () => {
+		it("附件基础：真实 PNG、剪贴板图片与冻结重试（FakeRuntimeSession，不计 CustomEditor 证据）", async () => {
 			const attempts = Number(process.env.LYSTAR_CUSTOM_EDITOR_ATTEMPTS ?? 2);
 			for (let attempt = 0; attempt < attempts; attempt++) {
 				const tui = await startTui(4, { width: 80, height: 8 }, `custom-editor-attachments-${attempt + 1}`);
@@ -2840,6 +3057,290 @@ describe("Rust read-only TUI fd bridge", () => {
 				}
 			}
 		}, 120_000);
+
+		it(
+			"C CustomEditor：真实 completion、Recovery 与附件语义",
+			async () => {
+				const attempts = Number(process.env.LYSTAR_CUSTOM_EDITOR_ATTEMPTS ?? 2);
+				for (let attempt = 0; attempt < attempts; attempt++) {
+					const completionTui = await startTui(
+						0,
+						{ width: 80, height: 24 },
+						`custom-editor-completion-${attempt + 1}`,
+						undefined,
+						{ captureRawOutput: false },
+						async ({ directory }) => createCustomEditorContractRuntimeHost(directory),
+					);
+					try {
+						await waitForInitialPage(completionTui);
+						await waitForCustomEditor(completionTui);
+						await clearCustomEditor(completionTui);
+						await typeInCustomEditor(completionTui, "/editor-contract-");
+						const slashInputAccepted = completionTui
+							.traces()
+							.filter((trace) => trace.event === "component_input_accepted").length;
+						completionTui.send("Tab");
+						await waitFor(
+							() =>
+								customEditorFrames(completionTui).at(-1)?.lines.join("\n").includes("editor-contract-mount") ??
+								false,
+							"extension command completion did not render in the real CustomEditor frame",
+						);
+						await waitForTrace(completionTui, "component_input_accepted", slashInputAccepted + 1);
+						completionTui.send("Tab");
+						await waitFor(
+							() =>
+								customEditorActions(completionTui).some((action) => action.text === "/editor-contract-mount "),
+							() =>
+								`extension command completion was not written to the CustomEditor: ${JSON.stringify(
+									customEditorActions(completionTui),
+								)}`,
+						);
+
+						await clearCustomEditor(completionTui);
+						const completionCallsBeforeStale = contractStatusCounter(completionTui, "completionCalls");
+						await typeInCustomEditor(completionTui, "@stale-old");
+						completionTui.send("Tab");
+						await waitFor(
+							() => contractStatusCounter(completionTui, "completionCalls") > completionCallsBeforeStale,
+							"stale completion did not start in the Host",
+						);
+						await clearCustomEditor(completionTui);
+						await typeInCustomEditor(completionTui, "@contract-provider");
+						await waitFor(
+							() => contractStatusCounter(completionTui, "completionAborts") >= 1,
+							"Host completion AbortSignal was not observed for the stale request",
+						);
+						const providerInputAccepted = completionTui
+							.traces()
+							.filter((trace) => trace.event === "component_input_accepted").length;
+						completionTui.send("Tab");
+						await waitFor(
+							() =>
+								customEditorFrames(completionTui).at(-1)?.lines.join("\n").includes("provider completion") ??
+								false,
+							"provider completion did not replace the stale completion",
+						);
+						await waitForTrace(completionTui, "component_input_accepted", providerInputAccepted + 1);
+						completionTui.send("Tab");
+						await waitFor(
+							() =>
+								customEditorActions(completionTui).some((action) => action.text === "@contract-provider-final"),
+							"selected provider completion was not written to the CustomEditor",
+						);
+						assertCustomEditorArtifactSafe(completionTui.artifactDirectory);
+					} finally {
+						await finishTuiRound(completionTui);
+					}
+
+					const directTui = await startTui(
+						0,
+						{ width: 80, height: 24 },
+						`custom-editor-recovery-direct-${attempt + 1}`,
+						undefined,
+						{ captureRawOutput: false, nonBlockingPromptRequests: true },
+						async ({ directory }) => createCustomEditorContractRuntimeHost(directory),
+					);
+					try {
+						await waitForInitialPage(directTui);
+						await waitForCustomEditor(directTui);
+						const operation = await armDeferredCustomEditorSubmit(directTui, "C-a", "old draft");
+						await waitFor(async () => {
+							await directTui.pump();
+							return (
+								customEditorStateTexts(directTui).at(-1) === "" &&
+								!customEditorFrames(directTui).at(-1)?.lines.join("\n").includes("old draft")
+							);
+						}, "Rust and Host CustomEditor were not empty while the deferred operation was running");
+						await releaseDeferredCustomEditorSubmit(directTui, "C-e");
+						await waitForOperationStatus(directTui, operation.operationId, "failed");
+						await waitFor(async () => {
+							await directTui.pump();
+							return customEditorStateTexts(directTui).at(-1) === "old draft";
+						}, "direct recovery did not mirror the old draft back to the Host editor");
+						assert.ok(!directTui.pane().includes("恢复草稿"), "direct recovery incorrectly opened an overlay");
+						assertCustomEditorArtifactSafe(directTui.artifactDirectory, ["old draft"]);
+					} finally {
+						await finishTuiRound(directTui);
+					}
+
+					for (const action of ["append", "replace", "copy", "discard"] as const) {
+						const recoveryTui = await startTui(
+							0,
+							{ width: 80, height: 24 },
+							`custom-editor-recovery-${action}-${attempt + 1}`,
+							undefined,
+							{ captureRawOutput: false, nonBlockingPromptRequests: true },
+							async ({ directory }) => createCustomEditorContractRuntimeHost(directory),
+						);
+						try {
+							await waitForInitialPage(recoveryTui);
+							await waitForCustomEditor(recoveryTui);
+							const operation = await armDeferredCustomEditorSubmit(recoveryTui, "C-a", "old draft");
+							await typeInCustomEditor(recoveryTui, "new input");
+							await waitFor(async () => {
+								await recoveryTui.pump();
+								return customEditorStateTexts(recoveryTui).at(-1) === "new input";
+							}, "Rust did not publish extension_editor_state.text for the conflicted input");
+							await releaseDeferredCustomEditorSubmit(recoveryTui, "C-e");
+							await waitForOperationStatus(recoveryTui, operation.operationId, "failed");
+							await waitFor(async () => {
+								await recoveryTui.pump();
+								return recoveryTui.pane().includes("Ctrl+R 打开恢复草稿");
+							}, "conflicted recovery did not expose the Ctrl+R hint");
+							recoveryTui.send("C-r");
+							await waitFor(async () => {
+								await recoveryTui.pump();
+								const pane = recoveryTui.pane();
+								return pane.includes("追加") && pane.includes("替换") && pane.includes("复制");
+							}, "Ctrl+R did not open recovery menu");
+							if (action === "append") {
+								recoveryTui.send("Enter");
+								await waitFor(async () => {
+									await recoveryTui.pump();
+									return customEditorStateTexts(recoveryTui).at(-1) === "new input\nold draft";
+								}, "append did not mirror new input plus old draft to Host editor");
+							} else if (action === "replace") {
+								recoveryTui.send("Down", "Enter");
+								await waitFor(
+									() => recoveryTui.pane().includes("替换恢复草稿"),
+									"replace confirmation did not open",
+								);
+								recoveryTui.send("Enter");
+								await waitFor(async () => {
+									await recoveryTui.pump();
+									return customEditorStateTexts(recoveryTui).at(-1) === "old draft";
+								}, "replace did not mirror the old draft to Host editor");
+							} else if (action === "copy") {
+								recoveryTui.send("Down", "Down", "Enter");
+								await waitForRequest(recoveryTui, "write_clipboard_text");
+								const writes = recoveryTui.clientMessages.filter(
+									(message) =>
+										message.type === "request" && message.request.command === "write_clipboard_text",
+								) as ClipboardWriteRequestMessage[];
+								assert.equal(writes.length, 1, "recovery copy wrote the clipboard more than once");
+								assert.equal(writes[0].request.text, "old draft");
+								recoveryTui.send("Escape", "C-r");
+								await waitFor(async () => {
+									await recoveryTui.pump();
+									const pane = recoveryTui.pane();
+									return pane.includes("追加") && pane.includes("替换") && pane.includes("复制");
+								}, "copy discarded the recovery draft");
+							} else {
+								recoveryTui.send("Down", "Down", "Down", "Enter");
+								await waitFor(
+									() => !recoveryTui.pane().includes("恢复草稿"),
+									"discard did not close recovery menu",
+								);
+								recoveryTui.send("C-r");
+								await new Promise((resolve) => setTimeout(resolve, 50));
+								assert.ok(!recoveryTui.pane().includes("恢复草稿"), "discard did not release recovery draft");
+							}
+							assertCustomEditorArtifactSafe(recoveryTui.artifactDirectory, ["old draft", "new input"]);
+						} finally {
+							await finishTuiRound(recoveryTui);
+						}
+					}
+
+					const successTui = await startTui(
+						0,
+						{ width: 80, height: 24 },
+						`custom-editor-attachment-success-${attempt + 1}`,
+						undefined,
+						{ captureRawOutput: false, nonBlockingPromptRequests: true },
+						async ({ directory }) => createCustomEditorContractRuntimeHost(directory),
+					);
+					try {
+						await waitForInitialPage(successTui);
+						await waitForCustomEditor(successTui);
+						await pasteCustomEditorImage(successTui, 1);
+						const operation = await armDeferredCustomEditorSubmit(successTui, "C-s", "attachment success");
+						assert.ok(
+							successTui.pane().includes("图片 1"),
+							"accepted CustomEditor submit cleared attachment A too early",
+						);
+						await pasteCustomEditorImage(successTui, 2);
+						await releaseDeferredCustomEditorSubmit(successTui, "C-l");
+						await waitForOperationStatus(successTui, operation.operationId, "completed");
+						await waitFor(
+							() => successTui.pane().includes("图片 1"),
+							"success did not retain attachment B after clearing A",
+						);
+						assert.equal(customEditorPromptRequests(successTui).at(-1)?.request.images?.length, 1);
+						assertCustomEditorArtifactSafe(successTui.artifactDirectory, ["attachment success"]);
+					} finally {
+						await finishTuiRound(successTui);
+					}
+
+					const errorTui = await startTui(
+						0,
+						{ width: 80, height: 24 },
+						`custom-editor-attachment-error-${attempt + 1}`,
+						undefined,
+						{ captureRawOutput: false, nonBlockingPromptRequests: true },
+						async ({ directory }) => createCustomEditorContractRuntimeHost(directory),
+					);
+					try {
+						await waitForInitialPage(errorTui);
+						await waitForCustomEditor(errorTui);
+						await pasteCustomEditorImage(errorTui, 1);
+						const operation = await armDeferredCustomEditorSubmit(errorTui, "C-a", "attachment error");
+						assert.ok(errorTui.pane().includes("图片 1"), "running CustomEditor submit lost attachment A");
+						await typeInCustomEditor(errorTui, "/attachments");
+						errorTui.send("Enter");
+						await waitFor(
+							() => errorTui.pane().includes("图片附件"),
+							"CustomEditor /attachments did not open Rust overlay",
+						);
+						errorTui.send("Enter");
+						await waitFor(() => errorTui.pane().includes("图片预览"), "attachment preview did not open");
+						errorTui.send("Escape");
+						await waitFor(
+							() => errorTui.pane().includes("图片附件"),
+							"attachment preview did not return to the attachment list",
+						);
+						errorTui.send("d");
+						await waitFor(
+							() => errorTui.pane().includes("删除图片附件"),
+							"attachment deletion confirmation did not open",
+						);
+						errorTui.send("Enter");
+						await waitFor(
+							() => errorTui.pane().includes("图片附件"),
+							"attachment deletion did not return to the attachment list",
+						);
+						errorTui.send("Escape");
+						await waitFor(async () => {
+							await errorTui.pump();
+							const pane = errorTui.pane();
+							return !pane.includes("图片附件") && customEditorStateTexts(errorTui).at(-1) === "";
+						}, "attachment overlay did not return an empty CustomEditor");
+						assert.ok(!errorTui.pane().includes("图片 1"), "failed attachment A reappeared before recovery");
+						await typeInCustomEditor(errorTui, "new input");
+						await waitFor(async () => {
+							await errorTui.pump();
+							return customEditorStateTexts(errorTui).at(-1) === "new input";
+						}, "Rust did not publish the post-attachment CustomEditor text");
+						await releaseDeferredCustomEditorSubmit(errorTui, "C-e");
+						await waitForOperationStatus(errorTui, operation.operationId, "failed");
+						await waitFor(async () => {
+							await errorTui.pump();
+							return errorTui.pane().includes("Ctrl+R 打开恢复草稿");
+						}, "attachment error did not create recovery draft");
+						errorTui.send("C-r");
+						await waitFor(
+							() => errorTui.pane().includes("提交时 1 张，当前缺 1 张"),
+							"recovery menu did not report the removed attachment as missing",
+						);
+						assert.ok(!errorTui.pane().includes("图片 1"), "failed attachment A revived after recovery");
+						assertCustomEditorArtifactSafe(errorTui.artifactDirectory, ["attachment error", "new input"]);
+					} finally {
+						await finishTuiRound(errorTui);
+					}
+				}
+			},
+			Number(process.env.LYSTAR_CUSTOM_EDITOR_TIMEOUT_MS ?? 360_000),
+		);
 	});
 
 	it("通过 tmux/FIFO 两轮加载真实 Pi custom Editor examples", async () => {

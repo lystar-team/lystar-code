@@ -175,6 +175,34 @@ describe("ExtensionUiBridge", () => {
 		expect(JSON.stringify(diagnostic)).not.toContain("secret input");
 	});
 
+	it("mirrors editor text changed by completion input without onChange", () => {
+		const events: ExtensionUiBridgeEvent[] = [];
+		const bridge = new ExtensionUiBridge(
+			async () => ({ cancelled: true }),
+			(event) => events.push(event),
+			() => {},
+		);
+		let text = "@provider";
+		bridge.context().setEditorComponent(() => ({
+			render: () => [text],
+			invalidate: () => {},
+			getText: () => text,
+			handleInput: (data: string) => {
+				if (data === "\r") text = "@provider-final";
+			},
+		}));
+		const mount = events.find((event) => event.type === "component_mount" && event.placement === "editor");
+		if (!mount || mount.type !== "component_mount") throw new Error("editor did not mount");
+
+		expect(bridge.dispatchComponentInput(mount.componentId, mount.generation, "\r")).toEqual({});
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "editor_action",
+				action: expect.objectContaining({ text: "@provider-final" }),
+			}),
+		);
+	});
+
 	it("mounts custom editors with the mirrored draft and restores native text after unmount", () => {
 		const events: ExtensionUiBridgeEvent[] = [];
 		const bridge = new ExtensionUiBridge(

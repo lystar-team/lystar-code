@@ -33,6 +33,8 @@ type ContractState = {
 	failNext: boolean;
 	completeNext: boolean;
 	completionCalls: number;
+	completionAborts: number;
+	responseCalls: number;
 	deferred?: DeferredResponse;
 	animationFrames: number;
 };
@@ -82,7 +84,7 @@ class ContractEditor extends CustomEditor {
 			this.onControl("arm-success");
 			return;
 		}
-		if (data === "\u000c") {
+		if (data === "\u0005" || data === "\u000c") {
 			this.onControl("release");
 			return;
 		}
@@ -130,13 +132,16 @@ export default function customEditorContractExtension(pi: ExtensionAPI): void {
 		failNext: false,
 		completeNext: false,
 		completionCalls: 0,
+		completionAborts: 0,
+		responseCalls: 0,
 		animationFrames: 0,
 	};
 	faux.setResponses(
 		Array.from({ length: 128 }, () => async (_context, options) => {
+			state.responseCalls++;
+			publish();
 			const deferred = state.deferred;
 			if (deferred) {
-				state.deferred = undefined;
 				await Promise.race([
 					deferred.promise,
 					new Promise<void>((resolve) => {
@@ -147,6 +152,8 @@ export default function customEditorContractExtension(pi: ExtensionAPI): void {
 						options?.signal?.addEventListener("abort", () => resolve(), { once: true });
 					}),
 				]);
+				state.deferred = undefined;
+				publish();
 				if (options?.signal?.aborted) return ai.fauxAssistantMessage("", { stopReason: "aborted" });
 				if (deferred.kind === "error") throw new Error("controlled custom editor faux error");
 			}
@@ -159,7 +166,7 @@ export default function customEditorContractExtension(pi: ExtensionAPI): void {
 	const publish = () => {
 		context?.ui.setStatus(
 			"custom-editor-contract",
-			`mounts=${state.mounts};disposals=${state.disposals};completionCalls=${state.completionCalls};animation=${state.animationFrames};deferred=${state.deferred?.kind ?? "none"}`,
+			`mounts=${state.mounts};disposals=${state.disposals};completionCalls=${state.completionCalls};completionAborts=${state.completionAborts};responseCalls=${state.responseCalls};animation=${state.animationFrames};deferred=${state.deferred?.kind ?? "none"}`,
 		);
 	};
 	const armDeferred = (kind: DeferredResponse["kind"]) => {
@@ -174,8 +181,33 @@ export default function customEditorContractExtension(pi: ExtensionAPI): void {
 		triggerCharacters: [...new Set([...(current.triggerCharacters ?? []), "@", "/"])],
 		getSuggestions: async (lines, cursorLine, cursorCol, options) => {
 			state.completionCalls++;
+			publish();
 			const text = lines.join("\n");
-			if (text.includes("@stale-old")) await new Promise((resolve) => setTimeout(resolve, 75));
+			if (text.includes("@stale-old")) {
+				await new Promise<void>((resolve) => {
+					const timer = setTimeout(resolve, 75);
+					options.signal.addEventListener(
+						"abort",
+						() => {
+							clearTimeout(timer);
+							state.completionAborts++;
+							resolve();
+						},
+						{ once: true },
+					);
+				});
+				if (options.signal.aborted) {
+					publish();
+					return null;
+				}
+				return { items: [{ value: "@stale-old-result", label: "stale completion" }], prefix: "@stale-old" };
+			}
+			if (text.includes("@contract-provider")) {
+				return {
+					items: [{ value: "@contract-provider-final", label: "provider completion" }],
+					prefix: "@contract-provider",
+				};
+			}
 			if (options.signal.aborted) return null;
 			if (state.completeNext) {
 				state.completeNext = false;

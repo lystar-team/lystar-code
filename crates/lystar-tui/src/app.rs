@@ -1467,7 +1467,6 @@ impl AppState {
                 error: None,
             });
         }
-        self.acknowledge_submitted_attachments(&submit.attachments);
         self.accepted_custom_editor_submits
             .insert(operation_id, RecoveryDraft::from_submit(submit));
     }
@@ -1484,7 +1483,11 @@ impl AppState {
             if let Some(draft) = self.accepted_custom_editor_submits.remove(operation_id) {
                 self.offer_recovery(draft);
             }
-        } else if matches!(status, "completed" | "aborted" | "interrupted") {
+        } else if status == "completed" {
+            if let Some(draft) = self.accepted_custom_editor_submits.remove(operation_id) {
+                self.acknowledge_submitted_attachment_hashes(&draft.submitted_attachment_hashes);
+            }
+        } else if matches!(status, "aborted" | "interrupted") {
             self.accepted_custom_editor_submits.remove(operation_id);
         }
     }
@@ -1495,20 +1498,10 @@ impl AppState {
         {
             return;
         }
-        let editor_matches = match (
-            draft.editor_component_generation,
-            self.active_extension_editor(),
-        ) {
-            (Some(expected), Some(current)) => current.generation == expected,
-            (Some(_), None) => true,
-            (None, None) => true,
-            (None, Some(_)) => false,
-        };
-        if editor_matches
-            && self.extension_ui.revision == draft.submit_revision
-            && self.editor.is_empty()
-        {
+        if self.editor.is_empty() || self.editor.text() == draft.text {
             self.editor.replace(&draft.text);
+            self.synced_editor_text.clear();
+            self.synced_editor_cursor = usize::MAX;
             self.set_toast("提交失败，草稿已恢复");
             return;
         }
@@ -1532,6 +1525,8 @@ impl AppState {
         };
         self.editor.insert("\n");
         self.editor.insert(&draft.text);
+        self.synced_editor_text.clear();
+        self.synced_editor_cursor = usize::MAX;
         true
     }
 
@@ -1540,6 +1535,8 @@ impl AppState {
             return false;
         };
         self.editor.replace(&draft.text);
+        self.synced_editor_text.clear();
+        self.synced_editor_cursor = usize::MAX;
         true
     }
 
@@ -1644,6 +1641,18 @@ impl AppState {
                 }
             )
         })
+    }
+
+    fn acknowledge_submitted_attachment_hashes(&mut self, submitted_hashes: &[String]) {
+        self.attachments
+            .retain(|attachment| !submitted_hashes.contains(&attachment.content_hash));
+        if self
+            .attachment_preview
+            .as_deref()
+            .is_some_and(|hash| self.attachment_by_hash(hash).is_none())
+        {
+            self.attachment_preview = None;
+        }
     }
 
     fn acknowledge_submitted_attachments(&mut self, submitted: &[ComposerAttachment]) {
@@ -2751,8 +2760,8 @@ impl AppState {
             return false;
         }
         self.extension_ui.revision = revision;
-        self.synced_editor_text = self.editor.text().to_owned();
-        self.synced_editor_cursor = self.editor.cursor();
+        self.synced_editor_text.clear();
+        self.synced_editor_cursor = usize::MAX;
         true
     }
 
@@ -3577,6 +3586,8 @@ impl Widget for ComposerView<'_> {
         }
         let shortcuts = if self.state.is_active_operation() {
             "Enter 引导  Alt+Enter 后续  Esc 停止  Ctrl+O Tool"
+        } else if self.state.recovery_draft.is_some() {
+            "Enter 提交  Ctrl+R 打开恢复草稿  Ctrl+F 搜索  Ctrl+O Tool"
         } else {
             "Enter 提交  Shift+Enter 换行  Ctrl+F 搜索  Ctrl+O Tool"
         };
@@ -4527,11 +4538,11 @@ mod tests {
         assert_eq!(app.add_attachment(attachment.clone()), Ok(true));
         app.begin_custom_editor_submit(
             "accepted".to_owned(),
-            submit("接受后失败", 5, vec![attachment]),
+            submit("接受后失败", 5, vec![attachment.clone()]),
         );
         app.acknowledge_custom_editor_submit("accepted", "operation-1".to_owned());
         assert!(app.pending_custom_editor_submits.is_empty());
-        assert!(app.attachments.is_empty());
+        assert_eq!(app.attachments, vec![attachment]);
         app.settle_custom_editor_operation("operation-1", "failed");
         assert!(app.recovery_draft.is_some());
         app.begin_active_session("/tmp/other.jsonl".to_owned(), "/tmp".to_owned());

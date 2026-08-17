@@ -701,6 +701,14 @@ function contentImages(images?: Array<{ data: string; mimeType: string }>) {
 	return images?.map((image) => ({ type: "image" as const, ...image }));
 }
 
+function promptFailure(entries: readonly SessionEntry[]): string | undefined {
+	for (const entry of [...entries].reverse()) {
+		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+		if (entry.message.stopReason === "error") return entry.message.errorMessage ?? "模型响应失败";
+	}
+	return undefined;
+}
+
 class CoreRuntimeSession implements RuntimeSession {
 	private readonly listeners = new Set<(event: RuntimeEvent) => void>();
 	private readonly runtime: Awaited<ReturnType<typeof createAgentSessionRuntime>>;
@@ -884,11 +892,14 @@ class CoreRuntimeSession implements RuntimeSession {
 	}
 
 	async prompt(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void> {
+		const entryCount = this.runtime.session.sessionManager.getEntries().length;
 		await this.runtime.session.prompt(text, {
 			images: contentImages(images),
 			source: "rpc",
 		});
 		await this.runtime.session.waitForIdle();
+		const error = promptFailure(this.runtime.session.sessionManager.getEntries().slice(entryCount));
+		if (error) throw new Error(error);
 		this.emitCommittedEntries();
 	}
 

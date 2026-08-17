@@ -942,6 +942,8 @@ fn run_session(
                             rect.y.saturating_add(inset).saturating_add(row),
                         ));
                     }
+                } else if app.overlay().is_some() {
+                    frame.render_widget(WorkbenchOverlayView::new(&app), area);
                 } else if let Some(component) = app.active_extension_editor() {
                     let composer = composer_area_with_widget_budget(area, widget_budget);
                     if let Some((row, column)) = component.cursor
@@ -967,10 +969,11 @@ fn run_session(
                 .active_extension_overlay()
                 .and_then(|component| component.cursor)
                 .is_some()
-                || app
-                    .active_extension_editor()
-                    .and_then(|component| component.cursor)
-                    .is_some()
+                || (app.overlay().is_none()
+                    && app
+                        .active_extension_editor()
+                        .and_then(|component| component.cursor)
+                        .is_some())
             {
                 execute!(terminal.backend_mut().writer_mut(), Show)?;
             } else {
@@ -1048,13 +1051,31 @@ fn run_session(
                         .map(|component| (component.component_id.clone(), component.generation));
                     let is_overlay_component = overlay_component.is_some();
                     let component = overlay_component.or_else(|| {
-                        app.active_extension_editor()
-                            .map(|component| (component.component_id.clone(), component.generation))
+                        if app.overlay().is_none() {
+                            app.active_extension_editor().map(|component| {
+                                (component.component_id.clone(), component.generation)
+                            })
+                        } else {
+                            None
+                        }
                     });
-                    if let Some((component_id, generation)) = component {
+                    if key.code == KeyCode::Char('r')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                        && app.recovery_draft.is_some()
+                    {
+                        open_custom_editor_recovery(&mut app);
+                        state_changed = true;
+                    } else if let Some((component_id, generation)) = component {
                         let active_path =
                             app.active_session_path().unwrap_or(session_path).to_owned();
-                        if is_overlay_component && key.code == KeyCode::Esc {
+                        if component_id == "editor"
+                            && key.code == KeyCode::Enter
+                            && key.modifiers.is_empty()
+                            && app.editor.text().trim() == "/attachments"
+                        {
+                            app.editor.clear();
+                            app.open_overlay(attach_overlay(&app));
+                        } else if is_overlay_component && key.code == KeyCode::Esc {
                             request_extension_component_cancel(
                                 &app,
                                 pipe,
@@ -9514,6 +9535,52 @@ mod tests {
             );
             std::fs::remove_file(path).unwrap();
         }
+    }
+
+    #[test]
+    fn opens_recovery_menu_for_a_pending_custom_editor_draft() {
+        let mut app = AppState::default();
+        app.begin_active_session("/tmp/current.jsonl".to_owned(), "/tmp".to_owned());
+        app.extension_ui.revision = 1;
+        app.editor.insert("new input");
+        app.extension_ui.revision = 2;
+        app.begin_custom_editor_submit(
+            "recovery".to_owned(),
+            crate::app::PendingCustomEditorSubmit {
+                command: "prompt".to_owned(),
+                session_path: "/tmp/current.jsonl".to_owned(),
+                session_generation: app.session_generation,
+                editor_component_generation: None,
+                lease_id: "lease".to_owned(),
+                client_instance_id: "client".to_owned(),
+                client_request_id: "request".to_owned(),
+                text: "old draft".to_owned(),
+                submit_revision: 1,
+                attachments: Vec::new(),
+                started_at: Instant::now(),
+                retry_count: 0,
+            },
+        );
+        app.reject_custom_editor_submit("recovery");
+
+        open_custom_editor_recovery(&mut app);
+
+        let Some(OverlayState::List(menu)) = app.overlay() else {
+            panic!("恢复草稿菜单没有打开");
+        };
+        assert_eq!(menu.title, "恢复草稿");
+        assert_eq!(
+            menu.items
+                .iter()
+                .map(|item| item.action.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "recovery-append",
+                "recovery-replace-confirm",
+                "recovery-copy",
+                "recovery-discard",
+            ]
+        );
     }
 
     #[test]
