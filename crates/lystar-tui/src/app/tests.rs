@@ -1,6 +1,10 @@
 use std::time::Instant;
 
-use lystar_protocol::{OperationSnapshot, ToolCall, TranscriptItem, TranscriptViewItem};
+use lystar_protocol::{
+    OperationSnapshot, SessionProgress, SessionSnapshot, ToolCall, TranscriptItem,
+    TranscriptViewItem,
+};
+use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 
 use super::*;
 fn user(id: &str, text: &str) -> TranscriptItem {
@@ -13,6 +17,113 @@ fn user(id: &str, text: &str) -> TranscriptItem {
         },
     }
 }
+
+fn assistant(id: &str, text: &str) -> TranscriptItem {
+    TranscriptItem {
+        entry_id: id.to_owned(),
+        timestamp: String::new(),
+        view: TranscriptViewItem::Assistant {
+            text: text.to_owned(),
+            images: None,
+        },
+    }
+}
+
+fn rendered_transcript(app: &AppState) -> String {
+    let area = Rect::new(0, 0, 40, 8);
+    let mut buffer = Buffer::empty(area);
+    TranscriptView::new(app).render(area, &mut buffer);
+    buffer
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>()
+        .replace(' ', "")
+}
+#[test]
+fn renders_live_thinking_before_assistant_without_protocol_labels() {
+    let mut app = AppState::default();
+    app.apply_progress(SessionProgress::AssistantDelta {
+        text: "实时回答".to_owned(),
+    });
+    app.apply_progress(SessionProgress::ThinkingDelta {
+        text: "正在思考\n下一步".to_owned(),
+    });
+
+    let rendered = rendered_transcript(&app);
+    assert!(rendered.contains("正在思考"), "{rendered:?}");
+    assert!(rendered.contains("下一步"));
+    assert!(rendered.contains("实时回答"));
+    assert!(rendered.find("正在思考") < rendered.find("实时回答"));
+    assert!(!rendered.contains("thinking_delta"));
+    assert!(!rendered.contains("assistant_delta"));
+}
+
+#[test]
+fn committed_assistant_replaces_the_live_tail_without_duplication() {
+    let mut app = AppState::default();
+    app.transcript
+        .replace_page(vec![user("user", "问题")], "g".to_owned(), 1, None);
+    app.apply_progress(SessionProgress::ThinkingDelta {
+        text: "临时思考".to_owned(),
+    });
+    app.apply_progress(SessionProgress::AssistantDelta {
+        text: "已提交正文".to_owned(),
+    });
+    let committed = vec![assistant("assistant", "已提交正文")];
+    assert!(
+        app.transcript
+            .append_committed("g", 1, 2, committed.clone())
+    );
+    app.clear_live_after_commit(&committed);
+
+    assert!(app.thinking_stream.is_empty());
+    assert!(app.assistant_stream.is_empty());
+    let rendered = rendered_transcript(&app);
+    assert_eq!(rendered.matches("已提交正文").count(), 1, "{rendered:?}");
+    assert!(!rendered.contains("临时思考"));
+}
+
+#[test]
+fn clears_live_streams_when_switching_or_disconnecting() {
+    let mut app = AppState::default();
+    app.begin_active_session("/tmp/old.jsonl".to_owned(), "/tmp".to_owned());
+    app.apply_progress(SessionProgress::ThinkingDelta {
+        text: "旧思考".to_owned(),
+    });
+    app.apply_progress(SessionProgress::AssistantDelta {
+        text: "旧回答".to_owned(),
+    });
+    app.commit_session_switch(
+        "/tmp/new.jsonl".to_owned(),
+        "new-lease".to_owned(),
+        SessionSnapshot {
+            id: "new".to_owned(),
+            path: "/tmp/new.jsonl".to_owned(),
+            cwd: "/tmp".to_owned(),
+            phase: "idle".to_owned(),
+            activity: "idle".to_owned(),
+            thinking_level: "off".to_owned(),
+            attached: true,
+            write_access: "owned".to_owned(),
+            revision: 1,
+            queued_steer_count: 0,
+            queued_follow_up_count: 0,
+            transcript_generation: "g".to_owned(),
+            transcript_revision: 1,
+            model: None,
+        },
+    );
+    assert!(app.thinking_stream.is_empty());
+    assert!(app.assistant_stream.is_empty());
+
+    app.apply_progress(SessionProgress::AssistantDelta {
+        text: "断开前回答".to_owned(),
+    });
+    app.clear_connection_state("断开");
+    assert!(app.assistant_stream.is_empty());
+}
+
 #[test]
 fn extension_widget_budget_is_computed_once_and_preserves_line_order() {
     let mut app = AppState::default();

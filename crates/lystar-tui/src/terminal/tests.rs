@@ -510,6 +510,7 @@ fn keeps_active_events_running_behind_readonly_view() {
         "/tmp/active.jsonl",
     )
     .unwrap();
+    assert_eq!(app.assistant_stream, "running");
     apply_event(
         &mut app,
         &ReadOnlyEvent::TranscriptCommitted {
@@ -517,7 +518,14 @@ fn keeps_active_events_running_behind_readonly_view() {
             transcript_generation: "g1".to_owned(),
             from_revision: 1,
             to_revision: 2,
-            items: vec![item("after")],
+            items: vec![lystar_protocol::TranscriptItem {
+                entry_id: "after".to_owned(),
+                timestamp: String::new(),
+                view: TranscriptViewItem::Assistant {
+                    text: "after".to_owned(),
+                    images: None,
+                },
+            }],
         },
         "/tmp/active.jsonl",
     )

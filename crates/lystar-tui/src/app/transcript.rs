@@ -15,7 +15,10 @@ use crate::{
     rich_text::{RenderedRichText, RichTextKey, parse_ansi_lines},
 };
 
-use super::{AppState, ITEM_CACHE_LIMIT, ROUND_CACHE_LIMIT, UTF8_CACHE_LIMIT, VisibleLink};
+use super::{
+    AppState, ITEM_CACHE_LIMIT, ROUND_CACHE_LIMIT, UTF8_CACHE_LIMIT, VisibleLink,
+    live_stream::streaming_tail_lines,
+};
 
 const OLDER_PAGE_THRESHOLD: usize = 2;
 #[derive(Debug, Clone)]
@@ -497,76 +500,11 @@ pub struct TranscriptPendingRequest {
     pub context: Option<lystar_protocol::TranscriptRequestContext>,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct ReadonlySessionView {
-    pub path: String,
-    pub generation: u64,
-    pub transcript: TranscriptWindow,
-    pub search: SearchState,
-    pub status: String,
-}
-#[derive(Debug, Clone, Default)]
-pub struct SearchState {
-    pub open: bool,
-    pub query: String,
-    pub hits: Vec<SearchHit>,
-    pub selected: usize,
-    pub pending_jump: Option<String>,
-    pub status: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SearchHit {
-    pub entry_id: String,
-    pub kind: String,
-    pub timestamp: String,
-    pub snippet: String,
-}
-
 impl AppState {
-    pub fn open_search(&mut self) {
-        self.search.open = true;
-        self.search.status.clear();
-    }
-    pub fn close_search(&mut self) {
-        self.search.open = false;
-        self.search.status.clear();
-    }
     pub(super) fn clear_transient(&mut self) {
         self.assistant_stream.clear();
         self.thinking_stream.clear();
         self.live_tools.clear();
-    }
-
-    pub fn clear_for_reload(&mut self, reason: impl Into<String>) {
-        self.transcript.clear_for_reload(reason);
-        self.search.hits.clear();
-        self.search.selected = 0;
-        self.search.pending_jump = None;
-        self.clear_transient();
-    }
-    pub fn set_search_results(&mut self, hits: Vec<SearchHit>) {
-        self.search.selected = 0;
-        self.search.hits = hits;
-        self.search.status = format!("{} 个结果", self.search.hits.len());
-    }
-    pub fn select_search_result(&mut self) -> Option<String> {
-        let entry_id = self.search.hits.get(self.search.selected)?.entry_id.clone();
-        if self.transcript.jump_to(&entry_id) {
-            self.search.status = "已跳转".to_owned();
-            return None;
-        }
-        self.search.pending_jump = Some(entry_id.clone());
-        self.search.status = "正在加载目标记录".to_owned();
-        Some(entry_id)
-    }
-    pub fn resolve_pending_jump(&mut self) {
-        if let Some(entry_id) = self.search.pending_jump.clone()
-            && self.transcript.jump_to(&entry_id)
-        {
-            self.search.pending_jump = None;
-            self.search.status = "已跳转".to_owned();
-        }
     }
 }
 
@@ -593,6 +531,10 @@ impl<'a> TranscriptView<'a> {
         let search_height = u16::from(self.state.search.open).saturating_mul(2);
         let content_height = area.height.saturating_sub(1 + search_height);
         let width = usize::from(area.width.saturating_sub(1));
+        let content_height = content_height.saturating_sub(
+            u16::try_from(streaming_tail_lines(self.state, width, content_height).len())
+                .unwrap_or(u16::MAX),
+        );
         let rich_width = area.width.saturating_sub(3);
         let mut row = 0_u16;
         for (index, round) in self
@@ -709,6 +651,9 @@ impl Widget for TranscriptView<'_> {
             .saturating_sub(header_height);
         let width = usize::from(area.width.saturating_sub(1));
         let rich_width = area.width.saturating_sub(3);
+        let stream_lines = streaming_tail_lines(self.state, width, content_height);
+        let persistent_height =
+            content_height.saturating_sub(u16::try_from(stream_lines.len()).unwrap_or(u16::MAX));
         let mut row = 0_u16;
         for (index, round) in self
             .state
@@ -718,7 +663,7 @@ impl Widget for TranscriptView<'_> {
             .enumerate()
             .skip(self.state.transcript.scroll)
         {
-            if row >= content_height {
+            if row >= persistent_height {
                 break;
             }
             let marker = if index == self.state.transcript.current {
@@ -740,7 +685,7 @@ impl Widget for TranscriptView<'_> {
             };
             if let Some(rendered) = self.rendered_round(round, rich_width) {
                 for (line_index, line) in rendered.lines.iter().enumerate() {
-                    if row >= content_height {
+                    if row >= persistent_height {
                         break;
                     }
                     let prefix = if line_index == 0 {
@@ -778,7 +723,7 @@ impl Widget for TranscriptView<'_> {
             }
             for image in round.items.iter().flat_map(transcript_images) {
                 for placeholder_row in 0..3 {
-                    if row >= content_height {
+                    if row >= persistent_height {
                         break;
                     }
                     let value = if placeholder_row == 0 {
@@ -799,7 +744,7 @@ impl Widget for TranscriptView<'_> {
             }
             if round.expanded {
                 for detail in round.detail_lines() {
-                    if row >= content_height {
+                    if row >= persistent_height {
                         break;
                     }
                     put_line(
@@ -813,6 +758,13 @@ impl Widget for TranscriptView<'_> {
                     row += 1;
                 }
             }
+        }
+        for (line, style) in stream_lines {
+            if row >= content_height {
+                break;
+            }
+            put_line(buffer, area.x, content_y + row, &line, width, style);
+            row += 1;
         }
         if let Some(preview) = &self.state.transcript.streaming_preview
             && row < content_height
@@ -947,7 +899,7 @@ pub(super) fn put_rich_line(
     }
 }
 
-fn sanitize_render_text(text: &str) -> String {
+pub(super) fn sanitize_render_text(text: &str) -> String {
     text.chars()
         .filter(|character| !character.is_control())
         .collect()

@@ -1,6 +1,8 @@
 mod composer;
 mod extension;
+mod live_stream;
 mod overlay;
+mod search;
 mod state;
 mod transcript;
 mod workspace;
@@ -8,6 +10,7 @@ mod workspace;
 pub use composer::*;
 pub use extension::*;
 pub use overlay::*;
+pub use search::*;
 pub use state::*;
 pub use transcript::*;
 pub use workspace::*;

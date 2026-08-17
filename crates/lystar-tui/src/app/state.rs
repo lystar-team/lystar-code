@@ -176,6 +176,7 @@ impl AppState {
 
     pub fn begin_active_session(&mut self, path: String, cwd: String) -> u64 {
         self.clear_custom_editor_drafts();
+        self.clear_transient();
         self.session_generation = self.session_generation.saturating_add(1);
         self.invalidate_transcript_requests(TranscriptViewKind::Active);
         self.invalidate_rich_text();
@@ -247,11 +248,13 @@ impl AppState {
         self.invalidate_rich_text();
         self.invalidate_images();
         self.transcript.clear_for_reload(reason);
+        self.clear_transient();
         self.clear_extension_components();
     }
 
     pub fn clear_connection_state(&mut self, reason: impl Into<String>) {
         self.clear_active_lease();
+        self.clear_transient();
         self.page_load_pending = false;
         self.transcript.loading_previous = false;
         if let Some(view) = &mut self.readonly_view {
@@ -515,13 +518,24 @@ impl AppState {
     }
 
     pub fn clear_live_after_commit(&mut self, items: &[TranscriptItem]) {
+        let mut committed_assistant = false;
+        let mut committed_thinking = false;
         for item in items {
-            if let TranscriptViewItem::ToolResult { call_id, .. } = &item.view {
-                self.live_tools.remove(call_id);
+            match &item.view {
+                TranscriptViewItem::Assistant { .. } => committed_assistant = true,
+                TranscriptViewItem::Thinking { .. } => committed_thinking = true,
+                TranscriptViewItem::ToolResult { call_id, .. } => {
+                    self.live_tools.remove(call_id);
+                }
+                _ => {}
             }
         }
-        self.assistant_stream.clear();
-        self.thinking_stream.clear();
+        if committed_assistant {
+            self.assistant_stream.clear();
+            self.thinking_stream.clear();
+        } else if committed_thinking {
+            self.thinking_stream.clear();
+        }
     }
 
     pub fn is_recovery_session_chooser(&self) -> bool {
