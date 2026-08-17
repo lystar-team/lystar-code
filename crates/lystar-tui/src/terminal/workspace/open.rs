@@ -15,7 +15,15 @@ pub(in super::super) fn open_workbench(
     if target == "compact" {
         return request_compaction(app, pipe, session_path, client_instance_id, sequence, None);
     }
-    if target == "sessions" {
+    if matches!(target, "resume" | "sessions") {
+        let Some(cwd) = app
+            .active_session_cwd()
+            .filter(|cwd| !cwd.is_empty())
+            .map(str::to_owned)
+        else {
+            app.set_overlay_error("尚未获取项目目录");
+            return Ok(());
+        };
         *sequence += 1;
         let id = format!("sessions-list-{sequence}");
         *session_flow = Some(SessionFlow::List {
@@ -30,7 +38,7 @@ pub(in super::super) fn open_workbench(
             link: None,
             copy_text: None,
         }));
-        return pipe.request(&encode_list_sessions_request(&id, session_path, None)?);
+        return pipe.request(&encode_list_sessions_request(&id, &cwd, None)?);
     }
     if target == "subagents" {
         return request_subagents(
@@ -78,7 +86,7 @@ pub(in super::super) fn open_workbench(
             title: "帮助".to_owned(),
             lines: vec![
                 "Ctrl+P 打开命令面板".to_owned(),
-                "/new 新建会话，/subagents Subagent，/clipboard 剪贴板，/sessions 会话，/tree 分支树".to_owned(),
+                "/new 新建会话，/resume 继续会话，/subagents Subagent，/clipboard 剪贴板，/sessions 会话，/tree 分支树".to_owned(),
                 "/settings 设置，/model 模型，/thinking 思考，/login 登录".to_owned(),
                 "Ctrl+Shift+V 读取并插入剪贴板，Ctrl+Y 复制当前上下文".to_owned(),
                 "/help 显示此帮助，/about 显示版本与运行目录，/doctor 显示诊断结果".to_owned(),

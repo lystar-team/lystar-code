@@ -345,6 +345,7 @@ fn intercepts_only_connected_slash_commands() {
         ("/doctor", "doctor"),
         ("/new", "new"),
         ("/compact", "compact"),
+        ("/resume", "resume"),
         ("/settings", "settings"),
         ("/model", "model"),
         ("/thinking", "thinking"),
@@ -492,6 +493,47 @@ fn compact_command_sends_optional_instructions_and_refuses_active_operations() {
         app.overlay_error.as_deref(),
         Some("当前会话正在运行，不能压缩")
     );
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn resume_command_lists_sessions_for_the_active_project() {
+    let mut app = AppState::default();
+    app.begin_active_session(
+        "/tmp/sessions/current.jsonl".to_owned(),
+        "/work/project".to_owned(),
+    );
+    app.lease_id = Some("lease".to_owned());
+    app.editor.insert("/resume");
+    let (mut pipe, path) = test_pipe_with_path();
+    let mut sequence = 0;
+    let mut session_flow = None;
+    submit_editor(
+        &mut app,
+        &mut pipe,
+        "/tmp/sessions/current.jsonl",
+        "client",
+        &mut sequence,
+        false,
+        &mut session_flow,
+    )
+    .unwrap();
+    drop(pipe);
+
+    let frames = FrameDecoder::default()
+        .push(&std::fs::read(&path).unwrap())
+        .unwrap();
+    let message = lystar_protocol::decode_client_message(&frames[0]).unwrap();
+    let request = serde_json::to_value(message.value()).unwrap();
+    assert_eq!(request["request"]["command"], "list_sessions");
+    assert_eq!(request["request"]["cwd"], "/work/project");
+    assert!(matches!(
+        session_flow,
+        Some(SessionFlow::List {
+            selected_path: Some(ref selected_path),
+            ..
+        }) if selected_path == "/tmp/sessions/current.jsonl"
+    ));
     std::fs::remove_file(path).unwrap();
 }
 
