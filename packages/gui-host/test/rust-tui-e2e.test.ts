@@ -489,6 +489,7 @@ class FakeRuntimeSession implements RuntimeSession {
 		this.clearQueueCount++;
 		return { steering: [], followUp: [] };
 	}
+	async compact(): Promise<void> {}
 	async runBash(): Promise<JsonValue> {
 		return {};
 	}

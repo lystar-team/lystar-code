@@ -76,6 +76,7 @@ export interface RuntimeSession {
 	steer(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void>;
 	followUp(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void>;
 	clearQueue(): Promise<{ steering: string[]; followUp: string[] }>;
+	compact(customInstructions?: string): Promise<void>;
 	runBash(command: string, onChunk: (chunk: string) => void): Promise<JsonValue>;
 	rename(name: string): Promise<void>;
 	setModel(model: ModelRef): Promise<void>;

@@ -525,6 +525,17 @@ export class GuiHostService {
 				return this.acceptQueueOperation(connection, request, {}, async (runtime) =>
 					jsonValue(await runtime.clearQueue()),
 				);
+			case "compact":
+				return this.acceptOperation(
+					connection,
+					request,
+					{ customInstructions: request.customInstructions ?? null },
+					async (runtime, operation) => {
+						await runtime.compact(request.customInstructions);
+						return { sessionPath: canonicalSessionPath(runtime.sessionPath), operationId: operation.operationId };
+					},
+					afterResponse,
+				);
 			case "run_bash":
 				return this.acceptOperation(
 					connection,
@@ -1435,7 +1446,10 @@ export class GuiHostService {
 
 	private async acceptOperation(
 		connection: ClientConnection,
-		request: Extract<Extract<ClientMessage, { type: "request" }>["request"], { command: "prompt" | "run_bash" }>,
+		request: Extract<
+			Extract<ClientMessage, { type: "request" }>["request"],
+			{ command: "prompt" | "compact" | "run_bash" }
+		>,
 		payload: JsonValue,
 		run: (runtime: RuntimeSession, operation: OperationSnapshot) => Promise<JsonValue>,
 		afterResponse: (action: () => void) => void,

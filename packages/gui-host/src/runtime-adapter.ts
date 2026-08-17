@@ -1177,6 +1177,11 @@ class CoreRuntimeSession implements RuntimeSession {
 		return queue;
 	}
 
+	async compact(customInstructions?: string): Promise<void> {
+		await this.runtime.session.compact(customInstructions);
+		this.emitCommittedEntries();
+	}
+
 	async runBash(command: string, onChunk: (chunk: string) => void): Promise<JsonValue> {
 		const result = await this.runtime.session.executeBash(command, onChunk);
 		this.emitCommittedEntries();

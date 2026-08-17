@@ -29,6 +29,44 @@ pub(super) fn start_new_session(
     )?)
 }
 
+pub(super) fn request_compaction(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    client_instance_id: &str,
+    sequence: &mut u64,
+    custom_instructions: Option<&str>,
+) -> Result<(), TuiError> {
+    if app.is_active_operation() {
+        app.set_overlay_error("当前会话正在运行，不能压缩");
+        return Ok(());
+    }
+    let Some(lease_id) = app.lease_id.clone() else {
+        app.set_overlay_error("尚未获取会话租约");
+        return Ok(());
+    };
+    *sequence += 1;
+    let id = format!("compact-{sequence}");
+    let mut request = serde_json::json!({
+        "sessionPath": session_path,
+        "leaseId": lease_id,
+        "clientInstanceId": client_instance_id,
+        "clientRequestId": id,
+    })
+    .as_object()
+    .cloned()
+    .unwrap_or_default();
+    if let Some(instructions) = custom_instructions {
+        request.insert(
+            "customInstructions".to_owned(),
+            serde_json::Value::String(instructions.to_owned()),
+        );
+    }
+    pipe.request(&encode_session_write_request(&id, "compact", request)?)?;
+    app.transcript.status = "正在压缩上下文".to_owned();
+    Ok(())
+}
+
 pub(super) fn release_active_session(
     app: &AppState,
     pipe: &mut ProtocolPipe,

@@ -1088,6 +1088,14 @@ export const CommandSchema = Type.Union([
 		clientRequestId: Id,
 	}),
 	StrictObject({
+		command: Type.Literal("compact"),
+		sessionPath: Type.String({ minLength: 1 }),
+		leaseId: Id,
+		clientInstanceId: Id,
+		clientRequestId: Id,
+		customInstructions: Type.Optional(Type.String({ maxLength: 64 * 1024 })),
+	}),
+	StrictObject({
 		command: Type.Literal("run_bash"),
 		sessionPath: Type.String({ minLength: 1 }),
 		leaseId: Id,

@@ -89,6 +89,9 @@ class FakeRuntime implements RuntimeSession {
 	async clearQueue() {
 		return { steering: [], followUp: [] };
 	}
+	async compact() {
+		this.counts.compact = (this.counts.compact ?? 0) + 1;
+	}
 	updateExtensionEditorState() {
 		this.counts.extension_editor_state = (this.counts.extension_editor_state ?? 0) + 1;
 		return this.counts.extension_editor_state;
@@ -385,6 +388,27 @@ const SESSION_COMMANDS = new Set([
 ]);
 
 describe("GuiHostService journaled writes", () => {
+	it("runs manual compaction once through the operation journal", async () => {
+		const setupValue = setup();
+		const active = await lease(setupValue.service, setupValue.sessionPath);
+		const payload = {
+			command: "compact" as const,
+			sessionPath: setupValue.sessionPath,
+			leaseId: active.leaseId,
+			clientInstanceId: "client",
+			clientRequestId: "compact-once",
+			customInstructions: "保留实现决策",
+		};
+		await active.connection.handle({ type: "request", id: "compact", request: payload });
+		await active.connection.handle({ type: "request", id: "compact-retry", request: payload });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(setupValue.counts.compact).toBe(1);
+		expect(
+			active.connection.messages.find((message) => message.type === "response" && message.id === "compact-retry"),
+		).toMatchObject({ ok: true, result: { duplicate: true, operation: { type: "compact" } } });
+	});
+
 	it.each(WRITE_COMMANDS)("executes %s once and persists a completed operation", async (command) => {
 		const setupValue = setup();
 		const acquired = SESSION_COMMANDS.has(command)

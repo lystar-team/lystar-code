@@ -366,6 +366,21 @@ pub(super) fn submit_editor_with_origin(
         app.open_overlay(attach_overlay(app));
         return Ok(());
     }
+    let trimmed = text.trim();
+    if trimmed == "/compact" || trimmed.starts_with("/compact ") {
+        let custom_instructions = trimmed
+            .strip_prefix("/compact")
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        return request_compaction(
+            app,
+            pipe,
+            session_path,
+            client_instance_id,
+            sequence,
+            custom_instructions,
+        );
+    }
     if let Some(command) = builtin_slash_command(&text) {
         open_workbench(
             app,

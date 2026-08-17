@@ -344,6 +344,7 @@ fn intercepts_only_connected_slash_commands() {
         (" /about ", "about"),
         ("/doctor", "doctor"),
         ("/new", "new"),
+        ("/compact", "compact"),
         ("/settings", "settings"),
         ("/model", "model"),
         ("/thinking", "thinking"),
@@ -421,6 +422,75 @@ fn new_command_uses_project_cwd_and_refuses_active_operations() {
     assert_eq!(
         app.overlay_error.as_deref(),
         Some("当前会话正在运行，不能新建")
+    );
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn compact_command_sends_optional_instructions_and_refuses_active_operations() {
+    let mut app = AppState::default();
+    app.begin_active_session(
+        "/tmp/sessions/current.jsonl".to_owned(),
+        "/work/project".to_owned(),
+    );
+    app.lease_id = Some("lease".to_owned());
+    app.editor.insert("/compact 保留实现决策");
+    let (mut pipe, path) = test_pipe_with_path();
+    let mut sequence = 0;
+    let mut session_flow = None;
+    submit_editor(
+        &mut app,
+        &mut pipe,
+        "/tmp/sessions/current.jsonl",
+        "client",
+        &mut sequence,
+        false,
+        &mut session_flow,
+    )
+    .unwrap();
+    drop(pipe);
+
+    let frames = FrameDecoder::default()
+        .push(&std::fs::read(&path).unwrap())
+        .unwrap();
+    let message = lystar_protocol::decode_client_message(&frames[0]).unwrap();
+    let request = serde_json::to_value(message.value()).unwrap();
+    assert_eq!(request["request"]["command"], "compact");
+    assert_eq!(
+        request["request"]["sessionPath"],
+        "/tmp/sessions/current.jsonl"
+    );
+    assert_eq!(request["request"]["customInstructions"], "保留实现决策");
+    assert_eq!(app.transcript.status, "正在压缩上下文");
+    std::fs::remove_file(path).unwrap();
+
+    app.operation = Some(lystar_protocol::OperationSnapshot {
+        operation_id: "operation".to_owned(),
+        client_instance_id: "client".to_owned(),
+        client_request_id: "request".to_owned(),
+        session_path: "/tmp/sessions/current.jsonl".to_owned(),
+        operation_type: "prompt".to_owned(),
+        status: "running".to_owned(),
+        progress: None,
+        error: None,
+    });
+    app.editor.insert("/compact");
+    let (mut pipe, path) = test_pipe_with_path();
+    submit_editor(
+        &mut app,
+        &mut pipe,
+        "/tmp/sessions/current.jsonl",
+        "client",
+        &mut sequence,
+        false,
+        &mut session_flow,
+    )
+    .unwrap();
+    drop(pipe);
+    assert!(std::fs::read(&path).unwrap().is_empty());
+    assert_eq!(
+        app.overlay_error.as_deref(),
+        Some("当前会话正在运行，不能压缩")
     );
     std::fs::remove_file(path).unwrap();
 }

@@ -514,6 +514,46 @@
                     "sessionPath",
                     "leaseId",
                     "clientInstanceId",
+                    "clientRequestId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "compact"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "customInstructions": {
+                      "type": "string",
+                      "maxLength": 65536
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "leaseId",
+                    "clientInstanceId",
                     "clientRequestId",
                     "commandText"
                   ],

@@ -12,6 +12,9 @@ pub(in super::super) fn open_workbench(
     if target == "new" {
         return start_new_session(app, pipe, client_instance_id, sequence, session_flow);
     }
+    if target == "compact" {
+        return request_compaction(app, pipe, session_path, client_instance_id, sequence, None);
+    }
     if target == "sessions" {
         *sequence += 1;
         let id = format!("sessions-list-{sequence}");

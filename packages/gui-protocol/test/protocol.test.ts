@@ -466,6 +466,14 @@ describe("GUI Protocol v1", () => {
 				clientInstanceId: "client",
 				clientRequestId: "clear-1",
 			},
+			{
+				command: "compact",
+				sessionPath: "/tmp/session.jsonl",
+				leaseId: "lease",
+				clientInstanceId: "client",
+				clientRequestId: "compact-1",
+				customInstructions: "保留实现决策",
+			},
 		] as const) {
 			expect(
 				decoder.push(encodeClientMessage({ type: "request", id: request.clientRequestId, request })),
@@ -480,6 +488,22 @@ describe("GUI Protocol v1", () => {
 					progress: { type: "unknown_runtime", raw: "no" },
 				},
 			} as never),
+		).toThrow();
+		expect(() =>
+			decoder.push(
+				encodeClientMessage({
+					type: "request",
+					id: "compact-too-large",
+					request: {
+						command: "compact",
+						sessionPath: "/tmp/session.jsonl",
+						leaseId: "lease",
+						clientInstanceId: "client",
+						clientRequestId: "compact-too-large",
+						customInstructions: "x".repeat(64 * 1024 + 1),
+					},
+				}),
+			),
 		).toThrow();
 	});
 
