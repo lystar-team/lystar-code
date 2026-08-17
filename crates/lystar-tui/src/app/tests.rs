@@ -49,33 +49,39 @@ fn keeps_live_tools_in_start_order_through_updates_and_end() {
         tool_call_id: "z-first".to_owned(),
         name: "read".to_owned(),
         summary: Some("初始摘要".to_owned()),
+        diff: None,
     });
     app.apply_progress(SessionProgress::ToolStart {
         tool_call_id: "a-second".to_owned(),
         name: "grep".to_owned(),
         summary: Some("搜索中".to_owned()),
+        diff: None,
     });
     app.apply_progress(SessionProgress::ToolUpdate {
         tool_call_id: "z-first".to_owned(),
         name: "read".to_owned(),
         summary: "部分结果".to_owned(),
+        diff: None,
     });
     app.apply_progress(SessionProgress::ToolEnd {
         tool_call_id: "z-first".to_owned(),
         name: "read".to_owned(),
         status: "error".to_owned(),
         summary: "读取失败".to_owned(),
+        diff: None,
     });
     app.apply_progress(SessionProgress::ToolUpdate {
         tool_call_id: "z-first".to_owned(),
         name: "read".to_owned(),
         summary: "最终错误摘要".to_owned(),
+        diff: None,
     });
     app.apply_progress(SessionProgress::ToolEnd {
         tool_call_id: "a-second".to_owned(),
         name: "grep".to_owned(),
         status: "success".to_owned(),
         summary: "找到 2 处".to_owned(),
+        diff: None,
     });
 
     let ids = app.live_tools.iter().map(|(id, _)| id).collect::<Vec<_>>();
@@ -118,6 +124,7 @@ fn terminal_operations_settle_live_tools_without_clearing_the_tail() {
             tool_call_id: "call".to_owned(),
             name: "write".to_owned(),
             summary: Some("写入中".to_owned()),
+            diff: None,
         });
 
         app.apply_operation(operation(operation_status));
@@ -160,17 +167,20 @@ fn committed_tool_result_replaces_only_the_matching_live_tool() {
         tool_call_id: "matched".to_owned(),
         name: "read".to_owned(),
         summary: Some("文件".to_owned()),
+        diff: None,
     });
     app.apply_progress(SessionProgress::ToolEnd {
         tool_call_id: "matched".to_owned(),
         name: "read".to_owned(),
         status: "success".to_owned(),
         summary: "done".to_owned(),
+        diff: None,
     });
     app.apply_progress(SessionProgress::ToolStart {
         tool_call_id: "other".to_owned(),
         name: "grep".to_owned(),
         summary: Some("仍在运行".to_owned()),
+        diff: None,
     });
 
     let committed = vec![TranscriptItem {
@@ -183,6 +193,7 @@ fn committed_tool_result_replaces_only_the_matching_live_tool() {
             summary: "done".to_owned(),
             detail: None,
             content_ref: None,
+            diff: None,
             images: None,
         },
     }];
@@ -270,6 +281,7 @@ fn clears_live_streams_when_switching_or_disconnecting() {
         tool_call_id: "old-tool".to_owned(),
         name: "read".to_owned(),
         summary: Some("旧会话工具".to_owned()),
+        diff: None,
     });
     app.commit_session_switch(
         "/tmp/new.jsonl".to_owned(),
@@ -302,6 +314,7 @@ fn clears_live_streams_when_switching_or_disconnecting() {
         tool_call_id: "disconnect-tool".to_owned(),
         name: "grep".to_owned(),
         summary: Some("断开前工具".to_owned()),
+        diff: None,
     });
     app.clear_connection_state("断开");
     assert!(app.assistant_stream.is_empty());
@@ -430,6 +443,7 @@ fn pairs_every_tool_call_on_page_boundaries() {
             summary: "done".to_owned(),
             detail: None,
             content_ref: None,
+            diff: None,
             images: None,
         },
     };
@@ -448,6 +462,7 @@ fn clears_stream_and_search_on_reload() {
         tool_call_id: "reload-tool".to_owned(),
         name: "read".to_owned(),
         summary: Some("重载前工具".to_owned()),
+        diff: None,
     });
     app.clear_for_reload("rewrite");
     assert!(app.transcript.streaming_preview.is_none());

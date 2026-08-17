@@ -86,6 +86,73 @@ function imageMetadata(value: JsonValue | undefined): Array<{
 	return images;
 }
 
+function diffValue(value: JsonValue | undefined): { diff?: string; truncated?: boolean } {
+	if (typeof value === "string") {
+		const diff = bounded(value);
+		return { diff, ...(diff.length < value.length ? { truncated: true } : {}) };
+	}
+	return {};
+}
+
+function number(value: JsonValue | undefined): number | undefined {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function toolDiff(name: string, details: JsonValue | undefined) {
+	const source = record(details);
+	if (!source || (name !== "edit" && name !== "write" && name !== "apply_patch")) return undefined;
+	if (name === "apply_patch") {
+		if (!Array.isArray(source.files)) return undefined;
+		const files = source.files.flatMap((value) => {
+			const file = record(value);
+			if (!file) return [];
+			const path = typeof file.path === "string" ? file.path : undefined;
+			const additions = number(file.additions);
+			const deletions = number(file.deletions);
+			const operation = typeof file.operation === "string" ? file.operation : undefined;
+			const result = diffValue(file.diff);
+			if (!path && additions === undefined && deletions === undefined && !operation && !result.diff) {
+				return [];
+			}
+			return [
+				{
+					...(path ? { path } : {}),
+					...(operation ? { operation } : {}),
+					...(additions === undefined ? {} : { additions }),
+					...(deletions === undefined ? {} : { deletions }),
+					...(result.diff === undefined ? {} : { diff: result.diff }),
+					...(result.truncated ? { truncated: true } : {}),
+				},
+			];
+		});
+		return files.length > 0 ? { files } : undefined;
+	}
+	const additions = number(source.additions);
+	const deletions = number(source.deletions);
+	const operation = typeof source.operation === "string" ? source.operation : undefined;
+	const result = diffValue(source.diff);
+	if (additions === undefined && deletions === undefined && !operation && !result.diff) return undefined;
+	return {
+		files: [
+			{
+				...(operation ? { operation } : {}),
+				...(additions === undefined ? {} : { additions }),
+				...(deletions === undefined ? {} : { deletions }),
+				...(result.diff === undefined ? {} : { diff: result.diff }),
+				...(result.truncated ? { truncated: true } : {}),
+			},
+		],
+	};
+}
+
+function toolCallSummary(name: string, argumentsValue: JsonValue | undefined): string {
+	const argumentsRecord = record(argumentsValue);
+	if ((name === "edit" || name === "write") && typeof argumentsRecord?.path === "string") {
+		return argumentsRecord.path;
+	}
+	return text(argumentsValue);
+}
+
 function message(item: TranscriptItem): JsonRecord | undefined {
 	return record(record(item.payload)?.message);
 }
@@ -102,6 +169,10 @@ export function projectTranscriptItem(item: TranscriptItem): TranscriptViewItem 
 	if (role === "thinking") return { type: "thinking", text: text(content) };
 	if (role === "toolResult" && entryMessage) {
 		const isError = entryMessage?.isError === true;
+		const diff = toolDiff(
+			typeof entryMessage.toolName === "string" ? entryMessage.toolName : "",
+			entryMessage.details,
+		);
 		return {
 			type: "tool_result",
 			callId: typeof entryMessage.toolCallId === "string" ? entryMessage.toolCallId : item.entryId,
@@ -110,6 +181,7 @@ export function projectTranscriptItem(item: TranscriptItem): TranscriptViewItem 
 			summary: text(content),
 			...(text(content) ? { detail: text(content) } : {}),
 			...(contentRef(content) ? { contentRef: contentRef(content) } : {}),
+			...(diff ? { diff } : {}),
 			...(images.length > 0 ? { images } : {}),
 		};
 	}
@@ -130,7 +202,7 @@ export function projectTranscriptItem(item: TranscriptItem): TranscriptViewItem 
 						return {
 							id: part.id as string,
 							name: typeof part.name === "string" ? part.name : "Tool",
-							summary: text(part.arguments),
+							summary: toolCallSummary(typeof part.name === "string" ? part.name : "Tool", part.arguments),
 							...(href ? { href } : {}),
 						};
 					})

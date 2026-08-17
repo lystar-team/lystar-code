@@ -2714,6 +2714,51 @@
             "summary": {
               "type": "string",
               "maxLength": 16384
+            },
+            "diff": {
+              "type": "object",
+              "required": [
+                "files"
+              ],
+              "properties": {
+                "files": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 16384
+                      },
+                      "operation": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "additions": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "deletions": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "diff": {
+                        "type": "string",
+                        "maxLength": 16384
+                      },
+                      "truncated": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "minItems": 1,
+                  "maxItems": 128
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -2744,6 +2789,51 @@
             "summary": {
               "type": "string",
               "maxLength": 16384
+            },
+            "diff": {
+              "type": "object",
+              "required": [
+                "files"
+              ],
+              "properties": {
+                "files": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 16384
+                      },
+                      "operation": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "additions": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "deletions": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "diff": {
+                        "type": "string",
+                        "maxLength": 16384
+                      },
+                      "truncated": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "minItems": 1,
+                  "maxItems": 128
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -2778,6 +2868,51 @@
             "summary": {
               "type": "string",
               "maxLength": 16384
+            },
+            "diff": {
+              "type": "object",
+              "required": [
+                "files"
+              ],
+              "properties": {
+                "files": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 16384
+                      },
+                      "operation": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "additions": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "deletions": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "diff": {
+                        "type": "string",
+                        "maxLength": 16384
+                      },
+                      "truncated": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "minItems": 1,
+                  "maxItems": 128
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -3802,6 +3937,51 @@
                                     "type": "string",
                                     "minLength": 1,
                                     "maxLength": 4096
+                                  },
+                                  "diff": {
+                                    "type": "object",
+                                    "required": [
+                                      "files"
+                                    ],
+                                    "properties": {
+                                      "files": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "object",
+                                          "properties": {
+                                            "path": {
+                                              "type": "string",
+                                              "minLength": 1,
+                                              "maxLength": 16384
+                                            },
+                                            "operation": {
+                                              "type": "string",
+                                              "minLength": 1,
+                                              "maxLength": 256
+                                            },
+                                            "additions": {
+                                              "type": "integer",
+                                              "minimum": 0
+                                            },
+                                            "deletions": {
+                                              "type": "integer",
+                                              "minimum": 0
+                                            },
+                                            "diff": {
+                                              "type": "string",
+                                              "maxLength": 16384
+                                            },
+                                            "truncated": {
+                                              "type": "boolean"
+                                            }
+                                          },
+                                          "additionalProperties": false
+                                        },
+                                        "minItems": 1,
+                                        "maxItems": 128
+                                      }
+                                    },
+                                    "additionalProperties": false
                                   },
                                   "images": {
                                     "type": "array",

@@ -269,6 +269,7 @@ fn resume_hint_quotes_shell_paths_and_transcript_projection_keeps_metadata() {
             summary: "更新文件".to_owned(),
             detail: Some("diff --git a/a b/a".to_owned()),
             content_ref: Some("content_ref://tool/1".to_owned()),
+            diff: None,
             images: Some(vec![lystar_protocol::TranscriptImage {
                 content_ref: "content_ref://image/1".to_owned(),
                 mime_type: "image/png".to_owned(),

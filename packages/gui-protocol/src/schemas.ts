@@ -232,6 +232,17 @@ export const UsageProgressSchema = StrictObject({
 export type UsageProgress = Static<typeof UsageProgressSchema>;
 
 const ProgressTextSchema = Type.String({ maxLength: 16 * 1024 });
+const ToolDiffFileSchema = StrictObject({
+	path: Type.Optional(Type.String({ minLength: 1, maxLength: 16 * 1024 })),
+	operation: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
+	additions: Type.Optional(Type.Integer({ minimum: 0 })),
+	deletions: Type.Optional(Type.Integer({ minimum: 0 })),
+	diff: Type.Optional(ProgressTextSchema),
+	truncated: Type.Optional(Type.Boolean()),
+});
+export type ToolDiffFile = Static<typeof ToolDiffFileSchema>;
+const ToolDiffSchema = StrictObject({ files: Type.Array(ToolDiffFileSchema, { minItems: 1, maxItems: 128 }) });
+export type ToolDiff = Static<typeof ToolDiffSchema>;
 export const SessionProgressSchema = Type.Union([
 	StrictObject({ type: Type.Literal("assistant_delta"), text: ProgressTextSchema }),
 	StrictObject({ type: Type.Literal("thinking_delta"), text: ProgressTextSchema }),
@@ -240,12 +251,14 @@ export const SessionProgressSchema = Type.Union([
 		toolCallId: Id,
 		name: Type.String({ minLength: 1, maxLength: 256 }),
 		summary: Type.Optional(ProgressTextSchema),
+		diff: Type.Optional(ToolDiffSchema),
 	}),
 	StrictObject({
 		type: Type.Literal("tool_update"),
 		toolCallId: Id,
 		name: Type.String({ minLength: 1, maxLength: 256 }),
 		summary: ProgressTextSchema,
+		diff: Type.Optional(ToolDiffSchema),
 	}),
 	StrictObject({
 		type: Type.Literal("tool_end"),
@@ -253,6 +266,7 @@ export const SessionProgressSchema = Type.Union([
 		name: Type.String({ minLength: 1, maxLength: 256 }),
 		status: Type.Union([Type.Literal("success"), Type.Literal("error")]),
 		summary: ProgressTextSchema,
+		diff: Type.Optional(ToolDiffSchema),
 	}),
 	StrictObject({
 		type: Type.Literal("queue_update"),
@@ -354,6 +368,7 @@ export const TranscriptViewItemSchema = Type.Union([
 		summary: TranscriptViewTextSchema,
 		detail: Type.Optional(TranscriptViewTextSchema),
 		contentRef: Type.Optional(Id),
+		diff: Type.Optional(ToolDiffSchema),
 		images: Type.Optional(Type.Array(TranscriptImageSchema, { maxItems: 32 })),
 	}),
 	StrictObject({ type: Type.Literal("bash"), text: TranscriptViewTextSchema }),

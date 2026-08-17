@@ -15,6 +15,7 @@ import {
 	getSessionRecoveryLedgerPath,
 } from "../../coding-agent/src/core/tool-recovery/ledger.ts";
 import { CodingAgentRuntimeAdapter, projectRuntimeProgress } from "../src/runtime-adapter.ts";
+import { projectTranscriptItem } from "../src/transcript-projection.ts";
 import type { RuntimeEvent, RuntimeSession } from "../src/types.ts";
 
 function eventPayload(event: RuntimeEvent): {
@@ -94,6 +95,60 @@ describe("CodingAgentRuntimeAdapter", () => {
 		expect(projectRuntimeProgress({ type: "session_info_changed", name: "x".repeat(2_000) })).toEqual([
 			expect.objectContaining({ type: "status", status: "session_info_changed" }),
 		]);
+	});
+
+	it("projects tool details into diff facts without recomputing files", () => {
+		const start = projectRuntimeProgress({
+			type: "tool_execution_start",
+			toolCallId: "edit-1",
+			toolName: "edit",
+			args: { path: "src/app.ts" },
+		} as AgentSessionEvent);
+		const end = projectRuntimeProgress({
+			type: "tool_execution_end",
+			toolCallId: "edit-1",
+			toolName: "edit",
+			result: {
+				content: [{ type: "text", text: "done" }],
+				details: { diff: "--- a/src/app.ts\n+++ b/src/app.ts\n-old\n+new", additions: 1, deletions: 1 },
+			},
+			isError: false,
+		} as AgentSessionEvent);
+		expect(start).toEqual([
+			{
+				type: "tool_start",
+				toolCallId: "edit-1",
+				name: "edit",
+				summary: "src/app.ts",
+				diff: { files: [{ path: "src/app.ts" }] },
+			},
+		]);
+		expect(end[0]).toMatchObject({
+			type: "tool_end",
+			summary: "done",
+			diff: { files: [{ additions: 1, deletions: 1, diff: expect.stringContaining("+new") }] },
+		});
+
+		const projected = projectTranscriptItem({
+			entryId: "result",
+			parentId: null,
+			timestamp: "",
+			kind: "message",
+			payload: {
+				type: "message",
+				message: {
+					role: "toolResult",
+					toolCallId: "edit-1",
+					toolName: "edit",
+					content: [{ type: "text", text: "done" }],
+					details: { diff: "--- a/src/app.ts\n+++ b/src/app.ts\n-old\n+new", additions: 1, deletions: 1 },
+				},
+			},
+		});
+		expect(projected).toMatchObject({
+			type: "tool_result",
+			diff: { files: [{ additions: 1, deletions: 1, diff: expect.stringContaining("+new") }] },
+		});
 	});
 
 	it("projects bash commands and output snapshots without JSON summaries", () => {

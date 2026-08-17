@@ -165,6 +165,34 @@ describe("GUI Protocol v1", () => {
 		expect(client.getSnapshot().transcripts.has("/tmp/session.jsonl")).toBe(false);
 	});
 
+	it("accepts optional diff facts in session progress", () => {
+		const message = {
+			type: "event" as const,
+			event: {
+				type: "session_progress" as const,
+				sessionPath: "/tmp/session.jsonl",
+				progress: {
+					type: "tool_end" as const,
+					toolCallId: "edit-1",
+					name: "edit",
+					status: "success" as const,
+					summary: "已编辑",
+					diff: {
+						files: [
+							{
+								path: "src/app.ts",
+								additions: 1,
+								deletions: 1,
+								diff: "--- a/src/app.ts\n+++ b/src/app.ts\n-old\n+new",
+							},
+						],
+					},
+				},
+			},
+		};
+		expect(new ServerMessageDecoder().push(encodeServerMessage(message))).toEqual([message]);
+	});
+
 	it("fails pending input on disconnect without resending it", async () => {
 		const clientTransport = new MemoryTransport();
 		const serverTransport = new MemoryTransport();

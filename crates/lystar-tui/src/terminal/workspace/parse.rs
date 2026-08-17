@@ -265,7 +265,7 @@ pub(in super::super) fn readonly_overlay(view: &ReadonlySessionView) -> OverlayS
     lines.extend(view.transcript.rounds().iter().flat_map(|round| {
         let mut lines = vec![round.summary()];
         if round.expanded {
-            lines.extend(round.detail_lines());
+            lines.extend(round.detail_lines().iter().map(|line| line.text.clone()));
         }
         lines
     }));

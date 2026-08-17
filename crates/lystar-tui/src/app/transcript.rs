@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
-use lystar_protocol::{ToolCall, TranscriptItem, TranscriptViewItem};
+use lystar_protocol::{TranscriptItem, TranscriptViewItem};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -17,8 +17,12 @@ use crate::{
 
 use super::{
     AppState, ITEM_CACHE_LIMIT, ROUND_CACHE_LIMIT, UTF8_CACHE_LIMIT, VisibleLink,
+    live_diff::DiffLineKind,
     live_stream::streaming_tail_lines,
+    transcript_tools::{detail_lines_for_item, item_summary, tool_calls, tool_result_summary},
 };
+
+pub use super::transcript_tools::TranscriptDetailLine;
 
 const OLDER_PAGE_THRESHOLD: usize = 2;
 #[derive(Debug, Clone)]
@@ -47,6 +51,7 @@ pub struct TranscriptRound {
     pub items: Vec<TranscriptItem>,
     pub tool_call_ids: Vec<String>,
     pub expanded: bool,
+    detail_lines: Vec<TranscriptDetailLine>,
 }
 
 impl TranscriptRound {
@@ -57,6 +62,7 @@ impl TranscriptRound {
             .collect();
         Self {
             entry_ids: vec![item.entry_id.clone()],
+            detail_lines: detail_lines_for_item(&item, &[]),
             items: vec![item],
             tool_call_ids,
             expanded: false,
@@ -65,6 +71,8 @@ impl TranscriptRound {
 
     fn push(&mut self, item: TranscriptItem) {
         self.entry_ids.push(item.entry_id.clone());
+        self.detail_lines
+            .extend(detail_lines_for_item(&item, &self.items));
         self.items.push(item);
     }
 
@@ -102,7 +110,7 @@ impl TranscriptRound {
             let results = self
                 .items
                 .iter()
-                .filter_map(tool_result_summary)
+                .filter_map(|item| tool_result_summary(item, &self.items))
                 .collect::<Vec<_>>()
                 .join(" | ");
             return if results.is_empty() {
@@ -117,30 +125,8 @@ impl TranscriptRound {
             .unwrap_or_else(|| "空记录".to_owned())
     }
 
-    pub fn detail_lines(&self) -> Vec<String> {
-        self.items
-            .iter()
-            .flat_map(|item| match &item.view {
-                TranscriptViewItem::ToolResult {
-                    detail,
-                    content_ref,
-                    ..
-                } => {
-                    let mut lines = vec![format!("{} {}", item.entry_id, item.timestamp)];
-                    if let Some(detail) = detail {
-                        lines.push(detail.clone());
-                    }
-                    if let Some(content_ref) = content_ref {
-                        lines.push(format!("content_ref: {content_ref}"));
-                    }
-                    lines
-                }
-                _ => vec![
-                    format!("{} {}", item.entry_id, item.timestamp),
-                    item_summary(item),
-                ],
-            })
-            .collect()
+    pub fn detail_lines(&self) -> &[TranscriptDetailLine] {
+        &self.detail_lines
     }
 
     fn hyperlink(&self) -> Option<(&str, &str)> {
@@ -149,43 +135,6 @@ impl TranscriptRound {
                 .as_deref()
                 .map(|href| (href, call.summary.as_str()))
         })
-    }
-}
-
-fn tool_calls(item: &TranscriptItem) -> &[ToolCall] {
-    match &item.view {
-        TranscriptViewItem::ToolCall { calls } => calls,
-        _ => &[],
-    }
-}
-
-fn tool_result_summary(item: &TranscriptItem) -> Option<String> {
-    match &item.view {
-        TranscriptViewItem::ToolResult {
-            name,
-            status,
-            summary,
-            ..
-        } if status == "error" => Some(format!("{name} 错误: {summary}")),
-        TranscriptViewItem::ToolResult { name, summary, .. } => {
-            Some(format!("{name} 完成: {summary}"))
-        }
-        _ => None,
-    }
-}
-
-fn item_summary(item: &TranscriptItem) -> String {
-    match &item.view {
-        TranscriptViewItem::User { text, .. } => format!("用户  {text}"),
-        TranscriptViewItem::Assistant { text, .. } => format!("助手  {text}"),
-        TranscriptViewItem::Thinking { text } => format!("思考  {text}"),
-        TranscriptViewItem::Bash { text } => format!("Bash  {text}"),
-        TranscriptViewItem::Custom { text } => format!("自定义  {text}"),
-        TranscriptViewItem::Summary { title, text } => format!("{title}  {text}"),
-        TranscriptViewItem::System { text } => format!("系统  {text}"),
-        TranscriptViewItem::ToolCall { .. } | TranscriptViewItem::ToolResult { .. } => {
-            "Tool".to_owned()
-        }
     }
 }
 
@@ -751,9 +700,12 @@ impl Widget for TranscriptView<'_> {
                         buffer,
                         area.x,
                         content_y + row,
-                        &format!("   {detail}"),
+                        &format!("   {}", detail.text),
                         width,
-                        Style::default().fg(Color::DarkGray),
+                        detail.diff_kind.map_or_else(
+                            || Style::default().fg(Color::DarkGray),
+                            transcript_diff_style,
+                        ),
                     );
                     row += 1;
                 }
@@ -828,6 +780,16 @@ impl Widget for TranscriptView<'_> {
                 Style::default().fg(Color::DarkGray),
             );
         }
+    }
+}
+
+fn transcript_diff_style(kind: DiffLineKind) -> Style {
+    match kind {
+        DiffLineKind::FileHeader => Style::default().fg(Color::Cyan),
+        DiffLineKind::HunkHeader => Style::default().fg(Color::Yellow),
+        DiffLineKind::Addition => Style::default().fg(Color::Green),
+        DiffLineKind::Deletion => Style::default().fg(Color::Red),
+        DiffLineKind::Context | DiffLineKind::Metadata => Style::default().fg(Color::DarkGray),
     }
 }
 

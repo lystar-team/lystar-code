@@ -477,20 +477,25 @@ impl AppState {
                 tool_call_id,
                 name,
                 summary,
+                diff,
             } => self
                 .live_tools
-                .start(tool_call_id, name, summary.unwrap_or_default()),
+                .start(tool_call_id, name, summary.unwrap_or_default(), diff),
             SessionProgress::ToolUpdate {
                 tool_call_id,
                 name,
                 summary,
-            } => self.live_tools.update(tool_call_id, name, summary),
+                diff,
+            } => self.live_tools.update(tool_call_id, name, summary, diff),
             SessionProgress::ToolEnd {
                 tool_call_id,
                 name,
                 status,
                 summary,
-            } => self.live_tools.finish(tool_call_id, name, &status, summary),
+                diff,
+            } => self
+                .live_tools
+                .finish(tool_call_id, name, &status, summary, diff),
             SessionProgress::QueueUpdate {
                 steering_count,
                 follow_up_count,
@@ -515,7 +520,7 @@ impl AppState {
     }
 
     pub fn toggle_tool_expansion(&mut self) {
-        if !self.live_tools.toggle_bash_expansion() {
+        if !self.live_tools.toggle_output_expansion() {
             self.transcript.toggle_current_tool();
         }
     }

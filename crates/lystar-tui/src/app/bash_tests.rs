@@ -37,11 +37,13 @@ fn shows_command_and_start_order() {
         tool_call_id: "bash".to_owned(),
         name: "bash".to_owned(),
         summary: Some("printf ready".to_owned()),
+        diff: None,
     });
     app.apply_progress(SessionProgress::ToolStart {
         tool_call_id: "read".to_owned(),
         name: "read".to_owned(),
         summary: Some("src/main.rs".to_owned()),
+        diff: None,
     });
 
     assert_eq!(
@@ -64,16 +66,19 @@ fn replaces_output_snapshots_and_toggles_with_ctrl_o() {
         tool_call_id: "bash".to_owned(),
         name: "bash".to_owned(),
         summary: Some("printf one".to_owned()),
+        diff: None,
     });
     app.apply_progress(SessionProgress::ToolUpdate {
         tool_call_id: "bash".to_owned(),
         name: "bash".to_owned(),
         summary: "one".to_owned(),
+        diff: None,
     });
     app.apply_progress(SessionProgress::ToolUpdate {
         tool_call_id: "bash".to_owned(),
         name: "bash".to_owned(),
         summary: "one\ntwo\nthree\nfour".to_owned(),
+        diff: None,
     });
 
     let bash = app
@@ -126,28 +131,33 @@ fn surfaces_success_error_and_cancellation_without_inventing_metadata() {
         tool_call_id: "success".to_owned(),
         name: "bash".to_owned(),
         summary: Some("true".to_owned()),
+        diff: None,
     });
     app.apply_progress(SessionProgress::ToolEnd {
         tool_call_id: "success".to_owned(),
         name: "bash".to_owned(),
         status: "success".to_owned(),
         summary: "done".to_owned(),
+        diff: None,
     });
     app.apply_progress(SessionProgress::ToolStart {
         tool_call_id: "failed".to_owned(),
         name: "bash".to_owned(),
         summary: Some("false".to_owned()),
+        diff: None,
     });
     app.apply_progress(SessionProgress::ToolEnd {
         tool_call_id: "failed".to_owned(),
         name: "bash".to_owned(),
         status: "error".to_owned(),
         summary: "Command exited with code 7".to_owned(),
+        diff: None,
     });
     app.apply_progress(SessionProgress::ToolStart {
         tool_call_id: "cancelled".to_owned(),
         name: "bash".to_owned(),
         summary: Some("sleep 60".to_owned()),
+        diff: None,
     });
     app.apply_operation(operation("aborted"));
 
@@ -179,11 +189,13 @@ fn sanitizes_controls_and_stays_bounded() {
         tool_call_id: "bash".to_owned(),
         name: "bash".to_owned(),
         summary: Some("printf safe".to_owned()),
+        diff: None,
     });
     app.apply_progress(SessionProgress::ToolUpdate {
         tool_call_id: "bash".to_owned(),
         name: "bash".to_owned(),
         summary: "\u{1b}]0;injected\u{7}safe\0".to_owned(),
+        diff: None,
     });
     let bash = app
         .live_tools
@@ -201,6 +213,7 @@ fn sanitizes_controls_and_stays_bounded() {
         tool_call_id: "bash".to_owned(),
         name: "bash".to_owned(),
         summary: output,
+        diff: None,
     });
     let bash = app
         .live_tools
@@ -221,6 +234,7 @@ fn sanitizes_controls_and_stays_bounded() {
         tool_call_id: "bash".to_owned(),
         name: "bash".to_owned(),
         summary: format!("{}\n输出已截断", "x".repeat(13 * 1024)),
+        diff: None,
     });
     let bash = app
         .live_tools
@@ -265,12 +279,14 @@ fn committed_result_replaces_matching_live_tail_once() {
         tool_call_id: "bash".to_owned(),
         name: "bash".to_owned(),
         summary: Some("printf done".to_owned()),
+        diff: None,
     });
     app.apply_progress(SessionProgress::ToolEnd {
         tool_call_id: "bash".to_owned(),
         name: "bash".to_owned(),
         status: "success".to_owned(),
         summary: "done".to_owned(),
+        diff: None,
     });
     let committed = vec![TranscriptItem {
         entry_id: "result".to_owned(),
@@ -282,6 +298,7 @@ fn committed_result_replaces_matching_live_tail_once() {
             summary: "done".to_owned(),
             detail: None,
             content_ref: None,
+            diff: None,
             images: None,
         },
     }];

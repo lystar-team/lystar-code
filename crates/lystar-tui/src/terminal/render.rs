@@ -239,6 +239,7 @@ pub(super) fn transcript_plain_text(item: &lystar_protocol::TranscriptItem) -> S
             summary,
             detail,
             content_ref,
+            diff: _,
             images,
         } => format!(
             "Tool 结果 {name} ({status}) callId:{call_id}\n摘要: {summary}{}{}{}",

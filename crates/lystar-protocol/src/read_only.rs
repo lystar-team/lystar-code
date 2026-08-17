@@ -23,6 +23,22 @@ pub struct TranscriptImage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolDiffFile {
+    pub path: Option<String>,
+    pub operation: Option<String>,
+    pub additions: Option<u64>,
+    pub deletions: Option<u64>,
+    pub diff: Option<String>,
+    pub truncated: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ToolDiff {
+    pub files: Vec<ToolDiffFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TranscriptViewItem {
     User {
@@ -48,6 +64,7 @@ pub enum TranscriptViewItem {
         detail: Option<String>,
         #[serde(rename = "contentRef")]
         content_ref: Option<String>,
+        diff: Option<ToolDiff>,
         images: Option<Vec<TranscriptImage>>,
     },
     Bash {
@@ -91,6 +108,7 @@ impl TranscriptViewItem {
                 summary,
                 detail,
                 content_ref,
+                diff,
                 images,
             } => {
                 call_id.len()
@@ -99,11 +117,26 @@ impl TranscriptViewItem {
                     + summary.len()
                     + detail.as_ref().map_or(0, String::len)
                     + content_ref.as_ref().map_or(0, String::len)
+                    + diff.as_ref().map_or(0, tool_diff_utf8_len)
                     + images.as_deref().map_or(0, image_utf8_len)
             }
             Self::Summary { title, text } => title.len() + text.len(),
         }
     }
+}
+
+fn tool_diff_utf8_len(diff: &ToolDiff) -> usize {
+    diff.files
+        .iter()
+        .map(|file| {
+            file.path.as_ref().map_or(0, String::len)
+                + file.operation.as_ref().map_or(0, String::len)
+                + file.additions.map_or(0, |value| value.to_string().len())
+                + file.deletions.map_or(0, |value| value.to_string().len())
+                + file.diff.as_ref().map_or(0, String::len)
+                + usize::from(file.truncated.unwrap_or(false))
+        })
+        .sum()
 }
 
 fn image_utf8_len(images: &[TranscriptImage]) -> usize {
@@ -195,12 +228,14 @@ pub enum SessionProgress {
         tool_call_id: String,
         name: String,
         summary: Option<String>,
+        diff: Option<ToolDiff>,
     },
     ToolUpdate {
         #[serde(rename = "toolCallId")]
         tool_call_id: String,
         name: String,
         summary: String,
+        diff: Option<ToolDiff>,
     },
     ToolEnd {
         #[serde(rename = "toolCallId")]
@@ -208,6 +243,7 @@ pub enum SessionProgress {
         name: String,
         status: String,
         summary: String,
+        diff: Option<ToolDiff>,
     },
     QueueUpdate {
         #[serde(rename = "steeringCount")]

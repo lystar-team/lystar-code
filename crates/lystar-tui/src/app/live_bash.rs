@@ -30,6 +30,10 @@ impl LiveBash {
         self.truncated = truncated;
     }
 
+    pub fn has_output(&self) -> bool {
+        !self.output.is_empty()
+    }
+
     pub fn set_expanded(&mut self, expanded: bool) {
         self.expanded = expanded;
     }

@@ -1,6 +1,11 @@
 use std::collections::HashMap;
 
-use super::live_bash::LiveBash;
+use lystar_protocol::ToolDiff;
+
+use super::{
+    live_bash::LiveBash,
+    live_diff::{DiffLineKind, LiveDiff},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveToolStatus {
@@ -36,11 +41,18 @@ impl LiveToolStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveToolLine {
+    pub text: String,
+    pub diff_kind: Option<DiffLineKind>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveTool {
     pub name: String,
     pub summary: String,
     pub status: LiveToolStatus,
     bash: Option<LiveBash>,
+    diff: Option<LiveDiff>,
 }
 
 impl LiveTool {
@@ -58,10 +70,34 @@ impl LiveTool {
     }
 
     pub fn display_lines(&self) -> Vec<String> {
-        self.bash
-            .as_ref()
-            .map(|bash| bash.display_lines(self.status))
-            .unwrap_or_else(|| vec![self.display()])
+        self.rendered_lines()
+            .into_iter()
+            .map(|line| line.text)
+            .collect()
+    }
+
+    pub fn rendered_lines(&self) -> Vec<LiveToolLine> {
+        if let Some(bash) = &self.bash {
+            return bash
+                .display_lines(self.status)
+                .into_iter()
+                .map(|text| LiveToolLine {
+                    text,
+                    diff_kind: None,
+                })
+                .collect();
+        }
+        let mut lines = vec![LiveToolLine {
+            text: self.display(),
+            diff_kind: None,
+        }];
+        if let Some(diff) = &self.diff {
+            lines.extend(diff.display_lines().into_iter().map(|line| LiveToolLine {
+                text: line.text,
+                diff_kind: Some(line.kind),
+            }));
+        }
+        lines
     }
 
     #[cfg(test)]
@@ -77,15 +113,27 @@ pub struct LiveTools {
 }
 
 impl LiveTools {
-    pub fn start(&mut self, tool_call_id: String, name: String, summary: String) {
+    pub fn start(
+        &mut self,
+        tool_call_id: String,
+        name: String,
+        summary: String,
+        diff: Option<ToolDiff>,
+    ) {
         if name == "bash" {
             self.start_bash(tool_call_id, summary);
         } else {
-            self.upsert(tool_call_id, name, summary, LiveToolStatus::Running);
+            self.upsert(tool_call_id, name, summary, LiveToolStatus::Running, diff);
         }
     }
 
-    pub fn update(&mut self, tool_call_id: String, name: String, summary: String) {
+    pub fn update(
+        &mut self,
+        tool_call_id: String,
+        name: String,
+        summary: String,
+        diff: Option<ToolDiff>,
+    ) {
         if name == "bash" {
             self.update_bash(tool_call_id, summary);
             return;
@@ -93,12 +141,24 @@ impl LiveTools {
         if let Some(tool) = self.tools.get_mut(&tool_call_id) {
             tool.name = name;
             tool.summary = summary;
+            if let Some(diff) = diff {
+                tool.diff
+                    .get_or_insert_with(LiveDiff::default)
+                    .replace_snapshot(&diff);
+            }
             return;
         }
-        self.upsert(tool_call_id, name, summary, LiveToolStatus::Pending);
+        self.upsert(tool_call_id, name, summary, LiveToolStatus::Pending, diff);
     }
 
-    pub fn finish(&mut self, tool_call_id: String, name: String, status: &str, summary: String) {
+    pub fn finish(
+        &mut self,
+        tool_call_id: String,
+        name: String,
+        status: &str,
+        summary: String,
+        diff: Option<ToolDiff>,
+    ) {
         if name == "bash" {
             self.finish_bash(tool_call_id, status, summary);
         } else {
@@ -107,6 +167,7 @@ impl LiveTools {
                 name,
                 summary,
                 LiveToolStatus::from_tool_end(status),
+                diff,
             );
         }
     }
@@ -143,18 +204,35 @@ impl LiveTools {
         self.tools.is_empty()
     }
 
-    pub fn toggle_bash_expansion(&mut self) -> bool {
+    pub fn toggle_output_expansion(&mut self) -> bool {
         let expanded = !self
             .order
             .iter()
             .rev()
             .filter_map(|id| self.tools.get(id))
-            .find_map(|tool| tool.bash.as_ref().map(LiveBash::is_expanded))
+            .find_map(|tool| {
+                tool.bash
+                    .as_ref()
+                    .filter(|bash| bash.has_output())
+                    .map(LiveBash::is_expanded)
+                    .or_else(|| {
+                        tool.diff
+                            .as_ref()
+                            .filter(|diff| diff.has_expandable_diff())
+                            .map(LiveDiff::is_expanded)
+                    })
+            })
             .unwrap_or(false);
         let mut changed = false;
         for tool in self.tools.values_mut() {
             if let Some(bash) = &mut tool.bash {
                 bash.set_expanded(expanded);
+                changed = true;
+            }
+            if let Some(diff) = &mut tool.diff
+                && diff.has_expandable_diff()
+            {
+                diff.set_expanded(expanded);
                 changed = true;
             }
         }
@@ -177,6 +255,7 @@ impl LiveTools {
                 summary: command.clone(),
                 status: LiveToolStatus::Running,
                 bash: Some(LiveBash::new(command)),
+                diff: None,
             },
         );
     }
@@ -210,12 +289,24 @@ impl LiveTools {
         name: String,
         summary: String,
         status: LiveToolStatus,
+        diff: Option<ToolDiff>,
     ) {
         if let Some(tool) = self.tools.get_mut(&tool_call_id) {
             tool.name = name;
             tool.summary = summary;
             tool.status = status;
+            if let Some(diff) = diff {
+                tool.diff
+                    .get_or_insert_with(LiveDiff::default)
+                    .replace_snapshot(&diff);
+            }
             return;
+        }
+        let mut live_diff = None;
+        if let Some(diff) = diff {
+            let mut value = LiveDiff::default();
+            value.replace_snapshot(&diff);
+            live_diff = Some(value);
         }
         self.order.push(tool_call_id.clone());
         self.tools.insert(
@@ -225,6 +316,7 @@ impl LiveTools {
                 summary,
                 status,
                 bash: None,
+                diff: live_diff,
             },
         );
     }

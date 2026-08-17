@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use super::{AppState, LiveToolStatus, transcript::sanitize_render_text};
+use super::{AppState, LiveToolStatus, live_diff::DiffLineKind, transcript::sanitize_render_text};
 
 pub(super) fn streaming_tail_lines(
     state: &AppState,
@@ -46,13 +46,14 @@ pub(super) fn streaming_tail_lines(
             push_stream_line(&mut lines, String::new(), Style::default(), max_lines);
         }
         for (_, tool) in state.live_tools.iter() {
-            for line in tool.display_lines() {
+            for line in tool.rendered_lines() {
                 push_stream_lines(
                     &mut lines,
-                    &line,
+                    &line.text,
                     width,
                     max_lines,
-                    live_tool_style(tool.status),
+                    line.diff_kind
+                        .map_or_else(|| live_tool_style(tool.status), diff_line_style),
                 );
             }
         }
@@ -67,6 +68,17 @@ fn live_tool_style(status: LiveToolStatus) -> Style {
         LiveToolStatus::Success => Style::default().fg(Color::Green),
         LiveToolStatus::Error => Style::default().fg(Color::Red),
         LiveToolStatus::Cancelled => Style::default().fg(Color::DarkGray),
+    }
+}
+
+fn diff_line_style(kind: DiffLineKind) -> Style {
+    match kind {
+        DiffLineKind::FileHeader => Style::default().fg(Color::Cyan),
+        DiffLineKind::HunkHeader => Style::default().fg(Color::Yellow),
+        DiffLineKind::Addition => Style::default().fg(Color::Green),
+        DiffLineKind::Deletion => Style::default().fg(Color::Red),
+        DiffLineKind::Context => Style::default().fg(Color::DarkGray),
+        DiffLineKind::Metadata => Style::default().fg(Color::DarkGray),
     }
 }
 

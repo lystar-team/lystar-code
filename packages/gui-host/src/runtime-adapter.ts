@@ -90,6 +90,7 @@ import type {
 	SettingSummary,
 	SubagentSnapshot,
 	ThinkingLevel,
+	ToolDiff,
 	TranscriptItem,
 } from "@lystar/code-gui-protocol";
 import { GUI_PROTOCOL_VERSION } from "@lystar/code-gui-protocol";
@@ -629,13 +630,107 @@ function notifyAuthEvent(onUiRequest: UiRequestHandler, event: AuthEvent): void 
 	});
 }
 
+function truncateWithoutSplittingSurrogate(value: string, maxChars: number): string {
+	if (value.length <= maxChars) return value;
+	let end = maxChars;
+	if (
+		end > 0 &&
+		value.charCodeAt(end - 1) >= 0xd800 &&
+		value.charCodeAt(end - 1) <= 0xdbff &&
+		value.charCodeAt(end) >= 0xdc00 &&
+		value.charCodeAt(end) <= 0xdfff
+	) {
+		end--;
+	}
+	return value.slice(0, end);
+}
+
 function boundedStatus(value: unknown): string {
 	const text = typeof value === "string" ? value : JSON.stringify(value);
-	return text.length <= 1024 ? text : `${text.slice(0, 1021)}...`;
+	return text.length <= 1024 ? text : `${truncateWithoutSplittingSurrogate(text, 1021)}...`;
 }
 
 const MAX_BASH_PROGRESS_CHARS = 16 * 1024;
 const BASH_TRUNCATION_MARKER = "输出已截断";
+
+function toolRecord(value: unknown): Record<string, unknown> | undefined {
+	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+function toolPath(value: unknown): string | undefined {
+	const record = toolRecord(value);
+	const path = record?.path ?? record?.file_path;
+	return typeof path === "string" && path.length > 0 ? path : undefined;
+}
+
+function toolNumber(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function diffText(value: unknown): { text?: string; truncated?: boolean } {
+	if (typeof value === "string") {
+		const text = truncateWithoutSplittingSurrogate(value, 16 * 1024);
+		return { text, ...(text.length < value.length ? { truncated: true } : {}) };
+	}
+	return {};
+}
+
+function isDiffTool(name: string): boolean {
+	return name === "edit" || name === "write" || name === "apply_patch";
+}
+
+function toolProgressDiff(name: string, args: unknown, result?: unknown): ToolDiff | undefined {
+	if (!isDiffTool(name)) return undefined;
+	const details = toolRecord(toolRecord(result)?.details);
+	if (!details) {
+		const path = name === "edit" || name === "write" ? toolPath(args) : undefined;
+		return path ? { files: [{ path }] } : undefined;
+	}
+	if (name === "apply_patch") {
+		if (!Array.isArray(details.files)) return undefined;
+		const files = details.files.flatMap((value) => {
+			const file = toolRecord(value);
+			if (!file) return [];
+			const diff = diffText(file.diff);
+			const path = toolPath(file);
+			const additions = toolNumber(file.additions);
+			const deletions = toolNumber(file.deletions);
+			const operation = typeof file.operation === "string" ? file.operation : undefined;
+			if (!path && additions === undefined && deletions === undefined && !diff.text) return [];
+			return [
+				{
+					...(path ? { path } : {}),
+					...(operation ? { operation } : {}),
+					...(additions === undefined ? {} : { additions }),
+					...(deletions === undefined ? {} : { deletions }),
+					...(diff.text === undefined ? {} : { diff: diff.text }),
+					...(diff.truncated ? { truncated: true } : {}),
+				},
+			];
+		});
+		return files.length > 0 ? { files } : undefined;
+	}
+	const path = toolPath(args);
+	const additions = toolNumber(details.additions);
+	const deletions = toolNumber(details.deletions);
+	const operation = typeof details.operation === "string" ? details.operation : undefined;
+	const diff = diffText(details.diff);
+	if (!path && additions === undefined && deletions === undefined && !operation && !diff.text) {
+		return undefined;
+	}
+	return {
+		files: [
+			{
+				...(path ? { path } : {}),
+				...(operation ? { operation } : {}),
+				...(additions === undefined ? {} : { additions }),
+				...(deletions === undefined ? {} : { deletions }),
+				...(diff.text === undefined ? {} : { diff: diff.text }),
+				...(diff.truncated ? { truncated: true } : {}),
+			},
+		],
+	};
+}
 
 function tailWithoutSplittingSurrogate(value: string, maxChars: number): string {
 	let start = Math.max(0, value.length - maxChars);
@@ -657,11 +752,10 @@ function bashCommand(value: unknown): string | undefined {
 	return typeof command === "string" ? command : undefined;
 }
 
-function bashOutput(value: unknown): string | undefined {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-	const result = value as { content?: unknown; details?: unknown };
-	if (!Array.isArray(result.content)) return undefined;
-	const text = result.content
+function toolOutputText(value: unknown): string | undefined {
+	const result = toolRecord(value);
+	if (!Array.isArray(result?.content)) return undefined;
+	return result.content
 		.filter(
 			(part): part is { type: unknown; text: string } =>
 				!!part &&
@@ -671,8 +765,14 @@ function bashOutput(value: unknown): string | undefined {
 		)
 		.map((part) => part.text)
 		.join("\n");
+}
+
+function bashOutput(value: unknown): string | undefined {
+	const result = toolRecord(value);
+	const text = toolOutputText(value);
+	if (text === undefined) return undefined;
 	const coreTruncated =
-		!!result.details &&
+		!!result?.details &&
 		typeof result.details === "object" &&
 		!!(result.details as { truncation?: { truncated?: unknown } }).truncation?.truncated;
 	if (!coreTruncated && text.length <= MAX_BASH_PROGRESS_CHARS) return text;
@@ -701,7 +801,9 @@ export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgres
 			}
 			return updates;
 		}
-		case "tool_execution_start":
+		case "tool_execution_start": {
+			const diffTool = isDiffTool(event.toolName);
+			const diff = toolProgressDiff(event.toolName, event.args);
 			if (event.toolName === "bash") {
 				const command = bashCommand(event.args);
 				return [
@@ -718,10 +820,14 @@ export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgres
 					type: "tool_start",
 					toolCallId: event.toolCallId,
 					name: event.toolName,
-					summary: boundedStatus(event.args),
+					summary: diffTool ? (toolPath(event.args) ?? event.toolName) : boundedStatus(event.args),
+					...(diff ? { diff } : {}),
 				},
 			];
-		case "tool_execution_update":
+		}
+		case "tool_execution_update": {
+			const diffTool = isDiffTool(event.toolName);
+			const diff = toolProgressDiff(event.toolName, event.args, event.partialResult);
 			if (event.toolName === "bash") {
 				return [
 					{
@@ -737,10 +843,16 @@ export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgres
 					type: "tool_update",
 					toolCallId: event.toolCallId,
 					name: event.toolName,
-					summary: boundedStatus(event.partialResult),
+					summary: diffTool
+						? (toolPath(event.args) ?? boundedStatus(toolOutputText(event.partialResult) ?? event.toolName))
+						: boundedStatus(event.partialResult),
+					...(diff ? { diff } : {}),
 				},
 			];
-		case "tool_execution_end":
+		}
+		case "tool_execution_end": {
+			const diffTool = isDiffTool(event.toolName);
+			const diff = toolProgressDiff(event.toolName, undefined, event.result);
 			if (event.toolName === "bash") {
 				return [
 					{
@@ -758,9 +870,13 @@ export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgres
 					toolCallId: event.toolCallId,
 					name: event.toolName,
 					status: event.isError ? "error" : "success",
-					summary: boundedStatus(event.result),
+					summary: diffTool
+						? boundedStatus(toolOutputText(event.result) ?? event.toolName)
+						: boundedStatus(event.result),
+					...(diff ? { diff } : {}),
 				},
 			];
+		}
 		case "queue_update":
 			return [{ type: "queue_update", steeringCount: event.steering.length, followUpCount: event.followUp.length }];
 		case "compaction_start":
