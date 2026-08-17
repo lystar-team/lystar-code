@@ -2311,12 +2311,12 @@
                     },
                     "text": {
                       "type": "string",
-                      "maxLength": 65536
+                      "maxLength": 4194304
                     },
                     "cursor": {
                       "type": "integer",
                       "minimum": 0,
-                      "maximum": 65536
+                      "maximum": 4194304
                     },
                     "revision": {
                       "type": "integer",
@@ -2366,7 +2366,7 @@
                     "data": {
                       "type": "string",
                       "minLength": 1,
-                      "maxLength": 256
+                      "maxLength": 65536
                     }
                   },
                   "additionalProperties": false
@@ -2419,7 +2419,7 @@
                     "data": {
                       "type": "string",
                       "minLength": 1,
-                      "maxLength": 256
+                      "maxLength": 65536
                     }
                   },
                   "additionalProperties": false

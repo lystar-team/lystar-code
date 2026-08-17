@@ -13,8 +13,8 @@ use std::{
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
-        MouseEventKind,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind,
     },
     execute, queue,
     style::Print,
@@ -63,6 +63,7 @@ const PAGE_LIMIT: u64 = 200;
 const SEARCH_LIMIT: u64 = 50;
 const EXIT_TRANSCRIPT_PAGE_LIMIT: u64 = 200;
 const EXTENSION_INPUT_TIMEOUT: Duration = Duration::from_millis(100);
+const MAX_EXTENSION_INPUT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalMode {
@@ -266,6 +267,7 @@ pub struct TerminalGuard {
     raw: bool,
     alternate: bool,
     mouse: bool,
+    bracketed_paste: bool,
     cursor_hidden: bool,
 }
 
@@ -275,6 +277,7 @@ impl TerminalGuard {
             raw: false,
             alternate: false,
             mouse: false,
+            bracketed_paste: false,
             cursor_hidden: false,
         };
         enable_raw_mode()?;
@@ -288,6 +291,8 @@ impl TerminalGuard {
                 execute!(stdout, EnableMouseCapture)?;
                 guard.mouse = true;
             }
+            execute!(stdout, EnableBracketedPaste)?;
+            guard.bracketed_paste = true;
             execute!(stdout, Hide)?;
             guard.cursor_hidden = true;
             Ok(())
@@ -304,6 +309,10 @@ impl TerminalGuard {
         if self.cursor_hidden {
             let _ = execute!(stdout, Show);
             self.cursor_hidden = false;
+        }
+        if self.bracketed_paste {
+            let _ = execute!(stdout, DisableBracketedPaste);
+            self.bracketed_paste = false;
         }
         if self.mouse {
             let _ = execute!(stdout, DisableMouseCapture);
@@ -1111,7 +1120,7 @@ fn run_session(
                         .or_else(|| app.active_extension_editor())
                         .map(|component| (component.component_id.clone(), component.generation));
                     if let Some((component_id, generation)) = component {
-                        if text.len().saturating_add(12) <= 256 {
+                        if text.len().saturating_add(12) <= MAX_EXTENSION_INPUT_BYTES {
                             let active_path =
                                 app.active_session_path().unwrap_or(session_path).to_owned();
                             request_extension_component_input(
@@ -1127,7 +1136,7 @@ fn run_session(
                         }
                     } else if app.extension_ui.terminal_input_listener_count > 0
                         && app.input_focus == InputFocus::Composer
-                        && text.len().saturating_add(12) <= 256
+                        && text.len().saturating_add(12) <= MAX_EXTENSION_INPUT_BYTES
                     {
                         let active_path =
                             app.active_session_path().unwrap_or(session_path).to_owned();
@@ -1636,7 +1645,7 @@ fn request_extension_component_input(
         return Ok(false);
     };
     if data.is_empty()
-        || data.len() > 256
+        || data.len() > MAX_EXTENSION_INPUT_BYTES
         || app.has_pending_component_input(component_id, generation, &data)
     {
         return Ok(false);
@@ -1722,7 +1731,7 @@ fn request_extension_terminal_input(
     let Some(lease_id) = app.lease_id.as_deref() else {
         return Ok(());
     };
-    if data.is_empty() || data.len() > 256 {
+    if data.is_empty() || data.len() > MAX_EXTENSION_INPUT_BYTES {
         return Ok(());
     }
     *sequence += 1;

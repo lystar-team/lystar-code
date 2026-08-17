@@ -2721,6 +2721,8 @@ impl AppState {
             return false;
         }
         self.extension_ui.revision = revision;
+        self.synced_editor_text = self.editor.text().to_owned();
+        self.synced_editor_cursor = self.editor.cursor();
         true
     }
 

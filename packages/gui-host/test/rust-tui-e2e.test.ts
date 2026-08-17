@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
 	appendFileSync,
@@ -1214,6 +1215,7 @@ interface StartedTui {
 	resize(width: number, height: number): void;
 	send(...keys: string[]): void;
 	sendLiteral(text: string): void;
+	paste(text: string): void;
 	panePid(): number;
 	clientInstanceId: string;
 	sttyBeforePath: string;
@@ -1241,6 +1243,7 @@ async function startTui(
 		mode?: "auto" | "fullscreen" | "regular";
 		exitOutput?: "transcript" | "resume-hint";
 		captureRawOutput?: boolean;
+		nonBlockingPromptRequests?: boolean;
 	} = {},
 	runtimeHostFactory?: (context: { directory: string }) => Promise<RealRuntimeHost>,
 ): Promise<StartedTui> {
@@ -1347,7 +1350,12 @@ async function startTui(
 							: {}),
 						receivedAt: monotonicMs(),
 					});
-				if (message.type === "request" && message.request.command === "login_model_provider") {
+				if (
+					message.type === "request" &&
+					(message.request.command === "login_model_provider" ||
+						(runOptions.nonBlockingPromptRequests &&
+							["prompt", "steer", "follow_up"].includes(message.request.command)))
+				) {
 					void connection.handle(message);
 				} else {
 					await connection.handle(message);
@@ -1364,6 +1372,15 @@ async function startTui(
 	};
 	const send = (...keys: string[]) => run("tmux", ["-L", socket, "send-keys", "-t", "tui", ...keys]);
 	const sendLiteral = (text: string) => run("tmux", ["-L", socket, "send-keys", "-t", "tui", "-l", "--", text]);
+	const paste = (text: string) => {
+		const buffer = `lystar-paste-${process.pid}-${Date.now()}`;
+		run("tmux", ["-L", socket, "set-buffer", "-b", buffer, text]);
+		try {
+			run("tmux", ["-L", socket, "paste-buffer", "-p", "-b", buffer, "-t", "tui"]);
+		} finally {
+			run("tmux", ["-L", socket, "delete-buffer", "-b", buffer]);
+		}
+	};
 	const panePid = () =>
 		Number(run("tmux", ["-L", socket, "display-message", "-p", "-t", "tui", "#{pane_pid}"]).trim());
 	const closeProtocol = () => closeDescriptor(input);
@@ -1392,6 +1409,7 @@ async function startTui(
 		resize,
 		send,
 		sendLiteral,
+		paste,
 		panePid,
 		clientInstanceId,
 		sttyBeforePath,
@@ -1526,6 +1544,10 @@ function createContractRuntimeHost(directory: string): Promise<RealRuntimeHost> 
 const CUSTOM_EDITOR_COMPANION = fileURLToPath(
 	new URL("./fixtures/runtime-custom-editor-companion-extension.ts", import.meta.url),
 );
+const CUSTOM_EDITOR_CONTRACT = resolve(
+	repositoryRoot,
+	"packages/coding-agent/examples/extensions/runtime-custom-editor-contract-extension.ts",
+);
 const CUSTOM_EDITOR_EXAMPLES = {
 	border: resolve(repositoryRoot, "packages/coding-agent/examples/extensions/border-status-editor.ts"),
 	modal: resolve(repositoryRoot, "packages/coding-agent/examples/extensions/modal-editor.ts"),
@@ -1533,6 +1555,32 @@ const CUSTOM_EDITOR_EXAMPLES = {
 } as const;
 
 type CustomEditorExample = keyof typeof CUSTOM_EDITOR_EXAMPLES;
+
+function createCustomEditorContractRuntimeHost(directory: string): Promise<RealRuntimeHost> {
+	return (async () => {
+		const agentDir = join(directory, "agent");
+		const cwd = join(directory, "project");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(join(cwd, "images"), { recursive: true });
+		writeFileSync(join(cwd, "images", "中文 图片.png"), "fixture png");
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({
+				defaultProvider: "lystar-custom-editor-contract-faux",
+				defaultModel: "contract-1",
+				defaultThinkingLevel: "off",
+				defaultProjectTrust: "always",
+				extensions: [CUSTOM_EDITOR_CONTRACT],
+				retry: { enabled: false },
+			}),
+		);
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		const runtime = await adapter.createSession(cwd, async () => ({ cancelled: true }));
+		const sessionPath = runtime.sessionPath;
+		await runtime.dispose();
+		return { adapter, agentDir, sessionPath };
+	})();
+}
 
 function createCustomEditorRuntimeHost(directory: string, example: CustomEditorExample): Promise<RealRuntimeHost> {
 	return (async () => {
@@ -2127,6 +2175,309 @@ describe("Rust read-only TUI fd bridge", () => {
 			}
 		}
 	}, 180_000);
+
+	it(
+		"通过 tmux/FIFO 两轮验收综合 CustomEditor fixture",
+		async () => {
+			const attempts = Number(process.env.LYSTAR_CUSTOM_EDITOR_ATTEMPTS ?? 2);
+			for (let attempt = 0; attempt < attempts; attempt++) {
+				const tui = await startTui(
+					0,
+					{ width: 80, height: 8 },
+					`custom-editor-contract-${attempt + 1}`,
+					undefined,
+					{ captureRawOutput: false, nonBlockingPromptRequests: true },
+					async ({ directory }) => createCustomEditorContractRuntimeHost(directory),
+				);
+				try {
+					await waitForInitialPage(tui);
+					await waitFor(
+						async () => {
+							await tui.pump();
+							return tui.serverMessages.some(
+								(message) =>
+									message.type === "event" &&
+									message.event.type === "extension_component_mount" &&
+									message.event.componentId === "editor",
+							);
+						},
+						() =>
+							`contract CustomEditor did not mount from session_start: ${JSON.stringify({ pane: tui.pane(), events: tui.serverMessages.filter((message) => message.type === "event") })}`,
+					);
+					await waitFor(
+						() =>
+							tui.serverMessages.some(
+								(message) =>
+									message.type === "event" &&
+									message.event.type === "extension_component_mount" &&
+									message.event.componentId === "editor" &&
+									message.event.frame.lines.some((line) => line.includes("预置草稿 中文")),
+							),
+						"draft did not migrate into the mounted CustomEditor frame",
+					);
+					assert.ok(tui.pane().includes("Enter 提交"), "80x8 CustomEditor lost Composer shortcuts");
+					tui.resize(80, 24);
+					await waitFor(() => tui.pane().includes("预置草稿 中文"), "CustomEditor did not render after resize");
+
+					const initialEditorGeneration = tui.serverMessages.find(
+						(message) =>
+							message.type === "event" &&
+							message.event.type === "extension_component_mount" &&
+							message.event.componentId === "editor",
+					);
+					if (
+						!initialEditorGeneration ||
+						initialEditorGeneration.type !== "event" ||
+						initialEditorGeneration.event.type !== "extension_component_mount"
+					) {
+						throw new Error("contract editor mount event is missing");
+					}
+					let currentEditorGeneration = initialEditorGeneration.event.generation;
+
+					const clearBeforeSlash = tui.requests.filter(
+						(request) => request.command === "extension_component_input",
+					).length;
+					const framesBeforeSlash = tui.serverMessages.filter(
+						(message) => message.type === "event" && message.event.type === "extension_component_frame",
+					).length;
+					tui.send("C-c");
+					await waitFor(async () => {
+						await tui.pump();
+						return (
+							tui.requests.filter(
+								(request) => request.command === "extension_component_input" && request.data === "\u0003",
+							).length > 0 &&
+							tui.serverMessages.filter(
+								(message) => message.type === "event" && message.event.type === "extension_component_frame",
+							).length > framesBeforeSlash
+						);
+					}, "CustomEditor app.clear did not reach the Host frame");
+					assert.ok(
+						clearBeforeSlash <
+							tui.requests.filter((request) => request.command === "extension_component_input").length,
+					);
+
+					const framesBeforeCompletion = tui.serverMessages.filter(
+						(message) => message.type === "event" && message.event.type === "extension_component_frame",
+					).length;
+					for (const character of "/editor-contract-unm") {
+						const inputsBeforeCharacter = tui.requests.filter(
+							(request) => request.command === "extension_component_input",
+						).length;
+						const framesBeforeCharacter = tui.serverMessages.filter(
+							(message) => message.type === "event" && message.event.type === "extension_component_frame",
+						).length;
+						tui.sendLiteral(character);
+						await waitFor(
+							async () => {
+								await tui.pump();
+								return (
+									tui.requests.filter((request) => request.command === "extension_component_input").length >
+										inputsBeforeCharacter &&
+									tui.serverMessages.filter(
+										(message) =>
+											message.type === "event" && message.event.type === "extension_component_frame",
+									).length > framesBeforeCharacter
+								);
+							},
+							`slash character ${JSON.stringify(character)} did not settle into the Host frame`,
+						);
+					}
+					assert.ok(
+						tui.serverMessages.filter(
+							(message) => message.type === "event" && message.event.type === "extension_component_frame",
+						).length > framesBeforeCompletion,
+						"slash input did not advance the Host frame",
+					);
+					const framesBeforeAutocomplete = tui.serverMessages.filter(
+						(message) => message.type === "event" && message.event.type === "extension_component_frame",
+					).length;
+					tui.send("Tab");
+					await waitFor(async () => {
+						await tui.pump();
+						return (
+							tui.requests.some(
+								(request) => request.command === "extension_component_input" && request.data === "\t",
+							) &&
+							tui.serverMessages.filter(
+								(message) => message.type === "event" && message.event.type === "extension_component_frame",
+							).length >
+								framesBeforeAutocomplete + 1
+						);
+					}, "first Tab did not render runtime slash completion in the Host frame");
+					tui.send("Enter");
+					await waitFor(async () => {
+						await tui.pump();
+						return tui.serverMessages.some(
+							(message) =>
+								message.type === "event" &&
+								message.event.type === "extension_component_unmount" &&
+								message.event.componentId === "editor",
+						);
+					}, "completed slash command did not dispatch to the runtime extension");
+					tui.sendLiteral("/editor-contract-mount");
+					tui.send("Enter");
+					await waitFor(async () => {
+						await tui.pump();
+						return tui.serverMessages.some(
+							(message) =>
+								message.type === "event" &&
+								message.event.type === "extension_component_mount" &&
+								message.event.componentId === "editor" &&
+								message.event.generation > currentEditorGeneration,
+						);
+					}, "slash command did not remount the CustomEditor");
+					const remountedEditor = tui.serverMessages
+						.filter(
+							(message) =>
+								message.type === "event" &&
+								message.event.type === "extension_component_mount" &&
+								message.event.componentId === "editor",
+						)
+						.at(-1);
+					if (
+						!remountedEditor ||
+						remountedEditor.type !== "event" ||
+						remountedEditor.event.type !== "extension_component_mount"
+					) {
+						throw new Error("slash command remount event is missing");
+					}
+					currentEditorGeneration = remountedEditor.event.generation;
+
+					const inputBeforeUnicode = tui.requests.filter(
+						(request) => request.command === "extension_component_input",
+					).length;
+					tui.send("C-c");
+					tui.sendLiteral("中文🙂e\u0301");
+					await waitFor(async () => {
+						await tui.pump();
+						return (
+							tui.requests.filter((request) => request.command === "extension_component_input").length >
+								inputBeforeUnicode && tui.pane().includes("中文🙂")
+						);
+					}, "Unicode committed text did not reach CustomEditor");
+					tui.send("Left", "Backspace", "S-Enter");
+
+					const paste = "甲".repeat(Number(process.env.LYSTAR_CUSTOM_EDITOR_PASTE_CHARS ?? 5_000));
+					tui.paste(paste);
+					await waitFor(async () => {
+						await tui.pump();
+						return tui.requests.some(
+							(request) =>
+								request.command === "extension_component_input" &&
+								request.data === `\u001b[200~${paste}\u001b[201~`,
+						);
+					}, "single 5000-character paste did not cross the CustomEditor bridge");
+					assert.equal(
+						tui.requests.filter(
+							(request) =>
+								request.command === "extension_component_input" &&
+								request.data === `\u001b[200~${paste}\u001b[201~`,
+						).length,
+						1,
+						"5000-character paste fragmented into multiple Host calls",
+					);
+					tui.send("C-z", "C-r");
+
+					tui.send("C-c");
+					tui.sendLiteral("history custom editor");
+					tui.send("Enter");
+					await waitFor(async () => {
+						await tui.pump();
+						return tui.requests.some((request) => request.command === "prompt");
+					}, "CustomEditor submit did not create a Host prompt");
+					tui.send("Up", "Down");
+					await waitFor(async () => {
+						await tui.pump();
+						return tui.requests.some(
+							(request) => request.command === "extension_component_input" && request.data === "\u001b[A",
+						);
+					}, "CustomEditor history key did not reach the Host bridge");
+
+					tui.send("C-g");
+					await waitFor(async () => {
+						await tui.pump();
+						return tui.serverMessages.some(
+							(message) =>
+								message.type === "event" &&
+								message.event.type === "extension_component_mount" &&
+								message.event.componentId === "editor" &&
+								message.event.generation > currentEditorGeneration,
+						);
+					}, "replacement CustomEditor did not mount a new generation");
+					const editorActionsBeforeStale = tui.serverMessages.filter(
+						(message) => message.type === "event" && message.event.type === "extension_editor_action",
+					).length;
+					const staleStatusBefore = tui.serverMessages.filter(
+						(message) => message.type === "event" && message.event.type === "extension_ui_delta",
+					).length;
+					tui.send("C-x");
+					await waitFor(async () => {
+						await tui.pump();
+						return (
+							tui.requests.some(
+								(request) => request.command === "extension_component_input" && request.data === "\u0018",
+							) &&
+							tui.serverMessages.filter(
+								(message) => message.type === "event" && message.event.type === "extension_ui_delta",
+							).length > staleStatusBefore
+						);
+					}, "stale callback control key did not execute");
+					assert.equal(
+						tui.serverMessages.filter(
+							(message) => message.type === "event" && message.event.type === "extension_editor_action",
+						).length,
+						editorActionsBeforeStale,
+						"replaced editor callback mutated the active draft",
+					);
+
+					const failStatusBefore = tui.serverMessages.filter(
+						(message) => message.type === "event" && message.event.type === "extension_ui_delta",
+					).length;
+					tui.send("C-v");
+					await waitFor(async () => {
+						await tui.pump();
+						return (
+							tui.requests.some(
+								(request) => request.command === "extension_component_input" && request.data === "\u0016",
+							) &&
+							tui.serverMessages.filter(
+								(message) => message.type === "event" && message.event.type === "extension_ui_delta",
+							).length > failStatusBefore
+						);
+					}, "fail-next control key did not execute");
+					tui.send("C-g");
+					await waitFor(
+						() => tui.pane().includes("Enter 提交") && !tui.pane().includes("mounts=3"),
+						"failing CustomEditor factory did not restore native Composer",
+					);
+
+					tui.resize(120, 36);
+					tui.resize(80, 8);
+					await waitFor(
+						() => tui.pane().includes("Enter 提交"),
+						"resize lost native Composer after CustomEditor failure",
+					);
+					writeFileSync(
+						join(tui.artifactDirectory, "result.json"),
+						`${JSON.stringify({
+							attempt,
+							pasteLength: paste.length,
+							pasteHash: createHash("sha256").update(paste).digest("hex"),
+							initialEditorGeneration: currentEditorGeneration,
+							componentInputCalls: tui.requests.filter(
+								(request) => request.command === "extension_component_input",
+							).length,
+						})}\n`,
+					);
+					assertCustomEditorArtifactSafe(tui.artifactDirectory);
+				} finally {
+					tui.closeProtocol();
+				}
+			}
+		},
+		Number(process.env.LYSTAR_CUSTOM_EDITOR_TIMEOUT_MS ?? 240_000),
+	);
 
 	it("通过 tmux/FIFO 两轮加载真实 Pi custom Editor examples", async () => {
 		for (const example of ["border", "modal", "rainbow"] as const) {
@@ -3902,6 +4253,12 @@ describe("Rust B3 会话工作台外部验收", () => {
 				assert.ok(
 					fullscreen.requests.filter((request) => request.id.startsWith("exit-transcript-")).length >= 3,
 					"fullscreen exit did not page through the complete transcript",
+				);
+				assert.match(transcript, /\x1b\[\?2004h/, "fullscreen mode did not enable bracketed paste in the PTY");
+				assert.match(transcript, /\x1b\[\?2004l/, "TerminalGuard did not disable bracketed paste before PTY exit");
+				assert.ok(
+					transcript.indexOf("\x1b[?2004h") < transcript.lastIndexOf("\x1b[?2004l"),
+					"TerminalGuard restored bracketed paste before the fullscreen transcript completed",
 				);
 				assert.equal(
 					readFileSync(fullscreen.sttyBeforePath, "utf8"),

@@ -964,6 +964,8 @@ export function assertB3CommandResult(command: keyof typeof B3CommandResultSchem
 
 const ImageInputSchema = StrictObject({ data: Type.String(), mimeType: Type.String({ minLength: 1 }) });
 
+const ExtensionInputSchema = Type.String({ minLength: 1, maxLength: 64 * 1024 });
+
 export const CommandSchema = Type.Union([
 	StrictObject({ command: Type.Literal("get_snapshot") }),
 	StrictObject({
@@ -1322,8 +1324,8 @@ export const CommandSchema = Type.Union([
 		leaseId: Id,
 		clientInstanceId: Id,
 		clientRequestId: Id,
-		text: Type.String({ maxLength: 64 * 1024 }),
-		cursor: Type.Integer({ minimum: 0, maximum: 64 * 1024 }),
+		text: Type.String({ maxLength: 4 * 1024 * 1024 }),
+		cursor: Type.Integer({ minimum: 0, maximum: 4 * 1024 * 1024 }),
 		revision: Type.Integer({ minimum: 0 }),
 		ackRevision: Type.Optional(Type.Integer({ minimum: 0 })),
 	}),
@@ -1333,7 +1335,7 @@ export const CommandSchema = Type.Union([
 		leaseId: Id,
 		clientInstanceId: Id,
 		clientRequestId: Id,
-		data: Type.String({ minLength: 1, maxLength: 256 }),
+		data: ExtensionInputSchema,
 	}),
 	StrictObject({
 		command: Type.Literal("extension_component_input"),
@@ -1343,7 +1345,7 @@ export const CommandSchema = Type.Union([
 		clientRequestId: Id,
 		componentId: Id,
 		generation: Type.Integer({ minimum: 0 }),
-		data: Type.String({ minLength: 1, maxLength: 256 }),
+		data: ExtensionInputSchema,
 	}),
 	StrictObject({
 		command: Type.Literal("extension_component_resize"),

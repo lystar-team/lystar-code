@@ -266,6 +266,10 @@ describe("ExtensionUiBridge", () => {
 		expect(originalActions).toBe(1);
 		current.actionHandlers.get("app.clear")?.();
 		expect(originalActions).toBe(1);
+		expect(current.getText()).toBe("");
+		expect(events.at(-2)).toEqual(
+			expect.objectContaining({ type: "editor_action", action: expect.objectContaining({ text: "" }) }),
+		);
 		expect(events.at(-1)).toEqual(expect.objectContaining({ type: "editor_app_action", action: "app.clear" }));
 		expect(current.onExtensionShortcut?.("handled")).toBe(false);
 		expect(current.onExtensionShortcut?.("unhandled")).toBe(false);
@@ -282,13 +286,21 @@ describe("ExtensionUiBridge", () => {
 		expect(events).toHaveLength(eventsBeforeDispose);
 	});
 
-	it("keeps raw terminal listener sequences intact while bounding them", async () => {
+	it("keeps raw terminal listener sequences intact while bounding them by UTF-8 bytes", async () => {
 		const bridge = new ExtensionUiBridge(
 			async () => ({ cancelled: true }),
 			() => {},
 			() => {},
 		);
-		bridge.context().onTerminalInput((data) => ({ data: data === "\u001b[A" ? "\u001b[B" : data }));
+		let received = "";
+		bridge.context().onTerminalInput((data) => {
+			received = data;
+			return { data: data === "\u001b[A" ? "\u001b[B" : data };
+		});
 		await expect(bridge.dispatchTerminalInput("\u001b[A")).resolves.toEqual({ consume: false, data: "\u001b[B" });
+		await bridge.dispatchTerminalInput(`${"甲".repeat(21_845)}🙂`);
+		expect(Buffer.byteLength(received, "utf8")).toBeLessThanOrEqual(64 * 1024);
+		expect(received.endsWith("\ud83d")).toBe(false);
+		expect(received.endsWith("\ude42")).toBe(false);
 	});
 });

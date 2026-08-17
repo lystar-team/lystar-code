@@ -171,7 +171,8 @@ interface ExtensionUiContextBridge {
 	setToolsExpanded(expanded: boolean): void;
 }
 
-const MAX_EDITOR_BYTES = 64 * 1024;
+const MAX_EDITOR_BYTES = 4 * 1024 * 1024;
+const MAX_EXTENSION_INPUT_BYTES = 64 * 1024;
 const HEADLESS_EDITOR_THEME = {
 	borderColor: (text: string) => text,
 	selectList: {
@@ -267,12 +268,18 @@ function sanitizeTerminalText(value: string, limit = 4096, allow: { newline?: bo
 	return output;
 }
 
-function bounded(value: string, limit = 4096): string {
+function bounded(value: string, limit = 256): string {
 	return sanitizeTerminalText(value, limit);
 }
 
 function boundedRawInput(value: string): string {
-	return value.length <= 256 ? value : value.slice(0, 256);
+	if (Buffer.byteLength(value, "utf8") <= MAX_EXTENSION_INPUT_BYTES) return value;
+	let output = "";
+	for (const character of value) {
+		if (Buffer.byteLength(output, "utf8") + Buffer.byteLength(character, "utf8") > MAX_EXTENSION_INPUT_BYTES) break;
+		output += character;
+	}
+	return output;
 }
 
 function boundedEditor(value: string): string {
@@ -771,7 +778,13 @@ export class ExtensionUiBridge {
 					const original = editor.actionHandlers.get(action);
 					bindings.actionHandlers.set(action, original);
 					editor.actionHandlers.set(action, () => {
-						if (isCurrent()) this.publishEditorAppAction(action);
+						if (!isCurrent()) return;
+						if (action === "app.clear") {
+							editor.setText?.("");
+							this.editorText = "";
+							this.publishEditorAction("set", "");
+						}
+						this.publishEditorAppAction(action);
 					});
 				}
 			}
@@ -843,7 +856,7 @@ export class ExtensionUiBridge {
 
 	private editorAutocompleteProvider(): EditorAutocompleteProvider {
 		const base: EditorAutocompleteProvider = {
-			triggerCharacters: ["@", "$"],
+			triggerCharacters: ["@", "$", "/"],
 			getSuggestions: async (lines, cursorLine, cursorCol, options) => {
 				if (options.signal.aborted || !this.getCompletions) return null;
 				const prefixLines = lines.slice(0, cursorLine);

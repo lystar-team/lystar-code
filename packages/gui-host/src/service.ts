@@ -585,6 +585,11 @@ export class GuiHostService {
 			}
 			case "extension_terminal_input": {
 				const { runtime, sessionPath } = this.assertExtensionSession(connection, request);
+				if (Buffer.byteLength(request.data, "utf8") > 64 * 1024)
+					throw Object.assign(new Error("扩展原始输入超过 64 KiB 限制"), {
+						code: "extension_input_too_large",
+						retryable: false,
+					});
 				return this.executeJournaledWrite(connection, {
 					command: request.command,
 					clientInstanceId: request.clientInstanceId,
@@ -596,6 +601,11 @@ export class GuiHostService {
 			}
 			case "extension_component_input": {
 				const { runtime, sessionPath } = this.assertExtensionSession(connection, request);
+				if (Buffer.byteLength(request.data, "utf8") > 64 * 1024)
+					throw Object.assign(new Error("扩展原始输入超过 64 KiB 限制"), {
+						code: "extension_input_too_large",
+						retryable: false,
+					});
 				return this.executeJournaledWrite(connection, {
 					command: request.command,
 					clientInstanceId: request.clientInstanceId,

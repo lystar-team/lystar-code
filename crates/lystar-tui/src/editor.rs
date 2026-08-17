@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-pub const MAX_EDITOR_BYTES: usize = 64 * 1024;
+pub const MAX_EDITOR_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_HISTORY_ENTRIES: usize = 200;
 pub const MAX_UNDO_ENTRIES: usize = 100;
 
