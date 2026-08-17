@@ -29,6 +29,178 @@ fn assistant(id: &str, text: &str) -> TranscriptItem {
     }
 }
 
+fn operation(status: &str) -> OperationSnapshot {
+    OperationSnapshot {
+        operation_id: "operation-1".to_owned(),
+        client_instance_id: "client".to_owned(),
+        client_request_id: "request".to_owned(),
+        session_path: "/tmp/session.jsonl".to_owned(),
+        operation_type: "prompt".to_owned(),
+        status: status.to_owned(),
+        progress: None,
+        error: None,
+    }
+}
+
+#[test]
+fn keeps_live_tools_in_start_order_through_updates_and_end() {
+    let mut app = AppState::default();
+    app.apply_progress(SessionProgress::ToolStart {
+        tool_call_id: "z-first".to_owned(),
+        name: "read".to_owned(),
+        summary: Some("初始摘要".to_owned()),
+    });
+    app.apply_progress(SessionProgress::ToolStart {
+        tool_call_id: "a-second".to_owned(),
+        name: "grep".to_owned(),
+        summary: Some("搜索中".to_owned()),
+    });
+    app.apply_progress(SessionProgress::ToolUpdate {
+        tool_call_id: "z-first".to_owned(),
+        name: "read".to_owned(),
+        summary: "部分结果".to_owned(),
+    });
+    app.apply_progress(SessionProgress::ToolEnd {
+        tool_call_id: "z-first".to_owned(),
+        name: "read".to_owned(),
+        status: "error".to_owned(),
+        summary: "读取失败".to_owned(),
+    });
+    app.apply_progress(SessionProgress::ToolUpdate {
+        tool_call_id: "z-first".to_owned(),
+        name: "read".to_owned(),
+        summary: "最终错误摘要".to_owned(),
+    });
+    app.apply_progress(SessionProgress::ToolEnd {
+        tool_call_id: "a-second".to_owned(),
+        name: "grep".to_owned(),
+        status: "success".to_owned(),
+        summary: "找到 2 处".to_owned(),
+    });
+
+    let ids = app.live_tools.iter().map(|(id, _)| id).collect::<Vec<_>>();
+    assert_eq!(ids, vec!["z-first", "a-second"]);
+    assert_eq!(
+        app.live_tools.get("z-first").map(|tool| tool.status),
+        Some(LiveToolStatus::Error)
+    );
+    assert_eq!(
+        app.live_tools
+            .get("z-first")
+            .map(|tool| tool.summary.as_str()),
+        Some("最终错误摘要")
+    );
+    assert_eq!(
+        app.live_tools.get("a-second").map(|tool| tool.status),
+        Some(LiveToolStatus::Success)
+    );
+
+    let rendered = rendered_transcript(&app);
+    assert!(
+        rendered.contains("工具read错误最终错误摘要"),
+        "{rendered:?}"
+    );
+    assert!(rendered.contains("工具grep已完成找到2处"), "{rendered:?}");
+}
+
+#[test]
+fn terminal_operations_settle_live_tools_without_clearing_the_tail() {
+    for (operation_status, expected_status) in [
+        ("aborted", LiveToolStatus::Cancelled),
+        ("interrupted", LiveToolStatus::Cancelled),
+        ("failed", LiveToolStatus::Error),
+    ] {
+        let mut app = AppState::default();
+        app.apply_progress(SessionProgress::AssistantDelta {
+            text: "仍在等待持久记录".to_owned(),
+        });
+        app.apply_progress(SessionProgress::ToolStart {
+            tool_call_id: "call".to_owned(),
+            name: "write".to_owned(),
+            summary: Some("写入中".to_owned()),
+        });
+
+        app.apply_operation(operation(operation_status));
+
+        assert_eq!(
+            app.live_tools.get("call").map(|tool| tool.status),
+            Some(expected_status)
+        );
+        assert_eq!(app.assistant_stream, "仍在等待持久记录");
+
+        let mut next_operation = operation("accepted");
+        next_operation.operation_id = "operation-2".to_owned();
+        app.apply_operation(next_operation);
+        assert!(app.live_tools.is_empty());
+        assert!(app.assistant_stream.is_empty());
+    }
+}
+
+#[test]
+fn committed_tool_result_replaces_only_the_matching_live_tool() {
+    let mut app = AppState::default();
+    app.transcript.replace_page(
+        vec![TranscriptItem {
+            entry_id: "call".to_owned(),
+            timestamp: String::new(),
+            view: TranscriptViewItem::ToolCall {
+                calls: vec![ToolCall {
+                    id: "matched".to_owned(),
+                    name: "read".to_owned(),
+                    summary: "文件".to_owned(),
+                    href: None,
+                }],
+            },
+        }],
+        "g".to_owned(),
+        1,
+        None,
+    );
+    app.apply_progress(SessionProgress::ToolStart {
+        tool_call_id: "matched".to_owned(),
+        name: "read".to_owned(),
+        summary: Some("文件".to_owned()),
+    });
+    app.apply_progress(SessionProgress::ToolEnd {
+        tool_call_id: "matched".to_owned(),
+        name: "read".to_owned(),
+        status: "success".to_owned(),
+        summary: "done".to_owned(),
+    });
+    app.apply_progress(SessionProgress::ToolStart {
+        tool_call_id: "other".to_owned(),
+        name: "grep".to_owned(),
+        summary: Some("仍在运行".to_owned()),
+    });
+
+    let committed = vec![TranscriptItem {
+        entry_id: "result".to_owned(),
+        timestamp: String::new(),
+        view: TranscriptViewItem::ToolResult {
+            call_id: "matched".to_owned(),
+            name: "read".to_owned(),
+            status: "success".to_owned(),
+            summary: "done".to_owned(),
+            detail: None,
+            content_ref: None,
+            images: None,
+        },
+    }];
+    assert!(
+        app.transcript
+            .append_committed("g", 1, 2, committed.clone())
+    );
+    app.clear_live_after_commit(&committed);
+
+    assert!(app.live_tools.get("matched").is_none());
+    assert_eq!(
+        app.live_tools.get("other").map(|tool| tool.status),
+        Some(LiveToolStatus::Running)
+    );
+    let rendered = rendered_transcript(&app);
+    assert_eq!(rendered.matches("done").count(), 1, "{rendered:?}");
+}
+
 fn rendered_transcript(app: &AppState) -> String {
     let area = Rect::new(0, 0, 40, 8);
     let mut buffer = Buffer::empty(area);
@@ -94,6 +266,11 @@ fn clears_live_streams_when_switching_or_disconnecting() {
     app.apply_progress(SessionProgress::AssistantDelta {
         text: "旧回答".to_owned(),
     });
+    app.apply_progress(SessionProgress::ToolStart {
+        tool_call_id: "old-tool".to_owned(),
+        name: "read".to_owned(),
+        summary: Some("旧会话工具".to_owned()),
+    });
     app.commit_session_switch(
         "/tmp/new.jsonl".to_owned(),
         "new-lease".to_owned(),
@@ -116,12 +293,19 @@ fn clears_live_streams_when_switching_or_disconnecting() {
     );
     assert!(app.thinking_stream.is_empty());
     assert!(app.assistant_stream.is_empty());
+    assert!(app.live_tools.is_empty());
 
     app.apply_progress(SessionProgress::AssistantDelta {
         text: "断开前回答".to_owned(),
     });
+    app.apply_progress(SessionProgress::ToolStart {
+        tool_call_id: "disconnect-tool".to_owned(),
+        name: "grep".to_owned(),
+        summary: Some("断开前工具".to_owned()),
+    });
     app.clear_connection_state("断开");
     assert!(app.assistant_stream.is_empty());
+    assert!(app.live_tools.is_empty());
 }
 
 #[test]
@@ -260,9 +444,15 @@ fn clears_stream_and_search_on_reload() {
     app.transcript.streaming_preview = Some("partial".to_owned());
     app.search.pending_jump = Some("old".to_owned());
     app.search.selected = 2;
+    app.apply_progress(SessionProgress::ToolStart {
+        tool_call_id: "reload-tool".to_owned(),
+        name: "read".to_owned(),
+        summary: Some("重载前工具".to_owned()),
+    });
     app.clear_for_reload("rewrite");
     assert!(app.transcript.streaming_preview.is_none());
     assert!(app.search.pending_jump.is_none());
+    assert!(app.live_tools.is_empty());
     assert_eq!(app.search.selected, 0);
 }
 #[test]

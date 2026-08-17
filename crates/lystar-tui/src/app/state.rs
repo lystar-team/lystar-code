@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use lystar_protocol::{
@@ -12,6 +12,7 @@ use crate::{
     rich_text::{RenderedRichText, RichTextCache, RichTextKey},
 };
 
+use super::live_tools::{LiveToolStatus, LiveTools};
 use super::transcript::rich_text_source;
 use super::{
     ChangesTab, ClipboardDescriptor, ClipboardReadState, ComposerAttachment, ComposerCompletion,
@@ -41,7 +42,7 @@ pub struct SessionRestorePoint {
     pub snapshot: Option<SessionSnapshot>,
     pub lease_id: Option<String>,
     pub operation: Option<OperationSnapshot>,
-    pub live_tools: BTreeMap<String, LiveTool>,
+    pub live_tools: LiveTools,
     pub assistant_stream: String,
     pub thinking_stream: String,
     pub overlays: Vec<OverlayState>,
@@ -77,13 +78,6 @@ impl UiRequest {
         matches!(self.kind, UiRequestKind::Secret)
     }
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LiveTool {
-    pub name: String,
-    pub summary: String,
-    pub status: String,
-}
-
 #[derive(Debug, Default)]
 pub struct AppState {
     pub active_session: Option<ActiveSessionContext>,
@@ -98,7 +92,7 @@ pub struct AppState {
     pub snapshot: Option<SessionSnapshot>,
     pub lease_id: Option<String>,
     pub operation: Option<OperationSnapshot>,
-    pub live_tools: BTreeMap<String, LiveTool>,
+    pub live_tools: LiveTools,
     pub assistant_stream: String,
     pub thinking_stream: String,
     pub disconnected: Option<String>,
@@ -435,6 +429,11 @@ impl AppState {
             operation.status.as_str(),
             "completed" | "aborted" | "interrupted" | "failed"
         );
+        let starts_new_operation = !terminal
+            && self
+                .operation
+                .as_ref()
+                .is_none_or(|current| current.operation_id != operation.operation_id);
         let current_is_active = self.operation.as_ref().is_some_and(|current| {
             matches!(
                 current.status.as_str(),
@@ -453,9 +452,20 @@ impl AppState {
         }) {
             return;
         }
-        self.operation = Some(operation);
-        if terminal {
+        if starts_new_operation {
             self.clear_transient();
+        }
+        self.operation = Some(operation);
+        match self
+            .operation
+            .as_ref()
+            .map(|operation| operation.status.as_str())
+        {
+            Some("failed") => self.live_tools.settle_active(LiveToolStatus::Error),
+            Some("aborted" | "interrupted") => {
+                self.live_tools.settle_active(LiveToolStatus::Cancelled)
+            }
+            _ => {}
         }
     }
 
@@ -467,33 +477,20 @@ impl AppState {
                 tool_call_id,
                 name,
                 summary,
-            } => {
-                self.live_tools.insert(
-                    tool_call_id,
-                    LiveTool {
-                        name,
-                        summary: summary.unwrap_or_default(),
-                        status: "运行中".to_owned(),
-                    },
-                );
-            }
+            } => self
+                .live_tools
+                .start(tool_call_id, name, summary.unwrap_or_default()),
             SessionProgress::ToolUpdate {
                 tool_call_id,
                 name,
                 summary,
-            } => {
-                self.live_tools.insert(
-                    tool_call_id,
-                    LiveTool {
-                        name,
-                        summary,
-                        status: "运行中".to_owned(),
-                    },
-                );
-            }
-            SessionProgress::ToolEnd { tool_call_id, .. } => {
-                self.live_tools.remove(&tool_call_id);
-            }
+            } => self.live_tools.update(tool_call_id, name, summary),
+            SessionProgress::ToolEnd {
+                tool_call_id,
+                name,
+                status,
+                summary,
+            } => self.live_tools.finish(tool_call_id, name, &status, summary),
             SessionProgress::QueueUpdate {
                 steering_count,
                 follow_up_count,

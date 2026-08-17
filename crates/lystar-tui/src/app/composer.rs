@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     fmt,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -13,10 +12,8 @@ use ratatui::{
 };
 use sha2::{Digest, Sha256};
 
-use unicode_width::UnicodeWidthStr;
-
 use super::transcript::{put_ansi_line, put_line};
-use super::{AppState, LiveTool, WORKSPACE_REQUEST_TIMEOUT};
+use super::{AppState, WORKSPACE_REQUEST_TIMEOUT};
 #[derive(Clone, PartialEq, Eq)]
 pub struct ComposerAttachment {
     pub id: u64,
@@ -634,7 +631,6 @@ impl Widget for ComposerView<'_> {
                 Style::default().fg(Color::DarkGray),
             );
         }
-        let tool_line = live_tool_line(&self.state.live_tools, width);
         let attachment_line = self.state.attachment_summary(area.height <= 4);
         let working = if self.state.is_active_operation() && self.state.extension_ui.working_visible
         {
@@ -660,7 +656,7 @@ impl Widget for ComposerView<'_> {
         } else {
             None
         };
-        let status_line = attachment_line.or(working).unwrap_or(tool_line);
+        let status_line = attachment_line.or(working).unwrap_or_default();
         if !status_line.is_empty() {
             put_line(
                 buffer,
@@ -687,28 +683,4 @@ impl Widget for ComposerView<'_> {
             Style::default().fg(Color::DarkGray),
         );
     }
-}
-
-fn live_tool_line(tools: &BTreeMap<String, LiveTool>, width: usize) -> String {
-    let mut line = String::new();
-    let mut hidden = 0;
-    for tool in tools.values() {
-        let item = format!("Tool {} {} {}", tool.name, tool.status, tool.summary);
-        let separator = if line.is_empty() { "" } else { " | " };
-        let candidate = line.clone() + separator + &item;
-        if UnicodeWidthStr::width(candidate.as_str()) <= width {
-            line.push_str(separator);
-            line.push_str(&item);
-        } else {
-            hidden += 1;
-        }
-    }
-    if hidden > 0 {
-        let more = format!(" +{hidden}");
-        while !line.is_empty() && UnicodeWidthStr::width((line.clone() + &more).as_str()) > width {
-            line.pop();
-        }
-        line.push_str(&more);
-    }
-    line
 }

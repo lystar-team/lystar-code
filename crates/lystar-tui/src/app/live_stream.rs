@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use super::{AppState, transcript::sanitize_render_text};
+use super::{AppState, LiveToolStatus, transcript::sanitize_render_text};
 
 pub(super) fn streaming_tail_lines(
     state: &AppState,
@@ -41,7 +41,31 @@ pub(super) fn streaming_tail_lines(
             Style::default().fg(Color::White),
         );
     }
+    if !state.live_tools.is_empty() {
+        if !lines.is_empty() {
+            push_stream_line(&mut lines, String::new(), Style::default(), max_lines);
+        }
+        for (_, tool) in state.live_tools.iter() {
+            push_stream_lines(
+                &mut lines,
+                &tool.display(),
+                width,
+                max_lines,
+                live_tool_style(tool.status),
+            );
+        }
+    }
     lines.into_iter().collect()
+}
+
+fn live_tool_style(status: LiveToolStatus) -> Style {
+    match status {
+        LiveToolStatus::Pending => Style::default().fg(Color::DarkGray),
+        LiveToolStatus::Running => Style::default().fg(Color::Yellow),
+        LiveToolStatus::Success => Style::default().fg(Color::Green),
+        LiveToolStatus::Error => Style::default().fg(Color::Red),
+        LiveToolStatus::Cancelled => Style::default().fg(Color::DarkGray),
+    }
 }
 
 fn push_stream_lines(

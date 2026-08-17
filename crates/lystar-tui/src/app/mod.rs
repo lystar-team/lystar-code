@@ -1,6 +1,7 @@
 mod composer;
 mod extension;
 mod live_stream;
+mod live_tools;
 mod overlay;
 mod search;
 mod state;
@@ -9,6 +10,7 @@ mod workspace;
 
 pub use composer::*;
 pub use extension::*;
+pub use live_tools::*;
 pub use overlay::*;
 pub use search::*;
 pub use state::*;
