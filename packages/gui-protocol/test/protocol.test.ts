@@ -210,6 +210,26 @@ describe("GUI Protocol v1", () => {
 		expect(new ServerMessageDecoder().push(encodeServerMessage(message))).toEqual([message]);
 	});
 
+	it("accepts structured retry progress", () => {
+		const message = {
+			type: "event" as const,
+			event: {
+				type: "session_progress" as const,
+				sessionPath: "/tmp/session.jsonl",
+				progress: {
+					type: "retry" as const,
+					status: "waiting" as const,
+					kind: "model" as const,
+					attempt: 2,
+					maxAttempts: 3,
+					delayMs: 1500,
+					error: "temporary",
+				},
+			},
+		};
+		expect(new ServerMessageDecoder().push(encodeServerMessage(message))).toEqual([message]);
+	});
+
 	it("fails pending input on disconnect without resending it", async () => {
 		const clientTransport = new MemoryTransport();
 		const serverTransport = new MemoryTransport();

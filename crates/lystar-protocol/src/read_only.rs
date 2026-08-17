@@ -259,6 +259,16 @@ pub enum SessionProgress {
         reason: String,
         error: Option<String>,
     },
+    Retry {
+        status: String,
+        kind: String,
+        attempt: Option<u64>,
+        #[serde(rename = "maxAttempts")]
+        max_attempts: Option<u64>,
+        #[serde(rename = "delayMs")]
+        delay_ms: Option<u64>,
+        error: Option<String>,
+    },
     Status {
         status: String,
         truncated: Option<bool>,

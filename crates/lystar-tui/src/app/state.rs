@@ -17,7 +17,7 @@ use super::transcript::rich_text_source;
 use super::{
     ChangesTab, ClipboardDescriptor, ClipboardReadState, ComposerAttachment, ComposerCompletion,
     ExtensionUiState, GitDiffDescriptor, GitStatusDescriptor, ImagePendingRequest,
-    InstructionDescriptor, ListOverlay, LiveCompaction, ModelDescriptor, OverlayOrigin,
+    InstructionDescriptor, ListOverlay, LiveCompaction, LiveRetry, ModelDescriptor, OverlayOrigin,
     OverlayState, PackageDescriptor, PendingAttachmentSubmit, PendingComponentInput,
     PendingCustomEditorSubmit, PendingRequest, PendingTerminalInput, ProjectTrustDescriptor,
     ProviderDescriptor, ReadonlySessionView, RecoveryDraft, RichTextPendingRequest, SearchState,
@@ -44,6 +44,7 @@ pub struct SessionRestorePoint {
     pub operation: Option<OperationSnapshot>,
     pub live_tools: LiveTools,
     pub compaction: Option<LiveCompaction>,
+    pub retry: Option<LiveRetry>,
     pub assistant_stream: String,
     pub thinking_stream: String,
     pub overlays: Vec<OverlayState>,
@@ -95,6 +96,7 @@ pub struct AppState {
     pub operation: Option<OperationSnapshot>,
     pub live_tools: LiveTools,
     pub compaction: Option<LiveCompaction>,
+    pub retry: Option<LiveRetry>,
     pub assistant_stream: String,
     pub thinking_stream: String,
     pub disconnected: Option<String>,
@@ -207,6 +209,7 @@ impl AppState {
             operation: self.operation.clone(),
             live_tools: self.live_tools.clone(),
             compaction: self.compaction.clone(),
+            retry: self.retry.clone(),
             assistant_stream: self.assistant_stream.clone(),
             thinking_stream: self.thinking_stream.clone(),
             overlays: self.overlays.clone(),
@@ -227,6 +230,7 @@ impl AppState {
         self.operation = restore.operation;
         self.live_tools = restore.live_tools;
         self.compaction = restore.compaction;
+        self.retry = restore.retry;
         self.assistant_stream = restore.assistant_stream;
         self.thinking_stream = restore.thinking_stream;
         self.overlays = restore.overlays;
@@ -475,8 +479,14 @@ impl AppState {
 
     pub fn apply_progress(&mut self, progress: SessionProgress) {
         match progress {
-            SessionProgress::AssistantDelta { text } => self.assistant_stream.push_str(&text),
-            SessionProgress::ThinkingDelta { text } => self.thinking_stream.push_str(&text),
+            SessionProgress::AssistantDelta { text } => {
+                self.retry = None;
+                self.assistant_stream.push_str(&text);
+            }
+            SessionProgress::ThinkingDelta { text } => {
+                self.retry = None;
+                self.thinking_stream.push_str(&text);
+            }
             SessionProgress::ToolStart {
                 tool_call_id,
                 name,
@@ -519,6 +529,28 @@ impl AppState {
                 reason,
                 error,
             } => self.compaction = Some(LiveCompaction::new(&status, reason, error)),
+            SessionProgress::Retry {
+                status,
+                kind,
+                attempt,
+                max_attempts,
+                delay_ms,
+                error,
+            } => {
+                if kind == "model" && status == "waiting" {
+                    self.assistant_stream.clear();
+                    self.thinking_stream.clear();
+                }
+                self.retry = LiveRetry::update(
+                    self.retry.take(),
+                    &status,
+                    kind,
+                    attempt,
+                    max_attempts,
+                    delay_ms,
+                    error,
+                );
+            }
             SessionProgress::Status { status, .. } => self.transcript.status = status,
             SessionProgress::Usage { usage } => {
                 if let Some(elapsed) = usage.elapsed_ms {
@@ -546,6 +578,10 @@ impl AppState {
                 }
                 TranscriptViewItem::Summary { title, .. } if title == "上下文压缩" => {
                     self.compaction = None;
+                    self.retry = None;
+                }
+                TranscriptViewItem::Summary { title, .. } if title == "分支摘要" => {
+                    self.retry = None;
                 }
                 _ => {}
             }
@@ -553,6 +589,7 @@ impl AppState {
         if committed_assistant {
             self.assistant_stream.clear();
             self.thinking_stream.clear();
+            self.retry = None;
         } else if committed_thinking {
             self.thinking_stream.clear();
         }

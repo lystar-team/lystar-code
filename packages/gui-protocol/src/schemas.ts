@@ -287,6 +287,25 @@ export const SessionProgressSchema = Type.Union([
 		error: Type.Optional(Type.String({ maxLength: 1024 })),
 	}),
 	StrictObject({
+		type: Type.Literal("retry"),
+		status: Type.Union([
+			Type.Literal("waiting"),
+			Type.Literal("running"),
+			Type.Literal("completed"),
+			Type.Literal("failed"),
+		]),
+		kind: Type.Union([
+			Type.Literal("model"),
+			Type.Literal("summarization"),
+			Type.Literal("compaction"),
+			Type.Literal("branch_summary"),
+		]),
+		attempt: Type.Optional(Type.Integer({ minimum: 1 })),
+		maxAttempts: Type.Optional(Type.Integer({ minimum: 1 })),
+		delayMs: Type.Optional(Type.Integer({ minimum: 0 })),
+		error: Type.Optional(Type.String({ maxLength: 1024 })),
+	}),
+	StrictObject({
 		type: Type.Literal("status"),
 		status: Type.String({ minLength: 1, maxLength: 1024 }),
 		truncated: Type.Optional(Type.Boolean()),

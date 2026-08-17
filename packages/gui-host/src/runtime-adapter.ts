@@ -902,8 +902,52 @@ export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgres
 			];
 		}
 		case "auto_retry_start":
+			return [
+				{ type: "phase", phase: "retry" },
+				{
+					type: "retry",
+					status: "waiting",
+					kind: "model",
+					attempt: event.attempt,
+					maxAttempts: event.maxAttempts,
+					delayMs: event.delayMs,
+					error: boundedStatus(event.errorMessage),
+				},
+			];
+		case "auto_retry_end":
+			return [
+				{
+					type: "retry",
+					status: event.success ? "completed" : "failed",
+					kind: "model",
+					attempt: event.attempt,
+					...(event.finalError ? { error: boundedStatus(event.finalError) } : {}),
+				},
+			];
 		case "summarization_retry_scheduled":
-			return [{ type: "phase", phase: "retry" }];
+			return [
+				{ type: "phase", phase: "retry" },
+				{
+					type: "retry",
+					status: "waiting",
+					kind: "summarization",
+					attempt: event.attempt,
+					maxAttempts: event.maxAttempts,
+					delayMs: event.delayMs,
+					error: boundedStatus(event.errorMessage),
+				},
+			];
+		case "summarization_retry_attempt_start":
+			if (event.source === "branchSummary") {
+				return [{ type: "retry", status: "running", kind: "branch_summary" }];
+			}
+			return [
+				{ type: "phase", phase: "compaction" },
+				{ type: "compaction", status: "running", reason: event.reason },
+				{ type: "retry", status: "running", kind: "compaction" },
+			];
+		case "summarization_retry_finished":
+			return [{ type: "retry", status: "completed", kind: "summarization" }];
 		case "agent_settled":
 			return [{ type: "phase", phase: "idle" }];
 		default:

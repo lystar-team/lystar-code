@@ -455,6 +455,7 @@ impl AppState {
         self.thinking_stream.clear();
         self.live_tools.clear();
         self.compaction = None;
+        self.retry = None;
     }
 }
 

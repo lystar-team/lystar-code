@@ -3,6 +3,7 @@ mod extension;
 mod live_bash;
 mod live_compaction;
 mod live_diff;
+mod live_retry;
 mod live_stream;
 mod live_tools;
 mod overlay;
@@ -15,6 +16,7 @@ mod workspace;
 pub use composer::*;
 pub use extension::*;
 pub use live_compaction::*;
+pub use live_retry::*;
 pub use live_tools::*;
 pub use overlay::*;
 pub use search::*;
@@ -33,5 +35,7 @@ mod bash_tests;
 mod compact_tests;
 #[cfg(test)]
 mod diff_tests;
+#[cfg(test)]
+mod retry_tests;
 #[cfg(test)]
 mod tests;

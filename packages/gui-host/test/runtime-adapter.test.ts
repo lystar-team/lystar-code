@@ -193,6 +193,69 @@ describe("CodingAgentRuntimeAdapter", () => {
 		).toEqual([{ type: "compaction", status: "completed", reason: "manual" }]);
 	});
 
+	it("projects model and summarization retry lifecycle progress", () => {
+		expect(
+			projectRuntimeProgress({
+				type: "auto_retry_start",
+				attempt: 2,
+				maxAttempts: 3,
+				delayMs: 1500,
+				errorMessage: "temporary",
+			}),
+		).toEqual([
+			{ type: "phase", phase: "retry" },
+			{
+				type: "retry",
+				status: "waiting",
+				kind: "model",
+				attempt: 2,
+				maxAttempts: 3,
+				delayMs: 1500,
+				error: "temporary",
+			},
+		]);
+		expect(
+			projectRuntimeProgress({ type: "auto_retry_end", success: false, attempt: 3, finalError: "failed" }),
+		).toEqual([{ type: "retry", status: "failed", kind: "model", attempt: 3, error: "failed" }]);
+		expect(
+			projectRuntimeProgress({
+				type: "summarization_retry_scheduled",
+				attempt: 1,
+				maxAttempts: 2,
+				delayMs: 500,
+				errorMessage: "summary failed",
+			}),
+		).toEqual([
+			{ type: "phase", phase: "retry" },
+			{
+				type: "retry",
+				status: "waiting",
+				kind: "summarization",
+				attempt: 1,
+				maxAttempts: 2,
+				delayMs: 500,
+				error: "summary failed",
+			},
+		]);
+		expect(
+			projectRuntimeProgress({
+				type: "summarization_retry_attempt_start",
+				source: "compaction",
+				reason: "overflow",
+			}),
+		).toEqual([
+			{ type: "phase", phase: "compaction" },
+			{ type: "compaction", status: "running", reason: "overflow" },
+			{ type: "retry", status: "running", kind: "compaction" },
+		]);
+		expect(projectRuntimeProgress({ type: "summarization_retry_attempt_start", source: "branchSummary" })).toEqual([
+			{ type: "retry", status: "running", kind: "branch_summary" },
+		]);
+		expect(projectRuntimeProgress({ type: "summarization_retry_finished" })).toEqual([
+			{ type: "retry", status: "completed", kind: "summarization" },
+		]);
+	});
+
 	it("projects bash commands and output snapshots without JSON summaries", () => {
 		const start: Extract<AgentSessionEvent, { type: "tool_execution_start" }> = {
 			type: "tool_execution_start",

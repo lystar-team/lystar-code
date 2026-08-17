@@ -5,7 +5,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::{
-    AppState, CompactionStatus, LiveToolStatus, live_diff::DiffLineKind,
+    AppState, CompactionStatus, LiveToolStatus, RetryStatus, live_diff::DiffLineKind,
     transcript::sanitize_render_text,
 };
 
@@ -73,7 +73,26 @@ pub(super) fn streaming_tail_lines(
             compaction_style(compaction.status),
         );
     }
+    if let Some(retry) = &state.retry {
+        if !lines.is_empty() {
+            push_stream_line(&mut lines, String::new(), Style::default(), max_lines);
+        }
+        push_stream_lines(
+            &mut lines,
+            &retry.display(),
+            width,
+            max_lines,
+            retry_style(retry.status),
+        );
+    }
     lines.into_iter().collect()
+}
+
+fn retry_style(status: RetryStatus) -> Style {
+    match status {
+        RetryStatus::Waiting | RetryStatus::Running => Style::default().fg(Color::Yellow),
+        RetryStatus::Failed => Style::default().fg(Color::Red),
+    }
 }
 
 fn compaction_style(status: CompactionStatus) -> Style {

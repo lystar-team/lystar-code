@@ -3049,6 +3049,77 @@
           "type": "object",
           "required": [
             "type",
+            "status",
+            "kind"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "retry"
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "waiting"
+                },
+                {
+                  "type": "string",
+                  "const": "running"
+                },
+                {
+                  "type": "string",
+                  "const": "completed"
+                },
+                {
+                  "type": "string",
+                  "const": "failed"
+                }
+              ]
+            },
+            "kind": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "model"
+                },
+                {
+                  "type": "string",
+                  "const": "summarization"
+                },
+                {
+                  "type": "string",
+                  "const": "compaction"
+                },
+                {
+                  "type": "string",
+                  "const": "branch_summary"
+                }
+              ]
+            },
+            "attempt": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxAttempts": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "delayMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "error": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
             "status"
           ],
           "properties": {
