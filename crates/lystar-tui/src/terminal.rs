@@ -1810,6 +1810,38 @@ fn raw_mouse(kind: MouseEventKind, column: u16, row: u16) -> Option<String> {
     ))
 }
 
+fn interrupt_active_operation(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    sequence: &mut u64,
+) -> Result<(), TuiError> {
+    let Some(lease_id) = app.lease_id.clone() else {
+        return Ok(());
+    };
+    let Some(operation_id) = app.operation.as_ref().and_then(|operation| {
+        matches!(
+            operation.status.as_str(),
+            "accepted" | "running" | "waiting_for_input"
+        )
+        .then(|| operation.operation_id.clone())
+    }) else {
+        return Ok(());
+    };
+    *sequence += 1;
+    pipe.request(&encode_abort_operation_request(
+        &format!("abort-{sequence}"),
+        &operation_id,
+        &lease_id,
+    )?)?;
+    if let Some(operation) = app.operation.as_mut()
+        && operation.operation_id == operation_id
+    {
+        operation.status = "aborting".to_owned();
+    }
+    app.transcript.status = "正在停止".to_owned();
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn apply_extension_editor_app_action(
     app: &mut AppState,
@@ -1823,19 +1855,7 @@ fn apply_extension_editor_app_action(
 ) -> Result<(), TuiError> {
     let active_path = app.active_session_path().unwrap_or(session_path).to_owned();
     match action {
-        "app.interrupt" => {
-            handle_key(
-                app,
-                KeyCode::Esc,
-                KeyModifiers::NONE,
-                pipe,
-                session_path,
-                client_instance_id,
-                sequence,
-                session_flow,
-                quit_requested,
-            )?;
-        }
+        "app.interrupt" => interrupt_active_operation(app, pipe, sequence)?,
         "app.clear" => app.editor.clear(),
         "app.exit" => *quit_requested = true,
         "app.clipboard.pasteImage" => {
@@ -2092,20 +2112,7 @@ fn handle_key(
 ) -> Result<bool, TuiError> {
     let session_path = app.active_session_path().unwrap_or(session_path).to_owned();
     if matches!(code, KeyCode::Char('c')) && modifiers.contains(KeyModifiers::CONTROL) {
-        if let (Some(operation), Some(lease_id)) = (&app.operation, &app.lease_id)
-            && matches!(
-                operation.status.as_str(),
-                "accepted" | "running" | "waiting_for_input"
-            )
-        {
-            *sequence += 1;
-            pipe.request(&encode_abort_operation_request(
-                &format!("abort-{sequence}"),
-                &operation.operation_id,
-                lease_id,
-            )?)?;
-            app.transcript.status = "正在停止".to_owned();
-        }
+        interrupt_active_operation(app, pipe, sequence)?;
         return Ok(false);
     }
     if is_readonly_overlay(app) {
@@ -2201,20 +2208,7 @@ fn handle_key(
     }
 
     if matches!(code, KeyCode::Esc) {
-        if let (Some(operation), Some(lease_id)) = (&app.operation, &app.lease_id)
-            && matches!(
-                operation.status.as_str(),
-                "accepted" | "running" | "waiting_for_input"
-            )
-        {
-            *sequence += 1;
-            pipe.request(&encode_abort_operation_request(
-                &format!("abort-{sequence}"),
-                &operation.operation_id,
-                lease_id,
-            )?)?;
-            app.transcript.status = "正在停止".to_owned();
-        }
+        interrupt_active_operation(app, pipe, sequence)?;
         return Ok(false);
     }
 
@@ -9401,10 +9395,125 @@ mod tests {
     }
 
     fn test_pipe() -> ProtocolPipe {
-        let path = std::env::temp_dir().join(format!("lystar-tui-test-{}", std::process::id()));
-        let output = std::fs::File::create(path).unwrap();
+        test_pipe_with_path().0
+    }
+
+    fn test_pipe_with_path() -> (ProtocolPipe, PathBuf) {
+        let path = std::env::temp_dir().join(format!(
+            "lystar-tui-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let output = std::fs::File::create(&path).unwrap();
         let (_sender, inbound) = mpsc::sync_channel(1);
-        ProtocolPipe { output, inbound }
+        (ProtocolPipe { output, inbound }, path)
+    }
+
+    #[test]
+    fn app_interrupt_sends_one_abort_for_an_active_leased_operation() {
+        let mut app = AppState::default();
+        app.begin_active_session("/tmp/current.jsonl".to_owned(), "/tmp".to_owned());
+        app.lease_id = Some("lease".to_owned());
+        app.input_focus = InputFocus::Overlay;
+        app.operation = Some(lystar_protocol::OperationSnapshot {
+            operation_id: "operation-1".to_owned(),
+            client_instance_id: "client".to_owned(),
+            client_request_id: "request".to_owned(),
+            session_path: "/tmp/current.jsonl".to_owned(),
+            operation_type: "prompt".to_owned(),
+            status: "running".to_owned(),
+            progress: None,
+            error: None,
+        });
+        let (mut pipe, path) = test_pipe_with_path();
+        let mut sequence = 0;
+        let mut session_flow = None;
+        let mut quit_requested = false;
+
+        apply_extension_editor_app_action(
+            &mut app,
+            "app.interrupt",
+            &mut pipe,
+            "/tmp/current.jsonl",
+            "client",
+            &mut sequence,
+            &mut session_flow,
+            &mut quit_requested,
+        )
+        .unwrap();
+        apply_extension_editor_app_action(
+            &mut app,
+            "app.interrupt",
+            &mut pipe,
+            "/tmp/current.jsonl",
+            "client",
+            &mut sequence,
+            &mut session_flow,
+            &mut quit_requested,
+        )
+        .unwrap();
+        drop(pipe);
+
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(
+            bytes
+                .windows(b"abort_operation".len())
+                .filter(|window| *window == b"abort_operation")
+                .count(),
+            1
+        );
+        assert_eq!(
+            app.operation
+                .as_ref()
+                .map(|operation| operation.status.as_str()),
+            Some("aborting")
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn app_interrupt_skips_missing_lease_and_terminal_operations() {
+        for (lease_id, status) in [(None, "running"), (Some("lease".to_owned()), "aborted")] {
+            let mut app = AppState::default();
+            app.begin_active_session("/tmp/current.jsonl".to_owned(), "/tmp".to_owned());
+            app.lease_id = lease_id;
+            app.operation = Some(lystar_protocol::OperationSnapshot {
+                operation_id: "operation-1".to_owned(),
+                client_instance_id: "client".to_owned(),
+                client_request_id: "request".to_owned(),
+                session_path: "/tmp/current.jsonl".to_owned(),
+                operation_type: "prompt".to_owned(),
+                status: status.to_owned(),
+                progress: None,
+                error: None,
+            });
+            let (mut pipe, path) = test_pipe_with_path();
+            let mut sequence = 0;
+            let mut session_flow = None;
+            let mut quit_requested = false;
+            apply_extension_editor_app_action(
+                &mut app,
+                "app.interrupt",
+                &mut pipe,
+                "/tmp/current.jsonl",
+                "client",
+                &mut sequence,
+                &mut session_flow,
+                &mut quit_requested,
+            )
+            .unwrap();
+            drop(pipe);
+            assert!(
+                !std::fs::read(&path)
+                    .unwrap()
+                    .windows(b"abort_operation".len())
+                    .any(|window| window == b"abort_operation")
+            );
+            std::fs::remove_file(path).unwrap();
+        }
     }
 
     #[test]

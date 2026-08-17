@@ -150,6 +150,31 @@ describe("ExtensionUiBridge", () => {
 		expect(events.some((event) => event.type === "editor_app_action")).toBe(false);
 	});
 
+	it("records bounded editor input diagnostics without retaining input text", () => {
+		const events: ExtensionUiBridgeEvent[] = [];
+		const bridge = new ExtensionUiBridge(
+			async () => ({ cancelled: true }),
+			(event) => events.push(event),
+			() => {},
+		);
+		bridge.context().setEditorComponent(() => ({
+			render: () => ["editor"],
+			invalidate: () => {},
+			handleInput: () => {},
+		}));
+		const mount = events.find((event) => event.type === "component_mount" && event.placement === "editor");
+		if (!mount || mount.type !== "component_mount") throw new Error("editor did not mount");
+
+		expect(bridge.dispatchComponentInput(mount.componentId, mount.generation, "secret input")).toEqual({});
+		const diagnostic = bridge
+			.getComponentDiagnostics()
+			.components.find((item) => item.componentId === mount.componentId);
+		expect(diagnostic?.inputs).toEqual([
+			expect.objectContaining({ revision: expect.any(Number), bytes: Buffer.byteLength("secret input", "utf8") }),
+		]);
+		expect(JSON.stringify(diagnostic)).not.toContain("secret input");
+	});
+
 	it("mounts custom editors with the mirrored draft and restores native text after unmount", () => {
 		const events: ExtensionUiBridgeEvent[] = [];
 		const bridge = new ExtensionUiBridge(

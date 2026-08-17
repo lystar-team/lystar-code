@@ -381,6 +381,7 @@ export interface ExtensionComponentDiagnostics {
 	coalescedCount: number;
 	lastFinalState: number | null;
 	invalidations: Array<{ invalidateRequestedAt: number; publishedAt?: number; revision?: number }>;
+	inputs: Array<{ receivedAt: number; revision: number; bytes: number }>;
 }
 
 interface ComponentDiagnosticState extends ExtensionComponentDiagnostics {}
@@ -410,6 +411,7 @@ function componentDiagnostic(mount: ComponentMount): ComponentDiagnosticState {
 		coalescedCount: 0,
 		lastFinalState: null,
 		invalidations: [],
+		inputs: [],
 	};
 }
 
@@ -553,6 +555,7 @@ export class ExtensionUiBridge {
 			components: [...this.componentDiagnostics.values()].map((diagnostic) => ({
 				...diagnostic,
 				invalidations: diagnostic.invalidations.map((invalidation) => ({ ...invalidation })),
+				inputs: diagnostic.inputs.map((input) => ({ ...input })),
 			})),
 		};
 	}
@@ -603,9 +606,12 @@ export class ExtensionUiBridge {
 		if (!mount || mount.generation !== generation || !mount.visible) return undefined;
 		this.componentInputActive = mount.placement === "editor";
 		this.componentInputAppAction = undefined;
+		const receivedAt = monotonicMilliseconds();
+		const input = boundedRawInput(data);
 		try {
-			const frame = mount.adapter.input(boundedRawInput(data));
+			const frame = mount.adapter.input(input);
 			this.publishComponentFrame(mount, frame);
+			this.recordComponentInput(mount, receivedAt, frame.revision, Buffer.byteLength(input, "utf8"));
 			return this.componentInputAppAction ? { appAction: this.componentInputAppAction } : {};
 		} catch (error) {
 			this.unmount(componentId, "error");
@@ -1118,6 +1124,13 @@ export class ExtensionUiBridge {
 			}
 		}
 		this.rescheduleComponentFrames();
+	}
+
+	private recordComponentInput(mount: ComponentMount, receivedAt: number, revision: number, bytes: number): void {
+		const diagnostic = this.componentDiagnostics.get(mount.componentId);
+		if (diagnostic?.generation !== mount.generation) return;
+		diagnostic.inputs.push({ receivedAt, revision, bytes });
+		if (diagnostic.inputs.length > MAX_COMPONENT_DIAGNOSTIC_INVALIDATIONS) diagnostic.inputs.shift();
 	}
 
 	private scheduleComponentFrame(componentId: string, generation: number): void {

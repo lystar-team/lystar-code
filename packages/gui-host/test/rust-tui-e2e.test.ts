@@ -1497,6 +1497,14 @@ type StormComponentDiagnostics = {
 	coalescedCount: number;
 	lastFinalState: number | null;
 	invalidations: Array<{ invalidateRequestedAt: number; publishedAt?: number; revision?: number }>;
+	inputs: Array<{ receivedAt: number; revision: number; bytes: number }>;
+};
+
+type OperationRecord = {
+	operationId: string;
+	clientRequestId: string;
+	type: string;
+	status: string;
 };
 
 function timingSummary(samples: readonly number[]) {
@@ -1509,8 +1517,8 @@ function timingSummary(samples: readonly number[]) {
 	};
 }
 
-async function readStormDiagnostics(tui: StartedTui): Promise<StormComponentDiagnostics> {
-	const id = `storm-diagnostics-${Date.now()}`;
+async function readComponentDiagnostics(tui: StartedTui, componentId: string): Promise<StormComponentDiagnostics> {
+	const id = `component-diagnostics-${componentId}-${Date.now()}`;
 	await tui.control.handle({ type: "request", id, request: { command: "get_diagnostics" } });
 	const response = tui.controlMessages.find(
 		(message) => message.type === "response" && message.id === id && message.ok,
@@ -1519,9 +1527,28 @@ async function readStormDiagnostics(tui: StartedTui): Promise<StormComponentDiag
 		throw new Error("Host did not return component diagnostics");
 	const components = (response.result as { extensionComponents?: { components?: StormComponentDiagnostics[] } })
 		.extensionComponents?.components;
-	const component = components?.find((candidate) => candidate.componentId === "header");
-	if (!component) throw new Error("Host diagnostics has no storm header component");
+	const component = components?.find((candidate) => candidate.componentId === componentId);
+	if (!component) throw new Error(`Host diagnostics has no ${componentId} component`);
 	return component;
+}
+
+async function readStormDiagnostics(tui: StartedTui): Promise<StormComponentDiagnostics> {
+	return readComponentDiagnostics(tui, "header");
+}
+
+async function readOperations(tui: StartedTui): Promise<OperationRecord[]> {
+	const id = `operations-${Date.now()}`;
+	await tui.control.handle({
+		type: "request",
+		id,
+		request: { command: "list_operations", sessionPath: tui.sessionPath },
+	});
+	const response = tui.controlMessages.find(
+		(message) => message.type === "response" && message.id === id && message.ok,
+	);
+	if (!response || response.type !== "response" || !response.ok)
+		throw new Error("Host did not return operation journal");
+	return response.result as OperationRecord[];
 }
 
 function startProcessTreeSampling(pid: number) {
@@ -2497,10 +2524,23 @@ describe("Rust read-only TUI fd bridge", () => {
 							);
 						}, "fail-next control key did not execute");
 						tui.send("C-g");
-						await waitFor(
-							() => tui.pane().includes("Enter 提交") && !tui.pane().includes("mounts=3"),
-							"failing CustomEditor factory did not restore native Composer",
-						);
+						const editorUnmountsBeforeFactoryFailure = tui.serverMessages.filter(
+							(message) =>
+								message.type === "event" &&
+								message.event.type === "extension_component_unmount" &&
+								message.event.componentId === "editor",
+						).length;
+						await waitFor(async () => {
+							await tui.pump();
+							return (
+								tui.serverMessages.filter(
+									(message) =>
+										message.type === "event" &&
+										message.event.type === "extension_component_unmount" &&
+										message.event.componentId === "editor",
+								).length > editorUnmountsBeforeFactoryFailure
+							);
+						}, "failing CustomEditor factory did not unmount the active editor");
 
 						tui.resize(120, 36);
 						tui.resize(80, 8);
@@ -2532,9 +2572,25 @@ describe("Rust read-only TUI fd bridge", () => {
 		it("B completion-submission：内置命令、提交、steer、follow-up、abort 与重放", async () => {
 			const attempts = Number(process.env.LYSTAR_CUSTOM_EDITOR_ATTEMPTS ?? 2);
 			for (let attempt = 0; attempt < attempts; attempt++) {
-				const tui = await startTui(4, { width: 80, height: 24 }, `custom-editor-submission-${attempt + 1}`);
+				const tui = await startTui(
+					0,
+					{ width: 80, height: 24 },
+					`custom-editor-submission-${attempt + 1}`,
+					undefined,
+					{ nonBlockingPromptRequests: true },
+					async ({ directory }) => createCustomEditorContractRuntimeHost(directory),
+				);
 				try {
 					await waitForInitialPage(tui);
+					await waitFor(async () => {
+						await tui.pump();
+						return tui.serverMessages.some(
+							(message) =>
+								message.type === "event" &&
+								message.event.type === "extension_component_mount" &&
+								message.event.componentId === "editor",
+						);
+					}, "submission scenario did not mount the CustomEditor");
 					await waitFor(async () => {
 						await tui.pump();
 						return tui.serverMessages.some(
@@ -2542,48 +2598,131 @@ describe("Rust read-only TUI fd bridge", () => {
 						);
 					}, "submission scenario did not acquire a lease");
 
+					tui.send("C-c");
+					await waitFor(async () => {
+						await tui.pump();
+						return tui.serverMessages.some(
+							(message) =>
+								message.type === "event" &&
+								message.event.type === "extension_editor_action" &&
+								message.event.action.action === "set" &&
+								message.event.action.text === "",
+						);
+					}, "CustomEditor clear did not reach the Host");
+
 					tui.sendLiteral("/about");
 					tui.send("Enter");
 					await waitForRequest(tui, "get_about");
-					await waitFor(() => tui.pane().includes("productName"), "built-in slash command did not render");
 					tui.send("Escape");
-					await waitFor(() => tui.pane().includes("Enter 提交"), "built-in command did not return Composer focus");
 
+					tui.send("C-a");
+					await waitFor(async () => {
+						await tui.pump();
+						return tui.requests.some(
+							(request) => request.command === "extension_component_input" && request.data === "\u0001",
+						);
+					}, "CustomEditor deferred gate did not receive its raw control key");
+
+					const componentInputsBeforeIdle = tui.requests.filter(
+						(request) => request.command === "extension_component_input",
+					).length;
 					tui.sendLiteral("idle prompt");
 					tui.send("Enter");
 					await waitFor(async () => {
 						await tui.pump();
-						return tui.runtime.prompts.filter((text) => text === "idle prompt").length === 1;
-					}, "idle prompt did not reach Host exactly once");
-
-					tui.runtime.setRunning(true);
+						return (
+							tui.requests.filter((request) => request.command === "prompt").length === 1 &&
+							tui.requests.filter((request) => request.command === "extension_component_input").length >
+								componentInputsBeforeIdle
+						);
+					}, "idle prompt did not leave the CustomEditor exactly once");
+					const promptAccepted = tui.serverMessages.find(
+						(message) =>
+							message.type === "response" &&
+							message.id.startsWith("command-") &&
+							message.ok &&
+							(message.result as { operation?: { type?: string } }).operation?.type === "prompt",
+					);
+					assert.ok(promptAccepted && promptAccepted.type === "response" && promptAccepted.ok);
+					const operation = (promptAccepted.result as { operation: OperationRecord }).operation;
+					assert.equal(operation.status, "accepted");
+					const operationStatuses = () =>
+						tui.serverMessages.flatMap((message) =>
+							message.type === "event" &&
+							message.event.type === "operation_updated" &&
+							message.event.operation.operationId === operation.operationId
+								? [message.event.operation.status]
+								: [],
+						);
+					await waitFor(
+						() => operationStatuses().includes("running"),
+						"CustomEditor prompt did not publish a running operation update",
+					);
+					tui.send("C-c");
 					tui.sendLiteral("active steer");
 					tui.send("Enter");
 					await waitFor(async () => {
 						await tui.pump();
-						return tui.runtime.steers.filter((text) => text === "active steer").length === 1;
-					}, "active Enter did not send steer");
+						return tui.requests.filter((request) => request.command === "steer").length === 1;
+					}, "active Enter did not send one steer from the CustomEditor");
 					tui.sendLiteral("active follow-up");
 					tui.send("M-Enter");
 					await waitFor(async () => {
 						await tui.pump();
-						return tui.runtime.followUps.filter((text) => text === "active follow-up").length === 1;
-					}, "Alt+Enter did not send follow_up");
+						return tui.requests.filter((request) => request.command === "follow_up").length === 1;
+					}, "Alt+Enter did not send one follow_up from the CustomEditor");
 
-					tui.runtime.setRunning(false);
-					tui.runtime.holdPrompt = true;
-					tui.sendLiteral("abort prompt");
-					tui.send("Enter");
+					tui.send("C-t");
 					await waitFor(async () => {
 						await tui.pump();
-						return tui.runtime.prompts.filter((text) => text === "abort prompt").length === 1;
-					}, "abort prompt was not accepted");
-					tui.send("Escape");
-					await waitFor(async () => {
-						await tui.pump();
-						return tui.runtime.abortCount > 0;
-					}, "Esc did not abort the active operation");
-					tui.runtime.holdPrompt = false;
+						return tui.serverMessages.some(
+							(message) =>
+								message.type === "response" &&
+								message.id.startsWith("component-input-") &&
+								message.ok &&
+								(message.result as { appAction?: string }).appAction === "app.interrupt",
+						);
+					}, "CustomEditor Ctrl+T did not return app.interrupt from the Host");
+					let abortOperations: OperationRecord[] = [];
+					await waitFor(
+						async () => {
+							await tui.pump();
+							abortOperations = await readOperations(tui);
+							return abortOperations.some(
+								(candidate) =>
+									candidate.operationId === operation.operationId && candidate.status === "aborted",
+							);
+						},
+						() =>
+							`CustomEditor Escape did not abort the active real Runtime operation: ${JSON.stringify({
+								inputs: tui.requests
+									.filter((request) => request.command === "extension_component_input")
+									.map((request) => request.data),
+								operations: abortOperations.map((candidate) => ({
+									type: candidate.type,
+									status: candidate.status,
+								})),
+							})}`,
+					);
+					assert.equal(
+						tui.requests.filter(
+							(request) => request.command === "extension_component_input" && request.data === "\u0014",
+						).length,
+						1,
+						"CustomEditor interrupt did not use exactly one raw Ctrl+T input",
+					);
+					assert.equal(
+						tui.requests.filter((request) => request.command === "abort_operation").length,
+						1,
+						"CustomEditor app.interrupt did not send exactly one abort_operation",
+					);
+					assert.deepEqual(
+						[operation.status, ...operationStatuses()],
+						["accepted", "running", "aborted"],
+						"real Runtime journal did not settle accepted -> running -> aborted",
+					);
+					assert.equal(tui.requests.filter((request) => request.command === "steer").length, 1);
+					assert.equal(tui.requests.filter((request) => request.command === "follow_up").length, 1);
 
 					const acquire = tui.serverMessages.find(
 						(message) => message.type === "response" && message.id.startsWith("acquire-") && message.ok,
@@ -2606,8 +2745,11 @@ describe("Rust read-only TUI fd bridge", () => {
 					await tui.connection.handle(request);
 					await tui.connection.handle({ ...request, id: `${request.id}-retry` });
 					await waitFor(
-						() => tui.runtime.prompts.filter((text) => text === "response drop once").length === 1,
-						"response-drop retry duplicated the request",
+						async () =>
+							(await readOperations(tui)).filter(
+								(operation) => operation.clientRequestId === `response-drop-once-${attempt}`,
+							).length === 1,
+						"response-drop retry duplicated the real Runtime request",
 					);
 					assertCustomEditorArtifactSafe(tui.artifactDirectory);
 				} finally {

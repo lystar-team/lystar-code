@@ -1455,6 +1455,18 @@ impl AppState {
         let Some(submit) = self.pending_custom_editor_submits.remove(request_id) else {
             return;
         };
+        if submit.command == "prompt" {
+            self.operation = Some(OperationSnapshot {
+                operation_id: operation_id.clone(),
+                client_instance_id: submit.client_instance_id.clone(),
+                client_request_id: submit.client_request_id.clone(),
+                session_path: submit.session_path.clone(),
+                operation_type: submit.command.clone(),
+                status: "accepted".to_owned(),
+                progress: None,
+                error: None,
+            });
+        }
         self.acknowledge_submitted_attachments(&submit.attachments);
         self.accepted_custom_editor_submits
             .insert(operation_id, RecoveryDraft::from_submit(submit));
@@ -1928,8 +1940,26 @@ impl AppState {
         self.settle_custom_editor_operation(&operation.operation_id, &operation.status);
         let terminal = matches!(
             operation.status.as_str(),
-            "aborted" | "interrupted" | "failed"
+            "completed" | "aborted" | "interrupted" | "failed"
         );
+        let current_is_active = self.operation.as_ref().is_some_and(|current| {
+            matches!(
+                current.status.as_str(),
+                "accepted" | "running" | "waiting_for_input" | "aborting"
+            )
+        });
+        if self.operation.as_ref().is_some_and(|current| {
+            current.operation_id != operation.operation_id && current_is_active
+        }) {
+            return;
+        }
+        if self.operation.as_ref().is_some_and(|current| {
+            current.operation_id == operation.operation_id
+                && current.status == "aborting"
+                && !terminal
+        }) {
+            return;
+        }
         self.operation = Some(operation);
         if terminal {
             self.clear_transient();
@@ -4335,6 +4365,92 @@ mod tests {
         assert_eq!(app.current_overlay_action().as_deref(), Some("tree:1"));
         app.select_tree_visible(1, true);
         assert_eq!(app.current_overlay_action().as_deref(), Some("tree:1"));
+    }
+
+    #[test]
+    fn tracks_custom_editor_operation_from_acceptance_through_terminal_update() {
+        let mut app = AppState::default();
+        app.begin_active_session("/tmp/current.jsonl".to_owned(), "/tmp".to_owned());
+        app.begin_custom_editor_submit(
+            "accepted".to_owned(),
+            PendingCustomEditorSubmit {
+                command: "prompt".to_owned(),
+                session_path: "/tmp/current.jsonl".to_owned(),
+                session_generation: app.session_generation,
+                editor_component_generation: None,
+                lease_id: "lease".to_owned(),
+                client_instance_id: "client".to_owned(),
+                client_request_id: "request".to_owned(),
+                text: "草稿".to_owned(),
+                submit_revision: 0,
+                attachments: Vec::new(),
+                started_at: Instant::now(),
+                retry_count: 0,
+            },
+        );
+
+        app.acknowledge_custom_editor_submit("accepted", "operation-1".to_owned());
+        assert_eq!(
+            app.operation
+                .as_ref()
+                .map(|operation| operation.status.as_str()),
+            Some("accepted")
+        );
+        assert!(
+            app.accepted_custom_editor_submits
+                .contains_key("operation-1")
+        );
+
+        let operation = |status: &str| OperationSnapshot {
+            operation_id: "operation-1".to_owned(),
+            client_instance_id: "client".to_owned(),
+            client_request_id: "request".to_owned(),
+            session_path: "/tmp/current.jsonl".to_owned(),
+            operation_type: "prompt".to_owned(),
+            status: status.to_owned(),
+            progress: None,
+            error: None,
+        };
+        app.apply_operation(operation("running"));
+        assert_eq!(
+            app.operation
+                .as_ref()
+                .map(|operation| operation.status.as_str()),
+            Some("running")
+        );
+        assert!(
+            app.accepted_custom_editor_submits
+                .contains_key("operation-1")
+        );
+
+        app.apply_operation(OperationSnapshot {
+            operation_id: "steer-1".to_owned(),
+            client_instance_id: "client".to_owned(),
+            client_request_id: "steer-request".to_owned(),
+            session_path: "/tmp/current.jsonl".to_owned(),
+            operation_type: "steer".to_owned(),
+            status: "running".to_owned(),
+            progress: None,
+            error: None,
+        });
+        assert_eq!(
+            app.operation
+                .as_ref()
+                .map(|operation| operation.operation_id.as_str()),
+            Some("operation-1")
+        );
+
+        app.apply_operation(operation("aborted"));
+        assert_eq!(
+            app.operation
+                .as_ref()
+                .map(|operation| operation.status.as_str()),
+            Some("aborted")
+        );
+        assert!(
+            !app.accepted_custom_editor_submits
+                .contains_key("operation-1")
+        );
     }
 
     #[test]
