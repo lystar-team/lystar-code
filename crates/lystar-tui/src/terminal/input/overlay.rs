@@ -463,22 +463,7 @@ pub(in super::super) fn handle_overlay_key(
             if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                 && matches!(app.overlay(), Some(OverlayState::List(list)) if list.title == "会话") =>
         {
-            if app.is_active_operation() || session_flow.is_some() {
-                app.set_overlay_error("当前会话正在运行，不能切换");
-            } else {
-                *sequence += 1;
-                let id = format!("session-create-{sequence}");
-                *session_flow = Some(SessionFlow::CreateStarting {
-                    id: id.clone(),
-                    restore: app.restore_point(),
-                });
-                pipe.request(&encode_create_session_request(
-                    &id,
-                    session_path,
-                    client_instance_id,
-                    &format!("create:{sequence}"),
-                )?)?;
-            }
+            start_new_session(app, pipe, client_instance_id, sequence, session_flow)?;
         }
         KeyCode::Char('n')
             if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)

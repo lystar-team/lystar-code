@@ -1,5 +1,34 @@
 use super::*;
 
+pub(super) fn start_new_session(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    client_instance_id: &str,
+    sequence: &mut u64,
+    session_flow: &mut Option<SessionFlow>,
+) -> Result<(), TuiError> {
+    if app.is_active_operation() || session_flow.is_some() {
+        app.set_overlay_error("当前会话正在运行，不能新建");
+        return Ok(());
+    }
+    let Some(cwd) = app.active_session_cwd().filter(|cwd| !cwd.is_empty()) else {
+        app.set_overlay_error("尚未获取项目目录");
+        return Ok(());
+    };
+    *sequence += 1;
+    let id = format!("session-create-{sequence}");
+    *session_flow = Some(SessionFlow::CreateStarting {
+        id: id.clone(),
+        restore: app.restore_point(),
+    });
+    pipe.request(&encode_create_session_request(
+        &id,
+        cwd,
+        client_instance_id,
+        &format!("create:{sequence}"),
+    )?)
+}
+
 pub(super) fn release_active_session(
     app: &AppState,
     pipe: &mut ProtocolPipe,

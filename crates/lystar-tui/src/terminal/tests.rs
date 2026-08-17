@@ -343,6 +343,7 @@ fn intercepts_only_connected_slash_commands() {
         ("/help", "help"),
         (" /about ", "about"),
         ("/doctor", "doctor"),
+        ("/new", "new"),
         ("/settings", "settings"),
         ("/model", "model"),
         ("/thinking", "thinking"),
@@ -352,6 +353,76 @@ fn intercepts_only_connected_slash_commands() {
     }
     assert_eq!(builtin_slash_command("/about later"), None);
     assert_eq!(builtin_slash_command("/settings-now"), None);
+}
+
+#[test]
+fn new_command_uses_project_cwd_and_refuses_active_operations() {
+    let mut app = AppState::default();
+    app.begin_active_session(
+        "/tmp/sessions/current.jsonl".to_owned(),
+        "/work/project".to_owned(),
+    );
+    app.lease_id = Some("lease".to_owned());
+    app.editor.insert("/new");
+    let (mut pipe, path) = test_pipe_with_path();
+    let mut sequence = 0;
+    let mut session_flow = None;
+    submit_editor(
+        &mut app,
+        &mut pipe,
+        "/tmp/sessions/current.jsonl",
+        "client",
+        &mut sequence,
+        false,
+        &mut session_flow,
+    )
+    .unwrap();
+    drop(pipe);
+
+    let frames = FrameDecoder::default()
+        .push(&std::fs::read(&path).unwrap())
+        .unwrap();
+    let message = lystar_protocol::decode_client_message(&frames[0]).unwrap();
+    let request = serde_json::to_value(message.value()).unwrap();
+    assert_eq!(request["request"]["command"], "create_session");
+    assert_eq!(request["request"]["cwd"], "/work/project");
+    assert!(matches!(
+        session_flow,
+        Some(SessionFlow::CreateStarting { .. })
+    ));
+    std::fs::remove_file(path).unwrap();
+
+    app.operation = Some(lystar_protocol::OperationSnapshot {
+        operation_id: "operation".to_owned(),
+        client_instance_id: "client".to_owned(),
+        client_request_id: "request".to_owned(),
+        session_path: "/tmp/sessions/current.jsonl".to_owned(),
+        operation_type: "prompt".to_owned(),
+        status: "running".to_owned(),
+        progress: None,
+        error: None,
+    });
+    app.editor.insert("/new");
+    let (mut pipe, path) = test_pipe_with_path();
+    session_flow = None;
+    submit_editor(
+        &mut app,
+        &mut pipe,
+        "/tmp/sessions/current.jsonl",
+        "client",
+        &mut sequence,
+        false,
+        &mut session_flow,
+    )
+    .unwrap();
+    drop(pipe);
+    assert!(std::fs::read(&path).unwrap().is_empty());
+    assert!(session_flow.is_none());
+    assert_eq!(
+        app.overlay_error.as_deref(),
+        Some("当前会话正在运行，不能新建")
+    );
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]
