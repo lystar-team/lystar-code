@@ -2,6 +2,12 @@
 
 核验日期：2026-08-17。范围是 Linux x64 上真实 `CodingAgentRuntimeAdapter`、`runtime-contract-extension.ts`、GUI Host、Unix fd3/fd4 FIFO 与 Rust TUI。未调用外部 Provider。
 
+## CustomEditor 分场景收口
+
+`rust-tui-e2e.test.ts` 将原先的综合 CustomEditor 验收拆为 A/B/C 三个独立 `it`，每轮都重新创建临时 Session、FIFO、tmux socket 和 Host。`LYSTAR_CUSTOM_EDITOR_ATTEMPTS` 默认 `2`，开发时可设 `1`；粘贴长度默认 `5,000` 字符。A 覆盖草稿迁移、unmount/remount、stale callback、factory 失败回退原生 Composer、Unicode grapheme、多行、单次 bracketed paste、undo/redo、历史与 `80x8` resize；B 覆盖内置 `/about`、idle prompt、active steer、Alt+Enter follow-up、Esc abort 和 response-drop 重放恰好一次；C 分别以原生 Composer 验证真实 PNG `/attach` 与冻结重试，以 CustomEditor 验证 `Ctrl+V -> app.clipboard.pasteImage` 的 Host clipboard 图片附件。真实 `border-status-editor`、`modal-editor`、`rainbow-editor` 原例子仍各两轮运行。
+
+每一轮的 `finally` 会依次调用当前 Runtime `abort()`、`GuiHostService.dispose()`、关闭连接与协议 FIFO，并在 2 秒内确认 tmux session 退出、关闭剩余 FIFO descriptor、停止本轮 tmux server、核对 `stty` 前后相同。artifact 仅保存请求数量、长度和哈希等元数据；扫描拒绝草稿原文、base64 和典型凭据。
+
 ## Tier 状态
 
 | Tier | 状态 | 证据 |

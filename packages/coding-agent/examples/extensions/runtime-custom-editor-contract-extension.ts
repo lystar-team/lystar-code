@@ -41,7 +41,7 @@ class ContractEditor extends CustomEditor {
 			this.onControl("stale");
 			return;
 		}
-		if (data === "\u0016") {
+		if (data === "\u000b") {
 			this.onControl("fail-next");
 			return;
 		}
