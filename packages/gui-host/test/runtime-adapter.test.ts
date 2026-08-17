@@ -96,6 +96,62 @@ describe("CodingAgentRuntimeAdapter", () => {
 		]);
 	});
 
+	it("projects bash commands and output snapshots without JSON summaries", () => {
+		const start: Extract<AgentSessionEvent, { type: "tool_execution_start" }> = {
+			type: "tool_execution_start",
+			toolCallId: "bash-1",
+			toolName: "bash",
+			args: { command: "printf ready" },
+		};
+		const update: Extract<AgentSessionEvent, { type: "tool_execution_update" }> = {
+			type: "tool_execution_update",
+			toolCallId: "bash-1",
+			toolName: "bash",
+			args: { command: "printf ready" },
+			partialResult: { content: [{ type: "text", text: "first\nsecond" }] },
+		};
+		const end: Extract<AgentSessionEvent, { type: "tool_execution_end" }> = {
+			type: "tool_execution_end",
+			toolCallId: "bash-1",
+			toolName: "bash",
+			result: { content: [{ type: "text", text: "first\nsecond" }] },
+			isError: false,
+		};
+
+		expect(projectRuntimeProgress(start)).toEqual([
+			{ type: "tool_start", toolCallId: "bash-1", name: "bash", summary: "printf ready" },
+		]);
+		expect(projectRuntimeProgress(update)).toEqual([
+			{ type: "tool_update", toolCallId: "bash-1", name: "bash", summary: "first\nsecond" },
+		]);
+		expect(projectRuntimeProgress(end)).toEqual([
+			{ type: "tool_end", toolCallId: "bash-1", name: "bash", status: "success", summary: "first\nsecond" },
+		]);
+		expect(
+			projectRuntimeProgress({
+				...update,
+				partialResult: {
+					content: [{ type: "text", text: "tail" }],
+					details: { truncation: { truncated: true } },
+				},
+			}),
+		).toEqual([{ type: "tool_update", toolCallId: "bash-1", name: "bash", summary: "tail\n输出已截断" }]);
+
+		const bounded = projectRuntimeProgress({
+			...update,
+			partialResult: {
+				content: [{ type: "text", text: `${"x".repeat(16 * 1024)}😀` }],
+				details: { truncation: { truncated: true } },
+			},
+		});
+		expect(bounded).toHaveLength(1);
+		const summary = bounded[0]?.type === "tool_update" ? bounded[0].summary : "";
+		expect(summary.length).toBeLessThanOrEqual(16 * 1024);
+		expect(summary.endsWith("输出已截断")).toBe(true);
+		const firstCodeUnit = summary.charCodeAt(0);
+		expect(firstCodeUnit < 0xdc00 || firstCodeUnit > 0xdfff).toBe(true);
+	});
+
 	afterEach(async () => {
 		while (cleanups.length > 0) await cleanups.pop()?.();
 	});

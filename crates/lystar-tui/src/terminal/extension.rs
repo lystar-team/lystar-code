@@ -129,7 +129,7 @@ pub(super) fn apply_extension_editor_app_action(
                 session_flow,
             )?;
         }
-        "app.tools.expand" => app.transcript.toggle_current_tool(),
+        "app.tools.expand" => app.toggle_tool_expansion(),
         "extension_shortcut" => app.set_toast("扩展快捷键未处理"),
         "app.message.followUp" => {
             submit_custom_editor(

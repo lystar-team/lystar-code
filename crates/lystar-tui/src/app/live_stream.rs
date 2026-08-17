@@ -46,13 +46,15 @@ pub(super) fn streaming_tail_lines(
             push_stream_line(&mut lines, String::new(), Style::default(), max_lines);
         }
         for (_, tool) in state.live_tools.iter() {
-            push_stream_lines(
-                &mut lines,
-                &tool.display(),
-                width,
-                max_lines,
-                live_tool_style(tool.status),
-            );
+            for line in tool.display_lines() {
+                push_stream_lines(
+                    &mut lines,
+                    &line,
+                    width,
+                    max_lines,
+                    live_tool_style(tool.status),
+                );
+            }
         }
     }
     lines.into_iter().collect()

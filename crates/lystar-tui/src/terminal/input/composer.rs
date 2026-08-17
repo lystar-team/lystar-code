@@ -174,7 +174,7 @@ pub(in super::super) fn handle_key(
             )?;
         }
         KeyCode::Char('o') if modifiers.contains(KeyModifiers::CONTROL) => {
-            app.transcript.toggle_current_tool()
+            app.toggle_tool_expansion()
         }
         KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => app.editor.clear(),
         KeyCode::Char('z') if modifiers.contains(KeyModifiers::CONTROL) => app.editor.undo(),

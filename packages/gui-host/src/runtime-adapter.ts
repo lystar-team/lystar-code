@@ -634,6 +634,52 @@ function boundedStatus(value: unknown): string {
 	return text.length <= 1024 ? text : `${text.slice(0, 1021)}...`;
 }
 
+const MAX_BASH_PROGRESS_CHARS = 16 * 1024;
+const BASH_TRUNCATION_MARKER = "输出已截断";
+
+function tailWithoutSplittingSurrogate(value: string, maxChars: number): string {
+	let start = Math.max(0, value.length - maxChars);
+	if (
+		start > 0 &&
+		value.charCodeAt(start) >= 0xdc00 &&
+		value.charCodeAt(start) <= 0xdfff &&
+		value.charCodeAt(start - 1) >= 0xd800 &&
+		value.charCodeAt(start - 1) <= 0xdbff
+	) {
+		start++;
+	}
+	return value.slice(start);
+}
+
+function bashCommand(value: unknown): string | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const command = (value as { command?: unknown }).command;
+	return typeof command === "string" ? command : undefined;
+}
+
+function bashOutput(value: unknown): string | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const result = value as { content?: unknown; details?: unknown };
+	if (!Array.isArray(result.content)) return undefined;
+	const text = result.content
+		.filter(
+			(part): part is { type: unknown; text: string } =>
+				!!part &&
+				typeof part === "object" &&
+				(part as { type?: unknown }).type === "text" &&
+				typeof (part as { text?: unknown }).text === "string",
+		)
+		.map((part) => part.text)
+		.join("\n");
+	const coreTruncated =
+		!!result.details &&
+		typeof result.details === "object" &&
+		!!(result.details as { truncation?: { truncated?: unknown } }).truncation?.truncated;
+	if (!coreTruncated && text.length <= MAX_BASH_PROGRESS_CHARS) return text;
+	const output = tailWithoutSplittingSurrogate(text, MAX_BASH_PROGRESS_CHARS - BASH_TRUNCATION_MARKER.length - 1);
+	return `${output}\n${BASH_TRUNCATION_MARKER}`;
+}
+
 export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgress[] {
 	switch (event.type) {
 		case "message_update": {
@@ -656,6 +702,17 @@ export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgres
 			return updates;
 		}
 		case "tool_execution_start":
+			if (event.toolName === "bash") {
+				const command = bashCommand(event.args);
+				return [
+					{
+						type: "tool_start",
+						toolCallId: event.toolCallId,
+						name: event.toolName,
+						...(command === undefined ? {} : { summary: command }),
+					},
+				];
+			}
 			return [
 				{
 					type: "tool_start",
@@ -665,6 +722,16 @@ export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgres
 				},
 			];
 		case "tool_execution_update":
+			if (event.toolName === "bash") {
+				return [
+					{
+						type: "tool_update",
+						toolCallId: event.toolCallId,
+						name: event.toolName,
+						summary: bashOutput(event.partialResult) ?? "",
+					},
+				];
+			}
 			return [
 				{
 					type: "tool_update",
@@ -674,6 +741,17 @@ export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgres
 				},
 			];
 		case "tool_execution_end":
+			if (event.toolName === "bash") {
+				return [
+					{
+						type: "tool_end",
+						toolCallId: event.toolCallId,
+						name: event.toolName,
+						status: event.isError ? "error" : "success",
+						summary: bashOutput(event.result) ?? "",
+					},
+				];
+			}
 			return [
 				{
 					type: "tool_end",

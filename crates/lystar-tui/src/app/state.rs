@@ -514,6 +514,12 @@ impl AppState {
         }
     }
 
+    pub fn toggle_tool_expansion(&mut self) {
+        if !self.live_tools.toggle_bash_expansion() {
+            self.transcript.toggle_current_tool();
+        }
+    }
+
     pub fn clear_live_after_commit(&mut self, items: &[TranscriptItem]) {
         let mut committed_assistant = false;
         let mut committed_thinking = false;

@@ -1,5 +1,6 @@
 mod composer;
 mod extension;
+mod live_bash;
 mod live_stream;
 mod live_tools;
 mod overlay;
@@ -22,5 +23,7 @@ pub const ITEM_CACHE_LIMIT: usize = 800;
 pub const UTF8_CACHE_LIMIT: usize = 4 * 1024 * 1024;
 pub const WORKSPACE_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
+#[cfg(test)]
+mod bash_tests;
 #[cfg(test)]
 mod tests;
