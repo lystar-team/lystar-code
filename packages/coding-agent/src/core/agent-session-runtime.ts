@@ -64,6 +64,24 @@ function extractUserMessageText(content: string | Array<{ type: string; text?: s
 		.join("");
 }
 
+const DISPOSE_ABORT_SETTLE_TIMEOUT_MS = 2_000;
+
+async function abortBeforeDispose(session: AgentSession): Promise<void> {
+	await new Promise<void>((resolve) => {
+		const timer = setTimeout(resolve, DISPOSE_ABORT_SETTLE_TIMEOUT_MS);
+		void session.abort().then(
+			() => {
+				clearTimeout(timer);
+				resolve();
+			},
+			() => {
+				clearTimeout(timer);
+				resolve();
+			},
+		);
+	});
+}
+
 /**
  * Owns the current AgentSession plus its cwd-bound services.
  *
@@ -167,7 +185,7 @@ export class AgentSessionRuntime {
 	private async teardownCurrent(reason: SessionShutdownEvent["reason"], targetSessionFile?: string): Promise<void> {
 		// Settle any active response first so the aborted turn (including tool
 		// results) is persisted to the outgoing session before it is replaced.
-		await this.session.abort();
+		await abortBeforeDispose(this.session);
 		await emitSessionShutdownEvent(this.session.extensionRunner, {
 			type: "session_shutdown",
 			reason,
@@ -420,6 +438,7 @@ export class AgentSessionRuntime {
 	}
 
 	async dispose(): Promise<void> {
+		await abortBeforeDispose(this.session);
 		await emitSessionShutdownEvent(this.session.extensionRunner, {
 			type: "session_shutdown",
 			reason: "quit",

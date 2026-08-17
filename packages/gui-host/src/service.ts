@@ -607,14 +607,10 @@ export class GuiHostService {
 						generation: request.generation,
 						data: request.data,
 					},
-					run: async () => ({
-						accepted:
-							runtime.dispatchExtensionComponentInput?.(
-								request.componentId,
-								request.generation,
-								request.data,
-							) === true,
-					}),
+					run: async () =>
+						runtime.dispatchExtensionComponentInput?.(request.componentId, request.generation, request.data) ?? {
+							accepted: false,
+						},
 				});
 			}
 			case "extension_component_resize": {

@@ -99,7 +99,7 @@ class FakeRuntime implements RuntimeSession {
 	}
 	dispatchExtensionComponentInput() {
 		this.counts.extension_component_input = (this.counts.extension_component_input ?? 0) + 1;
-		return true;
+		return { accepted: true };
 	}
 	resizeExtensionComponents() {
 		this.counts.extension_component_resize = (this.counts.extension_component_resize ?? 0) + 1;

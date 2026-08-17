@@ -8335,6 +8335,11 @@
       "properties": {
         "accepted": {
           "type": "boolean"
+        },
+        "appAction": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
         }
       },
       "additionalProperties": false
@@ -8347,6 +8352,11 @@
       "properties": {
         "accepted": {
           "type": "boolean"
+        },
+        "appAction": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
         }
       },
       "additionalProperties": false
@@ -8359,6 +8369,11 @@
       "properties": {
         "accepted": {
           "type": "boolean"
+        },
+        "appAction": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
         }
       },
       "additionalProperties": false
@@ -8371,6 +8386,11 @@
       "properties": {
         "accepted": {
           "type": "boolean"
+        },
+        "appAction": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
         }
       },
       "additionalProperties": false
@@ -8383,6 +8403,11 @@
       "properties": {
         "accepted": {
           "type": "boolean"
+        },
+        "appAction": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
         }
       },
       "additionalProperties": false

@@ -1045,8 +1045,13 @@ class CoreRuntimeSession implements RuntimeSession {
 		return this.extensionUi.dispatchTerminalInput(data);
 	}
 
-	dispatchExtensionComponentInput(componentId: string, generation: number, data: string): boolean {
-		return this.extensionUi.dispatchComponentInput(componentId, generation, data) !== undefined;
+	dispatchExtensionComponentInput(
+		componentId: string,
+		generation: number,
+		data: string,
+	): { accepted: boolean; appAction?: string } {
+		const result = this.extensionUi.dispatchComponentInput(componentId, generation, data);
+		return result ? { accepted: true, ...result } : { accepted: false };
 	}
 
 	resizeExtensionComponents(width: number, height: number): boolean {

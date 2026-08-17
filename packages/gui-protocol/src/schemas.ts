@@ -872,7 +872,10 @@ const ExtensionComponentUnmountReasonSchema = Type.Union([
 	Type.Literal("done"),
 	Type.Literal("cancel"),
 ]);
-const ExtensionComponentResultSchema = StrictObject({ accepted: Type.Boolean() });
+const ExtensionComponentResultSchema = StrictObject({
+	accepted: Type.Boolean(),
+	appAction: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+});
 const ExtensionUiDeltaSchema = StrictObject({
 	revision: Type.Integer({ minimum: 0 }),
 	statuses: Type.Optional(Type.Array(ExtensionUiStatusSchema, { maxItems: 128 })),

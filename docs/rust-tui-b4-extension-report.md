@@ -1,6 +1,6 @@
 # Rust TUI B4 Extension Component Bridge 核验
 
-核验日期：2026-08-16。范围是 Linux x64 上真实 `CodingAgentRuntimeAdapter`、`runtime-contract-extension.ts`、GUI Host、Unix fd3/fd4 FIFO 与 Rust TUI。未调用外部 Provider。
+核验日期：2026-08-17。范围是 Linux x64 上真实 `CodingAgentRuntimeAdapter`、`runtime-contract-extension.ts`、GUI Host、Unix fd3/fd4 FIFO 与 Rust TUI。未调用外部 Provider。
 
 ## Tier 状态
 
@@ -9,6 +9,18 @@
 | Tier 0：状态、widget、terminal listener | 已验收 | 既有真实 Runtime Adapter E2E 与 Host 单测持续通过。 |
 | Tier 1：Extension Component bridge | 已验收 | 两轮真实 Rust E2E 覆盖 mount/frame、header/footer、above/below widget、custom overlay、键盘 raw input、resize、hide/show、done、Esc cancel 与 replace。 |
 | Tier 2：跨平台、真实 Provider、图片终端 | 未验收 | 本轮未做 Windows named pipe、Kitty/iTerm2 实机或外部 Provider 验证。 |
+
+## CustomEditor 交互与释放
+
+`extension_component_input` 的响应现在可携带可选 `appAction`。Host 在同步调用 active editor 的 `handleInput()` 期间捕获 `CustomEditor` 触发的 app action，并将它随同本次 `{ accepted: true }` 响应返回；不会再额外发布同一动作的异步 event。Rust 只有收到该响应的 `app.interrupt` 时才执行中断。若有 Rust overlay，键盘分发仍先处理 overlay；component input 超时才对 active editor 使用本地 raw key fallback。
+
+`raw_key()` 保留 Alt+Enter 为 `\x1b\r`，timeout fallback 可恢复 Ctrl+D 和 Ctrl 字母控制序列，避免 Rust 在正常 bridge 路径抢先处理 editor key。`extension-ui-bridge.test.ts` 覆盖同步 `app.interrupt` result 且断言不重复发 event；`lystar-tui` 单元覆盖 Alt+Enter 与 Ctrl+D 原始序列。
+
+`AgentSessionRuntime` 在 `dispose()` 和 session replacement 的 teardown 都会先请求 abort，并最多等待 2 秒后继续 shutdown、invalidate 和资源释放。这个边界处理的是未结束 faux stream 让 `RuntimeAdapter.dispose()` 无限等待的问题，不依赖放宽 E2E timeout。
+
+`rust-tui-e2e.test.ts` 的 `通过 tmux/FIFO 两轮加载真实 Pi custom Editor examples` 对 `border-status-editor`、`modal-editor`、`rainbow-editor` 各运行两轮，使用真实原 example module 和真实 `CustomEditor` 基类。每轮确认 session-start draft 与 editor frame 挂载，并在 EOF 后确认不再 apply editor frame。该组 artifact 关闭 `terminal-output.raw`，仅写 example/round/frame count 元数据；测试扫描 artifact，拒绝编辑器全文、base64 和典型凭据模式。
+
+本轮没有运行 CustomEditor 性能基准；下方既有 Component storm 基准记录不代表本轮的 CustomEditor latency 结论。
 
 ## 真实 Component E2E
 

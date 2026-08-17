@@ -120,6 +120,36 @@ describe("ExtensionUiBridge", () => {
 		);
 	});
 
+	it("returns editor app actions in the current component input response", () => {
+		const events: ExtensionUiBridgeEvent[] = [];
+		const bridge = new ExtensionUiBridge(
+			async () => ({ cancelled: true }),
+			(event) => events.push(event),
+			() => {},
+		);
+		let onEscape: (() => void) | undefined;
+		bridge.context().setEditorComponent(() => ({
+			render: () => ["editor"],
+			invalidate: () => {},
+			handleInput: (data: string) => {
+				if (data === "\u001b") onEscape?.();
+			},
+			get onEscape() {
+				return onEscape;
+			},
+			set onEscape(handler) {
+				onEscape = handler;
+			},
+		}));
+		const mount = events.find((event) => event.type === "component_mount" && event.placement === "editor");
+		if (!mount || mount.type !== "component_mount") throw new Error("editor did not mount");
+
+		expect(bridge.dispatchComponentInput(mount.componentId, mount.generation, "\u001b")).toEqual({
+			appAction: "app.interrupt",
+		});
+		expect(events.some((event) => event.type === "editor_app_action")).toBe(false);
+	});
+
 	it("mounts custom editors with the mirrored draft and restores native text after unmount", () => {
 		const events: ExtensionUiBridgeEvent[] = [];
 		const bridge = new ExtensionUiBridge(

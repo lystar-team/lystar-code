@@ -432,6 +432,8 @@ export class ExtensionUiBridge {
 	private title: string | null = null;
 	private editorText = "";
 	private editorGeneration = 0;
+	private componentInputActive = false;
+	private componentInputAppAction?: string;
 	private editorComponentId: string | undefined;
 	private editorFactory: EditorFactory | undefined;
 	private readonly editorBindings = new WeakMap<EditorComponent, EditorBindings>();
@@ -589,17 +591,22 @@ export class ExtensionUiBridge {
 		return next === data ? { consume: false } : { consume: false, data: next };
 	}
 
-	dispatchComponentInput(componentId: string, generation: number, data: string): HeadlessFrame | undefined {
+	dispatchComponentInput(componentId: string, generation: number, data: string): { appAction?: string } | undefined {
 		const mount = this.components.get(componentId);
 		if (!mount || mount.generation !== generation || !mount.visible) return undefined;
+		this.componentInputActive = mount.placement === "editor";
+		this.componentInputAppAction = undefined;
 		try {
 			const frame = mount.adapter.input(boundedRawInput(data));
 			this.publishComponentFrame(mount, frame);
-			return frame;
+			return this.componentInputAppAction ? { appAction: this.componentInputAppAction } : {};
 		} catch (error) {
 			this.unmount(componentId, "error");
 			this.reportException("component_input", error);
 			return undefined;
+		} finally {
+			this.componentInputActive = false;
+			this.componentInputAppAction = undefined;
 		}
 	}
 
@@ -862,6 +869,10 @@ export class ExtensionUiBridge {
 
 	private publishEditorAppAction(action: string, data?: string): void {
 		if (this.disposed) return;
+		if (this.componentInputActive) {
+			this.componentInputAppAction = action;
+			return;
+		}
 		this.revision++;
 		this.publish({
 			type: "editor_app_action",

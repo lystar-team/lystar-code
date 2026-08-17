@@ -1294,7 +1294,27 @@ fn run_session(
         }
         for id in app.timed_out_component_inputs(EXTENSION_INPUT_TIMEOUT) {
             if let Some(pending) = app.take_component_input(&id) {
-                app.set_toast("组件输入 bridge 超时，可按 Esc 取消");
+                if app.active_extension_editor().is_some_and(|component| {
+                    component.component_id == pending.component_id
+                        && component.generation == pending.generation
+                }) {
+                    app.set_toast("编辑器输入 bridge 超时，已回退本地输入");
+                    let active_path = app.active_session_path().unwrap_or(session_path).to_owned();
+                    if apply_extension_raw_input(
+                        &mut app,
+                        &pending.data,
+                        pipe,
+                        &active_path,
+                        client_instance_id,
+                        &mut request_sequence,
+                        &mut session_flow,
+                        &mut quit_requested,
+                    )? {
+                        quit_requested = true;
+                    }
+                } else {
+                    app.set_toast("组件输入 bridge 超时，可按 Esc 取消");
+                }
                 trace_id("component_input_timeout", &pending.component_id);
                 state_changed = true;
             }
@@ -1737,6 +1757,7 @@ fn raw_key(code: KeyCode, modifiers: KeyModifiers) -> Option<String> {
         {
             character.to_string()
         }
+        KeyCode::Enter if modifiers.contains(KeyModifiers::ALT) => "\x1b\r".to_owned(),
         KeyCode::Enter => "\r".to_owned(),
         KeyCode::Tab => "\t".to_owned(),
         KeyCode::Backspace => "\x7f".to_owned(),
@@ -1781,6 +1802,77 @@ fn raw_mouse(kind: MouseEventKind, column: u16, row: u16) -> Option<String> {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn apply_extension_editor_app_action(
+    app: &mut AppState,
+    action: &str,
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    client_instance_id: &str,
+    sequence: &mut u64,
+    session_flow: &mut Option<SessionFlow>,
+    quit_requested: &mut bool,
+) -> Result<(), TuiError> {
+    let active_path = app.active_session_path().unwrap_or(session_path).to_owned();
+    match action {
+        "app.interrupt" => {
+            handle_key(
+                app,
+                KeyCode::Esc,
+                KeyModifiers::NONE,
+                pipe,
+                session_path,
+                client_instance_id,
+                sequence,
+                session_flow,
+                quit_requested,
+            )?;
+        }
+        "app.clear" => app.editor.clear(),
+        "app.exit" => *quit_requested = true,
+        "app.clipboard.pasteImage" => {
+            request_clipboard_both(app, pipe, sequence, ClipboardReadTarget::Insert)?;
+        }
+        "app.model.cycleForward" | "app.model.cycleBackward" | "app.model.select" => {
+            open_workbench(
+                app,
+                "model",
+                pipe,
+                &active_path,
+                client_instance_id,
+                sequence,
+                session_flow,
+            )?;
+        }
+        "app.thinking.cycle" | "app.thinking.toggle" => {
+            open_workbench(
+                app,
+                "thinking",
+                pipe,
+                &active_path,
+                client_instance_id,
+                sequence,
+                session_flow,
+            )?;
+        }
+        "app.tools.expand" => app.transcript.toggle_current_tool(),
+        "extension_shortcut" => app.set_toast("扩展快捷键未处理"),
+        "app.message.followUp" => {
+            submit_custom_editor(
+                app,
+                pipe,
+                &active_path,
+                client_instance_id,
+                sequence,
+                true,
+                session_flow,
+            )?;
+        }
+        _ => app.set_toast("自定义编辑器动作已接收"),
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn apply_extension_raw_input(
     app: &mut AppState,
     data: &str,
@@ -1811,7 +1903,28 @@ fn apply_extension_raw_input(
         "\x1b[F" => (KeyCode::End, KeyModifiers::NONE),
         "\x1b[5~" => (KeyCode::PageUp, KeyModifiers::NONE),
         "\x1b[6~" => (KeyCode::PageDown, KeyModifiers::NONE),
-        "\x1b[3~" => (KeyCode::Delete, KeyModifiers::NONE),
+        "\x04" => {
+            if app.editor.is_empty() {
+                return handle_key(
+                    app,
+                    KeyCode::Char('q'),
+                    KeyModifiers::NONE,
+                    pipe,
+                    session_path,
+                    client_instance_id,
+                    sequence,
+                    session_flow,
+                    quit_requested,
+                );
+            }
+            app.editor.delete();
+            return Ok(false);
+        }
+        "\x1b\r" => (KeyCode::Enter, KeyModifiers::ALT),
+        value if value.len() == 1 && (1..=26).contains(&value.as_bytes()[0]) => (
+            KeyCode::Char((b'a' + value.as_bytes()[0] - 1) as char),
+            KeyModifiers::CONTROL,
+        ),
         value if value.chars().count() == 1 => {
             let character = value.chars().next().unwrap_or_default();
             if character.is_ascii_control() {
@@ -6133,69 +6246,16 @@ fn apply_server_message(
                         .get("action")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or_default();
-                    match name {
-                        "app.interrupt" => {
-                            handle_key(
-                                app,
-                                KeyCode::Esc,
-                                KeyModifiers::NONE,
-                                pipe,
-                                session_path,
-                                client_instance_id,
-                                sequence,
-                                session_flow,
-                                quit_requested,
-                            )?;
-                        }
-                        "app.clear" => app.editor.clear(),
-                        "app.exit" => *quit_requested = true,
-                        "app.clipboard.pasteImage" => {
-                            request_clipboard_both(
-                                app,
-                                pipe,
-                                sequence,
-                                ClipboardReadTarget::Insert,
-                            )?;
-                        }
-                        "app.model.cycleForward"
-                        | "app.model.cycleBackward"
-                        | "app.model.select" => {
-                            open_workbench(
-                                app,
-                                "model",
-                                pipe,
-                                &active_path,
-                                client_instance_id,
-                                sequence,
-                                session_flow,
-                            )?;
-                        }
-                        "app.thinking.cycle" | "app.thinking.toggle" => {
-                            open_workbench(
-                                app,
-                                "thinking",
-                                pipe,
-                                &active_path,
-                                client_instance_id,
-                                sequence,
-                                session_flow,
-                            )?;
-                        }
-                        "app.tools.expand" => app.transcript.toggle_current_tool(),
-                        "extension_shortcut" => app.set_toast("扩展快捷键未处理"),
-                        "app.message.followUp" => {
-                            submit_custom_editor(
-                                app,
-                                pipe,
-                                &active_path,
-                                client_instance_id,
-                                sequence,
-                                true,
-                                session_flow,
-                            )?;
-                        }
-                        _ => app.set_toast("自定义编辑器动作已接收"),
-                    }
+                    apply_extension_editor_app_action(
+                        app,
+                        name,
+                        pipe,
+                        session_path,
+                        client_instance_id,
+                        sequence,
+                        session_flow,
+                        quit_requested,
+                    )?;
                     return Ok(false);
                 }
                 Some("extension_editor_action") => {
@@ -6247,6 +6307,22 @@ fn apply_server_message(
             }
         } else {
             trace_id("component_input_accepted", &pending.component_id);
+            if let Some(action) = raw
+                .get("result")
+                .and_then(|result| result.get("appAction"))
+                .and_then(serde_json::Value::as_str)
+            {
+                apply_extension_editor_app_action(
+                    app,
+                    action,
+                    pipe,
+                    session_path,
+                    client_instance_id,
+                    sequence,
+                    session_flow,
+                    quit_requested,
+                )?;
+            }
         }
         return Ok(false);
     }
@@ -9320,6 +9396,18 @@ mod tests {
         let output = std::fs::File::create(path).unwrap();
         let (_sender, inbound) = mpsc::sync_channel(1);
         ProtocolPipe { output, inbound }
+    }
+
+    #[test]
+    fn preserves_custom_editor_alt_enter_and_control_sequences() {
+        assert_eq!(
+            raw_key(KeyCode::Enter, KeyModifiers::ALT),
+            Some("\x1b\r".to_owned())
+        );
+        assert_eq!(
+            raw_key(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            Some("\x04".to_owned())
+        );
     }
 
     #[test]

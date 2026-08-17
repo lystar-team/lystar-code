@@ -89,7 +89,11 @@ export interface RuntimeSession {
 	getExtensionComponentDiagnostics?(): JsonValue;
 	updateExtensionEditorState?(text: string, generation: number): number;
 	dispatchExtensionTerminalInput?(data: string): Promise<ExtensionTerminalInputResult>;
-	dispatchExtensionComponentInput?(componentId: string, generation: number, data: string): boolean;
+	dispatchExtensionComponentInput?(
+		componentId: string,
+		generation: number,
+		data: string,
+	): { accepted: boolean; appAction?: string };
 	resizeExtensionComponents?(width: number, height: number): boolean;
 	disposeExtensionComponent?(componentId: string, generation: number): boolean;
 	completeExtensionCustom?(

@@ -1172,6 +1172,19 @@ async function openSubagents(tui: StartedTui): Promise<void> {
 	await waitFor(() => tui.pane().includes("fixture-running"), "Subagent list did not render");
 }
 
+function assertCustomEditorArtifactSafe(artifactDirectory: string): void {
+	for (const name of readdirSync(artifactDirectory)) {
+		const path = join(artifactDirectory, name);
+		const contents = readFileSync(path, "utf8");
+		assert.doesNotMatch(contents, /预置草稿|命令草稿|ultrathink/i, `artifact contains editor text: ${name}`);
+		assert.doesNotMatch(
+			contents,
+			/base64|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]+ KEY-----/i,
+			`artifact contains sensitive data: ${name}`,
+		);
+	}
+}
+
 interface RequestRecord {
 	id: string;
 	command: string;
@@ -1224,7 +1237,11 @@ async function startTui(
 	dimensions: { width: number; height: number },
 	label: string,
 	hostFactory?: (context: { directory: string; sessionPath: string }) => WorkbenchFixture,
-	runOptions: { mode?: "auto" | "fullscreen" | "regular"; exitOutput?: "transcript" | "resume-hint" } = {},
+	runOptions: {
+		mode?: "auto" | "fullscreen" | "regular";
+		exitOutput?: "transcript" | "resume-hint";
+		captureRawOutput?: boolean;
+	} = {},
 	runtimeHostFactory?: (context: { directory: string }) => Promise<RealRuntimeHost>,
 ): Promise<StartedTui> {
 	if (!releaseTuiBuilt) {
@@ -1273,7 +1290,9 @@ async function startTui(
 		String(dimensions.height),
 		command,
 	]);
-	run("tmux", ["-L", socket, "pipe-pane", "-o", "-t", "tui", `cat > ${shellQuote(rawOutputPath)}`]);
+	if (runOptions.captureRawOutput !== false) {
+		run("tmux", ["-L", socket, "pipe-pane", "-o", "-t", "tui", `cat > ${shellQuote(rawOutputPath)}`]);
+	}
 	closeDescriptor(incomingReader);
 	closeDescriptor(outgoingWriter);
 
@@ -2117,7 +2136,7 @@ describe("Rust read-only TUI fd bridge", () => {
 					{ width: 80, height: 24 },
 					`custom-editor-${example}-${attempt + 1}`,
 					undefined,
-					{},
+					{ captureRawOutput: false },
 					async ({ directory }) => createCustomEditorRuntimeHost(directory, example),
 				);
 				try {
@@ -2141,7 +2160,6 @@ describe("Rust read-only TUI fd bridge", () => {
 						`${example} did not render its original editor frame`,
 					);
 
-					writeFileSync(join(tui.artifactDirectory, `${example}-screen.txt`), tui.pane());
 					const framesBeforeDispose = tui
 						.traces()
 						.filter(
@@ -2162,6 +2180,11 @@ describe("Rust read-only TUI fd bridge", () => {
 						framesBeforeDispose,
 						`${example} produced an editor frame after disposal`,
 					);
+					writeFileSync(
+						join(tui.artifactDirectory, "result.json"),
+						`${JSON.stringify({ example, attempt, editorFramesBeforeDispose: framesBeforeDispose })}\n`,
+					);
+					assertCustomEditorArtifactSafe(tui.artifactDirectory);
 				} finally {
 					tui.closeProtocol();
 				}
