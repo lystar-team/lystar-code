@@ -60,6 +60,10 @@ class ContractEditor extends CustomEditor {
 	}
 
 	handleInput(data: string): void {
+		if (data === "\u0006") {
+			this.onControl("animate");
+			return;
+		}
 		if (data === "\u0019") {
 			this.onControl("interrupt");
 			return;
@@ -112,6 +116,10 @@ class ContractEditor extends CustomEditor {
 
 	render(width: number): string[] {
 		return [`contract-animation=${this.animationFrame}`, ...super.render(width)];
+	}
+
+	getFinalState(): number {
+		return this.animationFrame;
 	}
 
 	dispose(): void {

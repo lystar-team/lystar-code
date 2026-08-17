@@ -1,7 +1,7 @@
 use std::fs;
 
 use lystar_protocol::{
-    B3Command, FieldPresence, FrameDecoder, decode_client_message, decode_server_message,
+    FieldPresence, FrameDecoder, WorkspaceCommand, decode_client_message, decode_server_message,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -16,8 +16,8 @@ struct Fixture {
     name: String,
     direction: String,
     message: Value,
-    #[serde(rename = "b3Command")]
-    b3_command: Option<String>,
+    #[serde(rename = "workspaceCommand")]
+    workspace_command: Option<String>,
     presence: Option<Presence>,
 }
 
@@ -55,17 +55,17 @@ fn typescript_and_rust_frames_match_the_shared_semantic_matrix() {
                     "Rust client fixture {}",
                     fixture.name
                 );
-                if let Some(command) = fixture.b3_command.as_deref() {
+                if let Some(command) = fixture.workspace_command.as_deref() {
                     assert_eq!(
-                        typescript.b3_command(),
-                        B3Command::from_wire(command),
-                        "TS client B3 fixture {}",
+                        typescript.workspace_command(),
+                        WorkspaceCommand::from_wire(command),
+                        "TS client Workspace fixture {}",
                         fixture.name
                     );
                     assert_eq!(
-                        rust.b3_command(),
-                        B3Command::from_wire(command),
-                        "Rust client B3 fixture {}",
+                        rust.workspace_command(),
+                        WorkspaceCommand::from_wire(command),
+                        "Rust client Workspace fixture {}",
                         fixture.name
                     );
                 }
@@ -89,16 +89,19 @@ fn typescript_and_rust_frames_match_the_shared_semantic_matrix() {
                     "Rust server fixture {}",
                     fixture.name
                 );
-                if let Some(command) = fixture.b3_command.as_deref().and_then(B3Command::from_wire)
+                if let Some(command) = fixture
+                    .workspace_command
+                    .as_deref()
+                    .and_then(WorkspaceCommand::from_wire)
                 {
                     assert!(
-                        typescript.decode_b3_result(command).is_ok(),
-                        "TS B3 fixture {}",
+                        typescript.decode_workspace_result(command).is_ok(),
+                        "TS Workspace fixture {}",
                         fixture.name
                     );
                     assert!(
-                        rust.decode_b3_result(command).is_ok(),
-                        "Rust B3 fixture {}",
+                        rust.decode_workspace_result(command).is_ok(),
+                        "Rust Workspace fixture {}",
                         fixture.name
                     );
                 }

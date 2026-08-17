@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { ExtensionUiBridge, type ExtensionUiBridgeEvent } from "../src/extension-ui-bridge.ts";
 
@@ -150,29 +151,45 @@ describe("ExtensionUiBridge", () => {
 		expect(events.some((event) => event.type === "editor_app_action")).toBe(false);
 	});
 
-	it("records bounded editor input diagnostics without retaining input text", () => {
+	it("records observed editor bytes and hash without retaining input text", () => {
 		const events: ExtensionUiBridgeEvent[] = [];
 		const bridge = new ExtensionUiBridge(
 			async () => ({ cancelled: true }),
 			(event) => events.push(event),
 			() => {},
 		);
+		let text = "mounted";
 		bridge.context().setEditorComponent(() => ({
 			render: () => ["editor"],
 			invalidate: () => {},
-			handleInput: () => {},
+			getText: () => text,
+			handleInput: (data: string) => {
+				text = `${text}:${data}`;
+			},
 		}));
 		const mount = events.find((event) => event.type === "component_mount" && event.placement === "editor");
 		if (!mount || mount.type !== "component_mount") throw new Error("editor did not mount");
+		const mounted = bridge
+			.getComponentDiagnostics()
+			.components.find((item) => item.componentId === mount.componentId);
+		expect(mounted).toMatchObject({
+			editorTextBytes: Buffer.byteLength("mounted", "utf8"),
+			editorTextHash: createHash("sha256").update("mounted").digest("hex"),
+		});
 
 		expect(bridge.dispatchComponentInput(mount.componentId, mount.generation, "secret input")).toEqual({});
 		const diagnostic = bridge
 			.getComponentDiagnostics()
 			.components.find((item) => item.componentId === mount.componentId);
+		const observed = "mounted:secret input";
 		expect(diagnostic?.inputs).toEqual([
 			expect.objectContaining({ revision: expect.any(Number), bytes: Buffer.byteLength("secret input", "utf8") }),
 		]);
-		expect(JSON.stringify(diagnostic)).not.toContain("secret input");
+		expect(diagnostic).toMatchObject({
+			editorTextBytes: Buffer.byteLength(observed, "utf8"),
+			editorTextHash: createHash("sha256").update(observed).digest("hex"),
+		});
+		expect(JSON.stringify(bridge.getComponentDiagnostics())).not.toContain("secret input");
 	});
 
 	it("mirrors editor text changed by completion input without onChange", () => {

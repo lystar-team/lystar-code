@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
-	B3CommandResultSchemas,
+	WorkspaceCommandResultSchemas,
 	ClientMessageSchema,
 	JsonValueSchema,
 	ServerMessageSchema,
@@ -39,8 +39,8 @@ const schema = {
 			{ $ref: "#/$defs/ServerSessionProgress" },
 		),
 		...Object.fromEntries(
-			Object.entries(B3CommandResultSchemas).map(([command, result]) => [
-				`B3${command.replace(/(^|_)([a-z])/g, (_, __, character) => character.toUpperCase())}Result`,
+			Object.entries(WorkspaceCommandResultSchemas).map(([command, result]) => [
+				`Workspace${command.replace(/(^|_)([a-z])/g, (_, __, character) => character.toUpperCase())}Result`,
 				normalizeJsonValueReferences(result),
 			]),
 		),

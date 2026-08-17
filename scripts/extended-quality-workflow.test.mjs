@@ -16,6 +16,7 @@ test("extended quality workflow keeps live suites manual and non-live suites sch
 		"stress",
 		"rust-benchmark",
 		"rust-component-benchmark",
+		"rust-custom-editor-benchmark",
 		"non-live-all",
 	]);
 	assert.equal(parsed.on.schedule.length, 1);
@@ -59,5 +60,13 @@ test("extended quality workflow keeps live suites manual and non-live suites sch
 	assert.equal(rustJob.steps.find((step) => step.name === "Restore Rust dependencies").id, "cargo-cache");
 	assert.match(rustJob.steps.find((step) => step.name.includes("summary")).run, /--cache-hit "cargo=\$\{\{ steps\.cargo-cache\.outputs\.cache-hit \|\| 'unavailable' \}\}"/);
 	assert.match(JSON.stringify(rustJob.steps.find((step) => step.name === "Upload Rust benchmark report").with.path), /rust-benchmark-metrics\.json/);
+	const customEditorJob = parsed.jobs["rust-custom-editor-benchmark"];
+	assert.match(customEditorJob.if, /workflow_dispatch/);
+	assert.match(customEditorJob.if, /rust-custom-editor-benchmark/);
+	assert.match(JSON.stringify(customEditorJob.steps), /benchmark:rust-custom-editor/);
+	assert.match(
+		JSON.stringify(customEditorJob.steps.find((step) => step.name === "Upload Rust CustomEditor benchmark artifact").with.path),
+		/rust-tui-custom-editor/,
+	);
 	assert.match(workflow, /RUST_VERSION: 1\.97\.1/);
 });

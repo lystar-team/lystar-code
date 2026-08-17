@@ -13,14 +13,14 @@ export type ClientGoldenFixture = {
 	name: string;
 	direction: "client";
 	message: ClientMessage;
-	b3Command?: string;
+	workspaceCommand?: string;
 	presence?: GoldenPresence;
 };
 export type ServerGoldenFixture = {
 	name: string;
 	direction: "server";
 	message: ServerMessage;
-	b3Command?: string;
+	workspaceCommand?: string;
 	presence?: GoldenPresence;
 };
 export type GoldenFixture = ClientGoldenFixture | ServerGoldenFixture;
@@ -44,15 +44,15 @@ export const goldenFixtures: GoldenFixture[] = (parsed as { fixtures: unknown[] 
 		throw new Error(`Fixture ${fixture.name} has an invalid direction`);
 	}
 	const presence = parsePresence(fixture.presence, fixture.name);
-	if (fixture.b3Command !== undefined && typeof fixture.b3Command !== "string") {
-		throw new Error(`Fixture ${fixture.name} has an invalid B3 command`);
+	if (fixture.workspaceCommand !== undefined && typeof fixture.workspaceCommand !== "string") {
+		throw new Error(`Fixture ${fixture.name} has an invalid Workspace command`);
 	}
 	if (fixture.direction === "client") {
 		return {
 			name: fixture.name,
 			direction: "client",
 			message: parseClientMessage(fixture.message),
-			...(typeof fixture.b3Command === "string" ? { b3Command: fixture.b3Command } : {}),
+			...(typeof fixture.workspaceCommand === "string" ? { workspaceCommand: fixture.workspaceCommand } : {}),
 			...(presence ? { presence } : {}),
 		};
 	}
@@ -60,7 +60,7 @@ export const goldenFixtures: GoldenFixture[] = (parsed as { fixtures: unknown[] 
 		name: fixture.name,
 		direction: "server",
 		message: parseServerMessage(fixture.message),
-		...(typeof fixture.b3Command === "string" ? { b3Command: fixture.b3Command } : {}),
+		...(typeof fixture.workspaceCommand === "string" ? { workspaceCommand: fixture.workspaceCommand } : {}),
 		...(presence ? { presence } : {}),
 	};
 });

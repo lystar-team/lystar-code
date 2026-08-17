@@ -3062,7 +3062,7 @@
                   },
                   {
                     "type": "string",
-                    "const": "rust-workspace-b3"
+                    "const": "workspace-api"
                   },
                   {
                     "type": "string",
@@ -5010,7 +5010,7 @@
         }
       ]
     },
-    "B3ListSkillsResult": {
+    "WorkspaceListSkillsResult": {
       "type": "object",
       "required": [
         "skills",
@@ -5106,7 +5106,7 @@
       },
       "additionalProperties": false
     },
-    "B3SetSkillEnabledResult": {
+    "WorkspaceSetSkillEnabledResult": {
       "type": "object",
       "required": [
         "skills",
@@ -5202,7 +5202,7 @@
       },
       "additionalProperties": false
     },
-    "B3ListProjectInstructionsResult": {
+    "WorkspaceListProjectInstructionsResult": {
       "type": "array",
       "items": {
         "type": "object",
@@ -5244,7 +5244,7 @@
       },
       "maxItems": 32
     },
-    "B3SaveProjectInstructionResult": {
+    "WorkspaceSaveProjectInstructionResult": {
       "type": "array",
       "items": {
         "type": "object",
@@ -5286,7 +5286,7 @@
       },
       "maxItems": 32
     },
-    "B3ListHostInstructionsResult": {
+    "WorkspaceListHostInstructionsResult": {
       "type": "array",
       "items": {
         "type": "object",
@@ -5328,7 +5328,7 @@
       },
       "maxItems": 32
     },
-    "B3SaveHostInstructionResult": {
+    "WorkspaceSaveHostInstructionResult": {
       "type": "array",
       "items": {
         "type": "object",
@@ -5370,7 +5370,7 @@
       },
       "maxItems": 32
     },
-    "B3GetGitStatusResult": {
+    "WorkspaceGetGitStatusResult": {
       "type": "object",
       "required": [
         "root",
@@ -5450,7 +5450,7 @@
       },
       "additionalProperties": false
     },
-    "B3GetGitDiffResult": {
+    "WorkspaceGetGitDiffResult": {
       "type": "object",
       "required": [
         "staged",
@@ -5480,7 +5480,7 @@
       },
       "additionalProperties": false
     },
-    "B3GetCompletionsResult": {
+    "WorkspaceGetCompletionsResult": {
       "type": "object",
       "required": [
         "prefixStart",
@@ -5552,7 +5552,7 @@
       },
       "additionalProperties": false
     },
-    "B3CheckForUpdatesResult": {
+    "WorkspaceCheckForUpdatesResult": {
       "type": "object",
       "required": [
         "currentVersion",
@@ -5663,7 +5663,7 @@
       },
       "additionalProperties": false
     },
-    "B3ListSettingsResult": {
+    "WorkspaceListSettingsResult": {
       "type": "array",
       "items": {
         "type": "object",
@@ -5768,7 +5768,7 @@
       },
       "maxItems": 1000
     },
-    "B3SetSettingResult": {
+    "WorkspaceSetSettingResult": {
       "type": "object",
       "required": [
         "setting",
@@ -5882,7 +5882,7 @@
       },
       "additionalProperties": false
     },
-    "B3ListModelsResult": {
+    "WorkspaceListModelsResult": {
       "type": "array",
       "items": {
         "type": "object",
@@ -6042,7 +6042,7 @@
       },
       "maxItems": 10000
     },
-    "B3ListModelProvidersResult": {
+    "WorkspaceListModelProvidersResult": {
       "type": "array",
       "items": {
         "type": "object",
@@ -6105,7 +6105,7 @@
       },
       "maxItems": 1000
     },
-    "B3SetSessionModelResult": {
+    "WorkspaceSetSessionModelResult": {
       "type": "object",
       "required": [
         "id",
@@ -6324,7 +6324,7 @@
       },
       "additionalProperties": false
     },
-    "B3SetSessionThinkingResult": {
+    "WorkspaceSetSessionThinkingResult": {
       "type": "object",
       "required": [
         "id",
@@ -6543,7 +6543,7 @@
       },
       "additionalProperties": false
     },
-    "B3LoginModelProviderResult": {
+    "WorkspaceLoginModelProviderResult": {
       "type": "array",
       "items": {
         "type": "object",
@@ -6703,7 +6703,7 @@
       },
       "maxItems": 10000
     },
-    "B3LogoutModelProviderResult": {
+    "WorkspaceLogoutModelProviderResult": {
       "type": "array",
       "items": {
         "type": "object",
@@ -6863,7 +6863,7 @@
       },
       "maxItems": 10000
     },
-    "B3GetProjectTrustResult": {
+    "WorkspaceGetProjectTrustResult": {
       "type": "object",
       "required": [
         "cwd",
@@ -6898,7 +6898,7 @@
       },
       "additionalProperties": false
     },
-    "B3SetProjectTrustResult": {
+    "WorkspaceSetProjectTrustResult": {
       "type": "object",
       "required": [
         "cwd",
@@ -6933,7 +6933,7 @@
       },
       "additionalProperties": false
     },
-    "B3ListPackagesResult": {
+    "WorkspaceListPackagesResult": {
       "type": "array",
       "items": {
         "type": "object",
@@ -6973,7 +6973,7 @@
       },
       "maxItems": 1000
     },
-    "B3InstallPackageResult": {
+    "WorkspaceInstallPackageResult": {
       "type": "object",
       "required": [
         "changed",
@@ -6991,7 +6991,7 @@
       },
       "additionalProperties": false
     },
-    "B3RemovePackageResult": {
+    "WorkspaceRemovePackageResult": {
       "type": "object",
       "required": [
         "changed",
@@ -7009,7 +7009,7 @@
       },
       "additionalProperties": false
     },
-    "B3UpdatePackagesResult": {
+    "WorkspaceUpdatePackagesResult": {
       "type": "object",
       "required": [
         "changed",
@@ -7027,7 +7027,7 @@
       },
       "additionalProperties": false
     },
-    "B3GetSessionTreeResult": {
+    "WorkspaceGetSessionTreeResult": {
       "type": "array",
       "items": {
         "type": "object",
@@ -7088,7 +7088,7 @@
       },
       "maxItems": 10000
     },
-    "B3SetEntryLabelResult": {
+    "WorkspaceSetEntryLabelResult": {
       "type": "object",
       "required": [
         "changed"
@@ -7100,7 +7100,7 @@
       },
       "additionalProperties": false
     },
-    "B3NavigateSessionTreeResult": {
+    "WorkspaceNavigateSessionTreeResult": {
       "type": "object",
       "required": [
         "cancelled"
@@ -7121,7 +7121,7 @@
       },
       "additionalProperties": false
     },
-    "B3ListSubagentsResult": {
+    "WorkspaceListSubagentsResult": {
       "type": "array",
       "items": {
         "type": "object",
@@ -7270,7 +7270,7 @@
       },
       "maxItems": 1000
     },
-    "B3ReadSubagentResult": {
+    "WorkspaceReadSubagentResult": {
       "type": "object",
       "properties": {
         "transcript": {
@@ -7566,7 +7566,7 @@
       },
       "additionalProperties": false
     },
-    "B3AbortSubagentResult": {
+    "WorkspaceAbortSubagentResult": {
       "type": "object",
       "required": [
         "changed",
@@ -7584,7 +7584,7 @@
       },
       "additionalProperties": false
     },
-    "B3ContinueSubagentResult": {
+    "WorkspaceContinueSubagentResult": {
       "type": "object",
       "required": [
         "changed",
@@ -7602,7 +7602,7 @@
       },
       "additionalProperties": false
     },
-    "B3ReadClipboardTextResult": {
+    "WorkspaceReadClipboardTextResult": {
       "type": "object",
       "required": [
         "capability"
@@ -7618,7 +7618,7 @@
       },
       "additionalProperties": false
     },
-    "B3ReadClipboardImageResult": {
+    "WorkspaceReadClipboardImageResult": {
       "type": "object",
       "required": [
         "capability",
@@ -7668,7 +7668,7 @@
       },
       "additionalProperties": false
     },
-    "B3ReadProjectImageResult": {
+    "WorkspaceReadProjectImageResult": {
       "type": "object",
       "required": [
         "mimeType",
@@ -7714,7 +7714,7 @@
       },
       "additionalProperties": false
     },
-    "B3WriteClipboardTextResult": {
+    "WorkspaceWriteClipboardTextResult": {
       "type": "object",
       "required": [
         "capability",
@@ -7730,7 +7730,7 @@
       },
       "additionalProperties": false
     },
-    "B3RenderRichTextResult": {
+    "WorkspaceRenderRichTextResult": {
       "type": "object",
       "required": [
         "lines",
@@ -7753,7 +7753,7 @@
       },
       "additionalProperties": false
     },
-    "B3ReadImageContentResult": {
+    "WorkspaceReadImageContentResult": {
       "type": "object",
       "required": [
         "contentRef",
@@ -7784,7 +7784,7 @@
       },
       "additionalProperties": false
     },
-    "B3GetAboutResult": {
+    "WorkspaceGetAboutResult": {
       "type": "object",
       "required": [
         "productName",
@@ -7844,7 +7844,7 @@
       },
       "additionalProperties": false
     },
-    "B3GetDiagnosticsResult": {
+    "WorkspaceGetDiagnosticsResult": {
       "type": "object",
       "properties": {
         "checks": {
@@ -8298,7 +8298,7 @@
       },
       "additionalProperties": false
     },
-    "B3ExtensionEditorStateResult": {
+    "WorkspaceExtensionEditorStateResult": {
       "type": "object",
       "required": [
         "revision"
@@ -8311,7 +8311,7 @@
       },
       "additionalProperties": false
     },
-    "B3ExtensionTerminalInputResult": {
+    "WorkspaceExtensionTerminalInputResult": {
       "type": "object",
       "required": [
         "consume"
@@ -8327,7 +8327,7 @@
       },
       "additionalProperties": false
     },
-    "B3ExtensionComponentInputResult": {
+    "WorkspaceExtensionComponentInputResult": {
       "type": "object",
       "required": [
         "accepted"
@@ -8344,7 +8344,7 @@
       },
       "additionalProperties": false
     },
-    "B3ExtensionComponentResizeResult": {
+    "WorkspaceExtensionComponentResizeResult": {
       "type": "object",
       "required": [
         "accepted"
@@ -8361,7 +8361,7 @@
       },
       "additionalProperties": false
     },
-    "B3ExtensionComponentDisposeResult": {
+    "WorkspaceExtensionComponentDisposeResult": {
       "type": "object",
       "required": [
         "accepted"
@@ -8378,7 +8378,7 @@
       },
       "additionalProperties": false
     },
-    "B3ExtensionComponentCustomResultResult": {
+    "WorkspaceExtensionComponentCustomResultResult": {
       "type": "object",
       "required": [
         "accepted"
@@ -8395,7 +8395,7 @@
       },
       "additionalProperties": false
     },
-    "B3ExtensionComponentCustomCancelResult": {
+    "WorkspaceExtensionComponentCustomCancelResult": {
       "type": "object",
       "required": [
         "accepted"

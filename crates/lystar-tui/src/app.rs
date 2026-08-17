@@ -26,7 +26,7 @@ use unicode_width::UnicodeWidthStr;
 pub const ROUND_CACHE_LIMIT: usize = 400;
 pub const ITEM_CACHE_LIMIT: usize = 800;
 pub const UTF8_CACHE_LIMIT: usize = 4 * 1024 * 1024;
-pub const B3_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+pub const WORKSPACE_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const OLDER_PAGE_THRESHOLD: usize = 2;
 
 #[derive(Debug, Clone)]
@@ -1022,8 +1022,8 @@ pub enum TreeFilter {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct B3Request {
-    pub command: lystar_protocol::B3Command,
+pub struct WorkspaceRequest {
+    pub command: lystar_protocol::WorkspaceCommand,
     pub payload: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -1110,7 +1110,7 @@ pub enum PendingIntent {
 pub struct PendingRequest {
     pub intent: PendingIntent,
     pub workspace: Option<WorkspaceOverlayGeneration>,
-    pub request: B3Request,
+    pub request: WorkspaceRequest,
     pub started_at: Instant,
 }
 
@@ -1424,7 +1424,7 @@ impl AppState {
     pub fn timed_out_custom_editor_submit(&self) -> Option<(String, PendingCustomEditorSubmit)> {
         self.pending_custom_editor_submits
             .iter()
-            .find(|(_, submit)| submit.started_at.elapsed() >= B3_REQUEST_TIMEOUT)
+            .find(|(_, submit)| submit.started_at.elapsed() >= WORKSPACE_REQUEST_TIMEOUT)
             .map(|(id, submit)| (id.clone(), submit.clone()))
     }
 
@@ -1567,7 +1567,7 @@ impl AppState {
     pub fn timed_out_attachment_submit(&self) -> Option<(String, PendingAttachmentSubmit)> {
         self.pending_attachment_submits
             .iter()
-            .find(|(_, submit)| submit.started_at.elapsed() >= B3_REQUEST_TIMEOUT)
+            .find(|(_, submit)| submit.started_at.elapsed() >= WORKSPACE_REQUEST_TIMEOUT)
             .map(|(id, submit)| (id.clone(), submit.clone()))
     }
 
@@ -2145,7 +2145,7 @@ impl AppState {
         }
     }
 
-    pub fn begin_request(&mut self, id: String, request: B3Request, intent: PendingIntent) {
+    pub fn begin_request(&mut self, id: String, request: WorkspaceRequest, intent: PendingIntent) {
         let workspace = self.workspace_overlay_stack.last().cloned().flatten();
         self.pending_requests.insert(
             id,
@@ -2186,9 +2186,9 @@ impl AppState {
         Some(pending)
     }
 
-    pub fn timed_out_b3_request(&self) -> Option<(String, B3Request)> {
+    pub fn timed_out_workspace_request(&self) -> Option<(String, WorkspaceRequest)> {
         self.pending_requests.iter().find_map(|(id, pending)| {
-            (pending.started_at.elapsed() >= B3_REQUEST_TIMEOUT)
+            (pending.started_at.elapsed() >= WORKSPACE_REQUEST_TIMEOUT)
                 .then(|| (id.clone(), pending.request.clone()))
         })
     }
@@ -2200,8 +2200,8 @@ impl AppState {
         self.write_pending = false;
     }
 
-    pub fn restart_timed_out_b3_request(&mut self) -> Option<(String, B3Request)> {
-        let (id, request) = self.timed_out_b3_request()?;
+    pub fn restart_timed_out_workspace_request(&mut self) -> Option<(String, WorkspaceRequest)> {
+        let (id, request) = self.timed_out_workspace_request()?;
         if let Some(pending) = self.pending_requests.get_mut(&id) {
             pending.started_at = Instant::now();
         }
@@ -2289,7 +2289,7 @@ impl AppState {
             self.set_overlay_error("提交超时，已保留恢复草稿");
             return;
         }
-        if self.timed_out_b3_request().is_some()
+        if self.timed_out_workspace_request().is_some()
             || self.timed_out_custom_editor_submit().is_some()
             || self.timed_out_attachment_submit().is_some()
         {
@@ -3950,7 +3950,7 @@ mod tests {
                 lines: vec![
                     "b1".to_owned(),
                     "b2".to_owned(),
-                    "b3".to_owned(),
+                    "workspace".to_owned(),
                     "b4".to_owned(),
                 ],
             },
@@ -4160,7 +4160,7 @@ mod tests {
                 copy_text: None,
             })
         };
-        let request = |command| B3Request {
+        let request = |command| WorkspaceRequest {
             command,
             payload: serde_json::Map::new(),
         };
@@ -4169,7 +4169,7 @@ mod tests {
         app.open_workspace_overlay("changes", detail("变更"));
         app.begin_request(
             "changes-old".to_owned(),
-            request(lystar_protocol::B3Command::GetGitStatus),
+            request(lystar_protocol::WorkspaceCommand::GetGitStatus),
             PendingIntent::WorkbenchLoad {
                 target: WorkbenchTarget::Changes,
                 selected_key: None,
@@ -4183,7 +4183,7 @@ mod tests {
         app.open_workspace_overlay("skills", detail("技能"));
         app.begin_request(
             "skills-old".to_owned(),
-            request(lystar_protocol::B3Command::ListSkills),
+            request(lystar_protocol::WorkspaceCommand::ListSkills),
             PendingIntent::WorkbenchLoad {
                 target: WorkbenchTarget::Skills,
                 selected_key: None,
@@ -4626,8 +4626,8 @@ mod tests {
         app.active_session.as_mut().unwrap().lease_id = Some("lease".to_owned());
         app.begin_request(
             "pending".to_owned(),
-            B3Request {
-                command: lystar_protocol::B3Command::GetAbout,
+            WorkspaceRequest {
+                command: lystar_protocol::WorkspaceCommand::GetAbout,
                 payload: serde_json::Map::new(),
             },
             PendingIntent::Overlay {
@@ -4657,8 +4657,8 @@ mod tests {
         );
         app.begin_request(
             "first".to_owned(),
-            B3Request {
-                command: lystar_protocol::B3Command::ListSkills,
+            WorkspaceRequest {
+                command: lystar_protocol::WorkspaceCommand::ListSkills,
                 payload: serde_json::Map::new(),
             },
             PendingIntent::WorkbenchLoad {
@@ -4680,8 +4680,8 @@ mod tests {
         );
         app.begin_request(
             "second".to_owned(),
-            B3Request {
-                command: lystar_protocol::B3Command::GetProjectTrust,
+            WorkspaceRequest {
+                command: lystar_protocol::WorkspaceCommand::GetProjectTrust,
                 payload: serde_json::Map::new(),
             },
             PendingIntent::WorkbenchLoad {

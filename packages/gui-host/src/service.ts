@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
-	assertB3CommandResult,
+	assertWorkspaceCommandResult,
 	type Capability,
 	type ClientMessage,
 	type CompletionResult,
@@ -47,7 +47,7 @@ const BASE_CAPABILITIES: Capability[] = [
 	"project-resources",
 	"directory-browser",
 	"external-resources",
-	"rust-workspace-b3",
+	"workspace-api",
 	"rust-extension-ui",
 ];
 
@@ -59,7 +59,7 @@ const TERMINAL_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>([
 	"interrupted",
 ]);
 
-const B3_COMMANDS = {
+const WORKSPACE_COMMANDS = {
 	list_skills: true,
 	set_skill_enabled: true,
 	list_project_instructions: true,
@@ -331,8 +331,11 @@ export class GuiHostService {
 					afterResponse = action;
 				}),
 			);
-			if (message.request.command in B3_COMMANDS) {
-				assertB3CommandResult(message.request.command as Parameters<typeof assertB3CommandResult>[0], result);
+			if (message.request.command in WORKSPACE_COMMANDS) {
+				assertWorkspaceCommandResult(
+					message.request.command as Parameters<typeof assertWorkspaceCommandResult>[0],
+					result,
+				);
 			}
 		} catch (error) {
 			await connection.send({ type: "response", id: message.id, ok: false, error: protocolError(error) });

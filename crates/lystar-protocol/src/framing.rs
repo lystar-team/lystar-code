@@ -367,9 +367,9 @@ pub fn encode_abort_operation_request(
     }))
 }
 
-pub fn encode_b3_request(
+pub fn encode_workspace_request(
     id: &str,
-    command: crate::B3Command,
+    command: crate::WorkspaceCommand,
     request: serde_json::Map<String, serde_json::Value>,
 ) -> Result<Vec<u8>, ProtocolError> {
     let mut request = request;

@@ -6,7 +6,7 @@ export const MAX_TRANSCRIPT_PAGE_SIZE = 200;
 export const MAX_TRANSCRIPT_SEARCH_LIMIT = 100;
 
 const Id = Type.String({ minLength: 1, maxLength: 4096 });
-const B3Text = Type.String({ maxLength: 1024 * 1024 });
+const WorkspaceText = Type.String({ maxLength: 1024 * 1024 });
 const StrictObject = <const T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
 	Type.Object(properties, { additionalProperties: false });
 
@@ -141,7 +141,7 @@ export const CapabilitySchema = Type.Union([
 	Type.Literal("project-resources"),
 	Type.Literal("directory-browser"),
 	Type.Literal("external-resources"),
-	Type.Literal("rust-workspace-b3"),
+	Type.Literal("workspace-api"),
 	Type.Literal("rust-extension-ui"),
 ]);
 export type Capability = Static<typeof CapabilitySchema>;
@@ -637,7 +637,7 @@ export const SubagentSnapshotSchema = StrictObject({
 		Type.Literal("project"),
 		Type.Literal("unknown"),
 	]),
-	task: B3Text,
+	task: WorkspaceText,
 	state: Type.Union([
 		Type.Literal("queued"),
 		Type.Literal("running"),
@@ -724,7 +724,7 @@ export const PackageMutationResultSchema = StrictObject({
 export const SessionTreeResultSchema = Type.Array(SessionTreeNodeSchema, { maxItems: 10_000 });
 export const SetEntryLabelResultSchema = StrictObject({ changed: Type.Boolean() });
 export const NavigateSessionTreeResultSchema = StrictObject({
-	editorText: Type.Optional(B3Text),
+	editorText: Type.Optional(WorkspaceText),
 	cancelled: Type.Boolean(),
 	newLeafId: Type.Optional(Id),
 });
@@ -739,7 +739,7 @@ export const SubagentMutationResultSchema = StrictObject({
 });
 export const ClipboardReadResultSchema = StrictObject({
 	capability: Type.Boolean(),
-	text: Type.Optional(B3Text),
+	text: Type.Optional(WorkspaceText),
 });
 export const ClipboardWriteResultSchema = StrictObject({ capability: Type.Boolean(), changed: Type.Boolean() });
 
@@ -907,7 +907,7 @@ const ExtensionTerminalInputResultSchema = StrictObject({
 });
 export type ExtensionTerminalInputResult = Static<typeof ExtensionTerminalInputResultSchema>;
 
-export const B3CommandResultSchemas = {
+export const WorkspaceCommandResultSchemas = {
 	list_skills: ListSkillsResultSchema,
 	set_skill_enabled: SetSkillEnabledResultSchema,
 	list_project_instructions: ListProjectInstructionsResultSchema,
@@ -956,8 +956,11 @@ export const B3CommandResultSchemas = {
 	extension_component_custom_cancel: ExtensionComponentResultSchema,
 } as const;
 
-export function assertB3CommandResult(command: keyof typeof B3CommandResultSchemas, value: unknown): void {
-	if (!Check(B3CommandResultSchemas[command], value)) {
+export function assertWorkspaceCommandResult(
+	command: keyof typeof WorkspaceCommandResultSchemas,
+	value: unknown,
+): void {
+	if (!Check(WorkspaceCommandResultSchemas[command], value)) {
 		throw Object.assign(new Error(`命令 ${command} 返回了不符合协议的结果`), { code: "invalid_command_result" });
 	}
 }
@@ -1288,7 +1291,7 @@ export const CommandSchema = Type.Union([
 		sessionPath: Type.String({ minLength: 1 }),
 		leaseId: Id,
 		agentId: Id,
-		text: B3Text,
+		text: WorkspaceText,
 		clientInstanceId: Id,
 		clientRequestId: Id,
 	}),
@@ -1314,7 +1317,7 @@ export const CommandSchema = Type.Union([
 	}),
 	StrictObject({
 		command: Type.Literal("write_clipboard_text"),
-		text: B3Text,
+		text: WorkspaceText,
 		clientInstanceId: Id,
 		clientRequestId: Id,
 	}),

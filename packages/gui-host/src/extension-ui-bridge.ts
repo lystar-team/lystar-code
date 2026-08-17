@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import type { ExtensionUiState, JsonValue } from "@lystar/code-gui-protocol";
 import { KeybindingsManager } from "../../coding-agent/src/core/keybindings.ts";
@@ -286,6 +287,12 @@ function boundedEditor(value: string): string {
 	return sanitizeTerminalText(value, MAX_EDITOR_BYTES, { newline: true, tab: true });
 }
 
+function componentInputText(value: string): string {
+	const start = "\u001b[200~";
+	const end = "\u001b[201~";
+	return value.startsWith(start) && value.endsWith(end) ? value.slice(start.length, -end.length) : value;
+}
+
 function boundedDimension(value: number): number {
 	return Number.isFinite(value) ? Math.max(1, Math.min(COMPONENT_WIDTH, Math.floor(value))) : 1;
 }
@@ -381,15 +388,24 @@ export interface ExtensionComponentDiagnostics {
 	coalescedCount: number;
 	lastFinalState: number | null;
 	invalidations: Array<{ invalidateRequestedAt: number; publishedAt?: number; revision?: number }>;
-	inputs: Array<{ receivedAt: number; revision: number; bytes: number }>;
+	inputs: Array<{ receivedAt: number; publishedAt: number; revision: number; bytes: number }>;
+	editorTextBytes?: number;
+	editorTextHash?: string;
 }
 
 interface ComponentDiagnosticState extends ExtensionComponentDiagnostics {}
 
-const MAX_COMPONENT_DIAGNOSTIC_INVALIDATIONS = 10_000;
+const MAX_COMPONENT_DIAGNOSTIC_SAMPLES = 1_024;
+const bunMonotonicOffsetMs = (() => {
+	if (!process.versions.bun || process.platform !== "linux") return 0;
+	return (
+		Number(readFileSync("/proc/uptime", "utf8").trim().split(/\s+/)[0]) * 1_000 -
+		Number(process.hrtime.bigint()) / 1_000_000
+	);
+})();
 
 function monotonicMilliseconds(): number {
-	return Number(process.hrtime.bigint()) / 1_000_000;
+	return bunMonotonicOffsetMs + Number(process.hrtime.bigint()) / 1_000_000;
 }
 
 function numericFinalState(component: Component): number | null {
@@ -401,7 +417,17 @@ function numericFinalState(component: Component): number | null {
 	}
 }
 
+function editorTextObservation(component: Component): { bytes: number; hash: string } | undefined {
+	const text = (component as EditorComponent).getText?.();
+	if (typeof text !== "string") return undefined;
+	return {
+		bytes: Buffer.byteLength(text, "utf8"),
+		hash: createHash("sha256").update(text).digest("hex"),
+	};
+}
+
 function componentDiagnostic(mount: ComponentMount): ComponentDiagnosticState {
+	const editorText = mount.placement === "editor" ? editorTextObservation(mount.component) : undefined;
 	return {
 		componentId: mount.componentId,
 		generation: mount.generation,
@@ -412,6 +438,7 @@ function componentDiagnostic(mount: ComponentMount): ComponentDiagnosticState {
 		lastFinalState: null,
 		invalidations: [],
 		inputs: [],
+		...(editorText ? { editorTextBytes: editorText.bytes, editorTextHash: editorText.hash } : {}),
 	};
 }
 
@@ -608,17 +635,18 @@ export class ExtensionUiBridge {
 		this.componentInputAppAction = undefined;
 		const receivedAt = monotonicMilliseconds();
 		const input = boundedRawInput(data);
+		const componentInput = componentInputText(input);
 		try {
-			const frame = mount.adapter.input(input);
+			const frame = mount.adapter.input(componentInput);
 			if (mount.placement === "editor") {
-				const text = boundedEditor((mount.component as EditorComponent).getText?.() ?? this.editorText);
-				if (text !== this.editorText) {
+				const text = this.observeEditorText(mount);
+				if (text !== undefined && text !== this.editorText) {
 					this.editorText = text;
 					this.publishEditorAction("set", text);
 				}
 			}
-			this.publishComponentFrame(mount, frame);
-			this.recordComponentInput(mount, receivedAt, frame.revision, Buffer.byteLength(input, "utf8"));
+			const publishedAt = this.publishComponentFrame(mount, frame);
+			this.recordComponentInput(mount, receivedAt, publishedAt, frame.revision, Buffer.byteLength(input, "utf8"));
 			return this.componentInputAppAction ? { appAction: this.componentInputAppAction } : {};
 		} catch (error) {
 			this.unmount(componentId, "error");
@@ -732,6 +760,8 @@ export class ExtensionUiBridge {
 				onChange?.(text);
 				if (!isCurrent()) return;
 				this.editorText = boundedEditor(text);
+				const mount = this.components.get("editor");
+				if (mount?.component === editor) this.observeEditorText(mount);
 				this.publishEditorAction("set", this.editorText);
 			};
 			const onSubmit = bindings.onSubmit;
@@ -820,6 +850,7 @@ export class ExtensionUiBridge {
 			};
 			this.components.set(componentId, mount);
 			this.componentDiagnostics.set(componentId, componentDiagnostic(mount));
+			this.observeEditorText(mount);
 			this.editorComponentId = componentId;
 			const frame = adapter.render();
 			this.recordComponentFrame(mount, frame);
@@ -829,6 +860,17 @@ export class ExtensionUiBridge {
 			this.reportException("editor_factory", error);
 			this.publishEditorAction("set", this.editorText);
 		}
+	}
+
+	private observeEditorText(mount: ComponentMount): string | undefined {
+		const observation = editorTextObservation(mount.component);
+		if (!observation) return undefined;
+		const diagnostic = this.componentDiagnostics.get(mount.componentId);
+		if (diagnostic?.generation === mount.generation) {
+			diagnostic.editorTextBytes = observation.bytes;
+			diagnostic.editorTextHash = observation.hash;
+		}
+		return boundedEditor((mount.component as EditorComponent).getText?.() ?? "");
 	}
 
 	private isCurrentEditor(editor: EditorComponent, generation: number): boolean {
@@ -1103,22 +1145,23 @@ export class ExtensionUiBridge {
 		});
 	}
 
-	private publishComponentFrame(mount: ComponentMount, frame: HeadlessFrame): void {
-		this.recordComponentFrame(mount, frame);
+	private publishComponentFrame(mount: ComponentMount, frame: HeadlessFrame): number {
+		const publishedAt = this.recordComponentFrame(mount, frame);
 		this.publish({
 			type: "component_frame",
 			componentId: mount.componentId,
 			generation: mount.generation,
 			frame,
 		});
+		return publishedAt;
 	}
 
-	private recordComponentFrame(mount: ComponentMount, frame: HeadlessFrame): void {
+	private recordComponentFrame(mount: ComponentMount, frame: HeadlessFrame): number {
 		this.componentDirty.delete(mount.componentId);
 		this.componentFrameAt.set(mount.componentId, performance.now());
 		const diagnostic = this.componentDiagnostics.get(mount.componentId);
+		const publishedAt = monotonicMilliseconds();
 		if (diagnostic?.generation === mount.generation) {
-			const publishedAt = monotonicMilliseconds();
 			diagnostic.revision = frame.revision;
 			diagnostic.renderCount++;
 			diagnostic.publishCount++;
@@ -1131,13 +1174,20 @@ export class ExtensionUiBridge {
 			}
 		}
 		this.rescheduleComponentFrames();
+		return publishedAt;
 	}
 
-	private recordComponentInput(mount: ComponentMount, receivedAt: number, revision: number, bytes: number): void {
+	private recordComponentInput(
+		mount: ComponentMount,
+		receivedAt: number,
+		publishedAt: number,
+		revision: number,
+		bytes: number,
+	): void {
 		const diagnostic = this.componentDiagnostics.get(mount.componentId);
 		if (diagnostic?.generation !== mount.generation) return;
-		diagnostic.inputs.push({ receivedAt, revision, bytes });
-		if (diagnostic.inputs.length > MAX_COMPONENT_DIAGNOSTIC_INVALIDATIONS) diagnostic.inputs.shift();
+		diagnostic.inputs.push({ receivedAt, publishedAt, revision, bytes });
+		if (diagnostic.inputs.length > MAX_COMPONENT_DIAGNOSTIC_SAMPLES) diagnostic.inputs.shift();
 	}
 
 	private scheduleComponentFrame(componentId: string, generation: number): void {
@@ -1147,7 +1197,7 @@ export class ExtensionUiBridge {
 		if (diagnostic?.generation === generation) {
 			if (this.componentDirty.get(componentId) === generation) diagnostic.coalescedCount++;
 			diagnostic.invalidations.push({ invalidateRequestedAt: monotonicMilliseconds() });
-			if (diagnostic.invalidations.length > MAX_COMPONENT_DIAGNOSTIC_INVALIDATIONS) diagnostic.invalidations.shift();
+			if (diagnostic.invalidations.length > MAX_COMPONENT_DIAGNOSTIC_SAMPLES) diagnostic.invalidations.shift();
 		}
 		this.componentDirty.set(componentId, generation);
 		this.rescheduleComponentFrames();

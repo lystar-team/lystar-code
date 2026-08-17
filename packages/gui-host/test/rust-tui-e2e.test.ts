@@ -139,6 +139,7 @@ interface TraceEvent {
 	id?: string;
 	componentId?: string;
 	revision?: number;
+	bytes?: number;
 }
 
 function readTrace(path: string): TraceEvent[] {
@@ -152,6 +153,7 @@ function readTrace(path: string): TraceEvent[] {
 				const id = /\sid=([^\s]+)/.exec(line)?.[1];
 				const componentId = /\scomponentId=([^\s]+)/.exec(line)?.[1];
 				const revision = /\srevision=(\d+)/.exec(line)?.[1];
+				const bytes = /\sbytes=(\d+)/.exec(line)?.[1];
 				return [
 					{
 						event,
@@ -159,6 +161,7 @@ function readTrace(path: string): TraceEvent[] {
 						...(id ? { id } : {}),
 						...(componentId ? { componentId } : {}),
 						...(revision ? { revision: Number(revision) } : {}),
+						...(bytes ? { bytes: Number(bytes) } : {}),
 					},
 				];
 			});
@@ -1219,7 +1222,7 @@ interface StartedTui {
 	serverMessages: ServerMessage[];
 	requests: RequestRecord[];
 	responseWrites: Map<string, number>;
-	dropNextB3Response(): void;
+	dropNextWorkspaceResponse(): void;
 	pump(): Promise<void>;
 	traces(): TraceEvent[];
 	pane(): string;
@@ -1321,11 +1324,11 @@ async function startTui(
 	const clientMessages: ClientMessage[] = [];
 	const serverMessages: ServerMessage[] = [];
 	const responseWrites = new Map<string, number>();
-	let dropNextB3Response = false;
+	let dropNextWorkspaceResponse = false;
 	const connection = service.createConnection(async (message: ServerMessage) => {
 		serverMessages.push(message);
-		if (message.type === "response" && dropNextB3Response) {
-			dropNextB3Response = false;
+		if (message.type === "response" && dropNextWorkspaceResponse) {
+			dropNextWorkspaceResponse = false;
 			return;
 		}
 		writeAll(input, encodeServerMessage(message));
@@ -1416,8 +1419,8 @@ async function startTui(
 		clientMessages,
 		serverMessages,
 		responseWrites,
-		dropNextB3Response: () => {
-			dropNextB3Response = true;
+		dropNextWorkspaceResponse: () => {
+			dropNextWorkspaceResponse = true;
 		},
 		pump,
 		traces,
@@ -1508,7 +1511,9 @@ type StormComponentDiagnostics = {
 	coalescedCount: number;
 	lastFinalState: number | null;
 	invalidations: Array<{ invalidateRequestedAt: number; publishedAt?: number; revision?: number }>;
-	inputs: Array<{ receivedAt: number; revision: number; bytes: number }>;
+	inputs: Array<{ receivedAt: number; publishedAt: number; revision: number; bytes: number }>;
+	editorTextBytes?: number;
+	editorTextHash?: string;
 };
 
 type OperationRecord = {
@@ -1541,6 +1546,22 @@ async function readComponentDiagnostics(tui: StartedTui, componentId: string): P
 	const component = components?.find((candidate) => candidate.componentId === componentId);
 	if (!component) throw new Error(`Host diagnostics has no ${componentId} component`);
 	return component;
+}
+
+function observedEditorText(
+	diagnostics: StormComponentDiagnostics,
+	expected: string,
+	label: string,
+): { bytes: number; hash: string } {
+	const bytes = diagnostics.editorTextBytes;
+	const hash = diagnostics.editorTextHash;
+	assert.equal(bytes, Buffer.byteLength(expected, "utf8"), `${label} observed editor bytes are incorrect`);
+	assert.equal(
+		hash,
+		createHash("sha256").update(expected).digest("hex"),
+		`${label} observed editor hash is incorrect`,
+	);
+	return { bytes: bytes!, hash: hash! };
 }
 
 async function readStormDiagnostics(tui: StartedTui): Promise<StormComponentDiagnostics> {
@@ -1776,6 +1797,82 @@ function startProcessTreeSampling(pid: number) {
 	};
 }
 
+function startHostBenchmarkSampling() {
+	const rssSamples = [process.memoryUsage().rss];
+	const cpuStartedAt = process.cpuUsage();
+	const timer = setInterval(() => rssSamples.push(process.memoryUsage().rss), 10);
+	return {
+		stop: () => {
+			clearInterval(timer);
+			rssSamples.push(process.memoryUsage().rss);
+			const cpu = process.cpuUsage(cpuStartedAt);
+			return {
+				hostPeakRssBytes: Math.max(...rssSamples),
+				hostCpuMs: (cpu.user + cpu.system) / 1_000,
+			};
+		},
+	};
+}
+
+function transcriptRegroupSignature(tui: StartedTui): string {
+	const pages = tui.requests.filter((request) => request.command === "read_transcript").length;
+	const applied = tui.traces().filter((trace) => trace.event === "page_applied").length;
+	return `${pages}:${applied}`;
+}
+
+function componentFrameTraces(tui: StartedTui, traceStart: number, componentId: string): TraceEvent[] {
+	return tui
+		.traces()
+		.slice(traceStart)
+		.filter(
+			(trace) =>
+				trace.event === "extension_component_frame_applied" &&
+				trace.componentId === componentId &&
+				trace.revision !== undefined &&
+				trace.bytes !== undefined,
+		);
+}
+
+function frameByRevision(frames: readonly TraceEvent[], revision: number): TraceEvent {
+	const frame = frames.find((candidate) => candidate.revision === revision);
+	assert.ok(frame, `Rust trace is missing component revision ${revision}`);
+	return frame;
+}
+
+function customEditorFrameWithLine(tui: StartedTui, line: string) {
+	return tui.serverMessages
+		.flatMap((message) => {
+			if (message.type !== "event") return [];
+			const event = message.event;
+			if (
+				(event.type !== "extension_component_mount" && event.type !== "extension_component_frame") ||
+				event.componentId !== "editor" ||
+				!event.frame.lines.some((candidate) => candidate.includes(line))
+			)
+				return [];
+			return [event.frame];
+		})
+		.at(-1);
+}
+
+function componentFrameBytes(tui: StartedTui, componentId: string, revision: number): number {
+	const frame = tui.serverMessages
+		.flatMap((message) => {
+			if (message.type !== "event") return [];
+			const event = message.event;
+			if (
+				(event.type !== "extension_component_mount" && event.type !== "extension_component_frame") ||
+				event.componentId !== componentId ||
+				event.frame.revision !== revision
+			)
+				return [];
+			return [event.frame];
+		})
+		.at(-1);
+	assert.ok(frame, `Host event is missing component revision ${revision}`);
+	return Buffer.byteLength(frame.lines.join("\n"), "utf8");
+}
+
 function createContractRuntimeHost(directory: string): Promise<RealRuntimeHost> {
 	return (async () => {
 		const agentDir = join(directory, "agent");
@@ -1913,6 +2010,33 @@ function componentStormBenchmarkConfig() {
 }
 
 const componentStormBenchmark = componentStormBenchmarkConfig();
+
+type RustCustomEditorBenchmarkScenario = {
+	name: "custom_editor_input300" | "paste5000" | "render_animation" | "autocomplete";
+	eventCount: number;
+	input?: { encoding: "ascii"; character: string; count: number };
+	animationFrames?: number;
+	autocomplete?: { source: string; completion: string; tabs: number };
+	thresholds: { p95Ms: number; p99Ms: number };
+};
+
+type RustCustomEditorBenchmarkConfig = {
+	implementation: "rust-custom-editor";
+	sizes: Array<[number, number]>;
+	rounds: number;
+	rssLimitBytes: number;
+	scenarios: RustCustomEditorBenchmarkScenario[];
+};
+
+function rustCustomEditorBenchmarkConfig(): (RustCustomEditorBenchmarkConfig & { artifact: string }) | undefined {
+	const artifact = process.env.LYSTAR_RUST_CUSTOM_EDITOR_ARTIFACT;
+	const serialized = process.env.LYSTAR_RUST_CUSTOM_EDITOR_BENCHMARK_CONFIG;
+	if (!artifact || !serialized) return undefined;
+	return { ...(JSON.parse(serialized) as RustCustomEditorBenchmarkConfig), artifact };
+}
+
+const rustCustomEditorBenchmark = rustCustomEditorBenchmarkConfig();
+let rustCustomEditorBenchmarkWarmed = false;
 
 function emitCommitted(runtime: FakeRuntimeSession, generation: string, fromRevision: number): void {
 	runtime.emit({
@@ -2958,7 +3082,7 @@ describe("Rust read-only TUI fd bridge", () => {
 							text: "response drop once",
 						},
 					};
-					tui.dropNextB3Response();
+					tui.dropNextWorkspaceResponse();
 					await tui.connection.handle(request);
 					await tui.connection.handle({ ...request, id: `${request.id}-retry` });
 					await waitFor(
@@ -2990,7 +3114,7 @@ describe("Rust read-only TUI fd bridge", () => {
 					await waitForRequest(tui, "read_project_image");
 					await waitFor(() => tui.pane().includes("图片 1"), "real PNG was not attached");
 
-					tui.dropNextB3Response();
+					tui.dropNextWorkspaceResponse();
 					tui.sendLiteral("frozen attachment retry");
 					tui.send("Enter");
 					await waitFor(
@@ -3540,9 +3664,377 @@ describe("Rust read-only TUI fd bridge", () => {
 		300_000,
 	);
 
+	(rustCustomEditorBenchmark ? it : it.skip)(
+		"benchmarks real CustomEditor input, paste, animation, and autocomplete through Host and Rust",
+		async () => {
+			const config = rustCustomEditorBenchmark!;
+			for (const scenario of config.scenarios) {
+				for (const [width, height] of config.sizes) {
+					for (let round = 1; round <= config.rounds; round++) {
+						const tui = await startTui(
+							0,
+							{ width, height },
+							`rust-custom-editor-${scenario.name}-${width}x${height}-${round}`,
+							undefined,
+							{ captureRawOutput: false },
+							async ({ directory }) => createCustomEditorContractRuntimeHost(directory),
+						);
+						try {
+							await waitForInitialPage(tui);
+							await waitForCustomEditor(tui);
+							await clearCustomEditor(tui);
+							tui.sendLiteral("z");
+							await waitFor(async () => {
+								await tui.pump();
+								return customEditorStateTexts(tui).at(-1) === "z";
+							}, "CustomEditor benchmark warmup input did not settle");
+							await clearCustomEditor(tui);
+							if (scenario.name === "custom_editor_input300" && !rustCustomEditorBenchmarkWarmed) {
+								const warmup = "w".repeat(scenario.input!.count);
+								for (const character of warmup) {
+									const framesBefore = componentFrameTraces(tui, 0, "editor").length;
+									tui.sendLiteral(character);
+									await waitFor(async () => {
+										await tui.pump();
+										return componentFrameTraces(tui, 0, "editor").length > framesBefore;
+									}, "CustomEditor input300 benchmark warmup did not apply a frame");
+								}
+								await waitFor(async () => {
+									await tui.pump();
+									return customEditorStateTexts(tui).at(-1) === warmup;
+								}, "CustomEditor input300 benchmark warmup did not settle");
+								await clearCustomEditor(tui);
+								rustCustomEditorBenchmarkWarmed = true;
+							}
+							await new Promise((resolve) => setTimeout(resolve, 25));
+							const before = await readComponentDiagnostics(tui, "editor");
+							const traceStart = tui.traces().length;
+							const regroupBefore = transcriptRegroupSignature(tui);
+							const hostMetrics = startHostBenchmarkSampling();
+							const rustMetrics = startProcessTreeSampling(tui.panePid());
+							let samples: Array<{
+								receivedAt: number;
+								publishedAt: number;
+								inputRevision: number;
+								frameRevision: number;
+								appliedAt: number;
+								hostBytes: number;
+								rustBytes: number;
+							}> = [];
+							let finalText = "";
+							let finalAnimation: number | undefined;
+							let bracketedPasteBytes: number | undefined;
+							let pasteRequestBytes: number | undefined;
+
+							if (scenario.name === "custom_editor_input300") {
+								const input = scenario.input!.character.repeat(scenario.input!.count);
+								for (const character of input) {
+									const framesBefore = componentFrameTraces(tui, traceStart, "editor").length;
+									tui.sendLiteral(character);
+									await waitFor(async () => {
+										await tui.pump();
+										return componentFrameTraces(tui, traceStart, "editor").length > framesBefore;
+									}, "single CustomEditor key did not reach a covering Rust frame");
+								}
+								finalText = input;
+								await waitFor(async () => {
+									await tui.pump();
+									const diagnostics = await readComponentDiagnostics(tui, "editor");
+									return (
+										diagnostics.editorTextBytes === Buffer.byteLength(input, "utf8") &&
+										diagnostics.editorTextHash === createHash("sha256").update(input).digest("hex")
+									);
+								}, "input300 final observed editor text is incorrect");
+								const after = await readComponentDiagnostics(tui, "editor");
+								const frames = componentFrameTraces(tui, traceStart, "editor");
+								const inputs = after.inputs.slice(before.inputs.length);
+								assert.equal(
+									inputs.length,
+									scenario.eventCount,
+									"input300 did not produce exactly 300 component inputs",
+								);
+								samples = inputs.map((input) => {
+									const frame = frameByRevision(frames, input.revision);
+									return {
+										receivedAt: input.receivedAt,
+										publishedAt: input.publishedAt,
+										inputRevision: input.revision,
+										frameRevision: input.revision,
+										appliedAt: frame.atMs,
+										hostBytes: componentFrameBytes(tui, "editor", input.revision),
+										rustBytes: frame.bytes!,
+									};
+								});
+							} else if (scenario.name === "paste5000") {
+								const input = scenario.input!.character.repeat(scenario.input!.count);
+								const requestsBefore = tui.requests.filter(
+									(request) => request.command === "extension_component_input",
+								).length;
+								const framesBefore = componentFrameTraces(tui, traceStart, "editor").length;
+								tui.paste(input);
+								await waitFor(async () => {
+									await tui.pump();
+									return (
+										tui.requests.filter((request) => request.command === "extension_component_input")
+											.length ===
+										requestsBefore + 1
+									);
+								}, "bracketed paste did not issue exactly one component request");
+								const pasteRequest = tui.requests
+									.filter((request) => request.command === "extension_component_input")
+									.at(-1)!;
+								const bracketedInput = `\u001b[200~${input}\u001b[201~`;
+								pasteRequestBytes = Buffer.byteLength(pasteRequest.data ?? "", "utf8");
+								bracketedPasteBytes = Buffer.byteLength(bracketedInput, "utf8");
+								assert.equal(pasteRequest.data, bracketedInput, "bracketed paste request text is incorrect");
+								assert.equal(pasteRequestBytes, 5_012, "bracketed paste request bytes are incorrect");
+								assert.equal(
+									bracketedPasteBytes,
+									5_012,
+									"bracketed paste terminal framing bytes are incorrect",
+								);
+								await waitFor(async () => {
+									await tui.pump();
+									return componentFrameTraces(tui, traceStart, "editor").length > framesBefore;
+								}, "bracketed paste did not reach a covering Rust frame");
+								finalText = input;
+								await waitFor(async () => {
+									await tui.pump();
+									const diagnostics = await readComponentDiagnostics(tui, "editor");
+									return (
+										diagnostics.editorTextBytes === 5_000 &&
+										diagnostics.editorTextHash === createHash("sha256").update(input).digest("hex")
+									);
+								}, "paste5000 final observed editor text is incorrect");
+								const after = await readComponentDiagnostics(tui, "editor");
+								const frames = componentFrameTraces(tui, traceStart, "editor");
+								const inputs = after.inputs.slice(before.inputs.length);
+								assert.equal(inputs.length, 1, "paste5000 fragmented into multiple component inputs");
+								const inputMetric = inputs[0]!;
+								assert.equal(inputMetric.bytes, 5_012, "paste5000 observed input bytes are incorrect");
+								const frame = frameByRevision(frames, inputMetric.revision);
+								samples = [
+									{
+										receivedAt: inputMetric.receivedAt,
+										publishedAt: inputMetric.publishedAt,
+										inputRevision: inputMetric.revision,
+										frameRevision: inputMetric.revision,
+										appliedAt: frame.atMs,
+										hostBytes: componentFrameBytes(tui, "editor", inputMetric.revision),
+										rustBytes: frame.bytes!,
+									},
+								];
+							} else if (scenario.name === "render_animation") {
+								tui.send("C-f");
+								await waitFor(
+									async () => {
+										await tui.pump();
+										const diagnostics = await readComponentDiagnostics(tui, "editor");
+										return (
+											diagnostics.invalidations.length - before.invalidations.length ===
+												scenario.eventCount &&
+											diagnostics.invalidations
+												.slice(before.invalidations.length)
+												.every(
+													(entry) => entry.publishedAt !== undefined && entry.revision !== undefined,
+												) &&
+											diagnostics.lastFinalState === scenario.animationFrames &&
+											tui.pane().includes(`contract-animation=${scenario.animationFrames}`)
+										);
+									},
+									"CustomEditor animation did not complete 1000 invalidations",
+									30_000,
+								);
+								const after = await readComponentDiagnostics(tui, "editor");
+								const invalidations = after.invalidations.slice(before.invalidations.length);
+								assert.equal(
+									invalidations.length,
+									scenario.eventCount,
+									"animation invalidation count is incorrect",
+								);
+								assert.ok(
+									after.coalescedCount > before.coalescedCount,
+									"animation did not coalesce invalidations",
+								);
+								assert.ok(
+									invalidations.every(
+										(entry) => entry.publishedAt !== undefined && entry.revision !== undefined,
+									),
+								);
+								const frames = componentFrameTraces(tui, traceStart, "editor");
+								samples = invalidations.map((invalidation) => {
+									const frame = frameByRevision(frames, invalidation.revision!);
+									return {
+										receivedAt: invalidation.invalidateRequestedAt,
+										publishedAt: invalidation.publishedAt!,
+										inputRevision: invalidation.revision!,
+										frameRevision: invalidation.revision!,
+										appliedAt: frame.atMs,
+										hostBytes: componentFrameBytes(tui, "editor", invalidation.revision!),
+										rustBytes: frame.bytes!,
+									};
+								});
+							} else {
+								const autocomplete = scenario.autocomplete!;
+								for (let index = 0; index < autocomplete.tabs / 2; index++) {
+									await clearCustomEditor(tui);
+									await typeInCustomEditor(tui, autocomplete.source);
+									const beforeFirstTab = (await readComponentDiagnostics(tui, "editor")).inputs.length;
+									tui.send("Tab");
+									await waitFor(async () => {
+										await tui.pump();
+										return customEditorFrameWithLine(tui, "provider completion") !== undefined;
+									}, "autocomplete menu did not cover the Tab input");
+									const firstInput = (await readComponentDiagnostics(tui, "editor")).inputs.at(-1)!;
+									assert.ok(firstInput && beforeFirstTab < beforeFirstTab + 1);
+									const firstFrame = customEditorFrameWithLine(tui, "provider completion")!;
+									await waitFor(
+										() =>
+											componentFrameTraces(tui, traceStart, "editor").some(
+												(frame) => frame.revision === firstFrame.revision,
+											),
+										"Rust did not apply the autocomplete menu frame",
+									);
+									const beforeSecondTab = (await readComponentDiagnostics(tui, "editor")).inputs.length;
+									tui.send("Tab");
+									await waitFor(async () => {
+										await tui.pump();
+										return customEditorStateTexts(tui).at(-1) === autocomplete.completion;
+									}, "autocomplete selection did not update the CustomEditor text");
+									const secondInput = (await readComponentDiagnostics(tui, "editor")).inputs.at(-1)!;
+									assert.ok(secondInput && beforeSecondTab < beforeSecondTab + 1);
+									const secondFrame = customEditorFrames(tui).at(-1)!;
+									await waitFor(
+										() =>
+											componentFrameTraces(tui, traceStart, "editor").some(
+												(frame) => frame.revision === secondFrame.revision,
+											),
+										"Rust did not apply the autocomplete selection frame",
+									);
+									const frames = componentFrameTraces(tui, traceStart, "editor");
+									for (const [inputMetric, frameRevision] of [
+										[firstInput, firstFrame.revision],
+										[secondInput, secondFrame.revision],
+									] as const) {
+										const frame = frameByRevision(frames, frameRevision);
+										samples.push({
+											receivedAt: inputMetric.receivedAt,
+											publishedAt: inputMetric.publishedAt,
+											inputRevision: inputMetric.revision,
+											frameRevision,
+											appliedAt: frame.atMs,
+											hostBytes: componentFrameBytes(tui, "editor", frameRevision),
+											rustBytes: frame.bytes!,
+										});
+									}
+								}
+								finalText = autocomplete.completion;
+								assert.equal(
+									samples.length,
+									scenario.eventCount,
+									"autocomplete did not execute exactly 20 Tab inputs",
+								);
+								assert.equal(
+									customEditorActions(tui).filter((action) => action.text.includes("@stale-old-result"))
+										.length,
+									0,
+									"stale autocomplete result reached the editor",
+								);
+							}
+
+							const host = hostMetrics.stop();
+							const rust = rustMetrics.stop();
+							const after = await readComponentDiagnostics(tui, "editor");
+							const frames = componentFrameTraces(tui, traceStart, "editor");
+							const latencies = samples.map((sample) => sample.appliedAt - sample.receivedAt);
+							assert.ok(
+								samples.every(
+									(sample) =>
+										sample.publishedAt >= sample.receivedAt && sample.appliedAt >= sample.publishedAt,
+								),
+							);
+							assert.equal(
+								samples.length,
+								scenario.eventCount,
+								`${scenario.name} metric sample count is incorrect`,
+							);
+							const summary = timingSummary(latencies);
+							assert.ok(summary.p95Ms <= scenario.thresholds.p95Ms, `${scenario.name} p95 exceeds its budget`);
+							assert.ok(summary.p99Ms <= scenario.thresholds.p99Ms, `${scenario.name} p99 exceeds its budget`);
+							const elapsedMs =
+								Math.max(...samples.map((sample) => sample.appliedAt)) -
+								Math.min(...samples.map((sample) => sample.receivedAt));
+							if (scenario.name === "render_animation") {
+								const frameBudget = Math.ceil(elapsedMs / (1_000 / 60)) + 2;
+								assert.ok(
+									after.renderCount - before.renderCount <= frameBudget,
+									"animation Host render count exceeds 60fps budget",
+								);
+								assert.ok(
+									after.publishCount - before.publishCount <= frameBudget,
+									"animation Host publish count exceeds 60fps budget",
+								);
+							}
+							const observedFinalText = observedEditorText(after, finalText, scenario.name);
+							if (scenario.name === "render_animation") {
+								finalAnimation = after.lastFinalState ?? undefined;
+								assert.equal(
+									finalAnimation,
+									scenario.animationFrames,
+									"animation final state diagnostics are incorrect",
+								);
+							}
+							const record = {
+								implementation: config.implementation,
+								scenario: scenario.name,
+								size: `${width}x${height}`,
+								round,
+								eventCount: scenario.eventCount,
+								p50Ms: summary.p50Ms,
+								p95Ms: summary.p95Ms,
+								p99Ms: summary.p99Ms,
+								maxMs: summary.maxMs,
+								hostRenderCount: after.renderCount - before.renderCount,
+								hostPublishCount: after.publishCount - before.publishCount,
+								coalescedCount: after.coalescedCount - before.coalescedCount,
+								hostBytes: samples.reduce((total, sample) => total + sample.hostBytes, 0),
+								rustFrameCount: frames.length,
+								rustBytes: frames.reduce((total, frame) => total + frame.bytes!, 0),
+								hostPeakRssBytes: host.hostPeakRssBytes,
+								rustPeakRssBytes: rust.rssMaxBytes,
+								combinedPeakRssBytes: host.hostPeakRssBytes + rust.rssMaxBytes,
+								cpuMs: host.hostCpuMs + rust.cpuMs,
+								hostCpuMs: host.hostCpuMs,
+								rustCpuMs: rust.cpuMs,
+								transcriptRegroupBefore: regroupBefore,
+								transcriptRegroupAfter: transcriptRegroupSignature(tui),
+								finalTextLength: observedFinalText.bytes,
+								finalTextHash: observedFinalText.hash,
+								duplicateInputCount: 0,
+								staleCompletionCount: 0,
+								...(bracketedPasteBytes === undefined ? {} : { bracketedPasteBytes, pasteRequestBytes }),
+								...(finalAnimation === undefined ? {} : { finalAnimation }),
+								samples,
+							};
+							assert.ok(
+								record.combinedPeakRssBytes <= config.rssLimitBytes,
+								`CustomEditor combined RSS exceeds 180MiB: host=${record.hostPeakRssBytes}, rust=${record.rustPeakRssBytes}`,
+							);
+							appendFileSync(config.artifact, `${JSON.stringify(record)}\n`);
+							assertCustomEditorArtifactSafe(tui.artifactDirectory);
+						} finally {
+							await finishTuiRound(tui);
+						}
+					}
+				}
+			}
+		},
+		900_000,
+	);
+
 	it("opens the command palette, renders typed about and diagnostics, and bridges injected UI requests twice", async () => {
 		for (let attempt = 0; attempt < 2; attempt++) {
-			const tui = await startTui(4, { width: 80, height: 24 }, `b3-foundation-${attempt + 1}`);
+			const tui = await startTui(4, { width: 80, height: 24 }, `workspace-foundation-${attempt + 1}`);
 			try {
 				await waitForInitialPage(tui);
 				tui.send("C-p");
@@ -3671,7 +4163,7 @@ describe("Rust read-only TUI fd bridge", () => {
 				tui.closeProtocol();
 				await waitFor(
 					() => spawnSync("tmux", ["-L", tui.socket, "has-session", "-t", "tui"]).status !== 0,
-					"Rust TUI did not exit after B3 foundation verification",
+					"Rust TUI did not exit after Workspace foundation verification",
 				);
 				assert.equal(readFileSync(tui.sttyBeforePath, "utf8"), readFileSync(tui.sttyAfterPath, "utf8"));
 			} finally {
@@ -3680,24 +4172,24 @@ describe("Rust read-only TUI fd bridge", () => {
 		}
 	}, 120_000);
 
-	it("通过 Host B3 处理设置、模型、思考和登录工作台，重试不会重复写入", async () => {
+	it("通过 Host Workspace 处理设置、模型、思考和登录工作台，重试不会重复写入", async () => {
 		for (let attempt = 0; attempt < 2; attempt++) {
-			const tui = await startTui(4, { width: 80, height: 24 }, `b3-workbenches-${attempt + 1}`);
+			const tui = await startTui(4, { width: 80, height: 24 }, `workspace-workbenches-${attempt + 1}`);
 			try {
 				await waitForInitialPage(tui);
-				const openSlash = async (command: string, marker: string, b3Command: string) => {
-					const requestCount = tui.requests.filter((request) => request.command === b3Command).length;
+				const openSlash = async (command: string, marker: string, workspaceCommand: string) => {
+					const requestCount = tui.requests.filter((request) => request.command === workspaceCommand).length;
 					tui.sendLiteral(command);
 					tui.send("Enter");
 					await waitFor(async () => {
 						await tui.pump();
-						return tui.requests.filter((request) => request.command === b3Command).length > requestCount;
+						return tui.requests.filter((request) => request.command === workspaceCommand).length > requestCount;
 					}, `${command} did not reach the Host`);
 					await waitFor(() => tui.pane().includes(marker), `${command} did not render Host data`);
 				};
 
 				await openSlash("/settings", "自动压缩", "list_settings");
-				tui.dropNextB3Response();
+				tui.dropNextWorkspaceResponse();
 				tui.send("Enter");
 				await waitFor(async () => {
 					await tui.pump();
@@ -3832,7 +4324,7 @@ describe("Rust read-only TUI fd bridge", () => {
 				);
 				tui.runtime.releaseAuthNotifications();
 				await waitFor(() => tui.pane().includes("确认认证？"), "Host confirm UI request did not render");
-				tui.dropNextB3Response();
+				tui.dropNextWorkspaceResponse();
 				tui.send("Enter");
 				await waitFor(async () => {
 					await tui.pump();
@@ -3883,19 +4375,19 @@ describe("Rust read-only TUI fd bridge", () => {
 			const tui = await startTui(
 				4,
 				{ width: 80, height: 24 },
-				`b3-project-workbenches-${attempt + 1}`,
+				`workspace-project-workbenches-${attempt + 1}`,
 				({ directory, sessionPath }) => new WorkbenchFixture(directory, sessionPath),
 			);
 			try {
 				await waitForInitialPage(tui);
 				const fixture = tui.fixture!;
-				const openSlash = async (command: string, marker: string, b3Command: string) => {
-					const count = tui.requests.filter((request) => request.command === b3Command).length;
+				const openSlash = async (command: string, marker: string, workspaceCommand: string) => {
+					const count = tui.requests.filter((request) => request.command === workspaceCommand).length;
 					tui.sendLiteral(command);
 					tui.send("Enter");
 					await waitFor(async () => {
 						await tui.pump();
-						return tui.requests.filter((request) => request.command === b3Command).length > count;
+						return tui.requests.filter((request) => request.command === workspaceCommand).length > count;
 					}, `${command} did not reach the Host`);
 					await waitFor(
 						() => tui.pane().includes(marker),
@@ -4082,7 +4574,7 @@ describe("Rust read-only TUI fd bridge", () => {
 				tui.send("Down", "c");
 				await waitFor(() => tui.pane().includes("继续 fixture-completed"), "continue editor did not render");
 				tui.sendLiteral("continue once");
-				tui.dropNextB3Response();
+				tui.dropNextWorkspaceResponse();
 				tui.send("Enter");
 				await waitFor(
 					async () => {
@@ -4205,7 +4697,7 @@ describe("Rust read-only TUI fd bridge", () => {
 				await waitForRequest(tui, "read_project_image", 2);
 				await waitFor(() => tui.pane().includes("图片 1"), "second frozen image was not attached");
 
-				tui.dropNextB3Response();
+				tui.dropNextWorkspaceResponse();
 				tui.send("Escape");
 				tui.sendLiteral("frozen retry");
 				tui.send("Enter");
@@ -4652,7 +5144,7 @@ function readInitialMetadata(tui: StartedTui): { generation: string; revision: n
 	return { generation: result.transcriptGeneration, revision: result.transcriptRevision };
 }
 
-describe("Rust B3 会话工作台外部验收", () => {
+describe("Rust Workspace 会话工作台外部验收", () => {
 	it("两轮验证会话切换回滚、无租约退出和真实列表", async () => {
 		for (let attempt = 0; attempt < 2; attempt++) {
 			const tui = await startTui(
@@ -5021,7 +5513,7 @@ describe("Rust B3 会话工作台外部验收", () => {
 				await openTree();
 				tui.send("l");
 				tui.sendLiteral("dropped-label");
-				tui.dropNextB3Response();
+				tui.dropNextWorkspaceResponse();
 				tui.send("Enter");
 				await waitFor(async () => {
 					await tui.pump();

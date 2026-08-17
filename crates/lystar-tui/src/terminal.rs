@@ -21,15 +21,15 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use lystar_protocol::{
-    B3Command, FrameDecoder, ProtocolError, ReadOnlyEvent, ReadOnlyMessage, ReadOnlyResponse,
-    ServerMessage, TranscriptRequestContext, TranscriptViewItem, decode_server_message,
-    encode_abort_operation_request, encode_acquire_session_request, encode_b3_request,
-    encode_client_hello, encode_create_session_request, encode_extension_component_cancel_request,
+    FrameDecoder, ProtocolError, ReadOnlyEvent, ReadOnlyMessage, ReadOnlyResponse, ServerMessage,
+    TranscriptRequestContext, TranscriptViewItem, WorkspaceCommand, decode_server_message,
+    encode_abort_operation_request, encode_acquire_session_request, encode_client_hello,
+    encode_create_session_request, encode_extension_component_cancel_request,
     encode_extension_component_input_request, encode_extension_component_resize_request,
     encode_extension_editor_state_request, encode_extension_terminal_input_request,
     encode_list_sessions_request, encode_queue_request, encode_read_transcript_request,
     encode_release_session_request, encode_search_transcript_request, encode_session_write_request,
-    encode_ui_response,
+    encode_ui_response, encode_workspace_request,
 };
 use ratatui::{Terminal, TerminalOptions, Viewport, backend::CrosstermBackend};
 use signal_hook::{
@@ -40,20 +40,19 @@ use thiserror::Error;
 
 use crate::{
     app::{
-        AppState, B3Request, ChangesTab, ClipboardDescriptor, ClipboardReadTarget,
-        ComposerAttachment, ComposerCompletion, ComposerCompletionItem, ComposerView,
-        ConfirmOverlay, DetailOverlay, ExtensionComponentOverlayOptions,
-        ExtensionComponentOverlayView, ExtensionComponentState, ExtensionUiState, ExtensionWidget,
-        GitDiffDescriptor, GitFileDescriptor, GitStatusDescriptor, InputFocus,
-        InstructionDescriptor, ListOverlay, ModelDescriptor, OverlayItem, OverlayLink,
-        OverlayOrigin, OverlayState, PackageDescriptor, PendingIntent, PendingTerminalInput,
-        ProjectTrustDescriptor, ProviderDescriptor, ReadonlySessionView, SearchHit,
-        SessionRestorePoint, SessionSummary, SessionTreeNode, SettingDescriptor, SkillDescriptor,
-        SubagentDescriptor, TextEditorOverlay, TranscriptRequestKind, TranscriptView,
-        TranscriptViewKind, TreeFilter, UiRequest, UiRequestKind, UpdateDescriptor, VisibleLink,
-        WorkbenchOverlayView, WorkbenchTarget, composer_area_with_widget_budget,
-        extension_component_rect, transcript_area, transcript_area_with_widget_budget,
-        transcript_images,
+        AppState, ChangesTab, ClipboardDescriptor, ClipboardReadTarget, ComposerAttachment,
+        ComposerCompletion, ComposerCompletionItem, ComposerView, ConfirmOverlay, DetailOverlay,
+        ExtensionComponentOverlayOptions, ExtensionComponentOverlayView, ExtensionComponentState,
+        ExtensionUiState, ExtensionWidget, GitDiffDescriptor, GitFileDescriptor,
+        GitStatusDescriptor, InputFocus, InstructionDescriptor, ListOverlay, ModelDescriptor,
+        OverlayItem, OverlayLink, OverlayOrigin, OverlayState, PackageDescriptor, PendingIntent,
+        PendingTerminalInput, ProjectTrustDescriptor, ProviderDescriptor, ReadonlySessionView,
+        SearchHit, SessionRestorePoint, SessionSummary, SessionTreeNode, SettingDescriptor,
+        SkillDescriptor, SubagentDescriptor, TextEditorOverlay, TranscriptRequestKind,
+        TranscriptView, TranscriptViewKind, TreeFilter, UiRequest, UiRequestKind, UpdateDescriptor,
+        VisibleLink, WorkbenchOverlayView, WorkbenchTarget, WorkspaceRequest,
+        composer_area_with_widget_budget, extension_component_rect, transcript_area,
+        transcript_area_with_widget_budget, transcript_images,
     },
     image::{CachedImage, ImageSidecar, TerminalImageProtocol, current_terminal_image_protocol},
 };
@@ -449,10 +448,10 @@ fn trace_id(event: &str, id: &str) {
     }
 }
 
-fn trace_component_frame_applied(component_id: &str, revision: u64) {
+fn trace_component_frame_applied(component_id: &str, revision: u64, bytes: usize) {
     if std::env::var_os("PI_RUST_TUI_TRACE").is_some() {
         eprintln!(
-            "lystar-rust-tui trace=extension_component_frame_applied componentId={component_id} revision={revision} at_ms={}",
+            "lystar-rust-tui trace=extension_component_frame_applied componentId={component_id} revision={revision} bytes={bytes} at_ms={}",
             monotonic_millis()
         );
     }
@@ -1361,7 +1360,7 @@ fn run_session(
             clear_terminal_extension_output(&mut app, &mut terminal, &mut image_sidecar)?;
             return Ok(());
         }
-        if app.timed_out_b3_request().is_some()
+        if app.timed_out_workspace_request().is_some()
             || app.timed_out_custom_editor_submit().is_some()
             || app.timed_out_attachment_submit().is_some()
         {
@@ -2541,7 +2540,7 @@ fn handle_overlay_key(
         KeyCode::Char('r')
             if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                 && matches!(app.overlay(), Some(OverlayState::List(list)) if list.title == "Subagent")
-                && app.timed_out_b3_request().is_none() =>
+                && app.timed_out_workspace_request().is_none() =>
         {
             let filter = match app.overlay() {
                 Some(OverlayState::List(list)) => list.filter.clone(),
@@ -2898,8 +2897,12 @@ fn handle_overlay_key(
                     .as_deref()
                     .is_some_and(|action| action.starts_with("session:")) =>
         {
-            if let Some((id, request)) = app.restart_timed_out_b3_request() {
-                pipe.request(&encode_b3_request(&id, request.command, request.payload)?)?;
+            if let Some((id, request)) = app.restart_timed_out_workspace_request() {
+                pipe.request(&encode_workspace_request(
+                    &id,
+                    request.command,
+                    request.payload,
+                )?)?;
                 app.set_toast("正在重试请求");
             } else {
                 app.overlay_insert("r");
@@ -2909,11 +2912,11 @@ fn handle_overlay_key(
             if let Some(text) = app.overlay_copy_text() {
                 let client_request_id = format!("clipboard:{}", sequence.saturating_add(1));
                 app.mark_write_pending();
-                request_b3(
+                request_workspace(
                     app,
                     pipe,
                     sequence,
-                    B3Command::WriteClipboardText,
+                    WorkspaceCommand::WriteClipboardText,
                     serde_json::json!({
                         "text": text,
                         "clientInstanceId": client_instance_id,
@@ -3256,19 +3259,23 @@ fn set_tree_filter(app: &mut AppState, tree_filter: TreeFilter) {
 }
 
 #[cfg(unix)]
-fn request_b3(
+fn request_workspace(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,
     sequence: &mut u64,
-    command: B3Command,
+    command: WorkspaceCommand,
     payload: serde_json::Map<String, serde_json::Value>,
     intent: PendingIntent,
 ) -> Result<(), TuiError> {
     *sequence += 1;
     let id = format!("{}:{sequence}", command.wire());
-    let request = B3Request { command, payload };
+    let request = WorkspaceRequest { command, payload };
     app.begin_request(id.clone(), request.clone(), intent);
-    pipe.request(&encode_b3_request(&id, request.command, request.payload)?)
+    pipe.request(&encode_workspace_request(
+        &id,
+        request.command,
+        request.payload,
+    )?)
 }
 
 #[cfg(unix)]
@@ -3332,9 +3339,9 @@ fn request_visible_images(
         *sequence += 1;
         let id = format!("read-image-content-{sequence}");
         app.begin_image_request(id.clone(), image.content_ref.clone());
-        pipe.request(&encode_b3_request(
+        pipe.request(&encode_workspace_request(
             &id,
-            B3Command::ReadImageContent,
+            WorkspaceCommand::ReadImageContent,
             serde_json::json!({ "sessionPath": session_path, "contentRef": image.content_ref })
                 .as_object()
                 .cloned()
@@ -3382,9 +3389,9 @@ fn request_visible_rich_text(
         *sequence += 1;
         let id = format!("render-rich-text-{sequence}");
         app.begin_rich_text_request(id.clone(), key);
-        pipe.request(&encode_b3_request(
+        pipe.request(&encode_workspace_request(
             &id,
-            B3Command::RenderRichText,
+            WorkspaceCommand::RenderRichText,
             serde_json::json!({
                 "text": text,
                 "width": width,
@@ -3422,11 +3429,11 @@ fn request_subagents(
             copy_text: None,
         }),
     );
-    request_b3(
+    request_workspace(
         app,
         pipe,
         sequence,
-        B3Command::ListSubagents,
+        WorkspaceCommand::ListSubagents,
         serde_json::json!({ "sessionPath": parent_session_path })
             .as_object()
             .cloned()
@@ -3446,11 +3453,11 @@ fn request_clipboard_read(
     sequence: &mut u64,
     insert: bool,
 ) -> Result<(), TuiError> {
-    request_b3(
+    request_workspace(
         app,
         pipe,
         sequence,
-        B3Command::ReadClipboardText,
+        WorkspaceCommand::ReadClipboardText,
         serde_json::Map::new(),
         PendingIntent::ClipboardRead { insert },
     )
@@ -3464,19 +3471,19 @@ fn request_clipboard_both(
     target: ClipboardReadTarget,
 ) -> Result<(), TuiError> {
     let generation = app.begin_clipboard_read(target);
-    request_b3(
+    request_workspace(
         app,
         pipe,
         sequence,
-        B3Command::ReadClipboardText,
+        WorkspaceCommand::ReadClipboardText,
         serde_json::Map::new(),
         PendingIntent::ClipboardBothText { generation },
     )?;
-    request_b3(
+    request_workspace(
         app,
         pipe,
         sequence,
-        B3Command::ReadClipboardImage,
+        WorkspaceCommand::ReadClipboardImage,
         serde_json::Map::new(),
         PendingIntent::ClipboardBothImage { generation },
     )
@@ -3493,11 +3500,11 @@ fn request_attach_completion(
         app.set_overlay_error("尚未获取项目目录");
         return Ok(());
     };
-    request_b3(
+    request_workspace(
         app,
         pipe,
         sequence,
-        B3Command::GetCompletions,
+        WorkspaceCommand::GetCompletions,
         serde_json::json!({
             "cwd": cwd,
             "sessionPath": app.active_session_path(),
@@ -3628,11 +3635,11 @@ fn request_clipboard_write(
     }
     let client_request_id = format!("clipboard:{}", sequence.saturating_add(1));
     app.mark_write_pending();
-    request_b3(
+    request_workspace(
         app,
         pipe,
         sequence,
-        B3Command::WriteClipboardText,
+        WorkspaceCommand::WriteClipboardText,
         serde_json::json!({
             "text": text,
             "clientInstanceId": client_instance_id,
@@ -3681,7 +3688,7 @@ fn request_workspace_load(
         .ok_or_else(|| TuiError::InvalidResponse("尚未获取项目目录".to_owned()))?;
     let (command, payload, title, key) = match target {
         WorkbenchTarget::Changes => (
-            B3Command::GetGitStatus,
+            WorkspaceCommand::GetGitStatus,
             serde_json::json!({ "cwd": cwd })
                 .as_object()
                 .cloned()
@@ -3690,7 +3697,7 @@ fn request_workspace_load(
             "changes",
         ),
         WorkbenchTarget::Skills => (
-            B3Command::ListSkills,
+            WorkspaceCommand::ListSkills,
             serde_json::json!({ "cwd": cwd })
                 .as_object()
                 .cloned()
@@ -3699,7 +3706,7 @@ fn request_workspace_load(
             "skills",
         ),
         WorkbenchTarget::Trust => (
-            B3Command::GetProjectTrust,
+            WorkspaceCommand::GetProjectTrust,
             serde_json::json!({ "cwd": cwd })
                 .as_object()
                 .cloned()
@@ -3708,7 +3715,7 @@ fn request_workspace_load(
             "trust",
         ),
         WorkbenchTarget::InstructionsProject => (
-            B3Command::ListProjectInstructions,
+            WorkspaceCommand::ListProjectInstructions,
             serde_json::json!({ "cwd": cwd })
                 .as_object()
                 .cloned()
@@ -3717,13 +3724,13 @@ fn request_workspace_load(
             "instructions:project",
         ),
         WorkbenchTarget::InstructionsHost => (
-            B3Command::ListHostInstructions,
+            WorkspaceCommand::ListHostInstructions,
             serde_json::Map::new(),
             "指令 [本机]",
             "instructions:host",
         ),
         WorkbenchTarget::Packages => (
-            B3Command::ListPackages,
+            WorkspaceCommand::ListPackages,
             serde_json::json!({ "cwd": cwd })
                 .as_object()
                 .cloned()
@@ -3732,7 +3739,7 @@ fn request_workspace_load(
             "packages",
         ),
         WorkbenchTarget::Update => (
-            B3Command::CheckForUpdates,
+            WorkspaceCommand::CheckForUpdates,
             serde_json::Map::new(),
             "更新检查",
             "update",
@@ -3750,7 +3757,7 @@ fn request_workspace_load(
             copy_text: None,
         }),
     );
-    request_b3(
+    request_workspace(
         app,
         pipe,
         sequence,
@@ -3772,11 +3779,11 @@ fn request_settings(
     selected_key: Option<String>,
     filter: String,
 ) -> Result<(), TuiError> {
-    request_b3(
+    request_workspace(
         app,
         pipe,
         sequence,
-        B3Command::ListSettings,
+        WorkspaceCommand::ListSettings,
         serde_json::json!({ "sessionPath": session_path })
             .as_object()
             .cloned()
@@ -3807,11 +3814,11 @@ fn request_setting_write(
     };
     let client_request_id = format!("setting:{id}:{}", sequence.saturating_add(1));
     app.mark_write_pending();
-    request_b3(
+    request_workspace(
         app,
         pipe,
         sequence,
-        B3Command::SetSetting,
+        WorkspaceCommand::SetSetting,
         serde_json::json!({
             "sessionPath": session_path,
             "leaseId": lease_id,
@@ -3882,11 +3889,11 @@ fn open_workbench(
         return request_clipboard_both(app, pipe, sequence, ClipboardReadTarget::Overlay);
     }
     if target == "tree" {
-        return request_b3(
+        return request_workspace(
             app,
             pipe,
             sequence,
-            B3Command::GetSessionTree,
+            WorkspaceCommand::GetSessionTree,
             serde_json::json!({ "sessionPath": session_path })
                 .as_object()
                 .cloned()
@@ -3926,7 +3933,7 @@ fn open_workbench(
             .ok_or_else(|| TuiError::InvalidResponse("尚未获取项目目录".to_owned()))?;
         let (command, payload, workbench_target, title, key) = match target {
             "changes" => (
-                B3Command::GetGitStatus,
+                WorkspaceCommand::GetGitStatus,
                 serde_json::json!({ "cwd": cwd })
                     .as_object()
                     .cloned()
@@ -3936,7 +3943,7 @@ fn open_workbench(
                 "changes",
             ),
             "skills" => (
-                B3Command::ListSkills,
+                WorkspaceCommand::ListSkills,
                 serde_json::json!({ "cwd": cwd })
                     .as_object()
                     .cloned()
@@ -3946,7 +3953,7 @@ fn open_workbench(
                 "skills",
             ),
             "trust" => (
-                B3Command::GetProjectTrust,
+                WorkspaceCommand::GetProjectTrust,
                 serde_json::json!({ "cwd": cwd })
                     .as_object()
                     .cloned()
@@ -3956,7 +3963,7 @@ fn open_workbench(
                 "trust",
             ),
             "instructions" => (
-                B3Command::ListProjectInstructions,
+                WorkspaceCommand::ListProjectInstructions,
                 serde_json::json!({ "cwd": cwd })
                     .as_object()
                     .cloned()
@@ -3966,7 +3973,7 @@ fn open_workbench(
                 "instructions:project",
             ),
             "packages" => (
-                B3Command::ListPackages,
+                WorkspaceCommand::ListPackages,
                 serde_json::json!({ "cwd": cwd })
                     .as_object()
                     .cloned()
@@ -3976,7 +3983,7 @@ fn open_workbench(
                 "packages",
             ),
             "update" => (
-                B3Command::CheckForUpdates,
+                WorkspaceCommand::CheckForUpdates,
                 serde_json::Map::new(),
                 WorkbenchTarget::Update,
                 "更新检查",
@@ -3995,7 +4002,7 @@ fn open_workbench(
                 copy_text: None,
             }),
         );
-        return request_b3(
+        return request_workspace(
             app,
             pipe,
             sequence,
@@ -4010,7 +4017,7 @@ fn open_workbench(
     }
     let (command, payload, intent, title) = match target {
         "settings" => (
-            B3Command::ListSettings,
+            WorkspaceCommand::ListSettings,
             serde_json::json!({ "sessionPath": session_path })
                 .as_object()
                 .cloned()
@@ -4023,7 +4030,7 @@ fn open_workbench(
             "设置",
         ),
         "model" => (
-            B3Command::ListModels,
+            WorkspaceCommand::ListModels,
             serde_json::Map::new(),
             PendingIntent::WorkbenchLoad {
                 target: WorkbenchTarget::Model,
@@ -4033,7 +4040,7 @@ fn open_workbench(
             "模型",
         ),
         "thinking" => (
-            B3Command::ListModels,
+            WorkspaceCommand::ListModels,
             serde_json::Map::new(),
             PendingIntent::WorkbenchLoad {
                 target: WorkbenchTarget::Thinking,
@@ -4043,7 +4050,7 @@ fn open_workbench(
             "思考",
         ),
         "login" => (
-            B3Command::ListModelProviders,
+            WorkspaceCommand::ListModelProviders,
             serde_json::Map::new(),
             PendingIntent::WorkbenchLoad {
                 target: WorkbenchTarget::Login,
@@ -4052,9 +4059,9 @@ fn open_workbench(
             },
             "登录",
         ),
-        "about" => (B3Command::GetAbout, serde_json::Map::new(), PendingIntent::Overlay { target: "关于".to_owned() }, "关于"),
+        "about" => (WorkspaceCommand::GetAbout, serde_json::Map::new(), PendingIntent::Overlay { target: "关于".to_owned() }, "关于"),
         "doctor" => (
-            B3Command::GetDiagnostics,
+            WorkspaceCommand::GetDiagnostics,
             serde_json::json!({ "cwd": app.snapshot.as_ref().map(|snapshot| snapshot.cwd.clone()) })
                 .as_object()
                 .cloned()
@@ -4072,7 +4079,7 @@ fn open_workbench(
         link: None,
         copy_text: None,
     }));
-    request_b3(app, pipe, sequence, command, payload, intent)
+    request_workspace(app, pipe, sequence, command, payload, intent)
 }
 
 #[cfg(unix)]
@@ -4159,11 +4166,11 @@ fn activate_workbench_action(
         let path = item.value.trim_end_matches('/').to_owned();
         app.editor.clear();
         let cwd = app.active_session_cwd().unwrap_or_default().to_owned();
-        return request_b3(
+        return request_workspace(
             app,
             pipe,
             sequence,
-            B3Command::ReadProjectImage,
+            WorkspaceCommand::ReadProjectImage,
             serde_json::json!({ "cwd": cwd, "path": path })
                 .as_object()
                 .cloned()
@@ -4268,11 +4275,11 @@ fn activate_workbench_action(
             return Ok(());
         };
         let filter = list_context(app, "Subagent").0;
-        return request_b3(
+        return request_workspace(
             app,
             pipe,
             sequence,
-            B3Command::ReadSubagent,
+            WorkspaceCommand::ReadSubagent,
             serde_json::json!({
                 "sessionPath": snapshot.parent_session_path,
                 "agentId": snapshot.agent_id,
@@ -4310,11 +4317,11 @@ fn activate_workbench_action(
         let filter = list_context(app, "Subagent").0;
         app.close_overlay();
         app.mark_write_pending();
-        return request_b3(
+        return request_workspace(
             app,
             pipe,
             sequence,
-            B3Command::AbortSubagent,
+            WorkspaceCommand::AbortSubagent,
             serde_json::json!({
                 "sessionPath": snapshot.parent_session_path,
                 "leaseId": lease_id,
@@ -4364,11 +4371,11 @@ fn activate_workbench_action(
         let filter = list_context(app, "Subagent").0;
         app.close_overlay();
         app.mark_write_pending();
-        return request_b3(
+        return request_workspace(
             app,
             pipe,
             sequence,
-            B3Command::ContinueSubagent,
+            WorkspaceCommand::ContinueSubagent,
             serde_json::json!({
                 "sessionPath": snapshot.parent_session_path,
                 "leaseId": lease_id,
@@ -4433,11 +4440,11 @@ fn activate_workbench_action(
                 copy_text: None,
             }),
         );
-        return request_b3(
+        return request_workspace(
             app,
             pipe,
             sequence,
-            B3Command::GetGitDiff,
+            WorkspaceCommand::GetGitDiff,
             serde_json::json!({ "cwd": cwd, "path": file.path, "staged": file.staged })
                 .as_object()
                 .cloned()
@@ -4505,11 +4512,11 @@ fn activate_workbench_action(
             .map(str::to_owned)
             .ok_or_else(|| TuiError::InvalidResponse("尚未获取项目目录".to_owned()))?;
         app.mark_write_pending();
-        return request_b3(
+        return request_workspace(
             app,
             pipe,
             sequence,
-            B3Command::SetSkillEnabled,
+            WorkspaceCommand::SetSkillEnabled,
             serde_json::json!({
                 "cwd": cwd,
                 "path": skill.path,
@@ -4568,11 +4575,11 @@ fn activate_workbench_action(
             .map(str::to_owned)
             .ok_or_else(|| TuiError::InvalidResponse("尚未获取项目目录".to_owned()))?;
         app.mark_write_pending();
-        return request_b3(
+        return request_workspace(
             app,
             pipe,
             sequence,
-            B3Command::SetProjectTrust,
+            WorkspaceCommand::SetProjectTrust,
             serde_json::json!({
                 "cwd": cwd,
                 "trusted": trusted,
@@ -4671,9 +4678,9 @@ fn activate_workbench_action(
         .0;
         let cwd = app.active_session_cwd().unwrap_or_default();
         let command = if scope == "project" {
-            B3Command::SaveProjectInstruction
+            WorkspaceCommand::SaveProjectInstruction
         } else {
-            B3Command::SaveHostInstruction
+            WorkspaceCommand::SaveHostInstruction
         };
         let mut payload = serde_json::json!({
             "fileName": instruction.file_name,
@@ -4691,7 +4698,7 @@ fn activate_workbench_action(
             payload.insert("expectedHash".to_owned(), serde_json::Value::String(hash));
         }
         app.mark_write_pending();
-        return request_b3(
+        return request_workspace(
             app,
             pipe,
             sequence,
@@ -4753,11 +4760,11 @@ fn activate_workbench_action(
             .map(str::to_owned)
             .ok_or_else(|| TuiError::InvalidResponse("尚未获取项目目录".to_owned()))?;
         app.mark_write_pending();
-        return request_b3(
+        return request_workspace(
             app,
             pipe,
             sequence,
-            B3Command::InstallPackage,
+            WorkspaceCommand::InstallPackage,
             serde_json::json!({
                 "cwd": cwd, "source": source, "scope": scope,
                 "clientInstanceId": client_instance_id,
@@ -4785,11 +4792,11 @@ fn activate_workbench_action(
             .map(str::to_owned)
             .ok_or_else(|| TuiError::InvalidResponse("尚未获取项目目录".to_owned()))?;
         app.mark_write_pending();
-        return request_b3(
+        return request_workspace(
             app,
             pipe,
             sequence,
-            B3Command::RemovePackage,
+            WorkspaceCommand::RemovePackage,
             serde_json::json!({
                 "cwd": cwd, "source": package.source, "scope": package.scope,
                 "clientInstanceId": client_instance_id,
@@ -4829,11 +4836,11 @@ fn activate_workbench_action(
             payload.insert("source".to_owned(), serde_json::Value::String(source));
         }
         app.mark_write_pending();
-        return request_b3(
+        return request_workspace(
             app,
             pipe,
             sequence,
-            B3Command::UpdatePackages,
+            WorkspaceCommand::UpdatePackages,
             payload,
             PendingIntent::PackageMutation {
                 selected_key: None,
@@ -5018,11 +5025,11 @@ fn activate_workbench_action(
         if !label.is_empty() {
             payload.insert("label".to_owned(), serde_json::Value::String(label));
         }
-        return request_b3(
+        return request_workspace(
             app,
             pipe,
             sequence,
-            B3Command::SetEntryLabel,
+            WorkspaceCommand::SetEntryLabel,
             payload,
             PendingIntent::TreeMutation {
                 selected_key: node.id,
@@ -5044,8 +5051,8 @@ fn activate_workbench_action(
         };
         let (filter, selected_key) = list_context(app, "分支树");
         app.mark_write_pending();
-        return request_b3(
-            app, pipe, sequence, B3Command::NavigateSessionTree,
+        return request_workspace(
+            app, pipe, sequence, WorkspaceCommand::NavigateSessionTree,
             serde_json::json!({
                 "sessionPath": session_path, "leaseId": lease_id, "entryId": node.id, "summarize": true,
                 "clientInstanceId": client_instance_id, "clientRequestId": format!("tree-summary:{sequence}"),
@@ -5074,11 +5081,11 @@ fn activate_workbench_action(
         }
         let (filter, selected_key) = list_context(app, "分支树");
         app.mark_write_pending();
-        return request_b3(
+        return request_workspace(
             app,
             pipe,
             sequence,
-            B3Command::NavigateSessionTree,
+            WorkspaceCommand::NavigateSessionTree,
             serde_json::json!({
                 "sessionPath": session_path, "leaseId": lease_id, "entryId": node.id,
                 "clientInstanceId": client_instance_id, "clientRequestId": format!("tree-navigate:{sequence}"),
@@ -5257,11 +5264,11 @@ fn activate_workbench_action(
             sequence.saturating_add(1)
         );
         app.mark_write_pending();
-        return request_b3(
+        return request_workspace(
             app,
             pipe,
             sequence,
-            B3Command::SetSessionModel,
+            WorkspaceCommand::SetSessionModel,
             serde_json::json!({
                 "sessionPath": session_path,
                 "leaseId": lease_id,
@@ -5300,11 +5307,11 @@ fn activate_workbench_action(
         };
         let client_request_id = format!("thinking:{level}:{}", sequence.saturating_add(1));
         app.mark_write_pending();
-        return request_b3(
+        return request_workspace(
             app,
             pipe,
             sequence,
-            B3Command::SetSessionThinking,
+            WorkspaceCommand::SetSessionThinking,
             serde_json::json!({
                 "sessionPath": session_path,
                 "leaseId": lease_id,
@@ -5384,11 +5391,11 @@ fn activate_workbench_action(
             sequence.saturating_add(1)
         );
         app.mark_write_pending();
-        return request_b3(
+        return request_workspace(
             app,
             pipe,
             sequence,
-            B3Command::LoginModelProvider,
+            WorkspaceCommand::LoginModelProvider,
             serde_json::json!({
                 "provider": provider.id,
                 "authType": auth_type,
@@ -5416,11 +5423,11 @@ fn activate_workbench_action(
         let (filter, _) = list_context(app, "登录");
         let client_request_id = format!("logout:{}:{}", provider.id, sequence.saturating_add(1));
         app.mark_write_pending();
-        return request_b3(
+        return request_workspace(
             app,
             pipe,
             sequence,
-            B3Command::LogoutModelProvider,
+            WorkspaceCommand::LogoutModelProvider,
             serde_json::json!({
                 "provider": provider.id,
                 "clientInstanceId": client_instance_id,
@@ -5590,11 +5597,11 @@ fn submit_editor_with_origin(
     };
     if let Some(path) = attachment_path(&text) {
         let cwd = app.active_session_cwd().unwrap_or_default().to_owned();
-        return request_b3(
+        return request_workspace(
             app,
             pipe,
             sequence,
-            B3Command::ReadProjectImage,
+            WorkspaceCommand::ReadProjectImage,
             serde_json::json!({ "cwd": cwd, "path": path })
                 .as_object()
                 .cloned()
@@ -6164,6 +6171,7 @@ fn apply_server_message(
                             component_id,
                             event.get("frame").unwrap_or(&serde_json::Value::Null),
                         )?;
+                    let frame_bytes = lines.iter().map(|line| line.len()).sum::<usize>();
                     if app.apply_extension_component_frame(
                         component_id,
                         generation,
@@ -6175,7 +6183,7 @@ fn apply_server_message(
                         if let Some(component) = app.extension_ui.components.get_mut(component_id) {
                             component.desired_size = desired_size;
                         }
-                        trace_component_frame_applied(component_id, revision);
+                        trace_component_frame_applied(component_id, revision, frame_bytes);
                     }
                     return Ok(false);
                 }
@@ -6560,7 +6568,8 @@ fn apply_server_message(
             app.transcript.status = "图片读取失败，已保留占位".to_owned();
             return Ok(false);
         }
-        let result = message.validated_b3_result_value(B3Command::ReadImageContent)?;
+        let result =
+            message.validated_workspace_result_value(WorkspaceCommand::ReadImageContent)?;
         let object = result
             .as_object()
             .ok_or_else(|| TuiError::InvalidResponse("图片响应无效".to_owned()))?;
@@ -6608,7 +6617,7 @@ fn apply_server_message(
             app.transcript.status = "富文本渲染失败，已保留纯文本".to_owned();
             return Ok(false);
         }
-        let result = message.validated_b3_result_value(B3Command::RenderRichText)?;
+        let result = message.validated_workspace_result_value(WorkspaceCommand::RenderRichText)?;
         let object = result
             .as_object()
             .ok_or_else(|| TuiError::InvalidResponse("富文本响应无效".to_owned()))?;
@@ -6686,7 +6695,7 @@ fn apply_server_message(
             );
             return Ok(false);
         }
-        let result = message.validated_b3_result_value(pending.request.command)?;
+        let result = message.validated_workspace_result_value(pending.request.command)?;
         match pending.intent {
             PendingIntent::Overlay { target } => apply_workbench_result(app, target, result),
             PendingIntent::ChangeDetail => {
@@ -7041,11 +7050,11 @@ fn apply_server_message(
                 selected_key,
                 filter,
             } => {
-                request_b3(
+                request_workspace(
                     app,
                     pipe,
                     sequence,
-                    B3Command::GetSessionTree,
+                    WorkspaceCommand::GetSessionTree,
                     serde_json::json!({ "sessionPath": session_path })
                         .as_object()
                         .cloned()
@@ -7096,11 +7105,11 @@ fn apply_server_message(
             } => {
                 app.models = parse_models(&result)?;
                 app.set_toast(toast);
-                request_b3(
+                request_workspace(
                     app,
                     pipe,
                     sequence,
-                    B3Command::ListModelProviders,
+                    WorkspaceCommand::ListModelProviders,
                     serde_json::Map::new(),
                     PendingIntent::WorkbenchLoad {
                         target: WorkbenchTarget::Login,

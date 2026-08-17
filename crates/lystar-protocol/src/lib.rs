@@ -1,22 +1,22 @@
-mod b3;
 mod framing;
 mod read_only;
+mod workspace;
 
 #[allow(dead_code, clippy::all)]
 mod generated;
 
-pub use b3::{B3Command, B3Result};
+pub use workspace::{WorkspaceCommand, WorkspaceResult};
 
 pub use framing::{
     ClientMessage, FieldPresence, FrameDecoder, MAX_FRAME_LENGTH, MessageDiagnostic, ProtocolError,
     ServerMessage, decode_client_message, decode_server_message, encode_abort_operation_request,
-    encode_acquire_session_request, encode_b3_request, encode_client_hello,
-    encode_create_session_request, encode_extension_component_cancel_request,
-    encode_extension_component_input_request, encode_extension_component_resize_request,
-    encode_extension_component_result_request, encode_extension_editor_state_request,
-    encode_extension_terminal_input_request, encode_list_sessions_request, encode_queue_request,
-    encode_read_transcript_request, encode_release_session_request,
-    encode_search_transcript_request, encode_session_write_request, encode_ui_response,
+    encode_acquire_session_request, encode_client_hello, encode_create_session_request,
+    encode_extension_component_cancel_request, encode_extension_component_input_request,
+    encode_extension_component_resize_request, encode_extension_component_result_request,
+    encode_extension_editor_state_request, encode_extension_terminal_input_request,
+    encode_list_sessions_request, encode_queue_request, encode_read_transcript_request,
+    encode_release_session_request, encode_search_transcript_request, encode_session_write_request,
+    encode_ui_response, encode_workspace_request,
 };
 
 pub use read_only::{

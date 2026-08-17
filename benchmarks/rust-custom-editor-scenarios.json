@@ -1,0 +1,33 @@
+{
+  "implementation": "rust-custom-editor",
+  "hostRuntime": "bun-1.3.9",
+  "sizes": [[80, 24], [120, 36], [200, 60]],
+  "rounds": 5,
+  "rssLimitBytes": 188743680,
+  "scenarios": [
+    {
+      "name": "custom_editor_input300",
+      "eventCount": 300,
+      "input": { "encoding": "ascii", "character": "a", "count": 300 },
+      "thresholds": { "p95Ms": 16, "p99Ms": 33 }
+    },
+    {
+      "name": "paste5000",
+      "eventCount": 1,
+      "input": { "encoding": "ascii", "character": "p", "count": 5000 },
+      "thresholds": { "p95Ms": 16, "p99Ms": 33 }
+    },
+    {
+      "name": "render_animation",
+      "eventCount": 1000,
+      "animationFrames": 1000,
+      "thresholds": { "p95Ms": 50, "p99Ms": 75 }
+    },
+    {
+      "name": "autocomplete",
+      "eventCount": 10,
+      "autocomplete": { "source": "@contract-provider", "completion": "@contract-provider-final", "roundtrips": 10 },
+      "thresholds": { "p95Ms": 50, "p99Ms": 75 }
+    }
+  ]
+}

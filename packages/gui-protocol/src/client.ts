@@ -1,8 +1,7 @@
 import { Check } from "typebox/value";
 import { encodeClientMessage, ServerMessageDecoder } from "./framing.ts";
 import {
-	assertB3CommandResult,
-	B3CommandResultSchemas,
+	assertWorkspaceCommandResult,
 	type Command,
 	GUI_PROTOCOL_VERSION,
 	type JsonValue,
@@ -13,6 +12,7 @@ import {
 	type SessionStateSnapshot,
 	type TranscriptPage,
 	TranscriptPageSchema,
+	WorkspaceCommandResultSchemas,
 } from "./schemas.ts";
 
 export interface ByteTransport {
@@ -144,8 +144,8 @@ export class GuiProtocolClient {
 		if (request.command === "read_transcript" && Check(TranscriptPageSchema, value)) {
 			this.applyTranscriptPage(request.sessionPath, value);
 		}
-		if (request.command in B3CommandResultSchemas) {
-			assertB3CommandResult(request.command as keyof typeof B3CommandResultSchemas, value);
+		if (request.command in WorkspaceCommandResultSchemas) {
+			assertWorkspaceCommandResult(request.command as keyof typeof WorkspaceCommandResultSchemas, value);
 		}
 		return value;
 	}

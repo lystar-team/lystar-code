@@ -42,142 +42,142 @@
       "presence": { "path": ["value"], "state": "value" }
     },
     {
-      "name": "client-b3-list-settings",
+      "name": "client-workspace-list-settings",
       "direction": "client",
-      "b3Command": "list_settings",
-      "message": { "type": "request", "id": "b3-list-settings", "request": { "command": "list_settings", "sessionPath": "/tmp/session.jsonl" } }
+      "workspaceCommand": "list_settings",
+      "message": { "type": "request", "id": "workspace-list-settings", "request": { "command": "list_settings", "sessionPath": "/tmp/session.jsonl" } }
     },
     {
-      "name": "client-b3-set-setting",
+      "name": "client-workspace-set-setting",
       "direction": "client",
-      "b3Command": "set_setting",
-      "message": { "type": "request", "id": "b3-set-setting", "request": { "command": "set_setting", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "clientInstanceId": "client-1", "clientRequestId": "request-1", "id": "autocompact", "value": true } }
+      "workspaceCommand": "set_setting",
+      "message": { "type": "request", "id": "workspace-set-setting", "request": { "command": "set_setting", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "clientInstanceId": "client-1", "clientRequestId": "request-1", "id": "autocompact", "value": true } }
     },
     {
-      "name": "client-b3-list-models",
+      "name": "client-workspace-list-models",
       "direction": "client",
-      "b3Command": "list_models",
-      "message": { "type": "request", "id": "b3-list-models", "request": { "command": "list_models" } }
+      "workspaceCommand": "list_models",
+      "message": { "type": "request", "id": "workspace-list-models", "request": { "command": "list_models" } }
     },
     {
-      "name": "client-b3-list-model-providers",
+      "name": "client-workspace-list-model-providers",
       "direction": "client",
-      "b3Command": "list_model_providers",
-      "message": { "type": "request", "id": "b3-list-model-providers", "request": { "command": "list_model_providers" } }
+      "workspaceCommand": "list_model_providers",
+      "message": { "type": "request", "id": "workspace-list-model-providers", "request": { "command": "list_model_providers" } }
     },
     {
-      "name": "client-b3-set-session-model",
+      "name": "client-workspace-set-session-model",
       "direction": "client",
-      "b3Command": "set_session_model",
-      "message": { "type": "request", "id": "b3-set-session-model", "request": { "command": "set_session_model", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "clientInstanceId": "client-1", "clientRequestId": "request-1", "model": { "provider": "faux", "id": "test" } } }
+      "workspaceCommand": "set_session_model",
+      "message": { "type": "request", "id": "workspace-set-session-model", "request": { "command": "set_session_model", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "clientInstanceId": "client-1", "clientRequestId": "request-1", "model": { "provider": "faux", "id": "test" } } }
     },
     {
-      "name": "client-b3-set-session-thinking",
+      "name": "client-workspace-set-session-thinking",
       "direction": "client",
-      "b3Command": "set_session_thinking",
-      "message": { "type": "request", "id": "b3-set-session-thinking", "request": { "command": "set_session_thinking", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "clientInstanceId": "client-1", "clientRequestId": "request-1", "level": "high" } }
+      "workspaceCommand": "set_session_thinking",
+      "message": { "type": "request", "id": "workspace-set-session-thinking", "request": { "command": "set_session_thinking", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "clientInstanceId": "client-1", "clientRequestId": "request-1", "level": "high" } }
     },
     {
-      "name": "client-b3-login-model-provider",
+      "name": "client-workspace-login-model-provider",
       "direction": "client",
-      "b3Command": "login_model_provider",
-      "message": { "type": "request", "id": "b3-login-model-provider", "request": { "command": "login_model_provider", "provider": "faux", "authType": "api_key", "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
+      "workspaceCommand": "login_model_provider",
+      "message": { "type": "request", "id": "workspace-login-model-provider", "request": { "command": "login_model_provider", "provider": "faux", "authType": "api_key", "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
     },
     {
-      "name": "client-b3-logout-model-provider",
+      "name": "client-workspace-logout-model-provider",
       "direction": "client",
-      "b3Command": "logout_model_provider",
-      "message": { "type": "request", "id": "b3-logout-model-provider", "request": { "command": "logout_model_provider", "provider": "faux", "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
+      "workspaceCommand": "logout_model_provider",
+      "message": { "type": "request", "id": "workspace-logout-model-provider", "request": { "command": "logout_model_provider", "provider": "faux", "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
     },
     {
-      "name": "client-b3-get-project-trust",
+      "name": "client-workspace-get-project-trust",
       "direction": "client",
-      "b3Command": "get_project_trust",
-      "message": { "type": "request", "id": "b3-get-project-trust", "request": { "command": "get_project_trust", "cwd": "/tmp/project" } }
+      "workspaceCommand": "get_project_trust",
+      "message": { "type": "request", "id": "workspace-get-project-trust", "request": { "command": "get_project_trust", "cwd": "/tmp/project" } }
     },
     {
-      "name": "client-b3-set-project-trust",
+      "name": "client-workspace-set-project-trust",
       "direction": "client",
-      "b3Command": "set_project_trust",
-      "message": { "type": "request", "id": "b3-set-project-trust", "request": { "command": "set_project_trust", "cwd": "/tmp/project", "trusted": true, "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
+      "workspaceCommand": "set_project_trust",
+      "message": { "type": "request", "id": "workspace-set-project-trust", "request": { "command": "set_project_trust", "cwd": "/tmp/project", "trusted": true, "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
     },
     {
-      "name": "client-b3-list-packages",
+      "name": "client-workspace-list-packages",
       "direction": "client",
-      "b3Command": "list_packages",
-      "message": { "type": "request", "id": "b3-list-packages", "request": { "command": "list_packages", "cwd": "/tmp/project" } }
+      "workspaceCommand": "list_packages",
+      "message": { "type": "request", "id": "workspace-list-packages", "request": { "command": "list_packages", "cwd": "/tmp/project" } }
     },
     {
-      "name": "client-b3-install-package",
+      "name": "client-workspace-install-package",
       "direction": "client",
-      "b3Command": "install_package",
-      "message": { "type": "request", "id": "b3-install-package", "request": { "command": "install_package", "cwd": "/tmp/project", "source": "npm:example", "scope": "project", "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
+      "workspaceCommand": "install_package",
+      "message": { "type": "request", "id": "workspace-install-package", "request": { "command": "install_package", "cwd": "/tmp/project", "source": "npm:example", "scope": "project", "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
     },
     {
-      "name": "client-b3-remove-package",
+      "name": "client-workspace-remove-package",
       "direction": "client",
-      "b3Command": "remove_package",
-      "message": { "type": "request", "id": "b3-remove-package", "request": { "command": "remove_package", "cwd": "/tmp/project", "source": "npm:example", "scope": "project", "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
+      "workspaceCommand": "remove_package",
+      "message": { "type": "request", "id": "workspace-remove-package", "request": { "command": "remove_package", "cwd": "/tmp/project", "source": "npm:example", "scope": "project", "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
     },
     {
-      "name": "client-b3-update-packages",
+      "name": "client-workspace-update-packages",
       "direction": "client",
-      "b3Command": "update_packages",
-      "message": { "type": "request", "id": "b3-update-packages", "request": { "command": "update_packages", "cwd": "/tmp/project", "source": "npm:example", "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
+      "workspaceCommand": "update_packages",
+      "message": { "type": "request", "id": "workspace-update-packages", "request": { "command": "update_packages", "cwd": "/tmp/project", "source": "npm:example", "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
     },
     {
-      "name": "client-b3-get-session-tree",
+      "name": "client-workspace-get-session-tree",
       "direction": "client",
-      "b3Command": "get_session_tree",
-      "message": { "type": "request", "id": "b3-get-session-tree", "request": { "command": "get_session_tree", "sessionPath": "/tmp/session.jsonl" } }
+      "workspaceCommand": "get_session_tree",
+      "message": { "type": "request", "id": "workspace-get-session-tree", "request": { "command": "get_session_tree", "sessionPath": "/tmp/session.jsonl" } }
     },
     {
-      "name": "client-b3-set-entry-label",
+      "name": "client-workspace-set-entry-label",
       "direction": "client",
-      "b3Command": "set_entry_label",
-      "message": { "type": "request", "id": "b3-set-entry-label", "request": { "command": "set_entry_label", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "entryId": "entry-1", "label": "重点", "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
+      "workspaceCommand": "set_entry_label",
+      "message": { "type": "request", "id": "workspace-set-entry-label", "request": { "command": "set_entry_label", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "entryId": "entry-1", "label": "重点", "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
     },
     {
-      "name": "client-b3-navigate-session-tree",
+      "name": "client-workspace-navigate-session-tree",
       "direction": "client",
-      "b3Command": "navigate_session_tree",
-      "message": { "type": "request", "id": "b3-navigate-session-tree", "request": { "command": "navigate_session_tree", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "entryId": "entry-1", "summarize": true, "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
+      "workspaceCommand": "navigate_session_tree",
+      "message": { "type": "request", "id": "workspace-navigate-session-tree", "request": { "command": "navigate_session_tree", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "entryId": "entry-1", "summarize": true, "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
     },
     {
-      "name": "client-b3-list-subagents",
+      "name": "client-workspace-list-subagents",
       "direction": "client",
-      "b3Command": "list_subagents",
-      "message": { "type": "request", "id": "b3-list-subagents", "request": { "command": "list_subagents", "sessionPath": "/tmp/session.jsonl" } }
+      "workspaceCommand": "list_subagents",
+      "message": { "type": "request", "id": "workspace-list-subagents", "request": { "command": "list_subagents", "sessionPath": "/tmp/session.jsonl" } }
     },
     {
-      "name": "client-b3-read-subagent",
+      "name": "client-workspace-read-subagent",
       "direction": "client",
-      "b3Command": "read_subagent",
-      "message": { "type": "request", "id": "b3-read-subagent", "request": { "command": "read_subagent", "sessionPath": "/tmp/session.jsonl", "agentId": "agent-1" } }
+      "workspaceCommand": "read_subagent",
+      "message": { "type": "request", "id": "workspace-read-subagent", "request": { "command": "read_subagent", "sessionPath": "/tmp/session.jsonl", "agentId": "agent-1" } }
     },
     {
-      "name": "client-b3-abort-subagent",
+      "name": "client-workspace-abort-subagent",
       "direction": "client",
-      "b3Command": "abort_subagent",
-      "message": { "type": "request", "id": "b3-abort-subagent", "request": { "command": "abort_subagent", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "agentId": "agent-1", "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
+      "workspaceCommand": "abort_subagent",
+      "message": { "type": "request", "id": "workspace-abort-subagent", "request": { "command": "abort_subagent", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "agentId": "agent-1", "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
     },
     {
-      "name": "client-b3-continue-subagent",
+      "name": "client-workspace-continue-subagent",
       "direction": "client",
-      "b3Command": "continue_subagent",
-      "message": { "type": "request", "id": "b3-continue-subagent", "request": { "command": "continue_subagent", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "agentId": "agent-1", "text": "继续", "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
+      "workspaceCommand": "continue_subagent",
+      "message": { "type": "request", "id": "workspace-continue-subagent", "request": { "command": "continue_subagent", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "agentId": "agent-1", "text": "继续", "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
     },
     {
-      "name": "client-b3-read-clipboard-text",
+      "name": "client-workspace-read-clipboard-text",
       "direction": "client",
-      "b3Command": "read_clipboard_text",
-      "message": { "type": "request", "id": "b3-read-clipboard-text", "request": { "command": "read_clipboard_text" } }
+      "workspaceCommand": "read_clipboard_text",
+      "message": { "type": "request", "id": "workspace-read-clipboard-text", "request": { "command": "read_clipboard_text" } }
     },
     {
-      "name": "client-b3-write-clipboard-text",
+      "name": "client-workspace-write-clipboard-text",
       "direction": "client",
-      "b3Command": "write_clipboard_text",
-      "message": { "type": "request", "id": "b3-write-clipboard-text", "request": { "command": "write_clipboard_text", "text": "复制文本", "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
+      "workspaceCommand": "write_clipboard_text",
+      "message": { "type": "request", "id": "workspace-write-clipboard-text", "request": { "command": "write_clipboard_text", "text": "复制文本", "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
     },
     {
       "name": "client-write-create-session",
@@ -366,142 +366,142 @@
       "message": { "type": "event", "event": { "type": "session_progress", "sessionPath": "/tmp/session.jsonl", "progress": { "type": "usage", "usage": { "inputTokens": 1, "outputTokens": 2, "cacheReadTokens": 3, "cacheWriteTokens": 4, "elapsedMs": 5 } } } }
     },
     {
-      "name": "server-b3-list-settings",
+      "name": "server-workspace-list-settings",
       "direction": "server",
-      "b3Command": "list_settings",
-      "message": { "type": "response", "id": "b3-list-settings", "ok": true, "result": [{ "id": "autocompact", "label": "自动压缩", "kind": "boolean", "value": true, "displayValue": "开启", "scope": "global", "readOnly": false, "restartRequired": false }] }
+      "workspaceCommand": "list_settings",
+      "message": { "type": "response", "id": "workspace-list-settings", "ok": true, "result": [{ "id": "autocompact", "label": "自动压缩", "kind": "boolean", "value": true, "displayValue": "开启", "scope": "global", "readOnly": false, "restartRequired": false }] }
     },
     {
-      "name": "server-b3-set-setting",
+      "name": "server-workspace-set-setting",
       "direction": "server",
-      "b3Command": "set_setting",
-      "message": { "type": "response", "id": "b3-set-setting", "ok": true, "result": { "setting": { "id": "autocompact", "label": "自动压缩", "kind": "boolean", "value": true, "displayValue": "开启", "scope": "global", "readOnly": false, "restartRequired": false }, "requiresRestart": false } }
+      "workspaceCommand": "set_setting",
+      "message": { "type": "response", "id": "workspace-set-setting", "ok": true, "result": { "setting": { "id": "autocompact", "label": "自动压缩", "kind": "boolean", "value": true, "displayValue": "开启", "scope": "global", "readOnly": false, "restartRequired": false }, "requiresRestart": false } }
     },
     {
-      "name": "server-b3-list-models",
+      "name": "server-workspace-list-models",
       "direction": "server",
-      "b3Command": "list_models",
-      "message": { "type": "response", "id": "b3-list-models", "ok": true, "result": [{ "provider": "faux", "id": "test", "name": "Faux Test", "api": "openai-completions", "reasoning": true, "input": ["text"], "contextWindow": 128000, "maxTokens": 4096, "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }, "supportedThinkingLevels": ["off", "high"], "authenticated": true, "authMethods": ["api_key"] }] }
+      "workspaceCommand": "list_models",
+      "message": { "type": "response", "id": "workspace-list-models", "ok": true, "result": [{ "provider": "faux", "id": "test", "name": "Faux Test", "api": "openai-completions", "reasoning": true, "input": ["text"], "contextWindow": 128000, "maxTokens": 4096, "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }, "supportedThinkingLevels": ["off", "high"], "authenticated": true, "authMethods": ["api_key"] }] }
     },
     {
-      "name": "server-b3-list-model-providers",
+      "name": "server-workspace-list-model-providers",
       "direction": "server",
-      "b3Command": "list_model_providers",
-      "message": { "type": "response", "id": "b3-list-model-providers", "ok": true, "result": [{ "id": "faux", "name": "Faux", "authenticated": true, "authMethods": ["api_key"], "modelCount": 1, "builtIn": true, "custom": false }] }
+      "workspaceCommand": "list_model_providers",
+      "message": { "type": "response", "id": "workspace-list-model-providers", "ok": true, "result": [{ "id": "faux", "name": "Faux", "authenticated": true, "authMethods": ["api_key"], "modelCount": 1, "builtIn": true, "custom": false }] }
     },
     {
-      "name": "server-b3-set-session-model",
+      "name": "server-workspace-set-session-model",
       "direction": "server",
-      "b3Command": "set_session_model",
-      "message": { "type": "response", "id": "b3-set-session-model", "ok": true, "result": { "id": "session-1", "path": "/tmp/session.jsonl", "cwd": "/tmp", "createdAt": 0, "updatedAt": 1, "phase": "idle", "activity": "idle", "model": { "provider": "faux", "id": "test" }, "thinkingLevel": "off", "attached": true, "writeAccess": "owned", "revision": 1, "leafId": null, "queuedSteerCount": 0, "queuedFollowUpCount": 0, "transcriptGeneration": "generation-1", "transcriptRevision": 1 } }
+      "workspaceCommand": "set_session_model",
+      "message": { "type": "response", "id": "workspace-set-session-model", "ok": true, "result": { "id": "session-1", "path": "/tmp/session.jsonl", "cwd": "/tmp", "createdAt": 0, "updatedAt": 1, "phase": "idle", "activity": "idle", "model": { "provider": "faux", "id": "test" }, "thinkingLevel": "off", "attached": true, "writeAccess": "owned", "revision": 1, "leafId": null, "queuedSteerCount": 0, "queuedFollowUpCount": 0, "transcriptGeneration": "generation-1", "transcriptRevision": 1 } }
     },
     {
-      "name": "server-b3-set-session-thinking",
+      "name": "server-workspace-set-session-thinking",
       "direction": "server",
-      "b3Command": "set_session_thinking",
-      "message": { "type": "response", "id": "b3-set-session-thinking", "ok": true, "result": { "id": "session-1", "path": "/tmp/session.jsonl", "cwd": "/tmp", "createdAt": 0, "updatedAt": 1, "phase": "idle", "activity": "idle", "model": { "provider": "faux", "id": "test" }, "thinkingLevel": "high", "attached": true, "writeAccess": "owned", "revision": 2, "leafId": null, "queuedSteerCount": 0, "queuedFollowUpCount": 0, "transcriptGeneration": "generation-1", "transcriptRevision": 1 } }
+      "workspaceCommand": "set_session_thinking",
+      "message": { "type": "response", "id": "workspace-set-session-thinking", "ok": true, "result": { "id": "session-1", "path": "/tmp/session.jsonl", "cwd": "/tmp", "createdAt": 0, "updatedAt": 1, "phase": "idle", "activity": "idle", "model": { "provider": "faux", "id": "test" }, "thinkingLevel": "high", "attached": true, "writeAccess": "owned", "revision": 2, "leafId": null, "queuedSteerCount": 0, "queuedFollowUpCount": 0, "transcriptGeneration": "generation-1", "transcriptRevision": 1 } }
     },
     {
-      "name": "server-b3-login-model-provider",
+      "name": "server-workspace-login-model-provider",
       "direction": "server",
-      "b3Command": "login_model_provider",
-      "message": { "type": "response", "id": "b3-login-model-provider", "ok": true, "result": [{ "provider": "faux", "id": "test", "name": "Faux Test", "api": "openai-completions", "reasoning": true, "input": ["text"], "contextWindow": 128000, "maxTokens": 4096, "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }, "supportedThinkingLevels": ["off", "high"], "authenticated": true, "authMethods": ["api_key"] }] }
+      "workspaceCommand": "login_model_provider",
+      "message": { "type": "response", "id": "workspace-login-model-provider", "ok": true, "result": [{ "provider": "faux", "id": "test", "name": "Faux Test", "api": "openai-completions", "reasoning": true, "input": ["text"], "contextWindow": 128000, "maxTokens": 4096, "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }, "supportedThinkingLevels": ["off", "high"], "authenticated": true, "authMethods": ["api_key"] }] }
     },
     {
-      "name": "server-b3-logout-model-provider",
+      "name": "server-workspace-logout-model-provider",
       "direction": "server",
-      "b3Command": "logout_model_provider",
-      "message": { "type": "response", "id": "b3-logout-model-provider", "ok": true, "result": [{ "provider": "faux", "id": "test", "name": "Faux Test", "api": "openai-completions", "reasoning": true, "input": ["text"], "contextWindow": 128000, "maxTokens": 4096, "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }, "supportedThinkingLevels": ["off", "high"], "authenticated": false, "authMethods": ["api_key"] }] }
+      "workspaceCommand": "logout_model_provider",
+      "message": { "type": "response", "id": "workspace-logout-model-provider", "ok": true, "result": [{ "provider": "faux", "id": "test", "name": "Faux Test", "api": "openai-completions", "reasoning": true, "input": ["text"], "contextWindow": 128000, "maxTokens": 4096, "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }, "supportedThinkingLevels": ["off", "high"], "authenticated": false, "authMethods": ["api_key"] }] }
     },
     {
-      "name": "server-b3-get-project-trust",
+      "name": "server-workspace-get-project-trust",
       "direction": "server",
-      "b3Command": "get_project_trust",
-      "message": { "type": "response", "id": "b3-get-project-trust", "ok": true, "result": { "cwd": "/tmp/project", "trusted": true, "reason": "项目资源已信任", "resourceRisk": true } }
+      "workspaceCommand": "get_project_trust",
+      "message": { "type": "response", "id": "workspace-get-project-trust", "ok": true, "result": { "cwd": "/tmp/project", "trusted": true, "reason": "项目资源已信任", "resourceRisk": true } }
     },
     {
-      "name": "server-b3-set-project-trust",
+      "name": "server-workspace-set-project-trust",
       "direction": "server",
-      "b3Command": "set_project_trust",
-      "message": { "type": "response", "id": "b3-set-project-trust", "ok": true, "result": { "cwd": "/tmp/project", "trusted": false, "reason": "项目资源被明确设为不信任", "resourceRisk": true } }
+      "workspaceCommand": "set_project_trust",
+      "message": { "type": "response", "id": "workspace-set-project-trust", "ok": true, "result": { "cwd": "/tmp/project", "trusted": false, "reason": "项目资源被明确设为不信任", "resourceRisk": true } }
     },
     {
-      "name": "server-b3-list-packages",
+      "name": "server-workspace-list-packages",
       "direction": "server",
-      "b3Command": "list_packages",
-      "message": { "type": "response", "id": "b3-list-packages", "ok": true, "result": [{ "source": "npm:example", "scope": "project", "filtered": false, "installedPath": "/tmp/project/.pi/packages/example" }] }
+      "workspaceCommand": "list_packages",
+      "message": { "type": "response", "id": "workspace-list-packages", "ok": true, "result": [{ "source": "npm:example", "scope": "project", "filtered": false, "installedPath": "/tmp/project/.pi/packages/example" }] }
     },
     {
-      "name": "server-b3-install-package",
+      "name": "server-workspace-install-package",
       "direction": "server",
-      "b3Command": "install_package",
-      "message": { "type": "response", "id": "b3-install-package", "ok": true, "result": { "changed": true, "message": "ok" } }
+      "workspaceCommand": "install_package",
+      "message": { "type": "response", "id": "workspace-install-package", "ok": true, "result": { "changed": true, "message": "ok" } }
     },
     {
-      "name": "server-b3-remove-package",
+      "name": "server-workspace-remove-package",
       "direction": "server",
-      "b3Command": "remove_package",
-      "message": { "type": "response", "id": "b3-remove-package", "ok": true, "result": { "changed": false, "message": "ok" } }
+      "workspaceCommand": "remove_package",
+      "message": { "type": "response", "id": "workspace-remove-package", "ok": true, "result": { "changed": false, "message": "ok" } }
     },
     {
-      "name": "server-b3-update-packages",
+      "name": "server-workspace-update-packages",
       "direction": "server",
-      "b3Command": "update_packages",
-      "message": { "type": "response", "id": "b3-update-packages", "ok": true, "result": { "changed": true, "message": "ok" } }
+      "workspaceCommand": "update_packages",
+      "message": { "type": "response", "id": "workspace-update-packages", "ok": true, "result": { "changed": true, "message": "ok" } }
     },
     {
-      "name": "server-b3-get-session-tree",
+      "name": "server-workspace-get-session-tree",
       "direction": "server",
-      "b3Command": "get_session_tree",
-      "message": { "type": "response", "id": "b3-get-session-tree", "ok": true, "result": [{ "id": "entry-1", "parentId": null, "kind": "message", "label": "根", "timestamp": "2026-08-15T00:00:00.000Z", "preview": "hello", "isLeaf": true, "depth": 0 }] }
+      "workspaceCommand": "get_session_tree",
+      "message": { "type": "response", "id": "workspace-get-session-tree", "ok": true, "result": [{ "id": "entry-1", "parentId": null, "kind": "message", "label": "根", "timestamp": "2026-08-15T00:00:00.000Z", "preview": "hello", "isLeaf": true, "depth": 0 }] }
     },
     {
-      "name": "server-b3-set-entry-label",
+      "name": "server-workspace-set-entry-label",
       "direction": "server",
-      "b3Command": "set_entry_label",
-      "message": { "type": "response", "id": "b3-set-entry-label", "ok": true, "result": { "changed": true } }
+      "workspaceCommand": "set_entry_label",
+      "message": { "type": "response", "id": "workspace-set-entry-label", "ok": true, "result": { "changed": true } }
     },
     {
-      "name": "server-b3-navigate-session-tree",
+      "name": "server-workspace-navigate-session-tree",
       "direction": "server",
-      "b3Command": "navigate_session_tree",
-      "message": { "type": "response", "id": "b3-navigate-session-tree", "ok": true, "result": { "editorText": "继续", "cancelled": false, "newLeafId": "entry-2" } }
+      "workspaceCommand": "navigate_session_tree",
+      "message": { "type": "response", "id": "workspace-navigate-session-tree", "ok": true, "result": { "editorText": "继续", "cancelled": false, "newLeafId": "entry-2" } }
     },
     {
-      "name": "server-b3-list-subagents",
+      "name": "server-workspace-list-subagents",
       "direction": "server",
-      "b3Command": "list_subagents",
-      "message": { "type": "response", "id": "b3-list-subagents", "ok": true, "result": [{ "runId": "run-1", "agentId": "agent-1", "agent": "worker", "agentSource": "builtin", "task": "检查", "state": "running", "currentAction": "读取", "startedAt": 0, "updatedAt": 1, "elapsedMs": 1, "controllable": true }] }
+      "workspaceCommand": "list_subagents",
+      "message": { "type": "response", "id": "workspace-list-subagents", "ok": true, "result": [{ "runId": "run-1", "agentId": "agent-1", "agent": "worker", "agentSource": "builtin", "task": "检查", "state": "running", "currentAction": "读取", "startedAt": 0, "updatedAt": 1, "elapsedMs": 1, "controllable": true }] }
     },
     {
-      "name": "server-b3-read-subagent",
+      "name": "server-workspace-read-subagent",
       "direction": "server",
-      "b3Command": "read_subagent",
-      "message": { "type": "response", "id": "b3-read-subagent", "ok": true, "result": { "live": { "runId": "run-1", "agentId": "agent-1", "agent": "worker", "agentSource": "builtin", "task": "检查", "state": "running", "startedAt": 0, "updatedAt": 1, "elapsedMs": 1, "controllable": true } } }
+      "workspaceCommand": "read_subagent",
+      "message": { "type": "response", "id": "workspace-read-subagent", "ok": true, "result": { "live": { "runId": "run-1", "agentId": "agent-1", "agent": "worker", "agentSource": "builtin", "task": "检查", "state": "running", "startedAt": 0, "updatedAt": 1, "elapsedMs": 1, "controllable": true } } }
     },
     {
-      "name": "server-b3-abort-subagent",
+      "name": "server-workspace-abort-subagent",
       "direction": "server",
-      "b3Command": "abort_subagent",
-      "message": { "type": "response", "id": "b3-abort-subagent", "ok": true, "result": { "changed": true, "message": "ok" } }
+      "workspaceCommand": "abort_subagent",
+      "message": { "type": "response", "id": "workspace-abort-subagent", "ok": true, "result": { "changed": true, "message": "ok" } }
     },
     {
-      "name": "server-b3-continue-subagent",
+      "name": "server-workspace-continue-subagent",
       "direction": "server",
-      "b3Command": "continue_subagent",
-      "message": { "type": "response", "id": "b3-continue-subagent", "ok": true, "result": { "changed": true, "message": "ok" } }
+      "workspaceCommand": "continue_subagent",
+      "message": { "type": "response", "id": "workspace-continue-subagent", "ok": true, "result": { "changed": true, "message": "ok" } }
     },
     {
-      "name": "server-b3-read-clipboard-text",
+      "name": "server-workspace-read-clipboard-text",
       "direction": "server",
-      "b3Command": "read_clipboard_text",
-      "message": { "type": "response", "id": "b3-read-clipboard-text", "ok": true, "result": { "capability": true, "text": "剪贴板" } }
+      "workspaceCommand": "read_clipboard_text",
+      "message": { "type": "response", "id": "workspace-read-clipboard-text", "ok": true, "result": { "capability": true, "text": "剪贴板" } }
     },
     {
-      "name": "server-b3-write-clipboard-text",
+      "name": "server-workspace-write-clipboard-text",
       "direction": "server",
-      "b3Command": "write_clipboard_text",
-      "message": { "type": "response", "id": "b3-write-clipboard-text", "ok": true, "result": { "capability": true, "changed": true } }
+      "workspaceCommand": "write_clipboard_text",
+      "message": { "type": "response", "id": "workspace-write-clipboard-text", "ok": true, "result": { "capability": true, "changed": true } }
     }
   ]
 }

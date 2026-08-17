@@ -1,8 +1,7 @@
 import { encodeCbor, encodeFrame } from "@earendil-works/pi-protocol";
 import { describe, expect, it } from "vitest";
 import {
-	assertB3CommandResult,
-	B3CommandResultSchemas,
+	assertWorkspaceCommandResult,
 	type ByteTransport,
 	ClientMessageDecoder,
 	encodeClientMessage,
@@ -11,6 +10,7 @@ import {
 	GuiProtocolClient,
 	isDiagnostics,
 	ServerMessageDecoder,
+	WorkspaceCommandResultSchemas,
 } from "../src/index.ts";
 
 class MemoryTransport implements ByteTransport {
@@ -313,7 +313,7 @@ describe("GUI Protocol v1", () => {
 		}
 	});
 
-	it("rejects B3 oversized clipboard, tree, package, and settings payloads", () => {
+	it("rejects Workspace oversized clipboard, tree, package, and settings payloads", () => {
 		const decoder = new ClientMessageDecoder();
 		expect(() =>
 			decoder.push(
@@ -330,24 +330,24 @@ describe("GUI Protocol v1", () => {
 			),
 		).toThrow();
 		expect(() =>
-			assertB3CommandResult(
+			assertWorkspaceCommandResult(
 				"get_session_tree",
 				Array.from({ length: 10_001 }, () => ({})),
 			),
 		).toThrow();
 		expect(() =>
-			assertB3CommandResult(
+			assertWorkspaceCommandResult(
 				"list_packages",
 				Array.from({ length: 1001 }, () => ({})),
 			),
 		).toThrow();
 		expect(() =>
-			assertB3CommandResult(
+			assertWorkspaceCommandResult(
 				"list_settings",
 				Array.from({ length: 1001 }, () => ({})),
 			),
 		).toThrow();
-		expect(B3CommandResultSchemas.write_clipboard_text).toBeDefined();
+		expect(WorkspaceCommandResultSchemas.write_clipboard_text).toBeDefined();
 	});
 
 	it("keeps login results as strict model projections without credentials", () => {
@@ -367,9 +367,11 @@ describe("GUI Protocol v1", () => {
 				authMethods: ["api_key", "oauth"],
 			},
 		];
-		expect(() => assertB3CommandResult("login_model_provider", result)).not.toThrow();
+		expect(() => assertWorkspaceCommandResult("login_model_provider", result)).not.toThrow();
 		expect(() =>
-			assertB3CommandResult("login_model_provider", [{ method: "bearer-token", secret: "credential-secret" }]),
+			assertWorkspaceCommandResult("login_model_provider", [
+				{ method: "bearer-token", secret: "credential-secret" },
+			]),
 		).toThrow("不符合协议");
 	});
 
