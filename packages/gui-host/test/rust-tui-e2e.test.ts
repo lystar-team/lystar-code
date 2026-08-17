@@ -17,7 +17,7 @@ import {
 	writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import {
@@ -1504,6 +1504,42 @@ function createContractRuntimeHost(directory: string): Promise<RealRuntimeHost> 
 	})();
 }
 
+const CUSTOM_EDITOR_COMPANION = fileURLToPath(
+	new URL("./fixtures/runtime-custom-editor-companion-extension.ts", import.meta.url),
+);
+const CUSTOM_EDITOR_EXAMPLES = {
+	border: resolve(repositoryRoot, "packages/coding-agent/examples/extensions/border-status-editor.ts"),
+	modal: resolve(repositoryRoot, "packages/coding-agent/examples/extensions/modal-editor.ts"),
+	rainbow: resolve(repositoryRoot, "packages/coding-agent/examples/extensions/rainbow-editor.ts"),
+} as const;
+
+type CustomEditorExample = keyof typeof CUSTOM_EDITOR_EXAMPLES;
+
+function createCustomEditorRuntimeHost(directory: string, example: CustomEditorExample): Promise<RealRuntimeHost> {
+	return (async () => {
+		const agentDir = join(directory, "agent");
+		const cwd = join(directory, "project");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(cwd, { recursive: true });
+		writeFileSync(join(cwd, "bench-target.ts"), "export const benchTarget = true;\n");
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({
+				defaultProvider: "lystar-custom-editor-faux",
+				defaultModel: "editor-1",
+				defaultThinkingLevel: "off",
+				defaultProjectTrust: "always",
+				extensions: [CUSTOM_EDITOR_COMPANION, CUSTOM_EDITOR_EXAMPLES[example]],
+			}),
+		);
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		const runtime = await adapter.createSession(cwd, async () => ({ cancelled: true }));
+		const sessionPath = runtime.sessionPath;
+		await runtime.dispose();
+		return { adapter, agentDir, sessionPath };
+	})();
+}
+
 function componentStormBenchmarkConfig() {
 	const artifact = process.env.LYSTAR_EXTENSION_COMPONENT_STORM_ARTIFACT;
 	if (!artifact) return undefined;
@@ -2072,6 +2108,66 @@ describe("Rust read-only TUI fd bridge", () => {
 			}
 		}
 	}, 180_000);
+
+	it("通过 tmux/FIFO 两轮加载真实 Pi custom Editor examples", async () => {
+		for (const example of ["border", "modal", "rainbow"] as const) {
+			for (let attempt = 0; attempt < 2; attempt++) {
+				const tui = await startTui(
+					0,
+					{ width: 80, height: 24 },
+					`custom-editor-${example}-${attempt + 1}`,
+					undefined,
+					{},
+					async ({ directory }) => createCustomEditorRuntimeHost(directory, example),
+				);
+				try {
+					await waitForInitialPage(tui);
+					await waitFor(
+						async () => {
+							await tui.pump();
+							return tui.pane().includes("预置草稿 中文");
+						},
+						() =>
+							`${example} did not mount its original factory with the session-start draft: ${JSON.stringify({ pane: tui.pane(), server: tui.serverMessages.filter((message) => message.type === "event") })}`,
+					);
+
+					const expectedFrameText = {
+						border: "ctx 0%/128k",
+						modal: "INSERT",
+						rainbow: "预置草稿 中文",
+					}[example];
+					await waitFor(
+						() => tui.pane().includes(expectedFrameText),
+						`${example} did not render its original editor frame`,
+					);
+
+					writeFileSync(join(tui.artifactDirectory, `${example}-screen.txt`), tui.pane());
+					const framesBeforeDispose = tui
+						.traces()
+						.filter(
+							(event) => event.event === "extension_component_frame_applied" && event.componentId === "editor",
+						).length;
+					tui.closeProtocol();
+					await waitFor(
+						() => spawnSync("tmux", ["-L", tui.socket, "has-session", "-t", "tui"]).status !== 0,
+						`${example} Rust TUI did not stop after EOF`,
+					);
+					assert.equal(
+						tui
+							.traces()
+							.filter(
+								(event) =>
+									event.event === "extension_component_frame_applied" && event.componentId === "editor",
+							).length,
+						framesBeforeDispose,
+						`${example} produced an editor frame after disposal`,
+					);
+				} finally {
+					tui.closeProtocol();
+				}
+			}
+		}
+	}, 240_000);
 
 	(componentStormBenchmark ? it : it.skip)(
 		"benchmarks real Extension Component invalidate storms through Host and Rust",

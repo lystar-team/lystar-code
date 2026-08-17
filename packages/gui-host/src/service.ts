@@ -1524,11 +1524,6 @@ export class GuiHostService {
 		if (existing === runtime) return;
 		if (existing) throw new Error(`Session runtime is already attached: ${sessionPath}`);
 		this.runtimes.set(sessionPath, runtime);
-		const extensionUi = runtime.getExtensionUiSnapshot?.();
-		if (extensionUi) {
-			void this.broadcast({ type: "extension_ui_snapshot", sessionPath, state: extensionUi });
-			runtime.publishExtensionComponents?.();
-		}
 		this.runtimeUnsubscribers.set(
 			sessionPath,
 			runtime.onEvent((event) => {
@@ -1646,6 +1641,11 @@ export class GuiHostService {
 				}
 			}),
 		);
+		const extensionUi = runtime.getExtensionUiSnapshot?.();
+		if (extensionUi) {
+			void this.broadcast({ type: "extension_ui_snapshot", sessionPath, state: extensionUi });
+			runtime.publishExtensionComponents?.();
+		}
 	}
 
 	private detachRuntimeProjection(sessionPath: string): void {
