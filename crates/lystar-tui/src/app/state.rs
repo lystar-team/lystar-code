@@ -17,11 +17,11 @@ use super::transcript::rich_text_source;
 use super::{
     ChangesTab, ClipboardDescriptor, ClipboardReadState, ComposerAttachment, ComposerCompletion,
     ExtensionUiState, GitDiffDescriptor, GitStatusDescriptor, ImagePendingRequest,
-    InstructionDescriptor, ListOverlay, ModelDescriptor, OverlayOrigin, OverlayState,
-    PackageDescriptor, PendingAttachmentSubmit, PendingComponentInput, PendingCustomEditorSubmit,
-    PendingRequest, PendingTerminalInput, ProjectTrustDescriptor, ProviderDescriptor,
-    ReadonlySessionView, RecoveryDraft, RichTextPendingRequest, SearchState, SessionSummary,
-    SessionTreeNode, SettingDescriptor, SkillDescriptor, SubagentDescriptor,
+    InstructionDescriptor, ListOverlay, LiveCompaction, ModelDescriptor, OverlayOrigin,
+    OverlayState, PackageDescriptor, PendingAttachmentSubmit, PendingComponentInput,
+    PendingCustomEditorSubmit, PendingRequest, PendingTerminalInput, ProjectTrustDescriptor,
+    ProviderDescriptor, ReadonlySessionView, RecoveryDraft, RichTextPendingRequest, SearchState,
+    SessionSummary, SessionTreeNode, SettingDescriptor, SkillDescriptor, SubagentDescriptor,
     TranscriptPendingRequest, TranscriptRequestKind, TranscriptViewKind, TranscriptWindow,
     TreeFilter, UpdateDescriptor, WorkspaceOverlayGeneration,
 };
@@ -43,6 +43,7 @@ pub struct SessionRestorePoint {
     pub lease_id: Option<String>,
     pub operation: Option<OperationSnapshot>,
     pub live_tools: LiveTools,
+    pub compaction: Option<LiveCompaction>,
     pub assistant_stream: String,
     pub thinking_stream: String,
     pub overlays: Vec<OverlayState>,
@@ -93,6 +94,7 @@ pub struct AppState {
     pub lease_id: Option<String>,
     pub operation: Option<OperationSnapshot>,
     pub live_tools: LiveTools,
+    pub compaction: Option<LiveCompaction>,
     pub assistant_stream: String,
     pub thinking_stream: String,
     pub disconnected: Option<String>,
@@ -204,6 +206,7 @@ impl AppState {
             lease_id: self.lease_id.clone(),
             operation: self.operation.clone(),
             live_tools: self.live_tools.clone(),
+            compaction: self.compaction.clone(),
             assistant_stream: self.assistant_stream.clone(),
             thinking_stream: self.thinking_stream.clone(),
             overlays: self.overlays.clone(),
@@ -223,6 +226,7 @@ impl AppState {
         self.lease_id = restore.lease_id;
         self.operation = restore.operation;
         self.live_tools = restore.live_tools;
+        self.compaction = restore.compaction;
         self.assistant_stream = restore.assistant_stream;
         self.thinking_stream = restore.thinking_stream;
         self.overlays = restore.overlays;
@@ -510,6 +514,11 @@ impl AppState {
                     snapshot.phase = phase;
                 }
             }
+            SessionProgress::Compaction {
+                status,
+                reason,
+                error,
+            } => self.compaction = Some(LiveCompaction::new(&status, reason, error)),
             SessionProgress::Status { status, .. } => self.transcript.status = status,
             SessionProgress::Usage { usage } => {
                 if let Some(elapsed) = usage.elapsed_ms {
@@ -534,6 +543,9 @@ impl AppState {
                 TranscriptViewItem::Thinking { .. } => committed_thinking = true,
                 TranscriptViewItem::ToolResult { call_id, .. } => {
                     self.live_tools.remove(call_id);
+                }
+                TranscriptViewItem::Summary { title, .. } if title == "上下文压缩" => {
+                    self.compaction = None;
                 }
                 _ => {}
             }

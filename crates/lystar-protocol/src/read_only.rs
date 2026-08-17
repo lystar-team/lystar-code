@@ -254,6 +254,11 @@ pub enum SessionProgress {
     Phase {
         phase: String,
     },
+    Compaction {
+        status: String,
+        reason: String,
+        error: Option<String>,
+    },
     Status {
         status: String,
         truncated: Option<bool>,

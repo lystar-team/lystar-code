@@ -4,7 +4,10 @@ use ratatui::style::{Color, Modifier, Style};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use super::{AppState, LiveToolStatus, live_diff::DiffLineKind, transcript::sanitize_render_text};
+use super::{
+    AppState, CompactionStatus, LiveToolStatus, live_diff::DiffLineKind,
+    transcript::sanitize_render_text,
+};
 
 pub(super) fn streaming_tail_lines(
     state: &AppState,
@@ -58,7 +61,30 @@ pub(super) fn streaming_tail_lines(
             }
         }
     }
+    if let Some(compaction) = &state.compaction {
+        if !lines.is_empty() {
+            push_stream_line(&mut lines, String::new(), Style::default(), max_lines);
+        }
+        push_stream_lines(
+            &mut lines,
+            &compaction.display(),
+            width,
+            max_lines,
+            compaction_style(compaction.status),
+        );
+    }
     lines.into_iter().collect()
+}
+
+fn compaction_style(status: CompactionStatus) -> Style {
+    match status {
+        CompactionStatus::Running | CompactionStatus::WaitingRetry => {
+            Style::default().fg(Color::Yellow)
+        }
+        CompactionStatus::Completed => Style::default().fg(Color::Green),
+        CompactionStatus::Cancelled => Style::default().fg(Color::DarkGray),
+        CompactionStatus::Failed => Style::default().fg(Color::Red),
+    }
 }
 
 fn live_tool_style(status: LiveToolStatus) -> Style {

@@ -275,6 +275,18 @@ export const SessionProgressSchema = Type.Union([
 	}),
 	StrictObject({ type: Type.Literal("phase"), phase: SessionPhaseSchema }),
 	StrictObject({
+		type: Type.Literal("compaction"),
+		status: Type.Union([
+			Type.Literal("running"),
+			Type.Literal("completed"),
+			Type.Literal("cancelled"),
+			Type.Literal("failed"),
+			Type.Literal("waiting_retry"),
+		]),
+		reason: Type.Union([Type.Literal("manual"), Type.Literal("threshold"), Type.Literal("overflow")]),
+		error: Type.Optional(Type.String({ maxLength: 1024 })),
+	}),
+	StrictObject({
 		type: Type.Literal("status"),
 		status: Type.String({ minLength: 1, maxLength: 1024 }),
 		truncated: Type.Optional(Type.Boolean()),

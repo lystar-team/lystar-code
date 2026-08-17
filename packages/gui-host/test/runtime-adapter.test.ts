@@ -151,6 +151,48 @@ describe("CodingAgentRuntimeAdapter", () => {
 		});
 	});
 
+	it("projects structured compaction lifecycle progress", () => {
+		expect(projectRuntimeProgress({ type: "compaction_start", reason: "manual" })).toEqual([
+			{ type: "phase", phase: "compaction" },
+			{ type: "compaction", status: "running", reason: "manual" },
+		]);
+		expect(
+			projectRuntimeProgress({
+				type: "compaction_end",
+				reason: "threshold",
+				result: undefined,
+				aborted: false,
+				willRetry: true,
+				errorMessage: "temporary",
+			}),
+		).toEqual([
+			{
+				type: "compaction",
+				status: "waiting_retry",
+				reason: "threshold",
+				error: "temporary",
+			},
+		]);
+		expect(
+			projectRuntimeProgress({
+				type: "compaction_end",
+				reason: "overflow",
+				result: undefined,
+				aborted: true,
+				willRetry: false,
+			}),
+		).toEqual([{ type: "compaction", status: "cancelled", reason: "overflow" }]);
+		expect(
+			projectRuntimeProgress({
+				type: "compaction_end",
+				reason: "manual",
+				result: {} as never,
+				aborted: false,
+				willRetry: false,
+			}),
+		).toEqual([{ type: "compaction", status: "completed", reason: "manual" }]);
+	});
+
 	it("projects bash commands and output snapshots without JSON summaries", () => {
 		const start: Extract<AgentSessionEvent, { type: "tool_execution_start" }> = {
 			type: "tool_execution_start",

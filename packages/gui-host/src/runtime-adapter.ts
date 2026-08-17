@@ -880,7 +880,27 @@ export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgres
 		case "queue_update":
 			return [{ type: "queue_update", steeringCount: event.steering.length, followUpCount: event.followUp.length }];
 		case "compaction_start":
-			return [{ type: "phase", phase: "compaction" }];
+			return [
+				{ type: "phase", phase: "compaction" },
+				{ type: "compaction", status: "running", reason: event.reason },
+			];
+		case "compaction_end": {
+			const status = event.aborted
+				? "cancelled"
+				: event.result
+					? "completed"
+					: event.willRetry
+						? "waiting_retry"
+						: "failed";
+			return [
+				{
+					type: "compaction",
+					status,
+					reason: event.reason,
+					...(event.errorMessage ? { error: boundedStatus(event.errorMessage) } : {}),
+				},
+			];
+		}
 		case "auto_retry_start":
 		case "summarization_retry_scheduled":
 			return [{ type: "phase", phase: "retry" }];

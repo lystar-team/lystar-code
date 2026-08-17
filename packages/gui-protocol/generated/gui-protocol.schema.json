@@ -2990,6 +2990,65 @@
           "type": "object",
           "required": [
             "type",
+            "status",
+            "reason"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "compaction"
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "running"
+                },
+                {
+                  "type": "string",
+                  "const": "completed"
+                },
+                {
+                  "type": "string",
+                  "const": "cancelled"
+                },
+                {
+                  "type": "string",
+                  "const": "failed"
+                },
+                {
+                  "type": "string",
+                  "const": "waiting_retry"
+                }
+              ]
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "manual"
+                },
+                {
+                  "type": "string",
+                  "const": "threshold"
+                },
+                {
+                  "type": "string",
+                  "const": "overflow"
+                }
+              ]
+            },
+            "error": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
             "status"
           ],
           "properties": {

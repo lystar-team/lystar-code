@@ -1,6 +1,7 @@
 mod composer;
 mod extension;
 mod live_bash;
+mod live_compaction;
 mod live_diff;
 mod live_stream;
 mod live_tools;
@@ -13,6 +14,7 @@ mod workspace;
 
 pub use composer::*;
 pub use extension::*;
+pub use live_compaction::*;
 pub use live_tools::*;
 pub use overlay::*;
 pub use search::*;
@@ -27,6 +29,8 @@ pub const WORKSPACE_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::
 
 #[cfg(test)]
 mod bash_tests;
+#[cfg(test)]
+mod compact_tests;
 #[cfg(test)]
 mod diff_tests;
 #[cfg(test)]

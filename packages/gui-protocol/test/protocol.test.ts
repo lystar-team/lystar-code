@@ -193,6 +193,23 @@ describe("GUI Protocol v1", () => {
 		expect(new ServerMessageDecoder().push(encodeServerMessage(message))).toEqual([message]);
 	});
 
+	it("accepts structured compaction progress", () => {
+		const message = {
+			type: "event" as const,
+			event: {
+				type: "session_progress" as const,
+				sessionPath: "/tmp/session.jsonl",
+				progress: {
+					type: "compaction" as const,
+					status: "waiting_retry" as const,
+					reason: "threshold" as const,
+					error: "temporary",
+				},
+			},
+		};
+		expect(new ServerMessageDecoder().push(encodeServerMessage(message))).toEqual([message]);
+	});
+
 	it("fails pending input on disconnect without resending it", async () => {
 		const clientTransport = new MemoryTransport();
 		const serverTransport = new MemoryTransport();
