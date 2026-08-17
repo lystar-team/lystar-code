@@ -1124,6 +1124,10 @@ function hostLeaseCount(service: GuiHostService): number {
 	return (service as unknown as { leases: { leases: Map<string, unknown> } }).leases.leases.size;
 }
 
+function hostRuntimeCount(service: GuiHostService): number {
+	return (service as unknown as { runtimes: Map<string, unknown> }).runtimes.size;
+}
+
 async function waitForRequest(
 	tui: StartedTui,
 	command: string,
@@ -2946,6 +2950,15 @@ describe("Rust read-only TUI fd bridge", () => {
 		await first.handle(prompt);
 		assert.ok(dropped, "the accepted prompt response was not rejected");
 		assert.deepEqual(runtime.prompts, [], "prompt ran before its accepted response was delivered");
+		await first.handle({
+			type: "request",
+			id: "release-after-drop",
+			request: { command: "release_session", sessionPath, leaseId: firstLease },
+		});
+		const release = responseFor(droppedMessages, "release-after-drop");
+		assert.ok(release.ok, "accepted response reservation blocked release_session");
+		assert.equal(hostLeaseCount(service), 0, "accepted response drop retained a lease");
+		assert.equal(hostRuntimeCount(service), 0, "accepted response drop retained a runtime");
 		await first.close();
 
 		const retryMessages: ServerMessage[] = [];

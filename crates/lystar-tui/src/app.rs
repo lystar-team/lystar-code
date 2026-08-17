@@ -627,6 +627,95 @@ impl fmt::Debug for ComposerAttachment {
 }
 
 #[derive(Clone)]
+pub struct PendingCustomEditorSubmit {
+    pub command: String,
+    pub session_path: String,
+    pub session_generation: u64,
+    pub editor_component_generation: Option<u64>,
+    pub lease_id: String,
+    pub client_instance_id: String,
+    pub client_request_id: String,
+    pub text: String,
+    pub submit_revision: u64,
+    pub attachments: Vec<ComposerAttachment>,
+    pub started_at: Instant,
+    pub retry_count: u8,
+}
+
+fn short_hash(value: &str) -> String {
+    value.chars().take(12).collect()
+}
+
+fn draft_debug_fields(
+    formatter: &mut fmt::DebugStruct<'_, '_>,
+    text: &str,
+    attachment_hashes: &[String],
+) {
+    formatter
+        .field("text_bytes", &text.len())
+        .field(
+            "text_hash",
+            &short_hash(&format!("{:x}", Sha256::digest(text.as_bytes()))),
+        )
+        .field("attachments_count", &attachment_hashes.len())
+        .field(
+            "attachment_hashes",
+            &attachment_hashes
+                .iter()
+                .map(|hash| short_hash(hash))
+                .collect::<Vec<_>>(),
+        );
+}
+
+impl fmt::Debug for PendingCustomEditorSubmit {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let attachment_hashes = self
+            .attachments
+            .iter()
+            .map(|attachment| attachment.content_hash.clone())
+            .collect::<Vec<_>>();
+        let mut debug = formatter.debug_struct("PendingCustomEditorSubmit");
+        draft_debug_fields(&mut debug, &self.text, &attachment_hashes);
+        debug.finish()
+    }
+}
+
+#[derive(Clone)]
+pub struct RecoveryDraft {
+    pub session_path: String,
+    pub session_generation: u64,
+    pub editor_component_generation: Option<u64>,
+    pub submit_revision: u64,
+    text: String,
+    submitted_attachment_hashes: Vec<String>,
+}
+
+impl RecoveryDraft {
+    fn from_submit(submit: PendingCustomEditorSubmit) -> Self {
+        Self {
+            session_path: submit.session_path,
+            session_generation: submit.session_generation,
+            editor_component_generation: submit.editor_component_generation,
+            submit_revision: submit.submit_revision,
+            text: submit.text,
+            submitted_attachment_hashes: submit
+                .attachments
+                .into_iter()
+                .map(|attachment| attachment.content_hash)
+                .collect(),
+        }
+    }
+}
+
+impl fmt::Debug for RecoveryDraft {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = formatter.debug_struct("RecoveryDraft");
+        draft_debug_fields(&mut debug, &self.text, &self.submitted_attachment_hashes);
+        debug.finish()
+    }
+}
+
+#[derive(Clone)]
 pub struct PendingAttachmentSubmit {
     pub command: String,
     pub session_path: String,
@@ -1218,6 +1307,9 @@ pub struct AppState {
     pub subagent_parent_path: Option<String>,
     pub clipboard: Option<ClipboardDescriptor>,
     pub attachments: Vec<ComposerAttachment>,
+    pub pending_custom_editor_submits: HashMap<String, PendingCustomEditorSubmit>,
+    accepted_custom_editor_submits: HashMap<String, RecoveryDraft>,
+    pub recovery_draft: Option<RecoveryDraft>,
     pub pending_attachment_submits: HashMap<String, PendingAttachmentSubmit>,
     pub attachment_preview: Option<String>,
     pub composer_completion: Option<ComposerCompletion>,
@@ -1312,6 +1404,149 @@ impl AppState {
         }
     }
 
+    pub fn editor_generation(&self) -> u64 {
+        self.editor_generation
+    }
+
+    pub fn extension_editor_revision(&self) -> u64 {
+        self.extension_ui.revision
+    }
+
+    pub fn begin_custom_editor_submit(
+        &mut self,
+        response_id: String,
+        submit: PendingCustomEditorSubmit,
+    ) {
+        self.pending_custom_editor_submits
+            .insert(response_id, submit);
+    }
+
+    pub fn timed_out_custom_editor_submit(&self) -> Option<(String, PendingCustomEditorSubmit)> {
+        self.pending_custom_editor_submits
+            .iter()
+            .find(|(_, submit)| submit.started_at.elapsed() >= B3_REQUEST_TIMEOUT)
+            .map(|(id, submit)| (id.clone(), submit.clone()))
+    }
+
+    pub fn restart_timed_out_custom_editor_submit(
+        &mut self,
+    ) -> Option<(String, PendingCustomEditorSubmit)> {
+        let (id, submit) = self.timed_out_custom_editor_submit()?;
+        if let Some(pending) = self.pending_custom_editor_submits.get_mut(&id) {
+            pending.started_at = Instant::now();
+            pending.retry_count = pending.retry_count.saturating_add(1);
+        }
+        Some((id, submit))
+    }
+
+    pub fn recover_exhausted_custom_editor_submit(&mut self) -> bool {
+        let Some((id, submit)) = self.timed_out_custom_editor_submit() else {
+            return false;
+        };
+        if submit.retry_count == 0 {
+            return false;
+        }
+        self.pending_custom_editor_submits.remove(&id);
+        self.offer_recovery(RecoveryDraft::from_submit(submit));
+        true
+    }
+
+    pub fn acknowledge_custom_editor_submit(&mut self, request_id: &str, operation_id: String) {
+        let Some(submit) = self.pending_custom_editor_submits.remove(request_id) else {
+            return;
+        };
+        self.acknowledge_submitted_attachments(&submit.attachments);
+        self.accepted_custom_editor_submits
+            .insert(operation_id, RecoveryDraft::from_submit(submit));
+    }
+
+    pub fn reject_custom_editor_submit(&mut self, request_id: &str) {
+        let Some(submit) = self.pending_custom_editor_submits.remove(request_id) else {
+            return;
+        };
+        self.offer_recovery(RecoveryDraft::from_submit(submit));
+    }
+
+    pub fn settle_custom_editor_operation(&mut self, operation_id: &str, status: &str) {
+        if status == "failed" {
+            if let Some(draft) = self.accepted_custom_editor_submits.remove(operation_id) {
+                self.offer_recovery(draft);
+            }
+        } else if matches!(status, "completed" | "aborted" | "interrupted") {
+            self.accepted_custom_editor_submits.remove(operation_id);
+        }
+    }
+
+    fn offer_recovery(&mut self, draft: RecoveryDraft) {
+        if self.session_generation != draft.session_generation
+            || self.active_session_path() != Some(draft.session_path.as_str())
+        {
+            return;
+        }
+        let editor_matches = match (
+            draft.editor_component_generation,
+            self.active_extension_editor(),
+        ) {
+            (Some(expected), Some(current)) => current.generation == expected,
+            (Some(_), None) => true,
+            (None, None) => true,
+            (None, Some(_)) => false,
+        };
+        if editor_matches
+            && self.extension_ui.revision == draft.submit_revision
+            && self.editor.is_empty()
+        {
+            self.editor.replace(&draft.text);
+            self.set_toast("提交失败，草稿已恢复");
+            return;
+        }
+        self.recovery_draft = Some(draft);
+        self.set_toast("提交失败，按 Ctrl+R 打开恢复草稿");
+    }
+
+    pub fn recovery_attachment_counts(&self) -> Option<(usize, usize)> {
+        let draft = self.recovery_draft.as_ref()?;
+        let missing = draft
+            .submitted_attachment_hashes
+            .iter()
+            .filter(|hash| self.attachment_by_hash(hash).is_none())
+            .count();
+        Some((draft.submitted_attachment_hashes.len(), missing))
+    }
+
+    pub fn append_recovery_draft(&mut self) -> bool {
+        let Some(draft) = self.recovery_draft.take() else {
+            return false;
+        };
+        self.editor.insert("\n");
+        self.editor.insert(&draft.text);
+        true
+    }
+
+    pub fn replace_with_recovery_draft(&mut self) -> bool {
+        let Some(draft) = self.recovery_draft.take() else {
+            return false;
+        };
+        self.editor.replace(&draft.text);
+        true
+    }
+
+    pub fn recovery_draft_text(&self) -> Option<&str> {
+        self.recovery_draft
+            .as_ref()
+            .map(|draft| draft.text.as_str())
+    }
+
+    pub fn discard_recovery_draft(&mut self) -> bool {
+        self.recovery_draft.take().is_some()
+    }
+
+    fn clear_custom_editor_drafts(&mut self) {
+        self.pending_custom_editor_submits.clear();
+        self.accepted_custom_editor_submits.clear();
+        self.recovery_draft = None;
+    }
+
     pub fn begin_attachment_submit(
         &mut self,
         response_id: String,
@@ -1399,12 +1634,9 @@ impl AppState {
         })
     }
 
-    pub fn acknowledge_attachment_submit(&mut self, request_id: &str) {
-        let Some(submit) = self.pending_attachment_submits.remove(request_id) else {
-            return;
-        };
+    fn acknowledge_submitted_attachments(&mut self, submitted: &[ComposerAttachment]) {
         self.attachments.retain(|attachment| {
-            !submit.attachments.iter().any(|frozen| {
+            !submitted.iter().any(|frozen| {
                 frozen.id == attachment.id && frozen.content_hash == attachment.content_hash
             })
         });
@@ -1415,6 +1647,13 @@ impl AppState {
         {
             self.attachment_preview = None;
         }
+    }
+
+    pub fn acknowledge_attachment_submit(&mut self, request_id: &str) {
+        let Some(submit) = self.pending_attachment_submits.remove(request_id) else {
+            return;
+        };
+        self.acknowledge_submitted_attachments(&submit.attachments);
     }
 
     pub fn reject_attachment_submit(&mut self, request_id: &str) {
@@ -1434,6 +1673,7 @@ impl AppState {
     }
 
     pub fn begin_active_session(&mut self, path: String, cwd: String) -> u64 {
+        self.clear_custom_editor_drafts();
         self.session_generation = self.session_generation.saturating_add(1);
         self.invalidate_transcript_requests(TranscriptViewKind::Active);
         self.invalidate_rich_text();
@@ -1496,6 +1736,7 @@ impl AppState {
     }
 
     pub fn clear_active_session(&mut self, reason: impl Into<String>) {
+        self.clear_custom_editor_drafts();
         self.active_session = None;
         self.lease_id = None;
         self.snapshot = None;
@@ -1684,6 +1925,7 @@ impl AppState {
     }
 
     pub fn apply_operation(&mut self, operation: OperationSnapshot) {
+        self.settle_custom_editor_operation(&operation.operation_id, &operation.status);
         let terminal = matches!(
             operation.status.as_str(),
             "aborted" | "interrupted" | "failed"
@@ -1944,6 +2186,7 @@ impl AppState {
                 .is_some_and(|view| view.transcript.loading_previous)
             || !self.pending_requests.is_empty()
             || !self.pending_transcript_requests.is_empty()
+            || !self.pending_custom_editor_submits.is_empty()
             || !self.pending_attachment_submits.is_empty()
             || self.is_active_operation()
     }
@@ -2003,7 +2246,14 @@ impl AppState {
     }
 
     pub fn set_timeout_notice(&mut self) {
-        if self.timed_out_b3_request().is_some() || self.timed_out_attachment_submit().is_some() {
+        if self.recover_exhausted_custom_editor_submit() {
+            self.set_overlay_error("提交超时，已保留恢复草稿");
+            return;
+        }
+        if self.timed_out_b3_request().is_some()
+            || self.timed_out_custom_editor_submit().is_some()
+            || self.timed_out_attachment_submit().is_some()
+        {
             self.set_overlay_error("请求超时，按 r 重试");
         }
     }
@@ -4083,6 +4333,91 @@ mod tests {
         assert_eq!(app.current_overlay_action().as_deref(), Some("tree:1"));
         app.select_tree_visible(1, true);
         assert_eq!(app.current_overlay_action().as_deref(), Some("tree:1"));
+    }
+
+    #[test]
+    fn recovers_custom_editor_drafts_without_leaking_or_readding_attachments() {
+        let mut app = AppState::default();
+        app.begin_active_session("/tmp/current.jsonl".to_owned(), "/tmp".to_owned());
+        let generation = app.session_generation;
+        let submit = |text: &str, revision: u64, attachments: Vec<ComposerAttachment>| {
+            PendingCustomEditorSubmit {
+                command: "prompt".to_owned(),
+                session_path: "/tmp/current.jsonl".to_owned(),
+                session_generation: generation,
+                editor_component_generation: None,
+                lease_id: "lease-secret".to_owned(),
+                client_instance_id: "client".to_owned(),
+                client_request_id: "request".to_owned(),
+                text: text.to_owned(),
+                submit_revision: revision,
+                attachments,
+                started_at: Instant::now(),
+                retry_count: 0,
+            }
+        };
+
+        app.extension_ui.revision = 4;
+        let pending = submit("恢复的草稿", 4, Vec::new());
+        let debug = format!("{pending:?}");
+        assert!(debug.contains("text_bytes"));
+        assert!(!debug.contains("恢复的草稿"));
+        assert!(!debug.contains("lease-secret"));
+        app.begin_custom_editor_submit("direct".to_owned(), pending);
+        app.reject_custom_editor_submit("direct");
+        assert_eq!(app.editor.text(), "恢复的草稿");
+        assert!(app.recovery_draft.is_none());
+
+        app.editor.clear();
+        app.begin_custom_editor_submit("changed".to_owned(), submit("不能覆盖", 4, Vec::new()));
+        app.extension_ui.revision = 5;
+        app.reject_custom_editor_submit("changed");
+        assert!(app.editor.is_empty());
+        assert!(app.recovery_draft.is_some());
+        assert!(app.append_recovery_draft());
+        assert_eq!(app.editor.text(), "\n不能覆盖");
+
+        app.editor.clear();
+        let attachment = app.new_attachment(
+            "submitted.png".to_owned(),
+            "submitted.png".to_owned(),
+            "image/png".to_owned(),
+            1,
+            "submitted-hash".to_owned(),
+            "secret-base64".to_owned(),
+        );
+        assert_eq!(app.add_attachment(attachment.clone()), Ok(true));
+        let missing_submit = submit("附件草稿", 5, vec![attachment]);
+        let debug = format!("{missing_submit:?}");
+        assert!(!debug.contains("附件草稿"));
+        assert!(!debug.contains("secret-base64"));
+        app.begin_custom_editor_submit("missing".to_owned(), missing_submit);
+        assert!(app.remove_attachment(0));
+        app.extension_ui.revision = 6;
+        app.reject_custom_editor_submit("missing");
+        assert!(app.attachments.is_empty());
+        assert_eq!(app.recovery_attachment_counts(), Some((1, 1)));
+
+        let attachment = app.new_attachment(
+            "success.png".to_owned(),
+            "success.png".to_owned(),
+            "image/png".to_owned(),
+            1,
+            "success-hash".to_owned(),
+            "success-base64".to_owned(),
+        );
+        assert_eq!(app.add_attachment(attachment.clone()), Ok(true));
+        app.begin_custom_editor_submit(
+            "accepted".to_owned(),
+            submit("接受后失败", 5, vec![attachment]),
+        );
+        app.acknowledge_custom_editor_submit("accepted", "operation-1".to_owned());
+        assert!(app.pending_custom_editor_submits.is_empty());
+        assert!(app.attachments.is_empty());
+        app.settle_custom_editor_operation("operation-1", "failed");
+        assert!(app.recovery_draft.is_some());
+        app.begin_active_session("/tmp/other.jsonl".to_owned(), "/tmp".to_owned());
+        assert!(app.recovery_draft.is_none());
     }
 
     #[test]

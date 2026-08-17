@@ -174,6 +174,84 @@ describe("ExtensionUiBridge", () => {
 		expect(events.some((event) => event.type === "component_unmount" && event.reason === "replace")).toBe(true);
 	});
 
+	it("invalidates stale editor callbacks and keeps active extension actions", () => {
+		const events: ExtensionUiBridgeEvent[] = [];
+		const bridge = new ExtensionUiBridge(
+			async () => ({ cancelled: true }),
+			(event) => events.push(event),
+			() => {},
+		);
+		const editors: Array<EditorFixture> = [];
+		let originalActions = 0;
+		type EditorFixture = {
+			text: string;
+			setText(text: string): void;
+			getText(): string;
+			onChange?: (text: string) => void;
+			onSubmit?: (text: string) => void;
+			onEscape?: () => void;
+			onCtrlD?: () => void;
+			onPasteImage?: () => void;
+			onExtensionShortcut?: (data: string) => boolean;
+			actionHandlers: Map<string, () => void>;
+			render(): string[];
+			invalidate(): void;
+			dispose(): void;
+		};
+		const factory = () => {
+			const editor: EditorFixture = {
+				text: "",
+				setText(text) {
+					this.text = text;
+				},
+				getText() {
+					return this.text;
+				},
+				actionHandlers: new Map([["app.clear", () => originalActions++]]),
+				render: () => [editor.text],
+				invalidate: () => {},
+				dispose: () => {},
+			};
+			editors.push(editor);
+			return editor;
+		};
+		const ui = bridge.context();
+		ui.setEditorComponent(factory);
+		const stale = editors[0]!;
+		stale.onChange?.("old draft");
+		expect(events.at(-1)).toEqual(expect.objectContaining({ type: "editor_action" }));
+		ui.setEditorComponent(factory);
+		const current = editors[1]!;
+		const eventsBeforeStaleCalls = events.length;
+		const currentTextBeforeStaleCalls = current.getText();
+		stale.onChange?.("ignored");
+		stale.onSubmit?.("ignored");
+		stale.onEscape?.();
+		stale.onCtrlD?.();
+		stale.onPasteImage?.();
+		stale.onExtensionShortcut?.("x");
+		stale.actionHandlers.get("app.clear")?.();
+		expect(current.getText()).toBe(currentTextBeforeStaleCalls);
+		expect(events).toHaveLength(eventsBeforeStaleCalls);
+		expect(originalActions).toBe(1);
+		current.actionHandlers.get("app.clear")?.();
+		expect(originalActions).toBe(1);
+		expect(events.at(-1)).toEqual(expect.objectContaining({ type: "editor_app_action", action: "app.clear" }));
+		expect(current.onExtensionShortcut?.("handled")).toBe(false);
+		expect(current.onExtensionShortcut?.("unhandled")).toBe(false);
+		ui.setEditorComponent(undefined);
+		const eventsBeforeDispose = events.length;
+		current.onChange?.("ignored after dispose");
+		current.onSubmit?.("ignored after dispose");
+		current.onEscape?.();
+		current.onCtrlD?.();
+		current.onPasteImage?.();
+		current.onExtensionShortcut?.("x");
+		current.actionHandlers.get("app.clear")?.();
+		expect(originalActions).toBe(2);
+		expect(events).toHaveLength(eventsBeforeDispose);
+	});
+
 	it("keeps raw terminal listener sequences intact while bounding them", async () => {
 		const bridge = new ExtensionUiBridge(
 			async () => ({ cancelled: true }),

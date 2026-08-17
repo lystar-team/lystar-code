@@ -96,6 +96,15 @@ type EditorAutocompleteProvider = {
 };
 type EditorAutocompleteFactory = (current: EditorAutocompleteProvider) => EditorAutocompleteProvider;
 type EditorFactory = (tui: TUI, theme: unknown, keybindings: unknown) => EditorComponent;
+type EditorBindings = {
+	onChange: EditorComponent["onChange"];
+	onSubmit: EditorComponent["onSubmit"];
+	onEscape: EditorComponent["onEscape"];
+	onCtrlD: EditorComponent["onCtrlD"];
+	onPasteImage: EditorComponent["onPasteImage"];
+	onExtensionShortcut: EditorComponent["onExtensionShortcut"];
+	actionHandlers: Map<string, (() => void) | undefined>;
+};
 
 type ComponentPlacement = "widget_above" | "widget_below" | "header" | "footer" | "custom_overlay" | "editor";
 
@@ -425,6 +434,7 @@ export class ExtensionUiBridge {
 	private editorGeneration = 0;
 	private editorComponentId: string | undefined;
 	private editorFactory: EditorFactory | undefined;
+	private readonly editorBindings = new WeakMap<EditorComponent, EditorBindings>();
 	private disposed = false;
 
 	constructor(
@@ -558,6 +568,10 @@ export class ExtensionUiBridge {
 		if (this.disposed || generation < this.editorGeneration) return this.revision;
 		this.editorText = boundedEditor(text);
 		this.editorGeneration = generation;
+		const editor = this.editorComponentId
+			? (this.components.get(this.editorComponentId)?.component as EditorComponent | undefined)
+			: undefined;
+		editor?.setText?.(this.editorText);
 		return this.revision;
 	}
 
@@ -674,14 +688,56 @@ export class ExtensionUiBridge {
 		});
 		try {
 			const editor = this.editorFactory(facade, HEADLESS_EDITOR_THEME, this.editorKeybindings);
+			const bindings: EditorBindings = {
+				onChange: editor.onChange,
+				onSubmit: editor.onSubmit,
+				onEscape: editor.onEscape,
+				onCtrlD: editor.onCtrlD,
+				onPasteImage: editor.onPasteImage,
+				onExtensionShortcut: editor.onExtensionShortcut,
+				actionHandlers: new Map(),
+			};
+			this.editorBindings.set(editor, bindings);
+			const isCurrent = () => this.isCurrentEditor(editor, generation);
+			const onChange = bindings.onChange;
 			editor.onChange = (text) => {
+				if (!isCurrent()) return;
+				onChange?.(text);
+				if (!isCurrent()) return;
 				this.editorText = boundedEditor(text);
 				this.publishEditorAction("set", this.editorText);
 			};
+			const onSubmit = bindings.onSubmit;
 			editor.onSubmit = (text) => {
+				if (!isCurrent()) return;
+				onSubmit?.(text);
+				if (!isCurrent()) return;
 				this.editorText = "";
 				this.revision++;
 				this.publish({ type: "editor_submit", text: boundedEditor(text), revision: this.revision });
+			};
+			const onEscape = bindings.onEscape;
+			editor.onEscape = () => {
+				if (!isCurrent()) return;
+				onEscape?.();
+				if (isCurrent()) this.publishEditorAppAction("app.interrupt");
+			};
+			const onCtrlD = bindings.onCtrlD;
+			editor.onCtrlD = () => {
+				if (!isCurrent()) return;
+				onCtrlD?.();
+				if (isCurrent()) this.publishEditorAppAction("app.exit");
+			};
+			const onPasteImage = bindings.onPasteImage;
+			editor.onPasteImage = () => {
+				if (!isCurrent()) return;
+				onPasteImage?.();
+				if (isCurrent()) this.publishEditorAppAction("app.clipboard.pasteImage");
+			};
+			const onExtensionShortcut = bindings.onExtensionShortcut;
+			editor.onExtensionShortcut = (data) => {
+				if (!isCurrent()) return false;
+				return onExtensionShortcut?.(data) ?? false;
 			};
 			editor.setText?.(this.editorText);
 			if (editor.setPaddingX) editor.setPaddingX(1);
@@ -704,17 +760,13 @@ export class ExtensionUiBridge {
 					"app.session.tree",
 					"app.session.fork",
 					"app.session.resume",
-				])
-					editor.actionHandlers.set(action, () => this.publishEditorAppAction(action));
-				if (!editor.onEscape) editor.onEscape = () => this.publishEditorAppAction("app.interrupt");
-				if (!editor.onCtrlD) editor.onCtrlD = () => this.publishEditorAppAction("app.exit");
-				if (!editor.onPasteImage)
-					editor.onPasteImage = () => this.publishEditorAppAction("app.clipboard.pasteImage");
-				if (!editor.onExtensionShortcut)
-					editor.onExtensionShortcut = (data) => {
-						this.publishEditorAppAction("extension_shortcut", data);
-						return true;
-					};
+				]) {
+					const original = editor.actionHandlers.get(action);
+					bindings.actionHandlers.set(action, original);
+					editor.actionHandlers.set(action, () => {
+						if (isCurrent()) this.publishEditorAppAction(action);
+					});
+				}
 			}
 			adapter = createHeadlessComponentAdapter(editor, {
 				componentId,
@@ -744,6 +796,33 @@ export class ExtensionUiBridge {
 			this.reportException("editor_factory", error);
 			this.publishEditorAction("set", this.editorText);
 		}
+	}
+
+	private isCurrentEditor(editor: EditorComponent, generation: number): boolean {
+		return (
+			!this.disposed &&
+			this.editorComponentId === "editor" &&
+			this.components.get("editor")?.component === editor &&
+			this.components.get("editor")?.generation === generation
+		);
+	}
+
+	private detachEditorBindings(editor: EditorComponent): void {
+		const bindings = this.editorBindings.get(editor);
+		if (!bindings) return;
+		editor.onChange = bindings.onChange;
+		editor.onSubmit = bindings.onSubmit;
+		editor.onEscape = bindings.onEscape;
+		editor.onCtrlD = bindings.onCtrlD;
+		editor.onPasteImage = bindings.onPasteImage;
+		editor.onExtensionShortcut = bindings.onExtensionShortcut;
+		if (editor.actionHandlers instanceof Map) {
+			for (const [action, original] of bindings.actionHandlers) {
+				if (original) editor.actionHandlers.set(action, original);
+				else editor.actionHandlers.delete(action);
+			}
+		}
+		this.editorBindings.delete(editor);
 	}
 
 	private addAutocompleteProvider(factory: unknown): void {
@@ -1074,6 +1153,7 @@ export class ExtensionUiBridge {
 		const mount = this.components.get(componentId);
 		if (!mount) return;
 		this.components.delete(componentId);
+		if (mount.placement === "editor") this.detachEditorBindings(mount.component as EditorComponent);
 		this.clearComponentFrame(componentId);
 		for (const [key, value] of this.widgetComponents) if (value === componentId) this.widgetComponents.delete(key);
 		try {

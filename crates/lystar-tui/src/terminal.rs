@@ -1311,7 +1311,10 @@ fn run_session(
             clear_terminal_extension_output(&mut app, &mut terminal, &mut image_sidecar)?;
             return Ok(());
         }
-        if app.timed_out_b3_request().is_some() || app.timed_out_attachment_submit().is_some() {
+        if app.timed_out_b3_request().is_some()
+            || app.timed_out_custom_editor_submit().is_some()
+            || app.timed_out_attachment_submit().is_some()
+        {
             if !timeout_notified {
                 app.set_timeout_notice();
                 state_changed = true;
@@ -2158,7 +2161,28 @@ fn handle_key(
         KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => app.editor.clear(),
         KeyCode::Char('z') if modifiers.contains(KeyModifiers::CONTROL) => app.editor.undo(),
         KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
-            if let Some((id, submit)) = app.restart_timed_out_attachment_submit() {
+            if app.recovery_draft.is_some() {
+                open_custom_editor_recovery(app);
+            } else if let Some((id, submit)) = app.restart_timed_out_custom_editor_submit() {
+                let images = submit
+                    .attachments
+                    .iter()
+                    .map(|attachment| {
+                        serde_json::json!({ "data": attachment.base64, "mimeType": attachment.mime_type })
+                    })
+                    .collect::<Vec<_>>();
+                pipe.request(&encode_queue_request(
+                    &id,
+                    &submit.command,
+                    &submit.session_path,
+                    &submit.lease_id,
+                    &submit.client_instance_id,
+                    &submit.client_request_id,
+                    Some(&submit.text),
+                    Some(&images),
+                )?)?;
+                app.set_toast("正在重试提交");
+            } else if let Some((id, submit)) = app.restart_timed_out_attachment_submit() {
                 let images = submit
                     .attachments
                     .iter()
@@ -3924,6 +3948,52 @@ fn activate_workbench_action(
     sequence: &mut u64,
     session_flow: &mut Option<SessionFlow>,
 ) -> Result<(), TuiError> {
+    if action == "recovery-append" {
+        if app.append_recovery_draft() {
+            app.close_overlay();
+            app.set_toast("已追加恢复草稿");
+        }
+        return Ok(());
+    }
+    if action == "recovery-replace-confirm" {
+        if app.recovery_draft.is_some() {
+            app.open_overlay(OverlayState::Confirm(ConfirmOverlay {
+                title: "替换恢复草稿".to_owned(),
+                message: "确认替换当前输入内容？".to_owned(),
+                confirm_action: "recovery-replace".to_owned(),
+                status: String::new(),
+            }));
+        }
+        return Ok(());
+    }
+    if action == "recovery-replace" {
+        if app.replace_with_recovery_draft() {
+            app.close_overlay();
+            app.close_overlay();
+            app.set_toast("已替换输入草稿");
+        }
+        return Ok(());
+    }
+    if action == "recovery-copy" {
+        if let Some(text) = app.recovery_draft_text().map(str::to_owned) {
+            request_clipboard_write(
+                app,
+                pipe,
+                client_instance_id,
+                sequence,
+                text,
+                "已复制恢复草稿",
+            )?;
+        }
+        return Ok(());
+    }
+    if action == "recovery-discard" {
+        if app.discard_recovery_draft() {
+            app.close_overlay();
+            app.set_toast("已丢弃恢复草稿");
+        }
+        return Ok(());
+    }
     if let Some(index) = action
         .strip_prefix("attachment-completion:")
         .and_then(|value| value.parse::<usize>().ok())
@@ -5261,6 +5331,42 @@ fn activate_workbench_action(
 }
 
 #[cfg(unix)]
+fn open_custom_editor_recovery(app: &mut AppState) {
+    let Some((submitted, missing)) = app.recovery_attachment_counts() else {
+        return;
+    };
+    app.open_overlay(OverlayState::List(ListOverlay {
+        title: "恢复草稿".to_owned(),
+        origin: OverlayOrigin::User,
+        items: vec![
+            OverlayItem {
+                label: "追加".to_owned(),
+                detail: "在当前光标后换行追加".to_owned(),
+                action: "recovery-append".to_owned(),
+            },
+            OverlayItem {
+                label: "替换".to_owned(),
+                detail: "替换当前输入内容".to_owned(),
+                action: "recovery-replace-confirm".to_owned(),
+            },
+            OverlayItem {
+                label: "复制".to_owned(),
+                detail: "复制到系统剪贴板".to_owned(),
+                action: "recovery-copy".to_owned(),
+            },
+            OverlayItem {
+                label: "丢弃".to_owned(),
+                detail: "清除内存中的恢复草稿".to_owned(),
+                action: "recovery-discard".to_owned(),
+            },
+        ],
+        selected: 0,
+        filter: String::new(),
+        status: format!("提交时 {submitted} 张，当前缺 {missing} 张。Esc 返回，Enter 选择"),
+    }));
+}
+
+#[cfg(unix)]
 fn attachment_path(text: &str) -> Option<String> {
     let path = text.strip_prefix("/attach ")?.trim();
     if path.is_empty() {
@@ -5275,6 +5381,12 @@ fn attachment_path(text: &str) -> Option<String> {
 }
 
 #[cfg(unix)]
+struct SubmitEditorOptions {
+    follow_up: bool,
+    custom_editor: bool,
+}
+
+#[cfg(unix)]
 fn submit_editor(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,
@@ -5282,6 +5394,54 @@ fn submit_editor(
     client_instance_id: &str,
     sequence: &mut u64,
     follow_up: bool,
+    session_flow: &mut Option<SessionFlow>,
+) -> Result<(), TuiError> {
+    submit_editor_with_origin(
+        app,
+        pipe,
+        session_path,
+        client_instance_id,
+        sequence,
+        SubmitEditorOptions {
+            follow_up,
+            custom_editor: false,
+        },
+        session_flow,
+    )
+}
+
+#[cfg(unix)]
+fn submit_custom_editor(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    client_instance_id: &str,
+    sequence: &mut u64,
+    follow_up: bool,
+    session_flow: &mut Option<SessionFlow>,
+) -> Result<(), TuiError> {
+    submit_editor_with_origin(
+        app,
+        pipe,
+        session_path,
+        client_instance_id,
+        sequence,
+        SubmitEditorOptions {
+            follow_up,
+            custom_editor: true,
+        },
+        session_flow,
+    )
+}
+
+#[cfg(unix)]
+fn submit_editor_with_origin(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    client_instance_id: &str,
+    sequence: &mut u64,
+    options: SubmitEditorOptions,
     session_flow: &mut Option<SessionFlow>,
 ) -> Result<(), TuiError> {
     let Some(lease_id) = app.lease_id.clone() else {
@@ -5325,7 +5485,7 @@ fn submit_editor(
     }
     *sequence += 1;
     let request_id = format!("composer-{sequence}");
-    let command = if follow_up {
+    let command = if options.follow_up {
         "follow_up"
     } else if app.is_active_operation() {
         "steer"
@@ -5338,7 +5498,27 @@ fn submit_editor(
         .map(|attachment| serde_json::json!({ "data": attachment.base64, "mimeType": attachment.mime_type }))
         .collect::<Vec<_>>();
     let response_id = format!("command-{sequence}");
-    if !attachments.is_empty() {
+    if options.custom_editor {
+        app.begin_custom_editor_submit(
+            response_id.clone(),
+            crate::app::PendingCustomEditorSubmit {
+                command: command.to_owned(),
+                session_path: session_path.to_owned(),
+                session_generation: app.session_generation,
+                editor_component_generation: app
+                    .active_extension_editor()
+                    .map(|editor| editor.generation),
+                lease_id: lease_id.clone(),
+                client_instance_id: client_instance_id.to_owned(),
+                client_request_id: request_id.clone(),
+                text: text.clone(),
+                submit_revision: app.extension_editor_revision(),
+                attachments: attachments.clone(),
+                started_at: Instant::now(),
+                retry_count: 0,
+            },
+        );
+    } else if !attachments.is_empty() {
         app.begin_attachment_submit(
             response_id.clone(),
             crate::app::PendingAttachmentSubmit {
@@ -5721,6 +5901,19 @@ fn write_extension_title(title: Option<&str>) {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn queue_operation_id(raw: &serde_json::Value) -> Option<&str> {
+    raw.get("result")
+        .and_then(|result| {
+            result.get("operationId").or_else(|| {
+                result
+                    .get("operation")
+                    .and_then(|operation| operation.get("operationId"))
+            })
+        })
+        .and_then(serde_json::Value::as_str)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn apply_server_message(
     app: &mut AppState,
     message: &ServerMessage,
@@ -5917,7 +6110,7 @@ fn apply_server_message(
                             TuiError::InvalidResponse("自定义编辑器提交缺少修订".to_owned())
                         })?;
                     if app.apply_extension_editor_action("set", text, revision) {
-                        submit_editor(
+                        submit_custom_editor(
                             app,
                             pipe,
                             &active_path,
@@ -5941,7 +6134,7 @@ fn apply_server_message(
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or_default();
                     match name {
-                        "app.interrupt" | "app.clear" => {
+                        "app.interrupt" => {
                             handle_key(
                                 app,
                                 KeyCode::Esc,
@@ -5954,9 +6147,44 @@ fn apply_server_message(
                                 quit_requested,
                             )?;
                         }
+                        "app.clear" => app.editor.clear(),
                         "app.exit" => *quit_requested = true,
+                        "app.clipboard.pasteImage" => {
+                            request_clipboard_both(
+                                app,
+                                pipe,
+                                sequence,
+                                ClipboardReadTarget::Insert,
+                            )?;
+                        }
+                        "app.model.cycleForward"
+                        | "app.model.cycleBackward"
+                        | "app.model.select" => {
+                            open_workbench(
+                                app,
+                                "model",
+                                pipe,
+                                &active_path,
+                                client_instance_id,
+                                sequence,
+                                session_flow,
+                            )?;
+                        }
+                        "app.thinking.cycle" | "app.thinking.toggle" => {
+                            open_workbench(
+                                app,
+                                "thinking",
+                                pipe,
+                                &active_path,
+                                client_instance_id,
+                                sequence,
+                                session_flow,
+                            )?;
+                        }
+                        "app.tools.expand" => app.transcript.toggle_current_tool(),
+                        "extension_shortcut" => app.set_toast("扩展快捷键未处理"),
                         "app.message.followUp" => {
-                            submit_editor(
+                            submit_custom_editor(
                                 app,
                                 pipe,
                                 &active_path,
@@ -6084,6 +6312,21 @@ fn apply_server_message(
     .map(str::to_owned);
     if let Some(id) = &page_response_id {
         trace_id("host_response_received", id);
+    }
+    if raw.get("type").and_then(serde_json::Value::as_str) == Some("response")
+        && let Some(id) = raw.get("id").and_then(serde_json::Value::as_str)
+        && app.pending_custom_editor_submits.contains_key(id)
+    {
+        if raw.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+            if let Some(operation_id) = queue_operation_id(&raw) {
+                app.acknowledge_custom_editor_submit(id, operation_id.to_owned());
+            } else {
+                app.reject_custom_editor_submit(id);
+            }
+        } else {
+            app.reject_custom_editor_submit(id);
+            return Ok(false);
+        }
     }
     if raw.get("type").and_then(serde_json::Value::as_str) == Some("response")
         && let Some(id) = raw.get("id").and_then(serde_json::Value::as_str)
@@ -9500,6 +9743,21 @@ mod tests {
         apply_session_flow(&mut app, &serde_json::json!({"id":"quit-acquire","ok":true,"result":{"lease":{"leaseId":"quit-lease"},"snapshot":snapshot_value("/tmp/new.jsonl")}}), &mut pipe, "client", &mut sequence, &mut flow, &mut quit).unwrap();
         assert!(matches!(flow, Some(SessionFlow::QuitReleasing { .. })));
         assert!(app.lease_id.is_none());
+    }
+
+    #[test]
+    fn reads_accepted_queue_operation_id_from_host_response() {
+        assert_eq!(
+            queue_operation_id(&serde_json::json!({"result":{"operationId":"operation-1"}})),
+            Some("operation-1")
+        );
+        assert_eq!(
+            queue_operation_id(
+                &serde_json::json!({"result":{"operation":{"operationId":"operation-2"}}})
+            ),
+            Some("operation-2")
+        );
+        assert_eq!(queue_operation_id(&serde_json::json!({"result":{}})), None);
     }
 
     #[test]

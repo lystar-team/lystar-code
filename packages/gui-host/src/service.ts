@@ -251,6 +251,7 @@ export class GuiHostService {
 		for (const sessionPath of this.leases.releaseClient(connection.clientInstanceId)) {
 			const runtime = this.runtimes.get(sessionPath);
 			if (runtime) await this.sendSessionSnapshots(runtime, false);
+			this.releaseAcceptedReservation(sessionPath);
 			if (!this.activeOperationBySession.has(sessionPath)) await this.disposeRuntime(sessionPath);
 		}
 	}
@@ -469,9 +470,11 @@ export class GuiHostService {
 			case "release_session": {
 				const sessionPath = canonicalSessionPath(request.sessionPath);
 				this.leases.assert(sessionPath, request.leaseId, connection.clientInstanceId);
-				const active = this.journal
-					.list(sessionPath)
-					.some((operation) => ACTIVE_OPERATION_STATUSES.has(operation.status));
+				this.releaseAcceptedReservation(sessionPath);
+				const activeOperationId = this.activeOperationBySession.get(sessionPath);
+				const active = activeOperationId
+					? ACTIVE_OPERATION_STATUSES.has(this.journal.get(activeOperationId)?.status ?? "completed")
+					: false;
 				if (active) {
 					throw Object.assign(new Error("会话存在正在执行的任务"), {
 						code: "session_operation_active",
@@ -1411,6 +1414,14 @@ export class GuiHostService {
 			snapshot.activity === "waiting_for_input" ||
 			["turn", "compaction", "retry", "waiting_for_input"].includes(snapshot.phase)
 		);
+	}
+
+	private releaseAcceptedReservation(sessionPath: string): boolean {
+		const operationId = this.activeOperationBySession.get(sessionPath);
+		if (!operationId || this.scheduledOperations.has(operationId)) return false;
+		if (this.journal.get(operationId)?.status !== "accepted") return false;
+		this.activeOperationBySession.delete(sessionPath);
+		return true;
 	}
 
 	private async acceptOperation(
