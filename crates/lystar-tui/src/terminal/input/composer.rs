@@ -64,7 +64,7 @@ pub(in super::super) fn handle_key(
             title: "命令面板".to_owned(),
             origin: OverlayOrigin::User,
             items: [
-                ("subagents", "Subagent"),
+                ("agents", "查看和控制当前会话的 Subagent"),
                 ("clipboard", "剪贴板"),
                 ("changes", "变更"),
                 ("skills", "技能"),
@@ -173,7 +173,7 @@ pub(in super::super) fn handle_key(
         {
             open_workbench(
                 app,
-                "subagents",
+                "agents",
                 pipe,
                 &session_path,
                 client_instance_id,
@@ -291,7 +291,7 @@ pub(in super::super) fn handle_key(
 
 pub(in super::super) fn builtin_slash_command(text: &str) -> Option<&'static str> {
     match text.trim() {
-        "/subagents" => Some("subagents"),
+        "/agents" | "/subagents" => Some("agents"),
         "/clipboard" => Some("clipboard"),
         "/changes" => Some("changes"),
         "/skills" => Some("skills"),

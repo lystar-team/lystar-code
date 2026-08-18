@@ -352,6 +352,8 @@ fn intercepts_only_connected_slash_commands() {
         ("/share", "share"),
         ("/copy", "copy"),
         ("/resume", "resume"),
+        ("/agents", "agents"),
+        ("/subagents", "agents"),
         ("/settings", "settings"),
         ("/model", "model"),
         ("/thinking", "thinking"),
@@ -361,6 +363,84 @@ fn intercepts_only_connected_slash_commands() {
     }
     assert_eq!(builtin_slash_command("/about later"), None);
     assert_eq!(builtin_slash_command("/settings-now"), None);
+}
+
+#[test]
+fn agents_command_opens_the_existing_subagent_workbench() {
+    let mut app = AppState::default();
+    app.begin_active_session(
+        "/tmp/sessions/current.jsonl".to_owned(),
+        "/work/project".to_owned(),
+    );
+    app.lease_id = Some("lease".to_owned());
+    app.editor.insert("/agents");
+    let (mut pipe, path) = test_pipe_with_path();
+    let mut sequence = 0;
+    let mut session_flow = None;
+    submit_editor(
+        &mut app,
+        &mut pipe,
+        "/tmp/sessions/current.jsonl",
+        "client",
+        &mut sequence,
+        false,
+        &mut session_flow,
+    )
+    .unwrap();
+    drop(pipe);
+
+    let frames = FrameDecoder::default()
+        .push(&std::fs::read(&path).unwrap())
+        .unwrap();
+    let message = lystar_protocol::decode_client_message(&frames[0]).unwrap();
+    let request = serde_json::to_value(message.value()).unwrap();
+    assert_eq!(request["request"]["command"], "list_subagents");
+    assert_eq!(
+        request["request"]["sessionPath"],
+        "/tmp/sessions/current.jsonl"
+    );
+    assert_eq!(
+        app.subagent_parent_path.as_deref(),
+        Some("/tmp/sessions/current.jsonl")
+    );
+    assert!(matches!(
+        app.overlay(),
+        Some(OverlayState::Detail(detail)) if detail.title == "Subagent"
+    ));
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn command_palette_exposes_agents_as_the_public_entry() {
+    let mut app = AppState::default();
+    let mut pipe = test_pipe();
+    let mut sequence = 0;
+    let mut session_flow = None;
+    let mut quit_requested = false;
+
+    handle_key(
+        &mut app,
+        KeyCode::Char('p'),
+        KeyModifiers::CONTROL,
+        &mut pipe,
+        "/tmp/sessions/current.jsonl",
+        "client",
+        &mut sequence,
+        &mut session_flow,
+        &mut quit_requested,
+    )
+    .unwrap();
+
+    let Some(OverlayState::List(palette)) = app.overlay() else {
+        panic!("命令面板没有打开");
+    };
+    assert!(
+        palette
+            .items
+            .iter()
+            .any(|item| item.label == "/agents" && item.action == "open:agents")
+    );
+    assert!(!palette.items.iter().any(|item| item.label == "/subagents"));
 }
 
 #[test]
