@@ -138,6 +138,12 @@
       "message": { "type": "request", "id": "workspace-get-session-tree", "request": { "command": "get_session_tree", "sessionPath": "/tmp/session.jsonl" } }
     },
     {
+      "name": "client-workspace-get-session-info",
+      "direction": "client",
+      "workspaceCommand": "get_session_info",
+      "message": { "type": "request", "id": "workspace-get-session-info", "request": { "command": "get_session_info", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1" } }
+    },
+    {
       "name": "client-workspace-list-fork-messages",
       "direction": "client",
       "workspaceCommand": "list_fork_messages",
@@ -488,6 +494,12 @@
       "direction": "server",
       "workspaceCommand": "get_session_tree",
       "message": { "type": "response", "id": "workspace-get-session-tree", "ok": true, "result": [{ "id": "entry-1", "parentId": null, "kind": "message", "label": "根", "timestamp": "2026-08-15T00:00:00.000Z", "preview": "hello", "isLeaf": true, "depth": 0 }] }
+    },
+    {
+      "name": "server-workspace-get-session-info",
+      "direction": "server",
+      "workspaceCommand": "get_session_info",
+      "message": { "type": "response", "id": "workspace-get-session-info", "ok": true, "result": { "name": "当前会话", "sessionFile": "/tmp/session.jsonl", "sessionId": "session-1", "messages": { "total": 4, "user": 1, "agent": 1, "toolCalls": 1, "toolResults": 1 }, "tokens": { "input": 100, "output": 20, "cacheRead": 50, "cacheWrite": 10, "total": 180 }, "cost": 0.125, "usageBreakdown": [{ "key": "faux/model", "cost": 0.125, "tokens": 180 }], "cacheWaste": { "missedTokens": 2048, "missedCost": 0.01, "missCount": 1 } } }
     },
     {
       "name": "server-workspace-list-fork-messages",

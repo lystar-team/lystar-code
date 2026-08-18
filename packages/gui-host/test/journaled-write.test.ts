@@ -65,6 +65,18 @@ class FakeRuntime implements RuntimeSession {
 	getSessionTree() {
 		return [];
 	}
+	getSessionInfo() {
+		return {
+			name: "测试会话",
+			sessionFile: this.sessionPath,
+			sessionId: "session",
+			messages: { total: 2, user: 1, agent: 1, toolCalls: 0, toolResults: 0 },
+			tokens: { input: 100, output: 20, cacheRead: 50, cacheWrite: 0, total: 170 },
+			cost: 0.25,
+			usageBreakdown: [{ key: "faux/model", cost: 0.25, tokens: 170 }],
+			cacheWaste: { missedTokens: 0, missedCost: 0, missCount: 0 },
+		};
+	}
 	listForkMessages() {
 		return [
 			{ entryId: "entry-1", text: "first prompt" },
@@ -449,6 +461,30 @@ const SESSION_COMMANDS = new Set([
 ]);
 
 describe("GuiHostService journaled writes", () => {
+	it("returns Core session information only for the active Session lease", async () => {
+		const setupValue = setup();
+		const active = await lease(setupValue.service, setupValue.sessionPath);
+		for (const [id, leaseId] of [
+			["session-info", active.leaseId],
+			["session-info-stale", "stale-lease"],
+		] as const) {
+			await active.connection.handle({
+				type: "request",
+				id,
+				request: { command: "get_session_info", sessionPath: setupValue.sessionPath, leaseId },
+			});
+		}
+
+		expect(
+			active.connection.messages.find((message) => message.type === "response" && message.id === "session-info"),
+		).toMatchObject({ ok: true, result: { name: "测试会话", messages: { total: 2 }, cost: 0.25 } });
+		expect(
+			active.connection.messages.find(
+				(message) => message.type === "response" && message.id === "session-info-stale",
+			),
+		).toMatchObject({ ok: false, error: { code: "invalid_session_lease" } });
+	});
+
 	it("lists Core fork messages only for the active Session lease", async () => {
 		const setupValue = setup();
 		const active = await lease(setupValue.service, setupValue.sessionPath);

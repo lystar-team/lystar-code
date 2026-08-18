@@ -2129,6 +2129,30 @@
                   "properties": {
                     "command": {
                       "type": "string",
+                      "const": "get_session_info"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "leaseId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
                       "const": "list_fork_messages"
                     },
                     "sessionPath": {
@@ -7355,6 +7379,171 @@
         "transcriptRevision": {
           "type": "integer",
           "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceGetSessionInfoResult": {
+      "type": "object",
+      "required": [
+        "name",
+        "sessionFile",
+        "sessionId",
+        "messages",
+        "tokens",
+        "cost",
+        "usageBreakdown",
+        "cacheWaste"
+      ],
+      "properties": {
+        "name": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 16384
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sessionFile": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "messages": {
+          "type": "object",
+          "required": [
+            "total",
+            "user",
+            "agent",
+            "toolCalls",
+            "toolResults"
+          ],
+          "properties": {
+            "total": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "user": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "agent": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "toolCalls": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "toolResults": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "tokens": {
+          "type": "object",
+          "required": [
+            "input",
+            "output",
+            "cacheRead",
+            "cacheWrite",
+            "total"
+          ],
+          "properties": {
+            "input": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "output": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cacheRead": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cacheWrite": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "total": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "cost": {
+          "type": "number",
+          "minimum": 0
+        },
+        "usageBreakdown": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "key",
+              "cost",
+              "tokens"
+            ],
+            "properties": {
+              "key": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "cost": {
+                "type": "number",
+                "minimum": 0
+              },
+              "tokens": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 10000
+        },
+        "cacheWaste": {
+          "type": "object",
+          "required": [
+            "missedTokens",
+            "missedCost",
+            "missCount"
+          ],
+          "properties": {
+            "missedTokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "missedCost": {
+              "type": "number",
+              "minimum": 0
+            },
+            "missCount": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

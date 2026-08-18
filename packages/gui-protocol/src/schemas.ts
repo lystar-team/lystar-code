@@ -759,6 +759,41 @@ export const ListModelProvidersResultSchema = Type.Array(ModelProviderSummarySch
 export const SetSessionModelResultSchema = SessionStateSnapshotSchema;
 export const SetSessionThinkingResultSchema = SessionStateSnapshotSchema;
 export const ReloadResourcesResultSchema = SessionStateSnapshotSchema;
+const SessionInfoCountSchema = Type.Integer({ minimum: 0 });
+export const SessionInfoResultSchema = StrictObject({
+	name: Type.Union([Type.String({ maxLength: 16 * 1024 }), Type.Null()]),
+	sessionFile: Type.Union([Type.String({ minLength: 1, maxLength: 4096 }), Type.Null()]),
+	sessionId: Id,
+	messages: StrictObject({
+		total: SessionInfoCountSchema,
+		user: SessionInfoCountSchema,
+		agent: SessionInfoCountSchema,
+		toolCalls: SessionInfoCountSchema,
+		toolResults: SessionInfoCountSchema,
+	}),
+	tokens: StrictObject({
+		input: SessionInfoCountSchema,
+		output: SessionInfoCountSchema,
+		cacheRead: SessionInfoCountSchema,
+		cacheWrite: SessionInfoCountSchema,
+		total: SessionInfoCountSchema,
+	}),
+	cost: Type.Number({ minimum: 0 }),
+	usageBreakdown: Type.Array(
+		StrictObject({
+			key: Type.String({ minLength: 1, maxLength: 4096 }),
+			cost: Type.Number({ minimum: 0 }),
+			tokens: SessionInfoCountSchema,
+		}),
+		{ maxItems: 10_000 },
+	),
+	cacheWaste: StrictObject({
+		missedTokens: SessionInfoCountSchema,
+		missedCost: Type.Number({ minimum: 0 }),
+		missCount: SessionInfoCountSchema,
+	}),
+});
+export type SessionInfoResult = Static<typeof SessionInfoResultSchema>;
 export const ForkMessageSchema = StrictObject({
 	entryId: Id,
 	text: WorkspaceText,
@@ -1002,6 +1037,7 @@ export const WorkspaceCommandResultSchemas = {
 	set_session_model: SetSessionModelResultSchema,
 	set_session_thinking: SetSessionThinkingResultSchema,
 	reload_resources: ReloadResourcesResultSchema,
+	get_session_info: SessionInfoResultSchema,
 	list_fork_messages: ListForkMessagesResultSchema,
 	fork_session: ForkSessionResultSchema,
 	login_model_provider: LoginModelProviderResultSchema,
@@ -1385,6 +1421,11 @@ export const CommandSchema = Type.Union([
 		clientRequestId: Id,
 	}),
 	StrictObject({ command: Type.Literal("get_session_tree"), sessionPath: Type.String({ minLength: 1 }) }),
+	StrictObject({
+		command: Type.Literal("get_session_info"),
+		sessionPath: Type.String({ minLength: 1 }),
+		leaseId: Id,
+	}),
 	StrictObject({
 		command: Type.Literal("list_fork_messages"),
 		sessionPath: Type.String({ minLength: 1 }),

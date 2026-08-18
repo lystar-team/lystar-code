@@ -257,6 +257,31 @@ describe("AgentSession.getSessionStats", () => {
 		]);
 	});
 
+	it("builds the complete session information view from the same entries", async () => {
+		const { session, sessionManager } = await createSession();
+
+		try {
+			sessionManager.appendMessage(createUserMessage("hello", 1));
+			sessionManager.appendMessage({
+				...createAssistantMessage("response", 100, 2),
+				usage: { ...createUsage(100), cost: { ...createUsage(100).cost, total: 0.5 } },
+			});
+			const info = session.getSessionInfo();
+
+			expect(info).toMatchObject({
+				name: null,
+				sessionFile: null,
+				sessionId: session.sessionId,
+				messages: { total: 2, user: 1, agent: 1, toolCalls: 0, toolResults: 0 },
+				cost: 0.5,
+				usageBreakdown: [{ key: `${model.provider}/${model.id}`, cost: 0.5, tokens: 100 }],
+				cacheWaste: { missedTokens: 0, missedCost: 0, missCount: 0 },
+			});
+		} finally {
+			session.dispose();
+		}
+	});
+
 	it("ignores zero-usage messages when checking for post-compaction context usage", async () => {
 		const { session, sessionManager } = await createSession();
 

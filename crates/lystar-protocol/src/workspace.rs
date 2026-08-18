@@ -31,6 +31,7 @@ pub enum WorkspaceCommand {
     RemovePackage,
     UpdatePackages,
     GetSessionTree,
+    GetSessionInfo,
     ListForkMessages,
     ForkSession,
     SetEntryLabel,
@@ -81,6 +82,7 @@ impl WorkspaceCommand {
             "remove_package" => Self::RemovePackage,
             "update_packages" => Self::UpdatePackages,
             "get_session_tree" => Self::GetSessionTree,
+            "get_session_info" => Self::GetSessionInfo,
             "list_fork_messages" => Self::ListForkMessages,
             "fork_session" => Self::ForkSession,
             "set_entry_label" => Self::SetEntryLabel,
@@ -132,6 +134,7 @@ impl WorkspaceCommand {
             Self::RemovePackage => "remove_package",
             Self::UpdatePackages => "update_packages",
             Self::GetSessionTree => "get_session_tree",
+            Self::GetSessionInfo => "get_session_info",
             Self::ListForkMessages => "list_fork_messages",
             Self::ForkSession => "fork_session",
             Self::SetEntryLabel => "set_entry_label",
@@ -194,6 +197,7 @@ pub enum WorkspaceResult {
     RemovePackage(crate::generated::WorkspaceRemovePackageResult),
     UpdatePackages(crate::generated::WorkspaceUpdatePackagesResult),
     GetSessionTree(crate::generated::WorkspaceGetSessionTreeResult),
+    GetSessionInfo(crate::generated::WorkspaceGetSessionInfoResult),
     ListForkMessages(crate::generated::WorkspaceListForkMessagesResult),
     ForkSession(crate::generated::WorkspaceForkSessionResult),
     SetEntryLabel(crate::generated::WorkspaceSetEntryLabelResult),
@@ -283,6 +287,9 @@ impl ServerMessage {
             }
             WorkspaceCommand::GetSessionTree => {
                 Ok(WorkspaceResult::GetSessionTree(decode(result)?))
+            }
+            WorkspaceCommand::GetSessionInfo => {
+                Ok(WorkspaceResult::GetSessionInfo(decode(result)?))
             }
             WorkspaceCommand::ListForkMessages => {
                 Ok(WorkspaceResult::ListForkMessages(decode(result)?))
@@ -435,6 +442,10 @@ mod tests {
         assert_eq!(
             WorkspaceCommand::from_wire("list_fork_messages"),
             Some(WorkspaceCommand::ListForkMessages)
+        );
+        assert_eq!(
+            WorkspaceCommand::from_wire("get_session_info"),
+            Some(WorkspaceCommand::GetSessionInfo)
         );
         assert_eq!(
             WorkspaceCommand::from_wire("fork_session"),

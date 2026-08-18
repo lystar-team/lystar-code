@@ -293,6 +293,7 @@ pub enum PendingIntent {
     CopyLastAssistantMessage,
     Export,
     Changelog,
+    SessionInfo,
     ForkMessages,
     WorkbenchLoad {
         target: WorkbenchTarget,

@@ -439,6 +439,18 @@ class FakeRuntimeSession implements RuntimeSession {
 	getSessionTree() {
 		return [];
 	}
+	getSessionInfo() {
+		return {
+			name: null,
+			sessionFile: this.sessionPath,
+			sessionId: "m7-runtime",
+			messages: { total: 0, user: 0, agent: 0, toolCalls: 0, toolResults: 0 },
+			tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			cost: 0,
+			usageBreakdown: [],
+			cacheWaste: { missedTokens: 0, missedCost: 0, missCount: 0 },
+		};
+	}
 	listForkMessages() {
 		return [];
 	}

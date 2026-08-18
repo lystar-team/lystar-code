@@ -85,6 +85,7 @@ import type {
 	ProjectResource,
 	ProjectTrust,
 	ReadProjectImageResult,
+	SessionInfoResult,
 	SessionProgress,
 	SessionStateSnapshot,
 	SessionTreeNode,
@@ -1080,6 +1081,10 @@ class CoreRuntimeSession implements RuntimeSession {
 			this.runtime.session.sessionManager.getEntries(),
 			this.runtime.session.sessionManager.getLeafId(),
 		);
+	}
+
+	getSessionInfo(): SessionInfoResult {
+		return this.runtime.session.getSessionInfo();
 	}
 
 	listForkMessages(): Array<{ entryId: string; text: string }> {

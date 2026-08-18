@@ -359,6 +359,7 @@ fn intercepts_only_connected_slash_commands() {
         ("/resume", "resume"),
         ("/agents", "agents"),
         ("/subagents", "agents"),
+        ("/session", "session"),
         ("/changelog", "changelog"),
         ("/hotkeys", "hotkeys"),
         ("/settings", "settings"),
@@ -762,6 +763,9 @@ mod name_tests;
 
 #[path = "tests/changelog_tests.rs"]
 mod changelog_tests;
+
+#[path = "tests/session_info_tests.rs"]
+mod session_info_tests;
 
 #[path = "tests/hotkeys_tests.rs"]
 mod hotkeys_tests;

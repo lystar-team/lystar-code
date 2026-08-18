@@ -333,6 +333,14 @@ describe("CodingAgentRuntimeAdapter", () => {
 		expect(runtime.listSettings().map((setting) => setting.id)).toEqual(
 			LYSTAR_SETTINGS_CATALOG.map((setting) => setting.id),
 		);
+		expect(runtime.getSessionInfo()).toMatchObject({
+			name: null,
+			sessionFile: runtime.sessionPath,
+			messages: { total: 0, user: 0, agent: 0, toolCalls: 0, toolResults: 0 },
+			tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			usageBreakdown: [],
+		});
+		expect(() => assertWorkspaceCommandResult("get_session_info", runtime.getSessionInfo())).not.toThrow();
 		const result = await runtime.setSetting("http-idle-timeout", 0);
 		expect(result.setting).toMatchObject({ id: "http-idle-timeout", value: 0 });
 		expect(getLystarSetting("http-idle-timeout")?.get(SettingsManager.create(cwd, agentDir))).toBe(0);

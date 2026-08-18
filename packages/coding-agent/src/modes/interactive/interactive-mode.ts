@@ -58,13 +58,7 @@ import {
 } from "../../config.ts";
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
-import {
-	CACHE_TTL_MS,
-	type CacheMiss,
-	collectCacheMisses,
-	computeCacheWaste,
-	detectCacheMiss,
-} from "../../core/cache-stats.ts";
+import { CACHE_TTL_MS, type CacheMiss, collectCacheMisses, detectCacheMiss } from "../../core/cache-stats.ts";
 import type {
 	AutocompleteProviderFactory,
 	EditorFactory,
@@ -97,7 +91,6 @@ import type { SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
-import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 import {
 	type AgentRunState,
 	abortSubagent,
@@ -6764,33 +6757,25 @@ export class InteractiveMode {
 	}
 
 	private handleSessionCommand(): void {
-		const stats = this.session.getSessionStats();
-		const sessionName = this.sessionManager.getSessionName();
-		const entries = this.sessionManager.getEntries();
-		const cacheWaste = computeCacheWaste(entries, this.session.modelRuntime);
-
-		// Cost/token totals per provider/model actually used (e.g. OpenRouter `auto`
-		// resolves to a concrete responseModel). Usage without model attribution is
-		// grouped separately so the breakdown reconciles with the session total.
-		const usageBreakdown = getUsageCostBreakdown(entries);
+		const sessionInfo = this.session.getSessionInfo();
 
 		let info = `${theme.bold("会话信息")}\n\n`;
-		if (sessionName) {
-			info += `${theme.fg("dim", "名称：")} ${sessionName}\n`;
+		if (sessionInfo.name) {
+			info += `${theme.fg("dim", "名称：")} ${sessionInfo.name}\n`;
 		}
-		info += `${theme.fg("dim", "文件：")} ${stats.sessionFile ?? "仅存于内存"}\n`;
-		info += `${theme.fg("dim", "ID：")} ${stats.sessionId}\n\n`;
+		info += `${theme.fg("dim", "文件：")} ${sessionInfo.sessionFile ?? "仅存于内存"}\n`;
+		info += `${theme.fg("dim", "ID：")} ${sessionInfo.sessionId}\n\n`;
 		info += `${theme.bold("消息")}\n`;
-		info += `${theme.fg("dim", "总数：")} ${stats.totalMessages}\n`;
-		info += `${theme.fg("dim", "用户：")} ${stats.userMessages}\n`;
-		info += `${theme.fg("dim", "Agent：")} ${stats.assistantMessages}\n`;
-		info += `${theme.fg("dim", "工具：")} ${stats.toolCalls} 次调用，${stats.toolResults} 次返回\n\n`;
+		info += `${theme.fg("dim", "总数：")} ${sessionInfo.messages.total}\n`;
+		info += `${theme.fg("dim", "用户：")} ${sessionInfo.messages.user}\n`;
+		info += `${theme.fg("dim", "Agent：")} ${sessionInfo.messages.agent}\n`;
+		info += `${theme.fg("dim", "工具：")} ${sessionInfo.messages.toolCalls} 次调用，${sessionInfo.messages.toolResults} 次返回\n\n`;
 		info += `${theme.bold("Token 用量（会话累计）")}\n`;
 		// "Input" is the full prompt volume. With cache activity, split it into
 		// cached (served from cache) vs uncached (everything else) - the only
 		// provider-independent split. Cache writes, where reported, are a detail
 		// of the uncached portion.
-		const { input, cacheRead, cacheWrite } = stats.tokens;
+		const { input, cacheRead, cacheWrite } = sessionInfo.tokens;
 		const promptTokens = input + cacheRead + cacheWrite;
 		info += `${theme.fg("dim", "输入：")} ${promptTokens.toLocaleString()}\n`;
 		if (promptTokens > 0 && (cacheRead > 0 || cacheWrite > 0)) {
@@ -6799,22 +6784,22 @@ export class InteractiveMode {
 			const written = cacheWrite > 0 ? ` ${theme.fg("dim", `（写入缓存 ${cacheWrite.toLocaleString()}）`)}` : "";
 			info += `  ${theme.fg("dim", "未缓存：")} ${(input + cacheWrite).toLocaleString()}${written}\n`;
 		}
-		info += `${theme.fg("dim", "输出：")} ${stats.tokens.output.toLocaleString()}\n`;
-		info += `${theme.fg("dim", "合计：")} ${stats.tokens.total.toLocaleString()}\n`;
+		info += `${theme.fg("dim", "输出：")} ${sessionInfo.tokens.output.toLocaleString()}\n`;
+		info += `${theme.fg("dim", "合计：")} ${sessionInfo.tokens.total.toLocaleString()}\n`;
 
-		if (stats.cost > 0 || cacheWaste.missedTokens > 0) {
+		if (sessionInfo.cost > 0 || sessionInfo.cacheWaste.missedTokens > 0) {
 			info += `\n${theme.bold("费用")}\n`;
-			info += `${theme.fg("dim", "合计：")} $${stats.cost.toFixed(3)}`;
-			if (usageBreakdown.length > 1) {
-				for (const entry of usageBreakdown) {
+			info += `${theme.fg("dim", "合计：")} $${sessionInfo.cost.toFixed(3)}`;
+			if (sessionInfo.usageBreakdown.length > 1) {
+				for (const entry of sessionInfo.usageBreakdown) {
 					info += `\n  ${theme.fg("dim", `${entry.key}:`)} $${entry.cost.toFixed(3)} ${theme.fg("dim", `（${formatTokens(entry.tokens)} Token）`)}`;
 				}
 			}
-			if (cacheWaste.missedTokens > 0) {
-				const detail = `${cacheWaste.missedTokens.toLocaleString()} Token，${cacheWaste.missCount} 次未命中`;
+			if (sessionInfo.cacheWaste.missedTokens > 0) {
+				const detail = `${sessionInfo.cacheWaste.missedTokens.toLocaleString()} Token，${sessionInfo.cacheWaste.missCount} 次未命中`;
 				info +=
-					cacheWaste.missedCost >= 0.0001
-						? `\n${theme.fg("dim", "Cache 重复计费：")} $${cacheWaste.missedCost.toFixed(3)} ${theme.fg("dim", `（${detail}）`)}`
+					sessionInfo.cacheWaste.missedCost >= 0.0001
+						? `\n${theme.fg("dim", "Cache 重复计费：")} $${sessionInfo.cacheWaste.missedCost.toFixed(3)} ${theme.fg("dim", `（${detail}）`)}`
 						: `\n${theme.fg("dim", "Cache 重复计费：")} ${detail}`;
 			}
 		}

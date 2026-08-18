@@ -44,6 +44,7 @@ export {
 	type AgentSessionEventListener,
 	type ModelCycleResult,
 	type PromptOptions,
+	type SessionInfoView,
 	type SessionStats,
 } from "./agent-session.ts";
 export {

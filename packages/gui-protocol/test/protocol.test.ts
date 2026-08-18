@@ -572,6 +572,41 @@ describe("GUI Protocol v1", () => {
 		).not.toThrow();
 	});
 
+	it("strictly decodes session information requests and results", () => {
+		const message = {
+			type: "request" as const,
+			id: "session-info",
+			request: {
+				command: "get_session_info" as const,
+				sessionPath: "/tmp/current.jsonl",
+				leaseId: "lease",
+			},
+		};
+		const result = {
+			name: "当前会话",
+			sessionFile: "/tmp/current.jsonl",
+			sessionId: "session",
+			messages: { total: 4, user: 1, agent: 1, toolCalls: 1, toolResults: 1 },
+			tokens: { input: 100, output: 20, cacheRead: 50, cacheWrite: 10, total: 180 },
+			cost: 0.125,
+			usageBreakdown: [{ key: "faux/model", cost: 0.125, tokens: 180 }],
+			cacheWaste: { missedTokens: 2048, missedCost: 0.01, missCount: 1 },
+		};
+
+		expect(new ClientMessageDecoder().push(encodeClientMessage(message))).toEqual([message]);
+		expect(() =>
+			encodeClientMessage({ ...message, request: { ...message.request, leaseId: undefined } } as never),
+		).toThrow();
+		expect(() => assertWorkspaceCommandResult("get_session_info", result)).not.toThrow();
+		expect(() =>
+			assertWorkspaceCommandResult("get_session_info", {
+				...result,
+				messages: { ...result.messages, total: -1 },
+			}),
+		).toThrow();
+		expect(() => assertWorkspaceCommandResult("get_session_info", { ...result, extra: true })).toThrow();
+	});
+
 	it("strictly decodes fork candidates and fork results", () => {
 		const list = {
 			type: "request" as const,

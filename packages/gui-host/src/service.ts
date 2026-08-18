@@ -84,6 +84,7 @@ const WORKSPACE_COMMANDS = {
 	remove_package: true,
 	update_packages: true,
 	get_session_tree: true,
+	get_session_info: true,
 	list_fork_messages: true,
 	fork_session: true,
 	set_entry_label: true,
@@ -1207,6 +1208,10 @@ export class GuiHostService {
 			case "get_session_tree": {
 				const sessionPath = canonicalSessionPath(request.sessionPath);
 				return this.adapter.getSessionTree(sessionPath);
+			}
+			case "get_session_info": {
+				const { runtime } = this.assertSessionControl(request.sessionPath, request.leaseId, connection);
+				return runtime.getSessionInfo();
 			}
 			case "list_fork_messages": {
 				const { runtime } = this.assertSessionControl(request.sessionPath, request.leaseId, connection);

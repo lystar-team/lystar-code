@@ -87,6 +87,7 @@ pub(super) fn apply_workspace_response(
                     copy_text: None,
                 }));
             }
+            PendingIntent::SessionInfo => apply_session_info(app, result)?,
             PendingIntent::ForkMessages => apply_fork_messages(app, result)?,
             PendingIntent::ChangeDetail => {
                 app.change_detail = Some(parse_git_diff(&result)?);

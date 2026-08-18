@@ -20,6 +20,7 @@ import type {
 	RenderRichTextResult,
 	RichTextMessageType,
 	SessionActivity,
+	SessionInfoResult,
 	SessionPhase,
 	SessionProgress,
 	SessionStateSnapshot,
@@ -64,6 +65,7 @@ export interface RuntimeSession {
 		value: boolean | number | string,
 	): Promise<{ setting: SettingSummary; requiresRestart: boolean }>;
 	getSessionTree(): SessionTreeNode[];
+	getSessionInfo(): SessionInfoResult;
 	listForkMessages(): Array<{ entryId: string; text: string }>;
 	setEntryLabel(entryId: string, label?: string): Promise<void>;
 	navigateSessionTree(

@@ -65,6 +65,7 @@ pub(in super::super) fn handle_key(
             origin: OverlayOrigin::User,
             items: [
                 ("agents", "查看和控制当前会话的 Subagent"),
+                ("session", "当前会话信息"),
                 ("changelog", "更新内容"),
                 ("hotkeys", "快捷键"),
                 ("clipboard", "剪贴板"),
@@ -297,6 +298,7 @@ pub(in super::super) fn handle_key(
 pub(in super::super) fn builtin_slash_command(text: &str) -> Option<&'static str> {
     match text.trim() {
         "/agents" | "/subagents" => Some("agents"),
+        "/session" => Some("session"),
         "/changelog" => Some("changelog"),
         "/hotkeys" => Some("hotkeys"),
         "/clipboard" => Some("clipboard"),

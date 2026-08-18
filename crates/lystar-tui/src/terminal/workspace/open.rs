@@ -100,6 +100,9 @@ pub(in super::super) fn open_workbench(
             String::new(),
         );
     }
+    if target == "session" {
+        return request_session_info(app, pipe, session_path, sequence);
+    }
     if target == "changelog" {
         app.open_overlay(OverlayState::Detail(DetailOverlay {
             title: "更新内容".to_owned(),
@@ -201,7 +204,7 @@ pub(in super::super) fn open_workbench(
             title: "帮助".to_owned(),
             lines: vec![
                 "Ctrl+P 打开命令面板".to_owned(),
-                "/new 新建会话，/clone 复制当前会话，/fork 从历史消息分叉会话，/reload 重新加载资源，/resume 继续会话，/export 导出会话，/import 导入会话，/share 分享会话，/copy 复制 Agent 消息，/name 设置会话名称，/agents 查看和控制 Subagent，/changelog 更新内容，/hotkeys 快捷键，/clipboard 剪贴板，/sessions 会话，/tree 分支树".to_owned(),
+                "/new 新建会话，/clone 复制当前会话，/fork 从历史消息分叉会话，/reload 重新加载资源，/resume 继续会话，/export 导出会话，/import 导入会话，/share 分享会话，/copy 复制 Agent 消息，/name 设置会话名称，/session 当前会话信息，/agents 查看和控制 Subagent，/changelog 更新内容，/hotkeys 快捷键，/clipboard 剪贴板，/sessions 会话，/tree 分支树".to_owned(),
                 "/settings 设置，/model 模型，/thinking 思考，/login 登录".to_owned(),
                 "Ctrl+Shift+V 读取并插入剪贴板，Ctrl+Y 复制当前上下文".to_owned(),
                 "/help 显示此帮助，/about 显示版本与运行目录，/doctor 显示诊断结果".to_owned(),

@@ -60,6 +60,7 @@ import { sleep } from "../utils/sleep.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
+import { type CacheWasteTotals, computeCacheWaste } from "./cache-stats.ts";
 import {
 	type CompactionResult,
 	calculateContextTokens,
@@ -125,7 +126,12 @@ import { registerBuiltInToolIdentity } from "./tool-recovery/registry.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
-import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
+import {
+	addUsageToTotals,
+	createUsageTotals,
+	getUsageCostBreakdown,
+	type UsageCostBreakdownEntry,
+} from "./usage-totals.ts";
 
 // ============================================================================
 // Skill Block Parsing
@@ -299,6 +305,24 @@ export interface SessionStats {
 	};
 	cost: number;
 	contextUsage?: ContextUsage;
+}
+
+/** `/session` 视图使用的完整会话信息。 */
+export interface SessionInfoView {
+	name: string | null;
+	sessionFile: string | null;
+	sessionId: string;
+	messages: {
+		total: number;
+		user: number;
+		agent: number;
+		toolCalls: number;
+		toolResults: number;
+	};
+	tokens: SessionStats["tokens"];
+	cost: number;
+	usageBreakdown: UsageCostBreakdownEntry[];
+	cacheWaste: CacheWasteTotals;
 }
 
 interface ToolDefinitionEntry {
@@ -3374,6 +3398,27 @@ export class AgentSession {
 			},
 			cost: usageTotals.cost,
 			contextUsage: this.getContextUsage(),
+		};
+	}
+
+	getSessionInfo(): SessionInfoView {
+		const stats = this.getSessionStats();
+		const entries = this.sessionManager.getEntries();
+		return {
+			name: this.sessionName ?? null,
+			sessionFile: stats.sessionFile ?? null,
+			sessionId: stats.sessionId,
+			messages: {
+				total: stats.totalMessages,
+				user: stats.userMessages,
+				agent: stats.assistantMessages,
+				toolCalls: stats.toolCalls,
+				toolResults: stats.toolResults,
+			},
+			tokens: stats.tokens,
+			cost: stats.cost,
+			usageBreakdown: getUsageCostBreakdown(entries),
+			cacheWaste: computeCacheWaste(entries, this.modelRuntime),
 		};
 	}
 

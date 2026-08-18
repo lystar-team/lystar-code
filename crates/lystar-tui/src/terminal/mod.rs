@@ -77,6 +77,7 @@ mod render;
 mod requests;
 mod responses;
 mod runtime;
+mod session_info;
 mod shell;
 mod transport;
 mod workspace;
@@ -102,6 +103,7 @@ use reload::*;
 use render::*;
 use requests::*;
 use responses::*;
+use session_info::*;
 use transport::ProtocolPipe;
 use workspace::*;
 
