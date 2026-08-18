@@ -101,6 +101,47 @@ pub(in super::super) fn open_workbench(
             PendingIntent::Changelog,
         );
     }
+    if target == "hotkeys" {
+        app.open_overlay(OverlayState::Detail(DetailOverlay {
+            title: "快捷键".to_owned(),
+            lines: [
+                "导航",
+                "  ↑ / ↓  移动光标；输入首尾浏览历史",
+                "  ← / →  移动光标",
+                "  Home / End  跳到行首 / 行尾；空输入时跳到会话首尾",
+                "  PageUp / PageDown  按页滚动会话",
+                "",
+                "编辑",
+                "  Enter  提交消息",
+                "  Shift+Enter / Ctrl+J  换行",
+                "  Backspace / Delete  删除字符",
+                "  Ctrl+U  清空输入",
+                "  Ctrl+Z / Ctrl+R  撤销 / 重做",
+                "",
+                "工作台",
+                "  Ctrl+P  打开命令面板",
+                "  Ctrl+F  搜索会话",
+                "  Ctrl+O  展开 Tool；打开当前 Subagent",
+                "  Ctrl+C / Esc  停止当前操作",
+                "  Alt+Enter  添加后续消息",
+                "  Ctrl+V  粘贴剪贴板文本",
+                "  Ctrl+Shift+V  粘贴剪贴板文本和图片",
+                "  Ctrl+Y  复制当前上下文",
+                "  q  输入框为空时退出",
+                "",
+                "输入前缀",
+                "  /  斜杠命令",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            scroll: 0,
+            status: "Esc 返回".to_owned(),
+            link: None,
+            copy_text: None,
+        }));
+        return Ok(());
+    }
     if target == "clipboard" {
         app.open_workspace_overlay(
             "clipboard",
@@ -137,7 +178,7 @@ pub(in super::super) fn open_workbench(
             title: "帮助".to_owned(),
             lines: vec![
                 "Ctrl+P 打开命令面板".to_owned(),
-                "/new 新建会话，/resume 继续会话，/export 导出会话，/import 导入会话，/share 分享会话，/copy 复制 Agent 消息，/name 设置会话名称，/agents 查看和控制 Subagent，/changelog 更新内容，/clipboard 剪贴板，/sessions 会话，/tree 分支树".to_owned(),
+                "/new 新建会话，/resume 继续会话，/export 导出会话，/import 导入会话，/share 分享会话，/copy 复制 Agent 消息，/name 设置会话名称，/agents 查看和控制 Subagent，/changelog 更新内容，/hotkeys 快捷键，/clipboard 剪贴板，/sessions 会话，/tree 分支树".to_owned(),
                 "/settings 设置，/model 模型，/thinking 思考，/login 登录".to_owned(),
                 "Ctrl+Shift+V 读取并插入剪贴板，Ctrl+Y 复制当前上下文".to_owned(),
                 "/help 显示此帮助，/about 显示版本与运行目录，/doctor 显示诊断结果".to_owned(),
