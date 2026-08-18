@@ -800,6 +800,24 @@ export class GuiHostService {
 					},
 				});
 			}
+			case "reload_resources": {
+				const sessionPath = canonicalSessionPath(request.sessionPath);
+				this.assertExtensionSession(connection, request);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `session:${sessionPath}`,
+					lockSessionPath: sessionPath,
+					payload: { sessionPath },
+					run: async () => {
+						const { runtime } = this.assertExtensionSession(connection, request);
+						await runtime.reloadResources();
+						await this.sendSessionSnapshots(runtime);
+						return this.runtimeSnapshot(runtime, "owned");
+					},
+				});
+			}
 			case "fork_session": {
 				const sessionPath = canonicalSessionPath(request.sessionPath);
 				return this.executeJournaledWrite(connection, {
@@ -1411,6 +1429,7 @@ export class GuiHostService {
 			clientInstanceId: string;
 			clientRequestId: string;
 			scope: string;
+			lockSessionPath?: string;
 			payload: JsonValue;
 			run: () => Promise<JsonValue>;
 		},
@@ -1428,6 +1447,12 @@ export class GuiHostService {
 				retryable: false,
 			});
 		}
+		if (input.lockSessionPath && this.activeOperationBySession.has(input.lockSessionPath)) {
+			throw Object.assign(new Error("会话存在正在执行的任务"), {
+				code: "session_operation_active",
+				retryable: true,
+			});
+		}
 		const accepted = this.journal.accept({
 			clientInstanceId: input.clientInstanceId,
 			clientRequestId: input.clientRequestId,
@@ -1435,6 +1460,9 @@ export class GuiHostService {
 			type: input.command,
 			payloadHash,
 		});
+		if (input.lockSessionPath) {
+			this.activeOperationBySession.set(input.lockSessionPath, accepted.operation.operationId);
+		}
 		const execution = this.enqueueWriteScope(input.scope, async () => {
 			try {
 				this.updateOperation(accepted.operation.operationId, "running");
@@ -1446,6 +1474,13 @@ export class GuiHostService {
 					error: error instanceof Error ? error.message : String(error),
 				});
 				throw error;
+			} finally {
+				if (
+					input.lockSessionPath &&
+					this.activeOperationBySession.get(input.lockSessionPath) === accepted.operation.operationId
+				) {
+					this.activeOperationBySession.delete(input.lockSessionPath);
+				}
 			}
 		});
 		this.journalWritePromises.set(accepted.operation.operationId, execution);

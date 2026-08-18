@@ -358,6 +358,10 @@ pub(super) fn submit_editor_with_origin(
         app.transcript.status = "正在获取会话租约".to_owned();
         return Ok(());
     };
+    if matches!(session_flow.as_ref(), Some(SessionFlow::Reload { .. })) {
+        app.set_overlay_error("资源重新加载正在进行");
+        return Ok(());
+    }
     let Some(text) = app.editor.submit() else {
         return Ok(());
     };

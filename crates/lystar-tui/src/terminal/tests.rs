@@ -28,8 +28,9 @@ fn page(
 
 fn snapshot_value(path: &str) -> serde_json::Value {
     serde_json::json!({
-        "id": "session", "path": path, "cwd": "/tmp", "phase": "idle", "activity": "idle",
-        "thinkingLevel": "off", "attached": false, "writeAccess": "owned", "revision": 1,
+        "id": "session", "path": path, "cwd": "/tmp", "createdAt": 1, "updatedAt": 1,
+        "phase": "idle", "activity": "idle", "thinkingLevel": "off", "attached": false,
+        "writeAccess": "owned", "revision": 1,
         "leafId": "leaf-current", "queuedSteerCount": 0, "queuedFollowUpCount": 0,
         "transcriptGeneration": "g1",
         "transcriptRevision": 1, "model": null
@@ -348,6 +349,7 @@ fn intercepts_only_connected_slash_commands() {
         ("/doctor", "doctor"),
         ("/new", "new"),
         ("/clone", "clone"),
+        ("/reload", "reload"),
         ("/compact", "compact"),
         ("/export", "export"),
         ("/import", "import"),
@@ -765,6 +767,9 @@ mod hotkeys_tests;
 
 #[path = "tests/clone_tests.rs"]
 mod clone_tests;
+
+#[path = "tests/reload_tests.rs"]
+mod reload_tests;
 
 #[test]
 fn builds_select_items_from_host_payload() {

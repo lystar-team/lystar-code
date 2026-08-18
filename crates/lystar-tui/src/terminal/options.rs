@@ -138,6 +138,9 @@ pub(super) enum SessionTransition {
         id: String,
         requested_name: String,
     },
+    Reload {
+        id: String,
+    },
     Fork {
         id: String,
         toast: String,

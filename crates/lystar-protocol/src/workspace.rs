@@ -21,6 +21,7 @@ pub enum WorkspaceCommand {
     ListModelProviders,
     SetSessionModel,
     SetSessionThinking,
+    ReloadResources,
     LoginModelProvider,
     LogoutModelProvider,
     GetProjectTrust,
@@ -68,6 +69,7 @@ impl WorkspaceCommand {
             "list_model_providers" => Self::ListModelProviders,
             "set_session_model" => Self::SetSessionModel,
             "set_session_thinking" => Self::SetSessionThinking,
+            "reload_resources" => Self::ReloadResources,
             "login_model_provider" => Self::LoginModelProvider,
             "logout_model_provider" => Self::LogoutModelProvider,
             "get_project_trust" => Self::GetProjectTrust,
@@ -116,6 +118,7 @@ impl WorkspaceCommand {
             Self::ListModelProviders => "list_model_providers",
             Self::SetSessionModel => "set_session_model",
             Self::SetSessionThinking => "set_session_thinking",
+            Self::ReloadResources => "reload_resources",
             Self::LoginModelProvider => "login_model_provider",
             Self::LogoutModelProvider => "logout_model_provider",
             Self::GetProjectTrust => "get_project_trust",
@@ -175,6 +178,7 @@ pub enum WorkspaceResult {
     ListModelProviders(crate::generated::WorkspaceListModelProvidersResult),
     SetSessionModel(crate::generated::WorkspaceSetSessionModelResult),
     SetSessionThinking(crate::generated::WorkspaceSetSessionThinkingResult),
+    ReloadResources(crate::generated::WorkspaceReloadResourcesResult),
     LoginModelProvider(crate::generated::WorkspaceLoginModelProviderResult),
     LogoutModelProvider(crate::generated::WorkspaceLogoutModelProviderResult),
     GetProjectTrust(crate::generated::WorkspaceGetProjectTrustResult),
@@ -245,6 +249,9 @@ impl ServerMessage {
             }
             WorkspaceCommand::SetSessionThinking => {
                 Ok(WorkspaceResult::SetSessionThinking(decode(result)?))
+            }
+            WorkspaceCommand::ReloadResources => {
+                Ok(WorkspaceResult::ReloadResources(decode(result)?))
             }
             WorkspaceCommand::LoginModelProvider => {
                 Ok(WorkspaceResult::LoginModelProvider(decode(result)?))
@@ -408,6 +415,10 @@ mod tests {
         assert_eq!(
             WorkspaceCommand::from_wire("export_session"),
             Some(WorkspaceCommand::ExportSession)
+        );
+        assert_eq!(
+            WorkspaceCommand::from_wire("reload_resources"),
+            Some(WorkspaceCommand::ReloadResources)
         );
         assert!(WorkspaceCommand::from_wire("list_sessions").is_none());
     }

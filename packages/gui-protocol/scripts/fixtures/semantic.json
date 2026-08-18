@@ -78,6 +78,12 @@
       "message": { "type": "request", "id": "workspace-set-session-thinking", "request": { "command": "set_session_thinking", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "clientInstanceId": "client-1", "clientRequestId": "request-1", "level": "high" } }
     },
     {
+      "name": "client-workspace-reload-resources",
+      "direction": "client",
+      "workspaceCommand": "reload_resources",
+      "message": { "type": "request", "id": "workspace-reload-resources", "request": { "command": "reload_resources", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "clientInstanceId": "client-1", "clientRequestId": "request-reload" } }
+    },
+    {
       "name": "client-workspace-login-model-provider",
       "direction": "client",
       "workspaceCommand": "login_model_provider",
@@ -416,6 +422,12 @@
       "direction": "server",
       "workspaceCommand": "set_session_thinking",
       "message": { "type": "response", "id": "workspace-set-session-thinking", "ok": true, "result": { "id": "session-1", "path": "/tmp/session.jsonl", "cwd": "/tmp", "createdAt": 0, "updatedAt": 1, "phase": "idle", "activity": "idle", "model": { "provider": "faux", "id": "test" }, "thinkingLevel": "high", "attached": true, "writeAccess": "owned", "revision": 2, "leafId": null, "queuedSteerCount": 0, "queuedFollowUpCount": 0, "transcriptGeneration": "generation-1", "transcriptRevision": 1 } }
+    },
+    {
+      "name": "server-workspace-reload-resources",
+      "direction": "server",
+      "workspaceCommand": "reload_resources",
+      "message": { "type": "response", "id": "workspace-reload-resources", "ok": true, "result": { "id": "session-1", "path": "/tmp/session.jsonl", "cwd": "/tmp", "createdAt": 0, "updatedAt": 2, "phase": "idle", "activity": "idle", "model": { "provider": "faux", "id": "test" }, "thinkingLevel": "high", "attached": true, "writeAccess": "owned", "revision": 3, "leafId": null, "queuedSteerCount": 0, "queuedFollowUpCount": 0, "transcriptGeneration": "generation-1", "transcriptRevision": 1 } }
     },
     {
       "name": "server-workspace-login-model-provider",

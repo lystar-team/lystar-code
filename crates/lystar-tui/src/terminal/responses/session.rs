@@ -20,6 +20,7 @@ pub(in super::super) fn apply_session_flow(
         | SessionFlow::List { id, .. }
         | SessionFlow::Rename { id, .. }
         | SessionFlow::Name { id, .. }
+        | SessionFlow::Reload { id }
         | SessionFlow::Fork { id, .. }
         | SessionFlow::Import { id, .. }
         | SessionFlow::Readonly { id, .. }
@@ -139,6 +140,18 @@ pub(in super::super) fn apply_session_flow(
                     "会话名称已设置：{session_name}（已从 {requested_name:?} 规范化）"
                 ));
             }
+            Ok(Some(false))
+        }
+        SessionFlow::Reload { .. } => {
+            app.transcript.status.clear();
+            if !success {
+                app.set_overlay_error(format!("重新加载失败：{error}"));
+                return Ok(Some(false));
+            }
+            let snapshot: lystar_protocol::SessionSnapshot = serde_json::from_value(result)
+                .map_err(|error| TuiError::InvalidResponse(format!("重新加载响应无效: {error}")))?;
+            app.apply_snapshot(snapshot);
+            app.set_toast("已重新加载 Extension、Skill、Prompt、Theme 和上下文文件");
             Ok(Some(false))
         }
         SessionFlow::Fork { toast, .. } => {

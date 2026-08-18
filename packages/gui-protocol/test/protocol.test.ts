@@ -531,6 +531,47 @@ describe("GUI Protocol v1", () => {
 		expect(new ClientMessageDecoder().push(encodeClientMessage(message))).toEqual([message]);
 	});
 
+	it("strictly decodes resource reload requests and snapshot results", () => {
+		const message = {
+			type: "request" as const,
+			id: "reload",
+			request: {
+				command: "reload_resources" as const,
+				sessionPath: "/tmp/current.jsonl",
+				leaseId: "lease",
+				clientInstanceId: "client",
+				clientRequestId: "reload-1",
+			},
+		};
+		expect(new ClientMessageDecoder().push(encodeClientMessage(message))).toEqual([message]);
+		expect(() =>
+			encodeClientMessage({
+				...message,
+				request: { ...message.request, leaseId: undefined },
+			} as never),
+		).toThrow();
+		expect(() =>
+			assertWorkspaceCommandResult("reload_resources", {
+				id: "session",
+				path: "/tmp/current.jsonl",
+				cwd: "/tmp",
+				createdAt: 1,
+				updatedAt: 2,
+				phase: "idle",
+				activity: "idle",
+				thinkingLevel: "off",
+				attached: true,
+				writeAccess: "owned",
+				revision: 2,
+				leafId: null,
+				queuedSteerCount: 0,
+				queuedFollowUpCount: 0,
+				transcriptGeneration: "generation",
+				transcriptRevision: 0,
+			}),
+		).not.toThrow();
+	});
+
 	it("strictly decodes interactive queue commands and typed progress", () => {
 		const decoder = new ClientMessageDecoder();
 		for (const request of [

@@ -170,7 +170,8 @@ class FakeRuntime implements RuntimeSession {
 		this.counts.abort = (this.counts.abort ?? 0) + 1;
 	}
 	async reloadResources() {
-		this.counts.reload = (this.counts.reload ?? 0) + 1;
+		this.counts.reload_resources = (this.counts.reload_resources ?? 0) + 1;
+		if (this.counts.block_reload) await new Promise((resolve) => setTimeout(resolve, 20));
 	}
 	getCompletions() {
 		return undefined;
@@ -353,6 +354,8 @@ function request(command: string, cwd: string, sessionPath: string, leaseId: str
 			return { command, sessionPath, leaseId, model: { provider: "provider", id: "model" }, ...identity };
 		case "set_session_thinking":
 			return { command, sessionPath, leaseId, level: "off", ...identity };
+		case "reload_resources":
+			return { command, sessionPath, leaseId, ...identity };
 		case "fork_session":
 			return { command, sessionPath, leaseId, entryId: "entry", ...identity };
 		case "export_session":
@@ -403,6 +406,7 @@ const WRITE_COMMANDS = [
 	"rename_session",
 	"set_session_model",
 	"set_session_thinking",
+	"reload_resources",
 	"fork_session",
 	"export_session",
 	"delete_session",
@@ -425,6 +429,7 @@ const SESSION_COMMANDS = new Set([
 	"rename_session",
 	"set_session_model",
 	"set_session_thinking",
+	"reload_resources",
 	"fork_session",
 	"export_session",
 	"set_setting",
@@ -526,6 +531,78 @@ describe("GuiHostService journaled writes", () => {
 		expect(
 			active.connection.messages.find((message) => message.type === "response" && message.id === "abort-share"),
 		).toMatchObject({ ok: true, result: { type: "share_session", status: "aborted" } });
+	});
+
+	it("locks the session for the full resource reload window", async () => {
+		const setupValue = setup();
+		setupValue.counts.block_reload = 1;
+		const active = await lease(setupValue.service, setupValue.sessionPath);
+		const reload = active.connection.handle({
+			type: "request",
+			id: "reload",
+			request: {
+				command: "reload_resources",
+				sessionPath: setupValue.sessionPath,
+				leaseId: active.leaseId,
+				clientInstanceId: "client",
+				clientRequestId: "reload-blocking",
+			},
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await active.connection.handle({
+			type: "request",
+			id: "prompt-during-reload",
+			request: {
+				command: "prompt",
+				sessionPath: setupValue.sessionPath,
+				leaseId: active.leaseId,
+				clientInstanceId: "client",
+				clientRequestId: "prompt-during-reload",
+				text: "should be rejected",
+			},
+		});
+		await reload;
+
+		expect(setupValue.counts.reload_resources).toBe(1);
+		expect(
+			active.connection.messages.find(
+				(message) => message.type === "response" && message.id === "prompt-during-reload",
+			),
+		).toMatchObject({ ok: false, error: { code: "session_operation_active" } });
+	});
+
+	it("rejects resource reload while the session has an active operation", async () => {
+		const setupValue = setup();
+		setupValue.counts.block_share = 1;
+		const active = await lease(setupValue.service, setupValue.sessionPath);
+		await active.connection.handle({
+			type: "request",
+			id: "share",
+			request: {
+				command: "share_session",
+				sessionPath: setupValue.sessionPath,
+				leaseId: active.leaseId,
+				clientInstanceId: "client",
+				clientRequestId: "share-running",
+			},
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await active.connection.handle({
+			type: "request",
+			id: "reload",
+			request: {
+				command: "reload_resources",
+				sessionPath: setupValue.sessionPath,
+				leaseId: active.leaseId,
+				clientInstanceId: "client",
+				clientRequestId: "reload-busy",
+			},
+		});
+
+		expect(setupValue.counts.reload_resources).toBeUndefined();
+		expect(
+			active.connection.messages.find((message) => message.type === "response" && message.id === "reload"),
+		).toMatchObject({ ok: false, error: { code: "session_operation_active" } });
 	});
 
 	it("copies the Core-selected last assistant message and reports an empty session", async () => {

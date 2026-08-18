@@ -758,6 +758,7 @@ export const ListModelsResultSchema = Type.Array(ModelSummarySchema, { maxItems:
 export const ListModelProvidersResultSchema = Type.Array(ModelProviderSummarySchema, { maxItems: 1_000 });
 export const SetSessionModelResultSchema = SessionStateSnapshotSchema;
 export const SetSessionThinkingResultSchema = SessionStateSnapshotSchema;
+export const ReloadResourcesResultSchema = SessionStateSnapshotSchema;
 export const LoginModelProviderResultSchema = ListModelsResultSchema;
 export const LogoutModelProviderResultSchema = ListModelsResultSchema;
 export const GetProjectTrustResultSchema = ProjectTrustSchema;
@@ -983,6 +984,7 @@ export const WorkspaceCommandResultSchemas = {
 	list_model_providers: ListModelProvidersResultSchema,
 	set_session_model: SetSessionModelResultSchema,
 	set_session_thinking: SetSessionThinkingResultSchema,
+	reload_resources: ReloadResourcesResultSchema,
 	login_model_provider: LoginModelProviderResultSchema,
 	logout_model_provider: LogoutModelProviderResultSchema,
 	get_project_trust: GetProjectTrustResultSchema,
@@ -1208,6 +1210,13 @@ export const CommandSchema = Type.Union([
 		sessionPath: Type.String({ minLength: 1 }),
 		leaseId: Id,
 		level: ThinkingLevelSchema,
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
+	StrictObject({
+		command: Type.Literal("reload_resources"),
+		sessionPath: Type.String({ minLength: 1 }),
+		leaseId: Id,
 		clientInstanceId: Id,
 		clientRequestId: Id,
 	}),

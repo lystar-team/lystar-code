@@ -71,6 +71,7 @@ mod input;
 mod lifecycle;
 mod name;
 mod options;
+mod reload;
 mod render;
 mod requests;
 mod responses;
@@ -95,6 +96,7 @@ use name::*;
 #[cfg(test)]
 use options::TerminalModeContext;
 use options::{SessionFlow, inline_viewport_height, resolve_terminal_mode, terminal_mode_context};
+use reload::*;
 use render::*;
 use requests::*;
 use responses::*;
