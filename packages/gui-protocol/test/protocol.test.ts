@@ -460,6 +460,29 @@ describe("GUI Protocol v1", () => {
 		).toThrow();
 	});
 
+	it("strictly decodes session import requests", () => {
+		const message = {
+			type: "request" as const,
+			id: "import",
+			request: {
+				command: "import_session" as const,
+				sessionPath: "/tmp/current.jsonl",
+				leaseId: "lease",
+				clientInstanceId: "client",
+				clientRequestId: "import-1",
+				inputPath: "path with spaces/session.jsonl",
+				cwdOverride: "/work/project",
+			},
+		};
+		expect(new ClientMessageDecoder().push(encodeClientMessage(message))).toEqual([message]);
+		expect(() =>
+			encodeClientMessage({
+				...message,
+				request: { ...message.request, inputPath: "" },
+			}),
+		).toThrow();
+	});
+
 	it("strictly decodes interactive queue commands and typed progress", () => {
 		const decoder = new ClientMessageDecoder();
 		for (const request of [

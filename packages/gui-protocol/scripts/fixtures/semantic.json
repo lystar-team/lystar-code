@@ -225,6 +225,11 @@
       "message": { "type": "request", "id": "write-fork-session", "request": { "command": "fork_session", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "entryId": "entry-1", "clientInstanceId": "client-1", "clientRequestId": "write-9" } }
     },
     {
+      "name": "client-write-import-session",
+      "direction": "client",
+      "message": { "type": "request", "id": "write-import-session", "request": { "command": "import_session", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "inputPath": "path with spaces/session.jsonl", "cwdOverride": "/tmp/project", "clientInstanceId": "client-1", "clientRequestId": "write-import" } }
+    },
+    {
       "name": "client-write-delete-session",
       "direction": "client",
       "message": { "type": "request", "id": "write-delete-session", "request": { "command": "delete_session", "cwd": "/tmp/project", "sessionPath": "/tmp/session.jsonl", "clientInstanceId": "client-1", "clientRequestId": "write-10" } }

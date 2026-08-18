@@ -346,6 +346,7 @@ fn intercepts_only_connected_slash_commands() {
         ("/new", "new"),
         ("/compact", "compact"),
         ("/export", "export"),
+        ("/import", "import"),
         ("/resume", "resume"),
         ("/settings", "settings"),
         ("/model", "model"),
@@ -653,6 +654,9 @@ fn export_command_preserves_paths_and_applies_host_results() {
     assert!(!app.write_pending);
     std::fs::remove_file(path).unwrap();
 }
+
+#[path = "tests/import_tests.rs"]
+mod import_tests;
 
 #[test]
 fn builds_select_items_from_host_payload() {

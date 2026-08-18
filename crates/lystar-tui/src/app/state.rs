@@ -19,11 +19,11 @@ use super::{
     ExtensionUiState, GitDiffDescriptor, GitStatusDescriptor, ImagePendingRequest,
     InstructionDescriptor, ListOverlay, LiveCompaction, LiveRetry, ModelDescriptor, OverlayOrigin,
     OverlayState, PackageDescriptor, PendingAttachmentSubmit, PendingComponentInput,
-    PendingCustomEditorSubmit, PendingRequest, PendingTerminalInput, ProjectTrustDescriptor,
-    ProviderDescriptor, ReadonlySessionView, RecoveryDraft, RichTextPendingRequest, SearchState,
-    SessionSummary, SessionTreeNode, SettingDescriptor, SkillDescriptor, SubagentDescriptor,
-    TranscriptPendingRequest, TranscriptRequestKind, TranscriptViewKind, TranscriptWindow,
-    TreeFilter, UpdateDescriptor, WorkspaceOverlayGeneration,
+    PendingCustomEditorSubmit, PendingRequest, PendingSessionImport, PendingTerminalInput,
+    ProjectTrustDescriptor, ProviderDescriptor, ReadonlySessionView, RecoveryDraft,
+    RichTextPendingRequest, SearchState, SessionSummary, SessionTreeNode, SettingDescriptor,
+    SkillDescriptor, SubagentDescriptor, TranscriptPendingRequest, TranscriptRequestKind,
+    TranscriptViewKind, TranscriptWindow, TreeFilter, UpdateDescriptor, WorkspaceOverlayGeneration,
 };
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveSessionContext {
@@ -132,6 +132,7 @@ pub struct AppState {
     pub host_instructions: Vec<InstructionDescriptor>,
     pub packages: Vec<PackageDescriptor>,
     pub pending_package_source: Option<String>,
+    pub pending_session_import: Option<PendingSessionImport>,
     pub update: Option<UpdateDescriptor>,
     pub write_pending: bool,
     pub pending_editor_replace: Option<String>,
@@ -174,6 +175,7 @@ impl AppState {
 
     pub fn begin_active_session(&mut self, path: String, cwd: String) -> u64 {
         self.clear_custom_editor_drafts();
+        self.pending_session_import = None;
         self.clear_transient();
         self.session_generation = self.session_generation.saturating_add(1);
         self.invalidate_transcript_requests(TranscriptViewKind::Active);
@@ -242,6 +244,7 @@ impl AppState {
 
     pub fn clear_active_session(&mut self, reason: impl Into<String>) {
         self.clear_custom_editor_drafts();
+        self.pending_session_import = None;
         self.active_session = None;
         self.lease_id = None;
         self.snapshot = None;
@@ -255,6 +258,14 @@ impl AppState {
     }
 
     pub fn clear_connection_state(&mut self, reason: impl Into<String>) {
+        self.pending_session_import = None;
+        if matches!(
+            self.overlay(),
+            Some(OverlayState::Confirm(confirm))
+                if confirm.confirm_action.starts_with("session-import-")
+        ) {
+            self.close_overlay();
+        }
         self.clear_active_lease();
         self.clear_transient();
         self.page_load_pending = false;

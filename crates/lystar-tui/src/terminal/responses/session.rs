@@ -20,6 +20,7 @@ pub(in super::super) fn apply_session_flow(
         | SessionFlow::List { id, .. }
         | SessionFlow::Rename { id, .. }
         | SessionFlow::Fork { id, .. }
+        | SessionFlow::Import { id, .. }
         | SessionFlow::Readonly { id, .. }
         | SessionFlow::SwitchReleasing { id, .. }
         | SessionFlow::SwitchAcquiring { id, .. }
@@ -115,6 +116,51 @@ pub(in super::super) fn apply_session_flow(
             let (lease_id, snapshot) = parse_lease_snapshot(&result)?;
             app.commit_session_switch(snapshot.path.clone(), lease_id, snapshot);
             app.set_toast(toast);
+            Ok(Some(true))
+        }
+        SessionFlow::Import { input_path, .. } => {
+            if !success {
+                let error_code = raw
+                    .get("error")
+                    .and_then(|value| value.get("code"))
+                    .and_then(serde_json::Value::as_str);
+                if error_code == Some("missing_session_cwd") {
+                    let details = raw
+                        .get("error")
+                        .and_then(|value| value.get("details"))
+                        .and_then(serde_json::Value::as_object)
+                        .ok_or_else(|| {
+                            TuiError::InvalidResponse("导入缺少工作目录详情".to_owned())
+                        })?;
+                    let session_cwd = required_string(details, "sessionCwd")?;
+                    let fallback_cwd = required_string(details, "fallbackCwd")?;
+                    app.pending_session_import = Some(PendingSessionImport {
+                        input_path,
+                        cwd_override: Some(fallback_cwd.clone()),
+                    });
+                    app.open_overlay(OverlayState::Confirm(ConfirmOverlay {
+                        title: "找不到会话工作目录".to_owned(),
+                        message: format!(
+                            "会话文件中的工作目录不存在\n{session_cwd}\n\n是否在当前目录继续\n{fallback_cwd}"
+                        ),
+                        confirm_action: "session-import-cwd-confirm".to_owned(),
+                        status: String::new(),
+                    }));
+                } else {
+                    app.pending_session_import = None;
+                    app.set_overlay_error(format!("导入会话失败：{error}"));
+                }
+                return Ok(Some(false));
+            }
+            if result.get("cancelled").and_then(serde_json::Value::as_bool) == Some(true) {
+                app.pending_session_import = None;
+                app.set_toast("导入已取消");
+                return Ok(Some(false));
+            }
+            let (lease_id, snapshot) = parse_lease_snapshot(&result)?;
+            app.pending_session_import = None;
+            app.commit_session_switch(snapshot.path.clone(), lease_id, snapshot);
+            app.set_toast(format!("已从 {input_path} 导入会话"));
             Ok(Some(true))
         }
         SessionFlow::Readonly {

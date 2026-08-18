@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { ClientMessage, ServerMessage } from "@lystar/code-gui-protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { GuiHostService } from "../src/service.ts";
@@ -16,7 +16,7 @@ afterEach(async () => {
 class FakeRuntime implements RuntimeSession {
 	readonly events = new EventEmitter();
 	readonly counts: Record<string, number>;
-	readonly sessionPath: string;
+	sessionPath: string;
 	readonly cwd: string;
 	constructor(sessionPath: string, cwd: string, counts: Record<string, number>) {
 		this.sessionPath = sessionPath;
@@ -95,6 +95,17 @@ class FakeRuntime implements RuntimeSession {
 	async exportSession(outputPath?: string) {
 		this.counts.export_session = (this.counts.export_session ?? 0) + 1;
 		return { path: outputPath ?? "session.html" };
+	}
+	async importSession(inputPath: string, cwdOverride?: string) {
+		this.counts.import_session = (this.counts.import_session ?? 0) + 1;
+		if (basename(inputPath) === "missing-cwd.jsonl" && !cwdOverride) {
+			throw Object.assign(new Error("会话保存的工作目录不存在"), {
+				code: "missing_session_cwd",
+				details: { sessionCwd: "/missing/project", fallbackCwd: this.cwd },
+			});
+		}
+		this.sessionPath = join(dirname(this.sessionPath), basename(inputPath));
+		return { cancelled: false };
 	}
 	updateExtensionEditorState() {
 		this.counts.extension_editor_state = (this.counts.extension_editor_state ?? 0) + 1;
@@ -323,6 +334,8 @@ function request(command: string, cwd: string, sessionPath: string, leaseId: str
 			return { command, sessionPath, leaseId, entryId: "entry", ...identity };
 		case "export_session":
 			return { command, sessionPath, leaseId, outputPath: "session.html", ...identity };
+		case "import_session":
+			return { command, sessionPath, leaseId, inputPath: join(cwd, "imported.jsonl"), ...identity };
 		case "delete_session":
 			return { command, cwd, sessionPath, ...identity };
 		case "set_skill_enabled":
@@ -497,6 +510,73 @@ describe("GuiHostService journaled writes", () => {
 			).toMatchObject({ ok: false, error: { code: "operation_request_conflict" } });
 		},
 	);
+
+	it("moves the session lease once and replays a dropped import response", async () => {
+		const setupValue = setup();
+		const acquired = await lease(setupValue.service, setupValue.sessionPath);
+		const payload = request(
+			"import_session",
+			setupValue.cwd,
+			setupValue.sessionPath,
+			acquired.leaseId,
+			"import-once",
+		);
+		const dropped = await connection(setupValue.service, "client", true);
+		await dropped.handle({ type: "request", id: "dropped", request: payload } as ClientMessage);
+
+		const retry = await connection(setupValue.service);
+		await retry.handle({ type: "request", id: "retry", request: payload } as ClientMessage);
+		const importedPath = join(setupValue.directory, "imported.jsonl");
+		expect(setupValue.counts.import_session).toBe(1);
+		expect(retry.messages.find((message) => message.type === "response" && message.id === "retry")).toMatchObject({
+			ok: true,
+			result: {
+				cancelled: false,
+				lease: { leaseId: acquired.leaseId },
+				snapshot: { path: importedPath },
+			},
+		});
+	});
+
+	it("returns missing cwd details and imports with the selected override", async () => {
+		const setupValue = setup();
+		const acquired = await lease(setupValue.service, setupValue.sessionPath);
+		const payload = {
+			command: "import_session" as const,
+			sessionPath: setupValue.sessionPath,
+			leaseId: acquired.leaseId,
+			clientInstanceId: "client",
+			clientRequestId: "import-missing-cwd",
+			inputPath: join(setupValue.cwd, "missing-cwd.jsonl"),
+		};
+		await acquired.connection.handle({ type: "request", id: "missing", request: payload });
+		expect(
+			acquired.connection.messages.find((message) => message.type === "response" && message.id === "missing"),
+		).toMatchObject({
+			ok: false,
+			error: {
+				code: "missing_session_cwd",
+				details: { sessionCwd: "/missing/project", fallbackCwd: setupValue.cwd },
+			},
+		});
+
+		await acquired.connection.handle({
+			type: "request",
+			id: "override",
+			request: {
+				...payload,
+				clientRequestId: "import-with-override",
+				cwdOverride: setupValue.cwd,
+			},
+		});
+		expect(setupValue.counts.import_session).toBe(2);
+		expect(
+			acquired.connection.messages.find((message) => message.type === "response" && message.id === "override"),
+		).toMatchObject({
+			ok: true,
+			result: { cancelled: false, snapshot: { cwd: setupValue.cwd } },
+		});
+	});
 
 	it("serializes one scope, keeps different scopes parallel, and removes settled queues", async () => {
 		const { service } = setup();

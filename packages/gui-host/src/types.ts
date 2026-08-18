@@ -78,6 +78,7 @@ export interface RuntimeSession {
 	clearQueue(): Promise<{ steering: string[]; followUp: string[] }>;
 	compact(customInstructions?: string): Promise<void>;
 	exportSession(outputPath?: string): Promise<{ path: string }>;
+	importSession(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }>;
 	runBash(command: string, onChunk: (chunk: string) => void): Promise<JsonValue>;
 	rename(name: string): Promise<void>;
 	setModel(model: ModelRef): Promise<void>;

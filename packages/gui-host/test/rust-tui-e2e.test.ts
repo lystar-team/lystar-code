@@ -493,6 +493,9 @@ class FakeRuntimeSession implements RuntimeSession {
 	async exportSession(outputPath?: string): Promise<{ path: string }> {
 		return { path: outputPath ?? "session.html" };
 	}
+	async importSession(): Promise<{ cancelled: boolean }> {
+		return { cancelled: false };
+	}
 	async runBash(): Promise<JsonValue> {
 		return {};
 	}

@@ -42,11 +42,15 @@ export function formatMissingSessionCwdPrompt(issue: SessionCwdIssue): string {
 }
 
 export class MissingSessionCwdError extends Error {
+	readonly code = "missing_session_cwd";
+	readonly retryable = false;
+	readonly details: SessionCwdIssue;
 	readonly issue: SessionCwdIssue;
 
 	constructor(issue: SessionCwdIssue) {
 		super(formatMissingSessionCwdError(issue));
 		this.name = "MissingSessionCwdError";
+		this.details = issue;
 		this.issue = issue;
 	}
 }

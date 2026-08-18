@@ -44,6 +44,8 @@ export type CreateAgentSessionRuntimeFactory = (options: {
  * Thrown when /import references a JSONL file path that does not exist.
  */
 export class SessionImportFileNotFoundError extends Error {
+	readonly code = "not_found";
+	readonly retryable = false;
 	readonly filePath: string;
 
 	constructor(filePath: string) {
@@ -402,8 +404,12 @@ export class AgentSessionRuntime {
 	 * @throws {SessionImportFileNotFoundError} When the input path does not exist.
 	 * @throws {MissingSessionCwdError} When the imported session cwd cannot be resolved and no override is provided.
 	 */
-	async importFromJsonl(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }> {
-		const resolvedPath = resolvePath(inputPath);
+	async importFromJsonl(
+		inputPath: string,
+		cwdOverride?: string,
+		sourceBaseDir: string = process.cwd(),
+	): Promise<{ cancelled: boolean }> {
+		const resolvedPath = resolvePath(inputPath, sourceBaseDir);
 		if (!existsSync(resolvedPath)) {
 			throw new SessionImportFileNotFoundError(resolvedPath);
 		}

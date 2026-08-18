@@ -142,13 +142,14 @@ interface SessionFileFact {
 	writerLocked: boolean;
 }
 
-function protocolError(error: unknown): { code: string; message: string; retryable?: boolean } {
+function protocolError(error: unknown): { code: string; message: string; retryable?: boolean; details?: JsonValue } {
 	if (typeof error === "object" && error !== null) {
-		const candidate = error as { code?: unknown; message?: unknown; retryable?: unknown };
+		const candidate = error as { code?: unknown; message?: unknown; retryable?: unknown; details?: unknown };
 		return {
 			code: typeof candidate.code === "string" ? candidate.code : "internal_error",
 			message: typeof candidate.message === "string" ? candidate.message : String(error),
 			retryable: typeof candidate.retryable === "boolean" ? candidate.retryable : undefined,
+			...(candidate.details === undefined ? {} : { details: jsonValue(candidate.details) }),
 		};
 	}
 	return { code: "internal_error", message: String(error) };
@@ -822,6 +823,47 @@ export class GuiHostService {
 							lease: this.leases.get(nextSessionPath),
 							snapshot: this.runtimeSnapshot(runtime, "owned"),
 							selectedText: result.selectedText,
+						});
+					},
+				});
+			}
+			case "import_session": {
+				const sessionPath = canonicalSessionPath(request.sessionPath);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `session:${sessionPath}`,
+					payload: {
+						sessionPath,
+						inputPath: request.inputPath,
+						cwdOverride: request.cwdOverride ?? null,
+					},
+					run: async () => {
+						const { runtime } = this.assertSessionControl(sessionPath, request.leaseId, connection);
+						this.detachRuntimeProjection(sessionPath);
+						let result: Awaited<ReturnType<RuntimeSession["importSession"]>> | undefined;
+						let failure: unknown;
+						try {
+							result = await runtime.importSession(request.inputPath, request.cwdOverride);
+						} catch (error) {
+							failure = error;
+						}
+						const nextSessionPath = canonicalSessionPath(runtime.sessionPath);
+						if (nextSessionPath !== sessionPath) {
+							this.leases.move(sessionPath, nextSessionPath, request.leaseId);
+							this.snapshotRevisions.delete(sessionPath);
+							await this.broadcast({ type: "session_removed", sessionPath });
+						}
+						this.attachRuntime(runtime);
+						await this.sendSessionSnapshots(runtime);
+						if (failure) throw failure;
+						if (!result) throw new Error("会话导入未返回结果");
+						if (result.cancelled) return { cancelled: true };
+						return jsonValue({
+							cancelled: false,
+							lease: this.leases.get(nextSessionPath),
+							snapshot: this.runtimeSnapshot(runtime, "owned"),
 						});
 					},
 				});

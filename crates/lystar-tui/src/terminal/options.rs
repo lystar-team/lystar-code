@@ -138,6 +138,10 @@ pub(super) enum SessionTransition {
         id: String,
         toast: String,
     },
+    Import {
+        id: String,
+        input_path: String,
+    },
     Readonly {
         id: String,
         path: String,

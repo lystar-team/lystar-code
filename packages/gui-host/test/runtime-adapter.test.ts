@@ -381,10 +381,16 @@ describe("CodingAgentRuntimeAdapter", () => {
 		const jsonlPath = join(tempDir, "session export.jsonl");
 		expect(await runtime.exportSession("../session export.jsonl")).toEqual({ path: jsonlPath });
 		expect(readFileSync(jsonlPath, "utf8")).toContain('"role":"bashExecution"');
+		expect(await runtime.importSession("../session export.jsonl")).toEqual({ cancelled: false });
+		const importedSessionPath = runtime.sessionPath;
+		expect(importedSessionPath).not.toBe(sessionPath);
+		expect(runtime.getSnapshot("owned")).toMatchObject({ cwd, transcriptRevision: expect.any(Number) });
+		expect(adapter.isSessionWriterLocked(sessionPath)).toBe(false);
+		expect(adapter.isSessionWriterLocked(importedSessionPath)).toBe(true);
 
 		await runtime.dispose();
-		expect(adapter.isSessionWriterLocked(sessionPath)).toBe(false);
-		runtime = await adapter.openSession(sessionPath, async () => ({ cancelled: true }));
+		expect(adapter.isSessionWriterLocked(importedSessionPath)).toBe(false);
+		runtime = await adapter.openSession(importedSessionPath, async () => ({ cancelled: true }));
 		expect(runtime.getSnapshot("owned").transcriptRevision).toBeGreaterThan(0);
 	});
 

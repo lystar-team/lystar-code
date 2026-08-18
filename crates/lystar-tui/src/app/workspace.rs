@@ -188,6 +188,12 @@ pub struct SessionSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingSessionImport {
+    pub input_path: String,
+    pub cwd_override: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionTreeNode {
     pub id: String,
     pub parent_id: Option<String>,

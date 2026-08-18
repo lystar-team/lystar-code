@@ -407,6 +407,31 @@ pub(super) fn submit_editor_with_origin(
             output_path.as_deref(),
         );
     }
+    if trimmed == "/import" || trimmed.starts_with("/import ") {
+        let Some(input_path) = path_command_argument(trimmed, "/import") else {
+            app.set_overlay_error("用法：/import <path.jsonl>");
+            return Ok(());
+        };
+        if app.is_active_operation() || session_flow.is_some() {
+            app.set_overlay_error("当前会话正在运行，不能导入");
+            return Ok(());
+        }
+        if app.lease_id.is_none() {
+            app.set_overlay_error("尚未获取会话租约");
+            return Ok(());
+        }
+        app.pending_session_import = Some(PendingSessionImport {
+            input_path: input_path.clone(),
+            cwd_override: None,
+        });
+        app.open_overlay(OverlayState::Confirm(ConfirmOverlay {
+            title: "导入会话".to_owned(),
+            message: format!("用 {input_path} 替换当前会话？"),
+            confirm_action: "session-import-confirm".to_owned(),
+            status: String::new(),
+        }));
+        return Ok(());
+    }
     if let Some(command) = builtin_slash_command(&text) {
         open_workbench(
             app,

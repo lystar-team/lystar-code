@@ -1108,6 +1108,15 @@ export const CommandSchema = Type.Union([
 		outputPath: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
 	}),
 	StrictObject({
+		command: Type.Literal("import_session"),
+		sessionPath: Type.String({ minLength: 1 }),
+		leaseId: Id,
+		clientInstanceId: Id,
+		clientRequestId: Id,
+		inputPath: Type.String({ minLength: 1, maxLength: 4096 }),
+		cwdOverride: Type.Optional(Type.String({ minLength: 1, maxLength: 16 * 1024 })),
+	}),
+	StrictObject({
 		command: Type.Literal("run_bash"),
 		sessionPath: Type.String({ minLength: 1 }),
 		leaseId: Id,

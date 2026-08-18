@@ -19,6 +19,11 @@ pub(in super::super) fn handle_overlay_key(
     }
     match code {
         KeyCode::Esc => {
+            let cancelled_session_import = matches!(
+                app.overlay(),
+                Some(OverlayState::Confirm(confirm))
+                    if confirm.confirm_action.starts_with("session-import-")
+            );
             if let Some(request) = app.take_ui_response() {
                 pipe.request(&encode_ui_response(&request.id, None, None, Some(true))?)?;
                 app.set_toast("已取消输入");
@@ -33,6 +38,10 @@ pub(in super::super) fn handle_overlay_key(
                 app.attachment_preview = None;
             }
             app.close_overlay();
+            if cancelled_session_import {
+                app.pending_session_import = None;
+                app.set_toast("导入已取消");
+            }
         }
         KeyCode::Up => app.move_overlay_selection(-1),
         KeyCode::Down => app.move_overlay_selection(1),

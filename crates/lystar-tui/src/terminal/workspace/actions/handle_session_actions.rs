@@ -9,6 +9,52 @@ pub(super) fn handle_session_actions(
     sequence: &mut u64,
     session_flow: &mut Option<SessionFlow>,
 ) -> Result<bool, TuiError> {
+    if matches!(
+        action,
+        "session-import-confirm" | "session-import-cwd-confirm"
+    ) {
+        if app.is_active_operation() || session_flow.is_some() {
+            app.set_overlay_error("当前会话正在运行，不能导入");
+            return Ok(true);
+        }
+        let Some(lease_id) = app.lease_id.clone() else {
+            app.set_overlay_error("尚未获取会话租约");
+            return Ok(true);
+        };
+        let Some(pending) = app.pending_session_import.clone() else {
+            app.set_overlay_error("导入请求已失效，请重新执行 /import");
+            return Ok(true);
+        };
+        *sequence += 1;
+        let id = format!("session-import-{sequence}");
+        *session_flow = Some(SessionFlow::Import {
+            id: id.clone(),
+            input_path: pending.input_path.clone(),
+        });
+        let mut payload = serde_json::json!({
+            "sessionPath": session_path,
+            "leaseId": lease_id,
+            "clientInstanceId": client_instance_id,
+            "clientRequestId": format!("import:{sequence}"),
+            "inputPath": pending.input_path,
+        })
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+        if let Some(cwd_override) = pending.cwd_override {
+            payload.insert(
+                "cwdOverride".to_owned(),
+                serde_json::Value::String(cwd_override),
+            );
+        }
+        app.close_overlay();
+        pipe.request(&encode_session_write_request(
+            &id,
+            "import_session",
+            payload,
+        )?)?;
+        return Ok(true);
+    }
     if let Some(index) = action
         .strip_prefix("session:")
         .and_then(|value| value.parse::<usize>().ok())
