@@ -201,6 +201,7 @@ export class GuiHostService {
 	private readonly runtimeUnsubscribers = new Map<string, () => void>();
 	private readonly activeOperationBySession = new Map<string, string>();
 	private readonly scheduledOperations = new Set<string>();
+	private readonly operationAbortControllers = new Map<string, AbortController>();
 	private readonly journalWritePromises = new Map<string, Promise<JsonValue>>();
 	private readonly writeScopeQueues = new Map<string, Promise<void>>();
 	private readonly snapshotRevisions = new Map<string, number>();
@@ -259,6 +260,8 @@ export class GuiHostService {
 
 	async dispose(): Promise<void> {
 		clearInterval(this.sessionPollTimer);
+		for (const controller of this.operationAbortControllers.values()) controller.abort();
+		this.operationAbortControllers.clear();
 		for (const runtime of this.runtimes.values()) await runtime.dispose();
 		this.runtimes.clear();
 		this.runtimeUnsubscribers.clear();
@@ -537,6 +540,14 @@ export class GuiHostService {
 					},
 					afterResponse,
 				);
+			case "share_session":
+				return this.acceptOperation(
+					connection,
+					request,
+					{},
+					async (runtime, _operation, signal) => runtime.shareSession(signal),
+					afterResponse,
+				);
 			case "export_session": {
 				const { runtime, sessionPath } = this.assertExtensionSession(connection, request);
 				return this.executeJournaledWrite(connection, {
@@ -580,7 +591,8 @@ export class GuiHostService {
 				}
 				this.updateOperation(operation.operationId, "aborted");
 				this.cancelPendingUi(operation.operationId);
-				await this.runtimes.get(operation.sessionPath)?.abort();
+				this.operationAbortControllers.get(operation.operationId)?.abort();
+				if (operation.type !== "share_session") await this.runtimes.get(operation.sessionPath)?.abort();
 				return this.journal.get(operation.operationId) ?? operation;
 			}
 			case "get_operation": {
@@ -1501,10 +1513,10 @@ export class GuiHostService {
 		connection: ClientConnection,
 		request: Extract<
 			Extract<ClientMessage, { type: "request" }>["request"],
-			{ command: "prompt" | "compact" | "run_bash" }
+			{ command: "prompt" | "compact" | "share_session" | "run_bash" }
 		>,
 		payload: JsonValue,
-		run: (runtime: RuntimeSession, operation: OperationSnapshot) => Promise<JsonValue>,
+		run: (runtime: RuntimeSession, operation: OperationSnapshot, signal: AbortSignal) => Promise<JsonValue>,
 		afterResponse: (action: () => void) => void,
 	): Promise<JsonValue> {
 		this.assertClient(request.clientInstanceId, connection);
@@ -1545,23 +1557,29 @@ export class GuiHostService {
 	private scheduleOperation(
 		runtime: RuntimeSession,
 		operation: OperationSnapshot,
-		run: (runtime: RuntimeSession, operation: OperationSnapshot) => Promise<JsonValue>,
+		run: (runtime: RuntimeSession, operation: OperationSnapshot, signal: AbortSignal) => Promise<JsonValue>,
 	): void {
 		if (operation.status !== "accepted" || this.scheduledOperations.has(operation.operationId)) return;
 		this.scheduledOperations.add(operation.operationId);
-		void this.runOperation(runtime, operation, run)
+		const controller = new AbortController();
+		this.operationAbortControllers.set(operation.operationId, controller);
+		void this.runOperation(runtime, operation, run, controller.signal)
 			.catch(() => {})
-			.finally(() => this.scheduledOperations.delete(operation.operationId));
+			.finally(() => {
+				this.operationAbortControllers.delete(operation.operationId);
+				this.scheduledOperations.delete(operation.operationId);
+			});
 	}
 
 	private async runOperation(
 		runtime: RuntimeSession,
 		operation: OperationSnapshot,
-		run: (runtime: RuntimeSession, operation: OperationSnapshot) => Promise<JsonValue>,
+		run: (runtime: RuntimeSession, operation: OperationSnapshot, signal: AbortSignal) => Promise<JsonValue>,
+		signal: AbortSignal,
 	): Promise<void> {
 		try {
 			this.updateOperation(operation.operationId, "running");
-			const result = await run(runtime, operation);
+			const result = await run(runtime, operation, signal);
 			const current = this.journal.get(operation.operationId);
 			if (current && !TERMINAL_OPERATION_STATUSES.has(current.status)) {
 				this.updateOperation(operation.operationId, "completed", { result });

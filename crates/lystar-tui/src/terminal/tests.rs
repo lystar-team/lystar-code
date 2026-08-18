@@ -67,6 +67,7 @@ fn app_interrupt_sends_one_abort_for_an_active_leased_operation() {
         operation_type: "prompt".to_owned(),
         status: "running".to_owned(),
         progress: None,
+        result: None,
         error: None,
     });
     let (mut pipe, path) = test_pipe_with_path();
@@ -129,6 +130,7 @@ fn app_interrupt_skips_missing_lease_and_terminal_operations() {
             operation_type: "prompt".to_owned(),
             status: status.to_owned(),
             progress: None,
+            result: None,
             error: None,
         });
         let (mut pipe, path) = test_pipe_with_path();
@@ -347,6 +349,7 @@ fn intercepts_only_connected_slash_commands() {
         ("/compact", "compact"),
         ("/export", "export"),
         ("/import", "import"),
+        ("/share", "share"),
         ("/resume", "resume"),
         ("/settings", "settings"),
         ("/model", "model"),
@@ -404,6 +407,7 @@ fn new_command_uses_project_cwd_and_refuses_active_operations() {
         operation_type: "prompt".to_owned(),
         status: "running".to_owned(),
         progress: None,
+        result: None,
         error: None,
     });
     app.editor.insert("/new");
@@ -475,6 +479,7 @@ fn compact_command_sends_optional_instructions_and_refuses_active_operations() {
         operation_type: "prompt".to_owned(),
         status: "running".to_owned(),
         progress: None,
+        result: None,
         error: None,
     });
     app.editor.insert("/compact");
@@ -657,6 +662,9 @@ fn export_command_preserves_paths_and_applies_host_results() {
 
 #[path = "tests/import_tests.rs"]
 mod import_tests;
+
+#[path = "tests/share_tests.rs"]
+mod share_tests;
 
 #[test]
 fn builds_select_items_from_host_payload() {

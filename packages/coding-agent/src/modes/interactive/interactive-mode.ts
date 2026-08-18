@@ -53,7 +53,6 @@ import {
 	getAuthPath,
 	getDebugLogPath,
 	getDocsPath,
-	getShareViewerUrl,
 	RELEASE_REPOSITORY,
 	VERSION,
 } from "../../config.ts";
@@ -6683,96 +6682,35 @@ export class InteractiveMode {
 	}
 
 	private async handleShareCommand(): Promise<void> {
-		// Check if gh is available and logged in
-		try {
-			const authResult = spawnSync("gh", ["auth", "status"], { encoding: "utf-8" });
-			if (authResult.status !== 0) {
-				this.showError("GitHub CLI 尚未登录，请先运行 gh auth login。");
-				return;
-			}
-		} catch {
-			this.showError("未安装 GitHub CLI（gh），请从 https://cli.github.com/ 安装。");
-			return;
-		}
-
-		// Export to a temp file
-		const tmpFile = path.join(os.tmpdir(), "session.html");
-		try {
-			await this.session.exportToHtml(tmpFile, { themeName: theme.name });
-		} catch (error: unknown) {
-			this.showError(`导出会话失败：${error instanceof Error ? error.message : t("status.unknownError")}`);
-			return;
-		}
-
-		// Show cancellable loader, replacing the editor
 		const loader = new BorderedLoader(this.ui, theme, "正在创建 gist...");
 		this.editorContainer.clear();
 		this.editorContainer.addChild(loader);
 		this.ui.setFocus(loader);
 		this.ui.requestRender();
-
+		const controller = new AbortController();
+		let restored = false;
 		const restoreEditor = () => {
+			if (restored) return;
+			restored = true;
 			loader.dispose();
 			this.editorContainer.clear();
 			this.editorContainer.addChild(this.editor);
 			this.ui.setFocus(this.editor);
-			try {
-				fs.unlinkSync(tmpFile);
-			} catch {
-				// Ignore cleanup errors
-			}
+			this.ui.requestRender();
 		};
-
-		// Create a secret gist asynchronously
-		let proc: ReturnType<typeof spawn> | null = null;
-
-		loader.onAbort = () => {
-			proc?.kill();
-			restoreEditor();
-			this.showStatus("分享已取消");
-		};
+		loader.onAbort = () => controller.abort();
 
 		try {
-			const result = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve) => {
-				proc = spawn("gh", ["gist", "create", "--public=false", tmpFile]);
-				let stdout = "";
-				let stderr = "";
-				proc.stdout?.on("data", (data) => {
-					stdout += data.toString();
-				});
-				proc.stderr?.on("data", (data) => {
-					stderr += data.toString();
-				});
-				proc.on("close", (code) => resolve({ stdout, stderr, code }));
+			const result = await this.runtimeHost.shareViaPrivateGist({
+				signal: controller.signal,
+				themeName: theme.name,
 			});
-
-			if (loader.signal.aborted) return;
-
-			restoreEditor();
-
-			if (result.code !== 0) {
-				const errorMsg = result.stderr?.trim() || t("status.unknownError");
-				this.showError(`创建 gist 失败：${errorMsg}`);
-				return;
-			}
-
-			// Extract gist ID from the URL returned by gh
-			// gh returns something like: https://gist.github.com/username/GIST_ID
-			const gistUrl = result.stdout?.trim();
-			const gistId = gistUrl?.split("/").pop();
-			if (!gistId) {
-				this.showError("无法从 gh 输出中识别 gist ID");
-				return;
-			}
-
-			// Create the preview URL
-			const previewUrl = getShareViewerUrl(gistId);
-			this.showStatus(`分享地址：${previewUrl}\nGist：${gistUrl}`);
+			this.showStatus(`分享地址：${result.previewUrl}\nGist：${result.gistUrl}`);
 		} catch (error: unknown) {
-			if (!loader.signal.aborted) {
-				restoreEditor();
-				this.showError(`创建 gist 失败：${error instanceof Error ? error.message : t("status.unknownError")}`);
-			}
+			if (controller.signal.aborted) this.showStatus("分享已取消");
+			else this.showError(error instanceof Error ? error.message : t("status.unknownError"));
+		} finally {
+			restoreEditor();
 		}
 	}
 

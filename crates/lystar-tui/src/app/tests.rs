@@ -38,6 +38,7 @@ fn operation(status: &str) -> OperationSnapshot {
         operation_type: "prompt".to_owned(),
         status: status.to_owned(),
         progress: None,
+        result: None,
         error: None,
     }
 }
@@ -814,6 +815,7 @@ fn tracks_custom_editor_operation_from_acceptance_through_terminal_update() {
         operation_type: "prompt".to_owned(),
         status: status.to_owned(),
         progress: None,
+        result: None,
         error: None,
     };
     app.apply_operation(operation("running"));
@@ -836,6 +838,7 @@ fn tracks_custom_editor_operation_from_acceptance_through_terminal_update() {
         operation_type: "steer".to_owned(),
         status: "running".to_owned(),
         progress: None,
+        result: None,
         error: None,
     });
     assert_eq!(

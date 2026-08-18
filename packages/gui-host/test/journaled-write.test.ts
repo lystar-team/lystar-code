@@ -107,6 +107,20 @@ class FakeRuntime implements RuntimeSession {
 		this.sessionPath = join(dirname(this.sessionPath), basename(inputPath));
 		return { cancelled: false };
 	}
+	async shareSession(signal?: AbortSignal) {
+		this.counts.share_session = (this.counts.share_session ?? 0) + 1;
+		if (this.counts.block_share) {
+			await new Promise<void>((_resolve, reject) => {
+				const abort = () => reject(signal?.reason ?? new Error("aborted"));
+				if (signal?.aborted) abort();
+				else signal?.addEventListener("abort", abort, { once: true });
+			});
+		}
+		return {
+			previewUrl: "https://pi.dev/session/#gist-id",
+			gistUrl: "https://gist.github.com/user/gist-id",
+		};
+	}
 	updateExtensionEditorState() {
 		this.counts.extension_editor_state = (this.counts.extension_editor_state ?? 0) + 1;
 		return this.counts.extension_editor_state;
@@ -147,7 +161,9 @@ class FakeRuntime implements RuntimeSession {
 		this.counts.fork_session = (this.counts.fork_session ?? 0) + 1;
 		return { sessionPath: this.sessionPath };
 	}
-	async abort() {}
+	async abort() {
+		this.counts.abort = (this.counts.abort ?? 0) + 1;
+	}
 	async reloadResources() {
 		this.counts.reload = (this.counts.reload ?? 0) + 1;
 	}
@@ -428,6 +444,77 @@ describe("GuiHostService journaled writes", () => {
 		expect(
 			active.connection.messages.find((message) => message.type === "response" && message.id === "compact-retry"),
 		).toMatchObject({ ok: true, result: { duplicate: true, operation: { type: "compact" } } });
+	});
+
+	it("shares once through the operation journal and persists the returned URLs", async () => {
+		const setupValue = setup();
+		const active = await lease(setupValue.service, setupValue.sessionPath);
+		const payload = {
+			command: "share_session" as const,
+			sessionPath: setupValue.sessionPath,
+			leaseId: active.leaseId,
+			clientInstanceId: "client",
+			clientRequestId: "share-once",
+		};
+		await active.connection.handle({ type: "request", id: "share", request: payload });
+		await active.connection.handle({ type: "request", id: "share-retry", request: payload });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(setupValue.counts.share_session).toBe(1);
+		await active.connection.handle({
+			type: "request",
+			id: "share-operations",
+			request: { command: "list_operations", sessionPath: setupValue.sessionPath },
+		});
+		expect(
+			active.connection.messages.find((message) => message.type === "response" && message.id === "share-operations"),
+		).toMatchObject({
+			ok: true,
+			result: [
+				expect.objectContaining({
+					type: "share_session",
+					status: "completed",
+					result: {
+						previewUrl: "https://pi.dev/session/#gist-id",
+						gistUrl: "https://gist.github.com/user/gist-id",
+					},
+				}),
+			],
+		});
+	});
+
+	it("aborts a running share without aborting the Agent runtime", async () => {
+		const setupValue = setup();
+		setupValue.counts.block_share = 1;
+		const active = await lease(setupValue.service, setupValue.sessionPath);
+		await active.connection.handle({
+			type: "request",
+			id: "share",
+			request: {
+				command: "share_session",
+				sessionPath: setupValue.sessionPath,
+				leaseId: active.leaseId,
+				clientInstanceId: "client",
+				clientRequestId: "share-abort",
+			},
+		});
+		const accepted = active.connection.messages.find(
+			(message) => message.type === "response" && message.id === "share",
+		) as Extract<ServerMessage, { type: "response"; ok: true }>;
+		const operationId = (accepted.result as { operation: { operationId: string } }).operation.operationId;
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await active.connection.handle({
+			type: "request",
+			id: "abort-share",
+			request: { command: "abort_operation", operationId, leaseId: active.leaseId },
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(setupValue.counts.share_session).toBe(1);
+		expect(setupValue.counts.abort).toBeUndefined();
+		expect(
+			active.connection.messages.find((message) => message.type === "response" && message.id === "abort-share"),
+		).toMatchObject({ ok: true, result: { type: "share_session", status: "aborted" } });
 	});
 
 	it.each(WRITE_COMMANDS)("executes %s once and persists a completed operation", async (command) => {

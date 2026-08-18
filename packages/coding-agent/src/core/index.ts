@@ -177,6 +177,11 @@ export {
 	type SessionOutcome,
 } from "./session-manager.ts";
 export {
+	SessionShareError,
+	type SessionShareResult,
+	shareSessionAsPrivateGist,
+} from "./session-share.ts";
+export {
 	type DefaultProjectTrust,
 	type Settings,
 	SettingsManager,

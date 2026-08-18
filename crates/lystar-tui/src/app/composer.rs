@@ -301,6 +301,7 @@ impl AppState {
                 operation_type: submit.command.clone(),
                 status: "accepted".to_owned(),
                 progress: None,
+                result: None,
                 error: None,
             });
         }

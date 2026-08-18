@@ -483,6 +483,21 @@ describe("GUI Protocol v1", () => {
 		).toThrow();
 	});
 
+	it("strictly decodes session share requests", () => {
+		const message = {
+			type: "request" as const,
+			id: "share",
+			request: {
+				command: "share_session" as const,
+				sessionPath: "/tmp/current.jsonl",
+				leaseId: "lease",
+				clientInstanceId: "client",
+				clientRequestId: "share-1",
+			},
+		};
+		expect(new ClientMessageDecoder().push(encodeClientMessage(message))).toEqual([message]);
+	});
+
 	it("strictly decodes interactive queue commands and typed progress", () => {
 		const decoder = new ClientMessageDecoder();
 		for (const request of [

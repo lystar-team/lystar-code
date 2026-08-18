@@ -16,9 +16,9 @@ use super::live_tools::{LiveToolStatus, LiveTools};
 use super::transcript::rich_text_source;
 use super::{
     ChangesTab, ClipboardDescriptor, ClipboardReadState, ComposerAttachment, ComposerCompletion,
-    ExtensionUiState, GitDiffDescriptor, GitStatusDescriptor, ImagePendingRequest,
-    InstructionDescriptor, ListOverlay, LiveCompaction, LiveRetry, ModelDescriptor, OverlayOrigin,
-    OverlayState, PackageDescriptor, PendingAttachmentSubmit, PendingComponentInput,
+    DetailOverlay, ExtensionUiState, GitDiffDescriptor, GitStatusDescriptor, ImagePendingRequest,
+    InstructionDescriptor, ListOverlay, LiveCompaction, LiveRetry, ModelDescriptor, OverlayLink,
+    OverlayOrigin, OverlayState, PackageDescriptor, PendingAttachmentSubmit, PendingComponentInput,
     PendingCustomEditorSubmit, PendingRequest, PendingSessionImport, PendingTerminalInput,
     ProjectTrustDescriptor, ProviderDescriptor, ReadonlySessionView, RecoveryDraft,
     RichTextPendingRequest, SearchState, SessionSummary, SessionTreeNode, SettingDescriptor,
@@ -475,6 +475,66 @@ impl AppState {
             self.clear_transient();
         }
         self.operation = Some(operation);
+        let share_update = self.operation.as_ref().and_then(|operation| {
+            (operation.operation_type == "share_session").then(|| {
+                (
+                    operation.status.clone(),
+                    operation.error.clone(),
+                    operation.result.clone(),
+                )
+            })
+        });
+        if let Some((status, error, result)) = share_update {
+            match status.as_str() {
+                "accepted" | "running" | "waiting_for_input" => {
+                    self.transcript.status = "正在创建私密 Gist，按 Ctrl+C 可取消".to_owned();
+                }
+                "aborting" => self.transcript.status = "正在取消分享".to_owned(),
+                "aborted" | "interrupted" => {
+                    self.transcript.status.clear();
+                    self.set_toast("分享已取消");
+                }
+                "failed" => {
+                    self.transcript.status.clear();
+                    self.set_overlay_error(
+                        error.unwrap_or_else(|| "分享会话失败：未知错误".to_owned()),
+                    );
+                }
+                "completed" => {
+                    self.transcript.status.clear();
+                    let urls = result
+                        .as_ref()
+                        .and_then(serde_json::Value::as_object)
+                        .and_then(|result| {
+                            Some((
+                                result.get("previewUrl")?.as_str()?.to_owned(),
+                                result.get("gistUrl")?.as_str()?.to_owned(),
+                            ))
+                        });
+                    if let Some((preview_url, gist_url)) = urls {
+                        self.open_overlay(OverlayState::Detail(DetailOverlay {
+                            title: "会话已分享".to_owned(),
+                            lines: vec![
+                                format!("分享地址：{preview_url}"),
+                                format!("Gist：{gist_url}"),
+                            ],
+                            scroll: 0,
+                            status: "Ctrl+Y 复制分享地址，Enter 打开，Esc 关闭".to_owned(),
+                            link: Some(OverlayLink {
+                                line: 0,
+                                label: preview_url.clone(),
+                                href: preview_url.clone(),
+                            }),
+                            copy_text: Some(preview_url),
+                        }));
+                        self.set_toast("会话已分享");
+                    } else {
+                        self.set_overlay_error("分享任务缺少结果");
+                    }
+                }
+                _ => {}
+            }
+        }
         match self
             .operation
             .as_ref()

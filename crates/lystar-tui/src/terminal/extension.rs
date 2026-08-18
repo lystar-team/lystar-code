@@ -382,6 +382,16 @@ pub(super) fn submit_editor_with_origin(
         return Ok(());
     }
     let trimmed = text.trim();
+    if app.operation.as_ref().is_some_and(|operation| {
+        operation.operation_type == "share_session"
+            && matches!(
+                operation.status.as_str(),
+                "accepted" | "running" | "waiting_for_input" | "aborting"
+            )
+    }) {
+        app.set_overlay_error("正在分享会话，按 Ctrl+C 可取消");
+        return Ok(());
+    }
     if trimmed == "/compact" || trimmed.starts_with("/compact ") {
         let custom_instructions = trimmed
             .strip_prefix("/compact")
@@ -406,6 +416,9 @@ pub(super) fn submit_editor_with_origin(
             sequence,
             output_path.as_deref(),
         );
+    }
+    if trimmed == "/share" {
+        return request_share_session(app, pipe, session_path, client_instance_id, sequence);
     }
     if trimmed == "/import" || trimmed.starts_with("/import ") {
         let Some(input_path) = path_command_argument(trimmed, "/import") else {

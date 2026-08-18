@@ -14,6 +14,7 @@ fn operation(status: &str) -> OperationSnapshot {
         operation_type: "prompt".to_owned(),
         status: status.to_owned(),
         progress: None,
+        result: None,
         error: None,
     }
 }

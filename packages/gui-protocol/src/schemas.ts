@@ -1117,6 +1117,13 @@ export const CommandSchema = Type.Union([
 		cwdOverride: Type.Optional(Type.String({ minLength: 1, maxLength: 16 * 1024 })),
 	}),
 	StrictObject({
+		command: Type.Literal("share_session"),
+		sessionPath: Type.String({ minLength: 1 }),
+		leaseId: Id,
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
+	StrictObject({
 		command: Type.Literal("run_bash"),
 		sessionPath: Type.String({ minLength: 1 }),
 		leaseId: Id,

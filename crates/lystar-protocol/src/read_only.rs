@@ -314,6 +314,8 @@ pub struct OperationSnapshot {
     pub operation_type: String,
     pub status: String,
     pub progress: Option<SessionProgress>,
+    #[serde(default)]
+    pub result: Option<serde_json::Value>,
     pub error: Option<String>,
 }
 

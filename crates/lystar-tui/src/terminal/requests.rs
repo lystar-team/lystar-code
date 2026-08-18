@@ -67,6 +67,40 @@ pub(super) fn request_compaction(
     Ok(())
 }
 
+pub(super) fn request_share_session(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    client_instance_id: &str,
+    sequence: &mut u64,
+) -> Result<(), TuiError> {
+    if app.is_active_operation() {
+        app.set_overlay_error("当前会话正在运行，不能分享");
+        return Ok(());
+    }
+    let Some(lease_id) = app.lease_id.clone() else {
+        app.set_overlay_error("尚未获取会话租约");
+        return Ok(());
+    };
+    *sequence += 1;
+    let id = format!("share-{sequence}");
+    pipe.request(&encode_session_write_request(
+        &id,
+        "share_session",
+        serde_json::json!({
+            "sessionPath": session_path,
+            "leaseId": lease_id,
+            "clientInstanceId": client_instance_id,
+            "clientRequestId": id,
+        })
+        .as_object()
+        .cloned()
+        .unwrap_or_default(),
+    )?)?;
+    app.transcript.status = "正在创建私密 Gist，按 Ctrl+C 可取消".to_owned();
+    Ok(())
+}
+
 pub(super) fn request_export_session(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,

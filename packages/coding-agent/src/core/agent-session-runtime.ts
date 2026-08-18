@@ -13,6 +13,7 @@ import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
 import { SessionManager } from "./session-manager.ts";
+import { type SessionShareResult, shareSessionAsPrivateGist } from "./session-share.ts";
 
 /**
  * Result returned by runtime creation.
@@ -441,6 +442,14 @@ export class AgentSessionRuntime {
 		});
 		await this.commitReplacement(result, "resume", sessionManager.getSessionFile());
 		return { cancelled: false };
+	}
+
+	async shareViaPrivateGist(options: { signal?: AbortSignal; themeName?: string } = {}): Promise<SessionShareResult> {
+		return shareSessionAsPrivateGist({
+			signal: options.signal,
+			exportHtml: (path) =>
+				this.session.exportToHtml(path, options.themeName ? { themeName: options.themeName } : undefined),
+		});
 	}
 
 	async dispose(): Promise<void> {

@@ -1194,6 +1194,10 @@ class CoreRuntimeSession implements RuntimeSession {
 		return this.runtime.importFromJsonl(inputPath, cwdOverride, this.runtime.cwd);
 	}
 
+	async shareSession(signal?: AbortSignal): Promise<{ previewUrl: string; gistUrl: string }> {
+		return this.runtime.shareViaPrivateGist({ signal });
+	}
+
 	async runBash(command: string, onChunk: (chunk: string) => void): Promise<JsonValue> {
 		const result = await this.runtime.session.executeBash(command, onChunk);
 		this.emitCommittedEntries();

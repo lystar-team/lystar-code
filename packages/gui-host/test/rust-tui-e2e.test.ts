@@ -496,6 +496,12 @@ class FakeRuntimeSession implements RuntimeSession {
 	async importSession(): Promise<{ cancelled: boolean }> {
 		return { cancelled: false };
 	}
+	async shareSession(): Promise<{ previewUrl: string; gistUrl: string }> {
+		return {
+			previewUrl: "https://pi.dev/session/#gist-id",
+			gistUrl: "https://gist.github.com/user/gist-id",
+		};
+	}
 	async runBash(): Promise<JsonValue> {
 		return {};
 	}
