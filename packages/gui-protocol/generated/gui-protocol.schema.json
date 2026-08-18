@@ -2442,6 +2442,36 @@
                   "required": [
                     "command",
                     "sessionPath",
+                    "clientInstanceId",
+                    "clientRequestId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "copy_last_assistant_message"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
                     "leaseId",
                     "clientInstanceId",
                     "clientRequestId",
@@ -8208,6 +8238,22 @@
           "type": "boolean"
         },
         "changed": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceCopyLastAssistantMessageResult": {
+      "type": "object",
+      "required": [
+        "capability",
+        "copied"
+      ],
+      "properties": {
+        "capability": {
+          "type": "boolean"
+        },
+        "copied": {
           "type": "boolean"
         }
       },

@@ -420,6 +420,15 @@ pub(super) fn submit_editor_with_origin(
     if trimmed == "/share" {
         return request_share_session(app, pipe, session_path, client_instance_id, sequence);
     }
+    if trimmed == "/copy" {
+        return request_copy_last_assistant_message(
+            app,
+            pipe,
+            session_path,
+            client_instance_id,
+            sequence,
+        );
+    }
     if trimmed == "/import" || trimmed.starts_with("/import ") {
         let Some(input_path) = path_command_argument(trimmed, "/import") else {
             app.set_overlay_error("用法：/import <path.jsonl>");

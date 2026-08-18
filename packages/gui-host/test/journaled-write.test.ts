@@ -18,6 +18,7 @@ class FakeRuntime implements RuntimeSession {
 	readonly counts: Record<string, number>;
 	sessionPath: string;
 	readonly cwd: string;
+	lastAssistantText: string | undefined = "latest assistant";
 	constructor(sessionPath: string, cwd: string, counts: Record<string, number>) {
 		this.sessionPath = sessionPath;
 		this.cwd = cwd;
@@ -121,6 +122,10 @@ class FakeRuntime implements RuntimeSession {
 			gistUrl: "https://gist.github.com/user/gist-id",
 		};
 	}
+	getLastAssistantText() {
+		this.counts.copy_last_assistant_message = (this.counts.copy_last_assistant_message ?? 0) + 1;
+		return this.lastAssistantText;
+	}
 	updateExtensionEditorState() {
 		this.counts.extension_editor_state = (this.counts.extension_editor_state ?? 0) + 1;
 		return this.counts.extension_editor_state;
@@ -199,6 +204,7 @@ function setup() {
 	const sessionPath = join(directory, "session.jsonl");
 	writeFileSync(sessionPath, "{}\n");
 	const counts: Record<string, number> = {};
+	const clipboardWrites: string[] = [];
 	const runtime = new FakeRuntime(sessionPath, cwd, counts);
 	const adapter = {
 		getAbout: () => ({ productVersion: "test" }),
@@ -285,8 +291,9 @@ function setup() {
 			return { changed: true, message: "ok" };
 		},
 		readClipboardText: async () => ({ capability: true }),
-		writeClipboardText: async () => {
+		writeClipboardText: async (text: string) => {
 			counts.write_clipboard_text = (counts.write_clipboard_text ?? 0) + 1;
+			clipboardWrites.push(text);
 			return { capability: true, changed: true };
 		},
 	} as unknown as RuntimeAdapter;
@@ -295,7 +302,7 @@ function setup() {
 		await service.dispose();
 		rmSync(directory, { recursive: true, force: true });
 	});
-	return { directory, service, cwd, sessionPath, counts };
+	return { directory, service, cwd, sessionPath, counts, runtime, clipboardWrites };
 }
 
 async function connection(service: GuiHostService, clientInstanceId = "client", dropResponse = false) {
@@ -380,6 +387,8 @@ function request(command: string, cwd: string, sessionPath: string, leaseId: str
 			return { command, sessionPath, leaseId, agentId: "agent", text: "continue", ...identity };
 		case "write_clipboard_text":
 			return { command, text: "clipboard", ...identity };
+		case "copy_last_assistant_message":
+			return { command, sessionPath, ...identity };
 		default:
 			throw new Error(`unknown write command ${command}`);
 	}
@@ -410,6 +419,7 @@ const WRITE_COMMANDS = [
 	"abort_subagent",
 	"continue_subagent",
 	"write_clipboard_text",
+	"copy_last_assistant_message",
 ] as const;
 const SESSION_COMMANDS = new Set([
 	"rename_session",
@@ -422,6 +432,7 @@ const SESSION_COMMANDS = new Set([
 	"navigate_session_tree",
 	"abort_subagent",
 	"continue_subagent",
+	"copy_last_assistant_message",
 ]);
 
 describe("GuiHostService journaled writes", () => {
@@ -515,6 +526,46 @@ describe("GuiHostService journaled writes", () => {
 		expect(
 			active.connection.messages.find((message) => message.type === "response" && message.id === "abort-share"),
 		).toMatchObject({ ok: true, result: { type: "share_session", status: "aborted" } });
+	});
+
+	it("copies the Core-selected last assistant message and reports an empty session", async () => {
+		const setupValue = setup();
+		const active = await lease(setupValue.service, setupValue.sessionPath);
+		const copyRequest = {
+			command: "copy_last_assistant_message" as const,
+			sessionPath: setupValue.sessionPath,
+			clientInstanceId: "client",
+			clientRequestId: "copy-last",
+		};
+		await active.connection.handle({
+			type: "request",
+			id: "copy",
+			request: copyRequest,
+		});
+		await active.connection.handle({ type: "request", id: "copy-retry", request: copyRequest });
+		expect(setupValue.clipboardWrites).toEqual(["latest assistant"]);
+		expect(
+			active.connection.messages.find((message) => message.type === "response" && message.id === "copy"),
+		).toMatchObject({ ok: true, result: { capability: true, copied: true } });
+		expect(
+			active.connection.messages.find((message) => message.type === "response" && message.id === "copy-retry"),
+		).toMatchObject({ ok: true, result: { capability: true, copied: true } });
+
+		setupValue.runtime.lastAssistantText = undefined;
+		await active.connection.handle({
+			type: "request",
+			id: "copy-empty",
+			request: {
+				command: "copy_last_assistant_message",
+				sessionPath: setupValue.sessionPath,
+				clientInstanceId: "client",
+				clientRequestId: "copy-empty",
+			},
+		});
+		expect(setupValue.clipboardWrites).toEqual(["latest assistant"]);
+		expect(
+			active.connection.messages.find((message) => message.type === "response" && message.id === "copy-empty"),
+		).toMatchObject({ ok: true, result: { capability: true, copied: false } });
 	});
 
 	it.each(WRITE_COMMANDS)("executes %s once and persists a completed operation", async (command) => {

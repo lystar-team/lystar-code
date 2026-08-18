@@ -788,6 +788,10 @@ export const ClipboardReadResultSchema = StrictObject({
 	text: Type.Optional(WorkspaceText),
 });
 export const ClipboardWriteResultSchema = StrictObject({ capability: Type.Boolean(), changed: Type.Boolean() });
+export const CopyLastAssistantMessageResultSchema = StrictObject({
+	capability: Type.Boolean(),
+	copied: Type.Boolean(),
+});
 export const ExportSessionResultSchema = StrictObject({
 	path: Type.String({ minLength: 1, maxLength: 16 * 1024 }),
 });
@@ -992,6 +996,7 @@ export const WorkspaceCommandResultSchemas = {
 	read_clipboard_image: ClipboardImageReadResultSchema,
 	read_project_image: ReadProjectImageResultSchema,
 	write_clipboard_text: ClipboardWriteResultSchema,
+	copy_last_assistant_message: CopyLastAssistantMessageResultSchema,
 	export_session: ExportSessionResultSchema,
 	render_rich_text: RenderRichTextResultSchema,
 	read_image_content: ReadImageContentResultSchema,
@@ -1400,6 +1405,12 @@ export const CommandSchema = Type.Union([
 	StrictObject({
 		command: Type.Literal("write_clipboard_text"),
 		text: WorkspaceText,
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
+	StrictObject({
+		command: Type.Literal("copy_last_assistant_message"),
+		sessionPath: Type.String({ minLength: 1 }),
 		clientInstanceId: Id,
 		clientRequestId: Id,
 	}),

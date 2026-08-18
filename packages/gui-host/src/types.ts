@@ -80,6 +80,7 @@ export interface RuntimeSession {
 	exportSession(outputPath?: string): Promise<{ path: string }>;
 	importSession(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }>;
 	shareSession(signal?: AbortSignal): Promise<{ previewUrl: string; gistUrl: string }>;
+	getLastAssistantText(): string | undefined;
 	runBash(command: string, onChunk: (chunk: string) => void): Promise<JsonValue>;
 	rename(name: string): Promise<void>;
 	setModel(model: ModelRef): Promise<void>;

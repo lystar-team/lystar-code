@@ -40,6 +40,7 @@ pub enum WorkspaceCommand {
     ReadClipboardImage,
     ReadProjectImage,
     WriteClipboardText,
+    CopyLastAssistantMessage,
     ExportSession,
     GetAbout,
     GetDiagnostics,
@@ -85,6 +86,7 @@ impl WorkspaceCommand {
             "read_clipboard_image" => Self::ReadClipboardImage,
             "read_project_image" => Self::ReadProjectImage,
             "write_clipboard_text" => Self::WriteClipboardText,
+            "copy_last_assistant_message" => Self::CopyLastAssistantMessage,
             "export_session" => Self::ExportSession,
             "get_about" => Self::GetAbout,
             "get_diagnostics" => Self::GetDiagnostics,
@@ -131,6 +133,7 @@ impl WorkspaceCommand {
             Self::ReadClipboardImage => "read_clipboard_image",
             Self::ReadProjectImage => "read_project_image",
             Self::WriteClipboardText => "write_clipboard_text",
+            Self::CopyLastAssistantMessage => "copy_last_assistant_message",
             Self::ExportSession => "export_session",
             Self::GetAbout => "get_about",
             Self::GetDiagnostics => "get_diagnostics",
@@ -188,6 +191,7 @@ pub enum WorkspaceResult {
     ReadClipboardImage(crate::generated::WorkspaceReadClipboardImageResult),
     ReadProjectImage(crate::generated::WorkspaceReadProjectImageResult),
     WriteClipboardText(crate::generated::WorkspaceWriteClipboardTextResult),
+    CopyLastAssistantMessage(crate::generated::WorkspaceCopyLastAssistantMessageResult),
     ExportSession(crate::generated::WorkspaceExportSessionResult),
     GetAbout(crate::generated::WorkspaceGetAboutResult),
     GetDiagnostics(crate::generated::WorkspaceGetDiagnosticsResult),
@@ -282,6 +286,9 @@ impl ServerMessage {
             }
             WorkspaceCommand::WriteClipboardText => {
                 Ok(WorkspaceResult::WriteClipboardText(decode(result)?))
+            }
+            WorkspaceCommand::CopyLastAssistantMessage => {
+                Ok(WorkspaceResult::CopyLastAssistantMessage(decode(result)?))
             }
             WorkspaceCommand::ExportSession => Ok(WorkspaceResult::ExportSession(decode(result)?)),
             WorkspaceCommand::GetAbout => Ok(WorkspaceResult::GetAbout(decode(result)?)),

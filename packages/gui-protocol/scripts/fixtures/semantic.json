@@ -180,6 +180,12 @@
       "message": { "type": "request", "id": "workspace-write-clipboard-text", "request": { "command": "write_clipboard_text", "text": "复制文本", "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
     },
     {
+      "name": "client-workspace-copy-last-assistant-message",
+      "direction": "client",
+      "workspaceCommand": "copy_last_assistant_message",
+      "message": { "type": "request", "id": "workspace-copy-last-assistant-message", "request": { "command": "copy_last_assistant_message", "sessionPath": "/tmp/session.jsonl", "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
+    },
+    {
       "name": "client-write-create-session",
       "direction": "client",
       "message": { "type": "request", "id": "write-create-session", "request": { "command": "create_session", "cwd": "/tmp/project", "clientInstanceId": "client-1", "clientRequestId": "write-1" } }
@@ -512,6 +518,12 @@
       "direction": "server",
       "workspaceCommand": "write_clipboard_text",
       "message": { "type": "response", "id": "workspace-write-clipboard-text", "ok": true, "result": { "capability": true, "changed": true } }
+    },
+    {
+      "name": "server-workspace-copy-last-assistant-message",
+      "direction": "server",
+      "workspaceCommand": "copy_last_assistant_message",
+      "message": { "type": "response", "id": "workspace-copy-last-assistant-message", "ok": true, "result": { "capability": true, "copied": true } }
     }
   ]
 }

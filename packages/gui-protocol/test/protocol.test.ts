@@ -413,6 +413,16 @@ describe("GUI Protocol v1", () => {
 			),
 		).toThrow();
 		expect(WorkspaceCommandResultSchemas.write_clipboard_text).toBeDefined();
+		expect(() =>
+			assertWorkspaceCommandResult("copy_last_assistant_message", { capability: true, copied: true }),
+		).not.toThrow();
+		expect(() =>
+			assertWorkspaceCommandResult("copy_last_assistant_message", {
+				capability: true,
+				copied: true,
+				text: "secret",
+			}),
+		).toThrow();
 	});
 
 	it("keeps login results as strict model projections without credentials", () => {

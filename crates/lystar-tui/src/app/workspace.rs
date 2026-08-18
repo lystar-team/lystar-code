@@ -290,6 +290,7 @@ pub enum PendingIntent {
     ClipboardMutation {
         toast: String,
     },
+    CopyLastAssistantMessage,
     Export,
     WorkbenchLoad {
         target: WorkbenchTarget,

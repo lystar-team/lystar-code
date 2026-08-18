@@ -378,6 +378,26 @@ pub(super) fn apply_workspace_response(
                     app.set_overlay_error("Host 不支持剪贴板写入");
                 }
             }
+            PendingIntent::CopyLastAssistantMessage => {
+                let object = result
+                    .as_object()
+                    .ok_or_else(|| TuiError::InvalidResponse("复制消息响应无效".to_owned()))?;
+                if !object
+                    .get("capability")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    app.set_overlay_error("Host 不支持剪贴板写入");
+                } else if object
+                    .get("copied")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    app.set_toast("最近一条 Agent 消息已复制到剪贴板");
+                } else {
+                    app.set_overlay_error("还没有可复制的 Agent 消息");
+                }
+            }
             PendingIntent::Export => {
                 let path = result
                     .get("path")

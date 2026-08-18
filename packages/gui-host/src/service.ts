@@ -1277,6 +1277,26 @@ export class GuiHostService {
 					payload: { text: request.text },
 					run: () => this.adapter.writeClipboardText(request.text),
 				});
+			case "copy_last_assistant_message": {
+				this.assertClient(request.clientInstanceId, connection);
+				this.journal.assertWritable();
+				const sessionPath = canonicalSessionPath(request.sessionPath);
+				const runtime = this.runtimes.get(sessionPath);
+				if (!runtime) throw Object.assign(new Error("尚未获取会话运行时"), { code: "session_not_acquired" });
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: "host:clipboard",
+					payload: { sessionPath },
+					run: async () => {
+						const text = runtime.getLastAssistantText();
+						if (!text) return { capability: true, copied: false };
+						const result = await this.adapter.writeClipboardText(text);
+						return { capability: result.capability, copied: result.capability };
+					},
+				});
+			}
 		}
 	}
 

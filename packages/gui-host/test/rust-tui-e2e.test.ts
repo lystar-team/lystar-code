@@ -502,6 +502,9 @@ class FakeRuntimeSession implements RuntimeSession {
 			gistUrl: "https://gist.github.com/user/gist-id",
 		};
 	}
+	getLastAssistantText(): string | undefined {
+		return "latest assistant";
+	}
 	async runBash(): Promise<JsonValue> {
 		return {};
 	}

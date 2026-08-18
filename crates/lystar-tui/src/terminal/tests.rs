@@ -350,6 +350,7 @@ fn intercepts_only_connected_slash_commands() {
         ("/export", "export"),
         ("/import", "import"),
         ("/share", "share"),
+        ("/copy", "copy"),
         ("/resume", "resume"),
         ("/settings", "settings"),
         ("/model", "model"),
@@ -665,6 +666,9 @@ mod import_tests;
 
 #[path = "tests/share_tests.rs"]
 mod share_tests;
+
+#[path = "tests/copy_tests.rs"]
+mod copy_tests;
 
 #[test]
 fn builds_select_items_from_host_payload() {

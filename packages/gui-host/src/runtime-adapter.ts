@@ -1198,6 +1198,10 @@ class CoreRuntimeSession implements RuntimeSession {
 		return this.runtime.shareViaPrivateGist({ signal });
 	}
 
+	getLastAssistantText(): string | undefined {
+		return this.runtime.session.getLastAssistantText();
+	}
+
 	async runBash(command: string, onChunk: (chunk: string) => void): Promise<JsonValue> {
 		const result = await this.runtime.session.executeBash(command, onChunk);
 		this.emitCommittedEntries();
