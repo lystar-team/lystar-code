@@ -231,7 +231,9 @@ pub(in super::super) fn apply_event(
             Ok(false)
         }
         ReadOnlyEvent::SessionSnapshot { snapshot } if snapshot.path == session_path => {
-            app.apply_snapshot(snapshot.clone());
+            if !app.defers_session_snapshot(&snapshot.path) {
+                app.apply_snapshot(snapshot.clone());
+            }
             Ok(false)
         }
         ReadOnlyEvent::OperationUpdated { operation } if operation.session_path == session_path => {

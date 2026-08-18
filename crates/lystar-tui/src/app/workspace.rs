@@ -309,9 +309,11 @@ pub enum PendingIntent {
         provider: String,
         id: String,
     },
-    SessionMutation {
-        toast: String,
-        close_overlay: bool,
+    ThinkingMutation {
+        session_path: String,
+        provider: String,
+        id: String,
+        level: String,
     },
     TreeMutation {
         selected_key: String,

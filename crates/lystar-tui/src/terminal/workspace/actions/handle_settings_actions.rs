@@ -154,49 +154,6 @@ pub(super) fn handle_settings_actions(
             filter,
         );
     }
-    if let Some(level) = action.strip_prefix("thinking:") {
-        let model = match app.model_supports_reasoning() {
-            Ok(model) => model,
-            Err(reason) => {
-                app.set_overlay_error(reason);
-                return Ok(());
-            }
-        };
-        if !model
-            .supported_thinking_levels
-            .iter()
-            .any(|candidate| candidate == level)
-        {
-            app.set_overlay_error("当前模型不支持此思考强度");
-            return Ok(());
-        }
-        let Some(lease_id) = app.lease_id.clone() else {
-            app.set_overlay_error("尚未获取会话租约");
-            return Ok(());
-        };
-        let client_request_id = format!("thinking:{level}:{}", sequence.saturating_add(1));
-        app.mark_write_pending();
-        return request_workspace(
-            app,
-            pipe,
-            sequence,
-            WorkspaceCommand::SetSessionThinking,
-            serde_json::json!({
-                "sessionPath": session_path,
-                "leaseId": lease_id,
-                "clientInstanceId": client_instance_id,
-                "clientRequestId": client_request_id,
-                "level": level,
-            })
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
-            PendingIntent::SessionMutation {
-                toast: "已更新思考强度".to_owned(),
-                close_overlay: true,
-            },
-        );
-    }
     if let Some(index) = action
         .strip_prefix("login-provider:")
         .and_then(|value| value.parse::<usize>().ok())

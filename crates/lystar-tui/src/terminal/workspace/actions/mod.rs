@@ -49,6 +49,14 @@ pub(in super::super) fn activate_workbench_action(
         client_instance_id,
         sequence,
         session_flow,
+    )? || handle_thinking_action(
+        app,
+        action,
+        pipe,
+        session_path,
+        client_instance_id,
+        sequence,
+        session_flow,
     )? {
         return Ok(());
     }

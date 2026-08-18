@@ -205,6 +205,22 @@ impl AppState {
         self.workspace_overlay_stack.last().and_then(Option::as_ref) == Some(expected)
     }
 
+    pub fn defers_session_snapshot(&self, session_path: &str) -> bool {
+        self.pending_requests
+            .values()
+            .any(|pending| match &pending.intent {
+                PendingIntent::ModelMutation {
+                    session_path: pending_path,
+                    ..
+                }
+                | PendingIntent::ThinkingMutation {
+                    session_path: pending_path,
+                    ..
+                } => pending_path == session_path,
+                _ => false,
+            })
+    }
+
     pub fn take_pending(&mut self, id: &str) -> Option<PendingRequest> {
         let pending = self.pending_requests.remove(id)?;
         if matches!(
@@ -215,7 +231,7 @@ impl AppState {
                 | PendingIntent::PackageMutation { .. }
                 | PendingIntent::SettingMutation { .. }
                 | PendingIntent::ModelMutation { .. }
-                | PendingIntent::SessionMutation { .. }
+                | PendingIntent::ThinkingMutation { .. }
                 | PendingIntent::TreeMutation { .. }
                 | PendingIntent::TreeNavigate { .. }
                 | PendingIntent::AuthMutation { .. }
@@ -318,6 +334,9 @@ impl AppState {
         }
         if !descriptor.reasoning {
             return Err("当前模型不支持思考强度".to_owned());
+        }
+        if descriptor.supported_thinking_levels.is_empty() {
+            return Err("当前模型没有可用思考强度".to_owned());
         }
         Ok(descriptor)
     }

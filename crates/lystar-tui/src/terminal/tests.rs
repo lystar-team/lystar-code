@@ -770,6 +770,9 @@ mod session_info_tests;
 #[path = "tests/model_tests.rs"]
 mod model_tests;
 
+#[path = "tests/thinking_tests.rs"]
+mod thinking_tests;
+
 #[path = "tests/hotkeys_tests.rs"]
 mod hotkeys_tests;
 

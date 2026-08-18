@@ -784,18 +784,30 @@ pub(in super::super) fn model_overlay(
 pub(in super::super) fn thinking_level_label(level: &str) -> &'static str {
     match level {
         "off" => "关闭",
-        "minimal" => "最少",
+        "minimal" => "极简",
         "low" => "低",
         "medium" => "中",
         "high" => "高",
-        "xhigh" => "极高",
+        "xhigh" => "超高",
         "max" => "最大",
         _ => "未知",
     }
 }
 
+fn thinking_level_description(level: &str) -> &'static str {
+    match level {
+        "off" => "关闭思考",
+        "minimal" => "约 1k tokens",
+        "low" => "约 2k tokens",
+        "medium" => "约 8k tokens",
+        "high" => "约 16k tokens",
+        "xhigh" => "约 32k tokens",
+        "max" => "最大强度思考",
+        _ => "未知强度",
+    }
+}
+
 pub(in super::super) fn thinking_overlay(app: &AppState) -> OverlayState {
-    const LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
     let current = app
         .snapshot
         .as_ref()
@@ -805,32 +817,26 @@ pub(in super::super) fn thinking_overlay(app: &AppState) -> OverlayState {
         Ok(model) => OverlayState::List(ListOverlay {
             title: "思考".to_owned(),
             origin: OverlayOrigin::User,
-            items: LEVELS
-                .into_iter()
+            items: model
+                .supported_thinking_levels
+                .iter()
                 .map(|level| OverlayItem {
                     label: thinking_level_label(level).to_owned(),
                     detail: if level == current {
-                        "当前".to_owned()
+                        format!("{}  当前", thinking_level_description(level))
                     } else {
-                        String::new()
+                        thinking_level_description(level).to_owned()
                     },
-                    action: if model
-                        .supported_thinking_levels
-                        .iter()
-                        .any(|candidate| candidate == level)
-                    {
-                        format!("thinking:{level}")
-                    } else {
-                        "disabled:当前模型不支持此思考强度".to_owned()
-                    },
+                    action: format!("thinking:{level}"),
                 })
                 .collect(),
-            selected: LEVELS
+            selected: model
+                .supported_thinking_levels
                 .iter()
-                .position(|level| *level == current)
+                .position(|level| level == current)
                 .unwrap_or(0),
             filter: String::new(),
-            status: "Enter 保存，Esc 返回".to_owned(),
+            status: "Enter 切换思考强度，Esc 返回".to_owned(),
         }),
         Err(reason) => OverlayState::List(ListOverlay {
             title: "思考".to_owned(),

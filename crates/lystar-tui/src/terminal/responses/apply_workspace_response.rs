@@ -456,18 +456,13 @@ pub(super) fn apply_workspace_response(
                 provider,
                 id,
             } => apply_model_mutation_result(app, result, &session_path, &provider, &id)?,
-            PendingIntent::SessionMutation {
-                toast,
-                close_overlay,
+            PendingIntent::ThinkingMutation {
+                session_path,
+                provider,
+                id,
+                level,
             } => {
-                let snapshot = serde_json::from_value(result).map_err(|error| {
-                    TuiError::InvalidResponse(format!("会话状态响应无效: {error}"))
-                })?;
-                app.apply_snapshot(snapshot);
-                if close_overlay {
-                    app.close_overlay();
-                }
-                app.set_toast(toast);
+                apply_thinking_mutation_result(app, result, &session_path, &provider, &id, &level)?
             }
             PendingIntent::TreeMutation {
                 selected_key,

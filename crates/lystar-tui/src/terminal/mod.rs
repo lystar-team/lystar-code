@@ -80,6 +80,7 @@ mod responses;
 mod runtime;
 mod session_info;
 mod shell;
+mod thinking;
 mod transport;
 mod workspace;
 
@@ -106,6 +107,7 @@ use render::*;
 use requests::*;
 use responses::*;
 use session_info::*;
+use thinking::*;
 use transport::ProtocolPipe;
 use workspace::*;
 
