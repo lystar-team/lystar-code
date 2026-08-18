@@ -101,12 +101,20 @@ export default function runtimeContractExtension(pi: ExtensionAPI): void {
 		handler: async (_args, ctx) => {
 			ctx.ui.notify(
 				JSON.stringify(
-					pi.getCommands().map((command) => ({
-						name: command.name,
-						description: command.description,
-						source: command.source,
-						scope: command.sourceInfo.scope,
-					})),
+					pi
+						.getCommands()
+						.filter(
+							(command) =>
+								(command.source === "prompt" || command.source === "skill") &&
+								(command.name.startsWith("contract-project-") ||
+									command.name.startsWith("skill:contract-project-")),
+						)
+						.map((command) => ({
+							name: command.name,
+							description: command.description,
+							source: command.source,
+							scope: command.sourceInfo.scope,
+						})),
 				),
 				"info",
 			);
