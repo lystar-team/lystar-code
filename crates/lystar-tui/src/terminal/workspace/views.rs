@@ -670,6 +670,7 @@ pub(in super::super) fn settings_overlay(
                 match setting.kind.as_str() {
                     "boolean" => format!("setting-toggle:{}", setting.id),
                     "enum" => format!("setting-enum:{}", setting.id),
+                    "string" if setting.id == "theme" => "setting-theme".to_owned(),
                     "integer" | "string" => format!("setting-text:{}", setting.id),
                     _ => "disabled:不支持的设置类型".to_owned(),
                 }

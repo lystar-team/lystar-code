@@ -36,17 +36,18 @@ import {
 	type ExtensionUIContext,
 	formatVersionCheckError,
 	getAgentDir,
+	getBuiltinThemeNames,
 	getCurrentSubagentRuns,
 	getDefaultSessionDir,
 	getFullChangelogMarkdown,
 	getLatestPiRelease,
 	getLystarSetting,
+	getLystarSettingsForUi,
 	getSupportedThinkingLevels,
 	getToolRecoveryDoctorReport,
 	getToolRecoveryMode,
 	hasTrustRequiringProjectResources,
 	isNewerPackageVersion,
-	LYSTAR_SETTINGS_CATALOG,
 	loadProjectContextFiles,
 	loadSkills,
 	ModelConfig,
@@ -369,9 +370,10 @@ function jsonValue(value: unknown): JsonValue {
 	return JSON.parse(JSON.stringify(value)) as JsonValue;
 }
 
-function settingSummary(id: string, settings: SettingsManager): SettingSummary {
+function settingSummary(id: string, settings: SettingsManager, themeNames: readonly string[] = []): SettingSummary {
 	const definition = getLystarSetting(id);
 	if (!definition) throw Object.assign(new Error(`未知设置：${id}`), { code: "setting_not_found" });
+	const optionValues = definition.id === "theme" ? themeNames : definition.options;
 	return {
 		id: definition.id,
 		label: definition.label,
@@ -379,7 +381,12 @@ function settingSummary(id: string, settings: SettingsManager): SettingSummary {
 		kind: definition.kind,
 		value: definition.get(settings),
 		displayValue: definition.format(definition.get(settings)),
-		...(definition.options ? { options: definition.options.map(String) } : {}),
+		...(optionValues && optionValues.length > 0
+			? {
+					options: optionValues.map(String),
+					optionLabels: optionValues.map((value) => definition.format(value)),
+				}
+			: {}),
 		...(definition.range ? { minimum: definition.range.min, maximum: definition.range.max } : {}),
 		scope: definition.scope,
 		readOnly: false,
@@ -1049,8 +1056,14 @@ class CoreRuntimeSession implements RuntimeSession {
 	}
 
 	listSettings(): SettingSummary[] {
-		return LYSTAR_SETTINGS_CATALOG.map((setting) =>
-			settingSummary(setting.id, this.runtime.services.settingsManager),
+		const themeNames = [
+			...getBuiltinThemeNames(),
+			...this.runtime.services.resourceLoader
+				.getThemes()
+				.themes.flatMap((theme) => (theme.name ? [theme.name] : [])),
+		].filter((name, index, values) => values.indexOf(name) === index);
+		return getLystarSettingsForUi().map((setting) =>
+			settingSummary(setting.id, this.runtime.services.settingsManager, themeNames),
 		);
 	}
 
@@ -1077,7 +1090,8 @@ class CoreRuntimeSession implements RuntimeSession {
 		}
 		await this.runtime.services.settingsManager.flush();
 		this.emitStateChanged();
-		const setting = settingSummary(id, this.runtime.services.settingsManager);
+		const setting = this.listSettings().find((candidate) => candidate.id === id);
+		if (!setting) throw Object.assign(new Error(`未知设置：${id}`), { code: "setting_not_found" });
 		return { setting, requiresRestart: setting.restartRequired };
 	}
 
@@ -2073,7 +2087,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	listSettings(sessionPath: string): SettingSummary[] {
 		const snapshot = readSessionSnapshot(sessionPath);
 		const settings = this.settingsForCwd(snapshot.header.cwd);
-		return LYSTAR_SETTINGS_CATALOG.map((setting) => settingSummary(setting.id, settings));
+		return getLystarSettingsForUi().map((setting) => settingSummary(setting.id, settings, getBuiltinThemeNames()));
 	}
 
 	getSessionTree(sessionPath: string): SessionTreeNode[] {

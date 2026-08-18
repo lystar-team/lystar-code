@@ -7,7 +7,7 @@ import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-a
 import { assertWorkspaceCommandResult } from "@lystar/code-gui-protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentSessionEvent } from "../../coding-agent/src/core/agent-session.ts";
-import { getLystarSetting, LYSTAR_SETTINGS_CATALOG } from "../../coding-agent/src/core/lystar-settings-catalog.ts";
+import { getLystarSetting, getLystarSettingsForUi } from "../../coding-agent/src/core/lystar-settings-catalog.ts";
 import { SettingsManager } from "../../coding-agent/src/core/settings-manager.ts";
 import {
 	appendSessionRecoveryLedger,
@@ -320,9 +320,13 @@ describe("CodingAgentRuntimeAdapter", () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-settings-"));
 		const agentDir = join(tempDir, "agent");
 		const cwd = join(tempDir, "project");
-		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(join(agentDir, "themes"), { recursive: true });
 		mkdirSync(cwd, { recursive: true });
 		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always" }));
+		const paperTheme = JSON.parse(
+			readFileSync(join(import.meta.dirname, "../../coding-agent/src/modes/interactive/theme/dark.json"), "utf8"),
+		) as Record<string, unknown>;
+		writeFileSync(join(agentDir, "themes", "paper.json"), JSON.stringify({ ...paperTheme, name: "paper" }));
 		const adapter = new CodingAgentRuntimeAdapter(agentDir);
 		const runtime = await adapter.createSession(cwd, async () => ({ cancelled: true }));
 		cleanups.push(async () => {
@@ -330,9 +334,17 @@ describe("CodingAgentRuntimeAdapter", () => {
 			rmSync(tempDir, { recursive: true, force: true });
 		});
 
-		expect(runtime.listSettings().map((setting) => setting.id)).toEqual(
-			LYSTAR_SETTINGS_CATALOG.map((setting) => setting.id),
-		);
+		const settings = runtime.listSettings();
+		expect(settings.map((setting) => setting.id)).toEqual(getLystarSettingsForUi().map((setting) => setting.id));
+		expect(settings.find((setting) => setting.id === "theme")).toMatchObject({
+			kind: "string",
+			options: ["dark", "light", "paper"],
+			optionLabels: ["dark", "light", "paper"],
+		});
+		expect(settings.find((setting) => setting.id === "steering-mode")).toMatchObject({
+			options: ["one-at-a-time", "all"],
+			optionLabels: ["逐条处理", "全部处理"],
+		});
 		expect(runtime.getSessionInfo()).toMatchObject({
 			name: null,
 			sessionFile: runtime.sessionPath,

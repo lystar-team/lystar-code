@@ -812,6 +812,9 @@ mod auth_tests;
 #[path = "tests/hotkeys_tests.rs"]
 mod hotkeys_tests;
 
+#[path = "tests/settings_tests.rs"]
+mod settings_tests;
+
 #[path = "tests/clone_tests.rs"]
 mod clone_tests;
 

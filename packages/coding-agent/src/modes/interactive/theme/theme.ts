@@ -485,6 +485,10 @@ function getBuiltinThemes(): Record<string, ThemeJson> {
 	return BUILTIN_THEMES;
 }
 
+export function getBuiltinThemeNames(): string[] {
+	return Object.keys(getBuiltinThemes()).sort((a, b) => a.localeCompare(b));
+}
+
 export function getAvailableThemes(): string[] {
 	return getAvailableThemesWithPaths().map(({ name }) => name);
 }

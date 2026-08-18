@@ -415,7 +415,7 @@
       "name": "server-workspace-list-settings",
       "direction": "server",
       "workspaceCommand": "list_settings",
-      "message": { "type": "response", "id": "workspace-list-settings", "ok": true, "result": [{ "id": "autocompact", "label": "自动压缩", "kind": "boolean", "value": true, "displayValue": "开启", "scope": "global", "readOnly": false, "restartRequired": false }] }
+      "message": { "type": "response", "id": "workspace-list-settings", "ok": true, "result": [{ "id": "steering-mode", "label": "引导消息处理", "kind": "enum", "value": "one-at-a-time", "displayValue": "逐条处理", "options": ["one-at-a-time", "all"], "optionLabels": ["逐条处理", "全部处理"], "scope": "global", "readOnly": false, "restartRequired": false }] }
     },
     {
       "name": "server-workspace-set-setting",

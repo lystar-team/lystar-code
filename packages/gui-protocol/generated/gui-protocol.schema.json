@@ -6445,6 +6445,15 @@
             },
             "maxItems": 1000
           },
+          "optionLabels": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "maxItems": 1000
+          },
           "minimum": {
             "type": "integer"
           },
@@ -6547,6 +6556,15 @@
               "maxLength": 4096
             },
             "options": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "maxItems": 1000
+            },
+            "optionLabels": {
               "type": "array",
               "items": {
                 "type": "string",

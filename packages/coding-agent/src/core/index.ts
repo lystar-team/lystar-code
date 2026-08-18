@@ -28,6 +28,7 @@ export {
 	type SubagentSessionDescriptor,
 	type SubagentSessionRef,
 } from "../extensions/subagent/index.ts";
+export { getBuiltinThemeNames } from "../modes/interactive/theme/theme.ts";
 export { getFullChangelogMarkdown } from "../utils/changelog.ts";
 export { copyToClipboard, readClipboardText } from "../utils/clipboard.ts";
 export { readClipboardImage } from "../utils/clipboard-image.ts";
@@ -118,6 +119,7 @@ export {
 } from "./extensions/index.ts";
 export {
 	getLystarSetting,
+	getLystarSettingsForUi,
 	LYSTAR_SETTINGS_CATALOG,
 	type LystarSettingDefinition,
 	type LystarSettingKind,

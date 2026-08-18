@@ -54,6 +54,7 @@ pub struct SettingDescriptor {
     pub value: serde_json::Value,
     pub display_value: String,
     pub options: Vec<String>,
+    pub option_labels: Vec<String>,
     pub minimum: Option<i64>,
     pub maximum: Option<i64>,
     pub scope: String,

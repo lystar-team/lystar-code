@@ -9,6 +9,167 @@ pub(super) fn handle_settings_actions(
     sequence: &mut u64,
     _session_flow: &mut Option<SessionFlow>,
 ) -> Result<(), TuiError> {
+    if action == "setting-theme" {
+        let Some(setting) = app.setting("theme").cloned() else {
+            app.set_overlay_error("设置已刷新，请重新选择");
+            return Ok(());
+        };
+        if setting.read_only || setting.options.is_empty() {
+            app.set_overlay_error("当前没有可用主题");
+            return Ok(());
+        }
+        let automatic = setting
+            .value
+            .as_str()
+            .is_some_and(|value| value.split_once('/').is_some());
+        app.open_overlay(OverlayState::List(ListOverlay {
+            title: "主题模式".to_owned(),
+            origin: OverlayOrigin::User,
+            items: vec![
+                OverlayItem {
+                    label: "固定主题".to_owned(),
+                    detail: if automatic {
+                        String::new()
+                    } else {
+                        "当前".to_owned()
+                    },
+                    action: "setting-theme-fixed".to_owned(),
+                },
+                OverlayItem {
+                    label: "自动跟随终端".to_owned(),
+                    detail: if automatic {
+                        "当前".to_owned()
+                    } else {
+                        String::new()
+                    },
+                    action: "setting-theme-auto".to_owned(),
+                },
+            ],
+            selected: usize::from(automatic),
+            filter: String::new(),
+            status: "Enter 选择，Esc 返回".to_owned(),
+        }));
+        return Ok(());
+    }
+    if action == "setting-theme-fixed" {
+        let Some(setting) = app.setting("theme").cloned() else {
+            app.set_overlay_error("设置已刷新，请重新选择");
+            return Ok(());
+        };
+        let current = setting.value.as_str().filter(|value| !value.contains('/'));
+        app.open_overlay(theme_options_overlay(
+            &setting,
+            "固定主题",
+            "setting-theme-save",
+            current,
+        ));
+        return Ok(());
+    }
+    if action == "setting-theme-auto" {
+        let Some(setting) = app.setting("theme").cloned() else {
+            app.set_overlay_error("设置已刷新，请重新选择");
+            return Ok(());
+        };
+        let current = setting
+            .value
+            .as_str()
+            .and_then(|value| value.split_once('/'))
+            .map(|(light, _)| light)
+            .or_else(|| setting.value.as_str());
+        app.open_overlay(theme_options_overlay(
+            &setting,
+            "浅色主题",
+            "setting-theme-light",
+            current,
+        ));
+        return Ok(());
+    }
+    if let Some(index) = action.strip_prefix("setting-theme-light:") {
+        let Ok(index) = index.parse::<usize>() else {
+            app.set_overlay_error("主题选项无效");
+            return Ok(());
+        };
+        let Some(setting) = app.setting("theme").cloned() else {
+            app.set_overlay_error("设置已刷新，请重新选择");
+            return Ok(());
+        };
+        let Some(light) = setting.options.get(index) else {
+            app.set_overlay_error("主题选项无效");
+            return Ok(());
+        };
+        let current = setting
+            .value
+            .as_str()
+            .and_then(|value| value.split_once('/'))
+            .map(|(_, dark)| dark)
+            .or_else(|| setting.value.as_str());
+        app.open_overlay(theme_options_overlay(
+            &setting,
+            "深色主题",
+            &format!("setting-theme-pair:{light}"),
+            current,
+        ));
+        return Ok(());
+    }
+    if let Some(pair) = action.strip_prefix("setting-theme-pair:") {
+        let Some((light, index)) = pair.rsplit_once(':') else {
+            app.set_overlay_error("主题选项无效");
+            return Ok(());
+        };
+        let Ok(index) = index.parse::<usize>() else {
+            app.set_overlay_error("主题选项无效");
+            return Ok(());
+        };
+        let Some(setting) = app.setting("theme").cloned() else {
+            app.set_overlay_error("设置已刷新，请重新选择");
+            return Ok(());
+        };
+        let Some(dark) = setting.options.get(index) else {
+            app.set_overlay_error("主题选项无效");
+            return Ok(());
+        };
+        app.close_overlay();
+        app.close_overlay();
+        app.close_overlay();
+        let (filter, _) = list_context(app, "设置");
+        return request_setting_write(
+            app,
+            pipe,
+            session_path,
+            client_instance_id,
+            sequence,
+            "theme",
+            serde_json::Value::String(format!("{light}/{dark}")),
+            filter,
+        );
+    }
+    if let Some(index) = action.strip_prefix("setting-theme-save:") {
+        let Ok(index) = index.parse::<usize>() else {
+            app.set_overlay_error("主题选项无效");
+            return Ok(());
+        };
+        let Some(setting) = app.setting("theme").cloned() else {
+            app.set_overlay_error("设置已刷新，请重新选择");
+            return Ok(());
+        };
+        let Some(value) = setting.options.get(index).cloned() else {
+            app.set_overlay_error("主题选项无效");
+            return Ok(());
+        };
+        app.close_overlay();
+        app.close_overlay();
+        let (filter, _) = list_context(app, "设置");
+        return request_setting_write(
+            app,
+            pipe,
+            session_path,
+            client_instance_id,
+            sequence,
+            "theme",
+            serde_json::Value::String(value),
+            filter,
+        );
+    }
     if let Some(id) = action.strip_prefix("setting-toggle:") {
         let Some(setting) = app.setting(id).cloned() else {
             app.set_overlay_error("设置已刷新，请重新选择");
@@ -47,7 +208,11 @@ pub(super) fn handle_settings_actions(
                 .iter()
                 .enumerate()
                 .map(|(index, value)| OverlayItem {
-                    label: value.clone(),
+                    label: setting
+                        .option_labels
+                        .get(index)
+                        .cloned()
+                        .unwrap_or_else(|| value.clone()),
                     detail: if setting.value.as_str() == Some(value) {
                         "当前".to_owned()
                     } else {
@@ -183,4 +348,40 @@ pub(super) fn handle_settings_actions(
     app.close_overlay();
     app.set_toast("已提交输入");
     Ok(())
+}
+
+fn theme_options_overlay(
+    setting: &SettingDescriptor,
+    title: &str,
+    action_prefix: &str,
+    current: Option<&str>,
+) -> OverlayState {
+    let selected = current
+        .and_then(|current| setting.options.iter().position(|value| value == current))
+        .unwrap_or(0);
+    OverlayState::List(ListOverlay {
+        title: title.to_owned(),
+        origin: OverlayOrigin::User,
+        items: setting
+            .options
+            .iter()
+            .enumerate()
+            .map(|(index, value)| OverlayItem {
+                label: setting
+                    .option_labels
+                    .get(index)
+                    .cloned()
+                    .unwrap_or_else(|| value.clone()),
+                detail: if Some(value.as_str()) == current {
+                    "当前".to_owned()
+                } else {
+                    String::new()
+                },
+                action: format!("{action_prefix}:{index}"),
+            })
+            .collect(),
+        selected,
+        filter: String::new(),
+        status: "Enter 选择，Esc 返回".to_owned(),
+    })
 }

@@ -319,6 +319,17 @@ pub(in super::super) fn parse_settings(
                             .collect()
                     })
                     .unwrap_or_default(),
+                option_labels: object
+                    .get("optionLabels")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|options| {
+                        options
+                            .iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
                 minimum: object.get("minimum").and_then(serde_json::Value::as_i64),
                 maximum: object.get("maximum").and_then(serde_json::Value::as_i64),
                 scope: required_string(object, "scope")?,

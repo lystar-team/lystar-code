@@ -636,6 +636,7 @@ export const SettingSummarySchema = StrictObject({
 	value: SettingValueSchema,
 	displayValue: Type.String({ minLength: 1, maxLength: 4096 }),
 	options: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 1000 })),
+	optionLabels: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 1000 })),
 	minimum: Type.Optional(Type.Integer()),
 	maximum: Type.Optional(Type.Integer()),
 	scope: Type.Union([Type.Literal("global"), Type.Literal("project")]),
