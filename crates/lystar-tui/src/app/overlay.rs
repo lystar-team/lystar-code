@@ -216,6 +216,14 @@ impl AppState {
                 | PendingIntent::ThinkingMutation {
                     session_path: pending_path,
                     ..
+                }
+                | PendingIntent::ModelCycle {
+                    session_path: pending_path,
+                    ..
+                }
+                | PendingIntent::ThinkingCycle {
+                    session_path: pending_path,
+                    ..
                 } => pending_path == session_path,
                 _ => false,
             })
@@ -232,6 +240,8 @@ impl AppState {
                 | PendingIntent::SettingMutation { .. }
                 | PendingIntent::ModelMutation { .. }
                 | PendingIntent::ThinkingMutation { .. }
+                | PendingIntent::ModelCycle { .. }
+                | PendingIntent::ThinkingCycle { .. }
                 | PendingIntent::TreeMutation { .. }
                 | PendingIntent::TreeNavigate { .. }
                 | PendingIntent::AuthMutation { .. }

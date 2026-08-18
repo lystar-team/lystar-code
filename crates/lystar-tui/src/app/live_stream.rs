@@ -21,7 +21,7 @@ pub(super) fn streaming_tail_lines(
     }
 
     let mut lines = VecDeque::new();
-    if !state.thinking_stream.is_empty() {
+    if !state.hide_thinking && !state.thinking_stream.is_empty() {
         push_stream_lines(
             &mut lines,
             &state.thinking_stream,
@@ -32,7 +32,10 @@ pub(super) fn streaming_tail_lines(
                 .add_modifier(Modifier::ITALIC),
         );
     }
-    if !state.thinking_stream.is_empty() && !state.assistant_stream.is_empty() {
+    if !state.hide_thinking
+        && !state.thinking_stream.is_empty()
+        && !state.assistant_stream.is_empty()
+    {
         push_stream_line(&mut lines, String::new(), Style::default(), max_lines);
     }
     if !state.assistant_stream.is_empty() {

@@ -89,6 +89,8 @@ export interface RuntimeSession {
 	rename(name: string): Promise<void>;
 	setModel(model: ModelRef): Promise<void>;
 	setThinkingLevel(level: ThinkingLevel): Promise<void>;
+	cycleModel(direction: "forward" | "backward"): Promise<{ changed: boolean; isScoped: boolean }>;
+	cycleThinkingLevel(): { changed: boolean; supported: boolean };
 	fork(entryId: string, position?: "before" | "at"): Promise<{ sessionPath: string; selectedText?: string }>;
 	abort(): Promise<void>;
 	reloadResources(): Promise<void>;

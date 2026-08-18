@@ -315,6 +315,17 @@ pub enum PendingIntent {
         id: String,
         level: String,
     },
+    ModelCycle {
+        session_path: String,
+        provider: Option<String>,
+        id: Option<String>,
+    },
+    ThinkingCycle {
+        session_path: String,
+        provider: Option<String>,
+        id: Option<String>,
+        level: String,
+    },
     TreeMutation {
         selected_key: String,
         filter: String,

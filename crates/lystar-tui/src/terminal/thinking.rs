@@ -115,6 +115,111 @@ pub(super) fn handle_thinking_action(
     Ok(true)
 }
 
+pub(super) fn cycle_thinking(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    client_instance_id: &str,
+    sequence: &mut u64,
+    session_flow: &Option<SessionFlow>,
+) -> Result<(), TuiError> {
+    if app.is_active_operation() {
+        app.set_overlay_error("当前会话正在运行，不能切换思考强度");
+        return Ok(());
+    }
+    if session_flow.is_some() {
+        app.set_overlay_error("会话操作正在进行");
+        return Ok(());
+    }
+    if app.write_pending {
+        app.set_overlay_error("正在写入，请稍候");
+        return Ok(());
+    }
+    let Some(lease_id) = app.lease_id.clone() else {
+        app.set_overlay_error("尚未获取会话租约");
+        return Ok(());
+    };
+    let current = app.snapshot.as_ref();
+    let model = current.and_then(|snapshot| snapshot.model.as_ref());
+    let provider = model.map(|model| model.provider.clone());
+    let id = model.map(|model| model.id.clone());
+    let level = current
+        .map(|snapshot| snapshot.thinking_level.clone())
+        .unwrap_or_else(|| "off".to_owned());
+    let client_request_id = format!("thinking-cycle:{}", sequence.saturating_add(1));
+    app.mark_write_pending();
+    request_workspace(
+        app,
+        pipe,
+        sequence,
+        WorkspaceCommand::CycleSessionThinking,
+        serde_json::json!({
+            "sessionPath": session_path,
+            "leaseId": lease_id,
+            "clientInstanceId": client_instance_id,
+            "clientRequestId": client_request_id,
+        })
+        .as_object()
+        .cloned()
+        .unwrap_or_default(),
+        PendingIntent::ThinkingCycle {
+            session_path: session_path.to_owned(),
+            provider,
+            id,
+            level,
+        },
+    )
+}
+
+pub(super) fn apply_thinking_cycle_result(
+    app: &mut AppState,
+    result: serde_json::Value,
+    session_path: &str,
+    provider: Option<&str>,
+    id: Option<&str>,
+    level: &str,
+) -> Result<(), TuiError> {
+    let object = result
+        .as_object()
+        .ok_or_else(|| TuiError::InvalidResponse("思考强度循环响应无效".to_owned()))?;
+    let changed = object
+        .get("changed")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| TuiError::InvalidResponse("思考强度循环响应缺少变化状态".to_owned()))?;
+    let supported = object
+        .get("supported")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| TuiError::InvalidResponse("思考强度循环响应缺少能力状态".to_owned()))?;
+    let snapshot: lystar_protocol::SessionSnapshot = serde_json::from_value(
+        object
+            .get("snapshot")
+            .cloned()
+            .ok_or_else(|| TuiError::InvalidResponse("思考强度循环响应缺少会话状态".to_owned()))?,
+    )
+    .map_err(|error| TuiError::InvalidResponse(format!("会话状态响应无效: {error}")))?;
+    let model = snapshot
+        .model
+        .as_ref()
+        .map(|model| (model.provider.as_str(), model.id.as_str()));
+    if snapshot.path != session_path
+        || model != provider.zip(id)
+        || changed != (snapshot.thinking_level != level)
+        || (!supported && changed)
+    {
+        return Err(TuiError::InvalidResponse(
+            "思考强度循环结果与当前会话、模型或原等级不一致".to_owned(),
+        ));
+    }
+    let next_level = snapshot.thinking_level.clone();
+    app.apply_snapshot(snapshot);
+    app.set_toast(if supported {
+        format!("思考强度：{}", thinking_level_label(&next_level))
+    } else {
+        "当前模型不支持思考".to_owned()
+    });
+    Ok(())
+}
+
 pub(super) fn apply_thinking_mutation_result(
     app: &mut AppState,
     result: serde_json::Value,

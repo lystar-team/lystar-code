@@ -1,31 +1,54 @@
 use super::*;
 pub(super) fn raw_key(code: KeyCode, modifiers: KeyModifiers) -> Option<String> {
+    if modifiers.intersects(KeyModifiers::HYPER | KeyModifiers::META) {
+        return None;
+    }
+    let modifier = 1
+        + u8::from(modifiers.contains(KeyModifiers::SHIFT))
+        + 2 * u8::from(modifiers.contains(KeyModifiers::ALT))
+        + 4 * u8::from(modifiers.contains(KeyModifiers::CONTROL))
+        + 8 * u8::from(modifiers.contains(KeyModifiers::SUPER));
+    let modified = modifier > 1;
     let value = match code {
-        KeyCode::Char(character)
-            if modifiers.contains(KeyModifiers::CONTROL) && character.is_ascii() =>
-        {
+        KeyCode::Char(character) if modifiers == KeyModifiers::CONTROL && character.is_ascii() => {
             let upper = character.to_ascii_uppercase() as u8;
             ((upper & 0x1f) as char).to_string()
         }
-        KeyCode::Char(character)
-            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-        {
-            character.to_string()
+        KeyCode::Char(character) if modified => {
+            format!("\x1b[{};{modifier}u", character as u32)
         }
-        KeyCode::Enter if modifiers.contains(KeyModifiers::ALT) => "\x1b\r".to_owned(),
+        KeyCode::Char(character) => character.to_string(),
+        KeyCode::Enter if modifiers == KeyModifiers::ALT => "\x1b\r".to_owned(),
+        KeyCode::Enter if modified => format!("\x1b[13;{modifier}u"),
         KeyCode::Enter => "\r".to_owned(),
+        KeyCode::BackTab => "\x1b[Z".to_owned(),
+        KeyCode::Tab if modified => format!("\x1b[9;{modifier}u"),
         KeyCode::Tab => "\t".to_owned(),
+        KeyCode::Backspace if modified => format!("\x1b[127;{modifier}u"),
         KeyCode::Backspace => "\x7f".to_owned(),
+        KeyCode::Esc if modified => format!("\x1b[27;{modifier}u"),
         KeyCode::Esc => "\x1b".to_owned(),
+        KeyCode::Up if modified => format!("\x1b[1;{modifier}A"),
         KeyCode::Up => "\x1b[A".to_owned(),
+        KeyCode::Down if modified => format!("\x1b[1;{modifier}B"),
         KeyCode::Down => "\x1b[B".to_owned(),
+        KeyCode::Right if modified => format!("\x1b[1;{modifier}C"),
         KeyCode::Right => "\x1b[C".to_owned(),
+        KeyCode::Left if modified => format!("\x1b[1;{modifier}D"),
         KeyCode::Left => "\x1b[D".to_owned(),
+        KeyCode::Home if modified => format!("\x1b[1;{modifier}H"),
         KeyCode::Home => "\x1b[H".to_owned(),
+        KeyCode::End if modified => format!("\x1b[1;{modifier}F"),
         KeyCode::End => "\x1b[F".to_owned(),
-        KeyCode::PageUp => "\x1b[5~".to_owned(),
-        KeyCode::PageDown => "\x1b[6~".to_owned(),
+        KeyCode::Insert if modified => format!("\x1b[2;{modifier}~"),
+        KeyCode::Insert => "\x1b[2~".to_owned(),
+        KeyCode::Delete if modified => format!("\x1b[3;{modifier}~"),
         KeyCode::Delete => "\x1b[3~".to_owned(),
+        KeyCode::PageUp if modified => format!("\x1b[5;{modifier}~"),
+        KeyCode::PageUp => "\x1b[5~".to_owned(),
+        KeyCode::PageDown if modified => format!("\x1b[6;{modifier}~"),
+        KeyCode::PageDown => "\x1b[6~".to_owned(),
+        KeyCode::F(_) if modified => return None,
         KeyCode::F(number @ 1..=4) => {
             format!("\x1bO{}", ["P", "Q", "R", "S"][(number - 1) as usize])
         }
@@ -107,7 +130,25 @@ pub(super) fn apply_extension_editor_app_action(
         "app.clipboard.pasteImage" => {
             request_clipboard_both(app, pipe, sequence, ClipboardReadTarget::Insert)?;
         }
-        "app.model.cycleForward" | "app.model.cycleBackward" | "app.model.select" => {
+        "app.model.cycleForward" => cycle_model(
+            app,
+            pipe,
+            &active_path,
+            client_instance_id,
+            sequence,
+            session_flow,
+            "forward",
+        )?,
+        "app.model.cycleBackward" => cycle_model(
+            app,
+            pipe,
+            &active_path,
+            client_instance_id,
+            sequence,
+            session_flow,
+            "backward",
+        )?,
+        "app.model.select" => {
             open_workbench(
                 app,
                 "model",
@@ -118,17 +159,15 @@ pub(super) fn apply_extension_editor_app_action(
                 session_flow,
             )?;
         }
-        "app.thinking.cycle" | "app.thinking.toggle" => {
-            open_workbench(
-                app,
-                "thinking",
-                pipe,
-                &active_path,
-                client_instance_id,
-                sequence,
-                session_flow,
-            )?;
-        }
+        "app.thinking.cycle" => cycle_thinking(
+            app,
+            pipe,
+            &active_path,
+            client_instance_id,
+            sequence,
+            session_flow,
+        )?,
+        "app.thinking.toggle" => app.toggle_thinking_visibility(),
         "app.tools.expand" => app.toggle_tool_expansion(),
         "extension_shortcut" => app.set_toast("扩展快捷键未处理"),
         "app.message.followUp" => {

@@ -758,6 +758,16 @@ export const ListModelsResultSchema = Type.Array(ModelSummarySchema, { maxItems:
 export const ListModelProvidersResultSchema = Type.Array(ModelProviderSummarySchema, { maxItems: 1_000 });
 export const SetSessionModelResultSchema = SessionStateSnapshotSchema;
 export const SetSessionThinkingResultSchema = SessionStateSnapshotSchema;
+export const CycleSessionModelResultSchema = StrictObject({
+	snapshot: SessionStateSnapshotSchema,
+	changed: Type.Boolean(),
+	isScoped: Type.Boolean(),
+});
+export const CycleSessionThinkingResultSchema = StrictObject({
+	snapshot: SessionStateSnapshotSchema,
+	changed: Type.Boolean(),
+	supported: Type.Boolean(),
+});
 export const ReloadResourcesResultSchema = SessionStateSnapshotSchema;
 const SessionInfoCountSchema = Type.Integer({ minimum: 0 });
 export const SessionInfoResultSchema = StrictObject({
@@ -1036,6 +1046,8 @@ export const WorkspaceCommandResultSchemas = {
 	list_model_providers: ListModelProvidersResultSchema,
 	set_session_model: SetSessionModelResultSchema,
 	set_session_thinking: SetSessionThinkingResultSchema,
+	cycle_session_model: CycleSessionModelResultSchema,
+	cycle_session_thinking: CycleSessionThinkingResultSchema,
 	reload_resources: ReloadResourcesResultSchema,
 	get_session_info: SessionInfoResultSchema,
 	list_fork_messages: ListForkMessagesResultSchema,
@@ -1265,6 +1277,21 @@ export const CommandSchema = Type.Union([
 		sessionPath: Type.String({ minLength: 1 }),
 		leaseId: Id,
 		level: ThinkingLevelSchema,
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
+	StrictObject({
+		command: Type.Literal("cycle_session_model"),
+		sessionPath: Type.String({ minLength: 1 }),
+		leaseId: Id,
+		direction: Type.Union([Type.Literal("forward"), Type.Literal("backward")]),
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
+	StrictObject({
+		command: Type.Literal("cycle_session_thinking"),
+		sessionPath: Type.String({ minLength: 1 }),
+		leaseId: Id,
 		clientInstanceId: Id,
 		clientRequestId: Id,
 	}),

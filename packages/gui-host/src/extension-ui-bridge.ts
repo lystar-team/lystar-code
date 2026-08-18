@@ -454,7 +454,7 @@ export class ExtensionUiBridge {
 	private readonly componentDiagnostics = new Map<string, ComponentDiagnosticState>();
 	private componentFrameTimer: ReturnType<typeof setTimeout> | undefined;
 	private readonly onUiRequest: UiRequestHandler;
-	private readonly editorKeybindings = KeybindingsManager.create();
+	private readonly editorKeybindings: KeybindingsManager;
 	private readonly getCompletions?: (text: string, cursor: number) => EditorCompletion | undefined;
 	private readonly autocompleteProviderFactories: EditorAutocompleteFactory[] = [];
 	private readonly publish: (event: ExtensionUiBridgeEvent) => void;
@@ -480,11 +480,13 @@ export class ExtensionUiBridge {
 		publish: (event: ExtensionUiBridgeEvent) => void,
 		reportError: (error: { event: string; error: string; stack?: string }) => void,
 		getCompletions?: (text: string, cursor: number) => EditorCompletion | undefined,
+		agentDir?: string,
 	) {
 		this.onUiRequest = onUiRequest;
 		this.publish = publish;
 		this.reportError = reportError;
 		this.getCompletions = getCompletions;
+		this.editorKeybindings = KeybindingsManager.create(agentDir);
 	}
 
 	context(): ExtensionUiContextBridge {

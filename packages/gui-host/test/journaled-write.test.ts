@@ -180,6 +180,14 @@ class FakeRuntime implements RuntimeSession {
 	async setThinkingLevel() {
 		this.counts.set_session_thinking = (this.counts.set_session_thinking ?? 0) + 1;
 	}
+	async cycleModel() {
+		this.counts.cycle_session_model = (this.counts.cycle_session_model ?? 0) + 1;
+		return { changed: true, isScoped: false };
+	}
+	cycleThinkingLevel() {
+		this.counts.cycle_session_thinking = (this.counts.cycle_session_thinking ?? 0) + 1;
+		return { changed: false, supported: false };
+	}
 	async fork() {
 		this.counts.fork_session = (this.counts.fork_session ?? 0) + 1;
 		if (this.counts.block_fork) await new Promise((resolve) => setTimeout(resolve, 20));
@@ -374,6 +382,10 @@ function request(command: string, cwd: string, sessionPath: string, leaseId: str
 			return { command, sessionPath, leaseId, model: { provider: "provider", id: "model" }, ...identity };
 		case "set_session_thinking":
 			return { command, sessionPath, leaseId, level: "off", ...identity };
+		case "cycle_session_model":
+			return { command, sessionPath, leaseId, direction: "forward", ...identity };
+		case "cycle_session_thinking":
+			return { command, sessionPath, leaseId, ...identity };
 		case "reload_resources":
 			return { command, sessionPath, leaseId, ...identity };
 		case "fork_session":
@@ -426,6 +438,8 @@ const WRITE_COMMANDS = [
 	"rename_session",
 	"set_session_model",
 	"set_session_thinking",
+	"cycle_session_model",
+	"cycle_session_thinking",
 	"reload_resources",
 	"fork_session",
 	"export_session",
@@ -449,6 +463,8 @@ const SESSION_COMMANDS = new Set([
 	"rename_session",
 	"set_session_model",
 	"set_session_thinking",
+	"cycle_session_model",
+	"cycle_session_thinking",
 	"reload_resources",
 	"fork_session",
 	"export_session",

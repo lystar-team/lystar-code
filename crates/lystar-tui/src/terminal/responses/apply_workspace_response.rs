@@ -473,6 +473,30 @@ pub(super) fn apply_workspace_response(
             } => {
                 apply_thinking_mutation_result(app, result, &session_path, &provider, &id, &level)?
             }
+            PendingIntent::ModelCycle {
+                session_path,
+                provider,
+                id,
+            } => apply_model_cycle_result(
+                app,
+                result,
+                &session_path,
+                provider.as_deref(),
+                id.as_deref(),
+            )?,
+            PendingIntent::ThinkingCycle {
+                session_path,
+                provider,
+                id,
+                level,
+            } => apply_thinking_cycle_result(
+                app,
+                result,
+                &session_path,
+                provider.as_deref(),
+                id.as_deref(),
+                &level,
+            )?,
             PendingIntent::TreeMutation {
                 selected_key,
                 filter,

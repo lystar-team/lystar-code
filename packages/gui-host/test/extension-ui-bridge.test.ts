@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ExtensionUiBridge, type ExtensionUiBridgeEvent } from "../src/extension-ui-bridge.ts";
 
@@ -354,6 +357,62 @@ describe("ExtensionUiBridge", () => {
 		current.actionHandlers.get("app.clear")?.();
 		expect(originalActions).toBe(2);
 		expect(events).toHaveLength(eventsBeforeDispose);
+	});
+
+	it("loads custom app keybindings from the runtime agent directory", () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "lystar-keybindings-"));
+		writeFileSync(
+			join(agentDir, "keybindings.json"),
+			JSON.stringify({
+				"app.model.cycleForward": "ctrl+shift+p",
+				"app.thinking.cycle": "alt+m",
+				"app.thinking.toggle": "shift+tab",
+			}),
+		);
+		try {
+			const events: ExtensionUiBridgeEvent[] = [];
+			const bridge = new ExtensionUiBridge(
+				async () => ({ cancelled: true }),
+				(event) => events.push(event),
+				() => {},
+				undefined,
+				agentDir,
+			);
+			bridge.context().setEditorComponent((_tui: unknown, _theme: unknown, keybindings: unknown) => {
+				const manager = keybindings as { matches(data: string, action: string): boolean };
+				const actionHandlers = new Map<string, () => void>();
+				return {
+					actionHandlers,
+					handleInput(data: string) {
+						for (const action of [
+							"app.model.cycleForward",
+							"app.thinking.cycle",
+							"app.thinking.toggle",
+						] as const) {
+							if (manager.matches(data, action)) actionHandlers.get(action)?.();
+						}
+					},
+					render: () => [""],
+					invalidate: () => {},
+				};
+			});
+			const mount = events.find((event) => event.type === "component_mount" && event.placement === "editor");
+			if (!mount || mount.type !== "component_mount") throw new Error("editor did not mount");
+
+			for (const sequence of ["\u001b[112;6u", "\u001b[80;6u"]) {
+				expect(bridge.dispatchComponentInput(mount.componentId, mount.generation, sequence)).toEqual({
+					appAction: "app.model.cycleForward",
+				});
+			}
+			expect(bridge.dispatchComponentInput(mount.componentId, mount.generation, "\u001b[109;3u")).toEqual({
+				appAction: "app.thinking.cycle",
+			});
+			expect(bridge.dispatchComponentInput(mount.componentId, mount.generation, "\u001b[Z")).toEqual({
+				appAction: "app.thinking.toggle",
+			});
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true });
+		}
 	});
 
 	it("keeps raw terminal listener sequences intact while bounding them by UTF-8 bytes", async () => {

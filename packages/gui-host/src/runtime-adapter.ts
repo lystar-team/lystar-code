@@ -980,7 +980,11 @@ class CoreRuntimeSession implements RuntimeSession {
 	private lastTranscriptRevision = 0;
 	private disposed = false;
 
-	constructor(runtime: Awaited<ReturnType<typeof createAgentSessionRuntime>>, onUiRequest: UiRequestHandler) {
+	constructor(
+		runtime: Awaited<ReturnType<typeof createAgentSessionRuntime>>,
+		onUiRequest: UiRequestHandler,
+		agentDir: string,
+	) {
 		this.runtime = runtime;
 		this.extensionUi = new ExtensionUiBridge(
 			onUiRequest,
@@ -993,6 +997,7 @@ class CoreRuntimeSession implements RuntimeSession {
 					...(error.stack ? { stack: error.stack } : {}),
 				}),
 			(text, cursor) => this.getCompletions(text, cursor),
+			agentDir,
 		);
 	}
 
@@ -1237,6 +1242,22 @@ class CoreRuntimeSession implements RuntimeSession {
 	async setThinkingLevel(level: ThinkingLevel): Promise<void> {
 		this.runtime.session.setThinkingLevel(level);
 		this.emitStateChanged();
+	}
+
+	async cycleModel(direction: "forward" | "backward"): Promise<{ changed: boolean; isScoped: boolean }> {
+		const result = await this.runtime.session.cycleModel(direction);
+		this.emitStateChanged();
+		return {
+			changed: result !== undefined,
+			isScoped: result?.isScoped ?? this.runtime.session.scopedModels.length > 0,
+		};
+	}
+
+	cycleThinkingLevel(): { changed: boolean; supported: boolean } {
+		const previous = this.runtime.session.thinkingLevel;
+		const level = this.runtime.session.cycleThinkingLevel();
+		this.emitStateChanged();
+		return { changed: level !== undefined && level !== previous, supported: level !== undefined };
 	}
 
 	async fork(entryId: string, position?: "before" | "at"): Promise<{ sessionPath: string; selectedText?: string }> {
@@ -2265,7 +2286,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			agentDir: this.agentDir,
 			sessionManager,
 		});
-		const wrapped = new CoreRuntimeSession(runtime, onUiRequest);
+		const wrapped = new CoreRuntimeSession(runtime, onUiRequest, this.agentDir);
 		await wrapped.bind();
 		return wrapped;
 	}

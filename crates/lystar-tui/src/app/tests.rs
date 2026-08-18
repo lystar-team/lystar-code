@@ -29,6 +29,16 @@ fn assistant(id: &str, text: &str) -> TranscriptItem {
     }
 }
 
+fn thinking(id: &str, text: &str) -> TranscriptItem {
+    TranscriptItem {
+        entry_id: id.to_owned(),
+        timestamp: String::new(),
+        view: TranscriptViewItem::Thinking {
+            text: text.to_owned(),
+        },
+    }
+}
+
 fn operation(status: &str) -> OperationSnapshot {
     OperationSnapshot {
         operation_id: "operation-1".to_owned(),
@@ -241,6 +251,23 @@ fn renders_live_thinking_before_assistant_without_protocol_labels() {
     assert!(rendered.find("正在思考") < rendered.find("实时回答"));
     assert!(!rendered.contains("thinking_delta"));
     assert!(!rendered.contains("assistant_delta"));
+
+    app.transcript.replace_page(
+        vec![
+            thinking("thinking", "历史思考"),
+            assistant("assistant", "历史回答"),
+        ],
+        "g".to_owned(),
+        1,
+        None,
+    );
+    app.toggle_thinking_visibility();
+    let rendered = rendered_transcript(&app);
+    assert!(!rendered.contains("正在思考"));
+    assert!(!rendered.contains("下一步"));
+    assert!(!rendered.contains("历史思考"));
+    assert!(rendered.contains("实时回答"));
+    assert!(rendered.contains("历史回答"));
 }
 
 #[test]

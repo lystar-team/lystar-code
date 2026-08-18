@@ -461,6 +461,83 @@ fn model_failure_or_invalid_result_preserves_the_previous_model_overlay_and_draf
 }
 
 #[test]
+fn dynamic_model_cycle_uses_journaled_core_action_and_validates_the_result() {
+    let mut app = active_app();
+    let (mut pipe, path) = test_pipe_with_path();
+    let mut sequence = 0;
+    cycle_model(
+        &mut app,
+        &mut pipe,
+        "/tmp/session.jsonl",
+        "client",
+        &mut sequence,
+        &None,
+        "backward",
+    )
+    .unwrap();
+    drop(pipe);
+
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let frames = FrameDecoder::default().push(&bytes).unwrap();
+    let request = lystar_protocol::decode_client_message(&frames[0]).unwrap();
+    let request = serde_json::to_value(request.value()).unwrap();
+    assert_eq!(request["request"]["command"], "cycle_session_model");
+    assert_eq!(request["request"]["direction"], "backward");
+    assert_eq!(request["request"]["leaseId"], "lease");
+    assert!(app.write_pending);
+    assert!(app.defers_session_snapshot("/tmp/session.jsonl"));
+
+    let mut snapshot = snapshot_value("/tmp/session.jsonl");
+    snapshot["model"] = serde_json::json!({ "provider": "faux", "id": "next" });
+    apply_model_cycle_result(
+        &mut app,
+        serde_json::json!({ "snapshot": snapshot, "changed": true, "isScoped": true }),
+        "/tmp/session.jsonl",
+        Some("faux"),
+        Some("current"),
+    )
+    .unwrap();
+    assert_eq!(
+        app.snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.model.as_ref())
+            .map(|model| model.id.as_str()),
+        Some("next")
+    );
+
+    let mut invalid = snapshot_value("/tmp/session.jsonl");
+    invalid["model"] = serde_json::json!({ "provider": "faux", "id": "next" });
+    assert!(matches!(
+        apply_model_cycle_result(
+            &mut app,
+            serde_json::json!({ "snapshot": invalid, "changed": false, "isScoped": false }),
+            "/tmp/session.jsonl",
+            Some("faux"),
+            Some("current"),
+        ),
+        Err(TuiError::InvalidResponse(_))
+    ));
+
+    let mut running = active_app();
+    running.snapshot.as_mut().unwrap().phase = "turn".to_owned();
+    let (mut pipe, path) = test_pipe_with_path();
+    cycle_model(
+        &mut running,
+        &mut pipe,
+        "/tmp/session.jsonl",
+        "client",
+        &mut 0,
+        &None,
+        "forward",
+    )
+    .unwrap();
+    drop(pipe);
+    assert!(std::fs::read(&path).unwrap().is_empty());
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn command_palette_exposes_model_selection() {
     let mut app = AppState::default();
     let mut pipe = test_pipe();

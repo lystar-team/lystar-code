@@ -534,6 +534,12 @@ class FakeRuntimeSession implements RuntimeSession {
 		this.thinkingWrites.push(level);
 		this.emit({ type: "state_changed", payload: {} });
 	}
+	async cycleModel(): Promise<{ changed: boolean; isScoped: boolean }> {
+		return { changed: false, isScoped: false };
+	}
+	cycleThinkingLevel(): { changed: boolean; supported: boolean } {
+		return { changed: false, supported: false };
+	}
 	async fork(): Promise<{ sessionPath: string }> {
 		return { sessionPath: this.sessionPath };
 	}

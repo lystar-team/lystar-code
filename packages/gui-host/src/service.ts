@@ -75,6 +75,8 @@ const WORKSPACE_COMMANDS = {
 	list_model_providers: true,
 	set_session_model: true,
 	set_session_thinking: true,
+	cycle_session_model: true,
+	cycle_session_thinking: true,
 	login_model_provider: true,
 	logout_model_provider: true,
 	get_project_trust: true,
@@ -800,6 +802,38 @@ export class GuiHostService {
 						await runtime.setThinkingLevel(request.level);
 						await this.sendSessionSnapshots(runtime);
 						return this.runtimeSnapshot(runtime, "owned");
+					},
+				});
+			}
+			case "cycle_session_model": {
+				const sessionPath = canonicalSessionPath(request.sessionPath);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `session:${sessionPath}`,
+					payload: { sessionPath, direction: request.direction },
+					run: async () => {
+						const { runtime } = this.assertSessionControl(sessionPath, request.leaseId, connection);
+						const result = await runtime.cycleModel(request.direction);
+						await this.sendSessionSnapshots(runtime);
+						return { snapshot: this.runtimeSnapshot(runtime, "owned"), ...result };
+					},
+				});
+			}
+			case "cycle_session_thinking": {
+				const sessionPath = canonicalSessionPath(request.sessionPath);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `session:${sessionPath}`,
+					payload: { sessionPath },
+					run: async () => {
+						const { runtime } = this.assertSessionControl(sessionPath, request.leaseId, connection);
+						const result = runtime.cycleThinkingLevel();
+						await this.sendSessionSnapshots(runtime);
+						return { snapshot: this.runtimeSnapshot(runtime, "owned"), ...result };
 					},
 				});
 			}

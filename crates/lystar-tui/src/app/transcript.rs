@@ -84,6 +84,12 @@ impl TranscriptRound {
         !self.tool_call_ids.is_empty()
     }
 
+    fn is_thinking_round(&self) -> bool {
+        self.items
+            .iter()
+            .all(|item| matches!(item.view, TranscriptViewItem::Thinking { .. }))
+    }
+
     fn byte_len(&self) -> usize {
         self.items.iter().map(TranscriptItem::utf8_len).sum()
     }
@@ -496,6 +502,9 @@ impl<'a> TranscriptView<'a> {
             .enumerate()
             .skip(self.state.transcript.scroll)
         {
+            if self.state.hide_thinking && round.is_thinking_round() {
+                continue;
+            }
             if row >= content_height {
                 return None;
             }
@@ -614,6 +623,9 @@ impl Widget for TranscriptView<'_> {
             .enumerate()
             .skip(self.state.transcript.scroll)
         {
+            if self.state.hide_thinking && round.is_thinking_round() {
+                continue;
+            }
             if row >= persistent_height {
                 break;
             }

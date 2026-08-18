@@ -21,6 +21,8 @@ pub enum WorkspaceCommand {
     ListModelProviders,
     SetSessionModel,
     SetSessionThinking,
+    CycleSessionModel,
+    CycleSessionThinking,
     ReloadResources,
     LoginModelProvider,
     LogoutModelProvider,
@@ -72,6 +74,8 @@ impl WorkspaceCommand {
             "list_model_providers" => Self::ListModelProviders,
             "set_session_model" => Self::SetSessionModel,
             "set_session_thinking" => Self::SetSessionThinking,
+            "cycle_session_model" => Self::CycleSessionModel,
+            "cycle_session_thinking" => Self::CycleSessionThinking,
             "reload_resources" => Self::ReloadResources,
             "login_model_provider" => Self::LoginModelProvider,
             "logout_model_provider" => Self::LogoutModelProvider,
@@ -124,6 +128,8 @@ impl WorkspaceCommand {
             Self::ListModelProviders => "list_model_providers",
             Self::SetSessionModel => "set_session_model",
             Self::SetSessionThinking => "set_session_thinking",
+            Self::CycleSessionModel => "cycle_session_model",
+            Self::CycleSessionThinking => "cycle_session_thinking",
             Self::ReloadResources => "reload_resources",
             Self::LoginModelProvider => "login_model_provider",
             Self::LogoutModelProvider => "logout_model_provider",
@@ -187,6 +193,8 @@ pub enum WorkspaceResult {
     ListModelProviders(crate::generated::WorkspaceListModelProvidersResult),
     SetSessionModel(crate::generated::WorkspaceSetSessionModelResult),
     SetSessionThinking(crate::generated::WorkspaceSetSessionThinkingResult),
+    CycleSessionModel(crate::generated::WorkspaceCycleSessionModelResult),
+    CycleSessionThinking(crate::generated::WorkspaceCycleSessionThinkingResult),
     ReloadResources(crate::generated::WorkspaceReloadResourcesResult),
     LoginModelProvider(crate::generated::WorkspaceLoginModelProviderResult),
     LogoutModelProvider(crate::generated::WorkspaceLogoutModelProviderResult),
@@ -261,6 +269,12 @@ impl ServerMessage {
             }
             WorkspaceCommand::SetSessionThinking => {
                 Ok(WorkspaceResult::SetSessionThinking(decode(result)?))
+            }
+            WorkspaceCommand::CycleSessionModel => {
+                Ok(WorkspaceResult::CycleSessionModel(decode(result)?))
+            }
+            WorkspaceCommand::CycleSessionThinking => {
+                Ok(WorkspaceResult::CycleSessionThinking(decode(result)?))
             }
             WorkspaceCommand::ReloadResources => {
                 Ok(WorkspaceResult::ReloadResources(decode(result)?))

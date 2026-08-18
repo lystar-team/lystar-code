@@ -56,6 +56,38 @@ fn test_pipe_with_path() -> (ProtocolPipe, PathBuf) {
 }
 
 #[test]
+fn raw_key_preserves_dynamic_keybinding_modifiers() {
+    assert_eq!(
+        raw_key(
+            KeyCode::Char('p'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        )
+        .as_deref(),
+        Some("\x1b[112;6u")
+    );
+    assert_eq!(
+        raw_key(KeyCode::Char('m'), KeyModifiers::ALT).as_deref(),
+        Some("\x1b[109;3u")
+    );
+    assert_eq!(
+        raw_key(KeyCode::Char('p'), KeyModifiers::SHIFT).as_deref(),
+        Some("\x1b[112;2u")
+    );
+    assert_eq!(
+        raw_key(KeyCode::BackTab, KeyModifiers::SHIFT).as_deref(),
+        Some("\x1b[Z")
+    );
+    assert_eq!(
+        raw_key(KeyCode::Left, KeyModifiers::CONTROL).as_deref(),
+        Some("\x1b[1;5D")
+    );
+    assert_eq!(
+        raw_key(KeyCode::Char('p'), KeyModifiers::CONTROL).as_deref(),
+        Some("\x10")
+    );
+}
+
+#[test]
 fn app_interrupt_sends_one_abort_for_an_active_leased_operation() {
     let mut app = AppState::default();
     app.begin_active_session("/tmp/current.jsonl".to_owned(), "/tmp".to_owned());

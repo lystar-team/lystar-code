@@ -99,6 +99,7 @@ pub struct AppState {
     pub retry: Option<LiveRetry>,
     pub assistant_stream: String,
     pub thinking_stream: String,
+    pub hide_thinking: bool,
     pub disconnected: Option<String>,
     pub overlays: Vec<OverlayState>,
     pub input_focus: InputFocus,
@@ -635,6 +636,15 @@ impl AppState {
         if !self.live_tools.toggle_output_expansion() {
             self.transcript.toggle_current_tool();
         }
+    }
+
+    pub fn toggle_thinking_visibility(&mut self) {
+        self.hide_thinking = !self.hide_thinking;
+        self.set_toast(if self.hide_thinking {
+            "思考过程：已折叠"
+        } else {
+            "思考过程：已展开"
+        });
     }
 
     pub fn clear_live_after_commit(&mut self, items: &[TranscriptItem]) {

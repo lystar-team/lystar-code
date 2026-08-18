@@ -358,6 +358,95 @@ fn thinking_overlay_reports_missing_auth_and_non_reasoning_models() {
 }
 
 #[test]
+fn dynamic_thinking_cycle_uses_journaled_core_action_and_supports_single_level_models() {
+    let mut app = active_app("off");
+    let (mut pipe, path) = test_pipe_with_path();
+    let mut sequence = 0;
+    cycle_thinking(
+        &mut app,
+        &mut pipe,
+        "/tmp/session.jsonl",
+        "client",
+        &mut sequence,
+        &None,
+    )
+    .unwrap();
+    drop(pipe);
+
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let frames = FrameDecoder::default().push(&bytes).unwrap();
+    let request = lystar_protocol::decode_client_message(&frames[0]).unwrap();
+    let request = serde_json::to_value(request.value()).unwrap();
+    assert_eq!(request["request"]["command"], "cycle_session_thinking");
+    assert_eq!(request["request"]["leaseId"], "lease");
+    assert!(app.write_pending);
+    assert!(app.defers_session_snapshot("/tmp/session.jsonl"));
+
+    let mut snapshot = snapshot_value("/tmp/session.jsonl");
+    snapshot["model"] = serde_json::json!({ "provider": "faux", "id": "reasoning" });
+    snapshot["thinkingLevel"] = serde_json::json!("high");
+    apply_thinking_cycle_result(
+        &mut app,
+        serde_json::json!({ "snapshot": snapshot, "changed": true, "supported": true }),
+        "/tmp/session.jsonl",
+        Some("faux"),
+        Some("reasoning"),
+        "off",
+    )
+    .unwrap();
+    assert_eq!(
+        app.snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.thinking_level.as_str()),
+        Some("high")
+    );
+
+    let mut unchanged = snapshot_value("/tmp/session.jsonl");
+    unchanged["model"] = serde_json::json!({ "provider": "faux", "id": "reasoning" });
+    apply_thinking_cycle_result(
+        &mut app,
+        serde_json::json!({ "snapshot": unchanged, "changed": false, "supported": true }),
+        "/tmp/session.jsonl",
+        Some("faux"),
+        Some("reasoning"),
+        "off",
+    )
+    .unwrap();
+
+    let mut invalid = snapshot_value("/tmp/session.jsonl");
+    invalid["model"] = serde_json::json!({ "provider": "faux", "id": "reasoning" });
+    invalid["thinkingLevel"] = serde_json::json!("high");
+    assert!(matches!(
+        apply_thinking_cycle_result(
+            &mut app,
+            serde_json::json!({ "snapshot": invalid, "changed": true, "supported": false }),
+            "/tmp/session.jsonl",
+            Some("faux"),
+            Some("reasoning"),
+            "off",
+        ),
+        Err(TuiError::InvalidResponse(_))
+    ));
+
+    let mut pending = active_app("off");
+    pending.write_pending = true;
+    let (mut pipe, path) = test_pipe_with_path();
+    cycle_thinking(
+        &mut pending,
+        &mut pipe,
+        "/tmp/session.jsonl",
+        "client",
+        &mut 0,
+        &None,
+    )
+    .unwrap();
+    drop(pipe);
+    assert!(std::fs::read(&path).unwrap().is_empty());
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn thinking_failure_or_invalid_result_preserves_state_and_all_entry_points_share_the_selector() {
     let mut app = active_app("off");
     let (_, mut sequence, mut flow) = submit_thinking(&mut app);
@@ -551,8 +640,6 @@ fn thinking_failure_or_invalid_result_preserves_state_and_all_entry_points_share
         &mut quit,
     )
     .unwrap();
-    assert!(matches!(
-        shortcut_app.overlay(),
-        Some(OverlayState::Detail(detail)) if detail.lines == ["正在读取模型能力"]
-    ));
+    assert!(shortcut_app.hide_thinking);
+    assert!(shortcut_app.overlay().is_none());
 }
