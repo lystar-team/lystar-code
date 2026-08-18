@@ -9,6 +9,18 @@ pub(super) fn handle_session_actions(
     sequence: &mut u64,
     session_flow: &mut Option<SessionFlow>,
 ) -> Result<bool, TuiError> {
+    if let Some(entry_id) = action.strip_prefix("fork-message:") {
+        fork_from_message(
+            app,
+            pipe,
+            session_path,
+            client_instance_id,
+            entry_id,
+            sequence,
+            session_flow,
+        )?;
+        return Ok(true);
+    }
     if matches!(
         action,
         "session-import-confirm" | "session-import-cwd-confirm"
@@ -171,6 +183,7 @@ pub(super) fn handle_session_actions(
         *session_flow = Some(SessionFlow::Fork {
             id: id.clone(),
             toast: "已创建并切换分叉会话".to_owned(),
+            restore_selected_text: false,
         });
         pipe.request(&encode_session_write_request(
             &id,
@@ -199,6 +212,7 @@ pub(super) fn handle_session_actions(
         *session_flow = Some(SessionFlow::Fork {
             id: id.clone(),
             toast: "已创建并切换分叉会话".to_owned(),
+            restore_selected_text: false,
         });
         pipe.request(&encode_session_write_request(
             &id,

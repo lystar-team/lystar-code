@@ -508,6 +508,10 @@ describe("CodingAgentRuntimeAdapter", () => {
 
 		const firstUserEntryId = firstCommitted[0].items.find((item) => item.payload.message?.role === "user")?.entryId;
 		if (!firstUserEntryId) throw new Error("Missing user entry for fork");
+		expect(runtime.listForkMessages()).toEqual([
+			{ entryId: firstUserEntryId, text: "hello" },
+			expect.objectContaining({ text: "again" }),
+		]);
 		const originalSessionPath = runtime.sessionPath;
 		const forked = await runtime.fork(firstUserEntryId);
 		const forkedSessionPath = runtime.sessionPath;

@@ -362,6 +362,10 @@ pub(super) fn submit_editor_with_origin(
         app.set_overlay_error("资源重新加载正在进行");
         return Ok(());
     }
+    if matches!(session_flow.as_ref(), Some(SessionFlow::Fork { .. })) {
+        app.set_overlay_error("会话分叉正在进行");
+        return Ok(());
+    }
     let Some(text) = app.editor.submit() else {
         return Ok(());
     };

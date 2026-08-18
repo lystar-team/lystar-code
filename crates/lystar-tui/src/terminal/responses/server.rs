@@ -62,6 +62,15 @@ pub(in super::super) fn apply_server_message(
         app.transcript.status.clear();
         return Err(TuiError::Protocol(error));
     }
+    if let Some(SessionFlow::Fork { id, .. }) = session_flow.as_ref()
+        && raw.get("type").and_then(serde_json::Value::as_str) == Some("response")
+        && raw.get("id").and_then(serde_json::Value::as_str) == Some(id.as_str())
+        && raw.get("ok").and_then(serde_json::Value::as_bool) == Some(true)
+        && let Err(error) = message.validated_workspace_result_value(WorkspaceCommand::ForkSession)
+    {
+        *session_flow = None;
+        return Err(TuiError::Protocol(error));
+    }
     if let Some(outcome) = apply_interaction_response(
         app,
         &raw,

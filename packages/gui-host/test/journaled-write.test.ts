@@ -65,6 +65,12 @@ class FakeRuntime implements RuntimeSession {
 	getSessionTree() {
 		return [];
 	}
+	listForkMessages() {
+		return [
+			{ entryId: "entry-1", text: "first prompt" },
+			{ entryId: "entry-2", text: "latest prompt" },
+		];
+	}
 	async setEntryLabel() {
 		this.counts.set_entry_label = (this.counts.set_entry_label ?? 0) + 1;
 	}
@@ -164,6 +170,8 @@ class FakeRuntime implements RuntimeSession {
 	}
 	async fork() {
 		this.counts.fork_session = (this.counts.fork_session ?? 0) + 1;
+		if (this.counts.block_fork) await new Promise((resolve) => setTimeout(resolve, 20));
+		if (this.counts.move_fork) this.sessionPath = `${this.sessionPath}.forked`;
 		return { sessionPath: this.sessionPath };
 	}
 	async abort() {
@@ -441,6 +449,44 @@ const SESSION_COMMANDS = new Set([
 ]);
 
 describe("GuiHostService journaled writes", () => {
+	it("lists Core fork messages only for the active Session lease", async () => {
+		const setupValue = setup();
+		const active = await lease(setupValue.service, setupValue.sessionPath);
+		await active.connection.handle({
+			type: "request",
+			id: "fork-messages",
+			request: {
+				command: "list_fork_messages",
+				sessionPath: setupValue.sessionPath,
+				leaseId: active.leaseId,
+			},
+		});
+		await active.connection.handle({
+			type: "request",
+			id: "fork-messages-stale",
+			request: {
+				command: "list_fork_messages",
+				sessionPath: setupValue.sessionPath,
+				leaseId: "stale-lease",
+			},
+		});
+
+		expect(
+			active.connection.messages.find((message) => message.type === "response" && message.id === "fork-messages"),
+		).toMatchObject({
+			ok: true,
+			result: [
+				{ entryId: "entry-1", text: "first prompt" },
+				{ entryId: "entry-2", text: "latest prompt" },
+			],
+		});
+		expect(
+			active.connection.messages.find(
+				(message) => message.type === "response" && message.id === "fork-messages-stale",
+			),
+		).toMatchObject({ ok: false, error: { code: "invalid_session_lease" } });
+	});
+
 	it("runs manual compaction once through the operation journal", async () => {
 		const setupValue = setup();
 		const active = await lease(setupValue.service, setupValue.sessionPath);
@@ -569,6 +615,68 @@ describe("GuiHostService journaled writes", () => {
 				(message) => message.type === "response" && message.id === "prompt-during-reload",
 			),
 		).toMatchObject({ ok: false, error: { code: "session_operation_active" } });
+	});
+
+	it("locks the session for the full fork window", async () => {
+		const setupValue = setup();
+		setupValue.counts.block_fork = 1;
+		const active = await lease(setupValue.service, setupValue.sessionPath);
+		const fork = active.connection.handle({
+			type: "request",
+			id: "fork",
+			request: {
+				command: "fork_session",
+				sessionPath: setupValue.sessionPath,
+				leaseId: active.leaseId,
+				entryId: "entry",
+				position: "before",
+				clientInstanceId: "client",
+				clientRequestId: "fork-blocking",
+			},
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await active.connection.handle({
+			type: "request",
+			id: "prompt-during-fork",
+			request: {
+				command: "prompt",
+				sessionPath: setupValue.sessionPath,
+				leaseId: active.leaseId,
+				clientInstanceId: "client",
+				clientRequestId: "prompt-during-fork",
+				text: "should be rejected",
+			},
+		});
+		await fork;
+
+		expect(setupValue.counts.fork_session).toBe(1);
+		expect(
+			active.connection.messages.find(
+				(message) => message.type === "response" && message.id === "prompt-during-fork",
+			),
+		).toMatchObject({ ok: false, error: { code: "session_operation_active" } });
+	});
+
+	it("replays a completed fork after the Session path moves", async () => {
+		const setupValue = setup();
+		setupValue.counts.move_fork = 1;
+		const active = await lease(setupValue.service, setupValue.sessionPath);
+		const request = {
+			command: "fork_session" as const,
+			sessionPath: setupValue.sessionPath,
+			leaseId: active.leaseId,
+			entryId: "entry",
+			position: "before" as const,
+			clientInstanceId: "client",
+			clientRequestId: "fork-path-move",
+		};
+		await active.connection.handle({ type: "request", id: "fork", request });
+		await active.connection.handle({ type: "request", id: "fork-retry", request });
+
+		expect(setupValue.counts.fork_session).toBe(1);
+		expect(
+			active.connection.messages.find((message) => message.type === "response" && message.id === "fork-retry"),
+		).toMatchObject({ ok: true, result: { snapshot: { path: `${setupValue.sessionPath}.forked` } } });
 	});
 
 	it("rejects resource reload while the session has an active operation", async () => {

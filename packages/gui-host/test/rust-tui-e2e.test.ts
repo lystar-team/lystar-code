@@ -439,6 +439,9 @@ class FakeRuntimeSession implements RuntimeSession {
 	getSessionTree() {
 		return [];
 	}
+	listForkMessages() {
+		return [];
+	}
 	async setEntryLabel(_entryId: string, _label?: string): Promise<void> {}
 	async navigateSessionTree(_entryId: string, _summarize: boolean) {
 		return { cancelled: false };

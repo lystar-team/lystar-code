@@ -759,6 +759,23 @@ export const ListModelProvidersResultSchema = Type.Array(ModelProviderSummarySch
 export const SetSessionModelResultSchema = SessionStateSnapshotSchema;
 export const SetSessionThinkingResultSchema = SessionStateSnapshotSchema;
 export const ReloadResourcesResultSchema = SessionStateSnapshotSchema;
+export const ForkMessageSchema = StrictObject({
+	entryId: Id,
+	text: WorkspaceText,
+});
+export const ListForkMessagesResultSchema = Type.Array(ForkMessageSchema, { maxItems: 10_000 });
+export const ForkSessionResultSchema = StrictObject({
+	lease: StrictObject({
+		leaseId: Id,
+		leaseGeneration: Type.Integer({ minimum: 1 }),
+		sessionPath: Type.String({ minLength: 1 }),
+		clientInstanceId: Id,
+		createdAt: Type.Integer({ minimum: 0 }),
+		updatedAt: Type.Integer({ minimum: 0 }),
+	}),
+	snapshot: SessionStateSnapshotSchema,
+	selectedText: Type.Optional(WorkspaceText),
+});
 export const LoginModelProviderResultSchema = ListModelsResultSchema;
 export const LogoutModelProviderResultSchema = ListModelsResultSchema;
 export const GetProjectTrustResultSchema = ProjectTrustSchema;
@@ -985,6 +1002,8 @@ export const WorkspaceCommandResultSchemas = {
 	set_session_model: SetSessionModelResultSchema,
 	set_session_thinking: SetSessionThinkingResultSchema,
 	reload_resources: ReloadResourcesResultSchema,
+	list_fork_messages: ListForkMessagesResultSchema,
+	fork_session: ForkSessionResultSchema,
 	login_model_provider: LoginModelProviderResultSchema,
 	logout_model_provider: LogoutModelProviderResultSchema,
 	get_project_trust: GetProjectTrustResultSchema,
@@ -1366,6 +1385,11 @@ export const CommandSchema = Type.Union([
 		clientRequestId: Id,
 	}),
 	StrictObject({ command: Type.Literal("get_session_tree"), sessionPath: Type.String({ minLength: 1 }) }),
+	StrictObject({
+		command: Type.Literal("list_fork_messages"),
+		sessionPath: Type.String({ minLength: 1 }),
+		leaseId: Id,
+	}),
 	StrictObject({
 		command: Type.Literal("set_entry_label"),
 		sessionPath: Type.String({ minLength: 1 }),

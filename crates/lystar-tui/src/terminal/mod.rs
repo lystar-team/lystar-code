@@ -67,6 +67,7 @@ const MAX_EXTENSION_INPUT_BYTES: usize = 64 * 1024;
 mod clone;
 mod copy;
 mod extension;
+mod fork;
 mod input;
 mod lifecycle;
 mod name;
@@ -88,6 +89,7 @@ pub use transport::handshake_inherited_pipes;
 use clone::*;
 use copy::*;
 use extension::*;
+use fork::*;
 use input::*;
 use lifecycle::TerminalGuard;
 #[cfg(test)]

@@ -138,6 +138,12 @@
       "message": { "type": "request", "id": "workspace-get-session-tree", "request": { "command": "get_session_tree", "sessionPath": "/tmp/session.jsonl" } }
     },
     {
+      "name": "client-workspace-list-fork-messages",
+      "direction": "client",
+      "workspaceCommand": "list_fork_messages",
+      "message": { "type": "request", "id": "workspace-list-fork-messages", "request": { "command": "list_fork_messages", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1" } }
+    },
+    {
       "name": "client-workspace-set-entry-label",
       "direction": "client",
       "workspaceCommand": "set_entry_label",
@@ -482,6 +488,18 @@
       "direction": "server",
       "workspaceCommand": "get_session_tree",
       "message": { "type": "response", "id": "workspace-get-session-tree", "ok": true, "result": [{ "id": "entry-1", "parentId": null, "kind": "message", "label": "根", "timestamp": "2026-08-15T00:00:00.000Z", "preview": "hello", "isLeaf": true, "depth": 0 }] }
+    },
+    {
+      "name": "server-workspace-list-fork-messages",
+      "direction": "server",
+      "workspaceCommand": "list_fork_messages",
+      "message": { "type": "response", "id": "workspace-list-fork-messages", "ok": true, "result": [{ "entryId": "entry-1", "text": "first prompt" }, { "entryId": "entry-2", "text": "latest prompt" }] }
+    },
+    {
+      "name": "server-workspace-fork-session",
+      "direction": "server",
+      "workspaceCommand": "fork_session",
+      "message": { "type": "response", "id": "workspace-fork-session", "ok": true, "result": { "lease": { "leaseId": "fork-lease", "leaseGeneration": 2, "sessionPath": "/tmp/fork.jsonl", "clientInstanceId": "client-1", "createdAt": 1, "updatedAt": 2 }, "snapshot": { "id": "fork", "path": "/tmp/fork.jsonl", "cwd": "/tmp", "createdAt": 1, "updatedAt": 2, "phase": "idle", "activity": "idle", "thinkingLevel": "off", "attached": true, "writeAccess": "owned", "revision": 2, "leafId": null, "queuedSteerCount": 0, "queuedFollowUpCount": 0, "transcriptGeneration": "generation-1", "transcriptRevision": 0 }, "selectedText": "latest prompt" } }
     },
     {
       "name": "server-workspace-set-entry-label",

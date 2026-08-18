@@ -349,6 +349,7 @@ fn intercepts_only_connected_slash_commands() {
         ("/doctor", "doctor"),
         ("/new", "new"),
         ("/clone", "clone"),
+        ("/fork", "fork"),
         ("/reload", "reload"),
         ("/compact", "compact"),
         ("/export", "export"),
@@ -767,6 +768,9 @@ mod hotkeys_tests;
 
 #[path = "tests/clone_tests.rs"]
 mod clone_tests;
+
+#[path = "tests/fork_tests.rs"]
+mod fork_tests;
 
 #[path = "tests/reload_tests.rs"]
 mod reload_tests;

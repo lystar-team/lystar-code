@@ -64,6 +64,7 @@ export interface RuntimeSession {
 		value: boolean | number | string,
 	): Promise<{ setting: SettingSummary; requiresRestart: boolean }>;
 	getSessionTree(): SessionTreeNode[];
+	listForkMessages(): Array<{ entryId: string; text: string }>;
 	setEntryLabel(entryId: string, label?: string): Promise<void>;
 	navigateSessionTree(
 		entryId: string,

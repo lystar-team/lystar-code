@@ -31,6 +31,8 @@ pub enum WorkspaceCommand {
     RemovePackage,
     UpdatePackages,
     GetSessionTree,
+    ListForkMessages,
+    ForkSession,
     SetEntryLabel,
     NavigateSessionTree,
     ListSubagents,
@@ -79,6 +81,8 @@ impl WorkspaceCommand {
             "remove_package" => Self::RemovePackage,
             "update_packages" => Self::UpdatePackages,
             "get_session_tree" => Self::GetSessionTree,
+            "list_fork_messages" => Self::ListForkMessages,
+            "fork_session" => Self::ForkSession,
             "set_entry_label" => Self::SetEntryLabel,
             "navigate_session_tree" => Self::NavigateSessionTree,
             "list_subagents" => Self::ListSubagents,
@@ -128,6 +132,8 @@ impl WorkspaceCommand {
             Self::RemovePackage => "remove_package",
             Self::UpdatePackages => "update_packages",
             Self::GetSessionTree => "get_session_tree",
+            Self::ListForkMessages => "list_fork_messages",
+            Self::ForkSession => "fork_session",
             Self::SetEntryLabel => "set_entry_label",
             Self::NavigateSessionTree => "navigate_session_tree",
             Self::ListSubagents => "list_subagents",
@@ -188,6 +194,8 @@ pub enum WorkspaceResult {
     RemovePackage(crate::generated::WorkspaceRemovePackageResult),
     UpdatePackages(crate::generated::WorkspaceUpdatePackagesResult),
     GetSessionTree(crate::generated::WorkspaceGetSessionTreeResult),
+    ListForkMessages(crate::generated::WorkspaceListForkMessagesResult),
+    ForkSession(crate::generated::WorkspaceForkSessionResult),
     SetEntryLabel(crate::generated::WorkspaceSetEntryLabelResult),
     NavigateSessionTree(crate::generated::WorkspaceNavigateSessionTreeResult),
     ListSubagents(crate::generated::WorkspaceListSubagentsResult),
@@ -276,6 +284,10 @@ impl ServerMessage {
             WorkspaceCommand::GetSessionTree => {
                 Ok(WorkspaceResult::GetSessionTree(decode(result)?))
             }
+            WorkspaceCommand::ListForkMessages => {
+                Ok(WorkspaceResult::ListForkMessages(decode(result)?))
+            }
+            WorkspaceCommand::ForkSession => Ok(WorkspaceResult::ForkSession(decode(result)?)),
             WorkspaceCommand::SetEntryLabel => Ok(WorkspaceResult::SetEntryLabel(decode(result)?)),
             WorkspaceCommand::NavigateSessionTree => {
                 Ok(WorkspaceResult::NavigateSessionTree(decode(result)?))
@@ -419,6 +431,14 @@ mod tests {
         assert_eq!(
             WorkspaceCommand::from_wire("reload_resources"),
             Some(WorkspaceCommand::ReloadResources)
+        );
+        assert_eq!(
+            WorkspaceCommand::from_wire("list_fork_messages"),
+            Some(WorkspaceCommand::ListForkMessages)
+        );
+        assert_eq!(
+            WorkspaceCommand::from_wire("fork_session"),
+            Some(WorkspaceCommand::ForkSession)
         );
         assert!(WorkspaceCommand::from_wire("list_sessions").is_none());
     }

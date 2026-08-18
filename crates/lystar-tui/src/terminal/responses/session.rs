@@ -154,13 +154,31 @@ pub(in super::super) fn apply_session_flow(
             app.set_toast("已重新加载 Extension、Skill、Prompt、Theme 和上下文文件");
             Ok(Some(false))
         }
-        SessionFlow::Fork { toast, .. } => {
+        SessionFlow::Fork {
+            toast,
+            restore_selected_text,
+            ..
+        } => {
             if !success {
                 app.set_overlay_error(error);
                 return Ok(Some(false));
             }
+            let selected_text = restore_selected_text
+                .then(|| {
+                    result
+                        .get("selectedText")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                        .ok_or_else(|| {
+                            TuiError::InvalidResponse("分叉响应缺少 selectedText".to_owned())
+                        })
+                })
+                .transpose()?;
             let (lease_id, snapshot) = parse_lease_snapshot(&result)?;
             app.commit_session_switch(snapshot.path.clone(), lease_id, snapshot);
+            if let Some(selected_text) = selected_text {
+                app.editor.insert(&selected_text);
+            }
             app.set_toast(toast);
             Ok(Some(true))
         }

@@ -84,6 +84,8 @@ const WORKSPACE_COMMANDS = {
 	remove_package: true,
 	update_packages: true,
 	get_session_tree: true,
+	list_fork_messages: true,
+	fork_session: true,
 	set_entry_label: true,
 	navigate_session_tree: true,
 	list_subagents: true,
@@ -825,13 +827,14 @@ export class GuiHostService {
 					clientInstanceId: request.clientInstanceId,
 					clientRequestId: request.clientRequestId,
 					scope: `session:${sessionPath}`,
+					lockSessionPath: sessionPath,
 					payload: {
 						sessionPath,
 						entryId: request.entryId,
 						...(request.position ? { position: request.position } : {}),
 					},
 					run: async () => {
-						const { runtime } = this.assertSessionControl(sessionPath, request.leaseId, connection);
+						const { runtime } = this.assertExtensionSession(connection, request);
 						this.detachRuntimeProjection(sessionPath);
 						let result: Awaited<ReturnType<RuntimeSession["fork"]>> | undefined;
 						let failure: unknown;
@@ -843,6 +846,8 @@ export class GuiHostService {
 						const nextSessionPath = canonicalSessionPath(runtime.sessionPath);
 						if (nextSessionPath !== sessionPath) {
 							this.leases.move(sessionPath, nextSessionPath, request.leaseId);
+							const operationId = this.activeOperationBySession.get(sessionPath);
+							if (operationId) this.activeOperationBySession.set(nextSessionPath, operationId);
 							this.snapshotRevisions.delete(sessionPath);
 							await this.broadcast({ type: "session_removed", sessionPath });
 						}
@@ -1203,6 +1208,10 @@ export class GuiHostService {
 				const sessionPath = canonicalSessionPath(request.sessionPath);
 				return this.adapter.getSessionTree(sessionPath);
 			}
+			case "list_fork_messages": {
+				const { runtime } = this.assertSessionControl(request.sessionPath, request.leaseId, connection);
+				return runtime.listForkMessages();
+			}
 			case "set_entry_label": {
 				const { runtime, sessionPath } = this.assertSessionControl(
 					request.sessionPath,
@@ -1475,11 +1484,10 @@ export class GuiHostService {
 				});
 				throw error;
 			} finally {
-				if (
-					input.lockSessionPath &&
-					this.activeOperationBySession.get(input.lockSessionPath) === accepted.operation.operationId
-				) {
-					this.activeOperationBySession.delete(input.lockSessionPath);
+				if (input.lockSessionPath) {
+					for (const [sessionPath, operationId] of this.activeOperationBySession) {
+						if (operationId === accepted.operation.operationId) this.activeOperationBySession.delete(sessionPath);
+					}
 				}
 			}
 		});
@@ -1584,8 +1592,6 @@ export class GuiHostService {
 		this.journal.assertWritable();
 		const sessionPath = canonicalSessionPath(request.sessionPath);
 		this.leases.assert(sessionPath, request.leaseId, request.clientInstanceId);
-		const runtime = this.runtimes.get(sessionPath);
-		if (!runtime) throw Object.assign(new Error("尚未获取会话运行时"), { code: "session_not_acquired" });
 		const payloadHash = hashOperationPayload({
 			command: request.command,
 			sessionPath,
@@ -1593,7 +1599,11 @@ export class GuiHostService {
 		});
 		const existing = this.journal.find(request.clientInstanceId, request.clientRequestId, payloadHash);
 		if (existing) {
-			if (existing.status === "accepted") afterResponse(() => this.scheduleOperation(runtime, existing, run));
+			if (existing.status === "accepted") {
+				const runtime = this.runtimes.get(sessionPath);
+				if (!runtime) throw Object.assign(new Error("尚未获取会话运行时"), { code: "session_not_acquired" });
+				afterResponse(() => this.scheduleOperation(runtime, existing, run));
+			}
 			return { operation: existing, duplicate: true };
 		}
 		const activeOperationId = this.activeOperationBySession.get(sessionPath);
@@ -1603,6 +1613,8 @@ export class GuiHostService {
 				retryable: true,
 			});
 		}
+		const runtime = this.runtimes.get(sessionPath);
+		if (!runtime) throw Object.assign(new Error("尚未获取会话运行时"), { code: "session_not_acquired" });
 		const accepted = this.journal.accept({
 			clientInstanceId: request.clientInstanceId,
 			clientRequestId: request.clientRequestId,

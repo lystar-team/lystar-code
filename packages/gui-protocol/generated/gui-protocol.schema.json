@@ -2124,6 +2124,30 @@
                   "required": [
                     "command",
                     "sessionPath",
+                    "leaseId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "list_fork_messages"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
                     "leaseId",
                     "entryId",
                     "clientInstanceId",
@@ -7331,6 +7355,302 @@
         "transcriptRevision": {
           "type": "integer",
           "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceListForkMessagesResult": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "entryId",
+          "text"
+        ],
+        "properties": {
+          "entryId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 1048576
+          }
+        },
+        "additionalProperties": false
+      },
+      "maxItems": 10000
+    },
+    "WorkspaceForkSessionResult": {
+      "type": "object",
+      "required": [
+        "lease",
+        "snapshot"
+      ],
+      "properties": {
+        "lease": {
+          "type": "object",
+          "required": [
+            "leaseId",
+            "leaseGeneration",
+            "sessionPath",
+            "clientInstanceId",
+            "createdAt",
+            "updatedAt"
+          ],
+          "properties": {
+            "leaseId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "leaseGeneration": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "sessionPath": {
+              "type": "string",
+              "minLength": 1
+            },
+            "clientInstanceId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "createdAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "updatedAt": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "snapshot": {
+          "type": "object",
+          "required": [
+            "id",
+            "path",
+            "cwd",
+            "createdAt",
+            "updatedAt",
+            "phase",
+            "activity",
+            "thinkingLevel",
+            "attached",
+            "writeAccess",
+            "revision",
+            "leafId",
+            "queuedSteerCount",
+            "queuedFollowUpCount",
+            "transcriptGeneration",
+            "transcriptRevision"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "name": {
+              "type": "string"
+            },
+            "cwd": {
+              "type": "string"
+            },
+            "createdAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "updatedAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "phase": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "idle"
+                },
+                {
+                  "type": "string",
+                  "const": "turn"
+                },
+                {
+                  "type": "string",
+                  "const": "compaction"
+                },
+                {
+                  "type": "string",
+                  "const": "branch_summary"
+                },
+                {
+                  "type": "string",
+                  "const": "retry"
+                },
+                {
+                  "type": "string",
+                  "const": "waiting_for_input"
+                },
+                {
+                  "type": "string",
+                  "const": "interrupted"
+                }
+              ]
+            },
+            "activity": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "idle"
+                },
+                {
+                  "type": "string",
+                  "const": "running"
+                },
+                {
+                  "type": "string",
+                  "const": "waiting_for_input"
+                },
+                {
+                  "type": "string",
+                  "const": "completed"
+                },
+                {
+                  "type": "string",
+                  "const": "failed"
+                },
+                {
+                  "type": "string",
+                  "const": "aborted"
+                },
+                {
+                  "type": "string",
+                  "const": "interrupted"
+                }
+              ]
+            },
+            "model": {
+              "type": "object",
+              "required": [
+                "provider",
+                "id"
+              ],
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                }
+              },
+              "additionalProperties": false
+            },
+            "thinkingLevel": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "off"
+                },
+                {
+                  "type": "string",
+                  "const": "minimal"
+                },
+                {
+                  "type": "string",
+                  "const": "low"
+                },
+                {
+                  "type": "string",
+                  "const": "medium"
+                },
+                {
+                  "type": "string",
+                  "const": "high"
+                },
+                {
+                  "type": "string",
+                  "const": "xhigh"
+                },
+                {
+                  "type": "string",
+                  "const": "max"
+                }
+              ]
+            },
+            "attached": {
+              "type": "boolean"
+            },
+            "writeAccess": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "available"
+                },
+                {
+                  "type": "string",
+                  "const": "owned"
+                },
+                {
+                  "type": "string",
+                  "const": "controlled_elsewhere"
+                },
+                {
+                  "type": "string",
+                  "const": "locked_externally"
+                }
+              ]
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "leafId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "queuedSteerCount": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "queuedFollowUpCount": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "transcriptGeneration": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "transcriptRevision": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "selectedText": {
+          "type": "string",
+          "maxLength": 1048576
         }
       },
       "additionalProperties": false

@@ -572,6 +572,65 @@ describe("GUI Protocol v1", () => {
 		).not.toThrow();
 	});
 
+	it("strictly decodes fork candidates and fork results", () => {
+		const list = {
+			type: "request" as const,
+			id: "fork-list",
+			request: {
+				command: "list_fork_messages" as const,
+				sessionPath: "/tmp/current.jsonl",
+				leaseId: "lease",
+			},
+		};
+		expect(new ClientMessageDecoder().push(encodeClientMessage(list))).toEqual([list]);
+		expect(() =>
+			encodeClientMessage({ ...list, request: { ...list.request, leaseId: undefined } } as never),
+		).toThrow();
+		expect(() =>
+			assertWorkspaceCommandResult("list_fork_messages", [
+				{ entryId: "entry-1", text: "first" },
+				{ entryId: "entry-2", text: "latest" },
+			]),
+		).not.toThrow();
+		expect(() =>
+			assertWorkspaceCommandResult("fork_session", {
+				lease: {
+					leaseId: "fork-lease",
+					leaseGeneration: 2,
+					sessionPath: "/tmp/fork.jsonl",
+					clientInstanceId: "client",
+					createdAt: 1,
+					updatedAt: 2,
+				},
+				snapshot: {
+					id: "fork",
+					path: "/tmp/fork.jsonl",
+					cwd: "/tmp",
+					createdAt: 1,
+					updatedAt: 2,
+					phase: "idle",
+					activity: "idle",
+					thinkingLevel: "off",
+					attached: true,
+					writeAccess: "owned",
+					revision: 2,
+					leafId: null,
+					queuedSteerCount: 0,
+					queuedFollowUpCount: 0,
+					transcriptGeneration: "generation",
+					transcriptRevision: 0,
+				},
+				selectedText: "full selected prompt",
+			}),
+		).not.toThrow();
+		expect(() =>
+			assertWorkspaceCommandResult("fork_session", {
+				lease: { leaseId: "fork-lease" },
+				snapshot: {},
+			}),
+		).toThrow();
+	});
+
 	it("strictly decodes interactive queue commands and typed progress", () => {
 		const decoder = new ClientMessageDecoder();
 		for (const request of [

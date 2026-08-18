@@ -1082,6 +1082,10 @@ class CoreRuntimeSession implements RuntimeSession {
 		);
 	}
 
+	listForkMessages(): Array<{ entryId: string; text: string }> {
+		return this.runtime.session.getUserMessagesForForking();
+	}
+
 	async setEntryLabel(entryId: string, label?: string): Promise<void> {
 		this.runtime.session.sessionManager.appendLabelChange(entryId, label?.trim() || undefined);
 		this.emitCommittedEntries();

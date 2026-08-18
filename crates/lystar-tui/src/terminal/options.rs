@@ -144,6 +144,7 @@ pub(super) enum SessionTransition {
     Fork {
         id: String,
         toast: String,
+        restore_selected_text: bool,
     },
     Import {
         id: String,

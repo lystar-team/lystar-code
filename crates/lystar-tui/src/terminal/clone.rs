@@ -33,6 +33,7 @@ pub(super) fn clone_current_session(
     *session_flow = Some(SessionFlow::Fork {
         id: id.clone(),
         toast: "已复制为新会话".to_owned(),
+        restore_selected_text: false,
     });
     pipe.request(&encode_session_write_request(
         &id,
