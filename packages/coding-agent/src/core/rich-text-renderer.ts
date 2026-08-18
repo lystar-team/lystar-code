@@ -8,6 +8,8 @@ import type { MermaidRenderingMode } from "./settings-manager.ts";
 
 const MAX_LINES = 5_000;
 const MAX_BYTES = 1024 * 1024;
+const HARD_MAX_LINES = 15_000;
+const HARD_MAX_BYTES = 2 * 1024 * 1024;
 
 export type RichTextMessageType = "user" | "assistant" | "custom" | "summary";
 
@@ -20,6 +22,8 @@ export interface RichTextRenderOptions {
 	mermaidMode: MermaidRenderingMode;
 	showCodeBlockFences: boolean;
 	markdownTransformers?: readonly MarkdownTransformer[];
+	maxLines?: number;
+	maxBytes?: number;
 }
 
 export interface RichTextRenderResult {
@@ -60,18 +64,22 @@ export function renderTerminalRichText(options: RichTextRenderOptions): RichText
 		},
 	);
 	return {
-		lines: boundedLines(markdown.render(options.width)),
+		lines: boundedLines(
+			markdown.render(options.width),
+			Math.min(options.maxLines ?? MAX_LINES, HARD_MAX_LINES),
+			Math.min(options.maxBytes ?? MAX_BYTES, HARD_MAX_BYTES),
+		),
 		contentHash: createHash("sha256").update(options.text).digest("hex"),
 	};
 }
 
-function boundedLines(lines: readonly string[]): string[] {
+function boundedLines(lines: readonly string[], maxLines: number, maxBytes: number): string[] {
 	const bounded: string[] = [];
 	let bytes = 0;
 	for (const line of lines) {
-		if (bounded.length === MAX_LINES) break;
+		if (bounded.length === maxLines) break;
 		const lineBytes = Buffer.byteLength(line);
-		if (bytes + lineBytes > MAX_BYTES) break;
+		if (bytes + lineBytes > maxBytes) break;
 		bounded.push(line);
 		bytes += lineBytes;
 	}

@@ -144,7 +144,22 @@ describe("GuiHostService Session observation", () => {
 				clientRequestId: "create",
 			},
 		});
+		const created = messages.find((message) => message.type === "response" && message.id === "create" && message.ok);
+		if (!created || created.type !== "response" || !created.ok) throw new Error("Missing create response");
+		const sessionPath = (created.result as { snapshot: { path: string } }).snapshot.path;
 		await handle({ type: "request", id: "diagnostics", request: { command: "get_diagnostics", cwd } });
+		await handle({
+			type: "request",
+			id: "changelog",
+			request: { command: "get_changelog", sessionPath, width: 80 },
+		});
+
+		const changelog = messages.find(
+			(message) => message.type === "response" && message.id === "changelog" && message.ok,
+		);
+		if (!changelog || changelog.type !== "response" || !changelog.ok) throw new Error("Missing changelog response");
+		expect(changelog.result).toMatchObject({ contentHash: expect.stringMatching(/^[a-f0-9]{64}$/) });
+		expect((changelog.result as { lines: string[] }).lines.length).toBeGreaterThan(0);
 
 		const response = messages.find(
 			(message) => message.type === "response" && message.id === "diagnostics" && message.ok,

@@ -1516,6 +1516,30 @@
                 {
                   "type": "object",
                   "required": [
+                    "command",
+                    "sessionPath",
+                    "width"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "get_changelog"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "width": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 500
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
                     "command"
                   ],
                   "properties": {
@@ -8269,6 +8293,29 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 16384
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceGetChangelogResult": {
+      "type": "object",
+      "required": [
+        "lines",
+        "contentHash"
+      ],
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 1048576
+          },
+          "maxItems": 15000
+        },
+        "contentHash": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
         }
       },
       "additionalProperties": false

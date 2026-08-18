@@ -354,6 +354,7 @@ fn intercepts_only_connected_slash_commands() {
         ("/resume", "resume"),
         ("/agents", "agents"),
         ("/subagents", "agents"),
+        ("/changelog", "changelog"),
         ("/settings", "settings"),
         ("/model", "model"),
         ("/thinking", "thinking"),
@@ -752,6 +753,9 @@ mod copy_tests;
 
 #[path = "tests/name_tests.rs"]
 mod name_tests;
+
+#[path = "tests/changelog_tests.rs"]
+mod changelog_tests;
 
 #[test]
 fn builds_select_items_from_host_payload() {

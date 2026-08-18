@@ -1,5 +1,6 @@
 import path from "node:path";
 import { existsSync, readFileSync } from "fs";
+import { getChangelogPath } from "../config.ts";
 
 export interface ChangelogEntry {
 	major: number;
@@ -167,6 +168,13 @@ export function parseChangelog(changelogPath: string): ChangelogEntry[] {
 	}
 }
 
+export function getFullChangelogMarkdown(changelogPath = getChangelogPath()): string {
+	const entries = parseChangelog(changelogPath);
+	return entries.length > 0
+		? entries.map((entry) => normalizeChangelogLinks(entry.content, entry)).join("\n\n")
+		: "没有更新记录。";
+}
+
 /**
  * Compare versions. Returns: -1 if v1 < v2, 0 if v1 === v2, 1 if v1 > v2
  */
@@ -192,5 +200,5 @@ export function getNewEntries(entries: ChangelogEntry[], lastVersion: string): C
 	return entries.filter((entry) => compareVersions(entry, last) > 0);
 }
 
-// Re-export getChangelogPath from paths.ts for convenience
-export { getChangelogPath } from "../config.ts";
+// Re-export getChangelogPath from config.ts for convenience
+export { getChangelogPath };

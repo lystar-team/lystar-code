@@ -38,6 +38,7 @@ import {
 	getAgentDir,
 	getCurrentSubagentRuns,
 	getDefaultSessionDir,
+	getFullChangelogMarkdown,
 	getLatestPiRelease,
 	getLystarSetting,
 	getSupportedThinkingLevels,
@@ -1948,6 +1949,21 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			sessionsDir: join(this.agentDir, "sessions"),
 			configDirName: CONFIG_DIR_NAME,
 		};
+	}
+
+	getChangelog(sessionPath: string, width: number, cwd?: string) {
+		const settings = this.settingsForCwd(cwd ?? readSessionSnapshot(sessionPath).header.cwd);
+		return renderTerminalRichText({
+			text: getFullChangelogMarkdown(),
+			width,
+			messageType: "custom",
+			isStreaming: false,
+			themeName: settings.getTheme(),
+			mermaidMode: settings.getMermaidRenderingMode(),
+			showCodeBlockFences: settings.getShowMarkdownCodeBlockFences(),
+			maxLines: 15_000,
+			maxBytes: 2 * 1024 * 1024,
+		});
 	}
 
 	async getDiagnostics(cwd?: string, runtimeDiagnostics?: ToolRecoveryRuntimeDiagnostics): Promise<JsonValue> {

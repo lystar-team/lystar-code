@@ -336,6 +336,16 @@ describe("CodingAgentRuntimeAdapter", () => {
 		const result = await runtime.setSetting("http-idle-timeout", 0);
 		expect(result.setting).toMatchObject({ id: "http-idle-timeout", value: 0 });
 		expect(getLystarSetting("http-idle-timeout")?.get(SettingsManager.create(cwd, agentDir))).toBe(0);
+		const changelog = adapter.getChangelog(runtime.sessionPath, 80, cwd);
+		expect(changelog.lines.length).toBeGreaterThan(10_000);
+		expect(
+			changelog.lines
+				.at(-1)
+				?.replaceAll(/\x1b\[[0-9;:]*m/g, "")
+				.trim(),
+		).toContain("HTML export");
+		expect(changelog.contentHash).toMatch(/^[a-f0-9]{64}$/);
+		expect(() => assertWorkspaceCommandResult("get_changelog", changelog)).not.toThrow();
 	});
 
 	it("persists, exports, and restores bash when it is the first transcript entry", async () => {

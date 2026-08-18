@@ -43,6 +43,7 @@ pub enum WorkspaceCommand {
     CopyLastAssistantMessage,
     ExportSession,
     GetAbout,
+    GetChangelog,
     GetDiagnostics,
     RenderRichText,
     ReadImageContent,
@@ -89,6 +90,7 @@ impl WorkspaceCommand {
             "copy_last_assistant_message" => Self::CopyLastAssistantMessage,
             "export_session" => Self::ExportSession,
             "get_about" => Self::GetAbout,
+            "get_changelog" => Self::GetChangelog,
             "get_diagnostics" => Self::GetDiagnostics,
             "render_rich_text" => Self::RenderRichText,
             "read_image_content" => Self::ReadImageContent,
@@ -136,6 +138,7 @@ impl WorkspaceCommand {
             Self::CopyLastAssistantMessage => "copy_last_assistant_message",
             Self::ExportSession => "export_session",
             Self::GetAbout => "get_about",
+            Self::GetChangelog => "get_changelog",
             Self::GetDiagnostics => "get_diagnostics",
             Self::RenderRichText => "render_rich_text",
             Self::ReadImageContent => "read_image_content",
@@ -194,6 +197,7 @@ pub enum WorkspaceResult {
     CopyLastAssistantMessage(crate::generated::WorkspaceCopyLastAssistantMessageResult),
     ExportSession(crate::generated::WorkspaceExportSessionResult),
     GetAbout(crate::generated::WorkspaceGetAboutResult),
+    GetChangelog(crate::generated::WorkspaceGetChangelogResult),
     GetDiagnostics(crate::generated::WorkspaceGetDiagnosticsResult),
     RenderRichText(crate::generated::WorkspaceRenderRichTextResult),
     ReadImageContent(crate::generated::WorkspaceReadImageContentResult),
@@ -292,6 +296,7 @@ impl ServerMessage {
             }
             WorkspaceCommand::ExportSession => Ok(WorkspaceResult::ExportSession(decode(result)?)),
             WorkspaceCommand::GetAbout => Ok(WorkspaceResult::GetAbout(decode(result)?)),
+            WorkspaceCommand::GetChangelog => Ok(WorkspaceResult::GetChangelog(decode(result)?)),
             WorkspaceCommand::GetDiagnostics => {
                 Ok(WorkspaceResult::GetDiagnostics(decode(result)?))
             }
@@ -391,6 +396,10 @@ mod tests {
         assert_eq!(
             WorkspaceCommand::from_wire("get_about"),
             Some(WorkspaceCommand::GetAbout)
+        );
+        assert_eq!(
+            WorkspaceCommand::from_wire("get_changelog"),
+            Some(WorkspaceCommand::GetChangelog)
         );
         assert_eq!(
             WorkspaceCommand::from_wire("get_diagnostics"),

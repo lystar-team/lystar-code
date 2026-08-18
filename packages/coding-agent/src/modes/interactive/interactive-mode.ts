@@ -112,7 +112,13 @@ import {
 } from "../../extensions/subagent/index.ts";
 import { localizeSettingValue } from "../../locales/settings-zh-CN.ts";
 import { formatThinkingLevel, t } from "../../locales/zh-CN.ts";
-import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
+import {
+	getChangelogPath,
+	getFullChangelogMarkdown,
+	getNewEntries,
+	normalizeChangelogLinks,
+	parseChangelog,
+} from "../../utils/changelog.ts";
 import { copyToClipboard, readClipboardText } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
 import { parseGitUrl } from "../../utils/git.ts";
@@ -7111,13 +7117,7 @@ export class InteractiveMode {
 	}
 
 	private handleChangelogCommand(): void {
-		const changelogPath = getChangelogPath();
-		const allEntries = parseChangelog(changelogPath);
-
-		const changelogMarkdown =
-			allEntries.length > 0
-				? allEntries.map((e) => normalizeChangelogLinks(e.content, e)).join("\n\n")
-				: "没有更新记录。";
+		const changelogMarkdown = getFullChangelogMarkdown();
 
 		if (this.workspace.isFullscreen()) {
 			let handle: OverlayHandle | undefined;

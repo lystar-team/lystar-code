@@ -470,6 +470,29 @@ describe("GUI Protocol v1", () => {
 		).toThrow();
 	});
 
+	it("strictly decodes rendered changelog requests and results", () => {
+		const message = {
+			type: "request" as const,
+			id: "changelog",
+			request: {
+				command: "get_changelog" as const,
+				sessionPath: "/tmp/session.jsonl",
+				width: 92,
+			},
+		};
+		expect(new ClientMessageDecoder().push(encodeClientMessage(message))).toEqual([message]);
+		expect(() =>
+			assertWorkspaceCommandResult("get_changelog", { lines: ["release notes"], contentHash: "hash" }),
+		).not.toThrow();
+		expect(() =>
+			assertWorkspaceCommandResult("get_changelog", {
+				lines: ["release notes"],
+				contentHash: "hash",
+				markdown: "raw",
+			}),
+		).toThrow();
+	});
+
 	it("strictly decodes session import requests", () => {
 		const message = {
 			type: "request" as const,

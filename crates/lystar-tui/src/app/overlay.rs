@@ -9,7 +9,9 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use super::transcript::{put_line, truncate_graphemes};
+use crate::rich_text::parse_ansi_lines;
+
+use super::transcript::{put_ansi_line, put_line, truncate_graphemes};
 use super::{
     AppState, InputFocus, ModelDescriptor, PendingIntent, PendingRequest, SettingDescriptor,
     TranscriptViewKind, UiRequest, WORKSPACE_REQUEST_TIMEOUT, WorkspaceOverlayGeneration,
@@ -608,32 +610,70 @@ fn overlay_rect(area: Rect) -> Option<Rect> {
 }
 
 impl WorkbenchOverlayView<'_> {
-    pub fn visible_link(&self, area: Rect) -> Option<VisibleLink> {
-        let OverlayState::Detail(detail) = self.state.overlay()? else {
-            return None;
+    pub fn visible_links(&self, area: Rect) -> Vec<VisibleLink> {
+        let Some(OverlayState::Detail(detail)) = self.state.overlay() else {
+            return Vec::new();
         };
-        let link = detail.link.as_ref()?;
-        let overlay = overlay_rect(area)?;
+        let Some(overlay) = overlay_rect(area) else {
+            return Vec::new();
+        };
         let visible = usize::from(overlay.height.saturating_sub(4));
-        if link.line < detail.scroll || link.line >= detail.scroll.saturating_add(visible) {
-            return None;
+        let width = usize::from(overlay.width.saturating_sub(4));
+        let mut links = Vec::new();
+        if let Some(link) = &detail.link
+            && link.line >= detail.scroll
+            && link.line < detail.scroll.saturating_add(visible)
+            && let Some(line) = detail.lines.get(link.line)
+            && let Some(offset) = line.find(&link.label)
+        {
+            let used = UnicodeWidthStr::width(&line[..offset]);
+            let label = truncate_graphemes(&line[offset..], width.saturating_sub(used));
+            if !label.is_empty() {
+                links.push(VisibleLink {
+                    column: overlay.x + 2 + u16::try_from(used).unwrap_or(u16::MAX),
+                    row: overlay.y
+                        + 1
+                        + u16::try_from(link.line - detail.scroll).unwrap_or(u16::MAX),
+                    label,
+                    href: link.href.clone(),
+                });
+            }
         }
-        let line = detail.lines.get(link.line)?;
-        let offset = line.find(&link.label)?;
-        let label = truncate_graphemes(
-            &line[offset..],
-            usize::from(overlay.width.saturating_sub(4))
-                .saturating_sub(UnicodeWidthStr::width(&line[..offset])),
-        );
-        if label.is_empty() {
-            return None;
+        for (row, line) in detail
+            .lines
+            .iter()
+            .skip(detail.scroll)
+            .take(visible)
+            .enumerate()
+        {
+            let Some(rendered) = parse_ansi_lines(std::slice::from_ref(line))
+                .lines
+                .into_iter()
+                .next()
+            else {
+                continue;
+            };
+            let mut used = 0;
+            for span in rendered.spans {
+                let label = truncate_graphemes(&span.text, width.saturating_sub(used));
+                let label_width = UnicodeWidthStr::width(label.as_str());
+                if let Some(href) = span.href
+                    && !label.is_empty()
+                {
+                    links.push(VisibleLink {
+                        column: overlay.x + 2 + u16::try_from(used).unwrap_or(u16::MAX),
+                        row: overlay.y + 1 + u16::try_from(row).unwrap_or(u16::MAX),
+                        label,
+                        href,
+                    });
+                }
+                used = used.saturating_add(label_width);
+                if used >= width {
+                    break;
+                }
+            }
         }
-        Some(VisibleLink {
-            column: overlay.x + 2 + u16::try_from(UnicodeWidthStr::width(&line[..offset])).ok()?,
-            row: overlay.y + 1 + u16::try_from(link.line - detail.scroll).ok()?,
-            label,
-            href: link.href.clone(),
-        })
+        links
     }
 }
 
@@ -747,14 +787,24 @@ impl Widget for WorkbenchOverlayView<'_> {
                     .take(visible)
                     .enumerate()
                 {
-                    put_line(
-                        buffer,
-                        x + 2,
-                        y + 1 + u16::try_from(row).unwrap_or(0),
-                        line,
-                        inner_width,
-                        Style::default().fg(Color::White),
-                    );
+                    if line.contains('\u{1b}') {
+                        put_ansi_line(
+                            buffer,
+                            x + 2,
+                            y + 1 + u16::try_from(row).unwrap_or(0),
+                            line,
+                            inner_width,
+                        );
+                    } else {
+                        put_line(
+                            buffer,
+                            x + 2,
+                            y + 1 + u16::try_from(row).unwrap_or(0),
+                            line,
+                            inner_width,
+                            Style::default().fg(Color::White),
+                        );
+                    }
                 }
                 put_line(
                     buffer,

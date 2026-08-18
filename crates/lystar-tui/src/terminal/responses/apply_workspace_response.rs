@@ -66,6 +66,27 @@ pub(super) fn apply_workspace_response(
         let result = message.validated_workspace_result_value(pending.request.command)?;
         match pending.intent {
             PendingIntent::Overlay { target } => apply_workbench_result(app, target, result),
+            PendingIntent::Changelog => {
+                let lines = result
+                    .get("lines")
+                    .and_then(serde_json::Value::as_array)
+                    .ok_or_else(|| TuiError::InvalidResponse("更新内容缺少渲染行".to_owned()))?
+                    .iter()
+                    .map(|line| {
+                        line.as_str().map(str::to_owned).ok_or_else(|| {
+                            TuiError::InvalidResponse("更新内容包含无效渲染行".to_owned())
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                app.replace_overlay(OverlayState::Detail(DetailOverlay {
+                    title: "更新内容".to_owned(),
+                    lines,
+                    scroll: 0,
+                    status: "Esc 返回".to_owned(),
+                    link: None,
+                    copy_text: None,
+                }));
+            }
             PendingIntent::ChangeDetail => {
                 app.change_detail = Some(parse_git_diff(&result)?);
                 app.change_detail_expanded = false;

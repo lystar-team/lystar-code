@@ -109,10 +109,14 @@ pub(super) fn render_active_osc8_link(
 ) -> Result<(), io::Error> {
     let area = terminal.size()?;
     let full = ratatui::layout::Rect::new(0, 0, area.width, area.height);
-    let Some(region) = WorkbenchOverlayView::new(app)
-        .visible_link(full)
-        .or_else(|| TranscriptView::new(app).visible_link(transcript_area(app, full)))
-    else {
+    let overlay_links = WorkbenchOverlayView::new(app).visible_links(full);
+    if !overlay_links.is_empty() {
+        for region in overlay_links {
+            write_visible_osc8_link(terminal.backend_mut().writer_mut(), &region)?;
+        }
+        return Ok(());
+    }
+    let Some(region) = TranscriptView::new(app).visible_link(transcript_area(app, full)) else {
         return Ok(());
     };
     write_visible_osc8_link(terminal.backend_mut().writer_mut(), &region)

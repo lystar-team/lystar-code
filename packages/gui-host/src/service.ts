@@ -94,6 +94,7 @@ const WORKSPACE_COMMANDS = {
 	read_clipboard_image: true,
 	read_project_image: true,
 	write_clipboard_text: true,
+	get_changelog: true,
 	render_rich_text: true,
 	read_image_content: true,
 	get_completions: true,
@@ -1027,6 +1028,11 @@ export class GuiHostService {
 			}
 			case "get_about":
 				return this.adapter.getAbout();
+			case "get_changelog": {
+				const sessionPath = canonicalSessionPath(request.sessionPath);
+				const runtime = this.runtimes.get(sessionPath);
+				return this.adapter.getChangelog(sessionPath, request.width, runtime?.getSnapshot("available").cwd);
+			}
 			case "get_diagnostics": {
 				const cwd = request.cwd ? canonicalProjectCwd(request.cwd) : undefined;
 				const runtime = [...this.runtimes.values()].find(

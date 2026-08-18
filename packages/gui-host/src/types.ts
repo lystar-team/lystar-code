@@ -1,5 +1,6 @@
 import type {
 	AuthType,
+	ChangelogResult,
 	ClipboardImageReadResult,
 	CompletionItem,
 	CompletionResult,
@@ -225,6 +226,7 @@ export interface RuntimeAdapter {
 	resolveExternalResource(target: string, line?: number, column?: number): ProjectResource;
 	readExternalResource(path: string, accessToken: string, offset: number, limit: number): ContentChunk;
 	getAbout(): JsonValue;
+	getChangelog(sessionPath: string, width: number, cwd?: string): ChangelogResult;
 	getDiagnostics(cwd?: string, runtimeDiagnostics?: ToolRecoveryRuntimeDiagnostics): Promise<JsonValue>;
 	getGitStatus(cwd: string): Promise<GitStatus>;
 	getGitDiff(cwd: string, path: string | undefined, staged: boolean): Promise<GitDiff>;

@@ -810,6 +810,12 @@ export const RenderRichTextResultSchema = StrictObject({
 });
 export type RenderRichTextResult = Static<typeof RenderRichTextResultSchema>;
 
+export const ChangelogResultSchema = StrictObject({
+	lines: Type.Array(Type.String({ maxLength: 1024 * 1024 }), { maxItems: 15_000 }),
+	contentHash: Id,
+});
+export type ChangelogResult = Static<typeof ChangelogResultSchema>;
+
 export const ReadImageContentResultSchema = StrictObject({
 	contentRef: Id,
 	mimeType: Type.String({ minLength: 1, maxLength: 256 }),
@@ -998,6 +1004,7 @@ export const WorkspaceCommandResultSchemas = {
 	write_clipboard_text: ClipboardWriteResultSchema,
 	copy_last_assistant_message: CopyLastAssistantMessageResultSchema,
 	export_session: ExportSessionResultSchema,
+	get_changelog: ChangelogResultSchema,
 	render_rich_text: RenderRichTextResultSchema,
 	read_image_content: ReadImageContentResultSchema,
 	get_about: AboutResultSchema,
@@ -1258,6 +1265,11 @@ export const CommandSchema = Type.Union([
 		cursor: Type.Integer({ minimum: 0 }),
 	}),
 	StrictObject({ command: Type.Literal("get_about") }),
+	StrictObject({
+		command: Type.Literal("get_changelog"),
+		sessionPath: Type.String({ minLength: 1 }),
+		width: Type.Integer({ minimum: 1, maximum: 500 }),
+	}),
 	StrictObject({ command: Type.Literal("get_diagnostics"), cwd: Type.Optional(Type.String({ minLength: 1 })) }),
 	StrictObject({ command: Type.Literal("get_connection_status") }),
 	StrictObject({ command: Type.Literal("get_git_status"), cwd: Type.String({ minLength: 1 }) }),

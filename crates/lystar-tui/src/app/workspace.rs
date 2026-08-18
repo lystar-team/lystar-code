@@ -292,6 +292,7 @@ pub enum PendingIntent {
     },
     CopyLastAssistantMessage,
     Export,
+    Changelog,
     WorkbenchLoad {
         target: WorkbenchTarget,
         selected_key: Option<String>,
