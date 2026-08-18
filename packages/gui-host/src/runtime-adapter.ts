@@ -1182,6 +1182,14 @@ class CoreRuntimeSession implements RuntimeSession {
 		this.emitCommittedEntries();
 	}
 
+	async exportSession(outputPath?: string): Promise<{ path: string }> {
+		const targetPath = outputPath && !isAbsolute(outputPath) ? resolve(this.runtime.cwd, outputPath) : outputPath;
+		if (targetPath?.endsWith(".jsonl")) {
+			return { path: this.runtime.session.exportToJsonl(targetPath) };
+		}
+		return { path: await this.runtime.session.exportToHtml(targetPath) };
+	}
+
 	async runBash(command: string, onChunk: (chunk: string) => void): Promise<JsonValue> {
 		const result = await this.runtime.session.executeBash(command, onChunk);
 		this.emitCommittedEntries();

@@ -92,6 +92,10 @@ class FakeRuntime implements RuntimeSession {
 	async compact() {
 		this.counts.compact = (this.counts.compact ?? 0) + 1;
 	}
+	async exportSession(outputPath?: string) {
+		this.counts.export_session = (this.counts.export_session ?? 0) + 1;
+		return { path: outputPath ?? "session.html" };
+	}
 	updateExtensionEditorState() {
 		this.counts.extension_editor_state = (this.counts.extension_editor_state ?? 0) + 1;
 		return this.counts.extension_editor_state;
@@ -317,6 +321,8 @@ function request(command: string, cwd: string, sessionPath: string, leaseId: str
 			return { command, sessionPath, leaseId, level: "off", ...identity };
 		case "fork_session":
 			return { command, sessionPath, leaseId, entryId: "entry", ...identity };
+		case "export_session":
+			return { command, sessionPath, leaseId, outputPath: "session.html", ...identity };
 		case "delete_session":
 			return { command, cwd, sessionPath, ...identity };
 		case "set_skill_enabled":
@@ -360,6 +366,7 @@ const WRITE_COMMANDS = [
 	"set_session_model",
 	"set_session_thinking",
 	"fork_session",
+	"export_session",
 	"delete_session",
 	"set_skill_enabled",
 	"save_project_instruction",
@@ -380,6 +387,7 @@ const SESSION_COMMANDS = new Set([
 	"set_session_model",
 	"set_session_thinking",
 	"fork_session",
+	"export_session",
 	"set_setting",
 	"set_entry_label",
 	"navigate_session_tree",

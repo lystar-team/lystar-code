@@ -440,6 +440,26 @@ describe("GUI Protocol v1", () => {
 		).toThrow("不符合协议");
 	});
 
+	it("accepts journaled session exports and validates their result", () => {
+		const message = {
+			type: "request" as const,
+			id: "export",
+			request: {
+				command: "export_session" as const,
+				sessionPath: "/tmp/session.jsonl",
+				leaseId: "lease",
+				clientInstanceId: "client",
+				clientRequestId: "export-1",
+				outputPath: "session export.html",
+			},
+		};
+		expect(new ClientMessageDecoder().push(encodeClientMessage(message))).toEqual([message]);
+		expect(() => assertWorkspaceCommandResult("export_session", { path: "session export.html" })).not.toThrow();
+		expect(() =>
+			assertWorkspaceCommandResult("export_session", { path: "session export.html", extra: true }),
+		).toThrow();
+	});
+
 	it("strictly decodes interactive queue commands and typed progress", () => {
 		const decoder = new ClientMessageDecoder();
 		for (const request of [

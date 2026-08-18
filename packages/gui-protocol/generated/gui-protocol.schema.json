@@ -554,6 +554,47 @@
                     "sessionPath",
                     "leaseId",
                     "clientInstanceId",
+                    "clientRequestId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "export_session"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "outputPath": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "leaseId",
+                    "clientInstanceId",
                     "clientRequestId",
                     "commandText"
                   ],
@@ -2691,6 +2732,55 @@
         }
       ]
     },
+    "ServerCompactionProgressStatus": {
+      "anyOf": [
+        {
+          "type": "string",
+          "const": "running"
+        },
+        {
+          "type": "string",
+          "const": "completed"
+        },
+        {
+          "type": "string",
+          "const": "cancelled"
+        },
+        {
+          "type": "string",
+          "const": "failed"
+        },
+        {
+          "type": "string",
+          "const": "waiting_retry"
+        }
+      ]
+    },
+    "ServerRetryProgressStatus": {
+      "anyOf": [
+        {
+          "type": "string",
+          "const": "waiting"
+        },
+        {
+          "type": "string",
+          "const": "running"
+        },
+        {
+          "type": "string",
+          "const": "completed"
+        },
+        {
+          "type": "string",
+          "const": "failed"
+        }
+      ]
+    },
+    "ServerStatusProgressText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
     "ServerSessionProgress": {
       "anyOf": [
         {
@@ -3039,28 +3129,7 @@
               "const": "compaction"
             },
             "status": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "const": "running"
-                },
-                {
-                  "type": "string",
-                  "const": "completed"
-                },
-                {
-                  "type": "string",
-                  "const": "cancelled"
-                },
-                {
-                  "type": "string",
-                  "const": "failed"
-                },
-                {
-                  "type": "string",
-                  "const": "waiting_retry"
-                }
-              ]
+              "$ref": "#/$defs/ServerCompactionProgressStatus"
             },
             "reason": {
               "anyOf": [
@@ -3098,24 +3167,7 @@
               "const": "retry"
             },
             "status": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "const": "waiting"
-                },
-                {
-                  "type": "string",
-                  "const": "running"
-                },
-                {
-                  "type": "string",
-                  "const": "completed"
-                },
-                {
-                  "type": "string",
-                  "const": "failed"
-                }
-              ]
+              "$ref": "#/$defs/ServerRetryProgressStatus"
             },
             "kind": {
               "anyOf": [
@@ -3168,9 +3220,7 @@
               "const": "status"
             },
             "status": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024
+              "$ref": "#/$defs/ServerStatusProgressText"
             },
             "truncated": {
               "type": "boolean"
@@ -8076,6 +8126,20 @@
         },
         "changed": {
           "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceExportSessionResult": {
+      "type": "object",
+      "required": [
+        "path"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
         }
       },
       "additionalProperties": false

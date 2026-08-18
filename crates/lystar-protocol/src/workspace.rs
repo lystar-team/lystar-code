@@ -40,6 +40,7 @@ pub enum WorkspaceCommand {
     ReadClipboardImage,
     ReadProjectImage,
     WriteClipboardText,
+    ExportSession,
     GetAbout,
     GetDiagnostics,
     RenderRichText,
@@ -84,6 +85,7 @@ impl WorkspaceCommand {
             "read_clipboard_image" => Self::ReadClipboardImage,
             "read_project_image" => Self::ReadProjectImage,
             "write_clipboard_text" => Self::WriteClipboardText,
+            "export_session" => Self::ExportSession,
             "get_about" => Self::GetAbout,
             "get_diagnostics" => Self::GetDiagnostics,
             "render_rich_text" => Self::RenderRichText,
@@ -129,6 +131,7 @@ impl WorkspaceCommand {
             Self::ReadClipboardImage => "read_clipboard_image",
             Self::ReadProjectImage => "read_project_image",
             Self::WriteClipboardText => "write_clipboard_text",
+            Self::ExportSession => "export_session",
             Self::GetAbout => "get_about",
             Self::GetDiagnostics => "get_diagnostics",
             Self::RenderRichText => "render_rich_text",
@@ -185,6 +188,7 @@ pub enum WorkspaceResult {
     ReadClipboardImage(crate::generated::WorkspaceReadClipboardImageResult),
     ReadProjectImage(crate::generated::WorkspaceReadProjectImageResult),
     WriteClipboardText(crate::generated::WorkspaceWriteClipboardTextResult),
+    ExportSession(crate::generated::WorkspaceExportSessionResult),
     GetAbout(crate::generated::WorkspaceGetAboutResult),
     GetDiagnostics(crate::generated::WorkspaceGetDiagnosticsResult),
     RenderRichText(crate::generated::WorkspaceRenderRichTextResult),
@@ -279,6 +283,7 @@ impl ServerMessage {
             WorkspaceCommand::WriteClipboardText => {
                 Ok(WorkspaceResult::WriteClipboardText(decode(result)?))
             }
+            WorkspaceCommand::ExportSession => Ok(WorkspaceResult::ExportSession(decode(result)?)),
             WorkspaceCommand::GetAbout => Ok(WorkspaceResult::GetAbout(decode(result)?)),
             WorkspaceCommand::GetDiagnostics => {
                 Ok(WorkspaceResult::GetDiagnostics(decode(result)?))
@@ -383,6 +388,10 @@ mod tests {
         assert_eq!(
             WorkspaceCommand::from_wire("get_diagnostics"),
             Some(WorkspaceCommand::GetDiagnostics)
+        );
+        assert_eq!(
+            WorkspaceCommand::from_wire("export_session"),
+            Some(WorkspaceCommand::ExportSession)
         );
         assert!(WorkspaceCommand::from_wire("list_sessions").is_none());
     }

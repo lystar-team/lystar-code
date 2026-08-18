@@ -218,6 +218,7 @@ impl AppState {
                 | PendingIntent::AuthMutation { .. }
                 | PendingIntent::SubagentMutation { .. }
                 | PendingIntent::ClipboardMutation { .. }
+                | PendingIntent::Export
         ) {
             self.write_pending = false;
         }

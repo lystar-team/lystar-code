@@ -338,7 +338,7 @@ describe("CodingAgentRuntimeAdapter", () => {
 		expect(getLystarSetting("http-idle-timeout")?.get(SettingsManager.create(cwd, agentDir))).toBe(0);
 	});
 
-	it("persists and restores bash when it is the first transcript entry", async () => {
+	it("persists, exports, and restores bash when it is the first transcript entry", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-bash-"));
 		const agentDir = join(tempDir, "agent");
 		const cwd = join(tempDir, "project");
@@ -375,6 +375,12 @@ describe("CodingAgentRuntimeAdapter", () => {
 		}
 		expect(listed[0].firstMessage).toBe("未命名会话");
 		expect(listed[0].activity).toBe("completed");
+		const htmlPath = join(tempDir, "session export.html");
+		expect(await runtime.exportSession("../session export.html")).toEqual({ path: htmlPath });
+		expect(readFileSync(htmlPath, "utf8")).toContain("<!DOCTYPE html>");
+		const jsonlPath = join(tempDir, "session export.jsonl");
+		expect(await runtime.exportSession("../session export.jsonl")).toEqual({ path: jsonlPath });
+		expect(readFileSync(jsonlPath, "utf8")).toContain('"role":"bashExecution"');
 
 		await runtime.dispose();
 		expect(adapter.isSessionWriterLocked(sessionPath)).toBe(false);

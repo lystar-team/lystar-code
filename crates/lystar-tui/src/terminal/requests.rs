@@ -67,6 +67,45 @@ pub(super) fn request_compaction(
     Ok(())
 }
 
+pub(super) fn request_export_session(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    client_instance_id: &str,
+    sequence: &mut u64,
+    output_path: Option<&str>,
+) -> Result<(), TuiError> {
+    let Some(lease_id) = app.lease_id.clone() else {
+        app.set_overlay_error("尚未获取会话租约");
+        return Ok(());
+    };
+    let client_request_id = format!("export:{}", sequence.saturating_add(1));
+    let mut payload = serde_json::json!({
+        "sessionPath": session_path,
+        "leaseId": lease_id,
+        "clientInstanceId": client_instance_id,
+        "clientRequestId": client_request_id,
+    })
+    .as_object()
+    .cloned()
+    .unwrap_or_default();
+    if let Some(path) = output_path {
+        payload.insert(
+            "outputPath".to_owned(),
+            serde_json::Value::String(path.to_owned()),
+        );
+    }
+    app.mark_write_pending();
+    request_workspace(
+        app,
+        pipe,
+        sequence,
+        WorkspaceCommand::ExportSession,
+        payload,
+        PendingIntent::Export,
+    )
+}
+
 pub(super) fn release_active_session(
     app: &AppState,
     pipe: &mut ProtocolPipe,

@@ -788,6 +788,9 @@ export const ClipboardReadResultSchema = StrictObject({
 	text: Type.Optional(WorkspaceText),
 });
 export const ClipboardWriteResultSchema = StrictObject({ capability: Type.Boolean(), changed: Type.Boolean() });
+export const ExportSessionResultSchema = StrictObject({
+	path: Type.String({ minLength: 1, maxLength: 16 * 1024 }),
+});
 
 export const RichTextMessageTypeSchema = Type.Union([
 	Type.Literal("user"),
@@ -989,6 +992,7 @@ export const WorkspaceCommandResultSchemas = {
 	read_clipboard_image: ClipboardImageReadResultSchema,
 	read_project_image: ReadProjectImageResultSchema,
 	write_clipboard_text: ClipboardWriteResultSchema,
+	export_session: ExportSessionResultSchema,
 	render_rich_text: RenderRichTextResultSchema,
 	read_image_content: ReadImageContentResultSchema,
 	get_about: AboutResultSchema,
@@ -1094,6 +1098,14 @@ export const CommandSchema = Type.Union([
 		clientInstanceId: Id,
 		clientRequestId: Id,
 		customInstructions: Type.Optional(Type.String({ maxLength: 64 * 1024 })),
+	}),
+	StrictObject({
+		command: Type.Literal("export_session"),
+		sessionPath: Type.String({ minLength: 1 }),
+		leaseId: Id,
+		clientInstanceId: Id,
+		clientRequestId: Id,
+		outputPath: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
 	}),
 	StrictObject({
 		command: Type.Literal("run_bash"),

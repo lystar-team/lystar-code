@@ -19,18 +19,33 @@ const toolEndStatus = {
 		{ type: "string", const: "error" },
 	],
 };
+const compactionProgressStatus = {
+	anyOf: ["running", "completed", "cancelled", "failed", "waiting_retry"].map((value) => ({
+		type: "string",
+		const: value,
+	})),
+};
+const retryProgressStatus = {
+	anyOf: ["waiting", "running", "completed", "failed"].map((value) => ({ type: "string", const: value })),
+};
+const statusProgressText = { type: "string", minLength: 1, maxLength: 1024 };
 const normalizedSessionProgress = normalizeJsonValueReferences(SessionProgressSchema);
-const sessionProgress = replaceSchema(
-	normalizedSessionProgress,
-	toolEndStatus,
-	{ $ref: "#/$defs/ToolEndStatus" },
-);
+// typify 会按字段名推导匿名类型；显式命名不同语义的 status，避免新增 schema 时发生类型碰撞。
+const sessionProgress = [
+	[toolEndStatus, { $ref: "#/$defs/ToolEndStatus" }],
+	[compactionProgressStatus, { $ref: "#/$defs/ServerCompactionProgressStatus" }],
+	[retryProgressStatus, { $ref: "#/$defs/ServerRetryProgressStatus" }],
+	[statusProgressText, { $ref: "#/$defs/ServerStatusProgressText" }],
+].reduce((value, [target, replacement]) => replaceSchema(value, target, replacement), normalizedSessionProgress);
 const schema = {
 	$schema: "https://json-schema.org/draft/2020-12/schema",
 	$title: "LYStar GUI Protocol v1",
 	$defs: {
 		JsonValue: normalizeJsonValueReferences(jsonValueDefinition),
 		ClientMessage: normalizeJsonValueReferences(ClientMessageSchema),
+		ServerCompactionProgressStatus: compactionProgressStatus,
+		ServerRetryProgressStatus: retryProgressStatus,
+		ServerStatusProgressText: statusProgressText,
 		ServerSessionProgress: sessionProgress,
 		ToolEndStatus: toolEndStatus,
 		ServerMessage: replaceSchema(

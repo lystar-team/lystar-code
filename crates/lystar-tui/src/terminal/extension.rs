@@ -276,6 +276,21 @@ pub(super) fn attachment_path(text: &str) -> Option<String> {
 }
 
 #[cfg(unix)]
+pub(super) fn path_command_argument(text: &str, command: &str) -> Option<String> {
+    let args = text.strip_prefix(command)?.strip_prefix(' ')?.trim_start();
+    if args.is_empty() {
+        return None;
+    }
+    let first = args.chars().next()?;
+    if matches!(first, '"' | '\'') {
+        let rest = &args[first.len_utf8()..];
+        let closing = rest.find(first)?;
+        return Some(rest[..closing].to_owned());
+    }
+    args.split_whitespace().next().map(str::to_owned)
+}
+
+#[cfg(unix)]
 pub(super) struct SubmitEditorOptions {
     follow_up: bool,
     custom_editor: bool,
@@ -379,6 +394,17 @@ pub(super) fn submit_editor_with_origin(
             client_instance_id,
             sequence,
             custom_instructions,
+        );
+    }
+    if trimmed == "/export" || trimmed.starts_with("/export ") {
+        let output_path = path_command_argument(trimmed, "/export");
+        return request_export_session(
+            app,
+            pipe,
+            session_path,
+            client_instance_id,
+            sequence,
+            output_path.as_deref(),
         );
     }
     if let Some(command) = builtin_slash_command(&text) {

@@ -51,12 +51,16 @@ pub(super) fn apply_workspace_response(
                     status: "Enter 选择，Esc 返回".to_owned(),
                 }));
             }
-            app.set_overlay_error(
-                raw.get("error")
-                    .and_then(|value| value.get("message"))
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("工作台请求失败"),
-            );
+            let message = raw
+                .get("error")
+                .and_then(|value| value.get("message"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("工作台请求失败");
+            if matches!(&pending.intent, PendingIntent::Export) {
+                app.set_overlay_error(format!("导出会话失败：{message}"));
+            } else {
+                app.set_overlay_error(message);
+            }
             return Ok(Some(false));
         }
         let result = message.validated_workspace_result_value(pending.request.command)?;
@@ -373,6 +377,13 @@ pub(super) fn apply_workspace_response(
                 } else {
                     app.set_overlay_error("Host 不支持剪贴板写入");
                 }
+            }
+            PendingIntent::Export => {
+                let path = result
+                    .get("path")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| TuiError::InvalidResponse("导出结果缺少路径".to_owned()))?;
+                app.set_toast(format!("会话已导出到：{path}"));
             }
             PendingIntent::SettingMutation {
                 selected_key,

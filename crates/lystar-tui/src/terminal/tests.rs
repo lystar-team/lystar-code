@@ -345,6 +345,7 @@ fn intercepts_only_connected_slash_commands() {
         ("/doctor", "doctor"),
         ("/new", "new"),
         ("/compact", "compact"),
+        ("/export", "export"),
         ("/resume", "resume"),
         ("/settings", "settings"),
         ("/model", "model"),
@@ -534,6 +535,122 @@ fn resume_command_lists_sessions_for_the_active_project() {
             ..
         }) if selected_path == "/tmp/sessions/current.jsonl"
     ));
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn export_command_preserves_paths_and_applies_host_results() {
+    assert_eq!(
+        path_command_argument("/export \"path with spaces/session.html\"", "/export"),
+        Some("path with spaces/session.html".to_owned())
+    );
+    assert_eq!(
+        path_command_argument("/export john's/session.jsonl", "/export"),
+        Some("john's/session.jsonl".to_owned())
+    );
+    assert_eq!(path_command_argument("/export", "/export"), None);
+    assert_eq!(path_command_argument("/exporter out.html", "/export"), None);
+    assert_eq!(
+        path_command_argument("/export \"unterminated", "/export"),
+        None
+    );
+
+    let mut app = AppState::default();
+    app.begin_active_session(
+        "/tmp/sessions/current.jsonl".to_owned(),
+        "/work/project".to_owned(),
+    );
+    app.lease_id = Some("lease".to_owned());
+    app.editor
+        .insert("/export \"path with spaces/session.html\"");
+    let (mut pipe, path) = test_pipe_with_path();
+    let mut sequence = 0;
+    let mut session_flow = None;
+    submit_editor(
+        &mut app,
+        &mut pipe,
+        "/tmp/sessions/current.jsonl",
+        "client",
+        &mut sequence,
+        false,
+        &mut session_flow,
+    )
+    .unwrap();
+    drop(pipe);
+
+    let frames = FrameDecoder::default()
+        .push(&std::fs::read(&path).unwrap())
+        .unwrap();
+    let request = lystar_protocol::decode_client_message(&frames[0]).unwrap();
+    let request = serde_json::to_value(request.value()).unwrap();
+    assert_eq!(request["request"]["command"], "export_session");
+    assert_eq!(
+        request["request"]["outputPath"],
+        "path with spaces/session.html"
+    );
+    assert!(app.write_pending);
+
+    let response = serde_json::json!({
+        "type": "response", "id": "export_session:1", "ok": true,
+        "result": { "path": "/tmp/session export.html" }
+    });
+    let cbor: ciborium::value::Value = serde_json::from_value(response.clone()).unwrap();
+    let mut bytes = Vec::new();
+    ciborium::into_writer(&cbor, &mut bytes).unwrap();
+    let message = lystar_protocol::decode_server_message(&bytes).unwrap();
+    let mut response_pipe = test_pipe();
+    let mut quit = false;
+    apply_server_message(
+        &mut app,
+        &message,
+        "/tmp/sessions/current.jsonl",
+        &mut response_pipe,
+        "client",
+        &mut sequence,
+        &mut session_flow,
+        &mut quit,
+    )
+    .unwrap();
+    assert_eq!(
+        app.toast.as_deref(),
+        Some("会话已导出到：/tmp/session export.html")
+    );
+    assert!(!app.write_pending);
+
+    let mut error_pipe = test_pipe();
+    request_export_session(
+        &mut app,
+        &mut error_pipe,
+        "/tmp/sessions/current.jsonl",
+        "client",
+        &mut sequence,
+        Some("/root/forbidden.html"),
+    )
+    .unwrap();
+    let response = serde_json::json!({
+        "type": "response", "id": "export_session:2", "ok": false,
+        "error": { "code": "io_error", "message": "Permission denied", "retryable": false }
+    });
+    let cbor: ciborium::value::Value = serde_json::from_value(response).unwrap();
+    let mut bytes = Vec::new();
+    ciborium::into_writer(&cbor, &mut bytes).unwrap();
+    let message = lystar_protocol::decode_server_message(&bytes).unwrap();
+    apply_server_message(
+        &mut app,
+        &message,
+        "/tmp/sessions/current.jsonl",
+        &mut error_pipe,
+        "client",
+        &mut sequence,
+        &mut session_flow,
+        &mut quit,
+    )
+    .unwrap();
+    assert_eq!(
+        app.overlay_error.as_deref(),
+        Some("导出会话失败：Permission denied")
+    );
+    assert!(!app.write_pending);
     std::fs::remove_file(path).unwrap();
 }
 

@@ -284,6 +284,7 @@ pub enum PendingIntent {
     ClipboardMutation {
         toast: String,
     },
+    Export,
     WorkbenchLoad {
         target: WorkbenchTarget,
         selected_key: Option<String>,

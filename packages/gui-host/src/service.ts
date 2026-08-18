@@ -536,6 +536,17 @@ export class GuiHostService {
 					},
 					afterResponse,
 				);
+			case "export_session": {
+				const { runtime, sessionPath } = this.assertExtensionSession(connection, request);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `export:${sessionPath}`,
+					payload: { sessionPath, outputPath: request.outputPath ?? null },
+					run: async () => jsonValue(await runtime.exportSession(request.outputPath)),
+				});
+			}
 			case "run_bash":
 				return this.acceptOperation(
 					connection,
