@@ -429,6 +429,17 @@ pub(super) fn submit_editor_with_origin(
             sequence,
         );
     }
+    if trimmed == "/name" || trimmed.starts_with("/name ") {
+        return request_session_name(
+            app,
+            pipe,
+            session_path,
+            client_instance_id,
+            sequence,
+            session_flow,
+            trimmed.strip_prefix("/name").unwrap_or_default(),
+        );
+    }
     if trimmed == "/import" || trimmed.starts_with("/import ") {
         let Some(input_path) = path_command_argument(trimmed, "/import") else {
             app.set_overlay_error("用法：/import <path.jsonl>");

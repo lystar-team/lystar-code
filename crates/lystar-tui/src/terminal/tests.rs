@@ -670,6 +670,9 @@ mod share_tests;
 #[path = "tests/copy_tests.rs"]
 mod copy_tests;
 
+#[path = "tests/name_tests.rs"]
+mod name_tests;
+
 #[test]
 fn builds_select_items_from_host_payload() {
     let items = ui_select_items(&serde_json::json!({

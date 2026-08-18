@@ -283,6 +283,7 @@ pub enum SessionProgress {
 pub struct SessionSnapshot {
     pub id: String,
     pub path: String,
+    pub name: Option<String>,
     pub cwd: String,
     pub phase: String,
     pub activity: String,

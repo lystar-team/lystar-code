@@ -134,6 +134,10 @@ pub(super) enum SessionTransition {
         index: usize,
         name: String,
     },
+    Name {
+        id: String,
+        requested_name: String,
+    },
     Fork {
         id: String,
         toast: String,

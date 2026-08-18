@@ -68,6 +68,7 @@ mod copy;
 mod extension;
 mod input;
 mod lifecycle;
+mod name;
 mod options;
 mod render;
 mod requests;
@@ -88,6 +89,7 @@ use input::*;
 use lifecycle::TerminalGuard;
 #[cfg(test)]
 use lifecycle::enter_terminal;
+use name::*;
 #[cfg(test)]
 use options::TerminalModeContext;
 use options::{SessionFlow, inline_viewport_height, resolve_terminal_mode, terminal_mode_context};

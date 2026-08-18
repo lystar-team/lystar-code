@@ -290,6 +290,7 @@ fn clears_live_streams_when_switching_or_disconnecting() {
         SessionSnapshot {
             id: "new".to_owned(),
             path: "/tmp/new.jsonl".to_owned(),
+            name: None,
             cwd: "/tmp".to_owned(),
             phase: "idle".to_owned(),
             activity: "idle".to_owned(),

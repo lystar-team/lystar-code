@@ -19,6 +19,7 @@ pub(in super::super) fn apply_session_flow(
         SessionFlow::InitialAcquiring { id, .. }
         | SessionFlow::List { id, .. }
         | SessionFlow::Rename { id, .. }
+        | SessionFlow::Name { id, .. }
         | SessionFlow::Fork { id, .. }
         | SessionFlow::Import { id, .. }
         | SessionFlow::Readonly { id, .. }
@@ -97,15 +98,47 @@ pub(in super::super) fn apply_session_flow(
                 app.set_overlay_error(error);
                 return Ok(Some(false));
             }
+            let snapshot: lystar_protocol::SessionSnapshot = serde_json::from_value(result)
+                .map_err(|error| {
+                    TuiError::InvalidResponse(format!("重命名会话响应无效: {error}"))
+                })?;
             if let Some(session) = app.sessions.get_mut(index) {
-                session.name = (!name.trim().is_empty()).then_some(name);
+                session.name = snapshot.name.clone();
             }
+            app.apply_snapshot(snapshot.clone());
             app.replace_overlay(session_overlay(
                 &app.sessions,
                 app.active_session_path(),
                 OverlayOrigin::User,
             ));
-            app.set_toast("已重命名会话");
+            if snapshot.name.as_deref() == Some(name.as_str()) {
+                app.set_toast("已重命名会话");
+            } else {
+                app.set_toast(format!(
+                    "会话名称已规范化为：{}",
+                    snapshot.name.as_deref().unwrap_or("未命名")
+                ));
+            }
+            Ok(Some(false))
+        }
+        SessionFlow::Name { requested_name, .. } => {
+            if !success {
+                app.set_overlay_error(error);
+                return Ok(Some(false));
+            }
+            let snapshot: lystar_protocol::SessionSnapshot = serde_json::from_value(result)
+                .map_err(|error| {
+                    TuiError::InvalidResponse(format!("设置会话名称响应无效: {error}"))
+                })?;
+            let session_name = snapshot.name.clone().unwrap_or(requested_name.clone());
+            app.apply_snapshot(snapshot);
+            if session_name == requested_name {
+                app.set_toast(format!("会话名称已设置：{session_name}"));
+            } else {
+                app.set_toast(format!(
+                    "会话名称已设置：{session_name}（已从 {requested_name:?} 规范化）"
+                ));
+            }
             Ok(Some(false))
         }
         SessionFlow::Fork { toast, .. } => {

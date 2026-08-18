@@ -78,6 +78,7 @@ pub(in super::super) fn handle_key(
                 ("import", "导入会话"),
                 ("share", "分享会话"),
                 ("copy", "复制最近一条 Agent 消息"),
+                ("name", "设置会话名称"),
                 ("resume", "继续会话"),
                 ("sessions", "会话"),
                 ("tree", "分支树"),
