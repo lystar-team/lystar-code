@@ -64,6 +64,7 @@ const EXIT_TRANSCRIPT_PAGE_LIMIT: u64 = 200;
 const EXTENSION_INPUT_TIMEOUT: Duration = Duration::from_millis(100);
 const MAX_EXTENSION_INPUT_BYTES: usize = 64 * 1024;
 
+mod auth;
 mod clone;
 mod copy;
 mod extension;
@@ -89,6 +90,7 @@ pub use runtime::{run, run_with_options};
 pub use shell::{run_shell, run_shell_with_mode};
 pub use transport::handshake_inherited_pipes;
 
+use auth::*;
 use clone::*;
 use copy::*;
 use extension::*;

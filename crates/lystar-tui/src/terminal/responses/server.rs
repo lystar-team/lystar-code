@@ -85,9 +85,16 @@ pub(in super::super) fn apply_server_message(
     if let Some(outcome) = apply_content_response(app, message, &raw)? {
         return Ok(outcome);
     }
-    if let Some(outcome) =
-        apply_workspace_response(app, message, &raw, pipe, session_path, sequence)?
-    {
+    if let Some(outcome) = apply_workspace_response(
+        app,
+        message,
+        &raw,
+        pipe,
+        session_path,
+        client_instance_id,
+        sequence,
+        session_flow,
+    )? {
         return Ok(outcome);
     }
     let read_only = if let Some(id) = &page_response_id {

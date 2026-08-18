@@ -57,6 +57,13 @@ pub(in super::super) fn activate_workbench_action(
         client_instance_id,
         sequence,
         session_flow,
+    )? || handle_auth_action(
+        app,
+        action,
+        pipe,
+        client_instance_id,
+        sequence,
+        session_flow,
     )? {
         return Ok(());
     }

@@ -66,7 +66,22 @@ pub(super) fn apply_interaction_response(
             Some("editor") => UiRequestKind::Editor,
             Some("notify") => {
                 if app.mark_ui_responded(id) {
-                    app.open_overlay(OverlayState::Detail(ui_notify_detail(title, &payload)));
+                    let detail = OverlayState::Detail(ui_notify_detail(title, &payload));
+                    let auth_notification = event
+                        .get("operationId")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|operation_id| operation_id.starts_with("models-auth:"));
+                    if auth_notification && app.active_ui_request.is_some() {
+                        trace("ui_notify_deferred");
+                    } else if auth_notification
+                        && app
+                            .overlay()
+                            .is_some_and(|overlay| !matches!(overlay.title(), "登录" | "退出登录"))
+                    {
+                        app.replace_overlay(detail);
+                    } else {
+                        app.open_overlay(detail);
+                    }
                     trace("ui_notify");
                 }
                 return Ok(Some(false));

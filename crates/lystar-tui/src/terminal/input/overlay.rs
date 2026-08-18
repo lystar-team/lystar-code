@@ -712,19 +712,6 @@ pub(in super::super) fn handle_overlay_key(
                     confirm_action: "session-delete-current".to_owned(),
                     status: String::new(),
                 }));
-            } else if let Some(index) = app
-                .current_overlay_action()
-                .as_deref()
-                .and_then(|action| action.strip_prefix("login-provider:"))
-                .and_then(|value| value.parse::<usize>().ok())
-                && let Some(provider) = app.providers.get(index)
-            {
-                app.open_overlay(OverlayState::Confirm(ConfirmOverlay {
-                    title: "退出登录".to_owned(),
-                    message: format!("确认退出 {}？", provider.name),
-                    confirm_action: format!("auth-logout:{index}"),
-                    status: "d 仅在登录列表可用".to_owned(),
-                }));
             } else {
                 app.overlay_insert("d");
             }

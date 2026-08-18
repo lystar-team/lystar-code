@@ -93,6 +93,7 @@ pub(in super::super) fn handle_key(
                 ("model", "模型"),
                 ("thinking", "思考"),
                 ("login", "登录"),
+                ("logout", "退出登录"),
                 ("about", "关于"),
                 ("doctor", "诊断"),
             ]
@@ -327,6 +328,7 @@ pub(in super::super) fn builtin_slash_command(text: &str) -> Option<&'static str
         "/model" => Some("model"),
         "/thinking" => Some("thinking"),
         "/login" => Some("login"),
+        "/logout" => Some("logout"),
         _ => None,
     }
 }

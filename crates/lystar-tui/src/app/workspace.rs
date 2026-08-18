@@ -324,9 +324,19 @@ pub enum PendingIntent {
         filter: String,
     },
     AuthMutation {
-        selected_key: Option<String>,
+        provider: String,
+        auth_type: Option<String>,
         filter: String,
-        toast: String,
+    },
+    AuthVerify {
+        provider: String,
+        auth_type: Option<String>,
+        filter: String,
+        models: Vec<ModelDescriptor>,
+    },
+    AuthList {
+        mode: String,
+        filter: String,
     },
 }
 

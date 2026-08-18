@@ -887,6 +887,26 @@ pub(in super::super) fn login_overlay(
         .collect::<Vec<_>>();
     let selected = selected_key
         .and_then(|id| providers.iter().position(|provider| provider.id == id))
+        .filter(|index| {
+            filter.is_empty()
+                || items.get(*index).is_some_and(|item| {
+                    format!("{} {}", item.label, item.detail)
+                        .to_lowercase()
+                        .contains(&filter.to_lowercase())
+                })
+        })
+        .or_else(|| {
+            (!filter.is_empty()).then(|| {
+                items
+                    .iter()
+                    .position(|item| {
+                        format!("{} {}", item.label, item.detail)
+                            .to_lowercase()
+                            .contains(&filter.to_lowercase())
+                    })
+                    .unwrap_or(0)
+            })
+        })
         .unwrap_or(0);
     OverlayState::List(ListOverlay {
         title: "登录".to_owned(),
@@ -894,7 +914,62 @@ pub(in super::super) fn login_overlay(
         items,
         selected,
         filter,
-        status: "Enter 选择认证方式，d 退出登录，Esc 返回".to_owned(),
+        status: "Enter 选择认证方式，Esc 返回".to_owned(),
+    })
+}
+
+pub(in super::super) fn auth_overlay(
+    providers: &[ProviderDescriptor],
+    mode: &str,
+    selected_key: Option<&str>,
+    filter: String,
+) -> OverlayState {
+    if mode == "login" {
+        return login_overlay(providers, selected_key, filter);
+    }
+    let visible = providers
+        .iter()
+        .enumerate()
+        .filter(|(_, provider)| provider.auth_source.as_deref() == Some("stored"))
+        .collect::<Vec<_>>();
+    let items = visible
+        .iter()
+        .map(|(index, provider)| OverlayItem {
+            label: provider.name.clone(),
+            detail: format!("{}  已保存凭据", provider.id),
+            action: format!("auth-logout:{index}"),
+        })
+        .collect::<Vec<_>>();
+    let selected = selected_key
+        .and_then(|id| visible.iter().position(|(_, provider)| provider.id == id))
+        .filter(|index| {
+            filter.is_empty()
+                || items.get(*index).is_some_and(|item| {
+                    format!("{} {}", item.label, item.detail)
+                        .to_lowercase()
+                        .contains(&filter.to_lowercase())
+                })
+        })
+        .or_else(|| {
+            (!filter.is_empty()).then(|| {
+                items
+                    .iter()
+                    .position(|item| {
+                        format!("{} {}", item.label, item.detail)
+                            .to_lowercase()
+                            .contains(&filter.to_lowercase())
+                    })
+                    .unwrap_or(0)
+            })
+        })
+        .unwrap_or(0);
+    OverlayState::List(ListOverlay {
+        title: "退出登录".to_owned(),
+        origin: OverlayOrigin::User,
+        items,
+        selected,
+        filter,
+        status: "Enter 删除保存的凭据，环境变量和 models.json 不受影响，Esc 返回".to_owned(),
     })
 }
 

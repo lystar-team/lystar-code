@@ -366,6 +366,7 @@ fn intercepts_only_connected_slash_commands() {
         ("/model", "model"),
         ("/thinking", "thinking"),
         ("/login", "login"),
+        ("/logout", "logout"),
     ] {
         assert_eq!(builtin_slash_command(input), Some(target));
     }
@@ -772,6 +773,9 @@ mod model_tests;
 
 #[path = "tests/thinking_tests.rs"]
 mod thinking_tests;
+
+#[path = "tests/auth_tests.rs"]
+mod auth_tests;
 
 #[path = "tests/hotkeys_tests.rs"]
 mod hotkeys_tests;

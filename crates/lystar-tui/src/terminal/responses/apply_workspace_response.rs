@@ -1,12 +1,15 @@
 use super::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn apply_workspace_response(
     app: &mut AppState,
     message: &ServerMessage,
     raw: &serde_json::Value,
     pipe: &mut ProtocolPipe,
     session_path: &str,
+    client_instance_id: &str,
     sequence: &mut u64,
+    session_flow: &Option<SessionFlow>,
 ) -> Result<Option<bool>, TuiError> {
     if raw.get("type").and_then(serde_json::Value::as_str) == Some("response")
         && let Some(id) = raw.get("id").and_then(serde_json::Value::as_str)
@@ -16,6 +19,7 @@ pub(super) fn apply_workspace_response(
             return Ok(Some(false));
         }
         if raw.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
+            restore_auth_intent(app, &pending.intent);
             if matches!(&pending.intent, PendingIntent::TreeNavigate { .. }) {
                 app.pending_editor_replace = None;
             }
@@ -63,7 +67,12 @@ pub(super) fn apply_workspace_response(
             }
             return Ok(Some(false));
         }
-        let result = message.validated_workspace_result_value(pending.request.command)?;
+        let result = message
+            .validated_workspace_result_value(pending.request.command)
+            .map_err(|error| {
+                restore_auth_intent(app, &pending.intent);
+                TuiError::from(error)
+            })?;
         match pending.intent {
             PendingIntent::Overlay { target } => apply_workbench_result(app, target, result),
             PendingIntent::Changelog => {
@@ -517,24 +526,76 @@ pub(super) fn apply_workspace_response(
                 return Ok(Some(true));
             }
             PendingIntent::AuthMutation {
-                selected_key,
+                provider,
+                auth_type,
                 filter,
-                toast,
             } => {
-                app.models = parse_models(&result)?;
-                app.set_toast(toast);
-                request_workspace(
+                let outcome = apply_auth_models_result(
                     app,
                     pipe,
                     sequence,
-                    WorkspaceCommand::ListModelProviders,
-                    serde_json::Map::new(),
-                    PendingIntent::WorkbenchLoad {
-                        target: WorkbenchTarget::Login,
-                        selected_key,
+                    result,
+                    provider.clone(),
+                    auth_type.clone(),
+                    filter.clone(),
+                );
+                if outcome.is_err() {
+                    restore_auth_overlay(
+                        app,
+                        if auth_type.is_some() {
+                            "login"
+                        } else {
+                            "logout"
+                        },
+                        Some(&provider),
                         filter,
-                    },
-                )?;
+                    );
+                }
+                outcome?;
+            }
+            PendingIntent::AuthVerify {
+                provider,
+                auth_type,
+                filter,
+                models,
+            } => {
+                let outcome = apply_auth_verify_result(
+                    app,
+                    result,
+                    &provider,
+                    auth_type.as_deref(),
+                    filter.clone(),
+                    models,
+                );
+                if outcome.is_err() {
+                    restore_auth_overlay(
+                        app,
+                        if auth_type.is_some() {
+                            "login"
+                        } else {
+                            "logout"
+                        },
+                        Some(&provider),
+                        filter,
+                    );
+                }
+                outcome?;
+            }
+            PendingIntent::AuthList { mode, filter } => {
+                let outcome = apply_auth_list_result(
+                    app,
+                    pipe,
+                    client_instance_id,
+                    sequence,
+                    session_flow,
+                    result,
+                    &mode,
+                    filter.clone(),
+                );
+                if outcome.is_err() {
+                    restore_auth_overlay(app, &mode, None, filter);
+                }
+                outcome?;
             }
         }
         return Ok(Some(false));

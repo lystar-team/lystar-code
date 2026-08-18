@@ -235,6 +235,7 @@ impl AppState {
                 | PendingIntent::TreeMutation { .. }
                 | PendingIntent::TreeNavigate { .. }
                 | PendingIntent::AuthMutation { .. }
+                | PendingIntent::AuthVerify { .. }
                 | PendingIntent::SubagentMutation { .. }
                 | PendingIntent::ClipboardMutation { .. }
                 | PendingIntent::Export
