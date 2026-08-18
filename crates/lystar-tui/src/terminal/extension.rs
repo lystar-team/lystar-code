@@ -473,6 +473,9 @@ pub(super) fn submit_editor_with_origin(
         }));
         return Ok(());
     }
+    if let Some(filter) = model_command_filter(&text) {
+        return open_model_selector(app, pipe, sequence, session_flow, filter);
+    }
     if let Some(command) = builtin_slash_command(&text) {
         open_workbench(
             app,

@@ -754,6 +754,23 @@ pub(in super::super) fn model_overlay(
             })
         })
         .unwrap_or(0);
+    let selected = if filter.is_empty()
+        || items.get(selected).is_some_and(|item| {
+            format!("{} {}", item.label, item.detail)
+                .to_lowercase()
+                .contains(&filter.to_lowercase())
+        }) {
+        selected
+    } else {
+        items
+            .iter()
+            .position(|item| {
+                format!("{} {}", item.label, item.detail)
+                    .to_lowercase()
+                    .contains(&filter.to_lowercase())
+            })
+            .unwrap_or(0)
+    };
     OverlayState::List(ListOverlay {
         title: "模型".to_owned(),
         origin: OverlayOrigin::User,

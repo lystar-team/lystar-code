@@ -214,6 +214,7 @@ impl AppState {
                 | PendingIntent::InstructionMutation { .. }
                 | PendingIntent::PackageMutation { .. }
                 | PendingIntent::SettingMutation { .. }
+                | PendingIntent::ModelMutation { .. }
                 | PendingIntent::SessionMutation { .. }
                 | PendingIntent::TreeMutation { .. }
                 | PendingIntent::TreeNavigate { .. }

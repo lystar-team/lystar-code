@@ -451,6 +451,11 @@ pub(super) fn apply_workspace_response(
                     filter,
                 )?;
             }
+            PendingIntent::ModelMutation {
+                session_path,
+                provider,
+                id,
+            } => apply_model_mutation_result(app, result, &session_path, &provider, &id)?,
             PendingIntent::SessionMutation {
                 toast,
                 close_overlay,

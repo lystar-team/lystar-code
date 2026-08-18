@@ -304,6 +304,11 @@ pub enum PendingIntent {
         selected_key: String,
         filter: String,
     },
+    ModelMutation {
+        session_path: String,
+        provider: String,
+        id: String,
+    },
     SessionMutation {
         toast: String,
         close_overlay: bool,

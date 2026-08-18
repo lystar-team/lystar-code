@@ -767,6 +767,9 @@ mod changelog_tests;
 #[path = "tests/session_info_tests.rs"]
 mod session_info_tests;
 
+#[path = "tests/model_tests.rs"]
+mod model_tests;
+
 #[path = "tests/hotkeys_tests.rs"]
 mod hotkeys_tests;
 

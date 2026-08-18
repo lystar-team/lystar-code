@@ -41,6 +41,17 @@ pub(in super::super) fn activate_workbench_action(
     )? {
         return Ok(());
     }
+    if handle_model_action(
+        app,
+        action,
+        pipe,
+        session_path,
+        client_instance_id,
+        sequence,
+        session_flow,
+    )? {
+        return Ok(());
+    }
     handle_settings_actions(
         app,
         action,

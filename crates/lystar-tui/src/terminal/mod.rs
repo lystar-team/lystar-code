@@ -70,6 +70,7 @@ mod extension;
 mod fork;
 mod input;
 mod lifecycle;
+mod model;
 mod name;
 mod options;
 mod reload;
@@ -95,6 +96,7 @@ use input::*;
 use lifecycle::TerminalGuard;
 #[cfg(test)]
 use lifecycle::enter_terminal;
+use model::*;
 use name::*;
 #[cfg(test)]
 use options::TerminalModeContext;

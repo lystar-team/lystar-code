@@ -154,50 +154,6 @@ pub(super) fn handle_settings_actions(
             filter,
         );
     }
-    if let Some(index) = action
-        .strip_prefix("model:")
-        .and_then(|value| value.parse::<usize>().ok())
-    {
-        let Some(model) = app.models.get(index).cloned() else {
-            app.set_overlay_error("模型列表已刷新，请重新选择");
-            return Ok(());
-        };
-        if !model.configured {
-            app.set_overlay_error("该模型不可用：Provider 未完成认证");
-            return Ok(());
-        }
-        let Some(lease_id) = app.lease_id.clone() else {
-            app.set_overlay_error("尚未获取会话租约");
-            return Ok(());
-        };
-        let client_request_id = format!(
-            "model:{}:{}:{}",
-            model.provider,
-            model.id,
-            sequence.saturating_add(1)
-        );
-        app.mark_write_pending();
-        return request_workspace(
-            app,
-            pipe,
-            sequence,
-            WorkspaceCommand::SetSessionModel,
-            serde_json::json!({
-                "sessionPath": session_path,
-                "leaseId": lease_id,
-                "clientInstanceId": client_instance_id,
-                "clientRequestId": client_request_id,
-                "model": { "provider": model.provider, "id": model.id },
-            })
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
-            PendingIntent::SessionMutation {
-                toast: "已切换模型".to_owned(),
-                close_overlay: true,
-            },
-        );
-    }
     if let Some(level) = action.strip_prefix("thinking:") {
         let model = match app.model_supports_reasoning() {
             Ok(model) => model,

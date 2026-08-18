@@ -103,6 +103,9 @@ pub(in super::super) fn open_workbench(
     if target == "session" {
         return request_session_info(app, pipe, session_path, sequence);
     }
+    if target == "model" {
+        return open_model_selector(app, pipe, sequence, session_flow, String::new());
+    }
     if target == "changelog" {
         app.open_overlay(OverlayState::Detail(DetailOverlay {
             title: "更新内容".to_owned(),
@@ -323,16 +326,6 @@ pub(in super::super) fn open_workbench(
                 filter: String::new(),
             },
             "设置",
-        ),
-        "model" => (
-            WorkspaceCommand::ListModels,
-            serde_json::Map::new(),
-            PendingIntent::WorkbenchLoad {
-                target: WorkbenchTarget::Model,
-                selected_key: None,
-                filter: String::new(),
-            },
-            "模型",
         ),
         "thinking" => (
             WorkspaceCommand::ListModels,
