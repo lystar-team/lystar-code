@@ -30,7 +30,8 @@ fn snapshot_value(path: &str) -> serde_json::Value {
     serde_json::json!({
         "id": "session", "path": path, "cwd": "/tmp", "phase": "idle", "activity": "idle",
         "thinkingLevel": "off", "attached": false, "writeAccess": "owned", "revision": 1,
-        "queuedSteerCount": 0, "queuedFollowUpCount": 0, "transcriptGeneration": "g1",
+        "leafId": "leaf-current", "queuedSteerCount": 0, "queuedFollowUpCount": 0,
+        "transcriptGeneration": "g1",
         "transcriptRevision": 1, "model": null
     })
 }
@@ -346,6 +347,7 @@ fn intercepts_only_connected_slash_commands() {
         (" /about ", "about"),
         ("/doctor", "doctor"),
         ("/new", "new"),
+        ("/clone", "clone"),
         ("/compact", "compact"),
         ("/export", "export"),
         ("/import", "import"),
@@ -760,6 +762,9 @@ mod changelog_tests;
 
 #[path = "tests/hotkeys_tests.rs"]
 mod hotkeys_tests;
+
+#[path = "tests/clone_tests.rs"]
+mod clone_tests;
 
 #[test]
 fn builds_select_items_from_host_payload() {

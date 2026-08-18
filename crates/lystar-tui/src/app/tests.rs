@@ -298,6 +298,7 @@ fn clears_live_streams_when_switching_or_disconnecting() {
             attached: true,
             write_access: "owned".to_owned(),
             revision: 1,
+            leaf_id: Some("new-leaf".to_owned()),
             queued_steer_count: 0,
             queued_follow_up_count: 0,
             transcript_generation: "g".to_owned(),

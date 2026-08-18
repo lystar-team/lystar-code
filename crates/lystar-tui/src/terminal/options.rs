@@ -176,7 +176,7 @@ pub(super) enum SessionTransition {
         path: String,
         lease_id: String,
         snapshot: lystar_protocol::SessionSnapshot,
-        restore: SessionRestorePoint,
+        restore: Box<SessionRestorePoint>,
     },
     CreateCleanup {
         id: String,

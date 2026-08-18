@@ -349,7 +349,7 @@ pub(in super::super) fn apply_session_flow(
                     path: snapshot.path.clone(),
                     lease_id,
                     snapshot,
-                    restore,
+                    restore: Box::new(restore),
                 });
                 pipe.request(&encode_release_session_request(&id, &old_path, &old_lease)?)?;
                 Ok(Some(false))
@@ -376,7 +376,7 @@ pub(in super::super) fn apply_session_flow(
             let id = format!("session-create-cleanup-{sequence}");
             *session_flow = Some(SessionFlow::CreateCleanup {
                 id: id.clone(),
-                restore,
+                restore: *restore,
                 reason: error,
             });
             pipe.request(&encode_release_session_request(

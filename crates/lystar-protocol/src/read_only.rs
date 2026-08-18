@@ -291,6 +291,7 @@ pub struct SessionSnapshot {
     pub attached: bool,
     pub write_access: String,
     pub revision: u64,
+    pub leaf_id: Option<String>,
     pub queued_steer_count: u64,
     pub queued_follow_up_count: u64,
     pub transcript_generation: String,
