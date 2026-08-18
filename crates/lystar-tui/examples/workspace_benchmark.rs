@@ -554,7 +554,7 @@ fn open_readonly(app: &mut AppState) {
     lines.extend(view.transcript.rounds().iter().flat_map(|round| {
         let mut lines = vec![round.summary()];
         if round.expanded {
-            lines.extend(round.detail_lines());
+            lines.extend(round.detail_lines().iter().map(|line| line.text.clone()));
         }
         lines
     }));
@@ -730,6 +730,7 @@ fn tool_items(prefix: &str, tool_rounds: usize) -> Vec<TranscriptItem> {
                     .is_multiple_of(43)
                     .then(|| format!("content_ref://tool/{prefix}/{index:05}")),
                 images: None,
+                diff: None,
             },
         });
     }
