@@ -1420,13 +1420,15 @@ class CoreRuntimeSession implements RuntimeSession {
 		for (const [shortcutKey, shortcut] of shortcuts) {
 			if (!matchesKey(data, shortcutKey)) continue;
 			const context = this.runtime.session.extensionRunner.createCommandContext();
-			Promise.resolve(shortcut.handler(context)).catch((error) => {
-				this.runtime.session.extensionRunner.emitError({
-					extensionPath: shortcut.extensionPath,
-					event: "shortcut",
-					error: error instanceof Error ? error.message : String(error),
+			void Promise.resolve()
+				.then(() => shortcut.handler(context))
+				.catch((error) => {
+					this.runtime.session.extensionRunner.emitError({
+						extensionPath: shortcut.extensionPath,
+						event: "shortcut",
+						error: error instanceof Error ? error.message : String(error),
+					});
 				});
-			});
 			return true;
 		}
 		return false;

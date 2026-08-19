@@ -847,6 +847,103 @@ describe("CodingAgentRuntimeAdapter", () => {
 		});
 	});
 
+	it("reloads dynamic Extension commands and shortcuts and contains handler failures", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-dynamic-edge-"));
+		const agentDir = join(tempDir, "agent");
+		const cwd = join(tempDir, "project");
+		for (const dir of [agentDir, cwd]) mkdirSync(dir, { recursive: true });
+		const previousVariant = process.env.LYSTAR_GUI_DYNAMIC_EDGE_VARIANT;
+		process.env.LYSTAR_GUI_DYNAMIC_EDGE_VARIANT = "before";
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({
+				defaultProjectTrust: "always",
+				extensions: [fileURLToPath(new URL("./fixtures/runtime-dynamic-edge-extension.ts", import.meta.url))],
+			}),
+		);
+		let runtime: RuntimeSession | undefined;
+		const events: RuntimeEvent[] = [];
+		cleanups.push(async () => {
+			if (previousVariant === undefined) delete process.env.LYSTAR_GUI_DYNAMIC_EDGE_VARIANT;
+			else process.env.LYSTAR_GUI_DYNAMIC_EDGE_VARIANT = previousVariant;
+			await runtime?.dispose();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+		runtime = await new CodingAgentRuntimeAdapter(agentDir).createSession(cwd, async () => ({ cancelled: true }));
+		runtime.onEvent((event) => events.push(event));
+
+		expect((await runtime.getCompletions("/edge", 5))?.items).toEqual(
+			expect.arrayContaining([expect.objectContaining({ label: "edge-before", kind: "extension" })]),
+		);
+		await runtime.prompt("/edge-before");
+		expect(runtime.getExtensionUiSnapshot?.()).toMatchObject({
+			statuses: [{ key: "edge-command", text: "edge-before" }],
+			extensionShortcutCount: 2,
+		});
+
+		process.env.LYSTAR_GUI_DYNAMIC_EDGE_VARIANT = "after";
+		await runtime.reloadResources();
+		expect(runtime.getExtensionUiSnapshot?.()).toMatchObject({
+			statuses: [],
+			extensionShortcutCount: 2,
+		});
+		expect((await runtime.getCompletions("/edge", 5))?.items).toEqual(
+			expect.arrayContaining([expect.objectContaining({ label: "edge-after", kind: "extension" })]),
+		);
+		expect((await runtime.getCompletions("/edge", 5))?.items).not.toEqual(
+			expect.arrayContaining([expect.objectContaining({ label: "edge-before", kind: "extension" })]),
+		);
+		expect(await runtime.dispatchExtensionTerminalInput?.("\u001b[98;6u")).toEqual({ consume: false });
+		await runtime.prompt("/edge-after");
+		expect(runtime.getExtensionUiSnapshot?.()).toMatchObject({
+			statuses: [{ key: "edge-command", text: "edge-after" }],
+		});
+
+		expect(await runtime.dispatchExtensionTerminalInput?.("\u001b[120;6u")).toEqual({ consume: true });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(events).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					type: "progress",
+					payload: expect.objectContaining({ type: "extension_error", event: "shortcut" }),
+				}),
+			]),
+		);
+	});
+
+	it("uses the later Extension shortcut on conflicts and preserves reserved built-ins", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-dynamic-conflict-"));
+		const agentDir = join(tempDir, "agent");
+		const cwd = join(tempDir, "project");
+		for (const dir of [agentDir, cwd]) mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({
+				defaultProjectTrust: "always",
+				extensions: [
+					fileURLToPath(new URL("./fixtures/runtime-dynamic-extension.ts", import.meta.url)),
+					fileURLToPath(new URL("./fixtures/runtime-dynamic-conflict-extension.ts", import.meta.url)),
+				],
+			}),
+		);
+		let runtime: RuntimeSession | undefined;
+		cleanups.push(async () => {
+			await runtime?.dispose();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+		runtime = await new CodingAgentRuntimeAdapter(agentDir).createSession(cwd, async () => ({ cancelled: true }));
+
+		expect(runtime.getExtensionUiSnapshot?.()).toMatchObject({ extensionShortcutCount: 1 });
+		expect(await runtime.dispatchExtensionTerminalInput?.("\u001b[117;6u")).toEqual({ consume: true });
+		expect(runtime.getExtensionUiSnapshot?.()).toMatchObject({
+			statuses: [{ key: "conflict-shortcut", text: "winner" }],
+		});
+		expect(await runtime.dispatchExtensionTerminalInput?.("\r")).toEqual({ consume: false });
+		expect(runtime.getExtensionUiSnapshot?.()).toMatchObject({
+			statuses: [{ key: "conflict-shortcut", text: "winner" }],
+		});
+	});
+
 	it("routes API key login through a secret UI request and Core credential storage", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-auth-"));
 		const previousOpenAiKey = process.env.OPENAI_API_KEY;
