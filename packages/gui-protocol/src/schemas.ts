@@ -727,7 +727,13 @@ export const ListSkillsResultSchema = StrictObject({
 	skills: Type.Array(SkillSummarySchema, { maxItems: 10_000 }),
 	diagnostics: JsonValueSchema,
 });
-export const SetSkillEnabledResultSchema = ListSkillsResultSchema;
+export const SetSkillEnabledResultSchema = StrictObject({
+	skills: Type.Array(SkillSummarySchema, { maxItems: 10_000 }),
+	diagnostics: JsonValueSchema,
+	path: Type.String({ minLength: 1, maxLength: 4096 }),
+	scope: Type.Union([Type.Literal("user"), Type.Literal("project")]),
+	enabled: Type.Boolean(),
+});
 export const ListProjectInstructionsResultSchema = Type.Array(ProjectInstructionSchema, { maxItems: 32 });
 export const SaveProjectInstructionResultSchema = ListProjectInstructionsResultSchema;
 export const ListHostInstructionsResultSchema = Type.Array(ProjectInstructionSchema, { maxItems: 32 });
@@ -830,6 +836,9 @@ export const ListPackagesResultSchema = Type.Array(PackageSummarySchema, { maxIt
 export const PackageMutationResultSchema = StrictObject({
 	changed: Type.Boolean(),
 	message: Type.String({ minLength: 1, maxLength: 16 * 1024 }),
+	source: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+	scope: Type.Optional(PackageScopeSchema),
+	packages: Type.Array(PackageSummarySchema, { maxItems: 1000 }),
 });
 export const SessionTreeResultSchema = Type.Array(SessionTreeNodeSchema, { maxItems: 10_000 });
 export const SetEntryLabelResultSchema = StrictObject({ changed: Type.Boolean() });
@@ -1322,6 +1331,8 @@ export const CommandSchema = Type.Union([
 	StrictObject({ command: Type.Literal("list_skills"), cwd: Type.String({ minLength: 1 }) }),
 	StrictObject({
 		command: Type.Literal("set_skill_enabled"),
+		sessionPath: Type.Optional(Type.String({ minLength: 1 })),
+		leaseId: Type.Optional(Id),
 		cwd: Type.String({ minLength: 1 }),
 		path: Type.String({ minLength: 1 }),
 		scope: Type.Union([Type.Literal("user"), Type.Literal("project")]),
@@ -1332,6 +1343,8 @@ export const CommandSchema = Type.Union([
 	StrictObject({ command: Type.Literal("list_project_instructions"), cwd: Type.String({ minLength: 1 }) }),
 	StrictObject({
 		command: Type.Literal("save_project_instruction"),
+		sessionPath: Type.Optional(Type.String({ minLength: 1 })),
+		leaseId: Type.Optional(Id),
 		cwd: Type.String({ minLength: 1 }),
 		fileName: Type.Union([Type.Literal("AGENTS.md"), Type.Literal("AGENTS.override.md")]),
 		content: Type.String(),
@@ -1342,6 +1355,8 @@ export const CommandSchema = Type.Union([
 	StrictObject({ command: Type.Literal("list_host_instructions") }),
 	StrictObject({
 		command: Type.Literal("save_host_instruction"),
+		sessionPath: Type.Optional(Type.String({ minLength: 1 })),
+		leaseId: Type.Optional(Id),
 		fileName: Type.Union([Type.Literal("AGENTS.md"), Type.Literal("AGENTS.override.md")]),
 		content: Type.String(),
 		expectedHash: Type.Optional(Id),
@@ -1429,6 +1444,8 @@ export const CommandSchema = Type.Union([
 	StrictObject({ command: Type.Literal("list_packages"), cwd: Type.String({ minLength: 1 }) }),
 	StrictObject({
 		command: Type.Literal("install_package"),
+		sessionPath: Type.Optional(Type.String({ minLength: 1 })),
+		leaseId: Type.Optional(Id),
 		cwd: Type.String({ minLength: 1, maxLength: 4096 }),
 		source: Type.String({ minLength: 1, maxLength: 4096 }),
 		scope: PackageScopeSchema,
@@ -1437,6 +1454,8 @@ export const CommandSchema = Type.Union([
 	}),
 	StrictObject({
 		command: Type.Literal("remove_package"),
+		sessionPath: Type.Optional(Type.String({ minLength: 1 })),
+		leaseId: Type.Optional(Id),
 		cwd: Type.String({ minLength: 1, maxLength: 4096 }),
 		source: Type.String({ minLength: 1, maxLength: 4096 }),
 		scope: PackageScopeSchema,
@@ -1445,6 +1464,8 @@ export const CommandSchema = Type.Union([
 	}),
 	StrictObject({
 		command: Type.Literal("update_packages"),
+		sessionPath: Type.Optional(Type.String({ minLength: 1 })),
+		leaseId: Type.Optional(Id),
 		cwd: Type.String({ minLength: 1, maxLength: 4096 }),
 		source: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
 		clientInstanceId: Id,

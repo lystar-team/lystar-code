@@ -247,6 +247,9 @@ pub enum PendingIntent {
     },
     ChangeDetail,
     SkillMutation {
+        path: String,
+        scope: String,
+        enabled: bool,
         selected_key: String,
         filter: String,
     },
@@ -256,10 +259,16 @@ pub enum PendingIntent {
     },
     InstructionMutation {
         target: WorkbenchTarget,
+        file_name: String,
+        content: String,
         selected_key: String,
         filter: String,
     },
     PackageMutation {
+        source: Option<String>,
+        scope: Option<String>,
+        expected_present: Option<bool>,
+        close_overlay: bool,
         selected_key: Option<String>,
         filter: String,
         toast: String,

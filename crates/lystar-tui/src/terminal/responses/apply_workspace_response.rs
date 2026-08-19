@@ -104,10 +104,22 @@ pub(super) fn apply_workspace_response(
                 app.replace_overlay(change_detail_overlay(app));
             }
             PendingIntent::SkillMutation {
+                path,
+                scope,
+                enabled,
                 selected_key,
                 filter,
             } => {
-                app.skills = parse_skills(&result)?;
+                if result.get("path").and_then(serde_json::Value::as_str) != Some(path.as_str())
+                    || result.get("scope").and_then(serde_json::Value::as_str)
+                        != Some(scope.as_str())
+                    || result.get("enabled").and_then(serde_json::Value::as_bool) != Some(enabled)
+                {
+                    return Err(TuiError::InvalidResponse("技能响应与请求不一致".to_owned()));
+                }
+                let skills = parse_skills(&result)?;
+                app.skills = skills;
+                app.close_overlay();
                 app.replace_overlay(skills_overlay(&app.skills, Some(&selected_key), filter));
                 app.set_toast("技能启用状态已更新");
             }
@@ -125,12 +137,23 @@ pub(super) fn apply_workspace_response(
             }
             PendingIntent::InstructionMutation {
                 target,
+                file_name,
+                content,
                 selected_key,
                 filter,
             } => {
                 let instructions = parse_instructions(&result)?;
+                if !instructions.iter().any(|instruction| {
+                    instruction.file_name == file_name
+                        && instruction.content.as_deref() == Some(content.as_str())
+                }) {
+                    return Err(TuiError::InvalidResponse(
+                        "指令响应未包含保存内容".to_owned(),
+                    ));
+                }
                 if target == WorkbenchTarget::InstructionsProject {
                     app.project_instructions = instructions;
+                    app.close_overlay();
                     app.replace_overlay(instructions_overlay(
                         &app.project_instructions,
                         "项目",
@@ -139,6 +162,7 @@ pub(super) fn apply_workspace_response(
                     ));
                 } else {
                     app.host_instructions = instructions;
+                    app.close_overlay();
                     app.replace_overlay(instructions_overlay(
                         &app.host_instructions,
                         "本机",
@@ -149,24 +173,48 @@ pub(super) fn apply_workspace_response(
                 app.set_toast("指令已保存");
             }
             PendingIntent::PackageMutation {
+                source,
+                scope,
+                expected_present,
+                close_overlay,
                 selected_key,
                 filter,
                 toast,
             } => {
+                if result.get("source").and_then(serde_json::Value::as_str) != source.as_deref()
+                    || result.get("scope").and_then(serde_json::Value::as_str) != scope.as_deref()
+                {
+                    return Err(TuiError::InvalidResponse("包响应与请求不一致".to_owned()));
+                }
+                let packages =
+                    parse_packages(result.get("packages").ok_or_else(|| {
+                        TuiError::InvalidResponse("包响应缺少 packages".to_owned())
+                    })?)?;
+                if let (Some(source), Some(scope), Some(expected_present)) =
+                    (&source, &scope, expected_present)
+                    && packages
+                        .iter()
+                        .any(|package| package.source == *source && package.scope == *scope)
+                        != expected_present
+                {
+                    return Err(TuiError::InvalidResponse("包响应未包含目标状态".to_owned()));
+                }
+                app.packages = packages;
                 let message = result
                     .get("message")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or(&toast)
                     .to_owned();
                 app.set_toast(message);
-                request_workspace_load(
-                    app,
-                    pipe,
-                    sequence,
-                    WorkbenchTarget::Packages,
-                    selected_key,
+                app.pending_package_source = None;
+                if close_overlay {
+                    app.close_overlay();
+                }
+                app.replace_overlay(packages_overlay(
+                    &app.packages,
+                    selected_key.as_deref(),
                     filter,
-                )?;
+                ));
             }
             PendingIntent::WorkbenchLoad {
                 target,

@@ -1407,6 +1407,15 @@
                       "type": "string",
                       "const": "set_skill_enabled"
                     },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
                     "cwd": {
                       "type": "string",
                       "minLength": 1
@@ -1476,6 +1485,15 @@
                       "type": "string",
                       "const": "save_project_instruction"
                     },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
                     "cwd": {
                       "type": "string",
                       "minLength": 1
@@ -1539,6 +1557,15 @@
                     "command": {
                       "type": "string",
                       "const": "save_host_instruction"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
                     },
                     "fileName": {
                       "anyOf": [
@@ -2076,6 +2103,15 @@
                       "type": "string",
                       "const": "install_package"
                     },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
                     "cwd": {
                       "type": "string",
                       "minLength": 1,
@@ -2126,6 +2162,15 @@
                       "type": "string",
                       "const": "remove_package"
                     },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
                     "cwd": {
                       "type": "string",
                       "minLength": 1,
@@ -2173,6 +2218,15 @@
                     "command": {
                       "type": "string",
                       "const": "update_packages"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
                     },
                     "cwd": {
                       "type": "string",
@@ -5827,7 +5881,10 @@
       "type": "object",
       "required": [
         "skills",
-        "diagnostics"
+        "diagnostics",
+        "path",
+        "scope",
+        "enabled"
       ],
       "properties": {
         "skills": {
@@ -5915,6 +5972,26 @@
         },
         "diagnostics": {
           "$ref": "#/$defs/JsonValue"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "user"
+            },
+            {
+              "type": "string",
+              "const": "project"
+            }
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false
@@ -8864,7 +8941,8 @@
       "type": "object",
       "required": [
         "changed",
-        "message"
+        "message",
+        "packages"
       ],
       "properties": {
         "changed": {
@@ -8874,6 +8952,63 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 16384
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "user"
+            },
+            {
+              "type": "string",
+              "const": "project"
+            }
+          ]
+        },
+        "packages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "source",
+              "scope",
+              "filtered"
+            ],
+            "properties": {
+              "source": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "scope": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "user"
+                  },
+                  {
+                    "type": "string",
+                    "const": "project"
+                  }
+                ]
+              },
+              "filtered": {
+                "type": "boolean"
+              },
+              "installedPath": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 1000
         }
       },
       "additionalProperties": false
@@ -8882,7 +9017,8 @@
       "type": "object",
       "required": [
         "changed",
-        "message"
+        "message",
+        "packages"
       ],
       "properties": {
         "changed": {
@@ -8892,6 +9028,63 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 16384
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "user"
+            },
+            {
+              "type": "string",
+              "const": "project"
+            }
+          ]
+        },
+        "packages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "source",
+              "scope",
+              "filtered"
+            ],
+            "properties": {
+              "source": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "scope": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "user"
+                  },
+                  {
+                    "type": "string",
+                    "const": "project"
+                  }
+                ]
+              },
+              "filtered": {
+                "type": "boolean"
+              },
+              "installedPath": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 1000
         }
       },
       "additionalProperties": false
@@ -8900,7 +9093,8 @@
       "type": "object",
       "required": [
         "changed",
-        "message"
+        "message",
+        "packages"
       ],
       "properties": {
         "changed": {
@@ -8910,6 +9104,63 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 16384
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "user"
+            },
+            {
+              "type": "string",
+              "const": "project"
+            }
+          ]
+        },
+        "packages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "source",
+              "scope",
+              "filtered"
+            ],
+            "properties": {
+              "source": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "scope": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "user"
+                  },
+                  {
+                    "type": "string",
+                    "const": "project"
+                  }
+                ]
+              },
+              "filtered": {
+                "type": "boolean"
+              },
+              "installedPath": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 1000
         }
       },
       "additionalProperties": false

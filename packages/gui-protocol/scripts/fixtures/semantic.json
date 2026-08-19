@@ -129,7 +129,7 @@
       "name": "client-workspace-install-package",
       "direction": "client",
       "workspaceCommand": "install_package",
-      "message": { "type": "request", "id": "workspace-install-package", "request": { "command": "install_package", "cwd": "/tmp/project", "source": "npm:example", "scope": "project", "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
+      "message": { "type": "request", "id": "workspace-install-package", "request": { "command": "install_package", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "cwd": "/tmp/project", "source": "npm:example", "scope": "project", "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
     },
     {
       "name": "client-workspace-remove-package",
@@ -278,7 +278,7 @@
     {
       "name": "client-write-set-skill-enabled",
       "direction": "client",
-      "message": { "type": "request", "id": "write-set-skill-enabled", "request": { "command": "set_skill_enabled", "cwd": "/tmp/project", "path": "/tmp/skill.md", "scope": "project", "enabled": true, "clientInstanceId": "client-1", "clientRequestId": "write-11" } }
+      "message": { "type": "request", "id": "write-set-skill-enabled", "request": { "command": "set_skill_enabled", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "cwd": "/tmp/project", "path": "/tmp/skill.md", "scope": "project", "enabled": true, "clientInstanceId": "client-1", "clientRequestId": "write-11" } }
     },
     {
       "name": "client-write-save-project-instruction",
@@ -499,19 +499,19 @@
       "name": "server-workspace-install-package",
       "direction": "server",
       "workspaceCommand": "install_package",
-      "message": { "type": "response", "id": "workspace-install-package", "ok": true, "result": { "changed": true, "message": "ok" } }
+      "message": { "type": "response", "id": "workspace-install-package", "ok": true, "result": { "changed": true, "message": "ok", "source": "npm:example", "scope": "project", "packages": [{ "source": "npm:example", "scope": "project", "filtered": false, "installedPath": "/tmp/project/.pi/packages/example" }] } }
     },
     {
       "name": "server-workspace-remove-package",
       "direction": "server",
       "workspaceCommand": "remove_package",
-      "message": { "type": "response", "id": "workspace-remove-package", "ok": true, "result": { "changed": false, "message": "ok" } }
+      "message": { "type": "response", "id": "workspace-remove-package", "ok": true, "result": { "changed": false, "message": "ok", "source": "npm:example", "scope": "project", "packages": [] } }
     },
     {
       "name": "server-workspace-update-packages",
       "direction": "server",
       "workspaceCommand": "update_packages",
-      "message": { "type": "response", "id": "workspace-update-packages", "ok": true, "result": { "changed": true, "message": "ok" } }
+      "message": { "type": "response", "id": "workspace-update-packages", "ok": true, "result": { "changed": true, "message": "ok", "packages": [{ "source": "npm:example", "scope": "project", "filtered": false }] } }
     },
     {
       "name": "server-workspace-get-session-tree",

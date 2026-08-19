@@ -818,6 +818,9 @@ mod settings_tests;
 #[path = "tests/trust_tests.rs"]
 mod trust_tests;
 
+#[path = "tests/resource_mutation_tests.rs"]
+mod resource_mutation_tests;
+
 #[path = "tests/clone_tests.rs"]
 mod clone_tests;
 

@@ -119,7 +119,9 @@ pub(super) fn handle_project_actions(
             app.set_overlay_error("技能作用域无效");
             return Ok(true);
         }
-        app.close_overlay();
+        let Some(lease_id) = resource_write_lease(app, session_flow) else {
+            return Ok(true);
+        };
         let filter = list_context(app, "技能").0;
         let cwd = app
             .active_session_cwd()
@@ -133,6 +135,8 @@ pub(super) fn handle_project_actions(
             sequence,
             WorkspaceCommand::SetSkillEnabled,
             serde_json::json!({
+                "sessionPath": session_path,
+                "leaseId": lease_id,
                 "cwd": cwd,
                 "path": skill.path,
                 "scope": scope,
@@ -144,6 +148,9 @@ pub(super) fn handle_project_actions(
             .cloned()
             .unwrap_or_default(),
             PendingIntent::SkillMutation {
+                path: skill.path,
+                scope,
+                enabled: !skill.enabled,
                 selected_key: format!("skill:{index}"),
                 filter,
             },
@@ -232,10 +239,12 @@ pub(super) fn handle_project_actions(
             }
         };
         app.close_overlay();
+        app.close_overlay();
         request_workspace_load(app, pipe, sequence, target, None, String::new())?;
         return Ok(true);
     }
     if action == "instruction-conflict-discard" {
+        app.close_overlay();
         app.close_overlay();
         app.set_toast("已放弃保存，未覆盖外部修改");
         return Ok(true);
@@ -292,7 +301,9 @@ pub(super) fn handle_project_actions(
             app.set_overlay_error("指令列表已刷新，请重新选择");
             return Ok(true);
         };
-        app.close_overlay();
+        let Some(lease_id) = resource_write_lease(app, session_flow) else {
+            return Ok(true);
+        };
         let target = if scope == "project" {
             WorkbenchTarget::InstructionsProject
         } else {
@@ -314,6 +325,8 @@ pub(super) fn handle_project_actions(
             WorkspaceCommand::SaveHostInstruction
         };
         let mut payload = serde_json::json!({
+            "sessionPath": session_path,
+            "leaseId": lease_id,
             "fileName": instruction.file_name,
             "content": content,
             "clientInstanceId": client_instance_id,
@@ -337,6 +350,8 @@ pub(super) fn handle_project_actions(
             payload,
             PendingIntent::InstructionMutation {
                 target,
+                file_name: instruction.file_name,
+                content,
                 selected_key: format!("instruction:{scope}:{index}"),
                 filter,
             },
@@ -376,15 +391,17 @@ pub(super) fn handle_project_actions(
         return Ok(true);
     }
     if let Some(scope) = action.strip_prefix("package-install:") {
-        let Some(source) = app.pending_package_source.take() else {
-            app.set_overlay_error("包来源已丢失，请重新输入");
-            return Ok(true);
-        };
         if !matches!(scope, "user" | "project") {
             app.set_overlay_error("包作用域无效");
             return Ok(true);
         }
-        app.close_overlay();
+        let Some(lease_id) = resource_write_lease(app, session_flow) else {
+            return Ok(true);
+        };
+        let Some(source) = app.pending_package_source.clone() else {
+            app.set_overlay_error("包来源已丢失，请重新输入");
+            return Ok(true);
+        };
         let filter = list_context(app, "包").0;
         let cwd = app
             .active_session_cwd()
@@ -398,6 +415,7 @@ pub(super) fn handle_project_actions(
             sequence,
             WorkspaceCommand::InstallPackage,
             serde_json::json!({
+                "sessionPath": session_path, "leaseId": lease_id,
                 "cwd": cwd, "source": source, "scope": scope,
                 "clientInstanceId": client_instance_id,
                 "clientRequestId": format!("package-install:{}:{}", scope, sequence.saturating_add(1)),
@@ -405,7 +423,10 @@ pub(super) fn handle_project_actions(
             .as_object()
             .cloned()
             .unwrap_or_default(),
-            PendingIntent::PackageMutation { selected_key: None, filter, toast: "包已安装".to_owned() },
+            PendingIntent::PackageMutation {
+                source: Some(source), scope: Some(scope.to_owned()), expected_present: Some(true),
+                close_overlay: true, selected_key: None, filter, toast: "包已安装".to_owned()
+            },
         )?;
         return Ok(true);
     }
@@ -417,7 +438,9 @@ pub(super) fn handle_project_actions(
             app.set_overlay_error("包列表已刷新，请重新选择");
             return Ok(true);
         };
-        app.close_overlay();
+        let Some(lease_id) = resource_write_lease(app, session_flow) else {
+            return Ok(true);
+        };
         let filter = list_context(app, "包").0;
         let cwd = app
             .active_session_cwd()
@@ -431,6 +454,7 @@ pub(super) fn handle_project_actions(
             sequence,
             WorkspaceCommand::RemovePackage,
             serde_json::json!({
+                "sessionPath": session_path, "leaseId": lease_id,
                 "cwd": cwd, "source": package.source, "scope": package.scope,
                 "clientInstanceId": client_instance_id,
                 "clientRequestId": format!("package-remove:{}", sequence.saturating_add(1)),
@@ -439,6 +463,10 @@ pub(super) fn handle_project_actions(
             .cloned()
             .unwrap_or_default(),
             PendingIntent::PackageMutation {
+                source: Some(package.source),
+                scope: Some(package.scope),
+                expected_present: Some(false),
+                close_overlay: false,
                 selected_key: None,
                 filter,
                 toast: "包已移除".to_owned(),
@@ -452,6 +480,9 @@ pub(super) fn handle_project_actions(
             .and_then(|value| value.parse::<usize>().ok())
             .and_then(|index| app.packages.get(index))
             .map(|package| package.source.clone());
+        let Some(lease_id) = resource_write_lease(app, session_flow) else {
+            return Ok(true);
+        };
         let filter = list_context(app, "包").0;
         let cwd = app
             .active_session_cwd()
@@ -459,6 +490,8 @@ pub(super) fn handle_project_actions(
             .map(str::to_owned)
             .ok_or_else(|| TuiError::InvalidResponse("尚未获取项目目录".to_owned()))?;
         let mut payload = serde_json::json!({
+            "sessionPath": session_path,
+            "leaseId": lease_id,
             "cwd": cwd,
             "clientInstanceId": client_instance_id,
             "clientRequestId": format!("package-update:{}", sequence.saturating_add(1)),
@@ -466,8 +499,11 @@ pub(super) fn handle_project_actions(
         .as_object()
         .cloned()
         .unwrap_or_default();
-        if let Some(source) = source {
-            payload.insert("source".to_owned(), serde_json::Value::String(source));
+        if let Some(source) = &source {
+            payload.insert(
+                "source".to_owned(),
+                serde_json::Value::String(source.clone()),
+            );
         }
         app.mark_write_pending();
         request_workspace(
@@ -477,6 +513,10 @@ pub(super) fn handle_project_actions(
             WorkspaceCommand::UpdatePackages,
             payload,
             PendingIntent::PackageMutation {
+                source,
+                scope: None,
+                expected_present: None,
+                close_overlay: false,
                 selected_key: None,
                 filter,
                 toast: "包已更新".to_owned(),
@@ -485,4 +525,24 @@ pub(super) fn handle_project_actions(
         return Ok(true);
     }
     Ok(false)
+}
+
+fn resource_write_lease(app: &mut AppState, session_flow: &Option<SessionFlow>) -> Option<String> {
+    if app.is_active_operation() {
+        app.set_overlay_error("当前会话正在运行，不能修改资源");
+        return None;
+    }
+    if session_flow.is_some() {
+        app.set_overlay_error("会话操作正在进行");
+        return None;
+    }
+    if app.write_pending {
+        app.set_overlay_error("已有写入正在等待确认");
+        return None;
+    }
+    let Some(lease_id) = app.lease_id.clone() else {
+        app.set_overlay_error("尚未获取会话租约");
+        return None;
+    };
+    Some(lease_id)
 }

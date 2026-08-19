@@ -980,81 +980,97 @@ export class GuiHostService {
 				);
 			case "set_skill_enabled": {
 				const cwd = canonicalProjectCwd(request.cwd);
+				const sessionPath = this.mutationSessionPath(request);
 				return this.executeJournaledWrite(connection, {
 					command: request.command,
 					clientInstanceId: request.clientInstanceId,
 					clientRequestId: request.clientRequestId,
 					scope: `project:${cwd}`,
-					payload: { cwd, path: request.path, scope: request.scope, enabled: request.enabled },
-					run: async () =>
-						jsonValue(
-							await this.adapter.setSkillEnabled(
-								cwd,
-								request.path,
-								request.scope,
-								request.enabled,
-								this.createUiRequestHandler(
-									`skills:${request.clientRequestId}`,
-									undefined,
-									request.clientInstanceId,
-								),
+					lockSessionPath: sessionPath,
+					payload: {
+						...(sessionPath ? { sessionPath } : {}),
+						cwd,
+						path: request.path,
+						scope: request.scope,
+						enabled: request.enabled,
+					},
+					run: async () => {
+						const runtime = this.assertMutationSession(connection, request, cwd);
+						const result = await this.adapter.setSkillEnabled(
+							cwd,
+							request.path,
+							request.scope,
+							request.enabled,
+							this.createUiRequestHandler(
+								`skills:${request.clientRequestId}`,
+								undefined,
+								request.clientInstanceId,
 							),
-						),
+						);
+						await this.reloadMutationResources(runtime, request.scope === "project" ? cwd : undefined);
+						return jsonValue({ ...result, path: request.path, scope: request.scope, enabled: request.enabled });
+					},
 				});
 			}
 			case "list_project_instructions":
 				return jsonValue(this.adapter.listProjectInstructions(canonicalProjectCwd(request.cwd)));
 			case "save_project_instruction": {
 				const cwd = canonicalProjectCwd(request.cwd);
+				const sessionPath = this.mutationSessionPath(request);
 				return this.executeJournaledWrite(connection, {
 					command: request.command,
 					clientInstanceId: request.clientInstanceId,
 					clientRequestId: request.clientRequestId,
 					scope: `project:${cwd}`,
+					lockSessionPath: sessionPath,
 					payload: {
+						...(sessionPath ? { sessionPath } : {}),
 						cwd,
 						fileName: request.fileName,
 						content: request.content,
 						...(request.expectedHash ? { expectedHash: request.expectedHash } : {}),
 					},
 					run: async () => {
+						const runtime = this.assertMutationSession(connection, request, cwd);
 						const result = await this.adapter.saveProjectInstruction(
 							cwd,
 							request.fileName,
 							request.content,
 							request.expectedHash,
 						);
-						for (const runtime of this.runtimes.values()) {
-							if (canonicalProjectCwd(runtime.getSnapshot("available").cwd) === cwd)
-								await runtime.reloadResources();
-						}
+						await this.reloadMutationResources(runtime, cwd);
 						return jsonValue(result);
 					},
 				});
 			}
 			case "list_host_instructions":
 				return jsonValue(this.adapter.listHostInstructions());
-			case "save_host_instruction":
+			case "save_host_instruction": {
+				const sessionPath = this.mutationSessionPath(request);
 				return this.executeJournaledWrite(connection, {
 					command: request.command,
 					clientInstanceId: request.clientInstanceId,
 					clientRequestId: request.clientRequestId,
 					scope: "host:instructions",
+					lockSessionPath: sessionPath,
 					payload: {
+						...(sessionPath ? { sessionPath } : {}),
 						fileName: request.fileName,
 						content: request.content,
 						...(request.expectedHash ? { expectedHash: request.expectedHash } : {}),
 					},
 					run: async () => {
+						const runtime = this.assertMutationSession(connection, request);
 						const result = await this.adapter.saveHostInstruction(
 							request.fileName,
 							request.content,
 							request.expectedHash,
 						);
-						for (const runtime of this.runtimes.values()) await runtime.reloadResources();
+						await this.reloadMutationResources(runtime);
 						return jsonValue(result);
 					},
 				});
+			}
 			case "list_directories":
 				return jsonValue(this.adapter.listDirectories(request.path));
 			case "get_completions": {
@@ -1235,27 +1251,53 @@ export class GuiHostService {
 			case "install_package":
 			case "remove_package": {
 				const cwd = canonicalProjectCwd(request.cwd);
+				const sessionPath = this.mutationSessionPath(request);
 				return this.executeJournaledWrite(connection, {
 					command: request.command,
 					clientInstanceId: request.clientInstanceId,
 					clientRequestId: request.clientRequestId,
 					scope: request.scope === "user" ? "host:packages" : `project:${cwd}`,
-					payload: { cwd, source: request.source, scope: request.scope },
-					run: () =>
-						request.command === "install_package"
+					lockSessionPath: sessionPath,
+					payload: { ...(sessionPath ? { sessionPath } : {}), cwd, source: request.source, scope: request.scope },
+					run: async () => {
+						const runtime = this.assertMutationSession(connection, request, cwd);
+						const result = await (request.command === "install_package"
 							? this.adapter.installPackage(cwd, request.source, request.scope)
-							: this.adapter.removePackage(cwd, request.source, request.scope),
+							: this.adapter.removePackage(cwd, request.source, request.scope));
+						await this.reloadMutationResources(runtime, request.scope === "project" ? cwd : undefined);
+						return jsonValue({
+							...result,
+							source: request.source,
+							scope: request.scope,
+							packages: this.adapter.listPackages(cwd),
+						});
+					},
 				});
 			}
 			case "update_packages": {
 				const cwd = canonicalProjectCwd(request.cwd);
+				const sessionPath = this.mutationSessionPath(request);
 				return this.executeJournaledWrite(connection, {
 					command: request.command,
 					clientInstanceId: request.clientInstanceId,
 					clientRequestId: request.clientRequestId,
 					scope: `project:${cwd}`,
-					payload: { cwd, ...(request.source ? { source: request.source } : {}) },
-					run: () => this.adapter.updatePackages(cwd, request.source),
+					lockSessionPath: sessionPath,
+					payload: {
+						...(sessionPath ? { sessionPath } : {}),
+						cwd,
+						...(request.source ? { source: request.source } : {}),
+					},
+					run: async () => {
+						const runtime = this.assertMutationSession(connection, request, cwd);
+						const result = await this.adapter.updatePackages(cwd, request.source);
+						await this.reloadMutationResources(runtime);
+						return jsonValue({
+							...result,
+							...(request.source ? { source: request.source } : {}),
+							packages: this.adapter.listPackages(cwd),
+						});
+					},
 				});
 			}
 			case "get_session_tree": {
@@ -1933,6 +1975,46 @@ export class GuiHostService {
 		const runtime = this.runtimes.get(sessionPath);
 		this.detachRuntimeProjection(sessionPath);
 		await runtime?.dispose();
+	}
+
+	private mutationSessionPath(request: { sessionPath?: string; leaseId?: string }): string | undefined {
+		if (request.sessionPath === undefined && request.leaseId === undefined) return undefined;
+		if (!request.sessionPath || !request.leaseId) {
+			throw Object.assign(new Error("会话路径和租约必须同时提供"), {
+				code: "session_control_incomplete",
+				retryable: false,
+			});
+		}
+		return canonicalSessionPath(request.sessionPath);
+	}
+
+	private assertMutationSession(
+		connection: ClientConnection,
+		request: { sessionPath?: string; leaseId?: string; clientInstanceId: string },
+		cwd?: string,
+	): RuntimeSession | undefined {
+		if (!request.sessionPath || !request.leaseId) return undefined;
+		const { runtime } = this.assertExtensionSession(connection, {
+			sessionPath: request.sessionPath,
+			leaseId: request.leaseId,
+			clientInstanceId: request.clientInstanceId,
+		});
+		if (cwd && canonicalProjectCwd(runtime.getSnapshot("available").cwd) !== cwd) {
+			throw Object.assign(new Error("资源目录与当前会话不一致"), {
+				code: "resource_session_mismatch",
+				retryable: false,
+			});
+		}
+		return runtime;
+	}
+
+	private async reloadMutationResources(runtime: RuntimeSession | undefined, cwd?: string): Promise<void> {
+		for (const candidate of this.runtimes.values()) {
+			if ((!cwd || canonicalProjectCwd(candidate.getSnapshot("available").cwd) === cwd) && candidate !== runtime) {
+				await candidate.reloadResources();
+			}
+		}
+		await runtime?.reloadResources();
 	}
 
 	private assertExtensionSession(

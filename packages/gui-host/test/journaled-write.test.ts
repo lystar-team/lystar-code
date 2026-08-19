@@ -693,6 +693,126 @@ describe("GuiHostService journaled writes", () => {
 		).toMatchObject({ ok: false, error: { code: "session_operation_active" } });
 	});
 
+	it("binds resource mutations to the active Session and reloads before responding", async () => {
+		const setupValue = setup();
+		const active = await lease(setupValue.service, setupValue.sessionPath);
+		const otherProject = join(setupValue.directory, "other-resource-project");
+		mkdirSync(otherProject);
+
+		for (const [id, leaseId, cwd] of [
+			["resource-incomplete", undefined, setupValue.cwd],
+			["resource-stale", "stale-lease", setupValue.cwd],
+			["resource-other-project", active.leaseId, otherProject],
+		] as const) {
+			await active.connection.handle({
+				type: "request",
+				id,
+				request: {
+					command: "set_skill_enabled",
+					sessionPath: setupValue.sessionPath,
+					...(leaseId ? { leaseId } : {}),
+					cwd,
+					path: "skill.md",
+					scope: "project",
+					enabled: true,
+					clientInstanceId: "client",
+					clientRequestId: id,
+				},
+			} as ClientMessage);
+		}
+
+		setupValue.counts.block_reload = 1;
+		const mutation = active.connection.handle({
+			type: "request",
+			id: "resource-skill",
+			request: {
+				command: "set_skill_enabled",
+				sessionPath: setupValue.sessionPath,
+				leaseId: active.leaseId,
+				cwd: setupValue.cwd,
+				path: "skill.md",
+				scope: "project",
+				enabled: true,
+				clientInstanceId: "client",
+				clientRequestId: "resource-skill",
+			},
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await active.connection.handle({
+			type: "request",
+			id: "prompt-during-resource-write",
+			request: {
+				command: "prompt",
+				sessionPath: setupValue.sessionPath,
+				leaseId: active.leaseId,
+				clientInstanceId: "client",
+				clientRequestId: "prompt-during-resource-write",
+				text: "should be rejected",
+			},
+		});
+		await mutation;
+
+		await active.connection.handle({
+			type: "request",
+			id: "resource-host-instruction",
+			request: {
+				command: "save_host_instruction",
+				sessionPath: setupValue.sessionPath,
+				leaseId: active.leaseId,
+				fileName: "AGENTS.md",
+				content: "# Host",
+				clientInstanceId: "client",
+				clientRequestId: "resource-host-instruction",
+			},
+		});
+		await active.connection.handle({
+			type: "request",
+			id: "resource-package",
+			request: {
+				command: "install_package",
+				sessionPath: setupValue.sessionPath,
+				leaseId: active.leaseId,
+				cwd: setupValue.cwd,
+				source: "npm:example",
+				scope: "project",
+				clientInstanceId: "client",
+				clientRequestId: "resource-package",
+			},
+		});
+
+		expect(
+			active.connection.messages.find(
+				(message) => message.type === "response" && message.id === "resource-incomplete",
+			),
+		).toMatchObject({ ok: false, error: { code: "session_control_incomplete" } });
+		expect(
+			active.connection.messages.find((message) => message.type === "response" && message.id === "resource-stale"),
+		).toMatchObject({ ok: false, error: { code: "invalid_session_lease" } });
+		expect(
+			active.connection.messages.find(
+				(message) => message.type === "response" && message.id === "resource-other-project",
+			),
+		).toMatchObject({ ok: false, error: { code: "resource_session_mismatch" } });
+		expect(
+			active.connection.messages.find((message) => message.type === "response" && message.id === "resource-skill"),
+		).toMatchObject({ ok: true, result: { path: "skill.md", scope: "project", enabled: true } });
+		expect(
+			active.connection.messages.find(
+				(message) => message.type === "response" && message.id === "prompt-during-resource-write",
+			),
+		).toMatchObject({ ok: false, error: { code: "session_operation_active" } });
+		expect(
+			active.connection.messages.find((message) => message.type === "response" && message.id === "resource-package"),
+		).toMatchObject({
+			ok: true,
+			result: { source: "npm:example", scope: "project", packages: [] },
+		});
+		expect(setupValue.counts.set_skill_enabled).toBe(1);
+		expect(setupValue.counts.save_host_instruction).toBe(1);
+		expect(setupValue.counts.install_package).toBe(1);
+		expect(setupValue.counts.reload_resources).toBe(3);
+	});
+
 	it("binds project trust changes to the active Session and reloads its resources", async () => {
 		const setupValue = setup();
 		const active = await lease(setupValue.service, setupValue.sessionPath);
