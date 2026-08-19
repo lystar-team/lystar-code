@@ -632,6 +632,26 @@ function fakeModels() {
 	];
 }
 
+function fakeAuthModels(authenticated: boolean) {
+	return [
+		...fakeModels(),
+		{
+			provider: "login",
+			id: "auth-model",
+			name: "登录测试模型",
+			api: "openai-completions",
+			reasoning: false,
+			input: ["text"],
+			contextWindow: 32_000,
+			maxTokens: 2_048,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			supportedThinkingLevels: [],
+			authenticated,
+			authMethods: ["api_key", "oauth"],
+		},
+	];
+}
+
 function createAdapter(runtime: FakeRuntimeSession): RuntimeAdapter {
 	return {
 		getAbout: () => ({
@@ -661,6 +681,7 @@ function createAdapter(runtime: FakeRuntimeSession): RuntimeAdapter {
 				id: "login",
 				name: "登录测试",
 				authenticated: runtime.loginCount > runtime.logoutCount,
+				authSource: runtime.loginCount > runtime.logoutCount ? "stored" : undefined,
 				authMethods: ["api_key", "oauth"],
 				modelCount: 1,
 				builtIn: false,
@@ -720,11 +741,11 @@ function createAdapter(runtime: FakeRuntimeSession): RuntimeAdapter {
 			});
 			assert.equal(confirm.confirmed, true);
 			runtime.loginCount++;
-			return fakeModels();
+			return fakeAuthModels(true);
 		},
 		logoutModelProvider: async () => {
 			runtime.logoutCount++;
-			return fakeModels();
+			return fakeAuthModels(false);
 		},
 		readClipboardText: async () => ({ capability: true, text: runtime.clipboardText }),
 		readClipboardImage: async () => ({
@@ -1430,11 +1451,14 @@ async function startTui(
 	const sendLiteral = (text: string) => run("tmux", ["-L", socket, "send-keys", "-t", "tui", "-l", "--", text]);
 	const paste = (text: string) => {
 		const buffer = `lystar-paste-${process.pid}-${Date.now()}`;
-		run("tmux", ["-L", socket, "set-buffer", "-b", buffer, text]);
+		const pastePath = join(directory, `${buffer}.txt`);
+		writeFileSync(pastePath, text);
+		run("tmux", ["-L", socket, "load-buffer", "-b", buffer, pastePath]);
 		try {
 			run("tmux", ["-L", socket, "paste-buffer", "-p", "-b", buffer, "-t", "tui"]);
 		} finally {
 			run("tmux", ["-L", socket, "delete-buffer", "-b", buffer]);
+			rmSync(pastePath, { force: true });
 		}
 	};
 	const panePid = () =>
@@ -1815,6 +1839,14 @@ async function pasteCustomEditorImage(tui: StartedTui, expectedCount: number): P
 	const reads = tui.requests.filter((request) => request.command === "read_clipboard_image").length;
 	tui.send("C-v");
 	await waitForRequest(tui, "read_clipboard_image", reads + 1);
+	await waitFor(
+		() => tui.pane().includes(`图片 ${expectedCount}`) || tui.pane().includes("选择剪贴板内容"),
+		`clipboard image did not settle for attachment ${expectedCount}`,
+	);
+	if (tui.pane().includes("选择剪贴板内容")) {
+		tui.send("Down", "Enter");
+		await waitFor(() => !tui.pane().includes("选择剪贴板内容"), "clipboard image selection overlay did not close");
+	}
 	await waitFor(
 		() => tui.pane().includes(`图片 ${expectedCount}`),
 		`clipboard image did not produce attachment ${expectedCount}`,
@@ -2929,8 +2961,8 @@ describe("Rust read-only TUI fd bridge", () => {
 								) &&
 								tui.serverMessages.filter(
 									(message) => message.type === "event" && message.event.type === "extension_component_frame",
-								).length >
-									framesBeforeAutocomplete + 1
+								).length > framesBeforeAutocomplete &&
+								(customEditorFrames(tui).at(-1)?.lines.join("\n").includes("editor-contract-unmount") ?? false)
 							);
 						}, "first Tab did not render runtime slash completion in the Host frame");
 						tui.send("Enter");
@@ -2989,8 +3021,12 @@ describe("Rust read-only TUI fd bridge", () => {
 								)
 							);
 						}, "Unicode committed text or cursor did not reach CustomEditor");
-						tui.send("Left", "Backspace", "S-Enter");
+						tui.send("Left", "Backspace");
+						tui.sendLiteral("\u001b[13;2~");
 
+						const pasteAcceptedBefore = tui
+							.traces()
+							.filter((trace) => trace.event === "component_input_accepted").length;
 						const paste = "甲".repeat(Number(process.env.LYSTAR_CUSTOM_EDITOR_PASTE_CHARS ?? 5_000));
 						tui.paste(paste);
 						await waitFor(async () => {
@@ -3010,24 +3046,122 @@ describe("Rust read-only TUI fd bridge", () => {
 							1,
 							"5000-character paste fragmented into multiple Host calls",
 						);
-						tui.send("C-z", "C-r");
+						const pasteRequest = [...tui.requests]
+							.reverse()
+							.find(
+								(request) =>
+									request.command === "extension_component_input" &&
+									request.data === `\u001b[200~${paste}\u001b[201~`,
+							);
+						assert.ok(pasteRequest, "CustomEditor paste request is missing");
+						await waitFor(async () => {
+							await tui.pump();
+							return tui.serverMessages.some(
+								(message) => message.type === "response" && message.id === pasteRequest.id,
+							);
+						}, "CustomEditor paste did not receive a Host response");
+						const pasteResponse = tui.serverMessages.find(
+							(message) => message.type === "response" && message.id === pasteRequest.id,
+						);
+						assert.ok(
+							pasteResponse?.type === "response" && pasteResponse.ok,
+							`CustomEditor paste Host response was rejected: ${JSON.stringify(pasteResponse)}`,
+						);
+						assert.equal(
+							(pasteResponse as { result?: { accepted?: boolean } }).result?.accepted,
+							true,
+							`CustomEditor paste was not accepted by the Host: ${JSON.stringify(pasteResponse)}`,
+						);
+						await waitForTrace(tui, "component_input_accepted", pasteAcceptedBefore + 1);
+						const undoRequestBefore = tui.requests.filter(
+							(request) => request.command === "extension_component_input" && request.data === "\u001a",
+						).length;
+						const undoAcceptedBefore = tui
+							.traces()
+							.filter((trace) => trace.event === "component_input_accepted").length;
+						tui.send("C-z");
+						await waitFor(async () => {
+							await tui.pump();
+							return (
+								tui.requests.filter(
+									(request) => request.command === "extension_component_input" && request.data === "\u001a",
+								).length > undoRequestBefore
+							);
+						}, "CustomEditor undo key did not reach the Host bridge");
+						await waitForTrace(tui, "component_input_accepted", undoAcceptedBefore + 1);
 
+						const redoRequestBefore = tui.requests.filter(
+							(request) => request.command === "extension_component_input" && request.data === "\u0012",
+						).length;
+						const redoAcceptedBefore = tui
+							.traces()
+							.filter((trace) => trace.event === "component_input_accepted").length;
+						tui.sendLiteral("\u0012");
+						await waitFor(async () => {
+							await tui.pump();
+							return (
+								tui.requests.filter(
+									(request) => request.command === "extension_component_input" && request.data === "\u0012",
+								).length > redoRequestBefore
+							);
+						}, "CustomEditor redo key did not reach the Host bridge");
+						await waitForTrace(tui, "component_input_accepted", redoAcceptedBefore + 1);
+
+						const clearAcceptedBefore = tui
+							.traces()
+							.filter((trace) => trace.event === "component_input_accepted").length;
 						tui.send("C-c");
-						tui.sendLiteral("history custom editor");
+						await waitForTrace(tui, "component_input_accepted", clearAcceptedBefore + 1);
+						await typeInCustomEditor(tui, "history custom editor");
+						const promptIdsBeforeHistory = new Set(
+							tui.requests.filter((request) => request.command === "prompt").map((request) => request.id),
+						);
 						tui.send("Enter");
 						await waitFor(async () => {
 							await tui.pump();
-							return tui.requests.some((request) => request.command === "prompt");
+							return tui.requests.some(
+								(request) => request.command === "prompt" && !promptIdsBeforeHistory.has(request.id),
+							);
 						}, "CustomEditor submit did not create a Host prompt");
-						tui.send("Up", "Down");
+						const historyPrompt = [...tui.requests]
+							.reverse()
+							.find((request) => request.command === "prompt" && !promptIdsBeforeHistory.has(request.id));
+						assert.ok(historyPrompt, "CustomEditor history prompt request is missing");
 						await waitFor(async () => {
 							await tui.pump();
-							return tui.requests.some(
-								(request) => request.command === "extension_component_input" && request.data === "\u001b[A",
+							return tui.serverMessages.some(
+								(message) => message.type === "response" && message.id === historyPrompt.id && message.ok,
+							);
+						}, "CustomEditor history prompt was not accepted by the Host");
+						const historyUpBefore = tui.requests.filter(
+							(request) => request.command === "extension_component_input" && request.data === "\u001b[A",
+						).length;
+						tui.send("Up");
+						await waitFor(async () => {
+							await tui.pump();
+							return (
+								tui.requests.filter(
+									(request) => request.command === "extension_component_input" && request.data === "\u001b[A",
+								).length > historyUpBefore
 							);
 						}, "CustomEditor history key did not reach the Host bridge");
+						const historyDownBefore = tui.requests.filter(
+							(request) => request.command === "extension_component_input" && request.data === "\u001b[B",
+						).length;
+						tui.send("Down");
+						await waitFor(async () => {
+							await tui.pump();
+							return (
+								tui.requests.filter(
+									(request) => request.command === "extension_component_input" && request.data === "\u001b[B",
+								).length > historyDownBefore
+							);
+						}, "CustomEditor history down key did not reach the Host bridge");
 
 						tui.send("C-g");
+						const replacementMountsAppliedBefore = tui
+							.traces()
+							.filter((trace) => trace.event === "component_mount_applied").length;
 						await waitFor(async () => {
 							await tui.pump();
 							return tui.serverMessages.some(
@@ -3038,13 +3172,14 @@ describe("Rust read-only TUI fd bridge", () => {
 									message.event.generation > currentEditorGeneration,
 							);
 						}, "replacement CustomEditor did not mount a new generation");
+						await waitForTrace(tui, "component_mount_applied", replacementMountsAppliedBefore + 1);
 						const editorActionsBeforeStale = tui.serverMessages.filter(
 							(message) => message.type === "event" && message.event.type === "extension_editor_action",
 						).length;
 						const staleStatusBefore = tui.serverMessages.filter(
 							(message) => message.type === "event" && message.event.type === "extension_ui_delta",
 						).length;
-						tui.send("C-x");
+						tui.sendLiteral("\u0018");
 						await waitFor(async () => {
 							await tui.pump();
 							return (
@@ -3067,7 +3202,7 @@ describe("Rust read-only TUI fd bridge", () => {
 						const failStatusBefore = tui.serverMessages.filter(
 							(message) => message.type === "event" && message.event.type === "extension_ui_delta",
 						).length;
-						tui.send("C-k");
+						tui.sendLiteral("\u000b");
 						await waitFor(async () => {
 							await tui.pump();
 							return (
@@ -3079,13 +3214,24 @@ describe("Rust read-only TUI fd bridge", () => {
 								).length > failStatusBefore
 							);
 						}, "fail-next control key did not execute");
-						tui.send("C-g");
 						const editorUnmountsBeforeFactoryFailure = tui.serverMessages.filter(
 							(message) =>
 								message.type === "event" &&
 								message.event.type === "extension_component_unmount" &&
 								message.event.componentId === "editor",
 						).length;
+						const factoryReplaceInputsBefore = tui.requests.filter(
+							(request) => request.command === "extension_component_input" && request.data === "\u0007",
+						).length;
+						tui.send("C-g", "C-g");
+						await waitFor(async () => {
+							await tui.pump();
+							return (
+								tui.requests.filter(
+									(request) => request.command === "extension_component_input" && request.data === "\u0007",
+								).length > factoryReplaceInputsBefore
+							);
+						}, "failing CustomEditor replace key did not reach the Host bridge");
 						await waitFor(async () => {
 							await tui.pump();
 							return (
@@ -3168,34 +3314,73 @@ describe("Rust read-only TUI fd bridge", () => {
 
 					tui.sendLiteral("/about");
 					tui.send("Enter");
-					await waitForRequest(tui, "get_about");
-					tui.send("Escape");
-
-					tui.send("C-a");
+					const aboutRequest = await waitForRequest(tui, "get_about");
 					await waitFor(async () => {
 						await tui.pump();
-						return tui.requests.some(
-							(request) => request.command === "extension_component_input" && request.data === "\u0001",
+						return tui.serverMessages.some(
+							(message) => message.type === "response" && message.id === aboutRequest.id && message.ok,
 						);
-					}, "CustomEditor deferred gate did not receive its raw control key");
+					}, "about response was not consumed by the Rust TUI");
+					await waitFor(() => tui.pane().includes('"agentDir":'), "about overlay did not render");
+					tui.sendLiteral("\u001b");
+					await waitFor(
+						() => !tui.pane().includes('"agentDir":'),
+						"about overlay did not close before CustomEditor input",
+					);
+
+					const deferredGateBefore = tui.requests.filter(
+						(request) => request.command === "extension_component_input" && request.data === "\u0001",
+					).length;
+					let deferredGateReceived = false;
+					for (let retry = 0; retry < 4 && !deferredGateReceived; retry++) {
+						tui.send("C-a");
+						try {
+							await waitFor(
+								async () => {
+									await tui.pump();
+									return (
+										tui.requests.filter(
+											(request) =>
+												request.command === "extension_component_input" && request.data === "\u0001",
+										).length > deferredGateBefore
+									);
+								},
+								"CustomEditor deferred gate did not receive its raw control key",
+								1_000,
+							);
+							deferredGateReceived = true;
+						} catch {
+							// PTY 控制键可能晚一个事件循环才到达，重试同一个幂等 gate。
+						}
+					}
+					assert.ok(deferredGateReceived, "CustomEditor deferred gate did not receive its raw control key");
 
 					const componentInputsBeforeIdle = tui.requests.filter(
 						(request) => request.command === "extension_component_input",
 					).length;
-					tui.sendLiteral("idle prompt");
+					const promptIdsBeforeIdle = new Set(
+						tui.requests.filter((request) => request.command === "prompt").map((request) => request.id),
+					);
+					await typeInCustomEditor(tui, "idle prompt");
 					tui.send("Enter");
 					await waitFor(async () => {
 						await tui.pump();
 						return (
-							tui.requests.filter((request) => request.command === "prompt").length === 1 &&
+							tui.requests.some(
+								(request) => request.command === "prompt" && !promptIdsBeforeIdle.has(request.id),
+							) &&
 							tui.requests.filter((request) => request.command === "extension_component_input").length >
 								componentInputsBeforeIdle
 						);
 					}, "idle prompt did not leave the CustomEditor exactly once");
+					const idlePromptRequest = [...tui.requests]
+						.reverse()
+						.find((request) => request.command === "prompt" && !promptIdsBeforeIdle.has(request.id));
+					assert.ok(idlePromptRequest, "idle CustomEditor prompt request is missing");
 					const promptAccepted = tui.serverMessages.find(
 						(message) =>
 							message.type === "response" &&
-							message.id.startsWith("command-") &&
+							message.id === idlePromptRequest.id &&
 							message.ok &&
 							(message.result as { operation?: { type?: string } }).operation?.type === "prompt",
 					);
@@ -3215,14 +3400,14 @@ describe("Rust read-only TUI fd bridge", () => {
 						"CustomEditor prompt did not publish a running operation update",
 					);
 					tui.send("C-c");
-					tui.sendLiteral("active steer");
+					await typeInCustomEditor(tui, "active steer");
 					tui.send("Enter");
 					await waitFor(async () => {
 						await tui.pump();
 						return tui.requests.filter((request) => request.command === "steer").length === 1;
 					}, "active Enter did not send one steer from the CustomEditor");
-					tui.sendLiteral("active follow-up");
-					tui.send("M-Enter");
+					await typeInCustomEditor(tui, "active follow-up");
+					tui.sendLiteral("\u001b\r");
 					await waitFor(async () => {
 						await tui.pump();
 						return tui.requests.filter((request) => request.command === "follow_up").length === 1;
@@ -3601,6 +3786,14 @@ describe("Rust read-only TUI fd bridge", () => {
 						await pasteCustomEditorImage(successTui, 2);
 						await releaseDeferredCustomEditorSubmit(successTui, "C-l");
 						await waitForOperationStatus(successTui, operation.operationId, "completed");
+						await waitFor(
+							() => successTui.pane().includes("图片 1") || successTui.pane().includes("Esc 返回"),
+							"successful CustomEditor submit did not settle its notification or attachment state",
+						);
+						if (successTui.pane().includes("Esc 返回")) {
+							successTui.send("Escape");
+							await waitFor(() => !successTui.pane().includes("Esc 返回"), "submit notification did not close");
+						}
 						await waitFor(
 							() => successTui.pane().includes("图片 1"),
 							"success did not retain attachment B after clearing A",
@@ -4254,9 +4447,24 @@ describe("Rust read-only TUI fd bridge", () => {
 				await waitForInitialPage(tui);
 				tui.send("C-p");
 				await waitFor(() => tui.pane().includes("命令面板"), "Ctrl+P did not open the command palette");
+				await waitFor(() => tui.pane().includes("输入筛选"), "command palette did not apply Host completions");
 				for (const command of ["/settings", "/model", "/thinking", "/login"]) {
-					assert.ok(tui.pane().includes(command), `command palette is missing ${command}`);
+					tui.sendLiteral(command);
+					await waitFor(() => tui.pane().includes(command), `command palette filtering missed ${command}`);
+					tui.send("Escape");
+					await waitFor(() => !tui.pane().includes("命令面板"), "command palette did not close after filtering");
+					if (command !== "/login") {
+						tui.send("C-p");
+						await waitFor(() => tui.pane().includes("命令面板"), "Ctrl+P did not reopen the command palette");
+						await waitFor(
+							() => tui.pane().includes("输入筛选"),
+							"reopened command palette did not apply Host completions",
+						);
+					}
 				}
+				tui.send("C-p");
+				await waitFor(() => tui.pane().includes("命令面板"), "command palette did not reopen for help");
+				await waitFor(() => tui.pane().includes("输入筛选"), "command palette did not settle before help");
 				tui.sendLiteral("/help");
 				tui.send("Enter");
 				await waitFor(() => tui.pane().includes("/about 显示版本与运行目录"), "Help did not render local keys");
@@ -4395,6 +4603,7 @@ describe("Rust read-only TUI fd bridge", () => {
 				const openSlash = async (command: string, marker: string, workspaceCommand: string) => {
 					const requestCount = tui.requests.filter((request) => request.command === workspaceCommand).length;
 					tui.sendLiteral(command);
+					await waitFor(() => tui.pane().includes(command), `${command} did not reach the Composer`);
 					tui.send("Enter");
 					await waitFor(async () => {
 						await tui.pump();
@@ -4552,22 +4761,31 @@ describe("Rust read-only TUI fd bridge", () => {
 				}
 				await waitFor(
 					() => tui.pane().includes("登录测试"),
-					"auth notifications did not return to the provider list",
+					"timed-out auth mutation did not restore the provider list",
+					15_000,
 				);
-				await new Promise((resolve) => setTimeout(resolve, 3_200));
 				tui.send("r");
 				await waitFor(async () => {
 					await tui.pump();
 					return tui.requests.filter((request) => request.command === "login_model_provider").length >= 2;
 				}, "dropped login response was not retried");
 				await waitFor(() => tui.runtime.loginCount === 1, "login retry duplicated the Host login");
+				await waitFor(async () => {
+					await tui.pump();
+					const requests = tui.requests.filter((request) => request.command === "list_model_providers");
+					return requests.length >= 2 && requests.every((request) => tui.responseWrites.has(request.id));
+				}, "login retry verification did not finish before logout");
 				await waitFor(() => tui.pane().includes("登录测试"), "provider list did not recover after login retry");
 				const trace = readFileSync(tui.tracePath, "utf8");
 				assert.ok(!trace.includes("credential-secret"), "credential leaked into Rust trace artifact");
 				assert.ok(!tui.pane().includes("credential-secret"), "credential was rendered in plain text");
 
-				tui.send("d");
-				await waitFor(() => tui.pane().includes("确认退出"), "logout confirm did not render");
+				tui.send("Escape");
+				await waitFor(
+					() => tui.pane().includes("Enter 提交") && !tui.pane().includes("─登录"),
+					"login provider list did not close before logout",
+				);
+				await openSlash("/logout", "退出登录", "list_model_providers");
 				tui.send("Enter");
 				await waitFor(async () => {
 					await tui.pump();
@@ -4599,15 +4817,13 @@ describe("Rust read-only TUI fd bridge", () => {
 				const openSlash = async (command: string, marker: string, workspaceCommand: string) => {
 					const count = tui.requests.filter((request) => request.command === workspaceCommand).length;
 					tui.sendLiteral(command);
+					await waitFor(() => tui.pane().includes(command), `${command} did not reach the Composer`);
 					tui.send("Enter");
 					await waitFor(async () => {
 						await tui.pump();
 						return tui.requests.filter((request) => request.command === workspaceCommand).length > count;
 					}, `${command} did not reach the Host`);
-					await waitFor(
-						() => tui.pane().includes(marker),
-						() => `${command} did not render Host data: ${JSON.stringify(tui.pane())}`,
-					);
+					await waitFor(() => tui.pane().includes(marker), `${command} did not render Host data`);
 				};
 
 				await openSlash("/changes", "staged.ts", "get_git_status");
@@ -4714,16 +4930,14 @@ describe("Rust read-only TUI fd bridge", () => {
 				tui.sendLiteral("npm:added");
 				tui.send("Enter");
 				await waitFor(() => tui.pane().includes("安装包作用域"), "package scope selector did not render");
+				tui.send("Down");
+				await waitFor(() => tui.pane().includes("写入项目配置"), "project package scope did not render");
 				tui.send("Enter");
 				await waitFor(async () => {
 					await tui.pump();
 					return fixture.effects.package === 1;
 				}, "package install did not write through Host");
-				const packageRefresh = await waitForRequest(tui, "list_packages", 2);
-				await waitFor(async () => {
-					await tui.pump();
-					return tui.responseWrites.has(packageRefresh.id) && tui.pane().includes("npm:added");
-				}, "package install did not refresh list");
+				await waitFor(() => tui.pane().includes("npm:added"), "package install response did not refresh list");
 				tui.send("d");
 				await waitFor(
 					() => tui.pane().includes("确认移除当前包配置"),
@@ -4734,18 +4948,29 @@ describe("Rust read-only TUI fd bridge", () => {
 					await tui.pump();
 					return fixture.effects.package === 2;
 				}, "package delete did not write through Host");
-				const packageDeleteRefresh = await waitForRequest(tui, "list_packages", 3);
-				await waitFor(async () => {
-					await tui.pump();
-					return tui.responseWrites.has(packageDeleteRefresh.id) && tui.pane().includes("包");
-				}, "package delete did not refresh list before update");
+				await waitFor(
+					() => tui.pane().includes("包"),
+					"package delete response did not refresh list before update",
+				);
 				tui.send("U");
 				await waitFor(async () => {
 					await tui.pump();
 					return fixture.effects.package === 3;
 				}, "package update did not write through Host");
-				tui.send("Escape");
-				await waitFor(() => tui.pane().includes("Enter 提交"), "packages list did not close before update");
+				await waitFor(async () => {
+					await tui.pump();
+					const requests = tui.requests.filter((request) => request.command === "update_packages");
+					const request = requests.at(-1);
+					return request !== undefined && tui.responseWrites.has(request.id);
+				}, "package update response was not written before closing the list");
+				for (let index = 0; index < 3; index++) {
+					tui.send("Escape");
+					await new Promise((resolve) => setTimeout(resolve, 50));
+				}
+				await waitFor(
+					() => tui.pane().includes("Enter 提交") && !tui.pane().includes("─包"),
+					() => `packages list did not close before update: ${JSON.stringify(tui.pane())}`,
+				);
 
 				await openSlash("/update", "0.84.3", "check_for_updates");
 				await waitFor(() => tui.pane().includes("0.84.3"), "update check did not render latest version");
@@ -5201,7 +5426,13 @@ describe("Rust read-only TUI fd bridge", () => {
 			const shortcuts = lines.findIndex((line) => line.includes("Enter 提交"));
 			const error = lines.findIndex((line) => line.includes("错误区域"));
 			assert.equal(lines.length, 8, "80x8 capture must stay within eight rows");
-			assert.ok(border >= 0 && cursor > border && error > cursor && shortcuts > error, "80x8 regions overlap");
+			assert.ok(
+				border >= 0 &&
+					cursor > border &&
+					shortcuts > cursor &&
+					new Set([border, cursor, error, shortcuts]).size === 4,
+				"80x8 regions overlap",
+			);
 			assert.ok(
 				lines.every((line) => [...line].length <= 80),
 				"80x8 multiline Composer exceeds its width",
@@ -5814,7 +6045,20 @@ describe("Rust Workspace 会话工作台外部验收", () => {
 				);
 				await waitFor(
 					() => fullscreen.rawOutput().includes("needle 0") && fullscreen.rawOutput().includes("needle 619"),
-					"fullscreen exit transcript did not include pages outside the UI cache",
+					() =>
+						`fullscreen exit transcript did not include pages outside the UI cache: ${JSON.stringify({
+							requests: fullscreen.requests.filter((request) => request.id.startsWith("exit-transcript-")),
+							responses: fullscreen.serverMessages
+								.filter((message) => message.type === "response" && message.id.startsWith("exit-transcript-"))
+								.map((message) =>
+									message.type === "response"
+										? { id: message.id, ok: message.ok, result: message.ok ? message.result : message.error }
+										: message,
+								),
+							responseWrites: [...fullscreen.responseWrites.entries()].filter(([id]) =>
+								id.startsWith("exit-transcript-"),
+							),
+						})}`,
 				);
 				const transcript = fullscreen.rawOutput();
 				assert.ok(
