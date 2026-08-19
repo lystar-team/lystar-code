@@ -5,6 +5,7 @@ import {
 	type KeyId,
 	TUI_KEYBINDINGS,
 	KeybindingsManager as TuiKeybindingsManager,
+	matchesKey as tuiMatchesKey,
 } from "@earendil-works/pi-tui";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
@@ -385,6 +386,10 @@ export class KeybindingsManager extends TuiKeybindingsManager {
 		if (!rawConfig) return {};
 		return toKeybindingsConfig(migrateKeybindingsConfig(rawConfig).config);
 	}
+}
+
+export function matchesKey(data: string, keyId: KeyId): boolean {
+	return tuiMatchesKey(data, keyId);
 }
 
 export type { Keybinding, KeyId, KeybindingsConfig };

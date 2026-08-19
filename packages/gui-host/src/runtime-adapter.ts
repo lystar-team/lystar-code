@@ -48,10 +48,12 @@ import {
 	getToolRecoveryMode,
 	hasTrustRequiringProjectResources,
 	isNewerPackageVersion,
+	KeybindingsManager,
 	loadProjectContextFiles,
 	loadSkills,
 	ModelConfig,
 	ModelRuntime,
+	matchesKey,
 	PACKAGE_VERSION,
 	ProjectTrustStore,
 	RELEASE_REPOSITORY,
@@ -980,6 +982,7 @@ class CoreRuntimeSession implements RuntimeSession {
 	private readonly listeners = new Set<(event: RuntimeEvent) => void>();
 	private readonly runtime: Awaited<ReturnType<typeof createAgentSessionRuntime>>;
 	private readonly extensionUi: ExtensionUiBridge;
+	private readonly extensionKeybindings: KeybindingsManager;
 	private unsubscribe?: () => void;
 	private stateRevision = 0;
 	private committedEntryCount = 0;
@@ -993,6 +996,7 @@ class CoreRuntimeSession implements RuntimeSession {
 		agentDir: string,
 	) {
 		this.runtime = runtime;
+		this.extensionKeybindings = KeybindingsManager.create(agentDir);
 		this.extensionUi = new ExtensionUiBridge(
 			onUiRequest,
 			(event) => this.emit({ type: "extension_ui", payload: jsonValue(event) }),
@@ -1005,6 +1009,8 @@ class CoreRuntimeSession implements RuntimeSession {
 				}),
 			(text, cursor) => this.getCompletions(text, cursor),
 			agentDir,
+			() => this.extensionShortcutCount(),
+			(data) => this.dispatchExtensionShortcut(data),
 		);
 	}
 
@@ -1191,11 +1197,21 @@ class CoreRuntimeSession implements RuntimeSession {
 	}
 
 	async steer(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void> {
+		if (this.isRegisteredExtensionCommand(text)) {
+			await this.runtime.session.prompt(text, { images: contentImages(images), source: "rpc" });
+			this.emitStateChanged();
+			return;
+		}
 		await this.runtime.session.steer(text, contentImages(images));
 		this.emitStateChanged();
 	}
 
 	async followUp(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void> {
+		if (this.isRegisteredExtensionCommand(text)) {
+			await this.runtime.session.prompt(text, { images: contentImages(images), source: "rpc" });
+			this.emitStateChanged();
+			return;
+		}
 		await this.runtime.session.followUp(text, contentImages(images));
 		this.emitStateChanged();
 	}
@@ -1309,7 +1325,14 @@ class CoreRuntimeSession implements RuntimeSession {
 		this.emitStateChanged();
 	}
 
-	getCompletions(text: string, cursor: number): CompletionResult | undefined {
+	private isRegisteredExtensionCommand(text: string): boolean {
+		if (!text.startsWith("/")) return false;
+		const spaceIndex = text.indexOf(" ");
+		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
+		return this.runtime.session.extensionRunner.getCommand(commandName) !== undefined;
+	}
+
+	async getCompletions(text: string, cursor: number): Promise<CompletionResult | undefined> {
 		const before = text.slice(0, cursor);
 		const slash = /^\/([^\s]*)$/.exec(before);
 		if (slash) {
@@ -1343,6 +1366,29 @@ class CoreRuntimeSession implements RuntimeSession {
 			};
 		}
 
+		const argument = /^\/([^\s]+)\s(.*)$/.exec(before);
+		if (argument) {
+			const command = this.runtime.session.extensionRunner
+				.getRegisteredCommands()
+				.find((candidate) => candidate.invocationName === argument[1]);
+			if (command?.getArgumentCompletions) {
+				const argumentPrefix = argument[2];
+				const suggestions = await command.getArgumentCompletions(argumentPrefix);
+				if (Array.isArray(suggestions) && suggestions.length > 0) {
+					return {
+						prefixStart: cursor - argumentPrefix.length,
+						prefixEnd: cursor,
+						items: suggestions.slice(0, 50).map((item) => ({
+							value: item.value,
+							label: item.label,
+							...(item.description ? { description: item.description } : {}),
+							kind: "extension" as const,
+						})),
+					};
+				}
+			}
+		}
+
 		const skill = /(?:^|\s)([$@])(\[?)([a-z0-9-]*)$/i.exec(before);
 		if (!skill) return undefined;
 		const symbol = skill[1];
@@ -1359,6 +1405,31 @@ class CoreRuntimeSession implements RuntimeSession {
 				kind: "skill" as const,
 			}));
 		return { prefixStart: cursor - prefix.length, prefixEnd: cursor, items };
+	}
+
+	private extensionShortcutCount(): number {
+		this.extensionKeybindings.reload();
+		return this.runtime.session.extensionRunner.getShortcuts(this.extensionKeybindings.getEffectiveConfig()).size;
+	}
+
+	private dispatchExtensionShortcut(data: string): boolean {
+		this.extensionKeybindings.reload();
+		const shortcuts = this.runtime.session.extensionRunner.getShortcuts(
+			this.extensionKeybindings.getEffectiveConfig(),
+		);
+		for (const [shortcutKey, shortcut] of shortcuts) {
+			if (!matchesKey(data, shortcutKey)) continue;
+			const context = this.runtime.session.extensionRunner.createCommandContext();
+			Promise.resolve(shortcut.handler(context)).catch((error) => {
+				this.runtime.session.extensionRunner.emitError({
+					extensionPath: shortcut.extensionPath,
+					event: "shortcut",
+					error: error instanceof Error ? error.message : String(error),
+				});
+			});
+			return true;
+		}
+		return false;
 	}
 
 	getToolRecoveryDiagnostics(): ToolRecoveryRuntimeDiagnostics {
@@ -1396,6 +1467,7 @@ class CoreRuntimeSession implements RuntimeSession {
 	}
 
 	async dispatchExtensionTerminalInput(data: string) {
+		if (this.dispatchExtensionShortcut(data)) return { consume: true };
 		return this.extensionUi.dispatchTerminalInput(data);
 	}
 
@@ -1457,6 +1529,7 @@ class CoreRuntimeSession implements RuntimeSession {
 			abortHandler: () => void this.abort(),
 			onError: (error) => this.emit({ type: "progress", payload: jsonValue({ type: "extension_error", ...error }) }),
 		});
+		this.extensionUi.publishSnapshot();
 		this.unsubscribe = session.subscribe((event) => {
 			this.stateRevision++;
 			if (event.type === "message_end" || event.type === "entry_appended") {

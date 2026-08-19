@@ -56,7 +56,7 @@ pub(super) fn handle_recovery_actions(
         return Ok(true);
     }
     if let Some(index) = action
-        .strip_prefix("attachment-completion:")
+        .strip_prefix("composer-completion:")
         .and_then(|value| value.parse::<usize>().ok())
     {
         let Some(completion) = app.composer_completion.clone() else {
@@ -80,22 +80,24 @@ pub(super) fn handle_recovery_actions(
             request_attach_completion(app, pipe, sequence)?;
             return Ok(true);
         }
-        let path = item.value.trim_end_matches('/').to_owned();
-        app.editor.clear();
-        let cwd = app.active_session_cwd().unwrap_or_default().to_owned();
-        request_workspace(
-            app,
-            pipe,
-            sequence,
-            WorkspaceCommand::ReadProjectImage,
-            serde_json::json!({ "cwd": cwd, "path": path })
-                .as_object()
-                .cloned()
-                .unwrap_or_default(),
-            PendingIntent::ProjectImage {
-                source: item.value.clone(),
-            },
-        )?;
+        if item.kind == "file" && completion.text.starts_with("/attach ") {
+            let path = item.value.trim_end_matches('/').to_owned();
+            app.editor.clear();
+            let cwd = app.active_session_cwd().unwrap_or_default().to_owned();
+            request_workspace(
+                app,
+                pipe,
+                sequence,
+                WorkspaceCommand::ReadProjectImage,
+                serde_json::json!({ "cwd": cwd, "path": path })
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+                PendingIntent::ProjectImage {
+                    source: item.value.clone(),
+                },
+            )?;
+        }
         return Ok(true);
     }
     if let Some(index) = action

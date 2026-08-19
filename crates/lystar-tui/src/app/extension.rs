@@ -82,6 +82,7 @@ pub struct ExtensionUiState {
     pub hidden_thinking_label: Option<String>,
     pub title: Option<String>,
     pub terminal_input_listener_count: u64,
+    pub extension_shortcut_count: u64,
     pub components: BTreeMap<String, ExtensionComponentState>,
 }
 
@@ -103,6 +104,7 @@ impl Default for ExtensionUiState {
             hidden_thinking_label: None,
             title: None,
             terminal_input_listener_count: 0,
+            extension_shortcut_count: 0,
             components: BTreeMap::new(),
         }
     }

@@ -4904,7 +4904,8 @@
                         "workingIndicator",
                         "hiddenThinkingLabel",
                         "title",
-                        "terminalInputListenerCount"
+                        "terminalInputListenerCount",
+                        "extensionShortcutCount"
                       ],
                       "properties": {
                         "revision": {
@@ -5034,6 +5035,11 @@
                           ]
                         },
                         "terminalInputListenerCount": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 128
+                        },
+                        "extensionShortcutCount": {
                           "type": "integer",
                           "minimum": 0,
                           "maximum": 128
@@ -5193,6 +5199,11 @@
                           ]
                         },
                         "terminalInputListenerCount": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 128
+                        },
+                        "extensionShortcutCount": {
                           "type": "integer",
                           "minimum": 0,
                           "maximum": 128

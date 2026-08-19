@@ -63,51 +63,12 @@ pub(in super::super) fn handle_key(
         app.open_overlay(OverlayState::List(ListOverlay {
             title: "命令面板".to_owned(),
             origin: OverlayOrigin::User,
-            items: [
-                ("agents", "查看和控制当前会话的 Subagent"),
-                ("session", "当前会话信息"),
-                ("changelog", "更新内容"),
-                ("hotkeys", "快捷键"),
-                ("clipboard", "剪贴板"),
-                ("changes", "变更"),
-                ("skills", "技能"),
-                ("trust", "项目信任"),
-                ("instructions", "指令"),
-                ("packages", "包"),
-                ("update", "更新检查"),
-                ("new", "新建会话"),
-                ("clone", "复制当前会话"),
-                ("fork", "从历史用户消息分叉会话"),
-                ("reload", "重新加载资源"),
-                ("compact", "压缩上下文"),
-                ("export", "导出会话"),
-                ("import", "导入会话"),
-                ("share", "分享会话"),
-                ("copy", "复制最近一条 Agent 消息"),
-                ("name", "设置会话名称"),
-                ("resume", "继续会话"),
-                ("sessions", "会话"),
-                ("tree", "分支树"),
-                ("help", "帮助"),
-                ("settings", "设置"),
-                ("model", "模型"),
-                ("thinking", "思考"),
-                ("login", "登录"),
-                ("logout", "退出登录"),
-                ("about", "关于"),
-                ("doctor", "诊断"),
-            ]
-            .into_iter()
-            .map(|(target, detail)| OverlayItem {
-                label: format!("/{target}"),
-                detail: detail.to_owned(),
-                action: format!("open:{target}"),
-            })
-            .collect(),
+            items: builtin_command_panel_items(),
             selected: 0,
             filter: String::new(),
-            status: "输入筛选，Enter 打开".to_owned(),
+            status: "正在读取动态命令，输入筛选，Enter 打开".to_owned(),
         }));
+        request_composer_completion(app, pipe, sequence, true)?;
         return Ok(false);
     }
 
@@ -242,6 +203,9 @@ pub(in super::super) fn handle_key(
         KeyCode::Tab if app.editor.text().starts_with("/attach ") => {
             request_attach_completion(app, pipe, sequence)?;
         }
+        KeyCode::Tab if app.editor.text().starts_with('/') => {
+            request_composer_completion(app, pipe, sequence, false)?;
+        }
         KeyCode::Enter if modifiers.contains(KeyModifiers::SHIFT) => app.editor.insert("\n"),
         KeyCode::Enter => submit_editor(
             app,
@@ -294,6 +258,50 @@ pub(in super::super) fn handle_key(
         _ => {}
     }
     Ok(false)
+}
+
+pub(crate) fn builtin_command_panel_items() -> Vec<OverlayItem> {
+    [
+        ("agents", "查看和控制当前会话的 Subagent"),
+        ("session", "当前会话信息"),
+        ("changelog", "更新内容"),
+        ("hotkeys", "快捷键"),
+        ("clipboard", "剪贴板"),
+        ("changes", "变更"),
+        ("skills", "技能"),
+        ("trust", "项目信任"),
+        ("instructions", "指令"),
+        ("packages", "包"),
+        ("update", "更新检查"),
+        ("new", "新建会话"),
+        ("clone", "复制当前会话"),
+        ("fork", "从历史用户消息分叉会话"),
+        ("reload", "重新加载资源"),
+        ("compact", "压缩上下文"),
+        ("export", "导出会话"),
+        ("import", "导入会话"),
+        ("share", "分享会话"),
+        ("copy", "复制最近一条 Agent 消息"),
+        ("name", "设置会话名称"),
+        ("resume", "继续会话"),
+        ("sessions", "会话"),
+        ("tree", "分支树"),
+        ("help", "帮助"),
+        ("settings", "设置"),
+        ("model", "模型"),
+        ("thinking", "思考"),
+        ("login", "登录"),
+        ("logout", "退出登录"),
+        ("about", "关于"),
+        ("doctor", "诊断"),
+    ]
+    .into_iter()
+    .map(|(target, detail)| OverlayItem {
+        label: format!("/{target}"),
+        detail: detail.to_owned(),
+        action: format!("open:{target}"),
+    })
+    .collect()
 }
 
 pub(in super::super) fn builtin_slash_command(text: &str) -> Option<&'static str> {

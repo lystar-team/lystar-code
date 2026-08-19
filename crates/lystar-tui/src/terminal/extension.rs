@@ -895,6 +895,10 @@ pub(super) fn extension_state(value: &serde_json::Value) -> Result<ExtensionUiSt
             .get("terminalInputListenerCount")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0),
+        extension_shortcut_count: object
+            .get("extensionShortcutCount")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
         components: std::collections::BTreeMap::new(),
     })
 }
@@ -936,6 +940,7 @@ pub(super) fn apply_extension_delta(
             "workingVisible": state.working_visible, "workingIndicator": indicator,
             "hiddenThinkingLabel": state.hidden_thinking_label, "title": state.title,
             "terminalInputListenerCount": state.terminal_input_listener_count,
+            "extensionShortcutCount": state.extension_shortcut_count,
         }))?;
         state.working_frames = parsed.working_frames;
         state.working_interval_ms = parsed.working_interval_ms;
@@ -951,6 +956,12 @@ pub(super) fn apply_extension_delta(
         .and_then(serde_json::Value::as_u64)
     {
         state.terminal_input_listener_count = count;
+    }
+    if let Some(count) = object
+        .get("extensionShortcutCount")
+        .and_then(serde_json::Value::as_u64)
+    {
+        state.extension_shortcut_count = count;
     }
     app.apply_extension_ui_snapshot(state);
     Ok(())

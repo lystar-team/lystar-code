@@ -332,18 +332,28 @@ pub(super) fn apply_workspace_response(
                 }
                 finish_clipboard_both(app);
             }
-            PendingIntent::AttachCompletion { text } => {
+            PendingIntent::ComposerCompletion {
+                text,
+                command_panel,
+            } => {
+                let is_attach_completion = text.starts_with("/attach ");
                 let object = result
                     .as_object()
                     .ok_or_else(|| TuiError::InvalidResponse("补全响应无效".to_owned()))?;
-                let prefix_start = usize::try_from(required_u64(object, "prefixStart")?)
-                    .ok()
-                    .and_then(|offset| utf16_offset_to_byte(&text, offset))
-                    .ok_or_else(|| TuiError::InvalidResponse("补全起始位置无效".to_owned()))?;
-                let prefix_end = usize::try_from(required_u64(object, "prefixEnd")?)
-                    .ok()
-                    .and_then(|offset| utf16_offset_to_byte(&text, offset))
-                    .ok_or_else(|| TuiError::InvalidResponse("补全结束位置无效".to_owned()))?;
+                let (prefix_start, prefix_end) = if command_panel {
+                    // 命令面板用 "/" 作为 Host 查询文本，但替换范围属于当前草稿。
+                    (0, text.len())
+                } else {
+                    let prefix_start = usize::try_from(required_u64(object, "prefixStart")?)
+                        .ok()
+                        .and_then(|offset| utf16_offset_to_byte(&text, offset))
+                        .ok_or_else(|| TuiError::InvalidResponse("补全起始位置无效".to_owned()))?;
+                    let prefix_end = usize::try_from(required_u64(object, "prefixEnd")?)
+                        .ok()
+                        .and_then(|offset| utf16_offset_to_byte(&text, offset))
+                        .ok_or_else(|| TuiError::InvalidResponse("补全结束位置无效".to_owned()))?;
+                    (prefix_start, prefix_end)
+                };
                 let items = object
                     .get("items")
                     .and_then(serde_json::Value::as_array)
@@ -352,7 +362,10 @@ pub(super) fn apply_workspace_response(
                     .filter_map(|item| {
                         let object = item.as_object()?;
                         let kind = object.get("kind")?.as_str()?;
-                        if !matches!(kind, "file" | "directory") {
+                        if !matches!(
+                            kind,
+                            "file" | "directory" | "skill" | "prompt" | "extension" | "command"
+                        ) {
                             return None;
                         }
                         Some(ComposerCompletionItem {
@@ -367,7 +380,43 @@ pub(super) fn apply_workspace_response(
                     })
                     .collect::<Vec<_>>();
                 if items.is_empty() {
-                    app.set_toast("没有匹配的项目图片文件");
+                    app.set_toast(if command_panel {
+                        "没有可用的动态命令"
+                    } else if is_attach_completion {
+                        "没有匹配的项目图片文件"
+                    } else {
+                        "没有匹配的补全"
+                    });
+                } else if command_panel {
+                    let mut panel_items = builtin_command_panel_items();
+                    panel_items.extend(items.iter().enumerate().map(|(index, item)| OverlayItem {
+                        label: item.label.clone(),
+                        detail: format!(
+                            "扩展命令  {}",
+                            item.description.clone().unwrap_or_default()
+                        ),
+                        action: format!("composer-completion:{index}"),
+                    }));
+                    app.composer_completion = Some(ComposerCompletion {
+                        text,
+                        prefix_start,
+                        prefix_end,
+                        items,
+                    });
+                    let overlay = OverlayState::List(ListOverlay {
+                        title: "命令面板".to_owned(),
+                        origin: OverlayOrigin::User,
+                        items: panel_items,
+                        selected: 0,
+                        filter: String::new(),
+                        status: "输入筛选，Enter 打开；动态命令会写入输入框".to_owned(),
+                    });
+                    if matches!(app.overlay(), Some(OverlayState::List(list)) if list.title == "命令面板")
+                    {
+                        app.replace_overlay(overlay);
+                    } else {
+                        app.open_overlay(overlay);
+                    }
                 } else {
                     app.composer_completion = Some(ComposerCompletion {
                         text,
@@ -376,7 +425,11 @@ pub(super) fn apply_workspace_response(
                         items: items.clone(),
                     });
                     app.open_overlay(OverlayState::List(ListOverlay {
-                        title: "添加图片".to_owned(),
+                        title: if is_attach_completion {
+                            "添加图片".to_owned()
+                        } else {
+                            "命令补全".to_owned()
+                        },
                         origin: OverlayOrigin::User,
                         items: items
                             .iter()
@@ -387,17 +440,23 @@ pub(super) fn apply_workspace_response(
                                     "{}{}",
                                     if item.kind == "directory" {
                                         "目录  "
-                                    } else {
+                                    } else if item.kind == "file" {
                                         "文件  "
+                                    } else {
+                                        "命令  "
                                     },
                                     item.description.clone().unwrap_or_default()
                                 ),
-                                action: format!("attachment-completion:{index}"),
+                                action: format!("composer-completion:{index}"),
                             })
                             .collect(),
                         selected: 0,
                         filter: String::new(),
-                        status: "Enter 选择，目录会继续补全，Esc 返回".to_owned(),
+                        status: if is_attach_completion {
+                            "Enter 选择，目录会继续补全，Esc 返回".to_owned()
+                        } else {
+                            "Enter 选择，Esc 返回".to_owned()
+                        },
                     }));
                 }
             }

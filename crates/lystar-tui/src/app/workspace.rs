@@ -293,8 +293,9 @@ pub enum PendingIntent {
     ClipboardBothImage {
         generation: u64,
     },
-    AttachCompletion {
+    ComposerCompletion {
         text: String,
+        command_panel: bool,
     },
     ProjectImage {
         source: String,

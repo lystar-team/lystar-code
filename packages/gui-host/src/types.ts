@@ -94,7 +94,7 @@ export interface RuntimeSession {
 	fork(entryId: string, position?: "before" | "at"): Promise<{ sessionPath: string; selectedText?: string }>;
 	abort(): Promise<void>;
 	reloadResources(): Promise<void>;
-	getCompletions(text: string, cursor: number): CompletionResult | undefined;
+	getCompletions(text: string, cursor: number): CompletionResult | Promise<CompletionResult | undefined> | undefined;
 	renderRichText?(request: RichTextRenderRequest): RenderRichTextResult;
 	getExtensionUiSnapshot?(): ExtensionUiState;
 	getExtensionComponentDiagnostics?(): JsonValue;

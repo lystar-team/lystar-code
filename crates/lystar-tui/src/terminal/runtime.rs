@@ -293,7 +293,8 @@ pub(super) fn run_session(
                             )?;
                         }
                         state_changed = true;
-                    } else if app.extension_ui.terminal_input_listener_count > 0
+                    } else if (app.extension_ui.terminal_input_listener_count > 0
+                        || app.extension_ui.extension_shortcut_count > 0)
                         && app.input_focus == InputFocus::Composer
                         && let Some(data) = raw_key(key.code, key.modifiers)
                     {
@@ -350,7 +351,8 @@ pub(super) fn run_session(
                                 format!("\x1b[200~{text}\x1b[201~"),
                             )?;
                         }
-                    } else if app.extension_ui.terminal_input_listener_count > 0
+                    } else if (app.extension_ui.terminal_input_listener_count > 0
+                        || app.extension_ui.extension_shortcut_count > 0)
                         && app.input_focus == InputFocus::Composer
                         && text.len().saturating_add(12) <= MAX_EXTENSION_INPUT_BYTES
                     {
@@ -408,7 +410,8 @@ pub(super) fn run_session(
                             data,
                         )?;
                         state_changed = true;
-                    } else if app.extension_ui.terminal_input_listener_count > 0
+                    } else if (app.extension_ui.terminal_input_listener_count > 0
+                        || app.extension_ui.extension_shortcut_count > 0)
                         && app.input_focus == InputFocus::Composer
                         && let Some(data) = raw_mouse(mouse.kind, mouse.column, mouse.row)
                     {

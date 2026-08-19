@@ -808,6 +808,45 @@ describe("CodingAgentRuntimeAdapter", () => {
 		});
 	});
 
+	it("bridges dynamic Extension command completions and shortcuts", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-dynamic-extension-"));
+		const agentDir = join(tempDir, "agent");
+		const cwd = join(tempDir, "project");
+		for (const dir of [agentDir, cwd]) mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({
+				defaultProjectTrust: "always",
+				extensions: [fileURLToPath(new URL("./fixtures/runtime-dynamic-extension.ts", import.meta.url))],
+			}),
+		);
+		let runtime: RuntimeSession | undefined;
+		cleanups.push(async () => {
+			await runtime?.dispose();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+		runtime = await new CodingAgentRuntimeAdapter(agentDir).createSession(cwd, async () => ({ cancelled: true }));
+
+		const commandText = "/dynamic";
+		const commandCompletion = await runtime.getCompletions(commandText, commandText.length);
+		expect(commandCompletion?.items).toEqual(
+			expect.arrayContaining([expect.objectContaining({ label: "dynamic-contract", kind: "extension" })]),
+		);
+		const argumentText = "/dynamic-contract a";
+		const argumentCompletion = await runtime.getCompletions(argumentText, argumentText.length);
+		expect(argumentCompletion).toMatchObject({
+			prefixStart: argumentText.length - 1,
+			prefixEnd: argumentText.length,
+			items: [expect.objectContaining({ value: "alpha", kind: "extension" })],
+		});
+		expect(runtime.getExtensionUiSnapshot?.()).toMatchObject({ extensionShortcutCount: 1 });
+
+		await expect(runtime.dispatchExtensionTerminalInput?.("\u001b[117;6u")).resolves.toEqual({ consume: true });
+		expect(runtime.getExtensionUiSnapshot?.()).toMatchObject({
+			statuses: [{ key: "dynamic-shortcut", text: "handled" }],
+		});
+	});
+
 	it("routes API key login through a secret UI request and Core credential storage", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-auth-"));
 		const previousOpenAiKey = process.env.OPENAI_API_KEY;

@@ -48,6 +48,9 @@ type GuiRequestMessage = Extract<ClientMessage, { type: "request" }>;
 type PromptRequestMessage = GuiRequestMessage & {
 	request: Extract<GuiRequestMessage["request"], { command: "prompt" }>;
 };
+type CompletionRequestMessage = GuiRequestMessage & {
+	request: Extract<GuiRequestMessage["request"], { command: "get_completions" }>;
+};
 type ClipboardWriteRequestMessage = GuiRequestMessage & {
 	request: Extract<GuiRequestMessage["request"], { command: "write_clipboard_text" }>;
 };
@@ -2498,6 +2501,180 @@ describe("Rust read-only TUI fd bridge", () => {
 				assert.ok(tui.rawOutput().includes("\u001b]0;\u0007"), "EOF did not clear the Extension title");
 			} finally {
 				tui.closeProtocol();
+			}
+		}
+	}, 120_000);
+
+	it("drives real dynamic Extension commands, completions, command palette, and shortcuts twice", async () => {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const tui = await startTui(
+				0,
+				{ width: 80, height: 24 },
+				`extension-dynamic-${attempt + 1}`,
+				undefined,
+				{},
+				async ({ directory }) => {
+					const agentDir = join(directory, "agent");
+					const cwd = join(directory, "project");
+					mkdirSync(agentDir, { recursive: true });
+					mkdirSync(cwd, { recursive: true });
+					writeFileSync(
+						join(agentDir, "settings.json"),
+						JSON.stringify({
+							defaultProjectTrust: "always",
+							extensions: [fileURLToPath(new URL("./fixtures/runtime-dynamic-extension.ts", import.meta.url))],
+						}),
+					);
+					const adapter = new CodingAgentRuntimeAdapter(agentDir);
+					const runtime = await adapter.createSession(cwd, async () => ({ cancelled: true }));
+					const sessionPath = runtime.sessionPath;
+					await runtime.dispose();
+					return { adapter, agentDir, sessionPath };
+				},
+			);
+			try {
+				await waitForInitialPage(tui);
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.serverMessages.some(
+						(message) =>
+							message.type === "event" &&
+							message.event.type === "extension_ui_snapshot" &&
+							message.event.state.extensionShortcutCount === 1,
+					);
+				}, "dynamic Extension shortcut state did not reach Rust");
+
+				const completionCount = tui.requests.filter((request) => request.command === "get_completions").length;
+				tui.sendLiteral("/dynamic");
+				tui.send("Tab");
+				const commandCompletion = (await waitForRequest(
+					tui,
+					"get_completions",
+					completionCount + 1,
+				)) as CompletionRequestMessage;
+				assert.equal(commandCompletion.request.command, "get_completions");
+				assert.equal(commandCompletion.request.text, "/dynamic");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.pane().includes("命令补全") && tui.pane().includes("dynamic-contract");
+				}, "dynamic Extension slash completion did not render");
+				const commandResponse = tui.serverMessages.find(
+					(message) => message.type === "response" && message.id === commandCompletion.id && message.ok,
+				);
+				assert.ok(commandResponse && commandResponse.type === "response" && commandResponse.ok);
+				assert.ok(
+					(commandResponse.result as { items: Array<{ label: string; kind: string }> }).items.some(
+						(item) => item.label === "dynamic-contract" && item.kind === "extension",
+					),
+				);
+				tui.send("Enter", "Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.clientMessages.some(
+						(message) =>
+							message.type === "request" &&
+							message.request.command === "prompt" &&
+							message.request.text === "/dynamic-contract",
+					);
+				}, "selected dynamic Extension command was not submitted");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.serverMessages.some(
+						(message) =>
+							message.type === "event" &&
+							message.event.type === "extension_ui_delta" &&
+							message.event.delta.statuses?.some(
+								(status) => status.key === "dynamic-command" && status.text === "handled",
+							),
+					);
+				}, "dynamic Extension command did not execute");
+
+				const argumentCompletionCount = tui.requests.filter(
+					(request) => request.command === "get_completions",
+				).length;
+				tui.send("C-u");
+				await waitFor(async () => {
+					await tui.pump();
+					return !tui.pane().includes("/dynamic-contract");
+				}, "Composer did not clear the old command");
+				tui.sendLiteral("/dynamic-contract");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.pane().includes("/dynamic-contract");
+				}, "dynamic command prefix did not reach Composer");
+				tui.sendLiteral(" ");
+				tui.sendLiteral("a");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.pane().includes("/dynamic-contract a");
+				}, "dynamic argument prefix did not reach Composer");
+				tui.send("Tab");
+				const argumentCompletion = (await waitForRequest(
+					tui,
+					"get_completions",
+					argumentCompletionCount + 1,
+				)) as CompletionRequestMessage;
+				assert.equal(argumentCompletion.request.text, "/dynamic-contract a");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.pane().includes("命令补全") && tui.pane().includes("alpha");
+				}, "dynamic Extension argument completion did not render");
+				tui.send("Enter", "Enter");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.clientMessages.some(
+						(message) =>
+							message.type === "request" &&
+							message.request.command === "prompt" &&
+							message.request.text === "/dynamic-contract alpha",
+					);
+				}, "selected dynamic Extension argument was not submitted");
+
+				const panelCompletionCount = tui.requests.filter((request) => request.command === "get_completions").length;
+				tui.send("C-p");
+				const panelCompletion = (await waitForRequest(
+					tui,
+					"get_completions",
+					panelCompletionCount + 1,
+				)) as CompletionRequestMessage;
+				assert.equal(panelCompletion.request.text, "/");
+				const panelResponse = tui.serverMessages.find(
+					(message) => message.type === "response" && message.id === panelCompletion.id && message.ok,
+				);
+				assert.ok(panelResponse && panelResponse.type === "response" && panelResponse.ok);
+				assert.ok(
+					(panelResponse.result as { items: Array<{ label: string; kind: string }> }).items.some(
+						(item) => item.label === "dynamic-contract" && item.kind === "extension",
+					),
+				);
+				tui.sendLiteral("dynamic");
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.pane().includes("命令面板") && tui.pane().includes("dynamic-contract");
+				}, "Ctrl+P did not merge the dynamic Extension command");
+
+				tui.send("Escape");
+				const shortcutSequence = "\u001b[117;6u";
+				tui.sendLiteral(shortcutSequence);
+				await waitFor(async () => {
+					await tui.pump();
+					return tui.serverMessages.some(
+						(message) =>
+							message.type === "event" &&
+							message.event.type === "extension_ui_delta" &&
+							message.event.delta.statuses?.some(
+								(status) => status.key === "dynamic-shortcut" && status.text === "handled",
+							),
+					);
+				}, "dynamic Extension shortcut did not execute");
+				assert.ok(
+					tui.requests.some(
+						(request) => request.command === "extension_terminal_input" && request.data === shortcutSequence,
+					),
+					"Rust did not forward the raw dynamic shortcut sequence",
+				);
+			} finally {
+				await finishTuiRound(tui);
 			}
 		}
 	}, 120_000);

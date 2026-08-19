@@ -1099,7 +1099,7 @@ export class GuiHostService {
 						items: files,
 					} satisfies CompletionResult);
 				}
-				const runtimeResult = runtime?.getCompletions(request.text, request.cursor);
+				const runtimeResult = runtime ? await runtime.getCompletions(request.text, request.cursor) : undefined;
 				const fileQuery = projectFileCompletion(request.text, request.cursor);
 				if (!fileQuery) {
 					return jsonValue(runtimeResult ?? { prefixStart: request.cursor, prefixEnd: request.cursor, items: [] });

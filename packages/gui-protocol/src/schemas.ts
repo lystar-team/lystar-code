@@ -956,6 +956,7 @@ const ExtensionUiStateSchema = StrictObject({
 	hiddenThinkingLabel: Type.Union([Type.String({ maxLength: 4096 }), Type.Null()]),
 	title: Type.Union([Type.String({ maxLength: 4096 }), Type.Null()]),
 	terminalInputListenerCount: Type.Integer({ minimum: 0, maximum: 128 }),
+	extensionShortcutCount: Type.Integer({ minimum: 0, maximum: 128 }),
 });
 export type ExtensionUiState = Static<typeof ExtensionUiStateSchema>;
 
@@ -1024,6 +1025,7 @@ const ExtensionUiDeltaSchema = StrictObject({
 	hiddenThinkingLabel: Type.Optional(Type.Union([Type.String({ maxLength: 4096 }), Type.Null()])),
 	title: Type.Optional(Type.Union([Type.String({ maxLength: 4096 }), Type.Null()])),
 	terminalInputListenerCount: Type.Optional(Type.Integer({ minimum: 0, maximum: 128 })),
+	extensionShortcutCount: Type.Optional(Type.Integer({ minimum: 0, maximum: 128 })),
 });
 const ExtensionEditorActionSchema = StrictObject({
 	action: Type.Union([Type.Literal("paste"), Type.Literal("set")]),

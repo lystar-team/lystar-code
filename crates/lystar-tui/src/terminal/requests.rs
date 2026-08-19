@@ -641,10 +641,25 @@ pub(super) fn request_attach_completion(
     pipe: &mut ProtocolPipe,
     sequence: &mut u64,
 ) -> Result<(), TuiError> {
+    request_composer_completion(app, pipe, sequence, false)
+}
+
+pub(super) fn request_composer_completion(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    sequence: &mut u64,
+    command_panel: bool,
+) -> Result<(), TuiError> {
     let text = app.editor.text().to_owned();
     let Some(cwd) = app.active_session_cwd().filter(|cwd| !cwd.is_empty()) else {
         app.set_overlay_error("尚未获取项目目录");
         return Ok(());
+    };
+    let request_text = if command_panel { "/" } else { text.as_str() };
+    let cursor = if command_panel {
+        1
+    } else {
+        app.editor.text().encode_utf16().count()
     };
     request_workspace(
         app,
@@ -654,13 +669,16 @@ pub(super) fn request_attach_completion(
         serde_json::json!({
             "cwd": cwd,
             "sessionPath": app.active_session_path(),
-            "text": text,
-            "cursor": app.editor.text().encode_utf16().count(),
+            "text": request_text,
+            "cursor": cursor,
         })
         .as_object()
         .cloned()
         .unwrap_or_default(),
-        PendingIntent::AttachCompletion { text },
+        PendingIntent::ComposerCompletion {
+            text,
+            command_panel,
+        },
     )
 }
 

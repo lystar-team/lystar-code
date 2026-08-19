@@ -117,6 +117,7 @@ export {
 	type TurnStartEvent,
 	type WorkingIndicatorOptions,
 } from "./extensions/index.ts";
+export { KeybindingsManager, matchesKey } from "./keybindings.ts";
 export {
 	getLystarSetting,
 	getLystarSettingsForUi,

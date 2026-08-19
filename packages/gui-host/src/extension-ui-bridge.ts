@@ -455,7 +455,12 @@ export class ExtensionUiBridge {
 	private componentFrameTimer: ReturnType<typeof setTimeout> | undefined;
 	private readonly onUiRequest: UiRequestHandler;
 	private readonly editorKeybindings: KeybindingsManager;
-	private readonly getCompletions?: (text: string, cursor: number) => EditorCompletion | undefined;
+	private readonly getCompletions?: (
+		text: string,
+		cursor: number,
+	) => EditorCompletion | Promise<EditorCompletion | undefined> | undefined;
+	private readonly getExtensionShortcutCount?: () => number;
+	private readonly dispatchExtensionShortcut?: (data: string) => boolean;
 	private readonly autocompleteProviderFactories: EditorAutocompleteFactory[] = [];
 	private readonly publish: (event: ExtensionUiBridgeEvent) => void;
 	private readonly reportError: (error: { event: string; error: string; stack?: string }) => void;
@@ -479,13 +484,20 @@ export class ExtensionUiBridge {
 		onUiRequest: UiRequestHandler,
 		publish: (event: ExtensionUiBridgeEvent) => void,
 		reportError: (error: { event: string; error: string; stack?: string }) => void,
-		getCompletions?: (text: string, cursor: number) => EditorCompletion | undefined,
+		getCompletions?: (
+			text: string,
+			cursor: number,
+		) => EditorCompletion | Promise<EditorCompletion | undefined> | undefined,
 		agentDir?: string,
+		getExtensionShortcutCount?: () => number,
+		dispatchExtensionShortcut?: (data: string) => boolean,
 	) {
 		this.onUiRequest = onUiRequest;
 		this.publish = publish;
 		this.reportError = reportError;
 		this.getCompletions = getCompletions;
+		this.getExtensionShortcutCount = getExtensionShortcutCount;
+		this.dispatchExtensionShortcut = dispatchExtensionShortcut;
 		this.editorKeybindings = KeybindingsManager.create(agentDir);
 	}
 
@@ -572,6 +584,7 @@ export class ExtensionUiBridge {
 			hiddenThinkingLabel: this.hiddenThinkingLabel,
 			title: this.title,
 			terminalInputListenerCount: this.terminalInputHandlers.size,
+			extensionShortcutCount: Math.min(128, Math.max(0, this.getExtensionShortcutCount?.() ?? 0)),
 		};
 	}
 
@@ -796,6 +809,7 @@ export class ExtensionUiBridge {
 			const onExtensionShortcut = bindings.onExtensionShortcut;
 			editor.onExtensionShortcut = (data) => {
 				if (!isCurrent()) return false;
+				if (this.dispatchExtensionShortcut?.(data)) return true;
 				return onExtensionShortcut?.(data) ?? false;
 			};
 			editor.setText?.(this.editorText);
@@ -919,7 +933,7 @@ export class ExtensionUiBridge {
 				const prefixLines = lines.slice(0, cursorLine);
 				const text = [...prefixLines, lines[cursorLine] ?? "", ...lines.slice(cursorLine + 1)].join("\n");
 				const cursor = prefixLines.reduce((length, line) => length + line.length + 1, 0) + cursorCol;
-				const result = this.getCompletions(text, cursor);
+				const result = await this.getCompletions(text, cursor);
 				if (options.signal.aborted || !result) return null;
 				return {
 					items: result.items,
