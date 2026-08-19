@@ -2002,6 +2002,8 @@
                   "type": "object",
                   "required": [
                     "command",
+                    "sessionPath",
+                    "leaseId",
                     "cwd",
                     "trusted",
                     "clientInstanceId",
@@ -2011,6 +2013,15 @@
                     "command": {
                       "type": "string",
                       "const": "set_project_trust"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
                     },
                     "cwd": {
                       "type": "string",

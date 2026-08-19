@@ -241,7 +241,8 @@ export interface RuntimeAdapter {
 	listSubagents(sessionPath: string): SubagentSnapshot[];
 	readSubagent(sessionPath: string, agentId: string): { transcript?: SubagentSnapshot };
 	getProjectTrust(cwd: string): ProjectTrust;
-	setProjectTrust(cwd: string, trusted: boolean): Promise<ProjectTrust>;
+	getProjectTrustDecision(cwd: string): boolean | null;
+	setProjectTrust(cwd: string, trusted: boolean | null): Promise<ProjectTrust>;
 	listPackages(cwd: string): PackageSummary[];
 	installPackage(
 		cwd: string,

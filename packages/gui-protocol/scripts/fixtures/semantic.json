@@ -117,7 +117,7 @@
       "name": "client-workspace-set-project-trust",
       "direction": "client",
       "workspaceCommand": "set_project_trust",
-      "message": { "type": "request", "id": "workspace-set-project-trust", "request": { "command": "set_project_trust", "cwd": "/tmp/project", "trusted": true, "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
+      "message": { "type": "request", "id": "workspace-set-project-trust", "request": { "command": "set_project_trust", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "cwd": "/tmp/project", "trusted": true, "clientInstanceId": "client-1", "clientRequestId": "request-1" } }
     },
     {
       "name": "client-workspace-list-packages",

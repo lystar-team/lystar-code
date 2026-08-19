@@ -1195,17 +1195,36 @@ export class GuiHostService {
 				return this.adapter.getProjectTrust(canonicalProjectCwd(request.cwd));
 			case "set_project_trust": {
 				const cwd = canonicalProjectCwd(request.cwd);
+				const sessionPath = canonicalSessionPath(request.sessionPath);
 				return this.executeJournaledWrite(connection, {
 					command: request.command,
 					clientInstanceId: request.clientInstanceId,
 					clientRequestId: request.clientRequestId,
 					scope: `project:${cwd}`,
-					payload: { cwd, trusted: request.trusted },
+					lockSessionPath: sessionPath,
+					payload: { sessionPath, cwd, trusted: request.trusted },
 					run: async () => {
+						const { runtime } = this.assertExtensionSession(connection, request);
+						if (canonicalProjectCwd(runtime.getSnapshot("available").cwd) !== cwd) {
+							throw Object.assign(new Error("项目信任目录与当前会话不一致"), {
+								code: "project_trust_session_mismatch",
+								retryable: false,
+							});
+						}
+						const previousDecision = this.adapter.getProjectTrustDecision(cwd);
 						const result = await this.adapter.setProjectTrust(cwd, request.trusted);
-						for (const runtime of this.runtimes.values()) {
-							if (canonicalProjectCwd(runtime.getSnapshot("available").cwd) === cwd)
-								await runtime.reloadResources();
+						const reloadProjectRuntimes = async () => {
+							for (const runtime of this.runtimes.values()) {
+								if (canonicalProjectCwd(runtime.getSnapshot("available").cwd) === cwd)
+									await runtime.reloadResources();
+							}
+						};
+						try {
+							await reloadProjectRuntimes();
+						} catch (error) {
+							await this.adapter.setProjectTrust(cwd, previousDecision);
+							await reloadProjectRuntimes();
+							throw error;
 						}
 						return result;
 					},

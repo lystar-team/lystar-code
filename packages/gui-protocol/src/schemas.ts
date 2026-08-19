@@ -1419,6 +1419,8 @@ export const CommandSchema = Type.Union([
 	StrictObject({ command: Type.Literal("get_project_trust"), cwd: Type.String({ minLength: 1 }) }),
 	StrictObject({
 		command: Type.Literal("set_project_trust"),
+		sessionPath: Type.String({ minLength: 1 }),
+		leaseId: Id,
 		cwd: Type.String({ minLength: 1 }),
 		trusted: Type.Boolean(),
 		clientInstanceId: Id,

@@ -316,6 +316,25 @@ describe("CodingAgentRuntimeAdapter", () => {
 		while (cleanups.length > 0) await cleanups.pop()?.();
 	});
 
+	it("distinguishes inherited and direct project trust decisions", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-trust-"));
+		const agentDir = join(tempDir, "agent");
+		const parent = join(tempDir, "projects");
+		const cwd = join(parent, "project");
+		for (const dir of [agentDir, cwd]) mkdirSync(dir, { recursive: true });
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		cleanups.push(() => rmSync(tempDir, { recursive: true, force: true }));
+
+		await adapter.setProjectTrust(parent, true);
+		expect(adapter.getProjectTrust(cwd).trusted).toBe(true);
+		expect(adapter.getProjectTrustDecision(cwd)).toBeNull();
+		await adapter.setProjectTrust(cwd, false);
+		expect(adapter.getProjectTrustDecision(cwd)).toBe(false);
+		await adapter.setProjectTrust(cwd, null);
+		expect(adapter.getProjectTrust(cwd).trusted).toBe(true);
+		expect(adapter.getProjectTrustDecision(cwd)).toBeNull();
+	});
+
 	it("lists and writes the same catalog descriptors used by the selector", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-settings-"));
 		const agentDir = join(tempDir, "agent");

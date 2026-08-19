@@ -849,13 +849,14 @@ class WorkbenchFixture {
 				reason: this.trusted ? "项目资源已信任" : "项目资源被明确设为不信任",
 				resourceRisk: true,
 			}),
-			setProjectTrust: async (cwd: string, trusted: boolean) => {
+			getProjectTrustDecision: () => this.trusted,
+			setProjectTrust: async (cwd: string, trusted: boolean | null) => {
 				this.effects.trust++;
-				this.trusted = trusted;
+				this.trusted = trusted ?? false;
 				return {
 					cwd,
-					trusted,
-					reason: trusted ? "项目资源已信任" : "项目资源被明确设为不信任",
+					trusted: this.trusted,
+					reason: this.trusted ? "项目资源已信任" : "项目资源被明确设为不信任",
 					resourceRisk: true,
 				};
 			},

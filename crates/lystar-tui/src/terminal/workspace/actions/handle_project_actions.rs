@@ -4,10 +4,10 @@ pub(super) fn handle_project_actions(
     app: &mut AppState,
     action: &str,
     pipe: &mut ProtocolPipe,
-    _session_path: &str,
+    session_path: &str,
     client_instance_id: &str,
     sequence: &mut u64,
-    _session_flow: &mut Option<SessionFlow>,
+    session_flow: &mut Option<SessionFlow>,
 ) -> Result<bool, TuiError> {
     if app.write_pending && !action.starts_with("ui:") {
         app.set_overlay_error("正在写入，请稍候");
@@ -184,12 +184,23 @@ pub(super) fn handle_project_actions(
                 return Ok(true);
             }
         };
-        app.close_overlay();
+        if app.is_active_operation() {
+            app.set_overlay_error("当前会话正在运行，不能修改项目信任");
+            return Ok(true);
+        }
+        if session_flow.is_some() {
+            app.set_overlay_error("会话操作正在进行");
+            return Ok(true);
+        }
+        let Some(lease_id) = app.lease_id.clone() else {
+            app.set_overlay_error("尚未获取会话租约");
+            return Ok(true);
+        };
         let cwd = app
-            .active_session_cwd()
-            .filter(|cwd| !cwd.is_empty())
-            .map(str::to_owned)
-            .ok_or_else(|| TuiError::InvalidResponse("尚未获取项目目录".to_owned()))?;
+            .trust
+            .as_ref()
+            .map(|trust| trust.cwd.clone())
+            .ok_or_else(|| TuiError::InvalidResponse("尚未获取项目信任状态".to_owned()))?;
         app.mark_write_pending();
         request_workspace(
             app,
@@ -197,6 +208,8 @@ pub(super) fn handle_project_actions(
             sequence,
             WorkspaceCommand::SetProjectTrust,
             serde_json::json!({
+                "sessionPath": session_path,
+                "leaseId": lease_id,
                 "cwd": cwd,
                 "trusted": trusted,
                 "clientInstanceId": client_instance_id,
@@ -205,7 +218,7 @@ pub(super) fn handle_project_actions(
             .as_object()
             .cloned()
             .unwrap_or_default(),
-            PendingIntent::TrustMutation,
+            PendingIntent::TrustMutation { cwd, trusted },
         )?;
         return Ok(true);
     }

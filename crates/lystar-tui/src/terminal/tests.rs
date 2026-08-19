@@ -815,6 +815,9 @@ mod hotkeys_tests;
 #[path = "tests/settings_tests.rs"]
 mod settings_tests;
 
+#[path = "tests/trust_tests.rs"]
+mod trust_tests;
+
 #[path = "tests/clone_tests.rs"]
 mod clone_tests;
 

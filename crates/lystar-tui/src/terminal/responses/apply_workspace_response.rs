@@ -111,8 +111,15 @@ pub(super) fn apply_workspace_response(
                 app.replace_overlay(skills_overlay(&app.skills, Some(&selected_key), filter));
                 app.set_toast("技能启用状态已更新");
             }
-            PendingIntent::TrustMutation => {
-                app.trust = Some(parse_trust(&result)?);
+            PendingIntent::TrustMutation { cwd, trusted } => {
+                let trust = parse_trust(&result)?;
+                if trust.cwd != cwd || trust.trusted != Some(trusted) {
+                    return Err(TuiError::InvalidResponse(
+                        "项目信任响应与请求不一致".to_owned(),
+                    ));
+                }
+                app.trust = Some(trust);
+                app.close_overlay();
                 app.replace_overlay(trust_overlay(app));
                 app.set_toast("项目信任已更新");
             }

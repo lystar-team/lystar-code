@@ -234,7 +234,7 @@ impl AppState {
         if matches!(
             pending.intent,
             PendingIntent::SkillMutation { .. }
-                | PendingIntent::TrustMutation
+                | PendingIntent::TrustMutation { .. }
                 | PendingIntent::InstructionMutation { .. }
                 | PendingIntent::PackageMutation { .. }
                 | PendingIntent::SettingMutation { .. }

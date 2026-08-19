@@ -250,7 +250,10 @@ pub enum PendingIntent {
         selected_key: String,
         filter: String,
     },
-    TrustMutation,
+    TrustMutation {
+        cwd: String,
+        trusted: bool,
+    },
     InstructionMutation {
         target: WorkbenchTarget,
         selected_key: String,

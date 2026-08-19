@@ -199,6 +199,10 @@ class FakeRuntime implements RuntimeSession {
 	}
 	async reloadResources() {
 		this.counts.reload_resources = (this.counts.reload_resources ?? 0) + 1;
+		if (this.counts.fail_reload_once) {
+			this.counts.fail_reload_once = 0;
+			throw new Error("Extension 初始化失败");
+		}
 		if (this.counts.block_reload) await new Promise((resolve) => setTimeout(resolve, 20));
 	}
 	getCompletions() {
@@ -233,6 +237,7 @@ function setup() {
 	const sessionPath = join(directory, "session.jsonl");
 	writeFileSync(sessionPath, "{}\n");
 	const counts: Record<string, number> = {};
+	let projectTrustDecision: boolean | null = true;
 	const clipboardWrites: string[] = [];
 	const runtime = new FakeRuntime(sessionPath, cwd, counts);
 	const adapter = {
@@ -301,10 +306,28 @@ function setup() {
 		getSessionTree: () => [],
 		listSubagents: () => [],
 		readSubagent: () => ({}),
-		getProjectTrust: () => ({ cwd, trusted: true }),
-		setProjectTrust: async () => {
+		getProjectTrust: () => ({
+			cwd,
+			trusted: projectTrustDecision,
+			reason:
+				projectTrustDecision === true
+					? "项目资源已信任"
+					: projectTrustDecision === false
+						? "项目资源被明确设为不信任"
+						: "项目包含需信任资源，尚未选择",
+			resourceRisk: true,
+		}),
+		getProjectTrustDecision: () => projectTrustDecision,
+		setProjectTrust: async (_cwd: string, trusted: boolean | null) => {
 			counts.set_project_trust = (counts.set_project_trust ?? 0) + 1;
-			return { cwd, trusted: true };
+			if (counts.block_project_trust) await new Promise((resolve) => setTimeout(resolve, 20));
+			projectTrustDecision = trusted;
+			return {
+				cwd,
+				trusted,
+				reason: trusted ? "项目资源已信任" : "项目资源被明确设为不信任",
+				resourceRisk: true,
+			};
 		},
 		listPackages: () => [],
 		installPackage: async () => {
@@ -405,7 +428,7 @@ function request(command: string, cwd: string, sessionPath: string, leaseId: str
 		case "set_setting":
 			return { command, sessionPath, leaseId, id: "project-setting", value: true, ...identity };
 		case "set_project_trust":
-			return { command, cwd, trusted: true, ...identity };
+			return { command, sessionPath, leaseId, cwd, trusted: true, ...identity };
 		case "install_package":
 			return { command, cwd, source: "npm:example", scope: "project", ...identity };
 		case "remove_package":
@@ -469,6 +492,7 @@ const SESSION_COMMANDS = new Set([
 	"fork_session",
 	"export_session",
 	"set_setting",
+	"set_project_trust",
 	"set_entry_label",
 	"navigate_session_tree",
 	"abort_subagent",
@@ -667,6 +691,122 @@ describe("GuiHostService journaled writes", () => {
 				(message) => message.type === "response" && message.id === "prompt-during-reload",
 			),
 		).toMatchObject({ ok: false, error: { code: "session_operation_active" } });
+	});
+
+	it("binds project trust changes to the active Session and reloads its resources", async () => {
+		const setupValue = setup();
+		const active = await lease(setupValue.service, setupValue.sessionPath);
+		const otherProject = join(setupValue.directory, "other-project");
+		mkdirSync(otherProject);
+		await active.connection.handle({
+			type: "request",
+			id: "trust-read",
+			request: { command: "get_project_trust", cwd: setupValue.cwd },
+		});
+		for (const [id, leaseId, cwd] of [
+			["trust-stale", "stale-lease", setupValue.cwd],
+			["trust-other-project", active.leaseId, otherProject],
+		] as const) {
+			await active.connection.handle({
+				type: "request",
+				id,
+				request: {
+					command: "set_project_trust",
+					sessionPath: setupValue.sessionPath,
+					leaseId,
+					cwd,
+					trusted: false,
+					clientInstanceId: "client",
+					clientRequestId: id,
+				},
+			});
+		}
+
+		setupValue.counts.block_project_trust = 1;
+		const mutation = active.connection.handle({
+			type: "request",
+			id: "trust-set",
+			request: {
+				command: "set_project_trust",
+				sessionPath: setupValue.sessionPath,
+				leaseId: active.leaseId,
+				cwd: setupValue.cwd,
+				trusted: false,
+				clientInstanceId: "client",
+				clientRequestId: "trust-set",
+			},
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await active.connection.handle({
+			type: "request",
+			id: "prompt-during-trust",
+			request: {
+				command: "prompt",
+				sessionPath: setupValue.sessionPath,
+				leaseId: active.leaseId,
+				clientInstanceId: "client",
+				clientRequestId: "prompt-during-trust",
+				text: "should be rejected",
+			},
+		});
+		await mutation;
+
+		expect(
+			active.connection.messages.find((message) => message.type === "response" && message.id === "trust-read"),
+		).toMatchObject({ ok: true, result: { cwd: setupValue.cwd, trusted: true } });
+		expect(
+			active.connection.messages.find((message) => message.type === "response" && message.id === "trust-stale"),
+		).toMatchObject({ ok: false, error: { code: "invalid_session_lease" } });
+		expect(
+			active.connection.messages.find(
+				(message) => message.type === "response" && message.id === "trust-other-project",
+			),
+		).toMatchObject({ ok: false, error: { code: "project_trust_session_mismatch" } });
+		expect(
+			active.connection.messages.find((message) => message.type === "response" && message.id === "trust-set"),
+		).toMatchObject({ ok: true, result: { cwd: setupValue.cwd, trusted: false } });
+		expect(
+			active.connection.messages.find(
+				(message) => message.type === "response" && message.id === "prompt-during-trust",
+			),
+		).toMatchObject({ ok: false, error: { code: "session_operation_active" } });
+		expect(setupValue.counts.set_project_trust).toBe(1);
+		expect(setupValue.counts.reload_resources).toBe(1);
+	});
+
+	it("restores the previous project trust decision when resource reload fails", async () => {
+		const setupValue = setup();
+		const active = await lease(setupValue.service, setupValue.sessionPath);
+		setupValue.counts.fail_reload_once = 1;
+		await active.connection.handle({
+			type: "request",
+			id: "trust-failed",
+			request: {
+				command: "set_project_trust",
+				sessionPath: setupValue.sessionPath,
+				leaseId: active.leaseId,
+				cwd: setupValue.cwd,
+				trusted: false,
+				clientInstanceId: "client",
+				clientRequestId: "trust-failed",
+			},
+		});
+		await active.connection.handle({
+			type: "request",
+			id: "trust-after-failure",
+			request: { command: "get_project_trust", cwd: setupValue.cwd },
+		});
+
+		expect(
+			active.connection.messages.find((message) => message.type === "response" && message.id === "trust-failed"),
+		).toMatchObject({ ok: false, error: { message: "Extension 初始化失败" } });
+		expect(
+			active.connection.messages.find(
+				(message) => message.type === "response" && message.id === "trust-after-failure",
+			),
+		).toMatchObject({ ok: true, result: { trusted: true } });
+		expect(setupValue.counts.set_project_trust).toBe(2);
+		expect(setupValue.counts.reload_resources).toBe(2);
 	});
 
 	it("locks the session for the full fork window", async () => {

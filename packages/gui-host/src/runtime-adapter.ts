@@ -2127,7 +2127,13 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		};
 	}
 
-	async setProjectTrust(cwd: string, trusted: boolean): Promise<ProjectTrust> {
+	getProjectTrustDecision(cwd: string): boolean | null {
+		const root = canonicalDirectory(cwd);
+		const entry = new ProjectTrustStore(this.agentDir).getEntry(root);
+		return entry?.path === root ? entry.decision : null;
+	}
+
+	async setProjectTrust(cwd: string, trusted: boolean | null): Promise<ProjectTrust> {
 		const root = canonicalDirectory(cwd);
 		new ProjectTrustStore(this.agentDir).set(root, trusted);
 		return this.getProjectTrust(root);
