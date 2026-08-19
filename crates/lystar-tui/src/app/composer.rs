@@ -129,6 +129,15 @@ impl fmt::Debug for RecoveryDraft {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct PendingBashSubmit {
+    pub response_id: String,
+    pub session_path: String,
+    pub session_generation: u64,
+    pub text: String,
+    pub operation_id: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct PendingAttachmentSubmit {
     pub command: String,
@@ -400,10 +409,68 @@ impl AppState {
         self.recovery_draft.take().is_some()
     }
 
+    pub fn begin_bash_submit(&mut self, submit: PendingBashSubmit) {
+        self.pending_bash_submit = Some(submit);
+    }
+
+    pub fn accept_bash_submit(&mut self, response_id: &str, operation_id: String) -> bool {
+        let Some(submit) = self.pending_bash_submit.as_mut() else {
+            return false;
+        };
+        if submit.response_id != response_id || submit.operation_id.is_some() {
+            return false;
+        }
+        submit.operation_id = Some(operation_id);
+        true
+    }
+
+    pub fn reject_bash_submit(&mut self, response_id: &str) -> bool {
+        if self
+            .pending_bash_submit
+            .as_ref()
+            .is_none_or(|submit| submit.response_id != response_id || submit.operation_id.is_some())
+        {
+            return false;
+        }
+        self.restore_bash_draft();
+        true
+    }
+
+    pub fn settle_bash_operation(&mut self) {
+        let Some(operation) = self.operation.as_ref() else {
+            return;
+        };
+        let Some(submit) = self.pending_bash_submit.as_ref() else {
+            return;
+        };
+        if submit.operation_id.as_deref() != Some(operation.operation_id.as_str()) {
+            return;
+        }
+        match operation.status.as_str() {
+            "completed" => self.pending_bash_submit = None,
+            "failed" | "aborted" | "interrupted" => self.restore_bash_draft(),
+            _ => {}
+        }
+    }
+
+    fn restore_bash_draft(&mut self) {
+        let Some(submit) = self.pending_bash_submit.take() else {
+            return;
+        };
+        if self.session_generation == submit.session_generation
+            && self.active_session_path() == Some(submit.session_path.as_str())
+            && self.editor.is_empty()
+        {
+            self.editor.replace(&submit.text);
+            self.set_toast("Shell 草稿已恢复");
+        }
+    }
+
     pub(super) fn clear_custom_editor_drafts(&mut self) {
         self.pending_custom_editor_submits.clear();
         self.accepted_custom_editor_submits.clear();
         self.recovery_draft = None;
+        self.pending_bash_submit = None;
     }
 
     pub fn begin_attachment_submit(

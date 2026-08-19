@@ -180,6 +180,22 @@ impl LiveTools {
         }
     }
 
+    pub fn apply_bash_operation(
+        &mut self,
+        operation_id: String,
+        command: String,
+        output: String,
+        status: LiveToolStatus,
+    ) {
+        if !self.tools.contains_key(&operation_id) {
+            self.start_bash(operation_id.clone(), command);
+        }
+        self.update_bash(operation_id.clone(), output);
+        if let Some(tool) = self.tools.get_mut(&operation_id) {
+            tool.status = status;
+        }
+    }
+
     pub fn remove(&mut self, tool_call_id: &str) {
         self.tools.remove(tool_call_id);
         self.order.retain(|id| id != tool_call_id);

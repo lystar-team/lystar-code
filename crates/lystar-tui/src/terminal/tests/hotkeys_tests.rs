@@ -38,6 +38,18 @@ fn hotkeys_command_displays_the_active_rust_shortcuts() {
             .any(|line| line.contains("Ctrl+Shift+V"))
     );
     assert!(detail.lines.iter().any(|line| line.contains("斜杠命令")));
+    assert!(
+        detail
+            .lines
+            .iter()
+            .any(|line| line.contains("!  运行 Shell 并加入模型上下文"))
+    );
+    assert!(
+        detail
+            .lines
+            .iter()
+            .any(|line| line.contains("!!  运行 Shell 但不加入模型上下文"))
+    );
 }
 
 #[test]

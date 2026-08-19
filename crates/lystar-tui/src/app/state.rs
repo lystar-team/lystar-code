@@ -18,12 +18,13 @@ use super::{
     ChangesTab, ClipboardDescriptor, ClipboardReadState, ComposerAttachment, ComposerCompletion,
     DetailOverlay, ExtensionUiState, GitDiffDescriptor, GitStatusDescriptor, ImagePendingRequest,
     InstructionDescriptor, ListOverlay, LiveCompaction, LiveRetry, ModelDescriptor, OverlayLink,
-    OverlayOrigin, OverlayState, PackageDescriptor, PendingAttachmentSubmit, PendingComponentInput,
-    PendingCustomEditorSubmit, PendingRequest, PendingSessionImport, PendingTerminalInput,
-    ProjectTrustDescriptor, ProviderDescriptor, ReadonlySessionView, RecoveryDraft,
-    RichTextPendingRequest, SearchState, SessionSummary, SessionTreeNode, SettingDescriptor,
-    SkillDescriptor, SubagentDescriptor, TranscriptPendingRequest, TranscriptRequestKind,
-    TranscriptViewKind, TranscriptWindow, TreeFilter, UpdateDescriptor, WorkspaceOverlayGeneration,
+    OverlayOrigin, OverlayState, PackageDescriptor, PendingAttachmentSubmit, PendingBashSubmit,
+    PendingComponentInput, PendingCustomEditorSubmit, PendingRequest, PendingSessionImport,
+    PendingTerminalInput, ProjectTrustDescriptor, ProviderDescriptor, ReadonlySessionView,
+    RecoveryDraft, RichTextPendingRequest, SearchState, SessionSummary, SessionTreeNode,
+    SettingDescriptor, SkillDescriptor, SubagentDescriptor, TranscriptPendingRequest,
+    TranscriptRequestKind, TranscriptViewKind, TranscriptWindow, TreeFilter, UpdateDescriptor,
+    WorkspaceOverlayGeneration,
 };
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveSessionContext {
@@ -114,6 +115,7 @@ pub struct AppState {
     pub(super) accepted_custom_editor_submits: HashMap<String, RecoveryDraft>,
     pub recovery_draft: Option<RecoveryDraft>,
     pub pending_attachment_submits: HashMap<String, PendingAttachmentSubmit>,
+    pub pending_bash_submit: Option<PendingBashSubmit>,
     pub attachment_preview: Option<String>,
     pub composer_completion: Option<ComposerCompletion>,
     pub clipboard_read_generation: u64,
@@ -475,7 +477,57 @@ impl AppState {
         if starts_new_operation {
             self.clear_transient();
         }
+        let bash_progress = match operation.progress.as_ref() {
+            Some(SessionProgress::Bash {
+                command,
+                output,
+                truncated: _,
+            }) if operation.operation_type == "run_bash" => Some((command.clone(), output.clone())),
+            _ => None,
+        };
+        let pending_bash_matches = self.pending_bash_submit.as_ref().is_some_and(|submit| {
+            submit.operation_id.as_deref() == Some(operation.operation_id.as_str())
+        });
         self.operation = Some(operation);
+        if let Some((command, output)) = bash_progress
+            && (!terminal || pending_bash_matches)
+        {
+            let operation = self.operation.as_ref().expect("operation just stored");
+            let status = match operation.status.as_str() {
+                "completed" => LiveToolStatus::Success,
+                "failed" => LiveToolStatus::Error,
+                "aborted" | "interrupted" => LiveToolStatus::Cancelled,
+                _ => LiveToolStatus::Running,
+            };
+            self.live_tools.apply_bash_operation(
+                operation.operation_id.clone(),
+                command,
+                output,
+                status,
+            );
+        }
+        self.settle_bash_operation();
+        let bash_update = self.operation.as_ref().and_then(|operation| {
+            (operation.operation_type == "run_bash")
+                .then(|| (operation.status.clone(), operation.error.clone()))
+        });
+        if let Some((status, error)) = bash_update {
+            match status.as_str() {
+                "accepted" | "running" => {
+                    self.transcript.status = "正在运行 Shell，按 Esc 取消".to_owned();
+                }
+                "aborting" => self.transcript.status = "正在取消 Shell".to_owned(),
+                "completed" => self.transcript.status.clear(),
+                "aborted" | "interrupted" => self.transcript.status.clear(),
+                "failed" => {
+                    self.transcript.status.clear();
+                    self.set_overlay_error(
+                        error.unwrap_or_else(|| "Shell 命令执行失败：未知错误".to_owned()),
+                    );
+                }
+                _ => {}
+            }
+        }
         let share_update = self.operation.as_ref().and_then(|operation| {
             (operation.operation_type == "share_session").then(|| {
                 (
@@ -541,6 +593,14 @@ impl AppState {
             .as_ref()
             .map(|operation| operation.status.as_str())
         {
+            Some("completed")
+                if self
+                    .operation
+                    .as_ref()
+                    .is_some_and(|operation| operation.operation_type == "run_bash") =>
+            {
+                self.live_tools.settle_active(LiveToolStatus::Success)
+            }
             Some("failed") => self.live_tools.settle_active(LiveToolStatus::Error),
             Some("aborted" | "interrupted") => {
                 self.live_tools.settle_active(LiveToolStatus::Cancelled)
@@ -623,6 +683,7 @@ impl AppState {
                     error,
                 );
             }
+            SessionProgress::Bash { .. } => {}
             SessionProgress::Status { status, .. } => self.transcript.status = status,
             SessionProgress::Usage { usage } => {
                 if let Some(elapsed) = usage.elapsed_ms {
@@ -656,6 +717,22 @@ impl AppState {
                 TranscriptViewItem::Thinking { .. } => committed_thinking = true,
                 TranscriptViewItem::ToolResult { call_id, .. } => {
                     self.live_tools.remove(call_id);
+                }
+                TranscriptViewItem::Bash { .. } => {
+                    let operation_id = self
+                        .pending_bash_submit
+                        .as_ref()
+                        .and_then(|submit| submit.operation_id.clone())
+                        .or_else(|| {
+                            self.operation.as_ref().and_then(|operation| {
+                                (operation.operation_type == "run_bash")
+                                    .then(|| operation.operation_id.clone())
+                            })
+                        });
+                    if let Some(operation_id) = operation_id {
+                        self.live_tools.remove(&operation_id);
+                    }
+                    self.pending_bash_submit = None;
                 }
                 TranscriptViewItem::Summary { title, .. } if title == "上下文压缩" => {
                     self.compaction = None;

@@ -269,6 +269,11 @@ pub enum SessionProgress {
         delay_ms: Option<u64>,
         error: Option<String>,
     },
+    Bash {
+        command: String,
+        output: String,
+        truncated: Option<bool>,
+    },
     Status {
         status: String,
         truncated: Option<bool>,

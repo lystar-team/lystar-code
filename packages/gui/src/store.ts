@@ -1285,6 +1285,7 @@ export class GuiAppStore {
 						clientInstanceId: this.client.clientInstanceId,
 						clientRequestId,
 						commandText,
+						excludeFromContext: false,
 					})
 				: await this.client.request<{ operation: OperationSnapshot }>({
 						command: "prompt",

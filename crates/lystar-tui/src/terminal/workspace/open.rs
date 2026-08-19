@@ -166,6 +166,8 @@ pub(in super::super) fn open_workbench(
                 "",
                 "输入前缀",
                 "  /  斜杠命令",
+                "  !  运行 Shell 并加入模型上下文",
+                "  !!  运行 Shell 但不加入模型上下文",
             ]
             .into_iter()
             .map(str::to_owned)

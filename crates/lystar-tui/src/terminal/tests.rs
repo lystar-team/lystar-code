@@ -788,6 +788,9 @@ mod import_tests;
 #[path = "tests/share_tests.rs"]
 mod share_tests;
 
+#[path = "tests/bash_command_tests.rs"]
+mod bash_command_tests;
+
 #[path = "tests/copy_tests.rs"]
 mod copy_tests;
 

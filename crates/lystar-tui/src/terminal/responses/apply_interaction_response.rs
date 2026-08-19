@@ -11,6 +11,29 @@ pub(super) fn apply_interaction_response(
 ) -> Result<Option<bool>, TuiError> {
     if raw.get("type").and_then(serde_json::Value::as_str) == Some("response")
         && let Some(id) = raw.get("id").and_then(serde_json::Value::as_str)
+        && app
+            .pending_bash_submit
+            .as_ref()
+            .is_some_and(|submit| submit.response_id == id && submit.operation_id.is_none())
+    {
+        if raw.get("ok").and_then(serde_json::Value::as_bool) == Some(true)
+            && let Some(operation_id) = queue_operation_id(raw)
+        {
+            app.accept_bash_submit(id, operation_id.to_owned());
+        } else {
+            let message = raw
+                .get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Shell 请求响应无效")
+                .to_owned();
+            app.reject_bash_submit(id);
+            app.set_overlay_error(message);
+            return Ok(Some(false));
+        }
+    }
+    if raw.get("type").and_then(serde_json::Value::as_str) == Some("response")
+        && let Some(id) = raw.get("id").and_then(serde_json::Value::as_str)
         && app.pending_custom_editor_submits.contains_key(id)
     {
         if raw.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {

@@ -85,7 +85,7 @@ export interface RuntimeSession {
 	importSession(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }>;
 	shareSession(signal?: AbortSignal): Promise<{ previewUrl: string; gistUrl: string }>;
 	getLastAssistantText(): string | undefined;
-	runBash(command: string, onChunk: (chunk: string) => void): Promise<JsonValue>;
+	runBash(command: string, excludeFromContext: boolean, onChunk: (chunk: string) => void): Promise<JsonValue>;
 	rename(name: string): Promise<void>;
 	setModel(model: ModelRef): Promise<void>;
 	setThinkingLevel(level: ThinkingLevel): Promise<void>;

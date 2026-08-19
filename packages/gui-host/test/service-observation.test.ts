@@ -51,7 +51,7 @@ describe("GuiHostService Session observation", () => {
 
 		const external = await adapter.createSession(cwd, async () => ({ cancelled: true }));
 		cleanups.push(() => external.dispose());
-		await external.runBash("printf first", () => {});
+		await external.runBash("printf first", false, () => {});
 		const sessionPath = external.sessionPath;
 		await waitFor(() =>
 			messages.some(
@@ -73,7 +73,7 @@ describe("GuiHostService Session observation", () => {
 		]);
 
 		messages.length = 0;
-		await external.runBash("printf second", () => {});
+		await external.runBash("printf second", false, () => {});
 		await waitFor(() =>
 			messages.some(
 				(message) =>

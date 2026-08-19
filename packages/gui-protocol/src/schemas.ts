@@ -306,6 +306,12 @@ export const SessionProgressSchema = Type.Union([
 		error: Type.Optional(Type.String({ maxLength: 1024 })),
 	}),
 	StrictObject({
+		type: Type.Literal("bash"),
+		command: ProgressTextSchema,
+		output: ProgressTextSchema,
+		truncated: Type.Optional(Type.Boolean()),
+	}),
+	StrictObject({
 		type: Type.Literal("status"),
 		status: Type.String({ minLength: 1, maxLength: 1024 }),
 		truncated: Type.Optional(Type.Boolean()),
@@ -1220,7 +1226,8 @@ export const CommandSchema = Type.Union([
 		leaseId: Id,
 		clientInstanceId: Id,
 		clientRequestId: Id,
-		commandText: Type.String({ minLength: 1 }),
+		commandText: Type.String({ minLength: 1, maxLength: 64 * 1024 }),
+		excludeFromContext: Type.Boolean(),
 	}),
 	StrictObject({ command: Type.Literal("abort_operation"), operationId: Id, leaseId: Id }),
 	StrictObject({ command: Type.Literal("get_operation"), operationId: Id }),

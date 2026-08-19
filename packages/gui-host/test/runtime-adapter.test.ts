@@ -151,6 +151,28 @@ describe("CodingAgentRuntimeAdapter", () => {
 		});
 	});
 
+	it("projects persisted Shell results with terminal facts", () => {
+		expect(
+			projectTranscriptItem({
+				entryId: "bash",
+				parentId: null,
+				timestamp: "",
+				kind: "message",
+				payload: {
+					type: "message",
+					message: {
+						role: "bashExecution",
+						command: "exit 7",
+						output: "partial",
+						exitCode: 7,
+						cancelled: false,
+						truncated: true,
+					},
+				},
+			}),
+		).toEqual({ type: "bash", text: "$ exit 7\npartial\n退出码 7\n输出已截断" });
+	});
+
 	it("projects structured compaction lifecycle progress", () => {
 		expect(projectRuntimeProgress({ type: "compaction_start", reason: "manual" })).toEqual([
 			{ type: "phase", phase: "compaction" },
@@ -404,7 +426,7 @@ describe("CodingAgentRuntimeAdapter", () => {
 		runtime = await adapter.createSession(cwd, async () => ({ cancelled: true }));
 		const events: RuntimeEvent[] = [];
 		runtime.onEvent((event) => events.push(event));
-		await runtime.runBash("printf native-ok", () => {});
+		await runtime.runBash("printf native-ok", false, () => {});
 
 		const sessionPath = runtime.sessionPath;
 		expect(existsSync(sessionPath)).toBe(true);
@@ -441,6 +463,43 @@ describe("CodingAgentRuntimeAdapter", () => {
 		expect(adapter.isSessionWriterLocked(importedSessionPath)).toBe(false);
 		runtime = await adapter.openSession(importedSessionPath, async () => ({ cancelled: true }));
 		expect(runtime.getSnapshot("owned").transcriptRevision).toBeGreaterThan(0);
+	});
+
+	it("routes excluded Shell through the Extension hook and records its full result", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-extension-bash-"));
+		const agentDir = join(tempDir, "agent");
+		const cwd = join(tempDir, "project");
+		for (const dir of [agentDir, cwd]) mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({
+				defaultProjectTrust: "always",
+				extensions: [fileURLToPath(new URL("./fixtures/runtime-contract-extension.ts", import.meta.url))],
+			}),
+		);
+
+		let runtime: RuntimeSession | undefined;
+		cleanups.push(async () => {
+			await runtime?.dispose();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+		runtime = await new CodingAgentRuntimeAdapter(agentDir).createSession(cwd, async () => ({ cancelled: true }));
+		const chunks: string[] = [];
+		expect(await runtime.runBash("extension-bash", true, (chunk) => chunks.push(chunk))).toMatchObject({
+			output: "extension:true",
+			exitCode: 0,
+			cancelled: false,
+		});
+		expect(chunks).toEqual(["extension:true"]);
+		const persisted = readFileSync(runtime.sessionPath, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as { message?: Record<string, unknown> });
+		expect(persisted.find((entry) => entry.message?.role === "bashExecution")?.message).toMatchObject({
+			command: "extension-bash",
+			output: "extension:true",
+			excludeFromContext: true,
+		});
 	});
 
 	it("runs the real Core runtime, persists JSONL, and resumes with continuous transcript revisions", async () => {

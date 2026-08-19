@@ -2,12 +2,18 @@ import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import type { ClientMessage, ServerMessage } from "@lystar/code-gui-protocol";
+import type { ClientMessage, ServerMessage, SessionProgress } from "@lystar/code-gui-protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { GuiHostService } from "../src/service.ts";
 import type { RuntimeAdapter, RuntimeEvent, RuntimeSession } from "../src/types.ts";
 
 const cleanups: Array<() => Promise<void> | void> = [];
+
+type BashProgress = Extract<SessionProgress, { type: "bash" }>;
+
+function isBashProgress(value: unknown): value is BashProgress {
+	return typeof value === "object" && value !== null && "type" in value && value.type === "bash";
+}
 
 afterEach(async () => {
 	while (cleanups.length > 0) await cleanups.pop()?.();
@@ -19,6 +25,8 @@ class FakeRuntime implements RuntimeSession {
 	sessionPath: string;
 	readonly cwd: string;
 	lastAssistantText: string | undefined = "latest assistant";
+	lastBash: { command: string; excludeFromContext: boolean } | undefined;
+	private releaseBash: (() => void) | undefined;
 	constructor(sessionPath: string, cwd: string, counts: Record<string, number>) {
 		this.sessionPath = sessionPath;
 		this.cwd = cwd;
@@ -168,8 +176,22 @@ class FakeRuntime implements RuntimeSession {
 		this.counts.extension_component_custom = (this.counts.extension_component_custom ?? 0) + 1;
 		return true;
 	}
-	async runBash() {
-		return {};
+	async runBash(command: string, excludeFromContext: boolean, onChunk: (chunk: string) => void) {
+		this.counts.run_bash = (this.counts.run_bash ?? 0) + 1;
+		this.lastBash = { command, excludeFromContext };
+		if (command === "large-output") {
+			onChunk("x".repeat(17 * 1024));
+			return { output: "x".repeat(17 * 1024), exitCode: 0, cancelled: false };
+		}
+		if (this.counts.block_bash) {
+			await new Promise<void>((resolve) => {
+				this.releaseBash = resolve;
+			});
+			return { output: "", exitCode: null, cancelled: true };
+		}
+		onChunk("first");
+		onChunk("-second");
+		return { output: "first-second", exitCode: 0, cancelled: false };
 	}
 	async rename() {
 		this.counts.rename_session = (this.counts.rename_session ?? 0) + 1;
@@ -196,6 +218,8 @@ class FakeRuntime implements RuntimeSession {
 	}
 	async abort() {
 		this.counts.abort = (this.counts.abort ?? 0) + 1;
+		this.releaseBash?.();
+		this.releaseBash = undefined;
 	}
 	async reloadResources() {
 		this.counts.reload_resources = (this.counts.reload_resources ?? 0) + 1;
@@ -582,6 +606,109 @@ describe("GuiHostService journaled writes", () => {
 		expect(
 			active.connection.messages.find((message) => message.type === "response" && message.id === "compact-retry"),
 		).toMatchObject({ ok: true, result: { duplicate: true, operation: { type: "compact" } } });
+	});
+
+	it("runs excluded Shell through the operation journal with cumulative progress", async () => {
+		const setupValue = setup();
+		const active = await lease(setupValue.service, setupValue.sessionPath);
+		await active.connection.handle({
+			type: "request",
+			id: "bash",
+			request: {
+				command: "run_bash",
+				sessionPath: setupValue.sessionPath,
+				leaseId: active.leaseId,
+				clientInstanceId: "client",
+				clientRequestId: "bash-once",
+				commandText: "printf ok",
+				excludeFromContext: true,
+			},
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(setupValue.runtime.lastBash).toEqual({ command: "printf ok", excludeFromContext: true });
+		const progress = active.connection.messages
+			.filter((message) => message.type === "event" && message.event.type === "operation_updated")
+			.map((message) =>
+				message.type === "event" && message.event.type === "operation_updated"
+					? message.event.operation.progress
+					: undefined,
+			)
+			.filter(isBashProgress);
+		expect(progress).toEqual([
+			{ type: "bash", command: "printf ok", output: "" },
+			{ type: "bash", command: "printf ok", output: "first" },
+			{ type: "bash", command: "printf ok", output: "first-second" },
+		]);
+		expect(
+			active.connection.messages.find((message) => message.type === "response" && message.id === "bash"),
+		).toMatchObject({ ok: true, result: { operation: { type: "run_bash" } } });
+	});
+
+	it("truncates Shell progress to the latest 16 KiB", async () => {
+		const setupValue = setup();
+		const active = await lease(setupValue.service, setupValue.sessionPath);
+		await active.connection.handle({
+			type: "request",
+			id: "bash-large",
+			request: {
+				command: "run_bash",
+				sessionPath: setupValue.sessionPath,
+				leaseId: active.leaseId,
+				clientInstanceId: "client",
+				clientRequestId: "bash-large",
+				commandText: "large-output",
+				excludeFromContext: false,
+			},
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		const lastProgress = active.connection.messages
+			.filter((message) => message.type === "event" && message.event.type === "operation_updated")
+			.map((message) =>
+				message.type === "event" && message.event.type === "operation_updated"
+					? message.event.operation.progress
+					: undefined,
+			)
+			.filter(isBashProgress)
+			.at(-1);
+		expect(lastProgress).toMatchObject({ type: "bash", command: "large-output", truncated: true });
+		expect(lastProgress?.type === "bash" ? lastProgress.output : "").toHaveLength(16 * 1024);
+	});
+
+	it("aborts a running Shell operation through the Runtime", async () => {
+		const setupValue = setup();
+		setupValue.counts.block_bash = 1;
+		const active = await lease(setupValue.service, setupValue.sessionPath);
+		await active.connection.handle({
+			type: "request",
+			id: "bash-running",
+			request: {
+				command: "run_bash",
+				sessionPath: setupValue.sessionPath,
+				leaseId: active.leaseId,
+				clientInstanceId: "client",
+				clientRequestId: "bash-running",
+				commandText: "wait",
+				excludeFromContext: false,
+			},
+		});
+		const accepted = active.connection.messages.find(
+			(message) => message.type === "response" && message.id === "bash-running",
+		) as Extract<ServerMessage, { type: "response"; ok: true }>;
+		const operationId = (accepted.result as { operation: { operationId: string } }).operation.operationId;
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await active.connection.handle({
+			type: "request",
+			id: "abort-bash",
+			request: { command: "abort_operation", operationId, leaseId: active.leaseId },
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(setupValue.counts.abort).toBe(1);
+		expect(
+			active.connection.messages.find((message) => message.type === "response" && message.id === "abort-bash"),
+		).toMatchObject({ ok: true, result: { type: "run_bash", status: "aborted" } });
 	});
 
 	it("shares once through the operation journal and persists the returned URLs", async () => {

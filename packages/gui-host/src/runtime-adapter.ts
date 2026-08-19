@@ -1231,8 +1231,23 @@ class CoreRuntimeSession implements RuntimeSession {
 		return this.runtime.session.getLastAssistantText();
 	}
 
-	async runBash(command: string, onChunk: (chunk: string) => void): Promise<JsonValue> {
-		const result = await this.runtime.session.executeBash(command, onChunk);
+	async runBash(command: string, excludeFromContext: boolean, onChunk: (chunk: string) => void): Promise<JsonValue> {
+		const extensionResult = await this.runtime.session.extensionRunner.emitUserBash({
+			type: "user_bash",
+			command,
+			excludeFromContext,
+			cwd: this.runtime.cwd,
+		});
+		const result = extensionResult?.result
+			? extensionResult.result
+			: await this.runtime.session.executeBash(command, onChunk, {
+					excludeFromContext,
+					operations: extensionResult?.operations,
+				});
+		if (extensionResult?.result) {
+			if (result.output) onChunk(result.output);
+			this.runtime.session.recordBashResult(command, result, { excludeFromContext });
+		}
 		this.emitCommittedEntries();
 		return jsonValue(result);
 	}

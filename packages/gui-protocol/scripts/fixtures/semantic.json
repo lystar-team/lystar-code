@@ -271,6 +271,11 @@
       "message": { "type": "request", "id": "write-share-session", "request": { "command": "share_session", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "clientInstanceId": "client-1", "clientRequestId": "write-share" } }
     },
     {
+      "name": "client-write-run-bash",
+      "direction": "client",
+      "message": { "type": "request", "id": "write-run-bash", "request": { "command": "run_bash", "sessionPath": "/tmp/session.jsonl", "leaseId": "lease-1", "clientInstanceId": "client-1", "clientRequestId": "write-bash", "commandText": "printf ready", "excludeFromContext": true } }
+    },
+    {
       "name": "client-write-delete-session",
       "direction": "client",
       "message": { "type": "request", "id": "write-delete-session", "request": { "command": "delete_session", "cwd": "/tmp/project", "sessionPath": "/tmp/session.jsonl", "clientInstanceId": "client-1", "clientRequestId": "write-10" } }
@@ -375,6 +380,11 @@
       "name": "server-event-progress-thinking-delta",
       "direction": "server",
       "message": { "type": "event", "event": { "type": "session_progress", "sessionPath": "/tmp/session.jsonl", "progress": { "type": "thinking_delta", "text": "思考" } } }
+    },
+    {
+      "name": "server-event-operation-bash-progress",
+      "direction": "server",
+      "message": { "type": "event", "event": { "type": "operation_updated", "operation": { "operationId": "bash-1", "clientInstanceId": "client-1", "clientRequestId": "write-bash", "sessionPath": "/tmp/session.jsonl", "type": "run_bash", "status": "running", "acceptedAt": 0, "updatedAt": 1, "payloadHash": "payload-bash", "progress": { "type": "bash", "command": "printf ready", "output": "ready", "truncated": false } } } }
     },
     {
       "name": "server-event-progress-tool-start",

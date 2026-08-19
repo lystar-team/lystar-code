@@ -569,16 +569,28 @@ export class GuiHostService {
 				return this.acceptOperation(
 					connection,
 					request,
-					{ commandText: request.commandText },
+					{ commandText: request.commandText, excludeFromContext: request.excludeFromContext },
 					async (runtime, operation) => {
-						return runtime.runBash(request.commandText, (chunk) => {
+						let output = "";
+						let truncated = false;
+						const update = () => {
 							this.updateOperation(operation.operationId, "running", {
 								progress: {
-									type: "status",
-									status: chunk.slice(0, 1024),
-									...(chunk.length > 1024 ? { truncated: true } : {}),
+									type: "bash",
+									command: request.commandText.slice(0, 16 * 1024),
+									output,
+									...(truncated ? { truncated: true } : {}),
 								},
 							});
+						};
+						update();
+						return runtime.runBash(request.commandText, request.excludeFromContext, (chunk) => {
+							output += chunk;
+							if (output.length > 16 * 1024) {
+								output = output.slice(-16 * 1024);
+								truncated = true;
+							}
+							update();
 						});
 					},
 					afterResponse,

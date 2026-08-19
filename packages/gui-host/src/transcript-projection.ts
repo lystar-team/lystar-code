@@ -167,6 +167,15 @@ export function projectTranscriptItem(item: TranscriptItem): TranscriptViewItem 
 		return { type: "user", text: text(content), ...(images.length > 0 ? { images } : {}) };
 	}
 	if (role === "thinking") return { type: "thinking", text: text(content) };
+	if (role === "bashExecution" && entryMessage) {
+		const lines = [`$ ${typeof entryMessage.command === "string" ? entryMessage.command : ""}`];
+		if (typeof entryMessage.output === "string" && entryMessage.output) lines.push(entryMessage.output);
+		if (entryMessage.cancelled === true) lines.push("已取消");
+		else if (typeof entryMessage.exitCode === "number" && entryMessage.exitCode !== 0)
+			lines.push(`退出码 ${entryMessage.exitCode}`);
+		if (entryMessage.truncated === true) lines.push("输出已截断");
+		return { type: "bash", text: bounded(lines.join("\n")) };
+	}
 	if (role === "toolResult" && entryMessage) {
 		const isError = entryMessage?.isError === true;
 		const diff = toolDiff(

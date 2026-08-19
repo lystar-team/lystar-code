@@ -86,6 +86,17 @@ export default function runtimeContractExtension(pi: ExtensionAPI): void {
 	}
 
 	pi.registerProvider(faux.provider);
+	pi.on("user_bash", (event) => {
+		if (event.command !== "extension-bash") return;
+		return {
+			result: {
+				output: `extension:${event.excludeFromContext}`,
+				exitCode: 0,
+				cancelled: false,
+				truncated: false,
+			},
+		};
+	});
 	pi.registerTool({
 		name: "contract_echo",
 		label: "Contract Echo",

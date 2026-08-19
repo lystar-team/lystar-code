@@ -405,6 +405,20 @@ pub(super) fn submit_editor_with_origin(
         app.set_overlay_error("会话分叉正在进行");
         return Ok(());
     }
+    if app.pending_bash_submit.is_some() {
+        app.set_overlay_error("Shell 请求正在提交，请稍候");
+        return Ok(());
+    }
+    if app.editor.text().starts_with('!') {
+        return submit_bash(
+            app,
+            pipe,
+            session_path,
+            client_instance_id,
+            sequence,
+            session_flow,
+        );
+    }
     let Some(text) = app.editor.submit() else {
         return Ok(());
     };

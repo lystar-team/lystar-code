@@ -83,6 +83,7 @@ mod session_info;
 mod shell;
 mod thinking;
 mod transport;
+mod user_bash;
 mod workspace;
 
 pub use options::{ExitOutput, RunOptions, TerminalMode, TuiError};
@@ -111,6 +112,7 @@ use responses::*;
 use session_info::*;
 use thinking::*;
 use transport::ProtocolPipe;
+use user_bash::*;
 use workspace::*;
 
 #[cfg(test)]
