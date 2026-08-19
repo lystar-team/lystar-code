@@ -354,10 +354,11 @@ impl AppState {
             (None, None) => true,
             (None, Some(_)) => false,
         };
-        if editor_matches
-            && self.extension_editor_revision() == draft.submit_revision
-            && self.editor.is_empty()
-        {
+        let submitted_attachments_missing = draft
+            .submitted_attachment_hashes
+            .iter()
+            .any(|hash| self.attachment_by_hash(hash).is_none());
+        if editor_matches && !submitted_attachments_missing && self.editor.is_empty() {
             self.editor.replace(&draft.text);
             self.synced_editor_text.clear();
             self.synced_editor_cursor = usize::MAX;

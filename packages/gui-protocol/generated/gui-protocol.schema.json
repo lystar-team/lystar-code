@@ -10573,6 +10573,37 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 128
+        },
+        "editorAction": {
+          "type": "object",
+          "required": [
+            "action",
+            "text",
+            "revision"
+          ],
+          "properties": {
+            "action": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "paste"
+                },
+                {
+                  "type": "string",
+                  "const": "set"
+                }
+              ]
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 65536
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -10590,6 +10621,37 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 128
+        },
+        "editorAction": {
+          "type": "object",
+          "required": [
+            "action",
+            "text",
+            "revision"
+          ],
+          "properties": {
+            "action": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "paste"
+                },
+                {
+                  "type": "string",
+                  "const": "set"
+                }
+              ]
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 65536
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -10607,6 +10669,37 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 128
+        },
+        "editorAction": {
+          "type": "object",
+          "required": [
+            "action",
+            "text",
+            "revision"
+          ],
+          "properties": {
+            "action": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "paste"
+                },
+                {
+                  "type": "string",
+                  "const": "set"
+                }
+              ]
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 65536
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -10624,6 +10717,37 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 128
+        },
+        "editorAction": {
+          "type": "object",
+          "required": [
+            "action",
+            "text",
+            "revision"
+          ],
+          "properties": {
+            "action": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "paste"
+                },
+                {
+                  "type": "string",
+                  "const": "set"
+                }
+              ]
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 65536
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -10641,6 +10765,37 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 128
+        },
+        "editorAction": {
+          "type": "object",
+          "required": [
+            "action",
+            "text",
+            "revision"
+          ],
+          "properties": {
+            "action": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "paste"
+                },
+                {
+                  "type": "string",
+                  "const": "set"
+                }
+              ]
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 65536
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

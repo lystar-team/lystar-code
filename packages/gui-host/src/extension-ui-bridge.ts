@@ -475,6 +475,7 @@ export class ExtensionUiBridge {
 	private editorGeneration = 0;
 	private componentInputActive = false;
 	private componentInputAppAction?: string;
+	private componentInputEditorAction?: { action: "paste" | "set"; text: string; revision: number };
 	private editorComponentId: string | undefined;
 	private editorFactory: EditorFactory | undefined;
 	private readonly editorBindings = new WeakMap<EditorComponent, EditorBindings>();
@@ -643,11 +644,21 @@ export class ExtensionUiBridge {
 		return next === data ? { consume: false } : { consume: false, data: next };
 	}
 
-	dispatchComponentInput(componentId: string, generation: number, data: string): { appAction?: string } | undefined {
+	dispatchComponentInput(
+		componentId: string,
+		generation: number,
+		data: string,
+	):
+		| {
+				appAction?: string;
+				editorAction?: { action: "paste" | "set"; text: string; revision: number };
+		  }
+		| undefined {
 		const mount = this.components.get(componentId);
 		if (!mount || mount.generation !== generation || !mount.visible) return undefined;
 		this.componentInputActive = mount.placement === "editor";
 		this.componentInputAppAction = undefined;
+		this.componentInputEditorAction = undefined;
 		const receivedAt = monotonicMilliseconds();
 		const input = boundedRawInput(data);
 		const componentInput = componentInputText(input);
@@ -662,7 +673,12 @@ export class ExtensionUiBridge {
 			}
 			const publishedAt = this.publishComponentFrame(mount, frame);
 			this.recordComponentInput(mount, receivedAt, publishedAt, frame.revision, Buffer.byteLength(input, "utf8"));
-			return this.componentInputAppAction ? { appAction: this.componentInputAppAction } : {};
+			const appAction = this.componentInputAppAction;
+			const editorAction = this.componentInputEditorAction;
+			return {
+				...(appAction ? { appAction } : {}),
+				...(editorAction ? { editorAction } : {}),
+			};
 		} catch (error) {
 			this.unmount(componentId, "error");
 			this.reportException("component_input", error);
@@ -670,6 +686,7 @@ export class ExtensionUiBridge {
 		} finally {
 			this.componentInputActive = false;
 			this.componentInputAppAction = undefined;
+			this.componentInputEditorAction = undefined;
 		}
 	}
 
@@ -1307,7 +1324,9 @@ export class ExtensionUiBridge {
 		const value = boundedEditor(text);
 		this.editorText = action === "paste" ? boundedEditor(`${this.editorText}${value}`) : value;
 		this.revision++;
-		this.publish({ type: "editor_action", action: { action, text: value, revision: this.revision } });
+		const editorAction = { action, text: value, revision: this.revision };
+		if (this.componentInputActive) this.componentInputEditorAction = editorAction;
+		this.publish({ type: "editor_action", action: editorAction });
 	}
 
 	private widgetsSnapshot(): ExtensionUiState["widgets"] {

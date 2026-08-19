@@ -1,3 +1,5 @@
+use crate::app::PendingComponentInput;
+
 use super::*;
 
 fn item(id: &str) -> lystar_protocol::TranscriptItem {
@@ -53,6 +55,248 @@ fn test_pipe_with_path() -> (ProtocolPipe, PathBuf) {
     let output = std::fs::File::create(&path).unwrap();
     let (_sender, inbound) = mpsc::sync_channel(1);
     (ProtocolPipe { output, inbound }, path)
+}
+
+fn apply_server_json(
+    app: &mut AppState,
+    raw: serde_json::Value,
+    pipe: &mut ProtocolPipe,
+    sequence: &mut u64,
+    session_flow: &mut Option<SessionFlow>,
+) -> Result<bool, TuiError> {
+    let cbor = serde_json::from_value::<ciborium::value::Value>(raw).unwrap();
+    let mut bytes = Vec::new();
+    ciborium::into_writer(&cbor, &mut bytes).unwrap();
+    let message = lystar_protocol::decode_server_message(&bytes).unwrap();
+    let mut quit_requested = false;
+    apply_server_message(
+        app,
+        &message,
+        "/tmp/session.jsonl",
+        pipe,
+        "client",
+        sequence,
+        session_flow,
+        &mut quit_requested,
+    )
+}
+
+fn pending_component_input(app: &mut AppState, id: &str, data: &str) {
+    app.pending_component_inputs.insert(
+        id.to_owned(),
+        PendingComponentInput {
+            component_id: "editor".to_owned(),
+            generation: 1,
+            data: data.to_owned(),
+            started_at: Instant::now(),
+        },
+    );
+}
+
+#[test]
+fn applies_component_input_editor_action_and_clears_pending_input() {
+    let mut app = AppState::default();
+    app.editor.insert("旧文本");
+    app.extension_ui.revision = 4;
+    pending_component_input(&mut app, "component-input-1", "x");
+    let (mut pipe, path) = test_pipe_with_path();
+    let mut sequence = 0;
+    let mut session_flow = None;
+
+    assert!(
+        !apply_server_json(
+            &mut app,
+            serde_json::json!({
+                "type": "response",
+                "id": "component-input-1",
+                "ok": true,
+                "result": {
+                    "accepted": true,
+                    "editorAction": { "action": "set", "text": "响应文本", "revision": 5 }
+                }
+            }),
+            &mut pipe,
+            &mut sequence,
+            &mut session_flow,
+        )
+        .unwrap()
+    );
+    assert!(app.pending_component_inputs.is_empty());
+    assert_eq!(app.editor.text(), "响应文本");
+    assert_eq!(app.extension_ui.revision, 5);
+
+    pending_component_input(&mut app, "component-input-2", "y");
+    assert!(
+        !apply_server_json(
+            &mut app,
+            serde_json::json!({
+                "type": "response",
+                "id": "component-input-2",
+                "ok": true,
+                "result": {
+                    "accepted": true,
+                    "editorAction": { "action": "paste", "text": "追加", "revision": 3 }
+                }
+            }),
+            &mut pipe,
+            &mut sequence,
+            &mut session_flow,
+        )
+        .unwrap()
+    );
+    assert_eq!(app.editor.text(), "响应文本追加");
+    assert_eq!(app.extension_ui.revision, 5);
+
+    drop(pipe);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn rejects_invalid_component_input_editor_actions_after_clearing_pending_input() {
+    let cases = [
+        (
+            "invalid-action",
+            serde_json::json!({ "action": "append", "text": "无效", "revision": 1 }),
+            "编辑器动作无效",
+        ),
+        (
+            "missing-text",
+            serde_json::json!({ "action": "set", "revision": 1 }),
+            "缺少文本",
+        ),
+        (
+            "missing-revision",
+            serde_json::json!({ "action": "set", "text": "缺少修订" }),
+            "缺少修订",
+        ),
+    ];
+
+    for (id, editor_action, expected_error) in cases {
+        let mut app = AppState::default();
+        app.editor.insert("原始文本");
+        pending_component_input(&mut app, id, "z");
+        let (mut pipe, path) = test_pipe_with_path();
+        let mut sequence = 0;
+        let mut session_flow = None;
+        let error = apply_server_json(
+            &mut app,
+            serde_json::json!({
+                "type": "response",
+                "id": id,
+                "ok": true,
+                "result": { "accepted": true, "editorAction": editor_action }
+            }),
+            &mut pipe,
+            &mut sequence,
+            &mut session_flow,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains(expected_error));
+        assert!(app.pending_component_inputs.is_empty());
+        assert_eq!(app.editor.text(), "原始文本");
+        drop(pipe);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
+fn rejected_component_input_clears_pending_input_without_changing_editor() {
+    let mut app = AppState::default();
+    app.editor.insert("保留文本");
+    pending_component_input(&mut app, "component-input-rejected", "q");
+    let (mut pipe, path) = test_pipe_with_path();
+    let mut sequence = 0;
+    let mut session_flow = None;
+
+    assert!(
+        !apply_server_json(
+            &mut app,
+            serde_json::json!({
+                "type": "response",
+                "id": "component-input-rejected",
+                "ok": false,
+                "error": { "code": "component_input_rejected", "message": "拒绝" }
+            }),
+            &mut pipe,
+            &mut sequence,
+            &mut session_flow,
+        )
+        .unwrap()
+    );
+    assert!(app.pending_component_inputs.is_empty());
+    assert_eq!(app.editor.text(), "保留文本");
+    assert_eq!(
+        app.toast.as_deref(),
+        Some("组件输入被 Host 拒绝，可按 Esc 取消")
+    );
+
+    drop(pipe);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn stale_editor_action_broadcast_cannot_overwrite_component_input_response() {
+    let mut app = AppState::default();
+    pending_component_input(&mut app, "component-input-ordered", "r");
+    let (mut pipe, path) = test_pipe_with_path();
+    let mut sequence = 0;
+    let mut session_flow = None;
+
+    apply_server_json(
+        &mut app,
+        serde_json::json!({
+            "type": "response",
+            "id": "component-input-ordered",
+            "ok": true,
+            "result": {
+                "accepted": true,
+                "editorAction": { "action": "set", "text": "响应快照", "revision": 12 }
+            }
+        }),
+        &mut pipe,
+        &mut sequence,
+        &mut session_flow,
+    )
+    .unwrap();
+    apply_server_json(
+        &mut app,
+        serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "extension_editor_action",
+                "sessionPath": "/tmp/session.jsonl",
+                "action": { "action": "set", "text": "过期广播", "revision": 11 }
+            }
+        }),
+        &mut pipe,
+        &mut sequence,
+        &mut session_flow,
+    )
+    .unwrap();
+    assert_eq!(app.editor.text(), "响应快照");
+    assert_eq!(app.extension_ui.revision, 12);
+
+    apply_server_json(
+        &mut app,
+        serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "extension_editor_action",
+                "sessionPath": "/tmp/session.jsonl",
+                "action": { "action": "set", "text": "更新广播", "revision": 13 }
+            }
+        }),
+        &mut pipe,
+        &mut sequence,
+        &mut session_flow,
+    )
+    .unwrap();
+    assert_eq!(app.editor.text(), "更新广播");
+    assert_eq!(app.extension_ui.revision, 13);
+
+    drop(pipe);
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]

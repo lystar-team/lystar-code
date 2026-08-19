@@ -1,10 +1,10 @@
 # Rust TUI B4 Extension Component Bridge 核验
 
-核验日期：2026-08-17。范围是 Linux x64 上真实 `CodingAgentRuntimeAdapter`、`runtime-contract-extension.ts`、GUI Host、Unix fd3/fd4 FIFO 与 Rust TUI。未调用外部 Provider。
+核验日期：2026-08-19。范围是 Linux x64 上真实 `CodingAgentRuntimeAdapter`、`runtime-custom-editor-contract-extension.ts`、GUI Host、Unix fd3/fd4 FIFO 与 Rust TUI。未调用外部 Provider。
 
 ## CustomEditor 分场景收口
 
-`rust-tui-e2e.test.ts` 将原先的综合 CustomEditor 验收拆为 A/B/C 三个独立 `it`，每轮都重新创建临时 Session、FIFO、tmux socket 和 Host。`LYSTAR_CUSTOM_EDITOR_ATTEMPTS` 默认 `2`，开发可设 `1`；粘贴长度默认 `5,000` 字符。A 覆盖草稿迁移、Unicode grapheme 与 UTF-8 cursor、多行、5000 字符 paste、历史、stale callback、replace 与 factory failure。B 覆盖内置命令、idle prompt、active steer、Alt+Enter follow-up、Esc abort 与 response-drop 恰好一次。C 使用真实 Extension deferred faux：`Ctrl+A` arm error、`Ctrl+S` arm success，只有 `Ctrl+E` 或 `Ctrl+L` 才会放行；覆盖 completion AbortSignal、direct restore、Append/Replace/Copy/Discard、operation journal 与 Rust `operation_updated` failed、CustomEditor 图片 A/B 的成功清理和失败缺失恢复菜单。真实 `border-status-editor`、`modal-editor`、`rainbow-editor` 原例子仍各两轮运行。
+`rust-tui-e2e.test.ts` 将原先的综合 CustomEditor 验收拆为 A/B/C 三个独立 `it`，每轮都重新创建临时 Session、FIFO、tmux socket 和 Host。`LYSTAR_CUSTOM_EDITOR_ATTEMPTS` 默认 `2`，开发可设 `1`；粘贴长度默认 `5,000` 字符。A 覆盖草稿迁移、Unicode grapheme 与 UTF-8 cursor、多行、5000 字符 paste、历史、stale callback、replace 与 factory failure。B 覆盖内置命令、idle prompt、active steer、Alt+Enter follow-up、Esc abort 与 response-drop 恰好一次。C 使用真实 Extension deferred faux：`Ctrl+A` arm error、`Ctrl+S` arm success，只有 `Ctrl+E` 或 `Ctrl+L` 才会放行；覆盖 completion AbortSignal、direct restore、Append/Replace/Copy/Discard、operation journal 与 Rust `operation_updated` failed、CustomEditor 图片 A/B 的成功清理和失败缺失恢复菜单。本轮最终收口证据：A `editing-lifecycle` 使用默认 5,000 字符 paste 连续两轮通过；B `completion-submission` 连续两轮通过，覆盖内置命令、idle prompt、active steer、Alt+Enter follow-up、Esc abort、response-drop 与 exactly-once；C 连续两轮通过，覆盖真实 completion、direct/recovery menu、失败附件缺失保护，以及提交后清理附件 A、保留后加入附件 B。Rust 新增 `settles_custom_editor_submit_and_keeps_later_attachments` 单测，按提交 hash 验证结算边界。C 成功提交后的普通 notify 会打开详情 overlay，E2E 先关闭该 overlay 再检查 Composer，避免把 UI 遮挡误判成附件丢失。
 
 每一轮的 `finally` 会依次调用当前 Runtime `abort()`、`GuiHostService.dispose()`、关闭连接与协议 FIFO，并在 2 秒内确认 tmux session 退出、关闭剩余 FIFO descriptor、停止本轮 tmux server、核对 `stty` 前后相同。artifact 只保存请求数量、长度和哈希等元数据；Copy 的原文只在测试进程内存中断言，扫描对实际文件拒绝草稿原文、base64 和典型凭据。
 

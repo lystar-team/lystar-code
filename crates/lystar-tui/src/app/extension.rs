@@ -347,6 +347,28 @@ impl AppState {
         true
     }
 
+    pub fn apply_extension_editor_action_from_component_input(
+        &mut self,
+        action: &str,
+        text: &str,
+        revision: u64,
+    ) -> bool {
+        if text.len() > crate::editor::MAX_EDITOR_BYTES {
+            return false;
+        }
+        if action == "paste" {
+            self.editor.insert(text);
+        } else if action == "set" {
+            self.editor.replace(text);
+        } else {
+            return false;
+        }
+        self.synced_editor_text.clear();
+        self.synced_editor_cursor = usize::MAX;
+        self.extension_ui.revision = self.extension_ui.revision.max(revision);
+        true
+    }
+
     pub fn take_editor_state_update(&mut self) -> Option<(String, usize, u64)> {
         let text = self.editor.text();
         let cursor = self.editor.cursor();

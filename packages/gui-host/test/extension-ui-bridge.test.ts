@@ -180,11 +180,13 @@ describe("ExtensionUiBridge", () => {
 			editorTextHash: createHash("sha256").update("mounted").digest("hex"),
 		});
 
-		expect(bridge.dispatchComponentInput(mount.componentId, mount.generation, "secret input")).toEqual({});
+		const observed = "mounted:secret input";
+		expect(bridge.dispatchComponentInput(mount.componentId, mount.generation, "secret input")).toMatchObject({
+			editorAction: { action: "set", text: observed },
+		});
 		const diagnostic = bridge
 			.getComponentDiagnostics()
 			.components.find((item) => item.componentId === mount.componentId);
-		const observed = "mounted:secret input";
 		expect(diagnostic?.inputs).toEqual([
 			expect.objectContaining({ revision: expect.any(Number), bytes: Buffer.byteLength("secret input", "utf8") }),
 		]);
@@ -214,7 +216,9 @@ describe("ExtensionUiBridge", () => {
 		const mount = events.find((event) => event.type === "component_mount" && event.placement === "editor");
 		if (!mount || mount.type !== "component_mount") throw new Error("editor did not mount");
 
-		expect(bridge.dispatchComponentInput(mount.componentId, mount.generation, "\r")).toEqual({});
+		expect(bridge.dispatchComponentInput(mount.componentId, mount.generation, "\r")).toMatchObject({
+			editorAction: { action: "set", text: "@provider-final" },
+		});
 		expect(events).toContainEqual(
 			expect.objectContaining({
 				type: "editor_action",

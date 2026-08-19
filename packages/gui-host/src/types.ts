@@ -104,7 +104,11 @@ export interface RuntimeSession {
 		componentId: string,
 		generation: number,
 		data: string,
-	): { accepted: boolean; appAction?: string };
+	): {
+		accepted: boolean;
+		appAction?: string;
+		editorAction?: { action: "paste" | "set"; text: string; revision: number };
+	};
 	resizeExtensionComponents?(width: number, height: number): boolean;
 	disposeExtensionComponent?(componentId: string, generation: number): boolean;
 	completeExtensionCustom?(

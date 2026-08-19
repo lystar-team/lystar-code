@@ -196,7 +196,8 @@ pub(super) fn apply_extension_event(
                         .ok_or_else(|| {
                             TuiError::InvalidResponse("自定义编辑器提交缺少修订".to_owned())
                         })?;
-                    if app.apply_extension_editor_action("set", text, revision) {
+                    if app.apply_extension_editor_action_from_component_input("set", text, revision)
+                    {
                         submit_custom_editor(
                             app,
                             pipe,

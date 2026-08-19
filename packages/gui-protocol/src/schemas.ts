@@ -1011,9 +1011,15 @@ const ExtensionComponentUnmountReasonSchema = Type.Union([
 	Type.Literal("done"),
 	Type.Literal("cancel"),
 ]);
+const ExtensionEditorActionSchema = StrictObject({
+	action: Type.Union([Type.Literal("paste"), Type.Literal("set")]),
+	text: Type.String({ maxLength: 64 * 1024 }),
+	revision: Type.Integer({ minimum: 0 }),
+});
 const ExtensionComponentResultSchema = StrictObject({
 	accepted: Type.Boolean(),
 	appAction: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+	editorAction: Type.Optional(ExtensionEditorActionSchema),
 });
 const ExtensionUiDeltaSchema = StrictObject({
 	revision: Type.Integer({ minimum: 0 }),
@@ -1026,11 +1032,6 @@ const ExtensionUiDeltaSchema = StrictObject({
 	title: Type.Optional(Type.Union([Type.String({ maxLength: 4096 }), Type.Null()])),
 	terminalInputListenerCount: Type.Optional(Type.Integer({ minimum: 0, maximum: 128 })),
 	extensionShortcutCount: Type.Optional(Type.Integer({ minimum: 0, maximum: 128 })),
-});
-const ExtensionEditorActionSchema = StrictObject({
-	action: Type.Union([Type.Literal("paste"), Type.Literal("set")]),
-	text: Type.String({ maxLength: 64 * 1024 }),
-	revision: Type.Integer({ minimum: 0 }),
 });
 const ExtensionEditorSubmitSchema = StrictObject({
 	text: Type.String({ maxLength: 64 * 1024 }),

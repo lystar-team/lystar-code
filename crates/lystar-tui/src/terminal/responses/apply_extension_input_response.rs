@@ -35,6 +35,35 @@ pub(super) fn apply_extension_input_response(
                 app.set_toast("组件输入被 Host 拒绝，可按 Esc 取消");
             }
         } else {
+            if let Some(editor_action) = raw
+                .get("result")
+                .and_then(|result| result.get("editorAction"))
+                .and_then(serde_json::Value::as_object)
+            {
+                let action = editor_action
+                    .get("action")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        TuiError::InvalidResponse("组件输入编辑器动作无效".to_owned())
+                    })?;
+                let text = editor_action
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        TuiError::InvalidResponse("组件输入编辑器动作缺少文本".to_owned())
+                    })?;
+                let revision = editor_action
+                    .get("revision")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or_else(|| {
+                        TuiError::InvalidResponse("组件输入编辑器动作缺少修订".to_owned())
+                    })?;
+                if !app.apply_extension_editor_action_from_component_input(action, text, revision) {
+                    return Err(TuiError::InvalidResponse(
+                        "组件输入编辑器动作无效".to_owned(),
+                    ));
+                }
+            }
             trace_id("component_input_accepted", &pending.component_id);
             if let Some(action) = raw
                 .get("result")

@@ -266,6 +266,11 @@ pub(super) fn request_extension_editor_state(
     let Some(lease_id) = app.lease_id.clone() else {
         return Ok(());
     };
+    // 组件输入响应会通过 ExtensionEditorAction 同步最新草稿。输入尚未全部落地时上报本地快照，
+    // 会让 Host 用旧的分段文本回写 CustomEditor，造成 Unicode 输入的状态来回覆盖。
+    if !app.pending_component_inputs.is_empty() {
+        return Ok(());
+    }
     let Some((text, cursor, revision)) = app.take_editor_state_update() else {
         return Ok(());
     };

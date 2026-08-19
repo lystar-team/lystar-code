@@ -1,6 +1,6 @@
 // 此文件由 packages/gui-protocol/scripts/generate-schema.mjs 生成，禁止手改。
 
 pub const GUI_PROTOCOL_SCHEMA_SHA256: &str =
-    "e27aa74430275393e84622b17f628853ee0e91724f2d5574019d9440fd00608b";
+    "43b12e45061d576d2e023fa85fb8dc5a915ebba1fdab1c3bc673821923ebce1c";
 
 typify::import_types!(schema = "../../packages/gui-protocol/generated/gui-protocol.schema.json");

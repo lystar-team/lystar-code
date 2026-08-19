@@ -925,12 +925,12 @@ fn recovers_custom_editor_drafts_without_leaking_or_readding_attachments() {
 
     app.editor.clear();
     app.begin_custom_editor_submit("changed".to_owned(), submit("不能覆盖", 4, Vec::new()));
-    app.extension_ui.revision = 5;
+    app.editor.insert("新输入");
     app.reject_custom_editor_submit("changed");
-    assert!(app.editor.is_empty());
+    assert_eq!(app.editor.text(), "新输入");
     assert!(app.recovery_draft.is_some());
     assert!(app.append_recovery_draft());
-    assert_eq!(app.editor.text(), "\n不能覆盖");
+    assert_eq!(app.editor.text(), "新输入\n不能覆盖");
 
     app.editor.clear();
     let attachment = app.new_attachment(
@@ -1012,6 +1012,53 @@ fn bounds_dedupes_and_keeps_new_composer_attachments_after_submit() {
     );
     assert_eq!(app.add_attachment(later.clone()), Ok(true));
     app.acknowledge_attachment_submit("request");
+    assert_eq!(app.attachments, vec![later]);
+}
+
+#[test]
+fn settles_custom_editor_submit_and_keeps_later_attachments() {
+    let mut app = AppState::default();
+    app.begin_active_session("/tmp/current.jsonl".to_owned(), "/tmp".to_owned());
+    let generation = app.session_generation;
+    let submitted = app.new_attachment(
+        "submitted.png".to_owned(),
+        "clipboard".to_owned(),
+        "image/png".to_owned(),
+        1,
+        "submitted-hash".to_owned(),
+        "submitted-base64".to_owned(),
+    );
+    let later = app.new_attachment(
+        "later.png".to_owned(),
+        "clipboard".to_owned(),
+        "image/png".to_owned(),
+        1,
+        "later-hash".to_owned(),
+        "later-base64".to_owned(),
+    );
+    assert_eq!(app.add_attachment(submitted.clone()), Ok(true));
+    app.begin_custom_editor_submit(
+        "response".to_owned(),
+        PendingCustomEditorSubmit {
+            command: "prompt".to_owned(),
+            session_path: "/tmp/current.jsonl".to_owned(),
+            session_generation: generation,
+            editor_component_generation: None,
+            lease_id: "lease".to_owned(),
+            client_instance_id: "client".to_owned(),
+            client_request_id: "request".to_owned(),
+            text: "submitted text".to_owned(),
+            submit_revision: 0,
+            attachments: vec![submitted],
+            started_at: Instant::now(),
+            retry_count: 0,
+        },
+    );
+    app.acknowledge_custom_editor_submit("response", "operation".to_owned());
+    assert_eq!(app.add_attachment(later.clone()), Ok(true));
+
+    app.settle_custom_editor_operation("operation", "completed");
+
     assert_eq!(app.attachments, vec![later]);
 }
 
