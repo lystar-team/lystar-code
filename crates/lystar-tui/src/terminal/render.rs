@@ -354,7 +354,7 @@ pub(super) fn emit_exit_output(
         )?;
         if page.items.len() > EXIT_TRANSCRIPT_PAGE_LIMIT as usize {
             return Err(TuiError::InvalidResponse(
-                "退出记录页超过 200 条".to_owned(),
+                "退出记录页超过 150 条".to_owned(),
             ));
         }
         temporary.write_page(&page.items)?;

@@ -60,7 +60,8 @@ use crate::{
 const INITIAL_PAGE_LIMIT: u64 = 200;
 const PAGE_LIMIT: u64 = 200;
 const SEARCH_LIMIT: u64 = 50;
-const EXIT_TRANSCRIPT_PAGE_LIMIT: u64 = 200;
+// 退出阶段仍可能通过 Unix FIFO 返回；限制单页大小，避免单帧写入超过 FIFO 的可用缓冲。
+const EXIT_TRANSCRIPT_PAGE_LIMIT: u64 = 150;
 const EXTENSION_INPUT_TIMEOUT: Duration = Duration::from_millis(100);
 const MAX_EXTENSION_INPUT_BYTES: usize = 64 * 1024;
 
