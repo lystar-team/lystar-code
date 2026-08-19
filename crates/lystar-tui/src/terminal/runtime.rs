@@ -257,6 +257,8 @@ pub(super) fn run_session(
                     if key.code == KeyCode::Char('r')
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                         && app.recovery_draft.is_some()
+                        && app.overlay().is_none()
+                        && app.input_focus == InputFocus::Composer
                     {
                         open_custom_editor_recovery(&mut app);
                         state_changed = true;
@@ -564,6 +566,19 @@ pub(super) fn run_session(
             || app.timed_out_attachment_submit().is_some()
         {
             if !timeout_notified {
+                let timed_out_auth_intent = app
+                    .timed_out_workspace_request()
+                    .and_then(|(id, _)| app.pending_requests.get(&id))
+                    .map(|pending| pending.intent.clone())
+                    .filter(|intent| {
+                        matches!(
+                            intent,
+                            PendingIntent::AuthMutation { .. } | PendingIntent::AuthVerify { .. }
+                        )
+                    });
+                if let Some(intent) = timed_out_auth_intent {
+                    restore_auth_intent(&mut app, &intent);
+                }
                 app.set_timeout_notice();
                 state_changed = true;
                 timeout_notified = true;
