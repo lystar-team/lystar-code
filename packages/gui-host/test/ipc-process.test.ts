@@ -183,7 +183,16 @@ describe("GUI Host persistent IPC", () => {
 			stdio: ["ignore", "ignore", "pipe"],
 		});
 		children.add(rust);
-		await withTimeout("Rust TUI Host session smoke", waitForExit(rust), PROCESS_START_TIMEOUT_MS);
+		let rustStderr = "";
+		rust.stderr.setEncoding("utf8");
+		rust.stderr.on("data", (chunk: string) => {
+			rustStderr += chunk;
+		});
+		try {
+			await withTimeout("Rust TUI Host session smoke", waitForExit(rust), PROCESS_START_TIMEOUT_MS);
+		} catch (error) {
+			throw new Error(`${error instanceof Error ? error.message : String(error)}\nRust stderr:\n${rustStderr}`);
+		}
 		expect(rust.exitCode).toBe(0);
 		expect(readFileSync(join(agentDir, "prompt-calls.txt"), "utf8")).toBe("production IPC smoke\n");
 

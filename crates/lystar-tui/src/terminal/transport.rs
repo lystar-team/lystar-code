@@ -66,16 +66,87 @@ fn open_transport(endpoint: Option<&std::ffi::OsStr>) -> Result<TransportStreams
 
 #[cfg(windows)]
 fn open_transport(endpoint: Option<&std::ffi::OsStr>) -> Result<TransportStreams, TuiError> {
-    use std::{fs::OpenOptions, path::Path};
+    use std::{fs::OpenOptions, path::Path, sync::Arc};
 
     let endpoint = endpoint
         .ok_or_else(|| TuiError::HelloRejected("缺少 Windows named pipe endpoint".to_owned()))?;
-    let stream = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(Path::new(endpoint))?;
-    let input = stream.try_clone()?;
-    Ok((Box::new(input), Box::new(stream)))
+    let stream = Arc::new(std::sync::Mutex::new(
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(Path::new(endpoint))?,
+    ));
+    Ok((
+        Box::new(WindowsPipeReader {
+            stream: Arc::clone(&stream),
+        }),
+        Box::new(WindowsPipeWriter { stream }),
+    ))
+}
+
+#[cfg(windows)]
+struct WindowsPipeReader {
+    stream: std::sync::Arc<std::sync::Mutex<std::fs::File>>,
+}
+
+#[cfg(windows)]
+impl Read for WindowsPipeReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        use std::{os::windows::io::AsRawHandle, ptr, thread};
+        use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            let mut stream = self
+                .stream
+                .lock()
+                .map_err(|_| std::io::Error::other("Windows named pipe transport lock poisoned"))?;
+            let mut available = 0_u32;
+            let succeeded = unsafe {
+                PeekNamedPipe(
+                    stream.as_raw_handle(),
+                    ptr::null_mut(),
+                    0,
+                    ptr::null_mut(),
+                    &mut available,
+                    ptr::null_mut(),
+                )
+            };
+            if succeeded == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if available > 0 {
+                let count = buffer.len().min(available as usize);
+                return stream.read(&mut buffer[..count]);
+            }
+            drop(stream);
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+}
+
+#[cfg(windows)]
+struct WindowsPipeWriter {
+    stream: std::sync::Arc<std::sync::Mutex<std::fs::File>>,
+}
+
+#[cfg(windows)]
+impl Write for WindowsPipeWriter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.stream
+            .lock()
+            .map_err(|_| std::io::Error::other("Windows named pipe transport lock poisoned"))?
+            .write(buffer)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.stream
+            .lock()
+            .map_err(|_| std::io::Error::other("Windows named pipe transport lock poisoned"))?
+            .flush()
+    }
 }
 
 pub(super) fn read_protocol(
@@ -128,6 +199,7 @@ pub fn smoke_production_ipc(cwd: &str) -> Result<(), TuiError> {
     const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
     let mut pipe = ProtocolPipe::connect(CLIENT_ID)?;
+    eprintln!("lystar-tui IPC smoke: connected");
     pipe.request(&encode_create_session_request(
         "smoke-create",
         cwd,
@@ -138,6 +210,7 @@ pub fn smoke_production_ipc(cwd: &str) -> Result<(), TuiError> {
         wait_for_response(&pipe, "smoke-create", RESPONSE_TIMEOUT)?,
         "smoke-create",
     )?;
+    eprintln!("lystar-tui IPC smoke: session created");
 
     pipe.request(&encode_release_session_request(
         "smoke-release-created",
@@ -148,6 +221,7 @@ pub fn smoke_production_ipc(cwd: &str) -> Result<(), TuiError> {
         wait_for_response(&pipe, "smoke-release-created", RESPONSE_TIMEOUT)?,
         "smoke-release-created",
     )?;
+    eprintln!("lystar-tui IPC smoke: created lease released");
 
     pipe.request(&encode_acquire_session_request(
         "smoke-acquire",
@@ -163,6 +237,7 @@ pub fn smoke_production_ipc(cwd: &str) -> Result<(), TuiError> {
             "IPC smoke acquire 返回了不同的 Session".to_owned(),
         ));
     }
+    eprintln!("lystar-tui IPC smoke: session acquired");
 
     pipe.request(&encode_queue_request(
         "smoke-prompt",
@@ -178,7 +253,9 @@ pub fn smoke_production_ipc(cwd: &str) -> Result<(), TuiError> {
         wait_for_response(&pipe, "smoke-prompt", RESPONSE_TIMEOUT)?,
         "smoke-prompt",
     )?;
+    eprintln!("lystar-tui IPC smoke: prompt accepted");
     wait_for_completed_operation(&pipe, &operation.operation_id, RESPONSE_TIMEOUT)?;
+    eprintln!("lystar-tui IPC smoke: operation completed");
 
     pipe.request(&encode_release_session_request(
         "smoke-release",
@@ -188,7 +265,9 @@ pub fn smoke_production_ipc(cwd: &str) -> Result<(), TuiError> {
     expect_other_response(
         wait_for_response(&pipe, "smoke-release", RESPONSE_TIMEOUT)?,
         "smoke-release",
-    )
+    )?;
+    eprintln!("lystar-tui IPC smoke: session released");
+    Ok(())
 }
 
 fn wait_for_response(
