@@ -2443,8 +2443,17 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 
 	private async wrapRuntime(runtime: AgentSessionRuntime, onUiRequest: UiRequestHandler): Promise<RuntimeSession> {
 		const wrapped = new CoreRuntimeSession(runtime, onUiRequest, this.agentDir);
-		await wrapped.bind();
-		return wrapped;
+		try {
+			await wrapped.bind();
+			return wrapped;
+		} catch (error) {
+			try {
+				await wrapped.dispose();
+			} catch (disposeError) {
+				throw new AggregateError([error, disposeError], "Runtime 绑定失败且清理未完成");
+			}
+			throw error;
+		}
 	}
 
 	private getModelRuntime(): Promise<ModelRuntime> {

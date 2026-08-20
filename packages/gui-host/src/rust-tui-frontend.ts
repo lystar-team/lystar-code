@@ -51,6 +51,28 @@ function exitCode(code: number | null, signal: NodeJS.Signals | null): number {
 	return signal ? 1 : 0;
 }
 
+async function cleanupHost(server: Server | undefined, service: GuiHostService | undefined, directory?: string) {
+	let cleanupError: unknown;
+	try {
+		await closeServer(server);
+	} catch (error) {
+		cleanupError = error;
+	}
+	try {
+		await service?.dispose();
+	} catch (error) {
+		cleanupError ??= error;
+	}
+	if (directory) {
+		try {
+			rmSync(directory, { recursive: true, force: true });
+		} catch (error) {
+			cleanupError ??= error;
+		}
+	}
+	if (cleanupError) throw cleanupError;
+}
+
 export const runEmbeddedRustTui: RustTuiFrontend = async (context): Promise<RustTuiFrontendResult> => {
 	if (process.platform === "win32") {
 		return { handled: false, reason: "当前版本尚未接入 Windows named pipe" };
@@ -58,20 +80,29 @@ export const runEmbeddedRustTui: RustTuiFrontend = async (context): Promise<Rust
 	const binary = resolveRustTuiBinary();
 	if (!binary) return { handled: false, reason: `未找到 ${executableName()} sidecar` };
 
-	const endpointDirectory = mkdtempSync(join(tmpdir(), "lystar-rust-tui-"));
+	let endpointDirectory: string;
+	try {
+		endpointDirectory = mkdtempSync(join(tmpdir(), "lystar-rust-tui-"));
+	} catch (error) {
+		return {
+			handled: false,
+			reason: `无法创建 Host 临时目录：${error instanceof Error ? error.message : String(error)}`,
+		};
+	}
 	const endpoint = join(endpointDirectory, `${process.pid}-${randomUUID()}.sock`);
 	const adapter = new CodingAgentRuntimeAdapter({
 		agentDir: context.agentDir,
 		initialRuntime: context.runtime,
 		createRuntime: context.createRuntime,
 	});
-	const service = new GuiHostService(adapter, {
-		agentDir: context.agentDir,
-		startupInput: context.startupInput,
-		startupSessionPath: context.launchOptions.sessionPath,
-	});
+	let service: GuiHostService | undefined;
 	let server: Server | undefined;
 	try {
+		service = new GuiHostService(adapter, {
+			agentDir: context.agentDir,
+			startupInput: context.startupInput,
+			startupSessionPath: context.launchOptions.sessionPath,
+		});
 		try {
 			server = await serveIpcHost(service, endpoint);
 		} catch (error) {
@@ -103,8 +134,6 @@ export const runEmbeddedRustTui: RustTuiFrontend = async (context): Promise<Rust
 		}
 		return { handled: true, exitCode: exitCode(result.code, result.signal) };
 	} finally {
-		await closeServer(server);
-		await service.dispose();
-		rmSync(endpointDirectory, { recursive: true, force: true });
+		await cleanupHost(server, service, endpointDirectory);
 	}
 };

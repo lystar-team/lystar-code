@@ -1,13 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
-import { CURRENT_SESSION_VERSION } from "../../coding-agent/src/core/session-manager.ts";
+import { CURRENT_SESSION_VERSION, SessionManager } from "../../coding-agent/src/core/session-manager.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../../..", import.meta.url));
 const entry = fileURLToPath(new URL("./fixtures/embedded-lc.ts", import.meta.url));
+const clientFixture = fileURLToPath(new URL("./fixtures/embedded-rust-client.ts", import.meta.url));
 const tsxImport = import.meta.resolve("tsx");
 const rustBinary = join(repositoryRoot, "target", "debug", "lystar-tui");
 const hasScript = spawnSync("script", ["--version"]).status === 0;
@@ -86,6 +87,54 @@ function sessionEntries(rounds: number, cwd: string): string {
 }
 
 describe("lc embedded Rust TUI startup", () => {
+	test.runIf(process.platform === "linux" && hasScript)(
+		"does not start the TypeScript TUI after the sidecar acquired ownership and exited nonzero",
+		() => {
+			const tempDir = mkdtempSync(join(tmpdir(), "lystar-main-rust-failure-"));
+			tempDirs.add(tempDir);
+			const cwd = join(tempDir, "project");
+			const agentDir = join(tempDir, "agent");
+			const sessionPath = join(tempDir, "session.jsonl");
+			const client = join(tempDir, "lystar-tui");
+			const endpointCapturePath = join(tempDir, "endpoint.txt");
+			const beforePath = join(tempDir, "stty-before");
+			const afterPath = join(tempDir, "stty-after");
+			const rawOutputPath = join(tempDir, "terminal.raw");
+			mkdirSync(cwd, { recursive: true });
+			mkdirSync(agentDir, { recursive: true });
+			writeFileSync(sessionPath, sessionEntries(1, cwd));
+			writeFileSync(
+				client,
+				`#!/bin/sh\nexec ${shellQuote(process.execPath)} --import ${shellQuote(tsxImport)} ${shellQuote(clientFixture)} "$@"\n`,
+			);
+			chmodSync(client, 0o700);
+
+			const lcCommand = `env PI_CODING_AGENT_DIR=${shellQuote(agentDir)} PI_TUI_FRONTEND=rust PI_RUST_TUI_BINARY=${shellQuote(client)} PI_EMBEDDED_CLIENT_MODE=acquire-exit-17 PI_EMBEDDED_ENDPOINT_CAPTURE_PATH=${shellQuote(endpointCapturePath)} PI_OFFLINE=1 ${shellQuote(process.execPath)} --import ${shellQuote(tsxImport)} ${shellQuote(entry)} --session ${shellQuote(sessionPath)}`;
+			const command = [
+				`stty -g > ${shellQuote(beforePath)}`,
+				lcCommand,
+				`code=$?`,
+				`stty -g > ${shellQuote(afterPath)}`,
+				`exit "$code"`,
+			].join("; ");
+			const result = spawnSync("script", ["-q", "-e", "-c", command, rawOutputPath], {
+				encoding: "utf8",
+				timeout: 20_000,
+			});
+
+			expect(result.error).toBeUndefined();
+			expect(result.status, result.stderr).toBe(17);
+			expect(readFileSync(afterPath, "utf8").trim()).toBe(readFileSync(beforePath, "utf8").trim());
+			expect(SessionManager.isWriterLocked(sessionPath)).toBe(false);
+			const endpoint = readFileSync(endpointCapturePath, "utf8");
+			expect(existsSync(endpoint)).toBe(false);
+			expect(existsSync(dirname(endpoint))).toBe(false);
+			const output = readFileSync(rawOutputPath, "utf8");
+			expect(output).not.toContain("Rust TUI 不可用，已回退 TypeScript TUI");
+		},
+		30_000,
+	);
+
 	test.runIf(process.platform === "linux" && existsSync(rustBinary) && hasScript)(
 		"streams a 620-record exit transcript through the interactive main path",
 		async () => {
