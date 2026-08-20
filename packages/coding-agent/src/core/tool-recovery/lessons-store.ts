@@ -644,7 +644,7 @@ async function withStoreLock<T>(
 		await lockFile.close();
 		const release = await lockfile.lock(paths.lock, {
 			realpath: false,
-			retries: { retries: 100, factor: 1, minTimeout: 1, maxTimeout: 5 },
+			retries: { retries: 2_000, factor: 1, minTimeout: 1, maxTimeout: 5, maxRetryTime: 10_000 },
 		});
 		try {
 			return await operation(paths);

@@ -287,7 +287,7 @@ async function acquireLedgerLock(path: string): Promise<() => Promise<void>> {
 	await file.close();
 	return await lockfile.lock(path, {
 		realpath: false,
-		retries: { retries: 100, factor: 1, minTimeout: 1, maxTimeout: 5 },
+		retries: { retries: 2_000, factor: 1, minTimeout: 1, maxTimeout: 5, maxRetryTime: 10_000 },
 	});
 }
 
