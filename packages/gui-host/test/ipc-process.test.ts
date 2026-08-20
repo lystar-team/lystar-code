@@ -202,9 +202,8 @@ describe("GUI Host persistent IPC", () => {
 		children.delete(rust);
 	}, 30_000);
 
-	it.runIf(process.platform !== "win32")(
-		"keeps an accepted operation alive after the SSH-style relay is killed",
-		async () => {
+	if (process.platform !== "win32") {
+		it("keeps an accepted operation alive after the SSH-style relay is killed", async () => {
 			const agentDir = mkdtempSync(join(tmpdir(), "gui-host-ipc-"));
 			tempDirs.add(agentDir);
 			const endpoint = join(agentDir, "host.sock");
@@ -298,7 +297,6 @@ describe("GUI Host persistent IPC", () => {
 			host.kill("SIGTERM");
 			await withTimeout("Host shutdown", waitForExit(host), 2_000);
 			children.delete(host);
-		},
-		30_000,
-	);
+		}, 30_000);
+	}
 });
