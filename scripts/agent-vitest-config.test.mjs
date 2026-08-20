@@ -38,6 +38,8 @@ test("Agent Core Vitest config isolates the Windows platform suite", () => {
 });
 
 test("Windows CI retains the Agent Core and Rust TUI IPC platform reports", () => {
+	assert.doesNotMatch(workflow, /^\s{4}if:.*env\.CI_PLAN_MODE/m);
+	assert.match(workflow, /^\s{4}if:.*\(inputs\.plan_mode \|\| 'observe'\) == 'observe'/m);
 	assert.match(
 		workflow,
 		/\$env:PI_TEST_SUITE = "platform"\s*\r?\n\s*npm --workspace @earendil-works\/pi-agent-core test -- --reporter=json --outputFile="\$env:RUNNER_TEMP\\ci-windows-agent-platform\.json"/,

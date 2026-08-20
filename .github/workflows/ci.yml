@@ -64,7 +64,7 @@ jobs:
 
   source:
     needs: plan
-    if: ${{ always() && (needs.plan.result != 'success' || env.CI_PLAN_MODE == 'observe' || needs.plan.outputs.source == 'true') }}
+    if: ${{ always() && (needs.plan.result != 'success' || (inputs.plan_mode || 'observe') == 'observe' || needs.plan.outputs.source == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -158,7 +158,7 @@ jobs:
 
   core:
     needs: plan
-    if: ${{ always() && (needs.plan.result != 'success' || env.CI_PLAN_MODE == 'observe' || needs.plan.outputs.core == 'true' || needs.plan.outputs.gui == 'true') }}
+    if: ${{ always() && (needs.plan.result != 'success' || (inputs.plan_mode || 'observe') == 'observe' || needs.plan.outputs.core == 'true' || needs.plan.outputs.gui == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -260,7 +260,7 @@ jobs:
 
   coding:
     needs: plan
-    if: ${{ always() && (needs.plan.result != 'success' || env.CI_PLAN_MODE == 'observe' || needs.plan.outputs.coding == 'true') }}
+    if: ${{ always() && (needs.plan.result != 'success' || (inputs.plan_mode || 'observe') == 'observe' || needs.plan.outputs.coding == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -345,7 +345,7 @@ jobs:
 
   windows:
     needs: plan
-    if: ${{ always() && (needs.plan.result != 'success' || env.CI_PLAN_MODE == 'observe' || needs.plan.outputs.platform == 'true') }}
+    if: ${{ always() && (needs.plan.result != 'success' || (inputs.plan_mode || 'observe') == 'observe' || needs.plan.outputs.platform == 'true') }}
     runs-on: windows-2025
     timeout-minutes: 40
     steps:
