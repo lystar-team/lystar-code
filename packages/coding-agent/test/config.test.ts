@@ -4,9 +4,11 @@ import { delimiter, join } from "path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
 	detectInstallMethod,
+	getPackageDir,
 	getSelfUpdateCommand,
 	getSelfUpdateUnavailableInstruction,
 	getUpdateInstruction,
+	resolveNodePackageDir,
 } from "../src/config.ts";
 
 const execPathDescriptor = Object.getOwnPropertyDescriptor(process, "execPath");
@@ -144,6 +146,35 @@ function createFakeBunScript(bunBin: string): string {
 	const escapedBunBin = bunBin.replaceAll("'", "'\\''");
 	return `#!/bin/sh\nif [ "$1" = "pm" ] && [ "$2" = "bin" ] && [ "$3" = "-g" ]; then\n\tprintf '%s\\n' '${escapedBunBin}'\n\texit 0\nfi\nexit 1\n`;
 }
+
+describe("package asset paths", () => {
+	test("ignores build:binary package metadata inside a source checkout dist directory", () => {
+		const packageDir = mkdtempSync(join(tmpdir(), "pi-package-dir-"));
+		mkdirSync(join(packageDir, "src"));
+		mkdirSync(join(packageDir, "dist"));
+		writeFileSync(join(packageDir, "package.json"), "{}");
+		writeFileSync(join(packageDir, "dist", "package.json"), "{}");
+		tempDir = packageDir;
+
+		expect(resolveNodePackageDir(join(packageDir, "dist"))).toBe(packageDir);
+	});
+
+	test("keeps a standalone directory containing package metadata", () => {
+		const packageDir = mkdtempSync(join(tmpdir(), "pi-standalone-package-dir-"));
+		writeFileSync(join(packageDir, "package.json"), "{}");
+		tempDir = packageDir;
+
+		expect(resolveNodePackageDir(packageDir)).toBe(packageDir);
+	});
+
+	test("honors PI_PACKAGE_DIR before automatic package discovery", () => {
+		const packageDir = mkdtempSync(join(tmpdir(), "pi-package-dir-override-"));
+		process.env.PI_PACKAGE_DIR = packageDir;
+		tempDir = packageDir;
+
+		expect(getPackageDir()).toBe(packageDir);
+	});
+});
 
 describe("detectInstallMethod", () => {
 	test("detects pnpm from Windows .pnpm install paths", () => {

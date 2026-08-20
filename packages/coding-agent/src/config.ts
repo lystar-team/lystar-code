@@ -375,16 +375,25 @@ export function getPackageDir(): string {
 		// Bun binary: process.execPath points to the compiled executable
 		return dirname(process.execPath);
 	}
-	// Node.js: walk up from __dirname until we find package.json
-	let dir = __dirname;
+	return resolveNodePackageDir(__dirname);
+}
+
+export function resolveNodePackageDir(moduleDir: string): string {
+	// build:binary copies package.json into dist; inside a source checkout that
+	// directory is an asset bundle, not the package root used by Node/Vitest.
+	let dir = moduleDir;
 	while (dir !== dirname(dir)) {
 		if (existsSync(join(dir, "package.json"))) {
+			const parent = dirname(dir);
+			if (basename(dir) === "dist" && existsSync(join(parent, "package.json")) && existsSync(join(parent, "src"))) {
+				return parent;
+			}
 			return dir;
 		}
 		dir = dirname(dir);
 	}
 	// Fallback (shouldn't happen)
-	return __dirname;
+	return moduleDir;
 }
 
 /**
