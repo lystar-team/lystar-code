@@ -5,6 +5,7 @@
  * createAgentSession() options. The SDK does the heavy lifting.
  */
 
+import { existsSync } from "node:fs";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { createInterface } from "node:readline";
 import { type ImageContent, modelsAreEqual } from "@earendil-works/pi-ai";
@@ -78,6 +79,8 @@ import { loadLystarSettings } from "./modes/interactive/lystar-settings.ts";
 import { createTerminalModeContext, shouldUseAlternateScreen } from "./modes/interactive/terminal-mode.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
+import { type RustTuiFrontend, resolveTuiFrontendSelection } from "./rust-tui-frontend.ts";
+import { createRustTuiLaunchOptions } from "./rust-tui-launch-options.ts";
 import { SessionOpenCoordinator } from "./session-open-coordinator.ts";
 import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
 import { ensureManagedWindowsBash } from "./utils/tools-manager.ts";
@@ -130,6 +133,19 @@ function reportDiagnostics(diagnostics: readonly AgentSessionRuntimeDiagnostic[]
 function isTruthyEnvFlag(value: string | undefined): boolean {
 	if (!value) return false;
 	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
+}
+
+function rustTuiIneligibleReason(options: {
+	frontend: RustTuiFrontend | undefined;
+	startupBenchmark: boolean;
+	sessionPath: string | undefined;
+	hasInitialInput: boolean;
+}): string | undefined {
+	if (!options.frontend) return "当前启动入口未包含 Rust Host";
+	if (options.startupBenchmark) return "启动基准仍使用 TypeScript TUI";
+	if (!options.sessionPath || !existsSync(options.sessionPath)) return "当前 Session 尚未持久化";
+	if (options.hasInitialInput) return "当前版本尚未桥接启动消息";
+	return undefined;
 }
 
 function resolveAppMode(parsed: Args, stdinIsTTY: boolean, stdoutIsTTY: boolean): AppMode {
@@ -632,6 +648,7 @@ async function promptForMissingSessionCwd(
 
 export interface MainOptions {
 	extensionFactories?: InlineExtension[];
+	rustTuiFrontend?: RustTuiFrontend;
 }
 
 export async function main(args: string[], options?: MainOptions) {
@@ -1095,6 +1112,38 @@ export async function main(args: string[], options?: MainOptions) {
 		printTimings();
 		await runRpcMode(runtime);
 	} else if (appMode === "interactive") {
+		const frontendSelection = resolveTuiFrontendSelection();
+		const sessionPath = session.sessionFile;
+		const rustRequested = frontendSelection === "rust" || frontendSelection === "auto";
+		const rustIneligibleReason = rustRequested
+			? rustTuiIneligibleReason({
+					frontend: options?.rustTuiFrontend,
+					startupBenchmark,
+					sessionPath,
+					hasInitialInput:
+						initialMessage !== undefined ||
+						(initialImages !== undefined && initialImages.length > 0) ||
+						parsed.messages.length > 0,
+				})
+			: undefined;
+		if (rustRequested && !rustIneligibleReason && options?.rustTuiFrontend && sessionPath) {
+			const result = await options.rustTuiFrontend({
+				runtime,
+				createRuntime,
+				agentDir,
+				launchOptions: createRustTuiLaunchOptions(sessionPath, settingsManager),
+			});
+			if (result.handled) {
+				stopThemeWatcher();
+				if (result.exitCode !== 0) process.exitCode = result.exitCode;
+				return;
+			}
+			if (frontendSelection === "rust") {
+				console.error(chalk.yellow(`Rust TUI 不可用，已回退 TypeScript TUI：${result.reason}`));
+			}
+		} else if (frontendSelection === "rust" && rustIneligibleReason) {
+			console.error(chalk.yellow(`Rust TUI 暂不可用，已回退 TypeScript TUI：${rustIneligibleReason}`));
+		}
 		const interactiveMode = new InteractiveMode(runtime, {
 			migratedProviders,
 			modelFallbackMessage,

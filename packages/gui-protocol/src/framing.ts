@@ -60,9 +60,12 @@ export function parseServerMessage(value: unknown): ServerMessage {
 	return value;
 }
 
+function encodeFramedMessage(value: unknown): Uint8Array {
+	return encodeFrame(encodeCbor(value, { maxByteLength: GUI_MAX_FRAME_LENGTH }));
+}
+
 function encodeMessage(value: unknown, parse: (candidate: unknown) => unknown): Uint8Array {
-	const validated = parse(value);
-	return encodeFrame(encodeCbor(validated, { maxByteLength: GUI_MAX_FRAME_LENGTH }));
+	return encodeFramedMessage(parse(value));
 }
 
 export function encodeClientMessage(message: ClientMessage): Uint8Array {
@@ -71,6 +74,11 @@ export function encodeClientMessage(message: ClientMessage): Uint8Array {
 
 export function encodeServerMessage(message: ServerMessage): Uint8Array {
 	return encodeMessage(message, parseServerMessage);
+}
+
+// Host 输出由 TypeScript 合同构造；接收端仍会完整校验跨进程消息。
+export function encodeTrustedServerMessage(message: ServerMessage): Uint8Array {
+	return encodeFramedMessage(message);
 }
 
 class GuiMessageDecoder<T> {

@@ -289,6 +289,7 @@ pub(super) fn request_exit_transcript_page(
     cursor: Option<&str>,
     context: Option<&TranscriptRequestContext>,
 ) -> Result<lystar_protocol::TranscriptPage, TuiError> {
+    trace_id("exit_transcript_request", request_id);
     pipe.request(&encode_read_transcript_request(
         request_id,
         session_path,
@@ -302,6 +303,7 @@ pub(super) fn request_exit_transcript_page(
                 ReadOnlyMessage::Response(ReadOnlyResponse::TranscriptPage { id, page })
                     if id == request_id =>
                 {
+                    trace_id("exit_transcript_response", &id);
                     if !page.complete {
                         return Err(TuiError::InvalidResponse("退出记录页未完整返回".to_owned()));
                     }
@@ -353,9 +355,9 @@ pub(super) fn emit_exit_output(
             context.as_ref(),
         )?;
         if page.items.len() > EXIT_TRANSCRIPT_PAGE_LIMIT as usize {
-            return Err(TuiError::InvalidResponse(
-                "退出记录页超过 150 条".to_owned(),
-            ));
+            return Err(TuiError::InvalidResponse(format!(
+                "退出记录页超过 {EXIT_TRANSCRIPT_PAGE_LIMIT} 条"
+            )));
         }
         temporary.write_page(&page.items)?;
         generation = Some(page.transcript_generation);

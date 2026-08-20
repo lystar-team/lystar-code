@@ -20,6 +20,7 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } 
 import { promisify } from "node:util";
 import {
 	type AgentSessionEvent,
+	type AgentSessionRuntime,
 	APP_TITLE,
 	type AuthEvent,
 	type AuthPrompt,
@@ -55,6 +56,7 @@ import {
 	ModelRuntime,
 	matchesKey,
 	PACKAGE_VERSION,
+	type ProjectTrustContext,
 	ProjectTrustStore,
 	RELEASE_REPOSITORY,
 	readClipboardImage,
@@ -1579,13 +1581,32 @@ export function getGuiAgentDir(): string {
 	return getAgentDir();
 }
 
+export interface CodingAgentRuntimeAdapterOptions {
+	agentDir?: string;
+	initialRuntime?: AgentSessionRuntime;
+	createRuntime?: CreateAgentSessionRuntimeFactory;
+}
+
 export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	private readonly agentDir: string;
+	private readonly createRuntimeFactory?: CreateAgentSessionRuntimeFactory;
 	private readonly externalResourceGrants = new Map<string, { path: string; expiresAt: number }>();
 	private modelRuntimePromise?: Promise<ModelRuntime>;
+	private initialRuntime?: AgentSessionRuntime;
+	private initialRuntimeClaimed = false;
 
-	constructor(agentDir = getAgentDir()) {
-		this.agentDir = agentDir;
+	constructor(options: string | CodingAgentRuntimeAdapterOptions = getAgentDir()) {
+		if (typeof options === "string") {
+			this.agentDir = options;
+			return;
+		}
+		this.agentDir = options.agentDir ?? getAgentDir();
+		this.initialRuntime = options.initialRuntime;
+		this.createRuntimeFactory = options.createRuntime;
+	}
+
+	get hasClaimedInitialRuntime(): boolean {
+		return this.initialRuntimeClaimed;
 	}
 
 	async createSession(cwd: string, onUiRequest: UiRequestHandler): Promise<RuntimeSession> {
@@ -1593,6 +1614,8 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	}
 
 	async openSession(sessionPath: string, onUiRequest: UiRequestHandler): Promise<RuntimeSession> {
+		const initialRuntime = this.takeInitialRuntime(sessionPath);
+		if (initialRuntime) return this.wrapRuntime(initialRuntime, onUiRequest);
 		const manager = SessionManager.open(sessionPath);
 		return this.createRuntime(manager.getCwd(), manager, onUiRequest);
 	}
@@ -2347,7 +2370,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		onUiRequest: UiRequestHandler,
 	): Promise<RuntimeSession> {
 		const trustStore = new ProjectTrustStore(this.agentDir);
-		const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+		const defaultCreateRuntime: CreateAgentSessionRuntimeFactory = async ({
 			cwd: runtimeCwd,
 			agentDir,
 			sessionManager: runtimeSessionManager,
@@ -2391,11 +2414,31 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				diagnostics: services.diagnostics,
 			};
 		};
-		const runtime = await createAgentSessionRuntime(createRuntime, {
+		const projectTrustContext: ProjectTrustContext = {
+			cwd,
+			mode: "rpc",
+			hasUI: true,
+			ui: createUiContext(onUiRequest),
+		};
+		const runtime = await createAgentSessionRuntime(this.createRuntimeFactory ?? defaultCreateRuntime, {
 			cwd,
 			agentDir: this.agentDir,
 			sessionManager,
+			projectTrustContext,
 		});
+		return this.wrapRuntime(runtime, onUiRequest);
+	}
+
+	private takeInitialRuntime(sessionPath: string): AgentSessionRuntime | undefined {
+		const runtime = this.initialRuntime;
+		const runtimePath = runtime?.session.sessionFile;
+		if (!runtime || !runtimePath || resolve(runtimePath) !== resolve(sessionPath)) return undefined;
+		this.initialRuntime = undefined;
+		this.initialRuntimeClaimed = true;
+		return runtime;
+	}
+
+	private async wrapRuntime(runtime: AgentSessionRuntime, onUiRequest: UiRequestHandler): Promise<RuntimeSession> {
 		const wrapped = new CoreRuntimeSession(runtime, onUiRequest, this.agentDir);
 		await wrapped.bind();
 		return wrapped;

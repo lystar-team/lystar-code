@@ -6,6 +6,7 @@ import {
 	ClientMessageDecoder,
 	encodeClientMessage,
 	encodeServerMessage,
+	encodeTrustedServerMessage,
 	GUI_PROTOCOL_VERSION,
 	GuiProtocolClient,
 	isDiagnostics,
@@ -40,6 +41,17 @@ class MemoryTransport implements ByteTransport {
 }
 
 describe("GUI Protocol v1", () => {
+	it("decodes trusted Host frames with the normal server validator", () => {
+		const message = {
+			type: "response",
+			id: "trusted",
+			ok: true,
+			result: { items: Array.from({ length: 200 }, (_, index) => ({ index, text: `needle ${index}` })) },
+		} as const;
+		expect(new ServerMessageDecoder().push(encodeTrustedServerMessage(message))).toEqual([message]);
+		expect(encodeTrustedServerMessage(message)).toEqual(encodeServerMessage(message));
+	});
+
 	it("decodes fragmented and coalesced framed messages", () => {
 		const first = encodeClientMessage({ type: "hello", version: GUI_PROTOCOL_VERSION, clientInstanceId: "client" });
 		const second = encodeClientMessage({ type: "request", id: "1", request: { command: "get_snapshot" } });

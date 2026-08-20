@@ -2,18 +2,37 @@ use super::*;
 
 #[cfg(unix)]
 pub(super) struct ProtocolPipe {
-    pub(super) output: std::fs::File,
+    pub(super) output: Box<dyn Write>,
     pub(super) inbound: Receiver<Result<ServerMessage, TuiError>>,
 }
 
 #[cfg(unix)]
 impl ProtocolPipe {
     pub(super) fn connect(client_instance_id: &str) -> Result<Self, TuiError> {
+        // Composition root 注入 socket endpoint；未注入时保留 fd3/fd4 FIFO 兼容路径。
+        let endpoint = std::env::var_os("PI_RUST_TUI_HOST_ENDPOINT");
+        Self::connect_with_endpoint(client_instance_id, endpoint.as_deref())
+    }
+
+    pub(super) fn connect_with_endpoint(
+        client_instance_id: &str,
+        endpoint: Option<&std::ffi::OsStr>,
+    ) -> Result<Self, TuiError> {
         use std::{fs::File, os::fd::FromRawFd, thread};
 
-        // fd3/4 仅承载 Host 的 framed protocol，Session 文件始终由 Host 读取。
-        let input = unsafe { File::from_raw_fd(3) };
-        let mut output = unsafe { File::from_raw_fd(4) };
+        let (input, mut output): (Box<dyn Read + Send>, Box<dyn Write>) =
+            if let Some(endpoint) = endpoint {
+                use std::{os::unix::net::UnixStream, path::Path};
+
+                let stream = UnixStream::connect(Path::new(endpoint))?;
+                let input = stream.try_clone()?;
+                (Box::new(input), Box::new(stream))
+            } else {
+                // fd3/4 仅承载 Host 的 framed protocol，Session 文件始终由 Host 读取。
+                let input = unsafe { File::from_raw_fd(3) };
+                let output = unsafe { File::from_raw_fd(4) };
+                (Box::new(input), Box::new(output))
+            };
         output.write_all(&encode_client_hello(client_instance_id)?)?;
         output.flush()?;
         let (sender, inbound) = mpsc::sync_channel(64);
@@ -44,7 +63,7 @@ impl ProtocolPipe {
 
 #[cfg(unix)]
 pub(super) fn read_protocol(
-    mut input: std::fs::File,
+    mut input: Box<dyn Read + Send>,
     sender: SyncSender<Result<ServerMessage, TuiError>>,
 ) {
     let mut decoder = FrameDecoder::default();

@@ -54,7 +54,89 @@ fn test_pipe_with_path() -> (ProtocolPipe, PathBuf) {
     ));
     let output = std::fs::File::create(&path).unwrap();
     let (_sender, inbound) = mpsc::sync_channel(1);
-    (ProtocolPipe { output, inbound }, path)
+    (
+        ProtocolPipe {
+            output: Box::new(output),
+            inbound,
+        },
+        path,
+    )
+}
+
+#[cfg(unix)]
+fn encode_test_server_frame(value: serde_json::Value) -> Vec<u8> {
+    let cbor = serde_json::from_value::<ciborium::value::Value>(value).unwrap();
+    let mut payload = Vec::new();
+    ciborium::into_writer(&cbor, &mut payload).unwrap();
+    let mut frame = Vec::with_capacity(4 + payload.len());
+    frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    frame.extend_from_slice(&payload);
+    frame
+}
+
+#[cfg(unix)]
+#[test]
+fn unix_socket_transport_reads_large_server_frames_without_fifo_sized_limits() {
+    use std::{
+        io::{Read, Write},
+        os::unix::net::UnixListener,
+        thread,
+    };
+
+    let path = std::env::temp_dir().join(format!(
+        "lystar-tui-socket-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let listener = UnixListener::bind(&path).unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = FrameDecoder::default();
+        let mut buffer = [0_u8; 1024];
+        loop {
+            let count = stream.read(&mut buffer).unwrap();
+            assert!(count > 0);
+            if !decoder.push(&buffer[..count]).unwrap().is_empty() {
+                break;
+            }
+        }
+        let hello = encode_test_server_frame(serde_json::json!({
+            "type": "hello",
+            "version": 1,
+            "protocolVersion": 1,
+            "productVersion": "test",
+            "serverInstanceId": "server",
+            "hostInstanceId": "host",
+            "hostStartedAt": 0,
+            "capabilities": [],
+        }));
+        let large_text = "x".repeat(100 * 1024);
+        let response = encode_test_server_frame(serde_json::json!({
+            "type": "response",
+            "id": "large-frame",
+            "ok": true,
+            "result": { "text": large_text },
+        }));
+        stream.write_all(&hello).unwrap();
+        stream.write_all(&response).unwrap();
+    });
+
+    let pipe = ProtocolPipe::connect_with_endpoint("socket-test", Some(path.as_os_str())).unwrap();
+    let message = pipe
+        .inbound
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap();
+    let value = message.json().unwrap();
+    assert_eq!(value["id"], "large-frame");
+    assert_eq!(value["result"]["text"].as_str().unwrap().len(), 100 * 1024);
+
+    drop(pipe);
+    server.join().unwrap();
+    std::fs::remove_file(path).unwrap();
 }
 
 fn apply_server_json(
@@ -726,6 +808,51 @@ fn command_palette_exposes_agents_as_the_public_entry() {
             .any(|item| item.label == "/agents" && item.action == "open:agents")
     );
     assert!(!palette.items.iter().any(|item| item.label == "/subagents"));
+}
+
+#[test]
+fn quit_command_uses_the_session_release_flow() {
+    let mut app = AppState::default();
+    app.begin_active_session(
+        "/tmp/sessions/current.jsonl".to_owned(),
+        "/work/project".to_owned(),
+    );
+    app.lease_id = Some("lease".to_owned());
+    app.editor.insert("/quit");
+    let (mut pipe, path) = test_pipe_with_path();
+    let mut sequence = 0;
+    let mut session_flow = None;
+    let mut quit_requested = false;
+
+    let exit_now = handle_key(
+        &mut app,
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+        &mut pipe,
+        "/tmp/sessions/current.jsonl",
+        "client",
+        &mut sequence,
+        &mut session_flow,
+        &mut quit_requested,
+    )
+    .unwrap();
+    drop(pipe);
+
+    assert!(!exit_now);
+    assert!(quit_requested);
+    assert!(app.editor.is_empty());
+    assert!(matches!(
+        session_flow,
+        Some(SessionFlow::QuitReleasing { .. })
+    ));
+    let frames = FrameDecoder::default()
+        .push(&std::fs::read(&path).unwrap())
+        .unwrap();
+    let message = lystar_protocol::decode_client_message(&frames[0]).unwrap();
+    let request = serde_json::to_value(message.value()).unwrap();
+    assert_eq!(request["request"]["command"], "release_session");
+    assert_eq!(request["request"]["leaseId"], "lease");
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]

@@ -7,7 +7,16 @@ import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-a
 import { assertWorkspaceCommandResult } from "@lystar/code-gui-protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentSessionEvent } from "../../coding-agent/src/core/agent-session.ts";
+import {
+	type CreateAgentSessionRuntimeFactory,
+	createAgentSessionRuntime,
+} from "../../coding-agent/src/core/agent-session-runtime.ts";
+import {
+	createAgentSessionFromServices,
+	createAgentSessionServices,
+} from "../../coding-agent/src/core/agent-session-services.ts";
 import { getLystarSetting, getLystarSettingsForUi } from "../../coding-agent/src/core/lystar-settings-catalog.ts";
+import { CURRENT_SESSION_VERSION, SessionManager } from "../../coding-agent/src/core/session-manager.ts";
 import { SettingsManager } from "../../coding-agent/src/core/settings-manager.ts";
 import {
 	appendSessionRecoveryLedger,
@@ -34,6 +43,62 @@ function eventPayload(event: RuntimeEvent): {
 
 describe("CodingAgentRuntimeAdapter", () => {
 	const cleanups: Array<() => Promise<void> | void> = [];
+
+	it("adopts the existing AgentSessionRuntime without opening a second writer", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-adopt-runtime-"));
+		const cwd = join(tempDir, "project");
+		const agentDir = join(tempDir, "agent");
+		const sessionPath = join(tempDir, "session.jsonl");
+		mkdirSync(cwd, { recursive: true });
+		writeFileSync(
+			sessionPath,
+			`${JSON.stringify({
+				type: "session",
+				version: CURRENT_SESSION_VERSION,
+				id: "adopt-runtime",
+				timestamp: new Date().toISOString(),
+				cwd,
+			})}\n`,
+		);
+		const manager = SessionManager.open(sessionPath);
+		let factoryCalls = 0;
+		const createRuntime: CreateAgentSessionRuntimeFactory = async (options) => {
+			factoryCalls++;
+			const services = await createAgentSessionServices({
+				cwd: options.cwd,
+				agentDir: options.agentDir,
+				settingsManager: SettingsManager.create(options.cwd, options.agentDir, { projectTrusted: true }),
+				resourceLoaderOptions: {
+					noExtensions: true,
+					noSkills: true,
+					noPromptTemplates: true,
+					noThemes: true,
+					noContextFiles: true,
+				},
+			});
+			return {
+				...(await createAgentSessionFromServices({
+					services,
+					sessionManager: options.sessionManager,
+					sessionStartEvent: options.sessionStartEvent,
+				})),
+				services,
+				diagnostics: services.diagnostics,
+			};
+		};
+		const initialRuntime = await createAgentSessionRuntime(createRuntime, { cwd, agentDir, sessionManager: manager });
+		factoryCalls = 0;
+		const adapter = new CodingAgentRuntimeAdapter({ agentDir, initialRuntime, createRuntime });
+		const runtime = await adapter.openSession(sessionPath, async () => ({ cancelled: true }));
+		cleanups.push(async () => {
+			await runtime.dispose();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+
+		expect(adapter.hasClaimedInitialRuntime).toBe(true);
+		expect(runtime.sessionPath).toBe(sessionPath);
+		expect(factoryCalls).toBe(0);
+	});
 
 	it("projects real AgentSessionEvent variants into bounded typed progress", () => {
 		const toolStart: Extract<AgentSessionEvent, { type: "tool_execution_start" }> = {

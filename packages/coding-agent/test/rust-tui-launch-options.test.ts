@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { resolveTuiFrontendSelection } from "../src/rust-tui-frontend.ts";
 import { createRustTuiLaunchOptions, rustTuiLaunchArgv } from "../src/rust-tui-launch-options.ts";
 
 describe("Rust TUI launch options", () => {
@@ -29,5 +30,12 @@ describe("Rust TUI launch options", () => {
 	test("leaves PI_TUI_MODE precedence to Rust mode resolution", () => {
 		const settings = SettingsManager.inMemory({ tuiMode: "fullscreen" });
 		expect(createRustTuiLaunchOptions("/tmp/session.jsonl", settings, { PI_TUI_MODE: "regular" }).mode).toBe("auto");
+	});
+
+	test("keeps TypeScript as the default frontend until the Rust release gate changes", () => {
+		expect(resolveTuiFrontendSelection({})).toBe("typescript");
+		expect(resolveTuiFrontendSelection({ PI_TUI_FRONTEND: "rust" })).toBe("rust");
+		expect(resolveTuiFrontendSelection({ PI_TUI_FRONTEND: "auto" })).toBe("auto");
+		expect(resolveTuiFrontendSelection({ PI_TUI_FRONTEND: "invalid" })).toBe("typescript");
 	});
 });

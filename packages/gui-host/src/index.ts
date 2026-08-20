@@ -4,6 +4,7 @@ export * from "./ipc.ts";
 export * from "./lease-manager.ts";
 export * from "./operation-journal.ts";
 export * from "./runtime-adapter.ts";
+export * from "./rust-tui-frontend.ts";
 export * from "./service.ts";
 export * from "./stdio.ts";
 export * from "./stream-transport.ts";

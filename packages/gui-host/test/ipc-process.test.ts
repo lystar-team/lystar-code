@@ -1,5 +1,5 @@
-import { type ChildProcess, type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { type ChildProcess, type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -151,7 +151,48 @@ function response(id: string) {
 	return (message: ServerMessage): boolean => message.type === "response" && message.id === id;
 }
 
+function ensureRustTuiBinary(): string {
+	const binary = join(repositoryRoot, "target/debug/lystar-tui");
+	if (existsSync(binary)) return binary;
+	const result = spawnSync("cargo", ["build", "-p", "lystar-tui"], {
+		cwd: repositoryRoot,
+		encoding: "utf8",
+	});
+	if (result.status !== 0) throw new Error(`Rust TUI build failed:\n${result.stderr}`);
+	return binary;
+}
+
 describe.runIf(process.platform !== "win32")("GUI Host persistent IPC", () => {
+	it("accepts the Rust TUI handshake through the production Unix socket Host", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "gui-host-rust-ipc-"));
+		tempDirs.add(agentDir);
+		const endpoint = join(agentDir, "host.sock");
+		const host = spawn(process.execPath, ["--import", tsxImport, hostFixture, agentDir, endpoint], {
+			cwd: repositoryRoot,
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		children.add(host);
+		await withTimeout(
+			"Host ready",
+			waitForLine(host, "stderr", "ready", PROCESS_START_TIMEOUT_MS),
+			PROCESS_START_TIMEOUT_MS,
+		);
+
+		const rust = spawn(ensureRustTuiBinary(), ["--pipe-handshake"], {
+			cwd: repositoryRoot,
+			env: { ...process.env, PI_RUST_TUI_HOST_ENDPOINT: endpoint },
+			stdio: ["ignore", "ignore", "pipe"],
+		});
+		children.add(rust);
+		await withTimeout("Rust TUI Host handshake", waitForExit(rust), PROCESS_START_TIMEOUT_MS);
+		expect(rust.exitCode).toBe(0);
+
+		host.kill("SIGTERM");
+		await withTimeout("Host shutdown", waitForExit(host), 2_000);
+		children.delete(host);
+		children.delete(rust);
+	}, 30_000);
+
 	it("keeps an accepted operation alive after the SSH-style relay is killed", async () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "gui-host-ipc-"));
 		tempDirs.add(agentDir);

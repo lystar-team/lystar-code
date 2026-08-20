@@ -17,6 +17,7 @@ import {
 	writeFileSync,
 	writeSync,
 } from "node:fs";
+import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -26,6 +27,7 @@ import {
 	type ClientMessage,
 	ClientMessageDecoder,
 	encodeServerMessage,
+	encodeTrustedServerMessage,
 	type JsonValue,
 	type ServerMessage,
 	type SubagentSnapshot,
@@ -1319,6 +1321,7 @@ async function startTui(
 	runOptions: {
 		mode?: "auto" | "fullscreen" | "regular";
 		exitOutput?: "transcript" | "resume-hint";
+		transport?: "fifo" | "unix-socket";
 		captureRawOutput?: boolean;
 		nonBlockingPromptRequests?: boolean;
 	} = {},
@@ -1340,23 +1343,122 @@ async function startTui(
 	const sttyBeforePath = join(artifactDirectory, "stty-before");
 	const sttyAfterPath = join(artifactDirectory, "stty-after");
 	const rawOutputPath = join(artifactDirectory, "terminal-output.raw");
+	const useUnixSocket = runOptions.transport === "unix-socket";
+	const encodeHostMessage = useUnixSocket ? encodeTrustedServerMessage : encodeServerMessage;
+	const socketEndpoint = join(directory, "host.sock");
 	if (!runtimeHost) writeFileSync(sessionPath, sessionEntries(rounds));
-	run("/usr/bin/mkfifo", [toRust, fromRust]);
-
-	const incomingReader = openSync(toRust, constants.O_RDONLY | constants.O_NONBLOCK);
-	descriptors.add(incomingReader);
-	const input = openSync(toRust, constants.O_WRONLY);
-	descriptors.add(input);
-	const outgoingReader = openSync(fromRust, constants.O_RDONLY | constants.O_NONBLOCK);
-	descriptors.add(outgoingReader);
-	const outgoingWriter = openSync(fromRust, constants.O_WRONLY | constants.O_NONBLOCK);
-	descriptors.add(outgoingWriter);
+	let incomingReader: number | undefined;
+	let input: number | undefined;
+	let outgoingReader: number | undefined;
+	let outgoingWriter: number | undefined;
+	if (!useUnixSocket) {
+		run("/usr/bin/mkfifo", [toRust, fromRust]);
+		incomingReader = openSync(toRust, constants.O_RDONLY | constants.O_NONBLOCK);
+		descriptors.add(incomingReader);
+		input = openSync(toRust, constants.O_WRONLY);
+		descriptors.add(input);
+		outgoingReader = openSync(fromRust, constants.O_RDONLY | constants.O_NONBLOCK);
+		descriptors.add(outgoingReader);
+		outgoingWriter = openSync(fromRust, constants.O_WRONLY | constants.O_NONBLOCK);
+		descriptors.add(outgoingWriter);
+	}
 
 	const socket = `lystar-m7-${process.pid}-${Date.now()}-${label}`;
 	sockets.add(socket);
 	const clientInstanceId = `lystar-rust-m8-${socket}`;
 	const binary = join(repositoryRoot, "target/release/lystar-tui");
-	const command = `exec 3<${shellQuote(toRust)} 4>${shellQuote(fromRust)}; before=$(stty -g); printf %s "$before" > ${shellQuote(sttyBeforePath)}; env PI_RUST_TUI_TRACE=1 PI_RUST_TUI_CLIENT_INSTANCE_ID=${shellQuote(clientInstanceId)} ${shellQuote(binary)} --run ${shellQuote(sessionPath)} --mode ${shellQuote(runOptions.mode ?? "auto")} --exit-output ${shellQuote(runOptions.exitOutput ?? "transcript")} 2>${shellQuote(tracePath)}; status=$?; after=$(stty -g); printf %s "$after" > ${shellQuote(sttyAfterPath)}; exit $status`;
+	const transportPrefix = useUnixSocket
+		? `env PI_RUST_TUI_HOST_ENDPOINT=${shellQuote(socketEndpoint)}`
+		: `exec 3<${shellQuote(toRust)} 4>${shellQuote(fromRust)}; env`;
+	const command = `before=$(stty -g); printf %s "$before" > ${shellQuote(sttyBeforePath)}; ${transportPrefix} PI_RUST_TUI_TRACE=1 PI_RUST_TUI_CLIENT_INSTANCE_ID=${shellQuote(clientInstanceId)} ${shellQuote(binary)} --run ${shellQuote(sessionPath)} --mode ${shellQuote(runOptions.mode ?? "auto")} --exit-output ${shellQuote(runOptions.exitOutput ?? "transcript")} 2>${shellQuote(tracePath)}; status=$?; after=$(stty -g); printf %s "$after" > ${shellQuote(sttyAfterPath)}; exit $status`;
+	const fixture = hostFactory?.({ directory, sessionPath });
+	const runtime = fixture?.runtimeFor(sessionPath) ?? new FakeRuntimeSession(sessionPath);
+	const service = new GuiHostService(runtimeHost?.adapter ?? fixture?.adapter ?? createAdapter(runtime), {
+		agentDir: runtimeHost?.agentDir ?? directory,
+	});
+	cleanups.push(async () => service.dispose());
+	const requests: RequestRecord[] = [];
+	const clientMessages: ClientMessage[] = [];
+	const serverMessages: ServerMessage[] = [];
+	const responseWrites = new Map<string, number>();
+	let dropNextWorkspaceResponse = false;
+	let socketPeer: Socket | undefined;
+	let socketServer: ReturnType<typeof createServer> | undefined;
+	let socketProcessing = Promise.resolve();
+	let socketError: Error | undefined;
+	const connection = service.createConnection(async (message: ServerMessage) => {
+		serverMessages.push(message);
+		if (message.type === "response" && dropNextWorkspaceResponse) {
+			dropNextWorkspaceResponse = false;
+			return;
+		}
+		const bytes = encodeHostMessage(message);
+		if (useUnixSocket) {
+			const peer = socketPeer;
+			if (!peer) throw new Error("Rust TUI Unix socket is not connected");
+			await new Promise<void>((resolve, reject) => {
+				peer.write(bytes, (error) => (error ? reject(error) : resolve()));
+			});
+		} else {
+			writeAll(input!, bytes);
+		}
+		if (message.type === "response") responseWrites.set(message.id, Math.floor(monotonicMs() / 10) * 10);
+	});
+	cleanups.push(() => connection.close());
+	const controlMessages: ServerMessage[] = [];
+	const control = service.createConnection(async (message: ServerMessage) => {
+		controlMessages.push(message);
+	});
+	cleanups.push(() => control.close());
+	await control.handle({ type: "hello", version: 1, clientInstanceId: "m7-runtime-controller" });
+
+	const decoder = new ClientMessageDecoder();
+	const handleClientMessage = (message: ClientMessage): void => {
+		clientMessages.push(message);
+		if (message.type === "request")
+			requests.push({
+				id: message.id,
+				command: message.request.command,
+				...("data" in message.request && typeof message.request.data === "string"
+					? { data: message.request.data }
+					: {}),
+				receivedAt: monotonicMs(),
+			});
+		if (
+			message.type === "request" &&
+			(message.request.command === "login_model_provider" ||
+				(runOptions.nonBlockingPromptRequests &&
+					["prompt", "steer", "follow_up"].includes(message.request.command)))
+		) {
+			void connection.handle(message);
+		} else {
+			socketProcessing = socketProcessing.then(() => connection.handle(message));
+		}
+	};
+	if (useUnixSocket) {
+		socketServer = createServer((peer) => {
+			socketPeer = peer;
+			peer.on("data", (chunk: Buffer) => {
+				try {
+					for (const message of decoder.push(chunk)) handleClientMessage(message);
+				} catch (error) {
+					socketError = error instanceof Error ? error : new Error(String(error));
+					peer.destroy(socketError);
+				}
+			});
+			peer.on("error", (error) => {
+				socketError = error;
+			});
+		});
+		await new Promise<void>((resolve, reject) => {
+			socketServer!.once("error", reject);
+			socketServer!.listen(socketEndpoint, resolve);
+		});
+		cleanups.push(() => {
+			socketPeer?.destroy();
+			socketServer?.close();
+		});
+	}
 	run("tmux", [
 		"-L",
 		socket,
@@ -1373,44 +1475,20 @@ async function startTui(
 	if (runOptions.captureRawOutput !== false) {
 		run("tmux", ["-L", socket, "pipe-pane", "-o", "-t", "tui", `cat > ${shellQuote(rawOutputPath)}`]);
 	}
-	closeDescriptor(incomingReader);
-	closeDescriptor(outgoingWriter);
-
-	const fixture = hostFactory?.({ directory, sessionPath });
-	const runtime = fixture?.runtimeFor(sessionPath) ?? new FakeRuntimeSession(sessionPath);
-	const service = new GuiHostService(runtimeHost?.adapter ?? fixture?.adapter ?? createAdapter(runtime), {
-		agentDir: runtimeHost?.agentDir ?? directory,
-	});
-	cleanups.push(async () => service.dispose());
-	const requests: RequestRecord[] = [];
-	const clientMessages: ClientMessage[] = [];
-	const serverMessages: ServerMessage[] = [];
-	const responseWrites = new Map<string, number>();
-	let dropNextWorkspaceResponse = false;
-	const connection = service.createConnection(async (message: ServerMessage) => {
-		serverMessages.push(message);
-		if (message.type === "response" && dropNextWorkspaceResponse) {
-			dropNextWorkspaceResponse = false;
-			return;
-		}
-		writeAll(input, encodeServerMessage(message));
-		if (message.type === "response") responseWrites.set(message.id, Math.floor(monotonicMs() / 10) * 10);
-	});
-	cleanups.push(() => connection.close());
-	const controlMessages: ServerMessage[] = [];
-	const control = service.createConnection(async (message) => {
-		controlMessages.push(message);
-	});
-	cleanups.push(() => control.close());
-	await control.handle({ type: "hello", version: 1, clientInstanceId: "m7-runtime-controller" });
-
-	const decoder = new ClientMessageDecoder();
+	closeDescriptor(incomingReader!);
+	closeDescriptor(outgoingWriter!);
 	const outputBuffer = Buffer.allocUnsafe(64 * 1024);
 	const pump = async () => {
+		if (useUnixSocket) {
+			await Promise.resolve();
+			if (socketError) throw socketError;
+			await socketProcessing;
+			return;
+		}
 		while (true) {
 			let bytesRead: number;
 			try {
-				bytesRead = readSync(outgoingReader, outputBuffer);
+				bytesRead = readSync(outgoingReader!, outputBuffer);
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code === "EAGAIN") return;
 				throw error;
@@ -1463,12 +1541,28 @@ async function startTui(
 	};
 	const panePid = () =>
 		Number(run("tmux", ["-L", socket, "display-message", "-p", "-t", "tui", "#{pane_pid}"]).trim());
-	const closeProtocol = () => closeDescriptor(input);
-	const closeTransport = () => {
-		closeDescriptor(input);
-		closeDescriptor(outgoingReader);
+	const closeProtocol = () => {
+		if (useUnixSocket) socketPeer?.end();
+		else closeDescriptor(input!);
 	};
-	const emitServer = (message: ServerMessage) => writeAll(input, encodeServerMessage(message));
+	const closeTransport = () => {
+		if (useUnixSocket) {
+			socketPeer?.destroy();
+			socketServer?.close();
+		} else {
+			closeDescriptor(input!);
+			closeDescriptor(outgoingReader!);
+		}
+	};
+	const emitServer = (message: ServerMessage) => {
+		const bytes = encodeHostMessage(message);
+		if (useUnixSocket) {
+			if (!socketPeer) throw new Error("Rust TUI Unix socket is not connected");
+			void new Promise<void>((resolve, reject) => {
+				socketPeer!.write(bytes, (error) => (error ? reject(error) : resolve()));
+			});
+		} else writeAll(input!, bytes);
+	};
 	return {
 		directory,
 		artifactDirectory,
@@ -6125,4 +6219,33 @@ describe("Rust Workspace 会话工作台外部验收", () => {
 			}
 		}
 	}, 240_000);
+
+	it("streams large fullscreen exit frames over a Unix socket", async () => {
+		const tui = await startTui(620, { width: 80, height: 24 }, "exit-transcript-unix-socket", undefined, {
+			mode: "fullscreen",
+			exitOutput: "transcript",
+			transport: "unix-socket",
+		});
+		try {
+			await waitForInitialPage(tui);
+			tui.send("q");
+			await waitFor(
+				async () => {
+					await tui.pump();
+					return spawnSync("tmux", ["-L", tui.socket, "has-session", "-t", "tui"]).status !== 0;
+				},
+				"Unix socket fullscreen exit did not complete",
+				30_000,
+			);
+			const transcript = tui.rawOutput();
+			assert.ok(transcript.includes("needle 0"), "Unix socket transcript missed the first record");
+			assert.ok(transcript.includes("needle 619"), "Unix socket transcript missed the last record");
+			assert.ok(
+				tui.requests.filter((request) => request.id.startsWith("exit-transcript-")).length >= 3,
+				"Unix socket exit did not page through the complete transcript",
+			);
+		} finally {
+			await finishTuiRound(tui);
+		}
+	}, 120_000);
 });

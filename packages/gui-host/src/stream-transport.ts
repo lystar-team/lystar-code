@@ -1,5 +1,5 @@
 import type { Readable, Writable } from "node:stream";
-import { ClientMessageDecoder, encodeServerMessage, type ServerMessage } from "@lystar/code-gui-protocol";
+import { ClientMessageDecoder, encodeTrustedServerMessage, type ServerMessage } from "@lystar/code-gui-protocol";
 import type { GuiHostService } from "./service.ts";
 
 export function writeBounded(stream: Writable, bytes: Uint8Array): Promise<void> {
@@ -24,7 +24,7 @@ export function writeBounded(stream: Writable, bytes: Uint8Array): Promise<void>
 
 export async function runHostStream(service: GuiHostService, input: Readable, output: Writable): Promise<void> {
 	const connection = service.createConnection((message: ServerMessage) =>
-		writeBounded(output, encodeServerMessage(message)),
+		writeBounded(output, encodeTrustedServerMessage(message)),
 	);
 	const decoder = new ClientMessageDecoder();
 	let processing = Promise.resolve();

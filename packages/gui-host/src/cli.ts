@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import type { Server } from "node:net";
 import {
 	ensureHostService,
 	getHostServiceStatus,
@@ -15,8 +16,22 @@ const agentDir = getGuiAgentDir();
 const command = process.argv[2] ?? "stdio";
 const endpoint = process.env.PI_GUI_HOST_ENDPOINT ?? defaultIpcEndpoint(agentDir);
 let service: GuiHostService | undefined;
+let server: Server | undefined;
+let shuttingDown = false;
+
+async function closeServer(): Promise<void> {
+	const activeServer = server;
+	server = undefined;
+	if (!activeServer || !activeServer.listening) return;
+	await new Promise<void>((resolve, reject) => {
+		activeServer.close((error) => (error ? reject(error) : resolve()));
+	});
+}
 
 const shutdown = async () => {
+	if (shuttingDown) return;
+	shuttingDown = true;
+	await closeServer();
 	await service?.dispose();
 	process.exit(0);
 };
@@ -64,14 +79,16 @@ async function main(): Promise<void> {
 		try {
 			if (command === "stdio") await runStdioHost(service);
 			else {
-				const server = await serveIpcHost(service, endpoint);
+				server = await serveIpcHost(service, endpoint);
 				await new Promise<void>((resolve, reject) => {
-					server.once("close", resolve);
-					server.once("error", reject);
+					server?.once("close", resolve);
+					server?.once("error", reject);
 				});
 			}
 		} finally {
+			await closeServer();
 			await service.dispose();
+			service = undefined;
 		}
 		return;
 	}

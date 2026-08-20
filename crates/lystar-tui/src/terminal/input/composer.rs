@@ -92,21 +92,14 @@ pub(in super::super) fn handle_key(
 
     match code {
         KeyCode::Char('q') if app.editor.is_empty() => {
-            *quit_requested = true;
-            if session_flow.is_some() {
-                return Ok(false);
-            }
-            let Some(lease_id) = app.lease_id.clone() else {
-                return Ok(true);
-            };
-            *sequence += 1;
-            let id = format!("quit-release-{sequence}");
-            *session_flow = Some(SessionFlow::QuitReleasing { id: id.clone() });
-            pipe.request(&encode_release_session_request(
-                &id,
+            return request_quit(
+                app,
+                pipe,
                 &session_path,
-                &lease_id,
-            )?)?;
+                sequence,
+                session_flow,
+                quit_requested,
+            );
         }
         KeyCode::Char('f') if modifiers.contains(KeyModifiers::CONTROL) => {
             app.open_search();
@@ -207,6 +200,17 @@ pub(in super::super) fn handle_key(
             request_composer_completion(app, pipe, sequence, false)?;
         }
         KeyCode::Enter if modifiers.contains(KeyModifiers::SHIFT) => app.editor.insert("\n"),
+        KeyCode::Enter if app.editor.text().trim() == "/quit" => {
+            app.editor.submit();
+            return request_quit(
+                app,
+                pipe,
+                &session_path,
+                sequence,
+                session_flow,
+                quit_requested,
+            );
+        }
         KeyCode::Enter => submit_editor(
             app,
             pipe,
@@ -257,6 +261,32 @@ pub(in super::super) fn handle_key(
         }
         _ => {}
     }
+    Ok(false)
+}
+
+fn request_quit(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    sequence: &mut u64,
+    session_flow: &mut Option<SessionFlow>,
+    quit_requested: &mut bool,
+) -> Result<bool, TuiError> {
+    *quit_requested = true;
+    if session_flow.is_some() {
+        return Ok(false);
+    }
+    let Some(lease_id) = app.lease_id.clone() else {
+        return Ok(true);
+    };
+    *sequence += 1;
+    let id = format!("quit-release-{sequence}");
+    *session_flow = Some(SessionFlow::QuitReleasing { id: id.clone() });
+    pipe.request(&encode_release_session_request(
+        &id,
+        session_path,
+        &lease_id,
+    )?)?;
     Ok(false)
 }
 
