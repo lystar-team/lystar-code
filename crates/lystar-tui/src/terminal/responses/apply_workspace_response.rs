@@ -19,6 +19,17 @@ pub(super) fn apply_workspace_response(
             return Ok(Some(false));
         }
         if raw.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
+            let error_code = raw
+                .get("error")
+                .and_then(|value| value.get("code"))
+                .and_then(serde_json::Value::as_str);
+            if error_code == Some("operation_aborted") {
+                if matches!(pending.intent, PendingIntent::AuthMutation { .. }) {
+                    app.close_overlay();
+                    app.set_toast("登录已取消");
+                }
+                return Ok(Some(false));
+            }
             restore_auth_intent(app, &pending.intent);
             if matches!(&pending.intent, PendingIntent::TreeNavigate { .. }) {
                 app.pending_editor_replace = None;

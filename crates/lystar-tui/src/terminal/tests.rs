@@ -1359,6 +1359,7 @@ fn keeps_active_events_running_behind_readonly_view() {
             },
         },
         "/tmp/active.jsonl",
+        "client",
     )
     .unwrap();
     assert_eq!(app.assistant_stream, "running");
@@ -1379,6 +1380,7 @@ fn keeps_active_events_running_behind_readonly_view() {
             }],
         },
         "/tmp/active.jsonl",
+        "client",
     )
     .unwrap();
     assert_eq!(app.assistant_stream, "");

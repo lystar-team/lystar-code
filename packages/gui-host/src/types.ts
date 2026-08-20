@@ -205,7 +205,12 @@ export interface RuntimeAdapter {
 	listModelProviders(): Promise<ModelProviderSummary[]>;
 	addModelProvider(input: ModelProviderInput): Promise<ModelProviderSummary[]>;
 	addProviderModel(input: ProviderModelInput): Promise<ModelSummary[]>;
-	loginModelProvider(provider: string, authType: AuthType, onUiRequest: UiRequestHandler): Promise<ModelSummary[]>;
+	loginModelProvider(
+		provider: string,
+		authType: AuthType,
+		onUiRequest: UiRequestHandler,
+		signal?: AbortSignal,
+	): Promise<ModelSummary[]>;
 	logoutModelProvider(provider: string): Promise<ModelSummary[]>;
 	listSkills(cwd: string, onUiRequest: UiRequestHandler): Promise<{ skills: SkillSummary[]; diagnostics: JsonValue }>;
 	setSkillEnabled(

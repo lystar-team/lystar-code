@@ -93,7 +93,13 @@ pub(super) fn apply_interaction_response(
                     let auth_notification = event
                         .get("operationId")
                         .and_then(serde_json::Value::as_str)
-                        .is_some_and(|operation_id| operation_id.starts_with("models-auth:"));
+                        .is_some_and(|operation_id| {
+                            operation_id.starts_with("models-auth:")
+                                || app.operation.as_ref().is_some_and(|operation| {
+                                    operation.operation_id == operation_id
+                                        && operation.operation_type == "login_model_provider"
+                                })
+                        });
                     if auth_notification && app.active_ui_request.is_some() {
                         trace("ui_notify_deferred");
                     } else if auth_notification

@@ -477,6 +477,7 @@ fn thinking_failure_or_invalid_result_preserves_state_and_all_entry_points_share
             snapshot: serde_json::from_value(broadcast).unwrap(),
         },
         "/tmp/session.jsonl",
+        "client",
     )
     .unwrap();
     assert_eq!(

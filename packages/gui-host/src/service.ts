@@ -268,10 +268,26 @@ export class GuiHostService {
 		};
 	}
 
+	private abortClientAuthenticationOperations(clientInstanceId: string): void {
+		for (const operation of this.journal.list()) {
+			if (
+				operation.type !== "login_model_provider" ||
+				operation.clientInstanceId !== clientInstanceId ||
+				TERMINAL_OPERATION_STATUSES.has(operation.status) ||
+				this.activeOperationBySession.get(operation.sessionPath) !== operation.operationId
+			)
+				continue;
+			this.updateOperation(operation.operationId, "aborted");
+			this.cancelPendingUi(operation.operationId);
+			this.operationAbortControllers.get(operation.operationId)?.abort();
+		}
+	}
+
 	private async detachConnection(connection: ClientConnection): Promise<void> {
 		this.clients.delete(connection.id);
 		if (!connection.clientInstanceId) return;
 		if ([...this.clients.values()].some((client) => client.clientInstanceId === connection.clientInstanceId)) return;
+		this.abortClientAuthenticationOperations(connection.clientInstanceId);
 		for (const sessionPath of this.leases.releaseClient(connection.clientInstanceId)) {
 			const runtime = this.runtimes.get(sessionPath);
 			if (runtime) await this.sendSessionSnapshots(runtime, false);
@@ -621,7 +637,16 @@ export class GuiHostService {
 				this.journal.assertWritable();
 				const operation = this.journal.get(request.operationId);
 				if (!operation) throw Object.assign(new Error("未找到任务"), { code: "not_found" });
-				this.leases.assert(operation.sessionPath, request.leaseId, connection.clientInstanceId);
+				if (operation.type === "login_model_provider") {
+					if (operation.clientInstanceId !== connection.clientInstanceId) {
+						throw Object.assign(new Error("客户端无权取消此任务"), {
+							code: "client_instance_mismatch",
+							retryable: false,
+						});
+					}
+				} else {
+					this.leases.assert(operation.sessionPath, request.leaseId, connection.clientInstanceId);
+				}
 				if (TERMINAL_OPERATION_STATUSES.has(operation.status)) return operation;
 				if (this.activeOperationBySession.get(operation.sessionPath) !== operation.operationId) {
 					throw Object.assign(new Error("任务当前未在执行"), {
@@ -766,8 +791,9 @@ export class GuiHostService {
 					clientInstanceId: request.clientInstanceId,
 					clientRequestId: request.clientRequestId,
 					scope: `provider:${provider}`,
+					lockSessionPath: request.command === "login_model_provider" ? `provider:${provider}` : undefined,
 					payload: request,
-					run: async () => {
+					run: async (operation, signal) => {
 						switch (request.command) {
 							case "add_model_provider":
 								return jsonValue(await this.adapter.addModelProvider(request));
@@ -778,11 +804,8 @@ export class GuiHostService {
 									await this.adapter.loginModelProvider(
 										request.provider,
 										request.authType,
-										this.createUiRequestHandler(
-											`models-auth:${request.clientRequestId}`,
-											undefined,
-											request.clientInstanceId,
-										),
+										this.createUiRequestHandler(operation.operationId, undefined, request.clientInstanceId),
+										signal,
 									),
 								);
 							case "logout_model_provider":
@@ -1574,7 +1597,7 @@ export class GuiHostService {
 			scope: string;
 			lockSessionPath?: string;
 			payload: JsonValue;
-			run: () => Promise<JsonValue>;
+			run: (operation: OperationSnapshot, signal: AbortSignal) => Promise<JsonValue>;
 		},
 	): Promise<JsonValue> {
 		this.assertClient(input.clientInstanceId, connection);
@@ -1606,13 +1629,21 @@ export class GuiHostService {
 		if (input.lockSessionPath) {
 			this.activeOperationBySession.set(input.lockSessionPath, accepted.operation.operationId);
 		}
+		const controller = new AbortController();
+		this.operationAbortControllers.set(accepted.operation.operationId, controller);
 		const execution = this.enqueueWriteScope(input.scope, async () => {
 			try {
 				this.updateOperation(accepted.operation.operationId, "running");
-				const result = await input.run();
+				const result = await input.run(accepted.operation, controller.signal);
 				this.updateOperation(accepted.operation.operationId, "completed", { result });
 				return result;
 			} catch (error) {
+				if (controller.signal.aborted) {
+					throw Object.assign(new Error("任务已取消"), {
+						code: "operation_aborted",
+						retryable: false,
+					});
+				}
 				this.updateOperation(accepted.operation.operationId, "failed", {
 					error: error instanceof Error ? error.message : String(error),
 				});
@@ -1623,6 +1654,7 @@ export class GuiHostService {
 						if (operationId === accepted.operation.operationId) this.activeOperationBySession.delete(sessionPath);
 					}
 				}
+				this.operationAbortControllers.delete(accepted.operation.operationId);
 			}
 		});
 		this.journalWritePromises.set(accepted.operation.operationId, execution);

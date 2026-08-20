@@ -556,6 +556,31 @@ impl AppState {
             submit.operation_id.as_deref() == Some(operation.operation_id.as_str())
         });
         self.operation = Some(operation);
+        let auth_update = self.operation.as_ref().and_then(|operation| {
+            (operation.operation_type == "login_model_provider")
+                .then(|| (operation.status.clone(), operation.error.clone()))
+        });
+        if let Some((status, error)) = auth_update {
+            match status.as_str() {
+                "accepted" | "running" | "waiting_for_input" => {
+                    self.transcript.status = "正在等待认证，按 Esc 取消".to_owned();
+                }
+                "aborted" | "interrupted" => {
+                    self.write_pending = false;
+                    self.transcript.status.clear();
+                    self.close_overlay();
+                    self.set_toast("登录已取消");
+                }
+                "failed" => {
+                    self.transcript.status.clear();
+                    if let Some(error) = error {
+                        self.set_overlay_error(error);
+                    }
+                }
+                "completed" => self.transcript.status.clear(),
+                _ => {}
+            }
+        }
         if let Some((command, output)) = bash_progress
             && (!terminal || pending_bash_matches)
         {

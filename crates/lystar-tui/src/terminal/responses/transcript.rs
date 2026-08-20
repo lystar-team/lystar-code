@@ -192,6 +192,7 @@ pub(in super::super) fn apply_event(
     app: &mut AppState,
     event: &ReadOnlyEvent,
     session_path: &str,
+    client_instance_id: &str,
 ) -> Result<bool, TuiError> {
     match event {
         ReadOnlyEvent::TranscriptChanged {
@@ -240,7 +241,10 @@ pub(in super::super) fn apply_event(
             }
             Ok(false)
         }
-        ReadOnlyEvent::OperationUpdated { operation } if operation.session_path == session_path => {
+        ReadOnlyEvent::OperationUpdated { operation }
+            if operation.session_path == session_path
+                || operation.client_instance_id == client_instance_id =>
+        {
             app.apply_operation(operation.clone());
             Ok(false)
         }

@@ -109,7 +109,7 @@ pub(in super::super) fn apply_server_message(
         ReadOnlyMessage::Response(response) => apply_response(app, &response),
         ReadOnlyMessage::Event(event) => {
             let active_path = app.active_session_path().unwrap_or(session_path).to_owned();
-            apply_event(app, &event, &active_path)
+            apply_event(app, &event, &active_path, client_instance_id)
         }
         ReadOnlyMessage::Hello | ReadOnlyMessage::HelloError { .. } => Ok(false),
     }

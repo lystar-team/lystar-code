@@ -3,7 +3,7 @@
 最后更新：2026-08-20
 接手分支：`feat/rust-tui`
 Git 基线：`00f58e7e7 fix(ci): 收紧必需测试并发`
-当前工作：Windows runner 已完成 named pipe Session lifecycle、standalone、terminal host 和 installer；required 总体仍被 Linux coding/core 失败阻塞
+当前工作：OAuth 纯等待阶段取消已接入 Host operation journal 和 Rust Esc；required 总体仍被 Linux coding/core 失败阻塞，Windows 实机与剩余 parity 仍未收口
 产品版本：`0.84.2-lystar.1`
 Pi 基线：`0.84.2`
 
@@ -48,6 +48,7 @@ node -p 'require("./packages/coding-agent/package.json").piConfig'
 - 当前 Rust：`rustc 1.97.1`，Cargo `1.97.1`。
 - 当前 tmux：`3.5a`。
 - 默认前端仍是 TypeScript TUI，不能写成 Rust 已默认启用。
+- 本轮未读取、修改或暂存用户文件 `aaa.jsonl`。
 
 ## 3. 不可破坏的架构边界
 
@@ -266,6 +267,20 @@ required 边界：最终 `required` 没有通过。Linux `coding` 在最终 run 
 
 证据边界：Windows runner 已证明 named pipe Session lifecycle、Windows bundle、terminal host 和 installer 自动链；仍不是 Windows 实机/ConPTY 证据。ACL/owner、完整交互 `/quit`、中文宽字符、resize、Ctrl+C/窗口关闭、Host/child crash、pipe disconnect、安装路径带空格或非 ASCII 仍待实机验证。
 
+### 4.8 OAuth 纯等待阶段取消已接通
+
+本轮已完成 OAuth 等待阶段的真实取消合同，未修改 GUI Protocol schema、Session JSONL 或 Provider API：
+
+- Host 的 `login_model_provider` 使用真实 journal operation ID，进入 `running` 后通过 `operationAbortControllers` 绑定独立 `AbortController`，并以 `provider:<id>` 锁住同一 Provider 的并发登录。
+- `RuntimeAdapter.loginModelProvider()` 将 signal 传入已有 Core `runtime.login()`；Core/ModelsStore 原有 abort 和凭据 mutation 保护负责保证取消后不保存凭据、不刷新模型候选状态。
+- `abort_operation` 对登录 operation 按 `clientInstanceId` 校验，不要求把 `provider:<id>` 伪装成 Session lease；session operation 的原 lease 校验保持不变。
+- Rust 按当前 client 的 `operation_updated` 接收 provider operation，即使 operation 的 `sessionPath` 不是当前 Session；Esc 仍只发送已有 `abort_operation`，收到 Host 的 `aborted` 后才显示“登录已取消”。
+- UI request 使用真实 operation ID；Rust 以 operation 类型识别认证通知，保留 OAuth 通知与输入 Overlay 共存的行为。
+- Host connection detach 和 process dispose 都会释放认证 operation 的 UI request 与 AbortController；未完成 operation 进入 `aborted`，不会进入普通失败重试路径。
+- 新增 Host 纯 OAuth 等待、abort、client disconnect 测试：journaled-write `57/57`；Rust TUI all-targets `152/152`，其中覆盖 provider operation 事件、通知 Overlay、Esc abort 和终态。
+
+本轮验证：`cargo fmt --check`、`cargo clippy -p lystar-tui --all-targets -- -D warnings`、`NODE_TLS_REJECT_UNAUTHORIZED=1 npm run check`、`npm run build:offline` 和 `git diff --check` 通过。`packages/gui-host/test/rust-tui-e2e.test.ts` 的定向复跑两次均在 Settings 响应刷新显示“开启”前超时，尚未进入登录流程；该 E2E 缺口需作为独立时序/环境问题继续定位，不能写成 OAuth 失败或全量 E2E 通过。
+
 ## 5. 下一步执行顺序
 
 不要先切默认前端。按下面顺序完成，每一阶段单独形成提交和验证记录。
@@ -398,15 +413,16 @@ Linux package smoke 已完成，不能由该结果推断 macOS/Windows 可运行
 
 #### OAuth 等待阶段取消
 
-当前交互式 API key/OAuth prompt 可以取消，但进入纯 OAuth 等待后，客户端没有可用的 operation ID 取消合同。
+纯 OAuth 等待阶段取消合同已完成；现有交互式 API key/OAuth prompt 和纯等待共用同一 operation 生命周期。
 
 要求：
 
-- [ ] 先定义 Host/Core 可中止的真实 operation 生命周期。
-- [ ] Esc 只能在 Host 确认取消后显示已取消。
-- [ ] 取消后不保存凭据、不提交模型目录候选状态。
-- [ ] 连接断开和进程退出释放等待中的 UI 与 AbortController。
-- [ ] 不用本地关闭 Overlay 冒充 OAuth 已取消。
+- [x] 定义 Host/Core 可中止的真实 operation 生命周期。
+- [x] Esc 只能在 Host 确认取消后显示已取消。
+- [x] 取消后不保存凭据、不提交模型目录候选状态。
+- [x] 连接断开和进程退出释放等待中的 UI 与 AbortController。
+- [x] 不用本地关闭 Overlay 冒充 OAuth 已取消。
+- [ ] 使用真实外部 Provider 完成 OAuth 浏览器/device-code 取消验证；当前只有 Core signal 合同、Host fake wait 和 Rust/Host 自动测试证据。
 
 #### Extension 组件能力
 
@@ -565,13 +581,13 @@ crates/lystar-protocol/src/generated.rs
 
 ## 9. 下个会话的第一轮建议
 
-第一轮先核对最终 CI 证据和工作区状态；不要重复触发已经成功的 Windows job，也不要同时处理 OAuth、Extension 组件或默认前端：
+第一轮先核对最终 CI 证据和工作区状态；不要重复触发已经成功的 Windows job，也不要同时处理 Extension 组件、默认前端或真实 Provider：
 
 1. 运行 `git status --short --branch` 和 `git log -8 --oneline --decorate`，确认历史包含功能代码基线 `00f58e7e7` 和其后的交接文档提交，工作区只保留用户文件 `aaa.jsonl`。
-2. 复查最终 run `32378843602`：Windows job 已成功，artifact 中 Rust IPC `1/1`、0 skip；总 workflow/required 失败来自 Linux `coding` 与 `core`，不要误判为 Windows 回归。
+2. 复查最终 run `32378843602`：Windows job 已成功，artifact 中 Rust IPC `1/1`、0 skip；总 workflow/required 失败来自 Linux `coding` 与 `core`，不要误判为 Windows 回归。OAuth 取消代码和定向测试已完成，不要重复实现；先处理本轮 Settings 刷新 E2E 超时。
 3. 若继续收 required，拆成独立 CI 稳定性任务：先复现 lessons-store 多进程 `proper-lockfile ELOCKED`；再定位 GUI Host trusted server message/620-record transcript 在 Node 22.19 runner 上的 decoder 失败。不要继续靠 worker 数、放宽断言或增大 timeout。
 4. Windows 主线下一项应转到实机：覆盖 startup input、完整 TUI `/quit`、child/Host crash、pipe disconnect、Ctrl+C、窗口关闭和 writer/lease 清理。
 5. 使用 ConPTY 覆盖 `80x24`、`120x36`、`80x8 -> 120x36`、中文宽字符、多行 Composer、fullscreen/regular 和终端恢复；再验证空格与非 ASCII 安装路径。
-6. Windows 实机证据收口后，再做 `lc update` 的 staging、`current/previous`、rollback 和新终端独立启动；之后才进入 macOS 实机、OAuth 或剩余 parity。
+6. Windows 实机证据收口后，再做 `lc update` 的 staging、`current/previous`、rollback 和新终端独立启动；之后验证真实外部 Provider OAuth 取消，再进入 Extension 组件剩余 parity 和 macOS 实机。
 
 默认前端继续保持 TypeScript。没有 Windows 实机/ConPTY、macOS 实机和公开升级链证据前，不调整默认选择。

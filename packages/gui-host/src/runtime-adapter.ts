@@ -2021,6 +2021,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		provider: string,
 		authType: AuthType,
 		onUiRequest: UiRequestHandler,
+		signal?: AbortSignal,
 	): Promise<ModelSummary[]> {
 		const runtime = await this.getModelRuntime();
 		if (!authMethods(runtime, provider).includes(authType)) {
@@ -2032,6 +2033,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		await runtime.login(provider, authType, {
 			prompt: (prompt) => requestAuthPrompt(onUiRequest, prompt),
 			notify: (event) => notifyAuthEvent(onUiRequest, event),
+			signal,
 		});
 		return this.listModels();
 	}

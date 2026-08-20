@@ -561,6 +561,130 @@ fn auth_commits_models_only_after_provider_verification_and_logout_accepts_envir
 }
 
 #[test]
+fn oauth_wait_operation_is_owned_by_the_client_and_can_be_cancelled_without_a_session_path() {
+    let mut app = active_app();
+    app.write_pending = true;
+    let mut sequence = 0;
+    let mut flow = None;
+    let (mut pipe, path) = test_pipe_with_path();
+    apply_message(
+        &mut app,
+        server_message(serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "operation_updated",
+                "operation": {
+                    "operationId": "oauth-operation",
+                    "clientInstanceId": "client",
+                    "clientRequestId": "auth:oauth",
+                    "sessionPath": "provider:openai",
+                    "type": "login_model_provider",
+                    "status": "running",
+                    "acceptedAt": 1,
+                    "updatedAt": 2,
+                    "payloadHash": "hash"
+                }
+            }
+        })),
+        &mut pipe,
+        &mut sequence,
+        &mut flow,
+    )
+    .unwrap();
+    assert_eq!(
+        app.operation
+            .as_ref()
+            .map(|operation| operation.operation_id.as_str()),
+        Some("oauth-operation")
+    );
+    assert!(app.is_active_operation());
+
+    apply_message(
+        &mut app,
+        server_message(serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "ui_request",
+                "id": "oauth-input",
+                "operationId": "oauth-operation",
+                "kind": "secret",
+                "title": "模型认证",
+                "payload": { "message": "输入认证信息" }
+            }
+        })),
+        &mut pipe,
+        &mut sequence,
+        &mut flow,
+    )
+    .unwrap();
+    apply_message(
+        &mut app,
+        server_message(serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "ui_request",
+                "id": "oauth-progress",
+                "operationId": "oauth-operation",
+                "kind": "notify",
+                "title": "模型认证",
+                "payload": { "method": "auth_progress", "message": "正在等待认证" }
+            }
+        })),
+        &mut pipe,
+        &mut sequence,
+        &mut flow,
+    )
+    .unwrap();
+    assert!(matches!(app.overlay(), Some(OverlayState::TextEditor(editor)) if editor.secret));
+
+    interrupt_active_operation(&mut app, &mut pipe, &mut sequence).unwrap();
+    assert_eq!(
+        app.operation
+            .as_ref()
+            .map(|operation| operation.status.as_str()),
+        Some("aborting")
+    );
+    drop(pipe);
+    let frames = FrameDecoder::default()
+        .push(&std::fs::read(&path).unwrap())
+        .unwrap();
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(frames.len(), 1);
+    let abort = lystar_protocol::decode_client_message(&frames[0]).unwrap();
+    let abort = serde_json::to_value(abort.value()).unwrap();
+    assert_eq!(abort["request"]["command"], "abort_operation");
+    assert_eq!(abort["request"]["operationId"], "oauth-operation");
+
+    let mut final_pipe = test_pipe();
+    apply_message(
+        &mut app,
+        server_message(serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "operation_updated",
+                "operation": {
+                    "operationId": "oauth-operation",
+                    "clientInstanceId": "client",
+                    "clientRequestId": "auth:oauth",
+                    "sessionPath": "provider:openai",
+                    "type": "login_model_provider",
+                    "status": "aborted",
+                    "acceptedAt": 1,
+                    "updatedAt": 3,
+                    "payloadHash": "hash"
+                }
+            }
+        })),
+        &mut final_pipe,
+        &mut sequence,
+        &mut flow,
+    )
+    .unwrap();
+    assert!(!app.write_pending);
+    assert_eq!(app.toast.as_deref(), Some("登录已取消"));
+}
+
+#[test]
 fn auth_failure_invalid_verification_and_concurrent_states_preserve_previous_state_and_draft() {
     let mut app = active_app();
     app.editor.insert("保留的草稿");

@@ -291,8 +291,13 @@ function setup() {
 			_provider: string,
 			_auth: string,
 			ui: (request: unknown) => Promise<{ cancelled?: boolean }>,
+			signal?: AbortSignal,
 		) => {
 			counts.login_model_provider = (counts.login_model_provider ?? 0) + 1;
+			if (counts.block_login) {
+				await new Promise<void>((resolve) => signal?.addEventListener("abort", () => resolve(), { once: true }));
+				signal?.throwIfAborted();
+			}
 			const response = await ui({ id: "login-ui", kind: "secret", title: "认证", payload: {} });
 			if (response.cancelled) throw Object.assign(new Error("认证已取消"), { code: "auth_cancelled" });
 			return [];
@@ -1431,6 +1436,85 @@ describe("GuiHostService journaled writes", () => {
 			ok: false,
 			error: { code: "operation_failed" },
 		});
+	});
+
+	it("aborts a pure OAuth wait through the journal without completing the login", async () => {
+		const setupValue = setup();
+		setupValue.counts.block_login = 1;
+		const active = await connection(setupValue.service);
+		const pending = active.handle({
+			type: "request",
+			id: "oauth-login",
+			request: {
+				command: "login_model_provider",
+				provider: "provider",
+				authType: "oauth",
+				clientInstanceId: "client",
+				clientRequestId: "oauth-login",
+			},
+		} as ClientMessage);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const running = active.messages.find(
+			(message) =>
+				message.type === "event" &&
+				message.event.type === "operation_updated" &&
+				message.event.operation.type === "login_model_provider" &&
+				message.event.operation.status === "running",
+		) as Extract<ServerMessage, { type: "event" }> | undefined;
+		if (!running || running.event.type !== "operation_updated") throw new Error("Missing running OAuth operation");
+
+		await active.handle({
+			type: "request",
+			id: "oauth-abort",
+			request: {
+				command: "abort_operation",
+				operationId: running.event.operation.operationId,
+				leaseId: "",
+			},
+		} as ClientMessage);
+		await pending;
+
+		expect(
+			active.messages.find((message) => message.type === "response" && message.id === "oauth-abort"),
+		).toMatchObject({ ok: true, result: { type: "login_model_provider", status: "aborted" } });
+		expect(
+			active.messages.find((message) => message.type === "response" && message.id === "oauth-login"),
+		).toMatchObject({ ok: false, error: { code: "operation_aborted" } });
+		expect(setupValue.counts.login_model_provider).toBe(1);
+		expect(setupValue.counts.login_completed).toBeUndefined();
+	});
+
+	it("aborts a pure OAuth wait when its owning client disconnects", async () => {
+		const setupValue = setup();
+		setupValue.counts.block_login = 1;
+		const active = await connection(setupValue.service);
+		const pending = active.handle({
+			type: "request",
+			id: "oauth-disconnect",
+			request: {
+				command: "login_model_provider",
+				provider: "provider",
+				authType: "oauth",
+				clientInstanceId: "client",
+				clientRequestId: "oauth-disconnect",
+			},
+		} as ClientMessage);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(
+			active.messages.some(
+				(message) =>
+					message.type === "event" &&
+					message.event.type === "operation_updated" &&
+					message.event.operation.type === "login_model_provider" &&
+					message.event.operation.status === "running",
+			),
+		).toBe(true);
+
+		await active.close();
+		await pending;
+		expect(
+			active.messages.find((message) => message.type === "response" && message.id === "oauth-disconnect"),
+		).toMatchObject({ ok: false, error: { code: "operation_aborted" } });
 	});
 
 	it("rejects extension commands from another client or an old lease and journals a dropped response once", async () => {
