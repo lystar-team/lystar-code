@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,6 +28,21 @@ test("CI summaries also expose documented metrics as JSON", () => {
 	assert.equal(metrics.metrics.ci_setup_seconds_total, 3);
 	assert.equal(metrics.metrics.test_skipped_total, 1);
 	assert.equal(metrics.skippedByReason.credential, 1);
+});
+
+test("CI summary reads planner JSON from an environment variable", () => {
+	const output = execFileSync(
+		process.execPath,
+		["scripts/ci-summary.mjs", "--suite", "platform", "--no-test-report", "--plan-json-env", "CI_TEST_PLAN"],
+		{
+			encoding: "utf8",
+			env: {
+				...process.env,
+				CI_TEST_PLAN: JSON.stringify({ mode: "observe", wouldRun: { platform: true }, reasons: { platform: [] } }),
+			},
+		},
+	);
+	assert.match(output, /planner_mode: observe/);
 });
 
 test("positive timing summaries reject placeholder machine metrics", () => {
