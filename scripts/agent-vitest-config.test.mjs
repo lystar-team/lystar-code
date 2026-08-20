@@ -62,8 +62,9 @@ test("Windows CI retains the Agent Core and Rust TUI IPC platform reports", () =
 test("required CI bounds GUI Host concurrency and leaves PTY E2E outside the deterministic report", () => {
 	assert.equal(
 		guiHostPackage.scripts["test:required"],
-		"vitest --run --exclude test/rust-tui-e2e.test.ts --maxWorkers=2",
+		"vitest --run --exclude test/rust-tui-e2e.test.ts --maxWorkers=1",
 	);
+	assert.match(workflow, /pi-coding-agent test -- --maxWorkers=2 --reporter=json/);
 	assert.match(
 		workflow,
 		/npm --workspace @lystar\/code-gui-host run test:required -- --reporter=json --outputFile="\$RUNNER_TEMP\/ci-gui-host\.json"/,
