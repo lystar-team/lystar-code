@@ -201,6 +201,14 @@ jobs:
           npm ci $NPM_CI_ARGS
           echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
 
+      - name: Build JavaScript packages
+        id: build
+        shell: bash
+        run: |
+          started=$SECONDS
+          npm run build:offline
+          echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
+
       - name: Test core deterministic suites
         id: tests
         shell: bash
@@ -232,6 +240,7 @@ jobs:
           --result "$RUNNER_TEMP/ci-gui-protocol.json"
           --result "$RUNNER_TEMP/ci-gui-host.json" --result "$RUNNER_TEMP/ci-gui.json"
           --timing setup=${{ steps.install.outputs.seconds || 0 }}
+          --timing build=${{ steps.build.outputs.seconds || 0 }}
           --timing test=${{ steps.tests.outputs.seconds || 0 }}
           --timing wall=$(( $(date +%s) - CI_JOB_STARTED ))
           --timing cache=$(( ${{ steps.npm-cache-end.outputs.seconds || 0 }} - ${{ steps.npm-cache-start.outputs.seconds || 0 }} ))
@@ -303,6 +312,14 @@ jobs:
           npm ci $NPM_CI_ARGS
           echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
 
+      - name: Build JavaScript packages
+        id: build
+        shell: bash
+        run: |
+          started=$SECONDS
+          npm run build:offline
+          echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
+
       - name: Test Coding Agent deterministic suite
         id: tests
         shell: bash
@@ -319,6 +336,7 @@ jobs:
           node scripts/ci-summary.mjs --suite coding --required --plan-json "$PLAN_JSON"
           --result "$RUNNER_TEMP/ci-coding-agent.json"
           --timing setup=${{ steps.install.outputs.seconds || 0 }}
+          --timing build=${{ steps.build.outputs.seconds || 0 }}
           --timing test=${{ steps.tests.outputs.seconds || 0 }}
           --timing wall=$(( $(date +%s) - CI_JOB_STARTED ))
           --timing cache=$(( ${{ steps.npm-cache-end.outputs.seconds || 0 }} - ${{ steps.npm-cache-start.outputs.seconds || 0 }} ))
@@ -412,25 +430,29 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund
           "seconds=$([math]::Round(((Get-Date) - $started).TotalSeconds))" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
-      - name: Test Windows platform suites
-        id: platform-tests
-        shell: powershell
-        run: |
-          $started = Get-Date
-          npm --workspace @earendil-works/pi-coding-agent run test:platform -- --reporter=json --outputFile="$env:RUNNER_TEMP\ci-windows-coding-platform.json"
-          $env:PI_TEST_SUITE = "platform"
-          npm --workspace @earendil-works/pi-agent-core test -- --reporter=json --outputFile="$env:RUNNER_TEMP\ci-windows-agent-platform.json"
-          Remove-Item Env:PI_TEST_SUITE -ErrorAction SilentlyContinue
-          cargo build -p lystar-tui
-          npx vitest --run packages/gui-host/test/ipc-process.test.ts -t "drives a Rust TUI session through the production IPC Host" --reporter=json --outputFile="$env:RUNNER_TEMP\ci-windows-rust-tui-ipc.json"
-          "seconds=$([math]::Round(((Get-Date) - $started).TotalSeconds))" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
       - name: Build offline
         id: build
         shell: powershell
         run: |
           $started = Get-Date
           npm run build:offline
+          "seconds=$([math]::Round(((Get-Date) - $started).TotalSeconds))" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Test Windows platform suites
+        id: platform-tests
+        shell: powershell
+        run: |
+          $started = Get-Date
+          npm --workspace @earendil-works/pi-coding-agent run test:platform -- --reporter=json --outputFile="$env:RUNNER_TEMP\ci-windows-coding-platform.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:PI_TEST_SUITE = "platform"
+          npm --workspace @earendil-works/pi-agent-core test -- --reporter=json --outputFile="$env:RUNNER_TEMP\ci-windows-agent-platform.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item Env:PI_TEST_SUITE -ErrorAction SilentlyContinue
+          cargo build -p lystar-tui
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npx vitest --run packages/gui-host/test/ipc-process.test.ts -t "drives a Rust TUI session through the production IPC Host" --reporter=json --outputFile="$env:RUNNER_TEMP\ci-windows-rust-tui-ipc.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "seconds=$([math]::Round(((Get-Date) - $started).TotalSeconds))" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Build Windows standalone release
@@ -476,7 +498,7 @@ jobs:
           PLAN_JSON: ${{ needs.plan.outputs.plan }}
         shell: powershell
         run: >-
-          node scripts/ci-summary.mjs --suite platform --required --plan-json "$env:PLAN_JSON"
+          node scripts/ci-summary.mjs --suite platform --required --plan-json-env PLAN_JSON
           --result "$env:RUNNER_TEMP\ci-windows-coding-platform.json"
           --result "$env:RUNNER_TEMP\ci-windows-agent-platform.json"
           --result "$env:RUNNER_TEMP\ci-windows-rust-tui-ipc.json"

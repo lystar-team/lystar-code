@@ -135,6 +135,11 @@ function parseArguments(argv) {
 			options.expectReports = false;
 			continue;
 		} else if (argument === "--plan-json") options.plan = JSON.parse(value);
+		else if (argument === "--plan-json-env") {
+			const planJson = process.env[value];
+			if (!planJson) throw new Error(`Missing plan JSON environment variable: ${value}`);
+			options.plan = JSON.parse(planJson);
+		}
 		else if (argument === "--timing") {
 			const [name, timing] = value.split("=", 2);
 			options.timings[name] = timing;
