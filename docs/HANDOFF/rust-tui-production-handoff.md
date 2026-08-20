@@ -2,8 +2,8 @@
 
 最后更新：2026-08-20
 接手分支：`feat/rust-tui`
-Git 基线：`533380eab feat(release): 打包 Rust TUI sidecar`
-当前工作：Windows named pipe transport 与 required CI handshake 闸门已完成，当前提交见 `git log -1`
+Git 基线：`1cce8bc24 feat(tui): 接通 Windows named pipe`
+当前工作：Windows required CI 已从 hello-only handshake 扩展为 Session 生命周期 smoke，当前提交见 `git log -1`
 产品版本：`0.84.2-lystar.1`
 Pi 基线：`0.84.2`
 
@@ -34,8 +34,8 @@ node -p 'require("./packages/coding-agent/package.json").piConfig'
 
 本次交接时的实际状态：
 
-- 当前分支：`feat/rust-tui`，本轮起点为 `533380eab feat(release): 打包 Rust TUI sidecar`。
-- 本轮 Windows named pipe transport 与 required CI handshake 闸门已完成并按独立任务提交；改动涉及 Host endpoint、Rust transport、Windows 编译面、跨平台 IPC 测试、CI workflow、验证文档和本 HANDOFF。
+- 当前分支：`feat/rust-tui`，本轮起点为 `1cce8bc24 feat(tui): 接通 Windows named pipe`。
+- 本轮把 Windows required CI 从 hello-only handshake 扩展为 `create -> release -> acquire -> prompt -> completed -> release` 的 production IPC smoke；改动涉及 Rust 诊断入口、Host fixture、跨平台 IPC 测试、CI workflow、验证文档和本 HANDOFF。
 - `aaa.jsonl` 是用户文件，不读取、不修改、不暂存、不提交。
 - `npm run build:offline` 新增的 16 个 `packages/coding-agent/src` 旁 `.js`、`.d.ts` 和 `.map` 已按构建前后差集删除；本轮临时 `dist/lystar-tui`、`dist/lc-native-test` 和仓库内 package artifact 也已清理。
 - 当前 shell 没有全局 Bun；`npx --yes -p bun@1.3.9 bun --version` 提供固定 Bun `1.3.9`。
@@ -43,7 +43,7 @@ node -p 'require("./packages/coding-agent/package.json").piConfig'
 - Linux x64 候选包保留在 `/tmp/lystar-rust-sidecar-release/`。归档 SHA-256 为 `478bbb2ce7af2818d9f1dbbc9c5b9b5af4947e09cd98fde0449cbd0ad948a35f`；`lc` SHA-256 为 `431812bb2d81b30515182f8736eca2ea63d0d1d2733158b5277e3938e4ce95b2`；`lystar-tui` SHA-256 为 `054513d5da7ce28174854973773900d7fa36adc96e50bccc5d74d07ff5df4ebb`。
 - Release workflow 已配置 Darwin ARM64/x64、Linux ARM64/x64 原生 runner matrix，Windows 构建也接入 Rust sidecar；这些非 Linux x64 平台尚未实际跑 workflow 或实机，不能写成已通过。
 - Windows production composition 已生成唯一 `\\.\pipe\lystar-rust-tui-<pid>-<uuid>` endpoint；Rust 使用标准库双向打开 named pipe，并复用现有 GUI Protocol framing、hello 和 Runtime 主循环。
-- Windows MSVC target 的 Rust TUI lib/bin Check 与 Clippy 已通过；required Windows CI 已加入真实 `serveIpcHost -> named pipe -> Rust --pipe-handshake` 测试，但本轮未推送，Windows runner 尚未产生实际结果。
+- Windows MSVC target 的 Rust TUI lib/bin Check 与 Clippy 已通过；required Windows CI 已加入真实 `serveIpcHost -> named pipe -> Rust --pipe-session-smoke` 测试，但当前分支和 `1cce8bc24` 都不在远端，本轮未获推送授权，Windows runner 尚未产生实际结果。
 - 当前 Node.js：`v22.21.1`。
 - 当前 Rust：`rustc 1.97.1`，Cargo `1.97.1`。
 - 当前 tmux：`3.5a`。
@@ -243,17 +243,17 @@ Linux x64 真实证据：
 - `runEmbeddedRustTui()` 不再在 `win32` 直接 fallback；Windows 使用唯一 named pipe 名称，Unix 继续使用私有临时目录和 socket。
 - Rust `ProtocolPipe` 在 Windows 使用标准库双向打开 named pipe，继续复用同一 frame decoder、hello、request 和 operation contract；Unix socket 与 fd3/fd4 兼容路径保持不变。
 - 移除只因旧 Unix-only 启动门闩存在的业务 helper `#[cfg(unix)]`，使完整 Composer、Workspace、Extension、Session flow 和 exit output 进入 Windows 编译面；真正平台相关条件仅保留在 transport、Unix socket 测试和 fd3/fd4 guard。
-- 跨平台 production IPC handshake 测试会在 Windows 构建真实 `lystar-tui.exe`，通过 Node `serveIpcHost()` named pipe 完成 framing 和 hello；Windows required CI 保存独立 JSON report。
+- 跨平台 production IPC smoke 会在 Windows 构建真实 `lystar-tui.exe`，通过 Node `serveIpcHost()` 和 named pipe 完成 framing、hello、Session create/release/acquire、journaled prompt、operation completed 与最终 release；Host fixture 断言 prompt exactly-once，Windows required CI 保存独立 JSON report。
 
 本地已验证：
 
 - `cargo check -p lystar-tui --target x86_64-pc-windows-msvc --lib --bin lystar-tui`：通过。
 - Windows target Clippy `-D warnings`：通过。
-- Linux production IPC handshake：`1/1`；GUI Host/Rust 聚焦 6 files：`65/65`。
+- Linux production IPC 测试文件：`2/2`，其中 Session 生命周期 smoke `1/1`。
 - Rust Protocol：`11/11`；Rust TUI all-targets：`154/154`；Linux Clippy `-D warnings`：通过。
-- `npm run test:scripts`：`49/49`；根级 `NODE_TLS_REJECT_UNAUTHORIZED=1 npm run check`、`npm run build:offline` 和 `git diff --check`：通过。
+- `npm run test:scripts`：`49/49`；根级 `NODE_TLS_REJECT_UNAUTHORIZED=1 npm run check`、`npm run build:offline` 和 `git diff --check`：通过；构建生成的 16 个源码旁文件已按差集删除。
 
-证据边界：本轮没有 Windows runner 或实机结果。named pipe ACL/owner、acquire/prompt/operation、ConPTY 输入与 resize、中文宽字符、Ctrl+C/窗口关闭、Host/child crash、安装路径带空格或非 ASCII 仍必须在 Windows 实机验证。
+证据边界：本轮没有 Windows runner 或实机结果。Linux smoke 证明共享 Host/Protocol/operation 路径，Windows MSVC 只证明可编译；named pipe 上的 acquire/prompt/operation/release、ACL/owner、ConPTY 输入与 resize、中文宽字符、Ctrl+C/窗口关闭、Host/child crash、安装路径带空格或非 ASCII 仍必须由 Windows runner 或实机验证。
 
 ## 5. 下一步执行顺序
 
@@ -372,7 +372,7 @@ Linux package smoke 已完成，不能由该结果推断 macOS/Windows 可运行
 
 - [x] Host composition 生成唯一 Windows named pipe endpoint，不再在 `win32` 直接 fallback。
 - [x] Rust sidecar 使用同一 GUI Protocol framing 连接 named pipe，完整 TUI 主循环进入 Windows MSVC 编译面。
-- [x] Windows required CI 加入真实 Rust `--pipe-handshake` 测试和独立 JSON report。
+- [x] Windows required CI 加入真实 Rust `--pipe-session-smoke` 测试和独立 JSON report，覆盖 Session create/release/acquire、prompt、operation completed、最终 release 和 prompt exactly-once。
 - [ ] 在 `windows-2025` runner 实际执行 CI，确认 named pipe 创建、Rust 连接和 hello。
 - [ ] Windows 实机验证权限和 owner 边界。
 - [ ] Rust 连接后的 acquire、prompt、operation 和 `/quit`。
@@ -380,7 +380,7 @@ Linux package smoke 已完成，不能由该结果推断 macOS/Windows 可运行
 - [ ] child crash、Host crash、Ctrl+C、窗口关闭和 pipe disconnect。
 - [ ] 安装目录带空格与非 ASCII 路径。
 
-不要新增第二套协议或 TCP fallback。当前本地 MSVC target Check/Clippy 只能证明可编译，Linux production IPC handshake 只能证明共享 framing；两者都不能替代 Windows 运行证据。
+不要新增第二套协议或 TCP fallback。当前本地 MSVC target Check/Clippy 只能证明可编译，Linux production IPC smoke 只能证明共享 Host/Protocol/operation 路径；两者都不能替代 Windows 运行证据。
 
 ### P1. 补齐剩余 parity 缺口
 
@@ -554,10 +554,10 @@ crates/lystar-protocol/src/generated.rs
 
 第一轮先核对本轮 Windows transport 提交和工作区状态，再让 Windows required CI 产生真实证据；不同时处理 OAuth、Extension 组件或默认前端：
 
-1. 运行 `git status --short --branch` 和 `git log -3 --oneline --decorate`，确认 Windows named pipe 是独立提交，工作区只保留用户文件 `aaa.jsonl`。
-2. 复查 `packages/gui-host/src/rust-tui-frontend.ts`、`crates/lystar-tui/src/terminal/transport.rs`、`packages/gui-host/test/ipc-process.test.ts` 和 `.github/workflows/ci.yml`；确认 Windows pipe 唯一、Rust 使用同一 framing，CI 保存 `ci-windows-rust-tui-ipc.json`。
-3. 推送或运行 GitHub workflow 需要 Yean 明确授权。获得授权后先运行 required Windows CI，不打 tag；确认真实 `windows-2025` runner 的 IPC handshake、Windows standalone build、terminal host 和 installer 全部通过。
-4. 在 Windows 实机继续扩展测试到 acquire、startup input、prompt、operation、`/quit`、child/Host crash、pipe disconnect、Ctrl+C、窗口关闭和 writer/lease 清理。
+1. 运行 `git status --short --branch` 和 `git log -3 --oneline --decorate`，确认 Windows named pipe 与本轮 Session lifecycle smoke 各自是独立提交，工作区只保留用户文件 `aaa.jsonl`。
+2. 复查 `crates/lystar-tui/src/terminal/transport.rs`、`packages/gui-host/test/fixtures/ipc-host-worker.mjs`、`packages/gui-host/test/ipc-process.test.ts` 和 `.github/workflows/ci.yml`；确认 CI 使用 `--pipe-session-smoke` 并保存 `ci-windows-rust-tui-ipc.json`。
+3. 推送或运行 GitHub workflow 需要 Yean 明确授权。获得授权后先推送 `feat/rust-tui` 并运行 required Windows CI，不打 tag；确认真实 `windows-2025` runner 的 Session lifecycle smoke、Windows standalone build、terminal host 和 installer 全部通过。
+4. required CI 通过后，在 Windows 实机继续覆盖 startup input、完整 TUI `/quit`、child/Host crash、pipe disconnect、Ctrl+C、窗口关闭和 writer/lease 清理。
 5. 使用 ConPTY 覆盖 `80x24`、`120x36`、`80x8 -> 120x36`、中文宽字符、多行 Composer、fullscreen/regular 和终端恢复；再验证空格与非 ASCII 安装路径。
 6. Windows transport 运行证据收口后，再做 `lc update` 的 staging、`current/previous`、rollback 和新终端独立启动；之后才进入 macOS 实机、OAuth 或剩余 parity。
 

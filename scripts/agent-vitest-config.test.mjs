@@ -44,7 +44,7 @@ test("Windows CI retains the Agent Core and Rust TUI IPC platform reports", () =
 	);
 	assert.match(
 		workflow,
-		/npx vitest --run packages\/gui-host\/test\/ipc-process\.test\.ts -t "accepts the Rust TUI handshake through the production IPC Host" --reporter=json --outputFile="\$env:RUNNER_TEMP\\ci-windows-rust-tui-ipc\.json"/,
+		/cargo build -p lystar-tui\s+npx vitest --run packages\/gui-host\/test\/ipc-process\.test\.ts -t "drives a Rust TUI session through the production IPC Host" --reporter=json --outputFile="\$env:RUNNER_TEMP\\ci-windows-rust-tui-ipc\.json"/,
 	);
 	assert.match(workflow, /--result "\$env:RUNNER_TEMP\\ci-windows-rust-tui-ipc\.json"/);
 	assert.doesNotMatch(workflow, /pi-agent-core test -- test\/harness\/nodejs-env\.windows\.test\.ts/);

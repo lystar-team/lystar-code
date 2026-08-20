@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { serveIpcHost } from "../../src/ipc.ts";
 import { GuiHostService } from "../../src/service.ts";
@@ -37,7 +37,8 @@ class Runtime {
 		};
 	}
 
-	async prompt() {
+	async prompt(text) {
+		appendFileSync(join(agentDir, "prompt-calls.txt"), `${text}\n`);
 		await new Promise((resolve) => setTimeout(resolve, 400));
 	}
 	async runBash() {

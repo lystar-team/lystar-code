@@ -64,6 +64,12 @@ fn main() {
             Ok(())
         }
         Some("--pipe-handshake") => terminal::handshake_inherited_pipes(),
+        Some("--pipe-session-smoke") => {
+            let cwd = args.get(1).ok_or_else(|| {
+                terminal::TuiError::InvalidResponse("缺少 IPC smoke 项目目录".to_owned())
+            })?;
+            terminal::smoke_production_ipc(cwd)
+        }
         Some("--shell") => terminal::run_shell(false, false),
         Some("--shell-pipe") => terminal::run_shell(true, false),
         Some("--shell-panic") => terminal::run_shell(false, true),

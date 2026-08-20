@@ -122,3 +122,193 @@ pub fn handshake_inherited_pipes() -> Result<(), TuiError> {
     let _pipe = ProtocolPipe::connect("lystar-rust-handshake")?;
     Ok(())
 }
+
+pub fn smoke_production_ipc(cwd: &str) -> Result<(), TuiError> {
+    const CLIENT_ID: &str = "lystar-rust-ipc-smoke";
+    const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
+
+    let mut pipe = ProtocolPipe::connect(CLIENT_ID)?;
+    pipe.request(&encode_create_session_request(
+        "smoke-create",
+        cwd,
+        CLIENT_ID,
+        "smoke:create",
+    )?)?;
+    let (session_path, created_lease) = expect_session_lease(
+        wait_for_response(&pipe, "smoke-create", RESPONSE_TIMEOUT)?,
+        "smoke-create",
+    )?;
+
+    pipe.request(&encode_release_session_request(
+        "smoke-release-created",
+        &session_path,
+        &created_lease,
+    )?)?;
+    expect_other_response(
+        wait_for_response(&pipe, "smoke-release-created", RESPONSE_TIMEOUT)?,
+        "smoke-release-created",
+    )?;
+
+    pipe.request(&encode_acquire_session_request(
+        "smoke-acquire",
+        &session_path,
+        CLIENT_ID,
+    )?)?;
+    let (acquired_path, lease_id) = expect_session_lease(
+        wait_for_response(&pipe, "smoke-acquire", RESPONSE_TIMEOUT)?,
+        "smoke-acquire",
+    )?;
+    if acquired_path != session_path {
+        return Err(TuiError::InvalidResponse(
+            "IPC smoke acquire 返回了不同的 Session".to_owned(),
+        ));
+    }
+
+    pipe.request(&encode_queue_request(
+        "smoke-prompt",
+        "prompt",
+        &session_path,
+        &lease_id,
+        CLIENT_ID,
+        "smoke:prompt",
+        Some("production IPC smoke"),
+        None,
+    )?)?;
+    let operation = expect_operation(
+        wait_for_response(&pipe, "smoke-prompt", RESPONSE_TIMEOUT)?,
+        "smoke-prompt",
+    )?;
+    wait_for_completed_operation(&pipe, &operation.operation_id, RESPONSE_TIMEOUT)?;
+
+    pipe.request(&encode_release_session_request(
+        "smoke-release",
+        &session_path,
+        &lease_id,
+    )?)?;
+    expect_other_response(
+        wait_for_response(&pipe, "smoke-release", RESPONSE_TIMEOUT)?,
+        "smoke-release",
+    )
+}
+
+fn wait_for_response(
+    pipe: &ProtocolPipe,
+    expected_id: &str,
+    timeout: Duration,
+) -> Result<ReadOnlyResponse, TuiError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(TuiError::InvalidResponse(format!(
+                "等待 {expected_id} 响应超时"
+            )));
+        }
+        let message = match pipe.inbound.recv_timeout(remaining) {
+            Ok(Ok(message)) => message,
+            Ok(Err(error)) => return Err(error),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                return Err(TuiError::InvalidResponse(format!(
+                    "等待 {expected_id} 响应超时"
+                )));
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(TuiError::ChildEof),
+        };
+        let ReadOnlyMessage::Response(response) = message.read_only().map_err(TuiError::from)?
+        else {
+            continue;
+        };
+        let response_id = match &response {
+            ReadOnlyResponse::TranscriptPage { id, .. }
+            | ReadOnlyResponse::SearchResult { id, .. }
+            | ReadOnlyResponse::SessionLease { id, .. }
+            | ReadOnlyResponse::Operation { id, .. }
+            | ReadOnlyResponse::Error { id, .. }
+            | ReadOnlyResponse::Other { id } => id,
+        };
+        if response_id == expected_id {
+            return Ok(response);
+        }
+    }
+}
+
+fn expect_session_lease(
+    response: ReadOnlyResponse,
+    expected_id: &str,
+) -> Result<(String, String), TuiError> {
+    match response {
+        ReadOnlyResponse::SessionLease {
+            lease_id, snapshot, ..
+        } => Ok((snapshot.path, lease_id)),
+        ReadOnlyResponse::Error { message, .. } => Err(TuiError::InvalidResponse(message)),
+        _ => Err(TuiError::InvalidResponse(format!(
+            "{expected_id} 未返回 Session lease"
+        ))),
+    }
+}
+
+fn expect_operation(
+    response: ReadOnlyResponse,
+    expected_id: &str,
+) -> Result<lystar_protocol::OperationSnapshot, TuiError> {
+    match response {
+        ReadOnlyResponse::Operation { operation, .. } => Ok(operation),
+        ReadOnlyResponse::Error { message, .. } => Err(TuiError::InvalidResponse(message)),
+        _ => Err(TuiError::InvalidResponse(format!(
+            "{expected_id} 未返回 operation"
+        ))),
+    }
+}
+
+fn expect_other_response(response: ReadOnlyResponse, expected_id: &str) -> Result<(), TuiError> {
+    match response {
+        ReadOnlyResponse::Other { .. } => Ok(()),
+        ReadOnlyResponse::Error { message, .. } => Err(TuiError::InvalidResponse(message)),
+        _ => Err(TuiError::InvalidResponse(format!(
+            "{expected_id} 返回了意外结果"
+        ))),
+    }
+}
+
+fn wait_for_completed_operation(
+    pipe: &ProtocolPipe,
+    operation_id: &str,
+    timeout: Duration,
+) -> Result<(), TuiError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(TuiError::InvalidResponse(
+                "等待 IPC smoke operation 完成超时".to_owned(),
+            ));
+        }
+        let message = match pipe.inbound.recv_timeout(remaining) {
+            Ok(Ok(message)) => message,
+            Ok(Err(error)) => return Err(error),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                return Err(TuiError::InvalidResponse(
+                    "等待 IPC smoke operation 完成超时".to_owned(),
+                ));
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(TuiError::ChildEof),
+        };
+        match message.read_only().map_err(TuiError::from)? {
+            ReadOnlyMessage::Event(ReadOnlyEvent::OperationUpdated { operation })
+                if operation.operation_id == operation_id =>
+            {
+                match operation.status.as_str() {
+                    "completed" => return Ok(()),
+                    "failed" | "aborted" | "interrupted" => {
+                        return Err(TuiError::InvalidResponse(format!(
+                            "IPC smoke operation 终止于 {}",
+                            operation.status
+                        )));
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+}

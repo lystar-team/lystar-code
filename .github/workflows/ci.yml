@@ -421,7 +421,8 @@ jobs:
           $env:PI_TEST_SUITE = "platform"
           npm --workspace @earendil-works/pi-agent-core test -- --reporter=json --outputFile="$env:RUNNER_TEMP\ci-windows-agent-platform.json"
           Remove-Item Env:PI_TEST_SUITE -ErrorAction SilentlyContinue
-          npx vitest --run packages/gui-host/test/ipc-process.test.ts -t "accepts the Rust TUI handshake through the production IPC Host" --reporter=json --outputFile="$env:RUNNER_TEMP\ci-windows-rust-tui-ipc.json"
+          cargo build -p lystar-tui
+          npx vitest --run packages/gui-host/test/ipc-process.test.ts -t "drives a Rust TUI session through the production IPC Host" --reporter=json --outputFile="$env:RUNNER_TEMP\ci-windows-rust-tui-ipc.json"
           "seconds=$([math]::Round(((Get-Date) - $started).TotalSeconds))" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Build offline

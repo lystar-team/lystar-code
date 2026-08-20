@@ -89,7 +89,7 @@ mod workspace;
 pub use options::{ExitOutput, RunOptions, TerminalMode, TuiError};
 pub use runtime::{run, run_with_options};
 pub use shell::{run_shell, run_shell_with_mode};
-pub use transport::handshake_inherited_pipes;
+pub use transport::{handshake_inherited_pipes, smoke_production_ipc};
 
 use auth::*;
 use clone::*;

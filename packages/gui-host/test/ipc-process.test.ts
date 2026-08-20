@@ -1,5 +1,5 @@
 import { type ChildProcess, type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -153,7 +153,6 @@ function response(id: string) {
 
 function ensureRustTuiBinary(): string {
 	const binary = join(repositoryRoot, `target/debug/lystar-tui${process.platform === "win32" ? ".exe" : ""}`);
-	if (existsSync(binary)) return binary;
 	const result = spawnSync("cargo", ["build", "-p", "lystar-tui"], {
 		cwd: repositoryRoot,
 		encoding: "utf8",
@@ -163,7 +162,7 @@ function ensureRustTuiBinary(): string {
 }
 
 describe("GUI Host persistent IPC", () => {
-	it("accepts the Rust TUI handshake through the production IPC Host", async () => {
+	it("drives a Rust TUI session through the production IPC Host", async () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "gui-host-rust-ipc-"));
 		tempDirs.add(agentDir);
 		const endpoint = process.platform === "win32" ? defaultIpcEndpoint(agentDir) : join(agentDir, "host.sock");
@@ -178,14 +177,15 @@ describe("GUI Host persistent IPC", () => {
 			PROCESS_START_TIMEOUT_MS,
 		);
 
-		const rust = spawn(ensureRustTuiBinary(), ["--pipe-handshake"], {
+		const rust = spawn(ensureRustTuiBinary(), ["--pipe-session-smoke", agentDir], {
 			cwd: repositoryRoot,
 			env: { ...process.env, PI_RUST_TUI_HOST_ENDPOINT: endpoint },
 			stdio: ["ignore", "ignore", "pipe"],
 		});
 		children.add(rust);
-		await withTimeout("Rust TUI Host handshake", waitForExit(rust), PROCESS_START_TIMEOUT_MS);
+		await withTimeout("Rust TUI Host session smoke", waitForExit(rust), PROCESS_START_TIMEOUT_MS);
 		expect(rust.exitCode).toBe(0);
+		expect(readFileSync(join(agentDir, "prompt-calls.txt"), "utf8")).toBe("production IPC smoke\n");
 
 		host.kill("SIGTERM");
 		await withTimeout("Host shutdown", waitForExit(host), 2_000);
