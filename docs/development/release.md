@@ -16,13 +16,15 @@ v<Pi版本>-lystar.<修订号>
 2. CI 通过。
 3. `productVersion`、README、兼容矩阵和验证记录一致。
 4. 完成[全部 gate](verification.md)。
-5. Unix runner 构建 macOS/Linux，Windows runner 原生构建 Windows 包。
+5. Darwin ARM64/x64、Linux ARM64/x64 和 Windows x64 分别在对应原生 runner 构建，不能在 Ubuntu 上交叉生成 Rust sidecar。
 
 ```bash
 bash scripts/build-binaries.sh --offline-model-data
 ```
 
-Windows x64 必须在安装了 MSVC Build Tools 的 Windows 主机执行：
+该命令只构建当前原生平台；也可显式传入与当前主机一致的 `--platform darwin-arm64|darwin-x64|linux-arm64|linux-x64`。GitHub Release workflow 使用 `macos-15`、`macos-15-intel`、`ubuntu-24.04-arm` 和 `ubuntu-24.04` 分别构建四个 Unix 归档。每个归档必须同时包含 `lc`、`lystar` 和相邻的 `lystar-tui`，缺少 sidecar 或 `lc --version` 不可执行时构建直接失败。
+
+Windows x64 必须在安装了 MSVC Build Tools 和 Rust `1.97.1` 的 Windows 主机执行：
 
 ```powershell
 npm ci --ignore-scripts
@@ -31,7 +33,7 @@ npm run build:offline
 .\scripts\test-windows-terminal.ps1 -BundleDir .\packages\coding-agent\binaries\windows-x64\lystar-agent
 ```
 
-两个 runner 的归档合并后再运行 `generate-release-metadata.mjs` 生成 SHA、manifest 和安装器。Ubuntu 不允许交叉编译 `lc.exe`，因为 Bun 的 `--windows-icon` 只在 Windows 构建进程中生效。
+两个 runner 的归档合并后再运行 `generate-release-metadata.mjs` 生成 SHA、manifest 和安装器。归档 SHA 同时保护内部 sidecar，不再维护第二套内部文件 manifest。Ubuntu 不允许交叉编译 macOS、Linux ARM64 或 `lc.exe`；Rust sidecar 必须在目标平台原生构建，Bun 的 `--windows-icon` 也只在 Windows 构建进程中生效。
 
 产物必须包含：
 
@@ -51,6 +53,7 @@ VERSION
 
 核对 manifest 的版本、Pi 版本、仓库、五平台文件、大小和 SHA-256。Linux x64 解压后执行版本、帮助、离线模型列表和真实 PTY smoke。Windows 还必须检查：
 
+- `lc.exe`、`lystar-tui.exe` 和 `lystar-terminal.exe` 都存在，前两者与启动器位于同一目录。
 - `lc.exe` 和 `lystar-terminal.exe` 均带 LYStar ICO。
 - WebView2 SDK 版本和 nupkg SHA-256 固定。
 - `terminal/` 包含 xterm.js、fit addon、Noto Sans CJK 和对应许可证。

@@ -17,8 +17,23 @@ run_bun() {
     if command -v bun >/dev/null 2>&1; then
         bun "$@"
     else
-        npx --yes bun@1.3.9 "$@"
+        npx --yes -p bun@1.3.9 bun "$@"
     fi
+}
+
+native_platform() {
+    local os arch
+    case "$(uname -s)" in
+        Darwin) os="darwin" ;;
+        Linux) os="linux" ;;
+        *) printf 'Unsupported Unix release host: %s\n' "$(uname -s)" >&2; exit 2 ;;
+    esac
+    case "$(uname -m)" in
+        arm64|aarch64) arch="arm64" ;;
+        x86_64|amd64) arch="x64" ;;
+        *) printf 'Unsupported Unix release architecture: %s\n' "$(uname -m)" >&2; exit 2 ;;
+    esac
+    printf '%s-%s\n' "$os" "$arch"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -34,10 +49,18 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+NATIVE_PLATFORM="$(native_platform)"
+if [[ -z "$PLATFORM" ]]; then
+    PLATFORM="$NATIVE_PLATFORM"
+fi
 case "$PLATFORM" in
-    ""|darwin-arm64|darwin-x64|linux-x64|linux-arm64) ;;
+    darwin-arm64|darwin-x64|linux-x64|linux-arm64) ;;
     *) printf 'Invalid platform: %s\n' "$PLATFORM" >&2; exit 2 ;;
 esac
+if [[ "$PLATFORM" != "$NATIVE_PLATFORM" ]]; then
+    printf 'Rust TUI sidecar must be built natively: requested %s, current %s\n' "$PLATFORM" "$NATIVE_PLATFORM" >&2
+    exit 2
+fi
 if [[ -n "$REPOSITORY" && ! "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
     printf 'Invalid repository: %s (expected owner/repo)\n' "$REPOSITORY" >&2
     exit 2
@@ -50,8 +73,10 @@ fi
 VERSION="$(node -p "const p=require('./packages/coding-agent/package.json'); p.piConfig?.productVersion || p.version")"
 CLIPBOARD_MODULES_DIR="$ROOT_DIR/node_modules/@mariozechner"
 RELEASE_DEPS_DIR=""
+BUN_STAGING_FILES=()
 cleanup() {
     if [[ -n "$RELEASE_DEPS_DIR" ]]; then rm -rf "$RELEASE_DEPS_DIR"; fi
+    if [[ ${#BUN_STAGING_FILES[@]} -gt 0 ]]; then rm -f "${BUN_STAGING_FILES[@]}"; fi
 }
 trap cleanup EXIT
 if [[ -z "$OUTPUT_DIR" ]]; then
@@ -86,11 +111,7 @@ if [[ "$SKIP_BUILD" == false ]]; then
     fi
 fi
 
-if [[ -n "$PLATFORM" ]]; then
-    PLATFORMS=("$PLATFORM")
-else
-    PLATFORMS=(darwin-arm64 darwin-x64 linux-x64 linux-arm64)
-fi
+PLATFORMS=("$PLATFORM")
 
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
@@ -101,16 +122,23 @@ done
 cd packages/coding-agent
 for platform in "${PLATFORMS[@]}"; do
     printf 'Building LYStar Code %s for %s...\n' "$VERSION" "$platform"
+
+    # Bun 只有显式收到 worker 入口时，才会把 worker 编入独立可执行文件。
+    # 每个平台在对应原生 runner 构建，避免交叉 target 产出不可执行文件。
+    # 禁用当前目录 bunfig.toml 自动加载，避免项目 preload 在独立程序启动前执行。
     bun_target="bun-$platform"
     if [[ "$platform" == *-x64 ]]; then
         bun_target="${bun_target}-baseline"
     fi
-
-    # Bun 只有显式收到 worker 入口时，才会把 worker 编入独立可执行文件。
-    # 禁用当前目录 bunfig.toml 自动加载，避免项目 preload 在独立程序启动前执行。
-    run_bun build --compile --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/cli.js ./src/utils/image-resize-worker.ts \
-        --outfile "$OUTPUT_DIR/$platform/lc"
+    bun_output="$ROOT_DIR/packages/coding-agent/dist/.lystar-lc-${platform}-$$"
+    BUN_STAGING_FILES+=("$bun_output")
+    rm -f "$bun_output"
+    run_bun build --compile --no-compile-autoload-bunfig --target="$bun_target" ../../scripts/lystar-bun-cli.mjs ./src/utils/image-resize-worker.ts \
+        --outfile "$bun_output"
+    cp "$bun_output" "$OUTPUT_DIR/$platform/lc"
+    rm -f "$bun_output"
 	ln -s lc "$OUTPUT_DIR/$platform/lystar"
+    node ../../scripts/build-rust-tui-sidecar.mjs --platform "$platform" --out-dir "$OUTPUT_DIR/$platform"
 done
 
 for platform in "${PLATFORMS[@]}"; do
@@ -159,6 +187,14 @@ for platform in "${PLATFORMS[@]}"; do
         cp "../tui/native/darwin/prebuilds/$platform/darwin-modifiers.node" \
             "$OUTPUT_DIR/$platform/native/darwin/prebuilds/$platform/"
     fi
+
+    [[ -x "$OUTPUT_DIR/$platform/lc" ]] || { printf 'Release bundle is missing lc for %s\n' "$platform" >&2; exit 1; }
+    [[ "$("$OUTPUT_DIR/$platform/lc" --version)" == "$VERSION" ]] || { printf 'Release bundle lc version mismatch for %s\n' "$platform" >&2; exit 1; }
+    [[ -x "$OUTPUT_DIR/$platform/lystar" ]] || { printf 'Release bundle is missing lystar for %s\n' "$platform" >&2; exit 1; }
+    [[ -x "$OUTPUT_DIR/$platform/lystar-tui" ]] || { printf 'Release bundle is missing lystar-tui for %s\n' "$platform" >&2; exit 1; }
+    [[ -f "$OUTPUT_DIR/$platform/package.json" ]] || { printf 'Release bundle is missing package.json for %s\n' "$platform" >&2; exit 1; }
+    [[ -f "$OUTPUT_DIR/$platform/photon_rs_bg.wasm" ]] || { printf 'Release bundle is missing photon WASM for %s\n' "$platform" >&2; exit 1; }
+    [[ -f "$OUTPUT_DIR/$platform/skills/imagegen/SKILL.md" ]] || { printf 'Release bundle is missing built-in skills for %s\n' "$platform" >&2; exit 1; }
 done
 
 cd "$OUTPUT_DIR"

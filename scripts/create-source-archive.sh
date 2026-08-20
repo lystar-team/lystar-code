@@ -117,6 +117,7 @@ required_paths=(
     "package.json"
     "package-lock.json"
     "scripts/build-binaries.sh"
+    "scripts/build-rust-tui-sidecar.mjs"
     "packages/ai/src/models.generated.ts"
     "packages/ai/src/image-models.generated.ts"
     "packages/ai/src/providers/data/.manifest.json"

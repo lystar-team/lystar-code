@@ -2,7 +2,8 @@
 
 最后更新：2026-08-20
 接手分支：`feat/rust-tui`
-功能基线：`614ae00 fix(agent): 修正二进制构建后的资源路径`
+Git 基线：`d0ce4f061 docs(tui): 交接 Rust 发行包物化`
+当前工作：发行包 sidecar 物化任务已完成，当前提交见 `git log -1`
 产品版本：`0.84.2-lystar.1`
 Pi 基线：`0.84.2`
 
@@ -33,14 +34,14 @@ node -p 'require("./packages/coding-agent/package.json").piConfig'
 
 本次交接时的实际状态：
 
-- 当前分支：`feat/rust-tui`。
-- 最新功能提交：`614ae00 fix(agent): 修正二进制构建后的资源路径`；它修复 `build:binary` 复制到 `dist/package.json` 后，Node/Vitest 把资源路径错误解析为 `dist/dist` 的问题。
-- 完成本 HANDOFF 提交后，工作区应只剩未跟踪的 `aaa.jsonl`。
+- 当前分支：`feat/rust-tui`，HEAD 为 `d0ce4f061 docs(tui): 交接 Rust 发行包物化`。
+- 本轮发行包 sidecar 物化任务已完成并按独立任务提交；改动涉及 Unix/Windows 构建、Release matrix、安装器、脚本测试、发行文档和本 HANDOFF。
 - `aaa.jsonl` 是用户文件，不读取、不修改、不暂存、不提交。
-- `npm run build:offline` 和 `build:binary` 生成的 `packages/coding-agent/src` 旁 `.js`、`.d.ts` 和 `.map` 已按本轮生成清单删除；在线模型目录刷新已恢复。
-- 当前 shell 没有全局 Bun；`bun --version` 返回不可用，但 `npx --yes -p bun@1.3.9 bun --version` 可提供精确 Bun `1.3.9`。
-- current HEAD 已生成 `packages/coding-agent/dist/lc`，SHA-256 为 `9c7e83bc91f562b89177aecde4a61442430ddf3948138122fa4953885f0cb46a`；该文件属于忽略的本地构建产物。
-- 相邻 `packages/coding-agent/dist/lystar-tui` 只在验证时手工放置，验证后已删除；当前发行构建不会自动物化 Rust sidecar。
+- `npm run build:offline` 新增的 16 个 `packages/coding-agent/src` 旁 `.js`、`.d.ts` 和 `.map` 已按构建前后差集删除；本轮临时 `dist/lystar-tui`、`dist/lc-native-test` 和仓库内 package artifact 也已清理。
+- 当前 shell 没有全局 Bun；`npx --yes -p bun@1.3.9 bun --version` 提供固定 Bun `1.3.9`。
+- `scripts/build-binaries.sh` 现在只构建当前原生 Unix 平台，并先在仓库 `dist` staging 编译 Bun executable，再复制到输出目录和执行 `lc --version`，避免 Bun 1.3.9 跨文件系统输出全零文件。
+- Linux x64 候选包保留在 `/tmp/lystar-rust-sidecar-release/`。归档 SHA-256 为 `478bbb2ce7af2818d9f1dbbc9c5b9b5af4947e09cd98fde0449cbd0ad948a35f`；`lc` SHA-256 为 `431812bb2d81b30515182f8736eca2ea63d0d1d2733158b5277e3938e4ce95b2`；`lystar-tui` SHA-256 为 `054513d5da7ce28174854973773900d7fa36adc96e50bccc5d74d07ff5df4ebb`。
+- Release workflow 已配置 Darwin ARM64/x64、Linux ARM64/x64 原生 runner matrix，Windows 构建也接入 Rust sidecar；这些非 Linux x64 平台尚未实际跑 workflow 或实机，不能写成已通过。
 - 当前 Node.js：`v22.21.1`。
 - 当前 Rust：`rustc 1.97.1`，Cargo `1.97.1`。
 - 当前 tmux：`3.5a`。
@@ -206,7 +207,32 @@ Rust TUI 已接入或完成：
 - `build:binary` 当前会运行在线模型生成，造成模型目录元数据漂移；本轮已恢复，不要提交该副作用。
 - `build:binary` 和根构建会在 `packages/coding-agent/src` 旁生成 16 个 `.js/.d.ts/.map`，本轮已按清单删除。
 - binary 构建复制的 `dist/package.json` 曾使后续 Node/Vitest 资源路径变成 `dist/dist`；提交 `614ae00` 已修复，配置 18/18、构建后配置与 Runtime adapter 38/38 通过。
-- 相邻 sidecar 仅为本轮手工验证，结束后已删除。发行包仍不包含 Rust sidecar，下一阶段必须正式物化。
+- 本轮发行构建已自动物化相邻 sidecar；手工复制仅属于上一阶段历史证据。
+
+### 4.6 发行包 sidecar 物化已完成 Linux x64 验证
+
+本轮已提交的改动完成：
+
+- 新增 `scripts/build-rust-tui-sidecar.mjs`，只允许当前原生平台构建 Rust sidecar，输出固定为 `lc` 相邻的 `lystar-tui`/`lystar-tui.exe`。
+- `packages/coding-agent` 的 `build:binary`、Unix `build-binaries.sh` 和 Windows `build-windows-release.ps1` 均接入同一 helper。
+- Unix 发行从 Ubuntu 单 job 交叉编译改为 `darwin-arm64`、`darwin-x64`、`linux-arm64`、`linux-x64` 四个原生 runner matrix；Windows job 固定 Rust `1.97.1`。
+- Unix 和 Windows Bun 入口统一使用正式 `scripts/lystar-bun-cli.mjs`，不再让发行包绕过 Rust composition root。
+- Unix bundle 会实际执行 `lc --version` 并断言 `lc`、`lystar`、sidecar、`package.json`、WASM 和内置 Skill；Windows bundle 做对应结构断言。
+- Unix/Windows 安装器拒绝缺少 sidecar 的归档。归档 SHA 和 release manifest 继续保护整个包，不增加内部第二套 manifest。
+- 修正 `npx bun@1.3.9` 调用和 Bun 跨文件系统输出问题；Bun 始终先在仓库文件系统 staging 编译，再复制到目标输出。
+- 脚本门禁顺带修正 Workspace benchmark verifier 的三个确定文件名笔误，否则 `npm run test:scripts` 无法通过。
+
+Linux x64 真实证据：
+
+- 候选归档 48,994,705 bytes，SHA-256 `478bbb2ce7af2818d9f1dbbc9c5b9b5af4947e09cd98fde0449cbd0ad948a35f`。
+- 归档包含 `lc`、`lystar`、`lystar-tui`、`package.json`、WASM、Skill、主题和许可证；`SHA256SUMS` 通过。
+- `lc` 与 `lystar-tui` 均为 x86-64 ELF；`lc --version`、`lystar --version`、中文 `--help`、`PI_OFFLINE=1 --list-models` 通过。
+- 解包后不设置 `PI_RUST_TUI_BINARY`，`PI_TUI_FRONTEND=rust` 通过 Rust trace 证明自动发现相邻 sidecar。
+- 真实安装覆盖 `current/previous`、双向 rollback、篡改 staging 不切换当前版本，并确认安装目录保留可执行 sidecar。
+- 安装后 PTY 覆盖 `80x8 -> 120x36` resize、`/quit`、退出码 0 和 `stty -g` 恢复。
+- `npm run test:scripts` 为 `49/49`；聚焦 Vitest 6 files `80/80`；Rust Protocol `11/11`；Rust TUI `154/154`；Clippy `-D warnings`、Unix 安装器、根级 `npm run check`、`npm run build:offline` 和 `git diff --check` 均通过。
+
+未验证：Darwin ARM64/x64、Linux ARM64、Windows x64 runner 实际构建与归档；Windows named pipe/ConPTY；`lc update` 公开升级链。
 
 ## 5. 下一步执行顺序
 
@@ -308,16 +334,16 @@ Rust sidecar 当前查找顺序：
 
 需要完成：
 
-- [ ] 五个平台都构建对应 Rust sidecar。
-- [ ] sidecar 放进每个平台归档的固定位置。
-- [ ] compiled `lc` 解包后能自动发现相邻 sidecar。
-- [ ] manifest 和 `SHA256SUMS` 包含 sidecar 或包含它的归档摘要。
-- [ ] Unix 安装、升级、`current/previous` 和 rollback。
-- [ ] Windows 安装、升级、占用中的 executable 切换和 rollback。
-- [ ] staging 失败不破坏当前版本。
+- [x] 五个平台构建链都使用对应原生 runner 构建 Rust sidecar；Linux x64 已实跑，其余平台待 workflow/实机确认。
+- [x] sidecar 放进每个平台归档的固定相邻位置；Linux x64 已检查真实归档，其他平台为脚本结构证据。
+- [x] compiled `lc` 解包后能自动发现相邻 sidecar；当前只证明 Linux x64。
+- [x] manifest 和 `SHA256SUMS` 覆盖包含 sidecar 的归档摘要，不增加内部第二套清单。
+- [x] Linux x64 Unix 安装、升级、`current/previous`、rollback 和 staging failure。
+- [ ] macOS Unix 安装、升级和 rollback 实机。
+- [ ] Windows 构建、安装、升级、占用中的 executable 切换和 rollback 实机。
 - [ ] `lc update` 后新终端可以独立启动 Rust TUI，不依赖 GUI。
 
-Linux 本机可先完成真实 package smoke，但不能由 Linux 构建成功推断 macOS/Windows 可运行。
+Linux package smoke 已完成，不能由该结果推断 macOS/Windows 可运行。
 
 ### P1. 补齐 Windows transport
 
@@ -507,16 +533,13 @@ crates/lystar-protocol/src/generated.rs
 
 ## 9. 下个会话的第一轮建议
 
-第一轮只做发行包中的 Rust sidecar 物化和 Linux x64 package smoke，不同时处理 Windows transport、OAuth、默认前端或正式发布：
+第一轮先核对本轮 sidecar 物化提交和工作区状态，再继续跨平台构建验证；不同时处理 Windows transport、OAuth 或默认前端：
 
-1. 先读完整 `scripts/build-binaries.sh`、`scripts/prepare-release-package.mjs`、`scripts/generate-release-metadata.mjs`、`packages/coding-agent/package.json` 的 `build:binary`/`copy-binary-assets`，以及 Unix 安装器和 release workflow。
-2. 明确五平台 Rust target 与归档内固定位置。优先让 sidecar 与 `lc` 相邻，直接复用 `resolveRustTuiBinary()` 已验证的查找顺序；不要增加第二套配置或运行时下载。
-3. 在 Linux x64 先完成最小生产链：构建 `target/release/lystar-tui`，把它物化到候选 package，与 compiled `lc` 一起归档，解包后不设 `PI_RUST_TUI_BINARY` 即可启动 Rust TUI。
-4. 为打包脚本增加结构断言：归档必须同时包含 `lc`、`lystar`、`lystar-tui`、`package.json`、主题、Skill、WASM、许可证；缺少 sidecar 时构建必须失败，不能静默发布 TypeScript-only 包。
-5. 核对 `SHA256SUMS` 和 manifest 的责任边界。当前发行摘要覆盖归档文件即可证明 sidecar 被归档完整性保护，不要无必要给归档内部文件再建第二套 manifest；若现有 Windows 汇聚需要内部清单，再以同一事实源生成。
-6. 用解包后的 Linux x64 候选包覆盖 `--version`、`--help`、`PI_OFFLINE=1 --list-models`、相邻 sidecar 自动发现、手工输入/流式回复、图片、`80x24`、`80x8`、`120x36`、resize、`/quit` 和 `stty -g`。
-7. 运行 Unix 安装器的安装、升级、`current/previous`、rollback 和 staging failure；确认安装后的新终端不依赖源码 checkout、GUI 或 `PI_RUST_TUI_BINARY`。
-8. `build:binary` 会在线刷新模型目录并生成 16 个源码旁 `.js/.d.ts/.map`；结束前恢复模型漂移、删除明确生成物，保留 `aaa.jsonl`。提交前复跑配置 18/18 与 Runtime adapter，防止 `dist/package.json` 再次触发 `dist/dist` 回归。
-9. 跑相关打包测试、聚焦 Vitest、Rust 全目标、根级 `npm run check`、`npm run build:offline`、`git diff --check`，更新 `AGENT_VERIFICATION.md` 和本 HANDOFF，单独提交发行包 sidecar 物化。
+1. 运行 `git status --short --branch` 和 `git log -3 --oneline --decorate`，确认本轮 sidecar 物化是独立提交，工作区只保留用户文件 `aaa.jsonl`。
+2. 复查 `scripts/build-rust-tui-sidecar.mjs`、`scripts/build-binaries.sh`、`scripts/build-windows-release.ps1` 和 Release matrix，重点确认所有平台都使用 `scripts/lystar-bun-cli.mjs`，sidecar 与 `lc` 相邻，缺失即失败。
+3. 推送或运行 GitHub workflow 需要 Yean 明确授权。获得授权后先让 CI/Release 的原生 matrix 实际构建 Darwin ARM64/x64、Linux ARM64/x64、Windows x64，下载各归档检查 sidecar 和架构；不要直接打正式 tag。
+4. macOS 至少实测 Intel 和 Apple Silicon 的 `lc --version`、相邻 sidecar 自动发现、PTY、安装、升级和 rollback。
+5. Windows 先验证 `lystar-tui.exe` 被构建和安装；由于 named pipe 尚未接入，只能记录 sidecar/package 结构与 TypeScript fallback，不能写成 Rust TUI 可运行。
+6. 五平台归档验证完成后，再做 `lc update` 的 staging、`current/previous`、rollback 和新终端独立启动；之后才进入 Windows named pipe 或剩余 parity。
 
-Linux package smoke 完成后，再扩展 Darwin ARM64/x64、Linux ARM64 和 Windows x64 构建矩阵；Windows named pipe 仍是独立任务，不要在本阶段提前切默认前端。
+默认前端继续保持 TypeScript。没有 macOS/Windows 实机和公开升级链证据前，不调整默认选择。

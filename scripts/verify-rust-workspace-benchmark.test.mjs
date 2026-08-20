@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { rustWorkspaceWorkbenchManifest } from "./rust-workspace-benchmark-manifest.mjs";
-import { verifyRustWorkspaceWorkbench } from "./verify-rust-workspace-benchmark-benchmark.mjs";
+import { verifyRustWorkspaceWorkbench } from "./verify-rust-workspace-benchmark.mjs";
 
 function record(scenario, columns, rows, round) {
 	const mode = rustWorkspaceWorkbenchManifest.scenarios.find(({ name }) => name === scenario)?.mode ?? "fullscreen";

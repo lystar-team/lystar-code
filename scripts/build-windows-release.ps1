@@ -23,8 +23,11 @@ New-Item -ItemType Directory -Force $BundleDir, $ReleaseDeps | Out-Null
 try {
     Push-Location $Root
     # Windows CI 安装 baseline Bun；原生编译直接复用当前 runtime，避免再次下载 target executable。
-    & bun build --compile --no-compile-autoload-bunfig --windows-icon=packages/coding-agent/assets/lystar-windows-icon.ico packages/coding-agent/dist/bun/cli.js packages/coding-agent/src/utils/image-resize-worker.ts --outfile (Join-Path $BundleDir "lc.exe")
+    & bun build --compile --no-compile-autoload-bunfig --windows-icon=packages/coding-agent/assets/lystar-windows-icon.ico scripts/lystar-bun-cli.mjs packages/coding-agent/src/utils/image-resize-worker.ts --outfile (Join-Path $BundleDir "lc.exe")
     if ($LASTEXITCODE -ne 0) { throw "lc.exe 构建失败。" }
+
+    & node (Join-Path $Root "scripts\build-rust-tui-sidecar.mjs") --platform windows-x64 --out-dir $BundleDir
+    if ($LASTEXITCODE -ne 0) { throw "lystar-tui.exe 构建失败。" }
 
     $BundleAlias = @'
 @echo off
@@ -65,6 +68,10 @@ try {
     Copy-Item -Recurse (Join-Path $ClipboardRoot "clipboard-win32-x64-msvc\*") (Join-Path $BundleDir "node_modules\@mariozechner\clipboard-win32-x64-msvc")
     Copy-Item (Join-Path $ClipboardRoot "clipboard-win32-x64-msvc\clipboard.win32-x64-msvc.node") (Join-Path $BundleDir "node_modules\@mariozechner\clipboard")
     Copy-Item (Join-Path $Root "packages\tui\native\win32\prebuilds\win32-x64\win32-console-mode.node") (Join-Path $BundleDir "native\win32\prebuilds\win32-x64")
+
+    foreach ($RequiredFile in @("lc.exe", "lystar-tui.exe", "package.json", "photon_rs_bg.wasm", "skills\imagegen\SKILL.md")) {
+        if (!(Test-Path (Join-Path $BundleDir $RequiredFile))) { throw "Windows release bundle is missing $RequiredFile." }
+    }
 
     $Archive = Join-Path $OutputDir "lystar-agent-v$Version-windows-x64.zip"
     Remove-Item -Force -ErrorAction SilentlyContinue $Archive

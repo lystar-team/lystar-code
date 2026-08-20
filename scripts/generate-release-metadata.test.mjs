@@ -90,10 +90,23 @@ test("CLI release workflow verifies final assets before attestation and publishi
 	assert.deepEqual(document.errors, []);
 	const jobs = document.toJS().jobs;
 	const steps = jobs.release.steps;
-	const unixUpload = jobs["build-unix"].steps.find((step) => step.name === "Upload Unix release artifacts");
+	const unixUpload = jobs["build-unix"].steps.find((step) => step.name === "Upload Unix release artifact");
 	const windowsUpload = jobs["build-windows"].steps.find((step) => step.name === "Upload Windows release artifact");
-	assert.equal(unixUpload.with.path, "packages/coding-agent/binaries/*.tar.gz");
+	assert.deepEqual(
+		jobs["build-unix"].strategy.matrix.include.map(({ platform, runner }) => [platform, runner]),
+		[
+			["darwin-arm64", "macos-15"],
+			["darwin-x64", "macos-15-intel"],
+			["linux-arm64", "ubuntu-24.04-arm"],
+			["linux-x64", "ubuntu-24.04"],
+		],
+	);
+	assert.equal(unixUpload.with.path, "packages/coding-agent/binaries/lystar-agent-*-${{ matrix.platform }}.tar.gz");
 	assert.equal(windowsUpload.with.path, "packages/coding-agent/binaries/lystar-agent-*-windows-x64.zip");
+	const unixVerification = jobs["build-unix"].steps.find((step) => step.name === "Verify Unix release artifact");
+	const windowsVerification = jobs["build-windows"].steps.find((step) => step.name === "Verify Windows binaries");
+	assert.match(unixVerification.run, /lystar-agent\/lystar-tui/);
+	assert.match(windowsVerification.run, /lystar-tui\.exe/);
 	const generated = steps.findIndex((step) => step.name === "Generate release metadata");
 	const verified = steps.findIndex((step) => step.name === "Verify release checksums, manifest, and public assets");
 	const attested = steps.findIndex((step) => step.name === "Attest release artifacts");

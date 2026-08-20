@@ -234,8 +234,10 @@ try {
     Expand-Archive -Path $Archive -DestinationPath $Extract
     $Bundle = Join-Path $Extract "lystar-agent"
     $Executable = Join-Path $Bundle "lc.exe"
+    $RustTui = Join-Path $Bundle "lystar-tui.exe"
     $TerminalHost = Join-Path $Bundle "lystar-terminal.exe"
     if (!(Test-Path $Executable)) { throw "发行包缺少 lc.exe。" }
+    if (!(Test-Path $RustTui)) { throw "发行包缺少 lystar-tui.exe。" }
     if (!(Test-Path $TerminalHost)) { throw "发行包缺少 lystar-terminal.exe。" }
     Ensure-WebView2Runtime $TerminalHost $Temp
     $CandidateVersion = (& $Executable --version | Out-String).Trim()

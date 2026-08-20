@@ -34,7 +34,7 @@
 		"benchmark:rust-m8": "node scripts/benchmark-rust-m8.mjs",
 		"benchmark:rust-m8:verify": "node scripts/verify-rust-m8-benchmark.mjs",
 		"benchmark:rust-workspace-benchmark": "node scripts/benchmark-rust-workspace-benchmark.mjs",
-		"benchmark:rust-workspace-benchmark:verify": "node scripts/verify-rust-workspace-benchmark-benchmark.mjs",
+		"benchmark:rust-workspace-benchmark:verify": "node scripts/verify-rust-workspace-benchmark.mjs",
 		"benchmark:rust-extension-component-storm": "node scripts/benchmark-rust-extension-component-storm.mjs",
 		"benchmark:rust-extension-component-storm:verify": "node scripts/verify-rust-extension-component-storm.mjs",
 		"benchmark:rust-custom-editor": "node scripts/benchmark-rust-custom-editor.mjs",

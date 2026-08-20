@@ -27,6 +27,8 @@ npm run build:offline
 bash scripts/build-binaries.sh --offline-model-data
 ```
 
+Unix 构建脚本只生成当前原生平台归档，并把 Rust `lystar-tui` sidecar 放在 `lc` 相邻位置。五平台正式产物由 Release workflow 在对应原生 runner 汇聚。
+
 发行仓库固定为 `lystar-team/lystar-code`。构建脚本会把该地址写入安装器、manifest 和发行包，供安装与更新使用。
 
 LYStar Code 当前基于 `earendil-works/pi` `v0.84.2`，上游 commit 为 `914cf1472e715297caa30db4b9535d534a9eb718`，按 MIT License 发行。Grok Build 仅作为全屏 TUI 交互参考，没有复制其源码或资产。
