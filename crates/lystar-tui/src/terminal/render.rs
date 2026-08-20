@@ -281,7 +281,6 @@ pub(super) fn write_resume_hint(
     Ok(())
 }
 
-#[cfg(unix)]
 pub(super) fn request_exit_transcript_page(
     pipe: &mut ProtocolPipe,
     session_path: &str,
@@ -325,7 +324,6 @@ pub(super) fn request_exit_transcript_page(
     }
 }
 
-#[cfg(unix)]
 pub(super) fn emit_exit_output(
     pipe: &mut ProtocolPipe,
     session_path: &str,

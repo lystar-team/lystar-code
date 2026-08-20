@@ -1,11 +1,9 @@
 use super::*;
 
-#[cfg(unix)]
 pub fn run(session_path: &str) -> Result<(), TuiError> {
     run_with_options(session_path, RunOptions::default())
 }
 
-#[cfg(unix)]
 pub fn run_with_options(session_path: &str, options: RunOptions) -> Result<(), TuiError> {
     let mode = resolve_terminal_mode(options.mode, terminal_mode_context());
     let client_instance_id = std::env::var("PI_RUST_TUI_CLIENT_INSTANCE_ID")
@@ -44,7 +42,6 @@ pub(super) fn clear_terminal_extension_output(
     Ok(())
 }
 
-#[cfg(unix)]
 pub(super) fn run_session(
     session_path: &str,
     mode: TerminalMode,
@@ -705,19 +702,6 @@ pub(super) fn run_session(
     }
 }
 
-#[cfg(not(unix))]
-pub fn run_with_options(_session_path: &str, _options: RunOptions) -> Result<(), TuiError> {
-    Err(TuiError::HelloRejected(
-        "Windows named-pipe transport is not implemented".to_owned(),
-    ))
-}
-
-#[cfg(not(unix))]
-pub fn run(_session_path: &str) -> Result<(), TuiError> {
-    run_with_options(_session_path, RunOptions::default())
-}
-
-#[cfg(unix)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn process_inbound_message(
     app: &mut AppState,

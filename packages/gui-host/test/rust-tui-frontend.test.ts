@@ -24,7 +24,7 @@ import {
 import { CURRENT_SESSION_VERSION, SessionManager } from "../../coding-agent/src/core/session-manager.ts";
 import { SettingsManager } from "../../coding-agent/src/core/settings-manager.ts";
 import type { RustTuiStartupInput } from "../../coding-agent/src/rust-tui-frontend.ts";
-import { runEmbeddedRustTui } from "../src/rust-tui-frontend.ts";
+import { createRustTuiEndpoint, runEmbeddedRustTui } from "../src/rust-tui-frontend.ts";
 
 const clientFixture = fileURLToPath(new URL("./fixtures/embedded-rust-client.ts", import.meta.url));
 const tsxImport = import.meta.resolve("tsx");
@@ -170,6 +170,15 @@ async function createFrontendFixture(): Promise<FrontendFixture> {
 }
 
 describe("embedded Rust TUI frontend", () => {
+	test("creates a unique Windows named-pipe endpoint without a filesystem directory", () => {
+		const first = createRustTuiEndpoint("win32");
+		const second = createRustTuiEndpoint("win32");
+
+		expect(first.endpoint).toMatch(/^\\\\\.\\pipe\\lystar-rust-tui-\d+-[0-9a-f-]{36}$/);
+		expect(first.directory).toBeUndefined();
+		expect(second.endpoint).not.toBe(first.endpoint);
+	});
+
 	test.runIf(process.platform !== "win32")(
 		"keeps the existing Runtime when the sidecar is missing or not executable",
 		async () => {

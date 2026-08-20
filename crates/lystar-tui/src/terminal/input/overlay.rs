@@ -740,7 +740,6 @@ pub(in super::super) fn handle_overlay_key(
     Ok(false)
 }
 
-#[cfg(unix)]
 pub(in super::super) fn set_tree_filter(app: &mut AppState, tree_filter: TreeFilter) {
     let Some(OverlayState::List(list)) = app.overlay() else {
         return;

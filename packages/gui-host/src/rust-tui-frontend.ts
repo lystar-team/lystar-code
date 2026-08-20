@@ -51,6 +51,22 @@ function exitCode(code: number | null, signal: NodeJS.Signals | null): number {
 	return signal ? 1 : 0;
 }
 
+interface RustTuiEndpoint {
+	endpoint: string;
+	directory?: string;
+}
+
+export function createRustTuiEndpoint(platform: NodeJS.Platform = process.platform): RustTuiEndpoint {
+	if (platform === "win32") {
+		return { endpoint: `\\\\.\\pipe\\lystar-rust-tui-${process.pid}-${randomUUID()}` };
+	}
+	const directory = mkdtempSync(join(tmpdir(), "lystar-rust-tui-"));
+	return {
+		endpoint: join(directory, `${process.pid}-${randomUUID()}.sock`),
+		directory,
+	};
+}
+
 async function cleanupHost(server: Server | undefined, service: GuiHostService | undefined, directory?: string) {
 	let cleanupError: unknown;
 	try {
@@ -74,22 +90,19 @@ async function cleanupHost(server: Server | undefined, service: GuiHostService |
 }
 
 export const runEmbeddedRustTui: RustTuiFrontend = async (context): Promise<RustTuiFrontendResult> => {
-	if (process.platform === "win32") {
-		return { handled: false, reason: "当前版本尚未接入 Windows named pipe" };
-	}
 	const binary = resolveRustTuiBinary();
 	if (!binary) return { handled: false, reason: `未找到 ${executableName()} sidecar` };
 
-	let endpointDirectory: string;
+	let endpointConfig: RustTuiEndpoint;
 	try {
-		endpointDirectory = mkdtempSync(join(tmpdir(), "lystar-rust-tui-"));
+		endpointConfig = createRustTuiEndpoint();
 	} catch (error) {
 		return {
 			handled: false,
 			reason: `无法创建 Host 临时目录：${error instanceof Error ? error.message : String(error)}`,
 		};
 	}
-	const endpoint = join(endpointDirectory, `${process.pid}-${randomUUID()}.sock`);
+	const { endpoint, directory: endpointDirectory } = endpointConfig;
 	const adapter = new CodingAgentRuntimeAdapter({
 		agentDir: context.agentDir,
 		initialRuntime: context.runtime,

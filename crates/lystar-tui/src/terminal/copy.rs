@@ -1,6 +1,5 @@
 use super::*;
 
-#[cfg(unix)]
 pub(super) fn request_copy_last_assistant_message(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,

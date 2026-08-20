@@ -7,7 +7,7 @@ import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { encodeClientMessage, type ServerMessage, ServerMessageDecoder } from "@lystar/code-gui-protocol";
 import { afterEach, describe, expect, it } from "vitest";
-import { REMOTE_PREFACE } from "../src/ipc.ts";
+import { defaultIpcEndpoint, REMOTE_PREFACE } from "../src/ipc.ts";
 
 const children = new Set<ChildProcess>();
 const tempDirs = new Set<string>();
@@ -152,7 +152,7 @@ function response(id: string) {
 }
 
 function ensureRustTuiBinary(): string {
-	const binary = join(repositoryRoot, "target/debug/lystar-tui");
+	const binary = join(repositoryRoot, `target/debug/lystar-tui${process.platform === "win32" ? ".exe" : ""}`);
 	if (existsSync(binary)) return binary;
 	const result = spawnSync("cargo", ["build", "-p", "lystar-tui"], {
 		cwd: repositoryRoot,
@@ -162,11 +162,11 @@ function ensureRustTuiBinary(): string {
 	return binary;
 }
 
-describe.runIf(process.platform !== "win32")("GUI Host persistent IPC", () => {
-	it("accepts the Rust TUI handshake through the production Unix socket Host", async () => {
+describe("GUI Host persistent IPC", () => {
+	it("accepts the Rust TUI handshake through the production IPC Host", async () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "gui-host-rust-ipc-"));
 		tempDirs.add(agentDir);
-		const endpoint = join(agentDir, "host.sock");
+		const endpoint = process.platform === "win32" ? defaultIpcEndpoint(agentDir) : join(agentDir, "host.sock");
 		const host = spawn(process.execPath, ["--import", tsxImport, hostFixture, agentDir, endpoint], {
 			cwd: repositoryRoot,
 			stdio: ["ignore", "pipe", "pipe"],
@@ -193,99 +193,103 @@ describe.runIf(process.platform !== "win32")("GUI Host persistent IPC", () => {
 		children.delete(rust);
 	}, 30_000);
 
-	it("keeps an accepted operation alive after the SSH-style relay is killed", async () => {
-		const agentDir = mkdtempSync(join(tmpdir(), "gui-host-ipc-"));
-		tempDirs.add(agentDir);
-		const endpoint = join(agentDir, "host.sock");
-		const host = spawn(process.execPath, ["--import", tsxImport, hostFixture, agentDir, endpoint], {
-			cwd: repositoryRoot,
-			stdio: ["ignore", "pipe", "pipe"],
-		});
-		children.add(host);
-		await withTimeout(
-			"Host ready",
-			waitForLine(host, "stderr", "ready", PROCESS_START_TIMEOUT_MS),
-			PROCESS_START_TIMEOUT_MS,
-		);
+	it.runIf(process.platform !== "win32")(
+		"keeps an accepted operation alive after the SSH-style relay is killed",
+		async () => {
+			const agentDir = mkdtempSync(join(tmpdir(), "gui-host-ipc-"));
+			tempDirs.add(agentDir);
+			const endpoint = join(agentDir, "host.sock");
+			const host = spawn(process.execPath, ["--import", tsxImport, hostFixture, agentDir, endpoint], {
+				cwd: repositoryRoot,
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+			children.add(host);
+			await withTimeout(
+				"Host ready",
+				waitForLine(host, "stderr", "ready", PROCESS_START_TIMEOUT_MS),
+				PROCESS_START_TIMEOUT_MS,
+			);
 
-		const firstRelay = startRelay(agentDir, endpoint);
-		const first = readRelayMessages(firstRelay);
-		await withTimeout("first relay ready", first.ready, PROCESS_START_TIMEOUT_MS);
-		firstRelay.stdin.write(encodeClientMessage({ type: "hello", version: 1, clientInstanceId: "client" }));
-		const firstHello = await withTimeout(
-			"first relay hello",
-			first.waitFor((message) => message.type === "hello"),
-		);
-		if (firstHello.type !== "hello") throw new Error("Missing first Host hello");
-		expect(firstHello.capabilities).toContain("remote-detach");
-		firstRelay.stdin.write(
-			encodeClientMessage({
-				type: "request",
-				id: "create",
-				request: {
-					command: "create_session",
-					cwd: agentDir,
-					clientInstanceId: "client",
-					clientRequestId: "create-session",
-				},
-			}),
-		);
-		const create = await withTimeout("create Session", first.waitFor(response("create")));
-		if (create.type !== "response" || !create.ok) throw new Error("Session creation failed");
-		const result = create.result as { lease: { leaseId: string }; snapshot: { path: string } };
-		firstRelay.stdin.write(
-			encodeClientMessage({
-				type: "request",
-				id: "prompt",
-				request: {
-					command: "prompt",
-					sessionPath: result.snapshot.path,
-					leaseId: result.lease.leaseId,
-					clientInstanceId: "client",
-					clientRequestId: "persistent-request",
-					text: "continue remotely",
-				},
-			}),
-		);
-		const accepted = await withTimeout("prompt accepted", first.waitFor(response("prompt")));
-		if (accepted.type !== "response" || !accepted.ok) throw new Error("Prompt was not accepted");
-		const operationId = (accepted.result as { operation: { operationId: string } }).operation.operationId;
-		const exited = waitForExit(firstRelay);
-		if (firstRelay.exitCode === null && firstRelay.signalCode === null) firstRelay.kill("SIGKILL");
-		await withTimeout("first relay exit", exited, 2_000);
-		children.delete(firstRelay);
-		await new Promise((resolve) => setTimeout(resolve, 600));
-		expect(host.exitCode).toBeNull();
+			const firstRelay = startRelay(agentDir, endpoint);
+			const first = readRelayMessages(firstRelay);
+			await withTimeout("first relay ready", first.ready, PROCESS_START_TIMEOUT_MS);
+			firstRelay.stdin.write(encodeClientMessage({ type: "hello", version: 1, clientInstanceId: "client" }));
+			const firstHello = await withTimeout(
+				"first relay hello",
+				first.waitFor((message) => message.type === "hello"),
+			);
+			if (firstHello.type !== "hello") throw new Error("Missing first Host hello");
+			expect(firstHello.capabilities).toContain("remote-detach");
+			firstRelay.stdin.write(
+				encodeClientMessage({
+					type: "request",
+					id: "create",
+					request: {
+						command: "create_session",
+						cwd: agentDir,
+						clientInstanceId: "client",
+						clientRequestId: "create-session",
+					},
+				}),
+			);
+			const create = await withTimeout("create Session", first.waitFor(response("create")));
+			if (create.type !== "response" || !create.ok) throw new Error("Session creation failed");
+			const result = create.result as { lease: { leaseId: string }; snapshot: { path: string } };
+			firstRelay.stdin.write(
+				encodeClientMessage({
+					type: "request",
+					id: "prompt",
+					request: {
+						command: "prompt",
+						sessionPath: result.snapshot.path,
+						leaseId: result.lease.leaseId,
+						clientInstanceId: "client",
+						clientRequestId: "persistent-request",
+						text: "continue remotely",
+					},
+				}),
+			);
+			const accepted = await withTimeout("prompt accepted", first.waitFor(response("prompt")));
+			if (accepted.type !== "response" || !accepted.ok) throw new Error("Prompt was not accepted");
+			const operationId = (accepted.result as { operation: { operationId: string } }).operation.operationId;
+			const exited = waitForExit(firstRelay);
+			if (firstRelay.exitCode === null && firstRelay.signalCode === null) firstRelay.kill("SIGKILL");
+			await withTimeout("first relay exit", exited, 2_000);
+			children.delete(firstRelay);
+			await new Promise((resolve) => setTimeout(resolve, 600));
+			expect(host.exitCode).toBeNull();
 
-		const secondSocket = await withTimeout("second socket connect", connectSocket(endpoint));
-		const second = readSocketMessages(secondSocket);
-		secondSocket.write(encodeClientMessage({ type: "hello", version: 1, clientInstanceId: "client" }));
-		const secondHello = await withTimeout(
-			"second socket hello",
-			second.waitFor((message) => message.type === "hello"),
-		);
-		if (secondHello.type !== "hello") throw new Error("Missing resumed Host hello");
-		expect(secondHello.hostInstanceId).toBe(firstHello.hostInstanceId);
-		secondSocket.write(encodeClientMessage({ type: "request", id: "about", request: { command: "get_about" } }));
-		await second.waitFor(response("about"));
-		secondSocket.write(
-			encodeClientMessage({
-				type: "request",
+			const secondSocket = await withTimeout("second socket connect", connectSocket(endpoint));
+			const second = readSocketMessages(secondSocket);
+			secondSocket.write(encodeClientMessage({ type: "hello", version: 1, clientInstanceId: "client" }));
+			const secondHello = await withTimeout(
+				"second socket hello",
+				second.waitFor((message) => message.type === "hello"),
+			);
+			if (secondHello.type !== "hello") throw new Error("Missing resumed Host hello");
+			expect(secondHello.hostInstanceId).toBe(firstHello.hostInstanceId);
+			secondSocket.write(encodeClientMessage({ type: "request", id: "about", request: { command: "get_about" } }));
+			await second.waitFor(response("about"));
+			secondSocket.write(
+				encodeClientMessage({
+					type: "request",
+					id: "operation",
+					request: { command: "get_operation", operationId },
+				}),
+			);
+			const completed = await second.waitFor(response("operation"));
+			expect(completed).toMatchObject({
+				type: "response",
 				id: "operation",
-				request: { command: "get_operation", operationId },
-			}),
-		);
-		const completed = await second.waitFor(response("operation"));
-		expect(completed).toMatchObject({
-			type: "response",
-			id: "operation",
-			ok: true,
-			result: { operationId, status: "completed" },
-		});
+				ok: true,
+				result: { operationId, status: "completed" },
+			});
 
-		secondSocket.end();
-		host.kill("SIGTERM");
-		await withTimeout("Host shutdown", waitForExit(host), 2_000);
-		children.delete(host);
-	}, 30_000);
+			secondSocket.end();
+			host.kill("SIGTERM");
+			await withTimeout("Host shutdown", waitForExit(host), 2_000);
+			children.delete(host);
+		},
+		30_000,
+	);
 });

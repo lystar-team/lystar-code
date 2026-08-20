@@ -159,7 +159,6 @@ pub(super) fn release_active_session(
     )?)
 }
 
-#[cfg(unix)]
 pub(super) fn request_acquire(
     pipe: &mut ProtocolPipe,
     session_path: &str,
@@ -176,7 +175,6 @@ pub(super) fn request_acquire(
     Ok(id)
 }
 
-#[cfg(unix)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn request_transcript(
     app: &mut AppState,
@@ -222,7 +220,6 @@ pub(super) fn request_transcript(
     )?)
 }
 
-#[cfg(unix)]
 pub(super) fn request_search(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,
@@ -429,7 +426,6 @@ pub(super) fn request_workspace(
     )?)
 }
 
-#[cfg(unix)]
 pub(super) fn visible_cached_images(app: &AppState) -> Vec<CachedImage> {
     let mut visible = app
         .attachment_preview
@@ -459,7 +455,6 @@ pub(super) fn visible_cached_images(app: &AppState) -> Vec<CachedImage> {
     visible
 }
 
-#[cfg(unix)]
 pub(super) fn request_visible_images(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,
@@ -503,7 +498,6 @@ pub(super) fn request_visible_images(
     Ok(requested)
 }
 
-#[cfg(unix)]
 pub(super) fn request_visible_rich_text(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,
@@ -559,7 +553,6 @@ pub(super) fn request_visible_rich_text(
     Ok(requested)
 }
 
-#[cfg(unix)]
 pub(super) fn request_subagents(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,
@@ -597,7 +590,6 @@ pub(super) fn request_subagents(
     )
 }
 
-#[cfg(unix)]
 pub(super) fn request_clipboard_read(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,
@@ -614,7 +606,6 @@ pub(super) fn request_clipboard_read(
     )
 }
 
-#[cfg(unix)]
 pub(super) fn request_clipboard_both(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,
@@ -640,7 +631,6 @@ pub(super) fn request_clipboard_both(
     )
 }
 
-#[cfg(unix)]
 pub(super) fn request_attach_completion(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,
@@ -687,7 +677,6 @@ pub(super) fn request_composer_completion(
     )
 }
 
-#[cfg(unix)]
 pub(super) fn utf16_offset_to_byte(value: &str, offset: usize) -> Option<usize> {
     let mut units = 0;
     for (index, character) in value.char_indices() {
@@ -702,7 +691,6 @@ pub(super) fn utf16_offset_to_byte(value: &str, offset: usize) -> Option<usize> 
     (units == offset).then_some(value.len())
 }
 
-#[cfg(unix)]
 pub(super) fn finish_clipboard_both(app: &mut AppState) {
     let Some(state) = app.clipboard_read.clone() else {
         return;
@@ -762,7 +750,6 @@ pub(super) fn finish_clipboard_both(app: &mut AppState) {
     }
 }
 
-#[cfg(unix)]
 pub(super) fn attach_overlay(app: &AppState) -> OverlayState {
     OverlayState::List(ListOverlay {
         title: "图片附件".to_owned(),
@@ -789,7 +776,6 @@ pub(super) fn attach_overlay(app: &AppState) -> OverlayState {
     })
 }
 
-#[cfg(unix)]
 pub(super) fn request_clipboard_write(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,
@@ -823,7 +809,6 @@ pub(super) fn request_clipboard_write(
     )
 }
 
-#[cfg(unix)]
 pub(super) fn list_context(app: &AppState, title: &str) -> (String, Option<String>) {
     app.overlays
         .iter()
@@ -841,7 +826,6 @@ pub(super) fn list_context(app: &AppState, title: &str) -> (String, Option<Strin
         .unwrap_or_default()
 }
 
-#[cfg(unix)]
 pub(super) fn request_workspace_load(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,
@@ -965,7 +949,6 @@ pub(super) fn request_settings(
     )
 }
 
-#[cfg(unix)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn request_setting_write(
     app: &mut AppState,

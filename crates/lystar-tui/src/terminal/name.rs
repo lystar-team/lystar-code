@@ -1,6 +1,5 @@
 use super::*;
 
-#[cfg(unix)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn request_session_name(
     app: &mut AppState,

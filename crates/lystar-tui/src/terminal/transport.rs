@@ -1,12 +1,12 @@
 use super::*;
 
-#[cfg(unix)]
+type TransportStreams = (Box<dyn Read + Send>, Box<dyn Write>);
+
 pub(super) struct ProtocolPipe {
     pub(super) output: Box<dyn Write>,
     pub(super) inbound: Receiver<Result<ServerMessage, TuiError>>,
 }
 
-#[cfg(unix)]
 impl ProtocolPipe {
     pub(super) fn connect(client_instance_id: &str) -> Result<Self, TuiError> {
         // Composition root 注入 socket endpoint；未注入时保留 fd3/fd4 FIFO 兼容路径。
@@ -18,21 +18,9 @@ impl ProtocolPipe {
         client_instance_id: &str,
         endpoint: Option<&std::ffi::OsStr>,
     ) -> Result<Self, TuiError> {
-        use std::{fs::File, os::fd::FromRawFd, thread};
+        use std::thread;
 
-        let (input, mut output): (Box<dyn Read + Send>, Box<dyn Write>) =
-            if let Some(endpoint) = endpoint {
-                use std::{os::unix::net::UnixStream, path::Path};
-
-                let stream = UnixStream::connect(Path::new(endpoint))?;
-                let input = stream.try_clone()?;
-                (Box::new(input), Box::new(stream))
-            } else {
-                // fd3/4 仅承载 Host 的 framed protocol，Session 文件始终由 Host 读取。
-                let input = unsafe { File::from_raw_fd(3) };
-                let output = unsafe { File::from_raw_fd(4) };
-                (Box::new(input), Box::new(output))
-            };
+        let (input, mut output) = open_transport(endpoint)?;
         output.write_all(&encode_client_hello(client_instance_id)?)?;
         output.flush()?;
         let (sender, inbound) = mpsc::sync_channel(64);
@@ -62,6 +50,34 @@ impl ProtocolPipe {
 }
 
 #[cfg(unix)]
+fn open_transport(endpoint: Option<&std::ffi::OsStr>) -> Result<TransportStreams, TuiError> {
+    use std::{fs::File, os::fd::FromRawFd, os::unix::net::UnixStream, path::Path};
+
+    if let Some(endpoint) = endpoint {
+        let stream = UnixStream::connect(Path::new(endpoint))?;
+        let input = stream.try_clone()?;
+        return Ok((Box::new(input), Box::new(stream)));
+    }
+    // fd3/4 仅承载 Host 的 framed protocol，Session 文件始终由 Host 读取。
+    let input = unsafe { File::from_raw_fd(3) };
+    let output = unsafe { File::from_raw_fd(4) };
+    Ok((Box::new(input), Box::new(output)))
+}
+
+#[cfg(windows)]
+fn open_transport(endpoint: Option<&std::ffi::OsStr>) -> Result<TransportStreams, TuiError> {
+    use std::{fs::OpenOptions, path::Path};
+
+    let endpoint = endpoint
+        .ok_or_else(|| TuiError::HelloRejected("缺少 Windows named pipe endpoint".to_owned()))?;
+    let stream = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(Path::new(endpoint))?;
+    let input = stream.try_clone()?;
+    Ok((Box::new(input), Box::new(stream)))
+}
+
 pub(super) fn read_protocol(
     mut input: Box<dyn Read + Send>,
     sender: SyncSender<Result<ServerMessage, TuiError>>,
@@ -102,15 +118,7 @@ pub(super) fn read_protocol(
     }
 }
 
-#[cfg(unix)]
 pub fn handshake_inherited_pipes() -> Result<(), TuiError> {
     let _pipe = ProtocolPipe::connect("lystar-rust-handshake")?;
     Ok(())
-}
-
-#[cfg(not(unix))]
-pub fn handshake_inherited_pipes() -> Result<(), TuiError> {
-    Err(TuiError::HelloRejected(
-        "Windows named-pipe transport is not implemented".to_owned(),
-    ))
 }

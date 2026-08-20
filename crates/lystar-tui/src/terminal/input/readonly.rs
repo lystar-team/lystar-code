@@ -4,14 +4,12 @@ pub(in super::super) fn is_readonly_overlay(app: &AppState) -> bool {
     matches!(app.overlay(), Some(OverlayState::Detail(detail)) if detail.title == "会话只读")
 }
 
-#[cfg(unix)]
 pub(in super::super) fn readonly_view_mut(app: &mut AppState) -> Option<&mut ReadonlySessionView> {
     is_readonly_overlay(app)
         .then_some(app.readonly_view.as_mut())
         .flatten()
 }
 
-#[cfg(unix)]
 pub(in super::super) fn refresh_readonly_overlay(app: &mut AppState) {
     if let Some(view) = app.readonly_view.clone()
         && is_readonly_overlay(app)
@@ -20,7 +18,6 @@ pub(in super::super) fn refresh_readonly_overlay(app: &mut AppState) {
     }
 }
 
-#[cfg(unix)]
 pub(in super::super) fn handle_readonly_key(
     app: &mut AppState,
     code: KeyCode,

@@ -264,7 +264,6 @@ pub(super) fn apply_extension_raw_input(
     )
 }
 
-#[cfg(unix)]
 pub(super) fn open_custom_editor_recovery(app: &mut AppState) {
     let Some((submitted, missing)) = app.recovery_attachment_counts() else {
         return;
@@ -300,7 +299,6 @@ pub(super) fn open_custom_editor_recovery(app: &mut AppState) {
     }));
 }
 
-#[cfg(unix)]
 pub(super) fn attachment_path(text: &str) -> Option<String> {
     let path = text.strip_prefix("/attach ")?.trim();
     if path.is_empty() {
@@ -314,7 +312,6 @@ pub(super) fn attachment_path(text: &str) -> Option<String> {
     )
 }
 
-#[cfg(unix)]
 pub(super) fn path_command_argument(text: &str, command: &str) -> Option<String> {
     let args = text.strip_prefix(command)?.strip_prefix(' ')?.trim_start();
     if args.is_empty() {
@@ -329,13 +326,11 @@ pub(super) fn path_command_argument(text: &str, command: &str) -> Option<String>
     args.split_whitespace().next().map(str::to_owned)
 }
 
-#[cfg(unix)]
 pub(super) struct SubmitEditorOptions {
     follow_up: bool,
     custom_editor: bool,
 }
 
-#[cfg(unix)]
 pub(super) fn submit_editor(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,
@@ -359,7 +354,6 @@ pub(super) fn submit_editor(
     )
 }
 
-#[cfg(unix)]
 pub(super) fn submit_custom_editor(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,
@@ -383,7 +377,6 @@ pub(super) fn submit_custom_editor(
     )
 }
 
-#[cfg(unix)]
 pub(super) fn submit_next_startup_prompt(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,
@@ -426,7 +419,6 @@ pub(super) fn submit_next_startup_prompt(
     Ok(true)
 }
 
-#[cfg(unix)]
 pub(super) fn submit_editor_with_origin(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,

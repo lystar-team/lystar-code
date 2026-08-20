@@ -37,10 +37,15 @@ test("Agent Core Vitest config isolates the Windows platform suite", () => {
 	});
 });
 
-test("Windows CI selects the Agent Core platform suite and retains its JSON report", () => {
+test("Windows CI retains the Agent Core and Rust TUI IPC platform reports", () => {
 	assert.match(
 		workflow,
 		/\$env:PI_TEST_SUITE = "platform"\s*\r?\n\s*npm --workspace @earendil-works\/pi-agent-core test -- --reporter=json --outputFile="\$env:RUNNER_TEMP\\ci-windows-agent-platform\.json"/,
 	);
+	assert.match(
+		workflow,
+		/npx vitest --run packages\/gui-host\/test\/ipc-process\.test\.ts -t "accepts the Rust TUI handshake through the production IPC Host" --reporter=json --outputFile="\$env:RUNNER_TEMP\\ci-windows-rust-tui-ipc\.json"/,
+	);
+	assert.match(workflow, /--result "\$env:RUNNER_TEMP\\ci-windows-rust-tui-ipc\.json"/);
 	assert.doesNotMatch(workflow, /pi-agent-core test -- test\/harness\/nodejs-env\.windows\.test\.ts/);
 });

@@ -371,7 +371,6 @@ pub(in super::super) fn builtin_slash_command(text: &str) -> Option<&'static str
     }
 }
 
-#[cfg(unix)]
 pub(in super::super) fn open_readonly_session(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,
