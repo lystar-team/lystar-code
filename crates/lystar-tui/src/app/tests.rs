@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use lystar_protocol::{
-    OperationSnapshot, SessionProgress, SessionSnapshot, ToolCall, TranscriptItem,
-    TranscriptViewItem,
+    OperationSnapshot, SessionProgress, SessionSnapshot, StartupImage, StartupInput, StartupPrompt,
+    ToolCall, TranscriptItem, TranscriptViewItem,
 };
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 
@@ -50,6 +50,32 @@ fn operation(status: &str) -> OperationSnapshot {
         progress: None,
         result: None,
         error: None,
+    }
+}
+
+fn snapshot() -> SessionSnapshot {
+    SessionSnapshot {
+        id: "session".to_owned(),
+        path: "/tmp/session.jsonl".to_owned(),
+        name: None,
+        cwd: "/work/project".to_owned(),
+        phase: "idle".to_owned(),
+        activity: "idle".to_owned(),
+        thinking_level: "medium".to_owned(),
+        attached: true,
+        write_access: "owned".to_owned(),
+        revision: 1,
+        leaf_id: None,
+        queued_steer_count: 0,
+        queued_follow_up_count: 0,
+        context_tokens: Some(32_000),
+        context_window: Some(128_000),
+        transcript_generation: "generation".to_owned(),
+        transcript_revision: 1,
+        model: Some(lystar_protocol::ModelRef {
+            provider: "openai".to_owned(),
+            id: "gpt-5.5".to_owned(),
+        }),
     }
 }
 
@@ -234,6 +260,145 @@ fn rendered_transcript(app: &AppState) -> String {
         .collect::<String>()
         .replace(' ', "")
 }
+
+#[test]
+fn renders_typescript_workspace_chrome_and_context_usage() {
+    let mut app = AppState {
+        snapshot: Some(snapshot()),
+        ..AppState::default()
+    };
+    app.editor.insert("hello");
+    let area = Rect::new(0, 0, 80, 24);
+    let mut buffer = Buffer::empty(area);
+    WorkspaceHeaderView::new(&app).render(workspace_header_area(area), &mut buffer);
+    ComposerView::new(&app).render(composer_area(&app, area), &mut buffer);
+    let rendered = buffer
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    let compact = rendered.replace(' ', "");
+    assert!(rendered.contains("/work/project"), "{rendered:?}");
+    assert!(compact.contains("上下文25.0%"), "{rendered:?}");
+    assert!(rendered.contains("LYStar Code"), "{rendered:?}");
+    assert!(compact.contains("❯hello"), "{rendered:?}");
+    assert!(compact.contains("gpt-5.5·思考中(medium)"), "{rendered:?}");
+    assert!(compact.contains("Shift+Tab思考强度·Ctrl+O展开·/命令"));
+}
+
+#[test]
+fn thinking_scan_respects_reduce_motion() {
+    let mut active_snapshot = snapshot();
+    active_snapshot.phase = "turn".to_owned();
+    active_snapshot.activity = "running".to_owned();
+    active_snapshot.thinking_level = "high".to_owned();
+    let mut app = AppState {
+        snapshot: Some(active_snapshot),
+        operation: Some(operation("running")),
+        ..AppState::default()
+    };
+    let area = Rect::new(0, 0, 80, 5);
+    let mut animated = Buffer::empty(area);
+    ComposerView::new(&app).render(area, &mut animated);
+    let animated_colors = animated
+        .content()
+        .iter()
+        .take("Thinking".len())
+        .map(|cell| cell.fg)
+        .collect::<std::collections::HashSet<_>>();
+    assert!(animated_colors.len() > 1);
+
+    app.reduce_motion = true;
+    let mut reduced = Buffer::empty(area);
+    ComposerView::new(&app).render(area, &mut reduced);
+    assert!(
+        reduced
+            .content()
+            .iter()
+            .take("Thinking".len())
+            .all(|cell| cell.fg == ratatui::style::Color::DarkGray)
+    );
+}
+
+#[test]
+fn startup_prompts_are_ordered_and_do_not_reset_for_the_same_batch() {
+    let mut app = AppState::default();
+    let input = StartupInput {
+        batch_id: "batch".to_owned(),
+        prompts: vec![
+            StartupPrompt {
+                text: "first".to_owned(),
+                images: vec![StartupImage {
+                    data: "base64".to_owned(),
+                    mime_type: "image/png".to_owned(),
+                }],
+            },
+            StartupPrompt {
+                text: "second".to_owned(),
+                images: Vec::new(),
+            },
+        ],
+    };
+    app.install_startup_input(input.clone());
+    let (first_id, first) = app.take_startup_prompt().expect("first startup prompt");
+    assert_eq!(first_id, "startup:batch:0");
+    assert_eq!(first.text, "first");
+    app.install_startup_input(input);
+    assert!(app.take_startup_prompt().is_none());
+
+    let mut completed = operation("completed");
+    completed.client_request_id = first_id;
+    app.apply_operation(completed);
+    let (second_id, second) = app.take_startup_prompt().expect("second startup prompt");
+    assert_eq!(second_id, "startup:batch:1");
+    assert_eq!(second.text, "second");
+}
+
+#[test]
+fn startup_prompts_continue_after_failure_cancellation_or_rejection() {
+    let input = StartupInput {
+        batch_id: "batch".to_owned(),
+        prompts: vec![
+            StartupPrompt {
+                text: "first".to_owned(),
+                images: Vec::new(),
+            },
+            StartupPrompt {
+                text: "second".to_owned(),
+                images: Vec::new(),
+            },
+        ],
+    };
+
+    for status in ["failed", "aborted", "interrupted"] {
+        let mut app = AppState::default();
+        app.install_startup_input(input.clone());
+        let (first_id, _) = app.take_startup_prompt().expect("first startup prompt");
+        let mut terminal = operation(status);
+        terminal.client_request_id = first_id;
+        app.apply_operation(terminal);
+        assert_eq!(
+            app.take_startup_prompt()
+                .expect("second startup prompt")
+                .1
+                .text,
+            "second"
+        );
+    }
+
+    let mut app = AppState::default();
+    app.install_startup_input(input);
+    let (first_id, _) = app.take_startup_prompt().expect("first startup prompt");
+    assert!(app.reject_startup_response(&first_id));
+    assert_eq!(
+        app.take_startup_prompt()
+            .expect("second startup prompt")
+            .1
+            .text,
+        "second"
+    );
+}
+
 #[test]
 fn renders_live_thinking_before_assistant_without_protocol_labels() {
     let mut app = AppState::default();
@@ -328,6 +493,8 @@ fn clears_live_streams_when_switching_or_disconnecting() {
             leaf_id: Some("new-leaf".to_owned()),
             queued_steer_count: 0,
             queued_follow_up_count: 0,
+            context_tokens: Some(4_096),
+            context_window: Some(128_000),
             transcript_generation: "g".to_owned(),
             transcript_revision: 1,
             model: None,

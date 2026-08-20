@@ -1,9 +1,42 @@
+use std::fmt;
+
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{ProtocolError, ServerMessage};
 
 pub const MAX_PROGRESS_PREVIEW_BYTES: usize = 8 * 1024;
+
+#[derive(Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartupImage {
+    pub data: String,
+    pub mime_type: String,
+}
+
+impl fmt::Debug for StartupImage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StartupImage")
+            .field("data", &"[redacted]")
+            .field("mime_type", &self.mime_type)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct StartupPrompt {
+    pub text: String,
+    #[serde(default)]
+    pub images: Vec<StartupImage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartupInput {
+    pub batch_id: String,
+    pub prompts: Vec<StartupPrompt>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ToolCall {
@@ -299,6 +332,8 @@ pub struct SessionSnapshot {
     pub leaf_id: Option<String>,
     pub queued_steer_count: u64,
     pub queued_follow_up_count: u64,
+    pub context_tokens: Option<u64>,
+    pub context_window: Option<u64>,
     pub transcript_generation: String,
     pub transcript_revision: u64,
     pub model: Option<ModelRef>,

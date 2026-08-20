@@ -1,8 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
 use lystar_protocol::{
-    OperationSnapshot, SessionProgress, SessionSnapshot, TranscriptItem, TranscriptViewItem,
+    OperationSnapshot, SessionProgress, SessionSnapshot, StartupInput, StartupPrompt,
+    TranscriptItem, TranscriptViewItem,
 };
 use sha2::{Digest, Sha256};
 
@@ -48,6 +49,10 @@ pub struct SessionRestorePoint {
     pub retry: Option<LiveRetry>,
     pub assistant_stream: String,
     pub thinking_stream: String,
+    pub startup_batch_id: Option<String>,
+    pub startup_prompts: VecDeque<StartupPrompt>,
+    pub startup_next_index: usize,
+    pub startup_inflight_request_id: Option<String>,
     pub overlays: Vec<OverlayState>,
     pub workspace_overlay_stack: Vec<Option<WorkspaceOverlayGeneration>>,
     pub workspace_generations: HashMap<String, u64>,
@@ -101,6 +106,11 @@ pub struct AppState {
     pub assistant_stream: String,
     pub thinking_stream: String,
     pub hide_thinking: bool,
+    pub reduce_motion: bool,
+    pub startup_batch_id: Option<String>,
+    pub startup_prompts: VecDeque<StartupPrompt>,
+    pub startup_next_index: usize,
+    pub startup_inflight_request_id: Option<String>,
     pub disconnected: Option<String>,
     pub overlays: Vec<OverlayState>,
     pub input_focus: InputFocus,
@@ -176,6 +186,46 @@ impl AppState {
             .map(|context| context.cwd.as_str())
     }
 
+    pub fn install_startup_input(&mut self, input: StartupInput) {
+        if self.startup_batch_id.as_deref() == Some(input.batch_id.as_str()) {
+            return;
+        }
+        self.startup_batch_id = Some(input.batch_id);
+        self.startup_prompts = input.prompts.into();
+        self.startup_next_index = 0;
+        self.startup_inflight_request_id = None;
+    }
+
+    pub fn take_startup_prompt(&mut self) -> Option<(String, StartupPrompt)> {
+        if self.startup_inflight_request_id.is_some() {
+            return None;
+        }
+        let prompt = self.startup_prompts.pop_front()?;
+        let request_id = format!(
+            "startup:{}:{}",
+            self.startup_batch_id.as_deref().unwrap_or("cli"),
+            self.startup_next_index
+        );
+        self.startup_next_index = self.startup_next_index.saturating_add(1);
+        self.startup_inflight_request_id = Some(request_id.clone());
+        Some((request_id, prompt))
+    }
+
+    pub fn clear_startup_input(&mut self) {
+        self.startup_batch_id = None;
+        self.startup_prompts.clear();
+        self.startup_next_index = 0;
+        self.startup_inflight_request_id = None;
+    }
+
+    pub fn reject_startup_response(&mut self, response_id: &str) -> bool {
+        if self.startup_inflight_request_id.as_deref() != Some(response_id) {
+            return false;
+        }
+        self.startup_inflight_request_id = None;
+        true
+    }
+
     pub fn begin_active_session(&mut self, path: String, cwd: String) -> u64 {
         self.clear_custom_editor_drafts();
         self.pending_session_import = None;
@@ -185,6 +235,7 @@ impl AppState {
         self.invalidate_rich_text();
         self.invalidate_images();
         self.clear_extension_components();
+        self.clear_startup_input();
         self.active_session = Some(ActiveSessionContext {
             path,
             lease_id: None,
@@ -217,6 +268,10 @@ impl AppState {
             retry: self.retry.clone(),
             assistant_stream: self.assistant_stream.clone(),
             thinking_stream: self.thinking_stream.clone(),
+            startup_batch_id: self.startup_batch_id.clone(),
+            startup_prompts: self.startup_prompts.clone(),
+            startup_next_index: self.startup_next_index,
+            startup_inflight_request_id: self.startup_inflight_request_id.clone(),
             overlays: self.overlays.clone(),
             workspace_overlay_stack: self.workspace_overlay_stack.clone(),
             workspace_generations: self.workspace_generations.clone(),
@@ -238,6 +293,10 @@ impl AppState {
         self.retry = restore.retry;
         self.assistant_stream = restore.assistant_stream;
         self.thinking_stream = restore.thinking_stream;
+        self.startup_batch_id = restore.startup_batch_id;
+        self.startup_prompts = restore.startup_prompts;
+        self.startup_next_index = restore.startup_next_index;
+        self.startup_inflight_request_id = restore.startup_inflight_request_id;
         self.overlays = restore.overlays;
         self.workspace_overlay_stack = restore.workspace_overlay_stack;
         self.workspace_generations = restore.workspace_generations;
@@ -446,6 +505,14 @@ impl AppState {
     }
 
     pub fn apply_operation(&mut self, operation: OperationSnapshot) {
+        if matches!(
+            operation.status.as_str(),
+            "completed" | "aborted" | "interrupted" | "failed"
+        ) && self.startup_inflight_request_id.as_deref()
+            == Some(operation.client_request_id.as_str())
+        {
+            self.startup_inflight_request_id = None;
+        }
         self.settle_custom_editor_operation(&operation.operation_id, &operation.status);
         let terminal = matches!(
             operation.status.as_str(),

@@ -46,6 +46,7 @@ impl ExitOutput {
 pub struct RunOptions {
     pub mode: TerminalMode,
     pub exit_output: ExitOutput,
+    pub reduce_motion: bool,
 }
 
 impl Default for RunOptions {
@@ -53,6 +54,7 @@ impl Default for RunOptions {
         Self {
             mode: TerminalMode::Auto,
             exit_output: ExitOutput::Transcript,
+            reduce_motion: false,
         }
     }
 }

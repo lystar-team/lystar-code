@@ -139,12 +139,10 @@ function rustTuiIneligibleReason(options: {
 	frontend: RustTuiFrontend | undefined;
 	startupBenchmark: boolean;
 	sessionPath: string | undefined;
-	hasInitialInput: boolean;
 }): string | undefined {
 	if (!options.frontend) return "当前启动入口未包含 Rust Host";
 	if (options.startupBenchmark) return "启动基准仍使用 TypeScript TUI";
 	if (!options.sessionPath || !existsSync(options.sessionPath)) return "当前 Session 尚未持久化";
-	if (options.hasInitialInput) return "当前版本尚未桥接启动消息";
 	return undefined;
 }
 
@@ -1120,10 +1118,6 @@ export async function main(args: string[], options?: MainOptions) {
 					frontend: options?.rustTuiFrontend,
 					startupBenchmark,
 					sessionPath,
-					hasInitialInput:
-						initialMessage !== undefined ||
-						(initialImages !== undefined && initialImages.length > 0) ||
-						parsed.messages.length > 0,
 				})
 			: undefined;
 		if (rustRequested && !rustIneligibleReason && options?.rustTuiFrontend && sessionPath) {
@@ -1131,7 +1125,33 @@ export async function main(args: string[], options?: MainOptions) {
 				runtime,
 				createRuntime,
 				agentDir,
-				launchOptions: createRustTuiLaunchOptions(sessionPath, settingsManager),
+				launchOptions: createRustTuiLaunchOptions(
+					sessionPath,
+					settingsManager,
+					process.env,
+					loadLystarSettings(getAgentDir()).settings.reduceMotion,
+				),
+				startupInput:
+					initialMessage || parsed.messages.length > 0
+						? {
+								batchId: `cli-${session.sessionId}`,
+								prompts: [
+									...(initialMessage
+										? [
+												{
+													text: initialMessage,
+													...(initialImages
+														? {
+																images: initialImages.map(({ data, mimeType }) => ({ data, mimeType })),
+															}
+														: {}),
+												},
+											]
+										: []),
+									...parsed.messages.map((text) => ({ text })),
+								],
+							}
+						: undefined,
 			});
 			if (result.handled) {
 				stopThemeWatcher();

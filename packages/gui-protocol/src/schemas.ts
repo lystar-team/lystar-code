@@ -348,6 +348,8 @@ export const SessionStateSnapshotSchema = StrictObject({
 	leafId: Type.Union([Id, Type.Null()]),
 	queuedSteerCount: Type.Integer({ minimum: 0 }),
 	queuedFollowUpCount: Type.Integer({ minimum: 0 }),
+	contextTokens: Type.Optional(Type.Union([Type.Integer({ minimum: 0 }), Type.Null()])),
+	contextWindow: Type.Optional(Type.Integer({ minimum: 1 })),
 	transcriptGeneration: Id,
 	transcriptRevision: Type.Integer({ minimum: 0 }),
 });
@@ -1115,7 +1117,18 @@ export function assertWorkspaceCommandResult(
 	}
 }
 
-const ImageInputSchema = StrictObject({ data: Type.String(), mimeType: Type.String({ minLength: 1 }) });
+export const ImageInputSchema = StrictObject({ data: Type.String(), mimeType: Type.String({ minLength: 1 }) });
+export type ImageInput = Static<typeof ImageInputSchema>;
+export const StartupPromptSchema = StrictObject({
+	text: Type.String({ maxLength: 16 * 1024 * 1024 }),
+	images: Type.Optional(Type.Array(ImageInputSchema, { maxItems: 32 })),
+});
+export type StartupPrompt = Static<typeof StartupPromptSchema>;
+export const StartupInputSchema = StrictObject({
+	batchId: Id,
+	prompts: Type.Array(StartupPromptSchema, { minItems: 1, maxItems: 1000 }),
+});
+export type StartupInput = Static<typeof StartupInputSchema>;
 
 const ExtensionInputSchema = Type.String({ minLength: 1, maxLength: 64 * 1024 });
 

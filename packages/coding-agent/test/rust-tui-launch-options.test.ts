@@ -6,11 +6,12 @@ import { createRustTuiLaunchOptions, rustTuiLaunchArgv } from "../src/rust-tui-l
 describe("Rust TUI launch options", () => {
 	test("maps configured mode and fullscreen exit output without changing the default path", () => {
 		const settings = SettingsManager.inMemory({ tuiMode: "fullscreen", fullscreenExitOutput: "resume-hint" });
-		const options = createRustTuiLaunchOptions("/tmp/session with space.jsonl", settings, {});
+		const options = createRustTuiLaunchOptions("/tmp/session with space.jsonl", settings, {}, true);
 		expect(options).toEqual({
 			sessionPath: "/tmp/session with space.jsonl",
 			mode: "fullscreen",
 			exitOutput: "resume-hint",
+			reduceMotion: true,
 		});
 		expect(rustTuiLaunchArgv(options)).toEqual([
 			"--run",
@@ -19,6 +20,8 @@ describe("Rust TUI launch options", () => {
 			"fullscreen",
 			"--exit-output",
 			"resume-hint",
+			"--reduce-motion",
+			"true",
 		]);
 	});
 

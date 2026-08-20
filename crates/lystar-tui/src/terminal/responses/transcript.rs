@@ -6,6 +6,10 @@ pub(in super::super) fn apply_response(
 ) -> Result<bool, TuiError> {
     match response {
         ReadOnlyResponse::Error { id, message } => {
+            if app.reject_startup_response(id) {
+                app.transcript.status = format!("启动消息提交失败：{message}");
+                return Ok(false);
+            }
             let Some(pending) = app.take_transcript_request(id) else {
                 return Ok(false);
             };

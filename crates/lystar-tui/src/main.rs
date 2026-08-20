@@ -26,6 +26,17 @@ fn parse_run_options(args: &[String]) -> Result<RunOptions, terminal::TuiError> 
                     )
                 })?;
             }
+            "--reduce-motion" => {
+                options.reduce_motion = match option.as_str() {
+                    "true" => true,
+                    "false" => false,
+                    _ => {
+                        return Err(terminal::TuiError::InvalidResponse(
+                            "--reduce-motion 仅支持 true 或 false".to_owned(),
+                        ));
+                    }
+                };
+            }
             _ => {
                 return Err(terminal::TuiError::InvalidResponse(format!(
                     "未知参数：{value}"

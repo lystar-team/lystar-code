@@ -6,6 +6,7 @@ export interface RustTuiLaunchOptions {
 	sessionPath: string;
 	mode: RustTuiLaunchMode;
 	exitOutput: "transcript" | "resume-hint";
+	reduceMotion: boolean;
 }
 
 /**
@@ -15,6 +16,7 @@ export function createRustTuiLaunchOptions(
 	sessionPath: string,
 	settingsManager: SettingsManager,
 	env: NodeJS.ProcessEnv = process.env,
+	reduceMotion = false,
 ): RustTuiLaunchOptions {
 	const envMode = env.PI_TUI_MODE;
 	const mode: RustTuiLaunchMode =
@@ -25,9 +27,19 @@ export function createRustTuiLaunchOptions(
 		sessionPath,
 		mode,
 		exitOutput: settingsManager.getFullscreenExitOutput(),
+		reduceMotion,
 	};
 }
 
 export function rustTuiLaunchArgv(options: RustTuiLaunchOptions): string[] {
-	return ["--run", options.sessionPath, "--mode", options.mode, "--exit-output", options.exitOutput];
+	return [
+		"--run",
+		options.sessionPath,
+		"--mode",
+		options.mode,
+		"--exit-output",
+		options.exitOutput,
+		"--reduce-motion",
+		String(options.reduceMotion),
+	];
 }

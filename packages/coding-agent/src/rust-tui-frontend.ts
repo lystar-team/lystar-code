@@ -13,6 +13,17 @@ export interface RustTuiFrontendContext {
 	createRuntime: CreateAgentSessionRuntimeFactory;
 	agentDir: string;
 	launchOptions: RustTuiLaunchOptions;
+	startupInput?: RustTuiStartupInput;
+}
+
+export interface RustTuiStartupPrompt {
+	text: string;
+	images?: Array<{ data: string; mimeType: string }>;
+}
+
+export interface RustTuiStartupInput {
+	batchId: string;
+	prompts: RustTuiStartupPrompt[];
 }
 
 export type RustTuiFrontendResult = { handled: true; exitCode: number } | { handled: false; reason: string };

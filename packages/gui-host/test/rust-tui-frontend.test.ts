@@ -36,6 +36,8 @@ describe("embedded Rust TUI frontend", () => {
 			const agentDir = join(tempDir, "agent");
 			const sessionPath = join(tempDir, "session.jsonl");
 			const client = join(tempDir, "lystar-tui");
+			const preAcquireClient = join(tempDir, "lystar-tui-pre-acquire");
+			const startupExpectedPath = join(tempDir, "startup-input.json");
 			mkdirSync(cwd, { recursive: true });
 			writeFileSync(
 				sessionPath,
@@ -51,12 +53,29 @@ describe("embedded Rust TUI frontend", () => {
 				client,
 				`#!/bin/sh\nexec ${shellQuote(process.execPath)} --import ${shellQuote(tsxImport)} ${shellQuote(fixture)} "$@"\n`,
 			);
+			writeFileSync(preAcquireClient, "#!/bin/sh\nexit 7\n");
 			chmodSync(client, 0o700);
+			chmodSync(preAcquireClient, 0o700);
 			const previousBinary = process.env.PI_RUST_TUI_BINARY;
+			const previousStartupExpectedPath = process.env.PI_EMBEDDED_STARTUP_EXPECTED_PATH;
 			process.env.PI_RUST_TUI_BINARY = client;
+			const startupInput = {
+				batchId: "embedded-startup",
+				prompts: [
+					{
+						text: "startup text",
+						images: [{ data: "cGl4ZWw=", mimeType: "image/png" }],
+					},
+					{ text: "follow-up startup text" },
+				],
+			};
+			writeFileSync(startupExpectedPath, JSON.stringify(startupInput));
+			process.env.PI_EMBEDDED_STARTUP_EXPECTED_PATH = startupExpectedPath;
 			cleanups.push(() => {
 				if (previousBinary === undefined) delete process.env.PI_RUST_TUI_BINARY;
 				else process.env.PI_RUST_TUI_BINARY = previousBinary;
+				if (previousStartupExpectedPath === undefined) delete process.env.PI_EMBEDDED_STARTUP_EXPECTED_PATH;
+				else process.env.PI_EMBEDDED_STARTUP_EXPECTED_PATH = previousStartupExpectedPath;
 				rmSync(tempDir, { recursive: true, force: true });
 			});
 
@@ -88,12 +107,27 @@ describe("embedded Rust TUI frontend", () => {
 			};
 			const runtime = await createAgentSessionRuntime(createRuntime, { cwd, agentDir, sessionManager: manager });
 			factoryCalls = 0;
+			process.env.PI_RUST_TUI_BINARY = preAcquireClient;
+			const preAcquireResult = await runEmbeddedRustTui({
+				runtime,
+				createRuntime,
+				agentDir,
+				launchOptions: { sessionPath, mode: "regular", exitOutput: "resume-hint", reduceMotion: false },
+			});
+			expect(preAcquireResult).toEqual({
+				handled: false,
+				reason: "Rust TUI 在接管 Session 前退出（code=7, signal=null）",
+			});
+			expect(factoryCalls).toBe(0);
+			expect(SessionManager.isWriterLocked(sessionPath)).toBe(true);
 
+			process.env.PI_RUST_TUI_BINARY = client;
 			const result = await runEmbeddedRustTui({
 				runtime,
 				createRuntime,
 				agentDir,
-				launchOptions: { sessionPath, mode: "regular", exitOutput: "resume-hint" },
+				launchOptions: { sessionPath, mode: "regular", exitOutput: "resume-hint", reduceMotion: false },
+				startupInput,
 			});
 
 			expect(result).toEqual({ handled: true, exitCode: 0 });

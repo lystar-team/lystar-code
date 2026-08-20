@@ -4179,6 +4179,21 @@
                           "type": "integer",
                           "minimum": 0
                         },
+                        "contextTokens": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "contextWindow": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
                         "transcriptGeneration": {
                           "type": "string",
                           "minLength": 1,
@@ -7166,6 +7181,21 @@
           "type": "integer",
           "minimum": 0
         },
+        "contextTokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contextWindow": {
+          "type": "integer",
+          "minimum": 1
+        },
         "transcriptGeneration": {
           "type": "string",
           "minLength": 1,
@@ -7384,6 +7414,21 @@
         "queuedFollowUpCount": {
           "type": "integer",
           "minimum": 0
+        },
+        "contextTokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contextWindow": {
+          "type": "integer",
+          "minimum": 1
         },
         "transcriptGeneration": {
           "type": "string",
@@ -7611,6 +7656,21 @@
             "queuedFollowUpCount": {
               "type": "integer",
               "minimum": 0
+            },
+            "contextTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "contextWindow": {
+              "type": "integer",
+              "minimum": 1
             },
             "transcriptGeneration": {
               "type": "string",
@@ -7848,6 +7908,21 @@
               "type": "integer",
               "minimum": 0
             },
+            "contextTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "contextWindow": {
+              "type": "integer",
+              "minimum": 1
+            },
             "transcriptGeneration": {
               "type": "string",
               "minLength": 1,
@@ -8075,6 +8150,21 @@
         "queuedFollowUpCount": {
           "type": "integer",
           "minimum": 0
+        },
+        "contextTokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contextWindow": {
+          "type": "integer",
+          "minimum": 1
         },
         "transcriptGeneration": {
           "type": "string",
@@ -8529,6 +8619,21 @@
             "queuedFollowUpCount": {
               "type": "integer",
               "minimum": 0
+            },
+            "contextTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "contextWindow": {
+              "type": "integer",
+              "minimum": 1
             },
             "transcriptGeneration": {
               "type": "string",

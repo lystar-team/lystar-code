@@ -66,6 +66,12 @@ pub(in super::super) fn apply_session_flow(
                 return Ok(Some(false));
             }
             let (lease_id, snapshot) = parse_lease_snapshot(&result)?;
+            let startup_input = result
+                .get("startupInput")
+                .cloned()
+                .map(serde_json::from_value::<lystar_protocol::StartupInput>)
+                .transpose()
+                .map_err(|error| TuiError::InvalidResponse(format!("启动输入响应无效: {error}")))?;
             if *quit_requested {
                 *sequence += 1;
                 let id = format!("quit-release-{sequence}");
@@ -78,6 +84,9 @@ pub(in super::super) fn apply_session_flow(
                 return Ok(Some(false));
             }
             app.apply_active_lease(lease_id, snapshot);
+            if let Some(startup_input) = startup_input {
+                app.install_startup_input(startup_input);
+            }
             app.transcript.status = "已获取会话租约".to_owned();
             Ok(Some(false))
         }

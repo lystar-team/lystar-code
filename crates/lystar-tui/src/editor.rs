@@ -250,6 +250,13 @@ impl EditorState {
             .collect()
     }
 
+    pub fn visual_lines(&self, width: u16) -> Vec<String> {
+        visual_segments(&self.text, usize::from(width).max(1))
+            .into_iter()
+            .map(|(start, end)| self.text[start..end].to_owned())
+            .collect()
+    }
+
     pub fn cursor_line_column(&self) -> (usize, usize) {
         let line_start = self.line_start(self.cursor);
         (

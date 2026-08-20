@@ -384,6 +384,49 @@ pub(super) fn submit_custom_editor(
 }
 
 #[cfg(unix)]
+pub(super) fn submit_next_startup_prompt(
+    app: &mut AppState,
+    pipe: &mut ProtocolPipe,
+    session_path: &str,
+    client_instance_id: &str,
+    sequence: &mut u64,
+) -> Result<bool, TuiError> {
+    if app.is_active_operation() {
+        return Ok(false);
+    }
+    let Some(lease_id) = app.lease_id.clone() else {
+        return Ok(false);
+    };
+    let Some((request_id, prompt)) = app.take_startup_prompt() else {
+        return Ok(false);
+    };
+    let images = prompt
+        .images
+        .iter()
+        .map(|image| {
+            serde_json::json!({
+                "data": image.data,
+                "mimeType": image.mime_type,
+            })
+        })
+        .collect::<Vec<_>>();
+    *sequence += 1;
+    pipe.request(&encode_queue_request(
+        &request_id,
+        "prompt",
+        session_path,
+        &lease_id,
+        client_instance_id,
+        &request_id,
+        Some(&prompt.text),
+        Some(&images),
+    )?)?;
+    app.transcript.status = format!("正在提交第 {} 条启动消息", app.startup_next_index);
+    trace("startup_prompt");
+    Ok(true)
+}
+
+#[cfg(unix)]
 pub(super) fn submit_editor_with_origin(
     app: &mut AppState,
     pipe: &mut ProtocolPipe,

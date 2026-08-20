@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { encodeClientMessage, type ServerMessage, ServerMessageDecoder } from "@lystar/code-gui-protocol";
 
@@ -55,4 +56,13 @@ socket.write(
 );
 const response = await waitFor((message) => message.type === "response" && message.id === "acquire");
 if (response.type !== "response" || !response.ok) process.exit(3);
+const expectedStartupPath = process.env.PI_EMBEDDED_STARTUP_EXPECTED_PATH;
+if (expectedStartupPath) {
+	const expected = JSON.parse(readFileSync(expectedStartupPath, "utf8"));
+	const actual =
+		response.result && typeof response.result === "object" && !Array.isArray(response.result)
+			? response.result.startupInput
+			: undefined;
+	if (JSON.stringify(actual) !== JSON.stringify(expected)) process.exit(4);
+}
 socket.end();

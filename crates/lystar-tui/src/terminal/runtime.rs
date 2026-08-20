@@ -11,7 +11,13 @@ pub fn run_with_options(session_path: &str, options: RunOptions) -> Result<(), T
     let client_instance_id = std::env::var("PI_RUST_TUI_CLIENT_INSTANCE_ID")
         .unwrap_or_else(|_| format!("lystar-rust-m8-{}", std::process::id()));
     let mut pipe = ProtocolPipe::connect(&client_instance_id)?;
-    let result = run_session(session_path, mode, &client_instance_id, &mut pipe);
+    let result = run_session(
+        session_path,
+        mode,
+        options.reduce_motion,
+        &client_instance_id,
+        &mut pipe,
+    );
     if mode == TerminalMode::Fullscreen
         && let Err(error) = emit_exit_output(&mut pipe, session_path, options.exit_output)
     {
@@ -42,6 +48,7 @@ pub(super) fn clear_terminal_extension_output(
 pub(super) fn run_session(
     session_path: &str,
     mode: TerminalMode,
+    reduce_motion: bool,
     client_instance_id: &str,
     pipe: &mut ProtocolPipe,
 ) -> Result<(), TuiError> {
@@ -54,6 +61,7 @@ pub(super) fn run_session(
     })?;
     let mut request_sequence = 0_u64;
     let mut app = AppState::default();
+    app.reduce_motion = reduce_motion;
     let generation = app.begin_active_session(session_path.to_owned(), String::new());
     let acquire_id = request_acquire(
         pipe,
@@ -97,6 +105,7 @@ pub(super) fn run_session(
     trace("terminal_ready");
     app.mark_page_load_pending();
     let mut dirty = true;
+    let mut last_motion_frame = Instant::now();
     let mut timeout_notified = false;
     let mut last_component_size: Option<(u16, u16)> = None;
     loop {
@@ -104,18 +113,16 @@ pub(super) fn run_session(
             let area = terminal.size()?;
             let full = ratatui::layout::Rect::new(0, 0, area.width, area.height);
             let widget_budget = app.extension_widget_budget(full.height);
-            let composer = composer_area_with_widget_budget(full, widget_budget);
+            let composer = composer_area(&app, full);
             app.prepare_composer(composer);
             trace("draw_start");
             terminal.draw(|frame| {
                 let area = frame.area();
-                frame.render_widget(
-                    TranscriptView::new(&app),
-                    transcript_area_with_widget_budget(area, widget_budget),
-                );
+                frame.render_widget(WorkspaceHeaderView::new(&app), workspace_header_area(area));
+                frame.render_widget(TranscriptView::new(&app), transcript_area(&app, area));
                 frame.render_widget(
                     ComposerView::with_widget_budget(&app, usize::from(widget_budget)),
-                    composer_area_with_widget_budget(area, widget_budget),
+                    composer_area(&app, area),
                 );
                 if let Some(component) = app.active_extension_overlay() {
                     let rect = extension_component_rect(&app, component, area);
@@ -140,18 +147,38 @@ pub(super) fn run_session(
                 } else if app.overlay().is_some() {
                     frame.render_widget(WorkbenchOverlayView::new(&app), area);
                 } else if let Some(component) = app.active_extension_editor() {
-                    let composer = composer_area_with_widget_budget(area, widget_budget);
+                    let composer = composer_area(&app, area);
+                    let editor_offset = widget_budget
+                        .saturating_add(u16::from(app.composer_activity_visible()))
+                        .saturating_add(1);
                     if let Some((row, column)) = component.cursor
-                        && row.saturating_add(1) < composer.height.saturating_sub(2)
-                        && column < composer.width
+                        && row.saturating_add(editor_offset) < composer.height.saturating_sub(2)
+                        && column < composer.width.saturating_sub(4)
                     {
                         frame.set_cursor_position((
-                            composer.x.saturating_add(column),
-                            composer.y.saturating_add(1).saturating_add(row),
+                            composer.x.saturating_add(3).saturating_add(column),
+                            composer.y.saturating_add(editor_offset).saturating_add(row),
                         ));
                     }
                 } else {
                     frame.render_widget(WorkbenchOverlayView::new(&app), area);
+                    let composer = composer_area(&app, area);
+                    let editor_offset = widget_budget
+                        .saturating_add(u16::from(app.composer_activity_visible()))
+                        .saturating_add(1);
+                    let editor_width = composer.width.saturating_sub(4).max(1);
+                    let (cursor_row, cursor_column) = app.editor.visual_cursor(editor_width);
+                    let visible_row = cursor_row.saturating_sub(app.editor.scroll_line());
+                    if let (Ok(row), Ok(column)) =
+                        (u16::try_from(visible_row), u16::try_from(cursor_column))
+                        && row.saturating_add(editor_offset) < composer.height.saturating_sub(2)
+                        && column < editor_width
+                    {
+                        frame.set_cursor_position((
+                            composer.x.saturating_add(3).saturating_add(column),
+                            composer.y.saturating_add(editor_offset).saturating_add(row),
+                        ));
+                    }
                 }
             })?;
             trace("draw_end");
@@ -169,6 +196,7 @@ pub(super) fn run_session(
                         .active_extension_editor()
                         .and_then(|component| component.cursor)
                         .is_some())
+                || (app.overlay().is_none() && app.active_extension_editor().is_none())
             {
                 execute!(terminal.backend_mut().writer_mut(), Show)?;
             } else {
@@ -666,6 +694,13 @@ pub(super) fn run_session(
                 state_changed = true;
             }
         }
+        if app.thinking_activity_visible()
+            && !app.reduce_motion
+            && last_motion_frame.elapsed() >= Duration::from_millis(90)
+        {
+            last_motion_frame = Instant::now();
+            state_changed = true;
+        }
         dirty |= state_changed;
     }
 }
@@ -718,5 +753,13 @@ pub(super) fn process_inbound_message(
             request_sequence,
         )?;
     }
+    let active_path = app.active_session_path().unwrap_or(session_path).to_owned();
+    submit_next_startup_prompt(
+        app,
+        pipe,
+        &active_path,
+        client_instance_id,
+        request_sequence,
+    )?;
     Ok(())
 }

@@ -403,6 +403,8 @@ export type {
 	RustTuiFrontend,
 	RustTuiFrontendContext,
 	RustTuiFrontendResult,
+	RustTuiStartupInput,
+	RustTuiStartupPrompt,
 	TuiFrontendSelection,
 } from "./rust-tui-frontend.ts";
 export { resolveTuiFrontendSelection } from "./rust-tui-frontend.ts";

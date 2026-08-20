@@ -51,8 +51,8 @@ use crate::{
         SettingDescriptor, SkillDescriptor, SubagentDescriptor, TextEditorOverlay,
         TranscriptRequestKind, TranscriptView, TranscriptViewKind, TreeFilter, UiRequest,
         UiRequestKind, UpdateDescriptor, VisibleLink, WorkbenchOverlayView, WorkbenchTarget,
-        WorkspaceRequest, composer_area_with_widget_budget, extension_component_rect,
-        transcript_area, transcript_area_with_widget_budget, transcript_images,
+        WorkspaceHeaderView, WorkspaceRequest, composer_area, extension_component_rect,
+        transcript_area, transcript_images, workspace_header_area,
     },
     image::{CachedImage, ImageSidecar, TerminalImageProtocol, current_terminal_image_protocol},
 };

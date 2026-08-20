@@ -1035,6 +1035,7 @@ class CoreRuntimeSession implements RuntimeSession {
 		const session = this.runtime.session;
 		const header = session.sessionManager.getHeader();
 		const storage = sessionGeneration(this.sessionPath, session.sessionId);
+		const contextUsage = session.getContextUsage();
 		return {
 			id: session.sessionId,
 			path: this.sessionPath,
@@ -1058,6 +1059,8 @@ class CoreRuntimeSession implements RuntimeSession {
 			leafId: session.sessionManager.getLeafId(),
 			queuedSteerCount: session.getSteeringMessages().length,
 			queuedFollowUpCount: session.getFollowUpMessages().length,
+			contextTokens: contextUsage?.tokens,
+			contextWindow: contextUsage?.contextWindow,
 			transcriptGeneration: storage.generation,
 			transcriptRevision: storage.revision,
 		};

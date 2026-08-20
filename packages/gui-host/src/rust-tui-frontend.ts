@@ -65,7 +65,11 @@ export const runEmbeddedRustTui: RustTuiFrontend = async (context): Promise<Rust
 		initialRuntime: context.runtime,
 		createRuntime: context.createRuntime,
 	});
-	const service = new GuiHostService(adapter, { agentDir: context.agentDir });
+	const service = new GuiHostService(adapter, {
+		agentDir: context.agentDir,
+		startupInput: context.startupInput,
+		startupSessionPath: context.launchOptions.sessionPath,
+	});
 	let server: Server | undefined;
 	try {
 		try {

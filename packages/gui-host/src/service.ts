@@ -17,6 +17,7 @@ import {
 	type SessionProgress,
 	type SessionStateSnapshot,
 	type SessionSummary,
+	type StartupInput,
 	type TranscriptItem,
 } from "@lystar/code-gui-protocol";
 import { ContentStore } from "./content-store.ts";
@@ -220,13 +221,28 @@ export class GuiHostService {
 	private readonly adapter: RuntimeAdapter;
 	private readonly capabilities: Capability[];
 	private readonly persistent: boolean;
+	private readonly startupInput?: StartupInput;
+	private readonly startupSessionPath?: string;
 	private readonly watchedSessionFacts = new Map<string, Map<string, SessionFileFact>>();
 	private readonly sessionPollTimer: ReturnType<typeof setInterval>;
 	private pollingSessions = false;
 
-	constructor(adapter: RuntimeAdapter, options: { agentDir: string; journalPath?: string; persistent?: boolean }) {
+	constructor(
+		adapter: RuntimeAdapter,
+		options: {
+			agentDir: string;
+			journalPath?: string;
+			persistent?: boolean;
+			startupInput?: StartupInput;
+			startupSessionPath?: string;
+		},
+	) {
 		this.adapter = adapter;
 		this.persistent = options.persistent === true;
+		this.startupInput = options.startupInput;
+		this.startupSessionPath = options.startupSessionPath
+			? canonicalSessionPath(options.startupSessionPath)
+			: undefined;
 		this.capabilities = options.persistent ? [...BASE_CAPABILITIES, "remote-detach"] : BASE_CAPABILITIES;
 		this.journal = new OperationJournal(options.journalPath ?? join(options.agentDir, "host", "operations.jsonl"));
 		try {
@@ -465,7 +481,13 @@ export class GuiHostService {
 						),
 					);
 					await this.sendSessionSnapshots(runtime);
-					return jsonValue({ lease, snapshot: this.runtimeSnapshot(runtime, "owned") });
+					return jsonValue({
+						lease,
+						snapshot: this.runtimeSnapshot(runtime, "owned"),
+						...(this.startupInput && this.startupSessionPath === sessionPath
+							? { startupInput: this.startupInput }
+							: {}),
+					});
 				} catch (error) {
 					this.leases.release(sessionPath, lease.leaseId);
 					throw error;

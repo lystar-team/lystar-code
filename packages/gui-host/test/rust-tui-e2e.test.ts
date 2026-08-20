@@ -30,6 +30,7 @@ import {
 	encodeTrustedServerMessage,
 	type JsonValue,
 	type ServerMessage,
+	type StartupInput,
 	type SubagentSnapshot,
 	type ThinkingLevel,
 } from "@lystar/code-gui-protocol";
@@ -296,6 +297,7 @@ class FakeRuntimeSession implements RuntimeSession {
 	readonly events = new EventEmitter();
 	readonly sessionPath: string;
 	readonly prompts: string[] = [];
+	readonly promptImages: Array<Array<{ data: string; mimeType: string }> | undefined> = [];
 	readonly steers: string[] = [];
 	readonly followUps: string[] = [];
 	clearQueueCount = 0;
@@ -492,12 +494,17 @@ class FakeRuntimeSession implements RuntimeSession {
 				: candidate,
 		);
 	}
-	async prompt(text: string): Promise<void> {
+	async prompt(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void> {
 		this.prompts.push(text);
+		this.promptImages.push(images);
 		if (this.holdPrompt)
 			await new Promise<void>((resolve) => {
 				this.resolvePrompt = resolve;
 			});
+	}
+	releasePrompt(): void {
+		this.resolvePrompt?.();
+		this.resolvePrompt = undefined;
 	}
 	async steer(text: string): Promise<void> {
 		this.steers.push(text);
@@ -595,6 +602,10 @@ class FakeRuntimeSession implements RuntimeSession {
 		this.snapshot.activity = running ? "running" : "idle";
 		this.snapshot.phase = running ? "turn" : "idle";
 		this.emit({ type: "state_changed", payload: {} });
+	}
+	setThinking(running: boolean): void {
+		this.snapshot.thinkingLevel = running ? "high" : "off";
+		this.setRunning(running);
 	}
 	emit(event: RuntimeEvent): void {
 		this.events.emit("runtime", event);
@@ -1324,6 +1335,10 @@ async function startTui(
 		transport?: "fifo" | "unix-socket";
 		captureRawOutput?: boolean;
 		nonBlockingPromptRequests?: boolean;
+		startupInput?: StartupInput;
+		holdPrompt?: boolean;
+		reduceMotion?: boolean;
+		dropFirstStartupResponse?: boolean;
 	} = {},
 	runtimeHostFactory?: (context: { directory: string }) => Promise<RealRuntimeHost>,
 ): Promise<StartedTui> {
@@ -1370,11 +1385,14 @@ async function startTui(
 	const transportPrefix = useUnixSocket
 		? `env PI_RUST_TUI_HOST_ENDPOINT=${shellQuote(socketEndpoint)}`
 		: `exec 3<${shellQuote(toRust)} 4>${shellQuote(fromRust)}; env`;
-	const command = `before=$(stty -g); printf %s "$before" > ${shellQuote(sttyBeforePath)}; ${transportPrefix} PI_RUST_TUI_TRACE=1 PI_RUST_TUI_CLIENT_INSTANCE_ID=${shellQuote(clientInstanceId)} ${shellQuote(binary)} --run ${shellQuote(sessionPath)} --mode ${shellQuote(runOptions.mode ?? "auto")} --exit-output ${shellQuote(runOptions.exitOutput ?? "transcript")} 2>${shellQuote(tracePath)}; status=$?; after=$(stty -g); printf %s "$after" > ${shellQuote(sttyAfterPath)}; exit $status`;
+	const command = `before=$(stty -g); printf %s "$before" > ${shellQuote(sttyBeforePath)}; ${transportPrefix} PI_RUST_TUI_TRACE=1 PI_RUST_TUI_CLIENT_INSTANCE_ID=${shellQuote(clientInstanceId)} ${shellQuote(binary)} --run ${shellQuote(sessionPath)} --mode ${shellQuote(runOptions.mode ?? "auto")} --exit-output ${shellQuote(runOptions.exitOutput ?? "transcript")} --reduce-motion ${shellQuote(String(runOptions.reduceMotion ?? false))} 2>${shellQuote(tracePath)}; status=$?; after=$(stty -g); printf %s "$after" > ${shellQuote(sttyAfterPath)}; exit $status`;
 	const fixture = hostFactory?.({ directory, sessionPath });
 	const runtime = fixture?.runtimeFor(sessionPath) ?? new FakeRuntimeSession(sessionPath);
+	if (runOptions.holdPrompt && runtime instanceof FakeRuntimeSession) runtime.holdPrompt = true;
 	const service = new GuiHostService(runtimeHost?.adapter ?? fixture?.adapter ?? createAdapter(runtime), {
 		agentDir: runtimeHost?.agentDir ?? directory,
+		startupInput: runOptions.startupInput,
+		startupSessionPath: sessionPath,
 	});
 	cleanups.push(async () => service.dispose());
 	const requests: RequestRecord[] = [];
@@ -1382,12 +1400,17 @@ async function startTui(
 	const serverMessages: ServerMessage[] = [];
 	const responseWrites = new Map<string, number>();
 	let dropNextWorkspaceResponse = false;
+	let dropFirstStartupResponse = runOptions.dropFirstStartupResponse === true;
 	let socketPeer: Socket | undefined;
 	let socketServer: ReturnType<typeof createServer> | undefined;
 	let socketProcessing = Promise.resolve();
 	let socketError: Error | undefined;
 	const connection = service.createConnection(async (message: ServerMessage) => {
 		serverMessages.push(message);
+		if (message.type === "response" && dropFirstStartupResponse && message.id.startsWith("startup:")) {
+			dropFirstStartupResponse = false;
+			return;
+		}
 		if (message.type === "response" && dropNextWorkspaceResponse) {
 			dropNextWorkspaceResponse = false;
 			return;
@@ -2248,6 +2271,52 @@ function emitCommitted(runtime: FakeRuntimeSession, generation: string, fromRevi
 }
 
 describe("Rust read-only TUI fd bridge", () => {
+	it("submits startup text and images sequentially through journaled prompt operations", async () => {
+		const startupInput: StartupInput = {
+			batchId: "startup-e2e",
+			prompts: [
+				{
+					text: "first startup prompt",
+					images: [{ data: "c3RhcnR1cC1pbWFnZQ==", mimeType: "image/png" }],
+				},
+				{ text: "second startup prompt" },
+			],
+		};
+		const tui = await startTui(0, { width: 80, height: 24 }, "startup-input", undefined, {
+			startupInput,
+			holdPrompt: true,
+			nonBlockingPromptRequests: true,
+			dropFirstStartupResponse: true,
+		});
+		try {
+			await waitFor(async () => {
+				await tui.pump();
+				return tui.runtime.prompts.length === 1;
+			}, "Rust did not submit the first startup prompt after acquire");
+			assert.deepEqual(tui.runtime.prompts, ["first startup prompt"]);
+			assert.deepEqual(tui.runtime.promptImages, [[{ data: "c3RhcnR1cC1pbWFnZQ==", mimeType: "image/png" }]]);
+
+			tui.runtime.releasePrompt();
+			await waitFor(async () => {
+				await tui.pump();
+				return tui.runtime.prompts.length === 2;
+			}, "Rust did not submit the second startup prompt after the first operation settled");
+			assert.deepEqual(tui.runtime.prompts, ["first startup prompt", "second startup prompt"]);
+			const promptRequests = tui.clientMessages.filter(
+				(message): message is PromptRequestMessage =>
+					message.type === "request" && message.request.command === "prompt",
+			);
+			assert.deepEqual(
+				promptRequests.map((message) => message.request.clientRequestId),
+				["startup:startup-e2e:0", "startup:startup-e2e:1"],
+			);
+			tui.runtime.releasePrompt();
+		} finally {
+			tui.runtime.releasePrompt();
+			tui.closeProtocol();
+		}
+	}, 30_000);
+
 	it("drives PageUp, search, runtime append, reload, captures layouts, and exits on EOF twice", async () => {
 		for (let attempt = 0; attempt < 2; attempt++) {
 			const tui = await startTui(240, { width: 80, height: 24 }, `e2e-${attempt + 1}`);
@@ -2277,6 +2346,15 @@ describe("Rust read-only TUI fd bridge", () => {
 				writeCapture(tui, "80x8-compat", 80, false);
 				tui.resize(80, 24);
 				await waitForTrace(tui, "frame_rendered", beforeSmallFrames + 2);
+
+				tui.runtime.setThinking(true);
+				await waitFor(() => tui.pane().includes("Thinking"), "Rust thinking activity is not visible");
+				const thinkingFrames = tui.traces().filter((event) => event.event === "frame_rendered").length;
+				await new Promise((resolve) => setTimeout(resolve, 320));
+				await waitForTrace(tui, "frame_rendered", thinkingFrames + 2);
+				writeCapture(tui, "80x24-thinking", 80);
+				tui.runtime.setThinking(false);
+				await waitFor(() => !tui.pane().includes("Thinking"), "Rust thinking activity did not settle");
 
 				const olderPageCount = tui.traces().filter((event) => event.event === "page_applied").length;
 				for (let index = 1; index <= 10; index++) {

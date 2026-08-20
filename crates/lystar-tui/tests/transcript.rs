@@ -1,6 +1,7 @@
 use lystar_protocol::{TranscriptItem, TranscriptViewItem};
 use lystar_tui::app::{
-    AppState, ComposerView, ROUND_CACHE_LIMIT, TranscriptView, composer_area, transcript_area,
+    AppState, ComposerView, ROUND_CACHE_LIMIT, TranscriptView, WorkspaceHeaderView, composer_area,
+    transcript_area, workspace_header_area,
 };
 use ratatui::{Terminal, backend::TestBackend};
 
@@ -16,7 +17,7 @@ fn item(id: usize) -> TranscriptItem {
 }
 
 #[test]
-fn keeps_a_bounded_round_window_and_status_at_small_sizes() {
+fn keeps_a_bounded_round_window_and_workspace_chrome_at_small_sizes() {
     let mut app = AppState::default();
     app.transcript.replace_page(
         (0..10_000).map(item).collect(),
@@ -35,12 +36,14 @@ fn keeps_a_bounded_round_window_and_status_at_small_sizes() {
         terminal
             .draw(|frame| {
                 let area = frame.area();
+                frame.render_widget(WorkspaceHeaderView::new(&app), workspace_header_area(area));
                 frame.render_widget(TranscriptView::new(&app), transcript_area(&app, area));
                 frame.render_widget(ComposerView::new(&app), composer_area(&app, area));
             })
             .unwrap();
         let output = terminal.backend().buffer().content();
-        assert!(output.iter().any(|cell| cell.symbol() == "未"));
-        assert!(output.iter().any(|cell| cell.symbol() == "E"));
+        assert!(output.iter().any(|cell| cell.symbol() == "L"));
+        assert!(output.iter().any(|cell| cell.symbol() == "❯"));
+        assert!(output.iter().any(|cell| cell.symbol() == "中"));
     }
 }

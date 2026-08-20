@@ -122,7 +122,7 @@ describe("lc embedded Rust TUI startup", () => {
 			try {
 				await waitFor("Rust Composer", () => {
 					const pane = tmux(socket, ["capture-pane", "-p", "-t", "tui", "-S", "-24"]);
-					return pane.includes("idle 队列 0/0") && pane.includes("Ctrl+O Tool");
+					return pane.includes("LYStar Code") && pane.includes("Ctrl+O 展开") && pane.includes("上下文");
 				});
 			} catch (error) {
 				const pane = tmux(socket, ["capture-pane", "-p", "-t", "tui", "-S", "-24"]);
@@ -142,7 +142,11 @@ describe("lc embedded Rust TUI startup", () => {
 				throw new Error(`${error instanceof Error ? error.message : String(error)}\n${pane}`);
 			}
 
-			expect(readFileSync(exitPath, "utf8").trim()).toBe("0");
+			const exit = readFileSync(exitPath, "utf8").trim();
+			expect(
+				exit,
+				`Rust TUI exited unexpectedly.\ntrace:\n${readFileSync(tracePath, "utf8")}\nterminal:\n${readFileSync(rawOutputPath, "utf8").slice(-8_000)}`,
+			).toBe("0");
 			expect(readFileSync(afterPath, "utf8").trim()).toBe(readFileSync(beforePath, "utf8").trim());
 			const rawOutput = readFileSync(rawOutputPath, "utf8");
 			const trace = readFileSync(tracePath, "utf8");

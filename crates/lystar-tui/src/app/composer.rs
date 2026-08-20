@@ -7,10 +7,11 @@ use lystar_protocol::OperationSnapshot;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     widgets::Widget,
 };
 use sha2::{Digest, Sha256};
+use unicode_width::UnicodeWidthStr;
 
 use super::transcript::{put_ansi_line, put_line};
 use super::{AppState, WORKSPACE_REQUEST_TIMEOUT};
@@ -600,6 +601,71 @@ impl AppState {
     }
 }
 
+pub struct WorkspaceHeaderView<'a> {
+    state: &'a AppState,
+}
+
+impl<'a> WorkspaceHeaderView<'a> {
+    pub fn new(state: &'a AppState) -> Self {
+        Self { state }
+    }
+}
+
+impl Widget for WorkspaceHeaderView<'_> {
+    fn render(self, area: Rect, buffer: &mut Buffer) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let width = usize::from(area.width);
+        let path = self
+            .state
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.cwd.as_str())
+            .or_else(|| self.state.active_session_cwd())
+            .unwrap_or_default();
+        let context = self.state.snapshot.as_ref().map_or_else(
+            || "上下文 ?".to_owned(),
+            |snapshot| match (snapshot.context_tokens, snapshot.context_window) {
+                (Some(tokens), Some(window)) if window > 0 => {
+                    format!("上下文 {:.1}%", tokens as f64 / window as f64 * 100.0)
+                }
+                _ => "上下文 ?".to_owned(),
+            },
+        );
+        let context_width = UnicodeWidthStr::width(context.as_str());
+        let path_width = width.saturating_sub(context_width.saturating_add(2));
+        put_line(
+            buffer,
+            area.x,
+            area.y,
+            path,
+            path_width,
+            Style::default().fg(Color::White),
+        );
+        if context_width <= width {
+            put_line(
+                buffer,
+                area.x + u16::try_from(width - context_width).unwrap_or(0),
+                area.y,
+                &context,
+                context_width,
+                Style::default().fg(Color::DarkGray),
+            );
+        }
+        if area.height > 1 {
+            put_line(
+                buffer,
+                area.x,
+                area.y + 1,
+                &"─".repeat(width),
+                width,
+                Style::default().fg(Color::DarkGray),
+            );
+        }
+    }
+}
+
 pub struct ComposerView<'a> {
     state: &'a AppState,
     widget_budget: usize,
@@ -620,7 +686,7 @@ impl<'a> ComposerView<'a> {
 
 impl Widget for ComposerView<'_> {
     fn render(self, area: Rect, buffer: &mut Buffer) {
-        if area.width == 0 || area.height == 0 {
+        if area.width < 2 || area.height == 0 {
             return;
         }
         let width = usize::from(area.width);
@@ -631,66 +697,16 @@ impl Widget for ComposerView<'_> {
             put_ansi_line(buffer, area.x, row, line, width);
             row = row.saturating_add(1);
         }
-        put_line(
-            buffer,
-            area.x,
-            row,
-            "─",
-            width,
-            Style::default().fg(Color::DarkGray),
-        );
-        row = row.saturating_add(1);
-        let reserved = u16::try_from(
-            below_lines
-                .len()
-                .saturating_add(usize::from(hidden_lines > 0)),
-        )
-        .unwrap_or(u16::MAX)
-        .saturating_add(2);
-        let visible_lines = usize::from(
-            area.y
-                .saturating_add(area.height)
-                .saturating_sub(row)
-                .saturating_sub(reserved),
-        )
-        .max(1);
-        let editor_lines = self
-            .state
-            .active_extension_editor()
-            .map(|component| component.lines.clone())
-            .unwrap_or_else(|| {
-                self.state
-                    .editor
-                    .visual_lines_with_cursor(area.width)
-                    .into_iter()
-                    .skip(self.state.editor.scroll_line())
-                    .collect()
-            });
-        for (line_index, rendered) in editor_lines.iter().enumerate().take(visible_lines) {
-            let target_row = row + u16::try_from(line_index).unwrap_or(0);
-            if self.state.active_extension_editor().is_some() {
-                put_ansi_line(buffer, area.x, target_row, rendered, width);
-            } else {
-                put_line(
-                    buffer,
-                    area.x,
-                    target_row,
-                    rendered,
-                    width,
-                    Style::default().fg(Color::White),
-                );
-            }
+        let activity = activity_line(self.state);
+        if let Some((text, style)) = &activity {
+            render_activity(buffer, area.x, row, width, text, *style, self.state);
+            row = row.saturating_add(1);
         }
-        row = row.saturating_add(u16::try_from(visible_lines).unwrap_or(u16::MAX));
-        let status_y = area.y + area.height.saturating_sub(2);
         for line in below_lines {
-            if row >= status_y {
-                break;
-            }
             put_ansi_line(buffer, area.x, row, line, width);
             row = row.saturating_add(1);
         }
-        if hidden_lines > 0 && row < status_y {
+        if hidden_lines > 0 {
             put_line(
                 buffer,
                 area.x,
@@ -699,49 +715,90 @@ impl Widget for ComposerView<'_> {
                 width,
                 Style::default().fg(Color::DarkGray),
             );
+            row = row.saturating_add(1);
         }
-        let attachment_line = self.state.attachment_summary(area.height <= 4);
-        let working = if self.state.is_active_operation() && self.state.extension_ui.working_visible
-        {
-            let frames = &self.state.extension_ui.working_frames;
-            let frame = if frames.is_empty() {
-                ""
-            } else {
-                let elapsed = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
-                &frames[((elapsed / self.state.extension_ui.working_interval_ms.max(16)) as usize)
-                    % frames.len()]
-            };
-            Some(format!(
-                "{frame} {}",
+        if row >= area.y.saturating_add(area.height) {
+            return;
+        }
+        render_top_border(buffer, area.x, row, width);
+        row = row.saturating_add(1);
+        let reserved = 2_u16;
+        let visible_lines = usize::from(
+            area.y
+                .saturating_add(area.height)
+                .saturating_sub(row)
+                .saturating_sub(reserved),
+        )
+        .max(1);
+        let editor_width = area.width.saturating_sub(4).max(1);
+        let editor_lines = self
+            .state
+            .active_extension_editor()
+            .map(|component| component.lines.clone())
+            .unwrap_or_else(|| {
                 self.state
-                    .extension_ui
-                    .working_message
-                    .as_deref()
-                    .unwrap_or("运行中")
-            ))
-        } else {
-            None
-        };
-        let status_line = attachment_line.or(working).unwrap_or_default();
-        if !status_line.is_empty() {
+                    .editor
+                    .visual_lines(editor_width)
+                    .into_iter()
+                    .skip(self.state.editor.scroll_line())
+                    .collect()
+            });
+        for (line_index, rendered) in editor_lines.iter().enumerate().take(visible_lines) {
+            let target_row = row + u16::try_from(line_index).unwrap_or(0);
             put_line(
                 buffer,
                 area.x,
-                status_y,
-                &status_line,
-                width,
-                Style::default().fg(Color::Cyan),
+                target_row,
+                "│",
+                1,
+                Style::default().fg(Color::DarkGray),
+            );
+            let prompt = if line_index == 0 { "❯ " } else { "  " };
+            put_line(
+                buffer,
+                area.x + 1,
+                target_row,
+                prompt,
+                2,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            );
+            if self.state.active_extension_editor().is_some() {
+                put_ansi_line(
+                    buffer,
+                    area.x + 3,
+                    target_row,
+                    rendered,
+                    usize::from(editor_width),
+                );
+            } else {
+                put_line(
+                    buffer,
+                    area.x + 3,
+                    target_row,
+                    rendered,
+                    usize::from(editor_width),
+                    Style::default().fg(Color::White),
+                );
+            }
+            put_line(
+                buffer,
+                area.x + area.width.saturating_sub(1),
+                target_row,
+                "│",
+                1,
+                Style::default().fg(Color::DarkGray),
             );
         }
+        row = row.saturating_add(u16::try_from(visible_lines).unwrap_or(u16::MAX));
+        render_bottom_border(buffer, area.x, row, width, self.state);
         let shortcuts = if self.state.is_active_operation() {
-            "Enter 引导  Alt+Enter 后续  Esc 停止  Ctrl+O Tool"
+            "Esc 停止  ·  Ctrl+O 展开  ·  / 命令"
         } else if self.state.recovery_draft.is_some() {
-            "Enter 提交  Ctrl+R 打开恢复草稿  Ctrl+F 搜索  Ctrl+O Tool"
+            "Ctrl+R 恢复草稿  ·  Ctrl+O 展开  ·  / 命令"
         } else {
-            "Enter 提交  Shift+Enter 换行  Ctrl+F 搜索  Ctrl+O Tool"
+            "Shift+Tab 思考强度  ·  Ctrl+O 展开  ·  / 命令"
         };
         put_line(
             buffer,
@@ -752,4 +809,160 @@ impl Widget for ComposerView<'_> {
             Style::default().fg(Color::DarkGray),
         );
     }
+}
+
+fn activity_line(state: &AppState) -> Option<(String, Style)> {
+    if let Some(disconnected) = &state.disconnected {
+        return Some((disconnected.clone(), Style::default().fg(Color::Red)));
+    }
+    if let Some(attachments) = state.attachment_summary(false) {
+        return Some((attachments, Style::default().fg(Color::Cyan)));
+    }
+    if !state.is_active_operation() {
+        return None;
+    }
+    if state.thinking_activity_visible() {
+        return Some(("Thinking".to_owned(), Style::default().fg(Color::DarkGray)));
+    }
+    if state.extension_ui.working_visible {
+        let frames = &state.extension_ui.working_frames;
+        let frame = if frames.is_empty() {
+            ""
+        } else {
+            let elapsed = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            &frames[((elapsed / state.extension_ui.working_interval_ms.max(16)) as usize)
+                % frames.len()]
+        };
+        return Some((
+            format!(
+                "{frame} {}",
+                state
+                    .extension_ui
+                    .working_message
+                    .as_deref()
+                    .unwrap_or("运行中")
+            ),
+            Style::default().fg(Color::Cyan),
+        ));
+    }
+    Some((
+        state.transcript.status.clone(),
+        Style::default().fg(Color::DarkGray),
+    ))
+}
+
+fn render_activity(
+    buffer: &mut Buffer,
+    x: u16,
+    y: u16,
+    width: usize,
+    text: &str,
+    style: Style,
+    state: &AppState,
+) {
+    if text != "Thinking" || state.reduce_motion {
+        put_line(buffer, x, y, text, width, style);
+        return;
+    }
+    let scan = usize::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            / 90,
+    )
+    .unwrap_or(0)
+        % text.chars().count();
+    for (index, character) in text.chars().enumerate() {
+        let color = if index == scan {
+            Color::White
+        } else if index.abs_diff(scan) == 1 {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        };
+        buffer.set_string(
+            x + u16::try_from(index).unwrap_or(0),
+            y,
+            character.to_string(),
+            Style::default().fg(color),
+        );
+    }
+}
+
+fn render_top_border(buffer: &mut Buffer, x: u16, y: u16, width: usize) {
+    let title = " LYStar Code ";
+    if width < UnicodeWidthStr::width(title).saturating_add(2) {
+        put_line(
+            buffer,
+            x,
+            y,
+            &"─".repeat(width),
+            width,
+            Style::default().fg(Color::DarkGray),
+        );
+        return;
+    }
+    let left = width
+        .saturating_sub(UnicodeWidthStr::width(title))
+        .saturating_sub(2)
+        .saturating_sub(1);
+    let line = format!("╭{}{}─╮", "─".repeat(left), title);
+    put_line(
+        buffer,
+        x,
+        y,
+        &line,
+        width,
+        Style::default().fg(Color::DarkGray),
+    );
+}
+
+fn render_bottom_border(buffer: &mut Buffer, x: u16, y: u16, width: usize, state: &AppState) {
+    let model = state
+        .snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.model.as_ref())
+        .map_or("无模型", |model| model.id.as_str());
+    let thinking = state
+        .snapshot
+        .as_ref()
+        .map_or("中(medium)".to_owned(), |snapshot| {
+            let label = match snapshot.thinking_level.as_str() {
+                "off" => "关",
+                "minimal" => "最小",
+                "low" => "低",
+                "medium" => "中",
+                "high" => "高",
+                "xhigh" => "极高",
+                "max" => "最高",
+                _ => "未知",
+            };
+            format!("{label}({})", snapshot.thinking_level)
+        });
+    let status = format!(" {model} · 思考 {thinking} ");
+    let status_width = UnicodeWidthStr::width(status.as_str());
+    if width < status_width.saturating_add(2) {
+        put_line(
+            buffer,
+            x,
+            y,
+            &"─".repeat(width),
+            width,
+            Style::default().fg(Color::DarkGray),
+        );
+        return;
+    }
+    let line = format!("╰─{status}{}╯", "─".repeat(width - status_width - 3));
+    put_line(
+        buffer,
+        x,
+        y,
+        &line,
+        width,
+        Style::default().fg(Color::DarkGray),
+    );
 }

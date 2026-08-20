@@ -118,8 +118,24 @@ pub struct PendingTerminalInput {
 
 impl AppState {
     pub fn composer_height(&self, total_height: u16) -> u16 {
-        let base: u16 = if total_height <= 8 { 4 } else { 6 };
-        base.saturating_add(self.extension_widget_budget(total_height))
+        4_u16
+            .saturating_add(self.extension_widget_budget(total_height))
+            .saturating_add(u16::from(self.composer_activity_visible()))
+            .min(total_height)
+    }
+
+    pub fn composer_activity_visible(&self) -> bool {
+        self.disconnected.is_some()
+            || self.attachment_summary(false).is_some()
+            || self.is_active_operation()
+    }
+
+    pub fn thinking_activity_visible(&self) -> bool {
+        self.is_active_operation()
+            && self.snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot.phase == "turn" && snapshot.thinking_level != "off"
+            })
+            && self.assistant_stream.is_empty()
     }
 
     pub fn extension_widget_budget(&self, total_height: u16) -> u16 {
@@ -401,10 +417,14 @@ impl AppState {
     }
 
     pub fn prepare_composer(&mut self, area: Rect) {
-        self.composer_width = area.width;
+        let auxiliary_height = area.height.saturating_sub(4);
+        let editor_width = area.width.saturating_sub(4).max(1);
+        self.composer_width = editor_width;
         if self.active_extension_editor().is_none() {
-            self.editor
-                .ensure_cursor_visible(area.width, area.height.saturating_sub(3).max(1));
+            self.editor.ensure_cursor_visible(
+                editor_width,
+                area.height.saturating_sub(3 + auxiliary_height).max(1),
+            );
         }
     }
 
@@ -467,8 +487,7 @@ pub fn extension_component_rect(
     component: &ExtensionComponentState,
     area: Rect,
 ) -> Rect {
-    let widget_budget = state.extension_widget_budget(area.height);
-    let workspace = transcript_area_with_widget_budget(area, widget_budget);
+    let workspace = transcript_area(state, area);
     if !component.overlay_options.overlay {
         return workspace;
     }
@@ -614,31 +633,60 @@ impl Widget for ExtensionComponentOverlayView<'_> {
     }
 }
 
+fn workspace_content_area(area: Rect) -> Rect {
+    if area.width <= 4 {
+        area
+    } else {
+        Rect::new(area.x + 2, area.y, area.width - 4, area.height)
+    }
+}
+
+pub fn workspace_header_area(area: Rect) -> Rect {
+    let content = workspace_content_area(area);
+    Rect::new(content.x, content.y, content.width, content.height.min(2))
+}
+
 pub fn transcript_area_with_widget_budget(area: Rect, widget_budget: u16) -> Rect {
-    let base: u16 = if area.height <= 8 { 4 } else { 6 };
+    let content = workspace_content_area(area);
+    let header_height = content.height.min(2);
+    let composer_height = 4_u16
+        .saturating_add(widget_budget)
+        .min(content.height.saturating_sub(header_height));
     Rect::new(
-        area.x,
-        area.y,
-        area.width,
-        area.height
-            .saturating_sub(base.saturating_add(widget_budget)),
+        content.x,
+        content.y.saturating_add(header_height),
+        content.width,
+        content
+            .height
+            .saturating_sub(header_height)
+            .saturating_sub(composer_height),
     )
 }
 
 pub fn composer_area_with_widget_budget(area: Rect, widget_budget: u16) -> Rect {
+    let content = workspace_content_area(area);
     let transcript = transcript_area_with_widget_budget(area, widget_budget);
     Rect::new(
-        area.x,
-        area.y + transcript.height,
-        area.width,
-        area.height.saturating_sub(transcript.height),
+        content.x,
+        transcript.y + transcript.height,
+        content.width,
+        content
+            .y
+            .saturating_add(content.height)
+            .saturating_sub(transcript.y + transcript.height),
     )
 }
 
 pub fn transcript_area(state: &AppState, area: Rect) -> Rect {
-    transcript_area_with_widget_budget(area, state.extension_widget_budget(area.height))
+    let budget = state
+        .extension_widget_budget(area.height)
+        .saturating_add(u16::from(state.composer_activity_visible()));
+    transcript_area_with_widget_budget(area, budget)
 }
 
 pub fn composer_area(state: &AppState, area: Rect) -> Rect {
-    composer_area_with_widget_budget(area, state.extension_widget_budget(area.height))
+    let budget = state
+        .extension_widget_budget(area.height)
+        .saturating_add(u16::from(state.composer_activity_visible()));
+    composer_area_with_widget_budget(area, budget)
 }

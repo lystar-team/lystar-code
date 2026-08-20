@@ -590,10 +590,9 @@ impl Widget for TranscriptView<'_> {
             return;
         }
         let search_height = u16::from(self.state.search.open).saturating_mul(2);
-        let status_y = area.y + area.height.saturating_sub(1);
         let header_lines = self
             .state
-            .extension_header_lines(usize::from(area.height.saturating_sub(1 + search_height)));
+            .extension_header_lines(usize::from(area.height.saturating_sub(search_height)));
         let header_height = u16::try_from(header_lines.len()).unwrap_or(u16::MAX);
         for (index, line) in header_lines.iter().enumerate() {
             put_ansi_line(
@@ -607,7 +606,7 @@ impl Widget for TranscriptView<'_> {
         let content_y = area.y.saturating_add(header_height);
         let content_height = area
             .height
-            .saturating_sub(1 + search_height)
+            .saturating_sub(search_height)
             .saturating_sub(header_height);
         let width = usize::from(area.width.saturating_sub(1));
         let rich_width = area.width.saturating_sub(3);
@@ -744,32 +743,9 @@ impl Widget for TranscriptView<'_> {
                 Style::default().fg(Color::Yellow),
             );
         }
-        render_scrollbar(
-            area,
-            buffer,
-            self.state.transcript.cached_rounds(),
-            self.state.transcript.current,
-        );
-        let status = self
-            .state
-            .disconnected
-            .as_deref()
-            .unwrap_or(&self.state.transcript.status);
-        put_line(
-            buffer,
-            area.x,
-            status_y,
-            &format!("{status}  |  {}", self.state.footer_status()),
-            usize::from(area.width),
-            Style::default().fg(if self.state.disconnected.is_some() {
-                Color::Red
-            } else {
-                Color::DarkGray
-            }),
-        );
         if self.state.search.open {
-            let query_y = status_y.saturating_sub(2);
-            let result_y = status_y.saturating_sub(1);
+            let query_y = area.y + area.height.saturating_sub(2);
+            let result_y = area.y + area.height.saturating_sub(1);
             put_line(
                 buffer,
                 area.x,
@@ -829,23 +805,6 @@ fn group_rounds(items: Vec<TranscriptItem>) -> Vec<TranscriptRound> {
         }
     }
     rounds
-}
-
-fn render_scrollbar(area: Rect, buffer: &mut Buffer, total: usize, current: usize) {
-    if area.width < 2 || area.height < 3 || total <= 1 {
-        return;
-    }
-    let track = area.height.saturating_sub(1);
-    let position = ((current as f64 / (total.saturating_sub(1)) as f64)
-        * f64::from(track.saturating_sub(1))) as u16;
-    for offset in 0..track {
-        buffer.set_string(
-            area.x + area.width - 1,
-            area.y + offset,
-            if offset == position { "#" } else { "|" },
-            Style::default().fg(Color::DarkGray),
-        );
-    }
 }
 
 pub(super) fn put_rich_line(
