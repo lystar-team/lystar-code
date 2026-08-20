@@ -2,7 +2,7 @@
 
 最后更新：2026-08-20
 接手分支：`feat/rust-tui`
-功能基线：`4312b9c18 fix(tui): 收口 Rust 接管生命周期`
+功能基线：`614ae00 fix(agent): 修正二进制构建后的资源路径`
 产品版本：`0.84.2-lystar.1`
 Pi 基线：`0.84.2`
 
@@ -34,11 +34,13 @@ node -p 'require("./packages/coding-agent/package.json").piConfig'
 本次交接时的实际状态：
 
 - 当前分支：`feat/rust-tui`。
-- 最新功能提交：`4312b9c18 fix(tui): 收口 Rust 接管生命周期`；本 HANDOFF 文档提交位于其后。
+- 最新功能提交：`614ae00 fix(agent): 修正二进制构建后的资源路径`；它修复 `build:binary` 复制到 `dist/package.json` 后，Node/Vitest 把资源路径错误解析为 `dist/dist` 的问题。
 - 完成本 HANDOFF 提交后，工作区应只剩未跟踪的 `aaa.jsonl`。
 - `aaa.jsonl` 是用户文件，不读取、不修改、不暂存、不提交。
-- `npm run build:offline` 生成的 `packages/coding-agent/src` 旁 `.js`、`.d.ts` 和 `.map` 已按本轮生成清单删除。
-- 当前 shell 没有 Bun；`bun --version` 返回不可用。
+- `npm run build:offline` 和 `build:binary` 生成的 `packages/coding-agent/src` 旁 `.js`、`.d.ts` 和 `.map` 已按本轮生成清单删除；在线模型目录刷新已恢复。
+- 当前 shell 没有全局 Bun；`bun --version` 返回不可用，但 `npx --yes -p bun@1.3.9 bun --version` 可提供精确 Bun `1.3.9`。
+- current HEAD 已生成 `packages/coding-agent/dist/lc`，SHA-256 为 `9c7e83bc91f562b89177aecde4a61442430ddf3948138122fa4953885f0cb46a`；该文件属于忽略的本地构建产物。
+- 相邻 `packages/coding-agent/dist/lystar-tui` 只在验证时手工放置，验证后已删除；当前发行构建不会自动物化 Rust sidecar。
 - 当前 Node.js：`v22.21.1`。
 - 当前 Rust：`rustc 1.97.1`，Cargo `1.97.1`。
 - 当前 tmux：`3.5a`。
@@ -147,7 +149,7 @@ Rust TUI 已接入或完成：
 
 - ownership/正式 main 聚焦 Vitest：6 files，`64/64`。
 - Host-Rust startup/layout PTY E2E：`2/2`。
-- Rust TUI lib：`151/151`。
+- Rust TUI all-targets：`154/154`。
 - Rust transcript 集成：`1/1`。
 - Rust benchmark 自测：`2/2`。
 - Rust Protocol：`11/11`。
@@ -182,6 +184,29 @@ Rust TUI 已接入或完成：
 - 每条 frontend 场景核对 Runtime factory 未增加、writer lock、endpoint/socket 目录和 `handled`；Shell 重放使用 marker 证明 exactly-once。
 - 正式 `main()` PTY 证明 acquire 后 sidecar 以 17 退出时，`lc` 返回 17，不打印 fallback 提示，也不启动 TypeScript TUI。
 - 真实 Rust PTY guard 继续证明 fullscreen/regular 下 EOF、panic、SIGINT 和 SIGTERM 均恢复 `stty -g`。
+
+### 4.5 compiled Bun `lc` 已完成 Linux x64 验证
+
+本轮使用 `npx --yes -p bun@1.3.9` 提供项目固定 Bun `1.3.9`，没有修改依赖或项目版本。current HEAD 的 `build:binary` 编译 2080 个模块，产出 Linux x64 `dist/lc`，SHA-256 为 `9c7e83bc91f562b89177aecde4a61442430ddf3948138122fa4953885f0cb46a`。
+
+已验证：
+
+- `dist/lc --version`、中文 `--help`、`PI_OFFLINE=1 --list-models`。
+- 手工相邻放置 sidecar 后自动发现；`PI_RUST_TUI_BINARY` wrapper marker 证明覆盖路径优先。
+- 移走全部候选后，明确在 acquire 前打印回退 TypeScript TUI 诊断；fallback 正常 `/quit` 且恢复终端。
+- 手工输入、faux 流式回复和 Session 各一次写入。
+- 初始文本、真实 640x537 PNG 加文本、`@image` 无文本参数的图片输入意图、两条额外 message 的顺序和 exactly-once。
+- piped stdin 进入 print mode，sidecar marker 未触发，不能写成 interactive composition 已通过。
+- 620 轮 Session 在 fullscreen `80x24` 退出时完整输出 `needle 0..619`。
+- fullscreen、regular、`80x24`、`120x36`、`80x8 -> 120x36` resize、`/quit` 和 `stty -g` 恢复。
+
+边界与发现：
+
+- CLI `@image` 无文本参数仍会由 `file-processor` 附带 `<file ...></file>` 元数据，因此这是图片输入意图，不是协议层字面空文本；协议级纯图片空文本已有既有 Host-Rust E2E，不要混写。
+- `build:binary` 当前会运行在线模型生成，造成模型目录元数据漂移；本轮已恢复，不要提交该副作用。
+- `build:binary` 和根构建会在 `packages/coding-agent/src` 旁生成 16 个 `.js/.d.ts/.map`，本轮已按清单删除。
+- binary 构建复制的 `dist/package.json` 曾使后续 Node/Vitest 资源路径变成 `dist/dist`；提交 `614ae00` 已修复，配置 18/18、构建后配置与 Runtime adapter 38/38 通过。
+- 相邻 sidecar 仅为本轮手工验证，结束后已删除。发行包仍不包含 Rust sidecar，下一阶段必须正式物化。
 
 ## 5. 下一步执行顺序
 
@@ -225,9 +250,9 @@ Rust TUI 已接入或完成：
 
 后续若修改 frontend lifecycle，必须保留这组测试；不要在生产逻辑增加测试开关或建立单实现抽象。
 
-### P0. 构建并验证真实 compiled Bun `lc`
+### P0. 构建并验证真实 compiled Bun `lc`：Linux x64 已完成
 
-当前阻塞是 shell 中没有 Bun。先提供项目固定的 Bun `1.3.9`，不要改版本绕过。
+当前 shell 没有全局 Bun，本轮通过 `npx --yes -p bun@1.3.9` 提供固定版本。后续发行脚本仍必须使用 Bun `1.3.9`，不要改版本绕过。
 
 构建入口：
 
@@ -249,22 +274,24 @@ Rust sidecar 当前查找顺序：
 2. compiled `lc` 相邻目录下的 `lystar-tui`/平台可执行文件。
 3. 相邻 `rust-tui/` 子目录。
 
-必须验证：
+已完成：
 
-- [ ] `dist/lc --version`、`--help`、`PI_OFFLINE=1 --list-models`。
-- [ ] 相邻 sidecar 自动发现。
-- [ ] `PI_RUST_TUI_BINARY` 显式覆盖。
-- [ ] sidecar 缺失时只在 acquire 前 fallback。
-- [ ] 普通交互启动、发送、流式回复和 `/quit`。
-- [ ] 初始文本。
-- [ ] piped stdin 在 interactive composition 中的真实语义；不要把 print mode 误当 interactive。
-- [ ] 图片加文本。
-- [ ] 纯图片。
-- [ ] 多条额外 message 的顺序和 exactly-once。
-- [ ] 620 轮 Session。
-- [ ] fullscreen、regular、resize 和终端恢复。
+- [x] `dist/lc --version`、`--help`、`PI_OFFLINE=1 --list-models`。
+- [x] 相邻 sidecar 自动发现。
+- [x] `PI_RUST_TUI_BINARY` 显式覆盖。
+- [x] sidecar 缺失时只在 acquire 前 fallback。
+- [x] 普通交互启动、发送、流式回复和 `/quit`。
+- [x] 初始文本。
+- [x] piped stdin 的真实语义：进入 print mode，不启动 Rust sidecar；不能写成 interactive。
+- [x] 图片加文本。
+- [x] 无文本参数的 `@image` 图片输入意图；仍附带 file metadata，不等于协议层字面空文本。
+- [x] 多条额外 message 的顺序和 exactly-once。
+- [x] 620 轮 Session。
+- [x] fullscreen、regular、resize 和终端恢复。
 
-`build:binary` 或 `tsgo` 可能在 `packages/coding-agent/src` 旁生成未跟踪的 `.js`、`.d.ts` 和 `.map`。结束前用 `git status` 和 `find` 核对，只删除本轮生成且未跟踪的构建产物，不碰源码和用户文件。
+本阶段同时修复了 binary 构建后 Node 资源路径被 `dist/package.json` 遮蔽的问题，提交为 `614ae00`。后续若修改 composition、资源布局或 sidecar 发现顺序，必须保留本阶段的 compiled PTY 证据。
+
+`build:binary` 或 `tsgo` 可能在 `packages/coding-agent/src` 旁生成未跟踪的 `.js`、`.d.ts` 和 `.map`，并可能刷新在线模型目录。结束前用 `git status` 和 `find` 核对，只删除本轮生成且未跟踪的构建产物，并恢复本轮模型元数据漂移；不碰源码和用户文件。
 
 ### P1. 完成发行包中的 Rust sidecar
 
@@ -364,13 +391,13 @@ Linux 本机可先完成真实 package smoke，但不能由 Linux 构建成功�
 
 只有以下条件全部满足后，才讨论把默认改成 `auto` 或 Rust：
 
-- [ ] compiled Bun `lc` 真实 PTY 全链通过。
+- [x] compiled Bun `lc` 真实 PTY 全链通过（Linux x64）。
 - [ ] Linux、macOS、Windows sidecar 和 transport 通过。
 - [x] ownership 故障矩阵通过。
-- [ ] startup text/image/extra messages 和 exactly-once 通过。
+- [x] startup text/image/extra messages 和 exactly-once 通过（Linux x64）。
 - [ ] OAuth、Extension unsupported 边界和 Session lifecycle 有明确结果。
 - [ ] 五平台 package、安装、升级和 rollback 通过。
-- [ ] TypeScript fallback 只发生在 ownership 转移前。
+- [x] TypeScript fallback 只发生在 ownership 转移前。
 - [ ] `PI_OFFLINE=1` 不产生非必要网络请求。
 - [ ] 发布 gate 和文档同步。
 
@@ -399,7 +426,7 @@ npx vitest --run packages/gui-host/test/rust-tui-e2e.test.ts \
 ### Rust
 
 ```bash
-cargo fmt --all
+cargo fmt --all -- --check
 cargo test -p lystar-protocol --all-targets
 cargo test -p lystar-tui --all-targets
 cargo clippy -p lystar-tui --all-targets -- -D warnings
@@ -450,6 +477,7 @@ crates/lystar-protocol/src/generated.rs
 | Rust frontend contract | `packages/coding-agent/src/rust-tui-frontend.ts` |
 | Rust launch options | `packages/coding-agent/src/rust-tui-launch-options.ts` |
 | compiled Bun composition root | `scripts/lystar-bun-cli.mjs` |
+| package asset root | `packages/coding-agent/src/config.ts` |
 | Host 内嵌 Rust 启动 | `packages/gui-host/src/rust-tui-frontend.ts` |
 | Host service、lease、journal | `packages/gui-host/src/service.ts` |
 | Runtime/Core adapter | `packages/gui-host/src/runtime-adapter.ts` |
@@ -479,15 +507,16 @@ crates/lystar-protocol/src/generated.rs
 
 ## 9. 下个会话的第一轮建议
 
-第一轮只做 compiled Bun `lc` 和 Linux sidecar 发现链，不同时处理 Windows、OAuth、Release 或默认前端：
+第一轮只做发行包中的 Rust sidecar 物化和 Linux x64 package smoke，不同时处理 Windows transport、OAuth、默认前端或正式发布：
 
-1. 先安装或提供项目固定的 Bun `1.3.9`，确认 `bun --version` 精确匹配；不要修改项目版本绕过。
-2. 读完整 `scripts/lystar-bun-cli.mjs`、`packages/coding-agent/package.json` 的 `build:binary`、`packages/gui-host/src/rust-tui-frontend.ts` 和相关 binary 测试。
-3. 执行 `npm --workspace @earendil-works/pi-coding-agent run build:binary`，记录输出路径，并立即检查源码目录旁生成的未跟踪 `.js/.d.ts/.map`。
-4. 先跑 compiled `dist/lc --version`、`--help`、`PI_OFFLINE=1 --list-models`，再放置相邻 `lystar-tui` 验证自动发现和 `PI_RUST_TUI_BINARY` 显式覆盖。
-5. 用真实 PTY 覆盖 regular/fullscreen、`80x24`、`120x36`、`80x8`、resize、发送、流式回复、`/quit` 和 `stty -g` 恢复。
-6. 分别验证初始文本、图片加文本、纯图片、多条额外 message 与 620 轮 Session；piped stdin 先确认 `main()` 当前会把非 TTY stdin 归入 print mode，不要误写成 interactive 已通过。
-7. sidecar 缺失只能在 acquire 前 fallback；任何 acquire 后故障继续要求 `handled: true`，不得启动第二个前端。
-8. 跑聚焦 Vitest、Rust 全目标、根级 `npm run check`、`npm run build:offline` 和 `git diff --check`，更新 `AGENT_VERIFICATION.md`，单独提交 compiled `lc` 验证或必要修复。
+1. 先读完整 `scripts/build-binaries.sh`、`scripts/prepare-release-package.mjs`、`scripts/generate-release-metadata.mjs`、`packages/coding-agent/package.json` 的 `build:binary`/`copy-binary-assets`，以及 Unix 安装器和 release workflow。
+2. 明确五平台 Rust target 与归档内固定位置。优先让 sidecar 与 `lc` 相邻，直接复用 `resolveRustTuiBinary()` 已验证的查找顺序；不要增加第二套配置或运行时下载。
+3. 在 Linux x64 先完成最小生产链：构建 `target/release/lystar-tui`，把它物化到候选 package，与 compiled `lc` 一起归档，解包后不设 `PI_RUST_TUI_BINARY` 即可启动 Rust TUI。
+4. 为打包脚本增加结构断言：归档必须同时包含 `lc`、`lystar`、`lystar-tui`、`package.json`、主题、Skill、WASM、许可证；缺少 sidecar 时构建必须失败，不能静默发布 TypeScript-only 包。
+5. 核对 `SHA256SUMS` 和 manifest 的责任边界。当前发行摘要覆盖归档文件即可证明 sidecar 被归档完整性保护，不要无必要给归档内部文件再建第二套 manifest；若现有 Windows 汇聚需要内部清单，再以同一事实源生成。
+6. 用解包后的 Linux x64 候选包覆盖 `--version`、`--help`、`PI_OFFLINE=1 --list-models`、相邻 sidecar 自动发现、手工输入/流式回复、图片、`80x24`、`80x8`、`120x36`、resize、`/quit` 和 `stty -g`。
+7. 运行 Unix 安装器的安装、升级、`current/previous`、rollback 和 staging failure；确认安装后的新终端不依赖源码 checkout、GUI 或 `PI_RUST_TUI_BINARY`。
+8. `build:binary` 会在线刷新模型目录并生成 16 个源码旁 `.js/.d.ts/.map`；结束前恢复模型漂移、删除明确生成物，保留 `aaa.jsonl`。提交前复跑配置 18/18 与 Runtime adapter，防止 `dist/package.json` 再次触发 `dist/dist` 回归。
+9. 跑相关打包测试、聚焦 Vitest、Rust 全目标、根级 `npm run check`、`npm run build:offline`、`git diff --check`，更新 `AGENT_VERIFICATION.md` 和本 HANDOFF，单独提交发行包 sidecar 物化。
 
-完成 Linux compiled `lc` 后，再进入发行包 sidecar 物化；不要提前切默认前端。
+Linux package smoke 完成后，再扩展 Darwin ARM64/x64、Linux ARM64 和 Windows x64 构建矩阵；Windows named pipe 仍是独立任务，不要在本阶段提前切默认前端。
