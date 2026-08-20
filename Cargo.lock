@@ -462,6 +462,7 @@ dependencies = [
  "thiserror",
  "unicode-segmentation",
  "unicode-width",
+ "windows-sys",
 ]
 
 [[package]]
