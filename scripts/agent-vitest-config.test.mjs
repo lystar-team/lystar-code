@@ -10,6 +10,7 @@ const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta
 const codingAgentPackage = JSON.parse(
 	readFileSync(new URL("../packages/coding-agent/package.json", import.meta.url), "utf8"),
 );
+const guiHostPackage = JSON.parse(readFileSync(new URL("../packages/gui-host/package.json", import.meta.url), "utf8"));
 
 function loadAgentTestConfig(suite) {
 	const env = { ...process.env };
@@ -56,4 +57,15 @@ test("Windows CI retains the Agent Core and Rust TUI IPC platform reports", () =
 	);
 	assert.match(workflow, /--result "\$env:RUNNER_TEMP\\ci-windows-rust-tui-ipc\.json"/);
 	assert.doesNotMatch(workflow, /pi-agent-core test -- test\/harness\/nodejs-env\.windows\.test\.ts/);
+});
+
+test("required CI bounds GUI Host concurrency and leaves PTY E2E outside the deterministic report", () => {
+	assert.equal(
+		guiHostPackage.scripts["test:required"],
+		"vitest --run --exclude test/rust-tui-e2e.test.ts --maxWorkers=2",
+	);
+	assert.match(
+		workflow,
+		/npm --workspace @lystar\/code-gui-host run test:required -- --reporter=json --outputFile="\$RUNNER_TEMP\/ci-gui-host\.json"/,
+	);
 });
