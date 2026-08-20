@@ -3,7 +3,7 @@
 最后更新：2026-08-20
 接手分支：`feat/rust-tui`
 Git 基线：`00f58e7e7 fix(ci): 收紧必需测试并发`
-当前工作：OAuth 纯等待阶段取消已接入 Host operation journal 和 Rust Esc；required 总体仍被 Linux coding/core 失败阻塞，Windows 实机与剩余 parity 仍未收口
+当前工作：OAuth 纯等待阶段取消已接入 Host operation journal 和 Rust Esc；已修复 lessons-store 跨进程锁重试并瘦身 Linux required，Windows 实机与剩余 parity 仍未收口
 产品版本：`0.84.2-lystar.1`
 Pi 基线：`0.84.2`
 
@@ -34,7 +34,7 @@ node -p 'require("./packages/coding-agent/package.json").piConfig'
 
 本次交接时的实际状态：
 
-- 当前分支：`feat/rust-tui`，功能代码已推进到 `00f58e7e7 fix(ci): 收紧必需测试并发` 并推送到 `origin/feat/rust-tui`；最新文档提交以 `git log -1` 为准。
+- 当前分支：`feat/rust-tui`；远端仍停在 `d68df4dff`，本地未推送提交依次为 `dce87f1a9`、`637d9bdf6` 和 `3838cb9b1`，最新状态以 `git log -1` 为准。
 - 本轮把 Windows required CI 从 hello-only handshake 扩展为 `create -> release -> acquire -> prompt -> completed -> release` 的 production IPC smoke；改动涉及 Rust 诊断入口、Host fixture、跨平台 IPC 测试、CI workflow、验证文档和本 HANDOFF。
 - `aaa.jsonl` 是用户文件，不读取、不修改、不暂存、不提交。
 - `npm run build:offline` 新增的 16 个 `packages/coding-agent/src` 旁 `.js`、`.d.ts` 和 `.map` 已按构建前后差集删除；本轮临时 `dist/lystar-tui`、`dist/lc-native-test` 和仓库内 package artifact 也已清理。
@@ -49,6 +49,8 @@ node -p 'require("./packages/coding-agent/package.json").piConfig'
 - 当前 tmux：`3.5a`。
 - 默认前端仍是 TypeScript TUI，不能写成 Rust 已默认启用。
 - 本轮未读取、修改或暂存用户文件 `aaa.jsonl`。
+- `packages/coding-agent` 的 lessons-store 与 recovery ledger 锁重试从约 500ms 窗口扩大为最多 10s；这是针对 CI `proper-lockfile ELOCKED` 的根因修复，不改变存储格式。
+- `packages/gui-host` 的 `test:required` 现在排除 `rust-tui-e2e.test.ts`、`ipc-process.test.ts` 和 `rust-tui-main-process.test.ts`；Windows job 仍显式运行 production IPC smoke，ownership 单测仍留在 required。
 
 ## 3. 不可破坏的架构边界
 
@@ -280,6 +282,18 @@ required 边界：最终 `required` 没有通过。Linux `coding` 在最终 run 
 - 新增 Host 纯 OAuth 等待、abort、client disconnect 测试：journaled-write `57/57`；Rust TUI all-targets `152/152`，其中覆盖 provider operation 事件、通知 Overlay、Esc abort 和终态。
 
 本轮验证：`cargo fmt --check`、`cargo clippy -p lystar-tui --all-targets -- -D warnings`、`NODE_TLS_REJECT_UNAUTHORIZED=1 npm run check`、`npm run build:offline` 和 `git diff --check` 通过。`packages/gui-host/test/rust-tui-e2e.test.ts` 的定向复跑两次均在 Settings 响应刷新显示“开启”前超时，尚未进入登录流程；该 E2E 缺口需作为独立时序/环境问题继续定位，不能写成 OAuth 失败或全量 E2E 通过。
+
+### 4.9 CI 并发锁修复与 required 瘦身已完成
+
+本轮只处理直接阻塞主线的 CI 问题，没有重跑综合 Rust TUI E2E：
+
+- CI run `32378843602` 的 Coding Agent 失败根因确认是 `lessons-store.test.ts` 并发 worker 在约 500ms 锁重试窗口内收到 `ELOCKED`；不是业务数据损坏。
+- `lessons-store.ts` 与 `ledger.ts` 的 `proper-lockfile` 重试改为最多 2,000 次、最多等待 10s。定向 `lessons-store` `18/18`、`tool-recovery` `20/20` 通过。
+- 旧 run 的 GUI Host required 还包含生产 `ipc-process` 51 秒超时和 620-record PTY/ownership 的跨进程失败；当前分支的 `dce87f1a9` 已让本地 ownership/main 聚焦测试通过，剩余生产 IPC/PTY 验收不再进入 Linux required。
+- `test:required` 的排除范围由仅 `rust-tui-e2e` 扩展为 `rust-tui-e2e`、`ipc-process`、`rust-tui-main-process`。本地 required 为 `11 files / 132 tests`，`npm run test:scripts` 为 `51/51`。
+- 两个独立提交的提交钩子均完成根级 `npm run check`；本轮没有新增测试开关、重试掩盖或第二套 CI 合同。工作区只保留用户文件 `aaa.jsonl`。
+
+本节不表示 GitHub required 已重新运行通过：三个本地提交尚未推送。下一次如获推送授权，只观察 changed gates 和 required 汇总，不重复触发已通过的 Windows job，也不恢复被移出的 E2E。
 
 ## 5. 下一步执行顺序
 
@@ -581,12 +595,12 @@ crates/lystar-protocol/src/generated.rs
 
 ## 9. 下个会话的第一轮建议
 
-第一轮先核对最终 CI 证据和工作区状态；不要重复触发已经成功的 Windows job，也不要同时处理 Extension 组件、默认前端或真实 Provider：
+第一轮先核对当前三个本地提交和工作区状态；不要恢复综合 E2E，也不要同时处理 Extension 组件、默认前端或真实 Provider：
 
-1. 运行 `git status --short --branch` 和 `git log -8 --oneline --decorate`，确认历史包含功能代码基线 `00f58e7e7` 和其后的交接文档提交，工作区只保留用户文件 `aaa.jsonl`。
-2. 复查最终 run `32378843602`：Windows job 已成功，artifact 中 Rust IPC `1/1`、0 skip；总 workflow/required 失败来自 Linux `coding` 与 `core`，不要误判为 Windows 回归。OAuth 取消代码和定向测试已完成，不要重复实现；先处理本轮 Settings 刷新 E2E 超时。
-3. 若继续收 required，拆成独立 CI 稳定性任务：先复现 lessons-store 多进程 `proper-lockfile ELOCKED`；再定位 GUI Host trusted server message/620-record transcript 在 Node 22.19 runner 上的 decoder 失败。不要继续靠 worker 数、放宽断言或增大 timeout。
-4. Windows 主线下一项应转到实机：覆盖 startup input、完整 TUI `/quit`、child/Host crash、pipe disconnect、Ctrl+C、窗口关闭和 writer/lease 清理。
+1. 运行 `git status --short --branch` 和 `git log -8 --oneline --decorate`，确认 HEAD 为 `3838cb9b1`，本地比远端领先 3 个提交，工作区只保留用户文件 `aaa.jsonl`。
+2. 不再把 Settings 刷新超时当作当前阻塞；它属于未进入登录流程的高成本 E2E 缺口，除非出现主线回归证据，否则保持延期。
+3. 如获推送授权，先推送当前三个提交并只观察 source/core/coding/required 汇总；若失败，只处理新的确定性失败，不恢复被移出的 Linux production IPC/PTY E2E。
+4. required 稳定后，Windows 主线转实机：覆盖 startup input、完整 TUI `/quit`、child/Host crash、pipe disconnect、Ctrl+C、窗口关闭和 writer/lease 清理。
 5. 使用 ConPTY 覆盖 `80x24`、`120x36`、`80x8 -> 120x36`、中文宽字符、多行 Composer、fullscreen/regular 和终端恢复；再验证空格与非 ASCII 安装路径。
 6. Windows 实机证据收口后，再做 `lc update` 的 staging、`current/previous`、rollback 和新终端独立启动；之后验证真实外部 Provider OAuth 取消，再进入 Extension 组件剩余 parity 和 macOS 实机。
 
