@@ -34,7 +34,7 @@ node -p 'require("./packages/coding-agent/package.json").piConfig'
 
 本次交接时的实际状态：
 
-- 当前分支：`feat/rust-tui`；远端仍停在 `d68df4dff`，本地未推送提交依次为 `dce87f1a9`、`637d9bdf6` 和 `3838cb9b1`，最新状态以 `git log -1` 为准。
+- 当前分支：`feat/rust-tui`；远端仍停在 `d68df4dff`，本地未推送提交依次为 `dce87f1a9`、`637d9bdf6`、`3838cb9b1` 和 `dbaf61f7e`，最新状态以 `git log -1` 为准。
 - 本轮把 Windows required CI 从 hello-only handshake 扩展为 `create -> release -> acquire -> prompt -> completed -> release` 的 production IPC smoke；改动涉及 Rust 诊断入口、Host fixture、跨平台 IPC 测试、CI workflow、验证文档和本 HANDOFF。
 - `aaa.jsonl` 是用户文件，不读取、不修改、不暂存、不提交。
 - `npm run build:offline` 新增的 16 个 `packages/coding-agent/src` 旁 `.js`、`.d.ts` 和 `.map` 已按构建前后差集删除；本轮临时 `dist/lystar-tui`、`dist/lc-native-test` 和仓库内 package artifact 也已清理。
@@ -291,9 +291,9 @@ required 边界：最终 `required` 没有通过。Linux `coding` 在最终 run 
 - `lessons-store.ts` 与 `ledger.ts` 的 `proper-lockfile` 重试改为最多 2,000 次、最多等待 10s。定向 `lessons-store` `18/18`、`tool-recovery` `20/20` 通过。
 - 旧 run 的 GUI Host required 还包含生产 `ipc-process` 51 秒超时和 620-record PTY/ownership 的跨进程失败；当前分支的 `dce87f1a9` 已让本地 ownership/main 聚焦测试通过，剩余生产 IPC/PTY 验收不再进入 Linux required。
 - `test:required` 的排除范围由仅 `rust-tui-e2e` 扩展为 `rust-tui-e2e`、`ipc-process`、`rust-tui-main-process`。本地 required 为 `11 files / 132 tests`，`npm run test:scripts` 为 `51/51`。
-- 两个独立提交的提交钩子均完成根级 `npm run check`；本轮没有新增测试开关、重试掩盖或第二套 CI 合同。工作区只保留用户文件 `aaa.jsonl`。
+- 两个代码提交和本交接文档提交的提交钩子均完成根级 `npm run check`；本轮没有新增测试开关、重试掩盖或第二套 CI 合同。工作区只保留用户文件 `aaa.jsonl`。
 
-本节不表示 GitHub required 已重新运行通过：三个本地提交尚未推送。下一次如获推送授权，只观察 changed gates 和 required 汇总，不重复触发已通过的 Windows job，也不恢复被移出的 E2E。
+本节不表示 GitHub required 已重新运行通过：四个本地提交尚未推送。下一次如获推送授权，只观察 changed gates 和 required 汇总，不重复触发已通过的 Windows job，也不恢复被移出的 E2E。
 
 ## 5. 下一步执行顺序
 
@@ -595,9 +595,9 @@ crates/lystar-protocol/src/generated.rs
 
 ## 9. 下个会话的第一轮建议
 
-第一轮先核对当前三个本地提交和工作区状态；不要恢复综合 E2E，也不要同时处理 Extension 组件、默认前端或真实 Provider：
+第一轮先核对当前四个本地提交和工作区状态；不要恢复综合 E2E，也不要同时处理 Extension 组件、默认前端或真实 Provider：
 
-1. 运行 `git status --short --branch` 和 `git log -8 --oneline --decorate`，确认 HEAD 为 `3838cb9b1`，本地比远端领先 3 个提交，工作区只保留用户文件 `aaa.jsonl`。
+1. 运行 `git status --short --branch` 和 `git log -8 --oneline --decorate`，确认 HEAD 为 `dbaf61f7e`，本地比远端领先 4 个提交，工作区只保留用户文件 `aaa.jsonl`。
 2. 不再把 Settings 刷新超时当作当前阻塞；它属于未进入登录流程的高成本 E2E 缺口，除非出现主线回归证据，否则保持延期。
 3. 如获推送授权，先推送当前三个提交并只观察 source/core/coding/required 汇总；若失败，只处理新的确定性失败，不恢复被移出的 Linux production IPC/PTY E2E。
 4. required 稳定后，Windows 主线转实机：覆盖 startup input、完整 TUI `/quit`、child/Host crash、pipe disconnect、Ctrl+C、窗口关闭和 writer/lease 清理。
