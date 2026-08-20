@@ -325,7 +325,7 @@ jobs:
         shell: bash
         run: |
           started=$SECONDS
-          npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=4 --reporter=json --outputFile="$RUNNER_TEMP/ci-coding-agent.json"
+          npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=2 --reporter=json --outputFile="$RUNNER_TEMP/ci-coding-agent.json"
           echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
 
       - name: Write Coding Agent summary
