@@ -149,7 +149,7 @@ export class WorkspaceComposer implements Component {
 		const framedBody = visibleBody.map((line, index) => {
 			let content = truncateToWidth(line, innerWidth, "", true);
 			if (index === arrowRow && content.startsWith("  ")) {
-				content = theme.fg("accent", `${uiGlyphs.prompt} `) + content.slice(2);
+				content = theme.fg("mdLink", `${uiGlyphs.prompt} `) + content.slice(2);
 			}
 			return `${border("│")}${content}${border("│")}`;
 		});
@@ -180,7 +180,7 @@ export class WorkspaceComposer implements Component {
 		const brandWidth = visibleWidth(brandLabel);
 		const top =
 			brandWidth > 0 && brandWidth + 1 <= innerWidth
-				? `${border("╭")}${border("─".repeat(innerWidth - brandWidth - 1))}${theme.bold(theme.fg("accent", brandLabel))}${border("─╮")}`
+				? `${border("╭")}${border("─".repeat(innerWidth - brandWidth - 1))}${theme.bold(theme.fg("mdLink", brandLabel))}${border("─╮")}`
 				: `${border("╭")}${border("─".repeat(innerWidth))}${border("╮")}`;
 		const framed = [top, ...framedBody, bottom];
 		for (const line of autocomplete) {
