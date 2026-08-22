@@ -113,7 +113,12 @@ import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
-import { findMatchingToolRecoveryLessons, hashToolRecoveryLessonScope } from "./tool-recovery/lessons-store.ts";
+import {
+	findMatchingToolRecoveryLessons,
+	hashToolRecoveryLessonScope,
+	reconcileToolRecoveryLessons,
+	recordToolRecoveryLessonUsage,
+} from "./tool-recovery/lessons-store.ts";
 import {
 	AssistToolRecoveryController,
 	AutoToolRecoveryController,
@@ -123,6 +128,10 @@ import {
 } from "./tool-recovery/policies.ts";
 import type { ToolRecoveryRefiner } from "./tool-recovery/refiner.ts";
 import { registerBuiltInToolIdentity } from "./tool-recovery/registry.ts";
+import {
+	createToolRecoverySafeRefreshRegistry,
+	type ToolRecoverySafeRefreshRegistry,
+} from "./tool-recovery/safe-refresh.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
@@ -254,6 +263,8 @@ export interface AgentSessionConfig {
 	toolRecoveryRefiner?: ToolRecoveryRefiner;
 	/** Explicit caller-provided user corrections for the optional refiner. */
 	getToolRecoveryUserCorrections?: () => readonly string[] | undefined;
+	/** Registry of code-registered read-only handlers for safe_refresh lessons. */
+	toolRecoverySafeRefreshRegistry?: ToolRecoverySafeRefreshRegistry;
 }
 
 export interface ExtensionBindings {
@@ -412,6 +423,7 @@ export class AgentSession {
 
 	private _modelRuntime: ModelRuntime;
 	private readonly _toolRecoveryMode: ToolRecoveryMode;
+	private readonly _toolRecoverySafeRefreshRegistry: ToolRecoverySafeRefreshRegistry;
 	private readonly _toolRecoveryController?:
 		| ObserveOnlyToolRecoveryController
 		| AssistToolRecoveryController
@@ -442,6 +454,8 @@ export class AgentSession {
 		this._toolRecoveryAgentDir = config.agentDir ?? getAgentDir();
 		this._toolRecoveryScopeHash = hashToolRecoveryLessonScope(this._cwd);
 		this._toolRecoveryMode = getToolRecoveryMode();
+		this._toolRecoverySafeRefreshRegistry =
+			config.toolRecoverySafeRefreshRegistry ?? createToolRecoverySafeRefreshRegistry();
 		if (this._toolRecoveryMode !== "off") {
 			const controllerOptions = {
 				agentDir: this._toolRecoveryAgentDir,
@@ -631,8 +645,23 @@ export class AgentSession {
 							selected.push(lesson.id);
 						}
 						if (selected.length > 0) {
-							finalContent = [...normalizedContent, { type: "text", text: guidanceText }];
+							const selectedLessons = matches.lessons.filter((lesson) => selected.includes(lesson.id));
+							const requiresRefresh = selectedLessons.some((lesson) => lesson.allowedAction === "safe_refresh");
+							const refreshText = requiresRefresh
+								? ((await this._toolRecoverySafeRefreshRegistry.run(toolCall.name, args, this._cwd)) ?? "")
+								: "";
+							const visibleText =
+								refreshText && estimateTextTokens(`${refreshText}\n${guidanceText}`) <= 500
+									? `${refreshText}\n${guidanceText}`
+									: guidanceText;
+							finalContent = [...normalizedContent, { type: "text", text: visibleText }];
 							this._toolRecoveryController.recordLessonMatches(selected);
+							await recordToolRecoveryLessonUsage(this._toolRecoveryAgentDir, selected, {
+								source: "runtime",
+								guidanceShown: true,
+							}).catch(() => {
+								// 命中计数失败不能改变已经生成的 ToolResult。
+							});
 						}
 					} catch {
 						// Lesson 查询失败不能改变最终 ToolResult。
@@ -798,6 +827,16 @@ export class AgentSession {
 		// M3 的恢复观察仅供本地诊断，不进入 Extension、订阅者、Session JSONL 或模型上下文。
 		if (event.type === "tool_recovery_observe") {
 			return;
+		}
+		if (event.type === "agent_start" && this._toolRecoveryMode !== "off") {
+			const sessionFile = this.sessionManager.getSessionFile();
+			if (sessionFile) {
+				await reconcileToolRecoveryLessons(this._toolRecoveryAgentDir, sessionFile, this._toolRecoveryScopeHash, {
+					source: "reconcile",
+				}).catch(() => {
+					// 账本重放是补偿路径，不能阻断正常 Session 启动。
+				});
+			}
 		}
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state

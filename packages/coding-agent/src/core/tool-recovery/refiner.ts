@@ -12,6 +12,7 @@ import {
 } from "./lessons-store.ts";
 
 export interface ToolRecoveryRefinerFailure {
+	toolName: string;
 	code: string;
 	category: string;
 	fingerprint: string;
@@ -32,6 +33,7 @@ export interface ToolRecoveryRefinerInput {
 		guidance: string;
 	}>;
 	userCorrections: readonly string[];
+	signal?: AbortSignal;
 }
 
 export type ToolRecoveryRefiner = (input: ToolRecoveryRefinerInput) => Promise<unknown> | unknown;
@@ -159,22 +161,25 @@ export async function findToolRecoveryRefinerLessons(
 	scopeHash: string,
 	failures: readonly ToolRecoveryRefinerFailure[],
 ): Promise<ToolRecoveryRefinerInput["relatedLessons"]> {
-	const keys = new Set(failures.map((failure) => `${failure.code}\u0000${failure.fingerprint.slice(0, 16)}`));
-	return (await listToolRecoveryLessons(agentDir))
-		.filter(
-			(lesson) =>
-				lesson.status !== "expired" &&
-				(lesson.scope === "global" || lesson.scopeHash === scopeHash) &&
-				keys.has(`${lesson.matcher.failureCode}\u0000${lesson.matcher.fingerprintPrefix ?? ""}`),
-		)
-		.slice(0, 3)
-		.map((lesson) => ({
-			id: lesson.id,
-			status: lesson.status,
-			scope: lesson.scope,
-			toolName: lesson.matcher.toolName,
-			failureCode: lesson.matcher.failureCode,
-			...(lesson.matcher.fingerprintPrefix ? { fingerprintPrefix: lesson.matcher.fingerprintPrefix } : {}),
-			guidance: lesson.guidance,
-		}));
+	const matches = (await listToolRecoveryLessons(agentDir)).filter(
+		(lesson) =>
+			lesson.status !== "expired" &&
+			(lesson.scope === "global" || lesson.scopeHash === scopeHash) &&
+			failures.some(
+				(failure) =>
+					failure.toolName === lesson.matcher.toolName &&
+					failure.code === lesson.matcher.failureCode &&
+					(lesson.matcher.fingerprintPrefix === undefined ||
+						failure.fingerprint.startsWith(lesson.matcher.fingerprintPrefix)),
+			),
+	);
+	return matches.slice(0, 3).map((lesson) => ({
+		id: lesson.id,
+		status: lesson.status,
+		scope: lesson.scope,
+		toolName: lesson.matcher.toolName,
+		failureCode: lesson.matcher.failureCode,
+		...(lesson.matcher.fingerprintPrefix ? { fingerprintPrefix: lesson.matcher.fingerprintPrefix } : {}),
+		guidance: lesson.guidance,
+	}));
 }

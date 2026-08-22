@@ -208,6 +208,12 @@ export {
 	type ToolRecoveryLessonStoreDiagnostic,
 } from "./tool-recovery/lessons-store.ts";
 export {
+	createToolRecoverySafeRefreshRegistry,
+	type ToolRecoverySafeRefreshContext,
+	type ToolRecoverySafeRefreshHandler,
+	ToolRecoverySafeRefreshRegistry,
+} from "./tool-recovery/safe-refresh.ts";
+export {
 	getProjectTrustOptions,
 	hasTrustRequiringProjectResources,
 	type ProjectTrustDecision,

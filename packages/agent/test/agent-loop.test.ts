@@ -2364,6 +2364,43 @@ describe("Tool recovery observation", () => {
 		expect(events.filter((event) => event.type === "tool_execution_end")).toHaveLength(1);
 	});
 
+	it("skips identical parallel Tool calls after preparing the first one", async () => {
+		const schema = Type.Object({ value: Type.String() });
+		let executions = 0;
+		const tool: AgentTool<typeof schema> = {
+			name: "duplicate-parallel",
+			label: "Duplicate parallel",
+			description: "Duplicate parallel tool",
+			parameters: schema,
+			async execute() {
+				executions++;
+				return { content: [{ type: "text", text: "executed" }], details: {} };
+			},
+		};
+		const response = createToolCallThenStopStream([
+			{ type: "toolCall", id: "call-1", name: "duplicate-parallel", arguments: { value: "same" } },
+			{ type: "toolCall", id: "call-2", name: "duplicate-parallel", arguments: { value: "same" } },
+		]);
+		const events: AgentEvent[] = [];
+		const stream = agentLoop(
+			[createUserMessage("run")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{ model: createModel(), convertToLlm: identityConverter },
+			undefined,
+			response.streamFn,
+		);
+		for await (const event of stream) events.push(event);
+
+		expect(executions).toBe(1);
+		const toolEnds = events.filter((event) => event.type === "tool_execution_end");
+		expect(toolEnds).toHaveLength(2);
+		const duplicateEnd = toolEnds.find((event) => event.toolCallId === "call-2");
+		expect(duplicateEnd).toMatchObject({ isError: true });
+		expect(duplicateEnd?.type === "tool_execution_end" ? duplicateEnd.result.content : []).toContainEqual(
+			expect.objectContaining({ type: "text", text: expect.stringContaining("已跳过重复 Tool 调用") }),
+		);
+	});
+
 	it("keeps parallel observations isolated by tool call", async () => {
 		const schema = Type.Object({ value: Type.String() });
 		let releaseFirst: (() => void) | undefined;

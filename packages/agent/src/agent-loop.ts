@@ -19,6 +19,7 @@ import {
 	type ToolRecoveryCall,
 	type ToolRecoveryObservation,
 } from "./tool-recovery/controller.ts";
+import { createToolCallFingerprint } from "./tool-recovery/fingerprint.ts";
 import { ToolExecutionError } from "./tool-recovery/types.ts";
 import type {
 	AgentContext,
@@ -514,6 +515,7 @@ async function executeToolCallsParallel(
 	emit: AgentEventSink,
 ): Promise<ExecutedToolCallBatch> {
 	const finalizedCalls: FinalizedToolCallEntry[] = [];
+	const inBatchCallSignatures = new Set<string>();
 
 	for (const toolCall of toolCalls) {
 		const preparation = await prepareToolCall(currentContext, assistantMessage, toolCall, config, signal);
@@ -536,6 +538,25 @@ async function executeToolCallsParallel(
 			}
 			continue;
 		}
+
+		const fingerprint = await createToolCallFingerprint(preparation.toolCall.name, preparation.args);
+		if (inBatchCallSignatures.has(fingerprint.callSignature)) {
+			await emit({
+				type: "tool_execution_start",
+				toolCallId: toolCall.id,
+				toolName: toolCall.name,
+				args: toolCall.arguments,
+			});
+			const finalized = {
+				toolCall,
+				result: createErrorToolResult("已跳过重复 Tool 调用：相同调用正在执行。"),
+				isError: true,
+			} satisfies FinalizedToolCallOutcome;
+			await emitToolExecutionEnd(finalized, emit);
+			finalizedCalls.push(finalized);
+			continue;
+		}
+		inBatchCallSignatures.add(fingerprint.callSignature);
 
 		finalizedCalls.push(async () => {
 			const executed = await executePreparedToolCall(preparation, signal, emit, config.toolRecoveryController);

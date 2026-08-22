@@ -11,6 +11,26 @@
 - 发行包只构建 `lc` 与 `lystar`，不包含额外终端前端可执行文件。
 - `packages/gui/src-tauri` 是 GUI 桌面壳自己的 Rust 工程，不属于终端前端清理范围。
 
+## Tool Recovery 验证
+
+当前恢复经验链路包含 candidate 自动验证、显式 active 批准、Session ledger 重放、账本游标幂等、history checkpoint 归档，以及代码侧注册的 `safe_refresh` handler。当前实际运行的定向验证为：
+
+```bash
+cd packages/coding-agent
+npx vitest --run test/tool-recovery.test.ts test/lessons-store.test.ts \
+  test/file-mutation-queue.test.ts test/apply-patch-extension.test.ts \
+  --maxWorkers=2 --pool=forks
+# 4 个测试文件，78 项通过
+
+cd ../agent
+npx vitest --run test/agent-loop.test.ts --maxWorkers=2 --pool=forks
+# 1 个测试文件，41 项通过
+```
+
+本轮只增加三个有明确契约价值的运行链路 E2E：`custom safe_refresh` handler、真实 `apply_patch` 重建，以及由独立 Node 进程执行两次的 Session ledger reconcile 幂等。它们分别覆盖自定义 handler 的 active 门槛、补丁失败到重建成功的关联、以及进程重启后的补偿重放；未扩展为全 Tool、全 Provider 或全 Session 的 E2E 矩阵。
+
+已通过 `npx tsgo -p packages/coding-agent/tsconfig.build.json --pretty false`、根目录 `tsgo --noEmit`、`npm run check --silent` 和 `git diff --check --no-ext-diff`。跨进程真实进程重启、真实 Provider、Windows、macOS、Tauri 和发行包实机运行仍未在本轮验证。
+
 ## 验证入口
 
 依赖安装：

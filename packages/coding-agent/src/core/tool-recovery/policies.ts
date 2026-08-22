@@ -1,7 +1,9 @@
 import type {
+	RecoveryAction as CoreRecoveryAction,
 	ToolFailure,
 	ToolRecoveryAttemptDecision,
 	ToolRecoveryController,
+	ToolRecoveryModelRecoveryAction,
 	ToolRecoveryObservation,
 	ToolRecoveryPreflightContext,
 	ToolRecoveryPreflightResult,
@@ -41,6 +43,7 @@ async function runToolRecoveryHandler(
 }
 
 const MAX_RECOVERY_RETRIES = 2;
+const REFINER_TIMEOUT_MS = 2_000;
 const RETRYABLE_CODES = new Set(["TIMEOUT", "TRANSPORT_ERROR", "RATE_LIMITED"]);
 const TRUSTED_READ_ONLY_TOOL_NAMES = new Set(["read", "grep", "find", "ls"]);
 const BLOCKED_MESSAGE = "已阻止重复失败，需修改参数、刷新状态、切换工具或请求用户决定。";
@@ -61,7 +64,7 @@ export interface ToolRecoveryDiagnostics {
 	mode: ToolRecoveryMode;
 	toolFailureTotal: Array<{ tool: string; code: string; count: number }>;
 	toolRecoveryAttemptTotal: Array<{ tool: string; action: RecoveryAction; count: number }>;
-	toolRecoverySuccessTotal: Array<{ tool: string; action: "retry_same_args"; count: number }>;
+	toolRecoverySuccessTotal: Array<{ tool: string; action: CoreRecoveryAction["type"]; count: number }>;
 	toolRepeatBlockedTotal: Array<{ tool: string; code: string; count: number }>;
 	toolUnsafeRetryBlockedTotal: Array<{ tool: string; count: number }>;
 	lessonMatchTotal: Array<{ lesson: string; count: number }>;
@@ -114,8 +117,8 @@ class ToolRecoveryMetrics {
 		increment(this.attempts, `${toolName}\u0000${action}`);
 	}
 
-	recordSuccess(toolName: string): void {
-		increment(this.successes, `${toolName}\u0000retry_same_args`);
+	recordSuccess(toolName: string, action: CoreRecoveryAction["type"]): void {
+		increment(this.successes, `${toolName}\u0000${action}`);
 	}
 
 	recordRepeatBlocked(failure: ToolFailure): void {
@@ -152,9 +155,9 @@ class ToolRecoveryMetrics {
 				action: code as RecoveryAction,
 				count,
 			})),
-			toolRecoverySuccessTotal: unpack(this.successes).map(({ tool, count }) => ({
+			toolRecoverySuccessTotal: unpack(this.successes).map(({ tool, code, count }) => ({
 				tool,
-				action: "retry_same_args",
+				action: code as CoreRecoveryAction["type"],
 				count,
 			})),
 			toolRepeatBlockedTotal: unpack(this.repeatBlocked),
@@ -186,6 +189,18 @@ function attemptKey(toolCallId: string, failureFingerprint: string): string {
 
 function circuitKey(callSignature: string, failureFingerprint: string): string {
 	return `${callSignature}\u0000${failureFingerprint}`;
+}
+
+function isWithinModelRecoveryTurnWindow(previousTurnId: string, currentTurnId: string): boolean {
+	if (previousTurnId === currentTurnId) return true;
+	const previous = Number(previousTurnId);
+	const current = Number(currentTurnId);
+	return (
+		Number.isSafeInteger(previous) &&
+		Number.isSafeInteger(current) &&
+		current >= previous &&
+		current - previous <= MODEL_RECOVERY_MAX_TURN_GAP
+	);
 }
 
 function isSafeRetry(observation: ToolRecoveryObservation, error?: unknown): boolean {
@@ -231,10 +246,27 @@ interface ControllerOptions {
 	sleep?: (delayMs: number, signal?: AbortSignal) => Promise<boolean>;
 }
 
+interface PendingModelRecovery {
+	toolName: string;
+	failure: ToolFailure;
+	attempt: number;
+	callSignature: string;
+	targetHash?: string;
+	turnId: string;
+	action: ToolRecoveryModelRecoveryAction;
+	createdAt: number;
+}
+
+const MODEL_RECOVERY_MAX_AGE_MS = 5 * 60 * 1000;
+const MODEL_RECOVERY_MAX_TURN_GAP = 2;
+const MAX_PENDING_MODEL_RECOVERIES_PER_FAILURE = 4;
+
 abstract class BaseToolRecoveryController implements ToolRecoveryController {
 	protected readonly options: ControllerOptions;
 	protected readonly metrics = new ToolRecoveryMetrics();
 	private readonly refinerFailures: ToolRecoveryRefinerFailure[] = [];
+	private readonly refinerFailureKeys = new Set<string>();
+	private readonly pendingModelRecoveries = new Map<string, PendingModelRecovery[]>();
 
 	constructor(options: ControllerOptions) {
 		this.options = options;
@@ -246,6 +278,69 @@ abstract class BaseToolRecoveryController implements ToolRecoveryController {
 
 	async waitForRetry(delayMs: number, signal?: AbortSignal): Promise<boolean> {
 		return await (this.options.sleep ?? defaultSleep)(delayMs, signal);
+	}
+
+	protected registerPendingModelRecovery(
+		observation: ToolRecoveryObservation,
+		failure: ToolFailure,
+		attempt: number,
+		action: ToolRecoveryModelRecoveryAction,
+	): void {
+		const key = `${failure.toolName}\u0000${failure.fingerprint}`;
+		const pending = this.pendingModelRecoveries.get(key) ?? [];
+		pending.push({
+			toolName: observation.toolName,
+			failure,
+			attempt,
+			callSignature: observation.callSignature,
+			...(observation.targetHash ? { targetHash: observation.targetHash } : {}),
+			turnId: this.options.getTurnId(),
+			action,
+			createdAt: this.now(),
+		});
+		if (pending.length > MAX_PENDING_MODEL_RECOVERIES_PER_FAILURE) pending.shift();
+		this.pendingModelRecoveries.set(key, pending);
+	}
+
+	protected async recordPendingModelRecoverySuccess(observation: ToolRecoveryObservation): Promise<boolean> {
+		if (observation.outcome !== "success") return false;
+		const now = this.now();
+		for (const [key, pending] of this.pendingModelRecoveries) {
+			while (pending.length > 0 && now - pending[0]!.createdAt > MODEL_RECOVERY_MAX_AGE_MS) pending.shift();
+			const index = pending.findIndex(
+				(candidate) =>
+					isWithinModelRecoveryTurnWindow(candidate.turnId, this.options.getTurnId()) &&
+					candidate.toolName === observation.toolName &&
+					candidate.targetHash === observation.targetHash &&
+					now - candidate.createdAt <= MODEL_RECOVERY_MAX_AGE_MS &&
+					(candidate.action === "refresh_context" || candidate.callSignature !== observation.callSignature),
+			);
+			if (index === -1) {
+				if (pending.length === 0) this.pendingModelRecoveries.delete(key);
+				continue;
+			}
+			const [candidate] = pending.splice(index, 1);
+			if (pending.length === 0) this.pendingModelRecoveries.delete(key);
+			if (!candidate) continue;
+			observation.action = candidate.action;
+			observation.outcome = "recovered";
+			observation.failure = candidate.failure;
+			this.metrics.recordSuccess(observation.toolName, candidate.action);
+			await this.append(observation, candidate.failure, candidate.attempt + 1, candidate.action);
+			return true;
+		}
+		return false;
+	}
+
+	protected discardPendingModelRecoveries(observation: ToolRecoveryObservation): void {
+		for (const [key, pending] of this.pendingModelRecoveries) {
+			const remaining = pending.filter(
+				(candidate) =>
+					candidate.toolName !== observation.toolName || candidate.targetHash !== observation.targetHash,
+			);
+			if (remaining.length === 0) this.pendingModelRecoveries.delete(key);
+			else this.pendingModelRecoveries.set(key, remaining);
+		}
 	}
 
 	protected async append(
@@ -290,15 +385,22 @@ abstract class BaseToolRecoveryController implements ToolRecoveryController {
 			const candidate = await recordDeterministicToolRecoveryCandidate(this.options.agentDir, {
 				scopeHash: this.options.scopeHash,
 				receipt,
+				autoVerify: true,
 			});
 			if (!candidate && this.options.refiner && outcome === "recovered") {
-				this.refinerFailures.push({
+				const refinerFailure: ToolRecoveryRefinerFailure = {
+					toolName: failure.toolName,
 					code: failure.code,
 					category: failure.category,
 					fingerprint: failure.fingerprint,
 					action,
 					outcome,
-				});
+				};
+				const key = `${refinerFailure.toolName}\u0000${refinerFailure.code}\u0000${refinerFailure.fingerprint}\u0000${refinerFailure.action}`;
+				if (!this.refinerFailureKeys.has(key)) {
+					this.refinerFailureKeys.add(key);
+					this.refinerFailures.push(refinerFailure);
+				}
 			}
 			if (outcome === "recovered") {
 				const matches = await findMatchingToolRecoveryLessons(this.options.agentDir, {
@@ -323,20 +425,39 @@ abstract class BaseToolRecoveryController implements ToolRecoveryController {
 	}
 
 	async refineTurn(): Promise<void> {
-		if (!this.options.refiner || !this.options.scopeHash || this.refinerFailures.length === 0) return;
 		const failures = this.refinerFailures.splice(0);
+		this.refinerFailureKeys.clear();
 		try {
+			if (!this.options.refiner || !this.options.scopeHash || failures.length === 0) return;
 			const relatedLessons = await findToolRecoveryRefinerLessons(
 				this.options.agentDir,
 				this.options.scopeHash,
 				failures,
 			);
-			const output = await this.options.refiner({
-				scopeHash: this.options.scopeHash,
-				failures,
-				relatedLessons,
-				userCorrections: sanitizeToolRecoveryUserCorrections(this.options.getUserCorrections?.()),
-			});
+			const controller = new AbortController();
+			let timeout: ReturnType<typeof setTimeout> | undefined;
+			let output: unknown;
+			try {
+				output = await Promise.race([
+					Promise.resolve(
+						this.options.refiner({
+							scopeHash: this.options.scopeHash,
+							failures,
+							relatedLessons,
+							userCorrections: sanitizeToolRecoveryUserCorrections(this.options.getUserCorrections?.()),
+							signal: controller.signal,
+						}),
+					),
+					new Promise<undefined>((resolve) => {
+						timeout = setTimeout(() => {
+							controller.abort();
+							resolve(undefined);
+						}, REFINER_TIMEOUT_MS);
+					}),
+				]);
+			} finally {
+				if (timeout) clearTimeout(timeout);
+			}
 			const proposal = parseToolRecoveryRefinerProposal(output);
 			if (proposal) await applyToolRecoveryRefinerProposal(this.options.agentDir, this.options.scopeHash, proposal);
 		} catch {
@@ -416,6 +537,7 @@ export class AssistToolRecoveryController extends BaseToolRecoveryController {
 	): Promise<ToolRecoveryAttemptDecision> {
 		await adaptToolRecoveryObservation(observation, error, signal);
 		const failure = observation.failure!;
+		this.discardPendingModelRecoveries(observation);
 		this.metrics.recordDuration(observation.durationMs);
 		this.metrics.recordFailure(failure);
 		const key = attemptKey(observation.toolCallId, failure.fingerprint);
@@ -432,28 +554,34 @@ export class AssistToolRecoveryController extends BaseToolRecoveryController {
 			return { action: { type: "stop", reason: "cancelled" }, observation };
 		}
 
-		let guidance: string | undefined;
+		let action: ToolRecoveryResolution | undefined;
 		if (
 			(isTrustedBuiltinTool(observation.toolName, observation.toolRuntimeContext) ||
 				isTrustedBuiltinRecoveryError(observation.toolName, error)) &&
 			!signal?.aborted
 		) {
 			const resolution = await runToolRecoveryHandler(error, signal);
-			if (resolution?.type === "ask_model_to_rebuild") guidance = resolution.guidance;
+			if (resolution?.type === "ask_model_to_rebuild") {
+				action = resolution;
+			}
 		}
-		if (!guidance && isSafeRetry(observation, error)) {
-			guidance = "该只读 Tool 遇到暂时性错误。请在改变参数、刷新状态或改用其他工具后再继续，不要原样重复调用。";
+		if (!action && isSafeRetry(observation, error)) {
+			const guidance =
+				"该只读 Tool 遇到暂时性错误。请在改变参数、刷新状态或改用其他工具后再继续，不要原样重复调用。";
+			action = {
+				type: "ask_model_to_rebuild",
+				guidance,
+				replacementResult: { content: [{ type: "text", text: guidance }], details: {} },
+			};
 		}
 
-		if (guidance) {
-			const action = {
-				type: "ask_model_to_rebuild" as const,
-				guidance,
-				replacementResult: { content: [{ type: "text" as const, text: guidance }], details: {} },
-			};
+		if (action) {
 			observation.action = action.type;
 			observation.outcome = "needs_model";
 			this.metrics.recordAttempt(observation.toolName, action.type);
+			if (action.type === "ask_model_to_rebuild" || action.type === "refresh_context") {
+				this.registerPendingModelRecovery(observation, failure, state.attempt, action.type);
+			}
 			this.circuits.set(circuitKey(observation.callSignature, failure.fingerprint), {
 				attempt: state.attempt,
 				failure,
@@ -478,6 +606,7 @@ export class AssistToolRecoveryController extends BaseToolRecoveryController {
 
 	async observe(observation: ToolRecoveryObservation, signal?: AbortSignal, error?: unknown): Promise<void> {
 		this.metrics.recordDuration(observation.durationMs);
+		if (await this.recordPendingModelRecoverySuccess(observation)) return;
 		if (!observation.failure) return;
 		await adaptToolRecoveryObservation(observation, error, signal);
 		const failure = observation.failure;
@@ -534,6 +663,7 @@ export class AutoToolRecoveryController extends BaseToolRecoveryController {
 	): Promise<ToolRecoveryAttemptDecision> {
 		await adaptToolRecoveryObservation(observation, error, signal);
 		const failure = observation.failure!;
+		this.discardPendingModelRecoveries(observation);
 		this.metrics.recordDuration(observation.durationMs);
 		this.metrics.recordFailure(failure);
 		const key = attemptKey(observation.toolCallId, failure.fingerprint);
@@ -583,6 +713,9 @@ export class AutoToolRecoveryController extends BaseToolRecoveryController {
 					observation.action = resolution.type;
 					observation.outcome = resolution.type === "accept_as_success" ? "recovered" : "needs_model";
 					this.metrics.recordAttempt(observation.toolName, resolution.type);
+					if (resolution.type === "ask_model_to_rebuild" || resolution.type === "refresh_context") {
+						this.registerPendingModelRecovery(observation, failure, state.attempt, resolution.type);
+					}
 					if (resolution.type !== "accept_as_success") {
 						this.circuits.set(circuitKey(observation.callSignature, failure.fingerprint), {
 							attempt: state.attempt,
@@ -636,15 +769,16 @@ export class AutoToolRecoveryController extends BaseToolRecoveryController {
 	}
 
 	async observe(observation: ToolRecoveryObservation, signal?: AbortSignal, error?: unknown): Promise<void> {
+		this.metrics.recordDuration(observation.durationMs);
+		if (await this.recordPendingModelRecoverySuccess(observation)) return;
 		if (observation.outcome === "success") {
 			const state = this.recovered.get(observation.toolCallId);
-			this.metrics.recordDuration(observation.durationMs);
 			if (!state) return;
 			this.recovered.delete(observation.toolCallId);
 			observation.action = "retry_same_args";
 			observation.outcome = "recovered";
 			observation.failure = state.failure;
-			this.metrics.recordSuccess(observation.toolName);
+			this.metrics.recordSuccess(observation.toolName, "retry_same_args");
 			await this.append(observation, state.failure, state.attempt + 1, "retry_same_args");
 			return;
 		}

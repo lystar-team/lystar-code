@@ -26,9 +26,14 @@ import {
 	approveToolRecoveryLesson,
 	createToolRecoveryLesson,
 	disableToolRecoveryLesson,
+	hashToolRecoveryLessonScope,
 	listToolRecoveryLessons,
 } from "../src/core/tool-recovery/lessons-store.ts";
-import { AutoToolRecoveryController, ObserveOnlyToolRecoveryController } from "../src/core/tool-recovery/policies.ts";
+import {
+	AssistToolRecoveryController,
+	AutoToolRecoveryController,
+	ObserveOnlyToolRecoveryController,
+} from "../src/core/tool-recovery/policies.ts";
 import { parseToolRecoveryRefinerProposal } from "../src/core/tool-recovery/refiner.ts";
 import {
 	adaptToolRecoveryObservation,
@@ -37,7 +42,9 @@ import {
 	registerBuiltInRecoveryError,
 	registerBuiltInToolIdentity,
 } from "../src/core/tool-recovery/registry.ts";
-import { createHarness } from "./test-harness.ts";
+import { createToolRecoverySafeRefreshRegistry } from "../src/core/tool-recovery/safe-refresh.ts";
+import { builtInExtensions } from "../src/extensions/index.ts";
+import { createHarness, createHarnessWithExtensions } from "./test-harness.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -57,6 +64,7 @@ class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMe
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 const CREATED_AT = "2026-08-15T00:00:00.000Z";
+const FUTURE = "2030-01-01T00:00:00.000Z";
 const originalToolRecoveryMode = process.env.PI_TOOL_RECOVERY_MODE;
 const tempDirs: string[] = [];
 
@@ -221,6 +229,22 @@ describe("Tool recovery observe ledger", () => {
 			code: "CANCELLED",
 			category: "cancelled",
 		});
+	});
+
+	it("keeps safe_refresh handlers explicit and isolates handler failures", async () => {
+		const registry = createToolRecoverySafeRefreshRegistry();
+		expect(registry.has("read")).toBe(true);
+		expect(registry.has("edit")).toBe(true);
+
+		registry.register("inspect_custom", ({ args }) => `snapshot:${JSON.stringify(args)}`);
+		expect(await registry.run("inspect_custom", { key: "value" }, process.cwd())).toBe('snapshot:{"key":"value"}');
+		await expect(registry.run("missing_custom", {}, process.cwd())).resolves.toBeUndefined();
+
+		registry.register("broken_custom", () => {
+			throw new Error("handler failed");
+		});
+		await expect(registry.run("broken_custom", {}, process.cwd())).resolves.toBeUndefined();
+		expect(() => registry.register("read", () => "override")).toThrow("已注册");
 	});
 
 	it("preserves POST_HOOK_FAILURE even when the hook error resembles a timeout", async () => {
@@ -457,6 +481,97 @@ describe("Tool recovery observe ledger", () => {
 		session.dispose();
 	});
 
+	it("runs a registered custom safe_refresh handler only for an active lesson", async () => {
+		process.env.PI_TOOL_RECOVERY_MODE = "assist";
+		const agentDir = createTempDir();
+		const sessionManager = SessionManager.create(agentDir, join(agentDir, "sessions"), {
+			id: "custom-refresh-session",
+		});
+		const registry = createToolRecoverySafeRefreshRegistry();
+		registry.register("inspect_custom", ({ args }) => {
+			const key =
+				typeof args === "object" && args !== null && !Array.isArray(args)
+					? String((args as Record<string, unknown>).key ?? "")
+					: "";
+			return `自定义状态：${key}`;
+		});
+		const customTool: AgentTool = {
+			name: "inspect_custom",
+			label: "inspect_custom",
+			description: "test custom inspection tool",
+			parameters: Type.Object({ key: Type.String() }),
+			async execute() {
+				throw new ToolExecutionError("custom target missing", {
+					code: "TARGET_NOT_FOUND",
+					category: "precondition",
+					retryable: false,
+				});
+			},
+		};
+		const harness = await createHarness({
+			agentDir,
+			sessionManager,
+			baseToolsOverride: { inspect_custom: customTool },
+			toolRecoverySafeRefreshRegistry: registry,
+			responses: [
+				{ toolCalls: [{ id: "custom-first", name: "inspect_custom", args: { key: "first" } }] },
+				"after first",
+				{ toolCalls: [{ id: "custom-second", name: "inspect_custom", args: { key: "second" } }] },
+				"after second",
+			],
+		});
+		try {
+			await harness.session.prompt("inspect first");
+			const firstResult = harness.session.messages.find((message) => message.role === "toolResult");
+			const firstText =
+				firstResult?.role === "toolResult"
+					? firstResult.content
+							.filter((content): content is { type: "text"; text: string } => content.type === "text")
+							.map((content) => content.text)
+							.join("\n")
+					: "";
+			expect(firstText).not.toContain("自定义状态：first");
+			const ledger = await readSessionRecoveryLedger(agentDir, sessionManager.getSessionFile()!);
+			const failure = ledger.find((entry) => entry.toolName === "inspect_custom");
+			if (!failure) throw new Error("missing custom Tool failure ledger");
+			const candidate = await createToolRecoveryLesson(
+				agentDir,
+				{
+					scope: "project",
+					scopeHash: hashToolRecoveryLessonScope(harness.tempDir),
+					matcher: {
+						toolName: failure.toolName,
+						failureCode: failure.failureCode,
+						fingerprintPrefix: failure.failureFingerprint.slice(0, 16),
+					},
+					guidance: "先读取自定义 Tool 的当前状态，再决定下一步。",
+					allowedAction: "safe_refresh",
+					expiresAt: FUTURE,
+				},
+				{ now: new Date(CREATED_AT) },
+			);
+			await approveToolRecoveryLesson(agentDir, candidate.id, candidate.version, { now: new Date(CREATED_AT) });
+
+			await harness.session.prompt("inspect second");
+			const results = harness.session.messages.filter(
+				(message): message is Extract<(typeof harness.session.messages)[number], { role: "toolResult" }> =>
+					message.role === "toolResult",
+			);
+			const result = results[results.length - 1];
+			const text =
+				result?.content
+					.filter((content): content is { type: "text"; text: string } => content.type === "text")
+					.map((content) => content.text)
+					.join("\n") ?? "";
+			expect(result?.isError).toBe(true);
+			expect(text).toContain("自定义状态：second");
+			expect(text).toContain("先读取自定义 Tool 的当前状态");
+		} finally {
+			harness.cleanup();
+			sessionManager.dispose();
+		}
+	});
+
 	it("separates off, observe, assist, and auto for the same transient read failure", async () => {
 		for (const mode of ["off", "observe", "assist", "auto"] as const) {
 			process.env.PI_TOOL_RECOVERY_MODE = mode;
@@ -520,6 +635,58 @@ describe("Tool recovery observe ledger", () => {
 				harness.cleanup();
 			}
 		}
+	});
+
+	it("associates a rebuilt Tool call with the original failure and records a candidate", async () => {
+		const agentDir = createTempDir();
+		const sessionManager = SessionManager.create(agentDir, join(agentDir, "sessions"), { id: "rebuild-session" });
+		let turnId = "0";
+		const controller = new AssistToolRecoveryController({
+			agentDir,
+			sessionManager,
+			getTurnId: () => turnId,
+			scopeHash: hashToolRecoveryLessonScope(agentDir),
+		});
+		const builtinEdit = createTrustedBuiltInTool("edit");
+		const error = registerBuiltInRecoveryError(
+			"edit",
+			new ToolExecutionError("old text was not found", {
+				code: "MATCH_NOT_FOUND",
+				category: "arguments",
+				retryable: false,
+			}),
+		);
+		Object.defineProperty(error, Symbol.for("pi.toolRecoveryHandler"), {
+			value: async () => ({
+				type: "ask_model_to_rebuild",
+				guidance: "先读取当前内容，再重建编辑。",
+				replacementResult: { content: [{ type: "text", text: "先读取当前内容，再重建编辑。" }], details: {} },
+			}),
+		});
+
+		const failed = createObservation("failed-edit", builtinEdit.runtimeContext, "edit");
+		const decision = await controller.decideAttempt(failed, undefined, error);
+		expect(decision.action.type).toBe("ask_model_to_rebuild");
+
+		turnId = "1";
+		const rebuilt = createObservation("rebuilt-edit", builtinEdit.runtimeContext, "edit");
+		rebuilt.callSignature = HASH_B;
+		rebuilt.outcome = "success";
+		rebuilt.failure = undefined;
+		await controller.observe(rebuilt);
+
+		const ledger = await readSessionRecoveryLedger(agentDir, sessionManager.getSessionFile()!);
+		expect(ledger.map((entry) => [entry.toolName, entry.failureCode, entry.action, entry.outcome])).toEqual([
+			["edit", "MATCH_NOT_FOUND", "ask_model_to_rebuild", "needs_model"],
+			["edit", "MATCH_NOT_FOUND", "ask_model_to_rebuild", "recovered"],
+		]);
+		const lessons = await listToolRecoveryLessons(agentDir, { status: "candidate" });
+		expect(lessons).toHaveLength(1);
+		expect(lessons[0]).toMatchObject({
+			matcher: { toolName: "edit", failureCode: "MATCH_NOT_FOUND" },
+			evidence: { occurrences: 1, sessions: 1, recovered: 1, failed: 0 },
+		});
+		sessionManager.dispose();
 	});
 
 	it("blocks an identical assist retry within the same Session without rerunning the Tool", async () => {
@@ -735,6 +902,61 @@ describe("Tool recovery observe ledger", () => {
 			} finally {
 				harness.cleanup();
 			}
+		}
+	});
+
+	it("rebuilds an apply_patch failure through the AgentSession recovery path", async () => {
+		process.env.PI_TOOL_RECOVERY_MODE = "assist";
+		const agentDir = createTempDir();
+		const sessionManager = SessionManager.create(agentDir, join(agentDir, "sessions"), {
+			id: "apply-patch-recovery-session",
+		});
+		const applyPatch = builtInExtensions.find((extension) => extension.name === "apply-patch");
+		if (!applyPatch) throw new Error("missing apply-patch built-in extension");
+		const patch = (lines: string[]) => ["*** Begin Patch", ...lines, "*** End Patch"].join("\n");
+		const harness = await createHarnessWithExtensions({
+			agentDir,
+			sessionManager,
+			extensionFactories: [applyPatch],
+			responses: [
+				{
+					toolCalls: [
+						{
+							id: "patch-failure",
+							name: "apply_patch",
+							args: {
+								input: patch(["*** Update File: target.txt", "@@", "-missing", "+updated"]),
+							},
+						},
+					],
+				},
+				{
+					toolCalls: [
+						{
+							id: "patch-rebuild",
+							name: "apply_patch",
+							args: {
+								input: patch(["*** Update File: target.txt", "@@", "-old", "+updated"]),
+							},
+						},
+					],
+				},
+				"done",
+			],
+		});
+		try {
+			writeFileSync(join(harness.tempDir, "target.txt"), "old\n");
+			await harness.session.prompt("apply the patch");
+			expect(readFileSync(join(harness.tempDir, "target.txt"), "utf8")).toBe("updated\n");
+			const ledger = await readSessionRecoveryLedger(agentDir, sessionManager.getSessionFile()!);
+			expect(ledger.map((entry) => [entry.toolName, entry.failureCode, entry.action, entry.outcome])).toEqual([
+				["apply_patch", "PATCH_MATCH_NOT_FOUND", "ask_model_to_rebuild", "needs_model"],
+				["apply_patch", "PATCH_MATCH_NOT_FOUND", "ask_model_to_rebuild", "recovered"],
+			]);
+			expect(await listToolRecoveryLessons(agentDir, { status: "candidate" })).toHaveLength(1);
+		} finally {
+			harness.cleanup();
+			sessionManager.dispose();
 		}
 	});
 

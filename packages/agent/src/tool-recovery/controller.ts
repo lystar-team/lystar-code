@@ -17,6 +17,10 @@ export interface ToolRecoveryPreflightContext extends ToolCallFingerprint {
 
 export type ToolRecoveryEventAction = "observe" | RecoveryAction["type"];
 export type ToolRecoveryEventOutcome = "success" | "failure" | "recovered" | "needs_model" | "blocked" | "cancelled";
+export type ToolRecoveryModelRecoveryAction = Extract<
+	RecoveryAction,
+	{ type: "refresh_context" | "ask_model_to_rebuild" }
+>["type"];
 
 export interface ToolRecoveryObservation extends ToolRecoveryPreflightContext {
 	action: ToolRecoveryEventAction;

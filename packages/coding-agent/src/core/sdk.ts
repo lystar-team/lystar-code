@@ -17,6 +17,7 @@ import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { time } from "./timings.ts";
 import type { ToolRecoveryRefiner } from "./tool-recovery/refiner.ts";
+import type { ToolRecoverySafeRefreshRegistry } from "./tool-recovery/safe-refresh.ts";
 import {
 	createBashTool,
 	createCodingTools,
@@ -89,6 +90,8 @@ export interface CreateAgentSessionOptions {
 	toolRecoveryRefiner?: ToolRecoveryRefiner;
 	/** Explicit user corrections that may be included in sanitized refiner input. */
 	getToolRecoveryUserCorrections?: () => readonly string[] | undefined;
+	/** Registry of code-registered read-only handlers for safe_refresh lessons. */
+	toolRecoverySafeRefreshRegistry?: ToolRecoverySafeRefreshRegistry;
 }
 
 /** Result from createAgentSession */
@@ -397,6 +400,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sessionStartEvent: options.sessionStartEvent,
 		toolRecoveryRefiner: options.toolRecoveryRefiner,
 		getToolRecoveryUserCorrections: options.getToolRecoveryUserCorrections,
+		toolRecoverySafeRefreshRegistry: options.toolRecoverySafeRefreshRegistry,
 		agentDir,
 	});
 	const extensionsResult = resourceLoader.getExtensions();

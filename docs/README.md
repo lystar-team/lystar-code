@@ -13,6 +13,7 @@
 
 - [交互界面与快捷键](usage/interactive-tui.md)
 - [Session 与项目规则](usage/sessions-and-project-instructions.md)
+- [Tool Recovery 与恢复经验](usage/tool-recovery.md)
 - [配置](usage/configuration.md)
 - [Responses 原生网页搜索](usage/responses-web-search.md)
 - [更新、回退与卸载](usage/update-rollback-uninstall.md)

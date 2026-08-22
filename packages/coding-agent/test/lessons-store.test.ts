@@ -17,6 +17,7 @@ import {
 	listToolRecoveryLessons,
 	pruneToolRecoveryLessons,
 	readToolRecoveryLessonHistory,
+	reconcileToolRecoveryLessons,
 	recordDeterministicToolRecoveryCandidate,
 	rollbackToolRecoveryLesson,
 	runToolRecoveryLessonReplay,
@@ -397,6 +398,96 @@ describe("Tool recovery lessons store", () => {
 		expect(readFileSync(paths.history, "utf8")).toContain('{"broken"');
 	});
 
+	it("compacts long history into a replayable checkpoint", async () => {
+		const agentDir = createTempDir();
+		let current = await createToolRecoveryLesson(agentDir, lessonInput(), { now: NOW, source: "test" });
+		for (let index = 0; index < 512; index++) {
+			current = await updateToolRecoveryLesson(
+				agentDir,
+				current.id,
+				current.version,
+				{ guidance: `当前恢复经验 ${index}` },
+				{ now: NOW, source: "test" },
+			);
+		}
+		const paths = getToolRecoveryLessonsPaths(agentDir);
+		const currentHistory = JSON.parse(readFileSync(paths.history, "utf8")) as { action?: string };
+		const history = await readToolRecoveryLessonHistory(agentDir);
+		expect(currentHistory.action).toBe("checkpoint");
+		expect(readdirSync(paths.historyArchiveDirectory)).toHaveLength(1);
+		expect(history[0]?.action).toBe("create");
+		expect(history.some((entry) => entry.action === "checkpoint")).toBe(true);
+		expect(history.length).toBeGreaterThan(512);
+		expect(await getToolRecoveryLesson(agentDir, current.id, { now: NOW })).toEqual(current);
+		const firstUpdate = history.find((entry) => entry.action === "update");
+		if (!firstUpdate) throw new Error("missing archived update");
+		const rolledBack = await rollbackToolRecoveryLesson(agentDir, firstUpdate.id, current.version, { now: NOW });
+		expect(rolledBack.status).toBe("candidate");
+		expect(rolledBack.version).toBe(current.version + 1);
+	});
+
+	it("reconciles a persisted ledger exactly once after a restart", async () => {
+		const agentDir = createTempDir();
+		const sessionPath = join(agentDir, "sessions", "restart.jsonl");
+		const receipt = await appendCandidateReceipt(agentDir, "restart");
+		if (!receipt) throw new Error("missing ledger receipt");
+		const worker = join(import.meta.dirname, "fixtures", "reconcile-lessons-worker.ts");
+		const reconcileInNewProcess = async (): Promise<number> => {
+			const result = await execFileAsync(process.execPath, ["--import", "tsx", worker, agentDir, sessionPath]);
+			return (JSON.parse(result.stdout) as { applied: number }).applied;
+		};
+
+		const first = await reconcileInNewProcess();
+		const lessonAfterFirst = (await listToolRecoveryLessons(agentDir, { status: "candidate", now: NOW }))[0];
+		if (!lessonAfterFirst) throw new Error("missing reconciled lesson");
+		const second = await reconcileInNewProcess();
+		const lessonAfterSecond = (await listToolRecoveryLessons(agentDir, { status: "candidate", now: NOW }))[0];
+
+		expect(first).toBe(1);
+		expect(second).toBe(0);
+		expect(lessonAfterSecond).toEqual(lessonAfterFirst);
+	});
+
+	it("bounds receipt hashes while keeping replay idempotent with ledger cursors", async () => {
+		const agentDir = createTempDir();
+		const sessionPath = join(agentDir, "sessions", "bounded.jsonl");
+		mkdirSync(join(agentDir, "sessions"), { recursive: true });
+		writeFileSync(sessionPath, "{}\n");
+		for (let index = 0; index < 70; index++) {
+			const receipt = await appendSessionRecoveryLedger(
+				agentDir,
+				sessionPath,
+				createRecoveryLedgerEntry({
+					sessionId: "bounded",
+					turnId: `turn-${index}`,
+					toolCallId: `call-${index}`,
+					toolName: "read",
+					callSignature: "a".repeat(64),
+					failureFingerprint: "b".repeat(64),
+					failureCode: "TIMEOUT",
+					attempt: 1,
+					action: "retry_same_args",
+					outcome: "recovered",
+					durationMs: 1,
+					createdAt: NOW.toISOString(),
+				}),
+			);
+			expect(receipt).toBeDefined();
+		}
+
+		const scopeHash = hashToolRecoveryLessonScope("project-a");
+		expect(await reconcileToolRecoveryLessons(agentDir, sessionPath, scopeHash, { now: NOW })).toBe(70);
+		const lesson = (await listToolRecoveryLessons(agentDir, { status: "candidate", now: NOW }))[0];
+		if (!lesson) throw new Error("missing bounded lesson");
+		expect(lesson.evidence.occurrences).toBe(70);
+		expect(lesson.evidence.receiptHashes).toHaveLength(64);
+		expect(lesson.evidence.ledgerCursors).toEqual([
+			expect.objectContaining({ sessionHash: expect.any(String), sequence: 70 }),
+		]);
+		expect(await reconcileToolRecoveryLessons(agentDir, sessionPath, scopeHash, { now: NOW })).toBe(0);
+		expect(await getToolRecoveryLesson(agentDir, lesson.id, { now: NOW })).toEqual(lesson);
+	});
+
 	it("rejects sensitive guidance and writes no raw paths or test secrets", async () => {
 		const agentDir = createTempDir();
 		for (const guidance of [
@@ -498,6 +589,49 @@ describe("Tool recovery lessons store", () => {
 		const paths = getToolRecoveryLessonsPaths(agentDir);
 		const bytes = `${readFileSync(paths.snapshot, "utf8")}\n${readFileSync(paths.history, "utf8")}`;
 		for (const forbidden of ["session-a", "session-b"]) expect(bytes).not.toContain(forbidden);
+	});
+
+	it("auto-verifies runtime deterministic evidence without activating the lesson", async () => {
+		const agentDir = createTempDir();
+		for (const sessionId of ["runtime-a", "runtime-a", "runtime-b"]) {
+			const receipt = await appendCandidateReceipt(agentDir, sessionId);
+			if (!receipt) throw new Error("missing runtime receipt");
+			await recordDeterministicToolRecoveryCandidate(
+				agentDir,
+				{
+					scopeHash: hashToolRecoveryLessonScope("project-a"),
+					receipt,
+					autoVerify: true,
+				},
+				{ now: NOW, source: "recovery" },
+			);
+		}
+		const verified = (await listToolRecoveryLessons(agentDir, { status: "verified", now: NOW }))[0];
+		if (!verified) throw new Error("missing verified lesson");
+		expect(verified.status).toBe("verified");
+		expect(await listToolRecoveryLessons(agentDir, { status: "active", now: NOW })).toEqual([]);
+	});
+
+	it("suspends an active lesson after repeated terminal failures", async () => {
+		const agentDir = createTempDir();
+		const candidate = await createToolRecoveryLesson(
+			agentDir,
+			lessonInput({ matcher: { toolName: "read", failureCode: "TIMEOUT", fingerprintPrefix: "b".repeat(16) } }),
+			{ now: NOW },
+		);
+		const active = await approveToolRecoveryLesson(agentDir, candidate.id, candidate.version, { now: NOW });
+		for (const sessionId of ["failure-a", "failure-b", "failure-c"]) {
+			const receipt = await appendCandidateReceipt(agentDir, sessionId, "failed");
+			if (!receipt) throw new Error("missing failure receipt");
+			await recordDeterministicToolRecoveryCandidate(
+				agentDir,
+				{ scopeHash: hashToolRecoveryLessonScope("project-a"), receipt },
+				{ now: NOW },
+			);
+		}
+		const suspended = await getToolRecoveryLesson(agentDir, active.id, { now: NOW });
+		expect(suspended.status).toBe("suspended");
+		expect(suspended.evidence).toMatchObject({ terminalFailures: 3, failed: 3 });
 	});
 
 	it("only verifies through store-controlled replay and promotes after real receipt thresholds", async () => {

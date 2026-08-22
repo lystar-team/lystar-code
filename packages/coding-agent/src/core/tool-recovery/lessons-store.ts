@@ -1,10 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import lockfile from "proper-lockfile";
 import { satisfies, validRange } from "semver";
 import type { SessionRecoveryLedgerReceipt } from "./ledger.ts";
-import { consumeSessionRecoveryLedgerReceipt } from "./ledger.ts";
+import {
+	consumeSessionRecoveryLedgerReceipt,
+	createSessionRecoveryLedgerReplayReceipt,
+	readSessionRecoveryLedger,
+} from "./ledger.ts";
 import { isStableFailureCode } from "./registry.ts";
 
 export type ToolRecoveryLessonStatus = "candidate" | "verified" | "active" | "suspended" | "expired";
@@ -17,15 +21,33 @@ export type ToolRecoveryLessonHistoryAction =
 	| "approve"
 	| "disable"
 	| "rollback"
-	| "prune";
+	| "prune"
+	| "checkpoint";
+
+export interface ToolRecoveryLessonLedgerCursor {
+	sessionHash: string;
+	sequence: number;
+	entryHash: string;
+}
 
 export interface ToolRecoveryLessonEvidence {
 	occurrences: number;
 	sessions: number;
 	recovered: number;
 	failed: number;
+	attempts?: number;
+	terminalFailures?: number;
+	needsModel?: number;
+	blocked?: number;
+	cancelled?: number;
+	matched?: number;
+	guidanceShown?: number;
 	/** 只由确定性候选写入，用于跨 Session 去重；不保存原始 Session ID。 */
 	sessionHashes?: string[];
+	/** 由账本 entry hash 组成，只保留最近窗口，覆盖进程崩溃后的重复提交。 */
+	receiptHashes?: string[];
+	/** 每个 Session 已完成重放的最后账本序号，避免截断 hash 后重复聚合。 */
+	ledgerCursors?: ToolRecoveryLessonLedgerCursor[];
 }
 
 export interface ToolRecoveryLesson {
@@ -63,12 +85,14 @@ export interface ToolRecoveryLessonHistoryEntry {
 	time: string;
 	before: ToolRecoveryLesson | null;
 	after: ToolRecoveryLesson | null;
+	checkpoint?: ToolRecoveryLessonsSnapshot;
 }
 
 export interface ToolRecoveryLessonsPaths {
 	directory: string;
 	snapshot: string;
 	history: string;
+	historyArchiveDirectory: string;
 	lock: string;
 }
 
@@ -124,6 +148,8 @@ export interface DeterministicToolRecoveryCandidateInput {
 	scopeHash: string;
 	receipt: SessionRecoveryLedgerReceipt;
 	expiresAt?: string;
+	/** 仅运行时 ledger 聚合和启动 reconcile 使用，允许确定性证据自动进入 verified。 */
+	autoVerify?: boolean;
 }
 
 export interface ToolRecoveryLessonReplayContext {
@@ -155,6 +181,10 @@ export interface FindToolRecoveryLessonsResult {
 	suspendedLessonIds: string[];
 }
 
+export interface ToolRecoveryLessonUsageOptions extends ToolRecoveryLessonsOptions {
+	guidanceShown?: boolean;
+}
+
 export class ToolRecoveryLessonsError extends Error {}
 export class ToolRecoveryLessonNotFoundError extends ToolRecoveryLessonsError {}
 export class ToolRecoveryLessonVersionConflictError extends ToolRecoveryLessonsError {}
@@ -175,6 +205,7 @@ const HISTORY_ACTIONS = new Set<ToolRecoveryLessonHistoryAction>([
 	"disable",
 	"rollback",
 	"prune",
+	"checkpoint",
 ]);
 const LESSON_KEYS = new Set([
 	"schema",
@@ -192,11 +223,18 @@ const LESSON_KEYS = new Set([
 	"updatedAt",
 	"rollbackOf",
 ]);
-const HISTORY_KEYS = new Set(["schema", "id", "action", "source", "time", "before", "after"]);
+const HISTORY_KEYS = new Set(["schema", "id", "action", "source", "time", "before", "after", "checkpoint"]);
+const MAX_HISTORY_ENTRIES = 512;
+const MAX_RECEIPT_HASHES = 64;
+const MAX_HISTORY_ARCHIVES = 32;
+const HISTORY_ARCHIVE_NAME = /^history-(?:\d{13}-)?[a-f0-9]{64}\.jsonl$/u;
 const storeQueues = new Map<string, Promise<void>>();
 const DEFAULT_SUSPENDED_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 const DEFAULT_CANDIDATE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const DETERMINISTIC_MATCHER_VERSION = 1 as const;
+const DETERMINISTIC_VERIFY_OCCURRENCES = 3;
+const DETERMINISTIC_VERIFY_SESSIONS = 2;
+const DETERMINISTIC_VERIFY_RECOVERED = 3;
 const DETERMINISTIC_GUIDANCE = new Map<string, string>([
 	["read\u0000TARGET_NOT_FOUND\u0000refresh_context", "先确认目标仍在父目录中，再决定是否调整路径。"],
 	["read\u0000TIMEOUT\u0000retry_same_args", "短暂超时后先确认调用已结束，再依据当前状态继续。"],
@@ -226,22 +264,72 @@ function isTime(value: unknown): value is string {
 
 function isEvidence(value: unknown): value is ToolRecoveryLessonEvidence {
 	if (!isRecord(value)) return false;
-	const keys = ["occurrences", "sessions", "recovered", "failed"];
-	if (!Object.keys(value).every((key) => keys.includes(key) || key === "sessionHashes")) return false;
+	const requiredKeys = ["occurrences", "sessions", "recovered", "failed"];
+	const optionalCounterKeys = [
+		"attempts",
+		"terminalFailures",
+		"needsModel",
+		"blocked",
+		"cancelled",
+		"matched",
+		"guidanceShown",
+	];
 	if (
-		!keys.every((key) => {
+		!Object.keys(value).every(
+			(key) =>
+				requiredKeys.includes(key) ||
+				optionalCounterKeys.includes(key) ||
+				key === "sessionHashes" ||
+				key === "receiptHashes" ||
+				key === "ledgerCursors",
+		)
+	)
+		return false;
+	if (
+		![...requiredKeys, ...optionalCounterKeys].every((key) => {
 			const candidate = value[key];
-			return typeof candidate === "number" && Number.isSafeInteger(candidate) && candidate >= 0;
+			return (
+				candidate === undefined ||
+				(typeof candidate === "number" && Number.isSafeInteger(candidate) && candidate >= 0)
+			);
 		})
 	) {
 		return false;
 	}
-	if (value.sessionHashes === undefined) return true;
+	if (
+		value.sessionHashes !== undefined &&
+		(!Array.isArray(value.sessionHashes) ||
+			!value.sessionHashes.every((hash) => typeof hash === "string" && SHA256.test(hash)) ||
+			new Set(value.sessionHashes).size !== value.sessionHashes.length ||
+			value.sessionHashes.length !== value.sessions)
+	) {
+		return false;
+	}
+	if (
+		value.receiptHashes !== undefined &&
+		(!Array.isArray(value.receiptHashes) ||
+			!value.receiptHashes.every((hash) => typeof hash === "string" && SHA256.test(hash)) ||
+			new Set(value.receiptHashes).size !== value.receiptHashes.length ||
+			value.receiptHashes.length > MAX_RECEIPT_HASHES)
+	) {
+		return false;
+	}
+	if (value.ledgerCursors === undefined) return true;
 	return (
-		Array.isArray(value.sessionHashes) &&
-		value.sessionHashes.every((hash) => typeof hash === "string" && SHA256.test(hash)) &&
-		new Set(value.sessionHashes).size === value.sessionHashes.length &&
-		value.sessionHashes.length === value.sessions
+		Array.isArray(value.ledgerCursors) &&
+		value.ledgerCursors.every(
+			(cursor) =>
+				isRecord(cursor) &&
+				typeof cursor.sessionHash === "string" &&
+				SHA256.test(cursor.sessionHash) &&
+				typeof cursor.sequence === "number" &&
+				Number.isSafeInteger(cursor.sequence) &&
+				cursor.sequence >= 1 &&
+				typeof cursor.entryHash === "string" &&
+				SHA256.test(cursor.entryHash) &&
+				Object.keys(cursor).length === 3,
+		) &&
+		new Set(value.ledgerCursors.map((cursor) => cursor.sessionHash)).size === value.ledgerCursors.length
 	);
 }
 
@@ -256,7 +344,16 @@ function isEmptyEvidence(value: unknown): boolean {
 		value.sessions === 0 &&
 		value.recovered === 0 &&
 		value.failed === 0 &&
-		value.sessionHashes === undefined
+		value.attempts === undefined &&
+		value.terminalFailures === undefined &&
+		value.needsModel === undefined &&
+		value.blocked === undefined &&
+		value.cancelled === undefined &&
+		value.matched === undefined &&
+		value.guidanceShown === undefined &&
+		value.sessionHashes === undefined &&
+		value.receiptHashes === undefined &&
+		value.ledgerCursors === undefined
 	);
 }
 
@@ -329,18 +426,31 @@ function isSnapshot(value: unknown): value is ToolRecoveryLessonsSnapshot {
 }
 
 function isHistoryEntry(value: unknown): value is ToolRecoveryLessonHistoryEntry {
+	if (
+		!isRecord(value) ||
+		!hasOnlyKeys(value, HISTORY_KEYS) ||
+		value.schema !== 1 ||
+		typeof value.id !== "string" ||
+		!UUID.test(value.id) ||
+		typeof value.action !== "string" ||
+		!HISTORY_ACTIONS.has(value.action as ToolRecoveryLessonHistoryAction) ||
+		typeof value.source !== "string" ||
+		!SOURCE.test(value.source) ||
+		!isTime(value.time)
+	) {
+		return false;
+	}
+	if (value.action === "checkpoint") {
+		return (
+			Object.keys(value).length === HISTORY_KEYS.size &&
+			value.before === null &&
+			value.after === null &&
+			isSnapshot(value.checkpoint)
+		);
+	}
 	return (
-		isRecord(value) &&
-		hasOnlyKeys(value, HISTORY_KEYS) &&
-		Object.keys(value).length === HISTORY_KEYS.size &&
-		value.schema === 1 &&
-		typeof value.id === "string" &&
-		UUID.test(value.id) &&
-		typeof value.action === "string" &&
-		HISTORY_ACTIONS.has(value.action as ToolRecoveryLessonHistoryAction) &&
-		typeof value.source === "string" &&
-		SOURCE.test(value.source) &&
-		isTime(value.time) &&
+		Object.keys(value).length === HISTORY_KEYS.size - 1 &&
+		value.checkpoint === undefined &&
 		(value.before === null || isLesson(value.before)) &&
 		(value.after === null || isLesson(value.after))
 	);
@@ -508,16 +618,52 @@ async function appendHistory(paths: ToolRecoveryLessonsPaths, entry: ToolRecover
 	}
 }
 
+async function readHistoryArchives(paths: ToolRecoveryLessonsPaths): Promise<ToolRecoveryLessonHistoryEntry[]> {
+	let names: string[];
+	try {
+		names = (await readdir(paths.historyArchiveDirectory)).filter((name) => HISTORY_ARCHIVE_NAME.test(name));
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw error;
+	}
+	const entries: ToolRecoveryLessonHistoryEntry[] = [];
+	for (const name of names.sort()) {
+		const raw = await readText(join(paths.historyArchiveDirectory, name));
+		const parsed = parseHistory(raw);
+		if (parsed.repairedContent !== raw) throw new ToolRecoveryLessonsError("history archive 尾部损坏");
+		entries.push(...parsed.entries);
+	}
+	return entries;
+}
+
+async function readAllHistoryEntries(
+	paths: ToolRecoveryLessonsPaths,
+	currentEntries: readonly ToolRecoveryLessonHistoryEntry[],
+): Promise<ToolRecoveryLessonHistoryEntry[]> {
+	const entries = [...(await readHistoryArchives(paths)), ...currentEntries];
+	const ids = new Set<string>();
+	for (const entry of entries) {
+		if (ids.has(entry.id)) throw new ToolRecoveryLessonsError("history archive 包含重复记录 ID");
+		ids.add(entry.id);
+	}
+	return entries;
+}
+
 function equalLessons(left: ToolRecoveryLesson, right: ToolRecoveryLesson): boolean {
 	return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function replayHistory(entries: ToolRecoveryLessonHistoryEntry[]): ToolRecoveryLessonsSnapshot {
-	const lessons: ToolRecoveryLesson[] = [];
+	let lessons: ToolRecoveryLesson[] = [];
 	const entryIds = new Set<string>();
 	for (const entry of entries) {
 		if (entryIds.has(entry.id)) throw new ToolRecoveryLessonsError("history.jsonl 包含重复记录 ID");
 		entryIds.add(entry.id);
+
+		if (entry.action === "checkpoint") {
+			lessons = structuredClone(entry.checkpoint!.lessons);
+			continue;
+		}
 
 		if (entry.action === "create") {
 			if (
@@ -681,6 +827,23 @@ function historyEntry(
 	return { schema: 1, id: randomUUID(), action, source, time, before, after };
 }
 
+function checkpointHistoryEntry(
+	source: string,
+	time: string,
+	snapshot: ToolRecoveryLessonsSnapshot,
+): ToolRecoveryLessonHistoryEntry {
+	return {
+		schema: 1,
+		id: randomUUID(),
+		action: "checkpoint",
+		source,
+		time,
+		before: null,
+		after: null,
+		checkpoint: structuredClone(snapshot),
+	};
+}
+
 function behaviorChanged(current: ToolRecoveryLesson, next: ToolRecoveryLesson): boolean {
 	return (
 		current.scope !== next.scope ||
@@ -692,6 +855,32 @@ function behaviorChanged(current: ToolRecoveryLesson, next: ToolRecoveryLesson):
 	);
 }
 
+async function compactHistoryIfNeeded(
+	paths: ToolRecoveryLessonsPaths,
+	snapshot: ToolRecoveryLessonsSnapshot,
+	options: ToolRecoveryLessonsOptions,
+): Promise<void> {
+	const rawHistory = await readText(paths.history);
+	const history = parseHistory(rawHistory).entries;
+	if (history.length <= MAX_HISTORY_ENTRIES) return;
+	await mkdir(paths.historyArchiveDirectory, { recursive: true, mode: 0o700 });
+	const archiveContent = `${history.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
+	const archiveHash = sha256(archiveContent);
+	const archiveNames = (await readdir(paths.historyArchiveDirectory)).filter((name) =>
+		HISTORY_ARCHIVE_NAME.test(name),
+	);
+	const archiveName =
+		archiveNames.find((name) => name === `history-${archiveHash}.jsonl` || name.endsWith(`-${archiveHash}.jsonl`)) ??
+		`history-${Date.now()}-${archiveHash}.jsonl`;
+	await writeAtomically(join(paths.historyArchiveDirectory, archiveName), archiveContent);
+	const checkpoint = checkpointHistoryEntry("compaction", nowIso(options), snapshot);
+	await writeAtomically(paths.history, `${JSON.stringify(checkpoint)}\n`);
+	const archives = (await readdir(paths.historyArchiveDirectory)).filter((name) => HISTORY_ARCHIVE_NAME.test(name));
+	for (const name of archives.sort().slice(0, Math.max(0, archives.length - MAX_HISTORY_ARCHIVES))) {
+		await rm(join(paths.historyArchiveDirectory, name), { force: true });
+	}
+}
+
 async function commit(
 	paths: ToolRecoveryLessonsPaths,
 	snapshot: ToolRecoveryLessonsSnapshot,
@@ -701,6 +890,7 @@ async function commit(
 	for (const entry of Array.isArray(entries) ? entries : [entries]) await appendHistory(paths, entry);
 	await options.onHistorySynced?.();
 	await writeAtomically(paths.snapshot, `${JSON.stringify(snapshot, null, 2)}\n`);
+	await compactHistoryIfNeeded(paths, snapshot, options);
 }
 
 export function hashToolRecoveryLessonScope(value: string): string {
@@ -713,6 +903,7 @@ export function getToolRecoveryLessonsPaths(agentDir: string): ToolRecoveryLesso
 		directory,
 		snapshot: join(directory, "lessons.json"),
 		history: join(directory, "history.jsonl"),
+		historyArchiveDirectory: join(directory, "history-archive"),
 		lock: join(directory, "lock"),
 	};
 }
@@ -765,6 +956,12 @@ export async function getToolRecoveryLessonDiagnostics(
 		const parsedHistory = parseHistory(historyContent);
 		if (parsedHistory.repairedContent !== historyContent)
 			throw new ToolRecoveryLessonsError("truncated lessons history");
+		const archiveEntries = await readHistoryArchives(paths);
+		const historyIds = new Set<string>();
+		for (const entry of [...archiveEntries, ...parsedHistory.entries]) {
+			if (historyIds.has(entry.id)) throw new ToolRecoveryLessonsError("history archive 包含重复记录 ID");
+			historyIds.add(entry.id);
+		}
 		const lessons =
 			parsedHistory.entries.length > 0 ? replayHistory(parsedHistory.entries).lessons : snapshot.lessons;
 		return { available: true, counts: countLessons(lessons, options.now ?? new Date()) };
@@ -833,7 +1030,10 @@ export async function getToolRecoveryLesson(
 }
 
 export async function readToolRecoveryLessonHistory(agentDir: string): Promise<ToolRecoveryLessonHistoryEntry[]> {
-	return await withStoreLock(agentDir, async (paths) => (await loadStore(paths)).history);
+	return await withStoreLock(agentDir, async (paths) => {
+		const { history } = await loadStore(paths);
+		return await readAllHistoryEntries(paths, history);
+	});
 }
 
 export async function updateToolRecoveryLesson(
@@ -973,10 +1173,7 @@ export async function autoPromoteToolRecoveryLesson(
 		if (
 			current.status !== "verified" ||
 			current.allowedAction !== "guidance" ||
-			evidence.occurrences < 3 ||
-			evidence.sessions < 2 ||
-			evidence.recovered < 3 ||
-			evidence.failed !== 0 ||
+			!meetsDeterministicVerificationThreshold(evidence) ||
 			(current.scope === "project" && !current.scopeHash) ||
 			!isMatcher(matcher) ||
 			!versionMatches ||
@@ -1020,6 +1217,16 @@ export async function disableToolRecoveryLesson(
 	});
 }
 
+function meetsDeterministicVerificationThreshold(evidence: ToolRecoveryLessonEvidence): boolean {
+	return (
+		evidence.occurrences >= DETERMINISTIC_VERIFY_OCCURRENCES &&
+		evidence.sessions >= DETERMINISTIC_VERIFY_SESSIONS &&
+		evidence.recovered >= DETERMINISTIC_VERIFY_RECOVERED &&
+		evidence.failed === 0 &&
+		(evidence.terminalFailures ?? 0) === 0
+	);
+}
+
 function deterministicGuidance(
 	scopeHash: string,
 	evidence: ReturnType<typeof consumeSessionRecoveryLedgerReceipt>,
@@ -1053,13 +1260,24 @@ export async function recordDeterministicToolRecoveryCandidate(
 		const snapshot = (await loadStore(paths)).snapshot;
 		const current = snapshot.lessons.find(
 			(lesson) =>
-				(lesson.status === "candidate" || lesson.status === "verified") &&
+				effectiveStatus(lesson, options.now ?? new Date()) !== "expired" &&
+				(lesson.status === "candidate" ||
+					lesson.status === "verified" ||
+					lesson.status === "active" ||
+					lesson.status === "suspended") &&
 				lesson.scope === "project" &&
 				lesson.scopeHash === input.scopeHash &&
 				lesson.matcher.toolName === receipt.toolName &&
 				lesson.matcher.failureCode === receipt.failureCode &&
 				lesson.matcher.fingerprintPrefix === fingerprintPrefix,
 		);
+		const currentCursor = current?.evidence.ledgerCursors?.find(
+			(cursor) => cursor.sessionHash === receipt.sessionHash,
+		);
+		if (currentCursor && receipt.ledgerSequence !== undefined && receipt.ledgerSequence <= currentCursor.sequence) {
+			return undefined;
+		}
+		if (current?.evidence.receiptHashes?.includes(receipt.entryHash)) return undefined;
 		if (!current && receipt.outcome !== "recovered") return undefined;
 		const time = nowIso(options);
 		if (!current) {
@@ -1079,7 +1297,21 @@ export async function recordDeterministicToolRecoveryCandidate(
 					sessions: 1,
 					recovered: 1,
 					failed: 0,
+					attempts: 1,
+					terminalFailures: 0,
 					sessionHashes: [receipt.sessionHash],
+					receiptHashes: [receipt.entryHash],
+					...(receipt.ledgerSequence === undefined
+						? {}
+						: {
+								ledgerCursors: [
+									{
+										sessionHash: receipt.sessionHash,
+										sequence: receipt.ledgerSequence,
+										entryHash: receipt.entryHash,
+									},
+								],
+							}),
 				},
 				version: 1,
 				expiresAt,
@@ -1097,21 +1329,56 @@ export async function recordDeterministicToolRecoveryCandidate(
 			return presentLesson(lesson, options.now ?? new Date());
 		}
 
-		const sessionHashes = current.evidence.sessionHashes ?? [];
-		const nextSessionHashes = sessionHashes.includes(receipt.sessionHash)
-			? sessionHashes
-			: [...sessionHashes, receipt.sessionHash];
+		const sessionHashes = current.evidence.sessionHashes;
+		const nextSessionHashes = sessionHashes
+			? sessionHashes.includes(receipt.sessionHash)
+				? sessionHashes
+				: [...sessionHashes, receipt.sessionHash]
+			: undefined;
+		const receiptHashes = current.evidence.receiptHashes ?? [];
+		const ledgerCursors = current.evidence.ledgerCursors ? [...current.evidence.ledgerCursors] : [];
+		if (receipt.ledgerSequence !== undefined) {
+			const cursorIndex = ledgerCursors.findIndex((cursor) => cursor.sessionHash === receipt.sessionHash);
+			const nextCursor = {
+				sessionHash: receipt.sessionHash,
+				sequence: receipt.ledgerSequence,
+				entryHash: receipt.entryHash,
+			};
+			if (cursorIndex === -1) ledgerCursors.push(nextCursor);
+			else ledgerCursors[cursorIndex] = nextCursor;
+		}
+		const nextEvidence: ToolRecoveryLessonEvidence = {
+			occurrences: current.evidence.occurrences + 1,
+			sessions: nextSessionHashes ? nextSessionHashes.length : current.evidence.sessions + 1,
+			recovered: current.evidence.recovered + (receipt.outcome === "recovered" ? 1 : 0),
+			failed:
+				current.evidence.failed +
+				(receipt.outcome === "failed" || receipt.outcome === "blocked" || receipt.outcome === "cancelled" ? 1 : 0),
+			attempts: (current.evidence.attempts ?? current.evidence.occurrences) + 1,
+			terminalFailures:
+				(current.evidence.terminalFailures ?? current.evidence.failed) +
+				(receipt.outcome === "failed" || receipt.outcome === "blocked" || receipt.outcome === "cancelled" ? 1 : 0),
+			needsModel: (current.evidence.needsModel ?? 0) + (receipt.outcome === "needs_model" ? 1 : 0),
+			blocked: (current.evidence.blocked ?? 0) + (receipt.outcome === "blocked" ? 1 : 0),
+			cancelled: (current.evidence.cancelled ?? 0) + (receipt.outcome === "cancelled" ? 1 : 0),
+			...(current.evidence.matched === undefined ? {} : { matched: current.evidence.matched }),
+			...(current.evidence.guidanceShown === undefined ? {} : { guidanceShown: current.evidence.guidanceShown }),
+			...(nextSessionHashes ? { sessionHashes: nextSessionHashes } : {}),
+			receiptHashes: [...receiptHashes, receipt.entryHash].slice(-MAX_RECEIPT_HASHES),
+			...(ledgerCursors.length > 0 ? { ledgerCursors } : {}),
+		};
+		const shouldSuspend =
+			current.status === "active" &&
+			(nextEvidence.terminalFailures ?? 0) >= 3 &&
+			(nextEvidence.terminalFailures ?? 0) > nextEvidence.recovered;
+		const shouldVerify =
+			input.autoVerify === true &&
+			current.status === "candidate" &&
+			meetsDeterministicVerificationThreshold(nextEvidence);
 		const next: ToolRecoveryLesson = {
 			...current,
-			evidence: {
-				occurrences: current.evidence.occurrences + 1,
-				sessions: current.evidence.sessionHashes
-					? nextSessionHashes.length
-					: Math.max(current.evidence.sessions, 1),
-				recovered: current.evidence.recovered + (receipt.outcome === "recovered" ? 1 : 0),
-				failed: current.evidence.failed + (receipt.outcome === "failed" ? 1 : 0),
-				sessionHashes: nextSessionHashes,
-			},
+			status: shouldSuspend ? "suspended" : shouldVerify ? "verified" : current.status,
+			evidence: nextEvidence,
 			version: current.version + 1,
 			updatedAt: time,
 		};
@@ -1120,11 +1387,45 @@ export async function recordDeterministicToolRecoveryCandidate(
 		await commit(
 			paths,
 			snapshot,
-			historyEntry("update", sourceOf({ ...options, source: options.source ?? "recovery" }), time, current, next),
+			historyEntry(
+				shouldSuspend ? "disable" : shouldVerify ? "verify" : "update",
+				sourceOf({ ...options, source: options.source ?? "recovery" }),
+				time,
+				current,
+				next,
+			),
 			options,
 		);
 		return presentLesson(next, options.now ?? new Date());
 	});
+}
+
+/**
+ * 启动或恢复 Session 时重放已经落盘但可能尚未聚合到 Store 的 recovery ledger。
+ * receiptHashes 让重复启动成为幂等操作；Store 锁保证多个进程不会并发破坏快照。
+ */
+export async function reconcileToolRecoveryLessons(
+	agentDir: string,
+	sessionPath: string,
+	scopeHash: string,
+	options: ToolRecoveryLessonsOptions = {},
+): Promise<number> {
+	if (!SHA256.test(scopeHash)) throw new ToolRecoveryLessonsError("scopeHash 必须是 SHA-256 摘要");
+	const entries = await readSessionRecoveryLedger(agentDir, sessionPath);
+	let applied = 0;
+	for (const [index, entry] of entries.entries()) {
+		const lesson = await recordDeterministicToolRecoveryCandidate(
+			agentDir,
+			{
+				scopeHash,
+				receipt: createSessionRecoveryLedgerReplayReceipt(entry, index + 1),
+				autoVerify: true,
+			},
+			options,
+		);
+		if (lesson) applied++;
+	}
+	return applied;
 }
 
 function lessonMatchesRuntime(lesson: ToolRecoveryLesson, input: FindToolRecoveryLessonsInput, now: Date): boolean {
@@ -1146,7 +1447,11 @@ export async function findMatchingToolRecoveryLessons(
 	const now = input.now ?? new Date();
 	return await withStoreLock(agentDir, async (paths) => {
 		const snapshot = (await loadStore(paths)).snapshot;
-		const matching = snapshot.lessons.filter((lesson) => lessonMatchesRuntime(lesson, input, now));
+		const matching = snapshot.lessons.filter(
+			(lesson) =>
+				lessonMatchesRuntime(lesson, input, now) &&
+				(lesson.scope === "global" || (lesson.scope === "project" && lesson.scopeHash === input.scopeHash)),
+		);
 		const suspendedLessonIds = matching.filter((lesson) => lesson.status === "suspended").map((lesson) => lesson.id);
 		const rank = (lesson: ToolRecoveryLesson) =>
 			(lesson.scope === "project" && lesson.scopeHash === input.scopeHash ? 0 : 2) +
@@ -1169,6 +1474,46 @@ export async function findMatchingToolRecoveryLessons(
 	});
 }
 
+/** 记录 active lesson 的运行时命中，不执行经验中的任意动作。 */
+export async function recordToolRecoveryLessonUsage(
+	agentDir: string,
+	lessonIds: readonly string[],
+	options: ToolRecoveryLessonUsageOptions = {},
+): Promise<void> {
+	const ids = new Set(lessonIds);
+	if (ids.size === 0) return;
+	await withStoreLock(agentDir, async (paths) => {
+		const snapshot = (await loadStore(paths)).snapshot;
+		const time = nowIso(options);
+		const entries: ToolRecoveryLessonHistoryEntry[] = [];
+		for (const current of snapshot.lessons) {
+			if (
+				!ids.has(current.id) ||
+				current.status !== "active" ||
+				effectiveStatus(current, options.now ?? new Date()) !== "active"
+			) {
+				continue;
+			}
+			const next: ToolRecoveryLesson = {
+				...current,
+				evidence: {
+					...current.evidence,
+					matched: (current.evidence.matched ?? 0) + 1,
+					...(options.guidanceShown ? { guidanceShown: (current.evidence.guidanceShown ?? 0) + 1 } : {}),
+				},
+				version: current.version + 1,
+				updatedAt: time,
+			};
+			if (!isLesson(next)) throw new ToolRecoveryLessonsError("恢复经验命中证据无效");
+			snapshot.lessons[snapshot.lessons.indexOf(current)] = next;
+			entries.push(
+				historyEntry("update", sourceOf({ ...options, source: options.source ?? "runtime" }), time, current, next),
+			);
+		}
+		if (entries.length > 0) await commit(paths, snapshot, entries, options);
+	});
+}
+
 export async function rollbackToolRecoveryLesson(
 	agentDir: string,
 	historyId: string,
@@ -1177,7 +1522,7 @@ export async function rollbackToolRecoveryLesson(
 ): Promise<ToolRecoveryLesson> {
 	return await withStoreLock(agentDir, async (paths) => {
 		const { snapshot, history } = await loadStore(paths);
-		const target = history.find((entry) => entry.id === historyId);
+		const target = (await readAllHistoryEntries(paths, history)).find((entry) => entry.id === historyId);
 		if (!target) throw new ToolRecoveryLessonsError(`未找到历史记录“${historyId}”`);
 		if (!target.before) throw new ToolRecoveryLessonsError("这条历史记录没有可恢复的旧快照");
 		const current = findLesson(snapshot, target.before.id);

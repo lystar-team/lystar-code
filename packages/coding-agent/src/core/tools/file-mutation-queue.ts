@@ -1,5 +1,7 @@
-import { realpath } from "node:fs/promises";
-import { resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { access, open, realpath, rm } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import lockfile from "proper-lockfile";
 
 const fileMutationQueues = new Map<string, Promise<void>>();
 let registrationQueue = Promise.resolve();
@@ -25,8 +27,53 @@ async function getMutationQueueKey(filePath: string): Promise<string> {
 	}
 }
 
+async function getCrossProcessLockTarget(key: string): Promise<{ path: string; removeAfter: boolean }> {
+	try {
+		await access(key);
+		return { path: key, removeAfter: false };
+	} catch (error) {
+		if (!isMissingPathError(error)) throw error;
+	}
+
+	let directory = dirname(key);
+	while (true) {
+		try {
+			await access(directory);
+			const lockTarget = join(
+				directory,
+				`.pi-file-mutation-${createHash("sha256").update(key).digest("hex")}.lock-target`,
+			);
+			const handle = await open(lockTarget, "a");
+			await handle.close();
+			return { path: lockTarget, removeAfter: true };
+		} catch (error) {
+			if (!isMissingPathError(error)) throw error;
+			const parent = dirname(directory);
+			if (parent === directory) throw error;
+			directory = parent;
+		}
+	}
+}
+
+async function acquireCrossProcessLock(key: string): Promise<() => Promise<void>> {
+	const target = await getCrossProcessLockTarget(key);
+	await lockfile.lock(target.path, {
+		realpath: false,
+		stale: 60_000,
+		update: 15_000,
+		retries: { retries: 40, minTimeout: 10, maxTimeout: 100 },
+	});
+	return async () => {
+		try {
+			await lockfile.unlock(target.path, { realpath: false });
+		} finally {
+			if (target.removeAfter) await rm(target.path, { force: true });
+		}
+	};
+}
+
 /**
- * Serialize file mutation operations targeting the same file.
+ * Serialize file mutation operations targeting the same file inside one process and across processes.
  * Operations for different files still run in parallel.
  */
 export async function withFileMutationQueue<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
@@ -50,12 +97,18 @@ export async function withFileMutationQueue<T>(filePath: string, fn: () => Promi
 
 	const { key, currentQueue, chainedQueue, releaseNext } = await registration;
 	await currentQueue;
+	let releaseCrossProcessLock: (() => Promise<void>) | undefined;
 	try {
+		releaseCrossProcessLock = await acquireCrossProcessLock(key);
 		return await fn();
 	} finally {
-		releaseNext();
-		if (fileMutationQueues.get(key) === chainedQueue) {
-			fileMutationQueues.delete(key);
+		try {
+			if (releaseCrossProcessLock) await releaseCrossProcessLock();
+		} finally {
+			releaseNext();
+			if (fileMutationQueues.get(key) === chainedQueue) {
+				fileMutationQueues.delete(key);
+			}
 		}
 	}
 }

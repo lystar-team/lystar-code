@@ -38,6 +38,7 @@ export interface SessionRecoveryLedgerKey {
 export interface SessionRecoveryLedgerReceipt {
 	readonly entryHash: string;
 	readonly sessionHash: string;
+	readonly ledgerSequence?: number;
 	readonly toolName: string;
 	readonly failureCode: string;
 	readonly failureFingerprint: string;
@@ -48,6 +49,7 @@ export interface SessionRecoveryLedgerReceipt {
 export interface SessionRecoveryLedgerReceiptEvidence {
 	entryHash: string;
 	sessionHash: string;
+	ledgerSequence?: number;
 	toolName: string;
 	failureCode: string;
 	failureFingerprint: string;
@@ -144,10 +146,11 @@ function assertLedgerEntry(entry: RecoveryLedgerEntry): void {
 	if (!isLedgerEntry(entry)) throw new Error("Invalid recovery ledger entry");
 }
 
-function createLedgerReceipt(entry: RecoveryLedgerEntry): SessionRecoveryLedgerReceipt {
+function createLedgerReceipt(entry: RecoveryLedgerEntry, ledgerSequence?: number): SessionRecoveryLedgerReceipt {
 	const receipt = Object.freeze({
 		entryHash: sha256(JSON.stringify(entry)),
 		sessionHash: entry.sessionId,
+		...(ledgerSequence === undefined ? {} : { ledgerSequence }),
 		toolName: entry.toolName,
 		failureCode: entry.failureCode,
 		failureFingerprint: entry.failureFingerprint,
@@ -156,6 +159,21 @@ function createLedgerReceipt(entry: RecoveryLedgerEntry): SessionRecoveryLedgerR
 	});
 	ledgerReceipts.add(receipt);
 	return receipt;
+}
+
+/**
+ * 从已校验的持久化账本条目重建一次性 receipt，供启动时补偿聚合使用。
+ * 调用方必须先通过 readSessionRecoveryLedger() 读取条目，不能把普通对象直接当成可信证据。
+ */
+export function createSessionRecoveryLedgerReplayReceipt(
+	entry: RecoveryLedgerEntry,
+	ledgerSequence?: number,
+): SessionRecoveryLedgerReceipt {
+	assertLedgerEntry(entry);
+	if (ledgerSequence !== undefined && (!Number.isSafeInteger(ledgerSequence) || ledgerSequence < 1)) {
+		throw new Error("Invalid recovery ledger sequence");
+	}
+	return createLedgerReceipt(entry, ledgerSequence);
 }
 
 /**
@@ -177,6 +195,7 @@ export function consumeSessionRecoveryLedgerReceipt(
 	return {
 		entryHash: verified.entryHash,
 		sessionHash: verified.sessionHash,
+		...(verified.ledgerSequence === undefined ? {} : { ledgerSequence: verified.ledgerSequence }),
 		toolName: verified.toolName,
 		failureCode: verified.failureCode,
 		failureFingerprint: verified.failureFingerprint,

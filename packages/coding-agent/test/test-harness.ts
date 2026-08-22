@@ -33,6 +33,7 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import type { Settings } from "../src/core/settings-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { ToolRecoveryRefiner } from "../src/core/tool-recovery/refiner.ts";
+import type { ToolRecoverySafeRefreshRegistry } from "../src/core/tool-recovery/safe-refresh.ts";
 import type { InlineExtension, ResourceLoader } from "../src/index.ts";
 import {
 	type CreateTestExtensionsResultInput,
@@ -349,6 +350,8 @@ export interface HarnessOptions {
 	/** Explicit optional refiner used by recovery lifecycle tests. */
 	toolRecoveryRefiner?: ToolRecoveryRefiner;
 	getToolRecoveryUserCorrections?: () => readonly string[] | undefined;
+	/** Optional safe_refresh registry for custom Tool recovery tests. */
+	toolRecoverySafeRefreshRegistry?: ToolRecoverySafeRefreshRegistry;
 	/** Optional persistent manager when ledger-backed lifecycle behavior is under test. */
 	sessionManager?: SessionManager;
 }
@@ -436,6 +439,7 @@ async function createHarnessWithResourceLoader(
 		agentDir: options.agentDir,
 		toolRecoveryRefiner: options.toolRecoveryRefiner,
 		getToolRecoveryUserCorrections: options.getToolRecoveryUserCorrections,
+		toolRecoverySafeRefreshRegistry: options.toolRecoverySafeRefreshRegistry,
 	});
 
 	const events: AgentSessionEvent[] = [];
