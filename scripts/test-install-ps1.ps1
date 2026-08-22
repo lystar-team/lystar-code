@@ -53,7 +53,6 @@ try {
             'ReleaseManifest',
             '[switch]$Offline',
             'Ensure-WebView2Runtime',
-            'lystar-tui.exe',
             'lystar-terminal.exe',
             'LYStar Code.lnk',
             'lc --attached'

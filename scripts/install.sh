@@ -199,7 +199,6 @@ mkdir -p "$INSTALL_ROOT/versions" "$BIN_DIR"
 tar -xzf "$tmp/$asset" -C "$tmp"
 [[ -x "$tmp/lystar-agent/lc" ]] || { printf '发行包缺少 lc。\n' >&2; exit 1; }
 [[ -x "$tmp/lystar-agent/lystar" ]] || { printf '发行包缺少 lystar。\n' >&2; exit 1; }
-[[ -x "$tmp/lystar-agent/lystar-tui" ]] || { printf '发行包缺少 lystar-tui。\n' >&2; exit 1; }
 "$tmp/lystar-agent/lc" --version >/dev/null
 
 target="$INSTALL_ROOT/versions/$VERSION"

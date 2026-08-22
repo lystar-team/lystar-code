@@ -399,28 +399,6 @@ export {
 	Theme,
 	type ThemeColor,
 } from "./modes/interactive/theme/theme.ts";
-export type {
-	RustTuiFrontend,
-	RustTuiFrontendContext,
-	RustTuiFrontendResult,
-	RustTuiStartupInput,
-	RustTuiStartupPrompt,
-	TuiFrontendSelection,
-} from "./rust-tui-frontend.ts";
-export { resolveTuiFrontendSelection } from "./rust-tui-frontend.ts";
-export {
-	createRustTuiLaunchOptions,
-	type RustTuiLaunchMode,
-	type RustTuiLaunchOptions,
-	rustTuiLaunchArgv,
-} from "./rust-tui-launch-options.ts";
-export {
-	launchRustTuiProcess,
-	type ProcessExit,
-	type ProcessInvocation,
-	type RustTuiProcess,
-	type RustTuiProcessOptions,
-} from "./rust-tui-process.ts";
 // Clipboard utilities
 export { copyToClipboard } from "./utils/clipboard.ts";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";

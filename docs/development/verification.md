@@ -70,19 +70,16 @@ cd packages/coding-agent/binaries
 sha256sum -c SHA256SUMS
 ```
 
-Unix 脚本只构建当前原生平台，归档必须包含与 `lc` 相邻的 `lystar-tui`；传入其他平台会直接失败，跨平台发行由 Release workflow 的原生 runner 矩阵完成。
+Unix 脚本只构建当前原生平台，传入其他平台会直接失败，跨平台发行由 Release workflow 的原生 runner 矩阵完成。
 
 Linux x64 包至少运行：
 
 ```bash
 tar -xzf lystar-agent-v<version>-linux-x64.tar.gz
 ./lystar-agent/lc --version
-./lystar-agent/lystar-tui --help
 ./lystar-agent/lc --help
 PI_OFFLINE=1 ./lystar-agent/lc --list-models
 ```
-
-设置 `PI_TUI_FRONTEND=rust` 后还要在真实 PTY 中确认不设置 `PI_RUST_TUI_BINARY` 即可自动发现相邻 sidecar，并覆盖 `80x24`、`80x8`、`120x36`、resize、`/quit` 和 `stty -g` 恢复。
 
 ## 证据边界
 

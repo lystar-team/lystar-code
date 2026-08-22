@@ -10,8 +10,5 @@ registerBunOAuthFlows();
 restoreSandboxEnv();
 
 await import("../packages/coding-agent/dist/bun/register-bedrock.js");
-const [{ main }, { runEmbeddedRustTui }] = await Promise.all([
-	import("../packages/coding-agent/dist/main.js"),
-	import("../packages/gui-host/dist/rust-tui-frontend.js"),
-]);
-await main(process.argv.slice(2), { rustTuiFrontend: runEmbeddedRustTui });
+const { main } = await import("../packages/coding-agent/dist/main.js");
+await main(process.argv.slice(2));

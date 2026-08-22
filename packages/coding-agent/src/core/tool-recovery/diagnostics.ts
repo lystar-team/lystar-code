@@ -34,7 +34,6 @@ export interface ToolRecoveryDoctorReport {
 	frontend: {
 		implementation: "typescript";
 		modes: ["regular", "fullscreen"];
-		rust: { b0Status: "stop"; integration: "not_integrated" };
 	};
 	nodeVersion: string;
 	guiProtocolVersion: number;
@@ -71,7 +70,6 @@ export async function getToolRecoveryDoctorReport(options: {
 		frontend: {
 			implementation: "typescript",
 			modes: ["regular", "fullscreen"],
-			rust: { b0Status: "stop", integration: "not_integrated" },
 		},
 		nodeVersion: process.version,
 		guiProtocolVersion: options.guiProtocolVersion,

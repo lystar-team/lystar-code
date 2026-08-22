@@ -9,7 +9,7 @@ import type {
 	TranscriptSearchResult,
 } from "@lystar/code-gui-protocol";
 
-import { projectTranscriptItem } from "./transcript-projection.ts";
+import { projectTranscriptItems } from "./transcript-projection.ts";
 
 const READ_BUFFER_SIZE = 64 * 1024;
 const MAX_JSONL_LINE_BYTES = 4 * 1024 * 1024;
@@ -277,13 +277,13 @@ async function readTailId(handle: Awaited<ReturnType<typeof open>>, completeSize
 
 function searchText(entry: RawEntry): string {
 	return JSON.stringify(
-		projectTranscriptItem({
+		projectTranscriptItems({
 			entryId: entry.id ?? "",
 			parentId: typeof entry.parentId === "string" ? entry.parentId : null,
 			timestamp: typeof entry.timestamp === "string" ? entry.timestamp : "",
 			kind: entry.type,
 			payload: entry as JsonValue,
-		}),
+		}).map((item) => item.view),
 	);
 }
 

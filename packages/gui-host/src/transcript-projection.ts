@@ -153,20 +153,123 @@ function toolCallSummary(name: string, argumentsValue: JsonValue | undefined): s
 	return text(argumentsValue);
 }
 
+function toolCallView(part: JsonRecord): TranscriptViewItem | undefined {
+	if (part.type !== "toolCall" || typeof part.id !== "string") return undefined;
+	const argumentsValue = record(part.arguments);
+	const href =
+		typeof argumentsValue?.url === "string"
+			? argumentsValue.url
+			: typeof argumentsValue?.path === "string"
+				? `file://${argumentsValue.path}`
+				: undefined;
+	return {
+		type: "tool_call",
+		calls: [
+			{
+				id: part.id,
+				name: typeof part.name === "string" ? part.name : "Tool",
+				summary: toolCallSummary(typeof part.name === "string" ? part.name : "Tool", part.arguments),
+				...(href ? { href } : {}),
+			},
+		],
+	};
+}
+
+type TranscriptImageMetadata = ReturnType<typeof imageMetadata>;
+
+function assistantViews(content: JsonValue | undefined, images: TranscriptImageMetadata): TranscriptViewItem[] {
+	if (!Array.isArray(content)) {
+		return [{ type: "assistant", text: text(content), ...(images.length > 0 ? { images } : {}) }];
+	}
+
+	const views: TranscriptViewItem[] = [];
+	let thinkingParts: string[] = [];
+	let textParts: string[] = [];
+	let toolCalls: JsonRecord[] = [];
+	let projectedToolCallCount = 0;
+
+	const flushThinking = () => {
+		if (thinkingParts.length > 0) {
+			views.push({ type: "thinking", text: bounded(thinkingParts.join("\n\n")) });
+			thinkingParts = [];
+		}
+	};
+	const flushText = () => {
+		if (textParts.length > 0) {
+			views.push({ type: "assistant", text: bounded(textParts.join("\n")) });
+			textParts = [];
+		}
+	};
+	const flushToolCalls = () => {
+		if (toolCalls.length > 0) {
+			const remaining = TOOL_CALL_LIMIT - projectedToolCallCount;
+			const calls = toolCalls.slice(0, Math.max(0, remaining)).flatMap((part) => {
+				const view = toolCallView(part);
+				return view?.type === "tool_call" ? view.calls : [];
+			});
+			if (calls.length > 0) {
+				views.push({ type: "tool_call", calls });
+				projectedToolCallCount += calls.length;
+			}
+			toolCalls = [];
+		}
+	};
+
+	for (const part of content) {
+		const item = record(part);
+		if (!item) continue;
+		if (item.type === "thinking" && typeof item.thinking === "string") {
+			flushText();
+			flushToolCalls();
+			if (item.thinking.trim()) thinkingParts.push(item.thinking);
+			continue;
+		}
+		if (item.type === "text" && typeof item.text === "string") {
+			flushThinking();
+			flushToolCalls();
+			if (item.text.trim()) textParts.push(item.text);
+			continue;
+		}
+		if (item.type === "toolCall" && typeof item.id === "string") {
+			flushThinking();
+			flushText();
+			toolCalls.push(item);
+			continue;
+		}
+		if (item.type === "image") continue;
+		flushThinking();
+		flushText();
+		flushToolCalls();
+		views.push({ type: "assistant", text: text(item) });
+	}
+	flushThinking();
+	flushText();
+	flushToolCalls();
+
+	const assistantIndex = views.findIndex((view) => view.type === "assistant");
+	if (images.length > 0 && assistantIndex >= 0) {
+		const view = views[assistantIndex];
+		if (view?.type === "assistant") views[assistantIndex] = { ...view, images };
+	} else if (images.length > 0) {
+		views.push({ type: "assistant", text: "", images });
+	}
+	return views.length > 0 ? views : [{ type: "assistant", text: "", ...(images.length > 0 ? { images } : {}) }];
+}
+
 function message(item: TranscriptItem): JsonRecord | undefined {
 	return record(record(item.payload)?.message);
 }
 
-export function projectTranscriptItem(item: TranscriptItem): TranscriptViewItem {
+function projectTranscriptViews(item: TranscriptItem): TranscriptViewItem[] {
 	const payload = record(item.payload);
 	const entryMessage = message(item);
 	const role = entryMessage?.role;
 	const content = entryMessage?.content ?? payload?.text;
 	const images = imageMetadata(content);
 	if (role === "user") {
-		return { type: "user", text: text(content), ...(images.length > 0 ? { images } : {}) };
+		return [{ type: "user", text: text(content), ...(images.length > 0 ? { images } : {}) }];
 	}
-	if (role === "thinking") return { type: "thinking", text: text(content) };
+	if (role === "thinking") return [{ type: "thinking", text: text(content) }];
 	if (role === "bashExecution" && entryMessage) {
 		const lines = [`$ ${typeof entryMessage.command === "string" ? entryMessage.command : ""}`];
 		if (typeof entryMessage.output === "string" && entryMessage.output) lines.push(entryMessage.output);
@@ -174,7 +277,7 @@ export function projectTranscriptItem(item: TranscriptItem): TranscriptViewItem 
 		else if (typeof entryMessage.exitCode === "number" && entryMessage.exitCode !== 0)
 			lines.push(`退出码 ${entryMessage.exitCode}`);
 		if (entryMessage.truncated === true) lines.push("输出已截断");
-		return { type: "bash", text: bounded(lines.join("\n")) };
+		return [{ type: "bash", text: bounded(lines.join("\n")) }];
 	}
 	if (role === "toolResult" && entryMessage) {
 		const isError = entryMessage?.isError === true;
@@ -182,48 +285,36 @@ export function projectTranscriptItem(item: TranscriptItem): TranscriptViewItem 
 			typeof entryMessage.toolName === "string" ? entryMessage.toolName : "",
 			entryMessage.details,
 		);
-		return {
-			type: "tool_result",
-			callId: typeof entryMessage.toolCallId === "string" ? entryMessage.toolCallId : item.entryId,
-			name: typeof entryMessage.toolName === "string" ? entryMessage.toolName : "Tool",
-			status: isError ? "error" : "success",
-			summary: text(content),
-			...(text(content) ? { detail: text(content) } : {}),
-			...(contentRef(content) ? { contentRef: contentRef(content) } : {}),
-			...(diff ? { diff } : {}),
-			...(images.length > 0 ? { images } : {}),
-		};
+		return [
+			{
+				type: "tool_result",
+				callId: typeof entryMessage.toolCallId === "string" ? entryMessage.toolCallId : item.entryId,
+				name: typeof entryMessage.toolName === "string" ? entryMessage.toolName : "Tool",
+				status: isError ? "error" : "success",
+				summary: text(content),
+				...(text(content) ? { detail: text(content) } : {}),
+				...(contentRef(content) ? { contentRef: contentRef(content) } : {}),
+				...(diff ? { diff } : {}),
+				...(images.length > 0 ? { images } : {}),
+			},
+		];
 	}
 	if (role === "assistant") {
-		const calls = Array.isArray(content)
-			? content
-					.map(record)
-					.filter((part): part is JsonRecord => part?.type === "toolCall" && typeof part.id === "string")
-					.slice(0, TOOL_CALL_LIMIT)
-					.map((part) => {
-						const argumentsValue = record(part.arguments);
-						const href =
-							typeof argumentsValue?.url === "string"
-								? argumentsValue.url
-								: typeof argumentsValue?.path === "string"
-									? `file://${argumentsValue.path}`
-									: undefined;
-						return {
-							id: part.id as string,
-							name: typeof part.name === "string" ? part.name : "Tool",
-							summary: toolCallSummary(typeof part.name === "string" ? part.name : "Tool", part.arguments),
-							...(href ? { href } : {}),
-						};
-					})
-			: [];
-		if (calls.length > 0) return { type: "tool_call", calls };
-		return { type: "assistant", text: text(content), ...(images.length > 0 ? { images } : {}) };
+		return assistantViews(content, images);
 	}
-	if (item.kind === "compaction") return { type: "summary", title: "上下文压缩", text: text(payload) };
-	if (item.kind === "branch_summary") return { type: "summary", title: "分支摘要", text: text(payload) };
+	if (item.kind === "compaction") return [{ type: "summary", title: "上下文压缩", text: text(payload) }];
+	if (item.kind === "branch_summary") return [{ type: "summary", title: "分支摘要", text: text(payload) }];
 	if (item.kind === "custom" || item.kind === "custom_message") {
 		const name = typeof payload?.customType === "string" ? payload.customType : "";
-		return name === "bash" ? { type: "bash", text: text(payload) } : { type: "custom", text: text(payload) };
+		return [name === "bash" ? { type: "bash", text: text(payload) } : { type: "custom", text: text(payload) }];
 	}
-	return { type: "system", text: text(payload) };
+	return [{ type: "system", text: text(payload) }];
+}
+
+export function projectTranscriptItems(item: TranscriptItem): TranscriptItem[] {
+	return projectTranscriptViews(item).map((view) => ({ ...item, view }));
+}
+
+export function projectTranscriptItem(item: TranscriptItem): TranscriptViewItem {
+	return projectTranscriptViews(item)[0] ?? { type: "system", text: "" };
 }

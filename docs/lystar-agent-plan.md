@@ -675,7 +675,7 @@ SSH
 ### 发行验证
 
 - macOS arm64/x64、Linux x64/arm64、Windows x64 在 CI 构建并冒烟。
-- 每个归档从全新目录运行，确认所有 sidecar 资源可用。
+- 每个归档从全新目录运行，确认 CLI 与运行时资源可用。
 - 无 Node.js 环境可以完成基础 Agent 流程。
 - Windows 安装器在没有 Git、Bash 和 Node.js 的干净环境完成安装、启动、更新、回退和卸载；实际调用 `bash` Tool 时再检查兼容 Bash。
 - 安装、同版本重装、升级、下载中断、校验失败、切换失败、回退和卸载全部验证。

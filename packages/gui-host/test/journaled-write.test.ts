@@ -152,30 +152,6 @@ class FakeRuntime implements RuntimeSession {
 		this.counts.copy_last_assistant_message = (this.counts.copy_last_assistant_message ?? 0) + 1;
 		return this.lastAssistantText;
 	}
-	updateExtensionEditorState() {
-		this.counts.extension_editor_state = (this.counts.extension_editor_state ?? 0) + 1;
-		return this.counts.extension_editor_state;
-	}
-	async dispatchExtensionTerminalInput() {
-		this.counts.extension_terminal_input = (this.counts.extension_terminal_input ?? 0) + 1;
-		return { consume: false };
-	}
-	dispatchExtensionComponentInput() {
-		this.counts.extension_component_input = (this.counts.extension_component_input ?? 0) + 1;
-		return { accepted: true };
-	}
-	resizeExtensionComponents() {
-		this.counts.extension_component_resize = (this.counts.extension_component_resize ?? 0) + 1;
-		return true;
-	}
-	disposeExtensionComponent() {
-		this.counts.extension_component_dispose = (this.counts.extension_component_dispose ?? 0) + 1;
-		return true;
-	}
-	completeExtensionCustom() {
-		this.counts.extension_component_custom = (this.counts.extension_component_custom ?? 0) + 1;
-		return true;
-	}
 	async runBash(command: string, excludeFromContext: boolean, onChunk: (chunk: string) => void) {
 		this.counts.run_bash = (this.counts.run_bash ?? 0) + 1;
 		this.lastBash = { command, excludeFromContext };
@@ -1515,95 +1491,5 @@ describe("GuiHostService journaled writes", () => {
 		expect(
 			active.messages.find((message) => message.type === "response" && message.id === "oauth-disconnect"),
 		).toMatchObject({ ok: false, error: { code: "operation_aborted" } });
-	});
-
-	it("rejects extension commands from another client or an old lease and journals a dropped response once", async () => {
-		const setupValue = setup();
-		const owner = await lease(setupValue.service, setupValue.sessionPath, "owner");
-		const attacker = await connection(setupValue.service, "attacker");
-		const extensionRequests = [
-			{
-				command: "extension_terminal_input",
-				sessionPath: setupValue.sessionPath,
-				leaseId: owner.leaseId,
-				clientInstanceId: "attacker",
-				clientRequestId: "attack-terminal",
-				data: "x",
-			},
-			{
-				command: "extension_component_input",
-				sessionPath: setupValue.sessionPath,
-				leaseId: owner.leaseId,
-				clientInstanceId: "attacker",
-				clientRequestId: "attack-component",
-				componentId: "component",
-				generation: 1,
-				data: "x",
-			},
-			{
-				command: "extension_component_custom_cancel",
-				sessionPath: setupValue.sessionPath,
-				leaseId: owner.leaseId,
-				clientInstanceId: "attacker",
-				clientRequestId: "attack-custom",
-				componentId: "component",
-				generation: 1,
-			},
-			{
-				command: "extension_editor_state",
-				sessionPath: setupValue.sessionPath,
-				leaseId: owner.leaseId,
-				clientInstanceId: "attacker",
-				clientRequestId: "attack-editor",
-				text: "attacker",
-				cursor: 0,
-				revision: 1,
-			},
-		] as const;
-		for (const [index, request] of extensionRequests.entries()) {
-			await attacker.handle({ type: "request", id: `attack-${index}`, request } as ClientMessage);
-			expect(attacker.messages.at(-1)).toMatchObject({ ok: false, error: { code: "invalid_session_lease" } });
-		}
-		expect(setupValue.counts.extension_terminal_input).toBeUndefined();
-		expect(setupValue.counts.extension_component_input).toBeUndefined();
-		expect(setupValue.counts.extension_component_custom).toBeUndefined();
-		expect(setupValue.counts.extension_editor_state).toBeUndefined();
-
-		await owner.connection.close();
-		const replacement = await lease(setupValue.service, setupValue.sessionPath, "owner");
-		await replacement.connection.handle({
-			type: "request",
-			id: "old-lease",
-			request: {
-				command: "extension_component_dispose",
-				sessionPath: setupValue.sessionPath,
-				leaseId: owner.leaseId,
-				clientInstanceId: "owner",
-				clientRequestId: "old-dispose",
-				componentId: "component",
-				generation: 1,
-			},
-		});
-		expect(replacement.connection.messages.at(-1)).toMatchObject({
-			ok: false,
-			error: { code: "invalid_session_lease" },
-		});
-
-		const payload = {
-			command: "extension_terminal_input" as const,
-			sessionPath: setupValue.sessionPath,
-			leaseId: replacement.leaseId,
-			clientInstanceId: "owner",
-			clientRequestId: "dropped-extension-input",
-			data: "x",
-		};
-		const dropped = await connection(setupValue.service, "owner", true);
-		await dropped.handle({ type: "request", id: "dropped", request: payload });
-		const retry = await connection(setupValue.service, "owner");
-		await Promise.all([
-			retry.handle({ type: "request", id: "retry-a", request: payload }),
-			retry.handle({ type: "request", id: "retry-b", request: payload }),
-		]);
-		expect(setupValue.counts.extension_terminal_input).toBe(1);
 	});
 });

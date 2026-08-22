@@ -26,9 +26,6 @@ try {
     & bun build --compile --no-compile-autoload-bunfig --windows-icon=packages/coding-agent/assets/lystar-windows-icon.ico scripts/lystar-bun-cli.mjs packages/coding-agent/src/utils/image-resize-worker.ts --outfile (Join-Path $BundleDir "lc.exe")
     if ($LASTEXITCODE -ne 0) { throw "lc.exe 构建失败。" }
 
-    & node (Join-Path $Root "scripts\build-rust-tui-sidecar.mjs") --platform windows-x64 --out-dir $BundleDir
-    if ($LASTEXITCODE -ne 0) { throw "lystar-tui.exe 构建失败。" }
-
     $BundleAlias = @'
 @echo off
 "%~dp0lc.exe" %*
@@ -69,7 +66,7 @@ try {
     Copy-Item (Join-Path $ClipboardRoot "clipboard-win32-x64-msvc\clipboard.win32-x64-msvc.node") (Join-Path $BundleDir "node_modules\@mariozechner\clipboard")
     Copy-Item (Join-Path $Root "packages\tui\native\win32\prebuilds\win32-x64\win32-console-mode.node") (Join-Path $BundleDir "native\win32\prebuilds\win32-x64")
 
-    foreach ($RequiredFile in @("lc.exe", "lystar-tui.exe", "package.json", "photon_rs_bg.wasm", "skills\imagegen\SKILL.md")) {
+    foreach ($RequiredFile in @("lc.exe", "package.json", "photon_rs_bg.wasm", "skills\imagegen\SKILL.md")) {
         if (!(Test-Path (Join-Path $BundleDir $RequiredFile))) { throw "Windows release bundle is missing $RequiredFile." }
     }
 

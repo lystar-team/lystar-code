@@ -21,7 +21,7 @@
 		"clean": "shx rm -rf dist",
 		"build": "tsgo -p tsconfig.build.json && shx chmod +x dist/cli.js",
 		"test": "vitest --run",
-		"test:required": "vitest --run --exclude test/rust-tui-e2e.test.ts --exclude test/ipc-process.test.ts --exclude test/rust-tui-main-process.test.ts --maxWorkers=1"
+		"test:required": "vitest --run --maxWorkers=1"
 	},
 	"dependencies": {
 		"@earendil-works/pi-coding-agent": "0.84.2",

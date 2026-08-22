@@ -6,8 +6,6 @@ import {
 	type Capability,
 	type ClientMessage,
 	type CompletionResult,
-	type ExtensionComponentFrame,
-	type ExtensionUiState,
 	GUI_PROTOCOL_VERSION,
 	isSessionProgress,
 	type JsonValue,
@@ -23,7 +21,7 @@ import {
 import { ContentStore } from "./content-store.ts";
 import { LeaseManager } from "./lease-manager.ts";
 import { hashOperationPayload, OperationJournal, OperationJournalCorruptError } from "./operation-journal.ts";
-import { projectTranscriptItem } from "./transcript-projection.ts";
+import { projectTranscriptItems } from "./transcript-projection.ts";
 import { TranscriptReader } from "./transcript-reader.ts";
 import type { RuntimeAdapter, RuntimeSession, UiRequestHandler } from "./types.ts";
 
@@ -49,7 +47,6 @@ const BASE_CAPABILITIES: Capability[] = [
 	"directory-browser",
 	"external-resources",
 	"workspace-api",
-	"rust-extension-ui",
 ];
 
 const ACTIVE_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>(["accepted", "running", "waiting_for_input"]);
@@ -104,13 +101,6 @@ const WORKSPACE_COMMANDS = {
 	render_rich_text: true,
 	read_image_content: true,
 	get_completions: true,
-	extension_editor_state: true,
-	extension_terminal_input: true,
-	extension_component_input: true,
-	extension_component_resize: true,
-	extension_component_dispose: true,
-	extension_component_custom_result: true,
-	extension_component_custom_cancel: true,
 } as const;
 
 function projectSessionProgress(value: JsonValue | SessionProgress): SessionProgress {
@@ -212,7 +202,6 @@ export class GuiHostService {
 	private readonly journalWritePromises = new Map<string, Promise<JsonValue>>();
 	private readonly writeScopeQueues = new Map<string, Promise<void>>();
 	private readonly snapshotRevisions = new Map<string, number>();
-	private readonly extensionEditorRevisions = new Map<string, number>();
 	private readonly pendingUi = new Map<string, PendingUiRequest>();
 	private readonly leases = new LeaseManager();
 	private readonly transcriptReader = new TranscriptReader();
@@ -430,7 +419,7 @@ export class GuiHostService {
 				return jsonValue({
 					...page,
 					requestContext: request.context,
-					items: page.items.map((item) => this.projectTranscriptItem(sessionPath, item)),
+					items: page.items.flatMap((item) => this.projectTranscriptItems(sessionPath, item)),
 				});
 			}
 			case "search_transcript": {
@@ -667,116 +656,6 @@ export class GuiHostService {
 			}
 			case "list_operations":
 				return this.journal.list(request.sessionPath ? canonicalSessionPath(request.sessionPath) : undefined);
-			case "extension_editor_state": {
-				const { runtime, sessionPath } = this.assertExtensionSession(connection, request);
-				return this.executeJournaledWrite(connection, {
-					command: request.command,
-					clientInstanceId: request.clientInstanceId,
-					clientRequestId: request.clientRequestId,
-					scope: `extension:${sessionPath}`,
-					payload: { sessionPath, revision: request.revision, text: request.text, cursor: request.cursor },
-					run: async () => {
-						const key = `${sessionPath}:${request.leaseId}:${request.clientInstanceId}`;
-						const previous = this.extensionEditorRevisions.get(key) ?? -1;
-						if (request.revision <= previous) {
-							throw Object.assign(new Error("编辑器状态修订已过期"), { code: "stale_editor_revision" });
-						}
-						this.extensionEditorRevisions.set(key, request.revision);
-						return { revision: runtime.updateExtensionEditorState?.(request.text, request.revision) ?? 0 };
-					},
-				});
-			}
-			case "extension_terminal_input": {
-				const { runtime, sessionPath } = this.assertExtensionSession(connection, request);
-				if (Buffer.byteLength(request.data, "utf8") > 64 * 1024)
-					throw Object.assign(new Error("扩展原始输入超过 64 KiB 限制"), {
-						code: "extension_input_too_large",
-						retryable: false,
-					});
-				return this.executeJournaledWrite(connection, {
-					command: request.command,
-					clientInstanceId: request.clientInstanceId,
-					clientRequestId: request.clientRequestId,
-					scope: `extension:${sessionPath}`,
-					payload: { sessionPath, data: request.data },
-					run: async () => runtime.dispatchExtensionTerminalInput?.(request.data) ?? { consume: false },
-				});
-			}
-			case "extension_component_input": {
-				const { runtime, sessionPath } = this.assertExtensionSession(connection, request);
-				if (Buffer.byteLength(request.data, "utf8") > 64 * 1024)
-					throw Object.assign(new Error("扩展原始输入超过 64 KiB 限制"), {
-						code: "extension_input_too_large",
-						retryable: false,
-					});
-				return this.executeJournaledWrite(connection, {
-					command: request.command,
-					clientInstanceId: request.clientInstanceId,
-					clientRequestId: request.clientRequestId,
-					scope: `extension:${sessionPath}`,
-					payload: {
-						sessionPath,
-						componentId: request.componentId,
-						generation: request.generation,
-						data: request.data,
-					},
-					run: async () =>
-						runtime.dispatchExtensionComponentInput?.(request.componentId, request.generation, request.data) ?? {
-							accepted: false,
-						},
-				});
-			}
-			case "extension_component_resize": {
-				const { runtime, sessionPath } = this.assertExtensionSession(connection, request);
-				return this.executeJournaledWrite(connection, {
-					command: request.command,
-					clientInstanceId: request.clientInstanceId,
-					clientRequestId: request.clientRequestId,
-					scope: `extension:${sessionPath}`,
-					payload: { sessionPath, width: request.width, height: request.height },
-					run: async () => ({
-						accepted: runtime.resizeExtensionComponents?.(request.width, request.height) === true,
-					}),
-				});
-			}
-			case "extension_component_dispose": {
-				const { runtime, sessionPath } = this.assertExtensionSession(connection, request);
-				return this.executeJournaledWrite(connection, {
-					command: request.command,
-					clientInstanceId: request.clientInstanceId,
-					clientRequestId: request.clientRequestId,
-					scope: `extension:${sessionPath}`,
-					payload: { sessionPath, componentId: request.componentId, generation: request.generation },
-					run: async () => ({
-						accepted: runtime.disposeExtensionComponent?.(request.componentId, request.generation) === true,
-					}),
-				});
-			}
-			case "extension_component_custom_result":
-			case "extension_component_custom_cancel": {
-				const { runtime, sessionPath } = this.assertExtensionSession(connection, request);
-				return this.executeJournaledWrite(connection, {
-					command: request.command,
-					clientInstanceId: request.clientInstanceId,
-					clientRequestId: request.clientRequestId,
-					scope: `extension:${sessionPath}`,
-					payload: {
-						sessionPath,
-						componentId: request.componentId,
-						generation: request.generation,
-						...(request.command === "extension_component_custom_result" ? { value: request.value } : {}),
-					},
-					run: async () => ({
-						accepted:
-							runtime.completeExtensionCustom?.(
-								request.componentId,
-								request.generation,
-								request.command === "extension_component_custom_result" ? request.value : undefined,
-								request.command === "extension_component_custom_cancel",
-							) === true,
-					}),
-				});
-			}
 			case "list_models":
 				return jsonValue(await this.adapter.listModels());
 			case "list_model_providers":
@@ -1170,10 +1049,7 @@ export class GuiHostService {
 					(candidate) => !cwd || canonicalProjectCwd(candidate.getSnapshot("available").cwd) === cwd,
 				);
 				const diagnostics = await this.adapter.getDiagnostics(cwd, runtime?.getToolRecoveryDiagnostics());
-				const componentDiagnostics = runtime?.getExtensionComponentDiagnostics?.();
-				return componentDiagnostics
-					? { ...(diagnostics as Record<string, JsonValue>), extensionComponents: componentDiagnostics }
-					: diagnostics;
+				return diagnostics;
 			}
 			case "get_connection_status":
 				return {
@@ -1487,6 +1363,8 @@ export class GuiHostService {
 					},
 				});
 			}
+			default:
+				throw new Error("Unsupported workspace command");
 		}
 	}
 
@@ -1512,9 +1390,9 @@ export class GuiHostService {
 		});
 	}
 
-	private projectTranscriptItem(sessionPath: string, item: TranscriptItem) {
+	private projectTranscriptItems(sessionPath: string, item: TranscriptItem): TranscriptItem[] {
 		const compact = this.contentStore.compactTranscriptItem(sessionPath, item);
-		return { ...compact, view: projectTranscriptItem(compact) };
+		return projectTranscriptItems(compact);
 	}
 
 	private rememberSessionFacts(cwd: string, sessions: readonly SessionSummary[]): void {
@@ -1875,96 +1753,8 @@ export class GuiHostService {
 						transcriptGeneration: payload.transcriptGeneration,
 						fromRevision: payload.fromRevision,
 						toRevision: payload.transcriptRevision,
-						items: payload.items.map((item) => this.projectTranscriptItem(sessionPath, item)),
+						items: payload.items.flatMap((item) => this.projectTranscriptItems(sessionPath, item)),
 					});
-				} else if (event.type === "extension_ui") {
-					const payload = event.payload as
-						| { type: "snapshot"; state: ExtensionUiState }
-						| {
-								type: "delta";
-								delta: Omit<Partial<ExtensionUiState>, "revision"> & { revision: number };
-						  }
-						| {
-								type: "editor_action";
-								action: { action: "paste" | "set"; text: string; revision: number };
-						  }
-						| { type: "editor_submit"; text: string; revision: number }
-						| { type: "editor_app_action"; action: string; data?: string; revision: number }
-						| {
-								type: "component_mount";
-								componentId: string;
-								generation: number;
-								placement: "widget_above" | "widget_below" | "header" | "footer" | "custom_overlay";
-								visible: boolean;
-								overlayOptions?: JsonValue;
-								frame: ExtensionComponentFrame;
-						  }
-						| { type: "component_frame"; componentId: string; generation: number; frame: ExtensionComponentFrame }
-						| { type: "component_invalidate"; componentId: string; generation: number; visible: boolean }
-						| {
-								type: "component_unmount";
-								componentId: string;
-								generation: number;
-								reason: "replace" | "clear" | "dispose" | "error" | "done" | "cancel";
-						  };
-					if (payload.type === "snapshot") {
-						void this.broadcast({ type: "extension_ui_snapshot", sessionPath, state: payload.state });
-					} else if (payload.type === "delta") {
-						void this.broadcast({ type: "extension_ui_delta", sessionPath, delta: payload.delta });
-					} else if (payload.type === "editor_action") {
-						void this.broadcast({ type: "extension_editor_action", sessionPath, action: payload.action });
-					} else if (payload.type === "editor_submit") {
-						void this.broadcast({
-							type: "extension_editor_submit",
-							sessionPath,
-							submit: { text: payload.text, revision: payload.revision },
-						});
-					} else if (payload.type === "editor_app_action") {
-						void this.broadcast({
-							type: "extension_editor_app_action",
-							sessionPath,
-							action: {
-								action: payload.action,
-								...(payload.data ? { data: payload.data } : {}),
-								revision: payload.revision,
-							},
-						});
-					} else if (payload.type === "component_mount") {
-						void this.broadcast({
-							type: "extension_component_mount",
-							sessionPath,
-							componentId: payload.componentId,
-							generation: payload.generation,
-							placement: payload.placement,
-							visible: payload.visible,
-							...(payload.overlayOptions ? { overlayOptions: payload.overlayOptions as never } : {}),
-							frame: payload.frame,
-						});
-					} else if (payload.type === "component_frame") {
-						void this.broadcast({
-							type: "extension_component_frame",
-							sessionPath,
-							componentId: payload.componentId,
-							generation: payload.generation,
-							frame: payload.frame,
-						});
-					} else if (payload.type === "component_invalidate") {
-						void this.broadcast({
-							type: "extension_component_invalidate",
-							sessionPath,
-							componentId: payload.componentId,
-							generation: payload.generation,
-							visible: payload.visible,
-						});
-					} else {
-						void this.broadcast({
-							type: "extension_component_unmount",
-							sessionPath,
-							componentId: payload.componentId,
-							generation: payload.generation,
-							reason: payload.reason,
-						});
-					}
 				} else {
 					void this.broadcast({
 						type: "session_progress",
@@ -1974,11 +1764,6 @@ export class GuiHostService {
 				}
 			}),
 		);
-		const extensionUi = runtime.getExtensionUiSnapshot?.();
-		if (extensionUi) {
-			void this.broadcast({ type: "extension_ui_snapshot", sessionPath, state: extensionUi });
-			runtime.publishExtensionComponents?.();
-		}
 	}
 
 	private detachRuntimeProjection(sessionPath: string): void {

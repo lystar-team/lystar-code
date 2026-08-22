@@ -83,7 +83,6 @@ export const DiagnosticsSchema = StrictObject({
 		StrictObject({
 			implementation: Type.String({ minLength: 1 }),
 			modes: Type.Array(Type.String({ minLength: 1 })),
-			rust: StrictObject({ b0Status: Type.String({ minLength: 1 }), integration: Type.String({ minLength: 1 }) }),
 		}),
 	),
 	nodeVersion: Type.Optional(Type.String({ minLength: 1 })),
@@ -142,7 +141,6 @@ export const CapabilitySchema = Type.Union([
 	Type.Literal("directory-browser"),
 	Type.Literal("external-resources"),
 	Type.Literal("workspace-api"),
-	Type.Literal("rust-extension-ui"),
 ]);
 export type Capability = Static<typeof CapabilitySchema>;
 
@@ -385,7 +383,7 @@ const TranscriptToolCallSchema = StrictObject({
 	href: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
 });
 
-// Host 投影是 Rust 终端的唯一 transcript 输入；payload 仅保留给既有 GUI 兼容路径。
+// Host 投影是 GUI client 的 transcript 输入；payload 仅保留给既有 GUI 兼容路径。
 export const TranscriptViewItemSchema = Type.Union([
 	StrictObject({
 		type: Type.Literal("user"),
@@ -935,121 +933,6 @@ export const ClipboardImageReadResultSchema = StrictObject({
 });
 export type ClipboardImageReadResult = Static<typeof ClipboardImageReadResultSchema>;
 
-const ExtensionUiStatusSchema = StrictObject({
-	key: Id,
-	text: Type.String({ maxLength: 4096 }),
-});
-const ExtensionUiWidgetSchema = StrictObject({
-	key: Id,
-	placement: Type.Union([Type.Literal("above"), Type.Literal("below")]),
-	lines: Type.Array(Type.String({ maxLength: 4096 }), { maxItems: 32 }),
-});
-const ExtensionWorkingIndicatorSchema = StrictObject({
-	frames: Type.Array(Type.String({ maxLength: 256 }), { maxItems: 32 }),
-	intervalMs: Type.Integer({ minimum: 16, maximum: 60_000 }),
-});
-const ExtensionUiStateSchema = StrictObject({
-	revision: Type.Integer({ minimum: 0 }),
-	statuses: Type.Array(ExtensionUiStatusSchema, { maxItems: 128 }),
-	widgets: Type.Array(ExtensionUiWidgetSchema, { maxItems: 64 }),
-	workingMessage: Type.Union([Type.String({ maxLength: 4096 }), Type.Null()]),
-	workingVisible: Type.Boolean(),
-	workingIndicator: ExtensionWorkingIndicatorSchema,
-	hiddenThinkingLabel: Type.Union([Type.String({ maxLength: 4096 }), Type.Null()]),
-	title: Type.Union([Type.String({ maxLength: 4096 }), Type.Null()]),
-	terminalInputListenerCount: Type.Integer({ minimum: 0, maximum: 128 }),
-	extensionShortcutCount: Type.Integer({ minimum: 0, maximum: 128 }),
-});
-export type ExtensionUiState = Static<typeof ExtensionUiStateSchema>;
-
-export const ExtensionComponentPlacementSchema = Type.Union([
-	Type.Literal("widget_above"),
-	Type.Literal("widget_below"),
-	Type.Literal("header"),
-	Type.Literal("footer"),
-	Type.Literal("custom_overlay"),
-	Type.Literal("editor"),
-]);
-export type ExtensionComponentPlacement = Static<typeof ExtensionComponentPlacementSchema>;
-const ExtensionComponentCursorSchema = StrictObject({
-	row: Type.Integer({ minimum: 0, maximum: 500 }),
-	column: Type.Integer({ minimum: 0, maximum: 10_000 }),
-});
-const ExtensionComponentHitRegionSchema = StrictObject({
-	kind: Type.Literal("component"),
-	row: Type.Integer({ minimum: 0, maximum: 500 }),
-	column: Type.Integer({ minimum: 0, maximum: 10_000 }),
-	width: Type.Integer({ minimum: 0, maximum: 10_000 }),
-});
-export const ExtensionComponentFrameSchema = StrictObject({
-	componentId: Id,
-	revision: Type.Integer({ minimum: 0 }),
-	width: Type.Integer({ minimum: 1, maximum: 500 }),
-	height: Type.Integer({ minimum: 1, maximum: 500 }),
-	lines: Type.Array(Type.String({ maxLength: 512 * 1024 }), { maxItems: 500 }),
-	cursor: Type.Optional(ExtensionComponentCursorSchema),
-	hitRegions: Type.Array(ExtensionComponentHitRegionSchema, { maxItems: 500 }),
-	desiredSize: Type.Optional(
-		StrictObject({
-			width: Type.Optional(Type.Integer({ minimum: 1, maximum: 500 })),
-			height: Type.Optional(Type.Integer({ minimum: 1, maximum: 500 })),
-		}),
-	),
-});
-export type ExtensionComponentFrame = Static<typeof ExtensionComponentFrameSchema>;
-const ExtensionComponentOverlayOptionsSchema = StrictObject({
-	width: Type.Optional(Type.Union([Type.Integer({ minimum: 1, maximum: 500 }), Type.String({ maxLength: 16 })])),
-	maxHeight: Type.Optional(Type.Union([Type.Integer({ minimum: 1, maximum: 500 }), Type.String({ maxLength: 16 })])),
-	anchor: Type.Optional(Type.String({ maxLength: 32 })),
-	row: Type.Optional(Type.Union([Type.Integer({ minimum: 0, maximum: 500 }), Type.String({ maxLength: 16 })])),
-	col: Type.Optional(Type.Union([Type.Integer({ minimum: 0, maximum: 500 }), Type.String({ maxLength: 16 })])),
-	overlay: Type.Optional(Type.Boolean()),
-});
-const ExtensionComponentUnmountReasonSchema = Type.Union([
-	Type.Literal("replace"),
-	Type.Literal("clear"),
-	Type.Literal("dispose"),
-	Type.Literal("error"),
-	Type.Literal("done"),
-	Type.Literal("cancel"),
-]);
-const ExtensionEditorActionSchema = StrictObject({
-	action: Type.Union([Type.Literal("paste"), Type.Literal("set")]),
-	text: Type.String({ maxLength: 64 * 1024 }),
-	revision: Type.Integer({ minimum: 0 }),
-});
-const ExtensionComponentResultSchema = StrictObject({
-	accepted: Type.Boolean(),
-	appAction: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
-	editorAction: Type.Optional(ExtensionEditorActionSchema),
-});
-const ExtensionUiDeltaSchema = StrictObject({
-	revision: Type.Integer({ minimum: 0 }),
-	statuses: Type.Optional(Type.Array(ExtensionUiStatusSchema, { maxItems: 128 })),
-	widgets: Type.Optional(Type.Array(ExtensionUiWidgetSchema, { maxItems: 64 })),
-	workingMessage: Type.Optional(Type.Union([Type.String({ maxLength: 4096 }), Type.Null()])),
-	workingVisible: Type.Optional(Type.Boolean()),
-	workingIndicator: Type.Optional(ExtensionWorkingIndicatorSchema),
-	hiddenThinkingLabel: Type.Optional(Type.Union([Type.String({ maxLength: 4096 }), Type.Null()])),
-	title: Type.Optional(Type.Union([Type.String({ maxLength: 4096 }), Type.Null()])),
-	terminalInputListenerCount: Type.Optional(Type.Integer({ minimum: 0, maximum: 128 })),
-	extensionShortcutCount: Type.Optional(Type.Integer({ minimum: 0, maximum: 128 })),
-});
-const ExtensionEditorSubmitSchema = StrictObject({
-	text: Type.String({ maxLength: 64 * 1024 }),
-	revision: Type.Integer({ minimum: 0 }),
-});
-const ExtensionEditorAppActionSchema = StrictObject({
-	action: Type.String({ minLength: 1, maxLength: 128 }),
-	data: Type.Optional(Type.String({ maxLength: 256 })),
-	revision: Type.Integer({ minimum: 0 }),
-});
-const ExtensionTerminalInputResultSchema = StrictObject({
-	consume: Type.Boolean(),
-	data: Type.Optional(Type.String({ maxLength: 256 })),
-});
-export type ExtensionTerminalInputResult = Static<typeof ExtensionTerminalInputResultSchema>;
-
 export const WorkspaceCommandResultSchemas = {
 	list_skills: ListSkillsResultSchema,
 	set_skill_enabled: SetSkillEnabledResultSchema,
@@ -1099,13 +982,6 @@ export const WorkspaceCommandResultSchemas = {
 	read_image_content: ReadImageContentResultSchema,
 	get_about: AboutResultSchema,
 	get_diagnostics: DiagnosticsSchema,
-	extension_editor_state: StrictObject({ revision: Type.Integer({ minimum: 0 }) }),
-	extension_terminal_input: ExtensionTerminalInputResultSchema,
-	extension_component_input: ExtensionComponentResultSchema,
-	extension_component_resize: ExtensionComponentResultSchema,
-	extension_component_dispose: ExtensionComponentResultSchema,
-	extension_component_custom_result: ExtensionComponentResultSchema,
-	extension_component_custom_cancel: ExtensionComponentResultSchema,
 } as const;
 
 export function assertWorkspaceCommandResult(
@@ -1129,8 +1005,6 @@ export const StartupInputSchema = StrictObject({
 	prompts: Type.Array(StartupPromptSchema, { minItems: 1, maxItems: 1000 }),
 });
 export type StartupInput = Static<typeof StartupInputSchema>;
-
-const ExtensionInputSchema = Type.String({ minLength: 1, maxLength: 64 * 1024 });
 
 export const CommandSchema = Type.Union([
 	StrictObject({ command: Type.Literal("get_snapshot") }),
@@ -1574,72 +1448,6 @@ export const CommandSchema = Type.Union([
 		clientInstanceId: Id,
 		clientRequestId: Id,
 	}),
-	StrictObject({
-		command: Type.Literal("extension_editor_state"),
-		sessionPath: Type.String({ minLength: 1 }),
-		leaseId: Id,
-		clientInstanceId: Id,
-		clientRequestId: Id,
-		text: Type.String({ maxLength: 4 * 1024 * 1024 }),
-		cursor: Type.Integer({ minimum: 0, maximum: 4 * 1024 * 1024 }),
-		revision: Type.Integer({ minimum: 0 }),
-		ackRevision: Type.Optional(Type.Integer({ minimum: 0 })),
-	}),
-	StrictObject({
-		command: Type.Literal("extension_terminal_input"),
-		sessionPath: Type.String({ minLength: 1 }),
-		leaseId: Id,
-		clientInstanceId: Id,
-		clientRequestId: Id,
-		data: ExtensionInputSchema,
-	}),
-	StrictObject({
-		command: Type.Literal("extension_component_input"),
-		sessionPath: Type.String({ minLength: 1 }),
-		leaseId: Id,
-		clientInstanceId: Id,
-		clientRequestId: Id,
-		componentId: Id,
-		generation: Type.Integer({ minimum: 0 }),
-		data: ExtensionInputSchema,
-	}),
-	StrictObject({
-		command: Type.Literal("extension_component_resize"),
-		sessionPath: Type.String({ minLength: 1 }),
-		leaseId: Id,
-		clientInstanceId: Id,
-		clientRequestId: Id,
-		width: Type.Integer({ minimum: 1, maximum: 500 }),
-		height: Type.Integer({ minimum: 1, maximum: 500 }),
-	}),
-	StrictObject({
-		command: Type.Literal("extension_component_dispose"),
-		sessionPath: Type.String({ minLength: 1 }),
-		leaseId: Id,
-		clientInstanceId: Id,
-		clientRequestId: Id,
-		componentId: Id,
-		generation: Type.Integer({ minimum: 0 }),
-	}),
-	StrictObject({
-		command: Type.Literal("extension_component_custom_result"),
-		sessionPath: Type.String({ minLength: 1 }),
-		leaseId: Id,
-		clientInstanceId: Id,
-		clientRequestId: Id,
-		componentId: Id,
-		generation: Type.Integer({ minimum: 0 }),
-		value: Type.Optional(JsonValueSchema),
-	}),
-	StrictObject({
-		command: Type.Literal("extension_component_custom_cancel"),
-		sessionPath: Type.String({ minLength: 1 }),
-		leaseId: Id,
-		clientInstanceId: Id,
-		clientRequestId: Id,
-		componentId: Id,
-		generation: Type.Integer({ minimum: 0 }),
-	}),
 ]);
 export type Command = Static<typeof CommandSchema>;
 
@@ -1710,62 +1518,6 @@ export const ServerEventSchema = Type.Union([
 		title: Type.String(),
 		payload: JsonValueSchema,
 		timeoutMs: Type.Optional(Type.Integer({ minimum: 1 })),
-	}),
-	StrictObject({
-		type: Type.Literal("extension_ui_snapshot"),
-		sessionPath: Type.String({ minLength: 1 }),
-		state: ExtensionUiStateSchema,
-	}),
-	StrictObject({
-		type: Type.Literal("extension_ui_delta"),
-		sessionPath: Type.String({ minLength: 1 }),
-		delta: ExtensionUiDeltaSchema,
-	}),
-	StrictObject({
-		type: Type.Literal("extension_editor_action"),
-		sessionPath: Type.String({ minLength: 1 }),
-		action: ExtensionEditorActionSchema,
-	}),
-	StrictObject({
-		type: Type.Literal("extension_editor_submit"),
-		sessionPath: Type.String({ minLength: 1 }),
-		submit: ExtensionEditorSubmitSchema,
-	}),
-	StrictObject({
-		type: Type.Literal("extension_editor_app_action"),
-		sessionPath: Type.String({ minLength: 1 }),
-		action: ExtensionEditorAppActionSchema,
-	}),
-	StrictObject({
-		type: Type.Literal("extension_component_mount"),
-		sessionPath: Type.String({ minLength: 1 }),
-		componentId: Id,
-		generation: Type.Integer({ minimum: 0 }),
-		placement: ExtensionComponentPlacementSchema,
-		visible: Type.Boolean(),
-		overlayOptions: Type.Optional(ExtensionComponentOverlayOptionsSchema),
-		frame: ExtensionComponentFrameSchema,
-	}),
-	StrictObject({
-		type: Type.Literal("extension_component_frame"),
-		sessionPath: Type.String({ minLength: 1 }),
-		componentId: Id,
-		generation: Type.Integer({ minimum: 0 }),
-		frame: ExtensionComponentFrameSchema,
-	}),
-	StrictObject({
-		type: Type.Literal("extension_component_invalidate"),
-		sessionPath: Type.String({ minLength: 1 }),
-		componentId: Id,
-		generation: Type.Integer({ minimum: 0 }),
-		visible: Type.Boolean(),
-	}),
-	StrictObject({
-		type: Type.Literal("extension_component_unmount"),
-		sessionPath: Type.String({ minLength: 1 }),
-		componentId: Id,
-		generation: Type.Integer({ minimum: 0 }),
-		reason: ExtensionComponentUnmountReasonSchema,
 	}),
 ]);
 export type ServerEvent = Static<typeof ServerEventSchema>;

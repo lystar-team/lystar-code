@@ -59,11 +59,7 @@ for (const guiRoot of guiRoots) {
 				report(file, source, position, `GUI code must not import TUI implementation: ${value}`);
 			}
 			if (!value.startsWith("@earendil-works/pi-coding-agent")) continue;
-			if (path === "packages/gui-host/src/rust-tui-frontend.ts") {
-				if (value !== "@earendil-works/pi-coding-agent") {
-					report(file, source, position, `rust-tui-frontend.ts must use the public package export: ${value}`);
-				}
-			} else if (path !== "packages/gui-host/src/runtime-adapter.ts") {
+			if (path !== "packages/gui-host/src/runtime-adapter.ts") {
 				report(file, source, position, `only runtime-adapter.ts may import Coding Agent: ${value}`);
 			} else if (value !== "@earendil-works/pi-coding-agent/core") {
 				report(file, source, position, `runtime-adapter.ts must use the public ./core export: ${value}`);

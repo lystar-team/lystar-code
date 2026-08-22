@@ -47,7 +47,6 @@ function formatText(report: ToolRecoveryDoctorReport): string {
 		t("doctor.title"),
 		`${t("doctor.product")}: ${report.product.name} ${report.product.version}`,
 		`${t("doctor.frontend")}: ${report.frontend.implementation} (${report.frontend.modes.join(", ")})`,
-		`${t("doctor.rust")}: B0 ${report.frontend.rust.b0Status}, ${report.frontend.rust.integration}`,
 		`${t("doctor.node")}: ${report.nodeVersion}`,
 		`${t("doctor.guiProtocol")}: ${report.guiProtocolVersion}`,
 		`${t("doctor.cwd")}: ${report.cwd}`,

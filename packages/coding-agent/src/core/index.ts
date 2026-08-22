@@ -192,6 +192,7 @@ export {
 	SettingsManager,
 } from "./settings-manager.ts";
 export { type LoadSkillsOptions, type LoadSkillsResult, loadSkills } from "./skills.ts";
+export { BUILTIN_SLASH_COMMANDS, type BuiltinSlashCommand } from "./slash-commands.ts";
 export { createSyntheticSourceInfo } from "./source-info.ts";
 export {
 	getToolRecoveryDoctorReport,

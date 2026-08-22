@@ -134,7 +134,6 @@ export const zhCN = {
 	"doctor.parseFailed": "解析 doctor 命令失败",
 	"doctor.product": "产品",
 	"doctor.frontend": "前端",
-	"doctor.rust": "Rust",
 	"doctor.node": "Node.js",
 	"doctor.guiProtocol": "GUI Protocol",
 	"doctor.cwd": "当前目录",

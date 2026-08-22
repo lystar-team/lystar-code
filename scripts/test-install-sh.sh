@@ -24,8 +24,6 @@ mkdir -p "$release_dir" "$bundle_dir"
 printf '%s\n' '#!/usr/bin/env bash' '[[ "${1:-}" == "--version" ]] || exit 2' "printf '%s\\n' '$VERSION'" > "$bundle_dir/lc"
 chmod +x "$bundle_dir/lc"
 ln -s lc "$bundle_dir/lystar"
-printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$bundle_dir/lystar-tui"
-chmod +x "$bundle_dir/lystar-tui"
 asset="lystar-agent-v${VERSION}-${os}-${arch}.tar.gz"
 tar -czf "$release_dir/$asset" -C "$tmp/bundle" lystar-agent
 node "$ROOT/scripts/generate-release-metadata.mjs" "$release_dir" "$VERSION" "lystar-team/lystar-code"
@@ -76,7 +74,6 @@ install_with_curl() {
     [[ "$(readlink "$install_root/current")" == "versions/$VERSION" ]]
     [[ -x "$install_root/current/lc" ]]
     [[ -x "$install_root/current/lystar" ]]
-    [[ -x "$install_root/current/lystar-tui" ]]
     [[ -x "$home/.local/bin/lc" ]]
     [[ -x "$home/.local/bin/lystar" ]]
     [[ ! -e "$home/.local/bin/la" ]]
@@ -140,23 +137,6 @@ reject_bad_checksum() {
     [[ ! -e "$home/.local/share/lystar-agent/current" ]]
 }
 
-reject_missing_sidecar() {
-    local bad_release="$tmp/missing-sidecar-release"
-    local bad_bundle="$tmp/missing-sidecar-bundle/lystar-agent"
-    mkdir -p "$bad_release" "$bad_bundle"
-    cp "$bundle_dir/lc" "$bad_bundle/lc"
-    ln -s lc "$bad_bundle/lystar"
-    tar -czf "$bad_release/$asset" -C "$tmp/missing-sidecar-bundle" lystar-agent
-    node "$ROOT/scripts/generate-release-metadata.mjs" "$bad_release" "$VERSION" "lystar-team/lystar-code"
-    local home="$tmp/home-missing-sidecar"
-    if HOME="$home" SHELL=/bin/bash FIXTURE_DIR="$bad_release" PATH="$fake_curl_dir:$ORIGINAL_PATH" \
-        bash "$bad_release/install.sh" >/dev/null 2>&1; then
-        printf 'installer unexpectedly accepted an archive without lystar-tui\n' >&2
-        exit 1
-    fi
-    [[ ! -e "$home/.local/share/lystar-agent/current" ]]
-}
-
 check_upgrade_rollback_and_uninstall() {
     local home="$tmp/home-actions"
     local install_root="$home/.local/share/lystar-agent"
@@ -194,7 +174,6 @@ install_with_curl
 install_without_path_update
 install_with_wget_only
 reject_bad_checksum
-reject_missing_sidecar
 check_upgrade_rollback_and_uninstall
 
 if HOME="$tmp/home-missing-version" bash "$ROOT/scripts/install.sh" --version >/dev/null 2>&1; then

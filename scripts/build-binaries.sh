@@ -58,7 +58,7 @@ case "$PLATFORM" in
     *) printf 'Invalid platform: %s\n' "$PLATFORM" >&2; exit 2 ;;
 esac
 if [[ "$PLATFORM" != "$NATIVE_PLATFORM" ]]; then
-    printf 'Rust TUI sidecar must be built natively: requested %s, current %s\n' "$PLATFORM" "$NATIVE_PLATFORM" >&2
+    printf 'Release binary must be built natively: requested %s, current %s\n' "$PLATFORM" "$NATIVE_PLATFORM" >&2
     exit 2
 fi
 if [[ -n "$REPOSITORY" && ! "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
@@ -138,7 +138,6 @@ for platform in "${PLATFORMS[@]}"; do
     cp "$bun_output" "$OUTPUT_DIR/$platform/lc"
     rm -f "$bun_output"
 	ln -s lc "$OUTPUT_DIR/$platform/lystar"
-    node ../../scripts/build-rust-tui-sidecar.mjs --platform "$platform" --out-dir "$OUTPUT_DIR/$platform"
 done
 
 for platform in "${PLATFORMS[@]}"; do
@@ -191,7 +190,6 @@ for platform in "${PLATFORMS[@]}"; do
     [[ -x "$OUTPUT_DIR/$platform/lc" ]] || { printf 'Release bundle is missing lc for %s\n' "$platform" >&2; exit 1; }
     [[ "$("$OUTPUT_DIR/$platform/lc" --version)" == "$VERSION" ]] || { printf 'Release bundle lc version mismatch for %s\n' "$platform" >&2; exit 1; }
     [[ -x "$OUTPUT_DIR/$platform/lystar" ]] || { printf 'Release bundle is missing lystar for %s\n' "$platform" >&2; exit 1; }
-    [[ -x "$OUTPUT_DIR/$platform/lystar-tui" ]] || { printf 'Release bundle is missing lystar-tui for %s\n' "$platform" >&2; exit 1; }
     [[ -f "$OUTPUT_DIR/$platform/package.json" ]] || { printf 'Release bundle is missing package.json for %s\n' "$platform" >&2; exit 1; }
     [[ -f "$OUTPUT_DIR/$platform/photon_rs_bg.wasm" ]] || { printf 'Release bundle is missing photon WASM for %s\n' "$platform" >&2; exit 1; }
     [[ -f "$OUTPUT_DIR/$platform/skills/imagegen/SKILL.md" ]] || { printf 'Release bundle is missing built-in skills for %s\n' "$platform" >&2; exit 1; }

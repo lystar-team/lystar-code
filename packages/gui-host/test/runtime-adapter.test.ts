@@ -812,68 +812,7 @@ describe("CodingAgentRuntimeAdapter", () => {
 		expect(await adapter.getGitStatus(tempDir)).toEqual(before);
 	});
 
-	it("bridges a real Extension Tier1 UI state, editor mirror, and terminal input", async () => {
-		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-extension-ui-"));
-		const agentDir = join(tempDir, "agent");
-		const cwd = join(tempDir, "project");
-		for (const dir of [agentDir, cwd]) mkdirSync(dir, { recursive: true });
-		writeFileSync(
-			join(agentDir, "settings.json"),
-			JSON.stringify({
-				defaultProvider: "lystar-contract-faux",
-				defaultModel: "contract-1",
-				defaultThinkingLevel: "off",
-				defaultProjectTrust: "always",
-				extensions: [fileURLToPath(new URL("./fixtures/runtime-contract-extension.ts", import.meta.url))],
-			}),
-		);
-		let runtime: RuntimeSession | undefined;
-		cleanups.push(async () => {
-			await runtime?.dispose();
-			rmSync(tempDir, { recursive: true, force: true });
-		});
-		runtime = await new CodingAgentRuntimeAdapter(agentDir).createSession(cwd, async () => ({ cancelled: true }));
-		const events: RuntimeEvent[] = [];
-		runtime.onEvent((event) => events.push(event));
-
-		await runtime.prompt("/contract-rust-ui");
-		const snapshot = runtime.getExtensionUiSnapshot?.();
-		expect(snapshot).toMatchObject({
-			statuses: [{ key: "contract", text: "ready" }],
-			widgets: [{ key: "contract", placement: "below", lines: ["extension widget", "second line"] }],
-			terminalInputListenerCount: 1,
-		});
-		const extensionEvents = events
-			.filter((event) => event.type === "extension_ui")
-			.map((event) => event.payload as { type?: string; delta?: Record<string, unknown> });
-		expect(extensionEvents).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					type: "delta",
-					delta: expect.objectContaining({ workingMessage: "extension working" }),
-				}),
-				expect.objectContaining({
-					type: "delta",
-					delta: expect.objectContaining({ hiddenThinkingLabel: "extension thinking" }),
-				}),
-				expect.objectContaining({ type: "delta", delta: expect.objectContaining({ title: "Extension Contract" }) }),
-				expect.objectContaining({ type: "editor_action" }),
-			]),
-		);
-		expect(runtime.updateExtensionEditorState?.("host editor", 1)).toBe(snapshot?.revision);
-		await expect(runtime.dispatchExtensionTerminalInput?.("\u001b[A")).resolves.toEqual({
-			consume: false,
-			data: "up",
-		});
-		await runtime.reloadResources();
-		expect(runtime.getExtensionUiSnapshot?.()).toMatchObject({
-			statuses: [],
-			widgets: [],
-			terminalInputListenerCount: 0,
-		});
-	});
-
-	it("bridges dynamic Extension command completions and shortcuts", async () => {
+	it("bridges dynamic Extension command completions", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-dynamic-extension-"));
 		const agentDir = join(tempDir, "agent");
 		const cwd = join(tempDir, "project");
@@ -897,6 +836,10 @@ describe("CodingAgentRuntimeAdapter", () => {
 		expect(commandCompletion?.items).toEqual(
 			expect.arrayContaining([expect.objectContaining({ label: "dynamic-contract", kind: "extension" })]),
 		);
+		const builtinCompletion = await runtime.getCompletions("/", 1);
+		expect(builtinCompletion?.items).toEqual(
+			expect.arrayContaining([expect.objectContaining({ label: "model", kind: "command" })]),
+		);
 		const argumentText = "/dynamic-contract a";
 		const argumentCompletion = await runtime.getCompletions(argumentText, argumentText.length);
 		expect(argumentCompletion).toMatchObject({
@@ -904,15 +847,9 @@ describe("CodingAgentRuntimeAdapter", () => {
 			prefixEnd: argumentText.length,
 			items: [expect.objectContaining({ value: "alpha", kind: "extension" })],
 		});
-		expect(runtime.getExtensionUiSnapshot?.()).toMatchObject({ extensionShortcutCount: 1 });
-
-		await expect(runtime.dispatchExtensionTerminalInput?.("\u001b[117;6u")).resolves.toEqual({ consume: true });
-		expect(runtime.getExtensionUiSnapshot?.()).toMatchObject({
-			statuses: [{ key: "dynamic-shortcut", text: "handled" }],
-		});
 	});
 
-	it("reloads dynamic Extension commands and shortcuts and contains handler failures", async () => {
+	it("reloads dynamic Extension commands", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-dynamic-edge-"));
 		const agentDir = join(tempDir, "agent");
 		const cwd = join(tempDir, "project");
@@ -927,7 +864,6 @@ describe("CodingAgentRuntimeAdapter", () => {
 			}),
 		);
 		let runtime: RuntimeSession | undefined;
-		const events: RuntimeEvent[] = [];
 		cleanups.push(async () => {
 			if (previousVariant === undefined) delete process.env.LYSTAR_GUI_DYNAMIC_EDGE_VARIANT;
 			else process.env.LYSTAR_GUI_DYNAMIC_EDGE_VARIANT = previousVariant;
@@ -935,78 +871,21 @@ describe("CodingAgentRuntimeAdapter", () => {
 			rmSync(tempDir, { recursive: true, force: true });
 		});
 		runtime = await new CodingAgentRuntimeAdapter(agentDir).createSession(cwd, async () => ({ cancelled: true }));
-		runtime.onEvent((event) => events.push(event));
 
 		expect((await runtime.getCompletions("/edge", 5))?.items).toEqual(
 			expect.arrayContaining([expect.objectContaining({ label: "edge-before", kind: "extension" })]),
 		);
 		await runtime.prompt("/edge-before");
-		expect(runtime.getExtensionUiSnapshot?.()).toMatchObject({
-			statuses: [{ key: "edge-command", text: "edge-before" }],
-			extensionShortcutCount: 2,
-		});
 
 		process.env.LYSTAR_GUI_DYNAMIC_EDGE_VARIANT = "after";
 		await runtime.reloadResources();
-		expect(runtime.getExtensionUiSnapshot?.()).toMatchObject({
-			statuses: [],
-			extensionShortcutCount: 2,
-		});
 		expect((await runtime.getCompletions("/edge", 5))?.items).toEqual(
 			expect.arrayContaining([expect.objectContaining({ label: "edge-after", kind: "extension" })]),
 		);
 		expect((await runtime.getCompletions("/edge", 5))?.items).not.toEqual(
 			expect.arrayContaining([expect.objectContaining({ label: "edge-before", kind: "extension" })]),
 		);
-		expect(await runtime.dispatchExtensionTerminalInput?.("\u001b[98;6u")).toEqual({ consume: false });
 		await runtime.prompt("/edge-after");
-		expect(runtime.getExtensionUiSnapshot?.()).toMatchObject({
-			statuses: [{ key: "edge-command", text: "edge-after" }],
-		});
-
-		expect(await runtime.dispatchExtensionTerminalInput?.("\u001b[120;6u")).toEqual({ consume: true });
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(events).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					type: "progress",
-					payload: expect.objectContaining({ type: "extension_error", event: "shortcut" }),
-				}),
-			]),
-		);
-	});
-
-	it("uses the later Extension shortcut on conflicts and preserves reserved built-ins", async () => {
-		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-dynamic-conflict-"));
-		const agentDir = join(tempDir, "agent");
-		const cwd = join(tempDir, "project");
-		for (const dir of [agentDir, cwd]) mkdirSync(dir, { recursive: true });
-		writeFileSync(
-			join(agentDir, "settings.json"),
-			JSON.stringify({
-				defaultProjectTrust: "always",
-				extensions: [
-					fileURLToPath(new URL("./fixtures/runtime-dynamic-extension.ts", import.meta.url)),
-					fileURLToPath(new URL("./fixtures/runtime-dynamic-conflict-extension.ts", import.meta.url)),
-				],
-			}),
-		);
-		let runtime: RuntimeSession | undefined;
-		cleanups.push(async () => {
-			await runtime?.dispose();
-			rmSync(tempDir, { recursive: true, force: true });
-		});
-		runtime = await new CodingAgentRuntimeAdapter(agentDir).createSession(cwd, async () => ({ cancelled: true }));
-
-		expect(runtime.getExtensionUiSnapshot?.()).toMatchObject({ extensionShortcutCount: 1 });
-		expect(await runtime.dispatchExtensionTerminalInput?.("\u001b[117;6u")).toEqual({ consume: true });
-		expect(runtime.getExtensionUiSnapshot?.()).toMatchObject({
-			statuses: [{ key: "conflict-shortcut", text: "winner" }],
-		});
-		expect(await runtime.dispatchExtensionTerminalInput?.("\r")).toEqual({ consume: false });
-		expect(runtime.getExtensionUiSnapshot?.()).toMatchObject({
-			statuses: [{ key: "conflict-shortcut", text: "winner" }],
-		});
 	});
 
 	it("routes API key login through a secret UI request and Core credential storage", async () => {

@@ -14,9 +14,6 @@ test("extended quality workflow keeps live suites manual and non-live suites sch
 		"ai-live",
 		"coding-live",
 		"stress",
-		"rust-benchmark",
-		"rust-component-benchmark",
-		"rust-custom-editor-benchmark",
 		"non-live-all",
 	]);
 	assert.equal(parsed.on.schedule.length, 1);
@@ -32,11 +29,11 @@ test("extended quality workflow keeps live suites manual and non-live suites sch
 		assert.match(JSON.stringify(job.steps), /--assert-passed/);
 		assert.match(JSON.stringify(job.steps), /credential=1/);
 	}
-	for (const name of ["stress", "rust-benchmark"]) assert.match(parsed.jobs[name].if, /github\.event_name == 'schedule'/);
+	assert.match(parsed.jobs.stress.if, /github\.event_name == 'schedule'/);
 	assert.match(JSON.stringify(parsed.jobs.stress.steps), /test:stress/);
 	assert.doesNotMatch(workflow, /cache-hit \|\| 'false'/);
 
-	for (const name of ["ai-live", "coding-live", "stress", "rust-benchmark"]) {
+	for (const name of ["ai-live", "coding-live", "stress"]) {
 		const job = parsed.jobs[name];
 		const setupNode = job.steps.find((step) => step.name === "Setup Node.js");
 		const summary = job.steps.find((step) => step.name.includes("summary"));
@@ -49,24 +46,4 @@ test("extended quality workflow keeps live suites manual and non-live suites sch
 		assert.ok(job.steps.some((step) => typeof step.run === "string" && step.run.includes("date +%s%N")));
 	}
 
-	const rustJob = parsed.jobs["rust-benchmark"];
-	const rustSteps = JSON.stringify(rustJob.steps);
-	assert.match(rustSteps, /benchmark:rust-spike/);
-	assert.match(rustSteps, /benchmark:rust-extension-component-storm/);
-	assert.match(rustSteps, /verify-rust-spike-benchmark/);
-	assert.match(rustSteps, /verify-rust-extension-component-storm/);
-	assert.match(rustJob.if, /rust-component-benchmark/);
-	assert.doesNotMatch(rustSteps, /\|\| true/);
-	assert.equal(rustJob.steps.find((step) => step.name === "Restore Rust dependencies").id, "cargo-cache");
-	assert.match(rustJob.steps.find((step) => step.name.includes("summary")).run, /--cache-hit "cargo=\$\{\{ steps\.cargo-cache\.outputs\.cache-hit \|\| 'unavailable' \}\}"/);
-	assert.match(JSON.stringify(rustJob.steps.find((step) => step.name === "Upload Rust benchmark report").with.path), /rust-benchmark-metrics\.json/);
-	const customEditorJob = parsed.jobs["rust-custom-editor-benchmark"];
-	assert.match(customEditorJob.if, /workflow_dispatch/);
-	assert.match(customEditorJob.if, /rust-custom-editor-benchmark/);
-	assert.match(JSON.stringify(customEditorJob.steps), /benchmark:rust-custom-editor/);
-	assert.match(
-		JSON.stringify(customEditorJob.steps.find((step) => step.name === "Upload Rust CustomEditor benchmark artifact").with.path),
-		/rust-tui-custom-editor/,
-	);
-	assert.match(workflow, /RUST_VERSION: 1\.97\.1/);
 });

@@ -69,7 +69,7 @@ describe("doctor CLI", () => {
 		const report = JSON.parse(result.stdout) as {
 			recovery: { sessionActive: boolean; activeCircuits: number; metrics: object };
 			lessons: { available: boolean; counts: Record<string, number> };
-			frontend: { implementation: string; modes: string[]; rust: { b0Status: string; integration: string } };
+			frontend: { implementation: string; modes: string[] };
 		};
 		expect(report.recovery).toEqual({ sessionActive: false, mode: "assist", activeCircuits: 0, metrics: {} });
 		expect(report.lessons).toEqual({
@@ -79,7 +79,6 @@ describe("doctor CLI", () => {
 		expect(report.frontend).toEqual({
 			implementation: "typescript",
 			modes: ["regular", "fullscreen"],
-			rust: { b0Status: "stop", integration: "not_integrated" },
 		});
 	});
 

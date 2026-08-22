@@ -5,8 +5,6 @@ import type {
 	CompletionItem,
 	CompletionResult,
 	ContentChunk,
-	ExtensionTerminalInputResult,
-	ExtensionUiState,
 	GitDiff,
 	GitStatus,
 	HostDirectoryListing,
@@ -31,7 +29,7 @@ import type {
 } from "@lystar/code-gui-protocol";
 
 export interface RuntimeEvent {
-	type: "progress" | "entry_committed" | "state_changed" | "ui_request" | "extension_ui";
+	type: "progress" | "entry_committed" | "state_changed" | "ui_request";
 	payload: JsonValue | SessionProgress;
 }
 
@@ -96,28 +94,6 @@ export interface RuntimeSession {
 	reloadResources(): Promise<void>;
 	getCompletions(text: string, cursor: number): CompletionResult | Promise<CompletionResult | undefined> | undefined;
 	renderRichText?(request: RichTextRenderRequest): RenderRichTextResult;
-	getExtensionUiSnapshot?(): ExtensionUiState;
-	getExtensionComponentDiagnostics?(): JsonValue;
-	updateExtensionEditorState?(text: string, generation: number): number;
-	dispatchExtensionTerminalInput?(data: string): Promise<ExtensionTerminalInputResult>;
-	dispatchExtensionComponentInput?(
-		componentId: string,
-		generation: number,
-		data: string,
-	): {
-		accepted: boolean;
-		appAction?: string;
-		editorAction?: { action: "paste" | "set"; text: string; revision: number };
-	};
-	resizeExtensionComponents?(width: number, height: number): boolean;
-	disposeExtensionComponent?(componentId: string, generation: number): boolean;
-	completeExtensionCustom?(
-		componentId: string,
-		generation: number,
-		value: JsonValue | undefined,
-		cancelled: boolean,
-	): boolean;
-	publishExtensionComponents?(): void;
 	getToolRecoveryDiagnostics(): ToolRecoveryRuntimeDiagnostics;
 	dispose(): Promise<void>;
 	onEvent(listener: (event: RuntimeEvent) => void): () => void;

@@ -1,5 +1,5 @@
-import { type ChildProcess, type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { type ChildProcess, type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +7,7 @@ import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { encodeClientMessage, type ServerMessage, ServerMessageDecoder } from "@lystar/code-gui-protocol";
 import { afterEach, describe, expect, it } from "vitest";
-import { defaultIpcEndpoint, REMOTE_PREFACE } from "../src/ipc.ts";
+import { REMOTE_PREFACE } from "../src/ipc.ts";
 
 const children = new Set<ChildProcess>();
 const tempDirs = new Set<string>();
@@ -151,57 +151,7 @@ function response(id: string) {
 	return (message: ServerMessage): boolean => message.type === "response" && message.id === id;
 }
 
-function ensureRustTuiBinary(): string {
-	const binary = join(repositoryRoot, `target/debug/lystar-tui${process.platform === "win32" ? ".exe" : ""}`);
-	const result = spawnSync("cargo", ["build", "-p", "lystar-tui"], {
-		cwd: repositoryRoot,
-		encoding: "utf8",
-	});
-	if (result.status !== 0) throw new Error(`Rust TUI build failed:\n${result.stderr}`);
-	return binary;
-}
-
 describe("GUI Host persistent IPC", () => {
-	it("drives a Rust TUI session through the production IPC Host", async () => {
-		const agentDir = mkdtempSync(join(tmpdir(), "gui-host-rust-ipc-"));
-		tempDirs.add(agentDir);
-		const endpoint = process.platform === "win32" ? defaultIpcEndpoint(agentDir) : join(agentDir, "host.sock");
-		const host = spawn(process.execPath, ["--import", tsxImport, hostFixture, agentDir, endpoint], {
-			cwd: repositoryRoot,
-			stdio: ["ignore", "pipe", "pipe"],
-		});
-		children.add(host);
-		await withTimeout(
-			"Host ready",
-			waitForLine(host, "stderr", "ready", PROCESS_START_TIMEOUT_MS),
-			PROCESS_START_TIMEOUT_MS,
-		);
-
-		const rust = spawn(ensureRustTuiBinary(), ["--pipe-session-smoke", agentDir], {
-			cwd: repositoryRoot,
-			env: { ...process.env, PI_RUST_TUI_HOST_ENDPOINT: endpoint },
-			stdio: ["ignore", "ignore", "pipe"],
-		});
-		children.add(rust);
-		let rustStderr = "";
-		rust.stderr.setEncoding("utf8");
-		rust.stderr.on("data", (chunk: string) => {
-			rustStderr += chunk;
-		});
-		try {
-			await withTimeout("Rust TUI Host session smoke", waitForExit(rust), PROCESS_START_TIMEOUT_MS);
-		} catch (error) {
-			throw new Error(`${error instanceof Error ? error.message : String(error)}\nRust stderr:\n${rustStderr}`);
-		}
-		expect(rust.exitCode).toBe(0);
-		expect(readFileSync(join(agentDir, "prompt-calls.txt"), "utf8")).toBe("production IPC smoke\n");
-
-		host.kill("SIGTERM");
-		await withTimeout("Host shutdown", waitForExit(host), 2_000);
-		children.delete(host);
-		children.delete(rust);
-	}, 30_000);
-
 	if (process.platform !== "win32") {
 		it("keeps an accepted operation alive after the SSH-style relay is killed", async () => {
 			const agentDir = mkdtempSync(join(tmpdir(), "gui-host-ipc-"));

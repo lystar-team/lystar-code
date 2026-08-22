@@ -25,6 +25,7 @@ import {
 	type AuthEvent,
 	type AuthPrompt,
 	abortSubagent,
+	BUILTIN_SLASH_COMMANDS,
 	CONFIG_DIR_NAME,
 	type CreateAgentSessionRuntimeFactory,
 	continueSubagentSession,
@@ -49,12 +50,10 @@ import {
 	getToolRecoveryMode,
 	hasTrustRequiringProjectResources,
 	isNewerPackageVersion,
-	KeybindingsManager,
 	loadProjectContextFiles,
 	loadSkills,
 	ModelConfig,
 	ModelRuntime,
-	matchesKey,
 	PACKAGE_VERSION,
 	type ProjectTrustContext,
 	ProjectTrustStore,
@@ -101,7 +100,6 @@ import type {
 	TranscriptItem,
 } from "@lystar/code-gui-protocol";
 import { GUI_PROTOCOL_VERSION } from "@lystar/code-gui-protocol";
-import { ExtensionUiBridge } from "./extension-ui-bridge.ts";
 import type {
 	ModelProviderInput,
 	ModelProviderSummary,
@@ -983,8 +981,7 @@ function promptFailure(entries: readonly SessionEntry[]): string | undefined {
 class CoreRuntimeSession implements RuntimeSession {
 	private readonly listeners = new Set<(event: RuntimeEvent) => void>();
 	private readonly runtime: Awaited<ReturnType<typeof createAgentSessionRuntime>>;
-	private readonly extensionUi: ExtensionUiBridge;
-	private readonly extensionKeybindings: KeybindingsManager;
+	private readonly onUiRequest: UiRequestHandler;
 	private unsubscribe?: () => void;
 	private stateRevision = 0;
 	private committedEntryCount = 0;
@@ -992,28 +989,9 @@ class CoreRuntimeSession implements RuntimeSession {
 	private lastTranscriptRevision = 0;
 	private disposed = false;
 
-	constructor(
-		runtime: Awaited<ReturnType<typeof createAgentSessionRuntime>>,
-		onUiRequest: UiRequestHandler,
-		agentDir: string,
-	) {
+	constructor(runtime: Awaited<ReturnType<typeof createAgentSessionRuntime>>, onUiRequest: UiRequestHandler) {
 		this.runtime = runtime;
-		this.extensionKeybindings = KeybindingsManager.create(agentDir);
-		this.extensionUi = new ExtensionUiBridge(
-			onUiRequest,
-			(event) => this.emit({ type: "extension_ui", payload: jsonValue(event) }),
-			(error) =>
-				this.runtime.session.extensionRunner.emitError({
-					extensionPath: "rust-extension-ui",
-					event: error.event,
-					error: error.error,
-					...(error.stack ? { stack: error.stack } : {}),
-				}),
-			(text, cursor) => this.getCompletions(text, cursor),
-			agentDir,
-			() => this.extensionShortcutCount(),
-			(data) => this.dispatchExtensionShortcut(data),
-		);
+		this.onUiRequest = onUiRequest;
 	}
 
 	get sessionPath(): string {
@@ -1326,7 +1304,6 @@ class CoreRuntimeSession implements RuntimeSession {
 
 	async reloadResources(): Promise<void> {
 		await this.runtime.session.reload();
-		this.extensionUi.reset();
 		this.emitStateChanged();
 	}
 
@@ -1342,13 +1319,23 @@ class CoreRuntimeSession implements RuntimeSession {
 		const slash = /^\/([^\s]*)$/.exec(before);
 		if (slash) {
 			const query = slash[1].toLowerCase();
+			const builtinCommandNames = new Set(BUILTIN_SLASH_COMMANDS.map((command) => command.name));
 			const commands: CompletionItem[] = [
-				...this.runtime.session.extensionRunner.getRegisteredCommands().map((command) => ({
-					value: `/${command.invocationName} `,
-					label: command.invocationName,
+				...BUILTIN_SLASH_COMMANDS.map((command) => ({
+					value: `/${command.name} `,
+					label: command.name,
 					description: command.description,
-					kind: "extension" as const,
+					kind: "command" as const,
 				})),
+				...this.runtime.session.extensionRunner
+					.getRegisteredCommands()
+					.filter((command) => !builtinCommandNames.has(command.name))
+					.map((command) => ({
+						value: `/${command.invocationName} `,
+						label: command.invocationName,
+						description: command.description,
+						kind: "extension" as const,
+					})),
 				...this.runtime.session.promptTemplates.map((prompt) => ({
 					value: `/${prompt.name} `,
 					label: prompt.name,
@@ -1373,6 +1360,28 @@ class CoreRuntimeSession implements RuntimeSession {
 
 		const argument = /^\/([^\s]+)\s(.*)$/.exec(before);
 		if (argument) {
+			if (argument[1] === "model") {
+				const prefix = argument[2];
+				const models =
+					this.runtime.session.scopedModels.length > 0
+						? this.runtime.session.scopedModels.map((scoped) => scoped.model)
+						: this.runtime.services.modelRuntime.getAvailableSnapshot();
+				const query = prefix.toLowerCase();
+				const items = models
+					.map((model) => ({
+						value: `${model.provider}/${model.id}`,
+						label: model.id,
+						description: model.provider,
+						kind: "command" as const,
+					}))
+					.filter((item) => `${item.label} ${item.description}`.toLowerCase().includes(query))
+					.slice(0, 50);
+				return {
+					prefixStart: cursor - prefix.length,
+					prefixEnd: cursor,
+					items,
+				};
+			}
 			const command = this.runtime.session.extensionRunner
 				.getRegisteredCommands()
 				.find((candidate) => candidate.invocationName === argument[1]);
@@ -1412,33 +1421,6 @@ class CoreRuntimeSession implements RuntimeSession {
 		return { prefixStart: cursor - prefix.length, prefixEnd: cursor, items };
 	}
 
-	private extensionShortcutCount(): number {
-		this.extensionKeybindings.reload();
-		return this.runtime.session.extensionRunner.getShortcuts(this.extensionKeybindings.getEffectiveConfig()).size;
-	}
-
-	private dispatchExtensionShortcut(data: string): boolean {
-		this.extensionKeybindings.reload();
-		const shortcuts = this.runtime.session.extensionRunner.getShortcuts(
-			this.extensionKeybindings.getEffectiveConfig(),
-		);
-		for (const [shortcutKey, shortcut] of shortcuts) {
-			if (!matchesKey(data, shortcutKey)) continue;
-			const context = this.runtime.session.extensionRunner.createCommandContext();
-			void Promise.resolve()
-				.then(() => shortcut.handler(context))
-				.catch((error) => {
-					this.runtime.session.extensionRunner.emitError({
-						extensionPath: shortcut.extensionPath,
-						event: "shortcut",
-						error: error instanceof Error ? error.message : String(error),
-					});
-				});
-			return true;
-		}
-		return false;
-	}
-
 	getToolRecoveryDiagnostics(): ToolRecoveryRuntimeDiagnostics {
 		return this.runtime.session.getToolRecoveryDiagnostics();
 	}
@@ -1456,57 +1438,8 @@ class CoreRuntimeSession implements RuntimeSession {
 	async dispose(): Promise<void> {
 		if (this.disposed) return;
 		this.disposed = true;
-		this.extensionUi.dispose();
 		this.unsubscribe?.();
 		await this.runtime.dispose();
-	}
-
-	getExtensionUiSnapshot() {
-		return this.extensionUi.snapshot();
-	}
-
-	getExtensionComponentDiagnostics(): JsonValue {
-		return jsonValue(this.extensionUi.getComponentDiagnostics());
-	}
-
-	updateExtensionEditorState(text: string, generation: number): number {
-		return this.extensionUi.updateEditorState(text, generation);
-	}
-
-	async dispatchExtensionTerminalInput(data: string) {
-		if (this.dispatchExtensionShortcut(data)) return { consume: true };
-		return this.extensionUi.dispatchTerminalInput(data);
-	}
-
-	dispatchExtensionComponentInput(
-		componentId: string,
-		generation: number,
-		data: string,
-	): { accepted: boolean; appAction?: string } {
-		const result = this.extensionUi.dispatchComponentInput(componentId, generation, data);
-		return result ? { accepted: true, ...result } : { accepted: false };
-	}
-
-	resizeExtensionComponents(width: number, height: number): boolean {
-		this.extensionUi.resizeComponents(width, height);
-		return true;
-	}
-
-	disposeExtensionComponent(componentId: string, generation: number): boolean {
-		return this.extensionUi.disposeComponent(componentId, generation);
-	}
-
-	completeExtensionCustom(
-		componentId: string,
-		generation: number,
-		value: JsonValue | undefined,
-		cancelled: boolean,
-	): boolean {
-		return this.extensionUi.completeCustom(componentId, generation, value, cancelled);
-	}
-
-	publishExtensionComponents(): void {
-		this.extensionUi.publishComponentSnapshot();
 	}
 
 	onEvent(listener: (event: RuntimeEvent) => void): () => void {
@@ -1515,7 +1448,6 @@ class CoreRuntimeSession implements RuntimeSession {
 	}
 
 	private async bindCurrentSession(): Promise<void> {
-		this.extensionUi.reset();
 		this.unsubscribe?.();
 		const session = this.runtime.session;
 		const unsupportedSessionChange = async () => {
@@ -1530,13 +1462,12 @@ class CoreRuntimeSession implements RuntimeSession {
 			reload: () => session.reload(),
 		};
 		await session.bindExtensions({
-			uiContext: this.extensionUi.context() as unknown as ExtensionUIContext,
+			uiContext: createUiContext(this.onUiRequest),
 			mode: "rpc",
 			commandContextActions,
 			abortHandler: () => void this.abort(),
 			onError: (error) => this.emit({ type: "progress", payload: jsonValue({ type: "extension_error", ...error }) }),
 		});
-		this.extensionUi.publishSnapshot();
 		this.unsubscribe = session.subscribe((event) => {
 			this.stateRevision++;
 			if (event.type === "message_end" || event.type === "entry_appended") {
@@ -2444,7 +2375,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	}
 
 	private async wrapRuntime(runtime: AgentSessionRuntime, onUiRequest: UiRequestHandler): Promise<RuntimeSession> {
-		const wrapped = new CoreRuntimeSession(runtime, onUiRequest, this.agentDir);
+		const wrapped = new CoreRuntimeSession(runtime, onUiRequest);
 		try {
 			await wrapped.bind();
 			return wrapped;

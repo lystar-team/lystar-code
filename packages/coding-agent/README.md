@@ -27,7 +27,7 @@ npm run build:offline
 bash scripts/build-binaries.sh --offline-model-data
 ```
 
-Unix 构建脚本只生成当前原生平台归档，并把 Rust `lystar-tui` sidecar 放在 `lc` 相邻位置。五平台正式产物由 Release workflow 在对应原生 runner 汇聚。
+Unix 构建脚本只生成当前原生平台归档。五平台正式产物由 Release workflow 在对应原生 runner 汇聚。
 
 发行仓库固定为 `lystar-team/lystar-code`。构建脚本会把该地址写入安装器、manifest 和发行包，供安装与更新使用。
 
