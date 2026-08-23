@@ -687,7 +687,7 @@ describe("task workbench components", () => {
 		const context = Object.assign(Object.create(InteractiveMode.prototype), {
 			startupNoticesShown: false,
 			changelogMarkdown: "## [0.84.2]\n\n- 上游更新",
-			version: "0.84.2-lystar.1",
+			version: "0.84.2-lystar.2",
 			chatContainer,
 			workspace: { isFullscreen: () => true },
 			runtimeHost: { session: { settingsManager: { getCollapseChangelog: () => false } } },
@@ -701,7 +701,7 @@ describe("task workbench components", () => {
 		expect(chatContainer.children).toHaveLength(1);
 		const rendered = stripAnsi(chatContainer.render(80).join("\n"));
 		const compactRendered = rendered.replace(/\s+/g, "");
-		expect(compactRendered).toContain("LYStarCode已更新到v0.84.2-lystar.1。");
+		expect(compactRendered).toContain("LYStarCode已更新到v0.84.2-lystar.2。");
 		expect(compactRendered).toContain("使用/changelog查看LYStarCode更新记录。");
 	});
 
@@ -728,7 +728,7 @@ describe("task workbench components", () => {
 				},
 			});
 			expect(getChangelogForDisplay.call(firstInstall)).toBeUndefined();
-			expect(firstInstallSetVersion).toHaveBeenCalledWith("0.84.2-lystar.1");
+			expect(firstInstallSetVersion).toHaveBeenCalledWith("0.84.2-lystar.2");
 
 			const updateSetVersion = vi.fn();
 			const update = Object.assign(Object.create(InteractiveMode.prototype), {
@@ -743,8 +743,8 @@ describe("task workbench components", () => {
 				},
 			});
 			const updateMarkdown = getChangelogForDisplay.call(update);
-			expect(updateMarkdown).toContain("0.84.2-lystar.1");
-			expect(updateSetVersion).toHaveBeenCalledWith("0.84.2-lystar.1");
+			expect(updateMarkdown).toContain("0.84.2-lystar.2");
+			expect(updateSetVersion).toHaveBeenCalledWith("0.84.2-lystar.2");
 
 			const resumedSettings = {
 				getLastChangelogVersion: vi.fn(() => "0.84.1-lystar.13"),
@@ -762,7 +762,7 @@ describe("task workbench components", () => {
 			expect(resumedSettings.getLastChangelogVersion).not.toHaveBeenCalled();
 
 			const repeatedSettings = {
-				getLastChangelogVersion: () => "0.84.2-lystar.1",
+				getLastChangelogVersion: () => "0.84.2-lystar.2",
 				setLastChangelogVersion: vi.fn(),
 			};
 			const repeated = Object.assign(Object.create(InteractiveMode.prototype), {
