@@ -5,9 +5,20 @@ import { stripAnsi } from "../../../utils/ansi.ts";
 import { theme } from "../theme/theme.ts";
 import { uiGlyphs } from "../ui-glyphs.ts";
 
+export const WORKSPACE_HEADER_SEPARATOR = "  │  ";
+const FULL_HEADER_MIN_WIDTH = 100;
+const MEDIUM_HEADER_MIN_WIDTH = 72;
+const WORKSPACE_HEADER_SEPARATOR_GLYPH = "│";
+
 export interface WorkspaceComponentHit {
 	component: Component;
 	row: number;
+}
+
+export interface WorkspaceScrollAnchor {
+	component: Component;
+	componentRow: number;
+	viewportOffset: number;
 }
 
 interface RenderedComponentRange {
@@ -48,6 +59,28 @@ export interface WorkspaceHeaderState {
 	contextWarning?: boolean;
 }
 
+function renderWorkspaceHeaderDivider(row: string, width: number): string {
+	const divider = Array.from({ length: Math.max(1, width) }, () => "─");
+	const plainRow = stripAnsi(row);
+	for (let index = 0; index < plainRow.length; index++) {
+		if (plainRow[index] !== WORKSPACE_HEADER_SEPARATOR_GLYPH && plainRow[index] !== "|") continue;
+		const column = visibleWidth(plainRow.slice(0, index));
+		if (column < divider.length) divider[column] = "┴";
+	}
+	return theme.fg("toolDivider", divider.join(""));
+}
+
+function renderWorkspaceHeaderPart(text: string, color: "text" | "warning"): string {
+	return text
+		.replaceAll("|", WORKSPACE_HEADER_SEPARATOR_GLYPH)
+		.split(WORKSPACE_HEADER_SEPARATOR_GLYPH)
+		.map(
+			(part, index, parts) =>
+				`${theme.fg(color, part)}${index < parts.length - 1 ? theme.fg("toolDivider", WORKSPACE_HEADER_SEPARATOR_GLYPH) : ""}`,
+		)
+		.join("");
+}
+
 export class WorkspaceHeader implements Component {
 	private readonly getState: () => WorkspaceHeaderState;
 
@@ -59,25 +92,26 @@ export class WorkspaceHeader implements Component {
 
 	render(width: number): string[] {
 		const state = this.getState();
-		const divider = theme.fg("toolDivider", "─".repeat(Math.max(1, width)));
-		const separator = theme.fg("dim", "  ·  ");
+		const separator = theme.fg("toolDivider", WORKSPACE_HEADER_SEPARATOR);
+		const separatorWidth = visibleWidth(separator);
 		const product = state.product ? theme.bold(theme.fg("accent", state.product)) : undefined;
 		const path = theme.fg("muted", state.path);
 		const branch = state.branch ? theme.fg("text", state.branch) : undefined;
 		const taskText = state.task ?? state.session;
 		const task = taskText ? theme.fg("text", taskText) : undefined;
-		const contextText = width >= 120 ? state.context : (state.compactContext ?? state.context);
-		const right = theme.fg(state.contextWarning ? "warning" : "text", contextText);
+		const contextText = width >= FULL_HEADER_MIN_WIDTH ? state.context : (state.compactContext ?? state.context);
+		const right = renderWorkspaceHeaderPart(contextText, state.contextWarning ? "warning" : "text");
 		const rightWidth = visibleWidth(right);
-		if (rightWidth >= width) {
-			return [truncateToWidth(right, width, theme.fg("dim", "...")), divider];
+		if (rightWidth + separatorWidth >= width) {
+			const row = truncateToWidth(right, width, theme.fg("dim", "..."));
+			return [row, renderWorkspaceHeaderDivider(row, width)];
 		}
 
-		const leftMaxWidth = Math.max(0, width - rightWidth - 2);
+		const leftMaxWidth = Math.max(0, width - rightWidth - separatorWidth);
 		const candidateParts =
-			width >= 120
+			width >= FULL_HEADER_MIN_WIDTH
 				? [[product, path, branch, task], [path, branch, task], [branch, task], [task], [path]]
-				: width >= 80
+				: width >= MEDIUM_HEADER_MIN_WIDTH
 					? [[path, branch, task], [branch, task], [task], [path]]
 					: [[task], [path]];
 		const candidates = candidateParts
@@ -86,8 +120,9 @@ export class WorkspaceHeader implements Component {
 		const left =
 			candidates.find((candidate) => visibleWidth(candidate) <= leftMaxWidth) ??
 			truncateToWidth(candidates[0] ?? "", leftMaxWidth, theme.fg("dim", "..."));
-		const gap = " ".repeat(Math.max(0, width - visibleWidth(left) - rightWidth));
-		return [`${left}${gap}${right}`, divider];
+		const gap = " ".repeat(Math.max(0, width - visibleWidth(left) - separatorWidth - rightWidth));
+		const row = `${left}${gap}${separator}${right}`;
+		return [row, renderWorkspaceHeaderDivider(row, width)];
 	}
 }
 
@@ -207,6 +242,7 @@ export interface WorkspaceOptions {
 export class LystarWorkspace implements Component {
 	private readonly options: WorkspaceOptions;
 	private fullscreen: boolean;
+	private bottomContainersVisible = true;
 	private scrollbar: ScrollViewScrollbar;
 	private following = true;
 	private scrollTop = 0;
@@ -228,8 +264,7 @@ export class LystarWorkspace implements Component {
 	private jumpToTop = false;
 	private hasNewerHistory = false;
 	private indicatorRow = -1;
-	private lastContentHeight = 0;
-	private preserveViewportOnNextPrepend = false;
+	private pendingScrollAnchor: WorkspaceScrollAnchor | undefined;
 	private contentRenderWidth = 1;
 	private contentPadding = 0;
 	private searchDocument: WorkspaceSearchDocument | undefined;
@@ -245,6 +280,11 @@ export class LystarWorkspace implements Component {
 		if (this.fullscreen === fullscreen) return;
 		this.fullscreen = fullscreen;
 		this.resetScrollback();
+	}
+
+	/** 退出全屏并输出 transcript 时，只保留会话内容，不写入输入控件。 */
+	setBottomContainersVisible(visible: boolean): void {
+		this.bottomContainersVisible = visible;
 	}
 
 	invalidate(): void {
@@ -282,8 +322,7 @@ export class LystarWorkspace implements Component {
 		this.jumpToTop = false;
 		this.hasNewerHistory = false;
 		this.indicatorRow = -1;
-		this.lastContentHeight = 0;
-		this.preserveViewportOnNextPrepend = false;
+		this.pendingScrollAnchor = undefined;
 		this.blockCache = new Map();
 		this.componentInvalidationGeneration = new WeakMap();
 		this.searchDocument = undefined;
@@ -294,9 +333,34 @@ export class LystarWorkspace implements Component {
 		return this.fullscreen && this.scrollTop <= 0;
 	}
 
-	preserveViewportAfterPrepend(): void {
-		if (!this.fullscreen || this.following) return;
-		this.preserveViewportOnNextPrepend = true;
+	captureScrollAnchor(predicate: (component: Component) => boolean = () => true): WorkspaceScrollAnchor | undefined {
+		if (!this.fullscreen || this.viewportHeight <= 0) return undefined;
+
+		if (this.jumpToTop) {
+			const component = this.getScrollComponents().find(predicate);
+			if (component) {
+				return { component, componentRow: 0, viewportOffset: 0 };
+			}
+		}
+
+		const viewportStart = this.scrollTop;
+		for (const range of this.contentRanges) {
+			if (!predicate(range.component) || range.end <= viewportStart) continue;
+			const contentRow = Math.max(viewportStart, range.start);
+			return {
+				component: range.component,
+				componentRow: contentRow - range.start,
+				viewportOffset: contentRow - viewportStart,
+			};
+		}
+		return undefined;
+	}
+
+	restoreScrollAnchor(anchor: WorkspaceScrollAnchor): void {
+		if (!this.fullscreen) return;
+		this.pendingScrollAnchor = anchor;
+		this.following = false;
+		this.jumpToTop = false;
 	}
 
 	scrollBy(lines: number): void {
@@ -418,10 +482,12 @@ export class LystarWorkspace implements Component {
 		this.contentPadding = horizontalPadding;
 		const headerLines = this.options.header.render(renderWidth);
 		const topStatusLines = this.options.topStatus?.render(renderWidth) ?? [];
-		const bottomSections = this.options.bottomContainers.map((component) => ({
-			component,
-			lines: component.render(renderWidth),
-		}));
+		const bottomSections = this.bottomContainersVisible
+			? this.options.bottomContainers.map((component) => ({
+					component,
+					lines: component.render(renderWidth),
+				}))
+			: [];
 		const bottomLines = bottomSections.flatMap((section) => section.lines);
 
 		if (!this.fullscreen) {
@@ -507,11 +573,6 @@ export class LystarWorkspace implements Component {
 		} = this.renderScrollContent(renderWidth, this.viewportHeight);
 		this.contentRanges = ranges;
 		const maxScrollTop = Math.max(0, contentHeight - this.viewportHeight);
-		if (this.preserveViewportOnNextPrepend) {
-			this.scrollTop += Math.max(0, contentHeight - this.lastContentHeight);
-			this.preserveViewportOnNextPrepend = false;
-		}
-		this.lastContentHeight = contentHeight;
 		if (this.following) {
 			this.scrollTop = maxScrollTop;
 		} else {
@@ -655,11 +716,39 @@ export class LystarWorkspace implements Component {
 		}
 
 		const bufferHeight = viewportHeight * 2;
-		let start: number;
-		let end: number;
+		let start = 0;
+		let end = 0;
 		let jumpedToTop = false;
+		let anchoredWindow: ReturnType<typeof buildBlocks> | undefined;
 		const searchJump = this.searchJump;
-		if (searchJump) {
+		const pendingAnchor = this.pendingScrollAnchor;
+		const anchorIndex = pendingAnchor ? components.indexOf(pendingAnchor.component) : -1;
+		if (pendingAnchor && anchorIndex >= 0) {
+			start = anchorIndex;
+			end = anchorIndex + 1;
+			let beforeHeight = renderComponent(components[anchorIndex]!).length;
+			while (start > 0 && beforeHeight < bufferHeight) {
+				start--;
+				beforeHeight += renderComponent(components[start]!).length;
+			}
+			let afterHeight = renderComponent(components[anchorIndex]!).length;
+			while (end < components.length && afterHeight < viewportHeight + bufferHeight) {
+				afterHeight += renderComponent(components[end]!).length;
+				end++;
+			}
+			anchoredWindow = buildBlocks(start, end);
+			const anchorBlock = anchoredWindow.blocks.find((block) => block.component === pendingAnchor.component);
+			this.scrollTop = anchorBlock
+				? Math.max(0, anchorBlock.start + pendingAnchor.componentRow - pendingAnchor.viewportOffset)
+				: 0;
+			this.pendingScrollAnchor = undefined;
+		} else {
+			this.pendingScrollAnchor = undefined;
+		}
+
+		if (anchoredWindow) {
+			// 已按组件身份定位，下面只负责裁剪缓冲区。
+		} else if (searchJump) {
 			start = searchJump.componentIndex;
 			let beforeHeight = 0;
 			while (start > 0 && beforeHeight < bufferHeight) {
@@ -723,7 +812,7 @@ export class LystarWorkspace implements Component {
 			}
 		}
 
-		let { blocks, height } = buildBlocks(start, end);
+		let { blocks, height } = anchoredWindow ?? buildBlocks(start, end);
 		// 只保留视口前后缓冲区；裁掉上方块时同步重定位局部滚动坐标。
 		if (!this.following && !jumpedToTop && blocks.length > 0) {
 			const keepStart = Math.max(0, this.scrollTop - bufferHeight);

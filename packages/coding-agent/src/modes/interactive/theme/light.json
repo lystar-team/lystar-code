@@ -20,9 +20,9 @@
 		"customMsgBg": "#e8eaee"
 	},
 	"colors": {
-		"accent": "teal",
+		"accent": "blue",
 		"border": "lightGray",
-		"borderAccent": "teal",
+		"borderAccent": "blue",
 		"borderMuted": "lightGray",
 		"toolDivider": "toolDivider",
 		"success": "green",
@@ -51,8 +51,8 @@
 		"mdHeading": "yellow",
 		"mdLink": "blue",
 		"mdLinkUrl": "dimGray",
-		"mdCode": "teal",
-		"mdCodeBlock": "green",
+		"mdCode": "blue",
+		"mdCodeBlock": "blue",
 		"mdCodeBlockBorder": "mediumGray",
 		"mdQuote": "mediumGray",
 		"mdQuoteBorder": "mediumGray",

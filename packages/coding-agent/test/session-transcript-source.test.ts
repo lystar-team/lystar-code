@@ -7,6 +7,7 @@ import {
 	TranscriptCursorInvalidError,
 	TranscriptMigrationRequiredError,
 } from "../src/modes/interactive/session-transcript-source.ts";
+import { createLongSessionFixture } from "./fixtures/long-session.ts";
 
 type Entry = Record<string, unknown>;
 const READ_BUFFER_TEST_BYTES = 128 * 1024;
@@ -127,6 +128,35 @@ describe("SessionTranscriptSource", () => {
 
 		const page = await source.readTail({ leafId: "left-leaf", limit: 10 });
 		expect(entryIds(page.entries)).toEqual(["root", "left", "left-leaf"]);
+	});
+
+	it("pages a long active branch without duplicates, omissions, or sibling entries", async () => {
+		const fixture = createLongSessionFixture();
+		writeFileSync(sessionFile, `${fixture.entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+		const source = new SessionTranscriptSource(sessionFile);
+		const collected: string[] = [];
+		let page = await source.readTail({ leafId: fixture.activeLeafId, limit: 80 });
+
+		while (true) {
+			for (const entry of page.entries) {
+				expect(collected).not.toContain(entry.id);
+				collected.push(entry.id);
+			}
+			if (!page.hasMore) break;
+			page = await source.readPrevious(page.previousCursor!, 80);
+		}
+
+		expect(collected).toContain("active-0");
+		expect(collected).toContain("active-4999");
+		expect(collected).toContain(fixture.compactionId);
+		expect(collected).not.toContain(fixture.siblingLeafId);
+		expect(collected).not.toContain("sibling-branch");
+		expect(new Set(collected).size).toBe(collected.length);
+		for (const resultId of fixture.toolResultIds) {
+			const resultIndex = collected.indexOf(resultId);
+			expect(resultIndex).toBeGreaterThan(0);
+			expect(collected[resultIndex - 1]).toBe(resultId.replace("result", "assistant"));
+		}
 	});
 
 	it("keeps history before compaction in the transcript", async () => {

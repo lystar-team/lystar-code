@@ -42,6 +42,7 @@ function ansiRegex({ onlyFirst = false }: { onlyFirst?: boolean } = {}): RegExp 
 }
 
 const regex = ansiRegex();
+const firstRegex = ansiRegex({ onlyFirst: true });
 
 export function stripAnsi(value: string): string {
 	if (typeof value !== "string") {
@@ -57,4 +58,10 @@ export function stripAnsi(value: string): string {
 	// because unlike `.exec()` and `.test()`, `.replace()` does it automatically
 	// and doing it manually has a performance penalty.
 	return value.replace(regex, "");
+}
+
+export function extractAnsiCode(value: string, position: number): { code: string; length: number } | null {
+	if (position >= value.length || value[position] !== "\u001B") return null;
+	const match = firstRegex.exec(value.slice(position));
+	return match ? { code: match[0], length: match[0].length } : null;
 }

@@ -308,13 +308,24 @@ describe("ToolExecutionComponent parity", () => {
 
 		const failed = new ToolExecutionComponent("apply_patch", "failed", {}, {}, tool, createFakeTui(), process.cwd());
 		failed.updateResult({
-			content: [{ type: "text", text: "Could not find the expected text in src/index.ts" }],
+			content: [
+				{
+					type: "text",
+					text: "Could not find the expected text in src/index.ts\nline 42: expected marker was not found",
+				},
+			],
 			isError: true,
 		});
-		const rendered = stripAnsi(failed.render(80).join("\n"));
-		expect(rendered).toContain("应用补丁失败");
-		expect(rendered).toContain("Could not find the expected text");
-		expect(rendered).not.toContain("已应用补丁");
+		const collapsed = stripAnsi(failed.render(80).join("\n"));
+		expect(collapsed).toContain("应用补丁失败");
+		expect(collapsed).toContain("Could not find the expected text");
+		expect(collapsed).not.toContain("line 42: expected marker was not found");
+		expect(collapsed).not.toContain("已应用补丁");
+
+		failed.setExpanded(true);
+		const expanded = stripAnsi(failed.render(80).join("\n"));
+		expect(expanded).toContain("Could not find the expected text");
+		expect(expanded).toContain("line 42: expected marker was not found");
 	});
 
 	test("self-rendered empty tool rows take no layout space", () => {
@@ -774,7 +785,7 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).not.toContain("two\n\n");
 	});
 
-	test("does not syntax-highlight read errors based on the requested file path", () => {
+	test("collapses read errors to one line without syntax-highlighting them", () => {
 		const component = new ToolExecutionComponent(
 			"read",
 			"tool-read-error-highlighting",
@@ -785,11 +796,20 @@ describe("ToolExecutionComponent parity", () => {
 			process.cwd(),
 		);
 		const error = "Offset 120 is beyond end of file (96 lines total)";
-		component.updateResult({ content: [{ type: "text", text: error }], details: undefined, isError: true }, false);
+		const detail = "Use a smaller offset and try again";
+		component.updateResult(
+			{ content: [{ type: "text", text: `${error}\n${detail}` }], details: undefined, isError: true },
+			false,
+		);
 
-		const rendered = component.render(120).join("\n");
-		expect(stripAnsi(rendered)).toContain(error);
-		expect(rendered).toContain(theme.fg("toolOutput", error));
+		const collapsed = component.render(120).join("\n");
+		expect(stripAnsi(collapsed)).toContain(error);
+		expect(stripAnsi(collapsed)).not.toContain(detail);
+		expect(collapsed).toContain(theme.fg("error", error));
+
+		component.setExpanded(true);
+		const expanded = component.render(120).join("\n");
+		expect(stripAnsi(expanded)).toContain(detail);
 	});
 
 	test("collapses ordinary read results until expanded", () => {

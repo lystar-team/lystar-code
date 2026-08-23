@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.84.2-lystar.1] - 2026-08-23
+
+### LYStar 产品
+
+- 启动更新提示改用 LYStar Code 产品版本和产品名称，不再从 Pi 上游 Changelog 标题推断版本。
+- `/changelog` 保留 Pi 上游记录和 LYStar 适配记录，并支持 `lystar.N` 产品修订版本的连续比较。
+- 建立统一的 `LYStar Icons` 资源系统，提供 `compact/card` 尺寸、固定宽度、颜色角色和 Windows 外部终端 ASCII fallback，并接入内置 Tool、Agent、状态栏和终端自检展示。
+
 ## [0.84.2] - 2026-08-14
 
 ### New Features

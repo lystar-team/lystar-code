@@ -276,7 +276,7 @@ function buildEditCallComponent(
 	options: { expanded: boolean; isPartial: boolean; isError: boolean },
 ): EditCallRenderComponent {
 	const previewIsError = component.preview && "error" in component.preview;
-	const showPreview = options.expanded || previewIsError;
+	const showPreview = options.expanded || Boolean(previewIsError);
 	component.setBgFn((text) => text);
 	component.clear();
 	const summary = getToolSummary(undefined);
@@ -288,7 +288,14 @@ function buildEditCallComponent(
 	}
 
 	const body =
-		"error" in component.preview ? theme.fg("error", component.preview.error) : renderDiff(component.preview.diff);
+		"error" in component.preview
+			? theme.fg(
+					"error",
+					options.expanded
+						? component.preview.error
+						: (component.preview.error.split(/\r?\n/).find((line) => line.trim()) ?? component.preview.error),
+				)
+			: renderDiff(component.preview.diff);
 	component.addChild(new Spacer(1));
 	component.addChild(new Text(body, 0, 0));
 	return component;

@@ -78,6 +78,66 @@ describe("task workbench components", () => {
 		bar.dispose();
 	});
 
+	it("moves a shimmer band across thinking text without changing its content", () => {
+		let now = 0;
+		const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+		try {
+			const bar = new WorkspaceActivityBar(() => undefined);
+			bar.setState({
+				phase: "thinking",
+				thinking: "正在检查前面的上下文并准备最后结论",
+				startedAt: 0,
+				completedTools: 0,
+				knownTools: 0,
+				queueCount: 0,
+			});
+
+			const first = bar.render(80)[0] ?? "";
+			now = 500;
+			const second = bar.render(80)[0] ?? "";
+
+			expect(stripAnsi(first)).toBe(stripAnsi(second));
+			expect(first).not.toBe(second);
+			expect(first).toContain(theme.getBgAnsi("searchMatchBg"));
+			expect(second).toContain(theme.getBgAnsi("searchMatchBg"));
+			expect(first.split(theme.getFgAnsi("accent")).length).toBeGreaterThan(2);
+			expect(second.split(theme.getFgAnsi("accent")).length).toBeGreaterThan(2);
+			expect(visibleWidth(first)).toBeLessThanOrEqual(80);
+			bar.dispose();
+		} finally {
+			nowSpy.mockRestore();
+		}
+	});
+
+	it("keeps thinking text static when reduced motion is enabled", () => {
+		let now = 0;
+		const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+		try {
+			const bar = new WorkspaceActivityBar(
+				() => undefined,
+				() => true,
+			);
+			bar.setState({
+				phase: "thinking",
+				thinking: "正在检查上下文",
+				startedAt: 0,
+				completedTools: 0,
+				knownTools: 0,
+				queueCount: 0,
+			});
+
+			const first = bar.render(80)[0] ?? "";
+			now = 500;
+			const second = bar.render(80)[0] ?? "";
+
+			expect(second).toBe(first);
+			expect(first).not.toContain(theme.getBgAnsi("searchMatchBg"));
+			bar.dispose();
+		} finally {
+			nowSpy.mockRestore();
+		}
+	});
+
 	it("renders inline Markdown in live thinking without exposing source markers", () => {
 		const bar = new WorkspaceActivityBar(() => undefined);
 		bar.setState({
@@ -626,8 +686,8 @@ describe("task workbench components", () => {
 		const chatContainer = new Container();
 		const context = Object.assign(Object.create(InteractiveMode.prototype), {
 			startupNoticesShown: false,
-			changelogMarkdown: "## 0.84.1\n\n- 第一项\n- 第二项",
-			version: "0.84.1-lystar.1",
+			changelogMarkdown: "## [0.84.2]\n\n- 上游更新",
+			version: "0.84.2-lystar.1",
 			chatContainer,
 			workspace: { isFullscreen: () => true },
 			runtimeHost: { session: { settingsManager: { getCollapseChangelog: () => false } } },
@@ -639,7 +699,86 @@ describe("task workbench components", () => {
 		).showStartupNoticesIfNeeded;
 		showStartupNoticesIfNeeded.call(context);
 		expect(chatContainer.children).toHaveLength(1);
-		expect(stripAnsi(chatContainer.render(80).join("\n"))).toContain("使用 /changelog 查看完整更新记录");
+		const rendered = stripAnsi(chatContainer.render(80).join("\n"));
+		const compactRendered = rendered.replace(/\s+/g, "");
+		expect(compactRendered).toContain("LYStarCode已更新到v0.84.2-lystar.1。");
+		expect(compactRendered).toContain("使用/changelog查看LYStarCode更新记录。");
+	});
+
+	it("keeps startup changelog display rules explicit across install, update, resume, and repeat", () => {
+		const previousOffline = process.env.PI_OFFLINE;
+		process.env.PI_OFFLINE = "1";
+		const getChangelogForDisplay = (
+			InteractiveMode.prototype as unknown as {
+				getChangelogForDisplay(this: object): string | undefined;
+			}
+		).getChangelogForDisplay;
+
+		try {
+			const firstInstallSetVersion = vi.fn();
+			const firstInstall = Object.assign(Object.create(InteractiveMode.prototype), {
+				runtimeHost: {
+					session: {
+						state: { messages: [] },
+						settingsManager: {
+							getLastChangelogVersion: () => undefined,
+							setLastChangelogVersion: firstInstallSetVersion,
+						},
+					},
+				},
+			});
+			expect(getChangelogForDisplay.call(firstInstall)).toBeUndefined();
+			expect(firstInstallSetVersion).toHaveBeenCalledWith("0.84.2-lystar.1");
+
+			const updateSetVersion = vi.fn();
+			const update = Object.assign(Object.create(InteractiveMode.prototype), {
+				runtimeHost: {
+					session: {
+						state: { messages: [] },
+						settingsManager: {
+							getLastChangelogVersion: () => "0.84.1-lystar.13",
+							setLastChangelogVersion: updateSetVersion,
+						},
+					},
+				},
+			});
+			const updateMarkdown = getChangelogForDisplay.call(update);
+			expect(updateMarkdown).toContain("0.84.2-lystar.1");
+			expect(updateSetVersion).toHaveBeenCalledWith("0.84.2-lystar.1");
+
+			const resumedSettings = {
+				getLastChangelogVersion: vi.fn(() => "0.84.1-lystar.13"),
+				setLastChangelogVersion: vi.fn(),
+			};
+			const resumed = Object.assign(Object.create(InteractiveMode.prototype), {
+				runtimeHost: {
+					session: {
+						state: { messages: [{ role: "user" }] },
+						settingsManager: resumedSettings,
+					},
+				},
+			});
+			expect(getChangelogForDisplay.call(resumed)).toBeUndefined();
+			expect(resumedSettings.getLastChangelogVersion).not.toHaveBeenCalled();
+
+			const repeatedSettings = {
+				getLastChangelogVersion: () => "0.84.2-lystar.1",
+				setLastChangelogVersion: vi.fn(),
+			};
+			const repeated = Object.assign(Object.create(InteractiveMode.prototype), {
+				runtimeHost: {
+					session: {
+						state: { messages: [] },
+						settingsManager: repeatedSettings,
+					},
+				},
+			});
+			expect(getChangelogForDisplay.call(repeated)).toBeUndefined();
+			expect(repeatedSettings.setLastChangelogVersion).not.toHaveBeenCalled();
+		} finally {
+			if (previousOffline === undefined) delete process.env.PI_OFFLINE;
+			else process.env.PI_OFFLINE = previousOffline;
+		}
 	});
 
 	it("reads workspace changes separately from turn files", () => {

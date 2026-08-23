@@ -149,7 +149,13 @@ import {
 } from "./components/interactive-card.ts";
 import { formatKeyText, keyDisplayText } from "./components/keybinding-hints.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
-import { LystarWorkspace, WorkspaceComposer, WorkspaceHeader } from "./components/lystar-workspace.ts";
+import {
+	LystarWorkspace,
+	WORKSPACE_HEADER_SEPARATOR,
+	WorkspaceComposer,
+	WorkspaceHeader,
+	type WorkspaceScrollAnchor,
+} from "./components/lystar-workspace.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
 import {
@@ -278,6 +284,19 @@ type TurnActivityCollector = {
 };
 
 type RenderSessionItem = AgentMessage | Extract<SessionEntry, { type: "custom" }>;
+
+type TranscriptPaginationState = "idle" | "loading" | "exhausted" | "retryable-error" | "cursor-invalidated";
+
+interface TranscriptScrollAnchor extends WorkspaceScrollAnchor {
+	entryId: string;
+	cursor: string;
+	generation: number;
+}
+
+interface MaterializedTranscriptPage {
+	children: Component[];
+	entryComponents: Map<string, Component>;
+}
 
 function isCustomSessionEntry(item: RenderSessionItem): item is Extract<SessionEntry, { type: "custom" }> {
 	return "type" in item && item.type === "custom";
@@ -567,7 +586,8 @@ export class InteractiveMode {
 	private transcriptCursor: string | undefined;
 	private transcriptEntries: SessionEntry[] = [];
 	private transcriptGeneration = 0;
-	private transcriptPageLoading = false;
+	private transcriptPaginationState: TranscriptPaginationState = "exhausted";
+	private transcriptComponentEntryIds = new WeakMap<Component, string>();
 
 	// Tool output expansion state
 	private toolOutputExpanded = false;
@@ -789,7 +809,10 @@ export class InteractiveMode {
 				};
 			},
 		});
-		this.activityBar = new WorkspaceActivityBar(() => this.ui.requestRender());
+		this.activityBar = new WorkspaceActivityBar(
+			() => this.ui.requestRender(),
+			() => this.ui.reduceMotion,
+		);
 		this.workspace = new LystarWorkspace({
 			getHeight: () => this.ui.terminal.rows,
 			header: this.headerContainer,
@@ -997,9 +1020,10 @@ export class InteractiveMode {
 		if (this.chatContainer.children.length > 0) {
 			this.chatContainer.addChild(new Spacer(1));
 		}
-		const versionMatch = this.changelogMarkdown.match(/##\s+\[?(\d+\.\d+\.\d+)\]?/);
-		const latestVersion = versionMatch ? versionMatch[1] : this.version;
-		const condensedText = `已更新到 v${latestVersion}。使用 ${theme.bold("/changelog")} 查看完整更新记录。`;
+		const condensedText = `${t("update.productUpdated", { app: APP_TITLE, version: this.version })} ${t(
+			"update.productChangelog",
+			{ app: APP_TITLE },
+		)}`;
 		if (this.workspace.isFullscreen()) {
 			this.chatContainer.addChild(new Text(condensedText, 1, 0));
 			return;
@@ -1027,6 +1051,7 @@ export class InteractiveMode {
 		if (this.renderer.mode === "fullscreen" && fullscreenExitOutput === "transcript") {
 			while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
 			this.switchTuiMode("regular", false, false);
+			this.workspace.setBottomContainersVisible(false);
 			this.renderer.renderNow();
 		} else {
 			while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
@@ -1149,10 +1174,11 @@ export class InteractiveMode {
 					? ((usage.contextWindow - compaction.reserveTokens) / usage.contextWindow) * 100
 					: 100;
 			return {
+				product: APP_TITLE,
 				path,
 				branch: branch ?? undefined,
 				session: this.getWorkspaceStatusLabel(),
-				context: `上下文 ${percent}  ·  ${used}/${available}`,
+				context: `上下文 ${percent}${WORKSPACE_HEADER_SEPARATOR}${used}/${available}`,
 				compactContext: `上下文 ${percent}`,
 				contextWarning: percentValue !== null && percentValue !== undefined && percentValue >= threshold - 5,
 			};
@@ -4268,6 +4294,7 @@ export class InteractiveMode {
 	private renderSessionItems(
 		items: readonly RenderSessionItem[],
 		options: { updateFooter?: boolean; populateHistory?: boolean; cwd?: string; includeCacheMisses?: boolean } = {},
+		onItemRendered?: (item: RenderSessionItem, components: Component[], index: number) => void,
 	): void {
 		this.pendingTools.clear();
 		this.streamingToolStack = undefined;
@@ -4285,9 +4312,12 @@ export class InteractiveMode {
 			this.updateEditorBorderColor();
 		}
 
-		for (const item of items) {
+		for (const [index, item] of items.entries()) {
+			const childStart = this.chatContainer.children.length;
+			let fallbackComponent: Component | undefined;
 			if (isCustomSessionEntry(item)) {
 				this.addCustomEntryToChat(item);
+				onItemRendered?.(item, this.chatContainer.children.slice(childStart), index);
 				continue;
 			}
 
@@ -4295,6 +4325,7 @@ export class InteractiveMode {
 			// Assistant messages need special handling for tool calls
 			if (message.role === "assistant") {
 				this.addMessageToChat(message);
+				fallbackComponent = this.chatContainer.children.at(-1);
 				let toolStack: ToolExecutionStackComponent | undefined;
 				// Render tool call components
 				for (const content of message.content) {
@@ -4344,12 +4375,23 @@ export class InteractiveMode {
 				const component = renderedPendingTools.get(message.toolCallId);
 				if (component) {
 					component.updateResult(message);
+					fallbackComponent = component;
 					renderedPendingTools.delete(message.toolCallId);
 				}
 			} else {
 				// All other messages use standard rendering
 				this.addMessageToChat(message, options);
 			}
+
+			onItemRendered?.(
+				item,
+				this.chatContainer.children.slice(childStart).length > 0
+					? this.chatContainer.children.slice(childStart)
+					: fallbackComponent
+						? [fallbackComponent]
+						: [],
+				index,
+			);
 		}
 
 		for (const [toolCallId, component] of renderedPendingTools) {
@@ -4368,14 +4410,22 @@ export class InteractiveMode {
 	private renderSessionEntries(
 		entries: SessionEntry[],
 		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
+		onEntryRendered?: (entryId: string, components: Component[]) => void,
 	): void {
-		const items = entries.flatMap((entry): RenderSessionItem[] => {
+		const itemEntries = entries.flatMap((entry) => {
 			if (entry.type === "custom") {
-				return [entry];
+				return [{ entryId: entry.id, item: entry as RenderSessionItem }];
 			}
-			return sessionEntryToContextMessages(entry);
+			return sessionEntryToContextMessages(entry).map((item) => ({ entryId: entry.id, item }));
 		});
-		this.renderSessionItems(items, options);
+		this.renderSessionItems(
+			itemEntries.map(({ item }) => item),
+			options,
+			(_item, components, index) => {
+				const entryId = itemEntries[index]?.entryId;
+				if (entryId) onEntryRendered?.(entryId, components);
+			},
+		);
 	}
 
 	/**
@@ -4429,7 +4479,7 @@ export class InteractiveMode {
 		const generation = ++this.transcriptGeneration;
 		const source = new SessionTranscriptSource(sessionFile);
 		this.transcriptSource = source;
-		this.transcriptPageLoading = false;
+		this.transcriptPaginationState = "loading";
 		try {
 			const page = await source.readTail({
 				leafId: this.sessionManager.getLeafId(),
@@ -4438,18 +4488,27 @@ export class InteractiveMode {
 			if (this.transcriptGeneration !== generation || this.transcriptSource !== source) return;
 			this.transcriptEntries = page.entries;
 			this.transcriptCursor = page.previousCursor;
+			this.transcriptPaginationState = page.hasMore && page.previousCursor ? "idle" : "exhausted";
 			this.renderInitialEntries(page.entries);
 		} catch {
 			if (this.transcriptGeneration !== generation || this.transcriptSource !== source) return;
 			this.renderInitialEntries(this.resetTranscriptPagination());
+			this.showWarning("历史记录分页读取失败，向上滚动可重试。");
 		}
 	}
 
 	private renderInitialEntries(entries: SessionEntry[]): void {
-		this.renderSessionEntries(entries, {
-			updateFooter: true,
-			populateHistory: true,
-		});
+		this.transcriptComponentEntryIds = new WeakMap();
+		this.renderSessionEntries(
+			entries,
+			{
+				updateFooter: true,
+				populateHistory: true,
+			},
+			(entryId, components) => {
+				for (const component of components) this.transcriptComponentEntryIds.set(component, entryId);
+			},
+		);
 		this.renderProjectTrustWarningIfNeeded();
 
 		const compactionCount = this.sessionManager.getEntries().filter((entry) => entry.type === "compaction").length;
@@ -4461,7 +4520,7 @@ export class InteractiveMode {
 	private resetTranscriptPagination(): SessionEntry[] {
 		const generation = ++this.transcriptGeneration;
 		this.transcriptCursor = undefined;
-		this.transcriptPageLoading = false;
+		this.transcriptPaginationState = "exhausted";
 		const branch = this.sessionManager.getBranch();
 		if (!this.workspace.isFullscreen()) {
 			this.transcriptSource = undefined;
@@ -4486,30 +4545,38 @@ export class InteractiveMode {
 		this.transcriptEntries = visibleBranch.slice(tailStart);
 		const source = new SessionTranscriptSource(sessionFile);
 		this.transcriptSource = source;
+		this.transcriptPaginationState = "loading";
 		void source
 			.readTail({ leafId: this.sessionManager.getLeafId(), limit: TRANSCRIPT_PAGE_SIZE })
 			.then((page) => {
 				if (this.transcriptGeneration !== generation || this.transcriptSource !== source) return;
 				this.transcriptCursor = page.previousCursor;
+				this.transcriptPaginationState = page.hasMore && page.previousCursor ? "idle" : "exhausted";
 			})
 			.catch(() => {
 				if (this.transcriptGeneration === generation && this.transcriptSource === source) {
-					this.transcriptSource = undefined;
 					this.transcriptCursor = undefined;
+					this.transcriptPaginationState = "retryable-error";
 				}
 			});
 		return this.transcriptEntries;
 	}
 
-	private materializeSessionEntries(entries: SessionEntry[]): Component[] {
+	private materializeSessionEntries(entries: SessionEntry[]): MaterializedTranscriptPage {
 		const chatContainer = this.chatContainer;
 		const pendingTools = this.pendingTools;
 		const streamingToolStack = this.streamingToolStack;
 		const temporary = new Container();
+		const entryComponents = new Map<string, Component>();
 		this.chatContainer = temporary;
 		try {
-			this.renderSessionEntries(entries);
-			return [...temporary.children];
+			this.renderSessionEntries(entries, {}, (entryId, components) => {
+				const component = components[0];
+				if (!component) return;
+				entryComponents.set(entryId, component);
+				for (const child of components) this.transcriptComponentEntryIds.set(child, entryId);
+			});
+			return { children: [...temporary.children], entryComponents };
 		} finally {
 			this.chatContainer = chatContainer;
 			this.pendingTools = pendingTools;
@@ -4535,11 +4602,41 @@ export class InteractiveMode {
 		}
 	}
 
+	private captureTranscriptScrollAnchor(): TranscriptScrollAnchor | undefined {
+		const cursor = this.transcriptCursor;
+		if (!cursor) return undefined;
+		const workspaceAnchor = this.workspace.captureScrollAnchor((component) =>
+			this.transcriptComponentEntryIds.has(component),
+		);
+		if (!workspaceAnchor) return undefined;
+		const entryId = this.transcriptComponentEntryIds.get(workspaceAnchor.component);
+		if (!entryId) return undefined;
+		return {
+			...workspaceAnchor,
+			entryId,
+			cursor,
+			generation: this.transcriptGeneration,
+		};
+	}
+
 	private async loadPreviousTranscriptPage(): Promise<void> {
 		const source = this.transcriptSource;
 		const cursor = this.transcriptCursor;
-		if (!source || !cursor || this.transcriptPageLoading || this.session.isStreaming) return;
-		this.transcriptPageLoading = true;
+		if (!cursor && source && this.transcriptPaginationState === "retryable-error") {
+			this.resetTranscriptPagination();
+			return;
+		}
+		if (
+			!source ||
+			!cursor ||
+			this.transcriptPaginationState === "loading" ||
+			this.transcriptPaginationState === "exhausted" ||
+			this.session.isStreaming
+		) {
+			return;
+		}
+		const anchor = this.captureTranscriptScrollAnchor();
+		this.transcriptPaginationState = "loading";
 		const generation = this.transcriptGeneration;
 		try {
 			const page = await source.readPrevious(cursor, TRANSCRIPT_PAGE_SIZE);
@@ -4547,19 +4644,26 @@ export class InteractiveMode {
 			const existingIds = new Set(this.transcriptEntries.map((entry) => entry.id));
 			const previousEntries = page.entries.filter((entry) => !existingIds.has(entry.id));
 			this.transcriptCursor = page.previousCursor;
+			this.transcriptPaginationState = page.hasMore && page.previousCursor ? "idle" : "exhausted";
 			if (previousEntries.length === 0) return;
 			const existingChildren = [...this.chatContainer.children];
-			const previousChildren = this.materializeSessionEntries(previousEntries);
-			this.chatContainer.children = [...previousChildren, ...existingChildren];
+			const previousPage = this.materializeSessionEntries(previousEntries);
+			this.chatContainer.children = [...previousPage.children, ...existingChildren];
 			this.transcriptEntries = [...previousEntries, ...this.transcriptEntries];
-			this.workspace.preserveViewportAfterPrepend();
+			if (anchor && anchor.generation === generation && anchor.cursor === cursor) {
+				this.workspace.restoreScrollAnchor(anchor);
+			}
 			this.ui.requestRender();
 		} catch (error) {
-			if (error instanceof TranscriptCursorInvalidError && this.transcriptGeneration === generation) {
+			if (this.transcriptGeneration !== generation) return;
+			if (error instanceof TranscriptCursorInvalidError) {
+				this.transcriptPaginationState = "cursor-invalidated";
+				this.showWarning("历史记录已变化，正在重新定位。再次向上滚动可继续加载。");
 				this.resetTranscriptPagination();
+			} else {
+				this.transcriptPaginationState = "retryable-error";
+				this.showWarning("历史记录加载失败，再次向上滚动可重试。");
 			}
-		} finally {
-			if (this.transcriptGeneration === generation) this.transcriptPageLoading = false;
 		}
 	}
 
@@ -7108,6 +7212,7 @@ export class InteractiveMode {
 			let handle: OverlayHandle | undefined;
 			const viewer = new ChangelogViewerComponent({
 				markdown: changelogMarkdown,
+				title: t("update.changelogTitle", { app: APP_TITLE }),
 				markdownTheme: this.getMarkdownThemeWithSettings(),
 				getHeight: () => this.ui.terminal.rows,
 				requestRender: () => this.ui.requestRender(),
@@ -7125,7 +7230,9 @@ export class InteractiveMode {
 
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new DynamicBorder());
-		this.chatContainer.addChild(new Text(theme.bold(theme.fg("accent", "更新内容")), 1, 0));
+		this.chatContainer.addChild(
+			new Text(theme.bold(theme.fg("accent", t("update.changelogTitle", { app: APP_TITLE }))), 1, 0),
+		);
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Markdown(changelogMarkdown, 1, 1, this.getMarkdownThemeWithSettings()));
 		this.chatContainer.addChild(new DynamicBorder());

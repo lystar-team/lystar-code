@@ -2,10 +2,11 @@ import { Container, Text, visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
 	LystarWorkspace,
+	WORKSPACE_HEADER_SEPARATOR,
 	WorkspaceComposer,
 	WorkspaceHeader,
 } from "../src/modes/interactive/components/lystar-workspace.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
 function textContainer(...lines: string[]): Container {
@@ -34,6 +35,24 @@ describe("LYStar workspace", () => {
 		expect(rendered).toHaveLength(8);
 		expect(rendered.join("\n")).toContain("line-12");
 		expect(rendered.slice(-2).map((line) => line.trimEnd())).toEqual(["  editor", "  footer"]);
+	});
+
+	it("omits bottom controls when rendering the transcript for fullscreen exit", () => {
+		const workspace = new LystarWorkspace({
+			getHeight: () => 8,
+			header: textContainer("header"),
+			scrollContainers: [textContainer("latest message")],
+			bottomContainers: [textContainer("editor border", "shortcut bar")],
+			fullscreen: false,
+		});
+
+		expect(workspace.render(40).join("\n")).toContain("editor border");
+
+		workspace.setBottomContainersVisible(false);
+		const transcript = workspace.render(40).join("\n");
+		expect(transcript).toContain("latest message");
+		expect(transcript).not.toContain("editor border");
+		expect(transcript).not.toContain("shortcut bar");
 	});
 
 	it("keeps the composer and shortcuts when optional bottom content overflows", () => {
@@ -134,6 +153,34 @@ describe("LYStar workspace", () => {
 		expect(after.join("\n")).toContain("下方还有");
 		workspace.scrollToBottom();
 		expect(workspace.render(60).join("\n")).toContain("line-21");
+	});
+
+	it("restores the same transcript component after prepending older history", () => {
+		const chat = new Container();
+		for (let index = 0; index < 80; index++) chat.addChild(new Text(`line-${index}`, 0, 0));
+		const workspace = new LystarWorkspace({
+			getHeight: () => 8,
+			header: textContainer("header"),
+			scrollContainers: [chat],
+			bottomContainers: [textContainer("editor")],
+			fullscreen: true,
+			scrollbar: "hidden",
+		});
+
+		workspace.render(40);
+		workspace.scrollToTop();
+		const anchor = workspace.captureScrollAnchor();
+		const before = workspace.render(40).map(stripAnsi);
+		expect(anchor).toBeDefined();
+
+		chat.children = [new Text("older-1", 0, 0), new Text("older-2", 0, 0), ...chat.children];
+		workspace.restoreScrollAnchor(anchor!);
+		const after = workspace.render(40).map(stripAnsi);
+		const firstTranscriptLine = (lines: string[]) => lines.find((line) => /^line-\d+$/.test(line.trim()));
+
+		expect(firstTranscriptLine(after)).toBe(firstTranscriptLine(before));
+		expect(after.join("\n")).toContain("line-0");
+		expect(after.join("\n")).not.toContain("older-1");
 	});
 
 	it("keeps manual scroll lock while the activity row appears and disappears", () => {
@@ -475,17 +522,42 @@ describe("LYStar workspace", () => {
 		}
 	});
 
+	it("connects header separators to the shared bottom divider", () => {
+		const header = new WorkspaceHeader(() => ({
+			product: "LYStar Code",
+			path: "~/project",
+			branch: "main",
+			task: "任务一",
+			context: "上下文 7.4%  |  9.5K/128K",
+		}));
+
+		const [rawRow, rawDivider] = header.render(120);
+		const row = stripAnsi(rawRow);
+		const divider = stripAnsi(rawDivider);
+		const separatorColumns = Array.from(row)
+			.map((char, index) => (char === "│" ? visibleWidth(row.slice(0, index)) : -1))
+			.filter((column) => column >= 0);
+
+		expect(separatorColumns.length).toBeGreaterThanOrEqual(4);
+		expect(separatorColumns.every((column) => divider[column] === "┴")).toBe(true);
+		expect(rawRow).toContain(theme.fg("toolDivider", WORKSPACE_HEADER_SEPARATOR));
+		expect(rawRow).toContain(theme.fg("toolDivider", "│"));
+		expect(rawRow).not.toContain(theme.fg("dim", WORKSPACE_HEADER_SEPARATOR));
+		expect(row).not.toContain("|");
+		expect(visibleWidth(divider)).toBe(120);
+	});
+
 	it("keeps context usage visible when the header is narrow", () => {
 		const header = new WorkspaceHeader(() => ({
 			product: "LYStar Code",
 			path: "~/very/long/project/path/that/needs/truncation",
 			branch: "main",
-			context: "上下文 64.2%  ·  82K/128K",
+			context: "上下文 64.2%  |  82K/128K",
 		}));
 
 		const line = stripAnsi(header.render(40)[0]);
 
-		expect(line).toContain("上下文 64.2%  ·  82K/128K");
+		expect(line).toContain("上下文 64.2%  │  82K/128K");
 		expect(visibleWidth(line)).toBeLessThanOrEqual(40);
 	});
 
@@ -495,7 +567,7 @@ describe("LYStar workspace", () => {
 			path: "~/project",
 			branch: "main",
 			task: "修复登录流程",
-			context: "上下文 7.4%  ·  9.5K/128K",
+			context: "上下文 7.4%  |  9.5K/128K",
 			compactContext: "上下文 7.4%",
 		}));
 
@@ -509,6 +581,46 @@ describe("LYStar workspace", () => {
 		expect(narrow).toContain("上下文 7.4%");
 		expect(visibleWidth(medium)).toBeLessThanOrEqual(80);
 		expect(visibleWidth(narrow)).toBeLessThanOrEqual(48);
+	});
+
+	it.each([
+		{ label: "80x24", width: 80, height: 24, left: "~/project  │  main  │  任务一", context: "上下文 7.4%" },
+		{ label: "80x8", width: 80, height: 8, left: "~/project  │  main  │  任务一", context: "上下文 7.4%" },
+		{
+			label: "120x36",
+			width: 120,
+			height: 36,
+			left: "LYStar Code  │  ~/project  │  main  │  任务一",
+			context: "上下文 7.4%  │  9.5K/128K",
+		},
+	])("keeps the top layout aligned at $label", ({ width, height, left, context }) => {
+		const header = new WorkspaceHeader(() => ({
+			product: "LYStar Code",
+			path: "~/project",
+			branch: "main",
+			task: "任务一",
+			context: "上下文 7.4%  |  9.5K/128K",
+			compactContext: "上下文 7.4%",
+		}));
+		const headerContainer = new Container();
+		headerContainer.addChild(header);
+		const workspace = new LystarWorkspace({
+			getHeight: () => height,
+			header: headerContainer,
+			scrollContainers: [textContainer(...Array.from({ length: 40 }, (_, index) => `line-${index + 1}`))],
+			bottomContainers: [textContainer("editor", "shortcuts")],
+			fixedBottomContainers: [],
+			fullscreen: true,
+			scrollbar: "hidden",
+		});
+
+		const rendered = workspace.render(width).map(stripAnsi);
+
+		expect(rendered).toHaveLength(height);
+		expect(rendered[0]).toContain(left);
+		expect(rendered[0]).toContain(context);
+		expect(rendered[0]).not.toContain("·");
+		for (const line of rendered) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 	});
 
 	it("keeps the active top status ahead of secondary header rows at minimal height", () => {
@@ -534,7 +646,7 @@ describe("LYStar workspace", () => {
 			path: "~/project",
 			branch: "main",
 			session: "任务一",
-			context: "上下文 7.4%  ·  9.5K/128K",
+			context: "上下文 7.4%  |  9.5K/128K",
 		}));
 		const editor = textContainer("────────────────", "  修复登录流程", "────────────────");
 		const composer = new WorkspaceComposer({
@@ -551,8 +663,8 @@ describe("LYStar workspace", () => {
 		const composerLines = composer.render(80).map(stripAnsi);
 
 		expect(headerLines).toHaveLength(2);
-		expect(headerLines[0]).toContain("LYStar Code  ·  ~/project  ·  main  ·  任务一");
-		expect(headerLines[0]).toContain("上下文 7.4%  ·  9.5K/128K");
+		expect(headerLines[0]).toContain("LYStar Code  │  ~/project  │  main  │  任务一");
+		expect(headerLines[0]).toContain("上下文 7.4%  │  9.5K/128K");
 		expect(headerLines[1]).toContain("─");
 		expect(composerLines[0]).toMatch(/^╭─+ LYStar Code ─╮$/);
 		expect(composerLines[1]).toContain("│❯ 修复登录流程");

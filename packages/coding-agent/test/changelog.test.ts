@@ -2,7 +2,14 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { type ChangelogEntry, getFullChangelogMarkdown, normalizeChangelogLinks } from "../src/utils/changelog.ts";
+import {
+	type ChangelogEntry,
+	compareVersions,
+	getFullChangelogMarkdown,
+	getNewEntries,
+	normalizeChangelogLinks,
+	parseChangelog,
+} from "../src/utils/changelog.ts";
 
 const cleanups: string[] = [];
 
@@ -66,5 +73,35 @@ describe("normalizeChangelogLinks", () => {
 				"[Local anchor](#settings)",
 			].join("\n"),
 		);
+	});
+
+	test("parses and compares LYStar product revisions after the upstream version", () => {
+		const directory = mkdtempSync(join(tmpdir(), "lystar-changelog-"));
+		cleanups.push(directory);
+		const changelogPath = join(directory, "CHANGELOG.md");
+		writeFileSync(
+			changelogPath,
+			[
+				"# Changelog",
+				"",
+				"## [0.84.2-lystar.2] - 2026-08-24",
+				"",
+				"Second product revision",
+				"",
+				"## [0.84.2-lystar.1] - 2026-08-23",
+				"",
+				"First product revision",
+				"",
+				"## [0.84.2] - 2026-08-14",
+				"",
+				"Upstream release",
+			].join("\n"),
+		);
+
+		const entries = parseChangelog(changelogPath);
+		expect(entries[0]).toMatchObject({ major: 0, minor: 84, patch: 2, qualifier: "lystar.2" });
+		expect(compareVersions(entries[0], entries[1])).toBeGreaterThan(0);
+		expect(compareVersions(entries[1], entries[2])).toBeGreaterThan(0);
+		expect(getNewEntries(entries, "0.84.2-lystar.1")).toEqual([entries[0]]);
 	});
 });

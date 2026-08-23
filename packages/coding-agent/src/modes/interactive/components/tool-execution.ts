@@ -193,6 +193,12 @@ export class ToolExecutionComponent extends Container {
 		return new Text(text, 0, 0);
 	}
 
+	private createCollapsedErrorPreview(): Component | undefined {
+		const output = this.getTextOutput();
+		const firstLine = output.split("\n").find((line) => line.trim());
+		return firstLine ? new Text(theme.fg("error", firstLine.trim()), 0, 0) : undefined;
+	}
+
 	updateArgs(args: any): void {
 		this.args = args;
 		this.updateDisplay();
@@ -404,30 +410,37 @@ export class ToolExecutionComponent extends Container {
 			}
 
 			if (this.result) {
-				const resultRenderer = this.getResultRenderer();
-				if (!resultRenderer) {
-					const component = this.createResultFallback();
-					if (component) {
-						renderContainer.addChild(component);
-						hasContent = true;
-					}
+				const collapsedError =
+					this.result.isError && !this.expanded ? this.createCollapsedErrorPreview() : undefined;
+				if (collapsedError) {
+					renderContainer.addChild(collapsedError);
+					hasContent = true;
 				} else {
-					try {
-						const component = resultRenderer(
-							{ content: this.result.content as any, details: this.result.details },
-							{ expanded: this.expanded, isPartial: this.isPartial },
-							theme,
-							this.getRenderContext(this.resultRendererComponent),
-						);
-						this.resultRendererComponent = component;
-						renderContainer.addChild(component);
-						hasContent = true;
-					} catch {
-						this.resultRendererComponent = undefined;
+					const resultRenderer = this.getResultRenderer();
+					if (!resultRenderer) {
 						const component = this.createResultFallback();
 						if (component) {
 							renderContainer.addChild(component);
 							hasContent = true;
+						}
+					} else {
+						try {
+							const component = resultRenderer(
+								{ content: this.result.content as any, details: this.result.details },
+								{ expanded: this.expanded, isPartial: this.isPartial },
+								theme,
+								this.getRenderContext(this.resultRendererComponent),
+							);
+							this.resultRendererComponent = component;
+							renderContainer.addChild(component);
+							hasContent = true;
+						} catch {
+							this.resultRendererComponent = undefined;
+							const component = this.createResultFallback();
+							if (component) {
+								renderContainer.addChild(component);
+								hasContent = true;
+							}
 						}
 					}
 				}

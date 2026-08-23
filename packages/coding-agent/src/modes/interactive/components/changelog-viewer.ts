@@ -15,18 +15,21 @@ export class ChangelogViewerComponent implements Component, Focusable {
 	private scrollTop = 0;
 	private readonly wheelScroll = new WheelScrollNormalizer();
 	private readonly markdown: Markdown;
+	private readonly title: string;
 	private readonly getHeight: () => number;
 	private readonly requestRender: () => void;
 	private readonly onCancel: () => void;
 
 	constructor(options: {
 		markdown: string;
+		title?: string;
 		markdownTheme: MarkdownTheme;
 		getHeight: () => number;
 		requestRender: () => void;
 		onCancel: () => void;
 	}) {
 		this.markdown = new Markdown(options.markdown, 0, 0, options.markdownTheme);
+		this.title = options.title ?? "更新内容";
 		this.getHeight = options.getHeight;
 		this.requestRender = options.requestRender;
 		this.onCancel = options.onCancel;
@@ -50,7 +53,7 @@ export class ChangelogViewerComponent implements Component, Focusable {
 		const body = this.markdown.render(width);
 		const maxScroll = Math.max(0, body.length - bodyHeight);
 		this.scrollTop = Math.min(this.scrollTop, maxScroll);
-		const lines = [theme.bold(theme.fg("accent", "更新内容"))];
+		const lines = [theme.bold(theme.fg("accent", this.title))];
 		for (const line of body.slice(this.scrollTop, this.scrollTop + bodyHeight)) {
 			lines.push(truncateToWidth(line, width, "", true));
 		}

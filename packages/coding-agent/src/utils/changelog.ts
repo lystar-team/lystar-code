@@ -6,8 +6,11 @@ export interface ChangelogEntry {
 	major: number;
 	minor: number;
 	patch: number;
+	qualifier?: string;
 	content: string;
 }
+
+type ChangelogVersion = Omit<ChangelogEntry, "content">;
 
 const GITHUB_REPO = "earendil-works/pi";
 const CHANGELOG_LINK_BASE_PATH = "packages/coding-agent";
@@ -16,12 +19,25 @@ const URL_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
 const INLINE_MARKDOWN_LINK_RE = /(!?\[[^\]\n]+\]\()([^\s)]+)((?:\s+[^)]*)?\))/g;
 
 function entryVersion(entry: ChangelogEntry): string {
-	return `${entry.major}.${entry.minor}.${entry.patch}`;
+	const baseVersion = `${entry.major}.${entry.minor}.${entry.patch}`;
+	return entry.qualifier ? `${baseVersion}-${entry.qualifier}` : baseVersion;
 }
 
 function normalizeTag(version: string | ChangelogEntry): string {
 	const versionString = typeof version === "string" ? version : entryVersion(version);
 	return versionString.startsWith("v") ? versionString : `v${versionString}`;
+}
+
+function parseVersion(version: string): ChangelogVersion | undefined {
+	const match = version.trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z][0-9A-Za-z.-]*))?$/);
+	if (!match) return undefined;
+
+	return {
+		major: Number.parseInt(match[1], 10),
+		minor: Number.parseInt(match[2], 10),
+		patch: Number.parseInt(match[3], 10),
+		...(match[4] ? { qualifier: match[4] } : {}),
+	};
 }
 
 function splitLocalTarget(target: string): { fragment: string; pathPart: string; query: string } {
@@ -120,7 +136,7 @@ export function parseChangelog(changelogPath: string): ChangelogEntry[] {
 		const entries: ChangelogEntry[] = [];
 
 		let currentLines: string[] = [];
-		let currentVersion: { major: number; minor: number; patch: number } | null = null;
+		let currentVersion: ChangelogVersion | null = null;
 
 		for (const line of lines) {
 			// Check if this is a version header (## [x.y.z] ...)
@@ -134,12 +150,13 @@ export function parseChangelog(changelogPath: string): ChangelogEntry[] {
 				}
 
 				// Try to parse version from this line
-				const versionMatch = line.match(/##\s+\[?(\d+)\.(\d+)\.(\d+)\]?/);
+				const versionMatch = line.match(/^##\s+\[?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z][0-9A-Za-z.-]*))?\]?/);
 				if (versionMatch) {
 					currentVersion = {
 						major: Number.parseInt(versionMatch[1], 10),
 						minor: Number.parseInt(versionMatch[2], 10),
 						patch: Number.parseInt(versionMatch[3], 10),
+						...(versionMatch[4] ? { qualifier: versionMatch[4] } : {}),
 					};
 					currentLines = [line];
 				} else {
@@ -181,19 +198,38 @@ export function getFullChangelogMarkdown(changelogPath = getChangelogPath()): st
 export function compareVersions(v1: ChangelogEntry, v2: ChangelogEntry): number {
 	if (v1.major !== v2.major) return v1.major - v2.major;
 	if (v1.minor !== v2.minor) return v1.minor - v2.minor;
-	return v1.patch - v2.patch;
+	if (v1.patch !== v2.patch) return v1.patch - v2.patch;
+
+	if (v1.qualifier === v2.qualifier) return 0;
+	if (!v1.qualifier) return -1;
+	if (!v2.qualifier) return 1;
+
+	const firstParts = v1.qualifier.split(/[.-]/);
+	const secondParts = v2.qualifier.split(/[.-]/);
+	for (let index = 0; index < Math.max(firstParts.length, secondParts.length); index++) {
+		const firstPart = firstParts[index];
+		const secondPart = secondParts[index];
+		if (firstPart === undefined) return -1;
+		if (secondPart === undefined) return 1;
+		if (firstPart === secondPart) continue;
+
+		const firstNumber = /^\d+$/.test(firstPart) ? Number.parseInt(firstPart, 10) : undefined;
+		const secondNumber = /^\d+$/.test(secondPart) ? Number.parseInt(secondPart, 10) : undefined;
+		if (firstNumber !== undefined && secondNumber !== undefined) return firstNumber - secondNumber;
+		if (firstNumber !== undefined) return -1;
+		if (secondNumber !== undefined) return 1;
+		return firstPart.localeCompare(secondPart);
+	}
+
+	return 0;
 }
 
 /**
  * Get entries newer than lastVersion
  */
 export function getNewEntries(entries: ChangelogEntry[], lastVersion: string): ChangelogEntry[] {
-	// Parse lastVersion
-	const parts = lastVersion.split(".").map(Number);
 	const last: ChangelogEntry = {
-		major: parts[0] || 0,
-		minor: parts[1] || 0,
-		patch: parts[2] || 0,
+		...(parseVersion(lastVersion) ?? { major: 0, minor: 0, patch: 0 }),
 		content: "",
 	};
 
