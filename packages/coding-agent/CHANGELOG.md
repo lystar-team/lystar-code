@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.84.2-lystar.2] - 2026-08-23
+
+### 发布修复
+
+- 修复 macOS Release runner 对发行归档数量校验的跨平台空白处理，避免 Darwin 构建完成后被错误拦截。
+
 ## [0.84.2-lystar.1] - 2026-08-23
 
 ### LYStar 产品

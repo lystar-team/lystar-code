@@ -121,7 +121,8 @@ jobs:
           version="${TAG#v}"
           archive="packages/coding-agent/binaries/lystar-agent-v${version}-${{ matrix.platform }}.tar.gz"
           test "v$(cat packages/coding-agent/binaries/VERSION)" = "$TAG"
-          test "$(find packages/coding-agent/binaries -maxdepth 1 -name '*.tar.gz' | wc -l)" = "1"
+          archive_count="$(find packages/coding-agent/binaries -maxdepth 1 -name '*.tar.gz' | wc -l | tr -d '[:space:]')"
+          test "$archive_count" = "1"
           tar -tzf "$archive" > archive-contents.txt
           grep -Fxq 'lystar-agent/lc' archive-contents.txt
           grep -Fxq 'lystar-agent/lystar' archive-contents.txt
@@ -312,7 +313,8 @@ jobs:
           version="${TAG#v}"
           node scripts/generate-release-metadata.mjs packages/coding-agent/binaries "$version" "${GITHUB_REPOSITORY}"
           printf '%s\n' "$version" > packages/coding-agent/binaries/VERSION
-          test "$(find packages/coding-agent/binaries -maxdepth 1 \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)" = "5"
+          archive_count="$(find packages/coding-agent/binaries -maxdepth 1 \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l | tr -d '[:space:]')"
+          test "$archive_count" = "5"
 
       - name: Verify release checksums, manifest, and public assets
         env:
