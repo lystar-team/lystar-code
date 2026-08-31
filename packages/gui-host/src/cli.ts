@@ -15,6 +15,7 @@ import { runStdioHost } from "./stdio.ts";
 const agentDir = getGuiAgentDir();
 const command = process.argv[2] ?? "stdio";
 const endpoint = process.env.PI_GUI_HOST_ENDPOINT ?? defaultIpcEndpoint(agentDir);
+const startupSessionPath = process.env.PI_GUI_STARTUP_SESSION_PATH?.trim();
 let service: GuiHostService | undefined;
 let server: Server | undefined;
 let shuttingDown = false;
@@ -75,6 +76,7 @@ async function main(): Promise<void> {
 		service = new GuiHostService(new CodingAgentRuntimeAdapter(agentDir), {
 			agentDir,
 			persistent: command === "serve",
+			...(startupSessionPath ? { startupSessionPath } : {}),
 		});
 		try {
 			if (command === "stdio") await runStdioHost(service);

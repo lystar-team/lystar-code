@@ -153,15 +153,23 @@ function sourceEntryIds(execution: ToolExecutionView): string[] {
 }
 
 export function buildTranscriptRows(items: readonly TranscriptItem[]): TranscriptViewRow[] {
-	const results = new Map<string, ToolResultView>();
+	const uniqueItems: TranscriptItem[] = [];
+	const seenEntryIds = new Set<string>();
 	for (const item of items) {
+		if (seenEntryIds.has(item.entryId)) continue;
+		seenEntryIds.add(item.entryId);
+		uniqueItems.push(item);
+	}
+
+	const results = new Map<string, ToolResultView>();
+	for (const item of uniqueItems) {
 		const parsed = toolResult(item);
 		if (parsed) results.set(parsed.callId, parsed.result);
 	}
 
 	const matchedResults = new Set<string>();
 	const rows: TranscriptViewRow[] = [];
-	for (const item of items) {
+	for (const item of uniqueItems) {
 		const standaloneBash = bashExecution(item);
 		if (standaloneBash) {
 			const previous = rows.at(-1);
@@ -171,7 +179,7 @@ export function buildTranscriptRows(items: readonly TranscriptItem[]): Transcrip
 			} else {
 				rows.push({
 					kind: "bash-group",
-					key: `bash:${standaloneBash.callId}`,
+					key: `bash:after:${previous?.key ?? "start"}`,
 					executions: [standaloneBash],
 					sourceEntryIds: [item.entryId],
 				});
@@ -197,7 +205,7 @@ export function buildTranscriptRows(items: readonly TranscriptItem[]): Transcrip
 				} else if (execution.name === "bash") {
 					rows.push({
 						kind: "bash-group",
-						key: `bash:${execution.callId}`,
+						key: `bash:after:${previous?.key ?? "start"}`,
 						executions: [execution],
 						sourceEntryIds: sourceEntryIds(execution),
 					});

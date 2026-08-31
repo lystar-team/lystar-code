@@ -35,6 +35,7 @@ import { deleteSessionWithRecoveryLedger } from "./tool-recovery/ledger.ts";
 
 export const CURRENT_SESSION_VERSION = 3;
 const ASYNC_SESSION_READ_BUFFER_SIZE = 64 * 1024;
+const SESSION_METADATA_READ_BYTES = 64 * 1024;
 
 export interface SessionHeader {
 	type: "session";
@@ -196,6 +197,27 @@ export interface SessionInfo {
 	allMessagesText: string;
 	/** Outcome inferred from the last committed user, assistant, Tool, or Bash message. */
 	lastOutcome?: SessionOutcome;
+}
+
+export interface SessionInfoCacheEntry {
+	size: number;
+	mtimeMs: number;
+	ctimeMs: number;
+	ino: number;
+	includeAllMessagesText: boolean;
+	metadataOnly: boolean;
+	info: SessionInfo | null;
+}
+
+export interface SessionInfoCache {
+	entries: Map<string, SessionInfoCacheEntry>;
+}
+
+export interface SessionListOptions {
+	cache?: SessionInfoCache;
+	includeAllMessagesText?: boolean;
+	/** 只读取文件首尾元数据，用于 GUI 会话列表，避免扫描完整历史正文。 */
+	metadataOnly?: boolean;
 }
 
 export type ReadonlySessionManager = Pick<
@@ -623,11 +645,11 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 	if (!existsSync(resolvedFilePath)) return [];
 
 	const entries: FileEntry[] = [];
+	let pending = "";
 	const fd = openSync(resolvedFilePath, "r");
 	try {
 		const decoder = new StringDecoder("utf8");
 		const buffer = Buffer.allocUnsafe(SESSION_READ_BUFFER_SIZE);
-		let pending = "";
 
 		while (true) {
 			const bytesRead = readSync(fd, buffer, 0, buffer.length, null);
@@ -652,13 +674,14 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 		closeSync(fd);
 	}
 
-	// Validate session header
+	// Validate session header before repairing the file.
 	if (entries.length === 0) return entries;
 	const header = entries[0];
 	if (header.type !== "session" || typeof (header as { id?: unknown }).id !== "string") {
 		return [];
 	}
 
+	if (pending) appendFileSync(resolvedFilePath, "\n");
 	return entries;
 }
 
@@ -884,9 +907,97 @@ function getMessageOutcome(message: AgentMessage): SessionOutcome | undefined {
 	}
 }
 
-async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
+function parseMetadataLines(buffer: Buffer, skipFirstLine: boolean, skipLastLine: boolean): FileEntry[] {
+	const lines = buffer.toString("utf8").split("\n");
+	if (skipFirstLine) lines.shift();
+	if (skipLastLine && lines.length > 0 && lines.at(-1) !== "") lines.pop();
+	return lines.flatMap((line) => {
+		const entry = parseSessionEntryLine(line);
+		return entry ? [entry] : [];
+	});
+}
+
+async function buildMetadataOnlySessionInfo(
+	filePath: string,
+	stats: { size: number; mtimeMs: number },
+): Promise<SessionInfo | null> {
+	const header = readSessionHeaderForDiscovery(filePath);
+	if (!header) return null;
+
+	const rangeLength = Math.min(stats.size, SESSION_METADATA_READ_BYTES);
+	const prefix = Buffer.alloc(rangeLength);
+	const suffixOffset = Math.max(0, stats.size - rangeLength);
+	const suffix = suffixOffset > 0 ? Buffer.alloc(rangeLength) : undefined;
+	const handle = await open(filePath, "r");
+	try {
+		await handle.read(prefix, 0, prefix.length, 0);
+		if (suffix) await handle.read(suffix, 0, suffix.length, suffixOffset);
+	} finally {
+		await handle.close();
+	}
+
+	let name: string | undefined;
+	let firstMessage = "";
+	let lastOutcome: SessionOutcome | undefined;
+	const inspect = (entry: FileEntry): void => {
+		if (entry.type === "session_info") {
+			name = entry.name?.trim() || undefined;
+			return;
+		}
+		if (entry.type !== "message") return;
+		lastOutcome = getMessageOutcome(entry.message) ?? lastOutcome;
+		if (firstMessage || !isMessageWithContent(entry.message) || entry.message.role !== "user") return;
+		const textContent = extractTextContent(entry.message);
+		if (textContent) firstMessage = textContent;
+	};
+	for (const entry of parseMetadataLines(prefix, false, suffixOffset > 0)) inspect(entry);
+	if (suffix) for (const entry of parseMetadataLines(suffix, true, false)) inspect(entry);
+
+	return {
+		path: filePath,
+		id: header.id,
+		cwd: typeof header.cwd === "string" ? header.cwd : "",
+		parentSessionPath: header.parentSession,
+		created: new Date(header.timestamp),
+		modified: new Date(stats.mtimeMs),
+		messageCount: 0,
+		firstMessage: firstMessage || "(no messages)",
+		allMessagesText: "",
+		...(name ? { name } : {}),
+		...(lastOutcome ? { lastOutcome } : {}),
+	};
+}
+
+async function buildSessionInfo(filePath: string, options: SessionListOptions = {}): Promise<SessionInfo | null> {
 	try {
 		const stats = await stat(filePath);
+		const includeAllMessagesText = options.includeAllMessagesText !== false;
+		const metadataOnly = options.metadataOnly === true;
+		const cached = options.cache?.entries.get(filePath);
+		if (
+			cached &&
+			cached.size === stats.size &&
+			cached.mtimeMs === stats.mtimeMs &&
+			cached.ctimeMs === stats.ctimeMs &&
+			cached.ino === stats.ino &&
+			cached.includeAllMessagesText === includeAllMessagesText &&
+			cached.metadataOnly === metadataOnly
+		) {
+			return cached.info;
+		}
+		if (metadataOnly) {
+			const info = await buildMetadataOnlySessionInfo(filePath, stats);
+			options.cache?.entries.set(filePath, {
+				size: stats.size,
+				mtimeMs: stats.mtimeMs,
+				ctimeMs: stats.ctimeMs,
+				ino: stats.ino,
+				includeAllMessagesText,
+				metadataOnly,
+				info,
+			});
+			return info;
+		}
 		let header: SessionHeader | null = null;
 		let messageCount = 0;
 		let firstMessage = "";
@@ -928,10 +1039,11 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 			if (!isMessageWithContent(message)) continue;
 			if (message.role !== "user" && message.role !== "assistant") continue;
 
+			if (!includeAllMessagesText && firstMessage) continue;
 			const textContent = extractTextContent(message);
 			if (!textContent) continue;
 
-			allMessages.push(textContent);
+			if (includeAllMessagesText) allMessages.push(textContent);
 			if (!firstMessage && message.role === "user") {
 				firstMessage = textContent;
 			}
@@ -949,7 +1061,7 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 					? new Date(headerTime)
 					: stats.mtime;
 
-		return {
+		const info = {
 			path: filePath,
 			id: header.id,
 			cwd,
@@ -962,7 +1074,18 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 			allMessagesText: allMessages.join(" "),
 			...(lastOutcome ? { lastOutcome } : {}),
 		};
+		options.cache?.entries.set(filePath, {
+			size: stats.size,
+			mtimeMs: stats.mtimeMs,
+			ctimeMs: stats.ctimeMs,
+			ino: stats.ino,
+			includeAllMessagesText,
+			metadataOnly,
+			info,
+		});
+		return info;
 	} catch {
+		options.cache?.entries.delete(filePath);
 		return null;
 	}
 }
@@ -974,6 +1097,7 @@ const MAX_CONCURRENT_SESSION_INFO_LOADS = 10;
 async function buildSessionInfosWithConcurrency(
 	files: string[],
 	onLoaded: () => void,
+	options: SessionListOptions = {},
 ): Promise<(SessionInfo | null)[]> {
 	const results: (SessionInfo | null)[] = new Array(files.length).fill(null);
 	const inFlight = new Set<Promise<void>>();
@@ -985,7 +1109,7 @@ async function buildSessionInfosWithConcurrency(
 		if (!file) return;
 
 		let task: Promise<void>;
-		task = buildSessionInfo(file)
+		task = buildSessionInfo(file, options)
 			.then((info) => {
 				results[index] = info;
 			})
@@ -1016,6 +1140,7 @@ async function listSessionsFromDir(
 	onProgress?: SessionListProgress,
 	progressOffset = 0,
 	progressTotal?: number,
+	options: SessionListOptions = {},
 ): Promise<SessionInfo[]> {
 	const sessions: SessionInfo[] = [];
 	if (!existsSync(dir)) {
@@ -1025,13 +1150,23 @@ async function listSessionsFromDir(
 	try {
 		const dirEntries = await readdir(dir);
 		const files = dirEntries.filter((f) => f.endsWith(".jsonl")).map((f) => join(dir, f));
+		if (options.cache) {
+			const listed = new Set(files);
+			for (const cachedPath of options.cache.entries.keys()) {
+				if (dirname(cachedPath) === dir && !listed.has(cachedPath)) options.cache.entries.delete(cachedPath);
+			}
+		}
 		const total = progressTotal ?? files.length;
 
 		let loaded = 0;
-		const results = await buildSessionInfosWithConcurrency(files, () => {
-			loaded++;
-			onProgress?.(progressOffset + loaded, total);
-		});
+		const results = await buildSessionInfosWithConcurrency(
+			files,
+			() => {
+				loaded++;
+				onProgress?.(progressOffset + loaded, total);
+			},
+			options,
+		);
 		for (const info of results) {
 			if (info) {
 				sessions.push(info);
@@ -1702,13 +1837,14 @@ export class SessionManager {
 		if (branchFromId !== null && !this.byId.has(branchFromId)) {
 			throw new Error(`Entry ${branchFromId} not found`);
 		}
+		const fromId = this.leafId ?? "root";
 		this.leafId = branchFromId;
 		const entry: BranchSummaryEntry = {
 			type: "branch_summary",
 			id: generateId(this.byId),
 			parentId: branchFromId,
 			timestamp: new Date().toISOString(),
-			fromId: branchFromId ?? "root",
+			fromId,
 			summary,
 			details,
 			usage,
@@ -2056,11 +2192,16 @@ export class SessionManager {
 	 * @param sessionDir Optional session directory. If omitted, uses default (~/.pi/agent/sessions/<encoded-cwd>/).
 	 * @param onProgress Optional callback for progress updates (loaded, total)
 	 */
-	static async list(cwd: string, sessionDir?: string, onProgress?: SessionListProgress): Promise<SessionInfo[]> {
+	static async list(
+		cwd: string,
+		sessionDir?: string,
+		onProgress?: SessionListProgress,
+		options: SessionListOptions = {},
+	): Promise<SessionInfo[]> {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
 		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
 		const resolvedCwd = resolvePath(cwd);
-		const sessions = (await listSessionsFromDir(dir, onProgress)).filter(
+		const sessions = (await listSessionsFromDir(dir, onProgress, 0, undefined, options)).filter(
 			(session) => !filterCwd || sessionCwdMatches(session.cwd, resolvedCwd),
 		);
 		sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());

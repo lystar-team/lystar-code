@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseDoctorCommand } from "../src/cli/doctor-command.ts";
+import { summarizeToolRecoveryDiagnostics } from "../src/core/tool-recovery/diagnostics.ts";
 import { getToolRecoveryLessonDiagnostics } from "../src/core/tool-recovery/lessons-store.ts";
 import { main } from "../src/main.ts";
 
@@ -80,6 +81,29 @@ describe("doctor CLI", () => {
 			implementation: "typescript",
 			modes: ["regular", "fullscreen"],
 		});
+	});
+
+	it("keeps the runtime mode out of the metrics object", () => {
+		const summary = summarizeToolRecoveryDiagnostics(
+			{
+				mode: "assist",
+				activeCircuits: 1,
+				toolFailureTotal: [],
+				toolRecoveryAttemptTotal: [],
+				toolRecoverySuccessTotal: [],
+				toolRepeatBlockedTotal: [],
+				toolUnsafeRetryBlockedTotal: [],
+				lessonMatchTotal: [],
+				lessonRecoverySuccessTotal: [],
+				lessonSuspendedTotal: [],
+				duration: { count: 0, totalMs: 0, maxMs: 0 },
+			},
+			"assist",
+		);
+
+		expect(summary).toMatchObject({ sessionActive: true, mode: "assist", activeCircuits: 1 });
+		expect(summary.metrics).not.toHaveProperty("mode");
+		expect(summary.metrics).toMatchObject({ toolRecoveryAttemptTotal: [] });
 	});
 
 	it("returns only a structured mode error for invalid recovery configuration", async () => {

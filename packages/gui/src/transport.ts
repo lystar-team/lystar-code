@@ -113,6 +113,12 @@ class TauriByteTransport implements ByteTransport {
 	}
 }
 
+export async function getStartupSessionPath(): Promise<string | undefined> {
+	if (!isTauri()) return undefined;
+	const value = await invoke<string | null>("get_startup_session_path");
+	return value?.trim() || undefined;
+}
+
 export async function createByteTransport(target: TransportTarget = { kind: "local" }): Promise<ByteTransport> {
 	if (isTauri()) return TauriByteTransport.open(target);
 	if (target.kind === "ssh") throw new Error("SSH 连接只在桌面应用中可用");

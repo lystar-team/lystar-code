@@ -146,7 +146,70 @@ describe("GuiHostService Session observation", () => {
 		});
 		const created = messages.find((message) => message.type === "response" && message.id === "create" && message.ok);
 		if (!created || created.type !== "response" || !created.ok) throw new Error("Missing create response");
-		const sessionPath = (created.result as { snapshot: { path: string } }).snapshot.path;
+		const createdResult = created.result as { lease: { leaseId: string }; snapshot: { path: string } };
+		const sessionPath = createdResult.snapshot.path;
+		await handle({ type: "request", id: "sessions", request: { command: "list_sessions", cwd } });
+		const emptySessions = messages.find(
+			(message) => message.type === "response" && message.id === "sessions" && message.ok,
+		);
+		if (!emptySessions || emptySessions.type !== "response" || !emptySessions.ok)
+			throw new Error("Missing empty sessions response");
+		expect(emptySessions.result).toEqual([
+			expect.objectContaining({
+				path: sessionPath,
+				messageCount: 0,
+				firstMessage: "未命名会话",
+				writeAccess: "owned",
+			}),
+		]);
+		messages.length = 0;
+		await handle({
+			type: "request",
+			id: "bash",
+			request: {
+				command: "run_bash",
+				sessionPath,
+				leaseId: createdResult.lease.leaseId,
+				clientInstanceId: "diagnostics-client",
+				clientRequestId: "bash",
+				commandText: "printf attached-runtime",
+				excludeFromContext: false,
+			},
+		});
+		await waitFor(() =>
+			messages.some(
+				(message) =>
+					message.type === "event" &&
+					message.event.type === "operation_updated" &&
+					message.event.operation.status === "completed",
+			),
+		);
+		expect(
+			messages.some(
+				(message) =>
+					message.type === "event" &&
+					message.event.type === "transcript_committed" &&
+					message.event.sessionPath === sessionPath,
+			),
+		).toBe(true);
+		await new Promise((resolve) => setTimeout(resolve, 650));
+		expect(
+			messages.some(
+				(message) =>
+					message.type === "event" &&
+					message.event.type === "transcript_changed" &&
+					message.event.sessionPath === sessionPath,
+			),
+		).toBe(false);
+		await new Promise((resolve) => setTimeout(resolve, 650));
+		expect(
+			messages.some(
+				(message) =>
+					message.type === "event" &&
+					message.event.type === "session_removed" &&
+					message.event.sessionPath === sessionPath,
+			),
+		).toBe(false);
 		await handle({ type: "request", id: "diagnostics", request: { command: "get_diagnostics", cwd } });
 		await handle({
 			type: "request",

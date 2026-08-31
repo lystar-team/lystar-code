@@ -5,9 +5,11 @@ import type {
 	CompletionResult,
 	ContentReference,
 	JsonValue,
+	OperationSnapshot,
 	OperationStatus,
 	ThinkingLevel,
 	TranscriptItem,
+	UsageProgress,
 } from "@lystar/code-gui-protocol";
 import {
 	AlertCircle,
@@ -66,6 +68,7 @@ import {
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import logoDark from "./assets/lystar-mark-on-dark.png";
 import logoLight from "./assets/lystar-mark-on-light.png";
+import { GUI_INSPECTOR_DEFAULT_SPLIT, GUI_INSPECTOR_DEFAULT_WIDTH } from "./desktop-state.ts";
 import { HighlightedCode, Markdown } from "./markdown.tsx";
 import {
 	guiStore,
@@ -84,6 +87,7 @@ import {
 	readLineRange,
 	toolFiles,
 	transcriptImages,
+	type TranscriptViewRow,
 	type TranscriptImageView,
 	type ToolExecutionView,
 	type ToolFileView,
@@ -91,6 +95,7 @@ import {
 import { selectOptions } from "./ui-request.ts";
 
 const ACTIVE_STATUSES = new Set(["accepted", "running", "waiting_for_input"]);
+const SESSION_LIST_LIMIT = 20;
 const SETTINGS: Array<{
 	id: SettingsPage;
 	label: string;
@@ -156,6 +161,48 @@ function transcriptText(item: TranscriptItem): string {
 	if (typeof payload?.content === "string") return payload.content;
 	if (typeof payload?.summary === "string") return payload.summary;
 	return "";
+}
+
+function assistantUsage(item: TranscriptItem): UsageProgress | undefined {
+	const message = record(record(item.payload)?.message);
+	const usage = record(message?.usage);
+	if (!usage) return undefined;
+	const result: {
+		inputTokens?: number;
+		outputTokens?: number;
+		cacheReadTokens?: number;
+		cacheWriteTokens?: number;
+	} = {};
+	if (typeof usage.input === "number") result.inputTokens = usage.input;
+	if (typeof usage.output === "number") result.outputTokens = usage.output;
+	if (typeof usage.cacheRead === "number") result.cacheReadTokens = usage.cacheRead;
+	if (typeof usage.cacheWrite === "number") result.cacheWriteTokens = usage.cacheWrite;
+	return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function formatTokenCount(value: number): string {
+	if (value < 1000) return String(value);
+	if (value < 1_000_000) return `${(value / 1000).toFixed(value < 10_000 ? 1 : 0)}k`;
+	return `${(value / 1_000_000).toFixed(value < 10_000_000 ? 1 : 0)}M`;
+}
+
+function formatDuration(value: number): string {
+	if (value < 1000) return `${Math.max(1, Math.round(value))} ms`;
+	return `${(value / 1000).toFixed(value < 10_000 ? 1 : 0)} s`;
+}
+
+function nearestUserEntryId(entryId: string, items: readonly TranscriptItem[]): string | undefined {
+	const entries = new Map(items.map((item) => [item.entryId, item]));
+	const visited = new Set<string>();
+	let currentId: string | null = entryId;
+	while (currentId && !visited.has(currentId)) {
+		visited.add(currentId);
+		const current = entries.get(currentId);
+		if (!current) return undefined;
+		if (transcriptRole(current) === "user") return current.entryId;
+		currentId = current.parentId;
+	}
+	return undefined;
 }
 
 function stringArgument(execution: ToolExecutionView, key: string): string | undefined {
@@ -326,9 +373,12 @@ function Sidebar({ mobileOpen, closeMobile }: { mobileOpen: boolean; closeMobile
 	const snapshot = useSyncExternalStore(guiStore.subscribe, guiStore.getSnapshot);
 	const [query, setQuery] = useState("");
 	const [showArchived, setShowArchived] = useState(false);
+	const [showAllSessions, setShowAllSessions] = useState(false);
 	const searchInput = useRef<HTMLInputElement>(null);
 	const normalizedQuery = query.trim().toLowerCase();
 	const sessions = snapshot.sessions.filter((session) => sessionTitle(session).toLowerCase().includes(normalizedQuery));
+	const visibleSessions = showAllSessions ? sessions : sessions.slice(0, SESSION_LIST_LIMIT);
+	useEffect(() => setShowAllSessions(false), [normalizedQuery, snapshot.currentProjectId]);
 	const projects = snapshot.projects
 		.filter((project) => !project.archived && (!normalizedQuery || `${project.name} ${project.cwd}`.toLowerCase().includes(normalizedQuery) || project.id === snapshot.currentProjectId))
 		.sort((left, right) => Number(right.pinned) - Number(left.pinned));
@@ -367,13 +417,21 @@ function Sidebar({ mobileOpen, closeMobile }: { mobileOpen: boolean; closeMobile
 						<div className="sidebar-section-label"><span>项目</span><button type="button" title="打开项目" onClick={() => run(guiStore.chooseProject())}><Plus size={14} /></button></div>
 						<div className="project-list">
 							{projects.map((project) => (
-								<ProjectItem key={project.id} project={project} sessions={sessions} closeMobile={closeMobile} />
+								<ProjectItem
+									key={project.id}
+									project={project}
+									sessions={project.id === snapshot.currentProjectId ? visibleSessions : []}
+									totalSessions={project.id === snapshot.currentProjectId ? sessions.length : 0}
+									showAllSessions={showAllSessions}
+									toggleAllSessions={() => setShowAllSessions((value) => !value)}
+									closeMobile={closeMobile}
+								/>
 							))}
 							{projects.length === 0 && <div className="sidebar-empty">未找到项目</div>}
 							{archived.length > 0 && (
 								<div className="archived-projects">
 									<button type="button" onClick={() => setShowArchived((value) => !value)}><Archive size={13} />已归档 <span>{archived.length}</span><ChevronRight size={13} className={showArchived ? "expanded" : ""} /></button>
-									{showArchived && archived.map((project) => <ProjectItem key={project.id} project={project} sessions={[]} closeMobile={closeMobile} />)}
+					{showArchived && archived.map((project) => <ProjectItem key={project.id} project={project} sessions={[]} totalSessions={0} closeMobile={closeMobile} />)}
 								</div>
 							)}
 						</div>
@@ -388,7 +446,21 @@ function Sidebar({ mobileOpen, closeMobile }: { mobileOpen: boolean; closeMobile
 	);
 }
 
-function ProjectItem({ project, sessions, closeMobile }: { project: ProjectSummary; sessions: SessionSummary[]; closeMobile: () => void }) {
+function ProjectItem({
+	project,
+	sessions,
+	totalSessions,
+	showAllSessions = false,
+	toggleAllSessions,
+	closeMobile,
+}: {
+	project: ProjectSummary;
+	sessions: SessionSummary[];
+	totalSessions: number;
+	showAllSessions?: boolean;
+	toggleAllSessions?: () => void;
+	closeMobile: () => void;
+}) {
 	const snapshot = useSyncExternalStore(guiStore.subscribe, guiStore.getSnapshot);
 	const [menuOpen, setMenuOpen] = useState(false);
 	const current = project.id === snapshot.currentProjectId;
@@ -449,7 +521,12 @@ function ProjectItem({ project, sessions, closeMobile }: { project: ProjectSumma
 			{current && (
 				<div className="session-list">
 					{sessions.map((session) => <SessionRow key={session.path} session={session} closeMobile={closeMobile} />)}
-					{sessions.length === 0 && <div className="sidebar-empty">暂无会话</div>}
+					{totalSessions === 0 && <div className="sidebar-empty">暂无会话</div>}
+					{totalSessions > SESSION_LIST_LIMIT && (
+						<button className="session-list-toggle" type="button" onClick={() => toggleAllSessions?.()}>
+							{showAllSessions ? "收起会话" : `显示更多会话（${totalSessions - SESSION_LIST_LIMIT}）`}
+						</button>
+					)}
 				</div>
 			)}
 		</div>
@@ -472,6 +549,7 @@ function SessionRow({ session, closeMobile }: { session: SessionSummary; closeMo
 					closeMobile();
 				}}
 			>
+				<FileText size={14} aria-hidden="true" />
 				<span>{sessionTitle(session)}</span>
 				<time>{relativeTime(session.updatedAt)}</time>
 				<span className={`session-state ${state.className}`} title={state.label} aria-label={state.label} />
@@ -508,7 +586,7 @@ function SessionRow({ session, closeMobile }: { session: SessionSummary; closeMo
 	);
 }
 
-function Topbar({ openMobile }: { openMobile: () => void }) {
+function Topbar({ openMobile, closeMobile }: { openMobile: () => void; closeMobile: () => void }) {
 	const snapshot = useSyncExternalStore(guiStore.subscribe, guiStore.getSnapshot);
 	const project = snapshot.projects.find((candidate) => candidate.id === snapshot.currentProjectId);
 	const session = snapshot.sessions.find((candidate) => candidate.path === snapshot.selectedSessionPath);
@@ -524,7 +602,7 @@ function Topbar({ openMobile }: { openMobile: () => void }) {
 			</div>
 			<div className="topbar-spacer" />
 			{snapshot.capabilities.includes("git-inspector") && snapshot.currentCwd && (
-				<button className={`topbar-change ${snapshot.gitInspectorOpen ? "selected" : ""}`} type="button" title="查看工作区变更" onClick={() => snapshot.gitInspectorOpen ? guiStore.closeGitInspector() : run(guiStore.openGitInspector())}>
+				<button className={`topbar-change ${snapshot.gitInspectorOpen ? "selected" : ""}`} type="button" title="查看工作区变更" onClick={() => { closeMobile(); if (snapshot.gitInspectorOpen) guiStore.closeGitInspector(); else run(guiStore.openGitInspector()); }}>
 					<GitBranch size={16} />
 					{snapshot.gitStatus && <span>{snapshot.gitStatus.files.length}</span>}
 				</button>
@@ -550,15 +628,95 @@ function SessionLoadingOverlay() {
 	);
 }
 
+function WorkspaceStatus() {
+	const snapshot = useSyncExternalStore(guiStore.subscribe, guiStore.getSnapshot);
+	const operation = snapshot.currentOperation;
+	let status:
+		| { className: string; label: string; detail?: string; icon: LucideIcon; live: boolean }
+		| undefined;
+
+	if (!snapshot.connected && snapshot.selectedSessionPath) {
+		status = {
+			className: "disconnected",
+			label: "后台已断开",
+			detail: snapshot.connectionError ?? "等待重新连接",
+			icon: Unplug,
+			live: true,
+		};
+	} else if (operation?.status === "waiting_for_input" || snapshot.pendingUi.length > 0) {
+		status = {
+			className: "waiting",
+			label: "等待输入",
+			detail: snapshot.pendingUi.length > 0 ? "请完成当前请求" : undefined,
+			icon: Info,
+			live: true,
+		};
+	} else if (operation && (operation.status === "accepted" || operation.status === "running")) {
+		status = {
+			className: "running",
+			label: snapshot.statusText || "正在处理",
+			icon: LoaderCircle,
+			live: true,
+		};
+	} else if (operation?.status === "failed") {
+		status = {
+			className: "error",
+			label: "任务失败",
+			detail: operation.error ?? snapshot.statusText,
+			icon: AlertCircle,
+			live: false,
+		};
+	} else if (operation?.status === "aborted") {
+		status = { className: "warning", label: "任务已取消", icon: CircleStop, live: false };
+	} else if (operation?.status === "interrupted") {
+		status = { className: "warning", label: "任务已中断", icon: AlertCircle, live: false };
+	} else if (snapshot.selectedSessionPath && !snapshot.lease && !snapshot.sessionAction) {
+		status = {
+			className: "readonly",
+			label: "只读会话",
+			detail: "该会话正在其他进程中使用",
+			icon: ShieldAlert,
+			live: false,
+		};
+	} else if (snapshot.statusText) {
+		status = { className: "info", label: snapshot.statusText, icon: Info, live: false };
+	}
+
+	if (!status) return null;
+	const Icon = status.icon;
+	return (
+		<div className={`workspace-status ${status.className}`} role={status.live ? "status" : "note"} aria-live={status.live ? "polite" : undefined}>
+			<Icon size={15} className={status.className === "running" ? "spin" : undefined} />
+			<strong>{status.label}</strong>
+			{status.detail && <span className="workspace-status-detail" title={status.detail}>{status.detail}</span>}
+		</div>
+	);
+}
+
+type TranscriptRenderItem =
+	| (TranscriptViewRow & { renderKey: string })
+	| { key: string; renderKey: string; live: true; text: string };
+
 function Transcript() {
 	const snapshot = useSyncExternalStore(guiStore.subscribe, guiStore.getSnapshot);
 	const parent = useRef<HTMLDivElement>(null);
 	const previousTranscriptSessionPath = useRef<string | undefined>(undefined);
-	const previousFirstEntryId = useRef<string | undefined>(undefined);
+	const followLatest = useRef(true);
+	const hasMoreRecent = useRef(snapshot.hasMoreRecent);
+	const userScrollIntent = useRef(false);
+	const pendingHistoryAnchor = useRef<{ scrollTop: number; scrollHeight: number } | undefined>(undefined);
+	const [showFollowLatest, setShowFollowLatest] = useState(false);
+	hasMoreRecent.current = snapshot.hasMoreRecent;
 	const rows = useMemo(() => buildTranscriptRows(snapshot.transcript), [snapshot.transcript]);
-	const items = useMemo(() => {
-		const result: Array<(typeof rows)[number] | { key: "live"; live: true; text: string }> = [...rows];
-		if (snapshot.liveText) result.push({ key: "live", live: true, text: snapshot.liveText });
+	const items = useMemo<TranscriptRenderItem[]>(() => {
+		const seen = new Map<string, number>();
+		const nextKey = (key: string): string => {
+			const count = seen.get(key) ?? 0;
+			seen.set(key, count + 1);
+			return count === 0 ? key : `${key}:${count}`;
+		};
+		const result: TranscriptRenderItem[] = rows.map((row) => ({ ...row, renderKey: nextKey(row.key) }));
+		if (snapshot.liveText) result.push({ key: "live", renderKey: nextKey("live"), live: true, text: snapshot.liveText });
 		return result;
 	}, [rows, snapshot.liveText]);
 	const activeIncompleteCallId = useMemo(() => {
@@ -574,76 +732,167 @@ function Transcript() {
 	const virtualizer = useVirtualizer({
 		count: items.length,
 		getScrollElement: () => parent.current,
-		getItemKey: (index) => items[index]?.key ?? index,
+		getItemKey: (index) => items[index]?.renderKey ?? index,
 		estimateSize: () => 120,
 		overscan: 8,
 		useFlushSync: false,
 	});
+	virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () => followLatest.current;
+
+	const updateFollowLatest = (allowFollowChange = true) => {
+		const element = parent.current;
+		if (!element) return;
+		const atEnd = element.scrollHeight - element.scrollTop - element.clientHeight <= 48;
+		if (allowFollowChange) followLatest.current = atEnd && !hasMoreRecent.current;
+		setShowFollowLatest(!followLatest.current || hasMoreRecent.current);
+	};
+
+	useEffect(() => {
+		const element = parent.current;
+		if (!element) return;
+		const markUserScrollIntent = (event: Event) => {
+			if (event.type === "keydown" && !["ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End"].includes((event as KeyboardEvent).key)) return;
+			userScrollIntent.current = true;
+		};
+		const handleScroll = () => {
+			const allowFollowChange = userScrollIntent.current;
+			userScrollIntent.current = false;
+			updateFollowLatest(allowFollowChange);
+		};
+		element.addEventListener("wheel", markUserScrollIntent, { passive: true });
+		element.addEventListener("touchstart", markUserScrollIntent, { passive: true });
+		element.addEventListener("keydown", markUserScrollIntent);
+		element.addEventListener("scroll", handleScroll, { passive: true });
+		updateFollowLatest(false);
+		return () => {
+			element.removeEventListener("wheel", markUserScrollIntent);
+			element.removeEventListener("touchstart", markUserScrollIntent);
+			element.removeEventListener("keydown", markUserScrollIntent);
+			element.removeEventListener("scroll", handleScroll);
+		};
+	}, [snapshot.selectedSessionPath]);
 
 	useEffect(() => {
 		virtualizer.measure();
 		const previousSessionPath = previousTranscriptSessionPath.current;
-		const previousFirst = previousFirstEntryId.current;
-		const firstEntryId = snapshot.transcript[0]?.entryId;
-		const anchorIndex =
-			previousSessionPath === snapshot.selectedSessionPath && previousFirst
-				? rows.findIndex((row) => row.sourceEntryIds.includes(previousFirst))
-				: -1;
 		previousTranscriptSessionPath.current = snapshot.selectedSessionPath;
-		previousFirstEntryId.current = firstEntryId;
-		if (anchorIndex > 0) virtualizer.scrollToIndex(anchorIndex, { align: "start" });
-		else if (items.length > 0) virtualizer.scrollToIndex(items.length - 1, { align: "end" });
-	}, [items.length, rows, snapshot.selectedSessionPath, snapshot.transcriptGeneration, virtualizer]);
+		const sessionChanged = previousSessionPath !== snapshot.selectedSessionPath;
+		const pendingAnchor = pendingHistoryAnchor.current;
+		let frame = 0;
+		const schedule = (callback: () => void) => {
+			frame = window.requestAnimationFrame(callback);
+		};
+
+		if (sessionChanged) {
+			pendingHistoryAnchor.current = undefined;
+			followLatest.current = true;
+			setShowFollowLatest(false);
+			schedule(() => {
+				virtualizer.measure();
+				if (items.length > 0) virtualizer.scrollToEnd();
+				updateFollowLatest(false);
+			});
+		} else if (pendingAnchor && !snapshot.loadingEarlier) {
+			pendingHistoryAnchor.current = undefined;
+			schedule(() => {
+				const element = parent.current;
+				if (element) {
+					virtualizer.measure();
+					const restoreAnchor = () => {
+						virtualizer.measure();
+						const delta = element.scrollHeight - pendingAnchor.scrollHeight;
+						element.scrollTop = Math.max(0, pendingAnchor.scrollTop + delta);
+						frame = window.requestAnimationFrame(() => {
+							virtualizer.measure();
+							const finalDelta = element.scrollHeight - pendingAnchor.scrollHeight;
+							element.scrollTop = Math.max(0, pendingAnchor.scrollTop + finalDelta);
+							updateFollowLatest(false);
+						});
+					};
+					restoreAnchor();
+				} else {
+					updateFollowLatest(false);
+				}
+			});
+		} else if (followLatest.current && items.length > 0) {
+			schedule(() => {
+				virtualizer.measure();
+				virtualizer.scrollToEnd();
+				updateFollowLatest(false);
+			});
+		} else {
+			schedule(() => updateFollowLatest(false));
+		}
+
+		return () => {
+			if (frame) window.cancelAnimationFrame(frame);
+		};
+	}, [items, snapshot.loadingEarlier, snapshot.selectedSessionPath, snapshot.transcriptGeneration, virtualizer]);
+
+	const loadEarlier = () => {
+		const element = parent.current;
+		if (element) {
+			pendingHistoryAnchor.current = {
+				scrollTop: element.scrollTop,
+				scrollHeight: element.scrollHeight,
+			};
+		}
+		followLatest.current = false;
+		setShowFollowLatest(true);
+		run(guiStore.loadEarlier());
+	};
+
+	const jumpToLatest = () => {
+		pendingHistoryAnchor.current = undefined;
+		followLatest.current = true;
+		setShowFollowLatest(false);
+		virtualizer.scrollToEnd();
+		if (snapshot.hasMoreRecent) run(guiStore.jumpToLatest());
+		else window.requestAnimationFrame(() => updateFollowLatest(false));
+	};
 
 	if (!snapshot.currentCwd) {
 		return (
 			<div className="workspace-empty">
-				<FolderOpen size={28} />
+				<div className="empty-state-icon" aria-hidden="true"><FolderOpen size={24} /></div>
 				<h2>打开一个项目</h2>
 				<p>项目路径只保存在本机，Session 继续使用现有 JSONL。</p>
-				<button type="button" onClick={() => run(guiStore.chooseProject())}>打开项目</button>
+				<button type="button" onClick={() => run(guiStore.chooseProject())}><FolderOpen size={15} />打开项目</button>
 			</div>
 		);
 	}
 	if (!snapshot.selectedSessionPath) {
 		return (
 			<div className="workspace-empty">
-				<MessageSquarePlus size={28} />
+				<div className="empty-state-icon" aria-hidden="true"><MessageSquarePlus size={24} /></div>
 				<h2>开始新会话</h2>
 				<p>新会话会写入当前项目的标准 Session 目录。</p>
-				<button type="button" onClick={() => run(guiStore.createSession())}>新会话</button>
+				<button type="button" onClick={() => run(guiStore.createSession())}><MessageSquarePlus size={15} />新会话</button>
 			</div>
 		);
 	}
 
 	return (
-		<div className="transcript-scroll" ref={parent}>
+		<div className="transcript-panel">
+			<div className="transcript-scroll" ref={parent}>
 			<div className="transcript-content">
-				{(snapshot.hasMorePrevious || snapshot.hasMoreRecent) && (
+				{snapshot.hasMorePrevious && (
 					<div className="transcript-history-actions">
-						{snapshot.hasMorePrevious && (
-							<button
-								className="load-earlier"
-								type="button"
-								disabled={snapshot.loadingEarlier}
-								onClick={() => run(guiStore.loadEarlier())}
-							>
-								<RefreshCw size={14} />
-								{snapshot.loadingEarlier ? "加载中" : "加载更早内容"}
-							</button>
-						)}
-						{snapshot.hasMoreRecent && (
-							<button className="load-earlier" type="button" onClick={() => run(guiStore.jumpToLatest())}>
-								<ArrowDown size={14} />
-								回到最新
-							</button>
-						)}
+						<button
+							className="load-earlier"
+							type="button"
+							disabled={snapshot.loadingEarlier}
+							onClick={loadEarlier}
+						>
+							<RefreshCw size={14} />
+							{snapshot.loadingEarlier ? "加载中" : "加载更早内容"}
+						</button>
 					</div>
 				)}
 				{items.length === 0 ? (
 					<div className="conversation-empty">
-						<Sparkles size={22} />
-						<p>输入任务或继续说明</p>
+						<div className="empty-state-icon" aria-hidden="true"><Sparkles size={22} /></div>
+						<h2>输入任务或继续说明</h2>
 					</div>
 				) : (
 					<div className="virtual-transcript" style={{ height: `${virtualizer.getTotalSize()}px` }}>
@@ -652,14 +901,14 @@ function Transcript() {
 							const isTool = !("live" in item) && item.kind !== "entry";
 							return (
 								<div
-									key={item.key}
+									key={item.renderKey}
 									data-index={virtualItem.index}
 									ref={virtualizer.measureElement}
 									className={`virtual-row ${isTool ? "tool-virtual-row" : ""}`}
 									style={{ transform: `translateY(${virtualItem.start}px)` }}
 								>
-									{"live" in item ? (
-										<AssistantMessage text={item.text} live />
+														{"live" in item ? (
+						<AssistantMessage text={item.text} live usage={snapshot.liveUsage} operation={snapshot.currentOperation} />
 									) : item.kind === "entry" ? (
 										<TranscriptEntry item={item.item} />
 									) : item.kind === "bash-group" ? (
@@ -681,6 +930,13 @@ function Transcript() {
 						})}
 					</div>
 				)}
+			</div>
+			{(showFollowLatest || snapshot.hasMoreRecent) && items.length > 0 && (
+				<button className="follow-latest" type="button" onClick={jumpToLatest}>
+					<ArrowDown size={14} />
+					回到最新
+				</button>
+			)}
 			</div>
 		</div>
 	);
@@ -750,14 +1006,25 @@ function TranscriptImages({ images }: { images: readonly TranscriptImageView[] }
 }
 
 function TranscriptEntry({ item }: { item: TranscriptItem }) {
+	const snapshot = useSyncExternalStore(guiStore.subscribe, guiStore.getSnapshot);
 	const role = transcriptRole(item);
 	const text = transcriptText(item);
 	const images = transcriptImages(item);
 	if (item.kind === "compaction" || item.kind === "branch_summary") {
 		return <CompactSummary text={text} branch={item.kind === "branch_summary"} />;
 	}
-	if (role === "user") return <UserMessage text={text} images={images} />;
-	if (role === "assistant") return <AssistantMessage text={text} entryId={item.entryId} images={images} />;
+	if (role === "user") return <UserMessage entryId={item.entryId} text={text} images={images} />;
+	if (role === "assistant") {
+		return (
+			<AssistantMessage
+				text={text}
+				entryId={item.entryId}
+				forkEntryId={nearestUserEntryId(item.entryId, snapshot.transcript)}
+				usage={assistantUsage(item)}
+				images={images}
+			/>
+		);
+	}
 	if (role === "toolResult") return <ToolResult item={item} />;
 	return (
 		<div className="system-entry">
@@ -784,12 +1051,86 @@ function CompactSummary({ text, branch }: { text: string; branch: boolean }) {
 	);
 }
 
-function UserMessage({ text, images = [] }: { text: string; images?: readonly TranscriptImageView[] }) {
+function MessageActions({
+	text,
+	entryId,
+	copyLabel,
+	canFork = false,
+}: {
+	text: string;
+	entryId?: string;
+	copyLabel: string;
+	canFork?: boolean;
+}) {
+	const [copied, setCopied] = useState(false);
+	const copy = async () => {
+		if (!text) return;
+		await navigator.clipboard.writeText(text);
+		setCopied(true);
+		window.setTimeout(() => setCopied(false), 1400);
+	};
 	return (
-		<div className="user-message">
-			<div className="message-author"><User size={14} />你</div>
-			<TranscriptImages images={images} />
-			{text && <Markdown text={text} onOpenResource={(target) => run(guiStore.openResource(target))} />}
+		<div className="message-actions" role="group" aria-label="消息操作">
+			{canFork && entryId && (
+				<IconButton label="从这里分叉" onClick={() => run(guiStore.forkSession(entryId))}>
+					<GitBranch size={14} />
+				</IconButton>
+			)}
+			<IconButton label={copied ? "已复制" : copyLabel} disabled={!text} onClick={() => run(copy())}>
+				{copied ? <Check size={14} /> : <Copy size={14} />}
+			</IconButton>
+		</div>
+	);
+}
+
+function UserMessage({
+	entryId,
+	text,
+	images = [],
+}: {
+	entryId: string;
+	text: string;
+	images?: readonly TranscriptImageView[];
+}) {
+	return (
+		<div className="user-message-row">
+			<div className="user-message">
+				<div className="message-author"><User size={14} />你</div>
+				<TranscriptImages images={images} />
+				{text && <Markdown text={text} onOpenResource={(target) => run(guiStore.openResource(target))} />}
+			</div>
+			<MessageActions text={text} entryId={entryId} copyLabel="复制消息" />
+		</div>
+	);
+}
+
+function AssistantMetadata({
+	usage,
+	operation,
+}: {
+	usage?: UsageProgress;
+	operation?: OperationSnapshot;
+}) {
+	if (!usage && !operation) return null;
+	const durationMs = operation
+		? Math.max(0, (ACTIVE_STATUSES.has(operation.status) ? Date.now() : operation.updatedAt) - operation.acceptedAt)
+		: undefined;
+	const outputPerSecond =
+		usage?.outputTokens !== undefined && durationMs !== undefined && durationMs > 0
+			? Math.round((usage.outputTokens * 1000) / durationMs)
+			: undefined;
+	const totalTokens = [usage?.inputTokens, usage?.outputTokens, usage?.cacheReadTokens, usage?.cacheWriteTokens]
+		.filter((value): value is number => value !== undefined)
+		.reduce((total, value) => total + value, 0);
+	return (
+		<div className="assistant-metadata" aria-label="生成信息">
+			{usage?.inputTokens !== undefined && <span>输入 {formatTokenCount(usage.inputTokens)}</span>}
+			{usage?.outputTokens !== undefined && <span>输出 {formatTokenCount(usage.outputTokens)}</span>}
+			{usage?.cacheReadTokens !== undefined && usage.cacheReadTokens > 0 && <span>缓存读 {formatTokenCount(usage.cacheReadTokens)}</span>}
+			{usage?.cacheWriteTokens !== undefined && usage.cacheWriteTokens > 0 && <span>缓存写 {formatTokenCount(usage.cacheWriteTokens)}</span>}
+			{totalTokens > 0 && <span>合计 {formatTokenCount(totalTokens)}</span>}
+			{durationMs !== undefined && durationMs > 0 && <span>用时 {formatDuration(durationMs)}</span>}
+			{outputPerSecond !== undefined && <span>{formatTokenCount(outputPerSecond)} tok/s</span>}
 		</div>
 	);
 }
@@ -798,11 +1139,17 @@ function AssistantMessage({
 	text,
 	live,
 	entryId,
+	forkEntryId,
+	usage,
+	operation,
 	images = [],
 }: {
 	text: string;
 	live?: boolean;
 	entryId?: string;
+	forkEntryId?: string;
+	usage?: UsageProgress;
+	operation?: OperationSnapshot;
 	images?: readonly TranscriptImageView[];
 }) {
 	const snapshot = useSyncExternalStore(guiStore.subscribe, guiStore.getSnapshot);
@@ -811,15 +1158,14 @@ function AssistantMessage({
 			<div className="message-author"><Bot size={15} />LYStar</div>
 			<TranscriptImages images={images} />
 			{text ? <Markdown text={text} onOpenResource={(target) => run(guiStore.openResource(target))} /> : images.length === 0 ? <div className="thinking-line"><WandSparkles size={14} />正在处理</div> : null}
-			{entryId && snapshot.lease && (
-				<div className="message-actions">
-					<IconButton label="从这里分叉" onClick={() => run(guiStore.forkSession(entryId))}>
-						<GitBranch size={14} />
-					</IconButton>
-					<IconButton label="复制回复" onClick={() => void navigator.clipboard.writeText(text)}>
-						<Copy size={14} />
-					</IconButton>
-				</div>
+			<AssistantMetadata usage={usage} operation={operation} />
+			{entryId && (
+				<MessageActions
+					text={text}
+					entryId={forkEntryId}
+					copyLabel="复制回复"
+					canFork={Boolean(snapshot.lease && forkEntryId)}
+				/>
 			)}
 		</article>
 	);
@@ -1115,8 +1461,11 @@ function Composer() {
 	const textarea = useRef<HTMLTextAreaElement>(null);
 	const imageInput = useRef<HTMLInputElement>(null);
 	const completionRequest = useRef(0);
-	const running = !!snapshot.currentOperation && ACTIVE_STATUSES.has(snapshot.currentOperation.status);
-	const writable = !!snapshot.lease && snapshot.capabilities.includes("session-control");
+	const operationStatus = snapshot.currentOperation?.status;
+	const running = operationStatus === "accepted" || operationStatus === "running";
+	const operationActive = operationStatus !== undefined && ACTIVE_STATUSES.has(operationStatus);
+	const waitingForInput = operationStatus === "waiting_for_input";
+	const writable = !!snapshot.lease && snapshot.connected && snapshot.capabilities.includes("session-control");
 	const bashCommand = text.trimStart().startsWith("!");
 	const invalidAttachments = bashCommand && images.length > 0;
 	const selectedModel = snapshot.models.find(
@@ -1135,6 +1484,8 @@ function Composer() {
 	}, []);
 	const disabledReason = !snapshot.selectedSessionPath
 		? "先打开或新建会话"
+		: !snapshot.connected
+			? "后台服务已断开，输入会保留到重新连接"
 		: !snapshot.lease
 			? "该会话正在其他进程中使用"
 			: undefined;
@@ -1248,6 +1599,7 @@ function Composer() {
 					))}
 				</div>
 			)}
+			<div className="composer-input-area">
 			{images.length > 0 && (
 				<div className="attachment-list">
 					{images.map((image) => (
@@ -1263,6 +1615,7 @@ function Composer() {
 			)}
 			<textarea
 				ref={textarea}
+				aria-label="任务输入"
 				value={text}
 				disabled={!snapshot.selectedSessionPath}
 				placeholder={disabledReason ?? "输入任务或继续说明"}
@@ -1309,6 +1662,7 @@ function Composer() {
 					}
 				}}
 			/>
+			</div>
 			<div className="composer-footer">
 				<div className="composer-left">
 					<div className="menu-trigger-wrap">
@@ -1317,7 +1671,7 @@ function Composer() {
 							type="button"
 							aria-label="添加内容"
 							title="添加内容"
-							disabled={!writable || bashCommand}
+							disabled={!writable || operationActive || bashCommand}
 							onClick={() => setActionOpen((value) => !value)}
 						>
 							<Plus size={17} />
@@ -1357,7 +1711,7 @@ function Composer() {
 				</div>
 				<div className="composer-right">
 					<div className="menu-trigger-wrap">
-						<button className="text-trigger model-trigger" type="button" disabled={!writable || running} onClick={() => setModelOpen((value) => !value)}>
+						<button className="text-trigger model-trigger" type="button" disabled={!writable || operationActive} onClick={() => setModelOpen((value) => !value)}>
 							<span>{selectedModel?.name ?? snapshot.selectedSession?.model?.id ?? "选择模型"}</span>
 							<small>{THINKING_LABELS[snapshot.selectedSession?.thinkingLevel ?? "off"]}</small>
 							<ChevronDown size={13} />
@@ -1404,10 +1758,11 @@ function Composer() {
 						)}
 					</div>
 					<button
-						className={`send-button ${running ? "stop" : ""}`}
+						className={`send-button ${running ? "stop" : ""} ${waitingForInput ? "waiting" : ""}`}
 						type="button"
-						aria-label={running ? "停止" : "发送"}
-						disabled={!running && (!writable || !text.trim() || invalidAttachments)}
+						aria-label={running ? "停止" : waitingForInput ? "等待输入" : "发送"}
+						title={waitingForInput ? "请先完成当前请求" : undefined}
+						disabled={!running && (waitingForInput || !writable || !text.trim() || invalidAttachments)}
 						onClick={() => running ? run(guiStore.abort()) : submit()}
 					>
 						{running ? <CircleStop size={18} /> : <ArrowUp size={19} />}
@@ -2213,7 +2568,7 @@ function GitInspector() {
 				aria-label="调整变更面板宽度"
 				aria-orientation="vertical"
 				onPointerDown={resizeWidth}
-				onDoubleClick={() => { guiStore.setInspectorLayout(480, snapshot.inspectorSplit); run(guiStore.persistInspectorLayout()); }}
+				onDoubleClick={() => { guiStore.setInspectorLayout(GUI_INSPECTOR_DEFAULT_WIDTH, snapshot.inspectorSplit); run(guiStore.persistInspectorLayout()); }}
 				onKeyDown={(event) => {
 					if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
 					event.preventDefault();
@@ -2243,7 +2598,7 @@ function GitInspector() {
 						aria-label="调整文件列表高度"
 						aria-orientation="horizontal"
 						onPointerDown={resizeSplit}
-						onDoubleClick={() => { guiStore.setInspectorLayout(snapshot.inspectorWidth, 0.34); run(guiStore.persistInspectorLayout()); }}
+						onDoubleClick={() => { guiStore.setInspectorLayout(snapshot.inspectorWidth, GUI_INSPECTOR_DEFAULT_SPLIT); run(guiStore.persistInspectorLayout()); }}
 						onKeyDown={(event) => {
 							if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
 							event.preventDefault();
@@ -2368,6 +2723,9 @@ export function App() {
 	useEffect(() => {
 		run(guiStore.connect());
 	}, []);
+	useEffect(() => {
+		if (mobileSidebar && (snapshot.gitInspectorOpen || snapshot.settingsPage)) setMobileSidebar(false);
+	}, [mobileSidebar, snapshot.gitInspectorOpen, snapshot.settingsPage]);
 
 	return (
 		<div
@@ -2386,8 +2744,8 @@ export function App() {
 				className={`main-shell ${snapshot.gitInspectorOpen ? "inspector-open" : ""}`}
 				style={{ "--inspector-width": `${snapshot.inspectorWidth}px` } as React.CSSProperties}
 			>
-				<Topbar openMobile={() => setMobileSidebar(true)} />
-				<main className="workspace"><Transcript /><SessionLoadingOverlay /><Composer /></main>
+				<Topbar openMobile={() => { guiStore.closeGitInspector(); setMobileSidebar(true); }} closeMobile={() => setMobileSidebar(false)} />
+				<main className="workspace"><Transcript /><WorkspaceStatus /><SessionLoadingOverlay />{snapshot.selectedSessionPath && <Composer />}</main>
 				<GitInspector />
 			</div>
 			{snapshot.settingsPage && <SettingsView />}

@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import { access, chmod, realpath, symlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -7,6 +8,10 @@ import { NodeExecutionEnv } from "../../src/harness/env/nodejs.ts";
 import { FileError, getOrThrow } from "../../src/harness/types.ts";
 import { executeShellWithCapture } from "../../src/harness/utils/shell-output.ts";
 import { createTempDir } from "./session-test-utils.ts";
+
+function toBashSingleQuotedArg(value: string): string {
+	return `'${value.replace(/\\/g, "/").replace(/'/g, `'"'"'`)}'`;
+}
 
 const chmodRestorePaths: string[] = [];
 
@@ -442,6 +447,48 @@ describe("NodeExecutionEnv", () => {
 		const result = await promise;
 		expect(result.ok).toBe(false);
 		if (!result.ok) expect(result.error).toMatchObject({ code: "aborted" });
+	});
+
+	it.skipIf(process.platform === "win32")("ignores asynchronous taskkill spawn errors during abort", async () => {
+		const root = createTempDir();
+		const pidFile = join(root, "shell.pid");
+		const controller = new AbortController();
+		const env = new NodeExecutionEnv({ cwd: root, shellPath: "/bin/bash" });
+		const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+		const previousSystemRoot = process.env.SystemRoot;
+		process.env.SystemRoot = "/definitely/missing/windows";
+		Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+
+		let pid: number | undefined;
+		try {
+			const execution = env.exec(`echo $$ > ${toBashSingleQuotedArg(pidFile)}; exec sleep 60`, {
+				abortSignal: controller.signal,
+			});
+			for (let attempt = 0; attempt < 100 && !existsSync(pidFile); attempt++) {
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+			expect(existsSync(pidFile)).toBe(true);
+
+			controller.abort();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			pid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
+			process.kill(pid, "SIGKILL");
+
+			const result = await execution;
+			expect(result).toMatchObject({ ok: false, error: { code: "aborted" } });
+		} finally {
+			if (pid === undefined && existsSync(pidFile)) {
+				pid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
+			}
+			if (pid !== undefined && Number.isFinite(pid)) {
+				try {
+					process.kill(pid, "SIGKILL");
+				} catch {}
+			}
+			if (previousSystemRoot === undefined) delete process.env.SystemRoot;
+			else process.env.SystemRoot = previousSystemRoot;
+			if (platformDescriptor) Object.defineProperty(process, "platform", platformDescriptor);
+		}
 	});
 
 	it("captures large shell output to a full output file through the execution env", async () => {

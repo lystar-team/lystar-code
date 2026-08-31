@@ -3,6 +3,19 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 
 const BROWSER_STATE_KEY = "lystar.gui.desktop-state";
 
+export const GUI_INSPECTOR_DEFAULT_WIDTH = 520;
+export const GUI_INSPECTOR_MIN_WIDTH = 420;
+export const GUI_INSPECTOR_MAX_WIDTH = 680;
+export const GUI_INSPECTOR_DEFAULT_SPLIT = 0.34;
+
+export function clampInspectorWidth(value: number): number {
+	return Math.min(GUI_INSPECTOR_MAX_WIDTH, Math.max(GUI_INSPECTOR_MIN_WIDTH, Math.round(value)));
+}
+
+export function clampInspectorSplit(value: number): number {
+	return Math.min(0.8, Math.max(0.2, value));
+}
+
 export interface SshConnectionProfile {
 	id: string;
 	name: string;
@@ -197,8 +210,8 @@ function normalizeState(value: unknown): DesktopState {
 		...(inspectorWidth !== undefined && inspectorSplit !== undefined
 			? {
 					layout: {
-						inspectorWidth: Math.min(900, Math.max(320, inspectorWidth)),
-						inspectorSplit: Math.min(0.8, Math.max(0.2, inspectorSplit)),
+						inspectorWidth: clampInspectorWidth(inspectorWidth),
+						inspectorSplit: clampInspectorSplit(inspectorSplit),
 						...(layoutSource?.sidebarCollapsed === true ? { sidebarCollapsed: true } : {}),
 					},
 				}

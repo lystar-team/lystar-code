@@ -18,6 +18,20 @@ lc --ensure-windows-bash --archive .\MinGit-2.55.0.3-64-bit.zip --offline
 
 Interactive standalone launches open the Windows-only `lystar-terminal.exe` host, which runs the existing TUI through ConPTY and renders it with local xterm.js and Noto Sans CJK assets. Automation remains attached to the invoking terminal. Use `lc --attached` to keep an interactive TUI in PowerShell, CMD, SSH, or an IDE terminal.
 
+## PowerShell Tool
+
+The optional `powershell` tool runs commands through `pwsh.exe` when available, otherwise Windows PowerShell. It starts PowerShell with `-NoProfile -NonInteractive -ExecutionPolicy Bypass`. Administrator-enforced execution policies can still take precedence.
+
+Use `defaultTools` to enable it alongside the built-in tools:
+
+```json
+{
+  "defaultTools": ["read", "bash", "powershell", "edit", "write"]
+}
+```
+
+The `!` and `!!` editor commands continue to use Bash.
+
 `PI_OFFLINE=1` disables implicit downloads. An explicit `shellPath` still overrides the managed shell:
 
 ```json

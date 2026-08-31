@@ -52,8 +52,8 @@ export function summarizeToolRecoveryDiagnostics(
 	mode: ToolRecoveryMode,
 ): ToolRecoveryDiagnosticSummary {
 	if (!diagnostics) return { sessionActive: false, mode, activeCircuits: 0, metrics: {} };
-	const { activeCircuits, ...metrics } = diagnostics;
-	return { sessionActive: true, mode: diagnostics.mode, activeCircuits, metrics };
+	const { mode: runtimeMode, activeCircuits, ...metrics } = diagnostics;
+	return { sessionActive: true, mode: runtimeMode, activeCircuits, metrics };
 }
 
 export async function getToolRecoveryDoctorReport(options: {

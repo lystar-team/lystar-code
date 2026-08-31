@@ -8,8 +8,9 @@
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { createInterface } from "node:readline";
 import { type ImageContent, modelsAreEqual } from "@earendil-works/pi-ai";
+import { setCapabilityOverrides } from "@earendil-works/pi-tui";
 import chalk from "chalk";
-import { type Args, type Mode, parseArgs, printHelp } from "./cli/args.ts";
+import { type Args, type Mode, normalizeSessionName, parseArgs, printHelp } from "./cli/args.ts";
 import {
 	type AuthCheckResult,
 	checkProviderAuth,
@@ -68,6 +69,7 @@ import {
 	type SessionCwdIssue,
 } from "./core/session-cwd.ts";
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
+import { collectSettingsDiagnostics, deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
@@ -77,7 +79,7 @@ import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { loadLystarSettings } from "./modes/interactive/lystar-settings.ts";
 import { createTerminalModeContext, shouldUseAlternateScreen } from "./modes/interactive/terminal-mode.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
-import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
+import { cleanupManagedInstall, handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
 import { SessionOpenCoordinator } from "./session-open-coordinator.ts";
 import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
 import { ensureManagedWindowsBash } from "./utils/tools-manager.ts";
@@ -107,16 +109,6 @@ async function readPipedStdin(): Promise<string | undefined> {
 		});
 		process.stdin.resume();
 	});
-}
-
-function collectSettingsDiagnostics(
-	settingsManager: SettingsManager,
-	context: string,
-): AgentSessionRuntimeDiagnostic[] {
-	return settingsManager.drainErrors().map(({ scope, error }) => ({
-		type: "warning",
-		message: `(${context}, ${scope} settings) ${error.message}`,
-	}));
 }
 
 function reportDiagnostics(diagnostics: readonly AgentSessionRuntimeDiagnostic[]): void {
@@ -420,13 +412,13 @@ function forkSessionOrExit(sourcePath: string, cwd: string, sessionDir?: string,
 	}
 }
 
-async function createSessionManager(
+export async function createSessionManager(
 	parsed: Args,
 	cwd: string,
 	sessionDir: string | undefined,
 	settingsManager: SettingsManager,
-	appMode: AppMode,
-	state: SessionOpenState,
+	appMode: AppMode = "print",
+	state: SessionOpenState = { openedExistingSession: false },
 ): Promise<SessionManager> {
 	if (parsed.noSession || parsed.help || parsed.listModels !== undefined) {
 		return SessionManager.inMemory(cwd, parsed.sessionId !== undefined ? { id: parsed.sessionId } : undefined);
@@ -661,6 +653,7 @@ export async function main(args: string[], options?: MainOptions) {
 			return;
 		}
 	}
+	cleanupManagedInstall();
 
 	const cwd = process.cwd();
 	const agentDir = getAgentDir();
@@ -805,7 +798,7 @@ export async function main(args: string[], options?: MainOptions) {
 	time("runMigrations");
 
 	const startupSettingsManager = SettingsManager.create(cwd, agentDir);
-	reportDiagnostics(collectSettingsDiagnostics(startupSettingsManager, "startup session lookup"));
+	const startupSettingsDiagnostics = collectSettingsDiagnostics(startupSettingsManager);
 
 	// Experimental first-time setup: theme choice and analytics opt-in.
 	// Runs before any runtime services are created so the chosen settings apply everywhere.
@@ -859,8 +852,8 @@ export async function main(args: string[], options?: MainOptions) {
 		}
 	}
 	if (parsed.name !== undefined) {
-		const name = parsed.name.trim();
-		if (!name) {
+		const name = normalizeSessionName(parsed.name);
+		if (name === undefined) {
 			console.error(chalk.red("Error: --name requires a non-empty value"));
 			process.exit(1);
 		}
@@ -950,7 +943,7 @@ export async function main(args: string[], options?: MainOptions) {
 		const diagnostics: AgentSessionRuntimeDiagnostic[] = [
 			...projectTrustDiagnostics,
 			...services.diagnostics,
-			...collectSettingsDiagnostics(settingsManager, "runtime creation"),
+			...collectSettingsDiagnostics(settingsManager),
 			...resourceLoader.getExtensions().errors.map(({ path, error }) => ({
 				type: "error" as const,
 				message: `Failed to load extension "${path}": ${error}`,
@@ -1019,10 +1012,12 @@ export async function main(args: string[], options?: MainOptions) {
 	if (eventLoopDelay) benchmarkEventLoopPhases.runtime = Number(eventLoopDelay.max) / 1e6;
 	const { services, session, modelFallbackMessage } = runtime;
 	const { settingsManager, modelRuntime, resourceLoader } = services;
+	setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides());
 	applyHttpProxySettings(settingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher(settingsManager.getHttpIdleTimeoutMs());
 
 	if (parsed.help) {
+		reportDiagnostics(startupSettingsDiagnostics);
 		const extensionFlags = resourceLoader
 			.getExtensions()
 			.extensions.flatMap((extension) => Array.from(extension.flags.values()));
@@ -1031,6 +1026,7 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	if (parsed.listModels !== undefined) {
+		reportDiagnostics(startupSettingsDiagnostics);
 		const searchPattern = typeof parsed.listModels === "string" ? parsed.listModels : undefined;
 		await listModels(modelRuntime, searchPattern, AbortSignal.timeout(15_000));
 		process.exit(0);
@@ -1061,8 +1057,12 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	time("resolveModelScope");
-	reportDiagnostics(runtime.diagnostics);
-	if (runtime.diagnostics.some((diagnostic) => diagnostic.type === "error")) {
+	const startupDiagnostics = deduplicateDiagnostics([...startupSettingsDiagnostics, ...runtime.diagnostics]);
+	const hasRuntimeErrors = runtime.diagnostics.some((diagnostic) => diagnostic.type === "error");
+	if (appMode !== "interactive" || hasRuntimeErrors) {
+		reportDiagnostics(startupDiagnostics);
+	}
+	if (hasRuntimeErrors) {
 		if (runtime.diagnostics.some((diagnostic) => diagnostic.message.includes("Failed to load extension"))) {
 			console.error(chalk.yellow(EXTENSION_LOAD_FAILURE_HINT));
 		}
@@ -1097,6 +1097,7 @@ export async function main(args: string[], options?: MainOptions) {
 	} else if (appMode === "interactive") {
 		const interactiveMode = new InteractiveMode(runtime, {
 			migratedProviders,
+			startupDiagnostics,
 			modelFallbackMessage,
 			autoTrustOnReloadCwd,
 			initialMessage,

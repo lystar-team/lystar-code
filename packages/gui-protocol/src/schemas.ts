@@ -242,6 +242,7 @@ export type ToolDiffFile = Static<typeof ToolDiffFileSchema>;
 const ToolDiffSchema = StrictObject({ files: Type.Array(ToolDiffFileSchema, { minItems: 1, maxItems: 128 }) });
 export type ToolDiff = Static<typeof ToolDiffSchema>;
 export const SessionProgressSchema = Type.Union([
+	StrictObject({ type: Type.Literal("user_message"), text: ProgressTextSchema }),
 	StrictObject({ type: Type.Literal("assistant_delta"), text: ProgressTextSchema }),
 	StrictObject({ type: Type.Literal("thinking_delta"), text: ProgressTextSchema }),
 	StrictObject({

@@ -3,7 +3,7 @@ import { stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { SessionHeader } from "../src/core/session-manager.ts";
+import type { SessionHeader, SessionInfoCache } from "../src/core/session-manager.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
@@ -82,6 +82,78 @@ describe("SessionInfo.modified", () => {
 		expect(s!.modified.getTime()).not.toBe(before.mtime.getTime());
 		expect(s!.lastOutcome).toBe("completed");
 		mgr.dispose();
+	});
+
+	it("supports lightweight cached listing without reusing an incomplete full-text entry", async () => {
+		const filePath = join(tmpdir(), `pi-session-${Date.now()}-cached-list.jsonl`);
+		writeFileSync(
+			filePath,
+			`${[
+				JSON.stringify({
+					type: "session",
+					id: "cached-list",
+					version: 3,
+					timestamp: new Date(0).toISOString(),
+					cwd: "/tmp",
+				}),
+				JSON.stringify({
+					type: "message",
+					id: "user-1",
+					parentId: null,
+					timestamp: new Date(1).toISOString(),
+					message: { role: "user", content: "hello", timestamp: 1 },
+				}),
+				JSON.stringify({
+					type: "message",
+					id: "assistant-1",
+					parentId: "user-1",
+					timestamp: new Date(2).toISOString(),
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "reply" }],
+						stopReason: "stop",
+						timestamp: 2,
+					},
+				}),
+			].join("\n")}\n`,
+		);
+		const cache: SessionInfoCache = { entries: new Map() };
+
+		const lightweight = await SessionManager.list("/tmp", dirname(filePath), undefined, {
+			cache,
+			includeAllMessagesText: false,
+		});
+		const lightweightSession = lightweight.find((session) => session.path === filePath);
+		expect(lightweightSession).toMatchObject({ firstMessage: "hello", messageCount: 2, allMessagesText: "" });
+		const cached = await SessionManager.list("/tmp", dirname(filePath), undefined, {
+			cache,
+			includeAllMessagesText: false,
+		});
+		const cachedSession = cached.find((session) => session.path === filePath);
+		expect(cachedSession).toBe(lightweightSession);
+
+		const full = await SessionManager.list("/tmp", dirname(filePath), undefined, {
+			cache,
+			includeAllMessagesText: true,
+		});
+		const fullSession = full.find((session) => session.path === filePath);
+		expect(fullSession?.allMessagesText).toContain("hello");
+		expect(fullSession?.allMessagesText).toContain("reply");
+
+		const metadataCache: SessionInfoCache = { entries: new Map() };
+		const metadataOnly = await SessionManager.list("/tmp", dirname(filePath), undefined, {
+			cache: metadataCache,
+			includeAllMessagesText: false,
+			metadataOnly: true,
+		});
+		const metadataSession = metadataOnly.find((session) => session.path === filePath);
+		expect(metadataSession).toMatchObject({ firstMessage: "hello", messageCount: 0, allMessagesText: "" });
+		const metadataAgain = await SessionManager.list("/tmp", dirname(filePath), undefined, {
+			cache: metadataCache,
+			includeAllMessagesText: false,
+			metadataOnly: true,
+		});
+		expect(metadataAgain.find((session) => session.path === filePath)).toBe(metadataSession);
 	});
 
 	it("derives a failed outcome from the last committed Bash execution", async () => {

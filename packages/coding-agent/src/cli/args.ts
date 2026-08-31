@@ -67,6 +67,11 @@ export function isValidThinkingLevel(level: string): level is ThinkingLevel {
 	return VALID_THINKING_LEVELS.includes(level as ThinkingLevel);
 }
 
+export function normalizeSessionName(value: string): string | undefined {
+	const name = value.trim();
+	return name.length > 0 ? name : undefined;
+}
+
 export function parseArgs(args: string[]): Args {
 	const result: Args = {
 		messages: [],
@@ -78,7 +83,16 @@ export function parseArgs(args: string[]): Args {
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i];
 
-		if (arg === "--help" || arg === "-h") {
+		if (arg === "--") {
+			for (const positionalArg of args.slice(i + 1)) {
+				if (positionalArg.startsWith("@")) {
+					result.fileArgs.push(positionalArg.slice(1));
+				} else {
+					result.messages.push(positionalArg);
+				}
+			}
+			break;
+		} else if (arg === "--help" || arg === "-h") {
 			result.help = true;
 		} else if (arg === "--version" || arg === "-v") {
 			result.version = true;
@@ -270,7 +284,7 @@ export function printHelp(extensionFlags?: ExtensionFlag[]): void {
 	console.log(`${chalk.bold(APP_NAME)} - ${t("app.description")}
 
 ${chalk.bold("用法：")}
-  ${APP_NAME} [选项] [@文件...] [消息...]
+  ${APP_NAME} [选项] [--] [@文件...] [消息...]
 
 ${chalk.bold("命令：")}
   ${APP_NAME} install <source> [-l]     安装 Extension 并写入设置
@@ -328,6 +342,7 @@ ${chalk.bold("选项：")}
   --approve, -a                  本次运行信任项目本地文件
   --no-approve, -na              本次运行忽略项目本地文件
   --offline                      关闭启动网络请求，等同 PI_OFFLINE=1
+  --                             后续参数全部作为消息或文件处理
   --attached                     Windows 下在当前终端运行 TUI
   --help, -h                     显示帮助
   --version, -v                  显示版本号
@@ -355,6 +370,9 @@ ${chalk.bold("示例：")}
 
   # 非交互模式，处理后退出
   ${APP_NAME} -p "List all .ts files in src/"
+
+  # 以 -- 开始的消息
+  ${APP_NAME} -p -- "- 总结这些要点"
 
   # 交互模式下依次发送多条消息
   ${APP_NAME} "Read package.json" "What dependencies do we have?"
@@ -446,12 +464,13 @@ ${chalk.bold("环境变量：")}
   PI_SHARE_VIEWER_URL              - /share 查看地址（默认 https://pi.dev/session/）
 
 ${chalk.bold("内置工具名称：")}
-  read   - 读取文件内容
-  bash   - 执行 Bash 命令
-  edit   - 精确查找并替换文件内容
-  write  - 创建或覆盖文件
-  grep   - 搜索文件内容，只读且默认关闭
-  find   - 按 glob 查找文件，只读且默认关闭
-  ls     - 列出目录内容，只读且默认关闭
+  read       - 读取文件内容
+  bash       - 执行 Bash 命令
+  powershell - 在 Windows 上执行 PowerShell 命令
+  edit       - 精确查找并替换文件内容
+  write      - 创建或覆盖文件
+  grep       - 搜索文件内容，只读且默认关闭
+  find       - 按 glob 查找文件，只读且默认关闭
+  ls         - 列出目录内容，只读且默认关闭
 `);
 }

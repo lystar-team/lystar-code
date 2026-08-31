@@ -130,6 +130,7 @@ export const zhCN = {
 	"command.compact": "手动压缩会话上下文",
 	"command.resume": "继续其他会话",
 	"command.reload": "重新加载快捷键、Extension、Skill、Prompt、Theme 和上下文文件",
+	"command.gui": "交接当前会话到 GUI",
 	"command.quit": "退出 {app}",
 	"doctor.title": "LYStar Code 诊断",
 	"doctor.help": "只读输出当前进程、恢复机制与恢复经验的诊断信息。",

@@ -29,6 +29,19 @@ function result(entryId: string, callId: string, toolName: string, details?: Jso
 }
 
 describe("buildTranscriptRows", () => {
+	it("collapses Host projection views that share one raw entry", () => {
+		const raw = assistant("assistant-projected", [{ type: "text", text: "REAL_SMOKE_OK" }]);
+		const projected = [
+			{ ...raw, view: { type: "thinking" as const, text: "hidden reasoning" } },
+			{ ...raw, view: { type: "assistant" as const, text: "REAL_SMOKE_OK" } },
+		];
+
+		const rows = buildTranscriptRows(projected);
+
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({ kind: "entry", item: projected[0] });
+	});
+
 	it("pairs results by toolCallId and groups adjacent Bash calls across result entries", () => {
 		const rows = buildTranscriptRows([
 			assistant("assistant-1", [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "pwd" } }]),
@@ -86,6 +99,39 @@ describe("buildTranscriptRows", () => {
 				],
 			}),
 		]);
+	});
+
+	it("keeps the Bash group key when an adjacent earlier page is prepended", () => {
+		const currentPage = buildTranscriptRows([
+			item("bash-2", {
+				role: "bashExecution",
+				command: "printf current",
+				output: "current",
+				exitCode: 0,
+				cancelled: false,
+				timestamp: 2,
+			}),
+		]);
+		const withEarlierPage = buildTranscriptRows([
+			item("bash-1", {
+				role: "bashExecution",
+				command: "printf earlier",
+				output: "earlier",
+				exitCode: 0,
+				cancelled: false,
+				timestamp: 1,
+			}),
+			item("bash-2", {
+				role: "bashExecution",
+				command: "printf current",
+				output: "current",
+				exitCode: 0,
+				cancelled: false,
+				timestamp: 2,
+			}),
+		]);
+
+		expect(withEarlierPage[0]?.key).toBe(currentPage[0]?.key);
 	});
 
 	it("keeps user and Tool images as inline data or content references", () => {

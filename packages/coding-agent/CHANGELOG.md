@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.84.4-lystar.1] - 2026-08-31
+
+### 上游同步
+
+- 同步 Pi `v0.84.4`（`b79e4cc834970cca69daebffab7df1da7d1e52c4`）的 Agent、Provider、Tool、TUI、CLI 和 Extension API 更新。
+- 保留 LYStar Code 的中文界面、全屏工作区、GUI Runtime、Tool Recovery 和 LYStar release 更新源。
+
 ## [0.84.2-lystar.2] - 2026-08-23
 
 ### 发布修复

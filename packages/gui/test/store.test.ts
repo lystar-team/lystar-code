@@ -1,4 +1,4 @@
-import type { GuiProtocolClient } from "@lystar/code-gui-protocol";
+import type { GuiProtocolClient, ServerEvent } from "@lystar/code-gui-protocol";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -94,6 +94,80 @@ beforeEach(() => {
 });
 
 describe("project open transaction", () => {
+	it("restores the latest terminal operation for the initially selected session", async () => {
+		const store = new GuiAppStore();
+		const targetSession = session("/tmp/gui-session.jsonl", "/tmp/gui-project");
+		const abortedOperation = {
+			operationId: "operation-aborted",
+			clientInstanceId: "client",
+			clientRequestId: "request",
+			sessionPath: targetSession.path,
+			type: "run_bash",
+			status: "aborted" as const,
+			acceptedAt: 1,
+			updatedAt: 3,
+			payloadHash: "payload",
+		};
+		const candidate = fakeClient(async (message) => {
+			if (message.command === "list_sessions") return [targetSession];
+			if (message.command === "acquire_session")
+				return { lease: lease(targetSession.path), snapshot: targetSession };
+			if (message.command === "read_transcript")
+				return {
+					items: [],
+					previousCursor: undefined,
+					transcriptGeneration: "generation",
+					hasMorePrevious: false,
+				};
+			throw new Error(`unexpected command: ${message.command}`);
+		});
+		Object.assign(store, {
+			projects: [{ id: "project", name: "Project", cwd: targetSession.cwd, connectionId: "local" }],
+			createHostConnection: async () => ({
+				connectionId: "local",
+				client: candidate.client,
+				initial: { sessions: [], operations: [abortedOperation], pendingUiRequests: [] },
+			}),
+		});
+
+		await store.selectProject("project");
+
+		expect(store.getSnapshot().currentOperation).toEqual(abortedOperation);
+	});
+
+	it("prefers an explicit startup session over the newest session", async () => {
+		const store = new GuiAppStore();
+		const preferredSession = session("/tmp/gui-preferred.jsonl", "/tmp/gui-project");
+		const newestSession = { ...session("/tmp/gui-newest.jsonl", "/tmp/gui-project"), updatedAt: 3 };
+		const candidate = fakeClient(async (message) => {
+			if (message.command === "list_sessions") return [newestSession, preferredSession];
+			if (message.command === "acquire_session") {
+				expect(message.sessionPath).toBe(preferredSession.path);
+				return { lease: lease(preferredSession.path), snapshot: preferredSession };
+			}
+			if (message.command === "read_transcript")
+				return {
+					items: [],
+					previousCursor: undefined,
+					transcriptGeneration: "generation",
+					hasMorePrevious: false,
+				};
+			throw new Error(`unexpected command: ${message.command}`);
+		});
+		Object.assign(store, {
+			projects: [{ id: "project", name: "Project", cwd: preferredSession.cwd, connectionId: "local" }],
+			createHostConnection: async () => ({
+				connectionId: "local",
+				client: candidate.client,
+				initial: { sessions: [], operations: [], pendingUiRequests: [] },
+			}),
+		});
+
+		await store.selectProject("project", preferredSession.path);
+
+		expect(store.getSnapshot().selectedSessionPath).toBe(preferredSession.path);
+	});
+
 	it("keeps the current workspace and lease when the candidate project cannot list sessions", async () => {
 		const store = new GuiAppStore();
 		const old = fakeClient(async () => undefined);
@@ -300,5 +374,96 @@ describe("settings Host lifecycle", () => {
 		expect(firstClient.close).toHaveBeenCalledOnce();
 		expect(secondClient.close).not.toHaveBeenCalled();
 		expect(store.getSnapshot()).toMatchObject({ settingsHostId: "ssh-2", settingsHostConnected: true });
+	});
+
+	it("keeps the persisted Inspector layout within the approved range", () => {
+		const store = new GuiAppStore();
+
+		store.setInspectorLayout(900, 1);
+		expect(store.getSnapshot()).toMatchObject({ inspectorWidth: 680, inspectorSplit: 0.8 });
+
+		store.setInspectorLayout(320, 0);
+		expect(store.getSnapshot()).toMatchObject({ inspectorWidth: 420, inspectorSplit: 0.2 });
+	});
+});
+
+describe("live transcript lifecycle", () => {
+	it("projects the submitted user message before Host commits the transcript", async () => {
+		const store = new GuiAppStore();
+		const targetSession = session("/tmp/gui-pending-user.jsonl", "/tmp/gui-project");
+		const operation = {
+			operationId: "operation-pending-user",
+			clientInstanceId: "client",
+			clientRequestId: "request",
+			sessionPath: targetSession.path,
+			type: "prompt",
+			status: "accepted" as const,
+			acceptedAt: 1,
+			updatedAt: 2,
+			payloadHash: "payload",
+		};
+		let releaseRequest = () => {};
+		const requestReady = new Promise<void>((resolve) => {
+			releaseRequest = resolve;
+		});
+		const candidate = fakeClient(async (message) => {
+			if (message.command === "prompt") {
+				await requestReady;
+				return { operation };
+			}
+			throw new Error(`unexpected command: ${message.command}`);
+		});
+		Object.assign(store, {
+			client: candidate.client,
+			selectedSessionPath: targetSession.path,
+			selectedSession: targetSession,
+			lease: lease(targetSession.path),
+		});
+
+		const submission = store.submit("第一段用户内容");
+		await vi.waitFor(() => expect(store.getSnapshot().transcript).toHaveLength(1));
+		expect(store.getSnapshot().transcript[0]).toMatchObject({
+			kind: "message",
+			payload: { message: { role: "user", content: [{ type: "text", text: "第一段用户内容" }] } },
+		});
+
+		releaseRequest();
+		await submission;
+	});
+
+	it("clears the live assistant preview when the operation completes", async () => {
+		const store = new GuiAppStore();
+		const targetSession = session("/tmp/gui-live-session.jsonl", "/tmp/gui-project");
+		const operation = {
+			operationId: "operation-completed",
+			clientInstanceId: "client",
+			clientRequestId: "request",
+			sessionPath: targetSession.path,
+			type: "prompt",
+			status: "completed" as const,
+			acceptedAt: 1,
+			updatedAt: 3,
+			payloadHash: "payload",
+		};
+		Object.assign(store, {
+			currentCwd: targetSession.cwd,
+			currentOperation: { ...operation, status: "running" as const },
+			selectedSessionPath: targetSession.path,
+			sessions: [targetSession],
+			liveText: "REAL_SMOKE_OK",
+			liveUsage: { inputTokens: 17_027, outputTokens: 40, elapsedMs: 3_400 },
+		});
+		(store as unknown as { publish(): void }).publish();
+
+		await (store as unknown as { handleEvent(event: ServerEvent): Promise<void> }).handleEvent({
+			type: "operation_updated",
+			operation,
+		});
+
+		expect(store.getSnapshot()).toMatchObject({
+			currentOperation: operation,
+			liveText: "",
+			liveUsage: undefined,
+		});
 	});
 });

@@ -386,7 +386,16 @@ export class GuiHostService {
 		afterResponse: (action: () => void) => void,
 	): Promise<JsonValue> {
 		switch (request.command) {
-			case "get_snapshot":
+			case "get_snapshot": {
+				let startupSession: { path: string; cwd: string } | undefined;
+				if (this.startupSessionPath) {
+					try {
+						const snapshot = this.adapter.inspectSession(this.startupSessionPath);
+						startupSession = { path: snapshot.path, cwd: snapshot.cwd };
+					} catch {
+						// 交接文件可能已被删除，普通 GUI 启动仍应继续。
+					}
+				}
 				return jsonValue({
 					operations: this.journal.list(),
 					pendingUiRequests: [...this.pendingUi.values()]
@@ -400,7 +409,9 @@ export class GuiHostService {
 							this.writeAccess(canonicalSessionPath(runtime.sessionPath), connection),
 						),
 					),
+					...(startupSession ? { startupSessionPath: startupSession.path, startupCwd: startupSession.cwd } : {}),
 				});
+			}
 			case "list_sessions": {
 				const cwd = canonicalProjectCwd(request.cwd);
 				const sessions = await this.listSessionSummaries(cwd, connection);
@@ -1370,7 +1381,7 @@ export class GuiHostService {
 
 	private async listSessionSummaries(cwd: string, connection: ClientConnection): Promise<SessionSummary[]> {
 		const sessions = await this.adapter.listSessions(cwd);
-		return sessions.map((session) => {
+		const summaries = sessions.map((session) => {
 			const sessionPath = canonicalSessionPath(session.path);
 			const latestOperation = this.journal
 				.list(sessionPath)
@@ -1388,6 +1399,35 @@ export class GuiHostService {
 				...(latestOperation ? { operationUpdatedAt: latestOperation.updatedAt } : {}),
 			};
 		});
+		const listedPaths = new Set(summaries.map((session) => session.path));
+		for (const runtime of this.runtimes.values()) {
+			const sessionPath = canonicalSessionPath(runtime.sessionPath);
+			if (listedPaths.has(sessionPath)) continue;
+			const snapshot = this.runtimeSnapshot(runtime, this.writeAccess(sessionPath, connection));
+			if (canonicalProjectCwd(snapshot.cwd) !== cwd) continue;
+			const latestOperation = this.journal
+				.list(sessionPath)
+				.reduce<OperationSnapshot | undefined>(
+					(latest, operation) => (!latest || operation.updatedAt > latest.updatedAt ? operation : latest),
+					undefined,
+				);
+			summaries.push({
+				path: sessionPath,
+				id: snapshot.id,
+				cwd: snapshot.cwd,
+				...(snapshot.name ? { name: snapshot.name } : {}),
+				createdAt: snapshot.createdAt,
+				updatedAt: snapshot.updatedAt,
+				messageCount: 0,
+				firstMessage: "未命名会话",
+				activity:
+					latestOperation?.status === "accepted" ? "running" : (latestOperation?.status ?? snapshot.activity),
+				writeAccess: snapshot.writeAccess,
+				...(latestOperation ? { operationUpdatedAt: latestOperation.updatedAt } : {}),
+			});
+		}
+		summaries.sort((left, right) => right.updatedAt - left.updatedAt);
+		return summaries;
 	}
 
 	private projectTranscriptItems(sessionPath: string, item: TranscriptItem): TranscriptItem[] {
@@ -1425,7 +1465,7 @@ export class GuiHostService {
 				}
 				const next = new Map<string, SessionFileFact>();
 				const transcriptChanges: string[] = [];
-				let changed = sessions.length !== previous.size;
+				let changed = false;
 				for (const session of sessions) {
 					const sessionPath = canonicalSessionPath(session.path);
 					const fact: SessionFileFact = {
@@ -1446,10 +1486,30 @@ export class GuiHostService {
 						old.name !== fact.name
 					) {
 						changed = true;
-						transcriptChanges.push(sessionPath);
+						if (!this.runtimes.has(sessionPath)) transcriptChanges.push(sessionPath);
 					}
 					if (old.writerLocked !== fact.writerLocked) changed = true;
 				}
+				for (const runtime of this.runtimes.values()) {
+					const snapshot = runtime.getSnapshot("available");
+					const sessionPath = canonicalSessionPath(runtime.sessionPath);
+					if (canonicalProjectCwd(snapshot.cwd) !== cwd || next.has(sessionPath)) continue;
+					const fact: SessionFileFact = {
+						updatedAt: snapshot.updatedAt,
+						messageCount: 0,
+						...(snapshot.name ? { name: snapshot.name } : {}),
+						writerLocked: this.adapter.isSessionWriterLocked(sessionPath),
+					};
+					next.set(sessionPath, fact);
+					const old = previous.get(sessionPath);
+					if (!old) {
+						changed = true;
+						continue;
+					}
+					if (old.updatedAt !== fact.updatedAt || old.name !== fact.name) changed = true;
+					if (old.writerLocked !== fact.writerLocked) changed = true;
+				}
+				if (next.size !== previous.size) changed = true;
 				for (const sessionPath of previous.keys()) {
 					if (next.has(sessionPath)) continue;
 					changed = true;

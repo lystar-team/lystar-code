@@ -1,9 +1,19 @@
-import { join } from "node:path";
+import { readdirSync, readFileSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { Markdown, type MarkdownTheme } from "@earendil-works/pi-tui";
 import chalk from "chalk";
+import lockfile from "proper-lockfile";
 import { selectConfig } from "./cli/config-selector.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
-import { APP_NAME, APP_TITLE, CONFIG_DIR_NAME, getAgentDir, RELEASE_REPOSITORY, VERSION } from "./config.ts";
+import {
+	APP_NAME,
+	APP_TITLE,
+	CONFIG_DIR_NAME,
+	getAgentDir,
+	getPackageDir,
+	RELEASE_REPOSITORY,
+	VERSION,
+} from "./config.ts";
 import type { InlineExtension } from "./core/extensions/types.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
 import { DefaultPackageManager } from "./core/package-manager.ts";
@@ -12,6 +22,7 @@ import { DefaultResourceLoader } from "./core/resource-loader.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
 import { runLystarInstaller } from "./utils/lystar-updater.ts";
+import { canonicalizePath, getCwdRelativePath } from "./utils/paths.ts";
 import { formatVersionCheckError, getLatestPiRelease, isNewerPackageVersion } from "./utils/version-check.ts";
 
 export type PackageCommand = "install" | "remove" | "update" | "list";
@@ -22,6 +33,69 @@ type UpdateTarget =
 	| { type: "extensions"; source?: string }
 	| { type: "models" }
 	| { type: "rollback" };
+
+const MANAGED_INSTALL_MARKER = "managed-install.json";
+
+function getActiveManagedInstallRoot(): string | undefined {
+	const configuredRoot = process.env.PI_MANAGED_INSTALL_ROOT?.trim();
+	if (!configuredRoot) return undefined;
+
+	const managedRoot = resolve(configuredRoot);
+	const releasesDir = canonicalizePath(join(managedRoot, "releases"));
+	// The launcher environment is inherited by child processes. Do not classify a
+	// source checkout or another Pi installation launched from managed Pi as managed.
+	if (getCwdRelativePath(canonicalizePath(getPackageDir()), releasesDir) === undefined) return undefined;
+
+	const markerPath = join(managedRoot, MANAGED_INSTALL_MARKER);
+	try {
+		const marker = JSON.parse(readFileSync(markerPath, "utf8")) as {
+			kind?: unknown;
+			layout?: unknown;
+			schemaVersion?: unknown;
+		};
+		if (marker.kind !== "pi-managed-install" || marker.schemaVersion !== 1 || marker.layout !== "releases-v1") {
+			throw new Error();
+		}
+	} catch {
+		throw new Error(`Managed install marker is missing or invalid: ${markerPath}`);
+	}
+
+	return managedRoot;
+}
+
+function cleanupManagedStaging(managedRoot: string): void {
+	const stagingRoot = join(managedRoot, "staging");
+	try {
+		for (const entry of readdirSync(stagingRoot)) {
+			if (entry.startsWith("update-")) {
+				rmSync(join(stagingRoot, entry), { force: true, recursive: true });
+			}
+		}
+	} catch {
+		// The staging directory does not exist yet or is not writable.
+	}
+}
+
+export function cleanupManagedInstall(): void {
+	let managedRoot: string | undefined;
+	try {
+		managedRoot = getActiveManagedInstallRoot();
+	} catch {
+		return;
+	}
+	if (!managedRoot) return;
+
+	try {
+		const releaseLock = lockfile.lockSync(join(managedRoot, "update"), { realpath: false });
+		try {
+			cleanupManagedStaging(managedRoot);
+		} finally {
+			releaseLock();
+		}
+	} catch {
+		// A live update owns the staging directory, or cleanup is unavailable.
+	}
+}
 
 const SELF_UPDATE_NOTE_MARKDOWN_THEME: MarkdownTheme = {
 	heading: (text) => chalk.bold(chalk.yellow(text)),

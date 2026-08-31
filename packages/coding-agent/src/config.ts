@@ -4,6 +4,7 @@ import { basename, dirname, join, resolve, sep, win32 } from "path";
 import { fileURLToPath } from "url";
 import { spawnProcessSync } from "./utils/child-process.ts";
 import { normalizePath } from "./utils/paths.ts";
+import { stripBom } from "./utils/text.ts";
 
 // =============================================================================
 // Package Detection
@@ -361,9 +362,30 @@ export function getUpdateInstruction(packageName: string): string {
 /**
  * Get the base directory for resolving package assets (themes, package.json, README.md, CHANGELOG.md).
  * - For Bun binary: returns the directory containing the executable
- * - For Node.js (dist/): returns __dirname (the dist/ directory)
- * - For tsx (src/): returns parent directory (the package root)
+ * - For Node.js and tsx: returns the package root containing package.json
+ * - Ignores Bun binary metadata copied into dist/ when the package root is available
  */
+export function findNodePackageDir(startDir: string): string {
+	let dir = startDir;
+	while (dir !== dirname(dir)) {
+		if (existsSync(join(dir, "package.json"))) {
+			const parent = dirname(dir);
+			// build:binary places Bun's metadata inside dist/. Node still needs the
+			// package root so its dist-relative asset paths do not become dist/dist/.
+			if (basename(dir) === "dist" && existsSync(join(parent, "package.json"))) {
+				return parent;
+			}
+			return dir;
+		}
+		dir = dirname(dir);
+	}
+	return startDir;
+}
+
+export function resolveNodePackageDir(moduleDir: string): string {
+	return findNodePackageDir(moduleDir);
+}
+
 export function getPackageDir(): string {
 	// Allow override via environment variable (useful for Nix/Guix where store paths tokenize poorly)
 	const envDir = process.env.PI_PACKAGE_DIR;
@@ -376,24 +398,6 @@ export function getPackageDir(): string {
 		return dirname(process.execPath);
 	}
 	return resolveNodePackageDir(__dirname);
-}
-
-export function resolveNodePackageDir(moduleDir: string): string {
-	// build:binary copies package.json into dist; inside a source checkout that
-	// directory is an asset bundle, not the package root used by Node/Vitest.
-	let dir = moduleDir;
-	while (dir !== dirname(dir)) {
-		if (existsSync(join(dir, "package.json"))) {
-			const parent = dirname(dir);
-			if (basename(dir) === "dist" && existsSync(join(parent, "package.json")) && existsSync(join(parent, "src"))) {
-				return parent;
-			}
-			return dir;
-		}
-		dir = dirname(dir);
-	}
-	// Fallback (shouldn't happen)
-	return moduleDir;
 }
 
 /**
@@ -500,7 +504,7 @@ interface PackageJson {
 
 let pkg: PackageJson = {};
 try {
-	pkg = JSON.parse(readFileSync(getPackageJsonPath(), "utf-8")) as PackageJson;
+	pkg = JSON.parse(stripBom(readFileSync(getPackageJsonPath(), "utf-8"))) as PackageJson;
 } catch (e: unknown) {
 	const err = e as NodeJS.ErrnoException;
 	if (err.code !== "ENOENT") throw e;
@@ -549,7 +553,7 @@ export function expandTildePath(path: string): string {
 
 const DEFAULT_SHARE_VIEWER_URL = "https://pi.dev/session/";
 
-/** Get the share viewer URL for a gist ID */
+/** Get the share viewer URL for a gist ID. */
 export function getShareViewerUrl(gistId: string): string {
 	const baseUrl = process.env.PI_SHARE_VIEWER_URL || DEFAULT_SHARE_VIEWER_URL;
 	return `${baseUrl}#${gistId}`;

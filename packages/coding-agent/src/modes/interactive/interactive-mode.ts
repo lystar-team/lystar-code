@@ -58,6 +58,7 @@ import {
 } from "../../config.ts";
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
+import type { AgentSessionRuntimeDiagnostic } from "../../core/agent-session-services.ts";
 import { CACHE_TTL_MS, type CacheMiss, collectCacheMisses, detectCacheMiss } from "../../core/cache-stats.ts";
 import type {
 	AutocompleteProviderFactory,
@@ -73,6 +74,7 @@ import type {
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
+import { GuiCompanionServer } from "../../core/gui-companion.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
 import {
@@ -429,6 +431,8 @@ function formatLoginProviderCompletionDescription(provider: LoginProviderComplet
 export interface InteractiveModeOptions {
 	/** Providers that were migrated to auth.json (shows warning) */
 	migratedProviders?: string[];
+	/** Diagnostics collected before the interactive TUI was initialized. */
+	startupDiagnostics?: AgentSessionRuntimeDiagnostic[];
 	/** Warning message if session model couldn't be restored */
 	modelFallbackMessage?: string;
 	/** Cwd to trust after reload if it gained a .pi directory during this implicitly trusted session. */
@@ -459,6 +463,7 @@ interface InteractiveTuiOptions {
 	workspaceInputHandler?: TuiInputListener;
 	workspaceSearchTarget?: () => AltScreenSearchTarget | undefined;
 	terminal?: Terminal;
+	copyOnSelect?: boolean;
 	onRightClickPaste?: () => void;
 }
 
@@ -469,6 +474,7 @@ export function createInteractiveTui(options: InteractiveTuiOptions): TuiMainScr
 		const styleSearchMatch = (text: string) => theme.bg("searchMatchBg", theme.fg("searchMatchText", text));
 		return new LystarTUI(terminal, options.showHardwareCursor, options.logDirectory, {
 			mouse: options.mouse,
+			copyOnSelect: options.copyOnSelect,
 			searchMatchStyle: (text) => theme.underline(styleSearchMatch(text)),
 			searchCurrentMatchStyle: (text) => theme.bold(theme.inverse(styleSearchMatch(text))),
 			openUrl: openBrowser,
@@ -523,6 +529,8 @@ const TRANSCRIPT_PAGE_SIZE = 80;
 
 export class InteractiveMode {
 	private runtimeHost: AgentSessionRuntime;
+	private guiCompanion?: GuiCompanionServer;
+	private guiCompanionSessionPath?: string;
 	private renderer: TuiMainScreen | LystarTUI;
 	private ui: TUI;
 	private mainScreenRenderState: TuiMainScreenRenderState | undefined;
@@ -737,6 +745,7 @@ export class InteractiveMode {
 			showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
 			logDirectory: getAgentDir(),
 			mouse: this.fullscreenMouse,
+			copyOnSelect: this.settingsManager.getFullscreenCopyOnSelect(),
 			workspaceInputHandler: (data) => this.handleWorkspaceInput(data),
 			workspaceSearchTarget: () => this.workspace?.getAltScreenSearchTarget?.(),
 			onRightClickPaste: this.onRightClickPaste,
@@ -1084,6 +1093,7 @@ export class InteractiveMode {
 			showHardwareCursor,
 			logDirectory: getAgentDir(),
 			mouse: this.fullscreenMouse,
+			copyOnSelect: this.settingsManager.getFullscreenCopyOnSelect(),
 			workspaceInputHandler: (data) => this.handleWorkspaceInput(data),
 			workspaceSearchTarget: () => this.workspace?.getAltScreenSearchTarget?.(),
 			terminal,
@@ -1280,7 +1290,24 @@ export class InteractiveMode {
 		});
 
 		// Show startup warnings
-		const { migratedProviders, modelFallbackMessage, initialMessage, initialImages, initialMessages } = this.options;
+		const {
+			migratedProviders,
+			startupDiagnostics,
+			modelFallbackMessage,
+			initialMessage,
+			initialImages,
+			initialMessages,
+		} = this.options;
+
+		for (const diagnostic of startupDiagnostics ?? []) {
+			if (diagnostic.type === "error") {
+				this.showError(diagnostic.message);
+			} else if (diagnostic.type === "warning") {
+				this.showWarning(diagnostic.message);
+			} else {
+				this.showStatus(diagnostic.message);
+			}
+		}
 
 		if (migratedProviders && migratedProviders.length > 0) {
 			this.showWarning(`凭据已迁移到 auth.json：${migratedProviders.join(", ")}`);
@@ -2205,6 +2232,30 @@ export class InteractiveMode {
 		await this.updateAvailableProviderCount();
 		this.updateEditorBorderColor();
 		this.updateTerminalTitle();
+		await this.ensureGuiCompanion();
+	}
+
+	private async ensureGuiCompanion(): Promise<void> {
+		const sessionPath = this.sessionManager.getSessionFile();
+		if (!sessionPath || !fs.existsSync(sessionPath)) {
+			await this.guiCompanion?.dispose();
+			this.guiCompanion = undefined;
+			this.guiCompanionSessionPath = undefined;
+			return;
+		}
+		if (this.guiCompanion && this.guiCompanionSessionPath === sessionPath) return;
+		await this.guiCompanion?.dispose();
+		const companion = new GuiCompanionServer(this.session, getAgentDir());
+		try {
+			await companion.start();
+			this.guiCompanion = companion;
+			this.guiCompanionSessionPath = sessionPath;
+		} catch (error) {
+			await companion.dispose().catch(() => {});
+			this.guiCompanion = undefined;
+			this.guiCompanionSessionPath = undefined;
+			this.showWarning(`GUI 共享通道启动失败：${error instanceof Error ? error.message : String(error)}`);
+		}
 	}
 
 	private async handleFatalRuntimeError(prefix: string, error: unknown): Promise<never> {
@@ -3176,7 +3227,10 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.tools.expand", () => this.toggleToolOutputExpansion());
 		this.defaultEditor.onAction("app.thinking.toggle", () => this.toggleThinkingBlockVisibility());
 		this.defaultEditor.onAction("app.editor.external", () => void this.handleOpenExternalEditor());
-		this.defaultEditor.onAction("app.message.copy", () => void this.handleCopyCommand({ flashConfirmation: true }));
+		this.defaultEditor.onAction(
+			"app.message.copy",
+			() => void this.handleCopyCommand({ flashConfirmation: true, preferSelection: true }),
+		);
 		this.defaultEditor.onAction("app.message.followUp", () => this.handleFollowUp());
 		this.defaultEditor.onAction("app.message.dequeue", () => this.handleDequeue());
 		this.defaultEditor.onAction("app.session.new", () => this.handleClearCommand());
@@ -3384,6 +3438,11 @@ export class InteractiveMode {
 				await this.handleReloadCommand();
 				return;
 			}
+			if (text === "/gui") {
+				this.editor.setText("");
+				await this.handleGuiCommand();
+				return;
+			}
 			if (text === "/debug") {
 				this.handleDebugCommand();
 				this.editor.setText("");
@@ -3462,6 +3521,51 @@ export class InteractiveMode {
 			}
 			this.editor.addToHistory?.(text);
 		};
+	}
+
+	private async handleGuiCommand(): Promise<void> {
+		const sessionPath = this.sessionManager.getSessionFile();
+		if (!sessionPath || !this.sessionManager.isPersisted() || !fs.existsSync(sessionPath)) {
+			this.showWarning("当前会话没有可共享的持久化文件。");
+			return;
+		}
+		await this.ensureGuiCompanion();
+		try {
+			await this.launchGui(sessionPath);
+			this.showStatus("GUI 已打开，当前会话由 TUI 与 GUI 共同使用。");
+		} catch (error) {
+			this.showError(`启动 GUI 失败：${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	private getGuiLauncher(): { command: string; shell: boolean } {
+		const configured = process.env.LYSTAR_GUI_LAUNCHER?.trim();
+		if (configured)
+			return { command: configured, shell: process.platform === "win32" && configured.endsWith(".cmd") };
+		if (process.platform === "win32") {
+			return {
+				command: path.join(os.homedir(), "AppData", "Local", "lystar-agent", "bin", "lystar-code-gui.cmd"),
+				shell: true,
+			};
+		}
+		return { command: path.join(os.homedir(), ".local", "bin", "lystar-code-gui"), shell: false };
+	}
+
+	private async launchGui(sessionPath: string): Promise<void> {
+		const launcher = this.getGuiLauncher();
+		await new Promise<void>((resolve, reject) => {
+			const child = spawn(launcher.command, [], {
+				detached: true,
+				env: { ...process.env, PI_GUI_STARTUP_SESSION_PATH: sessionPath },
+				stdio: "ignore",
+				shell: launcher.shell,
+			});
+			child.once("error", reject);
+			child.once("spawn", () => {
+				child.unref();
+				resolve();
+			});
+		});
 	}
 
 	private getWorkspaceStatusLabel(): string | undefined {
@@ -3653,6 +3757,9 @@ export class InteractiveMode {
 	private async handleEvent(event: AgentSessionEvent): Promise<void> {
 		if (!this.isInitialized) {
 			await this.init();
+		}
+		if (event.type === "entry_appended" || event.type === "message_end") {
+			void this.ensureGuiCompanion();
 		}
 
 		this.footer.invalidate();
@@ -4734,7 +4841,7 @@ export class InteractiveMode {
 	 */
 	private isShuttingDown = false;
 
-	private async shutdown(options?: { fromSignal?: boolean }): Promise<void> {
+	private async shutdown(options?: { fromSignal?: boolean; handoffToGui?: string }): Promise<void> {
 		if (this.isShuttingDown) return;
 		this.isShuttingDown = true;
 		// Keep signal handlers registered until terminal cleanup has completed.
@@ -4749,6 +4856,8 @@ export class InteractiveMode {
 			// terminal. If the terminal is gone, the restore writes below emit EIO,
 			// which the stdout/stderr error handler turns into emergencyTerminalExit;
 			// the render loop is already idle, so this cannot hot-spin (see #4144).
+			await this.guiCompanion?.dispose();
+			this.guiCompanion = undefined;
 			await this.runtimeHost.dispose();
 			this.themeController.disableAutoSync();
 			await this.ui.terminal.drainInput(1000);
@@ -4765,7 +4874,19 @@ export class InteractiveMode {
 		await this.ui.terminal.drainInput(1000);
 
 		this.stop();
+		await this.guiCompanion?.dispose();
+		this.guiCompanion = undefined;
 		await this.runtimeHost.dispose();
+
+		if (options?.handoffToGui) {
+			try {
+				await this.launchGui(options.handoffToGui);
+			} catch (error) {
+				process.stderr.write(`启动 GUI 失败：${error instanceof Error ? error.message : String(error)}\n`);
+				process.exit(1);
+			}
+			process.exit(0);
+		}
 
 		const resumeCommand = formatResumeCommand(this.sessionManager);
 		if (resumeCommand) {
@@ -5668,7 +5789,6 @@ export class InteractiveMode {
 			const selector = new ModelSelectorComponent(
 				this.ui,
 				this.session.model,
-				this.settingsManager,
 				this.session.modelRuntime,
 				this.session.scopedModels,
 				async (model) => {
@@ -6817,7 +6937,19 @@ export class InteractiveMode {
 		}
 	}
 
-	private async handleCopyCommand(options: { flashConfirmation?: boolean } = {}): Promise<void> {
+	private async handleCopyCommand(
+		options: { flashConfirmation?: boolean; preferSelection?: boolean } = {},
+	): Promise<void> {
+		if (
+			options.preferSelection &&
+			this.renderer instanceof LystarTUI &&
+			!this.renderer.getCopyOnSelect() &&
+			this.renderer.hasActiveSelection()
+		) {
+			await this.renderer.copyActiveSelectionToClipboard();
+			return;
+		}
+
 		const text = this.session.getLastAssistantText();
 		if (!text) {
 			this.showError("还没有可复制的 Agent 消息");

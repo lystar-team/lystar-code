@@ -21,13 +21,18 @@ import {
 	type ThinkingLevel,
 	type TranscriptItem,
 	type TranscriptPage,
+	type UsageProgress,
 } from "@lystar/code-gui-protocol";
 import { isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
+	clampInspectorSplit,
+	clampInspectorWidth,
 	type DesktopProject,
 	deleteSshPassword,
+	GUI_INSPECTOR_DEFAULT_SPLIT,
+	GUI_INSPECTOR_DEFAULT_WIDTH,
 	inspectSshHostKey,
 	installSshHost,
 	loadDesktopState,
@@ -39,7 +44,7 @@ import {
 	storeSshPassword,
 	trustSshHostKey,
 } from "./desktop-state.ts";
-import { createByteTransport } from "./transport.ts";
+import { createByteTransport, getStartupSessionPath } from "./transport.ts";
 
 declare const __LYSTAR_GUI_DEFAULT_CWD__: string;
 
@@ -232,6 +237,7 @@ export interface AppSnapshot {
 	resourceViewer?: ResourceViewer;
 	currentOperation?: OperationSnapshot;
 	liveText: string;
+	liveUsage?: UsageProgress;
 	pendingUi: readonly PendingUiRequest[];
 	statusText?: string;
 	toast?: string;
@@ -264,6 +270,18 @@ const GUI_COMMANDS: CompletionResult["items"] = [
 	{ value: "/changes ", label: "changes", description: "打开工作区变更", kind: "command" },
 ];
 
+function latestOperationForSession(
+	operations: Iterable<OperationSnapshot>,
+	sessionPath: string,
+): OperationSnapshot | undefined {
+	let latest: OperationSnapshot | undefined;
+	for (const operation of operations) {
+		if (operation.sessionPath !== sessionPath) continue;
+		if (!latest || operation.updatedAt > latest.updatedAt) latest = operation;
+	}
+	return latest;
+}
+
 interface HostConnection {
 	connectionId: "local" | string;
 	client: GuiProtocolClient;
@@ -271,6 +289,8 @@ interface HostConnection {
 		sessions: SessionStateSnapshot[];
 		operations: OperationSnapshot[];
 		pendingUiRequests: PendingUiRequest[];
+		startupSessionPath?: string;
+		startupCwd?: string;
 	};
 }
 
@@ -414,6 +434,7 @@ export class GuiAppStore {
 	private registryLoaded = false;
 	private sessions: SessionSummary[] = [];
 	private transcript: TranscriptItem[] = [];
+	private pendingUserMessages: TranscriptItem[] = [];
 	private models: ModelSummary[] = [];
 	private modelProviders: ModelProviderSummary[] = [];
 	private skills: SkillSummary[] = [];
@@ -432,6 +453,7 @@ export class GuiAppStore {
 	private loadingEarlier = false;
 	private currentOperation?: OperationSnapshot;
 	private liveText = "";
+	private liveUsage?: UsageProgress;
 	private skillDiagnostics: JsonValue = [];
 	private diagnostics?: JsonValue;
 	private about?: JsonValue;
@@ -441,8 +463,8 @@ export class GuiAppStore {
 	private gitDiff?: GitDiff;
 	private gitInspectorOpen = false;
 	private sidebarCollapsed = false;
-	private inspectorWidth = 480;
-	private inspectorSplit = 0.34;
+	private inspectorWidth = GUI_INSPECTOR_DEFAULT_WIDTH;
+	private inspectorSplit = GUI_INSPECTOR_DEFAULT_SPLIT;
 	private resourceViewer?: ResourceViewer;
 	private pendingExternalResource?: PendingExternalResource;
 	private statusText?: string;
@@ -487,6 +509,19 @@ export class GuiAppStore {
 
 	private async openConnection(): Promise<void> {
 		await this.loadRegistry();
+		const startupSessionPath = await getStartupSessionPath().catch(() => undefined);
+		if (startupSessionPath) {
+			try {
+				const connection = await this.createHostConnection("local");
+				const startupCwd = connection.initial.startupCwd;
+				if (startupCwd) {
+					const project = await this.addProject(startupCwd, "local");
+					await this.selectProject(project.id, startupSessionPath, connection);
+					return;
+				}
+				await connection.client.close();
+			} catch {}
+		}
 		const defaultCwd = import.meta.env.DEV ? __LYSTAR_GUI_DEFAULT_CWD__ : "";
 		if (defaultCwd && this.projects.length === 0) {
 			const project = await this.addProject(defaultCwd, "local");
@@ -529,8 +564,8 @@ export class GuiAppStore {
 		this.connections = state.connections;
 		this.projects = state.projects;
 		this.lastProjectId = state.selectedProjectId;
-		this.inspectorWidth = state.layout?.inspectorWidth ?? 480;
-		this.inspectorSplit = state.layout?.inspectorSplit ?? 0.34;
+		this.inspectorWidth = state.layout?.inspectorWidth ?? GUI_INSPECTOR_DEFAULT_WIDTH;
+		this.inspectorSplit = state.layout?.inspectorSplit ?? GUI_INSPECTOR_DEFAULT_SPLIT;
 		this.sidebarCollapsed = state.layout?.sidebarCollapsed === true;
 		if (this.projects.length === 0) {
 			const legacy = readJson<Array<{ cwd: string; name: string }>>(PROJECTS_KEY, []);
@@ -695,6 +730,7 @@ export class GuiAppStore {
 	}
 
 	openSettings(page: SettingsPage = "general"): void {
+		this.gitInspectorOpen = false;
 		this.settingsPage = page;
 		const hostScoped = ["general", "models", "skills", "diagnostics", "about"].includes(page);
 		const target = hostScoped && this.settingsHostId === "all" ? this.activeConnectionId : this.settingsHostId;
@@ -974,19 +1010,23 @@ export class GuiAppStore {
 		}
 	}
 
-	selectProject(projectId: string): Promise<void> {
+	selectProject(projectId: string, preferredSessionPath?: string, startupConnection?: HostConnection): Promise<void> {
 		if (this.projectOpen) {
 			if (this.projectOpen.projectId === projectId) return this.projectOpen.promise;
 			return Promise.reject(new Error("另一个项目正在打开，请等待当前操作结束"));
 		}
-		const promise = this.openProject(projectId).finally(() => {
+		const promise = this.openProject(projectId, preferredSessionPath, startupConnection).finally(() => {
 			if (this.projectOpen?.promise === promise) this.projectOpen = undefined;
 		});
 		this.projectOpen = { projectId, promise };
 		return promise;
 	}
 
-	private async openProject(projectId: string): Promise<void> {
+	private async openProject(
+		projectId: string,
+		preferredSessionPath?: string,
+		startupConnection?: HostConnection,
+	): Promise<void> {
 		const project = this.projects.find((candidate) => candidate.id === projectId);
 		if (!project) throw new Error("未找到项目");
 		if (project.id === this.currentProjectId && this.clientSnapshot?.connected && this.selectedSessionPath) return;
@@ -1010,17 +1050,19 @@ export class GuiAppStore {
 		let prepared: PreparedSession | undefined;
 		let preparedOwnsLease = false;
 		try {
-			candidate = sameHost
-				? {
-						connectionId: oldConnectionId,
-						client: oldClient,
-						initial: await requestHost<HostConnection["initial"]>(
-							oldClient,
-							{ command: "get_snapshot" },
-							"读取当前 Host 状态超时",
-						),
-					}
-				: await this.createHostConnection(project.connectionId);
+			candidate =
+				startupConnection ??
+				(sameHost
+					? {
+							connectionId: oldConnectionId,
+							client: oldClient,
+							initial: await requestHost<HostConnection["initial"]>(
+								oldClient,
+								{ command: "get_snapshot" },
+								"读取当前 Host 状态超时",
+							),
+						}
+					: await this.createHostConnection(project.connectionId));
 
 			stage = "sessions";
 			const sessions = await requestHost<SessionSummary[]>(
@@ -1034,9 +1076,16 @@ export class GuiAppStore {
 					ACTIVE_OPERATION_STATUSES.has(operation.status) &&
 					sessions.some((session) => session.path === operation.sessionPath),
 			);
+			const startupTarget =
+				preferredSessionPath ??
+				(candidate.initial.startupCwd === project.cwd ? candidate.initial.startupSessionPath : undefined);
 			const initialSession =
+				(startupTarget && sessions.find((session) => session.path === startupTarget)) ??
 				(activeOperation && sessions.find((session) => session.path === activeOperation.sessionPath)) ??
 				sessions[0];
+			const initialOperation = initialSession
+				? latestOperationForSession(candidate.initial.operations, initialSession.path)
+				: undefined;
 			if (initialSession) {
 				stage = "session";
 				prepared = await this.prepareSession(candidate.client, initialSession.path);
@@ -1061,7 +1110,8 @@ export class GuiAppStore {
 			this.currentProjectId = project.id;
 			this.currentCwd = project.cwd;
 			this.sessions = sessions;
-			this.currentOperation = activeOperation;
+			this.currentOperation = initialOperation;
+			this.statusText = undefined;
 			this.skills = [];
 			this.skillDiagnostics = [];
 			this.projectInstructions = [];
@@ -1160,6 +1210,8 @@ export class GuiAppStore {
 			this.hasMoreRecent = false;
 			this.browsingHistory = false;
 			this.liveText = "";
+			this.liveUsage = undefined;
+			this.statusText = undefined;
 			await this.refreshSessions();
 		} catch (error) {
 			this.showError(error);
@@ -1210,8 +1262,9 @@ export class GuiAppStore {
 			this.lease = result?.lease;
 			this.selectedSessionPath = targetPath;
 			this.selectedSession = result?.snapshot ?? inspected ?? this.clientSnapshot?.sessions.get(targetPath);
-			this.currentOperation = activeOperation?.sessionPath === targetPath ? activeOperation : undefined;
+			this.currentOperation = latestOperationForSession(this.clientSnapshot?.operations.values() ?? [], targetPath);
 			this.applyTranscriptPage(page);
+			this.statusText = undefined;
 			this.publish();
 			if (acquireError) this.showError(acquireError);
 			result = undefined;
@@ -1272,30 +1325,43 @@ export class GuiAppStore {
 			return;
 		}
 		if (!this.client || !this.selectedSessionPath || !this.lease) return;
+		this.statusText = undefined;
 		const commandText = value.startsWith("!") ? value.slice(1).trim() : undefined;
 		if (commandText !== undefined && !commandText) return;
 		if (commandText !== undefined && images?.length) throw new Error("Bash 命令不能包含图片附件");
 		const clientRequestId = createClientRequestId();
-		const result =
-			commandText !== undefined
-				? await this.client.request<{ operation: OperationSnapshot }>({
-						command: "run_bash",
-						sessionPath: this.selectedSessionPath,
-						leaseId: this.lease.leaseId,
-						clientInstanceId: this.client.clientInstanceId,
-						clientRequestId,
-						commandText,
-						excludeFromContext: false,
-					})
-				: await this.client.request<{ operation: OperationSnapshot }>({
-						command: "prompt",
-						sessionPath: this.selectedSessionPath,
-						leaseId: this.lease.leaseId,
-						clientInstanceId: this.client.clientInstanceId,
-						clientRequestId,
-						text: value,
-						images,
-					});
+		const pendingEntryId = `gui-pending:${clientRequestId}`;
+		if (commandText === undefined) {
+			this.pendingUserMessages.push(this.createPendingUserMessage(value, images, pendingEntryId));
+			this.publish();
+		}
+		let result: { operation: OperationSnapshot };
+		try {
+			result =
+				commandText !== undefined
+					? await this.client.request<{ operation: OperationSnapshot }>({
+							command: "run_bash",
+							sessionPath: this.selectedSessionPath,
+							leaseId: this.lease.leaseId,
+							clientInstanceId: this.client.clientInstanceId,
+							clientRequestId,
+							commandText,
+							excludeFromContext: false,
+						})
+					: await this.client.request<{ operation: OperationSnapshot }>({
+							command: "prompt",
+							sessionPath: this.selectedSessionPath,
+							leaseId: this.lease.leaseId,
+							clientInstanceId: this.client.clientInstanceId,
+							clientRequestId,
+							text: value,
+							images,
+						});
+		} catch (error) {
+			this.pendingUserMessages = this.pendingUserMessages.filter((item) => item.entryId !== pendingEntryId);
+			this.publish();
+			throw error;
+		}
 		this.currentOperation = result.operation;
 		this.sessions = this.sessions.map((session) =>
 			session.path === result.operation.sessionPath
@@ -1303,6 +1369,7 @@ export class GuiAppStore {
 				: session,
 		);
 		this.liveText = "";
+		this.liveUsage = undefined;
 		if (this.browsingHistory) this.hasMoreRecent = true;
 		this.publish();
 	}
@@ -1362,6 +1429,7 @@ export class GuiAppStore {
 		this.lease = result.lease;
 		this.selectedSessionPath = result.snapshot.path;
 		this.selectedSession = result.snapshot;
+		this.statusText = undefined;
 		await Promise.all([this.refreshTranscript(), this.refreshSessions()]);
 	}
 
@@ -1550,6 +1618,7 @@ export class GuiAppStore {
 
 	async openGitInspector(): Promise<void> {
 		if (!this.hasCapability("git-inspector")) return;
+		if (this.settingsPage) this.closeSettings();
 		this.gitInspectorOpen = true;
 		this.publish();
 		await this.refreshGitStatus();
@@ -1713,8 +1782,8 @@ export class GuiAppStore {
 	}
 
 	setInspectorLayout(width: number, split: number): void {
-		this.inspectorWidth = Math.min(900, Math.max(320, Math.round(width)));
-		this.inspectorSplit = Math.min(0.8, Math.max(0.2, split));
+		this.inspectorWidth = clampInspectorWidth(width);
+		this.inspectorSplit = clampInspectorSplit(split);
 		this.publish();
 	}
 
@@ -1723,7 +1792,7 @@ export class GuiAppStore {
 	}
 
 	async resetInspectorLayout(): Promise<void> {
-		this.setInspectorLayout(480, 0.34);
+		this.setInspectorLayout(GUI_INSPECTOR_DEFAULT_WIDTH, GUI_INSPECTOR_DEFAULT_SPLIT);
 		await this.persistRegistry();
 	}
 
@@ -2143,12 +2212,15 @@ export class GuiAppStore {
 		this.selectedSessionPath = undefined;
 		this.selectedSession = undefined;
 		this.transcript = [];
+		this.pendingUserMessages = [];
 		this.previousCursor = undefined;
 		this.transcriptGeneration = undefined;
 		this.hasMorePrevious = false;
 		this.hasMoreRecent = false;
 		this.browsingHistory = false;
 		this.liveText = "";
+		this.liveUsage = undefined;
+		this.statusText = undefined;
 	}
 
 	private async refreshSessions(): Promise<void> {
@@ -2190,12 +2262,81 @@ export class GuiAppStore {
 
 	private applyTranscriptPage(page: TranscriptPage): void {
 		this.transcript = page.items;
+		this.reconcilePendingUserMessages();
 		this.previousCursor = page.previousCursor;
 		this.transcriptGeneration = page.transcriptGeneration;
 		this.hasMorePrevious = page.hasMorePrevious;
 		this.hasMoreRecent = false;
 		this.browsingHistory = false;
 		this.liveText = "";
+		this.liveUsage = undefined;
+	}
+
+	private reconcilePendingUserMessages(): void {
+		const committedTexts = new Map<string, number>();
+		for (const item of this.transcript) {
+			const payload = item.payload as Record<string, JsonValue> | null;
+			const message =
+				payload && typeof payload === "object" && !Array.isArray(payload)
+					? (payload.message as Record<string, JsonValue> | undefined)
+					: undefined;
+			if (!message || message.role !== "user" || !Array.isArray(message.content)) continue;
+			const text = message.content
+				.map((part) =>
+					part &&
+					typeof part === "object" &&
+					!Array.isArray(part) &&
+					part.type === "text" &&
+					typeof part.text === "string"
+						? part.text
+						: "",
+				)
+				.join("");
+			committedTexts.set(text, (committedTexts.get(text) ?? 0) + 1);
+		}
+		this.pendingUserMessages = this.pendingUserMessages.filter((item) => {
+			const payload = item.payload as Record<string, JsonValue>;
+			const message = payload.message as Record<string, JsonValue>;
+			const content = Array.isArray(message.content) ? message.content : [];
+			const text = content
+				.map((part) =>
+					part &&
+					typeof part === "object" &&
+					!Array.isArray(part) &&
+					part.type === "text" &&
+					typeof part.text === "string"
+						? part.text
+						: "",
+				)
+				.join("");
+			const count = committedTexts.get(text) ?? 0;
+			if (count === 0) return true;
+			committedTexts.set(text, count - 1);
+			return false;
+		});
+	}
+
+	private createPendingUserMessage(
+		text: string,
+		images: Array<{ data: string; mimeType: string }> | undefined,
+		entryId: string,
+	): TranscriptItem {
+		return {
+			entryId,
+			parentId: this.selectedSession?.leafId ?? null,
+			timestamp: new Date().toISOString(),
+			kind: "message",
+			payload: {
+				type: "message",
+				message: {
+					role: "user",
+					content: [
+						{ type: "text", text },
+						...(images ?? []).map((image) => ({ type: "image", data: image.data, mimeType: image.mimeType })),
+					],
+				},
+			},
+		};
 	}
 
 	private async releaseLease(sessionPath?: string, lease?: ControlLease): Promise<void> {
@@ -2328,6 +2469,7 @@ export class GuiAppStore {
 				this.hasMorePrevious = false;
 				this.hasMoreRecent = false;
 				this.browsingHistory = false;
+				this.statusText = undefined;
 			}
 			await this.refreshSessions();
 		}
@@ -2341,9 +2483,23 @@ export class GuiAppStore {
 		}
 		if (event.type === "operation_updated" && event.operation.sessionPath === this.selectedSessionPath) {
 			this.currentOperation = event.operation;
-			if (!ACTIVE_OPERATION_STATUSES.has(event.operation.status)) {
-				this.statusText = event.operation.status === "completed" ? "已完成" : event.operation.error;
+			if (ACTIVE_OPERATION_STATUSES.has(event.operation.status) || event.operation.status === "completed") {
+				this.statusText = undefined;
+				if (event.operation.status === "completed") {
+					this.liveText = "";
+					this.liveUsage = undefined;
+				}
+			} else {
+				this.statusText =
+					event.operation.status === "aborted"
+						? "已取消"
+						: event.operation.status === "interrupted"
+							? "已中断"
+							: event.operation.error
+								? `失败：${event.operation.error}`
+								: "任务失败";
 				this.liveText = "";
+				this.liveUsage = undefined;
 				if (this.browsingHistory) this.hasMoreRecent = true;
 				else await this.refreshTranscript();
 				if (this.gitInspectorOpen) await this.refreshGitStatus().catch(() => {});
@@ -2359,8 +2515,30 @@ export class GuiAppStore {
 			event.sessionPath === this.selectedSessionPath &&
 			!this.browsingHistory
 		) {
+			if (event.progress.type === "user_message") {
+				const text = event.progress.text;
+				const alreadyVisible = this.pendingUserMessages.some((item) => {
+					const payload = item.payload as Record<string, JsonValue>;
+					const message = payload.message as Record<string, JsonValue> | undefined;
+					const content = message && Array.isArray(message.content) ? message.content : [];
+					return content.some(
+						(part) =>
+							part &&
+							typeof part === "object" &&
+							!Array.isArray(part) &&
+							part.type === "text" &&
+							part.text === text,
+					);
+				});
+				if (!alreadyVisible) {
+					this.pendingUserMessages.push(
+						this.createPendingUserMessage(text, undefined, `tui-live:${createClientRequestId()}`),
+					);
+				}
+			}
 			const liveText = extractAssistantText(event.progress);
 			if (liveText !== undefined) this.liveText = liveText;
+			if (event.progress.type === "usage") this.liveUsage = event.progress.usage;
 		}
 		if (event.type === "ui_request") {
 			const payload = asRecord(event.payload);
@@ -2439,7 +2617,7 @@ export class GuiAppStore {
 			selectedSessionPath: this.selectedSessionPath,
 			selectedSession: this.selectedSession,
 			lease: this.lease,
-			transcript: this.transcript,
+			transcript: [...this.transcript, ...this.pendingUserMessages],
 			transcriptGeneration: this.transcriptGeneration,
 			previousCursor: this.previousCursor,
 			hasMorePrevious: this.hasMorePrevious,
@@ -2463,6 +2641,7 @@ export class GuiAppStore {
 			resourceViewer: this.resourceViewer,
 			currentOperation: this.currentOperation,
 			liveText: this.liveText,
+			liveUsage: this.liveUsage,
 			pendingUi: this.pendingUi,
 			statusText: this.statusText,
 			toast: this.toast,

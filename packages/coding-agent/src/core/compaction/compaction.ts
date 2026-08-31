@@ -555,6 +555,23 @@ function createSummarizationOptions(
 }
 
 /**
+ * Returns an error message when a summarization response cannot safely be persisted.
+ * A length stop contains partial text and must not become a session checkpoint.
+ */
+export function getSummarizationFailure(response: AssistantMessage, label: string): string | undefined {
+	if (response.stopReason === "error") {
+		return `${label} failed: ${response.errorMessage || "Unknown error"}`;
+	}
+	if (response.stopReason === "length") {
+		return `${label} failed: generation hit the token cap and the summary is incomplete`;
+	}
+	if (!response.content.some((block) => block.type === "text" && block.text.trim().length > 0)) {
+		return `${label} failed: the summary was empty`;
+	}
+	return undefined;
+}
+
+/**
  * Shared choke point for every compaction/branch-summary summarization call. Wraps the
  * single LLM call in {@link retryAssistantCall} so transient stream drops (e.g.
  * `terminated`, socket close) honor the configured retry policy instead of failing

@@ -20,6 +20,7 @@ export interface BuiltinSlashCommand {
 export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "settings", description: t("command.settings") },
 	{ name: "model", description: t("command.model"), argumentHint: "<provider/model>" },
+	{ name: "thinking", description: "设置思考级别", argumentHint: "<level>" },
 	{ name: "scoped-models", description: t("command.scopedModels") },
 	{ name: "export", description: t("command.export") },
 	{ name: "import", description: t("command.import") },
@@ -41,5 +42,6 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "compact", description: t("command.compact") },
 	{ name: "resume", description: t("command.resume") },
 	{ name: "reload", description: t("command.reload") },
+	{ name: "gui", description: t("command.gui") },
 	{ name: "quit", description: t("command.quit", { app: APP_NAME }) },
 ];

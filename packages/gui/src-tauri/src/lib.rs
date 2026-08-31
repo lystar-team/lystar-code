@@ -1295,6 +1295,11 @@ fn load_desktop_state(app: AppHandle) -> Result<Value, String> {
     serde_json::from_slice(&bytes).map_err(|error| format!("桌面配置文件损坏：{error}"))
 }
 
+#[tauri::command]
+fn get_startup_session_path() -> Option<String> {
+    env::var("PI_GUI_STARTUP_SESSION_PATH").ok().filter(|value| !value.trim().is_empty())
+}
+
 fn sync_parent(path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
@@ -1442,6 +1447,7 @@ pub fn run() {
             store_ssh_password,
             delete_ssh_password,
             load_desktop_state,
+            get_startup_session_path,
             save_desktop_state
         ])
         .build(tauri::generate_context!())

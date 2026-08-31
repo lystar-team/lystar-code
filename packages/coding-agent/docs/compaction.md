@@ -34,7 +34,7 @@ contextTokens > contextWindow - reserveTokens
 
 By default, `reserveTokens` is 16384 tokens (configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`). This leaves room for the LLM's response.
 
-Before every provider request, pi checks the fully prepared context after Skill/input transforms, extension messages, steering/follow-up injection, and tool results. The check uses provider-reported usage for the existing prefix and a conservative UTF-8 upper bound for newly added content. If the request crosses the compaction threshold, compaction runs first. If compaction cannot bring the request below the model's configured `contextWindow`, pi stops locally and does not call the provider.
+During a multi-turn agent run, Pi also checks the threshold after tools finish and their results are appended, before starting the next assistant response. If the completed tool batch terminates the run and no queued message requires another response, this between-turn check is skipped. The existing pre-request check remains the final guard for prepared context.
 
 You can also trigger manually with `/compact [instructions]`, where optional instructions focus the summary.
 

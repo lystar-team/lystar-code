@@ -64,6 +64,8 @@ import {
 	renderTerminalRichText,
 	resolveProjectTrusted,
 	type SessionEntry,
+	type SessionInfoCache,
+	SessionLockedError,
 	SessionManager,
 	SettingsManager,
 	type SubagentDetails,
@@ -100,6 +102,7 @@ import type {
 	TranscriptItem,
 } from "@lystar/code-gui-protocol";
 import { GUI_PROTOCOL_VERSION } from "@lystar/code-gui-protocol";
+import { GuiCompanionRuntime } from "./companion-runtime.ts";
 import type {
 	ModelProviderInput,
 	ModelProviderSummary,
@@ -1525,6 +1528,8 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	private readonly agentDir: string;
 	private readonly createRuntimeFactory?: CreateAgentSessionRuntimeFactory;
 	private readonly externalResourceGrants = new Map<string, { path: string; expiresAt: number }>();
+	private readonly sessionInfoCache: SessionInfoCache = { entries: new Map() };
+	private readonly sessionListPromises = new Map<string, Promise<SessionSummaryBase[]>>();
 	private modelRuntimePromise?: Promise<ModelRuntime>;
 	private initialRuntime?: AgentSessionRuntime;
 	private initialRuntimeClaimed = false;
@@ -1550,8 +1555,17 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	async openSession(sessionPath: string, onUiRequest: UiRequestHandler): Promise<RuntimeSession> {
 		const initialRuntime = this.takeInitialRuntime(sessionPath);
 		if (initialRuntime) return this.wrapRuntime(initialRuntime, onUiRequest);
-		const manager = SessionManager.open(sessionPath);
-		return this.createRuntime(manager.getCwd(), manager, onUiRequest);
+		try {
+			const manager = SessionManager.open(sessionPath);
+			return this.createRuntime(manager.getCwd(), manager, onUiRequest);
+		} catch (error) {
+			if (!(error instanceof SessionLockedError)) throw error;
+			try {
+				return await GuiCompanionRuntime.open(this.agentDir, sessionPath);
+			} catch {
+				throw error;
+			}
+		}
 	}
 
 	inspectSession(sessionPath: string): SessionStateSnapshot {
@@ -1603,17 +1617,37 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	}
 
 	async listSessions(cwd: string): Promise<SessionSummaryBase[]> {
-		return (await SessionManager.list(cwd, getDefaultSessionDir(cwd, this.agentDir))).map((session) => ({
-			path: session.path,
-			id: session.id,
-			cwd: session.cwd,
-			...(session.name ? { name: session.name } : {}),
-			createdAt: session.created.getTime(),
-			updatedAt: session.modified.getTime(),
-			messageCount: session.messageCount,
-			firstMessage: session.firstMessage === "(no messages)" ? "未命名会话" : session.firstMessage,
-			activity: session.lastOutcome ?? "idle",
-		}));
+		const key = resolve(cwd);
+		const pending = this.sessionListPromises.get(key);
+		if (pending) return pending;
+		const request: Promise<SessionSummaryBase[]> = SessionManager.list(
+			cwd,
+			getDefaultSessionDir(cwd, this.agentDir),
+			undefined,
+			{
+				cache: this.sessionInfoCache,
+				includeAllMessagesText: false,
+				metadataOnly: true,
+			},
+		).then((sessions) =>
+			sessions.map<SessionSummaryBase>((session) => ({
+				path: session.path,
+				id: session.id,
+				cwd: session.cwd,
+				...(session.name ? { name: session.name } : {}),
+				createdAt: session.created.getTime(),
+				updatedAt: session.modified.getTime(),
+				messageCount: session.messageCount,
+				firstMessage: session.firstMessage === "(no messages)" ? "未命名会话" : session.firstMessage,
+				activity: session.lastOutcome ?? "idle",
+			})),
+		);
+		this.sessionListPromises.set(key, request);
+		try {
+			return await request;
+		} finally {
+			if (this.sessionListPromises.get(key) === request) this.sessionListPromises.delete(key);
+		}
 	}
 
 	listProjectInstructions(cwd: string): ProjectInstruction[] {

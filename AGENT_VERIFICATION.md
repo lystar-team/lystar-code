@@ -1,6 +1,6 @@
 # LYStar Code 验证记录
 
-> 更新日期：2026-08-22
+> 更新日期：2026-08-31
 >
 > 本文件只记录当前 TypeScript TUI、GUI Host、GUI Protocol、GUI 和发行链路的验证。历史原生终端实验记录已移除，不作为当前实现证据。
 
@@ -9,7 +9,31 @@
 - 正式 CLI 入口是 `packages/coding-agent/src/main.ts`，使用 TypeScript Interactive TUI。
 - GUI 继续使用 `packages/gui-protocol`、`packages/gui-host`、Transcript 分页、Session lease、operation journal、content reference 和标准 `ui_request`/`ui_response`。
 - 发行包只构建 `lc` 与 `lystar`，不包含额外终端前端可执行文件。
-- `packages/gui/src-tauri` 是 GUI 桌面壳自己的 Rust 工程，不属于终端前端清理范围。
+- 上游 Pi 基线已同步到 `v0.84.4`，commit `b79e4cc834970cca69daebffab7df1da7d1e52c4`；LYStar 产品版本为 `0.84.4-lystar.1`。
+
+## Pi v0.84.4 合并验证（2026-08-31）
+
+本轮在当前工作区完成：
+
+```bash
+npm ci --ignore-scripts
+npm run check
+npm run build:offline
+npm exec -- vitest --run --maxWorkers=1 \
+  packages/agent/test/harness/nodejs-env.test.ts \
+  packages/coding-agent/test/config.test.ts \
+  packages/coding-agent/test/model-resolver.test.ts \
+  packages/coding-agent/test/suite/agent-session-model-extension.test.ts \
+  packages/coding-agent/test/interactive-tui.test.ts \
+  packages/coding-agent/test/session-id-readonly.test.ts \
+  packages/ai/test/model-catalog-types.test.ts \
+  packages/ai/test/xai-responses.test.ts \
+  packages/ai/test/zai-coding-plan-models.test.ts
+cd packages/tui && node --test test/tui-render.test.ts
+```
+
+结果：静态检查、离线构建、定向 Vitest（9 个文件、149 项）和 TUI 渲染测试（29 项）通过。未在本轮验证真实 Provider、PTY、多平台实机、Tauri 和发行包安装运行。
+
 
 ## Tool Recovery 验证
 
