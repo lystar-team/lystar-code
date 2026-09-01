@@ -729,6 +729,9 @@ async function summarizeConversationText(options: {
 		if (response.stopReason === "error") {
 			throw new Error(`${options.errorLabel}失败：${response.errorMessage || "未知错误"}`);
 		}
+		if (response.stopReason === "length") {
+			throw new Error("generation hit the token cap and the summary is incomplete");
+		}
 		summary = contentText(response.content);
 		usage = usage ? combineUsage(usage, response.usage) : response.usage;
 		remaining = remaining.slice(chunk.length);

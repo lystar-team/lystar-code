@@ -354,12 +354,12 @@ export async function generateBranchSummary(
 	if (response.stopReason === "aborted") {
 		return { aborted: true };
 	}
+	if (response.content.some((block) => block.type === "toolCall")) {
+		return { error: "Branch summarization attempted to call a tool" };
+	}
 	const failure = getSummarizationFailure(response, "Branch summarization");
 	if (failure) {
 		return { error: failure };
-	}
-	if (response.content.some((block) => block.type === "toolCall")) {
-		return { error: "Branch summarization attempted to call a tool" };
 	}
 
 	let summary = contentText(response.content);

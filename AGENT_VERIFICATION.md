@@ -16,16 +16,18 @@
 本轮修复工作区的类型、格式、Agent Tool 冲突、GUI companion、全屏工作台、Markdown 和鼠标 Overlay 相关回归，实际运行：
 
 ```bash
-npx tsgo --noEmit --pretty false --incremental false
+npx tsgo --noEmit --pretty false
 npx biome check --error-on-warnings --files-ignore-unknown=true .
 npm run test:scripts
 npm --workspace @earendil-works/pi-agent-core exec vitest -- --run test/agent-loop.test.ts test/harness/tools.test.ts --maxWorkers=2 --pool=forks
 npm --workspace @earendil-works/pi-coding-agent exec vitest -- --run test/gui-companion.test.ts test/interactive-gui-companion.test.ts test/apply-patch-extension.test.ts test/assistant-message.test.ts test/edit-tool-no-full-redraw.test.ts test/file-mutation-queue.test.ts test/interactive-tui.test.ts test/lystar-tui.test.ts test/lystar-workspace.test.ts test/subagent-session-view.test.ts test/system-prompt.test.ts test/task-workbench-components.test.ts test/tool-execution-component.test.ts test/tool-recovery.test.ts test/tool-system-prompt-contributions.test.ts --maxWorkers=2 --pool=forks
+npm --workspace @earendil-works/pi-coding-agent run build:unbundled
+npm --workspace @earendil-works/pi-coding-agent test -- --maxWorkers=2 --reporter=json --outputFile=/tmp/coding-local.json
 cd packages/tui && node --test test/markdown.test.ts test/tui-alt-screen.test.ts
 node scripts/lcd.mjs --version
 ```
 
-结果：TypeScript 检查、Biome 检查、脚本测试（33 项）、Agent 定向测试（2 个文件、71 项）、Coding Agent 定向测试（15 个文件、234 项）、TUI 定向测试（138 项）和源码快捷入口版本检查均通过，返回 `0.84.4-lystar.1`。本节未替代完整 CI、离线构建、PTY、多平台实机和发行包安装验证。
+结果：TypeScript 检查、Biome 检查、脚本测试（33 项）、Agent 定向测试（2 个文件、71 项）、Coding Agent 定向测试（15 个文件、234 项）、Coding Agent unbundled build、Coding Agent 完整测试（263 个文件、2323 项，其中 2322 项通过、1 项按平台跳过）、TUI 定向测试（138 项）和源码快捷入口版本检查均通过，返回 `0.84.4-lystar.1`。本节未替代完整 CI、离线构建、PTY、多平台实机和发行包安装验证。
 
 ## Pi v0.84.4 合并验证（2026-08-31）
 

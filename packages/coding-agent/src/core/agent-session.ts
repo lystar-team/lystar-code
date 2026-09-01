@@ -1728,8 +1728,10 @@ export class AgentSession {
 		} satisfies CustomMessage<T>;
 		if (options?.deliverAs === "nextTurn") {
 			this._pendingNextTurnMessages.push(appMessage);
-		} else if (this.isStreaming && options?.triggerTurn !== false) {
-			if (options?.deliverAs === "followUp") {
+		} else if (this.isStreaming) {
+			if (options?.triggerTurn === false) {
+				this.agent.steer(appMessage);
+			} else if (options?.deliverAs === "followUp") {
 				this.agent.followUp(appMessage);
 			} else {
 				this.agent.steer(appMessage);
@@ -2352,14 +2354,10 @@ export class AgentSession {
 		if (assistantMessage.stopReason === "error" || directContextTokens === 0) {
 			const messages = this.agent.state.messages;
 			const estimate = estimateContextTokens(messages);
-			if (estimate.lastUsageIndex === null) return false; // No usage data at all
-			// Verify the usage source is post-compaction. Kept pre-compaction messages
-			// have stale usage reflecting the old (larger) context and would falsely
-			// trigger compaction right after one just finished.
-			const usageMsg = messages[estimate.lastUsageIndex];
+			const usageMsg = estimate.lastUsageIndex === null ? undefined : messages[estimate.lastUsageIndex];
 			if (
 				compactionEntry &&
-				usageMsg.role === "assistant" &&
+				usageMsg?.role === "assistant" &&
 				(usageMsg as AssistantMessage).timestamp <= new Date(compactionEntry.timestamp).getTime()
 			) {
 				return false;

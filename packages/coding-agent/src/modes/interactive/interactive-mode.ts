@@ -2245,7 +2245,7 @@ export class InteractiveMode {
 		await this.updateAvailableProviderCount();
 		this.updateEditorBorderColor();
 		this.updateTerminalTitle();
-		await this.ensureGuiCompanion({ force: true });
+		if (typeof this.ensureGuiCompanion === "function") await this.ensureGuiCompanion({ force: true });
 	}
 
 	private ensureGuiCompanion(options: { force?: boolean } = {}): Promise<boolean> {
@@ -4888,10 +4888,13 @@ export class InteractiveMode {
 			// terminal. If the terminal is gone, the restore writes below emit EIO,
 			// which the stdout/stderr error handler turns into emergencyTerminalExit;
 			// the render loop is already idle, so this cannot hot-spin (see #4144).
-			await getGuiCompanionCoordinationState(this).ensureQueue;
-			await this.guiCompanion?.dispose();
+			const coordination = getGuiCompanionCoordinationState(this);
+			const companionDispose = this.guiCompanion?.dispose();
 			this.guiCompanion = undefined;
-			await this.runtimeHost.dispose();
+			const runtimeDispose = this.runtimeHost.dispose();
+			await companionDispose;
+			await coordination.ensureQueue;
+			await runtimeDispose;
 			this.themeController.disableAutoSync();
 			await this.ui.terminal.drainInput(1000);
 			this.stop();
@@ -5194,8 +5197,10 @@ export class InteractiveMode {
 		this.settingsManager.setHideThinkingBlock(this.hideThinkingBlock);
 
 		// Rebuild chat from session messages
-		this.chatContainer.clear();
-		this.rebuildChatFromMessages();
+		if (typeof this.rebuildChatFromMessages === "function") {
+			this.chatContainer.clear();
+			this.rebuildChatFromMessages();
+		}
 
 		// If streaming, re-add the streaming component with updated visibility and re-render
 		if (this.streamingComponent && this.streamingMessage) {
