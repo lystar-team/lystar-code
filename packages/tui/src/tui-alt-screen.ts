@@ -702,6 +702,20 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return this.isOverlayFocused() && this.activeSearch?.overlay?.isFocused() !== true;
 	}
 
+	private cancelActiveSelectionGesture(): boolean {
+		if (!this.selectionPressActive) return false;
+		this.selectionPressActive = false;
+		this.stopSelectionAutoScroll();
+		this.selectionAnchor = undefined;
+		this.selectionFocus = undefined;
+		this.selectionGranularity = "character";
+		this.selectionInitialRange = undefined;
+		this.pressedUrl = undefined;
+		this.selectionDragged = false;
+		this.lastClick = undefined;
+		return true;
+	}
+
 	protected handleViewportInput(data: string): TuiInputListenerResult {
 		if (data === FOCUS_OUT) {
 			const hadActiveSelection = this.selectionPressActive;
@@ -723,6 +737,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			return { consume: true };
 		}
 		if (data === FOCUS_IN) return { consume: true };
+		if (this.shouldDeferViewportInputToOverlay() && isTerminalMouseInput(data)) {
+			if (this.cancelActiveSelectionGesture()) this.requestRender();
+			return undefined;
+		}
 
 		const wheelEvent = this.parseWheelEvent(data);
 		if (wheelEvent) {

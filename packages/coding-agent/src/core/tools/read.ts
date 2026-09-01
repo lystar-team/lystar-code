@@ -2,7 +2,7 @@ import { basename, dirname, isAbsolute, relative, resolve as resolvePath, sep } 
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { ToolExecutionError, type ToolRecoveryReplacementResult } from "@earendil-works/pi-agent-core";
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
-import { Text } from "@earendil-works/pi-tui";
+import { type Component, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { constants } from "fs";
 import { access as fsAccess, readdir as fsReaddir, readFile as fsReadFile } from "fs/promises";
 import { type Static, Type } from "typebox";
@@ -181,6 +181,100 @@ function formatCompactReadCall(
 	};
 }
 
+interface ReadResultRenderValue {
+	text: string;
+	lines: string[];
+	widths: number[];
+	renderedByWidth?: Map<number, string[]>;
+}
+
+class ReadResultComponent implements Component {
+	private value: ReadResultRenderValue = { text: "", lines: [], widths: [] };
+	private cachedWidth?: number;
+	private cachedLines?: string[];
+
+	setValue(value: ReadResultRenderValue): void {
+		if (this.value.text === value.text) return;
+		this.value = value;
+		this.cachedWidth = undefined;
+		this.cachedLines = undefined;
+	}
+
+	render(width: number): string[] {
+		const safeWidth = Math.max(1, width);
+		if (this.cachedLines && this.cachedWidth === safeWidth) return this.cachedLines;
+		const valueCachedLines = this.value.renderedByWidth?.get(safeWidth);
+		if (valueCachedLines) {
+			this.cachedWidth = safeWidth;
+			this.cachedLines = valueCachedLines;
+			return valueCachedLines;
+		}
+		if (this.value.lines.length === 0) {
+			this.cachedWidth = safeWidth;
+			this.cachedLines = [];
+			return this.cachedLines;
+		}
+
+		const hasStableAnsiBoundaries = this.value.lines.every((line) => {
+			const ansiSequences = line.match(/\x1b\[[0-9;]*m/g);
+			const lastAnsiSequence = ansiSequences?.at(-1);
+			return !lastAnsiSequence || ["\x1b[0m", "\x1b[39m", "\x1b[49m"].includes(lastAnsiSequence);
+		});
+		const canRenderDirectly =
+			hasStableAnsiBoundaries &&
+			this.value.lines.every((line, index) => (this.value.widths[index] ?? visibleWidth(line)) <= safeWidth);
+		const lines = canRenderDirectly
+			? this.value.lines.map(
+					(line, index) =>
+						`${line}${" ".repeat(Math.max(0, safeWidth - (this.value.widths[index] ?? visibleWidth(line))))}`,
+				)
+			: wrapTextWithAnsi(this.value.text, safeWidth).map(
+					(line) => `${line}${" ".repeat(Math.max(0, safeWidth - visibleWidth(line)))}`,
+				);
+
+		this.value.renderedByWidth ??= new Map<number, string[]>();
+		this.value.renderedByWidth.set(safeWidth, lines);
+		this.cachedWidth = safeWidth;
+		this.cachedLines = lines;
+		return lines;
+	}
+
+	invalidate(): void {
+		this.cachedWidth = undefined;
+		this.cachedLines = undefined;
+	}
+}
+
+type ReadResultRenderCache = {
+	args: unknown;
+	content: readonly unknown[];
+	details: unknown;
+	showImages: boolean;
+	isError: boolean;
+	themeSignature: string;
+	values: Map<string, ReadResultRenderValue>;
+};
+
+const readResultRenderCache = new WeakMap<ReadResultComponent, ReadResultRenderCache>();
+
+function getReadThemeSignature(theme: Theme): string {
+	return [
+		theme.name,
+		theme.getColorMode(),
+		theme.getFgAnsi("toolOutput"),
+		theme.getFgAnsi("warning"),
+		theme.getFgAnsi("syntaxComment"),
+		theme.getFgAnsi("syntaxKeyword"),
+		theme.getFgAnsi("syntaxFunction"),
+		theme.getFgAnsi("syntaxVariable"),
+		theme.getFgAnsi("syntaxString"),
+		theme.getFgAnsi("syntaxNumber"),
+		theme.getFgAnsi("syntaxType"),
+		theme.getFgAnsi("syntaxOperator"),
+		theme.getFgAnsi("syntaxPunctuation"),
+	].join("\0");
+}
+
 function formatReadResult(
 	args: ReadRenderArgs | undefined,
 	result: { content: (TextContent | ImageContent)[]; details?: ReadToolDetails },
@@ -189,31 +283,51 @@ function formatReadResult(
 	showImages: boolean,
 	_cwd: string,
 	isError: boolean,
-): string {
+): ReadResultRenderValue {
 	if (!options.expanded && !isError) {
-		return "";
+		return { text: "", lines: [], widths: [] };
 	}
 
 	const rawPath = str(args?.file_path ?? args?.path);
 	const output = getTextOutput(result, showImages);
 	const lang = !isError && rawPath ? getLanguageFromPath(rawPath) : undefined;
-	const renderedLines = lang ? highlightCode(replaceTabs(output), lang) : output.split("\n");
+	const sourceLines = trimTrailingEmptyLines(replaceTabs(output).split("\n"));
+	const renderedLines = lang ? highlightCode(replaceTabs(output), lang) : sourceLines;
 	const lines = trimTrailingEmptyLines(renderedLines);
 	const maxLines = options.expanded ? lines.length : 1;
 	const displayLines = lines.slice(0, maxLines);
-	let text = `\n${displayLines.map((line) => (lang ? replaceTabs(line) : theme.fg("toolOutput", replaceTabs(line)))).join("\n")}`;
+	const displayWidths = sourceLines.slice(0, maxLines).map((line) => visibleWidth(line));
+	const renderedDisplayLines = displayLines.map((line) =>
+		lang ? replaceTabs(line) : theme.fg("toolOutput", replaceTabs(line)),
+	);
+	const outputLines = ["", ...renderedDisplayLines];
+	const outputWidths = [0, ...displayWidths];
+	let text = outputLines.join("\n");
 
 	const truncation = result.details?.truncation;
 	if (truncation?.truncated) {
+		let warning: string;
 		if (truncation.firstLineExceedsLimit) {
-			text += `\n${theme.fg("warning", `[First line exceeds ${formatSize(truncation.maxBytes ?? DEFAULT_MAX_BYTES)} limit]`)}`;
+			warning = theme.fg(
+				"warning",
+				`[First line exceeds ${formatSize(truncation.maxBytes ?? DEFAULT_MAX_BYTES)} limit]`,
+			);
 		} else if (truncation.truncatedBy === "lines") {
-			text += `\n${theme.fg("warning", `[Truncated: showing ${truncation.outputLines} of ${truncation.totalLines} lines (${truncation.maxLines ?? DEFAULT_MAX_LINES} line limit)]`)}`;
+			warning = theme.fg(
+				"warning",
+				`[Truncated: showing ${truncation.outputLines} of ${truncation.totalLines} lines (${truncation.maxLines ?? DEFAULT_MAX_LINES} line limit)]`,
+			);
 		} else {
-			text += `\n${theme.fg("warning", `[Truncated: ${truncation.outputLines} lines shown (${formatSize(truncation.maxBytes ?? DEFAULT_MAX_BYTES)} limit)]`)}`;
+			warning = theme.fg(
+				"warning",
+				`[Truncated: ${truncation.outputLines} lines shown (${formatSize(truncation.maxBytes ?? DEFAULT_MAX_BYTES)} limit)]`,
+			);
 		}
+		text += `\n${warning}`;
+		outputLines.push(warning);
+		outputWidths.push(visibleWidth(warning));
 	}
-	return text;
+	return { text, lines: outputLines, widths: outputWidths };
 }
 
 const readRecoveryHandlerSymbol = Symbol.for("pi.toolRecoveryHandler");
@@ -432,10 +546,44 @@ export function createReadToolDefinition(
 			return summary;
 		},
 		renderResult(result, options, theme, context) {
-			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			text.setText(
-				formatReadResult(context.args, result, options, theme, context.showImages, context.cwd, context.isError),
-			);
+			const text = (context.lastComponent as ReadResultComponent | undefined) ?? new ReadResultComponent();
+			const themeSignature = getReadThemeSignature(theme);
+			const cached = readResultRenderCache.get(text);
+			const cacheMatches =
+				cached !== undefined &&
+				cached.args === context.args &&
+				cached.content === result.content &&
+				cached.details === result.details &&
+				cached.showImages === context.showImages &&
+				cached.isError === context.isError &&
+				cached.themeSignature === themeSignature;
+			const renderCache = cacheMatches
+				? cached
+				: {
+						args: context.args,
+						content: result.content,
+						details: result.details,
+						showImages: context.showImages,
+						isError: context.isError,
+						themeSignature,
+						values: new Map<string, ReadResultRenderValue>(),
+					};
+			const stateKey = `${options.expanded ? "expanded" : "collapsed"}:${options.isPartial ? "partial" : "complete"}`;
+			let value = renderCache.values.get(stateKey);
+			if (value === undefined) {
+				value = formatReadResult(
+					context.args,
+					result,
+					options,
+					theme,
+					context.showImages,
+					context.cwd,
+					context.isError,
+				);
+				renderCache.values.set(stateKey, value);
+			}
+			if (!cacheMatches) readResultRenderCache.set(text, renderCache);
+			text.setValue(value);
 			return text;
 		},
 	};

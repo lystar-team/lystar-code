@@ -9,7 +9,7 @@ import { getLanguageFromPath, highlightCode, type Theme } from "../../modes/inte
 import { uiGlyphs } from "../../modes/interactive/ui-glyphs.ts";
 import { getExperimentalToolSampling } from "../experimental.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
-import { withFileMutationQueue } from "./file-mutation-queue.ts";
+import { getMutationQueueKey, withFileMutationQueue } from "./file-mutation-queue.ts";
 import { resolveToCwd } from "./path-utils.ts";
 import { normalizeDisplayText, renderToolPath, replaceTabs, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -21,7 +21,10 @@ const writeSchema = Type.Object({
 
 export const writeToolSystemPromptContribution = {
 	snippet: "Create or overwrite files",
-	guidelines: ["Use write only for new files or complete rewrites."],
+	guidelines: [
+		"Use write only for new files or complete rewrites.",
+		"In one assistant response, use only one mutation call per file; merge all changes for that file into one write or edit call.",
+	],
 } as const;
 
 export type WriteToolInput = Static<typeof writeSchema>;
@@ -245,10 +248,16 @@ export function createWriteToolDefinition(
 		name: "write",
 		label: "write",
 		description:
-			"Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+			"Write content to a file. Creates the file if it doesn't exist, overwrites if it does. In one assistant response, use only one mutation call for a file. Automatically creates parent directories.",
 		promptSnippet: writeToolSystemPromptContribution.snippet,
 		promptGuidelines: [...writeToolSystemPromptContribution.guidelines],
 		parameters: writeSchema,
+		getExecutionKeys: async (args) => {
+			if (!args || typeof args !== "object") return [];
+			const path = (args as { path?: unknown }).path;
+			if (typeof path !== "string") return [];
+			return [await getMutationQueueKey(resolveToCwd(path, cwd))];
+		},
 		constrainedSampling: getExperimentalToolSampling(),
 		async execute(
 			_toolCallId,

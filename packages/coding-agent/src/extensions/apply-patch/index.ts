@@ -14,7 +14,7 @@ import {
 	restoreLineEndings,
 	stripBom,
 } from "../../core/tools/edit-diff.ts";
-import { withFileMutationQueue } from "../../core/tools/file-mutation-queue.ts";
+import { getMutationQueueKey, withFileMutationQueue } from "../../core/tools/file-mutation-queue.ts";
 import { resolveToCwd } from "../../core/tools/path-utils.ts";
 import { shortenPath } from "../../core/tools/render-utils.ts";
 import { t } from "../../locales/zh-CN.ts";
@@ -100,6 +100,10 @@ class ApplyPatchFileCard implements InteractiveCard {
 	private expanded = false;
 	private hovered = false;
 	private lastRenderedLineCount = 0;
+	private renderVersion = 0;
+	private diffComponent?: Text;
+	private diffSource?: string;
+	private diffFilePath?: string;
 
 	constructor(file: Partial<ApplyPatchFileDetails> & Pick<ApplyPatchFileDetails, "path">, toolCallId: string) {
 		this.file = file;
@@ -107,6 +111,11 @@ class ApplyPatchFileCard implements InteractiveCard {
 	}
 
 	update(file: Partial<ApplyPatchFileDetails> & Pick<ApplyPatchFileDetails, "path">): void {
+		if (this.file.diff !== file.diff || this.file.path !== file.path) {
+			this.diffComponent = undefined;
+			this.diffSource = undefined;
+			this.diffFilePath = undefined;
+		}
 		this.file = file;
 	}
 
@@ -115,11 +124,20 @@ class ApplyPatchFileCard implements InteractiveCard {
 	}
 
 	setExpanded(expanded: boolean): void {
-		this.expanded = Boolean(this.file.diff) && expanded;
+		const nextExpanded = Boolean(this.file.diff) && expanded;
+		if (this.expanded === nextExpanded) return;
+		this.expanded = nextExpanded;
+		this.renderVersion++;
 	}
 
 	setHovered(hovered: boolean): void {
+		if (this.hovered === hovered) return;
 		this.hovered = hovered;
+		this.renderVersion++;
+	}
+
+	getRenderVersion(): number {
+		return this.renderVersion;
 	}
 
 	getCardStateKey(): string {
@@ -149,14 +167,23 @@ class ApplyPatchFileCard implements InteractiveCard {
 		const header = truncateToWidth(`${prefix}${theme.fg("accent", displayPath)}${suffix}`, Math.max(1, width), "");
 		const lines = [renderCardHover([header], width, this.hovered)[0] ?? header];
 		if (this.expanded && this.file.diff) {
+			if (!this.diffComponent || this.diffSource !== this.file.diff || this.diffFilePath !== this.file.path) {
+				this.diffSource = this.file.diff;
+				this.diffFilePath = this.file.path;
+				this.diffComponent = new Text(renderDiff(this.file.diff, { filePath: this.file.path }), 1, 0);
+			}
 			lines.push("");
-			lines.push(...new Text(renderDiff(this.file.diff, { filePath: this.file.path }), 1, 0).render(width));
+			lines.push(...this.diffComponent.render(width));
 		}
 		this.lastRenderedLineCount = lines.length;
 		return lines;
 	}
 
-	invalidate(): void {}
+	invalidate(): void {
+		this.diffComponent = undefined;
+		this.diffSource = undefined;
+		this.diffFilePath = undefined;
+	}
 }
 
 interface ApplyPatchFileRange {
@@ -203,6 +230,10 @@ class ApplyPatchResultComponent implements InteractiveCard {
 
 	getChildCards(): readonly InteractiveCard[] {
 		return this.orderedCards;
+	}
+
+	getRenderVersion(): number {
+		return this.orderedCards.reduce((version, card) => version + card.getRenderVersion(), 0);
 	}
 
 	getCardClickActionAtRow(row: number): InteractiveCardAction | undefined {
@@ -1020,8 +1051,26 @@ export function createApplyPatchToolDefinition(options?: {
 			"For update hunks, include 3 lines of unchanged context before and after each change when possible.",
 			"Use an @@ function, class, or stable section header when repeated code makes the hunk ambiguous.",
 			"Use separate hunks for distant changes, and re-read the target region before retrying a failed patch.",
+			"In one assistant response, use only one mutation call per file; combine all changes for that file into one patch.",
 		],
 		parameters: applyPatchSchema,
+		getExecutionKeys: async (args, ctx) => {
+			if (!ctx || !args || typeof args !== "object") return [];
+			const input = (args as { input?: unknown }).input;
+			if (typeof input !== "string") return [];
+			try {
+				const operations = parseApplyPatch(input);
+				return [
+					...new Set(
+						await Promise.all(
+							operations.map((operation) => getMutationQueueKey(resolveToCwd(operation.path, ctx.cwd))),
+						),
+					),
+				];
+			} catch {
+				return [];
+			}
+		},
 		prepareArguments: prepareApplyPatchArguments,
 		async execute(_toolCallId, { input }, signal, _onUpdate, ctx) {
 			let operations: PatchOperation[] = [];

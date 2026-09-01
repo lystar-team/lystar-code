@@ -96,7 +96,7 @@ export class ToolExecutionComponent extends Container {
 		// Always create all shell variants. contentBox is used for default renderer-based composition.
 		// selfRenderContainer is used when the tool renders its own framing.
 		// contentText is reserved for generic fallback rendering when no tool definition exists.
-		this.contentBox = new Box(1, 0, (text: string) => text);
+		this.contentBox = new Box(1, 0);
 		this.contentText = new Text("", 1, 0);
 		this.selfRenderContainer = new Container();
 
@@ -311,7 +311,11 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	getRenderVersion(): number {
-		return this.renderVersion;
+		const nestedVersion = [this.callRendererComponent, this.resultRendererComponent].reduce(
+			(version, component) => version + (isInteractiveCard(component) ? (component.getRenderVersion?.() ?? 0) : 0),
+			0,
+		);
+		return this.renderVersion + nestedVersion;
 	}
 
 	getExecutionStatus(): ToolExecutionStatus {
@@ -387,9 +391,6 @@ export class ToolExecutionComponent extends Container {
 		this.hideComponent = false;
 		if (this.hasRendererDefinition()) {
 			const renderContainer = this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox;
-			if (renderContainer instanceof Box) {
-				renderContainer.setBgFn((text: string) => text);
-			}
 			renderContainer.clear();
 
 			const callRenderer = this.getCallRenderer();

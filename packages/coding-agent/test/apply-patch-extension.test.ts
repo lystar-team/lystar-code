@@ -3,10 +3,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ToolExecutionError } from "@earendil-works/pi-agent-core";
 import { afterEach, describe, expect, it } from "vitest";
-import { createEventBus } from "../src/core/event-bus.ts";
-import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
 import { resolveToCwd } from "../src/core/tools/path-utils.ts";
-import applyPatchExtension, {
+import {
 	type ApplyPatchDetails,
 	createApplyPatchToolDefinition,
 	parseApplyPatch,
@@ -66,7 +64,21 @@ async function recoverPatchFailure(execute: () => Promise<unknown>): Promise<Pat
 	return (await handler?.({})) as PatchRecoveryResult | undefined;
 }
 
-describe("built-in apply_patch extension", () => {
+describe("legacy apply_patch compatibility implementation", () => {
+	it("exposes canonical target keys for files in a patch", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "a.txt"), "a\n", "utf-8");
+		await writeFile(join(dir, "b.txt"), "b\n", "utf-8");
+		const definition = createApplyPatchToolDefinition();
+
+		expect(
+			await definition.getExecutionKeys?.(
+				{ input: patch(["*** Update File: a.txt", "@@", "-a", "+A", "*** Update File: b.txt", "@@", "-b", "+B"]) },
+				{ cwd: dir } as never,
+			),
+		).toEqual([join(dir, "a.txt"), join(dir, "b.txt")]);
+	});
+
 	it("accepts NO_CHANGE only after all postconditions are verified", async () => {
 		const dir = await createTempDir();
 		await writeFile(join(dir, "中文.txt"), "\uFEFF\u201ctarget\u201d\r\n", "utf-8");
@@ -504,19 +516,7 @@ describe("built-in apply_patch extension", () => {
 		});
 	});
 
-	it("is registered as a hidden built-in extension", async () => {
-		expect(builtInExtensions).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({ name: "apply-patch", factory: applyPatchExtension, hidden: true }),
-			]),
-		);
-		const extension = await loadExtensionFromFactory(
-			applyPatchExtension,
-			process.cwd(),
-			createEventBus(),
-			createExtensionRuntime(),
-			"<inline:apply-patch>",
-		);
-		expect(extension.tools.get("apply_patch")?.definition.name).toBe("apply_patch");
+	it("is not registered as a built-in extension", () => {
+		expect(builtInExtensions).not.toEqual(expect.arrayContaining([expect.objectContaining({ name: "apply-patch" })]));
 	});
 });

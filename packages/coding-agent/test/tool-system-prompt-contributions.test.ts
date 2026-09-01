@@ -41,4 +41,8 @@ describe("built-in tool system prompt contributions", () => {
 
 		expect(definition.promptGuidelines).toBeUndefined();
 	});
+
+	test("does not advertise the removed apply_patch compatibility tool in write guidance", () => {
+		expect(writeToolSystemPromptContribution.guidelines.join("\n")).not.toContain("apply_patch");
+	});
 });

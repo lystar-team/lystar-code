@@ -434,6 +434,14 @@ describe("AgentHarness tools", () => {
 	});
 
 	describe("edit", () => {
+		it("exposes target keys for same-batch mutation conflict detection", () => {
+			const editTool = createEditTool();
+			const writeTool = createWriteTool();
+
+			expect(editTool.getExecutionKeys?.({ path: "edit.txt", edits: [] })).toEqual(["harness-file:edit.txt"]);
+			expect(writeTool.getExecutionKeys?.({ path: "edit.txt", content: "next" })).toEqual(["harness-file:edit.txt"]);
+		});
+
 		it("applies disjoint edits and returns both diff formats", async () => {
 			const context = createContext();
 			const original = "alpha\nbeta\ngamma\ndelta\n";

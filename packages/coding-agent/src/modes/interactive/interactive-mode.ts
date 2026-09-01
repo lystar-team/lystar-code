@@ -155,6 +155,7 @@ import {
 	LystarWorkspace,
 	WORKSPACE_HEADER_SEPARATOR,
 	WorkspaceComposer,
+	type WorkspaceComposerInfo,
 	WorkspaceHeader,
 	type WorkspaceScrollAnchor,
 } from "./components/lystar-workspace.ts";
@@ -175,7 +176,6 @@ import {
 	IdleStatus,
 	RetryStatusIndicator,
 	type StatusIndicator,
-	WorkingStatusIndicator,
 } from "./components/status-indicator.ts";
 import type { SubagentRunTarget } from "./components/subagent-run.ts";
 import { SubagentSessionViewComponent } from "./components/subagent-session-view.ts";
@@ -527,6 +527,22 @@ export function createInteractiveTuiReference(getTui: () => TUI): TUI {
 
 const TRANSCRIPT_PAGE_SIZE = 80;
 
+interface GuiCompanionCoordinationState {
+	ensureQueue: Promise<void>;
+	warningKey?: string;
+	failedSessionPath?: string;
+}
+
+const guiCompanionCoordinationStates = new WeakMap<object, GuiCompanionCoordinationState>();
+
+function getGuiCompanionCoordinationState(owner: object): GuiCompanionCoordinationState {
+	const existing = guiCompanionCoordinationStates.get(owner);
+	if (existing) return existing;
+	const state: GuiCompanionCoordinationState = { ensureQueue: Promise.resolve() };
+	guiCompanionCoordinationStates.set(owner, state);
+	return state;
+}
+
 export class InteractiveMode {
 	private runtimeHost: AgentSessionRuntime;
 	private guiCompanion?: GuiCompanionServer;
@@ -566,7 +582,6 @@ export class InteractiveMode {
 	private workingMessage: string | undefined = undefined;
 	private workingVisible = true;
 	private workingIndicatorOptions: WorkingIndicatorOptions | undefined = undefined;
-	private readonly defaultWorkingMessage = t("status.working");
 	private readonly defaultHiddenThinkingLabel = t("status.thinking");
 	private hiddenThinkingLabel = this.defaultHiddenThinkingLabel;
 
@@ -715,6 +730,27 @@ export class InteractiveMode {
 		return this.headerContextUsage;
 	}
 
+	private getWorkspaceComposerInfo(): WorkspaceComposerInfo {
+		const state = this.session.state;
+		const model = !state.model || state.model.id === "unknown" ? t("status.noModel") : state.model.id;
+		const provider =
+			state.model && this.footerDataProvider.getAvailableProviderCount() > 1 ? state.model.provider : undefined;
+		const thinking = state.model?.reasoning ? `思考 ${formatThinkingLevel(state.thinkingLevel || "off")}` : undefined;
+		const projectTrusted = this.settingsManager.isProjectTrusted();
+		const trustState = projectTrusted
+			? undefined
+			: hasTrustRequiringProjectResources(this.sessionManager.getCwd())
+				? "项目资源受限"
+				: "项目未信任";
+		return {
+			primary: [`${provider ? `${provider}/` : ""}${model}`, thinking].filter(Boolean).join(" · "),
+			secondary: !state.model || state.model.id === "unknown" ? "无可用模型" : trustState,
+			provider,
+			model,
+			thinking,
+		};
+	}
+
 	constructor(runtimeHost: AgentSessionRuntime, options: InteractiveModeOptions = {}) {
 		this.runtimeHost = runtimeHost;
 		const lystarSettings = loadLystarSettings(getAgentDir());
@@ -793,30 +829,7 @@ export class InteractiveMode {
 			brand: APP_TITLE,
 			structuredEditor: this.defaultEditor,
 			fullscreen: tuiMode === "fullscreen",
-			getInfo: () => {
-				const state = this.session.state;
-				const model = !state.model || state.model.id === "unknown" ? t("status.noModel") : state.model.id;
-				const provider =
-					state.model && this.footerDataProvider.getAvailableProviderCount() > 1
-						? state.model.provider
-						: undefined;
-				const thinking = state.model?.reasoning
-					? `思考 ${formatThinkingLevel(state.thinkingLevel || "off")}`
-					: undefined;
-				const projectTrusted = this.settingsManager.isProjectTrusted();
-				const trustState = projectTrusted
-					? undefined
-					: hasTrustRequiringProjectResources(this.sessionManager.getCwd())
-						? "项目资源受限"
-						: "项目未信任";
-				return {
-					primary: [`${provider ? `${provider}/` : ""}${model}`, thinking].filter(Boolean).join(" · "),
-					secondary: !state.model || state.model.id === "unknown" ? "无可用模型" : trustState,
-					provider,
-					model,
-					thinking,
-				};
-			},
+			getInfo: () => this.getWorkspaceComposerInfo(),
 		});
 		this.activityBar = new WorkspaceActivityBar(
 			() => this.ui.requestRender(),
@@ -838,9 +851,9 @@ export class InteractiveMode {
 			],
 			fixedBottomContainers: [this.composer, this.shortcutContainer],
 			optionalBottomPriority: [
-				this.statusContainer,
-				this.pendingMessagesContainer,
 				this.activityBar,
+				this.pendingMessagesContainer,
+				this.statusContainer,
 				this.footerContainer,
 				this.widgetContainerAbove,
 				this.widgetContainerBelow,
@@ -2232,29 +2245,74 @@ export class InteractiveMode {
 		await this.updateAvailableProviderCount();
 		this.updateEditorBorderColor();
 		this.updateTerminalTitle();
-		await this.ensureGuiCompanion();
+		await this.ensureGuiCompanion({ force: true });
 	}
 
-	private async ensureGuiCompanion(): Promise<void> {
-		const sessionPath = this.sessionManager.getSessionFile();
-		if (!sessionPath || !fs.existsSync(sessionPath)) {
+	private ensureGuiCompanion(options: { force?: boolean } = {}): Promise<boolean> {
+		const coordination = getGuiCompanionCoordinationState(this);
+		const targetSession = this.session;
+		const targetSessionPath = this.sessionManager.getSessionFile();
+		const task = coordination.ensureQueue.then(() =>
+			this.ensureGuiCompanionNow(targetSession, targetSessionPath, coordination, options.force === true),
+		);
+		coordination.ensureQueue = task.then(
+			() => undefined,
+			() => undefined,
+		);
+		return task;
+	}
+
+	private async ensureGuiCompanionNow(
+		targetSession: AgentSession,
+		targetSessionPath: string | undefined,
+		coordination: GuiCompanionCoordinationState,
+		force: boolean,
+	): Promise<boolean> {
+		const isCurrentTarget = () =>
+			!this.isShuttingDown &&
+			this.session === targetSession &&
+			this.sessionManager.getSessionFile() === targetSessionPath;
+
+		if (!isCurrentTarget()) return false;
+		if (!targetSessionPath || !fs.existsSync(targetSessionPath)) {
 			await this.guiCompanion?.dispose();
 			this.guiCompanion = undefined;
 			this.guiCompanionSessionPath = undefined;
-			return;
+			coordination.warningKey = undefined;
+			coordination.failedSessionPath = undefined;
+			return false;
 		}
-		if (this.guiCompanion && this.guiCompanionSessionPath === sessionPath) return;
+		if (!force && coordination.failedSessionPath === targetSessionPath) return false;
+		if (this.guiCompanion && this.guiCompanionSessionPath === targetSessionPath) return true;
+
 		await this.guiCompanion?.dispose();
-		const companion = new GuiCompanionServer(this.session, getAgentDir());
+		this.guiCompanion = undefined;
+		this.guiCompanionSessionPath = undefined;
+		if (!isCurrentTarget()) return false;
+
+		const companion = new GuiCompanionServer(targetSession, getAgentDir());
 		try {
 			await companion.start();
+			if (!isCurrentTarget()) {
+				await companion.dispose();
+				return false;
+			}
 			this.guiCompanion = companion;
-			this.guiCompanionSessionPath = sessionPath;
+			this.guiCompanionSessionPath = targetSessionPath;
+			coordination.warningKey = undefined;
+			coordination.failedSessionPath = undefined;
+			return true;
 		} catch (error) {
 			await companion.dispose().catch(() => {});
-			this.guiCompanion = undefined;
-			this.guiCompanionSessionPath = undefined;
-			this.showWarning(`GUI 共享通道启动失败：${error instanceof Error ? error.message : String(error)}`);
+			if (!isCurrentTarget()) return false;
+			const message = error instanceof Error ? error.message : String(error);
+			coordination.failedSessionPath = targetSessionPath;
+			const warningKey = `${targetSessionPath}\0${message}`;
+			if (coordination.warningKey !== warningKey) {
+				this.showWarning(`GUI 共享通道启动失败：${message}`);
+				coordination.warningKey = warningKey;
+			}
+			return false;
 		}
 	}
 
@@ -2379,28 +2437,13 @@ export class InteractiveMode {
 
 	private setWorkingVisible(visible: boolean): void {
 		this.workingVisible = visible;
-		if (!visible) {
-			this.clearStatusIndicator("working");
-			this.ui.requestRender();
-			return;
-		}
-		if (this.session.isStreaming && this.activeStatusIndicator?.kind !== "working") {
-			this.showStatusIndicator(
-				new WorkingStatusIndicator(
-					this.ui,
-					this.workingMessage ?? this.defaultWorkingMessage,
-					this.workingIndicatorOptions,
-				),
-			);
-		}
+		this.updateActivityBar();
 		this.ui.requestRender();
 	}
 
 	private setWorkingIndicator(options?: WorkingIndicatorOptions): void {
 		this.workingIndicatorOptions = options;
-		if (this.activeStatusIndicator?.kind === "working") {
-			this.activeStatusIndicator.setIndicator(options);
-		}
+		this.updateActivityBar();
 		this.ui.requestRender();
 	}
 
@@ -2499,9 +2542,7 @@ export class InteractiveMode {
 		this.workingMessage = undefined;
 		this.workingVisible = true;
 		this.setWorkingIndicator();
-		if (this.activeStatusIndicator?.kind === "working") {
-			this.activeStatusIndicator.setMessage(this.defaultWorkingMessage);
-		}
+		this.updateActivityBar();
 		this.setHiddenThinkingLabel();
 	}
 
@@ -2661,9 +2702,8 @@ export class InteractiveMode {
 			setStatus: (key, text) => this.setExtensionStatus(key, text),
 			setWorkingMessage: (message) => {
 				this.workingMessage = message;
-				if (this.activeStatusIndicator?.kind === "working") {
-					this.activeStatusIndicator.setMessage(message ?? this.defaultWorkingMessage);
-				}
+				this.updateActivityBar();
+				this.ui.requestRender();
 			},
 			setWorkingVisible: (visible) => this.setWorkingVisible(visible),
 			setWorkingIndicator: (options) => this.setWorkingIndicator(options),
@@ -3095,21 +3135,20 @@ export class InteractiveMode {
 				if (this.setHoveredCard(undefined)) this.ui.requestRender();
 				return undefined;
 			}
-			if (mouse.motion && mouse.button !== "left") {
-				if (this.updateHoveredCard(mouse.row)) this.ui.requestRender();
-				return undefined;
-			}
 			if (mouse.button === "wheel-up" || mouse.button === "wheel-down") {
 				this.pendingCardClick = undefined;
 				this.setHoveredCard(undefined);
 				const lines = this.wheelScroll.getDelta(mouse.button === "wheel-up" ? -1 : 1);
 				this.workspace.scrollBy(lines);
 				if (lines < 0 && this.workspace.isAtTop()) void this.loadPreviousTranscriptPage();
+			} else if (mouse.motion && mouse.button !== "left") {
+				if (this.updateHoveredCard(mouse.row)) this.ui.requestRender();
+				return undefined;
 			} else if (mouse.button === "left" && mouse.motion) {
 				this.pendingCardClick = undefined;
 				this.setHoveredCard(undefined);
 				return undefined;
-			} else if (mouse.button === "left" && mouse.released) {
+			} else if (mouse.released && (mouse.button === "left" || mouse.button === "other")) {
 				const pending = this.pendingCardClick;
 				this.pendingCardClick = undefined;
 				if (pending && pending.row === mouse.row && pending.column === mouse.column) {
@@ -3118,11 +3157,10 @@ export class InteractiveMode {
 					);
 					if (action?.type === "toggle") {
 						this.rememberCardExpansion(action.component);
-						pending.component.invalidate?.();
 					}
-					this.ui.requestRender(action?.type === "toggle");
+					this.ui.requestRender();
 				}
-				return undefined;
+				return pending ? { consume: true } : undefined;
 			} else if (mouse.button === "left") {
 				if (this.workspace.isNewContentIndicatorRow(mouse.row)) {
 					this.workspace.scrollToBottom();
@@ -3139,7 +3177,7 @@ export class InteractiveMode {
 					component: hit.component,
 					componentRow: hit.row,
 				};
-				return undefined;
+				return { consume: true };
 			} else {
 				this.pendingCardClick = undefined;
 				return undefined;
@@ -3529,7 +3567,7 @@ export class InteractiveMode {
 			this.showWarning("当前会话没有可共享的持久化文件。");
 			return;
 		}
-		await this.ensureGuiCompanion();
+		if (!(await this.ensureGuiCompanion({ force: true }))) return;
 		try {
 			await this.launchGui(sessionPath);
 			this.showStatus("GUI 已打开，当前会话由 TUI 与 GUI 共同使用。");
@@ -3659,6 +3697,9 @@ export class InteractiveMode {
 			action: activity.phase === "runningTool" ? (current?.action ?? current?.name) : activity.action,
 			subject: activity.phase === "runningTool" && running.length <= 1 ? current?.subject : undefined,
 			thinking: this.thinkingDisplayMode === "activity" ? activity.thinking : undefined,
+			workingVisible: this.workingVisible,
+			workingMessage: this.workingMessage,
+			workingIndicator: this.workingIndicatorOptions,
 			startedAt: activity.startedAt,
 			completedTools: tools.filter(
 				(tool) => tool.status === "success" || tool.status === "error" || tool.status === "cancelled",
@@ -3788,17 +3829,9 @@ export class InteractiveMode {
 					this.defaultEditor.onEscape = this.retryEscapeHandler;
 					this.retryEscapeHandler = undefined;
 				}
-				if (this.workingVisible) {
-					this.showStatusIndicator(
-						new WorkingStatusIndicator(
-							this.ui,
-							this.workingMessage ?? this.defaultWorkingMessage,
-							this.workingIndicatorOptions,
-						),
-					);
-				} else {
-					this.clearStatusIndicator();
-				}
+				this.activeStatusIndicator?.dispose();
+				this.activeStatusIndicator = undefined;
+				this.statusContainer.clear();
 				this.ui.requestRender();
 				break;
 
@@ -4078,7 +4111,6 @@ export class InteractiveMode {
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(false);
 				}
-				this.clearStatusIndicator("working");
 				if (this.streamingComponent) {
 					this.chatContainer.removeChild(this.streamingComponent);
 					this.streamingComponent = undefined;
@@ -4856,6 +4888,7 @@ export class InteractiveMode {
 			// terminal. If the terminal is gone, the restore writes below emit EIO,
 			// which the stdout/stderr error handler turns into emergencyTerminalExit;
 			// the render loop is already idle, so this cannot hot-spin (see #4144).
+			await getGuiCompanionCoordinationState(this).ensureQueue;
 			await this.guiCompanion?.dispose();
 			this.guiCompanion = undefined;
 			await this.runtimeHost.dispose();
@@ -4874,6 +4907,7 @@ export class InteractiveMode {
 		await this.ui.terminal.drainInput(1000);
 
 		this.stop();
+		await getGuiCompanionCoordinationState(this).ensureQueue;
 		await this.guiCompanion?.dispose();
 		this.guiCompanion = undefined;
 		await this.runtimeHost.dispose();
@@ -7191,6 +7225,16 @@ export class InteractiveMode {
 					autocompleteMaxVisible: this.settingsManager.getAutocompleteMaxVisible(),
 				})
 			: undefined;
+		const editorContainer = editor ? new Container() : undefined;
+		if (editor && editorContainer) editorContainer.addChild(editor);
+		const composer = editorContainer
+			? new WorkspaceComposer({
+					editor: editorContainer,
+					brand: APP_TITLE,
+					getInfo: () => this.getWorkspaceComposerInfo(),
+					fullscreen: this.workspace.isFullscreen(),
+				})
+			: undefined;
 		const close = () => {
 			closed = true;
 			if (refreshTimer) clearTimeout(refreshTimer);
@@ -7202,6 +7246,7 @@ export class InteractiveMode {
 			status: this.subagentStatusLabel(target.state),
 			readOnly: !target.session,
 			editor,
+			composer,
 			getHeight: () => this.ui.terminal.rows,
 			requestRender: () => this.ui.requestRender(),
 			renderMessages: (messages) =>

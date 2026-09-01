@@ -20,7 +20,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  NODE_VERSION: 22.19.0
+  NODE_VERSION: 24.18.0
   NPM_CI_ARGS: --ignore-scripts --no-audit --no-fund
 
 jobs:

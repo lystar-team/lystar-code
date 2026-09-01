@@ -11,6 +11,7 @@ import { createReadTool, createReadToolDefinition } from "../src/core/tools/read
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 import { createApplyPatchToolDefinition } from "../src/extensions/apply-patch/index.ts";
 import { SubagentResultComponent } from "../src/modes/interactive/components/subagent-run.ts";
+import { alignCardExpansion, renderCardHover } from "../src/modes/interactive/components/tool-card-layout.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { uiGlyphs } from "../src/modes/interactive/ui-glyphs.ts";
@@ -38,6 +39,17 @@ function createFakeTui(): TUI {
 describe("ToolExecutionComponent parity", () => {
 	beforeAll(() => {
 		initTheme("dark");
+	});
+	test("keeps the hover background continuous across truncated expansion indicators", () => {
+		const line = renderCardHover(
+			[alignCardExpansion(theme.fg("text", "A very long tool title that truncates"), 24, false)],
+			24,
+			true,
+		)[0]!;
+		const selectedBackground = theme.getBgAnsi("selectedBg");
+
+		expect(visibleWidth(line)).toBe(24);
+		expect(line.split(selectedBackground).length).toBeGreaterThan(2);
 	});
 
 	test("stacks custom call and result renderers like the old implementation", () => {
@@ -215,6 +227,44 @@ describe("ToolExecutionComponent parity", () => {
 
 		component.setExpanded(false);
 		expect(stripAnsi(component.render(100).join("\n"))).not.toContain("src/index.ts");
+	});
+
+	test("propagates nested apply_patch card state to the outer render version", () => {
+		const component = new ToolExecutionComponent(
+			"apply_patch",
+			"apply-patch-hover-version",
+			{ input: "*** Begin Patch\n*** End Patch" },
+			{},
+			createApplyPatchToolDefinition(),
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult({
+			content: [{ type: "text", text: "Applied patch to 1 file(s)." }],
+			details: {
+				files: [
+					{
+						path: "src/index.ts",
+						operation: "update",
+						additions: 1,
+						deletions: 1,
+						diff: "- before\n+ after",
+					},
+				],
+			},
+			isError: false,
+		});
+		component.setExpanded(true);
+		component.render(80);
+
+		const resultCard = component.getChildCards()[0];
+		const fileCard = resultCard?.getChildCards?.()[0];
+		if (!fileCard) throw new Error("expected an apply_patch file card");
+		const versionBeforeHover = component.getRenderVersion();
+		fileCard.setHovered?.(true);
+
+		expect(component.getRenderVersion()).toBeGreaterThan(versionBeforeHover);
+		expect(component.render(80).join("\n")).toContain(theme.getBgAnsi("selectedBg"));
 	});
 
 	test("replays persisted apply_patch details after the current target is deleted", () => {

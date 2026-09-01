@@ -101,6 +101,29 @@ describe("buildSystemPrompt", () => {
 		});
 	});
 
+	describe("custom prompt tool contract", () => {
+		test("includes active tool declarations and guidelines", () => {
+			const prompt = buildSystemPrompt({
+				customPrompt: "Custom system prompt.",
+				selectedTools: ["read", "edit"],
+				toolSnippets: {
+					read: "Read file contents",
+					edit: "Make precise file edits",
+				},
+				promptGuidelines: ["Use edit for targeted file changes."],
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			expect(prompt).toContain(
+				"Available tools for this session:\n- read: Read file contents\n- edit: Make precise file edits",
+			);
+			expect(prompt).toContain("- Treat the tool declarations supplied with the request as authoritative.");
+			expect(prompt).toContain("- Use edit for targeted file changes.");
+		});
+	});
+
 	describe("prompt guidelines", () => {
 		test("appends promptGuidelines to default guidelines", () => {
 			const prompt = buildSystemPrompt({

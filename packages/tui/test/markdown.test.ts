@@ -10,6 +10,8 @@ import { visibleWidth } from "../src/utils.ts";
 import { defaultMarkdownTheme } from "./test-themes.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
+const borderedMarkdownOptions = { showBlockquoteBorder: true };
+
 // Force full color in CI so ANSI assertions are deterministic
 const chalk = new Chalk({ level: 3 });
 
@@ -372,7 +374,14 @@ describe("Markdown component", () => {
 		});
 
 		it("should render and wrap blockquotes inside list items", () => {
-			const markdown = new Markdown("- > alpha beta gamma delta epsilon zeta", 0, 0, defaultMarkdownTheme);
+			const markdown = new Markdown(
+				"- > alpha beta gamma delta epsilon zeta",
+				0,
+				0,
+				defaultMarkdownTheme,
+				undefined,
+				borderedMarkdownOptions,
+			);
 
 			const lines = markdown.render(24).map((line) => stripAnsi(line).trimEnd());
 
@@ -601,7 +610,7 @@ describe("Markdown component", () => {
 			setCapabilities({ images: null, trueColor: true, hyperlinks: true });
 			const terminal = new VirtualTerminal(28, 10);
 			const tui: TUI = new TuiMainScreen(terminal);
-			tui.addChild(new Markdown(source, 0, 0, theme));
+			tui.addChild(new Markdown(source, 0, 0, theme, undefined, borderedMarkdownOptions));
 			tui.start();
 
 			try {
@@ -1415,6 +1424,31 @@ again, hello world`,
 		});
 	});
 
+	describe("Blockquotes without visual borders", () => {
+		it("should render blockquotes without a border or indentation by default", () => {
+			const markdown = new Markdown(
+				`> quoted text
+>
+> #### Blockquote heading
+> - nested item`,
+				0,
+				0,
+				defaultMarkdownTheme,
+			);
+
+			const lines = markdown.render(80);
+			const plainLines = lines.map((line) => stripAnsi(line).trimEnd());
+			const headingLine = lines.find((line) => stripAnsi(line).trimEnd() === "Blockquote heading");
+
+			assert.ok(plainLines.includes("quoted text"));
+			assert.ok(plainLines.includes("Blockquote heading"));
+			assert.ok(plainLines.includes("- nested item"));
+			assert.ok(plainLines.every((line) => !line.startsWith("│ ")));
+			assert.ok(headingLine?.includes("\x1b[1m"), "Blockquote heading should be bold");
+			assert.ok(!plainLines.some((line) => line.includes("####")));
+		});
+	});
+
 	describe("Blockquotes with multiline content", () => {
 		it("should apply consistent styling to all lines in lazy continuation blockquote", () => {
 			// Markdown "lazy continuation" - second line without > is still part of the quote
@@ -1427,6 +1461,7 @@ bar`,
 				{
 					color: (text) => chalk.magenta(text), // This should NOT be applied to blockquotes
 				},
+				borderedMarkdownOptions,
 			);
 
 			const lines = markdown.render(80);
@@ -1461,6 +1496,7 @@ bar`,
 				{
 					color: (text) => chalk.cyan(text), // This should NOT be applied to blockquotes
 				},
+				borderedMarkdownOptions,
 			);
 
 			const lines = markdown.render(80);
@@ -1488,6 +1524,8 @@ bar`,
 				0,
 				0,
 				defaultMarkdownTheme,
+				undefined,
+				borderedMarkdownOptions,
 			);
 
 			const lines = markdown.render(80);
@@ -1506,7 +1544,7 @@ bar`,
 
 		it("should wrap long blockquote lines and add border to each wrapped line", () => {
 			const longText = "This is a very long blockquote line that should wrap to multiple lines when rendered";
-			const markdown = new Markdown(`> ${longText}`, 0, 0, defaultMarkdownTheme);
+			const markdown = new Markdown(`> ${longText}`, 0, 0, defaultMarkdownTheme, undefined, borderedMarkdownOptions);
 
 			// Render at narrow width to force wrapping
 			const lines = markdown.render(30);
@@ -1540,6 +1578,7 @@ bar`,
 					color: (text) => chalk.yellow(text), // This should NOT be applied to blockquotes
 					italic: true,
 				},
+				borderedMarkdownOptions,
 			);
 
 			const lines = markdown.render(25);
@@ -1562,7 +1601,14 @@ bar`,
 		});
 
 		it("should render inline formatting inside blockquotes and reapply quote styling after", () => {
-			const markdown = new Markdown("> Quote with **bold** and `code`", 0, 0, defaultMarkdownTheme);
+			const markdown = new Markdown(
+				"> Quote with **bold** and `code`",
+				0,
+				0,
+				defaultMarkdownTheme,
+				undefined,
+				borderedMarkdownOptions,
+			);
 
 			const lines = markdown.render(80);
 			const plainLines = lines.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
@@ -1593,6 +1639,20 @@ bar`,
 	});
 
 	describe("Heading with inline code", () => {
+		it("should render level-three and level-four headings without source markers", () => {
+			const markdown = new Markdown("### Level three\n#### Level four", 0, 0, defaultMarkdownTheme);
+
+			const lines = markdown.render(80);
+			const plainLines = lines.map((line) => stripAnsi(line).trimEnd());
+			const headingLines = plainLines.filter((line) => line.length > 0);
+			const rendered = lines.join("\n");
+
+			assert.deepStrictEqual(headingLines, ["Level three", "Level four"]);
+			assert.ok(rendered.includes("\x1b[1m"), "Headings should be bold");
+			assert.ok(!rendered.includes("###"));
+			assert.ok(!rendered.includes("####"));
+		});
+
 		it("should preserve heading styling after inline code", () => {
 			const markdown = new Markdown("### Why `sourceInfo` should not be optional", 0, 0, defaultMarkdownTheme);
 

@@ -24,7 +24,7 @@ import {
 	restoreLineEndings,
 	stripBom,
 } from "./edit-diff.ts";
-import { withFileMutationQueue } from "./file-mutation-queue.ts";
+import { getMutationQueueKey, withFileMutationQueue } from "./file-mutation-queue.ts";
 import { resolveToCwd } from "./path-utils.ts";
 import { renderToolPath, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -64,6 +64,7 @@ export const editToolSystemPromptContribution = {
 		"When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
 		"Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
 		"Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
+		"In one assistant response, use only one mutation call per file; merge all edits for that file into one edits[] or one patch.",
 	],
 } as const;
 
@@ -276,7 +277,7 @@ function buildEditCallComponent(
 	options: { expanded: boolean; isPartial: boolean; isError: boolean },
 ): EditCallRenderComponent {
 	const previewIsError = component.preview && "error" in component.preview;
-	const showPreview = options.expanded || Boolean(previewIsError);
+	const showPreview = !options.isError && (options.expanded || Boolean(previewIsError));
 	component.setBgFn((text) => text);
 	component.clear();
 	const summary = getToolSummary(undefined);
@@ -406,10 +407,16 @@ export function createEditToolDefinition(
 		name: "edit",
 		label: "edit",
 		description:
-			"Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+			"Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. In one assistant response, use only one mutation call for a file. Do not include large unchanged regions just to connect distant changes.",
 		promptSnippet: editToolSystemPromptContribution.snippet,
 		promptGuidelines: [...editToolSystemPromptContribution.guidelines],
 		parameters: editSchema,
+		getExecutionKeys: async (args) => {
+			if (!args || typeof args !== "object") return [];
+			const path = (args as { path?: unknown }).path;
+			if (typeof path !== "string") return [];
+			return [await getMutationQueueKey(resolveToCwd(path, cwd))];
+		},
 		constrainedSampling: getExperimentalToolSampling(),
 		renderShell: "self",
 		prepareArguments: prepareEditArguments,

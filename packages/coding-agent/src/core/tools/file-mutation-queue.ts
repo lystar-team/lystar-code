@@ -15,7 +15,7 @@ function isMissingPathError(error: unknown): boolean {
 	);
 }
 
-async function getMutationQueueKey(filePath: string): Promise<string> {
+export async function getMutationQueueKey(filePath: string): Promise<string> {
 	const resolvedPath = resolve(filePath);
 	try {
 		return await realpath(resolvedPath);

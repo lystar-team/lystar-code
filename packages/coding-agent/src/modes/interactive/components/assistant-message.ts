@@ -180,6 +180,7 @@ export class AssistantMessageComponent extends Container {
 	private hasLongMarkdown = false;
 	private hasWebSearchSources = false;
 	private contentExpanded = false;
+	private streamingMarkdown?: Markdown;
 	private webSearchComponents = new Map<string, WebSearchCallComponent>();
 	private webSearchRanges: WebSearchRange[] = [];
 
@@ -212,6 +213,7 @@ export class AssistantMessageComponent extends Container {
 
 	override invalidate(): void {
 		super.invalidate();
+		this.streamingMarkdown = undefined;
 		if (this.lastMessage) {
 			this.updateContent(this.lastMessage);
 		}
@@ -240,6 +242,7 @@ export class AssistantMessageComponent extends Container {
 
 	setOutputPad(padding: number): void {
 		this.outputPad = padding;
+		this.streamingMarkdown = undefined;
 		if (this.lastMessage) {
 			this.updateContent(this.lastMessage);
 		}
@@ -326,6 +329,17 @@ export class AssistantMessageComponent extends Container {
 		const citations = message.content.flatMap((content) =>
 			content.type === "text" ? getCitationLinks(content) : [],
 		);
+		const firstContent = message.content[0];
+		const streamingText =
+			this.isStreaming &&
+			message.content.length === 1 &&
+			firstContent?.type === "text" &&
+			firstContent.text.trim() !== "" &&
+			citations.length === 0
+				? firstContent.text.trim()
+				: undefined;
+		const hasToolCalls = message.content.some((c) => c.type === "toolCall");
+		this.hasToolCalls = hasToolCalls;
 		const activeWebSearchIds = new Set<string>();
 		for (const content of message.content) {
 			if (content.type !== "webSearchCall") continue;
@@ -355,6 +369,11 @@ export class AssistantMessageComponent extends Container {
 		if (!this.hasLongCodeBlock && !this.hasLongMarkdown && !this.hasWebSearchSources) {
 			this.contentExpanded = false;
 		}
+		if (streamingText !== undefined && this.streamingMarkdown) {
+			this.streamingMarkdown.setText(streamingText);
+			return;
+		}
+
 		const codeBlockCollapse =
 			this.hasLongCodeBlock && !this.contentExpanded
 				? {
@@ -367,6 +386,7 @@ export class AssistantMessageComponent extends Container {
 
 		// Clear content container
 		this.contentContainer.clear();
+		this.streamingMarkdown = undefined;
 
 		const collapseMarkdown = (markdown: string): string => {
 			if (this.isStreaming || this.contentExpanded) return markdown;
@@ -391,12 +411,12 @@ export class AssistantMessageComponent extends Container {
 				const markdown = collapseMarkdown(content.text.trim());
 				// Assistant text messages with no background - trim the text
 				// Set paddingY=0 to avoid extra spacing before tool executions
-				this.contentContainer.addChild(
-					new Markdown(markdown, this.outputPad, 0, this.markdownTheme, undefined, {
-						transform: createMarkdownTransform("assistant", this.isStreaming, this.markdownTransformers),
-						codeBlockCollapse,
-					}),
-				);
+				const markdownComponent = new Markdown(markdown, this.outputPad, 0, this.markdownTheme, undefined, {
+					transform: createMarkdownTransform("assistant", this.isStreaming, this.markdownTransformers),
+					codeBlockCollapse,
+				});
+				this.contentContainer.addChild(markdownComponent);
+				if (streamingText !== undefined) this.streamingMarkdown = markdownComponent;
 				const citations = getCitationLinks(content);
 				if (citations.length > 0) {
 					this.contentContainer.addChild(
@@ -480,8 +500,6 @@ export class AssistantMessageComponent extends Container {
 		// Check if incomplete/failed - show after partial content.
 		// For aborted/error tool calls, tool execution components show the error.
 		// Length stops can happen before a tool call is complete, so surface them here too.
-		const hasToolCalls = message.content.some((c) => c.type === "toolCall");
-		this.hasToolCalls = hasToolCalls;
 		if (message.stopReason === "length") {
 			this.contentContainer.addChild(new Spacer(1));
 			this.contentContainer.addChild(

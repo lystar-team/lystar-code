@@ -99,6 +99,18 @@ describe("withFileMutationQueue", () => {
 });
 
 describe("built-in edit and write tools", () => {
+	it("exposes the canonical target key used for batch conflict detection", async () => {
+		const dir = await createTempDir();
+		const filePath = join(dir, "target.txt");
+		await writeFile(filePath, "original\n", "utf8");
+
+		const editTool = createEditTool(dir);
+		const writeTool = createWriteTool(dir);
+
+		expect(await editTool.getExecutionKeys?.({ path: filePath })).toEqual([filePath]);
+		expect(await writeTool.getExecutionKeys?.({ path: filePath })).toEqual([filePath]);
+	});
+
 	it("preserves both parallel edits on the same file", async () => {
 		const dir = await createTempDir();
 		const filePath = join(dir, "parallel-edit.txt");

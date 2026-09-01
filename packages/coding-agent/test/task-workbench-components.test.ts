@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Container, setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import { VERSION } from "../src/config.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { createApplyPatchToolDefinition } from "../src/extensions/apply-patch/index.ts";
 import { BranchSummaryMessageComponent } from "../src/modes/interactive/components/branch-summary-message.ts";
@@ -76,6 +77,91 @@ describe("task workbench components", () => {
 		expect(line).not.toContain("正在检查");
 		expect(visibleWidth(bar.render(24)[0] ?? "")).toBeLessThanOrEqual(24);
 		bar.dispose();
+	});
+
+	it("keeps progress and elapsed time while waiting after thinking ends", () => {
+		vi.useFakeTimers();
+		try {
+			const requestRender = vi.fn();
+			const bar = new WorkspaceActivityBar(requestRender);
+			bar.setState({
+				phase: "waiting",
+				startedAt: Date.now(),
+				completedTools: 1,
+				knownTools: 3,
+				queueCount: 0,
+			});
+
+			const first = stripAnsi(bar.render(80)[0] ?? "");
+			expect(first).toContain("等待下一步");
+			expect(first).toContain("已完成 1/3");
+			expect(first).toContain("0s");
+
+			vi.advanceTimersByTime(1000);
+			const second = stripAnsi(bar.render(80)[0] ?? "");
+			expect(requestRender).toHaveBeenCalled();
+			expect(second).toContain("1s");
+			bar.dispose();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("uses the working spinner for thinking and honors its visibility and customization", () => {
+		vi.useFakeTimers();
+		try {
+			const bar = new WorkspaceActivityBar(() => undefined);
+			bar.setState({
+				phase: "thinking",
+				thinking: "正在分析上下文",
+				startedAt: Date.now(),
+				completedTools: 0,
+				knownTools: 0,
+				queueCount: 0,
+			});
+
+			expect(stripAnsi(bar.render(80)[0] ?? "")).toContain("⠋ 正在分析上下文");
+			vi.advanceTimersByTime(80);
+			expect(stripAnsi(bar.render(80)[0] ?? "")).toContain("⠙ 正在分析上下文");
+
+			bar.setState({
+				phase: "thinking",
+				workingMessage: "自定义处理中",
+				workingIndicator: { frames: ["●"] },
+				startedAt: Date.now(),
+				completedTools: 0,
+				knownTools: 0,
+				queueCount: 0,
+			});
+			expect(stripAnsi(bar.render(80)[0] ?? "")).toContain("● 自定义处理中");
+
+			bar.setState({
+				phase: "thinking",
+				thinking: "不应显示",
+				workingVisible: false,
+				startedAt: Date.now(),
+				completedTools: 0,
+				knownTools: 0,
+				queueCount: 0,
+			});
+			expect(bar.render(80)).toEqual([]);
+
+			bar.setState({
+				phase: "thinking",
+				thinking: "不应显示文本",
+				workingVisible: false,
+				startedAt: Date.now(),
+				completedTools: 1,
+				knownTools: 2,
+				queueCount: 0,
+			});
+			const hiddenWorkingLine = stripAnsi(bar.render(80)[0] ?? "");
+			expect(hiddenWorkingLine).not.toContain("不应显示文本");
+			expect(hiddenWorkingLine).toContain("已完成 1/2");
+			bar.dispose();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("moves a shimmer band across thinking text without changing its content", () => {
@@ -568,8 +654,8 @@ describe("task workbench components", () => {
 
 		expect(expanded).toBe(true);
 		expect(rememberCardExpansion).toHaveBeenCalledWith(child);
-		expect(invalidate).toHaveBeenCalledOnce();
-		expect(requestRender).toHaveBeenLastCalledWith(true);
+		expect(invalidate).not.toHaveBeenCalled();
+		expect(requestRender).toHaveBeenLastCalledWith();
 	});
 
 	it("collapses an apply_patch file from its Diff body in the main workspace", () => {
@@ -638,8 +724,8 @@ describe("task workbench components", () => {
 		expect(stripAnsi(tool.render(80).join("\n"))).not.toContain("before");
 		expect(stripAnsi(tool.render(80).join("\n"))).toContain("src/index.ts");
 		expect(rememberCardExpansion).toHaveBeenCalledWith(fileAction.component);
-		expect(invalidate).toHaveBeenCalledOnce();
-		expect(requestRender).toHaveBeenLastCalledWith(true);
+		expect(invalidate).not.toHaveBeenCalled();
+		expect(requestRender).toHaveBeenLastCalledWith();
 	});
 
 	it("restores stable card expansion within the same session", () => {
@@ -687,7 +773,7 @@ describe("task workbench components", () => {
 		const context = Object.assign(Object.create(InteractiveMode.prototype), {
 			startupNoticesShown: false,
 			changelogMarkdown: "## [0.84.2]\n\n- 上游更新",
-			version: "0.84.2-lystar.2",
+			version: VERSION,
 			chatContainer,
 			workspace: { isFullscreen: () => true },
 			runtimeHost: { session: { settingsManager: { getCollapseChangelog: () => false } } },
@@ -701,7 +787,7 @@ describe("task workbench components", () => {
 		expect(chatContainer.children).toHaveLength(1);
 		const rendered = stripAnsi(chatContainer.render(80).join("\n"));
 		const compactRendered = rendered.replace(/\s+/g, "");
-		expect(compactRendered).toContain("LYStarCode已更新到v0.84.2-lystar.2。");
+		expect(compactRendered).toContain(`LYStarCode已更新到v${VERSION}。`);
 		expect(compactRendered).toContain("使用/changelog查看LYStarCode更新记录。");
 	});
 
@@ -728,7 +814,7 @@ describe("task workbench components", () => {
 				},
 			});
 			expect(getChangelogForDisplay.call(firstInstall)).toBeUndefined();
-			expect(firstInstallSetVersion).toHaveBeenCalledWith("0.84.2-lystar.2");
+			expect(firstInstallSetVersion).toHaveBeenCalledWith(VERSION);
 
 			const updateSetVersion = vi.fn();
 			const update = Object.assign(Object.create(InteractiveMode.prototype), {
@@ -743,8 +829,8 @@ describe("task workbench components", () => {
 				},
 			});
 			const updateMarkdown = getChangelogForDisplay.call(update);
-			expect(updateMarkdown).toContain("0.84.2-lystar.2");
-			expect(updateSetVersion).toHaveBeenCalledWith("0.84.2-lystar.2");
+			expect(updateMarkdown).toContain(VERSION);
+			expect(updateSetVersion).toHaveBeenCalledWith(VERSION);
 
 			const resumedSettings = {
 				getLastChangelogVersion: vi.fn(() => "0.84.1-lystar.13"),
@@ -762,7 +848,7 @@ describe("task workbench components", () => {
 			expect(resumedSettings.getLastChangelogVersion).not.toHaveBeenCalled();
 
 			const repeatedSettings = {
-				getLastChangelogVersion: () => "0.84.2-lystar.2",
+				getLastChangelogVersion: () => VERSION,
 				setLastChangelogVersion: vi.fn(),
 			};
 			const repeated = Object.assign(Object.create(InteractiveMode.prototype), {

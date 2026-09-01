@@ -1,4 +1,6 @@
+import { readFileSync } from "node:fs";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { type Container, Markdown } from "@earendil-works/pi-tui";
 import { describe, expect, test } from "vitest";
 import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
 import { UserMessageComponent } from "../src/modes/interactive/components/user-message.ts";
@@ -9,6 +11,9 @@ import { stripAnsi } from "../src/utils/ansi.ts";
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
+const complexAssistantFixture = JSON.parse(
+	readFileSync(new URL("./fixtures/assistant-message-with-thinking-code.json", import.meta.url), "utf-8"),
+) as AssistantMessage;
 
 function createAssistantMessage(
 	content: AssistantMessage["content"],
@@ -64,6 +69,30 @@ describe("AssistantMessageComponent", () => {
 		expect(rendered.includes(OSC133_ZONE_START)).toBe(false);
 		expect(rendered.includes(OSC133_ZONE_END)).toBe(false);
 		expect(rendered.includes(OSC133_ZONE_FINAL)).toBe(false);
+	});
+
+	test("renders assistant Markdown headings without source markers or quote rails", () => {
+		initTheme("dark");
+		const component = new AssistantMessageComponent(
+			createAssistantMessage([
+				{
+					type: "text",
+					text: `> feat: 完善移动端询价修正与报价流程
+> - 接入询价处理阶段、实时状态和报价结果展示
+>
+> #### 流水线发版`,
+				},
+			]),
+		);
+
+		const lines = component.render(80).map(stripAnsi);
+		const rendered = lines.join("\n");
+
+		expect(rendered).toContain("feat: 完善移动端询价修正与报价流程");
+		expect(rendered).toContain("- 接入询价处理阶段、实时状态和报价结果展示");
+		expect(rendered).toContain("流水线发版");
+		expect(rendered).not.toContain("####");
+		expect(lines.some((line) => line.startsWith("│ "))).toBe(false);
 	});
 
 	test("hides configured markdown fences while keeping a code rail", () => {
@@ -273,6 +302,97 @@ describe("AssistantMessageComponent", () => {
 
 		expect(stripAnsi(component.render(80).join("\n"))).toContain("The result is x². Done.");
 		expect(calls).toEqual(["formula", "suffix"]);
+	});
+
+	test("reuses the Markdown child while a simple assistant response is streaming", () => {
+		initTheme("dark");
+		const component = new AssistantMessageComponent();
+		const contentContainer = (component as unknown as { contentContainer: Container }).contentContainer;
+		const getMarkdown = (): Markdown | undefined =>
+			contentContainer.children.find((child): child is Markdown => child instanceof Markdown);
+
+		component.updateContent(createAssistantMessage([{ type: "text", text: "partial response" }]), true);
+		component.render(80);
+		const firstMarkdown = getMarkdown();
+		expect(firstMarkdown).toBeDefined();
+
+		component.updateContent(
+			createAssistantMessage([{ type: "text", text: "partial response with more content" }]),
+			true,
+		);
+		const secondMarkdown = getMarkdown();
+		expect(secondMarkdown).toBe(firstMarkdown);
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("more content");
+
+		component.updateContent(
+			createAssistantMessage([{ type: "text", text: "partial response with more content" }]),
+			false,
+		);
+		component.render(80);
+		expect(getMarkdown()).not.toBe(secondMarkdown);
+	});
+
+	test("transitions the complex fixture from streaming thinking to a completed answer", () => {
+		initTheme("dark");
+		const thinkingContent = complexAssistantFixture.content.find((content) => content.type === "thinking");
+		const textContent = complexAssistantFixture.content.find((content) => content.type === "text");
+		if (!thinkingContent || thinkingContent.type !== "thinking")
+			throw new Error("fixture is missing thinking content");
+		if (!textContent || textContent.type !== "text") throw new Error("fixture is missing text content");
+
+		const component = new AssistantMessageComponent();
+		const partialThinking = { ...thinkingContent, thinking: thinkingContent.thinking.slice(0, 600) };
+		component.updateContent({ ...complexAssistantFixture, content: [partialThinking] }, true);
+		const thinkingRender = stripAnsi(component.render(120).join("\n"));
+		expect(thinkingRender).toContain("findModel");
+
+		const partialText = { ...textContent, text: textContent.text.slice(0, 480) };
+		component.updateContent({ ...complexAssistantFixture, content: [partialThinking, partialText] }, true);
+		const mixedRender = stripAnsi(component.render(120).join("\n"));
+		expect(mixedRender).toContain("current flow in main.ts");
+
+		component.updateContent(complexAssistantFixture, false);
+		const completedRender = stripAnsi(component.render(120).join("\n"));
+		expect(completedRender).toContain("findInitialModelForSession");
+		expect(completedRender).toContain("findModel");
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("findModel");
+	});
+
+	test("rebuilds streaming Markdown when content structure or layout changes", () => {
+		initTheme("dark");
+		const component = new AssistantMessageComponent();
+		const contentContainer = (component as unknown as { contentContainer: Container }).contentContainer;
+		const getMarkdown = (): Markdown | undefined =>
+			contentContainer.children.find((child): child is Markdown => child instanceof Markdown);
+		const simpleMessage = createAssistantMessage([{ type: "text", text: "partial response" }]);
+
+		component.updateContent(simpleMessage, true);
+		component.render(80);
+		const simpleMarkdown = getMarkdown();
+		expect(simpleMarkdown).toBeDefined();
+
+		component.updateContent(
+			createAssistantMessage([
+				{ type: "text", text: "partial response" },
+				{ type: "toolCall", id: "tool-1", name: "read", arguments: { path: "file.txt" } },
+			]),
+			true,
+		);
+		expect(getMarkdown()).not.toBe(simpleMarkdown);
+		expect(stripAnsi(component.render(80).join("\n"))).not.toContain(OSC133_ZONE_START);
+
+		component.updateContent(simpleMessage, true);
+		component.render(80);
+		const restoredMarkdown = getMarkdown();
+		expect(restoredMarkdown).not.toBe(simpleMarkdown);
+
+		component.setOutputPad(0);
+		component.render(80);
+		expect(getMarkdown()).not.toBe(restoredMarkdown);
+
+		component.invalidate();
+		component.render(80);
+		expect(getMarkdown()).not.toBe(restoredMarkdown);
 	});
 
 	test("identifies partial assistant Markdown as streaming", () => {

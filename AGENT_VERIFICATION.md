@@ -1,6 +1,6 @@
 # LYStar Code 验证记录
 
-> 更新日期：2026-08-31
+> 更新日期：2026-09-01
 >
 > 本文件只记录当前 TypeScript TUI、GUI Host、GUI Protocol、GUI 和发行链路的验证。历史原生终端实验记录已移除，不作为当前实现证据。
 
@@ -10,6 +10,22 @@
 - GUI 继续使用 `packages/gui-protocol`、`packages/gui-host`、Transcript 分页、Session lease、operation journal、content reference 和标准 `ui_request`/`ui_response`。
 - 发行包只构建 `lc` 与 `lystar`，不包含额外终端前端可执行文件。
 - 上游 Pi 基线已同步到 `v0.84.4`，commit `b79e4cc834970cca69daebffab7df1da7d1e52c4`；LYStar 产品版本为 `0.84.4-lystar.1`。
+
+## 本轮发版前定向验证（2026-09-01）
+
+本轮修复工作区的类型、格式、Agent Tool 冲突、GUI companion、全屏工作台、Markdown 和鼠标 Overlay 相关回归，实际运行：
+
+```bash
+npx tsgo --noEmit --pretty false --incremental false
+npx biome check --error-on-warnings --files-ignore-unknown=true .
+npm run test:scripts
+npm --workspace @earendil-works/pi-agent-core exec vitest -- --run test/agent-loop.test.ts test/harness/tools.test.ts --maxWorkers=2 --pool=forks
+npm --workspace @earendil-works/pi-coding-agent exec vitest -- --run test/gui-companion.test.ts test/interactive-gui-companion.test.ts test/apply-patch-extension.test.ts test/assistant-message.test.ts test/edit-tool-no-full-redraw.test.ts test/file-mutation-queue.test.ts test/interactive-tui.test.ts test/lystar-tui.test.ts test/lystar-workspace.test.ts test/subagent-session-view.test.ts test/system-prompt.test.ts test/task-workbench-components.test.ts test/tool-execution-component.test.ts test/tool-recovery.test.ts test/tool-system-prompt-contributions.test.ts --maxWorkers=2 --pool=forks
+cd packages/tui && node --test test/markdown.test.ts test/tui-alt-screen.test.ts
+node scripts/lcd.mjs --version
+```
+
+结果：TypeScript 检查、Biome 检查、脚本测试（33 项）、Agent 定向测试（2 个文件、71 项）、Coding Agent 定向测试（15 个文件、234 项）、TUI 定向测试（138 项）和源码快捷入口版本检查均通过，返回 `0.84.4-lystar.1`。本节未替代完整 CI、离线构建、PTY、多平台实机和发行包安装验证。
 
 ## Pi v0.84.4 合并验证（2026-08-31）
 

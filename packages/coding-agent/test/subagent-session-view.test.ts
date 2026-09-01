@@ -1,8 +1,9 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { type Component, Text, type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, Container, Text, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { createApplyPatchToolDefinition } from "../src/extensions/apply-patch/index.ts";
 import type { InteractiveCardAction } from "../src/modes/interactive/components/interactive-card.ts";
+import { WorkspaceComposer } from "../src/modes/interactive/components/lystar-workspace.ts";
 import { SubagentSessionViewComponent } from "../src/modes/interactive/components/subagent-session-view.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
@@ -78,6 +79,37 @@ describe("SubagentSessionViewComponent", () => {
 		view.handleInput("\x1b");
 		view.handleInput("\x1b[<0;1;2M");
 		expect(returned).toBe(2);
+	});
+
+	it("uses the shared workspace composer for writable subagent input", () => {
+		const editor = new Container();
+		editor.addChild(new Text("  输入内容", 0, 0));
+		const composer = new WorkspaceComposer({
+			editor,
+			brand: "LYStar Code",
+			getInfo: () => ({ primary: "model" }),
+			fullscreen: true,
+		});
+		const view = new SubagentSessionViewComponent({
+			agent: "worker",
+			status: "运行中",
+			readOnly: false,
+			composer,
+			getHeight: () => 12,
+			requestRender: () => {},
+			renderMessages: () => [],
+			onOpenSubagent: () => {},
+			getLinkAtScreenPosition: () => undefined,
+			openLinkAtScreenPosition: () => false,
+			onReturn: () => {},
+			onAbort: () => {},
+			overlayTop: 1,
+		});
+
+		const rendered = view.render(40).map(stripAnsi).join("\n");
+		expect(rendered).toContain("LYStar Code");
+		expect(rendered).toContain("╭");
+		expect(rendered).toContain("╰");
 	});
 
 	it("scrolls the transcript with page keys and the mouse wheel", () => {

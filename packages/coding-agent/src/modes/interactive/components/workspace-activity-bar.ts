@@ -1,4 +1,5 @@
 import { type Component, Markdown, sliceByColumn, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import type { WorkingIndicatorOptions } from "../../../core/extensions/types.ts";
 import { extractAnsiCode } from "../../../utils/ansi.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { uiGlyphs } from "../ui-glyphs.ts";
@@ -22,6 +23,9 @@ export interface WorkspaceActivityState {
 	queueCount: number;
 	runningTools?: number;
 	thinking?: string;
+	workingVisible?: boolean;
+	workingMessage?: string;
+	workingIndicator?: WorkingIndicatorOptions;
 }
 
 function formatDuration(ms: number): string {
@@ -33,7 +37,7 @@ function formatDuration(ms: number): string {
 function phaseLabel(state: WorkspaceActivityState): string {
 	switch (state.phase) {
 		case "thinking":
-			return state.thinking || "正在思考";
+			return state.thinking || state.workingMessage || "正在思考";
 		case "runningTool":
 			if ((state.runningTools ?? 0) > 1) return `${state.runningTools} 个操作并行`;
 			return [state.action, state.subject].filter(Boolean).join(" ") || "正在执行";
@@ -57,6 +61,8 @@ function truncateFromStart(text: string, width: number, ellipsis = "…"): strin
 }
 
 const ACTIVITY_REFRESH_MS = 1000;
+const DEFAULT_WORKING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const DEFAULT_WORKING_INTERVAL_MS = 80;
 const SHIMMER_REFRESH_MS = 100;
 const SHIMMER_CYCLE_MS = 2000;
 const SHIMMER_BAND_HALF_WIDTH = 6;
@@ -110,6 +116,9 @@ export class WorkspaceActivityBar implements Component {
 	private timer: ReturnType<typeof setInterval> | undefined;
 	private timerIntervalMs: number | undefined;
 	private shimmerStartedAt: number | undefined;
+	private workingFrame = 0;
+	private workingFrames = [...DEFAULT_WORKING_FRAMES];
+	private workingIntervalMs = DEFAULT_WORKING_INTERVAL_MS;
 	private readonly requestRender: () => void;
 	private readonly isMotionReduced: () => boolean;
 	private readonly inlineMarkdown = new Markdown("", 0, 0, getMarkdownTheme(), {
@@ -125,6 +134,18 @@ export class WorkspaceActivityBar implements Component {
 		const wasThinking = this.isThinkingState(this.state);
 		this.state = state;
 		const isThinking = this.isThinkingState(state);
+		if (state) {
+			this.workingFrames = [...(state.workingIndicator?.frames ?? DEFAULT_WORKING_FRAMES)];
+			this.workingIntervalMs =
+				state.workingIndicator?.intervalMs && state.workingIndicator.intervalMs > 0
+					? state.workingIndicator.intervalMs
+					: DEFAULT_WORKING_INTERVAL_MS;
+			if (this.workingFrames.length === 0) {
+				this.workingFrame = 0;
+			} else {
+				this.workingFrame %= this.workingFrames.length;
+			}
+		}
 		if (isThinking && !wasThinking) {
 			this.shimmerStartedAt = Date.now();
 		} else if (!isThinking) {
@@ -142,25 +163,57 @@ export class WorkspaceActivityBar implements Component {
 	invalidate(): void {}
 
 	private readonly onTimer = (): void => {
+		if (this.isWorkingIndicatorAnimated(this.state)) {
+			this.workingFrame = (this.workingFrame + 1) % this.workingFrames.length;
+		}
 		this.syncTimer();
 		this.requestRender();
 	};
 
 	private isThinkingState(state: WorkspaceActivityState | undefined): boolean {
-		return state?.phase === "thinking" && Boolean(state.thinking);
+		return state?.phase === "thinking";
+	}
+
+	private hasPersistentMetrics(state: WorkspaceActivityState): boolean {
+		return state.knownTools > 0 || state.queueCount > 0;
+	}
+
+	private isWorkingContentHidden(state: WorkspaceActivityState): boolean {
+		return state.workingVisible === false && (state.phase === "thinking" || state.phase === "runningTool");
+	}
+
+	private shouldRenderActivity(state: WorkspaceActivityState): boolean {
+		return (state.phase !== "waiting" && !this.isWorkingContentHidden(state)) || this.hasPersistentMetrics(state);
 	}
 
 	private isShimmerActive(state: WorkspaceActivityState | undefined): boolean {
-		return this.isThinkingState(state) && !this.isMotionReduced();
+		return (
+			this.isThinkingState(state) &&
+			state?.workingVisible !== false &&
+			Boolean(state?.thinking) &&
+			!this.isMotionReduced()
+		);
+	}
+
+	private isWorkingIndicatorAnimated(state: WorkspaceActivityState | undefined): boolean {
+		return Boolean(
+			state &&
+				state.phase === "thinking" &&
+				state.workingVisible !== false &&
+				this.workingFrames.length > 1 &&
+				!this.isMotionReduced(),
+		);
 	}
 
 	private syncTimer(): void {
 		const intervalMs =
-			!this.state || this.state.phase === "waiting"
+			!this.state || !this.shouldRenderActivity(this.state)
 				? undefined
-				: this.isShimmerActive(this.state)
-					? SHIMMER_REFRESH_MS
-					: ACTIVITY_REFRESH_MS;
+				: this.isWorkingIndicatorAnimated(this.state)
+					? this.workingIntervalMs
+					: this.isShimmerActive(this.state)
+						? SHIMMER_REFRESH_MS
+						: ACTIVITY_REFRESH_MS;
 		if (intervalMs === this.timerIntervalMs) return;
 
 		this.clearTimer();
@@ -174,6 +227,12 @@ export class WorkspaceActivityBar implements Component {
 		if (this.timer) clearInterval(this.timer);
 		this.timer = undefined;
 		this.timerIntervalMs = undefined;
+	}
+
+	private renderWorkingIndicator(state: WorkspaceActivityState): string {
+		const frame = this.workingFrames[this.workingFrame] ?? "";
+		if (!frame) return "";
+		return state.workingIndicator ? frame : theme.bold(theme.fg("accent", frame));
 	}
 
 	/** 在已渲染的 ANSI 文本上叠加分级扫光，保留 Markdown 原有前景色和样式。 */
@@ -237,11 +296,20 @@ export class WorkspaceActivityBar implements Component {
 	}
 
 	render(width: number): string[] {
-		if (!this.state || width <= 0 || this.state.phase === "waiting") return [];
+		if (!this.state || width <= 0 || !this.shouldRenderActivity(this.state)) return [];
 		const state = this.state;
-		const prefixGlyph = state.phase === "runningTool" ? uiGlyphs.running : uiGlyphs.list;
-		const prefix = theme.bold(theme.fg(state.phase === "cancelled" ? "warning" : "accent", prefixGlyph));
-		const labelText = phaseLabel(state);
+		const workingContentHidden = this.isWorkingContentHidden(state);
+		const prefix = workingContentHidden
+			? ""
+			: state.phase === "thinking"
+				? this.renderWorkingIndicator(state)
+				: theme.bold(
+						theme.fg(
+							state.phase === "cancelled" ? "warning" : "accent",
+							state.phase === "runningTool" ? uiGlyphs.running : uiGlyphs.list,
+						),
+					);
+		const labelText = workingContentHidden ? "" : phaseLabel(state);
 		const labelColor = state.phase === "retrying" || state.phase === "cancelled" ? "warning" : "text";
 		const progress =
 			state.knownTools > 0
@@ -253,10 +321,10 @@ export class WorkspaceActivityBar implements Component {
 		const fullSuffix = [progress, queue, elapsed].filter((part): part is string => Boolean(part)).join(separator);
 		const suffix = width - visibleWidth(fullSuffix) >= 16 ? fullSuffix : elapsed;
 		const renderMain = (maxWidth: number): string => {
-			const prefixText = `${prefix} `;
+			const prefixText = prefix ? `${prefix} ` : "";
 			if (maxWidth <= visibleWidth(prefixText)) return truncateToWidth(prefix, maxWidth, "");
 			const labelWidth = Math.max(1, maxWidth - visibleWidth(prefixText));
-			if (state.phase === "thinking" && state.thinking) {
+			if (state.phase === "thinking" && state.thinking && !workingContentHidden) {
 				const label = this.inlineMarkdown.renderInline(labelText);
 				const truncatedLabel = truncateFromStart(label, labelWidth, theme.fg("text", "…"));
 				const renderedLabel = this.isShimmerActive(state)
@@ -266,7 +334,10 @@ export class WorkspaceActivityBar implements Component {
 			}
 			return `${prefixText}${theme.fg(labelColor, truncateToWidth(labelText, labelWidth, "…"))}`;
 		};
-		if (!suffix || visibleWidth(suffix) + 2 >= width) return [renderMain(width)];
+		if (!suffix || visibleWidth(suffix) + 2 >= width) {
+			const main = renderMain(width);
+			return main ? [main] : [truncateToWidth(suffix, width, "…")];
+		}
 		const main = renderMain(Math.max(1, width - visibleWidth(suffix) - 1));
 		const gap = " ".repeat(Math.max(1, width - visibleWidth(main) - visibleWidth(suffix)));
 		return [`${main}${gap}${suffix}`];

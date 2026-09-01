@@ -26,18 +26,24 @@ export class BashExecutionComponent extends Container {
 	private expanded = false;
 	private contentBox: Box;
 	private lastRenderedLineCount = 0;
+	private renderVersion = 0;
 
 	constructor(command: string, _ui: TUI, _excludeFromContext = false) {
 		super();
 		this.command = command;
-		this.contentBox = new Box(1, 0, (text: string) => text);
+		this.contentBox = new Box(1, 0);
 		this.addChild(this.contentBox);
 		this.updateDisplay();
 	}
 
 	setExpanded(expanded: boolean): void {
+		if (this.expanded === expanded) return;
 		this.expanded = expanded;
 		this.updateDisplay();
+	}
+
+	getRenderVersion(): number {
+		return this.renderVersion;
 	}
 
 	isExpanded(): boolean {
@@ -91,6 +97,7 @@ export class BashExecutionComponent extends Container {
 	}
 
 	private updateDisplay(): void {
+		this.renderVersion++;
 		const isPartial = this.status === "running";
 		const isError = this.status === "error";
 		const successLabel = this.status === "cancelled" ? "已取消" : "已运行";
@@ -106,7 +113,6 @@ export class BashExecutionComponent extends Container {
 			}),
 		);
 
-		this.contentBox.setBgFn((text) => text);
 		this.contentBox.clear();
 		this.contentBox.addChild(summary);
 

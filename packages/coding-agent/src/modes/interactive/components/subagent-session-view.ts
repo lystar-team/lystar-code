@@ -11,6 +11,7 @@ import { parseMouseEvent, WheelScrollNormalizer } from "../mouse.ts";
 import { theme } from "../theme/theme.ts";
 import type { CustomEditor } from "./custom-editor.ts";
 import { activateInteractiveCard, resolveInteractiveCardAction, visitInteractiveCards } from "./interactive-card.ts";
+import type { WorkspaceComposer } from "./lystar-workspace.ts";
 import type { SubagentRunTarget } from "./subagent-run.ts";
 
 interface TranscriptComponentRange {
@@ -39,6 +40,7 @@ export class SubagentSessionViewComponent implements Component, Focusable {
 		status: string;
 		readOnly: boolean;
 		editor?: CustomEditor;
+		composer?: WorkspaceComposer;
 		getHeight: () => number;
 		requestRender: () => void;
 		renderMessages: (messages: AgentMessage[]) => Component[];
@@ -55,6 +57,7 @@ export class SubagentSessionViewComponent implements Component, Focusable {
 		status: string;
 		readOnly: boolean;
 		editor?: CustomEditor;
+		composer?: WorkspaceComposer;
 		getHeight: () => number;
 		requestRender: () => void;
 		renderMessages: (messages: AgentMessage[]) => Component[];
@@ -104,7 +107,8 @@ export class SubagentSessionViewComponent implements Component, Focusable {
 
 	invalidate(): void {
 		this.transcript.invalidate();
-		this.options.editor?.invalidate();
+		this.options.composer?.invalidate();
+		if (!this.options.composer) this.options.editor?.invalidate();
 	}
 
 	private scrollBy(lines: number): void {
@@ -122,7 +126,7 @@ export class SubagentSessionViewComponent implements Component, Focusable {
 		);
 		const footer = this.options.readOnly
 			? [truncateToWidth(theme.fg("muted", "旧记录没有独立 Session，只能查看历史内容"), width, "…")]
-			: (this.options.editor?.render(width) ?? []);
+			: (this.options.composer?.render(width) ?? this.options.editor?.render(width) ?? []);
 		const transcriptHeight = Math.max(1, height - footer.length - 2);
 		const transcriptLines: string[] = [];
 		this.componentRanges = [];

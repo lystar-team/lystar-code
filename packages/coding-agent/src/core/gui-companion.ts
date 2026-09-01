@@ -69,9 +69,12 @@ function send(socket: Socket, message: GuiCompanionServerMessage): void {
 	if (!socket.destroyed) socket.write(`${JSON.stringify(message)}\n`);
 }
 
-async function removeStaleEndpoint(endpoint: string): Promise<void> {
-	if (process.platform === "win32" || !existsSync(endpoint)) return;
-	await new Promise<void>((resolve, reject) => {
+function isAddressInUse(error: unknown): boolean {
+	return (error as NodeJS.ErrnoException | undefined)?.code === "EADDRINUSE";
+}
+
+async function probeEndpoint(endpoint: string): Promise<boolean> {
+	return await new Promise<boolean>((resolve, reject) => {
 		const socket = createConnection(endpoint);
 		const cleanup = () => {
 			socket.removeAllListeners();
@@ -79,22 +82,60 @@ async function removeStaleEndpoint(endpoint: string): Promise<void> {
 		};
 		socket.once("connect", () => {
 			cleanup();
-			reject(new Error(`GUI companion is already running at ${endpoint}`));
+			resolve(true);
 		});
 		socket.once("error", (error: NodeJS.ErrnoException) => {
 			cleanup();
-			if (error.code !== "ECONNREFUSED" && error.code !== "ENOENT") {
-				reject(error);
+			if (error.code === "ECONNREFUSED" || error.code === "ENOENT") {
+				resolve(false);
 				return;
 			}
-			try {
-				unlinkSync(endpoint);
-				resolve();
-			} catch (error) {
-				reject(error);
-			}
+			reject(error);
 		});
 	});
+}
+
+function listenServer(server: Server, endpoint: string): Promise<void> {
+	return new Promise<void>((resolve, reject) => {
+		const onError = (error: Error) => {
+			server.off("listening", onListening);
+			reject(error);
+		};
+		const onListening = () => {
+			server.off("error", onError);
+			resolve();
+		};
+		server.once("error", onError);
+		server.listen(endpoint, onListening);
+	});
+}
+
+async function createListeningServer(endpoint: string, onConnection: (socket: Socket) => void): Promise<Server> {
+	const create = () => createServer(onConnection);
+	let server = create();
+	try {
+		await listenServer(server, endpoint);
+		return server;
+	} catch (error) {
+		if (!isAddressInUse(error)) throw error;
+		if (process.platform === "win32") {
+			throw new Error(`GUI companion is already running at ${endpoint}`);
+		}
+
+		if (await probeEndpoint(endpoint)) {
+			throw new Error(`GUI companion is already running at ${endpoint}`);
+		}
+
+		try {
+			unlinkSync(endpoint);
+		} catch (unlinkError) {
+			if ((unlinkError as NodeJS.ErrnoException).code !== "ENOENT") throw unlinkError;
+		}
+
+		server = create();
+		await listenServer(server, endpoint);
+		return server;
+	}
 }
 
 function sessionImages(images: GuiCompanionImage[] | undefined): ImageContent[] | undefined {
@@ -124,30 +165,25 @@ export class GuiCompanionServer {
 		if (!sessionPath || this.server) return;
 		const endpoint = getGuiCompanionEndpoint(this.agentDir, sessionPath);
 		if (process.platform !== "win32") mkdirSync(dirname(endpoint), { recursive: true, mode: 0o700 });
-		await removeStaleEndpoint(endpoint);
-		const server = createServer((socket) => this.accept(socket));
-		try {
-			await new Promise<void>((resolve, reject) => {
-				server.once("error", reject);
-				server.listen(endpoint, resolve);
-			});
-		} catch (error) {
-			server.close();
-			throw error;
-		}
-		if (process.platform !== "win32") chmodSync(endpoint, 0o600);
+		const server = await createListeningServer(endpoint, (socket) => this.accept(socket));
+		this.endpoint = endpoint;
+		this.server = server;
 		server.once("close", () => {
 			if (process.platform !== "win32" && existsSync(endpoint)) unlinkSync(endpoint);
 		});
-		this.endpoint = endpoint;
-		this.server = server;
-		this.unsubscribe = this.session.subscribe((event) => {
-			this.broadcast({ type: "agent_event", event });
-			if (event.type === "message_end" || event.type === "entry_appended") {
-				queueMicrotask(() => this.broadcastCommittedEntries());
-			}
-			queueMicrotask(() => this.broadcast({ type: "snapshot", snapshot: this.snapshot() }));
-		});
+		try {
+			if (process.platform !== "win32") chmodSync(endpoint, 0o600);
+			this.unsubscribe = this.session.subscribe((event) => {
+				this.broadcast({ type: "agent_event", event });
+				if (event.type === "message_end" || event.type === "entry_appended") {
+					queueMicrotask(() => this.broadcastCommittedEntries());
+				}
+				queueMicrotask(() => this.broadcast({ type: "snapshot", snapshot: this.snapshot() }));
+			});
+		} catch (error) {
+			await this.dispose();
+			throw error;
+		}
 	}
 
 	async dispose(): Promise<void> {

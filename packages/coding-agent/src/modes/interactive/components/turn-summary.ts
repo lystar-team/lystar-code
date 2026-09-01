@@ -145,6 +145,7 @@ export class TurnSummaryComponent extends Box {
 	private expanded = false;
 	private readonly data: TurnSummaryData;
 	private lastRenderedLineCount = 0;
+	private renderVersion = 0;
 
 	constructor(data: TurnSummaryData) {
 		super(1, 0, (text) => text);
@@ -153,8 +154,13 @@ export class TurnSummaryComponent extends Box {
 	}
 
 	setExpanded(expanded: boolean): void {
+		if (this.expanded === expanded) return;
 		this.expanded = expanded;
 		this.updateDisplay();
+	}
+
+	getRenderVersion(): number {
+		return this.renderVersion;
 	}
 
 	isExpanded(): boolean {
@@ -181,6 +187,7 @@ export class TurnSummaryComponent extends Box {
 	}
 
 	private updateDisplay(): void {
+		this.renderVersion++;
 		this.clear();
 		const outcome = getOutcome(this.data);
 		this.addChild(new TurnSummaryHeader(this.data));

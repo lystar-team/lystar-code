@@ -40,6 +40,12 @@ interface WorkspaceSearchDocument {
 	ranges: Array<{ start: number; end: number }>;
 }
 
+interface SearchComponentCacheEntry {
+	width: number;
+	version: number;
+	lines: string[];
+}
+
 interface RenderVersionedComponent extends Component {
 	getRenderVersion(): number;
 }
@@ -268,6 +274,7 @@ export class LystarWorkspace implements Component {
 	private contentRenderWidth = 1;
 	private contentPadding = 0;
 	private searchDocument: WorkspaceSearchDocument | undefined;
+	private searchComponentCache = new Map<Component, SearchComponentCacheEntry>();
 	private searchJump: { componentIndex: number; row: number } | undefined;
 
 	constructor(options: WorkspaceOptions) {
@@ -295,6 +302,7 @@ export class LystarWorkspace implements Component {
 		this.invalidationGeneration++;
 		this.blockCache = new Map();
 		this.searchDocument = undefined;
+		this.searchComponentCache.clear();
 	}
 
 	setScrollbar(scrollbar: ScrollViewScrollbar): void {
@@ -326,6 +334,7 @@ export class LystarWorkspace implements Component {
 		this.blockCache = new Map();
 		this.componentInvalidationGeneration = new WeakMap();
 		this.searchDocument = undefined;
+		this.searchComponentCache.clear();
 		this.searchJump = undefined;
 	}
 
@@ -418,28 +427,67 @@ export class LystarWorkspace implements Component {
 		};
 	}
 
+	private getSearchComponentLines(component: Component, width: number, version: number | undefined): string[] {
+		if (version === undefined) return component.render(width);
+
+		const cached = this.searchComponentCache.get(component);
+		if (cached && cached.width === width && cached.version === version) return cached.lines;
+
+		const lines = component.render(width);
+		this.searchComponentCache.set(component, { width, version, lines });
+		return lines;
+	}
+
 	private getSearchDocument(): WorkspaceSearchDocument {
 		const components = this.getScrollComponents();
 		const versions = components.map((component) =>
 			isRenderVersioned(component) ? component.getRenderVersion() : undefined,
 		);
+		const allVersioned = versions.every((version) => version !== undefined);
 		const cached = this.searchDocument;
-		if (
+		const sameComponents =
 			cached &&
 			cached.width === this.contentRenderWidth &&
 			cached.components.length === components.length &&
-			cached.components.every((component, index) => component === components[index]) &&
+			cached.components.every((component, index) => component === components[index]);
+		if (
+			cached &&
+			allVersioned &&
+			sameComponents &&
 			cached.versions.every((version, index) => version === versions[index])
 		) {
 			return cached;
 		}
 
+		const appendOnly =
+			cached &&
+			cached.width === this.contentRenderWidth &&
+			cached.components.length < components.length &&
+			cached.components.every((component, index) => component === components[index]) &&
+			cached.versions.every((version, index) => version !== undefined && version === versions[index]);
+		if (appendOnly) {
+			const lines = [...cached.lines];
+			const ranges = [...cached.ranges];
+			for (let index = cached.components.length; index < components.length; index++) {
+				const start = lines.length;
+				lines.push(...this.getSearchComponentLines(components[index]!, this.contentRenderWidth, versions[index]));
+				ranges.push({ start, end: lines.length });
+			}
+			const document = { width: this.contentRenderWidth, components: [...components], versions, lines, ranges };
+			this.searchDocument = document;
+			return document;
+		}
+
 		const lines: string[] = [];
 		const ranges: Array<{ start: number; end: number }> = [];
-		for (const component of components) {
+		for (let index = 0; index < components.length; index++) {
 			const start = lines.length;
-			lines.push(...component.render(this.contentRenderWidth));
+			lines.push(...this.getSearchComponentLines(components[index]!, this.contentRenderWidth, versions[index]));
 			ranges.push({ start, end: lines.length });
+		}
+		const activeComponents = new Set(components);
+		for (const component of this.searchComponentCache.keys()) {
+			if (!activeComponents.has(component)) this.searchComponentCache.delete(component);
 		}
 		const document = { width: this.contentRenderWidth, components: [...components], versions, lines, ranges };
 		this.searchDocument = document;
@@ -630,28 +678,53 @@ export class LystarWorkspace implements Component {
 	}
 
 	private getScrollComponents(): Component[] {
-		const changed = this.options.scrollContainers.some((container, index) => {
-			const snapshot = this.scrollContainerSnapshots[index];
-			return (
-				!snapshot ||
-				snapshot.children !== container.children ||
-				snapshot.length !== container.children.length ||
-				snapshot.first !== container.children[0] ||
-				snapshot.last !== container.children.at(-1)
-			);
-		});
-		if (!changed && this.scrollContainerSnapshots.length === this.options.scrollContainers.length) {
-			return this.scrollComponents;
-		}
-
-		this.scrollComponents = this.options.scrollContainers.flatMap((container) => container.children);
-		this.searchDocument = undefined;
-		this.scrollContainerSnapshots = this.options.scrollContainers.map((container) => ({
+		const snapshots = this.options.scrollContainers.map((container) => ({
 			children: container.children,
 			length: container.children.length,
 			first: container.children[0],
 			last: container.children.at(-1),
 		}));
+		const unchanged =
+			snapshots.length === this.scrollContainerSnapshots.length &&
+			snapshots.every((snapshot, index) => {
+				const previous = this.scrollContainerSnapshots[index];
+				return (
+					previous !== undefined &&
+					snapshot.children === previous.children &&
+					snapshot.length === previous.length &&
+					snapshot.first === previous.first &&
+					snapshot.last === previous.last
+				);
+			});
+		if (unchanged) return this.scrollComponents;
+
+		// 会话尾部通常只会向 chatContainer 追加新组件。保留已有索引，避免每条消息都复制完整组件列表。
+		const appendOnly =
+			snapshots.length === this.scrollContainerSnapshots.length &&
+			snapshots.every((snapshot, index) => {
+				const previous = this.scrollContainerSnapshots[index];
+				if (!previous || snapshot.children !== previous.children || snapshot.length < previous.length) return false;
+				if (previous.length === 0) return true;
+				return snapshot.children[previous.length - 1] === previous.last;
+			});
+		if (appendOnly) {
+			let offset = 0;
+			for (let index = 0; index < snapshots.length; index++) {
+				const snapshot = snapshots[index]!;
+				const previous = this.scrollContainerSnapshots[index]!;
+				const appended = snapshot.children.slice(previous.length);
+				if (appended.length > 0) {
+					this.scrollComponents.splice(offset + previous.length, 0, ...appended);
+				}
+				offset += snapshot.length;
+			}
+			this.scrollContainerSnapshots = snapshots;
+			return this.scrollComponents;
+		}
+
+		this.scrollComponents = snapshots.flatMap((snapshot) => snapshot.children);
+		this.searchDocument = undefined;
+		this.scrollContainerSnapshots = snapshots;
 		return this.scrollComponents;
 	}
 

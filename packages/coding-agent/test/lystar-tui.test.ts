@@ -75,6 +75,27 @@ describe("LYStar TUI", () => {
 		expect(component.widths).toContain(terminal.columns - 1);
 	});
 
+	it("enables all-motion tracking inside terminal multiplexers so card hover receives movement events", () => {
+		const environmentKeys = ["TMUX", "ZELLIJ", "STY", "TERM"] as const;
+		const previousEnvironment = new Map(environmentKeys.map((key) => [key, process.env[key]]));
+		try {
+			for (const key of environmentKeys) delete process.env[key];
+			process.env.TERM = "tmux-256color";
+			const terminal = new CaptureTerminal();
+			const tui = new LystarTUI(terminal);
+			tui.start();
+			const output = terminal.writes.join("");
+			expect(output).toContain("\x1b[?1002h\x1b[?1003h");
+			tui.stop();
+		} finally {
+			for (const key of environmentKeys) {
+				const value = previousEnvironment.get(key);
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
+		}
+	});
+
 	it("keeps base and overlay frames off the physical right margin", async () => {
 		const terminal = new CaptureTerminal();
 		const tui = new LystarTUI(terminal);

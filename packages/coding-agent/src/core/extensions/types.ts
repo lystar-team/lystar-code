@@ -480,6 +480,9 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	 */
 	executionMode?: ToolExecutionMode;
 
+	/** 仅供运行时使用的目标键，用来拒绝同一条助手回复中的冲突调用。 */
+	getExecutionKeys?: (args: unknown, ctx?: ExtensionContext) => readonly string[] | Promise<readonly string[]>;
+
 	/** Execute the tool. */
 	execute(
 		toolCallId: string,

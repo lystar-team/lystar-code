@@ -20,19 +20,24 @@ export interface AltScreenSearchMatch {
 	segments: AltScreenSearchSegment[];
 }
 
-function appendMappedText(
-	text: string,
-	span: SearchSourceSpan | undefined,
-	corpus: { text: string; source: Array<SearchSourceSpan | undefined> },
-): void {
+interface SearchCorpus {
+	text: string;
+	source: Array<SearchSourceSpan | undefined>;
+}
+
+interface SearchCorpusCacheEntry {
+	snapshot: string[];
+	corpus: SearchCorpus;
+}
+
+const searchCorpusCache = new WeakMap<readonly string[], SearchCorpusCacheEntry>();
+
+function appendMappedText(text: string, span: SearchSourceSpan | undefined, corpus: SearchCorpus): void {
 	corpus.text += text;
 	for (let index = 0; index < text.length; index++) corpus.source.push(span);
 }
 
-function buildSearchCorpus(lines: readonly string[]): {
-	text: string;
-	source: Array<SearchSourceSpan | undefined>;
-} {
+function buildSearchCorpus(lines: readonly string[]): SearchCorpus {
 	const corpus: { text: string; source: Array<SearchSourceSpan | undefined> } = { text: "", source: [] };
 	let pendingSeparator = false;
 
@@ -60,6 +65,21 @@ function buildSearchCorpus(lines: readonly string[]): {
 	return corpus;
 }
 
+function getSearchCorpus(lines: readonly string[]): SearchCorpus {
+	const cached = searchCorpusCache.get(lines);
+	if (
+		cached &&
+		cached.snapshot.length === lines.length &&
+		cached.snapshot.every((line, index) => line === lines[index])
+	) {
+		return cached.corpus;
+	}
+
+	const corpus = buildSearchCorpus(lines);
+	searchCorpusCache.set(lines, { snapshot: [...lines], corpus });
+	return corpus;
+}
+
 function normalizeQuery(query: string): string {
 	return query.replace(/\s+/gu, " ").trim();
 }
@@ -72,7 +92,7 @@ export function findAltScreenSearchMatches(lines: readonly string[], query: stri
 	const normalizedQuery = normalizeQuery(query);
 	if (!normalizedQuery) return [];
 
-	const corpus = buildSearchCorpus(lines);
+	const corpus = getSearchCorpus(lines);
 	const expression = new RegExp(escapeRegExp(normalizedQuery), "giu");
 	const matches: AltScreenSearchMatch[] = [];
 

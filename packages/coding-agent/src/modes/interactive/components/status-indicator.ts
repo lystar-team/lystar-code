@@ -1,9 +1,8 @@
 import { type Component, Loader, type TUI } from "@earendil-works/pi-tui";
-import type { WorkingIndicatorOptions } from "../../../core/extensions/index.ts";
 import { theme } from "../theme/theme.ts";
 import { CountdownTimer } from "./countdown-timer.ts";
 
-export type StatusIndicatorKind = "working" | "retry" | "compaction" | "branchSummary";
+export type StatusIndicatorKind = "retry" | "compaction" | "branchSummary";
 
 export class StatusIndicator extends Loader {
 	readonly kind: StatusIndicatorKind;
@@ -14,27 +13,13 @@ export class StatusIndicator extends Loader {
 		spinnerColorFn: (str: string) => string,
 		messageColorFn: (str: string) => string,
 		message: string,
-		indicator?: WorkingIndicatorOptions,
 	) {
-		super(ui, spinnerColorFn, messageColorFn, message, indicator);
+		super(ui, spinnerColorFn, messageColorFn, message);
 		this.kind = kind;
 	}
 
 	dispose(): void {
 		this.stop();
-	}
-}
-
-export class WorkingStatusIndicator extends StatusIndicator {
-	constructor(ui: TUI, message: string, indicator?: WorkingIndicatorOptions) {
-		super(
-			"working",
-			ui,
-			(spinner) => theme.fg("accent", spinner),
-			(text) => theme.fg("muted", text),
-			message,
-			indicator,
-		);
 	}
 }
 

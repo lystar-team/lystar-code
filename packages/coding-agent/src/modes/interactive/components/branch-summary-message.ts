@@ -14,6 +14,7 @@ export class BranchSummaryMessageComponent extends Box {
 	private message: BranchSummaryMessage;
 	private markdownTheme: MarkdownTheme;
 	private lastRenderedLineCount = 0;
+	private renderVersion = 0;
 
 	constructor(message: BranchSummaryMessage, markdownTheme: MarkdownTheme = getMarkdownTheme()) {
 		super(1, 0, (text) => text);
@@ -23,8 +24,13 @@ export class BranchSummaryMessageComponent extends Box {
 	}
 
 	setExpanded(expanded: boolean): void {
+		if (this.expanded === expanded) return;
 		this.expanded = expanded;
 		this.updateDisplay();
+	}
+
+	getRenderVersion(): number {
+		return this.renderVersion;
 	}
 
 	isExpanded(): boolean {
@@ -51,6 +57,7 @@ export class BranchSummaryMessageComponent extends Box {
 	}
 
 	private updateDisplay(): void {
+		this.renderVersion++;
 		this.clear();
 
 		const label = theme.bold(theme.fg("customMessageLabel", `${uiGlyphs.branch} 分支摘要`));

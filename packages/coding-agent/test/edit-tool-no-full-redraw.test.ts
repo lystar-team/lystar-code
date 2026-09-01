@@ -7,6 +7,7 @@ import { createEditToolDefinition } from "../src/core/tools/edit.ts";
 import { computeEditsDiff, type Edit } from "../src/core/tools/edit-diff.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { stripAnsi } from "../src/utils/ansi.ts";
 
 class FakeTerminal implements Terminal {
 	columns = 80;
@@ -237,5 +238,15 @@ describe("edit tool TUI rendering", () => {
 		);
 		expect(rendered).not.toContain("+1 ");
 		expect(rendered).not.toContain("-1 ");
+
+		component.updateResult(
+			{
+				content: [{ type: "text", text: "Could not find the exact text in the target file." }],
+				isError: true,
+			},
+			false,
+		);
+		const settledError = stripAnsi(component.render(80).join("\n"));
+		expect(settledError.match(/Could not find/g)).toHaveLength(1);
 	});
 });

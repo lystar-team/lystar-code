@@ -12,7 +12,7 @@ export interface BuildSystemPromptOptions {
 	selectedTools?: string[];
 	/** Optional one-line tool snippets keyed by tool name. */
 	toolSnippets?: Record<string, string>;
-	/** Additional guideline bullets appended to the default system prompt guidelines. */
+	/** Additional guideline bullets appended to default guidelines or included in custom prompt tool guidance. */
 	promptGuidelines?: string[];
 	/** Text to append to system prompt. */
 	appendSystemPrompt?: string;
@@ -42,6 +42,25 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
 	const contextFiles = providedContextFiles ?? [];
 	const skills = providedSkills ?? [];
+	const tools = selectedTools || ["read", "bash", "edit", "write"];
+	const visibleTools = tools.filter((name) => !!toolSnippets?.[name]);
+	const toolsList =
+		visibleTools.length > 0 ? visibleTools.map((name) => `- ${name}: ${toolSnippets![name]}`).join("\n") : "(none)";
+	const hasRead = tools.includes("read");
+	const customPromptGuidelines = Array.from(
+		new Set(
+			(promptGuidelines ?? []).map((guideline) => guideline.trim()).filter((guideline) => guideline.length > 0),
+		),
+	);
+	const customPromptToolSection =
+		selectedTools === undefined
+			? ""
+			: `\n\nAvailable tools for this session:\n${toolsList}\n\nTool usage guidelines:\n${[
+					"Treat the tool declarations supplied with the request as authoritative.",
+					...customPromptGuidelines,
+				]
+					.map((guideline) => `- ${guideline}`)
+					.join("\n")}`;
 
 	if (customPrompt) {
 		let prompt = customPrompt;
@@ -66,6 +85,10 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 			prompt += formatSkillsForPrompt(skills);
 		}
 
+		if (customPromptToolSection) {
+			prompt += customPromptToolSection;
+		}
+
 		prompt += `\nCurrent working directory: ${promptCwd}\n`;
 
 		return prompt;
@@ -75,13 +98,6 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const readmePath = getReadmePath();
 	const docsPath = getDocsPath();
 	const examplesPath = getExamplesPath();
-
-	// Build tools list based on selected tools.
-	// A tool appears in Available tools only when the caller provides a one-line snippet.
-	const tools = selectedTools || ["read", "bash", "edit", "write"];
-	const visibleTools = tools.filter((name) => !!toolSnippets?.[name]);
-	const toolsList =
-		visibleTools.length > 0 ? visibleTools.map((name) => `- ${name}: ${toolSnippets![name]}`).join("\n") : "(none)";
 
 	// Build guidelines based on which tools are actually available
 	const guidelinesList: string[] = [];
@@ -99,7 +115,6 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const hasGrep = tools.includes("grep");
 	const hasFind = tools.includes("find");
 	const hasLs = tools.includes("ls");
-	const hasRead = tools.includes("read");
 
 	// File exploration guidelines
 	if ((hasBash || hasPowerShell) && !hasGrep && !hasFind && !hasLs) {

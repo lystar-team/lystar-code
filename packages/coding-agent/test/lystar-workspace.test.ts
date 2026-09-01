@@ -290,6 +290,44 @@ describe("LYStar workspace", () => {
 		expect(history.render).toHaveBeenCalledTimes(2);
 	});
 
+	it("extends appended history without re-indexing the existing transcript", () => {
+		let indexedReads = 0;
+		const isIndexProperty = (property: PropertyKey): boolean =>
+			typeof property === "string" && property.length > 0 && String(Number(property)) === property;
+		const children = new Proxy(
+			Array.from({ length: 5000 }, (_, index) => new Text(`message-${index}`, 0, 0)),
+			{
+				get(target, property, receiver) {
+					if (isIndexProperty(property)) indexedReads++;
+					return Reflect.get(target, property, receiver);
+				},
+				has(target, property) {
+					if (isIndexProperty(property)) indexedReads++;
+					return Reflect.has(target, property);
+				},
+			},
+		);
+		const chat = new Container();
+		chat.children = children;
+		const workspace = new LystarWorkspace({
+			getHeight: () => 24,
+			header: textContainer("header"),
+			scrollContainers: [chat],
+			bottomContainers: [textContainer("editor")],
+			fullscreen: true,
+		});
+
+		workspace.render(80);
+		indexedReads = 0;
+		for (let index = 0; index < 100; index++) {
+			chat.addChild(new Text(`message-${5000 + index}`, 0, 0));
+			workspace.render(80);
+		}
+
+		expect(indexedReads).toBeLessThan(2000);
+		expect(workspace.render(80).join("\n")).toContain("message-5099");
+	});
+
 	it("materializes only the visible history window and loads older blocks on demand", () => {
 		let renderCount = 0;
 		const histories = Array.from({ length: 500 }, (_, index) => ({
@@ -480,6 +518,81 @@ describe("LYStar workspace", () => {
 		expect(stripAnsi(workspace.render(40).join("\n"))).toContain("┃");
 		workspace.setScrollbar("hidden");
 		expect(stripAnsi(workspace.render(40).join("\n"))).not.toMatch(/[│┃]/);
+	});
+
+	it("incrementally extends cached search lines for appended versioned components", () => {
+		let firstText = "first needle";
+		let firstVersion = 0;
+		const first = {
+			render: vi.fn((_width: number) => [firstText]),
+			invalidate: vi.fn(),
+			getRenderVersion: () => firstVersion,
+		};
+		const second = {
+			render: vi.fn((_width: number) => ["second needle"]),
+			invalidate: vi.fn(),
+			getRenderVersion: () => 0,
+		};
+		const chat = new Container();
+		chat.addChild(first);
+		const workspace = new LystarWorkspace({
+			getHeight: () => 8,
+			header: textContainer("header"),
+			scrollContainers: [chat],
+			bottomContainers: [textContainer("editor")],
+			fullscreen: true,
+			scrollbar: "hidden",
+		});
+		const target = workspace.getAltScreenSearchTarget();
+
+		workspace.render(40);
+		first.render.mockClear();
+		expect(target.getLines()).toEqual(["first needle"]);
+		expect(first.render).toHaveBeenCalledTimes(1);
+
+		chat.addChild(second);
+		expect(target.getLines()).toEqual(["first needle", "second needle"]);
+		expect(first.render).toHaveBeenCalledTimes(1);
+		expect(second.render).toHaveBeenCalledTimes(1);
+
+		firstText = "updated needle";
+		firstVersion++;
+		expect(target.getLines()).toEqual(["updated needle", "second needle"]);
+		expect(first.render).toHaveBeenCalledTimes(2);
+		expect(second.render).toHaveBeenCalledTimes(1);
+
+		workspace.render(50);
+		first.render.mockClear();
+		second.render.mockClear();
+		expect(target.getLines()).toEqual(["updated needle", "second needle"]);
+		expect(first.render).toHaveBeenCalledTimes(1);
+		expect(second.render).toHaveBeenCalledTimes(1);
+	});
+
+	it("rebuilds search lines for unversioned components instead of reusing stale output", () => {
+		let text = "first value";
+		const dynamic = {
+			render: vi.fn(() => [text]),
+			invalidate: vi.fn(),
+		};
+		const chat = new Container();
+		chat.addChild(dynamic);
+		const workspace = new LystarWorkspace({
+			getHeight: () => 8,
+			header: textContainer("header"),
+			scrollContainers: [chat],
+			bottomContainers: [textContainer("editor")],
+			fullscreen: true,
+			scrollbar: "hidden",
+		});
+		const target = workspace.getAltScreenSearchTarget();
+
+		workspace.render(40);
+		dynamic.render.mockClear();
+		expect(target.getLines()).toEqual(["first value"]);
+		text = "updated value";
+		expect(target.getLines()).toEqual(["updated value"]);
+		expect(dynamic.render).toHaveBeenCalledTimes(2);
 	});
 
 	it("positions search matches one third below the workspace viewport top", () => {

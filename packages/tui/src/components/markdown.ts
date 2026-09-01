@@ -280,6 +280,8 @@ export interface MarkdownOptions {
 	preserveBackslashEscapes?: boolean;
 	/** Transform source Markdown before parsing, with the exact width available for content. */
 	transform?: (markdown: string, availableWidth: number) => string;
+	/** 是否显示引用块左侧边框（默认不显示）。 */
+	showBlockquoteBorder?: boolean;
 	/** Render supported LaTeX math expressions as Unicode text (default: true). */
 	renderLatex?: boolean;
 	/** Receives per-render timing data, including cache hits. */
@@ -545,7 +547,6 @@ export class Markdown implements Component {
 		switch (token.type) {
 			case "heading": {
 				const headingLevel = token.depth;
-				const headingPrefix = `${"#".repeat(headingLevel)} `;
 
 				// Build a heading-specific style context so inline tokens (codespan, bold, etc.)
 				// restore heading styling after their own ANSI resets instead of falling back to
@@ -563,8 +564,7 @@ export class Markdown implements Component {
 				};
 
 				const headingText = this.renderInlineTokens(token.tokens || [], headingStyleContext);
-				const styledHeading = headingLevel >= 3 ? headingStyleFn(headingPrefix) + headingText : headingText;
-				lines.push(styledHeading);
+				lines.push(headingText);
 				if (nextTokenType && nextTokenType !== "space") {
 					lines.push(""); // Add spacing after headings (unless space token follows)
 				}
@@ -662,8 +662,8 @@ export class Markdown implements Component {
 					return quoteStyle(lineWithReappliedStyle);
 				};
 
-				// Calculate available width for quote content (subtract border "│ " = 2 chars)
-				const quoteContentWidth = Math.max(1, width - 2);
+				const quoteBorder = this.options.showBlockquoteBorder ? this.theme.quoteBorder("│ ") : "";
+				const quoteContentWidth = Math.max(1, width - visibleWidth(quoteBorder));
 
 				// Blockquotes contain block-level tokens (paragraph, list, code, etc.), so render
 				// children with renderToken() instead of renderInlineTokens().
@@ -691,7 +691,7 @@ export class Markdown implements Component {
 					const styledLine = applyQuoteStyle(quoteLine);
 					const wrappedLines = wrapTextWithAnsi(styledLine, quoteContentWidth);
 					for (const wrappedLine of wrappedLines) {
-						lines.push(this.theme.quoteBorder("│ ") + wrappedLine);
+						lines.push(quoteBorder + wrappedLine);
 					}
 				}
 				if (nextTokenType && nextTokenType !== "space") {

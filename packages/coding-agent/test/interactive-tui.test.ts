@@ -151,7 +151,7 @@ describe("createInteractiveTui", () => {
 			expect(terminal.getViewport()[0]).toContain("header");
 			expect(terminal.getViewport()[1]).toContain("line-24");
 
-			terminal.sendInput("\x1b[<64;10;4M");
+			terminal.sendInput("\x1b[<96;10;4M");
 			await terminal.waitForRender();
 
 			expect(terminal.getViewport()[1]).toContain("line-21");
@@ -182,6 +182,91 @@ describe("createInteractiveTui", () => {
 			terminal.sendInput("\x1b[1;5F");
 			expect(workspace.render(terminal.columns)[1]).toContain("line-24");
 		} finally {
+			renderer.stop();
+		}
+	});
+
+	it("keeps clickable subagent cards from leaking a mouse gesture into overlay return", async () => {
+		initTheme("dark");
+		const terminal = new RecordingTerminal(40, 8);
+		const target = {
+			agentId: "worker",
+			agent: "worker",
+			agentSource: "builtin" as const,
+			agentScope: "user" as const,
+			task: "inspect the session",
+			state: "running" as const,
+		};
+		const card = {
+			render: () => ["card"],
+			invalidate: () => {},
+			isExpanded: () => false,
+			setExpanded: (_expanded: boolean) => {},
+			getCardClickActionAtRow: () => ({ type: "openSubagent" as const, target }),
+		};
+		const workspace = {
+			isFullscreen: () => true,
+			isNewContentIndicatorRow: () => false,
+			getComponentHitAtScreenRow: () => ({ component: card, row: 0 }),
+		};
+		let renderer: LystarTUI;
+		let overlayHandle: ReturnType<LystarTUI["showOverlay"]> | undefined;
+		const returnPress = "\x1b[<0;2;2M";
+		const overlay = {
+			focused: false,
+			render: () => ["overlay"],
+			invalidate: () => {},
+			handleInput: (data: string) => {
+				if (data === returnPress) overlayHandle?.hide();
+			},
+		};
+		type WorkspaceInputContext = {
+			workspace: typeof workspace;
+			renderer: LystarTUI;
+			ui: TUI;
+			keybindings: KeybindingsManager;
+			wheelScroll: WheelScrollNormalizer;
+			loadPreviousTranscriptPage: () => Promise<void>;
+			openSubagentSession: () => void;
+		};
+		const handleWorkspaceInput = (
+			InteractiveMode.prototype as unknown as {
+				handleWorkspaceInput(this: WorkspaceInputContext, data: string): { consume: true } | undefined;
+			}
+		).handleWorkspaceInput;
+		const context = Object.assign(Object.create(InteractiveMode.prototype), {
+			workspace,
+			renderer: undefined as unknown as LystarTUI,
+			ui: undefined as unknown as TUI,
+			keybindings: new KeybindingsManager(),
+			wheelScroll: new WheelScrollNormalizer(),
+			loadPreviousTranscriptPage: async () => {},
+			openSubagentSession: () => {
+				overlayHandle = renderer.showOverlay(overlay, { row: 1, col: 1, width: 20, maxHeight: 4 });
+			},
+		}) as WorkspaceInputContext;
+		renderer = new LystarTUI(terminal, false, undefined, {
+			copyOnSelect: false,
+			workspaceInputHandler: (data) => handleWorkspaceInput.call(context, data),
+		});
+		context.renderer = renderer;
+		context.ui = renderer;
+		renderer.addChild(new Text(Array.from({ length: 8 }, (_, index) => `line-${index}`).join("\n"), 0, 0));
+		renderer.start();
+		try {
+			await terminal.waitForRender();
+			terminal.sendInput("\x1b[<0;3;2M");
+			terminal.sendInput("\x1b[<3;3;2m");
+			await terminal.waitForRender();
+			expect(overlayHandle).toBeDefined();
+			expect(renderer.hasActiveSelection()).toBe(false);
+
+			terminal.sendInput(returnPress);
+			terminal.sendInput("\x1b[<3;2;2m");
+			await terminal.waitForRender();
+			expect(renderer.hasActiveSelection()).toBe(false);
+		} finally {
+			if (overlayHandle?.isFocused()) overlayHandle.hide();
 			renderer.stop();
 		}
 	});
@@ -412,7 +497,7 @@ describe("createInteractiveTui", () => {
 			const summaryRow = terminal.getViewport().findIndex((line) => line.includes("已搜索网页"));
 			expect(summaryRow).toBeGreaterThanOrEqual(0);
 			terminal.sendInput(`\x1b[<0;3;${summaryRow + 1}M`);
-			terminal.sendInput(`\x1b[<0;3;${summaryRow + 1}m`);
+			terminal.sendInput(`\x1b[<3;3;${summaryRow + 1}m`);
 			await terminal.waitForRender();
 			expect(terminal.getViewport().some((line) => line.includes("example.com"))).toBe(true);
 			expect(terminal.getViewport().some((line) => line.includes("second.example"))).toBe(false);

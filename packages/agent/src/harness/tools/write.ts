@@ -23,6 +23,11 @@ export function createWriteTool<TContext extends ExecutionToolContext = Executio
 		description:
 			"Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
 		parameters: writeSchema,
+		getExecutionKeys: (args) => {
+			if (!args || typeof args !== "object") return [];
+			const path = (args as { path?: unknown }).path;
+			return typeof path === "string" ? [`harness-file:${path}`] : [];
+		},
 		async execute(_toolCallId, { path, content }, signal, _onUpdate, { env }) {
 			const absolutePath = await resolveToolPath(env, path, signal);
 			return withFileMutationQueue(env, absolutePath, async () => {

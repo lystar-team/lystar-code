@@ -420,6 +420,11 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
 	 */
 	runtimeContext?: unknown;
 	/**
+	 * 仅供运行时使用的目标键，用来阻止同一条助手回复中的冲突调用。
+	 * 共享任一键的调用会在执行前被拒绝，不会写入 Session。
+	 */
+	getExecutionKeys?: (args: unknown) => readonly string[] | Promise<readonly string[]>;
+	/**
 	 * Per-tool execution mode override.
 	 * - "sequential": this tool must execute one at a time with other tool calls.
 	 * - "parallel": this tool can execute concurrently with other tool calls.

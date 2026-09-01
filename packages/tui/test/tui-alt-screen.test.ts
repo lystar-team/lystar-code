@@ -441,6 +441,15 @@ describe("TuiAltScreen", () => {
 		]);
 	});
 
+	it("rebuilds the cached search corpus when a line changes in place", () => {
+		const lines = ["before"];
+		assert.equal(findAltScreenSearchMatches(lines, "before").length, 1);
+
+		lines[0] = "after";
+		assert.equal(findAltScreenSearchMatches(lines, "before").length, 0);
+		assert.equal(findAltScreenSearchMatches(lines, "after").length, 1);
+	});
+
 	it("uses configured styles for current and non-current search matches", async () => {
 		const terminal = new RecordingTerminal(60, 4);
 		const tui = new TuiAltScreen(terminal, undefined, undefined, {
@@ -1456,7 +1465,7 @@ describe("TuiAltScreen", () => {
 		}
 	});
 
-	it("gives wheel and viewport keys to a focused overlay", async () => {
+	it("gives viewport and mouse input to a focused overlay", async () => {
 		const terminal = new VirtualTerminal(20, 6);
 		const tui = new TuiAltScreen(terminal);
 		tui.addChild(new Text(Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0));
@@ -1469,7 +1478,8 @@ describe("TuiAltScreen", () => {
 		assert.strictEqual(overlay.focused, true);
 
 		const wheel = "\x1b[<64;10;3M";
-		const keys = ["\x1b[5~", "\x1b[6~", "\x1bOH", "\x1bOF", wheel];
+		const click = ["\x1b[<0;5;3M", "\x1b[<0;5;3m"];
+		const keys = ["\x1b[5~", "\x1b[6~", "\x1bOH", "\x1bOF", wheel, ...click];
 		for (const key of keys) terminal.sendInput(key);
 		await terminal.waitForRender();
 
@@ -1481,6 +1491,37 @@ describe("TuiAltScreen", () => {
 		terminal.sendInput("\x1b[5~");
 		await terminal.waitForRender();
 		assert.ok(tui.viewportTop < topBefore);
+		tui.stop();
+	});
+
+	it("cancels a pending text-selection gesture when an overlay takes the mouse", async () => {
+		const terminal = new VirtualTerminal(20, 6);
+		const tui = new TuiAltScreen(terminal, undefined, undefined, { copyOnSelect: false });
+		tui.addChild(new Text(Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0));
+		tui.start();
+		await terminal.waitForRender();
+
+		terminal.sendInput("\x1b[<0;2;2M");
+		let handle: ReturnType<typeof tui.showOverlay> | undefined;
+		const overlay = new InputOverlay();
+		const originalHandleInput = overlay.handleInput.bind(overlay);
+		overlay.handleInput = (data) => {
+			originalHandleInput(data);
+			if (data === "\x1b[<0;2;2M") handle?.hide();
+		};
+		handle = tui.showOverlay(overlay, { row: 1, col: 1, width: 16, maxHeight: 3 });
+
+		// The release that opened the overlay must cancel the base selection gesture.
+		terminal.sendInput("\x1b[<3;2;2m");
+		await terminal.waitForRender();
+		assert.strictEqual(tui.hasActiveSelection(), false);
+
+		// Closing the overlay on mouse-down must not expose its matching release as a selection.
+		terminal.sendInput("\x1b[<0;2;2M");
+		terminal.sendInput("\x1b[<3;2;2m");
+		await terminal.waitForRender();
+		assert.strictEqual(tui.hasActiveSelection(), false);
+
 		tui.stop();
 	});
 

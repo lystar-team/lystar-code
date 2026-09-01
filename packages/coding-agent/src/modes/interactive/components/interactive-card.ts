@@ -16,6 +16,8 @@ export interface InteractiveCard extends Component {
 	getCardStateKey?(): string | undefined;
 	/** Nested cards whose state must survive transcript rebuilds. */
 	getChildCards?(): readonly InteractiveCard[];
+	/** Version used by an enclosing render cache when nested state changes. */
+	getRenderVersion?(): number;
 }
 
 export function isInteractiveCard(component: Component | undefined): component is InteractiveCard {

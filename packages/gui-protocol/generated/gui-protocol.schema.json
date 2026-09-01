@@ -2825,6 +2825,24 @@
           "properties": {
             "type": {
               "type": "string",
+              "const": "user_message"
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 16384
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "text"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
               "const": "assistant_delta"
             },
             "text": {

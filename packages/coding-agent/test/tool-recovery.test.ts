@@ -43,7 +43,7 @@ import {
 	registerBuiltInToolIdentity,
 } from "../src/core/tool-recovery/registry.ts";
 import { createToolRecoverySafeRefreshRegistry } from "../src/core/tool-recovery/safe-refresh.ts";
-import { builtInExtensions } from "../src/extensions/index.ts";
+import applyPatchExtension from "../src/extensions/apply-patch/index.ts";
 import { createHarness, createHarnessWithExtensions } from "./test-harness.ts";
 
 const execFileAsync = promisify(execFile);
@@ -911,8 +911,7 @@ describe("Tool recovery observe ledger", () => {
 		const sessionManager = SessionManager.create(agentDir, join(agentDir, "sessions"), {
 			id: "apply-patch-recovery-session",
 		});
-		const applyPatch = builtInExtensions.find((extension) => extension.name === "apply-patch");
-		if (!applyPatch) throw new Error("missing apply-patch built-in extension");
+		const applyPatch = { name: "apply-patch", factory: applyPatchExtension, hidden: true };
 		const patch = (lines: string[]) => ["*** Begin Patch", ...lines, "*** End Patch"].join("\n");
 		const harness = await createHarnessWithExtensions({
 			agentDir,

@@ -514,6 +514,8 @@ async function executeToolCallsParallel(
 ): Promise<ExecutedToolCallBatch> {
 	const finalizedCalls: FinalizedToolCallEntry[] = [];
 	const inBatchCallSignatures = new Set<string>();
+	const executionKeyCallIds = new Map<string, Set<string>>();
+	const conflictingExecutionKeys = new Set<string>();
 
 	for (const toolCall of toolCalls) {
 		const preparation = await prepareToolCall(currentContext, assistantMessage, toolCall, config, signal);
@@ -555,8 +557,32 @@ async function executeToolCallsParallel(
 			continue;
 		}
 		inBatchCallSignatures.add(fingerprint.callSignature);
+		for (const executionKey of preparation.executionKeys) {
+			const callIds = executionKeyCallIds.get(executionKey) ?? new Set<string>();
+			callIds.add(toolCall.id);
+			executionKeyCallIds.set(executionKey, callIds);
+		}
 
 		finalizedCalls.push(async () => {
+			const conflictKey = preparation.executionKeys.find((key) => conflictingExecutionKeys.has(key));
+			if (conflictKey) {
+				await emit({
+					type: "tool_execution_start",
+					toolCallId: toolCall.id,
+					toolName: toolCall.name,
+					args: toolCall.arguments,
+				});
+				const finalized = {
+					toolCall,
+					result: createErrorToolResult(
+						`同一条助手回复中不能同时修改同一个目标：${conflictKey}。请把同一文件的多个修改合并到一个 edit 或 apply_patch 调用中；本批次没有执行这些冲突修改。`,
+					),
+					isError: true,
+				} satisfies FinalizedToolCallOutcome;
+				await emitToolExecutionEnd(finalized, emit);
+				return finalized;
+			}
+
 			const executed = await executePreparedToolCall(preparation, signal, emit, config.toolRecoveryController);
 			const finalized = await finalizeExecutedToolCall(
 				currentContext,
@@ -573,6 +599,10 @@ async function executeToolCallsParallel(
 		if (signal?.aborted) {
 			break;
 		}
+	}
+
+	for (const [executionKey, callIds] of executionKeyCallIds) {
+		if (callIds.size > 1) conflictingExecutionKeys.add(executionKey);
 	}
 
 	const orderedFinalizedCalls = await Promise.all(
@@ -596,6 +626,7 @@ type PreparedToolCall = {
 	toolCall: AgentToolCall;
 	tool: AgentTool<any>;
 	args: unknown;
+	executionKeys: readonly string[];
 };
 
 type ImmediateToolCallOutcome = {
@@ -698,11 +729,13 @@ async function prepareToolCall(
 				isError: true,
 			};
 		}
+		const executionKeys = tool.getExecutionKeys ? [...new Set(await tool.getExecutionKeys(validatedArgs))] : [];
 		return {
 			kind: "prepared",
 			toolCall,
 			tool,
 			args: validatedArgs,
+			executionKeys,
 		};
 	} catch (error) {
 		return {

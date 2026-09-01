@@ -23,8 +23,13 @@ export function renderCardWithDivider(lines: readonly string[], width: number, e
 
 export function renderCardHover(lines: string[], width: number, hovered: boolean): string[] {
 	if (!hovered) return lines;
+	const selectedBackground = theme.getBgAnsi("selectedBg");
 	return lines.map((line) => {
 		const fitted = truncateToWidth(line, Math.max(1, width), "", true);
-		return theme.bg("selectedBg", `${fitted}${" ".repeat(Math.max(0, width - visibleWidth(fitted)))}`);
+		const stableBackground = fitted.replace(/\x1b\[([0-9;]*)m/g, (sequence, params: string) => {
+			const codes = params === "" ? [0] : params.split(";").map((value) => Number.parseInt(value, 10));
+			return codes.includes(0) || codes.includes(49) ? `${sequence}${selectedBackground}` : sequence;
+		});
+		return `${selectedBackground}${stableBackground}${" ".repeat(Math.max(0, width - visibleWidth(fitted)))}\x1b[49m`;
 	});
 }
