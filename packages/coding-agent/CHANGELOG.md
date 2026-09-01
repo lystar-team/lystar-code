@@ -15,7 +15,7 @@
 - Markdown 标题和引用块默认使用终端排版，不显示源标记与引用边框；`read` 结果按宽度缓存渲染。
 - 默认注册表移除 `apply_patch` 隐藏扩展；显式扩展仍可注册该 Tool。
 - 源码快捷启动脚本保留调用目录，GitHub Actions 的 Node.js 固定版本统一为 `24.18.0`。
-- 修复 clean install 下 `highlight.js` 子路径类型声明、截断摘要、零用量上下文估算、Custom Message 顺序和 InteractiveMode 回归；Coding Agent CI 排除由 Windows 平台任务单独覆盖的 PowerShell 跳过用例。
+- 修复 clean install 下 `highlight.js` 子路径类型声明、截断摘要、零用量上下文估算、Custom Message 顺序、InteractiveMode 清理和 Tool Recovery 零 TTL 孤儿账本清理回归；Coding Agent CI 排除由 Windows 平台任务单独覆盖的 PowerShell 跳过用例。
 
 ## [0.84.2-lystar.2] - 2026-08-23
 

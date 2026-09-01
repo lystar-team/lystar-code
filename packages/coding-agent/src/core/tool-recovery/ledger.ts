@@ -415,14 +415,14 @@ export async function cleanupOrphanRecoveryLedgers(
 		for (const file of files) {
 			if (!file.isFile() || !/^[a-f0-9]{64}\.jsonl$/.test(file.name)) continue;
 			const path = join(directory, file.name);
-			if (now - (await stat(path)).mtimeMs < ttlMs) continue;
+			if (ttlMs > 0 && now - (await stat(path)).mtimeMs < ttlMs) continue;
 			await withLedgerQueue(path, async () => {
 				const release = await acquireLedgerLock(path);
 				try {
 					const latest = await stat(path).catch((error: NodeJS.ErrnoException) =>
 						error.code === "ENOENT" ? undefined : Promise.reject(error),
 					);
-					if (!latest || now - latest.mtimeMs < ttlMs) return;
+					if (!latest || (ttlMs > 0 && now - latest.mtimeMs < ttlMs)) return;
 					// 等待同一账本锁后再扫描真实 Session 根，避免删除刚恢复活动的账本。
 					if ((await collectSessionLedgerNames(agentDir)).has(file.name)) return;
 					await rm(path, { force: true });
