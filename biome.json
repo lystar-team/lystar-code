@@ -26,6 +26,7 @@
 	"files": {
 		"includes": [
 			"packages/*/src/**/*.ts",
+			"packages/web/src/**/*.tsx",
 			"packages/*/test/**/*.ts",
 			"packages/session-backends/*/src/**/*.ts",
 			"packages/session-backends/*/test/**/*.ts",

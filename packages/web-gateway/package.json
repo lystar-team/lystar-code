@@ -1,0 +1,39 @@
+{
+  "name": "@lystar/code-web-gateway",
+  "version": "0.84.4-lystar-web.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "lystar-web": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "clean": "shx rm -rf dist",
+    "build": "tsgo -p tsconfig.build.json && shx chmod +x dist/cli.js",
+    "test": "node --import tsx --test test/*.test.ts",
+    "test:vertical": "node --import tsx --test test/vertical-loop.test.ts",
+    "dev": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@lystar/code-gui-host": "0.84.4-lystar-gui.1",
+    "@lystar/code-gui-protocol": "0.84.4-lystar-gui.1",
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@types/ws": "8.18.1",
+    "shx": "0.4.0",
+    "tsx": "4.22.1"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "license": "MIT"
+}
