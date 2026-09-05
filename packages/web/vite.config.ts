@@ -1,12 +1,25 @@
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
-import { defineConfig } from "vite";
+import { defineConfig, type ProxyOptions } from "vite";
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 const guiProtocolSource = fileURLToPath(new URL("../gui-protocol/src/index.ts", import.meta.url));
-const gatewayUrl = process.env.PI_WEB_GATEWAY_URL ?? "http://127.0.0.1:1420";
+const WEB_DEV_PORT = 1420;
+const DEFAULT_GATEWAY_URL = "http://127.0.0.1:1422";
+const gatewayUrl = process.env.PI_WEB_GATEWAY_URL ?? DEFAULT_GATEWAY_URL;
 const gatewayWebSocketUrl = gatewayUrl.replace(/^http/iu, "ws");
+const gatewayProxy: ProxyOptions = {
+	target: gatewayUrl,
+	changeOrigin: true,
+	headers: { Origin: gatewayUrl },
+};
+const gatewayWebSocketProxy: ProxyOptions = {
+	target: gatewayWebSocketUrl,
+	changeOrigin: true,
+	ws: true,
+	headers: { Origin: gatewayUrl },
+};
 
 export default defineConfig({
 	plugins: [react(), tailwindcss()],
@@ -21,15 +34,12 @@ export default defineConfig({
 	},
 	server: {
 		host: "0.0.0.0",
-		port: 1421,
+		port: WEB_DEV_PORT,
 		strictPort: true,
 		proxy: {
-			"/api": gatewayUrl,
-			"/healthz": gatewayUrl,
-			"/ws": {
-				target: gatewayWebSocketUrl,
-				ws: true,
-			},
+			"/api": gatewayProxy,
+			"/healthz": gatewayProxy,
+			"/ws": gatewayWebSocketProxy,
 		},
 	},
 	build: {

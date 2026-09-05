@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
+	BUILTIN_SLASH_COMMANDS,
+} from "@earendil-works/pi-coding-agent/core";
+import {
 	assertWorkspaceCommandResult,
 	type Capability,
 	type ClientMessage,
@@ -49,7 +52,12 @@ const BASE_CAPABILITIES: Capability[] = [
 	"workspace-api",
 ];
 
+const SESSION_FILE_POLL_INTERVAL_MS = 1_000;
+const PROGRESS_BATCH_MS = 50;
+const MAX_PENDING_PROGRESS = 64;
+
 const ACTIVE_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>(["accepted", "running", "waiting_for_input"]);
+const BOOTSTRAP_OPERATION_LIMIT = 200;
 const TERMINAL_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>([
 	"completed",
 	"failed",
@@ -103,18 +111,94 @@ const WORKSPACE_COMMANDS = {
 	get_completions: true,
 } as const;
 
+function fallbackResourceCompletions(
+	text: string,
+	cursor: number,
+	skills: ReadonlyArray<{ name: string; description?: string }>,
+): CompletionResult | undefined {
+	const before = text.slice(0, cursor);
+	const slash = /^\/([^\s]*)$/.exec(before);
+	if (slash) {
+		const query = slash[1].toLowerCase();
+		const items: CompletionResult["items"] = [
+			...BUILTIN_SLASH_COMMANDS.map((command) => ({
+				value: `/${command.name} `,
+				label: command.name,
+				description: command.description,
+				kind: "command" as const,
+			})),
+			...skills.map((skill) => ({
+				value: `/skill:${skill.name} `,
+				label: `skill:${skill.name}`,
+				description: skill.description,
+				kind: "skill" as const,
+			})),
+		];
+		return {
+			prefixStart: 0,
+			prefixEnd: cursor,
+			items: items
+				.filter((item) => `${item.label} ${item.description ?? ""}`.toLowerCase().includes(query))
+				.slice(0, 50),
+		};
+	}
+
+	const skill = /(?:^|\s)\$(\[?)([a-z0-9-]*)$/i.exec(before);
+	if (!skill) return undefined;
+	const query = skill[2].toLowerCase();
+	const prefix = `$${skill[1]}${skill[2]}`;
+	return {
+		prefixStart: cursor - prefix.length,
+		prefixEnd: cursor,
+		items: skills
+			.filter((candidate) => `${candidate.name} ${candidate.description ?? ""}`.toLowerCase().includes(query))
+			.slice(0, 30)
+			.map((candidate) => ({
+				value: `$[${candidate.name}] `,
+				label: candidate.name,
+				description: candidate.description,
+				kind: "skill" as const,
+			})),
+	};
+}
+
 function projectSessionProgress(value: JsonValue | SessionProgress): SessionProgress {
 	if (isSessionProgress(value)) return value;
-	const serialized = JSON.stringify(value);
-	const preview = Buffer.from(serialized)
-		.subarray(0, 1024)
-		.toString("utf8")
-		.replace(/\uFFFD$/u, "");
+	const record =
+		value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, JsonValue>) : undefined;
 	return {
 		type: "status",
-		status: preview || "运行状态已更新",
-		...(serialized.length > preview.length ? { truncated: true } : {}),
+		status: record?.type === "extension_error" ? "扩展运行失败" : "运行状态已更新",
 	};
+}
+
+interface PendingSessionProgress {
+	key?: string;
+	progress: SessionProgress;
+}
+
+function sessionProgressKey(progress: SessionProgress): string | undefined {
+	switch (progress.type) {
+		case "assistant_delta":
+		case "thinking_delta":
+		case "phase":
+		case "queue_update":
+		case "status":
+		case "usage":
+			return progress.type;
+		case "tool_update":
+			return `${progress.type}:${progress.toolCallId}`;
+		default:
+			return undefined;
+	}
+}
+
+function mergeSessionProgress(left: SessionProgress, right: SessionProgress): SessionProgress {
+	if (left.type === "assistant_delta" && right.type === "assistant_delta")
+		return { type: "assistant_delta", text: left.text + right.text };
+	if (left.type === "thinking_delta" && right.type === "thinking_delta")
+		return { type: "thinking_delta", text: left.text + right.text };
+	return right;
 }
 
 interface ClientConnection {
@@ -137,6 +221,11 @@ interface SessionFileFact {
 	messageCount: number;
 	name?: string;
 	writerLocked: boolean;
+}
+
+interface RuntimeTranscriptFact {
+	updatedAt: number;
+	revision: number;
 }
 
 function protocolError(error: unknown): { code: string; message: string; retryable?: boolean; details?: JsonValue } {
@@ -202,6 +291,9 @@ export class GuiHostService {
 	private readonly journalWritePromises = new Map<string, Promise<JsonValue>>();
 	private readonly writeScopeQueues = new Map<string, Promise<void>>();
 	private readonly snapshotRevisions = new Map<string, number>();
+	private readonly snapshotTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	private readonly progressTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	private readonly pendingProgress = new Map<string, PendingSessionProgress[]>();
 	private readonly pendingUi = new Map<string, PendingUiRequest>();
 	private readonly leases = new LeaseManager();
 	private readonly transcriptReader = new TranscriptReader();
@@ -213,6 +305,7 @@ export class GuiHostService {
 	private readonly startupInput?: StartupInput;
 	private readonly startupSessionPath?: string;
 	private readonly watchedSessionFacts = new Map<string, Map<string, SessionFileFact>>();
+	private readonly runtimeTranscriptFacts = new Map<string, RuntimeTranscriptFact>();
 	private readonly sessionPollTimer: ReturnType<typeof setInterval>;
 	private pollingSessions = false;
 
@@ -239,7 +332,7 @@ export class GuiHostService {
 		} catch (error) {
 			if (!(error instanceof OperationJournalCorruptError)) throw error;
 		}
-		this.sessionPollTimer = setInterval(() => void this.pollSessionFiles(), 500);
+		this.sessionPollTimer = setInterval(() => void this.pollSessionFiles(), SESSION_FILE_POLL_INTERVAL_MS);
 		this.sessionPollTimer.unref?.();
 	}
 
@@ -279,9 +372,10 @@ export class GuiHostService {
 		this.abortClientAuthenticationOperations(connection.clientInstanceId);
 		for (const sessionPath of this.leases.releaseClient(connection.clientInstanceId)) {
 			const runtime = this.runtimes.get(sessionPath);
-			if (runtime) await this.sendSessionSnapshots(runtime, false);
+			if (runtime) await this.sendSessionSnapshots(runtime, this.leases.has(sessionPath));
 			this.releaseAcceptedReservation(sessionPath);
-			if (!this.activeOperationBySession.has(sessionPath)) await this.disposeRuntime(sessionPath);
+			if (!this.leases.has(sessionPath) && !this.activeOperationBySession.has(sessionPath))
+				await this.disposeRuntime(sessionPath);
 		}
 	}
 
@@ -299,6 +393,11 @@ export class GuiHostService {
 		}
 		this.pendingUi.clear();
 		this.snapshotRevisions.clear();
+		for (const timer of this.snapshotTimers.values()) clearTimeout(timer);
+		this.snapshotTimers.clear();
+		for (const timer of this.progressTimers.values()) clearTimeout(timer);
+		this.progressTimers.clear();
+		this.pendingProgress.clear();
 		this.contentStore.clear();
 	}
 
@@ -397,7 +496,10 @@ export class GuiHostService {
 					}
 				}
 				return jsonValue({
-					operations: this.journal.list(),
+					operations: this.journal
+						.list()
+						.slice(0, BOOTSTRAP_OPERATION_LIMIT)
+						.map(({ result: _result, ...operation }) => operation),
 					pendingUiRequests: [...this.pendingUi.values()]
 						.filter(
 							(request) => !request.clientInstanceId || request.clientInstanceId === connection.clientInstanceId,
@@ -414,7 +516,7 @@ export class GuiHostService {
 			}
 			case "list_sessions": {
 				const cwd = canonicalProjectCwd(request.cwd);
-				const sessions = await this.listSessionSummaries(cwd, connection);
+				const sessions = await this.listSessionSummaries(cwd, connection, request.metadataOnly === true);
 				this.rememberSessionFacts(cwd, sessions);
 				if (!request.query) return sessions;
 				const query = request.query.toLowerCase();
@@ -534,8 +636,8 @@ export class GuiHostService {
 				}
 				this.leases.release(sessionPath, request.leaseId);
 				const runtime = this.runtimes.get(sessionPath);
-				if (runtime) await this.sendSessionSnapshots(runtime, false);
-				await this.disposeRuntime(sessionPath);
+				if (runtime) await this.sendSessionSnapshots(runtime, this.leases.has(sessionPath));
+				if (!this.leases.has(sessionPath)) await this.disposeRuntime(sessionPath);
 				return { released: true };
 			}
 			case "prompt":
@@ -673,6 +775,7 @@ export class GuiHostService {
 				return jsonValue(await this.adapter.listModelProviders());
 			case "add_model_provider":
 			case "add_provider_model":
+			case "sync_model_provider":
 			case "login_model_provider":
 			case "logout_model_provider": {
 				const provider = request.provider;
@@ -689,6 +792,8 @@ export class GuiHostService {
 								return jsonValue(await this.adapter.addModelProvider(request));
 							case "add_provider_model":
 								return jsonValue(await this.adapter.addProviderModel(request));
+							case "sync_model_provider":
+								return jsonValue(await this.adapter.syncModelProvider(request.provider));
 							case "login_model_provider":
 								return jsonValue(
 									await this.adapter.loginModelProvider(
@@ -778,7 +883,7 @@ export class GuiHostService {
 					payload: { sessionPath },
 					run: async () => {
 						const { runtime } = this.assertSessionControl(sessionPath, request.leaseId, connection);
-						const result = runtime.cycleThinkingLevel();
+						const result = await runtime.cycleThinkingLevel();
 						await this.sendSessionSnapshots(runtime);
 						return { snapshot: this.runtimeSnapshot(runtime, "owned"), ...result };
 					},
@@ -838,7 +943,7 @@ export class GuiHostService {
 						if (failure) throw failure;
 						if (!result) throw new Error("会话分叉未返回结果");
 						return jsonValue({
-							lease: this.leases.get(nextSessionPath),
+							lease: this.leases.get(nextSessionPath, request.clientInstanceId),
 							snapshot: this.runtimeSnapshot(runtime, "owned"),
 							selectedText: result.selectedText,
 						});
@@ -880,7 +985,7 @@ export class GuiHostService {
 						if (result.cancelled) return { cancelled: true };
 						return jsonValue({
 							cancelled: false,
-							lease: this.leases.get(nextSessionPath),
+							lease: this.leases.get(nextSessionPath, request.clientInstanceId),
 							snapshot: this.runtimeSnapshot(runtime, "owned"),
 						});
 					},
@@ -896,7 +1001,7 @@ export class GuiHostService {
 					scope: `session-collection:${cwd}`,
 					payload: { cwd, sessionPath },
 					run: async () => {
-						if (this.runtimes.has(sessionPath) || this.leases.get(sessionPath)) {
+						if (this.runtimes.has(sessionPath) || this.leases.has(sessionPath)) {
 							throw Object.assign(new Error("会话当前仍被占用"), {
 								code: "session_attached",
 								retryable: true,
@@ -1035,6 +1140,26 @@ export class GuiHostService {
 					} satisfies CompletionResult);
 				}
 				const runtimeResult = runtime ? await runtime.getCompletions(request.text, request.cursor) : undefined;
+				if (!runtimeResult) {
+					const fallback = fallbackResourceCompletions(request.text, request.cursor, []);
+					if (fallback) {
+						const needsSkills = true;
+						if (needsSkills) {
+							const skills = await this.adapter.listSkills(
+								request.cwd,
+								this.createUiRequestHandler(
+									`completion:${connection.id}`,
+									undefined,
+									connection.clientInstanceId,
+								),
+							);
+							return jsonValue(
+								fallbackResourceCompletions(request.text, request.cursor, skills.skills),
+							);
+						}
+						return jsonValue(fallback);
+					}
+				}
 				const fileQuery = projectFileCompletion(request.text, request.cursor);
 				if (!fileQuery) {
 					return jsonValue(runtimeResult ?? { prefixStart: request.cursor, prefixEnd: request.cursor, items: [] });
@@ -1379,8 +1504,12 @@ export class GuiHostService {
 		}
 	}
 
-	private async listSessionSummaries(cwd: string, connection: ClientConnection): Promise<SessionSummary[]> {
-		const sessions = await this.adapter.listSessions(cwd);
+	private async listSessionSummaries(
+		cwd: string,
+		connection: ClientConnection,
+		metadataOnly = false,
+	): Promise<SessionSummary[]> {
+		const sessions = await this.adapter.listSessions(cwd, { metadataOnly });
 		const summaries = sessions.map((session) => {
 			const sessionPath = canonicalSessionPath(session.path);
 			const latestOperation = this.journal
@@ -1426,7 +1555,7 @@ export class GuiHostService {
 				...(latestOperation ? { operationUpdatedAt: latestOperation.updatedAt } : {}),
 			});
 		}
-		summaries.sort((left, right) => right.updatedAt - left.updatedAt);
+		summaries.sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id));
 		return summaries;
 	}
 
@@ -1459,13 +1588,13 @@ export class GuiHostService {
 			for (const [cwd, previous] of this.watchedSessionFacts) {
 				let sessions: Awaited<ReturnType<RuntimeAdapter["listSessions"]>>;
 				try {
-					sessions = await this.adapter.listSessions(cwd);
+					sessions = await this.adapter.listSessions(cwd, { metadataOnly: true });
 				} catch {
 					continue;
 				}
 				const next = new Map<string, SessionFileFact>();
 				const transcriptChanges: string[] = [];
-				let changed = false;
+				let sessionListChanged = false;
 				for (const session of sessions) {
 					const sessionPath = canonicalSessionPath(session.path);
 					const fact: SessionFileFact = {
@@ -1477,7 +1606,7 @@ export class GuiHostService {
 					next.set(sessionPath, fact);
 					const old = previous.get(sessionPath);
 					if (!old) {
-						changed = true;
+						sessionListChanged = true;
 						continue;
 					}
 					if (
@@ -1485,10 +1614,26 @@ export class GuiHostService {
 						old.messageCount !== fact.messageCount ||
 						old.name !== fact.name
 					) {
-						changed = true;
-						if (!this.runtimes.has(sessionPath)) transcriptChanges.push(sessionPath);
+						// 内容变化由 transcript_changed 或 session_snapshot 传递，避免每条消息都重发整个会话列表。
+						if (old.name !== fact.name) sessionListChanged = true;
+						const runtime = this.runtimes.get(sessionPath);
+						if (!runtime) transcriptChanges.push(sessionPath);
+						else {
+							const snapshot = runtime.getSnapshot?.("available");
+							const known = this.runtimeTranscriptFacts.get(sessionPath);
+							if (
+								snapshot &&
+								(!known || known.updatedAt !== snapshot.updatedAt || known.revision !== snapshot.transcriptRevision)
+							) {
+								transcriptChanges.push(sessionPath);
+								this.runtimeTranscriptFacts.set(sessionPath, {
+									updatedAt: snapshot.updatedAt,
+									revision: snapshot.transcriptRevision,
+								});
+							}
+						}
 					}
-					if (old.writerLocked !== fact.writerLocked) changed = true;
+					if (old.writerLocked !== fact.writerLocked) sessionListChanged = true;
 				}
 				for (const runtime of this.runtimes.values()) {
 					const snapshot = runtime.getSnapshot("available");
@@ -1503,23 +1648,25 @@ export class GuiHostService {
 					next.set(sessionPath, fact);
 					const old = previous.get(sessionPath);
 					if (!old) {
-						changed = true;
+						sessionListChanged = true;
 						continue;
 					}
-					if (old.updatedAt !== fact.updatedAt || old.name !== fact.name) changed = true;
-					if (old.writerLocked !== fact.writerLocked) changed = true;
+					if (old.updatedAt !== fact.updatedAt || old.name !== fact.name) {
+						if (old.name !== fact.name) sessionListChanged = true;
+					}
+					if (old.writerLocked !== fact.writerLocked) sessionListChanged = true;
 				}
-				if (next.size !== previous.size) changed = true;
+				if (next.size !== previous.size) sessionListChanged = true;
 				for (const sessionPath of previous.keys()) {
 					if (next.has(sessionPath)) continue;
-					changed = true;
+					sessionListChanged = true;
 					await this.broadcast({ type: "session_removed", sessionPath });
 				}
 				this.watchedSessionFacts.set(cwd, next);
 				for (const sessionPath of transcriptChanges) {
 					await this.broadcast({ type: "transcript_changed", sessionPath });
 				}
-				if (changed) await this.broadcast({ type: "sessions_changed", cwd });
+				if (sessionListChanged) await this.broadcast({ type: "sessions_changed", cwd });
 			}
 		} finally {
 			this.pollingSessions = false;
@@ -1773,7 +1920,7 @@ export class GuiHostService {
 				this.activeOperationBySession.delete(operation.sessionPath);
 			}
 			this.cancelPendingUi(operation.operationId);
-			if (!this.leases.get(operation.sessionPath)) await this.disposeRuntime(operation.sessionPath);
+			if (!this.leases.has(operation.sessionPath)) await this.disposeRuntime(operation.sessionPath);
 		}
 	}
 
@@ -1795,18 +1942,21 @@ export class GuiHostService {
 		if (existing === runtime) return;
 		if (existing) throw new Error(`Session runtime is already attached: ${sessionPath}`);
 		this.runtimes.set(sessionPath, runtime);
+		this.rememberRuntimeTranscriptFact(runtime);
 		this.runtimeUnsubscribers.set(
 			sessionPath,
 			runtime.onEvent((event) => {
 				if (event.type === "state_changed") {
-					void this.sendSessionSnapshots(runtime);
+					this.scheduleSessionSnapshots(runtime);
 				} else if (event.type === "entry_committed") {
+					this.flushSessionProgress(sessionPath);
 					const payload = event.payload as {
 						items: never[];
 						transcriptGeneration: string;
 						fromRevision: number;
 						transcriptRevision: number;
 					};
+					this.rememberRuntimeTranscriptFact(runtime, payload.transcriptRevision);
 					void this.broadcast({
 						type: "transcript_committed",
 						sessionPath,
@@ -1816,19 +1966,86 @@ export class GuiHostService {
 						items: payload.items.flatMap((item) => this.projectTranscriptItems(sessionPath, item)),
 					});
 				} else {
-					void this.broadcast({
-						type: "session_progress",
-						sessionPath,
-						progress: projectSessionProgress(event.payload),
-					});
+					this.enqueueSessionProgress(sessionPath, projectSessionProgress(event.payload));
 				}
 			}),
 		);
 	}
 
+	private rememberRuntimeTranscriptFact(runtime: RuntimeSession, revision?: number): void {
+		const snapshot = runtime.getSnapshot?.("available");
+		if (!snapshot) return;
+		this.runtimeTranscriptFacts.set(canonicalSessionPath(runtime.sessionPath), {
+			updatedAt: snapshot.updatedAt,
+			revision: revision ?? snapshot.transcriptRevision,
+		});
+	}
+
+	private clearPendingSessionProgress(sessionPath: string): void {
+		const timer = this.progressTimers.get(sessionPath);
+		if (timer) {
+			clearTimeout(timer);
+			this.progressTimers.delete(sessionPath);
+		}
+		this.pendingProgress.delete(sessionPath);
+	}
+
+	private flushSessionProgress(sessionPath: string): void {
+		const timer = this.progressTimers.get(sessionPath);
+		if (timer) {
+			clearTimeout(timer);
+			this.progressTimers.delete(sessionPath);
+		}
+		const pending = this.pendingProgress.get(sessionPath);
+		if (!pending || pending.length === 0) return;
+		this.pendingProgress.delete(sessionPath);
+		for (const entry of pending) {
+			void this.broadcast({ type: "session_progress", sessionPath, progress: entry.progress });
+		}
+	}
+
+	private enqueueSessionProgress(sessionPath: string, progress: SessionProgress): void {
+		const pending = this.pendingProgress.get(sessionPath) ?? [];
+		const key = sessionProgressKey(progress);
+		const previous = pending.at(-1);
+		if (key && previous?.key === key) previous.progress = mergeSessionProgress(previous.progress, progress);
+		else pending.push({ key, progress });
+		this.pendingProgress.set(sessionPath, pending);
+		if (pending.length >= MAX_PENDING_PROGRESS) {
+			this.flushSessionProgress(sessionPath);
+			return;
+		}
+		if (this.progressTimers.has(sessionPath)) return;
+		const timer = setTimeout(() => {
+			this.progressTimers.delete(sessionPath);
+			this.flushSessionProgress(sessionPath);
+		}, PROGRESS_BATCH_MS);
+		timer.unref?.();
+		this.progressTimers.set(sessionPath, timer);
+	}
+
+	private scheduleSessionSnapshots(runtime: RuntimeSession): void {
+		const sessionPath = canonicalSessionPath(runtime.sessionPath);
+		if (this.snapshotTimers.has(sessionPath)) return;
+		const timer = setTimeout(() => {
+			this.snapshotTimers.delete(sessionPath);
+			if (this.runtimes.get(sessionPath) !== runtime) return;
+			void this.sendSessionSnapshots(runtime).catch(() => {});
+		}, 50);
+		timer.unref?.();
+		this.snapshotTimers.set(sessionPath, timer);
+	}
+
 	private detachRuntimeProjection(sessionPath: string): void {
+		const timer = this.snapshotTimers.get(sessionPath);
+		if (timer) {
+			clearTimeout(timer);
+			this.snapshotTimers.delete(sessionPath);
+		}
+		this.clearPendingSessionProgress(sessionPath);
 		this.runtimeUnsubscribers.get(sessionPath)?.();
 		this.runtimeUnsubscribers.delete(sessionPath);
+		this.runtimeTranscriptFacts.delete(sessionPath);
 		this.runtimes.delete(sessionPath);
 	}
 
@@ -1852,6 +2069,11 @@ export class GuiHostService {
 
 	private async sendSessionSnapshots(runtime: RuntimeSession, attached = true): Promise<void> {
 		const sessionPath = canonicalSessionPath(runtime.sessionPath);
+		const timer = this.snapshotTimers.get(sessionPath);
+		if (timer) {
+			clearTimeout(timer);
+			this.snapshotTimers.delete(sessionPath);
+		}
 		const runtimeRevision = runtime.getSnapshot("available").revision;
 		const revision = Math.max(runtimeRevision, (this.snapshotRevisions.get(sessionPath) ?? -1) + 1);
 		this.snapshotRevisions.set(sessionPath, revision);
@@ -1883,6 +2105,11 @@ export class GuiHostService {
 	}
 
 	private async disposeRuntime(sessionPath: string): Promise<void> {
+		const timer = this.snapshotTimers.get(sessionPath);
+		if (timer) {
+			clearTimeout(timer);
+			this.snapshotTimers.delete(sessionPath);
+		}
 		const runtime = this.runtimes.get(sessionPath);
 		this.detachRuntimeProjection(sessionPath);
 		await runtime?.dispose();
@@ -1963,9 +2190,9 @@ export class GuiHostService {
 	}
 
 	private sessionWriteAccess(sessionPath: string, connection: ClientConnection): SessionStateSnapshot["writeAccess"] {
-		const lease = this.leases.get(sessionPath);
-		if (lease) return lease.clientInstanceId === connection.clientInstanceId ? "owned" : "controlled_elsewhere";
-		if (this.runtimes.has(sessionPath)) return "controlled_elsewhere";
+		const lease = this.leases.get(sessionPath, connection.clientInstanceId);
+		if (lease) return "owned";
+		if (this.runtimes.has(sessionPath) || this.leases.has(sessionPath)) return "controlled_elsewhere";
 		return this.adapter.isSessionWriterLocked(sessionPath) ? "locked_externally" : "available";
 	}
 

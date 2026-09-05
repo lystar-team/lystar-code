@@ -152,6 +152,7 @@ export const ThinkingLevelSchema = Type.Union([
 	Type.Literal("high"),
 	Type.Literal("xhigh"),
 	Type.Literal("max"),
+	Type.Literal("ultra"),
 ]);
 export type ThinkingLevel = Static<typeof ThinkingLevelSchema>;
 
@@ -162,7 +163,16 @@ export const AuthTypeSchema = Type.Union([Type.Literal("api_key"), Type.Literal(
 export type AuthType = Static<typeof AuthTypeSchema>;
 
 export const ModelInputSchema = Type.Union([Type.Literal("text"), Type.Literal("image")]);
-
+const ModelThinkingLevelMapSchema = StrictObject({
+	off: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 128 }), Type.Null()])),
+	minimal: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 128 }), Type.Null()])),
+	low: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 128 }), Type.Null()])),
+	medium: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 128 }), Type.Null()])),
+	high: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 128 }), Type.Null()])),
+	xhigh: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 128 }), Type.Null()])),
+	max: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 128 }), Type.Null()])),
+	ultra: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 128 }), Type.Null()])),
+});
 const ModelCostSchema = StrictObject({
 	input: Type.Number({ minimum: 0 }),
 	output: Type.Number({ minimum: 0 }),
@@ -179,7 +189,10 @@ export const ModelSummarySchema = StrictObject({
 	contextWindow: Type.Integer({ minimum: 1 }),
 	maxTokens: Type.Integer({ minimum: 1 }),
 	cost: ModelCostSchema,
-	supportedThinkingLevels: Type.Array(ThinkingLevelSchema, { maxItems: 7 }),
+	thinkingLevelMap: Type.Optional(ModelThinkingLevelMapSchema),
+	capabilitiesPending: Type.Optional(Type.Boolean()),
+	hasOverrides: Type.Optional(Type.Boolean()),
+	supportedThinkingLevels: Type.Array(ThinkingLevelSchema, { maxItems: 8 }),
 	authenticated: Type.Boolean(),
 	authMethods: Type.Array(AuthTypeSchema, { maxItems: 2 }),
 	authSource: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
@@ -189,12 +202,15 @@ export type ModelSummary = Static<typeof ModelSummarySchema>;
 export const ModelProviderSummarySchema = StrictObject({
 	id: Id,
 	name: Type.String({ minLength: 1, maxLength: 4096 }),
+	api: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+	baseUrl: Type.Optional(Type.String({ minLength: 1, maxLength: 16 * 1024 })),
 	authenticated: Type.Boolean(),
 	authMethods: Type.Array(AuthTypeSchema, { maxItems: 2 }),
 	authSource: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
 	modelCount: Type.Integer({ minimum: 0 }),
 	builtIn: Type.Boolean(),
 	custom: Type.Boolean(),
+	catalogProvider: Type.Optional(Id),
 });
 export type ModelProviderSummary = Static<typeof ModelProviderSummarySchema>;
 
@@ -949,6 +965,7 @@ export const WorkspaceCommandResultSchemas = {
 	set_setting: SetSettingResultSchema,
 	list_models: ListModelsResultSchema,
 	list_model_providers: ListModelProvidersResultSchema,
+	sync_model_provider: ListModelsResultSchema,
 	set_session_model: SetSessionModelResultSchema,
 	set_session_thinking: SetSessionThinkingResultSchema,
 	cycle_session_model: CycleSessionModelResultSchema,
@@ -1013,6 +1030,7 @@ export const CommandSchema = Type.Union([
 		command: Type.Literal("list_sessions"),
 		cwd: Type.String({ minLength: 1 }),
 		query: Type.Optional(Type.String()),
+		metadataOnly: Type.Optional(Type.Boolean()),
 	}),
 	StrictObject({
 		command: Type.Literal("read_transcript"),
@@ -1134,6 +1152,15 @@ export const CommandSchema = Type.Union([
 		name: Type.Optional(Type.String({ minLength: 1 })),
 		baseUrl: Type.String({ minLength: 1 }),
 		api: Type.String({ minLength: 1 }),
+		apiKey: Type.Optional(Type.String({ minLength: 1 })),
+		catalogProvider: Type.Optional(Id),
+		clearCatalogProvider: Type.Optional(Type.Boolean()),
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
+	StrictObject({
+		command: Type.Literal("sync_model_provider"),
+		provider: Id,
 		clientInstanceId: Id,
 		clientRequestId: Id,
 	}),
@@ -1145,6 +1172,8 @@ export const CommandSchema = Type.Union([
 		api: Type.Optional(Type.String({ minLength: 1 })),
 		baseUrl: Type.Optional(Type.String({ minLength: 1 })),
 		reasoning: Type.Boolean(),
+		thinkingLevelMap: Type.Optional(ModelThinkingLevelMapSchema),
+		resetOverride: Type.Optional(Type.Boolean()),
 		input: Type.Array(ModelInputSchema, { minItems: 1 }),
 		contextWindow: Type.Optional(Type.Integer({ minimum: 1 })),
 		maxTokens: Type.Optional(Type.Integer({ minimum: 1 })),

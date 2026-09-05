@@ -7,6 +7,8 @@ import { runHostStream, writeBounded } from "./stream-transport.ts";
 
 export const REMOTE_PREFACE = "LYSTAR-GUI-HOST/1\n";
 
+const socketsByServer = new WeakMap<Server, Set<Socket>>();
+
 export function defaultIpcEndpoint(agentDir: string): string {
 	if (process.platform === "win32") {
 		const suffix = createHash("sha256").update(agentDir).digest("hex").slice(0, 24);
@@ -47,12 +49,16 @@ function assertPrivateEndpoint(endpoint: string): void {
 export async function serveIpcHost(service: GuiHostService, endpoint: string): Promise<Server> {
 	if (process.platform !== "win32") mkdirSync(dirname(endpoint), { recursive: true, mode: 0o700 });
 	await removeStaleEndpoint(endpoint);
+	const sockets = new Set<Socket>();
 	const server = createServer((socket) => {
+		sockets.add(socket);
+		socket.once("close", () => sockets.delete(socket));
 		void runHostStream(service, socket, socket).then(
 			() => socket.end(),
 			() => socket.destroy(),
 		);
 	});
+	socketsByServer.set(server, sockets);
 	await new Promise<void>((resolve, reject) => {
 		server.once("error", reject);
 		server.listen(endpoint, resolve);
@@ -62,9 +68,18 @@ export async function serveIpcHost(service: GuiHostService, endpoint: string): P
 		assertPrivateEndpoint(endpoint);
 	}
 	server.once("close", () => {
+		socketsByServer.delete(server);
 		if (process.platform !== "win32" && existsSync(endpoint)) unlinkSync(endpoint);
 	});
 	return server;
+}
+
+export async function closeIpcHost(server: Server): Promise<void> {
+	for (const socket of socketsByServer.get(server) ?? []) socket.destroy();
+	if (!server.listening) return;
+	await new Promise<void>((resolve, reject) => {
+		server.close((error) => (error ? reject(error) : resolve()));
+	});
 }
 
 export async function runIpcRelay(endpoint: string, preface = false): Promise<void> {

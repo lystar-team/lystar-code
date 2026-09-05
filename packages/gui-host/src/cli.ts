@@ -7,7 +7,7 @@ import {
 	removeHostService,
 	stopHostService,
 } from "./host-service.ts";
-import { defaultIpcEndpoint, runIpcRelay, serveIpcHost } from "./ipc.ts";
+import { closeIpcHost, defaultIpcEndpoint, runIpcRelay, serveIpcHost } from "./ipc.ts";
 import { CodingAgentRuntimeAdapter, getGuiAgentDir } from "./runtime-adapter.ts";
 import { GuiHostService } from "./service.ts";
 import { runStdioHost } from "./stdio.ts";
@@ -24,9 +24,7 @@ async function closeServer(): Promise<void> {
 	const activeServer = server;
 	server = undefined;
 	if (!activeServer || !activeServer.listening) return;
-	await new Promise<void>((resolve, reject) => {
-		activeServer.close((error) => (error ? reject(error) : resolve()));
-	});
+	await closeIpcHost(activeServer);
 }
 
 const shutdown = async () => {

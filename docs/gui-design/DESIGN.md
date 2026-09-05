@@ -196,10 +196,9 @@ LYStar Code GUI 是跨平台编码 Agent 工作台。用户需要在同一个窗
 
 ## 事实源优先级
 
-1. 功能与业务边界：`../lystar-code-gui-development-plan.md`。
-2. 布局与视觉原则：本文件。
-3. 精确颜色、尺寸、间距和动效：`tokens.json`、`COLORS.md`、`COMPONENTS.md`。
-4. 品牌轮廓与颜色：`brand/` 下的母版和透明底衍生资产。
-5. 页面结构与视觉关系：`screens/`、`components/` 和 `palettes/` 下的 PNG。
+1. 布局与视觉原则：本文件。
+2. 精确颜色、尺寸、间距和动效：`tokens.json`、`COLORS.md`、`COMPONENTS.md`。
+3. 品牌轮廓与颜色：`brand/` 下的母版和透明底衍生资产。
+4. 页面结构与视觉关系：`screens/`、`components/` 和 `palettes/` 下的 PNG。
 
 生成图不作为精确中文、Logo 轮廓、颜色值、尺寸或功能事实源。图片模型造成的细字偏差必须以 Markdown、JSON 和真实品牌资产修正。

@@ -29,6 +29,7 @@ const LEVEL_DESCRIPTIONS: Record<ThinkingLevel, string> = {
 	high: "高强度思考（约 16k tokens）",
 	xhigh: "超高强度思考（约 32k tokens）",
 	max: "最大强度思考",
+	ultra: "极致强度思考",
 };
 
 /**

@@ -2290,7 +2290,11 @@ export class InteractiveMode {
 		this.guiCompanionSessionPath = undefined;
 		if (!isCurrentTarget()) return false;
 
-		const companion = new GuiCompanionServer(targetSession, getAgentDir());
+		const companion = new GuiCompanionServer(targetSession, getAgentDir(), () => {
+			this.footer.invalidate();
+			this.updateEditorBorderColor();
+			this.ui.requestRender();
+		});
 		try {
 			await companion.start();
 			if (!isCurrentTarget()) {

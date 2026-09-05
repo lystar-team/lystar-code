@@ -31,17 +31,21 @@ export class InvalidSessionLeaseError extends Error {
 	}
 }
 
+/**
+ * Session leases identify attached clients. They are intentionally independent:
+ * one Session runtime serializes commands, while multiple UI clients may observe
+ * and submit commands at the same time.
+ */
 export class LeaseManager {
-	private readonly leases = new Map<string, ControlLease>();
+	private readonly leases = new Map<string, Map<string, ControlLease>>();
 	private readonly generations = new Map<string, number>();
 
 	acquire(sessionPath: string, clientInstanceId: string): ControlLease {
-		const current = this.leases.get(sessionPath);
-		if (current && current.clientInstanceId !== clientInstanceId) throw new SessionControlLockedError(sessionPath);
+		const sessionLeases = this.leases.get(sessionPath) ?? new Map<string, ControlLease>();
 		const leaseGeneration = (this.generations.get(sessionPath) ?? 0) + 1;
 		this.generations.set(sessionPath, leaseGeneration);
 		const now = Date.now();
-		const lease = {
+		const lease: ControlLease = {
 			leaseId: randomUUID(),
 			leaseGeneration,
 			sessionPath,
@@ -49,12 +53,14 @@ export class LeaseManager {
 			createdAt: now,
 			updatedAt: now,
 		};
-		this.leases.set(sessionPath, lease);
+		sessionLeases.set(clientInstanceId, lease);
+		this.leases.set(sessionPath, sessionLeases);
 		return lease;
 	}
 
 	assert(sessionPath: string, leaseId: string, clientInstanceId?: string): ControlLease {
-		const lease = this.leases.get(sessionPath);
+		const sessionLeases = this.leases.get(sessionPath);
+		const lease = clientInstanceId ? sessionLeases?.get(clientInstanceId) : this.findById(sessionLeases, leaseId);
 		if (!lease || lease.leaseId !== leaseId || (clientInstanceId && lease.clientInstanceId !== clientInstanceId)) {
 			throw new InvalidSessionLeaseError();
 		}
@@ -63,35 +69,58 @@ export class LeaseManager {
 	}
 
 	release(sessionPath: string, leaseId: string): boolean {
-		const lease = this.leases.get(sessionPath);
-		if (!lease || lease.leaseId !== leaseId) return false;
-		this.leases.delete(sessionPath);
+		const sessionLeases = this.leases.get(sessionPath);
+		if (!sessionLeases) return false;
+		const lease = this.findById(sessionLeases, leaseId);
+		if (!lease) return false;
+		sessionLeases.delete(lease.clientInstanceId);
+		if (sessionLeases.size === 0) this.leases.delete(sessionPath);
 		return true;
 	}
 
 	releaseClient(clientInstanceId: string): string[] {
 		const released: string[] = [];
-		for (const [sessionPath, lease] of this.leases) {
-			if (lease.clientInstanceId !== clientInstanceId) continue;
-			this.leases.delete(sessionPath);
+		for (const [sessionPath, sessionLeases] of this.leases) {
+			if (!sessionLeases.delete(clientInstanceId)) continue;
 			released.push(sessionPath);
+			if (sessionLeases.size === 0) this.leases.delete(sessionPath);
 		}
 		return released;
 	}
 
 	move(sessionPath: string, nextSessionPath: string, leaseId: string): ControlLease {
 		const lease = this.assert(sessionPath, leaseId);
-		if (this.leases.has(nextSessionPath)) throw new SessionControlLockedError(nextSessionPath);
-		this.leases.delete(sessionPath);
+		const currentLeases = this.leases.get(sessionPath);
+		currentLeases?.delete(lease.clientInstanceId);
+		if (currentLeases?.size === 0) this.leases.delete(sessionPath);
+
+		const nextLeases = this.leases.get(nextSessionPath) ?? new Map<string, ControlLease>();
+		const leaseGeneration = (this.generations.get(nextSessionPath) ?? 0) + 1;
+		this.generations.set(nextSessionPath, leaseGeneration);
 		lease.sessionPath = nextSessionPath;
-		lease.leaseGeneration = (this.generations.get(nextSessionPath) ?? 0) + 1;
+		lease.leaseGeneration = leaseGeneration;
 		lease.updatedAt = Date.now();
-		this.generations.set(nextSessionPath, lease.leaseGeneration);
-		this.leases.set(nextSessionPath, lease);
+		nextLeases.set(lease.clientInstanceId, lease);
+		this.leases.set(nextSessionPath, nextLeases);
 		return lease;
 	}
 
-	get(sessionPath: string): ControlLease | undefined {
-		return this.leases.get(sessionPath);
+	get(sessionPath: string, clientInstanceId?: string): ControlLease | undefined {
+		const sessionLeases = this.leases.get(sessionPath);
+		return clientInstanceId ? sessionLeases?.get(clientInstanceId) : sessionLeases?.values().next().value;
+	}
+
+	has(sessionPath: string): boolean {
+		return (this.leases.get(sessionPath)?.size ?? 0) > 0;
+	}
+
+	count(sessionPath: string): number {
+		return this.leases.get(sessionPath)?.size ?? 0;
+	}
+
+	private findById(sessionLeases: Map<string, ControlLease> | undefined, leaseId: string): ControlLease | undefined {
+		if (!sessionLeases) return undefined;
+		for (const lease of sessionLeases.values()) if (lease.leaseId === leaseId) return lease;
+		return undefined;
 	}
 }

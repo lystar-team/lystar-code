@@ -1,4 +1,5 @@
 import type {
+	CompletionResult,
 	GitDiff,
 	GitStatus,
 	HostDirectoryEntry,
@@ -17,10 +18,13 @@ import type {
 
 export type WebSessionSummary = Omit<SessionSummary, "path" | "cwd">;
 export type WebSessionSnapshot = Omit<SessionStateSnapshot, "path" | "cwd">;
+export type WebTranscriptItem = Omit<TranscriptItem, "payload">;
 export type WebOperation = Omit<
 	OperationSnapshot,
 	"sessionPath" | "clientInstanceId" | "clientRequestId" | "payloadHash"
 > & { sessionId?: string };
+
+export type WebCompletionResult = CompletionResult;
 
 export interface WebProject {
 	id: string;
@@ -60,6 +64,7 @@ export interface BootstrapResponse {
 	connection: { connected: boolean; host: string; productVersion?: string };
 	pendingUiRequests: UiRequestEvent[];
 	operations: WebOperation[];
+	leases: Array<{ sessionId: string; lease: WebLease }>;
 }
 
 export interface UiRequestEvent {
@@ -85,7 +90,7 @@ export type GatewayEvent =
 			transcriptGeneration: string;
 			fromRevision: number;
 			toRevision: number;
-			items: TranscriptItem[];
+			items: WebTranscriptItem[];
 	  }
 	| { type: "session_progress"; sessionId: string; progress: SessionProgress }
 	| { type: "operation_updated"; operation: WebOperation }
@@ -93,7 +98,32 @@ export type GatewayEvent =
 
 export interface ModelsResponse {
 	models: ModelSummary[];
-	providers: ModelProviderSummary[];
+	providers: (ModelProviderSummary & { catalogProvider?: string })[];
+}
+
+export type WebThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+
+export interface WebModelProviderInput {
+	provider: string;
+	name?: string;
+	baseUrl: string;
+	api: string;
+	apiKey?: string;
+	catalogProvider?: string;
+	clearCatalogProvider?: boolean;
+}
+
+export interface WebProviderModelInput {
+	id: string;
+	name?: string;
+	api?: string;
+	baseUrl?: string;
+	reasoning: boolean;
+	thinkingLevelMap?: Partial<Record<WebThinkingLevel, string | null>>;
+	input: ("text" | "image")[];
+	resetOverride?: boolean;
+	contextWindow?: number;
+	maxTokens?: number;
 }
 
 export interface ProjectTreeEntry extends HostDirectoryEntry {
@@ -134,4 +164,4 @@ export interface SessionTreeResponse {
 export interface GitStatusResponse extends GitStatus {}
 export interface GitDiffResponse extends GitDiff {}
 export interface ProjectTrustResponse extends ProjectTrust {}
-export interface TranscriptResponse extends TranscriptPage {}
+export type TranscriptResponse = Omit<TranscriptPage, "items"> & { items: WebTranscriptItem[] };

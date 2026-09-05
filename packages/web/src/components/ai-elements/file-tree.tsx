@@ -130,14 +130,16 @@ const FileTreeFolderContext = createContext<FileTreeFolderContextType>({
   path: "",
 });
 
-export type FileTreeFolderProps = HTMLAttributes<HTMLDivElement> & {
+export type FileTreeFolderProps = Omit<HTMLAttributes<HTMLDivElement>, "onToggle"> & {
   path: string;
   name: string;
+  onToggle?: (path: string, expanded: boolean) => void;
 };
 
 export const FileTreeFolder = ({
   path,
   name,
+  onToggle,
   className,
   children,
   ...props
@@ -147,9 +149,13 @@ export const FileTreeFolder = ({
   const isExpanded = expandedPaths.has(path);
   const isSelected = selectedPath === path;
 
-  const handleOpenChange = useCallback(() => {
-    togglePath(path);
-  }, [togglePath, path]);
+  const handleOpenChange = useCallback(
+    (open: boolean) => {
+      togglePath(path);
+      onToggle?.(path, open);
+    },
+    [onToggle, path, togglePath]
+  );
 
   const handleSelect = useCallback(() => {
     onSelect?.(path);
@@ -178,6 +184,7 @@ export const FileTreeFolder = ({
             <CollapsibleTrigger asChild>
               <button
                 className="flex shrink-0 cursor-pointer items-center border-none bg-transparent p-0"
+                onClick={(event) => event.stopPropagation()}
                 type="button"
               >
                 <ChevronRightIcon

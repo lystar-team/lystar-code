@@ -1,5 +1,6 @@
 import { ProcessTerminal, Text, type TUI, TuiMainScreen, type TuiMode } from "@earendil-works/pi-tui";
 import { APP_TITLE, getAgentDir } from "./config.ts";
+import { stripInternalPromptContent } from "./core/prompt-display.ts";
 import type { SessionEntry } from "./core/session-manager.ts";
 import { time } from "./core/timings.ts";
 import { LystarTUI } from "./modes/interactive/lystar-tui.ts";
@@ -48,7 +49,8 @@ function previewEntry(entry: SessionEntry): string | undefined {
 	if (message.role !== "user" && message.role !== "assistant" && message.role !== "toolResult") return undefined;
 	const text = contentText(message.content);
 	if (!text.trim()) return undefined;
-	const preview = truncatePreview(text);
+	const preview = truncatePreview(message.role === "user" ? stripInternalPromptContent(text) : text);
+	if (!preview.trim()) return undefined;
 	if (message.role === "user") return `你：${preview}`;
 	if (message.role === "assistant") return `助手：${preview}`;
 	if (message.role === "toolResult") return `Tool ${message.toolName}：${preview}`;

@@ -28,6 +28,8 @@ import {
   useMemo,
   useState,
 } from "react";
+import { PlainTextCodeBlock } from "./code-block";
+import { ResourceImage } from "./resource-preview";
 import { Streamdown } from "streamdown";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
@@ -319,24 +321,93 @@ export const MessageBranchPage = ({
   );
 };
 
-export type MessageResponseProps = ComponentProps<typeof Streamdown>;
+export type MessageResponseProps = ComponentProps<typeof Streamdown> & {
+	onOpenPath?: (path: string) => void;
+};
 
-const streamdownPlugins = { cjk, code, math, mermaid };
+const ResourcePathContext = createContext<((path: string) => void) | undefined>(undefined);
+
+const MessageMarkdownImage = ({ src, alt }: ComponentProps<"img">) => {
+	const isLocalPath = Boolean(src && /^(?:\/|[A-Za-z]:[\\/]|\\\\|\.\.?[\\/]|(?:packages|docs|scripts|src|test|tests|tmp)[\\/])/u.test(src));
+	return src ? (
+		<ResourceImage
+			{...(isLocalPath ? { path: src } : { src })}
+			alt={alt || "图片"}
+			className="my-3 max-w-full"
+		/>
+	) : null;
+};
+
+const MessageMarkdownLink = ({ href, children, ...props }: ComponentProps<"a">) => {
+	const onOpenPath = useContext(ResourcePathContext);
+	const isLocalPath = Boolean(href && /^(?:\/|[A-Za-z]:[\\/]|\\\\|\.\.?[\\/]|(?:packages|docs|scripts|src|test|tests|tmp)[\\/])/u.test(href));
+	if (href && onOpenPath && isLocalPath) {
+		if (/\.(?:avif|gif|jpe?g|png|svg|webp)(?:[?#].*)?$/iu.test(href)) {
+			return <ResourceImage path={href} alt={typeof children === "string" ? children : "图片"} onOpenPath={onOpenPath} />;
+		}
+		return (
+			<button
+				className="text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
+				onClick={() => onOpenPath(href)}
+				type="button"
+			>
+				{children}
+			</button>
+		);
+	}
+	return (
+		<a href={href} {...props}>
+			{children}
+		</a>
+	);
+};
+
+const MessageMarkdownParagraph = ({ children, ...props }: ComponentProps<"p">) => <p {...props}>{children}</p>;
+
+const PlainTextRenderer = ({ code }: { code: string }) => <PlainTextCodeBlock code={code} />;
+
+const streamdownTranslations = {
+  close: "关闭",
+  copyLink: "复制链接",
+  externalLinkWarning: "即将访问外部网站。",
+  openExternalLink: "打开外部链接？",
+  openLink: "打开链接",
+};
+
+const streamdownPlugins = {
+  cjk,
+  code,
+  math,
+  mermaid,
+  renderers: [{ language: ["text", "plaintext"], component: PlainTextRenderer }],
+};
 
 export const MessageResponse: NamedExoticComponent<MessageResponseProps> = memo(
-  ({ className, ...props }: MessageResponseProps): ReactElement => (
-    <Streamdown
-      className={cn(
-        "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
-        className
-      )}
-      plugins={streamdownPlugins}
-      {...props}
-    />
-  ),
-  (prevProps, nextProps) =>
-    prevProps.children === nextProps.children &&
-    nextProps.isAnimating === prevProps.isAnimating
+	({ className, onOpenPath, components, ...props }: MessageResponseProps): ReactElement => (
+		<ResourcePathContext.Provider value={onOpenPath}>
+						<Streamdown
+				className={cn(
+					"size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+					className,
+				)}
+				plugins={streamdownPlugins}
+				translations={streamdownTranslations}
+				components={
+					{
+						...components,
+						img: MessageMarkdownImage,
+					a: MessageMarkdownLink,
+						p: MessageMarkdownParagraph,
+					} as NonNullable<MessageResponseProps["components"]>
+				}
+				{...props}
+			/>
+		</ResourcePathContext.Provider>
+	),
+	(prevProps, nextProps) =>
+		prevProps.children === nextProps.children &&
+		nextProps.isAnimating === prevProps.isAnimating &&
+		nextProps.onOpenPath === prevProps.onOpenPath
 );
 
 MessageResponse.displayName = "MessageResponse";

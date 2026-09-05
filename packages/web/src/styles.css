@@ -106,8 +106,14 @@ kbd {
 	font-size: 13px !important;
 }
 
-.project-list [data-slot="button"] {
-	font-size: 13px;
+.tool-batch-stack {
+	display: grid;
+	min-width: 0;
+	gap: 0;
+}
+
+.live-turn > .tool-batch-render-item + .tool-batch-render-item {
+	margin-top: -0.5rem;
 }
 
 .prompt-input-shell [data-slot="input-group"],
@@ -116,6 +122,73 @@ kbd {
 	border: 1px solid var(--border) !important;
 	corner-shape: squircle;
 	box-shadow: 0 2px 12px rgb(0 0 0 / 0.05) !important;
+}
+
+.code-block-token,
+.code-block-pre {
+	color: inherit;
+}
+
+:root[data-theme="dark"] .code-block-token,
+:root[data-theme="dark"] .code-block-pre {
+	color: var(--shiki-dark, inherit) !important;
+}
+
+:root[data-theme="dark"] .code-block-pre[data-code-background="themed"] {
+	background-color: var(--shiki-dark-bg, var(--background)) !important;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root[data-theme=""] .code-block-token,
+	:root[data-theme=""] .code-block-pre {
+		color: var(--shiki-dark, inherit) !important;
+	}
+
+	:root[data-theme=""] .code-block-pre[data-code-background="themed"] {
+		background-color: var(--shiki-dark-bg, var(--background)) !important;
+	}
+}
+
+.is-assistant [data-streamdown="code-block"] {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	grid-template-rows: auto auto;
+	gap: 0;
+}
+
+.is-assistant [data-streamdown="code-block-header"] {
+	grid-column: 1 / -1;
+	grid-row: 1;
+	min-width: 0;
+}
+
+.is-assistant [data-streamdown="code-block-actions"] {
+	grid-column: 2;
+	grid-row: 1;
+	align-self: center;
+	margin: 0;
+	position: static;
+	border: 0 !important;
+	border-radius: 0 !important;
+	background: transparent !important;
+	padding: 0 !important;
+	box-shadow: none !important;
+	backdrop-filter: none !important;
+}
+
+.is-assistant [data-streamdown="code-block"] > :not([data-streamdown="code-block-header"]):not([data-streamdown="code-block-body"]) {
+	grid-column: 2;
+	grid-row: 1;
+	align-self: center;
+	margin: 0;
+	position: static;
+	pointer-events: auto;
+}
+
+.is-assistant [data-streamdown="code-block-body"] {
+	grid-column: 1 / -1;
+	grid-row: 2;
+	margin-top: 0;
 }
 
 ::selection {

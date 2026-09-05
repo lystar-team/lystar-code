@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { dirname } from "node:path";
 import {
 	type AutocompleteItem,
 	type AutocompleteProvider,
@@ -146,45 +147,78 @@ function collectReferencedSkillNames(text: string): string[] {
 }
 
 function escapeXmlAttribute(value: string): string {
-	return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
+	return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
-function buildSingleSkillBlock(command: SkillCommand, body: string): string {
+function escapeXmlText(value: string): string {
+	return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function skillBaseDir(command: SkillCommand): string {
+	return dirname(command.sourceInfo.path);
+}
+
+function buildSkillBlock(command: SkillCommand, body: string): string {
 	const name = getSkillName(command);
 	const location = command.sourceInfo.path;
-	const baseDir = command.sourceInfo.baseDir ?? location;
-	return `<skill name="${name}" location="${escapeXmlAttribute(location)}">\nReferences are relative to ${baseDir}.\n\n${body}\n</skill>`;
+	const baseDir = skillBaseDir(command);
+	return `<skill name="${escapeXmlAttribute(name)}" location="${escapeXmlAttribute(location)}">\nReferences are relative to ${escapeXmlText(baseDir)}.\n\n${body}\n</skill>`;
 }
 
-function buildCombinedSkillBlock(skills: Array<{ command: SkillCommand; body: string }>): string {
-	const names = skills.map(({ command }) => getSkillName(command));
-	const sections = skills.map(({ command, body }) => {
+function buildSkillReferenceBlock(commands: SkillCommand[], unavailableNames: string[]): string | undefined {
+	const entries = commands.map((command) => {
 		const name = getSkillName(command);
 		const location = command.sourceInfo.path;
-		const baseDir = command.sourceInfo.baseDir ?? location;
-		return `## ${name}\n\nLocation: ${location}\nReferences are relative to ${baseDir}.\n\n${body}`;
+		const baseDir = skillBaseDir(command);
+		return `  <skill_reference name="${escapeXmlAttribute(name)}" location="${escapeXmlAttribute(location)}" base_dir="${escapeXmlAttribute(baseDir)}">\n    ${escapeXmlText(command.description ?? "")}\n  </skill_reference>`;
 	});
-	return `<skill name="${names.join(" + ")}" location="multiple">\nThe user explicitly referenced the following Skills. Apply all of them to the user message below in the listed order.\n\n${sections.join("\n\n---\n\n")}\n</skill>`;
+	for (const name of unavailableNames) {
+		entries.push(
+			`  <skill_reference name="${escapeXmlAttribute(name)}" status="unavailable">\n    当前 Skill 不可用，请检查名称或重新加载 Skill 列表。\n  </skill_reference>`,
+		);
+	}
+	return entries.length > 0 ? `<skill_references>\n${entries.join("\n")}\n</skill_references>` : undefined;
 }
 
 export function expandSkillReferences(text: string, commands: SkillCommand[]): string | undefined {
-	const names = collectReferencedSkillNames(text);
+	const leadingCommand = text.match(LEADING_SKILL_COMMAND_PATTERN);
+	const leadingSkillName = leadingCommand?.[1];
 	const hasInlineReferences = SKILL_REFERENCE_PATTERN.test(text);
 	SKILL_REFERENCE_PATTERN.lastIndex = 0;
-	if (!hasInlineReferences) return undefined;
+	if (!leadingSkillName && !hasInlineReferences) return undefined;
 
+	const names = collectReferencedSkillNames(text);
 	const byName = new Map(commands.map((command) => [getSkillName(command), command]));
-	const skills = names.map((name) => {
-		const command = byName.get(name);
-		if (!command) throw new Error(`Skill“${name}”当前不可用，请执行 /reload 后重新选择。`);
-		const body = stripFrontmatter(readFileSync(command.sourceInfo.path, "utf8")).trim();
-		return { command, body };
-	});
+	const unavailableNames: string[] = [];
+	const explicitBlocks: string[] = [];
 
+	if (leadingSkillName) {
+		const command = byName.get(leadingSkillName);
+		if (!command) {
+			unavailableNames.push(leadingSkillName);
+		} else {
+			try {
+				const body = stripFrontmatter(readFileSync(command.sourceInfo.path, "utf8")).trim();
+				explicitBlocks.push(buildSkillBlock(command, body));
+			} catch {
+				unavailableNames.push(leadingSkillName);
+			}
+		}
+	}
+
+	const referencedCommands: SkillCommand[] = [];
+	for (const name of names) {
+		if (name === leadingSkillName) continue;
+		const command = byName.get(name);
+		if (command) referencedCommands.push(command);
+		else unavailableNames.push(name);
+	}
+
+	const metadataBlock = buildSkillReferenceBlock(referencedCommands, unavailableNames);
+	const blocks = [...explicitBlocks, ...(metadataBlock ? [metadataBlock] : [])];
 	const userText = text.replace(LEADING_SKILL_COMMAND_PATTERN, "").trim();
-	const block =
-		skills.length === 1 ? buildSingleSkillBlock(skills[0].command, skills[0].body) : buildCombinedSkillBlock(skills);
-	return userText ? `${block}\n\n${userText}` : block;
+	if (blocks.length === 0) return userText || text;
+	return userText ? `${blocks.join("\n\n")}\n\n${userText}` : blocks.join("\n\n");
 }
 
 export default function skillReferenceExtension(pi: ExtensionAPI): void {

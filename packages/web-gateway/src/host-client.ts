@@ -16,6 +16,9 @@ class SocketByteTransport implements ByteTransport {
 	private readonly bytesListeners = new Set<(bytes: Uint8Array) => void>();
 	private readonly closeListeners = new Set<(error?: Error) => void>();
 	private closed = false;
+	private notifiedClose = false;
+	private sendQueue = Promise.resolve();
+	private sendFailure?: Error;
 
 	private readonly socket: Socket;
 
@@ -31,43 +34,81 @@ class SocketByteTransport implements ByteTransport {
 	static connect(endpoint: string): Promise<SocketByteTransport> {
 		return new Promise((resolve, reject) => {
 			const socket = createConnection(endpoint);
-			const onError = (error: Error) => {
+			let settled = false;
+			const timer = setTimeout(() => {
+				fail(new Error("Web Host IPC 连接超时"));
+			}, 10_000);
+			const fail = (error: Error) => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				socket.off("error", onError);
+				socket.off("close", onClose);
 				socket.destroy();
 				reject(error);
 			};
+			const onError = (error: Error) => fail(error);
+			const onClose = () => fail(new Error("Web Host IPC 连接已关闭"));
 			socket.once("error", onError);
+			socket.once("close", onClose);
 			socket.once("connect", () => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
 				socket.off("error", onError);
+				socket.off("close", onClose);
 				socket.setNoDelay(true);
+				socket.setKeepAlive(true, 10_000);
 				resolve(new SocketByteTransport(socket));
 			});
 		});
 	}
 
 	async send(bytes: Uint8Array): Promise<void> {
-		if (this.closed) throw new Error("Web Host IPC 连接已关闭");
-		await new Promise<void>((resolvePromise, reject) => {
-			const onError = (error: Error) => {
-				this.socket.off("drain", onDrain);
-				reject(error);
-			};
-			const onDrain = () => {
-				this.socket.off("error", onError);
-				resolvePromise();
-			};
-			this.socket.once("error", onError);
-			if (this.socket.write(bytes)) {
-				this.socket.off("error", onError);
-				resolvePromise();
-			} else {
-				this.socket.once("drain", onDrain);
-			}
+		if (this.closed) throw this.sendFailure ?? new Error("Web Host IPC 连接已关闭");
+		const send = this.sendQueue.then(() => {
+			if (this.closed) throw this.sendFailure ?? new Error("Web Host IPC 连接已关闭");
+			return new Promise<void>((resolvePromise, reject) => {
+				let settled = false;
+				const cleanup = () => {
+					this.socket.off("drain", onDrain);
+					this.socket.off("error", onError);
+					this.socket.off("close", onClose);
+				};
+				const resolveOnce = () => {
+					if (settled) return;
+					settled = true;
+					cleanup();
+					resolvePromise();
+				};
+				const rejectOnce = (error: Error) => {
+					if (settled) return;
+					settled = true;
+					cleanup();
+					reject(error);
+				};
+				const onDrain = () => resolveOnce();
+				const onError = (error: Error) => rejectOnce(error);
+				const onClose = () => rejectOnce(this.sendFailure ?? new Error("Web Host IPC 连接已关闭"));
+				this.socket.once("error", onError);
+				this.socket.once("close", onClose);
+				try {
+					if (this.socket.write(bytes)) resolveOnce();
+					else this.socket.once("drain", onDrain);
+				} catch (error) {
+					rejectOnce(error instanceof Error ? error : new Error(String(error)));
+				}
+			});
 		});
+		this.sendQueue = send.catch((error) => {
+			this.sendFailure = error instanceof Error ? error : new Error(String(error));
+		});
+		return send;
 	}
 
 	async close(): Promise<void> {
-		if (this.closed) return;
-		this.closed = true;
+		if (this.notifiedClose) return;
+		this.notifyClose(new Error("Web Host IPC 连接已关闭"));
 		this.socket.end();
 		this.socket.destroy();
 	}
@@ -83,8 +124,10 @@ class SocketByteTransport implements ByteTransport {
 	}
 
 	private notifyClose(error?: Error): void {
-		if (this.closed && !error) return;
+		if (this.notifiedClose) return;
 		this.closed = true;
+		this.notifiedClose = true;
+		this.sendFailure = error ?? new Error("Web Host IPC 连接已关闭");
 		for (const listener of this.closeListeners) listener(error);
 	}
 }
@@ -117,7 +160,11 @@ async function waitForHello(client: GuiProtocolClient): Promise<void> {
 }
 
 function repositoryRoot(): string {
-	return resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+	const currentDirectory = resolve(dirname(fileURLToPath(import.meta.url)));
+	for (const candidate of [resolve(currentDirectory, "../.."), resolve(currentDirectory, "../../..")]) {
+		if (existsSync(resolve(candidate, "packages/gui-host/dist/cli.js"))) return candidate;
+	}
+	return resolve(currentDirectory, "../..");
 }
 
 function hostCommand(): { command: string; args: string[]; cwd: string } {
@@ -135,23 +182,33 @@ function hostCommand(): { command: string; args: string[]; cwd: string } {
 	return { command: "lystar-gui-host", args: ["serve"], cwd: process.cwd() };
 }
 
-export async function ensurePersistentHost(config: WebGatewayConfig): Promise<void> {
-	if ((await probeIpcHost(config.hostEndpoint)).reachable) return;
-	if (!config.manageHost) throw new Error(`Web Host 未运行：${config.hostEndpoint}`);
-	const command = hostCommand();
-	const child = spawn(command.command, command.args, {
-		cwd: command.cwd,
-		env: { ...process.env, PI_GUI_HOST_ENDPOINT: config.hostEndpoint },
-		detached: true,
-		stdio: "ignore",
-	});
-	child.unref();
-	const deadline = Date.now() + 10_000;
-	while (Date.now() < deadline) {
+const hostStartupPromises = new Map<string, Promise<void>>();
+
+export function ensurePersistentHost(config: WebGatewayConfig): Promise<void> {
+	const existing = hostStartupPromises.get(config.hostEndpoint);
+	if (existing) return existing;
+	const promise = (async () => {
 		if ((await probeIpcHost(config.hostEndpoint)).reachable) return;
-		await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-	}
-	throw new Error("Web Host 启动超时，请检查 Web Host 进程和日志");
+		if (!config.manageHost) throw new Error(`Web Host 未运行：${config.hostEndpoint}`);
+		const command = hostCommand();
+		const child = spawn(command.command, command.args, {
+			cwd: command.cwd,
+			env: { ...process.env, PI_GUI_HOST_ENDPOINT: config.hostEndpoint },
+			detached: true,
+			stdio: "ignore",
+		});
+		child.unref();
+		const deadline = Date.now() + 10_000;
+		while (Date.now() < deadline) {
+			if ((await probeIpcHost(config.hostEndpoint)).reachable) return;
+			await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+		}
+		throw new Error("Web Host 启动超时，请检查 Web Host 进程和日志");
+	})();
+	hostStartupPromises.set(config.hostEndpoint, promise);
+	return promise.finally(() => {
+		if (hostStartupPromises.get(config.hostEndpoint) === promise) hostStartupPromises.delete(config.hostEndpoint);
+	});
 }
 
 export async function connectHostClient(
@@ -163,7 +220,7 @@ export async function connectHostClient(
 	await ensurePersistentHost(config);
 	const transport = await SocketByteTransport.connect(config.hostEndpoint);
 	transport.onClose(onClose);
-	const client = new ProtocolClient(transport, clientInstanceId);
+	const client = new ProtocolClient(transport, clientInstanceId, { trustedServerMessages: true });
 	client.onEvent(onEvent);
 	await client.connect();
 	await waitForHello(client);

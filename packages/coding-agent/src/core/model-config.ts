@@ -76,6 +76,7 @@ const ThinkingLevelMapSchema = Type.Object({
 	high: Type.Optional(ThinkingLevelMapValueSchema),
 	xhigh: Type.Optional(ThinkingLevelMapValueSchema),
 	max: Type.Optional(ThinkingLevelMapValueSchema),
+	ultra: Type.Optional(ThinkingLevelMapValueSchema),
 });
 
 const ChatTemplateKwargScalarSchema = Type.Union([Type.String(), Type.Number(), Type.Boolean(), Type.Null()]);
@@ -214,6 +215,7 @@ const ProviderConfigSchema = Type.Object({
 	baseUrl: Type.Optional(Type.String({ minLength: 1 })),
 	apiKey: Type.Optional(Type.String({ minLength: 1 })),
 	api: Type.Optional(Type.String({ minLength: 1 })),
+	catalogProvider: Type.Optional(Type.String({ minLength: 1 })),
 	oauth: Type.Optional(Type.Literal("radius")),
 	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
 	compat: Type.Optional(ProviderCompatSchema),
@@ -316,6 +318,73 @@ export async function saveModelsJsonModel(
 		if (index >= 0) models[index] = structuredClone(model);
 		else models.push(structuredClone(model));
 		config.providers[providerId] = { ...provider, models };
+	});
+}
+
+export async function saveModelsJsonModels(
+	modelsJsonPath: string,
+	providerId: string,
+	models: readonly ModelsJsonModel[],
+): Promise<void> {
+	if (models.length === 0) return;
+	await updateModelsJson(modelsJsonPath, (config) => {
+		const provider = config.providers[providerId] ?? {};
+		const current = [...(provider.models ?? [])];
+		for (const model of models) {
+			const index = current.findIndex((candidate) => candidate.id === model.id);
+			if (index >= 0) current[index] = structuredClone(model);
+			else current.push(structuredClone(model));
+		}
+		config.providers[providerId] = { ...provider, models: current };
+	});
+}
+
+export async function saveModelsJsonModelOverride(
+	modelsJsonPath: string,
+	providerId: string,
+	modelId: string,
+	override: ModelsJsonModelOverride,
+): Promise<void> {
+	await updateModelsJson(modelsJsonPath, (config) => {
+		const provider = config.providers[providerId] ?? {};
+		const previous = provider.modelOverrides?.[modelId] ?? {};
+		config.providers[providerId] = {
+			...provider,
+			modelOverrides: {
+				...(provider.modelOverrides ?? {}),
+				[modelId]: { ...previous, ...structuredClone(override) },
+			},
+		};
+	});
+}
+
+export async function clearModelsJsonProviderCatalogProvider(
+	modelsJsonPath: string,
+	providerId: string,
+): Promise<void> {
+	await updateModelsJson(modelsJsonPath, (config) => {
+		const provider = config.providers[providerId];
+		if (!provider?.catalogProvider) return;
+		const nextProvider = { ...provider };
+		delete nextProvider.catalogProvider;
+		config.providers[providerId] = nextProvider;
+	});
+}
+
+export async function clearModelsJsonModelOverride(
+	modelsJsonPath: string,
+	providerId: string,
+	modelId: string,
+): Promise<void> {
+	await updateModelsJson(modelsJsonPath, (config) => {
+		const provider = config.providers[providerId];
+		if (!provider?.modelOverrides?.[modelId]) return;
+		const modelOverrides = { ...provider.modelOverrides };
+		delete modelOverrides[modelId];
+		const nextProvider = { ...provider };
+		if (Object.keys(modelOverrides).length > 0) nextProvider.modelOverrides = modelOverrides;
+		else delete nextProvider.modelOverrides;
+		config.providers[providerId] = nextProvider;
 	});
 }
 

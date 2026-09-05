@@ -117,7 +117,6 @@ export {
 	type TurnStartEvent,
 	type WorkingIndicatorOptions,
 } from "./extensions/index.ts";
-export { KeybindingsManager, matchesKey } from "./keybindings.ts";
 export {
 	getLystarSetting,
 	getLystarSettingsForUi,
@@ -128,10 +127,15 @@ export {
 	SETTINGS_SELECTOR_PERSISTENT_IDS,
 } from "./lystar-settings-catalog.ts";
 export {
+	clearModelsJsonModelOverride,
+	clearModelsJsonProviderCatalogProvider,
 	ModelConfig,
 	type ModelsJsonModel,
+	type ModelsJsonModelOverride,
 	type ModelsJsonProvider,
 	saveModelsJsonModel,
+	saveModelsJsonModelOverride,
+	saveModelsJsonModels,
 	saveModelsJsonProvider,
 } from "./model-config.ts";
 export {
@@ -152,6 +156,7 @@ export {
 	type ResolveProjectTrustedOptions,
 	resolveProjectTrusted,
 } from "./project-trust.ts";
+export { stripInternalPromptContent } from "./prompt-display.ts";
 export {
 	DefaultResourceLoader,
 	type DefaultResourceLoaderOptions,

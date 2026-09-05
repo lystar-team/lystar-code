@@ -1,4 +1,5 @@
 import { type Static, Type } from "typebox";
+import { ToolExecutionError } from "../../tool-recovery/types.ts";
 import type { AgentHarnessTool, FileError } from "../types.ts";
 import {
 	applyEditsToNormalizedContent,
@@ -87,6 +88,32 @@ function editAccessError(path: string, error: FileError): Error {
 	return new Error(`Could not edit file: ${path}. Error code: ${error.code}.`, { cause: error });
 }
 
+async function hashFileContent(content: string): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(content));
+	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function createWriteConflictError(
+	path: string,
+	expectedContentHash: string,
+	actualContentHash: string,
+): ToolExecutionError {
+	return new ToolExecutionError(
+		`Could not edit file: ${path}. Target changed before write; no changes were written. Re-read the target region and retry.`,
+		{
+			code: "WRITE_CONFLICT",
+			category: "stale_state",
+			retryable: false,
+			details: { expectedContentHash, actualContentHash },
+			fingerprintConstraint: {
+				kind: "edit_write_conflict",
+				expectedContentHash,
+				actualContentHash,
+			},
+		},
+	);
+}
+
 export function createEditTool<TContext extends ExecutionToolContext = ExecutionToolContext>(): AgentHarnessTool<
 	TContext,
 	typeof editSchema,
@@ -120,19 +147,38 @@ export function createEditTool<TContext extends ExecutionToolContext = Execution
 				if (signal?.aborted) throw new Error("Operation aborted");
 
 				const { bom, text: content } = stripBom(readResult.value);
+				const snapshotHash = await hashFileContent(readResult.value);
 				const originalEnding = detectLineEnding(content);
 				const normalizedContent = normalizeToLF(content);
 				const { baseContent, newContent } = applyEditsToNormalizedContent(normalizedContent, edits, path);
 				if (signal?.aborted) throw new Error("Operation aborted");
 
 				const finalContent = bom + restoreLineEndings(newContent, originalEnding);
-				const writeResult = await env.writeFile(absolutePath, finalContent, signal);
-				if (!writeResult.ok) throw editAccessError(path, writeResult.error);
-				if (signal?.aborted) throw new Error("Operation aborted");
+				if (finalContent !== readResult.value) {
+					if (signal?.aborted) throw new Error("Operation aborted");
+					const currentResult = await env.readTextFile(absolutePath, signal);
+					if (!currentResult.ok) throw editAccessError(path, currentResult.error);
+					if (signal?.aborted) throw new Error("Operation aborted");
+					const currentHash = await hashFileContent(currentResult.value);
+					if (currentHash !== snapshotHash) {
+						throw createWriteConflictError(path, snapshotHash, currentHash);
+					}
+					const writeResult = await env.writeFile(absolutePath, finalContent, signal);
+					if (!writeResult.ok) throw editAccessError(path, writeResult.error);
+					if (signal?.aborted) throw new Error("Operation aborted");
+				}
 
 				const diffResult = generateDiffString(baseContent, newContent);
 				return {
-					content: [{ type: "text", text: `Successfully replaced ${edits.length} block(s) in ${path}.` }],
+					content: [
+						{
+							type: "text",
+							text:
+								baseContent === newContent
+									? `No changes needed for ${path}; the requested content is already present.`
+									: `Successfully replaced ${edits.length} block(s) in ${path}.`,
+						},
+					],
 					details: {
 						diff: diffResult.diff,
 						patch: generateUnifiedPatch(path, baseContent, newContent),

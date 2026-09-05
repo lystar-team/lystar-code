@@ -296,17 +296,77 @@ describe("Coding Agent Tools", () => {
 			expect(applyPatch(originalContent, result.details.patch)).toBe("Hello, testing!");
 		});
 
-		it("should fail if text not found", async () => {
-			const testFile = join(testDir, "edit-test.txt");
-			const originalContent = "Hello, world!";
+		it("should treat a validated no-op edit as an idempotent success", async () => {
+			const testFile = join(testDir, "edit-no-op.txt");
+			const originalContent = "already final\n";
 			writeFileSync(testFile, originalContent);
 
+			const result = await editTool.execute("test-call-no-op", {
+				path: testFile,
+				edits: [{ oldText: "already final", newText: "already final" }],
+			});
+
+			expect(getTextOutput(result)).toBe(
+				`No changes needed for ${testFile}; the requested content is already present.`,
+			);
+			expect(result.details).toMatchObject({ additions: 0, deletions: 0 });
+			expect(readFileSync(testFile, "utf-8")).toBe(originalContent);
+		});
+
+		it("should reject an edit when the target changes before write", async () => {
+			const testFile = join(testDir, "edit-write-conflict.txt");
+			writeFileSync(testFile, "alpha\nbeta\n");
+			let readCount = 0;
+			let writeCount = 0;
+			const conflictTool = createEditTool(testDir, {
+				operations: {
+					access: async () => {},
+					readFile: async (path) => {
+						readCount++;
+						if (readCount === 2) writeFileSync(path, "changed\n");
+						return readFileSync(path);
+					},
+					writeFile: async (path, content) => {
+						writeCount++;
+						writeFileSync(path, content);
+					},
+				},
+			});
+
 			await expect(
-				editTool.execute("test-call-6", {
+				conflictTool.execute("test-call-write-conflict", {
 					path: testFile,
-					edits: [{ oldText: "nonexistent", newText: "testing" }],
+					edits: [{ oldText: "alpha", newText: "ALPHA" }],
+				}),
+			).rejects.toMatchObject({
+				code: "WRITE_CONFLICT",
+				category: "stale_state",
+				retryable: false,
+				details: {
+					expectedContentHash: expect.any(String),
+					actualContentHash: expect.any(String),
+				},
+				fingerprintConstraint: { kind: "edit_write_conflict" },
+			});
+			expect(writeCount).toBe(0);
+			expect(readFileSync(testFile, "utf-8")).toBe("changed\n");
+		});
+
+		it("should not apply stale oldText after a prior edit changes the file", async () => {
+			const testFile = join(testDir, "edit-stale-old-text.txt");
+			writeFileSync(testFile, "alpha\nbeta\n");
+
+			await editTool.execute("test-call-stale-first", {
+				path: testFile,
+				edits: [{ oldText: "alpha", newText: "ALPHA" }],
+			});
+			await expect(
+				editTool.execute("test-call-stale-second", {
+					path: testFile,
+					edits: [{ oldText: "alpha", newText: "changed" }],
 				}),
 			).rejects.toThrow(/Could not find the exact text/);
+			expect(readFileSync(testFile, "utf-8")).toBe("ALPHA\nbeta\n");
 		});
 
 		it("should include ENOENT when the edit target does not exist", async () => {
@@ -456,6 +516,57 @@ describe("Coding Agent Tools", () => {
 					],
 				}),
 			).rejects.toThrow(/overlap/);
+		});
+
+		it("should classify overlapping edits with stable recovery metadata", async () => {
+			const testFile = join(testDir, "edit-overlap-metadata.txt");
+			writeFileSync(testFile, "one\ntwo\nthree\n");
+
+			await expect(
+				editTool.execute("test-call-overlap-metadata", {
+					path: testFile,
+					edits: [
+						{ oldText: "one\ntwo\n", newText: "ONE\nTWO\n" },
+						{ oldText: "two\nthree\n", newText: "TWO\nTHREE\n" },
+					],
+				}),
+			).rejects.toMatchObject({
+				code: "EDIT_OVERLAP",
+				category: "precondition",
+				retryable: false,
+				details: { overlapEditIndexes: [0, 1] },
+				fingerprintConstraint: { kind: "edit_overlap", editIndexes: [0, 1] },
+			});
+		});
+
+		it("should keep failed edit fingerprints distinct by oldText", async () => {
+			const testFile = join(testDir, "edit-fingerprint.txt");
+			writeFileSync(testFile, "current\n");
+
+			const firstError = await editTool
+				.execute("test-call-fingerprint-1", {
+					path: testFile,
+					edits: [{ oldText: "missing-a", newText: "a" }],
+				})
+				.then(
+					() => undefined,
+					(error: unknown) => error,
+				);
+			const secondError = await editTool
+				.execute("test-call-fingerprint-2", {
+					path: testFile,
+					edits: [{ oldText: "missing-b", newText: "b" }],
+				})
+				.then(
+					() => undefined,
+					(error: unknown) => error,
+				);
+
+			expect(firstError).toMatchObject({ code: "MATCH_NOT_FOUND" });
+			expect(secondError).toMatchObject({ code: "MATCH_NOT_FOUND" });
+			expect((firstError as { fingerprintConstraint?: unknown }).fingerprintConstraint).not.toEqual(
+				(secondError as { fingerprintConstraint?: unknown }).fingerprintConstraint,
+			);
 		});
 
 		it("should not partially apply edits when one edit fails", async () => {

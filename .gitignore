@@ -12,6 +12,9 @@ packages/*/dist-chrome/
 packages/*/dist-firefox/
 packages/ai/src/providers/.model-generation-*/
 *.cpuprofile
+.visual-restore/
+plans/
+.handoff/
 
 # Environment
 .env
@@ -40,6 +43,7 @@ out.html
 packages/coding-agent/binaries/
 todo.md
 plans/
+plan/
 .pi/hf-sessions/
 .pi/hf-sessions-backup/
 collect.sh

@@ -1,4 +1,4 @@
-import type { TranscriptItem } from "@lystar/code-gui-protocol";
+import type { WebTranscriptItem } from "../types.ts";
 
 export type ToolVisualState = "input-available" | "output-available" | "output-error";
 
@@ -9,12 +9,20 @@ export interface TranscriptAttachmentViewModel {
 	url: string;
 }
 
+export interface TranscriptImageViewModel {
+	contentRef: string;
+	mimeType: string;
+	byteLength: number;
+	alt?: string;
+}
+
 export interface TranscriptToolViewModel {
 	id: string;
 	name: string;
 	summary: string;
 	state: ToolVisualState;
 	detail?: string;
+	images?: TranscriptImageViewModel[];
 	diff?: {
 		files: Array<{
 			path?: string;
@@ -41,7 +49,7 @@ export type SessionItemViewModel =
 	| { kind: "summary"; title: string; text: string; timestamp: string };
 
 export function toSessionItemViewModel(
-	item: TranscriptItem,
+	item: WebTranscriptItem,
 	toolStatuses: ReadonlyMap<string, "success" | "error"> = new Map(),
 ): SessionItemViewModel {
 	const view = item.view;
@@ -100,6 +108,7 @@ export function toSessionItemViewModel(
 					summary: view.summary,
 					state: toToolState(view.status),
 					detail: view.detail,
+					images: view.images,
 					diff: view.diff,
 				},
 			],

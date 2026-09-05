@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -34,4 +34,43 @@ test("ProjectRegistry 串行处理并发保存并保留完整项目索引", asyn
 		new Set(projectDirectories.map((_, index) => `project-${index}`)),
 	);
 	assert.deepEqual(new Set(saved.projects?.map((project) => project.cwd)), new Set(projectDirectories));
+});
+
+test("ProjectRegistry 加载已有的最近会话缓存", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "lystar-project-registry-cache-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+
+	const projectRoot = join(root, "project");
+	await mkdir(join(root, "agent", "web"), { recursive: true });
+	await mkdir(projectRoot, { recursive: true });
+	await writeFile(
+		join(root, "agent", "web", "projects.json"),
+		JSON.stringify({
+			version: 1,
+			projects: [
+				{
+					id: "project",
+					name: "测试项目",
+					cwd: projectRoot,
+					recentSessions: [
+						{
+							path: join(root, "session.jsonl"),
+							id: "session",
+							cwd: projectRoot,
+							createdAt: 1,
+							updatedAt: 2,
+							messageCount: 0,
+							firstMessage: "测试会话",
+							activity: "interrupted",
+							writeAccess: "locked_externally",
+						},
+					],
+				},
+			],
+		}),
+	);
+
+	const registry = new ProjectRegistry(join(root, "agent"));
+	await registry.load();
+	assert.equal(registry.list()[0]?.recentSessions?.[0]?.id, "session");
 });

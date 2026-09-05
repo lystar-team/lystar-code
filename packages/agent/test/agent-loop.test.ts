@@ -2445,6 +2445,57 @@ describe("Tool recovery observation", () => {
 		}
 	});
 
+	it("blocks conflicting execution keys before running sequential tools", async () => {
+		const schema = Type.Object({ path: Type.String(), value: Type.String() });
+		let executions = 0;
+		const tool: AgentTool<typeof schema> = {
+			name: "sequential-file-mutation",
+			label: "Sequential file mutation",
+			description: "Sequential file mutation",
+			parameters: schema,
+			getExecutionKeys: (args) => [`file:${(args as { path: string }).path}`],
+			async execute() {
+				executions++;
+				return { content: [{ type: "text", text: "executed" }], details: {} };
+			},
+		};
+		const response = createToolCallThenStopStream([
+			{
+				type: "toolCall",
+				id: "sequential-call-1",
+				name: "sequential-file-mutation",
+				arguments: { path: "same.ts", value: "first" },
+			},
+			{
+				type: "toolCall",
+				id: "sequential-call-2",
+				name: "sequential-file-mutation",
+				arguments: { path: "same.ts", value: "second" },
+			},
+		]);
+		const events: AgentEvent[] = [];
+		const stream = agentLoop(
+			[createUserMessage("run")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{ model: createModel(), convertToLlm: identityConverter, toolExecution: "sequential" },
+			undefined,
+			response.streamFn,
+		);
+		for await (const event of stream) events.push(event);
+
+		expect(executions).toBe(0);
+		const toolEnds = events.filter((event) => event.type === "tool_execution_end");
+		expect(toolEnds).toHaveLength(2);
+		for (const toolEnd of toolEnds) {
+			expect(toolEnd).toMatchObject({ isError: true });
+			if (toolEnd.type === "tool_execution_end") {
+				expect(toolEnd.result.content).toContainEqual(
+					expect.objectContaining({ type: "text", text: expect.stringContaining("不能同时修改同一个目标") }),
+				);
+			}
+		}
+	});
+
 	it("keeps parallel observations isolated by tool call", async () => {
 		const schema = Type.Object({ value: Type.String() });
 		let releaseFirst: (() => void) | undefined;

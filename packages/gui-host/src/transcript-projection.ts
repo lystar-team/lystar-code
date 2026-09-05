@@ -1,3 +1,4 @@
+import { stripInternalPromptContent } from "@earendil-works/pi-coding-agent/core";
 import type { JsonValue, TranscriptItem, TranscriptViewItem } from "@lystar/code-gui-protocol";
 
 const TEXT_LIMIT = 16 * 1024;
@@ -267,7 +268,13 @@ function projectTranscriptViews(item: TranscriptItem): TranscriptViewItem[] {
 	const content = entryMessage?.content ?? payload?.text;
 	const images = imageMetadata(content);
 	if (role === "user") {
-		return [{ type: "user", text: text(content), ...(images.length > 0 ? { images } : {}) }];
+		return [
+			{
+				type: "user",
+				text: stripInternalPromptContent(text(content)),
+				...(images.length > 0 ? { images } : {}),
+			},
+		];
 	}
 	if (role === "thinking") return [{ type: "thinking", text: text(content) }];
 	if (role === "bashExecution" && entryMessage) {

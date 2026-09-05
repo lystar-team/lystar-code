@@ -34,6 +34,80 @@ function validDirectory(value: string): string | undefined {
 	}
 }
 
+function normalizeRecentSessions(value: unknown): SessionSummary[] {
+	if (!Array.isArray(value)) return [];
+	const activities = new Set<SessionSummary["activity"]>([
+		"idle",
+		"running",
+		"waiting_for_input",
+		"completed",
+		"failed",
+		"aborted",
+		"interrupted",
+	]);
+	const writeAccesses = new Set<SessionSummary["writeAccess"]>([
+		"available",
+		"owned",
+		"controlled_elsewhere",
+		"locked_externally",
+	]);
+	return value
+		.flatMap((candidate) => {
+			if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
+			const source = candidate as Record<string, unknown>;
+			const path = stringValue(source.path);
+			const id = stringValue(source.id);
+			const cwd = stringValue(source.cwd);
+			const firstMessage = typeof source.firstMessage === "string" ? source.firstMessage : undefined;
+			const createdAt = source.createdAt;
+			const updatedAt = source.updatedAt;
+			const messageCount = source.messageCount;
+			const activity = source.activity;
+			const writeAccess = source.writeAccess;
+			if (
+				!path ||
+				!id ||
+				!cwd ||
+				firstMessage === undefined ||
+				typeof createdAt !== "number" ||
+				!Number.isInteger(createdAt) ||
+				createdAt < 0 ||
+				typeof updatedAt !== "number" ||
+				!Number.isInteger(updatedAt) ||
+				updatedAt < 0 ||
+				typeof messageCount !== "number" ||
+				!Number.isInteger(messageCount) ||
+				messageCount < 0 ||
+				typeof activity !== "string" ||
+				!activities.has(activity as SessionSummary["activity"]) ||
+				typeof writeAccess !== "string" ||
+				!writeAccesses.has(writeAccess as SessionSummary["writeAccess"])
+			)
+				return [];
+			const operationUpdatedAt = source.operationUpdatedAt;
+			return [
+				{
+					path,
+					id,
+					cwd,
+					...(typeof source.name === "string" ? { name: source.name } : {}),
+					createdAt,
+					updatedAt,
+					messageCount,
+					firstMessage,
+					activity: activity as SessionSummary["activity"],
+					writeAccess: writeAccess as SessionSummary["writeAccess"],
+					...(typeof operationUpdatedAt === "number" &&
+					Number.isInteger(operationUpdatedAt) &&
+					operationUpdatedAt >= 0
+						? { operationUpdatedAt }
+						: {}),
+				},
+			];
+		})
+		.slice(0, 100);
+}
+
 function normalizeProject(value: unknown): WebProject | undefined {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
 	const source = value as Record<string, unknown>;
@@ -53,6 +127,9 @@ function normalizeProject(value: unknown): WebProject | undefined {
 		...(source.pinned === true ? { pinned: true } : {}),
 		...(color ? { color } : {}),
 		...(source.archived === true ? { archived: true } : {}),
+		...(Array.isArray(source.recentSessions)
+			? { recentSessions: normalizeRecentSessions(source.recentSessions) }
+			: {}),
 	};
 }
 
@@ -173,8 +250,12 @@ export class ProjectRegistry {
 	}
 
 	async setRecentSessions(id: string, sessions: SessionSummary[]): Promise<void> {
-		this.state.projects = this.state.projects.map((project) =>
-			project.id === id ? { ...project, recentSessions: sessions.slice(0, 100) } : project,
+		const project = this.get(id);
+		if (!project) return;
+		const recentSessions = sessions.slice(0, 100);
+		if (JSON.stringify(project.recentSessions ?? []) === JSON.stringify(recentSessions)) return;
+		this.state.projects = this.state.projects.map((candidate) =>
+			candidate.id === id ? { ...candidate, recentSessions } : candidate,
 		);
 		await this.save();
 	}

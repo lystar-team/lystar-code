@@ -60,6 +60,32 @@ export function parseServerMessage(value: unknown): ServerMessage {
 	return value;
 }
 
+export function parseTrustedServerMessage(value: unknown): ServerMessage {
+	if (!value || typeof value !== "object" || Array.isArray(value))
+		throw new GuiProtocolValidationError("Invalid trusted GUI server message");
+	const candidate = value as Record<string, unknown>;
+	if (
+		candidate.type !== "hello" &&
+		candidate.type !== "hello_error" &&
+		candidate.type !== "response" &&
+		candidate.type !== "event"
+	)
+		throw new GuiProtocolValidationError("Invalid trusted GUI server message type");
+	if (candidate.type === "response" && typeof candidate.id !== "string")
+		throw new GuiProtocolValidationError("Invalid trusted GUI response envelope");
+	if (candidate.type === "event") {
+		const event = candidate.event;
+		if (
+			!event ||
+			typeof event !== "object" ||
+			Array.isArray(event) ||
+			typeof (event as Record<string, unknown>).type !== "string"
+		)
+			throw new GuiProtocolValidationError("Invalid trusted GUI event envelope");
+	}
+	return value as ServerMessage;
+}
+
 function encodeFramedMessage(value: unknown): Uint8Array {
 	return encodeFrame(encodeCbor(value, { maxByteLength: GUI_MAX_FRAME_LENGTH }));
 }
@@ -119,5 +145,11 @@ export class ClientMessageDecoder extends GuiMessageDecoder<ClientMessage> {
 export class ServerMessageDecoder extends GuiMessageDecoder<ServerMessage> {
 	constructor(options?: FrameDecoderOptions) {
 		super(parseServerMessage, options);
+	}
+}
+
+export class TrustedServerMessageDecoder extends GuiMessageDecoder<ServerMessage> {
+	constructor(options?: FrameDecoderOptions) {
+		super(parseTrustedServerMessage, options);
 	}
 }

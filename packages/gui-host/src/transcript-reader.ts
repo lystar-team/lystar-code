@@ -13,9 +13,10 @@ import { projectTranscriptItems } from "./transcript-projection.ts";
 
 const READ_BUFFER_SIZE = 64 * 1024;
 const MAX_JSONL_LINE_BYTES = 4 * 1024 * 1024;
-const CURSOR_VERSION = 2;
+const CURSOR_VERSION = 3;
 const SEARCH_CURSOR_VERSION = 3;
-const OBSERVED_GENERATION_LIMIT = 16;
+const TRANSCRIPT_FINGERPRINT_BYTES = 64 * 1024;
+const OBSERVED_GENERATION_LIMIT = 512;
 const SEARCH_CACHE_LIMIT = 8;
 const SEARCH_CACHE_BYTES = 32 * 1024 * 1024;
 const SEARCH_CACHE_ENTRY_BYTES = 256 * 1024;
@@ -29,6 +30,7 @@ type RewriteGeneration = {
 	mtimeMs: number;
 	ctimeMs: number;
 	contentHash: string;
+	tailHash: string;
 };
 type ObservedGeneration = RewriteGeneration & { generation: string; sessionId: string };
 type TranscriptCursor = {
@@ -169,6 +171,29 @@ async function hashPrefix(handle: Awaited<ReturnType<typeof open>>, size: number
 	return hash.digest("base64url");
 }
 
+async function hashWindow(handle: Awaited<ReturnType<typeof open>>, offset: number, size: number): Promise<string> {
+	const hash = createHash("sha256");
+	if (size > 0) hash.update(await readAt(handle, offset, size));
+	return hash.digest("base64url");
+}
+
+async function fileFingerprint(
+	handle: Awaited<ReturnType<typeof open>>,
+	size: number,
+): Promise<{ contentHash: string; tailHash: string }> {
+	const prefixSize = Math.min(size, TRANSCRIPT_FINGERPRINT_BYTES);
+	const prefix = await readAt(handle, 0, prefixSize);
+	const tailOffset = Math.max(0, size - TRANSCRIPT_FINGERPRINT_BYTES);
+	const tail = tailOffset === 0 ? prefix : await readAt(handle, tailOffset, size - tailOffset);
+	const contentHash = createHash("sha256")
+		.update("lystar-transcript-fingerprint\0")
+		.update(prefix)
+		.update(tail)
+		.digest("base64url");
+	const tailHash = createHash("sha256").update(tail).digest("base64url");
+	return { contentHash, tailHash };
+}
+
 function fileGeneration(sessionId: string, stat: { dev: number; ino: number; birthtimeMs: number }): string {
 	return `${sessionId}:${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
 }
@@ -307,7 +332,7 @@ function searchHit(entry: SearchIndexEntry, query: string): TranscriptSearchHit 
 
 function searchEntry(entry: RawEntry, query: string): TranscriptSearchHit | undefined {
 	if (!entry.id) return undefined;
-	const text = JSON.stringify(entry);
+	const text = searchText(entry);
 	return searchHit(
 		{
 			entryId: entry.id,
@@ -358,7 +383,10 @@ export class TranscriptReader {
 				previous.size === completeSize &&
 				previous.mtimeMs === stat.mtimeMs &&
 				previous.ctimeMs === stat.ctimeMs;
-			const contentHash = unchangedSincePrevious ? previous.contentHash : await hashPrefix(handle, completeSize);
+			const fingerprint = unchangedSincePrevious
+				? { contentHash: previous.contentHash, tailHash: previous.tailHash }
+				: await fileFingerprint(handle, completeSize);
+			const contentHash = fingerprint.contentHash;
 			const persistedTailId = cursor ? null : await readTailId(handle, completeSize);
 			const rewriteGeneration: RewriteGeneration = {
 				size: completeSize,
@@ -366,7 +394,7 @@ export class TranscriptReader {
 				inode: stat.ino,
 				mtimeMs: stat.mtimeMs,
 				ctimeMs: stat.ctimeMs,
-				contentHash,
+				...fingerprint,
 			};
 			if (cursor) {
 				if (cursor.sessionId !== header.id || completeSize < cursor.rewriteGeneration.size) {
@@ -375,12 +403,25 @@ export class TranscriptReader {
 				if (cursor.rewriteGeneration.device !== stat.dev || cursor.rewriteGeneration.inode !== stat.ino) {
 					throw new TranscriptCursorInvalidError();
 				}
-				if (
-					cursor.rewriteGeneration.size !== completeSize ||
-					cursor.rewriteGeneration.mtimeMs !== stat.mtimeMs ||
-					cursor.rewriteGeneration.ctimeMs !== stat.ctimeMs
-				) {
-					if ((await hashPrefix(handle, cursor.rewriteGeneration.size)) !== cursor.rewriteGeneration.contentHash) {
+				if (completeSize === cursor.rewriteGeneration.size) {
+					if (
+						(cursor.rewriteGeneration.mtimeMs !== stat.mtimeMs ||
+							cursor.rewriteGeneration.ctimeMs !== stat.ctimeMs) &&
+						(stat.size <= completeSize ||
+							(await hashWindow(
+								handle,
+								completeSize - Math.min(completeSize, TRANSCRIPT_FINGERPRINT_BYTES),
+								Math.min(completeSize, TRANSCRIPT_FINGERPRINT_BYTES),
+							)) !== cursor.rewriteGeneration.tailHash)
+					) {
+						throw new TranscriptCursorInvalidError();
+					}
+				} else {
+					const tailSize = Math.min(cursor.rewriteGeneration.size, TRANSCRIPT_FINGERPRINT_BYTES);
+					if (
+						(await hashWindow(handle, cursor.rewriteGeneration.size - tailSize, tailSize)) !==
+						cursor.rewriteGeneration.tailHash
+					) {
 						throw new TranscriptCursorInvalidError();
 					}
 				}
@@ -390,7 +431,19 @@ export class TranscriptReader {
 			const appendOnly =
 				sameFile &&
 				completeSize >= previous.size &&
-				(unchangedSincePrevious || (await hashPrefix(handle, previous.size)) === previous.contentHash);
+				(completeSize > previous.size
+					? (await hashWindow(
+							handle,
+							previous.size - Math.min(previous.size, TRANSCRIPT_FINGERPRINT_BYTES),
+							Math.min(previous.size, TRANSCRIPT_FINGERPRINT_BYTES),
+						)) === previous.tailHash
+					: unchangedSincePrevious ||
+						(stat.size > completeSize &&
+							(await hashWindow(
+								handle,
+								completeSize - Math.min(completeSize, TRANSCRIPT_FINGERPRINT_BYTES),
+								Math.min(completeSize, TRANSCRIPT_FINGERPRINT_BYTES),
+							)) === previous.tailHash));
 			const baseGeneration = fileGeneration(header.id, stat);
 			const generation =
 				!previous || appendOnly ? (previous?.generation ?? baseGeneration) : `${baseGeneration}:${contentHash}`;
@@ -593,7 +646,7 @@ export class TranscriptReader {
 			return {
 				generation: page.transcriptGeneration,
 				transcriptRevision: 0,
-				rewriteGeneration: { size: 0, device: 0, inode: 0, mtimeMs: 0, ctimeMs: 0, contentHash: "" },
+				rewriteGeneration: { size: 0, device: 0, inode: 0, mtimeMs: 0, ctimeMs: 0, contentHash: "", tailHash: "" },
 				mode: "cached",
 				entries: [],
 				bytes: 0,
@@ -639,6 +692,11 @@ export class TranscriptReader {
 					mtimeMs: stat.mtimeMs,
 					ctimeMs: stat.ctimeMs,
 					contentHash: await hashPrefix(handle, completeSize),
+					tailHash: await hashWindow(
+						handle,
+						completeSize - Math.min(completeSize, TRANSCRIPT_FINGERPRINT_BYTES),
+						Math.min(completeSize, TRANSCRIPT_FINGERPRINT_BYTES),
+					),
 				},
 				mode: cacheable ? "cached" : "stream",
 				entries: cacheable ? entries.reverse() : [],

@@ -25,7 +25,10 @@ export type ToolProps = ComponentProps<typeof Collapsible>;
 
 export const Tool = ({ className, ...props }: ToolProps) => (
   <Collapsible
-    className={cn("group not-prose mb-4 w-full rounded-md border", className)}
+    className={cn(
+      "group not-prose mb-2 w-full min-w-0 max-w-full overflow-hidden rounded-md border",
+      className
+    )}
     {...props}
   />
 );
@@ -45,13 +48,13 @@ export type ToolHeaderProps = {
 );
 
 const statusLabels: Record<ToolPart["state"], string> = {
-  "approval-requested": "Awaiting Approval",
-  "approval-responded": "Responded",
-  "input-available": "Running",
-  "input-streaming": "Pending",
-  "output-available": "Completed",
-  "output-denied": "Denied",
-  "output-error": "Error",
+  "approval-requested": "等待批准",
+  "approval-responded": "已响应",
+  "input-available": "执行中",
+  "input-streaming": "等待中",
+  "output-available": "已完成",
+  "output-denied": "已拒绝",
+  "output-error": "出错",
 };
 
 const statusIcons: Record<ToolPart["state"], ReactNode> = {
@@ -85,17 +88,21 @@ export const ToolHeader = ({
   return (
     <CollapsibleTrigger
       className={cn(
-        "flex w-full items-center justify-between gap-4 p-3",
+        "flex min-w-0 max-w-full w-full items-start justify-between gap-2 overflow-hidden px-2 py-1.5",
         className
       )}
       {...props}
     >
-      <div className="flex items-center gap-2">
-        <WrenchIcon className="size-4 text-muted-foreground" />
-        <span className="font-medium text-sm">{title ?? derivedName}</span>
-        {getStatusBadge(state)}
+      <div className="flex min-w-0 flex-1 items-start gap-1.5 text-left">
+        <WrenchIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+        <span className="line-clamp-2 min-w-0 flex-1 break-words font-medium text-sm">
+          {title ?? derivedName}
+        </span>
       </div>
-      <ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+      <div className="flex shrink-0 items-center gap-1">
+        {getStatusBadge(state)}
+        <ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+      </div>
     </CollapsibleTrigger>
   );
 };
@@ -105,7 +112,7 @@ export type ToolContentProps = ComponentProps<typeof CollapsibleContent>;
 export const ToolContent = ({ className, ...props }: ToolContentProps) => (
   <CollapsibleContent
     className={cn(
-      "data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:slide-in-from-top-2 space-y-4 p-4 text-popover-foreground outline-none data-[state=closed]:animate-out data-[state=open]:animate-in",
+      "data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 min-w-0 max-w-full space-y-2 overflow-x-hidden overflow-y-auto p-2 text-popover-foreground outline-none data-[state=closed]:animate-out data-[state=open]:animate-in [&_[data-language]>div]:overflow-x-hidden [&_[data-language] pre]:break-words [&_[data-language] pre]:whitespace-pre-wrap",
       className
     )}
     {...props}
@@ -117,12 +124,15 @@ export type ToolInputProps = ComponentProps<"div"> & {
 };
 
 export const ToolInput = ({ className, input, ...props }: ToolInputProps) => (
-  <div className={cn("space-y-2 overflow-hidden", className)} {...props}>
+  <div className={cn("space-y-1 overflow-hidden", className)} {...props}>
     <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-      Parameters
+      参数
     </h4>
     <div className="rounded-md bg-muted/50">
-      <CodeBlock code={JSON.stringify(input, null, 2)} language="json" />
+      <CodeBlock
+        code={typeof input === "string" ? input : JSON.stringify(input, null, 2) ?? ""}
+        language="json"
+      />
     </div>
   </div>
 );
@@ -153,13 +163,13 @@ export const ToolOutput = ({
   }
 
   return (
-    <div className={cn("space-y-2", className)} {...props}>
+    <div className={cn("space-y-1", className)} {...props}>
       <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-        {errorText ? "Error" : "Result"}
+        {errorText ? "错误" : "结果"}
       </h4>
       <div
         className={cn(
-          "overflow-x-auto rounded-md text-xs [&_table]:w-full",
+          "min-w-0 max-w-full overflow-x-hidden rounded-md text-xs [&_table]:w-full",
           errorText
             ? "bg-destructive/10 text-destructive"
             : "bg-muted/50 text-foreground"

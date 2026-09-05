@@ -138,7 +138,12 @@ describe("CodingAgentRuntimeAdapter", () => {
 			...assistant,
 			assistantMessageEvent: { type: "thinking_delta", delta: "reason" },
 		} as AgentSessionEvent;
+		const assistantStart = {
+			type: "message_start",
+			message: { role: "assistant", content: [] },
+		} as AgentSessionEvent;
 
+		expect(projectRuntimeProgress(assistantStart)).toEqual([{ type: "phase", phase: "turn" }]);
 		expect(projectRuntimeProgress(toolStart)).toEqual([
 			expect.objectContaining({ type: "tool_start", toolCallId: "call-1", name: "read" }),
 		]);
@@ -158,7 +163,7 @@ describe("CodingAgentRuntimeAdapter", () => {
 			{ type: "usage", usage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4 } },
 		]);
 		expect(projectRuntimeProgress({ type: "session_info_changed", name: "x".repeat(2_000) })).toEqual([
-			expect.objectContaining({ type: "status", status: "session_info_changed" }),
+			expect.objectContaining({ type: "status", status: "正在处理" }),
 		]);
 	});
 
@@ -214,6 +219,51 @@ describe("CodingAgentRuntimeAdapter", () => {
 			type: "tool_result",
 			diff: { files: [{ additions: 1, deletions: 1, diff: expect.stringContaining("+new") }] },
 		});
+	});
+
+	it("hides internal Skill expansion from user transcript text", () => {
+		const projected = projectTranscriptItem({
+			entryId: "user-skill",
+			parentId: null,
+			timestamp: "",
+			kind: "message",
+			payload: {
+				type: "message",
+				message: {
+					role: "user",
+					content: [
+						{
+							type: "text",
+							text: '<skill_references>\n  <skill_reference name="demo" location="/tmp/demo/SKILL.md">\n    demo\n  </skill_reference>\n</skill_references>\n\n请按 $[demo] 处理这个任务',
+						},
+					],
+				},
+			},
+		});
+		expect(projected).toEqual({ type: "user", text: "请按 $[demo] 处理这个任务" });
+	});
+
+	it("projects an expanded explicit Skill block without exposing its body", () => {
+		expect(
+			projectTranscriptItem({
+				entryId: "user-explicit-skill",
+				parentId: null,
+				timestamp: "",
+				kind: "message",
+				payload: {
+					type: "message",
+					message: {
+						role: "user",
+						content: [
+							{
+								type: "text",
+								text: '<skill name="demo" location="/tmp/demo/SKILL.md">\n内部 Skill 正文\n</skill>\n\n',
+							},
+						],
+					},
+				},
+			}),
+		).toEqual({ type: "user", text: "" });
 	});
 
 	it("projects persisted Shell results with terminal facts", () => {
@@ -510,6 +560,7 @@ describe("CodingAgentRuntimeAdapter", () => {
 			throw new Error("Expected one listed Session summary");
 		}
 		expect(listed[0].firstMessage).toBe("未命名会话");
+		expect(listed[0].messageCount).toBe(1);
 		expect(listed[0].activity).toBe("completed");
 		const htmlPath = join(tempDir, "session export.html");
 		expect(await runtime.exportSession("../session export.html")).toEqual({ path: htmlPath });
@@ -931,5 +982,7 @@ describe("CodingAgentRuntimeAdapter", () => {
 			authMethods: ["api_key"],
 			builtIn: true,
 		});
+		const listedModels = await adapter.listModels();
+		expect(() => assertWorkspaceCommandResult("list_models", listedModels)).not.toThrow();
 	});
 });

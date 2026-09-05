@@ -8,6 +8,7 @@ export const THINKING_LEVEL_ZH_CN: Record<ThinkingLevel, string> = {
 	high: "高",
 	xhigh: "超高",
 	max: "最大",
+	ultra: "极致",
 };
 
 export function formatThinkingLevel(level: ThinkingLevel | string): string {

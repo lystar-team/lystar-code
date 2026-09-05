@@ -71,6 +71,7 @@ const SETTING_VALUE_ZH_CN: Partial<Record<SettingTextId, Record<string, string>>
 		high: formatThinkingLevel("high"),
 		xhigh: formatThinkingLevel("xhigh"),
 		max: formatThinkingLevel("max"),
+		ultra: formatThinkingLevel("ultra"),
 	},
 	"thinking-display": { activity: "左下角实时显示", transcript: "对话输出中显示" },
 	theme: { dark: "深色", light: "浅色" },

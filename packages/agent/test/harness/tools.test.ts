@@ -162,6 +162,25 @@ class BlockingEditExecutionEnv extends NodeExecutionEnv {
 	}
 }
 
+class ConflictEditExecutionEnv extends NodeExecutionEnv {
+	readCount = 0;
+	writeAttempts = 0;
+
+	override async readTextFile(path: string, abortSignal?: AbortSignal): Promise<Result<string, FileError>> {
+		this.readCount++;
+		if (this.readCount === 2) getOrThrow(await super.writeFile(path, "changed\n"));
+		return super.readTextFile(path, abortSignal);
+	}
+
+	override async writeFile(
+		path: string,
+		content: string | Uint8Array,
+		abortSignal?: AbortSignal,
+	): Promise<Result<void, FileError>> {
+		this.writeAttempts++;
+		return super.writeFile(path, content, abortSignal);
+	}
+}
 class LateOutputExecutionEnv extends NodeExecutionEnv {
 	override async exec(
 		_command: string,
@@ -434,6 +453,33 @@ describe("AgentHarness tools", () => {
 	});
 
 	describe("edit", () => {
+		it("rejects an edit when the target changes before write", async () => {
+			const env = new ConflictEditExecutionEnv({ cwd: createTempDir() });
+			getOrThrow(await env.writeFile("conflict.txt", "alpha\nbeta\n"));
+			env.writeAttempts = 0;
+
+			await expect(
+				createEditTool().execute(
+					"edit-write-conflict",
+					{ path: "conflict.txt", edits: [{ oldText: "alpha", newText: "ALPHA" }] },
+					undefined,
+					undefined,
+					{ env },
+				),
+			).rejects.toMatchObject({
+				code: "WRITE_CONFLICT",
+				category: "stale_state",
+				retryable: false,
+				details: {
+					expectedContentHash: expect.any(String),
+					actualContentHash: expect.any(String),
+				},
+				fingerprintConstraint: { kind: "edit_write_conflict" },
+			});
+			expect(env.writeAttempts).toBe(0);
+			expect(getOrThrow(await env.readTextFile("conflict.txt"))).toBe("changed\n");
+		});
+
 		it("exposes target keys for same-batch mutation conflict detection", () => {
 			const editTool = createEditTool();
 			const writeTool = createWriteTool();
@@ -466,6 +512,23 @@ describe("AgentHarness tools", () => {
 			expect(result.details?.diff).toContain("GAMMA");
 			expect(applyPatch(original, result.details?.patch ?? "")).toBe("ALPHA\nbeta\nGAMMA\ndelta\n");
 			expect(getOrThrow(await context.env.readTextFile("edit.txt"))).toBe("ALPHA\nbeta\nGAMMA\ndelta\n");
+		});
+
+		it("returns an idempotent success for a validated no-op edit", async () => {
+			const context = createContext();
+			const original = "already final\n";
+			getOrThrow(await context.env.writeFile("edit.txt", original));
+
+			const result = await createEditTool().execute(
+				"edit-no-op",
+				{ path: "edit.txt", edits: [{ oldText: "already final", newText: "already final" }] },
+				undefined,
+				undefined,
+				context,
+			);
+
+			expect(textOutput(result)).toBe("No changes needed for edit.txt; the requested content is already present.");
+			expect(getOrThrow(await context.env.readTextFile("edit.txt"))).toBe(original);
 		});
 
 		it("matches all edits against the original and rejects overlaps", async () => {

@@ -136,7 +136,7 @@ function stringSetting(
 	};
 }
 
-const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
 
 export const LYSTAR_SETTINGS_CATALOG: readonly LystarSettingDefinition[] = [
 	stringSetting(

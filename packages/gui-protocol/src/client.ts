@@ -1,5 +1,5 @@
 import { Check } from "typebox/value";
-import { encodeClientMessage, ServerMessageDecoder } from "./framing.ts";
+import { encodeClientMessage, ServerMessageDecoder, TrustedServerMessageDecoder } from "./framing.ts";
 import {
 	assertWorkspaceCommandResult,
 	type Command,
@@ -14,6 +14,7 @@ import {
 	TranscriptPageSchema,
 	WorkspaceCommandResultSchemas,
 } from "./schemas.ts";
+import { createUuid } from "./uuid.ts";
 
 export interface ByteTransport {
 	send(bytes: Uint8Array): Promise<void>;
@@ -38,7 +39,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 /** 只在创建一项用户逻辑写入动作时调用；重试必须复用返回值。 */
 export function createClientRequestId(): string {
-	return globalThis.crypto.randomUUID();
+	return createUuid();
 }
 
 export interface GuiClientSnapshot {
@@ -63,7 +64,7 @@ export class GuiProtocolError extends Error {
 }
 
 export class GuiProtocolClient {
-	private readonly decoder = new ServerMessageDecoder();
+	private readonly decoder: ServerMessageDecoder | TrustedServerMessageDecoder;
 	private readonly pending = new Map<
 		string,
 		{
@@ -86,11 +87,15 @@ export class GuiProtocolClient {
 	private unsubscribeBytes?: () => void;
 	private unsubscribeClose?: () => void;
 	private readonly transport: ByteTransport;
+	private readonly trustedServerMessages: boolean;
+	private closed = false;
 	readonly clientInstanceId: string;
 
-	constructor(transport: ByteTransport, clientInstanceId: string) {
+	constructor(transport: ByteTransport, clientInstanceId: string, options: { trustedServerMessages?: boolean } = {}) {
 		this.transport = transport;
 		this.clientInstanceId = clientInstanceId;
+		this.trustedServerMessages = options.trustedServerMessages === true;
+		this.decoder = options.trustedServerMessages ? new TrustedServerMessageDecoder() : new ServerMessageDecoder();
 	}
 
 	getSnapshot = (): GuiClientSnapshot => this.snapshot;
@@ -127,7 +132,10 @@ export class GuiProtocolClient {
 			if (timeoutMs > 0) {
 				pending.timeout = globalThis.setTimeout(() => {
 					if (!this.pending.delete(id)) return;
-					reject(new Error(options.timeoutMessage ?? `GUI 后台请求超时：${request.command}`));
+					const timeoutError = new Error(options.timeoutMessage ?? `GUI 后台请求超时：${request.command}`);
+					reject(timeoutError);
+					this.handleClose(timeoutError);
+					void this.transport.close().catch(() => {});
 				}, timeoutMs);
 			}
 			this.pending.set(id, pending);
@@ -141,8 +149,18 @@ export class GuiProtocolClient {
 			throw error;
 		}
 		const value = await result;
-		if (request.command === "read_transcript" && Check(TranscriptPageSchema, value)) {
-			this.applyTranscriptPage(request.sessionPath, value);
+		if (request.command === "read_transcript") {
+			if (this.trustedServerMessages) {
+				const page = value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+				if (
+					page &&
+					typeof (page as Record<string, unknown>).transcriptGeneration === "string" &&
+					Number.isInteger((page as Record<string, unknown>).transcriptRevision)
+				)
+					this.applyTranscriptPage(request.sessionPath, value as TranscriptPage);
+			} else if (Check(TranscriptPageSchema, value)) {
+				this.applyTranscriptPage(request.sessionPath, value);
+			}
 		}
 		if (request.command in WorkspaceCommandResultSchemas) {
 			assertWorkspaceCommandResult(request.command as keyof typeof WorkspaceCommandResultSchemas, value);
@@ -247,12 +265,15 @@ export class GuiProtocolClient {
 	}
 
 	private handleClose(error?: Error): void {
+		if (this.closed) return;
+		this.closed = true;
+		const reason = error ?? new Error("GUI 后台连接已关闭");
 		for (const pending of this.pending.values()) {
 			if (pending.timeout) globalThis.clearTimeout(pending.timeout);
-			pending.reject(error ?? new Error("GUI 后台连接已关闭"));
+			pending.reject(reason);
 		}
 		this.pending.clear();
-		this.publish({ connected: false, lastError: error?.message });
+		this.publish({ connected: false, lastError: reason.message });
 	}
 
 	private publish(update?: Partial<Pick<GuiClientSnapshot, "connected" | "hello" | "lastError">>): void {

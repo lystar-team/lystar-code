@@ -1,5 +1,38 @@
 "use client";
 
+import type { ChatStatus, FileUIPart, SourceDocumentUIPart } from "ai";
+import {
+  CornerDownLeftIcon,
+  ImageIcon,
+  Monitor,
+  PlusIcon,
+  SquareIcon,
+  XIcon,
+} from "lucide-react";
+import { nanoid } from "nanoid";
+import type {
+  ChangeEvent,
+  ChangeEventHandler,
+  ClipboardEventHandler,
+  ComponentProps,
+  FormEvent,
+  FormEventHandler,
+  HTMLAttributes,
+  KeyboardEventHandler,
+  PropsWithChildren,
+  ReactNode,
+  RefObject,
+} from "react";
+import {
+  Children,
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Command,
   CommandEmpty,
@@ -40,39 +73,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import type { ChatStatus, FileUIPart, SourceDocumentUIPart } from "ai";
-import {
-  CornerDownLeftIcon,
-  ImageIcon,
-  Monitor,
-  PlusIcon,
-  SquareIcon,
-  XIcon,
-} from "lucide-react";
-import { nanoid } from "nanoid";
-import type {
-  ChangeEvent,
-  ChangeEventHandler,
-  ClipboardEventHandler,
-  ComponentProps,
-  FormEvent,
-  FormEventHandler,
-  HTMLAttributes,
-  KeyboardEventHandler,
-  PropsWithChildren,
-  ReactNode,
-  RefObject,
-} from "react";
-import {
-  Children,
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
 
 // ============================================================================
 // Helpers
@@ -484,6 +484,7 @@ export const PromptInputActionAddScreenshot = ({
 export interface PromptInputMessage {
   text: string;
   files: FileUIPart[];
+  submitMode?: "prompt" | "steer";
 }
 
 export type PromptInputProps = Omit<
@@ -852,6 +853,8 @@ export const PromptInput = ({
             const formData = new FormData(form);
             return (formData.get("message") as string) || "";
           })();
+      const submitter = (event.nativeEvent as SubmitEvent).submitter;
+      const submitMode = submitter?.getAttribute("data-prompt-submit-mode") === "steer" ? "steer" : "prompt";
 
       // Reset form immediately after capturing text to avoid race condition
       // where user input during async blob conversion would be lost
@@ -875,7 +878,10 @@ export const PromptInput = ({
           })
         );
 
-        const result = onSubmit({ files: convertedFiles, text }, event);
+        const result = onSubmit(
+          { files: convertedFiles, text, submitMode },
+          event
+        );
 
         // Handle both sync and async onSubmit
         if (result instanceof Promise) {
@@ -921,6 +927,13 @@ export const PromptInput = ({
         ref={formRef}
         {...props}
       >
+        <button
+          aria-hidden="true"
+          className="hidden"
+          data-prompt-submit-mode="steer"
+          tabIndex={-1}
+          type="submit"
+        />
         <InputGroup className="overflow-hidden">{children}</InputGroup>
       </form>
     </>
@@ -971,6 +984,24 @@ export const PromptInputTextarea = ({
 
       // If the external handler prevented default, don't run internal logic
       if (e.defaultPrevented) {
+        return;
+      }
+
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+        if (isComposing || e.nativeEvent.isComposing) {
+          return;
+        }
+        e.preventDefault();
+
+        const { form } = e.currentTarget;
+        const submitButton = form?.querySelector(
+          'button[data-prompt-submit-mode="steer"]'
+        ) as HTMLButtonElement | null;
+        if (form && submitButton) {
+          form.requestSubmit(submitButton);
+        } else {
+          form?.requestSubmit();
+        }
         return;
       }
 

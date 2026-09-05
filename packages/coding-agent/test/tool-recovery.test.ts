@@ -905,6 +905,52 @@ describe("Tool recovery observe ledger", () => {
 		}
 	});
 
+	it("locates edit recovery evidence around the failed edit anchor", async () => {
+		const harness = await createHarness();
+		try {
+			const lines = Array.from({ length: 420 }, (_, index) => `line ${index + 1}`);
+			lines[349] = "stable target anchor";
+			lines[350] = "current value";
+			writeFileSync(join(harness.tempDir, "target.txt"), `${lines.join("\n")}\n`);
+
+			const activeEdit = harness.agent.state.tools.find((tool) => tool.name === "edit");
+			let directError: unknown;
+			try {
+				await activeEdit?.execute("anchor-failure", {
+					path: "target.txt",
+					edits: [{ oldText: "stable target anchor\nold value", newText: "updated" }],
+				});
+			} catch (error) {
+				directError = error;
+			}
+			expect(directError).toBeInstanceOf(ToolExecutionError);
+			const directHandler = (
+				directError as unknown as {
+					[key: symbol]: (context: Record<string, never>) => Promise<{
+						type: string;
+						replacementResult?: {
+							content: Array<{ type: string; text: string }>;
+							details: Record<string, unknown>;
+						};
+					}>;
+				}
+			)[Symbol.for("pi.toolRecoveryHandler")];
+			expect(directHandler).toBeTypeOf("function");
+
+			const resolution = await directHandler({});
+			const evidence = resolution.replacementResult?.content.map((content) => content.text).join("\n") ?? "";
+			expect(resolution).toMatchObject({ type: "ask_model_to_rebuild" });
+			expect(evidence).toContain("350: stable target anchor");
+			expect(evidence).toContain("351: current value");
+			expect(evidence).not.toContain("1: line 1");
+			expect(resolution.replacementResult?.details).toMatchObject({
+				recovery: { code: "MATCH_NOT_FOUND", failedEditIndex: 0, evidenceLine: 350 },
+			});
+		} finally {
+			harness.cleanup();
+		}
+	});
+
 	it("rebuilds an apply_patch failure through the AgentSession recovery path", async () => {
 		process.env.PI_TOOL_RECOVERY_MODE = "assist";
 		const agentDir = createTempDir();

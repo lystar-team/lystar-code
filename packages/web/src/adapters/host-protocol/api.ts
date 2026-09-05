@@ -1,6 +1,7 @@
 import { createUuid } from "@lystar/code-gui-protocol";
 import type {
 	BootstrapResponse,
+	WebCompletionResult,
 	DirectoryListing,
 	FileResponse,
 	GatewayEvent,
@@ -111,6 +112,18 @@ export class WebApi {
 		return this.request<{ sessions: WebSessionSummary[] }>(`/api/projects/${encodeURIComponent(projectId)}/sessions`);
 	}
 
+	async completions(
+		projectId: string,
+		text: string,
+		cursor: number,
+		sessionId?: string,
+	): Promise<WebCompletionResult> {
+		return this.request<WebCompletionResult>(`/api/projects/${encodeURIComponent(projectId)}/completions`, {
+			method: "POST",
+			body: JSON.stringify({ text, cursor, ...(sessionId ? { sessionId } : {}) }),
+		});
+	}
+
 	async projectTree(projectId: string, path = ""): Promise<ProjectTreeResponse> {
 		const query = path ? `?path=${encodeURIComponent(path)}` : "";
 		return this.request<ProjectTreeResponse>(`/api/projects/${encodeURIComponent(projectId)}/tree${query}`);
@@ -119,6 +132,19 @@ export class WebApi {
 	async projectFile(projectId: string, path: string): Promise<FileResponse> {
 		return this.request<FileResponse>(
 			`/api/projects/${encodeURIComponent(projectId)}/file?path=${encodeURIComponent(path)}`,
+		);
+	}
+
+	async externalFile(path: string): Promise<FileResponse> {
+		return this.request<FileResponse>(`/api/resources/external?path=${encodeURIComponent(path)}`);
+	}
+
+	async readImageContent(
+		sessionId: string,
+		contentRef: string,
+	): Promise<{ contentRef: string; mimeType: string; byteLength: number; data: string }> {
+		return this.request<{ contentRef: string; mimeType: string; byteLength: number; data: string }>(
+			`/api/sessions/${encodeURIComponent(sessionId)}/content/${encodeURIComponent(contentRef)}/image`,
 		);
 	}
 
@@ -271,6 +297,57 @@ export class WebApi {
 		return this.request<ModelsResponse>("/api/models");
 	}
 
+	async modelProvider(input: {
+		provider: string;
+		name?: string;
+		baseUrl: string;
+		api: string;
+		apiKey?: string;
+		catalogProvider?: string;
+		clearCatalogProvider?: boolean;
+	}): Promise<{ providers: ModelsResponse["providers"] }> {
+		return this.request<{ providers: ModelsResponse["providers"] }>("/api/model-providers", {
+			method: "POST",
+			body: JSON.stringify(input),
+		});
+	}
+
+	async providerModel(
+		provider: string,
+		input: {
+			id: string;
+			name?: string;
+			api?: string;
+			baseUrl?: string;
+			reasoning: boolean;
+			thinkingLevelMap?: Partial<
+				Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra", string | null>
+			>;
+			resetOverride?: boolean;
+			input: ("text" | "image")[];
+			contextWindow?: number;
+			maxTokens?: number;
+		},
+	): Promise<{ models: ModelsResponse["models"] }> {
+		return this.request<{ models: ModelsResponse["models"] }>(
+			`/api/model-providers/${encodeURIComponent(provider)}/models`,
+			{
+				method: "POST",
+				body: JSON.stringify(input),
+			},
+		);
+	}
+
+	async syncModelProvider(provider: string): Promise<{ models: ModelsResponse["models"] }> {
+		return this.request<{ models: ModelsResponse["models"] }>(
+			`/api/model-providers/${encodeURIComponent(provider)}/sync`,
+			{
+				method: "POST",
+				body: JSON.stringify({}),
+			},
+		);
+	}
+
 	async settings(sessionId: string): Promise<SettingsResponse> {
 		return this.request<SettingsResponse>(`/api/settings?sessionId=${encodeURIComponent(sessionId)}`);
 	}
@@ -307,6 +384,12 @@ export class WebApi {
 		const socket = new WebSocket(
 			`${protocol}//${location.host}/ws?token=${token}&clientId=${encodeURIComponent(clientId())}`,
 		);
+		let closed = false;
+		const notifyClose = () => {
+			if (closed) return;
+			closed = true;
+			onClose();
+		};
 		socket.addEventListener("message", (message) => {
 			try {
 				onEvent(JSON.parse(String(message.data)) as GatewayEvent);
@@ -314,8 +397,10 @@ export class WebApi {
 				// 网关只发送 JSON；无效消息忽略，下一次快照会重新校准状态。
 			}
 		});
-		socket.addEventListener("close", onClose, { once: true });
-		socket.addEventListener("error", onClose, { once: true });
+		socket.addEventListener("close", notifyClose, { once: true });
+		socket.addEventListener("error", () => {
+			// close 事件负责触发唯一一次重连，避免 error+close 导致重复创建 WebSocket。
+		});
 		return socket;
 	}
 }

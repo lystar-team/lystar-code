@@ -36,6 +36,8 @@ import { deleteSessionWithRecoveryLedger } from "./tool-recovery/ledger.ts";
 export const CURRENT_SESSION_VERSION = 3;
 const ASYNC_SESSION_READ_BUFFER_SIZE = 64 * 1024;
 const SESSION_METADATA_READ_BYTES = 64 * 1024;
+// 会话名称通常在首轮对话结束后写入；只向前扫描首轮，避免恢复会话列表时读取完整历史。
+const SESSION_NAME_SCAN_MAX_BYTES = 16 * 1024 * 1024;
 
 export interface SessionHeader {
 	type: "session";
@@ -206,6 +208,8 @@ export interface SessionInfoCacheEntry {
 	ino: number;
 	includeAllMessagesText: boolean;
 	metadataOnly: boolean;
+	/** metadata-only 列表是否已经确认过首轮会话名称。 */
+	metadataNameResolved?: boolean;
 	info: SessionInfo | null;
 }
 
@@ -719,10 +723,10 @@ export async function loadEntriesFromFileAsync(filePath: string): Promise<FileEn
 
 	const entries: FileEntry[] = [];
 	const handle = await open(resolvedFilePath, "r");
+	let pending = "";
 	try {
 		const decoder = new StringDecoder("utf8");
 		const buffer = Buffer.allocUnsafe(ASYNC_SESSION_READ_BUFFER_SIZE);
-		let pending = "";
 
 		while (true) {
 			const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
@@ -751,10 +755,8 @@ export async function loadEntriesFromFileAsync(filePath: string): Promise<FileEn
 
 	if (entries.length === 0) return entries;
 	const header = entries[0];
-	if (header.type !== "session" || typeof (header as { id?: unknown }).id !== "string") {
-		return [];
-	}
-
+	if (header.type !== "session" || typeof (header as { id?: unknown }).id !== "string") return [];
+	if (pending) appendFileSync(resolvedFilePath, "\n");
 	return entries;
 }
 /**
@@ -917,54 +919,131 @@ function parseMetadataLines(buffer: Buffer, skipFirstLine: boolean, skipLastLine
 	});
 }
 
+interface SessionNameScanResult {
+	resolved: boolean;
+	name?: string;
+}
+
+/**
+ * 在首轮对话范围内查找 session_info。
+ *
+ * metadata-only 列表不能为了标题重新解析完整 Session。名称扩展会在首轮
+ * agent_settled 后写入 session_info，因此遇到第二条用户消息即可结束扫描；
+ * 超过上限则保留原有 firstMessage 回退，避免异常大首轮拖慢列表。
+ */
+async function scanSessionNameFromFirstTurn(filePath: string): Promise<SessionNameScanResult> {
+	const input = createReadStream(filePath, {
+		encoding: "utf8",
+		start: 0,
+		end: SESSION_NAME_SCAN_MAX_BYTES - 1,
+	});
+	const reader = createInterface({ input, crlfDelay: Infinity });
+	let seenUserMessage = false;
+	let name: string | undefined;
+	let foundSessionInfo = false;
+	const finish = (): SessionNameScanResult => ({
+		resolved: foundSessionInfo,
+		...(name ? { name } : {}),
+	});
+	try {
+		for await (const line of reader) {
+			if (line.startsWith('{"type":"session_info"')) {
+				const entry = parseSessionEntryLine(line);
+				if (entry?.type === "session_info") {
+					name = entry.name?.trim() || undefined;
+					foundSessionInfo = true;
+				}
+			}
+			if (!line.startsWith('{"type":"message"') || !line.includes('"message":{"role":"user"')) continue;
+			if (seenUserMessage) return finish();
+			seenUserMessage = true;
+		}
+	} finally {
+		reader.close();
+		input.destroy();
+	}
+	return finish();
+}
+
+interface MetadataOnlySessionInfo {
+	info: SessionInfo | null;
+	nameResolved: boolean;
+}
+
 async function buildMetadataOnlySessionInfo(
 	filePath: string,
 	stats: { size: number; mtimeMs: number },
-): Promise<SessionInfo | null> {
-	const header = readSessionHeaderForDiscovery(filePath);
-	if (!header) return null;
-
+	cached?: SessionInfoCacheEntry,
+): Promise<MetadataOnlySessionInfo> {
 	const rangeLength = Math.min(stats.size, SESSION_METADATA_READ_BYTES);
 	const prefix = Buffer.alloc(rangeLength);
 	const suffixOffset = Math.max(0, stats.size - rangeLength);
 	const suffix = suffixOffset > 0 ? Buffer.alloc(rangeLength) : undefined;
+	let prefixBytesRead = 0;
+	let suffixBytesRead = 0;
 	const handle = await open(filePath, "r");
 	try {
-		await handle.read(prefix, 0, prefix.length, 0);
-		if (suffix) await handle.read(suffix, 0, suffix.length, suffixOffset);
+		prefixBytesRead = (await handle.read(prefix, 0, prefix.length, 0)).bytesRead;
+		if (suffix) suffixBytesRead = (await handle.read(suffix, 0, suffix.length, suffixOffset)).bytesRead;
 	} finally {
 		await handle.close();
 	}
 
+	const prefixEntries = parseMetadataLines(prefix.subarray(0, prefixBytesRead), false, suffixOffset > 0);
+	const header =
+		prefixEntries.find((entry): entry is SessionHeader => entry.type === "session" && typeof entry.id === "string") ??
+		readSessionHeaderForDiscovery(filePath);
+	if (!header) return { info: null, nameResolved: false };
+
 	let name: string | undefined;
+	let nameResolved = false;
 	let firstMessage = "";
 	let lastOutcome: SessionOutcome | undefined;
+	let lastActivityTime: number | undefined;
 	const inspect = (entry: FileEntry): void => {
 		if (entry.type === "session_info") {
 			name = entry.name?.trim() || undefined;
+			nameResolved = true;
 			return;
 		}
 		if (entry.type !== "message") return;
 		lastOutcome = getMessageOutcome(entry.message) ?? lastOutcome;
+		const activityTime = getMessageActivityTime(entry);
+		if (typeof activityTime === "number") lastActivityTime = Math.max(lastActivityTime ?? 0, activityTime);
 		if (firstMessage || !isMessageWithContent(entry.message) || entry.message.role !== "user") return;
 		const textContent = extractTextContent(entry.message);
 		if (textContent) firstMessage = textContent;
 	};
-	for (const entry of parseMetadataLines(prefix, false, suffixOffset > 0)) inspect(entry);
-	if (suffix) for (const entry of parseMetadataLines(suffix, true, false)) inspect(entry);
+	for (const entry of prefixEntries) inspect(entry);
+	if (suffix) for (const entry of parseMetadataLines(suffix.subarray(0, suffixBytesRead), true, false)) inspect(entry);
+
+	if (!nameResolved && cached?.metadataNameResolved) {
+		name = cached.info?.name;
+		nameResolved = true;
+	}
+	if (!nameResolved) {
+		const scanned = await scanSessionNameFromFirstTurn(filePath);
+		if (scanned.resolved) {
+			name = scanned.name;
+			nameResolved = true;
+		}
+	}
 
 	return {
-		path: filePath,
-		id: header.id,
-		cwd: typeof header.cwd === "string" ? header.cwd : "",
-		parentSessionPath: header.parentSession,
-		created: new Date(header.timestamp),
-		modified: new Date(stats.mtimeMs),
-		messageCount: 0,
-		firstMessage: firstMessage || "(no messages)",
-		allMessagesText: "",
-		...(name ? { name } : {}),
-		...(lastOutcome ? { lastOutcome } : {}),
+		info: {
+			path: filePath,
+			id: header.id,
+			cwd: typeof header.cwd === "string" ? header.cwd : "",
+			parentSessionPath: header.parentSession,
+			created: new Date(header.timestamp),
+			modified: typeof lastActivityTime === "number" ? new Date(lastActivityTime) : new Date(stats.mtimeMs),
+			messageCount: 0,
+			firstMessage: firstMessage || "(no messages)",
+			allMessagesText: "",
+			...(nameResolved ? { name: name ?? "" } : {}),
+			...(lastOutcome ? { lastOutcome } : {}),
+		},
+		nameResolved,
 	};
 }
 
@@ -986,7 +1065,7 @@ async function buildSessionInfo(filePath: string, options: SessionListOptions = 
 			return cached.info;
 		}
 		if (metadataOnly) {
-			const info = await buildMetadataOnlySessionInfo(filePath, stats);
+			const result = await buildMetadataOnlySessionInfo(filePath, stats, cached);
 			options.cache?.entries.set(filePath, {
 				size: stats.size,
 				mtimeMs: stats.mtimeMs,
@@ -994,9 +1073,10 @@ async function buildSessionInfo(filePath: string, options: SessionListOptions = 
 				ino: stats.ino,
 				includeAllMessagesText,
 				metadataOnly,
-				info,
+				metadataNameResolved: result.nameResolved,
+				info: result.info,
 			});
-			return info;
+			return result.info;
 		}
 		let header: SessionHeader | null = null;
 		let messageCount = 0;
@@ -1179,6 +1259,21 @@ async function listSessionsFromDir(
 	return sessions;
 }
 
+function deduplicateSessionInfos(sessions: SessionInfo[]): SessionInfo[] {
+	const byId = new Map<string, SessionInfo>();
+	for (const session of sessions) {
+		const existing = byId.get(session.id);
+		if (
+			!existing ||
+			session.modified.getTime() > existing.modified.getTime() ||
+			(session.modified.getTime() === existing.modified.getTime() && session.path < existing.path)
+		) {
+			byId.set(session.id, session);
+		}
+	}
+	return [...byId.values()];
+}
+
 /**
  * Manages conversation sessions as append-only trees stored in JSONL files.
  *
@@ -1218,7 +1313,7 @@ export class SessionManager {
 		sessionFile: string | undefined,
 		persist: boolean,
 		newSessionOptions?: NewSessionOptions,
-		_preloadedFileEntries?: FileEntry[],
+		deferSessionFileInitialization = false,
 	) {
 		this.cwd = resolvePath(cwd);
 		this.sessionDir = normalizePath(sessionDir);
@@ -1228,7 +1323,7 @@ export class SessionManager {
 		}
 
 		if (sessionFile) {
-			this._setSessionFile(sessionFile);
+			if (!deferSessionFileInitialization) this._setSessionFile(sessionFile);
 		} else {
 			this.newSession(newSessionOptions);
 		}
@@ -1287,38 +1382,18 @@ export class SessionManager {
 		if (previousLease !== lease) this._releaseWriterLease(previousLease);
 	}
 
-	private _loadSessionState(
-		sessionFile: string,
-		lease: NonNullable<SessionManager["writerLease"]>,
-	): { sessionId: string; sessionFile: string; fileEntries: FileEntry[]; flushed: boolean } {
-		this._assertWritable(lease);
-		if (!existsSync(sessionFile)) {
-			const timestamp = new Date().toISOString();
-			const sessionId = createSessionId();
-			return {
-				sessionId,
-				sessionFile,
-				fileEntries: [
-					{
-						type: "session",
-						version: CURRENT_SESSION_VERSION,
-						id: sessionId,
-						timestamp,
-						cwd: this.cwd,
-					},
-				],
-				flushed: false,
-			};
-		}
-
-		const fileEntries = loadEntriesFromFile(sessionFile);
-		if (fileEntries.length === 0) {
-			if (statSync(sessionFile).size > 0) {
-				throw new Error(`Session file is not a valid pi session: ${sessionFile}`);
-			}
-			const timestamp = new Date().toISOString();
-			const sessionId = createSessionId();
-			const entries: FileEntry[] = [
+	private _createNewSessionState(sessionFile: string): {
+		sessionId: string;
+		sessionFile: string;
+		fileEntries: FileEntry[];
+		flushed: boolean;
+	} {
+		const timestamp = new Date().toISOString();
+		const sessionId = createSessionId();
+		return {
+			sessionId,
+			sessionFile,
+			fileEntries: [
 				{
 					type: "session",
 					version: CURRENT_SESSION_VERSION,
@@ -1326,17 +1401,46 @@ export class SessionManager {
 					timestamp,
 					cwd: this.cwd,
 				},
-			];
-			writeSessionEntriesAtomically(sessionFile, entries);
-			return { sessionId, sessionFile, fileEntries: entries, flushed: true };
+			],
+			flushed: false,
+		};
+	}
+
+	private _loadSessionStateFromEntries(
+		sessionFile: string,
+		fileEntries: FileEntry[],
+	): { sessionId: string; sessionFile: string; fileEntries: FileEntry[]; flushed: boolean } {
+		if (fileEntries.length === 0) {
+			if (statSync(sessionFile).size > 0) {
+				throw new Error(`Session file is not a valid pi session: ${sessionFile}`);
+			}
+			const state = this._createNewSessionState(sessionFile);
+			writeSessionEntriesAtomically(sessionFile, state.fileEntries);
+			return { ...state, flushed: true };
 		}
 
 		const header = fileEntries.find((entry) => entry.type === "session") as SessionHeader | undefined;
 		const sessionId = header?.id ?? createSessionId();
-		if (migrateToCurrentVersion(fileEntries)) {
-			writeSessionEntriesAtomically(sessionFile, fileEntries);
-		}
+		if (migrateToCurrentVersion(fileEntries)) writeSessionEntriesAtomically(sessionFile, fileEntries);
 		return { sessionId, sessionFile, fileEntries, flushed: true };
+	}
+
+	private _loadSessionState(
+		sessionFile: string,
+		lease: NonNullable<SessionManager["writerLease"]>,
+	): { sessionId: string; sessionFile: string; fileEntries: FileEntry[]; flushed: boolean } {
+		this._assertWritable(lease);
+		if (!existsSync(sessionFile)) return this._createNewSessionState(sessionFile);
+		return this._loadSessionStateFromEntries(sessionFile, loadEntriesFromFile(sessionFile));
+	}
+
+	private async _loadSessionStateAsync(
+		sessionFile: string,
+		lease: NonNullable<SessionManager["writerLease"]>,
+	): Promise<{ sessionId: string; sessionFile: string; fileEntries: FileEntry[]; flushed: boolean }> {
+		this._assertWritable(lease);
+		if (!existsSync(sessionFile)) return this._createNewSessionState(sessionFile);
+		return this._loadSessionStateFromEntries(sessionFile, await loadEntriesFromFileAsync(sessionFile));
 	}
 
 	/** Switch to a different session file (used for resume and branching) */
@@ -1357,6 +1461,25 @@ export class SessionManager {
 		const lease = this._acquireWriterLease(canonicalFile);
 		try {
 			this._adoptState(this._loadSessionState(lease.sessionPath, lease), lease);
+		} catch (error) {
+			this._releaseWriterLease(lease);
+			throw error;
+		}
+	}
+
+	private async _setSessionFileAsync(sessionFile: string): Promise<void> {
+		const requestedFile = resolvePath(sessionFile);
+		const canonicalFile = canonicalizeSessionPath(requestedFile);
+		if (this.writerLease && canonicalFile === this.writerLease.sessionPath) {
+			this._assertWritable();
+			const state = await this._loadSessionStateAsync(canonicalFile, this.writerLease);
+			this._adoptState(state, this.writerLease);
+			return;
+		}
+
+		const lease = this._acquireWriterLease(canonicalFile);
+		try {
+			this._adoptState(await this._loadSessionStateAsync(lease.sessionPath, lease), lease);
 		} catch (error) {
 			this._releaseWriterLease(lease);
 			throw error;
@@ -2008,7 +2131,7 @@ export class SessionManager {
 		const cwd = cwdOverride ?? (header ? getSessionHeaderCwd(header) : undefined) ?? process.cwd();
 		// If no sessionDir provided, derive from file's parent directory
 		const dir = sessionDir ? normalizePath(sessionDir) : resolve(resolvedPath, "..");
-		return new SessionManager(cwd, dir, resolvedPath, true, undefined, preloadedFileEntries);
+		return new SessionManager(cwd, dir, resolvedPath, true, undefined);
 	}
 
 	/**
@@ -2016,12 +2139,22 @@ export class SessionManager {
 	 */
 	static async openAsync(path: string, sessionDir?: string, cwdOverride?: string): Promise<SessionManager> {
 		const resolvedPath = resolvePath(path);
-		const preloadedFileEntries = await loadEntriesFromFileAsync(resolvedPath);
-		const header = preloadedFileEntries[0];
-		const cwd =
-			cwdOverride ?? (header?.type === "session" ? getSessionHeaderCwd(header) : undefined) ?? process.cwd();
+		let header: SessionHeader | null = null;
+		if (cwdOverride === undefined && existsSync(resolvedPath)) {
+			try {
+				header = readSessionHeader(resolvedPath);
+			} catch (error) {
+				if (!(error instanceof SessionHeaderScanLimitError)) throw error;
+				const preloadedFileEntries = await loadEntriesFromFileAsync(resolvedPath);
+				const firstEntry = preloadedFileEntries[0];
+				header = firstEntry?.type === "session" ? firstEntry : null;
+			}
+		}
+		const cwd = cwdOverride ?? (header ? getSessionHeaderCwd(header) : undefined) ?? process.cwd();
 		const dir = sessionDir ? normalizePath(sessionDir) : resolve(resolvedPath, "..");
-		return new SessionManager(cwd, dir, resolvedPath, true, undefined, preloadedFileEntries);
+		const sessionManager = new SessionManager(cwd, dir, resolvedPath, true, undefined, true);
+		await sessionManager._setSessionFileAsync(resolvedPath);
+		return sessionManager;
 	}
 
 	/**
@@ -2201,8 +2334,10 @@ export class SessionManager {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
 		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
 		const resolvedCwd = resolvePath(cwd);
-		const sessions = (await listSessionsFromDir(dir, onProgress, 0, undefined, options)).filter(
-			(session) => !filterCwd || sessionCwdMatches(session.cwd, resolvedCwd),
+		const sessions = deduplicateSessionInfos(
+			(await listSessionsFromDir(dir, onProgress, 0, undefined, options)).filter(
+				(session) => !filterCwd || sessionCwdMatches(session.cwd, resolvedCwd),
+			),
 		);
 		sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
 		return sessions;
@@ -2222,7 +2357,7 @@ export class SessionManager {
 			typeof sessionDirOrOnProgress === "string" ? normalizePath(sessionDirOrOnProgress) : undefined;
 		const progress = typeof sessionDirOrOnProgress === "function" ? sessionDirOrOnProgress : onProgress;
 		if (customSessionDir) {
-			const sessions = await listSessionsFromDir(customSessionDir, progress);
+			const sessions = deduplicateSessionInfos(await listSessionsFromDir(customSessionDir, progress));
 			sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
 			return sessions;
 		}
@@ -2267,8 +2402,9 @@ export class SessionManager {
 				}
 			}
 
-			sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
-			return sessions;
+			const uniqueSessions = deduplicateSessionInfos(sessions);
+			uniqueSessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
+			return uniqueSessions;
 		} catch {
 			return [];
 		}

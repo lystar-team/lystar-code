@@ -14,6 +14,7 @@ const STABLE_FAILURES = {
 	TARGET_NOT_FOUND: { category: "precondition", retryable: false },
 	MATCH_NOT_FOUND: { category: "precondition", retryable: false },
 	MATCH_AMBIGUOUS: { category: "precondition", retryable: false },
+	EDIT_OVERLAP: { category: "precondition", retryable: false },
 	NO_CHANGE: { category: "precondition", retryable: false },
 	PATCH_PARSE_ERROR: { category: "arguments", retryable: false },
 	PATCH_TARGET_NOT_FOUND: { category: "precondition", retryable: false },

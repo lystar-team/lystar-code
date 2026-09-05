@@ -88,7 +88,7 @@ export interface RuntimeSession {
 	setModel(model: ModelRef): Promise<void>;
 	setThinkingLevel(level: ThinkingLevel): Promise<void>;
 	cycleModel(direction: "forward" | "backward"): Promise<{ changed: boolean; isScoped: boolean }>;
-	cycleThinkingLevel(): { changed: boolean; supported: boolean };
+	cycleThinkingLevel(): Promise<{ changed: boolean; supported: boolean }>;
 	fork(entryId: string, position?: "before" | "at"): Promise<{ sessionPath: string; selectedText?: string }>;
 	abort(): Promise<void>;
 	reloadResources(): Promise<void>;
@@ -121,6 +121,9 @@ export interface ModelSummary {
 	contextWindow: number;
 	maxTokens: number;
 	cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+	thinkingLevelMap?: Partial<Record<ThinkingLevel, string | null>>;
+	capabilitiesPending?: boolean;
+	hasOverrides?: boolean;
 	supportedThinkingLevels: ThinkingLevel[];
 	authenticated: boolean;
 	authMethods: AuthType[];
@@ -130,12 +133,15 @@ export interface ModelSummary {
 export interface ModelProviderSummary {
 	id: string;
 	name: string;
+	api?: string;
+	baseUrl?: string;
 	authenticated: boolean;
 	authMethods: AuthType[];
 	authSource?: string;
 	modelCount: number;
 	builtIn: boolean;
 	custom: boolean;
+	catalogProvider?: string;
 }
 
 export interface ModelProviderInput {
@@ -143,6 +149,9 @@ export interface ModelProviderInput {
 	name?: string;
 	baseUrl: string;
 	api: string;
+	apiKey?: string;
+	catalogProvider?: string;
+	clearCatalogProvider?: boolean;
 }
 
 export interface ProviderModelInput {
@@ -153,6 +162,8 @@ export interface ProviderModelInput {
 	baseUrl?: string;
 	reasoning: boolean;
 	input: ("text" | "image")[];
+	thinkingLevelMap?: Partial<Record<ThinkingLevel, string | null>>;
+	resetOverride?: boolean;
 	contextWindow?: number;
 	maxTokens?: number;
 }
@@ -176,11 +187,12 @@ export interface RuntimeAdapter {
 	inspectSession(sessionPath: string): SessionStateSnapshot;
 	isSessionWriterLocked(sessionPath: string): boolean;
 	deleteSession(sessionPath: string): Promise<void>;
-	listSessions(cwd: string): Promise<SessionSummaryBase[]>;
+	listSessions(cwd: string, options?: { metadataOnly?: boolean }): Promise<SessionSummaryBase[]>;
 	listModels(): Promise<ModelSummary[]>;
 	listModelProviders(): Promise<ModelProviderSummary[]>;
 	addModelProvider(input: ModelProviderInput): Promise<ModelProviderSummary[]>;
 	addProviderModel(input: ProviderModelInput): Promise<ModelSummary[]>;
+	syncModelProvider(provider: string): Promise<ModelSummary[]>;
 	loginModelProvider(
 		provider: string,
 		authType: AuthType,

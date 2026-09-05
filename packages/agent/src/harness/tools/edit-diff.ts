@@ -346,17 +346,6 @@ function getEmptyOldTextError(path: string, editIndex: number, totalEdits: numbe
 	return new Error(`edits[${editIndex}].oldText must not be empty in ${path}.`);
 }
 
-function getNoChangeError(path: string, totalEdits: number): Error {
-	if (totalEdits === 1) {
-		return new Error(
-			`No changes made to ${path}. The replacement produced identical content.\nNo changes were written. Re-read the target region and confirm whether the requested change already exists.`,
-		);
-	}
-	return new Error(
-		`No changes made to ${path}. The replacements produced identical content.\nNo changes were written. Re-read the target regions and confirm whether the requested changes already exist.`,
-	);
-}
-
 function findEditMatch(
 	content: string,
 	oldText: string,
@@ -434,10 +423,6 @@ export function applyEditsToNormalizedContent(
 
 	const baseContent = normalizedContent;
 	const newContent = applyReplacements(normalizedContent, matchedEdits);
-
-	if (baseContent === newContent) {
-		throw getNoChangeError(path, normalizedEdits.length);
-	}
 
 	return { baseContent, newContent };
 }

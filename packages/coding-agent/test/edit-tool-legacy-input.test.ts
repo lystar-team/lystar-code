@@ -54,6 +54,18 @@ describe("edit tool prepareArguments", () => {
 		});
 	});
 
+	it("normalizes a single edit object inside edits", () => {
+		const definition = createEditToolDefinition(process.cwd());
+		const prepared = definition.prepareArguments!({
+			path: "file.txt",
+			edits: { oldText: "a", newText: "b" },
+		});
+		expect(prepared).toEqual({
+			path: "file.txt",
+			edits: [{ oldText: "a", newText: "b" }],
+		});
+	});
+
 	it("passes through valid input unchanged", () => {
 		const definition = createEditToolDefinition(process.cwd());
 		const input = {
@@ -95,6 +107,18 @@ describe("edit tool stringified edits", () => {
 		const prepared = definition.prepareArguments!({
 			path: "file.txt",
 			edits: JSON.stringify([{ oldText: "a", newText: "b" }]),
+		});
+		expect(prepared).toEqual({
+			path: "file.txt",
+			edits: [{ oldText: "a", newText: "b" }],
+		});
+	});
+
+	it("parses a single edit object from a JSON string", () => {
+		const definition = createEditToolDefinition(process.cwd());
+		const prepared = definition.prepareArguments!({
+			path: "file.txt",
+			edits: JSON.stringify({ oldText: "a", newText: "b" }),
 		});
 		expect(prepared).toEqual({
 			path: "file.txt",

@@ -1,16 +1,19 @@
-import type { SessionProgress, TranscriptItem } from "@lystar/code-gui-protocol";
+import type { SessionProgress } from "@lystar/code-gui-protocol";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UnauthorizedError, webApi } from "../adapters/host-protocol/api.ts";
 import type {
 	GatewayEvent,
 	ProjectTreeResponse,
 	UiRequestEvent,
+	WebLease,
+	WebModelProviderInput,
 	WebOperation,
 	WebProject,
+	WebProviderModelInput,
 	WebSessionSnapshot,
 	WebSessionSummary,
+	WebTranscriptItem,
 } from "../types.ts";
-
 export type InspectorMode = "runs" | "files" | "tree" | "git";
 export type ComposerMode = "prompt" | "steer" | "follow-up";
 export type ThemeMode = "system" | "light" | "dark";
@@ -19,14 +22,46 @@ export type SettingsTab = "appearance" | "models" | "diagnostics" | "about";
 export interface LiveTool {
 	id: string;
 	name: string;
+	batchId: string;
 	summary: string;
+	result?: string;
 	status: "running" | "success" | "error";
 	diff?: {
 		files: Array<{ path?: string; operation?: string; additions?: number; deletions?: number; diff?: string }>;
 	};
 }
 
-export type WorkbenchTranscriptItem = TranscriptItem & { renderId: string };
+export type LiveTurnItem =
+	| { id: string; kind: "text"; text: string }
+	| { id: string; kind: "thinking"; text: string }
+	| { id: string; kind: "tools"; batchId: string; toolIds: string[] };
+
+function appendLiveTextBlock(
+	items: LiveTurnItem[],
+	kind: "text" | "thinking",
+	text: string,
+	id: string,
+): LiveTurnItem[] {
+	const last = items.at(-1);
+	if (last?.kind === kind) return [...items.slice(0, -1), { ...last, text: last.text + text }];
+	return [...items, { id, kind, text }];
+}
+
+function appendLiveToolBlock(items: LiveTurnItem[], batchId: string, toolCallId: string, id: string): LiveTurnItem[] {
+	const last = items.at(-1);
+	if (last?.kind === "tools" && last.batchId === batchId) {
+		if (last.toolIds.includes(toolCallId)) return items;
+		return [...items.slice(0, -1), { ...last, toolIds: [...last.toolIds, toolCallId] }];
+	}
+	return [...items, { id, kind: "tools", batchId, toolIds: [toolCallId] }];
+}
+
+interface GitFileDiffStats {
+	additions: number;
+	deletions: number;
+}
+
+export type WorkbenchTranscriptItem = WebTranscriptItem & { renderId: string };
 
 export interface WorkbenchState {
 	loading: boolean;
@@ -54,6 +89,8 @@ export interface WorkbenchState {
 	liveText: string;
 	liveThinking: string;
 	liveTools: Record<string, LiveTool>;
+	liveTurnItems: LiveTurnItem[];
+	unreadSessionIds: Record<string, true>;
 	statusText: string;
 	pendingUiRequests: UiRequestEvent[];
 	inspectorOpen: boolean;
@@ -74,9 +111,12 @@ export interface WorkbenchState {
 			conflicted: boolean;
 		}>;
 	};
+	gitFileStats: Record<string, GitFileDiffStats>;
 	gitDiff?: { path?: string; staged: boolean; diff: string; additions: number; deletions: number };
 	gitLoading: boolean;
 	fileTree?: ProjectTreeResponse;
+	fileTreeRootPath?: string;
+	fileTreeCache: Record<string, ProjectTreeResponse>;
 	fileTreeLoading: boolean;
 	filePath?: string;
 	fileContent?: {
@@ -117,6 +157,11 @@ export interface WorkbenchState {
 		input: ("text" | "image")[];
 		contextWindow: number;
 		maxTokens: number;
+		thinkingLevelMap?: Partial<
+			Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra", string | null>
+		>;
+		capabilitiesPending?: boolean;
+		hasOverrides?: boolean;
 		supportedThinkingLevels: string[];
 		authenticated: boolean;
 		authMethods: string[];
@@ -125,13 +170,19 @@ export interface WorkbenchState {
 	providers: Array<{
 		id: string;
 		name: string;
+		api?: string;
+		baseUrl?: string;
 		authenticated: boolean;
 		authMethods: string[];
 		authSource?: string;
 		modelCount: number;
 		builtIn: boolean;
 		custom: boolean;
+		catalogProvider?: string;
 	}>;
+	hiddenModelProviders: string[];
+	modelSettingsLoading: boolean;
+	modelSettingsError?: string;
 	about?: Record<string, unknown>;
 	diagnostics?: Record<string, unknown>;
 	projectTrust?: { cwd: string; trusted: boolean | null; reason: string; resourceRisk: boolean };
@@ -141,12 +192,25 @@ export interface WorkbenchState {
 }
 
 const THEME_KEY = "lystar.web.theme";
+const MODEL_PROVIDER_VISIBILITY_KEY = "lystar.web.model-provider-visibility.v2";
 const ACTIVE_OPERATION_STATUSES = new Set(["accepted", "running", "waiting_for_input"]);
+const TERMINAL_OPERATION_STATUSES = new Set(["completed", "failed", "aborted", "interrupted"]);
+const THINKING_DISPLAY_HOLD_MS = 1500;
 
 function savedTheme(): ThemeMode {
 	if (typeof window === "undefined") return "system";
 	const value = window.localStorage.getItem(THEME_KEY);
 	return value === "light" || value === "dark" ? value : "system";
+}
+
+function savedHiddenModelProviders(): string[] {
+	if (typeof window === "undefined") return [];
+	try {
+		const value: unknown = JSON.parse(window.localStorage.getItem(MODEL_PROVIDER_VISIBILITY_KEY) ?? "[]");
+		return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+	} catch {
+		return [];
+	}
 }
 
 function applyTheme(theme: ThemeMode): void {
@@ -172,7 +236,7 @@ function eventIsObject(value: unknown): value is Record<string, unknown> {
 	return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-function transcriptViewIdentity(item: TranscriptItem): string {
+function transcriptViewIdentity(item: WebTranscriptItem): string {
 	const view = item.view;
 	if (!view) return item.kind;
 	if (view.type === "tool_call") return `${view.type}:${view.calls.map((call) => call.id).join(",")}`;
@@ -180,7 +244,7 @@ function transcriptViewIdentity(item: TranscriptItem): string {
 	return view.type;
 }
 
-function decorateTranscriptItems(items: readonly TranscriptItem[]): WorkbenchTranscriptItem[] {
+function decorateTranscriptItems(items: readonly WebTranscriptItem[]): WorkbenchTranscriptItem[] {
 	const occurrences = new Map<string, number>();
 	return items.map((item) => {
 		const base = `${item.entryId}:${transcriptViewIdentity(item)}`;
@@ -192,7 +256,7 @@ function decorateTranscriptItems(items: readonly TranscriptItem[]): WorkbenchTra
 
 function replaceTranscriptEntries(
 	current: readonly WorkbenchTranscriptItem[],
-	incoming: readonly TranscriptItem[],
+	incoming: readonly WebTranscriptItem[],
 	prepend = false,
 ): WorkbenchTranscriptItem[] {
 	const incomingEntryIds = new Set(incoming.map((item) => item.entryId));
@@ -208,8 +272,113 @@ function operationForSession(operations: WebOperation[], sessionId: string | und
 		.sort((left, right) => right.updatedAt - left.updatedAt)[0];
 }
 
-export function transcriptText(item: TranscriptItem): string {
+function mergeSessionSummaries(
+	current: readonly WebSessionSummary[],
+	incoming: readonly WebSessionSummary[],
+): WebSessionSummary[] {
+	const incomingById = new Map(incoming.map((session) => [session.id, session]));
+	const currentIds = new Set(current.map((session) => session.id));
+	return [
+		...current.flatMap((session) => {
+			const next = incomingById.get(session.id);
+			if (!next) return [];
+			if (Object.prototype.hasOwnProperty.call(next, "name")) return [next];
+			return [session.name?.trim() ? { ...next, name: session.name } : next];
+		}),
+		...incoming.filter((session) => !currentIds.has(session.id)),
+	];
+}
+
+function updateSessionSummaryName(
+	projects: readonly WebProject[],
+	sessionId: string,
+	name: string | undefined,
+): WebProject[] {
+	const normalizedName = name?.trim();
+	return projects.map((project) => ({
+		...project,
+		sessions: project.sessions.map((session) => {
+			if (session.id !== sessionId) return session;
+			const { name: _name, ...withoutName } = session;
+			return normalizedName ? { ...withoutName, name: normalizedName } : withoutName;
+		}),
+	}));
+}
+
+function mergeProjectSessions(current: readonly WebProject[], incoming: readonly WebProject[]): WebProject[] {
+	const currentById = new Map(current.map((project) => [project.id, project]));
+	return incoming.map((project) => {
+		const previous = currentById.get(project.id);
+		return previous ? { ...project, sessions: mergeSessionSummaries(previous.sessions, project.sessions) } : project;
+	});
+}
+
+function updateSessionActivity(
+	projects: readonly WebProject[],
+	sessionId: string,
+	activity: WebSessionSummary["activity"],
+	operationUpdatedAt?: number,
+): WebProject[] {
+	return projects.map((project) => ({
+		...project,
+		sessions: project.sessions.map((session) =>
+			session.id === sessionId
+				? { ...session, activity, ...(operationUpdatedAt === undefined ? {} : { operationUpdatedAt }) }
+				: session,
+		),
+	}));
+}
+
+function sessionActivityFromProgress(progress: SessionProgress): "running" | "waiting_for_input" | "idle" | undefined {
+	switch (progress.type) {
+		case "phase":
+			return progress.phase === "waiting_for_input" ? "waiting_for_input" : progress.phase === "idle" ? "idle" : "running";
+		case "compaction":
+			return progress.status === "running" || progress.status === "waiting_retry" ? "running" : undefined;
+		case "retry":
+			return progress.status === "running" || progress.status === "waiting" ? "running" : undefined;
+		case "assistant_delta":
+		case "thinking_delta":
+		case "tool_start":
+		case "tool_update":
+		case "tool_end":
+		case "user_message":
+		case "bash":
+			return "running";
+		case "queue_update":
+		case "status":
+		case "usage":
+			return undefined;
+	}
+}
+
+export function transcriptText(item: WebTranscriptItem): string {
 	return item.view && "text" in item.view ? item.view.text : "";
+}
+
+function parseGitDiffStats(diff: string): Map<string, GitFileDiffStats> {
+	const stats = new Map<string, GitFileDiffStats>();
+	let currentPath: string | undefined;
+	for (const line of diff.split("\n")) {
+		const match = /^diff --git a\/(.+) b\/(.+)$/u.exec(line) ?? /^diff --git "a\/(.+)" "b\/(.+)"$/u.exec(line);
+		if (match) {
+			currentPath = match[2];
+			stats.set(currentPath, { additions: 0, deletions: 0 });
+			continue;
+		}
+		if (!currentPath) continue;
+		const entry = stats.get(currentPath);
+		if (!entry) continue;
+		if (line.startsWith("+") && !line.startsWith("+++")) entry.additions += 1;
+		else if (line.startsWith("-") && !line.startsWith("---")) entry.deletions += 1;
+	}
+	return stats;
+}
+
+function textLineCount(content: string): number {
+	if (!content) return 0;
+	const lines = content.split(/\r\n?|\n/gu);
+	return content.endsWith("\n") || content.endsWith("\r") ? lines.length - 1 : lines.length;
 }
 
 function initialState(): WorkbenchState {
@@ -233,12 +402,17 @@ function initialState(): WorkbenchState {
 		liveText: "",
 		liveThinking: "",
 		liveTools: {},
+		liveTurnItems: [],
+		unreadSessionIds: {},
+		gitFileStats: {},
 		statusText: "",
 		pendingUiRequests: [],
 		inspectorOpen: typeof window !== "undefined" && window.matchMedia("(min-width: 1280px)").matches,
 		inspectorMode: "runs",
 		gitLoading: false,
 		fileTreeLoading: false,
+		fileTreeRootPath: undefined,
+		fileTreeCache: {},
 		fileLoading: false,
 		sessionTree: [],
 		sessionTreeLoading: false,
@@ -247,6 +421,8 @@ function initialState(): WorkbenchState {
 		settingsTab: "appearance",
 		models: [],
 		providers: [],
+		hiddenModelProviders: savedHiddenModelProviders(),
+		modelSettingsLoading: false,
 		theme: savedTheme(),
 		composerMode: "prompt",
 	};
@@ -258,13 +434,20 @@ export function useWorkbench() {
 	stateRef.current = state;
 	const mountedRef = useRef(true);
 	const socketRef = useRef<WebSocket | undefined>(undefined);
+	const streamGenerationRef = useRef(0);
 	const reconnectTimerRef = useRef<number | undefined>(undefined);
 	const transcriptTimerRef = useRef<number | undefined>(undefined);
+	const thinkingClearTimerRef = useRef<number | undefined>(undefined);
+	const liveToolBatchRef = useRef(0);
+	const liveTurnItemRef = useRef(0);
 	const transcriptRequestRef = useRef(0);
+	const fileRequestRef = useRef(0);
 	const projectRefreshRef = useRef(new Map<string, { promise: Promise<void>; rerun: boolean }>());
 	const projectRefreshSuppressedUntilRef = useRef(new Map<string, number>());
 	const toastTimerRef = useRef<number | undefined>(undefined);
 	const selectionRef = useRef(0);
+	const selectionInFlightRef = useRef<string | undefined>(undefined);
+	const initializePromiseRef = useRef<Promise<void> | undefined>(undefined);
 	const selectSessionRef = useRef<(sessionId: string) => Promise<void>>(async () => {});
 	const loadSessionTreeRef = useRef<() => Promise<void>>(async () => {});
 	const loadProjectTrustRef = useRef<() => Promise<void>>(async () => {});
@@ -276,6 +459,25 @@ export function useWorkbench() {
 		setState(next);
 		return next;
 	}, []);
+
+	const cancelThinkingClear = useCallback(() => {
+		if (thinkingClearTimerRef.current) {
+			window.clearTimeout(thinkingClearTimerRef.current);
+			thinkingClearTimerRef.current = undefined;
+		}
+	}, []);
+	const scheduleThinkingClear = useCallback(() => {
+		if (!stateRef.current.liveThinking) return;
+		cancelThinkingClear();
+		thinkingClearTimerRef.current = window.setTimeout(() => {
+			thinkingClearTimerRef.current = undefined;
+			updateState((current) => ({
+				...current,
+				liveThinking: "",
+				liveTurnItems: current.liveTurnItems.filter((item) => item.kind !== "thinking"),
+			}));
+		}, THINKING_DISPLAY_HOLD_MS);
+	}, [cancelThinkingClear, updateState]);
 
 	const currentProject = useMemo(
 		() => state.projects.find((project) => project.id === state.currentProjectId),
@@ -318,22 +520,35 @@ export function useWorkbench() {
 			connection: { connected: boolean; host: string; productVersion?: string };
 			pendingUiRequests: UiRequestEvent[];
 			operations: WebOperation[];
+			leases?: Array<{ sessionId: string; lease: WebLease }>;
 		}) => {
-			updateState((current) => ({
-				...current,
-				projects: data.projects,
-				operations: data.operations,
-				pendingUiRequests: data.pendingUiRequests,
-				connected: data.connection.connected,
-				connectionError: "",
-				reconnecting: false,
-				authRequired: false,
-				currentProjectId:
-					current.currentProjectId && data.projects.some((project) => project.id === current.currentProjectId)
-						? current.currentProjectId
-						: undefined,
-				currentOperation: operationForSession(data.operations, current.sessionId),
-			}));
+			updateState((current) => {
+				const restoredLease = current.sessionId
+					? data.leases?.find((entry) => entry.sessionId === current.sessionId)?.lease
+					: undefined;
+				const nextLease = data.leases === undefined ? current.lease : restoredLease;
+				const projects = mergeProjectSessions(current.projects, data.projects);
+				return {
+					...current,
+					projects:
+						current.session
+							? updateSessionSummaryName(projects, current.sessionId!, current.session.name)
+							: projects,
+					operations: data.operations,
+					pendingUiRequests: data.pendingUiRequests,
+					connected: data.connection.connected,
+					connectionError: "",
+					reconnecting: false,
+					authRequired: false,
+					lease: nextLease,
+					readOnly: current.sessionId ? nextLease === undefined : current.readOnly,
+					currentProjectId:
+						current.currentProjectId && data.projects.some((project) => project.id === current.currentProjectId)
+							? current.currentProjectId
+							: undefined,
+					currentOperation: operationForSession(data.operations, current.sessionId),
+				};
+			});
 		},
 		[updateState],
 	);
@@ -358,7 +573,9 @@ export function useWorkbench() {
 					const result = await webApi.projectSessions(projectId);
 					updateState((current) => {
 						const projects = current.projects.map((project) =>
-							project.id === projectId ? { ...project, sessions: result.sessions } : project,
+							project.id === projectId
+								? { ...project, sessions: mergeSessionSummaries(project.sessions, result.sessions) }
+								: project,
 						);
 						const sessionStillExists = result.sessions.some((session) => session.id === current.sessionId);
 						return {
@@ -404,7 +621,7 @@ export function useWorkbench() {
 				);
 			}
 			try {
-				const result = await webApi.transcript(sessionId, { cursor, limit: 120 });
+				const result = await webApi.transcript(sessionId, { cursor, limit: 40 });
 				if (requestId !== transcriptRequestRef.current || stateRef.current.sessionId !== sessionId) return;
 				updateState((current) => ({
 					...current,
@@ -434,7 +651,12 @@ export function useWorkbench() {
 
 	const scheduleTranscriptRefresh = useCallback(
 		(sessionId = stateRef.current.sessionId) => {
-			if (!sessionId) return;
+			if (
+				!sessionId ||
+				selectionInFlightRef.current === sessionId ||
+				(stateRef.current.transcriptLoading && stateRef.current.statusText === "正在打开会话")
+			)
+				return;
 			if (transcriptTimerRef.current) window.clearTimeout(transcriptTimerRef.current);
 			transcriptTimerRef.current = window.setTimeout(
 				() => void loadTranscript(sessionId).catch((error) => showToast(errorMessage(error))),
@@ -446,15 +668,45 @@ export function useWorkbench() {
 
 	const applyProgress = useCallback(
 		(progress: SessionProgress) => {
+			if (
+				progress.type === "assistant_delta" ||
+				progress.type === "user_message" ||
+				progress.type === "tool_start"
+			) {
+				scheduleThinkingClear();
+			} else if (progress.type === "thinking_delta") {
+				cancelThinkingClear();
+			}
 			updateState((current) => {
 				switch (progress.type) {
 					case "assistant_delta":
-						return { ...current, liveText: current.liveText + progress.text, statusText: "正在生成回复" };
+						return {
+							...current,
+							liveText: current.liveText + progress.text,
+							liveTurnItems: appendLiveTextBlock(
+								current.liveTurnItems,
+								"text",
+								progress.text,
+								`live-turn:${liveTurnItemRef.current++}`,
+							),
+							statusText: "正在生成回复",
+						};
 					case "thinking_delta":
-						return { ...current, liveThinking: current.liveThinking + progress.text, statusText: "正在思考" };
+						return {
+							...current,
+							liveThinking: current.liveThinking + progress.text,
+							liveTurnItems: appendLiveTextBlock(
+								current.liveTurnItems,
+								"thinking",
+								progress.text,
+								`live-thinking:${liveTurnItemRef.current++}`,
+							),
+							statusText: "正在思考",
+						};
 					case "user_message":
 						return { ...current, statusText: "正在处理" };
-					case "tool_start":
+					case "tool_start": {
+						const batchId = `live-tool-batch:${liveToolBatchRef.current}`;
 						return {
 							...current,
 							liveTools: {
@@ -462,14 +714,24 @@ export function useWorkbench() {
 								[progress.toolCallId]: {
 									id: progress.toolCallId,
 									name: progress.name,
+									batchId,
 									summary: progress.summary ?? "正在执行",
 									status: "running",
 									diff: progress.diff,
 								},
 							},
+							liveTurnItems: appendLiveToolBlock(
+								current.liveTurnItems,
+								batchId,
+								progress.toolCallId,
+								`live-tools:${liveTurnItemRef.current++}`,
+							),
 							statusText: `正在执行 ${progress.name}`,
 						};
-					case "tool_update":
+					}
+					case "tool_update": {
+						const previous = current.liveTools[progress.toolCallId];
+						const batchId = previous?.batchId ?? `live-tool-batch:${liveToolBatchRef.current}`;
 						return {
 							...current,
 							liveTools: {
@@ -477,13 +739,26 @@ export function useWorkbench() {
 								[progress.toolCallId]: {
 									id: progress.toolCallId,
 									name: progress.name,
-									summary: progress.summary,
+									batchId,
+									summary: previous?.summary ?? progress.summary,
+									result: progress.summary,
 									status: "running",
 									diff: progress.diff,
 								},
 							},
+							liveTurnItems: previous
+								? current.liveTurnItems
+								: appendLiveToolBlock(
+										current.liveTurnItems,
+										batchId,
+										progress.toolCallId,
+										`live-tools:${liveTurnItemRef.current++}`,
+									),
 						};
-					case "tool_end":
+					}
+					case "tool_end": {
+						const previous = current.liveTools[progress.toolCallId];
+						const batchId = previous?.batchId ?? `live-tool-batch:${liveToolBatchRef.current}`;
 						return {
 							...current,
 							liveTools: {
@@ -491,13 +766,24 @@ export function useWorkbench() {
 								[progress.toolCallId]: {
 									id: progress.toolCallId,
 									name: progress.name,
-									summary: progress.summary,
+									batchId,
+									summary: previous?.summary ?? progress.summary,
+									result: progress.summary,
 									status: progress.status,
 									diff: progress.diff,
 								},
 							},
+							liveTurnItems: previous
+								? current.liveTurnItems
+								: appendLiveToolBlock(
+										current.liveTurnItems,
+										batchId,
+										progress.toolCallId,
+										`live-tools:${liveTurnItemRef.current++}`,
+									),
 							statusText: progress.status === "error" ? `${progress.name} 执行失败` : `${progress.name} 已完成`,
 						};
+					}
 					case "queue_update":
 						return {
 							...current,
@@ -507,6 +793,7 @@ export function useWorkbench() {
 									: "正在处理",
 						};
 					case "phase":
+						if (progress.phase === "turn") liveToolBatchRef.current += 1;
 						return {
 							...current,
 							statusText:
@@ -547,13 +834,17 @@ export function useWorkbench() {
 				}
 			});
 		},
-		[updateState],
+		[cancelThinkingClear, scheduleThinkingClear, updateState],
 	);
 
 	const handleEvent = useCallback(
 		(event: GatewayEvent) => {
 			if (event.type === "bootstrap") {
+				const sessionId = stateRef.current.sessionId;
 				applyBootstrap(event.data);
+				if (sessionId && event.data.leases && !event.data.leases.some((entry) => entry.sessionId === sessionId)) {
+					void selectSessionRef.current(sessionId).catch((error) => showToast(errorMessage(error)));
+				}
 				return;
 			}
 			if (event.type === "connection_state") {
@@ -576,33 +867,44 @@ export function useWorkbench() {
 				return;
 			}
 			if (event.type === "session_snapshot") {
-				if (event.sessionId === stateRef.current.sessionId)
-					updateState((current) => ({
+				updateState((current) => {
+					const projects = updateSessionActivity(
+						updateSessionSummaryName(current.projects, event.sessionId, event.snapshot.name),
+						event.sessionId,
+						event.snapshot.activity,
+					);
+					if (event.sessionId !== current.sessionId) return { ...current, projects };
+					return {
 						...current,
+						projects,
 						session: event.snapshot,
 						readOnly: event.snapshot.writeAccess !== "owned",
 						transcriptGeneration: event.snapshot.transcriptGeneration,
 						transcriptRevision: event.snapshot.transcriptRevision,
-					}));
+					};
+				});
 				return;
 			}
 			if (event.type === "session_removed") {
-				updateState((current) =>
-					event.sessionId === current.sessionId
+				updateState((current) => {
+					const unreadSessionIds = { ...current.unreadSessionIds };
+					delete unreadSessionIds[event.sessionId];
+					return event.sessionId === current.sessionId
 						? {
 								...current,
+								unreadSessionIds,
 								sessionId: undefined,
-																				session: undefined,
-												lease: undefined,
-												transcript: [],
-												transcriptLoading: false,
-												transcriptError: undefined,
-												sessionError: undefined,
-												transcriptGeneration: undefined,
+								session: undefined,
+								lease: undefined,
+								transcript: [],
+								transcriptLoading: false,
+								transcriptError: undefined,
+								sessionError: undefined,
+								transcriptGeneration: undefined,
 								transcriptRevision: undefined,
 							}
-						: current,
-				);
+						: { ...current, unreadSessionIds };
+				});
 				void refreshBootstrap();
 				return;
 			}
@@ -624,10 +926,35 @@ export function useWorkbench() {
 				return;
 			}
 			if (event.type === "session_progress") {
+				const activity = sessionActivityFromProgress(event.progress);
+				if (activity) {
+					updateState((current) => {
+						const previous = current.projects
+							.flatMap((project) => project.sessions)
+							.find((session) => session.id === event.sessionId);
+						const wasRunning =
+							previous?.activity === "running" ||
+							previous?.activity === "waiting_for_input" ||
+							current.operations.some(
+								(operation) => operation.sessionId === event.sessionId && ACTIVE_OPERATION_STATUSES.has(operation.status),
+							);
+						const unreadSessionIds = { ...current.unreadSessionIds };
+						if (activity === "idle" && event.sessionId !== current.sessionId && wasRunning) unreadSessionIds[event.sessionId] = true;
+						else if (activity !== "idle" || event.sessionId === current.sessionId) delete unreadSessionIds[event.sessionId];
+						return {
+							...current,
+							projects: updateSessionActivity(current.projects, event.sessionId, activity),
+							unreadSessionIds,
+						};
+					});
+				}
 				if (event.sessionId === stateRef.current.sessionId) applyProgress(event.progress);
 				return;
 			}
 			if (event.type === "operation_updated") {
+				const operationSessionId = event.operation.sessionId;
+				const operationIsActive = ACTIVE_OPERATION_STATUSES.has(event.operation.status);
+				const operationIsTerminal = TERMINAL_OPERATION_STATUSES.has(event.operation.status);
 				updateState((current) => {
 					const index = current.operations.findIndex(
 						(operation) => operation.operationId === event.operation.operationId,
@@ -638,13 +965,37 @@ export function useWorkbench() {
 							: current.operations.map((operation, operationIndex) =>
 									operationIndex === index ? event.operation : operation,
 								);
-					const selected = event.operation.sessionId === current.sessionId || !event.operation.sessionId;
+					const selected = operationSessionId === current.sessionId || !operationSessionId;
+					const terminalActivity =
+						event.operation.status === "completed" ||
+						event.operation.status === "failed" ||
+						event.operation.status === "aborted" ||
+						event.operation.status === "interrupted"
+							? event.operation.status
+							: undefined;
+					const activity = operationSessionId
+						? operationIsActive
+							? event.operation.status === "waiting_for_input"
+								? ("waiting_for_input" as const)
+								: ("running" as const)
+							: terminalActivity
+						: undefined;
+					const unreadSessionIds = { ...current.unreadSessionIds };
+					if (operationSessionId) {
+						if (operationIsActive || operationSessionId === current.sessionId) delete unreadSessionIds[operationSessionId];
+						else if (operationIsTerminal) unreadSessionIds[operationSessionId] = true;
+					}
 					return {
 						...current,
+						projects:
+							operationSessionId && activity
+								? updateSessionActivity(current.projects, operationSessionId, activity, event.operation.updatedAt)
+								: current.projects,
 						operations,
+						unreadSessionIds,
 						...(selected ? { currentOperation: event.operation } : {}),
 						...(selected && event.operation.status === "completed"
-							? { liveText: "", liveThinking: "", liveTools: {} }
+							? { liveText: "", liveThinking: "", liveTools: {}, liveTurnItems: [] }
 							: {}),
 						...(selected &&
 						(event.operation.status === "failed" ||
@@ -658,14 +1009,8 @@ export function useWorkbench() {
 							: {}),
 					};
 				});
-				if (event.operation.sessionId === stateRef.current.sessionId || !event.operation.sessionId) {
-					if (
-						event.operation.status === "completed" ||
-						event.operation.status === "failed" ||
-						event.operation.status === "aborted" ||
-						event.operation.status === "interrupted"
-					)
-						scheduleTranscriptRefresh(event.operation.sessionId ?? stateRef.current.sessionId);
+				if (operationSessionId === stateRef.current.sessionId || !operationSessionId) {
+					if (operationIsTerminal) scheduleTranscriptRefresh(operationSessionId ?? stateRef.current.sessionId);
 				}
 				return;
 			}
@@ -700,56 +1045,119 @@ export function useWorkbench() {
 	);
 
 	const connectStream = useCallback(() => {
-		socketRef.current?.close();
-		socketRef.current = webApi.connect(handleEvent, () => {
-			updateState((current) => ({
-				...current,
-				connected: false,
-				reconnecting: true,
-				connectionError: "Web Host 连接已断开，正在重连",
-			}));
-			if (!mountedRef.current || reconnectTimerRef.current) return;
-			reconnectTimerRef.current = window.setTimeout(() => {
-				reconnectTimerRef.current = undefined;
-				if (webApi.hasToken()) connectStream();
-			}, 1200);
-		});
+		const generation = streamGenerationRef.current + 1;
+		streamGenerationRef.current = generation;
+		if (reconnectTimerRef.current) {
+			window.clearTimeout(reconnectTimerRef.current);
+			reconnectTimerRef.current = undefined;
+		}
+		const previous = socketRef.current;
+		socketRef.current = undefined;
+		if (previous && previous.readyState !== WebSocket.CLOSED) previous.close();
+
+		let socket: WebSocket;
+		socket = webApi.connect(
+			(event) => {
+				if (streamGenerationRef.current !== generation || socketRef.current !== socket) return;
+				handleEvent(event);
+			},
+			() => {
+				if (streamGenerationRef.current !== generation || socketRef.current !== socket) return;
+				socketRef.current = undefined;
+				if (!mountedRef.current) return;
+				updateState((current) => ({
+					...current,
+					connected: false,
+					reconnecting: true,
+					connectionError: "Web Host 连接已断开，正在重连",
+				}));
+				if (reconnectTimerRef.current) return;
+				reconnectTimerRef.current = window.setTimeout(() => {
+					reconnectTimerRef.current = undefined;
+					if (
+						mountedRef.current &&
+						streamGenerationRef.current === generation &&
+						!socketRef.current &&
+						webApi.hasToken()
+					)
+						connectStream();
+				}, 1200);
+			},
+		);
+		socketRef.current = socket;
 	}, [handleEvent, updateState]);
 
-	const initialize = useCallback(async () => {
-		if (!webApi.hasToken()) {
-			updateState((current) => ({ ...current, authRequired: true, loading: false }));
-			return;
-		}
-		updateState((current) => ({ ...current, loading: true, connectionError: "" }));
+	const refreshModelSettings = useCallback(async () => {
+		updateState((current) => ({ ...current, modelSettingsLoading: true, modelSettingsError: undefined }));
 		try {
-			const data = await webApi.bootstrap();
-			applyBootstrap(data);
-			connectStream();
-			const firstProject = data.projects
-				.filter((project) => !project.archived)
-				.slice()
-				.sort((left, right) => Number(right.pinned) - Number(left.pinned))[0];
-			if (firstProject) {
-				updateState((current) => ({ ...current, currentProjectId: firstProject.id }));
-				await refreshProjectSessions(firstProject.id).catch((error) => showToast(errorMessage(error)));
-				const firstSession =
-					stateRef.current.projects.find((project) => project.id === firstProject.id)?.sessions[0] ?? firstProject.sessions[0];
-				if (firstSession) await selectSessionRef.current(firstSession.id);
-			}
+			const result = await webApi.models();
+			const visibilityConfigured = typeof window !== "undefined" && window.localStorage.getItem(MODEL_PROVIDER_VISIBILITY_KEY) !== null;
+			updateState((current) => {
+				const hiddenModelProviders = visibilityConfigured
+					? current.hiddenModelProviders
+					: [...new Set([...current.hiddenModelProviders, ...result.providers.filter((provider) => provider.builtIn && !provider.authenticated).map((provider) => provider.id)])];
+				if (!visibilityConfigured && typeof window !== "undefined") {
+					window.localStorage.setItem(MODEL_PROVIDER_VISIBILITY_KEY, JSON.stringify(hiddenModelProviders));
+				}
+				return {
+					...current,
+					models: result.models,
+					providers: result.providers,
+					hiddenModelProviders,
+					modelSettingsLoading: false,
+				};
+			});
 		} catch (error) {
-			if (error instanceof UnauthorizedError) {
-				webApi.clearToken();
-				updateState((current) => ({ ...current, authRequired: true, connected: false }));
-			} else {
-				const message = errorMessage(error);
-				updateState((current) => ({ ...current, connectionError: message }));
-				showToast(message);
-			}
-		} finally {
-			updateState((current) => ({ ...current, loading: false }));
+			const message = error instanceof Error ? error.message : String(error);
+			updateState((current) => ({ ...current, modelSettingsLoading: false, modelSettingsError: message }));
+			throw error;
 		}
-	}, [applyBootstrap, connectStream, refreshProjectSessions, showToast, updateState]);
+	}, [updateState]);
+
+	const initialize = useCallback((): Promise<void> => {
+		const existing = initializePromiseRef.current;
+		if (existing) return existing;
+		const promise = (async () => {
+			if (!webApi.hasToken()) {
+				updateState((current) => ({ ...current, authRequired: true, loading: false }));
+				return;
+			}
+			updateState((current) => ({ ...current, loading: true, connectionError: "" }));
+			try {
+				const data = await webApi.bootstrap();
+				applyBootstrap(data);
+				await refreshModelSettings().catch(() => undefined);
+				connectStream();
+				const firstProject = data.projects
+					.filter((project) => !project.archived)
+					.slice()
+					.sort((left, right) => Number(right.pinned) - Number(left.pinned))[0];
+				if (firstProject) {
+					updateState((current) => ({ ...current, currentProjectId: firstProject.id }));
+					const firstSession =
+						stateRef.current.projects.find((project) => project.id === firstProject.id)?.sessions[0] ??
+						firstProject.sessions[0];
+					if (firstSession) await selectSessionRef.current(firstSession.id);
+				}
+			} catch (error) {
+				if (error instanceof UnauthorizedError) {
+					webApi.clearToken();
+					updateState((current) => ({ ...current, authRequired: true, connected: false }));
+				} else {
+					const message = errorMessage(error);
+					updateState((current) => ({ ...current, connectionError: message }));
+					showToast(message);
+				}
+			} finally {
+				updateState((current) => ({ ...current, loading: false }));
+			}
+		})();
+		const tracked = promise.finally(() => {
+			if (initializePromiseRef.current === tracked) initializePromiseRef.current = undefined;
+		});
+		initializePromiseRef.current = tracked;
+		return tracked;
+	}, [applyBootstrap, connectStream, refreshModelSettings, showToast, updateState]);
 
 	const submitToken = useCallback(
 		async (token: string) => {
@@ -760,6 +1168,11 @@ export function useWorkbench() {
 	);
 
 	const signOut = useCallback(() => {
+		streamGenerationRef.current += 1;
+		if (reconnectTimerRef.current) {
+			window.clearTimeout(reconnectTimerRef.current);
+			reconnectTimerRef.current = undefined;
+		}
 		socketRef.current?.close();
 		socketRef.current = undefined;
 		webApi.clearToken();
@@ -773,8 +1186,22 @@ export function useWorkbench() {
 
 	const selectSession = useCallback(
 		async (sessionId: string) => {
+			if (selectionInFlightRef.current === sessionId) return;
+			const currentSelection = stateRef.current;
+			if (
+				currentSelection.sessionId === sessionId &&
+				currentSelection.session &&
+				currentSelection.lease &&
+				!currentSelection.transcriptLoading &&
+				!currentSelection.sessionError &&
+				!currentSelection.transcriptError
+			)
+				return;
+			selectionInFlightRef.current = sessionId;
 			const request = ++selectionRef.current;
 			const previous = stateRef.current;
+			const projectId = previous.currentProjectId;
+			if (projectId) projectRefreshSuppressedUntilRef.current.set(projectId, Date.now() + 2_000);
 			if (
 				previous.sessionId &&
 				previous.sessionId !== sessionId &&
@@ -783,7 +1210,7 @@ export function useWorkbench() {
 				await webApi.release(previous.sessionId).catch(() => {});
 			if (transcriptTimerRef.current) window.clearTimeout(transcriptTimerRef.current);
 			transcriptRequestRef.current++;
-						updateState((current) => ({
+			updateState((current) => ({
 				...current,
 				sessionId,
 				session: undefined,
@@ -797,16 +1224,26 @@ export function useWorkbench() {
 				transcriptRevision: undefined,
 				previousCursor: undefined,
 				hasMorePrevious: false,
-				liveText: "",
-				liveThinking: "",
-				liveTools: {},
-				statusText: "正在打开会话",
+												liveText: "",
+								liveThinking: "",
+								liveTools: {},
+								liveTurnItems: [],
+								unreadSessionIds: Object.fromEntries(
+									Object.entries(current.unreadSessionIds).filter(([id]) => id !== sessionId),
+								) as Record<string, true>,
+								statusText: "正在打开会话",
 				currentOperation: operationForSession(current.operations, sessionId),
 			}));
+			const transcriptPromise = loadTranscript(sessionId);
 			try {
 				const controlled = await webApi.control(sessionId);
+				if (request !== selectionRef.current) {
+					if (selectionInFlightRef.current === sessionId) selectionInFlightRef.current = undefined;
+					return;
+				}
 				updateState((current) => ({
 					...current,
+					projects: updateSessionSummaryName(current.projects, sessionId, controlled.snapshot.name),
 					lease: controlled.lease,
 					session: controlled.snapshot,
 					sessionError: undefined,
@@ -815,16 +1252,23 @@ export function useWorkbench() {
 			} catch (error) {
 				try {
 					const snapshot = (await webApi.session(sessionId)).session;
-					if (request !== selectionRef.current) return;
+					if (request !== selectionRef.current) {
+						if (selectionInFlightRef.current === sessionId) selectionInFlightRef.current = undefined;
+						return;
+					}
 					updateState((current) => ({
 						...current,
+						projects: updateSessionSummaryName(current.projects, sessionId, snapshot.name),
 						session: snapshot,
 						sessionError: undefined,
 						readOnly: true,
 					}));
 					showToast(errorMessage(error));
 				} catch (snapshotError) {
-					if (request !== selectionRef.current) return;
+					if (request !== selectionRef.current) {
+						if (selectionInFlightRef.current === sessionId) selectionInFlightRef.current = undefined;
+						return;
+					}
 					const message = errorMessage(snapshotError);
 					updateState((current) => ({
 						...current,
@@ -836,17 +1280,24 @@ export function useWorkbench() {
 						statusText: "",
 					}));
 					showToast(message);
+					if (selectionInFlightRef.current === sessionId) selectionInFlightRef.current = undefined;
 					return;
 				}
 			}
-			if (request !== selectionRef.current) return;
+			if (request !== selectionRef.current) {
+				if (selectionInFlightRef.current === sessionId) selectionInFlightRef.current = undefined;
+				return;
+			}
 			try {
-				await loadTranscript(sessionId);
+				await transcriptPromise;
 			} catch (error) {
 				showToast(errorMessage(error));
 			}
-			await Promise.allSettled([loadSessionTreeRef.current(), loadProjectTrustRef.current()]);
+			const supplementalLoads = [loadProjectTrustRef.current()];
+			if (stateRef.current.inspectorMode === "tree") supplementalLoads.push(loadSessionTreeRef.current());
+			void Promise.allSettled(supplementalLoads);
 			updateState((current) => ({ ...current, statusText: "" }));
+			if (selectionInFlightRef.current === sessionId) selectionInFlightRef.current = undefined;
 		},
 		[loadTranscript, showToast, updateState],
 	);
@@ -860,6 +1311,9 @@ export function useWorkbench() {
 			updateState((current) => ({
 				...current,
 				currentProjectId: projectId,
+				fileTree: undefined,
+				fileTreeRootPath: undefined,
+				fileTreeCache: {},
 				sessionId: undefined,
 				session: undefined,
 				sessionError: undefined,
@@ -874,6 +1328,7 @@ export function useWorkbench() {
 				liveText: "",
 				liveThinking: "",
 				liveTools: {},
+				liveTurnItems: [],
 			}));
 			try {
 				await refreshProjectSessions(projectId);
@@ -932,6 +1387,7 @@ export function useWorkbench() {
 			transcriptRevision: result.session.transcriptRevision,
 			currentOperation: undefined,
 			statusText: "",
+			liveTurnItems: [],
 		}));
 	}, [updateState]);
 
@@ -943,7 +1399,7 @@ export function useWorkbench() {
 		) => {
 			const current = stateRef.current;
 			if (!current.sessionId || current.readOnly) return;
-			if (hasActive(current.currentOperation) && mode === "prompt") mode = "steer";
+			if (hasActive(current.currentOperation) && mode === "prompt") mode = "follow-up";
 			const value = text.trim();
 			if (!value) return;
 			const result = await webApi.prompt(current.sessionId, value, mode, images);
@@ -953,6 +1409,7 @@ export function useWorkbench() {
 				liveText: "",
 				liveThinking: "",
 				liveTools: {},
+				liveTurnItems: [],
 				statusText: mode === "steer" ? "已加入当前任务" : mode === "follow-up" ? "已排入后续任务" : "正在处理",
 			}));
 		},
@@ -970,7 +1427,11 @@ export function useWorkbench() {
 			const current = stateRef.current;
 			if (!current.sessionId || current.readOnly) return;
 			const result = await webApi.renameSession(current.sessionId, name);
-			updateState((next) => ({ ...next, session: result.session }));
+			updateState((next) => ({
+				...next,
+				projects: updateSessionSummaryName(next.projects, current.sessionId!, result.session.name),
+				session: result.session,
+			}));
 			if (current.currentProjectId) await refreshProjectSessions(current.currentProjectId);
 		},
 		[refreshProjectSessions, updateState],
@@ -1017,24 +1478,62 @@ export function useWorkbench() {
 		showToast(`会话已导出：${result.path.split(/[\\/]/).at(-1) ?? "文件"}`);
 	}, [showToast]);
 
+	const ensureSessionControl = useCallback(
+		async (sessionId: string): Promise<boolean> => {
+			const current = stateRef.current;
+			if (current.sessionId !== sessionId) return false;
+			if (!current.readOnly && current.lease) return true;
+			try {
+				const controlled = await webApi.control(sessionId);
+				if (stateRef.current.sessionId !== sessionId) return false;
+				updateState((next) => ({
+					...next,
+					projects: updateSessionSummaryName(next.projects, sessionId, controlled.snapshot.name),
+					lease: controlled.lease,
+					session: controlled.snapshot,
+					readOnly: controlled.owned === false,
+				}));
+				if (controlled.owned) return true;
+				showToast("当前会话暂时无法修改");
+				return false;
+			} catch (error) {
+				showToast(errorMessage(error));
+				return false;
+			}
+		},
+		[showToast, updateState],
+	);
+
 	const updateModel = useCallback(
 		async (provider: string, id: string) => {
-			const current = stateRef.current;
-			if (!current.sessionId || current.readOnly) return;
-			const result = await webApi.model(current.sessionId, provider, id);
-			updateState((next) => ({ ...next, session: result.session }));
+			const sessionId = stateRef.current.sessionId;
+			if (!sessionId || !(await ensureSessionControl(sessionId))) return;
+			if (stateRef.current.sessionId !== sessionId) return;
+			try {
+				const result = await webApi.model(sessionId, provider, id);
+				if (stateRef.current.sessionId !== sessionId) return;
+				updateState((next) => ({ ...next, session: result.session, readOnly: result.session.writeAccess !== "owned" }));
+			} catch (error) {
+				showToast(errorMessage(error));
+			}
 		},
-		[updateState],
+		[ensureSessionControl, showToast, updateState],
 	);
 
 	const updateThinking = useCallback(
 		async (level: string) => {
-			const current = stateRef.current;
-			if (!current.sessionId || current.readOnly) return;
-			const result = await webApi.thinking(current.sessionId, level);
-			updateState((next) => ({ ...next, session: result.session }));
+			const sessionId = stateRef.current.sessionId;
+			if (!sessionId || !(await ensureSessionControl(sessionId))) return;
+			if (stateRef.current.sessionId !== sessionId) return;
+			try {
+				const result = await webApi.thinking(sessionId, level);
+				if (stateRef.current.sessionId !== sessionId) return;
+				updateState((next) => ({ ...next, session: result.session, readOnly: result.session.writeAccess !== "owned" }));
+			} catch (error) {
+				showToast(errorMessage(error));
+			}
 		},
-		[updateState],
+		[ensureSessionControl, showToast, updateState],
 	);
 
 	const loadGitStatus = useCallback(async () => {
@@ -1042,9 +1541,33 @@ export function useWorkbench() {
 		if (!projectId) return;
 		updateState((current) => ({ ...current, gitLoading: true }));
 		try {
-			updateState((current) => ({ ...current, gitStatus: undefined, gitLoading: true }));
-			const result = await webApi.gitStatus(projectId);
-			updateState((current) => ({ ...current, gitStatus: result }));
+			updateState((current) => ({ ...current, gitStatus: undefined, gitFileStats: {}, gitLoading: true }));
+			const [result, worktreeDiff, stagedDiff] = await Promise.all([
+				webApi.gitStatus(projectId),
+				webApi.gitDiff(projectId, undefined, false).catch(() => undefined),
+				webApi.gitDiff(projectId, undefined, true).catch(() => undefined),
+			]);
+			const stats = new Map<string, GitFileDiffStats>();
+			for (const diff of [worktreeDiff?.diff, stagedDiff?.diff]) {
+				if (!diff) continue;
+				for (const [path, value] of parseGitDiffStats(diff)) {
+					const current = stats.get(path) ?? { additions: 0, deletions: 0 };
+					stats.set(path, {
+						additions: current.additions + value.additions,
+						deletions: current.deletions + value.deletions,
+					});
+				}
+			}
+			const untrackedStats = await Promise.all(
+				result.files
+					.filter((file) => file.untracked)
+					.map(async (file) => {
+						const content = await webApi.projectFile(projectId, file.path).catch(() => undefined);
+						return [file.path, { additions: content?.kind === "text" && content.content ? textLineCount(content.content) : 0, deletions: 0 }] as const;
+					}),
+			);
+			for (const [path, value] of untrackedStats) stats.set(path, value);
+			updateState((current) => ({ ...current, gitStatus: result, gitFileStats: Object.fromEntries(stats) }));
 		} finally {
 			updateState((current) => ({ ...current, gitLoading: false }));
 		}
@@ -1082,13 +1605,18 @@ export function useWorkbench() {
 	);
 
 	const loadProjectTree = useCallback(
-		async (path = "") => {
+		async (path = "", preserveCurrentTree = false) => {
 			const projectId = stateRef.current.currentProjectId;
 			if (!projectId) return;
 			updateState((current) => ({ ...current, fileTreeLoading: true }));
 			try {
 				const result = await webApi.projectTree(projectId, path);
-				updateState((current) => ({ ...current, fileTree: result }));
+				updateState((current) => ({
+					...current,
+					fileTree: preserveCurrentTree ? current.fileTree : result,
+					fileTreeRootPath: preserveCurrentTree ? current.fileTreeRootPath : result.path,
+					fileTreeCache: { ...current.fileTreeCache, [result.path]: result },
+				}));
 			} finally {
 				updateState((current) => ({ ...current, fileTreeLoading: false }));
 			}
@@ -1096,25 +1624,42 @@ export function useWorkbench() {
 		[updateState],
 	);
 
-	const openFile = useCallback(
+	const openResource = useCallback(
 		async (path: string) => {
 			const projectId = stateRef.current.currentProjectId;
 			if (!projectId) return;
-			updateState((current) => ({ ...current, fileLoading: true, filePath: path }));
+			const requestId = ++fileRequestRef.current;
+			updateState((current) => ({
+				...current,
+				fileLoading: true,
+				filePath: path,
+				fileContent: undefined,
+			}));
 			try {
-				const result = await webApi.projectFile(projectId, path);
+				const result = await webApi.projectFile(projectId, path).catch(() => webApi.externalFile(path));
+				if (requestId !== fileRequestRef.current) return;
 				updateState((current) => ({
 					...current,
 					fileContent: result,
-					inspectorOpen: true,
-					inspectorMode: "files",
 				}));
 			} finally {
-				updateState((current) => ({ ...current, fileLoading: false }));
+				if (requestId === fileRequestRef.current) {
+					updateState((current) => ({ ...current, fileLoading: false }));
+				}
 			}
 		},
 		[updateState],
 	);
+
+	const closeFilePreview = useCallback(
+		() => {
+			fileRequestRef.current += 1;
+			updateState((current) => ({ ...current, fileContent: undefined, filePath: undefined, fileLoading: false }));
+		},
+		[updateState],
+	);
+
+	const openFile = openResource;
 
 	const loadSessionTree = useCallback(async () => {
 		const sessionId = stateRef.current.sessionId;
@@ -1207,12 +1752,52 @@ export function useWorkbench() {
 		[updateState],
 	);
 
+	const setModelProviderVisibility = useCallback(
+		(providerId: string, visible: boolean) => {
+			updateState((current) => {
+				const hidden = new Set(current.hiddenModelProviders);
+				if (visible) hidden.delete(providerId);
+				else hidden.add(providerId);
+				const hiddenModelProviders = [...hidden];
+				if (typeof window !== "undefined") window.localStorage.setItem(MODEL_PROVIDER_VISIBILITY_KEY, JSON.stringify(hiddenModelProviders));
+				return { ...current, hiddenModelProviders };
+			});
+		},
+		[updateState],
+	);
+
+	const saveModelProvider = useCallback(
+		async (input: WebModelProviderInput) => {
+			await webApi.modelProvider(input);
+			await refreshModelSettings();
+			showToast("Provider 配置已保存");
+		},
+		[refreshModelSettings, showToast],
+	);
+
+	const saveProviderModel = useCallback(
+		async (provider: string, input: WebProviderModelInput) => {
+			await webApi.providerModel(provider, input);
+			await refreshModelSettings();
+			showToast("模型配置已保存");
+		},
+		[refreshModelSettings, showToast],
+	);
+
+	const syncModelProvider = useCallback(
+		async (provider: string) => {
+			await webApi.syncModelProvider(provider);
+			await refreshModelSettings();
+			showToast("模型目录已同步");
+		},
+		[refreshModelSettings, showToast],
+	);
+
 	const openSettings = useCallback(
 		async (tab: SettingsTab = "appearance") => {
 			updateState((current) => ({ ...current, settingsOpen: true, settingsTab: tab }));
 			if (tab === "models" && stateRef.current.models.length === 0) {
-				const result = await webApi.models();
-				updateState((current) => ({ ...current, models: result.models, providers: result.providers }));
+				await refreshModelSettings();
 			}
 			if (tab === "diagnostics") updateState((current) => ({ ...current, diagnostics: undefined }));
 			if (tab === "diagnostics") {
@@ -1224,9 +1809,8 @@ export function useWorkbench() {
 				updateState((current) => ({ ...current, about: result }));
 			}
 		},
-		[updateState],
+		[refreshModelSettings, updateState],
 	);
-
 	const closeSettings = useCallback(
 		() => updateState((current) => ({ ...current, settingsOpen: false })),
 		[updateState],
@@ -1263,13 +1847,34 @@ export function useWorkbench() {
 	}, [state.theme]);
 
 	useEffect(() => {
+		const handleVisibilityChange = () => {
+			if (document.visibilityState !== "visible" || !webApi.hasToken()) return;
+			const socket = socketRef.current;
+			if (socket && socket.readyState !== WebSocket.CLOSED) return;
+			if (reconnectTimerRef.current) {
+				window.clearTimeout(reconnectTimerRef.current);
+				reconnectTimerRef.current = undefined;
+			}
+			connectStream();
+		};
+		document.addEventListener("visibilitychange", handleVisibilityChange);
+		return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+	}, [connectStream]);
+
+	useEffect(() => {
 		mountedRef.current = true;
 		void initialize();
 		return () => {
 			mountedRef.current = false;
+			streamGenerationRef.current += 1;
 			socketRef.current?.close();
-			if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
+			socketRef.current = undefined;
+			if (reconnectTimerRef.current) {
+				window.clearTimeout(reconnectTimerRef.current);
+				reconnectTimerRef.current = undefined;
+			}
 			if (transcriptTimerRef.current) window.clearTimeout(transcriptTimerRef.current);
+			if (thinkingClearTimerRef.current) window.clearTimeout(thinkingClearTimerRef.current);
 			if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
 		};
 	}, [initialize]);
@@ -1297,12 +1902,19 @@ export function useWorkbench() {
 		exportSession,
 		updateModel,
 		updateThinking,
+		setModelProviderVisibility,
+		syncModelProvider,
+		saveModelProvider,
+		saveProviderModel,
+		refreshModelSettings,
 		loadGitStatus,
 		loadGitDiff,
 		openInspector,
 		closeInspector,
 		loadProjectTree,
 		openFile,
+		openResource,
+		closeFilePreview,
 		loadSessionTree,
 		navigateTree,
 		loadProjectTrust,

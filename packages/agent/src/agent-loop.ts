@@ -458,9 +458,17 @@ async function executeToolCallsSequential(
 ): Promise<ExecutedToolCallBatch> {
 	const finalizedCalls: FinalizedToolCallOutcome[] = [];
 	const messages: ToolResultMessage[] = [];
+	const preparedEntries = await prepareToolCallBatch(
+		currentContext,
+		assistantMessage,
+		toolCalls,
+		config,
+		signal,
+		false,
+	);
 
-	for (const toolCall of toolCalls) {
-		const preparation = await prepareToolCall(currentContext, assistantMessage, toolCall, config, signal);
+	for (const entry of preparedEntries) {
+		const { toolCall, preparation } = entry;
 		let finalized: FinalizedToolCallOutcome;
 		if (preparation.kind === "immediate") {
 			await emit({
@@ -474,17 +482,63 @@ async function executeToolCallsSequential(
 				result: preparation.result,
 				isError: preparation.isError,
 			};
+		} else if (entry.duplicate) {
+			await emit({
+				type: "tool_execution_start",
+				toolCallId: toolCall.id,
+				toolName: toolCall.name,
+				args: toolCall.arguments,
+			});
+			finalized = {
+				toolCall,
+				result: createErrorToolResult("已跳过重复 Tool 调用：相同调用正在执行。"),
+				isError: true,
+			};
+		} else if (entry.conflictKey) {
+			await emit({
+				type: "tool_execution_start",
+				toolCallId: toolCall.id,
+				toolName: toolCall.name,
+				args: toolCall.arguments,
+			});
+			finalized = {
+				toolCall,
+				result: createExecutionKeyConflictResult(entry.conflictKey),
+				isError: true,
+			};
 		} else {
-			const executed = await executePreparedToolCall(preparation, signal, emit, config.toolRecoveryController);
-			finalized = await finalizeExecutedToolCall(
+			const beforeResult = await runBeforeToolCallHook(
 				currentContext,
 				assistantMessage,
-				preparation,
-				executed,
+				preparation.toolCall,
+				preparation.args,
 				config,
 				signal,
-				emit,
 			);
+			if (beforeResult) {
+				await emit({
+					type: "tool_execution_start",
+					toolCallId: toolCall.id,
+					toolName: toolCall.name,
+					args: toolCall.arguments,
+				});
+				finalized = {
+					toolCall,
+					result: beforeResult.result,
+					isError: beforeResult.isError,
+				};
+			} else {
+				const executed = await executePreparedToolCall(preparation, signal, emit, config.toolRecoveryController);
+				finalized = await finalizeExecutedToolCall(
+					currentContext,
+					assistantMessage,
+					preparation,
+					executed,
+					config,
+					signal,
+					emit,
+				);
+			}
 		}
 
 		await emitToolExecutionEnd(finalized, emit);
@@ -504,6 +558,56 @@ async function executeToolCallsSequential(
 	};
 }
 
+async function prepareToolCallBatch(
+	currentContext: AgentContext,
+	assistantMessage: AssistantMessage,
+	toolCalls: AgentToolCall[],
+	config: AgentLoopConfig,
+	signal: AbortSignal | undefined,
+	runBeforeToolCall = true,
+): Promise<PreparedToolCallBatchEntry[]> {
+	const entries: Array<Omit<PreparedToolCallBatchEntry, "conflictKey">> = [];
+	const inBatchCallSignatures = new Set<string>();
+	const executionKeyCallIds = new Map<string, Set<string>>();
+
+	for (const toolCall of toolCalls) {
+		const preparation = await prepareToolCall(
+			currentContext,
+			assistantMessage,
+			toolCall,
+			config,
+			signal,
+			runBeforeToolCall,
+		);
+		let duplicate = false;
+		if (preparation.kind === "prepared") {
+			const fingerprint = await createToolCallFingerprint(preparation.toolCall.name, preparation.args);
+			duplicate = inBatchCallSignatures.has(fingerprint.callSignature);
+			if (!duplicate) {
+				inBatchCallSignatures.add(fingerprint.callSignature);
+				for (const executionKey of preparation.executionKeys) {
+					const callIds = executionKeyCallIds.get(executionKey) ?? new Set<string>();
+					callIds.add(toolCall.id);
+					executionKeyCallIds.set(executionKey, callIds);
+				}
+			}
+		}
+		entries.push({ toolCall, preparation, duplicate });
+		if (signal?.aborted) break;
+	}
+
+	const conflictingExecutionKeys = new Set<string>();
+	for (const [executionKey, callIds] of executionKeyCallIds) {
+		if (callIds.size > 1) conflictingExecutionKeys.add(executionKey);
+	}
+
+	return entries.map((entry) => {
+		if (entry.preparation.kind === "immediate" || entry.duplicate) return entry;
+		const conflictKey = entry.preparation.executionKeys.find((key) => conflictingExecutionKeys.has(key));
+		return conflictKey === undefined ? entry : { ...entry, conflictKey };
+	});
+}
+
 async function executeToolCallsParallel(
 	currentContext: AgentContext,
 	assistantMessage: AssistantMessage,
@@ -513,12 +617,10 @@ async function executeToolCallsParallel(
 	emit: AgentEventSink,
 ): Promise<ExecutedToolCallBatch> {
 	const finalizedCalls: FinalizedToolCallEntry[] = [];
-	const inBatchCallSignatures = new Set<string>();
-	const executionKeyCallIds = new Map<string, Set<string>>();
-	const conflictingExecutionKeys = new Set<string>();
+	const preparedEntries = await prepareToolCallBatch(currentContext, assistantMessage, toolCalls, config, signal);
 
-	for (const toolCall of toolCalls) {
-		const preparation = await prepareToolCall(currentContext, assistantMessage, toolCall, config, signal);
+	for (const entry of preparedEntries) {
+		const { toolCall, preparation } = entry;
 		if (preparation.kind === "immediate") {
 			await emit({
 				type: "tool_execution_start",
@@ -539,8 +641,7 @@ async function executeToolCallsParallel(
 			continue;
 		}
 
-		const fingerprint = await createToolCallFingerprint(preparation.toolCall.name, preparation.args);
-		if (inBatchCallSignatures.has(fingerprint.callSignature)) {
+		if (entry.duplicate) {
 			await emit({
 				type: "tool_execution_start",
 				toolCallId: toolCall.id,
@@ -556,33 +657,25 @@ async function executeToolCallsParallel(
 			finalizedCalls.push(finalized);
 			continue;
 		}
-		inBatchCallSignatures.add(fingerprint.callSignature);
-		for (const executionKey of preparation.executionKeys) {
-			const callIds = executionKeyCallIds.get(executionKey) ?? new Set<string>();
-			callIds.add(toolCall.id);
-			executionKeyCallIds.set(executionKey, callIds);
+
+		if (entry.conflictKey) {
+			await emit({
+				type: "tool_execution_start",
+				toolCallId: toolCall.id,
+				toolName: toolCall.name,
+				args: toolCall.arguments,
+			});
+			const finalized = {
+				toolCall,
+				result: createExecutionKeyConflictResult(entry.conflictKey),
+				isError: true,
+			} satisfies FinalizedToolCallOutcome;
+			await emitToolExecutionEnd(finalized, emit);
+			finalizedCalls.push(finalized);
+			continue;
 		}
 
 		finalizedCalls.push(async () => {
-			const conflictKey = preparation.executionKeys.find((key) => conflictingExecutionKeys.has(key));
-			if (conflictKey) {
-				await emit({
-					type: "tool_execution_start",
-					toolCallId: toolCall.id,
-					toolName: toolCall.name,
-					args: toolCall.arguments,
-				});
-				const finalized = {
-					toolCall,
-					result: createErrorToolResult(
-						`同一条助手回复中不能同时修改同一个目标：${conflictKey}。请把同一文件的多个修改合并到一个 edit 或 apply_patch 调用中；本批次没有执行这些冲突修改。`,
-					),
-					isError: true,
-				} satisfies FinalizedToolCallOutcome;
-				await emitToolExecutionEnd(finalized, emit);
-				return finalized;
-			}
-
 			const executed = await executePreparedToolCall(preparation, signal, emit, config.toolRecoveryController);
 			const finalized = await finalizeExecutedToolCall(
 				currentContext,
@@ -599,10 +692,6 @@ async function executeToolCallsParallel(
 		if (signal?.aborted) {
 			break;
 		}
-	}
-
-	for (const [executionKey, callIds] of executionKeyCallIds) {
-		if (callIds.size > 1) conflictingExecutionKeys.add(executionKey);
 	}
 
 	const orderedFinalizedCalls = await Promise.all(
@@ -651,6 +740,12 @@ type FinalizedToolCallOutcome = {
 };
 
 type FinalizedToolCallEntry = FinalizedToolCallOutcome | (() => Promise<FinalizedToolCallOutcome>);
+type PreparedToolCallBatchEntry = {
+	toolCall: AgentToolCall;
+	preparation: PreparedToolCall | ImmediateToolCallOutcome;
+	duplicate: boolean;
+	conflictKey?: string;
+};
 
 function shouldTerminateToolBatch(finalizedCalls: FinalizedToolCallOutcome[]): boolean {
 	return finalizedCalls.length > 0 && finalizedCalls.every((finalized) => finalized.result.terminate === true);
@@ -670,12 +765,54 @@ function prepareToolCallArguments(tool: AgentTool<any>, toolCall: AgentToolCall)
 	};
 }
 
+async function runBeforeToolCallHook(
+	currentContext: AgentContext,
+	assistantMessage: AssistantMessage,
+	toolCall: AgentToolCall,
+	args: unknown,
+	config: AgentLoopConfig,
+	signal: AbortSignal | undefined,
+): Promise<ImmediateToolCallOutcome | undefined> {
+	if (!config.beforeToolCall) return undefined;
+	try {
+		const beforeResult = await config.beforeToolCall(
+			{
+				assistantMessage,
+				toolCall,
+				args,
+				context: currentContext,
+			},
+			signal,
+		);
+		if (signal?.aborted) {
+			return {
+				kind: "immediate",
+				result: createErrorToolResult("Operation aborted"),
+				isError: true,
+			};
+		}
+		if (beforeResult?.block) {
+			const result = createErrorToolResult(beforeResult.reason || "Tool execution was blocked");
+			if (beforeResult.terminate === true) result.terminate = true;
+			return { kind: "immediate", result, isError: true };
+		}
+		return undefined;
+	} catch (error) {
+		return {
+			kind: "immediate",
+			result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+			isError: true,
+		};
+	}
+}
+
 async function prepareToolCall(
 	currentContext: AgentContext,
 	assistantMessage: AssistantMessage,
 	toolCall: AgentToolCall,
 	config: AgentLoopConfig,
 	signal: AbortSignal | undefined,
+	runBeforeToolCall = true,
 ): Promise<PreparedToolCall | ImmediateToolCallOutcome> {
 	const tool = currentContext.tools?.find((t) => t.name === toolCall.name);
 	if (!tool) {
@@ -693,34 +830,16 @@ async function prepareToolCall(
 	try {
 		const preparedToolCall = prepareToolCallArguments(tool, toolCall);
 		const validatedArgs = validateToolArguments(tool, preparedToolCall);
-		if (config.beforeToolCall) {
-			const beforeResult = await config.beforeToolCall(
-				{
-					assistantMessage,
-					toolCall,
-					args: validatedArgs,
-					context: currentContext,
-				},
+		if (runBeforeToolCall) {
+			const beforeResult = await runBeforeToolCallHook(
+				currentContext,
+				assistantMessage,
+				toolCall,
+				validatedArgs,
+				config,
 				signal,
 			);
-			if (signal?.aborted) {
-				return {
-					kind: "immediate",
-					result: createErrorToolResult("Operation aborted"),
-					isError: true,
-				};
-			}
-			if (beforeResult?.block) {
-				const result = createErrorToolResult(beforeResult.reason || "Tool execution was blocked");
-				if (beforeResult.terminate === true) {
-					result.terminate = true;
-				}
-				return {
-					kind: "immediate",
-					result,
-					isError: true,
-				};
-			}
+			if (beforeResult) return beforeResult;
 		}
 		if (signal?.aborted) {
 			return {
@@ -1012,6 +1131,12 @@ function createErrorToolResult(message: string): AgentToolResult<any> {
 		content: [{ type: "text", text: message }],
 		details: {},
 	};
+}
+
+function createExecutionKeyConflictResult(conflictKey: string): AgentToolResult<any> {
+	return createErrorToolResult(
+		`同一条助手回复中不能同时修改同一个目标：${conflictKey}。请把同一文件的多个修改合并到一个 edit 或 apply_patch 调用中；本批次没有执行这些冲突修改。`,
+	);
 }
 
 async function emitToolExecutionEnd(finalized: FinalizedToolCallOutcome, emit: AgentEventSink): Promise<void> {

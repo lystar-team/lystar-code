@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, statSync, unlinkSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { dirname, join } from "node:path";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { AgentSession, AgentSessionEvent } from "./agent-session.ts";
 
@@ -35,9 +36,24 @@ export type GuiCompanionCommand =
 	| {
 			type: "request";
 			requestId: string;
-			command: "prompt" | "steer" | "follow_up" | "clear_queue" | "abort" | "snapshot";
+			command:
+				| "prompt"
+				| "steer"
+				| "follow_up"
+				| "clear_queue"
+				| "abort"
+				| "snapshot"
+				| "set_model"
+				| "set_thinking_level"
+				| "cycle_model"
+				| "cycle_thinking_level"
+				| "get_completions";
 			text?: string;
+			cursor?: number;
 			images?: GuiCompanionImage[];
+			model?: { provider: string; id: string };
+			level?: ThinkingLevel;
+			direction?: "forward" | "backward";
 	  };
 
 export type GuiCompanionServerMessage =
@@ -142,6 +158,8 @@ function sessionImages(images: GuiCompanionImage[] | undefined): ImageContent[] 
 	return images?.map((image) => ({ type: "image", data: image.data, mimeType: image.mimeType }));
 }
 
+const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+
 export class GuiCompanionServer {
 	private readonly sockets = new Set<Socket>();
 	private server?: Server;
@@ -150,11 +168,13 @@ export class GuiCompanionServer {
 	private committedEntryCount: number;
 	private readonly session: AgentSession;
 	private readonly agentDir: string;
+	private readonly onSessionChanged?: () => void;
 	private committedTranscriptRevision: number;
 
-	constructor(session: AgentSession, agentDir: string) {
+	constructor(session: AgentSession, agentDir: string, onSessionChanged?: () => void) {
 		this.session = session;
 		this.agentDir = agentDir;
+		this.onSessionChanged = onSessionChanged;
 		this.committedEntryCount = session.sessionManager.getEntries().length;
 		const sessionPath = session.sessionFile;
 		this.committedTranscriptRevision = sessionPath && existsSync(sessionPath) ? statSync(sessionPath).size : 0;
@@ -272,11 +292,51 @@ export class GuiCompanionServer {
 				return {};
 			case "clear_queue":
 				return this.session.clearQueue();
+			case "set_model": {
+				const modelRef = command.model;
+				if (!modelRef || !modelRef.provider.trim() || !modelRef.id.trim()) throw new Error("模型标识不能为空");
+				const model = this.session.modelRuntime.getModel(modelRef.provider, modelRef.id);
+				if (!model) throw new Error(`未找到模型：${modelRef.provider}/${modelRef.id}`);
+				await this.session.setModel(model);
+				this.onSessionChanged?.();
+				return this.snapshot();
+			}
+			case "set_thinking_level": {
+				const level = command.level;
+				if (!level || !THINKING_LEVELS.has(level)) throw new Error("不支持的 Thinking Level");
+				this.session.setThinkingLevel(level);
+				this.onSessionChanged?.();
+				return this.snapshot();
+			}
+			case "cycle_model": {
+				const direction = command.direction;
+				if (direction !== "forward" && direction !== "backward") throw new Error("模型切换方向无效");
+				const result = await this.session.cycleModel(direction);
+				this.onSessionChanged?.();
+				return {
+					snapshot: this.snapshot(),
+					changed: result !== undefined,
+					isScoped: result?.isScoped ?? this.session.scopedModels.length > 0,
+				};
+			}
+			case "cycle_thinking_level": {
+				const previous = this.session.thinkingLevel;
+				const level = this.session.cycleThinkingLevel();
+				this.onSessionChanged?.();
+				return {
+					snapshot: this.snapshot(),
+					changed: level !== undefined && level !== previous,
+					supported: level !== undefined,
+				};
+			}
 			case "abort":
 				await this.session.abort();
 				return {};
 			case "snapshot":
 				return this.snapshot();
+			case "get_completions":
+				if (typeof command.cursor !== "number" || command.cursor < 0) throw new Error("补全光标位置无效");
+				return this.session.getCompletions(command.text ?? "", command.cursor);
 		}
 	}
 

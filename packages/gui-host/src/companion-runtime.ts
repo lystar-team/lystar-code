@@ -2,10 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { createConnection, type Socket } from "node:net";
 import { join } from "node:path";
 import type {
+	CompletionResult,
 	JsonValue,
+	ModelRef,
 	SessionProgress,
 	SessionStateSnapshot,
 	SessionTreeNode,
+	ThinkingLevel,
 	TranscriptItem,
 	UsageProgress,
 } from "@lystar/code-gui-protocol";
@@ -43,9 +46,24 @@ type GuiCompanionCommand =
 	| {
 			type: "request";
 			requestId: string;
-			command: "prompt" | "steer" | "follow_up" | "clear_queue" | "abort" | "snapshot";
+			command:
+				| "prompt"
+				| "steer"
+				| "follow_up"
+				| "clear_queue"
+				| "abort"
+				| "snapshot"
+				| "set_model"
+				| "set_thinking_level"
+				| "cycle_model"
+				| "cycle_thinking_level"
+				| "get_completions";
 			text?: string;
+			cursor?: number;
 			images?: GuiCompanionImage[];
+			model?: ModelRef;
+			level?: ThinkingLevel;
+			direction?: "forward" | "backward";
 	  };
 
 type GuiCompanionServerMessage =
@@ -99,12 +117,61 @@ function usage(value: unknown): UsageProgress | undefined {
 	return Object.keys(result).length > 0 ? result : undefined;
 }
 
+function isGuiCompanionSnapshot(value: unknown): value is GuiCompanionSnapshot {
+	const item = record(value);
+	return (
+		item !== undefined &&
+		typeof item.id === "string" &&
+		typeof item.path === "string" &&
+		typeof item.cwd === "string" &&
+		typeof item.thinkingLevel === "string" &&
+		typeof item.transcriptGeneration === "string" &&
+		typeof item.transcriptRevision === "number"
+	);
+}
+
+function boundedText(value: string): string {
+	return value.length <= 16 * 1024 ? value : `${value.slice(0, 16 * 1024 - 1)}…`;
+}
+
+function serializedText(value: unknown): string {
+	if (typeof value === "string") return boundedText(value);
+	if (value === undefined || value === null) return "";
+	try {
+		return boundedText(JSON.stringify(value));
+	} catch {
+		return boundedText(String(value));
+	}
+}
+
+function toolInputSummary(name: string, value: unknown): string {
+	const input = record(value);
+	if (name === "bash" && typeof input?.command === "string") return boundedText(input.command);
+	return serializedText(value);
+}
+
+function toolOutputSummary(value: unknown): string {
+	const result = record(value);
+	if (Array.isArray(result?.content)) {
+		const text = result.content
+			.map((part) => {
+				const item = record(part);
+				return item?.type === "text" && typeof item.text === "string" ? item.text : "";
+			})
+			.filter(Boolean)
+			.join("\n");
+		if (text) return boundedText(text);
+	}
+	return serializedText(value);
+}
+
 function projectAgentEvent(value: unknown): SessionProgress[] {
 	const event = record(value);
 	if (!event || typeof event.type !== "string") return [];
 	if (event.type === "message_start") {
 		const message = record(event.message);
 		if (message?.role === "user") return [{ type: "user_message", text: textFromContent(message.content) }];
+		if (message?.role === "assistant") return [{ type: "phase", phase: "turn" }];
 		return [];
 	}
 	if (event.type === "message_update") {
@@ -121,23 +188,27 @@ function projectAgentEvent(value: unknown): SessionProgress[] {
 		return updates;
 	}
 	if (event.type === "tool_execution_start") {
+		const name = typeof event.toolName === "string" ? event.toolName : "tool";
 		return [
 			{
 				type: "tool_start",
 				toolCallId: typeof event.toolCallId === "string" ? event.toolCallId : randomUUID(),
-				name: typeof event.toolName === "string" ? event.toolName : "tool",
-				summary: "",
+				name,
+				summary: toolInputSummary(name, event.args),
 			},
 		];
 	}
 	if (event.type === "tool_execution_end") {
+		const name = typeof event.toolName === "string" ? event.toolName : "tool";
 		return [
 			{
 				type: "tool_end",
 				toolCallId: typeof event.toolCallId === "string" ? event.toolCallId : randomUUID(),
-				name: typeof event.toolName === "string" ? event.toolName : "tool",
+				name,
 				status: event.isError === true ? "error" : "success",
-				summary: "",
+				summary:
+					toolOutputSummary(event.result) ||
+					(typeof event.errorMessage === "string" ? boundedText(event.errorMessage) : ""),
 			},
 		];
 	}
@@ -326,15 +397,15 @@ export class GuiCompanionRuntime implements RuntimeSession {
 	}
 
 	async prompt(text: string, images?: GuiCompanionImage[]): Promise<void> {
-		await this.request("prompt", text, images);
+		await this.request("prompt", { text, images });
 	}
 
 	async steer(text: string, images?: GuiCompanionImage[]): Promise<void> {
-		await this.request("steer", text, images);
+		await this.request("steer", { text, images });
 	}
 
 	async followUp(text: string, images?: GuiCompanionImage[]): Promise<void> {
-		await this.request("follow_up", text, images);
+		await this.request("follow_up", { text, images });
 	}
 
 	async clearQueue(): Promise<{ steering: string[]; followUp: string[] }> {
@@ -369,20 +440,28 @@ export class GuiCompanionRuntime implements RuntimeSession {
 		throw new Error("TUI 共享会话暂不支持重命名控制");
 	}
 
-	async setModel(): Promise<void> {
-		throw new Error("TUI 共享会话请在 TUI 中切换模型");
+	async setModel(model: ModelRef): Promise<void> {
+		const result = await this.request("set_model", { model });
+		if (isGuiCompanionSnapshot(result)) this.applySnapshot(result);
 	}
 
-	async setThinkingLevel(): Promise<void> {
-		throw new Error("TUI 共享会话请在 TUI 中切换思考强度");
+	async setThinkingLevel(level: ThinkingLevel): Promise<void> {
+		const result = await this.request("set_thinking_level", { level });
+		if (isGuiCompanionSnapshot(result)) this.applySnapshot(result);
 	}
 
-	async cycleModel(): Promise<{ changed: boolean; isScoped: boolean }> {
-		throw new Error("TUI 共享会话请在 TUI 中切换模型");
+	async cycleModel(direction: "forward" | "backward"): Promise<{ changed: boolean; isScoped: boolean }> {
+		const result = record(await this.request("cycle_model", { direction }));
+		if (!result) throw new Error("TUI 共享会话返回了无效的模型切换结果");
+		if (isGuiCompanionSnapshot(result.snapshot)) this.applySnapshot(result.snapshot);
+		return { changed: result.changed === true, isScoped: result.isScoped === true };
 	}
 
-	cycleThinkingLevel(): { changed: boolean; supported: boolean } {
-		throw new Error("TUI 共享会话请在 TUI 中切换思考强度");
+	async cycleThinkingLevel(): Promise<{ changed: boolean; supported: boolean }> {
+		const result = record(await this.request("cycle_thinking_level"));
+		if (!result) throw new Error("TUI 共享会话返回了无效的思考强度切换结果");
+		if (isGuiCompanionSnapshot(result.snapshot)) this.applySnapshot(result.snapshot);
+		return { changed: result.changed === true, supported: result.supported === true };
 	}
 
 	async fork(): Promise<{ sessionPath: string; selectedText?: string }> {
@@ -397,8 +476,9 @@ export class GuiCompanionRuntime implements RuntimeSession {
 		throw new Error("TUI 共享会话暂不支持资源重载");
 	}
 
-	getCompletions() {
-		return undefined;
+	async getCompletions(text: string, cursor: number): Promise<CompletionResult | undefined> {
+		const result = await this.request("get_completions", { text, cursor });
+		return result as CompletionResult | undefined;
 	}
 
 	getToolRecoveryDiagnostics() {
@@ -455,6 +535,12 @@ export class GuiCompanionRuntime implements RuntimeSession {
 		this.pending.clear();
 	}
 
+	private applySnapshot(next: GuiCompanionSnapshot): void {
+		this.snapshotValue = next;
+		this.revision++;
+		this.emit({ type: "state_changed", payload: this.getSnapshot("owned") as unknown as JsonValue });
+	}
+
 	private handleMessage(line: string): void {
 		let message: GuiCompanionServerMessage;
 		try {
@@ -471,9 +557,7 @@ export class GuiCompanionRuntime implements RuntimeSession {
 			return;
 		}
 		if (message.type === "snapshot" || message.type === "ready") {
-			this.snapshotValue = message.snapshot;
-			this.revision++;
-			this.emit({ type: "state_changed", payload: this.getSnapshot("owned") as unknown as JsonValue });
+			this.applySnapshot(message.snapshot);
 			return;
 		}
 		if (message.type === "agent_event") {
@@ -500,8 +584,14 @@ export class GuiCompanionRuntime implements RuntimeSession {
 
 	private request(
 		command: Extract<GuiCompanionCommand, { type: "request" }>["command"],
-		text?: string,
-		images?: GuiCompanionImage[],
+		options: {
+			text?: string;
+			cursor?: number;
+			images?: GuiCompanionImage[];
+			model?: ModelRef;
+			level?: ThinkingLevel;
+			direction?: "forward" | "backward";
+		} = {},
 	): Promise<unknown> {
 		if (!this.socket || this.disposed) return Promise.reject(new Error("TUI 共享会话已断开"));
 		const requestId = randomUUID();
@@ -514,8 +604,7 @@ export class GuiCompanionRuntime implements RuntimeSession {
 			type: "request",
 			requestId,
 			command,
-			...(text === undefined ? {} : { text }),
-			...(images === undefined ? {} : { images }),
+			...options,
 		};
 		this.socket.write(`${JSON.stringify(message)}\n`, (error) => {
 			if (!error) return;

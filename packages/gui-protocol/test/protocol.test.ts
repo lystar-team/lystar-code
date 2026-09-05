@@ -11,6 +11,7 @@ import {
 	GuiProtocolClient,
 	isDiagnostics,
 	ServerMessageDecoder,
+	TrustedServerMessageDecoder,
 	WorkspaceCommandResultSchemas,
 } from "../src/index.ts";
 
@@ -50,6 +51,17 @@ describe("GUI Protocol v1", () => {
 		} as const;
 		expect(new ServerMessageDecoder().push(encodeTrustedServerMessage(message))).toEqual([message]);
 		expect(encodeTrustedServerMessage(message)).toEqual(encodeServerMessage(message));
+	});
+
+	it("keeps shallow envelope validation for trusted Host frames without deep payload validation", () => {
+		const frame = encodeFrame(
+			encodeCbor({ type: "event", event: { type: "session_progress", sessionPath: "session" } }),
+		);
+		expect(() => new ServerMessageDecoder().push(frame)).toThrow();
+		expect(new TrustedServerMessageDecoder().push(frame)).toEqual([
+			{ type: "event", event: { type: "session_progress", sessionPath: "session" } },
+		]);
+		expect(() => new TrustedServerMessageDecoder().push(encodeFrame(encodeCbor({ type: "event" })))).toThrow();
 	});
 
 	it("decodes fragmented and coalesced framed messages", () => {

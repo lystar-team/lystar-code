@@ -3,6 +3,7 @@ import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type {
+	CompletionResult,
 	ContentChunk,
 	GitDiff,
 	GitStatus,
@@ -14,11 +15,14 @@ import type {
 	OperationSnapshot,
 	ProjectResource,
 	ProjectTrust,
+	ReadImageContentResult,
 	ServerEvent,
+	SessionProgress,
 	SessionStateSnapshot,
 	SessionSummary,
 	SessionTreeNode,
 	SettingSummary,
+	TranscriptItem,
 	TranscriptPage,
 } from "@lystar/code-gui-protocol";
 import { WebSocket, WebSocketServer } from "ws";
@@ -37,10 +41,14 @@ import { ProjectRegistry, type WebProject } from "./project-registry.ts";
 
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
 const MAX_FILE_BYTES = 32 * 1024 * 1024;
+const PROGRESS_BATCH_MS = 50;
+const PUBLIC_SESSION_FIRST_MESSAGE_LIMIT = 512;
+const BROWSER_CONTEXT_IDLE_MS = 60_000;
 const ACTIVE_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>(["accepted", "running", "waiting_for_input"]);
 
 export type WebSessionSummary = Omit<SessionSummary, "path" | "cwd">;
 export type WebSessionSnapshot = Omit<SessionStateSnapshot, "path" | "cwd">;
+type WebTranscriptItem = Omit<TranscriptItem, "payload">;
 export type WebOperation = Omit<
 	OperationSnapshot,
 	"sessionPath" | "clientInstanceId" | "clientRequestId" | "payloadHash"
@@ -61,16 +69,34 @@ interface SessionRef {
 	cwd: string;
 }
 
+type ContextLease = {
+	leaseId: string;
+	leaseGeneration: number;
+	sessionPath: string;
+	createdAt: number;
+	updatedAt: number;
+};
+
 interface BrowserContext {
 	id: string;
 	client?: GuiProtocolClient;
 	connectPromise?: Promise<GuiProtocolClient>;
 	initial?: HostInitialSnapshot;
-	leases: Map<
-		string,
-		{ leaseId: string; leaseGeneration: number; sessionPath: string; createdAt: number; updatedAt: number }
-	>;
+	leases: Map<string, ContextLease>;
 	sockets: Set<WebSocket>;
+	sessionListPromises: Map<string, Promise<SessionSummary[]>>;
+	sessionListCache: Map<string, SessionListCache>;
+	sessionListGeneration: number;
+	bootstrapGeneration: number;
+	bootstrapCache?: BootstrapCache;
+	bootstrapPromise?: Promise<BootstrapResponse>;
+	activeRequests: number;
+	idleTimer?: ReturnType<typeof setTimeout>;
+	reconnectTimer?: ReturnType<typeof setTimeout>;
+	progressTimer?: ReturnType<typeof setTimeout>;
+	pendingProgress: PendingProgressEvent[];
+	reconnectAttempt: number;
+	connectionState: "unknown" | "connected" | "disconnected";
 }
 
 interface WebProjectResponse {
@@ -95,6 +121,52 @@ interface BootstrapResponse {
 	connection: { connected: boolean; host: string; productVersion?: string };
 	pendingUiRequests: Array<Extract<ServerEvent, { type: "ui_request" }>>;
 	operations: WebOperation[];
+	leases: Array<{ sessionId: string; lease: WebLease }>;
+}
+
+interface BootstrapCache {
+	generation: number;
+	value: BootstrapResponse;
+}
+
+type WebSessionProgressEvent = {
+	type: "session_progress";
+	sessionId: string;
+	progress: SessionProgress;
+};
+
+interface PendingProgressEvent {
+	key?: string;
+	event: WebSessionProgressEvent;
+}
+
+function progressCoalescingKey(event: WebSessionProgressEvent): string | undefined {
+	switch (event.progress.type) {
+		case "assistant_delta":
+		case "thinking_delta":
+		case "phase":
+		case "queue_update":
+		case "status":
+		case "usage":
+			return `${event.sessionId}:${event.progress.type}`;
+		case "tool_update":
+			return `${event.sessionId}:${event.progress.type}:${event.progress.toolCallId}`;
+		default:
+			return undefined;
+	}
+}
+
+function mergeProgress(left: SessionProgress, right: SessionProgress): SessionProgress {
+	if (left.type === "assistant_delta" && right.type === "assistant_delta")
+		return { type: "assistant_delta", text: left.text + right.text };
+	if (left.type === "thinking_delta" && right.type === "thinking_delta")
+		return { type: "thinking_delta", text: left.text + right.text };
+	return right;
+}
+
+interface SessionListCache {
+	generation: number;
+	value: SessionSummary[];
 }
 
 class HttpError extends Error {
@@ -212,11 +284,23 @@ function setSecurityHeaders(response: ServerResponse): void {
 
 function publicSessionSummary(session: SessionSummary): WebSessionSummary {
 	const { path: _path, cwd: _cwd, ...result } = session;
-	return result;
+	return {
+		...result,
+		firstMessage:
+			result.firstMessage.length > PUBLIC_SESSION_FIRST_MESSAGE_LIMIT
+				? `${result.firstMessage.slice(0, PUBLIC_SESSION_FIRST_MESSAGE_LIMIT - 1)}…`
+				: result.firstMessage,
+	};
 }
 
 function publicSessionSnapshot(snapshot: SessionStateSnapshot): WebSessionSnapshot {
 	const { path: _path, cwd: _cwd, ...result } = snapshot;
+	return result;
+}
+
+function publicTranscriptItem(item: TranscriptItem): WebTranscriptItem {
+	// Web 页面只使用投影后的 view；原始 payload 可能包含大型工具输出，不能重复传输。
+	const { payload: _payload, ...result } = item;
 	return result;
 }
 
@@ -305,9 +389,13 @@ export class WebGatewayServer {
 	readonly registry: ProjectRegistry;
 	private readonly contexts = new Map<string, BrowserContext>();
 	private readonly sessions = new Map<string, SessionRef>();
+	private readonly sessionIdsByPath = new Map<string, string>();
 	private readonly webSockets = new WebSocketServer({ noServer: true, maxPayload: MAX_BODY_BYTES });
 	private readonly server: Server;
+	private readonly heartbeatTimer: ReturnType<typeof setInterval>;
+	private readonly socketLiveness = new WeakMap<WebSocket, boolean>();
 	private listening = false;
+	private closed = false;
 
 	constructor(config: WebGatewayConfig) {
 		this.config = config;
@@ -315,6 +403,8 @@ export class WebGatewayServer {
 		this.server = createServer((request, response) => void this.handleRequest(request, response));
 		this.server.on("upgrade", (request, socket, head) => void this.handleUpgrade(request, socket, head));
 		this.webSockets.on("connection", (socket, request) => void this.handleWebSocket(socket, request));
+		this.heartbeatTimer = setInterval(() => this.checkWebSocketLiveness(), 15_000);
+		this.heartbeatTimer.unref?.();
 	}
 
 	async listen(): Promise<void> {
@@ -330,7 +420,12 @@ export class WebGatewayServer {
 	}
 
 	async close(): Promise<void> {
+		this.closed = true;
+		clearInterval(this.heartbeatTimer);
 		for (const context of this.contexts.values()) {
+			if (context.idleTimer) clearTimeout(context.idleTimer);
+			if (context.reconnectTimer) clearTimeout(context.reconnectTimer);
+			this.clearPendingProgress(context);
 			for (const socket of context.sockets) socket.close(1001, "Web Gateway stopped");
 			await context.client?.close().catch(() => {});
 		}
@@ -347,6 +442,112 @@ export class WebGatewayServer {
 
 	getToken(): string {
 		return this.config.token;
+	}
+
+	private createContext(id: string): BrowserContext {
+		return {
+			id,
+			leases: new Map(),
+			sockets: new Set(),
+			sessionListPromises: new Map(),
+			sessionListCache: new Map(),
+			sessionListGeneration: 0,
+			bootstrapGeneration: 0,
+			activeRequests: 0,
+			pendingProgress: [],
+			reconnectAttempt: 0,
+			connectionState: "unknown",
+		};
+	}
+
+	private touchContext(context: BrowserContext): void {
+		if (context.idleTimer) {
+			clearTimeout(context.idleTimer);
+			context.idleTimer = undefined;
+		}
+	}
+
+	private clearPendingProgress(context: BrowserContext): void {
+		if (context.progressTimer) {
+			clearTimeout(context.progressTimer);
+			context.progressTimer = undefined;
+		}
+		context.pendingProgress.length = 0;
+	}
+
+	private flushPendingProgress(context: BrowserContext): void {
+		if (context.progressTimer) {
+			clearTimeout(context.progressTimer);
+			context.progressTimer = undefined;
+		}
+		if (context.pendingProgress.length === 0) return;
+		const pending = context.pendingProgress.splice(0);
+		for (const entry of pending) this.broadcast(context, entry.event);
+	}
+
+	private enqueueProgress(context: BrowserContext, event: WebSessionProgressEvent): void {
+		const key = progressCoalescingKey(event);
+		const previous = context.pendingProgress.at(-1);
+		if (key && previous?.key === key) {
+			previous.event = { ...event, progress: mergeProgress(previous.event.progress, event.progress) };
+		} else {
+			context.pendingProgress.push({ key, event });
+		}
+		if (context.pendingProgress.length >= 64) {
+			this.flushPendingProgress(context);
+			return;
+		}
+		if (context.progressTimer) return;
+		const timer = setTimeout(() => {
+			context.progressTimer = undefined;
+			this.flushPendingProgress(context);
+		}, PROGRESS_BATCH_MS);
+		timer.unref?.();
+		context.progressTimer = timer;
+	}
+
+	private scheduleContextCleanup(context: BrowserContext): void {
+		if (
+			this.closed ||
+			this.contexts.get(context.id) !== context ||
+			context.sockets.size > 0 ||
+			context.activeRequests > 0 ||
+			context.connectPromise ||
+			context.reconnectTimer ||
+			context.idleTimer
+		)
+			return;
+		const timer = setTimeout(() => {
+			context.idleTimer = undefined;
+			if (
+				context.sockets.size > 0 ||
+				context.activeRequests > 0 ||
+				context.connectPromise ||
+				context.reconnectTimer ||
+				this.contexts.get(context.id) !== context
+			)
+				return;
+			this.contexts.delete(context.id);
+			context.leases.clear();
+			context.sessionListPromises.clear();
+			this.clearPendingProgress(context);
+			context.sessionListCache.clear();
+			context.bootstrapCache = undefined;
+			const client = context.client;
+			context.client = undefined;
+			context.initial = undefined;
+			void client?.close().catch(() => {});
+		}, BROWSER_CONTEXT_IDLE_MS);
+		timer.unref?.();
+		context.idleTimer = timer;
+	}
+
+	private invalidateBootstrap(context: BrowserContext): void {
+		context.bootstrapGeneration += 1;
+		context.sessionListGeneration += 1;
+		if (context.sockets.size === 0 && context.activeRequests === 0) return;
+		context.sessionListCache.clear();
+		context.sessionListPromises.clear();
 	}
 
 	private contextFor(request: IncomingMessage, response?: ServerResponse, url?: URL): BrowserContext {
@@ -371,9 +572,10 @@ export class WebGatewayServer {
 		}
 		let context = this.contexts.get(id);
 		if (!context) {
-			context = { id, leases: new Map(), sockets: new Set() };
+			context = this.createContext(id);
 			this.contexts.set(id, context);
 		}
+		this.touchContext(context);
 		return context;
 	}
 
@@ -407,79 +609,174 @@ export class WebGatewayServer {
 	private async getClient(context: BrowserContext): Promise<GuiProtocolClient> {
 		if (context.client?.getSnapshot().connected) return context.client;
 		if (context.connectPromise) return context.connectPromise;
+		const wasDisconnected = context.connectionState === "disconnected";
+		let connectedClient: GuiProtocolClient | undefined;
 		const promise = connectHostClient(
 			this.config,
 			context.id,
 			(event) => this.handleHostEvent(context, event),
-			(error) => {
-				if (context.client?.getSnapshot().connected === false) {
-					context.client = undefined;
-					context.connectPromise = undefined;
-					context.initial = undefined;
-					context.leases.clear();
-					this.broadcast(context, {
-						type: "connection_state",
-						connected: false,
-						message: error?.message ?? "Web Host 已断开",
-					});
-				}
-			},
+			(error) => this.handleHostDisconnect(context, connectedClient, error),
 		)
-			.then((result) => {
+			.then(async (result) => {
+				connectedClient = result.client;
 				context.client = result.client;
 				context.initial = result.initial;
+				await this.restoreContextLeases(context, result.client);
+				if (context.client !== result.client) throw new Error("Web Host 在恢复会话控制权时断开");
+				context.connectionState = "connected";
+				context.reconnectAttempt = 0;
+				if (wasDisconnected && context.sockets.size > 0) {
+					this.broadcast(context, { type: "connection_state", connected: true, message: "Web Host 已恢复" });
+					void this.pushBootstrap(context);
+				}
 				return result.client;
 			})
 			.finally(() => {
 				if (context.connectPromise === promise) context.connectPromise = undefined;
+				if (!context.client && context.sockets.size > 0) this.scheduleReconnect(context);
+				this.scheduleContextCleanup(context);
 			});
 		context.connectPromise = promise;
 		return promise;
 	}
 
+	private handleHostDisconnect(context: BrowserContext, client?: GuiProtocolClient, error?: Error): void {
+		if (this.closed || (client && context.client && context.client !== client)) return;
+		context.client = undefined;
+		context.initial = undefined;
+		this.clearPendingProgress(context);
+		this.invalidateBootstrap(context);
+		const shouldNotify = context.connectionState !== "disconnected" && context.sockets.size > 0;
+		context.connectionState = "disconnected";
+		if (shouldNotify) {
+			this.broadcast(context, {
+				type: "connection_state",
+				connected: false,
+				message: error?.message ?? "Web Host 已断开",
+			});
+		}
+		this.scheduleReconnect(context);
+		this.scheduleContextCleanup(context);
+	}
+
+	private scheduleReconnect(context: BrowserContext): void {
+		if (this.closed || context.reconnectTimer || context.connectPromise || context.sockets.size === 0) return;
+		const delay = Math.min(5_000, 250 * 2 ** Math.min(context.reconnectAttempt, 5));
+		context.reconnectAttempt += 1;
+		const timer = setTimeout(() => {
+			context.reconnectTimer = undefined;
+			void this.getClient(context).catch(() => {});
+		}, delay);
+		timer.unref?.();
+		context.reconnectTimer = timer;
+	}
+
+	private async restoreContextLeases(context: BrowserContext, client: GuiProtocolClient): Promise<void> {
+		const previousLeases = [...context.leases.entries()];
+		for (const [sessionId, previous] of previousLeases) {
+			try {
+				const result = await client.request<{
+					lease: ContextLease;
+				}>({
+					command: "acquire_session",
+					sessionPath: previous.sessionPath,
+					clientInstanceId: context.id,
+				});
+				context.leases.set(sessionId, result.lease);
+			} catch {
+				context.leases.delete(sessionId);
+			}
+		}
+	}
+
 	private async buildBootstrap(context: BrowserContext): Promise<BootstrapResponse> {
-		const client = await this.getClient(context);
-		const projects = await Promise.all(
-			this.registry.list().map(async (project) => {
-				try {
-					const sessions = await this.listProjectSessions(context, project);
-					return this.publicProject(project, sessions);
-				} catch {
-					// 会话目录读取短暂超时时，先返回索引中最近一次成功读取的真实会话，避免整个工作台退化为空壳。
-					return this.publicProject(project, project.recentSessions ?? []);
-				}
-			}),
-		);
-		const hello = client.getSnapshot().hello;
-		const initial = context.initial;
-		return {
-			projects,
-			capabilities: hello?.capabilities ?? [],
-			connection: {
-				connected: true,
-				host: "Web Host",
-				...(hello?.productVersion ? { productVersion: hello.productVersion } : {}),
-			},
-			pendingUiRequests: initial?.pendingUiRequests ?? [],
-			operations: (initial?.operations ?? []).map((operation) =>
-				publicOperation(operation, this.sessions.get(operation.sessionPath)?.id),
-			),
-		};
+		const cached = context.bootstrapCache;
+		if (cached && cached.generation === context.bootstrapGeneration) return cached.value;
+		if (context.bootstrapPromise) return context.bootstrapPromise;
+		const generation = context.bootstrapGeneration;
+		const promise = (async () => {
+			const client = await this.getClient(context);
+			const projects = await Promise.all(
+				this.registry.list().map(async (project) => {
+					try {
+						const sessions = await this.listProjectSessions(context, project);
+						return this.publicProject(project, sessions);
+					} catch {
+						// 会话目录读取短暂超时时，先返回索引中最近一次成功读取的真实会话，避免整个工作台退化为空壳。
+						return this.publicProject(project, project.recentSessions ?? []);
+					}
+				}),
+			);
+			const hello = client.getSnapshot().hello;
+			const initial = context.initial;
+			const value: BootstrapResponse = {
+				projects,
+				capabilities: hello?.capabilities ?? [],
+				connection: {
+					connected: true,
+					host: "Web Host",
+					...(hello?.productVersion ? { productVersion: hello.productVersion } : {}),
+				},
+				pendingUiRequests: initial?.pendingUiRequests ?? [],
+				operations: (initial?.operations ?? []).map((operation) =>
+					publicOperation(operation, this.sessions.get(operation.sessionPath)?.id),
+				),
+				leases: [...context.leases.entries()].map(([sessionId, lease]) => ({
+					sessionId,
+					lease: publicLease(lease),
+				})),
+			};
+			context.bootstrapCache = { generation, value };
+			return value;
+		})();
+		context.bootstrapPromise = promise;
+		try {
+			return await promise;
+		} finally {
+			if (context.bootstrapPromise === promise) context.bootstrapPromise = undefined;
+		}
 	}
 
 	private async listProjectSessions(context: BrowserContext, project: WebProject): Promise<SessionSummary[]> {
-		const client = await this.getClient(context);
-		const sessions = await client.request<SessionSummary[]>({ command: "list_sessions", cwd: project.cwd });
-		const sessionsById = new Map<string, SessionSummary>();
-		for (const session of sessions) {
-			const existing = sessionsById.get(session.id);
-			if (!existing || session.updatedAt > existing.updatedAt) sessionsById.set(session.id, session);
+		const cached = context.sessionListCache.get(project.id);
+		if (cached?.generation === context.sessionListGeneration) return cached.value;
+		const pending = context.sessionListPromises.get(project.id);
+		if (pending) return pending;
+		const generation = context.sessionListGeneration;
+		const request = (async () => {
+			const client = await this.getClient(context);
+			const sessions = await client.request<SessionSummary[]>({
+				command: "list_sessions",
+				cwd: project.cwd,
+				metadataOnly: true,
+			});
+			const sessionsById = new Map<string, SessionSummary>();
+			for (const session of sessions) {
+				const existing = sessionsById.get(session.id);
+				if (!existing || session.updatedAt > existing.updatedAt) sessionsById.set(session.id, session);
+			}
+			const uniqueSessions = [...sessionsById.values()].sort(
+				(left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id),
+			);
+			for (const session of uniqueSessions) {
+				this.sessions.set(session.id, {
+					id: session.id,
+					path: session.path,
+					projectId: project.id,
+					cwd: session.cwd,
+				});
+				this.sessionIdsByPath.set(session.path, session.id);
+			}
+			await this.registry.setRecentSessions(project.id, uniqueSessions);
+			context.sessionListCache.set(project.id, { generation, value: uniqueSessions });
+			return uniqueSessions;
+		})();
+		context.sessionListPromises.set(project.id, request);
+		try {
+			return await request;
+		} finally {
+			if (context.sessionListPromises.get(project.id) === request) context.sessionListPromises.delete(project.id);
 		}
-		const uniqueSessions = [...sessionsById.values()].sort((left, right) => right.updatedAt - left.updatedAt);
-		for (const session of uniqueSessions)
-			this.sessions.set(session.id, { id: session.id, path: session.path, projectId: project.id, cwd: session.cwd });
-		await this.registry.setRecentSessions(project.id, uniqueSessions);
-		return uniqueSessions;
 	}
 
 	private publicProject(project: WebProject, sessions: SessionSummary[]): WebProjectResponse {
@@ -598,7 +895,13 @@ export class WebGatewayServer {
 			if (url.pathname.startsWith("/api/")) {
 				this.assertToken(request);
 				const context = this.contextFor(request, response);
-				await this.handleApi(request, response, url, context);
+				context.activeRequests += 1;
+				try {
+					await this.handleApi(request, response, url, context);
+				} finally {
+					context.activeRequests -= 1;
+					this.scheduleContextCleanup(context);
+				}
 				return;
 			}
 			await this.handleStatic(response, url.pathname);
@@ -610,12 +913,22 @@ export class WebGatewayServer {
 
 	private async handleHealth(response: ServerResponse): Promise<void> {
 		let host: "connected" | "unavailable" = "unavailable";
-		try {
-			const context: BrowserContext = { id: `health-${randomUUID()}`, leases: new Map(), sockets: new Set() };
-			const client = await this.getClient(context);
-			host = client.getSnapshot().connected ? "connected" : "unavailable";
-			await client.close().catch(() => {});
-		} catch {}
+		const activeContext = [...this.contexts.values()].find((context) =>
+			Boolean(context.client?.getSnapshot().connected || context.connectPromise),
+		);
+		if (activeContext) {
+			try {
+				const client = activeContext.client ?? (await activeContext.connectPromise!);
+				host = client.getSnapshot().connected ? "connected" : "unavailable";
+			} catch {}
+		} else {
+			try {
+				const context = this.createContext(`health-${randomUUID()}`);
+				const client = await this.getClient(context);
+				host = client.getSnapshot().connected ? "connected" : "unavailable";
+				await client.close().catch(() => {});
+			} catch {}
+		}
 		sendJson(response, host === "connected" ? 200 : 503, { ok: host === "connected", gateway: "ok", host });
 	}
 
@@ -664,6 +977,34 @@ export class WebGatewayServer {
 			sendJson(response, 200, await this.buildBootstrap(context));
 			return;
 		}
+		if (parts.length === 3 && parts[1] === "resources" && parts[2] === "external" && request.method === "GET") {
+			const path = url.searchParams.get("path")?.trim();
+			if (!path) throw new HttpError(400, "resource_path_required", "资源路径不能为空");
+			const client = await this.getClient(context);
+			const resource = await client.request<ProjectResource>({
+				command: "resolve_external_resource",
+				target: path,
+			});
+			const bytes = await readChunks((offset) =>
+				client.request<ContentChunk>({
+					command: "read_external_resource",
+					path: resource.path,
+					accessToken: resource.accessToken ?? "",
+					offset,
+					limit: 1024 * 1024,
+				}),
+			);
+			sendJson(response, 200, {
+				kind: resource.kind,
+				path: resource.displayPath,
+				mimeType: resource.mimeType,
+				byteLength: bytes.byteLength,
+				...(resource.kind === "image"
+					? { data: Buffer.from(bytes).toString("base64") }
+					: { content: Buffer.from(bytes).toString("utf8") }),
+			});
+			return;
+		}
 		if (parts[1] === "projects") {
 			await this.handleProjects(request, response, url, context, parts);
 			return;
@@ -689,6 +1030,79 @@ export class WebGatewayServer {
 		if (parts[1] === "operations") {
 			await this.handleOperations(request, response, url, context, parts);
 			return;
+		}
+		if (parts[1] === "model-providers") {
+			const client = await this.getClient(context);
+			if (parts.length === 2 && request.method === "POST") {
+				const body = await parseJsonBody(request);
+				const provider = stringValue(body.provider);
+				const baseUrl = stringValue(body.baseUrl);
+				const api = stringValue(body.api);
+				if (!provider || !baseUrl || !api)
+					throw new HttpError(400, "model_provider_fields_required", "Provider、Base URL 和 API 类型不能为空");
+				const result = await client.request<ModelProviderSummary[]>({
+					command: "add_model_provider",
+					provider,
+					name: stringValue(body.name),
+					baseUrl,
+					api,
+					...(stringValue(body.apiKey) ? { apiKey: stringValue(body.apiKey) } : {}),
+					...(stringValue(body.catalogProvider) ? { catalogProvider: stringValue(body.catalogProvider) } : {}),
+					...(body.clearCatalogProvider === true ? { clearCatalogProvider: true } : {}),
+					clientInstanceId: context.id,
+					clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
+				});
+				sendJson(response, 200, { providers: result });
+				return;
+			}
+			if (parts.length === 4 && parts[3] === "models" && request.method === "POST") {
+				const body = await parseJsonBody(request);
+				const provider = stringValue(parts[2]);
+				const id = stringValue(body.id);
+				const input = Array.isArray(body.input)
+					? body.input.filter((value): value is "text" | "image" => value === "text" || value === "image")
+					: [];
+				if (!provider || !id || input.length === 0)
+					throw new HttpError(400, "model_fields_required", "模型 ID 和输入类型不能为空");
+				const thinkingLevelMap = object(body.thinkingLevelMap);
+				const result = await client.request<ModelSummary[]>({
+					command: "add_provider_model",
+					provider,
+					id,
+					name: stringValue(body.name),
+					api: stringValue(body.api),
+					baseUrl: stringValue(body.baseUrl),
+					reasoning: body.reasoning === true,
+					input,
+					...(thinkingLevelMap
+						? { thinkingLevelMap: jsonValue(thinkingLevelMap) as Record<string, string | null> }
+						: {}),
+					...(body.resetOverride === true ? { resetOverride: true } : {}),
+					...(Number.isInteger(body.contextWindow) && Number(body.contextWindow) > 0
+						? { contextWindow: Number(body.contextWindow) }
+						: {}),
+					...(Number.isInteger(body.maxTokens) && Number(body.maxTokens) > 0
+						? { maxTokens: Number(body.maxTokens) }
+						: {}),
+					clientInstanceId: context.id,
+					clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
+				});
+				sendJson(response, 200, { models: result });
+				return;
+			}
+			if (parts.length === 4 && parts[3] === "sync" && request.method === "POST") {
+				const provider = stringValue(parts[2]);
+				if (!provider) throw new HttpError(400, "model_provider_required", "Provider 不能为空");
+				const result = await client.request<ModelSummary[]>({
+					command: "sync_model_provider",
+					provider,
+					clientInstanceId: context.id,
+					clientRequestId: stringValue((await parseJsonBody(request)).clientRequestId) ?? randomUUID(),
+				});
+				sendJson(response, 200, { models: result });
+				return;
+			}
+			throw new HttpError(404, "model_provider_not_found", "未找到模型 Provider 接口");
 		}
 		if (parts[1] === "models" && request.method === "GET") {
 			const client = await this.getClient(context);
@@ -757,6 +1171,7 @@ export class WebGatewayServer {
 			const client = await this.getClient(context);
 			const listing = await client.request<HostDirectoryListing>({ command: "list_directories", path: cwd });
 			const project = await this.registry.add({ id: randomUUID(), cwd: listing.path, name: stringValue(body.name) });
+			this.invalidateBootstrap(context);
 			const sessions = await this.listProjectSessions(context, project);
 			sendJson(response, 201, { project: this.publicProject(project, sessions) });
 			return;
@@ -775,6 +1190,7 @@ export class WebGatewayServer {
 					: undefined,
 				archived: body.archived === true,
 			});
+			this.invalidateBootstrap(context);
 			sendJson(response, 200, {
 				project: this.publicProject(update, await this.listProjectSessions(context, update)),
 			});
@@ -782,12 +1198,33 @@ export class WebGatewayServer {
 		}
 		if (parts.length === 3 && request.method === "DELETE") {
 			await this.registry.remove(projectId);
+			this.invalidateBootstrap(context);
 			sendJson(response, 200, { removed: true });
 			return;
 		}
 		if (parts.length === 4 && parts[3] === "sessions" && request.method === "GET") {
 			const sessions = await this.listProjectSessions(context, project);
 			sendJson(response, 200, { sessions: sessions.map(publicSessionSummary) });
+			return;
+		}
+		if (parts.length === 4 && parts[3] === "completions" && request.method === "POST") {
+			const body = await parseJsonBody(request);
+			const text = typeof body.text === "string" ? body.text : "";
+			const cursor = Number(body.cursor);
+			if (!Number.isInteger(cursor) || cursor < 0 || cursor > text.length)
+				throw new HttpError(400, "completion_cursor_invalid", "输入建议光标位置无效");
+			const sessionId = stringValue(body.sessionId);
+			const session = sessionId ? await this.resolveSession(context, sessionId) : undefined;
+			if (session && session.projectId !== project.id)
+				throw new HttpError(400, "completion_project_mismatch", "会话不属于当前项目");
+			const result = await (await this.getClient(context)).request<CompletionResult>({
+				command: "get_completions",
+				cwd: project.cwd,
+				...(session ? { sessionPath: session.path } : {}),
+				text,
+				cursor,
+			});
+			sendJson(response, 200, result);
 			return;
 		}
 		if (parts.length >= 4 && parts[3] === "tree" && request.method === "GET") {
@@ -945,7 +1382,9 @@ export class WebGatewayServer {
 				projectId: project.id,
 				cwd: result.snapshot.cwd,
 			});
+			this.sessionIdsByPath.set(result.snapshot.path, sessionId);
 			context.leases.set(sessionId, result.lease);
+			this.invalidateBootstrap(context);
 			sendJson(response, 201, { session: publicSessionSnapshot(result.snapshot), lease: publicLease(result.lease) });
 			return;
 		}
@@ -971,6 +1410,8 @@ export class WebGatewayServer {
 				clientRequestId: randomUUID(),
 			});
 			this.sessions.delete(sessionId);
+			if (this.sessionIdsByPath.get(session.path) === sessionId) this.sessionIdsByPath.delete(session.path);
+			this.invalidateBootstrap(context);
 			sendJson(response, 200, { removed: true });
 			return;
 		}
@@ -988,6 +1429,7 @@ export class WebGatewayServer {
 					snapshot: SessionStateSnapshot;
 				}>({ command: "acquire_session", sessionPath: session.path, clientInstanceId: context.id });
 				context.leases.set(sessionId, result.lease);
+				this.invalidateBootstrap(context);
 				sendJson(response, 200, {
 					owned: true,
 					lease: publicLease(result.lease),
@@ -1000,6 +1442,7 @@ export class WebGatewayServer {
 				if (lease) {
 					await client.request({ command: "release_session", sessionPath: session.path, leaseId: lease.leaseId });
 					context.leases.delete(sessionId);
+					this.invalidateBootstrap(context);
 				}
 				sendJson(response, 200, { released: true });
 				return;
@@ -1022,17 +1465,23 @@ export class WebGatewayServer {
 					}),
 				);
 			} else {
-				sendJson(
-					response,
-					200,
-					await client.request<TranscriptPage>({
-						command: "read_transcript",
-						sessionPath: session.path,
-						...(url.searchParams.get("cursor") ? { cursor: url.searchParams.get("cursor")! } : {}),
-						limit,
-					}),
-				);
+				const page = await client.request<TranscriptPage>({
+					command: "read_transcript",
+					sessionPath: session.path,
+					...(url.searchParams.get("cursor") ? { cursor: url.searchParams.get("cursor")! } : {}),
+					limit,
+				});
+				sendJson(response, 200, { ...page, items: page.items.map(publicTranscriptItem) });
 			}
+			return;
+		}
+		if (parts.length === 6 && parts[3] === "content" && parts[5] === "image" && request.method === "GET") {
+			const image = await client.request<ReadImageContentResult>({
+				command: "read_image_content",
+				sessionPath: session.path,
+				contentRef: parts[4],
+			});
+			sendJson(response, 200, image);
 			return;
 		}
 		if (parts.length === 4 && parts[3] === "operations" && request.method === "GET") {
@@ -1147,7 +1596,9 @@ export class WebGatewayServer {
 				projectId: session.projectId,
 				cwd: result.snapshot.cwd,
 			});
+			this.sessionIdsByPath.set(result.snapshot.path, newSessionId);
 			context.leases.set(newSessionId, result.lease);
+			this.invalidateBootstrap(context);
 			sendJson(response, 201, {
 				session: publicSessionSnapshot(result.snapshot),
 				lease: publicLease(result.lease),
@@ -1209,7 +1660,7 @@ export class WebGatewayServer {
 		if (parts.length === 4 && parts[3] === "thinking" && request.method === "POST") {
 			const body = await parseJsonBody(request);
 			const lease = await this.requireLease(context, sessionId);
-			const levels = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+			const levels = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 			const level = stringValue(body.level);
 			if (!level || !levels.has(level))
 				throw new HttpError(400, "invalid_thinking_level", "不支持的 Thinking Level");
@@ -1219,7 +1670,7 @@ export class WebGatewayServer {
 						command: "set_session_thinking",
 						sessionPath: session.path,
 						leaseId: lease.leaseId,
-						level: level as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max",
+						level: level as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra",
 						clientInstanceId: context.id,
 						clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
 					}),
@@ -1329,15 +1780,45 @@ export class WebGatewayServer {
 		throw new HttpError(405, "method_not_allowed", "该接口不支持当前方法");
 	}
 
+	private async pushBootstrap(context: BrowserContext): Promise<void> {
+		try {
+			const bootstrap = await this.buildBootstrap(context);
+			this.broadcast(context, { type: "bootstrap", data: bootstrap });
+		} catch {
+			this.broadcast(context, {
+				type: "connection_state",
+				connected: false,
+				message: "Web Host 恢复后读取工作区失败",
+			});
+		}
+	}
+
 	private handleHostEvent(context: BrowserContext, event: ServerEvent): void {
+		if (context.sockets.size === 0) {
+			if (event.type !== "session_progress") {
+				this.invalidateBootstrap(context);
+				this.projectEvent(event);
+			}
+			return;
+		}
+		if (event.type !== "session_progress") this.invalidateBootstrap(context);
 		const projected = this.projectEvent(event);
-		if (projected) this.broadcast(context, projected);
+		if (!projected) return;
+		if (projected.type === "session_progress") {
+			this.enqueueProgress(context, projected as WebSessionProgressEvent);
+			return;
+		}
+		this.flushPendingProgress(context);
+		this.broadcast(context, projected);
 	}
 
 	private projectEvent(event: ServerEvent): Record<string, unknown> | undefined {
 		if (event.type === "session_snapshot") {
 			const ref = this.sessions.get(event.snapshot.id);
 			if (ref) {
+				if (ref.path !== event.snapshot.path && this.sessionIdsByPath.get(ref.path) === event.snapshot.id)
+					this.sessionIdsByPath.delete(ref.path);
+				this.sessionIdsByPath.set(event.snapshot.path, event.snapshot.id);
 				this.sessions.set(event.snapshot.id, { ...ref, path: event.snapshot.path, cwd: event.snapshot.cwd });
 				return {
 					type: "session_snapshot",
@@ -1345,6 +1826,7 @@ export class WebGatewayServer {
 					snapshot: publicSessionSnapshot(event.snapshot),
 				};
 			}
+			this.sessionIdsByPath.set(event.snapshot.path, event.snapshot.id);
 			return {
 				type: "session_snapshot",
 				sessionId: event.snapshot.id,
@@ -1352,9 +1834,10 @@ export class WebGatewayServer {
 			};
 		}
 		if (event.type === "session_removed") {
-			const sessionId = [...this.sessions.values()].find((candidate) => candidate.path === event.sessionPath)?.id;
+			const sessionId = this.sessionIdsByPath.get(event.sessionPath);
 			if (!sessionId) return { type: "sessions_changed" };
 			this.sessions.delete(sessionId);
+			this.sessionIdsByPath.delete(event.sessionPath);
 			return { type: "session_removed", sessionId };
 		}
 		if (event.type === "sessions_changed") {
@@ -1362,11 +1845,11 @@ export class WebGatewayServer {
 			return { type: "sessions_changed", ...(projectId ? { projectId } : {}) };
 		}
 		if (event.type === "transcript_changed") {
-			const sessionId = [...this.sessions.values()].find((candidate) => candidate.path === event.sessionPath)?.id;
+			const sessionId = this.sessionIdsByPath.get(event.sessionPath);
 			return sessionId ? { type: "transcript_changed", sessionId } : undefined;
 		}
 		if (event.type === "transcript_committed") {
-			const sessionId = [...this.sessions.values()].find((candidate) => candidate.path === event.sessionPath)?.id;
+			const sessionId = this.sessionIdsByPath.get(event.sessionPath);
 			return sessionId
 				? {
 						type: "transcript_committed",
@@ -1374,18 +1857,16 @@ export class WebGatewayServer {
 						transcriptGeneration: event.transcriptGeneration,
 						fromRevision: event.fromRevision,
 						toRevision: event.toRevision,
-						items: event.items,
+						items: event.items.map(publicTranscriptItem),
 					}
 				: undefined;
 		}
 		if (event.type === "session_progress") {
-			const sessionId = [...this.sessions.values()].find((candidate) => candidate.path === event.sessionPath)?.id;
+			const sessionId = this.sessionIdsByPath.get(event.sessionPath);
 			return sessionId ? { type: "session_progress", sessionId, progress: event.progress } : undefined;
 		}
 		if (event.type === "operation_updated") {
-			const sessionId = [...this.sessions.values()].find(
-				(candidate) => candidate.path === event.operation.sessionPath,
-			)?.id;
+			const sessionId = this.sessionIdsByPath.get(event.operation.sessionPath);
 			return {
 				type: "operation_updated",
 				operation: publicOperation(event.operation, sessionId),
@@ -1407,22 +1888,44 @@ export class WebGatewayServer {
 	private broadcast(context: BrowserContext, value: unknown): void {
 		const payload = JSON.stringify(value);
 		for (const socket of context.sockets) {
-			if (socket.readyState === WebSocket.OPEN) socket.send(payload);
+			if (socket.readyState !== WebSocket.OPEN) continue;
+			if (socket.bufferedAmount > 2 * 1024 * 1024) {
+				socket.terminate();
+				continue;
+			}
+			socket.send(payload, (error) => {
+				if (error) socket.terminate();
+			});
+		}
+	}
+
+	private checkWebSocketLiveness(): void {
+		for (const context of this.contexts.values()) {
+			for (const socket of context.sockets) {
+				if (socket.readyState !== WebSocket.OPEN) continue;
+				if (this.socketLiveness.get(socket) === false) {
+					socket.terminate();
+					continue;
+				}
+				this.socketLiveness.set(socket, false);
+				socket.ping();
+			}
 		}
 	}
 
 	private handleUpgrade(request: IncomingMessage, socket: import("node:stream").Duplex, head: Buffer): void {
+		let context: BrowserContext | undefined;
 		try {
 			this.assertRequestBoundary(request, true);
 			const url = new URL(request.url ?? "/ws", `http://${request.headers.host ?? "localhost"}`);
 			if (url.pathname !== "/ws") throw new HttpError(404, "not_found", "未找到 WebSocket 接口");
 			this.assertToken(request, true, url);
-			const context = this.contextFor(request, undefined, url);
+			context = this.contextFor(request, undefined, url);
 			this.webSockets.handleUpgrade(request, socket, head, (webSocket) =>
 				this.webSockets.emit("connection", webSocket, request),
 			);
-			void context;
 		} catch {
+			if (context) this.scheduleContextCleanup(context);
 			socket.destroy();
 		}
 	}
@@ -1434,8 +1937,18 @@ export class WebGatewayServer {
 			new URL(request.url ?? "/ws", `http://${request.headers.host ?? "localhost"}`),
 		);
 		context.sockets.add(socket);
-		socket.on("close", () => context.sockets.delete(socket));
-		socket.on("error", () => context.sockets.delete(socket));
+		this.touchContext(context);
+		this.socketLiveness.set(socket, true);
+		socket.on("pong", () => {
+			this.socketLiveness.set(socket, true);
+		});
+		const removeSocket = () => {
+			context.sockets.delete(socket);
+			if (context.sockets.size === 0) this.clearPendingProgress(context);
+			this.scheduleContextCleanup(context);
+		};
+		socket.on("close", removeSocket);
+		socket.on("error", removeSocket);
 		try {
 			const bootstrap = await this.buildBootstrap(context);
 			if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "bootstrap", data: bootstrap }));

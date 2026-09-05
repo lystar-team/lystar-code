@@ -10,6 +10,7 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 import { CodingAgentRuntimeAdapter } from "../src/runtime-adapter.ts";
 import { GuiHostService } from "../src/service.ts";
+import type { RuntimeEvent, RuntimeSession } from "../src/types.ts";
 
 async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
@@ -73,6 +74,24 @@ describe("GuiHostService Session observation", () => {
 		]);
 
 		messages.length = 0;
+		await handle({
+			type: "request",
+			id: "metadata",
+			request: { command: "list_sessions", cwd, metadataOnly: true },
+		});
+		const metadataResponse = messages.find(
+			(message) => message.type === "response" && message.id === "metadata" && message.ok,
+		);
+		if (!metadataResponse || metadataResponse.type !== "response" || !metadataResponse.ok) {
+			throw new Error("Missing metadata-only Session response");
+		}
+		const metadataSummaries = metadataResponse.result as unknown as SessionSummary[];
+		expect(metadataSummaries).toEqual([
+			expect.objectContaining({ path: sessionPath, messageCount: 0, firstMessage: "未命名会话" }),
+		]);
+		expect(metadataSummaries[0]).not.toHaveProperty("allMessagesText");
+
+		messages.length = 0;
 		await external.runBash("printf second", false, () => {});
 		await waitFor(() =>
 			messages.some(
@@ -114,6 +133,53 @@ describe("GuiHostService Session observation", () => {
 		);
 	});
 
+	it("coalesces adjacent high-frequency progress before sending it over the Host protocol", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-progress-"));
+		const agentDir = join(tempDir, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		const sessionPath = join(tempDir, "session.jsonl");
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		const service = new GuiHostService(adapter, { agentDir });
+		const messages: ServerMessage[] = [];
+		let emit: ((event: RuntimeEvent) => void) | undefined;
+		const runtime = {
+			sessionPath,
+			onEvent: (listener: (event: RuntimeEvent) => void) => {
+				emit = listener;
+				return () => {
+					emit = undefined;
+				};
+			},
+			dispose: async () => {},
+		} as unknown as RuntimeSession;
+		const connection = service.createConnection(async (message) => {
+			messages.push(message);
+		});
+		cleanups.push(async () => {
+			await connection.close();
+			await service.dispose();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+		await connection.handle({ type: "hello", version: 1, clientInstanceId: "progress-client" });
+		(service as unknown as { attachRuntime(runtime: RuntimeSession): void }).attachRuntime(runtime);
+
+		emit?.({ type: "progress", payload: { type: "assistant_delta", text: "O" } });
+		emit?.({ type: "progress", payload: { type: "assistant_delta", text: "K" } });
+		await waitFor(() =>
+			messages.some((message) => message.type === "event" && message.event.type === "session_progress"),
+		);
+
+		const progress = messages.filter(
+			(message): message is Extract<ServerMessage, { type: "event" }> =>
+				message.type === "event" && message.event.type === "session_progress",
+		);
+		expect(progress).toHaveLength(1);
+		expect(progress[0]?.event).toEqual({
+			type: "session_progress",
+			sessionPath,
+			progress: { type: "assistant_delta", text: "OK" },
+		});
+	});
 	it("returns active runtime recovery diagnostics through get_diagnostics", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-diagnostics-"));
 		const agentDir = join(tempDir, "agent");

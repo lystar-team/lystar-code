@@ -58,11 +58,10 @@
 
 ## 事实源顺序
 
-1. `../lystar-code-gui-development-plan.md`：功能、数据和状态边界。
-2. `DESIGN.md`：布局和视觉方向。
-3. `tokens.json`、`COLORS.md`、`COMPONENTS.md`：精确开发值。
-4. `brand/`：品牌资产。
-5. PNG：页面结构和视觉参考。
+1. `DESIGN.md`：布局和视觉方向。
+2. `tokens.json`、`COLORS.md`、`COMPONENTS.md`：精确开发值。
+3. `brand/`：品牌资产。
+4. PNG：页面结构和视觉参考。
 
 图片中的细小中文、路径和数值可能受生成模型影响，不能覆盖 Markdown 和 JSON 中的精确定义。
 
@@ -75,7 +74,7 @@
 - Inspector 默认关闭，审阅时从右侧打开。
 - `800×600` 正式稿展示侧栏关闭的工作态；抽屉打开态是单独交互状态。
 - 模型与认证、Skill、自动更新、诊断和关于页只展示 Host 可回查的真实状态。
-- 设计只覆盖 GUI 开发方案已有能力。
+- 设计只覆盖当前已确认的 GUI 能力。
 
 ## 参考图
 

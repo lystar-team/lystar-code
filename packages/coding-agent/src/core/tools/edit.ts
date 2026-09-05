@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { ToolExecutionError, type ToolRecoveryReplacementResult } from "@earendil-works/pi-agent-core";
 import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
@@ -20,6 +21,7 @@ import {
 	type EditDiffResult,
 	generateDiffString,
 	generateUnifiedPatch,
+	normalizeForFuzzyMatch,
 	normalizeToLF,
 	restoreLineEndings,
 	stripBom,
@@ -73,6 +75,13 @@ type LegacyEditToolInput = EditToolInput & {
 	oldText?: unknown;
 	newText?: unknown;
 };
+type SingleEditInput = { oldText: string; newText: string };
+
+function isSingleEditInput(value: unknown): value is SingleEditInput {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const edit = value as Record<string, unknown>;
+	return typeof edit.oldText === "string" && typeof edit.newText === "string";
+}
 
 export interface EditToolDetails {
 	/** Display-oriented diff of the changes made */
@@ -116,12 +125,18 @@ function prepareEditArguments(input: unknown): EditToolInput {
 
 	const args = input as Record<string, unknown>;
 
-	// Some models (Opus 4.6, GLM-5.1) send edits as a JSON string instead of an array
+	// Some models send edits as a JSON string instead of an array.
 	if (typeof args.edits === "string") {
 		try {
-			const parsed = JSON.parse(args.edits);
-			if (Array.isArray(parsed)) args.edits = parsed;
+			const parsed: unknown = JSON.parse(args.edits);
+			if (Array.isArray(parsed)) {
+				args.edits = parsed;
+			} else if (isSingleEditInput(parsed)) {
+				args.edits = [parsed];
+			}
 		} catch {}
+	} else if (isSingleEditInput(args.edits)) {
+		args.edits = [args.edits];
 	}
 
 	const legacy = args as LegacyEditToolInput;
@@ -332,26 +347,108 @@ function attachEditRecoveryHandler(error: ToolExecutionError, handler: EditRecov
 	return error;
 }
 
-function normalizeEditFailure(error: unknown): ToolExecutionError {
+function hashEditText(text: string): string {
+	return createHash("sha256").update(normalizeToLF(text), "utf8").digest("hex");
+}
+
+function hashFileContent(content: Buffer): string {
+	return createHash("sha256").update(content).digest("hex");
+}
+
+function createWriteConflictError(
+	path: string,
+	expectedContentHash: string,
+	actualContentHash: string,
+): ToolExecutionError {
+	return new ToolExecutionError(
+		`Could not edit file: ${path}. Target changed before write; no changes were written. Re-read the target region and retry.`,
+		{
+			code: "WRITE_CONFLICT",
+			category: "stale_state",
+			retryable: false,
+			details: { expectedContentHash, actualContentHash },
+			fingerprintConstraint: {
+				kind: "edit_write_conflict",
+				expectedContentHash,
+				actualContentHash,
+			},
+		},
+	);
+}
+
+function getEditFailureIndex(message: string, edits: readonly Edit[]): number | undefined {
+	const indexed = message.match(/edits\[(\d+)\]/);
+	if (indexed) {
+		const index = Number(indexed[1]);
+		return Number.isSafeInteger(index) && index >= 0 && index < edits.length ? index : undefined;
+	}
+	return edits.length === 1 && /^Could not find the exact text/.test(message) ? 0 : undefined;
+}
+
+function getEditFailureMetadata(
+	message: string,
+	edits: readonly Edit[],
+): { details: Record<string, unknown>; fingerprintConstraint?: unknown } {
+	const details: Record<string, unknown> = {};
+	const overlap = message.match(/^edits\[(\d+)\] and edits\[(\d+)\] overlap/);
+	if (overlap) {
+		const indexes = [Number(overlap[1]), Number(overlap[2])].sort((left, right) => left - right);
+		details.overlapEditIndexes = indexes;
+		return {
+			details,
+			fingerprintConstraint: {
+				kind: "edit_overlap",
+				editIndexes: indexes,
+				oldTextHashes: indexes.map((index) => (edits[index] ? hashEditText(edits[index].oldText) : "")),
+			},
+		};
+	}
+
+	const editIndex = getEditFailureIndex(message, edits);
+	if (editIndex === undefined) return { details };
+	const oldText = edits[editIndex]?.oldText;
+	details.editIndex = editIndex;
+	if (oldText === undefined) return { details, fingerprintConstraint: { kind: "edit", editIndex } };
+	const oldTextHash = hashEditText(oldText);
+	details.oldTextHash = oldTextHash;
+	return { details, fingerprintConstraint: { kind: "edit", editIndex, oldTextHash } };
+}
+
+function normalizeEditFailure(error: unknown, edits: readonly Edit[] = []): ToolExecutionError {
 	if (error instanceof ToolExecutionError) return error;
 	const message = error instanceof Error ? error.message : String(error);
-	const code = /Error code: ENOENT|Error code: ENOTDIR/.test(message)
-		? "TARGET_NOT_FOUND"
-		: /^Could not find(?: the exact text| edits\[)/.test(message)
-			? "MATCH_NOT_FOUND"
-			: /^Found \d+ occurrences/.test(message)
-				? "MATCH_AMBIGUOUS"
-				: /^No changes made/.test(message)
-					? "NO_CHANGE"
-					: "UNCLASSIFIED";
+	const metadata = getEditFailureMetadata(message, edits);
+	const code = /^edits\[\d+\] and edits\[\d+\] overlap/.test(message)
+		? "EDIT_OVERLAP"
+		: /Error code: (?:EACCES|EPERM)/.test(message)
+			? "PERMISSION_DENIED"
+			: /Error code: (?:ENOENT|ENOTDIR)/.test(message)
+				? "TARGET_NOT_FOUND"
+				: /^Could not find(?: the exact text| edits\[)/.test(message)
+					? "MATCH_NOT_FOUND"
+					: /^Found \d+ occurrences/.test(message)
+						? "MATCH_AMBIGUOUS"
+						: /^No changes made/.test(message)
+							? "NO_CHANGE"
+							: "UNCLASSIFIED";
+	const category =
+		code === "PERMISSION_DENIED"
+			? "permission"
+			: code === "TARGET_NOT_FOUND" ||
+					code === "MATCH_NOT_FOUND" ||
+					code === "MATCH_AMBIGUOUS" ||
+					code === "EDIT_OVERLAP" ||
+					code === "NO_CHANGE"
+				? "precondition"
+				: "unknown";
 	return new ToolExecutionError(message, {
 		code,
-		category:
-			code === "TARGET_NOT_FOUND" || code === "MATCH_NOT_FOUND" || code === "MATCH_AMBIGUOUS" || code === "NO_CHANGE"
-				? "precondition"
-				: "unknown",
+		category,
 		retryable: false,
-		details: {},
+		details: metadata.details,
+		...(metadata.fingerprintConstraint === undefined
+			? {}
+			: { fingerprintConstraint: metadata.fingerprintConstraint }),
 	});
 }
 
@@ -360,11 +457,38 @@ function candidateLines(message: string): number[] {
 	return match ? match[1].split(",").map(Number).filter(Number.isSafeInteger) : [];
 }
 
+function recoveryLineKey(line: string): string {
+	return normalizeForFuzzyMatch(line).trim();
+}
+
+function findRecoveryAnchorLine(lines: readonly string[], oldText: string): number | undefined {
+	const anchors = normalizeToLF(oldText)
+		.split("\n")
+		.map(recoveryLineKey)
+		.filter((line) => line.length >= 6)
+		.sort((left, right) => right.length - left.length);
+	if (anchors.length === 0) return undefined;
+
+	const normalizedLines = lines.map(recoveryLineKey);
+	for (const anchor of anchors) {
+		const exactIndex = normalizedLines.indexOf(anchor);
+		if (exactIndex !== -1) return exactIndex + 1;
+	}
+	for (const anchor of anchors) {
+		const partialIndex = normalizedLines.findIndex(
+			(line) => line.length >= 6 && (line.includes(anchor) || anchor.includes(line)),
+		);
+		if (partialIndex !== -1) return partialIndex + 1;
+	}
+	return undefined;
+}
+
 function attachEditRecovery(
 	error: ToolExecutionError,
 	absolutePath: string,
 	path: string,
 	ops: EditOperations,
+	edits: readonly Edit[],
 ): ToolExecutionError {
 	if (error.code !== "MATCH_NOT_FOUND" && error.code !== "MATCH_AMBIGUOUS") return error;
 	return attachEditRecoveryHandler(error, async ({ signal }) => {
@@ -375,16 +499,32 @@ function attachEditRecovery(
 				const lines = normalizeToLF(stripBom((await ops.readFile(absolutePath)).toString("utf-8")).text).split(
 					"\n",
 				);
-				const start = Math.max(0, (candidateLines(error.message)[0] ?? 1) - 1 - 25);
-				const excerpt = lines.slice(start, start + 200);
+				const failedEditIndex = getEditFailureIndex(error.message, edits);
+				const evidenceLine =
+					candidateLines(error.message)[0] ??
+					(failedEditIndex === undefined
+						? undefined
+						: findRecoveryAnchorLine(lines, edits[failedEditIndex]?.oldText ?? ""));
+				const hasLocatedContext = evidenceLine !== undefined;
+				const start = hasLocatedContext ? Math.max(0, evidenceLine - 1 - 25) : 0;
+				const limit = hasLocatedContext ? 200 : 80;
+				const excerpt = lines.slice(start, start + limit);
+				const locationNote = hasLocatedContext ? "" : "（未定位到 oldText 的稳定上下文，以下为文件开头）";
 				const replacementResult: ToolRecoveryReplacementResult = {
 					content: [
 						{
 							type: "text",
-							text: `${error.message}\n\n最新 ${path} 第 ${start + 1}-${start + excerpt.length} 行：\n${excerpt.map((line, index) => `${start + index + 1}: ${line}`).join("\n")}\n请基于最新内容重建 oldText。`,
+							text: `${error.message}\n\n最新 ${path} 第 ${start + 1}-${start + excerpt.length} 行${locationNote}：\n${excerpt.map((line, index) => `${start + index + 1}: ${line}`).join("\n")}\n请基于最新内容重建 oldText。`,
 						},
 					],
-					details: { recovery: { code: error.code, evidenceLines: excerpt.length } },
+					details: {
+						recovery: {
+							code: error.code,
+							evidenceLines: excerpt.length,
+							...(failedEditIndex === undefined ? {} : { failedEditIndex }),
+							...(evidenceLine === undefined ? {} : { evidenceLine }),
+						},
+					},
 				};
 				return {
 					type: "ask_model_to_rebuild",
@@ -449,6 +589,7 @@ export function createEditToolDefinition(
 
 					// Read the file.
 					const buffer = await ops.readFile(absolutePath);
+					const snapshotHash = hashFileContent(buffer);
 					const rawContent = buffer.toString("utf-8");
 					throwIfAborted();
 
@@ -460,8 +601,16 @@ export function createEditToolDefinition(
 					throwIfAborted();
 
 					const finalContent = bom + restoreLineEndings(newContent, originalEnding);
-					await ops.writeFile(absolutePath, finalContent);
-					throwIfAborted();
+					if (finalContent !== rawContent) {
+						const currentBuffer = await ops.readFile(absolutePath);
+						throwIfAborted();
+						const currentHash = hashFileContent(currentBuffer);
+						if (currentHash !== snapshotHash) {
+							throw createWriteConflictError(path, snapshotHash, currentHash);
+						}
+						await ops.writeFile(absolutePath, finalContent);
+						throwIfAborted();
+					}
 
 					const diffResult = generateDiffString(baseContent, newContent);
 					const patch = generateUnifiedPatch(path, baseContent, newContent);
@@ -469,7 +618,10 @@ export function createEditToolDefinition(
 						content: [
 							{
 								type: "text",
-								text: `Successfully replaced ${edits.length} block(s) in ${path}.`,
+								text:
+									baseContent === newContent
+										? `No changes needed for ${path}; the requested content is already present.`
+										: `Successfully replaced ${edits.length} block(s) in ${path}.`,
 							},
 						],
 						details: {
@@ -482,7 +634,7 @@ export function createEditToolDefinition(
 					};
 				});
 			} catch (error) {
-				throw attachEditRecovery(normalizeEditFailure(error), absolutePath, path, ops);
+				throw attachEditRecovery(normalizeEditFailure(error, edits), absolutePath, path, ops, edits);
 			}
 		},
 		renderCall(args, theme, context) {

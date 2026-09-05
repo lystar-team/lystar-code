@@ -97,28 +97,61 @@ describe("skill reference autocomplete", () => {
 });
 
 describe("skill reference expansion", () => {
-	it("expands multiple Skills in first-reference order and deduplicates them", () => {
+	it("adds short metadata for ordinary references without loading skill bodies", () => {
 		const { commands } = createSkills();
 		const prompt = "请结合 $[shuorenhua]、@[ui-design] 和 $[shuorenhua] 检查页面";
 		const expanded = expandSkillReferences(prompt, commands)!;
-		expect(expanded).toContain('<skill name="shuorenhua + ui-design" location="multiple">');
-		expect(expanded.indexOf("## shuorenhua")).toBeLessThan(expanded.indexOf("## ui-design"));
-		expect(expanded.match(/## shuorenhua/g)).toHaveLength(1);
-		expect(expanded).toContain("按说人话规则检查文本。");
-		expect(expanded).toContain("按 UI 规则检查界面。");
+
+		expect(expanded).toContain("<skill_references>");
+		expect(expanded.indexOf('name="shuorenhua"')).toBeLessThan(expanded.indexOf('name="ui-design"'));
+		expect(expanded).toContain("清理文案里的 AI 套路");
+		expect(expanded).toContain("设计和评审可见界面");
 		expect(expanded).toContain(prompt);
+		expect(expanded).not.toContain("按说人话规则检查文本。");
+		expect(expanded).not.toContain("按 UI 规则检查界面。");
 	});
 
-	it("keeps the existing single-Skill envelope and supports a leading /skill command", () => {
+	it("loads only the leading explicit Skill and keeps ordinary references as metadata", () => {
 		const { commands } = createSkills();
 		const expanded = expandSkillReferences("/skill:shuorenhua 再结合 @[ui-design] 检查页面", commands)!;
-		expect(expanded).toContain('<skill name="shuorenhua + ui-design" location="multiple">');
+
+		expect(expanded).toContain('<skill name="shuorenhua"');
+		expect(expanded).toContain("按说人话规则检查文本。");
+		expect(expanded).toContain("<skill_references>");
+		expect(expanded).toContain('name="ui-design"');
+		expect(expanded).toContain("设计和评审可见界面");
+		expect(expanded).not.toContain("按 UI 规则检查界面。");
 		expect(expanded).not.toContain("/skill:shuorenhua");
 	});
 
-	it("ignores ordinary dollar variables and rejects stale explicit references", () => {
+	it("uses the Skill directory as the relative path base", () => {
+		const { commands, root } = createSkills();
+		commands[0].sourceInfo.baseDir = root;
+
+		const expanded = expandSkillReferences("使用 $[shuorenhua]", commands)!;
+		expect(expanded).toContain(`base_dir="${join(root, "shuorenhua")}"`);
+		expect(expanded).not.toContain(`base_dir="${root}"`);
+	});
+
+	it("preserves unknown references and marks them unavailable", () => {
+		const { commands } = createSkills();
+		const expanded = expandSkillReferences("使用 $[missing] 检查配置", commands)!;
+
+		expect(expanded).toContain('name="missing" status="unavailable"');
+		expect(expanded).toContain("使用 $[missing] 检查配置");
+	});
+
+	it("marks an unknown explicit Skill unavailable instead of swallowing the prompt", () => {
+		const { commands } = createSkills();
+		const expanded = expandSkillReferences("/skill:missing 检查配置", commands)!;
+
+		expect(expanded).toContain('name="missing" status="unavailable"');
+		expect(expanded).toContain("检查配置");
+		expect(expanded).not.toContain("/skill:missing");
+	});
+
+	it("ignores ordinary dollar variables", () => {
 		const { commands } = createSkills();
 		expect(expandSkillReferences("检查 $PATH 和 $" + "{HOME}", commands)).toBeUndefined();
-		expect(() => expandSkillReferences("使用 $[missing]", commands)).toThrow("当前不可用");
 	});
 });

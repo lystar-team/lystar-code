@@ -110,7 +110,7 @@ import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.t
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
 import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
-import type { SlashCommandInfo } from "./slash-commands.ts";
+import { BUILTIN_SLASH_COMMANDS, type SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import {
@@ -152,6 +152,21 @@ export interface ParsedSkillBlock {
 	location: string;
 	content: string;
 	userMessage: string | undefined;
+}
+
+export type AgentSessionCompletionKind = "file" | "directory" | "command" | "extension" | "prompt" | "skill";
+
+export interface AgentSessionCompletionItem {
+	value: string;
+	label: string;
+	description?: string;
+	kind: AgentSessionCompletionKind;
+}
+
+export interface AgentSessionCompletionResult {
+	prefixStart: number;
+	prefixEnd: number;
+	items: AgentSessionCompletionItem[];
 }
 
 /**
@@ -3636,6 +3651,116 @@ export class AgentSession {
 	// =========================================================================
 	// Utilities
 	// =========================================================================
+
+	/**
+	 * Return slash-command, prompt, skill and model argument completions using the active session resources.
+	 */
+	async getCompletions(text: string, cursor: number): Promise<AgentSessionCompletionResult | undefined> {
+		const before = text.slice(0, cursor);
+		const slash = /^\/([^\s]*)$/.exec(before);
+		if (slash) {
+			const query = slash[1].toLowerCase();
+			const builtinCommandNames = new Set(BUILTIN_SLASH_COMMANDS.map((command) => command.name));
+			const commands: AgentSessionCompletionItem[] = [
+				...BUILTIN_SLASH_COMMANDS.map((command) => ({
+					value: `/${command.name} `,
+					label: command.name,
+					description: command.description,
+					kind: "command" as const,
+				})),
+				...this._extensionRunner
+					.getRegisteredCommands()
+					.filter((command) => !builtinCommandNames.has(command.name))
+					.map((command) => ({
+						value: `/${command.invocationName} `,
+						label: command.invocationName,
+						description: command.description,
+						kind: "extension" as const,
+					})),
+				...this.promptTemplates.map((prompt) => ({
+					value: `/${prompt.name} `,
+					label: prompt.name,
+					description: prompt.description,
+					kind: "prompt" as const,
+				})),
+				...this._resourceLoader.getSkills().skills.map((skill) => ({
+					value: `/skill:${skill.name} `,
+					label: `skill:${skill.name}`,
+					description: skill.description,
+					kind: "skill" as const,
+				})),
+			];
+			return {
+				prefixStart: 0,
+				prefixEnd: cursor,
+				items: commands
+					.filter((item) => `${item.label} ${item.description ?? ""}`.toLowerCase().includes(query))
+					.slice(0, 50),
+			};
+		}
+
+		const argument = /^\/([^\s]+)\s(.*)$/.exec(before);
+		if (argument) {
+			if (argument[1] === "model") {
+				const prefix = argument[2];
+				const models =
+					this._scopedModels.length > 0
+						? this._scopedModels.map((scoped) => scoped.model)
+						: this._modelRuntime.getAvailableSnapshot();
+				const query = prefix.toLowerCase();
+				const items = models
+					.map((model) => ({
+						value: `${model.provider}/${model.id}`,
+						label: model.id,
+						description: model.provider,
+						kind: "command" as const,
+					}))
+					.filter((item) => `${item.label} ${item.description}`.toLowerCase().includes(query))
+					.slice(0, 50);
+				return {
+					prefixStart: cursor - prefix.length,
+					prefixEnd: cursor,
+					items,
+				};
+			}
+			const command = this._extensionRunner
+				.getRegisteredCommands()
+				.find((candidate) => candidate.invocationName === argument[1]);
+			if (command?.getArgumentCompletions) {
+				const argumentPrefix = argument[2];
+				const suggestions = await command.getArgumentCompletions(argumentPrefix);
+				if (Array.isArray(suggestions) && suggestions.length > 0) {
+					return {
+						prefixStart: cursor - argumentPrefix.length,
+						prefixEnd: cursor,
+						items: suggestions.slice(0, 50).map((item) => ({
+							value: item.value,
+							label: item.label,
+							...(item.description ? { description: item.description } : {}),
+							kind: "extension" as const,
+						})),
+					};
+				}
+			}
+		}
+
+		const skill = /(?:^|\s)([$@])(\[?)([a-z0-9-]*)$/i.exec(before);
+		if (!skill) return undefined;
+		const symbol = skill[1];
+		const query = skill[3].toLowerCase();
+		const prefix = `${symbol}${skill[2]}${skill[3]}`;
+		const items = this._resourceLoader
+			.getSkills()
+			.skills.filter((candidate) => `${candidate.name} ${candidate.description}`.toLowerCase().includes(query))
+			.slice(0, 30)
+			.map((candidate) => ({
+				value: `${symbol}[${candidate.name}] `,
+				label: candidate.name,
+				description: candidate.description,
+				kind: "skill" as const,
+			}));
+		return { prefixStart: cursor - prefix.length, prefixEnd: cursor, items };
+	}
 
 	/**
 	 * Get text content of last assistant message.

@@ -6,7 +6,8 @@
   "scripts": {
     "clean": "shx rm -rf dist",
     "check": "tsgo -p tsconfig.json --noEmit",
-    "build": "tsgo -p tsconfig.json --noEmit && vite build"
+    "build": "tsgo -p tsconfig.json --noEmit && vite build",
+    "dev": "vite --host 0.0.0.0"
   },
   "dependencies": {
     "@lystar/code-gui-protocol": "0.84.4-lystar-gui.1",

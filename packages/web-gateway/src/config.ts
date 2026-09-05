@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultIpcEndpoint } from "@lystar/code-gui-host";
 
+export const DEFAULT_WEB_GATEWAY_PORT = 1422;
+
 export interface WebGatewayConfig {
 	host: string;
 	port: number;
@@ -27,7 +29,7 @@ function defaultHostEndpoint(agentDir: string): string {
 }
 
 function parsePort(value: string | undefined): number {
-	const port = Number(value ?? "1420");
+	const port = Number(value ?? String(DEFAULT_WEB_GATEWAY_PORT));
 	if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("端口必须在 1 到 65535 之间");
 	return port;
 }

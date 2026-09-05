@@ -182,7 +182,7 @@ class FakeRuntime implements RuntimeSession {
 		this.counts.cycle_session_model = (this.counts.cycle_session_model ?? 0) + 1;
 		return { changed: true, isScoped: false };
 	}
-	cycleThinkingLevel() {
+	async cycleThinkingLevel() {
 		this.counts.cycle_session_thinking = (this.counts.cycle_session_thinking ?? 0) + 1;
 		return { changed: false, supported: false };
 	}
