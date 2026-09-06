@@ -1,5 +1,9 @@
 import type { AssistantMessage, AssistantMessageEvent } from "../types.ts";
 
+type QueuedEventCompactor<T> = (queue: T[], event: T) => boolean;
+
+const COMPACTION_QUEUE_THRESHOLD = 1;
+
 // Generic event stream class for async iteration
 export class EventStream<T, R = T> implements AsyncIterable<T> {
 	private queue: T[] = [];
@@ -9,10 +13,16 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 	private resolveFinalResult!: (result: R) => void;
 	private isComplete: (event: T) => boolean;
 	private extractResult: (event: T) => R;
+	private readonly coalesceQueuedEvent?: QueuedEventCompactor<T>;
 
-	constructor(isComplete: (event: T) => boolean, extractResult: (event: T) => R) {
+	constructor(
+		isComplete: (event: T) => boolean,
+		extractResult: (event: T) => R,
+		coalesceQueuedEvent?: QueuedEventCompactor<T>,
+	) {
 		this.isComplete = isComplete;
 		this.extractResult = extractResult;
+		this.coalesceQueuedEvent = coalesceQueuedEvent;
 		this.finalResultPromise = new Promise((resolve) => {
 			this.resolveFinalResult = resolve;
 		});
@@ -26,7 +36,10 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 			this.resolveFinalResult(this.extractResult(event));
 		}
 
-		// Deliver to waiting consumer or queue it
+		// 消费者落后时只合并同一内容块的增量，保留边界事件和最终事件，避免累计 partial 快照堆积。
+		if (this.coalesceQueuedEvent && this.queue.length >= COMPACTION_QUEUE_THRESHOLD) {
+			if (this.coalesceQueuedEvent(this.queue, event)) return;
+		}
 		const waiter = this.waiting.shift();
 		if (waiter) {
 			waiter({ value: event, done: false });
@@ -66,6 +79,27 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 	}
 }
 
+function assistantMessageEventKey(event: AssistantMessageEvent): string | undefined {
+	switch (event.type) {
+		case "text_delta":
+		case "thinking_delta":
+		case "toolcall_delta":
+		case "websearch_update":
+			return `${event.type}:${event.contentIndex}`;
+		default:
+			return undefined;
+	}
+}
+
+function coalesceAssistantMessageEvent(queue: AssistantMessageEvent[], event: AssistantMessageEvent): boolean {
+	const key = assistantMessageEventKey(event);
+	if (!key) return false;
+	const previous = queue.at(-1);
+	if (previous === undefined || assistantMessageEventKey(previous) !== key) return false;
+	queue[queue.length - 1] = event;
+	return true;
+}
+
 export class AssistantMessageEventStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
 	constructor() {
 		super(
@@ -78,6 +112,7 @@ export class AssistantMessageEventStream extends EventStream<AssistantMessageEve
 				}
 				throw new Error("Unexpected event type for final result");
 			},
+			coalesceAssistantMessageEvent,
 		);
 	}
 }

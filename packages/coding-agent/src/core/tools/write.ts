@@ -60,6 +60,7 @@ type WriteHighlightCache = {
 	rawPath: string | null;
 	lang: string;
 	rawContent: string;
+	truncated: boolean;
 	normalizedLines: string[];
 	highlightedLines: string[];
 };
@@ -88,6 +89,26 @@ class WriteCallRenderComponent implements Component {
 }
 
 const WRITE_PARTIAL_FULL_HIGHLIGHT_LINES = 50;
+const MAX_WRITE_DISPLAY_CHARS = 16 * 1024;
+const MAX_WRITE_DISPLAY_LINES = 120;
+
+function boundedWriteDisplayText(value: string): { text: string; truncated: boolean } {
+	let end = Math.min(value.length, MAX_WRITE_DISPLAY_CHARS);
+	let truncated = end < value.length;
+	let lineCount = 0;
+	for (let index = 0; index < end; index++) {
+		const code = value.charCodeAt(index);
+		if (code !== 10 && code !== 13) continue;
+		if (code === 13 && value.charCodeAt(index + 1) === 10) index++;
+		lineCount++;
+		if (lineCount < MAX_WRITE_DISPLAY_LINES - 1) continue;
+		end = index + 1;
+		truncated = true;
+		break;
+	}
+	if (end > 0 && value.charCodeAt(end - 1) >= 0xd800 && value.charCodeAt(end - 1) <= 0xdbff) end--;
+	return { text: truncated ? `${value.slice(0, end)}\n…` : value, truncated };
+}
 
 function highlightSingleLine(line: string, lang: string): string {
 	const highlighted = highlightCode(line, lang);
@@ -108,12 +129,14 @@ function refreshWriteHighlightPrefix(cache: WriteHighlightCache): void {
 function rebuildWriteHighlightCacheFull(rawPath: string | null, fileContent: string): WriteHighlightCache | undefined {
 	const lang = rawPath ? getLanguageFromPath(rawPath) : undefined;
 	if (!lang) return undefined;
-	const displayContent = normalizeDisplayText(fileContent);
+	const bounded = boundedWriteDisplayText(fileContent);
+	const displayContent = normalizeDisplayText(bounded.text);
 	const normalized = replaceTabs(displayContent);
 	return {
 		rawPath,
 		lang,
-		rawContent: fileContent,
+		rawContent: bounded.text,
+		truncated: bounded.truncated,
 		normalizedLines: normalized.split("\n"),
 		highlightedLines: highlightCode(normalized, lang),
 	};
@@ -128,6 +151,8 @@ function updateWriteHighlightCacheIncremental(
 	if (!lang) return undefined;
 	if (!cache) return rebuildWriteHighlightCacheFull(rawPath, fileContent);
 	if (cache.lang !== lang || cache.rawPath !== rawPath) return rebuildWriteHighlightCacheFull(rawPath, fileContent);
+	if (cache.truncated || boundedWriteDisplayText(fileContent).truncated)
+		return rebuildWriteHighlightCacheFull(rawPath, fileContent);
 	if (!fileContent.startsWith(cache.rawContent)) return rebuildWriteHighlightCacheFull(rawPath, fileContent);
 	if (fileContent.length === cache.rawContent.length) return cache;
 
@@ -162,7 +187,16 @@ function trimTrailingEmptyLines(lines: string[]): string[] {
 
 function countLines(text: string): number {
 	if (!text) return 0;
-	return text.endsWith("\n") ? text.split("\n").length - 1 : text.split("\n").length;
+	let lines = 0;
+	let start = 0;
+	for (let index = 0; index < text.length; index++) {
+		const code = text.charCodeAt(index);
+		if (code !== 10 && code !== 13) continue;
+		lines++;
+		if (code === 13 && text.charCodeAt(index + 1) === 10) index++;
+		start = index + 1;
+	}
+	return start < text.length ? lines + 1 : lines;
 }
 
 function getWriteDetails(previous: string | undefined, content: string, canRead: boolean): WriteToolDetails {
@@ -191,6 +225,7 @@ function formatWriteCall(
 ): string {
 	const rawPath = str(args?.file_path ?? args?.path);
 	const fileContent = str(args?.content);
+	const displayContent = fileContent === null ? null : boundedWriteDisplayText(fileContent).text;
 	const pathDisplay = renderToolPath(rawPath, theme, cwd);
 	const additions = options.details?.additions ?? countLines(fileContent ?? "");
 	const deletions = options.details?.deletions ?? 0;
@@ -210,8 +245,8 @@ function formatWriteCall(
 	} else if (fileContent && options.expanded) {
 		const lang = rawPath ? getLanguageFromPath(rawPath) : undefined;
 		const renderedLines = lang
-			? (cache?.highlightedLines ?? highlightCode(replaceTabs(normalizeDisplayText(fileContent)), lang))
-			: normalizeDisplayText(fileContent).split("\n");
+			? (cache?.highlightedLines ?? highlightCode(replaceTabs(normalizeDisplayText(displayContent ?? "")), lang))
+			: normalizeDisplayText(displayContent ?? "").split("\n");
 		const lines = trimTrailingEmptyLines(renderedLines);
 		text += `\n\n${lines.map((line) => (lang ? line : theme.fg("toolOutput", replaceTabs(line)))).join("\n")}`;
 	}
@@ -228,8 +263,12 @@ function formatWriteResult(
 	}
 	const output = result.content
 		.filter((c) => c.type === "text")
-		.map((c) => c.text || "")
-		.join("\n");
+		.reduce((text, c) => {
+			if (!c.text || text.length >= MAX_WRITE_DISPLAY_CHARS) return text;
+			const separator = text ? "\n" : "";
+			const available = MAX_WRITE_DISPLAY_CHARS - text.length - separator.length;
+			return text + separator + c.text.slice(0, Math.max(0, available));
+		}, "");
 	if (!output) {
 		return undefined;
 	}

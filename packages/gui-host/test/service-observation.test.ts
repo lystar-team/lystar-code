@@ -7,7 +7,7 @@ import {
 	type ServerMessage,
 	type SessionSummary,
 } from "@lystar/code-gui-protocol";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodingAgentRuntimeAdapter } from "../src/runtime-adapter.ts";
 import { GuiHostService } from "../src/service.ts";
 import type { RuntimeEvent, RuntimeSession } from "../src/types.ts";
@@ -47,7 +47,7 @@ describe("GuiHostService Session observation", () => {
 			rmSync(tempDir, { recursive: true, force: true });
 		});
 		const handle = (message: ClientMessage) => connection.handle(message);
-		await handle({ type: "hello", version: 1, clientInstanceId: "desktop-client" });
+		await handle({ type: "hello", version: 2, clientInstanceId: "desktop-client" });
 		await handle({ type: "request", id: "initial", request: { command: "list_sessions", cwd } });
 
 		const external = await adapter.createSession(cwd, async () => ({ cancelled: true }));
@@ -133,6 +133,42 @@ describe("GuiHostService Session observation", () => {
 		);
 	});
 
+	it("projects observed external activity into the session summary", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-activity-"));
+		const agentDir = join(tempDir, "agent");
+		const cwd = join(tempDir, "project");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(cwd, { recursive: true });
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always" }));
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		const inspectActivity = vi.spyOn(adapter, "inspectSessionActivity").mockResolvedValue("running");
+		const service = new GuiHostService(adapter, { agentDir });
+		const messages: ServerMessage[] = [];
+		const connection = service.createConnection(async (message) => {
+			messages.push(message);
+		});
+		cleanups.push(async () => {
+			await connection.close();
+			await service.dispose();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+		const handle = (message: ClientMessage) => connection.handle(message);
+		await handle({ type: "hello", version: 2, clientInstanceId: "activity-client" });
+		const external = await adapter.createSession(cwd, async () => ({ cancelled: true }));
+		cleanups.push(() => external.dispose());
+		await external.runBash("printf activity", false, () => {});
+
+		await handle({ type: "request", id: "activity", request: { command: "list_sessions", cwd } });
+		const response = messages.find(
+			(message) => message.type === "response" && message.id === "activity" && message.ok,
+		);
+		if (!response || response.type !== "response" || !response.ok)
+			throw new Error("Missing activity Session response");
+		const summaries = response.result as unknown as SessionSummary[];
+		expect(summaries).toEqual([expect.objectContaining({ activity: "running", writeAccess: "locked_externally" })]);
+		expect(inspectActivity).toHaveBeenCalledWith(external.sessionPath);
+	});
+
 	it("coalesces adjacent high-frequency progress before sending it over the Host protocol", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "gui-host-progress-"));
 		const agentDir = join(tempDir, "agent");
@@ -160,7 +196,7 @@ describe("GuiHostService Session observation", () => {
 			await service.dispose();
 			rmSync(tempDir, { recursive: true, force: true });
 		});
-		await connection.handle({ type: "hello", version: 1, clientInstanceId: "progress-client" });
+		await connection.handle({ type: "hello", version: 2, clientInstanceId: "progress-client" });
 		(service as unknown as { attachRuntime(runtime: RuntimeSession): void }).attachRuntime(runtime);
 
 		emit?.({ type: "progress", payload: { type: "assistant_delta", text: "O" } });
@@ -199,7 +235,7 @@ describe("GuiHostService Session observation", () => {
 			rmSync(tempDir, { recursive: true, force: true });
 		});
 		const handle = (message: ClientMessage) => connection.handle(message);
-		await handle({ type: "hello", version: 1, clientInstanceId: "diagnostics-client" });
+		await handle({ type: "hello", version: 2, clientInstanceId: "diagnostics-client" });
 		await handle({
 			type: "request",
 			id: "create",

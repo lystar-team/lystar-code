@@ -12,6 +12,7 @@ import {
 	type OperationSnapshot,
 	type ServerEvent,
 	type ServerMessage,
+	type SessionActivity,
 	type SessionProgress,
 	type SessionStateSnapshot,
 	type SessionSummary,
@@ -22,7 +23,7 @@ import { ContentStore } from "./content-store.ts";
 import { LeaseManager } from "./lease-manager.ts";
 import { hashOperationPayload, OperationJournal, OperationJournalCorruptError } from "./operation-journal.ts";
 import { BUILTIN_SLASH_COMMANDS } from "./runtime-adapter.ts";
-import { projectTranscriptItems } from "./transcript-projection.ts";
+import { projectTranscriptBatch } from "./transcript-projection.ts";
 import { TranscriptReader } from "./transcript-reader.ts";
 import type { RuntimeAdapter, RuntimeSession, UiRequestHandler } from "./types.ts";
 
@@ -62,6 +63,28 @@ const TERMINAL_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>([
 	"aborted",
 	"interrupted",
 ]);
+
+function sessionActivityFromOperation(status: OperationSnapshot["status"]): SessionActivity {
+	switch (status) {
+		case "accepted":
+		case "running":
+			return "running";
+		case "waiting_for_input":
+			return "waiting_for_input";
+		case "completed":
+			return "completed";
+		case "failed":
+			return "failed";
+		case "aborted":
+			return "aborted";
+		case "interrupted":
+			return "interrupted";
+	}
+}
+
+function isActiveSessionActivity(activity: SessionActivity): boolean {
+	return activity === "running" || activity === "waiting_for_input";
+}
 
 const WORKSPACE_COMMANDS = {
 	list_skills: true,
@@ -530,7 +553,7 @@ export class GuiHostService {
 				return jsonValue({
 					...page,
 					requestContext: request.context,
-					items: page.items.flatMap((item) => this.projectTranscriptItems(sessionPath, item)),
+					items: this.projectTranscriptItems(sessionPath, page.items),
 				});
 			}
 			case "search_transcript": {
@@ -1500,42 +1523,75 @@ export class GuiHostService {
 		}
 	}
 
+	private latestOperation(sessionPath: string): OperationSnapshot | undefined {
+		return this.journal
+			.list(sessionPath)
+			.reduce<OperationSnapshot | undefined>(
+				(latest, operation) => (!latest || operation.updatedAt > latest.updatedAt ? operation : latest),
+				undefined,
+			);
+	}
+
+	private async observedSessionActivity(
+		sessionPath: string,
+		connection?: ClientConnection,
+	): Promise<SessionActivity | undefined> {
+		const runtime = this.runtimes.get(sessionPath);
+		if (runtime) {
+			try {
+				return runtime.getSnapshot(connection ? this.writeAccess(sessionPath, connection) : "available").activity;
+			} catch {
+				return undefined;
+			}
+		}
+		if (!this.adapter.inspectSessionActivity || !this.adapter.isSessionWriterLocked(sessionPath)) return undefined;
+		try {
+			return await this.adapter.inspectSessionActivity(sessionPath);
+		} catch {
+			return undefined;
+		}
+	}
+
+	private async resolveSessionActivity(
+		sessionPath: string,
+		fallback: SessionActivity,
+		latestOperation: OperationSnapshot | undefined,
+		connection?: ClientConnection,
+	): Promise<SessionActivity> {
+		const operationActivity = latestOperation ? sessionActivityFromOperation(latestOperation.status) : undefined;
+		if (operationActivity && isActiveSessionActivity(operationActivity)) return operationActivity;
+
+		const observedActivity = await this.observedSessionActivity(sessionPath, connection);
+		if (observedActivity && isActiveSessionActivity(observedActivity)) return observedActivity;
+		return operationActivity ?? observedActivity ?? fallback;
+	}
+
 	private async listSessionSummaries(
 		cwd: string,
 		connection: ClientConnection,
 		metadataOnly = false,
 	): Promise<SessionSummary[]> {
 		const sessions = await this.adapter.listSessions(cwd, { metadataOnly });
-		const summaries = sessions.map((session) => {
-			const sessionPath = canonicalSessionPath(session.path);
-			const latestOperation = this.journal
-				.list(sessionPath)
-				.reduce<OperationSnapshot | undefined>(
-					(latest, operation) => (!latest || operation.updatedAt > latest.updatedAt ? operation : latest),
-					undefined,
-				);
-			const activity =
-				latestOperation?.status === "accepted" ? "running" : (latestOperation?.status ?? session.activity);
-			return {
-				...session,
-				path: sessionPath,
-				activity,
-				writeAccess: this.sessionWriteAccess(sessionPath, connection),
-				...(latestOperation ? { operationUpdatedAt: latestOperation.updatedAt } : {}),
-			};
-		});
+		const summaries = await Promise.all(
+			sessions.map(async (session) => {
+				const sessionPath = canonicalSessionPath(session.path);
+				const latestOperation = this.latestOperation(sessionPath);
+				return {
+					...session,
+					path: sessionPath,
+					activity: await this.resolveSessionActivity(sessionPath, session.activity, latestOperation, connection),
+					writeAccess: this.sessionWriteAccess(sessionPath, connection),
+					...(latestOperation ? { operationUpdatedAt: latestOperation.updatedAt } : {}),
+				};
+			}),
+		);
 		const listedPaths = new Set(summaries.map((session) => session.path));
 		for (const runtime of this.runtimes.values()) {
 			const sessionPath = canonicalSessionPath(runtime.sessionPath);
 			if (listedPaths.has(sessionPath)) continue;
 			const snapshot = this.runtimeSnapshot(runtime, this.writeAccess(sessionPath, connection));
 			if (canonicalProjectCwd(snapshot.cwd) !== cwd) continue;
-			const latestOperation = this.journal
-				.list(sessionPath)
-				.reduce<OperationSnapshot | undefined>(
-					(latest, operation) => (!latest || operation.updatedAt > latest.updatedAt ? operation : latest),
-					undefined,
-				);
+			const latestOperation = this.latestOperation(sessionPath);
 			summaries.push({
 				path: sessionPath,
 				id: snapshot.id,
@@ -1545,8 +1601,7 @@ export class GuiHostService {
 				updatedAt: snapshot.updatedAt,
 				messageCount: 0,
 				firstMessage: "未命名会话",
-				activity:
-					latestOperation?.status === "accepted" ? "running" : (latestOperation?.status ?? snapshot.activity),
+				activity: await this.resolveSessionActivity(sessionPath, snapshot.activity, latestOperation, connection),
 				writeAccess: snapshot.writeAccess,
 				...(latestOperation ? { operationUpdatedAt: latestOperation.updatedAt } : {}),
 			});
@@ -1555,9 +1610,9 @@ export class GuiHostService {
 		return summaries;
 	}
 
-	private projectTranscriptItems(sessionPath: string, item: TranscriptItem): TranscriptItem[] {
-		const compact = this.contentStore.compactTranscriptItem(sessionPath, item);
-		return projectTranscriptItems(compact);
+	private projectTranscriptItems(sessionPath: string, items: readonly TranscriptItem[]): TranscriptItem[] {
+		const compactItems = items.map((item) => this.contentStore.compactTranscriptItem(sessionPath, item));
+		return projectTranscriptBatch(compactItems);
 	}
 
 	private rememberSessionFacts(cwd: string, sessions: readonly SessionSummary[]): void {
@@ -1610,8 +1665,8 @@ export class GuiHostService {
 						old.messageCount !== fact.messageCount ||
 						old.name !== fact.name
 					) {
-						// 内容变化由 transcript_changed 或 session_snapshot 传递，避免每条消息都重发整个会话列表。
-						if (old.name !== fact.name) sessionListChanged = true;
+						if (old.name !== fact.name || (fact.writerLocked && old.updatedAt !== fact.updatedAt))
+							sessionListChanged = true;
 						const runtime = this.runtimes.get(sessionPath);
 						if (!runtime) transcriptChanges.push(sessionPath);
 						else {
@@ -1650,7 +1705,8 @@ export class GuiHostService {
 						continue;
 					}
 					if (old.updatedAt !== fact.updatedAt || old.name !== fact.name) {
-						if (old.name !== fact.name) sessionListChanged = true;
+						if (old.name !== fact.name || (fact.writerLocked && old.updatedAt !== fact.updatedAt))
+							sessionListChanged = true;
 					}
 					if (old.writerLocked !== fact.writerLocked) sessionListChanged = true;
 				}
@@ -1961,7 +2017,7 @@ export class GuiHostService {
 						transcriptGeneration: payload.transcriptGeneration,
 						fromRevision: payload.fromRevision,
 						toRevision: payload.transcriptRevision,
-						items: payload.items.flatMap((item) => this.projectTranscriptItems(sessionPath, item)),
+						items: this.projectTranscriptItems(sessionPath, payload.items),
 					});
 				} else {
 					this.enqueueSessionProgress(sessionPath, projectSessionProgress(event.payload));

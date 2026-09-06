@@ -84,6 +84,26 @@ export interface ApplyPatchDetails {
 
 type ApplyPatchFileDetails = ApplyPatchDetails["files"][number];
 
+const MAX_APPLY_PATCH_DISPLAY_CHARS = 16 * 1024;
+const MAX_APPLY_PATCH_DISPLAY_LINES = 120;
+
+function boundedPatchDisplay(value: string): string {
+	let end = Math.min(value.length, MAX_APPLY_PATCH_DISPLAY_CHARS);
+	let truncated = end < value.length;
+	let lineCount = 0;
+	for (let index = 0; index < end; index++) {
+		if (value.charCodeAt(index) !== 10) continue;
+		lineCount++;
+		if (lineCount < MAX_APPLY_PATCH_DISPLAY_LINES - 1) continue;
+		end = index;
+		truncated = true;
+		break;
+	}
+	if (!truncated) return value;
+	if (end > 0 && value.charCodeAt(end - 1) >= 0xd800 && value.charCodeAt(end - 1) <= 0xdbff) end--;
+	return value.slice(0, end);
+}
+
 function renderCounts(additions: number, deletions: number): string {
 	return `${theme.fg("success", `+${additions}`)} ${theme.fg("error", `-${deletions}`)}`;
 }
@@ -111,12 +131,13 @@ class ApplyPatchFileCard implements InteractiveCard {
 	}
 
 	update(file: Partial<ApplyPatchFileDetails> & Pick<ApplyPatchFileDetails, "path">): void {
-		if (this.file.diff !== file.diff || this.file.path !== file.path) {
+		const nextFile = typeof file.diff === "string" ? { ...file, diff: boundedPatchDisplay(file.diff) } : file;
+		if (this.file.diff !== nextFile.diff || this.file.path !== nextFile.path) {
 			this.diffComponent = undefined;
 			this.diffSource = undefined;
 			this.diffFilePath = undefined;
 		}
-		this.file = file;
+		this.file = nextFile;
 	}
 
 	isExpanded(): boolean {
@@ -259,11 +280,12 @@ class ApplyPatchResultComponent implements InteractiveCard {
 }
 
 function getTextResult(result: { content: Array<{ type: string; text?: string }> }): string {
-	return result.content
-		.filter((item) => item.type === "text")
-		.map((item) => item.text ?? "")
-		.filter(Boolean)
-		.join("\n");
+	return result.content.reduce((text, item) => {
+		if (item.type !== "text" || !item.text || text.length >= MAX_APPLY_PATCH_DISPLAY_CHARS) return text;
+		const separator = text ? "\n" : "";
+		const available = MAX_APPLY_PATCH_DISPLAY_CHARS - text.length - separator.length;
+		return text + separator + item.text.slice(0, Math.max(0, available));
+	}, "");
 }
 
 export interface ApplyPatchOperations {

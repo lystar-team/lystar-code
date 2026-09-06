@@ -585,6 +585,7 @@ export function useWorkbench() {
 	const streamGenerationRef = useRef(0);
 	const reconnectTimerRef = useRef<number | undefined>(undefined);
 	const transcriptTimerRef = useRef<number | undefined>(undefined);
+	const transcriptRefreshPendingRef = useRef<string | undefined>(undefined);
 	const thinkingClearTimerRef = useRef<number | undefined>(undefined);
 	const liveToolBatchRef = useRef(0);
 	const liveTurnItemRef = useRef(0);
@@ -804,11 +805,19 @@ export function useWorkbench() {
 				(stateRef.current.transcriptLoading && stateRef.current.statusText === "正在打开会话")
 			)
 				return;
+			if (stateRef.current.loadingEarlier) {
+				transcriptRefreshPendingRef.current = sessionId;
+				return;
+			}
 			if (transcriptTimerRef.current) window.clearTimeout(transcriptTimerRef.current);
-			transcriptTimerRef.current = window.setTimeout(
-				() => void loadTranscript(sessionId).catch((error) => showToast(errorMessage(error))),
-				140,
-			);
+			transcriptTimerRef.current = window.setTimeout(() => {
+				transcriptTimerRef.current = undefined;
+				if (stateRef.current.loadingEarlier) {
+					transcriptRefreshPendingRef.current = sessionId;
+					return;
+				}
+				void loadTranscript(sessionId).catch((error) => showToast(errorMessage(error)));
+			}, 140);
 		},
 		[loadTranscript, showToast],
 	);
@@ -1532,13 +1541,18 @@ export function useWorkbench() {
 	const loadEarlier = useCallback(async () => {
 		const current = stateRef.current;
 		if (!current.sessionId || !current.previousCursor || current.loadingEarlier) return;
+		const sessionId = current.sessionId;
 		updateState((value) => ({ ...value, loadingEarlier: true }));
 		try {
-			await loadTranscript(current.sessionId, current.previousCursor);
+			await loadTranscript(sessionId, current.previousCursor);
 		} finally {
 			updateState((value) => ({ ...value, loadingEarlier: false }));
+			if (transcriptRefreshPendingRef.current === sessionId) {
+				transcriptRefreshPendingRef.current = undefined;
+				scheduleTranscriptRefresh(sessionId);
+			}
 		}
-	}, [loadTranscript, updateState]);
+	}, [loadTranscript, scheduleTranscriptRefresh, updateState]);
 
 	const createSession = useCallback(async () => {
 		const projectId = stateRef.current.currentProjectId;

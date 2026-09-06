@@ -12,7 +12,7 @@ import {
 	TerminalIcon,
 	WrenchIcon,
 } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type MouseEvent as ReactMouseEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import type { BundledLanguage } from "shiki";
 import { cn } from "@/lib/utils";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
@@ -48,7 +48,7 @@ export interface ToolBatchProps {
 }
 
 const statusLabels: Record<ToolBatchState, string> = {
-	"input-available": "执行中",
+	"input-available": "运行中",
 	"input-queued": "已排队",
 	"output-available": "已完成",
 	"output-error": "出错",
@@ -168,7 +168,9 @@ function toolActionLabel(name: string): string {
 	return labels[name] ?? `调用了 ${name}`;
 }
 
-function toolRowActionLabel(name: string): string {
+function toolRowActionLabel(name: string, state: ToolBatchState): string {
+	if (state === "input-available") return "运行中";
+	if (state === "input-queued") return "已排队";
 	const labels: Record<string, string> = {
 		bash: "已运行",
 		read: "已读取",
@@ -205,7 +207,16 @@ function batchTitle(tools: ToolBatchTool[]): string {
 
 function toolRowTitle(tool: ToolBatchTool): string {
 	const title = toolTitle(tool);
-	return title && title !== tool.name ? `${toolRowActionLabel(tool.name)} ${title}` : toolRowActionLabel(tool.name);
+	const action = toolRowActionLabel(tool.name, tool.state);
+	return title && title !== tool.name ? `${action} ${title}` : action;
+}
+
+function canCollapseFromContent(event: ReactMouseEvent<HTMLElement>): boolean {
+	if (event.defaultPrevented) return false;
+	const target = event.target;
+	if (target instanceof Element && target.closest("button, a, input, textarea, select, [role=button]")) return false;
+	const selection = window.getSelection();
+	return !selection || selection.isCollapsed;
 }
 
 function diffStats(diff?: ToolDiff): { additions: number; deletions: number } | undefined {
@@ -433,6 +444,9 @@ function ToolBatchRow({
 					) : null}
 					<span className="flex shrink-0 items-center gap-1.5">
 						{toolStatusIndicator(tool.state)}
+						{tool.state !== "output-available" ? (
+							<span className="text-xs text-muted-foreground">{statusLabels[tool.state]}</span>
+						) : null}
 						{hasDetails ? (
 							<ChevronDownIcon
 								className={cn("size-4 text-muted-foreground transition-transform", open && "rotate-180")}
@@ -442,7 +456,12 @@ function ToolBatchRow({
 				</button>
 			</CollapsibleTrigger>
 			{hasDetails ? (
-				<CollapsibleContent className="min-w-0 overflow-hidden pb-0.5 pl-6 pr-0 pt-0 data-[state=closed]:animate-out data-[state=open]:animate-in">
+				<CollapsibleContent
+					className="min-w-0 overflow-hidden pb-0.5 pl-6 pr-0 pt-0 data-[state=closed]:animate-out data-[state=open]:animate-in"
+					onClick={(event) => {
+						if (canCollapseFromContent(event)) setOpen(false);
+					}}
+				>
 					<ToolDetail tool={tool} sessionId={sessionId} onOpenPath={onOpenPath} />
 				</CollapsibleContent>
 			) : null}
@@ -477,7 +496,7 @@ export function ToolBatch({
 				tool={tool}
 				sessionId={sessionId}
 				onOpenPath={onOpenPath}
-								initialOpen={initialOpen}
+				initialOpen={initialOpen}
 				className={className}
 				autoCollapseWhenComplete={autoCollapseWhenComplete}
 			/>
@@ -500,11 +519,19 @@ export function ToolBatch({
 					{batchTitle(tools)}
 				</span>
 				<span className="flex shrink-0 items-center gap-1.5">
+					{aggregateState !== "output-available" ? (
+						<span className="text-xs text-muted-foreground">{statusLabels[aggregateState]}</span>
+					) : null}
 					{aggregateState === "input-available" ? toolStatusIndicator(aggregateState) : null}
 					<ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]/tool-batch:rotate-180" />
 				</span>
 			</CollapsibleTrigger>
-			<CollapsibleContent className="relative min-w-0 max-h-[min(34rem,60vh)] overflow-y-auto overflow-x-hidden pb-0 pl-0.5 data-[state=closed]:animate-out data-[state=open]:animate-in">
+			<CollapsibleContent
+				className="relative min-w-0 max-h-[min(34rem,60vh)] overflow-y-auto overflow-x-hidden pb-0 pl-0.5 data-[state=closed]:animate-out data-[state=open]:animate-in"
+				onClick={(event) => {
+					if (canCollapseFromContent(event)) setOpen(false);
+				}}
+			>
 				<div className="relative z-0 grid min-w-0 gap-0">
 					{tools.map((tool) => (
 						<ToolBatchRow key={tool.id} tool={tool} sessionId={sessionId} onOpenPath={onOpenPath} />

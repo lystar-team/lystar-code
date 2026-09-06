@@ -19,6 +19,14 @@ const TOOL_CALL_LIMIT = 32;
 
 type JsonRecord = Record<string, JsonValue>;
 
+export interface TranscriptToolCallProjection {
+	name: string;
+	summary: string;
+	href?: string;
+}
+
+export type TranscriptToolCallIndex = ReadonlyMap<string, TranscriptToolCallProjection>;
+
 function record(value: JsonValue | undefined): JsonRecord | undefined {
 	return value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
 }
@@ -161,29 +169,45 @@ function toolDiff(name: string, details: JsonValue | undefined) {
 
 function toolCallSummary(name: string, argumentsValue: JsonValue | undefined): string {
 	const argumentsRecord = record(argumentsValue);
-	if ((name === "edit" || name === "write") && typeof argumentsRecord?.path === "string") {
-		return argumentsRecord.path;
+	if (name === "bash" && typeof argumentsRecord?.command === "string") return argumentsRecord.command;
+	if (name === "read" || name === "edit" || name === "write" || name === "apply_patch") {
+		for (const key of ["path", "file_path", "filename"]) {
+			if (typeof argumentsRecord?.[key] === "string") return argumentsRecord[key];
+		}
 	}
 	return text(argumentsValue);
 }
 
-function toolCallView(part: JsonRecord): TranscriptViewItem | undefined {
+function toolCallProjection(part: JsonRecord): TranscriptToolCallProjection | undefined {
 	if (part.type !== "toolCall" || typeof part.id !== "string") return undefined;
+	const name = typeof part.name === "string" ? part.name : "Tool";
 	const argumentsValue = record(part.arguments);
 	const href =
 		typeof argumentsValue?.url === "string"
 			? argumentsValue.url
 			: typeof argumentsValue?.path === "string"
 				? `file://${argumentsValue.path}`
-				: undefined;
+				: typeof argumentsValue?.file_path === "string"
+					? `file://${argumentsValue.file_path}`
+					: undefined;
+	return {
+		name,
+		summary: toolCallSummary(name, part.arguments),
+		...(href ? { href } : {}),
+	};
+}
+
+function toolCallView(part: JsonRecord): TranscriptViewItem | undefined {
+	const projection = toolCallProjection(part);
+	if (!projection || typeof part.id !== "string") return undefined;
 	return {
 		type: "tool_call",
 		calls: [
 			{
 				id: part.id,
-				name: typeof part.name === "string" ? part.name : "Tool",
-				summary: toolCallSummary(typeof part.name === "string" ? part.name : "Tool", part.arguments),
-				...(href ? { href } : {}),
+				name: projection.name,
+				summary: projection.summary,
+				...(projection.href ? { href: projection.href } : {}),
 			},
 		],
 	};
@@ -274,7 +298,10 @@ function message(item: TranscriptItem): JsonRecord | undefined {
 	return record(record(item.payload)?.message);
 }
 
-function projectTranscriptViews(item: TranscriptItem): TranscriptViewItem[] {
+function projectTranscriptViews(
+	item: TranscriptItem,
+	toolCalls: TranscriptToolCallIndex = new Map(),
+): TranscriptViewItem[] {
 	const payload = record(item.payload);
 	const entryMessage = message(item);
 	const role = entryMessage?.role;
@@ -301,18 +328,22 @@ function projectTranscriptViews(item: TranscriptItem): TranscriptViewItem[] {
 	}
 	if (role === "toolResult" && entryMessage) {
 		const isError = entryMessage?.isError === true;
+		const callId = typeof entryMessage.toolCallId === "string" ? entryMessage.toolCallId : item.entryId;
+		const call = toolCalls.get(callId);
+		const name = call?.name ?? (typeof entryMessage.toolName === "string" ? entryMessage.toolName : "Tool");
+		const detail = text(content);
 		const diff = toolDiff(
-			typeof entryMessage.toolName === "string" ? entryMessage.toolName : "",
+			typeof entryMessage.toolName === "string" ? entryMessage.toolName : name,
 			entryMessage.details,
 		);
 		return [
 			{
 				type: "tool_result",
-				callId: typeof entryMessage.toolCallId === "string" ? entryMessage.toolCallId : item.entryId,
-				name: typeof entryMessage.toolName === "string" ? entryMessage.toolName : "Tool",
+				callId,
+				name,
 				status: isError ? "error" : "success",
-				summary: text(content),
-				...(text(content) ? { detail: text(content) } : {}),
+				summary: call?.summary ?? name,
+				...(detail ? { detail } : {}),
 				...(contentRef(content) ? { contentRef: contentRef(content) } : {}),
 				...(diff ? { diff } : {}),
 				...(images.length > 0 ? { images } : {}),
@@ -331,8 +362,26 @@ function projectTranscriptViews(item: TranscriptItem): TranscriptViewItem[] {
 	return [{ type: "system", text: text(payload) }];
 }
 
-export function projectTranscriptItems(item: TranscriptItem): TranscriptItem[] {
-	return projectTranscriptViews(item).map((view) => ({ ...item, view }));
+export function projectTranscriptItems(
+	item: TranscriptItem,
+	toolCalls: TranscriptToolCallIndex = new Map(),
+): TranscriptItem[] {
+	return projectTranscriptViews(item, toolCalls).map((view) => ({ ...item, view }));
+}
+
+export function projectTranscriptBatch(items: readonly TranscriptItem[]): TranscriptItem[] {
+	const toolCalls = new Map<string, TranscriptToolCallProjection>();
+	for (const item of items) {
+		const payload = record(item.payload);
+		const entryMessage = record(payload?.message);
+		if (entryMessage?.role !== "assistant" || !Array.isArray(entryMessage.content)) continue;
+		for (const part of entryMessage.content) {
+			const candidate = record(part);
+			const projection = candidate ? toolCallProjection(candidate) : undefined;
+			if (candidate && typeof candidate.id === "string" && projection) toolCalls.set(candidate.id, projection);
+		}
+	}
+	return items.flatMap((item) => projectTranscriptItems(item, toolCalls));
 }
 
 export function projectTranscriptItem(item: TranscriptItem): TranscriptViewItem {

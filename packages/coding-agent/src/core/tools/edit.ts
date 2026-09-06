@@ -3,7 +3,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { ToolExecutionError, type ToolRecoveryReplacementResult } from "@earendil-works/pi-agent-core";
 import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
 import { constants } from "fs";
-import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
+import { access as fsAccess, readFile as fsReadFile, stat as fsStat, writeFile as fsWriteFile } from "fs/promises";
 import { type Static, Type } from "typebox";
 import { renderDiff } from "../../modes/interactive/components/diff.ts";
 import { formatToolSummary, getToolSummary } from "../../modes/interactive/components/tool-summary.ts";
@@ -14,6 +14,7 @@ import type { ToolDefinition } from "../extensions/types.ts";
 import { registerBuiltInRecoveryError } from "../tool-recovery/registry.ts";
 import {
 	applyEditsToNormalizedContent,
+	computeEditsDiff,
 	detectLineEnding,
 	type Edit,
 	type EditDiffError,
@@ -172,7 +173,11 @@ type EditCallRenderComponent = Box & {
 	preview?: EditPreview;
 	previewArgs?: unknown;
 	previewArgsRevision?: number;
+	previewArgsReleased?: boolean;
 	previewInitialized?: boolean;
+	preflightPending?: boolean;
+	preflightRevision?: number;
+	previewFinalized?: boolean;
 	settledError?: boolean;
 };
 
@@ -181,7 +186,11 @@ function createEditCallRenderComponent(): EditCallRenderComponent {
 		preview: undefined as EditPreview | undefined,
 		previewArgs: undefined as unknown,
 		previewArgsRevision: undefined as number | undefined,
+		previewArgsReleased: false,
 		previewInitialized: false,
+		preflightPending: false,
+		preflightRevision: undefined as number | undefined,
+		previewFinalized: false,
 		settledError: false,
 	});
 }
@@ -202,6 +211,10 @@ function getEditCallRenderComponent(state: EditRenderState, lastComponent: unkno
 
 const MAX_EDIT_PREVIEW_CHARS = 16 * 1024;
 const MAX_EDIT_PREVIEW_LINES = 120;
+const MAX_PREVIEW_PARAMETER_CHARS = 128 * 1024;
+const MAX_PREVIEW_EDIT_ENTRIES = 128;
+const MAX_PREFLIGHT_FILE_BYTES = 1024 * 1024;
+const MAX_PREFLIGHT_EDIT_CHARS = 128 * 1024;
 
 type PreviewBuffer = {
 	lines: string[];
@@ -211,9 +224,15 @@ type PreviewBuffer = {
 
 function parseRenderableEdits(value: unknown): Edit[] {
 	if (Array.isArray(value)) {
-		return value.filter((edit): edit is Edit => isSingleEditInput(edit));
+		if (value.length > MAX_PREVIEW_EDIT_ENTRIES) return [];
+		const edits: Edit[] = [];
+		for (const edit of value) {
+			if (isSingleEditInput(edit)) edits.push(edit);
+		}
+		return edits;
 	}
 	if (typeof value === "string") {
+		if (value.length > MAX_PREVIEW_PARAMETER_CHARS) return [];
 		try {
 			return parseRenderableEdits(JSON.parse(value));
 		} catch {
@@ -223,41 +242,40 @@ function parseRenderableEdits(value: unknown): Edit[] {
 	return isSingleEditInput(value) ? [value] : [];
 }
 
-function getRenderablePreviewInput(args: RenderableEditArgs | undefined): { path: string; edits: Edit[] } | null {
+function getRenderablePreviewInput(args: RenderableEditArgs | undefined): { path?: string; edits: Edit[] } | null {
 	if (!args) {
 		return null;
 	}
 
-	const path = typeof args.path === "string" ? args.path : typeof args.file_path === "string" ? args.file_path : null;
-	if (!path) {
-		return null;
-	}
-
+	const path =
+		typeof args.path === "string" ? args.path : typeof args.file_path === "string" ? args.file_path : undefined;
 	const edits = parseRenderableEdits(args.edits);
 	if (edits.length > 0) {
-		return { path, edits };
+		return { ...(path ? { path } : {}), edits };
 	}
 
 	if (typeof args.oldText === "string" && typeof args.newText === "string") {
-		return { path, edits: [{ oldText: args.oldText, newText: args.newText }] };
+		return { ...(path ? { path } : {}), edits: [{ oldText: args.oldText, newText: args.newText }] };
 	}
 
 	return null;
 }
 
 function boundedEditPreviewText(value: string): string {
-	if (value.length <= MAX_EDIT_PREVIEW_CHARS) return value;
-	let end = MAX_EDIT_PREVIEW_CHARS - 1;
-	if (
-		end > 0 &&
-		value.charCodeAt(end - 1) >= 0xd800 &&
-		value.charCodeAt(end - 1) <= 0xdbff &&
-		value.charCodeAt(end) >= 0xdc00 &&
-		value.charCodeAt(end) <= 0xdfff
-	) {
-		end--;
+	let end = Math.min(value.length, MAX_EDIT_PREVIEW_CHARS);
+	let truncated = end < value.length;
+	let lineCount = 0;
+	for (let index = 0; index < end; index++) {
+		if (value.charCodeAt(index) !== 10) continue;
+		lineCount++;
+		if (lineCount < MAX_EDIT_PREVIEW_LINES - 1) continue;
+		end = index;
+		truncated = true;
+		break;
 	}
-	return `${value.slice(0, end)}…`;
+	if (!truncated) return value;
+	if (end > 0 && value.charCodeAt(end - 1) >= 0xd800 && value.charCodeAt(end - 1) <= 0xdbff) end--;
+	return `${value.slice(0, end)}\n…`;
 }
 
 function forEachTextLine(text: string, callback: (source: string, start: number, end: number) => void): void {
@@ -332,12 +350,41 @@ function createArgumentPreview(edits: Edit[]): EditDiffResult {
 	};
 }
 
+async function computeEditCallPreview(path: string, edits: Edit[], cwd: string): Promise<EditPreview | undefined> {
+	const inputSize = edits.reduce((total, edit) => total + edit.oldText.length + edit.newText.length, 0);
+	if (inputSize > MAX_PREFLIGHT_EDIT_CHARS) return undefined;
+
+	const absolutePath = resolveToCwd(path, cwd);
+	try {
+		const fileSize = (await fsStat(absolutePath)).size;
+		if (fileSize > MAX_PREFLIGHT_FILE_BYTES) return undefined;
+	} catch {
+		// 让 computeEditsDiff 返回缺失文件或访问错误。
+	}
+
+	return computeEditsDiff(path, edits, cwd);
+}
+
+function isRenderedDiffLine(diff: string, start: number, end: number, prefix: "-" | "+"): boolean {
+	if (diff[start] !== prefix) return false;
+	let index = start + 1;
+	while (index < end && /\s/.test(diff[index] ?? "")) index++;
+	const digitStart = index;
+	while (index < end && diff.charCodeAt(index) >= 48 && diff.charCodeAt(index) <= 57) index++;
+	return index > digitStart && index < end && /\s/.test(diff[index] ?? "");
+}
+
 function countRenderedDiff(diff: string): { additions: number; deletions: number } {
 	let additions = 0;
 	let deletions = 0;
-	for (const line of diff.split("\n")) {
-		if (/^\+\s*\d+\s/.test(line)) additions++;
-		if (/^-\s*\d+\s/.test(line)) deletions++;
+	let start = 0;
+	while (start <= diff.length) {
+		const newline = diff.indexOf("\n", start);
+		const end = newline === -1 ? diff.length : newline;
+		if (isRenderedDiffLine(diff, start, end, "+")) additions++;
+		if (isRenderedDiffLine(diff, start, end, "-")) deletions++;
+		if (newline === -1) break;
+		start = newline + 1;
 	}
 	return { additions, deletions };
 }
@@ -362,6 +409,19 @@ function formatEditCall(
 	});
 }
 
+function boundedResultText(content: EditToolResultLike["content"]): string {
+	let text = "";
+	for (const item of content) {
+		if (item.type !== "text" || !item.text) continue;
+		const separator = text ? "\n" : "";
+		const available = MAX_EDIT_PREVIEW_CHARS - text.length - separator.length;
+		if (available <= 0) break;
+		text += separator + item.text.slice(0, available);
+		if (item.text.length > available) break;
+	}
+	return text;
+}
+
 function formatEditResult(
 	args: RenderableEditArgs | undefined,
 	preview: EditPreview | undefined,
@@ -373,10 +433,7 @@ function formatEditResult(
 	const previewDiff = preview && !("error" in preview) ? preview.diff : undefined;
 	const previewError = preview && "error" in preview ? preview.error : undefined;
 	if (isError) {
-		const errorText = result.content
-			.filter((c) => c.type === "text")
-			.map((c) => c.text || "")
-			.join("\n");
+		const errorText = boundedResultText(result.content);
 		if (!errorText || errorText === previewError) {
 			return undefined;
 		}
@@ -384,8 +441,9 @@ function formatEditResult(
 	}
 
 	const resultDiff = result.details?.diff;
-	if (resultDiff && resultDiff !== previewDiff) {
-		return renderDiff(boundedEditPreviewText(resultDiff), { filePath: rawPath ?? undefined });
+	const displayResultDiff = typeof resultDiff === "string" ? boundedEditPreviewText(resultDiff) : undefined;
+	if (displayResultDiff && displayResultDiff !== previewDiff) {
+		return renderDiff(displayResultDiff, { filePath: rawPath ?? undefined });
 	}
 
 	return undefined;
@@ -812,16 +870,46 @@ export function createEditToolDefinition(
 			const argsRevision = context.argsRevision;
 			const argsChanged =
 				!component.previewInitialized ||
-				component.previewArgs !== args ||
+				(!component.previewArgsReleased && component.previewArgs !== args) ||
 				component.previewArgsRevision !== argsRevision;
 			if (argsChanged) {
 				component.preview = previewInput ? createArgumentPreview(previewInput.edits) : undefined;
 				component.previewArgs = args;
 				component.previewArgsRevision = argsRevision;
+				component.previewArgsReleased = false;
 				component.previewInitialized = true;
+				component.preflightPending = false;
+				component.preflightRevision = undefined;
+				component.previewFinalized = false;
 				component.settledError = false;
 			}
 
+			if (
+				context.argsComplete &&
+				typeof argsRevision === "number" &&
+				previewInput?.path &&
+				!component.previewFinalized &&
+				component.preflightRevision !== argsRevision &&
+				!component.preflightPending
+			) {
+				component.preflightPending = true;
+				component.preflightRevision = argsRevision;
+				const requestRevision = argsRevision;
+				void computeEditCallPreview(previewInput.path, previewInput.edits, context.cwd).then(
+					(preview) => {
+						if (component.previewArgsRevision !== requestRevision || component.previewFinalized) return;
+						component.preflightPending = false;
+						if (preview) setEditPreview(component, preview);
+						context.invalidate();
+					},
+					() => {
+						if (component.previewArgsRevision === requestRevision) {
+							component.preflightPending = false;
+							context.invalidate();
+						}
+					},
+				);
+			}
 			return buildEditCallComponent(component, args, theme, context.cwd, {
 				expanded: context.expanded,
 				isPartial: context.isPartial,
@@ -834,6 +922,8 @@ export function createEditToolDefinition(
 			const resultDiff = !context.isError ? typedResult.details?.diff : undefined;
 			let changed = false;
 			if (callComponent) {
+				callComponent.preflightPending = false;
+				callComponent.previewFinalized = true;
 				if (typeof resultDiff === "string") {
 					const fallbackStats = countRenderedDiff(resultDiff);
 					changed = setEditPreview(callComponent, {
@@ -861,6 +951,8 @@ export function createEditToolDefinition(
 						},
 					);
 				}
+				callComponent.previewArgs = undefined;
+				callComponent.previewArgsReleased = true;
 			}
 
 			const output =

@@ -100,6 +100,7 @@ import type {
 	ProjectResource,
 	ProjectTrust,
 	ReadProjectImageResult,
+	SessionActivity,
 	SessionInfoResult,
 	SessionProgress,
 	SessionStateSnapshot,
@@ -1550,6 +1551,20 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			transcriptGeneration: storage.generation,
 			transcriptRevision: storage.revision,
 		};
+	}
+
+	async inspectSessionActivity(sessionPath: string): Promise<SessionActivity | undefined> {
+		if (!this.isSessionWriterLocked(sessionPath)) return undefined;
+		try {
+			const companion = await GuiCompanionRuntime.open(this.agentDir, sessionPath);
+			try {
+				return companion.getSnapshot("locked_externally").activity;
+			} finally {
+				await companion.dispose();
+			}
+		} catch {
+			return undefined;
+		}
 	}
 
 	isSessionWriterLocked(sessionPath: string): boolean {

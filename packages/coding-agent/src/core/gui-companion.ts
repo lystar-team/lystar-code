@@ -85,8 +85,21 @@ export function getGuiCompanionEndpoint(agentDir: string, sessionPath: string): 
 		: join(agentDir, "host", "companions", `${suffix}.sock`);
 }
 
+const MAX_GUI_SOCKET_BUFFER_BYTES = 8 * 1024 * 1024;
+
 function send(socket: Socket, message: GuiCompanionServerMessage): void {
-	if (!socket.destroyed) socket.write(`${JSON.stringify(message)}\n`);
+	if (socket.destroyed || !socket.writable) return;
+	if (socket.writableLength >= MAX_GUI_SOCKET_BUFFER_BYTES) {
+		socket.destroy();
+		return;
+	}
+	const payload = `${JSON.stringify(message)}\n`;
+	if (socket.writableLength + Buffer.byteLength(payload) > MAX_GUI_SOCKET_BUFFER_BYTES) {
+		socket.destroy();
+		return;
+	}
+	const writable = socket.write(payload);
+	if (!writable && socket.writableLength > MAX_GUI_SOCKET_BUFFER_BYTES) socket.destroy();
 }
 
 function isAddressInUse(error: unknown): boolean {
@@ -174,6 +187,8 @@ export class GuiCompanionServer {
 	private readonly agentDir: string;
 	private readonly onSessionChanged?: () => void;
 	private committedTranscriptRevision: number;
+	private snapshotBroadcastPending = false;
+	private committedBroadcastPending = false;
 
 	constructor(session: AgentSession, agentDir: string, onSessionChanged?: () => void) {
 		this.session = session;
@@ -200,9 +215,9 @@ export class GuiCompanionServer {
 			this.unsubscribe = this.session.subscribe((event) => {
 				this.broadcast({ type: "agent_event", event });
 				if (event.type === "message_end" || event.type === "entry_appended") {
-					queueMicrotask(() => this.broadcastCommittedEntries());
+					this.scheduleCommittedEntriesBroadcast();
 				}
-				queueMicrotask(() => this.broadcast({ type: "snapshot", snapshot: this.snapshot() }));
+				this.scheduleSnapshotBroadcast();
 			});
 		} catch (error) {
 			await this.dispose();
@@ -378,6 +393,24 @@ export class GuiCompanionServer {
 			toolActivityRevision: this.session.getToolActivityRevision(),
 			toolActivities: this.session.getToolActivitySnapshot(),
 		};
+	}
+
+	private scheduleSnapshotBroadcast(): void {
+		if (this.snapshotBroadcastPending) return;
+		this.snapshotBroadcastPending = true;
+		queueMicrotask(() => {
+			this.snapshotBroadcastPending = false;
+			if (this.server) this.broadcast({ type: "snapshot", snapshot: this.snapshot() });
+		});
+	}
+
+	private scheduleCommittedEntriesBroadcast(): void {
+		if (this.committedBroadcastPending) return;
+		this.committedBroadcastPending = true;
+		queueMicrotask(() => {
+			this.committedBroadcastPending = false;
+			if (this.server) this.broadcastCommittedEntries();
+		});
 	}
 
 	private broadcast(message: GuiCompanionServerMessage): void {

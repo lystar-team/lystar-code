@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { AgentSessionEvent } from "./agent-session.ts";
 
 const MAX_PROGRESS_TEXT_CHARS = 16 * 1024;
+const MAX_PROGRESS_DIFF_LINES = 120;
+const MAX_PREVIEW_PARAMETER_CHARS = 128 * 1024;
+const MAX_PREVIEW_EDIT_ENTRIES = 128;
 
 export type ToolActivityState = "preparing" | "queued" | "running" | "success" | "error" | "cancelled" | "interrupted";
 
@@ -70,45 +73,108 @@ export function boundedText(value: string): string {
 }
 
 function boundedDiffText(value: string): { text: string; truncated?: boolean } {
-	if (value.length <= MAX_PROGRESS_TEXT_CHARS) return { text: value };
-	let end = MAX_PROGRESS_TEXT_CHARS;
-	if (
-		end > 0 &&
-		value.charCodeAt(end - 1) >= 0xd800 &&
-		value.charCodeAt(end - 1) <= 0xdbff &&
-		value.charCodeAt(end) >= 0xdc00 &&
-		value.charCodeAt(end) <= 0xdfff
-	) {
-		end--;
+	let end = Math.min(value.length, MAX_PROGRESS_TEXT_CHARS);
+	let truncated = end < value.length;
+	let lineCount = 0;
+	for (let index = 0; index < end; index++) {
+		if (value.charCodeAt(index) !== 10) continue;
+		lineCount++;
+		if (lineCount < MAX_PROGRESS_DIFF_LINES - 1) continue;
+		end = index;
+		truncated = true;
+		break;
 	}
+	if (!truncated) return { text: value };
+	if (end > 0 && value.charCodeAt(end - 1) >= 0xd800 && value.charCodeAt(end - 1) <= 0xdbff) end--;
 	return { text: value.slice(0, end), truncated: true };
 }
 
-function countLines(value: string): number {
-	if (!value) return 0;
-	const normalized = value.replace(/\r\n?/g, "\n");
-	return normalized.endsWith("\n") ? normalized.split("\n").length - 1 : normalized.split("\n").length;
+type PreviewBuffer = {
+	lines: string[];
+	length: number;
+	truncated: boolean;
+};
+
+function forEachTextLine(text: string, callback: (source: string, start: number, end: number) => void): void {
+	if (!text) return;
+	let start = 0;
+	for (let index = 0; index < text.length; index++) {
+		const code = text.charCodeAt(index);
+		if (code !== 10 && code !== 13) continue;
+		callback(text, start, index);
+		if (code === 13 && text.charCodeAt(index + 1) === 10) index++;
+		start = index + 1;
+	}
+	if (start < text.length) callback(text, start, text.length);
 }
 
-function prefixLines(value: string, prefix: string): string {
-	const normalized = value.replace(/\r\n?/g, "\n");
-	const lines = normalized.split("\n");
-	if (lines.at(-1) === "") lines.pop();
-	return lines.map((line) => `${prefix}${line}`).join("\n");
+function appendPrefixedLines(buffer: PreviewBuffer, text: string, prefix: string): number {
+	let lineCount = 0;
+	forEachTextLine(text, (source, start, end) => {
+		lineCount++;
+		if (buffer.truncated) return;
+		if (buffer.lines.length >= MAX_PROGRESS_DIFF_LINES - 1) {
+			buffer.truncated = true;
+			return;
+		}
+		const separatorLength = buffer.lines.length > 0 ? 1 : 0;
+		const available = MAX_PROGRESS_TEXT_CHARS - buffer.length - separatorLength;
+		if (available <= prefix.length) {
+			buffer.truncated = true;
+			return;
+		}
+		const contentLength = Math.min(end - start, available - prefix.length);
+		buffer.lines.push(`${prefix}${source.slice(start, start + contentLength)}`);
+		buffer.length += separatorLength + prefix.length + contentLength;
+		if (contentLength < end - start) buffer.truncated = true;
+	});
+	return lineCount;
+}
+
+function finishPreview(buffer: PreviewBuffer): { text: string; truncated?: boolean } {
+	return { text: buffer.lines.join("\n"), ...(buffer.truncated ? { truncated: true } : {}) };
+}
+
+function createPrefixedPreview(
+	value: string,
+	prefix: string,
+): { preview: { text: string; truncated?: boolean }; lines: number } {
+	const buffer: PreviewBuffer = { lines: [], length: 0, truncated: false };
+	const lines = appendPrefixedLines(buffer, value, prefix);
+	return { preview: finishPreview(buffer), lines };
+}
+
+function countPatchLines(value: string): { additions: number; deletions: number } {
+	let additions = 0;
+	let deletions = 0;
+	forEachTextLine(value, (source, start) => {
+		const first = source.charCodeAt(start);
+		const second = source.charCodeAt(start + 1);
+		const third = source.charCodeAt(start + 2);
+		if (first === 43 && second === 43 && third === 43) return;
+		if (first === 45 && second === 45 && third === 45) return;
+		if (first === 43) additions++;
+		if (first === 45) deletions++;
+	});
+	return { additions, deletions };
 }
 
 function editEntries(value: Record<string, unknown> | undefined): Array<{ oldText: string; newText: string }> {
 	if (!value) return [];
 	const edits = value.edits;
 	if (Array.isArray(edits)) {
-		return edits.flatMap((entry) => {
+		if (edits.length > MAX_PREVIEW_EDIT_ENTRIES) return [];
+		const entries: Array<{ oldText: string; newText: string }> = [];
+		for (const entry of edits) {
 			const item = toolRecord(entry);
-			return typeof item?.oldText === "string" && typeof item.newText === "string"
-				? [{ oldText: item.oldText, newText: item.newText }]
-				: [];
-		});
+			if (typeof item?.oldText === "string" && typeof item.newText === "string") {
+				entries.push({ oldText: item.oldText, newText: item.newText });
+			}
+		}
+		return entries;
 	}
 	if (typeof edits === "string") {
+		if (edits.length > MAX_PREVIEW_PARAMETER_CHARS) return [];
 		try {
 			const parsed = JSON.parse(edits) as unknown;
 			return Array.isArray(parsed) ? editEntries({ edits: parsed }) : editEntries({ edits: [parsed] });
@@ -124,15 +190,15 @@ function editEntries(value: Record<string, unknown> | undefined): Array<{ oldTex
 function previewWriteDiff(path: string | undefined, args: Record<string, unknown>): ToolActivityDiff | undefined {
 	const content = args.content;
 	if (typeof content !== "string") return path ? { files: [{ path }] } : undefined;
-	const preview = boundedDiffText(prefixLines(content, "+"));
+	const preview = createPrefixedPreview(content, "+");
 	return {
 		files: [
 			{
 				...(path ? { path } : {}),
-				additions: countLines(content),
+				additions: preview.lines,
 				deletions: 0,
-				...(preview.text ? { diff: preview.text } : {}),
-				...(preview.truncated ? { truncated: true } : {}),
+				...(preview.preview.text ? { diff: preview.preview.text } : {}),
+				...(preview.preview.truncated ? { truncated: true } : {}),
 			},
 		],
 	};
@@ -142,18 +208,10 @@ function previewEditDiff(path: string | undefined, args: Record<string, unknown>
 	const edits = editEntries(args);
 	if (edits.length === 0) return path ? { files: [{ path }] } : undefined;
 
-	let additions = 0;
-	let deletions = 0;
-	const lines: string[] = [];
-	for (const edit of edits) {
-		deletions += countLines(edit.oldText);
-		additions += countLines(edit.newText);
-		const removed = prefixLines(edit.oldText, "-");
-		const added = prefixLines(edit.newText, "+");
-		if (removed) lines.push(removed);
-		if (added) lines.push(added);
-	}
-	const preview = boundedDiffText(lines.join("\n"));
+	const buffer: PreviewBuffer = { lines: [], length: 0, truncated: false };
+	const deletions = edits.reduce((total, edit) => total + appendPrefixedLines(buffer, edit.oldText, "-"), 0);
+	const additions = edits.reduce((total, edit) => total + appendPrefixedLines(buffer, edit.newText, "+"), 0);
+	const preview = finishPreview(buffer);
 	return {
 		files: [
 			{
@@ -169,14 +227,8 @@ function previewEditDiff(path: string | undefined, args: Record<string, unknown>
 
 function previewPatchDiff(args: Record<string, unknown>): ToolActivityDiff | undefined {
 	if (typeof args.input !== "string") return undefined;
-	const input = args.input.replace(/\r\n?/g, "\n");
-	let additions = 0;
-	let deletions = 0;
-	for (const line of input.split("\n")) {
-		if (line.startsWith("+++") || line.startsWith("---")) continue;
-		if (line.startsWith("+")) additions++;
-		if (line.startsWith("-")) deletions++;
-	}
+	const input = args.input;
+	const { additions, deletions } = countPatchLines(input);
 	const preview = boundedDiffText(input);
 	return {
 		files: [
@@ -252,14 +304,26 @@ export function toolProgressDiff(name: string, args: unknown, result?: unknown):
 function textFromResult(value: unknown): string | undefined {
 	const result = toolRecord(value);
 	if (!Array.isArray(result?.content)) return undefined;
-	const text = result.content
-		.map((part) => {
-			const item = toolRecord(part);
-			return item?.type === "text" && typeof item.text === "string" ? item.text : "";
-		})
-		.filter(Boolean)
-		.join("\n");
-	return text ? boundedText(text) : undefined;
+	let text = "";
+	let truncated = false;
+	for (const part of result.content) {
+		const item = toolRecord(part);
+		if (item?.type !== "text" || typeof item.text !== "string" || !item.text) continue;
+		const separator = text ? "\n" : "";
+		const available = MAX_PROGRESS_TEXT_CHARS - text.length - separator.length;
+		if (available <= 0) {
+			truncated = true;
+			break;
+		}
+		const partText = item.text.slice(0, available);
+		text += separator + partText;
+		if (partText.length < item.text.length) {
+			truncated = true;
+			break;
+		}
+	}
+	if (!text) return undefined;
+	return truncated ? `${text.slice(0, Math.max(0, MAX_PROGRESS_TEXT_CHARS - 1))}…` : text;
 }
 
 function serializedText(value: unknown): string {
@@ -275,12 +339,25 @@ function serializedText(value: unknown): string {
 export function toolInputSummary(name: string, value: unknown): string {
 	const input = toolRecord(value);
 	if (name === "bash" && typeof input?.command === "string") return boundedText(input.command);
+	if (name === "read") return toolPath(value) ?? name;
 	if (isDiffTool(name)) return toolPath(value) ?? name;
 	return serializedText(value);
 }
 
-export function toolOutputSummary(value: unknown): string {
-	return textFromResult(value) ?? serializedText(value);
+export function toolOutputSummary(value: unknown, name?: string): string {
+	return (
+		textFromResult(value) ??
+		(name && isDiffTool(name)
+			? boundedText(
+					String(
+						toolRecord(value)?.error ??
+							toolRecord(toolRecord(value)?.details)?.error ??
+							toolRecord(toolRecord(value)?.details)?.message ??
+							name,
+					),
+				)
+			: serializedText(value))
+	);
 }
 
 interface InternalToolActivity {
@@ -384,20 +461,22 @@ export class ToolActivityTracker {
 			activity.state = "running";
 			activity.args = event.args;
 			activity.summary = this.summary(event.toolName, event.args);
-			activity.progress = textFromResult(event.partialResult) ?? toolOutputSummary(event.partialResult);
+			activity.progress =
+				textFromResult(event.partialResult) ?? toolOutputSummary(event.partialResult, event.toolName);
 			activity.diff = toolProgressDiff(event.toolName, event.args, event.partialResult) ?? activity.diff;
 			activity.startedAt ??= Date.now();
 			return [this.touch(activity)];
 		}
 		if (event.type === "tool_execution_end") {
 			const activity = this.getOrCreate(event.toolCallId, event.toolName, undefined);
-			const output = toolOutputSummary(event.result);
+			const output = toolOutputSummary(event.result, event.toolName);
 			const cancelled = event.isError && isCancelledText(output);
 			activity.state = cancelled ? "cancelled" : event.isError ? "error" : "success";
-			activity.summary = output || this.summary(event.toolName, activity.args);
+			// 终态摘要继续表示工具输入，结果单独放在 output，避免文件内容或命令输出替换标题。
 			activity.output = output;
 			activity.error = event.isError ? output || "工具调用失败" : undefined;
 			activity.diff = toolProgressDiff(event.toolName, activity.args, event.result);
+			activity.args = undefined;
 			activity.startedAt ??= Date.now();
 			activity.completedAt = Date.now();
 			return [this.touch(activity)];
@@ -427,6 +506,7 @@ export class ToolActivityTracker {
 			activity.error = "工具调用未返回最终结果";
 			activity.completedAt = Date.now();
 			snapshots.push(this.touch(activity));
+			activity.args = undefined;
 		}
 		return snapshots;
 	}

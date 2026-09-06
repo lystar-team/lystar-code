@@ -232,6 +232,25 @@ export class ToolExecutionComponent extends Container {
 		return firstLine ? new Text(theme.fg("error", firstLine.trim()), 0, 0) : undefined;
 	}
 
+	private releaseCompletedEditArgs(): void {
+		if (this.toolName !== "edit") return;
+		if (this.args && typeof this.args === "object" && !Array.isArray(this.args)) {
+			const path =
+				typeof this.args.path === "string"
+					? this.args.path
+					: typeof this.args.file_path === "string"
+						? this.args.file_path
+						: undefined;
+			this.args = path ? { ...(typeof this.args.path === "string" ? { path } : { file_path: path }) } : {};
+		}
+		if (!this.result?.details || typeof this.result.details !== "object" || Array.isArray(this.result.details))
+			return;
+		const details = { ...this.result.details };
+		delete details.diff;
+		delete details.patch;
+		this.result = { ...this.result, details };
+	}
+
 	updateArgs(args: any): void {
 		this.args = args;
 		this.argsRevision++;
@@ -262,6 +281,7 @@ export class ToolExecutionComponent extends Container {
 		const visibleChanged = !isPartial || this.expanded || !this.builtInToolDefinition;
 		if (visibleChanged) this.updateDisplay();
 		this.maybeConvertImagesForKitty();
+		if (!isPartial) this.releaseCompletedEditArgs();
 		return visibleChanged;
 	}
 

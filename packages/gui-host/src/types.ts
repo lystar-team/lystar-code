@@ -185,6 +185,7 @@ export interface RuntimeAdapter {
 	createSession(cwd: string, onUiRequest: UiRequestHandler): Promise<RuntimeSession>;
 	openSession(sessionPath: string, onUiRequest: UiRequestHandler): Promise<RuntimeSession>;
 	inspectSession(sessionPath: string): SessionStateSnapshot;
+	inspectSessionActivity?(sessionPath: string): Promise<SessionActivity | undefined>;
 	isSessionWriterLocked(sessionPath: string): boolean;
 	deleteSession(sessionPath: string): Promise<void>;
 	listSessions(cwd: string, options?: { metadataOnly?: boolean }): Promise<SessionSummaryBase[]>;

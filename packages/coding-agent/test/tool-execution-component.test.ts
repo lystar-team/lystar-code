@@ -885,7 +885,7 @@ describe("ToolExecutionComponent parity", () => {
 			"tool-edit-preview-bounded",
 			{
 				path: "README.md",
-				edits: [{ oldText: "old\n".repeat(5000), newText: "new\n".repeat(5000) }],
+				edits: [{ oldText: "old\n".repeat(40_000), newText: "new\n".repeat(40_000) }],
 			},
 			{},
 			createEditToolDefinition(process.cwd()),
@@ -894,6 +894,7 @@ describe("ToolExecutionComponent parity", () => {
 		);
 
 		component.setExpanded(true);
+		component.setArgsComplete();
 		const rendered = stripAnsi(component.render(120).join("\n"));
 		expect(rendered.length).toBeLessThan(20_000);
 	});

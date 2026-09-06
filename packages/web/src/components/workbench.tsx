@@ -109,6 +109,10 @@ import {
 	PromptCompletionTextarea,
 } from "./ai-elements/prompt-completion-menu";
 import {
+	PromptTokenContent,
+	hasPromptTokens,
+} from "./ai-elements/prompt-token.tsx";
+import {
 	PromptInput,
 	PromptInputBody,
 	PromptInputButton,
@@ -946,9 +950,20 @@ function ConversationBody({
 		if (!isAtBottom || !scrollRef.current || autoScrollFrameRef.current !== undefined) return;
 		autoScrollFrameRef.current = window.requestAnimationFrame(() => {
 			autoScrollFrameRef.current = undefined;
-			void scrollToBottom({ animation: "smooth", wait: true, preserveScrollPosition: true });
+			void scrollToBottom({ animation: "instant", preserveScrollPosition: true });
 		});
-			}, [isAtBottom, scrollRef, scrollToBottom]);
+	}, [
+		isAtBottom,
+		scrollRef,
+		scrollToBottom,
+		state.hasMorePrevious,
+		state.liveText,
+		state.liveThinking,
+		state.liveTools,
+		state.liveTurnItems,
+		state.statusText,
+		state.transcript,
+	]);
 
 	useEffect(() => {
 		return () => {
@@ -1129,15 +1144,19 @@ function TranscriptItemView({
 			>
 				<TranscriptSources urls={viewModel.sources} />
 				<MessageContent>
-					<MessageResponse
-						mode="static"
-						parseIncompleteMarkdown
-						linkSafety={{ enabled: true }}
-						controls={{ code: { copy: true, download: true }, table: { copy: true, download: true } }}
-						onOpenPath={(path) => void actions.openResource(path)}
-					>
-						{viewModel.text || " "}
-					</MessageResponse>
+					{viewModel.role === "user" && hasPromptTokens(viewModel.text) ? (
+						<PromptTokenContent text={viewModel.text} />
+					) : (
+						<MessageResponse
+							mode="static"
+							parseIncompleteMarkdown
+							linkSafety={{ enabled: true }}
+							controls={{ code: { copy: true, download: true }, table: { copy: true, download: true } }}
+							onOpenPath={(path) => void actions.openResource(path)}
+						>
+							{viewModel.text || " "}
+						</MessageResponse>
+					)}
 					<TranscriptAttachments attachments={viewModel.attachments} sessionId={sessionId} />
 				</MessageContent>
 				{showCopy && viewModel.role === "assistant" && viewModel.text ? (

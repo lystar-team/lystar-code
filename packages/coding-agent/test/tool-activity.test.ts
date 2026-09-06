@@ -67,6 +67,7 @@ describe("ToolActivityTracker", () => {
 		)[0];
 		expect(success).toMatchObject({
 			state: "success",
+			summary: "src/app.ts",
 			output: "已写入",
 			diff: { files: [{ path: "src/app.ts", additions: 1, deletions: 0 }] },
 		});
@@ -99,7 +100,34 @@ describe("ToolActivityTracker", () => {
 				}),
 			),
 		).toEqual([]);
-		expect(tracker.getSnapshot()[0]).toMatchObject({ state: "success", output: "done", revision: success?.revision });
+		expect(success).toMatchObject({ state: "success", summary: "a.ts", output: "done", revision: success?.revision });
+	});
+
+	it("终态保留实际执行的命令并单独记录输出", () => {
+		const tracker = new ToolActivityTracker();
+		tracker.apply(
+			event({
+				type: "tool_execution_start",
+				toolCallId: "call-bash",
+				toolName: "bash",
+				args: { command: "git status --short" },
+			}),
+		);
+		const finished = tracker.apply(
+			event({
+				type: "tool_execution_end",
+				toolCallId: "call-bash",
+				toolName: "bash",
+				result: toolResult(" M packages/web/src/components/workbench.tsx"),
+				isError: false,
+			}),
+		)[0];
+
+		expect(finished).toMatchObject({
+			state: "success",
+			summary: "git status --short",
+			output: " M packages/web/src/components/workbench.tsx",
+		});
 	});
 
 	it("未返回工具结果时收敛为中断", () => {
