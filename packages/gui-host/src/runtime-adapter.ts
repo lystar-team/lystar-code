@@ -111,7 +111,7 @@ import type {
 	TranscriptItem,
 } from "@lystar/code-gui-protocol";
 import { GUI_PROTOCOL_VERSION } from "@lystar/code-gui-protocol";
-import { GuiCompanionRuntime } from "./companion-runtime.ts";
+import { GuiCompanionProtocolError, GuiCompanionRuntime } from "./companion-runtime.ts";
 import { isDiffTool, toolCallUpdate, toolPath, toolProgressDiff, toolRecord } from "./tool-progress.ts";
 import type {
 	ModelProviderInput,
@@ -1509,7 +1509,8 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			if (!(error instanceof SessionLockedError)) throw error;
 			try {
 				return await GuiCompanionRuntime.open(this.agentDir, sessionPath);
-			} catch {
+			} catch (companionError) {
+				if (companionError instanceof GuiCompanionProtocolError) throw companionError;
 				throw error;
 			}
 		}

@@ -208,6 +208,8 @@ function toError(error: unknown): HttpError {
 	const message = error instanceof Error ? error.message : String(error);
 	if (code === "session_control_locked" || code === "session_locked")
 		return new HttpError(409, code, "当前会话正在其他进程中使用");
+	if (code === "gui_companion_protocol_incompatible")
+		return new HttpError(503, code, "当前 TUI 与 GUI Host 的共享协议不兼容，请重启 TUI 后重试");
 	if (code === "invalid_session_lease") return new HttpError(409, code, "会话控制权已失效，请重新取得控制权");
 	if (code === "operation_request_conflict") return new HttpError(409, code, "同一请求编号对应了不同内容");
 	if (code === "operation_journal_corrupt") return new HttpError(503, code, "任务记录损坏，后台当前不可写");

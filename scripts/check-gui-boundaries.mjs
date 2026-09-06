@@ -7,6 +7,10 @@ const guiRoots = ["packages/gui", "packages/gui-host", "packages/gui-protocol"];
 const reverseRoots = ["packages/coding-agent", "packages/tui", "packages/protocol", "packages/client", "packages/server"];
 const ignoredDirectories = new Set(["binaries", "dist", "node_modules", "resources", "target"]);
 const sourceExtensions = new Set([".ts", ".tsx", ".js", ".mjs"]);
+const codingAgentBridgeFiles = new Set([
+	"packages/gui-host/src/runtime-adapter.ts",
+	"packages/gui-host/src/companion-runtime.ts",
+]);
 const failures = [];
 
 function collect(directory, files = []) {
@@ -59,10 +63,11 @@ for (const guiRoot of guiRoots) {
 				report(file, source, position, `GUI code must not import TUI implementation: ${value}`);
 			}
 			if (!value.startsWith("@earendil-works/pi-coding-agent")) continue;
-			if (path !== "packages/gui-host/src/runtime-adapter.ts") {
-				report(file, source, position, `only runtime-adapter.ts may import Coding Agent: ${value}`);
+			const isCodingAgentBridge = codingAgentBridgeFiles.has(path);
+			if (!isCodingAgentBridge) {
+				report(file, source, position, `GUI 适配层只能从 Coding Agent 的公开 core 出口导入：${value}`);
 			} else if (value !== "@earendil-works/pi-coding-agent/core") {
-				report(file, source, position, `runtime-adapter.ts must use the public ./core export: ${value}`);
+				report(file, source, position, `GUI 适配层必须使用公开的 ./core 出口：${value}`);
 			}
 		}
 	}

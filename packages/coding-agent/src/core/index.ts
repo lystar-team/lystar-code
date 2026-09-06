@@ -63,7 +63,6 @@ export {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 } from "./agent-session-services.ts";
-export { AuthStorage, type AuthStorageBackend } from "./auth-storage.ts";
 export type { CompactionResult } from "./compaction/index.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./event-bus.ts";
 export { areExperimentalFeaturesEnabled } from "./experimental.ts";
@@ -117,6 +116,21 @@ export {
 	type TurnStartEvent,
 	type WorkingIndicatorOptions,
 } from "./extensions/index.ts";
+export {
+	GUI_COMPANION_CAPABILITIES,
+	GUI_COMPANION_LEGACY_CAPABILITIES,
+	GUI_COMPANION_LEGACY_PROTOCOL_VERSION,
+	GUI_COMPANION_PROTOCOL_VERSION,
+	type GuiCompanionCapability,
+	type GuiCompanionCommand,
+	type GuiCompanionImage,
+	type GuiCompanionProtocolVersion,
+	GuiCompanionServer,
+	type GuiCompanionServerMessage,
+	type GuiCompanionSnapshot,
+	type GuiCompanionSnapshotWire,
+	getGuiCompanionEndpoint,
+} from "./gui-companion.ts";
 export {
 	getLystarSetting,
 	getLystarSettingsForUi,

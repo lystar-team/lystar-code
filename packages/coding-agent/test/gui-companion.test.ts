@@ -1,10 +1,11 @@
 import { type ChildProcessByStdio, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
+import type { GuiCompanionCommand } from "../src/core/gui-companion.ts";
 import { GuiCompanionServer, getGuiCompanionEndpoint } from "../src/core/gui-companion.ts";
 
 const tempDirs = new Set<string>();
@@ -64,6 +65,52 @@ function createModelSwitchSession(sessionPath: string): {
 		thinkingLevel: { get: () => state.thinkingLevel },
 	});
 	return { session, model, thinkingLevel: state.thinkingLevel, setModel, setThinkingLevel };
+}
+
+function createControlSession(sessionPath: string): {
+	session: AgentSession;
+	setSessionName: ReturnType<typeof vi.fn>;
+	getSessionInfo: ReturnType<typeof vi.fn>;
+} {
+	const state = { name: undefined as string | undefined };
+	const setSessionName = vi.fn((name: string) => {
+		state.name = name;
+	});
+	const getSessionInfo = vi.fn(() => ({
+		name: state.name ?? null,
+		sessionFile: sessionPath,
+		sessionId: "test-session",
+		messages: { total: 1, user: 1, agent: 0, toolCalls: 0, toolResults: 0 },
+		tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		cost: 0,
+		usageBreakdown: [],
+		cacheWaste: { missedTokens: 0, missedCost: 0, missCount: 0 },
+	}));
+	const session = {
+		sessionFile: sessionPath,
+		isCompacting: false,
+		retryAttempt: 0,
+		isStreaming: false,
+		getContextUsage: () => undefined,
+		getSteeringMessages: () => [],
+		getFollowUpMessages: () => [],
+		getToolActivityEpoch: () => "test-epoch",
+		getToolActivityRevision: () => 0,
+		getToolActivitySnapshot: () => [],
+		getLastAssistantText: () => "最后回复",
+		getSessionInfo,
+		setSessionName,
+		sessionManager: {
+			getEntries: () => [],
+			getHeader: () => ({ timestamp: new Date(0).toISOString() }),
+			getSessionId: () => "test-session",
+			getCwd: () => "/tmp",
+			getLeafId: () => null,
+		},
+		subscribe: () => () => {},
+	} as unknown as AgentSession;
+	Object.defineProperty(session, "sessionName", { get: () => state.name });
+	return { session, setSessionName, getSessionInfo };
 }
 function waitForExit(child: SpawnedChild): Promise<void> {
 	if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
@@ -144,6 +191,118 @@ describe("GuiCompanionServer", () => {
 		expect(onSessionChanged).toHaveBeenCalledTimes(2);
 		expect((modelResult as { model?: typeof model }).model).toEqual(model);
 		expect((thinkingResult as { thinkingLevel?: string }).thinkingLevel).toBe("high");
+	});
+
+	it("forwards shared session controls and advertises capabilities", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "lystar-gui-companion-"));
+		tempDirs.add(agentDir);
+		const sessionPath = join(agentDir, "session.jsonl");
+		writeFileSync(sessionPath, "{}\n");
+		const { session, setSessionName, getSessionInfo } = createControlSession(sessionPath);
+		const server = new GuiCompanionServer(session, agentDir);
+		const execute = (
+			server as unknown as {
+				execute(command: Extract<GuiCompanionCommand, { type: "request" }>): Promise<unknown>;
+			}
+		).execute.bind(server);
+
+		const renameResult = await execute({ type: "request", requestId: "rename", command: "rename", name: "共享会话" });
+		expect(setSessionName).toHaveBeenCalledWith("共享会话");
+		expect(renameResult).toMatchObject({
+			name: "共享会话",
+			capabilities: expect.arrayContaining([
+				"session_rename",
+				"session_info",
+				"session_settings",
+				"session_fork",
+				"session_import",
+				"session_share",
+			]),
+		});
+		await expect(execute({ type: "request", requestId: "info", command: "get_session_info" })).resolves.toMatchObject(
+			{
+				sessionId: "test-session",
+			},
+		);
+		expect(getSessionInfo).toHaveBeenCalled();
+		await expect(execute({ type: "request", requestId: "tree", command: "get_session_tree" })).resolves.toEqual([]);
+		await expect(
+			execute({ type: "request", requestId: "last", command: "get_last_assistant_text" }),
+		).resolves.toEqual({ text: "最后回复" });
+	});
+
+	it("creates detached fork and import files through the companion", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "lystar-gui-companion-"));
+		const sourceDir = mkdtempSync(join(tmpdir(), "lystar-gui-import-"));
+		tempDirs.add(agentDir);
+		tempDirs.add(sourceDir);
+		const sessionPath = join(agentDir, "session.jsonl");
+		writeFileSync(sessionPath, "{}\n");
+		const entry = {
+			id: "entry-1",
+			parentId: null,
+			type: "message",
+			timestamp: new Date(0).toISOString(),
+			message: { role: "user", content: "hello" },
+		} as never;
+		const header = {
+			type: "session",
+			version: 3,
+			id: "source-session",
+			timestamp: new Date(0).toISOString(),
+			cwd: agentDir,
+		};
+		const forkPath = join(agentDir, "forked.jsonl");
+		const forkManager = {
+			getSessionFile: () => forkPath,
+			getHeader: () => ({ ...header, id: "forked-session" }),
+			getEntries: () => [entry],
+			dispose: vi.fn(),
+		};
+		const session = {
+			...createSession(sessionPath),
+			sessionManager: {
+				getEntries: () => [entry],
+				getEntry: () => entry,
+				getLeafId: () => "entry-1",
+				getCwd: () => agentDir,
+				getSessionDir: () => agentDir,
+				createBranchedSessionManager: () => forkManager,
+			},
+		} as unknown as AgentSession;
+		const sourcePath = join(sourceDir, "import.jsonl");
+		writeFileSync(sourcePath, `${JSON.stringify(header)}\n`);
+		const server = new GuiCompanionServer(session, agentDir);
+		const execute = (
+			server as unknown as {
+				execute(command: Extract<GuiCompanionCommand, { type: "request" }>): Promise<unknown>;
+			}
+		).execute.bind(server);
+
+		const forkResult = await execute({
+			type: "request",
+			requestId: "fork",
+			command: "fork_session",
+			entryId: "entry-1",
+			position: "at",
+		});
+		expect(forkResult).toMatchObject({ sessionPath: forkPath });
+		expect(JSON.parse(readFileSync(forkPath, "utf8").split("\n")[0])).toMatchObject({
+			type: "session",
+			id: "forked-session",
+		});
+
+		const importResult = await execute({
+			type: "request",
+			requestId: "import",
+			command: "import_session",
+			inputPath: sourcePath,
+		});
+		expect(importResult).toMatchObject({ cancelled: false, sessionPath: join(agentDir, "import.jsonl") });
+		expect(JSON.parse(readFileSync(join(agentDir, "import.jsonl"), "utf8").split("\n")[0])).toMatchObject({
+			type: "session",
+			id: "source-session",
+		});
 	});
 
 	it("routes completion lookup through the active session", async () => {

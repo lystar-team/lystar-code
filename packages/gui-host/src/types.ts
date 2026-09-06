@@ -54,7 +54,18 @@ export interface RichTextRenderRequest {
 	isStreaming: boolean;
 }
 
-export interface RuntimeSession {
+export interface RuntimeSessionAsyncControls {
+	getCapabilities?(): readonly string[];
+	listSettingsAsync?(): Promise<SettingSummary[]>;
+	getSessionTreeAsync?(): Promise<SessionTreeNode[]>;
+	getSessionInfoAsync?(): Promise<SessionInfoResult>;
+	listForkMessagesAsync?(): Promise<Array<{ entryId: string; text: string }>>;
+	listSubagentsAsync?(): Promise<SubagentSnapshot[]>;
+	readSubagentAsync?(agentId: string): Promise<{ transcript?: SubagentSnapshot; live?: SubagentSnapshot }>;
+	getLastAssistantTextAsync?(): Promise<string | undefined>;
+}
+
+export interface RuntimeSession extends RuntimeSessionAsyncControls {
 	readonly sessionPath: string;
 	getSnapshot(writeAccess: SessionStateSnapshot["writeAccess"]): SessionStateSnapshot;
 	listSettings(): SettingSummary[];
@@ -80,7 +91,7 @@ export interface RuntimeSession {
 	clearQueue(): Promise<{ steering: string[]; followUp: string[] }>;
 	compact(customInstructions?: string): Promise<void>;
 	exportSession(outputPath?: string): Promise<{ path: string }>;
-	importSession(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }>;
+	importSession(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean; sessionPath?: string }>;
 	shareSession(signal?: AbortSignal): Promise<{ previewUrl: string; gistUrl: string }>;
 	getLastAssistantText(): string | undefined;
 	runBash(command: string, excludeFromContext: boolean, onChunk: (chunk: string) => void): Promise<JsonValue>;

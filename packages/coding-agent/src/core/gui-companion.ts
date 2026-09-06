@@ -1,89 +1,44 @@
-import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, statSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
-import type { AgentSession, AgentSessionEvent } from "./agent-session.ts";
-import type { ToolActivitySnapshot } from "./tool-activity.ts";
+import {
+	abortSubagent,
+	continueSubagentSession,
+	getCurrentSubagentRuns,
+	type SubagentDetails,
+	type SubagentRunSnapshot,
+} from "../extensions/subagent/index.ts";
+import { getBuiltinThemeNames } from "../modes/interactive/theme/theme.ts";
+import type { AgentSession } from "./agent-session.ts";
+import {
+	GUI_COMPANION_CAPABILITIES,
+	GUI_COMPANION_PROTOCOL_VERSION,
+	type GuiCompanionCommand,
+	type GuiCompanionImage,
+	type GuiCompanionServerMessage,
+	type GuiCompanionSnapshot,
+	getGuiCompanionEndpoint,
+} from "./gui-companion-contract.ts";
+import { getLystarSetting, getLystarSettingsForUi } from "./lystar-settings-catalog.ts";
+import { assertSessionCwdExists } from "./session-cwd.ts";
+import { type SessionEntry, SessionManager } from "./session-manager.ts";
 
-export interface GuiCompanionImage {
-	data: string;
-	mimeType: string;
-}
-
-export interface GuiCompanionSnapshot {
-	id: string;
-	path: string;
-	cwd: string;
-	name?: string;
-	createdAt: number;
-	updatedAt: number;
-	phase: "idle" | "turn" | "compaction" | "retry";
-	activity: "idle" | "running";
-	model?: { provider: string; id: string };
-	thinkingLevel: string;
-	leafId: string | null;
-	queuedSteerCount: number;
-	queuedFollowUpCount: number;
-	contextTokens?: number | null;
-	contextWindow?: number;
-	transcriptGeneration: string;
-	transcriptRevision: number;
-	toolActivityEpoch: string;
-	toolActivityRevision: number;
-	toolActivities: ToolActivitySnapshot[];
-}
-
-export type GuiCompanionCommand =
-	| { type: "hello"; sessionPath: string }
-	| {
-			type: "request";
-			requestId: string;
-			command:
-				| "prompt"
-				| "steer"
-				| "follow_up"
-				| "clear_queue"
-				| "abort"
-				| "snapshot"
-				| "set_model"
-				| "set_thinking_level"
-				| "cycle_model"
-				| "cycle_thinking_level"
-				| "get_completions";
-			text?: string;
-			cursor?: number;
-			images?: GuiCompanionImage[];
-			model?: { provider: string; id: string };
-			level?: ThinkingLevel;
-			direction?: "forward" | "backward";
-	  };
-
-export type GuiCompanionServerMessage =
-	| { type: "ready"; snapshot: GuiCompanionSnapshot }
-	| { type: "response"; requestId: string; ok: true; result?: unknown }
-	| { type: "response"; requestId: string; ok: false; error: string }
-	| { type: "snapshot"; snapshot: GuiCompanionSnapshot }
-	| { type: "agent_event"; event: AgentSessionEvent }
-	| {
-			type: "entry_committed";
-			items: unknown[];
-			transcriptGeneration: string;
-			fromRevision: number;
-			transcriptRevision: number;
-	  };
-
-function endpointHash(agentDir: string, sessionPath: string): string {
-	return createHash("sha256").update(`${agentDir}\0${sessionPath}`).digest("hex").slice(0, 32);
-}
-
-export function getGuiCompanionEndpoint(agentDir: string, sessionPath: string): string {
-	const suffix = endpointHash(agentDir, sessionPath);
-	return process.platform === "win32"
-		? `\\\\.\\pipe\\lystar-session-companion-${suffix}`
-		: join(agentDir, "host", "companions", `${suffix}.sock`);
-}
+export {
+	GUI_COMPANION_CAPABILITIES,
+	GUI_COMPANION_LEGACY_CAPABILITIES,
+	GUI_COMPANION_LEGACY_PROTOCOL_VERSION,
+	GUI_COMPANION_PROTOCOL_VERSION,
+	type GuiCompanionCapability,
+	type GuiCompanionCommand,
+	type GuiCompanionImage,
+	type GuiCompanionProtocolVersion,
+	type GuiCompanionServerMessage,
+	type GuiCompanionSnapshot,
+	type GuiCompanionSnapshotWire,
+	getGuiCompanionEndpoint,
+} from "./gui-companion-contract.ts";
 
 const MAX_GUI_SOCKET_BUFFER_BYTES = 8 * 1024 * 1024;
 
@@ -175,6 +130,223 @@ function sessionImages(images: GuiCompanionImage[] | undefined): ImageContent[] 
 	return images?.map((image) => ({ type: "image", data: image.data, mimeType: image.mimeType }));
 }
 
+type CompanionSettingSummary = {
+	id: string;
+	label: string;
+	description?: string;
+	kind: string;
+	value: boolean | number | string;
+	displayValue: string;
+	options?: string[];
+	optionLabels?: string[];
+	minimum?: number;
+	maximum?: number;
+	scope: "global" | "project";
+	readOnly: boolean;
+	restartRequired: boolean;
+};
+
+type CompanionSessionTreeNode = {
+	id: string;
+	parentId: string | null;
+	kind: string;
+	label?: string;
+	timestamp: string;
+	preview: string;
+	isLeaf: boolean;
+	depth: number;
+};
+
+type CompanionSubagentSnapshot = {
+	runId: string;
+	agentId: string;
+	agent: string;
+	agentSource: "builtin" | "user" | "project" | "unknown";
+	task: string;
+	state: "queued" | "running" | "waiting" | "succeeded" | "failed" | "cancelled";
+	currentAction?: string;
+	startedAt: number;
+	updatedAt: number;
+	elapsedMs: number;
+	controllable: boolean;
+	session?: {
+		version: 1;
+		sessionId: string;
+		sessionFile: string;
+		parentSessionFile?: string;
+		cwd: string;
+		createdAt: number;
+	};
+};
+
+function settingSummary(session: AgentSession, id: string): CompanionSettingSummary {
+	const definition = getLystarSetting(id);
+	if (!definition) throw Object.assign(new Error(`未知设置：${id}`), { code: "setting_not_found" });
+	const themeNames = [
+		...getBuiltinThemeNames(),
+		...session.resourceLoader.getThemes().themes.flatMap((theme) => (theme.name ? [theme.name] : [])),
+	].filter((name, index, values) => values.indexOf(name) === index);
+	const value = definition.get(session.settingsManager);
+	const optionValues = definition.id === "theme" ? themeNames : definition.options;
+	return {
+		id: definition.id,
+		label: definition.label,
+		...(definition.description ? { description: definition.description } : {}),
+		kind: definition.kind,
+		value,
+		displayValue: definition.format(value),
+		...(optionValues && optionValues.length > 0
+			? { options: optionValues.map(String), optionLabels: optionValues.map((option) => definition.format(option)) }
+			: {}),
+		...(definition.range ? { minimum: definition.range.min, maximum: definition.range.max } : {}),
+		scope: definition.scope,
+		readOnly: false,
+		restartRequired: definition.restartRequired === true,
+	};
+}
+
+function listSettings(session: AgentSession): CompanionSettingSummary[] {
+	return getLystarSettingsForUi().map((setting) => settingSummary(session, setting.id));
+}
+
+function sessionTree(entries: readonly SessionEntry[], leafId: string | null): CompanionSessionTreeNode[] {
+	const labels = new Map<string, string | undefined>();
+	for (const entry of entries) {
+		if (entry.type === "label") labels.set(entry.targetId, entry.label);
+	}
+	const byId = new Map(entries.map((entry) => [entry.id, entry]));
+	const children = new Map<string, SessionEntry[]>();
+	const roots: SessionEntry[] = [];
+	for (const entry of entries) {
+		if (entry.parentId && entry.parentId !== entry.id && byId.has(entry.parentId)) {
+			const siblings = children.get(entry.parentId) ?? [];
+			siblings.push(entry);
+			children.set(entry.parentId, siblings);
+		} else {
+			roots.push(entry);
+		}
+	}
+	const output: CompanionSessionTreeNode[] = [];
+	const stack = roots
+		.sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp))
+		.map((entry) => ({ entry, depth: 0 }));
+	while (stack.length > 0) {
+		const { entry, depth } = stack.pop()!;
+		const raw = entry.type === "message" ? entry.message : entry;
+		output.push({
+			id: entry.id,
+			parentId: entry.parentId,
+			kind: entry.type,
+			...(labels.get(entry.id) ? { label: labels.get(entry.id) } : {}),
+			timestamp: entry.timestamp,
+			preview: JSON.stringify(raw).slice(0, 4096),
+			isLeaf: leafId === entry.id,
+			depth,
+		});
+		const descendants = children.get(entry.id) ?? [];
+		for (const child of descendants.sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp))) {
+			stack.push({ entry: child, depth: depth + 1 });
+		}
+	}
+	return output;
+}
+
+function transcriptSubagents(entries: readonly SessionEntry[]): CompanionSubagentSnapshot[] {
+	const snapshots: CompanionSubagentSnapshot[] = [];
+	for (const entry of entries) {
+		if (entry.type !== "message" || entry.message.role !== "toolResult" || entry.message.toolName !== "subagent")
+			continue;
+		const details = entry.message.details as Partial<SubagentDetails> | undefined;
+		if (!Array.isArray(details?.results)) continue;
+		for (const result of details.results) {
+			if (!result?.agentId || !result.agent || !result.runId) continue;
+			snapshots.push({
+				runId: result.runId,
+				agentId: result.agentId,
+				agent: result.agent,
+				agentSource: result.agentSource ?? "unknown",
+				task: result.task,
+				state: result.state ?? "succeeded",
+				...(result.currentAction ? { currentAction: result.currentAction } : {}),
+				startedAt: result.startedAt ?? Date.parse(entry.timestamp),
+				updatedAt: result.updatedAt ?? Date.parse(entry.timestamp),
+				elapsedMs: result.elapsedMs ?? 0,
+				controllable: false,
+				...(result.session ? { session: result.session } : {}),
+			});
+		}
+	}
+	return snapshots;
+}
+
+function liveSubagent(snapshot: SubagentRunSnapshot): CompanionSubagentSnapshot {
+	return {
+		runId: snapshot.runId,
+		agentId: snapshot.agentId,
+		agent: snapshot.agent,
+		agentSource: snapshot.agentSource,
+		task: snapshot.task,
+		state: snapshot.state,
+		...(snapshot.currentAction ? { currentAction: snapshot.currentAction } : {}),
+		startedAt: snapshot.startedAt,
+		updatedAt: snapshot.updatedAt,
+		elapsedMs: snapshot.elapsedMs,
+		controllable: snapshot.controllable,
+		...(snapshot.session ? { session: snapshot.session } : {}),
+	};
+}
+
+function listSubagents(session: AgentSession): CompanionSubagentSnapshot[] {
+	const merged = new Map<string, CompanionSubagentSnapshot>();
+	for (const snapshot of transcriptSubagents(session.sessionManager.getEntries()))
+		merged.set(`${snapshot.runId}:${snapshot.agentId}`, snapshot);
+	for (const snapshot of getCurrentSubagentRuns()) {
+		const current = liveSubagent(snapshot);
+		merged.set(`${current.runId}:${current.agentId}`, current);
+	}
+	return [...merged.values()].sort(
+		(left, right) =>
+			right.updatedAt - left.updatedAt ||
+			left.runId.localeCompare(right.runId) ||
+			left.agentId.localeCompare(right.agentId),
+	);
+}
+
+function readSubagent(
+	session: AgentSession,
+	agentId: string,
+): {
+	transcript?: CompanionSubagentSnapshot;
+	live?: CompanionSubagentSnapshot;
+} {
+	const transcript = transcriptSubagents(session.sessionManager.getEntries()).find(
+		(snapshot) => snapshot.agentId === agentId,
+	);
+	const live = getCurrentSubagentRuns().find((snapshot) => snapshot.agentId === agentId);
+	return {
+		...(transcript ? { transcript } : {}),
+		...(live && transcript?.runId === live.runId ? { live: liveSubagent(live) } : {}),
+	};
+}
+
+function persistDetachedSession(manager: SessionManager): string {
+	const sessionPath = manager.getSessionFile();
+	if (!sessionPath) {
+		manager.dispose();
+		throw new Error("共享会话没有生成会话文件");
+	}
+	try {
+		if (!existsSync(sessionPath)) {
+			const header = manager.getHeader();
+			if (!header) throw new Error("共享会话缺少会话头");
+			const entries = [header, ...manager.getEntries()];
+			writeFileSync(sessionPath, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, { flag: "wx" });
+		}
+		return sessionPath;
+	} finally {
+		manager.dispose();
+	}
+}
 const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 
 export class GuiCompanionServer {
@@ -278,7 +450,7 @@ export class GuiCompanionServer {
 			return;
 		}
 		try {
-			const result = await this.execute(command);
+			const result = await this.execute(command, socket);
 			send(socket, { type: "response", requestId: command.requestId, ok: true, result });
 		} catch (error) {
 			send(socket, {
@@ -290,7 +462,10 @@ export class GuiCompanionServer {
 		}
 	}
 
-	private async execute(command: Extract<GuiCompanionCommand, { type: "request" }>): Promise<unknown> {
+	private async execute(
+		command: Extract<GuiCompanionCommand, { type: "request" }>,
+		socket?: Socket,
+	): Promise<unknown> {
 		switch (command.command) {
 			case "prompt":
 				if (!command.text?.trim()) throw new Error("提示内容不能为空");
@@ -349,6 +524,7 @@ export class GuiCompanionServer {
 				};
 			}
 			case "abort":
+				this.session.abortBash();
 				await this.session.abort();
 				return {};
 			case "snapshot":
@@ -356,6 +532,193 @@ export class GuiCompanionServer {
 			case "get_completions":
 				if (typeof command.cursor !== "number" || command.cursor < 0) throw new Error("补全光标位置无效");
 				return this.session.getCompletions(command.text ?? "", command.cursor);
+			case "get_session_tree":
+				return sessionTree(this.session.sessionManager.getEntries(), this.session.sessionManager.getLeafId());
+			case "get_session_info":
+				return this.session.getSessionInfo();
+			case "list_fork_messages":
+				return this.session.getUserMessagesForForking();
+			case "set_entry_label": {
+				if (!command.entryId?.trim()) throw new Error("会话树节点不能为空");
+				this.session.sessionManager.appendLabelChange(command.entryId, command.label?.trim() || undefined);
+				this.onSessionChanged?.();
+				this.scheduleCommittedEntriesBroadcast();
+				return { changed: true };
+			}
+			case "navigate_session_tree": {
+				if (!command.entryId?.trim()) throw new Error("会话树节点不能为空");
+				const result = await this.session.navigateTree(command.entryId, { summarize: command.summarize === true });
+				this.onSessionChanged?.();
+				this.scheduleCommittedEntriesBroadcast();
+				return {
+					...(result.editorText ? { editorText: result.editorText } : {}),
+					cancelled: result.cancelled,
+					...(this.session.sessionManager.getLeafId()
+						? { newLeafId: this.session.sessionManager.getLeafId()! }
+						: {}),
+				};
+			}
+			case "list_settings":
+				return listSettings(this.session);
+			case "set_setting": {
+				if (!command.id?.trim() || command.value === undefined) throw new Error("设置参数不完整");
+				const definition = getLystarSetting(command.id);
+				if (!definition) throw Object.assign(new Error(`未知设置：${command.id}`), { code: "setting_not_found" });
+				definition.set(this.session.settingsManager, command.value);
+				switch (command.id) {
+					case "autocompact":
+						this.session.setAutoCompactionEnabled(command.value as boolean);
+						break;
+					case "steering-mode":
+						this.session.setSteeringMode(command.value as "all" | "one-at-a-time");
+						break;
+					case "follow-up-mode":
+						this.session.setFollowUpMode(command.value as "all" | "one-at-a-time");
+						break;
+					case "transport":
+						this.session.agent.transport = command.value as "auto" | "sse" | "websocket" | "websocket-cached";
+						break;
+				}
+				await this.session.settingsManager.flush();
+				this.onSessionChanged?.();
+				return {
+					setting: settingSummary(this.session, command.id),
+					requiresRestart: definition.restartRequired === true,
+				};
+			}
+			case "compact":
+				await this.session.compact(command.customInstructions);
+				this.scheduleCommittedEntriesBroadcast();
+				return this.snapshot();
+			case "export_session": {
+				const cwd = this.session.sessionManager.getCwd();
+				const targetPath =
+					command.outputPath && !isAbsolute(command.outputPath)
+						? resolve(cwd, command.outputPath)
+						: command.outputPath;
+				if (targetPath?.endsWith(".jsonl")) return { path: this.session.exportToJsonl(targetPath) };
+				return { path: await this.session.exportToHtml(targetPath) };
+			}
+			case "get_last_assistant_text":
+				return { text: this.session.getLastAssistantText() };
+			case "run_bash": {
+				if (!command.bashCommand?.trim()) throw new Error("Shell 命令不能为空");
+				const extensionResult = await this.session.extensionRunner.emitUserBash({
+					type: "user_bash",
+					command: command.bashCommand,
+					excludeFromContext: command.excludeFromContext === true,
+					cwd: this.session.sessionManager.getCwd(),
+				});
+				const result = extensionResult?.result
+					? extensionResult.result
+					: await this.session.executeBash(
+							command.bashCommand,
+							(chunk) => {
+								if (socket) send(socket, { type: "bash_chunk", requestId: command.requestId, chunk });
+							},
+							{
+								excludeFromContext: command.excludeFromContext === true,
+								operations: extensionResult?.operations,
+							},
+						);
+				if (extensionResult?.result) {
+					this.session.recordBashResult(command.bashCommand, result, {
+						excludeFromContext: command.excludeFromContext === true,
+					});
+					if (socket && result.output)
+						send(socket, { type: "bash_chunk", requestId: command.requestId, chunk: result.output });
+				}
+				this.scheduleCommittedEntriesBroadcast();
+				return result;
+			}
+			case "fork_session": {
+				const position = command.position ?? "before";
+				const selectedEntry = command.entryId ? this.session.sessionManager.getEntry(command.entryId) : undefined;
+				if (!selectedEntry) throw new Error("无效的分叉节点");
+				let targetLeafId: string | null = null;
+				let selectedText: string | undefined;
+				if (position === "at") {
+					targetLeafId = selectedEntry.id;
+				} else {
+					if (selectedEntry.type !== "message" || selectedEntry.message.role !== "user") {
+						throw new Error("分叉前置位置必须是用户消息");
+					}
+					targetLeafId = selectedEntry.parentId;
+					selectedText = this.session
+						.getUserMessagesForForking()
+						.find((item) => item.entryId === selectedEntry.id)?.text;
+				}
+				const currentSessionPath = this.session.sessionFile;
+				if (!currentSessionPath) throw new Error("当前共享会话没有会话文件");
+				const currentManager = this.session.sessionManager;
+				const manager = targetLeafId
+					? currentManager.createBranchedSessionManager(targetLeafId)
+					: SessionManager.create(currentManager.getCwd(), currentManager.getSessionDir());
+				if (!targetLeafId) manager.newSession({ parentSession: currentSessionPath });
+				const sessionPath = persistDetachedSession(manager);
+				return { sessionPath, selectedText };
+			}
+			case "import_session": {
+				if (!command.inputPath?.trim()) throw new Error("导入会话路径不能为空");
+				const cwd = this.session.sessionManager.getCwd();
+				const resolvedPath = isAbsolute(command.inputPath) ? command.inputPath : resolve(cwd, command.inputPath);
+				if (!existsSync(resolvedPath)) throw new Error(`未找到导入文件：${resolvedPath}`);
+				const sessionDir = this.session.sessionManager.getSessionDir();
+				const destinationPath = join(sessionDir, basename(resolvedPath));
+				const manager = SessionManager.importFromJsonl(
+					resolvedPath,
+					destinationPath,
+					sessionDir,
+					command.cwdOverride,
+				);
+				try {
+					assertSessionCwdExists(manager, cwd);
+					const sessionPath = persistDetachedSession(manager);
+					return { cancelled: false, sessionPath };
+				} catch (error) {
+					manager.dispose();
+					throw error;
+				}
+			}
+			case "rename":
+				if (command.name === undefined) throw new Error("会话名称不能为空");
+				this.session.setSessionName(command.name);
+				this.onSessionChanged?.();
+				return this.snapshot();
+			case "reload_resources":
+				await this.session.reload();
+				this.onSessionChanged?.();
+				return this.snapshot();
+			case "list_subagents":
+				return listSubagents(this.session);
+			case "read_subagent":
+				if (!command.agentId?.trim()) throw new Error("Subagent 标识不能为空");
+				return readSubagent(this.session, command.agentId);
+			case "abort_subagent": {
+				if (!command.agentId?.trim()) throw new Error("Subagent 标识不能为空");
+				if (!readSubagent(this.session, command.agentId).transcript)
+					throw Object.assign(new Error("Subagent 不属于当前会话"), { code: "subagent_not_found" });
+				await abortSubagent(command.agentId);
+				return { changed: true };
+			}
+			case "continue_subagent": {
+				if (!command.agentId?.trim() || !command.text?.trim()) throw new Error("Subagent 参数不完整");
+				const transcript = readSubagent(this.session, command.agentId).transcript;
+				if (!transcript?.session)
+					throw Object.assign(new Error("Subagent 会话不可继续"), { code: "subagent_not_continuable" });
+				await continueSubagentSession(
+					{
+						agentId: command.agentId,
+						agent: transcript.agent,
+						agentSource: transcript.agentSource,
+						task: transcript.task,
+						agentScope: "both",
+						session: transcript.session,
+					},
+					command.text,
+				);
+				return { changed: true };
+			}
 		}
 	}
 
@@ -365,7 +728,14 @@ export class GuiCompanionServer {
 		const header = this.session.sessionManager.getHeader();
 		const stat = existsSync(sessionPath) ? statSync(sessionPath) : undefined;
 		const usage = this.session.getContextUsage();
+		const toolActivityEpoch =
+			typeof this.session.getToolActivityEpoch === "function" ? this.session.getToolActivityEpoch() : "";
+		const toolActivityRevision =
+			typeof this.session.getToolActivityRevision === "function" ? this.session.getToolActivityRevision() : 0;
+		const toolActivities =
+			typeof this.session.getToolActivitySnapshot === "function" ? this.session.getToolActivitySnapshot() : [];
 		return {
+			protocolVersion: GUI_COMPANION_PROTOCOL_VERSION,
 			id: this.session.sessionManager.getSessionId(),
 			path: sessionPath,
 			cwd: this.session.sessionManager.getCwd(),
@@ -389,9 +759,10 @@ export class GuiCompanionServer {
 			contextWindow: usage?.contextWindow,
 			transcriptGeneration: this.session.sessionManager.getSessionId(),
 			transcriptRevision: stat?.size ?? 0,
-			toolActivityEpoch: this.session.getToolActivityEpoch(),
-			toolActivityRevision: this.session.getToolActivityRevision(),
-			toolActivities: this.session.getToolActivitySnapshot(),
+			toolActivityEpoch,
+			toolActivityRevision,
+			toolActivities,
+			capabilities: [...GUI_COMPANION_CAPABILITIES],
 		};
 	}
 

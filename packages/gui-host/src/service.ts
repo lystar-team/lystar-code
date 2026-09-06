@@ -19,7 +19,6 @@ import {
 	type StartupInput,
 	type TranscriptItem,
 } from "@lystar/code-gui-protocol";
-import { GuiCompanionRuntime } from "./companion-runtime.ts";
 import { ContentStore } from "./content-store.ts";
 import { LeaseManager } from "./lease-manager.ts";
 import { hashOperationPayload, OperationJournal, OperationJournalCorruptError } from "./operation-journal.ts";
@@ -942,9 +941,10 @@ export class GuiHostService {
 						entryId: request.entryId,
 						...(request.position ? { position: request.position } : {}),
 					},
-					run: async () => {
+					run: async (operation) => {
 						const { runtime } = this.assertExtensionSession(connection, request);
-						this.detachRuntimeProjection(sessionPath);
+						const detachedCompanion = this.isDetachedCompanion(runtime, "session_fork");
+						if (!detachedCompanion) this.detachRuntimeProjection(sessionPath);
 						let result: Awaited<ReturnType<RuntimeSession["fork"]>> | undefined;
 						let failure: unknown;
 						try {
@@ -952,7 +952,29 @@ export class GuiHostService {
 						} catch (error) {
 							failure = error;
 						}
-						const nextSessionPath = canonicalSessionPath(runtime.sessionPath);
+						const nextSessionPath = canonicalSessionPath(result?.sessionPath ?? runtime.sessionPath);
+						if (failure) throw failure;
+						if (!result) throw new Error("会话分叉未返回结果");
+						if (detachedCompanion && nextSessionPath !== sessionPath && runtime.sessionPath === sessionPath) {
+							const nextRuntime = await this.openDetachedRuntime(
+								nextSessionPath,
+								operation.operationId,
+								request.clientInstanceId,
+							);
+							const lease = this.leases.move(sessionPath, nextSessionPath, request.leaseId);
+							this.activeOperationBySession.set(nextSessionPath, operation.operationId);
+							this.snapshotRevisions.delete(sessionPath);
+							await this.sendSessionSnapshots(nextRuntime);
+							await this.broadcast({
+								type: "sessions_changed",
+								cwd: nextRuntime.getSnapshot("available").cwd,
+							});
+							return jsonValue({
+								lease,
+								snapshot: this.runtimeSnapshot(nextRuntime, "owned"),
+								selectedText: result.selectedText,
+							});
+						}
 						if (nextSessionPath !== sessionPath) {
 							this.leases.move(sessionPath, nextSessionPath, request.leaseId);
 							const operationId = this.activeOperationBySession.get(sessionPath);
@@ -984,9 +1006,10 @@ export class GuiHostService {
 						inputPath: request.inputPath,
 						cwdOverride: request.cwdOverride ?? null,
 					},
-					run: async () => {
+					run: async (operation) => {
 						const { runtime } = this.assertSessionControl(sessionPath, request.leaseId, connection);
-						this.detachRuntimeProjection(sessionPath);
+						const detachedCompanion = this.isDetachedCompanion(runtime, "session_import");
+						if (!detachedCompanion) this.detachRuntimeProjection(sessionPath);
 						let result: Awaited<ReturnType<RuntimeSession["importSession"]>> | undefined;
 						let failure: unknown;
 						try {
@@ -994,7 +1017,30 @@ export class GuiHostService {
 						} catch (error) {
 							failure = error;
 						}
-						const nextSessionPath = canonicalSessionPath(runtime.sessionPath);
+						if (failure) throw failure;
+						if (!result) throw new Error("会话导入未返回结果");
+						if (result.cancelled) return { cancelled: true };
+						const nextSessionPath = canonicalSessionPath(result.sessionPath ?? runtime.sessionPath);
+						if (detachedCompanion && nextSessionPath !== sessionPath && runtime.sessionPath === sessionPath) {
+							const nextRuntime = await this.openDetachedRuntime(
+								nextSessionPath,
+								operation.operationId,
+								request.clientInstanceId,
+							);
+							const lease = this.leases.move(sessionPath, nextSessionPath, request.leaseId);
+							this.activeOperationBySession.set(nextSessionPath, operation.operationId);
+							this.snapshotRevisions.delete(sessionPath);
+							await this.sendSessionSnapshots(nextRuntime);
+							await this.broadcast({
+								type: "sessions_changed",
+								cwd: nextRuntime.getSnapshot("available").cwd,
+							});
+							return jsonValue({
+								cancelled: false,
+								lease,
+								snapshot: this.runtimeSnapshot(nextRuntime, "owned"),
+							});
+						}
 						if (nextSessionPath !== sessionPath) {
 							this.leases.move(sessionPath, nextSessionPath, request.leaseId);
 							this.snapshotRevisions.delete(sessionPath);
@@ -1002,9 +1048,6 @@ export class GuiHostService {
 						}
 						this.attachRuntime(runtime);
 						await this.sendSessionSnapshots(runtime);
-						if (failure) throw failure;
-						if (!result) throw new Error("会话导入未返回结果");
-						if (result.cancelled) return { cancelled: true };
 						return jsonValue({
 							cancelled: false,
 							lease: this.leases.get(nextSessionPath, request.clientInstanceId),
@@ -1274,7 +1317,12 @@ export class GuiHostService {
 				return this.contentStore.readImage(canonicalSessionPath(request.sessionPath), request.contentRef);
 			case "list_settings": {
 				const sessionPath = canonicalSessionPath(request.sessionPath);
-				return this.runtimes.get(sessionPath)?.listSettings() ?? this.adapter.listSettings(sessionPath);
+				const runtime = this.runtimes.get(sessionPath);
+				return runtime
+					? runtime.listSettingsAsync
+						? await runtime.listSettingsAsync()
+						: runtime.listSettings()
+					: this.adapter.listSettings(sessionPath);
 			}
 			case "set_setting": {
 				const { runtime, sessionPath } = this.assertSessionControl(
@@ -1282,7 +1330,8 @@ export class GuiHostService {
 					request.leaseId,
 					connection,
 				);
-				const setting = runtime.listSettings().find((candidate) => candidate.id === request.id);
+				const settings = runtime.listSettingsAsync ? await runtime.listSettingsAsync() : runtime.listSettings();
+				const setting = settings.find((candidate) => candidate.id === request.id);
 				const scope =
 					setting?.scope === "global"
 						? "host:settings"
@@ -1391,15 +1440,20 @@ export class GuiHostService {
 			}
 			case "get_session_tree": {
 				const sessionPath = canonicalSessionPath(request.sessionPath);
-				return this.adapter.getSessionTree(sessionPath);
+				const runtime = this.runtimes.get(sessionPath);
+				return runtime
+					? runtime.getSessionTreeAsync
+						? await runtime.getSessionTreeAsync()
+						: runtime.getSessionTree()
+					: this.adapter.getSessionTree(sessionPath);
 			}
 			case "get_session_info": {
 				const { runtime } = this.assertSessionControl(request.sessionPath, request.leaseId, connection);
-				return runtime.getSessionInfo();
+				return runtime.getSessionInfoAsync ? await runtime.getSessionInfoAsync() : runtime.getSessionInfo();
 			}
 			case "list_fork_messages": {
 				const { runtime } = this.assertSessionControl(request.sessionPath, request.leaseId, connection);
-				return runtime.listForkMessages();
+				return runtime.listForkMessagesAsync ? await runtime.listForkMessagesAsync() : runtime.listForkMessages();
 			}
 			case "set_entry_label": {
 				const { runtime, sessionPath } = this.assertSessionControl(
@@ -1438,14 +1492,18 @@ export class GuiHostService {
 				const sessionPath = canonicalSessionPath(request.sessionPath);
 				const runtime = this.runtimes.get(sessionPath);
 				return runtime && this.sessionWriteAccess(sessionPath, connection) === "owned"
-					? runtime.listSubagents()
+					? runtime.listSubagentsAsync
+						? await runtime.listSubagentsAsync()
+						: runtime.listSubagents()
 					: this.adapter.listSubagents(sessionPath);
 			}
 			case "read_subagent": {
 				const sessionPath = canonicalSessionPath(request.sessionPath);
 				const runtime = this.runtimes.get(sessionPath);
 				return runtime && this.sessionWriteAccess(sessionPath, connection) === "owned"
-					? runtime.readSubagent(request.agentId)
+					? runtime.readSubagentAsync
+						? await runtime.readSubagentAsync(request.agentId)
+						: runtime.readSubagent(request.agentId)
 					: this.adapter.readSubagent(sessionPath, request.agentId);
 			}
 			case "abort_subagent": {
@@ -1512,7 +1570,9 @@ export class GuiHostService {
 					scope: "host:clipboard",
 					payload: { sessionPath },
 					run: async () => {
-						const text = runtime.getLastAssistantText();
+						const text = runtime.getLastAssistantTextAsync
+							? await runtime.getLastAssistantTextAsync()
+							: runtime.getLastAssistantText();
 						if (!text) return { capability: true, copied: false };
 						const result = await this.adapter.writeClipboardText(text);
 						return { capability: result.capability, copied: result.capability };
@@ -2159,6 +2219,17 @@ export class GuiHostService {
 		return runtime;
 	}
 
+	private isDetachedCompanion(runtime: RuntimeSession, capability: "session_fork" | "session_import"): boolean {
+		return runtime.getCapabilities?.().includes(capability) === true;
+	}
+
+	private async openDetachedRuntime(
+		sessionPath: string,
+		operationId: string,
+		clientInstanceId: string,
+	): Promise<RuntimeSession> {
+		return this.ensureRuntime(sessionPath, this.createUiRequestHandler(operationId, sessionPath, clientInstanceId));
+	}
 	private async disposeRuntime(sessionPath: string): Promise<void> {
 		const timer = this.snapshotTimers.get(sessionPath);
 		if (timer) {
@@ -2203,15 +2274,11 @@ export class GuiHostService {
 
 	private async reloadMutationResources(runtime: RuntimeSession | undefined, cwd?: string): Promise<void> {
 		for (const candidate of this.runtimes.values()) {
-			if (
-				(!cwd || canonicalProjectCwd(candidate.getSnapshot("available").cwd) === cwd) &&
-				candidate !== runtime &&
-				!(candidate instanceof GuiCompanionRuntime)
-			) {
+			if ((!cwd || canonicalProjectCwd(candidate.getSnapshot("available").cwd) === cwd) && candidate !== runtime) {
 				await candidate.reloadResources();
 			}
 		}
-		if (runtime && !(runtime instanceof GuiCompanionRuntime)) await runtime.reloadResources();
+		if (runtime) await runtime.reloadResources();
 	}
 
 	private assertExtensionSession(

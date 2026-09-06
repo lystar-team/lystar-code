@@ -1,13 +1,28 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { createConnection, type Socket } from "node:net";
-import { join } from "node:path";
+import {
+	GUI_COMPANION_CAPABILITIES,
+	GUI_COMPANION_LEGACY_CAPABILITIES,
+	GUI_COMPANION_LEGACY_PROTOCOL_VERSION,
+	GUI_COMPANION_PROTOCOL_VERSION,
+	type GuiCompanionCapability,
+	type GuiCompanionCommand,
+	type GuiCompanionImage,
+	type GuiCompanionServerMessage,
+	type GuiCompanionSnapshot,
+	type GuiCompanionSnapshotWire,
+	getGuiCompanionEndpoint,
+} from "@earendil-works/pi-coding-agent/core";
 import type {
 	CompletionResult,
 	JsonValue,
 	ModelRef,
+	SessionInfoResult,
 	SessionProgress,
 	SessionStateSnapshot,
 	SessionTreeNode,
+	SettingSummary,
+	SubagentSnapshot,
 	ThinkingLevel,
 	ToolActivity,
 	TranscriptItem,
@@ -15,81 +30,15 @@ import type {
 } from "@lystar/code-gui-protocol";
 import type { RuntimeEvent, RuntimeSession } from "./types.ts";
 
-type PendingResponse = { resolve(value: unknown): void; reject(error: Error): void };
-
-interface GuiCompanionImage {
-	data: string;
-	mimeType: string;
-}
-
-interface GuiCompanionSnapshot {
-	id: string;
-	path: string;
-	cwd: string;
-	name?: string;
-	createdAt: number;
-	updatedAt: number;
-	phase: "idle" | "turn" | "compaction" | "retry";
-	activity: "idle" | "running";
-	model?: { provider: string; id: string };
-	thinkingLevel: string;
-	leafId: string | null;
-	queuedSteerCount: number;
-	queuedFollowUpCount: number;
-	contextTokens?: number | null;
-	contextWindow?: number;
-	transcriptGeneration: string;
-	transcriptRevision: number;
-	toolActivityEpoch?: string;
-	toolActivityRevision?: number;
-	toolActivities?: SessionStateSnapshot["toolActivities"];
-}
-
-type GuiCompanionCommand =
-	| { type: "hello"; sessionPath: string }
-	| {
-			type: "request";
-			requestId: string;
-			command:
-				| "prompt"
-				| "steer"
-				| "follow_up"
-				| "clear_queue"
-				| "abort"
-				| "snapshot"
-				| "set_model"
-				| "set_thinking_level"
-				| "cycle_model"
-				| "cycle_thinking_level"
-				| "get_completions";
-			text?: string;
-			cursor?: number;
-			images?: GuiCompanionImage[];
-			model?: ModelRef;
-			level?: ThinkingLevel;
-			direction?: "forward" | "backward";
-	  };
-
-type GuiCompanionServerMessage =
-	| { type: "ready"; snapshot: GuiCompanionSnapshot }
-	| { type: "response"; requestId: string; ok: true; result?: unknown }
-	| { type: "response"; requestId: string; ok: false; error: string }
-	| { type: "snapshot"; snapshot: GuiCompanionSnapshot }
-	| { type: "agent_event"; event: unknown }
-	| {
-			type: "entry_committed";
-			items: unknown[];
-			transcriptGeneration: string;
-			fromRevision: number;
-			transcriptRevision: number;
-	  };
-
-function getGuiCompanionEndpoint(agentDir: string, sessionPath: string): string {
-	const suffix = createHash("sha256").update(`${agentDir}\0${sessionPath}`).digest("hex").slice(0, 32);
-	return process.platform === "win32"
-		? `\\\\.\\pipe\\lystar-session-companion-${suffix}`
-		: join(agentDir, "host", "companions", `${suffix}.sock`);
-}
+type PendingResponse = {
+	resolve(value: unknown): void;
+	reject(error: Error): void;
+	onBashChunk?: (chunk: string) => void;
+};
+type GuiCompanionRequestOptions = Omit<
+	Extract<GuiCompanionCommand, { type: "request" }>,
+	"type" | "requestId" | "command"
+>;
 
 function record(value: unknown): Record<string, unknown> | undefined {
 	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
@@ -121,7 +70,7 @@ function usage(value: unknown): UsageProgress | undefined {
 	return Object.keys(result).length > 0 ? result : undefined;
 }
 
-function isGuiCompanionSnapshot(value: unknown): value is GuiCompanionSnapshot {
+function isGuiCompanionSnapshot(value: unknown): value is GuiCompanionSnapshotWire {
 	const item = record(value);
 	return (
 		item !== undefined &&
@@ -203,6 +152,42 @@ function transcriptItem(value: unknown): TranscriptItem | undefined {
 	};
 }
 
+export class GuiCompanionProtocolError extends Error {
+	readonly code = "gui_companion_protocol_incompatible";
+	readonly retryable = false;
+	readonly details: JsonValue;
+
+	constructor(message: string, details: JsonValue) {
+		super(message);
+		this.name = "GuiCompanionProtocolError";
+		this.details = details;
+	}
+}
+
+function normalizeSnapshot(value: GuiCompanionSnapshotWire): GuiCompanionSnapshot {
+	const protocolVersion = value.protocolVersion ?? GUI_COMPANION_LEGACY_PROTOCOL_VERSION;
+	if (
+		protocolVersion !== GUI_COMPANION_LEGACY_PROTOCOL_VERSION &&
+		protocolVersion !== GUI_COMPANION_PROTOCOL_VERSION
+	) {
+		throw new GuiCompanionProtocolError("TUI 共享通道协议版本不受当前 GUI Host 支持", {
+			protocolVersion,
+			supportedVersions: [GUI_COMPANION_LEGACY_PROTOCOL_VERSION, GUI_COMPANION_PROTOCOL_VERSION],
+		});
+	}
+	if (protocolVersion === GUI_COMPANION_PROTOCOL_VERSION && !value.capabilities) {
+		throw new GuiCompanionProtocolError("TUI 共享通道缺少 v2 能力清单", { protocolVersion });
+	}
+	if (value.capabilities !== undefined && !Array.isArray(value.capabilities)) {
+		throw new GuiCompanionProtocolError("TUI 共享通道能力清单格式无效", { protocolVersion });
+	}
+	const capabilities = value.capabilities ?? [...GUI_COMPANION_LEGACY_CAPABILITIES];
+	if (!capabilities.every((capability) => GUI_COMPANION_CAPABILITIES.includes(capability))) {
+		throw new GuiCompanionProtocolError("TUI 共享通道返回了未知能力", { protocolVersion });
+	}
+	return { ...value, protocolVersion, capabilities };
+}
+
 function snapshot(
 	value: GuiCompanionSnapshot,
 	writeAccess: SessionStateSnapshot["writeAccess"],
@@ -243,12 +228,14 @@ export class GuiCompanionRuntime implements RuntimeSession {
 	private snapshotValue: GuiCompanionSnapshot;
 	private revision = 0;
 	private disposed = false;
+	private capabilities: GuiCompanionCapability[];
 
 	private readonly sessionPathValue: string;
 
-	private constructor(sessionPathValue: string, initialSnapshot: GuiCompanionSnapshot) {
+	private constructor(sessionPathValue: string, initialSnapshot: GuiCompanionSnapshotWire) {
 		this.sessionPathValue = sessionPathValue;
-		this.snapshotValue = initialSnapshot;
+		this.snapshotValue = normalizeSnapshot(initialSnapshot);
+		this.capabilities = [...this.snapshotValue.capabilities];
 	}
 
 	static async open(agentDir: string, sessionPath: string): Promise<GuiCompanionRuntime> {
@@ -258,7 +245,7 @@ export class GuiCompanionRuntime implements RuntimeSession {
 			candidate.once("connect", () => resolve(candidate));
 			candidate.once("error", reject);
 		});
-		const ready = await new Promise<GuiCompanionSnapshot>((resolve, reject) => {
+		const ready = await new Promise<GuiCompanionSnapshotWire>((resolve, reject) => {
 			let buffer = "";
 			const onData = (chunk: Buffer | string) => {
 				buffer += chunk.toString();
@@ -289,34 +276,59 @@ export class GuiCompanionRuntime implements RuntimeSession {
 			};
 			socket.on("data", onData);
 			socket.once("error", onError);
-			socket.write(`${JSON.stringify({ type: "hello", sessionPath } satisfies GuiCompanionCommand)}\n`);
+			socket.write(
+				`${JSON.stringify({ type: "hello", sessionPath, protocolVersion: GUI_COMPANION_PROTOCOL_VERSION } satisfies GuiCompanionCommand)}\n`,
+			);
 		});
-		const runtime = new GuiCompanionRuntime(sessionPath, ready);
-		runtime.attach(socket);
-		return runtime;
+		try {
+			const runtime = new GuiCompanionRuntime(sessionPath, ready);
+			runtime.attach(socket);
+			return runtime;
+		} catch (error) {
+			socket.destroy();
+			throw error;
+		}
 	}
 
 	get sessionPath(): string {
 		return this.sessionPathValue;
 	}
 
+	getCapabilities(): readonly GuiCompanionCapability[] {
+		return this.capabilities;
+	}
+
 	getSnapshot(writeAccess: SessionStateSnapshot["writeAccess"]): SessionStateSnapshot {
 		return snapshot(this.snapshotValue, writeAccess, this.revision);
 	}
 
-	listSettings() {
+	listSettings(): SettingSummary[] {
 		return [];
 	}
 
-	async setSetting(): Promise<{ setting: never; requiresRestart: boolean }> {
-		throw new Error("TUI 共享会话请在 TUI 中修改设置");
+	async listSettingsAsync(): Promise<SettingSummary[]> {
+		return this.request("list_settings") as Promise<SettingSummary[]>;
+	}
+
+	async setSetting(
+		id: string,
+		value: boolean | number | string,
+	): Promise<{ setting: SettingSummary; requiresRestart: boolean }> {
+		return (await this.request("set_setting", { id, value })) as {
+			setting: SettingSummary;
+			requiresRestart: boolean;
+		};
 	}
 
 	getSessionTree(): SessionTreeNode[] {
 		return [];
 	}
 
-	getSessionInfo() {
+	async getSessionTreeAsync(): Promise<SessionTreeNode[]> {
+		return (await this.request("get_session_tree")) as SessionTreeNode[];
+	}
+
+	getSessionInfo(): SessionInfoResult {
 		return {
 			name: this.snapshotValue.name ?? null,
 			sessionFile: this.sessionPathValue,
@@ -329,32 +341,58 @@ export class GuiCompanionRuntime implements RuntimeSession {
 		};
 	}
 
-	listForkMessages() {
+	async getSessionInfoAsync(): Promise<SessionInfoResult> {
+		return (await this.request("get_session_info")) as SessionInfoResult;
+	}
+
+	listForkMessages(): Array<{ entryId: string; text: string }> {
 		return [];
 	}
 
-	async setEntryLabel(): Promise<void> {
-		throw new Error("TUI 共享会话暂不支持标签编辑");
+	async listForkMessagesAsync(): Promise<Array<{ entryId: string; text: string }>> {
+		return (await this.request("list_fork_messages")) as Array<{ entryId: string; text: string }>;
 	}
 
-	async navigateSessionTree(): Promise<{ cancelled: boolean }> {
-		throw new Error("TUI 共享会话暂不支持会话树导航");
+	async setEntryLabel(entryId: string, label?: string): Promise<void> {
+		await this.request("set_entry_label", { entryId, label });
 	}
 
-	listSubagents() {
+	async navigateSessionTree(
+		entryId: string,
+		summarize: boolean,
+	): Promise<{ editorText?: string; cancelled: boolean; newLeafId?: string }> {
+		return (await this.request("navigate_session_tree", { entryId, summarize })) as {
+			editorText?: string;
+			cancelled: boolean;
+			newLeafId?: string;
+		};
+	}
+
+	listSubagents(): SubagentSnapshot[] {
 		return [];
 	}
 
-	readSubagent() {
+	async listSubagentsAsync(): Promise<SubagentSnapshot[]> {
+		return (await this.request("list_subagents")) as SubagentSnapshot[];
+	}
+
+	readSubagent(): { transcript?: SubagentSnapshot; live?: SubagentSnapshot } {
 		return {};
 	}
 
-	async abortSubagent(): Promise<void> {
-		throw new Error("TUI 共享会话暂不支持 Subagent 控制");
+	async readSubagentAsync(agentId: string): Promise<{ transcript?: SubagentSnapshot; live?: SubagentSnapshot }> {
+		return (await this.request("read_subagent", { agentId })) as {
+			transcript?: SubagentSnapshot;
+			live?: SubagentSnapshot;
+		};
 	}
 
-	async continueSubagent(): Promise<void> {
-		throw new Error("TUI 共享会话暂不支持 Subagent 控制");
+	async abortSubagent(agentId: string): Promise<void> {
+		await this.request("abort_subagent", { agentId });
+	}
+
+	async continueSubagent(agentId: string, text: string): Promise<void> {
+		await this.request("continue_subagent", { agentId, text });
 	}
 
 	async prompt(text: string, images?: GuiCompanionImage[]): Promise<void> {
@@ -373,32 +411,49 @@ export class GuiCompanionRuntime implements RuntimeSession {
 		return (await this.request("clear_queue")) as { steering: string[]; followUp: string[] };
 	}
 
-	async compact(): Promise<void> {
-		throw new Error("TUI 共享会话暂不支持压缩控制");
+	async compact(customInstructions?: string): Promise<void> {
+		const result = await this.request("compact", { customInstructions });
+		if (isGuiCompanionSnapshot(result)) this.applySnapshot(result);
 	}
 
-	async exportSession(): Promise<{ path: string }> {
-		throw new Error("TUI 共享会话暂不支持导出控制");
+	async exportSession(outputPath?: string): Promise<{ path: string }> {
+		return (await this.request("export_session", { outputPath })) as { path: string };
 	}
 
-	async importSession(): Promise<{ cancelled: boolean }> {
-		throw new Error("TUI 共享会话暂不支持导入控制");
+	async importSession(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean; sessionPath?: string }> {
+		return (await this.request("import_session", { inputPath, cwdOverride })) as {
+			cancelled: boolean;
+			sessionPath?: string;
+		};
 	}
 
-	async shareSession(): Promise<{ previewUrl: string; gistUrl: string }> {
-		throw new Error("TUI 共享会话暂不支持分享控制");
+	async shareSession(signal?: AbortSignal): Promise<{ previewUrl: string; gistUrl: string }> {
+		if (signal?.aborted) throw new Error("分享已取消");
+		const result = await this.exportSession();
+		if (signal?.aborted) throw new Error("分享已取消");
+		return { previewUrl: result.path, gistUrl: result.path };
 	}
 
 	getLastAssistantText(): string | undefined {
 		return undefined;
 	}
 
-	async runBash(): Promise<JsonValue> {
-		throw new Error("TUI 共享会话暂不支持 Bash 控制");
+	async getLastAssistantTextAsync(): Promise<string | undefined> {
+		const result = record(await this.request("get_last_assistant_text"));
+		return typeof result?.text === "string" ? result.text : undefined;
 	}
 
-	async rename(): Promise<void> {
-		throw new Error("TUI 共享会话暂不支持重命名控制");
+	async runBash(command: string, excludeFromContext: boolean, onChunk: (chunk: string) => void): Promise<JsonValue> {
+		return (await this.request(
+			"run_bash",
+			{ bashCommand: command, excludeFromContext },
+			{ onBashChunk: onChunk },
+		)) as JsonValue;
+	}
+
+	async rename(name: string): Promise<void> {
+		const result = await this.request("rename", { name });
+		if (isGuiCompanionSnapshot(result)) this.applySnapshot(result);
 	}
 
 	async setModel(model: ModelRef): Promise<void> {
@@ -425,8 +480,13 @@ export class GuiCompanionRuntime implements RuntimeSession {
 		return { changed: result.changed === true, supported: result.supported === true };
 	}
 
-	async fork(): Promise<{ sessionPath: string; selectedText?: string }> {
-		throw new Error("TUI 共享会话暂不支持分叉控制");
+	async fork(entryId: string, position?: "before" | "at"): Promise<{ sessionPath: string; selectedText?: string }> {
+		const result = record(await this.request("fork_session", { entryId, position }));
+		if (!result || typeof result.sessionPath !== "string") throw new Error("TUI 共享会话没有返回分叉路径");
+		return {
+			sessionPath: result.sessionPath,
+			...(typeof result.selectedText === "string" ? { selectedText: result.selectedText } : {}),
+		};
 	}
 
 	async abort(): Promise<void> {
@@ -434,7 +494,8 @@ export class GuiCompanionRuntime implements RuntimeSession {
 	}
 
 	async reloadResources(): Promise<void> {
-		throw new Error("TUI 共享会话暂不支持资源重载");
+		const result = await this.request("reload_resources");
+		if (isGuiCompanionSnapshot(result)) this.applySnapshot(result);
 	}
 
 	async getCompletions(text: string, cursor: number): Promise<CompletionResult | undefined> {
@@ -496,8 +557,9 @@ export class GuiCompanionRuntime implements RuntimeSession {
 		this.pending.clear();
 	}
 
-	private applySnapshot(next: GuiCompanionSnapshot): void {
-		this.snapshotValue = next;
+	private applySnapshot(next: GuiCompanionSnapshotWire): void {
+		this.snapshotValue = normalizeSnapshot(next);
+		this.capabilities = [...this.snapshotValue.capabilities];
 		this.revision++;
 		this.emit({ type: "state_changed", payload: this.getSnapshot("owned") as unknown as JsonValue });
 	}
@@ -507,6 +569,10 @@ export class GuiCompanionRuntime implements RuntimeSession {
 		try {
 			message = JSON.parse(line) as GuiCompanionServerMessage;
 		} catch {
+			return;
+		}
+		if (message.type === "bash_chunk") {
+			this.pending.get(message.requestId)?.onBashChunk?.(message.chunk);
 			return;
 		}
 		if (message.type === "response") {
@@ -545,21 +611,15 @@ export class GuiCompanionRuntime implements RuntimeSession {
 
 	private request(
 		command: Extract<GuiCompanionCommand, { type: "request" }>["command"],
-		options: {
-			text?: string;
-			cursor?: number;
-			images?: GuiCompanionImage[];
-			model?: ModelRef;
-			level?: ThinkingLevel;
-			direction?: "forward" | "backward";
-		} = {},
+		options: GuiCompanionRequestOptions = {},
+		callbacks: { onBashChunk?: (chunk: string) => void } = {},
 	): Promise<unknown> {
 		if (!this.socket || this.disposed) return Promise.reject(new Error("TUI 共享会话已断开"));
 		const requestId = randomUUID();
 		let rejectRequest: (error: Error) => void = () => {};
 		const pending = new Promise<unknown>((resolve, reject) => {
 			rejectRequest = reject;
-			this.pending.set(requestId, { resolve, reject });
+			this.pending.set(requestId, { resolve, reject, ...callbacks });
 		});
 		const message: Extract<GuiCompanionCommand, { type: "request" }> = {
 			type: "request",
