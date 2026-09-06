@@ -213,7 +213,7 @@ describe("built-in subagent extension", () => {
 			agentScope: "user",
 		});
 		const failedParallelDetails = parallelWithFailure.details as SubagentDetails;
-		expect(parallelWithFailure.isError).toBe(true);
+		expect((parallelWithFailure as { isError?: boolean }).isError).toBe(true);
 		expect(failedParallelDetails.results.map((result) => result.state)).toEqual(["succeeded", "failed"]);
 
 		const chain = await executeWithFauxRpc({

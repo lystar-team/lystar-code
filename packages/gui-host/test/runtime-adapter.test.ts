@@ -141,7 +141,7 @@ describe("CodingAgentRuntimeAdapter", () => {
 		const assistantStart = {
 			type: "message_start",
 			message: { role: "assistant", content: [] },
-		} as AgentSessionEvent;
+		} as unknown as AgentSessionEvent;
 
 		expect(projectRuntimeProgress(assistantStart)).toEqual([{ type: "phase", phase: "turn" }]);
 		expect(projectRuntimeProgress(toolStart)).toEqual([
@@ -219,6 +219,74 @@ describe("CodingAgentRuntimeAdapter", () => {
 			type: "tool_result",
 			diff: { files: [{ additions: 1, deletions: 1, diff: expect.stringContaining("+new") }] },
 		});
+	});
+
+	it("projects streamed tool-call arguments into live diff progress", () => {
+		const message = {
+			role: "assistant",
+			content: [
+				{
+					type: "toolCall",
+					id: "write-stream-1",
+					name: "write",
+					arguments: { path: "src/app.ts", content: "one\ntwo\n" },
+				},
+			],
+		};
+		const progress = projectRuntimeProgress({
+			type: "message_update",
+			message,
+			assistantMessageEvent: {
+				type: "toolcall_delta",
+				contentIndex: 0,
+				delta: "two",
+				partial: message,
+			},
+		} as unknown as AgentSessionEvent);
+
+		expect(progress).toEqual([
+			{
+				type: "tool_update",
+				toolCallId: "write-stream-1",
+				name: "write",
+				summary: "src/app.ts",
+				diff: {
+					files: [{ path: "src/app.ts", additions: 2, deletions: 0, diff: "+one\n+two" }],
+				},
+			},
+		]);
+
+		const editMessage = {
+			role: "assistant",
+			content: [
+				{
+					type: "toolCall",
+					id: "edit-stream-1",
+					name: "edit",
+					arguments: { path: "src/app.ts", edits: [{ oldText: "old\n", newText: "new\nline\n" }] },
+				},
+			],
+		};
+		const editProgress = projectRuntimeProgress({
+			type: "message_update",
+			message: editMessage,
+			assistantMessageEvent: {
+				type: "toolcall_delta",
+				contentIndex: 0,
+				delta: "line",
+				partial: editMessage,
+			},
+		} as unknown as AgentSessionEvent);
+
+		expect(editProgress).toMatchObject([
+			{
+				type: "tool_update",
+				toolCallId: "edit-stream-1",
+				name: "edit",
+				summary: "src/app.ts",
+				diff: { files: [{ path: "src/app.ts", additions: 2, deletions: 1, diff: "-old\n+new\n+line" }] },
+			},
+		]);
 	});
 
 	it("hides internal Skill expansion from user transcript text", () => {

@@ -3,10 +3,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Text, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { beforeAll, describe, expect, test } from "vitest";
+import { beforeAll, describe, expect, it, test } from "vitest";
 import { getReadmePath } from "../src/config.ts";
 import type { ToolDefinition } from "../src/core/extensions/types.ts";
 import { type BashOperations, createBashToolDefinition } from "../src/core/tools/bash.ts";
+import { createEditToolDefinition } from "../src/core/tools/edit.ts";
 import { createReadTool, createReadToolDefinition } from "../src/core/tools/read.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 import { createApplyPatchToolDefinition } from "../src/extensions/apply-patch/index.ts";
@@ -766,6 +767,52 @@ describe("ToolExecutionComponent parity", () => {
 		const expanded = stripAnsi(component.render(120).join("\n"));
 		expect(expanded).toContain("line-15");
 		expect(expanded).not.toContain("还有");
+	});
+
+	it("keeps mutation status when a specialized call renderer fails", () => {
+		const writeDefinition = {
+			...createWriteToolDefinition(process.cwd()),
+			renderCall: () => {
+				throw new Error("temporary write render failure");
+			},
+		} as unknown as ToolDefinition;
+		const write = new ToolExecutionComponent(
+			"write",
+			"tool-write-render-fallback",
+			{ path: "README.md", content: "one\ntwo\n" },
+			{},
+			writeDefinition,
+			createFakeTui(),
+			process.cwd(),
+		);
+		expect(stripAnsi(write.render(120).join("\n"))).toContain("正在写入");
+		write.markExecutionStarted();
+		expect(stripAnsi(write.render(120).join("\n"))).toContain("正在写入");
+		write.updateResult({
+			content: [{ type: "text", text: "done" }],
+			details: { operation: "written" },
+			isError: false,
+		});
+		expect(stripAnsi(write.render(120).join("\n"))).toContain("已写入");
+
+		const editDefinition = {
+			...createEditToolDefinition(process.cwd()),
+			renderCall: () => {
+				throw new Error("temporary edit render failure");
+			},
+		} as unknown as ToolDefinition;
+		const edit = new ToolExecutionComponent(
+			"edit",
+			"tool-edit-render-fallback",
+			{ path: "README.md", edits: [{ oldText: "one", newText: "two" }] },
+			{},
+			editDefinition,
+			createFakeTui(),
+			process.cwd(),
+		);
+		expect(stripAnsi(edit.render(120).join("\n"))).toContain("正在编辑");
+		edit.updateResult({ content: [{ type: "text", text: "done" }], details: {}, isError: false });
+		expect(stripAnsi(edit.render(120).join("\n"))).toContain("已编辑");
 	});
 
 	test("collapses write contents until expanded", () => {

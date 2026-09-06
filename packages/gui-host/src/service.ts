@@ -2,9 +2,6 @@ import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
-	BUILTIN_SLASH_COMMANDS,
-} from "@earendil-works/pi-coding-agent/core";
-import {
 	assertWorkspaceCommandResult,
 	type Capability,
 	type ClientMessage,
@@ -24,6 +21,7 @@ import {
 import { ContentStore } from "./content-store.ts";
 import { LeaseManager } from "./lease-manager.ts";
 import { hashOperationPayload, OperationJournal, OperationJournalCorruptError } from "./operation-journal.ts";
+import { BUILTIN_SLASH_COMMANDS } from "./runtime-adapter.ts";
 import { projectTranscriptItems } from "./transcript-projection.ts";
 import { TranscriptReader } from "./transcript-reader.ts";
 import type { RuntimeAdapter, RuntimeSession, UiRequestHandler } from "./types.ts";
@@ -1153,9 +1151,7 @@ export class GuiHostService {
 									connection.clientInstanceId,
 								),
 							);
-							return jsonValue(
-								fallbackResourceCompletions(request.text, request.cursor, skills.skills),
-							);
+							return jsonValue(fallbackResourceCompletions(request.text, request.cursor, skills.skills));
 						}
 						return jsonValue(fallback);
 					}
@@ -1623,7 +1619,9 @@ export class GuiHostService {
 							const known = this.runtimeTranscriptFacts.get(sessionPath);
 							if (
 								snapshot &&
-								(!known || known.updatedAt !== snapshot.updatedAt || known.revision !== snapshot.transcriptRevision)
+								(!known ||
+									known.updatedAt !== snapshot.updatedAt ||
+									known.revision !== snapshot.transcriptRevision)
 							) {
 								transcriptChanges.push(sessionPath);
 								this.runtimeTranscriptFacts.set(sessionPath, {

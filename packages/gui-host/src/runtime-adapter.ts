@@ -19,6 +19,7 @@ import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { Api, Model } from "@earendil-works/pi-ai";
+
 import {
 	type AgentSessionEvent,
 	type AgentSessionRuntime,
@@ -26,6 +27,7 @@ import {
 	type AuthEvent,
 	type AuthPrompt,
 	abortSubagent,
+	builtInExtensions,
 	CONFIG_DIR_NAME,
 	type CreateAgentSessionRuntimeFactory,
 	clearModelsJsonModelOverride,
@@ -105,11 +107,11 @@ import type {
 	SettingSummary,
 	SubagentSnapshot,
 	ThinkingLevel,
-	ToolDiff,
 	TranscriptItem,
 } from "@lystar/code-gui-protocol";
 import { GUI_PROTOCOL_VERSION } from "@lystar/code-gui-protocol";
 import { GuiCompanionRuntime } from "./companion-runtime.ts";
+import { isDiffTool, toolCallUpdate, toolPath, toolProgressDiff, toolRecord } from "./tool-progress.ts";
 import type {
 	ModelProviderInput,
 	ModelProviderSummary,
@@ -125,6 +127,8 @@ import type {
 	UiRequest,
 	UiRequestHandler,
 } from "./types.ts";
+
+export { BUILTIN_SLASH_COMMANDS } from "@earendil-works/pi-coding-agent/core";
 
 function readHostVersion(): string | undefined {
 	for (const path of [
@@ -748,85 +752,6 @@ function boundedStatus(value: unknown): string {
 const MAX_BASH_PROGRESS_CHARS = 16 * 1024;
 const BASH_TRUNCATION_MARKER = "输出已截断";
 
-function toolRecord(value: unknown): Record<string, unknown> | undefined {
-	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
-}
-
-function toolPath(value: unknown): string | undefined {
-	const record = toolRecord(value);
-	const path = record?.path ?? record?.file_path;
-	return typeof path === "string" && path.length > 0 ? path : undefined;
-}
-
-function toolNumber(value: unknown): number | undefined {
-	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
-}
-
-function diffText(value: unknown): { text?: string; truncated?: boolean } {
-	if (typeof value === "string") {
-		const text = truncateWithoutSplittingSurrogate(value, 16 * 1024);
-		return { text, ...(text.length < value.length ? { truncated: true } : {}) };
-	}
-	return {};
-}
-
-function isDiffTool(name: string): boolean {
-	return name === "edit" || name === "write" || name === "apply_patch";
-}
-
-function toolProgressDiff(name: string, args: unknown, result?: unknown): ToolDiff | undefined {
-	if (!isDiffTool(name)) return undefined;
-	const details = toolRecord(toolRecord(result)?.details);
-	if (!details) {
-		const path = name === "edit" || name === "write" ? toolPath(args) : undefined;
-		return path ? { files: [{ path }] } : undefined;
-	}
-	if (name === "apply_patch") {
-		if (!Array.isArray(details.files)) return undefined;
-		const files = details.files.flatMap((value) => {
-			const file = toolRecord(value);
-			if (!file) return [];
-			const diff = diffText(file.diff);
-			const path = toolPath(file);
-			const additions = toolNumber(file.additions);
-			const deletions = toolNumber(file.deletions);
-			const operation = typeof file.operation === "string" ? file.operation : undefined;
-			if (!path && additions === undefined && deletions === undefined && !diff.text) return [];
-			return [
-				{
-					...(path ? { path } : {}),
-					...(operation ? { operation } : {}),
-					...(additions === undefined ? {} : { additions }),
-					...(deletions === undefined ? {} : { deletions }),
-					...(diff.text === undefined ? {} : { diff: diff.text }),
-					...(diff.truncated ? { truncated: true } : {}),
-				},
-			];
-		});
-		return files.length > 0 ? { files } : undefined;
-	}
-	const path = toolPath(args);
-	const additions = toolNumber(details.additions);
-	const deletions = toolNumber(details.deletions);
-	const operation = typeof details.operation === "string" ? details.operation : undefined;
-	const diff = diffText(details.diff);
-	if (!path && additions === undefined && deletions === undefined && !operation && !diff.text) {
-		return undefined;
-	}
-	return {
-		files: [
-			{
-				...(path ? { path } : {}),
-				...(operation ? { operation } : {}),
-				...(additions === undefined ? {} : { additions }),
-				...(deletions === undefined ? {} : { deletions }),
-				...(diff.text === undefined ? {} : { diff: diff.text }),
-				...(diff.truncated ? { truncated: true } : {}),
-			},
-		],
-	};
-}
-
 function tailWithoutSplittingSurrogate(value: string, maxChars: number): string {
 	let start = Math.max(0, value.length - maxChars);
 	if (
@@ -884,6 +809,18 @@ export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgres
 			const stream = event.assistantMessageEvent;
 			if (stream.type === "text_delta") updates.push({ type: "assistant_delta", text: stream.delta });
 			else if (stream.type === "thinking_delta") updates.push({ type: "thinking_delta", text: stream.delta });
+			else if (
+				(stream.type === "toolcall_start" || stream.type === "toolcall_delta" || stream.type === "toolcall_end") &&
+				event.message.role === "assistant"
+			) {
+				const content = event.message.content[stream.contentIndex];
+				if (content?.type === "toolCall") {
+					const summary = isDiffTool(content.name)
+						? (toolPath(content.arguments) ?? content.name)
+						: boundedStatus(content.arguments);
+					updates.push(toolCallUpdate(content.id, content.name, summary, content.arguments));
+				}
+			}
 			const usage = event.message.role === "assistant" ? event.message.usage : undefined;
 			if (usage) {
 				updates.push({
@@ -1945,9 +1882,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			return {
 				id: provider.id,
 				name: provider.name,
-				...((providerConfig?.api ?? providerModel?.api)
-					? { api: providerConfig?.api ?? providerModel?.api }
-					: {}),
+				...((providerConfig?.api ?? providerModel?.api) ? { api: providerConfig?.api ?? providerModel?.api } : {}),
 				...((providerConfig?.baseUrl ?? provider.baseUrl)
 					? { baseUrl: providerConfig?.baseUrl ?? provider.baseUrl }
 					: {}),
@@ -1963,7 +1898,8 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	}
 
 	async addModelProvider(input: ModelProviderInput): Promise<ModelProviderSummary[]> {
-		if (input.clearCatalogProvider) await clearModelsJsonProviderCatalogProvider(join(this.agentDir, "models.json"), input.provider);
+		if (input.clearCatalogProvider)
+			await clearModelsJsonProviderCatalogProvider(join(this.agentDir, "models.json"), input.provider);
 		await saveModelsJsonProvider(join(this.agentDir, "models.json"), input.provider, {
 			...(input.name ? { name: input.name } : {}),
 			baseUrl: input.baseUrl,
@@ -2078,10 +2014,10 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				api: providerConfig?.api ?? existingDefinition?.api ?? providerApi,
 				baseUrl: providerConfig?.baseUrl ?? existingDefinition?.baseUrl ?? baseUrl,
 				input: existingDefinition?.input ?? existingModel?.input ?? ["text"],
-				...(model.contextWindow ?? existingDefinition?.contextWindow
+				...((model.contextWindow ?? existingDefinition?.contextWindow)
 					? { contextWindow: model.contextWindow ?? existingDefinition?.contextWindow }
 					: {}),
-				...(model.maxTokens ?? existingDefinition?.maxTokens
+				...((model.maxTokens ?? existingDefinition?.maxTokens)
 					? { maxTokens: model.maxTokens ?? existingDefinition?.maxTokens }
 					: {}),
 			};
@@ -2464,6 +2400,11 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				agentDir,
 				settingsManager,
 				modelRuntimeSignal: AbortSignal.timeout(15_000),
+				resourceLoaderOptions: {
+					extensionFactories: builtInExtensions.filter(
+						(extension) => typeof extension === "function" || extension.name !== "session-name",
+					),
+				},
 				resourceLoaderReloadOptions:
 					hasTrustResources && trustStore.get(runtimeCwd) === null
 						? {

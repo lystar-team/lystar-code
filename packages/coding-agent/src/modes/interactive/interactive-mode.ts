@@ -3662,6 +3662,37 @@ export class InteractiveMode {
 		return {};
 	}
 
+	private ensureToolComponent(toolCallId: string, toolName: string, args: unknown): ToolExecutionComponent {
+		const existing = this.pendingTools.get(toolCallId);
+		if (existing) {
+			existing.updateArgs(args);
+			return existing;
+		}
+
+		const component = new ToolExecutionComponent(
+			toolName,
+			toolCallId,
+			args,
+			{
+				showImages: this.settingsManager.getShowImages(),
+				imageWidthCells: this.settingsManager.getImageWidthCells(),
+			},
+			this.getRegisteredToolDefinition(toolName),
+			this.ui,
+			this.sessionManager.getCwd(),
+		);
+		component.setExpanded(this.toolOutputExpanded);
+		if (!this.streamingToolStack) {
+			this.streamingToolStack = new ToolExecutionStackComponent();
+			this.streamingToolStack.setExpanded(this.toolOutputExpanded);
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(this.streamingToolStack);
+		}
+		this.streamingToolStack.addTool(component);
+		this.pendingTools.set(toolCallId, component);
+		return component;
+	}
+
 	private ensureTrackedTool(id: string, name: string, args: unknown): TrackedTurnTool | undefined {
 		const activity = this.turnActivity;
 		if (!activity) return undefined;
@@ -3922,35 +3953,8 @@ export class InteractiveMode {
 					for (const content of this.streamingMessage.content) {
 						if (content.type === "toolCall") {
 							this.ensureTrackedTool(content.id, content.name, content.arguments);
+							this.ensureToolComponent(content.id, content.name, content.arguments);
 							this.updateActivityBar();
-							if (!this.pendingTools.has(content.id)) {
-								const component = new ToolExecutionComponent(
-									content.name,
-									content.id,
-									content.arguments,
-									{
-										showImages: this.settingsManager.getShowImages(),
-										imageWidthCells: this.settingsManager.getImageWidthCells(),
-									},
-									this.getRegisteredToolDefinition(content.name),
-									this.ui,
-									this.sessionManager.getCwd(),
-								);
-								component.setExpanded(this.toolOutputExpanded);
-								if (!this.streamingToolStack) {
-									this.streamingToolStack = new ToolExecutionStackComponent();
-									this.streamingToolStack.setExpanded(this.toolOutputExpanded);
-									this.chatContainer.addChild(new Spacer(1));
-									this.chatContainer.addChild(this.streamingToolStack);
-								}
-								this.streamingToolStack.addTool(component);
-								this.pendingTools.set(content.id, component);
-							} else {
-								const component = this.pendingTools.get(content.id);
-								if (component) {
-									component.updateArgs(content.arguments);
-								}
-							}
 						}
 					}
 					this.ui.requestRender();
@@ -4019,30 +4023,7 @@ export class InteractiveMode {
 					if (trackedTool) trackedTool.status = "running";
 					this.updateActivityBar("runningTool");
 				}
-				let component = this.pendingTools.get(event.toolCallId);
-				if (!component) {
-					component = new ToolExecutionComponent(
-						event.toolName,
-						event.toolCallId,
-						event.args,
-						{
-							showImages: this.settingsManager.getShowImages(),
-							imageWidthCells: this.settingsManager.getImageWidthCells(),
-						},
-						this.getRegisteredToolDefinition(event.toolName),
-						this.ui,
-						this.sessionManager.getCwd(),
-					);
-					component.setExpanded(this.toolOutputExpanded);
-					if (!this.streamingToolStack) {
-						this.streamingToolStack = new ToolExecutionStackComponent();
-						this.streamingToolStack.setExpanded(this.toolOutputExpanded);
-						this.chatContainer.addChild(new Spacer(1));
-						this.chatContainer.addChild(this.streamingToolStack);
-					}
-					this.streamingToolStack.addTool(component);
-					this.pendingTools.set(event.toolCallId, component);
-				}
+				const component = this.ensureToolComponent(event.toolCallId, event.toolName, event.args);
 				component.markExecutionStarted();
 				this.ui.requestRender();
 				break;

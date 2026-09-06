@@ -12,6 +12,7 @@ import type {
 	TranscriptItem,
 	UsageProgress,
 } from "@lystar/code-gui-protocol";
+import { isDiffTool, toolCallUpdate, toolPath, toolProgressDiff } from "./tool-progress.ts";
 import type { RuntimeEvent, RuntimeSession } from "./types.ts";
 
 type PendingResponse = { resolve(value: unknown): void; reject(error: Error): void };
@@ -181,6 +182,22 @@ function projectAgentEvent(value: unknown): SessionProgress[] {
 			updates.push({ type: "assistant_delta", text: stream.delta });
 		} else if (stream?.type === "thinking_delta" && typeof stream.delta === "string") {
 			updates.push({ type: "thinking_delta", text: stream.delta });
+		} else if (
+			(stream?.type === "toolcall_start" || stream?.type === "toolcall_delta" || stream?.type === "toolcall_end") &&
+			typeof stream.contentIndex === "number"
+		) {
+			const message = record(event.message);
+			const partial = record(stream.partial);
+			const messageContent = Array.isArray(message?.content) ? message.content[stream.contentIndex] : undefined;
+			const content =
+				messageContent ?? (Array.isArray(partial?.content) ? partial.content[stream.contentIndex] : undefined);
+			const toolCall = record(content);
+			if (toolCall?.type === "toolCall" && typeof toolCall.id === "string" && typeof toolCall.name === "string") {
+				const summary = isDiffTool(toolCall.name)
+					? (toolPath(toolCall.arguments) ?? toolCall.name)
+					: toolInputSummary(toolCall.name, toolCall.arguments);
+				updates.push(toolCallUpdate(toolCall.id, toolCall.name, summary, toolCall.arguments));
+			}
 		}
 		const message = record(event.message);
 		const currentUsage = usage(message?.usage);
@@ -189,26 +206,48 @@ function projectAgentEvent(value: unknown): SessionProgress[] {
 	}
 	if (event.type === "tool_execution_start") {
 		const name = typeof event.toolName === "string" ? event.toolName : "tool";
+		const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : randomUUID();
+		const diff = toolProgressDiff(name, event.args);
 		return [
 			{
 				type: "tool_start",
-				toolCallId: typeof event.toolCallId === "string" ? event.toolCallId : randomUUID(),
+				toolCallId,
 				name,
-				summary: toolInputSummary(name, event.args),
+				summary: isDiffTool(name) ? (toolPath(event.args) ?? name) : toolInputSummary(name, event.args),
+				...(diff ? { diff } : {}),
+			},
+		];
+	}
+	if (event.type === "tool_execution_update") {
+		const name = typeof event.toolName === "string" ? event.toolName : "tool";
+		const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : randomUUID();
+		const diff = toolProgressDiff(name, event.args, event.partialResult);
+		return [
+			{
+				type: "tool_update",
+				toolCallId,
+				name,
+				summary: isDiffTool(name)
+					? (toolPath(event.args) ?? toolOutputSummary(event.partialResult) ?? name)
+					: toolInputSummary(name, event.args),
+				...(diff ? { diff } : {}),
 			},
 		];
 	}
 	if (event.type === "tool_execution_end") {
 		const name = typeof event.toolName === "string" ? event.toolName : "tool";
+		const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : randomUUID();
+		const diff = toolProgressDiff(name, undefined, event.result);
 		return [
 			{
 				type: "tool_end",
-				toolCallId: typeof event.toolCallId === "string" ? event.toolCallId : randomUUID(),
+				toolCallId,
 				name,
 				status: event.isError === true ? "error" : "success",
 				summary:
 					toolOutputSummary(event.result) ||
 					(typeof event.errorMessage === "string" ? boundedText(event.errorMessage) : ""),
+				...(diff ? { diff } : {}),
 			},
 		];
 	}

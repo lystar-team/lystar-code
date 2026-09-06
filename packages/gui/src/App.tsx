@@ -119,6 +119,7 @@ const THINKING_LABELS: Record<ThinkingLevel, string> = {
 	high: "高",
 	xhigh: "很高",
 	max: "最大",
+	ultra: "极高",
 };
 const CUSTOM_PROVIDER_APIS = [
 	["openai-responses", "OpenAI Responses 兼容"],

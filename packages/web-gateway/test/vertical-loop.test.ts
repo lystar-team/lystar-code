@@ -400,7 +400,8 @@ test("Web Gateway fake Provider 完成 Prompt、事件和 Transcript 闭环", as
 		"Transcript committed event",
 	);
 	const committedItems = transcriptCommittedEvent.items as unknown[];
-	assert.equal("payload" in committedItems[0]!, false);
+	const firstCommittedItem = record(committedItems[0]);
+	assert.equal(firstCommittedItem ? "payload" in firstCommittedItem : false, false);
 	const resolvedProjectCwd = resolve(projectCwd);
 	const sessionDirectory = join(
 		agentDir,
@@ -449,7 +450,8 @@ test("Web Gateway fake Provider 完成 Prompt、事件和 Transcript 闭环", as
 	const transcriptResponse = await requestJson(baseUrl, `/api/sessions/${sessionId}/transcript?limit=120`);
 	assert.equal(transcriptResponse.status, 200);
 	assert.ok(Array.isArray(transcriptResponse.data.items));
-	assert.equal("payload" in (transcriptResponse.data.items as unknown[])[0]!, false);
+	const firstTranscriptItem = record((transcriptResponse.data.items as unknown[])[0]);
+	assert.equal(firstTranscriptItem ? "payload" in firstTranscriptItem : false, false);
 	assert.match(JSON.stringify(transcriptResponse.data.items), /OK/u);
 	assert.match(JSON.stringify(transcriptResponse.data.items), /请只回复 OK/u);
 	assert.equal("path" in transcriptResponse.data, false);

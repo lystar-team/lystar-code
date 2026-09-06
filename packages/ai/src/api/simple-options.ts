@@ -61,7 +61,9 @@ export const DEFAULT_THINKING_BUDGETS: ThinkingBudgets = {
 	high: 16384,
 };
 
-export function clampReasoning(effort: ThinkingLevel | undefined): Exclude<ThinkingLevel, "xhigh" | "max" | "ultra"> | undefined {
+export function clampReasoning(
+	effort: ThinkingLevel | undefined,
+): Exclude<ThinkingLevel, "xhigh" | "max" | "ultra"> | undefined {
 	return effort === "xhigh" || effort === "max" || effort === "ultra" ? "high" : effort;
 }
 

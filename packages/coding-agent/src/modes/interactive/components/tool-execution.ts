@@ -165,13 +165,44 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private createCallFallback(): Component {
+		const args = this.args && typeof this.args === "object" && !Array.isArray(this.args) ? this.args : undefined;
+		const path =
+			args && typeof args.path === "string"
+				? args.path
+				: args && typeof args.file_path === "string"
+					? args.file_path
+					: undefined;
+		const fallback =
+			this.toolName === "write"
+				? {
+						icon: uiGlyphs.write,
+						subject: path ?? this.toolName,
+						labels: { running: "正在写入", success: "已写入", error: "写入失败" },
+					}
+				: this.toolName === "edit"
+					? {
+							icon: uiGlyphs.edit,
+							subject: path ?? this.toolName,
+							labels: { running: "正在编辑", success: "已编辑", error: "编辑失败" },
+						}
+					: this.toolName === "apply_patch"
+						? {
+								icon: uiGlyphs.patch,
+								subject: this.toolName,
+								labels: { running: "正在应用补丁", success: "已应用补丁", error: "应用补丁失败" },
+							}
+						: {
+								icon: uiGlyphs.tool,
+								subject: this.toolName,
+								labels: { running: "正在执行", success: "已执行", error: "执行失败" },
+							};
 		return new Text(
 			formatToolSummary({
-				icon: uiGlyphs.tool,
-				subject: this.toolName,
+				icon: fallback.icon,
+				subject: fallback.subject,
 				isPartial: this.isPartial,
 				isError: this.result?.isError ?? false,
-				labels: { running: "正在执行", success: "已执行", error: "执行失败" },
+				labels: fallback.labels,
 			}),
 			0,
 			0,

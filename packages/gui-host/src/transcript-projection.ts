@@ -1,5 +1,18 @@
-import { stripInternalPromptContent } from "@earendil-works/pi-coding-agent/core";
 import type { JsonValue, TranscriptItem, TranscriptViewItem } from "@lystar/code-gui-protocol";
+
+const INTERNAL_PROMPT_BLOCK_PATTERNS = [
+	/<skill\b[^>]*\blocation="[^"]+"[^>]*>[\s\S]*?<\/skill>/gu,
+	/<skill_references\b[^>]*>[\s\S]*?<\/skill_references>/gu,
+] as const;
+
+function stripInternalPromptContent(value: string): string {
+	let projected = value;
+	for (const pattern of INTERNAL_PROMPT_BLOCK_PATTERNS) projected = projected.replace(pattern, "");
+	return projected
+		.replace(/[ \t]+\n/gu, "\n")
+		.replace(/\n{3,}/gu, "\n\n")
+		.trim();
+}
 
 const TEXT_LIMIT = 16 * 1024;
 const TOOL_CALL_LIMIT = 32;

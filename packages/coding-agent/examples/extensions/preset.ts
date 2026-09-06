@@ -100,7 +100,7 @@ function loadPresets(cwd: string): PresetsConfig {
 
 interface OriginalState {
 	model: Model<Api> | undefined;
-	thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+	thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 	tools: string[];
 }
 

@@ -8,7 +8,7 @@ export type ModelsDevReasoningOption =
 	  }
 	| { type: "budget_tokens"; min?: number; max?: number };
 
-const THINKING_LEVELS: readonly ThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+const THINKING_LEVELS: readonly Exclude<ThinkingLevel, "ultra">[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
 /**
  * Converts models.dev verified effort values into Pi's selectable thinking levels.

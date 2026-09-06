@@ -18,6 +18,7 @@ export {
 	ToolRecoveryModeError,
 	VERSION,
 } from "../config.ts";
+export { builtInExtensions } from "../extensions/index.ts";
 export {
 	abortSubagent,
 	continueSubagentSession,

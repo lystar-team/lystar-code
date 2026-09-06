@@ -62,8 +62,6 @@ import type {
 } from "../types";
 import {
 	Artifact,
-	ArtifactActions,
-	ArtifactClose,
 	ArtifactContent,
 	ArtifactDescription,
 	ArtifactHeader,
@@ -360,6 +358,7 @@ export function Workbench({
 					onEditProject={setEditingProject}
 				/>
 				<div
+					// biome-ignore lint/a11y/useSemanticElements: 可拖拽分隔器需要保留指针事件和数值属性
 					role="separator"
 					aria-label="调整项目栏宽度"
 					aria-orientation="vertical"
@@ -788,6 +787,7 @@ function SessionButton({
 				<LoaderCircle className="size-3.5 shrink-0 animate-spin text-primary" aria-label="会话进行中" />
 			) : unread ? (
 				<span
+					role="img"
 					className="size-2 shrink-0 rounded-full bg-blue-500"
 					aria-label="有新的会话内容"
 					title="有新的会话内容"
@@ -931,11 +931,11 @@ function ConversationBody({
 	const pendingScrollRef = useRef<{ top: number; height: number } | undefined>(undefined);
 	const responseActive = Boolean(
 		state.liveText ||
-		state.liveThinking ||
-		state.liveTurnItems.length ||
-		state.session?.activity === "running" ||
-		state.session?.activity === "waiting_for_input" ||
-		(state.currentOperation && ACTIVE_OPERATION_STATUSES.has(state.currentOperation.status)),
+			state.liveThinking ||
+			state.liveTurnItems.length ||
+			state.session?.activity === "running" ||
+			state.session?.activity === "waiting_for_input" ||
+			(state.currentOperation && ACTIVE_OPERATION_STATUSES.has(state.currentOperation.status)),
 	);
 	const lastAssistantMessageIndex = renderItems.reduce<number>((lastIndex, entry, index) => {
 		if (entry.kind !== "item") return lastIndex;
@@ -950,16 +950,7 @@ function ConversationBody({
 			autoScrollFrameRef.current = undefined;
 			void scrollToBottom({ animation: "smooth", wait: true, preserveScrollPosition: true });
 		});
-	}, [
-		isAtBottom,
-		scrollRef,
-		scrollToBottom,
-		state.liveText,
-		state.liveThinking,
-		state.liveTools,
-		state.statusText,
-		state.transcript,
-	]);
+			}, [isAtBottom, scrollRef, scrollToBottom]);
 
 	useEffect(() => {
 		return () => {
@@ -1151,7 +1142,9 @@ function TranscriptItemView({
 					</MessageResponse>
 					<TranscriptAttachments attachments={viewModel.attachments} sessionId={sessionId} />
 				</MessageContent>
-				{showCopy && viewModel.role === "assistant" && viewModel.text ? <CopyMessageAction text={viewModel.text} /> : null}
+				{showCopy && viewModel.role === "assistant" && viewModel.text ? (
+					<CopyMessageAction text={viewModel.text} />
+				) : null}
 			</Message>
 		);
 	}
@@ -1243,9 +1236,7 @@ function CodeBlockView({
 			wrap={wrap}
 		>
 			<CodeBlockHeader
-				className={cn(
-					embedded ? "justify-end border-b-0 bg-transparent px-0 py-0 text-foreground" : undefined,
-				)}
+				className={cn(embedded ? "justify-end border-b-0 bg-transparent px-0 py-0 text-foreground" : undefined)}
 			>
 				{embedded ? null : (
 					<CodeBlockTitle>
@@ -1575,7 +1566,12 @@ function ContextRing({ contextWindow, usedTokens }: { contextWindow: number; use
 					className="inline-flex size-8 cursor-pointer items-center justify-center rounded-full text-muted-foreground outline-none"
 					aria-label={`上下文使用率 ${percent}%`}
 				>
-					<svg className="size-5" viewBox="0 0 24 24" role="img">
+					<svg
+						className="size-5"
+						viewBox="0 0 24 24"
+						role="img"
+						aria-label={`上下文使用率 ${percent}%`}
+					>
 						<circle cx="12" cy="12" r={radius} fill="none" stroke="currentColor" strokeWidth="2" opacity="0.25" />
 						<circle
 							cx="12"
@@ -1870,9 +1866,9 @@ function FilesPanel({ state, actions }: { state: WorkbenchState; actions: Workbe
 					key={entry.path}
 					path={entry.path}
 					name={entry.name}
-						onToggle={(path, expanded) => {
-							if (expanded && !cachedTrees[path]) void actions.loadProjectTree(path, true);
-						}}
+					onToggle={(path, expanded) => {
+						if (expanded && !cachedTrees[path]) void actions.loadProjectTree(path, true);
+					}}
 				>
 					{cachedTrees[entry.path] ? renderEntries(cachedTrees[entry.path].entries) : null}
 				</FileTreeFolder>
@@ -1971,9 +1967,7 @@ function FilePreviewDialog({ state, actions }: { state: WorkbenchState; actions:
 						<span className="min-w-0 truncate font-mono">{state.filePath || "文件预览"}</span>
 					</DialogTitle>
 					{state.fileLoading || state.fileContent?.kind === "image" ? (
-						<DialogDescription>
-							{state.fileLoading ? "正在读取文件…" : "图片预览"}
-						</DialogDescription>
+						<DialogDescription>{state.fileLoading ? "正在读取文件…" : "图片预览"}</DialogDescription>
 					) : null}
 				</DialogHeader>
 				<div className="min-h-0 flex-1 overflow-auto bg-background p-4 sm:p-6">

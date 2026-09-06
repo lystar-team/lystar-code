@@ -141,7 +141,7 @@ function normalizeSessionProgress(events: unknown[]): string[] {
 					? [`tool_end:${event.name}:${event.status}`]
 					: [];
 			case "phase":
-				return typeof event.phase === "string" ? [`phase:${event.phase}`] : [];
+				return event.phase === "turn" ? [] : typeof event.phase === "string" ? [`phase:${event.phase}`] : [];
 			default:
 				return [];
 		}
@@ -657,7 +657,7 @@ describe("CodingAgentRuntimeAdapter RPC contract", () => {
 		expect(gui.listedSkills).toEqual([]);
 		expect(gui.userTexts).toEqual([
 			"/contract-project-prompt alpha beta",
-			"/skill:contract-project-skill extra instructions",
+			'<skill_references>\n  <skill_reference name="contract-project-skill" status="unavailable">\n    当前 Skill 不可用，请检查名称或重新加载 Skill 列表。\n  </skill_reference>\n</skill_references>\n\nextra instructions',
 		]);
 	}, 30_000);
 

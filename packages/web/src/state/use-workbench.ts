@@ -1,4 +1,4 @@
-import type { SessionProgress } from "@lystar/code-gui-protocol";
+import type { SessionProgress, ToolDiff } from "@lystar/code-gui-protocol";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UnauthorizedError, webApi } from "../adapters/host-protocol/api.ts";
 import type {
@@ -26,9 +26,7 @@ export interface LiveTool {
 	summary: string;
 	result?: string;
 	status: "running" | "success" | "error";
-	diff?: {
-		files: Array<{ path?: string; operation?: string; additions?: number; deletions?: number; diff?: string }>;
-	};
+	diff?: ToolDiff;
 }
 
 export type LiveTurnItem =
@@ -54,6 +52,24 @@ function appendLiveToolBlock(items: LiveTurnItem[], batchId: string, toolCallId:
 		return [...items.slice(0, -1), { ...last, toolIds: [...last.toolIds, toolCallId] }];
 	}
 	return [...items, { id, kind: "tools", batchId, toolIds: [toolCallId] }];
+}
+
+function mergeToolDiff(previous: ToolDiff | undefined, next: ToolDiff | undefined): ToolDiff | undefined {
+	if (!next) return previous;
+	if (!previous) return next;
+
+	return {
+		files: next.files.map((file, index) => {
+			const previousFile = file.path
+				? previous.files.find((candidate) => candidate.path === file.path)
+				: previous.files[index];
+			return {
+				...(previousFile ?? {}),
+				...file,
+				...(file.path === undefined && previousFile?.path ? { path: previousFile.path } : {}),
+			};
+		}),
+	};
 }
 
 interface GitFileDiffStats {
@@ -282,7 +298,7 @@ function mergeSessionSummaries(
 		...current.flatMap((session) => {
 			const next = incomingById.get(session.id);
 			if (!next) return [];
-			if (Object.prototype.hasOwnProperty.call(next, "name")) return [next];
+			if (Object.hasOwn(next, "name")) return [next];
 			return [session.name?.trim() ? { ...next, name: session.name } : next];
 		}),
 		...incoming.filter((session) => !currentIds.has(session.id)),
@@ -332,7 +348,11 @@ function updateSessionActivity(
 function sessionActivityFromProgress(progress: SessionProgress): "running" | "waiting_for_input" | "idle" | undefined {
 	switch (progress.type) {
 		case "phase":
-			return progress.phase === "waiting_for_input" ? "waiting_for_input" : progress.phase === "idle" ? "idle" : "running";
+			return progress.phase === "waiting_for_input"
+				? "waiting_for_input"
+				: progress.phase === "idle"
+					? "idle"
+					: "running";
 		case "compaction":
 			return progress.status === "running" || progress.status === "waiting_retry" ? "running" : undefined;
 		case "retry":
@@ -530,10 +550,9 @@ export function useWorkbench() {
 				const projects = mergeProjectSessions(current.projects, data.projects);
 				return {
 					...current,
-					projects:
-						current.session
-							? updateSessionSummaryName(projects, current.sessionId!, current.session.name)
-							: projects,
+					projects: current.session
+						? updateSessionSummaryName(projects, current.sessionId!, current.session.name)
+						: projects,
 					operations: data.operations,
 					pendingUiRequests: data.pendingUiRequests,
 					connected: data.connection.connected,
@@ -706,7 +725,8 @@ export function useWorkbench() {
 					case "user_message":
 						return { ...current, statusText: "正在处理" };
 					case "tool_start": {
-						const batchId = `live-tool-batch:${liveToolBatchRef.current}`;
+						const previous = current.liveTools[progress.toolCallId];
+						const batchId = previous?.batchId ?? `live-tool-batch:${liveToolBatchRef.current++}`;
 						return {
 							...current,
 							liveTools: {
@@ -715,23 +735,26 @@ export function useWorkbench() {
 									id: progress.toolCallId,
 									name: progress.name,
 									batchId,
-									summary: progress.summary ?? "正在执行",
+									summary: progress.summary ?? previous?.summary ?? "正在执行",
 									status: "running",
-									diff: progress.diff,
+									diff: mergeToolDiff(previous?.diff, progress.diff),
 								},
 							},
-							liveTurnItems: appendLiveToolBlock(
-								current.liveTurnItems,
-								batchId,
-								progress.toolCallId,
-								`live-tools:${liveTurnItemRef.current++}`,
-							),
+							liveTurnItems: previous
+								? current.liveTurnItems
+								: appendLiveToolBlock(
+										current.liveTurnItems,
+										batchId,
+										progress.toolCallId,
+										`live-tools:${liveTurnItemRef.current++}`,
+									),
 							statusText: `正在执行 ${progress.name}`,
 						};
 					}
 					case "tool_update": {
 						const previous = current.liveTools[progress.toolCallId];
-						const batchId = previous?.batchId ?? `live-tool-batch:${liveToolBatchRef.current}`;
+						if (previous && previous.status !== "running") return current;
+						const batchId = previous?.batchId ?? `live-tool-batch:${liveToolBatchRef.current++}`;
 						return {
 							...current,
 							liveTools: {
@@ -740,10 +763,10 @@ export function useWorkbench() {
 									id: progress.toolCallId,
 									name: progress.name,
 									batchId,
-									summary: previous?.summary ?? progress.summary,
+									summary: progress.summary || previous?.summary || "正在执行",
 									result: progress.summary,
 									status: "running",
-									diff: progress.diff,
+									diff: mergeToolDiff(previous?.diff, progress.diff),
 								},
 							},
 							liveTurnItems: previous
@@ -758,7 +781,7 @@ export function useWorkbench() {
 					}
 					case "tool_end": {
 						const previous = current.liveTools[progress.toolCallId];
-						const batchId = previous?.batchId ?? `live-tool-batch:${liveToolBatchRef.current}`;
+						const batchId = previous?.batchId ?? `live-tool-batch:${liveToolBatchRef.current++}`;
 						return {
 							...current,
 							liveTools: {
@@ -770,7 +793,7 @@ export function useWorkbench() {
 									summary: previous?.summary ?? progress.summary,
 									result: progress.summary,
 									status: progress.status,
-									diff: progress.diff,
+									diff: mergeToolDiff(previous?.diff, progress.diff),
 								},
 							},
 							liveTurnItems: previous
@@ -936,11 +959,14 @@ export function useWorkbench() {
 							previous?.activity === "running" ||
 							previous?.activity === "waiting_for_input" ||
 							current.operations.some(
-								(operation) => operation.sessionId === event.sessionId && ACTIVE_OPERATION_STATUSES.has(operation.status),
+								(operation) =>
+									operation.sessionId === event.sessionId && ACTIVE_OPERATION_STATUSES.has(operation.status),
 							);
 						const unreadSessionIds = { ...current.unreadSessionIds };
-						if (activity === "idle" && event.sessionId !== current.sessionId && wasRunning) unreadSessionIds[event.sessionId] = true;
-						else if (activity !== "idle" || event.sessionId === current.sessionId) delete unreadSessionIds[event.sessionId];
+						if (activity === "idle" && event.sessionId !== current.sessionId && wasRunning)
+							unreadSessionIds[event.sessionId] = true;
+						else if (activity !== "idle" || event.sessionId === current.sessionId)
+							delete unreadSessionIds[event.sessionId];
 						return {
 							...current,
 							projects: updateSessionActivity(current.projects, event.sessionId, activity),
@@ -982,14 +1008,20 @@ export function useWorkbench() {
 						: undefined;
 					const unreadSessionIds = { ...current.unreadSessionIds };
 					if (operationSessionId) {
-						if (operationIsActive || operationSessionId === current.sessionId) delete unreadSessionIds[operationSessionId];
+						if (operationIsActive || operationSessionId === current.sessionId)
+							delete unreadSessionIds[operationSessionId];
 						else if (operationIsTerminal) unreadSessionIds[operationSessionId] = true;
 					}
 					return {
 						...current,
 						projects:
 							operationSessionId && activity
-								? updateSessionActivity(current.projects, operationSessionId, activity, event.operation.updatedAt)
+								? updateSessionActivity(
+										current.projects,
+										operationSessionId,
+										activity,
+										event.operation.updatedAt,
+									)
 								: current.projects,
 						operations,
 						unreadSessionIds,
@@ -1091,11 +1123,19 @@ export function useWorkbench() {
 		updateState((current) => ({ ...current, modelSettingsLoading: true, modelSettingsError: undefined }));
 		try {
 			const result = await webApi.models();
-			const visibilityConfigured = typeof window !== "undefined" && window.localStorage.getItem(MODEL_PROVIDER_VISIBILITY_KEY) !== null;
+			const visibilityConfigured =
+				typeof window !== "undefined" && window.localStorage.getItem(MODEL_PROVIDER_VISIBILITY_KEY) !== null;
 			updateState((current) => {
 				const hiddenModelProviders = visibilityConfigured
 					? current.hiddenModelProviders
-					: [...new Set([...current.hiddenModelProviders, ...result.providers.filter((provider) => provider.builtIn && !provider.authenticated).map((provider) => provider.id)])];
+					: [
+							...new Set([
+								...current.hiddenModelProviders,
+								...result.providers
+									.filter((provider) => provider.builtIn && !provider.authenticated)
+									.map((provider) => provider.id),
+							]),
+						];
 				if (!visibilityConfigured && typeof window !== "undefined") {
 					window.localStorage.setItem(MODEL_PROVIDER_VISIBILITY_KEY, JSON.stringify(hiddenModelProviders));
 				}
@@ -1224,14 +1264,14 @@ export function useWorkbench() {
 				transcriptRevision: undefined,
 				previousCursor: undefined,
 				hasMorePrevious: false,
-												liveText: "",
-								liveThinking: "",
-								liveTools: {},
-								liveTurnItems: [],
-								unreadSessionIds: Object.fromEntries(
-									Object.entries(current.unreadSessionIds).filter(([id]) => id !== sessionId),
-								) as Record<string, true>,
-								statusText: "正在打开会话",
+				liveText: "",
+				liveThinking: "",
+				liveTools: {},
+				liveTurnItems: [],
+				unreadSessionIds: Object.fromEntries(
+					Object.entries(current.unreadSessionIds).filter(([id]) => id !== sessionId),
+				) as Record<string, true>,
+				statusText: "正在打开会话",
 				currentOperation: operationForSession(current.operations, sessionId),
 			}));
 			const transcriptPromise = loadTranscript(sessionId);
@@ -1512,7 +1552,11 @@ export function useWorkbench() {
 			try {
 				const result = await webApi.model(sessionId, provider, id);
 				if (stateRef.current.sessionId !== sessionId) return;
-				updateState((next) => ({ ...next, session: result.session, readOnly: result.session.writeAccess !== "owned" }));
+				updateState((next) => ({
+					...next,
+					session: result.session,
+					readOnly: result.session.writeAccess !== "owned",
+				}));
 			} catch (error) {
 				showToast(errorMessage(error));
 			}
@@ -1528,7 +1572,11 @@ export function useWorkbench() {
 			try {
 				const result = await webApi.thinking(sessionId, level);
 				if (stateRef.current.sessionId !== sessionId) return;
-				updateState((next) => ({ ...next, session: result.session, readOnly: result.session.writeAccess !== "owned" }));
+				updateState((next) => ({
+					...next,
+					session: result.session,
+					readOnly: result.session.writeAccess !== "owned",
+				}));
 			} catch (error) {
 				showToast(errorMessage(error));
 			}
@@ -1563,7 +1611,13 @@ export function useWorkbench() {
 					.filter((file) => file.untracked)
 					.map(async (file) => {
 						const content = await webApi.projectFile(projectId, file.path).catch(() => undefined);
-						return [file.path, { additions: content?.kind === "text" && content.content ? textLineCount(content.content) : 0, deletions: 0 }] as const;
+						return [
+							file.path,
+							{
+								additions: content?.kind === "text" && content.content ? textLineCount(content.content) : 0,
+								deletions: 0,
+							},
+						] as const;
 					}),
 			);
 			for (const [path, value] of untrackedStats) stats.set(path, value);
@@ -1651,13 +1705,10 @@ export function useWorkbench() {
 		[updateState],
 	);
 
-	const closeFilePreview = useCallback(
-		() => {
-			fileRequestRef.current += 1;
-			updateState((current) => ({ ...current, fileContent: undefined, filePath: undefined, fileLoading: false }));
-		},
-		[updateState],
-	);
+	const closeFilePreview = useCallback(() => {
+		fileRequestRef.current += 1;
+		updateState((current) => ({ ...current, fileContent: undefined, filePath: undefined, fileLoading: false }));
+	}, [updateState]);
 
 	const openFile = openResource;
 
@@ -1759,7 +1810,8 @@ export function useWorkbench() {
 				if (visible) hidden.delete(providerId);
 				else hidden.add(providerId);
 				const hiddenModelProviders = [...hidden];
-				if (typeof window !== "undefined") window.localStorage.setItem(MODEL_PROVIDER_VISIBILITY_KEY, JSON.stringify(hiddenModelProviders));
+				if (typeof window !== "undefined")
+					window.localStorage.setItem(MODEL_PROVIDER_VISIBILITY_KEY, JSON.stringify(hiddenModelProviders));
 				return { ...current, hiddenModelProviders };
 			});
 		},

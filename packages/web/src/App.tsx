@@ -12,12 +12,7 @@ export default function App() {
 
 	return (
 		<TooltipProvider>
-			<Workbench
-				state={state}
-				actions={workbench}
-				projects={orderedProjects}
-				currentProject={currentProject}
-			/>
+			<Workbench state={state} actions={workbench} projects={orderedProjects} currentProject={currentProject} />
 		</TooltipProvider>
 	);
 }
