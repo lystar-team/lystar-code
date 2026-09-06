@@ -19,6 +19,7 @@ import {
 	type StartupInput,
 	type TranscriptItem,
 } from "@lystar/code-gui-protocol";
+import { GuiCompanionRuntime } from "./companion-runtime.ts";
 import { ContentStore } from "./content-store.ts";
 import { LeaseManager } from "./lease-manager.ts";
 import { hashOperationPayload, OperationJournal, OperationJournalCorruptError } from "./operation-journal.ts";
@@ -2202,11 +2203,15 @@ export class GuiHostService {
 
 	private async reloadMutationResources(runtime: RuntimeSession | undefined, cwd?: string): Promise<void> {
 		for (const candidate of this.runtimes.values()) {
-			if ((!cwd || canonicalProjectCwd(candidate.getSnapshot("available").cwd) === cwd) && candidate !== runtime) {
+			if (
+				(!cwd || canonicalProjectCwd(candidate.getSnapshot("available").cwd) === cwd) &&
+				candidate !== runtime &&
+				!(candidate instanceof GuiCompanionRuntime)
+			) {
 				await candidate.reloadResources();
 			}
 		}
-		await runtime?.reloadResources();
+		if (runtime && !(runtime instanceof GuiCompanionRuntime)) await runtime.reloadResources();
 	}
 
 	private assertExtensionSession(

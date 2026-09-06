@@ -7,7 +7,9 @@ import type {
 	GatewayEvent,
 	GitDiffResponse,
 	GitStatusResponse,
+	HostInstructionsResponse,
 	ModelsResponse,
+	ProjectSkillsResponse,
 	ProjectTreeResponse,
 	ProjectTrustResponse,
 	SessionTreeResponse,
@@ -50,8 +52,12 @@ function jsonHeaders(): HeadersInit {
 
 async function parseResponse<T>(response: Response): Promise<T> {
 	if (response.status === 401) throw new UnauthorizedError();
-	const value = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
-	if (!response.ok) throw new Error(value.error?.message || `请求失败（${response.status}）`);
+	const value = (await response.json().catch(() => ({}))) as { error?: { code?: string; message?: string } };
+	if (!response.ok) {
+		const error = new Error(value.error?.message || `请求失败（${response.status}）`) as Error & { code?: string };
+		error.code = value.error?.code;
+		throw error;
+	}
 	return value as T;
 }
 
@@ -108,8 +114,39 @@ export class WebApi {
 		await this.request(`/api/projects/${encodeURIComponent(id)}`, { method: "DELETE" });
 	}
 
+	async setSessionPinned(
+		projectId: string,
+		sessionId: string,
+		pinned: boolean,
+	): Promise<{ project: WebProject }> {
+		return this.request<{ project: WebProject }>(
+			`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/pin`,
+			{
+				method: "PATCH",
+				body: JSON.stringify({ pinned }),
+			},
+		);
+	}
+
+	async reorderProjects(projectIds: string[]): Promise<void> {
+		await this.request("/api/projects/order", {
+			method: "PATCH",
+			body: JSON.stringify({ projectIds }),
+		});
+	}
+
 	async projectSessions(projectId: string): Promise<{ sessions: WebSessionSummary[] }> {
 		return this.request<{ sessions: WebSessionSummary[] }>(`/api/projects/${encodeURIComponent(projectId)}/sessions`);
+	}
+
+	async reorderSessions(projectId: string, sessionIds: string[]): Promise<{ sessions: WebSessionSummary[] }> {
+		return this.request<{ sessions: WebSessionSummary[] }>(
+			`/api/projects/${encodeURIComponent(projectId)}/sessions/order`,
+			{
+				method: "PATCH",
+				body: JSON.stringify({ sessionIds }),
+			},
+		);
 	}
 
 	async completions(
@@ -137,6 +174,22 @@ export class WebApi {
 
 	async externalFile(path: string): Promise<FileResponse> {
 		return this.request<FileResponse>(`/api/resources/external?path=${encodeURIComponent(path)}`);
+	}
+
+	async projectSkills(projectId: string): Promise<ProjectSkillsResponse> {
+		return this.request<ProjectSkillsResponse>(`/api/projects/${encodeURIComponent(projectId)}/skills`);
+	}
+
+	async setProjectSkillEnabled(
+		projectId: string,
+		path: string,
+		scope: "user" | "project",
+		enabled: boolean,
+	): Promise<ProjectSkillsResponse> {
+		return this.request<ProjectSkillsResponse>(`/api/projects/${encodeURIComponent(projectId)}/skills`, {
+			method: "POST",
+			body: JSON.stringify({ path, scope, enabled, clientRequestId: createUuid() }),
+		});
 	}
 
 	async readImageContent(
@@ -240,6 +293,10 @@ export class WebApi {
 			`/api/sessions/${encodeURIComponent(sessionId)}/fork`,
 			{ method: "POST", body: JSON.stringify({ entryId, clientRequestId: createUuid() }) },
 		);
+	}
+
+	async deleteSession(sessionId: string): Promise<void> {
+		await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
 	}
 
 	async renameSession(sessionId: string, name: string): Promise<{ session: WebSessionSnapshot }> {
@@ -348,9 +405,26 @@ export class WebApi {
 		);
 	}
 
+	async hostInstructions(): Promise<HostInstructionsResponse> {
+		return this.request<HostInstructionsResponse>("/api/settings/host-instructions");
+	}
+
+	async saveHostInstruction(content: string, expectedHash?: string): Promise<HostInstructionsResponse> {
+		return this.request<HostInstructionsResponse>("/api/settings/host-instructions", {
+			method: "POST",
+			body: JSON.stringify({
+				fileName: "AGENTS.md",
+				content,
+				...(expectedHash ? { expectedHash } : {}),
+				clientRequestId: createUuid(),
+			}),
+		});
+	}
+
 	async settings(sessionId: string): Promise<SettingsResponse> {
 		return this.request<SettingsResponse>(`/api/settings?sessionId=${encodeURIComponent(sessionId)}`);
 	}
+
 
 	async setSetting(sessionId: string, id: string, value: boolean | number | string): Promise<unknown> {
 		return this.request("/api/settings", {

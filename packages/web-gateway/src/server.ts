@@ -13,6 +13,7 @@ import type {
 	ModelProviderSummary,
 	ModelSummary,
 	OperationSnapshot,
+	ProjectInstruction,
 	ProjectResource,
 	ProjectTrust,
 	ReadImageContentResult,
@@ -46,7 +47,7 @@ const PUBLIC_SESSION_FIRST_MESSAGE_LIMIT = 512;
 const BROWSER_CONTEXT_IDLE_MS = 60_000;
 const ACTIVE_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>(["accepted", "running", "waiting_for_input"]);
 
-export type WebSessionSummary = Omit<SessionSummary, "path" | "cwd">;
+export type WebSessionSummary = Omit<SessionSummary, "path" | "cwd"> & { pinned?: boolean };
 export type WebSessionSnapshot = Omit<SessionStateSnapshot, "path" | "cwd">;
 type WebTranscriptItem = Omit<TranscriptItem, "payload">;
 export type WebOperation = Omit<
@@ -102,6 +103,7 @@ interface BrowserContext {
 interface WebProjectResponse {
 	id: string;
 	name: string;
+	path: string;
 	pinned?: boolean;
 	color?: WebProject["color"];
 	archived?: boolean;
@@ -209,6 +211,9 @@ function toError(error: unknown): HttpError {
 	if (code === "invalid_session_lease") return new HttpError(409, code, "会话控制权已失效，请重新取得控制权");
 	if (code === "operation_request_conflict") return new HttpError(409, code, "同一请求编号对应了不同内容");
 	if (code === "operation_journal_corrupt") return new HttpError(503, code, "任务记录损坏，后台当前不可写");
+	if (code === "instruction_conflict")
+		return new HttpError(409, code, "全局 AGENTS.md 已被外部修改，请重新加载后再保存");
+	if (code === "instruction_path_invalid") return new HttpError(400, code, "全局 AGENTS.md 路径无效");
 	return new HttpError(statusOf(error), code, message);
 }
 
@@ -282,10 +287,27 @@ function setSecurityHeaders(response: ServerResponse): void {
 	);
 }
 
-function publicSessionSummary(session: SessionSummary): WebSessionSummary {
+function orderSessionSummaries(
+	sessions: readonly SessionSummary[],
+	sessionOrder?: readonly string[],
+): SessionSummary[] {
+	if (!sessionOrder?.length) return [...sessions];
+	const sessionsById = new Map(sessions.map((session) => [session.id, session]));
+	const orderedIds = new Set<string>();
+	const ordered = sessionOrder.flatMap((sessionId) => {
+		const session = sessionsById.get(sessionId);
+		if (!session) return [];
+		orderedIds.add(sessionId);
+		return [session];
+	});
+	return [...ordered, ...sessions.filter((session) => !orderedIds.has(session.id))];
+}
+
+function publicSessionSummary(session: SessionSummary, pinnedSessionIds?: readonly string[]): WebSessionSummary {
 	const { path: _path, cwd: _cwd, ...result } = session;
 	return {
 		...result,
+		...(pinnedSessionIds?.includes(result.id) ? { pinned: true } : {}),
 		firstMessage:
 			result.firstMessage.length > PUBLIC_SESSION_FIRST_MESSAGE_LIMIT
 				? `${result.firstMessage.slice(0, PUBLIC_SESSION_FIRST_MESSAGE_LIMIT - 1)}…`
@@ -767,9 +789,10 @@ export class WebGatewayServer {
 				});
 				this.sessionIdsByPath.set(session.path, session.id);
 			}
-			await this.registry.setRecentSessions(project.id, uniqueSessions);
-			context.sessionListCache.set(project.id, { generation, value: uniqueSessions });
-			return uniqueSessions;
+			const orderedSessions = orderSessionSummaries(uniqueSessions, project.sessionOrder);
+			await this.registry.setRecentSessions(project.id, orderedSessions);
+			context.sessionListCache.set(project.id, { generation, value: orderedSessions });
+			return orderedSessions;
 		})();
 		context.sessionListPromises.set(project.id, request);
 		try {
@@ -783,10 +806,11 @@ export class WebGatewayServer {
 		return {
 			id: project.id,
 			name: project.name,
+			path: project.cwd,
 			...(project.pinned ? { pinned: true } : {}),
 			...(project.color ? { color: project.color } : {}),
 			...(project.archived ? { archived: true } : {}),
-			sessions: sessions.map(publicSessionSummary),
+			sessions: sessions.map((session) => publicSessionSummary(session, project.pinnedSessionIds)),
 		};
 	}
 
@@ -1131,7 +1155,7 @@ export class WebGatewayServer {
 			return;
 		}
 		if (parts[1] === "settings") {
-			await this.handleSettings(request, response, url, context);
+			await this.handleSettings(request, response, url, context, parts);
 			return;
 		}
 		if (parts[1] === "ui-requests" && parts.length === 3 && request.method === "POST") {
@@ -1176,6 +1200,15 @@ export class WebGatewayServer {
 			sendJson(response, 201, { project: this.publicProject(project, sessions) });
 			return;
 		}
+		if (parts.length === 3 && parts[2] === "order" && request.method === "PATCH") {
+			const body = await parseJsonBody(request);
+			if (!Array.isArray(body.projectIds) || body.projectIds.some((id) => typeof id !== "string"))
+				throw new HttpError(400, "project_order_invalid", "项目顺序数据无效");
+			await this.registry.reorderProjects(body.projectIds);
+			this.invalidateBootstrap(context);
+			sendJson(response, 200, { orderedProjectIds: this.registry.list().map((candidate) => candidate.id) });
+			return;
+		}
 		if (parts.length < 3) throw new HttpError(404, "project_not_found", "未找到项目");
 		const projectId = parts[2];
 		const project = this.project(projectId);
@@ -1202,9 +1235,45 @@ export class WebGatewayServer {
 			sendJson(response, 200, { removed: true });
 			return;
 		}
+		if (parts.length === 5 && parts[3] === "sessions" && parts[4] === "order" && request.method === "PATCH") {
+			const body = await parseJsonBody(request);
+			if (!Array.isArray(body.sessionIds) || body.sessionIds.some((id) => typeof id !== "string"))
+				throw new HttpError(400, "session_order_invalid", "会话顺序数据无效");
+			const sessions = await this.listProjectSessions(context, project);
+			const sessionIds = body.sessionIds;
+			const knownSessionIds = new Set(sessions.map((session) => session.id));
+			if (
+				new Set(sessionIds).size !== sessionIds.length ||
+				sessionIds.length !== sessions.length ||
+				sessionIds.some((sessionId) => !knownSessionIds.has(sessionId))
+			)
+				throw new HttpError(400, "session_order_invalid", "会话顺序必须包含当前项目的全部会话");
+			await this.registry.setSessionOrder(projectId, sessionIds);
+			this.invalidateBootstrap(context);
+			const orderedSessions = orderSessionSummaries(sessions, sessionIds);
+			sendJson(response, 200, {
+				sessions: orderedSessions.map((session) => publicSessionSummary(session, project.pinnedSessionIds)),
+			});
+			return;
+		}
+		if (parts.length === 6 && parts[3] === "sessions" && parts[5] === "pin" && request.method === "PATCH") {
+			const sessionId = parts[4];
+			const sessions = await this.listProjectSessions(context, project);
+			if (!sessions.some((session) => session.id === sessionId))
+				throw new HttpError(404, "session_not_found", "未找到项目中的会话");
+			const body = await parseJsonBody(request);
+			const updated = await this.registry.setSessionPinned(projectId, sessionId, body.pinned === true);
+			this.invalidateBootstrap(context);
+			sendJson(response, 200, {
+				project: this.publicProject(updated, sessions),
+			});
+			return;
+		}
 		if (parts.length === 4 && parts[3] === "sessions" && request.method === "GET") {
 			const sessions = await this.listProjectSessions(context, project);
-			sendJson(response, 200, { sessions: sessions.map(publicSessionSummary) });
+			sendJson(response, 200, {
+				sessions: sessions.map((session) => publicSessionSummary(session, project.pinnedSessionIds)),
+			});
 			return;
 		}
 		if (parts.length === 4 && parts[3] === "completions" && request.method === "POST") {
@@ -1329,19 +1398,16 @@ export class WebGatewayServer {
 			}
 			if (request.method === "POST") {
 				const body = await parseJsonBody(request);
-				sendJson(
-					response,
-					200,
-					await client.request<JsonValue>({
-						command: "set_skill_enabled",
-						cwd: project.cwd,
-						path: stringValue(body.path) ?? "",
-						scope: body.scope === "user" ? "user" : "project",
-						enabled: body.enabled === true,
-						clientInstanceId: context.id,
-						clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
-					}),
-				);
+				await client.request<JsonValue>({
+					command: "set_skill_enabled",
+					cwd: project.cwd,
+					path: stringValue(body.path) ?? "",
+					scope: body.scope === "user" ? "user" : "project",
+					enabled: body.enabled === true,
+					clientInstanceId: context.id,
+					clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
+				});
+				sendJson(response, 200, await client.request<JsonValue>({ command: "list_skills", cwd: project.cwd }));
 				return;
 			}
 		}
@@ -1748,7 +1814,36 @@ export class WebGatewayServer {
 		response: ServerResponse,
 		url: URL,
 		context: BrowserContext,
+		parts: string[],
 	): Promise<void> {
+		if (parts.length === 3 && parts[2] === "host-instructions") {
+			const client = await this.getClient(context);
+			if (request.method === "GET") {
+				sendJson(response, 200, {
+					instructions: await client.request<ProjectInstruction[]>({ command: "list_host_instructions" }),
+				});
+				return;
+			}
+			if (request.method === "POST") {
+				const body = await parseJsonBody(request);
+				if (body.fileName !== "AGENTS.md")
+					throw new HttpError(400, "instruction_file_invalid", "Web 端只支持管理全局 AGENTS.md");
+				if (typeof body.content !== "string")
+					throw new HttpError(400, "instruction_content_invalid", "全局 AGENTS.md 内容必须是文本");
+				const instructions = await client.request<ProjectInstruction[]>({
+					command: "save_host_instruction",
+					fileName: "AGENTS.md",
+					content: body.content,
+					...(typeof body.expectedHash === "string" ? { expectedHash: body.expectedHash } : {}),
+					clientInstanceId: context.id,
+					clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
+				});
+				sendJson(response, 200, { instructions });
+				return;
+			}
+			throw new HttpError(405, "method_not_allowed", "该接口不支持当前方法");
+		}
+
 		const sessionId = url.searchParams.get("sessionId")?.trim();
 		if (!sessionId) throw new HttpError(400, "session_required", "设置接口需要当前会话");
 		const session = await this.resolveSession(context, sessionId);

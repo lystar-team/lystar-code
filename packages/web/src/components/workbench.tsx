@@ -5,10 +5,12 @@ import {
 	ArrowRight,
 	ArrowUp,
 	Bot,
+	BookOpen,
 	Check,
 	ChevronDown,
 	ChevronRight,
 	CircleHelp,
+	Clock3,
 	Clipboard,
 	Download,
 	Eye,
@@ -28,9 +30,11 @@ import {
 	MessageSquarePlus,
 	MoreHorizontal,
 	PanelRight,
+	Pencil,
 	Pin,
 	Plus,
 	RefreshCw,
+	Save,
 	Search,
 	Settings,
 	ShieldCheck,
@@ -40,10 +44,11 @@ import {
 	SunMoon,
 	Trash2,
 	TreePine,
+	WandSparkles,
 	X,
 	Zap,
 } from "lucide-react";
-import type { FormEvent, ReactNode, PointerEvent as ReactPointerEvent } from "react";
+import type { FormEvent, ReactNode, PointerEvent as ReactPointerEvent, DragEvent as ReactDragEvent } from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { BundledLanguage } from "shiki";
 import { useStickToBottomContext } from "use-stick-to-bottom";
@@ -138,6 +143,13 @@ import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
+import {
+	ContextMenu,
+	ContextMenuContent,
+	ContextMenuItem,
+	ContextMenuSeparator,
+	ContextMenuTrigger,
+} from "./ui/context-menu";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 import {
 	DropdownMenu,
@@ -153,6 +165,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Separator } from "./ui/separator";
 import { Switch } from "./ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
+import { Textarea } from "./ui/textarea";
 
 const THINKING_LEVEL_LABELS: Record<string, string> = {
 	off: "关闭(Off)",
@@ -202,8 +215,12 @@ export interface WorkbenchActions {
 		projectId: string,
 		update: Partial<Pick<WebProject, "name" | "pinned" | "color" | "archived">>,
 	) => Promise<void>;
+	reorderProjects: (projectIds: string[]) => Promise<void>;
+	reorderSessions: (projectId: string, sessionIds: string[]) => Promise<void>;
 	removeProject: (projectId: string) => Promise<void>;
-	renameSession: (name: string) => Promise<void>;
+	deleteSession: (sessionId: string) => Promise<void>;
+	renameSession: (sessionId: string, name: string) => Promise<void>;
+	setSessionPinned: (sessionId: string, pinned: boolean) => Promise<void>;
 	fork: (entryId: string) => Promise<void>;
 	compact: () => Promise<void>;
 	exportSession: () => Promise<void>;
@@ -213,6 +230,10 @@ export interface WorkbenchActions {
 	saveModelProvider: (input: WebModelProviderInput) => Promise<void>;
 	saveProviderModel: (provider: string, input: WebProviderModelInput) => Promise<void>;
 	syncModelProvider: (provider: string) => Promise<void>;
+	refreshSkills: () => Promise<void>;
+	toggleSkill: (skill: WorkbenchState["skills"][number]) => Promise<void>;
+	refreshHostInstructions: () => Promise<void>;
+	saveHostInstruction: (content: string, expectedHash?: string) => Promise<void>;
 	setTheme: (theme: ThemeMode) => void;
 	setProjectTrust: (trusted: boolean) => Promise<void>;
 	respondUiRequest: (
@@ -517,12 +538,23 @@ function ProjectRail({
 	onEditProject: (project: WebProject) => void;
 	onNavigate?: () => void;
 }) {
-	const [query, _setQuery] = useState("");
+	const [query, setQuery] = useState("");
 	const filteredProjects = projects.filter((project) => project.name.toLowerCase().includes(query.toLowerCase()));
 	const archivedProjects = state.projects.filter((project) => project.archived);
 	const [showArchived, setShowArchived] = useState(false);
 	const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(() => new Set());
 	const [openProjectMenuId, setOpenProjectMenuId] = useState<string | null>(null);
+	const [renamingSession, setRenamingSession] = useState<WebSessionSummary>();
+	const [renameDraft, setRenameDraft] = useState("");
+	const [deletingSession, setDeletingSession] = useState<WebSessionSummary>();
+	const [sessionActionId, setSessionActionId] = useState<string>();
+	const [projectNameDrafts, setProjectNameDrafts] = useState<Record<string, string>>({});
+	const [editingProjectId, setEditingProjectId] = useState<string>();
+	const [projectActionId, setProjectActionId] = useState<string>();
+	const [draggedProjectId, setDraggedProjectId] = useState<string>();
+	const [dragOverProjectId, setDragOverProjectId] = useState<string>();
+	const [draggedSession, setDraggedSession] = useState<{ projectId: string; sessionId: string }>();
+	const [dragOverSessionId, setDragOverSessionId] = useState<string>();
 
 	useEffect(() => {
 		if (!currentProject?.id) return;
@@ -531,6 +563,118 @@ function ProjectRail({
 			return new Set(current).add(currentProject.id);
 		});
 	}, [currentProject?.id]);
+
+	const moveId = (ids: readonly string[], sourceId: string, targetId: string): string[] => {
+		const next = [...ids];
+		const sourceIndex = next.indexOf(sourceId);
+		const targetIndex = next.indexOf(targetId);
+		if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return next;
+		const [moved] = next.splice(sourceIndex, 1);
+		next.splice(targetIndex, 0, moved);
+		return next;
+	};
+
+	const orderedSessions = (project: WebProject): WebSessionSummary[] => [
+		...project.sessions.filter((session) => session.pinned),
+		...project.sessions.filter((session) => !session.pinned),
+	];
+
+	const openRenameSessionDialog = (session: WebSessionSummary) => {
+		setRenamingSession(session);
+		setRenameDraft(session.name ?? "");
+	};
+
+	const submitRenameDialog = async () => {
+		const session = renamingSession;
+		const name = renameDraft.trim();
+		if (!session || !name) return;
+		setSessionActionId(session.id);
+		try {
+			await actions.renameSession(session.id, name);
+			setRenamingSession(undefined);
+		} finally {
+			setSessionActionId(undefined);
+		}
+	};
+
+	const saveProjectName = async (project: WebProject) => {
+		const name = (projectNameDrafts[project.id] ?? project.name).trim();
+		if (!name || name === project.name) return;
+		setProjectActionId(project.id);
+		try {
+			await actions.updateProject(project.id, { name });
+		} catch (error) {
+			actions.showToast(error instanceof Error ? error.message : String(error));
+		} finally {
+			setProjectActionId(undefined);
+		}
+	};
+
+	const confirmDeleteSession = async () => {
+		const session = deletingSession;
+		if (!session) return;
+		setSessionActionId(session.id);
+		try {
+			await actions.deleteSession(session.id);
+			setDeletingSession(undefined);
+		} finally {
+			setSessionActionId(undefined);
+		}
+	};
+
+	const handleProjectDragStart = (event: ReactDragEvent<HTMLDivElement>, projectId: string) => {
+		if (query.trim()) return;
+		event.dataTransfer.effectAllowed = "move";
+		event.dataTransfer.setData("text/plain", projectId);
+		setDraggedProjectId(projectId);
+	};
+
+	const handleProjectDrop = (event: ReactDragEvent<HTMLDivElement>, targetProjectId: string) => {
+		event.preventDefault();
+		const sourceProjectId = draggedProjectId || event.dataTransfer.getData("text/plain");
+		const sourceProject = projects.find((project) => project.id === sourceProjectId);
+		const targetProject = projects.find((project) => project.id === targetProjectId);
+		if (!sourceProject || !targetProject || sourceProjectId === targetProjectId) {
+			setDraggedProjectId(undefined);
+			setDragOverProjectId(undefined);
+			return;
+		}
+		if (sourceProject.pinned !== targetProject.pinned) {
+			actions.showToast("置顶项目与普通项目分别调整顺序");
+			setDraggedProjectId(undefined);
+			setDragOverProjectId(undefined);
+			return;
+		}
+		void actions.reorderProjects(moveId(projects.map((project) => project.id), sourceProjectId, targetProjectId));
+		setDraggedProjectId(undefined);
+		setDragOverProjectId(undefined);
+	};
+
+	const handleSessionDrop = (event: ReactDragEvent<HTMLDivElement>, project: WebProject, targetSessionId: string) => {
+		event.preventDefault();
+		const source = draggedSession;
+		if (!source || source.projectId !== project.id || source.sessionId === targetSessionId) {
+			setDraggedSession(undefined);
+			setDragOverSessionId(undefined);
+			return;
+		}
+		const sessions = orderedSessions(project);
+		const sourceSession = sessions.find((session) => session.id === source.sessionId);
+		const targetSession = sessions.find((session) => session.id === targetSessionId);
+		if (!sourceSession || !targetSession) return;
+		if (sourceSession.pinned !== targetSession.pinned) {
+			actions.showToast("置顶会话与普通会话分别调整顺序");
+			setDraggedSession(undefined);
+			setDragOverSessionId(undefined);
+			return;
+		}
+		void actions.reorderSessions(
+			project.id,
+			moveId(sessions.map((session) => session.id), source.sessionId, targetSessionId),
+		);
+		setDraggedSession(undefined);
+		setDragOverSessionId(undefined);
+	};
 
 	return (
 		<div className="flex min-h-0 flex-1 flex-col bg-background">
@@ -562,8 +706,16 @@ function ProjectRail({
 			</div>
 			<div className="px-3 pb-3">
 				<div className="relative">
-					<Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-					<Input className="h-10 border-0 bg-muted/60 pl-9 shadow-none focus-visible:ring-0" />
+					<Search
+						className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+					/>
+					<Input
+						aria-label="搜索项目"
+						placeholder="搜索项目"
+						value={query}
+						onChange={(event) => setQuery(event.target.value)}
+						className="h-10 border-0 bg-muted/60 pl-9 shadow-none focus-visible:ring-0"
+					/>
 				</div>
 			</div>
 			<ScrollArea className="project-list min-h-0 flex-1 px-3">
@@ -593,22 +745,127 @@ function ProjectRail({
 										});
 									}}
 								>
-									<div className="group relative">
-										<CollapsibleTrigger asChild>
-											<Button
-												className="w-full min-w-0 justify-start gap-2 px-2 pr-20 text-xs"
-												variant={active ? "secondary" : "ghost"}
-												onClick={() => {
-													if (!active) void actions.selectProject(project.id);
-													onNavigate?.();
-												}}
-											>
-												<Folder className="size-4 shrink-0 text-muted-foreground" />
-												<span className="project-list-item-label min-w-0 flex-1 truncate text-left">
-													{project.name}
-												</span>
-											</Button>
-										</CollapsibleTrigger>
+									<div
+						className={cn(
+							"group relative rounded-md",
+							draggedProjectId === project.id && "opacity-50",
+							dragOverProjectId === project.id && "ring-1 ring-primary/50",
+						)}
+						draggable={!query.trim()}
+						onDragStart={(event) => handleProjectDragStart(event, project.id)}
+						onDragOver={(event) => {
+							if (!query.trim() && draggedProjectId && draggedProjectId !== project.id) {
+								event.preventDefault();
+								setDragOverProjectId(project.id);
+							}
+						}}
+						onDrop={(event) => handleProjectDrop(event, project.id)}
+						onDragEnd={() => {
+							setDraggedProjectId(undefined);
+							setDragOverProjectId(undefined);
+						}}
+					>
+						<HoverCard
+							openDelay={140}
+							closeDelay={80}
+							onOpenChange={(open) => {
+								if (open) {
+					setProjectNameDrafts((current) => ({ ...current, [project.id]: project.name }));
+				}
+							}}
+						>
+							<HoverCardTrigger asChild>
+								<CollapsibleTrigger asChild>
+									<Button
+										className="w-full min-w-0 justify-start gap-2 px-2 pr-20 text-xs"
+										variant={active ? "secondary" : "ghost"}
+										onClick={() => {
+											if (!active) void actions.selectProject(project.id);
+										onNavigate?.();
+									}}
+									>
+										<Folder className="size-4 shrink-0 text-muted-foreground" />
+										<span className="project-list-item-label min-w-0 flex-1 truncate text-left">
+											{project.name}
+										</span>
+									</Button>
+								</CollapsibleTrigger>
+							</HoverCardTrigger>
+							<HoverCardContent
+								side="right"
+								align="start"
+								sideOffset={8}
+								className="w-[min(28rem,calc(100vw-1rem))] rounded-xl border-border bg-background px-4 py-3 shadow-[0_2px_8px_rgb(0_0_0/0.05)]"
+								onPointerDown={(event) => event.stopPropagation()}
+							>
+								<div className="flex items-center gap-2">
+									{editingProjectId === project.id ? (
+										<Input
+											aria-label="项目名称"
+											autoFocus
+											className="project-list-item-label h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 shadow-sm transition-[border-color,box-shadow,background-color] duration-150 focus-visible:border-input focus-visible:ring-0"
+											value={projectNameDrafts[project.id] ?? project.name}
+											disabled={projectActionId === project.id}
+											onChange={(event) =>
+												setProjectNameDrafts((current) => ({ ...current, [project.id]: event.target.value }))
+											}
+											onKeyDown={(event) => {
+												if (event.key === "Enter") {
+													event.preventDefault();
+													event.currentTarget.blur();
+												}
+												if (event.key === "Escape") {
+													event.preventDefault();
+													event.stopPropagation();
+													setProjectNameDrafts((current) => ({ ...current, [project.id]: project.name }));
+													setEditingProjectId(undefined);
+												}
+											}}
+											onBlur={() => {
+												setEditingProjectId(undefined);
+												void saveProjectName(project);
+											}}
+											placeholder="输入项目名称"
+										/>
+									) : (
+										<button
+											type="button"
+											className="project-list-item-label min-w-0 flex-1 cursor-text truncate bg-transparent p-0 text-left text-foreground"
+											onClick={() => {
+												setProjectNameDrafts((current) => ({ ...current, [project.id]: project.name }));
+												setEditingProjectId(project.id);
+											}}
+											title="点击修改项目名称"
+										>
+											{project.name}
+										</button>
+									)}
+									<Button
+										aria-label={project.pinned ? "取消置顶项目" : "置顶项目"}
+										size="icon"
+										variant="ghost"
+										onClick={(event) => {
+											event.stopPropagation();
+											void actions.updateProject(project.id, { pinned: !project.pinned });
+										}}
+									>
+										<Pin className={cn("size-5", project.pinned && "text-primary")} />
+									</Button>
+								</div>
+								<div className="mt-3 flex items-center gap-2 text-sm text-foreground">
+									<span className="size-2 shrink-0 rounded-full bg-emerald-500" />
+									<span>{state.connected ? "已连接" : "未连接"}</span>
+									<span className="text-muted-foreground">·</span>
+									<span>{project.sessions.length} 个会话</span>
+								</div>
+								<div className="mt-2 flex min-w-0 items-start gap-2 text-sm text-muted-foreground">
+									<Folder className="mt-0.5 size-4 shrink-0" />
+									<span className="min-w-0 break-all font-mono text-xs" title={project.path}>
+										{project.path}
+									</span>
+								</div>
+							</HoverCardContent>
+						</HoverCard>
 										<div className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5">
 											<Button
 												className={cn(
@@ -679,7 +936,9 @@ function ProjectRail({
 									</div>
 									<CollapsibleContent>
 										<div className="mt-1 grid gap-1">
-											{project.sessions.map((session) => {
+										{(() => {
+							const sessions = orderedSessions(project);
+							return sessions.map((session) => {
 												const running =
 													session.activity === "running" ||
 													session.activity === "waiting_for_input" ||
@@ -691,6 +950,7 @@ function ProjectRail({
 												return (
 													<SessionButton
 														key={session.id}
+														projectName={project.name}
 														session={session}
 														active={state.sessionId === session.id}
 														running={running}
@@ -699,9 +959,31 @@ function ProjectRail({
 															void actions.selectSession(session.id);
 															onNavigate?.();
 														}}
+											onRename={(name) => actions.renameSession(session.id, name)}
+											onContextRename={() => openRenameSessionDialog(session)}
+											onTogglePinned={() => void actions.setSessionPinned(session.id, !session.pinned)}
+											onDelete={() => setDeletingSession(session)}
+											dragging={draggedSession?.sessionId === session.id}
+																dropTarget={dragOverSessionId === session.id}
+																onDragStart={(event) => {
+																	event.dataTransfer.effectAllowed = "move";
+																	event.dataTransfer.setData("text/plain", session.id);
+																setDraggedSession({ projectId: project.id, sessionId: session.id });
+															}}
+																onDragOver={(event) => {
+																if (draggedSession?.projectId !== project.id || draggedSession.sessionId === session.id) return;
+																event.preventDefault();
+																setDragOverSessionId(session.id);
+															}}
+																onDrop={(event) => handleSessionDrop(event, project, session.id)}
+																onDragEnd={() => {
+																setDraggedSession(undefined);
+																setDragOverSessionId(undefined);
+															}}
 													/>
 												);
-											})}
+											});
+										})()}
 											{project.sessions.length === 0 ? (
 												<span className="px-2 py-2 text-[13px] text-muted-foreground">暂无会话</span>
 											) : null}
@@ -764,41 +1046,261 @@ function ProjectRail({
 					<span className="project-list-item-label">退出</span>
 				</Button>
 			</div>
+							<Dialog open={Boolean(renamingSession)} onOpenChange={(open) => !open && setRenamingSession(undefined)}>
+								<DialogContent className="max-w-md">
+									<DialogHeader>
+										<DialogTitle>重命名会话</DialogTitle>
+										<DialogDescription>修改会话在左侧列表中的显示名称。</DialogDescription>
+									</DialogHeader>
+									<Input
+										aria-label="会话名称"
+										autoFocus
+										value={renameDraft}
+										onChange={(event) => setRenameDraft(event.target.value)}
+										onKeyDown={(event) => {
+											if (event.key === "Enter" && renameDraft.trim()) void submitRenameDialog();
+										}}
+										placeholder="输入会话名称"
+									/>
+									<DialogFooter>
+										<Button variant="ghost" onClick={() => setRenamingSession(undefined)}>
+											取消
+										</Button>
+										<Button
+											onClick={() => void submitRenameDialog()}
+											disabled={!renameDraft.trim() || sessionActionId === renamingSession?.id}
+										>
+											{sessionActionId === renamingSession?.id ? "保存中…" : "保存"}
+										</Button>
+									</DialogFooter>
+								</DialogContent>
+							</Dialog>
+			<Dialog open={Boolean(deletingSession)} onOpenChange={(open) => !open && setDeletingSession(undefined)}>
+				<DialogContent className="max-w-md">
+					<DialogHeader>
+						<DialogTitle>删除会话？</DialogTitle>
+						<DialogDescription>
+							“{deletingSession ? sessionTitle(deletingSession) : "当前会话"}”删除后无法恢复，确认继续吗？
+						</DialogDescription>
+					</DialogHeader>
+					<DialogFooter>
+						<Button variant="ghost" onClick={() => setDeletingSession(undefined)}>
+							取消
+						</Button>
+						<Button
+							variant="destructive"
+							onClick={() => void confirmDeleteSession()}
+							disabled={sessionActionId === deletingSession?.id}
+						>
+							{sessionActionId === deletingSession?.id ? "删除中…" : "删除会话"}
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 		</div>
 	);
 }
 
+function formatSessionAge(timestamp: number): string {
+	const elapsed = Math.max(0, Date.now() - timestamp);
+	const minute = 60 * 1000;
+	const hour = 60 * minute;
+	const day = 24 * hour;
+	if (elapsed < minute) return "刚刚";
+	if (elapsed < hour) return `${Math.floor(elapsed / minute)} 分钟`;
+	if (elapsed < day) return `${Math.floor(elapsed / hour)} 小时`;
+	if (elapsed < 30 * day) return `${Math.floor(elapsed / day)} 天`;
+	if (elapsed < 365 * day) return `${Math.floor(elapsed / (30 * day))} 个月`;
+	return `${Math.floor(elapsed / (365 * day))} 年`;
+}
+
+function formatSessionDate(timestamp: number): string {
+	return new Intl.DateTimeFormat("zh-CN", {
+		year: "numeric",
+		month: "long",
+		day: "numeric",
+		hour: "2-digit",
+		minute: "2-digit",
+	}).format(timestamp);
+}
+
 function SessionButton({
+	projectName,
 	session,
 	active,
 	running,
 	unread,
 	onClick,
+	onRename,
+	onContextRename,
+	onTogglePinned,
+	onDelete,
+	dragging,
+	dropTarget,
+	onDragStart,
+	onDragOver,
+	onDrop,
+	onDragEnd,
 }: {
+	projectName: string;
 	session: WebSessionSummary;
 	active: boolean;
 	running: boolean;
 	unread: boolean;
 	onClick: () => void;
+	onRename: (name: string) => Promise<void>;
+	onContextRename: () => void;
+	onTogglePinned: () => void;
+	onDelete: () => void;
+	dragging: boolean;
+	dropTarget: boolean;
+	onDragStart: (event: ReactDragEvent<HTMLDivElement>) => void;
+	onDragOver: (event: ReactDragEvent<HTMLDivElement>) => void;
+	onDrop: (event: ReactDragEvent<HTMLDivElement>) => void;
+	onDragEnd: () => void;
 }) {
+	const title = sessionTitle(session);
+	const [editingTitle, setEditingTitle] = useState(false);
+	const [renameDraft, setRenameDraft] = useState(title);
+	const relativeTime = formatSessionAge(session.updatedAt);
+	const absoluteTime = formatSessionDate(session.updatedAt);
+
+	useEffect(() => {
+		if (!editingTitle) setRenameDraft(title);
+	}, [editingTitle, title]);
+
+	const cancelRename = () => {
+		setRenameDraft(title);
+		setEditingTitle(false);
+	};
+
+	const commitRename = async () => {
+		const name = renameDraft.trim();
+		if (!name) {
+			cancelRename();
+			return;
+		}
+		await onRename(name);
+		setEditingTitle(false);
+	};
+
 	return (
-		<Button
-			className="w-full min-w-0 justify-start gap-2 py-2 pr-2 !pl-8 text-left text-xs"
-			variant={active ? "secondary" : "ghost"}
-			onClick={onClick}
-		>
-			<span className="project-list-item-label min-w-0 flex-1 truncate">{sessionTitle(session)}</span>
-			{running ? (
-				<LoaderCircle className="size-3.5 shrink-0 animate-spin text-primary" aria-label="会话进行中" />
-			) : unread ? (
-				<span
-					role="img"
-					className="size-2 shrink-0 rounded-full bg-blue-500"
-					aria-label="有新的会话内容"
-					title="有新的会话内容"
-				/>
-			) : null}
-		</Button>
+		<ContextMenu>
+			<ContextMenuTrigger asChild>
+				<div
+					className={cn(
+						"min-w-0 rounded-md",
+						dragging && "opacity-50",
+						dropTarget && "ring-1 ring-primary/50",
+					)}
+					draggable
+					onDragStart={onDragStart}
+					onDragOver={onDragOver}
+					onDrop={onDrop}
+					onDragEnd={onDragEnd}
+				>
+					<HoverCard openDelay={140} closeDelay={80}>
+						<HoverCardTrigger asChild>
+							<Button
+								className="w-full min-w-0 justify-start gap-2 py-2 pr-2 !pl-8 text-left text-xs"
+								variant={active ? "secondary" : "ghost"}
+								onClick={onClick}
+							>
+								<span className="project-list-item-label min-w-0 flex-1 truncate">{title}</span>
+								{session.pinned ? <Pin className="size-3.5 shrink-0 text-muted-foreground" aria-label="已置顶" /> : null}
+								{running ? (
+									<LoaderCircle className="size-3.5 shrink-0 animate-spin text-primary" aria-label="会话进行中" />
+								) : unread ? (
+									<span
+										role="img"
+										className="size-2 shrink-0 rounded-full bg-blue-500"
+										aria-label="有新的会话内容"
+										title="有新的会话内容"
+									/>
+								) : null}
+							</Button>
+						</HoverCardTrigger>
+						<HoverCardContent
+							side="right"
+							align="start"
+							sideOffset={8}
+							className="w-max min-w-72 max-w-[calc(100vw-1rem)] rounded-xl border-border bg-background px-4 py-3 shadow-[0_2px_8px_rgb(0_0_0/0.05)]"
+							onPointerDown={(event) => event.stopPropagation()}
+						>
+							<div className="flex items-start justify-between gap-4 whitespace-nowrap">
+								{editingTitle ? (
+									<Input
+										aria-label="会话名称"
+										autoFocus
+										className="project-list-item-label h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 shadow-sm transition-[border-color,box-shadow,background-color] duration-150 focus-visible:border-input focus-visible:ring-0"
+										value={renameDraft}
+										onChange={(event) => setRenameDraft(event.target.value)}
+										onClick={(event) => event.stopPropagation()}
+										onBlur={() => void commitRename()}
+										onKeyDown={(event) => {
+											if (event.key === "Enter") {
+												event.preventDefault();
+												event.currentTarget.blur();
+											}
+											if (event.key === "Escape") {
+												event.preventDefault();
+												event.stopPropagation();
+												cancelRename();
+											}
+										}}
+										placeholder="输入会话名称"
+									/>
+								) : (
+									<button
+										type="button"
+										className="project-list-item-label min-w-0 max-w-[calc(100vw-3rem)] cursor-text truncate whitespace-nowrap bg-transparent p-0 text-left text-foreground"
+										onClick={() => {
+											setRenameDraft(title);
+											setEditingTitle(true);
+										}}
+										title="点击修改会话名称"
+									>
+										{title}
+									</button>
+								)}
+								<time
+									className="shrink-0 text-xs text-muted-foreground"
+									dateTime={new Date(session.updatedAt).toISOString()}
+									title={absoluteTime}
+								>
+									{relativeTime}
+								</time>
+							</div>
+							<div className="mt-3 grid gap-2 whitespace-nowrap text-xs text-muted-foreground">
+								<div className="flex min-w-0 items-center gap-2">
+									<Folder className="size-3.5 shrink-0" />
+									<span className="truncate">{projectName}</span>
+								</div>
+								<div className="flex min-w-0 items-center gap-2">
+									<Clock3 className="size-3.5 shrink-0" />
+									<span className="truncate">最后回复 {absoluteTime}</span>
+								</div>
+							</div>
+						</HoverCardContent>
+					</HoverCard>
+				</div>
+			</ContextMenuTrigger>
+			<ContextMenuContent className="w-48">
+				<ContextMenuItem onSelect={onContextRename}>
+					<Pencil className="size-4" />
+					重命名
+				</ContextMenuItem>
+				<ContextMenuItem onSelect={onTogglePinned}>
+					<Pin className="size-4" />
+					{session.pinned ? "取消置顶" : "置顶会话"}
+				</ContextMenuItem>
+				<ContextMenuSeparator />
+				<ContextMenuItem className="text-destructive focus:text-destructive" onSelect={onDelete}>
+					<Trash2 className="size-4" />
+					删除会话
+				</ContextMenuItem>
+			</ContextMenuContent>
+		</ContextMenu>
 	);
 }
 
@@ -2177,7 +2679,9 @@ function SettingsDialog({ state, actions }: { state: WorkbenchState; actions: Wo
 	const [query, setQuery] = useState("");
 	const settingItems: Array<{ value: SettingsTab; label: string; icon: ReactNode; section: string }> = [
 		{ value: "appearance", label: "外观", icon: <SunMoon className="size-4" />, section: "个人" },
+		{ value: "instructions", label: "全局提示词", icon: <BookOpen className="size-4" />, section: "个人" },
 		{ value: "models", label: "模型与认证", icon: <Bot className="size-4" />, section: "工作区" },
+		{ value: "skills", label: "技能", icon: <WandSparkles className="size-4" />, section: "工作区" },
 		{ value: "diagnostics", label: "诊断", icon: <CircleHelp className="size-4" />, section: "工作区" },
 		{ value: "about", label: "关于", icon: <Sparkles className="size-4" />, section: "其他" },
 	];
@@ -2254,14 +2758,21 @@ function SettingsDialog({ state, actions }: { state: WorkbenchState; actions: Wo
 							<div className="mb-12">
 								<h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">{currentLabel}</h1>
 								<p className="mt-3 max-w-2xl text-base leading-7 text-muted-foreground">
-									配置工作台的外观、模型连接和运行信息。
+									{state.settingsTab === "instructions"
+										? "为所有项目的任务提供说明和上下文。"
+										: state.settingsTab === "skills"
+											? "查看和管理当前项目可用的 Skill。"
+											: "配置工作台的外观、模型连接和运行信息。"}
 								</p>
 							</div>
 							<TabsContent className="m-0" value="appearance">
 								<AppearanceSettings state={state} actions={actions} />
 							</TabsContent>
-							<TabsContent className="m-0" value="models">
-								<ModelSettings state={state} actions={actions} />
+							<TabsContent className="m-0" value="instructions">
+								<GlobalInstructionsSettings state={state} actions={actions} />
+							</TabsContent>
+							<TabsContent className="m-0" value="skills">
+								<SkillsSettings state={state} actions={actions} />
 							</TabsContent>
 							<TabsContent className="m-0" value="diagnostics">
 								<DiagnosticsSettings state={state} />
@@ -2274,6 +2785,157 @@ function SettingsDialog({ state, actions }: { state: WorkbenchState; actions: Wo
 				</Tabs>
 			</DialogContent>
 		</Dialog>
+	);
+}
+
+function GlobalInstructionsSettings({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
+	const file = state.hostInstructions.find((candidate) => candidate.fileName === "AGENTS.md");
+	const [content, setContent] = useState("");
+
+	useEffect(() => {
+		setContent(file?.content ?? "");
+	}, [state.hostInstructions]);
+
+	const dirty = content !== (file?.content ?? "");
+	const save = () => void actions.saveHostInstruction(content, file?.contentHash);
+
+	return (
+		<div className="grid gap-6">
+			<SettingSection title="全局提示词">
+				<Card className="shadow-none">
+					<CardHeader className="gap-2">
+						<div className="flex items-center justify-between gap-3">
+							<div className="min-w-0">
+								<CardTitle className="text-base">AGENTS.md</CardTitle>
+								<CardDescription>为所有项目的任务提供说明和上下文。</CardDescription>
+							</div>
+							<Badge variant={file?.active ? "secondary" : "outline"}>{file?.active ? "生效中" : "未创建"}</Badge>
+						</div>
+					</CardHeader>
+					<CardContent className="grid gap-3">
+						{state.hostInstructionsLoading ? (
+							<div className="flex min-h-72 items-center justify-center gap-2 text-sm text-muted-foreground" role="status">
+								<LoaderCircle className="size-4 animate-spin" />正在读取 AGENTS.md
+							</div>
+						) : (
+							<Textarea
+								aria-label="全局 AGENTS.md 内容"
+								className="min-h-72 resize-y font-mono text-sm leading-6"
+								value={content}
+								disabled={state.hostInstructionSaving}
+								spellCheck={false}
+								onChange={(event) => setContent(event.target.value)}
+								placeholder="添加全局说明…"
+							/>
+						)}
+						{state.hostInstructionsError ? (
+							<Alert variant="destructive">
+								<AlertTitle>操作失败</AlertTitle>
+								<AlertDescription>{state.hostInstructionsError}</AlertDescription>
+							</Alert>
+						) : null}
+						<div className="flex flex-wrap items-center justify-end gap-2">
+							<Button variant="outline" onClick={() => void actions.refreshHostInstructions()} disabled={state.hostInstructionsLoading || state.hostInstructionSaving}>
+								<RefreshCw className="size-4" />重新加载
+							</Button>
+							<Button onClick={save} disabled={!dirty || state.hostInstructionsLoading || state.hostInstructionSaving}>
+								{state.hostInstructionSaving ? <LoaderCircle className="size-4 animate-spin" /> : <Save className="size-4" />}
+								{state.hostInstructionSaving ? "正在保存" : file?.exists ? "保存" : "创建"}
+							</Button>
+						</div>
+					</CardContent>
+				</Card>
+			</SettingSection>
+		</div>
+	);
+}
+
+function SkillsSettings({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
+	const [query, setQuery] = useState("");
+	const [scope, setScope] = useState<"all" | "user" | "project">("all");
+	const currentProject = state.projects.find((project) => project.id === state.currentProjectId);
+	const visibleSkills = state.skills
+		.filter((skill) => scope === "all" || skill.scope === scope)
+		.filter((skill) => `${skill.name} ${skill.description}`.toLowerCase().includes(query.trim().toLowerCase()));
+	const counts = {
+		all: state.skills.length,
+		user: state.skills.filter((skill) => skill.scope === "user").length,
+		project: state.skills.filter((skill) => skill.scope === "project").length,
+	};
+	const scopeLabel = (value: "user" | "project" | "temporary") =>
+		value === "user" ? "个人" : value === "project" ? "项目" : "临时";
+
+	return (
+		<div className="grid gap-6">
+			<SettingSection title="技能">
+				<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+					<div className="flex flex-wrap gap-1 rounded-lg bg-muted/60 p-1">
+						{(["all", "user", "project"] as const).map((value) => (
+							<Button key={value} size="sm" variant={scope === value ? "secondary" : "ghost"} onClick={() => setScope(value)}>
+								{value === "all" ? "全部" : value === "user" ? "个人" : "项目"} {counts[value]}
+							</Button>
+						))}
+					</div>
+					<div className="flex items-center gap-2">
+						<div className="relative w-full sm:w-64">
+							<Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+							<Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索技能" aria-label="搜索技能" className="pl-9" />
+						</div>
+						<Button variant="outline" size="icon" onClick={() => void actions.refreshSkills()} disabled={state.skillsLoading} aria-label="重新加载技能" title="重新加载技能">
+							<RefreshCw className={cn("size-4", state.skillsLoading && "animate-spin")} />
+						</Button>
+					</div>
+				</div>
+				{!currentProject ? (
+					<Card className="shadow-none">
+						<CardContent className="py-10 text-center text-sm text-muted-foreground">请先选择一个项目，再查看该项目可用的 Skill。</CardContent>
+					</Card>
+				) : state.skillsLoading ? (
+					<Card className="shadow-none">
+						<CardContent className="flex min-h-48 items-center justify-center gap-2 text-sm text-muted-foreground" role="status">
+							<LoaderCircle className="size-4 animate-spin" />正在读取技能
+						</CardContent>
+					</Card>
+				) : state.skillsError ? (
+					<Alert variant="destructive">
+						<AlertTitle>技能读取失败</AlertTitle>
+						<AlertDescription>{state.skillsError}</AlertDescription>
+					</Alert>
+				) : (
+					<Card className="shadow-none">
+						<CardContent className="p-0">
+							{visibleSkills.length ? visibleSkills.map((skill) => {
+								const updating = state.skillUpdatingPath === skill.path;
+								const editable = skill.scope !== "temporary";
+								return (
+									<div className="flex items-center gap-3 border-b px-4 py-4 last:border-b-0 sm:gap-4 sm:px-5" key={`${skill.scope}:${skill.path}`}>
+										<div className="grid size-10 shrink-0 place-items-center rounded-full border bg-muted/30 text-muted-foreground">
+											<WandSparkles className="size-4" />
+										</div>
+										<div className="min-w-0 flex-1">
+											<div className="flex min-w-0 items-center gap-2">
+												<strong className="truncate text-sm font-medium">{skill.name}</strong>
+												<Badge variant="outline" className="shrink-0">{scopeLabel(skill.scope)}</Badge>
+											</div>
+											<p className="mt-1 line-clamp-2 text-sm leading-5 text-muted-foreground" title={skill.description}>{skill.description || "暂无描述"}</p>
+										</div>
+										<Switch checked={skill.enabled} disabled={!editable || updating} onCheckedChange={() => void actions.toggleSkill(skill)} aria-label={`${skill.enabled ? "停用" : "启用"} ${skill.name}`} />
+									</div>
+								);
+							}) : (
+								<div className="py-10 text-center text-sm text-muted-foreground">没有找到匹配的 Skill。</div>
+							)}
+						</CardContent>
+					</Card>
+				)}
+				{Array.isArray(state.skillDiagnostics) && state.skillDiagnostics.length > 0 ? (
+					<Alert>
+						<AlertTitle>发现 {state.skillDiagnostics.length} 条加载诊断</AlertTitle>
+						<AlertDescription>部分 Skill 可能无法加载，请检查 Skill 文件和配置。</AlertDescription>
+					</Alert>
+				) : null}
+			</SettingSection>
+		</div>
 	);
 }
 

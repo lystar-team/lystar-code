@@ -4,6 +4,9 @@ import { UnauthorizedError, webApi } from "../adapters/host-protocol/api.ts";
 import { shouldJoinToolBatch } from "./tool-batching.ts";
 import type {
 	GatewayEvent,
+	HostInstructionsResponse,
+	ProjectInstruction,
+	ProjectSkillsResponse,
 	ProjectTreeResponse,
 	UiRequestEvent,
 	WebLease,
@@ -18,7 +21,7 @@ import type {
 export type InspectorMode = "runs" | "files" | "tree" | "git";
 export type ComposerMode = "prompt" | "steer" | "follow-up";
 export type ThemeMode = "system" | "light" | "dark";
-export type SettingsTab = "appearance" | "models" | "diagnostics" | "about";
+export type SettingsTab = "appearance" | "instructions" | "skills" | "models" | "diagnostics" | "about";
 
 export interface LiveTool {
 	id: string;
@@ -285,6 +288,15 @@ export interface WorkbenchState {
 	directoryLoading: boolean;
 	settingsOpen: boolean;
 	settingsTab: SettingsTab;
+	skills: ProjectSkillsResponse["skills"];
+	skillDiagnostics: unknown;
+	skillsLoading: boolean;
+	skillsError?: string;
+	skillUpdatingPath?: string;
+	hostInstructions: ProjectInstruction[];
+	hostInstructionsLoading: boolean;
+	hostInstructionsError?: string;
+	hostInstructionSaving: boolean;
 	models: Array<{
 		provider: string;
 		id: string;
@@ -413,17 +425,12 @@ function mergeSessionSummaries(
 	current: readonly WebSessionSummary[],
 	incoming: readonly WebSessionSummary[],
 ): WebSessionSummary[] {
-	const incomingById = new Map(incoming.map((session) => [session.id, session]));
-	const currentIds = new Set(current.map((session) => session.id));
-	return [
-		...current.flatMap((session) => {
-			const next = incomingById.get(session.id);
-			if (!next) return [];
-			if (Object.hasOwn(next, "name")) return [next];
-			return [session.name?.trim() ? { ...next, name: session.name } : next];
-		}),
-		...incoming.filter((session) => !currentIds.has(session.id)),
-	];
+	const currentById = new Map(current.map((session) => [session.id, session]));
+	return incoming.map((next) => {
+		const previous = currentById.get(next.id);
+		if (Object.hasOwn(next, "name")) return next;
+		return previous?.name?.trim() ? { ...next, name: previous.name } : next;
+	});
 }
 
 function updateSessionSummaryName(
@@ -567,6 +574,12 @@ function initialState(): WorkbenchState {
 		directoryLoading: false,
 		settingsOpen: false,
 		settingsTab: "appearance",
+		skills: [],
+		skillDiagnostics: undefined,
+		skillsLoading: false,
+		hostInstructions: [],
+		hostInstructionsLoading: false,
+		hostInstructionSaving: false,
 		models: [],
 		providers: [],
 		hiddenModelProviders: savedHiddenModelProviders(),
@@ -1623,18 +1636,115 @@ export function useWorkbench() {
 	}, []);
 
 	const renameSession = useCallback(
-		async (name: string) => {
+		async (sessionId: string, name: string) => {
 			const current = stateRef.current;
-			if (!current.sessionId || current.readOnly) return;
-			const result = await webApi.renameSession(current.sessionId, name);
-			updateState((next) => ({
-				...next,
-				projects: updateSessionSummaryName(next.projects, current.sessionId!, result.session.name),
-				session: result.session,
-			}));
-			if (current.currentProjectId) await refreshProjectSessions(current.currentProjectId);
+			let temporaryLease = false;
+			try {
+				if (current.sessionId !== sessionId || !current.lease || current.readOnly) {
+					const controlled = await webApi.control(sessionId);
+					if (!controlled.owned) {
+						showToast("当前会话暂时无法修改");
+						return;
+					}
+					temporaryLease = current.sessionId !== sessionId;
+					if (current.sessionId === sessionId) {
+						updateState((next) => ({
+							...next,
+							projects: updateSessionSummaryName(next.projects, sessionId, controlled.snapshot.name),
+							session: controlled.snapshot,
+							lease: controlled.lease,
+							readOnly: false,
+						}));
+					}
+				}
+				const result = await webApi.renameSession(sessionId, name);
+				updateState((next) => ({
+					...next,
+					projects: updateSessionSummaryName(next.projects, sessionId, result.session.name),
+					...(next.sessionId === sessionId ? { session: result.session } : {}),
+				}));
+				if (current.currentProjectId) await refreshProjectSessions(current.currentProjectId);
+			} catch (error) {
+				showToast(errorMessage(error));
+			} finally {
+				if (temporaryLease) await webApi.release(sessionId).catch(() => {});
+			}
 		},
-		[refreshProjectSessions, updateState],
+		[refreshProjectSessions, showToast, updateState],
+	);
+
+	const setSessionPinned = useCallback(
+		async (sessionId: string, pinned: boolean) => {
+			const current = stateRef.current;
+			const project = current.projects.find((candidate) => candidate.sessions.some((session) => session.id === sessionId));
+			if (!project) return;
+			try {
+				const result = await webApi.setSessionPinned(project.id, sessionId, pinned);
+				updateState((next) => ({
+					...next,
+					projects: next.projects.map((candidate) =>
+						candidate.id === result.project.id ? result.project : candidate,
+					),
+				}));
+			} catch (error) {
+				showToast(errorMessage(error));
+			}
+		},
+		[showToast, updateState],
+	);
+
+	const deleteSession = useCallback(
+		async (sessionId: string) => {
+			const current = stateRef.current;
+			const project = current.projects.find((candidate) => candidate.sessions.some((session) => session.id === sessionId));
+			if (!project) return;
+			if (current.sessionId === sessionId && hasActive(current.currentOperation)) {
+				showToast("运行中的会话不能删除");
+				return;
+			}
+			try {
+				if (current.sessionId === sessionId && current.lease) await webApi.release(sessionId);
+				await webApi.deleteSession(sessionId);
+				const nextSessionId = project.sessions.find((session) => session.id !== sessionId)?.id;
+				updateState((next) => {
+					const projects = next.projects.map((candidate) =>
+						candidate.id === project.id
+							? { ...candidate, sessions: candidate.sessions.filter((session) => session.id !== sessionId) }
+							: candidate,
+					);
+					if (next.sessionId !== sessionId) return { ...next, projects };
+					return {
+						...next,
+						projects,
+						sessionId: nextSessionId,
+						session: undefined,
+						lease: undefined,
+						readOnly: false,
+						transcript: [],
+						transcriptLoading: false,
+						transcriptError: undefined,
+						transcriptGeneration: undefined,
+						transcriptRevision: undefined,
+						currentOperation: undefined,
+						liveText: "",
+						liveThinking: "",
+						liveTools: {},
+						liveTurnItems: [],
+						statusText: "",
+						unreadSessionIds: Object.fromEntries(
+							Object.entries(next.unreadSessionIds).filter(([id]) => id !== sessionId),
+						) as Record<string, true>,
+					};
+				});
+				if (current.sessionId === sessionId) {
+					if (nextSessionId) await selectSession(nextSessionId);
+					else await loadProjectTreeRef.current();
+				}
+			} catch (error) {
+				showToast(errorMessage(error));
+			}
+		},
+		[selectSession, showToast, updateState],
 	);
 
 	const fork = useCallback(
@@ -1951,6 +2061,42 @@ export function useWorkbench() {
 		[updateState],
 	);
 
+	const reorderProjects = useCallback(
+		async (projectIds: string[]) => {
+			try {
+				await webApi.reorderProjects(projectIds);
+				const orderedSet = new Set(projectIds);
+				updateState((current) => ({
+					...current,
+					projects: [
+						...projectIds.flatMap((projectId) => current.projects.filter((project) => project.id === projectId)),
+						...current.projects.filter((project) => !orderedSet.has(project.id)),
+					],
+				}));
+			} catch (error) {
+				showToast(errorMessage(error));
+			}
+		},
+		[showToast, updateState],
+	);
+
+	const reorderSessions = useCallback(
+		async (projectId: string, sessionIds: string[]) => {
+			try {
+				const result = await webApi.reorderSessions(projectId, sessionIds);
+				updateState((current) => ({
+					...current,
+					projects: current.projects.map((project) =>
+						project.id === projectId ? { ...project, sessions: result.sessions } : project,
+					),
+				}));
+			} catch (error) {
+				showToast(errorMessage(error));
+			}
+		},
+		[showToast, updateState],
+	);
+
 	const removeProject = useCallback(
 		async (projectId: string) => {
 			if (projectId === stateRef.current.currentProjectId) return;
@@ -2005,12 +2151,102 @@ export function useWorkbench() {
 		[refreshModelSettings, showToast],
 	);
 
+	const refreshSkills = useCallback(async () => {
+		const projectId = stateRef.current.currentProjectId;
+		if (!projectId) {
+			updateState((current) => ({ ...current, skills: [], skillsLoading: false, skillsError: "请先选择一个项目" }));
+			return;
+		}
+		updateState((current) => ({ ...current, skillsLoading: true, skillsError: undefined }));
+		try {
+			const result = await webApi.projectSkills(projectId);
+			updateState((current) => ({
+				...current,
+				skills: result.skills,
+				skillDiagnostics: result.diagnostics,
+				skillsLoading: false,
+				skillsError: undefined,
+			}));
+		} catch (error) {
+			const message = errorMessage(error);
+			updateState((current) => ({ ...current, skillsLoading: false, skillsError: message }));
+			showToast(message);
+		}
+	}, [showToast, updateState]);
+
+	const toggleSkill = useCallback(
+		async (skill: ProjectSkillsResponse["skills"][number]) => {
+			if (skill.scope === "temporary") return;
+			const projectId = stateRef.current.currentProjectId;
+			if (!projectId) {
+				showToast("请先选择一个项目");
+				return;
+			}
+			updateState((current) => ({ ...current, skillUpdatingPath: skill.path, skillsError: undefined }));
+			try {
+				const result = await webApi.setProjectSkillEnabled(projectId, skill.path, skill.scope, !skill.enabled);
+				updateState((current) => ({
+					...current,
+					skills: result.skills,
+					skillDiagnostics: result.diagnostics,
+					skillUpdatingPath: undefined,
+				}));
+			} catch (error) {
+				const message = errorMessage(error);
+				updateState((current) => ({ ...current, skillUpdatingPath: undefined, skillsError: message }));
+				showToast(message);
+			}
+		},
+		[showToast, updateState],
+	);
+
+	const refreshHostInstructions = useCallback(async () => {
+		updateState((current) => ({ ...current, hostInstructionsLoading: true, hostInstructionsError: undefined }));
+		try {
+			const result: HostInstructionsResponse = await webApi.hostInstructions();
+			updateState((current) => ({
+				...current,
+				hostInstructions: result.instructions,
+				hostInstructionsLoading: false,
+				hostInstructionsError: undefined,
+			}));
+		} catch (error) {
+			const message = errorMessage(error);
+			updateState((current) => ({ ...current, hostInstructionsLoading: false, hostInstructionsError: message }));
+			showToast(message);
+		}
+	}, [showToast, updateState]);
+
+	const saveHostInstruction = useCallback(
+		async (content: string, expectedHash?: string) => {
+			updateState((current) => ({ ...current, hostInstructionSaving: true, hostInstructionsError: undefined }));
+			try {
+				const result = await webApi.saveHostInstruction(content, expectedHash);
+				updateState((current) => ({
+					...current,
+					hostInstructions: result.instructions,
+					hostInstructionSaving: false,
+					hostInstructionsError: undefined,
+					toast: "全局 AGENTS.md 已保存",
+				}));
+			} catch (error) {
+				const message = errorMessage(error);
+				if ((error as { code?: string }).code === "instruction_conflict") await refreshHostInstructions();
+				updateState((current) => ({ ...current, hostInstructionSaving: false, hostInstructionsError: message }));
+				showToast(message);
+			}
+		},
+		[refreshHostInstructions, showToast, updateState],
+	);
+
 	const openSettings = useCallback(
 		async (tab: SettingsTab = "appearance") => {
 			updateState((current) => ({ ...current, settingsOpen: true, settingsTab: tab }));
 			if (tab === "models" && stateRef.current.models.length === 0) {
 				await refreshModelSettings();
 			}
+			if (tab === "instructions") await refreshHostInstructions();
+			if (tab === "skills") await refreshSkills();
 			if (tab === "diagnostics") updateState((current) => ({ ...current, diagnostics: undefined }));
 			if (tab === "diagnostics") {
 				const result = (await webApi.diagnostics(stateRef.current.currentProjectId)) as Record<string, unknown>;
@@ -2021,7 +2257,7 @@ export function useWorkbench() {
 				updateState((current) => ({ ...current, about: result }));
 			}
 		},
-		[refreshModelSettings, updateState],
+		[refreshHostInstructions, refreshModelSettings, refreshSkills, updateState],
 	);
 	const closeSettings = useCallback(
 		() => updateState((current) => ({ ...current, settingsOpen: false })),
@@ -2108,7 +2344,9 @@ export function useWorkbench() {
 		createSession,
 		sendMessage,
 		abort,
+		deleteSession,
 		renameSession,
+		setSessionPinned,
 		fork,
 		compact,
 		exportSession,
@@ -2118,6 +2356,10 @@ export function useWorkbench() {
 		syncModelProvider,
 		saveModelProvider,
 		saveProviderModel,
+		refreshSkills,
+		toggleSkill,
+		refreshHostInstructions,
+		saveHostInstruction,
 		refreshModelSettings,
 		loadGitStatus,
 		loadGitDiff,
@@ -2134,6 +2376,8 @@ export function useWorkbench() {
 		loadDirectory,
 		addProject,
 		updateProject,
+		reorderProjects,
+		reorderSessions,
 		removeProject,
 		openSettings,
 		closeSettings,

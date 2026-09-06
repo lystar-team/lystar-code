@@ -12,6 +12,8 @@ export interface WebProject {
 	pinned?: boolean;
 	color?: "red" | "orange" | "green" | "blue" | "purple" | "gray";
 	archived?: boolean;
+	pinnedSessionIds?: string[];
+	sessionOrder?: string[];
 	recentSessions?: SessionSummary[];
 }
 
@@ -108,6 +110,16 @@ function normalizeRecentSessions(value: unknown): SessionSummary[] {
 		.slice(0, 100);
 }
 
+function normalizedStringIds(value: unknown): string[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const ids = [
+		...new Set(
+			value.filter((candidate): candidate is string => typeof candidate === "string" && Boolean(candidate.trim())),
+		),
+	];
+	return ids.length > 0 ? ids : undefined;
+}
+
 function normalizeProject(value: unknown): WebProject | undefined {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
 	const source = value as Record<string, unknown>;
@@ -120,6 +132,8 @@ function normalizeProject(value: unknown): WebProject | undefined {
 	const color = ["red", "orange", "green", "blue", "purple", "gray"].includes(String(source.color))
 		? (source.color as WebProject["color"])
 		: undefined;
+	const pinnedSessionIds = normalizedStringIds(source.pinnedSessionIds);
+	const sessionOrder = normalizedStringIds(source.sessionOrder);
 	return {
 		id,
 		name,
@@ -127,6 +141,8 @@ function normalizeProject(value: unknown): WebProject | undefined {
 		...(source.pinned === true ? { pinned: true } : {}),
 		...(color ? { color } : {}),
 		...(source.archived === true ? { archived: true } : {}),
+		...(pinnedSessionIds ? { pinnedSessionIds } : {}),
+		...(sessionOrder ? { sessionOrder } : {}),
 		...(Array.isArray(source.recentSessions)
 			? { recentSessions: normalizeRecentSessions(source.recentSessions) }
 			: {}),
@@ -200,7 +216,12 @@ export class ProjectRegistry {
 	}
 
 	list(): WebProject[] {
-		return this.state.projects.map((project) => ({ ...project, recentSessions: project.recentSessions?.slice() }));
+		return this.state.projects.map((project) => ({
+			...project,
+			...(project.pinnedSessionIds ? { pinnedSessionIds: project.pinnedSessionIds.slice() } : {}),
+			...(project.sessionOrder ? { sessionOrder: project.sessionOrder.slice() } : {}),
+			recentSessions: project.recentSessions?.slice(),
+		}));
 	}
 
 	get(id: string): WebProject | undefined {
@@ -220,6 +241,8 @@ export class ProjectRegistry {
 			...(existing?.color ? { color: existing.color } : {}),
 			...(existing?.archived ? { archived: true } : {}),
 			...(existing?.recentSessions ? { recentSessions: existing.recentSessions } : {}),
+			...(existing?.pinnedSessionIds ? { pinnedSessionIds: existing.pinnedSessionIds } : {}),
+			...(existing?.sessionOrder ? { sessionOrder: existing.sessionOrder } : {}),
 		};
 		this.state.projects = [project, ...this.state.projects.filter((candidate) => candidate.id !== project.id)];
 		await this.save();
@@ -243,6 +266,56 @@ export class ProjectRegistry {
 		return { ...next };
 	}
 
+	async reorderProjects(projectIds: readonly string[]): Promise<void> {
+		const existingIds = new Set(this.state.projects.map((project) => project.id));
+		const orderedIds = [...new Set(projectIds)].filter((id) => existingIds.has(id));
+		const orderedSet = new Set(orderedIds);
+		const nextProjects = [
+			...orderedIds.flatMap((id) => this.state.projects.filter((project) => project.id === id)),
+			...this.state.projects.filter((project) => !orderedSet.has(project.id)),
+		];
+		if (nextProjects.every((project, index) => project.id === this.state.projects[index]?.id)) return;
+		this.state.projects = nextProjects;
+		await this.save();
+	}
+
+	async setSessionOrder(id: string, sessionIds: readonly string[]): Promise<void> {
+		const project = this.get(id);
+		if (!project) throw Object.assign(new Error("未找到项目"), { code: "project_not_found", status: 404 });
+		const nextOrder = [...new Set(sessionIds.filter((sessionId) => Boolean(sessionId.trim())))];
+		const currentOrder = project.sessionOrder ?? [];
+		if (JSON.stringify(currentOrder) === JSON.stringify(nextOrder)) return;
+		const recentById = new Map((project.recentSessions ?? []).map((session) => [session.id, session]));
+		const recentSessions = nextOrder.flatMap((sessionId) => {
+			const session = recentById.get(sessionId);
+			return session ? [session] : [];
+		});
+		const next = {
+			...project,
+			...(nextOrder.length > 0 ? { sessionOrder: nextOrder } : { sessionOrder: undefined }),
+			...(project.recentSessions ? { recentSessions } : {}),
+		};
+		this.state.projects = this.state.projects.map((candidate) => (candidate.id === id ? next : candidate));
+		await this.save();
+	}
+
+	async setSessionPinned(id: string, sessionId: string, pinned: boolean): Promise<WebProject> {
+		const project = this.get(id);
+		if (!project) throw Object.assign(new Error("未找到项目"), { code: "project_not_found", status: 404 });
+		const currentIds = project.pinnedSessionIds ?? [];
+		const nextIds = pinned
+			? [...new Set([...currentIds, sessionId])]
+			: currentIds.filter((candidate) => candidate !== sessionId);
+		const next = {
+			...project,
+			...(nextIds.length > 0 ? { pinnedSessionIds: nextIds } : { pinnedSessionIds: undefined }),
+		};
+		if (JSON.stringify(currentIds) === JSON.stringify(nextIds)) return { ...project };
+		this.state.projects = this.state.projects.map((candidate) => (candidate.id === id ? next : candidate));
+		await this.save();
+		return { ...next };
+	}
+
 	async remove(id: string): Promise<void> {
 		if (!this.get(id)) throw Object.assign(new Error("未找到项目"), { code: "project_not_found", status: 404 });
 		this.state.projects = this.state.projects.filter((project) => project.id !== id);
@@ -253,10 +326,28 @@ export class ProjectRegistry {
 		const project = this.get(id);
 		if (!project) return;
 		const recentSessions = sessions.slice(0, 100);
-		if (JSON.stringify(project.recentSessions ?? []) === JSON.stringify(recentSessions)) return;
-		this.state.projects = this.state.projects.map((candidate) =>
-			candidate.id === id ? { ...candidate, recentSessions } : candidate,
-		);
+		const availableSessionIds = new Set(sessions.map((session) => session.id));
+		const sessionOrder = [
+			...(project.sessionOrder ?? []).filter((sessionId) => availableSessionIds.has(sessionId)),
+			...sessions
+				.map((session) => session.id)
+				.filter((sessionId) => !(project.sessionOrder ?? []).includes(sessionId)),
+		];
+		const recentSessionIds = new Set(recentSessions.map((session) => session.id));
+		const pinnedSessionIds = (project.pinnedSessionIds ?? []).filter((sessionId) => recentSessionIds.has(sessionId));
+		const next = {
+			...project,
+			recentSessions,
+			...(sessionOrder.length > 0 ? { sessionOrder } : { sessionOrder: undefined }),
+			...(pinnedSessionIds.length > 0 ? { pinnedSessionIds } : { pinnedSessionIds: undefined }),
+		};
+		if (
+			JSON.stringify(project.recentSessions ?? []) === JSON.stringify(recentSessions) &&
+			JSON.stringify(project.sessionOrder ?? []) === JSON.stringify(sessionOrder) &&
+			JSON.stringify(project.pinnedSessionIds ?? []) === JSON.stringify(pinnedSessionIds)
+		)
+			return;
+		this.state.projects = this.state.projects.map((candidate) => (candidate.id === id ? next : candidate));
 		await this.save();
 	}
 

@@ -6,6 +6,7 @@ import type {
 	ModelProviderSummary,
 	ModelSummary,
 	OperationSnapshot,
+	ProjectInstruction,
 	ProjectTrust,
 	SessionProgress,
 	SessionStateSnapshot,
@@ -16,7 +17,9 @@ import type {
 	TranscriptPage,
 } from "@lystar/code-gui-protocol";
 
-export type WebSessionSummary = Omit<SessionSummary, "path" | "cwd">;
+export type { ProjectInstruction } from "@lystar/code-gui-protocol";
+
+export type WebSessionSummary = Omit<SessionSummary, "path" | "cwd"> & { pinned?: boolean };
 export type WebSessionSnapshot = Omit<SessionStateSnapshot, "path" | "cwd">;
 export type WebTranscriptItem = Omit<TranscriptItem, "payload">;
 export type WebOperation = Omit<
@@ -29,6 +32,7 @@ export type WebCompletionResult = CompletionResult;
 export interface WebProject {
 	id: string;
 	name: string;
+	path: string;
 	pinned?: boolean;
 	color?: "red" | "orange" | "green" | "blue" | "purple" | "gray";
 	archived?: boolean;
@@ -155,6 +159,10 @@ export interface ProjectSkillsResponse {
 
 export interface SettingsResponse {
 	settings: SettingSummary[];
+}
+
+export interface HostInstructionsResponse {
+	instructions: ProjectInstruction[];
 }
 
 export interface SessionTreeResponse {

@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import type { SessionSummary } from "@lystar/code-gui-protocol";
 import { ProjectRegistry } from "../src/project-registry.ts";
 
 test("ProjectRegistry 串行处理并发保存并保留完整项目索引", async (t) => {
@@ -36,6 +37,50 @@ test("ProjectRegistry 串行处理并发保存并保留完整项目索引", asyn
 	assert.deepEqual(new Set(saved.projects?.map((project) => project.cwd)), new Set(projectDirectories));
 });
 
+test("ProjectRegistry 持久化项目和项目内会话顺序", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "lystar-project-registry-order-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const previousConfigHome = process.env.XDG_CONFIG_HOME;
+	process.env.XDG_CONFIG_HOME = join(root, "config");
+	t.after(() => {
+		if (previousConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+		else process.env.XDG_CONFIG_HOME = previousConfigHome;
+	});
+	const projectRoots = [join(root, "project-1"), join(root, "project-2")];
+	await Promise.all(projectRoots.map((directory) => mkdir(directory, { recursive: true })));
+	const registry = new ProjectRegistry(join(root, "agent"));
+	await registry.load();
+	await registry.add({ id: "project-1", name: "项目 1", cwd: projectRoots[0] });
+	await registry.add({ id: "project-2", name: "项目 2", cwd: projectRoots[1] });
+	const sessions: SessionSummary[] = ["session-1", "session-2", "session-3"].map((id, index) => ({
+		path: join(root, `${id}.jsonl`),
+		id,
+		cwd: projectRoots[1],
+		createdAt: index,
+		updatedAt: index,
+		messageCount: 0,
+		firstMessage: id,
+		activity: "idle",
+		writeAccess: "available",
+	}));
+	await registry.setRecentSessions("project-2", sessions);
+	await registry.setSessionOrder("project-2", ["session-3", "session-1", "session-2"]);
+	await registry.reorderProjects(["project-1", "project-2"]);
+
+	assert.deepEqual(
+		registry.list().map((project) => project.id),
+		["project-1", "project-2"],
+	);
+	assert.deepEqual(registry.get("project-2")?.sessionOrder, ["session-3", "session-1", "session-2"]);
+
+	const restored = new ProjectRegistry(join(root, "agent"));
+	await restored.load();
+	assert.deepEqual(
+		restored.list().map((project) => project.id),
+		["project-1", "project-2"],
+	);
+	assert.deepEqual(restored.get("project-2")?.sessionOrder, ["session-3", "session-1", "session-2"]);
+});
 test("ProjectRegistry 加载已有的最近会话缓存", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "lystar-project-registry-cache-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
