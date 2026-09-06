@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 
 const repositoryRoot = fileURLToPath(new URL("../../..", import.meta.url));
-const hostCli = join(repositoryRoot, "packages/gui-host/dist/cli.js");
+const hostCli = join(repositoryRoot, "packages/web-runtime/dist/cli.js");
 const gatewayCli = join(repositoryRoot, "packages/web-gateway/dist/cli.js");
 const staticDir = join(repositoryRoot, "packages/web/dist");
 const token = "vertical-test-token";
@@ -79,13 +79,13 @@ function childEnvironment(values: Record<string, string>): NodeJS.ProcessEnv {
 		"PI_REASONING_LEVEL",
 		"PI_OFFLINE",
 		"PI_CODING_AGENT_DIR",
-		"PI_GUI_HOST_ENDPOINT",
+		"PI_WEB_RUNTIME_ENDPOINT",
 		"PI_WEB_HOST",
 		"PI_WEB_PORT",
 		"PI_WEB_TOKEN",
 		"PI_WEB_STATIC_DIR",
 		"PI_WEB_ALLOWED_HOSTS",
-		"PI_WEB_MANAGE_HOST",
+		"PI_WEB_MANAGE_RUNTIME",
 		"OPENAI_API_KEY",
 		"OPENAI_BASE_URL",
 	])
@@ -276,8 +276,8 @@ test("Web Gateway fake Provider 完成 Prompt、事件和 Transcript 闭环", as
 		[hostCli, "serve"],
 		childEnvironment({
 			PI_CODING_AGENT_DIR: agentDir,
-			PI_GUI_HOST_ENDPOINT: endpoint,
-			PI_GUI_HOST_PERSISTENT: "1",
+			PI_WEB_RUNTIME_ENDPOINT: endpoint,
+			PI_WEB_RUNTIME_PERSISTENT: "1",
 			OPENAI_API_KEY: "fake-test-key",
 			OPENAI_BASE_URL: fakeBaseUrl,
 			PI_PROVIDER: "openai",
@@ -289,11 +289,11 @@ test("Web Gateway fake Provider 完成 Prompt、事件和 Transcript 闭环", as
 		[gatewayCli],
 		childEnvironment({
 			PI_CODING_AGENT_DIR: agentDir,
-			PI_GUI_HOST_ENDPOINT: endpoint,
+			PI_WEB_RUNTIME_ENDPOINT: endpoint,
 			PI_WEB_HOST: "127.0.0.1",
 			PI_WEB_PORT: String(gatewayPort),
 			PI_WEB_TOKEN: token,
-			PI_WEB_MANAGE_HOST: "0",
+			PI_WEB_MANAGE_RUNTIME: "0",
 			PI_WEB_STATIC_DIR: staticDir,
 			PI_WEB_ALLOWED_HOSTS: "127.0.0.1,localhost",
 			OPENAI_API_KEY: "fake-test-key",

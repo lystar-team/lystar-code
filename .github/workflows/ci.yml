@@ -35,7 +35,7 @@ jobs:
       core: ${{ steps.planner.outputs.core }}
       coding: ${{ steps.planner.outputs.coding }}
       platform: ${{ steps.planner.outputs.platform }}
-      gui: ${{ steps.planner.outputs.gui }}
+      web: ${{ steps.planner.outputs.web }}
       release: ${{ steps.planner.outputs.release }}
       plan: ${{ steps.planner.outputs.plan }}
     steps:
@@ -157,7 +157,7 @@ jobs:
 
   core:
     needs: plan
-    if: ${{ always() && (needs.plan.result != 'success' || (inputs.plan_mode || 'observe') == 'observe' || needs.plan.outputs.core == 'true' || needs.plan.outputs.gui == 'true') }}
+    if: ${{ always() && (needs.plan.result != 'success' || (inputs.plan_mode || 'observe') == 'observe' || needs.plan.outputs.core == 'true' || needs.plan.outputs.web == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -221,9 +221,9 @@ jobs:
           npm --workspace @earendil-works/pi-client test -- --reporter=json --outputFile="$RUNNER_TEMP/ci-client.json"
           npm --workspace @earendil-works/pi-server test -- --reporter=json --outputFile="$RUNNER_TEMP/ci-server.json"
           npm --workspace @earendil-works/pi-session-backend-sqlite-node test -- --reporter=json --outputFile="$RUNNER_TEMP/ci-session-sqlite.json"
-          npm --workspace @lystar/code-gui-protocol test -- --reporter=json --outputFile="$RUNNER_TEMP/ci-gui-protocol.json"
-          npm --workspace @lystar/code-gui-host run test:required -- --reporter=json --outputFile="$RUNNER_TEMP/ci-gui-host.json"
-          npm --workspace @lystar/code-gui test -- --reporter=json --outputFile="$RUNNER_TEMP/ci-gui.json"
+          npm --workspace @lystar/code-web-protocol test -- --reporter=json --outputFile="$RUNNER_TEMP/ci-web-protocol.json"
+          npm --workspace @lystar/code-web-runtime run test:required -- --reporter=json --outputFile="$RUNNER_TEMP/ci-web-runtime.json"
+          npm --workspace @lystar/code-web test -- --reporter=json --outputFile="$RUNNER_TEMP/ci-web.json"
           echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
 
       - name: Write core summary
@@ -236,8 +236,8 @@ jobs:
           --result "$RUNNER_TEMP/ci-ai.json" --result "$RUNNER_TEMP/ci-agent.json"
           --result "$RUNNER_TEMP/ci-protocol.json" --result "$RUNNER_TEMP/ci-client.json"
           --result "$RUNNER_TEMP/ci-server.json" --result "$RUNNER_TEMP/ci-session-sqlite.json"
-          --result "$RUNNER_TEMP/ci-gui-protocol.json"
-          --result "$RUNNER_TEMP/ci-gui-host.json" --result "$RUNNER_TEMP/ci-gui.json"
+          --result "$RUNNER_TEMP/ci-web-protocol.json"
+          --result "$RUNNER_TEMP/ci-web-runtime.json" --result "$RUNNER_TEMP/ci-web.json"
           --timing setup=${{ steps.install.outputs.seconds || 0 }}
           --timing build=${{ steps.build.outputs.seconds || 0 }}
           --timing test=${{ steps.tests.outputs.seconds || 0 }}
@@ -553,7 +553,8 @@ jobs:
         run: >-
           node scripts/ci-summary.mjs --suite required --plan-json "$PLAN_JSON"
           --job source=${{ needs.source.result }}=source
-          --job core=${{ needs.core.result }}=core,gui
+          --job core=${{ needs.core.result }}=core
+          --job web=${{ needs.web.result }}=web
           --job coding=${{ needs.coding.result }}=coding
           --job windows=${{ needs.windows.result }}=platform
           --timing wall=$(( $(date +%s) - CI_JOB_STARTED ))

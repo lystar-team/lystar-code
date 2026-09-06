@@ -1,4 +1,4 @@
-import type { SessionProgress, ToolActivity, ToolActivityState, ToolDiff } from "@lystar/code-gui-protocol";
+import type { SessionProgress, ToolActivity, ToolActivityState, ToolDiff } from "@lystar/code-web-protocol";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UnauthorizedError, webApi } from "../adapters/host-protocol/api.ts";
 import { shouldJoinToolBatch } from "./tool-batching.ts";

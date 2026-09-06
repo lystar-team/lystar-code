@@ -10,7 +10,7 @@ const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta
 const codingAgentPackage = JSON.parse(
 	readFileSync(new URL("../packages/coding-agent/package.json", import.meta.url), "utf8"),
 );
-const guiHostPackage = JSON.parse(readFileSync(new URL("../packages/gui-host/package.json", import.meta.url), "utf8"));
+const webRuntimePackage = JSON.parse(readFileSync(new URL("../packages/web-runtime/package.json", import.meta.url), "utf8"));
 
 function loadAgentTestConfig(suite) {
 	const env = { ...process.env };
@@ -54,14 +54,14 @@ test("Windows CI retains the Agent Core platform report", () => {
 	assert.doesNotMatch(workflow, /pi-agent-core test -- test\/harness\/nodejs-env\.windows\.test\.ts/);
 });
 
-test("required CI bounds GUI Host concurrency", () => {
+test("required CI bounds Web Runtime concurrency", () => {
 	assert.equal(
-		guiHostPackage.scripts["test:required"],
+		webRuntimePackage.scripts["test:required"],
 		"vitest --run --maxWorkers=1",
 	);
 	assert.match(workflow, /pi-coding-agent test -- --maxWorkers=2 --reporter=json/);
 	assert.match(
 		workflow,
-		/npm --workspace @lystar\/code-gui-host run test:required -- --reporter=json --outputFile="\$RUNNER_TEMP\/ci-gui-host\.json"/,
+		/npm --workspace @lystar\/code-web-runtime run test:required -- --reporter=json --outputFile="\$RUNNER_TEMP\/ci-web-runtime\.json"/,
 	);
 });

@@ -23,8 +23,8 @@
     "dev": "tsx src/cli.ts"
   },
   "dependencies": {
-    "@lystar/code-gui-host": "0.84.4-lystar-gui.1",
-    "@lystar/code-gui-protocol": "0.84.4-lystar-gui.1",
+    "@lystar/code-web-runtime": "0.84.4-lystar-web.1",
+    "@lystar/code-web-protocol": "0.84.4-lystar-web.1",
     "ws": "8.21.3"
   },
   "devDependencies": {

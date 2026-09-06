@@ -220,7 +220,7 @@ export interface SessionInfoCache {
 export interface SessionListOptions {
 	cache?: SessionInfoCache;
 	includeAllMessagesText?: boolean;
-	/** 只读取文件首尾元数据，用于 GUI 会话列表，避免扫描完整历史正文。 */
+	/** 只读取文件首尾元数据，用于 Web 会话列表，避免扫描完整历史正文。 */
 	metadataOnly?: boolean;
 }
 

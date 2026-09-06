@@ -9,7 +9,7 @@ import {
 import { getToolRecoveryDoctorReport, type ToolRecoveryDoctorReport } from "../core/tool-recovery/diagnostics.ts";
 import { t } from "../locales/zh-CN.ts";
 
-const GUI_PROTOCOL_VERSION = 1;
+const RUNTIME_PROTOCOL_VERSION = 1;
 
 export class DoctorCommandError extends Error {}
 
@@ -48,7 +48,7 @@ function formatText(report: ToolRecoveryDoctorReport): string {
 		`${t("doctor.product")}: ${report.product.name} ${report.product.version}`,
 		`${t("doctor.frontend")}: ${report.frontend.implementation} (${report.frontend.modes.join(", ")})`,
 		`${t("doctor.node")}: ${report.nodeVersion}`,
-		`${t("doctor.guiProtocol")}: ${report.guiProtocolVersion}`,
+		`${t("doctor.runtimeProtocol")}: ${report.runtimeProtocolVersion}`,
 		`${t("doctor.cwd")}: ${report.cwd}`,
 		`${t("doctor.agentDir")}: ${report.agentDir}`,
 		`${t("doctor.platform")}: ${report.platform}/${report.arch}`,
@@ -101,7 +101,7 @@ export async function runDoctorCommand(args: string[], options: { cwd: string; a
 	const report = await getToolRecoveryDoctorReport({
 		productName: APP_TITLE,
 		productVersion: VERSION,
-		guiProtocolVersion: GUI_PROTOCOL_VERSION,
+		runtimeProtocolVersion: RUNTIME_PROTOCOL_VERSION,
 		cwd: options.cwd,
 		agentDir: options.agentDir,
 		recoveryMode,

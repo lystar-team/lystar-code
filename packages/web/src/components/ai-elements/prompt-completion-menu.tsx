@@ -20,7 +20,7 @@ type CompletionContextValue = {
 	moveSelection: (direction: 1 | -1) => void;
 	setSelectedIndex: (index: number) => void;
 	close: () => void;
-	textareaRef: RefObject<HTMLTextAreaElement | null>;
+	textareaRef: RefObject<HTMLTextAreaElement>;
 	handleKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
 	setCursor: (cursor: number) => void;
 	trigger: "@" | "$" | "/" | undefined;
@@ -147,7 +147,7 @@ function PromptTokenOverlay({
 }: {
 	text: string;
 	className?: string;
-	overlayRef: RefObject<HTMLDivElement | null>;
+	overlayRef: RefObject<HTMLDivElement>;
 }) {
 	return (
 		<div
@@ -197,7 +197,7 @@ export function PromptCompletionProvider({
 	const requestVersion = useRef(0);
 	const cursorRef = useRef(text.length);
 	const onErrorRef = useRef(onError);
-	const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const suppressAutoOpenRef = useRef(false);
 	const menuId = `prompt-completions-${useId().replaceAll(":", "")}`;
 	const trigger = completionTrigger(text, cursor);

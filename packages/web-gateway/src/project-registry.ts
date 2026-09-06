@@ -3,7 +3,7 @@ import { readFileSync, realpathSync, statSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import type { SessionSummary } from "@lystar/code-gui-protocol";
+import type { SessionSummary } from "@lystar/code-web-protocol";
 
 export interface WebProject {
 	id: string;

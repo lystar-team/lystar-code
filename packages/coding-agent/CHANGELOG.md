@@ -5,12 +5,12 @@
 ### 上游同步
 
 - 同步 Pi `v0.84.4`（`b79e4cc834970cca69daebffab7df1da7d1e52c4`）的 Agent、Provider、Tool、TUI、CLI 和 Extension API 更新。
-- 保留 LYStar Code 的中文界面、全屏工作区、GUI Runtime、Tool Recovery 和 LYStar release 更新源。
+- 保留 LYStar Code 的中文界面、全屏工作区、Web Runtime、Tool Recovery 和 LYStar release 更新源。
 
 ### LYStar 适配
 
 - 为 `edit`、`write` 和显式注册的扩展 Tool 增加同批目标键检查，阻止一条助手回复并发修改同一文件。
-- 修复 GUI companion 启动竞争、失效 Unix socket 清理和 TUI/GUI 会话切换时的异步协调。
+- 修复 Web companion 启动竞争、失效 Unix socket 清理和 TUI/Web 会话切换时的异步协调。
 - 优化全屏工作台的 Composer、活动状态、Subagent 输入区、流式 Markdown、Tool 卡片 Hover、搜索缓存和鼠标 Overlay 路由。
 - Markdown 标题和引用块默认使用终端排版，不显示源标记与引用边框；`read` 结果按宽度缓存渲染。
 - 默认注册表移除 `apply_patch` 隐藏扩展；显式扩展仍可注册该 Tool。

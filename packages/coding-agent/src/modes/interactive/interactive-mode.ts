@@ -74,7 +74,6 @@ import type {
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
-import { GuiCompanionServer } from "../../core/gui-companion.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
 import {
@@ -93,6 +92,7 @@ import type { SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
+import { WebCompanionServer } from "../../core/web-companion.ts";
 import {
 	type AgentRunState,
 	abortSubagent,
@@ -527,26 +527,26 @@ export function createInteractiveTuiReference(getTui: () => TUI): TUI {
 
 const TRANSCRIPT_PAGE_SIZE = 80;
 
-interface GuiCompanionCoordinationState {
+interface WebCompanionCoordinationState {
 	ensureQueue: Promise<void>;
 	warningKey?: string;
 	failedSessionPath?: string;
 }
 
-const guiCompanionCoordinationStates = new WeakMap<object, GuiCompanionCoordinationState>();
+const webCompanionCoordinationStates = new WeakMap<object, WebCompanionCoordinationState>();
 
-function getGuiCompanionCoordinationState(owner: object): GuiCompanionCoordinationState {
-	const existing = guiCompanionCoordinationStates.get(owner);
+function getWebCompanionCoordinationState(owner: object): WebCompanionCoordinationState {
+	const existing = webCompanionCoordinationStates.get(owner);
 	if (existing) return existing;
-	const state: GuiCompanionCoordinationState = { ensureQueue: Promise.resolve() };
-	guiCompanionCoordinationStates.set(owner, state);
+	const state: WebCompanionCoordinationState = { ensureQueue: Promise.resolve() };
+	webCompanionCoordinationStates.set(owner, state);
 	return state;
 }
 
 export class InteractiveMode {
 	private runtimeHost: AgentSessionRuntime;
-	private guiCompanion?: GuiCompanionServer;
-	private guiCompanionSessionPath?: string;
+	private webCompanion?: WebCompanionServer;
+	private webCompanionSessionPath?: string;
 	private renderer: TuiMainScreen | LystarTUI;
 	private ui: TUI;
 	private mainScreenRenderState: TuiMainScreenRenderState | undefined;
@@ -2245,15 +2245,15 @@ export class InteractiveMode {
 		await this.updateAvailableProviderCount();
 		this.updateEditorBorderColor();
 		this.updateTerminalTitle();
-		if (typeof this.ensureGuiCompanion === "function") await this.ensureGuiCompanion({ force: true });
+		if (typeof this.ensureWebCompanion === "function") await this.ensureWebCompanion({ force: true });
 	}
 
-	private ensureGuiCompanion(options: { force?: boolean } = {}): Promise<boolean> {
-		const coordination = getGuiCompanionCoordinationState(this);
+	private ensureWebCompanion(options: { force?: boolean } = {}): Promise<boolean> {
+		const coordination = getWebCompanionCoordinationState(this);
 		const targetSession = this.session;
 		const targetSessionPath = this.sessionManager.getSessionFile();
 		const task = coordination.ensureQueue.then(() =>
-			this.ensureGuiCompanionNow(targetSession, targetSessionPath, coordination, options.force === true),
+			this.ensureWebCompanionNow(targetSession, targetSessionPath, coordination, options.force === true),
 		);
 		coordination.ensureQueue = task.then(
 			() => undefined,
@@ -2262,10 +2262,10 @@ export class InteractiveMode {
 		return task;
 	}
 
-	private async ensureGuiCompanionNow(
+	private async ensureWebCompanionNow(
 		targetSession: AgentSession,
 		targetSessionPath: string | undefined,
-		coordination: GuiCompanionCoordinationState,
+		coordination: WebCompanionCoordinationState,
 		force: boolean,
 	): Promise<boolean> {
 		const isCurrentTarget = () =>
@@ -2275,22 +2275,22 @@ export class InteractiveMode {
 
 		if (!isCurrentTarget()) return false;
 		if (!targetSessionPath || !fs.existsSync(targetSessionPath)) {
-			await this.guiCompanion?.dispose();
-			this.guiCompanion = undefined;
-			this.guiCompanionSessionPath = undefined;
+			await this.webCompanion?.dispose();
+			this.webCompanion = undefined;
+			this.webCompanionSessionPath = undefined;
 			coordination.warningKey = undefined;
 			coordination.failedSessionPath = undefined;
 			return false;
 		}
 		if (!force && coordination.failedSessionPath === targetSessionPath) return false;
-		if (this.guiCompanion && this.guiCompanionSessionPath === targetSessionPath) return true;
+		if (this.webCompanion && this.webCompanionSessionPath === targetSessionPath) return true;
 
-		await this.guiCompanion?.dispose();
-		this.guiCompanion = undefined;
-		this.guiCompanionSessionPath = undefined;
+		await this.webCompanion?.dispose();
+		this.webCompanion = undefined;
+		this.webCompanionSessionPath = undefined;
 		if (!isCurrentTarget()) return false;
 
-		const companion = new GuiCompanionServer(targetSession, getAgentDir(), () => {
+		const companion = new WebCompanionServer(targetSession, getAgentDir(), () => {
 			this.footer.invalidate();
 			this.updateEditorBorderColor();
 			this.ui.requestRender();
@@ -2301,8 +2301,8 @@ export class InteractiveMode {
 				await companion.dispose();
 				return false;
 			}
-			this.guiCompanion = companion;
-			this.guiCompanionSessionPath = targetSessionPath;
+			this.webCompanion = companion;
+			this.webCompanionSessionPath = targetSessionPath;
 			coordination.warningKey = undefined;
 			coordination.failedSessionPath = undefined;
 			return true;
@@ -2313,7 +2313,7 @@ export class InteractiveMode {
 			coordination.failedSessionPath = targetSessionPath;
 			const warningKey = `${targetSessionPath}\0${message}`;
 			if (coordination.warningKey !== warningKey) {
-				this.showWarning(`GUI 共享通道启动失败：${message}`);
+				this.showWarning(`Web 共享通道启动失败：${message}`);
 				coordination.warningKey = warningKey;
 			}
 			return false;
@@ -3480,11 +3480,6 @@ export class InteractiveMode {
 				await this.handleReloadCommand();
 				return;
 			}
-			if (text === "/gui") {
-				this.editor.setText("");
-				await this.handleGuiCommand();
-				return;
-			}
 			if (text === "/debug") {
 				this.handleDebugCommand();
 				this.editor.setText("");
@@ -3563,51 +3558,6 @@ export class InteractiveMode {
 			}
 			this.editor.addToHistory?.(text);
 		};
-	}
-
-	private async handleGuiCommand(): Promise<void> {
-		const sessionPath = this.sessionManager.getSessionFile();
-		if (!sessionPath || !this.sessionManager.isPersisted() || !fs.existsSync(sessionPath)) {
-			this.showWarning("当前会话没有可共享的持久化文件。");
-			return;
-		}
-		if (!(await this.ensureGuiCompanion({ force: true }))) return;
-		try {
-			await this.launchGui(sessionPath);
-			this.showStatus("GUI 已打开，当前会话由 TUI 与 GUI 共同使用。");
-		} catch (error) {
-			this.showError(`启动 GUI 失败：${error instanceof Error ? error.message : String(error)}`);
-		}
-	}
-
-	private getGuiLauncher(): { command: string; shell: boolean } {
-		const configured = process.env.LYSTAR_GUI_LAUNCHER?.trim();
-		if (configured)
-			return { command: configured, shell: process.platform === "win32" && configured.endsWith(".cmd") };
-		if (process.platform === "win32") {
-			return {
-				command: path.join(os.homedir(), "AppData", "Local", "lystar-agent", "bin", "lystar-code-gui.cmd"),
-				shell: true,
-			};
-		}
-		return { command: path.join(os.homedir(), ".local", "bin", "lystar-code-gui"), shell: false };
-	}
-
-	private async launchGui(sessionPath: string): Promise<void> {
-		const launcher = this.getGuiLauncher();
-		await new Promise<void>((resolve, reject) => {
-			const child = spawn(launcher.command, [], {
-				detached: true,
-				env: { ...process.env, PI_GUI_STARTUP_SESSION_PATH: sessionPath },
-				stdio: "ignore",
-				shell: launcher.shell,
-			});
-			child.once("error", reject);
-			child.once("spawn", () => {
-				child.unref();
-				resolve();
-			});
-		});
 	}
 
 	private getWorkspaceStatusLabel(): string | undefined {
@@ -3835,7 +3785,7 @@ export class InteractiveMode {
 			await this.init();
 		}
 		if (event.type === "entry_appended" || event.type === "message_end") {
-			void this.ensureGuiCompanion();
+			void this.ensureWebCompanion();
 		}
 
 		this.footer.invalidate();
@@ -4887,7 +4837,7 @@ export class InteractiveMode {
 	 */
 	private isShuttingDown = false;
 
-	private async shutdown(options?: { fromSignal?: boolean; handoffToGui?: string }): Promise<void> {
+	private async shutdown(options?: { fromSignal?: boolean }): Promise<void> {
 		if (this.isShuttingDown) return;
 		this.isShuttingDown = true;
 		// Keep signal handlers registered until terminal cleanup has completed.
@@ -4902,9 +4852,9 @@ export class InteractiveMode {
 			// terminal. If the terminal is gone, the restore writes below emit EIO,
 			// which the stdout/stderr error handler turns into emergencyTerminalExit;
 			// the render loop is already idle, so this cannot hot-spin (see #4144).
-			const coordination = getGuiCompanionCoordinationState(this);
-			const companionDispose = this.guiCompanion?.dispose();
-			this.guiCompanion = undefined;
+			const coordination = getWebCompanionCoordinationState(this);
+			const companionDispose = this.webCompanion?.dispose();
+			this.webCompanion = undefined;
 			const runtimeDispose = this.runtimeHost.dispose();
 			await companionDispose;
 			await coordination.ensureQueue;
@@ -4924,20 +4874,10 @@ export class InteractiveMode {
 		await this.ui.terminal.drainInput(1000);
 
 		this.stop();
-		await getGuiCompanionCoordinationState(this).ensureQueue;
-		await this.guiCompanion?.dispose();
-		this.guiCompanion = undefined;
+		await getWebCompanionCoordinationState(this).ensureQueue;
+		await this.webCompanion?.dispose();
+		this.webCompanion = undefined;
 		await this.runtimeHost.dispose();
-
-		if (options?.handoffToGui) {
-			try {
-				await this.launchGui(options.handoffToGui);
-			} catch (error) {
-				process.stderr.write(`启动 GUI 失败：${error instanceof Error ? error.message : String(error)}\n`);
-				process.exit(1);
-			}
-			process.exit(0);
-		}
 
 		const resumeCommand = formatResumeCommand(this.sessionManager);
 		if (resumeCommand) {

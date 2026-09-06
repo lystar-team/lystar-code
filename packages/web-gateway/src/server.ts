@@ -7,7 +7,6 @@ import type {
 	ContentChunk,
 	GitDiff,
 	GitStatus,
-	GuiProtocolClient,
 	HostDirectoryListing,
 	JsonValue,
 	ModelProviderSummary,
@@ -17,6 +16,7 @@ import type {
 	ProjectResource,
 	ProjectTrust,
 	ReadImageContentResult,
+	RuntimeProtocolClient,
 	ServerEvent,
 	SessionProgress,
 	SessionStateSnapshot,
@@ -25,7 +25,7 @@ import type {
 	SettingSummary,
 	TranscriptItem,
 	TranscriptPage,
-} from "@lystar/code-gui-protocol";
+} from "@lystar/code-web-protocol";
 import { WebSocket, WebSocketServer } from "ws";
 import {
 	bearerToken,
@@ -37,8 +37,8 @@ import {
 	requestHostname,
 	type WebGatewayConfig,
 } from "./config.ts";
-import { connectHostClient, type HostInitialSnapshot } from "./host-client.ts";
 import { ProjectRegistry, type WebProject } from "./project-registry.ts";
+import { connectRuntimeClient, type RuntimeInitialSnapshot } from "./runtime-client.ts";
 
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
 const MAX_FILE_BYTES = 32 * 1024 * 1024;
@@ -80,9 +80,9 @@ type ContextLease = {
 
 interface BrowserContext {
 	id: string;
-	client?: GuiProtocolClient;
-	connectPromise?: Promise<GuiProtocolClient>;
-	initial?: HostInitialSnapshot;
+	client?: RuntimeProtocolClient;
+	connectPromise?: Promise<RuntimeProtocolClient>;
+	initial?: RuntimeInitialSnapshot;
 	leases: Map<string, ContextLease>;
 	sockets: Set<WebSocket>;
 	sessionListPromises: Map<string, Promise<SessionSummary[]>>;
@@ -208,8 +208,8 @@ function toError(error: unknown): HttpError {
 	const message = error instanceof Error ? error.message : String(error);
 	if (code === "session_control_locked" || code === "session_locked")
 		return new HttpError(409, code, "当前会话正在其他进程中使用");
-	if (code === "gui_companion_protocol_incompatible")
-		return new HttpError(503, code, "当前 TUI 与 GUI Host 的共享协议不兼容，请重启 TUI 后重试");
+	if (code === "web_companion_protocol_incompatible")
+		return new HttpError(503, code, "当前 TUI 与 Web Runtime 的共享协议不兼容，请重启 TUI 后重试");
 	if (code === "invalid_session_lease") return new HttpError(409, code, "会话控制权已失效，请重新取得控制权");
 	if (code === "operation_request_conflict") return new HttpError(409, code, "同一请求编号对应了不同内容");
 	if (code === "operation_journal_corrupt") return new HttpError(503, code, "任务记录损坏，后台当前不可写");
@@ -630,27 +630,27 @@ export class WebGatewayServer {
 			throw new HttpError(401, "unauthorized", "需要有效的 Web Token");
 	}
 
-	private async getClient(context: BrowserContext): Promise<GuiProtocolClient> {
+	private async getClient(context: BrowserContext): Promise<RuntimeProtocolClient> {
 		if (context.client?.getSnapshot().connected) return context.client;
 		if (context.connectPromise) return context.connectPromise;
 		const wasDisconnected = context.connectionState === "disconnected";
-		let connectedClient: GuiProtocolClient | undefined;
-		const promise = connectHostClient(
+		let connectedClient: RuntimeProtocolClient | undefined;
+		const promise = connectRuntimeClient(
 			this.config,
 			context.id,
 			(event) => this.handleHostEvent(context, event),
-			(error) => this.handleHostDisconnect(context, connectedClient, error),
+			(error) => this.handleRuntimeDisconnect(context, connectedClient, error),
 		)
 			.then(async (result) => {
 				connectedClient = result.client;
 				context.client = result.client;
 				context.initial = result.initial;
 				await this.restoreContextLeases(context, result.client);
-				if (context.client !== result.client) throw new Error("Web Host 在恢复会话控制权时断开");
+				if (context.client !== result.client) throw new Error("Web Runtime 在恢复会话控制权时断开");
 				context.connectionState = "connected";
 				context.reconnectAttempt = 0;
 				if (wasDisconnected && context.sockets.size > 0) {
-					this.broadcast(context, { type: "connection_state", connected: true, message: "Web Host 已恢复" });
+					this.broadcast(context, { type: "connection_state", connected: true, message: "Web Runtime 已恢复" });
 					void this.pushBootstrap(context);
 				}
 				return result.client;
@@ -664,7 +664,7 @@ export class WebGatewayServer {
 		return promise;
 	}
 
-	private handleHostDisconnect(context: BrowserContext, client?: GuiProtocolClient, error?: Error): void {
+	private handleRuntimeDisconnect(context: BrowserContext, client?: RuntimeProtocolClient, error?: Error): void {
 		if (this.closed || (client && context.client && context.client !== client)) return;
 		context.client = undefined;
 		context.initial = undefined;
@@ -676,7 +676,7 @@ export class WebGatewayServer {
 			this.broadcast(context, {
 				type: "connection_state",
 				connected: false,
-				message: error?.message ?? "Web Host 已断开",
+				message: error?.message ?? "Web Runtime 已断开",
 			});
 		}
 		this.scheduleReconnect(context);
@@ -695,7 +695,7 @@ export class WebGatewayServer {
 		context.reconnectTimer = timer;
 	}
 
-	private async restoreContextLeases(context: BrowserContext, client: GuiProtocolClient): Promise<void> {
+	private async restoreContextLeases(context: BrowserContext, client: RuntimeProtocolClient): Promise<void> {
 		const previousLeases = [...context.leases.entries()];
 		for (const [sessionId, previous] of previousLeases) {
 			try {

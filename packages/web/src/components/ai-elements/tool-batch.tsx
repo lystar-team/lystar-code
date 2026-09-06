@@ -1,6 +1,6 @@
 "use client";
 
-import type { ToolDiff } from "@lystar/code-gui-protocol";
+import type { ToolDiff } from "@lystar/code-web-protocol";
 import {
 	ChevronDownIcon,
 	FileCode2Icon,

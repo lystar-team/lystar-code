@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { ServerEvent } from "@lystar/code-gui-protocol";
+import type { ServerEvent } from "@lystar/code-web-protocol";
 import { WebSocket } from "ws";
 import type { WebGatewayConfig } from "../src/config.ts";
 import { WebGatewayServer } from "../src/server.ts";
@@ -33,12 +33,12 @@ function createConfig(): WebGatewayConfig {
 		host: "127.0.0.1",
 		port: 0,
 		agentDir,
-		hostEndpoint: join(agentDir, "host.sock"),
+		runtimeEndpoint: join(agentDir, "host.sock"),
 		token: "resilience-test-token",
 		tokenPath: join(agentDir, "web", "token"),
 		allowedHosts: ["127.0.0.1", "localhost"],
 		staticDir: agentDir,
-		manageHost: false,
+		manageRuntime: false,
 	};
 }
 

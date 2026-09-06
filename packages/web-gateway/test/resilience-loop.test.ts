@@ -7,12 +7,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import type { ByteTransport, ServerEvent, SessionSummary } from "@lystar/code-gui-protocol";
-import { GuiProtocolClient } from "@lystar/code-gui-protocol";
+import type { ByteTransport, ServerEvent, SessionSummary } from "@lystar/code-web-protocol";
+import { RuntimeProtocolClient } from "@lystar/code-web-protocol";
 import { WebSocket } from "ws";
 
 const repositoryRoot = fileURLToPath(new URL("../../..", import.meta.url));
-const hostCli = join(repositoryRoot, "packages/gui-host/dist/cli.js");
+const hostCli = join(repositoryRoot, "packages/web-runtime/dist/cli.js");
 const gatewayCli = join(repositoryRoot, "packages/web-gateway/dist/cli.js");
 const staticDir = join(repositoryRoot, "packages/web/dist");
 const token = "resilience-loop-token";
@@ -163,13 +163,13 @@ function childEnvironment(values: Record<string, string>): NodeJS.ProcessEnv {
 		"PI_REASONING_LEVEL",
 		"PI_OFFLINE",
 		"PI_CODING_AGENT_DIR",
-		"PI_GUI_HOST_ENDPOINT",
+		"PI_WEB_RUNTIME_ENDPOINT",
 		"PI_WEB_HOST",
 		"PI_WEB_PORT",
 		"PI_WEB_TOKEN",
 		"PI_WEB_STATIC_DIR",
 		"PI_WEB_ALLOWED_HOSTS",
-		"PI_WEB_MANAGE_HOST",
+		"PI_WEB_MANAGE_RUNTIME",
 		"OPENAI_API_KEY",
 		"OPENAI_BASE_URL",
 	])
@@ -345,8 +345,8 @@ async function findManagedHostPids(endpoint: string): Promise<number[]> {
 				readFile(`/proc/${entry.name}/environ`, "utf8"),
 			]);
 			if (
-				commandLine.includes("packages/gui-host/dist/cli.js") &&
-				environment.includes(`PI_GUI_HOST_ENDPOINT=${endpoint}`)
+				commandLine.includes("packages/web-runtime/dist/cli.js") &&
+				environment.includes(`PI_WEB_RUNTIME_ENDPOINT=${endpoint}`)
 			) {
 				pids.push(Number(entry.name));
 			}
@@ -355,7 +355,7 @@ async function findManagedHostPids(endpoint: string): Promise<number[]> {
 	return pids;
 }
 
-async function createStack(manageHost: boolean): Promise<GatewayStack> {
+async function createStack(manageRuntime: boolean): Promise<GatewayStack> {
 	const agentDir = await mkdtemp(join(tmpdir(), "lystar-web-gateway-resilience-loop-"));
 	const endpoint = join(agentDir, "host.sock");
 	const requests: FakeProviderRequest[] = [];
@@ -370,14 +370,14 @@ async function createStack(manageHost: boolean): Promise<GatewayStack> {
 	const gatewayPort = await listenOnFreePort(gatewayPortServer);
 	await closeServer(gatewayPortServer);
 	const baseUrl = `http://127.0.0.1:${gatewayPort}`;
-	const host = manageHost
+	const host = manageRuntime
 		? undefined
 		: startChild(
 				[hostCli, "serve"],
 				childEnvironment({
 					PI_CODING_AGENT_DIR: agentDir,
-					PI_GUI_HOST_ENDPOINT: endpoint,
-					PI_GUI_HOST_PERSISTENT: "1",
+					PI_WEB_RUNTIME_ENDPOINT: endpoint,
+					PI_WEB_RUNTIME_PERSISTENT: "1",
 					OPENAI_API_KEY: "fake-test-key",
 					OPENAI_BASE_URL: fakeBaseUrl,
 					PI_PROVIDER: "openai",
@@ -392,11 +392,11 @@ async function createStack(manageHost: boolean): Promise<GatewayStack> {
 			[gatewayCli],
 			childEnvironment({
 				PI_CODING_AGENT_DIR: agentDir,
-				PI_GUI_HOST_ENDPOINT: endpoint,
+				PI_WEB_RUNTIME_ENDPOINT: endpoint,
 				PI_WEB_HOST: "127.0.0.1",
 				PI_WEB_PORT: String(gatewayPort),
 				PI_WEB_TOKEN: token,
-				PI_WEB_MANAGE_HOST: manageHost ? "1" : "0",
+				PI_WEB_MANAGE_RUNTIME: manageRuntime ? "1" : "0",
 				PI_WEB_STATIC_DIR: staticDir,
 				PI_WEB_ALLOWED_HOSTS: "127.0.0.1,localhost",
 				OPENAI_API_KEY: "fake-test-key",
@@ -532,7 +532,7 @@ async function createProjectAndSession(
 	return { projectId, sessionId };
 }
 
-test("Web 与直接 GUI Client 可同时观察同一运行时，并由租约串行保护写入", async (t) => {
+test("Web 与直接 Web Client 可同时观察同一运行时，并由租约串行保护写入", async (t) => {
 	const stack = await createStack(false);
 	t.after(() => stack.close());
 	const webA: Credentials = { clientId: "resilience-web-a" };
@@ -556,7 +556,7 @@ test("Web 与直接 GUI Client 可同时观察同一运行时，并由租约串�
 	assert.equal(controlByB.status, 200);
 
 	const transport = await SocketByteTransport.connect(stack.endpoint);
-	const tui = new GuiProtocolClient(transport, "resilience-tui-observer");
+	const tui = new RuntimeProtocolClient(transport, "resilience-tui-observer");
 	const tuiEvents: ServerEvent[] = [];
 	tui.onEvent((event) => tuiEvents.push(event));
 	t.after(() => tui.close());
@@ -647,7 +647,7 @@ test("Web 与直接 GUI Client 可同时观察同一运行时，并由租约串�
 	assert.equal("payload" in firstTranscriptItem, false);
 });
 
-test("Gateway 在 manageHost=1 时可自动重启断开的 Host 并恢复 Bootstrap", async (t) => {
+test("Gateway 在 manageRuntime=1 时可自动重启断开的 Host 并恢复 Bootstrap", async (t) => {
 	if (process.platform !== "linux") {
 		t.skip("该测试需要 Linux /proc 读取托管 Host PID");
 		return;

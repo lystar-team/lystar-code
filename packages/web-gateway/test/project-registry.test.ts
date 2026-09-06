@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { SessionSummary } from "@lystar/code-gui-protocol";
+import type { SessionSummary } from "@lystar/code-web-protocol";
 import { ProjectRegistry } from "../src/project-registry.ts";
 
 test("ProjectRegistry 串行处理并发保存并保留完整项目索引", async (t) => {

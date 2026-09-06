@@ -1,0 +1,389 @@
+import type { JsonValue, TranscriptItem, TranscriptViewItem } from "@lystar/code-web-protocol";
+
+const INTERNAL_PROMPT_BLOCK_PATTERNS = [
+	/<skill\b[^>]*\blocation="[^"]+"[^>]*>[\s\S]*?<\/skill>/gu,
+	/<skill_references\b[^>]*>[\s\S]*?<\/skill_references>/gu,
+] as const;
+
+function stripInternalPromptContent(value: string): string {
+	let projected = value;
+	for (const pattern of INTERNAL_PROMPT_BLOCK_PATTERNS) projected = projected.replace(pattern, "");
+	return projected
+		.replace(/[ \t]+\n/gu, "\n")
+		.replace(/\n{3,}/gu, "\n\n")
+		.trim();
+}
+
+const TEXT_LIMIT = 16 * 1024;
+const TOOL_CALL_LIMIT = 32;
+
+type JsonRecord = Record<string, JsonValue>;
+
+export interface TranscriptToolCallProjection {
+	name: string;
+	summary: string;
+	href?: string;
+}
+
+export type TranscriptToolCallIndex = ReadonlyMap<string, TranscriptToolCallProjection>;
+
+function record(value: JsonValue | undefined): JsonRecord | undefined {
+	return value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+}
+
+function bounded(value: string): string {
+	return value.length <= TEXT_LIMIT ? value : `${value.slice(0, TEXT_LIMIT - 1)}…`;
+}
+
+function text(value: JsonValue | undefined): string {
+	if (typeof value === "string") return bounded(value);
+	if (Array.isArray(value)) {
+		return bounded(
+			value
+				.map((part) => {
+					const item = record(part);
+					if (!item) return typeof part === "string" ? part : "";
+					if (item.type === "image") return typeof item.alt === "string" ? item.alt : "";
+					if (typeof item.text === "string") return item.text;
+					if (item.type === "content_ref")
+						return typeof item.previewHead === "string" ? item.previewHead : "内容引用";
+					return JSON.stringify(item);
+				})
+				.join(" "),
+		);
+	}
+	if (value === undefined || value === null) return "";
+	const item = record(value);
+	if (item?.type === "content_ref")
+		return typeof item.previewHead === "string" ? bounded(item.previewHead) : "内容引用";
+	return bounded(JSON.stringify(value));
+}
+
+function contentRef(value: JsonValue | undefined): string | undefined {
+	if (Array.isArray(value)) {
+		for (const part of value) {
+			const reference = contentRef(part);
+			if (reference) return reference;
+		}
+		return undefined;
+	}
+	const item = record(value);
+	if (!item) return undefined;
+	if (item.type === "content_ref" && typeof item.contentRef === "string") return item.contentRef;
+	for (const nested of Object.values(item)) {
+		const reference = contentRef(nested);
+		if (reference) return reference;
+	}
+	return undefined;
+}
+
+function imageMetadata(value: JsonValue | undefined): Array<{
+	contentRef: string;
+	mimeType: string;
+	byteLength: number;
+	alt?: string;
+}> {
+	if (!Array.isArray(value)) return [];
+	const images: Array<{ contentRef: string; mimeType: string; byteLength: number; alt?: string }> = [];
+	for (const part of value) {
+		const item = record(part);
+		if (item?.type !== "image") continue;
+		const reference = record(item.data);
+		if (reference?.type !== "content_ref" || typeof reference.contentRef !== "string") continue;
+		const mimeType =
+			typeof item.mimeType === "string"
+				? item.mimeType
+				: typeof reference.mimeType === "string"
+					? reference.mimeType
+					: undefined;
+		const byteLength = reference.byteLength;
+		if (!mimeType || typeof byteLength !== "number" || !Number.isSafeInteger(byteLength) || byteLength < 0) continue;
+		images.push({
+			contentRef: reference.contentRef,
+			mimeType,
+			byteLength,
+			...(typeof item.alt === "string" ? { alt: item.alt } : {}),
+		});
+	}
+	return images;
+}
+
+function diffValue(value: JsonValue | undefined): { diff?: string; truncated?: boolean } {
+	if (typeof value === "string") {
+		const diff = bounded(value);
+		return { diff, ...(diff.length < value.length ? { truncated: true } : {}) };
+	}
+	return {};
+}
+
+function number(value: JsonValue | undefined): number | undefined {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function toolDiff(name: string, details: JsonValue | undefined) {
+	const source = record(details);
+	if (!source || (name !== "edit" && name !== "write" && name !== "apply_patch")) return undefined;
+	if (name === "apply_patch") {
+		if (!Array.isArray(source.files)) return undefined;
+		const files = source.files.flatMap((value) => {
+			const file = record(value);
+			if (!file) return [];
+			const path = typeof file.path === "string" ? file.path : undefined;
+			const additions = number(file.additions);
+			const deletions = number(file.deletions);
+			const operation = typeof file.operation === "string" ? file.operation : undefined;
+			const result = diffValue(file.diff);
+			if (!path && additions === undefined && deletions === undefined && !operation && !result.diff) {
+				return [];
+			}
+			return [
+				{
+					...(path ? { path } : {}),
+					...(operation ? { operation } : {}),
+					...(additions === undefined ? {} : { additions }),
+					...(deletions === undefined ? {} : { deletions }),
+					...(result.diff === undefined ? {} : { diff: result.diff }),
+					...(result.truncated ? { truncated: true } : {}),
+				},
+			];
+		});
+		return files.length > 0 ? { files } : undefined;
+	}
+	const additions = number(source.additions);
+	const deletions = number(source.deletions);
+	const operation = typeof source.operation === "string" ? source.operation : undefined;
+	const result = diffValue(source.diff);
+	if (additions === undefined && deletions === undefined && !operation && !result.diff) return undefined;
+	return {
+		files: [
+			{
+				...(operation ? { operation } : {}),
+				...(additions === undefined ? {} : { additions }),
+				...(deletions === undefined ? {} : { deletions }),
+				...(result.diff === undefined ? {} : { diff: result.diff }),
+				...(result.truncated ? { truncated: true } : {}),
+			},
+		],
+	};
+}
+
+function toolCallSummary(name: string, argumentsValue: JsonValue | undefined): string {
+	const argumentsRecord = record(argumentsValue);
+	if (name === "bash" && typeof argumentsRecord?.command === "string") return argumentsRecord.command;
+	if (name === "read" || name === "edit" || name === "write" || name === "apply_patch") {
+		for (const key of ["path", "file_path", "filename"]) {
+			if (typeof argumentsRecord?.[key] === "string") return argumentsRecord[key];
+		}
+	}
+	return text(argumentsValue);
+}
+
+function toolCallProjection(part: JsonRecord): TranscriptToolCallProjection | undefined {
+	if (part.type !== "toolCall" || typeof part.id !== "string") return undefined;
+	const name = typeof part.name === "string" ? part.name : "Tool";
+	const argumentsValue = record(part.arguments);
+	const href =
+		typeof argumentsValue?.url === "string"
+			? argumentsValue.url
+			: typeof argumentsValue?.path === "string"
+				? `file://${argumentsValue.path}`
+				: typeof argumentsValue?.file_path === "string"
+					? `file://${argumentsValue.file_path}`
+					: undefined;
+	return {
+		name,
+		summary: toolCallSummary(name, part.arguments),
+		...(href ? { href } : {}),
+	};
+}
+
+function toolCallView(part: JsonRecord): TranscriptViewItem | undefined {
+	const projection = toolCallProjection(part);
+	if (!projection || typeof part.id !== "string") return undefined;
+	return {
+		type: "tool_call",
+		calls: [
+			{
+				id: part.id,
+				name: projection.name,
+				summary: projection.summary,
+				...(projection.href ? { href: projection.href } : {}),
+			},
+		],
+	};
+}
+
+type TranscriptImageMetadata = ReturnType<typeof imageMetadata>;
+
+function assistantViews(content: JsonValue | undefined, images: TranscriptImageMetadata): TranscriptViewItem[] {
+	if (!Array.isArray(content)) {
+		return [{ type: "assistant", text: text(content), ...(images.length > 0 ? { images } : {}) }];
+	}
+
+	const views: TranscriptViewItem[] = [];
+	let thinkingParts: string[] = [];
+	let textParts: string[] = [];
+	let toolCalls: JsonRecord[] = [];
+	let projectedToolCallCount = 0;
+
+	const flushThinking = () => {
+		if (thinkingParts.length > 0) {
+			views.push({ type: "thinking", text: bounded(thinkingParts.join("\n\n")) });
+			thinkingParts = [];
+		}
+	};
+	const flushText = () => {
+		if (textParts.length > 0) {
+			views.push({ type: "assistant", text: bounded(textParts.join("\n")) });
+			textParts = [];
+		}
+	};
+	const flushToolCalls = () => {
+		if (toolCalls.length > 0) {
+			const remaining = TOOL_CALL_LIMIT - projectedToolCallCount;
+			const calls = toolCalls.slice(0, Math.max(0, remaining)).flatMap((part) => {
+				const view = toolCallView(part);
+				return view?.type === "tool_call" ? view.calls : [];
+			});
+			if (calls.length > 0) {
+				views.push({ type: "tool_call", calls });
+				projectedToolCallCount += calls.length;
+			}
+			toolCalls = [];
+		}
+	};
+
+	for (const part of content) {
+		const item = record(part);
+		if (!item) continue;
+		if (item.type === "thinking" && typeof item.thinking === "string") {
+			flushText();
+			flushToolCalls();
+			if (item.thinking.trim()) thinkingParts.push(item.thinking);
+			continue;
+		}
+		if (item.type === "text" && typeof item.text === "string") {
+			flushThinking();
+			flushToolCalls();
+			if (item.text.trim()) textParts.push(item.text);
+			continue;
+		}
+		if (item.type === "toolCall" && typeof item.id === "string") {
+			flushThinking();
+			flushText();
+			toolCalls.push(item);
+			continue;
+		}
+		if (item.type === "image") continue;
+		flushThinking();
+		flushText();
+		flushToolCalls();
+		views.push({ type: "assistant", text: text(item) });
+	}
+	flushThinking();
+	flushText();
+	flushToolCalls();
+
+	const assistantIndex = views.findIndex((view) => view.type === "assistant");
+	if (images.length > 0 && assistantIndex >= 0) {
+		const view = views[assistantIndex];
+		if (view?.type === "assistant") views[assistantIndex] = { ...view, images };
+	} else if (images.length > 0) {
+		views.push({ type: "assistant", text: "", images });
+	}
+	return views.length > 0 ? views : [{ type: "assistant", text: "", ...(images.length > 0 ? { images } : {}) }];
+}
+
+function message(item: TranscriptItem): JsonRecord | undefined {
+	return record(record(item.payload)?.message);
+}
+
+function projectTranscriptViews(
+	item: TranscriptItem,
+	toolCalls: TranscriptToolCallIndex = new Map(),
+): TranscriptViewItem[] {
+	const payload = record(item.payload);
+	const entryMessage = message(item);
+	const role = entryMessage?.role;
+	const content = entryMessage?.content ?? payload?.text;
+	const images = imageMetadata(content);
+	if (role === "user") {
+		return [
+			{
+				type: "user",
+				text: stripInternalPromptContent(text(content)),
+				...(images.length > 0 ? { images } : {}),
+			},
+		];
+	}
+	if (role === "thinking") return [{ type: "thinking", text: text(content) }];
+	if (role === "bashExecution" && entryMessage) {
+		const lines = [`$ ${typeof entryMessage.command === "string" ? entryMessage.command : ""}`];
+		if (typeof entryMessage.output === "string" && entryMessage.output) lines.push(entryMessage.output);
+		if (entryMessage.cancelled === true) lines.push("已取消");
+		else if (typeof entryMessage.exitCode === "number" && entryMessage.exitCode !== 0)
+			lines.push(`退出码 ${entryMessage.exitCode}`);
+		if (entryMessage.truncated === true) lines.push("输出已截断");
+		return [{ type: "bash", text: bounded(lines.join("\n")) }];
+	}
+	if (role === "toolResult" && entryMessage) {
+		const isError = entryMessage?.isError === true;
+		const callId = typeof entryMessage.toolCallId === "string" ? entryMessage.toolCallId : item.entryId;
+		const call = toolCalls.get(callId);
+		const name = call?.name ?? (typeof entryMessage.toolName === "string" ? entryMessage.toolName : "Tool");
+		const detail = text(content);
+		const diff = toolDiff(
+			typeof entryMessage.toolName === "string" ? entryMessage.toolName : name,
+			entryMessage.details,
+		);
+		return [
+			{
+				type: "tool_result",
+				callId,
+				name,
+				status: isError ? "error" : "success",
+				summary: call?.summary ?? name,
+				...(detail ? { detail } : {}),
+				...(contentRef(content) ? { contentRef: contentRef(content) } : {}),
+				...(diff ? { diff } : {}),
+				...(images.length > 0 ? { images } : {}),
+			},
+		];
+	}
+	if (role === "assistant") {
+		return assistantViews(content, images);
+	}
+	if (item.kind === "compaction") return [{ type: "summary", title: "上下文压缩", text: text(payload) }];
+	if (item.kind === "branch_summary") return [{ type: "summary", title: "分支摘要", text: text(payload) }];
+	if (item.kind === "custom" || item.kind === "custom_message") {
+		const name = typeof payload?.customType === "string" ? payload.customType : "";
+		return [name === "bash" ? { type: "bash", text: text(payload) } : { type: "custom", text: text(payload) }];
+	}
+	return [{ type: "system", text: text(payload) }];
+}
+
+export function projectTranscriptItems(
+	item: TranscriptItem,
+	toolCalls: TranscriptToolCallIndex = new Map(),
+): TranscriptItem[] {
+	return projectTranscriptViews(item, toolCalls).map((view) => ({ ...item, view }));
+}
+
+export function projectTranscriptBatch(items: readonly TranscriptItem[]): TranscriptItem[] {
+	const toolCalls = new Map<string, TranscriptToolCallProjection>();
+	for (const item of items) {
+		const payload = record(item.payload);
+		const entryMessage = record(payload?.message);
+		if (entryMessage?.role !== "assistant" || !Array.isArray(entryMessage.content)) continue;
+		for (const part of entryMessage.content) {
+			const candidate = record(part);
+			const projection = candidate ? toolCallProjection(candidate) : undefined;
+			if (candidate && typeof candidate.id === "string" && projection) toolCalls.set(candidate.id, projection);
+		}
+	}
+	return items.flatMap((item) => projectTranscriptItems(item, toolCalls));
+}
+
+export function projectTranscriptItem(item: TranscriptItem): TranscriptViewItem {
+	return projectTranscriptViews(item)[0] ?? { type: "system", text: "" };
+}

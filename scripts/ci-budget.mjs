@@ -6,7 +6,6 @@ export const BUDGETS = Object.freeze({
 	"docs-required": { wallSeconds: 90, runnerSecondsTotal: 120 },
 	"normal-ci": { wallSeconds: 300, runnerSecondsTotal: 480 },
 	"cli-release": { wallSeconds: 480, runnerSecondsTotal: 270 },
-	"gui-release": { wallSeconds: 1200, runnerSecondsTotal: 2100 },
 });
 
 function number(value) {

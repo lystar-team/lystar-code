@@ -1,4 +1,4 @@
-import { createUuid } from "@lystar/code-gui-protocol";
+import { createUuid } from "@lystar/code-web-protocol";
 import type {
 	BootstrapResponse,
 	WebCompletionResult,

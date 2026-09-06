@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-export const GATES = ["source", "core", "coding", "platform", "gui", "release"];
+export const GATES = ["source", "core", "coding", "platform", "web", "release"];
 
 const FULL_GATES = new Set(GATES);
 const PUBLIC_PACKAGES = new Set([
@@ -90,12 +90,12 @@ function classifyPath(plan, path, status) {
 		return;
 	}
 	if (packageName === "coding-agent") {
-		mark(plan, ["source", "coding", "gui"], `Coding Agent: ${path}`);
+		mark(plan, ["source", "coding", "web"], `Coding Agent: ${path}`);
 		if (/windows|win32|\.ps1$/i.test(path)) mark(plan, ["platform"], `Windows path: ${path}`);
 		return;
 	}
-	if (packageName === "gui" || packageName === "gui-host" || packageName === "gui-protocol") {
-		mark(plan, ["source", "gui"], `GUI workspace: ${path}`);
+	if (packageName === "web" || packageName === "web-runtime" || packageName === "web-protocol" || packageName === "web-gateway") {
+		mark(plan, ["source", "web"], `Web workspace: ${path}`);
 		return;
 	}
 	if (packageName === "evals") {

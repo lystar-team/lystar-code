@@ -36,7 +36,7 @@ export interface ToolRecoveryDoctorReport {
 		modes: ["regular", "fullscreen"];
 	};
 	nodeVersion: string;
-	guiProtocolVersion: number;
+	runtimeProtocolVersion: number;
 	cwd: string;
 	agentDir: string;
 	platform: string;
@@ -59,7 +59,7 @@ export function summarizeToolRecoveryDiagnostics(
 export async function getToolRecoveryDoctorReport(options: {
 	productName: string;
 	productVersion: string;
-	guiProtocolVersion: number;
+	runtimeProtocolVersion: number;
 	cwd: string;
 	agentDir: string;
 	runtimeDiagnostics?: ToolRecoveryRuntimeDiagnostics;
@@ -72,7 +72,7 @@ export async function getToolRecoveryDoctorReport(options: {
 			modes: ["regular", "fullscreen"],
 		},
 		nodeVersion: process.version,
-		guiProtocolVersion: options.guiProtocolVersion,
+		runtimeProtocolVersion: options.runtimeProtocolVersion,
 		cwd: options.cwd,
 		agentDir: options.agentDir,
 		platform: process.platform,

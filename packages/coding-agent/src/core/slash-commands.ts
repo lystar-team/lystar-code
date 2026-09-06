@@ -42,6 +42,5 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "compact", description: t("command.compact") },
 	{ name: "resume", description: t("command.resume") },
 	{ name: "reload", description: t("command.reload") },
-	{ name: "gui", description: t("command.gui") },
 	{ name: "quit", description: t("command.quit", { app: APP_NAME }) },
 ];

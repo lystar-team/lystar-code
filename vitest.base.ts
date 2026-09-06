@@ -11,7 +11,7 @@ export const workspaceSourcePaths = {
 	agentIndex: fileURLToPath(new URL("./packages/agent/src/index.ts", import.meta.url)),
 	codingAgentIndex: fileURLToPath(new URL("./packages/coding-agent/src/index.ts", import.meta.url)),
 	codingAgentCore: fileURLToPath(new URL("./packages/coding-agent/src/core/index.ts", import.meta.url)),
-	guiProtocolIndex: fileURLToPath(new URL("./packages/gui-protocol/src/index.ts", import.meta.url)),
+	runtimeProtocolIndex: fileURLToPath(new URL("./packages/web-protocol/src/index.ts", import.meta.url)),
 	tuiIndex: fileURLToPath(new URL("./packages/tui/src/index.ts", import.meta.url)),
 } as const;
 
@@ -29,7 +29,7 @@ export default defineConfig({
 			},
 			{ find: /^@earendil-works\/pi-agent-core$/, replacement: workspaceSourcePaths.agentIndex },
 			{ find: /^@earendil-works\/pi-coding-agent\/core$/, replacement: workspaceSourcePaths.codingAgentCore },
-			{ find: /^@lystar\/code-gui-protocol$/, replacement: workspaceSourcePaths.guiProtocolIndex },
+			{ find: /^@lystar\/code-web-protocol$/, replacement: workspaceSourcePaths.runtimeProtocolIndex },
 			{ find: /^@earendil-works\/pi-tui$/, replacement: workspaceSourcePaths.tuiIndex },
 		],
 	},

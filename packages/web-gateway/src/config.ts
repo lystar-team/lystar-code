@@ -3,7 +3,7 @@ import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defaultIpcEndpoint } from "@lystar/code-gui-host";
+import { defaultRuntimeEndpoint } from "@lystar/code-web-runtime";
 
 export const DEFAULT_WEB_GATEWAY_PORT = 1422;
 
@@ -11,21 +11,17 @@ export interface WebGatewayConfig {
 	host: string;
 	port: number;
 	agentDir: string;
-	hostEndpoint: string;
+	runtimeEndpoint: string;
 	token: string;
 	tokenPath: string;
 	allowedHosts: string[];
 	staticDir: string;
-	manageHost: boolean;
+	manageRuntime: boolean;
 }
 
 function envString(name: string): string | undefined {
 	const value = process.env[name]?.trim();
 	return value || undefined;
-}
-
-function defaultHostEndpoint(agentDir: string): string {
-	return defaultIpcEndpoint(agentDir);
 }
 
 function parsePort(value: string | undefined): number {
@@ -74,12 +70,12 @@ export async function loadWebGatewayConfig(): Promise<WebGatewayConfig> {
 		host,
 		port,
 		agentDir,
-		hostEndpoint: envString("PI_GUI_HOST_ENDPOINT") ?? defaultHostEndpoint(agentDir),
+		runtimeEndpoint: envString("PI_WEB_RUNTIME_ENDPOINT") ?? defaultRuntimeEndpoint(agentDir),
 		token: token.token,
 		tokenPath: token.tokenPath,
 		allowedHosts: parseAllowedHosts(process.env.PI_WEB_ALLOWED_HOSTS, host),
 		staticDir,
-		manageHost: process.env.PI_WEB_MANAGE_HOST !== "0",
+		manageRuntime: process.env.PI_WEB_MANAGE_RUNTIME !== "0",
 	};
 }
 

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig, type ProxyOptions } from "vite";
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
-const guiProtocolSource = fileURLToPath(new URL("../gui-protocol/src/index.ts", import.meta.url));
+const runtimeProtocolSource = fileURLToPath(new URL("../web-protocol/src/index.ts", import.meta.url));
 const WEB_DEV_PORT = 1420;
 const DEFAULT_GATEWAY_URL = "http://127.0.0.1:1422";
 const gatewayUrl = process.env.PI_WEB_GATEWAY_URL ?? DEFAULT_GATEWAY_URL;
@@ -25,7 +25,7 @@ export default defineConfig({
 	plugins: [react(), tailwindcss()],
 	resolve: {
 		alias: {
-			"@lystar/code-gui-protocol": guiProtocolSource,
+			"@lystar/code-web-protocol": runtimeProtocolSource,
 			"@": fileURLToPath(new URL("./src", import.meta.url)),
 		},
 	},

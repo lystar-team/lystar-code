@@ -1,0 +1,40 @@
+{
+	"name": "@lystar/code-web-runtime",
+	"version": "0.84.4-lystar-web.1",
+	"description": "LYStar Code Web Runtime",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"bin": {
+		"lystar-web-runtime": "./dist/cli.js"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"clean": "shx rm -rf dist",
+		"build": "tsgo -p tsconfig.build.json && shx chmod +x dist/cli.js",
+		"test": "vitest --run",
+		"test:required": "vitest --run --maxWorkers=1"
+	},
+	"dependencies": {
+		"@earendil-works/pi-coding-agent": "0.84.4",
+		"@lystar/code-web-protocol": "0.84.4-lystar-web.1"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-ai": "0.84.4",
+		"shx": "0.4.0",
+		"vitest": "4.1.9"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"license": "MIT",
+	"private": true
+}

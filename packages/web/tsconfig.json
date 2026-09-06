@@ -7,7 +7,7 @@
 		"jsx": "react-jsx",
 		"types": ["vite/client"],
 				"paths": {
-			"@lystar/code-gui-protocol": ["../gui-protocol/src/index.ts"],
+			"@lystar/code-web-protocol": ["../web-protocol/src/index.ts"],
 			"@/*": ["./src/*"]
 		},
 		"noEmit": true,

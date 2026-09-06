@@ -15,9 +15,9 @@ import type {
 	SettingSummary,
 	TranscriptItem,
 	TranscriptPage,
-} from "@lystar/code-gui-protocol";
+} from "@lystar/code-web-protocol";
 
-export type { ProjectInstruction } from "@lystar/code-gui-protocol";
+export type { ProjectInstruction } from "@lystar/code-web-protocol";
 
 export type WebSessionSummary = Omit<SessionSummary, "path" | "cwd"> & { pinned?: boolean };
 export type WebSessionSnapshot = Omit<SessionStateSnapshot, "path" | "cwd">;

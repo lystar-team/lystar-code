@@ -117,21 +117,6 @@ export {
 	type WorkingIndicatorOptions,
 } from "./extensions/index.ts";
 export {
-	GUI_COMPANION_CAPABILITIES,
-	GUI_COMPANION_LEGACY_CAPABILITIES,
-	GUI_COMPANION_LEGACY_PROTOCOL_VERSION,
-	GUI_COMPANION_PROTOCOL_VERSION,
-	type GuiCompanionCapability,
-	type GuiCompanionCommand,
-	type GuiCompanionImage,
-	type GuiCompanionProtocolVersion,
-	GuiCompanionServer,
-	type GuiCompanionServerMessage,
-	type GuiCompanionSnapshot,
-	type GuiCompanionSnapshotWire,
-	getGuiCompanionEndpoint,
-} from "./gui-companion.ts";
-export {
 	getLystarSetting,
 	getLystarSettingsForUi,
 	LYSTAR_SETTINGS_CATALOG,
@@ -257,3 +242,18 @@ export {
 	type ProjectTrustOption,
 	ProjectTrustStore,
 } from "./trust-manager.ts";
+export {
+	getWebCompanionEndpoint,
+	WEB_COMPANION_CAPABILITIES,
+	WEB_COMPANION_LEGACY_CAPABILITIES,
+	WEB_COMPANION_LEGACY_PROTOCOL_VERSION,
+	WEB_COMPANION_PROTOCOL_VERSION,
+	type WebCompanionCapability,
+	type WebCompanionCommand,
+	type WebCompanionImage,
+	type WebCompanionProtocolVersion,
+	WebCompanionServer,
+	type WebCompanionServerMessage,
+	type WebCompanionSnapshot,
+	type WebCompanionSnapshotWire,
+} from "./web-companion.ts";
