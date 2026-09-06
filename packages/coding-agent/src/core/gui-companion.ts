@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { AgentSession, AgentSessionEvent } from "./agent-session.ts";
+import type { ToolActivitySnapshot } from "./tool-activity.ts";
 
 export interface GuiCompanionImage {
 	data: string;
@@ -29,6 +30,9 @@ export interface GuiCompanionSnapshot {
 	contextWindow?: number;
 	transcriptGeneration: string;
 	transcriptRevision: number;
+	toolActivityEpoch: string;
+	toolActivityRevision: number;
+	toolActivities: ToolActivitySnapshot[];
 }
 
 export type GuiCompanionCommand =
@@ -370,6 +374,9 @@ export class GuiCompanionServer {
 			contextWindow: usage?.contextWindow,
 			transcriptGeneration: this.session.sessionManager.getSessionId(),
 			transcriptRevision: stat?.size ?? 0,
+			toolActivityEpoch: this.session.getToolActivityEpoch(),
+			toolActivityRevision: this.session.getToolActivityRevision(),
+			toolActivities: this.session.getToolActivitySnapshot(),
 		};
 	}
 

@@ -885,8 +885,8 @@ describe("Tool recovery observe ledger", () => {
 
 				const diagnostics = harness.session.getToolRecoveryDiagnostics();
 				expect(diagnostics.toolRecoveryAttemptTotal).toEqual([
-					{ tool: "edit", action: "ask_model_to_rebuild", count: 1 },
-					{ tool: "edit", action: "stop", count: 2 },
+					{ tool: "edit", action: "ask_model_to_rebuild", count: 2 },
+					{ tool: "edit", action: "stop", count: 1 },
 				]);
 				const firstResult = harness.session.messages.find(
 					(message): message is Extract<(typeof harness.session.messages)[number], { role: "toolResult" }> =>
@@ -945,6 +945,52 @@ describe("Tool recovery observe ledger", () => {
 			expect(evidence).not.toContain("1: line 1");
 			expect(resolution.replacementResult?.details).toMatchObject({
 				recovery: { code: "MATCH_NOT_FOUND", failedEditIndex: 0, evidenceLine: 350 },
+			});
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("locates all ambiguous edit candidates without dumping the whole file", async () => {
+		const harness = await createHarness();
+		try {
+			const lines = Array.from({ length: 520 }, (_, index) => `line ${index + 1}`);
+			lines[9] = "duplicate target";
+			lines[459] = "duplicate target";
+			writeFileSync(join(harness.tempDir, "target.txt"), `${lines.join("\n")}\n`);
+
+			const activeEdit = harness.agent.state.tools.find((tool) => tool.name === "edit");
+			let directError: unknown;
+			try {
+				await activeEdit?.execute("ambiguous-candidates", {
+					path: "target.txt",
+					edits: [{ oldText: "duplicate target", newText: "updated" }],
+				});
+			} catch (error) {
+				directError = error;
+			}
+			expect(directError).toBeInstanceOf(ToolExecutionError);
+			const directHandler = (
+				directError as unknown as {
+					[key: symbol]: (context: Record<string, never>) => Promise<{
+						type: string;
+						replacementResult?: {
+							content: Array<{ type: string; text: string }>;
+							details: Record<string, unknown>;
+						};
+					}>;
+				}
+			)[Symbol.for("pi.toolRecoveryHandler")];
+			expect(directHandler).toBeTypeOf("function");
+
+			const resolution = await directHandler({});
+			const evidence = resolution.replacementResult?.content.map((content) => content.text).join("\n") ?? "";
+			expect(resolution).toMatchObject({ type: "ask_model_to_rebuild" });
+			expect(evidence).toContain("10: duplicate target");
+			expect(evidence).toContain("460: duplicate target");
+			expect(evidence).not.toMatch(/^1: line 1$/m);
+			expect(resolution.replacementResult?.details).toMatchObject({
+				recovery: { code: "MATCH_AMBIGUOUS", candidateLines: [10, 460] },
 			});
 		} finally {
 			harness.cleanup();

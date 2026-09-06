@@ -16,6 +16,10 @@ candidate -> verified -> active
 - `suspended`：active 经验连续出现至少 3 次终止失败，且终止失败数高于恢复数时自动挂起。
 - `expired`：超过 `expiresAt` 后只读展示，不参与匹配。
 
+## 自动提炼
+
+`assist` 和 `auto` 在轮次结束后使用当前模型发起无 Tool 的结构化提炼；每轮最多一次、最多处理 3 个案例、15 秒超时。模型只能提出 project 范围的 `guidance` 候选，不能直接激活经验、授予 `safe_refresh` 权限或修改代码。无模型、超时、取消和无效 JSON 会保留案例，不改变已完成的 Tool 结果。
+
 CLI 批准入口：
 
 ```bash
@@ -70,7 +74,7 @@ await createAgentSession({
 
 默认 registry 只包含内置 `read` 和 `edit`：它们读取目标文件的前 200 行，目标不存在时只读取父目录前 80 个条目。自定义 handler 的约束由注册方负责，handler 抛错会被隔离为没有刷新结果，不会改变原 ToolResult 或中断 Agent 主流程。
 
-只有匹配到 `active` lesson 后才会调用 handler；`candidate`、`verified`、`suspended` 和 `expired` 不会触发刷新动作。刷新文本还会和恢复指导共同受到 500 token 上限约束。
+只有匹配到 `active` lesson 后才会调用 handler；`verified` 只能提供非强制指导，`candidate`、`suspended` 和 `expired` 不会参与运行匹配。刷新文本还会和恢复指导共同受到 500 token 上限约束。
 
 ## 当前验证范围
 

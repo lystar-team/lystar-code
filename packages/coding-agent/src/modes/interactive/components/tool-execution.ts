@@ -50,6 +50,7 @@ export class ToolExecutionComponent extends Container {
 	private toolName: string;
 	private toolCallId: string;
 	private args: any;
+	private argsRevision = 0;
 	private expanded = false;
 	private hovered = false;
 	private showImages: boolean;
@@ -146,6 +147,7 @@ export class ToolExecutionComponent extends Container {
 	private getRenderContext(lastComponent: Component | undefined): ToolRenderContext {
 		return {
 			args: this.args,
+			argsRevision: this.argsRevision,
 			toolCallId: this.toolCallId,
 			invalidate: () => {
 				this.invalidate();
@@ -232,6 +234,7 @@ export class ToolExecutionComponent extends Container {
 
 	updateArgs(args: any): void {
 		this.args = args;
+		this.argsRevision++;
 		this.updateDisplay();
 	}
 

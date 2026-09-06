@@ -717,6 +717,42 @@ describe("AgentHarness tools", () => {
 			expect(getOrThrow(await context.env.readTextFile("edit.txt"))).toBe("\uFEFFone\r\nTWO\r\n");
 		});
 
+		it("consumes explicit indentation without damaging the next line", async () => {
+			const context = createContext();
+			getOrThrow(await context.env.writeFile("edit.txt", "\tfoo();\n\tbar();\n"));
+
+			await createEditTool().execute(
+				"edit-fuzzy-indent-boundary",
+				{ path: "edit.txt", edits: [{ oldText: "  foo();\n", newText: "  baz();\n" }] },
+				undefined,
+				undefined,
+				context,
+			);
+
+			expect(getOrThrow(await context.env.readTextFile("edit.txt"))).toBe("  baz();\n\tbar();\n");
+		});
+
+		it("does not report adjacent fuzzy edits as overlapping", async () => {
+			const context = createContext();
+			getOrThrow(await context.env.writeFile("edit.txt", "\tfoo();\n\tbar();\n"));
+
+			await createEditTool().execute(
+				"edit-fuzzy-adjacent-edits",
+				{
+					path: "edit.txt",
+					edits: [
+						{ oldText: "  foo();\n", newText: "  baz();\n" },
+						{ oldText: "\tbar();\n", newText: "\tqux();\n" },
+					],
+				},
+				undefined,
+				undefined,
+				context,
+			);
+
+			expect(getOrThrow(await context.env.readTextFile("edit.txt"))).toBe("  baz();\n\tqux();\n");
+		});
+
 		it("chooses the matching tier independently for each edit", async () => {
 			const context = createContext();
 			getOrThrow(await context.env.writeFile("edit.txt", '\u201ctarget\u201d\n"exact"\n\u201cexact\u201d\n'));

@@ -19,7 +19,13 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/colla
 import { CodeBlock, CodeBlockActions, CodeBlockCopyButton, CodeBlockHeader, CodeBlockTitle } from "./code-block";
 import { ResourceImage } from "./resource-preview";
 
-export type ToolBatchState = "input-available" | "output-available" | "output-error";
+export type ToolBatchState =
+	| "input-available"
+	| "input-queued"
+	| "output-available"
+	| "output-error"
+	| "output-cancelled"
+	| "output-interrupted";
 
 export interface ToolBatchTool {
 	id: string;
@@ -29,6 +35,7 @@ export interface ToolBatchTool {
 	detail?: string;
 	images?: Array<{ contentRef: string; mimeType: string; byteLength: number; alt?: string }>;
 	diff?: ToolDiff;
+	inputPreview?: boolean;
 }
 
 export interface ToolBatchProps {
@@ -42,8 +49,11 @@ export interface ToolBatchProps {
 
 const statusLabels: Record<ToolBatchState, string> = {
 	"input-available": "执行中",
+	"input-queued": "已排队",
 	"output-available": "已完成",
 	"output-error": "出错",
+	"output-cancelled": "已取消",
+	"output-interrupted": "已中断",
 };
 
 function toolIcon(name: string, className?: string): ReactNode {
@@ -65,14 +75,18 @@ function toolIcon(name: string, className?: string): ReactNode {
 function toolStatusIndicator(state: ToolBatchState): ReactNode {
 	if (state === "input-available")
 		return <LoaderCircleIcon className="size-3.5 shrink-0 animate-spin text-muted-foreground" />;
-	if (state === "output-error")
-		return <span role="img" aria-label="出错" className="size-1.5 shrink-0 rounded-full bg-destructive" />;
+	if (state === "input-queued") return <span className="size-1.5 shrink-0 rounded-full bg-muted-foreground" />;
+	if (state === "output-error" || state === "output-cancelled" || state === "output-interrupted")
+		return <span role="img" aria-label={statusLabels[state]} className="size-1.5 shrink-0 rounded-full bg-destructive" />;
 	return null;
 }
 
 function batchState(tools: ToolBatchTool[]): ToolBatchState {
 	if (tools.some((tool) => tool.state === "input-available")) return "input-available";
+	if (tools.some((tool) => tool.state === "input-queued")) return "input-queued";
 	if (tools.some((tool) => tool.state === "output-error")) return "output-error";
+	if (tools.some((tool) => tool.state === "output-interrupted")) return "output-interrupted";
+	if (tools.some((tool) => tool.state === "output-cancelled")) return "output-cancelled";
 	return "output-available";
 }
 
@@ -169,6 +183,23 @@ function toolRowActionLabel(name: string): string {
 }
 
 function batchTitle(tools: ToolBatchTool[]): string {
+	if (tools.every((tool) => tool.name === "bash")) {
+		const completed = tools.filter(
+			(tool) => tool.state === "output-available" || tool.state === "output-error" || tool.state === "output-cancelled",
+		).length;
+		const failed = tools.filter((tool) => tool.state === "output-error").length;
+		const cancelled = tools.filter((tool) => tool.state === "output-cancelled").length;
+		if (completed === tools.length) {
+			let text = `${tools.length} 条命令${cancelled > 0 ? "执行结束" : "执行完成"}`;
+			if (failed > 0) text += ` · ${failed} 条失败`;
+			if (cancelled > 0) text += ` · ${cancelled} 条取消`;
+			return text;
+		}
+		if (tools.some((tool) => tool.state === "input-available")) {
+			return `正在执行 ${tools.length} 条命令 · 已完成 ${completed}/${tools.length}`;
+		}
+		return `准备执行 ${tools.length} 条命令`;
+	}
 	return [...new Set(tools.map((tool) => toolActionLabel(tool.name)))].join("，") || "执行了工具";
 }
 
@@ -326,6 +357,7 @@ function ToolDetail({
 
 	return (
 		<div className="grid min-w-0 gap-1">
+			{tool.inputPreview ? <div className="text-xs text-muted-foreground">参数预览，终态以工具真实结果为准</div> : null}
 			{imagePreview}
 			{stats ? (
 				<div className="text-xs text-muted-foreground">
@@ -369,11 +401,11 @@ function ToolBatchRow({
 	autoCollapseWhenComplete?: boolean;
 }) {
 	const [open, setOpen] = useState(initialOpen);
-	const active = tool.state === "input-available";
+	const active = tool.state === "input-available" || tool.state === "input-queued";
 	const previousActive = useRef(active);
 	const title = toolRowTitle(tool);
 	const stats = diffStats(tool.diff);
-	const hasDetails = Boolean(tool.detail || tool.diff || tool.images?.length);
+	const hasDetails = Boolean(tool.detail || tool.diff || tool.images?.length || tool.inputPreview);
 
 	useEffect(() => {
 		if (!previousActive.current && active) setOpen(true);
@@ -426,7 +458,7 @@ export function ToolBatch({
 	sessionId,
 	onOpenPath,
 }: ToolBatchProps) {
-	const active = tools.some((tool) => tool.state === "input-available");
+	const active = tools.some((tool) => tool.state === "input-available" || tool.state === "input-queued");
 	const aggregateState = batchState(tools);
 	const [open, setOpen] = useState(initialOpen);
 	const previousActive = useRef(active);

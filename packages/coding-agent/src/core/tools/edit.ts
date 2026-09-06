@@ -14,7 +14,6 @@ import type { ToolDefinition } from "../extensions/types.ts";
 import { registerBuiltInRecoveryError } from "../tool-recovery/registry.ts";
 import {
 	applyEditsToNormalizedContent,
-	computeEditsDiff,
 	detectLineEnding,
 	type Edit,
 	type EditDiffError,
@@ -159,7 +158,7 @@ function validateEditInput(input: EditToolInput): { path: string; edits: Edit[] 
 type RenderableEditArgs = {
 	path?: string;
 	file_path?: string;
-	edits?: Edit[];
+	edits?: unknown;
 	oldText?: string;
 	newText?: string;
 };
@@ -171,16 +170,18 @@ type EditToolResultLike = {
 
 type EditCallRenderComponent = Box & {
 	preview?: EditPreview;
-	previewArgsKey?: string;
-	previewPending?: boolean;
+	previewArgs?: unknown;
+	previewArgsRevision?: number;
+	previewInitialized?: boolean;
 	settledError?: boolean;
 };
 
 function createEditCallRenderComponent(): EditCallRenderComponent {
 	return Object.assign(new Box(1, 0, (text: string) => text), {
 		preview: undefined as EditPreview | undefined,
-		previewArgsKey: undefined as string | undefined,
-		previewPending: false,
+		previewArgs: undefined as unknown,
+		previewArgsRevision: undefined as number | undefined,
+		previewInitialized: false,
 		settledError: false,
 	});
 }
@@ -199,6 +200,29 @@ function getEditCallRenderComponent(state: EditRenderState, lastComponent: unkno
 	return component;
 }
 
+const MAX_EDIT_PREVIEW_CHARS = 16 * 1024;
+const MAX_EDIT_PREVIEW_LINES = 120;
+
+type PreviewBuffer = {
+	lines: string[];
+	length: number;
+	truncated: boolean;
+};
+
+function parseRenderableEdits(value: unknown): Edit[] {
+	if (Array.isArray(value)) {
+		return value.filter((edit): edit is Edit => isSingleEditInput(edit));
+	}
+	if (typeof value === "string") {
+		try {
+			return parseRenderableEdits(JSON.parse(value));
+		} catch {
+			return [];
+		}
+	}
+	return isSingleEditInput(value) ? [value] : [];
+}
+
 function getRenderablePreviewInput(args: RenderableEditArgs | undefined): { path: string; edits: Edit[] } | null {
 	if (!args) {
 		return null;
@@ -209,12 +233,9 @@ function getRenderablePreviewInput(args: RenderableEditArgs | undefined): { path
 		return null;
 	}
 
-	if (
-		Array.isArray(args.edits) &&
-		args.edits.length > 0 &&
-		args.edits.every((edit) => typeof edit?.oldText === "string" && typeof edit?.newText === "string")
-	) {
-		return { path, edits: args.edits };
+	const edits = parseRenderableEdits(args.edits);
+	if (edits.length > 0) {
+		return { path, edits };
 	}
 
 	if (typeof args.oldText === "string" && typeof args.newText === "string") {
@@ -222,6 +243,93 @@ function getRenderablePreviewInput(args: RenderableEditArgs | undefined): { path
 	}
 
 	return null;
+}
+
+function boundedEditPreviewText(value: string): string {
+	if (value.length <= MAX_EDIT_PREVIEW_CHARS) return value;
+	let end = MAX_EDIT_PREVIEW_CHARS - 1;
+	if (
+		end > 0 &&
+		value.charCodeAt(end - 1) >= 0xd800 &&
+		value.charCodeAt(end - 1) <= 0xdbff &&
+		value.charCodeAt(end) >= 0xdc00 &&
+		value.charCodeAt(end) <= 0xdfff
+	) {
+		end--;
+	}
+	return `${value.slice(0, end)}…`;
+}
+
+function forEachTextLine(text: string, callback: (source: string, start: number, end: number) => void): void {
+	if (!text) return;
+	let start = 0;
+	for (let index = 0; index < text.length; index++) {
+		const code = text.charCodeAt(index);
+		if (code !== 10 && code !== 13) continue;
+		callback(text, start, index);
+		if (code === 13 && text.charCodeAt(index + 1) === 10) index++;
+		start = index + 1;
+	}
+	if (start < text.length) callback(text, start, text.length);
+}
+
+function appendPreviewLines(buffer: PreviewBuffer, text: string, prefix: "-" | "+", startLine: number): number {
+	let lineNumber = startLine;
+	forEachTextLine(text, (source, start, end) => {
+		if (!buffer.truncated) {
+			if (buffer.lines.length >= MAX_EDIT_PREVIEW_LINES - 1) {
+				buffer.truncated = true;
+				lineNumber++;
+				return;
+			}
+			const separatorLength = buffer.lines.length > 0 ? 1 : 0;
+			const linePrefix = `${prefix}${lineNumber} `;
+			const available = MAX_EDIT_PREVIEW_CHARS - buffer.length - separatorLength;
+			if (available <= linePrefix.length) {
+				buffer.truncated = true;
+			} else {
+				const contentLength = Math.min(end - start, available - linePrefix.length);
+				buffer.lines.push(`${linePrefix}${source.slice(start, start + contentLength)}`);
+				buffer.length += separatorLength + linePrefix.length + contentLength;
+				if (contentLength < end - start) buffer.truncated = true;
+			}
+		}
+		lineNumber++;
+	});
+	return lineNumber;
+}
+
+function createArgumentPreview(edits: Edit[]): EditDiffResult {
+	const buffer: PreviewBuffer = { lines: [], length: 0, truncated: false };
+	let oldLine = 1;
+	let newLine = 1;
+	let firstChangedLine: number | undefined;
+	let additions = 0;
+	let deletions = 0;
+
+	for (const edit of edits) {
+		if (firstChangedLine === undefined && (edit.oldText.length > 0 || edit.newText.length > 0)) {
+			firstChangedLine = newLine;
+		}
+		const oldStart = oldLine;
+		oldLine = appendPreviewLines(buffer, edit.oldText, "-", oldLine);
+		const newStart = newLine;
+		newLine = appendPreviewLines(buffer, edit.newText, "+", newLine);
+		deletions += oldLine - oldStart;
+		additions += newLine - newStart;
+	}
+
+	if (buffer.truncated) {
+		const separatorLength = buffer.lines.length > 0 ? 1 : 0;
+		if (buffer.length + separatorLength < MAX_EDIT_PREVIEW_CHARS) buffer.lines.push("…");
+	}
+
+	return {
+		diff: buffer.lines.join("\n"),
+		firstChangedLine,
+		additions,
+		deletions,
+	};
 }
 
 function countRenderedDiff(diff: string): { additions: number; deletions: number } {
@@ -277,7 +385,7 @@ function formatEditResult(
 
 	const resultDiff = result.details?.diff;
 	if (resultDiff && resultDiff !== previewDiff) {
-		return renderDiff(resultDiff, { filePath: rawPath ?? undefined });
+		return renderDiff(boundedEditPreviewText(resultDiff), { filePath: rawPath ?? undefined });
 	}
 
 	return undefined;
@@ -316,23 +424,18 @@ function buildEditCallComponent(
 	return component;
 }
 
-function setEditPreview(
-	component: EditCallRenderComponent,
-	preview: EditPreview,
-	argsKey: string | undefined,
-): boolean {
+function setEditPreview(component: EditCallRenderComponent, preview: EditPreview): boolean {
+	const displayPreview = "error" in preview ? preview : { ...preview, diff: boundedEditPreviewText(preview.diff) };
 	const current = component.preview;
 	const changed =
 		current === undefined ||
-		("error" in current && "error" in preview
-			? current.error !== preview.error
-			: "error" in current !== "error" in preview) ||
+		("error" in current && "error" in displayPreview
+			? current.error !== displayPreview.error
+			: "error" in current !== "error" in displayPreview) ||
 		(!("error" in current) &&
-			!("error" in preview) &&
-			(current.diff !== preview.diff || current.firstChangedLine !== preview.firstChangedLine));
-	component.preview = preview;
-	component.previewArgsKey = argsKey;
-	component.previewPending = false;
+			!("error" in displayPreview) &&
+			(current.diff !== displayPreview.diff || current.firstChangedLine !== displayPreview.firstChangedLine));
+	component.preview = displayPreview;
 	return changed;
 }
 
@@ -482,6 +585,66 @@ function findRecoveryAnchorLine(lines: readonly string[], oldText: string): numb
 	return undefined;
 }
 
+function recoveryBlockLineCount(oldText: string): number {
+	const normalized = normalizeToLF(oldText);
+	const lines = normalized.split("\n");
+	return Math.max(1, normalized.endsWith("\n") ? lines.length - 1 : lines.length);
+}
+
+type RecoveryWindow = { start: number; end: number };
+
+function buildRecoveryWindows(
+	totalLines: number,
+	candidateLineNumbers: readonly number[],
+	evidenceLine: number | undefined,
+	oldText: string,
+): RecoveryWindow[] {
+	const lineNumbers = candidateLineNumbers.length > 0 ? candidateLineNumbers : evidenceLine ? [evidenceLine] : [];
+	if (lineNumbers.length === 0) return [{ start: 0, end: Math.min(totalLines, 80) }];
+
+	const blockLines = recoveryBlockLineCount(oldText);
+	const windows = lineNumbers
+		.map((lineNumber) => ({
+			start: Math.max(0, lineNumber - 1 - 3),
+			end: Math.min(totalLines, lineNumber - 1 + blockLines + 3),
+		}))
+		.sort((left, right) => left.start - right.start);
+	const merged: RecoveryWindow[] = [];
+	for (const window of windows) {
+		const previous = merged.at(-1);
+		if (previous && window.start <= previous.end) previous.end = Math.max(previous.end, window.end);
+		else merged.push(window);
+	}
+	return merged;
+}
+
+function formatRecoveryWindows(
+	lines: readonly string[],
+	windows: readonly RecoveryWindow[],
+): {
+	text: string;
+	lineCount: number;
+	truncated: boolean;
+} {
+	const output: string[] = [];
+	let lineCount = 0;
+	let byteCount = 0;
+	for (let windowIndex = 0; windowIndex < windows.length; windowIndex++) {
+		if (windowIndex > 0) output.push("…");
+		for (let index = windows[windowIndex].start; index < windows[windowIndex].end; index++) {
+			const rendered = `${index + 1}: ${lines[index]}`;
+			const nextBytes = Buffer.byteLength(rendered, "utf8") + (output.length > 0 ? 1 : 0);
+			if (lineCount >= 200 || byteCount + nextBytes > 16 * 1024) {
+				return { text: output.join("\n"), lineCount, truncated: true };
+			}
+			output.push(rendered);
+			lineCount++;
+			byteCount += nextBytes;
+		}
+	}
+	return { text: output.join("\n"), lineCount, truncated: false };
+}
+
 function attachEditRecovery(
 	error: ToolExecutionError,
 	absolutePath: string,
@@ -499,27 +662,34 @@ function attachEditRecovery(
 					"\n",
 				);
 				const failedEditIndex = getEditFailureIndex(error.message, edits);
+				const candidateLineNumbers = candidateLines(error.message);
 				const evidenceLine =
-					candidateLines(error.message)[0] ??
+					candidateLineNumbers[0] ??
 					(failedEditIndex === undefined
 						? undefined
 						: findRecoveryAnchorLine(lines, edits[failedEditIndex]?.oldText ?? ""));
-				const hasLocatedContext = evidenceLine !== undefined;
-				const start = hasLocatedContext ? Math.max(0, evidenceLine - 1 - 25) : 0;
-				const limit = hasLocatedContext ? 200 : 80;
-				const excerpt = lines.slice(start, start + limit);
-				const locationNote = hasLocatedContext ? "" : "（未定位到 oldText 的稳定上下文，以下为文件开头）";
+				const failedOldText = failedEditIndex === undefined ? "" : (edits[failedEditIndex]?.oldText ?? "");
+				const windows = buildRecoveryWindows(lines.length, candidateLineNumbers, evidenceLine, failedOldText);
+				const formatted = formatRecoveryWindows(lines, windows);
+				const locationNote =
+					candidateLineNumbers.length > 0
+						? `候选位置：${candidateLineNumbers.join(", ")}`
+						: evidenceLine === undefined
+							? "未定位到 oldText 的稳定上下文，以下为文件开头"
+							: `定位行：${evidenceLine}`;
+				const truncationNote = formatted.truncated ? "\n（上下文已截断，请使用 read 分段读取目标区域。）" : "";
 				const replacementResult: ToolRecoveryReplacementResult = {
 					content: [
 						{
 							type: "text",
-							text: `${error.message}\n\n最新 ${path} 第 ${start + 1}-${start + excerpt.length} 行${locationNote}：\n${excerpt.map((line, index) => `${start + index + 1}: ${line}`).join("\n")}\n请基于最新内容重建 oldText。`,
+							text: `${error.message}\n\n最新 ${path}（${locationNote}）：\n${formatted.text}${truncationNote}\n请基于最新内容重建本次 edits；只保留目标修改，整批确认后再提交。`,
 						},
 					],
 					details: {
 						recovery: {
 							code: error.code,
-							evidenceLines: excerpt.length,
+							evidenceLines: formatted.lineCount,
+							candidateLines: candidateLineNumbers,
 							...(failedEditIndex === undefined ? {} : { failedEditIndex }),
 							...(evidenceLine === undefined ? {} : { evidenceLine }),
 						},
@@ -527,7 +697,7 @@ function attachEditRecovery(
 				};
 				return {
 					type: "ask_model_to_rebuild",
-					guidance: "请基于最新内容重建 oldText。",
+					guidance: "请基于最新内容重建本次 edits，不要原样重复失败参数。",
 					replacementResult,
 				} as const;
 			} catch {
@@ -639,26 +809,17 @@ export function createEditToolDefinition(
 		renderCall(args, theme, context) {
 			const component = getEditCallRenderComponent(context.state, context.lastComponent);
 			const previewInput = getRenderablePreviewInput(args as RenderableEditArgs | undefined);
-			const argsKey = previewInput
-				? JSON.stringify({ path: previewInput.path, edits: previewInput.edits })
-				: undefined;
-
-			if (component.previewArgsKey !== argsKey) {
-				component.preview = undefined;
-				component.previewArgsKey = argsKey;
-				component.previewPending = false;
+			const argsRevision = context.argsRevision;
+			const argsChanged =
+				!component.previewInitialized ||
+				component.previewArgs !== args ||
+				component.previewArgsRevision !== argsRevision;
+			if (argsChanged) {
+				component.preview = previewInput ? createArgumentPreview(previewInput.edits) : undefined;
+				component.previewArgs = args;
+				component.previewArgsRevision = argsRevision;
+				component.previewInitialized = true;
 				component.settledError = false;
-			}
-
-			if (context.argsComplete && previewInput && !component.preview && !component.previewPending) {
-				component.previewPending = true;
-				const requestKey = argsKey;
-				void computeEditsDiff(previewInput.path, previewInput.edits, context.cwd).then((preview) => {
-					if (component.previewArgsKey === requestKey) {
-						setEditPreview(component, preview, requestKey);
-						context.invalidate();
-					}
-				});
 			}
 
 			return buildEditCallComponent(component, args, theme, context.cwd, {
@@ -669,27 +830,19 @@ export function createEditToolDefinition(
 		},
 		renderResult(result, _options, theme, context) {
 			const callComponent = context.state.callComponent;
-			const previewInput = getRenderablePreviewInput(context.args as RenderableEditArgs | undefined);
-			const argsKey = previewInput
-				? JSON.stringify({ path: previewInput.path, edits: previewInput.edits })
-				: undefined;
 			const typedResult = result as EditToolResultLike;
 			const resultDiff = !context.isError ? typedResult.details?.diff : undefined;
 			let changed = false;
 			if (callComponent) {
 				if (typeof resultDiff === "string") {
 					const fallbackStats = countRenderedDiff(resultDiff);
-					changed =
-						setEditPreview(
-							callComponent,
-							{
-								diff: resultDiff,
-								firstChangedLine: typedResult.details?.firstChangedLine,
-								additions: typedResult.details?.additions ?? fallbackStats.additions,
-								deletions: typedResult.details?.deletions ?? fallbackStats.deletions,
-							},
-							argsKey,
-						) || changed;
+					changed = setEditPreview(callComponent, {
+						diff: resultDiff,
+						firstChangedLine: typedResult.details?.firstChangedLine,
+						additions: typedResult.details?.additions ?? fallbackStats.additions,
+						deletions: typedResult.details?.deletions ?? fallbackStats.deletions,
+					});
+					callComponent.previewInitialized = true;
 				}
 				if (callComponent.settledError !== context.isError) {
 					callComponent.settledError = context.isError;

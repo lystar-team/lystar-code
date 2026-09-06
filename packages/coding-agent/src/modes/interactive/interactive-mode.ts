@@ -3961,6 +3961,35 @@ export class InteractiveMode {
 				}
 				break;
 
+			case "tool_activity": {
+				if (this.turnActivity) {
+					const trackedTool = this.ensureTrackedTool(event.activity.toolCallId, event.activity.name, undefined);
+					if (trackedTool) {
+						trackedTool.status =
+							event.activity.state === "success"
+								? "success"
+								: event.activity.state === "error"
+									? "error"
+									: event.activity.state === "cancelled"
+										? "cancelled"
+										: event.activity.state === "interrupted"
+											? "error"
+											: event.activity.state === "running"
+												? "running"
+												: "pending";
+					}
+					this.updateActivityBar(
+						event.activity.state === "error" || event.activity.state === "interrupted"
+							? "cancelled"
+							: event.activity.state === "success"
+								? "waiting"
+								: "runningTool",
+					);
+				}
+				this.ui.requestRender();
+				break;
+			}
+
 			case "message_end":
 				this.headerContextUsageDirty = true;
 				if (event.message.role === "user") break;

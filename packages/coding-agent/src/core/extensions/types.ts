@@ -421,6 +421,8 @@ export interface ToolRenderResultOptions {
 export interface ToolRenderContext<TState = any, TArgs = any> {
 	/** Current tool call arguments. Shared across call/result renders for the same tool call. */
 	args: TArgs;
+	/** Monotonic revision for streaming argument updates. */
+	argsRevision?: number;
 	/** Unique id for this tool execution. Stable across call/result renders for the same tool call. */
 	toolCallId: string;
 	/** Invalidate just this tool execution component for redraw. */

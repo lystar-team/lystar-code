@@ -9,10 +9,10 @@ import type {
 	SessionStateSnapshot,
 	SessionTreeNode,
 	ThinkingLevel,
+	ToolActivity,
 	TranscriptItem,
 	UsageProgress,
 } from "@lystar/code-gui-protocol";
-import { isDiffTool, toolCallUpdate, toolPath, toolProgressDiff } from "./tool-progress.ts";
 import type { RuntimeEvent, RuntimeSession } from "./types.ts";
 
 type PendingResponse = { resolve(value: unknown): void; reject(error: Error): void };
@@ -40,6 +40,9 @@ interface GuiCompanionSnapshot {
 	contextWindow?: number;
 	transcriptGeneration: string;
 	transcriptRevision: number;
+	toolActivityEpoch?: string;
+	toolActivityRevision?: number;
+	toolActivities?: SessionStateSnapshot["toolActivities"];
 }
 
 type GuiCompanionCommand =
@@ -131,41 +134,6 @@ function isGuiCompanionSnapshot(value: unknown): value is GuiCompanionSnapshot {
 	);
 }
 
-function boundedText(value: string): string {
-	return value.length <= 16 * 1024 ? value : `${value.slice(0, 16 * 1024 - 1)}…`;
-}
-
-function serializedText(value: unknown): string {
-	if (typeof value === "string") return boundedText(value);
-	if (value === undefined || value === null) return "";
-	try {
-		return boundedText(JSON.stringify(value));
-	} catch {
-		return boundedText(String(value));
-	}
-}
-
-function toolInputSummary(name: string, value: unknown): string {
-	const input = record(value);
-	if (name === "bash" && typeof input?.command === "string") return boundedText(input.command);
-	return serializedText(value);
-}
-
-function toolOutputSummary(value: unknown): string {
-	const result = record(value);
-	if (Array.isArray(result?.content)) {
-		const text = result.content
-			.map((part) => {
-				const item = record(part);
-				return item?.type === "text" && typeof item.text === "string" ? item.text : "";
-			})
-			.filter(Boolean)
-			.join("\n");
-		if (text) return boundedText(text);
-	}
-	return serializedText(value);
-}
-
 function projectAgentEvent(value: unknown): SessionProgress[] {
 	const event = record(value);
 	if (!event || typeof event.type !== "string") return [];
@@ -182,72 +150,23 @@ function projectAgentEvent(value: unknown): SessionProgress[] {
 			updates.push({ type: "assistant_delta", text: stream.delta });
 		} else if (stream?.type === "thinking_delta" && typeof stream.delta === "string") {
 			updates.push({ type: "thinking_delta", text: stream.delta });
-		} else if (
-			(stream?.type === "toolcall_start" || stream?.type === "toolcall_delta" || stream?.type === "toolcall_end") &&
-			typeof stream.contentIndex === "number"
-		) {
-			const message = record(event.message);
-			const partial = record(stream.partial);
-			const messageContent = Array.isArray(message?.content) ? message.content[stream.contentIndex] : undefined;
-			const content =
-				messageContent ?? (Array.isArray(partial?.content) ? partial.content[stream.contentIndex] : undefined);
-			const toolCall = record(content);
-			if (toolCall?.type === "toolCall" && typeof toolCall.id === "string" && typeof toolCall.name === "string") {
-				const summary = isDiffTool(toolCall.name)
-					? (toolPath(toolCall.arguments) ?? toolCall.name)
-					: toolInputSummary(toolCall.name, toolCall.arguments);
-				updates.push(toolCallUpdate(toolCall.id, toolCall.name, summary, toolCall.arguments));
-			}
 		}
 		const message = record(event.message);
 		const currentUsage = usage(message?.usage);
 		if (currentUsage) updates.push({ type: "usage", usage: currentUsage });
 		return updates;
 	}
-	if (event.type === "tool_execution_start") {
-		const name = typeof event.toolName === "string" ? event.toolName : "tool";
-		const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : randomUUID();
-		const diff = toolProgressDiff(name, event.args);
-		return [
-			{
-				type: "tool_start",
-				toolCallId,
-				name,
-				summary: isDiffTool(name) ? (toolPath(event.args) ?? name) : toolInputSummary(name, event.args),
-				...(diff ? { diff } : {}),
-			},
-		];
+	if (event.type === "tool_activity") {
+		const activity = record(event.activity);
+		if (!activity || typeof activity.activityEpoch !== "string" || typeof activity.toolCallId !== "string") return [];
+		return [{ type: "tool_state", activity: activity as ToolActivity }];
 	}
-	if (event.type === "tool_execution_update") {
-		const name = typeof event.toolName === "string" ? event.toolName : "tool";
-		const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : randomUUID();
-		const diff = toolProgressDiff(name, event.args, event.partialResult);
+	if (event.type === "tool_execution_update" && event.toolName === "bash") {
 		return [
 			{
-				type: "tool_update",
-				toolCallId,
-				name,
-				summary: isDiffTool(name)
-					? (toolPath(event.args) ?? toolOutputSummary(event.partialResult) ?? name)
-					: toolInputSummary(name, event.args),
-				...(diff ? { diff } : {}),
-			},
-		];
-	}
-	if (event.type === "tool_execution_end") {
-		const name = typeof event.toolName === "string" ? event.toolName : "tool";
-		const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : randomUUID();
-		const diff = toolProgressDiff(name, undefined, event.result);
-		return [
-			{
-				type: "tool_end",
-				toolCallId,
-				name,
-				status: event.isError === true ? "error" : "success",
-				summary:
-					toolOutputSummary(event.result) ||
-					(typeof event.errorMessage === "string" ? boundedText(event.errorMessage) : ""),
-				...(diff ? { diff } : {}),
+				type: "bash",
+				command: typeof record(event.args)?.command === "string" ? (record(event.args)?.command as string) : "",
+				output: "",
 			},
 		];
 	}
@@ -310,6 +229,9 @@ function snapshot(
 		...(value.contextWindow === undefined ? {} : { contextWindow: value.contextWindow }),
 		transcriptGeneration: value.transcriptGeneration,
 		transcriptRevision: value.transcriptRevision,
+		...(value.toolActivityEpoch ? { toolActivityEpoch: value.toolActivityEpoch } : {}),
+		...(value.toolActivityRevision === undefined ? {} : { toolActivityRevision: value.toolActivityRevision }),
+		...(value.toolActivities ? { toolActivities: value.toolActivities } : {}),
 	};
 }
 

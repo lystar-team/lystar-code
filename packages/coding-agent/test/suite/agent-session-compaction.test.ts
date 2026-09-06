@@ -100,6 +100,43 @@ describe("AgentSession compaction characterization", () => {
 		}
 	});
 
+	it("emits the persisted compaction entry before compaction ends", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+		useSummaryStreamFn(harness, "compaction summary");
+
+		await harness.session.compact();
+
+		const appended = harness.eventsOfType("entry_appended");
+		expect(appended).toHaveLength(1);
+		expect(appended[0]?.entry.type).toBe("compaction");
+		const appendedIndex = harness.events.indexOf(appended[0]!);
+		const endedIndex = harness.events.findIndex((event) => event.type === "compaction_end");
+		expect(appendedIndex).toBeGreaterThanOrEqual(0);
+		expect(endedIndex).toBeGreaterThan(appendedIndex);
+	});
+
+	it("emits an auto-compaction entry before compaction ends", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+		useSummaryStreamFn(harness, "auto-compaction summary");
+
+		const result = await (harness.session as unknown as SessionWithCompactionInternals)._runAutoCompaction(
+			"threshold",
+			false,
+		);
+
+		expect(result).toBe(false);
+		const appended = harness.eventsOfType("entry_appended");
+		expect(appended).toHaveLength(1);
+		expect(appended[0]?.entry.type).toBe("compaction");
+		const appendedIndex = harness.events.indexOf(appended[0]!);
+		const endedIndex = harness.events.findIndex((event) => event.type === "compaction_end");
+		expect(endedIndex).toBeGreaterThan(appendedIndex);
+	});
+
 	it("blocks extension-expanded input locally when it cannot fit the configured context window", async () => {
 		const harness = await createHarness({
 			models: [{ id: "faux-1", contextWindow: 100, maxTokens: 20 }],

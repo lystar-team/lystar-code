@@ -28,10 +28,7 @@ function boundedText(value: string): { text: string; truncated?: boolean } {
 	) {
 		end--;
 	}
-	return {
-		text: value.slice(0, end),
-		truncated: true,
-	};
+	return { text: value.slice(0, end), truncated: true };
 }
 
 function countLines(value: string): number {
@@ -61,9 +58,7 @@ function editEntries(value: Record<string, unknown> | undefined): Array<{ oldTex
 	if (typeof edits === "string") {
 		try {
 			const parsed = JSON.parse(edits) as unknown;
-			if (Array.isArray(parsed)) {
-				return editEntries({ edits: parsed });
-			}
+			if (Array.isArray(parsed)) return editEntries({ edits: parsed });
 			return editEntries({ edits: [parsed] });
 		} catch {
 			return [];

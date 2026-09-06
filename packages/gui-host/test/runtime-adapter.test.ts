@@ -162,6 +162,8 @@ describe("CodingAgentRuntimeAdapter", () => {
 			{ type: "thinking_delta", text: "reason" },
 			{ type: "usage", usage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4 } },
 		]);
+		const appended = { type: "entry_appended", entry: {} } as unknown as AgentSessionEvent;
+		expect(projectRuntimeProgress(appended)).toEqual([]);
 		expect(projectRuntimeProgress({ type: "session_info_changed", name: "x".repeat(2_000) })).toEqual([
 			expect.objectContaining({ type: "status", status: "正在处理" }),
 		]);

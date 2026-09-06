@@ -52,7 +52,8 @@ function normalizeMatchSegment(text: string): string {
 
 function createMatchView(content: string, tier: MatchTier): MatchView {
 	let text = "";
-	const boundaries: Array<number | undefined> = [0];
+	const boundaries: Array<number | undefined> = [];
+	const lines: MatchLine[] = [];
 	let lineStart = 0;
 
 	while (lineStart < content.length) {
@@ -63,29 +64,32 @@ function createMatchView(content: string, tier: MatchTier): MatchView {
 		const trailing = line.trimEnd().length;
 		const keptStart = lineStart + Math.min(leading, trailing);
 		const keptEnd = lineStart + trailing;
+		const textStart = text.length;
 
+		// 每个规范化行的起点只写一次，避免被下一行首字符覆盖。
+		if (boundaries[textStart] === undefined) boundaries[textStart] = keptStart;
 		for (const segment of graphemeSegmenter.segment(content.slice(keptStart, keptEnd))) {
 			const originalStart = keptStart + segment.index;
 			const originalEnd = originalStart + segment.segment.length;
 			const normalized = tier === "unicode" ? normalizeMatchSegment(segment.segment) : segment.segment;
-			boundaries[text.length] = originalStart;
+			if (boundaries[text.length] === undefined) boundaries[text.length] = originalStart;
 			text += normalized;
 			while (boundaries.length < text.length) boundaries.push(undefined);
-			boundaries.push(originalEnd);
+			boundaries[text.length] = originalEnd;
 		}
 
-		if (newline === -1) {
-			boundaries[text.length] = keptEnd;
-			break;
-		}
-		boundaries[text.length] = newline;
+		const textEnd = text.length;
+		if (boundaries[textEnd] === undefined) boundaries[textEnd] = keptEnd;
+		lines.push({ textStart, textEnd, originalStart: lineStart, contentStart: keptStart, originalEnd: keptEnd });
+
+		if (newline === -1) break;
 		text += "\n";
-		boundaries.push(newline + 1);
+		boundaries[text.length] = newline + 1;
 		lineStart = newline + 1;
 	}
 
 	if (content.length === 0) boundaries[0] = 0;
-	return { text, boundaries };
+	return { text, boundaries, lines };
 }
 
 function splitLinesWithEndings(content: string): string[] {
@@ -104,9 +108,18 @@ interface MatchedEdit {
 	newText: string;
 }
 
+interface MatchLine {
+	textStart: number;
+	textEnd: number;
+	originalStart: number;
+	contentStart: number;
+	originalEnd: number;
+}
+
 interface MatchView {
 	text: string;
 	boundaries: Array<number | undefined>;
+	lines: MatchLine[];
 }
 
 type TextReplacement = Pick<MatchedEdit, "matchIndex" | "matchLength" | "newText">;
@@ -349,6 +362,12 @@ function getEmptyOldTextError(path: string, editIndex: number, totalEdits: numbe
 	return new Error(`edits[${editIndex}].oldText must not be empty in ${path}.`);
 }
 
+function firstLineHasIndent(text: string): boolean {
+	const newline = text.indexOf("\n");
+	const firstLine = newline === -1 ? text : text.slice(0, newline);
+	return firstLine.length !== firstLine.trimStart().length;
+}
+
 function findEditMatch(
 	content: string,
 	oldText: string,
@@ -365,7 +384,8 @@ function findEditMatch(
 
 	for (const tier of ["trailing", "trimmed", "unicode"] as const) {
 		const contentView = createMatchView(content, tier);
-		const matchText = createMatchView(oldText, tier).text;
+		const oldTextView = createMatchView(oldText, tier);
+		const matchText = oldTextView.text;
 		if (!matchText) continue;
 		const matches = findAllOccurrences(contentView.text, matchText).filter(
 			(offset) =>
@@ -375,8 +395,12 @@ function findEditMatch(
 		const originalOffsets = matches.map((offset) => contentView.boundaries[offset] ?? content.length);
 		if (matches.length > 1) throw getDuplicateError(path, editIndex, originalOffsets, lineStarts);
 		if (matches.length === 1) {
-			const start = contentView.boundaries[matches[0]] ?? content.length;
+			let start = contentView.boundaries[matches[0]] ?? content.length;
 			const end = contentView.boundaries[matches[0] + matchText.length] ?? content.length;
+			if (firstLineHasIndent(oldText)) {
+				const startLine = contentView.lines.find((line) => line.textStart === matches[0]);
+				if (startLine) start = startLine.originalStart;
+			}
 			return { editIndex, matchIndex: start, matchLength: end - start, newText: "" };
 		}
 	}

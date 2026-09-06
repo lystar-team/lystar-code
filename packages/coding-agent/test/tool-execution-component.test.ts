@@ -838,6 +838,66 @@ describe("ToolExecutionComponent parity", () => {
 		expect(expanded).not.toContain("two\n\n");
 	});
 
+	test("shows edit preview content and line counts while arguments are still active", () => {
+		const component = new ToolExecutionComponent(
+			"edit",
+			"tool-edit-preview",
+			{ path: "README.md", edits: [{ oldText: "old line", newText: "new line\nadded line" }] },
+			{},
+			createEditToolDefinition(process.cwd()),
+			createFakeTui(),
+			process.cwd(),
+		);
+
+		const collapsed = stripAnsi(component.render(120).join("\n"));
+		expect(collapsed).toContain("+2 -1");
+		expect(collapsed).not.toContain("old line");
+
+		component.setExpanded(true);
+		const expanded = stripAnsi(component.render(120).join("\n"));
+		expect(expanded).toContain("old line");
+		expect(expanded).toContain("new line");
+		expect(expanded).toContain("added line");
+	});
+	test("refreshes edit preview when the same argument object changes", () => {
+		const args = { path: "README.md", edits: [{ oldText: "old line", newText: "new line" }] };
+		const component = new ToolExecutionComponent(
+			"edit",
+			"tool-edit-preview-update",
+			args,
+			{},
+			createEditToolDefinition(process.cwd()),
+			createFakeTui(),
+			process.cwd(),
+		);
+
+		args.edits[0].newText = "updated line";
+		component.updateArgs(args);
+		component.setExpanded(true);
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		expect(rendered).toContain("updated line");
+		expect(rendered).not.toContain("new line");
+	});
+
+	test("bounds expanded edit previews", () => {
+		const component = new ToolExecutionComponent(
+			"edit",
+			"tool-edit-preview-bounded",
+			{
+				path: "README.md",
+				edits: [{ oldText: "old\n".repeat(5000), newText: "new\n".repeat(5000) }],
+			},
+			{},
+			createEditToolDefinition(process.cwd()),
+			createFakeTui(),
+			process.cwd(),
+		);
+
+		component.setExpanded(true);
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		expect(rendered.length).toBeLessThan(20_000);
+	});
+
 	test("shows created-file details in the collapsed write summary", () => {
 		const component = new ToolExecutionComponent(
 			"write",

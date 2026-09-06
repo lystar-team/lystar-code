@@ -181,6 +181,18 @@ export interface FindToolRecoveryLessonsResult {
 	suspendedLessonIds: string[];
 }
 
+export interface FindRelevantToolRecoveryLessonsInput {
+	scopeHash: string;
+	toolNames: readonly string[];
+	taskText: string;
+	now?: Date;
+}
+
+export interface FindRelevantToolRecoveryLessonsResult {
+	lessons: ToolRecoveryLesson[];
+	suspendedLessonIds: string[];
+}
+
 export interface ToolRecoveryLessonUsageOptions extends ToolRecoveryLessonsOptions {
 	guidanceShown?: boolean;
 }
@@ -1439,7 +1451,7 @@ function lessonMatchesRuntime(lesson: ToolRecoveryLesson, input: FindToolRecover
 	);
 }
 
-/** 查询只返回 active guidance；暂停命中仅供本地 metrics 记录。 */
+/** 查询 active/verified guidance；暂停命中仅供本地 metrics 记录。 */
 export async function findMatchingToolRecoveryLessons(
 	agentDir: string,
 	input: FindToolRecoveryLessonsInput,
@@ -1459,7 +1471,7 @@ export async function findMatchingToolRecoveryLessons(
 		const lessons = matching
 			.filter(
 				(lesson) =>
-					lesson.status === "active" &&
+					(lesson.status === "active" || lesson.status === "verified") &&
 					(lesson.scope === "global" || (lesson.scope === "project" && lesson.scopeHash === input.scopeHash)),
 			)
 			.sort(
@@ -1474,7 +1486,46 @@ export async function findMatchingToolRecoveryLessons(
 	});
 }
 
-/** 记录 active lesson 的运行时命中，不执行经验中的任意动作。 */
+function lessonRelevanceScore(lesson: ToolRecoveryLesson, input: FindRelevantToolRecoveryLessonsInput): number {
+	const text = input.taskText.toLocaleLowerCase();
+	if (!new Set(input.toolNames).has(lesson.matcher.toolName)) return -1;
+	let score = lesson.scope === "project" && lesson.scopeHash === input.scopeHash ? 8 : 0;
+	if (lesson.status === "verified") score += 2;
+	if (text.includes(lesson.matcher.toolName.toLocaleLowerCase())) score += 2;
+	if (text.includes(lesson.matcher.failureCode.toLocaleLowerCase())) score += 2;
+	for (const token of lesson.guidance
+		.toLocaleLowerCase()
+		.split(/[^\p{L}\p{N}_-]+/u)
+		.filter(Boolean)) {
+		if (token.length >= 2 && text.includes(token)) score++;
+	}
+	return score;
+}
+
+export async function findRelevantToolRecoveryLessons(
+	agentDir: string,
+	input: FindRelevantToolRecoveryLessonsInput,
+): Promise<FindRelevantToolRecoveryLessonsResult> {
+	const now = input.now ?? new Date();
+	return await withStoreLock(agentDir, async (paths) => {
+		const snapshot = (await loadStore(paths)).snapshot;
+		const candidates = snapshot.lessons.filter(
+			(lesson) =>
+				(lesson.status === "active" || lesson.status === "verified") &&
+				effectiveStatus(lesson, now) === lesson.status &&
+				(lesson.scope === "global" || (lesson.scope === "project" && lesson.scopeHash === input.scopeHash)),
+		);
+		const lessons = candidates
+			.map((lesson) => ({ lesson, score: lessonRelevanceScore(lesson, input) }))
+			.filter(({ score }) => score >= 10)
+			.sort((left, right) => right.score - left.score || right.lesson.updatedAt.localeCompare(left.lesson.updatedAt))
+			.slice(0, 3)
+			.map(({ lesson }) => presentLesson(lesson, now));
+		return { lessons, suspendedLessonIds: [] };
+	});
+}
+
+/** 记录 active 或 verified lesson 的运行时命中，不执行经验中的任意动作。 */
 export async function recordToolRecoveryLessonUsage(
 	agentDir: string,
 	lessonIds: readonly string[],
@@ -1489,8 +1540,8 @@ export async function recordToolRecoveryLessonUsage(
 		for (const current of snapshot.lessons) {
 			if (
 				!ids.has(current.id) ||
-				current.status !== "active" ||
-				effectiveStatus(current, options.now ?? new Date()) !== "active"
+				(current.status !== "active" && current.status !== "verified") ||
+				effectiveStatus(current, options.now ?? new Date()) !== current.status
 			) {
 				continue;
 			}

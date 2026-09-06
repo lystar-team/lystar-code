@@ -67,6 +67,8 @@ export async function runToolRecoveryHandler(
 }
 
 export interface ToolRecoveryController {
+	/** 新用户任务开始时清理上一任务的电路、待归因状态和进展代次。 */
+	beginTask?(): void;
 	preflight(
 		context: ToolRecoveryPreflightContext,
 		signal?: AbortSignal,

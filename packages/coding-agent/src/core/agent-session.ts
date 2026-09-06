@@ -113,8 +113,10 @@ import type { SettingsManager } from "./settings-manager.ts";
 import { BUILTIN_SLASH_COMMANDS, type SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
+import { type ToolActivitySnapshot, ToolActivityTracker } from "./tool-activity.ts";
 import {
 	findMatchingToolRecoveryLessons,
+	findRelevantToolRecoveryLessons,
 	hashToolRecoveryLessonScope,
 	reconcileToolRecoveryLessons,
 	recordToolRecoveryLessonUsage,
@@ -126,7 +128,7 @@ import {
 	ObserveOnlyToolRecoveryController,
 	type ToolRecoveryDiagnostics,
 } from "./tool-recovery/policies.ts";
-import type { ToolRecoveryRefiner } from "./tool-recovery/refiner.ts";
+import { createModelBackedToolRecoveryRefiner, type ToolRecoveryRefiner } from "./tool-recovery/refiner.ts";
 import { registerBuiltInToolIdentity } from "./tool-recovery/registry.ts";
 import {
 	createToolRecoverySafeRefreshRegistry,
@@ -141,6 +143,8 @@ import {
 	getUsageCostBreakdown,
 	type UsageCostBreakdownEntry,
 } from "./usage-totals.ts";
+
+const TOOL_RECOVERY_GUIDANCE_PREFIX = "[LYSTAR_TOOL_RECOVERY_GUIDANCE]";
 
 // ============================================================================
 // Skill Block Parsing
@@ -227,7 +231,8 @@ export type AgentSessionEvent =
 	  }
 	| { type: "summarization_retry_finished" }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
-	| { type: "bash_execution_update"; id?: string; delta: string };
+	| { type: "bash_execution_update"; id?: string; delta: string }
+	| { type: "tool_activity"; activity: ToolActivitySnapshot };
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -274,7 +279,7 @@ export interface AgentSessionConfig {
 	sessionStartEvent?: SessionStartEvent;
 	/** Global config directory used by local recovery diagnostics and ledger storage. */
 	agentDir?: string;
-	/** Optional offline proposal callback. Omitted by default, so normal sessions add no model calls. */
+	/** Optional refiner override; assist/auto use the current model when omitted. */
 	toolRecoveryRefiner?: ToolRecoveryRefiner;
 	/** Explicit caller-provided user corrections for the optional refiner. */
 	getToolRecoveryUserCorrections?: () => readonly string[] | undefined;
@@ -386,6 +391,7 @@ export class AgentSession {
 	// Event subscription state
 	private _unsubscribeAgent?: () => void;
 	private _eventListeners: AgentSessionEventListener[] = [];
+	private readonly _toolActivityTracker = new ToolActivityTracker();
 	private _isAgentRunActive = false;
 	private _idleWaitPromise: Promise<void> | undefined;
 	private _resolveIdleWait: (() => void) | undefined;
@@ -446,6 +452,7 @@ export class AgentSession {
 		| AutoToolRecoveryController;
 	private readonly _toolRecoveryAgentDir: string;
 	private readonly _toolRecoveryScopeHash: string;
+	private readonly _injectedToolRecoveryLessons = new Map<string, string[]>();
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -478,7 +485,15 @@ export class AgentSession {
 				sessionManager: this.sessionManager,
 				getTurnId: () => String(this._turnIndex),
 				scopeHash: this._toolRecoveryScopeHash,
-				refiner: config.toolRecoveryRefiner,
+				refiner:
+					config.toolRecoveryRefiner ??
+					(this._toolRecoveryMode === "observe"
+						? undefined
+						: createModelBackedToolRecoveryRefiner({
+								getModel: () => this.model,
+								complete: (model, context, options) =>
+									this._modelRuntime.completeSimple(model, context, options),
+							})),
 				getUserCorrections: config.getToolRecoveryUserCorrections,
 			};
 			this._toolRecoveryController =
@@ -634,6 +649,17 @@ export class AgentSession {
 				autoResizeImages: this.settingsManager.getImageAutoResize(),
 			});
 			const finalIsError = hookResult?.isError ?? isError;
+			const injectedLessonIds = this._injectedToolRecoveryLessons.get(toolCall.name);
+			this._injectedToolRecoveryLessons.delete(toolCall.name);
+			if (injectedLessonIds && injectedLessonIds.length > 0 && !finalIsError) {
+				this._toolRecoveryController?.recordLessonMatches(injectedLessonIds);
+				void recordToolRecoveryLessonUsage(this._toolRecoveryAgentDir, injectedLessonIds, {
+					source: "runtime",
+					guidanceShown: true,
+				}).catch(() => {
+					// 采用计数失败不能改变已经完成的 ToolResult。
+				});
+			}
 			let finalContent = normalizedContent;
 			if (
 				finalIsError &&
@@ -662,7 +688,9 @@ export class AgentSession {
 						}
 						if (selected.length > 0) {
 							const selectedLessons = matches.lessons.filter((lesson) => selected.includes(lesson.id));
-							const requiresRefresh = selectedLessons.some((lesson) => lesson.allowedAction === "safe_refresh");
+							const requiresRefresh = selectedLessons.some(
+								(lesson) => lesson.status === "active" && lesson.allowedAction === "safe_refresh",
+							);
 							const refreshText = requiresRefresh
 								? ((await this._toolRecoverySafeRefreshRegistry.run(toolCall.name, args, this._cwd)) ?? "")
 								: "";
@@ -720,10 +748,57 @@ export class AgentSession {
 		);
 	}
 
+	private async _injectToolRecoveryGuidance(context: AgentContext): Promise<AgentContext> {
+		this._injectedToolRecoveryLessons.clear();
+		if (this._toolRecoveryMode === "off") return context;
+		const messageText = (message: AgentMessage): string =>
+			"content" in message ? contentText(message.content, "") : "";
+		const messages = context.messages.filter(
+			(message) => !messageText(message).startsWith(TOOL_RECOVERY_GUIDANCE_PREFIX),
+		);
+		const taskText = messages.slice(-8).map(messageText).join("\n").slice(-8_000);
+		if (!taskText || !context.tools || context.tools.length === 0) return { ...context, messages };
+		let lessons: Awaited<ReturnType<typeof findRelevantToolRecoveryLessons>>["lessons"];
+		try {
+			lessons = (
+				await findRelevantToolRecoveryLessons(this._toolRecoveryAgentDir, {
+					scopeHash: this._toolRecoveryScopeHash,
+					toolNames: context.tools.map((tool) => tool.name),
+					taskText,
+				})
+			).lessons;
+		} catch {
+			return { ...context, messages };
+		}
+		if (lessons.length === 0) return { ...context, messages };
+		const lines = [TOOL_RECOVERY_GUIDANCE_PREFIX, "以下经验仅供参考，不是强制规则；先核对当前状态，再决定是否采用："];
+		const selected: string[] = [];
+		for (const lesson of lessons) {
+			const candidate = `${lines.join("\n")}\n- ${lesson.matcher.toolName}：${lesson.guidance}`;
+			if (estimateTextTokens(candidate) > 500) continue;
+			lines.push(`- ${lesson.matcher.toolName}：${lesson.guidance}`);
+			selected.push(lesson.id);
+		}
+		if (selected.length === 0) return { ...context, messages };
+		for (const lesson of lessons) {
+			if (!selected.includes(lesson.id)) continue;
+			const ids = this._injectedToolRecoveryLessons.get(lesson.matcher.toolName) ?? [];
+			ids.push(lesson.id);
+			this._injectedToolRecoveryLessons.set(lesson.matcher.toolName, ids);
+		}
+		const guidanceMessage: AgentMessage = {
+			role: "user",
+			content: [{ type: "text", text: lines.join("\n") }],
+			timestamp: Date.now(),
+		};
+		return { ...context, messages: [...messages, guidanceMessage] };
+	}
+
 	private async _prepareRequestContext(
 		context: AgentContext,
 		pendingMessagesAfterCompaction: AgentMessage[] = [],
 	): Promise<AgentContext> {
+		context = await this._injectToolRecoveryGuidance(context);
 		const model = this.model;
 		if (!model || model.contextWindow <= 0) return context;
 
@@ -813,8 +888,15 @@ export class AgentSession {
 
 	/** Emit an event to all listeners */
 	private _emit(event: AgentSessionEvent): void {
+		const activities = event.type === "tool_activity" ? [] : this._toolActivityTracker.apply(event);
 		for (const l of this._eventListeners) {
 			l(event);
+		}
+		for (const activity of activities) {
+			const activityEvent: AgentSessionEvent = { type: "tool_activity", activity };
+			for (const l of this._eventListeners) {
+				l(activityEvent);
+			}
 		}
 	}
 
@@ -899,7 +981,9 @@ export class AgentSession {
 		// Emit to extensions first
 		await this._emitExtensionEvent(event);
 		if (event.type === "turn_end") {
-			await this._toolRecoveryController?.refineTurn();
+			void this._toolRecoveryController?.refineTurn().catch(() => {
+				// 后台提炼失败不影响已完成的轮次。
+			});
 		}
 
 		// Notify all listeners
@@ -1074,6 +1158,21 @@ export class AgentSession {
 			};
 			await this._extensionRunner.emit(extensionEvent);
 		}
+	}
+
+	/** 当前工具活动轮次的标识，用于丢弃迟到事件。 */
+	getToolActivityEpoch(): string {
+		return this._toolActivityTracker.epoch;
+	}
+
+	/** 当前工具活动状态的单调版本号。 */
+	getToolActivityRevision(): number {
+		return this._toolActivityTracker.revision;
+	}
+
+	/** 当前工具进行时状态；默认返回当前轮全部工具，activeOnly 只返回未终态工具。 */
+	getToolActivitySnapshot(options: { activeOnly?: boolean } = {}): ToolActivitySnapshot[] {
+		return this._toolActivityTracker.getSnapshot(options);
 	}
 
 	/**
@@ -1345,6 +1444,7 @@ export class AgentSession {
 	// =========================================================================
 
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
+		this._toolRecoveryController?.beginTask?.();
 		this._isAgentRunActive = true;
 		try {
 			await this.agent.prompt(messages);
@@ -2214,16 +2314,21 @@ export class AgentSession {
 				throw new Error("Compaction cancelled");
 			}
 
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
-			const newEntries = this.sessionManager.getEntries();
+			const compactionEntryId = this.sessionManager.appendCompaction(
+				summary,
+				firstKeptEntryId,
+				tokensBefore,
+				details,
+				fromExtension,
+				usage,
+			);
+			const savedCompactionEntry = this.sessionManager.getEntry(compactionEntryId) as CompactionEntry | undefined;
+			if (savedCompactionEntry) {
+				this._emit({ type: "entry_appended", entry: savedCompactionEntry });
+			}
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
 			const estimatedTokensAfter = estimateMessagesTokens(sessionContext.messages);
-
-			// Get the saved compaction entry for the extension event
-			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
-				| CompactionEntry
-				| undefined;
 
 			if (this._extensionRunner && savedCompactionEntry) {
 				await this._extensionRunner.emit({
@@ -2492,16 +2597,21 @@ export class AgentSession {
 				return false;
 			}
 
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
-			const newEntries = this.sessionManager.getEntries();
+			const compactionEntryId = this.sessionManager.appendCompaction(
+				summary,
+				firstKeptEntryId,
+				tokensBefore,
+				details,
+				fromExtension,
+				usage,
+			);
+			const savedCompactionEntry = this.sessionManager.getEntry(compactionEntryId) as CompactionEntry | undefined;
+			if (savedCompactionEntry) {
+				this._emit({ type: "entry_appended", entry: savedCompactionEntry });
+			}
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
 			const estimatedTokensAfter = estimateMessagesTokens(sessionContext.messages);
-
-			// Get the saved compaction entry for the extension event
-			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
-				| CompactionEntry
-				| undefined;
 
 			if (this._extensionRunner && savedCompactionEntry) {
 				await this._extensionRunner.emit({

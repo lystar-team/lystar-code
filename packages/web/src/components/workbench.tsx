@@ -49,6 +49,7 @@ import type { BundledLanguage } from "shiki";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { type TranscriptToolViewModel, toSessionItemViewModel } from "../adapters/session-view-model";
 import { cn } from "../lib/utils";
+import { shouldJoinToolBatch } from "../state/tool-batching";
 import type { ComposerMode, InspectorMode, SettingsTab, ThemeMode, WorkbenchState } from "../state/use-workbench";
 import { sessionTitle } from "../state/use-workbench";
 import type {
@@ -817,7 +818,6 @@ function buildTranscriptRenderItems(
 	let batchTools: ToolBatchTool[] = [];
 	let batchKey = "";
 	let batchEntryId: string | undefined;
-	let batchCallIds = new Set<string>();
 
 	const flushBatch = () => {
 		if (batchTools.length > 0) {
@@ -825,7 +825,6 @@ function buildTranscriptRenderItems(
 			batchTools = [];
 			batchKey = "";
 			batchEntryId = undefined;
-			batchCallIds = new Set<string>();
 		}
 	};
 
@@ -833,19 +832,18 @@ function buildTranscriptRenderItems(
 		const viewModel = toSessionItemViewModel(item, toolIndex.statuses);
 		if (viewModel.kind === "reasoning") continue;
 		if (viewModel.kind === "tools" && item.view?.type === "tool_call") {
-			if (batchTools.length > 0 && batchEntryId !== item.entryId) flushBatch();
-			if (!batchTools.length) {
-				batchKey = `tool-batch:${item.entryId}:${item.renderId}`;
-				batchEntryId = item.entryId;
-			}
 			for (const tool of viewModel.tools) {
 				const result = toolIndex.results.get(tool.id);
-				batchCallIds.add(tool.id);
-				batchTools.push(
-					result
-						? { ...tool, state: result.state, detail: result.detail, images: result.images, diff: result.diff }
-						: tool,
-				);
+				const resolvedTool = result
+					? { ...tool, state: result.state, detail: result.detail, images: result.images, diff: result.diff }
+					: tool;
+				const previous = batchTools.at(-1);
+				if (!previous || batchEntryId !== item.entryId || !shouldJoinToolBatch(previous.name, resolvedTool.name)) {
+					flushBatch();
+					batchEntryId = item.entryId;
+					batchKey = `tool-batch:${item.entryId}:${item.renderId}:${resolvedTool.id}`;
+				}
+				batchTools.push(resolvedTool);
 			}
 			continue;
 		}
@@ -1316,12 +1314,19 @@ function LiveTurn({ state, actions }: { state: WorkbenchState; actions: Workbenc
 							name: tool.name,
 							summary: tool.summary,
 							state:
-								tool.status === "success"
+								tool.state === "success"
 									? ("output-available" as const)
-									: tool.status === "error"
+									: tool.state === "error"
 										? ("output-error" as const)
-										: ("input-available" as const),
+										: tool.state === "cancelled"
+											? ("output-cancelled" as const)
+											: tool.state === "interrupted"
+												? ("output-interrupted" as const)
+												: tool.state === "preparing" || tool.state === "queued"
+													? ("input-queued" as const)
+													: ("input-available" as const),
 							detail: tool.result,
+							inputPreview: tool.inputPreview,
 							diff: tool.diff,
 						},
 					];
@@ -1334,7 +1339,9 @@ function LiveTurn({ state, actions }: { state: WorkbenchState; actions: Workbenc
 						tools={tools}
 						sessionId={state.sessionId}
 						onOpenPath={(path) => void actions.openResource(path)}
-						initialOpen={tools.some((tool) => tool.state === "input-available")}
+						initialOpen={tools.some(
+							(tool) => tool.state === "input-available" || tool.state === "input-queued",
+						)}
 						autoCollapseWhenComplete
 					/>
 				);

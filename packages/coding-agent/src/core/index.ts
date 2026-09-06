@@ -64,7 +64,6 @@ export {
 	createAgentSessionServices,
 } from "./agent-session-services.ts";
 export { AuthStorage, type AuthStorageBackend } from "./auth-storage.ts";
-export { type BashExecutorOptions, type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 export type { CompactionResult } from "./compaction/index.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./event-bus.ts";
 export { areExperimentalFeaturesEnabled } from "./experimental.ts";
@@ -203,6 +202,21 @@ export {
 export { type LoadSkillsOptions, type LoadSkillsResult, loadSkills } from "./skills.ts";
 export { BUILTIN_SLASH_COMMANDS, type BuiltinSlashCommand } from "./slash-commands.ts";
 export { createSyntheticSourceInfo } from "./source-info.ts";
+export {
+	boundedText,
+	isDiffTool,
+	type ToolActivityDiff,
+	type ToolActivityDiffFile,
+	type ToolActivityEvent,
+	type ToolActivitySnapshot,
+	type ToolActivityState,
+	ToolActivityTracker,
+	toolInputSummary,
+	toolOutputSummary,
+	toolPath,
+	toolProgressDiff,
+	toolRecord,
+} from "./tool-activity.ts";
 export {
 	getToolRecoveryDoctorReport,
 	summarizeToolRecoveryDiagnostics,

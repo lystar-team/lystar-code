@@ -43,7 +43,8 @@ async function runToolRecoveryHandler(
 }
 
 const MAX_RECOVERY_RETRIES = 2;
-const REFINER_TIMEOUT_MS = 2_000;
+const MAX_MODEL_RECOVERY_ROUNDS = 2;
+const REFINER_TIMEOUT_MS = 15_000;
 const RETRYABLE_CODES = new Set(["TIMEOUT", "TRANSPORT_ERROR", "RATE_LIMITED"]);
 const TRUSTED_READ_ONLY_TOOL_NAMES = new Set(["read", "grep", "find", "ls"]);
 const BLOCKED_MESSAGE = "已阻止重复失败，需修改参数、刷新状态、切换工具或请求用户决定。";
@@ -58,7 +59,7 @@ type RecoveryAction =
 	| "stop";
 type Counter = Map<string, number>;
 type AttemptState = { attempt: number; failure: ToolFailure };
-type CircuitState = { attempt: number; failure: ToolFailure };
+type CircuitState = { attempt: number; failure: ToolFailure; targetHash?: string; revision: number };
 
 export interface ToolRecoveryDiagnostics {
 	mode: ToolRecoveryMode;
@@ -267,9 +268,20 @@ abstract class BaseToolRecoveryController implements ToolRecoveryController {
 	private readonly refinerFailures: ToolRecoveryRefinerFailure[] = [];
 	private readonly refinerFailureKeys = new Set<string>();
 	private readonly pendingModelRecoveries = new Map<string, PendingModelRecovery[]>();
+	private readonly progressRevisions = new Map<string, number>();
+	private refinerInFlight?: Promise<void>;
+	private refinerAbortController?: AbortController;
+	protected taskContinuesRecovery = false;
 
 	constructor(options: ControllerOptions) {
 		this.options = options;
+	}
+
+	beginTask(): void {
+		this.refinerAbortController?.abort();
+		this.taskContinuesRecovery = this.pendingModelRecoveries.size > 0;
+		this.pendingModelRecoveries.clear();
+		this.progressRevisions.clear();
 	}
 
 	now(): number {
@@ -278,6 +290,144 @@ abstract class BaseToolRecoveryController implements ToolRecoveryController {
 
 	async waitForRetry(delayMs: number, signal?: AbortSignal): Promise<boolean> {
 		return await (this.options.sleep ?? defaultSleep)(delayMs, signal);
+	}
+
+	protected currentProgressRevision(targetHash: string | undefined): number {
+		return targetHash === undefined ? 0 : (this.progressRevisions.get(targetHash) ?? 0);
+	}
+
+	protected noteProgress(observation: ToolRecoveryObservation): void {
+		if (observation.outcome !== "success" && observation.outcome !== "recovered") return;
+		if (observation.targetHash === undefined) return;
+		this.progressRevisions.set(observation.targetHash, this.currentProgressRevision(observation.targetHash) + 1);
+	}
+
+	protected circuitCanBlock(context: ToolRecoveryPreflightContext, state: CircuitState): boolean {
+		if (state.targetHash !== context.targetHash) return false;
+		if (state.targetHash !== undefined && state.revision !== this.currentProgressRevision(state.targetHash))
+			return false;
+		return (
+			state.targetHash !== undefined || isTrustedReadOnlyBuiltinTool(context.toolName, context.toolRuntimeContext)
+		);
+	}
+
+	protected createCircuitState(
+		observation: Pick<ToolRecoveryObservation, "targetHash">,
+		failure: ToolFailure,
+		attempt: number,
+	): CircuitState {
+		return {
+			attempt,
+			failure,
+			...(observation.targetHash ? { targetHash: observation.targetHash } : {}),
+			revision: this.currentProgressRevision(observation.targetHash),
+		};
+	}
+
+	protected async appendRefinerFailure(
+		failure: ToolFailure,
+		action: RecoveryAction,
+		outcome: "recovered" | "failed" | "blocked" | "cancelled" | "needs_model",
+	): Promise<void> {
+		if (!this.options.refiner) return;
+		const refinerFailure: ToolRecoveryRefinerFailure = {
+			toolName: failure.toolName,
+			code: failure.code,
+			category: failure.category,
+			fingerprint: failure.fingerprint,
+			action,
+			outcome,
+			...(failure.targetHash ? { targetHash: failure.targetHash } : {}),
+		};
+		const key = `${refinerFailure.toolName}\u0000${refinerFailure.code}\u0000${refinerFailure.fingerprint}`;
+		const existingIndex = this.refinerFailures.findIndex(
+			(candidate) =>
+				candidate.toolName === refinerFailure.toolName &&
+				candidate.code === refinerFailure.code &&
+				candidate.fingerprint === refinerFailure.fingerprint,
+		);
+		if (existingIndex >= 0) {
+			this.refinerFailures[existingIndex] = refinerFailure;
+			return;
+		}
+		if (this.refinerFailureKeys.has(key)) return;
+		this.refinerFailureKeys.add(key);
+		this.refinerFailures.push(refinerFailure);
+	}
+
+	private async runRefinement(): Promise<void> {
+		const batch = this.refinerFailures.slice(0, 3);
+		if (!this.options.refiner || !this.options.scopeHash || batch.length === 0) return;
+		const controller = new AbortController();
+		this.refinerAbortController = controller;
+		let completed = false;
+		try {
+			const relatedLessons = await findToolRecoveryRefinerLessons(
+				this.options.agentDir,
+				this.options.scopeHash,
+				batch,
+			);
+			let timeout: ReturnType<typeof setTimeout> | undefined;
+			let output: unknown;
+			try {
+				output = await Promise.race([
+					Promise.resolve(
+						this.options.refiner({
+							scopeHash: this.options.scopeHash,
+							failures: batch,
+							relatedLessons,
+							userCorrections: sanitizeToolRecoveryUserCorrections(this.options.getUserCorrections?.()).slice(
+								0,
+								3,
+							),
+							signal: controller.signal,
+						}),
+					),
+					new Promise<undefined>((resolve) => {
+						timeout = setTimeout(() => {
+							controller.abort();
+							resolve(undefined);
+						}, REFINER_TIMEOUT_MS);
+					}),
+				]);
+			} finally {
+				if (timeout) clearTimeout(timeout);
+			}
+			if (output === undefined) throw new Error("refiner returned no output");
+			const proposal = parseToolRecoveryRefinerProposal(output);
+			if (!proposal) throw new Error("refiner returned no valid proposal");
+			if (proposal.type !== "none") {
+				await applyToolRecoveryRefinerProposal(this.options.agentDir, this.options.scopeHash, proposal);
+			}
+			completed = true;
+		} catch {
+			// 提炼失败保留案例，下一轮可以重试；不能改变已完成的 Tool 结果。
+		}
+		if (!completed) return;
+		const completedKeys = new Set(
+			batch.map((failure) => `${failure.toolName}\u0000${failure.code}\u0000${failure.fingerprint}`),
+		);
+		const completedEntries = new Set(batch);
+		for (let index = this.refinerFailures.length - 1; index >= 0; index--) {
+			if (completedEntries.has(this.refinerFailures[index]!)) this.refinerFailures.splice(index, 1);
+		}
+		for (const key of completedKeys) {
+			if (
+				!this.refinerFailures.some(
+					(failure) => `${failure.toolName}\u0000${failure.code}\u0000${failure.fingerprint}` === key,
+				)
+			) {
+				this.refinerFailureKeys.delete(key);
+			}
+		}
+	}
+
+	async refineTurn(): Promise<void> {
+		if (this.refinerInFlight) return this.refinerInFlight;
+		this.refinerInFlight = this.runRefinement().finally(() => {
+			this.refinerInFlight = undefined;
+		});
+		return this.refinerInFlight;
 	}
 
 	protected registerPendingModelRecovery(
@@ -313,7 +463,7 @@ abstract class BaseToolRecoveryController implements ToolRecoveryController {
 					candidate.toolName === observation.toolName &&
 					candidate.targetHash === observation.targetHash &&
 					now - candidate.createdAt <= MODEL_RECOVERY_MAX_AGE_MS &&
-					(candidate.action === "refresh_context" || candidate.callSignature !== observation.callSignature),
+					candidate.callSignature !== observation.callSignature,
 			);
 			if (index === -1) {
 				if (pending.length === 0) this.pendingModelRecoveries.delete(key);
@@ -382,26 +532,12 @@ abstract class BaseToolRecoveryController implements ToolRecoveryController {
 		if (!receipt || !this.options.scopeHash) return;
 
 		try {
-			const candidate = await recordDeterministicToolRecoveryCandidate(this.options.agentDir, {
+			await this.appendRefinerFailure(failure, action, outcome);
+			await recordDeterministicToolRecoveryCandidate(this.options.agentDir, {
 				scopeHash: this.options.scopeHash,
 				receipt,
 				autoVerify: true,
 			});
-			if (!candidate && this.options.refiner && outcome === "recovered") {
-				const refinerFailure: ToolRecoveryRefinerFailure = {
-					toolName: failure.toolName,
-					code: failure.code,
-					category: failure.category,
-					fingerprint: failure.fingerprint,
-					action,
-					outcome,
-				};
-				const key = `${refinerFailure.toolName}\u0000${refinerFailure.code}\u0000${refinerFailure.fingerprint}\u0000${refinerFailure.action}`;
-				if (!this.refinerFailureKeys.has(key)) {
-					this.refinerFailureKeys.add(key);
-					this.refinerFailures.push(refinerFailure);
-				}
-			}
 			if (outcome === "recovered") {
 				const matches = await findMatchingToolRecoveryLessons(this.options.agentDir, {
 					scopeHash: this.options.scopeHash,
@@ -422,47 +558,6 @@ abstract class BaseToolRecoveryController implements ToolRecoveryController {
 
 	recordSuspendedLessons(lessonIds: readonly string[]): void {
 		for (const lessonId of new Set(lessonIds)) this.metrics.recordLessonSuspended(lessonId);
-	}
-
-	async refineTurn(): Promise<void> {
-		const failures = this.refinerFailures.splice(0);
-		this.refinerFailureKeys.clear();
-		try {
-			if (!this.options.refiner || !this.options.scopeHash || failures.length === 0) return;
-			const relatedLessons = await findToolRecoveryRefinerLessons(
-				this.options.agentDir,
-				this.options.scopeHash,
-				failures,
-			);
-			const controller = new AbortController();
-			let timeout: ReturnType<typeof setTimeout> | undefined;
-			let output: unknown;
-			try {
-				output = await Promise.race([
-					Promise.resolve(
-						this.options.refiner({
-							scopeHash: this.options.scopeHash,
-							failures,
-							relatedLessons,
-							userCorrections: sanitizeToolRecoveryUserCorrections(this.options.getUserCorrections?.()),
-							signal: controller.signal,
-						}),
-					),
-					new Promise<undefined>((resolve) => {
-						timeout = setTimeout(() => {
-							controller.abort();
-							resolve(undefined);
-						}, REFINER_TIMEOUT_MS);
-					}),
-				]);
-			} finally {
-				if (timeout) clearTimeout(timeout);
-			}
-			const proposal = parseToolRecoveryRefinerProposal(output);
-			if (proposal) await applyToolRecoveryRefinerProposal(this.options.agentDir, this.options.scopeHash, proposal);
-		} catch {
-			// Refiner 是可选的离线建议，不得让 turn 失败或改变 Tool 结果。
-		}
 	}
 
 	getFailureForToolCall(_toolCallId: string): ToolFailure | undefined {
@@ -506,15 +601,32 @@ export class ObserveOnlyToolRecoveryController extends BaseToolRecoveryControlle
 export class AssistToolRecoveryController extends BaseToolRecoveryController {
 	private readonly circuits = new Map<string, CircuitState>();
 	private readonly attempts = new Map<string, AttemptState>();
+	private readonly rebuiltFingerprints = new Map<string, number>();
+	private readonly closedFingerprints = new Set<string>();
+
+	beginTask(): void {
+		super.beginTask();
+		this.circuits.clear();
+		this.attempts.clear();
+		if (!this.taskContinuesRecovery) {
+			this.rebuiltFingerprints.clear();
+			this.closedFingerprints.clear();
+		}
+	}
 
 	getFailureForToolCall(toolCallId: string): ToolFailure | undefined {
 		return Array.from(this.attempts.entries()).find(([key]) => key.startsWith(`${toolCallId}\u0000`))?.[1].failure;
 	}
 
 	async preflight(context: ToolRecoveryPreflightContext): Promise<ToolRecoveryPreflightResult | undefined> {
-		const circuit = Array.from(this.circuits.entries()).find(([key]) =>
-			key.startsWith(`${context.callSignature}\u0000`),
+		const circuit = Array.from(this.circuits.entries()).find(
+			([key, state]) => key.startsWith(`${context.callSignature}\u0000`) && this.circuitCanBlock(context, state),
 		);
+		for (const [key, state] of this.circuits) {
+			if (key.startsWith(`${context.callSignature}\u0000`) && !this.circuitCanBlock(context, state)) {
+				this.circuits.delete(key);
+			}
+		}
 		if (!circuit) return;
 		const [, state] = circuit;
 		const observation: ToolRecoveryObservation = {
@@ -562,17 +674,38 @@ export class AssistToolRecoveryController extends BaseToolRecoveryController {
 		) {
 			const resolution = await runToolRecoveryHandler(error, signal);
 			if (resolution?.type === "ask_model_to_rebuild") {
-				action = resolution;
+				const rebuildAttempt = this.rebuiltFingerprints.get(failure.fingerprint) ?? 0;
+				if (rebuildAttempt >= MAX_MODEL_RECOVERY_ROUNDS) {
+					this.closedFingerprints.add(failure.fingerprint);
+				} else {
+					this.rebuiltFingerprints.set(failure.fingerprint, rebuildAttempt + 1);
+					action = resolution;
+				}
 			}
 		}
+		if (this.closedFingerprints.has(failure.fingerprint)) {
+			observation.action = "stop";
+			observation.outcome = "failure";
+			this.metrics.recordAttempt(observation.toolName, "stop");
+			this.circuits.set(
+				circuitKey(observation.callSignature, failure.fingerprint),
+				this.createCircuitState(observation, failure, state.attempt),
+			);
+			await this.append(observation, failure, state.attempt, "stop");
+			return { action: { type: "stop", reason: "model recovery budget exhausted" }, observation };
+		}
 		if (!action && isSafeRetry(observation, error)) {
-			const guidance =
-				"该只读 Tool 遇到暂时性错误。请在改变参数、刷新状态或改用其他工具后再继续，不要原样重复调用。";
-			action = {
-				type: "ask_model_to_rebuild",
-				guidance,
-				replacementResult: { content: [{ type: "text", text: guidance }], details: {} },
-			};
+			const rebuildAttempt = this.rebuiltFingerprints.get(failure.fingerprint) ?? 0;
+			if (rebuildAttempt < MAX_MODEL_RECOVERY_ROUNDS) {
+				this.rebuiltFingerprints.set(failure.fingerprint, rebuildAttempt + 1);
+				const guidance =
+					"该只读 Tool 遇到暂时性错误。请在改变参数、刷新状态或改用其他工具后再继续，不要原样重复调用。";
+				action = {
+					type: "ask_model_to_rebuild",
+					guidance,
+					replacementResult: { content: [{ type: "text", text: guidance }], details: {} },
+				};
+			}
 		}
 
 		if (action) {
@@ -582,10 +715,10 @@ export class AssistToolRecoveryController extends BaseToolRecoveryController {
 			if (action.type === "ask_model_to_rebuild" || action.type === "refresh_context") {
 				this.registerPendingModelRecovery(observation, failure, state.attempt, action.type);
 			}
-			this.circuits.set(circuitKey(observation.callSignature, failure.fingerprint), {
-				attempt: state.attempt,
-				failure,
-			});
+			this.circuits.set(
+				circuitKey(observation.callSignature, failure.fingerprint),
+				this.createCircuitState(observation, failure, state.attempt),
+			);
 			await this.append(observation, failure, state.attempt, action.type);
 			return { action, observation };
 		}
@@ -595,10 +728,10 @@ export class AssistToolRecoveryController extends BaseToolRecoveryController {
 		this.metrics.recordAttempt(observation.toolName, "stop");
 		if (!isSafeRetry(observation, error)) this.metrics.recordUnsafeRetryBlocked(observation.toolName);
 		if (failure.code !== "POST_HOOK_FAILURE") {
-			this.circuits.set(circuitKey(observation.callSignature, failure.fingerprint), {
-				attempt: state.attempt,
-				failure,
-			});
+			this.circuits.set(
+				circuitKey(observation.callSignature, failure.fingerprint),
+				this.createCircuitState(observation, failure, state.attempt),
+			);
 		}
 		await this.append(observation, failure, state.attempt, "stop");
 		return { action: { type: "stop", reason: "automatic recovery disabled" }, observation };
@@ -606,9 +739,10 @@ export class AssistToolRecoveryController extends BaseToolRecoveryController {
 
 	async observe(observation: ToolRecoveryObservation, signal?: AbortSignal, error?: unknown): Promise<void> {
 		this.metrics.recordDuration(observation.durationMs);
+		await adaptToolRecoveryObservation(observation, error, signal);
+		this.noteProgress(observation);
 		if (await this.recordPendingModelRecoverySuccess(observation)) return;
 		if (!observation.failure) return;
-		await adaptToolRecoveryObservation(observation, error, signal);
 		const failure = observation.failure;
 		if (!failure) return;
 		this.metrics.recordFailure(failure);
@@ -633,14 +767,31 @@ export class AutoToolRecoveryController extends BaseToolRecoveryController {
 	private readonly closedFingerprints = new Set<string>();
 	private readonly refreshedFingerprints = new Set<string>();
 
+	beginTask(): void {
+		super.beginTask();
+		this.circuits.clear();
+		this.attempts.clear();
+		this.recovered.clear();
+		if (!this.taskContinuesRecovery) {
+			this.rebuiltFingerprints.clear();
+			this.closedFingerprints.clear();
+			this.refreshedFingerprints.clear();
+		}
+	}
+
 	getFailureForToolCall(toolCallId: string): ToolFailure | undefined {
 		return Array.from(this.attempts.entries()).find(([key]) => key.startsWith(`${toolCallId}\u0000`))?.[1].failure;
 	}
 
 	async preflight(context: ToolRecoveryPreflightContext): Promise<ToolRecoveryPreflightResult | undefined> {
-		const circuit = Array.from(this.circuits.entries()).find(([key]) =>
-			key.startsWith(`${context.callSignature}\u0000`),
+		const circuit = Array.from(this.circuits.entries()).find(
+			([key, state]) => key.startsWith(`${context.callSignature}\u0000`) && this.circuitCanBlock(context, state),
 		);
+		for (const [key, state] of this.circuits) {
+			if (key.startsWith(`${context.callSignature}\u0000`) && !this.circuitCanBlock(context, state)) {
+				this.circuits.delete(key);
+			}
+		}
 		if (!circuit) return;
 		const [, state] = circuit;
 		const observation: ToolRecoveryObservation = {
@@ -684,12 +835,12 @@ export class AutoToolRecoveryController extends BaseToolRecoveryController {
 			observation.action = "stop";
 			observation.outcome = "failure";
 			this.metrics.recordAttempt(observation.toolName, "stop");
-			this.circuits.set(circuitKey(observation.callSignature, failure.fingerprint), {
-				attempt: state.attempt,
-				failure,
-			});
+			this.circuits.set(
+				circuitKey(observation.callSignature, failure.fingerprint),
+				this.createCircuitState(observation, failure, state.attempt),
+			);
 			await this.append(observation, failure, state.attempt, "stop");
-			return { action: { type: "stop", reason: "rebuild budget exhausted" }, observation };
+			return { action: { type: "stop", reason: "model recovery budget exhausted" }, observation };
 		}
 
 		if (
@@ -700,7 +851,8 @@ export class AutoToolRecoveryController extends BaseToolRecoveryController {
 			const resolution = await runToolRecoveryHandler(error, signal);
 			if (resolution) {
 				const rebuildAttempt = this.rebuiltFingerprints.get(failure.fingerprint) ?? 0;
-				const isRepeatRebuild = resolution.type === "ask_model_to_rebuild" && rebuildAttempt >= 1;
+				const isRepeatRebuild =
+					resolution.type === "ask_model_to_rebuild" && rebuildAttempt >= MAX_MODEL_RECOVERY_ROUNDS;
 				const isRepeatRefresh =
 					resolution.type === "refresh_context" && this.refreshedFingerprints.has(failure.fingerprint);
 				if (isRepeatRebuild) {
@@ -717,10 +869,10 @@ export class AutoToolRecoveryController extends BaseToolRecoveryController {
 						this.registerPendingModelRecovery(observation, failure, state.attempt, resolution.type);
 					}
 					if (resolution.type !== "accept_as_success") {
-						this.circuits.set(circuitKey(observation.callSignature, failure.fingerprint), {
-							attempt: state.attempt,
-							failure,
-						});
+						this.circuits.set(
+							circuitKey(observation.callSignature, failure.fingerprint),
+							this.createCircuitState(observation, failure, state.attempt),
+						);
 					}
 					await this.append(observation, failure, state.attempt, resolution.type);
 					return { action: resolution, observation };
@@ -736,10 +888,10 @@ export class AutoToolRecoveryController extends BaseToolRecoveryController {
 			observation.action = action.type;
 			observation.outcome = "blocked";
 			this.metrics.recordAttempt(observation.toolName, action.type);
-			this.circuits.set(circuitKey(observation.callSignature, failure.fingerprint), {
-				attempt: state.attempt,
-				failure,
-			});
+			this.circuits.set(
+				circuitKey(observation.callSignature, failure.fingerprint),
+				this.createCircuitState(observation, failure, state.attempt),
+			);
 			await this.append(observation, failure, state.attempt, action.type);
 			return { action, observation };
 		}
@@ -759,10 +911,10 @@ export class AutoToolRecoveryController extends BaseToolRecoveryController {
 		this.metrics.recordAttempt(observation.toolName, "stop");
 		if (!isSafeRetry(observation, error)) this.metrics.recordUnsafeRetryBlocked(observation.toolName);
 		if (failure.code !== "POST_HOOK_FAILURE") {
-			this.circuits.set(circuitKey(observation.callSignature, failure.fingerprint), {
-				attempt: state.attempt,
-				failure,
-			});
+			this.circuits.set(
+				circuitKey(observation.callSignature, failure.fingerprint),
+				this.createCircuitState(observation, failure, state.attempt),
+			);
 		}
 		await this.append(observation, failure, state.attempt, "stop");
 		return { action: { type: "stop", reason: "retry policy denied" }, observation };
@@ -770,6 +922,7 @@ export class AutoToolRecoveryController extends BaseToolRecoveryController {
 
 	async observe(observation: ToolRecoveryObservation, signal?: AbortSignal, error?: unknown): Promise<void> {
 		this.metrics.recordDuration(observation.durationMs);
+		this.noteProgress(observation);
 		if (await this.recordPendingModelRecoverySuccess(observation)) return;
 		if (observation.outcome === "success") {
 			const state = this.recovered.get(observation.toolCallId);

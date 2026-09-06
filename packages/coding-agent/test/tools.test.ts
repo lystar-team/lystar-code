@@ -1246,6 +1246,33 @@ describe("edit tool fuzzy matching", () => {
 		expect(readFileSync(testFile, "utf-8")).toBe('"changed"\n"exact"\nprecise\n');
 	});
 
+	it("should consume explicit indentation without damaging the next line", async () => {
+		const testFile = join(testDir, "fuzzy-indent-boundary.txt");
+		writeFileSync(testFile, "\tfoo();\n\tbar();\n");
+
+		await editTool.execute("test-fuzzy-indent-boundary", {
+			path: testFile,
+			edits: [{ oldText: "  foo();\n", newText: "  baz();\n" }],
+		});
+
+		expect(readFileSync(testFile, "utf-8")).toBe("  baz();\n\tbar();\n");
+	});
+
+	it("should not report adjacent fuzzy edits as overlapping", async () => {
+		const testFile = join(testDir, "fuzzy-adjacent-edits.txt");
+		writeFileSync(testFile, "\tfoo();\n\tbar();\n");
+
+		await editTool.execute("test-fuzzy-adjacent-edits", {
+			path: testFile,
+			edits: [
+				{ oldText: "  foo();\n", newText: "  baz();\n" },
+				{ oldText: "\tbar();\n", newText: "\tqux();\n" },
+			],
+		});
+
+		expect(readFileSync(testFile, "utf-8")).toBe("  baz();\n\tqux();\n");
+	});
+
 	it("should preserve the correct occurrence when fuzzy replacement equals a nearby line", async () => {
 		const testFile = join(testDir, "fuzzy-preserve-duplicate-line.txt");
 		const originalContent = ["replace me\u0020\u0020\u0020", "after\u0020\u0020\u0020", ""].join("\n");

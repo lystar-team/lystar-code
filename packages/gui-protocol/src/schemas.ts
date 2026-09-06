@@ -1,7 +1,7 @@
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
 
-export const GUI_PROTOCOL_VERSION = 1 as const;
+export const GUI_PROTOCOL_VERSION = 2 as const;
 export const MAX_TRANSCRIPT_PAGE_SIZE = 200;
 export const MAX_TRANSCRIPT_SEARCH_LIMIT = 100;
 
@@ -9,6 +9,7 @@ const Id = Type.String({ minLength: 1, maxLength: 4096 });
 const WorkspaceText = Type.String({ maxLength: 1024 * 1024 });
 const StrictObject = <const T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
 	Type.Object(properties, { additionalProperties: false });
+const TimestampSchema = Type.Integer({ minimum: 0 });
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 const JsonValueRecursiveSchema = Type.Cyclic(
@@ -257,10 +258,38 @@ const ToolDiffFileSchema = StrictObject({
 export type ToolDiffFile = Static<typeof ToolDiffFileSchema>;
 const ToolDiffSchema = StrictObject({ files: Type.Array(ToolDiffFileSchema, { minItems: 1, maxItems: 128 }) });
 export type ToolDiff = Static<typeof ToolDiffSchema>;
+export const ToolActivityStateSchema = Type.Union([
+	Type.Literal("preparing"),
+	Type.Literal("queued"),
+	Type.Literal("running"),
+	Type.Literal("success"),
+	Type.Literal("error"),
+	Type.Literal("cancelled"),
+	Type.Literal("interrupted"),
+]);
+export type ToolActivityState = Static<typeof ToolActivityStateSchema>;
+export const ToolActivitySchema = StrictObject({
+	activityEpoch: Id,
+	revision: Type.Integer({ minimum: 0 }),
+	toolCallId: Id,
+	name: Type.String({ minLength: 1, maxLength: 256 }),
+	state: ToolActivityStateSchema,
+	summary: ProgressTextSchema,
+	inputPreview: Type.Optional(Type.Boolean()),
+	diff: Type.Optional(ToolDiffSchema),
+	progress: Type.Optional(ProgressTextSchema),
+	output: Type.Optional(ProgressTextSchema),
+	error: Type.Optional(ProgressTextSchema),
+	startedAt: Type.Optional(TimestampSchema),
+	updatedAt: TimestampSchema,
+	completedAt: Type.Optional(TimestampSchema),
+});
+export type ToolActivity = Static<typeof ToolActivitySchema>;
 export const SessionProgressSchema = Type.Union([
 	StrictObject({ type: Type.Literal("user_message"), text: ProgressTextSchema }),
 	StrictObject({ type: Type.Literal("assistant_delta"), text: ProgressTextSchema }),
 	StrictObject({ type: Type.Literal("thinking_delta"), text: ProgressTextSchema }),
+	StrictObject({ type: Type.Literal("tool_state"), activity: ToolActivitySchema }),
 	StrictObject({
 		type: Type.Literal("tool_start"),
 		toolCallId: Id,
@@ -367,6 +396,9 @@ export const SessionStateSnapshotSchema = StrictObject({
 	contextWindow: Type.Optional(Type.Integer({ minimum: 1 })),
 	transcriptGeneration: Id,
 	transcriptRevision: Type.Integer({ minimum: 0 }),
+	toolActivityEpoch: Type.Optional(Id),
+	toolActivityRevision: Type.Optional(Type.Integer({ minimum: 0 })),
+	toolActivities: Type.Optional(Type.Array(ToolActivitySchema, { maxItems: 128 })),
 });
 export type SessionStateSnapshot = Static<typeof SessionStateSnapshotSchema>;
 

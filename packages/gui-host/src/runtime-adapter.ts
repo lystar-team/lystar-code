@@ -895,6 +895,7 @@ export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgres
 						name: event.toolName,
 						status: event.isError ? "error" : "success",
 						summary: bashOutput(event.result) ?? "",
+						...(diff ? { diff } : {}),
 					},
 				];
 			}
@@ -911,6 +912,10 @@ export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgres
 				},
 			];
 		}
+		case "entry_appended":
+			return [];
+		case "tool_activity":
+			return [{ type: "tool_state", activity: event.activity }];
 		case "queue_update":
 			return [{ type: "queue_update", steeringCount: event.steering.length, followUpCount: event.followUp.length }];
 		case "compaction_start":
@@ -1037,6 +1042,12 @@ class CoreRuntimeSession implements RuntimeSession {
 		const header = session.sessionManager.getHeader();
 		const storage = sessionGeneration(this.sessionPath, session.sessionId);
 		const contextUsage = session.getContextUsage();
+		const toolActivityEpoch =
+			typeof session.getToolActivityEpoch === "function" ? session.getToolActivityEpoch() : undefined;
+		const toolActivityRevision =
+			typeof session.getToolActivityRevision === "function" ? session.getToolActivityRevision() : undefined;
+		const toolActivities =
+			typeof session.getToolActivitySnapshot === "function" ? session.getToolActivitySnapshot() : undefined;
 		return {
 			id: session.sessionId,
 			path: this.sessionPath,
@@ -1064,6 +1075,9 @@ class CoreRuntimeSession implements RuntimeSession {
 			contextWindow: contextUsage?.contextWindow,
 			transcriptGeneration: storage.generation,
 			transcriptRevision: storage.revision,
+			...(toolActivityEpoch ? { toolActivityEpoch } : {}),
+			...(toolActivityRevision === undefined ? {} : { toolActivityRevision }),
+			...(toolActivities === undefined ? {} : { toolActivities }),
 		};
 	}
 
@@ -1393,7 +1407,22 @@ class CoreRuntimeSession implements RuntimeSession {
 			if (event.type === "message_end" || event.type === "entry_appended") {
 				queueMicrotask(() => this.emitCommittedEntries());
 			}
-			for (const progress of projectRuntimeProgress(event)) this.emit({ type: "progress", payload: progress });
+			const isLegacyToolProjection =
+				event.type === "tool_execution_start" ||
+				event.type === "tool_execution_update" ||
+				event.type === "tool_execution_end" ||
+				(event.type === "message_update" &&
+					(event.assistantMessageEvent.type === "toolcall_start" ||
+						event.assistantMessageEvent.type === "toolcall_delta" ||
+						event.assistantMessageEvent.type === "toolcall_end"));
+			for (const progress of projectRuntimeProgress(event)) {
+				if (
+					isLegacyToolProjection &&
+					(progress.type === "tool_start" || progress.type === "tool_update" || progress.type === "tool_end")
+				)
+					continue;
+				this.emit({ type: "progress", payload: progress });
+			}
 			this.emit({ type: "state_changed", payload: jsonValue(this.getSnapshot("owned")) });
 		});
 	}

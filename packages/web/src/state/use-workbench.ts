@@ -1,6 +1,7 @@
-import type { SessionProgress, ToolDiff } from "@lystar/code-gui-protocol";
+import type { SessionProgress, ToolActivity, ToolActivityState, ToolDiff } from "@lystar/code-gui-protocol";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UnauthorizedError, webApi } from "../adapters/host-protocol/api.ts";
+import { shouldJoinToolBatch } from "./tool-batching.ts";
 import type {
 	GatewayEvent,
 	ProjectTreeResponse,
@@ -24,8 +25,10 @@ export interface LiveTool {
 	name: string;
 	batchId: string;
 	summary: string;
+	state: ToolActivityState;
 	result?: string;
 	status: "running" | "success" | "error";
+	inputPreview?: boolean;
 	diff?: ToolDiff;
 }
 
@@ -72,6 +75,122 @@ function mergeToolDiff(previous: ToolDiff | undefined, next: ToolDiff | undefine
 	};
 }
 
+function toolActivityStatus(state: ToolActivityState): LiveTool["status"] {
+	return state === "success" ? "success" : state === "error" || state === "cancelled" || state === "interrupted" ? "error" : "running";
+}
+
+function toolActivityLabel(activity: ToolActivity): string {
+	switch (activity.state) {
+		case "preparing":
+			return `准备 ${activity.name}`;
+		case "queued":
+			return `${activity.name} 已排队`;
+		case "running":
+			return `正在执行 ${activity.name}`;
+		case "success":
+			return `${activity.name} 已完成`;
+		case "error":
+			return `${activity.name} 执行失败`;
+		case "cancelled":
+			return `${activity.name} 已取消`;
+		case "interrupted":
+			return `${activity.name} 已中断`;
+	}
+}
+
+function liveToolFromActivity(
+	activity: ToolActivity,
+	previous: LiveTool | undefined,
+	batchId: string,
+): LiveTool {
+	const terminal = activity.state === "success" || activity.state === "error" || activity.state === "cancelled" || activity.state === "interrupted";
+	return {
+		id: activity.toolCallId,
+		name: activity.name,
+		batchId,
+		summary: activity.summary || previous?.summary || activity.name,
+		state: activity.state,
+		status: toolActivityStatus(activity.state),
+		inputPreview: activity.inputPreview,
+		result: activity.output ?? activity.progress ?? activity.error ?? previous?.result,
+		...(terminal ? { diff: activity.diff } : { diff: mergeToolDiff(previous?.diff, activity.diff) }),
+	};
+}
+
+function nextLiveToolBatchId(current: WorkbenchState, toolName: string, fallback: string): string {
+	const last = current.liveTurnItems.at(-1);
+	if (last?.kind !== "tools") return fallback;
+	const previousToolId = last.toolIds.at(-1);
+	const previousTool = previousToolId ? current.liveTools[previousToolId] : undefined;
+	return previousTool && shouldJoinToolBatch(previousTool.name, toolName) ? last.batchId : fallback;
+}
+
+function applyToolActivityState(current: WorkbenchState, activity: ToolActivity): WorkbenchState {
+	if (current.toolActivityEpoch === activity.activityEpoch && (current.toolActivityRevision ?? -1) >= activity.revision) {
+		return current;
+	}
+	const newEpoch = current.toolActivityEpoch !== activity.activityEpoch;
+	const liveTools = newEpoch ? {} : current.liveTools;
+	const previous = liveTools[activity.toolCallId];
+	const batchId = previous?.batchId ?? nextLiveToolBatchId(current, activity.name, `live-tool-batch:${activity.activityEpoch}:${activity.toolCallId}`);
+	return {
+		...current,
+		toolActivityEpoch: activity.activityEpoch,
+		toolActivityRevision: activity.revision,
+		liveTools: {
+			...liveTools,
+			[activity.toolCallId]: liveToolFromActivity(activity, previous, batchId),
+		},
+		liveTurnItems: previous
+			? current.liveTurnItems
+			: appendLiveToolBlock(
+					newEpoch ? current.liveTurnItems.filter((item) => item.kind !== "tools") : current.liveTurnItems,
+					batchId,
+					activity.toolCallId,
+					`live-tools:${activity.activityEpoch}:${activity.toolCallId}`,
+				),
+		statusText: toolActivityLabel(activity),
+	};
+}
+
+function restoreToolActivities(current: WorkbenchState, snapshot: WebSessionSnapshot): WorkbenchState {
+	if (!snapshot.toolActivityEpoch || snapshot.toolActivityRevision === undefined) return current;
+	if (
+		current.toolActivityEpoch === snapshot.toolActivityEpoch &&
+		(current.toolActivityRevision ?? -1) >= snapshot.toolActivityRevision
+	) {
+		return current;
+	}
+	let next: WorkbenchState = {
+		...current,
+		toolActivityEpoch: snapshot.toolActivityEpoch,
+		toolActivityRevision: snapshot.toolActivityRevision,
+		liveTools: {},
+		liveTurnItems: current.liveTurnItems.filter((item) => item.kind !== "tools"),
+	};
+	for (const activity of snapshot.toolActivities ?? []) {
+		const batchId = nextLiveToolBatchId(
+			next,
+			activity.name,
+			`live-tool-batch:${activity.activityEpoch}:${activity.toolCallId}`,
+		);
+		next = {
+			...next,
+			liveTools: {
+				...next.liveTools,
+				[activity.toolCallId]: liveToolFromActivity(activity, undefined, batchId),
+			},
+			liveTurnItems: appendLiveToolBlock(
+					next.liveTurnItems,
+					batchId,
+					activity.toolCallId,
+					`live-tools:${activity.activityEpoch}:${activity.toolCallId}`,
+			),
+		};
+	}
+	return next;
+}
+
 interface GitFileDiffStats {
 	additions: number;
 	deletions: number;
@@ -96,6 +215,8 @@ export interface WorkbenchState {
 	transcriptGeneration?: string;
 	transcriptRevision?: number;
 	previousCursor?: string;
+	toolActivityEpoch?: string;
+	toolActivityRevision?: number;
 	hasMorePrevious: boolean;
 	loadingEarlier: boolean;
 	lease?: { leaseId: string; leaseGeneration: number; createdAt: number; updatedAt: number };
@@ -365,6 +486,13 @@ function sessionActivityFromProgress(progress: SessionProgress): "running" | "wa
 		case "user_message":
 		case "bash":
 			return "running";
+		case "tool_state":
+			return progress.activity.state === "success" ||
+				progress.activity.state === "error" ||
+				progress.activity.state === "cancelled" ||
+				progress.activity.state === "interrupted"
+				? undefined
+				: "running";
 		case "queue_update":
 		case "status":
 		case "usage":
@@ -690,7 +818,8 @@ export function useWorkbench() {
 			if (
 				progress.type === "assistant_delta" ||
 				progress.type === "user_message" ||
-				progress.type === "tool_start"
+				progress.type === "tool_start" ||
+				progress.type === "tool_state"
 			) {
 				scheduleThinkingClear();
 			} else if (progress.type === "thinking_delta") {
@@ -724,9 +853,12 @@ export function useWorkbench() {
 						};
 					case "user_message":
 						return { ...current, statusText: "正在处理" };
+					case "tool_state":
+						return applyToolActivityState(current, progress.activity);
 					case "tool_start": {
 						const previous = current.liveTools[progress.toolCallId];
-						const batchId = previous?.batchId ?? `live-tool-batch:${liveToolBatchRef.current++}`;
+						const batchId =
+							previous?.batchId ?? nextLiveToolBatchId(current, progress.name, `live-tool-batch:${liveToolBatchRef.current++}`);
 						return {
 							...current,
 							liveTools: {
@@ -736,6 +868,7 @@ export function useWorkbench() {
 									name: progress.name,
 									batchId,
 									summary: progress.summary ?? previous?.summary ?? "正在执行",
+									state: "running",
 									status: "running",
 									diff: mergeToolDiff(previous?.diff, progress.diff),
 								},
@@ -754,7 +887,8 @@ export function useWorkbench() {
 					case "tool_update": {
 						const previous = current.liveTools[progress.toolCallId];
 						if (previous && previous.status !== "running") return current;
-						const batchId = previous?.batchId ?? `live-tool-batch:${liveToolBatchRef.current++}`;
+						const batchId =
+							previous?.batchId ?? nextLiveToolBatchId(current, progress.name, `live-tool-batch:${liveToolBatchRef.current++}`);
 						return {
 							...current,
 							liveTools: {
@@ -764,6 +898,7 @@ export function useWorkbench() {
 									name: progress.name,
 									batchId,
 									summary: progress.summary || previous?.summary || "正在执行",
+									state: "running",
 									result: progress.summary,
 									status: "running",
 									diff: mergeToolDiff(previous?.diff, progress.diff),
@@ -781,7 +916,8 @@ export function useWorkbench() {
 					}
 					case "tool_end": {
 						const previous = current.liveTools[progress.toolCallId];
-						const batchId = previous?.batchId ?? `live-tool-batch:${liveToolBatchRef.current++}`;
+						const batchId =
+							previous?.batchId ?? nextLiveToolBatchId(current, progress.name, `live-tool-batch:${liveToolBatchRef.current++}`);
 						return {
 							...current,
 							liveTools: {
@@ -791,6 +927,7 @@ export function useWorkbench() {
 									name: progress.name,
 									batchId,
 									summary: previous?.summary ?? progress.summary,
+									state: progress.status === "success" ? "success" : "error",
 									result: progress.summary,
 									status: progress.status,
 									diff: mergeToolDiff(previous?.diff, progress.diff),
@@ -833,7 +970,7 @@ export function useWorkbench() {
 								progress.status === "running"
 									? "正在整理上下文"
 									: progress.status === "completed"
-										? "上下文整理完成"
+										? "上下文已整理"
 										: progress.status === "failed"
 											? "上下文整理失败"
 											: "上下文整理已停止",
@@ -897,7 +1034,7 @@ export function useWorkbench() {
 						event.snapshot.activity,
 					);
 					if (event.sessionId !== current.sessionId) return { ...current, projects };
-					return {
+					const next: WorkbenchState = {
 						...current,
 						projects,
 						session: event.snapshot,
@@ -905,6 +1042,7 @@ export function useWorkbench() {
 						transcriptGeneration: event.snapshot.transcriptGeneration,
 						transcriptRevision: event.snapshot.transcriptRevision,
 					};
+					return restoreToolActivities(next, event.snapshot);
 				});
 				return;
 			}
@@ -1026,8 +1164,10 @@ export function useWorkbench() {
 						operations,
 						unreadSessionIds,
 						...(selected ? { currentOperation: event.operation } : {}),
-						...(selected && event.operation.status === "completed"
-							? { liveText: "", liveThinking: "", liveTools: {}, liveTurnItems: [] }
+						...(selected &&
+						event.operation.status === "completed" &&
+						["prompt", "compact", "run_bash"].includes(event.operation.type)
+							? { liveText: "", liveThinking: "", liveTools: {}, liveTurnItems: [], statusText: "" }
 							: {}),
 						...(selected &&
 						(event.operation.status === "failed" ||
@@ -1281,14 +1421,17 @@ export function useWorkbench() {
 					if (selectionInFlightRef.current === sessionId) selectionInFlightRef.current = undefined;
 					return;
 				}
-				updateState((current) => ({
-					...current,
-					projects: updateSessionSummaryName(current.projects, sessionId, controlled.snapshot.name),
-					lease: controlled.lease,
-					session: controlled.snapshot,
-					sessionError: undefined,
-					readOnly: controlled.owned === false,
-				}));
+				updateState((current) => {
+					const next: WorkbenchState = {
+						...current,
+						projects: updateSessionSummaryName(current.projects, sessionId, controlled.snapshot.name),
+						lease: controlled.lease,
+						session: controlled.snapshot,
+						sessionError: undefined,
+						readOnly: controlled.owned === false,
+					};
+					return restoreToolActivities(next, controlled.snapshot);
+				});
 			} catch (error) {
 				try {
 					const snapshot = (await webApi.session(sessionId)).session;
@@ -1296,13 +1439,16 @@ export function useWorkbench() {
 						if (selectionInFlightRef.current === sessionId) selectionInFlightRef.current = undefined;
 						return;
 					}
-					updateState((current) => ({
-						...current,
-						projects: updateSessionSummaryName(current.projects, sessionId, snapshot.name),
-						session: snapshot,
-						sessionError: undefined,
-						readOnly: true,
-					}));
+					updateState((current) => {
+						const next: WorkbenchState = {
+							...current,
+							projects: updateSessionSummaryName(current.projects, sessionId, snapshot.name),
+							session: snapshot,
+							sessionError: undefined,
+							readOnly: true,
+						};
+						return restoreToolActivities(next, snapshot);
+					});
 					showToast(errorMessage(error));
 				} catch (snapshotError) {
 					if (request !== selectionRef.current) {
