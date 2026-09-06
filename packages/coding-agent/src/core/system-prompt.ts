@@ -134,11 +134,19 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		}
 	}
 
+	if (tools.includes("edit") || tools.includes("write")) {
+		addGuideline(
+			"For each file, make at most one mutation call per assistant response; combine all changes into one edit or write call.",
+		);
+	}
+
 	// Always include these
 	addGuideline("Be concise in your responses");
-	addGuideline("Show file paths clearly when working with files");
 	addGuideline(
-		"When you want the user to open a file, use a Markdown link with the exact file path as its target; do not rely on bare paths being clickable",
+		"Show file paths clearly; when the user should open a file, use a Markdown link with the exact file path as its target",
+	);
+	addGuideline(
+		"Before calling tools for a non-trivial task, send a brief user-facing preamble stating the next step; group related calls under one preamble and skip trivial reads. After results, update only for meaningful discoveries, phase changes, blockers, or required user input. A preamble is not a request for confirmation; ask only when a user decision or authorization is required. Use observed facts, do not expose private reasoning or claim unperformed work is complete. When finished, briefly state what changed, what was verified, and what remains unverified.",
 	);
 
 	const guidelines = guidelinesList.map((g) => `- ${g}`).join("\n");
@@ -148,18 +156,13 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 Available tools:
 ${toolsList}
 
-In addition to the tools above, you may have access to other custom tools depending on the project.
-
 Guidelines:
 ${guidelines}
 
-Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):
-- Main documentation: ${readmePath}
-- Additional docs: ${docsPath}
-- Examples: ${examplesPath} (extensions, custom tools, SDK)
-- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory
-- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md), environment variables (docs/environment-variables.md)
-- When working on pi topics, first read the directly relevant documentation sections; read a full markdown file and its linked references only when the task requires the complete API contract`;
+Pi documentation (read only for pi-related questions):
+- Main: ${readmePath}; docs: ${docsPath}; examples: ${examplesPath} (extensions, custom tools, SDK)
+- Resolve docs/... and examples/... against these absolute paths, not the current working directory
+- For extensions, themes, skills, prompt templates, TUI, SDK, providers, models, packages, or environment variables, read the relevant docs before implementation and follow linked references when needed for the API contract`;
 
 	if (appendSection) {
 		prompt += appendSection;

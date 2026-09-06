@@ -60,6 +60,25 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain(expected);
 		});
 
+		test("includes concise progress and shared mutation guidance for active mutation tools", () => {
+			const prompt = buildSystemPrompt({
+				selectedTools: ["read", "edit", "write"],
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			expect(prompt).toContain("Before calling tools for a non-trivial task");
+			expect(prompt).toContain(
+				"For each file, make at most one mutation call per assistant response; combine all changes into one edit or write call.",
+			);
+			expect(
+				prompt.match(
+					/For each file, make at most one mutation call per assistant response; combine all changes into one edit or write call\./g,
+				),
+			).toHaveLength(1);
+		});
+
 		test("instructs models to resolve pi docs and examples under absolute base paths", () => {
 			const prompt = buildSystemPrompt({
 				contextFiles: [],
@@ -68,9 +87,9 @@ describe("buildSystemPrompt", () => {
 			});
 
 			expect(prompt).toContain(
-				"- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory",
+				"- Resolve docs/... and examples/... against these absolute paths, not the current working directory",
 			);
-			expect(prompt).toContain("environment variables (docs/environment-variables.md)");
+			expect(prompt).toContain("environment variables, read the relevant docs before implementation");
 		});
 	});
 
