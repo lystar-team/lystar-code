@@ -148,6 +148,18 @@ test("Gateway 只向订阅者发送会话详情，其他连接接收摘要", asy
 	assert.deepEqual(summaryOnly.sent, [{ type: "session_summary", sessionId: "session-1", activity: "running" }]);
 });
 
+test("Gateway 首次订阅也返回确认序号", async (t) => {
+	const server = new WebGatewayServer(createConfig());
+	t.after(() => void server.close());
+	const internal = internals(server);
+	const context = internal.createContext("initial-subscription-client");
+	const socket = createSocket();
+	context.sockets.add(socket.webSocket);
+
+	internal.subscribeSession(context, socket.webSocket, "session-1");
+
+	assert.deepEqual(socket.sent, [{ type: "session_subscription", sessionId: "session-1", seq: 0, gap: false }]);
+});
 test("Gateway 可用 lastSeq 重放未订阅期间的详情事件", async (t) => {
 	const server = new WebGatewayServer(createConfig());
 	t.after(() => void server.close());

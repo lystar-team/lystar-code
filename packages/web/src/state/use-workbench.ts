@@ -66,6 +66,11 @@ export type LiveTurnItem =
 
 type LiveTextProgress = Extract<SessionProgress, { type: "assistant_delta" | "thinking_delta" }>;
 type PendingTextProgress = { selection: number; progress: LiveTextProgress };
+type SessionSubscriptionWaiter = {
+	resolve: (ready: boolean) => void;
+	timeoutId: number;
+};
+
 
 function appendLiveTextBlock(
 	items: LiveTurnItem[],
@@ -709,6 +714,7 @@ export function useWorkbench() {
 	const selectionInFlightRef = useRef<string | undefined>(undefined);
 	const sessionDetailCacheRef = useRef(new Map<string, SessionDetailCache>());
 	const sessionDetailSeqRef = useRef(new Map<string, number>());
+	const sessionSubscriptionWaitersRef = useRef(new Map<string, Set<SessionSubscriptionWaiter>>());
 	const initializePromiseRef = useRef<Promise<void> | undefined>(undefined);
 	const selectSessionRef = useRef<(sessionId: string) => Promise<void>>(async () => {});
 	const loadSessionTreeRef = useRef<() => Promise<void>>(async () => {});
@@ -1240,10 +1246,35 @@ export function useWorkbench() {
 		[applyProgressNow, flushPendingTextProgress],
 	);
 
+	const subscribeSessionAndWait = useCallback((sessionId: string): Promise<boolean> => {
+		const socket = socketRef.current;
+		if (!socket || (socket.readyState !== WebSocket.OPEN && socket.readyState !== WebSocket.CONNECTING)) return Promise.resolve(false);
+		return new Promise((resolve) => {
+			const waiters = sessionSubscriptionWaitersRef.current.get(sessionId) ?? new Set<SessionSubscriptionWaiter>();
+			let waiter: SessionSubscriptionWaiter;
+			waiter = {
+				timeoutId: 0,
+				resolve: (ready) => {
+					window.clearTimeout(waiter.timeoutId);
+					waiters.delete(waiter);
+					if (!waiters.size) sessionSubscriptionWaitersRef.current.delete(sessionId);
+					resolve(ready);
+				},
+			};
+			waiter.timeoutId = window.setTimeout(() => waiter.resolve(false), 1500);
+			waiters.add(waiter);
+			sessionSubscriptionWaitersRef.current.set(sessionId, waiters);
+			webApi.subscribeSession(socket, sessionId, sessionDetailSeqRef.current.get(sessionId));
+		});
+	}, []);
 	const handleEvent = useCallback(
 		(event: GatewayEvent) => {
 			if (event.type === "session_subscription") {
 				sessionDetailSeqRef.current.set(event.sessionId, event.seq);
+				const waiters = sessionSubscriptionWaitersRef.current.get(event.sessionId);
+				if (waiters) {
+					for (const waiter of [...waiters]) waiter.resolve(!event.gap);
+				}
 				if (event.gap && stateRef.current.sessionId === event.sessionId)
 					void loadTranscript(event.sessionId).catch((error) => showToast(errorMessage(error)));
 				return;
@@ -1977,7 +2008,11 @@ export function useWorkbench() {
 	const createSession = useCallback(async () => {
 		const projectId = stateRef.current.currentProjectId;
 		if (!projectId) return;
+		const previousSessionId = stateRef.current.sessionId;
+		const socket = socketRef.current;
 		const result = await webApi.createSession(projectId);
+		if (socket && previousSessionId && previousSessionId !== result.session.id)
+			webApi.unsubscribeSession(socket, previousSessionId);
 		updateState((current) => ({
 			...current,
 			projects: current.projects.map((project) =>
@@ -2015,7 +2050,8 @@ export function useWorkbench() {
 			liveTurnItems: [],
 			liveCompaction: undefined,
 		}));
-	}, [updateState]);
+		await subscribeSessionAndWait(result.session.id);
+	}, [subscribeSessionAndWait, updateState]);
 
 	const sendMessage = useCallback(
 		async (

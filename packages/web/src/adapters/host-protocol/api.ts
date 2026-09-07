@@ -64,6 +64,9 @@ async function parseResponse<T>(response: Response): Promise<T> {
 }
 
 export class WebApi {
+	private readonly pendingSessionSubscriptions = new WeakMap<WebSocket, Map<string, number | undefined>>();
+	private readonly pendingSubscriptionListeners = new WeakMap<WebSocket, { onOpen: () => void; onClose: () => void }>();
+
 	hasToken(): boolean {
 		return Boolean(localStorage.getItem(TOKEN_KEY)?.trim());
 	}
@@ -488,14 +491,48 @@ export class WebApi {
 		});
 	}
 
+	private sendSessionSubscription(socket: WebSocket, sessionId: string, lastSeq?: number): void {
+		socket.send(JSON.stringify({ type: "subscribe_session", sessionId, ...(lastSeq === undefined ? {} : { lastSeq }) }));
+	}
+
+	private flushPendingSessionSubscriptions(socket: WebSocket): void {
+		if (socket.readyState !== WebSocket.OPEN) return;
+		const pending = this.pendingSessionSubscriptions.get(socket);
+		if (!pending) return;
+		for (const [sessionId, lastSeq] of pending) this.sendSessionSubscription(socket, sessionId, lastSeq);
+		pending.clear();
+		const listeners = this.pendingSubscriptionListeners.get(socket);
+		if (listeners) {
+			socket.removeEventListener("open", listeners.onOpen);
+			socket.removeEventListener("close", listeners.onClose);
+			this.pendingSubscriptionListeners.delete(socket);
+		}
+		this.pendingSessionSubscriptions.delete(socket);
+	}
+
 	subscribeSession(socket: WebSocket, sessionId: string, lastSeq?: number): void {
-		if (socket.readyState !== WebSocket.OPEN || !sessionId) return;
-		socket.send(
-			JSON.stringify({ type: "subscribe_session", sessionId, ...(lastSeq === undefined ? {} : { lastSeq }) }),
-		);
+		if (!sessionId) return;
+		if (socket.readyState === WebSocket.OPEN) {
+			this.sendSessionSubscription(socket, sessionId, lastSeq);
+			return;
+		}
+		if (socket.readyState !== WebSocket.CONNECTING) return;
+		const pending = this.pendingSessionSubscriptions.get(socket) ?? new Map<string, number | undefined>();
+		pending.set(sessionId, lastSeq);
+		this.pendingSessionSubscriptions.set(socket, pending);
+		if (this.pendingSubscriptionListeners.has(socket)) return;
+		const onOpen = () => this.flushPendingSessionSubscriptions(socket);
+		const onClose = () => {
+			this.pendingSessionSubscriptions.delete(socket);
+			this.pendingSubscriptionListeners.delete(socket);
+		};
+		this.pendingSubscriptionListeners.set(socket, { onOpen, onClose });
+		socket.addEventListener("open", onOpen, { once: true });
+		socket.addEventListener("close", onClose, { once: true });
 	}
 
 	unsubscribeSession(socket: WebSocket, sessionId: string): void {
+		this.pendingSessionSubscriptions.get(socket)?.delete(sessionId);
 		if (socket.readyState !== WebSocket.OPEN || !sessionId) return;
 		socket.send(JSON.stringify({ type: "unsubscribe_session", sessionId }));
 	}

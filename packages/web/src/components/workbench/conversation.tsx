@@ -1,5 +1,5 @@
 import { ArrowDownToLine, LoaderCircle, Sparkles } from "lucide-react";
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { toLiveToolViewModel } from "../../adapters/live-tool-view-model.ts";
 import { toSessionItemViewModel } from "../../adapters/session-view-model";
@@ -392,9 +392,11 @@ function ConversationBody({
 	renderItems: ConversationRenderItem[];
 	toolStatuses: ReadonlyMap<string, "success" | "error">;
 }) {
-	const { scrollRef, scrollToBottom, isAtBottom } = useStickToBottomContext();
+	const { scrollRef, scrollToBottom, isAtBottom, escapedFromLock } = useStickToBottomContext();
 	const pendingScrollRef = useRef<{ top: number; height: number } | undefined>(undefined);
 	const promptScrollRequestRef = useRef(state.promptScrollRequest);
+	const promptFollowRef = useRef(false);
+	const promptFollowPendingRef = useRef(false);
 	const isAtBottomRef = useRef(isAtBottom);
 	isAtBottomRef.current = isAtBottom;
 	const shouldAutoCollapseTools = useCallback(() => isAtBottomRef.current, []);
@@ -402,9 +404,34 @@ function ConversationBody({
 	useLayoutEffect(() => {
 		if (promptScrollRequestRef.current === state.promptScrollRequest) return;
 		promptScrollRequestRef.current = state.promptScrollRequest;
+		promptFollowRef.current = true;
+		promptFollowPendingRef.current = true;
 		pendingScrollRef.current = undefined;
 		void scrollToBottom({ animation: "instant" });
 	}, [scrollToBottom, state.promptScrollRequest]);
+
+	useLayoutEffect(() => {
+		if (!promptFollowRef.current) return;
+		if (promptFollowPendingRef.current) {
+			promptFollowPendingRef.current = false;
+			void scrollToBottom({ animation: "instant" });
+			return;
+		}
+		if (escapedFromLock && !isAtBottom) {
+			promptFollowRef.current = false;
+			return;
+		}
+		void scrollToBottom({ animation: "instant" });
+	}, [escapedFromLock, isAtBottom, renderItems, scrollToBottom]);
+
+	useEffect(() => {
+		if (!promptFollowRef.current || isConversationResponseActive(state)) return;
+		const frame = window.requestAnimationFrame(() => {
+			promptFollowRef.current = false;
+			promptFollowPendingRef.current = false;
+		});
+		return () => window.cancelAnimationFrame(frame);
+	}, [state]);
 
 	const loadEarlier = useCallback(async () => {
 		const scroller = scrollRef.current;

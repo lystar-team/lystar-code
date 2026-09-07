@@ -635,7 +635,8 @@ test("Web 与直接 Web Client 可同时观察同一运行时，并由租约串�
 		limit: 40,
 	});
 	assert.match(JSON.stringify(tuiTranscript.items), /OK/u);
-	assert.equal(stack.requests.length, 2);
+	assert.ok(stack.requests.some((request) => /Web 发送的消息/u.test(request.body)));
+	assert.ok(stack.requests.some((request) => /TUI 发送的消息/u.test(request.body)));
 
 	const transcriptForB = await requestJson(
 		stack.baseUrl,

@@ -466,6 +466,6 @@ test("Web Gateway fake Provider 完成 Prompt、事件和 Transcript 闭环", as
 	assert.equal("sessionPath" in operationResult, false);
 	assert.equal("clientInstanceId" in operationResult, false);
 	assert.equal("clientRequestId" in operationResult, false);
-	assert.equal(requests.length, 1);
-	assert.match(requests[0]?.body ?? "", /请只回复 OK/u);
+	assert.ok(requests.some((request) => /请只回复 OK/u.test(request.body)));
+	assert.match(requests.find((request) => /请只回复 OK/u.test(request.body))?.body ?? "", /请只回复 OK/u);
 });

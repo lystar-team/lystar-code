@@ -2275,18 +2275,24 @@ export class WebGatewayServer {
 		this.subscriptionsFor(socket).add(sessionId);
 		const state = context.sessionDetailState.get(sessionId);
 		const currentSeq = state?.nextSeq ?? 0;
-		if (lastSeq === undefined) return;
-		const oldestSeq = state?.events[0]?.seq;
-		const gap =
-			lastSeq > currentSeq ||
-			(currentSeq > lastSeq && oldestSeq === undefined) ||
-			(oldestSeq !== undefined && lastSeq < oldestSeq - 1);
-		if (!gap) {
-			for (const event of state?.events ?? []) {
-				if (event.seq > lastSeq) this.sendWebSocket(socket, event.payload);
+		if (lastSeq !== undefined) {
+			const oldestSeq = state?.events[0]?.seq;
+			const gap =
+				lastSeq > currentSeq ||
+				(currentSeq > lastSeq && oldestSeq === undefined) ||
+				(oldestSeq !== undefined && lastSeq < oldestSeq - 1);
+			if (!gap) {
+				for (const event of state?.events ?? []) {
+					if (event.seq > lastSeq) this.sendWebSocket(socket, event.payload);
+				}
 			}
+			this.sendWebSocket(socket, JSON.stringify({ type: "session_subscription", sessionId, seq: currentSeq, gap }));
+			return;
 		}
-		this.sendWebSocket(socket, JSON.stringify({ type: "session_subscription", sessionId, seq: currentSeq, gap }));
+		this.sendWebSocket(
+			socket,
+			JSON.stringify({ type: "session_subscription", sessionId, seq: currentSeq, gap: false }),
+		);
 	}
 
 	private sendToSessionUnsubscribers(context: BrowserContext, sessionId: string, value: unknown): void {
