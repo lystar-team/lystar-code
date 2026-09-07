@@ -42,6 +42,8 @@ import type {
 	WebSessionSummary,
 	WebTranscriptItem,
 } from "../types.ts";
+const TRANSCRIPT_PAGE_SIZE = 120;
+
 export type InspectorMode = "runs" | "files" | "tree" | "git";
 export type ComposerMode = "prompt" | "steer" | "follow-up";
 export type ThemeMode = "system" | "light" | "dark";
@@ -880,7 +882,7 @@ export function useWorkbench() {
 				);
 			}
 			try {
-				const result = await webApi.transcript(sessionId, { cursor, limit: 40 });
+				const result = await webApi.transcript(sessionId, { cursor, limit: TRANSCRIPT_PAGE_SIZE });
 				if (requestId !== transcriptRequestRef.current || stateRef.current.sessionId !== sessionId) return;
 				updateState((current) => {
 					const resultMatchesCurrentHistory =

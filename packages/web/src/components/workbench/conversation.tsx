@@ -1,4 +1,4 @@
-import { ArrowDownToLine, LoaderCircle, Sparkles } from "lucide-react";
+import { LoaderCircle, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { toLiveToolViewModel } from "../../adapters/live-tool-view-model.ts";
@@ -48,6 +48,9 @@ type ConversationRenderItem =
 	| TranscriptToolStackRenderItem
 	| CompactionRenderItem;
 type RawRenderItem = MessageRenderItem | TranscriptItemRenderItem | TranscriptBatchRenderItem | CompactionRenderItem;
+
+const HISTORY_LOAD_THRESHOLD = 240;
+const HISTORY_LOAD_RESET_DISTANCE = 480;
 
 type ToolIndex = {
 	callIds: ReadonlySet<string>;
@@ -401,6 +404,20 @@ function ConversationBody({
 	isAtBottomRef.current = isAtBottom;
 	const shouldAutoCollapseTools = useCallback(() => isAtBottomRef.current, []);
 
+	const loadEarlier = useCallback(async () => {
+		const scroller = scrollRef.current;
+		if (scroller) pendingScrollRef.current = { top: scroller.scrollTop, height: scroller.scrollHeight };
+		try {
+			await actions.loadEarlier();
+		} catch (error) {
+			pendingScrollRef.current = undefined;
+			throw error;
+		}
+	}, [actions.loadEarlier, scrollRef]);
+	const loadEarlierRef = useRef(loadEarlier);
+	loadEarlierRef.current = loadEarlier;
+	const historyLoadBlockedRef = useRef(false);
+
 	useLayoutEffect(() => {
 		if (promptScrollRequestRef.current === state.promptScrollRequest) return;
 		promptScrollRequestRef.current = state.promptScrollRequest;
@@ -409,6 +426,44 @@ function ConversationBody({
 		pendingScrollRef.current = undefined;
 		void scrollToBottom({ animation: "instant" });
 	}, [scrollToBottom, state.promptScrollRequest]);
+
+	useLayoutEffect(() => {
+		if (!state.hasMorePrevious) return;
+		const scroller = scrollRef.current;
+		if (!scroller) return;
+		let frame: number | undefined;
+		const checkTopBoundary = () => {
+			frame = undefined;
+			if (scroller.scrollTop > HISTORY_LOAD_RESET_DISTANCE) {
+				historyLoadBlockedRef.current = false;
+				return;
+			}
+			if (
+				scroller.scrollTop > HISTORY_LOAD_THRESHOLD ||
+				state.loadingEarlier ||
+				historyLoadBlockedRef.current
+			)
+				return;
+			historyLoadBlockedRef.current = true;
+			void loadEarlierRef.current().then(
+				() => {
+					historyLoadBlockedRef.current = false;
+				},
+				(error: unknown) => {
+					actions.showToast(error instanceof Error ? error.message : String(error));
+				},
+			);
+		};
+		const scheduleCheck = () => {
+			if (frame !== undefined) return;
+			frame = window.requestAnimationFrame(checkTopBoundary);
+		};
+		scroller.addEventListener("scroll", scheduleCheck, { passive: true });
+		return () => {
+			scroller.removeEventListener("scroll", scheduleCheck);
+			if (frame !== undefined) window.cancelAnimationFrame(frame);
+		};
+	}, [actions.showToast, scrollRef, state.hasMorePrevious, state.loadingEarlier]);
 
 	useLayoutEffect(() => {
 		if (!promptFollowRef.current) return;
@@ -432,17 +487,6 @@ function ConversationBody({
 		});
 		return () => window.cancelAnimationFrame(frame);
 	}, [state]);
-
-	const loadEarlier = useCallback(async () => {
-		const scroller = scrollRef.current;
-		if (scroller) pendingScrollRef.current = { top: scroller.scrollTop, height: scroller.scrollHeight };
-		try {
-			await actions.loadEarlier();
-		} catch (error) {
-			pendingScrollRef.current = undefined;
-			throw error;
-		}
-	}, [actions.loadEarlier, scrollRef]);
 
 	useLayoutEffect(() => {
 		if (state.loadingEarlier || !pendingScrollRef.current) return;
@@ -552,16 +596,25 @@ function ConversationBody({
 
 	return (
 		<ConversationContent className="conversation-content mx-auto w-full max-w-[var(--conversation-width)] gap-3 px-5 py-10 sm:px-10 sm:py-12">
-			{state.hasMorePrevious ? (
+			{state.loadingEarlier ? (
+				<div className="mx-auto flex items-center gap-2 py-2 text-sm text-muted-foreground" aria-live="polite" aria-busy="true">
+					<LoaderCircle className="size-4 animate-spin" />
+					正在加载更早消息
+				</div>
+			) : state.hasMorePrevious && state.transcriptError ? (
 				<Button
 					className="mx-auto"
 					size="sm"
 					variant="outline"
 					disabled={state.loadingEarlier}
-					onClick={() => void loadEarlier()}
+					onClick={() => {
+						historyLoadBlockedRef.current = false;
+						void loadEarlier().catch((error: unknown) => {
+							actions.showToast(error instanceof Error ? error.message : String(error));
+						});
+					}}
 				>
-					{state.loadingEarlier ? <LoaderCircle className="size-4 animate-spin" /> : <ArrowDownToLine className="size-4" />}
-					{state.loadingEarlier ? "正在加载" : "加载更早消息"}
+					重新加载更早消息
 				</Button>
 			) : null}
 			{state.loading ? (
