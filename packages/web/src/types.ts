@@ -82,6 +82,7 @@ export interface UiRequestEvent {
 }
 
 export type GatewayEvent =
+	| { type: "session_stream"; sessionId: string; text: string; thinking: string }
 	| { type: "bootstrap"; data: BootstrapResponse }
 	| { type: "connection_state"; connected: boolean; message?: string }
 	| { type: "sessions_changed"; projectId?: string }

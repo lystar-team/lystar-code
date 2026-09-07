@@ -6139,12 +6139,19 @@ export class InteractiveMode {
 	private showSessionSelector(): void {
 		this.showSelector((done) => {
 			const selector = new SessionSelectorComponent(
-				(onProgress) =>
-					SessionManager.list(this.sessionManager.getCwd(), this.sessionManager.getSessionDir(), onProgress),
-				(onProgress) =>
-					this.sessionManager.usesDefaultSessionDir()
-						? SessionManager.listAll(onProgress)
-						: SessionManager.listAll(this.sessionManager.getSessionDir(), onProgress),
+				(onProgress, options) =>
+					SessionManager.list(
+						this.sessionManager.getCwd(),
+						this.sessionManager.getSessionDir(),
+						onProgress,
+						options,
+					),
+				(onProgress, options) =>
+					SessionManager.listAll(
+						this.sessionManager.usesDefaultSessionDir() ? undefined : this.sessionManager.getSessionDir(),
+						onProgress,
+						options,
+					),
 				async (sessionPath) => {
 					done();
 					await this.handleResumeSession(sessionPath);

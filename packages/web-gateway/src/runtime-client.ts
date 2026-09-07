@@ -9,7 +9,7 @@ import {
 	RuntimeProtocolClient as ProtocolClient,
 	type SessionStateSnapshot,
 } from "@lystar/code-web-protocol";
-import { defaultRuntimeEndpoint, probeIpcRuntime } from "@lystar/code-web-runtime";
+import { createBoundedWriter, defaultRuntimeEndpoint, probeIpcRuntime } from "@lystar/code-web-runtime";
 import type { WebGatewayConfig } from "./config.ts";
 
 class SocketByteTransport implements ByteTransport {
@@ -17,13 +17,14 @@ class SocketByteTransport implements ByteTransport {
 	private readonly closeListeners = new Set<(error?: Error) => void>();
 	private closed = false;
 	private notifiedClose = false;
-	private sendQueue = Promise.resolve();
+	private readonly write: (bytes: Uint8Array) => Promise<void>;
 	private sendFailure?: Error;
 
 	private readonly socket: Socket;
 
 	private constructor(socket: Socket) {
 		this.socket = socket;
+		this.write = createBoundedWriter(socket);
 		socket.on("data", (chunk: Buffer) => {
 			for (const listener of this.bytesListeners) listener(new Uint8Array(chunk));
 		});
@@ -66,44 +67,7 @@ class SocketByteTransport implements ByteTransport {
 
 	async send(bytes: Uint8Array): Promise<void> {
 		if (this.closed) throw this.sendFailure ?? new Error("Web Runtime IPC 连接已关闭");
-		const send = this.sendQueue.then(() => {
-			if (this.closed) throw this.sendFailure ?? new Error("Web Runtime IPC 连接已关闭");
-			return new Promise<void>((resolvePromise, reject) => {
-				let settled = false;
-				const cleanup = () => {
-					this.socket.off("drain", onDrain);
-					this.socket.off("error", onError);
-					this.socket.off("close", onClose);
-				};
-				const resolveOnce = () => {
-					if (settled) return;
-					settled = true;
-					cleanup();
-					resolvePromise();
-				};
-				const rejectOnce = (error: Error) => {
-					if (settled) return;
-					settled = true;
-					cleanup();
-					reject(error);
-				};
-				const onDrain = () => resolveOnce();
-				const onError = (error: Error) => rejectOnce(error);
-				const onClose = () => rejectOnce(this.sendFailure ?? new Error("Web Runtime IPC 连接已关闭"));
-				this.socket.once("error", onError);
-				this.socket.once("close", onClose);
-				try {
-					if (this.socket.write(bytes)) resolveOnce();
-					else this.socket.once("drain", onDrain);
-				} catch (error) {
-					rejectOnce(error instanceof Error ? error : new Error(String(error)));
-				}
-			});
-		});
-		this.sendQueue = send.catch((error) => {
-			this.sendFailure = error instanceof Error ? error : new Error(String(error));
-		});
-		return send;
+		return this.write(bytes);
 	}
 
 	async close(): Promise<void> {

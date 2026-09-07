@@ -517,7 +517,7 @@ export class WebGatewayServer {
 		} else {
 			context.pendingProgress.push({ key, event });
 		}
-		if (context.pendingProgress.length >= 64) {
+		if (context.pendingProgress.length >= 64 || JSON.stringify(context.pendingProgress).length >= 16 * 1024) {
 			this.flushPendingProgress(context);
 			return;
 		}
@@ -732,7 +732,16 @@ export class WebGatewayServer {
 				}),
 			);
 			const hello = client.getSnapshot().hello;
-			const initial = context.initial;
+			const initial = await client.request<RuntimeInitialSnapshot>({ command: "get_snapshot" });
+			if (context.client !== client || !client.getSnapshot().connected)
+				throw new Error("Web Runtime 在读取工作区时断开");
+			context.initial = initial;
+			const operations = new Map(initial.operations.map((operation) => [operation.operationId, operation]));
+			for (const operation of client.getSnapshot().operations.values()) {
+				const previous = operations.get(operation.operationId);
+				if (!previous || operation.updatedAt > previous.updatedAt) operations.set(operation.operationId, operation);
+			}
+			for (const snapshot of initial.sessions) this.sessionIdsByPath.set(snapshot.path, snapshot.id);
 			const value: BootstrapResponse = {
 				projects,
 				capabilities: hello?.capabilities ?? [],
@@ -742,8 +751,8 @@ export class WebGatewayServer {
 					...(hello?.productVersion ? { productVersion: hello.productVersion } : {}),
 				},
 				pendingUiRequests: initial?.pendingUiRequests ?? [],
-				operations: (initial?.operations ?? []).map((operation) =>
-					publicOperation(operation, this.sessions.get(operation.sessionPath)?.id),
+				operations: [...operations.values()].map((operation) =>
+					publicOperation(operation, this.sessionIdsByPath.get(operation.sessionPath)),
 				),
 				leases: [...context.leases.entries()].map(([sessionId, lease]) => ({
 					sessionId,
@@ -791,8 +800,9 @@ export class WebGatewayServer {
 				});
 				this.sessionIdsByPath.set(session.path, session.id);
 			}
-			const orderedSessions = orderSessionSummaries(uniqueSessions, project.sessionOrder);
-			await this.registry.setRecentSessions(project.id, orderedSessions);
+			await this.registry.setRecentSessions(project.id, uniqueSessions);
+			const refreshedProject = this.registry.get(project.id);
+			const orderedSessions = orderSessionSummaries(uniqueSessions, refreshedProject?.sessionOrder);
 			context.sessionListCache.set(project.id, { generation, value: orderedSessions });
 			return orderedSessions;
 		})();
@@ -1168,6 +1178,7 @@ export class WebGatewayServer {
 				...(typeof body.confirmed === "boolean" ? { confirmed: body.confirmed } : {}),
 				...(typeof body.cancelled === "boolean" ? { cancelled: body.cancelled } : {}),
 			});
+			this.invalidateBootstrap(context);
 			sendJson(response, 200, { accepted: true });
 			return;
 		}
@@ -1495,7 +1506,24 @@ export class WebGatewayServer {
 						updatedAt: number;
 					};
 					snapshot: SessionStateSnapshot;
-				}>({ command: "acquire_session", sessionPath: session.path, clientInstanceId: context.id });
+				}>(
+					{ command: "acquire_session", sessionPath: session.path, clientInstanceId: context.id },
+					{
+						onResult: (value) => {
+							const live = object(object(value)?.liveMessage);
+							if (!live) return;
+							if (typeof live.text !== "string" || typeof live.thinking !== "string")
+								throw new Error("Web Runtime 生成内容快照无效");
+							this.flushPendingProgress(context);
+							this.broadcast(context, {
+								type: "session_stream",
+								sessionId,
+								text: live.text,
+								thinking: live.thinking,
+							});
+						},
+					},
+				);
 				context.leases.set(sessionId, result.lease);
 				this.invalidateBootstrap(context);
 				sendJson(response, 200, {
@@ -1617,6 +1645,22 @@ export class WebGatewayServer {
 					leaseId: lease.leaseId,
 				}),
 			);
+			return;
+		}
+		if (parts.length === 4 && parts[3] === "reload" && request.method === "POST") {
+			const body = await parseJsonBody(request);
+			const lease = await this.requireLease(context, sessionId);
+			const snapshot = await client.request<SessionStateSnapshot>(
+				{
+					command: "reload_resources",
+					sessionPath: session.path,
+					leaseId: lease.leaseId,
+					clientInstanceId: context.id,
+					clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
+				},
+				{ timeoutMs: 0 },
+			);
+			sendJson(response, 200, { session: publicSessionSnapshot(snapshot) });
 			return;
 		}
 		if (parts.length === 4 && parts[3] === "compact" && request.method === "POST") {
@@ -1791,14 +1835,14 @@ export class WebGatewayServer {
 		if (parts.length === 3 && request.method === "GET") {
 			const operation = await client.request<OperationSnapshot>({ command: "get_operation", operationId: parts[2] });
 			sendJson(response, 200, {
-				operation: publicOperation(operation, this.sessions.get(operation.sessionPath)?.id),
+				operation: publicOperation(operation, this.sessionIdsByPath.get(operation.sessionPath)),
 			});
 			return;
 		}
 		if (parts.length === 4 && parts[3] === "abort" && request.method === "POST") {
 			const operationId = parts[2];
 			const operation = await client.request<OperationSnapshot>({ command: "get_operation", operationId });
-			const sessionId = this.sessions.get(operation.sessionPath)?.id;
+			const sessionId = this.sessionIdsByPath.get(operation.sessionPath);
 			if (!sessionId) throw new HttpError(404, "session_not_found", "未找到任务所属会话");
 			const lease = await this.requireLease(context, sessionId);
 			sendJson(
@@ -1900,7 +1944,11 @@ export class WebGatewayServer {
 		}
 		if (event.type !== "session_progress") this.invalidateBootstrap(context);
 		const projected = this.projectEvent(event);
-		if (!projected) return;
+		if (!projected) {
+			this.invalidateBootstrap(context);
+			this.broadcast(context, { type: "sessions_changed" });
+			return;
+		}
 		if (projected.type === "session_progress") {
 			this.enqueueProgress(context, projected as WebSessionProgressEvent);
 			return;
@@ -1982,18 +2030,20 @@ export class WebGatewayServer {
 		return undefined;
 	}
 
+	private sendWebSocket(socket: WebSocket, payload: string): void {
+		if (socket.readyState !== WebSocket.OPEN) return;
+		if (socket.bufferedAmount + Buffer.byteLength(payload) > 2 * 1024 * 1024) {
+			socket.terminate();
+			return;
+		}
+		socket.send(payload, (error) => {
+			if (error) socket.terminate();
+		});
+	}
+
 	private broadcast(context: BrowserContext, value: unknown): void {
 		const payload = JSON.stringify(value);
-		for (const socket of context.sockets) {
-			if (socket.readyState !== WebSocket.OPEN) continue;
-			if (socket.bufferedAmount > 2 * 1024 * 1024) {
-				socket.terminate();
-				continue;
-			}
-			socket.send(payload, (error) => {
-				if (error) socket.terminate();
-			});
-		}
+		for (const socket of context.sockets) this.sendWebSocket(socket, payload);
 	}
 
 	private checkWebSocketLiveness(): void {
@@ -2047,8 +2097,9 @@ export class WebGatewayServer {
 		socket.on("close", removeSocket);
 		socket.on("error", removeSocket);
 		try {
+			this.invalidateBootstrap(context);
 			const bootstrap = await this.buildBootstrap(context);
-			if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "bootstrap", data: bootstrap }));
+			this.sendWebSocket(socket, JSON.stringify({ type: "bootstrap", data: bootstrap }));
 		} catch (error) {
 			if (socket.readyState === WebSocket.OPEN) socket.close(1011, toError(error).message.slice(0, 120));
 		}

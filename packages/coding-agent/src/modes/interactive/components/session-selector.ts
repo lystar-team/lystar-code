@@ -14,7 +14,13 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { KeybindingsManager } from "../../../core/keybindings.ts";
-import { type SessionInfo, type SessionListProgress, SessionManager } from "../../../core/session-manager.ts";
+import {
+	type SessionInfo,
+	type SessionInfoCache,
+	type SessionListOptions,
+	type SessionListProgress,
+	SessionManager,
+} from "../../../core/session-manager.ts";
 import { canonicalizePath as _canonicalizePath } from "../../../utils/paths.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
@@ -307,6 +313,7 @@ class SessionList implements Component, Focusable {
 	public onDeleteSession?: (sessionPath: string) => Promise<void>;
 	public onRenameSession?: (sessionPath: string) => void;
 	public onError?: (message: string) => void;
+	public onSearch?: (query: string) => void;
 	private maxVisible: number = 10; // Max sessions visible (one line each)
 
 	// Focusable implementation - propagate to searchInput for IME cursor positioning
@@ -384,6 +391,7 @@ class SessionList implements Component, Focusable {
 			}));
 		}
 		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredSessions.length - 1));
+		this.onSearch?.(query);
 	}
 
 	private setConfirmingDeletePath(path: string | null): void {
@@ -458,13 +466,12 @@ class SessionList implements Component, Focusable {
 
 			// Session display text (name or first message)
 			const hasName = !!session.name;
-			const displayText = session.name ?? session.firstMessage;
+			const displayText = session.name || session.firstMessage;
 			const normalizedMessage = displayText.replace(/[\x00-\x1f\x7f]/g, " ").trim();
 
 			// Right side: message count and age
 			const age = formatSessionDate(session.modified);
-			const msgCount = String(session.messageCount);
-			let rightPart = `${msgCount} ${age}`;
+			let rightPart = session.messageCount > 0 ? `${session.messageCount} ${age}` : age;
 			if (this.showCwd && session.cwd) {
 				rightPart = `${shortenPath(session.cwd)} ${rightPart}`;
 			}
@@ -637,7 +644,7 @@ class SessionList implements Component, Focusable {
 	}
 }
 
-type SessionsLoader = (onProgress?: SessionListProgress) => Promise<SessionInfo[]>;
+export type SessionsLoader = (onProgress?: SessionListProgress, options?: SessionListOptions) => Promise<SessionInfo[]>;
 
 /**
  * Delete a session file, trying the `trash` CLI first, then falling back to unlink
@@ -714,6 +721,10 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	private currentLoading = false;
 	private allLoading = false;
 	private allLoadSeq = 0;
+	private readonly listCache: SessionInfoCache = { entries: new Map() };
+	private readonly loadingAbort = new AbortController();
+	private readonly fullTextScopes = new Set<SessionScope>();
+	private searchQuery = "";
 
 	private mode: "list" | "rename" = "list";
 	private renameInput = new Input();
@@ -791,7 +802,11 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		};
 
 		// Ensure header status timeouts are cleared when leaving the selector
-		const clearStatusMessage = () => this.header.setStatusMessage(null);
+		const clearStatusMessage = () => {
+			this.loadingAbort.abort();
+			this.listCache.entries.clear();
+			this.header.setStatusMessage(null);
+		};
 		this.sessionList.onSelect = (sessionPath) => {
 			clearStatusMessage();
 			onSelect(sessionPath);
@@ -805,6 +820,10 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			onExit();
 		};
 		this.sessionList.onToggleScope = () => this.toggleScope();
+		this.sessionList.onSearch = (query) => {
+			this.searchQuery = query;
+			this.ensureSearchLoaded();
+		};
 		this.sessionList.onToggleSort = () => this.toggleSortMode();
 		this.sessionList.onToggleNameFilter = () => this.toggleNameFilter();
 		this.sessionList.onRenameSession = (sessionPath) => {
@@ -931,8 +950,16 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		}
 	}
 
-	private async loadScope(scope: SessionScope, reason: "initial" | "refresh" | "toggle"): Promise<void> {
+	private ensureSearchLoaded(): void {
+		if (this.loadingAbort.signal.aborted || !this.searchQuery.trim() || this.fullTextScopes.has(this.scope)) return;
+		if (this.scope === "current" ? this.currentLoading : this.allLoading) return;
+		void this.loadScope(this.scope, "search");
+	}
+
+	private async loadScope(scope: SessionScope, reason: "initial" | "refresh" | "toggle" | "search"): Promise<void> {
+		if (this.loadingAbort.signal.aborted) return;
 		const showCwd = scope === "all";
+		const metadataOnly = reason !== "search" && !this.fullTextScopes.has(scope);
 
 		// Mark loading
 		if (scope === "current") {
@@ -947,6 +974,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		this.requestRender();
 
 		const onProgress = (loaded: number, total: number) => {
+			if (this.loadingAbort.signal.aborted) return;
 			if (scope !== this.scope) return;
 			if (seq !== undefined && seq !== this.allLoadSeq) return;
 			this.header.setProgress(loaded, total);
@@ -954,9 +982,17 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		};
 
 		try {
+			const options: SessionListOptions = {
+				cache: this.listCache,
+				metadataOnly,
+				includeAllMessagesText: !metadataOnly,
+				signal: this.loadingAbort.signal,
+			};
 			const sessions = await (scope === "current"
-				? this.currentSessionsLoader(onProgress)
-				: this.allSessionsLoader(onProgress));
+				? this.currentSessionsLoader(onProgress, options)
+				: this.allSessionsLoader(onProgress, options));
+			if (this.loadingAbort.signal.aborted) return;
+			if (!metadataOnly) this.fullTextScopes.add(scope);
 
 			if (scope === "current") {
 				this.currentSessions = sessions;
@@ -973,6 +1009,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			this.sessionList.setSessions(sessions, showCwd);
 			this.requestRender();
 		} catch (err) {
+			if (this.loadingAbort.signal.aborted) return;
 			if (scope === "current") {
 				this.currentLoading = false;
 			} else {

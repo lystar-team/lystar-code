@@ -1,3 +1,5 @@
+import { toLiveToolViewModel } from "../../adapters/live-tool-view-model.ts";
+import { committedToolCallIds } from "../../state/chat-lifecycle.ts";
 import { Message, MessageContent, MessageResponse } from "../ai-elements/message";
 import { Shimmer } from "../ai-elements/shimmer";
 import { ToolBatch } from "../ai-elements/tool-batch";
@@ -15,9 +17,13 @@ function latestThinkingLine(text: string): string {
 }
 
 export function LiveTurn({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
+	const callIds = committedToolCallIds(state.transcript);
 	const liveItems = state.liveTurnItems.filter((item) => item.kind !== "thinking");
-	const hasLive = Boolean(state.liveText || state.liveThinking || liveItems.length || state.statusText);
-	if (!hasLive) return null;
+	const failed = state.liveTurnActive === false &&
+		["failed", "aborted", "interrupted"].includes(state.currentOperation?.status ?? "");
+	const showStatus = Boolean(state.statusText && (failed ||
+		(!liveItems.length && !state.liveThinking && state.liveTurnActive !== false)));
+	if (!liveItems.length && !showStatus) return null;
 
 	return (
 		<div className="live-turn grid gap-3" aria-live="polite">
@@ -40,29 +46,8 @@ export function LiveTurn({ state, actions }: { state: WorkbenchState; actions: W
 
 				const tools = item.toolIds.flatMap((toolId) => {
 					const tool = state.liveTools[toolId];
-					if (!tool) return [];
-					return [
-						{
-							id: tool.id,
-							name: tool.name,
-							summary: tool.summary,
-							state:
-								tool.state === "success"
-									? ("output-available" as const)
-									: tool.state === "error"
-										? ("output-error" as const)
-										: tool.state === "cancelled"
-											? ("output-cancelled" as const)
-											: tool.state === "interrupted"
-												? ("output-interrupted" as const)
-												: tool.state === "preparing" || tool.state === "queued"
-													? ("input-queued" as const)
-													: ("input-available" as const),
-							detail: tool.result,
-							inputPreview: tool.inputPreview,
-							diff: tool.diff,
-						},
-					];
+					if (!tool || callIds.has(toolId)) return [];
+					return [toLiveToolViewModel(tool)];
 				});
 				if (!tools.length) return null;
 				return (
@@ -79,14 +64,20 @@ export function LiveTurn({ state, actions }: { state: WorkbenchState; actions: W
 					/>
 				);
 			})}
-			{state.liveThinking ? (
-				<div className="text-sm font-normal text-muted-foreground" aria-live="polite">
-					<Shimmer as="span" className="text-sm font-normal">
-						{latestThinkingLine(state.liveThinking)}
-					</Shimmer>
-				</div>
-			) : null}
-			{!liveItems.length && !state.liveThinking && state.statusText ? <Shimmer>{state.statusText}</Shimmer> : null}
+			{showStatus ? failed ? (
+				<div role="alert" className="text-sm text-destructive">{state.statusText}</div>
+			) : <Shimmer>{state.statusText}</Shimmer> : null}
+		</div>
+	);
+}
+
+export function ThinkingActivity({ state }: { state: WorkbenchState }) {
+	if (!state.liveThinking) return null;
+	return (
+		<div className="mx-auto w-full max-w-[var(--conversation-width)] shrink-0 px-5 py-2 text-sm font-normal text-muted-foreground sm:px-10" aria-live="polite" role="status">
+			<Shimmer as="span" className="block truncate text-sm font-normal">
+				{latestThinkingLine(state.liveThinking)}
+			</Shimmer>
 		</div>
 	);
 }

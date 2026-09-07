@@ -1029,6 +1029,22 @@ class CoreRuntimeSession implements RuntimeSession {
 		return path;
 	}
 
+	getLiveMessage(): { text: string; thinking: string } {
+		const result = { text: "", thinking: "" };
+		const message = this.runtime.session.agent.state.streamingMessage;
+		if (message?.role === "assistant") {
+			for (const part of message.content) {
+				if (part.type === "text") result.text += part.text;
+				if (part.type === "thinking") result.thinking += part.thinking;
+			}
+		}
+		return result;
+	}
+
+	isConnected(): boolean {
+		return !this.disposed;
+	}
+
 	async bind(): Promise<void> {
 		const storage = sessionGeneration(this.sessionPath, this.runtime.session.sessionId);
 		this.committedEntryCount = this.runtime.session.sessionManager.getEntries().length;
@@ -1048,7 +1064,9 @@ class CoreRuntimeSession implements RuntimeSession {
 		const toolActivityRevision =
 			typeof session.getToolActivityRevision === "function" ? session.getToolActivityRevision() : undefined;
 		const toolActivities =
-			typeof session.getToolActivitySnapshot === "function" ? session.getToolActivitySnapshot() : undefined;
+			typeof session.getToolActivitySnapshot === "function"
+				? session.getToolActivitySnapshot({ activeOnly: true })
+				: undefined;
 		return {
 			id: session.sessionId,
 			path: this.sessionPath,

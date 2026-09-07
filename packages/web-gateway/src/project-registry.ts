@@ -325,14 +325,32 @@ export class ProjectRegistry {
 	async setRecentSessions(id: string, sessions: SessionSummary[]): Promise<void> {
 		const project = this.get(id);
 		if (!project) return;
-		const recentSessions = sessions.slice(0, 100);
+		const previousRecentSessions = project.recentSessions ?? [];
+		const previousLatestCreatedAt = previousRecentSessions.reduce(
+			(latest, session) => Math.max(latest, session.createdAt),
+			-1,
+		);
+		const freshSessionIds = new Set(
+			sessions
+				.filter((session) => session.createdAt > previousLatestCreatedAt)
+				.sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))
+				.map((session) => session.id),
+		);
 		const availableSessionIds = new Set(sessions.map((session) => session.id));
+		const existingOrder = project.sessionOrder ?? [];
 		const sessionOrder = [
-			...(project.sessionOrder ?? []).filter((sessionId) => availableSessionIds.has(sessionId)),
+			...freshSessionIds,
+			...existingOrder.filter((sessionId) => availableSessionIds.has(sessionId) && !freshSessionIds.has(sessionId)),
 			...sessions
 				.map((session) => session.id)
-				.filter((sessionId) => !(project.sessionOrder ?? []).includes(sessionId)),
+				.filter((sessionId) => !freshSessionIds.has(sessionId) && !existingOrder.includes(sessionId)),
 		];
+		const sessionsById = new Map(sessions.map((session) => [session.id, session]));
+		const orderedSessions = sessionOrder.flatMap((sessionId) => {
+			const session = sessionsById.get(sessionId);
+			return session ? [session] : [];
+		});
+		const recentSessions = orderedSessions.slice(0, 100);
 		const recentSessionIds = new Set(recentSessions.map((session) => session.id));
 		const pinnedSessionIds = (project.pinnedSessionIds ?? []).filter((sessionId) => recentSessionIds.has(sessionId));
 		const next = {

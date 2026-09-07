@@ -5,6 +5,7 @@ import {
 	type ClientMessage,
 	encodeServerMessage,
 	type ServerMessage,
+	type SessionStateSnapshot,
 	type SessionSummary,
 } from "@lystar/code-web-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -169,6 +170,158 @@ describe("WebRuntimeService Session observation", () => {
 		expect(inspectActivity).toHaveBeenCalledWith(external.sessionPath);
 	});
 
+	it("rebinds a stale local runtime to an external Companion before reusing it", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-rebind-"));
+		const agentDir = join(tempDir, "agent");
+		const cwd = join(tempDir, "project");
+		const sessionPath = join(cwd, "session.jsonl");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(cwd, { recursive: true });
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always" }));
+		writeFileSync(sessionPath, "{}\n");
+
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		const snapshot = {
+			id: "session-id",
+			path: sessionPath,
+			cwd,
+			name: "测试会话",
+			createdAt: 1,
+			updatedAt: 1,
+			phase: "idle",
+			activity: "idle",
+			attached: true,
+			writeAccess: "available",
+			revision: 0,
+			leafId: "leaf",
+			queuedSteerCount: 0,
+			queuedFollowUpCount: 0,
+			thinkingLevel: "off",
+			transcriptGeneration: "generation",
+			transcriptRevision: 1,
+		} as const;
+		const makeRuntime = (capabilities?: readonly string[]) => {
+			const listeners = new Set<(event: RuntimeEvent) => void>();
+			const disposeMock = vi.fn(async () => {});
+			const runtime = {
+				sessionPath,
+				...(capabilities ? { getCapabilities: () => capabilities } : {}),
+				getSnapshot: (writeAccess: SessionStateSnapshot["writeAccess"]) => ({ ...snapshot, writeAccess }),
+				onEvent: (listener: (event: RuntimeEvent) => void) => {
+					listeners.add(listener);
+					return () => {
+						listeners.delete(listener);
+					};
+				},
+				dispose: disposeMock,
+				emit: (event: RuntimeEvent) => {
+					listeners.forEach((listener) => {
+						listener(event);
+					});
+				},
+			} as unknown as RuntimeSession & { emit(event: RuntimeEvent): void };
+			return { runtime, disposeMock };
+		};
+		const local = makeRuntime();
+		const companion = makeRuntime(["session_fork"]);
+		vi.spyOn(adapter, "isSessionWriterLocked").mockReturnValue(true);
+		vi.spyOn(adapter, "openSession").mockResolvedValue(companion.runtime);
+		const service = new WebRuntimeService(adapter, { agentDir });
+		const messages: ServerMessage[] = [];
+		const connection = service.createConnection(async (message) => {
+			messages.push(message);
+		});
+		const handle = (message: ClientMessage) => connection.handle(message);
+		cleanups.push(async () => {
+			await connection.close();
+			await service.dispose();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+
+		(service as unknown as { attachRuntime(runtime: RuntimeSession): void }).attachRuntime(local.runtime);
+		await handle({ type: "hello", version: 2, clientInstanceId: "rebind-client" });
+		await handle({
+			type: "request",
+			id: "acquire",
+			request: { command: "acquire_session", sessionPath, clientInstanceId: "rebind-client" },
+		});
+
+		expect(local.disposeMock).toHaveBeenCalledOnce();
+		expect(adapter.openSession).toHaveBeenCalledWith(sessionPath, expect.any(Function));
+		messages.length = 0;
+		companion.runtime.emit({ type: "progress", payload: { type: "assistant_delta", text: "已切换" } });
+		await waitFor(() =>
+			messages.some(
+				(message) =>
+					message.type === "event" &&
+					message.event.type === "session_progress" &&
+					message.event.progress.type === "assistant_delta",
+			),
+		);
+	});
+
+	it("reopens a disconnected Companion runtime", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-reconnect-"));
+		const agentDir = join(tempDir, "agent");
+		const cwd = join(tempDir, "project");
+		const sessionPath = join(cwd, "session.jsonl");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(cwd, { recursive: true });
+		writeFileSync(sessionPath, "{}\n");
+
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		const snapshot = {
+			id: "session-id",
+			path: sessionPath,
+			cwd,
+			createdAt: 1,
+			updatedAt: 1,
+			phase: "turn",
+			activity: "running",
+			attached: true,
+			writeAccess: "available",
+			revision: 1,
+			leafId: "leaf",
+			queuedSteerCount: 0,
+			queuedFollowUpCount: 0,
+			thinkingLevel: "off",
+			transcriptGeneration: "generation",
+			transcriptRevision: 1,
+		} as const;
+		const makeRuntime = (connected: boolean) => {
+			const disposeMock = vi.fn(async () => {});
+			const runtime = {
+				sessionPath,
+				isConnected: () => connected,
+				getCapabilities: () => ["session_fork"],
+				getSnapshot: (writeAccess: SessionStateSnapshot["writeAccess"]) => ({ ...snapshot, writeAccess }),
+				onEvent: () => () => {},
+				dispose: disposeMock,
+			} as unknown as RuntimeSession;
+			return { runtime, disposeMock };
+		};
+		const stale = makeRuntime(false);
+		const fresh = makeRuntime(true);
+		vi.spyOn(adapter, "isSessionWriterLocked").mockReturnValue(true);
+		vi.spyOn(adapter, "openSession").mockResolvedValue(fresh.runtime);
+		const service = new WebRuntimeService(adapter, { agentDir });
+		cleanups.push(async () => {
+			await service.dispose();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+		(service as unknown as { attachRuntime(runtime: RuntimeSession): void }).attachRuntime(stale.runtime);
+
+		const rebind = Reflect.get(service, "ensureRuntime").bind(service) as (
+			sessionPath: string,
+			onUiRequest: (request: unknown) => Promise<unknown>,
+		) => Promise<RuntimeSession>;
+		const results = await Promise.all([rebind(sessionPath, async () => ({})), rebind(sessionPath, async () => ({}))]);
+
+		expect(results).toEqual([fresh.runtime, fresh.runtime]);
+		expect(adapter.openSession).toHaveBeenCalledOnce();
+		expect(stale.disposeMock).toHaveBeenCalledOnce();
+		expect(adapter.openSession).toHaveBeenCalledWith(sessionPath, expect.any(Function));
+	});
 	it("coalesces adjacent high-frequency progress before sending it over the Host protocol", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-progress-"));
 		const agentDir = join(tempDir, "agent");

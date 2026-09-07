@@ -42,6 +42,74 @@ class MemoryTransport implements ByteTransport {
 }
 
 describe("Web Runtime Protocol v1", () => {
+	it("恢复响应基线先于同批后续增量应用", async () => {
+		const clientTransport = new MemoryTransport();
+		const serverTransport = new MemoryTransport();
+		clientTransport.peer = serverTransport;
+		serverTransport.peer = clientTransport;
+		const decoder = new ClientMessageDecoder();
+		serverTransport.onBytes((bytes) => {
+			for (const message of decoder.push(bytes)) {
+				if (message.type !== "request") continue;
+				const response = encodeServerMessage({
+					type: "response",
+					id: message.id,
+					ok: true,
+					result: { text: "基线" },
+				});
+				const event = encodeServerMessage({
+					type: "event",
+					event: {
+						type: "session_progress",
+						sessionPath: "/session",
+						progress: { type: "assistant_delta", text: "增量" },
+					},
+				});
+				const batch = new Uint8Array(response.length + event.length);
+				batch.set(response);
+				batch.set(event, response.length);
+				void serverTransport.send(batch);
+			}
+		});
+		const client = new RuntimeProtocolClient(clientTransport, "restore-barrier");
+		const order: string[] = [];
+		client.onEvent(() => {
+			order.push("增量");
+		});
+		await client.connect();
+		await client.request(
+			{ command: "get_snapshot" },
+			{
+				onResult: () => {
+					order.push("基线");
+				},
+			},
+		);
+		expect(order).toEqual(["基线", "增量"]);
+		await client.close();
+	});
+	it("坏帧只关闭对应连接并结束等待请求", async () => {
+		const clientTransport = new MemoryTransport();
+		const serverTransport = new MemoryTransport();
+		clientTransport.peer = serverTransport;
+		serverTransport.peer = clientTransport;
+		const client = new RuntimeProtocolClient(clientTransport, "bad-frame");
+		await client.connect();
+		const result = client.request({ command: "get_snapshot" });
+		const assertion = expect(result).rejects.toThrow();
+		await expect(serverTransport.send(encodeFrame(encodeCbor({ type: "invalid" })))).resolves.toBeUndefined();
+		await assertion;
+		expect(client.getSnapshot().connected).toBe(false);
+		await client.close();
+	});
+	it("发送受阻时请求超时仍可结束", async () => {
+		const transport = new MemoryTransport();
+		const client = new RuntimeProtocolClient(transport, "blocked-send");
+		await client.connect();
+		transport.send = () => new Promise(() => {});
+		await expect(client.request({ command: "get_snapshot" }, { timeoutMs: 5 })).rejects.toThrow("超时");
+		await client.close();
+	});
 	it("decodes trusted Host frames with the normal server validator", () => {
 		const message = {
 			type: "response",

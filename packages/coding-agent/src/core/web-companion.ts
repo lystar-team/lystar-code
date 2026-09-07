@@ -24,6 +24,7 @@ import {
 	type WebCompanionServerMessage,
 	type WebCompanionSnapshot,
 } from "./web-companion-contract.ts";
+import { companionProgressEvent } from "./web-companion-events.ts";
 
 export {
 	getWebCompanionEndpoint,
@@ -42,19 +43,17 @@ export {
 
 const MAX_WEB_SOCKET_BUFFER_BYTES = 8 * 1024 * 1024;
 
-function send(socket: Socket, message: WebCompanionServerMessage): void {
+function sendPayload(socket: Socket, payload: string): void {
 	if (socket.destroyed || !socket.writable) return;
-	if (socket.writableLength >= MAX_WEB_SOCKET_BUFFER_BYTES) {
-		socket.destroy();
-		return;
-	}
-	const payload = `${JSON.stringify(message)}\n`;
 	if (socket.writableLength + Buffer.byteLength(payload) > MAX_WEB_SOCKET_BUFFER_BYTES) {
-		socket.destroy();
+		socket.destroy(new Error("TUI 共享发送队列超过大小限制，需要重新同步"));
 		return;
 	}
-	const writable = socket.write(payload);
-	if (!writable && socket.writableLength > MAX_WEB_SOCKET_BUFFER_BYTES) socket.destroy();
+	socket.write(payload);
+}
+
+function send(socket: Socket, message: WebCompanionServerMessage): void {
+	sendPayload(socket, `${JSON.stringify(message)}\n`);
 }
 
 function isAddressInUse(error: unknown): boolean {
@@ -348,9 +347,11 @@ function persistDetachedSession(manager: SessionManager): string {
 	}
 }
 const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+const SNAPSHOT_BROADCAST_DELAY_MS = 250;
 
 export class WebCompanionServer {
 	private readonly sockets = new Set<Socket>();
+	private readonly readySockets = new Set<Socket>();
 	private server?: Server;
 	private unsubscribe?: () => void;
 	private endpoint?: string;
@@ -360,6 +361,7 @@ export class WebCompanionServer {
 	private readonly onSessionChanged?: () => void;
 	private committedTranscriptRevision: number;
 	private snapshotBroadcastPending = false;
+	private snapshotBroadcastTimer?: ReturnType<typeof setTimeout>;
 	private committedBroadcastPending = false;
 
 	constructor(session: AgentSession, agentDir: string, onSessionChanged?: () => void) {
@@ -385,7 +387,8 @@ export class WebCompanionServer {
 		try {
 			if (process.platform !== "win32") chmodSync(endpoint, 0o600);
 			this.unsubscribe = this.session.subscribe((event) => {
-				this.broadcast({ type: "agent_event", event });
+				const progress = companionProgressEvent(event);
+				if (progress) this.broadcast({ type: "agent_event", event: progress });
 				if (event.type === "message_end" || event.type === "entry_appended") {
 					this.scheduleCommittedEntriesBroadcast();
 				}
@@ -400,8 +403,12 @@ export class WebCompanionServer {
 	async dispose(): Promise<void> {
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
-		for (const socket of this.sockets) socket.end();
+		if (this.snapshotBroadcastTimer) clearTimeout(this.snapshotBroadcastTimer);
+		this.snapshotBroadcastTimer = undefined;
+		this.snapshotBroadcastPending = false;
+		for (const socket of this.sockets) socket.destroy();
 		this.sockets.clear();
+		this.readySockets.clear();
 		const server = this.server;
 		this.server = undefined;
 		this.endpoint = undefined;
@@ -418,19 +425,31 @@ export class WebCompanionServer {
 		this.sockets.add(socket);
 		socket.setEncoding("utf8");
 		let buffer = "";
+		const timer = setTimeout(() => socket.destroy(), 10_000);
+		timer.unref?.();
 		socket.on("data", (chunk: string) => {
 			buffer += chunk;
 			let newline = buffer.indexOf("\n");
 			while (newline >= 0) {
 				const line = buffer.slice(0, newline);
 				buffer = buffer.slice(newline + 1);
+				if (Buffer.byteLength(line) > MAX_WEB_SOCKET_BUFFER_BYTES) {
+					socket.destroy();
+					return;
+				}
+				if (line.trim()) void this.handle(socket, line).catch(() => socket.destroy());
+				if (this.readySockets.has(socket)) clearTimeout(timer);
 				newline = buffer.indexOf("\n");
-				if (!line.trim()) continue;
-				void this.handle(socket, line);
 			}
+			if (Buffer.byteLength(buffer) > MAX_WEB_SOCKET_BUFFER_BYTES) socket.destroy();
 		});
-		socket.once("close", () => this.sockets.delete(socket));
-		socket.once("error", () => this.sockets.delete(socket));
+		const cleanup = () => {
+			clearTimeout(timer);
+			this.sockets.delete(socket);
+			this.readySockets.delete(socket);
+		};
+		socket.once("close", cleanup);
+		socket.once("error", cleanup);
 	}
 
 	private async handle(socket: Socket, line: string): Promise<void> {
@@ -442,11 +461,21 @@ export class WebCompanionServer {
 			return;
 		}
 		if (command.type === "hello") {
-			if (command.sessionPath !== this.session.sessionFile) {
+			if (command.sessionPath !== this.session.sessionFile || this.readySockets.has(socket)) {
 				socket.destroy();
 				return;
 			}
 			send(socket, { type: "ready", snapshot: this.snapshot() });
+			this.readySockets.add(socket);
+			return;
+		}
+		if (
+			!this.readySockets.has(socket) ||
+			command.type !== "request" ||
+			typeof command.requestId !== "string" ||
+			typeof command.command !== "string"
+		) {
+			socket.destroy();
 			return;
 		}
 		try {
@@ -722,7 +751,7 @@ export class WebCompanionServer {
 		}
 	}
 
-	private snapshot(): WebCompanionSnapshot {
+	private snapshot(includeLiveMessage = true): WebCompanionSnapshot {
 		const sessionPath = this.session.sessionFile;
 		if (!sessionPath) throw new Error("当前会话尚未持久化");
 		const header = this.session.sessionManager.getHeader();
@@ -733,7 +762,18 @@ export class WebCompanionServer {
 		const toolActivityRevision =
 			typeof this.session.getToolActivityRevision === "function" ? this.session.getToolActivityRevision() : 0;
 		const toolActivities =
-			typeof this.session.getToolActivitySnapshot === "function" ? this.session.getToolActivitySnapshot() : [];
+			// 已结束工具由 transcript 恢复，快照只承担进行中的工具状态。
+			typeof this.session.getToolActivitySnapshot === "function"
+				? this.session.getToolActivitySnapshot({ activeOnly: true })
+				: [];
+		const streaming = this.session.agent?.state.streamingMessage;
+		const liveMessage = { text: "", thinking: "" };
+		if (includeLiveMessage && streaming?.role === "assistant") {
+			for (const part of streaming.content) {
+				if (part.type === "text") liveMessage.text += part.text;
+				if (part.type === "thinking") liveMessage.thinking += part.thinking;
+			}
+		}
 		return {
 			protocolVersion: WEB_COMPANION_PROTOCOL_VERSION,
 			id: this.session.sessionManager.getSessionId(),
@@ -762,6 +802,7 @@ export class WebCompanionServer {
 			toolActivityEpoch,
 			toolActivityRevision,
 			toolActivities,
+			...(includeLiveMessage ? { liveMessage } : {}),
 			capabilities: [...WEB_COMPANION_CAPABILITIES],
 		};
 	}
@@ -769,10 +810,12 @@ export class WebCompanionServer {
 	private scheduleSnapshotBroadcast(): void {
 		if (this.snapshotBroadcastPending) return;
 		this.snapshotBroadcastPending = true;
-		queueMicrotask(() => {
+		this.snapshotBroadcastTimer = setTimeout(() => {
+			this.snapshotBroadcastTimer = undefined;
 			this.snapshotBroadcastPending = false;
-			if (this.server) this.broadcast({ type: "snapshot", snapshot: this.snapshot() });
-		});
+			if (this.server) this.broadcast({ type: "snapshot", snapshot: this.snapshot(false) });
+		}, SNAPSHOT_BROADCAST_DELAY_MS);
+		this.snapshotBroadcastTimer.unref?.();
 	}
 
 	private scheduleCommittedEntriesBroadcast(): void {
@@ -785,7 +828,9 @@ export class WebCompanionServer {
 	}
 
 	private broadcast(message: WebCompanionServerMessage): void {
-		for (const socket of this.sockets) send(socket, message);
+		if (this.readySockets.size === 0) return;
+		const payload = `${JSON.stringify(message)}\n`;
+		for (const socket of this.readySockets) sendPayload(socket, payload);
 	}
 
 	private broadcastCommittedEntries(): void {

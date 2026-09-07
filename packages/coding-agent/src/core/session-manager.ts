@@ -20,7 +20,6 @@ import {
 import { open, readdir, stat } from "fs/promises";
 import { basename, dirname, join, resolve } from "path";
 import lockfile, { type LockOptions } from "proper-lockfile";
-import { createInterface } from "readline";
 import { StringDecoder } from "string_decoder";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
@@ -35,9 +34,6 @@ import { deleteSessionWithRecoveryLedger } from "./tool-recovery/ledger.ts";
 
 export const CURRENT_SESSION_VERSION = 3;
 const ASYNC_SESSION_READ_BUFFER_SIZE = 64 * 1024;
-const SESSION_METADATA_READ_BYTES = 64 * 1024;
-// 会话名称通常在首轮对话结束后写入；只向前扫描首轮，避免恢复会话列表时读取完整历史。
-const SESSION_NAME_SCAN_MAX_BYTES = 16 * 1024 * 1024;
 
 export interface SessionHeader {
 	type: "session";
@@ -208,7 +204,7 @@ export interface SessionInfoCacheEntry {
 	ino: number;
 	includeAllMessagesText: boolean;
 	metadataOnly: boolean;
-	/** metadata-only 列表是否已经确认过首轮会话名称。 */
+	/** 摘要扫描是否发现名称记录（含显式清空）。 */
 	metadataNameResolved?: boolean;
 	info: SessionInfo | null;
 }
@@ -220,8 +216,9 @@ export interface SessionInfoCache {
 export interface SessionListOptions {
 	cache?: SessionInfoCache;
 	includeAllMessagesText?: boolean;
-	/** 只读取文件首尾元数据，用于 Web 会话列表，避免扫描完整历史正文。 */
+	/** 收集准确的会话摘要，不保留全文检索正文。 */
 	metadataOnly?: boolean;
+	signal?: AbortSignal;
 }
 
 export type ReadonlySessionManager = Pick<
@@ -909,149 +906,61 @@ function getMessageOutcome(message: AgentMessage): SessionOutcome | undefined {
 	}
 }
 
-function parseMetadataLines(buffer: Buffer, skipFirstLine: boolean, skipLastLine: boolean): FileEntry[] {
-	const lines = buffer.toString("utf8").split("\n");
-	if (skipFirstLine) lines.shift();
-	if (skipLastLine && lines.length > 0 && lines.at(-1) !== "") lines.pop();
-	return lines.flatMap((line) => {
-		const entry = parseSessionEntryLine(line);
-		return entry ? [entry] : [];
-	});
-}
-
-interface SessionNameScanResult {
-	resolved: boolean;
-	name?: string;
-}
-
-/**
- * 在首轮对话范围内查找 session_info。
- *
- * metadata-only 列表不能为了标题重新解析完整 Session。名称扩展会在首轮
- * agent_settled 后写入 session_info，因此遇到第二条用户消息即可结束扫描；
- * 超过上限则保留原有 firstMessage 回退，避免异常大首轮拖慢列表。
- */
-async function scanSessionNameFromFirstTurn(filePath: string): Promise<SessionNameScanResult> {
-	const input = createReadStream(filePath, {
-		encoding: "utf8",
-		start: 0,
-		end: SESSION_NAME_SCAN_MAX_BYTES - 1,
-	});
-	const reader = createInterface({ input, crlfDelay: Infinity });
-	let seenUserMessage = false;
-	let name: string | undefined;
-	let foundSessionInfo = false;
-	const finish = (): SessionNameScanResult => ({
-		resolved: foundSessionInfo,
-		...(name ? { name } : {}),
-	});
-	try {
-		for await (const line of reader) {
-			if (line.startsWith('{"type":"session_info"')) {
-				const entry = parseSessionEntryLine(line);
-				if (entry?.type === "session_info") {
-					name = entry.name?.trim() || undefined;
-					foundSessionInfo = true;
-				}
-			}
-			if (!line.startsWith('{"type":"message"') || !line.includes('"message":{"role":"user"')) continue;
-			if (seenUserMessage) return finish();
-			seenUserMessage = true;
+async function* readSessionInfoLines(
+	filePath: string,
+	signal?: AbortSignal,
+): AsyncGenerator<{ line: string } | { toolResult: true }> {
+	const input = createReadStream(filePath, { signal, highWaterMark: SESSION_READ_BUFFER_SIZE });
+	let parts: Buffer[] = [];
+	let length = 0;
+	let prefix = "";
+	let lastByte = -1;
+	const finishLine = (): { line: string } | { toolResult: true } => {
+		// 标准工具结果只参与计数和结束状态，跳过正文解码及详情对象分配。
+		// 其他字段顺序、格式和消息类型仍使用完整 JSON 解析。
+		if (
+			prefix.startsWith('{"type":"message",') &&
+			prefix.includes('"message":{"role":"toolResult",') &&
+			lastByte === 125
+		) {
+			return { toolResult: true };
 		}
+		return { line: parts.length === 1 ? parts[0]!.toString("utf8") : Buffer.concat(parts, length).toString("utf8") };
+	};
+	try {
+		for await (const chunk of input) {
+			const buffer = chunk as Buffer;
+			let start = 0;
+			while (start < buffer.length) {
+				const newline = buffer.indexOf(10, start);
+				const end = newline < 0 ? buffer.length : newline;
+				parts.push(buffer.subarray(start, end));
+				length += end - start;
+				if (end > start) lastByte = buffer[end - 1]!;
+				if (prefix.length < 1024)
+					prefix += buffer.toString("utf8", start, Math.min(end, start + 1024 - prefix.length));
+				if (newline < 0) break;
+				const record = finishLine();
+				parts = [];
+				length = 0;
+				prefix = "";
+				lastByte = -1;
+				yield record;
+				start = newline + 1;
+			}
+		}
+		if (length > 0) yield finishLine();
 	} finally {
-		reader.close();
 		input.destroy();
 	}
-	return finish();
-}
-
-interface MetadataOnlySessionInfo {
-	info: SessionInfo | null;
-	nameResolved: boolean;
-}
-
-async function buildMetadataOnlySessionInfo(
-	filePath: string,
-	stats: { size: number; mtimeMs: number },
-	cached?: SessionInfoCacheEntry,
-): Promise<MetadataOnlySessionInfo> {
-	const rangeLength = Math.min(stats.size, SESSION_METADATA_READ_BYTES);
-	const prefix = Buffer.alloc(rangeLength);
-	const suffixOffset = Math.max(0, stats.size - rangeLength);
-	const suffix = suffixOffset > 0 ? Buffer.alloc(rangeLength) : undefined;
-	let prefixBytesRead = 0;
-	let suffixBytesRead = 0;
-	const handle = await open(filePath, "r");
-	try {
-		prefixBytesRead = (await handle.read(prefix, 0, prefix.length, 0)).bytesRead;
-		if (suffix) suffixBytesRead = (await handle.read(suffix, 0, suffix.length, suffixOffset)).bytesRead;
-	} finally {
-		await handle.close();
-	}
-
-	const prefixEntries = parseMetadataLines(prefix.subarray(0, prefixBytesRead), false, suffixOffset > 0);
-	const header =
-		prefixEntries.find((entry): entry is SessionHeader => entry.type === "session" && typeof entry.id === "string") ??
-		readSessionHeaderForDiscovery(filePath);
-	if (!header) return { info: null, nameResolved: false };
-
-	let name: string | undefined;
-	let nameResolved = false;
-	let firstMessage = "";
-	let lastOutcome: SessionOutcome | undefined;
-	let lastActivityTime: number | undefined;
-	const inspect = (entry: FileEntry): void => {
-		if (entry.type === "session_info") {
-			name = entry.name?.trim() || undefined;
-			nameResolved = true;
-			return;
-		}
-		if (entry.type !== "message") return;
-		lastOutcome = getMessageOutcome(entry.message) ?? lastOutcome;
-		const activityTime = getMessageActivityTime(entry);
-		if (typeof activityTime === "number") lastActivityTime = Math.max(lastActivityTime ?? 0, activityTime);
-		if (firstMessage || !isMessageWithContent(entry.message) || entry.message.role !== "user") return;
-		const textContent = extractTextContent(entry.message);
-		if (textContent) firstMessage = textContent;
-	};
-	for (const entry of prefixEntries) inspect(entry);
-	if (suffix) for (const entry of parseMetadataLines(suffix.subarray(0, suffixBytesRead), true, false)) inspect(entry);
-
-	if (!nameResolved && cached?.metadataNameResolved) {
-		name = cached.info?.name;
-		nameResolved = true;
-	}
-	if (!nameResolved) {
-		const scanned = await scanSessionNameFromFirstTurn(filePath);
-		if (scanned.resolved) {
-			name = scanned.name;
-			nameResolved = true;
-		}
-	}
-
-	return {
-		info: {
-			path: filePath,
-			id: header.id,
-			cwd: typeof header.cwd === "string" ? header.cwd : "",
-			parentSessionPath: header.parentSession,
-			created: new Date(header.timestamp),
-			modified: typeof lastActivityTime === "number" ? new Date(lastActivityTime) : new Date(stats.mtimeMs),
-			messageCount: 0,
-			firstMessage: firstMessage || "(no messages)",
-			allMessagesText: "",
-			...(nameResolved ? { name: name ?? "" } : {}),
-			...(lastOutcome ? { lastOutcome } : {}),
-		},
-		nameResolved,
-	};
 }
 
 async function buildSessionInfo(filePath: string, options: SessionListOptions = {}): Promise<SessionInfo | null> {
 	try {
+		options.signal?.throwIfAborted();
 		const stats = await stat(filePath);
-		const includeAllMessagesText = options.includeAllMessagesText !== false;
 		const metadataOnly = options.metadataOnly === true;
+		const includeAllMessagesText = !metadataOnly && options.includeAllMessagesText !== false;
 		const cached = options.cache?.entries.get(filePath);
 		if (
 			cached &&
@@ -1064,35 +973,23 @@ async function buildSessionInfo(filePath: string, options: SessionListOptions = 
 		) {
 			return cached.info;
 		}
-		if (metadataOnly) {
-			const result = await buildMetadataOnlySessionInfo(filePath, stats, cached);
-			options.cache?.entries.set(filePath, {
-				size: stats.size,
-				mtimeMs: stats.mtimeMs,
-				ctimeMs: stats.ctimeMs,
-				ino: stats.ino,
-				includeAllMessagesText,
-				metadataOnly,
-				metadataNameResolved: result.nameResolved,
-				info: result.info,
-			});
-			return result.info;
-		}
 		let header: SessionHeader | null = null;
 		let messageCount = 0;
 		let firstMessage = "";
 		const allMessages: string[] = [];
 		let name: string | undefined;
+		let nameResolved = false;
 		let lastActivityTime: number | undefined;
 		let lastOutcome: SessionOutcome | undefined;
 
-		const rl = createInterface({
-			input: createReadStream(filePath, { encoding: "utf8" }),
-			crlfDelay: Infinity,
-		});
-
-		for await (const line of rl) {
-			const entry = parseSessionEntryLine(line);
+		for await (const record of readSessionInfoLines(filePath, options.signal)) {
+			if ("toolResult" in record) {
+				if (!header) return null;
+				messageCount++;
+				lastOutcome = "interrupted";
+				continue;
+			}
+			const entry = parseSessionEntryLine(record.line);
 			if (!entry) continue;
 
 			if (!header) {
@@ -1104,6 +1001,7 @@ async function buildSessionInfo(filePath: string, options: SessionListOptions = 
 			// Extract session name (use latest, including explicit clears)
 			if (entry.type === "session_info") {
 				name = entry.name?.trim() || undefined;
+				nameResolved = true;
 			}
 
 			if (entry.type !== "message") continue;
@@ -1145,11 +1043,11 @@ async function buildSessionInfo(filePath: string, options: SessionListOptions = 
 			path: filePath,
 			id: header.id,
 			cwd,
-			name,
+			name: metadataOnly && nameResolved ? (name ?? "") : name,
 			parentSessionPath,
 			created: new Date(header.timestamp),
 			modified,
-			messageCount,
+			messageCount: metadataOnly ? 0 : messageCount,
 			firstMessage: firstMessage || "(no messages)",
 			allMessagesText: allMessages.join(" "),
 			...(lastOutcome ? { lastOutcome } : {}),
@@ -1161,10 +1059,12 @@ async function buildSessionInfo(filePath: string, options: SessionListOptions = 
 			ino: stats.ino,
 			includeAllMessagesText,
 			metadataOnly,
+			metadataNameResolved: nameResolved,
 			info,
 		});
 		return info;
 	} catch {
+		options.signal?.throwIfAborted();
 		options.cache?.entries.delete(filePath);
 		return null;
 	}
@@ -1172,7 +1072,7 @@ async function buildSessionInfo(filePath: string, options: SessionListOptions = 
 
 export type SessionListProgress = (loaded: number, total: number) => void;
 
-const MAX_CONCURRENT_SESSION_INFO_LOADS = 10;
+const MAX_CONCURRENT_SESSION_INFO_LOADS = 2;
 
 async function buildSessionInfosWithConcurrency(
 	files: string[],
@@ -1198,12 +1098,14 @@ async function buildSessionInfosWithConcurrency(
 			})
 			.finally(() => {
 				inFlight.delete(task);
-				onLoaded();
+				if (!options.signal?.aborted) onLoaded();
 			});
 		inFlight.add(task);
 	};
 
 	while (nextIndex < files.length || inFlight.size > 0) {
+		options.signal?.throwIfAborted();
+		// 摘要与全文共用活动时间、名称规则；限制同时解析的大行数量。
 		while (nextIndex < files.length && inFlight.size < MAX_CONCURRENT_SESSION_INFO_LOADS) {
 			startNext();
 		}
@@ -1212,6 +1114,7 @@ async function buildSessionInfosWithConcurrency(
 		}
 	}
 
+	options.signal?.throwIfAborted();
 	return results;
 }
 
@@ -1253,6 +1156,7 @@ async function listSessionsFromDir(
 			}
 		}
 	} catch {
+		options.signal?.throwIfAborted();
 		// Return empty list on error
 	}
 
@@ -2348,16 +2252,23 @@ export class SessionManager {
 	 * @param onProgress Optional callback for progress updates (loaded, total)
 	 */
 	static async listAll(onProgress?: SessionListProgress): Promise<SessionInfo[]>;
-	static async listAll(sessionDir?: string, onProgress?: SessionListProgress): Promise<SessionInfo[]>;
+	static async listAll(
+		sessionDir?: string,
+		onProgress?: SessionListProgress,
+		options?: SessionListOptions,
+	): Promise<SessionInfo[]>;
 	static async listAll(
 		sessionDirOrOnProgress?: string | SessionListProgress,
 		onProgress?: SessionListProgress,
+		options: SessionListOptions = {},
 	): Promise<SessionInfo[]> {
 		const customSessionDir =
 			typeof sessionDirOrOnProgress === "string" ? normalizePath(sessionDirOrOnProgress) : undefined;
 		const progress = typeof sessionDirOrOnProgress === "function" ? sessionDirOrOnProgress : onProgress;
 		if (customSessionDir) {
-			const sessions = deduplicateSessionInfos(await listSessionsFromDir(customSessionDir, progress));
+			const sessions = deduplicateSessionInfos(
+				await listSessionsFromDir(customSessionDir, progress, 0, undefined, options),
+			);
 			sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
 			return sessions;
 		}
@@ -2391,10 +2302,14 @@ export class SessionManager {
 			const sessions: SessionInfo[] = [];
 			const allFiles = dirFiles.flat();
 
-			const results = await buildSessionInfosWithConcurrency(allFiles, () => {
-				loaded++;
-				progress?.(loaded, totalFiles);
-			});
+			const results = await buildSessionInfosWithConcurrency(
+				allFiles,
+				() => {
+					loaded++;
+					progress?.(loaded, totalFiles);
+				},
+				options,
+			);
 
 			for (const info of results) {
 				if (info) {
@@ -2406,6 +2321,7 @@ export class SessionManager {
 			uniqueSessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
 			return uniqueSessions;
 		} catch {
+			options.signal?.throwIfAborted();
 			return [];
 		}
 	}

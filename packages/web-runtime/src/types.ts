@@ -55,6 +55,9 @@ export interface RichTextRenderRequest {
 }
 
 export interface RuntimeSessionAsyncControls {
+	isConnected?(): boolean;
+	getLiveMessage?(): { text: string; thinking: string } | undefined;
+	readLiveMessage?(): Promise<{ text: string; thinking: string } | undefined>;
 	getCapabilities?(): readonly string[];
 	listSettingsAsync?(): Promise<SettingSummary[]>;
 	getSessionTreeAsync?(): Promise<SessionTreeNode[]>;
@@ -105,7 +108,7 @@ export interface RuntimeSession extends RuntimeSessionAsyncControls {
 	reloadResources(): Promise<void>;
 	getCompletions(text: string, cursor: number): CompletionResult | Promise<CompletionResult | undefined> | undefined;
 	renderRichText?(request: RichTextRenderRequest): RenderRichTextResult;
-	getToolRecoveryDiagnostics(): ToolRecoveryRuntimeDiagnostics;
+	getToolRecoveryDiagnostics(): ToolRecoveryRuntimeDiagnostics | undefined;
 	dispose(): Promise<void>;
 	onEvent(listener: (event: RuntimeEvent) => void): () => void;
 }

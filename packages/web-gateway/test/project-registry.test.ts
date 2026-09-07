@@ -119,3 +119,48 @@ test("ProjectRegistry 加载已有的最近会话缓存", async (t) => {
 	await registry.load();
 	assert.equal(registry.list()[0]?.recentSessions?.[0]?.id, "session");
 });
+
+test("ProjectRegistry 将新会话置于已有会话排序之前", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "lystar-project-registry-new-session-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+
+	const projectRoot = join(root, "project");
+	await mkdir(projectRoot, { recursive: true });
+	const registry = new ProjectRegistry(join(root, "agent"));
+	await registry.load();
+	await registry.add({ id: "project", name: "测试项目", cwd: projectRoot });
+
+	const sessions: SessionSummary[] = ["old-1", "old-2"].map((id, index) => ({
+		path: join(root, `${id}.jsonl`),
+		id,
+		cwd: projectRoot,
+		createdAt: (index + 1) * 100,
+		updatedAt: (index + 1) * 100,
+		messageCount: 0,
+		firstMessage: id,
+		activity: "idle",
+		writeAccess: "available",
+	}));
+	await registry.setRecentSessions("project", sessions);
+	await registry.setSessionOrder("project", ["old-2", "old-1"]);
+
+	const fresh: SessionSummary = {
+		path: join(root, "fresh.jsonl"),
+		id: "fresh",
+		cwd: projectRoot,
+		createdAt: 300,
+		updatedAt: 300,
+		messageCount: 0,
+		firstMessage: "fresh",
+		activity: "idle",
+		writeAccess: "available",
+	};
+	await registry.setRecentSessions("project", [fresh, ...sessions]);
+
+	const project = registry.get("project");
+	assert.deepEqual(project?.sessionOrder?.slice(0, 3), ["fresh", "old-2", "old-1"]);
+	assert.deepEqual(
+		project?.recentSessions?.slice(0, 3).map((session) => session.id),
+		["fresh", "old-2", "old-1"],
+	);
+});

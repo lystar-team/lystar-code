@@ -33,6 +33,8 @@ export interface RequestOptions {
 	/** Use 0 only for a command that intentionally has no deadline. */
 	timeoutMs?: number;
 	timeoutMessage?: string;
+	/** 在响应帧位置建立同步基线，必须先于同批后续事件执行。 */
+	onResult?: (value: unknown) => void;
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -70,6 +72,7 @@ export class RuntimeProtocolClient {
 		{
 			resolve: (value: unknown) => void;
 			reject: (error: Error) => void;
+			onResult?: (value: unknown) => void;
 			timeout?: ReturnType<typeof setTimeout>;
 		}
 	>();
@@ -112,7 +115,13 @@ export class RuntimeProtocolClient {
 
 	async connect(): Promise<void> {
 		this.unsubscribeBytes = this.transport.onBytes((bytes) => {
-			for (const message of this.decoder.push(bytes)) this.handleMessage(message);
+			if (this.closed) return;
+			try {
+				for (const message of this.decoder.push(bytes)) this.handleMessage(message);
+			} catch (error) {
+				this.handleClose(error instanceof Error ? error : new Error(String(error)));
+				void this.transport.close().catch(() => {});
+			}
 		});
 		this.unsubscribeClose = this.transport.onClose((error) => this.handleClose(error));
 		await this.transport.send(
@@ -125,12 +134,14 @@ export class RuntimeProtocolClient {
 	}
 
 	async request<T = unknown>(request: Command, options: RequestOptions = {}): Promise<T> {
+		if (this.closed) throw new Error("Web Runtime 连接已关闭");
 		const id = createClientRequestId();
 		const timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 		const result = new Promise<T>((resolve, reject) => {
 			const pending = {
 				resolve: (value: unknown) => resolve(value as T),
 				reject,
+				onResult: options.onResult,
 				timeout: undefined as ReturnType<typeof setTimeout> | undefined,
 			};
 			if (timeoutMs > 0) {
@@ -144,14 +155,13 @@ export class RuntimeProtocolClient {
 			}
 			this.pending.set(id, pending);
 		});
-		try {
-			await this.transport.send(encodeClientMessage({ type: "request", id, request }));
-		} catch (error) {
-			const pending = this.pending.get(id);
-			if (pending?.timeout) globalThis.clearTimeout(pending.timeout);
-			this.pending.delete(id);
-			throw error;
-		}
+		// 响应等待与发送并行：发送受阻时，请求超时也必须能够结束调用。
+		void Promise.resolve()
+			.then(() => this.transport.send(encodeClientMessage({ type: "request", id, request })))
+			.catch((error) => {
+				this.handleClose(error instanceof Error ? error : new Error(String(error)));
+				void this.transport.close().catch(() => {});
+			});
 		const value = await result;
 		if (request.command === "read_transcript") {
 			if (this.trustedServerMessages) {
@@ -208,8 +218,15 @@ export class RuntimeProtocolClient {
 			if (!pending) return;
 			this.pending.delete(message.id);
 			if (pending.timeout) globalThis.clearTimeout(pending.timeout);
-			if (message.ok) pending.resolve(message.result);
-			else
+			if (message.ok) {
+				try {
+					pending.onResult?.(message.result);
+					pending.resolve(message.result);
+				} catch (error) {
+					pending.reject(error instanceof Error ? error : new Error(String(error)));
+					throw error;
+				}
+			} else
 				pending.reject(
 					new RuntimeProtocolError(message.error.code, message.error.message, message.error.retryable),
 				);
@@ -221,8 +238,8 @@ export class RuntimeProtocolClient {
 	private applyEvent(event: ServerEvent): void {
 		if (event.type === "session_snapshot") {
 			const current = this.sessions.get(event.snapshot.path);
-			if (!current || event.snapshot.revision >= current.revision)
-				this.sessions.set(event.snapshot.path, event.snapshot);
+			if (current && event.snapshot.revision < current.revision) return;
+			this.sessions.set(event.snapshot.path, event.snapshot);
 		}
 		if (event.type === "session_removed") {
 			this.sessions.delete(event.sessionPath);
@@ -254,9 +271,8 @@ export class RuntimeProtocolClient {
 		}
 		if (event.type === "operation_updated") {
 			const current = this.operations.get(event.operation.operationId);
-			if (!current || event.operation.updatedAt >= current.updatedAt) {
-				this.operations.set(event.operation.operationId, event.operation);
-			}
+			if (current && event.operation.updatedAt < current.updatedAt) return;
+			this.operations.set(event.operation.operationId, event.operation);
 		}
 		for (const listener of this.eventListeners) listener(event);
 		this.publish();

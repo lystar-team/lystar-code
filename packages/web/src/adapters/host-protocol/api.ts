@@ -278,6 +278,13 @@ export class WebApi {
 		});
 	}
 
+	async reloadResources(sessionId: string): Promise<{ session: WebSessionSnapshot }> {
+		return this.request<{ session: WebSessionSnapshot }>(`/api/sessions/${encodeURIComponent(sessionId)}/reload`, {
+			method: "POST",
+			body: JSON.stringify({ clientRequestId: createUuid() }),
+		});
+	}
+
 	async compact(sessionId: string, customInstructions?: string): Promise<{ operation: WebOperation }> {
 		return this.request<{ operation: WebOperation }>(`/api/sessions/${encodeURIComponent(sessionId)}/compact`, {
 			method: "POST",
@@ -467,8 +474,9 @@ export class WebApi {
 		socket.addEventListener("message", (message) => {
 			try {
 				onEvent(JSON.parse(String(message.data)) as GatewayEvent);
-			} catch {
-				// 网关只发送 JSON；无效消息忽略，下一次快照会重新校准状态。
+			} catch (error) {
+				console.error("Web 实时消息处理失败，需要重新同步", error);
+				socket.close(4001, "实时消息处理失败");
 			}
 		});
 		socket.addEventListener("close", notifyClose, { once: true });

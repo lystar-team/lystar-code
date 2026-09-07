@@ -1,7 +1,15 @@
 import type { SessionProgress, ToolActivity, ToolActivityState, ToolDiff } from "@lystar/code-web-protocol";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UnauthorizedError, webApi } from "../adapters/host-protocol/api.ts";
-import { shouldJoinToolBatch } from "./tool-batching.ts";
+import { applyPromptAccepted, clearsThinking, committedToolCallIds, reconcileCommittedTurn } from "./chat-lifecycle.ts";
+import { isOlderSessionSnapshot, isTranscriptResponseObsolete, mergeOperationSnapshots, runtimeHistoryChanged } from "./session-sync.ts";
+import { shouldJoinLiveToolBatch } from "./tool-batching.ts";
+import {
+	decorateTranscriptItems,
+	mergeTranscriptEntries,
+	mergeTranscriptPage,
+	type WorkbenchTranscriptItem,
+} from "./transcript-state.ts";
 import type {
 	GatewayEvent,
 	HostInstructionsResponse,
@@ -36,28 +44,35 @@ export interface LiveTool {
 }
 
 export type LiveTurnItem =
-	| { id: string; kind: "text"; text: string }
-	| { id: string; kind: "thinking"; text: string }
-	| { id: string; kind: "tools"; batchId: string; toolIds: string[] };
+	| { id: string; kind: "text"; text: string; turnId: number }
+	| { id: string; kind: "thinking"; text: string; turnId: number }
+	| { id: string; kind: "tools"; turnId: number; batchId: string; toolIds: string[] };
 
 function appendLiveTextBlock(
 	items: LiveTurnItem[],
 	kind: "text" | "thinking",
 	text: string,
 	id: string,
+	turnId: number,
 ): LiveTurnItem[] {
 	const last = items.at(-1);
-	if (last?.kind === kind) return [...items.slice(0, -1), { ...last, text: last.text + text }];
-	return [...items, { id, kind, text }];
+	if (last?.kind === kind && last.turnId === turnId) return [...items.slice(0, -1), { ...last, text: last.text + text }];
+	return [...items, { id, kind, text, turnId }];
 }
 
-function appendLiveToolBlock(items: LiveTurnItem[], batchId: string, toolCallId: string, id: string): LiveTurnItem[] {
+function appendLiveToolBlock(
+	items: LiveTurnItem[],
+	batchId: string,
+	toolCallId: string,
+	id: string,
+	turnId: number,
+): LiveTurnItem[] {
 	const last = items.at(-1);
-	if (last?.kind === "tools" && last.batchId === batchId) {
+	if (last?.kind === "tools" && last.turnId === turnId && last.batchId === batchId) {
 		if (last.toolIds.includes(toolCallId)) return items;
 		return [...items.slice(0, -1), { ...last, toolIds: [...last.toolIds, toolCallId] }];
 	}
-	return [...items, { id, kind: "tools", batchId, toolIds: [toolCallId] }];
+	return [...items, { id, kind: "tools", turnId, batchId, toolIds: [toolCallId] }];
 }
 
 function mergeToolDiff(previous: ToolDiff | undefined, next: ToolDiff | undefined): ToolDiff | undefined {
@@ -120,12 +135,12 @@ function liveToolFromActivity(
 	};
 }
 
-function nextLiveToolBatchId(current: WorkbenchState, toolName: string, fallback: string): string {
+function nextLiveToolBatchId(current: WorkbenchState, toolName: string, turnId: number, fallback: string): string {
 	const last = current.liveTurnItems.at(-1);
-	if (last?.kind !== "tools") return fallback;
+	if (last?.kind !== "tools" || last.turnId !== turnId) return fallback;
 	const previousToolId = last.toolIds.at(-1);
 	const previousTool = previousToolId ? current.liveTools[previousToolId] : undefined;
-	return previousTool && shouldJoinToolBatch(previousTool.name, toolName) ? last.batchId : fallback;
+	return shouldJoinLiveToolBatch(previousTool?.name, toolName, last?.turnId, turnId) ? last.batchId : fallback;
 }
 
 function applyToolActivityState(current: WorkbenchState, activity: ToolActivity): WorkbenchState {
@@ -135,7 +150,9 @@ function applyToolActivityState(current: WorkbenchState, activity: ToolActivity)
 	const newEpoch = current.toolActivityEpoch !== activity.activityEpoch;
 	const liveTools = newEpoch ? {} : current.liveTools;
 	const previous = liveTools[activity.toolCallId];
-	const batchId = previous?.batchId ?? nextLiveToolBatchId(current, activity.name, `live-tool-batch:${activity.activityEpoch}:${activity.toolCallId}`);
+	const batchId =
+		previous?.batchId ??
+		nextLiveToolBatchId(current, activity.name, current.liveTurnId, `live-tool-batch:${activity.activityEpoch}:${activity.toolCallId}`);
 	return {
 		...current,
 		toolActivityEpoch: activity.activityEpoch,
@@ -151,6 +168,7 @@ function applyToolActivityState(current: WorkbenchState, activity: ToolActivity)
 					batchId,
 					activity.toolCallId,
 					`live-tools:${activity.activityEpoch}:${activity.toolCallId}`,
+					current.liveTurnId,
 				),
 		statusText: toolActivityLabel(activity),
 	};
@@ -175,6 +193,7 @@ function restoreToolActivities(current: WorkbenchState, snapshot: WebSessionSnap
 		const batchId = nextLiveToolBatchId(
 			next,
 			activity.name,
+			next.liveTurnId,
 			`live-tool-batch:${activity.activityEpoch}:${activity.toolCallId}`,
 		);
 		next = {
@@ -188,18 +207,25 @@ function restoreToolActivities(current: WorkbenchState, snapshot: WebSessionSnap
 					batchId,
 					activity.toolCallId,
 					`live-tools:${activity.activityEpoch}:${activity.toolCallId}`,
-			),
+					next.liveTurnId,
+				),
 		};
 	}
-	return next;
+	const persisted = committedToolCallIds(next.transcript);
+	return {
+		...next,
+		liveTurnItems: next.liveTurnItems.flatMap((item): LiveTurnItem[] => {
+			if (item.kind !== "tools") return [item];
+			const toolIds = item.toolIds.filter((id) => !persisted.has(id));
+			return toolIds.length ? [{ ...item, toolIds }] : [];
+		}),
+	};
 }
 
 interface GitFileDiffStats {
 	additions: number;
 	deletions: number;
 }
-
-export type WorkbenchTranscriptItem = WebTranscriptItem & { renderId: string };
 
 export interface WorkbenchState {
 	loading: boolean;
@@ -213,10 +239,12 @@ export interface WorkbenchState {
 	session?: WebSessionSnapshot;
 	sessionError?: string;
 	transcript: WorkbenchTranscriptItem[];
+	transcriptPageLoaded: boolean;
 	transcriptLoading: boolean;
 	transcriptError?: string;
 	transcriptGeneration?: string;
 	transcriptRevision?: number;
+	transcriptLeafId?: string | null;
 	previousCursor?: string;
 	toolActivityEpoch?: string;
 	toolActivityRevision?: number;
@@ -230,6 +258,10 @@ export interface WorkbenchState {
 	liveThinking: string;
 	liveTools: Record<string, LiveTool>;
 	liveTurnItems: LiveTurnItem[];
+	liveTurnId: number;
+	liveTurnStartRevision?: number;
+	liveTurnActive?: boolean;
+	promptScrollRequest?: number;
 	unreadSessionIds: Record<string, true>;
 	statusText: string;
 	pendingUiRequests: UiRequestEvent[];
@@ -344,7 +376,6 @@ const THEME_KEY = "lystar.web.theme";
 const MODEL_PROVIDER_VISIBILITY_KEY = "lystar.web.model-provider-visibility.v2";
 const ACTIVE_OPERATION_STATUSES = new Set(["accepted", "running", "waiting_for_input"]);
 const TERMINAL_OPERATION_STATUSES = new Set(["completed", "failed", "aborted", "interrupted"]);
-const THINKING_DISPLAY_HOLD_MS = 1500;
 
 function savedTheme(): ThemeMode {
 	if (typeof window === "undefined") return "system";
@@ -383,35 +414,6 @@ export function sessionTitle(session: WebSessionSummary | WebSessionSnapshot | u
 
 function eventIsObject(value: unknown): value is Record<string, unknown> {
 	return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-function transcriptViewIdentity(item: WebTranscriptItem): string {
-	const view = item.view;
-	if (!view) return item.kind;
-	if (view.type === "tool_call") return `${view.type}:${view.calls.map((call) => call.id).join(",")}`;
-	if (view.type === "tool_result") return `${view.type}:${view.callId}`;
-	return view.type;
-}
-
-function decorateTranscriptItems(items: readonly WebTranscriptItem[]): WorkbenchTranscriptItem[] {
-	const occurrences = new Map<string, number>();
-	return items.map((item) => {
-		const base = `${item.entryId}:${transcriptViewIdentity(item)}`;
-		const occurrence = occurrences.get(base) ?? 0;
-		occurrences.set(base, occurrence + 1);
-		return { ...item, renderId: `${base}:${occurrence}` };
-	});
-}
-
-function replaceTranscriptEntries(
-	current: readonly WorkbenchTranscriptItem[],
-	incoming: readonly WebTranscriptItem[],
-	prepend = false,
-): WorkbenchTranscriptItem[] {
-	const incomingEntryIds = new Set(incoming.map((item) => item.entryId));
-	const retained = current.filter((item) => !incomingEntryIds.has(item.entryId));
-	const next = decorateTranscriptItems(incoming);
-	return prepend ? [...next, ...retained] : [...retained, ...next];
 }
 
 function operationForSession(operations: WebOperation[], sessionId: string | undefined): WebOperation | undefined {
@@ -536,6 +538,14 @@ function textLineCount(content: string): number {
 	return content.endsWith("\n") || content.endsWith("\r") ? lines.length - 1 : lines.length;
 }
 
+function hasLiveTurnContent(state: Pick<WorkbenchState, "liveText" | "liveThinking" | "liveTools" | "liveTurnItems">): boolean {
+	return Boolean(state.liveText || state.liveThinking || Object.keys(state.liveTools).length || state.liveTurnItems.length);
+}
+
+function shouldClearLiveTurn(state: WorkbenchState): boolean {
+	return state.liveTurnActive === false && hasLiveTurnContent(state);
+}
+
 function initialState(): WorkbenchState {
 	return {
 		loading: false,
@@ -546,10 +556,12 @@ function initialState(): WorkbenchState {
 		projects: [],
 		sessionError: undefined,
 		transcript: [],
+		transcriptPageLoaded: false,
 		transcriptLoading: false,
 		transcriptError: undefined,
 		transcriptGeneration: undefined,
 		transcriptRevision: undefined,
+		transcriptLeafId: undefined,
 		hasMorePrevious: false,
 		loadingEarlier: false,
 		readOnly: false,
@@ -558,6 +570,7 @@ function initialState(): WorkbenchState {
 		liveThinking: "",
 		liveTools: {},
 		liveTurnItems: [],
+		liveTurnId: 0,
 		unreadSessionIds: {},
 		gitFileStats: {},
 		statusText: "",
@@ -599,13 +612,11 @@ export function useWorkbench() {
 	const reconnectTimerRef = useRef<number | undefined>(undefined);
 	const transcriptTimerRef = useRef<number | undefined>(undefined);
 	const transcriptRefreshPendingRef = useRef<string | undefined>(undefined);
-	const thinkingClearTimerRef = useRef<number | undefined>(undefined);
 	const liveToolBatchRef = useRef(0);
 	const liveTurnItemRef = useRef(0);
 	const transcriptRequestRef = useRef(0);
 	const fileRequestRef = useRef(0);
 	const projectRefreshRef = useRef(new Map<string, { promise: Promise<void>; rerun: boolean }>());
-	const projectRefreshSuppressedUntilRef = useRef(new Map<string, number>());
 	const toastTimerRef = useRef<number | undefined>(undefined);
 	const selectionRef = useRef(0);
 	const selectionInFlightRef = useRef<string | undefined>(undefined);
@@ -622,24 +633,6 @@ export function useWorkbench() {
 		return next;
 	}, []);
 
-	const cancelThinkingClear = useCallback(() => {
-		if (thinkingClearTimerRef.current) {
-			window.clearTimeout(thinkingClearTimerRef.current);
-			thinkingClearTimerRef.current = undefined;
-		}
-	}, []);
-	const scheduleThinkingClear = useCallback(() => {
-		if (!stateRef.current.liveThinking) return;
-		cancelThinkingClear();
-		thinkingClearTimerRef.current = window.setTimeout(() => {
-			thinkingClearTimerRef.current = undefined;
-			updateState((current) => ({
-				...current,
-				liveThinking: "",
-				liveTurnItems: current.liveTurnItems.filter((item) => item.kind !== "thinking"),
-			}));
-		}, THINKING_DISPLAY_HOLD_MS);
-	}, [cancelThinkingClear, updateState]);
 
 	const currentProject = useMemo(
 		() => state.projects.find((project) => project.id === state.currentProjectId),
@@ -689,13 +682,14 @@ export function useWorkbench() {
 					? data.leases?.find((entry) => entry.sessionId === current.sessionId)?.lease
 					: undefined;
 				const nextLease = data.leases === undefined ? current.lease : restoredLease;
+				const operations = mergeOperationSnapshots(current.operations, data.operations);
 				const projects = mergeProjectSessions(current.projects, data.projects);
 				return {
 					...current,
 					projects: current.session
 						? updateSessionSummaryName(projects, current.sessionId!, current.session.name)
 						: projects,
-					operations: data.operations,
+					operations,
 					pendingUiRequests: data.pendingUiRequests,
 					connected: data.connection.connected,
 					connectionError: "",
@@ -707,7 +701,7 @@ export function useWorkbench() {
 						current.currentProjectId && data.projects.some((project) => project.id === current.currentProjectId)
 							? current.currentProjectId
 							: undefined,
-					currentOperation: operationForSession(data.operations, current.sessionId),
+					currentOperation: operationForSession(operations, current.sessionId),
 				};
 			});
 		},
@@ -720,7 +714,6 @@ export function useWorkbench() {
 
 	const refreshProjectSessions = useCallback(
 		async (projectId: string) => {
-			projectRefreshSuppressedUntilRef.current.set(projectId, Date.now() + 5000);
 			const currentRefresh = projectRefreshRef.current.get(projectId);
 			if (currentRefresh) {
 				currentRefresh.rerun = true;
@@ -748,11 +741,21 @@ export function useWorkbench() {
 										session: undefined,
 										lease: undefined,
 										transcript: [],
+										transcriptPageLoaded: false,
 										transcriptLoading: false,
 										transcriptError: undefined,
 										sessionError: undefined,
 										transcriptGeneration: undefined,
 										transcriptRevision: undefined,
+										transcriptLeafId: undefined,
+										previousCursor: undefined,
+										hasMorePrevious: false,
+										liveText: "",
+										liveThinking: "",
+										liveTools: {},
+										liveTurnItems: [],
+										currentOperation: undefined,
+										statusText: "",
 									}
 								: {}),
 						};
@@ -773,8 +776,12 @@ export function useWorkbench() {
 	const loadTranscript = useCallback(
 		async (sessionId = stateRef.current.sessionId, cursor?: string) => {
 			if (!sessionId) return;
+			const requestedHistory = {
+				generation: stateRef.current.transcriptGeneration,
+				leafId: stateRef.current.transcriptLeafId,
+			};
 			const requestId = ++transcriptRequestRef.current;
-			if (!cursor) {
+			if (!cursor && (!stateRef.current.transcriptPageLoaded || stateRef.current.transcriptError)) {
 				updateState((current) =>
 					current.sessionId === sessionId
 						? { ...current, transcriptLoading: true, transcriptError: undefined }
@@ -784,18 +791,54 @@ export function useWorkbench() {
 			try {
 				const result = await webApi.transcript(sessionId, { cursor, limit: 40 });
 				if (requestId !== transcriptRequestRef.current || stateRef.current.sessionId !== sessionId) return;
-				updateState((current) => ({
-					...current,
-					transcript: cursor
-						? replaceTranscriptEntries(current.transcript, result.items, true)
-						: decorateTranscriptItems(result.items),
-					previousCursor: result.previousCursor,
-					hasMorePrevious: result.hasMorePrevious,
-					transcriptLoading: false,
-					transcriptError: undefined,
-					transcriptGeneration: result.transcriptGeneration,
-					transcriptRevision: result.transcriptRevision,
-				}));
+				updateState((current) => {
+					const resultMatchesCurrentHistory =
+						current.transcriptGeneration === undefined ||
+						current.transcriptGeneration === result.transcriptGeneration;
+					const currentHistoryChangedSinceRequest = isTranscriptResponseObsolete(requestedHistory, {
+						generation: current.transcriptGeneration, leafId: current.transcriptLeafId,
+					}, result);
+					const sameHistory = resultMatchesCurrentHistory;
+					const staleRevision =
+						current.transcriptGeneration === result.transcriptGeneration &&
+						current.transcriptRevision !== undefined &&
+						current.transcriptRevision > result.transcriptRevision;
+					if (currentHistoryChangedSinceRequest)
+						return cursor ? current : { ...current, transcriptLoading: false };
+					if (cursor && !sameHistory) return current;
+					if (staleRevision && !cursor) {
+						return cursor
+							? current
+							: {
+									...current,
+									transcriptLoading: false,
+									...(shouldClearLiveTurn(current)
+										? { liveText: "", liveThinking: "", liveTools: {}, liveTurnItems: [] }
+										: {}),
+							  };
+					}
+					if (!cursor && sameHistory && current.transcriptPageLoaded &&
+						current.transcriptRevision === result.transcriptRevision && !shouldClearLiveTurn(current))
+						return current.transcriptLoading ? { ...current, transcriptLoading: false } : current;
+					const transcriptWindow = mergeTranscriptPage(current, result, Boolean(cursor), sameHistory);
+					const completedTurnSynced = !cursor && shouldClearLiveTurn(current);
+					const knownIds = new Set(current.transcript.map((item) => item.entryId));
+					const next = !cursor && sameHistory
+						? reconcileCommittedTurn(current, result.items.filter((item) => !knownIds.has(item.entryId)), result.transcriptRevision)
+						: current;
+					return {
+						...next,
+						...transcriptWindow,
+						transcriptLoading: false,
+						transcriptError: undefined,
+						transcriptGeneration: result.transcriptGeneration,
+						transcriptRevision: sameHistory
+							? Math.max(current.transcriptRevision ?? 0, result.transcriptRevision)
+							: result.transcriptRevision,
+						transcriptLeafId: cursor ? current.transcriptLeafId : result.leafId,
+						...(completedTurnSynced ? { liveText: "", liveThinking: "", liveTools: {}, liveTurnItems: [] } : {}),
+					};
+				});
 			} catch (error) {
 				if (requestId === transcriptRequestRef.current && stateRef.current.sessionId === sessionId) {
 					updateState((current) => ({
@@ -812,12 +855,7 @@ export function useWorkbench() {
 
 	const scheduleTranscriptRefresh = useCallback(
 		(sessionId = stateRef.current.sessionId) => {
-			if (
-				!sessionId ||
-				selectionInFlightRef.current === sessionId ||
-				(stateRef.current.transcriptLoading && stateRef.current.statusText === "正在打开会话")
-			)
-				return;
+			if (!sessionId) return;
 			if (stateRef.current.loadingEarlier) {
 				transcriptRefreshPendingRef.current = sessionId;
 				return;
@@ -837,27 +875,27 @@ export function useWorkbench() {
 
 	const applyProgress = useCallback(
 		(progress: SessionProgress) => {
-			if (
-				progress.type === "assistant_delta" ||
-				progress.type === "user_message" ||
-				progress.type === "tool_start" ||
-				progress.type === "tool_state"
-			) {
-				scheduleThinkingClear();
-			} else if (progress.type === "thinking_delta") {
-				cancelThinkingClear();
-			}
 			updateState((current) => {
+				const activity = sessionActivityFromProgress(progress);
+				current = {
+					...current,
+					...(current.session && activity ? { session: { ...current.session, activity } } : {}),
+					...(clearsThinking(progress)
+						? { liveThinking: "", liveTurnItems: current.liveTurnItems.filter((item) => item.kind !== "thinking") }
+						: {}),
+				};
 				switch (progress.type) {
 					case "assistant_delta":
 						return {
 							...current,
 							liveText: current.liveText + progress.text,
+							liveTurnActive: true,
 							liveTurnItems: appendLiveTextBlock(
 								current.liveTurnItems,
 								"text",
 								progress.text,
 								`live-turn:${liveTurnItemRef.current++}`,
+								current.liveTurnId,
 							),
 							statusText: "正在生成回复",
 						};
@@ -865,11 +903,13 @@ export function useWorkbench() {
 						return {
 							...current,
 							liveThinking: current.liveThinking + progress.text,
+							liveTurnActive: true,
 							liveTurnItems: appendLiveTextBlock(
 								current.liveTurnItems,
 								"thinking",
 								progress.text,
 								`live-thinking:${liveTurnItemRef.current++}`,
+								current.liveTurnId,
 							),
 							statusText: "正在思考",
 						};
@@ -880,7 +920,8 @@ export function useWorkbench() {
 					case "tool_start": {
 						const previous = current.liveTools[progress.toolCallId];
 						const batchId =
-							previous?.batchId ?? nextLiveToolBatchId(current, progress.name, `live-tool-batch:${liveToolBatchRef.current++}`);
+							previous?.batchId ??
+							nextLiveToolBatchId(current, progress.name, current.liveTurnId, `live-tool-batch:${liveToolBatchRef.current++}`);
 						return {
 							...current,
 							liveTools: {
@@ -902,6 +943,7 @@ export function useWorkbench() {
 										batchId,
 										progress.toolCallId,
 										`live-tools:${liveTurnItemRef.current++}`,
+										current.liveTurnId,
 									),
 							statusText: `正在执行 ${progress.name}`,
 						};
@@ -910,7 +952,8 @@ export function useWorkbench() {
 						const previous = current.liveTools[progress.toolCallId];
 						if (previous && previous.status !== "running") return current;
 						const batchId =
-							previous?.batchId ?? nextLiveToolBatchId(current, progress.name, `live-tool-batch:${liveToolBatchRef.current++}`);
+							previous?.batchId ??
+							nextLiveToolBatchId(current, progress.name, current.liveTurnId, `live-tool-batch:${liveToolBatchRef.current++}`);
 						return {
 							...current,
 							liveTools: {
@@ -933,13 +976,15 @@ export function useWorkbench() {
 										batchId,
 										progress.toolCallId,
 										`live-tools:${liveTurnItemRef.current++}`,
+										current.liveTurnId,
 									),
 						};
 					}
 					case "tool_end": {
 						const previous = current.liveTools[progress.toolCallId];
 						const batchId =
-							previous?.batchId ?? nextLiveToolBatchId(current, progress.name, `live-tool-batch:${liveToolBatchRef.current++}`);
+							previous?.batchId ??
+							nextLiveToolBatchId(current, progress.name, current.liveTurnId, `live-tool-batch:${liveToolBatchRef.current++}`);
 						return {
 							...current,
 							liveTools: {
@@ -962,6 +1007,7 @@ export function useWorkbench() {
 										batchId,
 										progress.toolCallId,
 										`live-tools:${liveTurnItemRef.current++}`,
+										current.liveTurnId,
 									),
 							statusText: progress.status === "error" ? `${progress.name} 执行失败` : `${progress.name} 已完成`,
 						};
@@ -975,11 +1021,21 @@ export function useWorkbench() {
 									: "正在处理",
 						};
 					case "phase":
-						if (progress.phase === "turn") liveToolBatchRef.current += 1;
 						return {
 							...current,
+							liveTurnId: progress.phase === "turn" ? current.liveTurnId + 1 : current.liveTurnId,
+							...(progress.phase === "turn"
+								? {
+										liveTurnStartRevision: current.transcriptRevision,
+										liveTurnActive: true,
+										liveText: "",
+										liveTurnItems: [],
+									}
+								: progress.phase === "idle" || progress.phase === "interrupted"
+									? { liveTurnActive: false }
+									: {}),
 							statusText:
-								progress.phase === "waiting_for_input"
+								progress.phase === "idle" ? "" : progress.phase === "waiting_for_input"
 									? "等待输入"
 									: progress.phase === "compaction"
 										? "正在整理上下文"
@@ -1016,15 +1072,27 @@ export function useWorkbench() {
 				}
 			});
 		},
-		[cancelThinkingClear, scheduleThinkingClear, updateState],
+		[updateState],
 	);
 
 	const handleEvent = useCallback(
 		(event: GatewayEvent) => {
+			if (event.type === "session_stream") {
+				if (event.sessionId !== stateRef.current.sessionId) return;
+				updateState((current) => {
+					const tools = current.liveTurnItems.filter((item) => item.kind === "tools");
+					let items: LiveTurnItem[] = tools;
+					if (event.thinking) items = appendLiveTextBlock(items, "thinking", event.thinking, `restored-thinking:${liveTurnItemRef.current++}`, current.liveTurnId);
+					if (event.text) items = appendLiveTextBlock(items, "text", event.text, `restored-text:${liveTurnItemRef.current++}`, current.liveTurnId);
+					return { ...current, liveText: event.text, liveThinking: event.thinking, liveTurnItems: items, liveTurnActive: Boolean(event.text || event.thinking || tools.length) };
+				});
+				return;
+			}
 			if (event.type === "bootstrap") {
 				const sessionId = stateRef.current.sessionId;
 				applyBootstrap(event.data);
-				if (sessionId && event.data.leases && !event.data.leases.some((entry) => entry.sessionId === sessionId)) {
+				if (sessionId) {
+					updateState((current) => ({ ...current, sessionError: "正在同步会话" }));
 					void selectSessionRef.current(sessionId).catch((error) => showToast(errorMessage(error)));
 				}
 				return;
@@ -1040,8 +1108,6 @@ export function useWorkbench() {
 			}
 			if (event.type === "sessions_changed") {
 				if (event.projectId) {
-					const suppressedUntil = projectRefreshSuppressedUntilRef.current.get(event.projectId) ?? 0;
-					if (suppressedUntil > Date.now()) return;
 					void refreshProjectSessions(event.projectId).catch((error) => showToast(errorMessage(error)));
 				} else {
 					void refreshBootstrap().catch((error) => showToast(errorMessage(error)));
@@ -1049,6 +1115,7 @@ export function useWorkbench() {
 				return;
 			}
 			if (event.type === "session_snapshot") {
+				if (event.sessionId === stateRef.current.sessionId && isOlderSessionSnapshot(stateRef.current.session, event.snapshot)) return;
 				updateState((current) => {
 					const projects = updateSessionActivity(
 						updateSessionSummaryName(current.projects, event.sessionId, event.snapshot.name),
@@ -1056,16 +1123,38 @@ export function useWorkbench() {
 						event.snapshot.activity,
 					);
 					if (event.sessionId !== current.sessionId) return { ...current, projects };
+					const historyChanged =
+						runtimeHistoryChanged(current.session, event.snapshot) ||
+						(event.snapshot.transcriptRevision >= (current.transcriptRevision ?? 0) &&
+							event.snapshot.leafId !== current.transcriptLeafId &&
+							current.transcript.some((item) => item.entryId === event.snapshot.leafId) &&
+							current.transcript.at(-1)?.entryId !== event.snapshot.leafId);
 					const next: WorkbenchState = {
 						...current,
 						projects,
 						session: event.snapshot,
 						readOnly: event.snapshot.writeAccess !== "owned",
-						transcriptGeneration: event.snapshot.transcriptGeneration,
-						transcriptRevision: event.snapshot.transcriptRevision,
+						transcriptGeneration: historyChanged ? undefined : current.transcriptGeneration,
+						transcriptRevision: historyChanged ? undefined : current.transcriptRevision,
+						transcriptLeafId: historyChanged ? event.snapshot.leafId : current.transcriptLeafId,
+						...(historyChanged
+							? {
+									transcript: [],
+									transcriptPageLoaded: false,
+									previousCursor: undefined,
+									hasMorePrevious: false,
+									liveText: "",
+									liveThinking: "",
+									liveTools: {},
+									liveTurnItems: [],
+							  }
+							: {}),
 					};
 					return restoreToolActivities(next, event.snapshot);
 				});
+				if (event.sessionId === stateRef.current.sessionId &&
+					(event.snapshot.transcriptRevision > (stateRef.current.transcriptRevision ?? -1) || !stateRef.current.transcriptPageLoaded))
+					scheduleTranscriptRefresh(event.sessionId);
 				return;
 			}
 			if (event.type === "session_removed") {
@@ -1080,11 +1169,21 @@ export function useWorkbench() {
 								session: undefined,
 								lease: undefined,
 								transcript: [],
+								transcriptPageLoaded: false,
 								transcriptLoading: false,
 								transcriptError: undefined,
 								sessionError: undefined,
 								transcriptGeneration: undefined,
 								transcriptRevision: undefined,
+								transcriptLeafId: undefined,
+								previousCursor: undefined,
+								hasMorePrevious: false,
+								liveText: "",
+								liveThinking: "",
+								liveTools: {},
+								liveTurnItems: [],
+								currentOperation: undefined,
+								statusText: "",
 							}
 						: { ...current, unreadSessionIds };
 				});
@@ -1094,16 +1193,25 @@ export function useWorkbench() {
 			if (event.type === "transcript_changed" || event.type === "transcript_committed") {
 				if (event.sessionId !== stateRef.current.sessionId) return;
 				if (event.type === "transcript_committed") {
-					updateState((current) =>
-						current.sessionId === event.sessionId
-							? {
-									...current,
-									transcript: replaceTranscriptEntries(current.transcript, event.items),
-									transcriptGeneration: event.transcriptGeneration,
-									transcriptRevision: event.toRevision,
-								}
-							: current,
-					);
+					updateState((current) => {
+						if (current.sessionId !== event.sessionId) return current;
+						const sameHistory = current.session === undefined ||
+							current.session.transcriptGeneration === event.transcriptGeneration;
+						if (!sameHistory) return current;
+						const stale = sameHistory && event.toRevision < (current.transcriptRevision ?? 0);
+						const next = sameHistory && !stale ? reconcileCommittedTurn(current, event.items, event.toRevision) : current;
+						return {
+							...next,
+							transcript: stale ? current.transcript : sameHistory
+								? mergeTranscriptEntries(current.transcript, event.items)
+								: decorateTranscriptItems(event.items),
+							transcriptPageLoaded: sameHistory && current.transcriptPageLoaded,
+							previousCursor: sameHistory ? current.previousCursor : undefined,
+							hasMorePrevious: sameHistory ? current.hasMorePrevious : false,
+							transcriptGeneration: current.transcriptGeneration,
+							transcriptRevision: stale ? current.transcriptRevision : event.toRevision,
+						};
+					});
 				}
 				scheduleTranscriptRefresh(event.sessionId);
 				return;
@@ -1134,7 +1242,11 @@ export function useWorkbench() {
 						};
 					});
 				}
-				if (event.sessionId === stateRef.current.sessionId) applyProgress(event.progress);
+				if (event.sessionId === stateRef.current.sessionId) {
+					applyProgress(event.progress);
+					if (event.progress.type === "phase" && ["idle", "interrupted"].includes(event.progress.phase))
+						scheduleTranscriptRefresh(event.sessionId);
+				}
 				return;
 			}
 			if (event.type === "operation_updated") {
@@ -1186,10 +1298,13 @@ export function useWorkbench() {
 						operations,
 						unreadSessionIds,
 						...(selected ? { currentOperation: event.operation } : {}),
+						...(selected && operationIsTerminal && ["prompt", "compact", "run_bash"].includes(event.operation.type)
+							? { liveThinking: "", liveTurnActive: false }
+							: {}),
 						...(selected &&
 						event.operation.status === "completed" &&
 						["prompt", "compact", "run_bash"].includes(event.operation.type)
-							? { liveText: "", liveThinking: "", liveTools: {}, liveTurnItems: [], statusText: "" }
+							? { statusText: "" }
 							: {}),
 						...(selected &&
 						(event.operation.status === "failed" ||
@@ -1324,21 +1439,22 @@ export function useWorkbench() {
 				updateState((current) => ({ ...current, authRequired: true, loading: false }));
 				return;
 			}
-			updateState((current) => ({ ...current, loading: true, connectionError: "" }));
+			updateState((current) => ({ ...current, loading: !current.transcriptPageLoaded, connectionError: "" }));
 			try {
 				const data = await webApi.bootstrap();
 				applyBootstrap(data);
 				await refreshModelSettings().catch(() => undefined);
 				connectStream();
-				const firstProject = data.projects
+				const firstProject = data.projects.find(
+					(project) => project.id === stateRef.current.currentProjectId && !project.archived,
+				) ?? data.projects
 					.filter((project) => !project.archived)
 					.slice()
 					.sort((left, right) => Number(right.pinned) - Number(left.pinned))[0];
 				if (firstProject) {
 					updateState((current) => ({ ...current, currentProjectId: firstProject.id }));
-					const firstSession =
-						stateRef.current.projects.find((project) => project.id === firstProject.id)?.sessions[0] ??
-						firstProject.sessions[0];
+					const sessions = stateRef.current.projects.find((project) => project.id === firstProject.id)?.sessions ?? firstProject.sessions;
+					const firstSession = sessions.find((session) => session.id === stateRef.current.sessionId) ?? sessions[0];
 					if (firstSession) await selectSessionRef.current(firstSession.id);
 				}
 			} catch (error) {
@@ -1403,7 +1519,6 @@ export function useWorkbench() {
 			const request = ++selectionRef.current;
 			const previous = stateRef.current;
 			const projectId = previous.currentProjectId;
-			if (projectId) projectRefreshSuppressedUntilRef.current.set(projectId, Date.now() + 2_000);
 			if (
 				previous.sessionId &&
 				previous.sessionId !== sessionId &&
@@ -1419,17 +1534,24 @@ export function useWorkbench() {
 				sessionError: undefined,
 				lease: undefined,
 				readOnly: false,
-				transcript: [],
 				transcriptLoading: true,
 				transcriptError: undefined,
-				transcriptGeneration: undefined,
-				transcriptRevision: undefined,
-				previousCursor: undefined,
-				hasMorePrevious: false,
-				liveText: "",
-				liveThinking: "",
-				liveTools: {},
-				liveTurnItems: [],
+				...(current.sessionId !== sessionId ? {
+					transcript: [],
+					transcriptPageLoaded: false,
+					transcriptGeneration: undefined,
+					transcriptRevision: undefined,
+					transcriptLeafId: undefined,
+					previousCursor: undefined,
+					hasMorePrevious: false,
+					loadingEarlier: false,
+					liveText: "",
+					liveThinking: "",
+					liveTools: {},
+					liveTurnItems: [],
+					liveTurnActive: undefined,
+					liveTurnStartRevision: undefined,
+				} : {}),
 				unreadSessionIds: Object.fromEntries(
 					Object.entries(current.unreadSessionIds).filter(([id]) => id !== sessionId),
 				) as Record<string, true>,
@@ -1437,6 +1559,7 @@ export function useWorkbench() {
 				currentOperation: operationForSession(current.operations, sessionId),
 			}));
 			const transcriptPromise = loadTranscript(sessionId);
+			void transcriptPromise.catch(() => {});
 			try {
 				const controlled = await webApi.control(sessionId);
 				if (request !== selectionRef.current) {
@@ -1444,11 +1567,15 @@ export function useWorkbench() {
 					return;
 				}
 				updateState((current) => {
+					if (isOlderSessionSnapshot(current.session, controlled.snapshot)) return { ...current, lease: controlled.lease, sessionError: undefined };
 					const next: WorkbenchState = {
 						...current,
 						projects: updateSessionSummaryName(current.projects, sessionId, controlled.snapshot.name),
 						lease: controlled.lease,
 						session: controlled.snapshot,
+						transcriptGeneration: current.transcriptGeneration,
+						transcriptRevision: current.transcriptRevision,
+						transcriptLeafId: current.transcriptLeafId,
 						sessionError: undefined,
 						readOnly: controlled.owned === false,
 					};
@@ -1466,6 +1593,9 @@ export function useWorkbench() {
 							...current,
 							projects: updateSessionSummaryName(current.projects, sessionId, snapshot.name),
 							session: snapshot,
+							transcriptGeneration: current.transcriptGeneration,
+							transcriptRevision: current.transcriptRevision,
+							transcriptLeafId: current.transcriptLeafId,
 							sessionError: undefined,
 							readOnly: true,
 						};
@@ -1528,10 +1658,14 @@ export function useWorkbench() {
 				lease: undefined,
 				readOnly: false,
 				transcript: [],
+				transcriptPageLoaded: false,
 				transcriptLoading: false,
 				transcriptError: undefined,
 				transcriptGeneration: undefined,
 				transcriptRevision: undefined,
+				transcriptLeafId: undefined,
+				previousCursor: undefined,
+				hasMorePrevious: false,
 				currentOperation: undefined,
 				liveText: "",
 				liveThinking: "",
@@ -1559,7 +1693,7 @@ export function useWorkbench() {
 		try {
 			await loadTranscript(sessionId, current.previousCursor);
 		} finally {
-			updateState((value) => ({ ...value, loadingEarlier: false }));
+			updateState((value) => value.sessionId === sessionId ? { ...value, loadingEarlier: false } : value);
 			if (transcriptRefreshPendingRef.current === sessionId) {
 				transcriptRefreshPendingRef.current = undefined;
 				scheduleTranscriptRefresh(sessionId);
@@ -1594,12 +1728,19 @@ export function useWorkbench() {
 			lease: result.lease,
 			readOnly: false,
 			transcript: [],
+			transcriptPageLoaded: false,
 			transcriptLoading: false,
 			transcriptError: undefined,
-			transcriptGeneration: result.session.transcriptGeneration,
-			transcriptRevision: result.session.transcriptRevision,
+			transcriptGeneration: undefined,
+			transcriptRevision: undefined,
+			transcriptLeafId: undefined,
+			previousCursor: undefined,
+			hasMorePrevious: false,
 			currentOperation: undefined,
 			statusText: "",
+			liveText: "",
+			liveThinking: "",
+			liveTools: {},
 			liveTurnItems: [],
 		}));
 	}, [updateState]);
@@ -1616,14 +1757,9 @@ export function useWorkbench() {
 			const value = text.trim();
 			if (!value) return;
 			const result = await webApi.prompt(current.sessionId, value, mode, images);
-			updateState((next) => ({
-				...next,
-				currentOperation: result.operation ?? next.currentOperation,
-				liveText: "",
-				liveThinking: "",
-				liveTools: {},
-				liveTurnItems: [],
-				statusText: mode === "steer" ? "已加入当前任务" : mode === "follow-up" ? "已排入后续任务" : "正在处理",
+			updateState((next) => next.sessionId !== current.sessionId ? next : ({
+				...applyPromptAccepted(next, current.sessionId!, result.operation),
+				promptScrollRequest: (next.promptScrollRequest ?? 0) + 1,
 			}));
 		},
 		[updateState],
@@ -1721,10 +1857,14 @@ export function useWorkbench() {
 						lease: undefined,
 						readOnly: false,
 						transcript: [],
+						transcriptPageLoaded: false,
 						transcriptLoading: false,
 						transcriptError: undefined,
 						transcriptGeneration: undefined,
 						transcriptRevision: undefined,
+						transcriptLeafId: undefined,
+						previousCursor: undefined,
+						hasMorePrevious: false,
 						currentOperation: undefined,
 						liveText: "",
 						liveThinking: "",
@@ -1760,12 +1900,20 @@ export function useWorkbench() {
 				lease: result.lease,
 				readOnly: false,
 				transcript: [],
+				transcriptPageLoaded: false,
 				transcriptLoading: true,
 				transcriptError: undefined,
 				sessionError: undefined,
-				transcriptGeneration: result.session.transcriptGeneration,
-				transcriptRevision: result.session.transcriptRevision,
+				transcriptGeneration: undefined,
+				transcriptRevision: undefined,
+				transcriptLeafId: undefined,
+				previousCursor: undefined,
+				hasMorePrevious: false,
 				currentOperation: undefined,
+				liveText: "",
+				liveThinking: "",
+				liveTools: {},
+				liveTurnItems: [],
 			}));
 			if (current.currentProjectId) await refreshProjectSessions(current.currentProjectId);
 			await loadTranscript(result.session.id);
@@ -1774,10 +1922,35 @@ export function useWorkbench() {
 		[loadTranscript, refreshProjectSessions, showToast, updateState],
 	);
 
-	const compact = useCallback(async () => {
+	const reloadResources = useCallback(async () => {
+		const { sessionId, currentProjectId, readOnly } = stateRef.current;
+		if (!sessionId || readOnly) throw new Error("当前会话不可写");
+		showToast("正在重新加载会话资源…");
+		const result = await webApi.reloadResources(sessionId);
+		if (stateRef.current.sessionId !== sessionId) return;
+		updateState((current) => ({ ...current, session: result.session }));
+		try {
+			const [instructions, skills] = await Promise.all([
+				webApi.hostInstructions(),
+				currentProjectId ? webApi.projectSkills(currentProjectId) : undefined,
+			]);
+			if (stateRef.current.sessionId !== sessionId) return;
+			updateState((current) => ({
+				...current,
+				hostInstructions: instructions.instructions,
+				hostInstructionsError: undefined,
+				...(skills ? { skills: skills.skills, skillDiagnostics: skills.diagnostics, skillsError: undefined } : {}),
+			}));
+			showToast("会话资源已重新加载，后续消息使用更新后的 AGENTS.md 和 Skill");
+		} catch (error) {
+			showToast(`会话资源已重新加载，但资源列表刷新失败：${errorMessage(error)}`);
+		}
+	}, [showToast, updateState]);
+
+	const compact = useCallback(async (customInstructions?: string) => {
 		const current = stateRef.current;
 		if (!current.sessionId || current.readOnly) return;
-		const result = await webApi.compact(current.sessionId);
+		const result = await webApi.compact(current.sessionId, customInstructions);
 		updateState((next) => ({ ...next, currentOperation: result.operation }));
 	}, [updateState]);
 
@@ -2322,7 +2495,6 @@ export function useWorkbench() {
 				reconnectTimerRef.current = undefined;
 			}
 			if (transcriptTimerRef.current) window.clearTimeout(transcriptTimerRef.current);
-			if (thinkingClearTimerRef.current) window.clearTimeout(thinkingClearTimerRef.current);
 			if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
 		};
 	}, [initialize]);
@@ -2348,6 +2520,7 @@ export function useWorkbench() {
 		renameSession,
 		setSessionPinned,
 		fork,
+		reloadResources,
 		compact,
 		exportSession,
 		updateModel,

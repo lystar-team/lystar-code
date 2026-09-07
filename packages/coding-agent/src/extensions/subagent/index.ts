@@ -496,9 +496,9 @@ export class SubagentRunController {
 	}
 
 	private recordMessage(message: Message): void {
-		this.result.messages ??= [];
-		this.result.messages.push(message);
 		if (message.role === "assistant") {
+			// 完整历史由子会话持有；父进程只保留末条回复，避免重复积累工具结果和图片。
+			this.result.messages = [message];
 			this.result.usage.turns++;
 			const usage = message.usage;
 			if (usage) {

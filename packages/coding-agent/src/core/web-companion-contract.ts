@@ -74,6 +74,7 @@ export interface WebCompanionSnapshot {
 	toolActivityEpoch: string;
 	toolActivityRevision: number;
 	toolActivities: ToolActivitySnapshot[];
+	liveMessage?: { text: string; thinking: string };
 	capabilities: WebCompanionCapability[];
 }
 

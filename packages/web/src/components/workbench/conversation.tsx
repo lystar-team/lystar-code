@@ -2,14 +2,15 @@ import { ArrowDownToLine, LoaderCircle, Sparkles } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
-import { type TranscriptToolViewModel, toSessionItemViewModel } from "../../adapters/session-view-model";
+import { toLiveToolViewModel } from "../../adapters/live-tool-view-model.ts";
+import { toSessionItemViewModel } from "../../adapters/session-view-model";
 import { shouldJoinToolBatch } from "../../state/tool-batching";
 import type { WorkbenchState } from "../../state/use-workbench";
 import { Conversation, ConversationContent, ConversationEmptyState, ConversationScrollButton } from "../ai-elements/conversation";
 import { ToolBatch, type ToolBatchTool } from "../ai-elements/tool-batch";
 import { Button } from "../ui/button";
 import { ACTIVE_OPERATION_STATUSES } from "./constants";
-import { LiveTurn } from "./live-turn";
+import { LiveTurn, ThinkingActivity } from "./live-turn";
 import { AgentErrorCard, TranscriptItemView } from "./transcript";
 import type { WorkbenchActions } from "./types";
 
@@ -21,7 +22,7 @@ function buildTranscriptRenderItems(
 	items: WorkbenchState["transcript"],
 	toolIndex: {
 		callIds: ReadonlySet<string>;
-		results: ReadonlyMap<string, TranscriptToolViewModel>;
+		results: ReadonlyMap<string, ToolBatchTool>;
 		statuses: ReadonlyMap<string, "success" | "error">;
 	},
 ): TranscriptRenderItem[] {
@@ -46,7 +47,7 @@ function buildTranscriptRenderItems(
 			for (const tool of viewModel.tools) {
 				const result = toolIndex.results.get(tool.id);
 				const resolvedTool = result
-					? { ...tool, state: result.state, detail: result.detail, images: result.images, diff: result.diff }
+					? { ...tool, ...result, summary: tool.summary || result.summary }
 					: tool;
 				const previous = batchTools.at(-1);
 				if (!previous || batchEntryId !== item.entryId || !shouldJoinToolBatch(previous.name, resolvedTool.name)) {
@@ -82,14 +83,14 @@ export function ConversationView({
 }) {
 	const toolIndex = useMemo(() => {
 		const callIds = new Set<string>();
-		const results = new Map<string, TranscriptToolViewModel>();
+		const results = new Map<string, ToolBatchTool>();
 		const statuses = new Map<string, "success" | "error">();
 		for (const item of state.transcript) {
 			if (item.view?.type === "tool_call") {
 				for (const call of item.view.calls) callIds.add(call.id);
 			}
 			if (item.view?.type === "tool_result") {
-				const tool: TranscriptToolViewModel = {
+				const tool: ToolBatchTool = {
 					id: item.view.callId,
 					name: item.view.name,
 					summary: item.view.summary,
@@ -102,14 +103,22 @@ export function ConversationView({
 				statuses.set(item.view.callId, item.view.status);
 			}
 		}
+		for (const tool of Object.values(state.liveTools)) {
+			const persisted = results.get(tool.id);
+			if (!persisted || tool.state === "cancelled" || tool.state === "interrupted") {
+				const live = toLiveToolViewModel(tool);
+				results.set(tool.id, { ...persisted, ...live, images: persisted?.images });
+			}
+		}
 		return { callIds, results, statuses };
-	}, [state.transcript]);
+	}, [state.transcript, state.liveTools]);
 	const renderItems = useMemo(
 		() => buildTranscriptRenderItems(state.transcript, toolIndex),
 		[state.transcript, toolIndex],
 	);
 
 	return (
+		<>
 		<Conversation key={state.sessionId ?? "empty"} className="min-h-0 flex-1">
 			<ConversationBody
 				state={state}
@@ -120,6 +129,8 @@ export function ConversationView({
 			/>
 			<ConversationScrollButton aria-label="回到最新消息" />
 		</Conversation>
+		<ThinkingActivity state={state} />
+		</>
 	);
 }
 
@@ -152,6 +163,14 @@ function ConversationBody({
 		return viewModel.kind === "message" && viewModel.role === "assistant" && viewModel.text ? index : lastIndex;
 	}, -1);
 	const autoScrollFrameRef = useRef<number | undefined>(undefined);
+	const promptScrollRequestRef = useRef(state.promptScrollRequest);
+
+	useLayoutEffect(() => {
+		if (promptScrollRequestRef.current === state.promptScrollRequest) return;
+		promptScrollRequestRef.current = state.promptScrollRequest;
+		pendingScrollRef.current = undefined;
+		void scrollToBottom({ animation: "instant" });
+	}, [scrollToBottom, state.promptScrollRequest]);
 
 	useLayoutEffect(() => {
 		if (!isAtBottom || !scrollRef.current || autoScrollFrameRef.current !== undefined) return;
@@ -224,6 +243,8 @@ function ConversationBody({
 							className="tool-batch-render-item"
 							tools={batch.tools}
 							sessionId={state.sessionId}
+							initialOpen={batch.tools.some((tool) => tool.state === "input-available" || tool.state === "input-queued")}
+							autoCollapseWhenComplete
 							onOpenPath={(path) => void actions.openResource(path)}
 						/>
 					))}

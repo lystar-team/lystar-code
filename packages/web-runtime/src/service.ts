@@ -305,6 +305,8 @@ export class WebRuntimeService {
 	readonly hostStartedAt = Date.now();
 	private readonly clients = new Map<string, ClientConnection>();
 	private readonly runtimes = new Map<string, RuntimeSession>();
+	private readonly runtimeOpenings = new Map<string, Promise<RuntimeSession>>();
+	private disposed = false;
 	private readonly runtimeUnsubscribers = new Map<string, () => void>();
 	private readonly activeOperationBySession = new Map<string, string>();
 	private readonly scheduledOperations = new Set<string>();
@@ -353,7 +355,10 @@ export class WebRuntimeService {
 		} catch (error) {
 			if (!(error instanceof OperationJournalCorruptError)) throw error;
 		}
-		this.sessionPollTimer = setInterval(() => void this.pollSessionFiles(), SESSION_FILE_POLL_INTERVAL_MS);
+		this.sessionPollTimer = setInterval(
+			() => void this.pollSessionFiles().catch(() => {}),
+			SESSION_FILE_POLL_INTERVAL_MS,
+		);
 		this.sessionPollTimer.unref?.();
 	}
 
@@ -401,7 +406,9 @@ export class WebRuntimeService {
 	}
 
 	async dispose(): Promise<void> {
+		this.disposed = true;
 		clearInterval(this.sessionPollTimer);
+		await Promise.allSettled(this.runtimeOpenings.values());
 		for (const controller of this.operationAbortControllers.values()) controller.abort();
 		this.operationAbortControllers.clear();
 		for (const runtime of this.runtimes.values()) await runtime.dispose();
@@ -493,6 +500,18 @@ export class WebRuntimeService {
 			return;
 		}
 		try {
+			if (
+				message.request.command === "acquire_session" &&
+				result &&
+				typeof result === "object" &&
+				!Array.isArray(result)
+			) {
+				const sessionPath = canonicalSessionPath(message.request.sessionPath);
+				const liveMessage = this.runtimes.get(sessionPath)?.getLiveMessage?.();
+				if (liveMessage) result.liveMessage = liveMessage;
+				// 快照基线之前的增量先入发送队列，之后的增量只能排在响应之后。
+				this.flushSessionProgress(sessionPath);
+			}
 			await connection.send({ type: "response", id: message.id, ok: true, result });
 			afterResponse?.();
 		} catch {
@@ -619,6 +638,7 @@ export class WebRuntimeService {
 							request.clientInstanceId,
 						),
 					);
+					await runtime.readLiveMessage?.();
 					await this.sendSessionSnapshots(runtime);
 					return jsonValue({
 						lease,
@@ -922,6 +942,13 @@ export class WebRuntimeService {
 					payload: { sessionPath },
 					run: async () => {
 						const { runtime } = this.assertExtensionSession(connection, request);
+						const snapshot = runtime.getSnapshot("owned");
+						if (snapshot.activity !== "idle" || snapshot.phase !== "idle") {
+							throw Object.assign(new Error("请等待当前任务结束或停止任务后重新加载资源"), {
+								code: "session_operation_active",
+								retryable: true,
+							});
+						}
 						await runtime.reloadResources();
 						await this.sendSessionSnapshots(runtime);
 						return this.runtimeSnapshot(runtime, "owned");
@@ -1727,17 +1754,34 @@ export class WebRuntimeService {
 						sessionListChanged = true;
 						continue;
 					}
+					const fileChanged =
+						old.updatedAt !== fact.updatedAt || old.messageCount !== fact.messageCount || old.name !== fact.name;
+					const runtime = this.runtimes.get(sessionPath);
+					const runtimeDisconnected = runtime?.isConnected?.() === false;
 					if (
-						old.updatedAt !== fact.updatedAt ||
-						old.messageCount !== fact.messageCount ||
-						old.name !== fact.name
+						runtime &&
+						(runtimeDisconnected ||
+							(fact.writerLocked && (old.writerLocked !== fact.writerLocked || fileChanged)))
 					) {
+						// 每个会话独立恢复，握手等待不占住整个目录轮询。
+						void this.ensureRuntime(
+							sessionPath,
+							this.createUiRequestHandler(
+								() => this.activeOperationBySession.get(sessionPath) ?? `control:${sessionPath}`,
+								sessionPath,
+							),
+						).catch(() => {
+							if (runtime && this.runtimes.get(sessionPath) === runtime) void this.sendSessionSnapshots(runtime);
+						});
+					}
+					if (old.writerLocked !== fact.writerLocked) sessionListChanged = true;
+					if (fileChanged) {
 						if (old.name !== fact.name || (fact.writerLocked && old.updatedAt !== fact.updatedAt))
 							sessionListChanged = true;
-						const runtime = this.runtimes.get(sessionPath);
-						if (!runtime) transcriptChanges.push(sessionPath);
+						const observedRuntime = this.runtimes.get(sessionPath);
+						if (!observedRuntime) transcriptChanges.push(sessionPath);
 						else {
-							const snapshot = runtime.getSnapshot?.("available");
+							const snapshot = observedRuntime.getSnapshot?.("available");
 							const known = this.runtimeTranscriptFacts.get(sessionPath);
 							if (
 								snapshot &&
@@ -1753,7 +1797,6 @@ export class WebRuntimeService {
 							}
 						}
 					}
-					if (old.writerLocked !== fact.writerLocked) sessionListChanged = true;
 				}
 				for (const runtime of this.runtimes.values()) {
 					const snapshot = runtime.getSnapshot("available");
@@ -2132,7 +2175,11 @@ export class WebRuntimeService {
 		if (key && previous?.key === key) previous.progress = mergeSessionProgress(previous.progress, progress);
 		else pending.push({ key, progress });
 		this.pendingProgress.set(sessionPath, pending);
-		if (pending.length >= MAX_PENDING_PROGRESS) {
+		if (
+			pending.length >= MAX_PENDING_PROGRESS ||
+			((progress.type === "assistant_delta" || progress.type === "thinking_delta") &&
+				JSON.stringify(pending).length >= 16 * 1024)
+		) {
 			this.flushSessionProgress(sessionPath);
 			return;
 		}
@@ -2182,8 +2229,16 @@ export class WebRuntimeService {
 		this.snapshotRevisions.set(sessionPath, projectedRevision);
 		return {
 			...snapshot,
+			...(snapshot.toolActivities
+				? {
+						toolActivities: snapshot.toolActivities.filter((activity) =>
+							["preparing", "queued", "running"].includes(activity.state),
+						),
+					}
+				: {}),
 			path: sessionPath,
-			attached,
+			attached: attached && runtime.isConnected?.() !== false,
+			writeAccess: runtime.isConnected?.() === false ? "locked_externally" : writeAccess,
 			revision: projectedRevision,
 		};
 	}
@@ -2214,15 +2269,45 @@ export class WebRuntimeService {
 	}
 
 	private async ensureRuntime(sessionPath: string, onUiRequest: UiRequestHandler): Promise<RuntimeSession> {
-		const current = this.runtimes.get(sessionPath);
-		if (current) return current;
-		const runtime = await this.adapter.openSession(sessionPath, onUiRequest);
-		if (canonicalSessionPath(runtime.sessionPath) !== sessionPath) {
-			await runtime.dispose();
-			throw new Error("运行时打开了不同的会话路径");
+		if (this.disposed) throw new Error("Web Runtime 已关闭");
+		const pending = this.runtimeOpenings.get(sessionPath);
+		if (pending) return pending;
+		const opening = Promise.resolve().then(async () => {
+			const current = this.runtimes.get(sessionPath);
+			if (
+				current &&
+				current.isConnected?.() !== false &&
+				(current.isConnected !== undefined || !this.adapter.isSessionWriterLocked(sessionPath))
+			)
+				return current;
+			const replacement = await this.adapter.openSession(sessionPath, onUiRequest);
+			if (
+				this.disposed ||
+				canonicalSessionPath(replacement.sessionPath) !== sessionPath ||
+				replacement.isConnected?.() === false ||
+				this.runtimes.get(sessionPath) !== current
+			) {
+				if (replacement !== current) await replacement.dispose();
+				throw new Error("会话运行时恢复失败或会话身份已变化");
+			}
+			if (replacement === current) return replacement;
+			if (current) {
+				this.flushSessionProgress(sessionPath);
+				this.detachRuntimeProjection(sessionPath);
+			}
+			// 替换 Map 和事件订阅之间不让出执行权。
+			this.attachRuntime(replacement);
+			if (current) await current.dispose();
+			await this.sendSessionSnapshots(replacement);
+			await this.broadcast({ type: "transcript_changed", sessionPath });
+			return replacement;
+		});
+		this.runtimeOpenings.set(sessionPath, opening);
+		try {
+			return await opening;
+		} finally {
+			if (this.runtimeOpenings.get(sessionPath) === opening) this.runtimeOpenings.delete(sessionPath);
 		}
-		this.attachRuntime(runtime);
-		return runtime;
 	}
 
 	private isDetachedCompanion(runtime: RuntimeSession, capability: "session_fork" | "session_import"): boolean {
@@ -2237,6 +2322,7 @@ export class WebRuntimeService {
 		return this.ensureRuntime(sessionPath, this.createUiRequestHandler(operationId, sessionPath, clientInstanceId));
 	}
 	private async disposeRuntime(sessionPath: string): Promise<void> {
+		await this.runtimeOpenings.get(sessionPath)?.catch(() => {});
 		const timer = this.snapshotTimers.get(sessionPath);
 		if (timer) {
 			clearTimeout(timer);

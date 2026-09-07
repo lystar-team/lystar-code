@@ -22,6 +22,7 @@ interface GatewayInternals {
 	createContext(id: string): TestContext;
 	handleHostEvent(context: TestContext, event: ServerEvent): void;
 	checkWebSocketLiveness(): void;
+	sendWebSocket(socket: WebSocket, payload: string): void;
 	socketLiveness: WeakMap<WebSocket, boolean>;
 	sessionIdsByPath: Map<string, string>;
 	contexts: Map<string, TestContext>;
@@ -80,6 +81,15 @@ function internals(server: WebGatewayServer): GatewayInternals {
 function wait(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+test("Gateway 发送前把本条消息计入积压上限", async (t) => {
+	const server = new WebGatewayServer(createConfig());
+	t.after(() => void server.close());
+	const socket = createSocket();
+	internals(server).sendWebSocket(socket.webSocket, "x".repeat(2 * 1024 * 1024 + 1));
+	assert.equal(socket.terminated, 1);
+	assert.equal(socket.sent.length, 0);
+});
 
 test("Gateway 合并实时增量并在非进度事件前保持顺序", async (t) => {
 	const server = new WebGatewayServer(createConfig());

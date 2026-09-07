@@ -3,6 +3,7 @@ import type { KeyboardEvent, ReactNode, RefObject, SyntheticEvent } from "react"
 import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api.ts";
 import { cn } from "../../lib/utils";
+import { webCommandCompletions } from "../../state/composer-commands";
 import type { WebCompletionResult } from "../../types.ts";
 import { Spinner } from "../ui/spinner";
 import { PromptInputTextarea, type PromptInputTextareaProps, usePromptInputController } from "./prompt-input.tsx";
@@ -249,7 +250,7 @@ export function PromptCompletionProvider({
 				.completions(projectId, text, cursor, sessionId)
 				.then((nextResult) => {
 					if (requestVersion.current !== version) return;
-					setResult(nextResult);
+					setResult(webCommandCompletions(nextResult));
 					setSelectedIndex(0);
 				})
 				.catch((error: unknown) => {

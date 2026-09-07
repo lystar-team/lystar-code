@@ -1,5 +1,8 @@
 import { ArrowUp, Check, ChevronDown, Plus, Square } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { webApi } from "../../adapters/host-protocol/api";
+import { type CommandDialogRequest, executeComposerCommand, resolveComposerCommand } from "../../state/composer-commands";
+import { CommandDialog } from "./command-dialog";
 import type { WorkbenchState } from "../../state/use-workbench";
 import { Attachment, AttachmentInfo, AttachmentPreview, AttachmentRemove, Attachments } from "../ai-elements/attachments";
 import { ModelSelector, ModelSelectorContent, ModelSelectorEmpty, ModelSelectorGroup, ModelSelectorInput, ModelSelectorItem, ModelSelectorList, ModelSelectorName, ModelSelectorTrigger } from "../ai-elements/model-selector";
@@ -12,6 +15,15 @@ import type { WorkbenchActions } from "./types";
 
 export function Composer({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
 	const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
+	const [modelSearch, setModelSearch] = useState("");
+	const [commandDialog, setCommandDialog] = useState<CommandDialogRequest & { sessionId?: string }>();
+	const submittingRef = useRef(false);
+	const sessionIdRef = useRef(state.sessionId);
+	sessionIdRef.current = state.sessionId;
+	useEffect(() => {
+		setCommandDialog(undefined);
+		setModelSelectorOpen(false);
+	}, [state.sessionId]);
 	const disabled = !state.sessionId || state.readOnly || !state.connected;
 	const active = Boolean(
 		state.session?.activity === "running" ||
@@ -68,19 +80,44 @@ export function Composer({ state, actions }: { state: WorkbenchState; actions: W
 								}}
 								onSubmit={async ({ text, files, submitMode }) => {
 									if (!text.trim() || disabled) return;
-									const mode = stopping
-										? submitMode === "steer"
-											? "steer"
-											: "follow-up"
-										: state.composerMode;
-									await actions.sendMessage(
-										text,
-										mode,
-										files.map((file) => ({
-											data: file.url ?? "",
-											mimeType: file.mediaType || "application/octet-stream",
-										})),
-									);
+									if (submittingRef.current) throw new Error("正在提交，请稍候");
+									submittingRef.current = true;
+									try {
+										const command = await resolveComposerCommand(text, (token, cursor) => {
+											if (!state.currentProjectId) throw new Error("请先选择项目");
+											return webApi.completions(state.currentProjectId, token, cursor, state.sessionId);
+										});
+										if (sessionIdRef.current !== state.sessionId) throw new Error("会话已切换，请确认后重新提交");
+										if (command) {
+											if (files.length) throw new Error("内置命令不接受图片附件，请移除附件后执行");
+											await executeComposerCommand(command, state, actions, (request) => {
+												actions.closeInspector();
+												if (request.kind === "model") {
+													setModelSearch(request.value ?? "");
+													setModelSelectorOpen(true);
+												} else setCommandDialog({ ...request, sessionId: state.sessionId });
+											});
+											return;
+										}
+										const mode = stopping
+											? submitMode === "steer"
+												? "steer"
+												: "follow-up"
+											: state.composerMode;
+										await actions.sendMessage(
+											text,
+											mode,
+											files.map((file) => ({
+												data: file.url ?? "",
+												mimeType: file.mediaType || "application/octet-stream",
+											})),
+										);
+									} catch (error) {
+										actions.showToast(error instanceof Error ? error.message : String(error));
+										throw error;
+									} finally {
+										submittingRef.current = false;
+									}
 								}}
 							>
 								<PromptInputHeader className="empty:hidden">
@@ -115,7 +152,7 @@ export function Composer({ state, actions }: { state: WorkbenchState; actions: W
 												</PromptInputButton>
 											</ModelSelectorTrigger>
 											<ModelSelectorContent title="选择模型">
-												<ModelSelectorInput placeholder="搜索模型…" />
+												<ModelSelectorInput placeholder="搜索模型…" value={modelSearch} onValueChange={setModelSearch} />
 												<ModelSelectorList>
 													<ModelSelectorEmpty>没有找到模型</ModelSelectorEmpty>
 													{modelsByProvider.map(([provider, models]) => (
@@ -186,6 +223,9 @@ export function Composer({ state, actions }: { state: WorkbenchState; actions: W
 						</div>
 					</PromptCompletionProvider>
 				</PromptInputProvider>
+				{commandDialog && commandDialog.sessionId === state.sessionId ? (
+					<CommandDialog request={commandDialog} state={state} actions={actions} onClose={() => setCommandDialog(undefined)} />
+				) : null}
 			</div>
 		</div>
 	);

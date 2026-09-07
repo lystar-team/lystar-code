@@ -40,7 +40,8 @@ export interface WorkbenchActions {
 	renameSession: (sessionId: string, name: string) => Promise<void>;
 	setSessionPinned: (sessionId: string, pinned: boolean) => Promise<void>;
 	fork: (entryId: string) => Promise<void>;
-	compact: () => Promise<void>;
+	reloadResources: () => Promise<void>;
+	compact: (customInstructions?: string) => Promise<void>;
 	exportSession: () => Promise<void>;
 	updateModel: (provider: string, id: string) => Promise<void>;
 	updateThinking: (level: string) => Promise<void>;

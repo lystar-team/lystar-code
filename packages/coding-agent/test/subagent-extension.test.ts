@@ -411,7 +411,11 @@ describe("built-in subagent extension", () => {
 		expect((await first).state).toBe("succeeded");
 		expect(updateCount).toBeGreaterThan(0);
 		expect(updateCount).toBeLessThanOrEqual(4);
-		expect((await controller.followUp("second")).messages?.at(-1)).toMatchObject({ role: "assistant" });
+		const second = await controller.followUp("second");
+		expect(second.messages).toHaveLength(1);
+		expect(second.messages?.[0]).toMatchObject({ role: "assistant" });
+		expect(second.finalOutput).toBe("done:second");
+		expect(second.usage.turns).toBe(2);
 
 		const runningFollowUp = controller.followUp("cancel me");
 		await new Promise((resolve) => setTimeout(resolve, 10));

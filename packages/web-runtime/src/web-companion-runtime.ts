@@ -31,10 +31,26 @@ import type {
 import type { RuntimeEvent, RuntimeSession } from "./types.ts";
 
 type PendingResponse = {
+	command: string;
 	resolve(value: unknown): void;
 	reject(error: Error): void;
 	onBashChunk?: (chunk: string) => void;
+	timer?: ReturnType<typeof setTimeout>;
 };
+const MAX_COMPANION_BYTES = 8 * 1024 * 1024;
+const COMPANION_HANDSHAKE_MS = 10_000;
+const COMPANION_REQUEST_MS = 30_000;
+const LONG_COMPANION_COMMANDS = new Set([
+	"prompt",
+	"compact",
+	"run_bash",
+	"navigate_session_tree",
+	"reload_resources",
+	"continue_subagent",
+	"export_session",
+	"import_session",
+]);
+
 type WebCompanionRequestOptions = Omit<
 	Extract<WebCompanionCommand, { type: "request" }>,
 	"type" | "requestId" | "command"
@@ -225,7 +241,12 @@ export class WebCompanionRuntime implements RuntimeSession {
 	private readonly pending = new Map<string, PendingResponse>();
 	private socket?: Socket;
 	private buffer = "";
+	private readonly initialEvents: RuntimeEvent[] = [];
+	private initialEventBytes = 0;
+	private observed = false;
+	private heartbeat?: ReturnType<typeof setInterval>;
 	private snapshotValue: WebCompanionSnapshot;
+	private liveMessage?: { text: string; thinking: string };
 	private revision = 0;
 	private disposed = false;
 	private capabilities: WebCompanionCapability[];
@@ -235,63 +256,85 @@ export class WebCompanionRuntime implements RuntimeSession {
 	private constructor(sessionPathValue: string, initialSnapshot: WebCompanionSnapshotWire) {
 		this.sessionPathValue = sessionPathValue;
 		this.snapshotValue = normalizeSnapshot(initialSnapshot);
+		this.liveMessage = initialSnapshot.liveMessage ? { ...initialSnapshot.liveMessage } : undefined;
 		this.capabilities = [...this.snapshotValue.capabilities];
 	}
 
 	static async open(agentDir: string, sessionPath: string): Promise<WebCompanionRuntime> {
-		const endpoint = getWebCompanionEndpoint(agentDir, sessionPath);
-		const socket = await new Promise<Socket>((resolve, reject) => {
-			const candidate = createConnection(endpoint);
-			candidate.once("connect", () => resolve(candidate));
-			candidate.once("error", reject);
-		});
-		const ready = await new Promise<WebCompanionSnapshotWire>((resolve, reject) => {
+		return new Promise((resolve, reject) => {
+			const socket = createConnection(getWebCompanionEndpoint(agentDir, sessionPath));
+			socket.setEncoding("utf8");
+			let runtime: WebCompanionRuntime | undefined;
 			let buffer = "";
-			const onData = (chunk: Buffer | string) => {
-				buffer += chunk.toString();
-				const newline = buffer.indexOf("\n");
-				if (newline < 0) return;
-				const line = buffer.slice(0, newline);
-				try {
-					const message = JSON.parse(line) as WebCompanionServerMessage;
-					if (message.type === "ready") {
-						cleanup();
-						resolve(message.snapshot);
-					} else {
-						cleanup();
-						reject(new Error("Web 共享通道返回了无效握手"));
-					}
-				} catch (error) {
-					cleanup();
-					reject(error instanceof Error ? error : new Error(String(error)));
-				}
-			};
-			const cleanup = () => {
-				socket.off("data", onData);
-				socket.off("error", onError);
-			};
-			const onError = (error: Error) => {
-				cleanup();
+			const fail = (error: Error) => {
+				clearTimeout(timer);
+				runtime?.rejectPending(error);
+				socket.destroy();
 				reject(error);
 			};
-			socket.on("data", onData);
-			socket.once("error", onError);
-			socket.write(
-				`${JSON.stringify({ type: "hello", sessionPath, protocolVersion: WEB_COMPANION_PROTOCOL_VERSION } satisfies WebCompanionCommand)}\n`,
-			);
+			const timer = setTimeout(() => fail(new Error("TUI 共享通道握手超时")), COMPANION_HANDSHAKE_MS);
+			timer.unref?.();
+			socket.once("error", fail);
+			socket.once("close", () => fail(new Error("TUI 共享通道已关闭")));
+			socket.once("connect", () => {
+				socket.write(
+					`${JSON.stringify({ type: "hello", sessionPath, protocolVersion: WEB_COMPANION_PROTOCOL_VERSION } satisfies WebCompanionCommand)}\n`,
+				);
+			});
+			socket.on("data", (chunk: string) => {
+				try {
+					if (runtime) {
+						runtime.consume(chunk);
+						return;
+					}
+					buffer += chunk;
+					const newline = buffer.indexOf("\n");
+					if (newline < 0) {
+						if (Buffer.byteLength(buffer) > MAX_COMPANION_BYTES) throw new Error("TUI 共享握手超过大小限制");
+						return;
+					}
+					if (Buffer.byteLength(buffer.slice(0, newline)) > MAX_COMPANION_BYTES)
+						throw new Error("TUI 共享握手超过大小限制");
+					const message = JSON.parse(buffer.slice(0, newline)) as WebCompanionServerMessage;
+					if (
+						message.type !== "ready" ||
+						!isWebCompanionSnapshot(message.snapshot) ||
+						message.snapshot.path !== sessionPath
+					) {
+						throw new Error("TUI 共享通道返回了无效握手或会话路径");
+					}
+					runtime = new WebCompanionRuntime(sessionPath, message.snapshot);
+					runtime.socket = socket;
+					runtime.consume(buffer.slice(newline + 1));
+					buffer = "";
+					clearTimeout(timer);
+					runtime.heartbeat = setInterval(() => {
+						if (runtime?.isConnected()) void runtime.request("snapshot").catch(fail);
+					}, COMPANION_HANDSHAKE_MS);
+					runtime.heartbeat.unref?.();
+					resolve(runtime);
+				} catch (error) {
+					fail(error instanceof Error ? error : new Error(String(error)));
+				}
+			});
 		});
-		try {
-			const runtime = new WebCompanionRuntime(sessionPath, ready);
-			runtime.attach(socket);
-			return runtime;
-		} catch (error) {
-			socket.destroy();
-			throw error;
-		}
+	}
+
+	getLiveMessage(): { text: string; thinking: string } | undefined {
+		return this.liveMessage ? { ...this.liveMessage } : undefined;
+	}
+
+	async readLiveMessage(): Promise<{ text: string; thinking: string } | undefined> {
+		await this.request("snapshot");
+		return this.liveMessage ? { ...this.liveMessage } : undefined;
 	}
 
 	get sessionPath(): string {
 		return this.sessionPathValue;
+	}
+
+	isConnected(): boolean {
+		return !this.disposed && this.socket !== undefined && !this.socket.destroyed;
 	}
 
 	getCapabilities(): readonly WebCompanionCapability[] {
@@ -503,74 +546,72 @@ export class WebCompanionRuntime implements RuntimeSession {
 		return result as CompletionResult | undefined;
 	}
 
-	getToolRecoveryDiagnostics() {
-		return {
-			mode: "off" as const,
-			toolFailureTotal: [],
-			toolRecoveryAttemptTotal: [],
-			toolRecoverySuccessTotal: [],
-			toolRepeatBlockedTotal: [],
-			toolUnsafeRetryBlockedTotal: [],
-			lessonMatchTotal: [],
-			lessonRecoverySuccessTotal: [],
-			lessonSuspendedTotal: [],
-			duration: { count: 0, totalMs: 0, maxMs: 0 },
-			activeCircuits: 0,
-		};
+	getToolRecoveryDiagnostics(): undefined {
+		// Companion 未提供远端恢复统计，不能用本地假数据替代。
+		return undefined;
 	}
 
 	async dispose(): Promise<void> {
 		if (this.disposed) return;
 		this.disposed = true;
-		for (const pending of this.pending.values()) pending.reject(new Error("Web 共享会话已断开"));
-		this.pending.clear();
-		this.socket?.end();
+		this.rejectPending();
+		this.initialEvents.length = 0;
+		this.listeners.clear();
+		this.socket?.destroy();
 		this.socket = undefined;
 	}
 
 	onEvent(listener: (event: RuntimeEvent) => void): () => void {
 		this.listeners.add(listener);
-		return () => this.listeners.delete(listener);
+		this.observed = true;
+		const pending = this.initialEvents.splice(0);
+		this.initialEventBytes = 0;
+		for (const event of pending) listener(event);
+		return () => {
+			this.listeners.delete(listener);
+		};
 	}
 
-	private attach(socket: Socket): void {
-		this.socket = socket;
-		socket.setEncoding("utf8");
-		socket.on("data", (chunk: string) => {
-			this.buffer += chunk;
-			let newline = this.buffer.indexOf("\n");
-			while (newline >= 0) {
-				const line = this.buffer.slice(0, newline);
-				this.buffer = this.buffer.slice(newline + 1);
-				newline = this.buffer.indexOf("\n");
-				if (line.trim()) this.handleMessage(line);
-			}
-		});
-		socket.on("close", () => {
-			this.rejectPending();
-		});
-		socket.on("error", () => this.rejectPending());
+	private consume(chunk: string): void {
+		this.buffer += chunk;
+		let newline = this.buffer.indexOf("\n");
+		while (newline >= 0) {
+			const line = this.buffer.slice(0, newline);
+			if (Buffer.byteLength(line) > MAX_COMPANION_BYTES) throw new Error("TUI 共享消息超过大小限制");
+			this.buffer = this.buffer.slice(newline + 1);
+			if (line.trim()) this.handleMessage(line);
+			newline = this.buffer.indexOf("\n");
+		}
+		if (Buffer.byteLength(this.buffer) > MAX_COMPANION_BYTES) throw new Error("TUI 共享残帧超过大小限制");
 	}
 
-	private rejectPending(): void {
-		for (const pending of this.pending.values()) pending.reject(new Error("TUI 共享会话已断开"));
+	private rejectPending(error = new Error("TUI 共享会话已断开")): void {
+		if (this.heartbeat) clearInterval(this.heartbeat);
+		this.heartbeat = undefined;
+		for (const pending of this.pending.values()) {
+			if (pending.timer) clearTimeout(pending.timer);
+			pending.reject(error);
+		}
 		this.pending.clear();
 	}
 
 	private applySnapshot(next: WebCompanionSnapshotWire): void {
+		if (!isWebCompanionSnapshot(next) || next.path !== this.sessionPathValue) throw new Error("TUI 共享快照无效");
 		this.snapshotValue = normalizeSnapshot(next);
+		if (next.liveMessage) {
+			if (typeof next.liveMessage.text !== "string" || typeof next.liveMessage.thinking !== "string")
+				throw new Error("TUI 生成内容快照无效");
+			this.liveMessage = { ...next.liveMessage };
+		}
+		if (next.phase === "idle" && this.liveMessage) this.liveMessage = { text: "", thinking: "" };
 		this.capabilities = [...this.snapshotValue.capabilities];
 		this.revision++;
 		this.emit({ type: "state_changed", payload: this.getSnapshot("owned") as unknown as JsonValue });
 	}
 
 	private handleMessage(line: string): void {
-		let message: WebCompanionServerMessage;
-		try {
-			message = JSON.parse(line) as WebCompanionServerMessage;
-		} catch {
-			return;
-		}
+		const message = JSON.parse(line) as WebCompanionServerMessage;
+		if (!record(message) || typeof message.type !== "string") throw new Error("TUI 共享消息无效");
 		if (message.type === "bash_chunk") {
 			this.pending.get(message.requestId)?.onBashChunk?.(message.chunk);
 			return;
@@ -578,9 +619,15 @@ export class WebCompanionRuntime implements RuntimeSession {
 		if (message.type === "response") {
 			const pending = this.pending.get(message.requestId);
 			if (!pending) return;
+			if (message.ok && pending.command === "snapshot") {
+				if (!isWebCompanionSnapshot(message.result)) throw new Error("TUI 共享快照响应无效");
+				this.applySnapshot(message.result);
+			}
 			this.pending.delete(message.requestId);
-			if (message.ok) pending.resolve(message.result);
-			else pending.reject(new Error(message.error));
+			if (pending.timer) clearTimeout(pending.timer);
+			if (message.ok) {
+				pending.resolve(message.result);
+			} else pending.reject(new Error(message.error));
 			return;
 		}
 		if (message.type === "snapshot" || message.type === "ready") {
@@ -588,8 +635,15 @@ export class WebCompanionRuntime implements RuntimeSession {
 			return;
 		}
 		if (message.type === "agent_event") {
-			for (const progress of projectAgentEvent(message.event)) this.emit({ type: "progress", payload: progress });
-			this.emit({ type: "state_changed", payload: this.getSnapshot("owned") as unknown as JsonValue });
+			for (const progress of projectAgentEvent(message.event)) {
+				if (this.liveMessage) {
+					if (progress.type === "assistant_delta") this.liveMessage.text += progress.text;
+					if (progress.type === "thinking_delta") this.liveMessage.thinking += progress.text;
+					if (progress.type === "phase" && (progress.phase === "turn" || progress.phase === "idle"))
+						this.liveMessage = { text: "", thinking: "" };
+				}
+				this.emit({ type: "progress", payload: progress });
+			}
 			return;
 		}
 		if (message.type === "entry_committed") {
@@ -614,28 +668,44 @@ export class WebCompanionRuntime implements RuntimeSession {
 		options: WebCompanionRequestOptions = {},
 		callbacks: { onBashChunk?: (chunk: string) => void } = {},
 	): Promise<unknown> {
-		if (!this.socket || this.disposed) return Promise.reject(new Error("TUI 共享会话已断开"));
+		if (!this.isConnected()) return Promise.reject(new Error("TUI 共享会话已断开"));
 		const requestId = randomUUID();
-		let rejectRequest: (error: Error) => void = () => {};
-		const pending = new Promise<unknown>((resolve, reject) => {
-			rejectRequest = reject;
-			this.pending.set(requestId, { resolve, reject, ...callbacks });
+		const message = { type: "request", requestId, command, ...options } satisfies Extract<
+			WebCompanionCommand,
+			{ type: "request" }
+		>;
+		const bytes = `${JSON.stringify(message)}\n`;
+		if (this.pending.size >= 128 || this.socket!.writableLength + Buffer.byteLength(bytes) > MAX_COMPANION_BYTES) {
+			this.socket!.destroy();
+			return Promise.reject(new Error("TUI 共享请求队列超过限制"));
+		}
+		return new Promise((resolve, reject) => {
+			const pending: PendingResponse = { command, resolve, reject, ...callbacks };
+			if (!LONG_COMPANION_COMMANDS.has(command)) {
+				pending.timer = setTimeout(() => {
+					this.rejectPending(new Error(`TUI 共享请求超时：${command}`));
+					this.socket?.destroy();
+				}, COMPANION_REQUEST_MS);
+				pending.timer.unref?.();
+			}
+			this.pending.set(requestId, pending);
+			this.socket!.write(bytes, (error) => {
+				if (error) {
+					this.rejectPending(error);
+					this.socket?.destroy();
+				}
+			});
 		});
-		const message: Extract<WebCompanionCommand, { type: "request" }> = {
-			type: "request",
-			requestId,
-			command,
-			...options,
-		};
-		this.socket.write(`${JSON.stringify(message)}\n`, (error) => {
-			if (!error) return;
-			this.pending.delete(requestId);
-			rejectRequest(error);
-		});
-		return pending;
 	}
 
 	private emit(event: RuntimeEvent): void {
+		if (this.disposed) return;
+		if (!this.observed) {
+			this.initialEventBytes += Buffer.byteLength(JSON.stringify(event));
+			if (this.initialEventBytes > MAX_COMPANION_BYTES) throw new Error("TUI 共享事件接管队列超过限制");
+			this.initialEvents.push(event);
+			return;
+		}
 		for (const listener of this.listeners) listener(event);
 	}
 }
