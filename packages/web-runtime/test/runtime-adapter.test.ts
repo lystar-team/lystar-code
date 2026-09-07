@@ -688,6 +688,77 @@ describe("CodingAgentRuntimeAdapter", () => {
 		});
 	});
 
+	it("generates and persists a title for the first Web Runtime prompt", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-session-name-"));
+		const agentDir = join(tempDir, "agent");
+		const cwd = join(tempDir, "project");
+		const faux = registerFauxProvider();
+		faux.setResponses([fauxAssistantMessage("主回复"), fauxAssistantMessage("自动标题")]);
+		const model = faux.getModel();
+		for (const dir of [agentDir, cwd]) mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					[model.provider]: {
+						baseUrl: model.baseUrl,
+						apiKey: "faux-key",
+						api: faux.api,
+						models: [
+							{
+								id: model.id,
+								name: model.name,
+								reasoning: model.reasoning,
+								input: model.input,
+								cost: model.cost,
+								contextWindow: model.contextWindow,
+								maxTokens: model.maxTokens,
+							},
+						],
+					},
+				},
+			}),
+		);
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({
+				defaultProvider: model.provider,
+				defaultModel: model.id,
+				defaultThinkingLevel: "off",
+				defaultProjectTrust: "always",
+			}),
+		);
+
+		let runtime: RuntimeSession | undefined;
+		cleanups.push(async () => {
+			await runtime?.dispose();
+			faux.unregister();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+		runtime = await new CodingAgentRuntimeAdapter(agentDir).createSession(cwd, async () => ({ cancelled: true }));
+		const events: RuntimeEvent[] = [];
+		runtime.onEvent((event) => events.push(event));
+
+		await runtime.prompt("请修复 Web 会话自动命名");
+		const deadline = Date.now() + 3_000;
+		while (runtime.getSnapshot("owned").name !== "自动标题" && Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+
+		expect(runtime.getSnapshot("owned")).toMatchObject({ name: "自动标题" });
+		expect(
+			events.some(
+				(event) => event.type === "state_changed" && (event.payload as { name?: string }).name === "自动标题",
+			),
+		).toBe(true);
+		const entries = readFileSync(runtime.sessionPath, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as { type?: string; name?: string });
+		expect(entries).toContainEqual(expect.objectContaining({ type: "session_info", name: "自动标题" }));
+		expect((await new CodingAgentRuntimeAdapter(agentDir).listSessions(cwd))[0]).toMatchObject({ name: "自动标题" });
+	});
+
 	it("runs the real Core runtime, persists JSONL, and resumes with continuous transcript revisions", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-runtime-"));
 		const agentDir = join(tempDir, "agent");

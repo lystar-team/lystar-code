@@ -2489,9 +2489,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				settingsManager,
 				modelRuntimeSignal: AbortSignal.timeout(15_000),
 				resourceLoaderOptions: {
-					extensionFactories: builtInExtensions.filter(
-						(extension) => typeof extension === "function" || extension.name !== "session-name",
-					),
+					extensionFactories: builtInExtensions,
 				},
 				resourceLoaderReloadOptions:
 					hasTrustResources && trustStore.get(runtimeCwd) === null

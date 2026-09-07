@@ -20,7 +20,11 @@ export default function runtimeContractExtension(pi: ExtensionAPI): void {
 	} else if (scenario === "abort") {
 		faux.setResponses([fauxAssistantMessage("x".repeat(20_000))]);
 	} else if (scenario === "resources") {
-		faux.setResponses([fauxAssistantMessage("prompt expanded"), fauxAssistantMessage("skill expanded")]);
+		faux.setResponses([
+			fauxAssistantMessage("prompt expanded"),
+			fauxAssistantMessage("自动标题"),
+			fauxAssistantMessage("skill expanded"),
+		]);
 	} else {
 		faux.setResponses([fauxAssistantMessage("text complete")]);
 	}
