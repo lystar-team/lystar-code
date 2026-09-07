@@ -10,6 +10,7 @@ import {
 	LoaderCircleIcon,
 	PencilIcon,
 	SearchIcon,
+	SparklesIcon,
 	TerminalIcon,
 	WrenchIcon,
 } from "lucide-react";
@@ -67,9 +68,30 @@ const statusLabels: Record<ToolBatchState, string> = {
 	"output-interrupted": "已中断",
 };
 
-function toolIcon(name: string, className?: string): ReactNode {
-	const Icon =
-		name === "bash"
+function skillNameFromPath(path: string): string | undefined {
+	let normalizedPath = path.split(/[?#]/u, 1)[0] ?? path;
+	try {
+		normalizedPath = decodeURIComponent(normalizedPath);
+	} catch {
+		// 路径不是 URL 编码时继续使用原始值。
+	}
+	normalizedPath = normalizedPath.replaceAll("\\", "/");
+	const segments = normalizedPath.split("/").filter(Boolean);
+	const skillDirectoryIndex = segments.findIndex((segment) => segment.toLowerCase() === "skills");
+	if (skillDirectoryIndex < 0 || skillDirectoryIndex !== segments.length - 3) return undefined;
+	if (segments.at(-1)?.toLowerCase() !== "skill.md") return undefined;
+	return segments.at(-2);
+}
+
+export function skillNameFromTool(tool: ToolBatchTool): string | undefined {
+	if (tool.name !== "read") return undefined;
+	return skillNameFromPath(toolTitle(tool));
+}
+
+function toolIcon(name: string, className?: string, skill = false): ReactNode {
+	const Icon = skill
+		? SparklesIcon
+		: name === "bash"
 			? TerminalIcon
 			: name === "edit" || name === "write" || name === "apply_patch"
 				? PencilIcon
@@ -216,7 +238,9 @@ function batchTitle(tools: ToolBatchTool[]): string {
 	return [...new Set(tools.map((tool) => toolActionLabel(tool.name)))].join("，") || "执行了工具";
 }
 
-function toolRowTitle(tool: ToolBatchTool): string {
+export function toolRowTitle(tool: ToolBatchTool): string {
+	const skillName = skillNameFromTool(tool);
+	if (skillName && tool.state === "output-available") return `已加载 ${skillName} 技能`;
 	const title = toolTitle(tool);
 	const action = toolRowActionLabel(tool.name, tool.state);
 	return title && title !== tool.name ? `${action} ${title}` : action;
@@ -446,6 +470,7 @@ function ToolBatchRow({
 	const active = tool.state === "input-available" || tool.state === "input-queued";
 	const previousActive = useRef(active);
 	const title = toolRowTitle(tool);
+	const skillName = skillNameFromTool(tool);
 	const stats = diffStats(tool.diff);
 	const hasDetails = Boolean(tool.detail || tool.diff || tool.images?.length || tool.inputPreview);
 
@@ -462,7 +487,7 @@ function ToolBatchRow({
 					type="button"
 					aria-label={`${title}，${statusLabels[tool.state]}${hasDetails ? "，展开详情" : ""}`}
 				>
-					{toolIcon(tool.name)}
+					{toolIcon(tool.name, undefined, Boolean(skillName))}
 					<span className="min-w-0 flex-1 truncate font-mono text-[13px]" title={title}>
 						{title}
 					</span>
@@ -553,7 +578,7 @@ export const ToolBatch = memo(function ToolBatch({
 				type="button"
 				aria-label={`${batchTitle(tools)}，${statusLabels[aggregateState]}${open ? "，收起" : "，展开"}`}
 			>
-				{toolIcon(tools[0]?.name ?? "tool")}
+				{toolIcon(tools[0]?.name ?? "tool", undefined, Boolean(tools[0] && skillNameFromTool(tools[0])))}
 				<span className="min-w-0 flex-1 truncate font-medium text-sm text-muted-foreground">
 					{batchTitle(tools)}
 				</span>
