@@ -4,6 +4,7 @@ import {
 	mergeTranscriptEntries,
 	mergeTranscriptPage,
 	type TranscriptWindow,
+	transcriptRenderIdOverrides,
 } from "../src/state/transcript-state.ts";
 import type { WebTranscriptItem } from "../src/types.ts";
 
@@ -129,6 +130,32 @@ describe("transcript pagination window", () => {
 });
 
 describe("transcript state", () => {
+	it("keeps live assistant and tool blocks on their committed render identities", () => {
+		const liveItems = [
+			{ kind: "text" as const, id: "live-text" },
+			{ kind: "tools" as const, id: "live-tools", toolIds: ["tool-1"] },
+		];
+		const incoming: WebTranscriptItem[] = [
+			{ ...item("u1"), view: { type: "user", text: "任务" } },
+			{ ...item("a1"), view: { type: "assistant", text: "回复" } },
+			{ ...item("t1"), view: { type: "tool_call", calls: [{ id: "tool-1", name: "bash", summary: "pwd" }] } },
+			{
+				...item("r1"),
+				view: { type: "tool_result", callId: "tool-1", name: "bash", summary: "完成", status: "success" },
+			},
+		];
+		const overrides = transcriptRenderIdOverrides(liveItems, undefined, incoming);
+		const merged = mergeTranscriptEntries([], incoming, false, overrides);
+
+		const existing = mergeTranscriptEntries([], [{ ...item("a1"), view: { type: "assistant", text: "旧回复" } }]);
+		const remapped = mergeTranscriptEntries(existing, incoming, false, overrides);
+
+		expect(remapped.find((entry) => entry.view?.type === "assistant")?.renderId).toBe("live-text");
+		expect(merged.find((entry) => entry.view?.type === "assistant")?.renderId).toBe("live-text");
+		expect(merged.find((entry) => entry.view?.type === "tool_call")?.renderId).toBe("live-tools");
+		expect(merged.find((entry) => entry.view?.type === "tool_result")?.renderId).toBe("live-tools");
+	});
+
 	it("preserves loaded earlier entries when the tail page refreshes", () => {
 		const loaded = mergeTranscriptEntries(mergeTranscriptEntries([], [item("m1"), item("m2"), item("m3")]), [
 			item("m4"),

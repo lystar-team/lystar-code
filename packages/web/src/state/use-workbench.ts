@@ -19,9 +19,9 @@ import {
 } from "./session-sync.ts";
 import { shouldJoinLiveToolBatch } from "./tool-batching.ts";
 import {
-	decorateTranscriptItems,
 	mergeTranscriptEntries,
 	mergeTranscriptPage,
+	transcriptRenderIdOverrides,
 	type WorkbenchTranscriptItem,
 } from "./transcript-state.ts";
 import type {
@@ -905,7 +905,21 @@ export function useWorkbench() {
 					if (!cursor && sameHistory && current.transcriptPageLoaded &&
 						current.transcriptRevision === result.transcriptRevision && !shouldClearLiveTurn(current))
 						return current.transcriptLoading ? { ...current, transcriptLoading: false } : current;
-					const transcriptWindow = mergeTranscriptPage(current, result, Boolean(cursor), sameHistory);
+					const renderIdOverrides =
+						!cursor && sameHistory
+							? transcriptRenderIdOverrides(
+									current.liveTurnItems,
+									current.liveCompaction ? `live-compaction:${current.liveTurnId}` : undefined,
+									result.items,
+								)
+							: undefined;
+					const transcriptWindow = mergeTranscriptPage(
+						current,
+						result,
+						Boolean(cursor),
+						sameHistory,
+						renderIdOverrides,
+					);
 					const completedTurnSynced = !cursor && shouldClearLiveTurn(current);
 					const knownIds = new Set(current.transcript.map((item) => item.entryId));
 					const next = !cursor && sameHistory
@@ -1413,10 +1427,17 @@ export function useWorkbench() {
 						current.session === undefined || current.session.transcriptGeneration === event.transcriptGeneration;
 					if (!sameHistory) return current;
 					const stale = event.toRevision < (current.transcriptRevision ?? 0);
+					const renderIdOverrides = transcriptRenderIdOverrides(
+						current.liveTurnItems,
+						current.liveCompaction ? `live-compaction:${current.liveTurnId}` : undefined,
+						event.items,
+					);
 					const next = !stale ? reconcileCommittedTurn(current, event.items, event.toRevision) : current;
 					const updated = {
 						...next,
-						transcript: stale ? current.transcript : mergeTranscriptEntries(current.transcript, event.items),
+						transcript: stale
+							? current.transcript
+							: mergeTranscriptEntries(current.transcript, event.items, false, renderIdOverrides),
 						transcriptPageLoaded: current.transcriptPageLoaded,
 						previousCursor: current.previousCursor,
 						hasMorePrevious: current.hasMorePrevious,

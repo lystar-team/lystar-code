@@ -36,6 +36,55 @@ export function AgentErrorCard({ title, message, onRetry }: { title: string; mes
 	);
 }
 
+export const TranscriptMessageView = memo(function TranscriptMessageView({
+	role,
+	text,
+	attachments = [],
+	sources = [],
+	showCopy,
+	sessionId,
+	onOpenPath,
+	mode = "static",
+}: {
+	role: "user" | "assistant" | "system";
+	text: string;
+	attachments?: Array<{ id: string; filename: string; mediaType: string; url: string }>;
+	sources?: string[];
+	showCopy: boolean;
+	sessionId?: string;
+	onOpenPath: WorkbenchActions["openResource"];
+	mode?: "static" | "streaming";
+}) {
+	return (
+		<Message
+			from={role}
+			className={cn(
+				role === "user" && "max-w-[84%] self-end",
+				role === "system" && "rounded-md bg-muted/50 p-3",
+			)}
+		>
+			<TranscriptSources urls={sources} />
+			<MessageContent>
+				{role === "user" && hasPromptTokens(text) ? (
+					<PromptTokenContent text={text} />
+				) : (
+					<MessageResponse
+						mode={mode}
+						parseIncompleteMarkdown
+						linkSafety={{ enabled: true }}
+						controls={{ code: { copy: true, download: true }, table: { copy: true, download: true } }}
+						onOpenPath={(path) => void onOpenPath(path)}
+					>
+						{text || " "}
+					</MessageResponse>
+				)}
+				<TranscriptAttachments attachments={attachments} sessionId={sessionId} />
+			</MessageContent>
+			{showCopy && role === "assistant" && text ? <CopyMessageAction text={text} /> : null}
+		</Message>
+	);
+});
+
 export const TranscriptItemView = memo(function TranscriptItemView({
 	item,
 	toolStatuses,
@@ -52,34 +101,15 @@ export const TranscriptItemView = memo(function TranscriptItemView({
 	const viewModel = toSessionItemViewModel(item, toolStatuses);
 	if (viewModel.kind === "message") {
 		return (
-			<Message
-				from={viewModel.role}
-				className={cn(
-					viewModel.role === "user" && "max-w-[84%] self-end",
-					viewModel.role === "system" && "rounded-md bg-muted/50 p-3",
-				)}
-			>
-				<TranscriptSources urls={viewModel.sources} />
-				<MessageContent>
-					{viewModel.role === "user" && hasPromptTokens(viewModel.text) ? (
-						<PromptTokenContent text={viewModel.text} />
-					) : (
-						<MessageResponse
-							mode="static"
-							parseIncompleteMarkdown
-							linkSafety={{ enabled: true }}
-							controls={{ code: { copy: true, download: true }, table: { copy: true, download: true } }}
-							onOpenPath={(path) => void onOpenPath(path)}
-						>
-							{viewModel.text || " "}
-						</MessageResponse>
-					)}
-					<TranscriptAttachments attachments={viewModel.attachments} sessionId={sessionId} />
-				</MessageContent>
-				{showCopy && viewModel.role === "assistant" && viewModel.text ? (
-					<CopyMessageAction text={viewModel.text} />
-				) : null}
-			</Message>
+			<TranscriptMessageView
+				role={viewModel.role}
+				text={viewModel.text}
+				attachments={viewModel.attachments}
+				sources={viewModel.sources}
+				showCopy={showCopy}
+				sessionId={sessionId}
+				onOpenPath={onOpenPath}
+			/>
 		);
 	}
 	if (viewModel.kind === "reasoning") return null;

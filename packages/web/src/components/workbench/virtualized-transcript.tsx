@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 const DEFAULT_GAP = 12;
 const MOBILE_BREAKPOINT = 640;
@@ -96,12 +96,40 @@ export function getVirtualRange(
 
 type ScrollRef = { current: HTMLElement | null };
 
+type VirtualizedTranscriptRowProps = {
+	item: unknown;
+	index: number;
+	top: number;
+	rowRef: (element: HTMLDivElement | null) => void;
+	renderItem: (item: unknown, index: number) => ReactNode;
+	isItemEqual?: (previous: unknown, next: unknown) => boolean;
+};
+
+const VirtualizedTranscriptRow = memo(function VirtualizedTranscriptRow({
+	item,
+	index,
+	top,
+	rowRef,
+	renderItem,
+}: VirtualizedTranscriptRowProps) {
+	return (
+		<div ref={rowRef} style={{ left: 0, position: "absolute", right: 0, top }}>
+			{renderItem(item, index)}
+		</div>
+	);
+}, (previous, next) => {
+	if (previous.index !== next.index || previous.top !== next.top || previous.renderItem !== next.renderItem) return false;
+	return next.isItemEqual ? next.isItemEqual(previous.item, next.item) : previous.item === next.item;
+});
+
+
 export interface VirtualizedTranscriptProps<T> {
 	items: readonly T[];
 	getKey: (item: T, index: number) => string;
 	estimateHeight: (item: T, index: number) => number;
 	renderItem: (item: T, index: number) => ReactNode;
 	scrollRef: ScrollRef;
+	isItemEqual?: (previous: T, next: T) => boolean;
 }
 
 export function VirtualizedTranscript<T>({
@@ -110,6 +138,7 @@ export function VirtualizedTranscript<T>({
 	estimateHeight,
 	renderItem,
 	scrollRef,
+	isItemEqual,
 }: VirtualizedTranscriptProps<T>) {
 	const measuredHeightsRef = useRef(new Map<string, number>());
 	const elementsRef = useRef(new Map<string, HTMLDivElement>());
@@ -238,13 +267,15 @@ export function VirtualizedTranscript<T>({
 				const item = items[index];
 				const key = itemKeys[index];
 				return (
-					<div
+					<VirtualizedTranscriptRow
 						key={key}
-						ref={getRowRef(key)}
-						style={{ left: 0, position: "absolute", right: 0, top: layout.offsets[index] }}
-					>
-						{renderItem(item, index)}
-					</div>
+						item={item}
+						index={index}
+						top={layout.offsets[index]}
+						rowRef={getRowRef(key)}
+						renderItem={renderItem as (item: unknown, index: number) => ReactNode}
+						isItemEqual={isItemEqual as ((previous: unknown, next: unknown) => boolean) | undefined}
+					/>
 				);
 			})}
 		</div>

@@ -9,24 +9,31 @@ export interface TranscriptWindow {
 	transcriptPageLoaded: boolean;
 }
 
+export type LiveRenderSource =
+	| { kind: "text"; id: string }
+	| { kind: "thinking"; id: string }
+	| { kind: "tools"; id: string; toolIds: readonly string[] };
+
+export type TranscriptRenderIdOverrides = ReadonlyMap<string, string>;
+
 export function mergeTranscriptPage(
 	current: TranscriptWindow,
 	page: { items: readonly WebTranscriptItem[]; previousCursor?: string; hasMorePrevious: boolean },
 	prepend: boolean,
 	sameHistory: boolean,
+	renderIdOverrides?: TranscriptRenderIdOverrides,
 ): TranscriptWindow {
 	// 游标属于窗口最早一页；尾页刷新不能覆盖它，包括“历史已读完”的空游标。
 	const preserveBoundary = sameHistory && !prepend && current.transcriptPageLoaded && current.transcript.length > 0;
 	return {
 		transcript: sameHistory
-			? mergeTranscriptEntries(current.transcript, page.items, prepend)
-			: decorateTranscriptItems(page.items),
+			? mergeTranscriptEntries(current.transcript, page.items, prepend, renderIdOverrides)
+			: decorateTranscriptItems(page.items, [], renderIdOverrides),
 		previousCursor: preserveBoundary ? current.previousCursor : page.previousCursor,
 		hasMorePrevious: preserveBoundary ? current.hasMorePrevious : page.hasMorePrevious,
 		transcriptPageLoaded: true,
 	};
 }
-
 
 function transcriptViewIdentity(item: WebTranscriptItem): string {
 	const view = item.view;
@@ -36,20 +43,63 @@ function transcriptViewIdentity(item: WebTranscriptItem): string {
 	return view.type;
 }
 
+function transcriptRenderIdentity(item: WebTranscriptItem): string {
+	return `${item.entryId}:${transcriptViewIdentity(item)}`;
+}
+
+export function transcriptRenderIdOverrides(
+	liveItems: readonly LiveRenderSource[],
+	liveCompactionKey: string | undefined,
+	items: readonly WebTranscriptItem[],
+): TranscriptRenderIdOverrides {
+	const overrides = new Map<string, string>();
+	let textId: string | undefined;
+	for (let index = liveItems.length - 1; index >= 0; index--) {
+		const item = liveItems[index];
+		if (item?.kind === "text") {
+			textId = item.id;
+			break;
+		}
+	}
+	const toolIds = new Map<string, string>();
+	for (const item of liveItems) {
+		if (item.kind !== "tools") continue;
+		for (const toolId of item.toolIds) toolIds.set(toolId, item.id);
+	}
+	for (const item of items) {
+		const view = item.view;
+		if (!view) continue;
+		const key = transcriptRenderIdentity(item);
+		if (view.type === "assistant" && textId) {
+			overrides.set(key, textId);
+		} else if (view.type === "tool_call") {
+			const liveId = view.calls.map((call) => toolIds.get(call.id)).find(Boolean);
+			if (liveId) overrides.set(key, liveId);
+		} else if (view.type === "tool_result") {
+			const liveId = toolIds.get(view.callId);
+			if (liveId) overrides.set(key, liveId);
+		} else if (view.type === "summary" && view.variant === "compaction" && liveCompactionKey) {
+			overrides.set(key, liveCompactionKey);
+		}
+	}
+	return overrides;
+}
+
 export function decorateTranscriptItems(
 	items: readonly WebTranscriptItem[],
 	previous: readonly WorkbenchTranscriptItem[] = [],
+	renderIdOverrides?: TranscriptRenderIdOverrides,
 ): WorkbenchTranscriptItem[] {
 	const occurrences = new Map<string, number>();
 	const previousByBase = new Map<string, WorkbenchTranscriptItem[]>();
 	for (const item of previous) {
-		const base = `${item.entryId}:${transcriptViewIdentity(item)}`;
+		const base = transcriptRenderIdentity(item);
 		const group = previousByBase.get(base) ?? [];
 		group.push(item);
 		previousByBase.set(base, group);
 	}
 	return items.map((item) => {
-		const base = `${item.entryId}:${transcriptViewIdentity(item)}`;
+		const base = transcriptRenderIdentity(item);
 		const occurrence = occurrences.get(base) ?? 0;
 		occurrences.set(base, occurrence + 1);
 		const existing = previousByBase.get(base)?.[occurrence];
@@ -62,7 +112,7 @@ export function decorateTranscriptItems(
 			JSON.stringify(existing.view) === JSON.stringify(item.view)
 		)
 			return existing;
-		return { ...item, renderId: existing?.renderId ?? `${base}:${occurrence}` };
+		return { ...item, renderId: renderIdOverrides?.get(base) ?? existing?.renderId ?? `${base}:${occurrence}` };
 	});
 }
 
@@ -70,8 +120,9 @@ export function mergeTranscriptEntries(
 	current: readonly WorkbenchTranscriptItem[],
 	incoming: readonly WebTranscriptItem[],
 	prepend = false,
+	renderIdOverrides?: TranscriptRenderIdOverrides,
 ): WorkbenchTranscriptItem[] {
-	const next = decorateTranscriptItems(incoming, current);
+	const next = decorateTranscriptItems(incoming, current, renderIdOverrides);
 	const replacements = new Map<string, WorkbenchTranscriptItem[]>();
 	for (const item of next) {
 		const group = replacements.get(item.entryId) ?? [];

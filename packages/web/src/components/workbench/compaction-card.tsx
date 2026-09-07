@@ -41,7 +41,29 @@ function canCollapseFromContent(event: ReactMouseEvent<HTMLElement>): boolean {
 	return !selection || selection.isCollapsed;
 }
 
-export function CompactionActivity({ state }: { state: LiveCompactionState }) {
+export function CompactionCard({
+	state,
+	text,
+	tokensBefore,
+	onOpenPath,
+}: {
+	state?: LiveCompactionState;
+	text?: string;
+	tokensBefore?: number;
+	onOpenPath?: (path: string) => void;
+}) {
+	return state ? (
+		<CompactionActivityContent state={state} />
+	) : (
+		<CompactionSummaryCard
+			text={text ?? ""}
+			tokensBefore={tokensBefore}
+			onOpenPath={onOpenPath ?? (() => {})}
+		/>
+	);
+}
+
+function CompactionActivityContent({ state }: { state: LiveCompactionState }) {
 	const Icon =
 		state.status === "failed"
 			? CircleAlert
@@ -77,6 +99,10 @@ export function CompactionActivity({ state }: { state: LiveCompactionState }) {
 			{state.error ? <div className="break-words pl-6 pr-1 text-xs text-destructive">{state.error}</div> : null}
 		</div>
 	);
+}
+
+export function CompactionActivity({ state }: { state: LiveCompactionState }) {
+	return <CompactionCard state={state} />;
 }
 
 export function CompactionSummaryCard({
