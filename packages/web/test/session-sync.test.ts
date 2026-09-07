@@ -1,13 +1,40 @@
 import { describe, expect, it } from "vitest";
 import {
+	bootstrapLeaseForSession,
 	isOlderSessionSnapshot,
 	isTranscriptResponseObsolete,
 	mergeOperationSnapshots,
+	needsTranscriptRefreshForCommit,
 	runtimeHistoryChanged,
 } from "../src/state/session-sync.ts";
-import type { WebOperation, WebSessionSnapshot } from "../src/types.ts";
+import type { WebLease, WebOperation, WebSessionSnapshot } from "../src/types.ts";
 
 describe("连接恢复状态边界", () => {
+	it("旧 Bootstrap 不会清除刚取得的租约，恢复后的租约会覆盖旧值", () => {
+		const current: WebLease = { leaseId: "current", leaseGeneration: 1, createdAt: 1, updatedAt: 1 };
+		const restored: WebLease = { leaseId: "restored", leaseGeneration: 2, createdAt: 2, updatedAt: 2 };
+		expect(bootstrapLeaseForSession("session", current, [])).toBe(current);
+		expect(bootstrapLeaseForSession("session", current, [{ sessionId: "session", lease: restored }])).toBe(restored);
+	});
+	it("连续 Transcript 提交不刷新尾页，缺页、换代和 revision 断层才刷新", () => {
+		const current = { pageLoaded: true, revision: 20, runtimeGeneration: "generation" };
+		expect(needsTranscriptRefreshForCommit(current, { transcriptGeneration: "generation", fromRevision: 20 })).toBe(
+			false,
+		);
+		expect(needsTranscriptRefreshForCommit(current, { transcriptGeneration: "generation", fromRevision: 18 })).toBe(
+			false,
+		);
+		expect(needsTranscriptRefreshForCommit(current, { transcriptGeneration: "generation", fromRevision: 21 })).toBe(
+			true,
+		);
+		expect(needsTranscriptRefreshForCommit(current, { transcriptGeneration: "next", fromRevision: 20 })).toBe(true);
+		expect(
+			needsTranscriptRefreshForCommit(
+				{ ...current, pageLoaded: false },
+				{ transcriptGeneration: "generation", fromRevision: 20 },
+			),
+		).toBe(true);
+	});
 	it("相同 Runtime 快照不会因历史文件使用独立 generation 而重置", () => {
 		const current = {
 			id: "session",

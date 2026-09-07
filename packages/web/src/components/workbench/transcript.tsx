@@ -1,5 +1,5 @@
 import { Check, CircleHelp, Clipboard, FileCode2 } from "lucide-react";
-import { useState } from "react";
+import { memo, useState } from "react";
 import type { BundledLanguage } from "shiki";
 import { type TranscriptToolViewModel, toSessionItemViewModel } from "../../adapters/session-view-model";
 import { cn } from "../../lib/utils";
@@ -35,16 +35,16 @@ export function AgentErrorCard({ title, message, onRetry }: { title: string; mes
 	);
 }
 
-export function TranscriptItemView({
+export const TranscriptItemView = memo(function TranscriptItemView({
 	item,
 	toolStatuses,
-	actions,
+	onOpenPath,
 	sessionId,
 	showCopy,
 }: {
 	item: WorkbenchState["transcript"][number];
 	toolStatuses: ReadonlyMap<string, "success" | "error">;
-	actions: WorkbenchActions;
+	onOpenPath: WorkbenchActions["openResource"];
 	sessionId?: string;
 	showCopy: boolean;
 }) {
@@ -68,7 +68,7 @@ export function TranscriptItemView({
 							parseIncompleteMarkdown
 							linkSafety={{ enabled: true }}
 							controls={{ code: { copy: true, download: true }, table: { copy: true, download: true } }}
-							onOpenPath={(path) => void actions.openResource(path)}
+							onOpenPath={(path) => void onOpenPath(path)}
 						>
 							{viewModel.text || " "}
 						</MessageResponse>
@@ -88,7 +88,7 @@ export function TranscriptItemView({
 				className="tool-batch-render-item"
 				tools={viewModel.tools}
 				sessionId={sessionId}
-				onOpenPath={(path) => void actions.openResource(path)}
+				onOpenPath={(path) => void onOpenPath(path)}
 			/>
 		);
 	if (viewModel.kind === "code") return <CodeBlockView code={viewModel.code} language={viewModel.language} />;
@@ -96,13 +96,13 @@ export function TranscriptItemView({
 		<Task defaultOpen>
 			<TaskTrigger title={viewModel.title} />
 			<TaskContent>
-				<MessageResponse mode="static" onOpenPath={(path) => void actions.openResource(path)}>
+				<MessageResponse mode="static" onOpenPath={(path) => void onOpenPath(path)}>
 					{viewModel.text}
 				</MessageResponse>
 			</TaskContent>
 		</Task>
 	);
-}
+});
 
 function TranscriptSources({ urls }: { urls: string[] }) {
 	if (!urls.length) return null;

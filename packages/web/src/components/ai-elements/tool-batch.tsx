@@ -38,13 +38,19 @@ export interface ToolBatchTool {
 	inputPreview?: boolean;
 }
 
+export type ToolBatchAutoCollapse = boolean | (() => boolean);
+
 export interface ToolBatchProps {
 	tools: ToolBatchTool[];
 	className?: string;
 	initialOpen?: boolean;
-	autoCollapseWhenComplete?: boolean;
+	autoCollapseWhenComplete?: ToolBatchAutoCollapse;
 	sessionId?: string;
 	onOpenPath?: (path: string) => void;
+}
+
+function resolveAutoCollapse(value: ToolBatchAutoCollapse): boolean {
+	return typeof value === "function" ? value() : value;
 }
 
 const statusLabels: Record<ToolBatchState, string> = {
@@ -409,7 +415,7 @@ function ToolBatchRow({
 	onOpenPath?: (path: string) => void;
 	className?: string;
 	initialOpen?: boolean;
-	autoCollapseWhenComplete?: boolean;
+	autoCollapseWhenComplete?: ToolBatchAutoCollapse;
 }) {
 	const [open, setOpen] = useState(initialOpen);
 	const active = tool.state === "input-available" || tool.state === "input-queued";
@@ -420,7 +426,7 @@ function ToolBatchRow({
 
 	useEffect(() => {
 		if (!previousActive.current && active) setOpen(true);
-		if (previousActive.current && !active && autoCollapseWhenComplete) setOpen(false);
+		if (previousActive.current && !active && resolveAutoCollapse(autoCollapseWhenComplete)) setOpen(false);
 		previousActive.current = active;
 	}, [active, autoCollapseWhenComplete]);
 
@@ -484,7 +490,7 @@ export function ToolBatch({
 
 	useEffect(() => {
 		if (!previousActive.current && active) setOpen(true);
-		if (previousActive.current && !active && autoCollapseWhenComplete) setOpen(false);
+		if (previousActive.current && !active && resolveAutoCollapse(autoCollapseWhenComplete)) setOpen(false);
 		previousActive.current = active;
 	}, [active, autoCollapseWhenComplete]);
 

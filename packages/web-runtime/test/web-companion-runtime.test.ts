@@ -89,6 +89,35 @@ describe("WebCompanionRuntime 协议协商", () => {
 			await runtime.dispose();
 		}
 	});
+	it("提交事件同步更新 Transcript 快照版本", async () => {
+		const tail = `${JSON.stringify({
+			type: "entry_committed",
+			items: [],
+			transcriptGeneration: "generation-2",
+			fromRevision: 0,
+			transcriptRevision: 128,
+		})}\n`;
+		const server = await serveSnapshot(baseSnapshot, tail);
+		const runtime = await WebCompanionRuntime.open(server.agentDir, server.sessionPath);
+		try {
+			const events: RuntimeEvent[] = [];
+			runtime.onEvent((event) => {
+				events.push(event);
+			});
+			expect(runtime.getSnapshot("available")).toMatchObject({
+				transcriptGeneration: "generation-2",
+				transcriptRevision: 128,
+			});
+			expect(events).toEqual([
+				expect.objectContaining({
+					type: "entry_committed",
+					payload: expect.objectContaining({ transcriptRevision: 128 }),
+				}),
+			]);
+		} finally {
+			await runtime.dispose();
+		}
+	});
 	it("握手中文跨 UTF-8 字节分片仍完整", async () => {
 		const server = await serveSnapshot(
 			(path, cwd) => ({ ...baseSnapshot(path, cwd), name: "中文会话" }),

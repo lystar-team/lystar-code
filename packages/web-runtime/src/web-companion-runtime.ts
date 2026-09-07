@@ -647,6 +647,11 @@ export class WebCompanionRuntime implements RuntimeSession {
 			return;
 		}
 		if (message.type === "entry_committed") {
+			this.snapshotValue = {
+				...this.snapshotValue,
+				transcriptGeneration: message.transcriptGeneration,
+				transcriptRevision: message.transcriptRevision,
+			};
 			const items = message.items.flatMap((item) => {
 				const parsed = transcriptItem(item);
 				return parsed ? [parsed] : [];

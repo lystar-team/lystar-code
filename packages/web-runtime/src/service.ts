@@ -1776,12 +1776,15 @@ export class WebRuntimeService {
 					}
 					if (old.writerLocked !== fact.writerLocked) sessionListChanged = true;
 					if (fileChanged) {
-						if (old.name !== fact.name || (fact.writerLocked && old.updatedAt !== fact.updatedAt))
+						if (
+							old.name !== fact.name ||
+							(old.messageCount === 0) !== (fact.messageCount === 0) ||
+							(fact.writerLocked && old.updatedAt !== fact.updatedAt && !runtime)
+						)
 							sessionListChanged = true;
-						const observedRuntime = this.runtimes.get(sessionPath);
-						if (!observedRuntime) transcriptChanges.push(sessionPath);
+						if (!runtime) transcriptChanges.push(sessionPath);
 						else {
-							const snapshot = observedRuntime.getSnapshot?.("available");
+							const snapshot = runtime.getSnapshot?.("available");
 							const known = this.runtimeTranscriptFacts.get(sessionPath);
 							if (
 								snapshot &&
@@ -1815,8 +1818,7 @@ export class WebRuntimeService {
 						continue;
 					}
 					if (old.updatedAt !== fact.updatedAt || old.name !== fact.name) {
-						if (old.name !== fact.name || (fact.writerLocked && old.updatedAt !== fact.updatedAt))
-							sessionListChanged = true;
+						if (old.name !== fact.name) sessionListChanged = true;
 					}
 					if (old.writerLocked !== fact.writerLocked) sessionListChanged = true;
 				}
@@ -2250,6 +2252,7 @@ export class WebRuntimeService {
 			clearTimeout(timer);
 			this.snapshotTimers.delete(sessionPath);
 		}
+		this.rememberRuntimeTranscriptFact(runtime);
 		const runtimeRevision = runtime.getSnapshot("available").revision;
 		const revision = Math.max(runtimeRevision, (this.snapshotRevisions.get(sessionPath) ?? -1) + 1);
 		this.snapshotRevisions.set(sessionPath, revision);

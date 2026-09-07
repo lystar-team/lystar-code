@@ -1,6 +1,6 @@
 import { ArrowDownToLine, LoaderCircle, Sparkles } from "lucide-react";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { toLiveToolViewModel } from "../../adapters/live-tool-view-model.ts";
 import { toSessionItemViewModel } from "../../adapters/session-view-model";
@@ -81,7 +81,7 @@ export function ConversationView({
 	actions: WorkbenchActions;
 	sessionTitleText: string;
 }) {
-	const toolIndex = useMemo(() => {
+	const persistedToolIndex = useMemo(() => {
 		const callIds = new Set<string>();
 		const results = new Map<string, ToolBatchTool>();
 		const statuses = new Map<string, "success" | "error">();
@@ -103,15 +103,21 @@ export function ConversationView({
 				statuses.set(item.view.callId, item.view.status);
 			}
 		}
+		return { callIds, results, statuses };
+	}, [state.transcript]);
+	const toolIndex = useMemo(() => {
+		let results: Map<string, ToolBatchTool> | undefined;
 		for (const tool of Object.values(state.liveTools)) {
-			const persisted = results.get(tool.id);
+			if (!persistedToolIndex.callIds.has(tool.id)) continue;
+			const persisted = (results ?? persistedToolIndex.results).get(tool.id);
 			if (!persisted || tool.state === "cancelled" || tool.state === "interrupted") {
+				results ??= new Map(persistedToolIndex.results);
 				const live = toLiveToolViewModel(tool);
 				results.set(tool.id, { ...persisted, ...live, images: persisted?.images });
 			}
 		}
-		return { callIds, results, statuses };
-	}, [state.transcript, state.liveTools]);
+		return results ? { ...persistedToolIndex, results } : persistedToolIndex;
+	}, [persistedToolIndex, state.liveTools]);
 	const renderItems = useMemo(
 		() => buildTranscriptRenderItems(state.transcript, toolIndex),
 		[state.transcript, toolIndex],
@@ -157,13 +163,19 @@ function ConversationBody({
 			state.session?.activity === "waiting_for_input" ||
 			(state.currentOperation && ACTIVE_OPERATION_STATUSES.has(state.currentOperation.status)),
 	);
-	const lastAssistantMessageIndex = renderItems.reduce<number>((lastIndex, entry, index) => {
-		if (entry.kind !== "item") return lastIndex;
-		const viewModel = toSessionItemViewModel(entry.item, toolStatuses);
-		return viewModel.kind === "message" && viewModel.role === "assistant" && viewModel.text ? index : lastIndex;
-	}, -1);
-	const autoScrollFrameRef = useRef<number | undefined>(undefined);
+	const lastAssistantMessageIndex = useMemo(
+		() =>
+			renderItems.reduce<number>((lastIndex, entry, index) => {
+				if (entry.kind !== "item") return lastIndex;
+				const viewModel = toSessionItemViewModel(entry.item, toolStatuses);
+				return viewModel.kind === "message" && viewModel.role === "assistant" && viewModel.text ? index : lastIndex;
+			}, -1),
+		[renderItems, toolStatuses],
+	);
 	const promptScrollRequestRef = useRef(state.promptScrollRequest);
+	const isAtBottomRef = useRef(isAtBottom);
+	isAtBottomRef.current = isAtBottom;
+	const shouldAutoCollapseTools = useCallback(() => isAtBottomRef.current, []);
 
 	useLayoutEffect(() => {
 		if (promptScrollRequestRef.current === state.promptScrollRequest) return;
@@ -171,34 +183,6 @@ function ConversationBody({
 		pendingScrollRef.current = undefined;
 		void scrollToBottom({ animation: "instant" });
 	}, [scrollToBottom, state.promptScrollRequest]);
-
-	useLayoutEffect(() => {
-		if (!isAtBottom || !scrollRef.current || autoScrollFrameRef.current !== undefined) return;
-		autoScrollFrameRef.current = window.requestAnimationFrame(() => {
-			autoScrollFrameRef.current = undefined;
-			void scrollToBottom({ animation: "instant", preserveScrollPosition: true });
-		});
-	}, [
-		isAtBottom,
-		scrollRef,
-		scrollToBottom,
-		state.hasMorePrevious,
-		state.liveText,
-		state.liveThinking,
-		state.liveTools,
-		state.liveTurnItems,
-		state.statusText,
-		state.transcript,
-	]);
-
-	useEffect(() => {
-		return () => {
-			if (autoScrollFrameRef.current !== undefined) {
-				window.cancelAnimationFrame(autoScrollFrameRef.current);
-				autoScrollFrameRef.current = undefined;
-			}
-		};
-	}, []);
 
 	const loadEarlier = useCallback(async () => {
 		const scroller = scrollRef.current;
@@ -224,45 +208,53 @@ function ConversationBody({
 		return () => window.cancelAnimationFrame(frame);
 	}, [scrollRef, state.loadingEarlier]);
 
-	const transcriptNodes: ReactNode[] = [];
-	for (let index = 0; index < renderItems.length; index++) {
-		const entry = renderItems[index];
-		if (entry.kind === "tool-batch") {
-			const batches = [entry];
-			while (index + 1 < renderItems.length) {
-				const next = renderItems[index + 1];
-				if (next.kind !== "tool-batch") break;
-				batches.push(next);
-				index += 1;
+	const openResource = actions.openResource;
+	const transcriptNodes = useMemo(() => {
+		const nodes: ReactNode[] = [];
+		for (let index = 0; index < renderItems.length; index++) {
+			const entry = renderItems[index];
+			if (entry.kind === "tool-batch") {
+				const batches = [entry];
+				while (index + 1 < renderItems.length) {
+					const next = renderItems[index + 1];
+					if (next.kind !== "tool-batch") break;
+					batches.push(next);
+					index += 1;
+				}
+				nodes.push(
+					<div className="tool-batch-stack" key={`tool-stack:${batches[0].key}`}>
+						{batches.map((batch) => (
+							<ToolBatch
+								key={batch.key}
+								className="tool-batch-render-item"
+								tools={batch.tools}
+								sessionId={state.sessionId}
+								initialOpen={batch.tools.some((tool) => tool.state === "input-available" || tool.state === "input-queued")}
+								autoCollapseWhenComplete={shouldAutoCollapseTools}
+								onOpenPath={(path) => void openResource(path)}
+							/>
+						))}
+					</div>,
+				);
+				continue;
 			}
-			transcriptNodes.push(
-				<div className="tool-batch-stack" key={`tool-stack:${batches[0].key}`}>
-					{batches.map((batch) => (
-						<ToolBatch
-							key={batch.key}
-							className="tool-batch-render-item"
-							tools={batch.tools}
-							sessionId={state.sessionId}
-							initialOpen={batch.tools.some((tool) => tool.state === "input-available" || tool.state === "input-queued")}
-							autoCollapseWhenComplete
-							onOpenPath={(path) => void actions.openResource(path)}
-						/>
-					))}
-				</div>,
+			nodes.push(
+				<TranscriptItemView
+					key={entry.item.renderId}
+					item={entry.item}
+					showCopy={!responseActive && index === lastAssistantMessageIndex}
+					toolStatuses={toolStatuses}
+					onOpenPath={openResource}
+					sessionId={state.sessionId}
+				/>,
 			);
-			continue;
 		}
-		transcriptNodes.push(
-			<TranscriptItemView
-				key={entry.item.renderId}
-				item={entry.item}
-				showCopy={!responseActive && index === lastAssistantMessageIndex}
-				toolStatuses={toolStatuses}
-				actions={actions}
-				sessionId={state.sessionId}
-			/>,
-		);
-	}
+		return nodes;
+	}, [lastAssistantMessageIndex, openResource, renderItems, responseActive, shouldAutoCollapseTools, state.sessionId, toolStatuses]);
+	const liveTurnNode = useMemo(
+		() => <LiveTurn state={state} actions={actions} autoCollapseTools={shouldAutoCollapseTools} />,
+		[actions, shouldAutoCollapseTools, state],
+	);
 
 	return (
 		<ConversationContent className="conversation-content mx-auto w-full max-w-[var(--conversation-width)] gap-3 px-5 py-10 sm:px-10 sm:py-12">
@@ -322,7 +314,7 @@ function ConversationBody({
 					description={state.session ? "从底部输入任务，运行进展会显示在这里。" : "从左侧选择会话或新建会话。"}
 				/>
 			)}
-			<LiveTurn state={state} actions={actions} />
+			{liveTurnNode}
 		</ConversationContent>
 	);
 }

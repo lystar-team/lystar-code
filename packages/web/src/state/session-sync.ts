@@ -1,4 +1,25 @@
-import type { WebOperation, WebSessionSnapshot } from "../types.ts";
+import type { WebLease, WebOperation, WebSessionSnapshot } from "../types.ts";
+
+export function bootstrapLeaseForSession(
+	sessionId: string | undefined,
+	current: WebLease | undefined,
+	leases: readonly { sessionId: string; lease: WebLease }[],
+): WebLease | undefined {
+	if (!sessionId) return current;
+	return leases.find((entry) => entry.sessionId === sessionId)?.lease ?? current;
+}
+
+export function needsTranscriptRefreshForCommit(
+	current: { pageLoaded: boolean; revision?: number; runtimeGeneration?: string },
+	incoming: { transcriptGeneration: string; fromRevision: number },
+): boolean {
+	return (
+		!current.pageLoaded ||
+		current.revision === undefined ||
+		current.runtimeGeneration !== incoming.transcriptGeneration ||
+		incoming.fromRevision > current.revision
+	);
+}
 
 export function isOlderSessionSnapshot(current: WebSessionSnapshot | undefined, incoming: WebSessionSnapshot): boolean {
 	return current?.id === incoming.id && incoming.revision < current.revision;

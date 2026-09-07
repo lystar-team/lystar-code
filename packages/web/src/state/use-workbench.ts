@@ -2,7 +2,14 @@ import type { SessionProgress, ToolActivity, ToolActivityState, ToolDiff } from 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UnauthorizedError, webApi } from "../adapters/host-protocol/api.ts";
 import { applyPromptAccepted, clearsThinking, committedToolCallIds, reconcileCommittedTurn } from "./chat-lifecycle.ts";
-import { isOlderSessionSnapshot, isTranscriptResponseObsolete, mergeOperationSnapshots, runtimeHistoryChanged } from "./session-sync.ts";
+import {
+	bootstrapLeaseForSession,
+	isOlderSessionSnapshot,
+	isTranscriptResponseObsolete,
+	mergeOperationSnapshots,
+	needsTranscriptRefreshForCommit,
+	runtimeHistoryChanged,
+} from "./session-sync.ts";
 import { shouldJoinLiveToolBatch } from "./tool-batching.ts";
 import {
 	decorateTranscriptItems,
@@ -546,6 +553,10 @@ function shouldClearLiveTurn(state: WorkbenchState): boolean {
 	return state.liveTurnActive === false && hasLiveTurnContent(state);
 }
 
+function shouldRefreshCompletedTurn(state: WorkbenchState): boolean {
+	return !state.transcriptPageLoaded || Boolean(state.liveText || state.liveThinking || state.liveTurnItems.length);
+}
+
 function initialState(): WorkbenchState {
 	return {
 		loading: false,
@@ -678,10 +689,7 @@ export function useWorkbench() {
 			leases?: Array<{ sessionId: string; lease: WebLease }>;
 		}) => {
 			updateState((current) => {
-				const restoredLease = current.sessionId
-					? data.leases?.find((entry) => entry.sessionId === current.sessionId)?.lease
-					: undefined;
-				const nextLease = data.leases === undefined ? current.lease : restoredLease;
+				const nextLease = bootstrapLeaseForSession(current.sessionId, current.lease, data.leases ?? []);
 				const operations = mergeOperationSnapshots(current.operations, data.operations);
 				const projects = mergeProjectSessions(current.projects, data.projects);
 				return {
@@ -872,6 +880,15 @@ export function useWorkbench() {
 		},
 		[loadTranscript, showToast],
 	);
+
+	const cancelScheduledTranscriptRefresh = useCallback((sessionId: string) => {
+		if (stateRef.current.sessionId !== sessionId) return;
+		if (transcriptTimerRef.current) {
+			window.clearTimeout(transcriptTimerRef.current);
+			transcriptTimerRef.current = undefined;
+		}
+		if (transcriptRefreshPendingRef.current === sessionId) transcriptRefreshPendingRef.current = undefined;
+	}, []);
 
 	const applyProgress = useCallback(
 		(progress: SessionProgress) => {
@@ -1089,12 +1106,7 @@ export function useWorkbench() {
 				return;
 			}
 			if (event.type === "bootstrap") {
-				const sessionId = stateRef.current.sessionId;
 				applyBootstrap(event.data);
-				if (sessionId) {
-					updateState((current) => ({ ...current, sessionError: "正在同步会话" }));
-					void selectSessionRef.current(sessionId).catch((error) => showToast(errorMessage(error)));
-				}
 				return;
 			}
 			if (event.type === "connection_state") {
@@ -1103,6 +1115,7 @@ export function useWorkbench() {
 					connected: event.connected,
 					reconnecting: !event.connected,
 					connectionError: event.message ?? (event.connected ? "" : "Web Host 连接已断开"),
+					...(event.connected ? {} : { lease: undefined, readOnly: Boolean(current.sessionId) }),
 				}));
 				return;
 			}
@@ -1192,28 +1205,37 @@ export function useWorkbench() {
 			}
 			if (event.type === "transcript_changed" || event.type === "transcript_committed") {
 				if (event.sessionId !== stateRef.current.sessionId) return;
-				if (event.type === "transcript_committed") {
-					updateState((current) => {
-						if (current.sessionId !== event.sessionId) return current;
-						const sameHistory = current.session === undefined ||
-							current.session.transcriptGeneration === event.transcriptGeneration;
-						if (!sameHistory) return current;
-						const stale = sameHistory && event.toRevision < (current.transcriptRevision ?? 0);
-						const next = sameHistory && !stale ? reconcileCommittedTurn(current, event.items, event.toRevision) : current;
-						return {
-							...next,
-							transcript: stale ? current.transcript : sameHistory
-								? mergeTranscriptEntries(current.transcript, event.items)
-								: decorateTranscriptItems(event.items),
-							transcriptPageLoaded: sameHistory && current.transcriptPageLoaded,
-							previousCursor: sameHistory ? current.previousCursor : undefined,
-							hasMorePrevious: sameHistory ? current.hasMorePrevious : false,
-							transcriptGeneration: current.transcriptGeneration,
-							transcriptRevision: stale ? current.transcriptRevision : event.toRevision,
-						};
-					});
+				if (event.type === "transcript_changed") {
+					scheduleTranscriptRefresh(event.sessionId);
+					return;
 				}
-				scheduleTranscriptRefresh(event.sessionId);
+				const refreshNeeded = needsTranscriptRefreshForCommit(
+					{
+						pageLoaded: stateRef.current.transcriptPageLoaded,
+						revision: stateRef.current.transcriptRevision,
+						runtimeGeneration: stateRef.current.session?.transcriptGeneration,
+					},
+					event,
+				);
+				updateState((current) => {
+					if (current.sessionId !== event.sessionId) return current;
+					const sameHistory =
+						current.session === undefined || current.session.transcriptGeneration === event.transcriptGeneration;
+					if (!sameHistory) return current;
+					const stale = event.toRevision < (current.transcriptRevision ?? 0);
+					const next = !stale ? reconcileCommittedTurn(current, event.items, event.toRevision) : current;
+					return {
+						...next,
+						transcript: stale ? current.transcript : mergeTranscriptEntries(current.transcript, event.items),
+						transcriptPageLoaded: current.transcriptPageLoaded,
+						previousCursor: current.previousCursor,
+						hasMorePrevious: current.hasMorePrevious,
+						transcriptGeneration: current.transcriptGeneration,
+						transcriptRevision: stale ? current.transcriptRevision : event.toRevision,
+					};
+				});
+				if (refreshNeeded) scheduleTranscriptRefresh(event.sessionId);
+				else cancelScheduledTranscriptRefresh(event.sessionId);
 				return;
 			}
 			if (event.type === "session_progress") {
@@ -1244,7 +1266,11 @@ export function useWorkbench() {
 				}
 				if (event.sessionId === stateRef.current.sessionId) {
 					applyProgress(event.progress);
-					if (event.progress.type === "phase" && ["idle", "interrupted"].includes(event.progress.phase))
+					if (
+						event.progress.type === "phase" &&
+						["idle", "interrupted"].includes(event.progress.phase) &&
+						shouldRefreshCompletedTurn(stateRef.current)
+					)
 						scheduleTranscriptRefresh(event.sessionId);
 				}
 				return;
@@ -1319,7 +1345,8 @@ export function useWorkbench() {
 					};
 				});
 				if (operationSessionId === stateRef.current.sessionId || !operationSessionId) {
-					if (operationIsTerminal) scheduleTranscriptRefresh(operationSessionId ?? stateRef.current.sessionId);
+					if (operationIsTerminal && shouldRefreshCompletedTurn(stateRef.current))
+						scheduleTranscriptRefresh(operationSessionId ?? stateRef.current.sessionId);
 				}
 				return;
 			}
@@ -1345,6 +1372,7 @@ export function useWorkbench() {
 		[
 			applyBootstrap,
 			applyProgress,
+			cancelScheduledTranscriptRefresh,
 			refreshBootstrap,
 			refreshProjectSessions,
 			scheduleTranscriptRefresh,
@@ -1379,6 +1407,8 @@ export function useWorkbench() {
 					connected: false,
 					reconnecting: true,
 					connectionError: "Web Host 连接已断开，正在重连",
+					lease: undefined,
+					readOnly: Boolean(current.sessionId),
 				}));
 				if (reconnectTimerRef.current) return;
 				reconnectTimerRef.current = window.setTimeout(() => {
@@ -1525,7 +1555,11 @@ export function useWorkbench() {
 				!ACTIVE_OPERATION_STATUSES.has(previous.currentOperation?.status ?? "")
 			)
 				await webApi.release(previous.sessionId).catch(() => {});
-			if (transcriptTimerRef.current) window.clearTimeout(transcriptTimerRef.current);
+			if (transcriptTimerRef.current) {
+				window.clearTimeout(transcriptTimerRef.current);
+				transcriptTimerRef.current = undefined;
+			}
+			transcriptRefreshPendingRef.current = undefined;
 			transcriptRequestRef.current++;
 			updateState((current) => ({
 				...current,

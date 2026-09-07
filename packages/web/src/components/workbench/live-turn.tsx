@@ -2,7 +2,7 @@ import { toLiveToolViewModel } from "../../adapters/live-tool-view-model.ts";
 import { committedToolCallIds } from "../../state/chat-lifecycle.ts";
 import { Message, MessageContent, MessageResponse } from "../ai-elements/message";
 import { Shimmer } from "../ai-elements/shimmer";
-import { ToolBatch } from "../ai-elements/tool-batch";
+import { ToolBatch, type ToolBatchAutoCollapse } from "../ai-elements/tool-batch";
 import type { WorkbenchState } from "../../state/use-workbench";
 import type { WorkbenchActions } from "./types";
 
@@ -16,7 +16,15 @@ function latestThinkingLine(text: string): string {
 	return line.replace(/\*\*\s*(.*?)\s*\*\*/gu, "$1").replace(/__\s*(.*?)\s*__/gu, "$1");
 }
 
-export function LiveTurn({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
+export function LiveTurn({
+	state,
+	actions,
+	autoCollapseTools = true,
+}: {
+	state: WorkbenchState;
+	actions: WorkbenchActions;
+	autoCollapseTools?: ToolBatchAutoCollapse;
+}) {
 	const callIds = committedToolCallIds(state.transcript);
 	const liveItems = state.liveTurnItems.filter((item) => item.kind !== "thinking");
 	const failed = state.liveTurnActive === false &&
@@ -60,7 +68,7 @@ export function LiveTurn({ state, actions }: { state: WorkbenchState; actions: W
 						initialOpen={tools.some(
 							(tool) => tool.state === "input-available" || tool.state === "input-queued",
 						)}
-						autoCollapseWhenComplete
+						autoCollapseWhenComplete={autoCollapseTools}
 					/>
 				);
 			})}

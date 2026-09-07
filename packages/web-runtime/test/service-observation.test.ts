@@ -456,6 +456,12 @@ describe("WebRuntimeService Session observation", () => {
 					message.event.sessionPath === sessionPath,
 			),
 		).toBe(false);
+		expect(
+			messages.some(
+				(message) =>
+					message.type === "event" && message.event.type === "sessions_changed" && message.event.cwd === cwd,
+			),
+		).toBe(false);
 		await new Promise((resolve) => setTimeout(resolve, 650));
 		expect(
 			messages.some(
