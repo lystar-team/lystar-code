@@ -353,8 +353,31 @@ function projectTranscriptViews(
 	if (role === "assistant") {
 		return assistantViews(content, images);
 	}
-	if (item.kind === "compaction") return [{ type: "summary", title: "上下文压缩", text: text(payload) }];
-	if (item.kind === "branch_summary") return [{ type: "summary", title: "分支摘要", text: text(payload) }];
+	if (item.kind === "compaction") {
+		const source = record(payload);
+		const summary = typeof source?.summary === "string" ? bounded(source.summary) : "";
+		const tokensBefore = number(source?.tokensBefore);
+		return [
+			{
+				type: "summary",
+				variant: "compaction",
+				title: "上下文压缩",
+				text: summary,
+				...(tokensBefore === undefined ? {} : { tokensBefore }),
+			},
+		];
+	}
+	if (item.kind === "branch_summary") {
+		const source = record(payload);
+		return [
+			{
+				type: "summary",
+				variant: "branch_summary",
+				title: "分支摘要",
+				text: typeof source?.summary === "string" ? bounded(source.summary) : text(payload),
+			},
+		];
+	}
 	if (item.kind === "custom" || item.kind === "custom_message") {
 		const name = typeof payload?.customType === "string" ? payload.customType : "";
 		return [name === "bash" ? { type: "bash", text: text(payload) } : { type: "custom", text: text(payload) }];

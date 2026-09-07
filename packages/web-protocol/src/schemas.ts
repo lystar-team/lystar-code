@@ -460,7 +460,13 @@ export const TranscriptViewItemSchema = Type.Union([
 	}),
 	StrictObject({ type: Type.Literal("bash"), text: TranscriptViewTextSchema }),
 	StrictObject({ type: Type.Literal("custom"), text: TranscriptViewTextSchema }),
-	StrictObject({ type: Type.Literal("summary"), title: TranscriptViewTextSchema, text: TranscriptViewTextSchema }),
+	StrictObject({
+		type: Type.Literal("summary"),
+		variant: Type.Optional(Type.Union([Type.Literal("compaction"), Type.Literal("branch_summary")])),
+		title: TranscriptViewTextSchema,
+		text: TranscriptViewTextSchema,
+		tokensBefore: Type.Optional(Type.Integer({ minimum: 0 })),
+	}),
 	StrictObject({ type: Type.Literal("system"), text: TranscriptViewTextSchema }),
 ]);
 export type TranscriptViewItem = Static<typeof TranscriptViewItemSchema>;

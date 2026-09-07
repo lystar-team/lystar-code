@@ -28,4 +28,26 @@ describe("Companion 实时消息体量", () => {
 		} as AgentSessionEvent;
 		expect(companionProgressEvent(event)).toBeUndefined();
 	});
+	it("压缩完成事件只携带生命周期字段，不复制完整摘要结果", () => {
+		const event = {
+			type: "compaction_end",
+			reason: "manual",
+			result: {
+				summary: "x".repeat(2 * 1024 * 1024),
+				firstKeptEntryId: "kept",
+				tokensBefore: 12000,
+				details: { artifactIndex: "x".repeat(2 * 1024 * 1024) },
+			},
+			aborted: false,
+			willRetry: false,
+		} as AgentSessionEvent;
+
+		const projected = companionProgressEvent(event);
+		expect(JSON.stringify(projected).length).toBeLessThan(1024);
+		expect(projected).toMatchObject({
+			type: "compaction_end",
+			result: { summary: "", firstKeptEntryId: "kept", tokensBefore: 12000 },
+		});
+		expect(projected).not.toMatchObject({ result: { details: expect.anything() } });
+	});
 });

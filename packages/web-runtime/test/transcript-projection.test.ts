@@ -119,4 +119,45 @@ describe("assistant transcript projection", () => {
 			detail: "file contents",
 		});
 	});
+
+	it("projects compaction entries from the real summary field", () => {
+		const projected = projectTranscriptItems({
+			entryId: "compaction-entry",
+			parentId: "assistant-entry",
+			timestamp: "2026-09-07T00:00:00Z",
+			kind: "compaction",
+			payload: {
+				type: "compaction",
+				summary: "保留用户目标、工具结果和最后一轮回复。",
+				tokensBefore: 12000,
+				firstKeptEntryId: "kept-entry",
+			},
+		});
+
+		expect(projected[0]?.view).toEqual({
+			type: "summary",
+			variant: "compaction",
+			title: "上下文压缩",
+			text: "保留用户目标、工具结果和最后一轮回复。",
+			tokensBefore: 12000,
+		});
+	});
+
+	it("does not serialize the whole compaction entry when summary is missing", () => {
+		const projected = projectTranscriptItems({
+			entryId: "compaction-without-summary",
+			parentId: null,
+			timestamp: "2026-09-07T00:00:00Z",
+			kind: "compaction",
+			payload: { type: "compaction", tokensBefore: 12000, firstKeptEntryId: "kept-entry" },
+		});
+
+		expect(projected[0]?.view).toEqual({
+			type: "summary",
+			variant: "compaction",
+			title: "上下文压缩",
+			text: "",
+			tokensBefore: 12000,
+		});
+	});
 });

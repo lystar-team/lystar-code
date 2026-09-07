@@ -3,6 +3,7 @@ import { committedToolCallIds } from "../../state/chat-lifecycle.ts";
 import { Message, MessageContent } from "../ai-elements/message";
 import { Shimmer } from "../ai-elements/shimmer";
 import { ToolBatch, type ToolBatchAutoCollapse } from "../ai-elements/tool-batch";
+import { CompactionActivity } from "./compaction-card";
 import type { LiveTurnItem, WorkbenchState } from "../../state/use-workbench";
 import type { WorkbenchActions } from "./types";
 
@@ -45,9 +46,12 @@ export function LiveTurn({
 	const failed = state.liveTurnActive === false &&
 		["failed", "aborted", "interrupted"].includes(state.currentOperation?.status ?? "");
 	const thinkingItem = latestThinkingItem(state.liveTurnItems);
-	const showStatus = Boolean(state.statusText && (failed ||
-		(!liveItems.length && !thinkingItem && state.liveTurnActive !== false)));
-	if (!liveItems.length && !showStatus) return null;
+	const showStatus = Boolean(
+		state.statusText &&
+		!state.liveCompaction &&
+		(failed || (!liveItems.length && !thinkingItem && state.liveTurnActive !== false)),
+	);
+	if (!liveItems.length && !showStatus && !state.liveCompaction) return null;
 
 	return (
 		<div className="live-turn grid gap-3" aria-live="polite">
@@ -83,6 +87,7 @@ export function LiveTurn({
 					/>
 				);
 			})}
+			{state.liveCompaction ? <CompactionActivity state={state.liveCompaction} /> : null}
 			{showStatus ? failed ? (
 				<div role="alert" className="text-sm text-destructive">{state.statusText}</div>
 			) : <Shimmer>{state.statusText}</Shimmer> : null}

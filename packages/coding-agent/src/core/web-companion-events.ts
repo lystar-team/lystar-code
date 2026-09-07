@@ -30,6 +30,26 @@ export function companionProgressEvent(event: AgentSessionEvent): AgentSessionEv
 			return { ...event, steering: event.steering.map(() => ""), followUp: event.followUp.map(() => "") };
 		case "tool_activity":
 		case "compaction_start":
+			return event;
+		case "compaction_end":
+			return {
+				type: event.type,
+				reason: event.reason,
+				result:
+					event.result === undefined
+						? undefined
+						: {
+								summary: "",
+								firstKeptEntryId: event.result.firstKeptEntryId,
+								tokensBefore: event.result.tokensBefore,
+							},
+				aborted: event.aborted,
+				willRetry: event.willRetry,
+				...(event.errorMessage === undefined ? {} : { errorMessage: event.errorMessage }),
+			};
+		case "summarization_retry_scheduled":
+		case "summarization_retry_attempt_start":
+		case "summarization_retry_finished":
 		case "agent_settled":
 			return event;
 		default:

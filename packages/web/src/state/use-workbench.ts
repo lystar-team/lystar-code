@@ -3,6 +3,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UnauthorizedError, webApi } from "../adapters/host-protocol/api.ts";
 import { applyPromptAccepted, clearsThinking, committedToolCallIds, reconcileCommittedTurn } from "./chat-lifecycle.ts";
 import {
+	reconcileCompactionState,
+	restoreCompactionState,
+	type LiveCompactionState,
+	updateCompactionState,
+} from "./compaction-state.ts";
+import {
 	bootstrapLeaseForSession,
 	isOlderSessionSnapshot,
 	isSameSessionSnapshot,
@@ -237,6 +243,14 @@ function restoreToolActivities(current: WorkbenchState, snapshot: WebSessionSnap
 	};
 }
 
+function restoreRuntimeActivities(current: WorkbenchState, snapshot: WebSessionSnapshot): WorkbenchState {
+	const next = {
+		...current,
+		liveCompaction: restoreCompactionState(current.liveCompaction, snapshot.phase, current.transcript),
+	};
+	return restoreToolActivities(next, snapshot);
+}
+
 interface GitFileDiffStats {
 	additions: number;
 	deletions: number;
@@ -274,6 +288,7 @@ export interface WorkbenchState {
 	liveTurnId: number;
 	liveTurnStartRevision?: number;
 	liveTurnActive?: boolean;
+	liveCompaction?: LiveCompactionState;
 	promptScrollRequest?: number;
 	unreadSessionIds: Record<string, true>;
 	statusText: string;
@@ -409,6 +424,7 @@ type SessionDetailCache = Pick<
 	| "liveTurnId"
 	| "liveTurnStartRevision"
 	| "liveTurnActive"
+	| "liveCompaction"
 	| "statusText"
 >;
 
@@ -430,6 +446,7 @@ function sessionDetailCacheFromState(state: WorkbenchState): SessionDetailCache 
 		liveTurnId: state.liveTurnId,
 		liveTurnStartRevision: state.liveTurnStartRevision,
 		liveTurnActive: state.liveTurnActive,
+		liveCompaction: state.liveCompaction,
 		statusText: state.statusText,
 	};
 }
@@ -634,6 +651,7 @@ function initialState(): WorkbenchState {
 		operations: [],
 		liveTools: {},
 		liveTurnItems: [],
+		liveCompaction: undefined,
 		liveTurnId: 0,
 		unreadSessionIds: {},
 		gitFileStats: {},
@@ -820,6 +838,7 @@ export function useWorkbench() {
 										hasMorePrevious: false,
 										liveTools: {},
 										liveTurnItems: [],
+										liveCompaction: undefined,
 										currentOperation: undefined,
 										statusText: "",
 									}
@@ -892,7 +911,7 @@ export function useWorkbench() {
 					const next = !cursor && sameHistory
 						? reconcileCommittedTurn(current, result.items.filter((item) => !knownIds.has(item.entryId)), result.transcriptRevision)
 						: current;
-					return {
+					const updated = {
 						...next,
 						...transcriptWindow,
 						transcriptLoading: false,
@@ -903,6 +922,10 @@ export function useWorkbench() {
 							: result.transcriptRevision,
 						transcriptLeafId: cursor ? current.transcriptLeafId : result.leafId,
 						...(completedTurnSynced ? { liveTools: {}, liveTurnItems: [] } : {}),
+					};
+					return {
+						...updated,
+						liveCompaction: reconcileCompactionState(updated.liveCompaction, updated.transcript),
 					};
 				});
 			} catch (error) {
@@ -1093,29 +1116,41 @@ export function useWorkbench() {
 									? `队列中 ${progress.steeringCount + progress.followUpCount} 项`
 									: "正在处理",
 						};
-					case "phase":
+					case "phase": {
+						const liveCompaction =
+							progress.phase === "compaction"
+								? restoreCompactionState(current.liveCompaction, progress.phase, current.transcript)
+								: progress.phase === "idle" && current.liveCompaction?.status === "running"
+									? { ...current.liveCompaction, status: "completed" as const, retry: undefined }
+									: current.liveCompaction;
 						return {
 							...current,
+							liveCompaction,
 							liveTurnId: progress.phase === "turn" ? current.liveTurnId + 1 : current.liveTurnId,
 							...(progress.phase === "turn"
 								? {
 										liveTurnStartRevision: current.transcriptRevision,
 										liveTurnActive: true,
 										liveTurnItems: [],
-									}
+								  }
 								: progress.phase === "idle" || progress.phase === "interrupted"
 									? { liveTurnActive: false }
 									: {}),
 							statusText:
-								progress.phase === "idle" ? "" : progress.phase === "waiting_for_input"
-									? "等待输入"
-									: progress.phase === "compaction"
-										? "正在整理上下文"
-										: "正在处理",
+								progress.phase === "idle"
+									? ""
+									: progress.phase === "waiting_for_input"
+										? "等待输入"
+										: progress.phase === "compaction"
+											? "正在整理上下文"
+											: "正在处理",
 						};
-					case "compaction":
+					}
+					case "compaction": {
+						const liveCompaction = updateCompactionState(current.liveCompaction, progress, current.transcript);
 						return {
 							...current,
+							liveCompaction,
 							statusText:
 								progress.status === "running"
 									? "正在整理上下文"
@@ -1123,18 +1158,26 @@ export function useWorkbench() {
 										? "上下文已整理"
 										: progress.status === "failed"
 											? "上下文整理失败"
-											: "上下文整理已停止",
+											: progress.status === "waiting_retry"
+												? "等待重试摘要"
+												: "上下文整理已停止",
 						};
-					case "retry":
+					}
+					case "retry": {
+						const liveCompaction = updateCompactionState(current.liveCompaction, progress, current.transcript);
 						return {
 							...current,
+							liveCompaction,
 							statusText:
 								progress.status === "running"
 									? "正在重试"
 									: progress.status === "failed"
 										? "重试失败"
-										: "等待重试",
+										: progress.status === "completed"
+											? "重试完成"
+											: "等待重试",
 						};
+					}
 					case "bash":
 						return { ...current, statusText: "正在运行命令" };
 					case "status":
@@ -1309,7 +1352,7 @@ export function useWorkbench() {
 							  }
 							: {}),
 					};
-					return restoreToolActivities(next, event.snapshot);
+					return restoreRuntimeActivities(next, event.snapshot);
 				});
 				if (event.sessionId === stateRef.current.sessionId &&
 					(event.snapshot.transcriptRevision > (stateRef.current.transcriptRevision ?? -1) || !stateRef.current.transcriptPageLoaded))
@@ -1341,6 +1384,7 @@ export function useWorkbench() {
 								hasMorePrevious: false,
 								liveTools: {},
 								liveTurnItems: [],
+								liveCompaction: undefined,
 								currentOperation: undefined,
 								statusText: "",
 							}
@@ -1370,7 +1414,7 @@ export function useWorkbench() {
 					if (!sameHistory) return current;
 					const stale = event.toRevision < (current.transcriptRevision ?? 0);
 					const next = !stale ? reconcileCommittedTurn(current, event.items, event.toRevision) : current;
-					return {
+					const updated = {
 						...next,
 						transcript: stale ? current.transcript : mergeTranscriptEntries(current.transcript, event.items),
 						transcriptPageLoaded: current.transcriptPageLoaded,
@@ -1378,6 +1422,10 @@ export function useWorkbench() {
 						hasMorePrevious: current.hasMorePrevious,
 						transcriptGeneration: current.transcriptGeneration,
 						transcriptRevision: stale ? current.transcriptRevision : event.toRevision,
+					};
+					return {
+						...updated,
+						liveCompaction: reconcileCompactionState(updated.liveCompaction, updated.transcript),
 					};
 				});
 				if (refreshNeeded) scheduleTranscriptRefresh(event.sessionId);
@@ -1757,6 +1805,7 @@ export function useWorkbench() {
 				) as Record<string, true>,
 				statusText: cached ? "正在同步会话" : "正在打开会话",
 				currentOperation: operationForSession(current.operations, sessionId),
+				liveCompaction: cached?.liveCompaction,
 			}));
 			const transcriptPromise = loadTranscript(sessionId);
 			void transcriptPromise.catch(() => {});
@@ -1779,7 +1828,7 @@ export function useWorkbench() {
 						sessionError: undefined,
 						readOnly: controlled.owned === false,
 					};
-					return restoreToolActivities(next, controlled.snapshot);
+					return restoreRuntimeActivities(next, controlled.snapshot);
 				});
 			} catch (error) {
 				try {
@@ -1799,7 +1848,7 @@ export function useWorkbench() {
 							sessionError: undefined,
 							readOnly: true,
 						};
-						return restoreToolActivities(next, snapshot);
+						return restoreRuntimeActivities(next, snapshot);
 					});
 					showToast(errorMessage(error));
 				} catch (snapshotError) {
@@ -1873,6 +1922,7 @@ export function useWorkbench() {
 				currentOperation: undefined,
 				liveTools: {},
 				liveTurnItems: [],
+				liveCompaction: undefined,
 			}));
 			try {
 				await refreshProjectSessions(projectId);
@@ -1942,6 +1992,7 @@ export function useWorkbench() {
 			statusText: "",
 			liveTools: {},
 			liveTurnItems: [],
+			liveCompaction: undefined,
 		}));
 	}, [updateState]);
 
@@ -2116,6 +2167,7 @@ export function useWorkbench() {
 				currentOperation: undefined,
 				liveTools: {},
 				liveTurnItems: [],
+				liveCompaction: undefined,
 			}));
 			if (current.currentProjectId) await refreshProjectSessions(current.currentProjectId);
 			await loadTranscript(result.session.id);

@@ -11,6 +11,7 @@ import { PromptTokenContent, hasPromptTokens } from "../ai-elements/prompt-token
 import { ResourceImage } from "../ai-elements/resource-preview";
 import { Source, Sources, SourcesContent, SourcesTrigger } from "../ai-elements/sources";
 import { Task, TaskContent, TaskTrigger } from "../ai-elements/task";
+import { CompactionSummaryCard } from "./compaction-card";
 import { ToolBatch } from "../ai-elements/tool-batch";
 import { Button } from "../ui/button";
 import type { WorkbenchActions } from "./types";
@@ -92,6 +93,9 @@ export const TranscriptItemView = memo(function TranscriptItemView({
 			/>
 		);
 	if (viewModel.kind === "code") return <CodeBlockView code={viewModel.code} language={viewModel.language} />;
+	if (viewModel.variant === "compaction" || viewModel.title === "上下文压缩") {
+		return <CompactionSummaryCard text={viewModel.text} tokensBefore={viewModel.tokensBefore} onOpenPath={onOpenPath} />;
+	}
 	return (
 		<Task defaultOpen>
 			<TaskTrigger title={viewModel.title} />

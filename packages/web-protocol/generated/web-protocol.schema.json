@@ -4965,6 +4965,18 @@
                                     "type": "string",
                                     "const": "summary"
                                   },
+                                  "variant": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "const": "compaction"
+                                      },
+                                      {
+                                        "type": "string",
+                                        "const": "branch_summary"
+                                      }
+                                    ]
+                                  },
                                   "title": {
                                     "type": "string",
                                     "maxLength": 16384
@@ -4972,6 +4984,10 @@
                                   "text": {
                                     "type": "string",
                                     "maxLength": 16384
+                                  },
+                                  "tokensBefore": {
+                                    "type": "integer",
+                                    "minimum": 0
                                   }
                                 },
                                 "additionalProperties": false

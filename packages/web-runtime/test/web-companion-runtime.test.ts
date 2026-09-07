@@ -176,4 +176,64 @@ describe("WebCompanionRuntime 协议协商", () => {
 			WebCompanionProtocolError,
 		);
 	});
+
+	it("投影压缩、摘要重试和完成事件的完整顺序", async () => {
+		const tail = `${[
+			{ type: "agent_event", event: { type: "compaction_start", reason: "manual" } },
+			{
+				type: "agent_event",
+				event: {
+					type: "compaction_end",
+					reason: "manual",
+					result: {},
+					aborted: false,
+					willRetry: false,
+				},
+			},
+			{
+				type: "agent_event",
+				event: {
+					type: "summarization_retry_scheduled",
+					attempt: 1,
+					maxAttempts: 2,
+					delayMs: 250,
+					errorMessage: "temporary",
+				},
+			},
+			{
+				type: "agent_event",
+				event: { type: "summarization_retry_attempt_start", source: "compaction", reason: "manual" },
+			},
+			{ type: "agent_event", event: { type: "summarization_retry_finished" } },
+		]
+			.map((message) => JSON.stringify(message))
+			.join("\n")}\n`;
+		const server = await serveSnapshot(baseSnapshot, tail);
+		const runtime = await WebCompanionRuntime.open(server.agentDir, server.sessionPath);
+		try {
+			const events: RuntimeEvent[] = [];
+			runtime.onEvent((event) => events.push(event));
+			expect(events.flatMap((event) => (event.type === "progress" ? [event.payload] : []))).toEqual([
+				{ type: "phase", phase: "compaction" },
+				{ type: "compaction", status: "running", reason: "manual" },
+				{ type: "compaction", status: "completed", reason: "manual" },
+				{ type: "phase", phase: "retry" },
+				{
+					type: "retry",
+					status: "waiting",
+					kind: "summarization",
+					attempt: 1,
+					maxAttempts: 2,
+					delayMs: 250,
+					error: "temporary",
+				},
+				{ type: "phase", phase: "compaction" },
+				{ type: "compaction", status: "running", reason: "manual" },
+				{ type: "retry", status: "running", kind: "compaction" },
+				{ type: "retry", status: "completed", kind: "summarization" },
+			]);
+		} finally {
+			await runtime.dispose();
+		}
+	});
 });

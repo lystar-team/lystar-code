@@ -46,7 +46,14 @@ export type SessionItemViewModel =
 	| { kind: "reasoning"; text: string; timestamp: string }
 	| { kind: "tools"; tools: TranscriptToolViewModel[]; timestamp: string }
 	| { kind: "code"; code: string; language: string; timestamp: string }
-	| { kind: "summary"; title: string; text: string; timestamp: string };
+	| {
+			kind: "summary";
+			variant?: "compaction" | "branch_summary";
+			title: string;
+			text: string;
+			tokensBefore?: number;
+			timestamp: string;
+	  };
 
 export function toSessionItemViewModel(
 	item: WebTranscriptItem,
@@ -120,7 +127,14 @@ export function toSessionItemViewModel(
 	}
 
 	if (view.type === "summary") {
-		return { kind: "summary", title: view.title, text: view.text, timestamp: item.timestamp };
+		return {
+			kind: "summary",
+			...(view.variant === undefined ? {} : { variant: view.variant }),
+			title: view.title,
+			text: view.text,
+			...(view.tokensBefore === undefined ? {} : { tokensBefore: view.tokensBefore }),
+			timestamp: item.timestamp,
+		};
 	}
 
 	return {

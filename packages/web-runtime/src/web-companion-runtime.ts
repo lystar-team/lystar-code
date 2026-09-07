@@ -144,7 +144,73 @@ function projectAgentEvent(value: unknown): SessionProgress[] {
 			},
 		];
 	}
-	if (event.type === "compaction_start") return [{ type: "phase", phase: "compaction" }];
+	if (event.type === "compaction_start") {
+		const reason = event.reason;
+		if (reason !== "manual" && reason !== "threshold" && reason !== "overflow") return [];
+		return [
+			{ type: "phase", phase: "compaction" },
+			{ type: "compaction", status: "running", reason },
+		];
+	}
+	if (event.type === "compaction_end") {
+		const reason = event.reason;
+		if (reason !== "manual" && reason !== "threshold" && reason !== "overflow") return [];
+		const status = event.aborted
+			? "cancelled"
+			: event.result !== undefined && event.result !== null
+				? "completed"
+				: event.willRetry
+					? "waiting_retry"
+					: "failed";
+		return [
+			{
+				type: "compaction",
+				status,
+				reason,
+				...(typeof event.errorMessage === "string" ? { error: event.errorMessage.slice(0, 1024) } : {}),
+			},
+		];
+	}
+	if (event.type === "summarization_retry_scheduled") {
+		const attempt =
+			typeof event.attempt === "number" && Number.isInteger(event.attempt) && event.attempt > 0
+				? event.attempt
+				: undefined;
+		const maxAttempts =
+			typeof event.maxAttempts === "number" && Number.isInteger(event.maxAttempts) && event.maxAttempts > 0
+				? event.maxAttempts
+				: undefined;
+		const delayMs =
+			typeof event.delayMs === "number" && Number.isInteger(event.delayMs) && event.delayMs >= 0
+				? event.delayMs
+				: undefined;
+		return [
+			{ type: "phase", phase: "retry" },
+			{
+				type: "retry",
+				status: "waiting",
+				kind: "summarization",
+				...(attempt === undefined ? {} : { attempt }),
+				...(maxAttempts === undefined ? {} : { maxAttempts }),
+				...(delayMs === undefined ? {} : { delayMs }),
+				...(typeof event.errorMessage === "string" ? { error: event.errorMessage.slice(0, 1024) } : {}),
+			},
+		];
+	}
+	if (event.type === "summarization_retry_attempt_start") {
+		if (event.source === "branchSummary") return [{ type: "retry", status: "running", kind: "branch_summary" }];
+		if (event.source !== "compaction") return [];
+		const reason = event.reason;
+		if (reason !== "manual" && reason !== "threshold" && reason !== "overflow") return [];
+		return [
+			{ type: "phase", phase: "compaction" },
+			{ type: "compaction", status: "running", reason },
+			{ type: "retry", status: "running", kind: "compaction" },
+		];
+	}
+	if (event.type === "summarization_retry_finished") {
+		return [{ type: "retry", status: "completed", kind: "summarization" }];
+	}
 	if (event.type === "agent_settled") return [{ type: "phase", phase: "idle" }];
 	return [];
 }
