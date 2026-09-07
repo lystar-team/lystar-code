@@ -489,6 +489,7 @@ function ToolBatchRow({
 				<CollapsibleContent
 					className="min-w-0 overflow-hidden pb-0.5 pl-6 pr-0 pt-0 data-[state=closed]:animate-out data-[state=open]:animate-in"
 					onClick={(event) => {
+						event.stopPropagation();
 						if (canCollapseFromContent(event)) setOpen(false);
 					}}
 				>

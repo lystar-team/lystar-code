@@ -1,6 +1,6 @@
 import { Archive, ArrowRight, ChevronDown, Folder, LogOut, MessageSquarePlus, MoreHorizontal, Pin, Plus, Search, Settings, SunMoon, Trash2 } from "lucide-react";
 import type { DragEvent as ReactDragEvent } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "../../lib/utils";
 import type { WorkbenchState } from "../../state/use-workbench";
 import { sessionTitle } from "../../state/use-workbench";
@@ -15,6 +15,7 @@ import { ScrollArea } from "../ui/scroll-area";
 import { Separator } from "../ui/separator";
 import { ACTIVE_OPERATION_STATUSES } from "./constants";
 import { SessionButton } from "./session-button";
+import { VirtualizedSessionList } from "./virtualized-session-list";
 import type { WorkbenchActions } from "./types";
 
 export function ProjectRail({
@@ -51,6 +52,7 @@ export function ProjectRail({
 	const [dragOverProjectId, setDragOverProjectId] = useState<string>();
 	const [draggedSession, setDraggedSession] = useState<{ projectId: string; sessionId: string }>();
 	const [dragOverSessionId, setDragOverSessionId] = useState<string>();
+	const sessionViewportRef = useRef<HTMLDivElement>(null);
 
 	useEffect(() => {
 		if (!currentProject?.id) return;
@@ -214,7 +216,7 @@ export function ProjectRail({
 					/>
 				</div>
 			</div>
-			<ScrollArea className="project-list min-h-0 flex-1 px-3">
+			<ScrollArea viewportRef={sessionViewportRef} className="project-list min-h-0 flex-1 px-3">
 				<div className="pb-5">
 					<div className="flex items-center justify-between px-2 pb-2 text-xs font-medium text-muted-foreground">
 						<span>项目</span>
@@ -228,6 +230,7 @@ export function ProjectRail({
 							const active = currentProject?.id === project.id;
 							const expanded = expandedProjectIds.has(project.id);
 							const projectActionsVisible = openProjectMenuId === project.id;
+							const sessions = orderedSessions(project);
 							return (
 								<Collapsible
 									key={project.id}
@@ -430,36 +433,38 @@ export function ProjectRail({
 											</DropdownMenu>
 										</div>
 									</div>
-									<CollapsibleContent>
-										<div className="mt-1 grid gap-1">
-										{(() => {
-							const sessions = orderedSessions(project);
-							return sessions.map((session) => {
-												const running =
-													session.activity === "running" ||
-													session.activity === "waiting_for_input" ||
-													state.operations.some(
-														(operation) =>
-															operation.sessionId === session.id &&
-															ACTIVE_OPERATION_STATUSES.has(operation.status),
-													);
-												return (
-													<SessionButton
-														key={session.id}
-														projectName={project.name}
-														session={session}
-														active={state.sessionId === session.id}
-														running={running}
-														unread={Boolean(state.unreadSessionIds[session.id]) && !running}
-														onClick={() => {
-															void actions.selectSession(session.id);
-															onNavigate?.();
-														}}
-											onRename={(name) => actions.renameSession(session.id, name)}
-											onContextRename={() => openRenameSessionDialog(session)}
-											onTogglePinned={() => void actions.setSessionPinned(session.id, !session.pinned)}
-											onDelete={() => setDeletingSession(session)}
-											dragging={draggedSession?.sessionId === session.id}
+<CollapsibleContent>
+										<div className="mt-1">
+											{sessions.length ? (
+												<VirtualizedSessionList
+													items={sessions}
+													getKey={(session) => session.id}
+													scrollRef={sessionViewportRef}
+													renderItem={(session) => {
+														const running =
+															session.activity === "running" ||
+															session.activity === "waiting_for_input" ||
+															state.operations.some(
+																(operation) =>
+																	operation.sessionId === session.id &&
+																	ACTIVE_OPERATION_STATUSES.has(operation.status),
+																);
+														return (
+															<SessionButton
+																projectName={project.name}
+																session={session}
+																active={state.sessionId === session.id}
+																running={running}
+																unread={Boolean(state.unreadSessionIds[session.id]) && !running}
+																onClick={() => {
+																	void actions.selectSession(session.id);
+																	onNavigate?.();
+																}}
+																onRename={(name) => actions.renameSession(session.id, name)}
+																onContextRename={() => openRenameSessionDialog(session)}
+																onTogglePinned={() => void actions.setSessionPinned(session.id, !session.pinned)}
+																onDelete={() => setDeletingSession(session)}
+																dragging={draggedSession?.sessionId === session.id}
 																dropTarget={dragOverSessionId === session.id}
 																onDragStart={(event) => {
 																	event.dataTransfer.effectAllowed = "move";
@@ -467,22 +472,22 @@ export function ProjectRail({
 																setDraggedSession({ projectId: project.id, sessionId: session.id });
 															}}
 																onDragOver={(event) => {
-																if (draggedSession?.projectId !== project.id || draggedSession.sessionId === session.id) return;
-																event.preventDefault();
-																setDragOverSessionId(session.id);
-															}}
+																	if (draggedSession?.projectId !== project.id || draggedSession.sessionId === session.id) return;
+																	event.preventDefault();
+																	setDragOverSessionId(session.id);
+																}}
 																onDrop={(event) => handleSessionDrop(event, project, session.id)}
 																onDragEnd={() => {
-																setDraggedSession(undefined);
-																setDragOverSessionId(undefined);
-															}}
-													/>
-												);
-											});
-										})()}
-											{project.sessions.length === 0 ? (
+																	setDraggedSession(undefined);
+																	setDragOverSessionId(undefined);
+																}}
+															/>
+														);
+													}}
+												/>
+											) : (
 												<span className="px-2 py-2 text-[13px] text-muted-foreground">暂无会话</span>
-											) : null}
+											)}
 										</div>
 									</CollapsibleContent>
 								</Collapsible>

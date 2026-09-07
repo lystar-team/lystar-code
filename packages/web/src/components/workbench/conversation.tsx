@@ -274,7 +274,18 @@ function ConversationBody({
 				/>
 			);
 		},
-		[lastAssistantMessageIndex, openResource, responseActive, shouldAutoCollapseTools, state.sessionId, toolStatuses],
+		[
+			expandedToolBatches,
+			expandedToolRows,
+			lastAssistantMessageIndex,
+			openResource,
+			responseActive,
+			shouldAutoCollapseTools,
+			state.sessionId,
+			toolStatuses,
+			updateExpandedToolBatch,
+			updateExpandedToolRow,
+		],
 	);
 	const transcriptItemKey = useCallback(
 		(entry: TranscriptRenderItem) => (entry.kind === "item" ? entry.item.renderId : entry.key),
