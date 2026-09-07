@@ -98,6 +98,7 @@ function completionItemLabel(item: CompletionItem, trigger: CompletionContextVal
 
 import {
 	PromptTokenPartView,
+	hasPromptTokens,
 	promptTokenDisplayOffset,
 	promptTokenParts,
 	promptTokenRanges,
@@ -141,6 +142,9 @@ function deletePromptToken(
 	return { text: nextText, cursor: target.start };
 }
 
+const PROMPT_TEXT_GEOMETRY_CLASS = "box-border whitespace-pre-wrap break-words text-left text-base md:text-sm";
+const PROMPT_TEXT_PADDING_CLASS = "!px-5 !pt-4 !pb-2";
+
 function PromptTokenOverlay({
 	text,
 	className,
@@ -154,7 +158,9 @@ function PromptTokenOverlay({
 		<div
 			aria-hidden="true"
 			className={cn(
-				"pointer-events-none absolute inset-0 z-0 overflow-hidden whitespace-pre-wrap break-words text-left text-base md:text-sm",
+				"pointer-events-none absolute inset-0 z-0 overflow-hidden",
+				PROMPT_TEXT_GEOMETRY_CLASS,
+				PROMPT_TEXT_PADDING_CLASS,
 				className,
 			)}
 			ref={overlayRef}
@@ -369,12 +375,12 @@ function promptCaretPosition(
 	const overlayRect = overlay.getBoundingClientRect();
 	const style = getComputedStyle(overlay);
 	const fallbackHeight = Number.parseFloat(style.lineHeight) || Number.parseFloat(style.fontSize) || 16;
+	const cursor = Math.max(0, Math.min(textarea.selectionStart, text.length));
 	const fallback = (): PromptCaretPosition => ({
 		left: Number.parseFloat(style.paddingLeft) || 0,
-		top: Number.parseFloat(style.paddingTop) || 0,
+		top: (Number.parseFloat(style.paddingTop) || 0) + (text.slice(0, cursor).split("\n").length - 1) * fallbackHeight,
 		height: fallbackHeight,
 	});
-	const cursor = Math.max(0, Math.min(textarea.selectionStart, text.length));
 	const parts = promptTokenParts(text);
 	const part =
 		parts.find((candidate) => cursor > candidate.start && cursor < candidate.end) ??
@@ -415,18 +421,18 @@ export function PromptCompletionTextarea({
 	const context = useCompletionContext();
 	const controller = usePromptInputController();
 	const overlayRef = useRef<HTMLDivElement | null>(null);
-	const pendingCursorRef = useRef<number | undefined>(undefined);
 	const [focused, setFocused] = useState(false);
 	const [caret, setCaret] = useState<PromptCaretPosition | null>(null);
+	const hasTokens = hasPromptTokens(controller.textInput.value);
 	const refreshVisualCaret = useCallback(() => {
 		const overlay = overlayRef.current;
 		const textarea = context.textareaRef.current;
-		if (!focused || !overlay || !textarea) {
+		if (!focused || !hasTokens || !overlay || !textarea) {
 			setCaret(null);
 			return;
 		}
 		setCaret(promptCaretPosition(overlay, textarea, controller.textInput.value));
-	}, [context.textareaRef, controller.textInput.value, focused]);
+	}, [context.textareaRef, controller.textInput.value, focused, hasTokens]);
 	const updateCursor = useCallback(
 		(event: SyntheticEvent<HTMLTextAreaElement>) => {
 			context.setCursor(event.currentTarget.selectionStart);
@@ -436,24 +442,17 @@ export function PromptCompletionTextarea({
 	);
 
 	useLayoutEffect(() => {
-		if (!focused) {
+		if (!focused || !hasTokens) {
 			setCaret(null);
 			return;
 		}
-		const textarea = context.textareaRef.current;
-		const pendingCursor = pendingCursorRef.current;
-		if (textarea && pendingCursor !== undefined) {
-			textarea.focus();
-			textarea.setSelectionRange(pendingCursor, pendingCursor);
-			pendingCursorRef.current = undefined;
-		}
 		const frame = window.requestAnimationFrame(refreshVisualCaret);
 		return () => window.cancelAnimationFrame(frame);
-	}, [context.textareaRef, focused, refreshVisualCaret]);
+	}, [focused, hasTokens, refreshVisualCaret]);
 
 	return (
 		<div className="relative w-full min-w-0">
-			<PromptTokenOverlay className={className} overlayRef={overlayRef} text={controller.textInput.value} />
+			{hasTokens ? <PromptTokenOverlay className={className} overlayRef={overlayRef} text={controller.textInput.value} /> : null}
 			<PromptInputTextarea
 				{...props}
 				aria-activedescendant={context.open ? `${context.menuId}-item-${context.selectedIndex}` : undefined}
@@ -461,8 +460,10 @@ export function PromptCompletionTextarea({
 				aria-controls={context.open ? context.menuId : undefined}
 				aria-expanded={context.open}
 				className={cn(
+					PROMPT_TEXT_GEOMETRY_CLASS,
+					PROMPT_TEXT_PADDING_CLASS,
 					className,
-					"relative z-10 bg-transparent text-transparent caret-transparent placeholder:text-muted-foreground selection:bg-blue-100 selection:text-transparent dark:selection:bg-blue-500/20",
+					hasTokens && "relative z-10 bg-transparent text-transparent caret-transparent placeholder:text-muted-foreground selection:bg-blue-100 selection:text-transparent dark:selection:bg-blue-500/20",
 				)}
 				onChange={(event) => {
 					context.resumeAutoOpen();
@@ -476,28 +477,6 @@ export function PromptCompletionTextarea({
 				}}
 				onKeyDown={(event) => {
 					context.handleKeyDown(event);
-					if (
-						!event.defaultPrevented &&
-						event.key === "Enter" &&
-						event.shiftKey &&
-						!event.ctrlKey &&
-						!event.metaKey &&
-						!event.nativeEvent.isComposing
-					) {
-						event.preventDefault();
-						const textarea = event.currentTarget;
-						const start = textarea.selectionStart;
-						const end = textarea.selectionEnd;
-						const nextCursor = start + 1;
-						controller.textInput.setInput(
-							`${controller.textInput.value.slice(0, start)}\n${controller.textInput.value.slice(end)}`,
-						);
-						pendingCursorRef.current = nextCursor;
-						context.setCursor(nextCursor);
-						context.resumeAutoOpen();
-						onKeyDown?.(event);
-						return;
-					}
 					if (!event.defaultPrevented && (event.key === "Backspace" || event.key === "Delete")) {
 						const deletion = deletePromptToken(
 							controller.textInput.value,

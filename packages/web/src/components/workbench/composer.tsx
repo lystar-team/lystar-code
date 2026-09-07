@@ -125,7 +125,6 @@ export function Composer({ state, actions }: { state: WorkbenchState; actions: W
 								</PromptInputHeader>
 								<PromptInputBody>
 									<PromptCompletionTextarea
-										className="!pt-4 !pb-2 !pl-5 text-left"
 										placeholder={disabled ? "当前会话不可写" : "描述你想完成的工作…"}
 										disabled={disabled}
 									/>
