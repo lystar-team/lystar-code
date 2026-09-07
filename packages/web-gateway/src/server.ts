@@ -18,6 +18,7 @@ import type {
 	ReadImageContentResult,
 	RuntimeProtocolClient,
 	ServerEvent,
+	SessionActivity,
 	SessionProgress,
 	SessionStateSnapshot,
 	SessionSummary,
@@ -46,6 +47,8 @@ const PROGRESS_BATCH_MS = 50;
 const PUBLIC_SESSION_FIRST_MESSAGE_LIMIT = 512;
 const BROWSER_CONTEXT_IDLE_MS = 60_000;
 const ACTIVE_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>(["accepted", "running", "waiting_for_input"]);
+const MAX_SESSION_DETAIL_EVENTS = 256;
+const MAX_SESSION_DETAIL_BYTES = 2 * 1024 * 1024;
 
 export type WebSessionSummary = Omit<SessionSummary, "path" | "cwd"> & { pinned?: boolean };
 export type WebSessionSnapshot = Omit<SessionStateSnapshot, "path" | "cwd">;
@@ -87,6 +90,9 @@ interface BrowserContext {
 	sockets: Set<WebSocket>;
 	sessionListPromises: Map<string, Promise<SessionSummary[]>>;
 	sessionListCache: Map<string, SessionListCache>;
+	sessionSummaryState: Map<string, { name?: string; activity: SessionActivity; operationUpdatedAt?: number }>;
+	sessionSnapshotState: Map<string, WebSessionSnapshot>;
+	sessionDetailState: Map<string, SessionDetailState>;
 	sessionListGeneration: number;
 	bootstrapGeneration: number;
 	bootstrapCache?: BootstrapCache;
@@ -140,6 +146,56 @@ type WebSessionProgressEvent = {
 interface PendingProgressEvent {
 	key?: string;
 	event: WebSessionProgressEvent;
+}
+
+interface SessionDetailRecord {
+	seq: number;
+	payload: string;
+	bytes: number;
+}
+
+interface SessionDetailState {
+	nextSeq: number;
+	events: SessionDetailRecord[];
+	bytes: number;
+}
+
+function sessionActivityFromProgress(progress: SessionProgress): SessionActivity | undefined {
+	switch (progress.type) {
+		case "phase":
+			return progress.phase === "waiting_for_input"
+				? "waiting_for_input"
+				: progress.phase === "idle"
+					? "idle"
+					: "running";
+		case "compaction":
+			return progress.status === "running" || progress.status === "waiting_retry" ? "running" : undefined;
+		case "retry":
+			return progress.status === "running" || progress.status === "waiting" ? "running" : undefined;
+		case "assistant_delta":
+		case "thinking_delta":
+		case "tool_start":
+		case "tool_update":
+		case "tool_end":
+		case "user_message":
+		case "bash":
+			return "running";
+		case "tool_state":
+			return ["success", "error", "cancelled", "interrupted"].includes(progress.activity.state)
+				? undefined
+				: "running";
+		case "queue_update":
+		case "status":
+		case "usage":
+			return undefined;
+	}
+}
+
+function sessionActivityFromOperation(status: OperationSnapshot["status"]): SessionActivity | undefined {
+	if (status === "accepted" || status === "running") return "running";
+	if (status === "waiting_for_input") return "waiting_for_input";
+	if (status === "completed" || status === "failed" || status === "aborted" || status === "interrupted") return status;
+	return undefined;
 }
 
 function progressCoalescingKey(event: WebSessionProgressEvent): string | undefined {
@@ -322,6 +378,34 @@ function publicSessionSnapshot(snapshot: SessionStateSnapshot): WebSessionSnapsh
 	return result;
 }
 
+function sameSessionSnapshot(left: WebSessionSnapshot, right: WebSessionSnapshot): boolean {
+	const leftModel = left.model;
+	const rightModel = right.model;
+	return (
+		left.id === right.id &&
+		left.name === right.name &&
+		left.createdAt === right.createdAt &&
+		left.updatedAt === right.updatedAt &&
+		left.phase === right.phase &&
+		left.activity === right.activity &&
+		leftModel?.provider === rightModel?.provider &&
+		leftModel?.id === rightModel?.id &&
+		left.thinkingLevel === right.thinkingLevel &&
+		left.attached === right.attached &&
+		left.writeAccess === right.writeAccess &&
+		left.leafId === right.leafId &&
+		left.queuedSteerCount === right.queuedSteerCount &&
+		left.queuedFollowUpCount === right.queuedFollowUpCount &&
+		left.contextTokens === right.contextTokens &&
+		left.contextWindow === right.contextWindow &&
+		left.transcriptGeneration === right.transcriptGeneration &&
+		left.transcriptRevision === right.transcriptRevision &&
+		left.toolActivityEpoch === right.toolActivityEpoch &&
+		left.toolActivityRevision === right.toolActivityRevision &&
+		JSON.stringify(left.toolActivities ?? []) === JSON.stringify(right.toolActivities ?? [])
+	);
+}
+
 function publicTranscriptItem(item: TranscriptItem): WebTranscriptItem {
 	// Web 页面只使用投影后的 view；原始 payload 可能包含大型工具输出，不能重复传输。
 	const { payload: _payload, ...result } = item;
@@ -418,6 +502,7 @@ export class WebGatewayServer {
 	private readonly server: Server;
 	private readonly heartbeatTimer: ReturnType<typeof setInterval>;
 	private readonly socketLiveness = new WeakMap<WebSocket, boolean>();
+	private readonly detailSubscriptions = new WeakMap<WebSocket, Set<string>>();
 	private listening = false;
 	private closed = false;
 
@@ -475,6 +560,9 @@ export class WebGatewayServer {
 			sockets: new Set(),
 			sessionListPromises: new Map(),
 			sessionListCache: new Map(),
+			sessionSummaryState: new Map(),
+			sessionSnapshotState: new Map(),
+			sessionDetailState: new Map(),
 			sessionListGeneration: 0,
 			bootstrapGeneration: 0,
 			activeRequests: 0,
@@ -506,7 +594,7 @@ export class WebGatewayServer {
 		}
 		if (context.pendingProgress.length === 0) return;
 		const pending = context.pendingProgress.splice(0);
-		for (const entry of pending) this.broadcast(context, entry.event);
+		for (const entry of pending) this.broadcastSessionProgress(context, entry.event);
 	}
 
 	private enqueueProgress(context: BrowserContext, event: WebSessionProgressEvent): void {
@@ -1515,7 +1603,7 @@ export class WebGatewayServer {
 							if (typeof live.text !== "string" || typeof live.thinking !== "string")
 								throw new Error("Web Runtime 生成内容快照无效");
 							this.flushPendingProgress(context);
-							this.broadcast(context, {
+							this.recordSessionDetail(context, sessionId, {
 								type: "session_stream",
 								sessionId,
 								text: live.text,
@@ -1862,6 +1950,71 @@ export class WebGatewayServer {
 		context: BrowserContext,
 		parts: string[],
 	): Promise<void> {
+		if (parts.length === 3 && parts[2] === "imports") {
+			const projectId = stringValue(url.searchParams.get("projectId"));
+			if (!projectId) throw new HttpError(400, "project_required", "导入资源需要当前项目");
+			const project = this.project(projectId);
+			const targetScope = url.searchParams.get("targetScope") === "project" ? "project" : "user";
+			const client = await this.getClient(context);
+			if (request.method === "GET") {
+				sendJson(
+					response,
+					200,
+					await client.request<JsonValue>({ command: "list_harness_imports", cwd: project.cwd, targetScope }),
+				);
+				return;
+			}
+			if (request.method === "POST") {
+				const body = await parseJsonBody(request);
+				const itemIds = Array.isArray(body.itemIds)
+					? body.itemIds.filter((value): value is string => typeof value === "string" && value.length > 0)
+					: [];
+				if (itemIds.length === 0) throw new HttpError(400, "import_items_required", "至少选择一项资源");
+				const ruleSelections: Record<string, string[]> = {};
+				if (body.ruleSelections !== undefined) {
+					if (
+						typeof body.ruleSelections !== "object" ||
+						body.ruleSelections === null ||
+						Array.isArray(body.ruleSelections)
+					)
+						throw new HttpError(400, "rule_selections_invalid", "规则合并选择格式无效");
+					for (const [itemId, selections] of Object.entries(body.ruleSelections)) {
+						if (
+							!Array.isArray(selections) ||
+							selections.some((value) => typeof value !== "string" || value.length === 0)
+						)
+							throw new HttpError(400, "rule_selections_invalid", "规则合并选择格式无效");
+						ruleSelections[itemId] = selections;
+					}
+				}
+				const replaceItemIds: string[] = [];
+				if (body.replaceItemIds !== undefined) {
+					if (
+						!Array.isArray(body.replaceItemIds) ||
+						body.replaceItemIds.some((value) => typeof value !== "string" || value.length === 0)
+					)
+						throw new HttpError(400, "replace_items_invalid", "覆盖资源列表格式无效");
+					replaceItemIds.push(...body.replaceItemIds);
+				}
+				sendJson(
+					response,
+					200,
+					await client.request<JsonValue>({
+						command: "import_harness_resources",
+						cwd: project.cwd,
+						targetScope,
+						itemIds,
+						...(Object.keys(ruleSelections).length > 0 ? { ruleSelections } : {}),
+						...(replaceItemIds.length > 0 ? { replaceItemIds } : {}),
+						clientInstanceId: context.id,
+						clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
+					}),
+				);
+				return;
+			}
+			throw new HttpError(405, "method_not_allowed", "该接口不支持当前方法");
+		}
+
 		if (parts.length === 3 && parts[2] === "host-instructions") {
 			const client = await this.getClient(context);
 			if (request.method === "GET") {
@@ -1954,6 +2107,43 @@ export class WebGatewayServer {
 			return;
 		}
 		this.flushPendingProgress(context);
+		if (projected.type === "session_snapshot") {
+			this.broadcastSessionSnapshot(
+				context,
+				projected as {
+					type: "session_snapshot";
+					sessionId: string;
+					snapshot: WebSessionSnapshot;
+				},
+			);
+			return;
+		}
+		if (projected.type === "session_removed") {
+			const sessionId = typeof projected.sessionId === "string" ? projected.sessionId : undefined;
+			if (sessionId) {
+				context.sessionSummaryState.delete(sessionId);
+				context.sessionSnapshotState.delete(sessionId);
+				context.sessionDetailState.delete(sessionId);
+				for (const socket of context.sockets) this.subscriptionsFor(socket).delete(sessionId);
+			}
+			this.broadcast(context, projected);
+			return;
+		}
+		if (projected.type === "transcript_changed" || projected.type === "transcript_committed") {
+			const sessionId = typeof projected.sessionId === "string" ? projected.sessionId : undefined;
+			if (sessionId) this.recordSessionDetail(context, sessionId, projected);
+			return;
+		}
+		if (projected.type === "operation_updated") {
+			this.broadcastSessionOperation(
+				context,
+				projected as {
+					type: "operation_updated";
+					operation: WebOperation;
+				},
+			);
+			return;
+		}
 		this.broadcast(context, projected);
 	}
 
@@ -2041,6 +2231,141 @@ export class WebGatewayServer {
 		});
 	}
 
+	private subscriptionsFor(socket: WebSocket): Set<string> {
+		let subscriptions = this.detailSubscriptions.get(socket);
+		if (!subscriptions) {
+			subscriptions = new Set();
+			this.detailSubscriptions.set(socket, subscriptions);
+		}
+		return subscriptions;
+	}
+
+	private detailStateFor(context: BrowserContext, sessionId: string): SessionDetailState {
+		let state = context.sessionDetailState.get(sessionId);
+		if (!state) {
+			state = { nextSeq: 0, events: [], bytes: 0 };
+			context.sessionDetailState.set(sessionId, state);
+		}
+		return state;
+	}
+
+	private recordSessionDetail(context: BrowserContext, sessionId: string, value: unknown): void {
+		const state = this.detailStateFor(context, sessionId);
+		const seq = state.nextSeq + 1;
+		state.nextSeq = seq;
+		const payload = JSON.stringify({ ...(object(value) ?? {}), seq });
+		const bytes = Buffer.byteLength(payload);
+		if (bytes <= MAX_SESSION_DETAIL_BYTES) {
+			while (
+				state.events.length >= MAX_SESSION_DETAIL_EVENTS ||
+				(state.events.length > 0 && state.bytes + bytes > MAX_SESSION_DETAIL_BYTES)
+			) {
+				const removed = state.events.shift();
+				if (removed) state.bytes -= removed.bytes;
+			}
+			state.events.push({ seq, payload, bytes });
+			state.bytes += bytes;
+		}
+		for (const socket of context.sockets) {
+			if (this.subscriptionsFor(socket).has(sessionId)) this.sendWebSocket(socket, payload);
+		}
+	}
+
+	private subscribeSession(context: BrowserContext, socket: WebSocket, sessionId: string, lastSeq?: number): void {
+		this.subscriptionsFor(socket).add(sessionId);
+		const state = context.sessionDetailState.get(sessionId);
+		const currentSeq = state?.nextSeq ?? 0;
+		if (lastSeq === undefined) return;
+		const oldestSeq = state?.events[0]?.seq;
+		const gap =
+			lastSeq > currentSeq ||
+			(currentSeq > lastSeq && oldestSeq === undefined) ||
+			(oldestSeq !== undefined && lastSeq < oldestSeq - 1);
+		if (!gap) {
+			for (const event of state?.events ?? []) {
+				if (event.seq > lastSeq) this.sendWebSocket(socket, event.payload);
+			}
+		}
+		this.sendWebSocket(socket, JSON.stringify({ type: "session_subscription", sessionId, seq: currentSeq, gap }));
+	}
+
+	private sendToSessionUnsubscribers(context: BrowserContext, sessionId: string, value: unknown): void {
+		const payload = JSON.stringify(value);
+		for (const socket of context.sockets) {
+			if (!this.subscriptionsFor(socket).has(sessionId)) this.sendWebSocket(socket, payload);
+		}
+	}
+
+	private broadcastSessionProgress(context: BrowserContext, event: WebSessionProgressEvent): void {
+		const activity = sessionActivityFromProgress(event.progress);
+		if (activity) this.broadcastSessionActivity(context, event.sessionId, activity);
+		this.recordSessionDetail(context, event.sessionId, event);
+	}
+
+	private broadcastSessionActivity(
+		context: BrowserContext,
+		sessionId: string,
+		activity: SessionActivity,
+		operationUpdatedAt?: number,
+	): void {
+		const previous = context.sessionSummaryState.get(sessionId);
+		if (
+			previous?.activity === activity &&
+			(operationUpdatedAt === undefined || previous.operationUpdatedAt === operationUpdatedAt)
+		)
+			return;
+		context.sessionSummaryState.set(sessionId, {
+			name: previous?.name,
+			activity,
+			...(operationUpdatedAt === undefined ? {} : { operationUpdatedAt }),
+		});
+		this.sendToSessionUnsubscribers(context, sessionId, {
+			type: "session_summary",
+			sessionId,
+			activity,
+			...(operationUpdatedAt === undefined ? {} : { operationUpdatedAt }),
+		});
+	}
+
+	private broadcastSessionSnapshot(
+		context: BrowserContext,
+		event: { type: "session_snapshot"; sessionId: string; snapshot: WebSessionSnapshot },
+	): void {
+		const previousSnapshot = context.sessionSnapshotState.get(event.sessionId);
+		context.sessionSnapshotState.set(event.sessionId, event.snapshot);
+		const previous = context.sessionSummaryState.get(event.sessionId);
+		const changed = previous?.activity !== event.snapshot.activity || previous?.name !== event.snapshot.name;
+		context.sessionSummaryState.set(event.sessionId, {
+			name: event.snapshot.name,
+			activity: event.snapshot.activity,
+			...(previous?.operationUpdatedAt === undefined ? {} : { operationUpdatedAt: previous.operationUpdatedAt }),
+		});
+		if (changed) {
+			this.sendToSessionUnsubscribers(context, event.sessionId, {
+				type: "session_summary",
+				sessionId: event.sessionId,
+				activity: event.snapshot.activity,
+				...(event.snapshot.name === undefined ? {} : { name: event.snapshot.name }),
+			});
+		}
+		if (previousSnapshot && sameSessionSnapshot(previousSnapshot, event.snapshot)) return;
+		this.recordSessionDetail(context, event.sessionId, event);
+	}
+
+	private broadcastSessionOperation(
+		context: BrowserContext,
+		event: { type: "operation_updated"; operation: WebOperation },
+	): void {
+		const sessionId = event.operation.sessionId;
+		if (!sessionId) {
+			this.broadcast(context, event);
+			return;
+		}
+		const activity = sessionActivityFromOperation(event.operation.status);
+		if (activity) this.broadcastSessionActivity(context, sessionId, activity, event.operation.updatedAt);
+		this.recordSessionDetail(context, sessionId, event);
+	}
+
 	private broadcast(context: BrowserContext, value: unknown): void {
 		const payload = JSON.stringify(value);
 		for (const socket of context.sockets) this.sendWebSocket(socket, payload);
@@ -2086,6 +2411,24 @@ export class WebGatewayServer {
 		context.sockets.add(socket);
 		this.touchContext(context);
 		this.socketLiveness.set(socket, true);
+		const subscriptions = this.subscriptionsFor(socket);
+		socket.on("message", (raw) => {
+			try {
+				const message = object(JSON.parse(String(raw)));
+				const sessionId = stringValue(message?.sessionId);
+				if (!sessionId) return;
+				if (message?.type === "subscribe_session") {
+					const candidate = message.lastSeq;
+					const lastSeq =
+						typeof candidate === "number" && Number.isSafeInteger(candidate) && candidate >= 0
+							? candidate
+							: undefined;
+					this.subscribeSession(context, socket, sessionId, lastSeq);
+				} else if (message?.type === "unsubscribe_session") subscriptions.delete(sessionId);
+			} catch {
+				// 忽略无法识别的客户端订阅消息，避免影响现有连接。
+			}
+		});
 		socket.on("pong", () => {
 			this.socketLiveness.set(socket, true);
 		});

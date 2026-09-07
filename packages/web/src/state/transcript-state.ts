@@ -36,13 +36,33 @@ function transcriptViewIdentity(item: WebTranscriptItem): string {
 	return view.type;
 }
 
-export function decorateTranscriptItems(items: readonly WebTranscriptItem[]): WorkbenchTranscriptItem[] {
+export function decorateTranscriptItems(
+	items: readonly WebTranscriptItem[],
+	previous: readonly WorkbenchTranscriptItem[] = [],
+): WorkbenchTranscriptItem[] {
 	const occurrences = new Map<string, number>();
+	const previousByBase = new Map<string, WorkbenchTranscriptItem[]>();
+	for (const item of previous) {
+		const base = `${item.entryId}:${transcriptViewIdentity(item)}`;
+		const group = previousByBase.get(base) ?? [];
+		group.push(item);
+		previousByBase.set(base, group);
+	}
 	return items.map((item) => {
 		const base = `${item.entryId}:${transcriptViewIdentity(item)}`;
 		const occurrence = occurrences.get(base) ?? 0;
 		occurrences.set(base, occurrence + 1);
-		return { ...item, renderId: `${base}:${occurrence}` };
+		const existing = previousByBase.get(base)?.[occurrence];
+		if (
+			existing &&
+			existing.entryId === item.entryId &&
+			existing.parentId === item.parentId &&
+			existing.timestamp === item.timestamp &&
+			existing.kind === item.kind &&
+			JSON.stringify(existing.view) === JSON.stringify(item.view)
+		)
+			return existing;
+		return { ...item, renderId: existing?.renderId ?? `${base}:${occurrence}` };
 	});
 }
 
@@ -51,7 +71,7 @@ export function mergeTranscriptEntries(
 	incoming: readonly WebTranscriptItem[],
 	prepend = false,
 ): WorkbenchTranscriptItem[] {
-	const next = decorateTranscriptItems(incoming);
+	const next = decorateTranscriptItems(incoming, current);
 	const replacements = new Map<string, WorkbenchTranscriptItem[]>();
 	for (const item of next) {
 		const group = replacements.get(item.entryId) ?? [];

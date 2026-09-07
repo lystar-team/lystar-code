@@ -46,7 +46,11 @@ import {
 	getToolRecoveryMode,
 	VERSION,
 } from "./config.ts";
-import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "./core/agent-session-runtime.ts";
+import {
+	type CreateAgentSessionRuntimeFactory,
+	createAgentSessionRuntime,
+	openSessionWithWebHandoff,
+} from "./core/agent-session-runtime.ts";
 import {
 	type AgentSessionRuntimeDiagnostic,
 	createAgentSessionFromServices,
@@ -401,7 +405,7 @@ async function openSessionOrExit(
 		mouse: parsed.mouse ?? loadLystarSettings(getAgentDir()).settings.mouse,
 	});
 	try {
-		return await SessionManager.openAsync(path, sessionDir, cwdOverride);
+		return await openSessionWithWebHandoff(path, getAgentDir(), sessionDir, cwdOverride);
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(chalk.red(`Error: ${message}`));
@@ -1016,6 +1020,7 @@ export async function main(args: string[], options?: MainOptions) {
 		cwd: sessionManager.getCwd(),
 		agentDir,
 		sessionManager,
+		writerHandoff: appMode === "interactive",
 	});
 	time("createAgentSessionRuntime");
 	if (eventLoopDelay) benchmarkEventLoopPhases.runtime = Number(eventLoopDelay.max) / 1e6;

@@ -2,6 +2,12 @@ import type {
 	CompletionResult,
 	GitDiff,
 	GitStatus,
+	HarnessId,
+	HarnessImportItem,
+	HarnessImportInstructionHunk,
+	HarnessImportPreview,
+	HarnessImportResult,
+	HarnessImportSource,
 	HostDirectoryEntry,
 	ModelProviderSummary,
 	ModelSummary,
@@ -17,7 +23,7 @@ import type {
 	TranscriptPage,
 } from "@lystar/code-web-protocol";
 
-export type { ProjectInstruction } from "@lystar/code-web-protocol";
+export type { HarnessId, HarnessImportItem, HarnessImportInstructionHunk, HarnessImportPreview, HarnessImportResult, HarnessImportSource, ProjectInstruction };
 
 export type WebSessionSummary = Omit<SessionSummary, "path" | "cwd"> & { pinned?: boolean };
 export type WebSessionSnapshot = Omit<SessionStateSnapshot, "path" | "cwd">;
@@ -82,13 +88,26 @@ export interface UiRequestEvent {
 }
 
 export type GatewayEvent =
-	| { type: "session_stream"; sessionId: string; text: string; thinking: string }
+	| { type: "session_stream"; sessionId: string; text: string; thinking: string; seq?: number }
 	| { type: "bootstrap"; data: BootstrapResponse }
 	| { type: "connection_state"; connected: boolean; message?: string }
 	| { type: "sessions_changed"; projectId?: string }
-	| { type: "session_snapshot"; sessionId: string; snapshot: WebSessionSnapshot }
+	| {
+			type: "session_summary";
+			sessionId: string;
+			activity: WebSessionSummary["activity"];
+			name?: string;
+			operationUpdatedAt?: number;
+	  }
+	| {
+			type: "session_subscription";
+			sessionId: string;
+			seq: number;
+			gap: boolean;
+	  }
+	| { type: "session_snapshot"; sessionId: string; snapshot: WebSessionSnapshot; seq?: number }
 	| { type: "session_removed"; sessionId: string }
-	| { type: "transcript_changed"; sessionId: string }
+	| { type: "transcript_changed"; sessionId: string; seq?: number }
 	| {
 			type: "transcript_committed";
 			sessionId: string;
@@ -96,9 +115,10 @@ export type GatewayEvent =
 			fromRevision: number;
 			toRevision: number;
 			items: WebTranscriptItem[];
+			seq?: number;
 	  }
-	| { type: "session_progress"; sessionId: string; progress: SessionProgress }
-	| { type: "operation_updated"; operation: WebOperation }
+	| { type: "session_progress"; sessionId: string; progress: SessionProgress; seq?: number }
+	| { type: "operation_updated"; operation: WebOperation; seq?: number }
 	| UiRequestEvent;
 
 export interface ModelsResponse {
@@ -161,6 +181,9 @@ export interface ProjectSkillsResponse {
 export interface SettingsResponse {
 	settings: SettingSummary[];
 }
+
+export type HarnessImportsResponse = HarnessImportPreview;
+export type HarnessImportResultResponse = HarnessImportResult;
 
 export interface HostInstructionsResponse {
 	instructions: ProjectInstruction[];

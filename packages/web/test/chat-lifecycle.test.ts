@@ -26,8 +26,6 @@ function liveState(): WorkbenchState {
 	return {
 		sessionId: "session-1",
 		transcript: [],
-		liveText: "正文",
-		liveThinking: "思考",
 		liveTurnId: 1,
 		liveTurnStartRevision: 10,
 		liveTurnActive: true,
@@ -42,7 +40,7 @@ function liveState(): WorkbenchState {
 			},
 		},
 		liveTurnItems: [
-			{ id: "text-1", kind: "text", text: "正文", turnId: 1 },
+			{ id: "text-1", kind: "text", parts: ["正文"], turnId: 1 },
 			{ id: "tools-1", kind: "tools", toolIds: ["tool-1"], batchId: "batch-1", turnId: 1 },
 		],
 	} as WorkbenchState;
@@ -55,8 +53,7 @@ function operation(status: WebOperation["status"], updatedAt: number): WebOperat
 describe("chat lifecycle", () => {
 	it("hands committed assistant text and calls to transcript without losing running tools", () => {
 		const next = reconcileCommittedTurn(liveState(), [assistant, call], 11);
-		expect(next.liveText).toBe("");
-		expect(next.liveThinking).toBe("");
+		expect(next.liveTurnStartRevision).toBe(11);
 		expect(next.liveTurnItems).toEqual([]);
 		expect(next.liveTools["tool-1"].state).toBe("running");
 	});
@@ -64,7 +61,6 @@ describe("chat lifecycle", () => {
 	it("does not clear a new assistant turn for an older duplicate commit", () => {
 		const current = liveState();
 		const next = reconcileCommittedTurn(current, [assistant], 10);
-		expect(next.liveText).toBe("正文");
 		expect(next.liveTurnItems).toEqual(current.liveTurnItems);
 	});
 
@@ -75,7 +71,6 @@ describe("chat lifecycle", () => {
 			view: { type: "tool_result", callId: "tool-1", name: "bash", summary: "pwd", status: "success" },
 		};
 		const next = reconcileCommittedTurn(liveState(), [user, result], 12);
-		expect(next.liveText).toBe("正文");
 		expect(next.liveTurnItems.map((item) => item.kind)).toEqual(["text"]);
 		expect([...committedToolCallIds([call, result])]).toEqual(["tool-1"]);
 	});
@@ -103,7 +98,6 @@ describe("chat lifecycle", () => {
 	it("does not reset active output when a follow-up HTTP response arrives", () => {
 		const current = liveState();
 		const next = applyPromptAccepted(current, "session-1", operation("accepted", 1));
-		expect(next.liveText).toBe(current.liveText);
 		expect(next.liveTurnItems).toBe(current.liveTurnItems);
 		expect(next.liveTools).toBe(current.liveTools);
 	});

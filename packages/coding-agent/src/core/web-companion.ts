@@ -17,21 +17,27 @@ import { assertSessionCwdExists } from "./session-cwd.ts";
 import { type SessionEntry, SessionManager } from "./session-manager.ts";
 import {
 	getWebCompanionEndpoint,
+	getWebSessionHandoffEndpoint,
 	WEB_COMPANION_CAPABILITIES,
 	WEB_COMPANION_PROTOCOL_VERSION,
+	WEB_SESSION_HANDOFF_PROTOCOL_VERSION,
 	type WebCompanionCommand,
 	type WebCompanionImage,
 	type WebCompanionServerMessage,
 	type WebCompanionSnapshot,
+	type WebSessionHandoffCommand,
+	type WebSessionHandoffServerMessage,
 } from "./web-companion-contract.ts";
 import { companionProgressEvent } from "./web-companion-events.ts";
 
 export {
 	getWebCompanionEndpoint,
+	getWebSessionHandoffEndpoint,
 	WEB_COMPANION_CAPABILITIES,
 	WEB_COMPANION_LEGACY_CAPABILITIES,
 	WEB_COMPANION_LEGACY_PROTOCOL_VERSION,
 	WEB_COMPANION_PROTOCOL_VERSION,
+	WEB_SESSION_HANDOFF_PROTOCOL_VERSION,
 	type WebCompanionCapability,
 	type WebCompanionCommand,
 	type WebCompanionImage,
@@ -39,9 +45,80 @@ export {
 	type WebCompanionServerMessage,
 	type WebCompanionSnapshot,
 	type WebCompanionSnapshotWire,
+	type WebSessionHandoffCommand,
+	type WebSessionHandoffServerMessage,
 } from "./web-companion-contract.ts";
 
 const MAX_WEB_SOCKET_BUFFER_BYTES = 8 * 1024 * 1024;
+const WEB_SESSION_HANDOFF_TIMEOUT_MS = 5_000;
+const MAX_WEB_SESSION_HANDOFF_BYTES = 64 * 1024;
+
+export async function requestWebSessionHandoff(agentDir: string, sessionPath: string): Promise<boolean> {
+	const endpoint = getWebSessionHandoffEndpoint(agentDir, sessionPath);
+	return new Promise<boolean>((resolve, reject) => {
+		const socket = createConnection(endpoint);
+		socket.setEncoding("utf8");
+		let settled = false;
+		let connected = false;
+		let buffer = "";
+		const finish = (result: { value: boolean } | { error: Error }) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			socket.removeAllListeners();
+			socket.destroy();
+			if ("error" in result) reject(result.error);
+			else resolve(result.value);
+		};
+		const timer = setTimeout(() => finish({ value: false }), WEB_SESSION_HANDOFF_TIMEOUT_MS);
+		timer.unref?.();
+		socket.once("connect", () => {
+			connected = true;
+			const command: WebSessionHandoffCommand = {
+				type: "handoff",
+				sessionPath,
+				protocolVersion: WEB_SESSION_HANDOFF_PROTOCOL_VERSION,
+			};
+			socket.write(`${JSON.stringify(command)}\n`);
+		});
+		socket.on("data", (chunk: string) => {
+			buffer += chunk;
+			const newline = buffer.indexOf("\n");
+			if (newline < 0) {
+				if (Buffer.byteLength(buffer) > MAX_WEB_SESSION_HANDOFF_BYTES)
+					finish({ error: new Error("Web 会话交接响应超过大小限制") });
+				return;
+			}
+			try {
+				const message = JSON.parse(buffer.slice(0, newline)) as WebSessionHandoffServerMessage;
+				if (message.type !== "handoff_result" || typeof message.ok !== "boolean") {
+					throw new Error("Web 会话交接响应无效");
+				}
+				if (message.ok) {
+					finish({ value: true });
+					return;
+				}
+				finish({
+					error: Object.assign(new Error(message.error), {
+						name: "WebSessionHandoffError",
+						code: message.code,
+						retryable: message.retryable,
+					}),
+				});
+			} catch (error) {
+				finish({ error: error instanceof Error ? error : new Error(String(error)) });
+			}
+		});
+		socket.once("error", (error: NodeJS.ErrnoException) => {
+			if (!connected && (error.code === "ENOENT" || error.code === "ECONNREFUSED")) {
+				finish({ value: false });
+				return;
+			}
+			finish({ error });
+		});
+		socket.once("close", () => finish({ value: false }));
+	});
+}
 
 function sendPayload(socket: Socket, payload: string): void {
 	if (socket.destroyed || !socket.writable) return;

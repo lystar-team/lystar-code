@@ -7,6 +7,9 @@ import type {
 	ContentChunk,
 	GitDiff,
 	GitStatus,
+	HarnessImportPreview,
+	HarnessImportResult,
+	HarnessImportScope,
 	HostDirectoryListing,
 	JsonValue,
 	ModelRef,
@@ -56,6 +59,7 @@ export interface RichTextRenderRequest {
 
 export interface RuntimeSessionAsyncControls {
 	isConnected?(): boolean;
+	ownsSessionWriter?(): boolean;
 	getLiveMessage?(): { text: string; thinking: string } | undefined;
 	readLiveMessage?(): Promise<{ text: string; thinking: string } | undefined>;
 	getCapabilities?(): readonly string[];
@@ -216,6 +220,15 @@ export interface RuntimeAdapter {
 	): Promise<ModelSummary[]>;
 	logoutModelProvider(provider: string): Promise<ModelSummary[]>;
 	listSkills(cwd: string, onUiRequest: UiRequestHandler): Promise<{ skills: SkillSummary[]; diagnostics: JsonValue }>;
+	listHarnessImports(cwd: string, targetScope: HarnessImportScope): HarnessImportPreview;
+	importHarnessResources(
+		cwd: string,
+		targetScope: HarnessImportScope,
+		itemIds: string[],
+		onUiRequest: UiRequestHandler,
+		ruleSelections?: Record<string, string[]>,
+		replaceItemIds?: string[],
+	): Promise<HarnessImportResult>;
 	setSkillEnabled(
 		cwd: string,
 		path: string,

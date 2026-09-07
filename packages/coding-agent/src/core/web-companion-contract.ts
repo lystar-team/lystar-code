@@ -13,6 +13,16 @@ export const WEB_COMPANION_PROTOCOL_VERSION = 2 as const;
 export const WEB_COMPANION_LEGACY_PROTOCOL_VERSION = 1 as const;
 export type WebCompanionProtocolVersion = 1 | 2;
 
+export const WEB_SESSION_HANDOFF_PROTOCOL_VERSION = 1 as const;
+export type WebSessionHandoffCommand = {
+	type: "handoff";
+	sessionPath: string;
+	protocolVersion: typeof WEB_SESSION_HANDOFF_PROTOCOL_VERSION;
+};
+export type WebSessionHandoffServerMessage =
+	| { type: "handoff_result"; ok: true }
+	| { type: "handoff_result"; ok: false; error: string; code?: string; retryable?: boolean };
+
 export const WEB_COMPANION_CAPABILITIES = [
 	"prompt",
 	"steer",
@@ -165,4 +175,11 @@ export function getWebCompanionEndpoint(agentDir: string, sessionPath: string): 
 	return process.platform === "win32"
 		? `\\\\.\\pipe\\lystar-session-companion-${suffix}`
 		: join(agentDir, "host", "companions", `${suffix}.sock`);
+}
+
+export function getWebSessionHandoffEndpoint(agentDir: string, sessionPath: string): string {
+	const suffix = endpointHash(agentDir, sessionPath);
+	return process.platform === "win32"
+		? `\\\\.\\pipe\\lystar-session-handoff-${suffix}`
+		: join(agentDir, "host", "handoffs", `${suffix}.sock`);
 }

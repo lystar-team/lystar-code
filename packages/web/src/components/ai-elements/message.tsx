@@ -12,8 +12,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { projectCodeHighlighter } from "@/lib/code-highlighter";
 import { cjk } from "@streamdown/cjk";
-import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import type { UIMessage } from "ai";
@@ -30,7 +30,7 @@ import {
 } from "react";
 import { PlainTextCodeBlock } from "./code-block";
 import { ResourceImage } from "./resource-preview";
-import { Streamdown } from "streamdown";
+import { Streamdown, type PluginConfig } from "streamdown";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: UIMessage["role"];
@@ -374,29 +374,37 @@ const streamdownTranslations = {
   openLink: "打开链接",
 };
 
-const streamdownPlugins = {
-  cjk,
-  code,
-  math,
-  mermaid,
-  renderers: [{ language: ["text", "plaintext"], component: PlainTextRenderer }],
+const baseStreamdownPlugins: PluginConfig = {
+	cjk,
+	math,
+	mermaid,
+	renderers: [{ language: ["text", "plaintext"], component: PlainTextRenderer }],
 };
 
+function streamdownPluginsFor(mode: MessageResponseProps["mode"], overrides?: PluginConfig): PluginConfig {
+	const withoutCode = { ...(overrides ?? {}) };
+	delete withoutCode.code;
+	return mode === "streaming"
+		? { ...baseStreamdownPlugins, ...withoutCode }
+		: { ...baseStreamdownPlugins, ...withoutCode, code: projectCodeHighlighter };
+}
+
 export const MessageResponse: NamedExoticComponent<MessageResponseProps> = memo(
-	({ className, onOpenPath, components, ...props }: MessageResponseProps): ReactElement => (
+	({ className, onOpenPath, components, mode = "static", plugins: callerPlugins, ...props }: MessageResponseProps): ReactElement => (
 		<ResourcePathContext.Provider value={onOpenPath}>
-						<Streamdown
+			<Streamdown
 				className={cn(
 					"size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
 					className,
 				)}
-				plugins={streamdownPlugins}
+				mode={mode}
+				plugins={streamdownPluginsFor(mode, callerPlugins)}
 				translations={streamdownTranslations}
 				components={
 					{
 						...components,
 						img: MessageMarkdownImage,
-					a: MessageMarkdownLink,
+						a: MessageMarkdownLink,
 						p: MessageMarkdownParagraph,
 					} as NonNullable<MessageResponseProps["components"]>
 				}
@@ -406,8 +414,9 @@ export const MessageResponse: NamedExoticComponent<MessageResponseProps> = memo(
 	),
 	(prevProps, nextProps) =>
 		prevProps.children === nextProps.children &&
+		prevProps.mode === nextProps.mode &&
 		nextProps.isAnimating === prevProps.isAnimating &&
-		nextProps.onOpenPath === prevProps.onOpenPath
+		nextProps.onOpenPath === prevProps.onOpenPath,
 );
 
 MessageResponse.displayName = "MessageResponse";

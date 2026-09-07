@@ -5,6 +5,7 @@ import { applyPromptAccepted, clearsThinking, committedToolCallIds, reconcileCom
 import {
 	bootstrapLeaseForSession,
 	isOlderSessionSnapshot,
+	isSameSessionSnapshot,
 	isTranscriptResponseObsolete,
 	mergeOperationSnapshots,
 	needsTranscriptRefreshForCommit,
@@ -19,6 +20,8 @@ import {
 } from "./transcript-state.ts";
 import type {
 	GatewayEvent,
+	HarnessImportsResponse,
+	HarnessImportResultResponse,
 	HostInstructionsResponse,
 	ProjectInstruction,
 	ProjectSkillsResponse,
@@ -36,7 +39,7 @@ import type {
 export type InspectorMode = "runs" | "files" | "tree" | "git";
 export type ComposerMode = "prompt" | "steer" | "follow-up";
 export type ThemeMode = "system" | "light" | "dark";
-export type SettingsTab = "appearance" | "instructions" | "skills" | "models" | "diagnostics" | "about";
+export type SettingsTab = "appearance" | "instructions" | "skills" | "models" | "imports" | "diagnostics" | "about";
 
 export interface LiveTool {
 	id: string;
@@ -51,9 +54,12 @@ export interface LiveTool {
 }
 
 export type LiveTurnItem =
-	| { id: string; kind: "text"; text: string; turnId: number }
-	| { id: string; kind: "thinking"; text: string; turnId: number }
+	| { id: string; kind: "text"; parts: readonly string[]; turnId: number }
+	| { id: string; kind: "thinking"; parts: readonly string[]; turnId: number }
 	| { id: string; kind: "tools"; turnId: number; batchId: string; toolIds: string[] };
+
+type LiveTextProgress = Extract<SessionProgress, { type: "assistant_delta" | "thinking_delta" }>;
+type PendingTextProgress = { selection: number; progress: LiveTextProgress };
 
 function appendLiveTextBlock(
 	items: LiveTurnItem[],
@@ -62,9 +68,11 @@ function appendLiveTextBlock(
 	id: string,
 	turnId: number,
 ): LiveTurnItem[] {
+	if (!text) return items;
 	const last = items.at(-1);
-	if (last?.kind === kind && last.turnId === turnId) return [...items.slice(0, -1), { ...last, text: last.text + text }];
-	return [...items, { id, kind, text, turnId }];
+	if (last?.kind === kind && last.turnId === turnId)
+		return [...items.slice(0, -1), { ...last, parts: [...last.parts, text] }];
+	return [...items, { id, kind, parts: [text], turnId }];
 }
 
 function appendLiveToolBlock(
@@ -261,8 +269,6 @@ export interface WorkbenchState {
 	readOnly: boolean;
 	currentOperation?: WebOperation;
 	operations: WebOperation[];
-	liveText: string;
-	liveThinking: string;
 	liveTools: Record<string, LiveTool>;
 	liveTurnItems: LiveTurnItem[];
 	liveTurnId: number;
@@ -336,6 +342,12 @@ export interface WorkbenchState {
 	hostInstructionsLoading: boolean;
 	hostInstructionsError?: string;
 	hostInstructionSaving: boolean;
+	harnessImports?: HarnessImportsResponse;
+	harnessImportsLoading: boolean;
+	harnessImportsError?: string;
+	harnessImportScope: "user" | "project";
+	harnessImporting: boolean;
+	harnessImportResult?: HarnessImportResultResponse;
 	models: Array<{
 		provider: string;
 		id: string;
@@ -377,6 +389,49 @@ export interface WorkbenchState {
 	toast?: string;
 	theme: ThemeMode;
 	composerMode: ComposerMode;
+}
+
+type SessionDetailCache = Pick<
+	WorkbenchState,
+	| "session"
+	| "transcript"
+	| "transcriptPageLoaded"
+	| "transcriptGeneration"
+	| "transcriptRevision"
+	| "transcriptLeafId"
+	| "previousCursor"
+	| "toolActivityEpoch"
+	| "toolActivityRevision"
+	| "hasMorePrevious"
+	| "loadingEarlier"
+	| "liveTools"
+	| "liveTurnItems"
+	| "liveTurnId"
+	| "liveTurnStartRevision"
+	| "liveTurnActive"
+	| "statusText"
+>;
+
+function sessionDetailCacheFromState(state: WorkbenchState): SessionDetailCache {
+	return {
+		session: state.session,
+		transcript: state.transcript,
+		transcriptPageLoaded: state.transcriptPageLoaded,
+		transcriptGeneration: state.transcriptGeneration,
+		transcriptRevision: state.transcriptRevision,
+		transcriptLeafId: state.transcriptLeafId,
+		previousCursor: state.previousCursor,
+		toolActivityEpoch: state.toolActivityEpoch,
+		toolActivityRevision: state.toolActivityRevision,
+		hasMorePrevious: state.hasMorePrevious,
+		loadingEarlier: state.loadingEarlier,
+		liveTools: state.liveTools,
+		liveTurnItems: state.liveTurnItems,
+		liveTurnId: state.liveTurnId,
+		liveTurnStartRevision: state.liveTurnStartRevision,
+		liveTurnActive: state.liveTurnActive,
+		statusText: state.statusText,
+	};
 }
 
 const THEME_KEY = "lystar.web.theme";
@@ -545,8 +600,8 @@ function textLineCount(content: string): number {
 	return content.endsWith("\n") || content.endsWith("\r") ? lines.length - 1 : lines.length;
 }
 
-function hasLiveTurnContent(state: Pick<WorkbenchState, "liveText" | "liveThinking" | "liveTools" | "liveTurnItems">): boolean {
-	return Boolean(state.liveText || state.liveThinking || Object.keys(state.liveTools).length || state.liveTurnItems.length);
+function hasLiveTurnContent(state: Pick<WorkbenchState, "liveTools" | "liveTurnItems">): boolean {
+	return Boolean(Object.keys(state.liveTools).length || state.liveTurnItems.length);
 }
 
 function shouldClearLiveTurn(state: WorkbenchState): boolean {
@@ -554,7 +609,7 @@ function shouldClearLiveTurn(state: WorkbenchState): boolean {
 }
 
 function shouldRefreshCompletedTurn(state: WorkbenchState): boolean {
-	return !state.transcriptPageLoaded || Boolean(state.liveText || state.liveThinking || state.liveTurnItems.length);
+	return !state.transcriptPageLoaded || Boolean(state.liveTurnItems.length);
 }
 
 function initialState(): WorkbenchState {
@@ -577,8 +632,6 @@ function initialState(): WorkbenchState {
 		loadingEarlier: false,
 		readOnly: false,
 		operations: [],
-		liveText: "",
-		liveThinking: "",
 		liveTools: {},
 		liveTurnItems: [],
 		liveTurnId: 0,
@@ -604,6 +657,9 @@ function initialState(): WorkbenchState {
 		hostInstructions: [],
 		hostInstructionsLoading: false,
 		hostInstructionSaving: false,
+		harnessImportsLoading: false,
+		harnessImportScope: "user",
+		harnessImporting: false,
 		models: [],
 		providers: [],
 		hiddenModelProviders: savedHiddenModelProviders(),
@@ -625,12 +681,16 @@ export function useWorkbench() {
 	const transcriptRefreshPendingRef = useRef<string | undefined>(undefined);
 	const liveToolBatchRef = useRef(0);
 	const liveTurnItemRef = useRef(0);
+	const pendingTextProgressRef = useRef<PendingTextProgress[]>([]);
+	const pendingTextFrameRef = useRef<number | undefined>(undefined);
 	const transcriptRequestRef = useRef(0);
 	const fileRequestRef = useRef(0);
 	const projectRefreshRef = useRef(new Map<string, { promise: Promise<void>; rerun: boolean }>());
 	const toastTimerRef = useRef<number | undefined>(undefined);
 	const selectionRef = useRef(0);
 	const selectionInFlightRef = useRef<string | undefined>(undefined);
+	const sessionDetailCacheRef = useRef(new Map<string, SessionDetailCache>());
+	const sessionDetailSeqRef = useRef(new Map<string, number>());
 	const initializePromiseRef = useRef<Promise<void> | undefined>(undefined);
 	const selectSessionRef = useRef<(sessionId: string) => Promise<void>>(async () => {});
 	const loadSessionTreeRef = useRef<() => Promise<void>>(async () => {});
@@ -758,8 +818,6 @@ export function useWorkbench() {
 										transcriptLeafId: undefined,
 										previousCursor: undefined,
 										hasMorePrevious: false,
-										liveText: "",
-										liveThinking: "",
 										liveTools: {},
 										liveTurnItems: [],
 										currentOperation: undefined,
@@ -821,7 +879,7 @@ export function useWorkbench() {
 									...current,
 									transcriptLoading: false,
 									...(shouldClearLiveTurn(current)
-										? { liveText: "", liveThinking: "", liveTools: {}, liveTurnItems: [] }
+										? { liveTools: {}, liveTurnItems: [] }
 										: {}),
 							  };
 					}
@@ -844,7 +902,7 @@ export function useWorkbench() {
 							? Math.max(current.transcriptRevision ?? 0, result.transcriptRevision)
 							: result.transcriptRevision,
 						transcriptLeafId: cursor ? current.transcriptLeafId : result.leafId,
-						...(completedTurnSynced ? { liveText: "", liveThinking: "", liveTools: {}, liveTurnItems: [] } : {}),
+						...(completedTurnSynced ? { liveTools: {}, liveTurnItems: [] } : {}),
 					};
 				});
 			} catch (error) {
@@ -890,7 +948,7 @@ export function useWorkbench() {
 		if (transcriptRefreshPendingRef.current === sessionId) transcriptRefreshPendingRef.current = undefined;
 	}, []);
 
-	const applyProgress = useCallback(
+	const applyProgressNow = useCallback(
 		(progress: SessionProgress) => {
 			updateState((current) => {
 				const activity = sessionActivityFromProgress(progress);
@@ -898,14 +956,13 @@ export function useWorkbench() {
 					...current,
 					...(current.session && activity ? { session: { ...current.session, activity } } : {}),
 					...(clearsThinking(progress)
-						? { liveThinking: "", liveTurnItems: current.liveTurnItems.filter((item) => item.kind !== "thinking") }
+						? { liveTurnItems: current.liveTurnItems.filter((item) => item.kind !== "thinking") }
 						: {}),
 				};
 				switch (progress.type) {
 					case "assistant_delta":
 						return {
 							...current,
-							liveText: current.liveText + progress.text,
 							liveTurnActive: true,
 							liveTurnItems: appendLiveTextBlock(
 								current.liveTurnItems,
@@ -919,7 +976,6 @@ export function useWorkbench() {
 					case "thinking_delta":
 						return {
 							...current,
-							liveThinking: current.liveThinking + progress.text,
 							liveTurnActive: true,
 							liveTurnItems: appendLiveTextBlock(
 								current.liveTurnItems,
@@ -1045,7 +1101,6 @@ export function useWorkbench() {
 								? {
 										liveTurnStartRevision: current.transcriptRevision,
 										liveTurnActive: true,
-										liveText: "",
 										liveTurnItems: [],
 									}
 								: progress.phase === "idle" || progress.phase === "interrupted"
@@ -1092,8 +1147,61 @@ export function useWorkbench() {
 		[updateState],
 	);
 
+	const flushPendingTextProgress = useCallback(() => {
+		if (pendingTextFrameRef.current !== undefined) {
+			window.cancelAnimationFrame(pendingTextFrameRef.current);
+			pendingTextFrameRef.current = undefined;
+		}
+		const pending = pendingTextProgressRef.current
+			.filter(({ selection }) => selection === selectionRef.current)
+			.map(({ progress }) => progress);
+		pendingTextProgressRef.current = [];
+		let batch: LiveTextProgress | undefined;
+		for (const progress of pending) {
+			if (batch && batch.type === progress.type) {
+				batch = { ...batch, text: batch.text + progress.text };
+				continue;
+			}
+			if (batch) applyProgressNow(batch);
+			batch = progress;
+		}
+		if (batch) applyProgressNow(batch);
+	}, [applyProgressNow]);
+
+	const applyProgress = useCallback(
+		(progress: SessionProgress) => {
+			if (progress.type === "assistant_delta" || progress.type === "thinking_delta") {
+				pendingTextProgressRef.current.push({ selection: selectionRef.current, progress });
+				if (pendingTextFrameRef.current === undefined) {
+					pendingTextFrameRef.current = window.requestAnimationFrame(flushPendingTextProgress);
+				}
+				return;
+			}
+			flushPendingTextProgress();
+			applyProgressNow(progress);
+		},
+		[applyProgressNow, flushPendingTextProgress],
+	);
+
 	const handleEvent = useCallback(
 		(event: GatewayEvent) => {
+			if (event.type === "session_subscription") {
+				sessionDetailSeqRef.current.set(event.sessionId, event.seq);
+				if (event.gap && stateRef.current.sessionId === event.sessionId)
+					void loadTranscript(event.sessionId).catch((error) => showToast(errorMessage(error)));
+				return;
+			}
+			const sequenceSessionId =
+				"sessionId" in event
+					? event.sessionId
+					: event.type === "operation_updated"
+						? event.operation.sessionId
+						: undefined;
+			if (sequenceSessionId && "seq" in event && typeof event.seq === "number") {
+				const previousSeq = sessionDetailSeqRef.current.get(sequenceSessionId);
+				if (previousSeq !== undefined && event.seq <= previousSeq) return;
+				sessionDetailSeqRef.current.set(sequenceSessionId, event.seq);
+			}
 			if (event.type === "session_stream") {
 				if (event.sessionId !== stateRef.current.sessionId) return;
 				updateState((current) => {
@@ -1101,7 +1209,7 @@ export function useWorkbench() {
 					let items: LiveTurnItem[] = tools;
 					if (event.thinking) items = appendLiveTextBlock(items, "thinking", event.thinking, `restored-thinking:${liveTurnItemRef.current++}`, current.liveTurnId);
 					if (event.text) items = appendLiveTextBlock(items, "text", event.text, `restored-text:${liveTurnItemRef.current++}`, current.liveTurnId);
-					return { ...current, liveText: event.text, liveThinking: event.thinking, liveTurnItems: items, liveTurnActive: Boolean(event.text || event.thinking || tools.length) };
+					return { ...current, liveTurnItems: items, liveTurnActive: Boolean(event.text || event.thinking || tools.length) };
 				});
 				return;
 			}
@@ -1127,8 +1235,48 @@ export function useWorkbench() {
 				}
 				return;
 			}
+			if (event.type === "session_summary") {
+				updateState((current) => {
+					if (event.sessionId === current.sessionId) return current;
+					const previous = current.projects
+						.flatMap((project) => project.sessions)
+						.find((session) => session.id === event.sessionId);
+					const wasRunning =
+						previous?.activity === "running" ||
+						previous?.activity === "waiting_for_input" ||
+						current.operations.some(
+							(operation) =>
+								operation.sessionId === event.sessionId && ACTIVE_OPERATION_STATUSES.has(operation.status),
+						);
+					const unreadSessionIds = { ...current.unreadSessionIds };
+					const terminal = TERMINAL_OPERATION_STATUSES.has(event.activity);
+					if ((terminal || (event.activity === "idle" && wasRunning)) && event.sessionId !== current.sessionId)
+						unreadSessionIds[event.sessionId] = true;
+					else if (event.activity !== "idle") delete unreadSessionIds[event.sessionId];
+					const projects = Object.hasOwn(event, "name")
+						? updateSessionSummaryName(current.projects, event.sessionId, event.name)
+						: current.projects;
+					return {
+						...current,
+						projects: updateSessionActivity(projects, event.sessionId, event.activity, event.operationUpdatedAt),
+						unreadSessionIds,
+					};
+				});
+				return;
+			}
 			if (event.type === "session_snapshot") {
-				if (event.sessionId === stateRef.current.sessionId && isOlderSessionSnapshot(stateRef.current.session, event.snapshot)) return;
+				const current = stateRef.current;
+				if (
+					event.sessionId === current.sessionId &&
+					(isOlderSessionSnapshot(current.session, event.snapshot) || isSameSessionSnapshot(current.session, event.snapshot))
+				)
+					return;
+				if (event.sessionId !== current.sessionId) {
+					const summary = current.projects
+						.flatMap((project) => project.sessions)
+						.find((session) => session.id === event.sessionId);
+					if (summary?.activity === event.snapshot.activity && summary.name === event.snapshot.name) return;
+				}
 				updateState((current) => {
 					const projects = updateSessionActivity(
 						updateSessionSummaryName(current.projects, event.sessionId, event.snapshot.name),
@@ -1156,8 +1304,6 @@ export function useWorkbench() {
 									transcriptPageLoaded: false,
 									previousCursor: undefined,
 									hasMorePrevious: false,
-									liveText: "",
-									liveThinking: "",
 									liveTools: {},
 									liveTurnItems: [],
 							  }
@@ -1171,6 +1317,8 @@ export function useWorkbench() {
 				return;
 			}
 			if (event.type === "session_removed") {
+				sessionDetailCacheRef.current.delete(event.sessionId);
+				sessionDetailSeqRef.current.delete(event.sessionId);
 				updateState((current) => {
 					const unreadSessionIds = { ...current.unreadSessionIds };
 					delete unreadSessionIds[event.sessionId];
@@ -1191,8 +1339,6 @@ export function useWorkbench() {
 								transcriptLeafId: undefined,
 								previousCursor: undefined,
 								hasMorePrevious: false,
-								liveText: "",
-								liveThinking: "",
 								liveTools: {},
 								liveTurnItems: [],
 								currentOperation: undefined,
@@ -1325,7 +1471,7 @@ export function useWorkbench() {
 						unreadSessionIds,
 						...(selected ? { currentOperation: event.operation } : {}),
 						...(selected && operationIsTerminal && ["prompt", "compact", "run_bash"].includes(event.operation.type)
-							? { liveThinking: "", liveTurnActive: false }
+							? { liveTurnActive: false }
 							: {}),
 						...(selected &&
 						event.operation.status === "completed" &&
@@ -1375,6 +1521,7 @@ export function useWorkbench() {
 			cancelScheduledTranscriptRefresh,
 			refreshBootstrap,
 			refreshProjectSessions,
+			loadTranscript,
 			scheduleTranscriptRefresh,
 			showToast,
 			updateState,
@@ -1423,7 +1570,13 @@ export function useWorkbench() {
 				}, 1200);
 			},
 		);
+		const subscribeSelectedSession = () => {
+			const sessionId = stateRef.current.sessionId;
+			if (sessionId) webApi.subscribeSession(socket, sessionId, sessionDetailSeqRef.current.get(sessionId));
+		};
+		socket.addEventListener("open", subscribeSelectedSession, { once: true });
 		socketRef.current = socket;
+		if (socket.readyState === WebSocket.OPEN) subscribeSelectedSession();
 	}, [handleEvent, updateState]);
 
 	const refreshModelSettings = useCallback(async () => {
@@ -1524,6 +1677,8 @@ export function useWorkbench() {
 		socketRef.current?.close();
 		socketRef.current = undefined;
 		webApi.clearToken();
+		sessionDetailCacheRef.current.clear();
+		sessionDetailSeqRef.current.clear();
 		updateState(() => ({
 			...initialState(),
 			authRequired: true,
@@ -1548,7 +1703,16 @@ export function useWorkbench() {
 			selectionInFlightRef.current = sessionId;
 			const request = ++selectionRef.current;
 			const previous = stateRef.current;
-			const projectId = previous.currentProjectId;
+			if (previous.sessionId && previous.sessionId !== sessionId) {
+				sessionDetailCacheRef.current.set(previous.sessionId, sessionDetailCacheFromState(previous));
+			}
+			const cached = sessionDetailCacheRef.current.get(sessionId);
+			const socket = socketRef.current;
+			if (socket) {
+				if (previous.sessionId && previous.sessionId !== sessionId)
+					webApi.unsubscribeSession(socket, previous.sessionId);
+				webApi.subscribeSession(socket, sessionId, sessionDetailSeqRef.current.get(sessionId));
+			}
 			if (
 				previous.sessionId &&
 				previous.sessionId !== sessionId &&
@@ -1564,32 +1728,34 @@ export function useWorkbench() {
 			updateState((current) => ({
 				...current,
 				sessionId,
-				session: undefined,
+				session: cached?.session,
 				sessionError: undefined,
 				lease: undefined,
 				readOnly: false,
-				transcriptLoading: true,
+				transcriptLoading: cached?.transcriptPageLoaded ? false : true,
 				transcriptError: undefined,
-				...(current.sessionId !== sessionId ? {
-					transcript: [],
-					transcriptPageLoaded: false,
-					transcriptGeneration: undefined,
-					transcriptRevision: undefined,
-					transcriptLeafId: undefined,
-					previousCursor: undefined,
-					hasMorePrevious: false,
-					loadingEarlier: false,
-					liveText: "",
-					liveThinking: "",
-					liveTools: {},
-					liveTurnItems: [],
-					liveTurnActive: undefined,
-					liveTurnStartRevision: undefined,
-				} : {}),
+				...(cached
+					? cached
+					: current.sessionId !== sessionId
+						? {
+								transcript: [],
+								transcriptPageLoaded: false,
+								transcriptGeneration: undefined,
+								transcriptRevision: undefined,
+								transcriptLeafId: undefined,
+								previousCursor: undefined,
+								hasMorePrevious: false,
+								loadingEarlier: false,
+								liveTools: {},
+								liveTurnItems: [],
+								liveTurnActive: undefined,
+								liveTurnStartRevision: undefined,
+							}
+						: {}),
 				unreadSessionIds: Object.fromEntries(
 					Object.entries(current.unreadSessionIds).filter(([id]) => id !== sessionId),
 				) as Record<string, true>,
-				statusText: "正在打开会话",
+				statusText: cached ? "正在同步会话" : "正在打开会话",
 				currentOperation: operationForSession(current.operations, sessionId),
 			}));
 			const transcriptPromise = loadTranscript(sessionId);
@@ -1678,6 +1844,10 @@ export function useWorkbench() {
 		async (projectId: string) => {
 			const request = ++selectionRef.current;
 			const previous = stateRef.current;
+			if (previous.sessionId) {
+				sessionDetailCacheRef.current.set(previous.sessionId, sessionDetailCacheFromState(previous));
+				if (socketRef.current) webApi.unsubscribeSession(socketRef.current, previous.sessionId);
+			}
 			if (previous.sessionId && !ACTIVE_OPERATION_STATUSES.has(previous.currentOperation?.status ?? ""))
 				await webApi.release(previous.sessionId).catch(() => {});
 			updateState((current) => ({
@@ -1701,8 +1871,6 @@ export function useWorkbench() {
 				previousCursor: undefined,
 				hasMorePrevious: false,
 				currentOperation: undefined,
-				liveText: "",
-				liveThinking: "",
 				liveTools: {},
 				liveTurnItems: [],
 			}));
@@ -1772,8 +1940,6 @@ export function useWorkbench() {
 			hasMorePrevious: false,
 			currentOperation: undefined,
 			statusText: "",
-			liveText: "",
-			liveThinking: "",
 			liveTools: {},
 			liveTurnItems: [],
 		}));
@@ -1882,7 +2048,13 @@ export function useWorkbench() {
 							? { ...candidate, sessions: candidate.sessions.filter((session) => session.id !== sessionId) }
 							: candidate,
 					);
-					if (next.sessionId !== sessionId) return { ...next, projects };
+					if (next.sessionId !== sessionId) {
+						sessionDetailCacheRef.current.delete(sessionId);
+						sessionDetailSeqRef.current.delete(sessionId);
+						return { ...next, projects };
+					}
+					sessionDetailCacheRef.current.delete(sessionId);
+					sessionDetailSeqRef.current.delete(sessionId);
 					return {
 						...next,
 						projects,
@@ -1900,8 +2072,6 @@ export function useWorkbench() {
 						previousCursor: undefined,
 						hasMorePrevious: false,
 						currentOperation: undefined,
-						liveText: "",
-						liveThinking: "",
 						liveTools: {},
 						liveTurnItems: [],
 						statusText: "",
@@ -1944,8 +2114,6 @@ export function useWorkbench() {
 				previousCursor: undefined,
 				hasMorePrevious: false,
 				currentOperation: undefined,
-				liveText: "",
-				liveThinking: "",
 				liveTools: {},
 				liveTurnItems: [],
 			}));
@@ -2407,6 +2575,57 @@ export function useWorkbench() {
 		[showToast, updateState],
 	);
 
+	const refreshHarnessImports = useCallback(
+		async (targetScope: "user" | "project" = stateRef.current.harnessImportScope) => {
+			const projectId = stateRef.current.currentProjectId;
+			if (!projectId) {
+				updateState((current) => ({ ...current, harnessImports: undefined, harnessImportsLoading: false, harnessImportsError: "请先选择一个项目" }));
+				return;
+			}
+			updateState((current) => ({
+				...current,
+				harnessImportScope: targetScope,
+				harnessImportsLoading: true,
+				harnessImportsError: undefined,
+				harnessImportResult: undefined,
+			}));
+			try {
+				const result = await webApi.harnessImports(projectId, targetScope);
+				updateState((current) => ({ ...current, harnessImports: result, harnessImportsLoading: false, harnessImportsError: undefined }));
+			} catch (error) {
+				const message = errorMessage(error);
+				updateState((current) => ({ ...current, harnessImportsLoading: false, harnessImportsError: message }));
+				showToast(message);
+			}
+		},
+		[showToast, updateState],
+	);
+
+	const importHarnessResources = useCallback(
+		async (
+			targetScope: "user" | "project",
+			itemIds: string[],
+			ruleSelections?: Record<string, string[]>,
+			replaceItemIds?: string[],
+		) => {
+			const projectId = stateRef.current.currentProjectId;
+			if (!projectId || itemIds.length === 0) return;
+			updateState((current) => ({ ...current, harnessImporting: true, harnessImportsError: undefined }));
+			try {
+				const result = await webApi.importHarnessResources(projectId, targetScope, itemIds, ruleSelections, replaceItemIds);
+				updateState((current) => ({ ...current, harnessImporting: false, harnessImportResult: result }));
+				await refreshHarnessImports(targetScope);
+				await refreshSkills();
+				showToast(result.imported > 0 ? `已导入 ${result.imported} 项资源` : "没有导入新的资源");
+			} catch (error) {
+				const message = errorMessage(error);
+				updateState((current) => ({ ...current, harnessImporting: false, harnessImportsError: message }));
+				showToast(message);
+			}
+		},
+		[refreshHarnessImports, refreshSkills, showToast, updateState],
+	);
+
 	const refreshHostInstructions = useCallback(async () => {
 		updateState((current) => ({ ...current, hostInstructionsLoading: true, hostInstructionsError: undefined }));
 		try {
@@ -2454,6 +2673,7 @@ export function useWorkbench() {
 			}
 			if (tab === "instructions") await refreshHostInstructions();
 			if (tab === "skills") await refreshSkills();
+			if (tab === "imports") await refreshHarnessImports();
 			if (tab === "diagnostics") updateState((current) => ({ ...current, diagnostics: undefined }));
 			if (tab === "diagnostics") {
 				const result = (await webApi.diagnostics(stateRef.current.currentProjectId)) as Record<string, unknown>;
@@ -2464,7 +2684,7 @@ export function useWorkbench() {
 				updateState((current) => ({ ...current, about: result }));
 			}
 		},
-		[refreshHostInstructions, refreshModelSettings, refreshSkills, updateState],
+		[refreshHarnessImports, refreshHostInstructions, refreshModelSettings, refreshSkills, updateState],
 	);
 	const closeSettings = useCallback(
 		() => updateState((current) => ({ ...current, settingsOpen: false })),
@@ -2522,8 +2742,15 @@ export function useWorkbench() {
 		return () => {
 			mountedRef.current = false;
 			streamGenerationRef.current += 1;
+			sessionDetailCacheRef.current.clear();
+			sessionDetailSeqRef.current.clear();
 			socketRef.current?.close();
 			socketRef.current = undefined;
+			if (pendingTextFrameRef.current !== undefined) {
+				window.cancelAnimationFrame(pendingTextFrameRef.current);
+				pendingTextFrameRef.current = undefined;
+			}
+			pendingTextProgressRef.current = [];
 			if (reconnectTimerRef.current) {
 				window.clearTimeout(reconnectTimerRef.current);
 				reconnectTimerRef.current = undefined;
@@ -2565,6 +2792,8 @@ export function useWorkbench() {
 		saveProviderModel,
 		refreshSkills,
 		toggleSkill,
+		refreshHarnessImports,
+		importHarnessResources,
 		refreshHostInstructions,
 		saveHostInstruction,
 		refreshModelSettings,

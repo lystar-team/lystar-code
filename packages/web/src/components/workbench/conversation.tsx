@@ -1,6 +1,5 @@
 import { ArrowDownToLine, LoaderCircle, Sparkles } from "lucide-react";
-import type { ReactNode } from "react";
-import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { toLiveToolViewModel } from "../../adapters/live-tool-view-model.ts";
 import { toSessionItemViewModel } from "../../adapters/session-view-model";
@@ -12,11 +11,14 @@ import { Button } from "../ui/button";
 import { ACTIVE_OPERATION_STATUSES } from "./constants";
 import { LiveTurn, ThinkingActivity } from "./live-turn";
 import { AgentErrorCard, TranscriptItemView } from "./transcript";
+import { VirtualizedTranscript } from "./virtualized-transcript";
 import type { WorkbenchActions } from "./types";
 
+type TranscriptItemRenderItem = { kind: "item"; item: WorkbenchState["transcript"][number] };
+type TranscriptBatchRenderItem = { kind: "tool-batch"; key: string; tools: ToolBatchTool[] };
 type TranscriptRenderItem =
-	| { kind: "item"; item: WorkbenchState["transcript"][number] }
-	| { kind: "tool-batch"; key: string; tools: ToolBatchTool[] };
+	| TranscriptItemRenderItem
+	| { kind: "tool-stack"; key: string; batches: TranscriptBatchRenderItem[] };
 
 function buildTranscriptRenderItems(
 	items: WorkbenchState["transcript"],
@@ -26,7 +28,7 @@ function buildTranscriptRenderItems(
 		statuses: ReadonlyMap<string, "success" | "error">;
 	},
 ): TranscriptRenderItem[] {
-	const rendered: TranscriptRenderItem[] = [];
+	const rendered: Array<TranscriptItemRenderItem | TranscriptBatchRenderItem> = [];
 	let batchTools: ToolBatchTool[] = [];
 	let batchKey = "";
 	let batchEntryId: string | undefined;
@@ -69,7 +71,20 @@ function buildTranscriptRenderItems(
 		rendered.push({ kind: "item", item });
 	}
 	flushBatch();
-	return rendered;
+	const grouped: TranscriptRenderItem[] = [];
+	for (const entry of rendered) {
+		const previous = grouped.at(-1);
+		if (entry.kind === "tool-batch") {
+			if (previous?.kind === "tool-stack") {
+				previous.batches.push(entry);
+			} else {
+				grouped.push({ kind: "tool-stack", key: `tool-stack:${entry.key}`, batches: [entry] });
+			}
+		} else {
+			grouped.push(entry);
+		}
+	}
+	return grouped;
 }
 
 export function ConversationView({
@@ -156,9 +171,7 @@ function ConversationBody({
 	const { scrollRef, scrollToBottom, isAtBottom } = useStickToBottomContext();
 	const pendingScrollRef = useRef<{ top: number; height: number } | undefined>(undefined);
 	const responseActive = Boolean(
-		state.liveText ||
-			state.liveThinking ||
-			state.liveTurnItems.length ||
+		state.liveTurnItems.length ||
 			state.session?.activity === "running" ||
 			state.session?.activity === "waiting_for_input" ||
 			(state.currentOperation && ACTIVE_OPERATION_STATUSES.has(state.currentOperation.status)),
@@ -209,48 +222,68 @@ function ConversationBody({
 	}, [scrollRef, state.loadingEarlier]);
 
 	const openResource = actions.openResource;
-	const transcriptNodes = useMemo(() => {
-		const nodes: ReactNode[] = [];
-		for (let index = 0; index < renderItems.length; index++) {
-			const entry = renderItems[index];
-			if (entry.kind === "tool-batch") {
-				const batches = [entry];
-				while (index + 1 < renderItems.length) {
-					const next = renderItems[index + 1];
-					if (next.kind !== "tool-batch") break;
-					batches.push(next);
-					index += 1;
-				}
-				nodes.push(
-					<div className="tool-batch-stack" key={`tool-stack:${batches[0].key}`}>
-						{batches.map((batch) => (
+	const [expandedToolBatches, setExpandedToolBatches] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+	const [expandedToolRows, setExpandedToolRows] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+	const updateExpandedToolBatch = useCallback((key: string, open: boolean) => {
+		setExpandedToolBatches((current) => {
+			if ((current.get(key) ?? false) === open) return current;
+			const next = new Map(current);
+			if (open) next.set(key, true);
+			else next.delete(key);
+			return next;
+		});
+	}, []);
+	const updateExpandedToolRow = useCallback((toolId: string, open: boolean) => {
+		setExpandedToolRows((current) => {
+			if ((current.get(toolId) ?? false) === open) return current;
+			const next = new Map(current);
+			if (open) next.set(toolId, true);
+			else next.delete(toolId);
+			return next;
+		});
+	}, []);
+	const renderTranscriptItem = useCallback(
+		(entry: TranscriptRenderItem, index: number) => {
+			if (entry.kind === "tool-stack") {
+				return (
+					<div className="tool-batch-stack">
+						{entry.batches.map((batch) => (
 							<ToolBatch
 								key={batch.key}
 								className="tool-batch-render-item"
 								tools={batch.tools}
 								sessionId={state.sessionId}
-								initialOpen={batch.tools.some((tool) => tool.state === "input-available" || tool.state === "input-queued")}
+								open={expandedToolBatches.get(batch.key) ?? false}
+								onOpenChange={(open) => updateExpandedToolBatch(batch.key, open)}
+								toolOpen={expandedToolRows}
+								onToolOpenChange={updateExpandedToolRow}
 								autoCollapseWhenComplete={shouldAutoCollapseTools}
 								onOpenPath={(path) => void openResource(path)}
 							/>
 						))}
-					</div>,
+					</div>
 				);
-				continue;
 			}
-			nodes.push(
+			return (
 				<TranscriptItemView
-					key={entry.item.renderId}
 					item={entry.item}
 					showCopy={!responseActive && index === lastAssistantMessageIndex}
 					toolStatuses={toolStatuses}
 					onOpenPath={openResource}
 					sessionId={state.sessionId}
-				/>,
+				/>
 			);
-		}
-		return nodes;
-	}, [lastAssistantMessageIndex, openResource, renderItems, responseActive, shouldAutoCollapseTools, state.sessionId, toolStatuses]);
+		},
+		[lastAssistantMessageIndex, openResource, responseActive, shouldAutoCollapseTools, state.sessionId, toolStatuses],
+	);
+	const transcriptItemKey = useCallback(
+		(entry: TranscriptRenderItem) => (entry.kind === "item" ? entry.item.renderId : entry.key),
+		[],
+	);
+	const estimateTranscriptItemHeight = useCallback(
+		(entry: TranscriptRenderItem) => (entry.kind === "tool-stack" ? 32 : 80),
+		[],
+	);
 	const liveTurnNode = useMemo(
 		() => <LiveTurn state={state} actions={actions} autoCollapseTools={shouldAutoCollapseTools} />,
 		[actions, shouldAutoCollapseTools, state],
@@ -305,7 +338,13 @@ function ConversationBody({
 					onRetry={() => void actions.loadTranscript()}
 				/>
 			) : state.transcript.length ? (
-				transcriptNodes
+				<VirtualizedTranscript
+					items={renderItems}
+					getKey={transcriptItemKey}
+					estimateHeight={estimateTranscriptItemHeight}
+					renderItem={renderTranscriptItem}
+					scrollRef={scrollRef}
+				/>
 			) : (
 				<ConversationEmptyState
 					className="min-h-[56vh]"

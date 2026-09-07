@@ -337,6 +337,10 @@ export class WebCompanionRuntime implements RuntimeSession {
 		return !this.disposed && this.socket !== undefined && !this.socket.destroyed;
 	}
 
+	ownsSessionWriter(): boolean {
+		return false;
+	}
+
 	getCapabilities(): readonly WebCompanionCapability[] {
 		return this.capabilities;
 	}

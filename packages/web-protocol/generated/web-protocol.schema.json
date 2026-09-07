@@ -1556,6 +1556,122 @@
                   "required": [
                     "command",
                     "cwd",
+                    "targetScope"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "list_harness_imports"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "targetScope": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "user"
+                        },
+                        {
+                          "type": "string",
+                          "const": "project"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "targetScope",
+                    "itemIds",
+                    "clientInstanceId",
+                    "clientRequestId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "import_harness_resources"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "targetScope": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "user"
+                        },
+                        {
+                          "type": "string",
+                          "const": "project"
+                        }
+                      ]
+                    },
+                    "itemIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      },
+                      "maxItems": 10000
+                    },
+                    "ruleSelections": {
+                      "type": "object",
+                      "patternProperties": {
+                        "^.*$": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4096
+                          },
+                          "maxItems": 512
+                        }
+                      }
+                    },
+                    "replaceItemIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      },
+                      "maxItems": 512
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
                     "path",
                     "scope",
                     "enabled",
@@ -3789,6 +3905,10 @@
                   },
                   {
                     "type": "string",
+                    "const": "harness-import"
+                  },
+                  {
+                    "type": "string",
                     "const": "completion"
                   },
                   {
@@ -5132,6 +5252,331 @@
         },
         "diagnostics": {
           "$ref": "#/$defs/JsonValue"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceListHarnessImportsResult": {
+      "type": "object",
+      "required": [
+        "sources",
+        "items"
+      ],
+      "properties": {
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "harness",
+              "label",
+              "scope",
+              "detected",
+              "resourceCount",
+              "resourceTypes"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "harness": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "codex"
+                  },
+                  {
+                    "type": "string",
+                    "const": "opencode"
+                  },
+                  {
+                    "type": "string",
+                    "const": "claude-code"
+                  }
+                ]
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "scope": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "user"
+                  },
+                  {
+                    "type": "string",
+                    "const": "project"
+                  }
+                ]
+              },
+              "detected": {
+                "type": "boolean"
+              },
+              "resourceCount": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "resourceTypes": {
+                "type": "object",
+                "required": [
+                  "skills",
+                  "prompts",
+                  "instructions"
+                ],
+                "properties": {
+                  "skills": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "prompts": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "instructions": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 32
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "harness",
+              "harnessLabel",
+              "sourceScope",
+              "resourceType",
+              "name",
+              "sourceRelativePath",
+              "targetRelativePath",
+              "status",
+              "warnings"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "harness": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "codex"
+                  },
+                  {
+                    "type": "string",
+                    "const": "opencode"
+                  },
+                  {
+                    "type": "string",
+                    "const": "claude-code"
+                  }
+                ]
+              },
+              "harnessLabel": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "sourceScope": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "user"
+                  },
+                  {
+                    "type": "string",
+                    "const": "project"
+                  }
+                ]
+              },
+              "resourceType": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "skill"
+                  },
+                  {
+                    "type": "string",
+                    "const": "prompt"
+                  },
+                  {
+                    "type": "string",
+                    "const": "instruction"
+                  }
+                ]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "sourceRelativePath": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "targetRelativePath": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 16384
+              },
+              "instructionHunks": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "title",
+                    "lines"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "lines": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "maxLength": 16384
+                      },
+                      "minItems": 1,
+                      "maxItems": 512
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "maxItems": 512
+              },
+              "instructionSourceContent": {
+                "type": "string",
+                "maxLength": 4194304
+              },
+              "instructionTargetContent": {
+                "type": "string",
+                "maxLength": 4194304
+              },
+              "status": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "ready"
+                  },
+                  {
+                    "type": "string",
+                    "const": "already-imported"
+                  },
+                  {
+                    "type": "string",
+                    "const": "conflict"
+                  },
+                  {
+                    "type": "string",
+                    "const": "unsupported"
+                  }
+                ]
+              },
+              "warnings": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 4096
+                },
+                "maxItems": 32
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 10000
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceImportHarnessResourcesResult": {
+      "type": "object",
+      "required": [
+        "imported",
+        "skipped",
+        "failed",
+        "items"
+      ],
+      "properties": {
+        "imported": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "skipped": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "status"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "status": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "imported"
+                  },
+                  {
+                    "type": "string",
+                    "const": "skipped"
+                  },
+                  {
+                    "type": "string",
+                    "const": "failed"
+                  }
+                ]
+              },
+              "message": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 10000
         }
       },
       "additionalProperties": false

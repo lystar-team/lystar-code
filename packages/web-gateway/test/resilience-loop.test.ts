@@ -548,6 +548,8 @@ test("Web 与直接 Web Client 可同时观察同一运行时，并由租约串�
 	await waitForMessage(second.messages, (message) => message.type === "bootstrap", "Web B bootstrap");
 
 	const project = await createProjectAndSession(stack, webA);
+	first.socket.send(JSON.stringify({ type: "subscribe_session", sessionId: project.sessionId }));
+	second.socket.send(JSON.stringify({ type: "subscribe_session", sessionId: project.sessionId }));
 	const projectsForB = await requestJson(stack.baseUrl, "/api/projects", webB);
 	assert.equal(projectsForB.status, 200);
 	const controlByB = await requestJson(stack.baseUrl, `/api/sessions/${project.sessionId}/control`, webB, {

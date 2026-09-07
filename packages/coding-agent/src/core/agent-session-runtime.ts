@@ -12,8 +12,9 @@ import type {
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
-import { SessionManager } from "./session-manager.ts";
+import { SessionLockedError, SessionManager } from "./session-manager.ts";
 import { type SessionShareResult, shareSessionAsPrivateGist } from "./session-share.ts";
+import { requestWebSessionHandoff } from "./web-companion.ts";
 
 /**
  * Result returned by runtime creation.
@@ -85,6 +86,21 @@ async function abortBeforeDispose(session: AgentSession): Promise<void> {
 	});
 }
 
+export async function openSessionWithWebHandoff(
+	sessionPath: string,
+	agentDir: string,
+	sessionDir?: string,
+	cwdOverride?: string,
+): Promise<SessionManager> {
+	try {
+		return await SessionManager.openAsync(sessionPath, sessionDir, cwdOverride);
+	} catch (error) {
+		if (!(error instanceof SessionLockedError)) throw error;
+		if (!(await requestWebSessionHandoff(agentDir, sessionPath))) throw error;
+		return SessionManager.openAsync(sessionPath, sessionDir, cwdOverride);
+	}
+}
+
 /**
  * Owns the current AgentSession plus its cwd-bound services.
  *
@@ -98,6 +114,7 @@ export class AgentSessionRuntime {
 	private _session: AgentSession;
 	private _services: AgentSessionServices;
 	private readonly createRuntime: CreateAgentSessionRuntimeFactory;
+	private readonly writerHandoff: boolean;
 	private _diagnostics: AgentSessionRuntimeDiagnostic[];
 	private _modelFallbackMessage?: string;
 
@@ -107,10 +124,12 @@ export class AgentSessionRuntime {
 		createRuntime: CreateAgentSessionRuntimeFactory,
 		_diagnostics: AgentSessionRuntimeDiagnostic[] = [],
 		_modelFallbackMessage?: string,
+		writerHandoff = false,
 	) {
 		this._session = _session;
 		this._services = _services;
 		this.createRuntime = createRuntime;
+		this.writerHandoff = writerHandoff;
 		this._diagnostics = _diagnostics;
 		this._modelFallbackMessage = _modelFallbackMessage;
 	}
@@ -255,7 +274,9 @@ export class AgentSessionRuntime {
 		}
 
 		const previousSessionFile = this.session.sessionFile;
-		const sessionManager = SessionManager.open(sessionPath, undefined, options?.cwdOverride);
+		const sessionManager = this.writerHandoff
+			? await openSessionWithWebHandoff(sessionPath, this.services.agentDir, undefined, options?.cwdOverride)
+			: SessionManager.open(sessionPath, undefined, options?.cwdOverride);
 		try {
 			assertSessionCwdExists(sessionManager, this.cwd);
 		} catch (error) {
@@ -477,6 +498,7 @@ export async function createAgentSessionRuntime(
 		sessionManager: SessionManager;
 		sessionStartEvent?: SessionStartEvent;
 		projectTrustContext?: ProjectTrustContext;
+		writerHandoff?: boolean;
 	},
 ): Promise<AgentSessionRuntime> {
 	try {
@@ -488,6 +510,7 @@ export async function createAgentSessionRuntime(
 			createRuntime,
 			result.diagnostics,
 			result.modelFallbackMessage,
+			options.writerHandoff === true,
 		);
 	} catch (error) {
 		options.sessionManager.dispose();

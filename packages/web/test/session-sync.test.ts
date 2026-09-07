@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	bootstrapLeaseForSession,
 	isOlderSessionSnapshot,
+	isSameSessionSnapshot,
 	isTranscriptResponseObsolete,
 	mergeOperationSnapshots,
 	needsTranscriptRefreshForCommit,
@@ -55,6 +56,19 @@ describe("连接恢复状态边界", () => {
 		const current = { id: "session", revision: 8 } as WebSessionSnapshot;
 		expect(isOlderSessionSnapshot(current, { ...current, revision: 7 })).toBe(true);
 		expect(isOlderSessionSnapshot(current, { ...current, revision: 9 })).toBe(false);
+	});
+	it("相同内容的快照只因 revision 变化时可复用", () => {
+		const current = {
+			id: "session",
+			name: "测试会话",
+			activity: "running",
+			phase: "turn",
+			revision: 8,
+			transcriptGeneration: "generation",
+			transcriptRevision: 10,
+		} as WebSessionSnapshot;
+		expect(isSameSessionSnapshot(current, { ...current, revision: 9 })).toBe(true);
+		expect(isSameSessionSnapshot(current, { ...current, revision: 9, activity: "idle" })).toBe(false);
 	});
 	it("旧 bootstrap 不会把完成操作恢复成运行中", () => {
 		const completed = { operationId: "operation", updatedAt: 20, status: "completed" } as WebOperation;

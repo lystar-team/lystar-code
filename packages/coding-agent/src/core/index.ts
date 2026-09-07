@@ -65,7 +65,6 @@ export {
 } from "./agent-session-services.ts";
 export type { CompactionResult } from "./compaction/index.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./event-bus.ts";
-export { areExperimentalFeaturesEnabled } from "./experimental.ts";
 // Extensions system
 export {
 	type AgentEndEvent,
@@ -116,6 +115,20 @@ export {
 	type TurnStartEvent,
 	type WorkingIndicatorOptions,
 } from "./extensions/index.ts";
+export {
+	discoverHarnessImports,
+	type HarnessId,
+	type HarnessImportInstructionHunk,
+	type HarnessImportItem,
+	type HarnessImportItemStatus,
+	type HarnessImportPreview,
+	type HarnessImportResult,
+	type HarnessImportResultItem,
+	type HarnessImportScope,
+	type HarnessImportSource,
+	type HarnessResourceType,
+	importHarnessResources,
+} from "./harness-resource-import.ts";
 export {
 	getLystarSetting,
 	getLystarSettingsForUi,
@@ -244,10 +257,13 @@ export {
 } from "./trust-manager.ts";
 export {
 	getWebCompanionEndpoint,
+	getWebSessionHandoffEndpoint,
+	requestWebSessionHandoff,
 	WEB_COMPANION_CAPABILITIES,
 	WEB_COMPANION_LEGACY_CAPABILITIES,
 	WEB_COMPANION_LEGACY_PROTOCOL_VERSION,
 	WEB_COMPANION_PROTOCOL_VERSION,
+	WEB_SESSION_HANDOFF_PROTOCOL_VERSION,
 	type WebCompanionCapability,
 	type WebCompanionCommand,
 	type WebCompanionImage,
@@ -256,4 +272,6 @@ export {
 	type WebCompanionServerMessage,
 	type WebCompanionSnapshot,
 	type WebCompanionSnapshotWire,
+	type WebSessionHandoffCommand,
+	type WebSessionHandoffServerMessage,
 } from "./web-companion.ts";

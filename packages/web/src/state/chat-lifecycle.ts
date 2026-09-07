@@ -38,9 +38,7 @@ export function reconcileCommittedTurn(
 	const callIds = committedToolCallIds(items);
 	return {
 		...current,
-		...(assistantCommitted
-			? { liveText: "", liveThinking: "", liveTurnStartRevision: revision }
-			: {}),
+		...(assistantCommitted ? { liveTurnStartRevision: revision } : {}),
 		liveTurnItems: current.liveTurnItems.flatMap((item): LiveTurnItem[] => {
 			if (item.kind !== "tools") return assistantCommitted ? [] : [item];
 			const toolIds = item.toolIds.filter((id) => !callIds.has(id));

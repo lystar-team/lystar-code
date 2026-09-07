@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
 	assertWorkspaceCommandResult,
@@ -23,6 +23,7 @@ import { ContentStore } from "./content-store.ts";
 import { LeaseManager } from "./lease-manager.ts";
 import { hashOperationPayload, OperationJournal, OperationJournalCorruptError } from "./operation-journal.ts";
 import { BUILTIN_SLASH_COMMANDS } from "./runtime-adapter.ts";
+import { WebSessionHandoffServer } from "./session-handoff-server.ts";
 import { projectTranscriptBatch } from "./transcript-projection.ts";
 import { TranscriptReader } from "./transcript-reader.ts";
 import type { RuntimeAdapter, RuntimeSession, UiRequestHandler } from "./types.ts";
@@ -44,6 +45,7 @@ const BASE_CAPABILITIES: Capability[] = [
 	"session-observation",
 	"project-instructions",
 	"host-instructions",
+	"harness-import",
 	"completion",
 	"project-resources",
 	"directory-browser",
@@ -54,6 +56,9 @@ const BASE_CAPABILITIES: Capability[] = [
 const SESSION_FILE_POLL_INTERVAL_MS = 1_000;
 const PROGRESS_BATCH_MS = 50;
 const MAX_PENDING_PROGRESS = 64;
+const SESSION_HANDOFF_RECONNECT_INTERVAL_MS = 100;
+const SESSION_HANDOFF_RECONNECT_TIMEOUT_MS = 60_000;
+const SESSION_HANDOFF_LOCAL_FALLBACK_MS = 5_000;
 
 const ACTIVE_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>(["accepted", "running", "waiting_for_input"]);
 const BOOTSTRAP_OPERATION_LIMIT = 200;
@@ -88,6 +93,8 @@ function isActiveSessionActivity(activity: SessionActivity): boolean {
 
 const WORKSPACE_COMMANDS = {
 	list_skills: true,
+	list_harness_imports: true,
+	import_harness_resources: true,
 	set_skill_enabled: true,
 	list_project_instructions: true,
 	save_project_instruction: true,
@@ -242,11 +249,19 @@ interface SessionFileFact {
 	messageCount: number;
 	name?: string;
 	writerLocked: boolean;
+	transcriptGeneration?: string;
+	transcriptRevision?: number;
 }
 
 interface RuntimeTranscriptFact {
-	updatedAt: number;
+	generation: string;
 	revision: number;
+}
+
+interface SessionHandoffHost {
+	runtime: RuntimeSession;
+	server: WebSessionHandoffServer;
+	ready: Promise<void>;
 }
 
 function protocolError(error: unknown): { code: string; message: string; retryable?: boolean; details?: JsonValue } {
@@ -329,7 +344,11 @@ export class WebRuntimeService {
 	private readonly startupSessionPath?: string;
 	private readonly watchedSessionFacts = new Map<string, Map<string, SessionFileFact>>();
 	private readonly runtimeTranscriptFacts = new Map<string, RuntimeTranscriptFact>();
+	private readonly sessionHandoffHosts = new Map<string, SessionHandoffHost>();
+	private readonly sessionHandoffRecoveries = new Map<string, Promise<void>>();
+	private readonly sessionsInHandoff = new Set<string>();
 	private readonly sessionPollTimer: ReturnType<typeof setInterval>;
+	private readonly agentDir: string;
 	private pollingSessions = false;
 
 	constructor(
@@ -343,6 +362,7 @@ export class WebRuntimeService {
 		},
 	) {
 		this.adapter = adapter;
+		this.agentDir = options.agentDir;
 		this.persistent = options.persistent === true;
 		this.startupInput = options.startupInput;
 		this.startupSessionPath = options.startupSessionPath
@@ -408,6 +428,11 @@ export class WebRuntimeService {
 	async dispose(): Promise<void> {
 		this.disposed = true;
 		clearInterval(this.sessionPollTimer);
+		await Promise.allSettled([...this.sessionHandoffHosts.values()].map((host) => host.server.dispose()));
+		this.sessionHandoffHosts.clear();
+		await Promise.allSettled(this.sessionHandoffRecoveries.values());
+		this.sessionHandoffRecoveries.clear();
+		this.sessionsInHandoff.clear();
 		await Promise.allSettled(this.runtimeOpenings.values());
 		for (const controller of this.operationAbortControllers.values()) controller.abort();
 		this.operationAbortControllers.clear();
@@ -613,6 +638,7 @@ export class WebRuntimeService {
 						try {
 							lease = this.leases.acquire(sessionPath, request.clientInstanceId);
 							this.attachRuntime(runtime);
+							await this.ensureSessionHandoffServer(runtime);
 							await this.sendSessionSnapshots(runtime);
 							return jsonValue({ lease, snapshot: this.runtimeSnapshot(runtime, "owned") });
 						} catch (error) {
@@ -638,6 +664,7 @@ export class WebRuntimeService {
 							request.clientInstanceId,
 						),
 					);
+					await this.ensureSessionHandoffServer(runtime);
 					await runtime.readLiveMessage?.();
 					await this.sendSessionSnapshots(runtime);
 					return jsonValue({
@@ -971,7 +998,10 @@ export class WebRuntimeService {
 					run: async (operation) => {
 						const { runtime } = this.assertExtensionSession(connection, request);
 						const detachedCompanion = this.isDetachedCompanion(runtime, "session_fork");
-						if (!detachedCompanion) this.detachRuntimeProjection(sessionPath);
+						if (!detachedCompanion) {
+							await this.disposeSessionHandoffServer(sessionPath, runtime);
+							this.detachRuntimeProjection(sessionPath);
+						}
 						let result: Awaited<ReturnType<RuntimeSession["fork"]>> | undefined;
 						let failure: unknown;
 						try {
@@ -1010,6 +1040,7 @@ export class WebRuntimeService {
 							await this.broadcast({ type: "session_removed", sessionPath });
 						}
 						this.attachRuntime(runtime);
+						await this.ensureSessionHandoffServer(runtime);
 						await this.sendSessionSnapshots(runtime);
 						if (failure) throw failure;
 						if (!result) throw new Error("会话分叉未返回结果");
@@ -1036,7 +1067,10 @@ export class WebRuntimeService {
 					run: async (operation) => {
 						const { runtime } = this.assertSessionControl(sessionPath, request.leaseId, connection);
 						const detachedCompanion = this.isDetachedCompanion(runtime, "session_import");
-						if (!detachedCompanion) this.detachRuntimeProjection(sessionPath);
+						if (!detachedCompanion) {
+							await this.disposeSessionHandoffServer(sessionPath, runtime);
+							this.detachRuntimeProjection(sessionPath);
+						}
 						let result: Awaited<ReturnType<RuntimeSession["importSession"]>> | undefined;
 						let failure: unknown;
 						try {
@@ -1047,6 +1081,7 @@ export class WebRuntimeService {
 						if (failure) {
 							if (canonicalSessionPath(runtime.sessionPath) === sessionPath) {
 								this.attachRuntime(runtime);
+								await this.ensureSessionHandoffServer(runtime);
 								await this.sendSessionSnapshots(runtime);
 							}
 							throw failure;
@@ -1080,6 +1115,7 @@ export class WebRuntimeService {
 							await this.broadcast({ type: "session_removed", sessionPath });
 						}
 						this.attachRuntime(runtime);
+						await this.ensureSessionHandoffServer(runtime);
 						await this.sendSessionSnapshots(runtime);
 						return jsonValue({
 							cancelled: false,
@@ -1128,6 +1164,40 @@ export class WebRuntimeService {
 						this.createUiRequestHandler(`skills:${connection.id}`, undefined, connection.clientInstanceId),
 					),
 				);
+			case "list_harness_imports":
+				return jsonValue(this.adapter.listHarnessImports(canonicalProjectCwd(request.cwd), request.targetScope));
+			case "import_harness_resources": {
+				const cwd = canonicalProjectCwd(request.cwd);
+				const sessionPath = this.mutationSessionPath(request);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: request.targetScope === "user" ? "host:harness-import" : `project:${cwd}`,
+					lockSessionPath: sessionPath,
+					payload: {
+						...(sessionPath ? { sessionPath } : {}),
+						cwd,
+						targetScope: request.targetScope,
+						itemIds: request.itemIds,
+						...(request.ruleSelections ? { ruleSelections: request.ruleSelections } : {}),
+						...(request.replaceItemIds ? { replaceItemIds: request.replaceItemIds } : {}),
+					},
+					run: async (operation) => {
+						const runtime = this.assertMutationSession(connection, request, cwd);
+						const result = await this.adapter.importHarnessResources(
+							cwd,
+							request.targetScope,
+							request.itemIds,
+							this.createUiRequestHandler(operation.operationId, undefined, request.clientInstanceId),
+							request.ruleSelections,
+							request.replaceItemIds,
+						);
+						await this.reloadMutationResources(runtime, request.targetScope === "project" ? cwd : undefined);
+						return jsonValue(result);
+					},
+				});
+			}
 			case "set_skill_enabled": {
 				const cwd = canonicalProjectCwd(request.cwd);
 				const sessionPath = this.mutationSessionPath(request);
@@ -1709,19 +1779,38 @@ export class WebRuntimeService {
 		return projectTranscriptBatch(compactItems);
 	}
 
+	private sessionTranscriptFact(
+		sessionPath: string,
+		sessionId: string,
+	): Pick<SessionFileFact, "transcriptGeneration" | "transcriptRevision"> | undefined {
+		try {
+			const stat = statSync(sessionPath);
+			return {
+				transcriptGeneration: `${sessionId}:${stat.dev}:${stat.ino}:${stat.birthtimeMs}`,
+				transcriptRevision: stat.size,
+			};
+		} catch {
+			return undefined;
+		}
+	}
+
 	private rememberSessionFacts(cwd: string, sessions: readonly SessionSummary[]): void {
 		this.watchedSessionFacts.set(
 			cwd,
 			new Map(
-				sessions.map((session) => [
-					session.path,
-					{
-						updatedAt: session.updatedAt,
-						messageCount: session.messageCount,
-						...(session.name ? { name: session.name } : {}),
-						writerLocked: this.adapter.isSessionWriterLocked(session.path),
-					},
-				]),
+				sessions.map((session) => {
+					const transcript = this.sessionTranscriptFact(session.path, session.id);
+					return [
+						session.path,
+						{
+							updatedAt: session.updatedAt,
+							messageCount: session.messageCount,
+							...(session.name ? { name: session.name } : {}),
+							writerLocked: this.adapter.isSessionWriterLocked(session.path),
+							...(transcript ?? {}),
+						},
+					] as const;
+				}),
 			),
 		);
 	}
@@ -1748,6 +1837,9 @@ export class WebRuntimeService {
 						...(session.name ? { name: session.name } : {}),
 						writerLocked: this.adapter.isSessionWriterLocked(sessionPath),
 					};
+					const runtime = this.runtimes.get(sessionPath);
+					const observedTranscript = runtime ? undefined : this.sessionTranscriptFact(sessionPath, session.id);
+					if (observedTranscript) Object.assign(fact, observedTranscript);
 					next.set(sessionPath, fact);
 					const old = previous.get(sessionPath);
 					if (!old) {
@@ -1756,7 +1848,17 @@ export class WebRuntimeService {
 					}
 					const fileChanged =
 						old.updatedAt !== fact.updatedAt || old.messageCount !== fact.messageCount || old.name !== fact.name;
-					const runtime = this.runtimes.get(sessionPath);
+					const transcriptChanged =
+						observedTranscript !== undefined &&
+						(old.transcriptGeneration !== observedTranscript.transcriptGeneration ||
+							old.transcriptRevision !== observedTranscript.transcriptRevision);
+					const runtimeSnapshot = runtime?.getSnapshot?.("available");
+					const known = runtime ? this.runtimeTranscriptFacts.get(sessionPath) : undefined;
+					const runtimeTranscriptChanged =
+						runtimeSnapshot !== undefined &&
+						(!known ||
+							known.generation !== runtimeSnapshot.transcriptGeneration ||
+							known.revision !== runtimeSnapshot.transcriptRevision);
 					const runtimeDisconnected = runtime?.isConnected?.() === false;
 					if (
 						runtime &&
@@ -1775,7 +1877,7 @@ export class WebRuntimeService {
 						});
 					}
 					if (old.writerLocked !== fact.writerLocked) sessionListChanged = true;
-					if (fileChanged) {
+					if (fileChanged || transcriptChanged || runtimeTranscriptChanged) {
 						if (
 							old.name !== fact.name ||
 							(old.messageCount === 0) !== (fact.messageCount === 0) ||
@@ -1783,21 +1885,12 @@ export class WebRuntimeService {
 						)
 							sessionListChanged = true;
 						if (!runtime) transcriptChanges.push(sessionPath);
-						else {
-							const snapshot = runtime.getSnapshot?.("available");
-							const known = this.runtimeTranscriptFacts.get(sessionPath);
-							if (
-								snapshot &&
-								(!known ||
-									known.updatedAt !== snapshot.updatedAt ||
-									known.revision !== snapshot.transcriptRevision)
-							) {
-								transcriptChanges.push(sessionPath);
-								this.runtimeTranscriptFacts.set(sessionPath, {
-									updatedAt: snapshot.updatedAt,
-									revision: snapshot.transcriptRevision,
-								});
-							}
+						else if (runtimeSnapshot && runtimeTranscriptChanged) {
+							transcriptChanges.push(sessionPath);
+							this.runtimeTranscriptFacts.set(sessionPath, {
+								generation: runtimeSnapshot.transcriptGeneration,
+								revision: runtimeSnapshot.transcriptRevision,
+							});
 						}
 					}
 				}
@@ -2142,7 +2235,7 @@ export class WebRuntimeService {
 		const snapshot = runtime.getSnapshot?.("available");
 		if (!snapshot) return;
 		this.runtimeTranscriptFacts.set(canonicalSessionPath(runtime.sessionPath), {
-			updatedAt: snapshot.updatedAt,
+			generation: snapshot.transcriptGeneration,
 			revision: revision ?? snapshot.transcriptRevision,
 		});
 	}
@@ -2273,6 +2366,12 @@ export class WebRuntimeService {
 
 	private async ensureRuntime(sessionPath: string, onUiRequest: UiRequestHandler): Promise<RuntimeSession> {
 		if (this.disposed) throw new Error("Web Runtime 已关闭");
+		if (this.sessionsInHandoff.has(sessionPath)) {
+			throw Object.assign(new Error("会话正在交给 TUI，请稍后重试"), {
+				code: "session_handoff_in_progress",
+				retryable: true,
+			});
+		}
 		const pending = this.runtimeOpenings.get(sessionPath);
 		if (pending) return pending;
 		const opening = Promise.resolve().then(async () => {
@@ -2281,8 +2380,10 @@ export class WebRuntimeService {
 				current &&
 				current.isConnected?.() !== false &&
 				(current.isConnected !== undefined || !this.adapter.isSessionWriterLocked(sessionPath))
-			)
+			) {
+				await this.ensureSessionHandoffServer(current);
 				return current;
+			}
 			const replacement = await this.adapter.openSession(sessionPath, onUiRequest);
 			if (
 				this.disposed ||
@@ -2296,10 +2397,12 @@ export class WebRuntimeService {
 			if (replacement === current) return replacement;
 			if (current) {
 				this.flushSessionProgress(sessionPath);
+				await this.disposeSessionHandoffServer(sessionPath, current);
 				this.detachRuntimeProjection(sessionPath);
 			}
 			// 替换 Map 和事件订阅之间不让出执行权。
 			this.attachRuntime(replacement);
+			await this.ensureSessionHandoffServer(replacement);
 			if (current) await current.dispose();
 			await this.sendSessionSnapshots(replacement);
 			await this.broadcast({ type: "transcript_changed", sessionPath });
@@ -2324,8 +2427,122 @@ export class WebRuntimeService {
 	): Promise<RuntimeSession> {
 		return this.ensureRuntime(sessionPath, this.createUiRequestHandler(operationId, sessionPath, clientInstanceId));
 	}
+
+	private async ensureSessionHandoffServer(runtime: RuntimeSession): Promise<void> {
+		if (runtime.ownsSessionWriter?.() !== true) return;
+		const sessionPath = canonicalSessionPath(runtime.sessionPath);
+		const existing = this.sessionHandoffHosts.get(sessionPath);
+		if (existing?.runtime === runtime) {
+			await existing.ready.catch(() => {});
+			return;
+		}
+		if (existing) await this.disposeSessionHandoffServer(sessionPath);
+		const server = new WebSessionHandoffServer(
+			this.agentDir,
+			sessionPath,
+			() => this.handoffRuntimeToTui(sessionPath, runtime),
+			() => {
+				if (this.sessionHandoffHosts.get(sessionPath)?.server === server)
+					this.sessionHandoffHosts.delete(sessionPath);
+			},
+		);
+		const ready = Promise.resolve()
+			.then(() => server.start())
+			.catch(async (error) => {
+				if (this.sessionHandoffHosts.get(sessionPath)?.server === server)
+					this.sessionHandoffHosts.delete(sessionPath);
+				await server.dispose().catch(() => {});
+				throw error;
+			});
+		this.sessionHandoffHosts.set(sessionPath, { runtime, server, ready });
+		await ready.catch(() => {});
+	}
+
+	private async disposeSessionHandoffServer(sessionPath: string, runtime?: RuntimeSession): Promise<void> {
+		const host = this.sessionHandoffHosts.get(sessionPath);
+		if (!host || (runtime && host.runtime !== runtime)) return;
+		this.sessionHandoffHosts.delete(sessionPath);
+		await host.server.dispose();
+	}
+
+	private async handoffRuntimeToTui(sessionPath: string, runtime: RuntimeSession): Promise<void> {
+		if (this.disposed || this.runtimes.get(sessionPath) !== runtime || runtime.ownsSessionWriter?.() !== true) {
+			throw Object.assign(new Error("Web Runtime 已不再持有该会话"), {
+				code: "session_not_acquired",
+				retryable: true,
+			});
+		}
+		if (this.activeOperationBySession.has(sessionPath)) {
+			throw Object.assign(new Error("会话存在正在执行的任务"), {
+				code: "session_operation_active",
+				retryable: true,
+			});
+		}
+		const snapshot = runtime.getSnapshot("owned");
+		if (snapshot.activity !== "idle" || snapshot.phase !== "idle") {
+			throw Object.assign(new Error("会话存在正在执行的任务"), {
+				code: "session_operation_active",
+				retryable: true,
+			});
+		}
+		this.sessionsInHandoff.add(sessionPath);
+		try {
+			await runtime.dispose();
+			if (this.runtimes.get(sessionPath) === runtime) this.detachRuntimeProjection(sessionPath);
+			this.startSessionHandoffRecovery(sessionPath);
+		} catch (error) {
+			this.sessionsInHandoff.delete(sessionPath);
+			throw error;
+		}
+	}
+
+	private startSessionHandoffRecovery(sessionPath: string): void {
+		const recovery = this.recoverSessionAfterHandoff(sessionPath).finally(() => {
+			if (this.sessionHandoffRecoveries.get(sessionPath) === recovery)
+				this.sessionHandoffRecoveries.delete(sessionPath);
+			this.sessionsInHandoff.delete(sessionPath);
+		});
+		this.sessionHandoffRecoveries.set(sessionPath, recovery);
+		void recovery.catch(() => {});
+	}
+
+	private async recoverSessionAfterHandoff(sessionPath: string): Promise<void> {
+		const startedAt = Date.now();
+		const deadline = startedAt + SESSION_HANDOFF_RECONNECT_TIMEOUT_MS;
+		let observedTuiWriter = false;
+		while (!this.disposed && this.leases.has(sessionPath) && !this.runtimes.has(sessionPath)) {
+			const writerLocked = this.adapter.isSessionWriterLocked(sessionPath);
+			if (writerLocked) observedTuiWriter = true;
+			if (writerLocked || observedTuiWriter || Date.now() - startedAt >= SESSION_HANDOFF_LOCAL_FALLBACK_MS) {
+				try {
+					const replacement = await this.adapter.openSession(
+						sessionPath,
+						this.createUiRequestHandler(
+							() => this.activeOperationBySession.get(sessionPath) ?? `control:${sessionPath}`,
+							sessionPath,
+						),
+					);
+					if (this.disposed || !this.leases.has(sessionPath) || this.runtimes.has(sessionPath)) {
+						await replacement.dispose();
+						return;
+					}
+					this.attachRuntime(replacement);
+					await this.ensureSessionHandoffServer(replacement);
+					await this.sendSessionSnapshots(replacement);
+					await this.broadcast({ type: "transcript_changed", sessionPath });
+					return;
+				} catch {
+					// TUI 已取得写锁但 Companion 尚未启动时继续等待。
+				}
+			}
+			if (Date.now() >= deadline) return;
+			await new Promise((resolve) => setTimeout(resolve, SESSION_HANDOFF_RECONNECT_INTERVAL_MS));
+		}
+	}
+
 	private async disposeRuntime(sessionPath: string): Promise<void> {
 		await this.runtimeOpenings.get(sessionPath)?.catch(() => {});
+		await this.disposeSessionHandoffServer(sessionPath);
 		const timer = this.snapshotTimers.get(sessionPath);
 		if (timer) {
 			clearTimeout(timer);
@@ -2384,6 +2601,12 @@ export class WebRuntimeService {
 		this.journal.assertWritable();
 		const sessionPath = canonicalSessionPath(request.sessionPath);
 		this.leases.assert(sessionPath, request.leaseId, connection.clientInstanceId);
+		if (this.sessionsInHandoff.has(sessionPath)) {
+			throw Object.assign(new Error("会话正在交给 TUI，请稍后重试"), {
+				code: "session_handoff_in_progress",
+				retryable: true,
+			});
+		}
 		const runtime = this.runtimes.get(sessionPath);
 		if (!runtime) throw Object.assign(new Error("尚未获取会话运行时"), { code: "session_not_acquired" });
 		return { runtime, sessionPath };
@@ -2397,6 +2620,12 @@ export class WebRuntimeService {
 		this.journal.assertWritable();
 		const sessionPath = canonicalSessionPath(sessionPathInput);
 		this.leases.assert(sessionPath, leaseId, connection.clientInstanceId);
+		if (this.sessionsInHandoff.has(sessionPath)) {
+			throw Object.assign(new Error("会话正在交给 TUI，请稍后重试"), {
+				code: "session_handoff_in_progress",
+				retryable: true,
+			});
+		}
 		if (this.activeOperationBySession.has(sessionPath)) {
 			throw Object.assign(new Error("会话存在正在执行的任务"), {
 				code: "session_operation_active",

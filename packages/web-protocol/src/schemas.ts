@@ -137,6 +137,7 @@ export const CapabilitySchema = Type.Union([
 	Type.Literal("session-observation"),
 	Type.Literal("project-instructions"),
 	Type.Literal("host-instructions"),
+	Type.Literal("harness-import"),
 	Type.Literal("completion"),
 	Type.Literal("project-resources"),
 	Type.Literal("directory-browser"),
@@ -627,6 +628,83 @@ export const ProjectInstructionSchema = StrictObject({
 });
 export type ProjectInstruction = Static<typeof ProjectInstructionSchema>;
 
+export const HarnessIdSchema = Type.Union([
+	Type.Literal("codex"),
+	Type.Literal("opencode"),
+	Type.Literal("claude-code"),
+]);
+export type HarnessId = Static<typeof HarnessIdSchema>;
+export const HarnessImportScopeSchema = Type.Union([Type.Literal("user"), Type.Literal("project")]);
+export type HarnessImportScope = Static<typeof HarnessImportScopeSchema>;
+export const HarnessResourceTypeSchema = Type.Union([
+	Type.Literal("skill"),
+	Type.Literal("prompt"),
+	Type.Literal("instruction"),
+]);
+export type HarnessResourceType = Static<typeof HarnessResourceTypeSchema>;
+export const HarnessImportItemStatusSchema = Type.Union([
+	Type.Literal("ready"),
+	Type.Literal("already-imported"),
+	Type.Literal("conflict"),
+	Type.Literal("unsupported"),
+]);
+export type HarnessImportItemStatus = Static<typeof HarnessImportItemStatusSchema>;
+export const HarnessImportSourceSchema = StrictObject({
+	id: Id,
+	harness: HarnessIdSchema,
+	label: Type.String({ minLength: 1, maxLength: 128 }),
+	scope: HarnessImportScopeSchema,
+	detected: Type.Boolean(),
+	resourceCount: Type.Integer({ minimum: 0 }),
+	resourceTypes: StrictObject({
+		skills: Type.Integer({ minimum: 0 }),
+		prompts: Type.Integer({ minimum: 0 }),
+		instructions: Type.Integer({ minimum: 0 }),
+	}),
+});
+export type HarnessImportSource = Static<typeof HarnessImportSourceSchema>;
+export const HarnessImportInstructionHunkSchema = StrictObject({
+	id: Id,
+	title: Type.String({ minLength: 1, maxLength: 4096 }),
+	lines: Type.Array(Type.String({ maxLength: 16 * 1024 }), { minItems: 1, maxItems: 512 }),
+});
+export type HarnessImportInstructionHunk = Static<typeof HarnessImportInstructionHunkSchema>;
+export const HarnessImportItemSchema = StrictObject({
+	id: Id,
+	harness: HarnessIdSchema,
+	harnessLabel: Type.String({ minLength: 1, maxLength: 128 }),
+	sourceScope: HarnessImportScopeSchema,
+	resourceType: HarnessResourceTypeSchema,
+	name: Type.String({ minLength: 1, maxLength: 4096 }),
+	sourceRelativePath: Type.String({ minLength: 1, maxLength: 4096 }),
+	targetRelativePath: Type.String({ minLength: 1, maxLength: 4096 }),
+	description: Type.Optional(Type.String({ maxLength: 16 * 1024 })),
+	instructionHunks: Type.Optional(Type.Array(HarnessImportInstructionHunkSchema, { maxItems: 512 })),
+	instructionSourceContent: Type.Optional(Type.String({ maxLength: 4 * 1024 * 1024 })),
+	instructionTargetContent: Type.Optional(Type.String({ maxLength: 4 * 1024 * 1024 })),
+	status: HarnessImportItemStatusSchema,
+	warnings: Type.Array(Type.String({ maxLength: 4096 }), { maxItems: 32 }),
+});
+export type HarnessImportItem = Static<typeof HarnessImportItemSchema>;
+export const HarnessImportPreviewSchema = StrictObject({
+	sources: Type.Array(HarnessImportSourceSchema, { maxItems: 32 }),
+	items: Type.Array(HarnessImportItemSchema, { maxItems: 10_000 }),
+});
+export type HarnessImportPreview = Static<typeof HarnessImportPreviewSchema>;
+export const HarnessImportResultItemSchema = StrictObject({
+	id: Id,
+	status: Type.Union([Type.Literal("imported"), Type.Literal("skipped"), Type.Literal("failed")]),
+	message: Type.Optional(Type.String({ maxLength: 4096 })),
+});
+export type HarnessImportResultItem = Static<typeof HarnessImportResultItemSchema>;
+export const HarnessImportResultSchema = StrictObject({
+	imported: Type.Integer({ minimum: 0 }),
+	skipped: Type.Integer({ minimum: 0 }),
+	failed: Type.Integer({ minimum: 0 }),
+	items: Type.Array(HarnessImportResultItemSchema, { maxItems: 10_000 }),
+});
+export type HarnessImportResult = Static<typeof HarnessImportResultSchema>;
+
 export const HostDirectoryEntrySchema = StrictObject({
 	name: Type.String({ minLength: 1 }),
 	path: Type.String({ minLength: 1 }),
@@ -782,6 +860,8 @@ export const ListSkillsResultSchema = StrictObject({
 	skills: Type.Array(SkillSummarySchema, { maxItems: 10_000 }),
 	diagnostics: JsonValueSchema,
 });
+export const ListHarnessImportsResultSchema = HarnessImportPreviewSchema;
+export const ImportHarnessResourcesResultSchema = HarnessImportResultSchema;
 export const SetSkillEnabledResultSchema = StrictObject({
 	skills: Type.Array(SkillSummarySchema, { maxItems: 10_000 }),
 	diagnostics: JsonValueSchema,
@@ -984,6 +1064,8 @@ export type ClipboardImageReadResult = Static<typeof ClipboardImageReadResultSch
 
 export const WorkspaceCommandResultSchemas = {
 	list_skills: ListSkillsResultSchema,
+	list_harness_imports: ListHarnessImportsResultSchema,
+	import_harness_resources: ImportHarnessResourcesResultSchema,
 	set_skill_enabled: SetSkillEnabledResultSchema,
 	list_project_instructions: ListProjectInstructionsResultSchema,
 	save_project_instruction: SaveProjectInstructionResultSchema,
@@ -1288,6 +1370,25 @@ export const CommandSchema = Type.Union([
 		clientRequestId: Id,
 	}),
 	StrictObject({ command: Type.Literal("list_skills"), cwd: Type.String({ minLength: 1 }) }),
+	StrictObject({
+		command: Type.Literal("list_harness_imports"),
+		cwd: Type.String({ minLength: 1 }),
+		targetScope: HarnessImportScopeSchema,
+	}),
+	StrictObject({
+		command: Type.Literal("import_harness_resources"),
+		sessionPath: Type.Optional(Type.String({ minLength: 1 })),
+		leaseId: Type.Optional(Id),
+		cwd: Type.String({ minLength: 1 }),
+		targetScope: HarnessImportScopeSchema,
+		itemIds: Type.Array(Id, { maxItems: 10_000 }),
+		ruleSelections: Type.Optional(
+			Type.Record(Type.String({ minLength: 1, maxLength: 4096 }), Type.Array(Id, { maxItems: 512 })),
+		),
+		replaceItemIds: Type.Optional(Type.Array(Id, { maxItems: 512 })),
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
 	StrictObject({
 		command: Type.Literal("set_skill_enabled"),
 		sessionPath: Type.Optional(Type.String({ minLength: 1 })),

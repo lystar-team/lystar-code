@@ -38,6 +38,7 @@ import {
 	createAgentSessionRuntime,
 	createAgentSessionServices,
 	DefaultPackageManager,
+	discoverHarnessImports,
 	type ExtensionCommandContextActions,
 	type ExtensionUIContext,
 	formatVersionCheckError,
@@ -53,6 +54,7 @@ import {
 	getToolRecoveryDoctorReport,
 	getToolRecoveryMode,
 	hasTrustRequiringProjectResources,
+	importHarnessResources,
 	isNewerPackageVersion,
 	loadProjectContextFiles,
 	loadSkills,
@@ -92,6 +94,9 @@ import type {
 	GitDiff,
 	GitFileStatus,
 	GitStatus,
+	HarnessImportPreview,
+	HarnessImportResult,
+	HarnessImportScope,
 	HostDirectoryListing,
 	JsonValue,
 	ModelRef,
@@ -1043,6 +1048,10 @@ class CoreRuntimeSession implements RuntimeSession {
 
 	isConnected(): boolean {
 		return !this.disposed;
+	}
+
+	ownsSessionWriter(): boolean {
+		return true;
 	}
 
 	async bind(): Promise<void> {
@@ -2102,6 +2111,35 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		const runtime = await this.getModelRuntime();
 		await runtime.logout(provider);
 		return this.listModels();
+	}
+
+	listHarnessImports(cwd: string, targetScope: HarnessImportScope): HarnessImportPreview {
+		const preview = discoverHarnessImports({ cwd, agentDir: this.agentDir, targetScope });
+		return {
+			sources: preview.sources,
+			items: preview.items.map(
+				({ sourcePath: _sourcePath, targetPath: _targetPath, contentHash: _contentHash, ...item }) => item,
+			),
+		};
+	}
+
+	async importHarnessResources(
+		cwd: string,
+		targetScope: HarnessImportScope,
+		itemIds: string[],
+		onUiRequest: UiRequestHandler,
+		ruleSelections?: Record<string, string[]>,
+		replaceItemIds?: string[],
+	): Promise<HarnessImportResult> {
+		if (targetScope === "project") await this.createTrustedSettings(cwd, onUiRequest);
+		return importHarnessResources({
+			cwd,
+			agentDir: this.agentDir,
+			targetScope,
+			itemIds,
+			ruleSelections,
+			replaceItemIds,
+		});
 	}
 
 	async listSkills(

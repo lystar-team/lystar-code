@@ -363,6 +363,7 @@ test("Web Gateway fake Provider 完成 Prompt、事件和 Transcript 闭环", as
 	const lease = record(createResponse.data.lease);
 	if (!session || !lease) throw new Error("Session response is missing session or lease data");
 	const sessionId = requiredString(session.id, "session id");
+	ws.send(JSON.stringify({ type: "subscribe_session", sessionId }));
 	assert.equal("path" in session, false);
 	assert.equal("cwd" in session, false);
 	assert.equal(lease.leaseGeneration, 1);

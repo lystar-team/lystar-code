@@ -26,6 +26,8 @@ interface GatewayInternals {
 	socketLiveness: WeakMap<WebSocket, boolean>;
 	sessionIdsByPath: Map<string, string>;
 	contexts: Map<string, TestContext>;
+	subscriptionsFor(socket: WebSocket): Set<string>;
+	subscribeSession(context: TestContext, socket: WebSocket, sessionId: string, lastSeq?: number): void;
 }
 
 function createConfig(): WebGatewayConfig {
@@ -99,6 +101,7 @@ test("Gateway 合并实时增量并在非进度事件前保持顺序", async (t)
 	const socket = createSocket();
 	context.sockets.add(socket.webSocket);
 	internal.sessionIdsByPath.set("/tmp/resilience-session.jsonl", "session-1");
+	internal.subscriptionsFor(socket.webSocket).add("session-1");
 
 	internal.handleHostEvent(context, {
 		type: "session_progress",
@@ -113,11 +116,101 @@ test("Gateway 合并实时增量并在非进度事件前保持顺序", async (t)
 	await wait(75);
 
 	assert.deepEqual(socket.sent, [
-		{ type: "session_progress", sessionId: "session-1", progress: { type: "assistant_delta", text: "OK" } },
+		{ type: "session_progress", sessionId: "session-1", progress: { type: "assistant_delta", text: "OK" }, seq: 1 },
 	]);
 
 	internal.handleHostEvent(context, { type: "sessions_changed", cwd: "/tmp" });
 	assert.deepEqual(socket.sent.at(-1), { type: "sessions_changed" });
+});
+
+test("Gateway 只向订阅者发送会话详情，其他连接接收摘要", async (t) => {
+	const server = new WebGatewayServer(createConfig());
+	t.after(() => void server.close());
+	const internal = internals(server);
+	const context = internal.createContext("subscription-client");
+	const subscribed = createSocket();
+	const summaryOnly = createSocket();
+	context.sockets.add(subscribed.webSocket);
+	context.sockets.add(summaryOnly.webSocket);
+	internal.sessionIdsByPath.set("/tmp/subscription-session.jsonl", "session-1");
+	internal.subscriptionsFor(subscribed.webSocket).add("session-1");
+
+	internal.handleHostEvent(context, {
+		type: "session_progress",
+		sessionPath: "/tmp/subscription-session.jsonl",
+		progress: { type: "assistant_delta", text: "详情" },
+	});
+	await wait(75);
+
+	assert.deepEqual(subscribed.sent, [
+		{ type: "session_progress", sessionId: "session-1", progress: { type: "assistant_delta", text: "详情" }, seq: 1 },
+	]);
+	assert.deepEqual(summaryOnly.sent, [{ type: "session_summary", sessionId: "session-1", activity: "running" }]);
+});
+
+test("Gateway 可用 lastSeq 重放未订阅期间的详情事件", async (t) => {
+	const server = new WebGatewayServer(createConfig());
+	t.after(() => void server.close());
+	const internal = internals(server);
+	const context = internal.createContext("replay-client");
+	const socket = createSocket();
+	context.sockets.add(socket.webSocket);
+	internal.sessionIdsByPath.set("/tmp/replay-session.jsonl", "session-1");
+
+	internal.handleHostEvent(context, {
+		type: "session_progress",
+		sessionPath: "/tmp/replay-session.jsonl",
+		progress: { type: "assistant_delta", text: "补齐" },
+	});
+	await wait(75);
+	internal.subscribeSession(context, socket.webSocket, "session-1", 0);
+
+	assert.deepEqual(socket.sent, [
+		{ type: "session_summary", sessionId: "session-1", activity: "running" },
+		{ type: "session_progress", sessionId: "session-1", progress: { type: "assistant_delta", text: "补齐" }, seq: 1 },
+		{ type: "session_subscription", sessionId: "session-1", seq: 1, gap: false },
+	]);
+});
+
+test("Gateway 丢弃只有 revision 变化的重复会话快照", async (t) => {
+	const server = new WebGatewayServer(createConfig());
+	t.after(() => void server.close());
+	const internal = internals(server);
+	const context = internal.createContext("snapshot-dedupe-client");
+	const socket = createSocket();
+	context.sockets.add(socket.webSocket);
+	internal.subscriptionsFor(socket.webSocket).add("session-1");
+
+	const snapshot = {
+		id: "session-1",
+		path: "/tmp/snapshot-session.jsonl",
+		cwd: "/tmp",
+		createdAt: 1,
+		updatedAt: 2,
+		phase: "turn",
+		activity: "running",
+		thinkingLevel: "off",
+		attached: true,
+		writeAccess: "owned",
+		revision: 1,
+		leafId: null,
+		queuedSteerCount: 0,
+		queuedFollowUpCount: 0,
+		transcriptGeneration: "generation",
+		transcriptRevision: 10,
+	} as const;
+	internal.handleHostEvent(context, { type: "session_snapshot", snapshot });
+	internal.handleHostEvent(context, { type: "session_snapshot", snapshot: { ...snapshot, revision: 2 } });
+
+	assert.equal(socket.sent.length, 1);
+	assert.equal((socket.sent[0] as { seq?: number }).seq, 1);
+
+	internal.handleHostEvent(context, {
+		type: "session_snapshot",
+		snapshot: { ...snapshot, revision: 3, activity: "idle" },
+	});
+	assert.equal(socket.sent.length, 2);
+	assert.equal((socket.sent[1] as { seq?: number }).seq, 2);
 });
 
 test("Gateway 心跳会终止连续未响应的 WebSocket", async (t) => {

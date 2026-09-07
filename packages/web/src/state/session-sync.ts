@@ -25,6 +25,34 @@ export function isOlderSessionSnapshot(current: WebSessionSnapshot | undefined, 
 	return current?.id === incoming.id && incoming.revision < current.revision;
 }
 
+export function isSameSessionSnapshot(current: WebSessionSnapshot | undefined, incoming: WebSessionSnapshot): boolean {
+	if (!current || current.id !== incoming.id) return false;
+	const currentModel = current.model;
+	const incomingModel = incoming.model;
+	return (
+		current.name === incoming.name &&
+		current.createdAt === incoming.createdAt &&
+		current.updatedAt === incoming.updatedAt &&
+		current.phase === incoming.phase &&
+		current.activity === incoming.activity &&
+		currentModel?.provider === incomingModel?.provider &&
+		currentModel?.id === incomingModel?.id &&
+		current.thinkingLevel === incoming.thinkingLevel &&
+		current.attached === incoming.attached &&
+		current.writeAccess === incoming.writeAccess &&
+		current.leafId === incoming.leafId &&
+		current.queuedSteerCount === incoming.queuedSteerCount &&
+		current.queuedFollowUpCount === incoming.queuedFollowUpCount &&
+		current.contextTokens === incoming.contextTokens &&
+		current.contextWindow === incoming.contextWindow &&
+		current.transcriptGeneration === incoming.transcriptGeneration &&
+		current.transcriptRevision === incoming.transcriptRevision &&
+		current.toolActivityEpoch === incoming.toolActivityEpoch &&
+		current.toolActivityRevision === incoming.toolActivityRevision &&
+		JSON.stringify(current.toolActivities ?? []) === JSON.stringify(incoming.toolActivities ?? [])
+	);
+}
+
 export function runtimeHistoryChanged(
 	current: WebSessionSnapshot | undefined,
 	incoming: WebSessionSnapshot,

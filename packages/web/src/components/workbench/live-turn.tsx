@@ -1,19 +1,34 @@
 import { toLiveToolViewModel } from "../../adapters/live-tool-view-model.ts";
 import { committedToolCallIds } from "../../state/chat-lifecycle.ts";
-import { Message, MessageContent, MessageResponse } from "../ai-elements/message";
+import { Message, MessageContent } from "../ai-elements/message";
 import { Shimmer } from "../ai-elements/shimmer";
 import { ToolBatch, type ToolBatchAutoCollapse } from "../ai-elements/tool-batch";
-import type { WorkbenchState } from "../../state/use-workbench";
+import type { LiveTurnItem, WorkbenchState } from "../../state/use-workbench";
 import type { WorkbenchActions } from "./types";
 
-function latestThinkingLine(text: string): string {
-	const lines = text
-		.replace(/\r\n?/gu, "\n")
-		.split("\n")
-		.map((line) => line.trim())
-		.filter(Boolean);
-	const line = lines[lines.length - 1] ?? text.trim();
-	return line.replace(/\*\*\s*(.*?)\s*\*\*/gu, "$1").replace(/__\s*(.*?)\s*__/gu, "$1");
+type LiveTextItem = Extract<LiveTurnItem, { kind: "text" | "thinking" }>;
+
+function latestThinkingItem(items: readonly LiveTurnItem[]): Extract<LiveTurnItem, { kind: "thinking" }> | undefined {
+	for (let index = items.length - 1; index >= 0; index--) {
+		const item = items[index];
+		if (item?.kind === "thinking") return item;
+	}
+	return undefined;
+}
+
+function latestThinkingLine(parts: readonly string[]): string {
+	let line = "";
+	for (let index = parts.length - 1; index >= 0; index--) {
+		const part = parts[index] ?? "";
+		const newline = part.lastIndexOf("\n");
+		line = newline >= 0 ? part.slice(newline + 1) + line : part + line;
+		if (newline >= 0 || line.length >= 2048) break;
+	}
+	return line
+		.slice(-2048)
+		.trim()
+		.replace(/\*\*\s*(.*?)\s*\*\*/gu, "$1")
+		.replace(/__\s*(.*?)\s*__/gu, "$1");
 }
 
 export function LiveTurn({
@@ -29,24 +44,23 @@ export function LiveTurn({
 	const liveItems = state.liveTurnItems.filter((item) => item.kind !== "thinking");
 	const failed = state.liveTurnActive === false &&
 		["failed", "aborted", "interrupted"].includes(state.currentOperation?.status ?? "");
+	const thinkingItem = latestThinkingItem(state.liveTurnItems);
 	const showStatus = Boolean(state.statusText && (failed ||
-		(!liveItems.length && !state.liveThinking && state.liveTurnActive !== false)));
+		(!liveItems.length && !thinkingItem && state.liveTurnActive !== false)));
 	if (!liveItems.length && !showStatus) return null;
 
 	return (
 		<div className="live-turn grid gap-3" aria-live="polite">
 			{liveItems.map((item) => {
 				if (item.kind === "text") {
-					return item.text ? (
+					return item.parts.length ? (
 						<Message key={item.id} from="assistant">
 							<MessageContent>
-								<MessageResponse
-									mode="streaming"
-									parseIncompleteMarkdown
-									onOpenPath={(path) => void actions.openResource(path)}
-								>
-									{item.text}
-								</MessageResponse>
+								<div className="whitespace-pre-wrap break-words text-sm leading-6">
+									{item.parts.map((part, index) => (
+										<span key={`${item.id}:${index}`}>{part}</span>
+									))}
+								</div>
 							</MessageContent>
 						</Message>
 					) : null;
@@ -62,12 +76,9 @@ export function LiveTurn({
 					<ToolBatch
 						key={`${item.id}:${item.batchId}`}
 						className="tool-batch-render-item"
+						onOpenPath={(path) => void actions.openResource(path)}
 						tools={tools}
 						sessionId={state.sessionId}
-						onOpenPath={(path) => void actions.openResource(path)}
-						initialOpen={tools.some(
-							(tool) => tool.state === "input-available" || tool.state === "input-queued",
-						)}
 						autoCollapseWhenComplete={autoCollapseTools}
 					/>
 				);
@@ -80,11 +91,13 @@ export function LiveTurn({
 }
 
 export function ThinkingActivity({ state }: { state: WorkbenchState }) {
-	if (!state.liveThinking) return null;
+	const thinkingItem = latestThinkingItem(state.liveTurnItems);
+	if (!thinkingItem) return null;
+	const thinkingLine = latestThinkingLine(thinkingItem.parts);
 	return (
 		<div className="mx-auto w-full max-w-[var(--conversation-width)] shrink-0 px-5 py-2 text-sm font-normal text-muted-foreground sm:px-10" aria-live="polite" role="status">
 			<Shimmer as="span" className="block truncate text-sm font-normal">
-				{latestThinkingLine(state.liveThinking)}
+				{thinkingLine}
 			</Shimmer>
 		</div>
 	);

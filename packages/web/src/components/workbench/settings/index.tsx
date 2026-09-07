@@ -1,4 +1,4 @@
-import { ArrowLeft, BookOpen, Bot, CircleHelp, Search, Sparkles, SunMoon, WandSparkles } from "lucide-react";
+import { ArrowDownToLine, ArrowLeft, BookOpen, Bot, CircleHelp, Search, Sparkles, SunMoon, WandSparkles } from "lucide-react";
 import { useState } from "react";
 import type { ReactNode } from "react";
 import type { SettingsTab, WorkbenchState } from "../../../state/use-workbench";
@@ -10,6 +10,7 @@ import { AboutSettings } from "./about";
 import { AppearanceSettings } from "./appearance";
 import { DiagnosticsSettings } from "./diagnostics";
 import { GlobalInstructionsSettings } from "./global-instructions";
+import { HarnessImportsSettings } from "./imports";
 import { ModelSettings } from "./model-settings";
 import { SkillsSettings } from "./skills";
 import type { WorkbenchActions } from "../types";
@@ -21,6 +22,7 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 		{ value: "instructions", label: "全局提示词", icon: <BookOpen className="size-4" />, section: "个人" },
 		{ value: "models", label: "模型与认证", icon: <Bot className="size-4" />, section: "工作区" },
 		{ value: "skills", label: "技能", icon: <WandSparkles className="size-4" />, section: "工作区" },
+		{ value: "imports", label: "迁移导入", icon: <ArrowDownToLine className="size-4" />, section: "工作区" },
 		{ value: "diagnostics", label: "诊断", icon: <CircleHelp className="size-4" />, section: "工作区" },
 		{ value: "about", label: "关于", icon: <Sparkles className="size-4" />, section: "其他" },
 	];
@@ -101,7 +103,9 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 										? "为所有项目的任务提供说明和上下文。"
 										: state.settingsTab === "skills"
 											? "查看和管理当前项目可用的 Skill。"
-											: "配置工作台的外观、模型连接和运行信息。"}
+											: state.settingsTab === "imports"
+												? "把其他 Harness 的资源导入 LYStar Code。"
+												: "配置工作台的外观、模型连接和运行信息。"}
 								</p>
 							</div>
 							<TabsContent className="m-0" value="appearance">
@@ -112,6 +116,9 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 							</TabsContent>
 							<TabsContent className="m-0" value="skills">
 								<SkillsSettings state={state} actions={actions} />
+							</TabsContent>
+							<TabsContent className="m-0" value="imports">
+								<HarnessImportsSettings state={state} actions={actions} />
 							</TabsContent>
 							<TabsContent className="m-0" value="diagnostics">
 								<DiagnosticsSettings state={state} />

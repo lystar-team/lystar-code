@@ -7,6 +7,8 @@ import type {
 	GatewayEvent,
 	GitDiffResponse,
 	GitStatusResponse,
+	HarnessImportsResponse,
+	HarnessImportResultResponse,
 	HostInstructionsResponse,
 	ModelsResponse,
 	ProjectSkillsResponse,
@@ -412,6 +414,33 @@ export class WebApi {
 		);
 	}
 
+	async harnessImports(projectId: string, targetScope: "user" | "project"): Promise<HarnessImportsResponse> {
+		return this.request<HarnessImportsResponse>(
+			`/api/settings/imports?projectId=${encodeURIComponent(projectId)}&targetScope=${targetScope}`,
+		);
+	}
+
+	async importHarnessResources(
+		projectId: string,
+		targetScope: "user" | "project",
+		itemIds: string[],
+		ruleSelections?: Record<string, string[]>,
+		replaceItemIds?: string[],
+	): Promise<HarnessImportResultResponse> {
+		return this.request<HarnessImportResultResponse>(
+			`/api/settings/imports?projectId=${encodeURIComponent(projectId)}&targetScope=${targetScope}`,
+			{
+				method: "POST",
+				body: JSON.stringify({
+					itemIds,
+					...(ruleSelections ? { ruleSelections } : {}),
+					...(replaceItemIds ? { replaceItemIds } : {}),
+					clientRequestId: createUuid(),
+				}),
+			},
+		);
+	}
+
 	async hostInstructions(): Promise<HostInstructionsResponse> {
 		return this.request<HostInstructionsResponse>("/api/settings/host-instructions");
 	}
@@ -457,6 +486,18 @@ export class WebApi {
 			method: "POST",
 			body: JSON.stringify(response),
 		});
+	}
+
+	subscribeSession(socket: WebSocket, sessionId: string, lastSeq?: number): void {
+		if (socket.readyState !== WebSocket.OPEN || !sessionId) return;
+		socket.send(
+			JSON.stringify({ type: "subscribe_session", sessionId, ...(lastSeq === undefined ? {} : { lastSeq }) }),
+		);
+	}
+
+	unsubscribeSession(socket: WebSocket, sessionId: string): void {
+		if (socket.readyState !== WebSocket.OPEN || !sessionId) return;
+		socket.send(JSON.stringify({ type: "unsubscribe_session", sessionId }));
 	}
 
 	connect(onEvent: (event: GatewayEvent) => void, onClose: () => void): WebSocket {

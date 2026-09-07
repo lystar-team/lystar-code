@@ -1,5 +1,6 @@
 "use client";
 
+import { useControllableState } from "@radix-ui/react-use-controllable-state";
 import type { ToolDiff } from "@lystar/code-web-protocol";
 import {
 	ChevronDownIcon,
@@ -12,7 +13,7 @@ import {
 	TerminalIcon,
 	WrenchIcon,
 } from "lucide-react";
-import { type MouseEvent as ReactMouseEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { type MouseEvent as ReactMouseEvent, type ReactNode, memo, useEffect, useRef } from "react";
 import type { BundledLanguage } from "shiki";
 import { cn } from "@/lib/utils";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
@@ -44,6 +45,10 @@ export interface ToolBatchProps {
 	tools: ToolBatchTool[];
 	className?: string;
 	initialOpen?: boolean;
+	open?: boolean;
+	onOpenChange?: (open: boolean) => void;
+	toolOpen?: ReadonlyMap<string, boolean>;
+	onToolOpenChange?: (toolId: string, open: boolean) => void;
 	autoCollapseWhenComplete?: ToolBatchAutoCollapse;
 	sessionId?: string;
 	onOpenPath?: (path: string) => void;
@@ -241,10 +246,12 @@ function ToolDiffOutput({
 	diff,
 	fallbackPath,
 	onOpenPath,
+	plainText = false,
 }: {
 	diff: ToolDiff;
 	fallbackPath?: string;
 	onOpenPath?: (path: string) => void;
+	plainText?: boolean;
 }) {
 	return (
 		<div className="grid gap-1">
@@ -277,7 +284,8 @@ function ToolDiffOutput({
 								className="my-0 border-border/60 bg-muted/25"
 								code={file.diff}
 								language={"diff" as BundledLanguage}
-							>
+								plainText={plainText}
+								>
 								<CodeBlockHeader className="border-b-0 bg-transparent px-2 py-1">
 									<CodeBlockTitle className="min-w-0 text-foreground">
 										<FileCode2Icon className="size-3.5 shrink-0" />
@@ -305,6 +313,7 @@ function ToolDetail({
 	sessionId?: string;
 	onOpenPath?: (path: string) => void;
 }) {
+	const plainText = tool.state === "input-available" || tool.state === "input-queued";
 	const title = toolTitle(tool);
 	const stats = diffStats(tool.diff);
 	const imagePreview = tool.images?.length ? (
@@ -331,7 +340,8 @@ function ToolDetail({
 					<CodeBlock
 						className="my-0 rounded-md border-0 bg-transparent shadow-none"
 						code={code}
-						language={codeLanguageForPath(title)}
+						language={plainText ? ("text" as BundledLanguage) : codeLanguageForPath(title)}
+						plainText={plainText}
 						showLineNumbers
 						transparent
 					>
@@ -382,7 +392,14 @@ function ToolDetail({
 					{stats.deletions ? <span className="text-destructive">-{stats.deletions}</span> : null}
 				</div>
 			) : null}
-			{tool.diff ? <ToolDiffOutput diff={tool.diff} fallbackPath={title} onOpenPath={onOpenPath} /> : null}
+			{tool.diff ? (
+				<ToolDiffOutput
+					diff={tool.diff}
+					fallbackPath={title}
+					onOpenPath={onOpenPath}
+					plainText={plainText}
+				/>
+			) : null}
 			{!tool.diff && tool.detail ? (
 				<CodeBlock
 					className="my-0 border-border/60 bg-muted/25"
@@ -408,6 +425,8 @@ function ToolBatchRow({
 	onOpenPath,
 	className,
 	initialOpen = false,
+	open: controlledOpen,
+	onOpenChange,
 	autoCollapseWhenComplete = false,
 }: {
 	tool: ToolBatchTool;
@@ -415,9 +434,15 @@ function ToolBatchRow({
 	onOpenPath?: (path: string) => void;
 	className?: string;
 	initialOpen?: boolean;
+	open?: boolean;
+	onOpenChange?: (open: boolean) => void;
 	autoCollapseWhenComplete?: ToolBatchAutoCollapse;
 }) {
-	const [open, setOpen] = useState(initialOpen);
+	const [open, setOpen] = useControllableState({
+		defaultProp: initialOpen,
+		prop: controlledOpen,
+		onChange: onOpenChange,
+	});
 	const active = tool.state === "input-available" || tool.state === "input-queued";
 	const previousActive = useRef(active);
 	const title = toolRowTitle(tool);
@@ -425,7 +450,6 @@ function ToolBatchRow({
 	const hasDetails = Boolean(tool.detail || tool.diff || tool.images?.length || tool.inputPreview);
 
 	useEffect(() => {
-		if (!previousActive.current && active) setOpen(true);
 		if (previousActive.current && !active && resolveAutoCollapse(autoCollapseWhenComplete)) setOpen(false);
 		previousActive.current = active;
 	}, [active, autoCollapseWhenComplete]);
@@ -475,21 +499,28 @@ function ToolBatchRow({
 	);
 }
 
-export function ToolBatch({
+export const ToolBatch = memo(function ToolBatch({
 	tools,
 	className,
 	initialOpen = false,
+	open: controlledOpen,
+	onOpenChange,
 	autoCollapseWhenComplete = false,
 	sessionId,
 	onOpenPath,
+	toolOpen,
+	onToolOpenChange,
 }: ToolBatchProps) {
 	const active = tools.some((tool) => tool.state === "input-available" || tool.state === "input-queued");
 	const aggregateState = batchState(tools);
-	const [open, setOpen] = useState(initialOpen);
+	const [open, setOpen] = useControllableState({
+		defaultProp: initialOpen,
+		prop: controlledOpen,
+		onChange: onOpenChange,
+	});
 	const previousActive = useRef(active);
 
 	useEffect(() => {
-		if (!previousActive.current && active) setOpen(true);
 		if (previousActive.current && !active && resolveAutoCollapse(autoCollapseWhenComplete)) setOpen(false);
 		previousActive.current = active;
 	}, [active, autoCollapseWhenComplete]);
@@ -502,7 +533,8 @@ export function ToolBatch({
 				tool={tool}
 				sessionId={sessionId}
 				onOpenPath={onOpenPath}
-				initialOpen={initialOpen}
+				open={open}
+				onOpenChange={setOpen}
 				className={className}
 				autoCollapseWhenComplete={autoCollapseWhenComplete}
 			/>
@@ -540,12 +572,19 @@ export function ToolBatch({
 			>
 				<div className="relative z-0 grid min-w-0 gap-0">
 					{tools.map((tool) => (
-						<ToolBatchRow key={tool.id} tool={tool} sessionId={sessionId} onOpenPath={onOpenPath} />
+						<ToolBatchRow
+							key={tool.id}
+							tool={tool}
+							sessionId={sessionId}
+							onOpenPath={onOpenPath}
+							open={toolOpen ? (toolOpen.get(tool.id) ?? false) : undefined}
+							onOpenChange={toolOpen ? (nextOpen) => onToolOpenChange?.(tool.id, nextOpen) : undefined}
+						/>
 					))}
 				</div>
 			</CollapsibleContent>
 		</Collapsible>
 	);
-}
+});
 
 export { statusLabels as toolBatchStatusLabels, toolTitle };

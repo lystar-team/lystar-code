@@ -146,6 +146,19 @@ describe("transcript state", () => {
 		expect(merged[1].view).toEqual({ type: "assistant", text: "更新" });
 	});
 
+	it("尾页刷新复用未变化的 Transcript 对象", () => {
+		const current = decorateTranscriptItems([
+			{ ...item("m1"), view: { type: "assistant" as const, text: "保留" } },
+			{ ...item("m2"), view: { type: "assistant" as const, text: "旧" } },
+		]);
+		const refreshed = mergeTranscriptEntries(current, [
+			{ ...item("m1"), view: { type: "assistant" as const, text: "保留" } },
+			{ ...item("m2"), view: { type: "assistant" as const, text: "新" } },
+		]);
+		expect(refreshed[0]).toBe(current[0]);
+		expect(refreshed[1]).not.toBe(current[1]);
+	});
+
 	it("keeps websocket messages received after the requested tail in place", () => {
 		const current = decorateTranscriptItems([item("m1"), item("m2"), item("m3"), item("m4")]);
 		const merged = mergeTranscriptEntries(current, [item("m2"), item("m3")]);
