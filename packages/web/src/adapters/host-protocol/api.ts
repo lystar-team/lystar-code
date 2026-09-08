@@ -16,6 +16,8 @@ import type {
 	ProjectSkillsResponse,
 	ProjectTreeResponse,
 	ProjectTrustResponse,
+	SecuritySettingsResponse,
+	SaveSecuritySettingsResponse,
 	SessionTreeResponse,
 	SettingsResponse,
 	TranscriptResponse,
@@ -477,6 +479,20 @@ export class WebApi {
 		return this.request<SettingsResponse>(`/api/settings?sessionId=${encodeURIComponent(sessionId)}`);
 	}
 
+	async securitySettings(): Promise<SecuritySettingsResponse> {
+		return this.request<SecuritySettingsResponse>("/api/security-settings");
+	}
+
+	async saveSecuritySettings(input: {
+		host: string;
+		port: number;
+		password?: string;
+	}): Promise<SaveSecuritySettingsResponse> {
+		return this.request<SaveSecuritySettingsResponse>("/api/security-settings", {
+			method: "POST",
+			body: JSON.stringify(input),
+		});
+	}
 
 	async setSetting(sessionId: string, id: string, value: boolean | number | string): Promise<unknown> {
 		return this.request("/api/settings", {

@@ -96,6 +96,18 @@ function attachmentListsEqual(
 	});
 }
 
+function toolSourcesEqual(
+	previous: readonly { url: string; title?: string }[] | undefined,
+	next: readonly { url: string; title?: string }[] | undefined,
+): boolean {
+	if (previous === next) return true;
+	if (!previous || !next || previous.length !== next.length) return !previous?.length && !next?.length;
+	return previous.every((source, index) => {
+		const candidate = next[index];
+		return candidate?.url === source.url && candidate.title === source.title;
+	});
+}
+
 function toolBatchToolsEqual(previous: readonly ToolBatchTool[], next: readonly ToolBatchTool[]): boolean {
 	if (previous === next) return true;
 	if (previous.length !== next.length) return false;
@@ -108,13 +120,15 @@ function toolBatchToolsEqual(previous: readonly ToolBatchTool[], next: readonly 
 			candidate.state === tool.state &&
 			candidate.detail === tool.detail &&
 			candidate.inputPreview === tool.inputPreview &&
+			toolSourcesEqual(tool.sources, candidate.sources) &&
 			candidate.images === tool.images &&
 			candidate.diff === tool.diff
 		);
 	});
 }
 
-function persistedToolBatchKind(batch: TranscriptBatchRenderItem): "read" | "image" | "action" {
+function persistedToolBatchKind(batch: TranscriptBatchRenderItem): "read" | "image" | "search" | "action" {
+	if (batch.tools.length > 0 && batch.tools.every((tool) => tool.name === "web_search")) return "search";
 	if (batch.tools.length > 0 && batch.tools.every((tool) => tool.name === "read" && Boolean(tool.images?.length))) return "image";
 	if (batch.tools.length > 0 && batch.tools.every((tool) => tool.name === "read")) return "read";
 	return "action";
@@ -154,7 +168,7 @@ function conversationRenderItemEqual(previous: ConversationRenderItem, next: Con
 function groupPersistedToolBatches(rendered: Array<RawRenderItem>): ConversationRenderItem[] {
 	const grouped: ConversationRenderItem[] = [];
 	let previousToolStack: TranscriptToolStackRenderItem | undefined;
-	let previousToolBatchKind: "read" | "image" | "action" | undefined;
+	let previousToolBatchKind: "read" | "image" | "search" | "action" | undefined;
 	for (const entry of rendered) {
 		if (entry.kind === "activity-boundary") {
 			previousToolStack = undefined;
@@ -182,11 +196,28 @@ function groupPersistedToolBatches(rendered: Array<RawRenderItem>): Conversation
 export function buildPersistedRenderItems(
 	items: WorkbenchState["transcript"],
 	toolIndex: ToolIndex,
+	pendingUserPrompts: WorkbenchState["pendingUserPrompts"] = [],
 ): ConversationRenderItem[] {
 	const rendered: Array<RawRenderItem> = [];
 	let batchTools: ToolBatchTool[] = [];
 	let batchKey = "";
 	let batchEntryId: string | undefined;
+
+	const pendingAtIndex = new Map<number, WorkbenchState["pendingUserPrompts"]>();
+	for (const prompt of pendingUserPrompts) {
+		let insertIndex = prompt.afterEntryId ? items.length : 0;
+		if (prompt.afterEntryId) {
+			for (let index = items.length - 1; index >= 0; index--) {
+				if (items[index]?.entryId === prompt.afterEntryId) {
+					insertIndex = index + 1;
+					break;
+				}
+			}
+		}
+		const prompts = pendingAtIndex.get(insertIndex) ?? [];
+		prompts.push(prompt);
+		pendingAtIndex.set(insertIndex, prompts);
+	}
 
 	const flushBatch = () => {
 		if (batchTools.length > 0) {
@@ -196,8 +227,28 @@ export function buildPersistedRenderItems(
 			batchEntryId = undefined;
 		}
 	};
+	const appendPendingPrompts = (index: number) => {
+		const prompts = pendingAtIndex.get(index);
+		if (!prompts?.length) return;
+		flushBatch();
+		for (const prompt of prompts) {
+			rendered.push({
+				kind: "message",
+				key: prompt.id,
+				live: false,
+				role: "user",
+				text: prompt.text,
+				attachments: prompt.attachments,
+				sources: [],
+				copyVisible: false,
+			});
+		}
+	};
 
-	for (const item of items) {
+	for (let index = 0; index <= items.length; index++) {
+		appendPendingPrompts(index);
+		if (index === items.length) break;
+		const item = items[index]!;
 		const viewModel = toSessionItemViewModel(item, toolIndex.statuses);
 		if (viewModel.kind === "reasoning") {
 			flushBatch();
@@ -216,6 +267,18 @@ export function buildPersistedRenderItems(
 				sources: viewModel.sources,
 				copyVisible: false,
 			});
+			continue;
+		}
+		if (viewModel.kind === "tools" && item.view?.type === "web_search") {
+			flushBatch();
+			const searchTool = viewModel.tools[0];
+			if (searchTool) {
+				rendered.push({
+					kind: "tool-batch",
+					key: `web-search:${item.renderId}:${searchTool.id}`,
+					tools: [searchTool],
+				});
+			}
 			continue;
 		}
 		if (viewModel.kind === "tools" && item.view?.type === "tool_call") {
@@ -316,7 +379,6 @@ export function appendLiveRenderItems(
 
 export function buildConversationRenderItems(
 	persistedItems: ConversationRenderItem[],
-	pendingUserPrompts: WorkbenchState["pendingUserPrompts"],
 	liveItems: readonly LiveTurnItem[],
 	liveTools: WorkbenchState["liveTools"],
 	committedToolCallIds: ReadonlySet<string>,
@@ -324,21 +386,8 @@ export function buildConversationRenderItems(
 	liveTurnId: number,
 	responseActive: boolean,
 ): ConversationRenderItem[] {
-	const next = [...persistedItems];
-	for (const prompt of pendingUserPrompts) {
-		next.push({
-			kind: "message",
-			key: prompt.id,
-			live: false,
-			role: "user",
-			text: prompt.text,
-			attachments: prompt.attachments,
-			sources: [],
-			copyVisible: false,
-		});
-	}
 	const withLive = appendLiveRenderItems(
-		next,
+		persistedItems,
 		liveItems,
 		liveTools,
 		committedToolCallIds,
@@ -412,14 +461,13 @@ export function ConversationView({
 	}, [persistedToolIndex, state.liveTools]);
 	const responseActive = isConversationResponseActive(state);
 	const persistedRenderItems = useMemo(
-		() => buildPersistedRenderItems(state.transcript, toolIndex),
-		[state.transcript, toolIndex],
+		() => buildPersistedRenderItems(state.transcript, toolIndex, state.pendingUserPrompts),
+		[state.pendingUserPrompts, state.transcript, toolIndex],
 	);
 	const renderItems = useMemo(
 		() =>
 			buildConversationRenderItems(
 				persistedRenderItems,
-				state.pendingUserPrompts,
 				state.liveTurnItems,
 				state.liveTools,
 				toolIndex.callIds,
@@ -433,7 +481,6 @@ export function ConversationView({
 			state.liveTools,
 			state.liveTurnId,
 			state.liveTurnItems,
-			state.pendingUserPrompts,
 			toolIndex.callIds,
 			responseActive,
 		],
@@ -582,8 +629,8 @@ function ConversationBody({
 			return next;
 		});
 	}, []);
-	const renderStateRef = useRef({ sessionId: state.sessionId, toolStatuses });
-	renderStateRef.current = { sessionId: state.sessionId, toolStatuses };
+	const renderStateRef = useRef({ sessionId: state.sessionId, projectId: state.currentProjectId, toolStatuses });
+	renderStateRef.current = { sessionId: state.sessionId, projectId: state.currentProjectId, toolStatuses };
 	const renderConversationItem = useCallback(
 		(entry: ConversationRenderItem) => {
 			const current = renderStateRef.current;
@@ -596,6 +643,7 @@ function ConversationBody({
 						sources={entry.sources}
 						showCopy={entry.copyVisible}
 						sessionId={current.sessionId}
+						projectId={current.projectId}
 						onOpenPath={openResource}
 						mode={entry.live ? "streaming" : "static"}
 					/>
@@ -675,6 +723,7 @@ function ConversationBody({
 					toolStatuses={current.toolStatuses}
 					onOpenPath={openResource}
 					sessionId={current.sessionId}
+					projectId={current.projectId}
 				/>
 			);
 		},

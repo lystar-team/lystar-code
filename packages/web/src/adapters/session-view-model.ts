@@ -16,12 +16,18 @@ export interface TranscriptImageViewModel {
 	alt?: string;
 }
 
+export interface TranscriptSourceViewModel {
+	url: string;
+	title?: string;
+}
+
 export interface TranscriptToolViewModel {
 	id: string;
 	name: string;
 	summary: string;
 	state: ToolVisualState;
 	detail?: string;
+	sources?: TranscriptSourceViewModel[];
 	images?: TranscriptImageViewModel[];
 	diff?: {
 		files: Array<{
@@ -91,6 +97,22 @@ export function toSessionItemViewModel(
 		return { kind: "reasoning", text: view.text, timestamp: item.timestamp };
 	}
 
+	if (view.type === "web_search") {
+		return {
+			kind: "tools",
+			timestamp: item.timestamp,
+			tools: [
+				{
+					id: view.id,
+					name: "web_search",
+					summary: view.query || "网页搜索",
+					state: toWebSearchState(view.status),
+					sources: view.sources,
+				},
+			],
+		};
+	}
+
 	if (view.type === "tool_call") {
 		return {
 			kind: "tools",
@@ -145,6 +167,12 @@ export function toSessionItemViewModel(
 		attachments: [],
 		sources: [],
 	};
+}
+
+function toWebSearchState(status: "in_progress" | "searching" | "completed" | "failed"): ToolVisualState {
+	if (status === "completed") return "output-available";
+	if (status === "failed") return "output-error";
+	return "input-available";
 }
 
 function toToolState(status?: "success" | "error"): ToolVisualState {

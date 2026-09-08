@@ -136,7 +136,7 @@ function MetricCard({
 	detail?: string;
 }) {
 	return (
-		<Card className="shadow-none">
+		<Card className="min-w-0 shadow-none">
 			<CardContent className="p-4">
 				<div className="flex items-start justify-between gap-3">
 					<div>
@@ -171,7 +171,7 @@ function ResourceChart({ history }: { history: ChartSample[] }) {
 		{ label: "LYStar 进程内存", color: "#b45309", values: history.map((sample) => sample.processMemory) },
 	];
 	return (
-		<Card className="shadow-none">
+		<Card className="min-w-0 shadow-none">
 			<CardHeader className="gap-3 pb-3">
 				<div className="flex flex-wrap items-center justify-between gap-3">
 					<div>
@@ -275,7 +275,7 @@ export function DiagnosticsSettings({ state, actions }: { state: WorkbenchState;
 	const checks = Array.isArray(diagnostics.checks) ? diagnostics.checks : [];
 
 	return (
-		<div className="grid gap-6">
+		<div className="grid min-w-0 gap-6">
 			<div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/20 px-4 py-3">
 				<div className="flex items-center gap-2 text-sm">
 					<Activity className="size-4 text-muted-foreground" />
@@ -298,8 +298,8 @@ export function DiagnosticsSettings({ state, actions }: { state: WorkbenchState;
 
 			<SettingSection title="服务状态">
 				<div className="grid gap-3 md:grid-cols-2">
-					<Card className="shadow-none">
-						<CardContent className="flex items-center justify-between gap-4 p-4">
+					<Card className="min-w-0 shadow-none">
+						<CardContent className="flex flex-col items-stretch justify-between gap-3 p-4 sm:flex-row sm:items-center">
 							<div className="flex min-w-0 items-center gap-3">
 								<span className="rounded-md bg-muted p-2"><Server className="size-4" /></span>
 								<div className="min-w-0">
@@ -307,7 +307,7 @@ export function DiagnosticsSettings({ state, actions }: { state: WorkbenchState;
 									<p className="truncate text-xs text-muted-foreground">{diagnostics.web?.host ?? "—"}:{diagnostics.web?.port ?? "—"} · PID {diagnostics.gateway?.pid ?? "—"}</p>
 								</div>
 							</div>
-							<div className="flex items-center gap-2">
+							<div className="flex min-w-0 flex-wrap items-center justify-end gap-2 sm:shrink-0">
 								<StatusBadge status={diagnostics.gateway} />
 								<Button variant="outline" size="sm" disabled={activeAction !== undefined} onClick={() => void runServiceAction("gateway")}>
 									<RotateCw className={cn("size-3.5", activeAction === "gateway" && "animate-spin")} />
@@ -316,8 +316,8 @@ export function DiagnosticsSettings({ state, actions }: { state: WorkbenchState;
 							</div>
 						</CardContent>
 					</Card>
-					<Card className="shadow-none">
-						<CardContent className="flex items-center justify-between gap-4 p-4">
+					<Card className="min-w-0 shadow-none">
+						<CardContent className="flex flex-col items-stretch justify-between gap-3 p-4 sm:flex-row sm:items-center">
 							<div className="flex min-w-0 items-center gap-3">
 								<span className="rounded-md bg-muted p-2"><Activity className="size-4" /></span>
 								<div className="min-w-0">
@@ -325,7 +325,7 @@ export function DiagnosticsSettings({ state, actions }: { state: WorkbenchState;
 									<p className="truncate text-xs text-muted-foreground">PID {diagnostics.runtime?.pid ?? "—"} · {diagnostics.runtime?.manager ?? "—"}</p>
 								</div>
 							</div>
-							<div className="flex items-center gap-2">
+							<div className="flex min-w-0 flex-wrap items-center justify-end gap-2 sm:shrink-0">
 								<StatusBadge status={diagnostics.runtime} />
 								<Button variant="outline" size="sm" disabled={activeAction !== undefined} onClick={() => void runServiceAction("runtime")}>
 									<RotateCw className={cn("size-3.5", activeAction === "runtime" && "animate-spin")} />

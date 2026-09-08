@@ -60,6 +60,8 @@ export interface WorkbenchActions {
 	syncModelProvider: (provider: string) => Promise<void>;
 	refreshSkills: () => Promise<void>;
 	refreshDiagnostics: () => Promise<void>;
+	refreshSecuritySettings: () => Promise<void>;
+	saveSecuritySettings: (input: { host: string; port: number; password?: string }) => Promise<void>;
 	restartDiagnosticService: (service: "gateway" | "runtime") => Promise<void>;
 	refreshHarnessImports: (targetScope?: "user" | "project") => Promise<void>;
 	importHarnessResources: (

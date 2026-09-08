@@ -162,6 +162,54 @@ describe("CodingAgentRuntimeAdapter", () => {
 			{ type: "thinking_delta", text: "reason" },
 			{ type: "usage", usage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4 } },
 		]);
+		const webSearchCall = {
+			type: "webSearchCall",
+			id: "web-search-1",
+			status: "searching",
+			action: { type: "search", query: "uni-app H5 Canvas touch event" },
+		};
+		const webSearchStart = {
+			type: "message_update",
+			message: { role: "assistant" },
+			assistantMessageEvent: { type: "websearch_start", contentIndex: 0, call: webSearchCall },
+		} as unknown as AgentSessionEvent;
+		const webSearchUpdate = {
+			...webSearchStart,
+			assistantMessageEvent: { type: "websearch_update", contentIndex: 0, call: webSearchCall },
+		} as unknown as AgentSessionEvent;
+		const webSearchEnd = {
+			...webSearchStart,
+			assistantMessageEvent: {
+				type: "websearch_end",
+				contentIndex: 0,
+				call: { ...webSearchCall, status: "completed" },
+			},
+		} as unknown as AgentSessionEvent;
+		expect(projectRuntimeProgress(webSearchStart)).toEqual([
+			{
+				type: "tool_start",
+				toolCallId: "web-search-1",
+				name: "web_search",
+				summary: "uni-app H5 Canvas touch event",
+			},
+		]);
+		expect(projectRuntimeProgress(webSearchUpdate)).toEqual([
+			{
+				type: "tool_update",
+				toolCallId: "web-search-1",
+				name: "web_search",
+				summary: "uni-app H5 Canvas touch event",
+			},
+		]);
+		expect(projectRuntimeProgress(webSearchEnd)).toEqual([
+			{
+				type: "tool_end",
+				toolCallId: "web-search-1",
+				name: "web_search",
+				status: "success",
+				summary: "uni-app H5 Canvas touch event",
+			},
+		]);
 		const appended = { type: "entry_appended", entry: {} } as unknown as AgentSessionEvent;
 		expect(projectRuntimeProgress(appended)).toEqual([]);
 		expect(projectRuntimeProgress({ type: "session_info_changed", name: "x".repeat(2_000) })).toEqual([
@@ -555,6 +603,7 @@ describe("CodingAgentRuntimeAdapter", () => {
 		writeFileSync(join(agentDir, "themes", "paper.json"), JSON.stringify({ ...paperTheme, name: "paper" }));
 		const adapter = new CodingAgentRuntimeAdapter(agentDir);
 		const runtime = await adapter.createSession(cwd, async () => ({ cancelled: true }));
+		expect(existsSync(runtime.sessionPath)).toBe(true);
 		cleanups.push(async () => {
 			await runtime.dispose();
 			rmSync(tempDir, { recursive: true, force: true });

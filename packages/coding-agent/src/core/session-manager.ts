@@ -47,6 +47,8 @@ export interface SessionHeader {
 export interface NewSessionOptions {
 	id?: string;
 	parentSession?: string;
+	/** 在首条会话记录前持久化 Session 头。 */
+	persistHeader?: boolean;
 }
 
 export interface SessionEntryBase {
@@ -1415,7 +1417,16 @@ export class SessionManager {
 		const fileTimestamp = timestamp.replace(/[:.]/g, "-");
 		const sessionFile = join(this.getSessionDir(), `${fileTimestamp}_${sessionId}.jsonl`);
 		const lease = this._acquireWriterLease(sessionFile);
-		this._adoptState({ sessionId, sessionFile, fileEntries: [header], flushed: false }, lease);
+		try {
+			if (options?.persistHeader) writeSessionEntriesAtomically(sessionFile, [header]);
+			this._adoptState(
+				{ sessionId, sessionFile, fileEntries: [header], flushed: options?.persistHeader === true },
+				lease,
+			);
+		} catch (error) {
+			this._releaseWriterLease(lease);
+			throw error;
+		}
 		return sessionFile;
 	}
 

@@ -27,7 +27,7 @@ export function SkillsSettings({ state, actions }: { state: WorkbenchState; acti
 		value === "user" ? "个人" : value === "project" ? "项目" : "临时";
 
 	return (
-		<div className="grid gap-6">
+		<div className="grid min-w-0 gap-6">
 			<SettingSection title="技能">
 				<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 					<div className="flex flex-wrap gap-1 rounded-lg bg-muted/60 p-1">
@@ -37,8 +37,8 @@ export function SkillsSettings({ state, actions }: { state: WorkbenchState; acti
 							</Button>
 						))}
 					</div>
-					<div className="flex items-center gap-2">
-						<div className="relative w-full sm:w-64">
+					<div className="flex min-w-0 flex-1 items-center gap-2 sm:flex-none">
+						<div className="relative min-w-0 flex-1 sm:w-64 sm:flex-none">
 							<Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
 							<Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索技能" aria-label="搜索技能" className="pl-9" />
 						</div>
@@ -48,12 +48,12 @@ export function SkillsSettings({ state, actions }: { state: WorkbenchState; acti
 					</div>
 				</div>
 				{!currentProject ? (
-					<Card className="shadow-none">
-						<CardContent className="py-10 text-center text-sm text-muted-foreground">请先选择一个项目，再查看该项目可用的 Skill。</CardContent>
+						<Card className="min-w-0 shadow-none">
+							<CardContent className="py-10 text-center text-sm text-muted-foreground">请先选择一个项目，再查看该项目可用的 Skill。</CardContent>
 					</Card>
 				) : state.skillsLoading ? (
-					<Card className="shadow-none">
-						<CardContent className="flex min-h-48 items-center justify-center gap-2 text-sm text-muted-foreground" role="status">
+						<Card className="min-w-0 shadow-none">
+							<CardContent className="flex min-h-48 items-center justify-center gap-2 text-sm text-muted-foreground" role="status">
 							<LoaderCircle className="size-4 animate-spin" />正在读取技能
 						</CardContent>
 					</Card>
@@ -63,7 +63,7 @@ export function SkillsSettings({ state, actions }: { state: WorkbenchState; acti
 						<AlertDescription>{state.skillsError}</AlertDescription>
 					</Alert>
 				) : (
-					<Card className="shadow-none">
+					<Card className="min-w-0 shadow-none">
 						<CardContent className="p-0">
 							{visibleSkills.length ? visibleSkills.map((skill) => {
 								const updating = state.skillUpdatingPath === skill.path;

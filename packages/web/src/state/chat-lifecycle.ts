@@ -1,6 +1,12 @@
-import type { SessionProgress } from "@lystar/code-web-protocol";
+import type { SessionProgress, ToolActivity } from "@lystar/code-web-protocol";
 import type { PromptAttachmentPreview, WebTranscriptItem } from "../types.ts";
 import type { LiveTurnItem, WorkbenchState } from "./use-workbench.ts";
+
+const ACTIVE_TOOL_ACTIVITY_STATES = new Set<ToolActivity["state"]>(["preparing", "queued", "running"]);
+
+export function hasActiveToolActivities(activities: readonly ToolActivity[] | undefined): boolean {
+	return Boolean(activities?.some((activity) => ACTIVE_TOOL_ACTIVITY_STATES.has(activity.state)));
+}
 
 export function canSendPrompt(
 	state: Pick<WorkbenchState, "sessionId" | "sessionReady" | "readOnly" | "connected">,
@@ -12,6 +18,7 @@ export interface PendingUserPrompt {
 	id: string;
 	text: string;
 	attachments: PromptAttachmentPreview[];
+	afterEntryId?: string;
 }
 
 export function reconcilePendingUserPrompts(

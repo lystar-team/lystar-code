@@ -256,9 +256,9 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 	};
 
 	return (
-		<div className="grid gap-6">
+		<div className="grid min-w-0 gap-6">
 			<SettingSection title="当前模型">
-				<Card className="!py-1 shadow-none">
+				<Card className="min-w-0 !py-1 shadow-none">
 					<CardContent className="p-3">
 						<div className="flex items-center gap-2">
 							<ModelBrandIcon
@@ -284,7 +284,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 							onValueChange={(level) => void actions.updateThinking(level)}
 							className="mt-3 gap-0"
 						>
-							<TabsList className="grid h-auto w-full grid-flow-col auto-cols-max items-center justify-start gap-1 overflow-x-auto rounded-none bg-transparent p-0 py-0.5">
+							<TabsList className="grid h-auto w-full min-w-0 grid-flow-col auto-cols-max items-center justify-start gap-1 overflow-x-auto rounded-none bg-transparent p-0 py-0.5">
 								{["off", "low", "medium", "high", "xhigh", "max", "ultra"].map((level) => (
 									<TabsTrigger
 										className="!h-8 !w-auto !min-w-max !flex-none whitespace-nowrap rounded-xl border-0 !px-3 !text-[13px] !leading-5 font-medium text-muted-foreground after:hidden data-[state=active]:bg-accent data-[state=active]:text-foreground data-[state=active]:shadow-none"
@@ -303,7 +303,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 			</SettingSection>
 
 			<SettingSection title="模型供应商">
-				<div className="flex items-center justify-between gap-3">
+				<div className="flex min-w-0 flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-center">
 					<p className="text-sm text-muted-foreground">管理供应商、目录来源和在模型选择器中的显示状态。</p>
 					<Button size="sm" onClick={() => openProvider()}>
 						<Plus className="size-4" />
@@ -327,7 +327,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 					onValueChange={(value) => setProviderTab(value as "custom" | "builtin")}
 					className="gap-2"
 				>
-					<TabsList className="!flex-row h-9 w-fit flex-nowrap">
+					<TabsList className="!flex-row h-9 w-fit max-w-full flex-nowrap overflow-x-auto">
 						<TabsTrigger value="custom">
 							自定义<span className="ml-1 text-xs text-muted-foreground">{customProviders.length}</span>
 						</TabsTrigger>
@@ -343,12 +343,12 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 									<Card
 										key={provider.id}
 										className={cn(
-											"!py-1 shadow-none transition-colors",
+															"!py-1 min-w-0 shadow-none transition-colors",
 											activeProvider === provider.id && "border-primary/50 bg-accent/30",
 											!visible && "opacity-65",
 										)}
 									>
-										<CardContent className="flex items-center gap-2 p-2">
+										<CardContent className="flex flex-col items-stretch gap-3 p-2 sm:flex-row sm:items-center">
 											<MonochromeProviderIcon providerId={provider.id} />
 											<div className="min-w-0 flex-1">
 												<div className="flex flex-wrap items-center gap-1.5">
@@ -373,7 +373,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 													{provider.catalogProvider ? ` · 目录来源 ${provider.catalogProvider}` : ""}
 												</p>
 											</div>
-											<div className="flex shrink-0 items-center gap-1">
+											<div className="flex min-w-0 flex-wrap items-center justify-end gap-1 sm:shrink-0">
 												<Badge className="h-5 px-1.5 text-[10px]" variant="outline">
 													{provider.modelCount} 个模型
 												</Badge>
@@ -444,7 +444,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 					if (!open) setModelListProviderId(null);
 				}}
 			>
-				<DialogContent className="max-h-[min(720px,calc(100vh-2rem))] max-w-2xl overflow-hidden">
+				<DialogContent className="w-[calc(100%-1rem)] max-w-[calc(100%-1rem)] max-h-[min(720px,calc(100vh-2rem))] overflow-hidden sm:max-w-2xl">
 					<DialogHeader>
 						<DialogTitle>{modelListProvider?.name ?? modelListProviderId} 的模型</DialogTitle>
 						<DialogDescription>查看当前供应商可用的模型，并按需调整模型配置。</DialogDescription>
@@ -521,7 +521,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 					if (!open) setProviderDraft(null);
 				}}
 			>
-				<DialogContent className="max-h-[min(720px,calc(100vh-2rem))] max-w-lg overflow-y-auto">
+				<DialogContent className="w-[calc(100%-1rem)] max-w-[calc(100%-1rem)] max-h-[min(720px,calc(100vh-2rem))] overflow-y-auto sm:max-w-lg">
 					<DialogHeader>
 						<DialogTitle>{providerDraft?.isNew ? "新增模型 Provider" : "编辑模型 Provider"}</DialogTitle>
 						<DialogDescription>配置连接地址、API 类型和可选的模型目录来源。</DialogDescription>
@@ -633,7 +633,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 					if (!open) setModelDraft(null);
 				}}
 			>
-				<DialogContent className="max-h-[min(720px,calc(100vh-2rem))] max-w-lg overflow-y-auto">
+				<DialogContent className="w-[calc(100%-1rem)] max-w-[calc(100%-1rem)] max-h-[min(720px,calc(100vh-2rem))] overflow-y-auto sm:max-w-lg">
 					<DialogHeader>
 						<DialogTitle>{modelDraft?.isNew ? "新增模型" : "编辑模型配置"}</DialogTitle>
 						<DialogDescription>自动匹配结果可按需调整，手工调整后会保留。</DialogDescription>

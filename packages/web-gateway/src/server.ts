@@ -37,7 +37,12 @@ import {
 	isValidClientId,
 	loadWebGatewayConfig,
 	originHostname,
+	parseGatewayPort,
 	requestHostname,
+	saveWebGatewaySettings,
+	saveWebGatewayToken,
+	validateGatewayHost,
+	validateWebPassword,
 	type WebGatewayConfig,
 } from "./config.ts";
 import {
@@ -168,6 +173,24 @@ interface BootstrapCache {
 	generation: number;
 	value: BootstrapResponse;
 }
+
+interface GatewaySecuritySettingsResponse {
+	host: string;
+	port: number;
+	passwordConfigured: boolean;
+	editable: {
+		host: boolean;
+		port: boolean;
+		password: boolean;
+	};
+}
+
+type GatewaySecuritySettingsSaveResponse = GatewaySecuritySettingsResponse & {
+	accepted: true;
+	passwordChanged: boolean;
+	restartPending: true;
+	runtimePreserved: true;
+};
 
 type WebSessionProgressEvent = {
 	type: "session_progress";
@@ -1231,6 +1254,10 @@ export class WebGatewayServer {
 		context: BrowserContext,
 	): Promise<void> {
 		const parts = parsePathParts(url.pathname);
+		if (parts.length === 2 && parts[1] === "security-settings") {
+			await this.handleGatewaySecuritySettings(request, response);
+			return;
+		}
 		if (parts[1] === "bootstrap" && request.method === "GET") {
 			sendJson(response, 200, await this.buildBootstrap(context));
 			return;
@@ -2148,6 +2175,86 @@ export class WebGatewayServer {
 			return;
 		}
 		throw new HttpError(404, "operation_not_found", "未找到任务接口");
+	}
+
+	private gatewaySecuritySettings(): GatewaySecuritySettingsResponse {
+		const hostManagedByEnvironment = Boolean(
+			process.env.PI_WEB_HOST?.trim() || process.env.PI_WEB_ALLOWED_HOSTS?.trim(),
+		);
+		return {
+			host: this.config.host,
+			port: this.config.port,
+			passwordConfigured: Boolean(this.config.token),
+			editable: {
+				host: !hostManagedByEnvironment,
+				port: !process.env.PI_WEB_PORT?.trim(),
+				password: !process.env.PI_WEB_TOKEN?.trim(),
+			},
+		};
+	}
+
+	private async handleGatewaySecuritySettings(request: IncomingMessage, response: ServerResponse): Promise<void> {
+		if (request.method === "GET") {
+			sendJson(response, 200, this.gatewaySecuritySettings());
+			return;
+		}
+		if (request.method !== "POST") throw new HttpError(405, "method_not_allowed", "该接口不支持当前方法");
+		if (!this.restartHandler)
+			throw new HttpError(503, "gateway_restart_unavailable", "当前 Gateway 不支持应用安全与访问设置");
+
+		const body = await parseJsonBody(request);
+		const current = this.gatewaySecuritySettings();
+		if (!current.editable.host && body.host !== undefined && body.host !== current.host)
+			throw new HttpError(409, "gateway_host_managed_by_environment", "可访问 IP 由启动环境变量管理");
+		if (!current.editable.port && body.port !== undefined && Number(body.port) !== current.port)
+			throw new HttpError(409, "gateway_port_managed_by_environment", "服务端口由启动环境变量管理");
+		if (!current.editable.password && body.password !== undefined && body.password !== "")
+			throw new HttpError(409, "gateway_password_managed_by_environment", "访问密码由启动环境变量管理");
+
+		let host: string;
+		let port: number;
+		try {
+			host = validateGatewayHost(body.host ?? current.host);
+			port = parseGatewayPort(body.port ?? current.port);
+		} catch (error) {
+			throw new HttpError(
+				400,
+				"gateway_network_settings_invalid",
+				error instanceof Error ? error.message : String(error),
+			);
+		}
+		let password: string | undefined;
+		if (body.password !== undefined) {
+			try {
+				password =
+					typeof body.password === "string" && body.password.trim()
+						? validateWebPassword(body.password)
+						: undefined;
+			} catch (error) {
+				throw new HttpError(
+					400,
+					"gateway_password_invalid",
+					error instanceof Error ? error.message : String(error),
+				);
+			}
+			if (body.password !== undefined && typeof body.password !== "string")
+				throw new HttpError(400, "gateway_password_invalid", "访问密码必须是文本");
+		}
+
+		const saved = await saveWebGatewaySettings(this.config.agentDir, { host, port });
+		if (password) await saveWebGatewayToken(this.config.agentDir, password);
+		const result: GatewaySecuritySettingsSaveResponse = {
+			...current,
+			host: saved.host,
+			port: saved.port,
+			passwordConfigured: true,
+			accepted: true,
+			passwordChanged: Boolean(password),
+			restartPending: true,
+			runtimePreserved: true,
+		};
+		sendJson(response, 202, result);
+		this.restartHandler();
 	}
 
 	private async handleSettings(

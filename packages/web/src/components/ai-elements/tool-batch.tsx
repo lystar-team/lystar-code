@@ -7,8 +7,8 @@ import {
 	FileCode2Icon,
 	FileTextIcon,
 	FolderIcon,
-		ImagesIcon,
-		LoaderCircleIcon,
+	ImagesIcon,
+	LoaderCircleIcon,
 	PencilIcon,
 	SearchIcon,
 	SparklesIcon,
@@ -21,6 +21,7 @@ import { cn } from "@/lib/utils";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
 import { CodeBlock, CodeBlockActions, CodeBlockCopyButton, CodeBlockHeader, CodeBlockTitle } from "./code-block";
 import { ResourceImageGallery } from "./resource-preview";
+import { Source } from "./sources";
 
 export type ToolBatchState =
 	| "input-available"
@@ -36,6 +37,7 @@ export interface ToolBatchTool {
 	summary: string;
 	state: ToolBatchState;
 	detail?: string;
+	sources?: Array<{ url: string; title?: string }>;
 	images?: Array<{ contentRef: string; mimeType: string; byteLength: number; alt?: string }>;
 	diff?: ToolDiff;
 	inputPreview?: boolean;
@@ -101,8 +103,8 @@ function toolIcon(name: string, className?: string, skill = false, images = fals
 					? PencilIcon
 					: name === "read"
 						? FileTextIcon
-						: name === "find" || name === "grep"
-							? SearchIcon
+				: name === "find" || name === "grep" || name === "web_search"
+					? SearchIcon
 							: name === "ls"
 								? FolderIcon
 								: WrenchIcon;
@@ -147,7 +149,30 @@ function parseToolSummary(summary: string): Record<string, unknown> | undefined 
 	}
 }
 
+function webSearchTitle(summary: string): string {
+	const parsed = parseToolSummary(summary);
+	if (parsed?.type === "webSearchCall") {
+		const action =
+			parsed.action && typeof parsed.action === "object" && !Array.isArray(parsed.action)
+				? (parsed.action as Record<string, unknown>)
+				: undefined;
+		if (action?.type === "search") {
+				if (typeof action.query === "string" && action.query.trim().length > 0) return action.query.trim();
+				if (Array.isArray(action.queries)) {
+					const query = action.queries.find((value): value is string => typeof value === "string" && value.trim().length > 0);
+					if (query) return query.trim();
+				}
+				return "网页搜索";
+			}
+			if (action?.type === "open_page") return typeof action.url === "string" ? `打开 ${action.url}` : "打开网页";
+			if (action?.type === "find_in_page") return typeof action.url === "string" ? `查找 ${action.url}` : "查找网页内容";
+		return "网页搜索";
+	}
+	return summary || "网页搜索";
+}
+
 function toolTitle(tool: ToolBatchTool): string {
+	if (tool.name === "web_search") return webSearchTitle(tool.summary);
 	const parsed = parseToolSummary(tool.summary);
 	if (typeof parsed?.command === "string") return parsed.command;
 	for (const key of ["path", "file_path", "filename", "url"]) {
@@ -209,6 +234,7 @@ function toolActionLabel(name: string): string {
 		apply_patch: "应用了补丁",
 		find: "查找了文件",
 		grep: "搜索了内容",
+		web_search: "搜索了网页",
 		ls: "查看了目录",
 	};
 	return labels[name] ?? `调用了 ${name}`;
@@ -228,6 +254,7 @@ const activeToolLabels: Record<string, string> = {
 	apply_patch: "正在应用补丁",
 	find: "正在查找",
 	grep: "正在搜索",
+	web_search: "正在搜索网页",
 	ls: "正在查看目录",
 };
 
@@ -242,6 +269,7 @@ function toolRowActionLabel(name: string, state: ToolBatchState): string {
 		apply_patch: "已应用补丁",
 		find: "已查找",
 		grep: "已搜索",
+		web_search: "已搜索网页",
 		ls: "已查看目录",
 	};
 	return labels[name] ?? `已调用 ${name}`;
@@ -274,6 +302,7 @@ export function toolRowTitle(tool: ToolBatchTool): string {
 	if (skillName && tool.state === "output-available") return `已加载 ${skillName} 技能`;
 	const title = toolTitle(tool);
 	const action = toolRowActionLabel(tool.name, tool.state);
+	if (tool.name === "web_search" && title === "网页搜索") return action;
 	return title && title !== tool.name ? `${action} ${title}` : action;
 }
 
@@ -387,6 +416,24 @@ function ImageToolGallery({
 	);
 }
 
+function WebSearchToolDetail({ tool }: { tool: ToolBatchTool }) {
+	const sources = tool.sources ?? [];
+	if (!sources.length) return null;
+	return (
+		<div className="grid min-w-0 gap-1.5">
+			<div className="flex items-center gap-1 text-xs text-muted-foreground">
+				<SearchIcon className="size-3.5 shrink-0" />
+				<span>来源 · {sources.length}</span>
+			</div>
+			<div className="grid min-w-0 gap-1.5">
+				{sources.map((source) => (
+					<Source href={source.url} key={source.url} title={source.title} />
+				))}
+			</div>
+		</div>
+	);
+}
+
 function ToolDetail({
 	tool,
 	sessionId,
@@ -402,6 +449,8 @@ function ToolDetail({
 	const imagePreview = tool.images?.length ? (
 		<ImageToolGallery tools={[tool]} sessionId={sessionId} onOpenPath={onOpenPath} />
 	) : null;
+
+	if (tool.name === "web_search") return <WebSearchToolDetail tool={tool} />;
 
 	if (tool.name === "read") {
 		if (tool.images?.length) return imagePreview;
@@ -520,7 +569,7 @@ function ToolBatchRow({
 	const title = toolRowTitle(tool);
 	const skillName = skillNameFromTool(tool);
 	const stats = diffStats(tool.diff);
-	const hasDetails = Boolean(tool.detail || tool.diff || tool.images?.length || tool.inputPreview);
+	const hasDetails = Boolean(tool.detail || tool.diff || tool.images?.length || tool.inputPreview || tool.sources?.length);
 
 	useEffect(() => {
 		if (previousActive.current && !active && resolveAutoCollapse(autoCollapseWhenComplete)) setOpen(false);
@@ -590,8 +639,9 @@ export const ToolBatch = memo(function ToolBatch({
 	const active = tools.some((tool) => tool.state === "input-available" || tool.state === "input-queued");
 	const aggregateState = batchState(tools);
 	const imageGallery = tools.length > 0 && tools.every((tool) => tool.images?.length);
+	const searchHasSources = tools.length === 1 && tools[0]?.name === "web_search" && Boolean(tools[0].sources?.length);
 	const [open, setOpen] = useControllableState({
-		defaultProp: imageGallery || initialOpen,
+		defaultProp: imageGallery || initialOpen || searchHasSources,
 		prop: imageGallery ? undefined : controlledOpen,
 		onChange: imageGallery ? undefined : onOpenChange,
 	});
@@ -657,7 +707,7 @@ export const ToolBatch = memo(function ToolBatch({
 				tool={tool}
 				sessionId={sessionId}
 				onOpenPath={onOpenPath}
-				initialOpen={imageTool || initialOpen}
+				initialOpen={imageTool || initialOpen || (tool.name === "web_search" && Boolean(tool.sources?.length))}
 				open={imageTool ? undefined : open}
 				onOpenChange={imageTool ? undefined : setOpen}
 				className={className}

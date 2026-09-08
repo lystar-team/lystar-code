@@ -6,8 +6,8 @@ import { SettingSection } from "./shared";
 export function AboutSettings({ state }: { state: WorkbenchState }) {
 	const productVersion = typeof state.about?.productVersion === "string" ? state.about.productVersion : "LYStar Code";
 	return (
-		<div className="grid gap-6">
-			<Card className="shadow-none">
+		<div className="grid min-w-0 gap-6">
+			<Card className="min-w-0 shadow-none">
 				<CardHeader>
 					<div className="flex items-center gap-3">
 						<BrandLogo className="size-12 rounded-lg object-contain" />
@@ -24,9 +24,9 @@ export function AboutSettings({ state }: { state: WorkbenchState }) {
 				</CardContent>
 			</Card>
 			<SettingSection title="版本信息">
-				<div className="flex items-center justify-between rounded-md border px-3 py-3 text-sm">
+				<div className="flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-3 text-sm">
 					<span className="text-muted-foreground">产品版本</span>
-					<span className="font-mono">{productVersion}</span>
+					<span className="break-all text-right font-mono">{productVersion}</span>
 				</div>
 			</SettingSection>
 		</div>

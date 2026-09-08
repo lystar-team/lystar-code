@@ -5,6 +5,7 @@ import {
 	canSendPrompt,
 	clearsThinking,
 	committedToolCallIds,
+	hasActiveToolActivities,
 	reconcileCommittedTurn,
 	reconcilePendingUserPrompts,
 } from "../src/state/chat-lifecycle.ts";
@@ -59,6 +60,20 @@ describe("chat lifecycle", () => {
 		expect(canSendPrompt({ ...current, sessionReady: true })).toBe(true);
 	});
 
+	it("工具仍在运行时保持活跃任务状态", () => {
+		const activity = {
+			activityEpoch: "epoch",
+			revision: 1,
+			toolCallId: "tool-1",
+			name: "bash",
+			state: "running" as const,
+			summary: "sleep 10",
+			updatedAt: 1,
+		};
+
+		expect(hasActiveToolActivities([activity])).toBe(true);
+		expect(hasActiveToolActivities([{ ...activity, state: "success" }])).toBe(false);
+	});
 	it("removes one optimistic prompt for each matching committed user message", () => {
 		const pending = [
 			{ id: "prompt-1", text: "新任务", attachments: [] },

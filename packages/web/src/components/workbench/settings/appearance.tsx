@@ -6,7 +6,7 @@ import type { WorkbenchActions } from "../types";
 
 export function AppearanceSettings({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
 	return (
-		<div className="grid gap-6">
+		<div className="grid min-w-0 gap-6">
 			<SettingSection title="主题">
 				<div className="grid gap-2 sm:grid-cols-3">
 					{(["system", "light", "dark"] as ThemeMode[]).map((theme) => (

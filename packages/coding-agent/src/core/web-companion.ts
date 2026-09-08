@@ -842,6 +842,7 @@ export class WebCompanionServer {
 			typeof this.session.getToolActivitySnapshot === "function"
 				? this.session.getToolActivitySnapshot({ activeOnly: true })
 				: [];
+		const hasActiveToolActivity = toolActivities.length > 0;
 		const streaming = this.session.agent?.state.streamingMessage;
 		const liveMessage = { text: "", thinking: "" };
 		if (includeLiveMessage && streaming?.role === "assistant") {
@@ -862,10 +863,10 @@ export class WebCompanionServer {
 				? "compaction"
 				: this.session.retryAttempt > 0
 					? "retry"
-					: this.session.isStreaming
+					: this.session.isStreaming || hasActiveToolActivity
 						? "turn"
 						: "idle",
-			activity: this.session.isStreaming ? "running" : "idle",
+			activity: this.session.isStreaming || hasActiveToolActivity ? "running" : "idle",
 			model: this.session.model ? { provider: this.session.model.provider, id: this.session.model.id } : undefined,
 			thinkingLevel: this.session.thinkingLevel,
 			leafId: this.session.sessionManager.getLeafId(),

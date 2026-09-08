@@ -25,6 +25,8 @@ type CompletionContextValue = {
 	handleKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
 	setCursor: (cursor: number) => void;
 	trigger: "@" | "$" | "/" | undefined;
+	validTokens: ReadonlySet<string>;
+	markValidToken: (value: string) => void;
 	resumeAutoOpen: () => void;
 };
 
@@ -104,6 +106,7 @@ import {
 	promptTokenRanges,
 	type PromptTokenKind,
 	type PromptTokenPart,
+	usePromptTokenValidation,
 } from "./prompt-token.tsx";
 
 function deletePromptToken(
@@ -111,8 +114,9 @@ function deletePromptToken(
 	selectionStart: number,
 	selectionEnd: number,
 	key: "Backspace" | "Delete",
+	validTokens: ReadonlySet<string>,
 ): { text: string; cursor: number } | undefined {
-	const ranges = promptTokenRanges(text);
+	const ranges = promptTokenRanges(text, validTokens);
 	if (selectionStart !== selectionEnd) {
 		const selectedTokens = ranges.filter((range) => range.start < selectionEnd && range.end > selectionStart);
 		if (selectedTokens.length === 0) return undefined;
@@ -149,10 +153,12 @@ function PromptTokenOverlay({
 	text,
 	className,
 	overlayRef,
+	validTokens,
 }: {
 	text: string;
 	className?: string;
 	overlayRef: RefObject<HTMLDivElement>;
+	validTokens: ReadonlySet<string>;
 }) {
 	return (
 		<div
@@ -165,7 +171,7 @@ function PromptTokenOverlay({
 			)}
 			ref={overlayRef}
 		>
-			{promptTokenParts(text).map((part, index) => (
+			{promptTokenParts(text, validTokens).map((part, index) => (
 				<PromptTokenPartView
 					key={`${part.start}:${part.end}:${index}`}
 					part={part}
@@ -197,6 +203,7 @@ export function PromptCompletionProvider({
 }: PromptCompletionProviderProps) {
 	const controller = usePromptInputController();
 	const text = controller.textInput.value;
+	const { validTokens, markValidToken } = usePromptTokenValidation(text, projectId, sessionId);
 	const [cursor, setCursorState] = useState(text.length);
 	const [result, setResult] = useState<CompletionResult>();
 	const [loading, setLoading] = useState(false);
@@ -280,6 +287,7 @@ export function PromptCompletionProvider({
 			const prefixEnd = Math.max(prefixStart, Math.min(result.prefixEnd, text.length));
 			const nextText = `${text.slice(0, prefixStart)}${item.value}${text.slice(prefixEnd)}`;
 			const nextCursor = prefixStart + item.value.length;
+			markValidToken(item.value.trimEnd());
 			suppressAutoOpenRef.current = true;
 			controller.textInput.setInput(nextText);
 			setCursor(nextCursor);
@@ -290,7 +298,7 @@ export function PromptCompletionProvider({
 				textarea?.setSelectionRange(nextCursor, nextCursor);
 			});
 		},
-		[close, controller.textInput, result, setCursor, text],
+		[close, controller.textInput, markValidToken, result, setCursor, text],
 	);
 
 	const moveSelection = useCallback(
@@ -341,6 +349,8 @@ export function PromptCompletionProvider({
 			setSelectedIndex,
 			textareaRef,
 			trigger,
+			validTokens,
+			markValidToken,
 		}),
 		[
 			close,
@@ -355,6 +365,8 @@ export function PromptCompletionProvider({
 			selectItem,
 			setCursor,
 			trigger,
+			validTokens,
+			markValidToken,
 		],
 	);
 
@@ -371,6 +383,7 @@ function promptCaretPosition(
 	overlay: HTMLDivElement,
 	textarea: HTMLTextAreaElement,
 	text: string,
+	validTokens: ReadonlySet<string>,
 ): PromptCaretPosition {
 	const overlayRect = overlay.getBoundingClientRect();
 	const style = getComputedStyle(overlay);
@@ -381,7 +394,7 @@ function promptCaretPosition(
 		top: (Number.parseFloat(style.paddingTop) || 0) + (text.slice(0, cursor).split("\n").length - 1) * fallbackHeight,
 		height: fallbackHeight,
 	});
-	const parts = promptTokenParts(text);
+	const parts = promptTokenParts(text, validTokens);
 	const part =
 		parts.find((candidate) => cursor > candidate.start && cursor < candidate.end) ??
 		parts.find((candidate) => cursor === candidate.end) ??
@@ -423,7 +436,7 @@ export function PromptCompletionTextarea({
 	const overlayRef = useRef<HTMLDivElement | null>(null);
 	const [focused, setFocused] = useState(false);
 	const [caret, setCaret] = useState<PromptCaretPosition | null>(null);
-	const hasTokens = hasPromptTokens(controller.textInput.value);
+	const hasTokens = hasPromptTokens(controller.textInput.value, context.validTokens);
 	const refreshVisualCaret = useCallback(() => {
 		const overlay = overlayRef.current;
 		const textarea = context.textareaRef.current;
@@ -431,7 +444,7 @@ export function PromptCompletionTextarea({
 			setCaret(null);
 			return;
 		}
-		setCaret(promptCaretPosition(overlay, textarea, controller.textInput.value));
+		setCaret(promptCaretPosition(overlay, textarea, controller.textInput.value, context.validTokens));
 	}, [context.textareaRef, controller.textInput.value, focused, hasTokens]);
 	const updateCursor = useCallback(
 		(event: SyntheticEvent<HTMLTextAreaElement>) => {
@@ -452,7 +465,14 @@ export function PromptCompletionTextarea({
 
 	return (
 		<div className="relative w-full min-w-0">
-			{hasTokens ? <PromptTokenOverlay className={className} overlayRef={overlayRef} text={controller.textInput.value} /> : null}
+			{hasTokens ? (
+				<PromptTokenOverlay
+					className={className}
+					overlayRef={overlayRef}
+					text={controller.textInput.value}
+					validTokens={context.validTokens}
+				/>
+			) : null}
 			<PromptInputTextarea
 				{...props}
 				aria-activedescendant={context.open ? `${context.menuId}-item-${context.selectedIndex}` : undefined}
@@ -483,6 +503,7 @@ export function PromptCompletionTextarea({
 							event.currentTarget.selectionStart,
 							event.currentTarget.selectionEnd,
 							event.key,
+							context.validTokens,
 						);
 						if (deletion) {
 							event.preventDefault();

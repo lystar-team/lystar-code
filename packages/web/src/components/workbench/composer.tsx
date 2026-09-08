@@ -2,7 +2,7 @@ import { ArrowUp, Check, ChevronDown, Plus, Square } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api";
 import { type CommandDialogRequest, executeComposerCommand, resolveComposerCommand } from "../../state/composer-commands";
-import { canSendPrompt } from "../../state/chat-lifecycle";
+import { canSendPrompt, hasActiveToolActivities } from "../../state/chat-lifecycle";
 import { CommandDialog } from "./command-dialog";
 import type { WorkbenchState } from "../../state/use-workbench";
 import { Attachment, AttachmentInfo, AttachmentPreview, AttachmentRemove, Attachments } from "../ai-elements/attachments";
@@ -57,6 +57,8 @@ export const Composer = memo(function Composer({ state, actions }: ComposerProps
 	const active = Boolean(
 		state.session?.activity === "running" ||
 			state.session?.activity === "waiting_for_input" ||
+			hasActiveToolActivities(state.session?.toolActivities) ||
+			Object.values(state.liveTools).some((tool) => tool.status === "running") ||
 			(state.currentOperation && ACTIVE_OPERATION_STATUSES.has(state.currentOperation.status)),
 	);
 	const stopping = active;

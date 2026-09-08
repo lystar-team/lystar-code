@@ -200,6 +200,24 @@ export interface SettingsResponse {
 	settings: SettingSummary[];
 }
 
+export interface SecuritySettingsResponse {
+	host: string;
+	port: number;
+	passwordConfigured: boolean;
+	editable: {
+		host: boolean;
+		port: boolean;
+		password: boolean;
+	};
+}
+
+export interface SaveSecuritySettingsResponse extends SecuritySettingsResponse {
+	accepted: true;
+	passwordChanged: boolean;
+	restartPending: true;
+	runtimePreserved: true;
+}
+
 export type HarnessImportsResponse = HarnessImportPreview;
 export type HarnessImportResultResponse = HarnessImportResult;
 

@@ -1,4 +1,9 @@
-import type { JsonValue, TranscriptItem, TranscriptViewItem } from "@lystar/code-web-protocol";
+import type {
+	JsonValue,
+	TranscriptItem,
+	TranscriptViewItem,
+	TranscriptWebSearchSource,
+} from "@lystar/code-web-protocol";
 
 const INTERNAL_PROMPT_BLOCK_PATTERNS = [
 	/<skill\b[^>]*\blocation="[^"]+"[^>]*>[\s\S]*?<\/skill>/gu,
@@ -223,12 +228,86 @@ function toolCallView(part: JsonRecord): TranscriptViewItem | undefined {
 
 type TranscriptImageMetadata = ReturnType<typeof imageMetadata>;
 
+function webSearchSource(value: string, title?: string): TranscriptWebSearchSource | undefined {
+	try {
+		const url = new URL(value);
+		if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+		return { url: url.toString(), title: bounded(title?.trim() || url.hostname) };
+	} catch {
+		return undefined;
+	}
+}
+
+function webSearchCitations(content: JsonValue | undefined): TranscriptWebSearchSource[] {
+	if (!Array.isArray(content)) return [];
+	const sources = new Map<string, TranscriptWebSearchSource>();
+	for (const part of content) {
+		const item = record(part);
+		if (!item || !Array.isArray(item.annotations)) continue;
+		for (const annotation of item.annotations) {
+			const candidate = record(annotation);
+			if (candidate?.type !== "url_citation" || typeof candidate.url !== "string") continue;
+			const source = webSearchSource(
+				candidate.url,
+				typeof candidate.title === "string" ? candidate.title : undefined,
+			);
+			if (source && !sources.has(source.url)) sources.set(source.url, source);
+		}
+	}
+	return [...sources.values()];
+}
+
+function webSearchView(
+	part: JsonRecord,
+	citations: readonly TranscriptWebSearchSource[],
+): Extract<TranscriptViewItem, { type: "web_search" }> | undefined {
+	if (part.type !== "webSearchCall" || typeof part.id !== "string") return undefined;
+	const status = part.status;
+	if (status !== "in_progress" && status !== "searching" && status !== "completed" && status !== "failed")
+		return undefined;
+
+	const action = record(part.action);
+	const citationTitles = new Map(citations.map((citation) => [citation.url, citation.title]));
+	const sourceValues = action?.type === "search" && Array.isArray(action.sources) ? action.sources : [];
+	const sourceUrls = sourceValues.flatMap((value) => {
+		const source = record(value);
+		return typeof source?.url === "string" ? [source.url] : [];
+	});
+	if (action?.type === "open_page" || action?.type === "find_in_page") {
+		if (typeof action.url === "string") sourceUrls.push(action.url);
+	}
+	const sources = new Map<string, TranscriptWebSearchSource>();
+	for (const url of sourceUrls) {
+		const source = webSearchSource(url, citationTitles.get(url));
+		if (source && !sources.has(source.url)) sources.set(source.url, source);
+	}
+	if (sources.size === 0) {
+		for (const citation of citations) sources.set(citation.url, citation);
+	}
+	const query =
+		action?.type === "search"
+			? typeof action.query === "string"
+				? action.query
+				: Array.isArray(action.queries)
+					? action.queries.find((value): value is string => typeof value === "string" && value.trim().length > 0)
+					: undefined
+			: undefined;
+	return {
+		type: "web_search",
+		id: part.id,
+		status,
+		...(query ? { query: bounded(query) } : {}),
+		sources: [...sources.values()].slice(0, 32),
+	};
+}
+
 function assistantViews(content: JsonValue | undefined, images: TranscriptImageMetadata): TranscriptViewItem[] {
 	if (!Array.isArray(content)) {
 		return [{ type: "assistant", text: text(content), ...(images.length > 0 ? { images } : {}) }];
 	}
 
 	const views: TranscriptViewItem[] = [];
+	const citations = webSearchCitations(content);
 	let thinkingParts: string[] = [];
 	let textParts: string[] = [];
 	let toolCalls: JsonRecord[] = [];
@@ -280,6 +359,14 @@ function assistantViews(content: JsonValue | undefined, images: TranscriptImageM
 			flushThinking();
 			flushText();
 			toolCalls.push(item);
+			continue;
+		}
+		if (item.type === "webSearchCall" && typeof item.id === "string") {
+			flushThinking();
+			flushText();
+			flushToolCalls();
+			const view = webSearchView(item, citations);
+			if (view) views.push(view);
 			continue;
 		}
 		if (item.type === "image") continue;

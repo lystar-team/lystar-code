@@ -6,7 +6,7 @@ import { cn } from "../../lib/utils";
 import type { WorkbenchState } from "../../state/use-workbench";
 import { CodeBlock, CodeBlockActions, CodeBlockCopyButton, CodeBlockDownloadButton, CodeBlockFilename, CodeBlockHeader, CodeBlockTitle } from "../ai-elements/code-block";
 import { Message, MessageAction, MessageActions, MessageContent, MessageResponse } from "../ai-elements/message";
-import { PromptTokenContent, hasPromptTokens } from "../ai-elements/prompt-token.tsx";
+import { PromptTokenContent, hasPromptTokenCandidates } from "../ai-elements/prompt-token.tsx";
 import { ResourceImage } from "../ai-elements/resource-preview";
 import { Source, Sources, SourcesContent, SourcesTrigger } from "../ai-elements/sources";
 import { Task, TaskContent, TaskTrigger } from "../ai-elements/task";
@@ -42,6 +42,7 @@ export const TranscriptMessageView = memo(function TranscriptMessageView({
 	sources = [],
 	showCopy,
 	sessionId,
+	projectId,
 	onOpenPath,
 	mode = "static",
 }: {
@@ -51,6 +52,7 @@ export const TranscriptMessageView = memo(function TranscriptMessageView({
 	sources?: string[];
 	showCopy: boolean;
 	sessionId?: string;
+	projectId?: string;
 	onOpenPath: WorkbenchActions["openResource"];
 	mode?: "static" | "streaming";
 }) {
@@ -64,8 +66,8 @@ export const TranscriptMessageView = memo(function TranscriptMessageView({
 		>
 			<TranscriptSources urls={sources} />
 			<MessageContent>
-				{role === "user" && hasPromptTokens(text) ? (
-					<PromptTokenContent text={text} />
+				{role === "user" && hasPromptTokenCandidates(text) ? (
+					<PromptTokenContent text={text} projectId={projectId} sessionId={sessionId} />
 				) : (
 					<MessageResponse
 						mode={mode}
@@ -89,12 +91,14 @@ export const TranscriptItemView = memo(function TranscriptItemView({
 	toolStatuses,
 	onOpenPath,
 	sessionId,
+	projectId,
 	showCopy,
 }: {
 	item: WorkbenchState["transcript"][number];
 	toolStatuses: ReadonlyMap<string, "success" | "error">;
 	onOpenPath: WorkbenchActions["openResource"];
 	sessionId?: string;
+	projectId?: string;
 	showCopy: boolean;
 }) {
 	const viewModel = toSessionItemViewModel(item, toolStatuses);
@@ -107,6 +111,7 @@ export const TranscriptItemView = memo(function TranscriptItemView({
 				sources={viewModel.sources}
 				showCopy={showCopy}
 				sessionId={sessionId}
+				projectId={projectId}
 				onOpenPath={onOpenPath}
 			/>
 		);

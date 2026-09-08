@@ -51,7 +51,7 @@ it("大历史工具结果不重复广播，连续文本增量保持完整", asyn
 		getContextUsage: () => undefined,
 		isCompacting: false,
 		retryAttempt: 0,
-		isStreaming: true,
+		isStreaming: false,
 		thinkingLevel: "off",
 		getSteeringMessages: () => [],
 		getFollowUpMessages: () => [],
@@ -71,7 +71,7 @@ it("大历史工具结果不重复广播，连续文本增量保持完整", asyn
 	try {
 		await server.start();
 		runtime = await WebCompanionRuntime.open(agentDir, sessionPath);
-		expect(runtime.getSnapshot("available").toolActivities).toHaveLength(1);
+		expect(runtime.getSnapshot("available")).toMatchObject({ phase: "turn", activity: "running" });
 		expect(JSON.stringify(runtime.getSnapshot("available")).length).toBeLessThan(2048);
 		let text = "";
 		let snapshots = 0;

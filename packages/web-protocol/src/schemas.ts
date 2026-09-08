@@ -432,6 +432,24 @@ const TranscriptToolCallSchema = StrictObject({
 	summary: TranscriptViewTextSchema,
 	href: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
 });
+const TranscriptWebSearchSourceSchema = StrictObject({
+	url: Type.String({ minLength: 1, maxLength: 4096 }),
+	title: Type.Optional(TranscriptViewTextSchema),
+});
+export type TranscriptWebSearchSource = Static<typeof TranscriptWebSearchSourceSchema>;
+const TranscriptWebSearchStatusSchema = Type.Union([
+	Type.Literal("in_progress"),
+	Type.Literal("searching"),
+	Type.Literal("completed"),
+	Type.Literal("failed"),
+]);
+const TranscriptWebSearchSchema = StrictObject({
+	type: Type.Literal("web_search"),
+	id: Id,
+	status: TranscriptWebSearchStatusSchema,
+	query: Type.Optional(TranscriptViewTextSchema),
+	sources: Type.Array(TranscriptWebSearchSourceSchema, { maxItems: 32 }),
+});
 
 // Web Runtime 投影是 Web client 的 transcript 输入；payload 用于协议内部完整回放。
 export const TranscriptViewItemSchema = Type.Union([
@@ -446,6 +464,7 @@ export const TranscriptViewItemSchema = Type.Union([
 		images: Type.Optional(Type.Array(TranscriptImageSchema, { maxItems: 32 })),
 	}),
 	StrictObject({ type: Type.Literal("thinking"), text: TranscriptViewTextSchema }),
+	TranscriptWebSearchSchema,
 	StrictObject({ type: Type.Literal("tool_call"), calls: Type.Array(TranscriptToolCallSchema, { maxItems: 32 }) }),
 	StrictObject({
 		type: Type.Literal("tool_result"),

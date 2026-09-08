@@ -21,9 +21,9 @@ export function GlobalInstructionsSettings({ state, actions }: { state: Workbenc
 	const save = () => void actions.saveHostInstruction(content, file?.contentHash);
 
 	return (
-		<div className="grid gap-6">
+		<div className="grid min-w-0 gap-6">
 			<SettingSection title="全局提示词">
-				<Card className="shadow-none">
+				<Card className="min-w-0 shadow-none">
 					<CardHeader className="gap-2">
 						<div className="flex items-center justify-between gap-3">
 							<div className="min-w-0">
@@ -41,7 +41,8 @@ export function GlobalInstructionsSettings({ state, actions }: { state: Workbenc
 						) : (
 							<Textarea
 								aria-label="全局 AGENTS.md 内容"
-								className="min-h-72 resize-y font-mono text-sm leading-6"
+								wrap="soft"
+								className="min-h-72 min-w-0 max-w-full resize-y whitespace-pre-wrap break-words font-mono text-sm leading-6"
 								value={content}
 								disabled={state.hostInstructionSaving}
 								spellCheck={false}

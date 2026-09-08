@@ -67,9 +67,9 @@ export function HarnessImportsSettings({ state, actions }: { state: WorkbenchSta
 		state.harnessImports?.items.filter((item) => item.status === "ready" && item.resourceType !== "instruction").length ?? 0;
 
 	return (
-		<div className="grid gap-6">
+		<div className="grid min-w-0 gap-6">
 			<SettingSection title="迁移导入">
-				<Card className="shadow-none">
+				<Card className="min-w-0 shadow-none">
 					<CardHeader className="gap-2">
 						<div className="flex items-start justify-between gap-4">
 							<div className="min-w-0">
@@ -196,8 +196,8 @@ function HarnessImportDialog({
 	return (
 		<>
 			<Dialog open={open} onOpenChange={onOpenChange}>
-				<DialogContent className="flex h-[min(760px,calc(100dvh-2rem))] max-w-4xl flex-col gap-0 overflow-hidden p-0">
-					<DialogHeader className="shrink-0 border-b px-6 py-5 pr-12">
+				<DialogContent className="flex h-[min(760px,calc(100dvh-2rem))] w-[calc(100%-1rem)] max-w-[calc(100%-1rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+					<DialogHeader className="shrink-0 border-b px-4 py-5 pr-12 sm:px-6">
 						<DialogTitle>选择要导入的资源</DialogTitle>
 						<DialogDescription>Skill 和提示词模板可以直接导入；规则文件先查看 Diff，再选择要合并的内容。</DialogDescription>
 					</DialogHeader>
@@ -237,7 +237,7 @@ function HarnessImportDialog({
 								})}
 							</div>
 						</div>
-						<div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+						<div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6">
 							<div className="grid gap-4">
 								<div className="flex flex-wrap items-center justify-between gap-3">
 									<div className="flex flex-wrap items-center gap-1 rounded-lg bg-muted/60 p-1">
@@ -320,7 +320,7 @@ function HarnessImportDialog({
 							</div>
 						</div>
 					</div>
-					<DialogFooter className="shrink-0 border-t px-6 py-4">
+					<DialogFooter className="shrink-0 border-t px-4 py-4 sm:px-6">
 						<Button variant="outline" onClick={() => onOpenChange(false)}>
 							取消
 						</Button>
@@ -386,14 +386,14 @@ function RuleMergeDialog({
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className="flex h-[min(760px,calc(100dvh-2rem))] max-w-4xl flex-col gap-0 overflow-hidden p-0">
-				<DialogHeader className="shrink-0 border-b px-6 py-5 pr-12">
+				<DialogContent className="flex h-[min(760px,calc(100dvh-2rem))] w-[calc(100%-1rem)] max-w-[calc(100%-1rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+				<DialogHeader className="shrink-0 border-b px-4 py-5 pr-12 sm:px-6">
 					<DialogTitle>合并规则 Diff</DialogTitle>
 					<DialogDescription>
 						{item?.harnessLabel} · {item?.sourceRelativePath} → {item?.targetRelativePath}
 					</DialogDescription>
 				</DialogHeader>
-				<div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+				<div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6">
 					<div className="grid gap-4">
 						<div className="flex flex-wrap items-center gap-1 rounded-lg bg-muted/60 p-1">
 							<Button variant={mode === "merge" ? "secondary" : "ghost"} size="sm" onClick={() => setMode("merge")}>
@@ -462,9 +462,9 @@ function RuleMergeDialog({
 								)}
 							</>
 						)}
+						</div>
 					</div>
-				</div>
-				<DialogFooter className="shrink-0 border-t px-6 py-4">
+				<DialogFooter className="shrink-0 border-t px-4 py-4 sm:px-6">
 					<Button variant="outline" onClick={() => onOpenChange(false)}>
 						取消
 					</Button>

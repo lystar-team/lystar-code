@@ -18,7 +18,7 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, Model, WebSearchCallContent } from "@earendil-works/pi-ai";
 
 import {
 	type AgentSessionEvent,
@@ -786,6 +786,19 @@ function truncateWithoutSplittingSurrogate(value: string, maxChars: number): str
 	return value.slice(0, end);
 }
 
+function webSearchProgressSummary(call: WebSearchCallContent): string {
+	switch (call.action.type) {
+		case "search":
+			return (
+				call.action.query?.trim() || call.action.queries?.find((query) => query.trim().length > 0) || "网页搜索"
+			);
+		case "open_page":
+			return call.action.url ? `打开 ${call.action.url}` : "打开网页";
+		case "find_in_page":
+			return call.action.url ? `查找 ${call.action.url}` : "查找网页内容";
+	}
+}
+
 function boundedStatus(value: unknown): string {
 	const text = typeof value === "string" ? value : JSON.stringify(value);
 	return text.length <= 1024 ? text : `${truncateWithoutSplittingSurrogate(text, 1021)}...`;
@@ -852,6 +865,26 @@ export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgres
 			if (stream.type === "text_delta") updates.push({ type: "assistant_delta", text: stream.delta });
 			else if (stream.type === "thinking_delta") updates.push({ type: "thinking_delta", text: stream.delta });
 			else if (
+				(stream.type === "websearch_start" ||
+					stream.type === "websearch_update" ||
+					stream.type === "websearch_end") &&
+				event.message.role === "assistant"
+			) {
+				const summary = webSearchProgressSummary(stream.call);
+				if (stream.type === "websearch_end") {
+					updates.push({
+						type: "tool_end",
+						toolCallId: stream.call.id,
+						name: "web_search",
+						status: stream.call.status === "failed" ? "error" : "success",
+						summary,
+					});
+				} else if (stream.type === "websearch_start") {
+					updates.push({ type: "tool_start", toolCallId: stream.call.id, name: "web_search", summary });
+				} else {
+					updates.push({ type: "tool_update", toolCallId: stream.call.id, name: "web_search", summary });
+				}
+			} else if (
 				(stream.type === "toolcall_start" || stream.type === "toolcall_delta" || stream.type === "toolcall_end") &&
 				event.message.role === "assistant"
 			) {
@@ -1096,9 +1129,10 @@ class CoreRuntimeSession implements RuntimeSession {
 
 	async bind(): Promise<void> {
 		const storage = sessionGeneration(this.sessionPath, this.runtime.session.sessionId);
-		this.committedEntryCount = this.runtime.session.sessionManager.getEntries().length;
+		const entries = this.runtime.session.sessionManager.getEntries();
+		this.committedEntryCount = entries.length;
 		this.lastTranscriptGeneration = storage.generation;
-		this.lastTranscriptRevision = storage.revision;
+		this.lastTranscriptRevision = entries.some(isTranscriptEntry) ? storage.revision : 0;
 		this.runtime.setRebindSession(async () => this.bindCurrentSession());
 		await this.bindCurrentSession();
 	}
@@ -1116,6 +1150,7 @@ class CoreRuntimeSession implements RuntimeSession {
 			typeof session.getToolActivitySnapshot === "function"
 				? session.getToolActivitySnapshot({ activeOnly: true })
 				: undefined;
+		const hasActiveToolActivity = Boolean(toolActivities?.length);
 		return {
 			id: session.sessionId,
 			path: this.sessionPath,
@@ -1127,10 +1162,10 @@ class CoreRuntimeSession implements RuntimeSession {
 				? "compaction"
 				: session.retryAttempt > 0
 					? "retry"
-					: session.isStreaming
+					: session.isStreaming || hasActiveToolActivity
 						? "turn"
 						: "idle",
-			activity: session.isStreaming ? "running" : "idle",
+			activity: session.isStreaming || hasActiveToolActivity ? "running" : "idle",
 			model: session.model ? { provider: session.model.provider, id: session.model.id } : undefined,
 			thinkingLevel: session.thinkingLevel,
 			attached: true,
@@ -1487,6 +1522,12 @@ class CoreRuntimeSession implements RuntimeSession {
 		const entries = this.runtime.session.sessionManager.getEntries();
 		const committed = entries.slice(this.committedEntryCount);
 		if (committed.length === 0) return;
+		const hasCompletedEntry = committed.some(
+			(entry) =>
+				entry.type === "message" && (entry.message.role === "assistant" || entry.message.role === "bashExecution"),
+		);
+		const hasTranscriptBeforeCommit = entries.slice(0, this.committedEntryCount).some(isTranscriptEntry);
+		if (!hasTranscriptBeforeCommit && !hasCompletedEntry) return;
 		const storage = sessionGeneration(this.sessionPath, this.runtime.session.sessionId);
 		const fromRevision = this.lastTranscriptGeneration === storage.generation ? this.lastTranscriptRevision : 0;
 		this.committedEntryCount = entries.length;
@@ -1550,7 +1591,11 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	}
 
 	async createSession(cwd: string, onUiRequest: UiRequestHandler): Promise<RuntimeSession> {
-		return this.createRuntime(cwd, SessionManager.create(cwd, getDefaultSessionDir(cwd, this.agentDir)), onUiRequest);
+		return this.createRuntime(
+			cwd,
+			SessionManager.create(cwd, getDefaultSessionDir(cwd, this.agentDir), { persistHeader: true }),
+			onUiRequest,
+		);
 	}
 
 	async openSession(sessionPath: string, onUiRequest: UiRequestHandler): Promise<RuntimeSession> {

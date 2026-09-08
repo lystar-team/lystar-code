@@ -1,15 +1,19 @@
 import { FileText, Sparkles } from "lucide-react";
 import type { ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { webApi } from "../../adapters/host-protocol/api.ts";
 import { cn } from "../../lib/utils";
 
 export const PROMPT_TOKEN_PATTERN =
-	/\$\[[a-z0-9][a-z0-9-]*\]|@\[[a-z0-9][a-z0-9-]*\]|\/skill:[a-z0-9][a-z0-9-]*|@"(?:[^"\\]|\\.)*"|@[^\s,，。；;!?！？]+/giu;
+	/\$\[[a-z0-9][a-z0-9-]*\]|@\[[a-z0-9][a-z0-9-]*\]|\/skill:[a-z0-9][a-z0-9-]*|@"(?:[^"\\]|\\.)*"|@[^\s,，。；;!?！？、()\[\]{}<>]+/giu;
 
 export type PromptTokenKind = "file" | "skill";
 export type PromptTokenPart = { text: string; start: number; end: number; kind?: PromptTokenKind };
 export type PromptTokenRange = { start: number; end: number };
 
 type PromptTokenAttributes = Record<string, string | number | undefined>;
+const EMPTY_PROMPT_TOKEN_SET: ReadonlySet<string> = new Set();
+const promptTokenValidationCache = new Map<string, Promise<boolean>>();
 
 function promptTokenKind(value: string): PromptTokenKind | undefined {
 	if (value.startsWith("$[") || value.startsWith("@[") || value.startsWith("/skill:")) return "skill";
@@ -32,20 +36,37 @@ export function promptTokenDisplayOffset(value: string, kind: PromptTokenKind, o
 	return Math.max(0, Math.min(displayLength, offset - prefixLength));
 }
 
-export function promptTokenRanges(text: string): PromptTokenRange[] {
-	return [...text.matchAll(PROMPT_TOKEN_PATTERN)].map((match) => {
+function hasPromptTokenBoundary(text: string, start: number): boolean {
+	const previous = text[start - 1];
+	return !previous || !/[\p{L}\p{N}_$@]/u.test(previous);
+}
+
+export function promptTokenCandidates(text: string): string[] {
+	return [...text.matchAll(PROMPT_TOKEN_PATTERN)]
+		.filter((match) => hasPromptTokenBoundary(text, match.index ?? 0))
+		.map((match) => match[0]);
+}
+
+export function promptTokenRanges(text: string, validTokens: ReadonlySet<string> = EMPTY_PROMPT_TOKEN_SET): PromptTokenRange[] {
+	return [...text.matchAll(PROMPT_TOKEN_PATTERN)].flatMap((match) => {
 		const start = match.index ?? 0;
-		return { start, end: start + match[0].length };
+		return hasPromptTokenBoundary(text, start) && validTokens.has(match[0])
+			? [{ start, end: start + match[0].length }]
+			: [];
 	});
 }
 
-export function promptTokenParts(text: string): PromptTokenPart[] {
+export function promptTokenParts(
+	text: string,
+	validTokens: ReadonlySet<string> = EMPTY_PROMPT_TOKEN_SET,
+): PromptTokenPart[] {
 	const parts: PromptTokenPart[] = [];
 	let lastIndex = 0;
 	for (const match of text.matchAll(PROMPT_TOKEN_PATTERN)) {
 		const start = match.index ?? 0;
+		if (!hasPromptTokenBoundary(text, start)) continue;
 		const value = match[0];
-		const kind = promptTokenKind(value);
+		const kind = validTokens.has(value) ? promptTokenKind(value) : undefined;
 		if (start > lastIndex) parts.push({ text: text.slice(lastIndex, start), start: lastIndex, end: start });
 		parts.push({
 			text: kind ? promptTokenDisplayText(value, kind) : value,
@@ -60,8 +81,72 @@ export function promptTokenParts(text: string): PromptTokenPart[] {
 	return parts;
 }
 
-export function hasPromptTokens(text: string): boolean {
-	return promptTokenParts(text).some((part) => part.kind !== undefined);
+export function hasPromptTokenCandidates(text: string): boolean {
+	return promptTokenCandidates(text).length > 0;
+}
+
+export function hasPromptTokens(text: string, validTokens: ReadonlySet<string> = EMPTY_PROMPT_TOKEN_SET): boolean {
+	return promptTokenParts(text, validTokens).some((part) => part.kind !== undefined);
+}
+
+function validationQuery(value: string): string {
+	return value.startsWith("$[") || value.startsWith("@[") ? value.slice(0, -1) : value;
+}
+
+function validatePromptToken(projectId: string, sessionId: string | undefined, value: string): Promise<boolean> {
+	const key = `${projectId}\u0000${sessionId ?? ""}\u0000${value}`;
+	const cached = promptTokenValidationCache.get(key);
+	if (cached) return cached;
+
+	const query = validationQuery(value);
+	const request = webApi
+		.completions(projectId, query, query.length, sessionId)
+		.then((result) => result.items.some((item) => item.value.trimEnd() === value))
+		.catch(() => false);
+	promptTokenValidationCache.set(key, request);
+	return request;
+}
+
+export function usePromptTokenValidation(
+	text: string,
+	projectId?: string,
+	sessionId?: string,
+): { validTokens: ReadonlySet<string>; markValidToken: (value: string) => void } {
+	const candidates = useMemo(() => [...new Set(promptTokenCandidates(text))], [text]);
+	const candidateKey = candidates.join("\u0001");
+	const [validatedTokens, setValidatedTokens] = useState<ReadonlySet<string>>(EMPTY_PROMPT_TOKEN_SET);
+	const [acceptedTokens, setAcceptedTokens] = useState<ReadonlySet<string>>(EMPTY_PROMPT_TOKEN_SET);
+
+	useEffect(() => {
+		setAcceptedTokens(EMPTY_PROMPT_TOKEN_SET);
+	}, [projectId, sessionId]);
+
+	useEffect(() => {
+		if (!projectId || candidates.length === 0) {
+			setValidatedTokens(EMPTY_PROMPT_TOKEN_SET);
+			return;
+		}
+		let cancelled = false;
+		void Promise.all(candidates.map(async (value) => ((await validatePromptToken(projectId, sessionId, value)) ? value : undefined))).then(
+			(values) => {
+				if (cancelled) return;
+				setValidatedTokens(new Set(values.filter((value): value is string => value !== undefined)));
+			},
+		);
+		return () => {
+			cancelled = true;
+		};
+	}, [candidateKey, candidates, projectId, sessionId]);
+
+	const markValidToken = useCallback((value: string) => {
+		if (!promptTokenKind(value)) return;
+		setAcceptedTokens((current) => (current.has(value) ? current : new Set([...current, value])));
+	}, []);
+	const validTokens = useMemo(
+		() => new Set([...acceptedTokens, ...validatedTokens]),
+		[acceptedTokens, validatedTokens],
+	);
+	return { markValidToken, validTokens };
 }
 
 export function PromptTokenPartView({
@@ -89,10 +174,24 @@ export function PromptTokenPartView({
 	);
 }
 
-export function PromptTokenContent({ text, className }: { text: string; className?: string }): ReactNode {
+export function PromptTokenContent({
+	text,
+	className,
+	projectId,
+	sessionId,
+	validTokens,
+}: {
+	text: string;
+	className?: string;
+	projectId?: string;
+	sessionId?: string;
+	validTokens?: ReadonlySet<string>;
+}): ReactNode {
+	const validation = usePromptTokenValidation(text, projectId, sessionId);
+	const tokens = validTokens ?? validation.validTokens;
 	return (
 		<span className={cn("whitespace-pre-wrap", className)}>
-			{promptTokenParts(text).map((part, index) => (
+			{promptTokenParts(text, tokens).map((part, index) => (
 				<PromptTokenPartView key={`${part.start}:${part.end}:${index}`} part={part} index={index} />
 			))}
 		</span>

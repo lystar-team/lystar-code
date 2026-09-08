@@ -4,6 +4,7 @@ import { UnauthorizedError, webApi } from "../adapters/host-protocol/api.ts";
 import {
 	applyPromptAccepted,
 	canSendPrompt,
+	hasActiveToolActivities,
 	type PendingUserPrompt,
 	committedToolCallIds,
 	reconcileCommittedTurn,
@@ -43,6 +44,7 @@ import type {
 	PromptAttachmentPreview,
 	ProjectSkillsResponse,
 	ProjectTreeResponse,
+	SecuritySettingsResponse,
 	UiRequestEvent,
 	WebLease,
 	WebModelProviderInput,
@@ -58,7 +60,15 @@ const TRANSCRIPT_PAGE_SIZE = 120;
 export type InspectorMode = "runs" | "files" | "tree" | "git";
 export type ComposerMode = "prompt" | "steer" | "follow-up";
 export type ThemeMode = "system" | "light" | "dark";
-export type SettingsTab = "appearance" | "instructions" | "skills" | "models" | "imports" | "diagnostics" | "about";
+export type SettingsTab =
+	| "appearance"
+	| "instructions"
+	| "skills"
+	| "models"
+	| "imports"
+	| "diagnostics"
+	| "security"
+	| "about";
 
 export interface LiveTool {
 	id: string;
@@ -379,6 +389,10 @@ export interface WorkbenchState {
 	directoryLoading: boolean;
 	settingsOpen: boolean;
 	settingsTab: SettingsTab;
+	securitySettings?: SecuritySettingsResponse;
+	securitySettingsLoading: boolean;
+	securitySettingsSaving: boolean;
+	securitySettingsError?: string;
 	skills: ProjectSkillsResponse["skills"];
 	skillDiagnostics: unknown;
 	skillsLoading: boolean;
@@ -548,6 +562,11 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+function hasMeaningfulSessionFirstMessage(value: string): boolean {
+	const normalized = value.trim();
+	return normalized.length > 0 && normalized !== "未命名会话";
+}
+
 export function sessionTitle(session: WebSessionSummary | WebSessionSnapshot | undefined): string {
 	if (!session) return "未命名会话";
 	return (
@@ -575,19 +594,26 @@ function sessionSnapshotIsActive(snapshot: WebSessionSnapshot): boolean {
 	return (
 		snapshot.activity === "running" ||
 		snapshot.activity === "waiting_for_input" ||
-		["turn", "compaction", "retry", "waiting_for_input"].includes(snapshot.phase)
+		["turn", "compaction", "retry", "waiting_for_input"].includes(snapshot.phase) ||
+		hasActiveToolActivities(snapshot.toolActivities)
 	);
 }
 
-function mergeSessionSummaries(
+export function mergeSessionSummaries(
 	current: readonly WebSessionSummary[],
 	incoming: readonly WebSessionSummary[],
 ): WebSessionSummary[] {
 	const currentById = new Map(current.map((session) => [session.id, session]));
 	return incoming.map((next) => {
 		const previous = currentById.get(next.id);
-		if (Object.hasOwn(next, "name")) return next;
-		return previous?.name?.trim() ? { ...next, name: previous.name } : next;
+		const preservedName = !Object.hasOwn(next, "name") && previous?.name?.trim() ? { name: previous.name } : {};
+		const preservedFirstMessage =
+			previous &&
+			hasMeaningfulSessionFirstMessage(previous.firstMessage) &&
+			!hasMeaningfulSessionFirstMessage(next.firstMessage)
+				? { firstMessage: previous.firstMessage }
+				: {};
+		return { ...next, ...preservedName, ...preservedFirstMessage };
 	});
 }
 
@@ -610,6 +636,32 @@ function updateSessionSummaryName(
 		const nextSession = normalizedName ? { ...withoutName, name: normalizedName } : withoutName;
 		const sessions = [...project.sessions];
 		sessions[sessionIndex] = nextSession;
+		const next = [...projects];
+		next[projectIndex] = { ...project, sessions };
+		return next;
+	}
+	return projects;
+}
+
+export function updateSessionSummaryFirstMessage(
+	projects: WebProject[],
+	sessionId: string,
+	firstMessage: string,
+): WebProject[] {
+	const normalizedMessage = firstMessage.trim();
+	if (!normalizedMessage) return projects;
+	for (let projectIndex = 0; projectIndex < projects.length; projectIndex++) {
+		const project = projects[projectIndex];
+		const sessionIndex = project.sessions.findIndex((session) => session.id === sessionId);
+		if (sessionIndex < 0) continue;
+		const session = project.sessions[sessionIndex];
+		if (hasMeaningfulSessionFirstMessage(session.firstMessage)) return projects;
+		const sessions = [...project.sessions];
+		sessions[sessionIndex] = {
+			...session,
+			firstMessage: normalizedMessage,
+			messageCount: Math.max(session.messageCount, 1),
+		};
 		const next = [...projects];
 		next[projectIndex] = { ...project, sessions };
 		return next;
@@ -773,6 +825,10 @@ function initialState(): WorkbenchState {
 		directoryLoading: false,
 		settingsOpen: false,
 		settingsTab: "appearance",
+		securitySettings: undefined,
+		securitySettingsLoading: false,
+		securitySettingsSaving: false,
+		securitySettingsError: undefined,
 		skills: [],
 		skillDiagnostics: undefined,
 		skillsLoading: false,
@@ -2320,7 +2376,12 @@ export function useWorkbench() {
 			if (!value) return;
 			const optimisticPrompt: PendingUserPrompt | undefined =
 				mode === "prompt"
-					? { id: `optimistic-user:${pendingUserPromptRef.current++}`, text: value, attachments: attachmentPreviews ?? [] }
+					? {
+							id: `optimistic-user:${pendingUserPromptRef.current++}`,
+							text: value,
+							attachments: attachmentPreviews ?? [],
+							afterEntryId: current.transcript.at(-1)?.entryId,
+						}
 					: undefined;
 			if (optimisticPrompt)
 				updateState((next) =>
@@ -2330,10 +2391,17 @@ export function useWorkbench() {
 				);
 			try {
 				const result = await webApi.prompt(current.sessionId, value, mode, attachments);
-				updateState((next) => next.sessionId !== current.sessionId ? next : ({
-					...applyPromptAccepted(next, current.sessionId!, result.operation),
-					promptScrollRequest: (next.promptScrollRequest ?? 0) + 1,
-				}));
+				updateState((next) => {
+					if (next.sessionId !== current.sessionId) return next;
+					const accepted = applyPromptAccepted(next, current.sessionId!, result.operation);
+					return {
+						...accepted,
+						projects: mode === "prompt"
+							? updateSessionSummaryFirstMessage(accepted.projects, current.sessionId!, value)
+							: accepted.projects,
+						promptScrollRequest: (accepted.promptScrollRequest ?? 0) + 1,
+					};
+				});
 			} catch (error) {
 				if (optimisticPrompt)
 					updateState((next) =>
@@ -2352,8 +2420,8 @@ export function useWorkbench() {
 
 	const abort = useCallback(async () => {
 		const current = stateRef.current;
-		if (!current.sessionId || !current.currentOperation) return;
-		await webApi.abort(current.sessionId, current.currentOperation.operationId);
+		if (!current.sessionId) return;
+		await webApi.abort(current.sessionId, current.currentOperation?.operationId);
 	}, []);
 
 	const renameSession = useCallback(
@@ -3055,6 +3123,45 @@ export function useWorkbench() {
 		[refreshHarnessImports, refreshSkills, showToast, updateState],
 	);
 
+	const refreshSecuritySettings = useCallback(async () => {
+		updateState((current) => ({ ...current, securitySettingsLoading: true, securitySettingsError: undefined }));
+		try {
+			const securitySettings = await webApi.securitySettings();
+			updateState((current) => ({
+				...current,
+				securitySettings,
+				securitySettingsLoading: false,
+				securitySettingsError: undefined,
+			}));
+		} catch (error) {
+			const message = errorMessage(error);
+			updateState((current) => ({ ...current, securitySettingsLoading: false, securitySettingsError: message }));
+			showToast(message);
+		}
+	}, [showToast, updateState]);
+
+	const saveSecuritySettings = useCallback(
+		async (input: { host: string; port: number; password?: string }) => {
+			updateState((current) => ({ ...current, securitySettingsSaving: true, securitySettingsError: undefined }));
+			try {
+				const result = await webApi.saveSecuritySettings(input);
+				if (input.password?.trim()) webApi.setToken(input.password);
+				updateState((current) => ({
+					...current,
+					securitySettings: result,
+					securitySettingsSaving: false,
+					securitySettingsError: undefined,
+				}));
+				showToast("安全与访问设置已保存，Gateway 正在重启；Runtime 会话不会停止");
+			} catch (error) {
+				const message = errorMessage(error);
+				updateState((current) => ({ ...current, securitySettingsSaving: false, securitySettingsError: message }));
+				showToast(message);
+			}
+		},
+		[showToast, updateState],
+	);
+
 	const refreshHostInstructions = useCallback(async () => {
 		updateState((current) => ({ ...current, hostInstructionsLoading: true, hostInstructionsError: undefined }));
 		try {
@@ -3103,6 +3210,7 @@ export function useWorkbench() {
 			if (tab === "instructions") await refreshHostInstructions();
 			if (tab === "skills") await refreshSkills();
 			if (tab === "imports") await refreshHarnessImports();
+			if (tab === "security") await refreshSecuritySettings();
 			if (tab === "diagnostics") {
 				updateState((current) => ({ ...current, diagnostics: undefined }));
 				await refreshDiagnostics();
@@ -3112,7 +3220,7 @@ export function useWorkbench() {
 				updateState((current) => ({ ...current, about: result }));
 			}
 		},
-		[refreshHarnessImports, refreshHostInstructions, refreshModelSettings, refreshSkills, refreshDiagnostics, updateState],
+		[refreshHarnessImports, refreshHostInstructions, refreshModelSettings, refreshSecuritySettings, refreshSkills, refreshDiagnostics, updateState],
 	);
 	const closeSettings = useCallback(
 		() => updateState((current) => ({ ...current, settingsOpen: false })),
@@ -3255,6 +3363,8 @@ export function useWorkbench() {
 		refreshHostInstructions,
 		saveHostInstruction,
 		refreshModelSettings,
+		refreshSecuritySettings,
+		saveSecuritySettings,
 		loadGitStatus,
 		loadGitDiff,
 		closeGitDiff,

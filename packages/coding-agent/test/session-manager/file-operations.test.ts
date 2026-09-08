@@ -303,6 +303,20 @@ describe("SessionManager custom flat session directory", () => {
 		return sessionFile;
 	}
 
+	it("persists a discoverable header before the first transcript entry", async () => {
+		const session = SessionManager.create(projectA, tempDir, { persistHeader: true });
+		const sessionFile = session.getSessionFile();
+		if (!sessionFile) throw new Error("Expected persisted session file");
+
+		expect(JSON.parse(readFileSync(sessionFile, "utf8").trim())).toMatchObject({
+			type: "session",
+			id: session.getSessionId(),
+			cwd: projectA,
+		});
+		expect((await SessionManager.list(projectA, tempDir)).map((entry) => entry.path)).toEqual([sessionFile]);
+		session.dispose();
+	});
+
 	it("persists a bash-only session and restores its transcript", () => {
 		const session = SessionManager.create(projectA, tempDir);
 		session.appendMessage({
