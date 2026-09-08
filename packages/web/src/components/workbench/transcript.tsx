@@ -188,11 +188,13 @@ export function CodeBlockView({
 	language,
 	wrap = false,
 	embedded = false,
+	showActions = true,
 }: {
 	code: string;
 	language: string;
 	wrap?: boolean;
 	embedded?: boolean;
+	showActions?: boolean;
 }) {
 	return (
 		<CodeBlock
@@ -202,20 +204,22 @@ export function CodeBlockView({
 			transparent={embedded}
 			wrap={wrap}
 		>
-			<CodeBlockHeader
-				className={cn(embedded ? "justify-end border-b-0 bg-transparent px-0 py-0 text-foreground" : undefined)}
-			>
-				{embedded ? null : (
-					<CodeBlockTitle>
-						<FileCode2 className="size-4" />
-						<CodeBlockFilename>{language}</CodeBlockFilename>
-					</CodeBlockTitle>
-				)}
-				<CodeBlockActions className={embedded ? "-my-1 -mr-1" : undefined}>
-					<CodeBlockDownloadButton aria-label="下载代码" filename={`code.${language}`} />
-					<CodeBlockCopyButton aria-label="复制代码" />
-				</CodeBlockActions>
-			</CodeBlockHeader>
+			{showActions ? (
+				<CodeBlockHeader
+					className={cn(embedded ? "justify-end border-b-0 bg-transparent px-0 py-0 text-foreground" : undefined)}
+				>
+					{embedded ? null : (
+						<CodeBlockTitle>
+							<FileCode2 className="size-4" />
+							<CodeBlockFilename>{language}</CodeBlockFilename>
+						</CodeBlockTitle>
+					)}
+					<CodeBlockActions className={embedded ? "-my-1 -mr-1" : undefined}>
+						<CodeBlockDownloadButton aria-label="下载代码" filename={`code.${language}`} />
+						<CodeBlockCopyButton aria-label="复制代码" />
+					</CodeBlockActions>
+				</CodeBlockHeader>
+			) : null}
 		</CodeBlock>
 	);
 }

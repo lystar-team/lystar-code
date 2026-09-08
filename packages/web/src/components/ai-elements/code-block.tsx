@@ -348,12 +348,14 @@ export const CodeBlock = ({
 };
 
 export type CodeBlockCopyButtonProps = ComponentProps<typeof Button> & {
+	code?: string;
 	onCopy?: () => void;
 	onError?: (error: Error) => void;
 	timeout?: number;
 };
 
 export const CodeBlockCopyButton = ({
+	code: providedCode,
 	onCopy,
 	onError,
 	timeout = 2000,
@@ -363,7 +365,8 @@ export const CodeBlockCopyButton = ({
 }: CodeBlockCopyButtonProps) => {
 	const [isCopied, setIsCopied] = useState(false);
 	const timeoutRef = useRef<number>(0);
-	const { code } = useContext(CodeBlockContext);
+	const { code: contextCode } = useContext(CodeBlockContext);
+	const code = providedCode ?? contextCode;
 
 	const copyToClipboard = useCallback(async () => {
 		if (typeof window === "undefined" || !navigator?.clipboard?.writeText) {
@@ -400,16 +403,19 @@ export const CodeBlockCopyButton = ({
 };
 
 export type CodeBlockDownloadButtonProps = ComponentProps<typeof Button> & {
+	code?: string;
 	filename?: string;
 };
 
 export const CodeBlockDownloadButton = ({
+	code: providedCode,
 	filename = "code.txt",
 	children,
 	className,
 	...props
 }: CodeBlockDownloadButtonProps) => {
-	const { code } = useContext(CodeBlockContext);
+	const { code: contextCode } = useContext(CodeBlockContext);
+	const code = providedCode ?? contextCode;
 
 	const download = useCallback(() => {
 		const url = URL.createObjectURL(new Blob([code], { type: "text/plain;charset=utf-8" }));

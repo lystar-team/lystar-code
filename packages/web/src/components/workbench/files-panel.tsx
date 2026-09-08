@@ -64,18 +64,14 @@ export function FilesPanel({ state, actions }: { state: WorkbenchState; actions:
 					<RefreshCw className={cn("size-4", state.fileTreeLoading && "animate-spin")} />
 				</Button>
 			</div>
-			<div className="flex gap-2">
-				<Button size="sm" variant="outline" onClick={() => void actions.loadProjectTree("")}>
-					<HardDrive className="size-4" />
-					根目录
-				</Button>
-				{tree?.parent !== undefined ? (
+			{tree?.parent !== undefined ? (
+				<div className="flex gap-2">
 					<Button size="sm" variant="outline" onClick={() => void actions.loadProjectTree(tree.parent)}>
 						<ArrowLeft className="size-4" />
 						上一级
 					</Button>
-				) : null}
-			</div>
+				</div>
+			) : null}
 			{tree ? (
 				<FileTree
 					selectedPath={state.filePath}

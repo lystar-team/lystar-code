@@ -149,6 +149,12 @@ export const FileTreeFolder = ({
   const isExpanded = expandedPaths.has(path);
   const isSelected = selectedPath === path;
 
+  const handleToggle = useCallback(() => {
+    const nextExpanded = !isExpanded;
+    togglePath(path);
+    onToggle?.(path, nextExpanded);
+  }, [isExpanded, onToggle, path, togglePath]);
+
   const handleOpenChange = useCallback(
     (open: boolean) => {
       togglePath(path);
@@ -198,6 +204,7 @@ export const FileTreeFolder = ({
             <button
               className="flex min-w-0 flex-1 cursor-pointer items-center gap-1 border-none bg-transparent p-0 text-left"
               onClick={handleSelect}
+              onDoubleClick={handleToggle}
               type="button"
             >
               <FileTreeIcon>
