@@ -1,7 +1,7 @@
 import type { SessionProgress, ToolActivity, ToolActivityState, ToolDiff } from "@lystar/code-web-protocol";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UnauthorizedError, webApi } from "../adapters/host-protocol/api.ts";
-import { applyPromptAccepted, clearsThinking, committedToolCallIds, reconcileCommittedTurn } from "./chat-lifecycle.ts";
+import { applyPromptAccepted, committedToolCallIds, reconcileCommittedTurn } from "./chat-lifecycle.ts";
 import {
 	reconcileCompactionState,
 	restoreCompactionState,
@@ -891,7 +891,8 @@ export function useWorkbench() {
 					const currentHistoryChangedSinceRequest = isTranscriptResponseObsolete(requestedHistory, {
 						generation: current.transcriptGeneration, leafId: current.transcriptLeafId,
 					}, result);
-					const sameHistory = resultMatchesCurrentHistory;
+					const sameHistory = resultMatchesCurrentHistory &&
+						!(current.transcriptPageLoaded && current.transcriptGeneration === undefined && current.transcript.length > 0);
 					const staleRevision =
 						current.transcriptGeneration === result.transcriptGeneration &&
 						current.transcriptRevision !== undefined &&
@@ -995,16 +996,13 @@ export function useWorkbench() {
 
 	const applyProgressNow = useCallback(
 		(progress: SessionProgress) => {
-			updateState((current) => {
-				const activity = sessionActivityFromProgress(progress);
-				current = {
-					...current,
-					...(current.session && activity ? { session: { ...current.session, activity } } : {}),
-					...(clearsThinking(progress)
-						? { liveTurnItems: current.liveTurnItems.filter((item) => item.kind !== "thinking") }
-						: {}),
-				};
-				switch (progress.type) {
+		updateState((current) => {
+			const activity = sessionActivityFromProgress(progress);
+			current = {
+				...current,
+				...(current.session && activity ? { session: { ...current.session, activity } } : {}),
+			};
+			switch (progress.type) {
 					case "assistant_delta":
 						return {
 							...current,
@@ -1385,18 +1383,20 @@ export function useWorkbench() {
 						projects,
 						session: event.snapshot,
 						readOnly: event.snapshot.writeAccess !== "owned",
-						transcriptGeneration: historyChanged ? undefined : current.transcriptGeneration,
-						transcriptRevision: historyChanged ? undefined : current.transcriptRevision,
-						transcriptLeafId: historyChanged ? event.snapshot.leafId : current.transcriptLeafId,
+						transcriptGeneration: current.transcriptGeneration,
+						transcriptRevision: current.transcriptRevision,
+						transcriptLeafId: current.transcriptLeafId,
 						...(historyChanged
 							? {
-									transcript: [],
-									transcriptPageLoaded: false,
+									// 历史换代时保留当前窗口，等新 Transcript 返回后再整体替换，避免界面短暂空白。
+									transcriptGeneration: undefined,
+									transcriptRevision: undefined,
+									transcriptLeafId: event.snapshot.leafId,
 									previousCursor: undefined,
 									hasMorePrevious: false,
 									liveTools: {},
 									liveTurnItems: [],
-							  }
+								  }
 							: {}),
 					};
 					return restoreRuntimeActivities(next, event.snapshot);

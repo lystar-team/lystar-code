@@ -15,9 +15,11 @@ export function toLiveToolViewModel(tool: LiveTool): ToolBatchTool {
 						? "output-cancelled"
 						: tool.state === "interrupted"
 							? "output-interrupted"
-							: tool.state === "preparing" || tool.state === "queued"
-								? "input-queued"
-								: "input-available",
+							: tool.state === "preparing"
+								? "input-available"
+								: tool.state === "queued"
+									? "input-queued"
+									: "input-available",
 		detail: tool.result,
 		inputPreview: tool.inputPreview,
 		diff: tool.diff,

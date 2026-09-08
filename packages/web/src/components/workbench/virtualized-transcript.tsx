@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-const DEFAULT_GAP = 12;
+export const DEFAULT_TRANSCRIPT_GAP = 12;
 const MOBILE_BREAKPOINT = 640;
 const MOBILE_OVERSCAN = 320;
 const DESKTOP_OVERSCAN = 640;
@@ -23,7 +23,7 @@ export function buildVirtualLayout<T>(
 	getKey: (item: T, index: number) => string,
 	measuredHeights: ReadonlyMap<string, number>,
 	estimateHeight: (item: T, index: number) => number,
-	gap = DEFAULT_GAP,
+	gap: number | ((previous: T, current: T, index: number) => number) = DEFAULT_TRANSCRIPT_GAP,
 ): VirtualLayout {
 	const offsets: number[] = [];
 	const heights: number[] = [];
@@ -36,7 +36,11 @@ export function buildVirtualLayout<T>(
 		offsets.push(totalHeight);
 		heights.push(height);
 		totalHeight += height;
-		if (index < items.length - 1) totalHeight += gap;
+		if (index < items.length - 1) {
+			const nextItem = items[index + 1];
+			const rowGap = typeof gap === "function" ? gap(item, nextItem, index) : gap;
+			totalHeight += Math.max(0, rowGap);
+		}
 	}
 
 	return { offsets, heights, totalHeight };
@@ -130,6 +134,7 @@ export interface VirtualizedTranscriptProps<T> {
 	renderItem: (item: T, index: number) => ReactNode;
 	scrollRef: ScrollRef;
 	isItemEqual?: (previous: T, next: T) => boolean;
+	gap?: number | ((previous: T, current: T, index: number) => number);
 }
 
 export function VirtualizedTranscript<T>({
@@ -139,6 +144,7 @@ export function VirtualizedTranscript<T>({
 	renderItem,
 	scrollRef,
 	isItemEqual,
+	gap,
 }: VirtualizedTranscriptProps<T>) {
 	const measuredHeightsRef = useRef(new Map<string, number>());
 	const elementsRef = useRef(new Map<string, HTMLDivElement>());
@@ -155,8 +161,8 @@ export function VirtualizedTranscript<T>({
 	indexByKeyRef.current = indexByKey;
 
 	const layout = useMemo(
-		() => buildVirtualLayout(items, getKey, measuredHeightsRef.current, estimateHeight),
-		[estimateHeight, getKey, items, measurementVersion],
+		() => buildVirtualLayout(items, getKey, measuredHeightsRef.current, estimateHeight, gap),
+		[estimateHeight, gap, getKey, items, measurementVersion],
 	);
 	layoutRef.current = layout;
 

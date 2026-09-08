@@ -116,6 +116,8 @@ describe("chat lifecycle", () => {
 		const tool = liveState().liveTools["tool-1"];
 		expect(toLiveToolViewModel({ ...tool, state: "cancelled" }).state).toBe("output-cancelled");
 		expect(toLiveToolViewModel({ ...tool, state: "interrupted" }).state).toBe("output-interrupted");
+		expect(toLiveToolViewModel({ ...tool, state: "preparing" }).state).toBe("input-available");
+		expect(toLiveToolViewModel({ ...tool, state: "queued" }).state).toBe("input-queued");
 		expect(toLiveToolViewModel({ ...tool, state: "running" }).state).toBe("input-available");
 	});
 });

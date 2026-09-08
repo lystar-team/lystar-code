@@ -28,9 +28,10 @@ import {
   useMemo,
   useState,
 } from "react";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
 import { PlainTextCodeBlock } from "./code-block";
 import { ResourceImage } from "./resource-preview";
-import { Streamdown, type PluginConfig } from "streamdown";
+import { Streamdown, defaultRehypePlugins, type PluginConfig } from "streamdown";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: UIMessage["role"];
@@ -327,8 +328,22 @@ export type MessageResponseProps = ComponentProps<typeof Streamdown> & {
 
 const ResourcePathContext = createContext<((path: string) => void) | undefined>(undefined);
 
+const messageRehypePlugins = [defaultRehypePlugins.raw, defaultRehypePlugins.sanitize];
+
+function messageRehypePluginsFor(callerPlugins: MessageResponseProps["rehypePlugins"]): NonNullable<MessageResponseProps["rehypePlugins"]> {
+	return callerPlugins ?? messageRehypePlugins;
+}
+
+function isLocalResourcePath(value: string): boolean {
+	return /^(?:\/|[A-Za-z]:[\\/]|\\\\|\.\.?[\\/]|(?:packages|docs|scripts|src|test|tests|tmp)[\\/])/u.test(value);
+}
+
+function isExternalLink(value: string): boolean {
+	return /^(?:https?:|mailto:|tel:|irc:|ircs:|xmpp:|\/\/)/iu.test(value);
+}
+
 const MessageMarkdownImage = ({ src, alt }: ComponentProps<"img">) => {
-	const isLocalPath = Boolean(src && /^(?:\/|[A-Za-z]:[\\/]|\\\\|\.\.?[\\/]|(?:packages|docs|scripts|src|test|tests|tmp)[\\/])/u.test(src));
+	const isLocalPath = Boolean(src && isLocalResourcePath(src));
 	return src ? (
 		<ResourceImage
 			{...(isLocalPath ? { path: src } : { src })}
@@ -338,10 +353,43 @@ const MessageMarkdownImage = ({ src, alt }: ComponentProps<"img">) => {
 	) : null;
 };
 
+function ExternalMessageLink({ href, children }: { href: string; children: React.ReactNode }) {
+	const [open, setOpen] = useState(false);
+	return (
+		<>
+			<button
+				className="text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
+				onClick={() => setOpen(true)}
+				type="button"
+			>
+				{children}
+			</button>
+			<Dialog open={open} onOpenChange={setOpen}>
+				<DialogContent>
+					<DialogHeader>
+						<DialogTitle>打开外部链接？</DialogTitle>
+						<DialogDescription className="break-all">{href}</DialogDescription>
+					</DialogHeader>
+					<DialogFooter>
+						<Button variant="outline" onClick={() => setOpen(false)}>取消</Button>
+						<Button
+							onClick={() => {
+								window.open(href, "_blank", "noopener,noreferrer");
+								setOpen(false);
+							}}
+						>
+							打开链接
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
+		</>
+	);
+}
+
 const MessageMarkdownLink = ({ href, children, ...props }: ComponentProps<"a">) => {
 	const onOpenPath = useContext(ResourcePathContext);
-	const isLocalPath = Boolean(href && /^(?:\/|[A-Za-z]:[\\/]|\\\\|\.\.?[\\/]|(?:packages|docs|scripts|src|test|tests|tmp)[\\/])/u.test(href));
-	if (href && onOpenPath && isLocalPath) {
+	if (href && onOpenPath && isLocalResourcePath(href)) {
 		if (/\.(?:avif|gif|jpe?g|png|svg|webp)(?:[?#].*)?$/iu.test(href)) {
 			return <ResourceImage path={href} alt={typeof children === "string" ? children : "图片"} onOpenPath={onOpenPath} />;
 		}
@@ -355,6 +403,7 @@ const MessageMarkdownLink = ({ href, children, ...props }: ComponentProps<"a">) 
 			</button>
 		);
 	}
+	if (href && isExternalLink(href)) return <ExternalMessageLink href={href}>{children}</ExternalMessageLink>;
 	return (
 		<a href={href} {...props}>
 			{children}
@@ -390,7 +439,7 @@ function streamdownPluginsFor(mode: MessageResponseProps["mode"], overrides?: Pl
 }
 
 export const MessageResponse: NamedExoticComponent<MessageResponseProps> = memo(
-	({ className, onOpenPath, components, mode = "static", plugins: callerPlugins, ...props }: MessageResponseProps): ReactElement => (
+	({ className, onOpenPath, components, mode = "static", plugins: callerPlugins, rehypePlugins: callerRehypePlugins, ...props }: MessageResponseProps): ReactElement => (
 		<ResourcePathContext.Provider value={onOpenPath}>
 			<Streamdown
 				className={cn(
@@ -400,6 +449,7 @@ export const MessageResponse: NamedExoticComponent<MessageResponseProps> = memo(
 				mode={mode}
 				plugins={streamdownPluginsFor(mode, callerPlugins)}
 				translations={streamdownTranslations}
+				rehypePlugins={messageRehypePluginsFor(callerRehypePlugins)}
 				components={
 					{
 						...components,

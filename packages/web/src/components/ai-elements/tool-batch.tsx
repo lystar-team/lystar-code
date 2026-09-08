@@ -7,7 +7,8 @@ import {
 	FileCode2Icon,
 	FileTextIcon,
 	FolderIcon,
-	LoaderCircleIcon,
+		ImagesIcon,
+		LoaderCircleIcon,
 	PencilIcon,
 	SearchIcon,
 	SparklesIcon,
@@ -19,7 +20,7 @@ import type { BundledLanguage } from "shiki";
 import { cn } from "@/lib/utils";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
 import { CodeBlock, CodeBlockActions, CodeBlockCopyButton, CodeBlockHeader, CodeBlockTitle } from "./code-block";
-import { ResourceImage } from "./resource-preview";
+import { ResourceImageGallery } from "./resource-preview";
 
 export type ToolBatchState =
 	| "input-available"
@@ -46,6 +47,7 @@ export interface ToolBatchProps {
 	tools: ToolBatchTool[];
 	className?: string;
 	initialOpen?: boolean;
+	summaryLabel?: string;
 	open?: boolean;
 	onOpenChange?: (open: boolean) => void;
 	toolOpen?: ReadonlyMap<string, boolean>;
@@ -88,20 +90,22 @@ export function skillNameFromTool(tool: ToolBatchTool): string | undefined {
 	return skillNameFromPath(toolTitle(tool));
 }
 
-function toolIcon(name: string, className?: string, skill = false): ReactNode {
-	const Icon = skill
-		? SparklesIcon
-		: name === "bash"
-			? TerminalIcon
-			: name === "edit" || name === "write" || name === "apply_patch"
-				? PencilIcon
-				: name === "read"
-					? FileTextIcon
-					: name === "find" || name === "grep"
-						? SearchIcon
-						: name === "ls"
-							? FolderIcon
-							: WrenchIcon;
+function toolIcon(name: string, className?: string, skill = false, images = false): ReactNode {
+	const Icon = images
+		? ImagesIcon
+		: skill
+			? SparklesIcon
+			: name === "bash"
+				? TerminalIcon
+				: name === "edit" || name === "write" || name === "apply_patch"
+					? PencilIcon
+					: name === "read"
+						? FileTextIcon
+						: name === "find" || name === "grep"
+							? SearchIcon
+							: name === "ls"
+								? FolderIcon
+								: WrenchIcon;
 	return <Icon className={cn("size-4 shrink-0 text-muted-foreground", className)} />;
 }
 
@@ -121,6 +125,15 @@ function batchState(tools: ToolBatchTool[]): ToolBatchState {
 	if (tools.some((tool) => tool.state === "output-interrupted")) return "output-interrupted";
 	if (tools.some((tool) => tool.state === "output-cancelled")) return "output-cancelled";
 	return "output-available";
+}
+
+function isToolComplete(tool: ToolBatchTool): boolean {
+	return (
+		tool.state === "output-available" ||
+		tool.state === "output-error" ||
+		tool.state === "output-cancelled" ||
+		tool.state === "output-interrupted"
+	);
 }
 
 function parseToolSummary(summary: string): Record<string, unknown> | undefined {
@@ -201,8 +214,25 @@ function toolActionLabel(name: string): string {
 	return labels[name] ?? `调用了 ${name}`;
 }
 
+export function toolBatchSummaryLabel(tools: readonly Pick<ToolBatchTool, "name" | "images">[]): string {
+	const imageCount = tools.reduce((count, tool) => count + (tool.images?.length ?? 0), 0);
+	if (imageCount > 0) return `已查看 ${imageCount} 张图像`;
+	return [...new Set(tools.map((tool) => toolActionLabel(tool.name)))].join("并") || "执行了工具";
+}
+
+const activeToolLabels: Record<string, string> = {
+	bash: "正在执行",
+	read: "正在读取",
+	edit: "正在编辑",
+	write: "正在写入",
+	apply_patch: "正在应用补丁",
+	find: "正在查找",
+	grep: "正在搜索",
+	ls: "正在查看目录",
+};
+
 function toolRowActionLabel(name: string, state: ToolBatchState): string {
-	if (state === "input-available") return "运行中";
+	if (state === "input-available") return activeToolLabels[name] ?? "运行中";
 	if (state === "input-queued") return "已排队";
 	const labels: Record<string, string> = {
 		bash: "已运行",
@@ -239,6 +269,7 @@ function batchTitle(tools: ToolBatchTool[]): string {
 }
 
 export function toolRowTitle(tool: ToolBatchTool): string {
+	if (tool.images?.length) return `已查看 ${tool.images.length} 张图像`;
 	const skillName = skillNameFromTool(tool);
 	if (skillName && tool.state === "output-available") return `已加载 ${skillName} 技能`;
 	const title = toolTitle(tool);
@@ -328,6 +359,34 @@ function ToolDiffOutput({
 	);
 }
 
+function ImageToolGallery({
+	tools,
+	sessionId,
+	onOpenPath,
+}: {
+	tools: readonly ToolBatchTool[];
+	sessionId?: string;
+	onOpenPath?: (path: string) => void;
+}) {
+	return (
+		<div className="min-w-0 pt-1">
+			<ResourceImageGallery
+				items={tools.flatMap((tool) =>
+					(tool.images ?? []).map((image) => ({
+						id: `${tool.id}:${image.contentRef}`,
+						sessionId,
+						contentRef: image.contentRef,
+						mimeType: image.mimeType,
+						alt: image.alt || toolTitle(tool),
+					})),
+				)}
+				itemClassName="w-40 [&>button]:h-32 [&>button]:w-40 [&>button]:min-h-0 [&>button>img]:h-full [&>button>img]:w-full"
+				onOpenPath={onOpenPath}
+			/>
+		</div>
+	);
+}
+
 function ToolDetail({
 	tool,
 	sessionId,
@@ -341,25 +400,14 @@ function ToolDetail({
 	const title = toolTitle(tool);
 	const stats = diffStats(tool.diff);
 	const imagePreview = tool.images?.length ? (
-		<div className="grid min-w-0 gap-1">
-			{tool.images.map((image) => (
-				<ResourceImage
-					key={image.contentRef}
-					sessionId={sessionId}
-					contentRef={image.contentRef}
-					alt={image.alt || title}
-					pathLabel={title}
-					onOpenPath={onOpenPath}
-				/>
-			))}
-		</div>
+		<ImageToolGallery tools={[tool]} sessionId={sessionId} onOpenPath={onOpenPath} />
 	) : null;
 
 	if (tool.name === "read") {
+		if (tool.images?.length) return imagePreview;
 		const code = tool.detail ?? "";
 		return (
 			<div className="grid min-w-0 gap-1">
-				{imagePreview}
 				{tool.detail ? (
 					<CodeBlock
 						className="my-0 rounded-md border-0 bg-transparent shadow-none"
@@ -483,11 +531,11 @@ function ToolBatchRow({
 		<Collapsible open={open} onOpenChange={setOpen} className={cn("min-w-0", className)}>
 			<CollapsibleTrigger asChild>
 				<button
-					className="flex min-h-8 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-1 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					className="flex min-h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 					type="button"
 					aria-label={`${title}，${statusLabels[tool.state]}${hasDetails ? "，展开详情" : ""}`}
 				>
-					{toolIcon(tool.name, undefined, Boolean(skillName))}
+					{toolIcon(tool.name, undefined, Boolean(skillName), Boolean(tool.images?.length))}
 					<span className="min-w-0 flex-1 truncate font-mono text-[13px]" title={title}>
 						{title}
 					</span>
@@ -529,6 +577,7 @@ export const ToolBatch = memo(function ToolBatch({
 	tools,
 	className,
 	initialOpen = false,
+	summaryLabel,
 	open: controlledOpen,
 	onOpenChange,
 	autoCollapseWhenComplete = false,
@@ -539,10 +588,11 @@ export const ToolBatch = memo(function ToolBatch({
 }: ToolBatchProps) {
 	const active = tools.some((tool) => tool.state === "input-available" || tool.state === "input-queued");
 	const aggregateState = batchState(tools);
+	const imageGallery = tools.length > 0 && tools.every((tool) => tool.images?.length);
 	const [open, setOpen] = useControllableState({
-		defaultProp: initialOpen,
-		prop: controlledOpen,
-		onChange: onOpenChange,
+		defaultProp: imageGallery || initialOpen,
+		prop: imageGallery ? undefined : controlledOpen,
+		onChange: imageGallery ? undefined : onOpenChange,
 	});
 	const previousActive = useRef(active);
 
@@ -552,35 +602,87 @@ export const ToolBatch = memo(function ToolBatch({
 	}, [active, autoCollapseWhenComplete]);
 
 	if (!tools.length) return null;
-	if (tools.length === 1) {
+	const allToolsCompleted = tools.every(isToolComplete);
+	if (!allToolsCompleted && tools.length > 1) {
+		return (
+			<div className={cn("tool-batch-stack", className)}>
+				{tools.map((tool) => (
+					<ToolBatchRow
+						key={tool.id}
+						tool={tool}
+						sessionId={sessionId}
+						onOpenPath={onOpenPath}
+						initialOpen={false}
+						open={toolOpen ? (toolOpen.get(tool.id) ?? false) : undefined}
+						onOpenChange={toolOpen ? (nextOpen) => onToolOpenChange?.(tool.id, nextOpen) : undefined}
+						autoCollapseWhenComplete={autoCollapseWhenComplete}
+					/>
+				))}
+			</div>
+		);
+	}
+	if (imageGallery) {
+		const imageCount = tools.reduce((count, tool) => count + (tool.images?.length ?? 0), 0);
+		return (
+			<Collapsible
+				className={cn("group/tool-batch min-w-0 w-full", className)}
+				open={open}
+				onOpenChange={setOpen}
+			>
+				<CollapsibleTrigger
+					className="flex min-h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					type="button"
+					aria-label={`已查看 ${imageCount} 张图像${open ? "，收起" : "，展开"}`}
+				>
+					{toolIcon("read", undefined, false, true)}
+					<span className="min-w-0 flex-1 truncate font-mono text-[13px]">
+						{summaryLabel ?? `已查看 ${imageCount} 张图像`}
+					</span>
+					<ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]/tool-batch:rotate-180" />
+				</CollapsibleTrigger>
+				<CollapsibleContent className="min-w-0 overflow-hidden pb-0">
+					<ImageToolGallery tools={tools} sessionId={sessionId} onOpenPath={onOpenPath} />
+				</CollapsibleContent>
+			</Collapsible>
+		);
+	}
+	if (tools.length === 1 && !summaryLabel) {
 		const tool = tools[0];
-		return tool ? (
+		if (!tool) return null;
+		const imageTool = Boolean(tool.images?.length);
+		return (
 			<ToolBatchRow
 				tool={tool}
 				sessionId={sessionId}
 				onOpenPath={onOpenPath}
-				open={open}
-				onOpenChange={setOpen}
+				initialOpen={imageTool || initialOpen}
+				open={imageTool ? undefined : open}
+				onOpenChange={imageTool ? undefined : setOpen}
 				className={className}
 				autoCollapseWhenComplete={autoCollapseWhenComplete}
 			/>
-		) : null;
+		);
 	}
 
 	return (
 		<Collapsible
-			className={cn("group/tool-batch relative min-w-0 w-full", className)}
+			className={cn("group/tool-batch min-w-0 w-full", className)}
 			open={open}
 			onOpenChange={setOpen}
 		>
 			<CollapsibleTrigger
-				className="flex min-h-8 w-full min-w-0 items-center gap-1.5 px-0 py-0.5 text-left transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+				className="flex min-h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 				type="button"
-				aria-label={`${batchTitle(tools)}，${statusLabels[aggregateState]}${open ? "，收起" : "，展开"}`}
+				aria-label={`${summaryLabel ?? batchTitle(tools)}，${statusLabels[aggregateState]}${open ? "，收起" : "，展开"}`}
 			>
-				{toolIcon(tools[0]?.name ?? "tool", undefined, Boolean(tools[0] && skillNameFromTool(tools[0])))}
-				<span className="min-w-0 flex-1 truncate font-medium text-sm text-muted-foreground">
-					{batchTitle(tools)}
+				{toolIcon(
+					tools[0]?.name ?? "tool",
+					undefined,
+					Boolean(tools[0] && skillNameFromTool(tools[0])),
+					Boolean(tools[0]?.images?.length),
+				)}
+				<span className="min-w-0 flex-1 truncate font-mono text-[13px]">
+					{summaryLabel ?? batchTitle(tools)}
 				</span>
 				<span className="flex shrink-0 items-center gap-1.5">
 					{aggregateState !== "output-available" ? (
@@ -591,7 +693,7 @@ export const ToolBatch = memo(function ToolBatch({
 				</span>
 			</CollapsibleTrigger>
 			<CollapsibleContent
-				className="relative min-w-0 max-h-[min(34rem,60vh)] overflow-y-auto overflow-x-hidden pb-0 pl-0.5 data-[state=closed]:animate-out data-[state=open]:animate-in"
+				className="relative min-w-0 max-h-[min(34rem,60vh)] overflow-y-auto overflow-x-hidden pb-0 data-[state=closed]:animate-out data-[state=open]:animate-in"
 				onClick={(event) => {
 					if (canCollapseFromContent(event)) setOpen(false);
 				}}

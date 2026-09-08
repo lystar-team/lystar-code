@@ -1,13 +1,4 @@
 import { Shimmer } from "../ai-elements/shimmer";
-import type { LiveTurnItem, WorkbenchState } from "../../state/use-workbench";
-
-function latestThinkingItem(items: readonly LiveTurnItem[]): Extract<LiveTurnItem, { kind: "thinking" }> | undefined {
-	for (let index = items.length - 1; index >= 0; index--) {
-		const item = items[index];
-		if (item?.kind === "thinking") return item;
-	}
-	return undefined;
-}
 
 function latestThinkingLine(parts: readonly string[]): string {
 	let line = "";
@@ -24,32 +15,11 @@ function latestThinkingLine(parts: readonly string[]): string {
 		.replace(/__\s*(.*?)\s*__/gu, "$1");
 }
 
-export function LiveStatus({ state }: { state: WorkbenchState }) {
-	const failed = state.liveTurnActive === false &&
-		["failed", "aborted", "interrupted"].includes(state.currentOperation?.status ?? "");
-	const showStatus = Boolean(
-		state.statusText &&
-		!state.liveCompaction &&
-		(failed || (!state.liveTurnItems.some((item) => item.kind === "text" || item.kind === "tools") && state.liveTurnActive !== false)),
-	);
-	if (!showStatus) return null;
-	return failed ? (
-		<div role="alert" className="text-sm text-destructive">{state.statusText}</div>
-	) : (
-		<Shimmer>{state.statusText}</Shimmer>
-	);
-}
-
-export function ThinkingActivity({ state }: { state: WorkbenchState }) {
-	const thinkingItem = latestThinkingItem(state.liveTurnItems);
-	if (!thinkingItem) return null;
-	const thinkingLine = latestThinkingLine(thinkingItem.parts);
+export function ThinkingBlock({ text }: { text: string }) {
+	const thinkingLine = latestThinkingLine([text]);
+	if (!thinkingLine) return null;
 	return (
-		<div
-			className="mx-auto w-full max-w-[var(--conversation-width)] shrink-0 px-5 py-2 text-sm font-normal text-muted-foreground sm:px-10"
-			aria-live="polite"
-			role="status"
-		>
+		<div className="min-h-8 px-1 py-1 text-sm text-muted-foreground" aria-live="polite" role="status">
 			<Shimmer as="span" className="block truncate text-sm font-normal">
 				{thinkingLine}
 			</Shimmer>

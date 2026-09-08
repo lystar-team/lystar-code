@@ -8,12 +8,12 @@ import { shouldJoinToolBatch } from "../../state/tool-batching";
 import type { LiveTurnItem, WorkbenchState } from "../../state/use-workbench";
 import { CompactionCard } from "./compaction-card";
 import { Conversation, ConversationContent, ConversationEmptyState, ConversationScrollButton } from "../ai-elements/conversation";
-import { ToolBatch, type ToolBatchTool } from "../ai-elements/tool-batch";
+import { ToolBatch, toolBatchSummaryLabel, type ToolBatchTool } from "../ai-elements/tool-batch";
 import { Button } from "../ui/button";
 import { ACTIVE_OPERATION_STATUSES } from "./constants";
-import { LiveStatus, ThinkingActivity } from "./live-turn";
+import { ThinkingBlock } from "./live-turn";
 import { AgentErrorCard, TranscriptItemView, TranscriptMessageView } from "./transcript";
-import { VirtualizedTranscript } from "./virtualized-transcript";
+import { DEFAULT_TRANSCRIPT_GAP, VirtualizedTranscript } from "./virtualized-transcript";
 import type { WorkbenchActions } from "./types";
 
 type MessageRenderItem = {
@@ -26,8 +26,10 @@ type MessageRenderItem = {
 	sources: string[];
 	copyVisible: boolean;
 };
+type ThinkingRenderItem = { kind: "thinking"; key: string; text: string };
 type TranscriptItemRenderItem = { kind: "item"; key: string; item: WorkbenchState["transcript"][number] };
 type TranscriptBatchRenderItem = { kind: "tool-batch"; key: string; tools: ToolBatchTool[] };
+type ActivityBoundaryRenderItem = { kind: "activity-boundary"; key: string };
 type TranscriptToolStackRenderItem = {
 	kind: "tool-stack";
 	key: string;
@@ -44,10 +46,16 @@ type CompactionRenderItem = {
 };
 type ConversationRenderItem =
 	| MessageRenderItem
+	| ThinkingRenderItem
 	| TranscriptItemRenderItem
 	| TranscriptToolStackRenderItem
 	| CompactionRenderItem;
-type RawRenderItem = MessageRenderItem | TranscriptItemRenderItem | TranscriptBatchRenderItem | CompactionRenderItem;
+type RawRenderItem =
+	| MessageRenderItem
+	| TranscriptItemRenderItem
+	| TranscriptBatchRenderItem
+	| ActivityBoundaryRenderItem
+	| CompactionRenderItem;
 
 const HISTORY_LOAD_THRESHOLD = 240;
 const HISTORY_LOAD_RESET_DISTANCE = 480;
@@ -57,6 +65,15 @@ type ToolIndex = {
 	results: ReadonlyMap<string, ToolBatchTool>;
 	statuses: ReadonlyMap<string, "success" | "error">;
 };
+
+function isToolComplete(tool: ToolBatchTool): boolean {
+	return (
+		tool.state === "output-available" ||
+		tool.state === "output-error" ||
+		tool.state === "output-cancelled" ||
+		tool.state === "output-interrupted"
+	);
+}
 
 function attachmentListsEqual(
 	previous: MessageRenderItem["attachments"],
@@ -93,6 +110,12 @@ function toolBatchToolsEqual(previous: readonly ToolBatchTool[], next: readonly 
 	});
 }
 
+function persistedToolBatchKind(batch: TranscriptBatchRenderItem): "read" | "image" | "action" {
+	if (batch.tools.length > 0 && batch.tools.every((tool) => tool.name === "read" && Boolean(tool.images?.length))) return "image";
+	if (batch.tools.length > 0 && batch.tools.every((tool) => tool.name === "read")) return "read";
+	return "action";
+}
+
 function conversationRenderItemEqual(previous: ConversationRenderItem, next: ConversationRenderItem): boolean {
 	if (previous.kind !== next.kind || previous.key !== next.key) return false;
 	if (previous.kind === "message" && next.kind === "message") {
@@ -105,6 +128,7 @@ function conversationRenderItemEqual(previous: ConversationRenderItem, next: Con
 			attachmentListsEqual(previous.attachments, next.attachments)
 		);
 	}
+	if (previous.kind === "thinking" && next.kind === "thinking") return previous.text === next.text;
 	if (previous.kind === "tool-stack" && next.kind === "tool-stack") {
 		return (
 			previous.live === next.live &&
@@ -125,17 +149,28 @@ function conversationRenderItemEqual(previous: ConversationRenderItem, next: Con
 
 function groupPersistedToolBatches(rendered: Array<RawRenderItem>): ConversationRenderItem[] {
 	const grouped: ConversationRenderItem[] = [];
+	let previousToolStack: TranscriptToolStackRenderItem | undefined;
+	let previousToolBatchKind: "read" | "image" | "action" | undefined;
 	for (const entry of rendered) {
-		const previous = grouped.at(-1);
-		if (entry.kind === "tool-batch") {
-			if (previous?.kind === "tool-stack" && !previous.live) {
-				previous.batches.push(entry);
-			} else {
-				grouped.push({ kind: "tool-stack", key: `tool-stack:${entry.key}`, live: false, batches: [entry] });
-			}
-		} else {
-			grouped.push(entry);
+		if (entry.kind === "activity-boundary") {
+			previousToolStack = undefined;
+			previousToolBatchKind = undefined;
+			continue;
 		}
+		if (entry.kind === "tool-batch") {
+			const toolBatchKind = persistedToolBatchKind(entry);
+			if (previousToolStack && previousToolBatchKind === toolBatchKind) {
+				previousToolStack.batches.push(entry);
+			} else {
+				previousToolStack = { kind: "tool-stack", key: `tool-stack:${entry.key}`, live: false, batches: [entry] };
+				grouped.push(previousToolStack);
+			}
+			previousToolBatchKind = toolBatchKind;
+			continue;
+		}
+		grouped.push(entry);
+		previousToolStack = undefined;
+		previousToolBatchKind = undefined;
 	}
 	return grouped;
 }
@@ -157,7 +192,11 @@ function buildPersistedRenderItems(items: WorkbenchState["transcript"], toolInde
 
 	for (const item of items) {
 		const viewModel = toSessionItemViewModel(item, toolIndex.statuses);
-		if (viewModel.kind === "reasoning") continue;
+		if (viewModel.kind === "reasoning") {
+			flushBatch();
+			rendered.push({ kind: "activity-boundary", key: `activity-boundary:${item.renderId}` });
+			continue;
+		}
 		if (viewModel.kind === "message") {
 			flushBatch();
 			rendered.push({
@@ -220,7 +259,13 @@ function appendLiveRenderItems(
 	liveTurnId: number,
 ): ConversationRenderItem[] {
 	const next = [...rendered];
+	const lastLiveItem = liveItems.at(-1);
 	for (const item of liveItems) {
+		if (item.kind === "thinking") {
+			if (!item.parts.length || lastLiveItem?.id !== item.id || next.some((entry) => entry.key === item.id)) continue;
+			next.push({ kind: "thinking", key: item.id, text: item.parts.join("") });
+			continue;
+		}
 		if (item.kind === "text") {
 			if (!item.parts.length || next.some((entry) => entry.key === item.id)) continue;
 			next.push({
@@ -268,10 +313,10 @@ function buildConversationRenderItems(
 	toolIndex: ToolIndex,
 	liveItems: readonly LiveTurnItem[],
 	liveTools: WorkbenchState["liveTools"],
-		liveCompaction: LiveCompactionState | undefined,
-		liveTurnId: number,
-		responseActive: boolean,
-	): ConversationRenderItem[] {
+	liveCompaction: LiveCompactionState | undefined,
+	liveTurnId: number,
+	responseActive: boolean,
+): ConversationRenderItem[] {
 	const next = appendLiveRenderItems(
 		buildPersistedRenderItems(transcript, toolIndex),
 		liveItems,
@@ -291,8 +336,8 @@ function buildConversationRenderItems(
 		}
 	}
 	return next.map((entry, index) =>
-			entry.kind === "message" ? { ...entry, copyVisible: index === lastAssistantIndex } : entry,
-		);
+		entry.kind === "message" ? { ...entry, copyVisible: index === lastAssistantIndex } : entry,
+	);
 }
 
 function isConversationResponseActive(state: WorkbenchState): boolean {
@@ -377,7 +422,6 @@ export function ConversationView({
 				/>
 				<ConversationScrollButton aria-label="回到最新消息" />
 			</Conversation>
-			<ThinkingActivity state={state} />
 		</>
 	);
 }
@@ -539,24 +583,61 @@ function ConversationBody({
 					/>
 				);
 			}
+			if (entry.kind === "thinking") return <ThinkingBlock text={entry.text} />;
 			if (entry.kind === "tool-stack") {
+				const tools = entry.batches.flatMap((batch) => batch.tools);
+				const allToolsCompleted = tools.length > 0 && tools.every(isToolComplete);
+				if (!allToolsCompleted) {
+					return (
+						<div className="tool-batch-stack">
+							{tools.map((tool) => (
+								<ToolBatch
+									key={tool.id}
+									className="tool-batch-render-item"
+									tools={[tool]}
+									initialOpen={false}
+									autoCollapseWhenComplete={shouldAutoCollapseTools}
+									sessionId={current.sessionId}
+									onOpenPath={(path) => void openResource(path)}
+								/>
+							))}
+						</div>
+					);
+				}
+				const standaloneReadTools =
+					tools.length > 0 && tools.every((tool) => tool.name === "read" && !tool.images?.length);
+				if (standaloneReadTools) {
+					return (
+						<div className="tool-batch-stack">
+							{tools.map((tool) => (
+								<ToolBatch
+									key={tool.id}
+									className="tool-batch-render-item"
+									tools={[tool]}
+									initialOpen={false}
+									autoCollapseWhenComplete={shouldAutoCollapseTools}
+									sessionId={current.sessionId}
+									onOpenPath={(path) => void openResource(path)}
+								/>
+							))}
+						</div>
+					);
+				}
 				return (
-					<div className="tool-batch-stack">
-						{entry.batches.map((batch) => (
-							<ToolBatch
-								key={batch.key}
-								className="tool-batch-render-item"
-								tools={batch.tools}
-								sessionId={current.sessionId}
-								open={entry.live ? undefined : expandedToolBatches.get(batch.key) ?? false}
-								onOpenChange={entry.live ? undefined : (open) => updateExpandedToolBatch(batch.key, open)}
-								toolOpen={entry.live ? undefined : expandedToolRows}
-								onToolOpenChange={entry.live ? undefined : updateExpandedToolRow}
-								autoCollapseWhenComplete={shouldAutoCollapseTools}
-								onOpenPath={(path) => void openResource(path)}
-							/>
-						))}
-					</div>
+					<ToolBatch
+						key={entry.key}
+						className="tool-batch-render-item"
+						tools={tools}
+						summaryLabel={tools.length > 1 ? toolBatchSummaryLabel(tools) : undefined}
+						initialOpen={false}
+						open={entry.live ? undefined : expandedToolBatches.get(entry.key) ?? false}
+						onOpenChange={entry.live ? undefined : (open) => updateExpandedToolBatch(entry.key, open)}
+						toolOpen={entry.live ? undefined : expandedToolRows}
+						onToolOpenChange={entry.live ? undefined : updateExpandedToolRow}
+						autoCollapseWhenComplete={shouldAutoCollapseTools}
+						sessionId={current.sessionId}
+						onOpenPath={(path) => void openResource(path)}
+					/>
 				);
 			}
 			if (entry.kind === "compaction") {
@@ -590,7 +671,8 @@ function ConversationBody({
 	);
 	const transcriptItemKey = useCallback((entry: ConversationRenderItem) => entry.key, []);
 	const estimateTranscriptItemHeight = useCallback(
-		(entry: ConversationRenderItem) => (entry.kind === "tool-stack" || entry.kind === "compaction" ? 32 : 80),
+		(entry: ConversationRenderItem) =>
+			(entry.kind === "tool-stack" || entry.kind === "compaction" || entry.kind === "thinking" ? 32 : 80),
 		[],
 	);
 
@@ -640,6 +722,9 @@ function ConversationBody({
 					items={renderItems}
 					getKey={transcriptItemKey}
 					estimateHeight={estimateTranscriptItemHeight}
+					gap={(previous, current) =>
+						previous.kind === "tool-stack" && current.kind === "tool-stack" ? 0 : DEFAULT_TRANSCRIPT_GAP
+					}
 					renderItem={renderConversationItem}
 					isItemEqual={conversationRenderItemEqual}
 					scrollRef={scrollRef}
@@ -652,7 +737,6 @@ function ConversationBody({
 					description={state.session ? "从底部输入任务，运行进展会显示在这里。" : "从左侧选择会话或新建会话。"}
 				/>
 			)}
-			<LiveStatus state={state} />
 		</ConversationContent>
 	);
 }
