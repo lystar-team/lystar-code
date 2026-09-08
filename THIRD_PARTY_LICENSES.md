@@ -17,6 +17,9 @@ The standalone bundles also include runtime assets or native modules from these 
 | `diff` | BSD-3-Clause |
 | `highlight.js` | BSD-3-Clause |
 | `jiti` | MIT |
+| `monaco-editor` | MIT |
+| `marked` (Monaco Editor dependency) | MIT |
+| `dompurify` (Monaco Editor dependency) | MPL-2.0 OR Apache-2.0 |
 | `semver` | ISC |
 | `undici` | MIT |
 | `yaml` | ISC |

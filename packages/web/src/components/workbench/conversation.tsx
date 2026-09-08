@@ -310,6 +310,7 @@ function appendLiveRenderItems(
 
 function buildConversationRenderItems(
 	transcript: WorkbenchState["transcript"],
+	pendingUserPrompts: WorkbenchState["pendingUserPrompts"],
 	toolIndex: ToolIndex,
 	liveItems: readonly LiveTurnItem[],
 	liveTools: WorkbenchState["liveTools"],
@@ -317,8 +318,21 @@ function buildConversationRenderItems(
 	liveTurnId: number,
 	responseActive: boolean,
 ): ConversationRenderItem[] {
-	const next = appendLiveRenderItems(
-		buildPersistedRenderItems(transcript, toolIndex),
+	const next = buildPersistedRenderItems(transcript, toolIndex);
+	for (const prompt of pendingUserPrompts) {
+		next.push({
+			kind: "message",
+			key: prompt.id,
+			live: false,
+			role: "user",
+			text: prompt.text,
+			attachments: [],
+			sources: [],
+			copyVisible: false,
+		});
+	}
+	appendLiveRenderItems(
+		next,
 		liveItems,
 		liveTools,
 		toolIndex.callIds,
@@ -400,6 +414,7 @@ export function ConversationView({
 		() =>
 			buildConversationRenderItems(
 				state.transcript,
+				state.pendingUserPrompts,
 				toolIndex,
 				state.liveTurnItems,
 				state.liveTools,
@@ -407,7 +422,16 @@ export function ConversationView({
 				state.liveTurnId,
 				responseActive,
 			),
-		[state.liveCompaction, state.liveTools, state.liveTurnId, state.liveTurnItems, state.transcript, toolIndex, responseActive],
+		[
+			state.liveCompaction,
+			state.liveTools,
+			state.liveTurnId,
+			state.liveTurnItems,
+			state.pendingUserPrompts,
+			state.transcript,
+			toolIndex,
+			responseActive,
+		],
 	);
 
 	return (

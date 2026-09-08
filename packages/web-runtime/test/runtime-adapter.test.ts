@@ -998,9 +998,13 @@ describe("CodingAgentRuntimeAdapter", () => {
 		const worktreeDiff = await adapter.getGitDiff(tempDir, "tracked.txt", false);
 		expect(worktreeDiff).toMatchObject({ path: "tracked.txt", staged: false, additions: 1, deletions: 0 });
 		expect(worktreeDiff.diff).toContain("+worktree");
+		expect(worktreeDiff.original).toBe("base\n");
+		expect(worktreeDiff.modified).toBe("base\nworktree\n");
 		const stagedDiff = await adapter.getGitDiff(tempDir, "staged.txt", true);
 		expect(stagedDiff).toMatchObject({ path: "staged.txt", staged: true, additions: 1, deletions: 0 });
 		expect(stagedDiff.diff).toContain("+staged");
+		expect(stagedDiff.original).toBe("");
+		expect(stagedDiff.modified).toBe("staged\n");
 		expect(await adapter.getGitStatus(tempDir)).toEqual(before);
 	});
 

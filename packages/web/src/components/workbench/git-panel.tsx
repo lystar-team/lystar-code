@@ -1,8 +1,6 @@
-import { ChevronRight, GitBranch, GitCompare, RefreshCw } from "lucide-react";
+import { ChevronRight, GitBranch, RefreshCw } from "lucide-react";
 import { cn } from "../../lib/utils";
 import type { WorkbenchState } from "../../state/use-workbench";
-import { Artifact, ArtifactContent, ArtifactDescription, ArtifactHeader, ArtifactTitle } from "../ai-elements/artifact";
-import { CodeBlockView } from "./transcript";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent } from "../ui/card";
@@ -38,7 +36,7 @@ export function GitPanel({ state, actions }: { state: WorkbenchState; actions: W
 									key={file.path}
 									className="h-8 w-full min-w-0 justify-start gap-2 px-2 font-mono !text-[13px] !leading-5"
 									variant="ghost"
-									onClick={() => void actions.loadGitDiff(file.path)}
+									onClick={() => void actions.loadGitDiff(file.path, file.staged && !file.unstaged)}
 								>
 									<Badge
 										className="shrink-0 text-[11px]"
@@ -60,22 +58,6 @@ export function GitPanel({ state, actions }: { state: WorkbenchState; actions: W
 							);
 						})}
 					</div>
-					{state.gitDiff ? (
-						<Artifact>
-							<ArtifactHeader>
-								<div className="min-w-0">
-									<ArtifactTitle className="truncate">{state.gitDiff.path ?? "工作区差异"}</ArtifactTitle>
-									<ArtifactDescription>
-										+{state.gitDiff.additions} -{state.gitDiff.deletions}
-									</ArtifactDescription>
-								</div>
-								<GitCompare className="size-4 text-muted-foreground" />
-							</ArtifactHeader>
-							<ArtifactContent>
-								<CodeBlockView code={state.gitDiff.diff || "没有差异"} language="diff" />
-							</ArtifactContent>
-						</Artifact>
-					) : null}
 				</>
 			) : (
 				<Card>

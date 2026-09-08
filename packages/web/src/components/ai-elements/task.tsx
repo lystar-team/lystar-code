@@ -66,11 +66,14 @@ export const TaskTrigger = ({
   </CollapsibleTrigger>
 );
 
-export type TaskContentProps = ComponentProps<typeof CollapsibleContent>;
+export type TaskContentProps = ComponentProps<typeof CollapsibleContent> & {
+  contentClassName?: string;
+};
 
 export const TaskContent = ({
   children,
   className,
+  contentClassName,
   ...props
 }: TaskContentProps) => (
   <CollapsibleContent
@@ -80,7 +83,12 @@ export const TaskContent = ({
     )}
     {...props}
   >
-    <div className="mt-4 space-y-2 border-muted border-l-2 pl-4">
+    <div
+      className={cn(
+        "mt-4 space-y-2 border-muted border-l-2 pl-4",
+        contentClassName
+      )}
+    >
       {children}
     </div>
   </CollapsibleContent>

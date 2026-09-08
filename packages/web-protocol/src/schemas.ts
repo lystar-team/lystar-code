@@ -620,6 +620,9 @@ export const GitDiffSchema = StrictObject({
 	diff: Type.String(),
 	additions: Type.Integer({ minimum: 0 }),
 	deletions: Type.Integer({ minimum: 0 }),
+	original: Type.Optional(Type.String({ maxLength: 2 * 1024 * 1024 })),
+	modified: Type.Optional(Type.String({ maxLength: 2 * 1024 * 1024 })),
+	contentTruncated: Type.Optional(Type.Boolean()),
 });
 export type GitDiff = Static<typeof GitDiffSchema>;
 

@@ -152,6 +152,7 @@ function readHostVersion(): string | undefined {
 const HOST_VERSION = process.env.PI_WEB_RUNTIME_VERSION ?? readHostVersion() ?? "0.0.0";
 const execFileAsync = promisify(execFile);
 const GIT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
+const GIT_EDITOR_CONTENT_MAX_BYTES = 2 * 1024 * 1024;
 const PROJECT_RESOURCE_MAX_BYTES = 32 * 1024 * 1024;
 const PROJECT_INSTRUCTION_NAMES = ["AGENTS.override.md", "AGENTS.md"] as const;
 const IMAGE_MIME_TYPES: Readonly<Record<string, string>> = {
@@ -324,6 +325,42 @@ async function git(cwd: string, args: string[]): Promise<string> {
 	}
 }
 
+function boundedGitEditorContent(content: string): string | undefined {
+	if (content.includes("\0") || Buffer.byteLength(content, "utf8") > GIT_EDITOR_CONTENT_MAX_BYTES) return undefined;
+	return content;
+}
+
+async function readGitRevisionContent(cwd: string, revision: string, path: string): Promise<string | undefined> {
+	const objectPath = `${revision}:${path}`;
+	try {
+		await git(cwd, ["cat-file", "-e", objectPath]);
+	} catch {
+		return "";
+	}
+	try {
+		return boundedGitEditorContent(await git(cwd, ["show", objectPath]));
+	} catch {
+		return undefined;
+	}
+}
+
+function readWorkingTreeGitContent(cwd: string, path: string): string | undefined {
+	const root = canonicalDirectory(cwd);
+	const candidate = resolve(root, path);
+	if (!isInside(root, candidate)) {
+		throw Object.assign(new Error("Git 文件不在当前项目范围内"), { code: "resource_outside_project" });
+	}
+	if (!existsSync(candidate)) return "";
+	const resolved = realpathSync(candidate);
+	if (!isInside(root, resolved)) {
+		throw Object.assign(new Error("Git 文件不在当前项目范围内"), { code: "resource_outside_project" });
+	}
+	const stat = statSync(resolved);
+	if (!stat.isFile()) return "";
+	if (stat.size > GIT_EDITOR_CONTENT_MAX_BYTES) return undefined;
+	return boundedGitEditorContent(readFileSync(resolved, "utf8"));
+}
+
 function gitFile(
 	path: string,
 	xy: string,
@@ -434,11 +471,7 @@ function sessionTree(entries: readonly SessionEntry[], leafId: string | null): S
 		}
 	}
 	const output: SessionTreeNode[] = [];
-	const stack = roots
-		.sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp))
-		.map((entry) => ({ entry, depth: 0 }));
-	while (stack.length > 0) {
-		const { entry, depth } = stack.pop()!;
+	const visit = (entry: SessionEntry, depth: number): void => {
 		const raw = entry.type === "message" ? entry.message : entry;
 		output.push({
 			id: entry.id,
@@ -450,10 +483,13 @@ function sessionTree(entries: readonly SessionEntry[], leafId: string | null): S
 			isLeaf: leafId === entry.id,
 			depth,
 		});
-		const descendants = children.get(entry.id) ?? [];
-		for (const child of descendants.sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp))) {
-			stack.push({ entry: child, depth: depth + 1 });
-		}
+		const descendants = (children.get(entry.id) ?? []).sort(
+			(left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp),
+		);
+		for (const child of descendants) visit(child, depth + 1);
+	};
+	for (const root of roots.sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp))) {
+		visit(root, 0);
 	}
 	return output;
 }
@@ -2267,7 +2303,12 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			if (line.startsWith("+") && !line.startsWith("+++")) additions++;
 			else if (line.startsWith("-") && !line.startsWith("---")) deletions++;
 		}
-		return { ...(path ? { path } : {}), staged, diff, additions, deletions };
+		const result: GitDiff = { ...(path ? { path } : {}), staged, diff, additions, deletions };
+		if (!path) return result;
+		const original = await readGitRevisionContent(cwd, staged ? "HEAD" : "", path);
+		const modified = staged ? await readGitRevisionContent(cwd, "", path) : readWorkingTreeGitContent(cwd, path);
+		if (original === undefined || modified === undefined) return { ...result, contentTruncated: true };
+		return { ...result, original, modified };
 	}
 
 	async checkForUpdates(): Promise<JsonValue> {

@@ -620,6 +620,7 @@ describe("WebRuntimeService journaled writes", () => {
 			{ type: "bash", command: "printf ok", output: "" },
 			{ type: "bash", command: "printf ok", output: "first" },
 			{ type: "bash", command: "printf ok", output: "first-second" },
+			{ type: "bash", command: "printf ok", output: "first-second" },
 		]);
 		expect(
 			active.connection.messages.find((message) => message.type === "response" && message.id === "bash"),

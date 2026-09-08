@@ -32,6 +32,7 @@
     "embla-carousel-react": "8.6.0",
     "lucide-react": "1.31.0",
     "media-chrome": "4.19.2",
+    "monaco-editor": "0.56.0",
     "motion": "12.26.2",
     "nanoid": "6.0.1",
     "radix-ui": "1.6.7",

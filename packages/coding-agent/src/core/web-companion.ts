@@ -303,11 +303,7 @@ function sessionTree(entries: readonly SessionEntry[], leafId: string | null): C
 		}
 	}
 	const output: CompanionSessionTreeNode[] = [];
-	const stack = roots
-		.sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp))
-		.map((entry) => ({ entry, depth: 0 }));
-	while (stack.length > 0) {
-		const { entry, depth } = stack.pop()!;
+	const visit = (entry: SessionEntry, depth: number): void => {
 		const raw = entry.type === "message" ? entry.message : entry;
 		output.push({
 			id: entry.id,
@@ -319,10 +315,13 @@ function sessionTree(entries: readonly SessionEntry[], leafId: string | null): C
 			isLeaf: leafId === entry.id,
 			depth,
 		});
-		const descendants = children.get(entry.id) ?? [];
-		for (const child of descendants.sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp))) {
-			stack.push({ entry: child, depth: depth + 1 });
-		}
+		const descendants = (children.get(entry.id) ?? []).sort(
+			(left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp),
+		);
+		for (const child of descendants) visit(child, depth + 1);
+	};
+	for (const root of roots.sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp))) {
+		visit(root, 0);
 	}
 	return output;
 }

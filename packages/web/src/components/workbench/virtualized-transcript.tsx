@@ -115,6 +115,7 @@ const VirtualizedTranscriptRow = memo(function VirtualizedTranscriptRow({
 	top,
 	rowRef,
 	renderItem,
+	isItemEqual,
 }: VirtualizedTranscriptRowProps) {
 	return (
 		<div ref={rowRef} style={{ left: 0, position: "absolute", right: 0, top }}>

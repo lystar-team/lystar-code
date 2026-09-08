@@ -13,6 +13,7 @@ import { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH } from "./w
 import { ConversationView } from "./workbench/conversation";
 import { DirectoryDialog, ProjectRenameDialog, Toast, UiRequestDialog } from "./workbench/dialogs";
 import { FilePreviewDialog } from "./workbench/file-preview-dialog";
+import { GitDiffDialog } from "./workbench/git-diff-dialog";
 import { InspectorDialog, InspectorPanel } from "./workbench/inspector";
 import { ProjectRail } from "./workbench/project-rail";
 import { SettingsDialog } from "./workbench/settings";
@@ -213,6 +214,7 @@ export function Workbench({
 
 			<InspectorDialog state={state} actions={actions} />
 			<FilePreviewDialog state={state} actions={actions} />
+			<GitDiffDialog state={state} actions={actions} />
 			<SettingsDialog state={state} actions={actions} />
 			<DirectoryDialog
 				open={directoryOpen}

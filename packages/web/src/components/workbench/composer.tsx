@@ -2,6 +2,7 @@ import { ArrowUp, Check, ChevronDown, Plus, Square } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api";
 import { type CommandDialogRequest, executeComposerCommand, resolveComposerCommand } from "../../state/composer-commands";
+import { canSendPrompt } from "../../state/chat-lifecycle";
 import { CommandDialog } from "./command-dialog";
 import type { WorkbenchState } from "../../state/use-workbench";
 import { Attachment, AttachmentInfo, AttachmentPreview, AttachmentRemove, Attachments } from "../ai-elements/attachments";
@@ -34,7 +35,7 @@ export function Composer({ state, actions }: { state: WorkbenchState; actions: W
 		setCommandDialog(undefined);
 		setModelSelectorOpen(false);
 	}, [state.sessionId]);
-	const disabled = !state.sessionId || state.readOnly || !state.connected;
+	const disabled = !canSendPrompt(state);
 	const active = Boolean(
 		state.session?.activity === "running" ||
 			state.session?.activity === "waiting_for_input" ||
@@ -143,7 +144,13 @@ export function Composer({ state, actions }: { state: WorkbenchState; actions: W
 								</PromptInputHeader>
 								<PromptInputBody>
 									<PromptCompletionTextarea
-										placeholder={disabled ? "当前会话不可写" : "描述你想完成的工作…"}
+										placeholder={
+											state.sessionId && !state.sessionReady
+												? "正在同步会话"
+												: disabled
+													? "当前会话不可写"
+													: "描述你想完成的工作…"
+										}
 										disabled={disabled}
 									/>
 								</PromptInputBody>

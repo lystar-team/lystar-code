@@ -1,5 +1,5 @@
-import { FolderOpen, GitBranch, TreePine, X, Zap } from "lucide-react";
-import { useEffect, useState } from "react";
+import { FolderOpen, GitBranch, GitFork, X, Zap } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "../../lib/utils";
 import type { InspectorMode, WorkbenchState } from "../../state/use-workbench";
 import { Button } from "../ui/button";
@@ -35,17 +35,20 @@ export function InspectorPanel({
 	actions: WorkbenchActions;
 	floating?: boolean;
 }) {
+	const runViewportRef = useRef<HTMLDivElement>(null);
+	const treeViewportRef = useRef<HTMLDivElement>(null);
+
 	return (
 		<div
 			className={cn(
-				"flex h-full min-h-0 flex-col overflow-hidden bg-background",
+				"flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-background",
 				floating && "inspector-panel rounded-[28px] border border-border/70 shadow-[0_12px_36px_rgb(0_0_0/0.06)]",
 			)}
 		>
 			<div className="flex shrink-0 items-start justify-between gap-3 border-b border-border/60 px-5 py-4">
 				<div className="min-w-0">
 					<h2 className="truncate text-base font-semibold">审阅工作区</h2>
-					<p className="mt-1 truncate text-xs text-muted-foreground">运行、文件、会话树和 Git 改动</p>
+					<p className="mt-1 truncate text-xs text-muted-foreground">文件、Git、运行和分支</p>
 				</div>
 				<Button size="icon" variant="ghost" onClick={actions.closeInspector} aria-label="关闭审阅工作区">
 					<X className="size-4" />
@@ -54,16 +57,9 @@ export function InspectorPanel({
 			<Tabs
 				value={state.inspectorMode}
 				onValueChange={(value) => void actions.openInspector(value as InspectorMode)}
-				className="min-h-0 flex-1 gap-0"
+				className="min-h-0 w-full min-w-0 flex-1 gap-0"
 			>
 				<TabsList className="mx-4 mt-3 grid h-10 w-auto grid-cols-4 gap-1 rounded-none border-0 bg-transparent p-0">
-					<TabsTrigger
-						className="h-9 rounded-xl border-0 px-2 text-xs font-medium text-muted-foreground after:hidden data-[state=active]:bg-accent data-[state=active]:text-foreground data-[state=active]:shadow-none"
-						value="runs"
-					>
-						<Zap className="size-3.5" />
-						运行
-					</TabsTrigger>
 					<TabsTrigger
 						className="h-9 rounded-xl border-0 px-2 text-xs font-medium text-muted-foreground after:hidden data-[state=active]:bg-accent data-[state=active]:text-foreground data-[state=active]:shadow-none"
 						value="files"
@@ -73,37 +69,44 @@ export function InspectorPanel({
 					</TabsTrigger>
 					<TabsTrigger
 						className="h-9 rounded-xl border-0 px-2 text-xs font-medium text-muted-foreground after:hidden data-[state=active]:bg-accent data-[state=active]:text-foreground data-[state=active]:shadow-none"
-						value="tree"
-					>
-						<TreePine className="size-3.5" />
-						会话树
-					</TabsTrigger>
-					<TabsTrigger
-						className="h-9 rounded-xl border-0 px-2 text-xs font-medium text-muted-foreground after:hidden data-[state=active]:bg-accent data-[state=active]:text-foreground data-[state=active]:shadow-none"
 						value="git"
 					>
 						<GitBranch className="size-3.5" />
 						Git
 					</TabsTrigger>
+					<TabsTrigger
+						className="h-9 rounded-xl border-0 px-2 text-xs font-medium text-muted-foreground after:hidden data-[state=active]:bg-accent data-[state=active]:text-foreground data-[state=active]:shadow-none"
+						value="runs"
+					>
+						<Zap className="size-3.5" />
+						运行
+					</TabsTrigger>
+					<TabsTrigger
+						className="h-9 rounded-xl border-0 px-2 text-xs font-medium text-muted-foreground after:hidden data-[state=active]:bg-accent data-[state=active]:text-foreground data-[state=active]:shadow-none"
+						value="tree"
+					>
+						<GitFork className="size-3.5" />
+						分支
+					</TabsTrigger>
 				</TabsList>
-				<TabsContent className="min-h-0 flex-1 overflow-hidden" value="runs">
-					<ScrollArea className="h-full">
-						<RunPanel state={state} actions={actions} />
-					</ScrollArea>
-				</TabsContent>
-				<TabsContent className="min-h-0 flex-1 overflow-hidden" value="files">
-					<ScrollArea className="h-full">
+				<TabsContent className="min-h-0 w-full min-w-0 flex-1 overflow-hidden" value="files">
+					<ScrollArea className="h-full w-full">
 						<FilesPanel state={state} actions={actions} />
 					</ScrollArea>
 				</TabsContent>
-				<TabsContent className="min-h-0 flex-1 overflow-hidden" value="tree">
-					<ScrollArea className="h-full">
-						<SessionTreePanel state={state} actions={actions} />
+				<TabsContent className="min-h-0 w-full min-w-0 flex-1 overflow-hidden" value="git">
+					<ScrollArea className="h-full w-full">
+						<GitPanel state={state} actions={actions} />
 					</ScrollArea>
 				</TabsContent>
-				<TabsContent className="min-h-0 flex-1 overflow-hidden" value="git">
-					<ScrollArea className="h-full">
-						<GitPanel state={state} actions={actions} />
+				<TabsContent className="min-h-0 w-full min-w-0 flex-1 overflow-hidden" value="runs">
+					<ScrollArea className="h-full w-full" viewportRef={runViewportRef}>
+						<RunPanel state={state} actions={actions} scrollRef={runViewportRef} />
+					</ScrollArea>
+				</TabsContent>
+				<TabsContent className="min-h-0 w-full min-w-0 flex-1 overflow-hidden" value="tree">
+					<ScrollArea className="h-full w-full" viewportRef={treeViewportRef}>
+						<SessionTreePanel state={state} actions={actions} scrollRef={treeViewportRef} />
 					</ScrollArea>
 				</TabsContent>
 			</Tabs>

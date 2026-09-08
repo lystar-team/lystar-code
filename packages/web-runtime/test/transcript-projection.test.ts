@@ -81,6 +81,27 @@ describe("assistant transcript projection", () => {
 		expect(items[0]?.view).toEqual({ type: "thinking", text: "private plan" });
 	});
 
+	it("does not render session control entries as chat content", () => {
+		const technical: TranscriptItem = {
+			entryId: "thinking-level-entry",
+			parentId: "assistant-entry",
+			timestamp: "2026-09-08T00:00:00Z",
+			kind: "thinking_level_change",
+			payload: {
+				type: "thinking_level_change",
+				id: "thinking-level-entry",
+				parentId: "assistant-entry",
+				timestamp: "2026-09-08T00:00:00Z",
+				thinkingLevel: "xhigh",
+			},
+		};
+
+		expect(projectTranscriptItems(technical)).toEqual([]);
+		expect(
+			projectTranscriptBatch([technical, assistant([{ type: "text", text: "visible" }])]).map((item) => item.view),
+		).toEqual([{ type: "assistant", text: "visible" }]);
+	});
+
 	it("uses tool input for the result title and keeps output in detail", () => {
 		const items = projectTranscriptBatch([
 			assistant([

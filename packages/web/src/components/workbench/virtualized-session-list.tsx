@@ -7,8 +7,6 @@ const SESSION_SLOT_HEIGHT = SESSION_ROW_HEIGHT + SESSION_ROW_GAP;
 const SESSION_OVERSCAN = 240;
 const INITIAL_RENDER_COUNT = 16;
 
-type ScrollRef = { readonly current: HTMLElement | null };
-
 export interface VirtualizedSessionRange {
 	start: number;
 	end: number;
@@ -35,11 +33,18 @@ export function getVirtualSessionRange(
 	};
 }
 
+export interface ScrollRef {
+	readonly current: HTMLElement | null;
+}
+
 export interface VirtualizedSessionListProps<T> {
 	items: readonly T[];
 	getKey: (item: T, index: number) => string;
 	renderItem: (item: T, index: number) => ReactNode;
 	scrollRef: ScrollRef;
+	rowHeight?: number;
+	rowGap?: number;
+	overscan?: number;
 }
 
 export function VirtualizedSessionList<T>({
@@ -47,6 +52,9 @@ export function VirtualizedSessionList<T>({
 	getKey,
 	renderItem,
 	scrollRef,
+	rowHeight = SESSION_ROW_HEIGHT,
+	rowGap = SESSION_ROW_GAP,
+	overscan = SESSION_OVERSCAN,
 }: VirtualizedSessionListProps<T>) {
 	const listRef = useRef<HTMLDivElement>(null);
 	const [viewport, setViewport] = useState({ scrollTop: 0, height: 0, listTop: 0 });
@@ -113,8 +121,9 @@ export function VirtualizedSessionList<T>({
 		};
 	}, [scrollRef, updateViewport]);
 
+	const slotHeight = rowHeight + rowGap;
 	const itemKeys = useMemo(() => items.map(getKey), [getKey, items]);
-	const range = getVirtualSessionRange(items.length, viewport.scrollTop, viewport.height, viewport.listTop);
+	const range = getVirtualSessionRange(items.length, viewport.scrollTop, viewport.height, viewport.listTop, slotHeight, overscan);
 	const renderedIndexes: number[] = [];
 	for (let index = range.start; index <= range.end; index++) renderedIndexes.push(index);
 
@@ -124,7 +133,7 @@ export function VirtualizedSessionList<T>({
 		<div
 			ref={listRef}
 			data-virtualized-session-list
-			style={{ height: items.length * SESSION_SLOT_HEIGHT - SESSION_ROW_GAP, minWidth: 0, position: "relative" }}
+			style={{ height: items.length * slotHeight - rowGap, minWidth: 0, position: "relative" }}
 		>
 			{renderedIndexes.map((index) => {
 				const item = items[index];
@@ -134,7 +143,7 @@ export function VirtualizedSessionList<T>({
 					<div
 						key={key}
 						data-virtualized-session-row
-						style={{ height: SESSION_ROW_HEIGHT, left: 0, position: "absolute", right: 0, top: index * SESSION_SLOT_HEIGHT }}
+						style={{ height: rowHeight, left: 0, position: "absolute", right: 0, top: index * slotHeight }}
 					>
 						{renderItem(item, index)}
 					</div>

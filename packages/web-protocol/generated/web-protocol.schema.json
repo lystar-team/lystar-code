@@ -5999,6 +5999,17 @@
         "deletions": {
           "type": "integer",
           "minimum": 0
+        },
+        "original": {
+          "type": "string",
+          "maxLength": 2097152
+        },
+        "modified": {
+          "type": "string",
+          "maxLength": 2097152
+        },
+        "contentTruncated": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false

@@ -52,7 +52,7 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 	);
 }
 
-function languageForPath(path: string): string {
+export function languageForPath(path: string): string {
 	const extension = path.split(".").at(-1)?.toLowerCase();
 	return extension === "ts" || extension === "tsx"
 		? "typescript"

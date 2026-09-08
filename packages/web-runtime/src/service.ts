@@ -56,6 +56,7 @@ const BASE_CAPABILITIES: Capability[] = [
 const SESSION_FILE_POLL_INTERVAL_MS = 1_000;
 const PROGRESS_BATCH_MS = 50;
 const MAX_PENDING_PROGRESS = 64;
+const MAX_OPERATION_MESSAGE_LENGTH = 16 * 1024;
 const SESSION_HANDOFF_RECONNECT_INTERVAL_MS = 100;
 const SESSION_HANDOFF_RECONNECT_TIMEOUT_MS = 60_000;
 const SESSION_HANDOFF_LOCAL_FALLBACK_MS = 5_000;
@@ -68,6 +69,15 @@ const TERMINAL_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>([
 	"aborted",
 	"interrupted",
 ]);
+
+function operationMessageProgress(text: string, imageCount: number): JsonValue {
+	return {
+		type: "message",
+		text: text.slice(0, MAX_OPERATION_MESSAGE_LENGTH),
+		...(text.length > MAX_OPERATION_MESSAGE_LENGTH ? { truncated: true } : {}),
+		...(imageCount > 0 ? { imageCount } : {}),
+	};
+}
 
 function sessionActivityFromOperation(status: OperationSnapshot["status"]): SessionActivity {
 	switch (status) {
@@ -2067,7 +2077,13 @@ export class WebRuntimeService {
 			type: request.command,
 			payloadHash,
 		});
-		const operation = await this.runQueueOperation(runtime, accepted.operation, run);
+		const acceptedOperation =
+			request.command === "steer" || request.command === "follow_up"
+				? this.updateOperation(accepted.operation.operationId, "accepted", {
+						progress: operationMessageProgress(request.text, request.images?.length ?? 0),
+					})
+				: accepted.operation;
+		const operation = await this.runQueueOperation(runtime, acceptedOperation, run);
 		return { operation, duplicate: false };
 	}
 
@@ -2132,9 +2148,15 @@ export class WebRuntimeService {
 			type: request.command,
 			payloadHash,
 		});
-		this.activeOperationBySession.set(sessionPath, accepted.operation.operationId);
-		afterResponse(() => this.scheduleOperation(runtime, accepted.operation, run));
-		return { operation: accepted.operation, duplicate: false };
+		const acceptedOperation =
+			request.command === "prompt"
+				? this.updateOperation(accepted.operation.operationId, "accepted", {
+						progress: operationMessageProgress(request.text, request.images?.length ?? 0),
+					})
+				: accepted.operation;
+		this.activeOperationBySession.set(sessionPath, acceptedOperation.operationId);
+		afterResponse(() => this.scheduleOperation(runtime, acceptedOperation, run));
+		return { operation: acceptedOperation, duplicate: false };
 	}
 
 	private scheduleOperation(
@@ -2186,7 +2208,7 @@ export class WebRuntimeService {
 	private updateOperation(
 		operationId: string,
 		status: OperationSnapshot["status"],
-		options?: { progress?: SessionProgress; result?: JsonValue; error?: string },
+		options?: { progress?: JsonValue; result?: JsonValue; error?: string },
 	): OperationSnapshot {
 		const current = this.journal.get(operationId);
 		if (current && TERMINAL_OPERATION_STATUSES.has(current.status)) return current;

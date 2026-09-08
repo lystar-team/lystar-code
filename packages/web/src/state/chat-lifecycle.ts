@@ -2,6 +2,31 @@ import type { SessionProgress } from "@lystar/code-web-protocol";
 import type { WebTranscriptItem } from "../types.ts";
 import type { LiveTurnItem, WorkbenchState } from "./use-workbench.ts";
 
+export function canSendPrompt(
+	state: Pick<WorkbenchState, "sessionId" | "sessionReady" | "readOnly" | "connected">,
+): boolean {
+	return Boolean(state.sessionId && state.sessionReady && state.connected && !state.readOnly);
+}
+
+export interface PendingUserPrompt {
+	id: string;
+	text: string;
+}
+
+export function reconcilePendingUserPrompts(
+	pending: readonly PendingUserPrompt[],
+	items: readonly WebTranscriptItem[],
+): PendingUserPrompt[] {
+	const remaining = [...pending];
+	for (const item of items) {
+		const view = item.view;
+		if (view?.type !== "user") continue;
+		const index = remaining.findIndex((prompt) => prompt.text === view.text);
+		if (index >= 0) remaining.splice(index, 1);
+	}
+	return remaining;
+}
+
 export function clearsThinking(progress: SessionProgress): boolean {
 	return (
 		progress.type === "assistant_delta" ||
@@ -53,6 +78,7 @@ export function applyPromptAccepted(
 	operation: WorkbenchState["currentOperation"],
 ): WorkbenchState {
 	if (current.sessionId !== sessionId) return current;
+	if (operation && operation.sessionId !== sessionId) return current;
 	// WebSocket 可以先于 HTTP 响应到达，不能用 Accepted 覆盖运行中或终态。
 	const latest = current.currentOperation;
 	if (latest && (!operation || latest.updatedAt >= operation.updatedAt)) return current;

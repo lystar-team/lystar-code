@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import { toLiveToolViewModel } from "../src/adapters/live-tool-view-model.ts";
 import {
 	applyPromptAccepted,
+	canSendPrompt,
 	clearsThinking,
 	committedToolCallIds,
 	reconcileCommittedTurn,
+	reconcilePendingUserPrompts,
 } from "../src/state/chat-lifecycle.ts";
 import type { WorkbenchState } from "../src/state/use-workbench.ts";
 import type { WebOperation, WebTranscriptItem } from "../src/types.ts";
@@ -47,10 +49,24 @@ function liveState(): WorkbenchState {
 }
 
 function operation(status: WebOperation["status"], updatedAt: number): WebOperation {
-	return { operationId: "op-1", type: "prompt", status, updatedAt } as WebOperation;
+	return { operationId: "op-1", type: "prompt", status, updatedAt, sessionId: "session-1" } as WebOperation;
 }
 
 describe("chat lifecycle", () => {
+	it("blocks prompt submission before the session subscription is ready", () => {
+		const current = { ...liveState(), connected: true, readOnly: false, sessionReady: false };
+		expect(canSendPrompt(current)).toBe(false);
+		expect(canSendPrompt({ ...current, sessionReady: true })).toBe(true);
+	});
+
+	it("removes one optimistic prompt for each matching committed user message", () => {
+		const pending = [
+			{ id: "prompt-1", text: "新任务" },
+			{ id: "prompt-2", text: "新任务" },
+		];
+		expect(reconcilePendingUserPrompts(pending, [user])).toEqual([pending[1]]);
+	});
+
 	it("hands committed assistant text and calls to transcript without losing running tools", () => {
 		const next = reconcileCommittedTurn(liveState(), [assistant, call], 11);
 		expect(next.liveTurnStartRevision).toBe(11);
@@ -105,6 +121,13 @@ describe("chat lifecycle", () => {
 	it("ignores prompt responses for a session that is no longer selected", () => {
 		const current = liveState();
 		expect(applyPromptAccepted(current, "other-session", operation("accepted", 1))).toBe(current);
+	});
+
+	it("ignores prompt responses without the selected session", () => {
+		const current = liveState();
+		expect(applyPromptAccepted(current, "session-1", { ...operation("accepted", 1), sessionId: undefined })).toBe(
+			current,
+		);
 	});
 
 	it("does not regress websocket operation state with an older HTTP response", () => {

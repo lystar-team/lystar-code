@@ -18,7 +18,6 @@ import {
 	type JsonValue,
 	type OperationSnapshot,
 	type OperationStatus,
-	type SessionProgress,
 } from "@lystar/code-web-protocol";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -115,12 +114,12 @@ export class OperationJournal {
 	update(
 		operationId: string,
 		status: OperationStatus,
-		options?: { progress?: SessionProgress; result?: JsonValue; error?: string },
+		options?: { progress?: JsonValue; result?: JsonValue; error?: string },
 	): OperationSnapshot {
 		this.assertWritable();
 		const current = this.byId.get(operationId);
 		if (!current) throw new Error(`Unknown operation: ${operationId}`);
-		const { progress: _progress, result: _result, error: _error, ...base } = current;
+		const { result: _result, error: _error, ...base } = current;
 		const operation: OperationSnapshot = {
 			...base,
 			status,

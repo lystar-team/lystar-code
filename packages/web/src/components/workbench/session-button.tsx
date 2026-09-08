@@ -1,5 +1,6 @@
 import { Clock3, Folder, LoaderCircle, Pencil, Pin, Trash2 } from "lucide-react";
 import type { DragEvent as ReactDragEvent } from "react";
+import type { ReactElement } from "react";
 import { useEffect, useState } from "react";
 import { cn } from "../../lib/utils";
 import { sessionTitle } from "../../state/use-workbench";
@@ -8,6 +9,33 @@ import { Button } from "../ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "../ui/context-menu";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card";
 import { Input } from "../ui/input";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
+
+const SESSION_TITLE_MAX_LENGTH = 40;
+
+export function truncateSessionTitle(title: string): string {
+	const characters = Array.from(title);
+	return characters.length > SESSION_TITLE_MAX_LENGTH
+		? `${characters.slice(0, SESSION_TITLE_MAX_LENGTH).join("")}...`
+		: title;
+}
+
+function SessionTitleTooltip({ title, children }: { title: string; children: ReactElement }) {
+	if (truncateSessionTitle(title) === title) return children;
+	return (
+		<Tooltip>
+			<TooltipTrigger asChild>{children}</TooltipTrigger>
+			<TooltipContent
+				side="right"
+				align="start"
+				sideOffset={8}
+				className="max-w-[calc(100vw-1rem)] break-words"
+			>
+				{title}
+			</TooltipContent>
+		</Tooltip>
+	);
+}
 
 function formatSessionAge(timestamp: number): string {
 	const elapsed = Math.max(0, Date.now() - timestamp);
@@ -68,6 +96,7 @@ export function SessionButton({
 	onDragEnd: () => void;
 }) {
 	const title = sessionTitle(session);
+	const displayTitle = truncateSessionTitle(title);
 	const [editingTitle, setEditingTitle] = useState(false);
 	const [renameDraft, setRenameDraft] = useState(title);
 	const relativeTime = formatSessionAge(session.updatedAt);
@@ -114,7 +143,9 @@ export function SessionButton({
 								variant={active ? "secondary" : "ghost"}
 								onClick={onClick}
 							>
-								<span className="project-list-item-label min-w-0 flex-1 truncate">{title}</span>
+								<SessionTitleTooltip title={title}>
+									<span className="project-list-item-label min-w-0 flex-1 truncate">{displayTitle}</span>
+								</SessionTitleTooltip>
 								{session.pinned ? <Pin className="size-3.5 shrink-0 text-muted-foreground" aria-label="已置顶" /> : null}
 								{running ? (
 									<LoaderCircle className="size-3.5 shrink-0 animate-spin text-primary" aria-label="会话进行中" />
@@ -159,17 +190,19 @@ export function SessionButton({
 										placeholder="输入会话名称"
 									/>
 								) : (
-									<button
-										type="button"
-										className="project-list-item-label min-w-0 max-w-[calc(100vw-3rem)] cursor-text truncate whitespace-nowrap bg-transparent p-0 text-left text-foreground"
-										onClick={() => {
-											setRenameDraft(title);
-											setEditingTitle(true);
-										}}
-										title="点击修改会话名称"
-									>
-										{title}
-									</button>
+									<SessionTitleTooltip title={title}>
+										<button
+											type="button"
+											className="project-list-item-label min-w-0 max-w-[calc(100vw-3rem)] cursor-text truncate whitespace-nowrap bg-transparent p-0 text-left text-foreground"
+											onClick={() => {
+												setRenameDraft(title);
+												setEditingTitle(true);
+											}}
+											title="点击修改会话名称"
+										>
+											{displayTitle}
+										</button>
+									</SessionTitleTooltip>
 								)}
 								<time
 									className="shrink-0 text-xs text-muted-foreground"

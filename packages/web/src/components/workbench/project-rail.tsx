@@ -1,10 +1,10 @@
-import { Archive, ArrowRight, ChevronDown, Folder, LogOut, MessageSquarePlus, MoreHorizontal, Pin, Plus, Search, Settings, SunMoon, Trash2 } from "lucide-react";
+import { Archive, ArrowRight, ChevronDown, Folder, LoaderCircle, LogOut, MessageSquarePlus, MoreHorizontal, Pin, Plus, Search, Settings, SunMoon, Trash2 } from "lucide-react";
 import type { DragEvent as ReactDragEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 import { cn } from "../../lib/utils";
 import type { WorkbenchState } from "../../state/use-workbench";
 import { sessionTitle } from "../../state/use-workbench";
-import type { WebProject, WebSessionSummary } from "../../types";
+import type { WebOperation, WebProject, WebSessionSummary } from "../../types";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
@@ -19,6 +19,16 @@ import { VirtualizedSessionList } from "./virtualized-session-list";
 import type { WorkbenchActions } from "./types";
 
 const SESSION_PAGE_SIZE = 10;
+
+function isSessionRunning(session: WebSessionSummary, operations: readonly WebOperation[]): boolean {
+	return (
+		session.activity === "running" ||
+		session.activity === "waiting_for_input" ||
+		operations.some(
+			(operation) => operation.sessionId === session.id && ACTIVE_OPERATION_STATUSES.has(operation.status),
+		)
+	);
+}
 
 export function ProjectRail({
 	state,
@@ -222,9 +232,8 @@ export function ProjectRail({
 			<ScrollArea viewportRef={sessionViewportRef} className="project-list min-h-0 flex-1 px-3">
 				<div className="pb-5">
 					<div className="flex items-center justify-between px-2 pb-2 text-xs font-medium text-muted-foreground">
-						<span>项目</span>
-						<span>{filteredProjects.length}</span>
-					</div>
+										<span>项目</span>
+									</div>
 					{state.loading && !projects.length ? (
 						<div className="px-2 py-8 text-center text-sm text-muted-foreground">正在加载项目与会话</div>
 					) : null}
@@ -234,6 +243,7 @@ export function ProjectRail({
 							const expanded = expandedProjectIds.has(project.id);
 							const projectActionsVisible = openProjectMenuId === project.id;
 							const sessions = orderedSessions(project);
+							const runningSessionCount = sessions.filter((session) => isSessionRunning(session, state.operations)).length;
 							const visibleSessionCount = sessionVisibleCounts[project.id] ?? SESSION_PAGE_SIZE;
 							const visibleSessions = sessions.slice(0, visibleSessionCount);
 							const hasMoreSessions = visibleSessions.length < sessions.length;
@@ -282,7 +292,7 @@ export function ProjectRail({
 							<HoverCardTrigger asChild>
 								<CollapsibleTrigger asChild>
 									<Button
-										className="w-full min-w-0 justify-start gap-2 px-2 pr-20 text-xs"
+										className="w-full min-w-0 justify-start gap-2 px-2 pr-2 text-xs"
 										variant={active ? "secondary" : "ghost"}
 
 									>
@@ -290,6 +300,12 @@ export function ProjectRail({
 										<span className="project-list-item-label min-w-0 flex-1 truncate text-left">
 											{project.name}
 										</span>
+										{runningSessionCount > 0 ? (
+											<LoaderCircle
+												className="size-3.5 shrink-0 animate-spin text-primary group-hover:invisible"
+												aria-label="项目中有会话进行中"
+											/>
+										) : null}
 									</Button>
 								</CollapsibleTrigger>
 							</HoverCardTrigger>
@@ -360,6 +376,12 @@ export function ProjectRail({
 									<span className="text-muted-foreground">·</span>
 									<span>{project.sessions.length} 个会话</span>
 								</div>
+								{runningSessionCount > 0 ? (
+									<div className="mt-2 flex items-center gap-2 text-sm text-primary">
+										<LoaderCircle className="size-4 shrink-0 animate-spin" aria-hidden="true" />
+										<span>{runningSessionCount} 个会话正在进行中</span>
+									</div>
+								) : null}
 								<div className="mt-2 flex min-w-0 items-start gap-2 text-sm text-muted-foreground">
 									<Folder className="mt-0.5 size-4 shrink-0" />
 									<span className="min-w-0 break-all font-mono text-xs" title={project.path}>
@@ -367,7 +389,7 @@ export function ProjectRail({
 									</span>
 								</div>
 							</HoverCardContent>
-						</HoverCard>
+										</HoverCard>
 										<div className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5">
 											<Button
 												className={cn(
@@ -392,10 +414,10 @@ export function ProjectRail({
 											>
 												<DropdownMenuTrigger asChild>
 													<Button
-														className={cn(
-															projectActionsVisible
-																? "opacity-100"
-																: "opacity-0 group-hover:opacity-100",
+													className={cn(
+														projectActionsVisible
+															? "opacity-100"
+															: "opacity-0 group-hover:opacity-100",
 														)}
 														size="icon-sm"
 														variant="ghost"
@@ -433,7 +455,7 @@ export function ProjectRail({
 														移除项目
 													</DropdownMenuItem>
 												</DropdownMenuContent>
-											</DropdownMenu>
+												</DropdownMenu>
 										</div>
 									</div>
 <CollapsibleContent>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api";
 import type { CommandDialogRequest } from "../../state/composer-commands";
 import { sessionTitle, type WorkbenchState } from "../../state/use-workbench";
@@ -7,34 +7,41 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "../ui/input";
 import { THINKING_LEVEL_LABELS } from "./constants";
 import { formatModelDisplayName } from "./model-utils";
+import { VirtualizedSessionList } from "./virtualized-session-list";
+import {
+	buildSessionTurns,
+	sessionTreeNodeLabel,
+	sessionTurnLabel,
+} from "./session-tree-utils";
+import { SessionToolsDialog } from "./session-tree-panel";
+import { SessionTurnRow } from "./session-turn-row";
 import type { WorkbenchActions } from "./types";
 
 const TITLES = {
-	model: "选择模型", thinking: "选择思考级别", name: "重命名会话", resume: "恢复会话",
-	fork: "创建会话分支", tree: "会话树", trust: "项目信任", session: "当前会话", hotkeys: "输入快捷键",
+	model: "选择模型",
+	thinking: "选择思考级别",
+	name: "重命名会话",
+	resume: "恢复会话",
+	fork: "创建会话分支",
+	tree: "会话分支",
+	trust: "项目信任",
+	session: "当前会话",
+	hotkeys: "输入快捷键",
 };
 const DESCRIPTIONS = {
-	model: "选择当前会话使用的模型", thinking: "选择当前模型支持的思考级别", name: "修改当前会话的显示名称",
-	resume: "选择当前项目中的会话", fork: "选择一条用户消息，从该位置创建新会话", tree: "选择要回到的上下文位置",
-	trust: "管理当前项目的资源信任", session: "查看会话与上下文信息", hotkeys: "Web 输入框支持的键盘操作",
+	model: "选择当前会话使用的模型",
+	thinking: "选择当前模型支持的思考级别",
+	name: "修改当前会话的显示名称",
+	resume: "选择当前项目中的会话",
+	fork: "选择一条用户消息，从该位置创建新会话",
+	tree: "按会话轮次选择 fork 位置；原有会话和分支会保留",
+	trust: "管理当前项目的资源信任",
+	session: "查看会话与上下文信息",
+	hotkeys: "Web 输入框支持的键盘操作",
 };
 
-// 会话树的 preview 是运行时 JSON，只提取可读消息，不能把内部记录原样展示。
 export function commandTreeLabel(node: WorkbenchState["sessionTree"][number]): string {
-	if (node.label) return node.label;
-	try {
-		const value: unknown = JSON.parse(node.preview);
-		if (value && typeof value === "object" && "content" in value) {
-			if (typeof value.content === "string") return value.content;
-			if (Array.isArray(value.content)) {
-				const text = value.content.flatMap((part: unknown) => part && typeof part === "object" && "type" in part && part.type === "text" && "text" in part && typeof part.text === "string" ? [part.text] : []).join("\n");
-				if (text) return text;
-			}
-		}
-	} catch {
-		// preview 可能被运行时截断；使用记录类型，不展示残缺 JSON。
-	}
-	return node.kind === "message" ? "消息" : node.kind === "compaction" ? "上下文压缩" : "上下文记录";
+	return sessionTreeNodeLabel(node);
 }
 
 export function CommandDialog({ request, state, actions, onClose }: {
@@ -51,6 +58,12 @@ export function CommandDialog({ request, state, actions, onClose }: {
 	const model = state.models.find((item) => item.provider === state.session?.model?.provider && item.id === state.session?.model?.id);
 	const levels = model?.supportedThinkingLevels.length ? model.supportedThinkingLevels : ["off"];
 	const project = state.projects.find((item) => item.id === state.currentProjectId);
+	const treeViewportRef = useRef<HTMLDivElement>(null);
+	const [pendingTurnId, setPendingTurnId] = useState<string>();
+	const [toolTurnId, setToolTurnId] = useState<string>();
+	const turns = useMemo(() => buildSessionTurns(state.sessionTree), [state.sessionTree]);
+	const pendingTurn = turns.find((turn) => turn.id === pendingTurnId);
+	const toolTurn = turns.find((turn) => turn.id === toolTurnId);
 	const unavailable = busy || loading || state.readOnly || !state.connected;
 
 	useEffect(() => {
@@ -116,7 +129,59 @@ export function CommandDialog({ request, state, actions, onClose }: {
 					{state.transcript.filter((item) => item.view?.type === "user").map((item) => <Button key={item.entryId} variant="ghost" className="h-auto justify-start py-3 text-left" disabled={unavailable} onClick={() => void run(() => actions.fork(item.entryId))}><span className="line-clamp-3 whitespace-pre-wrap break-words">{item.view?.type === "user" ? item.view.text || "图片消息" : ""}</span></Button>)}
 					{!state.transcript.some((item) => item.view?.type === "user") ? <p className="text-sm text-muted-foreground">当前没有可选择的用户消息。</p> : null}
 				</div> : null}
-				{request.kind === "tree" && !loading ? <div className="grid max-h-[50vh] gap-1 overflow-y-auto">{state.sessionTree.map((node) => <Button key={node.id} variant={node.isLeaf ? "secondary" : "ghost"} className="justify-start" disabled={unavailable} onClick={() => void run(() => actions.navigateTree(node.id))}><span className="truncate">{commandTreeLabel(node)}</span>{node.isLeaf ? " · 当前" : ""}</Button>)}{!state.sessionTree.length ? <p className="text-sm text-muted-foreground">还没有会话树记录。</p> : null}</div> : null}
+				{request.kind === "tree" && !loading ? (
+					<div className="grid gap-3">
+						<div ref={treeViewportRef} className="max-h-[50vh] overflow-y-auto">
+							{turns.length ? (
+								<VirtualizedSessionList
+									items={turns}
+									getKey={(turn) => turn.id}
+									scrollRef={treeViewportRef}
+									rowHeight={56}
+									rowGap={4}
+									renderItem={(turn) => (
+										<SessionTurnRow
+											turn={turn}
+											selected={pendingTurnId === turn.id}
+											compact
+											disabled={unavailable}
+											onSelect={() => setPendingTurnId(turn.id)}
+										/>
+									)}
+								/>
+							) : (
+								<p className="py-4 text-sm text-muted-foreground">当前会话还没有可创建分支的历史轮次。</p>
+							)}
+						</div>
+						{pendingTurn ? (
+							<div className="grid gap-3 border-t border-border/70 pt-3">
+								<div>
+									<p className="text-sm font-medium">从这一轮创建新会话？</p>
+									<p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{sessionTurnLabel(pendingTurn)}</p>
+									{pendingTurn.toolNodes.length ? (
+										<button
+											type="button"
+											className="mt-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground underline-offset-2 hover:bg-accent hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+											onClick={() => setToolTurnId(pendingTurn.id)}
+										>
+											{pendingTurn.toolNodes.length} 个工具动作
+										</button>
+									) : null}
+								</div>
+								<div className="flex justify-end gap-2">
+									<Button variant="outline" onClick={() => setPendingTurnId(undefined)} disabled={busy}>
+										取消
+									</Button>
+									<Button onClick={() => void run(() => actions.fork(pendingTurn.forkEntryId))} disabled={unavailable || !pendingTurn.userNode}>
+										创建新会话
+									</Button>
+								</div>
+							</div>
+						) : null}
+					</div>
+				) : null}
+				<SessionToolsDialog turn={toolTurn} onClose={() => setToolTurnId(undefined)} />
+
 				{request.kind === "trust" && trust ? <div className="grid gap-4">
 					<p className="text-sm">{trust.trusted === true ? "当前项目已信任" : trust.trusted === false ? "当前项目未信任" : "当前项目尚未设置信任"}</p>
 					<DialogFooter><Button variant="outline" disabled={unavailable} onClick={() => void run(() => actions.setProjectTrust(false))}>不信任</Button><Button disabled={unavailable} onClick={() => void run(() => actions.setProjectTrust(true))}>信任项目</Button></DialogFooter>

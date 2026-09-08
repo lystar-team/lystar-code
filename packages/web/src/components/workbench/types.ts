@@ -21,6 +21,7 @@ export interface WorkbenchActions {
 	loadTranscript: () => Promise<void>;
 	loadGitStatus: () => Promise<void>;
 	loadGitDiff: (path?: string, staged?: boolean) => Promise<void>;
+	closeGitDiff: () => void;
 	loadProjectTree: (path?: string, preserveCurrentTree?: boolean) => Promise<void>;
 	openFile: (path: string) => Promise<void>;
 	openResource: (path: string) => Promise<void>;

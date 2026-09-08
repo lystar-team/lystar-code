@@ -5,6 +5,14 @@ const INTERNAL_PROMPT_BLOCK_PATTERNS = [
 	/<skill_references\b[^>]*>[\s\S]*?<\/skill_references>/gu,
 ] as const;
 
+const HIDDEN_SESSION_ENTRY_TYPES = new Set([
+	"session",
+	"thinking_level_change",
+	"model_change",
+	"label",
+	"session_info",
+]);
+
 function stripInternalPromptContent(value: string): string {
 	let projected = value;
 	for (const pattern of INTERNAL_PROMPT_BLOCK_PATTERNS) projected = projected.replace(pattern, "");
@@ -303,6 +311,12 @@ function projectTranscriptViews(
 	toolCalls: TranscriptToolCallIndex = new Map(),
 ): TranscriptViewItem[] {
 	const payload = record(item.payload);
+	if (
+		HIDDEN_SESSION_ENTRY_TYPES.has(item.kind) ||
+		(typeof payload?.type === "string" && HIDDEN_SESSION_ENTRY_TYPES.has(payload.type))
+	) {
+		return [];
+	}
 	const entryMessage = message(item);
 	const role = entryMessage?.role;
 	const content = entryMessage?.content ?? payload?.text;

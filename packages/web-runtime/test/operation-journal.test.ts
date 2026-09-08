@@ -104,6 +104,23 @@ describe("OperationJournal", () => {
 		expect(completed.updatedAt).toBeGreaterThan(running.updatedAt);
 	});
 
+	it("keeps progress details when an operation reaches a terminal state", () => {
+		const journal = new OperationJournal(journalPath());
+		const accepted = journal.accept({
+			clientInstanceId: "client",
+			clientRequestId: "request",
+			sessionPath: "/tmp/session.jsonl",
+			type: "run_bash",
+			payloadHash: "hash",
+		}).operation;
+		const running = journal.update(accepted.operationId, "running", {
+			progress: { type: "bash", command: "git status --short", output: "" },
+		});
+		const completed = journal.update(accepted.operationId, "completed");
+
+		expect(completed.progress).toEqual(running.progress);
+	});
+
 	it("prunes the in-memory index when compaction drops expired operations", () => {
 		const path = journalPath();
 		const expired = {
