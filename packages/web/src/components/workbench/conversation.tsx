@@ -461,6 +461,24 @@ function ConversationBody({
 	const loadEarlierRef = useRef(loadEarlier);
 	loadEarlierRef.current = loadEarlier;
 	const historyLoadBlockedRef = useRef(false);
+	const initialSessionScrollRef = useRef<string | undefined>(undefined);
+
+	useLayoutEffect(() => {
+		if (!state.sessionId) {
+			initialSessionScrollRef.current = undefined;
+			return;
+		}
+		if (!state.transcriptPageLoaded && !renderItems.length) return;
+		if (initialSessionScrollRef.current === state.sessionId) return;
+		initialSessionScrollRef.current = state.sessionId;
+		pendingScrollRef.current = undefined;
+		promptFollowRef.current = false;
+		promptFollowPendingRef.current = false;
+		const frame = window.requestAnimationFrame(() => {
+			void scrollToBottom({ animation: "instant" });
+		});
+		return () => window.cancelAnimationFrame(frame);
+	}, [renderItems.length, scrollToBottom, state.sessionId, state.transcriptPageLoaded]);
 
 	useLayoutEffect(() => {
 		if (promptScrollRequestRef.current === state.promptScrollRequest) return;

@@ -154,7 +154,30 @@ export function VirtualizedTranscript<T>({
 	const layoutRef = useRef<VirtualLayout>({ offsets: [], heights: [], totalHeight: 0 });
 	const indexByKeyRef = useRef(new Map<string, number>());
 	const [measurementVersion, setMeasurementVersion] = useState(0);
-	const [viewport, setViewport] = useState({ top: 0, height: 0, width: 0 });
+	const [viewport, setViewport] = useState({ top: 0, height: 0, width: 0, listTop: 0 });
+	const listRef = useRef<HTMLDivElement>(null);
+
+	const updateViewport = useCallback(() => {
+		const scroller = scrollRef.current;
+		const list = listRef.current;
+		if (!scroller || !list) return;
+		const scrollerRect = scroller.getBoundingClientRect();
+		const listRect = list.getBoundingClientRect();
+		const next = {
+			top: scroller.scrollTop,
+			height: scroller.clientHeight,
+			width: scroller.clientWidth,
+			listTop: listRect.top - scrollerRect.top + scroller.scrollTop,
+		};
+		setViewport((current) =>
+			current.top === next.top &&
+			current.height === next.height &&
+			current.width === next.width &&
+			current.listTop === next.listTop
+				? current
+				: next,
+		);
+	}, [scrollRef]);
 
 	const itemKeys = useMemo(() => items.map(getKey), [getKey, items]);
 	const indexByKey = useMemo(() => new Map(itemKeys.map((key, index) => [key, index])), [itemKeys]);
@@ -165,6 +188,13 @@ export function VirtualizedTranscript<T>({
 		[estimateHeight, gap, getKey, items, measurementVersion],
 	);
 	layoutRef.current = layout;
+
+	useLayoutEffect(() => {
+		const scroller = scrollRef.current;
+		if (!scroller || !layout.heights.length) return;
+		const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+		if (scroller.scrollTop > maxScrollTop + 1) scroller.scrollTop = maxScrollTop;
+	}, [layout.heights.length, layout.totalHeight, scrollRef]);
 
 	const registerRow = useCallback((key: string, element: HTMLDivElement | null) => {
 		const previous = elementsRef.current.get(key);
@@ -191,35 +221,42 @@ export function VirtualizedTranscript<T>({
 	);
 
 	useLayoutEffect(() => {
+		updateViewport();
+		let frame = window.requestAnimationFrame(() => {
+			frame = window.requestAnimationFrame(() => updateViewport());
+			updateViewport();
+		});
+		return () => window.cancelAnimationFrame(frame);
+	});
+
+	useLayoutEffect(() => {
 		const scroller = scrollRef.current;
 		if (!scroller) return;
 
 		let frame: number | undefined;
-		const updateViewport = () => {
-			frame = undefined;
-			const next = { top: scroller.scrollTop, height: scroller.clientHeight, width: scroller.clientWidth };
-			setViewport((current) =>
-				current.top === next.top && current.height === next.height && current.width === next.width ? current : next,
-			);
-		};
 		const scheduleViewportUpdate = () => {
 			if (frame !== undefined) return;
-			frame = window.requestAnimationFrame(updateViewport);
+			frame = window.requestAnimationFrame(() => {
+				frame = undefined;
+				updateViewport();
+			});
 		};
 		const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(scheduleViewportUpdate);
 
 		updateViewport();
 		scroller.addEventListener("scroll", scheduleViewportUpdate, { passive: true });
 		observer?.observe(scroller);
+		observer?.observe(listRef.current ?? scroller);
 		return () => {
 			scroller.removeEventListener("scroll", scheduleViewportUpdate);
 			observer?.disconnect();
 			if (frame !== undefined) window.cancelAnimationFrame(frame);
 		};
-	}, [scrollRef]);
+	}, [scrollRef, updateViewport]);
 
 	useLayoutEffect(() => {
 		if (typeof ResizeObserver === "undefined") return;
+		let bottomCorrectionFrame: number | undefined;
 		const observer = new ResizeObserver((entries) => {
 			const scroller = scrollRef.current;
 			const currentLayout = layoutRef.current;
@@ -246,13 +283,29 @@ export function VirtualizedTranscript<T>({
 			}
 
 			if (scrollAdjustment && scroller) scroller.scrollTop += scrollAdjustment;
-			if (changed) setMeasurementVersion((version) => version + 1);
+			if (changed) {
+				setMeasurementVersion((version) => version + 1);
+				if (wasAtBottom && scroller && bottomCorrectionFrame === undefined) {
+					bottomCorrectionFrame = window.requestAnimationFrame(() => {
+						bottomCorrectionFrame = undefined;
+						const currentScroller = scrollRef.current;
+						if (!currentScroller) return;
+						const maxScrollTop = Math.max(0, currentScroller.scrollHeight - currentScroller.clientHeight);
+						if (
+							currentScroller.scrollTop > maxScrollTop + 1 ||
+							currentScroller.scrollHeight - currentScroller.scrollTop - currentScroller.clientHeight <= 8
+						)
+							currentScroller.scrollTop = maxScrollTop;
+					});
+				}
+			}
 		});
 		resizeObserverRef.current = observer;
 		for (const element of elementsRef.current.values()) observer.observe(element);
 
 		return () => {
 			observer.disconnect();
+			if (bottomCorrectionFrame !== undefined) window.cancelAnimationFrame(bottomCorrectionFrame);
 			if (resizeObserverRef.current === observer) resizeObserverRef.current = undefined;
 		};
 	}, [scrollRef]);
@@ -262,13 +315,13 @@ export function VirtualizedTranscript<T>({
 	const overscan = viewport.width > 0 && viewport.width < MOBILE_BREAKPOINT ? MOBILE_OVERSCAN : DESKTOP_OVERSCAN;
 	const range =
 		viewport.height > 0
-			? getVirtualRange(layout, viewport.top, viewport.height, overscan)
+			? getVirtualRange(layout, viewport.top - viewport.listTop, viewport.height, overscan)
 			: { start: 0, end: Math.min(items.length - 1, INITIAL_RENDER_COUNT - 1) };
 	const renderedIndexes: number[] = [];
 	for (let index = range.start; index <= range.end; index++) renderedIndexes.push(index);
 
 	return (
-		<div style={{ height: layout.totalHeight, minWidth: 0, position: "relative", width: "100%" }}>
+		<div ref={listRef} style={{ height: layout.totalHeight, minWidth: 0, position: "relative", width: "100%" }}>
 			{renderedIndexes.map((index) => {
 				const item = items[index];
 				const key = itemKeys[index];
