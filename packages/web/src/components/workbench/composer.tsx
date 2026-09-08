@@ -19,6 +19,10 @@ function base64FromDataUrl(url: string): string {
 	return url.slice(separator + 1);
 }
 
+function thinkingLevelDisplayLabel(level: string): string {
+	return (THINKING_LEVEL_LABELS[level] ?? level).replace(/\s*\([^)]*\)\s*$/u, "").trim();
+}
+
 export function Composer({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
 	const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
 	const [modelSearch, setModelSearch] = useState("");
@@ -203,12 +207,21 @@ export function Composer({ state, actions }: { state: WorkbenchState; actions: W
 												onValueChange={actions.updateThinking}
 											>
 												<PromptInputSelectTrigger
-													className="hidden h-8 w-auto border-0 px-2 text-xs shadow-none focus-visible:ring-0 sm:flex"
+													className="flex h-8 w-auto min-w-0 max-w-[7rem] shrink border-0 px-2 text-xs shadow-none focus-visible:ring-0 sm:max-w-none"
 													aria-label="思考强度"
 												>
-													<PromptInputSelectValue />
+													<PromptInputSelectValue>
+														{thinkingLevelDisplayLabel(
+															state.session?.thinkingLevel === "minimal"
+																? "low"
+																: (state.session?.thinkingLevel ?? "off"),
+														)}
+													</PromptInputSelectValue>
 												</PromptInputSelectTrigger>
-												<PromptInputSelectContent>
+												<PromptInputSelectContent
+													position="popper"
+													className="!max-h-none !overflow-y-visible"
+												>
 													{thinkingLevels.map((level) => (
 														<PromptInputSelectItem key={level} value={level}>
 															{THINKING_LEVEL_LABELS[level] ?? level}
