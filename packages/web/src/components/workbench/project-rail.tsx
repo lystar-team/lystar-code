@@ -18,6 +18,8 @@ import { SessionButton } from "./session-button";
 import { VirtualizedSessionList } from "./virtualized-session-list";
 import type { WorkbenchActions } from "./types";
 
+const SESSION_PAGE_SIZE = 10;
+
 export function ProjectRail({
 	state,
 	actions,
@@ -40,6 +42,7 @@ export function ProjectRail({
 	const archivedProjects = state.projects.filter((project) => project.archived);
 	const [showArchived, setShowArchived] = useState(false);
 	const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(() => new Set());
+	const [sessionVisibleCounts, setSessionVisibleCounts] = useState<Record<string, number>>({});
 	const [openProjectMenuId, setOpenProjectMenuId] = useState<string | null>(null);
 	const [renamingSession, setRenamingSession] = useState<WebSessionSummary>();
 	const [renameDraft, setRenameDraft] = useState("");
@@ -231,6 +234,9 @@ export function ProjectRail({
 							const expanded = expandedProjectIds.has(project.id);
 							const projectActionsVisible = openProjectMenuId === project.id;
 							const sessions = orderedSessions(project);
+							const visibleSessionCount = sessionVisibleCounts[project.id] ?? SESSION_PAGE_SIZE;
+							const visibleSessions = sessions.slice(0, visibleSessionCount);
+							const hasMoreSessions = visibleSessions.length < sessions.length;
 							return (
 								<Collapsible
 									key={project.id}
@@ -278,10 +284,7 @@ export function ProjectRail({
 									<Button
 										className="w-full min-w-0 justify-start gap-2 px-2 pr-20 text-xs"
 										variant={active ? "secondary" : "ghost"}
-										onClick={() => {
-											if (!active) void actions.selectProject(project.id);
-										onNavigate?.();
-									}}
+
 									>
 										<Folder className="size-4 shrink-0 text-muted-foreground" />
 										<span className="project-list-item-label min-w-0 flex-1 truncate text-left">
@@ -435,9 +438,10 @@ export function ProjectRail({
 									</div>
 <CollapsibleContent>
 										<div className="mt-1">
-											{sessions.length ? (
+										{sessions.length ? (
+											<>
 												<VirtualizedSessionList
-													items={sessions}
+													items={visibleSessions}
 													getKey={(session) => session.id}
 													scrollRef={sessionViewportRef}
 													renderItem={(session) => {
@@ -482,11 +486,28 @@ export function ProjectRail({
 																	setDragOverSessionId(undefined);
 																}}
 															/>
-														);
-													}}
-												/>
-											) : (
-												<span className="px-2 py-2 text-[13px] text-muted-foreground">暂无会话</span>
+																				);
+																			}}
+																		/>
+													{hasMoreSessions ? (
+														<div className="mt-1">
+															<Button
+																className="w-full min-w-0 justify-start gap-2 py-2 pr-2 !pl-8 text-left text-xs"
+															variant="ghost"
+															onClick={() =>
+																						setSessionVisibleCounts((current) => ({
+																							...current,
+																							[project.id]: (current[project.id] ?? SESSION_PAGE_SIZE) + SESSION_PAGE_SIZE,
+																						}))
+															}
+														>
+															<span className="project-list-item-label min-w-0 flex-1 truncate">加载更多</span>
+														</Button>
+														</div>
+													) : null}
+											</>
+										) : (
+											<span className="px-2 py-2 text-[13px] text-muted-foreground">暂无会话</span>
 											)}
 										</div>
 									</CollapsibleContent>

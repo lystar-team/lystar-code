@@ -1806,6 +1806,9 @@ export function useWorkbench() {
 			selectionInFlightRef.current = sessionId;
 			const request = ++selectionRef.current;
 			const previous = stateRef.current;
+			const selectedProjectId = previous.projects.find((project) =>
+				project.sessions.some((session) => session.id === sessionId),
+			)?.id;
 			if (previous.sessionId && previous.sessionId !== sessionId) {
 				sessionDetailCacheRef.current.set(previous.sessionId, sessionDetailCacheFromState(previous));
 			}
@@ -1830,6 +1833,7 @@ export function useWorkbench() {
 			transcriptRequestRef.current++;
 			updateState((current) => ({
 				...current,
+				...(selectedProjectId ? { currentProjectId: selectedProjectId } : {}),
 				sessionId,
 				session: cached?.session,
 				sessionError: undefined,
@@ -1985,11 +1989,9 @@ export function useWorkbench() {
 				showToast(errorMessage(error));
 			}
 			if (request !== selectionRef.current) return;
-			const firstSession = stateRef.current.projects.find((project) => project.id === projectId)?.sessions[0];
-			if (firstSession) await selectSession(firstSession.id);
-			else await loadProjectTreeRef.current();
+			await loadProjectTreeRef.current();
 		},
-		[refreshProjectSessions, selectSession, updateState, showToast],
+		[refreshProjectSessions, updateState, showToast],
 	);
 
 	const loadEarlier = useCallback(async () => {
