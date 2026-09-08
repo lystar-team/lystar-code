@@ -49,6 +49,37 @@ body,
 	margin: 0;
 }
 
+.brand-logo {
+	display: inline-flex;
+	flex-shrink: 0;
+}
+
+.brand-logo-light {
+	display: block;
+}
+
+.brand-logo-dark {
+	display: none;
+}
+
+:root[data-theme="dark"] .brand-logo-light {
+	display: none;
+}
+
+:root[data-theme="dark"] .brand-logo-dark {
+	display: block;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root[data-theme=""] .brand-logo-light {
+		display: none;
+	}
+
+	:root[data-theme=""] .brand-logo-dark {
+		display: block;
+	}
+}
+
 .conversation-scroll {
 	scrollbar-color: var(--border) transparent;
 	scrollbar-width: thin;

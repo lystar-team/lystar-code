@@ -121,7 +121,7 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 								<HarnessImportsSettings state={state} actions={actions} />
 							</TabsContent>
 							<TabsContent className="m-0" value="diagnostics">
-								<DiagnosticsSettings state={state} />
+								<DiagnosticsSettings state={state} actions={actions} />
 							</TabsContent>
 							<TabsContent className="m-0" value="about">
 								<AboutSettings state={state} />

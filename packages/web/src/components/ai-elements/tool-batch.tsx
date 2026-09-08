@@ -531,6 +531,7 @@ function ToolBatchRow({
 		<Collapsible open={open} onOpenChange={setOpen} className={cn("min-w-0", className)}>
 			<CollapsibleTrigger asChild>
 				<button
+					data-transcript-resize-anchor
 					className="flex min-h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 					type="button"
 					aria-label={`${title}，${statusLabels[tool.state]}${hasDetails ? "，展开详情" : ""}`}
@@ -630,6 +631,7 @@ export const ToolBatch = memo(function ToolBatch({
 				onOpenChange={setOpen}
 			>
 				<CollapsibleTrigger
+					data-transcript-resize-anchor
 					className="flex min-h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 					type="button"
 					aria-label={`已查看 ${imageCount} 张图像${open ? "，收起" : "，展开"}`}
@@ -671,6 +673,7 @@ export const ToolBatch = memo(function ToolBatch({
 			onOpenChange={setOpen}
 		>
 			<CollapsibleTrigger
+				data-transcript-resize-anchor
 				className="flex min-h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 				type="button"
 				aria-label={`${summaryLabel ?? batchTitle(tools)}，${statusLabels[aggregateState]}${open ? "，收起" : "，展开"}`}

@@ -1,5 +1,14 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -18,6 +27,7 @@ export interface RuntimeServiceStatus {
 	running: boolean;
 	persistent: boolean;
 	manager: "systemd-user" | "launch-daemon" | "scheduled-task" | "detached";
+	pid?: number;
 	servicePath?: string;
 	lingerEnabled?: boolean;
 	message?: string;
@@ -67,6 +77,34 @@ function writeAtomic(path: string, content: string, mode: number): void {
 	renameSync(temporaryPath, path);
 }
 
+function runtimePidPath(endpoint: string): string {
+	return process.platform === "win32"
+		? join(homedir(), ".pi", "agent", "host", "lystar-web-runtime.pid")
+		: `${endpoint}.pid`;
+}
+
+export function writeRuntimePid(endpoint: string, pid = process.pid): void {
+	writeAtomic(runtimePidPath(endpoint), `${pid}\n`, 0o600);
+}
+
+export function clearRuntimePid(endpoint: string, pid = process.pid): void {
+	const path = runtimePidPath(endpoint);
+	try {
+		if (readFileSync(path, "utf8").trim() === String(pid)) unlinkSync(path);
+	} catch {}
+}
+
+function readRuntimePid(endpoint: string): number | undefined {
+	try {
+		const pid = Number.parseInt(readFileSync(runtimePidPath(endpoint), "utf8").trim(), 10);
+		if (!Number.isInteger(pid) || pid <= 0) return undefined;
+		process.kill(pid, 0);
+		return pid;
+	} catch {
+		return undefined;
+	}
+}
+
 function systemdUnitPath(): string {
 	return join(homedir(), ".config", "systemd", "user", `${SERVICE_NAME}.service`);
 }
@@ -92,18 +130,20 @@ function linuxStatus(endpoint: string): RuntimeServiceStatus {
 	const active = run("systemctl", ["--user", "is-active", "--quiet", SERVICE_NAME]).ok;
 	const user = process.env.USER ?? process.env.LOGNAME ?? "";
 	const lingerEnabled = user !== "" && existsSync(join("/var/lib/systemd/linger", user));
+	const installed = existsSync(servicePath);
 	return {
 		platform: process.platform,
 		arch: process.arch,
 		endpoint,
 		reachable: false,
-		installed: existsSync(servicePath),
+		installed,
 		running: active,
 		persistent: active && lingerEnabled,
-		manager: "systemd-user",
+		manager: installed ? "systemd-user" : "detached",
+		...(readRuntimePid(endpoint) ? { pid: readRuntimePid(endpoint) } : {}),
 		servicePath,
 		lingerEnabled,
-		...(!lingerEnabled && user
+		...(installed && !lingerEnabled && user
 			? {
 					message: "用户 lingering 尚未启用，SSH 退出后用户服务可能停止",
 					remedy: `sudo loginctl enable-linger ${user}`,
@@ -115,17 +155,19 @@ function linuxStatus(endpoint: string): RuntimeServiceStatus {
 function macStatus(endpoint: string): RuntimeServiceStatus {
 	const servicePath = launchDaemonPath();
 	const listed = run("launchctl", ["print", `system/${launchDaemonLabel()}`]).ok;
+	const installed = existsSync(servicePath);
 	return {
 		platform: process.platform,
 		arch: process.arch,
 		endpoint,
 		reachable: false,
-		installed: existsSync(servicePath),
+		installed,
 		running: listed,
 		persistent: listed,
-		manager: "launch-daemon",
+		manager: installed ? "launch-daemon" : "detached",
+		...(readRuntimePid(endpoint) ? { pid: readRuntimePid(endpoint) } : {}),
 		servicePath,
-		...(!existsSync(servicePath)
+		...(!installed
 			? {
 					message: "macOS 远端后台需要一次管理员批准",
 					remedy: "在远端终端运行 ~/.local/bin/lystar-web-runtime install --interactive-admin。",
@@ -137,15 +179,17 @@ function macStatus(endpoint: string): RuntimeServiceStatus {
 function windowsStatus(endpoint: string): RuntimeServiceStatus {
 	const task = run("schtasks.exe", ["/Query", "/TN", windowsTaskName(), "/FO", "LIST"]);
 	const running = task.ok && /Running|正在运行/iu.test(task.stdout);
+	const installed = task.ok;
 	return {
 		platform: process.platform,
 		arch: process.arch,
 		endpoint,
 		reachable: false,
-		installed: task.ok,
+		installed,
 		running,
-		persistent: task.ok,
-		manager: "scheduled-task",
+		persistent: installed,
+		manager: installed ? "scheduled-task" : "detached",
+		...(readRuntimePid(endpoint) ? { pid: readRuntimePid(endpoint) } : {}),
 		servicePath: windowsTaskName(),
 	};
 }
@@ -158,7 +202,12 @@ export async function getRuntimeServiceStatus(endpoint: string): Promise<Runtime
 				? macStatus(endpoint)
 				: windowsStatus(endpoint);
 	const reachable = (await probeIpcRuntime(endpoint)).reachable;
-	return { ...base, reachable, running: base.running || reachable };
+	return {
+		...base,
+		...(readRuntimePid(endpoint) ? { pid: readRuntimePid(endpoint) } : {}),
+		reachable,
+		running: base.running || reachable,
+	};
 }
 
 function installLinux(endpoint: string): void {
@@ -356,6 +405,7 @@ async function readHostSnapshot(endpoint: string): Promise<HostSnapshot | undefi
 }
 
 export async function stopRuntimeService(endpoint: string, force: boolean): Promise<RuntimeServiceStatus> {
+	const status = await getRuntimeServiceStatus(endpoint);
 	const snapshot = await readHostSnapshot(endpoint);
 	if (!force && snapshot) {
 		const active = snapshot.operations.filter((operation) => ACTIVE_OPERATION_STATUSES.has(operation.status));
@@ -366,6 +416,19 @@ export async function stopRuntimeService(endpoint: string, force: boolean): Prom
 				pendingUiRequests: snapshot.pendingUiRequests.length,
 			});
 		}
+	}
+	if (!status.installed) {
+		if (status.pid) {
+			try {
+				process.kill(status.pid, force ? "SIGKILL" : "SIGTERM");
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+			}
+			await waitUntilUnreachable(endpoint);
+			return getRuntimeServiceStatus(endpoint);
+		}
+		if (status.reachable) throw new Error("无法定位 Web Runtime 进程，请检查 Runtime PID 文件");
+		return status;
 	}
 	const stop =
 		process.platform === "linux"

@@ -28,6 +28,7 @@ import type {
 	TranscriptItem,
 	TranscriptPage,
 } from "@lystar/code-web-protocol";
+import { ensureRuntimeService, getRuntimeServiceStatus, stopRuntimeService } from "@lystar/code-web-runtime";
 import { WebSocket, WebSocketServer } from "ws";
 import {
 	bearerToken,
@@ -39,8 +40,18 @@ import {
 	requestHostname,
 	type WebGatewayConfig,
 } from "./config.ts";
+import {
+	type CpuSnapshot,
+	calculateCpuUsage,
+	diskUsage,
+	hostCpu,
+	hostMemory,
+	hostNetworkAddresses,
+	hostUptimeSeconds,
+	readCpuSnapshot,
+} from "./host-diagnostics.ts";
 import { ProjectRegistry, type WebProject } from "./project-registry.ts";
-import { connectRuntimeClient, type RuntimeInitialSnapshot } from "./runtime-client.ts";
+import { connectRuntimeClient, ensurePersistentRuntime, type RuntimeInitialSnapshot } from "./runtime-client.ts";
 
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
 const MAX_FILE_BYTES = 32 * 1024 * 1024;
@@ -92,6 +103,15 @@ type ContextLease = {
 	createdAt: number;
 	updatedAt: number;
 };
+
+interface RuntimeConnectionStatus {
+	pid?: number;
+	processMemory?: {
+		rssBytes: number;
+		heapUsedBytes: number;
+		externalBytes: number;
+	};
+}
 
 interface BrowserContext {
 	id: string;
@@ -517,6 +537,8 @@ export class WebGatewayServer {
 	private readonly uploadedFiles = new Map<string, { mimeType: string; expiresAt: number }>();
 	private readonly socketLiveness = new WeakMap<WebSocket, boolean>();
 	private readonly detailSubscriptions = new WeakMap<WebSocket, Set<string>>();
+	private previousCpuSnapshot?: CpuSnapshot;
+	private restartHandler?: () => void;
 	private listening = false;
 	private closed = false;
 
@@ -569,6 +591,10 @@ export class WebGatewayServer {
 
 	getToken(): string {
 		return this.config.token;
+	}
+
+	setRestartHandler(handler: () => void): void {
+		this.restartHandler = handler;
 	}
 
 	private createContext(id: string): BrowserContext {
@@ -1053,6 +1079,96 @@ export class WebGatewayServer {
 		}
 	}
 
+	private async collectDiagnostics(context: BrowserContext, projectId?: string): Promise<Record<string, unknown>> {
+		const project = projectId ? this.project(projectId) : undefined;
+		const client = await this.getClient(context);
+		const [runtimeDiagnostics, runtimeStatus, runtimeConnection] = await Promise.all([
+			client.request<JsonValue>({
+				command: "get_diagnostics",
+				...(project ? { cwd: project.cwd } : {}),
+			}),
+			getRuntimeServiceStatus(this.config.runtimeEndpoint),
+			client.request<RuntimeConnectionStatus>({ command: "get_connection_status" }).catch(() => undefined),
+		]);
+		const currentCpuSnapshot = readCpuSnapshot();
+		const cpuUsagePercent = calculateCpuUsage(this.previousCpuSnapshot, currentCpuSnapshot);
+		this.previousCpuSnapshot = currentCpuSnapshot;
+		const memory = hostMemory();
+		const disk = await diskUsage(this.config.agentDir);
+		const gatewayMemory = process.memoryUsage();
+		const runtimeMemory = runtimeConnection?.processMemory;
+		const processes = [
+			{
+				name: "Web Gateway",
+				role: "gateway",
+				pid: process.pid,
+				rssBytes: gatewayMemory.rss,
+			},
+			...(runtimeConnection?.pid && runtimeMemory
+				? [
+						{
+							name: "Web Runtime",
+							role: "runtime",
+							pid: runtimeConnection.pid,
+							rssBytes: runtimeMemory.rssBytes,
+						},
+					]
+				: []),
+		];
+		const runtimeObject = {
+			status: runtimeStatus.reachable ? "running" : "unavailable",
+			...runtimeStatus,
+			...(runtimeConnection?.pid ? { pid: runtimeConnection.pid } : {}),
+			...(runtimeMemory ? { processMemory: runtimeMemory } : {}),
+		};
+		const existing = object(runtimeDiagnostics) ?? {};
+		const existingChecks = Array.isArray(existing.checks) ? existing.checks : [];
+		return {
+			...existing,
+			generatedAt: Date.now(),
+			web: {
+				host: this.config.host,
+				port: this.config.port,
+				ipAddresses: hostNetworkAddresses(),
+			},
+			gateway: {
+				status: "running",
+				pid: process.pid,
+				host: this.config.host,
+				port: this.config.port,
+				uptimeSeconds: Math.floor(process.uptime()),
+				rssBytes: gatewayMemory.rss,
+			},
+			runtime: runtimeObject,
+			cpu: hostCpu(cpuUsagePercent),
+			memory,
+			disk,
+			host: {
+				platform: process.platform,
+				arch: process.arch,
+				uptimeSeconds: hostUptimeSeconds(),
+			},
+			processMemory: {
+				totalRssBytes: processes.reduce((sum, processInfo) => sum + processInfo.rssBytes, 0),
+				processes,
+			},
+			checks: [
+				...existingChecks,
+				{ id: "web-gateway", status: "ok", message: `Web Gateway ${this.config.host}:${this.config.port}` },
+				{
+					id: "web-runtime",
+					status: runtimeStatus.reachable ? "ok" : "error",
+					message: runtimeStatus.reachable ? "Web Runtime 已连接" : "Web Runtime 不可用",
+				},
+				{
+					id: "disk",
+					status: disk.available ? "ok" : "warning",
+					message: disk.available ? `磁盘 ${disk.usedPercent}% 已使用` : "磁盘信息不可用",
+				},
+			],
+		};
+	}
+
 	private async handleHealth(response: ServerResponse): Promise<void> {
 		let host: "connected" | "unavailable" = "unavailable";
 		const activeContext = [...this.contexts.values()].find((context) =>
@@ -1263,17 +1379,30 @@ export class WebGatewayServer {
 			sendJson(response, 200, await (await this.getClient(context)).request<JsonValue>({ command: "get_about" }));
 			return;
 		}
+		if (parts.length === 3 && parts[1] === "diagnostics" && parts[2] === "actions" && request.method === "POST") {
+			const body = await parseJsonBody(request);
+			const action = stringValue(body.action);
+			if (action === "restart-runtime") {
+				const currentStatus = await getRuntimeServiceStatus(this.config.runtimeEndpoint);
+				await stopRuntimeService(this.config.runtimeEndpoint, false);
+				const status = currentStatus.installed
+					? await ensureRuntimeService(this.config.runtimeEndpoint)
+					: await ensurePersistentRuntime({ ...this.config, manageRuntime: true });
+				sendJson(response, 200, { accepted: true, service: "runtime", status });
+				return;
+			}
+			if (action === "restart-gateway") {
+				if (!this.restartHandler)
+					throw new HttpError(503, "gateway_restart_unavailable", "当前 Gateway 不支持自重启");
+				sendJson(response, 202, { accepted: true, service: "gateway" });
+				this.restartHandler();
+				return;
+			}
+			throw new HttpError(400, "diagnostics_action_invalid", "不支持的诊断操作");
+		}
 		if (parts[1] === "diagnostics" && request.method === "GET") {
 			const projectId = url.searchParams.get("projectId") ?? undefined;
-			const project = projectId ? this.project(projectId) : undefined;
-			sendJson(
-				response,
-				200,
-				await (await this.getClient(context)).request<JsonValue>({
-					command: "get_diagnostics",
-					...(project ? { cwd: project.cwd } : {}),
-				}),
-			);
+			sendJson(response, 200, await this.collectDiagnostics(context, projectId));
 			return;
 		}
 		if (parts[1] === "settings") {

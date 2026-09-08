@@ -494,6 +494,13 @@ export class WebApi {
 		return this.request(`/api/diagnostics${query}`);
 	}
 
+	async restartDiagnosticService(service: "gateway" | "runtime"): Promise<{ accepted: boolean; service: string }> {
+		return this.request<{ accepted: boolean; service: string }>("/api/diagnostics/actions", {
+			method: "POST",
+			body: JSON.stringify({ action: `restart-${service}` }),
+		});
+	}
+
 	async uiResponse(
 		requestId: string,
 		response: { value?: unknown; confirmed?: boolean; cancelled?: boolean },

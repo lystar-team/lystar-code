@@ -13,6 +13,7 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card"
 import { Input } from "../ui/input";
 import { ScrollArea } from "../ui/scroll-area";
 import { Separator } from "../ui/separator";
+import { BrandLogo } from "../brand-logo";
 import { SessionButton } from "./session-button";
 import { VirtualizedSessionList } from "./virtualized-session-list";
 import type { WorkbenchActions } from "./types";
@@ -202,7 +203,7 @@ export const ProjectRail = memo(function ProjectRail({
 		<div className="flex min-h-0 flex-1 flex-col bg-background">
 			<div className="flex h-16 shrink-0 items-center justify-between px-4 pr-14 lg:pr-4">
 				<div className="flex items-center gap-2.5 font-semibold tracking-tight">
-					<img className="size-7 rounded-md object-contain" src="/brand/lystar-mark.png" alt="" />
+					<BrandLogo className="size-7 rounded-md object-contain" />
 					<span>LYStar Code</span>
 				</div>
 				<Button

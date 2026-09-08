@@ -51,6 +51,8 @@ export interface WorkbenchActions {
 	saveProviderModel: (provider: string, input: WebProviderModelInput) => Promise<void>;
 	syncModelProvider: (provider: string) => Promise<void>;
 	refreshSkills: () => Promise<void>;
+	refreshDiagnostics: () => Promise<void>;
+	restartDiagnosticService: (service: "gateway" | "runtime") => Promise<void>;
 	refreshHarnessImports: (targetScope?: "user" | "project") => Promise<void>;
 	importHarnessResources: (
 		targetScope: "user" | "project",

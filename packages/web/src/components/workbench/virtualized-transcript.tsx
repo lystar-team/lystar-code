@@ -1,132 +1,88 @@
-import type { ReactNode } from "react";
-import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode, Ref } from "react";
+import { forwardRef, memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+	Virtuoso,
+	type FollowOutput,
+	type ListProps,
+	type ScrollerProps,
+	type VirtuosoHandle,
+} from "react-virtuoso";
 
 export const DEFAULT_TRANSCRIPT_GAP = 12;
-const MOBILE_BREAKPOINT = 640;
-const MOBILE_OVERSCAN = 320;
-const DESKTOP_OVERSCAN = 640;
-const INITIAL_RENDER_COUNT = 24;
-
-export interface VirtualLayout {
-	offsets: number[];
-	heights: number[];
-	totalHeight: number;
-}
-
-export interface VirtualRange {
-	start: number;
-	end: number;
-}
-
-export function buildVirtualLayout<T>(
-	items: readonly T[],
-	getKey: (item: T, index: number) => string,
-	measuredHeights: ReadonlyMap<string, number>,
-	estimateHeight: (item: T, index: number) => number,
-	gap: number | ((previous: T, current: T, index: number) => number) = DEFAULT_TRANSCRIPT_GAP,
-): VirtualLayout {
-	const offsets: number[] = [];
-	const heights: number[] = [];
-	let totalHeight = 0;
-
-	for (let index = 0; index < items.length; index++) {
-		const item = items[index];
-		const measured = measuredHeights.get(getKey(item, index));
-		const height = Math.max(1, measured ?? estimateHeight(item, index));
-		offsets.push(totalHeight);
-		heights.push(height);
-		totalHeight += height;
-		if (index < items.length - 1) {
-			const nextItem = items[index + 1];
-			const rowGap = typeof gap === "function" ? gap(item, nextItem, index) : gap;
-			totalHeight += Math.max(0, rowGap);
-		}
-	}
-
-	return { offsets, heights, totalHeight };
-}
-
-function firstIndexAtOrAfter(layout: VirtualLayout, offset: number): number {
-	let low = 0;
-	let high = layout.heights.length - 1;
-	let result = high;
-	while (low <= high) {
-		const middle = Math.floor((low + high) / 2);
-		const end = layout.offsets[middle] + layout.heights[middle];
-		if (end >= offset) {
-			result = middle;
-			high = middle - 1;
-		} else {
-			low = middle + 1;
-		}
-	}
-	return result;
-}
-
-function lastIndexAtOrBefore(layout: VirtualLayout, offset: number): number {
-	let low = 0;
-	let high = layout.heights.length - 1;
-	let result = 0;
-	while (low <= high) {
-		const middle = Math.floor((low + high) / 2);
-		if (layout.offsets[middle] <= offset) {
-			result = middle;
-			low = middle + 1;
-		} else {
-			high = middle - 1;
-		}
-	}
-	return result;
-}
-
-export function getVirtualRange(
-	layout: VirtualLayout,
-	scrollTop: number,
-	viewportHeight: number,
-	overscan: number,
-): VirtualRange {
-	if (!layout.heights.length || viewportHeight <= 0) {
-		return { start: 0, end: Math.max(0, layout.heights.length - 1) };
-	}
-
-	const startOffset = Math.max(0, scrollTop - overscan);
-	const endOffset = Math.max(startOffset, scrollTop + viewportHeight + overscan);
-	const start = firstIndexAtOrAfter(layout, startOffset);
-	const end = lastIndexAtOrBefore(layout, endOffset);
-	return start <= end
-		? { start, end }
-		: { start: Math.max(0, start - 1), end: Math.min(layout.heights.length - 1, start) };
-}
+const TRANSCRIPT_OVERSCAN = 640;
+const TRANSCRIPT_MIN_OVERSCAN_ITEMS = 6;
+const INITIAL_RENDER_ITEM_COUNT = 24;
+const CONVERSATION_EDGE_PADDING = 48;
+const TRANSCRIPT_FIRST_ITEM_INDEX = 1_000_000_000;
 
 type ScrollRef = { current: HTMLElement | null };
+type TranscriptGap<T> = number | ((previous: T, current: T, index: number) => number);
+
+function normalizeHeight(value: number): number {
+	return Number.isFinite(value) ? Math.max(1, value) : 1;
+}
+
+function normalizeGap(value: number): number {
+	return Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+function transcriptGapAt<T>(items: readonly T[], index: number, gap: TranscriptGap<T>): number {
+	if (index >= items.length - 1) return 0;
+	const value = typeof gap === "function" ? gap(items[index], items[index + 1], index) : gap;
+	return normalizeGap(value);
+}
+
+export function buildTranscriptHeightEstimates<T>(
+	items: readonly T[],
+	estimateHeight: (item: T, index: number) => number,
+	gap: TranscriptGap<T> = DEFAULT_TRANSCRIPT_GAP,
+): number[] {
+	return items.map((item, index) => normalizeHeight(estimateHeight(item, index)) + transcriptGapAt(items, index, gap));
+}
 
 type VirtualizedTranscriptRowProps = {
 	item: unknown;
 	index: number;
-	top: number;
-	rowRef: (element: HTMLDivElement | null) => void;
+	gap: number;
+	edgePadding: number;
+	isFirst: boolean;
+	isLast: boolean;
 	renderItem: (item: unknown, index: number) => ReactNode;
 	isItemEqual?: (previous: unknown, next: unknown) => boolean;
 };
 
-const VirtualizedTranscriptRow = memo(function VirtualizedTranscriptRow({
-	item,
-	index,
-	top,
-	rowRef,
-	renderItem,
-	isItemEqual,
-}: VirtualizedTranscriptRowProps) {
-	return (
-		<div ref={rowRef} style={{ left: 0, position: "absolute", right: 0, top }}>
-			{renderItem(item, index)}
-		</div>
-	);
-}, (previous, next) => {
-	if (previous.index !== next.index || previous.top !== next.top || previous.renderItem !== next.renderItem) return false;
-	return next.isItemEqual ? next.isItemEqual(previous.item, next.item) : previous.item === next.item;
-});
-
+const VirtualizedTranscriptRow = memo(
+	function VirtualizedTranscriptRow({
+		item,
+		index,
+		gap,
+		edgePadding,
+		isFirst,
+		isLast,
+		renderItem,
+	}: VirtualizedTranscriptRowProps) {
+		return (
+			<div data-virtualized-transcript-row>
+				{isFirst && edgePadding > 0 ? <div aria-hidden="true" style={{ height: edgePadding }} /> : null}
+				{renderItem(item, index)}
+				{gap > 0 ? <div aria-hidden="true" style={{ height: gap }} /> : null}
+				{isLast && edgePadding > 0 ? <div aria-hidden="true" style={{ height: edgePadding }} /> : null}
+			</div>
+		);
+	},
+	(previous, next) => {
+		if (
+			previous.index !== next.index ||
+			previous.gap !== next.gap ||
+			previous.edgePadding !== next.edgePadding ||
+			previous.isFirst !== next.isFirst ||
+			previous.isLast !== next.isLast ||
+			previous.renderItem !== next.renderItem
+		)
+			return false;
+		return next.isItemEqual ? next.isItemEqual(previous.item, next.item) : previous.item === next.item;
+	},
+);
 
 export interface VirtualizedTranscriptProps<T> {
 	items: readonly T[];
@@ -135,7 +91,51 @@ export interface VirtualizedTranscriptProps<T> {
 	renderItem: (item: T, index: number) => ReactNode;
 	scrollRef: ScrollRef;
 	isItemEqual?: (previous: T, next: T) => boolean;
-	gap?: number | ((previous: T, current: T, index: number) => number);
+	gap?: TranscriptGap<T>;
+}
+
+function useTranscriptRenderer<T>({
+	items,
+	getKey,
+	estimateHeight,
+	renderItem,
+	isItemEqual,
+	gap,
+	edgePadding = 0,
+}: Omit<VirtualizedTranscriptProps<T>, "scrollRef"> & { edgePadding?: number }) {
+	const itemsRef = useRef(items);
+	const gapRef = useRef(gap ?? DEFAULT_TRANSCRIPT_GAP);
+	itemsRef.current = items;
+	gapRef.current = gap ?? DEFAULT_TRANSCRIPT_GAP;
+
+	const [heightEstimates] = useState(() => {
+		const estimates = buildTranscriptHeightEstimates(items, estimateHeight, gap ?? DEFAULT_TRANSCRIPT_GAP);
+		if (edgePadding > 0 && estimates.length) {
+			estimates[0] += edgePadding;
+			estimates[estimates.length - 1] += edgePadding;
+		}
+		return estimates;
+	});
+	const computeItemKey = useCallback((index: number, item: T) => getKey(item, index), [getKey]);
+	const itemContent = useCallback(
+		(index: number, item: T) => {
+			const currentItems = itemsRef.current;
+			return (
+				<VirtualizedTranscriptRow
+					item={item}
+					index={index}
+					gap={transcriptGapAt(currentItems, index, gapRef.current)}
+					edgePadding={edgePadding}
+					isFirst={index === 0}
+					isLast={index === currentItems.length - 1}
+					renderItem={renderItem as (item: unknown, index: number) => ReactNode}
+					isItemEqual={isItemEqual as ((previous: unknown, next: unknown) => boolean) | undefined}
+				/>
+			);
+		},
+		[edgePadding, isItemEqual, renderItem],
+	);
+	return { computeItemKey, heightEstimates, itemContent };
 }
 
 export function VirtualizedTranscript<T>({
@@ -145,194 +145,295 @@ export function VirtualizedTranscript<T>({
 	renderItem,
 	scrollRef,
 	isItemEqual,
-	gap,
+	gap = DEFAULT_TRANSCRIPT_GAP,
 }: VirtualizedTranscriptProps<T>) {
-	const measuredHeightsRef = useRef(new Map<string, number>());
-	const elementsRef = useRef(new Map<string, HTMLDivElement>());
-	const elementKeysRef = useRef(new WeakMap<Element, string>());
-	const rowRefCallbacksRef = useRef(new Map<string, (element: HTMLDivElement | null) => void>());
-	const resizeObserverRef = useRef<ResizeObserver | undefined>(undefined);
-	const layoutRef = useRef<VirtualLayout>({ offsets: [], heights: [], totalHeight: 0 });
-	const indexByKeyRef = useRef(new Map<string, number>());
-	const [measurementVersion, setMeasurementVersion] = useState(0);
-	const [viewport, setViewport] = useState({ top: 0, height: 0, width: 0, listTop: 0 });
-	const listRef = useRef<HTMLDivElement>(null);
-
-	const updateViewport = useCallback(() => {
-		const scroller = scrollRef.current;
-		const list = listRef.current;
-		if (!scroller || !list) return;
-		const scrollerRect = scroller.getBoundingClientRect();
-		const listRect = list.getBoundingClientRect();
-		const next = {
-			top: scroller.scrollTop,
-			height: scroller.clientHeight,
-			width: scroller.clientWidth,
-			listTop: listRect.top - scrollerRect.top + scroller.scrollTop,
-		};
-		setViewport((current) =>
-			current.top === next.top &&
-			current.height === next.height &&
-			current.width === next.width &&
-			current.listTop === next.listTop
-				? current
-				: next,
-		);
-	}, [scrollRef]);
-
-	const itemKeys = useMemo(() => items.map(getKey), [getKey, items]);
-	const indexByKey = useMemo(() => new Map(itemKeys.map((key, index) => [key, index])), [itemKeys]);
-	indexByKeyRef.current = indexByKey;
-
-	const layout = useMemo(
-		() => buildVirtualLayout(items, getKey, measuredHeightsRef.current, estimateHeight, gap),
-		[estimateHeight, gap, getKey, items, measurementVersion],
-	);
-	layoutRef.current = layout;
+	const [scrollParent, setScrollParent] = useState<HTMLElement | null>(() => scrollRef.current);
+	const renderer = useTranscriptRenderer({ items, getKey, estimateHeight, renderItem, isItemEqual, gap });
 
 	useLayoutEffect(() => {
-		const scroller = scrollRef.current;
-		if (!scroller || !layout.heights.length) return;
-		const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-		if (scroller.scrollTop > maxScrollTop + 1) scroller.scrollTop = maxScrollTop;
-	}, [layout.heights.length, layout.totalHeight, scrollRef]);
-
-	const registerRow = useCallback((key: string, element: HTMLDivElement | null) => {
-		const previous = elementsRef.current.get(key);
-		if (previous === element) return;
-		if (previous) resizeObserverRef.current?.unobserve(previous);
-		if (!element) {
-			elementsRef.current.delete(key);
+		if (scrollRef.current) {
+			setScrollParent(scrollRef.current);
 			return;
 		}
-		elementsRef.current.set(key, element);
-		elementKeysRef.current.set(element, key);
-		resizeObserverRef.current?.observe(element);
-	}, []);
-
-	const getRowRef = useCallback(
-		(key: string) => {
-			const existing = rowRefCallbacksRef.current.get(key);
-			if (existing) return existing;
-			const callback = (element: HTMLDivElement | null) => registerRow(key, element);
-			rowRefCallbacksRef.current.set(key, callback);
-			return callback;
-		},
-		[registerRow],
-	);
-
-	useLayoutEffect(() => {
-		updateViewport();
-	}, [items.length, layout.totalHeight, updateViewport]);
-
-	useLayoutEffect(() => {
-		const scroller = scrollRef.current;
-		if (!scroller) return;
-
-		let frame: number | undefined;
-		const scheduleViewportUpdate = () => {
-			if (frame !== undefined) return;
-			frame = window.requestAnimationFrame(() => {
-				frame = undefined;
-				updateViewport();
-			});
-		};
-		const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(scheduleViewportUpdate);
-
-		updateViewport();
-		scroller.addEventListener("scroll", scheduleViewportUpdate, { passive: true });
-		observer?.observe(scroller);
-		observer?.observe(listRef.current ?? scroller);
-		return () => {
-			scroller.removeEventListener("scroll", scheduleViewportUpdate);
-			observer?.disconnect();
-			if (frame !== undefined) window.cancelAnimationFrame(frame);
-		};
-	}, [scrollRef, updateViewport]);
-
-	useLayoutEffect(() => {
-		if (typeof ResizeObserver === "undefined") return;
-		let bottomCorrectionFrame: number | undefined;
-		const observer = new ResizeObserver((entries) => {
-			const scroller = scrollRef.current;
-			const currentLayout = layoutRef.current;
-			const measured = measuredHeightsRef.current;
-			const wasAtBottom = scroller
-				? scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 2
-				: false;
-			let changed = false;
-			let scrollAdjustment = 0;
-
-			for (const entry of entries) {
-				const key = elementKeysRef.current.get(entry.target);
-				const index = key ? indexByKeyRef.current.get(key) : undefined;
-				if (key === undefined || index === undefined) continue;
-				const nextHeight = Math.max(1, entry.contentRect.height);
-				const previousHeight = measured.get(key) ?? currentLayout.heights[index] ?? nextHeight;
-				const difference = nextHeight - previousHeight;
-				if (Math.abs(difference) < 0.5) continue;
-				measured.set(key, nextHeight);
-				changed = true;
-				if (!wasAtBottom && scroller && currentLayout.offsets[index] < scroller.scrollTop) {
-					scrollAdjustment += difference;
-				}
-			}
-
-			if (scrollAdjustment && scroller) scroller.scrollTop += scrollAdjustment;
-			if (changed) {
-				setMeasurementVersion((version) => version + 1);
-				if (wasAtBottom && scroller && bottomCorrectionFrame === undefined) {
-					bottomCorrectionFrame = window.requestAnimationFrame(() => {
-						bottomCorrectionFrame = undefined;
-						const currentScroller = scrollRef.current;
-						if (!currentScroller) return;
-						const maxScrollTop = Math.max(0, currentScroller.scrollHeight - currentScroller.clientHeight);
-						if (
-							currentScroller.scrollTop > maxScrollTop + 1 ||
-							currentScroller.scrollHeight - currentScroller.scrollTop - currentScroller.clientHeight <= 8
-						)
-							currentScroller.scrollTop = maxScrollTop;
-					});
-				}
-			}
+		let frame = window.requestAnimationFrame(function bindScrollParent() {
+			if (scrollRef.current) setScrollParent(scrollRef.current);
+			else frame = window.requestAnimationFrame(bindScrollParent);
 		});
-		resizeObserverRef.current = observer;
-		for (const element of elementsRef.current.values()) observer.observe(element);
-
-		return () => {
-			observer.disconnect();
-			if (bottomCorrectionFrame !== undefined) window.cancelAnimationFrame(bottomCorrectionFrame);
-			if (resizeObserverRef.current === observer) resizeObserverRef.current = undefined;
-		};
+		return () => window.cancelAnimationFrame(frame);
 	}, [scrollRef]);
 
 	if (!items.length) return null;
-
-	const overscan = viewport.width > 0 && viewport.width < MOBILE_BREAKPOINT ? MOBILE_OVERSCAN : DESKTOP_OVERSCAN;
-	const range =
-		viewport.height > 0
-			? getVirtualRange(layout, viewport.top - viewport.listTop, viewport.height, overscan)
-			: { start: 0, end: Math.min(items.length - 1, INITIAL_RENDER_COUNT - 1) };
-	const renderedIndexes: number[] = [];
-	for (let index = range.start; index <= range.end; index++) renderedIndexes.push(index);
-
-	return (
-		<div ref={listRef} style={{ height: layout.totalHeight, minWidth: 0, position: "relative", width: "100%" }}>
-			{renderedIndexes.map((index) => {
-				const item = items[index];
-				const key = itemKeys[index];
-				return (
+	if (!scrollParent) {
+		return (
+			<>
+				{items.slice(0, INITIAL_RENDER_ITEM_COUNT).map((item, index) => (
 					<VirtualizedTranscriptRow
-						key={key}
+						key={getKey(item, index)}
 						item={item}
 						index={index}
-						top={layout.offsets[index]}
-						rowRef={getRowRef(key)}
+						gap={transcriptGapAt(items, index, gap)}
+						edgePadding={0}
+						isFirst={index === 0}
+						isLast={index === items.length - 1}
 						renderItem={renderItem as (item: unknown, index: number) => ReactNode}
 						isItemEqual={isItemEqual as ((previous: unknown, next: unknown) => boolean) | undefined}
 					/>
-				);
-			})}
+				))}
+			</>
+		);
+	}
+
+	return (
+		<Virtuoso
+			computeItemKey={renderer.computeItemKey}
+			customScrollParent={scrollParent}
+			data={items}
+			heightEstimates={renderer.heightEstimates}
+			itemContent={renderer.itemContent}
+			minOverscanItemCount={{ bottom: TRANSCRIPT_MIN_OVERSCAN_ITEMS, top: TRANSCRIPT_MIN_OVERSCAN_ITEMS }}
+			overscan={{ main: TRANSCRIPT_OVERSCAN, reverse: TRANSCRIPT_OVERSCAN }}
+			style={{ minWidth: 0, width: "100%" }}
+		/>
+	);
+}
+
+type ConversationTranscriptContext = {
+	header: ReactNode;
+	onResizeAnchor: (element: HTMLElement) => void;
+	onScrollerRef: (element: HTMLElement | null) => void;
+	onUserScrollAway: () => void;
+};
+
+const SCROLL_AWAY_KEYS = new Set(["ArrowUp", "Home", "PageUp"]);
+
+const ConversationTranscriptScroller = forwardRef<
+	HTMLDivElement,
+	ScrollerProps & { context: ConversationTranscriptContext }
+>(function ConversationTranscriptScroller({ children, context, style, ...props }, forwardedRef) {
+	const pointerActiveRef = useRef(false);
+	const contextRef = useRef(context);
+	contextRef.current = context;
+	const attachScroller = useCallback(
+		(element: HTMLDivElement | null) => {
+			if (typeof forwardedRef === "function") forwardedRef(element);
+			else if (forwardedRef) forwardedRef.current = element;
+			contextRef.current.onScrollerRef(element);
+		},
+		[forwardedRef],
+	);
+	return (
+		<div
+			{...props}
+			ref={attachScroller}
+			className="conversation-scroll min-w-0 max-w-full overflow-auto overscroll-y-contain"
+			style={{ ...style, overflowAnchor: "none" }}
+			onKeyDown={(event) => {
+				if (SCROLL_AWAY_KEYS.has(event.key)) contextRef.current.onUserScrollAway();
+			}}
+			onPointerDownCapture={(event) => {
+				const target = event.target;
+				if (!(target instanceof Element) || !target.closest("[data-transcript-resize-anchor]")) return;
+				const row = target.closest("[data-virtualized-transcript-row]");
+				if (row instanceof HTMLElement) contextRef.current.onResizeAnchor(row);
+			}}
+			onPointerCancel={() => {
+				pointerActiveRef.current = false;
+			}}
+			onPointerDown={() => {
+				pointerActiveRef.current = true;
+			}}
+			onPointerUp={() => {
+				pointerActiveRef.current = false;
+			}}
+			onScroll={(event) => {
+				if (!pointerActiveRef.current) return;
+				const element = event.currentTarget;
+				if (element.scrollHeight - element.scrollTop - element.clientHeight > 2)
+					contextRef.current.onUserScrollAway();
+			}}
+			onWheel={(event) => {
+				if (event.deltaY < 0) contextRef.current.onUserScrollAway();
+			}}
+		>
+			{context.header ? (
+				<div className="pointer-events-none absolute top-0 right-0 left-0 z-10 mx-auto min-w-0 w-full max-w-[var(--conversation-width)] px-5 pt-2 sm:px-10">
+					<div className="pointer-events-auto">{context.header}</div>
+				</div>
+			) : null}
+			{children}
 		</div>
+	);
+});
+
+const ConversationTranscriptList = forwardRef<
+	HTMLDivElement,
+	ListProps & { context: ConversationTranscriptContext }
+>(function ConversationTranscriptList({ context: _context, style, ...props }, ref) {
+	return (
+		<div
+			{...props}
+			ref={ref}
+			className="conversation-content mx-auto min-w-0 w-full max-w-[var(--conversation-width)] px-5 sm:px-10"
+			style={style}
+		/>
+	);
+});
+
+const CONVERSATION_TRANSCRIPT_COMPONENTS = {
+	List: ConversationTranscriptList,
+	Scroller: ConversationTranscriptScroller,
+};
+
+type TranscriptWindowAnchor = { firstItemIndex: number; firstKey: string };
+
+export function resolveTranscriptFirstItemIndex(
+	previous: TranscriptWindowAnchor | undefined,
+	itemKeys: readonly string[],
+): number {
+	if (!previous) return TRANSCRIPT_FIRST_ITEM_INDEX;
+	const prependedItemCount = itemKeys.indexOf(previous.firstKey);
+	return prependedItemCount > 0 ? previous.firstItemIndex - prependedItemCount : previous.firstItemIndex;
+}
+
+export function transcriptDataIndex(index: number, firstItemIndex: number): number {
+	return index - firstItemIndex;
+}
+
+function useTranscriptFirstItemIndex<T>(
+	items: readonly T[],
+	getKey: (item: T, index: number) => string,
+): number {
+	const committedWindowRef = useRef<TranscriptWindowAnchor>();
+	const previous = committedWindowRef.current;
+	const firstKey = items.length ? getKey(items[0], 0) : "";
+	let firstItemIndex = previous?.firstItemIndex ?? TRANSCRIPT_FIRST_ITEM_INDEX;
+	if (previous && firstKey !== previous.firstKey) {
+		const prependedItemCount = items.findIndex((item, index) => getKey(item, index) === previous.firstKey);
+		if (prependedItemCount > 0) firstItemIndex -= prependedItemCount;
+	}
+
+	useLayoutEffect(() => {
+		committedWindowRef.current = { firstItemIndex, firstKey };
+	}, [firstItemIndex, firstKey]);
+	return firstItemIndex;
+}
+
+export interface VirtualizedConversationTranscriptProps<T>
+	extends Omit<VirtualizedTranscriptProps<T>, "scrollRef"> {
+	atBottomStateChange: (atBottom: boolean) => void;
+	followOutput: FollowOutput;
+	header?: ReactNode;
+	onScrollerRef: (element: HTMLElement | null) => void;
+	onTotalListHeightChanged: (height: number) => void;
+	onUserScrollAway: () => void;
+	virtuosoRef: Ref<VirtuosoHandle>;
+}
+
+export function VirtualizedConversationTranscript<T>({
+	items,
+	getKey,
+	estimateHeight,
+	renderItem,
+	atBottomStateChange,
+	followOutput,
+	header = null,
+	onScrollerRef,
+	onTotalListHeightChanged,
+	onUserScrollAway,
+	virtuosoRef,
+	isItemEqual,
+	gap = DEFAULT_TRANSCRIPT_GAP,
+}: VirtualizedConversationTranscriptProps<T>) {
+	const renderer = useTranscriptRenderer({
+		items,
+		getKey,
+		estimateHeight,
+		renderItem,
+		isItemEqual,
+		gap,
+		edgePadding: CONVERSATION_EDGE_PADDING,
+	});
+	const scrollerElementRef = useRef<HTMLElement | null>(null);
+	const resizeAnchorRef = useRef<{ element: HTMLElement; top: number }>();
+	const totalHeightFrameRef = useRef<number>();
+	const latestTotalHeightRef = useRef(0);
+	const handleScrollerRef = useCallback(
+		(element: HTMLElement | null) => {
+			scrollerElementRef.current = element;
+			onScrollerRef(element);
+		},
+		[onScrollerRef],
+	);
+	const handleResizeAnchor = useCallback(
+		(element: HTMLElement) => {
+			resizeAnchorRef.current = { element, top: element.getBoundingClientRect().top };
+			onUserScrollAway();
+		},
+		[onUserScrollAway],
+	);
+	const handleTotalListHeightChanged = useCallback(
+		(height: number) => {
+			const anchor = resizeAnchorRef.current;
+			resizeAnchorRef.current = undefined;
+			if (anchor?.element.isConnected) {
+				const offset = anchor.element.getBoundingClientRect().top - anchor.top;
+				if (Math.abs(offset) >= 0.5) scrollerElementRef.current?.scrollBy({ behavior: "auto", top: offset });
+				return;
+			}
+			latestTotalHeightRef.current = height;
+			if (totalHeightFrameRef.current !== undefined) window.cancelAnimationFrame(totalHeightFrameRef.current);
+			totalHeightFrameRef.current = window.requestAnimationFrame(() => {
+				totalHeightFrameRef.current = undefined;
+				onTotalListHeightChanged(latestTotalHeightRef.current);
+			});
+		},
+		[onTotalListHeightChanged],
+	);
+	useLayoutEffect(
+		() => () => {
+			if (totalHeightFrameRef.current !== undefined) window.cancelAnimationFrame(totalHeightFrameRef.current);
+		},
+		[],
+	);
+	const context = useMemo(
+		() => ({
+			header,
+			onResizeAnchor: handleResizeAnchor,
+			onScrollerRef: handleScrollerRef,
+			onUserScrollAway,
+		}),
+		[header, handleResizeAnchor, handleScrollerRef, onUserScrollAway],
+	);
+	const initialItemCount = Math.min(INITIAL_RENDER_ITEM_COUNT, items.length);
+	const firstItemIndex = useTranscriptFirstItemIndex(items, getKey);
+	const computeConversationItemKey = useCallback(
+		(index: number, item: T) => renderer.computeItemKey(transcriptDataIndex(index, firstItemIndex), item),
+		[firstItemIndex, renderer.computeItemKey],
+	);
+	const conversationItemContent = useCallback(
+		(index: number, item: T) => renderer.itemContent(transcriptDataIndex(index, firstItemIndex), item),
+		[firstItemIndex, renderer.itemContent],
+	);
+
+	if (!items.length) return null;
+	return (
+		<Virtuoso
+			ref={virtuosoRef}
+			alignToBottom
+			atBottomStateChange={atBottomStateChange}
+			components={CONVERSATION_TRANSCRIPT_COMPONENTS}
+			computeItemKey={computeConversationItemKey}
+			context={context}
+			data={items}
+			firstItemIndex={firstItemIndex}
+			followOutput={followOutput}
+			heightEstimates={renderer.heightEstimates}
+			initialItemCount={initialItemCount}
+			itemContent={conversationItemContent}
+			minOverscanItemCount={{ bottom: TRANSCRIPT_MIN_OVERSCAN_ITEMS, top: TRANSCRIPT_MIN_OVERSCAN_ITEMS }}
+			overscan={{ main: TRANSCRIPT_OVERSCAN, reverse: TRANSCRIPT_OVERSCAN }}
+			style={{ height: "100%", minWidth: 0, width: "100%" }}
+			totalListHeightChanged={handleTotalListHeightChanged}
+		/>
 	);
 }

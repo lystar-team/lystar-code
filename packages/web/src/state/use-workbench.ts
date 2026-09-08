@@ -32,6 +32,7 @@ import {
 	transcriptRenderIdOverrides,
 	type WorkbenchTranscriptItem,
 } from "./transcript-state.ts";
+import { readLastSession, saveLastSession } from "./session-persistence.ts";
 import type {
 	GatewayEvent,
 	HarnessImportsResponse,
@@ -509,6 +510,8 @@ const THEME_KEY = "lystar.web.theme";
 const MODEL_PROVIDER_VISIBILITY_KEY = "lystar.web.model-provider-visibility.v2";
 const ACTIVE_OPERATION_STATUSES = new Set(["accepted", "running", "waiting_for_input"]);
 const TERMINAL_OPERATION_STATUSES = new Set(["completed", "failed", "aborted", "interrupted"]);
+const LIGHT_FAVICON_PATH = "/brand/lystar-mark-light.png";
+const DARK_FAVICON_PATH = "/brand/lystar-mark-dark.png";
 
 function savedTheme(): ThemeMode {
 	if (typeof window === "undefined") return "system";
@@ -526,10 +529,18 @@ function savedHiddenModelProviders(): string[] {
 	}
 }
 
+function applyFavicon(theme: ThemeMode): void {
+	if (typeof document === "undefined") return;
+	const isDark = theme === "dark" || (theme === "system" && window.matchMedia?.("(prefers-color-scheme: dark)").matches === true);
+	const favicon = document.querySelector<HTMLLinkElement>('link[data-theme-favicon]');
+	if (favicon) favicon.href = isDark ? DARK_FAVICON_PATH : LIGHT_FAVICON_PATH;
+}
+
 function applyTheme(theme: ThemeMode): void {
 	if (typeof document === "undefined") return;
 	document.documentElement.dataset.theme = theme === "system" ? "" : theme;
 	window.localStorage.setItem(THEME_KEY, theme);
+	applyFavicon(theme);
 }
 
 function errorMessage(error: unknown): string {
@@ -749,7 +760,7 @@ function initialState(): WorkbenchState {
 		statusText: "",
 		pendingUiRequests: [],
 		inspectorOpen: typeof window !== "undefined" && window.matchMedia("(min-width: 1280px)").matches,
-		inspectorMode: "runs",
+		inspectorMode: "files",
 		gitLoading: false,
 		gitDiffLoading: false,
 		fileTreeLoading: false,
@@ -1909,16 +1920,31 @@ export function useWorkbench() {
 				applyBootstrap(data);
 				connectStream();
 				void refreshModelSettings().catch(() => undefined);
+				const lastSession = readLastSession();
+				const lastSessionProject = lastSession
+					? data.projects.find(
+							(project) =>
+								!project.archived &&
+								project.id === lastSession.projectId &&
+								project.sessions.some((session) => session.id === lastSession.sessionId),
+						)
+					: undefined;
 				const firstProject = data.projects.find(
 					(project) => project.id === stateRef.current.currentProjectId && !project.archived,
-				) ?? data.projects
+				) ?? lastSessionProject ?? data.projects
 					.filter((project) => !project.archived)
 					.slice()
 					.sort((left, right) => Number(right.pinned) - Number(left.pinned))[0];
 				if (firstProject) {
 					updateState((current) => ({ ...current, currentProjectId: firstProject.id }));
+					await loadProjectTreeRef.current();
 					const sessions = stateRef.current.projects.find((project) => project.id === firstProject.id)?.sessions ?? firstProject.sessions;
-					const firstSession = sessions.find((session) => session.id === stateRef.current.sessionId) ?? sessions[0];
+					const rememberedSession =
+						firstProject.id === lastSessionProject?.id
+							? sessions.find((session) => session.id === lastSession?.sessionId)
+							: undefined;
+					const firstSession =
+						sessions.find((session) => session.id === stateRef.current.sessionId) ?? rememberedSession ?? sessions[0];
 					if (firstSession) await selectSessionRef.current(firstSession.id);
 				}
 			} catch (error) {
@@ -2671,7 +2697,7 @@ export function useWorkbench() {
 	}, [updateState]);
 
 	const openInspector = useCallback(
-		async (mode: InspectorMode = "runs") => {
+		async (mode: InspectorMode = "files") => {
 			updateState((current) => ({ ...current, inspectorOpen: true, inspectorMode: mode }));
 			if (mode === "git") await loadGitStatus();
 			if (mode === "files" && !stateRef.current.fileTree) await loadProjectTreeRef.current();
@@ -2931,6 +2957,25 @@ export function useWorkbench() {
 		}
 	}, [showToast, updateState]);
 
+	const refreshDiagnostics = useCallback(async () => {
+		const result = (await webApi.diagnostics(stateRef.current.currentProjectId)) as Record<string, unknown>;
+		updateState((current) => ({ ...current, diagnostics: result }));
+	}, [updateState]);
+
+	const restartDiagnosticService = useCallback(
+		async (service: "gateway" | "runtime") => {
+			try {
+				await webApi.restartDiagnosticService(service);
+				showToast(service === "gateway" ? "Gateway 重启请求已发送" : "Runtime 已重启");
+				if (service === "runtime") await refreshDiagnostics();
+			} catch (error) {
+				showToast(errorMessage(error));
+				throw error;
+			}
+		},
+		[refreshDiagnostics, showToast],
+	);
+
 	const toggleSkill = useCallback(
 		async (skill: ProjectSkillsResponse["skills"][number]) => {
 			if (skill.scope === "temporary") return;
@@ -3056,17 +3101,16 @@ export function useWorkbench() {
 			if (tab === "instructions") await refreshHostInstructions();
 			if (tab === "skills") await refreshSkills();
 			if (tab === "imports") await refreshHarnessImports();
-			if (tab === "diagnostics") updateState((current) => ({ ...current, diagnostics: undefined }));
 			if (tab === "diagnostics") {
-				const result = (await webApi.diagnostics(stateRef.current.currentProjectId)) as Record<string, unknown>;
-				updateState((current) => ({ ...current, diagnostics: result }));
+				updateState((current) => ({ ...current, diagnostics: undefined }));
+				await refreshDiagnostics();
 			}
 			if (tab === "about" && !stateRef.current.about) {
 				const result = (await webApi.about()) as Record<string, unknown>;
 				updateState((current) => ({ ...current, about: result }));
 			}
 		},
-		[refreshHarnessImports, refreshHostInstructions, refreshModelSettings, refreshSkills, updateState],
+		[refreshHarnessImports, refreshHostInstructions, refreshModelSettings, refreshSkills, refreshDiagnostics, updateState],
 	);
 	const closeSettings = useCallback(
 		() => updateState((current) => ({ ...current, settingsOpen: false })),
@@ -3100,7 +3144,20 @@ export function useWorkbench() {
 	loadProjectTreeRef.current = loadProjectTree;
 
 	useEffect(() => {
+		if (!state.currentProjectId || !state.sessionId) return;
+		saveLastSession(state.currentProjectId, state.sessionId);
+	}, [state.currentProjectId, state.sessionId]);
+
+	useEffect(() => {
 		applyTheme(state.theme);
+	}, [state.theme]);
+
+	useEffect(() => {
+		if (state.theme !== "system" || typeof window.matchMedia !== "function") return;
+		const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+		const handleChange = () => applyFavicon("system");
+		mediaQuery.addEventListener("change", handleChange);
+		return () => mediaQuery.removeEventListener("change", handleChange);
 	}, [state.theme]);
 
 	useEffect(() => {
@@ -3188,6 +3245,8 @@ export function useWorkbench() {
 		saveModelProvider,
 		saveProviderModel,
 		refreshSkills,
+		refreshDiagnostics,
+		restartDiagnosticService,
 		toggleSkill,
 		refreshHarnessImports,
 		importHarnessResources,

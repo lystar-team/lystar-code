@@ -1,4 +1,4 @@
-import { ArrowLeft, FileCode2, FileJson, FileText, FolderOpen, HardDrive, ImageIcon, RefreshCw } from "lucide-react";
+import { ArrowLeft, FileCode2, FileJson, FileText, ImageIcon, LoaderCircle, RefreshCw } from "lucide-react";
 import type { ReactNode } from "react";
 import type { ProjectTreeEntry } from "../../types";
 import type { WorkbenchState } from "../../state/use-workbench";
@@ -49,11 +49,11 @@ export function FilesPanel({ state, actions }: { state: WorkbenchState; actions:
 		);
 
 	return (
-		<div className="grid gap-4 p-4">
-			<div className="flex items-start justify-between gap-3">
-				<div>
+		<div className="flex h-full min-h-0 flex-col gap-2 p-4">
+			<div className="flex shrink-0 items-center justify-between gap-3">
+				<div className="min-w-0">
 					<h2 className="font-semibold">项目文件</h2>
-					<p className="mt-1 truncate text-xs text-muted-foreground">{tree?.path || "项目根目录"}</p>
+					{tree?.path ? <p className="mt-1 truncate text-xs text-muted-foreground">{tree.path}</p> : null}
 				</div>
 				<Button
 					size="icon"
@@ -65,7 +65,7 @@ export function FilesPanel({ state, actions }: { state: WorkbenchState; actions:
 				</Button>
 			</div>
 			{tree?.parent !== undefined ? (
-				<div className="flex gap-2">
+				<div className="flex shrink-0 gap-2">
 					<Button size="sm" variant="outline" onClick={() => void actions.loadProjectTree(tree.parent)}>
 						<ArrowLeft className="size-4" />
 						上一级
@@ -74,6 +74,7 @@ export function FilesPanel({ state, actions }: { state: WorkbenchState; actions:
 			) : null}
 			{tree ? (
 				<FileTree
+					className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto"
 					selectedPath={state.filePath}
 					onSelect={(path) => {
 						const entry = findEntry(path, entries);
@@ -83,12 +84,16 @@ export function FilesPanel({ state, actions }: { state: WorkbenchState; actions:
 					{renderEntries(entries)}
 				</FileTree>
 			) : (
-				<Card>
-					<CardContent className="py-8 text-center">
-						<Button variant="outline" onClick={() => void actions.loadProjectTree()}>
-							<FolderOpen className="size-4" />
-							加载文件树
-						</Button>
+				<Card className="min-h-0 flex-1">
+					<CardContent className="flex h-full items-center justify-center py-8 text-center text-sm text-muted-foreground">
+						{state.fileTreeLoading ? (
+							<span className="flex items-center gap-2">
+								<LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+								正在加载文件树
+							</span>
+						) : (
+							<span>文件树加载失败，请点击右上角刷新。</span>
+						)}
 					</CardContent>
 				</Card>
 			)}

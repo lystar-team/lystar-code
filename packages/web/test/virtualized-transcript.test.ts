@@ -1,34 +1,56 @@
 import { describe, expect, it } from "vitest";
-import { buildVirtualLayout, getVirtualRange } from "../src/components/workbench/virtualized-transcript.tsx";
+import {
+	buildTranscriptHeightEstimates,
+	resolveTranscriptFirstItemIndex,
+	transcriptDataIndex,
+} from "../src/components/workbench/virtualized-transcript.tsx";
 
-type Item = { key: string; height: number };
+type Item = { key: string; height: number; kind: "message" | "tool" };
 
-const getKey = (item: Item) => item.key;
-const estimateHeight = (item: Item) => item.height;
-
-function items(...heights: number[]): Item[] {
-	return heights.map((height, index) => ({ key: `item-${index}`, height }));
+function items(...entries: Array<[number, Item["kind"]]>): Item[] {
+	return entries.map(([height, kind], index) => ({ key: `item-${index}`, height, kind }));
 }
 
-describe("transcript virtual layout", () => {
-	it("uses measured heights and preserves the configured row gap", () => {
-		const layout = buildVirtualLayout(items(40, 50, 60), getKey, new Map([["item-1", 90]]), estimateHeight, 12);
+describe("transcript virtualization", () => {
+	it("builds per-item height estimates and leaves no gap after the final row", () => {
+		const result = buildTranscriptHeightEstimates(
+			items([40, "message"], [50, "message"], [60, "message"]),
+			(item) => item.height,
+			12,
+		);
 
-		expect(layout.offsets).toEqual([0, 52, 154]);
-		expect(layout.heights).toEqual([40, 90, 60]);
-		expect(layout.totalHeight).toBe(214);
+		expect(result).toEqual([52, 62, 60]);
 	});
 
-	it("returns only the viewport range with overscan", () => {
-		const layout = buildVirtualLayout(items(40, 40, 40, 40, 40), getKey, new Map(), estimateHeight, 12);
+	it("preserves the zero gap between adjacent tool rows", () => {
+		const result = buildTranscriptHeightEstimates(
+			items([32, "tool"], [32, "tool"], [80, "message"]),
+			(item) => item.height,
+			(previous, current) => (previous.kind === "tool" && current.kind === "tool" ? 0 : 12),
+		);
 
-		expect(getVirtualRange(layout, 104, 40, 0)).toEqual({ start: 2, end: 2 });
-		expect(getVirtualRange(layout, 104, 40, 45)).toEqual({ start: 1, end: 3 });
+		expect(result).toEqual([32, 44, 80]);
 	});
 
-	it("keeps a row mounted while the viewport is inside a row gap", () => {
-		const layout = buildVirtualLayout(items(40, 40), getKey, new Map(), estimateHeight, 12);
+	it("normalizes invalid estimates without producing an unusable scroll size", () => {
+		const result = buildTranscriptHeightEstimates(
+			items([0, "message"], [Number.NaN, "message"]),
+			(item) => item.height,
+			Number.NaN,
+		);
 
-		expect(getVirtualRange(layout, 44, 1, 0)).toEqual({ start: 0, end: 1 });
+		expect(result).toEqual([1, 1]);
+	});
+
+	it("decreases the first item index only when stable keys are prepended", () => {
+		const previous = { firstItemIndex: 1_000, firstKey: "current-0" };
+
+		expect(resolveTranscriptFirstItemIndex(previous, ["older-0", "older-1", "current-0", "current-1"])).toBe(998);
+		expect(resolveTranscriptFirstItemIndex(previous, ["current-0", "current-1", "newer-0"])).toBe(1_000);
+	});
+
+	it("converts Virtuoso absolute indexes back to transcript array indexes", () => {
+		expect(transcriptDataIndex(998, 998)).toBe(0);
+		expect(transcriptDataIndex(1_005, 998)).toBe(7);
 	});
 });

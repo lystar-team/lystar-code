@@ -1373,6 +1373,12 @@ export class WebRuntimeService {
 					hostStartedAt: this.hostStartedAt,
 					platform: process.platform,
 					arch: process.arch,
+					pid: process.pid,
+					processMemory: {
+						rssBytes: process.memoryUsage().rss,
+						heapUsedBytes: process.memoryUsage().heapUsed,
+						externalBytes: process.memoryUsage().external,
+					},
 					remoteProfilesSupported: false,
 					remoteBlockedReason: "持久 SSH 后台配置、凭据引用、探测和恢复契约尚未实现。",
 				};

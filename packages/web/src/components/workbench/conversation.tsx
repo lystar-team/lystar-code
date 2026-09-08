@@ -1,19 +1,22 @@
-import { LoaderCircle, Sparkles } from "lucide-react";
+import { ArrowDownIcon, LoaderCircle, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useStickToBottomContext } from "use-stick-to-bottom";
+import type { VirtuosoHandle } from "react-virtuoso";
 import { toLiveToolViewModel } from "../../adapters/live-tool-view-model.ts";
 import { toSessionItemViewModel } from "../../adapters/session-view-model";
 import { type LiveCompactionState } from "../../state/compaction-state";
 import { shouldJoinToolBatch } from "../../state/tool-batching";
 import type { LiveTurnItem, WorkbenchState } from "../../state/use-workbench";
 import { CompactionCard } from "./compaction-card";
-import { Conversation, ConversationContent, ConversationEmptyState, ConversationScrollButton } from "../ai-elements/conversation";
+import { Conversation, ConversationContent, ConversationEmptyState } from "../ai-elements/conversation";
 import { ToolBatch, toolBatchSummaryLabel, type ToolBatchTool } from "../ai-elements/tool-batch";
 import { Button } from "../ui/button";
 import { ACTIVE_OPERATION_STATUSES } from "./constants";
 import { ThinkingBlock } from "./live-turn";
 import { AgentErrorCard, TranscriptItemView, TranscriptMessageView } from "./transcript";
-import { DEFAULT_TRANSCRIPT_GAP, VirtualizedTranscript } from "./virtualized-transcript";
+import {
+	DEFAULT_TRANSCRIPT_GAP,
+	VirtualizedConversationTranscript,
+} from "./virtualized-transcript";
 import type { WorkbenchActions } from "./types";
 
 type MessageRenderItem = {
@@ -445,7 +448,6 @@ export function ConversationView({
 					renderItems={renderItems}
 					toolStatuses={toolIndex.statuses}
 				/>
-				<ConversationScrollButton aria-label="回到最新消息" />
 			</Conversation>
 		</>
 	);
@@ -464,25 +466,39 @@ function ConversationBody({
 	renderItems: ConversationRenderItem[];
 	toolStatuses: ReadonlyMap<string, "success" | "error">;
 }) {
-	const { scrollRef, scrollToBottom, isAtBottom, escapedFromLock } = useStickToBottomContext();
-	const pendingScrollRef = useRef<{ top: number; height: number } | undefined>(undefined);
+	const responseActive = isConversationResponseActive(state);
+	const virtuosoRef = useRef<VirtuosoHandle>(null);
+	const scrollRef = useRef<HTMLElement | null>(null);
+	const [isAtBottom, setIsAtBottom] = useState(true);
+	const [followOutput, setFollowOutput] = useState<false | "auto">(false);
 	const promptScrollRequestRef = useRef(state.promptScrollRequest);
 	const promptFollowRef = useRef(false);
-	const promptFollowPendingRef = useRef(false);
 	const isAtBottomRef = useRef(isAtBottom);
 	isAtBottomRef.current = isAtBottom;
 	const shouldAutoCollapseTools = useCallback(() => isAtBottomRef.current, []);
-
-	const loadEarlier = useCallback(async () => {
-		const scroller = scrollRef.current;
-		if (scroller) pendingScrollRef.current = { top: scroller.scrollTop, height: scroller.scrollHeight };
-		try {
-			await actions.loadEarlier();
-		} catch (error) {
-			pendingScrollRef.current = undefined;
-			throw error;
+	const scrollToBottom = useCallback(() => {
+		virtuosoRef.current?.scrollToIndex({ align: "end", behavior: "auto", index: "LAST" });
+	}, []);
+	const handleAtBottomStateChange = useCallback((atBottom: boolean) => {
+		setIsAtBottom(atBottom);
+		if (atBottom) {
+			promptFollowRef.current = true;
+			setFollowOutput("auto");
 		}
-	}, [actions.loadEarlier, scrollRef]);
+	}, []);
+	const handleScrollerRef = useCallback((element: HTMLElement | null) => {
+		scrollRef.current = element;
+	}, []);
+	const handleUserScrollAway = useCallback(() => {
+		promptFollowRef.current = false;
+		setFollowOutput(false);
+		setIsAtBottom(false);
+	}, []);
+	const handleTotalListHeightChanged = useCallback((height: number) => {
+		if (promptFollowRef.current) scrollRef.current?.scrollTo({ behavior: "auto", top: height });
+	}, []);
+
+	const loadEarlier = useCallback(() => actions.loadEarlier(), [actions.loadEarlier]);
 	const loadEarlierRef = useRef(loadEarlier);
 	loadEarlierRef.current = loadEarlier;
 	const historyLoadBlockedRef = useRef(false);
@@ -496,12 +512,9 @@ function ConversationBody({
 		if (!state.transcriptPageLoaded && !renderItems.length) return;
 		if (initialSessionScrollRef.current === state.sessionId) return;
 		initialSessionScrollRef.current = state.sessionId;
-		pendingScrollRef.current = undefined;
 		promptFollowRef.current = false;
-		promptFollowPendingRef.current = false;
-		const frame = window.requestAnimationFrame(() => {
-			void scrollToBottom({ animation: "instant" });
-		});
+		setFollowOutput(false);
+		const frame = window.requestAnimationFrame(scrollToBottom);
 		return () => window.cancelAnimationFrame(frame);
 	}, [renderItems.length, scrollToBottom, state.sessionId, state.transcriptPageLoaded]);
 
@@ -509,9 +522,8 @@ function ConversationBody({
 		if (promptScrollRequestRef.current === state.promptScrollRequest) return;
 		promptScrollRequestRef.current = state.promptScrollRequest;
 		promptFollowRef.current = true;
-		promptFollowPendingRef.current = true;
-		pendingScrollRef.current = undefined;
-		void scrollToBottom({ animation: "instant" });
+		setFollowOutput("auto");
+		scrollToBottom();
 	}, [scrollToBottom, state.promptScrollRequest]);
 
 	useLayoutEffect(() => {
@@ -550,42 +562,16 @@ function ConversationBody({
 			scroller.removeEventListener("scroll", scheduleCheck);
 			if (frame !== undefined) window.cancelAnimationFrame(frame);
 		};
-	}, [actions.showToast, scrollRef, state.hasMorePrevious, state.loadingEarlier]);
+	}, [actions.showToast, renderItems.length, state.hasMorePrevious, state.loadingEarlier]);
 
-	useLayoutEffect(() => {
-		if (!promptFollowRef.current) return;
-		if (promptFollowPendingRef.current) {
-			promptFollowPendingRef.current = false;
-			void scrollToBottom({ animation: "instant" });
-			return;
-		}
-		if (escapedFromLock && !isAtBottom) {
-			promptFollowRef.current = false;
-			return;
-		}
-		void scrollToBottom({ animation: "instant" });
-	}, [escapedFromLock, isAtBottom, renderItems, scrollToBottom]);
-
-	const responseActive = isConversationResponseActive(state);
 	useEffect(() => {
 		if (!promptFollowRef.current || responseActive) return;
 		const frame = window.requestAnimationFrame(() => {
 			promptFollowRef.current = false;
-			promptFollowPendingRef.current = false;
+			setFollowOutput(false);
 		});
 		return () => window.cancelAnimationFrame(frame);
 	}, [responseActive]);
-
-	useLayoutEffect(() => {
-		if (state.loadingEarlier || !pendingScrollRef.current) return;
-		const frame = window.requestAnimationFrame(() => {
-			const scroller = scrollRef.current;
-			const pending = pendingScrollRef.current;
-			if (scroller && pending) scroller.scrollTop = pending.top + (scroller.scrollHeight - pending.height);
-			pendingScrollRef.current = undefined;
-		});
-		return () => window.cancelAnimationFrame(frame);
-	}, [scrollRef, state.loadingEarlier]);
 
 	const openResource = actions.openResource;
 	const [expandedToolBatches, setExpandedToolBatches] = useState<ReadonlyMap<string, boolean>>(() => new Map());
@@ -720,29 +706,77 @@ function ConversationBody({
 		[],
 	);
 
+	const historyStatus = state.loadingEarlier ? (
+		<div className="mx-auto flex items-center gap-2 py-2 text-sm text-muted-foreground" aria-live="polite" aria-busy="true">
+			<LoaderCircle className="size-4 animate-spin" />
+			正在加载更早消息
+		</div>
+	) : state.hasMorePrevious && state.transcriptError ? (
+		<Button
+			className="mx-auto"
+			size="sm"
+			variant="outline"
+			disabled={state.loadingEarlier}
+			onClick={() => {
+				historyLoadBlockedRef.current = false;
+				void loadEarlier().catch((error: unknown) => {
+					actions.showToast(error instanceof Error ? error.message : String(error));
+				});
+			}}
+		>
+			重新加载更早消息
+		</Button>
+	) : null;
+	const showTranscript =
+		!state.loading &&
+		!state.sessionError &&
+		!(state.transcriptLoading && !state.transcript.length && !renderItems.length) &&
+		!(state.transcriptError && !state.transcript.length && !renderItems.length) &&
+		renderItems.length > 0;
+
+	if (showTranscript) {
+		return (
+			<>
+				<VirtualizedConversationTranscript
+					items={renderItems}
+					getKey={transcriptItemKey}
+					estimateHeight={estimateTranscriptItemHeight}
+					gap={(previous, current) =>
+						previous.kind === "tool-stack" && current.kind === "tool-stack" ? 0 : DEFAULT_TRANSCRIPT_GAP
+					}
+					header={historyStatus}
+					renderItem={renderConversationItem}
+					isItemEqual={conversationRenderItemEqual}
+					atBottomStateChange={handleAtBottomStateChange}
+					followOutput={followOutput}
+					onScrollerRef={handleScrollerRef}
+					onTotalListHeightChanged={handleTotalListHeightChanged}
+					onUserScrollAway={handleUserScrollAway}
+					virtuosoRef={virtuosoRef}
+				/>
+				{!isAtBottom ? (
+					<Button
+						aria-label="回到最新消息"
+						className="absolute bottom-4 left-[50%] translate-x-[-50%] rounded-full dark:bg-background dark:hover:bg-muted"
+						onClick={() => {
+							promptFollowRef.current = true;
+							setFollowOutput("auto");
+							scrollToBottom();
+						}}
+						size="icon"
+						type="button"
+						variant="outline"
+					>
+						<ArrowDownIcon className="size-4" />
+					</Button>
+				) : null}
+			</>
+		);
+	}
+
 	return (
 		<ConversationContent className="conversation-content mx-auto w-full max-w-[var(--conversation-width)] gap-3 px-5 py-10 sm:px-10 sm:py-12">
-			{state.loadingEarlier ? (
-				<div className="mx-auto flex items-center gap-2 py-2 text-sm text-muted-foreground" aria-live="polite" aria-busy="true">
-					<LoaderCircle className="size-4 animate-spin" />
-					正在加载更早消息
-				</div>
-			) : state.hasMorePrevious && state.transcriptError ? (
-				<Button
-					className="mx-auto"
-					size="sm"
-					variant="outline"
-					disabled={state.loadingEarlier}
-					onClick={() => {
-						historyLoadBlockedRef.current = false;
-						void loadEarlier().catch((error: unknown) => {
-							actions.showToast(error instanceof Error ? error.message : String(error));
-						});
-					}}
-				>
-					重新加载更早消息
-				</Button>
-			) : null}
+			{historyStatus}
 			{state.loading ? (
 				<div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground" aria-live="polite" aria-busy="true">
 					<LoaderCircle className="size-4 animate-spin" />
@@ -761,18 +795,6 @@ function ConversationBody({
 				</div>
 			) : state.transcriptError && !state.transcript.length && !renderItems.length ? (
 				<AgentErrorCard title="会话记录加载失败" message={state.transcriptError} onRetry={() => void actions.loadTranscript()} />
-			) : renderItems.length ? (
-				<VirtualizedTranscript
-					items={renderItems}
-					getKey={transcriptItemKey}
-					estimateHeight={estimateTranscriptItemHeight}
-					gap={(previous, current) =>
-						previous.kind === "tool-stack" && current.kind === "tool-stack" ? 0 : DEFAULT_TRANSCRIPT_GAP
-					}
-					renderItem={renderConversationItem}
-					isItemEqual={conversationRenderItemEqual}
-					scrollRef={scrollRef}
-				/>
 			) : (
 				<ConversationEmptyState
 					className="min-h-[56vh]"

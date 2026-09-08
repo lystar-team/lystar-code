@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
 import { loadWebGatewayConfig } from "./config.ts";
 import { GatewayAlreadyRunningError, GatewayInstanceLock } from "./instance-lock.ts";
 import { WebGatewayServer } from "./server.ts";
@@ -29,6 +30,29 @@ const shutdown = async () => {
 	await instanceLock.release();
 	process.exit(0);
 };
+const restart = () => {
+	setTimeout(() => {
+		if (closing) return;
+		closing = true;
+		void gateway
+			.close()
+			.then(() => instanceLock.release())
+			.then(() => {
+				const child = spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
+					detached: true,
+					stdio: "ignore",
+					env: process.env,
+				});
+				child.unref();
+				process.exit(0);
+			})
+			.catch((error) => {
+				process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+				process.exit(1);
+			});
+	}, 50).unref?.();
+};
+gateway.setRestartHandler(restart);
 process.once("SIGINT", () => void shutdown());
 process.once("SIGTERM", () => void shutdown());
 

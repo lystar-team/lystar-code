@@ -90,9 +90,7 @@ export function InspectorPanel({
 					</TabsTrigger>
 				</TabsList>
 				<TabsContent className="min-h-0 w-full min-w-0 flex-1 overflow-hidden" value="files">
-					<ScrollArea className="h-full w-full">
-						<FilesPanel state={state} actions={actions} />
-					</ScrollArea>
+					<FilesPanel state={state} actions={actions} />
 				</TabsContent>
 				<TabsContent className="min-h-0 w-full min-w-0 flex-1 overflow-hidden" value="git">
 					<ScrollArea className="h-full w-full">

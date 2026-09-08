@@ -1,6 +1,7 @@
 import { ArrowRight, LockKeyhole, LoaderCircle, ShieldCheck } from "lucide-react";
 import type { FormEvent } from "react";
 import { useState } from "react";
+import { BrandLogo } from "../brand-logo";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -28,7 +29,7 @@ export function TokenGate({
 			<Card className="w-full max-w-md border-border/80 shadow-xl">
 				<CardHeader className="gap-6">
 					<div className="flex items-center gap-3">
-						<img className="size-10 rounded-lg object-contain" src="/brand/lystar-mark.png" alt="LYStar" />
+						<BrandLogo className="size-10 rounded-lg object-contain" alt="LYStar" />
 						<div>
 							<CardTitle>LYStar Code</CardTitle>
 							<CardDescription>浏览器工作台</CardDescription>

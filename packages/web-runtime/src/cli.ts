@@ -3,11 +3,13 @@ import type { Server } from "node:net";
 import { closeIpcRuntime, defaultRuntimeEndpoint, runIpcRelay, serveIpcRuntime } from "./ipc.ts";
 import { CodingAgentRuntimeAdapter, getRuntimeAgentDir } from "./runtime-adapter.ts";
 import {
+	clearRuntimePid,
 	ensureRuntimeService,
 	getRuntimeServiceStatus,
 	installRuntimeService,
 	removeRuntimeService,
 	stopRuntimeService,
+	writeRuntimePid,
 } from "./runtime-service.ts";
 import { WebRuntimeService } from "./service.ts";
 import { runStdioRuntime } from "./stdio.ts";
@@ -80,12 +82,14 @@ async function main(): Promise<void> {
 			if (command === "stdio") await runStdioRuntime(service);
 			else {
 				server = await serveIpcRuntime(service, endpoint);
+				writeRuntimePid(endpoint);
 				await new Promise<void>((resolve, reject) => {
 					server?.once("close", resolve);
 					server?.once("error", reject);
 				});
 			}
 		} finally {
+			clearRuntimePid(endpoint);
 			await closeServer();
 			await service.dispose();
 			service = undefined;

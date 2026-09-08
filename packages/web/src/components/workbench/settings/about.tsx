@@ -1,3 +1,4 @@
+import { BrandLogo } from "../../brand-logo";
 import type { WorkbenchState } from "../../../state/use-workbench";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../ui/card";
 import { SettingSection } from "./shared";
@@ -9,7 +10,7 @@ export function AboutSettings({ state }: { state: WorkbenchState }) {
 			<Card className="shadow-none">
 				<CardHeader>
 					<div className="flex items-center gap-3">
-						<img className="size-12 rounded-lg object-contain" src="/brand/lystar-mark.png" alt="" />
+						<BrandLogo className="size-12 rounded-lg object-contain" />
 						<div>
 							<CardTitle>LYStar Code</CardTitle>
 							<CardDescription>本机 Agent 工作台</CardDescription>
