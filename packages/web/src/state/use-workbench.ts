@@ -40,6 +40,7 @@ import type {
 	HostInstructionsResponse,
 	ProjectInstruction,
 	PromptAttachment,
+	PromptAttachmentPreview,
 	ProjectSkillsResponse,
 	ProjectTreeResponse,
 	UiRequestEvent,
@@ -2310,6 +2311,7 @@ export function useWorkbench() {
 			text: string,
 			mode: ComposerMode = stateRef.current.composerMode,
 			attachments?: PromptAttachment[],
+			attachmentPreviews?: PromptAttachmentPreview[],
 		) => {
 			const current = stateRef.current;
 			if (!current.sessionId || !canSendPrompt(current)) return;
@@ -2318,7 +2320,7 @@ export function useWorkbench() {
 			if (!value) return;
 			const optimisticPrompt: PendingUserPrompt | undefined =
 				mode === "prompt"
-					? { id: `optimistic-user:${pendingUserPromptRef.current++}`, text: value }
+					? { id: `optimistic-user:${pendingUserPromptRef.current++}`, text: value, attachments: attachmentPreviews ?? [] }
 					: undefined;
 			if (optimisticPrompt)
 				updateState((next) =>

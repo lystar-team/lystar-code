@@ -1,5 +1,5 @@
 import type { SessionProgress } from "@lystar/code-web-protocol";
-import type { WebTranscriptItem } from "../types.ts";
+import type { PromptAttachmentPreview, WebTranscriptItem } from "../types.ts";
 import type { LiveTurnItem, WorkbenchState } from "./use-workbench.ts";
 
 export function canSendPrompt(
@@ -11,6 +11,7 @@ export function canSendPrompt(
 export interface PendingUserPrompt {
 	id: string;
 	text: string;
+	attachments: PromptAttachmentPreview[];
 }
 
 export function reconcilePendingUserPrompts(

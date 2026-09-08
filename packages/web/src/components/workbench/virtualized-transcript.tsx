@@ -404,7 +404,6 @@ export function VirtualizedConversationTranscript<T>({
 		}),
 		[header, handleResizeAnchor, handleScrollerRef, onUserScrollAway],
 	);
-	const initialItemCount = Math.min(INITIAL_RENDER_ITEM_COUNT, items.length);
 	const firstItemIndex = useTranscriptFirstItemIndex(items, getKey);
 	const computeConversationItemKey = useCallback(
 		(index: number, item: T) => renderer.computeItemKey(transcriptDataIndex(index, firstItemIndex), item),
@@ -428,7 +427,7 @@ export function VirtualizedConversationTranscript<T>({
 			firstItemIndex={firstItemIndex}
 			followOutput={followOutput}
 			heightEstimates={renderer.heightEstimates}
-			initialItemCount={initialItemCount}
+			initialTopMostItemIndex={{ index: "LAST", align: "end" }}
 			itemContent={conversationItemContent}
 			minOverscanItemCount={{ bottom: TRANSCRIPT_MIN_OVERSCAN_ITEMS, top: TRANSCRIPT_MIN_OVERSCAN_ITEMS }}
 			overscan={{ main: TRANSCRIPT_OVERSCAN, reverse: TRANSCRIPT_OVERSCAN }}

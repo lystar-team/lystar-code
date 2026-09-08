@@ -6,6 +6,7 @@ import { toSessionItemViewModel } from "../../adapters/session-view-model";
 import { type LiveCompactionState } from "../../state/compaction-state";
 import { shouldJoinToolBatch } from "../../state/tool-batching";
 import type { LiveTurnItem, WorkbenchState } from "../../state/use-workbench";
+import type { PromptAttachmentPreview } from "../../types";
 import { CompactionCard } from "./compaction-card";
 import { Conversation, ConversationContent, ConversationEmptyState } from "../ai-elements/conversation";
 import { ToolBatch, toolBatchSummaryLabel, type ToolBatchTool } from "../ai-elements/tool-batch";
@@ -25,7 +26,7 @@ type MessageRenderItem = {
 	live: boolean;
 	role: "user" | "assistant" | "system";
 	text: string;
-	attachments: Array<{ id: string; filename: string; mediaType: string; url: string }>;
+	attachments: PromptAttachmentPreview[];
 	sources: string[];
 	copyVisible: boolean;
 };
@@ -331,7 +332,7 @@ export function buildConversationRenderItems(
 			live: false,
 			role: "user",
 			text: prompt.text,
-			attachments: [],
+			attachments: prompt.attachments,
 			sources: [],
 			copyVisible: false,
 		});
@@ -469,6 +470,7 @@ function ConversationBody({
 	const responseActive = isConversationResponseActive(state);
 	const virtuosoRef = useRef<VirtuosoHandle>(null);
 	const scrollRef = useRef<HTMLElement | null>(null);
+	const [scrollElement, setScrollElement] = useState<HTMLElement | null>(null);
 	const [isAtBottom, setIsAtBottom] = useState(true);
 	const [followOutput, setFollowOutput] = useState<false | "auto">(false);
 	const promptScrollRequestRef = useRef(state.promptScrollRequest);
@@ -488,6 +490,7 @@ function ConversationBody({
 	}, []);
 	const handleScrollerRef = useCallback((element: HTMLElement | null) => {
 		scrollRef.current = element;
+		setScrollElement(element);
 	}, []);
 	const handleUserScrollAway = useCallback(() => {
 		promptFollowRef.current = false;
@@ -502,21 +505,6 @@ function ConversationBody({
 	const loadEarlierRef = useRef(loadEarlier);
 	loadEarlierRef.current = loadEarlier;
 	const historyLoadBlockedRef = useRef(false);
-	const initialSessionScrollRef = useRef<string | undefined>(undefined);
-
-	useLayoutEffect(() => {
-		if (!state.sessionId) {
-			initialSessionScrollRef.current = undefined;
-			return;
-		}
-		if (!state.transcriptPageLoaded && !renderItems.length) return;
-		if (initialSessionScrollRef.current === state.sessionId) return;
-		initialSessionScrollRef.current = state.sessionId;
-		promptFollowRef.current = false;
-		setFollowOutput(false);
-		const frame = window.requestAnimationFrame(scrollToBottom);
-		return () => window.cancelAnimationFrame(frame);
-	}, [renderItems.length, scrollToBottom, state.sessionId, state.transcriptPageLoaded]);
 
 	useLayoutEffect(() => {
 		if (promptScrollRequestRef.current === state.promptScrollRequest) return;
@@ -528,7 +516,7 @@ function ConversationBody({
 
 	useLayoutEffect(() => {
 		if (!state.hasMorePrevious) return;
-		const scroller = scrollRef.current;
+		const scroller = scrollElement;
 		if (!scroller) return;
 		let frame: number | undefined;
 		const checkTopBoundary = () => {
@@ -562,7 +550,7 @@ function ConversationBody({
 			scroller.removeEventListener("scroll", scheduleCheck);
 			if (frame !== undefined) window.cancelAnimationFrame(frame);
 		};
-	}, [actions.showToast, renderItems.length, state.hasMorePrevious, state.loadingEarlier]);
+	}, [actions.showToast, scrollElement, state.hasMorePrevious, state.loadingEarlier]);
 
 	useEffect(() => {
 		if (!promptFollowRef.current || responseActive) return;

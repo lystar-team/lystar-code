@@ -61,8 +61,8 @@ describe("chat lifecycle", () => {
 
 	it("removes one optimistic prompt for each matching committed user message", () => {
 		const pending = [
-			{ id: "prompt-1", text: "新任务" },
-			{ id: "prompt-2", text: "新任务" },
+			{ id: "prompt-1", text: "新任务", attachments: [] },
+			{ id: "prompt-2", text: "新任务", attachments: [] },
 		];
 		expect(reconcilePendingUserPrompts(pending, [user])).toEqual([pending[1]]);
 	});

@@ -26,6 +26,27 @@ describe("conversation render items", () => {
 		expect(html).not.toContain("<button");
 	});
 
+	it("保留乐观用户消息的图片附件", () => {
+		const attachment = {
+			id: "upload-1",
+			filename: "截图.png",
+			mediaType: "image/png",
+			url: "data:image/png;base64,AAAA",
+		};
+		const rendered = buildConversationRenderItems(
+			[],
+			[{ id: "prompt-1", text: "请查看截图", attachments: [attachment] }],
+			[],
+			{},
+			new Set(),
+			undefined,
+			1,
+			true,
+		);
+
+		expect(rendered[0]).toMatchObject({ kind: "message", text: "请查看截图", attachments: [attachment] });
+	});
+
 	it("把实时渲染结果合并进最终会话列表", () => {
 		const rendered = buildConversationRenderItems([], [], [thinking, text], {}, new Set(), undefined, 1, true);
 

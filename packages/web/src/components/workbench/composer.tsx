@@ -144,10 +144,17 @@ export const Composer = memo(function Composer({ state, actions }: ComposerProps
 						const promptText = uploadedImages.length
 							? `${text}\n\n${uploadedImages.map((image) => `<file name="${image.path}"></file>`).join("\n")}`
 							: text;
+						const attachmentPreviews = uploadedImages.map((image, index) => ({
+							id: image.path,
+							filename: files[index]?.filename ?? `图片 ${index + 1}`,
+							mediaType: image.mimeType,
+							url: files[index]?.url ?? "",
+						}));
 						await actions.sendMessage(
 							promptText,
 							mode,
 							uploadedImages.map(({ path, mimeType }) => ({ path, mimeType })),
+							attachmentPreviews,
 						);
 									} catch (error) {
 										actions.showToast(error instanceof Error ? error.message : String(error));

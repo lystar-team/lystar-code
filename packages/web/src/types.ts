@@ -79,6 +79,13 @@ export interface PromptAttachment {
 	mimeType: string;
 }
 
+export interface PromptAttachmentPreview {
+	id: string;
+	filename: string;
+	mediaType: string;
+	url: string;
+}
+
 export interface BootstrapResponse {
 	projects: WebProject[];
 	capabilities: readonly string[];
