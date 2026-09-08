@@ -12,6 +12,16 @@ import type {
 const NON_VISION_USER_IMAGE_PLACEHOLDER = "(image omitted: model does not support images)";
 const NON_VISION_TOOL_IMAGE_PLACEHOLDER = "(tool image omitted: model does not support images)";
 
+type ImageContentWithDelivery = ImageContent & { sendToModel?: boolean };
+
+function isDisplayOnlyImage(content: TextContent | ImageContent): boolean {
+	return content.type === "image" && (content as ImageContentWithDelivery).sendToModel === false;
+}
+
+function removeDisplayOnlyImages(content: (TextContent | ImageContent)[]): (TextContent | ImageContent)[] {
+	return content.filter((block) => !isDisplayOnlyImage(block));
+}
+
 function replaceImagesWithPlaceholder(content: (TextContent | ImageContent)[], placeholder: string): TextContent[] {
 	const result: TextContent[] = [];
 	let previousWasPlaceholder = false;
@@ -33,23 +43,24 @@ function replaceImagesWithPlaceholder(content: (TextContent | ImageContent)[], p
 }
 
 function downgradeUnsupportedImages<TApi extends Api>(messages: Message[], model: Model<TApi>): Message[] {
+	const displayOnlyImagesRemoved = messages.map((msg) => {
+		if ((msg.role === "user" || msg.role === "toolResult") && Array.isArray(msg.content)) {
+			return { ...msg, content: removeDisplayOnlyImages(msg.content) };
+		}
+		return msg;
+	});
+
 	if (model.input.includes("image")) {
-		return messages;
+		return displayOnlyImagesRemoved;
 	}
 
-	return messages.map((msg) => {
+	return displayOnlyImagesRemoved.map((msg) => {
 		if (msg.role === "user" && Array.isArray(msg.content)) {
-			return {
-				...msg,
-				content: replaceImagesWithPlaceholder(msg.content, NON_VISION_USER_IMAGE_PLACEHOLDER),
-			};
+			return { ...msg, content: replaceImagesWithPlaceholder(msg.content, NON_VISION_USER_IMAGE_PLACEHOLDER) };
 		}
 
-		if (msg.role === "toolResult") {
-			return {
-				...msg,
-				content: replaceImagesWithPlaceholder(msg.content, NON_VISION_TOOL_IMAGE_PLACEHOLDER),
-			};
+		if (msg.role === "toolResult" && Array.isArray(msg.content)) {
+			return { ...msg, content: replaceImagesWithPlaceholder(msg.content, NON_VISION_TOOL_IMAGE_PLACEHOLDER) };
 		}
 
 		return msg;

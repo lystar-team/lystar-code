@@ -1000,8 +1000,12 @@ export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgres
 	}
 }
 
-function contentImages(images?: Array<{ data: string; mimeType: string }>) {
-	return images?.map((image) => ({ type: "image" as const, ...image }));
+function contentImages(images?: Array<{ data: string; mimeType: string; displayOnly?: boolean }>) {
+	return images?.map((image) =>
+		image.displayOnly
+			? { type: "image" as const, data: image.data, mimeType: image.mimeType, sendToModel: false as const }
+			: { type: "image" as const, data: image.data, mimeType: image.mimeType },
+	);
 }
 
 function promptFailure(entries: readonly SessionEntry[]): string | undefined {

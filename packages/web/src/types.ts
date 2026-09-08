@@ -68,6 +68,17 @@ export interface FileResponse {
 	data?: string;
 }
 
+export interface ImageUploadResponse {
+	path: string;
+	mimeType: string;
+	byteLength: number;
+}
+
+export interface PromptAttachment {
+	path: string;
+	mimeType: string;
+}
+
 export interface BootstrapResponse {
 	projects: WebProject[];
 	capabilities: readonly string[];

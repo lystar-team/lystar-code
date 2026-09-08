@@ -346,6 +346,9 @@
                           "mimeType": {
                             "type": "string",
                             "minLength": 1
+                          },
+                          "displayOnly": {
+                            "type": "boolean"
                           }
                         },
                         "additionalProperties": false
@@ -406,6 +409,9 @@
                           "mimeType": {
                             "type": "string",
                             "minLength": 1
+                          },
+                          "displayOnly": {
+                            "type": "boolean"
                           }
                         },
                         "additionalProperties": false
@@ -466,6 +472,9 @@
                           "mimeType": {
                             "type": "string",
                             "minLength": 1
+                          },
+                          "displayOnly": {
+                            "type": "boolean"
                           }
                         },
                         "additionalProperties": false

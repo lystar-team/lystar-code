@@ -368,9 +368,24 @@ test("Web Gateway fake Provider 完成 Prompt、事件和 Transcript 闭环", as
 	assert.equal("cwd" in session, false);
 	assert.equal(lease.leaseGeneration, 1);
 
+	const imageData = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+	const uploadResponse = await requestJson(baseUrl, "/api/uploads/image", {
+		method: "POST",
+		body: JSON.stringify({ data: imageData, mimeType: "image/png" }),
+	});
+	assert.equal(uploadResponse.status, 201);
+	const upload = record(uploadResponse.data);
+	const uploadedPath = requiredString(upload?.path, "uploaded image path");
+	assert.match(uploadedPath, /lystar-web-upload-/u);
+
+	const promptText = `<file name="${uploadedPath}"></file>\n请只回复 OK，不要调用工具。`;
 	const promptResponse = await requestJson(baseUrl, `/api/sessions/${sessionId}/prompt`, {
 		method: "POST",
-		body: JSON.stringify({ text: "请只回复 OK，不要调用工具。", clientRequestId: "prompt-vertical-loop" }),
+		body: JSON.stringify({
+			text: promptText,
+			attachments: [{ path: uploadedPath, mimeType: "image/png" }],
+			clientRequestId: "prompt-vertical-loop",
+		}),
 	});
 	assert.equal(promptResponse.status, 202);
 	const promptOperation = record(promptResponse.data.operation);
@@ -455,6 +470,20 @@ test("Web Gateway fake Provider 完成 Prompt、事件和 Transcript 闭环", as
 	assert.equal(firstTranscriptItem ? "payload" in firstTranscriptItem : false, false);
 	assert.match(JSON.stringify(transcriptResponse.data.items), /OK/u);
 	assert.match(JSON.stringify(transcriptResponse.data.items), /请只回复 OK/u);
+	assert.match(JSON.stringify(transcriptResponse.data.items), /"images"/u);
+	const userTranscriptItem = (transcriptResponse.data.items as unknown[])
+		.map(record)
+		.find((item) => record(item?.view)?.type === "user");
+	const userView = record(userTranscriptItem?.view);
+	const userImages = Array.isArray(userView?.images) ? userView.images.map(record).filter(Boolean) : [];
+	const contentRef = requiredString(userImages[0]?.contentRef, "uploaded image content reference");
+	const imageContentResponse = await requestJson(
+		baseUrl,
+		`/api/sessions/${sessionId}/content/${encodeURIComponent(contentRef)}/image`,
+	);
+	assert.equal(imageContentResponse.status, 200);
+	assert.equal(imageContentResponse.data.mimeType, "image/png");
+	assert.equal(imageContentResponse.data.data, imageData);
 	assert.equal("path" in transcriptResponse.data, false);
 	assert.equal("cwd" in transcriptResponse.data, false);
 
@@ -466,6 +495,10 @@ test("Web Gateway fake Provider 完成 Prompt、事件和 Transcript 闭环", as
 	assert.equal("sessionPath" in operationResult, false);
 	assert.equal("clientInstanceId" in operationResult, false);
 	assert.equal("clientRequestId" in operationResult, false);
-	assert.ok(requests.some((request) => /请只回复 OK/u.test(request.body)));
-	assert.match(requests.find((request) => /请只回复 OK/u.test(request.body))?.body ?? "", /请只回复 OK/u);
+	assert.ok(requests.some((request) => request.body.includes(uploadedPath)));
+	assert.equal(
+		requests.some((request) => request.body.includes(imageData)),
+		false,
+	);
+	assert.match(requests.find((request) => request.body.includes(uploadedPath))?.body ?? "", /请只回复 OK/u);
 });

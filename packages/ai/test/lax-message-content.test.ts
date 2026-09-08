@@ -64,4 +64,21 @@ describe("lax message content handling", () => {
 			expect(msg.content).toEqual([]);
 		}
 	});
+
+	it("removes display-only images from every provider request", () => {
+		const messages = [
+			{
+				role: "user",
+				content: [
+					{ type: "text", text: "请读取 /tmp/upload.png" },
+					{ type: "image", data: "cG5n", mimeType: "image/png", sendToModel: false },
+				],
+				timestamp: Date.now(),
+			},
+		] as unknown as Message[];
+
+		const result = transformMessages(messages, makeTextOnlyModel());
+
+		expect(result[0]?.content).toEqual([{ type: "text", text: "请读取 /tmp/upload.png" }]);
+	});
 });

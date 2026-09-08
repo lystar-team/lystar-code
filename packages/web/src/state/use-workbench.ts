@@ -30,6 +30,7 @@ import type {
 	HarnessImportResultResponse,
 	HostInstructionsResponse,
 	ProjectInstruction,
+	PromptAttachment,
 	ProjectSkillsResponse,
 	ProjectTreeResponse,
 	UiRequestEvent,
@@ -2059,14 +2060,14 @@ export function useWorkbench() {
 		async (
 			text: string,
 			mode: ComposerMode = stateRef.current.composerMode,
-			images?: Array<{ data: string; mimeType: string }>,
+			attachments?: PromptAttachment[],
 		) => {
 			const current = stateRef.current;
 			if (!current.sessionId || current.readOnly) return;
 			if (hasActive(current.currentOperation) && mode === "prompt") mode = "follow-up";
 			const value = text.trim();
 			if (!value) return;
-			const result = await webApi.prompt(current.sessionId, value, mode, images);
+			const result = await webApi.prompt(current.sessionId, value, mode, attachments);
 			updateState((next) => next.sessionId !== current.sessionId ? next : ({
 				...applyPromptAccepted(next, current.sessionId!, result.operation),
 				promptScrollRequest: (next.promptScrollRequest ?? 0) + 1,

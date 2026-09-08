@@ -1131,7 +1131,11 @@ export function assertWorkspaceCommandResult(
 	}
 }
 
-export const ImageInputSchema = StrictObject({ data: Type.String(), mimeType: Type.String({ minLength: 1 }) });
+export const ImageInputSchema = StrictObject({
+	data: Type.String(),
+	mimeType: Type.String({ minLength: 1 }),
+	displayOnly: Type.Optional(Type.Boolean()),
+});
 export type ImageInput = Static<typeof ImageInputSchema>;
 export const StartupPromptSchema = StrictObject({
 	text: Type.String({ maxLength: 16 * 1024 * 1024 }),

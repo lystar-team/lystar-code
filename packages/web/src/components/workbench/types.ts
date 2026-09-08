@@ -1,5 +1,5 @@
 import type { ComposerMode, InspectorMode, SettingsTab, ThemeMode, WorkbenchState } from "../../state/use-workbench";
-import type { UiRequestEvent, WebModelProviderInput, WebProject, WebProviderModelInput } from "../../types";
+import type { PromptAttachment, UiRequestEvent, WebModelProviderInput, WebProject, WebProviderModelInput } from "../../types";
 
 export interface WorkbenchActions {
 	selectProject: (projectId: string) => Promise<void>;
@@ -8,7 +8,7 @@ export interface WorkbenchActions {
 	sendMessage: (
 		text: string,
 		mode?: ComposerMode,
-		images?: Array<{ data: string; mimeType: string }>,
+		attachments?: PromptAttachment[],
 	) => Promise<void>;
 	abort: () => Promise<void>;
 	openInspector: (mode?: InspectorMode) => Promise<void>;

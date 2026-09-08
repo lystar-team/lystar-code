@@ -120,6 +120,43 @@ describe("assistant transcript projection", () => {
 		});
 	});
 
+	it("projects user image content as attachments for the Prompt card", () => {
+		const projected = projectTranscriptItems({
+			entryId: "user-entry",
+			parentId: null,
+			timestamp: "2026-09-07T00:00:00Z",
+			kind: "message",
+			payload: {
+				type: "message",
+				message: {
+					role: "user",
+					content: [
+						{ type: "text", text: "请读取 /tmp/upload.png" },
+						{
+							type: "image",
+							data: {
+								type: "content_ref",
+								contentRef: "image-ref",
+								mimeType: "image/png",
+								byteLength: 4,
+								previewHead: "",
+								previewTail: "",
+								lineCount: 0,
+							},
+							mimeType: "image/png",
+						},
+					],
+				},
+			},
+		} as TranscriptItem);
+
+		expect(projected[0]?.view).toEqual({
+			type: "user",
+			text: "请读取 /tmp/upload.png",
+			images: [{ contentRef: "image-ref", mimeType: "image/png", byteLength: 4 }],
+		});
+	});
+
 	it("projects compaction entries from the real summary field", () => {
 		const projected = projectTranscriptItems({
 			entryId: "compaction-entry",

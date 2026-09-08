@@ -10,6 +10,8 @@ import type {
 	HarnessImportsResponse,
 	HarnessImportResultResponse,
 	HostInstructionsResponse,
+	ImageUploadResponse,
+	PromptAttachment,
 	ModelsResponse,
 	ProjectSkillsResponse,
 	ProjectTreeResponse,
@@ -261,17 +263,28 @@ export class WebApi {
 		return this.request<TranscriptResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/transcript${query}`);
 	}
 
+	async uploadImage(input: { data: string; mimeType: string }): Promise<ImageUploadResponse> {
+		return this.request<ImageUploadResponse>("/api/uploads/image", {
+			method: "POST",
+			body: JSON.stringify(input),
+		});
+	}
+
 	async prompt(
 		sessionId: string,
 		text: string,
 		kind: "prompt" | "steer" | "follow-up" = "prompt",
-		images?: Array<{ data: string; mimeType: string }>,
+		attachments?: PromptAttachment[],
 	): Promise<{ operation?: WebOperation; accepted?: boolean }> {
 		return this.request<{ operation?: WebOperation; accepted?: boolean }>(
 			`/api/sessions/${encodeURIComponent(sessionId)}/${kind}`,
 			{
 				method: "POST",
-				body: JSON.stringify({ text, ...(images?.length ? { images } : {}), clientRequestId: createUuid() }),
+				body: JSON.stringify({
+					text,
+					...(attachments?.length ? { attachments } : {}),
+					clientRequestId: createUuid(),
+				}),
 			},
 		);
 	}

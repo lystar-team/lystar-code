@@ -13,6 +13,12 @@ import { ACTIVE_OPERATION_STATUSES, THINKING_LEVEL_LABELS } from "./constants";
 import { formatModelDisplayName } from "./model-utils";
 import type { WorkbenchActions } from "./types";
 
+function base64FromDataUrl(url: string): string {
+	const separator = url.indexOf(",");
+	if (!url.startsWith("data:") || separator < 0) throw new Error("图片附件读取失败，请重新选择图片");
+	return url.slice(separator + 1);
+}
+
 export function Composer({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
 	const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
 	const [modelSearch, setModelSearch] = useState("");
@@ -104,14 +110,22 @@ export function Composer({ state, actions }: { state: WorkbenchState; actions: W
 												? "steer"
 												: "follow-up"
 											: state.composerMode;
-										await actions.sendMessage(
-											text,
-											mode,
-											files.map((file) => ({
-												data: file.url ?? "",
-												mimeType: file.mediaType || "application/octet-stream",
-											})),
-										);
+						const uploadedImages = await Promise.all(
+							files.map((file) =>
+								webApi.uploadImage({
+									data: base64FromDataUrl(file.url ?? ""),
+									mimeType: file.mediaType || "application/octet-stream",
+								}),
+							),
+						);
+						const promptText = uploadedImages.length
+							? `${text}\n\n${uploadedImages.map((image) => `<file name="${image.path}"></file>`).join("\n")}`
+							: text;
+						await actions.sendMessage(
+							promptText,
+							mode,
+							uploadedImages.map(({ path, mimeType }) => ({ path, mimeType })),
+						);
 									} catch (error) {
 										actions.showToast(error instanceof Error ? error.message : String(error));
 										throw error;

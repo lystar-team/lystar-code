@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { readdir, readFile, realpath, stat } from "node:fs/promises";
+import { readdir, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type {
 	CompletionResult,
@@ -43,12 +44,23 @@ import { connectRuntimeClient, type RuntimeInitialSnapshot } from "./runtime-cli
 
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
 const MAX_FILE_BYTES = 32 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
+const UPLOAD_TTL_MS = 60 * 60 * 1000;
+const UPLOAD_CLEANUP_MS = 5 * 60 * 1000;
 const PROGRESS_BATCH_MS = 50;
 const PUBLIC_SESSION_FIRST_MESSAGE_LIMIT = 512;
 const BROWSER_CONTEXT_IDLE_MS = 60_000;
 const ACTIVE_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>(["accepted", "running", "waiting_for_input"]);
 const MAX_SESSION_DETAIL_EVENTS = 256;
 const MAX_SESSION_DETAIL_BYTES = 2 * 1024 * 1024;
+const IMAGE_EXTENSIONS: Record<string, string> = {
+	"image/apng": ".apng",
+	"image/bmp": ".bmp",
+	"image/gif": ".gif",
+	"image/jpeg": ".jpg",
+	"image/png": ".png",
+	"image/webp": ".webp",
+};
 
 export type WebSessionSummary = Omit<SessionSummary, "path" | "cwd"> & { pinned?: boolean };
 export type WebSessionSnapshot = Omit<SessionStateSnapshot, "path" | "cwd">;
@@ -501,6 +513,8 @@ export class WebGatewayServer {
 	private readonly webSockets = new WebSocketServer({ noServer: true, maxPayload: MAX_BODY_BYTES });
 	private readonly server: Server;
 	private readonly heartbeatTimer: ReturnType<typeof setInterval>;
+	private readonly uploadCleanupTimer: ReturnType<typeof setInterval>;
+	private readonly uploadedFiles = new Map<string, { mimeType: string; expiresAt: number }>();
 	private readonly socketLiveness = new WeakMap<WebSocket, boolean>();
 	private readonly detailSubscriptions = new WeakMap<WebSocket, Set<string>>();
 	private listening = false;
@@ -514,6 +528,8 @@ export class WebGatewayServer {
 		this.webSockets.on("connection", (socket, request) => void this.handleWebSocket(socket, request));
 		this.heartbeatTimer = setInterval(() => this.checkWebSocketLiveness(), 15_000);
 		this.heartbeatTimer.unref?.();
+		this.uploadCleanupTimer = setInterval(() => void this.cleanupUploadedFiles(), UPLOAD_CLEANUP_MS);
+		this.uploadCleanupTimer.unref?.();
 	}
 
 	async listen(): Promise<void> {
@@ -531,6 +547,8 @@ export class WebGatewayServer {
 	async close(): Promise<void> {
 		this.closed = true;
 		clearInterval(this.heartbeatTimer);
+		clearInterval(this.uploadCleanupTimer);
+		await this.cleanupUploadedFiles(true);
 		for (const context of this.contexts.values()) {
 			if (context.idleTimer) clearTimeout(context.idleTimer);
 			if (context.reconnectTimer) clearTimeout(context.reconnectTimer);
@@ -1127,6 +1145,10 @@ export class WebGatewayServer {
 					? { data: Buffer.from(bytes).toString("base64") }
 					: { content: Buffer.from(bytes).toString("utf8") }),
 			});
+			return;
+		}
+		if (parts.length === 3 && parts[1] === "uploads" && parts[2] === "image" && request.method === "POST") {
+			await this.handleImageUpload(request, response);
 			return;
 		}
 		if (parts[1] === "projects") {
@@ -1881,6 +1903,58 @@ export class WebGatewayServer {
 		throw new HttpError(404, "not_found", "未找到会话接口");
 	}
 
+	private async handleImageUpload(request: IncomingMessage, response: ServerResponse): Promise<void> {
+		const body = await parseJsonBody(request);
+		const mimeType = stringValue(body.mimeType);
+		const encoded = stringValue(body.data);
+		if (!mimeType || !mimeType.startsWith("image/"))
+			throw new HttpError(400, "image_type_invalid", "只支持上传图片文件");
+		if (!encoded) throw new HttpError(400, "image_data_required", "图片内容不能为空");
+		const comma = encoded.startsWith("data:") ? encoded.indexOf(",") : -1;
+		const base64 = comma >= 0 ? encoded.slice(comma + 1) : encoded;
+		if (!/^[A-Za-z0-9+/]*={0,2}$/u.test(base64) || base64.length % 4 === 1)
+			throw new HttpError(400, "image_data_invalid", "图片内容不是有效的 Base64 数据");
+		const bytes = Buffer.from(base64, "base64");
+		if (bytes.length === 0) throw new HttpError(400, "image_data_invalid", "图片内容不能为空");
+		if (bytes.length > MAX_UPLOAD_BYTES) throw new HttpError(413, "image_too_large", "单个图片不能超过 8 MB");
+		const extension = IMAGE_EXTENSIONS[mimeType] ?? ".img";
+		const path = join(tmpdir(), `lystar-web-upload-${randomUUID()}${extension}`);
+		await writeFile(path, bytes, { mode: 0o600 });
+		this.uploadedFiles.set(path, { mimeType, expiresAt: Date.now() + UPLOAD_TTL_MS });
+		sendJson(response, 201, { path, mimeType, byteLength: bytes.byteLength });
+	}
+
+	private async cleanupUploadedFiles(force = false): Promise<void> {
+		const now = Date.now();
+		for (const [path, upload] of this.uploadedFiles) {
+			if (!force && upload.expiresAt > now) continue;
+			this.uploadedFiles.delete(path);
+			await unlink(path).catch(() => {});
+		}
+	}
+
+	private async readUploadedImages(
+		value: unknown,
+	): Promise<Array<{ data: string; mimeType: string; displayOnly: true }>> {
+		if (value === undefined) return [];
+		if (!Array.isArray(value)) throw new HttpError(400, "image_attachments_invalid", "图片附件数据无效");
+		const images: Array<{ data: string; mimeType: string; displayOnly: true }> = [];
+		for (const item of value) {
+			const attachment = object(item);
+			const path = stringValue(attachment?.path);
+			if (!path) throw new HttpError(400, "image_attachment_path_required", "图片附件路径不能为空");
+			const upload = this.uploadedFiles.get(path);
+			if (!upload || upload.expiresAt <= Date.now()) {
+				throw new HttpError(400, "image_attachment_expired", "图片附件已过期，请重新上传");
+			}
+			const bytes = await readFile(path).catch(() => undefined);
+			if (!bytes) throw new HttpError(400, "image_attachment_missing", "图片附件不存在，请重新上传");
+			upload.expiresAt = Date.now() + UPLOAD_TTL_MS;
+			images.push({ data: bytes.toString("base64"), mimeType: upload.mimeType, displayOnly: true });
+		}
+		return images;
+	}
+
 	private async handlePromptLike(
 		request: IncomingMessage,
 		response: ServerResponse,
@@ -1894,7 +1968,9 @@ export class WebGatewayServer {
 		const text = typeof body.text === "string" ? body.text : "";
 		if (!text.trim()) throw new HttpError(400, "prompt_required", "消息内容不能为空");
 		const lease = await this.requireLease(context, sessionId);
-		const images = Array.isArray(body.images) ? body.images : undefined;
+		const rawImages = Array.isArray(body.images) ? body.images : [];
+		const uploadedImages = await this.readUploadedImages(body.attachments);
+		const images = [...rawImages, ...uploadedImages];
 		const command = kind === "prompt" ? "prompt" : kind === "steer" ? "steer" : "follow_up";
 		const result = await (await this.getClient(context)).request<{ operation?: OperationSnapshot }>({
 			command,
@@ -1903,7 +1979,9 @@ export class WebGatewayServer {
 			clientInstanceId: context.id,
 			clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
 			text,
-			...(images ? { images: jsonValue(images) as Array<{ data: string; mimeType: string }> } : {}),
+			...(images.length > 0
+				? { images: jsonValue(images) as Array<{ data: string; mimeType: string; displayOnly?: boolean }> }
+				: {}),
 		});
 		sendJson(
 			response,
