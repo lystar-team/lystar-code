@@ -1,6 +1,6 @@
 import { FolderOpen, LogOut, Menu, PanelRight, Settings } from "lucide-react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { cn } from "../lib/utils";
 import type { WorkbenchState } from "../state/use-workbench";
 import { sessionTitle } from "../state/use-workbench";
@@ -13,7 +13,6 @@ import { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH } from "./w
 import { ConversationView } from "./workbench/conversation";
 import { DirectoryDialog, ProjectRenameDialog, Toast, UiRequestDialog } from "./workbench/dialogs";
 import { FilePreviewDialog } from "./workbench/file-preview-dialog";
-import { GitDiffDialog } from "./workbench/git-diff-dialog";
 import { InspectorDialog, InspectorPanel } from "./workbench/inspector";
 import { ProjectRail } from "./workbench/project-rail";
 import { SettingsDialog } from "./workbench/settings";
@@ -22,6 +21,10 @@ import type { WorkbenchActions } from "./workbench/types";
 
 export type { WorkbenchActions } from "./workbench/types";
 export { TokenGate } from "./workbench/token-gate";
+
+const GitDiffDialog = lazy(() =>
+	import("./workbench/git-diff-dialog").then((module) => ({ default: module.GitDiffDialog })),
+);
 
 export function Workbench({
 	state,
@@ -41,6 +44,10 @@ export function Workbench({
 	const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
 	const [isResizingSidebar, setIsResizingSidebar] = useState(false);
 	const currentSessions = currentProject?.sessions ?? [];
+	const currentSessionSummary = currentSessions.find((session) => session.id === state.sessionId);
+	const sessionTitleText = state.session
+		? resolvedSessionTitle(state.session, currentSessionSummary)
+		: currentProject?.name || "选择会话";
 
 	const startSidebarResize = (event: ReactPointerEvent<HTMLDivElement>) => {
 		if (event.button !== 0) return;
@@ -68,13 +75,14 @@ export function Workbench({
 		};
 	}, [isResizingSidebar]);
 
-	const openDirectory = () => {
+	const openDirectory = useCallback(() => {
 		setDirectoryOpen(true);
 		if (!directoryLoaded) {
 			setDirectoryLoaded(true);
 			void actions.loadDirectory();
 		}
-	};
+	}, [actions.loadDirectory, directoryLoaded]);
+	const closeMobileProjects = useCallback(() => setMobileProjectOpen(false), []);
 
 	return (
 		<div className="flex h-dvh min-h-0 overflow-hidden bg-background text-foreground">
@@ -123,7 +131,7 @@ export function Workbench({
 						currentProject={currentProject}
 						onAddProject={openDirectory}
 						onEditProject={setEditingProject}
-						onNavigate={() => setMobileProjectOpen(false)}
+						onNavigate={closeMobileProjects}
 					/>
 				</DialogContent>
 			</Dialog>
@@ -143,12 +151,7 @@ export function Workbench({
 						<FolderOpen className="size-4 shrink-0 text-muted-foreground" />
 						<div className="min-w-0">
 							<h1 className="truncate text-base font-semibold tracking-tight sm:text-lg">
-								{state.session
-									? resolvedSessionTitle(
-											state.session,
-											currentSessions.find((session) => session.id === state.sessionId),
-										)
-									: currentProject?.name || "选择会话"}
+								{sessionTitleText}
 							</h1>
 							{currentProject ? (
 								<p className="truncate text-xs text-muted-foreground">{currentProject.name}</p>
@@ -196,10 +199,7 @@ export function Workbench({
 							<ConversationView
 								state={state}
 								actions={actions}
-								sessionTitleText={resolvedSessionTitle(
-									state.session,
-									currentSessions.find((session) => session.id === state.sessionId),
-								)}
+								sessionTitleText={sessionTitleText}
 							/>
 						</div>
 						<Composer state={state} actions={actions} />
@@ -214,7 +214,11 @@ export function Workbench({
 
 			<InspectorDialog state={state} actions={actions} />
 			<FilePreviewDialog state={state} actions={actions} />
-			<GitDiffDialog state={state} actions={actions} />
+			{state.gitDiffLoading || state.gitDiff ? (
+				<Suspense fallback={null}>
+					<GitDiffDialog state={state} actions={actions} />
+				</Suspense>
+			) : null}
 			<SettingsDialog state={state} actions={actions} />
 			<DirectoryDialog
 				open={directoryOpen}

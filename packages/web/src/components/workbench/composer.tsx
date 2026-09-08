@@ -1,5 +1,5 @@
 import { ArrowUp, Check, ChevronDown, Plus, Square } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api";
 import { type CommandDialogRequest, executeComposerCommand, resolveComposerCommand } from "../../state/composer-commands";
 import { canSendPrompt } from "../../state/chat-lifecycle";
@@ -24,7 +24,25 @@ function thinkingLevelDisplayLabel(level: string): string {
 	return (THINKING_LEVEL_LABELS[level] ?? level).replace(/\s*\([^)]*\)\s*$/u, "").trim();
 }
 
-export function Composer({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
+type ComposerProps = { state: WorkbenchState; actions: WorkbenchActions };
+
+function composerPropsEqual(previous: ComposerProps, next: ComposerProps): boolean {
+	return (
+		previous.state.composerMode === next.state.composerMode &&
+		previous.state.connected === next.state.connected &&
+		previous.state.currentOperation === next.state.currentOperation &&
+		previous.state.currentProjectId === next.state.currentProjectId &&
+		previous.state.hiddenModelProviders === next.state.hiddenModelProviders &&
+		previous.state.models === next.state.models &&
+		previous.state.providers === next.state.providers &&
+		previous.state.readOnly === next.state.readOnly &&
+		previous.state.session === next.state.session &&
+		previous.state.sessionId === next.state.sessionId &&
+		previous.state.sessionReady === next.state.sessionReady
+	);
+}
+
+export const Composer = memo(function Composer({ state, actions }: ComposerProps) {
 	const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
 	const [modelSearch, setModelSearch] = useState("");
 	const [commandDialog, setCommandDialog] = useState<CommandDialogRequest & { sessionId?: string }>();
@@ -262,7 +280,7 @@ export function Composer({ state, actions }: { state: WorkbenchState; actions: W
 			</div>
 		</div>
 	);
-}
+}, composerPropsEqual);
 
 function ImageUploadButton({ disabled }: { disabled: boolean }) {
 	const attachments = usePromptInputAttachments();

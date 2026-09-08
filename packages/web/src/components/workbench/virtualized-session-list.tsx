@@ -79,7 +79,7 @@ export function VirtualizedSessionList<T>({
 
 	useLayoutEffect(() => {
 		updateViewport();
-	});
+	}, [items.length, updateViewport]);
 
 	useLayoutEffect(() => {
 		let frame: number | undefined;

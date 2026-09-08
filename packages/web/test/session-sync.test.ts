@@ -6,6 +6,7 @@ import {
 	isTranscriptResponseObsolete,
 	mergeOperationSnapshots,
 	needsTranscriptRefreshForCommit,
+	replaceSessionOperationSnapshots,
 	runtimeHistoryChanged,
 } from "../src/state/session-sync.ts";
 import type { WebLease, WebOperation, WebSessionSnapshot } from "../src/types.ts";
@@ -74,6 +75,23 @@ describe("连接恢复状态边界", () => {
 		const completed = { operationId: "operation", updatedAt: 20, status: "completed" } as WebOperation;
 		const running = { ...completed, updatedAt: 10, status: "running" } as WebOperation;
 		expect(mergeOperationSnapshots([completed], [running])).toEqual([completed]);
+	});
+	it("会话对账会替换该会话的旧任务状态并保留其他会话", () => {
+		const stale = {
+			operationId: "stale",
+			sessionId: "session",
+			status: "running",
+			updatedAt: 10,
+		} as WebOperation;
+		const completed = { ...stale, status: "completed", updatedAt: 20 } as WebOperation;
+		const other = {
+			operationId: "other",
+			sessionId: "other-session",
+			status: "running",
+			updatedAt: 15,
+		} as WebOperation;
+		expect(replaceSessionOperationSnapshots([stale, other], "session", [completed])).toEqual([completed, other]);
+		expect(replaceSessionOperationSnapshots([stale, other], "session", [])).toEqual([other]);
 	});
 	it("首屏快照先到而 leaf 尚未加载时接受对应的历史页", () => {
 		expect(isTranscriptResponseObsolete({}, { generation: "g" }, { transcriptGeneration: "g", leafId: "tail" })).toBe(

@@ -22,6 +22,7 @@ import {
 	isTranscriptResponseObsolete,
 	mergeOperationSnapshots,
 	needsTranscriptRefreshForCommit,
+	replaceSessionOperationSnapshots,
 	runtimeHistoryChanged,
 } from "./session-sync.ts";
 import { shouldJoinLiveToolBatch } from "./tool-batching.ts";
@@ -76,8 +77,9 @@ export type LiveTurnItem =
 
 type LiveTextProgress = Extract<SessionProgress, { type: "assistant_delta" | "thinking_delta" }>;
 type PendingTextProgress = { selection: number; progress: LiveTextProgress };
+type SessionSubscriptionResult = "ready" | "gap" | "timeout";
 type SessionSubscriptionWaiter = {
-	resolve: (ready: boolean) => void;
+	resolve: (result: SessionSubscriptionResult) => void;
 	timeoutId: number;
 };
 
@@ -480,6 +482,29 @@ function sessionDetailCacheFromState(state: WorkbenchState): SessionDetailCache 
 	};
 }
 
+const SESSION_DETAIL_CACHE_LIMIT = 8;
+
+function cacheSessionDetail(cache: Map<string, SessionDetailCache>, sessionId: string, detail: SessionDetailCache): void {
+	cache.delete(sessionId);
+	cache.set(sessionId, detail);
+	while (cache.size > SESSION_DETAIL_CACHE_LIMIT) {
+		const oldest = cache.keys().next().value;
+		if (oldest === undefined) break;
+		cache.delete(oldest);
+	}
+}
+
+function readCachedSessionDetail(
+	cache: Map<string, SessionDetailCache>,
+	sessionId: string,
+): SessionDetailCache | undefined {
+	const detail = cache.get(sessionId);
+	if (!detail) return undefined;
+	cache.delete(sessionId);
+	cache.set(sessionId, detail);
+	return detail;
+}
+
 const THEME_KEY = "lystar.web.theme";
 const MODEL_PROVIDER_VISIBILITY_KEY = "lystar.web.model-provider-visibility.v2";
 const ACTIVE_OPERATION_STATUSES = new Set(["accepted", "running", "waiting_for_input"]);
@@ -526,9 +551,20 @@ function eventIsObject(value: unknown): value is Record<string, unknown> {
 
 function operationForSession(operations: WebOperation[], sessionId: string | undefined): WebOperation | undefined {
 	if (!sessionId) return undefined;
-	return operations
-		.filter((operation) => operation.sessionId === sessionId && ACTIVE_OPERATION_STATUSES.has(operation.status))
-		.sort((left, right) => right.updatedAt - left.updatedAt)[0];
+	let latest: WebOperation | undefined;
+	for (const operation of operations) {
+		if (operation.sessionId !== sessionId || !ACTIVE_OPERATION_STATUSES.has(operation.status)) continue;
+		if (!latest || operation.updatedAt > latest.updatedAt) latest = operation;
+	}
+	return latest;
+}
+
+function sessionSnapshotIsActive(snapshot: WebSessionSnapshot): boolean {
+	return (
+		snapshot.activity === "running" ||
+		snapshot.activity === "waiting_for_input" ||
+		["turn", "compaction", "retry", "waiting_for_input"].includes(snapshot.phase)
+	);
 }
 
 function mergeSessionSummaries(
@@ -544,19 +580,29 @@ function mergeSessionSummaries(
 }
 
 function updateSessionSummaryName(
-	projects: readonly WebProject[],
+	projects: WebProject[],
 	sessionId: string,
 	name: string | undefined,
 ): WebProject[] {
 	const normalizedName = name?.trim();
-	return projects.map((project) => ({
-		...project,
-		sessions: project.sessions.map((session) => {
-			if (session.id !== sessionId) return session;
-			const { name: _name, ...withoutName } = session;
-			return normalizedName ? { ...withoutName, name: normalizedName } : withoutName;
-		}),
-	}));
+	for (let projectIndex = 0; projectIndex < projects.length; projectIndex++) {
+		const project = projects[projectIndex];
+		const sessionIndex = project.sessions.findIndex((session) => session.id === sessionId);
+		if (sessionIndex < 0) continue;
+		const session = project.sessions[sessionIndex];
+		const currentName = session.name?.trim();
+		if (currentName === normalizedName && (normalizedName !== undefined || !Object.hasOwn(session, "name"))) {
+			return projects;
+		}
+		const { name: _name, ...withoutName } = session;
+		const nextSession = normalizedName ? { ...withoutName, name: normalizedName } : withoutName;
+		const sessions = [...project.sessions];
+		sessions[sessionIndex] = nextSession;
+		const next = [...projects];
+		next[projectIndex] = { ...project, sessions };
+		return next;
+	}
+	return projects;
 }
 
 function mergeProjectSessions(current: readonly WebProject[], incoming: readonly WebProject[]): WebProject[] {
@@ -568,19 +614,33 @@ function mergeProjectSessions(current: readonly WebProject[], incoming: readonly
 }
 
 function updateSessionActivity(
-	projects: readonly WebProject[],
+	projects: WebProject[],
 	sessionId: string,
 	activity: WebSessionSummary["activity"],
 	operationUpdatedAt?: number,
 ): WebProject[] {
-	return projects.map((project) => ({
-		...project,
-		sessions: project.sessions.map((session) =>
-			session.id === sessionId
-				? { ...session, activity, ...(operationUpdatedAt === undefined ? {} : { operationUpdatedAt }) }
-				: session,
-		),
-	}));
+	for (let projectIndex = 0; projectIndex < projects.length; projectIndex++) {
+		const project = projects[projectIndex];
+		const sessionIndex = project.sessions.findIndex((session) => session.id === sessionId);
+		if (sessionIndex < 0) continue;
+		const session = project.sessions[sessionIndex];
+		if (
+			session.activity === activity &&
+			(operationUpdatedAt === undefined || session.operationUpdatedAt === operationUpdatedAt)
+		) {
+			return projects;
+		}
+		const sessions = [...project.sessions];
+		sessions[sessionIndex] = {
+			...session,
+			activity,
+			...(operationUpdatedAt === undefined ? {} : { operationUpdatedAt }),
+		};
+		const next = [...projects];
+		next[projectIndex] = { ...project, sessions };
+		return next;
+	}
+	return projects;
 }
 
 function sessionActivityFromProgress(progress: SessionProgress): "running" | "waiting_for_input" | "idle" | undefined {
@@ -999,6 +1059,49 @@ export function useWorkbench() {
 		[updateState],
 	);
 
+	const loadSessionOperations = useCallback(
+		async (sessionId: string) => {
+			const result = await webApi.operations(sessionId);
+			updateState((current) => {
+				if (current.sessionId !== sessionId) return current;
+				const operations = replaceSessionOperationSnapshots(current.operations, sessionId, result.operations);
+				return {
+					...current,
+					operations,
+					currentOperation:
+						current.session && !sessionSnapshotIsActive(current.session)
+							? undefined
+							: operationForSession(operations, sessionId),
+				};
+			});
+		},
+		[updateState],
+	);
+
+	const loadSessionSnapshot = useCallback(
+		async (sessionId: string) => {
+			const snapshot = (await webApi.session(sessionId)).session;
+			updateState((current) => {
+				if (current.sessionId !== sessionId || isOlderSessionSnapshot(current.session, snapshot)) return current;
+				const next: WorkbenchState = {
+					...current,
+					projects: updateSessionActivity(
+						updateSessionSummaryName(current.projects, sessionId, snapshot.name),
+						sessionId,
+						snapshot.activity,
+					),
+					session: snapshot,
+					readOnly: snapshot.writeAccess !== "owned",
+					currentOperation: sessionSnapshotIsActive(snapshot)
+						? operationForSession(current.operations, sessionId)
+						: undefined,
+				};
+				return restoreRuntimeActivities(next, snapshot);
+			});
+		},
+		[updateState],
+	);
+
 	const scheduleTranscriptRefresh = useCallback(
 		(sessionId = stateRef.current.sessionId) => {
 			if (!sessionId) return;
@@ -1032,10 +1135,9 @@ export function useWorkbench() {
 		(progress: SessionProgress) => {
 		updateState((current) => {
 			const activity = sessionActivityFromProgress(progress);
-			current = {
-				...current,
-				...(current.session && activity ? { session: { ...current.session, activity } } : {}),
-			};
+			if (current.session && activity && current.session.activity !== activity) {
+				current = { ...current, session: { ...current.session, activity } };
+			}
 			switch (progress.type) {
 					case "assistant_delta":
 						return {
@@ -1280,44 +1382,62 @@ export function useWorkbench() {
 		[applyProgressNow, flushPendingTextProgress],
 	);
 
-	const subscribeSessionAndWait = useCallback((sessionId: string): Promise<boolean> => {
+	const subscribeSessionAndWait = useCallback((sessionId: string): Promise<SessionSubscriptionResult> => {
 		const socket = socketRef.current;
-		if (!socket || (socket.readyState !== WebSocket.OPEN && socket.readyState !== WebSocket.CONNECTING)) return Promise.resolve(false);
+		if (!socket || (socket.readyState !== WebSocket.OPEN && socket.readyState !== WebSocket.CONNECTING))
+			return Promise.resolve("timeout");
 		return new Promise((resolve) => {
 			const waiters = sessionSubscriptionWaitersRef.current.get(sessionId) ?? new Set<SessionSubscriptionWaiter>();
 			let waiter: SessionSubscriptionWaiter;
 			waiter = {
 				timeoutId: 0,
-				resolve: (ready) => {
+				resolve: (result) => {
 					window.clearTimeout(waiter.timeoutId);
 					waiters.delete(waiter);
 					if (!waiters.size) sessionSubscriptionWaitersRef.current.delete(sessionId);
-					resolve(ready);
+					resolve(result);
 				},
 			};
-			waiter.timeoutId = window.setTimeout(() => waiter.resolve(false), 1500);
+			waiter.timeoutId = window.setTimeout(() => waiter.resolve("timeout"), 1500);
 			waiters.add(waiter);
 			sessionSubscriptionWaitersRef.current.set(sessionId, waiters);
 			webApi.subscribeSession(socket, sessionId, sessionDetailSeqRef.current.get(sessionId));
 		});
 	}, []);
+
+	const completeSessionSubscription = useCallback(
+		async (sessionId: string, result: SessionSubscriptionResult): Promise<boolean> => {
+			if (result === "timeout") {
+				const socket = socketRef.current;
+				if (stateRef.current.sessionId === sessionId && socket?.readyState === WebSocket.OPEN)
+					socket.close(4002, "会话订阅确认超时");
+				return false;
+			}
+			if (result === "gap") {
+				await Promise.all([loadSessionSnapshot(sessionId), loadSessionOperations(sessionId), loadTranscript(sessionId)]);
+			}
+			if (stateRef.current.sessionId === sessionId)
+				updateState((current) => ({ ...current, sessionReady: true }));
+			return true;
+		},
+		[loadSessionOperations, loadSessionSnapshot, loadTranscript, updateState],
+	);
+
 	const handleEvent = useCallback(
 		(event: GatewayEvent) => {
 			if (event.type === "session_subscription") {
 				sessionDetailSeqRef.current.set(event.sessionId, event.seq);
 				const waiters = sessionSubscriptionWaitersRef.current.get(event.sessionId);
 				if (waiters) {
-					for (const waiter of [...waiters]) waiter.resolve(!event.gap);
+					for (const waiter of [...waiters]) waiter.resolve(event.gap ? "gap" : "ready");
 				}
 				const selected = stateRef.current.sessionId === event.sessionId;
 				if (selected) updateState((current) => ({ ...current, sessionReady: !event.gap }));
-				if (event.gap && selected)
-					void loadTranscript(event.sessionId)
-						.then(() => {
-							if (stateRef.current.sessionId === event.sessionId)
-								updateState((current) => ({ ...current, sessionReady: true }));
-						})
-						.catch((error) => showToast(errorMessage(error)));
+				if (event.gap && selected && selectionInFlightRef.current !== event.sessionId)
+					void completeSessionSubscription(event.sessionId, "gap").catch((error) => {
+						showToast(errorMessage(error));
+						socketRef.current?.close(4002, "会话断档恢复失败");
+					});
 				return;
 			}
 			const sequenceSessionId =
@@ -1544,16 +1664,25 @@ export function useWorkbench() {
 								(operation) =>
 									operation.sessionId === event.sessionId && ACTIVE_OPERATION_STATUSES.has(operation.status),
 							);
-						const unreadSessionIds = { ...current.unreadSessionIds };
-						if (activity === "idle" && event.sessionId !== current.sessionId && wasRunning)
-							unreadSessionIds[event.sessionId] = true;
-						else if (activity !== "idle" || event.sessionId === current.sessionId)
+						let unreadSessionIds = current.unreadSessionIds;
+						if (
+							activity === "idle" &&
+							event.sessionId !== current.sessionId &&
+							wasRunning &&
+							!unreadSessionIds[event.sessionId]
+						) {
+							unreadSessionIds = { ...unreadSessionIds, [event.sessionId]: true };
+						} else if (
+							(activity !== "idle" || event.sessionId === current.sessionId) &&
+							unreadSessionIds[event.sessionId]
+						) {
+							unreadSessionIds = { ...unreadSessionIds };
 							delete unreadSessionIds[event.sessionId];
-						return {
-							...current,
-							projects: updateSessionActivity(current.projects, event.sessionId, activity),
-							unreadSessionIds,
-						};
+						}
+						const projects = updateSessionActivity(current.projects, event.sessionId, activity);
+						return projects === current.projects && unreadSessionIds === current.unreadSessionIds
+							? current
+							: { ...current, projects, unreadSessionIds };
 					});
 				}
 				if (event.sessionId === stateRef.current.sessionId) {
@@ -1665,6 +1794,7 @@ export function useWorkbench() {
 			applyBootstrap,
 			applyProgress,
 			cancelScheduledTranscriptRefresh,
+			completeSessionSubscription,
 			refreshBootstrap,
 			refreshProjectSessions,
 			loadTranscript,
@@ -1720,12 +1850,15 @@ export function useWorkbench() {
 		);
 		const subscribeSelectedSession = () => {
 			const sessionId = stateRef.current.sessionId;
-			if (sessionId) void subscribeSessionAndWait(sessionId);
+			if (sessionId)
+				void subscribeSessionAndWait(sessionId)
+					.then((result) => completeSessionSubscription(sessionId, result))
+					.catch((error) => showToast(errorMessage(error)));
 		};
 		socket.addEventListener("open", subscribeSelectedSession, { once: true });
 		socketRef.current = socket;
 		if (socket.readyState === WebSocket.OPEN) subscribeSelectedSession();
-	}, [handleEvent, subscribeSessionAndWait, updateState]);
+	}, [completeSessionSubscription, handleEvent, showToast, subscribeSessionAndWait, updateState]);
 
 	const refreshModelSettings = useCallback(async () => {
 		updateState((current) => ({ ...current, modelSettingsLoading: true, modelSettingsError: undefined }));
@@ -1774,8 +1907,8 @@ export function useWorkbench() {
 			try {
 				const data = await webApi.bootstrap();
 				applyBootstrap(data);
-				await refreshModelSettings().catch(() => undefined);
 				connectStream();
+				void refreshModelSettings().catch(() => undefined);
 				const firstProject = data.projects.find(
 					(project) => project.id === stateRef.current.currentProjectId && !project.archived,
 				) ?? data.projects
@@ -1856,19 +1989,10 @@ export function useWorkbench() {
 				project.sessions.some((session) => session.id === sessionId),
 			)?.id;
 			if (previous.sessionId && previous.sessionId !== sessionId) {
-				sessionDetailCacheRef.current.set(previous.sessionId, sessionDetailCacheFromState(previous));
+				cacheSessionDetail(sessionDetailCacheRef.current, previous.sessionId, sessionDetailCacheFromState(previous));
 			}
-			const cached = sessionDetailCacheRef.current.get(sessionId);
+			const cached = readCachedSessionDetail(sessionDetailCacheRef.current, sessionId);
 			const socket = socketRef.current;
-			if (socket && previous.sessionId && previous.sessionId !== sessionId)
-				webApi.unsubscribeSession(socket, previous.sessionId);
-			const subscriptionPromise = socket ? subscribeSessionAndWait(sessionId) : Promise.resolve(false);
-			if (
-				previous.sessionId &&
-				previous.sessionId !== sessionId &&
-				!ACTIVE_OPERATION_STATUSES.has(previous.currentOperation?.status ?? "")
-			)
-				await webApi.release(previous.sessionId).catch(() => {});
 			if (transcriptTimerRef.current) {
 				window.clearTimeout(transcriptTimerRef.current);
 				transcriptTimerRef.current = undefined;
@@ -1879,7 +2003,7 @@ export function useWorkbench() {
 				...current,
 				...(selectedProjectId ? { currentProjectId: selectedProjectId } : {}),
 				sessionId,
-				session: previous.sessionId !== sessionId ? undefined : cached?.session,
+				session: cached?.session,
 				sessionError: undefined,
 				lease: undefined,
 				readOnly: true,
@@ -1912,6 +2036,18 @@ export function useWorkbench() {
 				currentOperation: operationForSession(current.operations, sessionId),
 				liveCompaction: cached?.liveCompaction,
 			}));
+			if (socket && previous.sessionId && previous.sessionId !== sessionId)
+				webApi.unsubscribeSession(socket, previous.sessionId);
+			const subscriptionPromise = socket
+				? subscribeSessionAndWait(sessionId)
+				: Promise.resolve<SessionSubscriptionResult>("timeout");
+			if (
+				previous.sessionId &&
+				previous.sessionId !== sessionId &&
+				!ACTIVE_OPERATION_STATUSES.has(previous.currentOperation?.status ?? "")
+			) {
+				void webApi.release(previous.sessionId).catch(() => {});
+			}
 			const transcriptPromise = loadTranscript(sessionId);
 			void transcriptPromise.catch(() => {});
 			try {
@@ -1924,7 +2060,11 @@ export function useWorkbench() {
 					if (isOlderSessionSnapshot(current.session, controlled.snapshot)) return { ...current, lease: controlled.lease, sessionError: undefined };
 					const next: WorkbenchState = {
 						...current,
-						projects: updateSessionSummaryName(current.projects, sessionId, controlled.snapshot.name),
+						projects: updateSessionActivity(
+							updateSessionSummaryName(current.projects, sessionId, controlled.snapshot.name),
+							sessionId,
+							controlled.snapshot.activity,
+						),
 						lease: controlled.lease,
 						session: controlled.snapshot,
 						transcriptGeneration: current.transcriptGeneration,
@@ -1932,7 +2072,9 @@ export function useWorkbench() {
 						transcriptLeafId: current.transcriptLeafId,
 						sessionError: undefined,
 						readOnly: controlled.owned === false,
-						currentOperation: operationForSession(current.operations, sessionId),
+						currentOperation: sessionSnapshotIsActive(controlled.snapshot)
+							? operationForSession(current.operations, sessionId)
+							: undefined,
 					};
 					return restoreRuntimeActivities(next, controlled.snapshot);
 				});
@@ -1946,14 +2088,20 @@ export function useWorkbench() {
 					updateState((current) => {
 						const next: WorkbenchState = {
 							...current,
-							projects: updateSessionSummaryName(current.projects, sessionId, snapshot.name),
+							projects: updateSessionActivity(
+								updateSessionSummaryName(current.projects, sessionId, snapshot.name),
+								sessionId,
+								snapshot.activity,
+							),
 							session: snapshot,
 							transcriptGeneration: current.transcriptGeneration,
 							transcriptRevision: current.transcriptRevision,
 							transcriptLeafId: current.transcriptLeafId,
 							sessionError: undefined,
 							readOnly: true,
-							currentOperation: operationForSession(current.operations, sessionId),
+							currentOperation: sessionSnapshotIsActive(snapshot)
+								? operationForSession(current.operations, sessionId)
+								: undefined,
 						};
 						return restoreRuntimeActivities(next, snapshot);
 					});
@@ -1987,25 +2135,30 @@ export function useWorkbench() {
 			} catch (error) {
 				showToast(errorMessage(error));
 			}
-			const subscriptionReady = await subscriptionPromise;
+			const subscriptionResult = await subscriptionPromise;
 			if (request !== selectionRef.current) {
 				if (selectionInFlightRef.current === sessionId) selectionInFlightRef.current = undefined;
 				return;
 			}
-			if (socket && !subscriptionReady) {
-				try {
-					await loadTranscript(sessionId);
-				} catch (error) {
-					showToast(errorMessage(error));
-				}
+			let subscriptionReady = false;
+			try {
+				subscriptionReady = await completeSessionSubscription(sessionId, subscriptionResult);
+				if (subscriptionResult !== "gap") await loadSessionOperations(sessionId);
+			} catch (error) {
+				showToast(errorMessage(error));
+				socketRef.current?.close(4002, "会话状态对账失败");
 			}
 			const supplementalLoads = [loadProjectTrustRef.current()];
 			if (stateRef.current.inspectorMode === "tree") supplementalLoads.push(loadSessionTreeRef.current());
 			void Promise.allSettled(supplementalLoads);
-			updateState((current) => ({ ...current, statusText: "" }));
+			updateState((current) =>
+				current.sessionId === sessionId
+					? { ...current, statusText: "", sessionReady: current.sessionReady || subscriptionReady }
+					: current,
+			);
 			if (selectionInFlightRef.current === sessionId) selectionInFlightRef.current = undefined;
 		},
-		[loadTranscript, showToast, subscribeSessionAndWait, updateState],
+		[completeSessionSubscription, loadSessionOperations, loadTranscript, showToast, subscribeSessionAndWait, updateState],
 	);
 
 	const selectProject = useCallback(
@@ -2013,11 +2166,12 @@ export function useWorkbench() {
 			const request = ++selectionRef.current;
 			const previous = stateRef.current;
 			if (previous.sessionId) {
-				sessionDetailCacheRef.current.set(previous.sessionId, sessionDetailCacheFromState(previous));
+				cacheSessionDetail(sessionDetailCacheRef.current, previous.sessionId, sessionDetailCacheFromState(previous));
 				if (socketRef.current) webApi.unsubscribeSession(socketRef.current, previous.sessionId);
 			}
-			if (previous.sessionId && !ACTIVE_OPERATION_STATUSES.has(previous.currentOperation?.status ?? ""))
-				await webApi.release(previous.sessionId).catch(() => {});
+			if (previous.sessionId && !ACTIVE_OPERATION_STATUSES.has(previous.currentOperation?.status ?? "")) {
+				void webApi.release(previous.sessionId).catch(() => {});
+			}
 			updateState((current) => ({
 				...current,
 				currentProjectId: projectId,
@@ -2119,9 +2273,11 @@ export function useWorkbench() {
 			liveTurnItems: [],
 			liveCompaction: undefined,
 		}));
-		const subscriptionReady = await subscribeSessionAndWait(result.session.id);
-		if (!subscriptionReady) await loadTranscript(result.session.id).catch((error) => showToast(errorMessage(error)));
-	}, [loadTranscript, showToast, subscribeSessionAndWait, updateState]);
+		const subscriptionResult = await subscribeSessionAndWait(result.session.id);
+		await completeSessionSubscription(result.session.id, subscriptionResult).catch((error) =>
+			showToast(errorMessage(error)),
+		);
+	}, [completeSessionSubscription, showToast, subscribeSessionAndWait, updateState]);
 
 	const sendMessage = useCallback(
 		async (
@@ -2326,12 +2482,15 @@ export function useWorkbench() {
 				liveCompaction: undefined,
 			}));
 			if (current.currentProjectId) await refreshProjectSessions(current.currentProjectId);
-			if (socket && oldSessionId !== result.session.id) await subscribeSessionAndWait(result.session.id);
+			if (socket && oldSessionId !== result.session.id) {
+				const subscriptionResult = await subscribeSessionAndWait(result.session.id);
+				await completeSessionSubscription(result.session.id, subscriptionResult);
+			}
 			await loadTranscript(result.session.id);
 			await loadSessionTreeRef.current();
 			if (oldSessionId !== result.session.id) showToast("已创建新的会话分支");
 		},
-		[loadTranscript, refreshProjectSessions, showToast, subscribeSessionAndWait, updateState],
+		[completeSessionSubscription, loadTranscript, refreshProjectSessions, showToast, subscribeSessionAndWait, updateState],
 	);
 
 	const reloadResources = useCallback(async () => {

@@ -175,7 +175,10 @@ function groupPersistedToolBatches(rendered: Array<RawRenderItem>): Conversation
 	return grouped;
 }
 
-function buildPersistedRenderItems(items: WorkbenchState["transcript"], toolIndex: ToolIndex): ConversationRenderItem[] {
+export function buildPersistedRenderItems(
+	items: WorkbenchState["transcript"],
+	toolIndex: ToolIndex,
+): ConversationRenderItem[] {
 	const rendered: Array<RawRenderItem> = [];
 	let batchTools: ToolBatchTool[] = [];
 	let batchKey = "";
@@ -250,7 +253,7 @@ function buildPersistedRenderItems(items: WorkbenchState["transcript"], toolInde
 	return groupPersistedToolBatches(rendered);
 }
 
-function appendLiveRenderItems(
+export function appendLiveRenderItems(
 	rendered: ConversationRenderItem[],
 	liveItems: readonly LiveTurnItem[],
 	liveTools: WorkbenchState["liveTools"],
@@ -259,10 +262,9 @@ function appendLiveRenderItems(
 	liveTurnId: number,
 ): ConversationRenderItem[] {
 	const next = [...rendered];
-	const lastLiveItem = liveItems.at(-1);
 	for (const item of liveItems) {
 		if (item.kind === "thinking") {
-			if (!item.parts.length || lastLiveItem?.id !== item.id || next.some((entry) => entry.key === item.id)) continue;
+			if (!item.parts.length || next.some((entry) => entry.key === item.id)) continue;
 			next.push({ kind: "thinking", key: item.id, text: item.parts.join("") });
 			continue;
 		}
@@ -308,17 +310,17 @@ function appendLiveRenderItems(
 	return next;
 }
 
-function buildConversationRenderItems(
-	transcript: WorkbenchState["transcript"],
+export function buildConversationRenderItems(
+	persistedItems: ConversationRenderItem[],
 	pendingUserPrompts: WorkbenchState["pendingUserPrompts"],
-	toolIndex: ToolIndex,
 	liveItems: readonly LiveTurnItem[],
 	liveTools: WorkbenchState["liveTools"],
+	committedToolCallIds: ReadonlySet<string>,
 	liveCompaction: LiveCompactionState | undefined,
 	liveTurnId: number,
 	responseActive: boolean,
 ): ConversationRenderItem[] {
-	const next = buildPersistedRenderItems(transcript, toolIndex);
+	const next = [...persistedItems];
 	for (const prompt of pendingUserPrompts) {
 		next.push({
 			kind: "message",
@@ -331,27 +333,22 @@ function buildConversationRenderItems(
 			copyVisible: false,
 		});
 	}
-	appendLiveRenderItems(
+	const withLive = appendLiveRenderItems(
 		next,
 		liveItems,
 		liveTools,
-		toolIndex.callIds,
+		committedToolCallIds,
 		liveCompaction,
 		liveTurnId,
 	);
-	let lastAssistantIndex = -1;
-	if (!responseActive) {
-		for (let index = next.length - 1; index >= 0; index--) {
-			const entry = next[index];
-			if (entry?.kind === "message" && entry.role === "assistant" && entry.text) {
-				lastAssistantIndex = index;
-				break;
-			}
-		}
+	if (responseActive) return withLive;
+	for (let index = withLive.length - 1; index >= 0; index--) {
+		const entry = withLive[index];
+		if (entry?.kind !== "message" || entry.role !== "assistant" || !entry.text) continue;
+		withLive[index] = { ...entry, copyVisible: true };
+		break;
 	}
-	return next.map((entry, index) =>
-		entry.kind === "message" ? { ...entry, copyVisible: index === lastAssistantIndex } : entry,
-	);
+	return withLive;
 }
 
 function isConversationResponseActive(state: WorkbenchState): boolean {
@@ -410,26 +407,30 @@ export function ConversationView({
 		return results ? { ...persistedToolIndex, results } : persistedToolIndex;
 	}, [persistedToolIndex, state.liveTools]);
 	const responseActive = isConversationResponseActive(state);
+	const persistedRenderItems = useMemo(
+		() => buildPersistedRenderItems(state.transcript, toolIndex),
+		[state.transcript, toolIndex],
+	);
 	const renderItems = useMemo(
 		() =>
 			buildConversationRenderItems(
-				state.transcript,
+				persistedRenderItems,
 				state.pendingUserPrompts,
-				toolIndex,
 				state.liveTurnItems,
 				state.liveTools,
+				toolIndex.callIds,
 				state.liveCompaction,
 				state.liveTurnId,
 				responseActive,
 			),
 		[
+			persistedRenderItems,
 			state.liveCompaction,
 			state.liveTools,
 			state.liveTurnId,
 			state.liveTurnItems,
 			state.pendingUserPrompts,
-			state.transcript,
-			toolIndex,
+			toolIndex.callIds,
 			responseActive,
 		],
 	);
@@ -565,14 +566,15 @@ function ConversationBody({
 		void scrollToBottom({ animation: "instant" });
 	}, [escapedFromLock, isAtBottom, renderItems, scrollToBottom]);
 
+	const responseActive = isConversationResponseActive(state);
 	useEffect(() => {
-		if (!promptFollowRef.current || isConversationResponseActive(state)) return;
+		if (!promptFollowRef.current || responseActive) return;
 		const frame = window.requestAnimationFrame(() => {
 			promptFollowRef.current = false;
 			promptFollowPendingRef.current = false;
 		});
 		return () => window.cancelAnimationFrame(frame);
-	}, [state]);
+	}, [responseActive]);
 
 	useLayoutEffect(() => {
 		if (state.loadingEarlier || !pendingScrollRef.current) return;

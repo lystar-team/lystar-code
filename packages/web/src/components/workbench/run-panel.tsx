@@ -15,7 +15,7 @@ import {
 	Upload,
 	Wrench,
 } from "lucide-react";
-import { useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import type { WebOperation } from "../../types";
 import type { WorkbenchState } from "../../state/use-workbench";
@@ -36,6 +36,20 @@ import type { WorkbenchActions } from "./types";
 
 type ScrollRef = { current: HTMLDivElement | null };
 type JsonRecord = Record<string, unknown>;
+type RunPanelProps = { state: WorkbenchState; actions: WorkbenchActions; scrollRef: ScrollRef };
+
+const operationKey = (operation: WebOperation) => operation.operationId;
+const estimateOperationHeight = () => 44;
+
+function runPanelPropsEqual(previous: RunPanelProps, next: RunPanelProps): boolean {
+	return (
+		previous.scrollRef === next.scrollRef &&
+		previous.state.currentOperation === next.state.currentOperation &&
+		previous.state.operations === next.state.operations &&
+		previous.state.readOnly === next.state.readOnly &&
+		previous.state.sessionId === next.state.sessionId
+	);
+}
 
 const OPERATION_TITLES: Record<string, string> = {
 	prompt: "提交任务",
@@ -459,15 +473,7 @@ function OperationCard({ operation }: { operation: WebOperation }) {
 	);
 }
 
-export function RunPanel({
-	state,
-	actions,
-	scrollRef,
-}: {
-	state: WorkbenchState;
-	actions: WorkbenchActions;
-	scrollRef: ScrollRef;
-}) {
+export const RunPanel = memo(function RunPanel({ state, actions, scrollRef }: RunPanelProps) {
 	const [selectedOperationId, setSelectedOperationId] = useState<string>();
 	const currentOperation =
 		state.sessionId &&
@@ -475,13 +481,23 @@ export function RunPanel({
 		ACTIVE_OPERATION_STATUSES.has(state.currentOperation.status)
 			? state.currentOperation
 			: undefined;
-	const operations = state.operations
-		.filter(
-			(operation) =>
-				operation.sessionId === state.sessionId && operation.operationId !== currentOperation?.operationId,
-		)
-		.sort((a, b) => b.updatedAt - a.updatedAt);
+	const operations = useMemo(
+		() =>
+			state.operations
+				.filter(
+					(operation) =>
+						operation.sessionId === state.sessionId && operation.operationId !== currentOperation?.operationId,
+				)
+				.sort((a, b) => b.updatedAt - a.updatedAt),
+		[currentOperation?.operationId, state.operations, state.sessionId],
+	);
 	const selectedOperation = operations.find((operation) => operation.operationId === selectedOperationId);
+	const renderOperation = useCallback(
+		(operation: WebOperation) => (
+			<OperationRow operation={operation} onClick={() => setSelectedOperationId(operation.operationId)} />
+		),
+		[],
+	);
 	return (
 		<div className="grid min-w-0 max-w-full gap-4 overflow-x-hidden p-4">
 			<Task defaultOpen className="min-w-0 max-w-full">
@@ -502,13 +518,11 @@ export function RunPanel({
 				<div className="min-w-0 max-w-full overflow-hidden">
 					<VirtualizedTranscript
 						items={operations}
-						getKey={(operation) => operation.operationId}
-						estimateHeight={() => 44}
+						getKey={operationKey}
+						estimateHeight={estimateOperationHeight}
 						gap={4}
 						isItemEqual={operationEqual}
-						renderItem={(operation) => (
-							<OperationRow operation={operation} onClick={() => setSelectedOperationId(operation.operationId)} />
-						)}
+						renderItem={renderOperation}
 						scrollRef={scrollRef}
 					/>
 				</div>
@@ -537,4 +551,4 @@ export function RunPanel({
 			<OperationDetailDialog operation={selectedOperation} onClose={() => setSelectedOperationId(undefined)} />
 		</div>
 	);
-}
+}, runPanelPropsEqual);

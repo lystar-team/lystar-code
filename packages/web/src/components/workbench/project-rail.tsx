@@ -1,10 +1,10 @@
 import { Archive, ArrowRight, ChevronDown, Folder, LoaderCircle, LogOut, MessageSquarePlus, MoreHorizontal, Pin, Plus, Search, Settings, SunMoon, Trash2 } from "lucide-react";
 import type { DragEvent as ReactDragEvent } from "react";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { cn } from "../../lib/utils";
 import type { WorkbenchState } from "../../state/use-workbench";
 import { sessionTitle } from "../../state/use-workbench";
-import type { WebOperation, WebProject, WebSessionSummary } from "../../types";
+import type { WebProject, WebSessionSummary } from "../../types";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
@@ -13,32 +13,13 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card"
 import { Input } from "../ui/input";
 import { ScrollArea } from "../ui/scroll-area";
 import { Separator } from "../ui/separator";
-import { ACTIVE_OPERATION_STATUSES } from "./constants";
 import { SessionButton } from "./session-button";
 import { VirtualizedSessionList } from "./virtualized-session-list";
 import type { WorkbenchActions } from "./types";
 
 const SESSION_PAGE_SIZE = 10;
 
-function isSessionRunning(session: WebSessionSummary, operations: readonly WebOperation[]): boolean {
-	return (
-		session.activity === "running" ||
-		session.activity === "waiting_for_input" ||
-		operations.some(
-			(operation) => operation.sessionId === session.id && ACTIVE_OPERATION_STATUSES.has(operation.status),
-		)
-	);
-}
-
-export function ProjectRail({
-	state,
-	actions,
-	projects,
-	currentProject,
-	onAddProject,
-	onEditProject,
-	onNavigate,
-}: {
+type ProjectRailProps = {
 	state: WorkbenchState;
 	actions: WorkbenchActions;
 	projects: WebProject[];
@@ -46,7 +27,37 @@ export function ProjectRail({
 	onAddProject: () => void;
 	onEditProject: (project: WebProject) => void;
 	onNavigate?: () => void;
-}) {
+};
+
+function projectRailPropsEqual(previous: ProjectRailProps, next: ProjectRailProps): boolean {
+	return (
+		previous.projects === next.projects &&
+		previous.currentProject === next.currentProject &&
+		previous.onAddProject === next.onAddProject &&
+		previous.onEditProject === next.onEditProject &&
+		previous.onNavigate === next.onNavigate &&
+		previous.state.connected === next.state.connected &&
+		previous.state.currentProjectId === next.state.currentProjectId &&
+		previous.state.loading === next.state.loading &&
+		previous.state.projects === next.state.projects &&
+		previous.state.sessionId === next.state.sessionId &&
+		previous.state.unreadSessionIds === next.state.unreadSessionIds
+	);
+}
+
+function isSessionRunning(session: WebSessionSummary): boolean {
+	return session.activity === "running" || session.activity === "waiting_for_input";
+}
+
+export const ProjectRail = memo(function ProjectRail({
+	state,
+	actions,
+	projects,
+	currentProject,
+	onAddProject,
+	onEditProject,
+	onNavigate,
+}: ProjectRailProps) {
 	const [query, setQuery] = useState("");
 	const filteredProjects = projects.filter((project) => project.name.toLowerCase().includes(query.toLowerCase()));
 	const archivedProjects = state.projects.filter((project) => project.archived);
@@ -243,7 +254,7 @@ export function ProjectRail({
 							const expanded = expandedProjectIds.has(project.id);
 							const projectActionsVisible = openProjectMenuId === project.id;
 							const sessions = orderedSessions(project);
-							const runningSessionCount = sessions.filter((session) => isSessionRunning(session, state.operations)).length;
+							const runningSessionCount = sessions.filter(isSessionRunning).length;
 							const visibleSessionCount = sessionVisibleCounts[project.id] ?? SESSION_PAGE_SIZE;
 							const visibleSessions = sessions.slice(0, visibleSessionCount);
 							const hasMoreSessions = visibleSessions.length < sessions.length;
@@ -467,14 +478,7 @@ export function ProjectRail({
 													getKey={(session) => session.id}
 													scrollRef={sessionViewportRef}
 													renderItem={(session) => {
-														const running =
-															session.activity === "running" ||
-															session.activity === "waiting_for_input" ||
-															state.operations.some(
-																(operation) =>
-																	operation.sessionId === session.id &&
-																	ACTIVE_OPERATION_STATUSES.has(operation.status),
-																);
+														const running = isSessionRunning(session);
 														return (
 															<SessionButton
 																projectName={project.name}
@@ -643,4 +647,4 @@ export function ProjectRail({
 			</Dialog>
 		</div>
 	);
-}
+}, projectRailPropsEqual);

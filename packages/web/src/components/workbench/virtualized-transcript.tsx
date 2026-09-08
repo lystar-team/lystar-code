@@ -223,12 +223,7 @@ export function VirtualizedTranscript<T>({
 
 	useLayoutEffect(() => {
 		updateViewport();
-		let frame = window.requestAnimationFrame(() => {
-			frame = window.requestAnimationFrame(() => updateViewport());
-			updateViewport();
-		});
-		return () => window.cancelAnimationFrame(frame);
-	});
+	}, [items.length, layout.totalHeight, updateViewport]);
 
 	useLayoutEffect(() => {
 		const scroller = scrollRef.current;

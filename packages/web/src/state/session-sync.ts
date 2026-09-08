@@ -71,6 +71,20 @@ export function mergeOperationSnapshots(current: readonly WebOperation[], incomi
 	return [...operations.values()].sort((left, right) => right.updatedAt - left.updatedAt).slice(0, 200);
 }
 
+export function replaceSessionOperationSnapshots(
+	current: readonly WebOperation[],
+	sessionId: string,
+	incoming: readonly WebOperation[],
+): WebOperation[] {
+	const operations = new Map(
+		current.filter((operation) => operation.sessionId !== sessionId).map((operation) => [operation.operationId, operation]),
+	);
+	for (const operation of incoming) {
+		if (operation.sessionId === sessionId) operations.set(operation.operationId, operation);
+	}
+	return [...operations.values()].sort((left, right) => right.updatedAt - left.updatedAt).slice(0, 200);
+}
+
 export function isTranscriptResponseObsolete(
 	requested: { generation?: string; leafId?: string | null },
 	current: { generation?: string; leafId?: string | null },
