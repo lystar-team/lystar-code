@@ -1,7 +1,7 @@
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
 
-export const RUNTIME_PROTOCOL_VERSION = 2 as const;
+export const RUNTIME_PROTOCOL_VERSION = 3 as const;
 export const MAX_TRANSCRIPT_PAGE_SIZE = 200;
 export const MAX_TRANSCRIPT_SEARCH_LIMIT = 100;
 
@@ -286,8 +286,18 @@ export const ToolActivitySchema = StrictObject({
 	completedAt: Type.Optional(TimestampSchema),
 });
 export type ToolActivity = Static<typeof ToolActivitySchema>;
+const QueueMessageSchema = StrictObject({
+	id: Id,
+	text: Type.String({ maxLength: 64 * 1024 }),
+});
+export type QueueMessage = Static<typeof QueueMessageSchema>;
+
 export const SessionProgressSchema = Type.Union([
-	StrictObject({ type: Type.Literal("user_message"), text: ProgressTextSchema }),
+	StrictObject({
+		type: Type.Literal("user_message"),
+		text: ProgressTextSchema,
+		queueId: Type.Optional(Id),
+	}),
 	StrictObject({ type: Type.Literal("assistant_delta"), text: ProgressTextSchema }),
 	StrictObject({ type: Type.Literal("thinking_delta"), text: ProgressTextSchema }),
 	StrictObject({ type: Type.Literal("tool_state"), activity: ToolActivitySchema }),
@@ -393,6 +403,8 @@ export const SessionStateSnapshotSchema = StrictObject({
 	leafId: Type.Union([Id, Type.Null()]),
 	queuedSteerCount: Type.Integer({ minimum: 0 }),
 	queuedFollowUpCount: Type.Integer({ minimum: 0 }),
+	queuedSteerMessages: Type.Optional(Type.Array(QueueMessageSchema, { maxItems: 128 })),
+	queuedFollowUpMessages: Type.Optional(Type.Array(QueueMessageSchema, { maxItems: 128 })),
 	contextTokens: Type.Optional(Type.Union([Type.Integer({ minimum: 0 }), Type.Null()])),
 	contextWindow: Type.Optional(Type.Integer({ minimum: 1 })),
 	transcriptGeneration: Id,
@@ -623,6 +635,18 @@ export const GitFileStatusSchema = StrictObject({
 });
 export type GitFileStatus = Static<typeof GitFileStatusSchema>;
 
+export const GitRepositoryStatusSchema = StrictObject({
+	root: Type.String({ minLength: 1 }),
+	path: Type.String(),
+	kind: Type.Union([Type.Literal("root"), Type.Literal("nested")]),
+	branch: Type.Optional(Type.String({ minLength: 1 })),
+	upstream: Type.Optional(Type.String({ minLength: 1 })),
+	ahead: Type.Integer({ minimum: 0 }),
+	behind: Type.Integer({ minimum: 0 }),
+	files: Type.Array(GitFileStatusSchema),
+});
+export type GitRepositoryStatus = Static<typeof GitRepositoryStatusSchema>;
+
 export const GitStatusSchema = StrictObject({
 	root: Type.String({ minLength: 1 }),
 	branch: Type.Optional(Type.String({ minLength: 1 })),
@@ -630,11 +654,13 @@ export const GitStatusSchema = StrictObject({
 	ahead: Type.Integer({ minimum: 0 }),
 	behind: Type.Integer({ minimum: 0 }),
 	files: Type.Array(GitFileStatusSchema),
+	repositories: Type.Optional(Type.Array(GitRepositoryStatusSchema)),
 });
 export type GitStatus = Static<typeof GitStatusSchema>;
 
 export const GitDiffSchema = StrictObject({
 	path: Type.Optional(Type.String({ minLength: 1 })),
+	repositoryPath: Type.Optional(Type.String()),
 	staged: Type.Boolean(),
 	diff: Type.String(),
 	additions: Type.Integer({ minimum: 0 }),
@@ -773,7 +799,7 @@ export type CompletionResult = Static<typeof CompletionResultSchema>;
 export const ProjectResourceSchema = StrictObject({
 	path: Type.String({ minLength: 1 }),
 	displayPath: Type.String({ minLength: 1 }),
-	kind: Type.Union([Type.Literal("text"), Type.Literal("image")]),
+	kind: Type.Union([Type.Literal("text"), Type.Literal("image"), Type.Literal("binary")]),
 	mimeType: Type.String({ minLength: 1 }),
 	byteLength: Type.Integer({ minimum: 0 }),
 	line: Type.Optional(Type.Integer({ minimum: 1 })),
@@ -1226,6 +1252,7 @@ export const CommandSchema = Type.Union([
 		clientRequestId: Id,
 		text: Type.String(),
 		images: Type.Optional(Type.Array(ImageInputSchema)),
+		queueId: Type.Optional(Id),
 	}),
 	StrictObject({
 		command: Type.Literal("follow_up"),
@@ -1235,6 +1262,16 @@ export const CommandSchema = Type.Union([
 		clientRequestId: Id,
 		text: Type.String(),
 		images: Type.Optional(Type.Array(ImageInputSchema)),
+		queueId: Type.Optional(Id),
+	}),
+	StrictObject({
+		command: Type.Literal("queue_action"),
+		sessionPath: Type.String({ minLength: 1 }),
+		leaseId: Id,
+		clientInstanceId: Id,
+		clientRequestId: Id,
+		queueId: Id,
+		action: Type.Union([Type.Literal("remove"), Type.Literal("steer")]),
 	}),
 	StrictObject({
 		command: Type.Literal("clear_queue"),
@@ -1476,6 +1513,7 @@ export const CommandSchema = Type.Union([
 		command: Type.Literal("get_git_diff"),
 		cwd: Type.String({ minLength: 1 }),
 		path: Type.Optional(Type.String({ minLength: 1 })),
+		repositoryPath: Type.Optional(Type.String()),
 		staged: Type.Boolean(),
 	}),
 	StrictObject({ command: Type.Literal("check_for_updates") }),

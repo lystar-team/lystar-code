@@ -91,12 +91,21 @@ function assistantMessageEventKey(event: AssistantMessageEvent): string | undefi
 	}
 }
 
+type AssistantMessageDeltaEvent = Extract<AssistantMessageEvent, { type: "text_delta" | "thinking_delta" }>;
+
 function coalesceAssistantMessageEvent(queue: AssistantMessageEvent[], event: AssistantMessageEvent): boolean {
+	if (event.type === "toolcall_delta") return false;
 	const key = assistantMessageEventKey(event);
 	if (!key) return false;
 	const previous = queue.at(-1);
 	if (previous === undefined || assistantMessageEventKey(previous) !== key) return false;
-	queue[queue.length - 1] = event;
+	if (event.type === "websearch_update") {
+		queue[queue.length - 1] = event;
+	} else {
+		const previousDelta = previous as AssistantMessageDeltaEvent;
+		const currentDelta = event as AssistantMessageDeltaEvent;
+		queue[queue.length - 1] = { ...currentDelta, delta: previousDelta.delta + currentDelta.delta };
+	}
 	return true;
 }
 

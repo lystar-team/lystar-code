@@ -15,10 +15,11 @@ import {
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import type { Api, Model, WebSearchCallContent } from "@earendil-works/pi-ai";
+import { type Api, contentText, type Model, type WebSearchCallContent } from "@earendil-works/pi-ai";
 
 import {
 	type AgentSessionEvent,
@@ -93,6 +94,7 @@ import type {
 	ContentChunk,
 	GitDiff,
 	GitFileStatus,
+	GitRepositoryStatus,
 	GitStatus,
 	HarnessImportPreview,
 	HarnessImportResult,
@@ -162,6 +164,19 @@ const IMAGE_MIME_TYPES: Readonly<Record<string, string>> = {
 	".jpg": "image/jpeg",
 	".png": "image/png",
 	".webp": "image/webp",
+};
+const BINARY_MIME_TYPES: Readonly<Record<string, string>> = {
+	".doc": "application/msword",
+	".docm": "application/vnd.ms-word.document.macroenabled.12",
+	".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	".pdf": "application/pdf",
+	".ppt": "application/vnd.ms-powerpoint",
+	".pptm": "application/vnd.ms-powerpoint.presentation.macroenabled.12",
+	".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+	".xls": "application/vnd.ms-excel",
+	".xlsm": "application/vnd.ms-excel.sheet.macroenabled.12",
+	".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+	".zip": "application/zip",
 };
 
 function contentHash(content: string | Uint8Array): string {
@@ -267,15 +282,18 @@ function imageMimeType(bytes: Uint8Array): "image/png" | "image/jpeg" | "image/w
 	return undefined;
 }
 
-function fileMimeType(path: string): { kind: "text" | "image"; mimeType: string } {
-	const imageMimeType = IMAGE_MIME_TYPES[extname(path).toLowerCase()];
+function fileMimeType(path: string): { kind: "text" | "image" | "binary"; mimeType: string } {
+	const extension = extname(path).toLowerCase();
+	const imageMimeType = IMAGE_MIME_TYPES[extension];
 	if (imageMimeType) return { kind: "image", mimeType: imageMimeType };
+	const binaryMimeType = BINARY_MIME_TYPES[extension];
+	if (binaryMimeType) return { kind: "binary", mimeType: binaryMimeType };
 	const file = openSync(path, "r");
 	try {
 		const buffer = Buffer.allocUnsafe(Math.min(8192, statSync(path).size));
 		const bytesRead = readSync(file, buffer, 0, buffer.length, 0);
 		if (buffer.subarray(0, bytesRead).includes(0)) {
-			throw Object.assign(new Error("只支持打开文本文件和常见图片"), { code: "resource_type_unsupported" });
+			return { kind: "binary", mimeType: "application/octet-stream" };
 		}
 	} finally {
 		closeSync(file);
@@ -379,6 +397,63 @@ function gitFile(
 		unstaged: untracked || worktreeStatus !== ".",
 		untracked,
 		conflicted,
+	};
+}
+
+function repositoryPathFromRoot(projectRoot: string, repositoryRoot: string): string {
+	if (!isInside(projectRoot, repositoryRoot) || projectRoot === repositoryRoot) return "";
+	return relative(projectRoot, repositoryRoot).split(sep).join("/");
+}
+
+async function discoverGitRepositoryRoots(projectRoot: string, rootRepository?: string): Promise<string[]> {
+	const repositories = new Set<string>();
+	if (rootRepository && isInside(projectRoot, rootRepository)) repositories.add(rootRepository);
+	const visited = new Set<string>();
+	const pending = [projectRoot];
+	while (pending.length > 0) {
+		const directory = pending.pop();
+		if (!directory) continue;
+		let canonicalPath: string;
+		try {
+			canonicalPath = realpathSync(directory);
+		} catch {
+			continue;
+		}
+		if (visited.has(canonicalPath)) continue;
+		visited.add(canonicalPath);
+		let entries: Dirent[];
+		try {
+			entries = await readdir(canonicalPath, { withFileTypes: true });
+		} catch {
+			continue;
+		}
+		for (const entry of entries) {
+			if (!entry.isDirectory() || entry.name === ".git" || entry.name === "node_modules") continue;
+			const child = join(canonicalPath, entry.name);
+			if (existsSync(join(child, ".git"))) {
+				try {
+					const detectedRoot = canonicalDirectory((await git(child, ["rev-parse", "--show-toplevel"])).trim());
+					if (isInside(projectRoot, detectedRoot)) repositories.add(detectedRoot);
+				} catch {
+					// 子目录可能只是普通目录中的无效 .git 文件，继续扫描其他目录。
+				}
+			}
+			pending.push(child);
+		}
+	}
+	return [...repositories];
+}
+
+function gitRepositoryStatus(status: GitStatus, projectRoot: string, rootRepository?: string): GitRepositoryStatus {
+	return {
+		root: status.root,
+		path: repositoryPathFromRoot(projectRoot, status.root),
+		kind: status.root === rootRepository ? "root" : "nested",
+		...(status.branch ? { branch: status.branch } : {}),
+		...(status.upstream ? { upstream: status.upstream } : {}),
+		ahead: status.ahead,
+		behind: status.behind,
+		files: status.files,
 	};
 }
 
@@ -858,7 +933,17 @@ function bashOutput(value: unknown): string | undefined {
 export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgress[] {
 	switch (event.type) {
 		case "message_start":
-			return event.message.role === "assistant" ? [{ type: "phase", phase: "turn" }] : [];
+			if (event.message.role === "assistant") return [{ type: "phase", phase: "turn" }];
+			if (event.message.role === "user") {
+				return [
+					{
+						type: "user_message",
+						text: contentText(event.message.content, ""),
+						...(event.queueId ? { queueId: event.queueId } : {}),
+					},
+				];
+			}
+			return [];
 		case "message_update": {
 			const updates: SessionProgress[] = [];
 			const stream = event.assistantMessageEvent;
@@ -1151,6 +1236,8 @@ class CoreRuntimeSession implements RuntimeSession {
 				? session.getToolActivitySnapshot({ activeOnly: true })
 				: undefined;
 		const hasActiveToolActivity = Boolean(toolActivities?.length);
+		const queuedSteerMessages = session.getSteeringQueueItems();
+		const queuedFollowUpMessages = session.getFollowUpQueueItems();
 		return {
 			id: session.sessionId,
 			path: this.sessionPath,
@@ -1172,8 +1259,10 @@ class CoreRuntimeSession implements RuntimeSession {
 			writeAccess,
 			revision: this.stateRevision,
 			leafId: session.sessionManager.getLeafId(),
-			queuedSteerCount: session.getSteeringMessages().length,
-			queuedFollowUpCount: session.getFollowUpMessages().length,
+			queuedSteerCount: queuedSteerMessages.length,
+			queuedFollowUpCount: queuedFollowUpMessages.length,
+			...(queuedSteerMessages.length > 0 ? { queuedSteerMessages } : {}),
+			...(queuedFollowUpMessages.length > 0 ? { queuedFollowUpMessages } : {}),
 			contextTokens: contextUsage?.tokens,
 			contextWindow: contextUsage?.contextWindow,
 			transcriptGeneration: storage.generation,
@@ -1319,23 +1408,28 @@ class CoreRuntimeSession implements RuntimeSession {
 		this.emitCommittedEntries();
 	}
 
-	async steer(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void> {
+	async steer(text: string, images?: Array<{ data: string; mimeType: string }>, queueId?: string): Promise<void> {
 		if (this.isRegisteredExtensionCommand(text)) {
 			await this.runtime.session.prompt(text, { images: contentImages(images), source: "rpc" });
 			this.emitStateChanged();
 			return;
 		}
-		await this.runtime.session.steer(text, contentImages(images));
+		await this.runtime.session.steer(text, contentImages(images), queueId);
 		this.emitStateChanged();
 	}
 
-	async followUp(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void> {
+	async followUp(text: string, images?: Array<{ data: string; mimeType: string }>, queueId?: string): Promise<void> {
 		if (this.isRegisteredExtensionCommand(text)) {
 			await this.runtime.session.prompt(text, { images: contentImages(images), source: "rpc" });
 			this.emitStateChanged();
 			return;
 		}
-		await this.runtime.session.followUp(text, contentImages(images));
+		await this.runtime.session.followUp(text, contentImages(images), queueId);
+		this.emitStateChanged();
+	}
+
+	async queueAction(queueId: string, action: "remove" | "steer"): Promise<void> {
+		this.runtime.session.queueAction(queueId, action);
 		this.emitStateChanged();
 	}
 
@@ -2330,28 +2424,95 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	}
 
 	async getGitStatus(cwd: string): Promise<GitStatus> {
-		const [root, status] = await Promise.all([
-			git(cwd, ["rev-parse", "--show-toplevel"]),
-			git(cwd, ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]),
-		]);
-		return parseGitStatus(root.trim(), status);
+		const projectRoot = canonicalDirectory(cwd);
+		let rootRepository: string | undefined;
+		try {
+			const detectedRoot = canonicalDirectory((await git(cwd, ["rev-parse", "--show-toplevel"])).trim());
+			if (isInside(projectRoot, detectedRoot)) rootRepository = detectedRoot;
+		} catch {
+			// 当前目录可以是包含多个独立仓库的工作目录。
+		}
+		const repositoryRoots = await discoverGitRepositoryRoots(projectRoot, rootRepository);
+		const statuses = await Promise.all(
+			repositoryRoots.map(async (repositoryRootPath) =>
+				parseGitStatus(
+					repositoryRootPath,
+					await git(repositoryRootPath, ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]),
+				),
+			),
+		);
+		const primary =
+			statuses.find((status) => status.root === rootRepository) ??
+			statuses.slice().sort((left, right) => left.root.localeCompare(right.root))[0];
+		if (!primary) throw Object.assign(new Error("未找到 Git 仓库"), { code: "git_not_repository" });
+		const repositories = statuses
+			.map((status) => gitRepositoryStatus(status, projectRoot, rootRepository))
+			.sort(
+				(left, right) =>
+					Number(right.kind === "root") - Number(left.kind === "root") || left.path.localeCompare(right.path),
+			);
+		return { ...primary, repositories };
 	}
 
-	async getGitDiff(cwd: string, path: string | undefined, staged: boolean): Promise<GitDiff> {
+	async getGitDiff(cwd: string, path: string | undefined, staged: boolean, repositoryPath?: string): Promise<GitDiff> {
+		const projectRoot = canonicalDirectory(cwd);
+		let repositoryRoot: string;
+		if (repositoryPath) {
+			if (repositoryPath.includes("\0") || isAbsolute(repositoryPath)) {
+				throw Object.assign(new Error("Git 仓库路径必须是项目内相对路径"), { code: "git_repository_path_invalid" });
+			}
+			const candidate = resolve(projectRoot, repositoryPath);
+			if (!isInside(projectRoot, candidate)) {
+				throw Object.assign(new Error("Git 仓库不在当前项目范围内"), { code: "resource_outside_project" });
+			}
+			repositoryRoot = canonicalDirectory(candidate);
+			const detectedRoot = canonicalDirectory((await git(repositoryRoot, ["rev-parse", "--show-toplevel"])).trim());
+			if (detectedRoot !== repositoryRoot || !isInside(projectRoot, detectedRoot)) {
+				throw Object.assign(new Error("目标目录不是当前项目内的 Git 仓库"), {
+					code: "git_repository_path_invalid",
+				});
+			}
+		} else {
+			try {
+				repositoryRoot = canonicalDirectory((await git(cwd, ["rev-parse", "--show-toplevel"])).trim());
+				if (!isInside(projectRoot, repositoryRoot)) throw new Error("Git 根目录不在当前项目范围内");
+			} catch {
+				const repositoryRoots = await discoverGitRepositoryRoots(projectRoot);
+				repositoryRoot = repositoryRoots[0] ?? "";
+				if (!repositoryRoot) {
+					throw Object.assign(new Error("未找到 Git 仓库"), { code: "git_not_repository" });
+				}
+			}
+		}
+		if (
+			path &&
+			(path.includes("\0") || isAbsolute(path) || !isInside(repositoryRoot, resolve(repositoryRoot, path)))
+		) {
+			throw Object.assign(new Error("Git 文件路径无效"), { code: "git_file_path_invalid" });
+		}
 		const args = ["diff", "--no-ext-diff", "--unified=3"];
 		if (staged) args.push("--cached");
 		if (path) args.push("--", path);
-		const diff = await git(cwd, args);
+		const diff = await git(repositoryRoot, args);
 		let additions = 0;
 		let deletions = 0;
 		for (const line of diff.split("\n")) {
 			if (line.startsWith("+") && !line.startsWith("+++")) additions++;
 			else if (line.startsWith("-") && !line.startsWith("---")) deletions++;
 		}
-		const result: GitDiff = { ...(path ? { path } : {}), staged, diff, additions, deletions };
+		const result: GitDiff = {
+			...(path ? { path } : {}),
+			...(repositoryPath ? { repositoryPath: repositoryPathFromRoot(projectRoot, repositoryRoot) } : {}),
+			staged,
+			diff,
+			additions,
+			deletions,
+		};
 		if (!path) return result;
-		const original = await readGitRevisionContent(cwd, staged ? "HEAD" : "", path);
-		const modified = staged ? await readGitRevisionContent(cwd, "", path) : readWorkingTreeGitContent(cwd, path);
+		const original = await readGitRevisionContent(repositoryRoot, staged ? "HEAD" : "", path);
+		const modified = staged
+			? await readGitRevisionContent(repositoryRoot, "", path)
+			: readWorkingTreeGitContent(repositoryRoot, path);
 		if (original === undefined || modified === undefined) return { ...result, contentTruncated: true };
 		return { ...result, original, modified };
 	}

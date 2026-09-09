@@ -1,67 +1,17 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
-import { loadWebGatewayConfig } from "./config.ts";
-import { GatewayAlreadyRunningError, GatewayInstanceLock } from "./instance-lock.ts";
-import { WebGatewayServer } from "./server.ts";
+import { DEFAULT_WEB_GATEWAY_PORT, loadWebGatewayConfig } from "./config.ts";
+import { runWebGatewayCli } from "./runner.ts";
 
-const command = process.argv[2];
-const config = await loadWebGatewayConfig();
-if (command === "token" || process.argv.includes("--token")) {
-	process.stdout.write(`${config.token}\n`);
-	process.exit(0);
-}
-
-let instanceLock: GatewayInstanceLock;
+const tokenOnly = process.argv[2] === "token" || process.argv.includes("--token");
 try {
-	instanceLock = await GatewayInstanceLock.acquire(config.agentDir);
-} catch (error) {
-	if (error instanceof GatewayAlreadyRunningError) {
-		process.stderr.write(`${error.message}\n`);
-		process.exit(1);
+	if (tokenOnly) {
+		const config = await loadWebGatewayConfig({ defaultPort: DEFAULT_WEB_GATEWAY_PORT });
+		process.stdout.write(`${config.token}\n`);
+	} else {
+		await runWebGatewayCli({ defaultPort: DEFAULT_WEB_GATEWAY_PORT });
 	}
-	throw error;
-}
-const gateway = new WebGatewayServer(config);
-let closing = false;
-const shutdown = async () => {
-	if (closing) return;
-	closing = true;
-	await gateway.close();
-	await instanceLock.release();
-	process.exit(0);
-};
-const restart = () => {
-	setTimeout(() => {
-		if (closing) return;
-		closing = true;
-		void gateway
-			.close()
-			.then(() => instanceLock.release())
-			.then(() => {
-				const child = spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
-					detached: true,
-					stdio: "ignore",
-					env: process.env,
-				});
-				child.unref();
-				process.exit(0);
-			})
-			.catch((error) => {
-				process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-				process.exit(1);
-			});
-	}, 50).unref?.();
-};
-gateway.setRestartHandler(restart);
-process.once("SIGINT", () => void shutdown());
-process.once("SIGTERM", () => void shutdown());
-
-try {
-	await gateway.listen();
-	process.stderr.write(`LYStar Web Gateway listening on ${gateway.config.host}:${gateway.config.port}\n`);
-	process.stderr.write(`Web Token file: ${gateway.config.tokenPath}\n`);
 } catch (error) {
-	await gateway.close().catch(() => {});
-	await instanceLock.release().catch(() => {});
-	throw error;
+	const value = error as Error & { code?: string; status?: unknown };
+	process.stderr.write(`${JSON.stringify({ error: value.message, code: value.code, status: value.status })}\n`);
+	process.exitCode = 1;
 }

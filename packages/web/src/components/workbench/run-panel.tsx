@@ -56,6 +56,7 @@ const OPERATION_TITLES: Record<string, string> = {
 	steer: "引导当前任务",
 	follow_up: "追加后续任务",
 	clear_queue: "清空任务队列",
+	queue_action: "操作任务队列",
 	compact: "整理上下文",
 	share_session: "分享会话",
 	export_session: "导出会话",
@@ -94,7 +95,7 @@ function record(value: unknown): JsonRecord | undefined {
 }
 
 function operationIcon(type: string): ReactNode {
-	if (["prompt", "steer", "follow_up"].includes(type)) return <MessageSquareText className="size-3.5 shrink-0" />;
+	if (["prompt", "steer", "follow_up", "queue_action"].includes(type)) return <MessageSquareText className="size-3.5 shrink-0" />;
 	if (type === "run_bash") return <SquareTerminal className="size-3.5 shrink-0" />;
 	if (["compact", "cycle_session_thinking", "set_session_thinking"].includes(type))
 		return <ListRestart className="size-3.5 shrink-0" />;
@@ -146,6 +147,7 @@ export function operationTaskDisplay(operation: WebOperation): { title: string; 
 			steer: "向正在运行的 Agent 追加引导",
 			follow_up: "向当前会话追加后续消息",
 			clear_queue: "清除尚未处理的引导和后续消息",
+			queue_action: "删除或调整任务队列中的消息",
 			compact: "压缩历史上下文，保留当前任务所需信息",
 			share_session: "生成当前会话的分享内容",
 			run_bash: "执行工作区命令并收集输出",

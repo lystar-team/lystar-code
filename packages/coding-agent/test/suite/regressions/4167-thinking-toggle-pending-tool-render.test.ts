@@ -50,6 +50,7 @@ type RenderSessionContextThis = {
 	isInitialized: boolean;
 	updateEditorBorderColor(): void;
 	getRegisteredToolDefinition(toolName: string): undefined;
+	ensureToolComponent(toolCallId: string, toolName: string, args: unknown): ToolExecutionComponent;
 	addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void;
 	restoreCardExpansion(components: readonly Component[]): void;
 	renderSessionItems: RenderSessionItems;
@@ -81,6 +82,18 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 		isInitialized: true,
 		updateEditorBorderColor: vi.fn(),
 		getRegisteredToolDefinition: (_toolName: string) => undefined,
+		ensureToolComponent(toolCallId, toolName, args) {
+			return (
+				InteractiveMode.prototype as unknown as {
+					ensureToolComponent: (
+						this: RenderSessionContextThis,
+						toolCallId: string,
+						toolName: string,
+						args: unknown,
+					) => ToolExecutionComponent;
+				}
+			).ensureToolComponent.call(this, toolCallId, toolName, args);
+		},
 		restoreCardExpansion: vi.fn(),
 		renderSessionItems: (InteractiveMode.prototype as unknown as { renderSessionItems: RenderSessionItems })
 			.renderSessionItems,

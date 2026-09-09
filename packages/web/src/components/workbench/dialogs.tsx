@@ -21,8 +21,11 @@ export function DirectoryDialog({
 	actions: WorkbenchActions;
 	onClose: () => void;
 }) {
-	const [name, setName] = useState("");
+	const [selectedDirectory, setSelectedDirectory] = useState<string>();
 	const listing = state.directoryListing;
+	useEffect(() => {
+		if (!open) setSelectedDirectory(undefined);
+	}, [open]);
 	return (
 		<Dialog
 			open={open}
@@ -41,17 +44,34 @@ export function DirectoryDialog({
 							<HardDrive className="size-4 text-muted-foreground" />
 							<Input
 								value={listing.path}
-								onChange={(event) => void actions.loadDirectory(event.target.value)}
+								onChange={(event) => {
+									setSelectedDirectory(event.target.value);
+									void actions.loadDirectory(event.target.value);
+								}}
 								aria-label="当前目录"
 							/>
 						</div>
 						<div className="flex gap-2">
-							<Button size="sm" variant="outline" onClick={() => void actions.loadDirectory(listing.home)}>
+							<Button
+								size="sm"
+								variant="outline"
+								onClick={() => {
+									setSelectedDirectory(listing.home);
+									void actions.loadDirectory(listing.home);
+								}}
+							>
 								<HardDrive className="size-4" />
 								主目录
 							</Button>
 							{listing.parent ? (
-								<Button size="sm" variant="outline" onClick={() => void actions.loadDirectory(listing.parent)}>
+								<Button
+									size="sm"
+									variant="outline"
+									onClick={() => {
+										setSelectedDirectory(listing.parent);
+										void actions.loadDirectory(listing.parent);
+									}}
+								>
 									<ArrowLeft className="size-4" />
 									上一级
 								</Button>
@@ -62,13 +82,16 @@ export function DirectoryDialog({
 								{listing.entries.map((entry) => (
 									<Button
 										key={entry.path}
-										className="justify-start gap-2"
-										variant={name === entry.name ? "secondary" : "ghost"}
-										onClick={() => setName(entry.name)}
-										onDoubleClick={() => void actions.loadDirectory(entry.path)}
+										className="justify-start gap-2 text-xs"
+										variant={selectedDirectory === entry.path ? "secondary" : "ghost"}
+										onClick={() => setSelectedDirectory(entry.path)}
+										onDoubleClick={() => {
+											setSelectedDirectory(entry.path);
+											void actions.loadDirectory(entry.path);
+										}}
 									>
-										<Folder className="size-4 text-amber-600" />
-										<span className="truncate">{entry.name}</span>
+										<Folder className="size-4 text-blue-500" />
+										<span className="truncate font-mono !text-xs">{entry.name}</span>
 										<ChevronRight className="ml-auto size-4" />
 									</Button>
 								))}
@@ -77,11 +100,11 @@ export function DirectoryDialog({
 						<DialogFooter>
 							<div className="mr-auto min-w-0 text-left">
 								<p className="text-xs text-muted-foreground">当前选择</p>
-								<p className="max-w-80 truncate font-mono text-xs">{listing.path}</p>
+								<p className="max-w-80 truncate font-mono text-xs">{selectedDirectory ?? listing.path}</p>
 							</div>
 							<Button
 								onClick={() => {
-									void actions.addProject(listing.path, name || undefined);
+									void actions.addProject(selectedDirectory ?? listing.path);
 									onClose();
 								}}
 							>
@@ -224,7 +247,7 @@ export function Toast({ message }: { message?: string }) {
 	if (!message) return null;
 	return (
 		<Alert
-			className="fixed right-4 bottom-4 z-[60] w-[min(420px,calc(100vw-2rem))] border-border/70 bg-background shadow-[0_8px_30px_rgb(0_0_0/0.08)]"
+			className="absolute top-full right-0 left-0 z-[60] w-auto max-w-none rounded-none border-x-0 border-t-0 border-border/70 bg-background shadow-[0_8px_30px_rgb(0_0_0/0.08)] sm:fixed sm:top-auto sm:right-4 sm:bottom-4 sm:left-auto sm:z-[60] sm:w-[min(420px,calc(100vw-2rem))] sm:max-w-full sm:rounded-lg sm:border-x sm:border-t"
 			role="status"
 		>
 			<Check className="size-4 text-emerald-600" />

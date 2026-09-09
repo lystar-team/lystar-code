@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { encodeCbor, encodeFrame } from "@earendil-works/pi-protocol";
-import { encodeClientMessage, type ServerMessage, ServerMessageDecoder } from "@lystar/code-web-protocol";
+import {
+	encodeClientMessage,
+	RUNTIME_PROTOCOL_VERSION,
+	type ServerMessage,
+	ServerMessageDecoder,
+} from "@lystar/code-web-protocol";
 import { afterEach, describe, expect, it } from "vitest";
 
 const children = new Set<ChildProcessWithoutNullStreams>();
@@ -128,7 +133,7 @@ describe("Web Runtime stdio process", () => {
 		const reading = readMessages(child, 2);
 		child.stdin.write(
 			coalesce(
-				encodeClientMessage({ type: "hello", version: 2, clientInstanceId: "client" }),
+				encodeClientMessage({ type: "hello", version: RUNTIME_PROTOCOL_VERSION, clientInstanceId: "client" }),
 				encodeClientMessage({ type: "request", id: "about", request: { command: "get_about" } }),
 			),
 		);
@@ -144,7 +149,7 @@ describe("Web Runtime stdio process", () => {
 		child.stdin.end();
 	}, 20_000);
 
-	it.each([0, 3])(
+	it.each([0, 2])(
 		"returns a readable version error over the framed process transport for v%i",
 		async (version) => {
 			const child = startHost();
@@ -157,7 +162,7 @@ describe("Web Runtime stdio process", () => {
 				type: "hello_error",
 				error: {
 					code: "version",
-					message: `Web Runtime Protocol ${version} is unsupported; Host requires 2`,
+					message: `Web Runtime Protocol ${version} is unsupported; Host requires ${RUNTIME_PROTOCOL_VERSION}`,
 					retryable: false,
 				},
 			});
@@ -174,7 +179,7 @@ describe("Web Runtime stdio process", () => {
 		child.stdout.on("data", (chunk: Buffer) => messages.push(...decoder.push(chunk)));
 		child.stdin.write(
 			coalesce(
-				encodeClientMessage({ type: "hello", version: 2, clientInstanceId: "client" }),
+				encodeClientMessage({ type: "hello", version: RUNTIME_PROTOCOL_VERSION, clientInstanceId: "client" }),
 				encodeClientMessage({
 					type: "request",
 					id: "login",
@@ -238,7 +243,7 @@ describe("Web Runtime stdio process", () => {
 		const reading = readMessages(child, 5);
 		child.stdin.write(
 			coalesce(
-				encodeClientMessage({ type: "hello", version: 2, clientInstanceId: "client" }),
+				encodeClientMessage({ type: "hello", version: RUNTIME_PROTOCOL_VERSION, clientInstanceId: "client" }),
 				encodeClientMessage({
 					type: "request",
 					id: "oauth-login",

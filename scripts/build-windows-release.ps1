@@ -45,12 +45,13 @@ try {
     Copy-Item (Join-Path $Root "node_modules\@silvia-odwyer\photon-node\photon_rs_bg.wasm") $BundleDir
     Copy-Item -Recurse (Join-Path $PackageDir "docs"), (Join-Path $PackageDir "examples") $BundleDir
 
-    New-Item -ItemType Directory -Force (Join-Path $BundleDir "theme"), (Join-Path $BundleDir "assets"), (Join-Path $BundleDir "terminal"), (Join-Path $BundleDir "node_modules\@mariozechner\clipboard"), (Join-Path $BundleDir "node_modules\@mariozechner\clipboard-win32-x64-msvc"), (Join-Path $BundleDir "native\win32\prebuilds\win32-x64") | Out-Null
+    New-Item -ItemType Directory -Force (Join-Path $BundleDir "theme"), (Join-Path $BundleDir "assets"), (Join-Path $BundleDir "terminal"), (Join-Path $BundleDir "web"), (Join-Path $BundleDir "node_modules\@mariozechner\clipboard"), (Join-Path $BundleDir "node_modules\@mariozechner\clipboard-win32-x64-msvc"), (Join-Path $BundleDir "native\win32\prebuilds\win32-x64") | Out-Null
     Copy-Item (Join-Path $PackageDir "dist\modes\interactive\theme\*.json") (Join-Path $BundleDir "theme")
     Copy-Item (Join-Path $PackageDir "dist\modes\interactive\assets\*") (Join-Path $BundleDir "assets")
     Copy-Item -Recurse (Join-Path $PackageDir "dist\core\export-html") $BundleDir
     Copy-Item -Recurse (Join-Path $PackageDir "dist\skills") $BundleDir
     Copy-Item (Join-Path $PackageDir "assets\lystar-windows-icon.png"), (Join-Path $PackageDir "assets\lystar-windows-icon.ico") (Join-Path $BundleDir "assets")
+    Copy-Item (Join-Path $Root "packages\web\dist\*") (Join-Path $BundleDir "web")
 
     $TerminalSource = Join-Path $PackageDir "src\windows-terminal-host\terminal"
     Copy-Item (Join-Path $TerminalSource "index.html"), (Join-Path $TerminalSource "terminal.css"), (Join-Path $TerminalSource "terminal.js"), (Join-Path $TerminalSource "NotoSansCJK-Regular.ttc"), (Join-Path $TerminalSource "NotoSansCJK-LICENSE.txt") (Join-Path $BundleDir "terminal")
@@ -66,7 +67,7 @@ try {
     Copy-Item (Join-Path $ClipboardRoot "clipboard-win32-x64-msvc\clipboard.win32-x64-msvc.node") (Join-Path $BundleDir "node_modules\@mariozechner\clipboard")
     Copy-Item (Join-Path $Root "packages\tui\native\win32\prebuilds\win32-x64\win32-console-mode.node") (Join-Path $BundleDir "native\win32\prebuilds\win32-x64")
 
-    foreach ($RequiredFile in @("lc.exe", "package.json", "photon_rs_bg.wasm", "skills\imagegen\SKILL.md")) {
+    foreach ($RequiredFile in @("lc.exe", "package.json", "photon_rs_bg.wasm", "web\index.html", "web\version.json", "skills\imagegen\SKILL.md")) {
         if (!(Test-Path (Join-Path $BundleDir $RequiredFile))) { throw "Windows release bundle is missing $RequiredFile." }
     }
 

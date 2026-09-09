@@ -152,6 +152,8 @@ for platform in "${PLATFORMS[@]}"; do
     cp -r dist/core/export-html "$OUTPUT_DIR/$platform/"
     cp -r dist/skills "$OUTPUT_DIR/$platform/"
     cp -r docs examples "$OUTPUT_DIR/$platform/"
+    mkdir -p "$OUTPUT_DIR/$platform/web"
+    cp -r "$ROOT_DIR/packages/web/dist/." "$OUTPUT_DIR/$platform/web/"
 
     case "$platform" in
         darwin-arm64)
@@ -192,6 +194,8 @@ for platform in "${PLATFORMS[@]}"; do
     [[ -x "$OUTPUT_DIR/$platform/lystar" ]] || { printf 'Release bundle is missing lystar for %s\n' "$platform" >&2; exit 1; }
     [[ -f "$OUTPUT_DIR/$platform/package.json" ]] || { printf 'Release bundle is missing package.json for %s\n' "$platform" >&2; exit 1; }
     [[ -f "$OUTPUT_DIR/$platform/photon_rs_bg.wasm" ]] || { printf 'Release bundle is missing photon WASM for %s\n' "$platform" >&2; exit 1; }
+    [[ -f "$OUTPUT_DIR/$platform/web/index.html" ]] || { printf 'Release bundle is missing Web assets for %s\n' "$platform" >&2; exit 1; }
+    [[ -f "$OUTPUT_DIR/$platform/web/version.json" ]] || { printf 'Release bundle is missing Web version for %s\n' "$platform" >&2; exit 1; }
     [[ -f "$OUTPUT_DIR/$platform/skills/imagegen/SKILL.md" ]] || { printf 'Release bundle is missing built-in skills for %s\n' "$platform" >&2; exit 1; }
 done
 

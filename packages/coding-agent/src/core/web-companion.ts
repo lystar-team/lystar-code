@@ -583,11 +583,16 @@ export class WebCompanionServer {
 				return {};
 			case "steer":
 				if (!command.text?.trim()) throw new Error("提示内容不能为空");
-				await this.session.steer(command.text, sessionImages(command.images));
+				await this.session.steer(command.text, sessionImages(command.images), command.queueId);
 				return {};
 			case "follow_up":
 				if (!command.text?.trim()) throw new Error("提示内容不能为空");
-				await this.session.followUp(command.text, sessionImages(command.images));
+				await this.session.followUp(command.text, sessionImages(command.images), command.queueId);
+				return {};
+			case "queue_action":
+				if (!command.queueId?.trim()) throw new Error("排队消息标识不能为空");
+				if (command.action !== "remove" && command.action !== "steer") throw new Error("排队消息操作无效");
+				this.session.queueAction(command.queueId, command.action);
 				return {};
 			case "clear_queue":
 				return this.session.clearQueue();
@@ -851,6 +856,15 @@ export class WebCompanionServer {
 				if (part.type === "thinking") liveMessage.thinking += part.thinking;
 			}
 		}
+		const hasQueueDetails =
+			typeof this.session.getSteeringQueueItems === "function" &&
+			typeof this.session.getFollowUpQueueItems === "function";
+		const queuedSteerMessages = hasQueueDetails ? this.session.getSteeringQueueItems() : [];
+		const queuedFollowUpMessages = hasQueueDetails ? this.session.getFollowUpQueueItems() : [];
+		const queuedSteerCount = hasQueueDetails ? queuedSteerMessages.length : this.session.getSteeringMessages().length;
+		const queuedFollowUpCount = hasQueueDetails
+			? queuedFollowUpMessages.length
+			: this.session.getFollowUpMessages().length;
 		return {
 			protocolVersion: WEB_COMPANION_PROTOCOL_VERSION,
 			id: this.session.sessionManager.getSessionId(),
@@ -870,8 +884,10 @@ export class WebCompanionServer {
 			model: this.session.model ? { provider: this.session.model.provider, id: this.session.model.id } : undefined,
 			thinkingLevel: this.session.thinkingLevel,
 			leafId: this.session.sessionManager.getLeafId(),
-			queuedSteerCount: this.session.getSteeringMessages().length,
-			queuedFollowUpCount: this.session.getFollowUpMessages().length,
+			queuedSteerCount,
+			queuedFollowUpCount,
+			...(hasQueueDetails && queuedSteerMessages.length > 0 ? { queuedSteerMessages } : {}),
+			...(hasQueueDetails && queuedFollowUpMessages.length > 0 ? { queuedFollowUpMessages } : {}),
 			contextTokens: usage?.tokens,
 			contextWindow: usage?.contextWindow,
 			transcriptGeneration: this.session.sessionManager.getSessionId(),

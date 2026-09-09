@@ -1,11 +1,27 @@
 import type { SessionProgress, ToolActivity } from "@lystar/code-web-protocol";
-import type { PromptAttachmentPreview, WebTranscriptItem } from "../types.ts";
+import type { PromptAttachmentPreview, QueuedUserPrompt, WebTranscriptItem } from "../types.ts";
 import type { LiveTurnItem, WorkbenchState } from "./use-workbench.ts";
 
 const ACTIVE_TOOL_ACTIVITY_STATES = new Set<ToolActivity["state"]>(["preparing", "queued", "running"]);
 
 export function hasActiveToolActivities(activities: readonly ToolActivity[] | undefined): boolean {
 	return Boolean(activities?.some((activity) => ACTIVE_TOOL_ACTIVITY_STATES.has(activity.state)));
+}
+
+const ACTIVE_OPERATION_STATUSES = new Set(["accepted", "running", "waiting_for_input"]);
+
+export function hasActiveSessionWork(
+	state: Pick<WorkbenchState, "session" | "currentOperation" | "liveTools" | "liveTurnActive" | "liveCompaction">,
+): boolean {
+	return Boolean(
+		state.session?.activity === "running" ||
+		state.session?.activity === "waiting_for_input" ||
+		state.liveTurnActive ||
+		hasActiveToolActivities(state.session?.toolActivities) ||
+		Object.values(state.liveTools).some((tool) => tool.status === "running") ||
+		(state.liveCompaction && ["running", "waiting_retry"].includes(state.liveCompaction.status)) ||
+		(state.currentOperation && ACTIVE_OPERATION_STATUSES.has(state.currentOperation.status)),
+	);
 }
 
 export function canSendPrompt(
@@ -33,6 +49,15 @@ export function reconcilePendingUserPrompts(
 		if (index >= 0) remaining.splice(index, 1);
 	}
 	return remaining;
+}
+
+export function removeQueuedUserPrompt(pending: readonly QueuedUserPrompt[], id: string): QueuedUserPrompt[] {
+	return pending.filter((prompt) => prompt.id !== id);
+}
+export function removeQueuedUserPromptByText(pending: readonly QueuedUserPrompt[], text: string): QueuedUserPrompt[] {
+	const index = pending.findIndex((prompt) => prompt.text === text);
+	if (index < 0) return [...pending];
+	return [...pending.slice(0, index), ...pending.slice(index + 1)];
 }
 
 export function clearsThinking(progress: SessionProgress): boolean {

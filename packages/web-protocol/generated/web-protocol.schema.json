@@ -416,6 +416,11 @@
                         },
                         "additionalProperties": false
                       }
+                    },
+                    "queueId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
                     }
                   },
                   "additionalProperties": false
@@ -479,6 +484,66 @@
                         },
                         "additionalProperties": false
                       }
+                    },
+                    "queueId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionPath",
+                    "leaseId",
+                    "clientInstanceId",
+                    "clientRequestId",
+                    "queueId",
+                    "action"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "queue_action"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "queueId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "action": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "remove"
+                        },
+                        {
+                          "type": "string",
+                          "const": "steer"
+                        }
+                      ]
                     }
                   },
                   "additionalProperties": false
@@ -2038,6 +2103,9 @@
                       "type": "string",
                       "minLength": 1
                     },
+                    "repositoryPath": {
+                      "type": "string"
+                    },
                     "staged": {
                       "type": "boolean"
                     }
@@ -3110,6 +3178,11 @@
             "text": {
               "type": "string",
               "maxLength": 16384
+            },
+            "queueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
             }
           },
           "additionalProperties": false
@@ -3816,7 +3889,7 @@
             },
             "version": {
               "type": "integer",
-              "const": 2
+              "const": 3
             },
             "productVersion": {
               "type": "string",
@@ -3824,7 +3897,7 @@
             },
             "protocolVersion": {
               "type": "integer",
-              "const": 2
+              "const": 3
             },
             "serverInstanceId": {
               "type": "string",
@@ -4293,6 +4366,52 @@
                         "queuedFollowUpCount": {
                           "type": "integer",
                           "minimum": 0
+                        },
+                        "queuedSteerMessages": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "id",
+                              "text"
+                            ],
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 4096
+                              },
+                              "text": {
+                                "type": "string",
+                                "maxLength": 65536
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "maxItems": 128
+                        },
+                        "queuedFollowUpMessages": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "id",
+                              "text"
+                            ],
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 4096
+                              },
+                              "text": {
+                                "type": "string",
+                                "maxLength": 65536
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "maxItems": 128
                         },
                         "contextTokens": {
                           "anyOf": [
@@ -6036,6 +6155,106 @@
             },
             "additionalProperties": false
           }
+        },
+        "repositories": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "root",
+              "path",
+              "kind",
+              "ahead",
+              "behind",
+              "files"
+            ],
+            "properties": {
+              "root": {
+                "type": "string",
+                "minLength": 1
+              },
+              "path": {
+                "type": "string"
+              },
+              "kind": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "root"
+                  },
+                  {
+                    "type": "string",
+                    "const": "nested"
+                  }
+                ]
+              },
+              "branch": {
+                "type": "string",
+                "minLength": 1
+              },
+              "upstream": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ahead": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "behind": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "path",
+                    "indexStatus",
+                    "worktreeStatus",
+                    "staged",
+                    "unstaged",
+                    "untracked",
+                    "conflicted"
+                  ],
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "originalPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "indexStatus": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1
+                    },
+                    "worktreeStatus": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1
+                    },
+                    "staged": {
+                      "type": "boolean"
+                    },
+                    "unstaged": {
+                      "type": "boolean"
+                    },
+                    "untracked": {
+                      "type": "boolean"
+                    },
+                    "conflicted": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false
@@ -6052,6 +6271,9 @@
         "path": {
           "type": "string",
           "minLength": 1
+        },
+        "repositoryPath": {
+          "type": "string"
         },
         "staged": {
           "type": "boolean"
@@ -7334,6 +7556,52 @@
           "type": "integer",
           "minimum": 0
         },
+        "queuedSteerMessages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "text"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "text": {
+                "type": "string",
+                "maxLength": 65536
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 128
+        },
+        "queuedFollowUpMessages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "text"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "text": {
+                "type": "string",
+                "maxLength": 65536
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 128
+        },
         "contextTokens": {
           "anyOf": [
             {
@@ -7726,6 +7994,52 @@
         "queuedFollowUpCount": {
           "type": "integer",
           "minimum": 0
+        },
+        "queuedSteerMessages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "text"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "text": {
+                "type": "string",
+                "maxLength": 65536
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 128
+        },
+        "queuedFollowUpMessages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "text"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "text": {
+                "type": "string",
+                "maxLength": 65536
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 128
         },
         "contextTokens": {
           "anyOf": [
@@ -8127,6 +8441,52 @@
             "queuedFollowUpCount": {
               "type": "integer",
               "minimum": 0
+            },
+            "queuedSteerMessages": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "text"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "text": {
+                    "type": "string",
+                    "maxLength": 65536
+                  }
+                },
+                "additionalProperties": false
+              },
+              "maxItems": 128
+            },
+            "queuedFollowUpMessages": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "text"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "text": {
+                    "type": "string",
+                    "maxLength": 65536
+                  }
+                },
+                "additionalProperties": false
+              },
+              "maxItems": 128
             },
             "contextTokens": {
               "anyOf": [
@@ -8538,6 +8898,52 @@
               "type": "integer",
               "minimum": 0
             },
+            "queuedSteerMessages": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "text"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "text": {
+                    "type": "string",
+                    "maxLength": 65536
+                  }
+                },
+                "additionalProperties": false
+              },
+              "maxItems": 128
+            },
+            "queuedFollowUpMessages": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "text"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "text": {
+                    "type": "string",
+                    "maxLength": 65536
+                  }
+                },
+                "additionalProperties": false
+              },
+              "maxItems": 128
+            },
             "contextTokens": {
               "anyOf": [
                 {
@@ -8939,6 +9345,52 @@
         "queuedFollowUpCount": {
           "type": "integer",
           "minimum": 0
+        },
+        "queuedSteerMessages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "text"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "text": {
+                "type": "string",
+                "maxLength": 65536
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 128
+        },
+        "queuedFollowUpMessages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "text"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "text": {
+                "type": "string",
+                "maxLength": 65536
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 128
         },
         "contextTokens": {
           "anyOf": [
@@ -9567,6 +10019,52 @@
             "queuedFollowUpCount": {
               "type": "integer",
               "minimum": 0
+            },
+            "queuedSteerMessages": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "text"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "text": {
+                    "type": "string",
+                    "maxLength": 65536
+                  }
+                },
+                "additionalProperties": false
+              },
+              "maxItems": 128
+            },
+            "queuedFollowUpMessages": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "text"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "text": {
+                    "type": "string",
+                    "maxLength": 65536
+                  }
+                },
+                "additionalProperties": false
+              },
+              "maxItems": 128
             },
             "contextTokens": {
               "anyOf": [

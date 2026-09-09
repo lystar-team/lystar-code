@@ -31,6 +31,8 @@ import type {
 	ThinkingLevel,
 } from "@lystar/code-web-protocol";
 
+export type QueueAction = "remove" | "steer";
+
 export interface RuntimeEvent {
 	type: "progress" | "entry_committed" | "state_changed" | "ui_request";
 	payload: JsonValue | SessionProgress;
@@ -93,8 +95,9 @@ export interface RuntimeSession extends RuntimeSessionAsyncControls {
 	abortSubagent(agentId: string): Promise<void>;
 	continueSubagent(agentId: string, text: string): Promise<void>;
 	prompt(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void>;
-	steer(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void>;
-	followUp(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void>;
+	steer(text: string, images?: Array<{ data: string; mimeType: string }>, queueId?: string): Promise<void>;
+	followUp(text: string, images?: Array<{ data: string; mimeType: string }>, queueId?: string): Promise<void>;
+	queueAction(queueId: string, action: QueueAction): Promise<void>;
 	clearQueue(): Promise<{ steering: string[]; followUp: string[] }>;
 	compact(customInstructions?: string): Promise<void>;
 	exportSession(outputPath?: string): Promise<{ path: string }>;
@@ -259,7 +262,7 @@ export interface RuntimeAdapter {
 	getChangelog(sessionPath: string, width: number, cwd?: string): ChangelogResult;
 	getDiagnostics(cwd?: string, runtimeDiagnostics?: ToolRecoveryRuntimeDiagnostics): Promise<JsonValue>;
 	getGitStatus(cwd: string): Promise<GitStatus>;
-	getGitDiff(cwd: string, path: string | undefined, staged: boolean): Promise<GitDiff>;
+	getGitDiff(cwd: string, path: string | undefined, staged: boolean, repositoryPath?: string): Promise<GitDiff>;
 	checkForUpdates(): Promise<JsonValue>;
 	listSettings(sessionPath: string): SettingSummary[];
 	getSessionTree(sessionPath: string): SessionTreeNode[];

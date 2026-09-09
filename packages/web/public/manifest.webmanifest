@@ -1,0 +1,26 @@
+{
+  "name": "LYStar Code",
+  "short_name": "LYStar",
+  "description": "LYStar Code 本机 Agent Web 工作台",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#f5f7fb",
+  "background_color": "#f5f7fb",
+  "icons": [
+    {
+      "src": "/brand/lystar-mark.png",
+      "sizes": "1254x1254",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/brand/lystar-mark@2x.png",
+      "sizes": "2508x2508",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

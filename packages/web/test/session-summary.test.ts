@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { mergeSessionSummaries, updateSessionSummaryFirstMessage } from "../src/state/use-workbench.ts";
+import {
+	mergeSessionSummaries,
+	projectInspectorStateForSelection,
+	updateSessionSummaryFirstMessage,
+} from "../src/state/use-workbench.ts";
 import type { WebProject, WebSessionSummary } from "../src/types.ts";
 
 function session(overrides: Partial<WebSessionSummary> = {}): WebSessionSummary {
@@ -39,5 +43,23 @@ describe("session summary lifecycle", () => {
 			firstMessage: "首条 Prompt",
 			name: "自动标题",
 		});
+	});
+
+	it("跨项目切换时清空旧项目的审阅状态", () => {
+		expect(projectInspectorStateForSelection("project-1", "project-2")).toEqual({
+			fileTree: undefined,
+			fileTreeRootPath: undefined,
+			fileTreeCache: {},
+			fileTreeLoading: false,
+			gitStatus: undefined,
+			gitFileStats: {},
+			gitDiff: undefined,
+			gitLoading: false,
+			gitDiffLoading: false,
+			filePath: undefined,
+			fileContent: undefined,
+			fileLoading: false,
+		});
+		expect(projectInspectorStateForSelection("project-1", "project-1")).toEqual({});
 	});
 });

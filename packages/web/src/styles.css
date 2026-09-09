@@ -184,6 +184,60 @@ kbd {
 	box-shadow: 0 2px 12px rgb(0 0 0 / 0.05) !important;
 }
 
+/* 待发送消息和输入框属于同一个编辑面板，不能显示成独立通知卡。 */
+section[aria-label="排队消息"] {
+	position: relative;
+	z-index: 1;
+	margin-bottom: -1px !important;
+	border-color: var(--border) !important;
+	border-radius: var(--radius) var(--radius) 0 0 !important;
+	background: color-mix(in srgb, var(--muted) 32%, var(--background)) !important;
+	box-shadow: none !important;
+	corner-shape: squircle;
+}
+
+section[aria-label="排队消息"] > div:first-child {
+	min-height: 30px;
+	border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+	padding: 0.375rem 0.75rem !important;
+	font-size: 0.6875rem !important;
+	letter-spacing: 0.01em;
+}
+
+section[aria-label="排队消息"] > div:last-child {
+	max-height: 10.5rem !important;
+}
+
+section[aria-label="排队消息"] > div:last-child > div {
+	align-items: center !important;
+	gap: 0.5rem !important;
+	min-height: 42px;
+	padding: 0.5rem 0.625rem 0.5rem 0.75rem !important;
+	background: var(--background);
+}
+
+section[aria-label="排队消息"] > div:last-child > div p:first-child {
+	display: -webkit-box;
+	overflow: hidden;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	font-size: 0.8125rem !important;
+	line-height: 1.125rem !important;
+}
+
+section[aria-label="排队消息"] > div:last-child > div button {
+	width: 1.75rem;
+	height: 1.75rem;
+}
+
+section[aria-label="排队消息"] ~ .prompt-input-shell [data-slot="input-group"] {
+	border-radius: 0 0 var(--radius) var(--radius);
+}
+
+div:has(> .prompt-input-shell [data-slot="input-group-control"]:focus-visible) > section[aria-label="排队消息"] {
+	border-color: var(--ring) !important;
+}
+
 .code-block-token,
 .code-block-pre {
 	color: inherit;

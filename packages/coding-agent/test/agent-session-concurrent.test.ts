@@ -16,7 +16,7 @@ import {
 	type TextContent,
 } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -133,8 +133,8 @@ describe("AgentSession concurrent prompt guard", () => {
 		// Start first prompt (don't await, it will block until abort)
 		const firstPrompt = session.prompt("First message");
 
-		// Wait a tick for isStreaming to be set
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		// Wait for isStreaming to be set
+		await vi.waitFor(() => expect(session.isStreaming).toBe(true), { timeout: 1000 });
 
 		// Verify we're streaming
 		expect(session.isStreaming).toBe(true);
@@ -154,7 +154,7 @@ describe("AgentSession concurrent prompt guard", () => {
 
 		// Start first prompt
 		const firstPrompt = session.prompt("First message");
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		await vi.waitFor(() => expect(session.isStreaming).toBe(true), { timeout: 1000 });
 
 		// steer should work while streaming
 		expect(() => session.steer("Steering message")).not.toThrow();
@@ -170,7 +170,7 @@ describe("AgentSession concurrent prompt guard", () => {
 
 		// Start first prompt
 		const firstPrompt = session.prompt("First message");
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		await vi.waitFor(() => expect(session.isStreaming).toBe(true), { timeout: 1000 });
 
 		// followUp should work while streaming
 		expect(() => session.followUp("Follow-up message")).not.toThrow();
@@ -179,6 +179,53 @@ describe("AgentSession concurrent prompt guard", () => {
 		// Cleanup
 		await session.abort();
 		await firstPrompt.catch(() => {});
+	});
+
+	it("should remove or steer queued follow-up messages by ID", async () => {
+		await createSession();
+
+		const firstPrompt = session.prompt("First message");
+		await vi.waitFor(() => expect(session.isStreaming).toBe(true), { timeout: 1000 });
+
+		await session.followUp("Remove me", undefined, "queue-remove");
+		expect(session.getFollowUpQueueItems()).toEqual([{ id: "queue-remove", text: "Remove me" }]);
+		session.queueAction("queue-remove", "remove");
+		expect(session.getFollowUpQueueItems()).toEqual([]);
+
+		await session.followUp("Move me", undefined, "queue-steer");
+		session.queueAction("queue-steer", "steer");
+		expect(session.getFollowUpQueueItems()).toEqual([]);
+		expect(session.getSteeringQueueItems()).toEqual([{ id: "queue-steer", text: "Move me" }]);
+
+		session.clearQueue();
+		await session.abort();
+		await firstPrompt.catch(() => {});
+	});
+
+	it("should emit stable IDs when duplicate follow-up messages are consumed", async () => {
+		await createSession();
+		session.agent.streamFunction = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				stream.push({ type: "start", partial: createAssistantMessage("") });
+				stream.push({ type: "done", reason: "stop", message: createAssistantMessage("reply") });
+			});
+			return stream;
+		};
+
+		const consumedIds: string[] = [];
+		session.subscribe((event) => {
+			if (event.type === "message_start" && event.message.role === "user" && event.queueId) {
+				consumedIds.push(event.queueId);
+			}
+		});
+
+		await session.followUp("重复文案", undefined, "queue-one");
+		await session.followUp("重复文案", undefined, "queue-two");
+		await session.prompt("First message");
+
+		expect(consumedIds).toEqual(["queue-one", "queue-two"]);
+		expect(session.getFollowUpQueueItems()).toEqual([]);
 	});
 
 	it("should queue extension-origin steering messages while streaming", async () => {
@@ -265,7 +312,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		});
 
 		const firstPrompt = session.prompt("First message");
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		await vi.waitFor(() => expect(session.isStreaming).toBe(true), { timeout: 1000 });
 		expect(session.isStreaming).toBe(true);
 
 		const pi = (

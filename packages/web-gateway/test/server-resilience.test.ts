@@ -184,7 +184,7 @@ test("Gateway 可用 lastSeq 重放未订阅期间的详情事件", async (t) =>
 	]);
 });
 
-test("Gateway 丢弃只有 revision 变化的重复会话快照", async (t) => {
+test("Gateway 在队列数量不变但消息内容替换时广播会话快照", async (t) => {
 	const server = new WebGatewayServer(createConfig());
 	t.after(() => void server.close());
 	const internal = internals(server);
@@ -193,7 +193,7 @@ test("Gateway 丢弃只有 revision 变化的重复会话快照", async (t) => {
 	context.sockets.add(socket.webSocket);
 	internal.subscriptionsFor(socket.webSocket).add("session-1");
 
-	const snapshot = {
+	const snapshot: Extract<ServerEvent, { type: "session_snapshot" }>["snapshot"] = {
 		id: "session-1",
 		path: "/tmp/snapshot-session.jsonl",
 		cwd: "/tmp",
@@ -207,22 +207,36 @@ test("Gateway 丢弃只有 revision 变化的重复会话快照", async (t) => {
 		revision: 1,
 		leafId: null,
 		queuedSteerCount: 0,
-		queuedFollowUpCount: 0,
+		queuedFollowUpCount: 1,
+		queuedFollowUpMessages: [{ id: "queue-1", text: "第一条" }],
 		transcriptGeneration: "generation",
 		transcriptRevision: 10,
-	} as const;
+	};
 	internal.handleHostEvent(context, { type: "session_snapshot", snapshot });
 	internal.handleHostEvent(context, { type: "session_snapshot", snapshot: { ...snapshot, revision: 2 } });
-
 	assert.equal(socket.sent.length, 1);
-	assert.equal((socket.sent[0] as { seq?: number }).seq, 1);
+	internal.handleHostEvent(context, {
+		type: "session_snapshot",
+		snapshot: { ...snapshot, revision: 3, queuedFollowUpMessages: [{ id: "queue-2", text: "第二条" }] },
+	});
+
+	assert.equal(socket.sent.length, 2);
+	assert.deepEqual(
+		(socket.sent[1] as { snapshot?: { queuedFollowUpMessages?: unknown } }).snapshot?.queuedFollowUpMessages,
+		[{ id: "queue-2", text: "第二条" }],
+	);
 
 	internal.handleHostEvent(context, {
 		type: "session_snapshot",
-		snapshot: { ...snapshot, revision: 3, activity: "idle" },
+		snapshot: {
+			...snapshot,
+			revision: 4,
+			activity: "idle",
+			queuedFollowUpCount: 0,
+			queuedFollowUpMessages: [],
+		},
 	});
-	assert.equal(socket.sent.length, 2);
-	assert.equal((socket.sent[1] as { seq?: number }).seq, 2);
+	assert.equal(socket.sent.length, 3);
 });
 
 test("Gateway 心跳会终止连续未响应的 WebSocket", async (t) => {

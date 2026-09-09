@@ -137,7 +137,7 @@ export function Workbench({
 			</Dialog>
 
 			<main className="flex min-w-0 flex-1 flex-col overflow-hidden">
-				<header className="flex h-16 shrink-0 items-center justify-between gap-3 border-b border-border/60 px-5 sm:px-7">
+				<header className="relative flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-border/60 px-5 pt-[env(safe-area-inset-top)] sm:px-7">
 					<div className="flex min-w-0 items-center gap-2">
 						<Button
 							className="lg:hidden"
@@ -191,6 +191,7 @@ export function Workbench({
 							<LogOut className="size-4" />
 						</Button>
 					</div>
+					<Toast message={state.toast} />
 				</header>
 
 				<div className="relative flex min-h-0 flex-1 overflow-hidden">
@@ -228,7 +229,6 @@ export function Workbench({
 			/>
 			<ProjectRenameDialog project={editingProject} actions={actions} onClose={() => setEditingProject(undefined)} />
 			<UiRequestDialog state={state} actions={actions} />
-			<Toast message={state.toast} />
 		</div>
 	);
 }

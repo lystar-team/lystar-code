@@ -1,7 +1,12 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ClientMessage, ServerMessage, SessionStateSnapshot } from "@lystar/code-web-protocol";
+import {
+	type ClientMessage,
+	RUNTIME_PROTOCOL_VERSION,
+	type ServerMessage,
+	type SessionStateSnapshot,
+} from "@lystar/code-web-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSession, AgentSessionEventListener } from "../../coding-agent/src/core/agent-session.ts";
 import { openSessionWithWebHandoff } from "../../coding-agent/src/core/agent-session-runtime.ts";
@@ -120,7 +125,11 @@ describe("Web Runtime 到 TUI 的会话交接", () => {
 			rmSync(root, { recursive: true, force: true });
 		});
 
-		await connection.handle({ type: "hello", version: 2, clientInstanceId: "web-client" });
+		await connection.handle({
+			type: "hello",
+			version: RUNTIME_PROTOCOL_VERSION,
+			clientInstanceId: "web-client",
+		});
 		await connection.handle({
 			type: "request",
 			id: "acquire",
@@ -205,7 +214,11 @@ describe("Web Runtime 到 TUI 的会话交接", () => {
 			rmSync(root, { recursive: true, force: true });
 		});
 
-		await connection.handle({ type: "hello", version: 2, clientInstanceId: "web-client" });
+		await connection.handle({
+			type: "hello",
+			version: RUNTIME_PROTOCOL_VERSION,
+			clientInstanceId: "web-client",
+		});
 		await connection.handle({
 			type: "request",
 			id: "acquire",

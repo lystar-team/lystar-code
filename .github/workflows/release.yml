@@ -129,6 +129,8 @@ jobs:
           grep -Fxq 'lystar-agent/package.json' archive-contents.txt
           grep -Fxq 'lystar-agent/photon_rs_bg.wasm' archive-contents.txt
           grep -Fxq 'lystar-agent/skills/imagegen/SKILL.md' archive-contents.txt
+          grep -Fxq 'lystar-agent/web/index.html' archive-contents.txt
+          grep -Fxq 'lystar-agent/web/version.json' archive-contents.txt
           ! grep -Fxq 'lystar-agent/la' archive-contents.txt
           rm archive-contents.txt
 
@@ -231,6 +233,8 @@ jobs:
           if ((& "$Bundle/lc.exe" --version | Out-String).Trim() -ne $Version) { throw "lc.exe version mismatch" }
           if (!(Test-Path "$Bundle/lystar.cmd")) { throw "lystar.cmd missing" }
           if (!(Test-Path "$Bundle/skills/imagegen/SKILL.md")) { throw "imagegen skill missing" }
+          if (!(Test-Path "$Bundle/web/index.html")) { throw "Web index missing" }
+          if (!(Test-Path "$Bundle/web/version.json")) { throw "Web version missing" }
           if (Test-Path "$Bundle/la.exe") { throw "legacy la.exe must not be shipped" }
           .\scripts\test-windows-terminal.ps1 -BundleDir $Bundle -ScreenshotPath "packages/coding-agent/binaries/windows-terminal-smoke.png"
 

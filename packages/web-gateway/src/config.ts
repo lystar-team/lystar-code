@@ -1,18 +1,56 @@
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { isIP } from "node:net";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defaultRuntimeEndpoint } from "@lystar/code-web-runtime";
+import { defaultRuntimeEndpoint, runtimeTcpEndpoint } from "@lystar/code-web-runtime";
+import {
+	DEFAULT_RUNTIME_HOST,
+	DEFAULT_RUNTIME_PORT,
+	DEFAULT_WEB_HOST,
+	defaultAllowedHosts,
+	loadWebConfig,
+	parseGatewayPort,
+	validateAllowedHosts,
+	validateGatewayHost,
+	validateWebPassword,
+	WebConfigStore,
+} from "./web-config.ts";
+
+export {
+	DEFAULT_ALLOWED_HOSTS,
+	DEFAULT_RUNTIME_HOST,
+	DEFAULT_RUNTIME_PORT,
+	DEFAULT_WEB_HOST,
+	DEFAULT_WEB_PORT,
+	defaultAllowedHosts,
+	type LegacyWebConfig,
+	loadWebConfig,
+	parseGatewayPort,
+	saveWebConfig,
+	validateAllowedHosts,
+	validateGatewayHost,
+	validateWebPassword,
+	WEB_CONFIG_VERSION,
+	type WebConfig,
+	type WebConfigInput,
+	WebConfigStore,
+	webConfigPath,
+	webGatewaySettingsPath,
+	webGatewayTokenPath,
+} from "./web-config.ts";
 
 export const DEFAULT_WEB_GATEWAY_PORT = 1422;
-const WEB_PASSWORD_MIN_LENGTH = 8;
-const WEB_PASSWORD_MAX_LENGTH = 256;
 
 export interface WebGatewaySettings {
 	host: string;
 	port: number;
+}
+
+export interface RuntimeInvocation {
+	command: string;
+	args: string[];
+	cwd: string;
 }
 
 export interface WebGatewayConfig {
@@ -20,23 +58,22 @@ export interface WebGatewayConfig {
 	port: number;
 	agentDir: string;
 	runtimeEndpoint: string;
+	runtimePort?: number;
 	token: string;
-	tokenPath: string;
+	/** 兼容旧调用方，实际配置文件为 configPath。 */
+	tokenPath?: string;
+	configPath?: string;
 	allowedHosts: string[];
 	staticDir: string;
 	manageRuntime: boolean;
+	runtimeInvocation?: RuntimeInvocation;
 }
 
-function webDirectory(agentDir: string): string {
-	return join(agentDir, "web");
-}
-
-export function webGatewaySettingsPath(agentDir: string): string {
-	return join(webDirectory(agentDir), "gateway.json");
-}
-
-export function webGatewayTokenPath(agentDir: string): string {
-	return join(webDirectory(agentDir), "token");
+export interface LoadWebGatewayConfigOptions {
+	defaultPort?: number;
+	defaultRuntimePort?: number;
+	staticDir?: string;
+	runtimeInvocation?: RuntimeInvocation;
 }
 
 function envString(name: string): string | undefined {
@@ -44,129 +81,125 @@ function envString(name: string): string | undefined {
 	return value || undefined;
 }
 
-export function parseGatewayPort(value: unknown): number {
-	const port = typeof value === "number" ? value : Number(value);
-	if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("端口必须在 1 到 65535 之间");
-	return port;
+export function getWebAgentDir(): string {
+	return envString("PI_CODING_AGENT_DIR") ?? join(homedir(), ".pi", "agent");
 }
 
-function parsePort(value: string | undefined): number {
-	return parseGatewayPort(value ?? DEFAULT_WEB_GATEWAY_PORT);
+function parsePort(value: string | undefined, fallback: number): number {
+	return parseGatewayPort(value ?? fallback);
 }
 
-export function validateGatewayHost(value: unknown): string {
-	if (typeof value !== "string") throw new Error("可访问 IP 必须是文本");
-	const host = value.trim();
-	if (!host || host.length > 255 || (host !== "localhost" && isIP(host) === 0))
-		throw new Error("可访问 IP 必须是有效的 IPv4 或 IPv6 地址");
-	return host;
-}
-
-export function validateWebPassword(value: unknown): string {
-	if (typeof value !== "string") throw new Error("访问密码必须是文本");
-	const password = value.trim();
-	if (password.length < WEB_PASSWORD_MIN_LENGTH || password.length > WEB_PASSWORD_MAX_LENGTH)
-		throw new Error(`访问密码长度必须在 ${WEB_PASSWORD_MIN_LENGTH} 到 ${WEB_PASSWORD_MAX_LENGTH} 个字符之间`);
-	return password;
+export function defaultWebStaticDir(): string {
+	const moduleDir = dirname(fileURLToPath(import.meta.url));
+	const candidates = [resolve(moduleDir, "../../web/dist"), resolve(process.cwd(), "packages/web/dist")];
+	return candidates.find((candidate) => existsSync(join(candidate, "index.html"))) ?? candidates[0];
 }
 
 export async function loadWebGatewaySettings(agentDir: string): Promise<WebGatewaySettings | undefined> {
-	let content: string;
-	try {
-		content = await readFile(webGatewaySettingsPath(agentDir), "utf8");
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-		throw error;
-	}
-	let value: unknown;
-	try {
-		value = JSON.parse(content);
-	} catch {
-		throw new Error("Web Gateway 配置文件不是有效 JSON");
-	}
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Web Gateway 配置格式无效");
-	const record = value as Record<string, unknown>;
-	try {
-		return {
-			host: validateGatewayHost(record.host),
-			port: parseGatewayPort(record.port),
-		};
-	} catch (error) {
-		throw new Error(`Web Gateway 配置无效：${error instanceof Error ? error.message : String(error)}`);
-	}
+	const config = await loadWebConfig(agentDir);
+	return config ? { host: config.host, port: config.port } : undefined;
 }
 
-async function writeWebFile(agentDir: string, fileName: string, content: string): Promise<string> {
-	const directory = webDirectory(agentDir);
-	const path = join(directory, fileName);
-	await mkdir(directory, { recursive: true, mode: 0o700 });
-	const temporaryPath = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
-	await writeFile(temporaryPath, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
-	await rename(temporaryPath, path);
-	if (process.platform !== "win32") await chmod(path, 0o600);
-	return path;
-}
-
+/** 兼容旧调用方；新写入统一保存完整 web-config.json。 */
 export async function saveWebGatewaySettings(
 	agentDir: string,
 	settings: WebGatewaySettings,
 ): Promise<WebGatewaySettings> {
-	const normalized = {
-		host: validateGatewayHost(settings.host),
-		port: parseGatewayPort(settings.port),
-	};
-	await writeWebFile(agentDir, "gateway.json", `${JSON.stringify(normalized)}\n`);
-	return normalized;
-}
-
-export async function saveWebGatewayToken(agentDir: string, password: string): Promise<string> {
-	const normalized = validateWebPassword(password);
-	await writeWebFile(agentDir, "token", `${normalized}\n`);
-	return normalized;
-}
-
-function parseAllowedHosts(value: string | undefined, host: string): string[] {
-	const configured = value
-		?.split(",")
-		.map((item) => item.trim().toLowerCase())
-		.filter(Boolean);
-	if (configured && configured.length > 0) return configured;
-	return host === "0.0.0.0" || host === "::"
-		? ["localhost", "127.0.0.1", "::1", "0.0.0.0"]
-		: ["localhost", "127.0.0.1", "::1", host.toLowerCase()];
-}
-
-async function loadOrCreateToken(agentDir: string): Promise<{ token: string; tokenPath: string }> {
-	const configured = envString("PI_WEB_TOKEN");
-	const tokenPath = webGatewayTokenPath(agentDir);
-	if (configured) return { token: configured, tokenPath };
-	try {
-		const stored = (await readFile(tokenPath, "utf8")).trim();
-		if (stored) return { token: stored, tokenPath };
-	} catch {}
-	const token = randomBytes(32).toString("hex");
-	await writeWebFile(agentDir, "token", `${token}\n`);
-	return { token, tokenPath };
-}
-
-export async function loadWebGatewayConfig(): Promise<WebGatewayConfig> {
-	const agentDir = envString("PI_CODING_AGENT_DIR") ?? join(homedir(), ".pi", "agent");
-	const persisted = await loadWebGatewaySettings(agentDir);
-	const host = envString("PI_WEB_HOST") ?? persisted?.host ?? "0.0.0.0";
-	const port = parsePort(envString("PI_WEB_PORT") ?? persisted?.port?.toString());
-	const token = await loadOrCreateToken(agentDir);
-	const staticDir =
-		envString("PI_WEB_STATIC_DIR") ?? fileURLToPath(new URL("../../packages/web/dist", import.meta.url));
-	return {
+	const store = new WebConfigStore(agentDir);
+	const current = await store.loadOrMigrate();
+	const legacy = current ? undefined : await store.loadLegacy();
+	const host = validateGatewayHost(settings.host);
+	const port = parseGatewayPort(settings.port);
+	await store.save({
 		host,
+		allowedHosts: current?.allowedHosts ?? legacy?.allowedHosts ?? defaultAllowedHosts(host),
 		port,
+		runtimePort: current?.runtimePort ?? legacy?.runtimePort ?? DEFAULT_RUNTIME_PORT,
+		password: current?.password ?? legacy?.password ?? randomBytes(32).toString("hex"),
+	});
+	return { host, port };
+}
+
+/** 兼容旧调用方；新写入统一保存完整 web-config.json。 */
+export async function saveWebGatewayToken(agentDir: string, password: string): Promise<string> {
+	const store = new WebConfigStore(agentDir);
+	const current = await store.loadOrMigrate();
+	const legacy = current ? undefined : await store.loadLegacy();
+	return (
+		await store.save({
+			host: current?.host ?? legacy?.host ?? DEFAULT_WEB_HOST,
+			allowedHosts:
+				current?.allowedHosts ??
+				legacy?.allowedHosts ??
+				defaultAllowedHosts(current?.host ?? legacy?.host ?? DEFAULT_WEB_HOST),
+			port: current?.port ?? legacy?.port ?? DEFAULT_WEB_GATEWAY_PORT,
+			runtimePort: current?.runtimePort ?? legacy?.runtimePort ?? DEFAULT_RUNTIME_PORT,
+			password: validateWebPassword(password),
+		})
+	).password;
+}
+
+export async function loadWebGatewayConfig(options: LoadWebGatewayConfigOptions = {}): Promise<WebGatewayConfig> {
+	const agentDir = getWebAgentDir();
+	const store = new WebConfigStore(agentDir);
+	let persisted = await store.loadOrMigrate();
+	const environmentHost = envString("PI_WEB_HOST");
+	const environmentAllowedHosts = envString("PI_WEB_ALLOWED_HOSTS");
+	const environmentPort = envString("PI_WEB_PORT");
+	const environmentRuntimePort = envString("PI_WEB_RUNTIME_PORT");
+	const environmentPassword = envString("PI_WEB_TOKEN");
+	if (!persisted) {
+		const legacy = await store.loadLegacy();
+		const host = environmentHost ?? legacy.host ?? DEFAULT_WEB_HOST;
+		persisted = await store.save({
+			host,
+			allowedHosts:
+				environmentAllowedHosts !== undefined
+					? validateAllowedHosts(environmentAllowedHosts)
+					: (legacy.allowedHosts ?? defaultAllowedHosts(host)),
+			port: parsePort(environmentPort ?? legacy.port?.toString(), options.defaultPort ?? DEFAULT_WEB_GATEWAY_PORT),
+			runtimePort: parsePort(
+				environmentRuntimePort ?? legacy.runtimePort?.toString(),
+				options.defaultRuntimePort ?? DEFAULT_RUNTIME_PORT,
+			),
+			password: environmentPassword ?? legacy.password ?? randomBytes(32).toString("hex"),
+		});
+	} else if (
+		environmentHost ||
+		environmentAllowedHosts ||
+		environmentPort ||
+		environmentRuntimePort ||
+		environmentPassword
+	) {
+		persisted = await store.save({
+			host: environmentHost ?? persisted.host,
+			allowedHosts:
+				environmentAllowedHosts !== undefined
+					? validateAllowedHosts(environmentAllowedHosts)
+					: persisted.allowedHosts,
+			port: parsePort(environmentPort, persisted.port),
+			runtimePort: parsePort(environmentRuntimePort, persisted.runtimePort),
+			password: environmentPassword ?? persisted.password,
+		});
+	}
+	const staticDir = options.staticDir ?? envString("PI_WEB_STATIC_DIR") ?? defaultWebStaticDir();
+	const runtimePort = persisted.runtimePort;
+	const runtimeEndpoint = options.runtimeInvocation
+		? runtimeTcpEndpoint(DEFAULT_RUNTIME_HOST, runtimePort)
+		: (envString("PI_WEB_RUNTIME_ENDPOINT") ?? defaultRuntimeEndpoint(agentDir));
+	return {
+		host: persisted.host,
+		port: persisted.port,
+		runtimePort,
 		agentDir,
-		runtimeEndpoint: envString("PI_WEB_RUNTIME_ENDPOINT") ?? defaultRuntimeEndpoint(agentDir),
-		token: token.token,
-		tokenPath: token.tokenPath,
-		allowedHosts: parseAllowedHosts(process.env.PI_WEB_ALLOWED_HOSTS, host),
+		runtimeEndpoint,
+		token: persisted.password,
+		tokenPath: store.path,
+		configPath: store.path,
+		allowedHosts: persisted.allowedHosts,
 		staticDir,
 		manageRuntime: process.env.PI_WEB_MANAGE_RUNTIME !== "0",
+		...(options.runtimeInvocation ? { runtimeInvocation: options.runtimeInvocation } : {}),
 	};
 }
 

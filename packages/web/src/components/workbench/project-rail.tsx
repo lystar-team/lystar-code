@@ -1,24 +1,64 @@
-import { Archive, ArrowRight, ChevronDown, Folder, LoaderCircle, LogOut, MessageSquarePlus, MoreHorizontal, Pin, Plus, Search, Settings, SunMoon, Trash2 } from "lucide-react";
+import {
+	Archive,
+	ArrowRight,
+	ChevronDown,
+	Folder,
+	FolderPlus,
+	FolderTree,
+	List,
+	LoaderCircle,
+	LogOut,
+	MessageSquarePlus,
+	MoreHorizontal,
+	Pencil,
+	Pin,
+	Plus,
+	Search,
+	Settings,
+	SunMoon,
+	Trash2,
+} from "lucide-react";
 import type { DragEvent as ReactDragEvent } from "react";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "../../lib/utils";
 import type { WorkbenchState } from "../../state/use-workbench";
-import { sessionTitle } from "../../state/use-workbench";
-import type { WebProject, WebSessionSummary } from "../../types";
+import type { ProjectGroup, WebProject, WebSessionSummary } from "../../types";
+import { BrandLogo } from "../brand-logo";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "../ui/dropdown-menu";
+import {
+	ContextMenu,
+	ContextMenuContent,
+	ContextMenuItem,
+	ContextMenuSeparator,
+	ContextMenuTrigger,
+} from "../ui/context-menu";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuSeparator,
+	DropdownMenuTrigger,
+} from "../ui/dropdown-menu";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card";
 import { Input } from "../ui/input";
 import { ScrollArea } from "../ui/scroll-area";
 import { Separator } from "../ui/separator";
-import { BrandLogo } from "../brand-logo";
+import { ProjectGroupDialog, ProjectGroupPickerDialog } from "./project-group-dialog";
+import { type DropPosition, reorderIds } from "./project-rail-utils";
 import { SessionButton } from "./session-button";
-import { VirtualizedSessionList } from "./virtualized-session-list";
+import { SessionManagementDialog } from "./session-management-dialog";
 import type { WorkbenchActions } from "./types";
+import { VirtualizedSessionList } from "./virtualized-session-list";
 
 const SESSION_PAGE_SIZE = 10;
+
+type ProjectDropTarget =
+	| { kind: "project"; projectId: string; position: DropPosition }
+	| { kind: "group"; groupId: string }
+	| { kind: "ungrouped" };
+type SessionDrag = { projectId: string; sessionId: string };
+type SessionDropTarget = { projectId: string; sessionId: string; position: DropPosition };
 
 type ProjectRailProps = {
 	state: WorkbenchState;
@@ -41,6 +81,7 @@ function projectRailPropsEqual(previous: ProjectRailProps, next: ProjectRailProp
 		previous.state.currentProjectId === next.state.currentProjectId &&
 		previous.state.loading === next.state.loading &&
 		previous.state.projects === next.state.projects &&
+		previous.state.projectGroups === next.state.projectGroups &&
 		previous.state.sessionId === next.state.sessionId &&
 		previous.state.unreadSessionIds === next.state.unreadSessionIds
 	);
@@ -48,6 +89,18 @@ function projectRailPropsEqual(previous: ProjectRailProps, next: ProjectRailProp
 
 function isSessionRunning(session: WebSessionSummary): boolean {
 	return session.activity === "running" || session.activity === "waiting_for_input";
+}
+
+function dropPosition(event: ReactDragEvent<HTMLElement>): DropPosition {
+	const rect = event.currentTarget.getBoundingClientRect();
+	return event.clientY < rect.top + rect.height / 2 ? "before" : "after";
+}
+
+function orderedSessions(project: WebProject): WebSessionSummary[] {
+	return [
+		...project.sessions.filter((session) => session.pinned),
+		...project.sessions.filter((session) => !session.pinned),
+	];
 }
 
 export const ProjectRail = memo(function ProjectRail({
@@ -60,64 +113,225 @@ export const ProjectRail = memo(function ProjectRail({
 	onNavigate,
 }: ProjectRailProps) {
 	const [query, setQuery] = useState("");
-	const filteredProjects = projects.filter((project) => project.name.toLowerCase().includes(query.toLowerCase()));
-	const archivedProjects = state.projects.filter((project) => project.archived);
 	const [showArchived, setShowArchived] = useState(false);
 	const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(() => new Set());
+	const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(() => new Set());
 	const [sessionVisibleCounts, setSessionVisibleCounts] = useState<Record<string, number>>({});
 	const [openProjectMenuId, setOpenProjectMenuId] = useState<string | null>(null);
-	const [renamingSession, setRenamingSession] = useState<WebSessionSummary>();
-	const [renameDraft, setRenameDraft] = useState("");
-	const [deletingSession, setDeletingSession] = useState<WebSessionSummary>();
-	const [sessionActionId, setSessionActionId] = useState<string>();
+	const [openGroupMenuId, setOpenGroupMenuId] = useState<string | null>(null);
+	const [projectDropTarget, setProjectDropTarget] = useState<ProjectDropTarget>();
+	const [draggedProjectId, setDraggedProjectId] = useState<string>();
+	const [draggedSession, setDraggedSession] = useState<SessionDrag>();
+	const [sessionDropTarget, setSessionDropTarget] = useState<SessionDropTarget>();
+	const [editingGroup, setEditingGroup] = useState<ProjectGroup>();
+	const [groupDialogOpen, setGroupDialogOpen] = useState(false);
+	const [movingProject, setMovingProject] = useState<WebProject>();
+	const [sessionManagementProject, setSessionManagementProject] = useState<WebProject>();
 	const [projectNameDrafts, setProjectNameDrafts] = useState<Record<string, string>>({});
 	const [editingProjectId, setEditingProjectId] = useState<string>();
 	const [projectActionId, setProjectActionId] = useState<string>();
-	const [draggedProjectId, setDraggedProjectId] = useState<string>();
-	const [dragOverProjectId, setDragOverProjectId] = useState<string>();
-	const [draggedSession, setDraggedSession] = useState<{ projectId: string; sessionId: string }>();
-	const [dragOverSessionId, setDragOverSessionId] = useState<string>();
 	const sessionViewportRef = useRef<HTMLDivElement>(null);
+
+	const normalizedQuery = query.trim().toLowerCase();
+	const archivedProjects = state.projects.filter((project) => project.archived);
+	const visibleProjects = useMemo(
+		() =>
+			normalizedQuery
+				? projects.filter((project) => project.name.toLowerCase().includes(normalizedQuery))
+				: projects,
+		[normalizedQuery, projects],
+	);
+
+	const projectSections = useMemo(() => {
+		const assigned = new Set<string>();
+		const groups = state.projectGroups.map((group) => {
+			const groupProjects = projects.filter(
+				(project) => group.projectIds.includes(project.id) && !assigned.has(project.id),
+			);
+			for (const project of groupProjects) assigned.add(project.id);
+			return { group, projects: groupProjects };
+		});
+		return {
+			groups,
+			ungrouped: projects.filter((project) => !assigned.has(project.id)),
+		};
+	}, [projects, state.projectGroups]);
+
+	const filteredProjectSections = useMemo(() => {
+		const visibleIds = new Set(visibleProjects.map((project) => project.id));
+		return {
+			groups: projectSections.groups.map((section) => ({
+				...section,
+				projects: section.projects.filter((project) => visibleIds.has(project.id)),
+			})),
+			ungrouped: projectSections.ungrouped.filter((project) => visibleIds.has(project.id)),
+		};
+	}, [projectSections, visibleProjects]);
+
+	const displayedProjectIds = useMemo(
+		() => [
+			...projectSections.groups.flatMap((section) => section.projects.map((project) => project.id)),
+			...projectSections.ungrouped.map((project) => project.id),
+		],
+		[projectSections],
+	);
 
 	useEffect(() => {
 		if (!currentProject?.id) return;
-		setExpandedProjectIds((current) => {
-			if (current.has(currentProject.id)) return current;
-			return new Set(current).add(currentProject.id);
-		});
-	}, [currentProject?.id]);
+		setExpandedProjectIds((current) =>
+			current.has(currentProject.id) ? current : new Set(current).add(currentProject.id),
+		);
+		const currentGroup = state.projectGroups.find((group) => group.projectIds.includes(currentProject.id));
+		if (currentGroup)
+			setExpandedGroupIds((current) =>
+				current.has(currentGroup.id) ? current : new Set(current).add(currentGroup.id),
+			);
+	}, [currentProject?.id, state.projectGroups]);
 
-	const moveId = (ids: readonly string[], sourceId: string, targetId: string): string[] => {
-		const next = [...ids];
-		const sourceIndex = next.indexOf(sourceId);
-		const targetIndex = next.indexOf(targetId);
-		if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return next;
-		const [moved] = next.splice(sourceIndex, 1);
-		next.splice(targetIndex, 0, moved);
+	const groupForProject = (projectId: string): ProjectGroup | undefined =>
+		state.projectGroups.find((group) => group.projectIds.includes(projectId));
+
+	const resetProjectDrag = () => {
+		setDraggedProjectId(undefined);
+		setProjectDropTarget(undefined);
+	};
+
+	const resetSessionDrag = () => {
+		setDraggedSession(undefined);
+		setSessionDropTarget(undefined);
+	};
+
+	const handleProjectDragStart = (event: ReactDragEvent<HTMLElement>, projectId: string) => {
+		if (normalizedQuery) return;
+		event.dataTransfer.effectAllowed = "move";
+		event.dataTransfer.setData("text/plain", projectId);
+		setDraggedProjectId(projectId);
+	};
+
+	const handleProjectDragOver = (event: ReactDragEvent<HTMLElement>, projectId: string) => {
+		if (!draggedProjectId || draggedProjectId === projectId || normalizedQuery) return;
+		event.preventDefault();
+		event.dataTransfer.dropEffect = "move";
+		setProjectDropTarget({ kind: "project", projectId, position: dropPosition(event) });
+	};
+
+	const handleProjectDrop = (event: ReactDragEvent<HTMLElement>, targetProjectId: string) => {
+		event.preventDefault();
+		const sourceProjectId = draggedProjectId || event.dataTransfer.getData("text/plain");
+		const sourceProject = projects.find((project) => project.id === sourceProjectId);
+		const targetProject = projects.find((project) => project.id === targetProjectId);
+		if (!sourceProject || !targetProject || sourceProjectId === targetProjectId) {
+			resetProjectDrag();
+			return;
+		}
+		if (sourceProject.pinned !== targetProject.pinned) {
+			actions.showToast("置顶项目与普通项目分别调整顺序");
+			resetProjectDrag();
+			return;
+		}
+		const position = dropPosition(event);
+		const sourceGroup = groupForProject(sourceProjectId)?.id;
+		const targetGroup = groupForProject(targetProjectId)?.id;
+		if (sourceGroup !== targetGroup) void actions.setProjectGroup(sourceProjectId, targetGroup);
+		void actions.reorderProjects(reorderIds(displayedProjectIds, sourceProjectId, targetProjectId, position));
+		resetProjectDrag();
+	};
+
+	const projectIdsAfterGroupDrop = (groupId: string, sourceProjectId: string): string[] => {
+		const next = displayedProjectIds.filter((projectId) => projectId !== sourceProjectId);
+		const group = projectSections.groups.find((section) => section.group.id === groupId);
+		if (!group) return next;
+		const lastProjectId = group.projects
+			.map((project) => project.id)
+			.filter((projectId) => projectId !== sourceProjectId)
+			.at(-1);
+		if (lastProjectId) {
+			const index = next.indexOf(lastProjectId);
+			if (index >= 0) {
+				next.splice(index + 1, 0, sourceProjectId);
+				return next;
+			}
+		}
+		const groupIndex = projectSections.groups.findIndex((section) => section.group.id === groupId);
+		const insertIndex = projectSections.groups
+			.slice(0, groupIndex)
+			.reduce((count, section) => count + section.projects.length, 0);
+		next.splice(Math.min(insertIndex, next.length), 0, sourceProjectId);
 		return next;
 	};
 
-	const orderedSessions = (project: WebProject): WebSessionSummary[] => [
-		...project.sessions.filter((session) => session.pinned),
-		...project.sessions.filter((session) => !session.pinned),
-	];
-
-	const openRenameSessionDialog = (session: WebSessionSummary) => {
-		setRenamingSession(session);
-		setRenameDraft(session.name ?? "");
+	const handleGroupDragOver = (event: ReactDragEvent<HTMLElement>, groupId: string) => {
+		if (!draggedProjectId || normalizedQuery) return;
+		event.preventDefault();
+		event.dataTransfer.dropEffect = "move";
+		setProjectDropTarget({ kind: "group", groupId });
 	};
 
-	const submitRenameDialog = async () => {
-		const session = renamingSession;
-		const name = renameDraft.trim();
-		if (!session || !name) return;
-		setSessionActionId(session.id);
-		try {
-			await actions.renameSession(session.id, name);
-			setRenamingSession(undefined);
-		} finally {
-			setSessionActionId(undefined);
+	const handleGroupDrop = (event: ReactDragEvent<HTMLElement>, groupId: string) => {
+		event.preventDefault();
+		const sourceProjectId = draggedProjectId || event.dataTransfer.getData("text/plain");
+		const sourceProject = projects.find((project) => project.id === sourceProjectId);
+		if (!sourceProject) {
+			resetProjectDrag();
+			return;
 		}
+		if (groupForProject(sourceProjectId)?.id !== groupId) void actions.setProjectGroup(sourceProjectId, groupId);
+		void actions.reorderProjects(projectIdsAfterGroupDrop(groupId, sourceProjectId));
+		resetProjectDrag();
+	};
+
+	const handleUngroupedDragOver = (event: ReactDragEvent<HTMLElement>) => {
+		if (!draggedProjectId || normalizedQuery) return;
+		event.preventDefault();
+		event.dataTransfer.dropEffect = "move";
+		setProjectDropTarget({ kind: "ungrouped" });
+	};
+
+	const handleUngroupedDrop = (event: ReactDragEvent<HTMLElement>) => {
+		event.preventDefault();
+		const sourceProjectId = draggedProjectId || event.dataTransfer.getData("text/plain");
+		const sourceProject = projects.find((project) => project.id === sourceProjectId);
+		if (!sourceProject) {
+			resetProjectDrag();
+			return;
+		}
+		if (groupForProject(sourceProjectId)) void actions.setProjectGroup(sourceProjectId);
+		void actions.reorderProjects([
+			...displayedProjectIds.filter((projectId) => projectId !== sourceProjectId),
+			sourceProjectId,
+		]);
+		resetProjectDrag();
+	};
+
+	const handleSessionDrop = (event: ReactDragEvent<HTMLElement>, project: WebProject, targetSessionId: string) => {
+		event.preventDefault();
+		const source = draggedSession;
+		if (!source || source.projectId !== project.id || source.sessionId === targetSessionId) {
+			resetSessionDrag();
+			return;
+		}
+		const sessions = orderedSessions(project);
+		const sourceSession = sessions.find((session) => session.id === source.sessionId);
+		const targetSession = sessions.find((session) => session.id === targetSessionId);
+		if (!sourceSession || !targetSession) {
+			resetSessionDrag();
+			return;
+		}
+		if (sourceSession.pinned !== targetSession.pinned) {
+			actions.showToast("置顶会话与普通会话分别调整顺序");
+			resetSessionDrag();
+			return;
+		}
+		void actions.reorderSessions(
+			project.id,
+			reorderIds(
+				sessions.map((session) => session.id),
+				source.sessionId,
+				targetSessionId,
+				dropPosition(event),
+			),
+		);
+		resetSessionDrag();
 	};
 
 	const saveProjectName = async (project: WebProject) => {
@@ -133,70 +347,460 @@ export const ProjectRail = memo(function ProjectRail({
 		}
 	};
 
-	const confirmDeleteSession = async () => {
-		const session = deletingSession;
-		if (!session) return;
-		setSessionActionId(session.id);
-		try {
-			await actions.deleteSession(session.id);
-			setDeletingSession(undefined);
-		} finally {
-			setSessionActionId(undefined);
-		}
+	const openCreateGroup = () => {
+		setEditingGroup(undefined);
+		setGroupDialogOpen(true);
 	};
 
-	const handleProjectDragStart = (event: ReactDragEvent<HTMLDivElement>, projectId: string) => {
-		if (query.trim()) return;
-		event.dataTransfer.effectAllowed = "move";
-		event.dataTransfer.setData("text/plain", projectId);
-		setDraggedProjectId(projectId);
+	const openRenameGroup = (group: ProjectGroup) => {
+		setEditingGroup(group);
+		setGroupDialogOpen(true);
 	};
 
-	const handleProjectDrop = (event: ReactDragEvent<HTMLDivElement>, targetProjectId: string) => {
-		event.preventDefault();
-		const sourceProjectId = draggedProjectId || event.dataTransfer.getData("text/plain");
-		const sourceProject = projects.find((project) => project.id === sourceProjectId);
-		const targetProject = projects.find((project) => project.id === targetProjectId);
-		if (!sourceProject || !targetProject || sourceProjectId === targetProjectId) {
-			setDraggedProjectId(undefined);
-			setDragOverProjectId(undefined);
-			return;
-		}
-		if (sourceProject.pinned !== targetProject.pinned) {
-			actions.showToast("置顶项目与普通项目分别调整顺序");
-			setDraggedProjectId(undefined);
-			setDragOverProjectId(undefined);
-			return;
-		}
-		void actions.reorderProjects(moveId(projects.map((project) => project.id), sourceProjectId, targetProjectId));
-		setDraggedProjectId(undefined);
-		setDragOverProjectId(undefined);
-	};
+	const saveGroup = (name: string): Promise<boolean> =>
+		editingGroup ? actions.updateProjectGroup(editingGroup.id, name) : actions.addProjectGroup(name);
 
-	const handleSessionDrop = (event: ReactDragEvent<HTMLDivElement>, project: WebProject, targetSessionId: string) => {
-		event.preventDefault();
-		const source = draggedSession;
-		if (!source || source.projectId !== project.id || source.sessionId === targetSessionId) {
-			setDraggedSession(undefined);
-			setDragOverSessionId(undefined);
-			return;
-		}
+	const renderProject = (project: WebProject, nested = false) => {
+		const active = currentProject?.id === project.id;
+		const expanded = expandedProjectIds.has(project.id);
+		const projectActionsVisible = openProjectMenuId === project.id;
 		const sessions = orderedSessions(project);
-		const sourceSession = sessions.find((session) => session.id === source.sessionId);
-		const targetSession = sessions.find((session) => session.id === targetSessionId);
-		if (!sourceSession || !targetSession) return;
-		if (sourceSession.pinned !== targetSession.pinned) {
-			actions.showToast("置顶会话与普通会话分别调整顺序");
-			setDraggedSession(undefined);
-			setDragOverSessionId(undefined);
-			return;
-		}
-		void actions.reorderSessions(
-			project.id,
-			moveId(sessions.map((session) => session.id), source.sessionId, targetSessionId),
+		const runningSessionCount = sessions.filter(isSessionRunning).length;
+		const visibleSessionCount = sessionVisibleCounts[project.id] ?? SESSION_PAGE_SIZE;
+		const visibleSessions = sessions.slice(0, visibleSessionCount);
+		const hasMoreSessions = visibleSessions.length < sessions.length;
+		const projectDrop = projectDropTarget?.kind === "project" && projectDropTarget.projectId === project.id;
+
+		return (
+			<ContextMenu key={project.id}>
+				<ContextMenuTrigger asChild>
+					<div
+						className={cn(
+							"group relative rounded-md",
+							nested && "ml-6",
+							draggedProjectId === project.id && "opacity-50",
+						)}
+					>
+						<Collapsible
+							open={expanded}
+							onOpenChange={(open) => {
+								setExpandedProjectIds((current) => {
+									const next = new Set(current);
+									if (open) next.add(project.id);
+									else next.delete(project.id);
+									return next;
+								});
+							}}
+						>
+							<li
+								className={cn(
+									"list-none relative rounded-md",
+									projectDrop && "ring-1 ring-primary/50",
+									projectDropTarget?.kind === "project" &&
+										projectDropTarget.position === "before" &&
+										"before:absolute before:-top-1 before:right-0 before:left-0 before:h-0.5 before:bg-primary",
+									projectDropTarget?.kind === "project" &&
+										projectDropTarget.position === "after" &&
+										"after:absolute after:-bottom-1 after:right-0 after:left-0 after:h-0.5 after:bg-primary",
+								)}
+								draggable={!normalizedQuery}
+								onDragStart={(event) => handleProjectDragStart(event, project.id)}
+								onDragOver={(event) => {
+									event.stopPropagation();
+									handleProjectDragOver(event, project.id);
+								}}
+								onDrop={(event) => {
+									event.stopPropagation();
+									handleProjectDrop(event, project.id);
+								}}
+								onDragEnd={resetProjectDrag}
+							>
+								<HoverCard
+									openDelay={140}
+									closeDelay={80}
+									onOpenChange={(open) =>
+										open && setProjectNameDrafts((current) => ({ ...current, [project.id]: project.name }))
+									}
+								>
+									<HoverCardTrigger asChild>
+										<CollapsibleTrigger asChild>
+											<Button
+												className="w-full min-w-0 justify-start gap-2 px-2 pr-20 text-xs"
+												variant={active ? "secondary" : "ghost"}
+												onClick={() => void actions.selectProject(project.id)}
+											>
+												<Folder className="size-4 shrink-0 text-muted-foreground" />
+												<span className="project-list-item-label min-w-0 flex-1 truncate text-left">
+													{project.name}
+												</span>
+												{runningSessionCount > 0 ? (
+													<LoaderCircle
+														className="size-3.5 shrink-0 animate-spin text-primary group-hover:invisible"
+														aria-label="项目中有会话进行中"
+													/>
+												) : null}
+											</Button>
+										</CollapsibleTrigger>
+									</HoverCardTrigger>
+									<HoverCardContent
+										side="right"
+										align="start"
+										sideOffset={8}
+										className="w-[min(28rem,calc(100vw-1rem))] rounded-xl border-border bg-background px-4 py-3 shadow-[0_2px_8px_rgb(0_0_0/0.05)]"
+										onPointerDown={(event) => event.stopPropagation()}
+									>
+										<div className="flex items-center gap-2">
+											{editingProjectId === project.id ? (
+												<Input
+													aria-label="项目名称"
+													autoFocus
+													className="project-list-item-label h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 shadow-sm"
+													value={projectNameDrafts[project.id] ?? project.name}
+													disabled={projectActionId === project.id}
+													onChange={(event) =>
+														setProjectNameDrafts((current) => ({
+															...current,
+															[project.id]: event.target.value,
+														}))
+													}
+													onKeyDown={(event) => {
+														if (event.key === "Enter") {
+															event.preventDefault();
+															event.currentTarget.blur();
+														}
+														if (event.key === "Escape") {
+															event.preventDefault();
+															setProjectNameDrafts((current) => ({
+																...current,
+																[project.id]: project.name,
+															}));
+															setEditingProjectId(undefined);
+														}
+													}}
+													onBlur={() => {
+														setEditingProjectId(undefined);
+														void saveProjectName(project);
+													}}
+													placeholder="输入项目名称"
+												/>
+											) : (
+												<button
+													type="button"
+													className="project-list-item-label min-w-0 flex-1 cursor-text truncate bg-transparent p-0 text-left text-foreground"
+													onClick={() => {
+														setProjectNameDrafts((current) => ({
+															...current,
+															[project.id]: project.name,
+														}));
+														setEditingProjectId(project.id);
+													}}
+												>
+													{project.name}
+												</button>
+											)}
+											<Button
+												aria-label={project.pinned ? "取消置顶项目" : "置顶项目"}
+												size="icon"
+												variant="ghost"
+												onClick={(event) => {
+													event.stopPropagation();
+													void actions.updateProject(project.id, { pinned: !project.pinned });
+												}}
+											>
+												<Pin className={cn("size-5", project.pinned && "text-primary")} />
+											</Button>
+										</div>
+										<div className="mt-3 flex items-center gap-2 text-sm text-foreground">
+											<span className="size-2 shrink-0 rounded-full bg-emerald-500" />
+											<span>{state.connected ? "已连接" : "未连接"}</span>
+											<span className="text-muted-foreground">·</span>
+											<span>{project.sessions.length} 个会话</span>
+										</div>
+										{runningSessionCount > 0 ? (
+											<div className="mt-2 flex items-center gap-2 text-sm text-primary">
+												<LoaderCircle className="size-4 shrink-0 animate-spin" aria-hidden="true" />
+												<span>{runningSessionCount} 个会话正在进行中</span>
+											</div>
+										) : null}
+										<div className="mt-2 flex min-w-0 items-start gap-2 text-sm text-muted-foreground">
+											<Folder className="mt-0.5 size-4 shrink-0" />
+											<span className="min-w-0 break-all font-mono text-xs">{project.path}</span>
+										</div>
+									</HoverCardContent>
+								</HoverCard>
+								<div className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5">
+									<Button
+										className={cn(
+											"text-muted-foreground transition-opacity hover:text-foreground",
+											projectActionsVisible
+												? "opacity-100"
+												: "opacity-0 group-hover:opacity-100 max-lg:opacity-100",
+										)}
+										size="icon-sm"
+										variant="ghost"
+										onClick={(event) => {
+											event.stopPropagation();
+											void (active
+												? actions.createSession()
+												: actions.selectProject(project.id).then(() => actions.createSession()));
+										}}
+										aria-label={`${project.name} 新建会话`}
+									>
+										<Plus className="size-4" />
+									</Button>
+									<DropdownMenu
+										open={projectActionsVisible}
+										onOpenChange={(open) => setOpenProjectMenuId(open ? project.id : null)}
+									>
+										<DropdownMenuTrigger asChild>
+											<Button
+												className={cn(
+													projectActionsVisible
+														? "opacity-100"
+														: "opacity-0 group-hover:opacity-100 max-lg:opacity-100",
+												)}
+												size="icon-sm"
+												variant="ghost"
+												aria-label={`${project.name} 更多操作`}
+											>
+												<MoreHorizontal className="size-4" />
+											</Button>
+										</DropdownMenuTrigger>
+										<DropdownMenuContent align="end">
+											<DropdownMenuItem onSelect={() => setSessionManagementProject(project)}>
+												<List className="size-4" />
+												会话管理
+											</DropdownMenuItem>
+											<DropdownMenuItem onSelect={() => onEditProject(project)}>
+												<Settings className="size-4" />
+												编辑项目
+											</DropdownMenuItem>
+											<DropdownMenuItem onSelect={() => setMovingProject(project)}>
+												<FolderPlus className="size-4" />
+												移动到项目组
+											</DropdownMenuItem>
+											<DropdownMenuItem
+												onSelect={() => void actions.updateProject(project.id, { pinned: !project.pinned })}
+											>
+												<Pin className="size-4" />
+												{project.pinned ? "取消置顶" : "置顶项目"}
+											</DropdownMenuItem>
+											<DropdownMenuItem
+												onSelect={() => void actions.updateProject(project.id, { archived: true })}
+											>
+												<Archive className="size-4" />
+												归档项目
+											</DropdownMenuItem>
+											<DropdownMenuSeparator />
+											<DropdownMenuItem
+												className="text-destructive focus:text-destructive"
+												disabled={project.id === state.currentProjectId}
+												onSelect={() => void actions.removeProject(project.id)}
+											>
+												<Trash2 className="size-4" />
+												移除项目
+											</DropdownMenuItem>
+										</DropdownMenuContent>
+									</DropdownMenu>
+								</div>
+							</li>
+							<CollapsibleContent>
+								<div className="mt-1">
+									{sessions.length ? (
+										<>
+											<VirtualizedSessionList
+												items={visibleSessions}
+												getKey={(session) => session.id}
+												scrollRef={sessionViewportRef}
+												renderItem={(session) => {
+													const running = isSessionRunning(session);
+													const sessionDrop =
+														sessionDropTarget?.projectId === project.id &&
+														sessionDropTarget.sessionId === session.id;
+													return (
+														<SessionButton
+															projectName={project.name}
+															session={session}
+															active={state.sessionId === session.id}
+															running={running}
+															unread={Boolean(state.unreadSessionIds[session.id]) && !running}
+															onClick={() => {
+																void actions.selectSession(session.id);
+																onNavigate?.();
+															}}
+															onRename={(name) => actions.renameSession(session.id, name)}
+															onContextRename={() => setSessionManagementProject(project)}
+															onTogglePinned={() =>
+																void actions.setSessionPinned(session.id, !session.pinned)
+															}
+															onDelete={() => void actions.deleteSession(session.id)}
+															dragging={draggedSession?.sessionId === session.id}
+															dropTarget={sessionDrop}
+															dropPosition={sessionDrop ? sessionDropTarget?.position : undefined}
+															onDragStart={(event) => {
+																event.dataTransfer.effectAllowed = "move";
+																event.dataTransfer.setData("text/plain", session.id);
+																setDraggedSession({ projectId: project.id, sessionId: session.id });
+															}}
+															onDragOver={(event) => {
+																if (
+																	draggedSession?.projectId !== project.id ||
+																	draggedSession.sessionId === session.id
+																)
+																	return;
+																event.preventDefault();
+																event.dataTransfer.dropEffect = "move";
+																setSessionDropTarget({
+																	projectId: project.id,
+																	sessionId: session.id,
+																	position: dropPosition(event),
+																});
+															}}
+															onDrop={(event) => handleSessionDrop(event, project, session.id)}
+															onDragEnd={resetSessionDrag}
+														/>
+													);
+												}}
+											/>
+											{hasMoreSessions ? (
+												<Button
+													className="mt-1 w-full min-w-0 justify-start gap-2 py-2 pr-2 !pl-8 text-left text-xs"
+													variant="ghost"
+													onClick={() =>
+														setSessionVisibleCounts((current) => ({
+															...current,
+															[project.id]:
+																(current[project.id] ?? SESSION_PAGE_SIZE) + SESSION_PAGE_SIZE,
+														}))
+													}
+												>
+													<span className="project-list-item-label min-w-0 flex-1 truncate">加载更多</span>
+												</Button>
+											) : null}
+										</>
+									) : (
+										<span className="px-2 py-2 text-[13px] text-muted-foreground">暂无会话</span>
+									)}
+								</div>
+							</CollapsibleContent>
+						</Collapsible>
+					</div>
+				</ContextMenuTrigger>
+				<ContextMenuContent className="w-52">
+					<ContextMenuItem onSelect={() => setSessionManagementProject(project)}>
+						<List className="size-4" />
+						会话管理
+					</ContextMenuItem>
+					<ContextMenuItem onSelect={() => onEditProject(project)}>
+						<Settings className="size-4" />
+						编辑项目
+					</ContextMenuItem>
+					<ContextMenuItem onSelect={() => setMovingProject(project)}>
+						<FolderPlus className="size-4" />
+						移动到项目组
+					</ContextMenuItem>
+					<ContextMenuItem onSelect={() => void actions.updateProject(project.id, { pinned: !project.pinned })}>
+						<Pin className="size-4" />
+						{project.pinned ? "取消置顶" : "置顶项目"}
+					</ContextMenuItem>
+					<ContextMenuItem onSelect={() => void actions.updateProject(project.id, { archived: true })}>
+						<Archive className="size-4" />
+						归档项目
+					</ContextMenuItem>
+					<ContextMenuSeparator />
+					<ContextMenuItem
+						className="text-destructive focus:text-destructive"
+						disabled={project.id === state.currentProjectId}
+						onSelect={() => void actions.removeProject(project.id)}
+					>
+						<Trash2 className="size-4" />
+						移除项目
+					</ContextMenuItem>
+				</ContextMenuContent>
+			</ContextMenu>
 		);
-		setDraggedSession(undefined);
-		setDragOverSessionId(undefined);
+	};
+
+	const renderGroup = (group: ProjectGroup, groupProjects: WebProject[]) => {
+		const expanded = expandedGroupIds.has(group.id);
+		const groupDrop = projectDropTarget?.kind === "group" && projectDropTarget.groupId === group.id;
+		return (
+			<Collapsible
+				key={group.id}
+				open={expanded}
+				onOpenChange={(open) =>
+					setExpandedGroupIds((current) => {
+						const next = new Set(current);
+						if (open) next.add(group.id);
+						else next.delete(group.id);
+						return next;
+					})
+				}
+			>
+				<fieldset
+					aria-label={group.name}
+					className="m-0 min-w-0 border-0 p-0"
+					onDragOver={(event) => handleGroupDragOver(event, group.id)}
+					onDrop={(event) => handleGroupDrop(event, group.id)}
+				>
+					<div className={cn("group relative rounded-md", groupDrop && "ring-1 ring-primary/50")}>
+						<CollapsibleTrigger asChild>
+							<Button className="w-full min-w-0 justify-start gap-2 px-2 text-xs" variant="ghost">
+								<ChevronDown
+									className={cn("size-3.5 shrink-0 transition-transform", !expanded && "-rotate-90")}
+								/>
+								<FolderTree className="size-4 shrink-0 text-muted-foreground" />
+								<span className="project-list-item-label min-w-0 flex-1 truncate text-left font-medium">
+									{group.name}
+								</span>
+								<span className="text-[11px] text-muted-foreground">{groupProjects.length}</span>
+							</Button>
+						</CollapsibleTrigger>
+						<div className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center">
+							<DropdownMenu
+								open={openGroupMenuId === group.id}
+								onOpenChange={(open) => setOpenGroupMenuId(open ? group.id : null)}
+							>
+								<DropdownMenuTrigger asChild>
+									<Button
+										className={cn(
+											"opacity-0 group-hover:opacity-100 max-lg:opacity-100",
+											openGroupMenuId === group.id && "opacity-100",
+										)}
+										size="icon-sm"
+										variant="ghost"
+										aria-label={`${group.name} 更多操作`}
+									>
+										<MoreHorizontal className="size-4" />
+									</Button>
+								</DropdownMenuTrigger>
+								<DropdownMenuContent align="end">
+									<DropdownMenuItem onSelect={() => openRenameGroup(group)}>
+										<Pencil className="size-4" />
+										重命名项目组
+									</DropdownMenuItem>
+									<DropdownMenuItem onSelect={() => void actions.removeProjectGroup(group.id)}>
+										<Trash2 className="size-4" />
+										删除项目组
+									</DropdownMenuItem>
+								</DropdownMenuContent>
+							</DropdownMenu>
+						</div>
+					</div>
+					<CollapsibleContent>
+						<div className="mt-1 grid gap-1">
+							{groupProjects.length ? (
+								groupProjects.map((project) => renderProject(project, true))
+							) : (
+								<span className="px-2 py-2 text-[13px] text-muted-foreground">
+									{normalizedQuery ? "没有匹配项目" : "拖动项目到这里"}
+								</span>
+							)}
+						</div>
+					</CollapsibleContent>
+				</fieldset>
+			</Collapsible>
+		);
 	};
 
 	return (
@@ -206,22 +810,36 @@ export const ProjectRail = memo(function ProjectRail({
 					<BrandLogo className="size-7 rounded-md object-contain" />
 					<span>LYStar Code</span>
 				</div>
-				<Button
-					className="max-lg:-translate-y-2"
-					size="icon"
-					variant="ghost"
-					onClick={onAddProject}
-					aria-label="添加项目"
-				>
-					<Plus className="size-4" />
-				</Button>
+				<div className="flex items-center gap-1">
+					<Button
+						className="max-lg:-translate-y-2"
+						size="icon"
+						variant="ghost"
+						onClick={onAddProject}
+						aria-label="添加项目"
+					>
+						<Plus className="size-4" />
+					</Button>
+					<Button
+						className="max-lg:-translate-y-2"
+						size="icon"
+						variant="ghost"
+						onClick={openCreateGroup}
+						aria-label="新建项目组"
+					>
+						<FolderPlus className="size-4" />
+					</Button>
+				</div>
 			</div>
 			<div className="px-3 pb-3">
 				<Button
 					className="h-10 w-full justify-start gap-2 px-3"
 					variant="ghost"
 					disabled={!currentProject}
-					onClick={() => void actions.createSession()}
+					onClick={() => {
+						void actions.createSession();
+						onNavigate?.();
+					}}
 				>
 					<MessageSquarePlus className="size-4" />
 					<span className="project-list-item-label">新对话</span>
@@ -229,9 +847,7 @@ export const ProjectRail = memo(function ProjectRail({
 			</div>
 			<div className="px-3 pb-3">
 				<div className="relative">
-					<Search
-						className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
-					/>
+					<Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
 					<Input
 						aria-label="搜索项目"
 						placeholder="搜索项目"
@@ -244,305 +860,55 @@ export const ProjectRail = memo(function ProjectRail({
 			<ScrollArea viewportRef={sessionViewportRef} className="project-list min-h-0 flex-1 px-3">
 				<div className="pb-5">
 					<div className="flex items-center justify-between px-2 pb-2 text-xs font-medium text-muted-foreground">
-										<span>项目</span>
-									</div>
+						<span>项目</span>
+						<span>{projects.length}</span>
+					</div>
 					{state.loading && !projects.length ? (
 						<div className="px-2 py-8 text-center text-sm text-muted-foreground">正在加载项目与会话</div>
 					) : null}
 					<div className="grid gap-1">
-						{filteredProjects.map((project) => {
-							const active = currentProject?.id === project.id;
-							const expanded = expandedProjectIds.has(project.id);
-							const projectActionsVisible = openProjectMenuId === project.id;
-							const sessions = orderedSessions(project);
-							const runningSessionCount = sessions.filter(isSessionRunning).length;
-							const visibleSessionCount = sessionVisibleCounts[project.id] ?? SESSION_PAGE_SIZE;
-							const visibleSessions = sessions.slice(0, visibleSessionCount);
-							const hasMoreSessions = visibleSessions.length < sessions.length;
-							return (
-								<Collapsible
-									key={project.id}
-									open={expanded}
-									onOpenChange={(open) => {
-										setExpandedProjectIds((current) => {
-											const next = new Set(current);
-											if (open) next.add(project.id);
-											else next.delete(project.id);
-											return next;
-										});
-									}}
-								>
-									<div
-						className={cn(
-							"group relative rounded-md",
-							draggedProjectId === project.id && "opacity-50",
-							dragOverProjectId === project.id && "ring-1 ring-primary/50",
-						)}
-						draggable={!query.trim()}
-						onDragStart={(event) => handleProjectDragStart(event, project.id)}
-						onDragOver={(event) => {
-							if (!query.trim() && draggedProjectId && draggedProjectId !== project.id) {
-								event.preventDefault();
-								setDragOverProjectId(project.id);
-							}
-						}}
-						onDrop={(event) => handleProjectDrop(event, project.id)}
-						onDragEnd={() => {
-							setDraggedProjectId(undefined);
-							setDragOverProjectId(undefined);
-						}}
-					>
-						<HoverCard
-							openDelay={140}
-							closeDelay={80}
-							onOpenChange={(open) => {
-								if (open) {
-					setProjectNameDrafts((current) => ({ ...current, [project.id]: project.name }));
-				}
-							}}
-						>
-							<HoverCardTrigger asChild>
-								<CollapsibleTrigger asChild>
-									<Button
-										className="w-full min-w-0 justify-start gap-2 px-2 pr-2 text-xs"
-										variant={active ? "secondary" : "ghost"}
-
-									>
-										<Folder className="size-4 shrink-0 text-muted-foreground" />
-										<span className="project-list-item-label min-w-0 flex-1 truncate text-left">
-											{project.name}
-										</span>
-										{runningSessionCount > 0 ? (
-											<LoaderCircle
-												className="size-3.5 shrink-0 animate-spin text-primary group-hover:invisible"
-												aria-label="项目中有会话进行中"
-											/>
-										) : null}
-									</Button>
-								</CollapsibleTrigger>
-							</HoverCardTrigger>
-							<HoverCardContent
-								side="right"
-								align="start"
-								sideOffset={8}
-								className="w-[min(28rem,calc(100vw-1rem))] rounded-xl border-border bg-background px-4 py-3 shadow-[0_2px_8px_rgb(0_0_0/0.05)]"
-								onPointerDown={(event) => event.stopPropagation()}
-							>
-								<div className="flex items-center gap-2">
-									{editingProjectId === project.id ? (
-										<Input
-											aria-label="项目名称"
-											autoFocus
-											className="project-list-item-label h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 shadow-sm transition-[border-color,box-shadow,background-color] duration-150 focus-visible:border-input focus-visible:ring-0"
-											value={projectNameDrafts[project.id] ?? project.name}
-											disabled={projectActionId === project.id}
-											onChange={(event) =>
-												setProjectNameDrafts((current) => ({ ...current, [project.id]: event.target.value }))
-											}
-											onKeyDown={(event) => {
-												if (event.key === "Enter") {
-													event.preventDefault();
-													event.currentTarget.blur();
-												}
-												if (event.key === "Escape") {
-													event.preventDefault();
-													event.stopPropagation();
-													setProjectNameDrafts((current) => ({ ...current, [project.id]: project.name }));
-													setEditingProjectId(undefined);
-												}
-											}}
-											onBlur={() => {
-												setEditingProjectId(undefined);
-												void saveProjectName(project);
-											}}
-											placeholder="输入项目名称"
-										/>
-									) : (
-										<button
-											type="button"
-											className="project-list-item-label min-w-0 flex-1 cursor-text truncate bg-transparent p-0 text-left text-foreground"
-											onClick={() => {
-												setProjectNameDrafts((current) => ({ ...current, [project.id]: project.name }));
-												setEditingProjectId(project.id);
-											}}
-											title="点击修改项目名称"
-										>
-											{project.name}
-										</button>
+						{filteredProjectSections.groups.map((section) => renderGroup(section.group, section.projects))}
+						{state.projectGroups.length ? (
+							<Collapsible defaultOpen>
+								<fieldset
+									aria-label="未分组项目"
+									className={cn(
+										"group relative rounded-md",
+										projectDropTarget?.kind === "ungrouped" && "ring-1 ring-primary/50",
 									)}
-									<Button
-										aria-label={project.pinned ? "取消置顶项目" : "置顶项目"}
-										size="icon"
-										variant="ghost"
-										onClick={(event) => {
-											event.stopPropagation();
-											void actions.updateProject(project.id, { pinned: !project.pinned });
-										}}
-									>
-										<Pin className={cn("size-5", project.pinned && "text-primary")} />
-									</Button>
-								</div>
-								<div className="mt-3 flex items-center gap-2 text-sm text-foreground">
-									<span className="size-2 shrink-0 rounded-full bg-emerald-500" />
-									<span>{state.connected ? "已连接" : "未连接"}</span>
-									<span className="text-muted-foreground">·</span>
-									<span>{project.sessions.length} 个会话</span>
-								</div>
-								{runningSessionCount > 0 ? (
-									<div className="mt-2 flex items-center gap-2 text-sm text-primary">
-										<LoaderCircle className="size-4 shrink-0 animate-spin" aria-hidden="true" />
-										<span>{runningSessionCount} 个会话正在进行中</span>
-									</div>
-								) : null}
-								<div className="mt-2 flex min-w-0 items-start gap-2 text-sm text-muted-foreground">
-									<Folder className="mt-0.5 size-4 shrink-0" />
-									<span className="min-w-0 break-all font-mono text-xs" title={project.path}>
-										{project.path}
-									</span>
-								</div>
-							</HoverCardContent>
-										</HoverCard>
-										<div className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5">
-											<Button
-												className={cn(
-													"text-muted-foreground transition-opacity hover:text-foreground",
-													projectActionsVisible ? "opacity-100" : "opacity-0 group-hover:opacity-100",
-												)}
-												size="icon-sm"
-												variant="ghost"
-												onClick={(event) => {
-													event.stopPropagation();
-													void (active
-														? actions.createSession()
-														: actions.selectProject(project.id).then(() => actions.createSession()));
-												}}
-												aria-label={`${project.name} 新建会话`}
-											>
-												<Plus className="size-4" />
-											</Button>
-											<DropdownMenu
-												open={projectActionsVisible}
-												onOpenChange={(open) => setOpenProjectMenuId(open ? project.id : null)}
-											>
-												<DropdownMenuTrigger asChild>
-													<Button
-													className={cn(
-														projectActionsVisible
-															? "opacity-100"
-															: "opacity-0 group-hover:opacity-100",
-														)}
-														size="icon-sm"
-														variant="ghost"
-														aria-label={`${project.name} 更多操作`}
-													>
-														<MoreHorizontal className="size-4" />
-													</Button>
-												</DropdownMenuTrigger>
-												<DropdownMenuContent align="end">
-													<DropdownMenuItem onSelect={() => onEditProject(project)}>
-														<Settings className="size-4" />
-														编辑项目
-													</DropdownMenuItem>
-													<DropdownMenuItem
-														onSelect={() =>
-															void actions.updateProject(project.id, { pinned: !project.pinned })
-														}
-													>
-														<Pin className="size-4" />
-														{project.pinned ? "取消置顶" : "置顶项目"}
-													</DropdownMenuItem>
-													<DropdownMenuItem
-														onSelect={() => void actions.updateProject(project.id, { archived: true })}
-													>
-														<Archive className="size-4" />
-														归档项目
-													</DropdownMenuItem>
-													<DropdownMenuSeparator />
-													<DropdownMenuItem
-														className="text-destructive focus:text-destructive"
-														disabled={project.id === state.currentProjectId}
-														onSelect={() => void actions.removeProject(project.id)}
-													>
-														<Trash2 className="size-4" />
-														移除项目
-													</DropdownMenuItem>
-												</DropdownMenuContent>
-												</DropdownMenu>
-										</div>
-									</div>
-<CollapsibleContent>
-										<div className="mt-1">
-										{sessions.length ? (
-											<>
-												<VirtualizedSessionList
-													items={visibleSessions}
-													getKey={(session) => session.id}
-													scrollRef={sessionViewportRef}
-													renderItem={(session) => {
-														const running = isSessionRunning(session);
-														return (
-															<SessionButton
-																projectName={project.name}
-																session={session}
-																active={state.sessionId === session.id}
-																running={running}
-																unread={Boolean(state.unreadSessionIds[session.id]) && !running}
-																onClick={() => {
-																	void actions.selectSession(session.id);
-																	onNavigate?.();
-																}}
-																onRename={(name) => actions.renameSession(session.id, name)}
-																onContextRename={() => openRenameSessionDialog(session)}
-																onTogglePinned={() => void actions.setSessionPinned(session.id, !session.pinned)}
-																onDelete={() => setDeletingSession(session)}
-																dragging={draggedSession?.sessionId === session.id}
-																dropTarget={dragOverSessionId === session.id}
-																onDragStart={(event) => {
-																	event.dataTransfer.effectAllowed = "move";
-																	event.dataTransfer.setData("text/plain", session.id);
-																setDraggedSession({ projectId: project.id, sessionId: session.id });
-															}}
-																onDragOver={(event) => {
-																	if (draggedSession?.projectId !== project.id || draggedSession.sessionId === session.id) return;
-																	event.preventDefault();
-																	setDragOverSessionId(session.id);
-																}}
-																onDrop={(event) => handleSessionDrop(event, project, session.id)}
-																onDragEnd={() => {
-																	setDraggedSession(undefined);
-																	setDragOverSessionId(undefined);
-																}}
-															/>
-																				);
-																			}}
-																		/>
-													{hasMoreSessions ? (
-														<div className="mt-1">
-															<Button
-																className="w-full min-w-0 justify-start gap-2 py-2 pr-2 !pl-8 text-left text-xs"
-															variant="ghost"
-															onClick={() =>
-																						setSessionVisibleCounts((current) => ({
-																							...current,
-																							[project.id]: (current[project.id] ?? SESSION_PAGE_SIZE) + SESSION_PAGE_SIZE,
-																						}))
-															}
-														>
-															<span className="project-list-item-label min-w-0 flex-1 truncate">加载更多</span>
-														</Button>
-														</div>
-													) : null}
-											</>
-										) : (
-											<span className="px-2 py-2 text-[13px] text-muted-foreground">暂无会话</span>
+									onDragOver={handleUngroupedDragOver}
+									onDrop={handleUngroupedDrop}
+								>
+									<CollapsibleTrigger asChild>
+										<Button className="w-full min-w-0 justify-start gap-2 px-2 text-xs" variant="ghost">
+											<ChevronDown className="size-3.5 shrink-0" />
+											<FolderTree className="size-4 shrink-0 text-muted-foreground" />
+											<span className="project-list-item-label min-w-0 flex-1 truncate text-left font-medium">
+												未分组
+											</span>
+											<span className="text-[11px] text-muted-foreground">
+												{filteredProjectSections.ungrouped.length}
+											</span>
+										</Button>
+									</CollapsibleTrigger>
+									<CollapsibleContent>
+										<div className="mt-1 grid gap-1">
+											{filteredProjectSections.ungrouped.length ? (
+												filteredProjectSections.ungrouped.map((project) => renderProject(project))
+											) : (
+												<span className="px-2 py-2 text-[13px] text-muted-foreground">
+													{normalizedQuery ? "没有匹配项目" : "暂无项目"}
+												</span>
 											)}
 										</div>
 									</CollapsibleContent>
-								</Collapsible>
-							);
-						})}
+								</fieldset>
+							</Collapsible>
+						) : (
+							filteredProjectSections.ungrouped.map((project) => renderProject(project))
+						)}
 					</div>
-					{!state.loading && !filteredProjects.length ? (
+					{!state.loading && !visibleProjects.length && !state.projectGroups.length ? (
 						<div className="px-2 py-8 text-center text-sm text-muted-foreground">暂无项目</div>
 					) : null}
 					{archivedProjects.length ? (
@@ -595,57 +961,24 @@ export const ProjectRail = memo(function ProjectRail({
 					<span className="project-list-item-label">退出</span>
 				</Button>
 			</div>
-							<Dialog open={Boolean(renamingSession)} onOpenChange={(open) => !open && setRenamingSession(undefined)}>
-								<DialogContent className="max-w-md">
-									<DialogHeader>
-										<DialogTitle>重命名会话</DialogTitle>
-										<DialogDescription>修改会话在左侧列表中的显示名称。</DialogDescription>
-									</DialogHeader>
-									<Input
-										aria-label="会话名称"
-										autoFocus
-										value={renameDraft}
-										onChange={(event) => setRenameDraft(event.target.value)}
-										onKeyDown={(event) => {
-											if (event.key === "Enter" && renameDraft.trim()) void submitRenameDialog();
-										}}
-										placeholder="输入会话名称"
-									/>
-									<DialogFooter>
-										<Button variant="ghost" onClick={() => setRenamingSession(undefined)}>
-											取消
-										</Button>
-										<Button
-											onClick={() => void submitRenameDialog()}
-											disabled={!renameDraft.trim() || sessionActionId === renamingSession?.id}
-										>
-											{sessionActionId === renamingSession?.id ? "保存中…" : "保存"}
-										</Button>
-									</DialogFooter>
-								</DialogContent>
-							</Dialog>
-			<Dialog open={Boolean(deletingSession)} onOpenChange={(open) => !open && setDeletingSession(undefined)}>
-				<DialogContent className="max-w-md">
-					<DialogHeader>
-						<DialogTitle>删除会话？</DialogTitle>
-						<DialogDescription>
-							“{deletingSession ? sessionTitle(deletingSession) : "当前会话"}”删除后无法恢复，确认继续吗？
-						</DialogDescription>
-					</DialogHeader>
-					<DialogFooter>
-						<Button variant="ghost" onClick={() => setDeletingSession(undefined)}>
-							取消
-						</Button>
-						<Button
-							variant="destructive"
-							onClick={() => void confirmDeleteSession()}
-							disabled={sessionActionId === deletingSession?.id}
-						>
-							{sessionActionId === deletingSession?.id ? "删除中…" : "删除会话"}
-						</Button>
-					</DialogFooter>
-				</DialogContent>
-			</Dialog>
+			<ProjectGroupDialog
+				open={groupDialogOpen}
+				group={editingGroup}
+				onClose={() => setGroupDialogOpen(false)}
+				onSave={saveGroup}
+			/>
+			<ProjectGroupPickerDialog
+				project={movingProject}
+				groups={state.projectGroups}
+				currentGroupId={movingProject ? groupForProject(movingProject.id)?.id : undefined}
+				onClose={() => setMovingProject(undefined)}
+				onSave={(groupId) => actions.setProjectGroup(movingProject!.id, groupId)}
+			/>
+			<SessionManagementDialog
+				project={sessionManagementProject}
+				actions={actions}
+				onClose={() => setSessionManagementProject(undefined)}
+			/>
 		</div>
 	);
 }, projectRailPropsEqual);

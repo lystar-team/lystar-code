@@ -142,8 +142,16 @@ describe("CodingAgentRuntimeAdapter", () => {
 			type: "message_start",
 			message: { role: "assistant", content: [] },
 		} as unknown as AgentSessionEvent;
+		const queuedUser = {
+			type: "message_start",
+			message: { role: "user", content: [{ type: "text", text: "后续任务" }] },
+			queueId: "queue-42",
+		} as unknown as AgentSessionEvent;
 
 		expect(projectRuntimeProgress(assistantStart)).toEqual([{ type: "phase", phase: "turn" }]);
+		expect(projectRuntimeProgress(queuedUser)).toEqual([
+			{ type: "user_message", text: "后续任务", queueId: "queue-42" },
+		]);
 		expect(projectRuntimeProgress(toolStart)).toEqual([
 			expect.objectContaining({ type: "tool_start", toolCallId: "call-1", name: "read" }),
 		]);
@@ -959,6 +967,7 @@ describe("CodingAgentRuntimeAdapter", () => {
 		mkdirSync(join(cwd, "src"), { recursive: true });
 		mkdirSync(agentDir, { recursive: true });
 		writeFileSync(join(cwd, "src", "app.ts"), "const first = 1;\nconst second = 2;\n");
+		writeFileSync(join(cwd, "report.xlsx"), Buffer.from([0x50, 0x4b, 0x03, 0x04]));
 		writeFileSync(outside, "outside\n");
 		cleanups.push(() => rmSync(tempDir, { recursive: true, force: true }));
 		const adapter = new CodingAgentRuntimeAdapter(agentDir);
@@ -982,6 +991,14 @@ describe("CodingAgentRuntimeAdapter", () => {
 		expect(resource).toMatchObject({ displayPath: "src/app.ts", kind: "text", line: 2 });
 		const chunk = adapter.readProjectResource(cwd, resource.path, 0, 1024);
 		expect(Buffer.from(chunk.data, "base64").toString("utf8")).toContain("const second = 2");
+		const officeResource = adapter.resolveProjectResource(cwd, "report.xlsx");
+		expect(officeResource).toMatchObject({
+			kind: "binary",
+			mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		});
+		expect(Buffer.from(adapter.readProjectResource(cwd, officeResource.path, 0, 1024).data, "base64")).toEqual(
+			Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+		);
 		expect(adapter.completeProjectFiles(cwd, "src/app", 10)).toEqual([
 			expect.objectContaining({ value: "@src/app.ts ", label: "app.ts", description: "src", kind: "file" }),
 		]);
@@ -1055,6 +1072,107 @@ describe("CodingAgentRuntimeAdapter", () => {
 		expect(stagedDiff.original).toBe("");
 		expect(stagedDiff.modified).toBe("staged\n");
 		expect(await adapter.getGitStatus(tempDir)).toEqual(before);
+	});
+
+	it("discovers nested repositories and reads their diffs", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-nested-git-"));
+		const projectDir = join(tempDir, "project");
+		const nestedDir = join(projectDir, "packages", "nested");
+		const sourceDir = join(tempDir, "worktree-source");
+		const worktreeDir = join(projectDir, "tools", "worktree");
+		const runGit = (cwd: string, ...args: string[]) =>
+			execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, LC_ALL: "C" } });
+		const initRepo = (cwd: string, branch: string) => {
+			mkdirSync(cwd, { recursive: true });
+			runGit(cwd, "init", "--initial-branch", branch);
+			runGit(cwd, "config", "user.name", "LYStar Test");
+			runGit(cwd, "config", "user.email", "lystar@example.invalid");
+		};
+		cleanups.push(() => rmSync(tempDir, { recursive: true, force: true }));
+
+		initRepo(projectDir, "main");
+		writeFileSync(join(projectDir, "root.txt"), "root\n");
+		runGit(projectDir, "add", "root.txt");
+		runGit(projectDir, "commit", "-m", "root");
+		writeFileSync(join(projectDir, "root.txt"), "root\nchanged\n");
+
+		initRepo(nestedDir, "develop");
+		writeFileSync(join(nestedDir, "nested.txt"), "nested\n");
+		runGit(nestedDir, "add", "nested.txt");
+		runGit(nestedDir, "commit", "-m", "nested");
+		writeFileSync(join(nestedDir, "nested.txt"), "nested\nchanged\n");
+		writeFileSync(join(nestedDir, "staged.txt"), "staged\n");
+		runGit(nestedDir, "add", "staged.txt");
+		writeFileSync(join(nestedDir, "untracked.txt"), "untracked\n");
+
+		initRepo(sourceDir, "main");
+		writeFileSync(join(sourceDir, "worktree.txt"), "worktree\n");
+		runGit(sourceDir, "add", "worktree.txt");
+		runGit(sourceDir, "commit", "-m", "worktree");
+		runGit(sourceDir, "worktree", "add", "-b", "feature", worktreeDir);
+		writeFileSync(join(worktreeDir, "worktree.txt"), "worktree\nchanged\n");
+
+		const adapter = new CodingAgentRuntimeAdapter(join(tempDir, "agent"));
+		const status = await adapter.getGitStatus(projectDir);
+		const repositories = status.repositories ?? [];
+		expect(repositories).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ path: "", kind: "root", branch: "main" }),
+				expect.objectContaining({ path: "packages/nested", kind: "nested", branch: "develop" }),
+				expect.objectContaining({ path: "tools/worktree", kind: "nested", branch: "feature" }),
+			]),
+		);
+		const nested = repositories.find((repository) => repository.path === "packages/nested");
+		expect(nested?.files).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ path: "nested.txt", unstaged: true }),
+				expect.objectContaining({ path: "staged.txt", staged: true }),
+				expect.objectContaining({ path: "untracked.txt", untracked: true }),
+			]),
+		);
+
+		const nestedDiff = await adapter.getGitDiff(projectDir, "nested.txt", false, "packages/nested");
+		expect(nestedDiff).toMatchObject({ path: "nested.txt", repositoryPath: "packages/nested", additions: 1 });
+		expect(nestedDiff.original).toBe("nested\n");
+		expect(nestedDiff.modified).toBe("nested\nchanged\n");
+		await expect(adapter.getGitDiff(projectDir, "nested.txt", false, "../outside")).rejects.toThrow(
+			"Git 仓库不在当前项目范围内",
+		);
+	});
+
+	it("discovers multiple independent repositories under a non-Git project directory", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-multi-git-"));
+		const projectDir = join(tempDir, "workspace");
+		const firstRepo = join(projectDir, "repo-a");
+		const secondRepo = join(projectDir, "repo-b");
+		const runGit = (cwd: string, ...args: string[]) =>
+			execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, LC_ALL: "C" } });
+		const initRepo = (cwd: string, fileName: string, branch: string) => {
+			mkdirSync(cwd, { recursive: true });
+			runGit(cwd, "init", "--initial-branch", branch);
+			runGit(cwd, "config", "user.name", "LYStar Test");
+			runGit(cwd, "config", "user.email", "lystar@example.invalid");
+			writeFileSync(join(cwd, fileName), "base\n");
+			runGit(cwd, "add", fileName);
+			runGit(cwd, "commit", "-m", "base");
+			writeFileSync(join(cwd, fileName), "base\nchanged\n");
+		};
+		cleanups.push(() => rmSync(tempDir, { recursive: true, force: true }));
+		initRepo(firstRepo, "a.txt", "main");
+		initRepo(secondRepo, "b.txt", "develop");
+
+		const adapter = new CodingAgentRuntimeAdapter(join(tempDir, "agent"));
+		const status = await adapter.getGitStatus(projectDir);
+		const repositories = status.repositories ?? [];
+		expect(repositories).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ path: "repo-a", branch: "main" }),
+				expect.objectContaining({ path: "repo-b", branch: "develop" }),
+			]),
+		);
+		expect(repositories.some((repository) => repository.path === "")).toBe(false);
+		const diff = await adapter.getGitDiff(projectDir, "a.txt", false, "repo-a");
+		expect(diff).toMatchObject({ repositoryPath: "repo-a", path: "a.txt", additions: 1, deletions: 0 });
 	});
 
 	it("bridges dynamic Extension command completions", async () => {

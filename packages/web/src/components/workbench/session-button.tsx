@@ -1,15 +1,19 @@
 import { Clock3, Folder, LoaderCircle, Pencil, Pin, Trash2 } from "lucide-react";
 import type { DragEvent as ReactDragEvent } from "react";
-import type { ReactElement } from "react";
 import { useEffect, useState } from "react";
 import { cn } from "../../lib/utils";
 import { sessionTitle } from "../../state/use-workbench";
 import type { WebSessionSummary } from "../../types";
 import { Button } from "../ui/button";
-import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "../ui/context-menu";
+import {
+	ContextMenu,
+	ContextMenuContent,
+	ContextMenuItem,
+	ContextMenuSeparator,
+	ContextMenuTrigger,
+} from "../ui/context-menu";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card";
 import { Input } from "../ui/input";
-import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 
 const SESSION_TITLE_MAX_LENGTH = 40;
 
@@ -18,23 +22,6 @@ export function truncateSessionTitle(title: string): string {
 	return characters.length > SESSION_TITLE_MAX_LENGTH
 		? `${characters.slice(0, SESSION_TITLE_MAX_LENGTH).join("")}...`
 		: title;
-}
-
-function SessionTitleTooltip({ title, children }: { title: string; children: ReactElement }) {
-	if (truncateSessionTitle(title) === title) return children;
-	return (
-		<Tooltip>
-			<TooltipTrigger asChild>{children}</TooltipTrigger>
-			<TooltipContent
-				side="right"
-				align="start"
-				sideOffset={8}
-				className="max-w-[calc(100vw-1rem)] break-words"
-			>
-				{title}
-			</TooltipContent>
-		</Tooltip>
-	);
 }
 
 function formatSessionAge(timestamp: number): string {
@@ -73,6 +60,7 @@ export function SessionButton({
 	onDelete,
 	dragging,
 	dropTarget,
+	dropPosition,
 	onDragStart,
 	onDragOver,
 	onDrop,
@@ -90,9 +78,10 @@ export function SessionButton({
 	onDelete: () => void;
 	dragging: boolean;
 	dropTarget: boolean;
-	onDragStart: (event: ReactDragEvent<HTMLDivElement>) => void;
-	onDragOver: (event: ReactDragEvent<HTMLDivElement>) => void;
-	onDrop: (event: ReactDragEvent<HTMLDivElement>) => void;
+	dropPosition?: "before" | "after";
+	onDragStart: (event: ReactDragEvent<HTMLElement>) => void;
+	onDragOver: (event: ReactDragEvent<HTMLElement>) => void;
+	onDrop: (event: ReactDragEvent<HTMLElement>) => void;
 	onDragEnd: () => void;
 }) {
 	const title = sessionTitle(session);
@@ -124,11 +113,15 @@ export function SessionButton({
 	return (
 		<ContextMenu>
 			<ContextMenuTrigger asChild>
-				<div
+				<li
 					className={cn(
-						"min-w-0 rounded-md",
+						"list-none relative min-w-0 rounded-md",
 						dragging && "opacity-50",
 						dropTarget && "ring-1 ring-primary/50",
+						dropPosition === "before" &&
+							"before:pointer-events-none before:absolute before:-top-1 before:right-0 before:left-0 before:z-10 before:h-0.5 before:rounded-full before:bg-primary",
+						dropPosition === "after" &&
+							"after:pointer-events-none after:absolute after:right-0 after:-bottom-1 after:left-0 after:z-10 after:h-0.5 after:rounded-full after:bg-primary",
 					)}
 					draggable
 					onDragStart={onDragStart}
@@ -143,12 +136,15 @@ export function SessionButton({
 								variant={active ? "secondary" : "ghost"}
 								onClick={onClick}
 							>
-								<SessionTitleTooltip title={title}>
-									<span className="project-list-item-label min-w-0 flex-1 truncate">{displayTitle}</span>
-								</SessionTitleTooltip>
-								{session.pinned ? <Pin className="size-3.5 shrink-0 text-muted-foreground" aria-label="已置顶" /> : null}
+								<span className="project-list-item-label min-w-0 flex-1 truncate">{displayTitle}</span>
+								{session.pinned ? (
+									<Pin className="size-3.5 shrink-0 text-muted-foreground" aria-label="已置顶" />
+								) : null}
 								{running ? (
-									<LoaderCircle className="size-3.5 shrink-0 animate-spin text-primary" aria-label="会话进行中" />
+									<LoaderCircle
+										className="size-3.5 shrink-0 animate-spin text-primary"
+										aria-label="会话进行中"
+									/>
 								) : unread ? (
 									<span
 										role="img"
@@ -190,19 +186,16 @@ export function SessionButton({
 										placeholder="输入会话名称"
 									/>
 								) : (
-									<SessionTitleTooltip title={title}>
-										<button
-											type="button"
-											className="project-list-item-label min-w-0 max-w-[calc(100vw-3rem)] cursor-text truncate whitespace-nowrap bg-transparent p-0 text-left text-foreground"
-											onClick={() => {
-												setRenameDraft(title);
-												setEditingTitle(true);
-											}}
-											title="点击修改会话名称"
-										>
-											{displayTitle}
-										</button>
-									</SessionTitleTooltip>
+									<button
+										type="button"
+										className="project-list-item-label min-w-0 max-w-[calc(100vw-3rem)] cursor-text truncate whitespace-nowrap bg-transparent p-0 text-left text-foreground"
+										onClick={() => {
+											setRenameDraft(title);
+											setEditingTitle(true);
+										}}
+									>
+										{displayTitle}
+									</button>
 								)}
 								<time
 									className="shrink-0 text-xs text-muted-foreground"
@@ -224,7 +217,7 @@ export function SessionButton({
 							</div>
 						</HoverCardContent>
 					</HoverCard>
-				</div>
+				</li>
 			</ContextMenuTrigger>
 			<ContextMenuContent className="w-48">
 				<ContextMenuItem onSelect={onContextRename}>

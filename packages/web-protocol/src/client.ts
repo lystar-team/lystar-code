@@ -91,13 +91,22 @@ export class RuntimeProtocolClient {
 	private unsubscribeClose?: () => void;
 	private readonly transport: ByteTransport;
 	private readonly trustedServerMessages: boolean;
+	private readonly protocolVersion: number;
 	private closed = false;
 	readonly clientInstanceId: string;
 
-	constructor(transport: ByteTransport, clientInstanceId: string, options: { trustedServerMessages?: boolean } = {}) {
+	constructor(
+		transport: ByteTransport,
+		clientInstanceId: string,
+		options: { trustedServerMessages?: boolean; protocolVersion?: number } = {},
+	) {
+		const protocolVersion = options.protocolVersion ?? RUNTIME_PROTOCOL_VERSION;
+		if (!Number.isInteger(protocolVersion) || protocolVersion < 0)
+			throw new RangeError("Web Runtime Protocol version must be a non-negative integer");
 		this.transport = transport;
 		this.clientInstanceId = clientInstanceId;
 		this.trustedServerMessages = options.trustedServerMessages === true;
+		this.protocolVersion = protocolVersion;
 		this.decoder = options.trustedServerMessages ? new TrustedServerMessageDecoder() : new ServerMessageDecoder();
 	}
 
@@ -127,7 +136,7 @@ export class RuntimeProtocolClient {
 		await this.transport.send(
 			encodeClientMessage({
 				type: "hello",
-				version: RUNTIME_PROTOCOL_VERSION,
+				version: this.protocolVersion,
 				clientInstanceId: this.clientInstanceId,
 			}),
 		);

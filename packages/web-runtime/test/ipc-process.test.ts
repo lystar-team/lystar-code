@@ -1,13 +1,18 @@
 import { type ChildProcess, type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
-import { createConnection, type Socket } from "node:net";
+import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { encodeClientMessage, type ServerMessage, ServerMessageDecoder } from "@lystar/code-web-protocol";
+import {
+	encodeClientMessage,
+	RUNTIME_PROTOCOL_VERSION,
+	type ServerMessage,
+	ServerMessageDecoder,
+} from "@lystar/code-web-protocol";
 import { afterEach, describe, expect, it } from "vitest";
-import { REMOTE_PREFACE } from "../src/ipc.ts";
+import { connectRuntimeEndpoint, REMOTE_PREFACE } from "../src/ipc.ts";
 
 const children = new Set<ChildProcess>();
 const tempDirs = new Set<string>();
@@ -119,10 +124,22 @@ function readRelayMessages(child: ChildProcessWithoutNullStreams): {
 }
 
 function connectSocket(endpoint: string): Promise<Socket> {
+	return connectRuntimeEndpoint(endpoint);
+}
+
+async function unusedTcpPort(): Promise<number> {
+	const server = createServer();
 	return new Promise((resolve, reject) => {
-		const socket = createConnection(endpoint);
-		socket.once("connect", () => resolve(socket));
-		socket.once("error", reject);
+		server.once("error", reject);
+		server.listen({ host: "127.0.0.1", port: 0 }, () => {
+			const address = server.address();
+			if (!address || typeof address === "string") {
+				server.close();
+				reject(new Error("无法获取测试 TCP 端口"));
+				return;
+			}
+			server.close((error) => (error ? reject(error) : resolve(address.port)));
+		});
 	});
 }
 
@@ -132,6 +149,7 @@ function readSocketMessages(socket: Socket): {
 } {
 	const decoder = new ServerMessageDecoder();
 	const messages: ServerMessage[] = [];
+	socket.on("error", () => {});
 	socket.on("data", (chunk) => messages.push(...decoder.push(chunk)));
 	return {
 		messages,
@@ -171,7 +189,9 @@ describe("Web Runtime persistent IPC", () => {
 			const firstRelay = startRelay(agentDir, endpoint);
 			const first = readRelayMessages(firstRelay);
 			await withTimeout("first relay ready", first.ready, PROCESS_START_TIMEOUT_MS);
-			firstRelay.stdin.write(encodeClientMessage({ type: "hello", version: 2, clientInstanceId: "client" }));
+			firstRelay.stdin.write(
+				encodeClientMessage({ type: "hello", version: RUNTIME_PROTOCOL_VERSION, clientInstanceId: "client" }),
+			);
 			const firstHello = await withTimeout(
 				"first relay hello",
 				first.waitFor((message) => message.type === "hello"),
@@ -219,7 +239,9 @@ describe("Web Runtime persistent IPC", () => {
 
 			const secondSocket = await withTimeout("second socket connect", connectSocket(endpoint));
 			const second = readSocketMessages(secondSocket);
-			secondSocket.write(encodeClientMessage({ type: "hello", version: 2, clientInstanceId: "client" }));
+			secondSocket.write(
+				encodeClientMessage({ type: "hello", version: RUNTIME_PROTOCOL_VERSION, clientInstanceId: "client" }),
+			);
 			const secondHello = await withTimeout(
 				"second socket hello",
 				second.waitFor((message) => message.type === "hello"),
@@ -248,5 +270,36 @@ describe("Web Runtime persistent IPC", () => {
 			await withTimeout("Host shutdown", waitForExit(host), 2_000);
 			children.delete(host);
 		}, 30_000);
+		it("supports a configured TCP Runtime endpoint", async () => {
+			const agentDir = mkdtempSync(join(tmpdir(), "web-runtime-ipc-tcp-"));
+			tempDirs.add(agentDir);
+			const endpoint = `tcp://127.0.0.1:${await unusedTcpPort()}`;
+			const host = spawn(process.execPath, ["--import", tsxImport, hostFixture, agentDir, endpoint], {
+				cwd: repositoryRoot,
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+			children.add(host);
+			await withTimeout(
+				"TCP Host ready",
+				waitForLine(host, "stderr", "ready", PROCESS_START_TIMEOUT_MS),
+				PROCESS_START_TIMEOUT_MS,
+			);
+			const socket = await withTimeout("TCP Host connect", connectSocket(endpoint));
+			const messages = readSocketMessages(socket);
+			const socketClosed = new Promise<void>((resolve) => socket.once("close", resolve));
+			socket.write(
+				encodeClientMessage({ type: "hello", version: RUNTIME_PROTOCOL_VERSION, clientInstanceId: "tcp-client" }),
+			);
+			const hello = await withTimeout(
+				"TCP Host hello",
+				messages.waitFor((message) => message.type === "hello"),
+			);
+			expect(hello).toMatchObject({ type: "hello", hostInstanceId: expect.any(String) });
+			socket.end();
+			await withTimeout("TCP socket close", socketClosed, 2_000);
+			host.kill("SIGTERM");
+			await withTimeout("TCP Host shutdown", waitForExit(host), 2_000);
+			children.delete(host);
+		});
 	}
 });

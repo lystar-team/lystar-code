@@ -1,5 +1,7 @@
+import { LoaderCircle } from "lucide-react";
 import { lazy, Suspense } from "react";
 import { TooltipProvider } from "./components/ui/tooltip";
+import { BrandLogo } from "./components/brand-logo";
 import { TokenGate } from "./components/workbench/token-gate";
 import { useWorkbench } from "./state/use-workbench";
 
@@ -19,8 +21,18 @@ export default function App() {
 		<TooltipProvider>
 			<Suspense
 				fallback={
-					<div className="grid min-h-dvh place-items-center bg-background text-sm text-muted-foreground">
-						正在加载工作台
+					<div className="grid min-h-dvh place-items-center bg-background text-foreground">
+						<div
+							className="flex flex-col items-center gap-2"
+							role="status"
+							aria-live="polite"
+							aria-busy="true"
+						>
+							<BrandLogo className="size-16 object-contain" alt="LYStar Code" />
+							<span className="text-base font-semibold tracking-tight">LYStar Code</span>
+							<span className="mt-2 text-sm text-muted-foreground">正在进入工作台</span>
+							<LoaderCircle className="mt-1 size-5 animate-spin" aria-hidden="true" />
+						</div>
 					</div>
 				}
 			>

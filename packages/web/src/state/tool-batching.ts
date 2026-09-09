@@ -1,5 +1,8 @@
 export function shouldJoinToolBatch(previousToolName: string | undefined, toolName: string): boolean {
-	return previousToolName === "bash" && toolName === "bash";
+	return (
+		(previousToolName === "bash" && toolName === "bash") ||
+		(previousToolName === "web_search" && toolName === "web_search")
+	);
 }
 
 export function shouldJoinLiveToolBatch(

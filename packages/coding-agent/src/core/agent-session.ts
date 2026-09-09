@@ -13,6 +13,7 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type {
@@ -190,7 +191,12 @@ export function parseSkillBlock(text: string): ParsedSkillBlock | null {
 
 /** Session-specific events that extend the core AgentEvent */
 export type AgentSessionEvent =
-	| Exclude<AgentEvent, { type: "agent_end" }>
+	| Exclude<AgentEvent, { type: "agent_end" | "message_start" }>
+	| {
+			type: "message_start";
+			message: AgentMessage;
+			queueId?: string;
+	  }
 	| {
 			type: "agent_end";
 			messages: AgentMessage[];
@@ -398,8 +404,12 @@ export class AgentSession {
 
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
 	private _steeringMessages: string[] = [];
+	private _steeringMessageIds: string[] = [];
+	private _steeringQueueMessages: AgentMessage[] = [];
 	/** Tracks pending follow-up messages for UI display. Removed when delivered. */
 	private _followUpMessages: string[] = [];
+	private _followUpMessageIds: string[] = [];
+	private _followUpQueueMessages: AgentMessage[] = [];
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 
@@ -900,6 +910,14 @@ export class AgentSession {
 		}
 	}
 
+	private _nextQueueMessageId(requestedId?: string): string {
+		const candidate = requestedId?.trim();
+		if (candidate && !this._steeringMessageIds.includes(candidate) && !this._followUpMessageIds.includes(candidate)) {
+			return candidate;
+		}
+		return randomUUID();
+	}
+
 	private _emitQueueUpdate(): void {
 		this._emit({
 			type: "queue_update",
@@ -956,24 +974,25 @@ export class AgentSession {
 				});
 			}
 		}
-		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
-		// This ensures the UI sees the updated queue state
+		let queueId: string | undefined;
+		// When a user message starts, remove the exact queued object before notifying listeners.
 		if (event.type === "message_start" && event.message.role === "user") {
 			this._overflowRecoveryAttempted = false;
-			const messageText = contentText(event.message.content, "");
-			if (messageText) {
-				// Check steering queue first
-				const steeringIndex = this._steeringMessages.indexOf(messageText);
-				if (steeringIndex !== -1) {
-					this._steeringMessages.splice(steeringIndex, 1);
+			const steeringIndex = this._steeringQueueMessages.indexOf(event.message);
+			if (steeringIndex !== -1) {
+				queueId = this._steeringMessageIds[steeringIndex];
+				this._steeringMessages.splice(steeringIndex, 1);
+				this._steeringMessageIds.splice(steeringIndex, 1);
+				this._steeringQueueMessages.splice(steeringIndex, 1);
+				this._emitQueueUpdate();
+			} else {
+				const followUpIndex = this._followUpQueueMessages.indexOf(event.message);
+				if (followUpIndex !== -1) {
+					queueId = this._followUpMessageIds[followUpIndex];
+					this._followUpMessages.splice(followUpIndex, 1);
+					this._followUpMessageIds.splice(followUpIndex, 1);
+					this._followUpQueueMessages.splice(followUpIndex, 1);
 					this._emitQueueUpdate();
-				} else {
-					// Check follow-up queue
-					const followUpIndex = this._followUpMessages.indexOf(messageText);
-					if (followUpIndex !== -1) {
-						this._followUpMessages.splice(followUpIndex, 1);
-						this._emitQueueUpdate();
-					}
 				}
 			}
 		}
@@ -986,8 +1005,13 @@ export class AgentSession {
 			});
 		}
 
-		// Notify all listeners
-		this._emit(event.type === "agent_end" ? { ...event, willRetry: this._willRetryAfterAgentEnd(event) } : event);
+		if (event.type === "agent_end") {
+			this._emit({ ...event, willRetry: this._willRetryAfterAgentEnd(event) });
+		} else if (event.type === "message_start" && event.message.role === "user" && queueId !== undefined) {
+			this._emit({ ...event, queueId });
+		} else {
+			this._emit(event);
+		}
 
 		// Handle session persistence
 		if (event.type === "message_end") {
@@ -1734,7 +1758,7 @@ export class AgentSession {
 	 * @param images Optional image attachments to include with the message
 	 * @throws Error if text is an extension command
 	 */
-	async steer(text: string, images?: ImageContent[]): Promise<void> {
+	async steer(text: string, images?: ImageContent[], queueId?: string): Promise<void> {
 		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
@@ -1744,7 +1768,7 @@ export class AgentSession {
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		await this._queueSteer(expandedText, images);
+		await this._queueSteer(expandedText, images, queueId);
 	}
 
 	/**
@@ -1754,7 +1778,7 @@ export class AgentSession {
 	 * @param images Optional image attachments to include with the message
 	 * @throws Error if text is an extension command
 	 */
-	async followUp(text: string, images?: ImageContent[]): Promise<void> {
+	async followUp(text: string, images?: ImageContent[], queueId?: string): Promise<void> {
 		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
@@ -1764,41 +1788,45 @@ export class AgentSession {
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		await this._queueFollowUp(expandedText, images);
+		await this._queueFollowUp(expandedText, images, queueId);
 	}
 
 	/**
 	 * Internal: Queue a steering message (already expanded, no extension command check).
 	 */
-	private async _queueSteer(text: string, images?: ImageContent[]): Promise<void> {
-		this._steeringMessages.push(text);
-		this._emitQueueUpdate();
+	private async _queueSteer(text: string, images?: ImageContent[], requestedQueueId?: string): Promise<void> {
+		const queueId = this._nextQueueMessageId(requestedQueueId);
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
-		if (images) {
-			content.push(...images);
-		}
-		this.agent.steer({
+		if (images) content.push(...images);
+		const message: AgentMessage = {
 			role: "user",
 			content,
 			timestamp: Date.now(),
-		});
+		};
+		this._steeringMessages.push(text);
+		this._steeringMessageIds.push(queueId);
+		this._steeringQueueMessages.push(message);
+		this._emitQueueUpdate();
+		this.agent.steer(message);
 	}
 
 	/**
 	 * Internal: Queue a follow-up message (already expanded, no extension command check).
 	 */
-	private async _queueFollowUp(text: string, images?: ImageContent[]): Promise<void> {
-		this._followUpMessages.push(text);
-		this._emitQueueUpdate();
+	private async _queueFollowUp(text: string, images?: ImageContent[], requestedQueueId?: string): Promise<void> {
+		const queueId = this._nextQueueMessageId(requestedQueueId);
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
-		if (images) {
-			content.push(...images);
-		}
-		this.agent.followUp({
+		if (images) content.push(...images);
+		const message: AgentMessage = {
 			role: "user",
 			content,
 			timestamp: Date.now(),
-		});
+		};
+		this._followUpMessages.push(text);
+		this._followUpMessageIds.push(queueId);
+		this._followUpQueueMessages.push(message);
+		this._emitQueueUpdate();
+		this.agent.followUp(message);
 	}
 
 	/**
@@ -1907,6 +1935,50 @@ export class AgentSession {
 	}
 
 	/**
+	 * Apply an action to one queued message without rebuilding the rest of the queue.
+	 * "steer" moves a follow-up message into the steering queue and preserves attachments.
+	 */
+	queueAction(queueId: string, action: "remove" | "steer"): void {
+		const id = queueId.trim();
+		if (!id) throw Object.assign(new Error("排队消息标识不能为空"), { code: "queue_message_not_found" });
+
+		const followUpIndex = this._followUpMessageIds.indexOf(id);
+		if (followUpIndex !== -1) {
+			const text = this._followUpMessages[followUpIndex];
+			if (action === "steer" && text === undefined) throw new Error("排队消息内容不存在");
+			const message = this.agent.removeFollowUpMessageAt(followUpIndex);
+			if (!message) throw Object.assign(new Error("排队消息已被处理"), { code: "queue_message_not_found" });
+			this._followUpMessages.splice(followUpIndex, 1);
+			this._followUpMessageIds.splice(followUpIndex, 1);
+			this._followUpQueueMessages.splice(followUpIndex, 1);
+			if (action === "steer") {
+				this._steeringMessages.push(text);
+				this._steeringMessageIds.push(id);
+				this._steeringQueueMessages.push(message);
+				this.agent.steer(message);
+			}
+			this._emitQueueUpdate();
+			return;
+		}
+
+		const steeringIndex = this._steeringMessageIds.indexOf(id);
+		if (steeringIndex !== -1 && action === "remove") {
+			const message = this.agent.removeSteeringMessageAt(steeringIndex);
+			if (!message) throw Object.assign(new Error("排队消息已被处理"), { code: "queue_message_not_found" });
+			this._steeringMessages.splice(steeringIndex, 1);
+			this._steeringMessageIds.splice(steeringIndex, 1);
+			this._steeringQueueMessages.splice(steeringIndex, 1);
+			this._emitQueueUpdate();
+			return;
+		}
+
+		if (steeringIndex !== -1) {
+			throw Object.assign(new Error("引导消息不能再次调整方向"), { code: "queue_message_action_invalid" });
+		}
+		throw Object.assign(new Error("排队消息不存在"), { code: "queue_message_not_found" });
+	}
+
+	/**
 	 * Clear all queued messages and return them.
 	 * Useful for restoring to editor when user aborts.
 	 * @returns Object with steering and followUp arrays
@@ -1915,7 +1987,11 @@ export class AgentSession {
 		const steering = [...this._steeringMessages];
 		const followUp = [...this._followUpMessages];
 		this._steeringMessages = [];
+		this._steeringMessageIds = [];
+		this._steeringQueueMessages = [];
 		this._followUpMessages = [];
+		this._followUpMessageIds = [];
+		this._followUpQueueMessages = [];
 		this.agent.clearAllQueues();
 		this._emitQueueUpdate();
 		return { steering, followUp };
@@ -1934,6 +2010,16 @@ export class AgentSession {
 	/** Get pending follow-up messages (read-only) */
 	getFollowUpMessages(): readonly string[] {
 		return this._followUpMessages;
+	}
+
+	/** Get pending steering messages with stable IDs (read-only) */
+	getSteeringQueueItems(): Array<{ id: string; text: string }> {
+		return this._steeringMessages.map((text, index) => ({ id: this._steeringMessageIds[index]!, text }));
+	}
+
+	/** Get pending follow-up messages with stable IDs (read-only) */
+	getFollowUpQueueItems(): Array<{ id: string; text: string }> {
+		return this._followUpMessages.map((text, index) => ({ id: this._followUpMessageIds[index]!, text }));
 	}
 
 	get resourceLoader(): ResourceLoader {

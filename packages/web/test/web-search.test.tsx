@@ -30,6 +30,17 @@ describe("Web search tool card", () => {
 		expect(toolRowTitle({ ...tool, summary })).toBe("已搜索网页 uni-app H5 Canvas touch event");
 	});
 
+	it("does not create an empty detail area while a search is running", () => {
+		const markup = renderToStaticMarkup(
+			createElement(ToolBatch, {
+				tools: [{ ...tool, state: "input-available", sources: undefined, inputPreview: "search query" }],
+			}),
+		);
+
+		expect(markup).toContain("正在搜索网页 uni-app Canvas touch event");
+		expect(markup).not.toContain("展开详情");
+	});
+
 	it("renders clickable sources with site favicons", () => {
 		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool] }));
 

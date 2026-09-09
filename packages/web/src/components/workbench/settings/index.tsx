@@ -1,6 +1,7 @@
 import { ArrowDownToLine, ArrowLeft, BookOpen, Bot, CircleHelp, Search, ShieldCheck, Sparkles, SunMoon, WandSparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import { useAppInstall } from "../../../state/use-app-install";
 import type { SettingsTab, WorkbenchState } from "../../../state/use-workbench";
 import { Button } from "../../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../../ui/dialog";
@@ -19,6 +20,7 @@ import type { WorkbenchActions } from "../types";
 export function SettingsDialog({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
 	const [query, setQuery] = useState("");
 	const [isMobile, setIsMobile] = useState(false);
+	const appInstall = useAppInstall();
 	useEffect(() => {
 		const media = window.matchMedia("(max-width: 639px)");
 		const update = () => setIsMobile(media.matches);
@@ -45,7 +47,7 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 				if (!open) actions.closeSettings();
 			}}
 		>
-			<DialogContent className="inset-0 h-dvh w-screen max-w-none translate-x-0 translate-y-0 rounded-none border-0 bg-background p-0 sm:max-w-none">
+			<DialogContent className="inset-0 h-dvh w-screen max-w-none translate-x-0 translate-y-0 rounded-none border-0 bg-background p-0 pt-[env(safe-area-inset-top)] sm:max-w-none">
 				<DialogHeader className="sr-only">
 					<DialogTitle>设置</DialogTitle>
 					<DialogDescription>工作台外观、模型、访问控制、诊断和版本信息</DialogDescription>
@@ -115,13 +117,15 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 											? "查看和管理当前项目可用的 Skill。"
 											: state.settingsTab === "imports"
 												? "把其他 Harness 的资源导入 LYStar Code。"
-												: state.settingsTab === "security"
-													? "配置 Web Gateway 的访问地址、端口和密码。"
-													: "配置工作台的外观、模型连接和运行信息。"}
+									: state.settingsTab === "security"
+										? "配置 Web Gateway 的监听 IP、白名单、Web/Runtime 端口和密码。"
+													: state.settingsTab === "appearance"
+														? "配置工作台的外观和应用安装。"
+														: "配置工作台的外观、模型连接和运行信息。"}
 								</p>
 							</div>
 							<TabsContent className="m-0 w-full min-w-0 max-w-full" value="appearance">
-								<AppearanceSettings state={state} actions={actions} />
+								<AppearanceSettings state={state} actions={actions} appInstall={appInstall} />
 							</TabsContent>
 							<TabsContent className="m-0 w-full min-w-0 max-w-full" value="instructions">
 								<GlobalInstructionsSettings state={state} actions={actions} />

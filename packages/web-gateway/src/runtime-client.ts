@@ -1,15 +1,24 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { createConnection, type Socket } from "node:net";
+import type { Socket } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ByteTransport, RuntimeProtocolClient, ServerEvent } from "@lystar/code-web-protocol";
 import {
 	type OperationSnapshot,
 	RuntimeProtocolClient as ProtocolClient,
+	RUNTIME_PROTOCOL_VERSION,
+	RuntimeProtocolError,
 	type SessionStateSnapshot,
 } from "@lystar/code-web-protocol";
-import { createBoundedWriter, defaultRuntimeEndpoint, probeIpcRuntime } from "@lystar/code-web-runtime";
+import {
+	connectRuntimeEndpoint,
+	createBoundedWriter,
+	defaultRuntimeEndpoint,
+	getRuntimeServiceStatus,
+	probeIpcRuntime,
+	stopRuntimeService,
+} from "@lystar/code-web-runtime";
 import type { WebGatewayConfig } from "./config.ts";
 
 class SocketByteTransport implements ByteTransport {
@@ -33,36 +42,7 @@ class SocketByteTransport implements ByteTransport {
 	}
 
 	static connect(endpoint: string): Promise<SocketByteTransport> {
-		return new Promise((resolve, reject) => {
-			const socket = createConnection(endpoint);
-			let settled = false;
-			const timer = setTimeout(() => {
-				fail(new Error("Web Host IPC 连接超时"));
-			}, 10_000);
-			const fail = (error: Error) => {
-				if (settled) return;
-				settled = true;
-				clearTimeout(timer);
-				socket.off("error", onError);
-				socket.off("close", onClose);
-				socket.destroy();
-				reject(error);
-			};
-			const onError = (error: Error) => fail(error);
-			const onClose = () => fail(new Error("Web Host IPC 连接已关闭"));
-			socket.once("error", onError);
-			socket.once("close", onClose);
-			socket.once("connect", () => {
-				if (settled) return;
-				settled = true;
-				clearTimeout(timer);
-				socket.off("error", onError);
-				socket.off("close", onClose);
-				socket.setNoDelay(true);
-				socket.setKeepAlive(true, 10_000);
-				resolve(new SocketByteTransport(socket));
-			});
-		});
+		return connectRuntimeEndpoint(endpoint).then((socket) => new SocketByteTransport(socket));
 	}
 
 	async send(bytes: Uint8Array): Promise<void> {
@@ -131,22 +111,66 @@ function repositoryRoot(): string {
 	return resolve(currentDirectory, "../..");
 }
 
-function runtimeCommand(): { command: string; args: string[]; cwd: string } {
+function runtimeCommand(endpoint: string): { command: string; args: string[]; cwd: string } {
 	const root = repositoryRoot();
 	const builtCli = resolve(root, "packages/web-runtime/dist/cli.js");
-	if (existsSync(builtCli)) return { command: process.execPath, args: [builtCli, "serve"], cwd: root };
+	if (existsSync(builtCli))
+		return { command: process.execPath, args: [builtCli, "serve", "--endpoint", endpoint], cwd: root };
 	const sourceCli = resolve(root, "packages/web-runtime/src/cli.ts");
 	if (existsSync(sourceCli)) {
 		return {
 			command: process.execPath,
-			args: ["--import", import.meta.resolve("tsx"), sourceCli, "serve"],
+			args: ["--import", import.meta.resolve("tsx"), sourceCli, "serve", "--endpoint", endpoint],
 			cwd: root,
 		};
 	}
-	return { command: "lystar-web-runtime", args: ["serve"], cwd: process.cwd() };
+	return { command: "lystar-web-runtime", args: ["serve", "--endpoint", endpoint], cwd: process.cwd() };
+}
+
+function withRuntimeEndpoint(args: readonly string[], endpoint: string): string[] {
+	const endpointIndex = args.findIndex((argument) => argument === "--endpoint" || argument.startsWith("--endpoint="));
+	if (endpointIndex === -1) return [...args, "--endpoint", endpoint];
+	if (args[endpointIndex] === "--endpoint") {
+		return [...args.slice(0, endpointIndex + 1), endpoint, ...args.slice(endpointIndex + 2)];
+	}
+	return [...args.slice(0, endpointIndex), `--endpoint=${endpoint}`, ...args.slice(endpointIndex + 1)];
 }
 
 const runtimeStartupPromises = new Map<string, Promise<void>>();
+const ACTIVE_OPERATION_STATUSES = new Set(["accepted", "running", "waiting_for_input"]);
+
+function incompatibleRuntimeVersion(error: unknown): number | undefined {
+	if (error instanceof RuntimeProtocolError && error.code !== "version") return undefined;
+	const message = error instanceof Error ? error.message : String(error);
+	if (!message.startsWith("Web Runtime Protocol ") || !message.includes(" is unsupported; Host requires "))
+		return undefined;
+	const match = /Host requires (\d+)/u.exec(message);
+	if (!match) return undefined;
+	const version = Number.parseInt(match[1]!, 10);
+	return Number.isInteger(version) && version >= 0 && version !== RUNTIME_PROTOCOL_VERSION ? version : undefined;
+}
+
+async function readLegacyRuntimeSnapshot(endpoint: string, protocolVersion: number): Promise<RuntimeInitialSnapshot> {
+	const transport = await SocketByteTransport.connect(endpoint);
+	const client = new ProtocolClient(transport, `gateway-compat-${process.pid}`, {
+		trustedServerMessages: true,
+		protocolVersion,
+	});
+	try {
+		await client.connect();
+		await waitForHello(client);
+		return await client.request<RuntimeInitialSnapshot>({ command: "get_snapshot" }, { timeoutMs: 5_000 });
+	} finally {
+		await client.close().catch(() => {});
+	}
+}
+
+function runtimeIsBusy(snapshot: RuntimeInitialSnapshot): boolean {
+	return (
+		snapshot.pendingUiRequests.length > 0 ||
+		snapshot.operations.some((operation) => ACTIVE_OPERATION_STATUSES.has(operation.status))
+	);
+}
 
 export function ensurePersistentRuntime(config: WebGatewayConfig): Promise<void> {
 	const existing = runtimeStartupPromises.get(config.runtimeEndpoint);
@@ -154,10 +178,14 @@ export function ensurePersistentRuntime(config: WebGatewayConfig): Promise<void>
 	const promise = (async () => {
 		if ((await probeIpcRuntime(config.runtimeEndpoint)).reachable) return;
 		if (!config.manageRuntime) throw new Error(`Web Runtime 未运行：${config.runtimeEndpoint}`);
-		const command = runtimeCommand();
-		const child = spawn(command.command, command.args, {
+		const command = config.runtimeInvocation ?? runtimeCommand(config.runtimeEndpoint);
+		const child = spawn(command.command, withRuntimeEndpoint(command.args, config.runtimeEndpoint), {
 			cwd: command.cwd,
-			env: { ...process.env, PI_WEB_RUNTIME_ENDPOINT: config.runtimeEndpoint },
+			env: {
+				...process.env,
+				PI_CODING_AGENT_DIR: config.agentDir,
+				PI_WEB_RUNTIME_ENDPOINT: config.runtimeEndpoint,
+			},
 			detached: true,
 			stdio: "ignore",
 		});
@@ -176,6 +204,27 @@ export function ensurePersistentRuntime(config: WebGatewayConfig): Promise<void>
 	});
 }
 
+async function openRuntimeClient(
+	config: WebGatewayConfig,
+	clientInstanceId: string,
+	onEvent: (event: ServerEvent) => void,
+	onClose: (error?: Error) => void,
+): Promise<{ client: RuntimeProtocolClient; initial: RuntimeInitialSnapshot }> {
+	const transport = await SocketByteTransport.connect(config.runtimeEndpoint);
+	const client = new ProtocolClient(transport, clientInstanceId, { trustedServerMessages: true });
+	client.onEvent(onEvent);
+	try {
+		await client.connect();
+		await waitForHello(client);
+		const initial = await client.request<RuntimeInitialSnapshot>({ command: "get_snapshot" }, { timeoutMs: 10_000 });
+		transport.onClose(onClose);
+		return { client, initial };
+	} catch (error) {
+		await client.close().catch(() => {});
+		throw error;
+	}
+}
+
 export async function connectRuntimeClient(
 	config: WebGatewayConfig,
 	clientInstanceId: string,
@@ -183,14 +232,38 @@ export async function connectRuntimeClient(
 	onClose: (error?: Error) => void,
 ): Promise<{ client: RuntimeProtocolClient; initial: RuntimeInitialSnapshot }> {
 	await ensurePersistentRuntime(config);
-	const transport = await SocketByteTransport.connect(config.runtimeEndpoint);
-	transport.onClose(onClose);
-	const client = new ProtocolClient(transport, clientInstanceId, { trustedServerMessages: true });
-	client.onEvent(onEvent);
-	await client.connect();
-	await waitForHello(client);
-	const initial = await client.request<RuntimeInitialSnapshot>({ command: "get_snapshot" }, { timeoutMs: 10_000 });
-	return { client, initial };
+	try {
+		return await openRuntimeClient(config, clientInstanceId, onEvent, onClose);
+	} catch (error) {
+		const legacyVersion = incompatibleRuntimeVersion(error);
+		if (!config.manageRuntime || legacyVersion === undefined) throw error;
+		const legacy = await readLegacyRuntimeSnapshot(config.runtimeEndpoint, legacyVersion).catch(() => undefined);
+		if (!legacy) {
+			throw new RuntimeProtocolError(
+				"version",
+				`${error instanceof Error ? error.message : String(error)}；无法读取旧 Runtime 状态，请运行 lc web runtime restart`,
+				false,
+			);
+		}
+		if (runtimeIsBusy(legacy)) {
+			throw new RuntimeProtocolError(
+				"version",
+				`${error instanceof Error ? error.message : String(error)}；旧 Runtime 仍有运行任务，任务结束后将自动切换`,
+				true,
+			);
+		}
+		const status = await getRuntimeServiceStatus(config.runtimeEndpoint);
+		if (!status.pid && !status.installed) {
+			throw new RuntimeProtocolError(
+				"version",
+				`${error instanceof Error ? error.message : String(error)}；无法定位旧 Runtime 进程，请运行 lc web runtime restart`,
+				false,
+			);
+		}
+		await stopRuntimeService(config.runtimeEndpoint, true);
+		await ensurePersistentRuntime(config);
+		return openRuntimeClient(config, clientInstanceId, onEvent, onClose);
+	}
 }
 
 export function endpointForAgentDir(agentDir: string): string {

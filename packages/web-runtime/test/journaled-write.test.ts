@@ -2,7 +2,12 @@ import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import type { ClientMessage, ServerMessage, SessionProgress } from "@lystar/code-web-protocol";
+import {
+	type ClientMessage,
+	RUNTIME_PROTOCOL_VERSION,
+	type ServerMessage,
+	type SessionProgress,
+} from "@lystar/code-web-protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebRuntimeService } from "../src/service.ts";
 import type { RuntimeAdapter, RuntimeEvent, RuntimeSession } from "../src/types.ts";
@@ -26,6 +31,7 @@ class FakeRuntime implements RuntimeSession {
 	readonly cwd: string;
 	lastAssistantText: string | undefined = "latest assistant";
 	lastBash: { command: string; excludeFromContext: boolean } | undefined;
+	lastQueueAction: { queueId: string; action: "remove" | "steer" } | undefined;
 	private releaseBash: (() => void) | undefined;
 	constructor(sessionPath: string, cwd: string, counts: Record<string, number>) {
 		this.sessionPath = sessionPath;
@@ -113,6 +119,10 @@ class FakeRuntime implements RuntimeSession {
 	async prompt() {}
 	async steer() {}
 	async followUp() {}
+	async queueAction(queueId: string, action: "remove" | "steer") {
+		this.counts.queue_action = (this.counts.queue_action ?? 0) + 1;
+		this.lastQueueAction = { queueId, action };
+	}
 	async clearQueue() {
 		return { steering: [], followUp: [] };
 	}
@@ -368,7 +378,7 @@ async function connection(service: WebRuntimeService, clientInstanceId = "client
 		messages.push(message);
 		if (dropResponse && message.type === "response") throw new Error("response dropped");
 	});
-	await value.handle({ type: "hello", version: 2, clientInstanceId });
+	await value.handle({ type: "hello", version: RUNTIME_PROTOCOL_VERSION, clientInstanceId });
 	return { ...value, messages };
 }
 
@@ -568,25 +578,31 @@ describe("WebRuntimeService journaled writes", () => {
 		).toMatchObject({ ok: false, error: { code: "invalid_session_lease" } });
 	});
 
-	it("runs manual compaction once through the operation journal", async () => {
+	it("runs queue_action once and preserves the stable queue ID on duplicate requests", async () => {
 		const setupValue = setup();
 		const active = await lease(setupValue.service, setupValue.sessionPath);
 		const payload = {
-			command: "compact" as const,
+			command: "queue_action" as const,
 			sessionPath: setupValue.sessionPath,
 			leaseId: active.leaseId,
 			clientInstanceId: "client",
-			clientRequestId: "compact-once",
-			customInstructions: "保留实现决策",
+			clientRequestId: "queue-action-once",
+			queueId: "queue-42",
+			action: "steer" as const,
 		};
-		await active.connection.handle({ type: "request", id: "compact", request: payload });
-		await active.connection.handle({ type: "request", id: "compact-retry", request: payload });
-		await new Promise((resolve) => setTimeout(resolve, 0));
+		await active.connection.handle({ type: "request", id: "queue-action", request: payload });
+		await active.connection.handle({ type: "request", id: "queue-action-retry", request: payload });
 
-		expect(setupValue.counts.compact).toBe(1);
+		expect(setupValue.runtime.lastQueueAction).toEqual({ queueId: "queue-42", action: "steer" });
+		expect(setupValue.counts.queue_action).toBe(1);
 		expect(
-			active.connection.messages.find((message) => message.type === "response" && message.id === "compact-retry"),
-		).toMatchObject({ ok: true, result: { duplicate: true, operation: { type: "compact" } } });
+			active.connection.messages.find(
+				(message) => message.type === "response" && message.id === "queue-action-retry",
+			),
+		).toMatchObject({
+			ok: true,
+			result: { duplicate: true, operation: { type: "queue_action", status: "completed" } },
+		});
 	});
 
 	it("runs excluded Shell through the operation journal with cumulative progress", async () => {

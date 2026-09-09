@@ -12,28 +12,50 @@ import type { WorkbenchActions } from "../types";
 export function SecuritySettings({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
 	const settings = state.securitySettings;
 	const [host, setHost] = useState("");
+	const [allowedHosts, setAllowedHosts] = useState("");
 	const [port, setPort] = useState("");
+	const [runtimePort, setRuntimePort] = useState("");
 	const [password, setPassword] = useState("");
 
 	useEffect(() => {
 		if (!settings) return;
 		setHost(settings.host);
+		setAllowedHosts(settings.allowedHosts.join(","));
 		setPort(String(settings.port));
+		setRuntimePort(String(settings.runtimePort));
 		setPassword("");
 	}, [settings]);
 
 	const portNumber = Number(port);
+	const runtimePortNumber = Number(runtimePort);
 	const portValid = Number.isInteger(portNumber) && portNumber >= 1 && portNumber <= 65535;
+	const runtimePortValid = Number.isInteger(runtimePortNumber) && runtimePortNumber >= 1 && runtimePortNumber <= 65535;
+	const allowedHostValues = allowedHosts
+		.split(",")
+		.map((value) => value.trim())
+		.filter(Boolean);
+	const allowedHostsValid = allowedHostValues.length > 0;
 	const passwordValid = !password || password.trim().length >= 8;
-	const dirty = Boolean(settings && (host !== settings.host || port !== String(settings.port) || password.trim()));
+	const dirty = Boolean(
+		settings &&
+		(host !== settings.host ||
+			allowedHosts !== settings.allowedHosts.join(",") ||
+			port !== String(settings.port) ||
+			runtimePort !== String(settings.runtimePort) ||
+			password.trim()),
+	);
 	const canSave = Boolean(
 		settings &&
 		(host.trim() || !settings.editable.host) &&
+		(allowedHostsValid || !settings.editable.allowedHosts) &&
 		(port || !settings.editable.port) &&
+		(runtimePort || !settings.editable.runtimePort) &&
 		portValid &&
+		runtimePortValid &&
 		passwordValid &&
 		(!settings.editable.host || host.trim() !== "") &&
 		(!settings.editable.port || portNumber > 0) &&
+		(!settings.editable.runtimePort || runtimePortNumber > 0) &&
 		dirty,
 	);
 
@@ -41,7 +63,9 @@ export function SecuritySettings({ state, actions }: { state: WorkbenchState; ac
 		if (!settings || !canSave) return;
 		void actions.saveSecuritySettings({
 			host: settings.editable.host ? host.trim() : settings.host,
+			allowedHosts: settings.editable.allowedHosts ? allowedHostValues : settings.allowedHosts,
 			port: settings.editable.port ? portNumber : settings.port,
+			runtimePort: settings.editable.runtimePort ? runtimePortNumber : settings.runtimePort,
 			...(password.trim() ? { password: password.trim() } : {}),
 		});
 	};
@@ -54,7 +78,9 @@ export function SecuritySettings({ state, actions }: { state: WorkbenchState; ac
 						<div className="flex flex-wrap items-start justify-between gap-3">
 							<div className="min-w-0">
 								<CardTitle className="text-base">Gateway 访问配置</CardTitle>
-								<CardDescription>保存后按新配置重启 Gateway，Web Runtime 与运行中的会话保持运行。</CardDescription>
+								<CardDescription>
+									保存到 web-config.json 后按新配置重启 Gateway，Web Runtime 与运行中的会话保持运行。
+								</CardDescription>
 							</div>
 							<Badge variant={settings?.passwordConfigured ? "secondary" : "outline"}>
 								{settings?.passwordConfigured ? "密码已设置" : "未设置密码"}
@@ -72,7 +98,7 @@ export function SecuritySettings({ state, actions }: { state: WorkbenchState; ac
 									<div className="grid gap-2">
 										<div className="flex items-center justify-between gap-2">
 											<label className="text-sm font-medium" htmlFor="gateway-host">
-												可访问 IP
+												监听 IP
 											</label>
 											{settings && !settings.editable.host ? <span className="text-xs text-muted-foreground">启动参数管理</span> : null}
 										</div>
@@ -88,8 +114,29 @@ export function SecuritySettings({ state, actions }: { state: WorkbenchState; ac
 									</div>
 									<div className="grid gap-2">
 										<div className="flex items-center justify-between gap-2">
+											<label className="text-sm font-medium" htmlFor="gateway-allowed-hosts">
+												白名单 IP
+											</label>
+											{settings && !settings.editable.allowedHosts ? <span className="text-xs text-muted-foreground">启动参数管理</span> : null}
+										</div>
+										<Input
+											id="gateway-allowed-hosts"
+											value={allowedHosts}
+											onChange={(event) => setAllowedHosts(event.target.value)}
+											placeholder="* 或 127.0.0.1,192.168.1.20"
+											aria-invalid={Boolean(allowedHosts) && !allowedHostsValid}
+											disabled={!settings?.editable.allowedHosts || state.securitySettingsSaving}
+											autoComplete="off"
+										/>
+										<p className="text-xs leading-5 text-muted-foreground">填入 * 表示不限制来源，多个地址使用英文逗号分隔。</p>
+									</div>
+								</div>
+
+								<div className="grid gap-4 sm:grid-cols-2">
+									<div className="grid gap-2">
+										<div className="flex items-center justify-between gap-2">
 											<label className="text-sm font-medium" htmlFor="gateway-port">
-												服务端口
+												Web 监听端口
 											</label>
 											{settings && !settings.editable.port ? <span className="text-xs text-muted-foreground">启动参数管理</span> : null}
 										</div>
@@ -104,7 +151,27 @@ export function SecuritySettings({ state, actions }: { state: WorkbenchState; ac
 											aria-invalid={Boolean(port) && !portValid}
 											disabled={!settings?.editable.port || state.securitySettingsSaving}
 										/>
-										<p className="text-xs leading-5 text-muted-foreground">端口范围为 1 到 65535。</p>
+										<p className="text-xs leading-5 text-muted-foreground">浏览器访问 Web UI 使用此端口，范围为 1 到 65535。</p>
+									</div>
+									<div className="grid gap-2">
+										<div className="flex items-center justify-between gap-2">
+											<label className="text-sm font-medium" htmlFor="runtime-port">
+												Runtime 端口
+											</label>
+											{settings && !settings.editable.runtimePort ? <span className="text-xs text-muted-foreground">启动参数管理</span> : null}
+										</div>
+										<Input
+											id="runtime-port"
+											type="number"
+											inputMode="numeric"
+											min={1}
+											max={65535}
+											value={runtimePort}
+											onChange={(event) => setRuntimePort(event.target.value)}
+											aria-invalid={Boolean(runtimePort) && !runtimePortValid}
+											disabled={!settings?.editable.runtimePort || state.securitySettingsSaving}
+										/>
+										<p className="text-xs leading-5 text-muted-foreground">Gateway 连接的本机 Runtime 端口，范围为 1 到 65535。</p>
 									</div>
 								</div>
 
@@ -131,7 +198,9 @@ export function SecuritySettings({ state, actions }: { state: WorkbenchState; ac
 								<Alert>
 									<ShieldCheck className="size-4" />
 									<AlertTitle>Runtime 不会停止</AlertTitle>
-									<AlertDescription>保存会让当前 Web 连接短暂断开。同一地址会按新配置重连；Host 或端口变化后，请使用新地址打开页面。正在执行的会话由独立 Runtime 继续运行。</AlertDescription>
+									<AlertDescription>
+										保存会让当前 Web 连接短暂断开。同一地址会按新配置重连；Web 或 Runtime 端口变化后，请使用新地址或新配置打开页面。正在执行的会话由独立 Runtime 继续运行。
+									</AlertDescription>
 								</Alert>
 							</>
 						)}
@@ -144,10 +213,17 @@ export function SecuritySettings({ state, actions }: { state: WorkbenchState; ac
 						) : null}
 
 						<div className="flex flex-wrap items-center justify-end gap-2">
-							<Button variant="outline" onClick={() => void actions.refreshSecuritySettings()} disabled={state.securitySettingsLoading || state.securitySettingsSaving}>
+							<Button
+								variant="outline"
+								onClick={() => void actions.refreshSecuritySettings()}
+								disabled={state.securitySettingsLoading || state.securitySettingsSaving}
+							>
 								<RefreshCw className="size-4" />重新加载
 							</Button>
-							<Button onClick={save} disabled={!canSave || state.securitySettingsLoading || state.securitySettingsSaving}>
+							<Button
+								onClick={save}
+								disabled={!canSave || state.securitySettingsLoading || state.securitySettingsSaving}
+							>
 								{state.securitySettingsSaving ? <LoaderCircle className="size-4 animate-spin" /> : <Save className="size-4" />}
 								{state.securitySettingsSaving ? "正在保存" : "保存设置"}
 							</Button>

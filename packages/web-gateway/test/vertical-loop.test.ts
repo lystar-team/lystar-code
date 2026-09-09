@@ -354,6 +354,58 @@ test("Web Gateway fake Provider 完成 Prompt、事件和 Transcript 闭环", as
 	const projectId = requiredString(project.id, "project id");
 	assert.equal("cwd" in project, false);
 
+	const initialGroupsResponse = await requestJson(baseUrl, "/api/project-groups");
+	assert.equal(initialGroupsResponse.status, 200);
+	assert.deepEqual(initialGroupsResponse.data.groups, []);
+
+	const createGroupResponse = await requestJson(baseUrl, "/api/project-groups", {
+		method: "POST",
+		body: JSON.stringify({ name: "Vertical Test Group" }),
+	});
+	assert.equal(createGroupResponse.status, 201);
+	const createdGroup = record(createGroupResponse.data.group);
+	const groupId = requiredString(createdGroup?.id, "project group id");
+	assert.equal(createdGroup?.name, "Vertical Test Group");
+
+	const assignGroupResponse = await requestJson(baseUrl, `/api/projects/${projectId}/group`, {
+		method: "PATCH",
+		body: JSON.stringify({ groupId }),
+	});
+	assert.equal(assignGroupResponse.status, 200);
+	const assignedGroups = Array.isArray(assignGroupResponse.data.groups)
+		? assignGroupResponse.data.groups.map(record).filter((group): group is Record<string, unknown> => Boolean(group))
+		: [];
+	const assignedGroup = assignedGroups.find((group) => group.id === groupId);
+	assert.deepEqual(assignedGroup?.projectIds, [projectId]);
+
+	const bootstrapAfterAssign = await requestJson(baseUrl, "/api/bootstrap");
+	assert.equal(bootstrapAfterAssign.status, 200);
+	const bootstrapGroups = Array.isArray(bootstrapAfterAssign.data.projectGroups)
+		? bootstrapAfterAssign.data.projectGroups
+				.map(record)
+				.filter((group): group is Record<string, unknown> => Boolean(group))
+		: [];
+	assert.deepEqual(bootstrapGroups.find((group) => group.id === groupId)?.projectIds, [projectId]);
+
+	const renameGroupResponse = await requestJson(baseUrl, `/api/project-groups/${groupId}`, {
+		method: "PATCH",
+		body: JSON.stringify({ name: "Renamed Vertical Test Group" }),
+	});
+	assert.equal(renameGroupResponse.status, 200);
+	assert.equal(record(renameGroupResponse.data.group)?.name, "Renamed Vertical Test Group");
+
+	const deleteGroupResponse = await requestJson(baseUrl, `/api/project-groups/${groupId}`, { method: "DELETE" });
+	assert.equal(deleteGroupResponse.status, 200);
+	assert.deepEqual(deleteGroupResponse.data.groups, []);
+	const projectsAfterDelete = await requestJson(baseUrl, "/api/projects");
+	assert.equal(projectsAfterDelete.status, 200);
+	const projectsAfterDeleteList = Array.isArray(projectsAfterDelete.data.projects)
+		? projectsAfterDelete.data.projects
+				.map(record)
+				.filter((candidate): candidate is Record<string, unknown> => Boolean(candidate))
+		: [];
+	assert.ok(projectsAfterDeleteList.some((candidate) => candidate.id === projectId));
+
 	const createResponse = await requestJson(baseUrl, "/api/sessions", {
 		method: "POST",
 		body: JSON.stringify({ projectId, clientRequestId: "create-vertical-session" }),

@@ -229,6 +229,10 @@ for (const pkg of packages) {
 	run("npm", ["run", pkg.directory === "packages/ai" ? "build:offline" : "build"], { cwd: pkg.directory });
 }
 
+for (const directory of ["packages/web-protocol", "packages/web-runtime", "packages/web", "packages/web-gateway"]) {
+	run("npm", ["run", "build"], { cwd: directory });
+}
+
 if (!options.skipTest) {
 	run("./test.sh", [], { cwd: repoRoot });
 }

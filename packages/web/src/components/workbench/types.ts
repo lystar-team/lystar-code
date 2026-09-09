@@ -17,7 +17,9 @@ export interface WorkbenchActions {
 		mode?: ComposerMode,
 		attachments?: PromptAttachment[],
 		attachmentPreviews?: PromptAttachmentPreview[],
+		displayText?: string,
 	) => Promise<void>;
+	queueAction: (queueId: string, action: "remove" | "steer") => Promise<void>;
 	abort: () => Promise<void>;
 	openInspector: (mode?: InspectorMode) => Promise<void>;
 	closeInspector: () => void;
@@ -28,7 +30,8 @@ export interface WorkbenchActions {
 	loadEarlier: () => Promise<void>;
 	loadTranscript: () => Promise<void>;
 	loadGitStatus: () => Promise<void>;
-	loadGitDiff: (path?: string, staged?: boolean) => Promise<void>;
+	loadGitRepositoryStats: (repositoryPath?: string) => Promise<void>;
+	loadGitDiff: (path?: string, staged?: boolean, repositoryPath?: string) => Promise<void>;
 	closeGitDiff: () => void;
 	loadProjectTree: (path?: string, preserveCurrentTree?: boolean) => Promise<void>;
 	openFile: (path: string) => Promise<void>;
@@ -42,6 +45,10 @@ export interface WorkbenchActions {
 		projectId: string,
 		update: Partial<Pick<WebProject, "name" | "pinned" | "color" | "archived">>,
 	) => Promise<void>;
+	addProjectGroup: (name: string) => Promise<boolean>;
+	updateProjectGroup: (groupId: string, name: string) => Promise<boolean>;
+	removeProjectGroup: (groupId: string) => Promise<boolean>;
+	setProjectGroup: (projectId: string, groupId?: string) => Promise<boolean>;
 	reorderProjects: (projectIds: string[]) => Promise<void>;
 	reorderSessions: (projectId: string, sessionIds: string[]) => Promise<void>;
 	removeProject: (projectId: string) => Promise<void>;
@@ -61,7 +68,13 @@ export interface WorkbenchActions {
 	refreshSkills: () => Promise<void>;
 	refreshDiagnostics: () => Promise<void>;
 	refreshSecuritySettings: () => Promise<void>;
-	saveSecuritySettings: (input: { host: string; port: number; password?: string }) => Promise<void>;
+	saveSecuritySettings: (input: {
+		host: string;
+		allowedHosts: string[];
+		port: number;
+		runtimePort: number;
+		password?: string;
+	}) => Promise<void>;
 	restartDiagnosticService: (service: "gateway" | "runtime") => Promise<void>;
 	refreshHarnessImports: (targetScope?: "user" | "project") => Promise<void>;
 	importHarnessResources: (

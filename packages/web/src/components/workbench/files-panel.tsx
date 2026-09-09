@@ -1,10 +1,22 @@
-import { ArrowLeft, FileCode2, FileJson, FileText, ImageIcon, LoaderCircle, RefreshCw } from "lucide-react";
+import {
+	ArrowLeft,
+	FileCode2,
+	FileJson,
+	FileSpreadsheet,
+	FileText,
+	FileType2,
+	ImageIcon,
+	LoaderCircle,
+	Presentation,
+	RefreshCw,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import type { ProjectTreeEntry } from "../../types";
 import type { WorkbenchState } from "../../state/use-workbench";
 import { FileTree, FileTreeFile, FileTreeFolder } from "../ai-elements/file-tree";
 import { Button } from "../ui/button";
 import { Card, CardContent } from "../ui/card";
+import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../../lib/utils";
 import type { WorkbenchActions } from "./types";
 
@@ -73,16 +85,20 @@ export function FilesPanel({ state, actions }: { state: WorkbenchState; actions:
 				</div>
 			) : null}
 			{tree ? (
-				<FileTree
-					className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto"
-					selectedPath={state.filePath}
-					onSelect={(path) => {
-						const entry = findEntry(path, entries);
-						if (entry?.kind === "file") void actions.openFile(entry.path);
-					}}
-				>
-					{renderEntries(entries)}
-				</FileTree>
+				<div className="min-h-0 flex-1 overflow-hidden rounded-lg border bg-background">
+					<ScrollArea className="h-full w-full">
+						<FileTree
+							className="min-w-0 rounded-none border-0 bg-transparent"
+							selectedPath={state.filePath}
+							onSelect={(path) => {
+								const entry = findEntry(path, entries);
+								if (entry?.kind === "file") void actions.openFile(entry.path);
+							}}
+						>
+							{renderEntries(entries)}
+						</FileTree>
+					</ScrollArea>
+				</div>
 			) : (
 				<Card className="min-h-0 flex-1">
 					<CardContent className="flex h-full items-center justify-center py-8 text-center text-sm text-muted-foreground">
@@ -106,14 +122,32 @@ export function FileTypeIcon({ path }: { path: string }) {
 	const extension = fileName.split(".").at(-1) ?? "";
 	const Icon = ["avif", "gif", "jpeg", "jpg", "png", "svg", "webp"].includes(extension)
 		? ImageIcon
-		: extension === "md" || extension === "mdx"
-			? FileText
-			: extension === "json"
-				? FileJson
-				: ["css", "go", "java", "js", "jsx", "py", "rs", "sql", "ts", "tsx", "vue", "yaml", "yml"].includes(
-							extension,
-						)
-					? FileCode2
-					: FileText;
+		: ["csv", "ods", "tsv", "xls", "xlsx"].includes(extension)
+			? FileSpreadsheet
+			: ["odp", "pot", "pps", "ppt", "pptx"].includes(extension)
+				? Presentation
+				: ["doc", "docm", "docx", "odt", "rtf"].includes(extension)
+					? FileType2
+					: extension === "md" || extension === "mdx"
+					? FileText
+					: extension === "json"
+						? FileJson
+						: [
+								"css",
+								"go",
+								"java",
+								"js",
+								"jsx",
+								"py",
+								"rs",
+								"sql",
+								"ts",
+								"tsx",
+								"vue",
+								"yaml",
+								"yml",
+							].includes(extension)
+							? FileCode2
+							: FileText;
 	return <Icon className="size-4 shrink-0 text-muted-foreground" />;
 }

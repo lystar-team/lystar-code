@@ -70,6 +70,10 @@ type ToolIndex = {
 	statuses: ReadonlyMap<string, "success" | "error">;
 };
 
+function isWebSearchTranscriptItem(entry: ConversationRenderItem): boolean {
+	return entry.kind === "item" && entry.item.view?.type === "web_search";
+}
+
 function isToolComplete(tool: ToolBatchTool): boolean {
 	return (
 		tool.state === "output-available" ||
@@ -672,7 +676,8 @@ function ConversationBody({
 				}
 				const standaloneReadTools =
 					tools.length > 0 && tools.every((tool) => tool.name === "read" && !tool.images?.length);
-				if (standaloneReadTools) {
+				const standaloneSearchTools = tools.length > 0 && tools.every((tool) => tool.name === "web_search");
+				if (standaloneReadTools || standaloneSearchTools) {
 					return (
 						<div className="tool-batch-stack">
 							{tools.map((tool) => (
@@ -739,7 +744,12 @@ function ConversationBody({
 	const transcriptItemKey = useCallback((entry: ConversationRenderItem) => entry.key, []);
 	const estimateTranscriptItemHeight = useCallback(
 		(entry: ConversationRenderItem) =>
-			(entry.kind === "tool-stack" || entry.kind === "compaction" || entry.kind === "thinking" ? 32 : 80),
+			(entry.kind === "tool-stack" ||
+				entry.kind === "compaction" ||
+				entry.kind === "thinking" ||
+				isWebSearchTranscriptItem(entry)
+				? 32
+				: 80),
 		[],
 	);
 
@@ -779,7 +789,10 @@ function ConversationBody({
 					getKey={transcriptItemKey}
 					estimateHeight={estimateTranscriptItemHeight}
 					gap={(previous, current) =>
-						previous.kind === "tool-stack" && current.kind === "tool-stack" ? 0 : DEFAULT_TRANSCRIPT_GAP
+						(previous.kind === "tool-stack" && current.kind === "tool-stack") ||
+						(isWebSearchTranscriptItem(previous) && isWebSearchTranscriptItem(current))
+							? 0
+							: DEFAULT_TRANSCRIPT_GAP
 					}
 					header={historyStatus}
 					renderItem={renderConversationItem}

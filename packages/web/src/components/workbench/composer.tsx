@@ -1,16 +1,19 @@
-import { ArrowUp, Check, ChevronDown, Plus, Square } from "lucide-react";
+import { ArrowUp, ArrowUpToLine, Check, ChevronDown, Plus, Square, Trash2 } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api";
 import { type CommandDialogRequest, executeComposerCommand, resolveComposerCommand } from "../../state/composer-commands";
-import { canSendPrompt, hasActiveToolActivities } from "../../state/chat-lifecycle";
+import { canSendPrompt, hasActiveSessionWork } from "../../state/chat-lifecycle";
 import { CommandDialog } from "./command-dialog";
 import type { WorkbenchState } from "../../state/use-workbench";
 import { Attachment, AttachmentInfo, AttachmentPreview, AttachmentRemove, Attachments } from "../ai-elements/attachments";
 import { ModelSelector, ModelSelectorContent, ModelSelectorEmpty, ModelSelectorGroup, ModelSelectorInput, ModelSelectorItem, ModelSelectorList, ModelSelectorName, ModelSelectorTrigger } from "../ai-elements/model-selector";
+import { ResourceImageViewer } from "../ai-elements/resource-preview";
 import { PromptCompletionMenu, PromptCompletionProvider, PromptCompletionTextarea } from "../ai-elements/prompt-completion-menu";
 import { PromptInput, PromptInputBody, PromptInputButton, PromptInputFooter, PromptInputHeader, PromptInputProvider, PromptInputSelect, PromptInputSelectContent, PromptInputSelectItem, PromptInputSelectTrigger, PromptInputSelectValue, PromptInputSubmit, PromptInputTools, usePromptInputAttachments } from "../ai-elements/prompt-input";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card";
-import { ACTIVE_OPERATION_STATUSES, THINKING_LEVEL_LABELS } from "./constants";
+import { Button } from "../ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
+import { THINKING_LEVEL_LABELS } from "./constants";
 import { formatModelDisplayName } from "./model-utils";
 import type { WorkbenchActions } from "./types";
 
@@ -35,6 +38,7 @@ function composerPropsEqual(previous: ComposerProps, next: ComposerProps): boole
 		previous.state.hiddenModelProviders === next.state.hiddenModelProviders &&
 		previous.state.models === next.state.models &&
 		previous.state.providers === next.state.providers &&
+		previous.state.queuedUserPrompts === next.state.queuedUserPrompts &&
 		previous.state.readOnly === next.state.readOnly &&
 		previous.state.session === next.state.session &&
 		previous.state.sessionId === next.state.sessionId &&
@@ -46,22 +50,27 @@ export const Composer = memo(function Composer({ state, actions }: ComposerProps
 	const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
 	const [modelSearch, setModelSearch] = useState("");
 	const [commandDialog, setCommandDialog] = useState<CommandDialogRequest & { sessionId?: string }>();
+	const [queueActionId, setQueueActionId] = useState<string>();
 	const submittingRef = useRef(false);
 	const sessionIdRef = useRef(state.sessionId);
 	sessionIdRef.current = state.sessionId;
 	useEffect(() => {
 		setCommandDialog(undefined);
 		setModelSelectorOpen(false);
+		setQueueActionId(undefined);
 	}, [state.sessionId]);
 	const disabled = !canSendPrompt(state);
-	const active = Boolean(
-		state.session?.activity === "running" ||
-			state.session?.activity === "waiting_for_input" ||
-			hasActiveToolActivities(state.session?.toolActivities) ||
-			Object.values(state.liveTools).some((tool) => tool.status === "running") ||
-			(state.currentOperation && ACTIVE_OPERATION_STATUSES.has(state.currentOperation.status)),
-	);
-	const stopping = active;
+	const stopping = hasActiveSessionWork(state);
+	const handleQueueAction = async (queueId: string, action: "remove" | "steer") => {
+		setQueueActionId(queueId);
+		try {
+			await actions.queueAction(queueId, action);
+		} catch (error) {
+			actions.showToast(error instanceof Error ? error.message : String(error));
+		} finally {
+			setQueueActionId(undefined);
+		}
+	};
 	const selectedModel = state.models.find(
 		(model) => model.provider === state.session?.model?.provider && model.id === state.session?.model?.id,
 	);
@@ -95,6 +104,13 @@ export const Composer = memo(function Composer({ state, actions }: ComposerProps
 						sessionId={state.sessionId}
 					>
 						<div className="relative">
+							{state.queuedUserPrompts.length ? (
+								<QueuedPromptList
+									prompts={state.queuedUserPrompts}
+									busyId={queueActionId}
+									onAction={handleQueueAction}
+								/>
+							) : null}
 							<PromptCompletionMenu />
 							<PromptInput
 								className="prompt-input-shell [&_[data-slot=input-group]]:rounded-[48px] [&_[data-slot=input-group]]:bg-background [&_[data-slot=input-group]]:shadow-[0_2px_12px_rgb(0_0_0/0.05)]"
@@ -130,11 +146,11 @@ export const Composer = memo(function Composer({ state, actions }: ComposerProps
 											});
 											return;
 										}
-										const mode = stopping
-											? submitMode === "steer"
-												? "steer"
-												: "follow-up"
-											: state.composerMode;
+						const mode = stopping
+							? submitMode === "steer"
+								? "steer"
+								: "follow-up"
+							: state.composerMode;
 						const uploadedImages = await Promise.all(
 							files.map((file) =>
 								webApi.uploadImage({
@@ -157,6 +173,7 @@ export const Composer = memo(function Composer({ state, actions }: ComposerProps
 							mode,
 							uploadedImages.map(({ path, mimeType }) => ({ path, mimeType })),
 							attachmentPreviews,
+							text,
 						);
 									} catch (error) {
 										actions.showToast(error instanceof Error ? error.message : String(error));
@@ -269,7 +286,8 @@ export const Composer = memo(function Composer({ state, actions }: ComposerProps
 											status={stopping ? "streaming" : "ready"}
 											onStop={stopping ? () => void actions.abort() : undefined}
 											disabled={disabled || (!stopping && !state.sessionId)}
-											aria-label={stopping ? "停止" : "发送"}
+							data-prompt-submit-mode={stopping ? "steer" : undefined}
+							aria-label={stopping ? "停止" : "发送"}
 										>
 											{stopping ? (
 												<Square className="size-4 fill-current" />
@@ -291,6 +309,73 @@ export const Composer = memo(function Composer({ state, actions }: ComposerProps
 	);
 }, composerPropsEqual);
 
+function QueuedPromptList({
+	prompts,
+	busyId,
+	onAction,
+}: {
+	prompts: WorkbenchState["queuedUserPrompts"];
+	busyId?: string;
+	onAction: (queueId: string, action: "remove" | "steer") => void;
+}) {
+	return (
+		<section
+			aria-label="排队消息"
+			className="mb-2 overflow-hidden rounded-2xl border border-border/70 bg-muted/20 shadow-sm"
+		>
+			<div className="flex items-center justify-between px-3 py-2 text-xs text-muted-foreground">
+				<span className="font-medium text-foreground">排队消息</span>
+				<span>{prompts.length} 条</span>
+			</div>
+			<div className="max-h-56 divide-y divide-border/60 overflow-y-auto">
+				{prompts.map((prompt) => (
+					<div className="flex min-w-0 items-start gap-3 px-3 py-2.5" key={prompt.id}>
+						<div className="min-w-0 flex-1">
+							<p className="whitespace-pre-wrap break-words text-sm leading-5 text-foreground">{prompt.displayText}</p>
+							{prompt.attachments.length ? (
+								<p className="mt-1 truncate text-xs text-muted-foreground">
+									附件：{prompt.attachments.map((attachment) => attachment.filename).join("、")}
+								</p>
+							) : null}
+						</div>
+						<div className="flex shrink-0 items-center gap-0.5">
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button
+										type="button"
+										variant="ghost"
+										size="icon-sm"
+										aria-label="调整方向"
+										disabled={busyId !== undefined}
+										onClick={() => onAction(prompt.id, "steer")}
+									>
+										<ArrowUpToLine className="size-4" />
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent side="top">调整方向（立即插队）</TooltipContent>
+							</Tooltip>
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button
+										type="button"
+										variant="ghost"
+										size="icon-sm"
+										aria-label="删除排队消息"
+										disabled={busyId !== undefined}
+										onClick={() => onAction(prompt.id, "remove")}
+									>
+										<Trash2 className="size-4" />
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent side="top">删除，不发送</TooltipContent>
+							</Tooltip>
+						</div>
+					</div>
+				))}
+			</div>
+		</section>
+	);
+}
 function ImageUploadButton({ disabled }: { disabled: boolean }) {
 	const attachments = usePromptInputAttachments();
 	return (
@@ -367,16 +452,57 @@ function ContextRing({ contextWindow, usedTokens }: { contextWindow: number; use
 
 function ComposerAttachments() {
 	const attachments = usePromptInputAttachments();
+	const [previewIndex, setPreviewIndex] = useState<number>();
 	if (!attachments.files.length) return null;
+
+	const previewItems = attachments.files.flatMap((file) =>
+		file.type === "file" && file.url
+			? [{ id: file.id, src: file.url, alt: file.filename ?? "图片" }]
+			: [],
+	);
+
 	return (
-		<Attachments variant="inline">
-			{attachments.files.map((file) => (
-				<Attachment key={file.id} data={file} onRemove={() => attachments.remove(file.id)}>
-					<AttachmentPreview />
-					<AttachmentInfo />
-					<AttachmentRemove label="移除附件" />
-				</Attachment>
-			))}
-		</Attachments>
+		<>
+			<Attachments variant="inline">
+				{attachments.files.map((file) => {
+					const imageIndex = previewItems.findIndex((item) => item.id === file.id);
+					const previewable = imageIndex >= 0;
+					return (
+						<Attachment
+							key={file.id}
+							data={file}
+							onRemove={() => attachments.remove(file.id)}
+							onClick={previewable ? () => setPreviewIndex(imageIndex) : undefined}
+							onKeyDown={
+								previewable
+									? (event) => {
+										if (event.key === "Enter" || event.key === " ") {
+											event.preventDefault();
+											setPreviewIndex(imageIndex);
+										}
+									}
+									: undefined
+							}
+							role={previewable ? "button" : undefined}
+							tabIndex={previewable ? 0 : undefined}
+							aria-label={previewable ? `预览 ${file.filename ?? "图片"}` : undefined}
+							className={previewable ? "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" : undefined}
+						>
+							<AttachmentPreview />
+							<AttachmentInfo />
+							<AttachmentRemove label="移除附件" />
+						</Attachment>
+					);
+				})}
+			</Attachments>
+			<ResourceImageViewer
+				items={previewItems}
+				open={previewIndex !== undefined}
+				initialIndex={previewIndex ?? 0}
+				onOpenChange={(open) => {
+					if (!open) setPreviewIndex(undefined);
+				}}
+			/>
+		</>
 	);
 }

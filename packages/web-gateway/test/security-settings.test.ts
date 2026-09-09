@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { test } from "node:test";
-import { loadWebGatewaySettings, WebGatewayServer, webGatewayTokenPath } from "../src/index.ts";
+import { loadWebGatewaySettings, WebGatewayServer, webConfigPath, webGatewayTokenPath } from "../src/index.ts";
 
 interface RouteInternals {
 	handleApi(request: IncomingMessage, response: ServerResponse, url: URL, context: never): Promise<void>;
@@ -56,7 +56,9 @@ test("Web 安全设置保存后重启 Gateway，Runtime 会话保持运行", asy
 			Buffer.from(
 				JSON.stringify({
 					host: "192.168.2.35",
+					allowedHosts: ["127.0.0.1", "192.168.2.35"],
 					port: 15432,
+					runtimePort: 15433,
 					password: "new-web-password",
 				}),
 			),
@@ -75,9 +77,11 @@ test("Web 安全设置保存后重启 Gateway，Runtime 会话保持运行", asy
 		assert.equal(capture.getStatus(), 202);
 		assert.deepEqual(JSON.parse(capture.getBody()), {
 			host: "192.168.2.35",
+			allowedHosts: ["127.0.0.1", "192.168.2.35"],
 			port: 15432,
+			runtimePort: 15433,
 			passwordConfigured: true,
-			editable: { host: true, port: true, password: true },
+			editable: { host: true, allowedHosts: true, port: true, runtimePort: true, password: true },
 			accepted: true,
 			passwordChanged: true,
 			restartPending: true,
@@ -85,7 +89,14 @@ test("Web 安全设置保存后重启 Gateway，Runtime 会话保持运行", asy
 		});
 		assert.equal(restartCount, 1);
 		assert.deepEqual(await loadWebGatewaySettings(agentDir), { host: "192.168.2.35", port: 15432 });
-		assert.equal((await readFile(webGatewayTokenPath(agentDir), "utf8")).trim(), "new-web-password");
+		assert.deepEqual(JSON.parse(await readFile(webConfigPath(agentDir), "utf8")), {
+			version: 1,
+			host: "192.168.2.35",
+			allowedHosts: ["127.0.0.1", "192.168.2.35"],
+			port: 15432,
+			runtimePort: 15433,
+			password: "new-web-password",
+		});
 	} finally {
 		await server.close();
 		await rm(agentDir, { recursive: true, force: true });

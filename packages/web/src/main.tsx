@@ -12,6 +12,12 @@ root.dataset.platform = /Mac/i.test(navigator.userAgent)
 		? "windows"
 		: "linux";
 
+if ("serviceWorker" in navigator) {
+	window.addEventListener("load", () => {
+		void navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => undefined);
+	});
+}
+
 createRoot(document.getElementById("app")!).render(
 	<StrictMode>
 		<App />

@@ -10,7 +10,7 @@ export interface TranscriptWindow {
 }
 
 export type LiveRenderSource =
-	| { kind: "text"; id: string }
+	| { kind: "text"; id: string; parts: readonly string[] }
 	| { kind: "thinking"; id: string }
 	| { kind: "tools"; id: string; toolIds: readonly string[] };
 
@@ -47,39 +47,72 @@ function transcriptRenderIdentity(item: WebTranscriptItem): string {
 	return `${item.entryId}:${transcriptViewIdentity(item)}`;
 }
 
+function transcriptRenderKeys(items: readonly WebTranscriptItem[]): string[] {
+	const occurrences = new Map<string, number>();
+	return items.map((item) => {
+		const base = transcriptRenderIdentity(item);
+		const occurrence = occurrences.get(base) ?? 0;
+		occurrences.set(base, occurrence + 1);
+		return `${base}:${occurrence}`;
+	});
+}
+
 export function transcriptRenderIdOverrides(
 	liveItems: readonly LiveRenderSource[],
 	liveCompactionKey: string | undefined,
 	items: readonly WebTranscriptItem[],
 ): TranscriptRenderIdOverrides {
 	const overrides = new Map<string, string>();
-	let textId: string | undefined;
-	for (let index = liveItems.length - 1; index >= 0; index--) {
-		const item = liveItems[index];
-		if (item?.kind === "text") {
-			textId = item.id;
-			break;
+	const renderKeys = transcriptRenderKeys(items);
+	const textIdsByContent = new Map<string, string[]>();
+	const liveToolIdByCallId = new Map<string, string>();
+
+	for (const item of liveItems) {
+		if (item.kind === "text") {
+			const content = item.parts.join("");
+			if (!content) continue;
+			const ids = textIdsByContent.get(content) ?? [];
+			ids.push(item.id);
+			textIdsByContent.set(content, ids);
+			continue;
+		}
+		if (item.kind === "tools") {
+			for (const toolId of item.toolIds) liveToolIdByCallId.set(toolId, item.id);
 		}
 	}
-	const toolIds = new Map<string, string>();
-	for (const item of liveItems) {
-		if (item.kind !== "tools") continue;
-		for (const toolId of item.toolIds) toolIds.set(toolId, item.id);
+
+	// 恢复流可能先于整页 Transcript 返回，只允许与相同正文的 Assistant 投影一对一交接身份。
+	for (let index = items.length - 1; index >= 0; index--) {
+		const view = items[index]?.view;
+		if (view?.type !== "assistant") continue;
+		const ids = textIdsByContent.get(view.text);
+		const liveId = ids?.pop();
+		if (liveId) overrides.set(renderKeys[index]!, liveId);
 	}
-	for (const item of items) {
-		const view = item.view;
-		if (!view) continue;
-		const key = transcriptRenderIdentity(item);
-		if (view.type === "assistant" && textId) {
-			overrides.set(key, textId);
-		} else if (view.type === "tool_call") {
-			const liveId = view.calls.map((call) => toolIds.get(call.id)).find(Boolean);
-			if (liveId) overrides.set(key, liveId);
-		} else if (view.type === "tool_result") {
-			const liveId = toolIds.get(view.callId);
-			if (liveId) overrides.set(key, liveId);
-		} else if (view.type === "summary" && view.variant === "compaction" && liveCompactionKey) {
-			overrides.set(key, liveCompactionKey);
+
+	const usedToolRenderIds = new Set<string>();
+	for (let index = 0; index < items.length; index++) {
+		const view = items[index]?.view;
+		if (view?.type !== "tool_call") continue;
+		let liveId: string | undefined;
+		for (const call of view.calls) {
+			const candidate = liveToolIdByCallId.get(call.id);
+			if (candidate && !usedToolRenderIds.has(candidate)) {
+				liveId = candidate;
+				break;
+			}
+		}
+		if (!liveId) continue;
+		usedToolRenderIds.add(liveId);
+		overrides.set(renderKeys[index]!, liveId);
+	}
+
+	if (liveCompactionKey) {
+		for (let index = items.length - 1; index >= 0; index--) {
+			const view = items[index]?.view;
+			if (view?.type !== "summary" || view.variant !== "compaction") continue;
+			overrides.set(renderKeys[index]!, liveCompactionKey);
+			break;
 		}
 	}
 	return overrides;
@@ -91,6 +124,7 @@ export function decorateTranscriptItems(
 	renderIdOverrides?: TranscriptRenderIdOverrides,
 ): WorkbenchTranscriptItem[] {
 	const occurrences = new Map<string, number>();
+	const renderKeys = transcriptRenderKeys(items);
 	const previousByBase = new Map<string, WorkbenchTranscriptItem[]>();
 	for (const item of previous) {
 		const base = transcriptRenderIdentity(item);
@@ -98,7 +132,7 @@ export function decorateTranscriptItems(
 		group.push(item);
 		previousByBase.set(base, group);
 	}
-	return items.map((item) => {
+	return items.map((item, index) => {
 		const base = transcriptRenderIdentity(item);
 		const occurrence = occurrences.get(base) ?? 0;
 		occurrences.set(base, occurrence + 1);
@@ -112,7 +146,8 @@ export function decorateTranscriptItems(
 			JSON.stringify(existing.view) === JSON.stringify(item.view)
 		)
 			return existing;
-		return { ...item, renderId: renderIdOverrides?.get(base) ?? existing?.renderId ?? `${base}:${occurrence}` };
+		const renderKey = renderKeys[index]!;
+		return { ...item, renderId: renderIdOverrides?.get(renderKey) ?? existing?.renderId ?? renderKey };
 	});
 }
 

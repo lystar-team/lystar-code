@@ -297,6 +297,8 @@ ${chalk.bold("命令：")}
   ${APP_NAME} auth <command>            输出凭据或检查 Provider 是否可用
   ${APP_NAME} lessons <command>         查看、审批、停用或回滚 Tool 恢复经验
   ${APP_NAME} doctor [--json]           输出只读恢复与运行环境诊断
+  ${APP_NAME} close-old [--dry-run]     关闭更新前启动的旧版 lc 会话
+  ${APP_NAME} close-old --force         强制关闭旧版 lc 会话
   ${APP_NAME} <command> --help          查看 install/remove/update/config/auth/lessons/doctor 等命令帮助
 
 ${chalk.bold("选项：")}

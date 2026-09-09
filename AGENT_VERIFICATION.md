@@ -1,6 +1,6 @@
 # LYStar Code 验证记录
 
-> 更新日期：2026-09-05
+> 更新日期：2026-09-09
 >
 > 本文件只记录当前 TypeScript TUI、Web Runtime、Web Runtime Protocol 和发行链路的验证。历史原生终端实验记录已移除，不作为当前实现证据。
 
@@ -8,7 +8,7 @@
 
 - 正式 CLI 入口是 `packages/coding-agent/src/main.ts`，使用 TypeScript Interactive TUI。
 - Web 客户端使用 `packages/web-protocol`、`packages/web-runtime`、Transcript 分页、Session lease、operation journal、content reference 和标准 `ui_request`/`ui_response`。
-- 发行包只构建 `lc` 与 `lystar`，不包含额外终端前端可执行文件。
+- 发行包包含 `lc`/`lystar` 可执行入口和 `web/` 静态资源，不包含额外终端前端可执行文件。
 - 上游 Pi 基线已同步到 `v0.84.4`，commit `b79e4cc834970cca69daebffab7df1da7d1e52c4`；LYStar 产品版本为 `0.84.4-lystar.1`。
 
 ## LYStar / Codex 架构整理定向验证（2026-09-05）
@@ -379,6 +379,47 @@ ws://10.218.2.35:1420/ws?token=...&clientId=...
 - operation journal 的重复请求、响应丢失和 payload 冲突。
 - 标准 Extension `ui_request`/`ui_response`。
 - Web Runtime 进程退出后的 Gateway 恢复和会话状态恢复。
+
+## Bundled `lc web` 验证（2026-09-09）
+
+本轮完成 bundled Web 发行链路和本机安装目录同步，实际验证：
+
+```bash
+npm run build:offline
+cd packages/web-gateway
+node --import tsx --test --test-reporter=spec test/*.test.ts
+cd ../..
+npx biome check --error-on-warnings \
+  scripts/local-release.mjs .github/workflows/release.yml \
+  packages/web-gateway/src packages/web-runtime/src/cli-runner.ts \
+  packages/web-runtime/src/cli.ts packages/web-runtime/src/index.ts \
+  packages/coding-agent/src/cli.ts packages/coding-agent/src/cli/args.ts \
+  packages/coding-agent/src/cli/web-command.ts \
+  packages/web/src/components/workbench/settings/security.tsx \
+  packages/web/src/components/workbench/token-gate.tsx packages/web/vite.config.ts \
+  scripts/lystar-bun-cli.mjs scripts/write-web-version.mjs \
+  packages/web-gateway/test/*.test.ts
+bash scripts/build-binaries.sh --skip-install --skip-build --skip-deps \
+  --offline-model-data --out /home/yean/lc-release-output
+cd /home/yean/lc-release-output
+sha256sum -c SHA256SUMS
+cd -
+bash scripts/test-install-sh.sh
+git diff --check --no-ext-diff
+```
+
+结果：Web Gateway 全量 28 项通过；Web Runtime、Web Protocol、Web 构建、TypeScript 检查和发行资源检查通过；`scripts/build-binaries.sh` 生成的 Linux x64 压缩包通过 SHA-256 校验；真实发行包运行 `install.sh` 后同时包含 `lc` 和 `web/`；`scripts/test-install-sh.sh` 的安装、PATH、校验、回退、卸载和物化检查通过；`packages/web/dist/version.json` 的 `productVersion` 为 `0.84.4-lystar.1`，生产资源未生成 sourcemap。
+
+使用 Bun 1.3.9 在用户目录生成 Linux x64 发行二进制，并与同目录 `package.json`、`web/` 资源组成临时发行目录。实际通过：
+
+- `lc --version` 返回 `0.84.4-lystar.1`；
+- `lc web --help`、静态 `index.html`、`web-config.json`、认证安全设置 API 和 `/healthz` 通过；
+- `lc web` 创建 Runtime Socket 和 PID 文件；
+- POST 安全设置后 Gateway 切换端口，Runtime PID 保持不变；
+- 本机 `~/.local/share/lystar-agent/current` 已原子切换到带 `web/` 的本地目录，旧目录保留为 `previous`；
+- 本轮未停止或重启已有 Gateway/Runtime 进程。
+
+`/tmp` 不作为 Bun 编译输出目录；该路径在当前环境生成了不可执行文件，改用用户目录后产物为可执行 ELF 并通过运行验证。Windows、macOS 实机运行、正式 Release workflow 和 Windows 安装器实机验证未在本轮执行。完整 `npm run check` 未记录为通过：`check:schema` 检测到工作区已有的 `packages/web-protocol/generated/web-protocol.schema.json` 改动后退出。
 
 ## 结果记录规则
 

@@ -1,26 +1,27 @@
 import { createUuid } from "@lystar/code-web-protocol";
 import type {
 	BootstrapResponse,
-	WebCompletionResult,
 	DirectoryListing,
 	FileResponse,
 	GatewayEvent,
 	GitDiffResponse,
 	GitStatusResponse,
-	HarnessImportsResponse,
 	HarnessImportResultResponse,
+	HarnessImportsResponse,
 	HostInstructionsResponse,
 	ImageUploadResponse,
-	PromptAttachment,
 	ModelsResponse,
+	ProjectGroup,
 	ProjectSkillsResponse,
 	ProjectTreeResponse,
 	ProjectTrustResponse,
-	SecuritySettingsResponse,
+	PromptAttachment,
 	SaveSecuritySettingsResponse,
+	SecuritySettingsResponse,
 	SessionTreeResponse,
 	SettingsResponse,
 	TranscriptResponse,
+	WebCompletionResult,
 	WebLease,
 	WebOperation,
 	WebProject,
@@ -69,7 +70,10 @@ async function parseResponse<T>(response: Response): Promise<T> {
 
 export class WebApi {
 	private readonly pendingSessionSubscriptions = new WeakMap<WebSocket, Map<string, number | undefined>>();
-	private readonly pendingSubscriptionListeners = new WeakMap<WebSocket, { onOpen: () => void; onClose: () => void }>();
+	private readonly pendingSubscriptionListeners = new WeakMap<
+		WebSocket,
+		{ onOpen: () => void; onClose: () => void }
+	>();
 
 	hasToken(): boolean {
 		return Boolean(localStorage.getItem(TOKEN_KEY)?.trim());
@@ -102,6 +106,37 @@ export class WebApi {
 		return this.request<DirectoryListing>(`/api/directories${query}`);
 	}
 
+	async projectGroups(): Promise<{ groups: ProjectGroup[] }> {
+		return this.request<{ groups: ProjectGroup[] }>("/api/project-groups");
+	}
+
+	async addProjectGroup(name: string): Promise<{ group: ProjectGroup; groups: ProjectGroup[] }> {
+		return this.request<{ group: ProjectGroup; groups: ProjectGroup[] }>("/api/project-groups", {
+			method: "POST",
+			body: JSON.stringify({ name }),
+		});
+	}
+
+	async updateProjectGroup(id: string, name: string): Promise<{ group: ProjectGroup; groups: ProjectGroup[] }> {
+		return this.request<{ group: ProjectGroup; groups: ProjectGroup[] }>(
+			`/api/project-groups/${encodeURIComponent(id)}`,
+			{ method: "PATCH", body: JSON.stringify({ name }) },
+		);
+	}
+
+	async removeProjectGroup(id: string): Promise<{ groups: ProjectGroup[] }> {
+		return this.request<{ groups: ProjectGroup[] }>(`/api/project-groups/${encodeURIComponent(id)}`, {
+			method: "DELETE",
+		});
+	}
+
+	async setProjectGroup(projectId: string, groupId?: string): Promise<{ groups: ProjectGroup[] }> {
+		return this.request<{ groups: ProjectGroup[] }>(`/api/projects/${encodeURIComponent(projectId)}/group`, {
+			method: "PATCH",
+			body: JSON.stringify({ groupId }),
+		});
+	}
+
 	async addProject(cwd: string, name?: string): Promise<{ project: WebProject }> {
 		return this.request<{ project: WebProject }>("/api/projects", {
 			method: "POST",
@@ -123,11 +158,7 @@ export class WebApi {
 		await this.request(`/api/projects/${encodeURIComponent(id)}`, { method: "DELETE" });
 	}
 
-	async setSessionPinned(
-		projectId: string,
-		sessionId: string,
-		pinned: boolean,
-	): Promise<{ project: WebProject }> {
+	async setSessionPinned(projectId: string, sessionId: string, pinned: boolean): Promise<{ project: WebProject }> {
 		return this.request<{ project: WebProject }>(
 			`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/pin`,
 			{
@@ -214,9 +245,10 @@ export class WebApi {
 		return this.request<GitStatusResponse>(`/api/projects/${encodeURIComponent(projectId)}/git/status`);
 	}
 
-	async gitDiff(projectId: string, path?: string, staged = false): Promise<GitDiffResponse> {
+	async gitDiff(projectId: string, path?: string, staged = false, repositoryPath?: string): Promise<GitDiffResponse> {
 		const params = new URLSearchParams({ staged: String(staged) });
 		if (path) params.set("path", path);
+		if (repositoryPath) params.set("repositoryPath", repositoryPath);
 		return this.request<GitDiffResponse>(`/api/projects/${encodeURIComponent(projectId)}/git/diff?${params}`);
 	}
 
@@ -277,18 +309,33 @@ export class WebApi {
 		text: string,
 		kind: "prompt" | "steer" | "follow-up" = "prompt",
 		attachments?: PromptAttachment[],
+		queueId?: string,
 	): Promise<{ operation?: WebOperation; accepted?: boolean }> {
-		return this.request<{ operation?: WebOperation; accepted?: boolean }>(
+		const result = await this.request<{ operation?: WebOperation; accepted?: boolean }>(
 			`/api/sessions/${encodeURIComponent(sessionId)}/${kind}`,
 			{
 				method: "POST",
 				body: JSON.stringify({
 					text,
 					...(attachments?.length ? { attachments } : {}),
+					...(queueId ? { queueId } : {}),
 					clientRequestId: createUuid(),
 				}),
 			},
 		);
+		if (result.operation?.status === "failed") throw new Error(result.operation.error ?? "排队消息发送失败");
+		return result;
+	}
+
+	async queueAction(sessionId: string, queueId: string, action: "remove" | "steer"): Promise<void> {
+		const result = await this.request<{ operation?: WebOperation }>(
+			`/api/sessions/${encodeURIComponent(sessionId)}/queue-action`,
+			{
+				method: "POST",
+				body: JSON.stringify({ queueId, action, clientRequestId: createUuid() }),
+			},
+		);
+		if (result.operation?.status === "failed") throw new Error(result.operation.error ?? "排队消息操作失败");
 	}
 
 	async abort(sessionId: string, operationId?: string): Promise<void> {
@@ -485,7 +532,9 @@ export class WebApi {
 
 	async saveSecuritySettings(input: {
 		host: string;
+		allowedHosts: string[];
 		port: number;
+		runtimePort: number;
 		password?: string;
 	}): Promise<SaveSecuritySettingsResponse> {
 		return this.request<SaveSecuritySettingsResponse>("/api/security-settings", {
@@ -528,7 +577,9 @@ export class WebApi {
 	}
 
 	private sendSessionSubscription(socket: WebSocket, sessionId: string, lastSeq?: number): void {
-		socket.send(JSON.stringify({ type: "subscribe_session", sessionId, ...(lastSeq === undefined ? {} : { lastSeq }) }));
+		socket.send(
+			JSON.stringify({ type: "subscribe_session", sessionId, ...(lastSeq === undefined ? {} : { lastSeq }) }),
+		);
 	}
 
 	private flushPendingSessionSubscriptions(socket: WebSocket): void {

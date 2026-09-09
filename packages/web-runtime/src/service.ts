@@ -733,9 +733,9 @@ export class WebRuntimeService {
 				return this.acceptQueueOperation(
 					connection,
 					request,
-					{ text: request.text, images: request.images ?? [] },
+					{ text: request.text, images: request.images ?? [], queueId: request.queueId ?? null },
 					async (runtime) => {
-						await runtime.steer(request.text, request.images);
+						await runtime.steer(request.text, request.images, request.queueId);
 						return {};
 					},
 				);
@@ -743,9 +743,19 @@ export class WebRuntimeService {
 				return this.acceptQueueOperation(
 					connection,
 					request,
-					{ text: request.text, images: request.images ?? [] },
+					{ text: request.text, images: request.images ?? [], queueId: request.queueId ?? null },
 					async (runtime) => {
-						await runtime.followUp(request.text, request.images);
+						await runtime.followUp(request.text, request.images, request.queueId);
+						return {};
+					},
+				);
+			case "queue_action":
+				return this.acceptQueueOperation(
+					connection,
+					request,
+					{ queueId: request.queueId, action: request.action },
+					async (runtime) => {
+						await runtime.queueAction(request.queueId, request.action);
 						return {};
 					},
 				);
@@ -1385,7 +1395,7 @@ export class WebRuntimeService {
 			case "get_git_status":
 				return this.adapter.getGitStatus(request.cwd);
 			case "get_git_diff":
-				return this.adapter.getGitDiff(request.cwd, request.path, request.staged);
+				return this.adapter.getGitDiff(request.cwd, request.path, request.staged, request.repositoryPath);
 			case "check_for_updates":
 				return this.adapter.checkForUpdates();
 			case "resolve_project_resource":
@@ -2056,7 +2066,7 @@ export class WebRuntimeService {
 		connection: ClientConnection,
 		request: Extract<
 			Extract<ClientMessage, { type: "request" }>["request"],
-			{ command: "steer" | "follow_up" | "clear_queue" }
+			{ command: "steer" | "follow_up" | "queue_action" | "clear_queue" }
 		>,
 		payload: JsonValue,
 		run: (runtime: RuntimeSession) => Promise<JsonValue>,
@@ -2070,7 +2080,7 @@ export class WebRuntimeService {
 		const payloadHash = hashOperationPayload({ command: request.command, sessionPath, payload });
 		const existing = this.journal.find(request.clientInstanceId, request.clientRequestId, payloadHash);
 		if (existing) return { operation: existing, duplicate: true };
-		if (request.command !== "clear_queue" && !this.isRuntimeActive(runtime)) {
+		if (request.command !== "clear_queue" && request.command !== "queue_action" && !this.isRuntimeActive(runtime)) {
 			throw Object.assign(new Error("会话当前不接受引导或后续消息"), {
 				code: "session_not_active",
 				retryable: false,

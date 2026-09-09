@@ -1,10 +1,20 @@
 import { Check, Sun, SunMoon } from "lucide-react";
+import type { AppInstallState } from "../../../state/use-app-install";
 import type { ThemeMode, WorkbenchState } from "../../../state/use-workbench";
 import { Button } from "../../ui/button";
+import { AppInstallSettings } from "./app-install";
 import { SettingSection } from "./shared";
 import type { WorkbenchActions } from "../types";
 
-export function AppearanceSettings({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
+export function AppearanceSettings({
+	state,
+	actions,
+	appInstall,
+}: {
+	state: WorkbenchState;
+	actions: WorkbenchActions;
+	appInstall: AppInstallState;
+}) {
 	return (
 		<div className="grid min-w-0 gap-6">
 			<SettingSection title="主题">
@@ -25,6 +35,7 @@ export function AppearanceSettings({ state, actions }: { state: WorkbenchState; 
 					))}
 				</div>
 			</SettingSection>
+			<AppInstallSettings appInstall={appInstall} />
 		</div>
 	);
 }

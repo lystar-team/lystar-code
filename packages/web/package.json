@@ -3,12 +3,12 @@
   "version": "0.84.4-lystar-web.1",
   "private": true,
   "type": "module",
-  "scripts": {
-    "clean": "shx rm -rf dist",
-    "check": "tsgo -p tsconfig.json --noEmit",
-    "build": "tsgo -p tsconfig.json --noEmit && vite build",
-    "dev": "vite --host 0.0.0.0"
-  },
+	"scripts": {
+		"clean": "shx rm -rf dist",
+		"check": "tsgo -p tsconfig.json --noEmit",
+		"build": "tsgo -p tsconfig.json --noEmit && vite build && node ../../scripts/write-web-version.mjs dist",
+		"dev": "vite --host 0.0.0.0"
+	},
   "dependencies": {
     "@lystar/code-web-protocol": "0.84.4-lystar-web.1",
     "@radix-ui/react-collapsible": "1.1.20",
@@ -19,6 +19,7 @@
     "@radix-ui/react-tooltip": "1.2.16",
     "@radix-ui/react-use-controllable-state": "1.2.6",
     "@rive-app/react-webgl2": "4.33.1",
+    "@silurus/ooxml": "0.86.1",
     "@streamdown/cjk": "1.0.2",
     "@streamdown/code": "1.1.0",
     "@streamdown/math": "1.0.2",

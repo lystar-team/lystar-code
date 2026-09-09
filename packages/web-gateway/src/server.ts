@@ -33,16 +33,17 @@ import { WebSocket, WebSocketServer } from "ws";
 import {
 	bearerToken,
 	cookieValue,
+	DEFAULT_RUNTIME_PORT,
 	hostMatches,
 	isValidClientId,
 	loadWebGatewayConfig,
 	originHostname,
 	parseGatewayPort,
 	requestHostname,
-	saveWebGatewaySettings,
-	saveWebGatewayToken,
+	validateAllowedHosts,
 	validateGatewayHost,
 	validateWebPassword,
+	WebConfigStore,
 	type WebGatewayConfig,
 } from "./config.ts";
 import {
@@ -55,6 +56,7 @@ import {
 	hostUptimeSeconds,
 	readCpuSnapshot,
 } from "./host-diagnostics.ts";
+import { type ProjectGroup, ProjectGroupRegistry } from "./project-group-registry.ts";
 import { ProjectRegistry, type WebProject } from "./project-registry.ts";
 import { connectRuntimeClient, ensurePersistentRuntime, type RuntimeInitialSnapshot } from "./runtime-client.ts";
 
@@ -162,6 +164,7 @@ interface DirectoryResponse {
 
 interface BootstrapResponse {
 	projects: WebProjectResponse[];
+	projectGroups: ProjectGroup[];
 	capabilities: readonly string[];
 	connection: { connected: boolean; host: string; productVersion?: string };
 	pendingUiRequests: Array<Extract<ServerEvent, { type: "ui_request" }>>;
@@ -176,11 +179,15 @@ interface BootstrapCache {
 
 interface GatewaySecuritySettingsResponse {
 	host: string;
+	allowedHosts: string[];
 	port: number;
+	runtimePort: number;
 	passwordConfigured: boolean;
 	editable: {
 		host: boolean;
+		allowedHosts: boolean;
 		port: boolean;
+		runtimePort: boolean;
 		password: boolean;
 	};
 }
@@ -309,7 +316,11 @@ function jsonValue(value: unknown): JsonValue {
 }
 
 function statusOf(error: unknown): number {
-	return error instanceof HttpError ? error.status : 500;
+	if (error instanceof HttpError) return error.status;
+	const candidate = object(error);
+	return typeof candidate?.status === "number" && candidate.status >= 400 && candidate.status < 600
+		? candidate.status
+		: 500;
 }
 
 function toError(error: unknown): HttpError {
@@ -451,6 +462,8 @@ function sameSessionSnapshot(left: WebSessionSnapshot, right: WebSessionSnapshot
 		left.leafId === right.leafId &&
 		left.queuedSteerCount === right.queuedSteerCount &&
 		left.queuedFollowUpCount === right.queuedFollowUpCount &&
+		JSON.stringify(left.queuedSteerMessages ?? []) === JSON.stringify(right.queuedSteerMessages ?? []) &&
+		JSON.stringify(left.queuedFollowUpMessages ?? []) === JSON.stringify(right.queuedFollowUpMessages ?? []) &&
 		left.contextTokens === right.contextTokens &&
 		left.contextWindow === right.contextWindow &&
 		left.transcriptGeneration === right.transcriptGeneration &&
@@ -550,6 +563,7 @@ async function readChunks(read: (offset: number) => Promise<ContentChunk>): Prom
 export class WebGatewayServer {
 	readonly config: WebGatewayConfig;
 	readonly registry: ProjectRegistry;
+	readonly projectGroups: ProjectGroupRegistry;
 	private readonly contexts = new Map<string, BrowserContext>();
 	private readonly sessions = new Map<string, SessionRef>();
 	private readonly sessionIdsByPath = new Map<string, string>();
@@ -568,6 +582,7 @@ export class WebGatewayServer {
 	constructor(config: WebGatewayConfig) {
 		this.config = config;
 		this.registry = new ProjectRegistry(config.agentDir);
+		this.projectGroups = new ProjectGroupRegistry(config.agentDir);
 		this.server = createServer((request, response) => void this.handleRequest(request, response));
 		this.server.on("upgrade", (request, socket, head) => void this.handleUpgrade(request, socket, head));
 		this.webSockets.on("connection", (socket, request) => void this.handleWebSocket(socket, request));
@@ -579,6 +594,7 @@ export class WebGatewayServer {
 
 	async listen(): Promise<void> {
 		await this.registry.load();
+		await this.projectGroups.load();
 		await new Promise<void>((resolvePromise, reject) => {
 			this.server.once("error", reject);
 			this.server.listen(this.config.port, this.config.host, () => {
@@ -727,6 +743,13 @@ export class WebGatewayServer {
 		if (context.sockets.size === 0 && context.activeRequests === 0) return;
 		context.sessionListCache.clear();
 		context.sessionListPromises.clear();
+	}
+
+	private invalidateAllBootstraps(): void {
+		for (const context of this.contexts.values()) {
+			this.invalidateBootstrap(context);
+			if (context.sockets.size > 0) void this.pushBootstrap(context);
+		}
 	}
 
 	private contextFor(request: IncomingMessage, response?: ServerResponse, url?: URL): BrowserContext {
@@ -899,6 +922,7 @@ export class WebGatewayServer {
 			for (const snapshot of initial.sessions) this.sessionIdsByPath.set(snapshot.path, snapshot.id);
 			const value: BootstrapResponse = {
 				projects,
+				projectGroups: this.projectGroups.list(),
 				capabilities: hello?.capabilities ?? [],
 				connection: {
 					connected: true,
@@ -1284,14 +1308,18 @@ export class WebGatewayServer {
 				path: resource.displayPath,
 				mimeType: resource.mimeType,
 				byteLength: bytes.byteLength,
-				...(resource.kind === "image"
-					? { data: Buffer.from(bytes).toString("base64") }
-					: { content: Buffer.from(bytes).toString("utf8") }),
+				...(resource.kind === "text"
+					? { content: Buffer.from(bytes).toString("utf8") }
+					: { data: Buffer.from(bytes).toString("base64") }),
 			});
 			return;
 		}
 		if (parts.length === 3 && parts[1] === "uploads" && parts[2] === "image" && request.method === "POST") {
 			await this.handleImageUpload(request, response);
+			return;
+		}
+		if (parts[1] === "project-groups") {
+			await this.handleProjectGroups(request, response, parts);
 			return;
 		}
 		if (parts[1] === "projects") {
@@ -1451,6 +1479,40 @@ export class WebGatewayServer {
 		throw new HttpError(404, "not_found", "未找到请求接口");
 	}
 
+	private async handleProjectGroups(
+		request: IncomingMessage,
+		response: ServerResponse,
+		parts: string[],
+	): Promise<void> {
+		if (parts.length === 2 && request.method === "GET") {
+			sendJson(response, 200, { groups: this.projectGroups.list() });
+			return;
+		}
+		if (parts.length === 2 && request.method === "POST") {
+			const body = await parseJsonBody(request);
+			const group = await this.projectGroups.create(stringValue(body.name) ?? "");
+			this.invalidateAllBootstraps();
+			sendJson(response, 201, { group, groups: this.projectGroups.list() });
+			return;
+		}
+		if (parts.length !== 3) throw new HttpError(404, "project_group_not_found", "未找到项目组接口");
+		const groupId = parts[2];
+		if (request.method === "PATCH") {
+			const body = await parseJsonBody(request);
+			const group = await this.projectGroups.update(groupId, stringValue(body.name) ?? "");
+			this.invalidateAllBootstraps();
+			sendJson(response, 200, { group, groups: this.projectGroups.list() });
+			return;
+		}
+		if (request.method === "DELETE") {
+			await this.projectGroups.remove(groupId);
+			this.invalidateAllBootstraps();
+			sendJson(response, 200, { groups: this.projectGroups.list() });
+			return;
+		}
+		throw new HttpError(405, "method_not_allowed", "该接口不支持当前方法");
+	}
+
 	private async handleProjects(
 		request: IncomingMessage,
 		response: ServerResponse,
@@ -1508,9 +1570,17 @@ export class WebGatewayServer {
 			});
 			return;
 		}
+		if (parts.length === 4 && parts[3] === "group" && request.method === "PATCH") {
+			const body = await parseJsonBody(request);
+			await this.projectGroups.assignProject(projectId, stringValue(body.groupId));
+			this.invalidateAllBootstraps();
+			sendJson(response, 200, { groups: this.projectGroups.list() });
+			return;
+		}
 		if (parts.length === 3 && request.method === "DELETE") {
 			await this.registry.remove(projectId);
-			this.invalidateBootstrap(context);
+			await this.projectGroups.assignProject(projectId);
+			this.invalidateAllBootstraps();
 			sendJson(response, 200, { removed: true });
 			return;
 		}
@@ -1605,6 +1675,14 @@ export class WebGatewayServer {
 					byteLength: bytes.byteLength,
 					data: Buffer.from(bytes).toString("base64"),
 				});
+			} else if (resource.kind === "binary") {
+				sendJson(response, 200, {
+					kind: resource.kind,
+					path: resource.displayPath,
+					mimeType: resource.mimeType,
+					byteLength: bytes.byteLength,
+					data: Buffer.from(bytes).toString("base64"),
+				});
 			} else {
 				sendJson(response, 200, {
 					kind: resource.kind,
@@ -1625,6 +1703,8 @@ export class WebGatewayServer {
 			return;
 		}
 		if (parts.length === 5 && parts[3] === "git" && parts[4] === "diff" && request.method === "GET") {
+			const repositoryPath = url.searchParams.get("repositoryPath")?.trim();
+			if (repositoryPath) this.projectPath(project, repositoryPath);
 			sendJson(
 				response,
 				200,
@@ -1632,6 +1712,7 @@ export class WebGatewayServer {
 					command: "get_git_diff",
 					cwd: project.cwd,
 					...(url.searchParams.get("path") ? { path: url.searchParams.get("path")! } : {}),
+					...(repositoryPath ? { repositoryPath } : {}),
 					staged: url.searchParams.get("staged") === "true",
 				}),
 			);
@@ -1890,6 +1971,10 @@ export class WebGatewayServer {
 			await this.handlePromptLike(request, response, context, sessionId, session, "follow_up");
 			return;
 		}
+		if (parts.length === 4 && parts[3] === "queue-action") {
+			await this.handleQueueAction(request, response, context, sessionId, session);
+			return;
+		}
 		if (parts.length === 4 && parts[3] === "abort" && request.method === "POST") {
 			const body = await parseJsonBody(request);
 			const lease = await this.requireLease(context, sessionId);
@@ -2111,6 +2196,36 @@ export class WebGatewayServer {
 		return images;
 	}
 
+	private async handleQueueAction(
+		request: IncomingMessage,
+		response: ServerResponse,
+		context: BrowserContext,
+		sessionId: string,
+		session: SessionRef,
+	): Promise<void> {
+		if (request.method !== "POST") throw new HttpError(405, "method_not_allowed", "该接口只支持 POST");
+		const body = await parseJsonBody(request);
+		const queueId = stringValue(body.queueId);
+		const action = body.action === "remove" || body.action === "steer" ? body.action : undefined;
+		if (!queueId) throw new HttpError(400, "queue_message_required", "排队消息标识不能为空");
+		if (!action) throw new HttpError(400, "queue_action_invalid", "排队消息操作无效");
+		const lease = await this.requireLease(context, sessionId);
+		const result = await (await this.getClient(context)).request<{ operation?: OperationSnapshot }>({
+			command: "queue_action",
+			sessionPath: session.path,
+			leaseId: lease.leaseId,
+			clientInstanceId: context.id,
+			clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
+			queueId,
+			action,
+		});
+		sendJson(
+			response,
+			result.operation ? 202 : 200,
+			result.operation ? { operation: publicOperation(result.operation, sessionId) } : { accepted: true },
+		);
+	}
+
 	private async handlePromptLike(
 		request: IncomingMessage,
 		response: ServerResponse,
@@ -2128,6 +2243,7 @@ export class WebGatewayServer {
 		const uploadedImages = await this.readUploadedImages(body.attachments);
 		const images = [...rawImages, ...uploadedImages];
 		const command = kind === "prompt" ? "prompt" : kind === "steer" ? "steer" : "follow_up";
+		const queueId = kind === "prompt" ? undefined : stringValue(body.queueId);
 		const result = await (await this.getClient(context)).request<{ operation?: OperationSnapshot }>({
 			command,
 			sessionPath: session.path,
@@ -2135,6 +2251,7 @@ export class WebGatewayServer {
 			clientInstanceId: context.id,
 			clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
 			text,
+			...(queueId ? { queueId } : {}),
 			...(images.length > 0
 				? { images: jsonValue(images) as Array<{ data: string; mimeType: string; displayOnly?: boolean }> }
 				: {}),
@@ -2177,25 +2294,31 @@ export class WebGatewayServer {
 		throw new HttpError(404, "operation_not_found", "未找到任务接口");
 	}
 
-	private gatewaySecuritySettings(): GatewaySecuritySettingsResponse {
-		const hostManagedByEnvironment = Boolean(
-			process.env.PI_WEB_HOST?.trim() || process.env.PI_WEB_ALLOWED_HOSTS?.trim(),
-		);
+	private gatewaySecuritySettingsEditable(): GatewaySecuritySettingsResponse["editable"] {
 		return {
-			host: this.config.host,
-			port: this.config.port,
-			passwordConfigured: Boolean(this.config.token),
-			editable: {
-				host: !hostManagedByEnvironment,
-				port: !process.env.PI_WEB_PORT?.trim(),
-				password: !process.env.PI_WEB_TOKEN?.trim(),
-			},
+			host: !process.env.PI_WEB_HOST?.trim(),
+			allowedHosts: !process.env.PI_WEB_ALLOWED_HOSTS?.trim(),
+			port: !process.env.PI_WEB_PORT?.trim(),
+			runtimePort: !process.env.PI_WEB_RUNTIME_PORT?.trim(),
+			password: !process.env.PI_WEB_TOKEN?.trim(),
+		};
+	}
+
+	private async gatewaySecuritySettings(): Promise<GatewaySecuritySettingsResponse> {
+		const persisted = await new WebConfigStore(this.config.agentDir).loadOrMigrate();
+		return {
+			host: persisted?.host ?? this.config.host,
+			allowedHosts: persisted?.allowedHosts ?? this.config.allowedHosts,
+			port: persisted?.port ?? this.config.port,
+			runtimePort: persisted?.runtimePort ?? this.config.runtimePort ?? DEFAULT_RUNTIME_PORT,
+			passwordConfigured: Boolean(persisted?.password ?? this.config.token),
+			editable: this.gatewaySecuritySettingsEditable(),
 		};
 	}
 
 	private async handleGatewaySecuritySettings(request: IncomingMessage, response: ServerResponse): Promise<void> {
 		if (request.method === "GET") {
-			sendJson(response, 200, this.gatewaySecuritySettings());
+			sendJson(response, 200, await this.gatewaySecuritySettings());
 			return;
 		}
 		if (request.method !== "POST") throw new HttpError(405, "method_not_allowed", "该接口不支持当前方法");
@@ -2203,19 +2326,46 @@ export class WebGatewayServer {
 			throw new HttpError(503, "gateway_restart_unavailable", "当前 Gateway 不支持应用安全与访问设置");
 
 		const body = await parseJsonBody(request);
-		const current = this.gatewaySecuritySettings();
-		if (!current.editable.host && body.host !== undefined && body.host !== current.host)
-			throw new HttpError(409, "gateway_host_managed_by_environment", "可访问 IP 由启动环境变量管理");
-		if (!current.editable.port && body.port !== undefined && Number(body.port) !== current.port)
+		const store = new WebConfigStore(this.config.agentDir);
+		const persisted = await store.loadOrMigrate();
+		const current = {
+			host: persisted?.host ?? this.config.host,
+			allowedHosts: persisted?.allowedHosts ?? this.config.allowedHosts,
+			port: persisted?.port ?? this.config.port,
+			runtimePort: persisted?.runtimePort ?? this.config.runtimePort ?? DEFAULT_RUNTIME_PORT,
+			password: persisted?.password ?? this.config.token,
+		};
+		const editable = this.gatewaySecuritySettingsEditable();
+		if (!editable.host && body.host !== undefined && body.host !== current.host)
+			throw new HttpError(409, "gateway_host_managed_by_environment", "监听 IP 由启动环境变量管理");
+		if (!editable.allowedHosts && body.allowedHosts !== undefined) {
+			try {
+				if (JSON.stringify(validateAllowedHosts(body.allowedHosts)) !== JSON.stringify(current.allowedHosts))
+					throw new HttpError(409, "gateway_allowed_hosts_managed_by_environment", "白名单由启动环境变量管理");
+			} catch (error) {
+				if (error instanceof HttpError) throw error;
+				throw new HttpError(
+					400,
+					"gateway_allowed_hosts_invalid",
+					error instanceof Error ? error.message : String(error),
+				);
+			}
+		}
+		if (!editable.port && body.port !== undefined && Number(body.port) !== current.port)
 			throw new HttpError(409, "gateway_port_managed_by_environment", "服务端口由启动环境变量管理");
-		if (!current.editable.password && body.password !== undefined && body.password !== "")
+		if (!editable.runtimePort && body.runtimePort !== undefined && Number(body.runtimePort) !== current.runtimePort)
+			throw new HttpError(409, "gateway_runtime_port_managed_by_environment", "Runtime 端口由启动环境变量管理");
+		if (!editable.password && body.password !== undefined && body.password !== "")
 			throw new HttpError(409, "gateway_password_managed_by_environment", "访问密码由启动环境变量管理");
-
 		let host: string;
+		let allowedHosts: string[];
 		let port: number;
+		let runtimePort: number;
 		try {
 			host = validateGatewayHost(body.host ?? current.host);
+			allowedHosts = validateAllowedHosts(body.allowedHosts ?? current.allowedHosts);
 			port = parseGatewayPort(body.port ?? current.port);
+			runtimePort = parseGatewayPort(body.runtimePort ?? current.runtimePort);
 		} catch (error) {
 			throw new HttpError(
 				400,
@@ -2223,33 +2373,35 @@ export class WebGatewayServer {
 				error instanceof Error ? error.message : String(error),
 			);
 		}
-		let password: string | undefined;
+		let password = current.password;
+		let passwordChanged = false;
 		if (body.password !== undefined) {
-			try {
-				password =
-					typeof body.password === "string" && body.password.trim()
-						? validateWebPassword(body.password)
-						: undefined;
-			} catch (error) {
-				throw new HttpError(
-					400,
-					"gateway_password_invalid",
-					error instanceof Error ? error.message : String(error),
-				);
+			if (typeof body.password !== "string")
+				throw new HttpError(400, "gateway_password_invalid", "连接密钥必须是文本");
+			if (body.password.trim()) {
+				try {
+					password = validateWebPassword(body.password);
+					passwordChanged = true;
+				} catch (error) {
+					throw new HttpError(
+						400,
+						"gateway_password_invalid",
+						error instanceof Error ? error.message : String(error),
+					);
+				}
 			}
-			if (body.password !== undefined && typeof body.password !== "string")
-				throw new HttpError(400, "gateway_password_invalid", "访问密码必须是文本");
 		}
 
-		const saved = await saveWebGatewaySettings(this.config.agentDir, { host, port });
-		if (password) await saveWebGatewayToken(this.config.agentDir, password);
+		const saved = await store.save({ host, allowedHosts, port, runtimePort, password });
 		const result: GatewaySecuritySettingsSaveResponse = {
-			...current,
 			host: saved.host,
+			allowedHosts: saved.allowedHosts,
 			port: saved.port,
+			runtimePort: saved.runtimePort,
 			passwordConfigured: true,
+			editable,
 			accepted: true,
-			passwordChanged: Boolean(password),
+			passwordChanged,
 			restartPending: true,
 			runtimePreserved: true,
 		};

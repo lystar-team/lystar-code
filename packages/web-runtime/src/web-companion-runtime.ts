@@ -121,7 +121,15 @@ function projectAgentEvent(value: unknown): SessionProgress[] {
 	if (!event || typeof event.type !== "string") return [];
 	if (event.type === "message_start") {
 		const message = record(event.message);
-		if (message?.role === "user") return [{ type: "user_message", text: textFromContent(message.content) }];
+		if (message?.role === "user") {
+			return [
+				{
+					type: "user_message",
+					text: textFromContent(message.content),
+					...(typeof event.queueId === "string" ? { queueId: event.queueId } : {}),
+				},
+			];
+		}
 		if (message?.role === "assistant") return [{ type: "phase", phase: "turn" }];
 		return [];
 	}
@@ -308,7 +316,13 @@ function normalizeSnapshot(value: WebCompanionSnapshotWire): WebCompanionSnapsho
 	if (!capabilities.every((capability) => WEB_COMPANION_CAPABILITIES.includes(capability))) {
 		throw new WebCompanionProtocolError("TUI 共享通道返回了未知能力", { protocolVersion });
 	}
-	return { ...value, protocolVersion, capabilities };
+	return {
+		...value,
+		protocolVersion,
+		capabilities,
+		queuedSteerMessages: value.queuedSteerMessages ?? [],
+		queuedFollowUpMessages: value.queuedFollowUpMessages ?? [],
+	};
 }
 
 function snapshot(
@@ -333,6 +347,8 @@ function snapshot(
 		leafId: value.leafId,
 		queuedSteerCount: value.queuedSteerCount,
 		queuedFollowUpCount: value.queuedFollowUpCount,
+		...(value.queuedSteerMessages?.length ? { queuedSteerMessages: value.queuedSteerMessages } : {}),
+		...(value.queuedFollowUpMessages?.length ? { queuedFollowUpMessages: value.queuedFollowUpMessages } : {}),
 		...(value.contextTokens === undefined ? {} : { contextTokens: value.contextTokens }),
 		...(value.contextWindow === undefined ? {} : { contextWindow: value.contextWindow }),
 		transcriptGeneration: value.transcriptGeneration,
@@ -553,12 +569,16 @@ export class WebCompanionRuntime implements RuntimeSession {
 		await this.request("prompt", { text, images });
 	}
 
-	async steer(text: string, images?: WebCompanionImage[]): Promise<void> {
-		await this.request("steer", { text, images });
+	async steer(text: string, images?: WebCompanionImage[], queueId?: string): Promise<void> {
+		await this.request("steer", { text, images, ...(queueId ? { queueId } : {}) });
 	}
 
-	async followUp(text: string, images?: WebCompanionImage[]): Promise<void> {
-		await this.request("follow_up", { text, images });
+	async followUp(text: string, images?: WebCompanionImage[], queueId?: string): Promise<void> {
+		await this.request("follow_up", { text, images, ...(queueId ? { queueId } : {}) });
+	}
+
+	async queueAction(queueId: string, action: "remove" | "steer"): Promise<void> {
+		await this.request("queue_action", { queueId, action });
 	}
 
 	async clearQueue(): Promise<{ steering: string[]; followUp: string[] }> {

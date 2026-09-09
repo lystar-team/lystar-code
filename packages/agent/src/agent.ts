@@ -157,6 +157,11 @@ class PendingMessageQueue {
 		return [first];
 	}
 
+	removeAt(index: number): AgentMessage | undefined {
+		if (!Number.isInteger(index) || index < 0 || index >= this.messages.length) return undefined;
+		return this.messages.splice(index, 1)[0];
+	}
+
 	clear(): void {
 		this.messages = [];
 	}
@@ -298,6 +303,16 @@ export class Agent {
 	/** Queue a message to run only after the agent would otherwise stop. */
 	followUp(message: AgentMessage): void {
 		this.followUpQueue.enqueue(message);
+	}
+
+	/** Remove one queued steering message by position. */
+	removeSteeringMessageAt(index: number): AgentMessage | undefined {
+		return this.steeringQueue.removeAt(index);
+	}
+
+	/** Remove one queued follow-up message by position. */
+	removeFollowUpMessageAt(index: number): AgentMessage | undefined {
+		return this.followUpQueue.removeAt(index);
 	}
 
 	/** Remove all queued steering messages. */

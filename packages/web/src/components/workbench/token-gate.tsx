@@ -55,7 +55,7 @@ export function TokenGate({
 									className="pl-9 font-mono"
 									value={token}
 									onChange={(event) => setToken(event.target.value)}
-									placeholder="输入 ~/.pi/agent/web/token"
+									placeholder="输入 ~/.pi/agent/web-config.json 中的连接密钥"
 									autoComplete="off"
 								/>
 							</div>

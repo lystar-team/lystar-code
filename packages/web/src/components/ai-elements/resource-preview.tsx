@@ -101,7 +101,7 @@ function resourceFileName(item: ResourceImageItem, index: number): string {
 	return name.includes(".") ? name : `${name}.png`;
 }
 
-function ResourceImageViewer({ items, open, initialIndex = 0, onOpenChange }: ResourceImageViewerProps) {
+export function ResourceImageViewer({ items, open, initialIndex = 0, onOpenChange }: ResourceImageViewerProps) {
 	const [index, setIndex] = useState(initialIndex);
 	const [zoom, setZoom] = useState(1);
 	const [source, setSource] = useState<string | undefined>();

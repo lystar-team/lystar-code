@@ -51,6 +51,31 @@ describe("Skill read tool display", () => {
 		);
 		expect(toolBatchSummaryLabel([])).toBe("执行了工具");
 	});
+	it("does not repeat aggregate diff stats inside details", () => {
+		const tool: ToolBatchTool = {
+			id: "edit-1",
+			name: "edit",
+			summary: JSON.stringify({ path: "/tmp/example.ts" }),
+			state: "output-available",
+			diff: { files: [{ path: "/tmp/example.ts", additions: 11, deletions: 0, diff: "+new" }] },
+		};
+		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool], initialOpen: true }));
+
+		expect(markup.match(/\+11/gu)).toHaveLength(1);
+	});
+	it("does not render the input preview hint while editing", () => {
+		const tool: ToolBatchTool = {
+			id: "edit-1",
+			name: "edit",
+			summary: JSON.stringify({ path: "/tmp/example.ts" }),
+			state: "input-available",
+			inputPreview: true,
+			diff: { files: [{ path: "/tmp/example.ts", additions: 49, deletions: 28, diff: "+new" }] },
+		};
+		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool], initialOpen: true }));
+
+		expect(markup).not.toContain("参数预览，终态以工具真实结果为准");
+	});
 	it("renders image reads as an inline preview without text content", () => {
 		const tool = {
 			...readTool("/tmp/example.png"),

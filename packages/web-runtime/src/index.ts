@@ -1,3 +1,4 @@
+export * from "./cli-runner.ts";
 export * from "./content-store.ts";
 export * from "./ipc.ts";
 export * from "./lease-manager.ts";

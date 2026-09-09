@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
 	type ClientMessage,
 	encodeServerMessage,
+	RUNTIME_PROTOCOL_VERSION,
 	type ServerMessage,
 	type SessionStateSnapshot,
 	type SessionSummary,
@@ -48,7 +49,7 @@ describe("WebRuntimeService Session observation", () => {
 			rmSync(tempDir, { recursive: true, force: true });
 		});
 		const handle = (message: ClientMessage) => connection.handle(message);
-		await handle({ type: "hello", version: 2, clientInstanceId: "desktop-client" });
+		await handle({ type: "hello", version: RUNTIME_PROTOCOL_VERSION, clientInstanceId: "desktop-client" });
 		await handle({ type: "request", id: "initial", request: { command: "list_sessions", cwd } });
 
 		const external = await adapter.createSession(cwd, async () => ({ cancelled: true }));
@@ -154,7 +155,7 @@ describe("WebRuntimeService Session observation", () => {
 			rmSync(tempDir, { recursive: true, force: true });
 		});
 		const handle = (message: ClientMessage) => connection.handle(message);
-		await handle({ type: "hello", version: 2, clientInstanceId: "activity-client" });
+		await handle({ type: "hello", version: RUNTIME_PROTOCOL_VERSION, clientInstanceId: "activity-client" });
 		const external = await adapter.createSession(cwd, async () => ({ cancelled: true }));
 		cleanups.push(() => external.dispose());
 		await external.runBash("printf activity", false, () => {});
@@ -239,7 +240,7 @@ describe("WebRuntimeService Session observation", () => {
 		});
 
 		(service as unknown as { attachRuntime(runtime: RuntimeSession): void }).attachRuntime(local.runtime);
-		await handle({ type: "hello", version: 2, clientInstanceId: "rebind-client" });
+		await handle({ type: "hello", version: RUNTIME_PROTOCOL_VERSION, clientInstanceId: "rebind-client" });
 		await handle({
 			type: "request",
 			id: "acquire",
@@ -349,7 +350,11 @@ describe("WebRuntimeService Session observation", () => {
 			await service.dispose();
 			rmSync(tempDir, { recursive: true, force: true });
 		});
-		await connection.handle({ type: "hello", version: 2, clientInstanceId: "progress-client" });
+		await connection.handle({
+			type: "hello",
+			version: RUNTIME_PROTOCOL_VERSION,
+			clientInstanceId: "progress-client",
+		});
 		(service as unknown as { attachRuntime(runtime: RuntimeSession): void }).attachRuntime(runtime);
 
 		emit?.({ type: "progress", payload: { type: "assistant_delta", text: "O" } });
@@ -388,7 +393,7 @@ describe("WebRuntimeService Session observation", () => {
 			rmSync(tempDir, { recursive: true, force: true });
 		});
 		const handle = (message: ClientMessage) => connection.handle(message);
-		await handle({ type: "hello", version: 2, clientInstanceId: "diagnostics-client" });
+		await handle({ type: "hello", version: RUNTIME_PROTOCOL_VERSION, clientInstanceId: "diagnostics-client" });
 		await handle({
 			type: "request",
 			id: "create",

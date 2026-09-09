@@ -5,9 +5,12 @@ import {
 	canSendPrompt,
 	clearsThinking,
 	committedToolCallIds,
+	hasActiveSessionWork,
 	hasActiveToolActivities,
 	reconcileCommittedTurn,
 	reconcilePendingUserPrompts,
+	removeQueuedUserPrompt,
+	removeQueuedUserPromptByText,
 } from "../src/state/chat-lifecycle.ts";
 import type { WorkbenchState } from "../src/state/use-workbench.ts";
 import type { WebOperation, WebTranscriptItem } from "../src/types.ts";
@@ -74,12 +77,30 @@ describe("chat lifecycle", () => {
 		expect(hasActiveToolActivities([activity])).toBe(true);
 		expect(hasActiveToolActivities([{ ...activity, state: "success" }])).toBe(false);
 	});
+	it("流式回复仍在展示时，即使快照暂时为空闲也按活跃任务处理", () => {
+		const staleSnapshot = {
+			...liveState(),
+			session: { activity: "idle" },
+			currentOperation: undefined,
+		} as WorkbenchState;
+		expect(hasActiveSessionWork(staleSnapshot)).toBe(true);
+	});
+
 	it("removes one optimistic prompt for each matching committed user message", () => {
 		const pending = [
 			{ id: "prompt-1", text: "新任务", attachments: [] },
 			{ id: "prompt-2", text: "新任务", attachments: [] },
 		];
 		expect(reconcilePendingUserPrompts(pending, [user])).toEqual([pending[1]]);
+	});
+
+	it("removes a queued prompt by ID without touching duplicate text", () => {
+		const pending = [
+			{ id: "queue-1", text: "重复任务", displayText: "重复任务", attachments: [] },
+			{ id: "queue-2", text: "重复任务", displayText: "重复任务", attachments: [] },
+		];
+		expect(removeQueuedUserPrompt(pending, "queue-2")).toEqual([pending[0]]);
+		expect(removeQueuedUserPromptByText(pending, "重复任务")).toEqual([pending[1]]);
 	});
 
 	it("hands committed assistant text and calls to transcript without losing running tools", () => {

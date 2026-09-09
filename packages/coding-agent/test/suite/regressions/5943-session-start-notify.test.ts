@@ -409,6 +409,11 @@ describe("regression #5943: session_start transient UI", () => {
 			};
 
 			await interactiveModePrototype.rebindCurrentSession.call(context, { renderBeforeBind: true });
+			await vi.waitFor(() => {
+				expect(events).toContain("message_start:user:user from start");
+				expect(events).toContain("message_end:user:user from start");
+				expect(events).toContain("message_end:assistant:assistant from start");
+			});
 			await harness.session.agent.waitForIdle();
 
 			expect(events.slice(0, 3)).toEqual(["render", "subscribe", "bind"]);

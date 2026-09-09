@@ -3,8 +3,8 @@ import type {
 	GitDiff,
 	GitStatus,
 	HarnessId,
-	HarnessImportItem,
 	HarnessImportInstructionHunk,
+	HarnessImportItem,
 	HarnessImportPreview,
 	HarnessImportResult,
 	HarnessImportSource,
@@ -23,7 +23,15 @@ import type {
 	TranscriptPage,
 } from "@lystar/code-web-protocol";
 
-export type { HarnessId, HarnessImportItem, HarnessImportInstructionHunk, HarnessImportPreview, HarnessImportResult, HarnessImportSource, ProjectInstruction };
+export type {
+	HarnessId,
+	HarnessImportItem,
+	HarnessImportInstructionHunk,
+	HarnessImportPreview,
+	HarnessImportResult,
+	HarnessImportSource,
+	ProjectInstruction,
+};
 
 export type WebSessionSummary = Omit<SessionSummary, "path" | "cwd"> & { pinned?: boolean };
 export type WebSessionSnapshot = Omit<SessionStateSnapshot, "path" | "cwd">;
@@ -34,6 +42,12 @@ export type WebOperation = Omit<
 > & { sessionId?: string };
 
 export type WebCompletionResult = CompletionResult;
+
+export interface ProjectGroup {
+	id: string;
+	name: string;
+	projectIds: string[];
+}
 
 export interface WebProject {
 	id: string;
@@ -60,7 +74,7 @@ export interface DirectoryListing {
 }
 
 export interface FileResponse {
-	kind: "text" | "image";
+	kind: "text" | "image" | "binary";
 	path: string;
 	mimeType: string;
 	byteLength: number;
@@ -86,8 +100,16 @@ export interface PromptAttachmentPreview {
 	url: string;
 }
 
+export interface QueuedUserPrompt {
+	id: string;
+	text: string;
+	displayText: string;
+	attachments: PromptAttachmentPreview[];
+}
+
 export interface BootstrapResponse {
 	projects: WebProject[];
+	projectGroups: ProjectGroup[];
 	capabilities: readonly string[];
 	connection: { connected: boolean; host: string; productVersion?: string };
 	pendingUiRequests: UiRequestEvent[];
@@ -202,11 +224,15 @@ export interface SettingsResponse {
 
 export interface SecuritySettingsResponse {
 	host: string;
+	allowedHosts: string[];
 	port: number;
+	runtimePort: number;
 	passwordConfigured: boolean;
 	editable: {
 		host: boolean;
+		allowedHosts: boolean;
 		port: boolean;
+		runtimePort: boolean;
 		password: boolean;
 	};
 }

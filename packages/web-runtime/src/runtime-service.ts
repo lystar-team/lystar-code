@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -9,11 +10,11 @@ import {
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { createConnection, type Socket } from "node:net";
+import type { Socket } from "node:net";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { type ByteTransport, type OperationSnapshot, RuntimeProtocolClient } from "@lystar/code-web-protocol";
-import { probeIpcRuntime } from "./ipc.ts";
+import { connectRuntimeEndpoint, probeIpcRuntime } from "./ipc.ts";
 
 const SERVICE_NAME = "lystar-web-runtime";
 const ACTIVE_OPERATION_STATUSES = new Set(["accepted", "running", "waiting_for_input"]);
@@ -78,6 +79,10 @@ function writeAtomic(path: string, content: string, mode: number): void {
 }
 
 function runtimePidPath(endpoint: string): string {
+	if (endpoint.startsWith("tcp://")) {
+		const suffix = createHash("sha256").update(endpoint).digest("hex").slice(0, 24);
+		return join(homedir(), ".pi", "agent", "host", `lystar-web-runtime-${suffix}.pid`);
+	}
 	return process.platform === "win32"
 		? join(homedir(), ".pi", "agent", "host", "lystar-web-runtime.pid")
 		: `${endpoint}.pid`;
@@ -212,7 +217,7 @@ export async function getRuntimeServiceStatus(endpoint: string): Promise<Runtime
 
 function installLinux(endpoint: string): void {
 	const invocation = executableInvocation();
-	const command = [...invocation.args, "serve"].reduce(
+	const command = [...invocation.args, "serve", "--endpoint", endpoint].reduce(
 		(value, argument) => `${value} ${JSON.stringify(argument)}`,
 		JSON.stringify(invocation.program),
 	);
@@ -238,7 +243,7 @@ function installMac(endpoint: string, interactiveAdmin: boolean): void {
 	const user = process.env.USER ?? process.env.LOGNAME;
 	if (!user) throw new Error("无法确定 macOS 后台运行用户");
 	const invocation = executableInvocation();
-	const programArguments = [invocation.program, ...invocation.args, "serve"]
+	const programArguments = [invocation.program, ...invocation.args, "serve", "--endpoint", endpoint]
 		.map((argument) => `<string>${xml(argument)}</string>`)
 		.join("");
 	const escapedEndpoint = xml(endpoint);
@@ -267,9 +272,9 @@ function installMac(endpoint: string, interactiveAdmin: boolean): void {
 	if (!bootstrap.ok) throw new Error(`无法启动 macOS LaunchDaemon：${bootstrap.stderr || bootstrap.stdout}`);
 }
 
-function installWindows(): void {
+function installWindows(endpoint: string): void {
 	const invocation = executableInvocation();
-	const taskCommand = [invocation.program, ...invocation.args, "serve"]
+	const taskCommand = [invocation.program, ...invocation.args, "serve", "--endpoint", endpoint]
 		.map((argument) => `"${argument.replaceAll('"', '\\"')}"`)
 		.join(" ");
 	const username = process.env.USERNAME;
@@ -315,7 +320,7 @@ async function waitUntilUnreachable(endpoint: string, timeoutMs = 10_000): Promi
 export async function installRuntimeService(endpoint: string, interactiveAdmin = false): Promise<RuntimeServiceStatus> {
 	if (process.platform === "linux") installLinux(endpoint);
 	else if (process.platform === "darwin") installMac(endpoint, interactiveAdmin);
-	else if (process.platform === "win32") installWindows();
+	else if (process.platform === "win32") installWindows(endpoint);
 	else throw new Error(`不支持的后台托管平台：${process.platform}`);
 	await waitUntilReachable(endpoint);
 	return getRuntimeServiceStatus(endpoint);
@@ -377,18 +382,10 @@ class SocketTransport implements ByteTransport {
 	}
 }
 
-async function connectSocket(endpoint: string): Promise<Socket> {
-	return new Promise((resolve, reject) => {
-		const socket = createConnection(endpoint);
-		socket.once("connect", () => resolve(socket));
-		socket.once("error", reject);
-	});
-}
-
 async function readHostSnapshot(endpoint: string): Promise<HostSnapshot | undefined> {
 	if (!(await probeIpcRuntime(endpoint)).reachable) return undefined;
 	const client = new RuntimeProtocolClient(
-		new SocketTransport(await connectSocket(endpoint)),
+		new SocketTransport(await connectRuntimeEndpoint(endpoint)),
 		`host-control-${process.pid}`,
 	);
 	try {
@@ -406,8 +403,8 @@ async function readHostSnapshot(endpoint: string): Promise<HostSnapshot | undefi
 
 export async function stopRuntimeService(endpoint: string, force: boolean): Promise<RuntimeServiceStatus> {
 	const status = await getRuntimeServiceStatus(endpoint);
-	const snapshot = await readHostSnapshot(endpoint);
-	if (!force && snapshot) {
+	const snapshot = force ? undefined : await readHostSnapshot(endpoint);
+	if (snapshot) {
 		const active = snapshot.operations.filter((operation) => ACTIVE_OPERATION_STATUSES.has(operation.status));
 		if (active.length > 0 || snapshot.pendingUiRequests.length > 0) {
 			throw Object.assign(new Error("Web Runtime仍有运行任务或待处理交互"), {
@@ -445,7 +442,7 @@ export async function stopRuntimeService(endpoint: string, force: boolean): Prom
 
 export function startDetachedRuntime(endpoint: string): void {
 	const invocation = executableInvocation();
-	const child = spawn(invocation.program, [...invocation.args, "serve"], {
+	const child = spawn(invocation.program, [...invocation.args, "serve", "--endpoint", endpoint], {
 		detached: true,
 		stdio: "ignore",
 		env: { ...process.env, PI_WEB_RUNTIME_ENDPOINT: endpoint },

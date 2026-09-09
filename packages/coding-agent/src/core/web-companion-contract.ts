@@ -9,6 +9,11 @@ export interface WebCompanionImage {
 	mimeType: string;
 }
 
+export interface WebCompanionQueueMessage {
+	id: string;
+	text: string;
+}
+
 export const WEB_COMPANION_PROTOCOL_VERSION = 2 as const;
 export const WEB_COMPANION_LEGACY_PROTOCOL_VERSION = 1 as const;
 export type WebCompanionProtocolVersion = 1 | 2;
@@ -28,6 +33,7 @@ export const WEB_COMPANION_CAPABILITIES = [
 	"steer",
 	"follow_up",
 	"clear_queue",
+	"queue_action",
 	"abort",
 	"model",
 	"thinking",
@@ -77,6 +83,8 @@ export interface WebCompanionSnapshot {
 	leafId: string | null;
 	queuedSteerCount: number;
 	queuedFollowUpCount: number;
+	queuedSteerMessages?: WebCompanionQueueMessage[];
+	queuedFollowUpMessages?: WebCompanionQueueMessage[];
 	contextTokens?: number | null;
 	contextWindow?: number;
 	transcriptGeneration: string;
@@ -88,9 +96,15 @@ export interface WebCompanionSnapshot {
 	capabilities: WebCompanionCapability[];
 }
 
-export interface WebCompanionSnapshotWire extends Omit<WebCompanionSnapshot, "protocolVersion" | "capabilities"> {
+export interface WebCompanionSnapshotWire
+	extends Omit<
+		WebCompanionSnapshot,
+		"protocolVersion" | "capabilities" | "queuedSteerMessages" | "queuedFollowUpMessages"
+	> {
 	protocolVersion?: number;
 	capabilities?: WebCompanionCapability[];
+	queuedSteerMessages?: WebCompanionQueueMessage[];
+	queuedFollowUpMessages?: WebCompanionQueueMessage[];
 }
 
 export type WebCompanionCommand =
@@ -103,6 +117,7 @@ export type WebCompanionCommand =
 				| "steer"
 				| "follow_up"
 				| "clear_queue"
+				| "queue_action"
 				| "abort"
 				| "snapshot"
 				| "set_model"
@@ -132,6 +147,8 @@ export type WebCompanionCommand =
 			text?: string;
 			cursor?: number;
 			images?: WebCompanionImage[];
+			queueId?: string;
+			action?: "remove" | "steer";
 			model?: { provider: string; id: string };
 			level?: ThinkingLevel;
 			direction?: "forward" | "backward";

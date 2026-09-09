@@ -4,6 +4,7 @@ import { useControllableState } from "@radix-ui/react-use-controllable-state";
 import type { ToolDiff } from "@lystar/code-web-protocol";
 import {
 	ChevronDownIcon,
+	EyeIcon,
 	FileCode2Icon,
 	FileTextIcon,
 	FolderIcon,
@@ -20,6 +21,7 @@ import type { BundledLanguage } from "shiki";
 import { cn } from "@/lib/utils";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
 import { CodeBlock, CodeBlockActions, CodeBlockCopyButton, CodeBlockHeader, CodeBlockTitle } from "./code-block";
+import { Button } from "../ui/button";
 import { ResourceImageGallery } from "./resource-preview";
 import { Source } from "./sources";
 
@@ -341,46 +343,48 @@ function ToolDiffOutput({
 		<div className="grid gap-1">
 			{diff.files.map((file, index) => {
 				const displayPath = file.path || (diff.files.length === 1 ? fallbackPath : undefined);
+				if (!file.diff) return null;
 				return (
 					<div className="grid gap-1" key={`${file.path ?? "file"}-${file.operation ?? "change"}-${index}`}>
-						<div className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
-							<FileCode2Icon className="size-3.5 shrink-0" />
-							{onOpenPath && displayPath ? (
-								<button
-									className="min-w-0 flex-1 truncate text-left font-mono text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
-									onClick={() => onOpenPath(displayPath)}
-									type="button"
-								>
-									{displayPath}
-								</button>
-							) : (
-								<span className="min-w-0 flex-1 truncate font-mono">{displayPath || "未命名文件"}</span>
-							)}
-							{typeof file.additions === "number" ? (
-								<span className="text-emerald-600">+{file.additions}</span>
-							) : null}
-							{typeof file.deletions === "number" ? (
-								<span className="text-destructive">-{file.deletions}</span>
-							) : null}
-						</div>
-						{file.diff ? (
-							<CodeBlock
-								className="my-0 border-border/60 bg-muted/25"
-								code={file.diff}
-								language={"diff" as BundledLanguage}
-								plainText={plainText}
-								>
-								<CodeBlockHeader className="border-b-0 bg-transparent px-2 py-1">
-									<CodeBlockTitle className="min-w-0 text-foreground">
-										<FileCode2Icon className="size-3.5 shrink-0" />
-										<span className="truncate font-mono">{displayPath || "diff"}</span>
-									</CodeBlockTitle>
-									<CodeBlockActions>
-										<CodeBlockCopyButton aria-label="复制差异" />
-									</CodeBlockActions>
-								</CodeBlockHeader>
-							</CodeBlock>
-						) : null}
+						<CodeBlock
+							className="my-0 border-border/60 bg-muted/25"
+							code={file.diff}
+							language={"diff" as BundledLanguage}
+							plainText={plainText}
+						>
+							<CodeBlockHeader className="border-b-0 bg-transparent px-2 py-1">
+								<CodeBlockTitle className="min-w-0 text-foreground">
+									<FileCode2Icon className="size-3.5 shrink-0" />
+									{onOpenPath && displayPath ? (
+										<button
+											className="min-w-0 truncate text-left font-mono text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
+											onClick={() => onOpenPath(displayPath)}
+											title={displayPath}
+											type="button"
+										>
+											{displayPath}
+										</button>
+									) : (
+										<span className="min-w-0 truncate font-mono">{displayPath || "diff"}</span>
+									)}
+								</CodeBlockTitle>
+								<CodeBlockActions>
+									{onOpenPath && displayPath ? (
+										<Button
+											aria-label="预览文件"
+											className="shrink-0"
+											onClick={() => onOpenPath(displayPath)}
+											size="icon"
+											type="button"
+											variant="ghost"
+										>
+											<EyeIcon size={14} />
+										</Button>
+									) : null}
+									<CodeBlockCopyButton aria-label="复制差异" />
+								</CodeBlockActions>
+							</CodeBlockHeader>
+						</CodeBlock>
 					</div>
 				);
 			})}
@@ -445,7 +449,6 @@ function ToolDetail({
 }) {
 	const plainText = tool.state === "input-available" || tool.state === "input-queued";
 	const title = toolTitle(tool);
-	const stats = diffStats(tool.diff);
 	const imagePreview = tool.images?.length ? (
 		<ImageToolGallery tools={[tool]} sessionId={sessionId} onOpenPath={onOpenPath} />
 	) : null;
@@ -505,14 +508,7 @@ function ToolDetail({
 
 	return (
 		<div className="grid min-w-0 gap-1">
-			{tool.inputPreview ? <div className="text-xs text-muted-foreground">参数预览，终态以工具真实结果为准</div> : null}
 			{imagePreview}
-			{stats ? (
-				<div className="text-xs text-muted-foreground">
-					{stats.additions ? <span className="mr-2 text-emerald-600">+{stats.additions}</span> : null}
-					{stats.deletions ? <span className="text-destructive">-{stats.deletions}</span> : null}
-				</div>
-			) : null}
 			{tool.diff ? (
 				<ToolDiffOutput
 					diff={tool.diff}
@@ -569,7 +565,10 @@ function ToolBatchRow({
 	const title = toolRowTitle(tool);
 	const skillName = skillNameFromTool(tool);
 	const stats = diffStats(tool.diff);
-	const hasDetails = Boolean(tool.detail || tool.diff || tool.images?.length || tool.inputPreview || tool.sources?.length);
+	const hasDetails =
+		tool.name === "web_search"
+			? Boolean(tool.sources?.length)
+			: Boolean(tool.detail || tool.diff || tool.images?.length || tool.inputPreview || tool.sources?.length);
 
 	useEffect(() => {
 		if (previousActive.current && !active && resolveAutoCollapse(autoCollapseWhenComplete)) setOpen(false);

@@ -132,7 +132,7 @@ describe("transcript pagination window", () => {
 describe("transcript state", () => {
 	it("keeps live assistant and tool blocks on their committed render identities", () => {
 		const liveItems = [
-			{ kind: "text" as const, id: "live-text" },
+			{ kind: "text" as const, id: "live-text", parts: ["回复"] },
 			{ kind: "tools" as const, id: "live-tools", toolIds: ["tool-1"] },
 		];
 		const incoming: WebTranscriptItem[] = [
@@ -153,7 +153,62 @@ describe("transcript state", () => {
 		expect(remapped.find((entry) => entry.view?.type === "assistant")?.renderId).toBe("live-text");
 		expect(merged.find((entry) => entry.view?.type === "assistant")?.renderId).toBe("live-text");
 		expect(merged.find((entry) => entry.view?.type === "tool_call")?.renderId).toBe("live-tools");
-		expect(merged.find((entry) => entry.view?.type === "tool_result")?.renderId).toBe("live-tools");
+		expect(merged.find((entry) => entry.view?.type === "tool_result")?.renderId).not.toBe("live-tools");
+		expect(new Set(merged.map((entry) => entry.renderId)).size).toBe(merged.length);
+	});
+
+	it("keeps restored stream keys unique when the stream arrives before a transcript page", () => {
+		const incoming: WebTranscriptItem[] = [
+			{ ...item("a1"), view: { type: "assistant", text: "旧回复一" } },
+			{ ...item("u2"), view: { type: "user", text: "继续" } },
+			{ ...item("a2"), view: { type: "assistant", text: "旧回复二" } },
+			{ ...item("a3"), view: { type: "assistant", text: "当前恢复回复" } },
+		];
+		const overrides = transcriptRenderIdOverrides(
+			[{ kind: "text", id: "restored-text:65", parts: ["当前恢复回复"] }],
+			undefined,
+			incoming,
+		);
+		const merged = mergeTranscriptEntries([], incoming, false, overrides);
+
+		expect(merged.filter((entry) => entry.view?.type === "assistant").map((entry) => entry.renderId)).toEqual([
+			"a1:assistant:0",
+			"a2:assistant:0",
+			"restored-text:65",
+		]);
+		expect(new Set(merged.map((entry) => entry.renderId)).size).toBe(merged.length);
+	});
+
+	it("does not bind an active restored response to an older assistant message", () => {
+		const incoming: WebTranscriptItem[] = [{ ...item("a1"), view: { type: "assistant", text: "已经提交的回复" } }];
+		const overrides = transcriptRenderIdOverrides(
+			[{ kind: "text", id: "restored-text:66", parts: ["仍在生成的新回复"] }],
+			undefined,
+			incoming,
+		);
+		const merged = mergeTranscriptEntries([], incoming, false, overrides);
+
+		expect(merged[0]?.renderId).toBe("a1:assistant:0");
+	});
+
+	it("hands off multiple assistant projections from one entry by occurrence", () => {
+		const incoming: WebTranscriptItem[] = [
+			{ ...item("a1"), view: { type: "assistant", text: "工具前回复" } },
+			{ ...item("a1"), view: { type: "tool_call", calls: [{ id: "tool-1", name: "bash", summary: "pwd" }] } },
+			{ ...item("a1"), view: { type: "assistant", text: "工具后回复" } },
+		];
+		const overrides = transcriptRenderIdOverrides(
+			[
+				{ kind: "text", id: "live-text:1", parts: ["工具前回复"] },
+				{ kind: "tools", id: "live-tools:1", toolIds: ["tool-1"] },
+				{ kind: "text", id: "live-text:2", parts: ["工具后回复"] },
+			],
+			undefined,
+			incoming,
+		);
+		const merged = mergeTranscriptEntries([], incoming, false, overrides);
+
+		expect(merged.map((entry) => entry.renderId)).toEqual(["live-text:1", "live-tools:1", "live-text:2"]);
 	});
 
 	it("preserves loaded earlier entries when the tail page refreshes", () => {

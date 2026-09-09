@@ -93,9 +93,7 @@ export function InspectorPanel({
 					<FilesPanel state={state} actions={actions} />
 				</TabsContent>
 				<TabsContent className="min-h-0 w-full min-w-0 flex-1 overflow-hidden" value="git">
-					<ScrollArea className="h-full w-full">
-						<GitPanel state={state} actions={actions} />
-					</ScrollArea>
+					<GitPanel state={state} actions={actions} />
 				</TabsContent>
 				<TabsContent className="min-h-0 w-full min-w-0 flex-1 overflow-hidden" value="runs">
 					<ScrollArea className="h-full w-full" viewportRef={runViewportRef}>
