@@ -1,6 +1,15 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { AltScreenSearchTarget, Component, Terminal, TUI } from "@earendil-works/pi-tui";
-import { Container, isViewportTUI, resetCapabilitiesCache, setCapabilities, Text } from "@earendil-works/pi-tui";
+import {
+	Container,
+	getKeybindings,
+	isViewportTUI,
+	resetCapabilitiesCache,
+	ScrollView,
+	setCapabilities,
+	setKeybindings,
+	Text,
+} from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
@@ -305,18 +314,14 @@ describe("createInteractiveTui", () => {
 			terminal.sendInput("\x1b[102;6u");
 			terminal.sendInput("needle");
 			await terminal.waitForRender();
-			expect(terminal.getViewport().some((line) => line.includes("Find transcript") && line.includes("1/2"))).toBe(
-				true,
-			);
-			expect(terminal.getViewport().some((line) => line.includes("line-4 needle one"))).toBe(true);
+			expect(terminal.getViewport().some((line) => line.includes("needle") && line.includes("1/2"))).toBe(true);
+			expect(terminal.getViewport().some((line) => line.includes("line-4 needle"))).toBe(true);
 			expect(scrollTo).toHaveBeenLastCalledWith(4);
 
 			terminal.sendInput("\x07");
 			await terminal.waitForRender();
-			expect(terminal.getViewport().some((line) => line.includes("Find transcript") && line.includes("2/2"))).toBe(
-				true,
-			);
-			expect(terminal.getViewport().some((line) => line.includes("line-20 needle two"))).toBe(true);
+			expect(terminal.getViewport().some((line) => line.includes("needle") && line.includes("2/2"))).toBe(true);
+			expect(terminal.getViewport().some((line) => line.includes("line-20 needle"))).toBe(true);
 			expect(scrollTo).toHaveBeenLastCalledWith(20);
 
 			terminal.sendInput("\x1b");
@@ -560,6 +565,35 @@ describe("createInteractiveTui", () => {
 		}
 	});
 
+	it("shows the configured jump-to-bottom shortcut while scrolled up", async () => {
+		initTheme("dark");
+		const previousKeybindings = getKeybindings();
+		setKeybindings(new KeybindingsManager({ "tui.altScreen.bottom": "ctrl+j" }));
+		const terminal = new RecordingTerminal(50, 4);
+		const ui = createInteractiveTui({
+			tuiMode: "fullscreen",
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal,
+		}) as LystarTUI;
+		ui.setLayoutRoot(
+			new ScrollView(new Text(Array.from({ length: 8 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0), {
+				follow: "end",
+				primary: true,
+			}),
+		);
+		ui.start();
+		try {
+			await terminal.waitForRender();
+			terminal.sendInput("\x1b[<64;1;1M");
+			await terminal.waitForRender();
+			expect(terminal.getViewport()[3]).toContain("↓ Jump to latest message · Ctrl+J");
+		} finally {
+			ui.stop();
+			setKeybindings(previousKeybindings);
+		}
+	});
+
 	it("replaces the renderer and restores the previous screen for resume-hint exits", async () => {
 		const terminal = new RecordingTerminal(40, 8);
 		const renderer = createInteractiveTui({
@@ -700,6 +734,7 @@ describe("InteractiveMode copy confirmation", () => {
 			logDirectory: "/tmp",
 			terminal,
 			copyOnSelect: false,
+			fullscreenCopyOnSelect: false,
 		});
 		const getLastAssistantText = vi.fn(() => "assistant response");
 		const showStatus = vi.fn();
@@ -836,38 +871,76 @@ describe("InteractiveMode copy confirmation", () => {
 	});
 });
 
+type StatusEditor = {
+	embedWorkingStatus: boolean;
+	setWorkingStatusIndicator: (indicator: undefined) => void;
+};
+
 type ClearStatusContext = {
-	activeStatusIndicator: { kind: "working"; dispose: () => void } | undefined;
+	activeStatusIndicator: { kind: "working" | "retry"; dispose: () => void } | undefined;
+	activeWorkingIndicatorEmbedded: boolean;
 	statusContainer: Container;
+	defaultEditor: StatusEditor;
+	editor: Partial<StatusEditor>;
 	options: { tuiMode?: TuiMode };
 	ui: { getClearOnShrink: () => boolean };
 	idleStatus: Component;
+	setEditorWorkingStatusIndicator(indicator: undefined): boolean;
 };
 
 type InteractiveModePrototype = {
-	clearStatusIndicator(this: ClearStatusContext, kind?: "working"): void;
+	clearStatusIndicator(this: ClearStatusContext, kind?: "working" | "retry"): void;
+	setEditorWorkingStatusIndicator(this: ClearStatusContext, indicator: undefined): boolean;
 };
 
 const interactiveModePrototype = InteractiveMode.prototype as unknown as InteractiveModePrototype;
 
 describe("clear-on-shrink status spacing", () => {
-	it("reserves status height only on the main-screen renderer", () => {
+	it("does not reserve separate status height for the editor-border working indicator", () => {
+		const dispose = vi.fn();
+		const editor: StatusEditor = { embedWorkingStatus: true, setWorkingStatusIndicator: vi.fn() };
+		const context: ClearStatusContext = {
+			activeStatusIndicator: { kind: "working", dispose },
+			activeWorkingIndicatorEmbedded: true,
+			statusContainer: new Container(),
+			defaultEditor: editor,
+			editor,
+			options: { tuiMode: "regular" },
+			ui: { getClearOnShrink: () => true },
+			idleStatus: new Text("", 0, 0),
+			setEditorWorkingStatusIndicator: interactiveModePrototype.setEditorWorkingStatusIndicator,
+		};
+
+		interactiveModePrototype.clearStatusIndicator.call(context);
+
+		expect(dispose).toHaveBeenCalledOnce();
+		expect(editor.setWorkingStatusIndicator).toHaveBeenCalledWith(undefined);
+		expect(context.statusContainer.children).toHaveLength(0);
+	});
+
+	it("uses the standalone row for a custom editor that has not opted in", () => {
 		for (const [tuiMode, expectedChildren] of [
 			["regular", 1],
 			["fullscreen", 0],
 		] as const) {
-			const dispose = vi.fn();
+			const defaultEditor: StatusEditor = { embedWorkingStatus: true, setWorkingStatusIndicator: vi.fn() };
+			const customEditor = { embedWorkingStatus: false, setWorkingStatusIndicator: vi.fn() };
 			const context: ClearStatusContext = {
-				activeStatusIndicator: { kind: "working", dispose },
+				activeStatusIndicator: { kind: "working", dispose: vi.fn() },
+				activeWorkingIndicatorEmbedded: false,
 				statusContainer: new Container(),
+				defaultEditor,
+				editor: customEditor,
 				options: { tuiMode },
 				ui: { getClearOnShrink: () => true },
 				idleStatus: new Text("", 0, 0),
+				setEditorWorkingStatusIndicator: interactiveModePrototype.setEditorWorkingStatusIndicator,
 			};
 
 			interactiveModePrototype.clearStatusIndicator.call(context);
 
-			expect(dispose).toHaveBeenCalledOnce();
+			expect(defaultEditor.setWorkingStatusIndicator).toHaveBeenCalledWith(undefined);
+			expect(customEditor.setWorkingStatusIndicator).not.toHaveBeenCalled();
 			expect(context.statusContainer.children).toHaveLength(expectedChildren);
 		}
 	});

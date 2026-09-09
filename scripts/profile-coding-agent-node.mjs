@@ -9,6 +9,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
 const packageDir = join(repoRoot, "packages", "coding-agent");
 const distCliPath = join(packageDir, "dist", "cli.js");
+const bundledDistCliPath = join(packageDir, "dist", "bundle", "cli.js");
 const srcCliPath = join(packageDir, "src", "cli.ts");
 const defaultNodeProfileDir = join(repoRoot, "profiles-node");
 const defaultBunProfileDir = join(repoRoot, "profiles-bun");
@@ -37,8 +38,9 @@ Options:
   --session <path>       Resume the specified Session JSONL instead of using --no-session
   --json                 Write a JSON benchmark report to stdout
   --isolated-agent-dir   Use a fresh temporary agent dir instead of the normal one
+  --bundle               Build and profile the bundled Node entrypoint instead of dist/cli.js
   --no-offline           Do not force PI_OFFLINE=1 / PI_SKIP_VERSION_CHECK=1
-  --skip-build           Reuse the current dist/cli.js without rebuilding first (Node only)
+  --skip-build           Reuse the selected build output without rebuilding first (Node only)
   --cpu-profile          Write CPU profiles for benchmark runs
   --help                 Show this help
 
@@ -75,6 +77,7 @@ function parseMode(value) {
 function parseArgs(argv) {
 	const options = {
 		mode: "tui",
+		bundle: false,
 		runs: 1,
 		warmup: 0,
 		profileDir: undefined,
@@ -104,6 +107,11 @@ function parseArgs(argv) {
 
 		if (arg === "--isolated-agent-dir") {
 			options.isolatedAgentDir = true;
+			continue;
+		}
+
+		if (arg === "--bundle") {
+			options.bundle = true;
 			continue;
 		}
 
@@ -332,55 +340,68 @@ async function waitForExit(child, errorPrefix) {
 	});
 }
 
-async function runBuild(quiet = false) {
+async function runBuild(bundle = false, quiet = false) {
 	if (!quiet) {
-		process.stdout.write("Building packages/tui, packages/telemetry, packages/ai, packages/agent, and packages/coding-agent...\n");
+		process.stdout.write(
+			`Building dependencies and the ${bundle ? "bundled" : "unbundled"} coding-agent Node entrypoint...\n`,
+		);
 	}
 	const startedAt = performance.now();
-	const child = spawn(
-		"npm",
-		[
-			"run",
-			"build",
-			"--workspace",
-			"packages/tui",
-			"--workspace",
-			"packages/telemetry",
-			"--workspace",
-			"packages/ai",
-			"--workspace",
-			"packages/agent",
-			"--workspace",
-			"packages/coding-agent",
-		],
+	const commands = [
 		{
+			label: "Dependency build",
+			args: [
+				"run",
+				"build",
+				"--workspace",
+				"packages/tui",
+				"--workspace",
+				"packages/telemetry",
+				"--workspace",
+				"packages/ai",
+				"--workspace",
+				"packages/agent",
+				"--workspace",
+				"packages/protocol",
+				"--workspace",
+				"packages/client",
+			],
+		},
+		{
+			label: "Coding-agent build",
+			args: ["run", bundle ? "build" : "build:unbundled", "--workspace", "packages/coding-agent"],
+		},
+	];
+
+	for (const command of commands) {
+		const child = spawn("npm", command.args, {
 			cwd: repoRoot,
 			env: process.env,
 			stdio: ["ignore", "pipe", "pipe"],
 			shell: process.platform === "win32",
-		},
-	);
+		});
 
-	let stdout = "";
-	let stderr = "";
-	child.stdout.setEncoding("utf8");
-	child.stdout.on("data", (chunk) => {
-		stdout += chunk;
-	});
-	child.stderr.setEncoding("utf8");
-	child.stderr.on("data", (chunk) => {
-		stderr += chunk;
-	});
+		let stdout = "";
+		let stderr = "";
+		child.stdout.setEncoding("utf8");
+		child.stdout.on("data", (chunk) => {
+			stdout += chunk;
+		});
+		child.stderr.setEncoding("utf8");
+		child.stderr.on("data", (chunk) => {
+			stderr += chunk;
+		});
 
-	const exitCode = await waitForExit(child, "Build");
-	if (exitCode !== 0) {
-		if (stdout.trim()) {
-			process.stderr.write(`${stdout}${stdout.endsWith("\n") ? "" : "\n"}`);
+		const exitCode = await waitForExit(child, command.label);
+		if (exitCode !== 0) {
+			if (stdout.trim()) {
+				process.stdout.write(`${stdout}${stdout.endsWith("\n") ? "" : "\n"}`);
+			}
+			if (stderr.trim()) {
+				process.stderr.write(`${stderr}${stderr.endsWith("\n") ? "" : "\n"}`);
+			}
+			throw new Error(`${command.label} failed with exit code ${exitCode}`);
 		}
-		if (stderr.trim()) {
-			process.stderr.write(`${stderr}${stderr.endsWith("\n") ? "" : "\n"}`);
-		}
-		throw new Error(`Build failed with exit code ${exitCode}`);
 	}
 
 	if (!quiet) {
@@ -388,7 +409,7 @@ async function runBuild(quiet = false) {
 	}
 }
 
-function getRuntimeCommand(runtime, mode, profileDir, profileName, cpuProfile, sessionPath) {
+function getRuntimeCommand(runtime, mode, profileDir, profileName, cpuProfile, nodeEntryPath, sessionPath) {
 	const benchmarkArgs = sessionPath
 		? ["--session", sessionPath, "--approve", "--no-extensions"]
 		: ["--no-session", "--approve", "--no-extensions"];
@@ -412,7 +433,7 @@ function getRuntimeCommand(runtime, mode, profileDir, profileName, cpuProfile, s
 	if (cpuProfile) {
 		args.push("--cpu-prof", `--cpu-prof-dir=${profileDir}`, `--cpu-prof-name=${profileName}`);
 	}
-	args.push(distCliPath, ...benchmarkArgs);
+	args.push(nodeEntryPath, ...benchmarkArgs);
 	return {
 		executable: process.execPath,
 		args,
@@ -420,7 +441,7 @@ function getRuntimeCommand(runtime, mode, profileDir, profileName, cpuProfile, s
 }
 
 function createBenchmarkEnv(options, isolatedAgentDir) {
-	const env = { ...process.env };
+	const env = { ...process.env, PI_TIMING: "1" };
 	if (options.agentDir) {
 		env[agentDirEnvName] = options.agentDir;
 	} else if (isolatedAgentDir) {
@@ -447,7 +468,16 @@ async function runTuiBenchmarkRun({ runtime, runIndex, measuredIndex, options, p
 		mkdirSync(isolatedAgentDir, { recursive: true });
 	}
 
-	const command = getRuntimeCommand(runtime, "tui", profileDir, profileName, options.cpuProfile, options.session);
+	const nodeEntryPath = options.bundle ? bundledDistCliPath : distCliPath;
+	const command = getRuntimeCommand(
+		runtime,
+		"tui",
+		profileDir,
+		profileName,
+		options.cpuProfile,
+		nodeEntryPath,
+		options.session,
+	);
 	const child = spawn(command.executable, command.args, {
 		cwd: packageDir,
 		env: createBenchmarkEnv(options, isolatedAgentDir),
@@ -518,7 +548,16 @@ async function runRpcBenchmarkRun({ runtime, runIndex, measuredIndex, options, p
 		mkdirSync(isolatedAgentDir, { recursive: true });
 	}
 
-	const command = getRuntimeCommand(runtime, "rpc", profileDir, profileName, options.cpuProfile, options.session);
+	const nodeEntryPath = options.bundle ? bundledDistCliPath : distCliPath;
+	const command = getRuntimeCommand(
+		runtime,
+		"rpc",
+		profileDir,
+		profileName,
+		options.cpuProfile,
+		nodeEntryPath,
+		options.session,
+	);
 	const child = spawn(command.executable, command.args, {
 		cwd: packageDir,
 		env: createBenchmarkEnv(options, isolatedAgentDir),
@@ -661,11 +700,14 @@ async function main() {
 
 	const runtime = resolveRuntime(options.runtime);
 	const sessionBytes = getSessionBytes(options.session);
+	if (options.bundle && runtime !== "node") {
+		throw new Error("--bundle only supports the Node runtime");
+	}
 	options.label = resolveLabel(options.mode, options.label);
 	const profileDir = resolveProfileDir(runtime, options.profileDir);
 
 	if (runtime === "node" && options.build) {
-		await runBuild(options.json);
+		await runBuild(options.bundle, options.json);
 	}
 	if (runtime === "bun" && !options.json) {
 		process.stdout.write(
@@ -673,7 +715,16 @@ async function main() {
 		);
 	}
 
-	const entryPath = runtime === "bun" ? srcCliPath : distCliPath;
+	const entryPath = runtime === "bun" ? srcCliPath : options.bundle ? bundledDistCliPath : distCliPath;
+	if (
+		runtime === "node" &&
+		!options.bundle &&
+		!options.build &&
+		existsSync(distCliPath) &&
+		readFileSync(distCliPath, "utf8").includes('import "./bundle/cli.js";')
+	) {
+		throw new Error("dist/cli.js is a bundled facade; rerun without --skip-build for an unbundled profile");
+	}
 	if (!existsSync(entryPath)) {
 		throw new Error(`CLI entrypoint not found: ${entryPath}`);
 	}
@@ -732,7 +783,7 @@ async function main() {
 	const maxElapsedRun = measuredRuns.reduce((slowest, run) => (run.elapsedMs > slowest.elapsedMs ? run : slowest));
 	if (measuredRuns.length === 1) {
 		process.stdout.write("\nResult\n");
-		process.stdout.write(`  runtime:          ${runtime}\n`);
+		process.stdout.write(`  runtime:          ${runtime}${options.bundle ? " (bundle)" : ""}\n`);
 		process.stdout.write(`  mode:             ${options.mode}\n`);
 		process.stdout.write(`  elapsed:          ${formatMs(measuredRuns[0].elapsedMs)}\n`);
 		for (const [label, summary] of timingSummaries.entries()) {
@@ -750,7 +801,7 @@ async function main() {
 	}
 
 	process.stdout.write("\nSummary\n");
-	process.stdout.write(`  runtime:          ${runtime}\n`);
+	process.stdout.write(`  runtime:          ${runtime}${options.bundle ? " (bundle)" : ""}\n`);
 	process.stdout.write(`  mode:             ${options.mode}\n`);
 	process.stdout.write(`  elapsed min:      ${formatMs(elapsedSummary.min)}\n`);
 	process.stdout.write(`  elapsed median:   ${formatMs(elapsedSummary.median)}\n`);

@@ -4,6 +4,7 @@ import { delimiter, join } from "path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
 	detectInstallMethod,
+	findNodePackageDir,
 	getPackageDir,
 	getSelfUpdateCommand,
 	getSelfUpdateUnavailableInstruction,
@@ -173,6 +174,19 @@ describe("package asset paths", () => {
 		tempDir = packageDir;
 
 		expect(getPackageDir()).toBe(packageDir);
+	});
+});
+
+describe("findNodePackageDir", () => {
+	test("skips binary metadata copied into dist", () => {
+		tempDir = mkdtempSync(join(tmpdir(), "pi-package-dir-"));
+		const distDir = join(tempDir, "dist");
+		const bundleDir = join(distDir, "bundle");
+		mkdirSync(bundleDir, { recursive: true });
+		writeFileSync(join(tempDir, "package.json"), "{}");
+		writeFileSync(join(distDir, "package.json"), "{}");
+
+		expect(findNodePackageDir(bundleDir)).toBe(tempDir);
 	});
 });
 

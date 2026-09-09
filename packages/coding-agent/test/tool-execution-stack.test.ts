@@ -1,5 +1,7 @@
 import { type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import { createBashToolDefinition } from "../src/core/tools/bash.ts";
+import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { ToolExecutionStackComponent } from "../src/modes/interactive/components/tool-execution-stack.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
@@ -11,7 +13,7 @@ function createTool(name: "bash" | "read", id: string, args: Record<string, unkn
 		id,
 		args,
 		{},
-		undefined,
+		name === "bash" ? createBashToolDefinition(process.cwd()) : createReadToolDefinition(process.cwd()),
 		{ requestRender: vi.fn() } as unknown as TUI,
 		process.cwd(),
 	);

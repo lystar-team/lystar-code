@@ -14,7 +14,7 @@ import { getModelSearchText } from "../model-search.ts";
 import { theme } from "../theme/theme.ts";
 import { uiGlyphs } from "../ui-glyphs.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
-import { keyText } from "./keybinding-hints.ts";
+import { keyDisplayText } from "./keybinding-hints.ts";
 
 // EnabledIds: null = all enabled (no filter), string[] = explicit ordered list
 type EnabledIds = string[] | null;
@@ -23,11 +23,16 @@ function isEnabled(enabledIds: EnabledIds, id: string): boolean {
 	return enabledIds === null || enabledIds.includes(id);
 }
 
-function toggle(enabledIds: EnabledIds, id: string): EnabledIds {
-	if (enabledIds === null) return [id]; // First toggle: start with only this one
+/** Collapse an explicit list back to null (= all enabled) when it covers every available model. */
+function normalizeEnabled(result: string[], allIds: string[]): EnabledIds {
+	return result.length === allIds.length && result.every((id) => allIds.includes(id)) ? null : result;
+}
+
+function toggle(enabledIds: EnabledIds, allIds: string[], id: string): EnabledIds {
+	if (enabledIds === null) return allIds.filter((modelId) => modelId !== id);
 	const index = enabledIds.indexOf(id);
 	if (index >= 0) return [...enabledIds.slice(0, index), ...enabledIds.slice(index + 1)];
-	return [...enabledIds, id];
+	return normalizeEnabled([...enabledIds, id], allIds);
 }
 
 function enableAll(enabledIds: EnabledIds, allIds: string[], targetIds?: string[]): EnabledIds {
@@ -37,7 +42,7 @@ function enableAll(enabledIds: EnabledIds, allIds: string[], targetIds?: string[
 	for (const id of targets) {
 		if (!result.includes(id)) result.push(id);
 	}
-	return result.length === allIds.length && result.every((id) => allIds.includes(id)) ? null : result;
+	return normalizeEnabled(result, allIds);
 }
 
 function clearAll(enabledIds: EnabledIds, allIds: string[], targetIds?: string[]): EnabledIds {
@@ -131,7 +136,9 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(theme.fg("accent", theme.bold("模型配置")), 0, 0));
-		this.addChild(new Text(theme.fg("muted", `仅本次会话生效。按 ${keyText("app.models.save")} 保存到设置。`), 0, 0));
+		this.addChild(
+			new Text(theme.fg("muted", `仅本次会话生效。按 ${keyDisplayText("app.models.save")} 保存到设置。`), 0, 0),
+		);
 		this.addChild(new Spacer(1));
 
 		// Search input
@@ -194,12 +201,12 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 			? "全部启用"
 			: `${enabledCount}/${this.allIds.length} 已启用${unavailableCount ? ` · ${unavailableCount} 个不可用` : ""}`;
 		const parts = [
-			`${keyText("tui.select.confirm")} 切换`,
-			`${keyText("app.models.enableAll")} 全选`,
-			`${keyText("app.models.clearAll")} 清空`,
-			`${keyText("app.models.toggleProvider")} Provider`,
-			`${keyText("app.models.reorderUp")}/${keyText("app.models.reorderDown")} 排序`,
-			`${keyText("app.models.save")} 保存`,
+			`${keyDisplayText("tui.select.confirm")} 切换`,
+			`${keyDisplayText("app.models.enableAll")} 全选`,
+			`${keyDisplayText("app.models.clearAll")} 清空`,
+			`${keyDisplayText("app.models.toggleProvider")} Provider`,
+			`${keyDisplayText("app.models.reorderUp")}/${keyDisplayText("app.models.reorderDown")} 排序`,
+			`${keyDisplayText("app.models.save")} 保存`,
 			countText,
 		];
 		return this.isDirty
@@ -240,13 +247,13 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 		);
 		const endIndex = Math.min(startIndex + this.maxVisible, this.filteredItems.length);
 		const allEnabled = this.enabledIds === null;
-
 		for (let i = startIndex; i < endIndex; i++) {
 			const item = this.filteredItems[i]!;
 			const isSelected = i === this.selectedIndex;
 			const prefix = isSelected ? theme.fg("accent", "→ ") : "  ";
 			const id = item.model?.id ?? item.fullId;
-			const modelText = isSelected ? theme.fg("accent", id) : id;
+			const styledId = item.model ? id : theme.strikethrough(id);
+			const modelText = isSelected ? theme.fg("accent", styledId) : styledId;
 			const providerBadge = theme.fg("muted", item.model ? ` [${item.model.provider}]` : " [unavailable]");
 			const status = item.model
 				? allEnabled
@@ -321,7 +328,7 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 		if (kb.matches(data, "tui.select.confirm")) {
 			const item = this.filteredItems[this.selectedIndex];
 			if (item) {
-				this.enabledIds = toggle(this.enabledIds, item.fullId);
+				this.enabledIds = toggle(this.enabledIds, this.allIds, item.fullId);
 				this.isDirty = true;
 				this.refresh();
 				this.notifyChange();

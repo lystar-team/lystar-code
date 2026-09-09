@@ -11,7 +11,7 @@ export {
 	type WorkspaceChangeFile,
 } from "./changes-selector.ts";
 export { CompactionSummaryMessageComponent } from "./compaction-summary-message.ts";
-export { CustomEditor } from "./custom-editor.ts";
+export { CustomEditor, type CustomEditorOptions } from "./custom-editor.ts";
 export { CustomMessageComponent } from "./custom-message.ts";
 export { DaxnutsComponent } from "./daxnuts.ts";
 export { type RenderDiffOptions, renderDiff } from "./diff.ts";

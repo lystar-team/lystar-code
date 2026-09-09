@@ -43,6 +43,7 @@ async function waitForRenderedText(
 	getRender: () => string,
 	expectedText: string,
 	onRetry?: () => void,
+	isRendered?: () => boolean,
 	timeoutMs = 2000,
 ): Promise<string> {
 	const deadline = Date.now() + timeoutMs;
@@ -51,7 +52,7 @@ async function waitForRenderedText(
 		onRetry?.();
 		await waitForRender();
 		lastRender = getRender();
-		if (lastRender.includes(expectedText)) {
+		if (lastRender.includes(expectedText) && (isRendered?.() ?? true)) {
 			return lastRender;
 		}
 	}
@@ -125,6 +126,7 @@ describe("edit tool TUI rendering", () => {
 			() => component.render(80).join("\n"),
 			"line 50 changed",
 			() => tui.requestRender(true),
+			() => terminal.writes.some((write) => stripAnsi(write).includes("line 50 changed")),
 		);
 		expect(callOnlyRender).toContain("edit");
 		expect(callOnlyRender).toContain("line 950 changed");

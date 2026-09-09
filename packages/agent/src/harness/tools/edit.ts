@@ -131,61 +131,66 @@ export function createEditTool<TContext extends ExecutionToolContext = Execution
 			const path = (args as { path?: unknown }).path;
 			return typeof path === "string" ? [`harness-file:${path}`] : [];
 		},
-		async execute(_toolCallId, input, signal, _onUpdate, { env }) {
+		async execute(_toolCallId, input, _onUpdate, { env }, _invocation, context) {
 			const { path, edits } = validateEditInput(input);
-			const absolutePath = await resolveToolPath(env, path, signal);
-			return withFileMutationQueue(env, absolutePath, async () => {
-				if (signal?.aborted) throw new Error("Operation aborted");
-				const info = await env.fileInfo(absolutePath, signal);
-				if (!info.ok) throw editAccessError(path, info.error);
-				if (info.value.kind !== "file" && info.value.kind !== "symlink") {
-					throw new Error(`Could not edit file: ${path}. Path is not a file.`);
-				}
-
-				const readResult = await env.readTextFile(absolutePath, signal);
-				if (!readResult.ok) throw editAccessError(path, readResult.error);
-				if (signal?.aborted) throw new Error("Operation aborted");
-
-				const { bom, text: content } = stripBom(readResult.value);
-				const snapshotHash = await hashFileContent(readResult.value);
-				const originalEnding = detectLineEnding(content);
-				const normalizedContent = normalizeToLF(content);
-				const { baseContent, newContent } = applyEditsToNormalizedContent(normalizedContent, edits, path);
-				if (signal?.aborted) throw new Error("Operation aborted");
-
-				const finalContent = bom + restoreLineEndings(newContent, originalEnding);
-				if (finalContent !== readResult.value) {
-					if (signal?.aborted) throw new Error("Operation aborted");
-					const currentResult = await env.readTextFile(absolutePath, signal);
-					if (!currentResult.ok) throw editAccessError(path, currentResult.error);
-					if (signal?.aborted) throw new Error("Operation aborted");
-					const currentHash = await hashFileContent(currentResult.value);
-					if (currentHash !== snapshotHash) {
-						throw createWriteConflictError(path, snapshotHash, currentHash);
+			const absolutePath = await resolveToolPath(env, path, context);
+			return withFileMutationQueue(
+				env,
+				absolutePath,
+				async () => {
+					if (context.abortSignal?.aborted) throw new Error("Operation aborted");
+					const info = await env.fileInfo(absolutePath, context);
+					if (!info.ok) throw editAccessError(path, info.error);
+					if (info.value.kind !== "file" && info.value.kind !== "symlink") {
+						throw new Error(`Could not edit file: ${path}. Path is not a file.`);
 					}
-					const writeResult = await env.writeFile(absolutePath, finalContent, signal);
-					if (!writeResult.ok) throw editAccessError(path, writeResult.error);
-					if (signal?.aborted) throw new Error("Operation aborted");
-				}
 
-				const diffResult = generateDiffString(baseContent, newContent);
-				return {
-					content: [
-						{
-							type: "text",
-							text:
-								baseContent === newContent
-									? `No changes needed for ${path}; the requested content is already present.`
-									: `Successfully replaced ${edits.length} block(s) in ${path}.`,
+					const readResult = await env.readTextFile(absolutePath, context);
+					if (!readResult.ok) throw editAccessError(path, readResult.error);
+					if (context.abortSignal?.aborted) throw new Error("Operation aborted");
+
+					const { bom, text: content } = stripBom(readResult.value);
+					const snapshotHash = await hashFileContent(readResult.value);
+					const originalEnding = detectLineEnding(content);
+					const normalizedContent = normalizeToLF(content);
+					const { baseContent, newContent } = applyEditsToNormalizedContent(normalizedContent, edits, path);
+					if (context.abortSignal?.aborted) throw new Error("Operation aborted");
+
+					const finalContent = bom + restoreLineEndings(newContent, originalEnding);
+					if (finalContent !== readResult.value) {
+						if (context.abortSignal?.aborted) throw new Error("Operation aborted");
+						const currentResult = await env.readTextFile(absolutePath, context);
+						if (!currentResult.ok) throw editAccessError(path, currentResult.error);
+						if (context.abortSignal?.aborted) throw new Error("Operation aborted");
+						const currentHash = await hashFileContent(currentResult.value);
+						if (currentHash !== snapshotHash) {
+							throw createWriteConflictError(path, snapshotHash, currentHash);
+						}
+						const writeResult = await env.writeFile(absolutePath, finalContent, context);
+						if (!writeResult.ok) throw editAccessError(path, writeResult.error);
+						if (context.abortSignal?.aborted) throw new Error("Operation aborted");
+					}
+
+					const diffResult = generateDiffString(baseContent, newContent);
+					return {
+						content: [
+							{
+								type: "text",
+								text:
+									baseContent === newContent
+										? `No changes needed for ${path}; the requested content is already present.`
+										: `Successfully replaced ${edits.length} block(s) in ${path}.`,
+							},
+						],
+						details: {
+							diff: diffResult.diff,
+							patch: generateUnifiedPatch(path, baseContent, newContent),
+							firstChangedLine: diffResult.firstChangedLine,
 						},
-					],
-					details: {
-						diff: diffResult.diff,
-						patch: generateUnifiedPatch(path, baseContent, newContent),
-						firstChangedLine: diffResult.firstChangedLine,
-					},
-				};
-			});
+					};
+				},
+				context,
+			);
 		},
 	};
 }

@@ -43,10 +43,10 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const contextFiles = providedContextFiles ?? [];
 	const skills = providedSkills ?? [];
 	const tools = selectedTools || ["read", "bash", "edit", "write"];
+	const skillFileReadTool = (["read", "bash"] as const).find((tool) => tools.includes(tool));
 	const visibleTools = tools.filter((name) => !!toolSnippets?.[name]);
 	const toolsList =
 		visibleTools.length > 0 ? visibleTools.map((name) => `- ${name}: ${toolSnippets![name]}`).join("\n") : "(none)";
-	const hasRead = tools.includes("read");
 	const customPromptGuidelines = Array.from(
 		new Set(
 			(promptGuidelines ?? []).map((guideline) => guideline.trim()).filter((guideline) => guideline.length > 0),
@@ -79,10 +79,9 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 			prompt += "</project_context>\n";
 		}
 
-		// Append skills section (only if read tool is available)
-		const customPromptHasRead = !selectedTools || selectedTools.includes("read");
-		if (customPromptHasRead && skills.length > 0) {
-			prompt += formatSkillsForPrompt(skills);
+		// Append skills when a tool capable of reading their files is available.
+		if (skillFileReadTool && skills.length > 0) {
+			prompt += formatSkillsForPrompt(skills, skillFileReadTool);
 		}
 
 		if (customPromptToolSection) {
@@ -178,9 +177,9 @@ Pi documentation (read only for pi-related questions):
 		prompt += "</project_context>\n";
 	}
 
-	// Append skills section (only if read tool is available)
-	if (hasRead && skills.length > 0) {
-		prompt += formatSkillsForPrompt(skills);
+	// Append skills when a tool capable of reading their files is available.
+	if (skillFileReadTool && skills.length > 0) {
+		prompt += formatSkillsForPrompt(skills, skillFileReadTool);
 	}
 
 	prompt += `\nCurrent working directory: ${promptCwd}`;

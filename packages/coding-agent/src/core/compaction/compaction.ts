@@ -499,9 +499,7 @@ Use this EXACT format:
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.`;
 
-const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
-
-Update the existing structured summary with new information. RULES:
+const UPDATE_SUMMARIZATION_INSTRUCTIONS = `Update the existing structured summary with new information. RULES:
 - PRESERVE all existing information from the previous summary
 - ADD new progress, decisions, and context from the new messages
 - UPDATE the Progress section: move items from "In Progress" to "Done" when completed
@@ -538,27 +536,18 @@ Use this EXACT format:
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.`;
 
-function createSummarizationOptions(
-	model: Model<any>,
-	maxTokens: number,
-	apiKey: string | undefined,
-	headers: Record<string, string> | undefined,
-	env: Record<string, string> | undefined,
-	signal: AbortSignal | undefined,
-	thinkingLevel: ThinkingLevel | undefined,
-): SimpleStreamOptions {
-	const options: SimpleStreamOptions = { maxTokens, signal, apiKey, headers, env };
-	if (model.reasoning && thinkingLevel && thinkingLevel !== "off") {
-		options.reasoning = thinkingLevel;
-	}
-	return options;
-}
+const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
+
+${UPDATE_SUMMARIZATION_INSTRUCTIONS}`;
 
 /**
  * Returns an error message when a summarization response cannot safely be persisted.
  * A length stop contains partial text and must not become a session checkpoint.
  */
 export function getSummarizationFailure(response: AssistantMessage, label: string): string | undefined {
+	if (response.stopReason === "aborted") {
+		return "Compaction cancelled";
+	}
 	if (response.stopReason === "error") {
 		return `${label} failed: ${response.errorMessage || "Unknown error"}`;
 	}
@@ -569,6 +558,23 @@ export function getSummarizationFailure(response: AssistantMessage, label: strin
 		return `${label} failed: the summary was empty`;
 	}
 	return undefined;
+}
+
+function createSummarizationOptions(
+	model: Model<any>,
+	maxTokens: number,
+	apiKey: string | undefined,
+	headers: Record<string, string> | undefined,
+	env: Record<string, string> | undefined,
+	signal: AbortSignal | undefined,
+	thinkingLevel: ThinkingLevel | undefined,
+	sessionId: string | undefined,
+): SimpleStreamOptions {
+	const options: SimpleStreamOptions = { maxTokens, signal, apiKey, headers, env, sessionId };
+	if (model.reasoning && thinkingLevel && thinkingLevel !== "off") {
+		options.reasoning = thinkingLevel;
+	}
+	return options;
 }
 
 /**
@@ -586,6 +592,7 @@ export async function completeSummarization(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 ): Promise<AssistantMessage> {
+	// Avoid cache writes for one-off summaries. Reuse caller-supplied routing when available.
 	const requestTokens = estimateContextTokensUpperBound(context).tokens;
 	if (model.contextWindow > 0 && requestTokens >= model.contextWindow) {
 		throw new Error(
@@ -601,11 +608,12 @@ export async function completeSummarization(
 			: options.maxTokens;
 
 	// Summaries are standalone requests, so isolate routing and avoid cache writes that cannot be reused.
+
 	const requestOptions: SimpleStreamOptions = {
 		...options,
 		maxTokens,
 		cacheRetention: "none",
-		sessionId: uuidv7(),
+		sessionId: options.sessionId ?? uuidv7(),
 	};
 	const produce = async (): Promise<AssistantMessage> =>
 		streamFn
@@ -632,6 +640,7 @@ export async function generateSummary(
 	env?: Record<string, string>,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	sessionId?: string,
 ): Promise<string> {
 	return (
 		await generateSummaryWithUsage(
@@ -648,6 +657,7 @@ export async function generateSummary(
 			env,
 			retry,
 			callbacks,
+			sessionId,
 		)
 	).text;
 }
@@ -667,7 +677,9 @@ async function summarizeConversationText(options: {
 	streamFn?: StreamFn;
 	retry?: RetryPolicy;
 	callbacks?: RetryCallbacks;
+	sessionId?: string;
 	errorLabel: string;
+	failureLabel: string;
 }): Promise<{ text: string; usage: Usage }> {
 	let remaining = options.conversationText;
 	let summary = options.previousSummary;
@@ -721,17 +733,17 @@ async function summarizeConversationText(options: {
 				options.env,
 				options.signal,
 				options.thinkingLevel,
+				options.sessionId,
 			),
 			options.streamFn,
 			options.retry,
 			options.callbacks,
 		);
-		if (response.stopReason === "error") {
-			throw new Error(`${options.errorLabel}失败：${response.errorMessage || "未知错误"}`);
+		if (response.content.some((block) => block.type === "toolCall")) {
+			throw new Error(`${options.failureLabel} attempted to call a tool`);
 		}
-		if (response.stopReason === "length") {
-			throw new Error("generation hit the token cap and the summary is incomplete");
-		}
+		const failure = getSummarizationFailure(response, options.failureLabel);
+		if (failure) throw new Error(failure);
 		summary = contentText(response.content);
 		usage = usage ? combineUsage(usage, response.usage) : response.usage;
 		remaining = remaining.slice(chunk.length);
@@ -756,6 +768,7 @@ export async function generateSummaryWithUsage(
 	env?: Record<string, string>,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	sessionId?: string,
 ): Promise<{ text: string; usage: Usage }> {
 	const maxTokens = Math.min(
 		Math.floor(0.8 * reserveTokens),
@@ -786,7 +799,9 @@ export async function generateSummaryWithUsage(
 		streamFn,
 		retry,
 		callbacks,
+		sessionId,
 		errorLabel: "摘要请求",
+		failureLabel: "Summarization",
 	});
 }
 
@@ -918,6 +933,7 @@ Be concise. Focus on what's needed to understand the kept suffix.`;
  *
  * @param preparation - Pre-calculated preparation from prepareCompaction()
  * @param customInstructions - Optional custom focus for the summary
+ * @param sessionId - Optional routing session ID forwarded without enabling prompt caching
  */
 export async function compact(
 	preparation: CompactionPreparation,
@@ -931,6 +947,7 @@ export async function compact(
 	env?: Record<string, string>,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	sessionId?: string,
 ): Promise<CompactionResult> {
 	const {
 		firstKeptEntryId,
@@ -965,6 +982,7 @@ export async function compact(
 				env,
 				retry,
 				callbacks,
+				sessionId,
 			);
 			historyText = historyResult.text;
 			historyUsage = historyResult.usage;
@@ -981,6 +999,7 @@ export async function compact(
 			streamFn,
 			retry,
 			callbacks,
+			sessionId,
 		);
 		// Merge into single summary
 		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.text}`;
@@ -1001,6 +1020,7 @@ export async function compact(
 			env,
 			retry,
 			callbacks,
+			sessionId,
 		);
 		summary = result.text;
 		summaryUsage = result.usage;
@@ -1038,6 +1058,7 @@ async function generateTurnPrefixSummary(
 	streamFn?: StreamFn,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	sessionId?: string,
 ): Promise<{ text: string; usage: Usage }> {
 	const maxTokens = Math.min(
 		Math.floor(0.5 * reserveTokens),
@@ -1058,6 +1079,8 @@ async function generateTurnPrefixSummary(
 		streamFn,
 		retry,
 		callbacks,
+		sessionId,
 		errorLabel: "轮次前缀摘要请求",
+		failureLabel: "Turn prefix summarization",
 	});
 }

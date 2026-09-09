@@ -1,5 +1,6 @@
 import type { TUI } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import { createBashToolDefinition } from "../src/core/tools/bash.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { ToolExecutionGroupComponent } from "../src/modes/interactive/components/tool-execution-group.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
@@ -12,7 +13,7 @@ function createTool(id: string, command: string): ToolExecutionComponent {
 		id,
 		{ command },
 		{},
-		undefined,
+		createBashToolDefinition(process.cwd()),
 		{ requestRender: vi.fn() } as unknown as TUI,
 		process.cwd(),
 	);

@@ -82,7 +82,8 @@ import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { loadLystarSettings } from "./modes/interactive/lystar-settings.ts";
 import { createTerminalModeContext, shouldUseAlternateScreen } from "./modes/interactive/terminal-mode.ts";
-import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
+import { initTheme, setThemeJsonValidator, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
+import { validateThemeJson } from "./modes/interactive/theme/theme-json.ts";
 import { cleanupManagedInstall, handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
 import { SessionOpenCoordinator } from "./session-open-coordinator.ts";
 import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
@@ -705,14 +706,14 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	if (args.includes("--windows-terminal-smoke")) {
-		console.log("LYStar 终端自检：中文 🟢 🔴 ✏️ 🔍 📋 ⏳ ⚙️ →");
+		console.log("LYStar 终端自检：中文 🟢 🔴 ✏ 🔍 📋 ⏳ ⚙ →");
 		return;
 	}
 
 	if (args.includes("--windows-terminal-ui-smoke")) {
 		console.log(`\u001b[38;2;85;194;255m${APP_TITLE} Windows Terminal\u001b[0m`);
 		console.log(`┌${"─".repeat(47)}┐`);
-		console.log("│ 中文输入与显示  🟢  🔴  ✏️  🔍  📋  ⏳  ⚙️  → │");
+		console.log("│ 中文输入与显示  🟢  🔴  ✏  🔍  📋  ⏳  ⚙  → │");
 		console.log(`└${"─".repeat(47)}┘`);
 		await new Promise((resolve) => setTimeout(resolve, 8_000));
 		return;
@@ -743,6 +744,7 @@ export async function main(args: string[], options?: MainOptions) {
 	if (await runLessonsCommand(args, agentDir)) {
 		return;
 	}
+	cleanupManagedInstall();
 
 	if (await handlePackageCommand(args, { extensionFactories })) {
 		const exitCode = process.exitCode ?? 0;
@@ -1062,6 +1064,8 @@ export async function main(args: string[], options?: MainOptions) {
 		stdinContent,
 	);
 	time("prepareInitialMessage");
+	// pi reads user-authored themes, so it opts into full validation before any theme loads.
+	setThemeJsonValidator(validateThemeJson);
 	initTheme(settingsManager.getTheme(), appMode === "interactive");
 	time("initTheme");
 

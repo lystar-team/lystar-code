@@ -1,4 +1,13 @@
-import { readdirSync, readFileSync, rmSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { Markdown, type MarkdownTheme } from "@earendil-works/pi-tui";
 import chalk from "chalk";
@@ -9,9 +18,15 @@ import {
 	APP_NAME,
 	APP_TITLE,
 	CONFIG_DIR_NAME,
+	detectInstallMethod,
 	getAgentDir,
 	getPackageDir,
+	getSelfUpdateCommand,
+	getSelfUpdateUnavailableInstruction,
+	PACKAGE_NAME,
 	RELEASE_REPOSITORY,
+	type SelfUpdateCommand,
+	type SelfUpdatePackageTarget,
 	VERSION,
 } from "./config.ts";
 import type { InlineExtension } from "./core/extensions/types.ts";
@@ -21,9 +36,15 @@ import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import { DefaultResourceLoader } from "./core/resource-loader.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
+import { spawnProcess, spawnProcessSync, waitForChildProcess } from "./utils/child-process.ts";
 import { runLystarInstaller } from "./utils/lystar-updater.ts";
 import { canonicalizePath, getCwdRelativePath } from "./utils/paths.ts";
+import { getPiUserAgent } from "./utils/pi-user-agent.ts";
 import { formatVersionCheckError, getLatestPiRelease, isNewerPackageVersion } from "./utils/version-check.ts";
+import {
+	cleanupWindowsSelfUpdateQuarantine,
+	quarantineWindowsNativeDependencies,
+} from "./utils/windows-self-update.ts";
 
 export type PackageCommand = "install" | "remove" | "update" | "list";
 
@@ -34,7 +55,9 @@ type UpdateTarget =
 	| { type: "models" }
 	| { type: "rollback" };
 
+const DEFAULT_INSTALLER_API_BASE = "https://pi.dev/api/installer/releases";
 const MANAGED_INSTALL_MARKER = "managed-install.json";
+const MANAGED_RELEASE_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 function getActiveManagedInstallRoot(): string | undefined {
 	const configuredRoot = process.env.PI_MANAGED_INSTALL_ROOT?.trim();
@@ -61,6 +84,62 @@ function getActiveManagedInstallRoot(): string | undefined {
 	}
 
 	return managedRoot;
+}
+
+async function fetchInstallerArtifact(url: string, label: string): Promise<string> {
+	const response = await fetch(url, { headers: { "User-Agent": getPiUserAgent(VERSION) } });
+	if (!response.ok) {
+		throw new Error(`Could not download managed installer ${label} from ${url}: HTTP ${response.status}`);
+	}
+	return await response.text();
+}
+
+async function runManagedNpmCi(stageDir: string): Promise<void> {
+	const args = [
+		"ci",
+		"--ignore-scripts",
+		"--min-release-age=0",
+		"--omit=dev",
+		"--include=optional",
+		"--no-fund",
+		"--no-audit",
+		"--loglevel=error",
+		"--progress=false",
+	];
+	const code = await waitForChildProcess(spawnProcess("npm", args, { cwd: stageDir, stdio: "inherit" }));
+	if (code !== 0) throw new Error(`npm ${args.join(" ")} exited with code ${code ?? "unknown"}`);
+}
+
+function verifyManagedRelease(releaseDir: string, expectedVersion: string): void {
+	const binPath = join(
+		releaseDir,
+		"node_modules",
+		".bin",
+		process.platform === "win32" ? `${APP_NAME}.cmd` : APP_NAME,
+	);
+	const result = spawnProcessSync(binPath, ["--version"], {
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	if (result.error || result.status !== 0) {
+		const reason = result.error?.message || result.stderr.trim() || `exit code ${result.status ?? "unknown"}`;
+		throw new Error(`Could not verify managed Pi ${expectedVersion}: ${reason}`);
+	}
+	const installedVersion = result.stdout.trim();
+	if (installedVersion !== expectedVersion) {
+		throw new Error(`Managed Pi smoke test returned version ${installedVersion}; expected ${expectedVersion}.`);
+	}
+}
+
+function activateManagedRelease(managedRoot: string, version: string): void {
+	const currentPath = join(managedRoot, "current-version");
+	const temporaryPath = join(managedRoot, `current-version.tmp.${process.pid}-${Date.now()}`);
+	try {
+		writeFileSync(temporaryPath, `${version}\n`);
+		renameSync(temporaryPath, currentPath);
+	} finally {
+		rmSync(temporaryPath, { force: true });
+	}
 }
 
 function cleanupManagedStaging(managedRoot: string): void {
@@ -94,6 +173,58 @@ export function cleanupManagedInstall(): void {
 		}
 	} catch {
 		// A live update owns the staging directory, or cleanup is unavailable.
+	}
+}
+
+async function _runManagedSelfUpdate(managedRoot: string, version: string): Promise<void> {
+	if (!MANAGED_RELEASE_VERSION_RE.test(version)) {
+		throw new Error(`Invalid managed release version: ${version}`);
+	}
+
+	let releaseLock: () => Promise<void>;
+	try {
+		releaseLock = await lockfile.lock(join(managedRoot, "update"), { realpath: false });
+	} catch (error: unknown) {
+		if (error instanceof Error && "code" in error && error.code === "ELOCKED") {
+			throw new Error("Another managed Pi update is already running.");
+		}
+		throw error;
+	}
+
+	let stageDir: string | undefined;
+	try {
+		cleanupManagedStaging(managedRoot);
+		const installerApiBase = (process.env.PI_INSTALLER_API_BASE?.trim() || DEFAULT_INSTALLER_API_BASE).replace(
+			/\/+$/,
+			"",
+		);
+		const releaseUrl = `${installerApiBase}/${encodeURIComponent(version)}`;
+		const stagingRoot = join(managedRoot, "staging");
+		const releasesRoot = join(managedRoot, "releases");
+		mkdirSync(releasesRoot, { recursive: true });
+		const releaseDir = join(releasesRoot, version);
+		if (existsSync(releaseDir)) {
+			verifyManagedRelease(releaseDir, version);
+			activateManagedRelease(managedRoot, version);
+			return;
+		}
+
+		mkdirSync(stagingRoot, { recursive: true });
+		stageDir = mkdtempSync(join(stagingRoot, "update-"));
+		const [packageJsonContent, packageLockContent] = await Promise.all([
+			fetchInstallerArtifact(`${releaseUrl}/package.json`, "package.json"),
+			fetchInstallerArtifact(`${releaseUrl}/package-lock.json`, "package-lock.json"),
+		]);
+		writeFileSync(join(stageDir, "package.json"), packageJsonContent);
+		writeFileSync(join(stageDir, "package-lock.json"), packageLockContent);
+
+		await runManagedNpmCi(stageDir);
+		verifyManagedRelease(stageDir, version);
+		renameSync(stageDir, releaseDir);
+		activateManagedRelease(managedRoot, version);
+	} finally {
+		if (stageDir) rmSync(stageDir, { force: true, recursive: true });
+		await releaseLock();
 	}
 }
 
@@ -522,7 +653,32 @@ function printSelfUpdateNote(note: string): void {
 	console.log();
 }
 
+function printSelfUpdateUnavailable(
+	npmCommand?: string[],
+	updatePackageTarget: SelfUpdatePackageTarget = PACKAGE_NAME,
+): void {
+	console.error(`error: ${APP_NAME} cannot self-update this installation.`);
+	console.error(getSelfUpdateUnavailableInstruction(PACKAGE_NAME, npmCommand, updatePackageTarget));
+
+	const entrypoint = process.argv[1];
+	if (entrypoint) {
+		console.error("");
+		console.error(`Location of ${APP_NAME} executable: ${entrypoint}`);
+	}
+}
+
+function printSelfUpdateFallback(command: SelfUpdateCommand): void {
+	console.error(chalk.dim(`If this keeps failing, run this command yourself: ${command.display}`));
+}
+
+function printPnpmSelfUpdateMetadataHint(): void {
+	console.error(chalk.yellow("If pnpm reports missing package versions, its cached registry metadata may be stale."));
+	console.error(chalk.yellow(`Run \`pnpm store prune\` and retry \`${APP_NAME} update --self\`.`));
+}
+
 interface SelfUpdatePlan {
+	packageName: string;
+	installSpec: string;
 	version: string;
 	shouldRun: boolean;
 	note?: string;
@@ -539,8 +695,12 @@ async function getSelfUpdatePlan(force: boolean): Promise<SelfUpdatePlan> {
 		throw new Error(`无法检查 ${APP_NAME} 最新版本。`);
 	}
 
-	if (force || isNewerPackageVersion(latestRelease.version, VERSION)) {
+	const packageName = latestRelease.packageName ?? PACKAGE_NAME;
+	const installSpec = `${packageName}@${latestRelease.version}`;
+	if (force || packageName !== PACKAGE_NAME || isNewerPackageVersion(latestRelease.version, VERSION)) {
 		return {
+			packageName,
+			installSpec,
 			version: latestRelease.version,
 			...(latestRelease.note ? { note: latestRelease.note } : {}),
 			shouldRun: true,
@@ -548,7 +708,40 @@ async function getSelfUpdatePlan(force: boolean): Promise<SelfUpdatePlan> {
 	}
 
 	console.log(chalk.green(`${APP_TITLE} 已是最新版本（v${VERSION}）`));
-	return { version: latestRelease.version, shouldRun: false };
+	return { packageName, installSpec, version: latestRelease.version, shouldRun: false };
+}
+
+async function runSelfUpdate(command: SelfUpdateCommand): Promise<void> {
+	console.log(chalk.dim(`Updating ${APP_NAME} with ${command.display}...`));
+	for (const step of command.steps ?? [command]) {
+		await new Promise<void>((resolve, reject) => {
+			const child = spawnProcess(step.command, step.args, {
+				stdio: "inherit",
+			});
+			child.on("error", (error) => {
+				reject(error);
+			});
+			child.on("close", (code, signal) => {
+				if (code === 0) {
+					resolve();
+				} else if (signal) {
+					reject(new Error(`${step.display} terminated by signal ${signal}`));
+				} else {
+					reject(new Error(`${step.display} exited with code ${code ?? "unknown"}`));
+				}
+			});
+		});
+	}
+}
+
+function prepareWindowsNpmSelfUpdate(): void {
+	if (process.platform !== "win32") {
+		return;
+	}
+
+	const packageDir = getPackageDir();
+	cleanupWindowsSelfUpdateQuarantine(packageDir);
+	quarantineWindowsNativeDependencies(packageDir);
 }
 
 export interface PackageCommandRuntimeOptions {
@@ -769,6 +962,7 @@ export async function handlePackageCommand(
 		return true;
 	}
 	reportSettingsErrors(settingsManager, "package command");
+	const selfUpdateNpmCommand = settingsManager.getGlobalSettings().npmCommand;
 
 	const packageManager = new DefaultPackageManager({ cwd, agentDir, settingsManager });
 
@@ -859,13 +1053,80 @@ export async function handlePackageCommand(
 					}
 				}
 				if (updateTargetIncludesSelf(target)) {
-					if (!RELEASE_REPOSITORY) {
-						throw new Error("当前构建没有配置 LYStar release repository，无法检查或安装更新");
+					const managedInstallRoot = getActiveManagedInstallRoot();
+					if (managedInstallRoot && options.force) {
+						console.error(
+							chalk.red(
+								`Managed ${APP_NAME} installations do not support --force; rerun the installer to repair this installation.`,
+							),
+						);
+						process.exitCode = 1;
+						return true;
 					}
+
 					const plan = await getSelfUpdatePlan(options.force);
 					if (!plan.shouldRun) return true;
-					if (plan.note) printSelfUpdateNote(plan.note);
-					await runLystarInstaller(RELEASE_REPOSITORY, ["--version", plan.version]);
+					if (managedInstallRoot) {
+						if (plan.note) {
+							printSelfUpdateNote(plan.note);
+						}
+						try {
+							console.log(chalk.dim(`Updating managed ${APP_NAME} installation...`));
+							await _runManagedSelfUpdate(managedInstallRoot, plan.version);
+						} catch (error: unknown) {
+							const message = error instanceof Error ? error.message : "Unknown managed update error";
+							console.error(chalk.red(`Error: ${message}`));
+							process.exitCode = 1;
+							return true;
+						}
+						console.log(chalk.green(`已将 ${APP_TITLE} 从 ${VERSION} 更新到 ${plan.version}`));
+						return true;
+					}
+
+					const installMethod = detectInstallMethod();
+					if (process.platform === "win32" && installMethod !== "npm" && installMethod !== "pnpm") {
+						console.error(
+							chalk.red(`${APP_NAME} self-update on Windows is only supported for npm and pnpm installs.`),
+						);
+						console.error(chalk.dim(`Detected install method: ${installMethod}. Update ${APP_NAME} manually.`));
+						process.exitCode = 1;
+						return true;
+					}
+
+					const selfUpdateTarget = {
+						packageName: plan.packageName,
+						installSpec: plan.installSpec,
+					};
+					const selfUpdateCommand = getSelfUpdateCommand(PACKAGE_NAME, selfUpdateNpmCommand, selfUpdateTarget);
+					if (!selfUpdateCommand) {
+						if (RELEASE_REPOSITORY) {
+							if (plan.note) printSelfUpdateNote(plan.note);
+							await runLystarInstaller(RELEASE_REPOSITORY, ["--version", plan.version]);
+							console.log(chalk.green(`已将 ${APP_TITLE} 从 ${VERSION} 更新到 ${plan.version}`));
+							return true;
+						}
+						printSelfUpdateUnavailable(selfUpdateNpmCommand, selfUpdateTarget);
+						process.exitCode = 1;
+						return true;
+					}
+					if (plan.note) {
+						printSelfUpdateNote(plan.note);
+					}
+					try {
+						if (installMethod === "npm") {
+							prepareWindowsNpmSelfUpdate();
+						}
+						await runSelfUpdate(selfUpdateCommand);
+					} catch (error: unknown) {
+						const message = error instanceof Error ? error.message : "Unknown package command error";
+						console.error(chalk.red(`Error: ${message}`));
+						if (installMethod === "pnpm") {
+							printPnpmSelfUpdateMetadataHint();
+						}
+						printSelfUpdateFallback(selfUpdateCommand);
+						process.exitCode = 1;
+						return true;
+					}
 					console.log(chalk.green(`已将 ${APP_TITLE} 从 ${VERSION} 更新到 ${plan.version}`));
 				}
 				return true;

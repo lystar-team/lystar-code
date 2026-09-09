@@ -9,8 +9,9 @@ import { renderDiff } from "../../modes/interactive/components/diff.ts";
 import { formatToolSummary, getToolSummary } from "../../modes/interactive/components/tool-summary.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { uiGlyphs } from "../../modes/interactive/ui-glyphs.ts";
+import { splitBom } from "../../utils/text.ts";
 import { getExperimentalToolSampling } from "../experimental.ts";
-import type { ToolDefinition } from "../extensions/types.ts";
+import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 import { registerBuiltInRecoveryError } from "../tool-recovery/registry.ts";
 import {
 	applyEditsToNormalizedContent,
@@ -29,13 +30,8 @@ import {
 import { getMutationQueueKey, withFileMutationQueue } from "./file-mutation-queue.ts";
 import { resolveToCwd } from "./path-utils.ts";
 import { renderToolPath, str } from "./render-utils.ts";
+import { type EditRenderState, editRenderers } from "./renderers/edit.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
-
-type EditPreview = EditDiffResult | EditDiffError;
-
-type EditRenderState = {
-	callComponent?: EditCallRenderComponent;
-};
 
 const replaceEditSchema = Type.Object(
 	{
@@ -77,7 +73,10 @@ type LegacyEditToolInput = EditToolInput & {
 type SingleEditInput = { oldText: string; newText: string };
 
 function isSingleEditInput(value: unknown): value is SingleEditInput {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return false;
+	}
+
 	const edit = value as Record<string, unknown>;
 	return typeof edit.oldText === "string" && typeof edit.newText === "string";
 }
@@ -92,6 +91,8 @@ export interface EditToolDetails {
 	additions?: number;
 	deletions?: number;
 }
+
+type EditPreview = EditDiffResult | EditDiffError;
 
 /**
  * Pluggable operations for the edit tool.
@@ -124,7 +125,8 @@ function prepareEditArguments(input: unknown): EditToolInput {
 
 	const args = input as Record<string, unknown>;
 
-	// Some models send edits as a JSON string instead of an array.
+	// Some models (Opus 4.6, GLM-5.1) send edits as a JSON string instead of an array.
+	// Others send a single edit object instead of a one-element edits array.
 	if (typeof args.edits === "string") {
 		try {
 			const parsed: unknown = JSON.parse(args.edits);
@@ -787,9 +789,9 @@ export function createEditToolDefinition(
 		constrainedSampling: getExperimentalToolSampling(),
 		renderShell: "self",
 		prepareArguments: prepareEditArguments,
-		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal, _onUpdate?, _ctx?) {
+		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal, _onUpdate?, ctx?: ExtensionContext) {
 			const { path, edits } = validateEditInput(input);
-			const absolutePath = resolveToCwd(path, cwd);
+			const absolutePath = resolveToCwd(path, ctx?.cwd || cwd);
 
 			try {
 				return await withFileMutationQueue(absolutePath, async () => {
@@ -821,7 +823,7 @@ export function createEditToolDefinition(
 					throwIfAborted();
 
 					// Strip BOM before matching. The model will not include an invisible BOM in oldText.
-					const { bom, text: content } = stripBom(rawContent);
+					const { bom, text: content } = splitBom(rawContent);
 					const originalEnding = detectLineEnding(content);
 					const normalizedContent = normalizeToLF(content);
 					const { baseContent, newContent } = applyEditsToNormalizedContent(normalizedContent, edits, path);
@@ -864,6 +866,7 @@ export function createEditToolDefinition(
 				throw attachEditRecovery(normalizeEditFailure(error, edits), absolutePath, path, ops, edits);
 			}
 		},
+		...editRenderers,
 		renderCall(args, theme, context) {
 			const component = getEditCallRenderComponent(context.state, context.lastComponent);
 			const previewInput = getRenderablePreviewInput(args as RenderableEditArgs | undefined);

@@ -20,6 +20,7 @@ import { getExperimentalToolSampling } from "../experimental.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { OutputAccumulator } from "./output-accumulator.ts";
 import { getTextOutput, invalidArgText, str } from "./render-utils.ts";
+import { BASH_UPDATE_THROTTLE_MS, createShellRenderers } from "./renderers/bash.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult } from "./truncate.ts";
 
@@ -211,8 +212,6 @@ export interface BashToolOptions {
 	spawnHook?: BashSpawnHook;
 }
 
-const BASH_UPDATE_THROTTLE_MS = 100;
-
 export type BashRenderState = {
 	startedAt: number | undefined;
 	endedAt: number | undefined;
@@ -315,7 +314,6 @@ export interface ShellToolConfig {
 	promptGuidelines?: readonly string[];
 	tempFilePrefix: string;
 }
-
 export function createShellToolDefinition(
 	cwd: string,
 	config: ShellToolConfig,
@@ -338,10 +336,16 @@ export function createShellToolDefinition(
 			{ command, timeout }: { command: string; timeout?: number },
 			signal?: AbortSignal,
 			onUpdate?,
-			ctx?,
+			ctx?: ExtensionContext,
 		) {
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
-			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook, exposeSessionEnvironment, ctx);
+			const spawnContext = resolveSpawnContext(
+				resolvedCommand,
+				ctx?.cwd || cwd,
+				spawnHook,
+				exposeSessionEnvironment,
+				ctx,
+			);
 			const output = new OutputAccumulator({ tempFilePrefix: config.tempFilePrefix });
 			let acceptingOutput = true;
 			let updateTimer: NodeJS.Timeout | undefined;
@@ -459,6 +463,7 @@ export function createShellToolDefinition(
 				clearUpdateTimer();
 			}
 		},
+		...createShellRenderers(config.prompt),
 		renderCall(args, _theme, context) {
 			const state = context.state;
 			if (context.executionStarted && state.startedAt === undefined) {

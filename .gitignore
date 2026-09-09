@@ -48,3 +48,4 @@ plan/
 .pi/hf-sessions-backup/
 collect.sh
 devdoc/
+packages/agent/docs/extensions/pi-server-artifact/index.md

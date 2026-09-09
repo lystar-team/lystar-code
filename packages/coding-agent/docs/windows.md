@@ -2,6 +2,14 @@
 
 LYStar requires a Bash-compatible shell for the built-in `bash` Tool. On Windows x64, the installer and first interactive startup provision a LYStar-managed MinGit Bash under `~/.pi/agent/bin/mingit/`; users do not need a system Git installation.
 
+Pi uses Git Bash by default on Windows. Checked locations (in order):
+
+1. Custom path from `~/.pi/agent/settings.json`
+2. Git Bash (`C:\Program Files\Git\bin\bash.exe`)
+3. `bash.exe` on PATH (Cygwin, MSYS2, WSL)
+
+For most users, [Git for Windows](https://git-scm.com/download/win) is sufficient.
+
 The managed archive is pinned to MinGit `2.55.0.3` and a fixed SHA-256. LYStar downloads from npmmirror first and falls back to the official Git for Windows Release, validates Bash and Git in staging, then replaces the shared managed directory atomically.
 
 Run the bootstrap explicitly with:
@@ -18,11 +26,20 @@ lc --ensure-windows-bash --archive .\MinGit-2.55.0.3-64-bit.zip --offline
 
 Interactive standalone launches open the Windows-only `lystar-terminal.exe` host, which runs the existing TUI through ConPTY and renders it with local xterm.js and Noto Sans CJK assets. Automation remains attached to the invoking terminal. Use `lc --attached` to keep an interactive TUI in PowerShell, CMD, SSH, or an IDE terminal.
 
+
 ## PowerShell Tool
 
 The optional `powershell` tool runs commands through `pwsh.exe` when available, otherwise Windows PowerShell. It starts PowerShell with `-NoProfile -NonInteractive -ExecutionPolicy Bypass`. Administrator-enforced execution policies can still take precedence.
 
-Use `defaultTools` to enable it alongside the built-in tools:
+Use `defaultTools` to enable it alongside the built-in tools. To replace the model-facing `bash` tool:
+
+```json
+{
+  "defaultTools": ["read", "powershell", "edit", "write"]
+}
+```
+
+Or enable both while comparing behavior:
 
 ```json
 {
@@ -33,6 +50,8 @@ Use `defaultTools` to enable it alongside the built-in tools:
 The `!` and `!!` editor commands continue to use Bash.
 
 `PI_OFFLINE=1` disables implicit downloads. An explicit `shellPath` still overrides the managed shell:
+
+## Custom Bash Path
 
 ```json
 {

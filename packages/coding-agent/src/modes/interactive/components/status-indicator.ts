@@ -1,8 +1,9 @@
-import { type Component, Loader, type TUI } from "@earendil-works/pi-tui";
+import { type Component, Loader, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
+import type { WorkingIndicatorOptions } from "../../../core/extensions/index.ts";
 import { theme } from "../theme/theme.ts";
 import { CountdownTimer } from "./countdown-timer.ts";
 
-export type StatusIndicatorKind = "retry" | "compaction" | "branchSummary";
+export type StatusIndicatorKind = "working" | "retry" | "compaction" | "branchSummary";
 
 export class StatusIndicator extends Loader {
 	readonly kind: StatusIndicatorKind;
@@ -13,13 +14,36 @@ export class StatusIndicator extends Loader {
 		spinnerColorFn: (str: string) => string,
 		messageColorFn: (str: string) => string,
 		message: string,
+		indicator?: WorkingIndicatorOptions,
 	) {
-		super(ui, spinnerColorFn, messageColorFn, message);
+		super(ui, spinnerColorFn, messageColorFn, message, indicator);
 		this.kind = kind;
 	}
 
 	dispose(): void {
 		this.stop();
+	}
+}
+
+export class WorkingStatusIndicator extends StatusIndicator {
+	constructor(ui: TUI, message: string, indicator?: WorkingIndicatorOptions, colorFn?: (text: string) => string) {
+		super(
+			"working",
+			ui,
+			colorFn ?? ((text) => theme.fg("accent", text)),
+			colorFn ?? ((text) => theme.fg("muted", text)),
+			message,
+			indicator,
+		);
+	}
+
+	renderInBorder(width: number): string {
+		const line = super.render(width + 2)[1] ?? "";
+		return truncateToWidth(line.startsWith(" ") ? line.slice(1).trimEnd() : line.trimEnd(), width, "");
+	}
+
+	renderSpinnerInBorder(width: number): string {
+		return truncateToWidth(this.getRenderedIndicator(), width, "");
 	}
 }
 

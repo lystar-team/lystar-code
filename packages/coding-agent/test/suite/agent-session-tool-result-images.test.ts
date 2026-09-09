@@ -20,8 +20,8 @@ function createPng(width: number, height: number): Buffer {
 	const ihdr = Buffer.alloc(13);
 	ihdr.writeUInt32BE(width, 0);
 	ihdr.writeUInt32BE(height, 4);
-	ihdr[8] = 8; // bit depth
-	ihdr[9] = 0; // color type: grayscale
+	ihdr[8] = 8;
+	ihdr[9] = 0;
 	const raw = Buffer.alloc((width + 1) * height);
 	for (let row = 0; row < height; row++) {
 		raw.fill(row % 256, row * (width + 1) + 1, (row + 1) * (width + 1));

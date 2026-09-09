@@ -5,6 +5,7 @@
 import * as Diff from "diff";
 import { constants } from "fs";
 import { access, readFile } from "fs/promises";
+import { splitBom } from "../../utils/text.ts";
 import { resolveToCwd } from "./path-utils.ts";
 
 export function detectLineEnding(content: string): "\r\n" | "\n" {
@@ -630,7 +631,7 @@ export async function computeEditsDiff(
 		const rawContent = await readFile(absolutePath, "utf-8");
 
 		// Strip BOM before matching (LLM won't include invisible BOM in oldText)
-		const { text: content } = stripBom(rawContent);
+		const { text: content } = splitBom(rawContent);
 		const normalizedContent = normalizeToLF(content);
 		const { baseContent, newContent } = applyEditsToNormalizedContent(normalizedContent, edits, path);
 

@@ -1,7 +1,7 @@
 import type { ThinkingLevelMap } from "../src/types.ts";
 import { getEffortThinkingLevelMap, type ModelsDevReasoningOption } from "./models-dev-reasoning-options.ts";
 
-type OpenRouterReasoningEffort = Extract<ModelsDevReasoningOption, { type: "effort" }>['values'][number];
+type OpenRouterReasoningEffort = Extract<ModelsDevReasoningOption, { type: "effort" }>["values"][number];
 
 export interface OpenRouterReasoningMetadata {
 	mandatory?: boolean;

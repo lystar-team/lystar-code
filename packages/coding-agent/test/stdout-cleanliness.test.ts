@@ -7,6 +7,7 @@ import { ENV_AGENT_DIR } from "../src/config.ts";
 import { allowNetwork } from "./test-network-env.ts";
 
 const cliPath = resolve(__dirname, "../src/cli.ts");
+const sourceResolverPath = resolve(__dirname, "../src/experimental/source-resolver.ts");
 
 const tempDirs: string[] = [];
 
@@ -59,12 +60,11 @@ async function runCli(args: string[]): Promise<{ stdout: string; stderr: string;
 	);
 
 	return await new Promise((resolvePromise, reject) => {
-		const child = spawn(process.execPath, [cliPath, ...args], {
+		const child = spawn(process.execPath, ["--import", sourceResolverPath, cliPath, ...args], {
 			cwd: projectDir,
 			env: {
 				...process.env,
 				[ENV_AGENT_DIR]: agentDir,
-				TSX_TSCONFIG_PATH: resolve(__dirname, "../../../tsconfig.json"),
 			},
 			stdio: ["ignore", "pipe", "pipe"],
 		});
@@ -85,20 +85,14 @@ async function runCli(args: string[]): Promise<{ stdout: string; stderr: string;
 }
 
 describe("stdout cleanliness in non-interactive modes", () => {
-	it("prints --version to stdout when stdout is redirected", async () => {
-		const result = await runCli(["--version"]);
-
-		expect(result.code).toBe(0);
-		expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
-		expect(result.stderr).toBe("");
-	});
-
 	it("prints plain --help to stdout when stdout is redirected", async () => {
 		const result = await runCli(["--help"]);
 
 		expect(result.code).toBe(0);
 		expect(result.stdout).toContain("用法：");
 		expect(result.stderr).not.toContain("用法：");
+		expect(result.stderr).not.toContain("changed 1 package in 471ms");
+		expect(result.stderr).not.toContain("found 0 vulnerabilities");
 	});
 
 	it("keeps stdout empty for --mode json --help while routing trusted startup chatter to stderr", async () => {

@@ -2,8 +2,10 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "../../src/harness/context.ts";
 import { NodeExecutionEnv } from "../../src/harness/env/nodejs.ts";
 import { getOrThrow } from "../../src/harness/types.ts";
+import { executeShellWithCapture } from "../../src/harness/utils/shell-output.ts";
 import { createTempDir } from "./session-test-utils.ts";
 
 function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout?: () => void): Promise<T> {
@@ -62,12 +64,17 @@ if (process.platform === "win32") {
 			try {
 				const result = getOrThrow(
 					await withTimeout(
-						env.exec(createInheritedStdioCommand(pidFile), { abortSignal: controller.signal }),
+						executeShellWithCapture(
+							env,
+							createInheritedStdioCommand(pidFile),
+							undefined,
+							withAbortSignal(controller.signal, BACKGROUND_CONTEXT),
+						),
 						3000,
 						() => controller.abort(),
 					),
 				);
-				expect(result.stdout).toContain("child-exiting");
+				expect(result.output).toContain("child-exiting");
 			} finally {
 				controller.abort();
 				cleanupDetachedChild(pidFile);

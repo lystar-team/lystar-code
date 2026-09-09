@@ -5,7 +5,6 @@ import {
 	fuzzyFilter,
 	getKeybindings,
 	Input,
-	matchesKey,
 	Spacer,
 	Text,
 	type TUI,
@@ -16,7 +15,7 @@ import { getModelSelectorSearchText } from "../model-search.ts";
 import { theme } from "../theme/theme.ts";
 import { uiGlyphs } from "../ui-glyphs.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
-import { keyHint } from "./keybinding-hints.ts";
+import { keyDisplayText, keyHint } from "./keybinding-hints.ts";
 
 interface ModelItem {
 	provider: string;
@@ -138,7 +137,14 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		// Hint
 		if (this.onSelectAsDefaultCallback) {
 			this.addChild(
-				new Text(theme.fg("dim", "  Enter to select \u00b7 Ctrl+S to set as default \u00b7 Esc to cancel"), 0, 0),
+				new Text(
+					theme.fg(
+						"dim",
+						`  ${keyDisplayText("tui.select.confirm")} to select · ${keyDisplayText("app.models.save")} to set as default · ${keyDisplayText("tui.select.cancel")} to cancel`,
+					),
+					0,
+					0,
+				),
 			);
 		}
 
@@ -397,8 +403,8 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			this.dispose();
 			this.onCancelCallback();
 		}
-		// Ctrl+S — select and save as default
-		else if (matchesKey(keyData, "ctrl+s") && this.onSelectAsDefaultCallback) {
+		// Select and save as default
+		else if (kb.matches(keyData, "app.models.save") && this.onSelectAsDefaultCallback) {
 			const selectedModel = this.filteredModels[this.selectedIndex];
 			if (selectedModel) {
 				this.dispose();

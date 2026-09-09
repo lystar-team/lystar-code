@@ -1220,6 +1220,7 @@ export class SessionManager {
 		persist: boolean,
 		newSessionOptions?: NewSessionOptions,
 		deferSessionFileInitialization = false,
+		preloadedFileEntries?: FileEntry[],
 	) {
 		this.cwd = resolvePath(cwd);
 		this.sessionDir = normalizePath(sessionDir);
@@ -1230,6 +1231,8 @@ export class SessionManager {
 
 		if (sessionFile) {
 			if (!deferSessionFileInitialization) this._setSessionFile(sessionFile);
+		} else if (preloadedFileEntries?.length) {
+			this._loadEntries(preloadedFileEntries, newSessionOptions);
 		} else {
 			this.newSession(newSessionOptions);
 		}
@@ -1428,6 +1431,24 @@ export class SessionManager {
 			throw error;
 		}
 		return sessionFile;
+	}
+
+	private _loadEntries(entries: FileEntry[], options?: NewSessionOptions): void {
+		const header = entries.find((e) => e.type === "session") as SessionHeader | undefined;
+
+		if (header) {
+			this.fileEntries = entries;
+			this.sessionId = header.id;
+
+			if (migrateToCurrentVersion(this.fileEntries)) {
+				this._rewriteFile();
+			}
+		} else {
+			this.newSession(options);
+			this.fileEntries = this.fileEntries.concat(entries);
+		}
+
+		this._buildIndex();
 	}
 
 	private _buildIndex(): void {
@@ -1902,10 +1923,27 @@ export class SessionManager {
 		if (path.length === 0) throw new Error(`Entry ${leafId} not found`);
 
 		const pathWithoutLabels: SessionEntry[] = [];
+		const replacementByLabelId = new Map<string, string>();
+		const pendingLabelIds: string[] = [];
 		let pathParentId: string | null = null;
 		for (const entry of path) {
-			if (entry.type === "label") continue;
-			pathWithoutLabels.push({ ...entry, parentId: pathParentId });
+			if (entry.type === "label") {
+				pendingLabelIds.push(entry.id);
+				continue;
+			}
+			for (const labelId of pendingLabelIds) {
+				replacementByLabelId.set(labelId, entry.id);
+			}
+			pendingLabelIds.length = 0;
+			pathWithoutLabels.push(
+				entry.type === "compaction"
+					? {
+							...entry,
+							parentId: pathParentId,
+							firstKeptEntryId: replacementByLabelId.get(entry.firstKeptEntryId) ?? entry.firstKeptEntryId,
+						}
+					: { ...entry, parentId: pathParentId },
+			);
 			pathParentId = entry.id;
 		}
 
@@ -2137,8 +2175,8 @@ export class SessionManager {
 	}
 
 	/** Create an in-memory session (no file persistence) */
-	static inMemory(cwd: string = process.cwd(), options?: NewSessionOptions): SessionManager {
-		return new SessionManager(cwd, "", undefined, false, options);
+	static inMemory(cwd: string = process.cwd(), options?: NewSessionOptions, entries?: FileEntry[]): SessionManager {
+		return new SessionManager(cwd, "", undefined, false, options, false, entries);
 	}
 
 	/**

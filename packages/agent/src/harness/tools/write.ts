@@ -28,17 +28,22 @@ export function createWriteTool<TContext extends ExecutionToolContext = Executio
 			const path = (args as { path?: unknown }).path;
 			return typeof path === "string" ? [`harness-file:${path}`] : [];
 		},
-		async execute(_toolCallId, { path, content }, signal, _onUpdate, { env }) {
-			const absolutePath = await resolveToolPath(env, path, signal);
-			return withFileMutationQueue(env, absolutePath, async () => {
-				if (signal?.aborted) throw new Error("Operation aborted");
-				getOrThrow(await env.writeFile(absolutePath, content, signal));
-				if (signal?.aborted) throw new Error("Operation aborted");
-				return {
-					content: [{ type: "text", text: `Successfully wrote ${content.length} bytes to ${path}` }],
-					details: undefined,
-				};
-			});
+		async execute(_toolCallId, { path, content }, _onUpdate, { env }, _invocation, context) {
+			const absolutePath = await resolveToolPath(env, path, context);
+			return withFileMutationQueue(
+				env,
+				absolutePath,
+				async () => {
+					if (context.abortSignal?.aborted) throw new Error("Operation aborted");
+					getOrThrow(await env.writeFile(absolutePath, content, context));
+					if (context.abortSignal?.aborted) throw new Error("Operation aborted");
+					return {
+						content: [{ type: "text", text: `Successfully wrote ${content.length} bytes to ${path}` }],
+						details: undefined,
+					};
+				},
+				context,
+			);
 		},
 	};
 }

@@ -622,22 +622,21 @@ async function executeToolCallsParallel(
 	for (const entry of preparedEntries) {
 		const { toolCall, preparation } = entry;
 		if (preparation.kind === "immediate") {
-			await emit({
-				type: "tool_execution_start",
-				toolCallId: toolCall.id,
-				toolName: toolCall.name,
-				args: toolCall.arguments,
+			finalizedCalls.push(async () => {
+				await emit({
+					type: "tool_execution_start",
+					toolCallId: toolCall.id,
+					toolName: toolCall.name,
+					args: toolCall.arguments,
+				});
+				const finalized = {
+					toolCall,
+					result: preparation.result,
+					isError: preparation.isError,
+				} satisfies FinalizedToolCallOutcome;
+				await emitToolExecutionEnd(finalized, emit);
+				return finalized;
 			});
-			const finalized = {
-				toolCall,
-				result: preparation.result,
-				isError: preparation.isError,
-			} satisfies FinalizedToolCallOutcome;
-			await emitToolExecutionEnd(finalized, emit);
-			finalizedCalls.push(finalized);
-			if (signal?.aborted) {
-				break;
-			}
 			continue;
 		}
 
@@ -676,6 +675,21 @@ async function executeToolCallsParallel(
 		}
 
 		finalizedCalls.push(async () => {
+			if (signal?.aborted) {
+				await emit({
+					type: "tool_execution_start",
+					toolCallId: toolCall.id,
+					toolName: toolCall.name,
+					args: toolCall.arguments,
+				});
+				const finalized = {
+					toolCall,
+					result: createErrorToolResult("Operation aborted"),
+					isError: true,
+				} satisfies FinalizedToolCallOutcome;
+				await emitToolExecutionEnd(finalized, emit);
+				return finalized;
+			}
 			const executed = await executePreparedToolCall(preparation, signal, emit, config.toolRecoveryController);
 			const finalized = await finalizeExecutedToolCall(
 				currentContext,
@@ -689,9 +703,6 @@ async function executeToolCallsParallel(
 			await emitToolExecutionEnd(finalized, emit);
 			return finalized;
 		});
-		if (signal?.aborted) {
-			break;
-		}
 	}
 
 	const orderedFinalizedCalls = await Promise.all(

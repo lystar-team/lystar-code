@@ -166,6 +166,7 @@ export function createHeadlessTuiFacade(options: HeadlessTuiFacadeOptions): TUI 
 				focus: () => options.onRequestRender(),
 				unfocus: () => options.onRequestRender(),
 				isFocused: () => focused !== null && !overlayHidden,
+				getBounds: () => undefined,
 			};
 		},
 		hideOverlay: () => {

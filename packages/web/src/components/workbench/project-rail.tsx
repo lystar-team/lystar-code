@@ -724,6 +724,10 @@ export const ProjectRail = memo(function ProjectRail({
 	const renderGroup = (group: ProjectGroup, groupProjects: WebProject[]) => {
 		const expanded = expandedGroupIds.has(group.id);
 		const groupDrop = projectDropTarget?.kind === "group" && projectDropTarget.groupId === group.id;
+		const groupRunningSessionCount = groupProjects.reduce(
+			(total, project) => total + project.sessions.filter(isSessionRunning).length,
+			0,
+		);
 		return (
 			<Collapsible
 				key={group.id}
@@ -745,7 +749,7 @@ export const ProjectRail = memo(function ProjectRail({
 				>
 					<div className={cn("group relative rounded-md", groupDrop && "ring-1 ring-primary/50")}>
 						<CollapsibleTrigger asChild>
-							<Button className="w-full min-w-0 justify-start gap-2 px-2 text-xs" variant="ghost">
+							<Button className="w-full min-w-0 justify-start gap-2 px-2 pr-12 text-xs" variant="ghost">
 								<ChevronDown
 									className={cn("size-3.5 shrink-0 transition-transform", !expanded && "-rotate-90")}
 								/>
@@ -753,7 +757,15 @@ export const ProjectRail = memo(function ProjectRail({
 								<span className="project-list-item-label min-w-0 flex-1 truncate text-left font-medium">
 									{group.name}
 								</span>
-								<span className="text-[11px] text-muted-foreground">{groupProjects.length}</span>
+								<span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+									{groupRunningSessionCount > 0 ? (
+										<LoaderCircle
+											className="size-3.5 animate-spin text-primary group-hover:invisible"
+											aria-label="项目组中有会话进行中"
+										/>
+									) : null}
+									{groupProjects.length}
+								</span>
 							</Button>
 						</CollapsibleTrigger>
 						<div className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center">
@@ -868,7 +880,7 @@ export const ProjectRail = memo(function ProjectRail({
 					) : null}
 					<div className="grid gap-1">
 						{filteredProjectSections.groups.map((section) => renderGroup(section.group, section.projects))}
-						{state.projectGroups.length ? (
+						{state.projectGroups.length > 0 && filteredProjectSections.ungrouped.length > 0 ? (
 							<Collapsible defaultOpen>
 								<fieldset
 									aria-label="未分组项目"

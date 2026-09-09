@@ -15,7 +15,7 @@ describe("TrustSelectorComponent", () => {
 		setKeybindings(new KeybindingsManager());
 	});
 
-	it("marks the saved trusted decision", () => {
+	it("keeps the saved trusted decision marked while browsing", () => {
 		const selector = new TrustSelectorComponent({
 			cwd: "/project",
 			savedDecision: { path: "/project", decision: true },
@@ -28,7 +28,7 @@ describe("TrustSelectorComponent", () => {
 
 		expect(output).toContain("已保存：信任（/project）");
 		expect(output).toContain("当前会话：信任");
-		expect(output).toContain(`信任此项目 ${uiGlyphs.success}`);
+		expect(output).toContain(`${uiGlyphs.success}信任此项目`);
 		expect(output).not.toContain(`不信任此项目 ${uiGlyphs.success}`);
 	});
 
@@ -73,7 +73,7 @@ describe("TrustSelectorComponent", () => {
 
 		const output = stripAnsi(selector.render(120).join("\n"));
 		expect(output).toContain("已保存：信任（继承自 /parent）");
-		expect(output).toContain(`信任上级目录（/parent） ${uiGlyphs.success}`);
+		expect(output).toContain(`${uiGlyphs.success}信任上级目录（/parent）`);
 
 		selector.handleInput("\n");
 
