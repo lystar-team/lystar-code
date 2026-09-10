@@ -29,6 +29,26 @@ describe("MessageResponse local resource links", () => {
 		expect(markup).not.toContain(">图片 1<");
 	});
 
+	it("renders user prompts with only simple markdown and exposes prompt copy", () => {
+		const markup = renderToStaticMarkup(
+			createElement(TranscriptMessageView, {
+				role: "user",
+				text: "**加粗**\n\n<u>下划线</u>\n\n~~删除~~\n\n- 列表\n\n```bash\necho blocked\n```",
+				showCopy: false,
+				onOpenPath: () => {},
+			}),
+		);
+
+		expect(markup).toContain('data-streamdown="strong"');
+		expect(markup).toContain("<u>下划线</u>");
+		expect(markup).toContain("<del>删除</del>");
+		expect(markup).toContain("<ul");
+		expect(markup).not.toContain("<pre");
+		expect(markup).not.toContain("复制代码");
+		expect(markup).toContain("复制");
+		expect(markup).not.toContain("复制 Prompt");
+	});
+
 	it("keeps project-relative file links clickable instead of marking them blocked", () => {
 		const markup = renderToStaticMarkup(
 			createElement(

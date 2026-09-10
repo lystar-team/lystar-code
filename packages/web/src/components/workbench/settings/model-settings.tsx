@@ -1,4 +1,4 @@
-import { Check, Eye, LoaderCircle, Plus, RefreshCw, Settings } from "lucide-react";
+import { Eye, LoaderCircle, Plus, RefreshCw, Settings } from "lucide-react";
 import type { FormEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "../../../lib/utils";
@@ -114,9 +114,6 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 	const activeProvider = visibleProviders.some((provider) => provider.id === selectedProvider)
 		? selectedProvider
 		: visibleProviders[0]?.id || "";
-	const currentModel = state.models.find(
-		(model) => model.provider === state.session?.model?.provider && model.id === state.session?.model?.id,
-	);
 	const modelListProvider = modelListProviderId
 		? state.providers.find((provider) => provider.id === modelListProviderId)
 		: undefined;
@@ -257,51 +254,6 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 
 	return (
 		<div className="grid min-w-0 gap-6">
-			<SettingSection title="当前模型">
-				<Card className="min-w-0 !py-1 shadow-none">
-					<CardContent className="p-3">
-						<div className="flex items-center gap-2">
-							<ModelBrandIcon
-								providerId={currentModel?.provider ?? state.session?.model?.provider ?? ""}
-								modelId={currentModel?.id ?? state.session?.model?.id ?? ""}
-								name={currentModel?.name ?? state.session?.model?.id ?? ""}
-							/>
-							<div className="min-w-0">
-								<p className="truncate font-medium">
-									{formatModelDisplayName(
-										currentModel ?? (state.session?.model ? { id: state.session.model.id } : undefined),
-									)}
-								</p>
-								<p className="text-xs text-muted-foreground">
-									思考强度：{THINKING_LEVEL_LABELS[state.session?.thinkingLevel ?? "off"] ?? "关闭"}
-								</p>
-							</div>
-						</div>
-						<Tabs
-							value={
-								state.session?.thinkingLevel === "minimal" ? "low" : (state.session?.thinkingLevel ?? "off")
-							}
-							onValueChange={(level) => void actions.updateThinking(level)}
-							className="mt-3 gap-0"
-						>
-							<TabsList className="grid h-auto w-full min-w-0 grid-flow-col auto-cols-max items-center justify-start gap-1 overflow-x-auto rounded-none bg-transparent p-0 py-0.5">
-								{["off", "low", "medium", "high", "xhigh", "max", "ultra"].map((level) => (
-									<TabsTrigger
-										className="!h-8 !w-auto !min-w-max !flex-none whitespace-nowrap rounded-xl border-0 !px-3 !text-[13px] !leading-5 font-medium text-muted-foreground after:hidden data-[state=active]:bg-accent data-[state=active]:text-foreground data-[state=active]:shadow-none"
-										style={{ fontSize: "13px", lineHeight: "20px" }}
-										key={level}
-										value={level}
-										disabled={!state.sessionId || !state.connected}
-									>
-										{THINKING_LEVEL_LABELS[level] ?? level}
-									</TabsTrigger>
-								))}
-							</TabsList>
-						</Tabs>
-					</CardContent>
-				</Card>
-			</SettingSection>
-
 			<SettingSection title="模型供应商">
 				<div className="flex min-w-0 flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-center">
 					<p className="text-sm text-muted-foreground">管理供应商、目录来源和在模型选择器中的显示状态。</p>

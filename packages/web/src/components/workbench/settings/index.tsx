@@ -1,4 +1,4 @@
-import { ArrowDownToLine, ArrowLeft, BookOpen, Bot, CircleHelp, Search, ShieldCheck, Sparkles, SunMoon, WandSparkles } from "lucide-react";
+import { ArrowDownToLine, ArrowLeft, BookOpen, Bot, CircleHelp, RefreshCw, Search, ShieldCheck, Sparkles, SunMoon, WandSparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { useAppInstall } from "../../../state/use-app-install";
@@ -109,20 +109,30 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 					<section className="min-h-0 w-full min-w-0 max-w-full flex-1 overflow-x-hidden overflow-y-auto">
 						<div className="mx-auto w-full min-w-0 max-w-[1120px] p-5 sm:p-12 lg:p-16">
 							<div className="mb-8 sm:mb-12">
-								<h1 className="text-2xl font-semibold tracking-tight sm:text-4xl">{currentLabel}</h1>
-								<p className="mt-2 max-w-2xl text-base leading-7 text-muted-foreground sm:mt-3">
-									{state.settingsTab === "instructions"
-										? "为所有项目的任务提供说明和上下文。"
-										: state.settingsTab === "skills"
-											? "查看和管理当前项目可用的 Skill。"
-											: state.settingsTab === "imports"
-												? "把其他 Harness 的资源导入 LYStar Code。"
-									: state.settingsTab === "security"
-										? "配置 Web Gateway 的监听 IP、白名单、Web/Runtime 端口和密码。"
+								<div className="flex items-center justify-between gap-4">
+									<div className="min-w-0">
+										<h1 className="text-2xl font-semibold tracking-tight sm:text-4xl">{currentLabel}</h1>
+										<p className="mt-2 max-w-2xl text-base leading-7 text-muted-foreground sm:mt-3">
+											{state.settingsTab === "instructions"
+												? "为所有项目的任务提供说明和上下文。"
+												: state.settingsTab === "skills"
+													? "查看和管理当前项目可用的 Skill。"
+													: state.settingsTab === "imports"
+														? "把其他 Harness 的资源导入 LYStar Code。"
+												: state.settingsTab === "security"
+													? "配置 Web Gateway 的监听 IP、白名单、Web/Runtime 端口和密码。"
 													: state.settingsTab === "appearance"
 														? "配置工作台的外观和应用安装。"
 														: "配置工作台的外观、模型连接和运行信息。"}
-								</p>
+										</p>
+									</div>
+								{state.settingsTab === "diagnostics" ? (
+									<Button className="shrink-0 self-center" variant="outline" size="sm" onClick={() => void actions.refreshDiagnostics()}>
+										<RefreshCw className="size-4" aria-hidden="true" />
+										刷新
+									</Button>
+								) : null}
+								</div>
 							</div>
 							<TabsContent className="m-0 w-full min-w-0 max-w-full" value="appearance">
 								<AppearanceSettings state={state} actions={actions} appInstall={appInstall} />

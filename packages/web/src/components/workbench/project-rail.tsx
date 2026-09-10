@@ -425,7 +425,7 @@ export const ProjectRail = memo(function ProjectRail({
 									<HoverCardTrigger asChild>
 										<CollapsibleTrigger asChild>
 											<Button
-												className="w-full min-w-0 justify-start gap-2 px-2 pr-20 text-xs"
+												className="h-8 w-full min-w-0 justify-start gap-2 px-2 py-1 pr-20 text-xs"
 												variant={active ? "secondary" : "ghost"}
 												onClick={() => void actions.selectProject(project.id)}
 											>
@@ -605,7 +605,7 @@ export const ProjectRail = memo(function ProjectRail({
 								</div>
 							</li>
 							<CollapsibleContent>
-								<div className="mt-1">
+								<div className="mt-0.5">
 									{sessions.length ? (
 										<>
 											<VirtualizedSessionList
@@ -664,7 +664,7 @@ export const ProjectRail = memo(function ProjectRail({
 											/>
 											{hasMoreSessions ? (
 												<Button
-													className="mt-1 w-full min-w-0 justify-start gap-2 py-2 pr-2 !pl-8 text-left text-xs"
+													className="mt-0.5 h-8 w-full min-w-0 justify-start gap-2 py-1 pr-2 !pl-8 text-left text-xs text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground"
 													variant="ghost"
 													onClick={() =>
 														setSessionVisibleCounts((current) => ({
@@ -749,7 +749,7 @@ export const ProjectRail = memo(function ProjectRail({
 				>
 					<div className={cn("group relative rounded-md", groupDrop && "ring-1 ring-primary/50")}>
 						<CollapsibleTrigger asChild>
-							<Button className="w-full min-w-0 justify-start gap-2 px-2 pr-12 text-xs" variant="ghost">
+							<Button className="h-8 w-full min-w-0 justify-start gap-2 px-2 py-1 pr-12 text-xs" variant="ghost">
 								<ChevronDown
 									className={cn("size-3.5 shrink-0 transition-transform", !expanded && "-rotate-90")}
 								/>
@@ -800,7 +800,7 @@ export const ProjectRail = memo(function ProjectRail({
 						</div>
 					</div>
 					<CollapsibleContent>
-						<div className="mt-1 grid gap-1">
+						<div className="mt-0.5 grid gap-0.5">
 							{groupProjects.length ? (
 								groupProjects.map((project) => renderProject(project, true))
 							) : (
@@ -878,7 +878,7 @@ export const ProjectRail = memo(function ProjectRail({
 					{state.loading && !projects.length ? (
 						<div className="px-2 py-8 text-center text-sm text-muted-foreground">正在加载项目与会话</div>
 					) : null}
-					<div className="grid gap-1">
+					<div className="grid gap-0.5">
 						{filteredProjectSections.groups.map((section) => renderGroup(section.group, section.projects))}
 						{state.projectGroups.length > 0 && filteredProjectSections.ungrouped.length > 0 ? (
 							<Collapsible defaultOpen>
@@ -892,7 +892,7 @@ export const ProjectRail = memo(function ProjectRail({
 									onDrop={handleUngroupedDrop}
 								>
 									<CollapsibleTrigger asChild>
-										<Button className="w-full min-w-0 justify-start gap-2 px-2 text-xs" variant="ghost">
+										<Button className="h-8 w-full min-w-0 justify-start gap-2 px-2 py-1 text-xs" variant="ghost">
 											<ChevronDown className="size-3.5 shrink-0" />
 											<FolderTree className="size-4 shrink-0 text-muted-foreground" />
 											<span className="project-list-item-label min-w-0 flex-1 truncate text-left font-medium">
@@ -904,7 +904,7 @@ export const ProjectRail = memo(function ProjectRail({
 										</Button>
 									</CollapsibleTrigger>
 									<CollapsibleContent>
-										<div className="mt-1 grid gap-1">
+										<div className="mt-0.5 grid gap-0.5">
 											{filteredProjectSections.ungrouped.length ? (
 												filteredProjectSections.ungrouped.map((project) => renderProject(project))
 											) : (
@@ -927,7 +927,7 @@ export const ProjectRail = memo(function ProjectRail({
 						<>
 							<Separator className="my-4" />
 							<Button
-								className="w-full justify-between px-2 text-xs text-muted-foreground"
+								className="h-8 w-full justify-between px-2 py-1 text-xs text-muted-foreground"
 								variant="ghost"
 								onClick={() => setShowArchived((value) => !value)}
 							>
@@ -941,7 +941,7 @@ export const ProjectRail = memo(function ProjectRail({
 								</span>
 							</Button>
 							{showArchived ? (
-								<div className="mt-1 grid gap-1">
+								<div className="mt-0.5 grid gap-0.5">
 									{archivedProjects.map((project) => (
 										<Button
 											className="justify-between text-xs"

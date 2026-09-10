@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { projectCodeHighlighter } from "@/lib/code-highlighter";
+import { decodeResourceLink, isExternalResourceLink, isLocalResourcePath } from "@/lib/resource-path";
 import { cjk } from "@streamdown/cjk";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
@@ -324,9 +325,15 @@ export const MessageBranchPage = ({
 
 export type MessageResponseProps = ComponentProps<typeof Streamdown> & {
 	onOpenPath?: (path: string) => void;
+	projectId?: string;
 };
 
-const ResourcePathContext = createContext<((path: string) => void) | undefined>(undefined);
+type ResourcePathContextValue = {
+	onOpenPath?: (path: string) => void;
+	projectId?: string;
+};
+
+const ResourcePathContext = createContext<ResourcePathContextValue>({});
 
 const messageRehypePlugins = [defaultRehypePlugins.raw, defaultRehypePlugins.sanitize];
 
@@ -334,21 +341,15 @@ function messageRehypePluginsFor(callerPlugins: MessageResponseProps["rehypePlug
 	return callerPlugins ?? messageRehypePlugins;
 }
 
-function isLocalResourcePath(value: string): boolean {
-	return /^(?:\/|[A-Za-z]:[\\/]|\\\\|\.\.?[\\/]|(?:packages|docs|scripts|src|test|tests|tmp)[\\/])/u.test(value);
-}
-
-function isExternalLink(value: string): boolean {
-	return /^(?:https?:|mailto:|tel:|irc:|ircs:|xmpp:|\/\/)/iu.test(value);
-}
-
 const MessageMarkdownImage = ({ src, alt }: ComponentProps<"img">) => {
-	const isLocalPath = Boolean(src && isLocalResourcePath(src));
+	const resource = useContext(ResourcePathContext);
+	const localPath = src && isLocalResourcePath(src) ? decodeResourceLink(src) : undefined;
 	return src ? (
 		<ResourceImage
-			{...(isLocalPath ? { path: src } : { src })}
+			{...(localPath ? { path: localPath, projectId: resource.projectId } : { src })}
 			alt={alt || "图片"}
 			className="my-3 max-w-full"
+			onOpenPath={resource.onOpenPath}
 		/>
 	) : null;
 };
@@ -388,22 +389,30 @@ function ExternalMessageLink({ href, children }: { href: string; children: React
 }
 
 const MessageMarkdownLink = ({ href, children, ...props }: ComponentProps<"a">) => {
-	const onOpenPath = useContext(ResourcePathContext);
-	if (href && onOpenPath && isLocalResourcePath(href)) {
-		if (/\.(?:avif|gif|jpe?g|png|svg|webp)(?:[?#].*)?$/iu.test(href)) {
-			return <ResourceImage path={href} alt={typeof children === "string" ? children : "图片"} onOpenPath={onOpenPath} />;
+	const resource = useContext(ResourcePathContext);
+	const localPath = href && isLocalResourcePath(href) ? decodeResourceLink(href) : undefined;
+	if (localPath && resource.onOpenPath) {
+		if (/\.(?:avif|gif|jpe?g|png|svg|webp)(?:[?#].*)?$/iu.test(localPath)) {
+			return (
+				<ResourceImage
+					path={localPath}
+					projectId={resource.projectId}
+					alt={typeof children === "string" ? children : "图片"}
+					onOpenPath={resource.onOpenPath}
+				/>
+			);
 		}
 		return (
 			<button
 				className="text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
-				onClick={() => onOpenPath(href)}
+				onClick={() => void resource.onOpenPath?.(localPath)}
 				type="button"
 			>
 				{children}
 			</button>
 		);
 	}
-	if (href && isExternalLink(href)) return <ExternalMessageLink href={href}>{children}</ExternalMessageLink>;
+	if (href && isExternalResourceLink(href)) return <ExternalMessageLink href={href}>{children}</ExternalMessageLink>;
 	return (
 		<a href={href} {...props}>
 			{children}
@@ -430,6 +439,9 @@ const baseStreamdownPlugins: PluginConfig = {
 	renderers: [{ language: ["text", "plaintext"], component: PlainTextRenderer }],
 };
 
+const promptStreamdownPlugins: PluginConfig = { cjk };
+const promptAllowedElements = ["p", "br", "ul", "ol", "li", "strong", "em", "del", "u"];
+
 function streamdownPluginsFor(mode: MessageResponseProps["mode"], overrides?: PluginConfig): PluginConfig {
 	const withoutCode = { ...(overrides ?? {}) };
 	delete withoutCode.code;
@@ -439,8 +451,8 @@ function streamdownPluginsFor(mode: MessageResponseProps["mode"], overrides?: Pl
 }
 
 export const MessageResponse: NamedExoticComponent<MessageResponseProps> = memo(
-	({ className, onOpenPath, components, mode = "static", plugins: callerPlugins, rehypePlugins: callerRehypePlugins, ...props }: MessageResponseProps): ReactElement => (
-		<ResourcePathContext.Provider value={onOpenPath}>
+	({ className, onOpenPath, projectId, components, mode = "static", plugins: callerPlugins, rehypePlugins: callerRehypePlugins, ...props }: MessageResponseProps): ReactElement => (
+		<ResourcePathContext.Provider value={{ onOpenPath, projectId }}>
 			<Streamdown
 				className={cn(
 					"size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
@@ -465,11 +477,36 @@ export const MessageResponse: NamedExoticComponent<MessageResponseProps> = memo(
 	(prevProps, nextProps) =>
 		prevProps.children === nextProps.children &&
 		prevProps.mode === nextProps.mode &&
+		prevProps.projectId === nextProps.projectId &&
 		nextProps.isAnimating === prevProps.isAnimating &&
 		nextProps.onOpenPath === prevProps.onOpenPath,
 );
 
 MessageResponse.displayName = "MessageResponse";
+
+export interface PromptResponseProps {
+	className?: string;
+	children?: string;
+}
+
+export function PromptResponse({ className, children }: PromptResponseProps): ReactElement {
+	return (
+		<Streamdown
+			className={cn(
+				"size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+				className,
+			)}
+			mode="static"
+			plugins={promptStreamdownPlugins}
+			controls={false}
+			allowedElements={promptAllowedElements}
+			allowedTags={{ u: [] }}
+			unwrapDisallowed
+		>
+			{children}
+		</Streamdown>
+	);
+}
 
 export type MessageToolbarProps = ComponentProps<"div">;
 

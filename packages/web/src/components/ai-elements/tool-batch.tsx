@@ -19,6 +19,7 @@ import {
 import { type MouseEvent as ReactMouseEvent, type ReactNode, memo, useEffect, useRef } from "react";
 import type { BundledLanguage } from "shiki";
 import { cn } from "@/lib/utils";
+import { StabilityBoundary } from "../stability-boundary";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
 import { CodeBlock, CodeBlockActions, CodeBlockCopyButton, CodeBlockHeader, CodeBlockTitle } from "./code-block";
 import { Button } from "../ui/button";
@@ -63,6 +64,14 @@ export interface ToolBatchProps {
 
 function resolveAutoCollapse(value: ToolBatchAutoCollapse): boolean {
 	return typeof value === "function" ? value() : value;
+}
+
+function canCollapseFromContent(event: ReactMouseEvent<HTMLElement>): boolean {
+	if (event.defaultPrevented) return false;
+	const target = event.target;
+	if (target instanceof Element && target.closest("button, a, input, textarea, select, [role=button]")) return false;
+	const selection = window.getSelection();
+	return !selection || selection.isCollapsed;
 }
 
 const statusLabels: Record<ToolBatchState, string> = {
@@ -306,14 +315,6 @@ export function toolRowTitle(tool: ToolBatchTool): string {
 	const action = toolRowActionLabel(tool.name, tool.state);
 	if (tool.name === "web_search" && title === "网页搜索") return action;
 	return title && title !== tool.name ? `${action} ${title}` : action;
-}
-
-function canCollapseFromContent(event: ReactMouseEvent<HTMLElement>): boolean {
-	if (event.defaultPrevented) return false;
-	const target = event.target;
-	if (target instanceof Element && target.closest("button, a, input, textarea, select, [role=button]")) return false;
-	const selection = window.getSelection();
-	return !selection || selection.isCollapsed;
 }
 
 function diffStats(diff?: ToolDiff): { additions: number; deletions: number } | undefined {
@@ -582,7 +583,7 @@ function ToolBatchRow({
 					data-transcript-resize-anchor
 					className="flex min-h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 					type="button"
-					aria-label={`${title}，${statusLabels[tool.state]}${hasDetails ? "，展开详情" : ""}`}
+					aria-label={`${title}，${statusLabels[tool.state]}${hasDetails ? `，${open ? "收起" : "展开"}详情` : ""}`}
 				>
 					{toolIcon(tool.name, undefined, Boolean(skillName), Boolean(tool.images?.length))}
 					<span className="min-w-0 flex-1 truncate font-mono text-[13px]" title={title}>
@@ -609,13 +610,23 @@ function ToolBatchRow({
 			</CollapsibleTrigger>
 			{hasDetails ? (
 				<CollapsibleContent
-					className="min-w-0 overflow-hidden pb-0.5 pl-6 pr-0 pt-0 data-[state=closed]:animate-out data-[state=open]:animate-in"
+					data-transcript-resize-anchor
+					className="min-w-0 max-h-[min(32rem,60vh)] overflow-y-auto overflow-x-hidden overscroll-contain pb-0.5 pl-6 pr-0 pt-0"
 					onClick={(event) => {
 						event.stopPropagation();
 						if (canCollapseFromContent(event)) setOpen(false);
 					}}
 				>
-					<ToolDetail tool={tool} sessionId={sessionId} onOpenPath={onOpenPath} />
+					<StabilityBoundary
+						scope={`tool-detail:${tool.name}`}
+						fallback={() => (
+							<div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive" role="alert">
+								工具详情渲染失败，工具结果仍保留在会话记录中。
+							</div>
+						)}
+					>
+						<ToolDetail tool={tool} sessionId={sessionId} onOpenPath={onOpenPath} />
+					</StabilityBoundary>
 				</CollapsibleContent>
 			) : null}
 		</Collapsible>
@@ -691,7 +702,13 @@ export const ToolBatch = memo(function ToolBatch({
 					</span>
 					<ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]/tool-batch:rotate-180" />
 				</CollapsibleTrigger>
-				<CollapsibleContent className="min-w-0 overflow-hidden pb-0">
+				<CollapsibleContent
+					data-transcript-resize-anchor
+					className="min-w-0 overflow-hidden pb-0"
+					onClick={(event) => {
+						if (canCollapseFromContent(event)) setOpen(false);
+					}}
+				>
 					<ImageToolGallery tools={tools} sessionId={sessionId} onOpenPath={onOpenPath} />
 				</CollapsibleContent>
 			</Collapsible>
@@ -745,7 +762,8 @@ export const ToolBatch = memo(function ToolBatch({
 				</span>
 			</CollapsibleTrigger>
 			<CollapsibleContent
-				className="relative min-w-0 max-h-[min(34rem,60vh)] overflow-y-auto overflow-x-hidden pb-0 data-[state=closed]:animate-out data-[state=open]:animate-in"
+				data-transcript-resize-anchor
+				className="relative min-w-0 max-h-[min(34rem,60vh)] overflow-y-auto overflow-x-hidden overscroll-contain pb-0"
 				onClick={(event) => {
 					if (canCollapseFromContent(event)) setOpen(false);
 				}}

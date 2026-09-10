@@ -9,6 +9,19 @@ import type {
 const DEFAULT_THEMES: [BundledTheme, BundledTheme] = ["github-light", "github-dark"];
 const MAX_CACHE_ENTRIES = 48;
 const MAX_CACHE_BYTES = 8 * 1024 * 1024;
+export const MAX_HIGHLIGHT_CODE_CHARS = 64 * 1024;
+export const MAX_HIGHLIGHT_CODE_LINES = 1_200;
+
+export function shouldHighlightCode(code: string): boolean {
+	if (code.length > MAX_HIGHLIGHT_CODE_CHARS) return false;
+	let lines = 1;
+	for (let index = 0; index < code.length; index++) {
+		if (code.charCodeAt(index) !== 10) continue;
+		lines += 1;
+		if (lines > MAX_HIGHLIGHT_CODE_LINES) return false;
+	}
+	return true;
+}
 
 const supportedLanguages = new Set<string>(bundledLanguagesInfo.map((language) => language.id));
 
@@ -142,6 +155,7 @@ export function highlightCode(
 	language: BundledLanguage,
 	callback?: HighlightListener,
 ): TokenizedCode | null {
+	if (!shouldHighlightCode(code)) return null;
 	const key = cacheKey(code, language);
 	const cached = cachedValue(key);
 	if (cached) return cached;
@@ -155,6 +169,7 @@ export function highlightCode(
 }
 
 export function subscribeToCodeHighlight(code: string, language: BundledLanguage, callback: HighlightListener): () => void {
+	if (!shouldHighlightCode(code)) return () => {};
 	const key = cacheKey(code, language);
 	if (cachedValue(key)) return () => {};
 	const pending = listeners.get(key) ?? new Set<HighlightListener>();

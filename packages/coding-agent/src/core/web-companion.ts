@@ -601,21 +601,24 @@ export class WebCompanionServer {
 				if (!modelRef || !modelRef.provider.trim() || !modelRef.id.trim()) throw new Error("模型标识不能为空");
 				const model = this.session.modelRuntime.getModel(modelRef.provider, modelRef.id);
 				if (!model) throw new Error(`未找到模型：${modelRef.provider}/${modelRef.id}`);
-				await this.session.setModel(model);
+				await this.session.setModel(model, { persist: true });
+				await this.session.settingsManager.flush();
 				this.onSessionChanged?.();
 				return this.snapshot();
 			}
 			case "set_thinking_level": {
 				const level = command.level;
 				if (!level || !THINKING_LEVELS.has(level)) throw new Error("不支持的 Thinking Level");
-				this.session.setThinkingLevel(level);
+				this.session.setThinkingLevel(level, { persist: true });
+				await this.session.settingsManager.flush();
 				this.onSessionChanged?.();
 				return this.snapshot();
 			}
 			case "cycle_model": {
 				const direction = command.direction;
 				if (direction !== "forward" && direction !== "backward") throw new Error("模型切换方向无效");
-				const result = await this.session.cycleModel(direction);
+				const result = await this.session.cycleModel(direction, { persist: true });
+				await this.session.settingsManager.flush();
 				this.onSessionChanged?.();
 				return {
 					snapshot: this.snapshot(),
@@ -625,7 +628,8 @@ export class WebCompanionServer {
 			}
 			case "cycle_thinking_level": {
 				const previous = this.session.thinkingLevel;
-				const level = this.session.cycleThinkingLevel();
+				const level = this.session.cycleThinkingLevel({ persist: true });
+				await this.session.settingsManager.flush();
 				this.onSessionChanged?.();
 				return {
 					snapshot: this.snapshot(),

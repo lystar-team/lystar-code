@@ -1,5 +1,5 @@
 import type { SessionProgress, ToolActivity } from "@lystar/code-web-protocol";
-import type { PromptAttachmentPreview, QueuedUserPrompt, WebTranscriptItem } from "../types.ts";
+import type { PromptAttachmentPreview, QueuedUserPrompt, WebSessionSnapshot, WebTranscriptItem } from "../types.ts";
 import type { LiveTurnItem, WorkbenchState } from "./use-workbench.ts";
 
 const ACTIVE_TOOL_ACTIVITY_STATES = new Set<ToolActivity["state"]>(["preparing", "queued", "running"]);
@@ -8,18 +8,30 @@ export function hasActiveToolActivities(activities: readonly ToolActivity[] | un
 	return Boolean(activities?.some((activity) => ACTIVE_TOOL_ACTIVITY_STATES.has(activity.state)));
 }
 
+export function hasActiveSessionSnapshot(
+	snapshot: Pick<WebSessionSnapshot, "activity" | "phase" | "toolActivities">,
+): boolean {
+	return (
+		snapshot.activity === "running" ||
+		snapshot.activity === "waiting_for_input" ||
+		["turn", "compaction", "retry", "waiting_for_input"].includes(snapshot.phase) ||
+		hasActiveToolActivities(snapshot.toolActivities)
+	);
+}
+
 const ACTIVE_OPERATION_STATUSES = new Set(["accepted", "running", "waiting_for_input"]);
 
 export function hasActiveSessionWork(
 	state: Pick<WorkbenchState, "session" | "currentOperation" | "liveTools" | "liveTurnActive" | "liveCompaction">,
 ): boolean {
+	const liveRuntimeMayBeActive = state.liveTurnActive !== false;
 	return Boolean(
-		state.session?.activity === "running" ||
-		state.session?.activity === "waiting_for_input" ||
+		(state.session && hasActiveSessionSnapshot(state.session)) ||
 		state.liveTurnActive ||
-		hasActiveToolActivities(state.session?.toolActivities) ||
-		Object.values(state.liveTools).some((tool) => tool.status === "running") ||
-		(state.liveCompaction && ["running", "waiting_retry"].includes(state.liveCompaction.status)) ||
+		(liveRuntimeMayBeActive && Object.values(state.liveTools).some((tool) => tool.status === "running")) ||
+		(liveRuntimeMayBeActive &&
+			state.liveCompaction &&
+			["running", "waiting_retry"].includes(state.liveCompaction.status)) ||
 		(state.currentOperation && ACTIVE_OPERATION_STATUSES.has(state.currentOperation.status)),
 	);
 }

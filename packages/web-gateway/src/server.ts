@@ -61,7 +61,8 @@ import { ProjectRegistry, type WebProject } from "./project-registry.ts";
 import { connectRuntimeClient, ensurePersistentRuntime, type RuntimeInitialSnapshot } from "./runtime-client.ts";
 
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
-const MAX_FILE_BYTES = 32 * 1024 * 1024;
+const MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024;
+const MAX_BINARY_PREVIEW_BYTES = 8 * 1024 * 1024;
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 const UPLOAD_TTL_MS = 60 * 60 * 1000;
 const UPLOAD_CLEANUP_MS = 5 * 60 * 1000;
@@ -534,30 +535,29 @@ function latestOperation(operations: OperationSnapshot[], sessionPath: string): 
 		.sort((left, right) => right.updatedAt - left.updatedAt)[0];
 }
 
-async function readChunks(read: (offset: number) => Promise<ContentChunk>): Promise<Uint8Array> {
+async function readChunks(read: (offset: number) => Promise<ContentChunk>, maxBytes: number): Promise<Uint8Array> {
 	const chunks: Uint8Array[] = [];
 	let offset = 0;
 	let total = 0;
-	while (true) {
+	while (total < maxBytes) {
 		const chunk = await read(offset);
 		if (chunk.offset !== offset || (!chunk.done && chunk.nextOffset <= offset)) {
 			throw new HttpError(502, "invalid_content_chunk", "后台返回了无效的文件分块");
 		}
 		const bytes = Buffer.from(chunk.data, "base64");
-		total += bytes.byteLength;
-		if (total > MAX_FILE_BYTES) throw new HttpError(413, "file_too_large", "文件超过浏览器查看大小限制");
-		chunks.push(new Uint8Array(bytes));
+		const accepted = bytes.subarray(0, Math.min(bytes.byteLength, maxBytes - total));
+		total += accepted.byteLength;
+		chunks.push(new Uint8Array(accepted));
 		offset = chunk.nextOffset;
-		if (chunk.done) {
-			const result = new Uint8Array(total);
-			let position = 0;
-			for (const part of chunks) {
-				result.set(part, position);
-				position += part.byteLength;
-			}
-			return result;
-		}
+		if (chunk.done || accepted.byteLength < bytes.byteLength) break;
 	}
+	const result = new Uint8Array(total);
+	let position = 0;
+	for (const part of chunks) {
+		result.set(part, position);
+		position += part.byteLength;
+	}
+	return result;
 }
 
 export class WebGatewayServer {
@@ -1119,7 +1119,7 @@ export class WebGatewayServer {
 				}
 				return;
 			}
-			await this.handleStatic(response, url.pathname);
+			await this.handleStatic(request, response, url.pathname);
 		} catch (error) {
 			if (!response.headersSent) sendError(response, error);
 			else response.destroy();
@@ -1237,7 +1237,7 @@ export class WebGatewayServer {
 		sendJson(response, host === "connected" ? 200 : 503, { ok: host === "connected", gateway: "ok", host });
 	}
 
-	private async handleStatic(response: ServerResponse, pathname: string): Promise<void> {
+	private async handleStatic(request: IncomingMessage, response: ServerResponse, pathname: string): Promise<void> {
 		const relativeName = pathname === "/" || pathname === "" ? "index.html" : pathname.replace(/^\/+/, "");
 		const candidate = resolve(this.config.staticDir, relativeName);
 		if (!isInside(resolve(this.config.staticDir), candidate))
@@ -1247,6 +1247,11 @@ export class WebGatewayServer {
 			const info = await stat(file);
 			if (!info.isFile()) throw new Error("not a file");
 		} catch {
+			const acceptsHtml = String(request.headers.accept ?? "").includes("text/html");
+			const looksLikeAsset = /(?:^|\/)[^/]+\.[A-Za-z\d]+$/u.test(relativeName);
+			if (request.method !== "GET" || !acceptsHtml || looksLikeAsset) {
+				throw new HttpError(404, "static_not_found", "静态资源不存在");
+			}
 			file = join(this.config.staticDir, "index.html");
 		}
 		const body = await readFile(file);
@@ -1265,7 +1270,11 @@ export class WebGatewayServer {
 		};
 		response.writeHead(200, {
 			"Content-Type": types[extension ?? ""] ?? "application/octet-stream",
-			"Cache-Control": file.endsWith("index.html") ? "no-store" : "public, max-age=31536000, immutable",
+			"Cache-Control": file.endsWith("index.html")
+				? "no-store"
+				: file.endsWith("sw.js")
+					? "no-cache"
+					: "public, max-age=31536000, immutable",
 			"Content-Length": body.byteLength,
 		});
 		response.end(body);
@@ -1294,23 +1303,30 @@ export class WebGatewayServer {
 				command: "resolve_external_resource",
 				target: path,
 			});
-			const bytes = await readChunks((offset) =>
-				client.request<ContentChunk>({
-					command: "read_external_resource",
-					path: resource.path,
-					accessToken: resource.accessToken ?? "",
-					offset,
-					limit: 1024 * 1024,
-				}),
+			const bytes = await readChunks(
+				(offset) =>
+					client.request<ContentChunk>({
+						command: "read_external_resource",
+						path: resource.path,
+						accessToken: resource.accessToken ?? "",
+						offset,
+						limit: 1024 * 1024,
+					}),
+				resource.kind === "text" ? MAX_TEXT_PREVIEW_BYTES : MAX_BINARY_PREVIEW_BYTES,
 			);
+			const truncated = bytes.byteLength < resource.byteLength;
 			sendJson(response, 200, {
 				kind: resource.kind,
 				path: resource.displayPath,
 				mimeType: resource.mimeType,
-				byteLength: bytes.byteLength,
+				byteLength: resource.byteLength,
+				previewByteLength: bytes.byteLength,
+				truncated,
 				...(resource.kind === "text"
 					? { content: Buffer.from(bytes).toString("utf8") }
-					: { data: Buffer.from(bytes).toString("base64") }),
+					: truncated
+						? {}
+						: { data: Buffer.from(bytes).toString("base64") }),
 			});
 			return;
 		}
@@ -1658,37 +1674,46 @@ export class WebGatewayServer {
 				cwd: project.cwd,
 				target: path,
 			});
-			const bytes = await readChunks((offset) =>
-				client.request<ContentChunk>({
-					command: "read_project_resource",
-					cwd: project.cwd,
-					path: resource.path,
-					offset,
-					limit: 1024 * 1024,
-				}),
+			const bytes = await readChunks(
+				(offset) =>
+					client.request<ContentChunk>({
+						command: "read_project_resource",
+						cwd: project.cwd,
+						path: resource.path,
+						offset,
+						limit: 1024 * 1024,
+					}),
+				resource.kind === "text" ? MAX_TEXT_PREVIEW_BYTES : MAX_BINARY_PREVIEW_BYTES,
 			);
+			const truncated = bytes.byteLength < resource.byteLength;
 			if (resource.kind === "image") {
 				sendJson(response, 200, {
 					kind: resource.kind,
 					path: resource.displayPath,
 					mimeType: resource.mimeType,
-					byteLength: bytes.byteLength,
-					data: Buffer.from(bytes).toString("base64"),
+					byteLength: resource.byteLength,
+					previewByteLength: bytes.byteLength,
+					truncated,
+					...(truncated ? {} : { data: Buffer.from(bytes).toString("base64") }),
 				});
 			} else if (resource.kind === "binary") {
 				sendJson(response, 200, {
 					kind: resource.kind,
 					path: resource.displayPath,
 					mimeType: resource.mimeType,
-					byteLength: bytes.byteLength,
-					data: Buffer.from(bytes).toString("base64"),
+					byteLength: resource.byteLength,
+					previewByteLength: bytes.byteLength,
+					truncated,
+					...(truncated ? {} : { data: Buffer.from(bytes).toString("base64") }),
 				});
 			} else {
 				sendJson(response, 200, {
 					kind: resource.kind,
 					path: resource.displayPath,
 					mimeType: resource.mimeType,
-					byteLength: bytes.byteLength,
+					byteLength: resource.byteLength,
+					previewByteLength: bytes.byteLength,
+					truncated,
 					content: Buffer.from(bytes).toString("utf8"),
 				});
 			}

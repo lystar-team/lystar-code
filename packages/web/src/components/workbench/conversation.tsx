@@ -16,6 +16,7 @@ import { ThinkingBlock } from "./live-turn";
 import { AgentErrorCard, TranscriptItemView, TranscriptMessageView } from "./transcript";
 import {
 	DEFAULT_TRANSCRIPT_GAP,
+	shouldFollowTranscriptResize,
 	VirtualizedConversationTranscript,
 } from "./virtualized-transcript";
 import type { WorkbenchActions } from "./types";
@@ -492,7 +493,7 @@ export function ConversationView({
 
 	return (
 		<>
-			<Conversation key={state.sessionId ?? "empty"} className="min-h-0 flex-1">
+			<Conversation className="min-h-0 flex-1">
 				<ConversationBody
 					state={state}
 					actions={actions}
@@ -526,15 +527,16 @@ function ConversationBody({
 	const [followOutput, setFollowOutput] = useState<false | "auto">(false);
 	const promptScrollRequestRef = useRef(state.promptScrollRequest);
 	const promptFollowRef = useRef(false);
-	const isAtBottomRef = useRef(isAtBottom);
-	isAtBottomRef.current = isAtBottom;
-	const shouldAutoCollapseTools = useCallback(() => isAtBottomRef.current, []);
+	const bottomFollowRef = useRef(true);
+	const lastUserScrollAtRef = useRef(Number.NEGATIVE_INFINITY);
+	const shouldAutoCollapseTools = useCallback(() => bottomFollowRef.current, []);
 	const scrollToBottom = useCallback(() => {
 		virtuosoRef.current?.scrollToIndex({ align: "end", behavior: "auto", index: "LAST" });
 	}, []);
 	const handleAtBottomStateChange = useCallback((atBottom: boolean) => {
 		setIsAtBottom(atBottom);
 		if (atBottom) {
+			bottomFollowRef.current = true;
 			promptFollowRef.current = true;
 			setFollowOutput("auto");
 		}
@@ -544,13 +546,17 @@ function ConversationBody({
 		setScrollElement(element);
 	}, []);
 	const handleUserScrollAway = useCallback(() => {
+		lastUserScrollAtRef.current = performance.now();
+		bottomFollowRef.current = false;
 		promptFollowRef.current = false;
 		setFollowOutput(false);
 		setIsAtBottom(false);
 	}, []);
-	const handleTotalListHeightChanged = useCallback((height: number) => {
-		if (promptFollowRef.current) scrollRef.current?.scrollTo({ behavior: "auto", top: height });
-	}, []);
+	const handleTotalListHeightChanged = useCallback(() => {
+		if (!shouldFollowTranscriptResize(bottomFollowRef.current, lastUserScrollAtRef.current, performance.now()))
+			return;
+		scrollToBottom();
+	}, [scrollToBottom]);
 
 	const loadEarlier = useCallback(() => actions.loadEarlier(), [actions.loadEarlier]);
 	const loadEarlierRef = useRef(loadEarlier);
@@ -615,6 +621,15 @@ function ConversationBody({
 	const openResource = actions.openResource;
 	const [expandedToolBatches, setExpandedToolBatches] = useState<ReadonlyMap<string, boolean>>(() => new Map());
 	const [expandedToolRows, setExpandedToolRows] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+	useEffect(() => {
+		setExpandedToolBatches(new Map());
+		setExpandedToolRows(new Map());
+		promptFollowRef.current = true;
+		bottomFollowRef.current = true;
+		lastUserScrollAtRef.current = Number.NEGATIVE_INFINITY;
+		setIsAtBottom(true);
+		setFollowOutput("auto");
+	}, [state.sessionId]);
 	const updateExpandedToolBatch = useCallback((key: string, open: boolean) => {
 		setExpandedToolBatches((current) => {
 			if ((current.get(key) ?? false) === open) return current;
@@ -666,6 +681,8 @@ function ConversationBody({
 									className="tool-batch-render-item"
 									tools={[tool]}
 									initialOpen={false}
+									open={entry.live ? undefined : expandedToolRows.get(tool.id) ?? false}
+									onOpenChange={entry.live ? undefined : (open) => updateExpandedToolRow(tool.id, open)}
 									autoCollapseWhenComplete={shouldAutoCollapseTools}
 									sessionId={current.sessionId}
 									onOpenPath={(path) => void openResource(path)}
@@ -686,6 +703,8 @@ function ConversationBody({
 									className="tool-batch-render-item"
 									tools={[tool]}
 									initialOpen={false}
+									open={expandedToolRows.get(tool.id) ?? false}
+									onOpenChange={(open) => updateExpandedToolRow(tool.id, open)}
 									autoCollapseWhenComplete={shouldAutoCollapseTools}
 									sessionId={current.sessionId}
 									onOpenPath={(path) => void openResource(path)}
@@ -753,6 +772,15 @@ function ConversationBody({
 		[],
 	);
 
+	const transcriptGap = useCallback(
+		(previous: ConversationRenderItem, current: ConversationRenderItem) =>
+			(previous.kind === "tool-stack" && current.kind === "tool-stack") ||
+			(isWebSearchTranscriptItem(previous) && isWebSearchTranscriptItem(current))
+				? 0
+				: DEFAULT_TRANSCRIPT_GAP,
+		[],
+	);
+
 	const historyStatus = state.loadingEarlier ? (
 		<div className="mx-auto flex items-center gap-2 py-2 text-sm text-muted-foreground" aria-live="polite" aria-busy="true">
 			<LoaderCircle className="size-4 animate-spin" />
@@ -788,12 +816,7 @@ function ConversationBody({
 					items={renderItems}
 					getKey={transcriptItemKey}
 					estimateHeight={estimateTranscriptItemHeight}
-					gap={(previous, current) =>
-						(previous.kind === "tool-stack" && current.kind === "tool-stack") ||
-						(isWebSearchTranscriptItem(previous) && isWebSearchTranscriptItem(current))
-							? 0
-							: DEFAULT_TRANSCRIPT_GAP
-					}
+					gap={transcriptGap}
 					header={historyStatus}
 					renderItem={renderConversationItem}
 					isItemEqual={conversationRenderItemEqual}
@@ -802,6 +825,7 @@ function ConversationBody({
 					onScrollerRef={handleScrollerRef}
 					onTotalListHeightChanged={handleTotalListHeightChanged}
 					onUserScrollAway={handleUserScrollAway}
+					sessionKey={state.sessionId ?? "empty"}
 					virtuosoRef={virtuosoRef}
 				/>
 				{!isAtBottom ? (
@@ -809,6 +833,7 @@ function ConversationBody({
 						aria-label="回到最新消息"
 						className="absolute bottom-4 left-[50%] translate-x-[-50%] rounded-full dark:bg-background dark:hover:bg-muted"
 						onClick={() => {
+							bottomFollowRef.current = true;
 							promptFollowRef.current = true;
 							setFollowOutput("auto");
 							scrollToBottom();
@@ -839,9 +864,22 @@ function ConversationBody({
 					onRetry={state.sessionId ? () => void actions.selectSession(state.sessionId!) : undefined}
 				/>
 			) : state.transcriptLoading && !state.transcript.length && !renderItems.length ? (
-				<div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground" aria-live="polite" aria-busy="true">
-					<LoaderCircle className="size-4 animate-spin" />
-					正在加载会话记录
+				<div className="mx-auto grid w-full max-w-3xl gap-4 py-4" aria-live="polite" aria-busy="true">
+					<div className="flex items-center justify-center gap-2 py-2 text-sm text-muted-foreground">
+						<LoaderCircle className="size-4 animate-spin" />
+						正在加载会话记录
+					</div>
+					{["72%", "58%", "81%", "46%"].map((width, index) => (
+						<div
+							key={width}
+							className={
+								index % 2 === 0
+									? "h-14 animate-pulse rounded-2xl bg-muted/35"
+									: "ml-auto h-12 animate-pulse rounded-2xl bg-muted/35"
+							}
+							style={{ width }}
+						/>
+					))}
 				</div>
 			) : state.transcriptError && !state.transcript.length && !renderItems.length ? (
 				<AgentErrorCard title="会话记录加载失败" message={state.transcriptError} onRetry={() => void actions.loadTranscript()} />

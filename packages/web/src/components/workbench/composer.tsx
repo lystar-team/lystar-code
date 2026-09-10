@@ -29,21 +29,28 @@ function thinkingLevelDisplayLabel(level: string): string {
 
 type ComposerProps = { state: WorkbenchState; actions: WorkbenchActions };
 
-function composerPropsEqual(previous: ComposerProps, next: ComposerProps): boolean {
+export function composerStateEqual(previous: WorkbenchState, next: WorkbenchState): boolean {
 	return (
-		previous.state.composerMode === next.state.composerMode &&
-		previous.state.connected === next.state.connected &&
-		previous.state.currentOperation === next.state.currentOperation &&
-		previous.state.currentProjectId === next.state.currentProjectId &&
-		previous.state.hiddenModelProviders === next.state.hiddenModelProviders &&
-		previous.state.models === next.state.models &&
-		previous.state.providers === next.state.providers &&
-		previous.state.queuedUserPrompts === next.state.queuedUserPrompts &&
-		previous.state.readOnly === next.state.readOnly &&
-		previous.state.session === next.state.session &&
-		previous.state.sessionId === next.state.sessionId &&
-		previous.state.sessionReady === next.state.sessionReady
+		previous.composerMode === next.composerMode &&
+		previous.connected === next.connected &&
+		previous.currentOperation === next.currentOperation &&
+		previous.currentProjectId === next.currentProjectId &&
+		previous.hiddenModelProviders === next.hiddenModelProviders &&
+		previous.liveCompaction === next.liveCompaction &&
+		previous.liveTools === next.liveTools &&
+		previous.liveTurnActive === next.liveTurnActive &&
+		previous.models === next.models &&
+		previous.providers === next.providers &&
+		previous.queuedUserPrompts === next.queuedUserPrompts &&
+		previous.readOnly === next.readOnly &&
+		previous.session === next.session &&
+		previous.sessionId === next.sessionId &&
+		previous.sessionReady === next.sessionReady
 	);
+}
+
+function composerPropsEqual(previous: ComposerProps, next: ComposerProps): boolean {
+	return composerStateEqual(previous.state, next.state);
 }
 
 export const Composer = memo(function Composer({ state, actions }: ComposerProps) {
@@ -60,7 +67,7 @@ export const Composer = memo(function Composer({ state, actions }: ComposerProps
 		setQueueActionId(undefined);
 	}, [state.sessionId]);
 	const disabled = !canSendPrompt(state);
-	const stopping = hasActiveSessionWork(state);
+	const stopping = !disabled && hasActiveSessionWork(state);
 	const handleQueueAction = async (queueId: string, action: "remove" | "steer") => {
 		setQueueActionId(queueId);
 		try {

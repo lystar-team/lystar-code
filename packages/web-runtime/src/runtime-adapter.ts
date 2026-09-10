@@ -1497,17 +1497,20 @@ class CoreRuntimeSession implements RuntimeSession {
 				code: "model_not_found",
 			});
 		}
-		await this.runtime.session.setModel(model);
+		await this.runtime.session.setModel(model, { persist: true });
+		await this.runtime.services.settingsManager.flush();
 		this.emitStateChanged();
 	}
 
 	async setThinkingLevel(level: ThinkingLevel): Promise<void> {
-		this.runtime.session.setThinkingLevel(level);
+		this.runtime.session.setThinkingLevel(level, { persist: true });
+		await this.runtime.services.settingsManager.flush();
 		this.emitStateChanged();
 	}
 
 	async cycleModel(direction: "forward" | "backward"): Promise<{ changed: boolean; isScoped: boolean }> {
-		const result = await this.runtime.session.cycleModel(direction);
+		const result = await this.runtime.session.cycleModel(direction, { persist: true });
+		await this.runtime.services.settingsManager.flush();
 		this.emitStateChanged();
 		return {
 			changed: result !== undefined,
@@ -1517,7 +1520,8 @@ class CoreRuntimeSession implements RuntimeSession {
 
 	async cycleThinkingLevel(): Promise<{ changed: boolean; supported: boolean }> {
 		const previous = this.runtime.session.thinkingLevel;
-		const level = this.runtime.session.cycleThinkingLevel();
+		const level = this.runtime.session.cycleThinkingLevel({ persist: true });
+		await this.runtime.services.settingsManager.flush();
 		this.emitStateChanged();
 		return { changed: level !== undefined && level !== previous, supported: level !== undefined };
 	}

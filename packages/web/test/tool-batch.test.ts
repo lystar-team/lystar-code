@@ -41,6 +41,8 @@ describe("Skill read tool display", () => {
 		expect(markup).toContain("lucide-sparkles");
 		expect(markup).toContain("size-4 shrink-0");
 		expect(markup).toContain("已加载 yean-develop-style 技能");
+		expect(markup).toContain("收起详情");
+		expect(markup.match(/data-transcript-resize-anchor="true"/gu)?.length).toBeGreaterThanOrEqual(2);
 		expect(markup).toContain("SKILL.md");
 		expect(markup).toContain("技能内容");
 	});

@@ -132,7 +132,7 @@ export function SessionButton({
 					<HoverCard openDelay={140} closeDelay={80}>
 						<HoverCardTrigger asChild>
 							<Button
-								className="w-full min-w-0 justify-start gap-2 py-2 pr-2 !pl-8 text-left text-xs"
+								className="h-8 w-full min-w-0 justify-start gap-2 py-1 pr-2 !pl-8 text-left text-xs"
 								variant={active ? "secondary" : "ghost"}
 								onClick={onClick}
 							>

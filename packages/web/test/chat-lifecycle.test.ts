@@ -5,6 +5,7 @@ import {
 	canSendPrompt,
 	clearsThinking,
 	committedToolCallIds,
+	hasActiveSessionSnapshot,
 	hasActiveSessionWork,
 	hasActiveToolActivities,
 	reconcileCommittedTurn,
@@ -12,7 +13,7 @@ import {
 	removeQueuedUserPrompt,
 	removeQueuedUserPromptByText,
 } from "../src/state/chat-lifecycle.ts";
-import type { WorkbenchState } from "../src/state/use-workbench.ts";
+import { restoreRuntimeActivities, type WorkbenchState } from "../src/state/use-workbench.ts";
 import type { WebOperation, WebTranscriptItem } from "../src/types.ts";
 
 const assistant: WebTranscriptItem = {
@@ -84,6 +85,33 @@ describe("chat lifecycle", () => {
 			currentOperation: undefined,
 		} as WorkbenchState;
 		expect(hasActiveSessionWork(staleSnapshot)).toBe(true);
+	});
+
+	it("终态信号会压过缓存中的运行工具和整理状态", () => {
+		const settled = {
+			...liveState(),
+			session: { activity: "idle", phase: "idle" },
+			currentOperation: undefined,
+			liveTurnActive: false,
+			liveCompaction: { status: "running", summaryCountAtStart: 0 },
+		} as WorkbenchState;
+
+		expect(hasActiveSessionWork(settled)).toBe(false);
+		expect(hasActiveSessionWork({ ...settled, currentOperation: operation("running", 1) })).toBe(true);
+	});
+
+	it("空闲快照会结束缓存中的旧 Live Turn", () => {
+		const snapshot = {
+			id: "session-1",
+			activity: "idle",
+			phase: "idle",
+			queuedFollowUpCount: 0,
+		} as WorkbenchState["session"];
+		const restored = restoreRuntimeActivities(liveState(), snapshot!);
+
+		expect(hasActiveSessionSnapshot(snapshot!)).toBe(false);
+		expect(restored.liveTurnActive).toBe(false);
+		expect(hasActiveSessionWork({ ...restored, session: snapshot, currentOperation: undefined })).toBe(false);
 	});
 
 	it("removes one optimistic prompt for each matching committed user message", () => {

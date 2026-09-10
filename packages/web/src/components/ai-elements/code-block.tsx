@@ -6,7 +6,7 @@ import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRe
 import type { BundledLanguage, ThemedToken } from "shiki";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { highlightCode, subscribeToCodeHighlight, type TokenizedCode } from "@/lib/code-highlighter";
+import { highlightCode, shouldHighlightCode, subscribeToCodeHighlight, type TokenizedCode } from "@/lib/code-highlighter";
 import { cn } from "@/lib/utils";
 
 export { highlightCode };
@@ -325,6 +325,7 @@ export const CodeBlock = ({
 	...props
 }: CodeBlockProps) => {
 	const contextValue = useMemo(() => ({ code }), [code]);
+	const renderPlainText = plainText || !shouldHighlightCode(code);
 
 	return (
 		<CodeBlockContext.Provider value={contextValue}>
@@ -338,7 +339,7 @@ export const CodeBlock = ({
 					code={code}
 					language={language}
 					showLineNumbers={showLineNumbers}
-					plainText={plainText}
+					plainText={renderPlainText}
 					transparent={transparent}
 					wrap={wrap}
 				/>

@@ -47,7 +47,7 @@ function assistantResponse(text: string): AssistantMessage {
 	};
 }
 
-function createExtensionTest(agentDir?: string) {
+function createExtensionTest(agentDir?: string, mode: ExtensionContext["mode"] = "print") {
 	const state: TestState = {
 		sessionId: "session-1",
 		sessionFile: "/tmp/session-1.jsonl",
@@ -74,6 +74,7 @@ function createExtensionTest(agentDir?: string) {
 		complete: vi.fn(async () => assistantResponse("默认标题")),
 	};
 	const context = {
+		mode,
 		model: activeModel,
 		modelRegistry,
 		sessionManager: {
@@ -115,10 +116,10 @@ describe("session name extension", () => {
 		tempDirs.push(agentDir);
 		writeFileSync(join(agentDir, "lystar.json"), JSON.stringify({ sessionName: { model: "upstream/gpt-5.6-luna" } }));
 
-		const test = createExtensionTest(agentDir);
+		const test = createExtensionTest(agentDir, "rpc");
 		await emit(test.handlers, "session_start", { type: "session_start", reason: "startup" }, test.context);
 		test.state.entries.push({ type: "message", message: { role: "user", content: "修复会话自动命名" } });
-		await emit(test.handlers, "agent_settled", { type: "agent_settled" }, test.context);
+		await emit(test.handlers, "before_agent_start", { prompt: "修复会话自动命名" }, test.context);
 		await flushAsyncWork();
 
 		expect(test.modelRegistry.find).toHaveBeenCalledWith("upstream", "gpt-5.6-luna");
@@ -130,6 +131,27 @@ describe("session name extension", () => {
 			expect.objectContaining({ reasoning: "low", maxTokens: 64, sessionId: "session-1" }),
 		);
 		expect(test.setSessionName).toHaveBeenCalledWith("默认标题");
+	});
+
+	it("starts RPC naming before the agent settles without blocking the main response", async () => {
+		const test = createExtensionTest(undefined, "rpc");
+		let resolveComplete: ((response: AssistantMessage) => void) | undefined;
+		test.modelRegistry.complete.mockImplementationOnce(
+			() =>
+				new Promise<AssistantMessage>((resolve) => {
+					resolveComplete = resolve;
+				}),
+		);
+		await emit(test.handlers, "session_start", { type: "session_start", reason: "startup" }, test.context);
+		await emit(test.handlers, "before_agent_start", { prompt: "首条 Prompt" }, test.context);
+		await flushAsyncWork();
+
+		expect(test.modelRegistry.complete).toHaveBeenCalled();
+		expect(test.setSessionName).not.toHaveBeenCalled();
+
+		resolveComplete?.(assistantResponse("自动标题"));
+		await flushAsyncWork();
+		expect(test.setSessionName).toHaveBeenCalledWith("自动标题");
 	});
 
 	it("does not let a failed naming request affect the session", async () => {

@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -19,6 +21,7 @@ interface TestSocket {
 }
 
 interface GatewayInternals {
+	server: Server;
 	createContext(id: string): TestContext;
 	handleHostEvent(context: TestContext, event: ServerEvent): void;
 	checkWebSocketLiveness(): void;
@@ -83,6 +86,33 @@ function internals(server: WebGatewayServer): GatewayInternals {
 function wait(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+test("Gateway 对缺失资源返回 404，只对页面导航回退首页", async (t) => {
+	const staticDir = await mkdtemp(join(tmpdir(), "lystar-web-static-"));
+	await writeFile(join(staticDir, "index.html"), "<!doctype html><title>LYStar</title>");
+	await writeFile(join(staticDir, "sw.js"), "self.addEventListener('fetch', () => {});");
+	const server = new WebGatewayServer({ ...createConfig(), staticDir });
+	await server.listen();
+	t.after(async () => {
+		await server.close();
+		await rm(staticDir, { recursive: true, force: true });
+	});
+	const address = internals(server).server.address();
+	assert.ok(address && typeof address === "object");
+	const baseUrl = `http://127.0.0.1:${address.port}`;
+
+	const missingScript = await fetch(`${baseUrl}/assets/missing.js`, { headers: { Accept: "text/javascript" } });
+	assert.equal(missingScript.status, 404);
+	assert.match(missingScript.headers.get("content-type") ?? "", /application\/json/u);
+
+	const navigation = await fetch(`${baseUrl}/sessions/example`, { headers: { Accept: "text/html" } });
+	assert.equal(navigation.status, 200);
+	assert.match(navigation.headers.get("content-type") ?? "", /text\/html/u);
+	assert.match(await navigation.text(), /<title>LYStar<\/title>/u);
+
+	const serviceWorker = await fetch(`${baseUrl}/sw.js`);
+	assert.equal(serviceWorker.headers.get("cache-control"), "no-cache");
+});
 
 test("Gateway 发送前把本条消息计入积压上限", async (t) => {
 	const server = new WebGatewayServer(createConfig());

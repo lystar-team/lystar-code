@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { getCodeHighlightCacheStats, highlightCode, subscribeToCodeHighlight } from "../src/lib/code-highlighter.ts";
+import {
+	getCodeHighlightCacheStats,
+	highlightCode,
+	MAX_HIGHLIGHT_CODE_CHARS,
+	shouldHighlightCode,
+	subscribeToCodeHighlight,
+} from "../src/lib/code-highlighter.ts";
 
 function waitForHighlight(code: string, language: "json" | "typescript"): Promise<void> {
 	return new Promise((resolve) => {
@@ -45,5 +51,18 @@ describe("code highlighter cache", () => {
 
 		expect(calls).toBe(0);
 		expect(getCodeHighlightCacheStats().listeners).toBe(0);
+	});
+
+	it("skips highlighting content that would create an unsafe DOM tree", () => {
+		const code = "x".repeat(MAX_HIGHLIGHT_CODE_CHARS + 1);
+		const before = getCodeHighlightCacheStats();
+		let calls = 0;
+
+		expect(shouldHighlightCode(code)).toBe(false);
+		expect(highlightCode(code, "typescript", () => calls++)).toBeNull();
+		const unsubscribe = subscribeToCodeHighlight(code, "typescript", () => calls++);
+		unsubscribe();
+		expect(calls).toBe(0);
+		expect(getCodeHighlightCacheStats()).toEqual(before);
 	});
 });

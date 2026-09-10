@@ -10,8 +10,9 @@ import {
 	XIcon,
 	ZoomInIcon,
 } from "lucide-react";
-import { useEffect, useState, type WheelEvent } from "react";
+import { useEffect, useRef, useState, type PointerEvent, type TouchEvent, type WheelEvent } from "react";
 import { cn } from "@/lib/utils";
+import { isAbsoluteResourcePath } from "@/lib/resource-path";
 import { webApi } from "../../adapters/host-protocol/api.ts";
 import type { FileResponse } from "../../types.ts";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog";
@@ -21,6 +22,7 @@ export interface ResourceImageItem {
 	src?: string;
 	path?: string;
 	pathLabel?: string;
+	projectId?: string;
 	sessionId?: string;
 	contentRef?: string;
 	mimeType?: string;
@@ -31,10 +33,13 @@ export interface ResourceImageProps {
 	src?: string;
 	path?: string;
 	pathLabel?: string;
+	projectId?: string;
 	sessionId?: string;
 	contentRef?: string;
 	alt?: string;
 	className?: string;
+	imageClassName?: string;
+	buttonClassName?: string;
 	onOpenPath?: (path: string) => void;
 	onPreview?: () => void;
 }
@@ -51,9 +56,43 @@ function imageDataUrl(result: FileResponse): string | undefined {
 	return `data:${result.mimeType};base64,${result.data}`;
 }
 
-function loadResourceImage(item: ResourceImageItem): Promise<string | undefined> {
+const MAX_RESOURCE_IMAGE_CACHE_BYTES = 12 * 1024 * 1024;
+
+type ResourceImageCacheEntry = {
+	promise: Promise<string | undefined>;
+	bytes: number;
+};
+
+const resourceImageCache = new Map<string, ResourceImageCacheEntry>();
+let resourceImageCacheBytes = 0;
+
+function resourceImageCacheKey(item: ResourceImageItem): string | undefined {
+	return item.sessionId && item.contentRef ? `${item.sessionId}\u0000${item.contentRef}` : undefined;
+}
+
+function removeResourceImageCacheEntry(key: string): void {
+	const entry = resourceImageCache.get(key);
+	if (!entry) return;
+	resourceImageCache.delete(key);
+	resourceImageCacheBytes -= entry.bytes;
+}
+
+function trimResourceImageCache(): void {
+	while (resourceImageCacheBytes > MAX_RESOURCE_IMAGE_CACHE_BYTES) {
+		const oldest = resourceImageCache.keys().next().value;
+		if (typeof oldest !== "string") break;
+		removeResourceImageCacheEntry(oldest);
+	}
+}
+
+function requestResourceImage(item: ResourceImageItem): Promise<string | undefined> {
 	if (item.src) return Promise.resolve(item.src);
-	if (item.path) return webApi.externalFile(item.path).then(imageDataUrl);
+	if (item.path) {
+		const request = item.projectId && !isAbsoluteResourcePath(item.path)
+			? webApi.projectFile(item.projectId, item.path)
+			: webApi.externalFile(item.path);
+		return request.then(imageDataUrl);
+	}
 	if (item.sessionId && item.contentRef) {
 		return webApi.readImageContent(item.sessionId, item.contentRef).then((result) => {
 			if (!result.data) return undefined;
@@ -61,6 +100,34 @@ function loadResourceImage(item: ResourceImageItem): Promise<string | undefined>
 		});
 	}
 	return Promise.resolve(undefined);
+}
+
+function loadResourceImage(item: ResourceImageItem): Promise<string | undefined> {
+	const key = resourceImageCacheKey(item);
+	if (!key) return requestResourceImage(item);
+	const cached = resourceImageCache.get(key);
+	if (cached) {
+		resourceImageCache.delete(key);
+		resourceImageCache.set(key, cached);
+		return cached.promise;
+	}
+	const entry: ResourceImageCacheEntry = { promise: Promise.resolve(undefined), bytes: 0 };
+	entry.promise = requestResourceImage(item).then(
+		(source) => {
+			if (resourceImageCache.get(key) === entry && source) {
+				entry.bytes = source.length * 2;
+				resourceImageCacheBytes += entry.bytes;
+				trimResourceImageCache();
+			}
+			return source;
+		},
+		(error: unknown) => {
+			if (resourceImageCache.get(key) === entry) removeResourceImageCacheEntry(key);
+			throw error;
+		},
+	);
+	resourceImageCache.set(key, entry);
+	return entry.promise;
 }
 
 function useResourceImageSource(item: ResourceImageItem) {
@@ -90,7 +157,7 @@ function useResourceImageSource(item: ResourceImageItem) {
 		return () => {
 			cancelled = true;
 		};
-	}, [item.contentRef, item.path, item.sessionId, item.src]);
+	}, [item.contentRef, item.path, item.projectId, item.sessionId, item.src]);
 
 	return { source, loading, failed };
 }
@@ -101,18 +168,34 @@ function resourceFileName(item: ResourceImageItem, index: number): string {
 	return name.includes(".") ? name : `${name}.png`;
 }
 
+function touchDistance(touches: { length: number; [index: number]: { clientX: number; clientY: number } }): number | undefined {
+	if (touches.length < 2) return undefined;
+	const first = touches[0];
+	const second = touches[1];
+	return Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY);
+}
+
 export function ResourceImageViewer({ items, open, initialIndex = 0, onOpenChange }: ResourceImageViewerProps) {
 	const [index, setIndex] = useState(initialIndex);
 	const [zoom, setZoom] = useState(1);
+	const [pan, setPan] = useState({ x: 0, y: 0 });
+	const [dragging, setDragging] = useState(false);
 	const [source, setSource] = useState<string | undefined>();
 	const [loading, setLoading] = useState(false);
 	const [failed, setFailed] = useState(false);
+	const pinchStartDistanceRef = useRef<number>();
+	const pinchStartZoomRef = useRef(1);
+	const dragStartRef = useRef<{ x: number; y: number }>();
+	const dragOriginRef = useRef({ x: 0, y: 0 });
+	const dragPointerIdRef = useRef<number>();
 	const current = items[index];
 
 	useEffect(() => {
 		if (!open || !items.length) return;
 		setIndex(Math.min(Math.max(initialIndex, 0), items.length - 1));
 		setZoom(1);
+		setPan({ x: 0, y: 0 });
+		setDragging(false);
 	}, [initialIndex, items.length, open]);
 
 	useEffect(() => {
@@ -138,7 +221,7 @@ export function ResourceImageViewer({ items, open, initialIndex = 0, onOpenChang
 		return () => {
 			cancelled = true;
 		};
-	}, [current?.contentRef, current?.path, current?.sessionId, current?.src, open]);
+	}, [current?.contentRef, current?.path, current?.projectId, current?.sessionId, current?.src, open]);
 
 	useEffect(() => {
 		if (!open || items.length < 2) return;
@@ -147,10 +230,12 @@ export function ResourceImageViewer({ items, open, initialIndex = 0, onOpenChang
 				event.preventDefault();
 				setIndex((value) => (value - 1 + items.length) % items.length);
 				setZoom(1);
+				setPan({ x: 0, y: 0 });
 			} else if (event.key === "ArrowRight") {
 				event.preventDefault();
 				setIndex((value) => (value + 1) % items.length);
 				setZoom(1);
+				setPan({ x: 0, y: 0 });
 			}
 		};
 		window.addEventListener("keydown", handleKeyDown);
@@ -159,14 +244,70 @@ export function ResourceImageViewer({ items, open, initialIndex = 0, onOpenChang
 
 	if (!current) return null;
 
-	const changeZoom = (delta: number) => setZoom((value) => Math.min(3, Math.max(0.5, value + delta)));
+	const applyZoom = (value: number) => {
+		const nextZoom = Math.min(3, Math.max(0.5, value));
+		setZoom(nextZoom);
+		if (nextZoom <= 1) setPan({ x: 0, y: 0 });
+	};
+	const changeZoom = (delta: number) => applyZoom(zoom + delta);
 	const move = (delta: number) => {
 		setIndex((value) => (value + delta + items.length) % items.length);
 		setZoom(1);
+		setPan({ x: 0, y: 0 });
 	};
 	const handleWheel = (event: WheelEvent<HTMLDivElement>) => {
 		event.preventDefault();
 		changeZoom(event.deltaY < 0 ? 0.1 : -0.1);
+	};
+	const handleTouchStart = (event: TouchEvent<HTMLDivElement>) => {
+		const distance = touchDistance(event.touches);
+		if (distance === undefined) return;
+		event.preventDefault();
+		pinchStartDistanceRef.current = distance;
+		pinchStartZoomRef.current = zoom;
+	};
+	const handleTouchMove = (event: TouchEvent<HTMLDivElement>) => {
+		const startDistance = pinchStartDistanceRef.current;
+		const distance = touchDistance(event.touches);
+		if (startDistance === undefined || distance === undefined) return;
+		event.preventDefault();
+		const nextZoom = pinchStartZoomRef.current * (distance / startDistance);
+		applyZoom(nextZoom);
+	};
+	const handleTouchEnd = (event: TouchEvent<HTMLDivElement>) => {
+		if (event.touches.length < 2) pinchStartDistanceRef.current = undefined;
+	};
+	const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
+		if (
+			event.pointerType !== "mouse" ||
+			event.button !== 0 ||
+			!source ||
+			zoom <= 1 ||
+			!(event.target instanceof HTMLImageElement)
+		) {
+			return;
+		}
+		event.preventDefault();
+		dragPointerIdRef.current = event.pointerId;
+		dragStartRef.current = { x: event.clientX, y: event.clientY };
+		dragOriginRef.current = pan;
+		setDragging(true);
+		event.currentTarget.setPointerCapture(event.pointerId);
+	};
+	const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
+		if (dragPointerIdRef.current !== event.pointerId || !dragStartRef.current) return;
+		event.preventDefault();
+		setPan({
+			x: dragOriginRef.current.x + event.clientX - dragStartRef.current.x,
+			y: dragOriginRef.current.y + event.clientY - dragStartRef.current.y,
+		});
+	};
+	const handlePointerEnd = (event: PointerEvent<HTMLDivElement>) => {
+		if (dragPointerIdRef.current !== event.pointerId) return;
+		if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+		dragPointerIdRef.current = undefined;
+		dragStartRef.current = undefined;
+		setDragging(false);
 	};
 	const download = () => {
 		if (!source) return;
@@ -206,7 +347,21 @@ export function ResourceImageViewer({ items, open, initialIndex = 0, onOpenChang
 					</button>
 				</div>
 
-				<div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden px-16 py-16 sm:px-24" onWheel={handleWheel}>
+				<div
+					className={cn(
+						"relative flex min-h-0 flex-1 touch-none items-center justify-center overflow-hidden px-16 py-16 cursor-grab sm:px-24",
+						dragging && "cursor-grabbing",
+					)}
+					onWheel={handleWheel}
+					onTouchStart={handleTouchStart}
+					onTouchMove={handleTouchMove}
+					onTouchEnd={handleTouchEnd}
+					onTouchCancel={handleTouchEnd}
+					onPointerDown={handlePointerDown}
+					onPointerMove={handlePointerMove}
+					onPointerUp={handlePointerEnd}
+					onPointerCancel={handlePointerEnd}
+				>
 					{items.length > 1 ? (
 						<button
 							className="absolute left-4 z-10 flex size-11 items-center justify-center rounded-full border border-white/10 bg-white/10 text-white/80 shadow-xl backdrop-blur-md transition-colors hover:bg-white/20 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 sm:left-8"
@@ -219,11 +374,14 @@ export function ResourceImageViewer({ items, open, initialIndex = 0, onOpenChang
 					) : null}
 					{source ? (
 						<img
-							className="max-h-[calc(100dvh-8rem)] max-w-[calc(100vw-8rem)] select-none object-contain transition-transform duration-100 ease-out"
+							className={cn(
+								"max-h-[calc(100dvh-8rem)] max-w-[calc(100vw-8rem)] select-none object-contain",
+								!dragging && "transition-transform duration-100 ease-out",
+							)}
 							src={source}
 							alt={current.alt ?? "图片"}
 							draggable={false}
-							style={{ transform: `scale(${zoom})` }}
+							style={{ transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})` }}
 						/>
 					) : loading ? (
 						<LoaderCircleIcon className="size-8 animate-spin text-white/60" />
@@ -272,10 +430,13 @@ export function ResourceImage({
 	src,
 	path,
 	pathLabel,
+	projectId,
 	sessionId,
 	contentRef,
 	alt = "图片",
 	className,
+	imageClassName,
+	buttonClassName,
 	onOpenPath,
 	onPreview,
 }: ResourceImageProps) {
@@ -284,6 +445,7 @@ export function ResourceImage({
 		src,
 		path,
 		pathLabel,
+		projectId,
 		sessionId,
 		contentRef,
 		alt,
@@ -296,14 +458,14 @@ export function ResourceImage({
 		<>
 			<div className={cn("grid min-w-0 gap-1.5", className)}>
 				<button
-					className="group relative flex min-h-24 w-fit max-w-full items-center justify-center overflow-hidden rounded-xl border border-border bg-muted/30 text-left transition-colors hover:border-primary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					className={cn("group relative flex min-h-24 w-fit max-w-full items-center justify-center overflow-hidden rounded-xl border border-border bg-muted/30 text-left transition-colors hover:border-primary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", buttonClassName)}
 					disabled={!source}
 					onClick={() => (onPreview ? onPreview() : setOpen(true))}
 					type="button"
 					aria-label={`放大${alt}`}
 				>
 					{source ? (
-						<img className="max-h-72 max-w-full object-contain" src={source} alt={alt} />
+						<img className={cn("max-h-72 max-w-full object-contain", imageClassName)} src={source} alt={alt} />
 					) : loading ? (
 						<LoaderCircleIcon className="m-8 size-5 animate-spin text-muted-foreground" />
 					) : (
@@ -359,6 +521,7 @@ export function ResourceImageGallery({
 						src={item.src}
 						path={item.path}
 						pathLabel={item.pathLabel}
+						projectId={item.projectId}
 						sessionId={item.sessionId}
 						contentRef={item.contentRef}
 						alt={item.alt}

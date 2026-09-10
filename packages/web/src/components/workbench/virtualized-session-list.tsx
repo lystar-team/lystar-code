@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-const SESSION_ROW_HEIGHT = 36;
-const SESSION_ROW_GAP = 4;
+const SESSION_ROW_HEIGHT = 32;
+const SESSION_ROW_GAP = 2;
 const SESSION_SLOT_HEIGHT = SESSION_ROW_HEIGHT + SESSION_ROW_GAP;
 const SESSION_OVERSCAN = 240;
 const INITIAL_RENDER_COUNT = 16;

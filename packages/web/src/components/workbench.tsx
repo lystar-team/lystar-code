@@ -2,6 +2,7 @@ import { FolderOpen, LogOut, Menu, PanelRight, Settings } from "lucide-react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { cn } from "../lib/utils";
+import { StabilityBoundary, StabilityFallbackPanel } from "./stability-boundary";
 import type { WorkbenchState } from "../state/use-workbench";
 import { sessionTitle } from "../state/use-workbench";
 import type { WebProject, WebSessionSummary } from "../types";
@@ -90,14 +91,28 @@ export function Workbench({
 				className="relative hidden shrink-0 border-r border-border/60 bg-background lg:flex"
 				style={{ width: `${sidebarWidth}px` }}
 			>
-				<ProjectRail
-					state={state}
-					actions={actions}
-					projects={projects}
-					currentProject={currentProject}
-					onAddProject={openDirectory}
-					onEditProject={setEditingProject}
-				/>
+				<StabilityBoundary
+					scope="project-rail"
+					resetKeys={[state.currentProjectId]}
+					fallback={({ error, reset }) => (
+						<StabilityFallbackPanel
+							className="h-full w-full"
+							title="项目栏没有正常显示"
+							message="聊天区域仍可使用。重新加载项目栏可以恢复导航。"
+							error={error}
+							onReset={reset}
+						/>
+					)}
+				>
+					<ProjectRail
+						state={state}
+						actions={actions}
+						projects={projects}
+						currentProject={currentProject}
+						onAddProject={openDirectory}
+						onEditProject={setEditingProject}
+					/>
+				</StabilityBoundary>
 				<div
 					// biome-ignore lint/a11y/useSemanticElements: 可拖拽分隔器需要保留指针事件和数值属性
 					role="separator"
@@ -124,15 +139,29 @@ export function Workbench({
 						<DialogTitle>项目与会话</DialogTitle>
 						<DialogDescription>选择项目和会话</DialogDescription>
 					</DialogHeader>
-					<ProjectRail
-						state={state}
-						actions={actions}
-						projects={projects}
-						currentProject={currentProject}
-						onAddProject={openDirectory}
-						onEditProject={setEditingProject}
-						onNavigate={closeMobileProjects}
-					/>
+					<StabilityBoundary
+						scope="mobile-project-rail"
+						resetKeys={[state.currentProjectId]}
+						fallback={({ error, reset }) => (
+							<StabilityFallbackPanel
+								className="h-full"
+								title="项目栏没有正常显示"
+								message="关闭面板后仍可使用当前会话。"
+								error={error}
+								onReset={reset}
+							/>
+						)}
+					>
+						<ProjectRail
+							state={state}
+							actions={actions}
+							projects={projects}
+							currentProject={currentProject}
+							onAddProject={openDirectory}
+							onEditProject={setEditingProject}
+							onNavigate={closeMobileProjects}
+						/>
+					</StabilityBoundary>
 				</DialogContent>
 			</Dialog>
 
@@ -197,24 +226,83 @@ export function Workbench({
 				<div className="relative flex min-h-0 flex-1 overflow-hidden">
 					<div className="flex min-w-0 flex-1 flex-col overflow-hidden">
 						<div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-							<ConversationView
-								state={state}
-								actions={actions}
-								sessionTitleText={sessionTitleText}
-							/>
+							<StabilityBoundary
+								scope="conversation"
+								resetKeys={[state.sessionId]}
+								fallback={({ error, reset }) => (
+									<StabilityFallbackPanel
+										className="min-h-0 flex-1"
+										title="聊天区域已停止异常渲染"
+										message="项目栏和输入区仍可使用。重新加载聊天记录可以恢复此区域。"
+										error={error}
+										onReset={() => {
+											reset();
+											void actions.loadTranscript();
+										}}
+									/>
+								)}
+							>
+								<ConversationView state={state} actions={actions} sessionTitleText={sessionTitleText} />
+							</StabilityBoundary>
 						</div>
-						<Composer state={state} actions={actions} />
+						<StabilityBoundary
+							scope="composer"
+							resetKeys={[state.sessionId]}
+							fallback={({ error, reset }) => (
+								<StabilityFallbackPanel
+									title="输入区没有正常显示"
+									message="聊天记录仍然保留。重新加载输入区后可以继续发送任务。"
+									error={error}
+									onReset={reset}
+								/>
+							)}
+						>
+							<Composer state={state} actions={actions} />
+						</StabilityBoundary>
 					</div>
 					{state.inspectorOpen ? (
 						<aside className="hidden min-h-0 w-[min(420px,34vw)] shrink-0 p-4 pl-0 xl:flex">
-							<InspectorPanel state={state} actions={actions} floating />
+							<StabilityBoundary
+								scope="inspector"
+								resetKeys={[state.currentProjectId, state.inspectorMode]}
+								fallback={({ error, reset }) => (
+									<StabilityFallbackPanel
+										className="h-full rounded-2xl border border-border/60"
+										title="审阅区没有正常显示"
+										message="聊天区域不受影响。"
+										error={error}
+										onReset={reset}
+									/>
+								)}
+							>
+								<InspectorPanel state={state} actions={actions} floating />
+							</StabilityBoundary>
 						</aside>
 					) : null}
 				</div>
 			</main>
 
 			<InspectorDialog state={state} actions={actions} />
-			<FilePreviewDialog state={state} actions={actions} />
+			<StabilityBoundary
+				scope="file-preview"
+				resetKeys={[state.filePath]}
+				fallback={({ error, reset }) => (
+					<div className="fixed inset-0 z-[80] flex items-center justify-center bg-background/85 p-5 backdrop-blur-sm">
+						<StabilityFallbackPanel
+							title="文件预览已停止异常渲染"
+							message="聊天区域没有受到影响。关闭预览后可以继续使用。"
+							error={error}
+							onReset={() => {
+								actions.closeFilePreview();
+								reset();
+							}}
+							retryLabel="关闭文件预览"
+						/>
+					</div>
+				)}
+			>
+				<FilePreviewDialog state={state} actions={actions} />
+			</StabilityBoundary>
 			{state.gitDiffLoading || state.gitDiff ? (
 				<Suspense fallback={null}>
 					<GitDiffDialog state={state} actions={actions} />

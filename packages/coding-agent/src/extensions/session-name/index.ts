@@ -2,6 +2,7 @@ import type { Api, AssistantMessage, Context, Model } from "@earendil-works/pi-a
 import { contentText } from "@earendil-works/pi-ai";
 import type {
 	AgentSettledEvent,
+	BeforeAgentStartEvent,
 	ExtensionAPI,
 	ExtensionContext,
 	ExtensionFactory,
@@ -154,11 +155,11 @@ export function createSessionNameExtension(agentDir?: string): ExtensionFactory 
 			eligible = false;
 		});
 
-		pi.on("agent_settled", (_event: AgentSettledEvent, ctx) => {
+		const startNameRequest = (ctx: ExtensionContext, userMessage: string | undefined) => {
 			if (!eligible || attempted || manualNameChanged || pending) return;
 
-			const userMessage = getFirstUserMessage(ctx.sessionManager.getBranch());
-			if (!userMessage) {
+			const normalizedMessage = userMessage?.trim();
+			if (!normalizedMessage) {
 				attempted = true;
 				return;
 			}
@@ -169,7 +170,7 @@ export function createSessionNameExtension(agentDir?: string): ExtensionFactory 
 			const controller = new AbortController();
 			pending = { controller, token };
 
-			void generateSessionName(ctx, userMessage, sessionId, agentDir, controller.signal)
+			void generateSessionName(ctx, normalizedMessage, sessionId, agentDir, controller.signal)
 				.then((name) => {
 					if (!name || controller.signal.aborted || token !== sessionToken || manualNameChanged) return;
 
@@ -185,11 +186,19 @@ export function createSessionNameExtension(agentDir?: string): ExtensionFactory 
 					}
 				})
 				.catch(() => {
-					// 自动命名失败不影响主会话。
+					// 自动命名失败不影响主会话，顶部继续使用首条 Prompt。
 				})
 				.finally(() => {
 					if (pending?.token === token) pending = undefined;
 				});
+		};
+
+		pi.on("before_agent_start", (event: BeforeAgentStartEvent, ctx) => {
+			if (ctx.mode === "rpc") startNameRequest(ctx, event.prompt);
+		});
+
+		pi.on("agent_settled", (_event: AgentSettledEvent, ctx) => {
+			startNameRequest(ctx, getFirstUserMessage(ctx.sessionManager.getBranch()));
 		});
 	};
 }

@@ -9,8 +9,8 @@ import {
 } from "react-virtuoso";
 
 export const DEFAULT_TRANSCRIPT_GAP = 12;
-const TRANSCRIPT_OVERSCAN = 640;
-const TRANSCRIPT_MIN_OVERSCAN_ITEMS = 6;
+const TRANSCRIPT_OVERSCAN = 480;
+const TRANSCRIPT_MIN_OVERSCAN_ITEMS = 4;
 const INITIAL_RENDER_ITEM_COUNT = 24;
 const CONVERSATION_EDGE_PADDING = 48;
 const TRANSCRIPT_FIRST_ITEM_INDEX = 1_000_000_000;
@@ -30,6 +30,30 @@ function transcriptGapAt<T>(items: readonly T[], index: number, gap: TranscriptG
 	if (index >= items.length - 1) return 0;
 	const value = typeof gap === "function" ? gap(items[index], items[index + 1], index) : gap;
 	return normalizeGap(value);
+}
+
+export function safeTranscriptItemKey<T>(
+	index: number,
+	item: T | undefined,
+	getKey: (item: T, index: number) => React.Key,
+): React.Key {
+	return item === undefined ? `virtual-placeholder:${index}` : getKey(item, index);
+}
+
+export function shouldFollowTranscriptResize(
+	followRequested: boolean,
+	lastUserScrollAt: number,
+	now: number,
+): boolean {
+	return followRequested && now - lastUserScrollAt >= 120;
+}
+
+export function shouldPreserveTranscriptResizeAnchor(
+	scrollTop: number,
+	scrollHeight: number,
+	clientHeight: number,
+): boolean {
+	return scrollHeight - scrollTop - clientHeight > 2;
 }
 
 export function buildTranscriptHeightEstimates<T>(
@@ -108,17 +132,21 @@ function useTranscriptRenderer<T>({
 	itemsRef.current = items;
 	gapRef.current = gap ?? DEFAULT_TRANSCRIPT_GAP;
 
-	const [heightEstimates] = useState(() => {
+	const heightEstimates = useMemo(() => {
 		const estimates = buildTranscriptHeightEstimates(items, estimateHeight, gap ?? DEFAULT_TRANSCRIPT_GAP);
 		if (edgePadding > 0 && estimates.length) {
 			estimates[0] += edgePadding;
 			estimates[estimates.length - 1] += edgePadding;
 		}
 		return estimates;
-	});
-	const computeItemKey = useCallback((index: number, item: T) => getKey(item, index), [getKey]);
+	}, [edgePadding, estimateHeight, gap, items]);
+	const computeItemKey = useCallback(
+		(index: number, item: T | undefined) => safeTranscriptItemKey(index, item, getKey),
+		[getKey],
+	);
 	const itemContent = useCallback(
-		(index: number, item: T) => {
+		(index: number, item: T | undefined) => {
+			if (item === undefined) return null;
 			const currentItems = itemsRef.current;
 			return (
 				<VirtualizedTranscriptRow
@@ -227,8 +255,11 @@ const ConversationTranscriptScroller = forwardRef<
 			ref={attachScroller}
 			className="conversation-scroll min-w-0 max-w-full overflow-auto overscroll-y-contain"
 			style={{ ...style, overflowAnchor: "none" }}
-			onKeyDown={(event) => {
+			onKeyDownCapture={(event) => {
 				if (SCROLL_AWAY_KEYS.has(event.key)) contextRef.current.onUserScrollAway();
+			}}
+			onWheelCapture={(event) => {
+				if (event.deltaY < 0) contextRef.current.onUserScrollAway();
 			}}
 			onPointerDownCapture={(event) => {
 				const target = event.target;
@@ -250,9 +281,6 @@ const ConversationTranscriptScroller = forwardRef<
 				const element = event.currentTarget;
 				if (element.scrollHeight - element.scrollTop - element.clientHeight > 2)
 					contextRef.current.onUserScrollAway();
-			}}
-			onWheel={(event) => {
-				if (event.deltaY < 0) contextRef.current.onUserScrollAway();
 			}}
 		>
 			{context.header ? (
@@ -284,7 +312,7 @@ const CONVERSATION_TRANSCRIPT_COMPONENTS = {
 	Scroller: ConversationTranscriptScroller,
 };
 
-type TranscriptWindowAnchor = { firstItemIndex: number; firstKey: string };
+type TranscriptWindowAnchor = { sessionKey: string; firstItemIndex: number; firstKey: string };
 
 export function resolveTranscriptFirstItemIndex(
 	previous: TranscriptWindowAnchor | undefined,
@@ -302,9 +330,11 @@ export function transcriptDataIndex(index: number, firstItemIndex: number): numb
 function useTranscriptFirstItemIndex<T>(
 	items: readonly T[],
 	getKey: (item: T, index: number) => string,
+	sessionKey: string,
 ): number {
 	const committedWindowRef = useRef<TranscriptWindowAnchor>();
-	const previous = committedWindowRef.current;
+	const committed = committedWindowRef.current;
+	const previous = committed?.sessionKey === sessionKey ? committed : undefined;
 	const firstKey = items.length ? getKey(items[0], 0) : "";
 	let firstItemIndex = previous?.firstItemIndex ?? TRANSCRIPT_FIRST_ITEM_INDEX;
 	if (previous && firstKey !== previous.firstKey) {
@@ -313,8 +343,8 @@ function useTranscriptFirstItemIndex<T>(
 	}
 
 	useLayoutEffect(() => {
-		committedWindowRef.current = { firstItemIndex, firstKey };
-	}, [firstItemIndex, firstKey]);
+		committedWindowRef.current = { sessionKey, firstItemIndex, firstKey };
+	}, [firstItemIndex, firstKey, sessionKey]);
 	return firstItemIndex;
 }
 
@@ -326,6 +356,7 @@ export interface VirtualizedConversationTranscriptProps<T>
 	onScrollerRef: (element: HTMLElement | null) => void;
 	onTotalListHeightChanged: (height: number) => void;
 	onUserScrollAway: () => void;
+	sessionKey: string;
 	virtuosoRef: Ref<VirtuosoHandle>;
 }
 
@@ -340,6 +371,7 @@ export function VirtualizedConversationTranscript<T>({
 	onScrollerRef,
 	onTotalListHeightChanged,
 	onUserScrollAway,
+	sessionKey,
 	virtuosoRef,
 	isItemEqual,
 	gap = DEFAULT_TRANSCRIPT_GAP,
@@ -366,6 +398,14 @@ export function VirtualizedConversationTranscript<T>({
 	);
 	const handleResizeAnchor = useCallback(
 		(element: HTMLElement) => {
+			const scroller = scrollerElementRef.current;
+			if (
+				!scroller ||
+				!shouldPreserveTranscriptResizeAnchor(scroller.scrollTop, scroller.scrollHeight, scroller.clientHeight)
+			) {
+				resizeAnchorRef.current = undefined;
+				return;
+			}
 			resizeAnchorRef.current = { element, top: element.getBoundingClientRect().top };
 			onUserScrollAway();
 		},
@@ -404,19 +444,21 @@ export function VirtualizedConversationTranscript<T>({
 		}),
 		[header, handleResizeAnchor, handleScrollerRef, onUserScrollAway],
 	);
-	const firstItemIndex = useTranscriptFirstItemIndex(items, getKey);
+	const firstItemIndex = useTranscriptFirstItemIndex(items, getKey, sessionKey);
 	const computeConversationItemKey = useCallback(
-		(index: number, item: T) => renderer.computeItemKey(transcriptDataIndex(index, firstItemIndex), item),
+		(index: number, item: T | undefined) =>
+			renderer.computeItemKey(transcriptDataIndex(index, firstItemIndex), item),
 		[firstItemIndex, renderer.computeItemKey],
 	);
 	const conversationItemContent = useCallback(
-		(index: number, item: T) => renderer.itemContent(transcriptDataIndex(index, firstItemIndex), item),
+		(index: number, item: T | undefined) => renderer.itemContent(transcriptDataIndex(index, firstItemIndex), item),
 		[firstItemIndex, renderer.itemContent],
 	);
 
 	if (!items.length) return null;
 	return (
 		<Virtuoso
+			key={sessionKey}
 			ref={virtuosoRef}
 			alignToBottom
 			atBottomStateChange={atBottomStateChange}

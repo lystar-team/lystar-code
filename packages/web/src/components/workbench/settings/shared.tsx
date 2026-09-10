@@ -12,7 +12,7 @@ export function SettingSection({ title, children }: { title: string; children: R
 
 export function StatText({ label, value }: { label: string; value: string }) {
 	return (
-		<Card className="min-w-0 shadow-none">
+		<Card className="min-w-0 rounded-xl py-2 shadow-none">
 			<CardContent className="p-3">
 				<p className="text-xs text-muted-foreground">{label}</p>
 				<p className="mt-1 truncate font-mono text-sm">{value}</p>

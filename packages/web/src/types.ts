@@ -78,6 +78,8 @@ export interface FileResponse {
 	path: string;
 	mimeType: string;
 	byteLength: number;
+	previewByteLength?: number;
+	truncated?: boolean;
 	content?: string;
 	data?: string;
 }

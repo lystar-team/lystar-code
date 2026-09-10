@@ -5,13 +5,14 @@ import { type TranscriptToolViewModel, toSessionItemViewModel } from "../../adap
 import { cn } from "../../lib/utils";
 import type { WorkbenchState } from "../../state/use-workbench";
 import { CodeBlock, CodeBlockActions, CodeBlockCopyButton, CodeBlockDownloadButton, CodeBlockFilename, CodeBlockHeader, CodeBlockTitle } from "../ai-elements/code-block";
-import { Message, MessageAction, MessageActions, MessageContent, MessageResponse } from "../ai-elements/message";
+import { Message, MessageAction, MessageActions, MessageContent, MessageResponse, PromptResponse } from "../ai-elements/message";
 import { PromptTokenContent, hasPromptTokenCandidates } from "../ai-elements/prompt-token.tsx";
 import { ResourceImage } from "../ai-elements/resource-preview";
 import { Source, Sources, SourcesContent, SourcesTrigger } from "../ai-elements/sources";
 import { Task, TaskContent, TaskTrigger } from "../ai-elements/task";
 import { CompactionSummaryCard } from "./compaction-card";
 import { ToolBatch } from "../ai-elements/tool-batch";
+import { StabilityBoundary } from "../stability-boundary";
 import { Button } from "../ui/button";
 import type { WorkbenchActions } from "./types";
 
@@ -66,22 +67,36 @@ export const TranscriptMessageView = memo(function TranscriptMessageView({
 		>
 			<TranscriptSources urls={sources} />
 			<MessageContent>
-				{role === "user" && hasPromptTokenCandidates(text) ? (
-					<PromptTokenContent text={text} projectId={projectId} sessionId={sessionId} />
-				) : (
-					<MessageResponse
-						mode={mode}
-						parseIncompleteMarkdown
-						linkSafety={{ enabled: true }}
-						controls={{ code: { copy: true, download: true }, table: { copy: true, download: true } }}
-						onOpenPath={(path) => void onOpenPath(path)}
-					>
-						{text || " "}
-					</MessageResponse>
-				)}
+				<StabilityBoundary
+					scope={`message:${role}`}
+					fallback={() => (
+						<pre className="max-w-full whitespace-pre-wrap break-words rounded-lg bg-muted/30 p-3 font-mono text-sm" role="alert">
+							{text || "消息内容渲染失败"}
+						</pre>
+					)}
+				>
+					{role === "user" && hasPromptTokenCandidates(text) ? (
+						<PromptTokenContent text={text} projectId={projectId} sessionId={sessionId} />
+					) : role === "user" ? (
+						<PromptResponse>{text || " "}</PromptResponse>
+					) : (
+						<MessageResponse
+							mode={mode}
+							parseIncompleteMarkdown
+							linkSafety={{ enabled: true }}
+							controls={{ code: { copy: true, download: true }, table: { copy: true, download: true } }}
+							onOpenPath={(path) => void onOpenPath(path)}
+							projectId={projectId}
+						>
+							{text || " "}
+						</MessageResponse>
+					)}
+				</StabilityBoundary>
 				<TranscriptAttachments attachments={attachments} sessionId={sessionId} />
 			</MessageContent>
-			{showCopy && role === "assistant" && text ? <CopyMessageAction text={text} /> : null}
+			{((role === "user" && text) || (showCopy && role === "assistant" && text)) ? (
+				<CopyMessageAction text={text} role={role === "assistant" ? "assistant" : "user"} />
+			) : null}
 		</Message>
 	);
 });
@@ -134,7 +149,11 @@ export const TranscriptItemView = memo(function TranscriptItemView({
 		<Task defaultOpen>
 			<TaskTrigger title={viewModel.title} />
 			<TaskContent>
-				<MessageResponse mode="static" onOpenPath={(path) => void onOpenPath(path)}>
+				<MessageResponse
+					mode="static"
+					onOpenPath={(path) => void onOpenPath(path)}
+					projectId={projectId}
+				>
 					{viewModel.text}
 				</MessageResponse>
 			</TaskContent>
@@ -226,8 +245,9 @@ export function CodeBlockView({
 	);
 }
 
-function CopyMessageAction({ text }: { text: string }) {
+function CopyMessageAction({ text, role }: { text: string; role: "user" | "assistant" }) {
 	const [copied, setCopied] = useState(false);
+	const label = role === "user" ? "复制" : "复制回复";
 	const copy = async () => {
 		try {
 			await navigator.clipboard.writeText(text);
@@ -238,8 +258,13 @@ function CopyMessageAction({ text }: { text: string }) {
 		}
 	};
 	return (
-		<MessageActions className="opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-			<MessageAction label="复制回复" tooltip="复制回复" onClick={() => void copy()}>
+		<MessageActions
+			className={cn(
+				"opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100",
+				role === "user" && "self-end",
+			)}
+		>
+			<MessageAction label={label} tooltip={label} onClick={() => void copy()}>
 				{copied ? <Check className="size-4" /> : <Clipboard className="size-4" />}
 			</MessageAction>
 		</MessageActions>
