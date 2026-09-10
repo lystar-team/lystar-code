@@ -2,17 +2,6 @@ import { defineConfig, mergeConfig } from "vitest/config";
 import baseConfig, { workspaceSourcePaths } from "../../vitest.base.ts";
 
 const TEST_FILES = {
-	ci: [
-		"test/args.test.ts",
-		"test/config.test.ts",
-		"test/model-resolver.test.ts",
-		"test/package-distribution.test.ts",
-		"test/path-utils.test.ts",
-		"test/resource-loader.test.ts",
-		"test/skills.test.ts",
-		"test/tools.test.ts",
-		"test/web-command.test.ts",
-	],
 	live: [
 		"test/agent-session-branching.test.ts",
 		"test/agent-session-compaction.test.ts",

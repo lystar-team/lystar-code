@@ -4,6 +4,7 @@ import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { restoreSandboxEnv } from "../packages/coding-agent/dist/bun/restore-sandbox-env.js";
 import { APP_NAME, VERSION } from "../packages/coding-agent/dist/config.js";
 import { loadWebConfig } from "../packages/web-gateway/dist/web-config.js";
+import { runWebServiceAction } from "../packages/web-gateway/dist/gateway-service.js";
 
 process.title = APP_NAME;
 process.emitWarning = () => {};
@@ -23,7 +24,7 @@ if (args[0] === "web") {
 	} else if (args.length > 1 && !foreground) {
 		if (args[1] === "service") {
 			const { runWebServiceCommand } = await import("../packages/coding-agent/dist/cli/web-command.js");
-			await runWebServiceCommand(args.slice(2));
+			await runWebServiceCommand(args.slice(2), { gatewayModule: { runWebServiceAction } });
 		} else {
 			const { runWebControlCommand } = await import("../packages/coding-agent/dist/cli/web-command.js");
 			await runWebControlCommand(args.slice(1), { gatewayModule: { loadWebConfig } });

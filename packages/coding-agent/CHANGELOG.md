@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.85.1-lystar.4] - 2026-09-10
+
+### Changed
+
+- 删除默认 push/PR 自动 CI 及其 changed-file planner，保留 Release workflow 和扩展质量 workflow。
+
+### Fixed
+
+- 修复 Bun 发布入口执行 `lc web service` 时未注入 Web Gateway service action，导致 Web Service 命令无法调用实际服务逻辑的问题。
+
 ## [0.85.1-lystar.3] - 2026-09-10
 
 ### Fixed

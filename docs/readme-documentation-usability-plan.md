@@ -507,7 +507,6 @@ scripts/install.sh
 scripts/install.ps1
 scripts/test-install-sh.sh
 scripts/test-install-ps1.ps1
-.github/workflows/ci.yml
 .github/workflows/release.yml
 ```
 
