@@ -14,6 +14,7 @@ import type {
 	JsonValue,
 	ModelRef,
 	PackageSummary,
+	ProjectFileSaveResult,
 	ProjectInstruction,
 	ProjectResource,
 	ProjectTrust,
@@ -256,6 +257,7 @@ export interface RuntimeAdapter {
 	completeProjectFiles(cwd: string, query: string, limit: number): CompletionItem[];
 	resolveProjectResource(cwd: string, target: string, line?: number, column?: number): ProjectResource;
 	readProjectResource(cwd: string, path: string, offset: number, limit: number): ContentChunk;
+	saveProjectFile(cwd: string, path: string, content: string, expectedHash: string): ProjectFileSaveResult;
 	resolveExternalResource(target: string, line?: number, column?: number): ProjectResource;
 	readExternalResource(path: string, accessToken: string, offset: number, limit: number): ContentChunk;
 	getAbout(): JsonValue;

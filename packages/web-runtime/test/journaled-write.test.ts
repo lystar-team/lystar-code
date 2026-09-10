@@ -311,6 +311,16 @@ function setup() {
 		completeProjectFiles: () => [],
 		resolveProjectResource: () => ({}),
 		readProjectResource: () => ({}),
+		saveProjectFile: () => {
+			counts.save_project_file = (counts.save_project_file ?? 0) + 1;
+			return {
+				path: "src/app.ts",
+				mimeType: "text/plain; charset=utf-8",
+				byteLength: 4,
+				contentHash: "saved-hash",
+				contentVersion: "4:1:2",
+			};
+		},
 		resolveExternalResource: () => ({}),
 		readExternalResource: () => ({}),
 		getDiagnostics: async () => ({}),
@@ -438,6 +448,17 @@ function request(command: string, cwd: string, sessionPath: string, leaseId: str
 			return { command, cwd, path: "skill.md", scope: "project", enabled: true, ...identity };
 		case "save_project_instruction":
 			return { command, cwd, fileName: "AGENTS.md", content: "# Project", ...identity };
+		case "save_project_file":
+			return {
+				command,
+				sessionPath,
+				leaseId,
+				cwd,
+				path: "src/app.ts",
+				content: "next",
+				expectedHash: "before-hash",
+				...identity,
+			};
 		case "save_host_instruction":
 			return { command, fileName: "AGENTS.md", content: "# Host", ...identity };
 		case "set_setting":
@@ -484,6 +505,7 @@ const WRITE_COMMANDS = [
 	"delete_session",
 	"set_skill_enabled",
 	"save_project_instruction",
+	"save_project_file",
 	"save_host_instruction",
 	"set_setting",
 	"set_project_trust",
@@ -508,6 +530,7 @@ const SESSION_COMMANDS = new Set([
 	"export_session",
 	"set_setting",
 	"set_project_trust",
+	"save_project_file",
 	"set_entry_label",
 	"navigate_session_tree",
 	"abort_subagent",

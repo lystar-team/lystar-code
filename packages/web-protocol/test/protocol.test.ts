@@ -474,6 +474,39 @@ describe("Web Runtime Protocol v1", () => {
 		}
 	});
 
+	it("strictly decodes project file saves and validates their result", () => {
+		const decoder = new ClientMessageDecoder();
+		const message = {
+			type: "request" as const,
+			id: "save-file",
+			request: {
+				command: "save_project_file" as const,
+				cwd: "/tmp/project",
+				path: "src/app.ts",
+				content: "export const value = 2;\n",
+				expectedHash: "before-hash",
+				clientInstanceId: "client",
+				clientRequestId: "save-file-1",
+			},
+		};
+		expect(decoder.push(encodeClientMessage(message))).toEqual([message]);
+		expect(() =>
+			assertWorkspaceCommandResult("save_project_file", {
+				path: "src/app.ts",
+				mimeType: "text/typescript",
+				byteLength: 24,
+				contentHash: "after-hash",
+				contentVersion: "24:1:2",
+			}),
+		).not.toThrow();
+		expect(() =>
+			encodeClientMessage({
+				...message,
+				request: { ...message.request, expectedHash: "" },
+			}),
+		).toThrow();
+	});
+
 	it("rejects Workspace oversized clipboard, tree, package, and settings payloads", () => {
 		const decoder = new ClientMessageDecoder();
 		expect(() =>

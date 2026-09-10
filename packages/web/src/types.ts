@@ -82,7 +82,14 @@ export interface FileResponse {
 	truncated?: boolean;
 	content?: string;
 	data?: string;
+	contentHash?: string;
+	contentVersion?: string;
 }
+
+export type FileMetadataResponse = Pick<
+	FileResponse,
+	"kind" | "path" | "mimeType" | "byteLength" | "contentVersion"
+>;
 
 export interface ImageUploadResponse {
 	path: string;

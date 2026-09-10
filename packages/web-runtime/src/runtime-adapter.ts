@@ -103,6 +103,7 @@ import type {
 	JsonValue,
 	ModelRef,
 	PackageSummary,
+	ProjectFileSaveResult,
 	ProjectInstruction,
 	ProjectResource,
 	ProjectTrust,
@@ -155,6 +156,7 @@ const HOST_VERSION = process.env.PI_WEB_RUNTIME_VERSION ?? readHostVersion() ?? 
 const execFileAsync = promisify(execFile);
 const GIT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 const GIT_EDITOR_CONTENT_MAX_BYTES = 2 * 1024 * 1024;
+const PROJECT_TEXT_EDITOR_MAX_BYTES = 2 * 1024 * 1024;
 const PROJECT_RESOURCE_MAX_BYTES = 32 * 1024 * 1024;
 const PROJECT_INSTRUCTION_NAMES = ["AGENTS.override.md", "AGENTS.md"] as const;
 const IMAGE_MIME_TYPES: Readonly<Record<string, string>> = {
@@ -181,6 +183,11 @@ const BINARY_MIME_TYPES: Readonly<Record<string, string>> = {
 
 function contentHash(content: string | Uint8Array): string {
 	return createHash("sha256").update(content).digest("hex");
+}
+
+function fileContentVersion(path: string): string {
+	const stat = statSync(path);
+	return contentHash(`${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`);
 }
 
 function canonicalDirectory(path: string): string {
@@ -236,11 +243,11 @@ function canonicalExternalFile(input: string): string {
 	return path;
 }
 
-function atomicWriteUtf8(path: string, content: string): void {
+function atomicWriteUtf8(path: string, content: string, mode?: number): void {
 	const temporaryPath = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
 	let file: number | undefined;
 	try {
-		file = openSync(temporaryPath, "wx");
+		file = openSync(temporaryPath, "wx", mode);
 		writeFileSync(file, content, "utf8");
 		fsyncSync(file);
 		closeSync(file);
@@ -2017,6 +2024,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			displayPath: relative(resolved.root, resolved.path).split(sep).join("/") || basename(resolved.path),
 			...type,
 			byteLength: stat.size,
+			contentVersion: fileContentVersion(resolved.path),
 			...((line ?? parsed.line) ? { line: line ?? parsed.line } : {}),
 			...((column ?? parsed.column) ? { column: column ?? parsed.column } : {}),
 		};
@@ -2024,6 +2032,46 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 
 	readProjectResource(cwd: string, path: string, offset: number, limit: number): ContentChunk {
 		return readResourceFile(canonicalProjectFile(cwd, path).path, offset, limit);
+	}
+
+	saveProjectFile(cwd: string, path: string, content: string, expectedHash: string): ProjectFileSaveResult {
+		const resolved = canonicalProjectFile(cwd, path);
+		const stat = statSync(resolved.path);
+		if (fileMimeType(resolved.path).kind !== "text") {
+			throw Object.assign(new Error("只有文本文件支持在线编辑"), {
+				code: "project_file_not_editable",
+				retryable: false,
+			});
+		}
+		if (stat.size > PROJECT_TEXT_EDITOR_MAX_BYTES) {
+			throw Object.assign(new Error("文件超过 2 MiB 的在线编辑上限"), {
+				code: "project_file_too_large",
+				retryable: false,
+			});
+		}
+		const current = readFileSync(resolved.path);
+		if (contentHash(current) !== expectedHash) {
+			throw Object.assign(new Error("文件已被外部修改，请重新加载后再保存"), {
+				code: "project_file_conflict",
+				retryable: true,
+			});
+		}
+		const next = Buffer.from(content, "utf8");
+		if (next.byteLength > PROJECT_TEXT_EDITOR_MAX_BYTES) {
+			throw Object.assign(new Error("文件超过 2 MiB 的在线编辑上限"), {
+				code: "project_file_too_large",
+				retryable: false,
+			});
+		}
+		atomicWriteUtf8(resolved.path, content, stat.mode);
+		const saved = statSync(resolved.path);
+		return {
+			path: relative(resolved.root, resolved.path).split(sep).join("/") || basename(resolved.path),
+			mimeType: "text/plain; charset=utf-8",
+			byteLength: saved.size,
+			contentHash: contentHash(next),
+			contentVersion: fileContentVersion(resolved.path),
+		};
 	}
 
 	resolveExternalResource(target: string, line?: number, column?: number): ProjectResource {
@@ -2040,6 +2088,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			displayPath: path,
 			...fileMimeType(path),
 			byteLength: stat.size,
+			contentVersion: fileContentVersion(path),
 			...((line ?? parsed.line) ? { line: line ?? parsed.line } : {}),
 			...((column ?? parsed.column) ? { column: column ?? parsed.column } : {}),
 			accessToken,

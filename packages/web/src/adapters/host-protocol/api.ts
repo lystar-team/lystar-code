@@ -2,6 +2,7 @@ import { createUuid } from "@lystar/code-web-protocol";
 import type {
 	BootstrapResponse,
 	DirectoryListing,
+	FileMetadataResponse,
 	FileResponse,
 	GatewayEvent,
 	GitDiffResponse,
@@ -210,6 +211,31 @@ export class WebApi {
 		return this.request<FileResponse>(
 			`/api/projects/${encodeURIComponent(projectId)}/file?path=${encodeURIComponent(path)}`,
 		);
+	}
+
+	async projectFileMetadata(projectId: string, path: string): Promise<FileMetadataResponse> {
+		return this.request<FileMetadataResponse>(
+			`/api/projects/${encodeURIComponent(projectId)}/file?path=${encodeURIComponent(path)}&metadata=true`,
+		);
+	}
+
+	async saveProjectFile(
+		projectId: string,
+		path: string,
+		content: string,
+		expectedHash: string,
+		sessionId?: string,
+	): Promise<FileResponse> {
+		return this.request<FileResponse>(`/api/projects/${encodeURIComponent(projectId)}/file`, {
+			method: "POST",
+			body: JSON.stringify({
+				path,
+				content,
+				expectedHash,
+				...(sessionId ? { sessionId } : {}),
+				clientRequestId: createUuid(),
+			}),
+		});
 	}
 
 	async externalFile(path: string): Promise<FileResponse> {

@@ -158,7 +158,7 @@ describe("Web Gateway Runtime 协议升级", () => {
 		);
 		try {
 			assert.equal(connected.client.getSnapshot().hello?.protocolVersion, RUNTIME_PROTOCOL_VERSION);
-			assert.equal(RUNTIME_PROTOCOL_VERSION, 3);
+			assert.equal(RUNTIME_PROTOCOL_VERSION, 4);
 			assert.equal(legacy.exitCode === null && legacy.signalCode === null, false);
 			children.delete(legacy);
 		} finally {

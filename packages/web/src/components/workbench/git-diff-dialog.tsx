@@ -1,111 +1,13 @@
 import type * as Monaco from "monaco-editor/editor/editor.api.js";
 import { GitCompare, LoaderCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { languageForPath } from "./file-preview-dialog";
+import { monacoLanguageForPath } from "./file-language";
+import { ensureMonacoLanguage, loadMonacoRuntime, setMonacoTheme } from "./monaco-runtime";
 import { CodeBlockView } from "./transcript";
 import type { WorkbenchState } from "../../state/use-workbench";
 import { Badge } from "../ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import type { WorkbenchActions } from "./types";
-
-interface MonacoEnvironment {
-	getWorker: (moduleId: string, label: string) => Worker;
-}
-
-const globalScope = globalThis as typeof globalThis & { MonacoEnvironment?: MonacoEnvironment };
-
-async function loadMonacoRuntime() {
-	const [monaco, editorWorkerModule] = await Promise.all([
-		import("monaco-editor/editor/editor.api.js"),
-		import("monaco-editor/editor/editor.worker.js?worker"),
-	]);
-	globalScope.MonacoEnvironment = {
-		getWorker() {
-			return new editorWorkerModule.default();
-		},
-	};
-	return monaco;
-}
-
-const lazyLanguageLoaders: Record<string, () => Promise<unknown>> = {
-	bat: () => import("monaco-editor/languages/definitions/bat/register.js"),
-	c: () => import("monaco-editor/languages/definitions/cpp/register.js"),
-	cpp: () => import("monaco-editor/languages/definitions/cpp/register.js"),
-	csharp: () => import("monaco-editor/languages/definitions/csharp/register.js"),
-	css: () => import("monaco-editor/languages/definitions/css/register.js"),
-	dart: () => import("monaco-editor/languages/definitions/dart/register.js"),
-	dockerfile: () => import("monaco-editor/languages/definitions/dockerfile/register.js"),
-	go: () => import("monaco-editor/languages/definitions/go/register.js"),
-	graphql: () => import("monaco-editor/languages/definitions/graphql/register.js"),
-	hcl: () => import("monaco-editor/languages/definitions/hcl/register.js"),
-	html: () => import("monaco-editor/languages/definitions/html/register.js"),
-	ini: () => import("monaco-editor/languages/definitions/ini/register.js"),
-	java: () => import("monaco-editor/languages/definitions/java/register.js"),
-	javascript: () => import("monaco-editor/languages/definitions/javascript/register.js"),
-	julia: () => import("monaco-editor/languages/definitions/julia/register.js"),
-	kotlin: () => import("monaco-editor/languages/definitions/kotlin/register.js"),
-	less: () => import("monaco-editor/languages/definitions/less/register.js"),
-	markdown: () => import("monaco-editor/languages/definitions/markdown/register.js"),
-	mdx: () => import("monaco-editor/languages/definitions/mdx/register.js"),
-	objectivec: () => import("monaco-editor/languages/definitions/objective-c/register.js"),
-	perl: () => import("monaco-editor/languages/definitions/perl/register.js"),
-	php: () => import("monaco-editor/languages/definitions/php/register.js"),
-	powershell: () => import("monaco-editor/languages/definitions/powershell/register.js"),
-	python: () => import("monaco-editor/languages/definitions/python/register.js"),
-	ruby: () => import("monaco-editor/languages/definitions/ruby/register.js"),
-	rust: () => import("monaco-editor/languages/definitions/rust/register.js"),
-	scala: () => import("monaco-editor/languages/definitions/scala/register.js"),
-	scss: () => import("monaco-editor/languages/definitions/scss/register.js"),
-	shell: () => import("monaco-editor/languages/definitions/shell/register.js"),
-	solidity: () => import("monaco-editor/languages/definitions/solidity/register.js"),
-	sql: () => import("monaco-editor/languages/definitions/sql/register.js"),
-	swift: () => import("monaco-editor/languages/definitions/swift/register.js"),
-	systemverilog: () => import("monaco-editor/languages/definitions/systemverilog/register.js"),
-	typescript: () => import("monaco-editor/languages/definitions/typescript/register.js"),
-	xml: () => import("monaco-editor/languages/definitions/xml/register.js"),
-	yaml: () => import("monaco-editor/languages/definitions/yaml/register.js"),
-};
-
-const languageLoadPromises = new Map<string, Promise<string>>();
-
-function monacoLanguageForPath(path: string): string {
-	const language = languageForPath(path);
-	switch (language) {
-		case "c":
-			return "cpp";
-		case "docker":
-			return "dockerfile";
-		case "jsx":
-			return "javascript";
-		case "tsx":
-			return "typescript";
-		case "make":
-		case "shellscript":
-			return "shell";
-		case "toml":
-			return "ini";
-		case "vue":
-			return "html";
-		default:
-			return language;
-	}
-}
-
-function ensureMonacoLanguage(monaco: typeof Monaco, language: string): Promise<string> {
-	if (language === "text" || monaco.languages.getLanguages().some((entry) => entry.id === language)) {
-		return Promise.resolve(language);
-	}
-	const loader = lazyLanguageLoaders[language];
-	if (!loader) return Promise.resolve("text");
-	const existing = languageLoadPromises.get(language);
-	if (existing) return existing;
-	const promise = loader().then(
-		() => (monaco.languages.getLanguages().some((entry) => entry.id === language) ? language : "text"),
-		() => "text",
-	);
-	languageLoadPromises.set(language, promise);
-	return promise;
-}
 
 let sharedDiffEditor: Monaco.editor.IStandaloneDiffEditor | undefined;
 let sharedOriginalModel: Monaco.editor.ITextModel | undefined;
@@ -184,7 +86,7 @@ function MonacoDiffViewer({
 				if (!disposed) setDiffReady(true);
 			});
 			editor.setModel({ original: originalModel, modified: modifiedModel });
-			monaco.editor.setTheme(dark ? "vs-dark" : "vs");
+			setMonacoTheme(monaco, dark);
 			setLanguageReady(true);
 			sharedDiffEditor = editor;
 			sharedOriginalModel = originalModel;

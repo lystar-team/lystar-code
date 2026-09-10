@@ -1,7 +1,7 @@
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
 
-export const RUNTIME_PROTOCOL_VERSION = 3 as const;
+export const RUNTIME_PROTOCOL_VERSION = 4 as const;
 export const MAX_TRANSCRIPT_PAGE_SIZE = 200;
 export const MAX_TRANSCRIPT_SEARCH_LIMIT = 100;
 
@@ -802,11 +802,21 @@ export const ProjectResourceSchema = StrictObject({
 	kind: Type.Union([Type.Literal("text"), Type.Literal("image"), Type.Literal("binary")]),
 	mimeType: Type.String({ minLength: 1 }),
 	byteLength: Type.Integer({ minimum: 0 }),
+	contentVersion: Type.Optional(Id),
 	line: Type.Optional(Type.Integer({ minimum: 1 })),
 	column: Type.Optional(Type.Integer({ minimum: 1 })),
 	accessToken: Type.Optional(Id),
 });
 export type ProjectResource = Static<typeof ProjectResourceSchema>;
+
+export const ProjectFileSaveResultSchema = StrictObject({
+	path: Type.String({ minLength: 1 }),
+	mimeType: Type.String({ minLength: 1 }),
+	byteLength: Type.Integer({ minimum: 0 }),
+	contentHash: Id,
+	contentVersion: Id,
+});
+export type ProjectFileSaveResult = Static<typeof ProjectFileSaveResultSchema>;
 
 export const SettingKindSchema = Type.Union([
 	Type.Literal("boolean"),
@@ -946,6 +956,7 @@ export const UpdateStatusSchema = StrictObject({
 });
 export const GetGitStatusResultSchema = GitStatusSchema;
 export const GetGitDiffResultSchema = GitDiffSchema;
+export const SaveProjectFileResultSchema = ProjectFileSaveResultSchema;
 export const CheckForUpdatesResultSchema = UpdateStatusSchema;
 export const GetCompletionsResultSchema = CompletionResultSchema;
 export const ListSettingsResultSchema = Type.Array(SettingSummarySchema, { maxItems: 1000 });
@@ -1127,6 +1138,7 @@ export const WorkspaceCommandResultSchemas = {
 	save_host_instruction: SaveHostInstructionResultSchema,
 	get_git_status: GetGitStatusResultSchema,
 	get_git_diff: GetGitDiffResultSchema,
+	save_project_file: SaveProjectFileResultSchema,
 	get_completions: GetCompletionsResultSchema,
 	check_for_updates: CheckForUpdatesResultSchema,
 	list_settings: ListSettingsResultSchema,
@@ -1536,6 +1548,17 @@ export const CommandSchema = Type.Union([
 		path: Type.String({ minLength: 1 }),
 		offset: Type.Integer({ minimum: 0 }),
 		limit: Type.Integer({ minimum: 1, maximum: 1024 * 1024 }),
+	}),
+	StrictObject({
+		command: Type.Literal("save_project_file"),
+		sessionPath: Type.Optional(Type.String({ minLength: 1 })),
+		leaseId: Type.Optional(Id),
+		cwd: Type.String({ minLength: 1 }),
+		path: Type.String({ minLength: 1 }),
+		content: Type.String({ maxLength: 2 * 1024 * 1024 }),
+		expectedHash: Id,
+		clientInstanceId: Id,
+		clientRequestId: Id,
 	}),
 	StrictObject({
 		command: Type.Literal("read_external_resource"),

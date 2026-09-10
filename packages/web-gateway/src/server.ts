@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readdir, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
@@ -13,6 +13,7 @@ import type {
 	ModelProviderSummary,
 	ModelSummary,
 	OperationSnapshot,
+	ProjectFileSaveResult,
 	ProjectInstruction,
 	ProjectResource,
 	ProjectTrust,
@@ -316,6 +317,10 @@ function jsonValue(value: unknown): JsonValue {
 	return JSON.parse(JSON.stringify(value)) as JsonValue;
 }
 
+function contentHash(content: Uint8Array): string {
+	return createHash("sha256").update(content).digest("hex");
+}
+
 function statusOf(error: unknown): number {
 	if (error instanceof HttpError) return error.status;
 	const candidate = object(error);
@@ -339,6 +344,10 @@ function toError(error: unknown): HttpError {
 	if (code === "instruction_conflict")
 		return new HttpError(409, code, "全局 AGENTS.md 已被外部修改，请重新加载后再保存");
 	if (code === "instruction_path_invalid") return new HttpError(400, code, "全局 AGENTS.md 路径无效");
+	if (code === "project_file_conflict") return new HttpError(409, code, "文件已被外部修改，请重新加载后再保存");
+	if (code === "project_file_not_editable" || code === "project_file_too_large") {
+		return new HttpError(400, code, message);
+	}
 	return new HttpError(statusOf(error), code, message);
 }
 
@@ -1665,59 +1674,114 @@ export class WebGatewayServer {
 			sendJson(response, 200, await this.projectTree(project, url.searchParams.get("path") ?? undefined));
 			return;
 		}
-		if (parts.length === 4 && parts[3] === "file" && request.method === "GET") {
-			const path = url.searchParams.get("path")?.trim();
-			if (!path) throw new HttpError(400, "file_path_required", "文件路径不能为空");
+		if (parts.length === 4 && parts[3] === "file") {
 			const client = await this.getClient(context);
-			const resource = await client.request<ProjectResource>({
-				command: "resolve_project_resource",
-				cwd: project.cwd,
-				target: path,
-			});
-			const bytes = await readChunks(
-				(offset) =>
-					client.request<ContentChunk>({
-						command: "read_project_resource",
-						cwd: project.cwd,
-						path: resource.path,
-						offset,
-						limit: 1024 * 1024,
-					}),
-				resource.kind === "text" ? MAX_TEXT_PREVIEW_BYTES : MAX_BINARY_PREVIEW_BYTES,
-			);
-			const truncated = bytes.byteLength < resource.byteLength;
-			if (resource.kind === "image") {
-				sendJson(response, 200, {
-					kind: resource.kind,
-					path: resource.displayPath,
-					mimeType: resource.mimeType,
-					byteLength: resource.byteLength,
-					previewByteLength: bytes.byteLength,
-					truncated,
-					...(truncated ? {} : { data: Buffer.from(bytes).toString("base64") }),
+			if (request.method === "GET") {
+				const path = url.searchParams.get("path")?.trim();
+				if (!path) throw new HttpError(400, "file_path_required", "文件路径不能为空");
+				const resource = await client.request<ProjectResource>({
+					command: "resolve_project_resource",
+					cwd: project.cwd,
+					target: path,
 				});
-			} else if (resource.kind === "binary") {
-				sendJson(response, 200, {
-					kind: resource.kind,
-					path: resource.displayPath,
-					mimeType: resource.mimeType,
-					byteLength: resource.byteLength,
-					previewByteLength: bytes.byteLength,
-					truncated,
-					...(truncated ? {} : { data: Buffer.from(bytes).toString("base64") }),
-				});
-			} else {
-				sendJson(response, 200, {
-					kind: resource.kind,
-					path: resource.displayPath,
-					mimeType: resource.mimeType,
-					byteLength: resource.byteLength,
-					previewByteLength: bytes.byteLength,
-					truncated,
-					content: Buffer.from(bytes).toString("utf8"),
-				});
+				if (url.searchParams.get("metadata") === "true") {
+					sendJson(response, 200, {
+						kind: resource.kind,
+						path: resource.displayPath,
+						mimeType: resource.mimeType,
+						byteLength: resource.byteLength,
+						...(resource.contentVersion ? { contentVersion: resource.contentVersion } : {}),
+					});
+					return;
+				}
+				const bytes = await readChunks(
+					(offset) =>
+						client.request<ContentChunk>({
+							command: "read_project_resource",
+							cwd: project.cwd,
+							path: resource.path,
+							offset,
+							limit: 1024 * 1024,
+						}),
+					resource.kind === "text" ? MAX_TEXT_PREVIEW_BYTES : MAX_BINARY_PREVIEW_BYTES,
+				);
+				const truncated = bytes.byteLength < resource.byteLength;
+				if (resource.kind === "image") {
+					sendJson(response, 200, {
+						kind: resource.kind,
+						path: resource.displayPath,
+						mimeType: resource.mimeType,
+						byteLength: resource.byteLength,
+						previewByteLength: bytes.byteLength,
+						truncated,
+						...(resource.contentVersion ? { contentVersion: resource.contentVersion } : {}),
+						...(truncated ? {} : { data: Buffer.from(bytes).toString("base64") }),
+					});
+				} else if (resource.kind === "binary") {
+					sendJson(response, 200, {
+						kind: resource.kind,
+						path: resource.displayPath,
+						mimeType: resource.mimeType,
+						byteLength: resource.byteLength,
+						previewByteLength: bytes.byteLength,
+						truncated,
+						...(resource.contentVersion ? { contentVersion: resource.contentVersion } : {}),
+						...(truncated ? {} : { data: Buffer.from(bytes).toString("base64") }),
+					});
+				} else {
+					sendJson(response, 200, {
+						kind: resource.kind,
+						path: resource.displayPath,
+						mimeType: resource.mimeType,
+						byteLength: resource.byteLength,
+						previewByteLength: bytes.byteLength,
+						truncated,
+						...(resource.contentVersion ? { contentVersion: resource.contentVersion } : {}),
+						contentHash: contentHash(bytes),
+						content: Buffer.from(bytes).toString("utf8"),
+					});
+				}
+				return;
 			}
-			return;
+			if (request.method === "POST") {
+				const body = await parseJsonBody(request);
+				const path = stringValue(body.path);
+				const expectedHash = stringValue(body.expectedHash);
+				if (!path) throw new HttpError(400, "file_path_required", "文件路径不能为空");
+				if (typeof body.content !== "string") {
+					throw new HttpError(400, "file_content_invalid", "文件内容必须是文本");
+				}
+				if (!expectedHash) throw new HttpError(400, "file_version_required", "保存文件需要原始内容版本");
+				const sessionId = stringValue(body.sessionId);
+				const session = sessionId ? await this.resolveSession(context, sessionId) : undefined;
+				if (session && session.projectId !== project.id) {
+					throw new HttpError(400, "file_project_mismatch", "会话不属于当前文件所在项目");
+				}
+				const lease = sessionId ? await this.requireLease(context, sessionId) : undefined;
+				const saved = await client.request<ProjectFileSaveResult>({
+					command: "save_project_file",
+					...(session && lease ? { sessionPath: session.path, leaseId: lease.leaseId } : {}),
+					cwd: project.cwd,
+					path,
+					content: body.content,
+					expectedHash,
+					clientInstanceId: context.id,
+					clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
+				});
+				sendJson(response, 200, {
+					kind: "text",
+					path: saved.path,
+					mimeType: saved.mimeType,
+					byteLength: saved.byteLength,
+					previewByteLength: saved.byteLength,
+					truncated: false,
+					content: body.content,
+					contentHash: saved.contentHash,
+					contentVersion: saved.contentVersion,
+				});
+				return;
+			}
+			throw new HttpError(405, "method_not_allowed", "文件接口不支持当前方法");
 		}
 		if (parts.length === 5 && parts[3] === "git" && parts[4] === "status" && request.method === "GET") {
 			sendJson(

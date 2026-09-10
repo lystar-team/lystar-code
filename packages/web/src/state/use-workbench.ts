@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UnauthorizedError, webApi } from "../adapters/host-protocol/api.ts";
 import { isAbsoluteResourcePath } from "../lib/resource-path.ts";
 import type {
+	FileResponse,
 	GatewayEvent,
 	HarnessImportResultResponse,
 	HarnessImportsResponse,
@@ -389,16 +390,7 @@ export interface WorkbenchState {
 	fileTreeCache: Record<string, ProjectTreeResponse>;
 	fileTreeLoading: boolean;
 	filePath?: string;
-	fileContent?: {
-		kind: "text" | "image" | "binary";
-		path: string;
-		mimeType: string;
-		byteLength: number;
-		previewByteLength?: number;
-		truncated?: boolean;
-		content?: string;
-		data?: string;
-	};
+	fileContent?: FileResponse;
 	fileError?: string;
 	fileLoading: boolean;
 	sessionTree: Array<{
@@ -830,6 +822,38 @@ function textLineCount(content: string): number {
 	return content.endsWith("\n") || content.endsWith("\r") ? lines.length - 1 : lines.length;
 }
 
+function changedFilePaths(progress: SessionProgress): string[] {
+	if (progress.type === "tool_end" && progress.status === "success") {
+		return progress.diff?.files.flatMap((file) => (file.path ? [file.path] : [])) ?? [];
+	}
+	if (progress.type === "tool_state" && progress.activity.state === "success") {
+		return progress.activity.diff?.files.flatMap((file) => (file.path ? [file.path] : [])) ?? [];
+	}
+	return [];
+}
+
+function normalizedProjectFilePath(projectPath: string, input: string): string | undefined {
+	const normalizedRoot = projectPath.replaceAll("\\", "/").replace(/\/$/u, "");
+	let normalized = input.replaceAll("\\", "/").replace(/^\.\//u, "");
+	if (normalized === normalizedRoot) return undefined;
+	if (normalized.startsWith(`${normalizedRoot}/`)) normalized = normalized.slice(normalizedRoot.length + 1);
+	if (!normalized || normalized.startsWith("../") || normalized.includes("/../")) return undefined;
+	return normalized;
+}
+
+function parentProjectPath(path: string): string {
+	const separator = path.lastIndexOf("/");
+	return separator < 0 ? "" : path.slice(0, separator);
+}
+
+function sameGitStatus(left: GitStatus | undefined, right: GitStatus): boolean {
+	return left !== undefined && JSON.stringify(left) === JSON.stringify(right);
+}
+
+function sameProjectTree(left: ProjectTreeResponse | undefined, right: ProjectTreeResponse): boolean {
+	return left !== undefined && JSON.stringify(left) === JSON.stringify(right);
+}
+
 function hasLiveTurnContent(state: Pick<WorkbenchState, "liveTools" | "liveTurnItems">): boolean {
 	return Boolean(Object.keys(state.liveTools).length || state.liveTurnItems.length);
 }
@@ -966,8 +990,12 @@ export function useWorkbench() {
 	const pendingTextTimeoutRef = useRef<number | undefined>(undefined);
 	const transcriptRequestRef = useRef(0);
 	const fileRequestRef = useRef(0);
+	const fileMetadataPromisesRef = useRef(new Map<string, Promise<void>>());
+	const projectTreeRefreshPromisesRef = useRef(new Map<string, Promise<void>>());
+	const fileTreePollIndexRef = useRef(0);
 	const gitDiffRequestRef = useRef(0);
 	const gitStatusRequestRef = useRef(0);
+	const gitStatusPromiseRef = useRef<Promise<void>>();
 	const gitStatsRepositoryRef = useRef(new Set<string>());
 	const projectTreeGenerationRef = useRef(0);
 	const sessionTreeRequestRef = useRef(0);
@@ -985,7 +1013,8 @@ export function useWorkbench() {
 	const loadSessionTreeRef = useRef<() => Promise<void>>(async () => {});
 	const loadProjectTrustRef = useRef<() => Promise<void>>(async () => {});
 	const loadProjectTreeRef = useRef<(path?: string) => Promise<void>>(async () => {});
-	const loadGitStatusRef = useRef<() => Promise<void>>(async () => {});
+	const loadGitStatusRef = useRef<(silent?: boolean) => Promise<void>>(async () => {});
+	const refreshProjectFilesRef = useRef<(paths: readonly string[]) => Promise<void>>(async () => {});
 
 	const updateState = useCallback((update: WorkbenchState | ((current: WorkbenchState) => WorkbenchState)) => {
 		const next = typeof update === "function" ? update(stateRef.current) : update;
@@ -1952,6 +1981,8 @@ export function useWorkbench() {
 				}
 				if (event.sessionId === stateRef.current.sessionId) {
 					applyProgress(event.progress);
+					const changedPaths = changedFilePaths(event.progress);
+					if (changedPaths.length > 0) void refreshProjectFilesRef.current(changedPaths).catch(() => {});
 					if (
 						event.progress.type === "phase" &&
 						["idle", "interrupted"].includes(event.progress.phase) &&
@@ -2281,6 +2312,9 @@ export function useWorkbench() {
 			const sessionChanged = previous.sessionId !== sessionId;
 			if (projectChanged) {
 				fileRequestRef.current++;
+				fileMetadataPromisesRef.current.clear();
+				projectTreeRefreshPromisesRef.current.clear();
+				gitStatusPromiseRef.current = undefined;
 				gitStatusRequestRef.current++;
 				gitDiffRequestRef.current++;
 				gitStatsRepositoryRef.current.clear();
@@ -2490,6 +2524,9 @@ export function useWorkbench() {
 			const projectChanged = projectId !== previous.currentProjectId;
 			if (projectChanged) {
 				fileRequestRef.current++;
+				fileMetadataPromisesRef.current.clear();
+				projectTreeRefreshPromisesRef.current.clear();
+				gitStatusPromiseRef.current = undefined;
 				gitStatusRequestRef.current++;
 				gitDiffRequestRef.current++;
 				gitStatsRepositoryRef.current.clear();
@@ -3017,20 +3054,38 @@ export function useWorkbench() {
 		[ensureSessionControl, showToast, updateState],
 	);
 
-	const loadGitStatus = useCallback(async () => {
-		const projectId = stateRef.current.currentProjectId;
-		if (!projectId) return;
-		const requestId = ++gitStatusRequestRef.current;
-		gitStatsRepositoryRef.current.clear();
-		updateState((current) => ({ ...current, gitLoading: true }));
-		try {
-			const result = await webApi.gitStatus(projectId);
-			if (requestId !== gitStatusRequestRef.current || stateRef.current.currentProjectId !== projectId) return;
-			updateState((current) => ({ ...current, gitStatus: result, gitFileStats: {} }));
-		} finally {
-			if (requestId === gitStatusRequestRef.current) updateState((current) => ({ ...current, gitLoading: false }));
-		}
-	}, [updateState]);
+	const loadGitStatus = useCallback(
+		(silent = false): Promise<void> => {
+			const pending = gitStatusPromiseRef.current;
+			if (pending) return pending;
+			const projectId = stateRef.current.currentProjectId;
+			if (!projectId) return Promise.resolve();
+			const requestId = ++gitStatusRequestRef.current;
+			gitStatsRepositoryRef.current.clear();
+			if (!silent) updateState((current) => ({ ...current, gitLoading: true }));
+			const run = (async () => {
+				try {
+					const result = await webApi.gitStatus(projectId);
+					if (requestId !== gitStatusRequestRef.current || stateRef.current.currentProjectId !== projectId) return;
+					updateState((current) =>
+						sameGitStatus(current.gitStatus, result)
+							? current
+							: { ...current, gitStatus: result, gitFileStats: {} },
+					);
+				} finally {
+					if (!silent && requestId === gitStatusRequestRef.current) {
+						updateState((current) => ({ ...current, gitLoading: false }));
+					}
+				}
+			})();
+			const tracked = run.finally(() => {
+				if (gitStatusPromiseRef.current === tracked) gitStatusPromiseRef.current = undefined;
+			});
+			gitStatusPromiseRef.current = tracked;
+			return tracked;
+		},
+		[updateState],
+	);
 
 	const loadGitRepositoryStats = useCallback(
 		async (repositoryPath = "") => {
@@ -3165,6 +3220,38 @@ export function useWorkbench() {
 		[updateState],
 	);
 
+	const refreshProjectTreePath = useCallback(
+		(path: string): Promise<void> => {
+			const projectId = stateRef.current.currentProjectId;
+			if (!projectId) return Promise.resolve();
+			const key = `${projectId}\0${path}`;
+			const pending = projectTreeRefreshPromisesRef.current.get(key);
+			if (pending) return pending;
+			const run = webApi
+				.projectTree(projectId, path)
+				.then((result) => {
+					if (stateRef.current.currentProjectId !== projectId) return;
+					updateState((current) => {
+						if (sameProjectTree(current.fileTreeCache[result.path], result)) return current;
+						return {
+							...current,
+							fileTree: current.fileTreeRootPath === result.path ? result : current.fileTree,
+							fileTreeCache: { ...current.fileTreeCache, [result.path]: result },
+						};
+					});
+				})
+				.catch(() => {});
+			const tracked = run.finally(() => {
+				if (projectTreeRefreshPromisesRef.current.get(key) === tracked) {
+					projectTreeRefreshPromisesRef.current.delete(key);
+				}
+			});
+			projectTreeRefreshPromisesRef.current.set(key, tracked);
+			return tracked;
+		},
+		[updateState],
+	);
+
 	const openResource = useCallback(
 		async (path: string) => {
 			const projectId = stateRef.current.currentProjectId;
@@ -3174,7 +3261,6 @@ export function useWorkbench() {
 				...current,
 				fileLoading: true,
 				filePath: path,
-				fileContent: undefined,
 				fileError: undefined,
 			}));
 			try {
@@ -3189,7 +3275,11 @@ export function useWorkbench() {
 				}));
 			} catch (error) {
 				if (requestId !== fileRequestRef.current) return;
-				updateState((current) => ({ ...current, fileError: errorMessage(error) }));
+				updateState((current) => ({
+					...current,
+					fileContent: current.fileContent?.path === path ? current.fileContent : undefined,
+					fileError: errorMessage(error),
+				}));
 			} finally {
 				if (requestId === fileRequestRef.current) {
 					updateState((current) => ({ ...current, fileLoading: false }));
@@ -3209,6 +3299,83 @@ export function useWorkbench() {
 			fileLoading: false,
 		}));
 	}, [updateState]);
+
+	const refreshOpenFile = useCallback(
+		(path = stateRef.current.filePath, force = false): Promise<void> => {
+			const projectId = stateRef.current.currentProjectId;
+			if (!projectId || !path || isAbsoluteResourcePath(path)) return Promise.resolve();
+			const key = `${projectId}\0${path}`;
+			const pending = fileMetadataPromisesRef.current.get(key);
+			if (pending) return pending;
+			const run = (async () => {
+				const metadata = await webApi.projectFileMetadata(projectId, path);
+				if (stateRef.current.currentProjectId !== projectId || stateRef.current.filePath !== path) return;
+				if (!force && metadata.contentVersion && metadata.contentVersion === stateRef.current.fileContent?.contentVersion) {
+					return;
+				}
+				const result = await webApi.projectFile(projectId, path);
+				if (stateRef.current.currentProjectId !== projectId || stateRef.current.filePath !== path) return;
+				updateState((current) => ({ ...current, fileContent: result, fileError: undefined }));
+			})().catch(() => {});
+			const tracked = run.finally(() => {
+				if (fileMetadataPromisesRef.current.get(key) === tracked) fileMetadataPromisesRef.current.delete(key);
+			});
+			fileMetadataPromisesRef.current.set(key, tracked);
+			return tracked;
+		},
+		[updateState],
+	);
+
+	const refreshProjectFiles = useCallback(
+		async (paths: readonly string[], refreshOpenedFile = true) => {
+			const current = stateRef.current;
+			const project = current.projects.find((candidate) => candidate.id === current.currentProjectId);
+			if (!project) return;
+			const normalized = paths.flatMap((path) => {
+				const value = normalizedProjectFilePath(project.path, path);
+				return value ? [value] : [];
+			});
+			const directories = new Set(normalized.map(parentProjectPath));
+			const loadedDirectories = new Set(Object.keys(current.fileTreeCache));
+			await Promise.all(
+				[...directories]
+					.filter((path) => path === current.fileTreeRootPath || loadedDirectories.has(path))
+					.map(refreshProjectTreePath),
+			);
+			if (refreshOpenedFile && current.filePath && normalized.includes(current.filePath)) {
+				await refreshOpenFile(current.filePath, true);
+			}
+			if (current.inspectorOpen && current.inspectorMode === "git") await loadGitStatusRef.current(true);
+		},
+		[refreshOpenFile, refreshProjectTreePath],
+	);
+
+	const saveFile = useCallback(
+		async (path: string, content: string, expectedHash: string): Promise<FileResponse> => {
+			const current = stateRef.current;
+			if (!current.currentProjectId || isAbsoluteResourcePath(path)) throw new Error("当前文件不可保存");
+			const sessionId = current.sessionId && current.lease && !current.readOnly ? current.sessionId : undefined;
+			try {
+				const result = await webApi.saveProjectFile(
+					current.currentProjectId,
+					path,
+					content,
+					expectedHash,
+					sessionId,
+				);
+				if (stateRef.current.currentProjectId === current.currentProjectId && stateRef.current.filePath === path) {
+					updateState((value) => ({ ...value, fileContent: result, fileError: undefined }));
+				}
+				await refreshProjectFiles([path], false);
+				showToast("文件已保存");
+				return result;
+			} catch (error) {
+				if ((error as { code?: string }).code === "project_file_conflict") void refreshOpenFile(path, true);
+				throw error;
+			}
+		},
+		[refreshOpenFile, refreshProjectFiles, showToast, updateState],
+	);
 
 	const openFile = openResource;
 
@@ -3713,6 +3880,40 @@ export function useWorkbench() {
 	loadProjectTrustRef.current = loadProjectTrust;
 	loadProjectTreeRef.current = loadProjectTree;
 	loadGitStatusRef.current = loadGitStatus;
+	refreshProjectFilesRef.current = refreshProjectFiles;
+
+	useEffect(() => {
+		const filesVisible = state.inspectorOpen && state.inspectorMode === "files";
+		const projectFileOpen = Boolean(state.filePath && !isAbsoluteResourcePath(state.filePath));
+		if (!state.connected || !state.currentProjectId || (!filesVisible && !projectFileOpen)) return;
+		const timer = window.setInterval(() => {
+			if (document.visibilityState !== "visible") return;
+			const current = stateRef.current;
+			if (filesVisible) {
+				const paths = Object.keys(current.fileTreeCache);
+				const path = paths.length > 0 ? paths[fileTreePollIndexRef.current++ % paths.length] : current.fileTreeRootPath;
+				if (path !== undefined) void refreshProjectTreePath(path);
+			}
+			if (current.filePath && !isAbsoluteResourcePath(current.filePath)) void refreshOpenFile(current.filePath);
+		}, 5_000);
+		return () => window.clearInterval(timer);
+	}, [
+		refreshOpenFile,
+		refreshProjectTreePath,
+		state.connected,
+		state.currentProjectId,
+		state.filePath,
+		state.inspectorMode,
+		state.inspectorOpen,
+	]);
+
+	useEffect(() => {
+		if (!state.connected || !state.currentProjectId || !state.inspectorOpen || state.inspectorMode !== "git") return;
+		const timer = window.setInterval(() => {
+			if (document.visibilityState === "visible") void loadGitStatus(true).catch(() => {});
+		}, 5_000);
+		return () => window.clearInterval(timer);
+	}, [loadGitStatus, state.connected, state.currentProjectId, state.inspectorMode, state.inspectorOpen]);
 
 	useEffect(() => {
 		if (!state.currentProjectId || !state.sessionId) return;
@@ -3843,6 +4044,7 @@ export function useWorkbench() {
 		loadProjectTree,
 		openFile,
 		openResource,
+		saveFile,
 		closeFilePreview,
 		loadSessionTree,
 		navigateTree,

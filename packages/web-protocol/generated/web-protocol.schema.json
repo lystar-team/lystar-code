@@ -2220,6 +2220,61 @@
                   "type": "object",
                   "required": [
                     "command",
+                    "cwd",
+                    "path",
+                    "content",
+                    "expectedHash",
+                    "clientInstanceId",
+                    "clientRequestId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "save_project_file"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "leaseId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "content": {
+                      "type": "string",
+                      "maxLength": 2097152
+                    },
+                    "expectedHash": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
                     "path",
                     "accessToken",
                     "offset",
@@ -3889,7 +3944,7 @@
             },
             "version": {
               "type": "integer",
-              "const": 3
+              "const": 4
             },
             "productVersion": {
               "type": "string",
@@ -3897,7 +3952,7 @@
             },
             "protocolVersion": {
               "type": "integer",
-              "const": 3
+              "const": 4
             },
             "serverInstanceId": {
               "type": "string",
@@ -6299,6 +6354,41 @@
         },
         "contentTruncated": {
           "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceSaveProjectFileResult": {
+      "type": "object",
+      "required": [
+        "path",
+        "mimeType",
+        "byteLength",
+        "contentHash",
+        "contentVersion"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mimeType": {
+          "type": "string",
+          "minLength": 1
+        },
+        "byteLength": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "contentHash": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "contentVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
         }
       },
       "additionalProperties": false

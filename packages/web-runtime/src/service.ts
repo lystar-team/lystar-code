@@ -112,6 +112,7 @@ const WORKSPACE_COMMANDS = {
 	save_host_instruction: true,
 	get_git_status: true,
 	get_git_diff: true,
+	save_project_file: true,
 	check_for_updates: true,
 	list_settings: true,
 	set_setting: true,
@@ -1404,6 +1405,28 @@ export class WebRuntimeService {
 				return this.adapter.resolveExternalResource(request.target, request.line, request.column);
 			case "read_project_resource":
 				return this.adapter.readProjectResource(request.cwd, request.path, request.offset, request.limit);
+			case "save_project_file": {
+				const cwd = canonicalProjectCwd(request.cwd);
+				const sessionPath = this.mutationSessionPath(request);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `project-file:${cwd}:${request.path}`,
+					lockSessionPath: sessionPath,
+					payload: {
+						...(sessionPath ? { sessionPath } : {}),
+						cwd,
+						path: request.path,
+						content: request.content,
+						expectedHash: request.expectedHash,
+					},
+					run: async () => {
+						this.assertMutationSession(connection, request, cwd);
+						return this.adapter.saveProjectFile(cwd, request.path, request.content, request.expectedHash);
+					},
+				});
+			}
 			case "read_external_resource":
 				return this.adapter.readExternalResource(request.path, request.accessToken, request.offset, request.limit);
 			case "read_content":

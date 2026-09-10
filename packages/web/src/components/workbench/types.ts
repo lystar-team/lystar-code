@@ -1,5 +1,6 @@
 import type { ComposerMode, InspectorMode, SettingsTab, ThemeMode, WorkbenchState } from "../../state/use-workbench";
 import type {
+	FileResponse,
 	PromptAttachment,
 	PromptAttachmentPreview,
 	UiRequestEvent,
@@ -36,6 +37,7 @@ export interface WorkbenchActions {
 	loadProjectTree: (path?: string, preserveCurrentTree?: boolean) => Promise<void>;
 	openFile: (path: string) => Promise<void>;
 	openResource: (path: string) => Promise<void>;
+	saveFile: (path: string, content: string, expectedHash: string) => Promise<FileResponse>;
 	closeFilePreview: () => void;
 	loadSessionTree: () => Promise<void>;
 	navigateTree: (entryId: string) => Promise<void>;

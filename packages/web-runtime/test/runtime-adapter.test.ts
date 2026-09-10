@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
@@ -992,8 +993,34 @@ describe("CodingAgentRuntimeAdapter", () => {
 
 		const resource = adapter.resolveProjectResource(cwd, "src/app.ts:2");
 		expect(resource).toMatchObject({ displayPath: "src/app.ts", kind: "text", line: 2 });
+		expect(resource.contentVersion).toEqual(expect.any(String));
 		const chunk = adapter.readProjectResource(cwd, resource.path, 0, 1024);
-		expect(Buffer.from(chunk.data, "base64").toString("utf8")).toContain("const second = 2");
+		const originalContent = Buffer.from(chunk.data, "base64").toString("utf8");
+		expect(originalContent).toContain("const second = 2");
+		const savedFile = adapter.saveProjectFile(
+			cwd,
+			"src/app.ts",
+			"const first = 1;\nconst second = 3;\n",
+			createHash("sha256").update(originalContent).digest("hex"),
+		);
+		expect(savedFile).toMatchObject({
+			path: "src/app.ts",
+			mimeType: "text/plain; charset=utf-8",
+			contentHash: createHash("sha256").update("const first = 1;\nconst second = 3;\n").digest("hex"),
+		});
+		expect(readFileSync(join(cwd, "src", "app.ts"), "utf8")).toContain("const second = 3");
+		writeFileSync(join(cwd, "src", "app.ts"), "external change\n");
+		expect(() => adapter.saveProjectFile(cwd, "src/app.ts", "stale write\n", savedFile.contentHash)).toThrow(
+			"外部修改",
+		);
+		expect(() =>
+			adapter.saveProjectFile(
+				cwd,
+				"src/app.ts",
+				"x".repeat(2 * 1024 * 1024 + 1),
+				createHash("sha256").update("external change\n").digest("hex"),
+			),
+		).toThrow("2 MiB");
 		const officeResource = adapter.resolveProjectResource(cwd, "report.xlsx");
 		expect(officeResource).toMatchObject({
 			kind: "binary",
@@ -1002,6 +1029,16 @@ describe("CodingAgentRuntimeAdapter", () => {
 		expect(Buffer.from(adapter.readProjectResource(cwd, officeResource.path, 0, 1024).data, "base64")).toEqual(
 			Buffer.from([0x50, 0x4b, 0x03, 0x04]),
 		);
+		expect(() =>
+			adapter.saveProjectFile(
+				cwd,
+				"report.xlsx",
+				"not binary",
+				createHash("sha256")
+					.update(Buffer.from([0x50, 0x4b, 0x03, 0x04]))
+					.digest("hex"),
+			),
+		).toThrow("文本文件");
 		expect(adapter.completeProjectFiles(cwd, "src/app", 10)).toEqual([
 			expect.objectContaining({ value: "@src/app.ts ", label: "app.ts", description: "src", kind: "file" }),
 		]);
