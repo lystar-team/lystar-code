@@ -10,7 +10,7 @@ process.emitWarning = () => {};
 registerBunOAuthFlows();
 restoreSandboxEnv();
 
-await import("../packages/coding-agent/dist/bun/register-bedrock.js");
+await import("../packages/coding-agent/dist/bun/runtime-setup.js");
 
 const args = process.argv.slice(2);
 if (args[0] === "web") {

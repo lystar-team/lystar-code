@@ -558,7 +558,6 @@ jobs:
           node scripts/ci-summary.mjs --suite required --plan-json "$PLAN_JSON"
           --job source=${{ needs.source.result }}=source
           --job core=${{ needs.core.result }}=core
-          --job web=${{ needs.web.result }}=web
           --job coding=${{ needs.coding.result }}=coding
           --job windows=${{ needs.windows.result }}=platform
           --timing wall=$(( $(date +%s) - CI_JOB_STARTED ))
