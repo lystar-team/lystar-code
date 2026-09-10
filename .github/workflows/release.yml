@@ -59,7 +59,7 @@ jobs:
 
       - name: Verify source version
         shell: bash
-        run: test -n "$(node -p \"require('./packages/coding-agent/package.json').piConfig.productVersion\")"
+        run: test -n "$(node -p "require('./packages/coding-agent/package.json').piConfig.productVersion")"
 
       - name: Install dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
@@ -78,7 +78,7 @@ jobs:
       - name: Verify Unix release artifact
         shell: bash
         run: |
-          version="$(node -p \"require('./packages/coding-agent/package.json').piConfig.productVersion\")"
+          version="$(node -p "require('./packages/coding-agent/package.json').piConfig.productVersion")"
           archive="packages/coding-agent/binaries/lystar-agent-v${version}-${{ matrix.platform }}.tar.gz"
           test "v$(cat packages/coding-agent/binaries/VERSION)" = "v${version}"
           test -f "$archive"
@@ -195,7 +195,7 @@ jobs:
       - name: Generate and verify release metadata
         shell: bash
         run: |
-          version="$(node -p \"require('./packages/coding-agent/package.json').piConfig.productVersion\")"
+          version="$(node -p "require('./packages/coding-agent/package.json').piConfig.productVersion")"
           node scripts/generate-release-metadata.mjs packages/coding-agent/binaries "$version" "${GITHUB_REPOSITORY}"
           printf '%s\n' "$version" > packages/coding-agent/binaries/VERSION
           test "$(find packages/coding-agent/binaries -maxdepth 1 \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l | tr -d '[:space:]')" = "5"

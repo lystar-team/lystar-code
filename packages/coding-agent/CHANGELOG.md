@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.85.1-lystar.3] - 2026-09-10
+
+### Fixed
+
+- 修复 Windows Web 服务宿主在 MSVC 构建中引用不存在错误常量导致发布失败的问题。
+- 修复 Release workflow 的 Unix 版本读取命令，恢复五平台候选构建。
+
 ## [0.85.1-lystar.2] - 2026-09-10
 
 ### New Features

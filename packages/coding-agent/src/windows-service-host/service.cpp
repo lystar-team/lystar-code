@@ -309,7 +309,7 @@ void WINAPI service_main(DWORD, LPWSTR*) {
     if (g_stop_event == nullptr || !start_child(config)) {
         const DWORD error = GetLastError();
         if (g_stop_event != nullptr) CloseHandle(g_stop_event);
-        report_status(SERVICE_STOPPED, error == NO_ERROR ? ERROR_CREATE_PROCESS : error);
+        report_status(SERVICE_STOPPED, error == NO_ERROR ? ERROR_GEN_FAILURE : error);
         return;
     }
 
