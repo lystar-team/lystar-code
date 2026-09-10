@@ -264,8 +264,14 @@ export function toolProgressDiff(name: string, args: unknown, result?: unknown):
 	};
 }
 
-export function toolCallUpdate(toolCallId: string, name: string, summary: string, args: unknown): SessionProgress {
-	const diff = toolProgressDiff(name, args);
+export function toolCallUpdate(
+	toolCallId: string,
+	name: string,
+	summary: string,
+	args: unknown,
+	includeDiff = true,
+): SessionProgress {
+	const diff = includeDiff ? toolProgressDiff(name, args) : undefined;
 	return {
 		type: "tool_update",
 		toolCallId,

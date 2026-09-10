@@ -72,6 +72,27 @@ Get-Command lc
 
 安装器会在切换 `current` 前停止，原版本仍可用。检查临时目录清理后重新运行；稳定复现时提交版本、系统、架构和完整错误。
 
+## Web 服务切换失败
+
+安装器完成应用版本切换后，才重写 Web Gateway 和 Web Runtime 服务。服务启动或健康检查失败时：
+
+- `current` 保持新应用版本，CLI 和其他功能不回退。
+- 服务编排器尝试恢复 `service-state.json` 记录的上一可用服务版本。
+- Runtime IPC 和 Gateway `/healthz` 均通过后，才提交新的服务版本。
+
+查看应用版本和服务版本：
+
+```bash
+lc --version
+lc web service status
+```
+
+修复问题后重试服务切换：
+
+```bash
+lc web service reconcile
+```
+
 ## 无法回退
 
 ```bash

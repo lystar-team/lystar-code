@@ -80,9 +80,22 @@ describe("conversation render items", () => {
 		]);
 	});
 
-	it("把实时渲染结果合并进最终会话列表", () => {
-		const rendered = buildConversationRenderItems([], [thinking, text], {}, new Set(), undefined, 1, true);
+	it("显示转录中的模型请求错误而不是空行", () => {
+		const errorText = "请求失败：503 service unavailable";
+		const persisted = buildPersistedRenderItems(
+			[
+				{
+					entryId: "error-entry",
+					parentId: null,
+					timestamp: "2026-09-08T00:00:00.000Z",
+					kind: "message",
+					view: { type: "system", text: errorText },
+				},
+			],
+			emptyToolIndex,
+		);
+		const rendered = buildConversationRenderItems(persisted, [], {}, new Set(), undefined, 1, false);
 
-		expect(rendered.map((item) => item.kind)).toEqual(["thinking", "message"]);
+		expect(rendered).toEqual([expect.objectContaining({ kind: "message", role: "system", text: errorText })]);
 	});
 });

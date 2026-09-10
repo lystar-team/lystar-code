@@ -985,7 +985,15 @@ export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgres
 					const summary = isDiffTool(content.name)
 						? (toolPath(content.arguments) ?? content.name)
 						: boundedStatus(content.arguments);
-					updates.push(toolCallUpdate(content.id, content.name, summary, content.arguments));
+					updates.push(
+						toolCallUpdate(
+							content.id,
+							content.name,
+							summary,
+							content.arguments,
+							stream.type !== "toolcall_delta",
+						),
+					);
 				}
 			}
 			const usage = event.message.role === "assistant" ? event.message.usage : undefined;
@@ -1498,7 +1506,12 @@ class CoreRuntimeSession implements RuntimeSession {
 	}
 
 	async setModel(modelRef: ModelRef): Promise<void> {
-		const model = this.runtime.services.modelRuntime.getModel(modelRef.provider, modelRef.id);
+		const modelRuntime = this.runtime.services.modelRuntime;
+		let model = modelRuntime.getModel(modelRef.provider, modelRef.id);
+		if (!model) {
+			await modelRuntime.refresh({ allowNetwork: false, providers: [modelRef.provider] });
+			model = modelRuntime.getModel(modelRef.provider, modelRef.id);
+		}
 		if (!model) {
 			throw Object.assign(new Error(`未找到模型：${modelRef.provider}/${modelRef.id}`), {
 				code: "model_not_found",

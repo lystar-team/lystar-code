@@ -897,7 +897,8 @@ describe("Tool recovery observe ledger", () => {
 						.filter((content): content is { type: "text"; text: string } => content.type === "text")
 						.map((content) => content.text)
 						.join("\n") ?? "";
-				expect(evidence.match(/^\d+: /gm)?.length ?? 0).toBeLessThanOrEqual(200);
+				expect(evidence).not.toMatch(/^\d+: /m);
+				expect(Buffer.byteLength(evidence)).toBeLessThanOrEqual(16 * 1024);
 				expect(evidence).toContain("最新 target.txt");
 			} finally {
 				harness.cleanup();
@@ -940,9 +941,10 @@ describe("Tool recovery observe ledger", () => {
 			const resolution = await directHandler({});
 			const evidence = resolution.replacementResult?.content.map((content) => content.text).join("\n") ?? "";
 			expect(resolution).toMatchObject({ type: "ask_model_to_rebuild" });
-			expect(evidence).toContain("350: stable target anchor");
-			expect(evidence).toContain("351: current value");
-			expect(evidence).not.toContain("1: line 1");
+			expect(evidence).toContain("read offset=347 limit=8");
+			expect(evidence).toContain("\nstable target anchor\ncurrent value\n");
+			expect(evidence).not.toMatch(/^\d+: /m);
+			expect(evidence).not.toContain("\nline 1\n");
 			expect(resolution.replacementResult?.details).toMatchObject({
 				recovery: { code: "MATCH_NOT_FOUND", failedEditIndex: 0, evidenceLine: 350 },
 			});
@@ -986,9 +988,11 @@ describe("Tool recovery observe ledger", () => {
 			const resolution = await directHandler({});
 			const evidence = resolution.replacementResult?.content.map((content) => content.text).join("\n") ?? "";
 			expect(resolution).toMatchObject({ type: "ask_model_to_rebuild" });
-			expect(evidence).toContain("10: duplicate target");
-			expect(evidence).toContain("460: duplicate target");
-			expect(evidence).not.toMatch(/^1: line 1$/m);
+			expect(evidence).toContain("read offset=7 limit=7");
+			expect(evidence).toContain("read offset=457 limit=7");
+			expect(evidence.match(/\nduplicate target\n/g)).toHaveLength(2);
+			expect(evidence).not.toMatch(/^\d+: /m);
+			expect(evidence).not.toContain("\nline 1\n");
 			expect(resolution.replacementResult?.details).toMatchObject({
 				recovery: { code: "MATCH_AMBIGUOUS", candidateLines: [10, 460] },
 			});

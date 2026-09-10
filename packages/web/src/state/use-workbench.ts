@@ -104,7 +104,7 @@ export type LiveTurnItem =
 	| { id: string; kind: "tools"; turnId: number; batchId: string; toolIds: string[] };
 
 type LiveTextProgress = Extract<SessionProgress, { type: "assistant_delta" | "thinking_delta" }>;
-type PendingTextProgress = { selection: number; progress: LiveTextProgress };
+type PendingTextProgress = { selection: number; sessionId: string; progress: LiveTextProgress };
 type SessionSubscriptionResult = "ready" | "gap" | "timeout";
 type SessionSubscriptionWaiter = {
 	resolve: (result: SessionSubscriptionResult) => void;
@@ -591,14 +591,44 @@ function savedTheme(): ThemeMode {
 	return value === "light" || value === "dark" ? value : "system";
 }
 
-function savedHiddenModelProviders(): string[] {
-	if (typeof window === "undefined") return [];
+type ModelProviderVisibilityOverrides = Record<string, boolean>;
+type ModelProviderVisibilityProvider = Pick<WorkbenchState["providers"][number], "id" | "authenticated">;
+
+function savedModelProviderVisibilityOverrides(): ModelProviderVisibilityOverrides {
+	if (typeof window === "undefined") return {};
 	try {
-		const value: unknown = JSON.parse(window.localStorage.getItem(MODEL_PROVIDER_VISIBILITY_KEY) ?? "[]");
-		return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+		const value: unknown = JSON.parse(window.localStorage.getItem(MODEL_PROVIDER_VISIBILITY_KEY) ?? "{}");
+		if (Array.isArray(value)) {
+			const overrides: ModelProviderVisibilityOverrides = {};
+			for (const providerId of value) {
+				if (typeof providerId === "string") overrides[providerId] = false;
+			}
+			return overrides;
+		}
+		if (!value || typeof value !== "object") return {};
+		const overrides: ModelProviderVisibilityOverrides = {};
+		for (const [providerId, visible] of Object.entries(value)) {
+			if (typeof visible === "boolean") overrides[providerId] = visible;
+		}
+		return overrides;
 	} catch {
-		return [];
+		return {};
 	}
+}
+
+function savedHiddenModelProviders(): string[] {
+	return Object.entries(savedModelProviderVisibilityOverrides())
+		.filter(([, visible]) => !visible)
+		.map(([providerId]) => providerId);
+}
+
+export function resolveHiddenModelProviders(
+	providers: readonly ModelProviderVisibilityProvider[],
+	overrides: Readonly<ModelProviderVisibilityOverrides>,
+): string[] {
+	return providers
+		.filter(({ id, authenticated }) => overrides[id] === false || (overrides[id] === undefined && !authenticated))
+		.map(({ id }) => id);
 }
 
 function applyFavicon(theme: ThemeMode): void {
@@ -990,6 +1020,7 @@ export function useWorkbench() {
 	const pendingTextTimeoutRef = useRef<number | undefined>(undefined);
 	const transcriptRequestRef = useRef(0);
 	const fileRequestRef = useRef(0);
+	const directoryRequestRef = useRef(0);
 	const fileMetadataPromisesRef = useRef(new Map<string, Promise<void>>());
 	const projectTreeRefreshPromisesRef = useRef(new Map<string, Promise<void>>());
 	const fileTreePollIndexRef = useRef(0);
@@ -1141,6 +1172,7 @@ export function useWorkbench() {
 										hasMorePrevious: false,
 										liveTools: {},
 										liveTurnItems: [],
+										liveTurnActive: false,
 										pendingUserPrompts: [],
 										queuedUserPrompts: [],
 										liveCompaction: undefined,
@@ -1600,9 +1632,10 @@ export function useWorkbench() {
 		const pending = pendingTextProgressRef.current;
 		pendingTextProgressRef.current = [];
 		const selection = selectionRef.current;
+		const sessionId = stateRef.current.sessionId;
 		let batch: LiveTextProgress | undefined;
 		for (const entry of pending) {
-			if (entry.selection !== selection) continue;
+			if (entry.selection !== selection || entry.sessionId !== sessionId) continue;
 			const progress = entry.progress;
 			if (batch && batch.type === progress.type) {
 				batch = { ...batch, text: batch.text + progress.text };
@@ -1615,18 +1648,23 @@ export function useWorkbench() {
 	}, [applyProgressNow]);
 
 	const applyProgress = useCallback(
-		(progress: SessionProgress) => {
+		(progress: SessionProgress, sessionId: string) => {
 			if (progress.type === "assistant_delta" || progress.type === "thinking_delta") {
 				const selection = selectionRef.current;
 				const pending = pendingTextProgressRef.current;
 				const previous = pending.at(-1);
-				if (previous?.selection === selection && previous.progress.type === progress.type) {
+				if (
+					previous?.selection === selection &&
+					previous.sessionId === sessionId &&
+					previous.progress.type === progress.type
+				) {
 					pending[pending.length - 1] = {
 						selection,
+						sessionId,
 						progress: { ...progress, text: previous.progress.text + progress.text },
 					};
 				} else {
-					pending.push({ selection, progress });
+					pending.push({ selection, sessionId, progress });
 				}
 				if (pendingTextFrameRef.current === undefined && pendingTextTimeoutRef.current === undefined) {
 					if (document.visibilityState === "hidden") {
@@ -1888,6 +1926,7 @@ export function useWorkbench() {
 								hasMorePrevious: false,
 								liveTools: {},
 								liveTurnItems: [],
+								liveTurnActive: false,
 								liveCompaction: undefined,
 								currentOperation: undefined,
 								statusText: "",
@@ -1980,7 +2019,7 @@ export function useWorkbench() {
 					});
 				}
 				if (event.sessionId === stateRef.current.sessionId) {
-					applyProgress(event.progress);
+					applyProgress(event.progress, event.sessionId);
 					const changedPaths = changedFilePaths(event.progress);
 					if (changedPaths.length > 0) void refreshProjectFilesRef.current(changedPaths).catch(() => {});
 					if (
@@ -2164,22 +2203,9 @@ export function useWorkbench() {
 		updateState((current) => ({ ...current, modelSettingsLoading: true, modelSettingsError: undefined }));
 		try {
 			const result = await webApi.models();
-			const visibilityConfigured =
-				typeof window !== "undefined" && window.localStorage.getItem(MODEL_PROVIDER_VISIBILITY_KEY) !== null;
+			const visibilityOverrides = savedModelProviderVisibilityOverrides();
 			updateState((current) => {
-				const hiddenModelProviders = visibilityConfigured
-					? current.hiddenModelProviders
-					: [
-							...new Set([
-								...current.hiddenModelProviders,
-								...result.providers
-									.filter((provider) => provider.builtIn && !provider.authenticated)
-									.map((provider) => provider.id),
-							]),
-						];
-				if (!visibilityConfigured && typeof window !== "undefined") {
-					window.localStorage.setItem(MODEL_PROVIDER_VISIBILITY_KEY, JSON.stringify(hiddenModelProviders));
-				}
+				const hiddenModelProviders = resolveHiddenModelProviders(result.providers, visibilityOverrides);
 				return {
 					...current,
 					models: result.models,
@@ -2569,6 +2595,8 @@ export function useWorkbench() {
 				previousCursor: undefined,
 				hasMorePrevious: false,
 				currentOperation: undefined,
+				liveTurnActive: false,
+				liveTurnStartRevision: undefined,
 				liveTools: {},
 				liveTurnItems: [],
 				liveCompaction: undefined,
@@ -2607,9 +2635,15 @@ export function useWorkbench() {
 	const createSession = useCallback(async () => {
 		const projectId = stateRef.current.currentProjectId;
 		if (!projectId) return;
+		const selectionRequest = selectionRef.current;
+		const result = await webApi.createSession(projectId);
+		if (selectionRef.current !== selectionRequest || stateRef.current.currentProjectId !== projectId) {
+			await webApi.release(result.session.id).catch(() => {});
+			return;
+		}
+		selectionRef.current++;
 		const previousSessionId = stateRef.current.sessionId;
 		const socket = socketRef.current;
-		const result = await webApi.createSession(projectId);
 		if (socket && previousSessionId && previousSessionId !== result.session.id)
 			webApi.unsubscribeSession(socket, previousSessionId);
 		updateState((current) => ({
@@ -2648,6 +2682,8 @@ export function useWorkbench() {
 			hasMorePrevious: false,
 			currentOperation: undefined,
 			statusText: "",
+			liveTurnActive: false,
+			liveTurnStartRevision: undefined,
 			liveTools: {},
 			liveTurnItems: [],
 			liveCompaction: undefined,
@@ -2868,6 +2904,8 @@ export function useWorkbench() {
 						previousCursor: undefined,
 						hasMorePrevious: false,
 						currentOperation: undefined,
+						liveTurnActive: false,
+						liveTurnStartRevision: undefined,
 						liveTools: {},
 						liveTurnItems: [],
 						statusText: "",
@@ -2892,8 +2930,14 @@ export function useWorkbench() {
 			const current = stateRef.current;
 			if (!current.sessionId || current.readOnly) return;
 			const oldSessionId = current.sessionId;
-			const socket = socketRef.current;
+			const selectionRequest = selectionRef.current;
 			const result = await webApi.fork(oldSessionId, entryId);
+			if (selectionRef.current !== selectionRequest || stateRef.current.sessionId !== oldSessionId) {
+				await webApi.release(result.session.id).catch(() => {});
+				return;
+			}
+			selectionRef.current++;
+			const socket = socketRef.current;
 			if (socket && oldSessionId !== result.session.id) webApi.unsubscribeSession(socket, oldSessionId);
 			updateState((next) => ({
 				...next,
@@ -2915,6 +2959,8 @@ export function useWorkbench() {
 				previousCursor: undefined,
 				hasMorePrevious: false,
 				currentOperation: undefined,
+				liveTurnActive: false,
+				liveTurnStartRevision: undefined,
 				liveTools: {},
 				liveTurnItems: [],
 				liveCompaction: undefined,
@@ -3427,12 +3473,15 @@ export function useWorkbench() {
 
 	const loadDirectory = useCallback(
 		async (path?: string) => {
+			const requestId = ++directoryRequestRef.current;
 			updateState((current) => ({ ...current, directoryLoading: true }));
 			try {
 				const result = await webApi.directories(path);
+				if (requestId !== directoryRequestRef.current) return;
 				updateState((current) => ({ ...current, directoryListing: result }));
 			} finally {
-				updateState((current) => ({ ...current, directoryLoading: false }));
+				if (requestId === directoryRequestRef.current)
+					updateState((current) => ({ ...current, directoryLoading: false }));
 			}
 		},
 		[updateState],
@@ -3572,8 +3621,11 @@ export function useWorkbench() {
 				if (visible) hidden.delete(providerId);
 				else hidden.add(providerId);
 				const hiddenModelProviders = [...hidden];
-				if (typeof window !== "undefined")
-					window.localStorage.setItem(MODEL_PROVIDER_VISIBILITY_KEY, JSON.stringify(hiddenModelProviders));
+				if (typeof window !== "undefined") {
+					const overrides = savedModelProviderVisibilityOverrides();
+					overrides[providerId] = visible;
+					window.localStorage.setItem(MODEL_PROVIDER_VISIBILITY_KEY, JSON.stringify(overrides));
+				}
 				return { ...current, hiddenModelProviders };
 			});
 		},

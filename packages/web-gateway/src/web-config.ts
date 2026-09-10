@@ -207,6 +207,7 @@ export class WebConfigStore {
 	async loadOrMigrate(): Promise<WebConfig | undefined> {
 		const current = await this.load();
 		if (current) return current;
+		if (this.path !== webConfigPath(this.agentDir)) return undefined;
 		const legacy = await this.loadLegacy();
 		if (!legacy.host || legacy.port === undefined || !legacy.password) return undefined;
 		const migrated = await this.save({
@@ -250,8 +251,9 @@ export class WebConfigStore {
 	}
 }
 
-export async function loadWebConfig(agentDir: string): Promise<WebConfig | undefined> {
-	return new WebConfigStore(agentDir).loadOrMigrate();
+export async function loadWebConfig(agentDir: string, configFileName?: string): Promise<WebConfig | undefined> {
+	const configPath = configFileName ? join(agentDir, configFileName) : undefined;
+	return new WebConfigStore(agentDir, configPath).loadOrMigrate();
 }
 
 export async function saveWebConfig(agentDir: string, input: WebConfigInput): Promise<WebConfig> {

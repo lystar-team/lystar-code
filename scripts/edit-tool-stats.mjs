@@ -70,7 +70,7 @@ Options:
   --ext <extension>      Filter by file extension, e.g. .ts
   --failed-only          Include only failed edit calls
   --top <n>              Number of examples to show (default: ${DEFAULT_TOP})
-  --since <iso>          Only scan session files created at or after this ISO time
+  --since <iso>          Include calls whose message timestamp is at or after this ISO time
   --all-sessions         Disable the automatic since filter
   --auto-since-path <p>  Use birth time of this file for the automatic since filter
   --json                 Print JSON summary instead of human report
@@ -79,14 +79,10 @@ Options:
 `);
 }
 
-function parseSessionFileTimestamp(sessionFile) {
-	const base = path.basename(sessionFile);
-	const rawTimestamp = base.split("_")[0];
-	if (!rawTimestamp) return null;
-	const isoTimestamp = rawTimestamp.replace(/T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/, "T$1:$2:$3.$4Z");
-	const ms = Date.parse(isoTimestamp);
-	if (!Number.isFinite(ms)) return null;
-	return ms;
+function getMessageTimestamp(message, entry) {
+	const value = message.timestamp ?? entry.timestamp;
+	const ms = typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : Number.NaN;
+	return Number.isFinite(ms) ? ms : null;
 }
 
 function formatIso(ms) {
@@ -240,18 +236,35 @@ function extractTextContent(content) {
 		.join("\n");
 }
 
-function classifyErrorKind(text, isError, matchedResult) {
+function classifyErrorKind(text, isError, matchedResult, details) {
 	if (!matchedResult) return "missing_result";
 	if (!isError) return null;
+	const code = details?.recovery?.code ?? details?.failureCode ?? details?.code;
+	const kinds = {
+		MATCH_NOT_FOUND: "not_found_exact_text",
+		MATCH_AMBIGUOUS: "multiple_occurrences",
+		EDIT_OVERLAP: "overlapping_edits",
+		WRITE_CONFLICT: "write_conflict",
+		TARGET_NOT_FOUND: "file_not_found",
+		PERMISSION_DENIED: "permission_denied",
+		NO_CHANGE: "no_changes_made",
+		CANCELLED: "aborted",
+		STALE_CONTEXT: "stale_context",
+	};
+	if (Object.hasOwn(kinds, code)) return kinds[code];
 	const normalized = text.toLowerCase();
-	if (normalized.includes("file not found")) return "file_not_found";
-	if (normalized.includes("could not find the exact text")) return "not_found_exact_text";
+	if (normalized.includes("不能同时修改同一个目标")) return "same_response_target_conflict";
+	if (/已阻止重复失败|repeat.*block|circuit.*open/.test(normalized)) return "repeat_blocked";
+	if (/target changed before write|write_conflict/.test(normalized)) return "write_conflict";
+	if (/file not found|error code: (enoent|enotdir)/.test(normalized)) return "file_not_found";
+	if (/error code: (eacces|eperm)|permission denied/.test(normalized)) return "permission_denied";
+	if (/could not find (?:the exact text|edits\[)/.test(normalized)) return "not_found_exact_text";
 	if (normalized.includes("found multiple occurrences") || /^found \d+ occurrences/m.test(normalized)) {
 		return "multiple_occurrences";
 	}
 	if (normalized.includes("no changes made")) return "no_changes_made";
-	if (normalized.includes("input is invalid")) return "invalid_input";
-	if (normalized.includes("must not overlap")) return "overlapping_edits";
+	if (/input is invalid|oldtext must not be empty/.test(normalized)) return "invalid_input";
+	if (/must not overlap|edits\[\d+\] and edits\[\d+\] overlap/.test(normalized)) return "overlapping_edits";
 	if (normalized.includes("aborted")) return "aborted";
 	return "other";
 }
@@ -268,10 +281,20 @@ function getArgStyle(args) {
 }
 
 function analyzeToolArguments(args) {
-	const normalizedArgs = args && typeof args === "object" ? args : {};
+	const sourceArgs = args && typeof args === "object" ? args : {};
+	const normalizedArgs = { ...sourceArgs };
+	if (typeof normalizedArgs.edits === "string") {
+		try { normalizedArgs.edits = JSON.parse(normalizedArgs.edits); } catch { /* Invalid arguments remain visible. */ }
+	}
+	if (normalizedArgs.edits && !Array.isArray(normalizedArgs.edits) && typeof normalizedArgs.edits.oldText === "string") {
+		normalizedArgs.edits = [normalizedArgs.edits];
+	}
+	if (Array.isArray(normalizedArgs.edits) && typeof normalizedArgs.oldText === "string" && typeof normalizedArgs.newText === "string") {
+		normalizedArgs.edits = [...normalizedArgs.edits, { oldText: normalizedArgs.oldText, newText: normalizedArgs.newText }];
+	}
 	const filePath = typeof normalizedArgs.path === "string" ? normalizedArgs.path : "";
 	const extension = getPathExtension(filePath);
-	const argStyle = getArgStyle(normalizedArgs);
+	const argStyle = getArgStyle(sourceArgs);
 
 	if (Array.isArray(normalizedArgs.edits)) {
 		const perEdit = normalizedArgs.edits.map((edit) =>
@@ -525,7 +548,27 @@ function buildSummary(records, meta, options) {
 		.map(([kind, count]) => ({ kind, count }))
 		.sort((a, b) => b.count - a.count || a.kind.localeCompare(b.kind));
 
+	const failedRecords = records.filter((record) => record.success === false);
+	const assistantUsage = new Map(records.map((record) => [`${record.sessionFile}::${record.assistantEntryId}`, record.usage]));
+	const usageFields = ["input", "output", "cacheRead", "cacheWrite", "totalTokens"];
+	const tokenUsage = Object.fromEntries(usageFields.map((field) => {
+		const known = [...assistantUsage.values()].map((usage) => usage?.[field]).filter(Number.isFinite);
+		return [field, { total: known.length ? known.reduce((sum, value) => sum + value, 0) : null, messagesWithUsage: known.length }];
+	}));
+
 	return {
+		measurement: {
+			outcome: "tool-reported outcome; correctness and original task completion are not established",
+			payloadUnit: "UTF-8 bytes, not tokens",
+			tokenUsageScope: "whole assistant messages containing selected edit calls, counted once; not attributed to an individual edit or recovery",
+			runtimeVersion: "unknown; session filename and automatic since cutoff do not establish loaded runtime version",
+		},
+		cost: {
+			failedPayloadBytes: failedRecords.reduce((sum, record) => sum + record.totalEditBytes, 0),
+			failedResultBytes: failedRecords.reduce((sum, record) => sum + record.resultBytes, 0),
+			assistantMessages: assistantUsage.size,
+			tokenUsage,
+		},
 		filters: {
 			model: options.modelFilter ?? null,
 			extension: options.extFilter ?? null,
@@ -540,6 +583,10 @@ function buildSummary(records, meta, options) {
 			since: meta.since ? { ms: meta.since.ms, iso: formatIso(meta.since.ms), source: meta.since.source } : null,
 			malformedLines: meta.malformedLines,
 			unmatchedToolResults: meta.unmatchedToolResults,
+			duplicateToolCalls: meta.duplicateToolCalls,
+			duplicateToolResults: meta.duplicateToolResults,
+			callsBeforeSince: meta.callsBeforeSince,
+			callsMissingTimestamp: meta.callsMissingTimestamp,
 		},
 		counts: {
 			assistantMessagesWithEditCalls: uniqueAssistantMessages,
@@ -584,8 +631,8 @@ function printHumanReport(summary) {
 	const { scan, counts, modeStats, multiEditLengthBuckets, argStyles, providerStats, extensionStats, inflation, sameFileClusters, failureKinds, worstExamples, filters } = summary;
 	console.log(`Scanned ${formatInt(scan.sessionFilesIncluded)} session files in ${scan.sessionsDir}`);
 	if (scan.since) {
-		console.log(`Session filter: files created at or after ${scan.since.iso} (${scan.since.source})`);
-		console.log(`Skipped older session files: ${formatInt(scan.sessionFilesSkippedOlderThanSince)} of ${formatInt(scan.sessionFilesScanned)}`);
+		console.log(`Call filter: message timestamp at or after ${scan.since.iso} (${scan.since.source})`);
+		console.log(`Excluded calls: ${formatInt(scan.callsBeforeSince)} older, ${formatInt(scan.callsMissingTimestamp)} missing timestamp; all session files inspected`);
 	}
 	console.log(`Found ${formatInt(counts.totalEditCalls)} edit tool calls in ${formatInt(counts.assistantMessagesWithEditCalls)} assistant messages`);
 	if (filters.model || filters.extension || filters.failedOnly) {
@@ -596,7 +643,9 @@ function printHumanReport(summary) {
 		console.log(`Filters: ${filterParts.join(", ")}`);
 	}
 
-	console.log("\nSuccess rate");
+	console.log("\nTool-reported success rate (not verified task completion)");
+	console.log(`Failed argument payload: ${summary.cost.failedPayloadBytes} UTF-8 bytes, not tokens`);
+	console.log(`Failed result text: ${summary.cost.failedResultBytes} UTF-8 bytes`);
 	console.log(`  success:    ${formatInt(counts.success)}  ${formatPercent(counts.success, counts.resolvedEditCalls)}`);
 	console.log(`  failed:     ${formatInt(counts.failed)}  ${formatPercent(counts.failed, counts.resolvedEditCalls)}`);
 	console.log(`  unresolved: ${formatInt(counts.unresolved)}`);
@@ -706,86 +755,87 @@ async function scanSessions(sessionsDir, since) {
 		since,
 		malformedLines: 0,
 		unmatchedToolResults: 0,
+		duplicateToolCalls: 0,
+		duplicateToolResults: 0,
+		callsBeforeSince: 0,
+		callsMissingTimestamp: 0,
 	};
 
 	for await (const sessionFile of walkJsonlFiles(sessionsDir)) {
 		meta.sessionFilesScanned++;
-		const sessionTimestampMs = parseSessionFileTimestamp(sessionFile);
-		if (since && sessionTimestampMs !== null && sessionTimestampMs < since.ms) {
-			meta.sessionFilesSkippedOlderThanSince++;
-			continue;
-		}
 		meta.sessionFilesIncluded++;
-		const pending = new Map();
-		let fileHadEditCall = false;
+		const calls = new Map();
+		const results = new Map();
+		const seenCallIds = new Set();
+		let lineNumber = 0;
 		const input = createReadStream(sessionFile, { encoding: "utf8" });
 		const rl = createInterface({ input, crlfDelay: Infinity });
-
 		for await (const line of rl) {
+			lineNumber++;
 			if (!line.trim()) continue;
 			let entry;
-			try {
-				entry = JSON.parse(line);
-			} catch {
-				meta.malformedLines++;
-				continue;
-			}
-
+			try { entry = JSON.parse(line); } catch { meta.malformedLines++; continue; }
 			if (entry?.type !== "message" || !entry.message) continue;
 			const message = entry.message;
-
 			if (message.role === "assistant" && Array.isArray(message.content)) {
-				for (const block of message.content) {
+				for (const [blockIndex, block] of message.content.entries()) {
 					if (block?.type !== "toolCall" || block.name !== "edit") continue;
-					fileHadEditCall = true;
+					const toolCallId = typeof block.id === "string" ? block.id : "";
+					const key = toolCallId || `missing-id:${lineNumber}:${blockIndex}`;
+					if (seenCallIds.has(key)) { meta.duplicateToolCalls++; continue; }
+					seenCallIds.add(key);
+					const timestampMs = getMessageTimestamp(message, entry);
+					if (timestampMs === null) meta.callsMissingTimestamp++;
+					if (since && (timestampMs === null || timestampMs < since.ms)) {
+						if (timestampMs !== null) meta.callsBeforeSince++;
+						continue;
+					}
 					const analysis = analyzeToolArguments(block.arguments);
 					const record = {
 						sessionFile,
-						assistantEntryId: entry.id,
-						toolCallId: typeof block.id === "string" ? block.id : "",
-						timestamp: entry.timestamp,
+						assistantEntryId: entry.id ?? `line:${lineNumber}`,
+						toolCallId,
+						timestamp: timestampMs === null ? null : formatIso(timestampMs),
 						api: typeof message.api === "string" ? message.api : null,
 						provider: typeof message.provider === "string" ? message.provider : "[unknown]",
 						model: typeof message.model === "string" ? message.model : "[unknown]",
-						providerModel: `${typeof message.provider === "string" ? message.provider : "[unknown]"}/${typeof message.model === "string" ? message.model : "[unknown]"}`,
+						providerModel: `${message.provider ?? "[unknown]"}/${message.model ?? "[unknown]"}`,
+						usage: message.usage ?? null,
 						success: null,
-						errorKind: null,
+						errorKind: "missing_result",
 						errorText: "",
 						resultSummary: "",
+						resultBytes: 0,
 						matchedResult: false,
 						...analysis,
 					};
+					calls.set(key, record);
 					records.push(record);
-					if (record.toolCallId) pending.set(record.toolCallId, record);
 				}
 			}
-
 			if (message.role === "toolResult" && message.toolName === "edit") {
-				const toolCallId = typeof message.toolCallId === "string" ? message.toolCallId : "";
-				const record = pending.get(toolCallId);
-				if (!record) {
-					meta.unmatchedToolResults++;
-					continue;
-				}
-				const text = extractTextContent(message.content);
-				record.matchedResult = true;
-				record.success = message.isError === true ? false : true;
-				record.resultSummary = text;
-				record.errorText = message.isError === true ? text : "";
-				record.errorKind = classifyErrorKind(text, message.isError === true, true);
-				pending.delete(toolCallId);
+				const id = typeof message.toolCallId === "string" ? message.toolCallId : "";
+				if (!id) { meta.unmatchedToolResults++; continue; }
+				if (results.has(id)) meta.duplicateToolResults++;
+				else results.set(id, message);
 			}
 		}
-
-		for (const record of pending.values()) {
-			record.matchedResult = false;
-			record.success = null;
-			record.errorKind = classifyErrorKind("", false, false);
+		for (const [id, message] of results) {
+			const record = calls.get(id);
+			if (!record) {
+				if (!seenCallIds.has(id)) meta.unmatchedToolResults++;
+				continue;
+			}
+			const text = extractTextContent(message.content);
+			record.matchedResult = true;
+			record.success = message.isError !== true;
+			record.resultSummary = text;
+			record.resultBytes = utf8Bytes(text);
+			record.errorText = message.isError === true ? text : "";
+			record.errorKind = classifyErrorKind(text, message.isError === true, true, message.details);
 		}
-
-		if (fileHadEditCall) meta.sessionFilesWithEditCalls++;
+		if (calls.size > 0) meta.sessionFilesWithEditCalls++;
 	}
-
 	return { records, meta };
 }
 

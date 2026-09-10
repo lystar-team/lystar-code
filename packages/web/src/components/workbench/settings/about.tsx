@@ -4,31 +4,47 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../..
 import { SettingSection } from "./shared";
 
 export function AboutSettings({ state }: { state: WorkbenchState }) {
-	const productVersion = typeof state.about?.productVersion === "string" ? state.about.productVersion : "LYStar Code";
+	const productVersion = typeof state.about?.productVersion === "string" ? state.about.productVersion : "—";
+	const piVersion = typeof state.about?.piVersion === "string" ? state.about.piVersion : undefined;
+
 	return (
-		<div className="grid min-w-0 gap-6">
-			<Card className="min-w-0 shadow-none">
-				<CardHeader>
-					<div className="flex items-center gap-3">
-						<BrandLogo className="size-12 rounded-lg object-contain" />
-						<div>
-							<CardTitle>LYStar Code</CardTitle>
-							<CardDescription>本机 Agent 工作台</CardDescription>
+		<div className="grid min-w-0 gap-4">
+			<Card className="min-w-0 gap-2 shadow-none">
+				<CardHeader className="gap-2 pb-2">
+					<div className="flex items-center gap-4">
+						<BrandLogo className="size-14 rounded-xl object-contain" />
+						<div className="min-w-0">
+							<CardTitle className="text-xl">LYStar Code</CardTitle>
+							<CardDescription className="mt-2">浏览器里的中文编码 Agent 工作台</CardDescription>
 						</div>
 					</div>
 				</CardHeader>
-				<CardContent>
+				<CardContent className="pt-0">
 					<p className="text-sm leading-6 text-muted-foreground">
-						让 Session、运行状态和项目上下文在浏览器里保持清晰可见。
+						在这里管理项目与会话，查看 Agent 运行状态。LYStar Code 基于 Pi 构建。
 					</p>
 				</CardContent>
 			</Card>
-			<SettingSection title="版本信息">
-				<div className="flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-3 text-sm">
-					<span className="text-muted-foreground">产品版本</span>
-					<span className="break-all text-right font-mono">{productVersion}</span>
+
+			<SettingSection title="应用信息">
+				<div className="grid gap-3 sm:grid-cols-2">
+					<Card className="min-w-0 rounded-xl py-3 shadow-none">
+						<CardContent className="px-4">
+							<p className="text-xs text-muted-foreground">LYStar Code 版本</p>
+							<p className="mt-1 break-all font-mono text-sm">{productVersion}</p>
+						</CardContent>
+					</Card>
+					{piVersion ? (
+						<Card className="min-w-0 rounded-xl py-3 shadow-none">
+							<CardContent className="px-4">
+								<p className="text-xs text-muted-foreground">Pi 版本</p>
+								<p className="mt-1 break-all font-mono text-sm">{piVersion}</p>
+							</CardContent>
+						</Card>
+					) : null}
 				</div>
 			</SettingSection>
+
 		</div>
 	);
 }

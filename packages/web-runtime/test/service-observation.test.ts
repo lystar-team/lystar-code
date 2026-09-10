@@ -374,6 +374,72 @@ describe("WebRuntimeService Session observation", () => {
 			progress: { type: "assistant_delta", text: "OK" },
 		});
 	});
+	it("工具生命周期即时发送，持续工具输出按调用合并", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-tool-progress-"));
+		const agentDir = join(tempDir, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		const sessionPath = join(tempDir, "session.jsonl");
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		const service = new WebRuntimeService(adapter, { agentDir });
+		const messages: ServerMessage[] = [];
+		let emit: ((event: RuntimeEvent) => void) | undefined;
+		const runtime = {
+			sessionPath,
+			onEvent: (listener: (event: RuntimeEvent) => void) => {
+				emit = listener;
+				return () => {
+					emit = undefined;
+				};
+			},
+			dispose: async () => {},
+		} as unknown as RuntimeSession;
+		const connection = service.createConnection(async (message) => {
+			messages.push(message);
+		});
+		cleanups.push(async () => {
+			await connection.close();
+			await service.dispose();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+		await connection.handle({ type: "hello", version: RUNTIME_PROTOCOL_VERSION, clientInstanceId: "tool-client" });
+		(service as unknown as { attachRuntime(runtime: RuntimeSession): void }).attachRuntime(runtime);
+		messages.length = 0;
+
+		const activity = {
+			activityEpoch: "epoch",
+			revision: 1,
+			toolCallId: "edit-1",
+			name: "edit",
+			state: "running" as const,
+			summary: "src/app.ts",
+			updatedAt: 1,
+		};
+		emit?.({ type: "progress", payload: { type: "tool_state", activity } });
+		await Promise.resolve();
+		expect(messages.filter((message) => message.type === "event")).toHaveLength(1);
+
+		messages.length = 0;
+		emit?.({
+			type: "progress",
+			payload: { type: "tool_state", activity: { ...activity, revision: 2, progress: "第一段" } },
+		});
+		emit?.({
+			type: "progress",
+			payload: { type: "tool_state", activity: { ...activity, revision: 3, progress: "第二段" } },
+		});
+		expect(messages.filter((message) => message.type === "event")).toHaveLength(0);
+		await waitFor(() => messages.some((message) => message.type === "event"));
+		const progress = messages.filter(
+			(message): message is Extract<ServerMessage, { type: "event" }> =>
+				message.type === "event" && message.event.type === "session_progress",
+		);
+		expect(progress).toHaveLength(1);
+		expect(progress[0]?.event).toMatchObject({
+			type: "session_progress",
+			progress: { type: "tool_state", activity: { progress: "第二段" } },
+		});
+	});
+
 	it("returns active runtime recovery diagnostics through get_diagnostics", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-diagnostics-"));
 		const agentDir = join(tempDir, "agent");

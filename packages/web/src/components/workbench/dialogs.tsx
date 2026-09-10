@@ -1,5 +1,5 @@
-import { ArrowLeft, Check, ChevronRight, Folder, HardDrive, LoaderCircle, Plus } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { ArrowLeft, Check, ChevronRight, Folder, HardDrive, LoaderCircle, Plus, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { WorkbenchState } from "../../state/use-workbench";
 import type { WebProject, UiRequestEvent } from "../../types";
 import { Alert, AlertDescription } from "../ui/alert";
@@ -22,10 +22,39 @@ export function DirectoryDialog({
 	onClose: () => void;
 }) {
 	const [selectedDirectory, setSelectedDirectory] = useState<string>();
+	const directoryPathRef = useRef<string>();
 	const listing = state.directoryListing;
+	const requestDirectory = useCallback(
+		(path?: string) => {
+			directoryPathRef.current = path;
+			void actions.loadDirectory(path).catch(() => {});
+		},
+		[actions.loadDirectory],
+	);
 	useEffect(() => {
 		if (!open) setSelectedDirectory(undefined);
-	}, [open]);
+		directoryPathRef.current = listing?.path;
+	}, [listing?.path, open]);
+	useEffect(() => {
+		if (!open) return;
+		const refresh = () => {
+			if (document.visibilityState === "visible") requestDirectory(directoryPathRef.current);
+		};
+		refresh();
+		const timer = window.setInterval(refresh, 3000);
+		const handleVisibilityChange = () => {
+			if (document.visibilityState === "visible") refresh();
+		};
+		document.addEventListener("visibilitychange", handleVisibilityChange);
+		return () => {
+			window.clearInterval(timer);
+			document.removeEventListener("visibilitychange", handleVisibilityChange);
+		};
+	}, [open, requestDirectory]);
+	useEffect(() => {
+		if (!open || !listing || !selectedDirectory || selectedDirectory === listing.path) return;
+		if (!listing.entries.some((entry) => entry.path === selectedDirectory)) setSelectedDirectory(undefined);
+	}, [listing, open, selectedDirectory]);
 	return (
 		<Dialog
 			open={open}
@@ -43,13 +72,24 @@ export function DirectoryDialog({
 						<div className="flex items-center gap-2">
 							<HardDrive className="size-4 text-muted-foreground" />
 							<Input
+								className="min-w-0 flex-1"
 								value={listing.path}
 								onChange={(event) => {
-									setSelectedDirectory(event.target.value);
-									void actions.loadDirectory(event.target.value);
+									const path = event.target.value;
+									setSelectedDirectory(path);
+									requestDirectory(path);
 								}}
 								aria-label="当前目录"
 							/>
+							<Button
+								size="icon"
+								variant="ghost"
+								onClick={() => requestDirectory(listing.path)}
+								disabled={state.directoryLoading}
+								aria-label="刷新当前目录"
+							>
+								<RefreshCw className={state.directoryLoading ? "size-4 animate-spin" : "size-4"} />
+							</Button>
 						</div>
 						<div className="flex gap-2">
 							<Button
@@ -57,7 +97,7 @@ export function DirectoryDialog({
 								variant="outline"
 								onClick={() => {
 									setSelectedDirectory(listing.home);
-									void actions.loadDirectory(listing.home);
+									requestDirectory(listing.home);
 								}}
 							>
 								<HardDrive className="size-4" />
@@ -69,7 +109,7 @@ export function DirectoryDialog({
 									variant="outline"
 									onClick={() => {
 										setSelectedDirectory(listing.parent);
-										void actions.loadDirectory(listing.parent);
+										requestDirectory(listing.parent);
 									}}
 								>
 									<ArrowLeft className="size-4" />
@@ -87,7 +127,7 @@ export function DirectoryDialog({
 										onClick={() => setSelectedDirectory(entry.path)}
 										onDoubleClick={() => {
 											setSelectedDirectory(entry.path);
-											void actions.loadDirectory(entry.path);
+											requestDirectory(entry.path);
 										}}
 									>
 										<Folder className="size-4 text-blue-500" />
@@ -247,7 +287,7 @@ export function Toast({ message }: { message?: string }) {
 	if (!message) return null;
 	return (
 		<Alert
-			className="absolute top-full right-0 left-0 z-[60] w-auto max-w-none rounded-none border-x-0 border-t-0 border-border/70 bg-background shadow-[0_8px_30px_rgb(0_0_0/0.08)] sm:fixed sm:top-auto sm:right-4 sm:bottom-4 sm:left-auto sm:z-[60] sm:w-[min(420px,calc(100vw-2rem))] sm:max-w-full sm:rounded-lg sm:border-x sm:border-t"
+			className="fixed top-4 right-4 left-auto z-[60] w-[min(420px,calc(100vw-2rem))] max-w-full rounded-lg border border-border/70 bg-background shadow-[0_8px_30px_rgb(0_0_0/0.08)]"
 			role="status"
 		>
 			<Check className="size-4 text-emerald-600" />

@@ -227,9 +227,23 @@ function sessionProgressKey(progress: SessionProgress): string | undefined {
 			return progress.type;
 		case "tool_update":
 			return `${progress.type}:${progress.toolCallId}`;
+		case "tool_state":
+			return `${progress.type}:${progress.activity.toolCallId}`;
 		default:
 			return undefined;
 	}
+}
+
+function shouldSendProgressImmediately(progress: SessionProgress): boolean {
+	if (progress.type === "tool_start" || progress.type === "tool_end") return true;
+	if (progress.type !== "tool_state") return false;
+	return (
+		(progress.activity.state === "running" &&
+			progress.activity.progress === undefined &&
+			progress.activity.output === undefined &&
+			progress.activity.error === undefined) ||
+		["success", "error", "cancelled", "interrupted"].includes(progress.activity.state)
+	);
 }
 
 function mergeSessionProgress(left: SessionProgress, right: SessionProgress): SessionProgress {
@@ -2325,6 +2339,11 @@ export class WebRuntimeService {
 	}
 
 	private enqueueSessionProgress(sessionPath: string, progress: SessionProgress): void {
+		if (shouldSendProgressImmediately(progress)) {
+			this.flushSessionProgress(sessionPath);
+			void this.broadcast({ type: "session_progress", sessionPath, progress });
+			return;
+		}
 		const pending = this.pendingProgress.get(sessionPath) ?? [];
 		const key = sessionProgressKey(progress);
 		const previous = pending.at(-1);

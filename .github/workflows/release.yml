@@ -144,7 +144,7 @@ jobs:
           $Archives = @(Get-ChildItem packages/coding-agent/binaries -Filter "lystar-agent-*-windows-x64.zip")
           if ($Archives.Count -ne 1) { throw "Expected exactly one Windows release archive" }
           if ((& "$Bundle/lc.exe" --version | Out-String).Trim() -ne $Version) { throw "lc.exe version mismatch" }
-          foreach ($RequiredFile in @("lystar.cmd", "skills/imagegen/SKILL.md", "web/index.html", "web/version.json")) {
+          foreach ($RequiredFile in @("lystar.cmd", "lystar-web-service.exe", "skills/imagegen/SKILL.md", "web/index.html", "web/version.json")) {
             if (!(Test-Path "$Bundle/$RequiredFile")) { throw "Windows release bundle is missing $RequiredFile" }
           }
           if (Test-Path "$Bundle/la.exe") { throw "legacy la.exe must not be shipped" }

@@ -121,6 +121,8 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 														? "把其他 Harness 的资源导入 LYStar Code。"
 												: state.settingsTab === "security"
 													? "配置 Web Gateway 的监听 IP、白名单、Web/Runtime 端口和密码。"
+													: state.settingsTab === "about"
+														? "查看 LYStar Code 的版本信息。"
 													: state.settingsTab === "appearance"
 														? "配置工作台的外观和应用安装。"
 														: "配置工作台的外观、模型连接和运行信息。"}

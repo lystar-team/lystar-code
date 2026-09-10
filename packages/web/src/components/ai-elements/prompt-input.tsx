@@ -256,6 +256,7 @@ const useOptionalProviderAttachments = () =>
 
 export type PromptInputProviderProps = PropsWithChildren<{
   initialInput?: string;
+  onInputChange?: (value: string) => void;
 }>;
 
 /**
@@ -264,11 +265,19 @@ export type PromptInputProviderProps = PropsWithChildren<{
  */
 export const PromptInputProvider = ({
   initialInput: initialTextInput = "",
+  onInputChange,
   children,
 }: PromptInputProviderProps) => {
   // ----- textInput state
   const [textInput, setTextInput] = useState(initialTextInput);
-  const clearInput = useCallback(() => setTextInput(""), []);
+  const setInput = useCallback(
+    (value: string) => {
+      setTextInput(value);
+      onInputChange?.(value);
+    },
+    [onInputChange],
+  );
+  const clearInput = useCallback(() => setInput(""), [setInput]);
 
   // ----- attachments state (global when wrapped)
   const [attachmentFiles, setAttachmentFiles] = useState<PromptInputAttachment[]>([]);
@@ -365,7 +374,7 @@ export const PromptInputProvider = ({
       attachments,
       textInput: {
         clear: clearInput,
-        setInput: setTextInput,
+        setInput,
         value: textInput,
       },
     }),

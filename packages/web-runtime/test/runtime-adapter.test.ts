@@ -309,9 +309,6 @@ describe("CodingAgentRuntimeAdapter", () => {
 				toolCallId: "write-stream-1",
 				name: "write",
 				summary: "src/app.ts",
-				diff: {
-					files: [{ path: "src/app.ts", additions: 2, deletions: 0, diff: "+one\n+two" }],
-				},
 			},
 		]);
 
@@ -337,13 +334,12 @@ describe("CodingAgentRuntimeAdapter", () => {
 			},
 		} as unknown as AgentSessionEvent);
 
-		expect(editProgress).toMatchObject([
+		expect(editProgress).toEqual([
 			{
 				type: "tool_update",
 				toolCallId: "edit-stream-1",
 				name: "edit",
 				summary: "src/app.ts",
-				diff: { files: [{ path: "src/app.ts", additions: 2, deletions: 1, diff: "-old\n+new\n+line" }] },
 			},
 		]);
 	});
@@ -818,6 +814,74 @@ describe("CodingAgentRuntimeAdapter", () => {
 			.map((line) => JSON.parse(line) as { type?: string; name?: string });
 		expect(entries).toContainEqual(expect.objectContaining({ type: "session_info", name: "自动标题" }));
 		expect((await new CodingAgentRuntimeAdapter(agentDir).listSessions(cwd))[0]).toMatchObject({ name: "自动标题" });
+	});
+
+	it("refreshes an existing session ModelRuntime after Web adds a provider model", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-model-refresh-"));
+		const agentDir = join(tempDir, "agent");
+		const cwd = join(tempDir, "project");
+		const faux = registerFauxProvider({ provider: "initial-web-provider" });
+		const initialModel = faux.getModel();
+		for (const dir of [agentDir, cwd]) mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					[initialModel.provider]: {
+						baseUrl: initialModel.baseUrl,
+						apiKey: "initial-key",
+						api: faux.api,
+						models: [
+							{
+								id: initialModel.id,
+								name: initialModel.name,
+								reasoning: initialModel.reasoning,
+								input: initialModel.input,
+								cost: initialModel.cost,
+								contextWindow: initialModel.contextWindow,
+								maxTokens: initialModel.maxTokens,
+							},
+						],
+					},
+				},
+			}),
+		);
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({
+				defaultProvider: initialModel.provider,
+				defaultModel: initialModel.id,
+				defaultThinkingLevel: "off",
+				defaultProjectTrust: "always",
+			}),
+		);
+
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		let runtime: RuntimeSession | undefined;
+		cleanups.push(async () => {
+			await runtime?.dispose();
+			faux.unregister();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+		runtime = await adapter.createSession(cwd, async () => ({ cancelled: true }));
+
+		const provider = "new-web-provider";
+		const baseUrl = "https://new-web-provider.example/v1";
+		await adapter.addModelProvider({ provider, name: "新 Provider", baseUrl, api: faux.api, apiKey: "new-key" });
+		await adapter.addProviderModel({
+			provider,
+			id: "new-model",
+			name: "New Model",
+			api: faux.api,
+			baseUrl,
+			reasoning: false,
+			input: ["text"],
+			contextWindow: 128_000,
+			maxTokens: 16_384,
+		});
+
+		await runtime.setModel({ provider, id: "new-model" });
+		expect(runtime.getSnapshot("owned").model).toEqual({ provider, id: "new-model" });
 	});
 
 	it("runs the real Core runtime, persists JSONL, and resumes with continuous transcript revisions", async () => {

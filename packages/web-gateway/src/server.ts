@@ -273,9 +273,23 @@ function progressCoalescingKey(event: WebSessionProgressEvent): string | undefin
 			return `${event.sessionId}:${event.progress.type}`;
 		case "tool_update":
 			return `${event.sessionId}:${event.progress.type}:${event.progress.toolCallId}`;
+		case "tool_state":
+			return `${event.sessionId}:${event.progress.type}:${event.progress.activity.toolCallId}`;
 		default:
 			return undefined;
 	}
+}
+
+function shouldSendProgressImmediately(progress: SessionProgress): boolean {
+	if (progress.type === "tool_start" || progress.type === "tool_end") return true;
+	if (progress.type !== "tool_state") return false;
+	return (
+		(progress.activity.state === "running" &&
+			progress.activity.progress === undefined &&
+			progress.activity.output === undefined &&
+			progress.activity.error === undefined) ||
+		["success", "error", "cancelled", "interrupted"].includes(progress.activity.state)
+	);
 }
 
 function mergeProgress(left: SessionProgress, right: SessionProgress): SessionProgress {
@@ -569,6 +583,10 @@ async function readChunks(read: (offset: number) => Promise<ContentChunk>, maxBy
 	return result;
 }
 
+function runtimeServiceProfile(): string | undefined {
+	return process.env.LYSTAR_CLI_MODE === "development" ? "development" : undefined;
+}
+
 export class WebGatewayServer {
 	readonly config: WebGatewayConfig;
 	readonly registry: ProjectRegistry;
@@ -690,6 +708,11 @@ export class WebGatewayServer {
 	}
 
 	private enqueueProgress(context: BrowserContext, event: WebSessionProgressEvent): void {
+		if (shouldSendProgressImmediately(event.progress)) {
+			this.flushPendingProgress(context);
+			this.broadcastSessionProgress(context, event);
+			return;
+		}
 		const key = progressCoalescingKey(event);
 		const previous = context.pendingProgress.at(-1);
 		if (key && previous?.key === key) {
@@ -1145,7 +1168,7 @@ export class WebGatewayServer {
 				command: "get_diagnostics",
 				...(project ? { cwd: project.cwd } : {}),
 			}),
-			getRuntimeServiceStatus(this.config.runtimeEndpoint),
+			getRuntimeServiceStatus(this.config.runtimeEndpoint, runtimeServiceProfile(), undefined, this.config.agentDir),
 			client.request<RuntimeConnectionStatus>({ command: "get_connection_status" }).catch(() => undefined),
 		]);
 		const currentCpuSnapshot = readCpuSnapshot();
@@ -1465,10 +1488,29 @@ export class WebGatewayServer {
 			const body = await parseJsonBody(request);
 			const action = stringValue(body.action);
 			if (action === "restart-runtime") {
-				const currentStatus = await getRuntimeServiceStatus(this.config.runtimeEndpoint);
-				await stopRuntimeService(this.config.runtimeEndpoint, false);
+				const profile = runtimeServiceProfile();
+				const currentStatus = await getRuntimeServiceStatus(
+					this.config.runtimeEndpoint,
+					profile,
+					undefined,
+					this.config.agentDir,
+				);
+				await stopRuntimeService(
+					this.config.runtimeEndpoint,
+					false,
+					profile,
+					undefined,
+					false,
+					this.config.agentDir,
+				);
 				const status = currentStatus.installed
-					? await ensureRuntimeService(this.config.runtimeEndpoint)
+					? await ensureRuntimeService(
+							this.config.runtimeEndpoint,
+							profile,
+							undefined,
+							false,
+							this.config.agentDir,
+						)
 					: await ensurePersistentRuntime({ ...this.config, manageRuntime: true });
 				sendJson(response, 200, { accepted: true, service: "runtime", status });
 				return;

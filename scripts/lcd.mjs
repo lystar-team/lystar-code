@@ -9,7 +9,7 @@ const cliPath = resolve(repoRoot, "packages/coding-agent/src/cli.ts");
 const tsxLoader = resolve(repoRoot, "node_modules/tsx/dist/loader.mjs");
 const result = spawnSync(process.execPath, ["--import", tsxLoader, cliPath, ...process.argv.slice(2)], {
 	cwd: process.cwd(),
-	env: process.env,
+	env: { ...process.env, LYSTAR_CLI_MODE: "development" },
 	stdio: "inherit",
 });
 

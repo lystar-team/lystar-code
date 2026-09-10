@@ -5,6 +5,7 @@ import {
 	applyEditsToNormalizedContent,
 	detectLineEnding,
 	type Edit,
+	EditMatchError,
 	generateDiffString,
 	generateUnifiedPatch,
 	normalizeToLF,
@@ -134,6 +135,7 @@ export function createEditTool<TContext extends ExecutionToolContext = Execution
 		async execute(_toolCallId, input, _onUpdate, { env }, _invocation, context) {
 			const { path, edits } = validateEditInput(input);
 			const absolutePath = await resolveToolPath(env, path, context);
+			const writeOutcome: { state: "not_written" | "unknown" | "written" } = { state: "not_written" };
 			return withFileMutationQueue(
 				env,
 				absolutePath,
@@ -166,8 +168,10 @@ export function createEditTool<TContext extends ExecutionToolContext = Execution
 						if (currentHash !== snapshotHash) {
 							throw createWriteConflictError(path, snapshotHash, currentHash);
 						}
+						writeOutcome.state = "unknown";
 						const writeResult = await env.writeFile(absolutePath, finalContent, context);
 						if (!writeResult.ok) throw editAccessError(path, writeResult.error);
+						writeOutcome.state = "written";
 						if (context.abortSignal?.aborted) throw new Error("Operation aborted");
 					}
 
@@ -175,7 +179,7 @@ export function createEditTool<TContext extends ExecutionToolContext = Execution
 					return {
 						content: [
 							{
-								type: "text",
+								type: "text" as const,
 								text:
 									baseContent === newContent
 										? `No changes needed for ${path}; the requested content is already present.`
@@ -190,7 +194,31 @@ export function createEditTool<TContext extends ExecutionToolContext = Execution
 					};
 				},
 				context,
-			);
+			).catch((error: unknown) => {
+				if (error instanceof EditMatchError) {
+					throw new ToolExecutionError(error.message, {
+						code: error.issues[0].code === "EMPTY_OLD_TEXT" ? "UNCLASSIFIED" : error.issues[0].code,
+						category: "precondition",
+						retryable: false,
+						details: {
+							issues: error.issues,
+							issueCount: error.issueCount,
+							totalEdits: error.totalEdits,
+							writeState: "not_written",
+						},
+					});
+				}
+				if (writeOutcome.state === "not_written") throw error;
+				const message = error instanceof Error ? error.message : String(error);
+				const outcome =
+					writeOutcome.state === "written" ? "File was written before this error." : "Write outcome is unknown.";
+				throw new ToolExecutionError(`${message}\n${outcome} Read the current file before retrying.`, {
+					code: context.abortSignal?.aborted ? "CANCELLED" : "UNCLASSIFIED",
+					category: context.abortSignal?.aborted ? "cancelled" : "unknown",
+					retryable: false,
+					details: { writeState: writeOutcome.state },
+				});
+			});
 		},
 	};
 }

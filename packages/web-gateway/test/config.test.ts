@@ -20,6 +20,11 @@ test("源码 Gateway 使用独立开发配置文件", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "lystar-web-dev-config-"));
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	try {
+		const production = await new WebConfigStore(agentDir).save({
+			host: "127.0.0.1",
+			port: 1420,
+			password: "production-password",
+		});
 		process.env.PI_CODING_AGENT_DIR = agentDir;
 		const config = await loadWebGatewayConfig({
 			defaultPort: 2422,
@@ -28,7 +33,8 @@ test("源码 Gateway 使用独立开发配置文件", async () => {
 		});
 		assert.equal(config.port, 2422);
 		assert.equal(config.configPath, join(agentDir, "web-dev-config.json"));
-		assert.equal(await new WebConfigStore(agentDir).load(), undefined);
+		assert.notEqual(config.token, production.password);
+		assert.deepEqual(await new WebConfigStore(agentDir).load(), production);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

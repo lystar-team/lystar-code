@@ -44,6 +44,18 @@ type ModelDraft = {
 };
 
 const MODEL_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
+const MODEL_PROVIDER_API_OPTIONS = [
+	{ value: "openai-completions", label: "OpenAI Chat Completions" },
+	{ value: "openai-responses", label: "OpenAI Responses" },
+	{ value: "anthropic-messages", label: "Anthropic Messages" },
+	{ value: "google-generative-ai", label: "Google Generative AI" },
+	{ value: "google-vertex", label: "Google Vertex AI" },
+	{ value: "mistral-conversations", label: "Mistral Conversations" },
+	{ value: "azure-openai-responses", label: "Azure OpenAI Responses" },
+	{ value: "bedrock-converse-stream", label: "Amazon Bedrock Converse" },
+	{ value: "openai-codex-responses", label: "OpenAI Codex Responses" },
+	{ value: "pi-messages", label: "Pi Messages" },
+] as const;
 function ModelBrandIcon({
 	providerId,
 	modelId,
@@ -259,7 +271,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 					<p className="text-sm text-muted-foreground">管理供应商、目录来源和在模型选择器中的显示状态。</p>
 					<Button size="sm" onClick={() => openProvider()}>
 						<Plus className="size-4" />
-						新增 Provider
+						添加供应商
 					</Button>
 				</div>
 				{state.modelSettingsError ? (
@@ -516,14 +528,26 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 							</div>
 							<div className="grid gap-2">
 								<label className="text-sm font-medium" htmlFor="provider-api">
-									API 类型
+									供应商类型
 								</label>
-								<Input
-									id="provider-api"
+								<Select
 									value={providerDraft.api}
-									onChange={(event) => setProviderDraft({ ...providerDraft, api: event.target.value })}
-									placeholder="openai-completions"
-								/>
+									onValueChange={(value) => setProviderDraft({ ...providerDraft, api: value })}
+								>
+									<SelectTrigger id="provider-api" className="w-full">
+										<SelectValue placeholder="选择供应商类型" />
+									</SelectTrigger>
+									<SelectContent>
+										{!MODEL_PROVIDER_API_OPTIONS.some((option) => option.value === providerDraft.api) ? (
+											<SelectItem value={providerDraft.api}>{providerDraft.api}（当前配置）</SelectItem>
+										) : null}
+										{MODEL_PROVIDER_API_OPTIONS.map((option) => (
+											<SelectItem key={option.value} value={option.value}>
+												{option.label}
+											</SelectItem>
+										))}
+									</SelectContent>
+								</Select>
 							</div>
 							<div className="grid gap-2">
 								<label className="text-sm font-medium" htmlFor="provider-key">

@@ -388,6 +388,7 @@ function assistantToolCall(event: Extract<AgentSessionEvent, { type: "message_up
 			id: string;
 			name: string;
 			arguments: unknown;
+			includeDiff: boolean;
 	  }
 	| undefined {
 	const stream = event.assistantMessageEvent;
@@ -396,7 +397,15 @@ function assistantToolCall(event: Extract<AgentSessionEvent, { type: "message_up
 	}
 	if (event.message.role !== "assistant") return undefined;
 	const content = event.message.content[stream.contentIndex];
-	return content?.type === "toolCall" ? content : undefined;
+	return content?.type === "toolCall"
+		? {
+				id: content.id,
+				name: content.name,
+				arguments: content.arguments,
+				// Delta 会在每个模型片段触发；完整 Diff 留到参数收敛或执行终态计算。
+				includeDiff: stream.type !== "toolcall_delta",
+			}
+		: undefined;
 }
 
 export class ToolActivityTracker {
@@ -428,7 +437,9 @@ export class ToolActivityTracker {
 		if (event.type === "tool_activity") return [];
 		if (event.type === "message_update") {
 			const toolCall = assistantToolCall(event);
-			return toolCall ? [this.updatePreparing(toolCall.id, toolCall.name, toolCall.arguments)] : [];
+			return toolCall
+				? [this.updatePreparing(toolCall.id, toolCall.name, toolCall.arguments, toolCall.includeDiff)]
+				: [];
 		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
 			const snapshots: ToolActivitySnapshot[] = [];
@@ -487,13 +498,13 @@ export class ToolActivityTracker {
 		return [];
 	}
 
-	private updatePreparing(toolCallId: string, name: string, args: unknown): ToolActivitySnapshot {
+	private updatePreparing(toolCallId: string, name: string, args: unknown, includeDiff = true): ToolActivitySnapshot {
 		const activity = this.getOrCreate(toolCallId, name, args);
 		if (!isTerminal(activity.state)) {
 			activity.state = "preparing";
 			activity.args = args;
 			activity.summary = this.summary(name, args);
-			activity.diff = toolProgressDiff(name, args) ?? activity.diff;
+			if (includeDiff) activity.diff = toolProgressDiff(name, args) ?? activity.diff;
 		}
 		return this.touch(activity);
 	}

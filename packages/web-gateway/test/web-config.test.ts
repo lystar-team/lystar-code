@@ -25,6 +25,21 @@ test("WebConfigStore 将完整配置写入 agentDir 根目录", async () => {
 	}
 });
 
+test("WebConfigStore 不让开发配置读取正式或旧 Gateway 配置", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "lystar-web-config-isolation-"));
+	try {
+		await new WebConfigStore(agentDir).save({ host: "127.0.0.1", port: 1420, password: "production-password" });
+		await mkdir(join(agentDir, "web"), { recursive: true });
+		await writeFile(webGatewaySettingsPath(agentDir), `${JSON.stringify({ host: "0.0.0.0", port: 2422 })}\n`);
+		await writeFile(webGatewayTokenPath(agentDir), "legacy-password\n");
+		const devStore = new WebConfigStore(agentDir, join(agentDir, "web-dev-config.json"));
+		assert.equal(await devStore.loadOrMigrate(), undefined);
+		await assert.rejects(readFile(join(agentDir, "web-dev-config.json"), "utf8"), { code: "ENOENT" });
+	} finally {
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});
+
 test("WebConfigStore 将旧 Gateway 配置迁移到 web-config.json", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "lystar-web-config-migrate-"));
 	try {

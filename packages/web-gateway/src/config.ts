@@ -70,6 +70,7 @@ export interface WebGatewayConfig {
 }
 
 export interface LoadWebGatewayConfigOptions {
+	agentDir?: string;
 	defaultPort?: number;
 	defaultRuntimePort?: number;
 	staticDir?: string;
@@ -141,7 +142,7 @@ export async function saveWebGatewayToken(agentDir: string, password: string): P
 }
 
 export async function loadWebGatewayConfig(options: LoadWebGatewayConfigOptions = {}): Promise<WebGatewayConfig> {
-	const agentDir = getWebAgentDir();
+	const agentDir = options.agentDir ?? getWebAgentDir();
 	const configPath = options.configFileName ? join(agentDir, options.configFileName) : undefined;
 	const store = new WebConfigStore(agentDir, configPath);
 	let persisted = await store.loadOrMigrate();
@@ -151,7 +152,7 @@ export async function loadWebGatewayConfig(options: LoadWebGatewayConfigOptions 
 	const environmentRuntimePort = envString("PI_WEB_RUNTIME_PORT");
 	const environmentPassword = envString("PI_WEB_TOKEN");
 	if (!persisted) {
-		const legacy = await store.loadLegacy();
+		const legacy = options.configFileName ? {} : await store.loadLegacy();
 		const host = environmentHost ?? legacy.host ?? DEFAULT_WEB_HOST;
 		persisted = await store.save({
 			host,

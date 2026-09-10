@@ -1,4 +1,4 @@
-import { FolderOpen, LogOut, Menu, PanelRight, Settings } from "lucide-react";
+import { LogOut, Menu, PanelRight, Settings } from "lucide-react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { cn } from "../lib/utils";
@@ -7,7 +7,6 @@ import type { WorkbenchState } from "../state/use-workbench";
 import { sessionTitle } from "../state/use-workbench";
 import type { WebProject, WebSessionSummary } from "../types";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
-import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Composer } from "./workbench/composer";
 import { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH } from "./workbench/constants";
@@ -40,7 +39,6 @@ export function Workbench({
 }) {
 	const [mobileProjectOpen, setMobileProjectOpen] = useState(false);
 	const [directoryOpen, setDirectoryOpen] = useState(false);
-	const [directoryLoaded, setDirectoryLoaded] = useState(false);
 	const [editingProject, setEditingProject] = useState<WebProject>();
 	const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
 	const [isResizingSidebar, setIsResizingSidebar] = useState(false);
@@ -76,13 +74,7 @@ export function Workbench({
 		};
 	}, [isResizingSidebar]);
 
-	const openDirectory = useCallback(() => {
-		setDirectoryOpen(true);
-		if (!directoryLoaded) {
-			setDirectoryLoaded(true);
-			void actions.loadDirectory();
-		}
-	}, [actions.loadDirectory, directoryLoaded]);
+	const openDirectory = useCallback(() => setDirectoryOpen(true), []);
 	const closeMobileProjects = useCallback(() => setMobileProjectOpen(false), []);
 
 	return (
@@ -166,7 +158,7 @@ export function Workbench({
 			</Dialog>
 
 			<main className="flex min-w-0 flex-1 flex-col overflow-hidden">
-				<header className="relative flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-border/60 px-5 pt-[env(safe-area-inset-top)] sm:px-7">
+				<header className="relative flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-border/60 pl-3 pr-5 pt-[env(safe-area-inset-top)] sm:pl-5 sm:pr-7">
 					<div className="flex min-w-0 items-center gap-2">
 						<Button
 							className="lg:hidden"
@@ -177,7 +169,6 @@ export function Workbench({
 						>
 							<Menu className="size-4" />
 						</Button>
-						<FolderOpen className="size-4 shrink-0 text-muted-foreground" />
 						<div className="min-w-0">
 							<h1 className="truncate text-base font-semibold tracking-tight sm:text-lg">
 								{sessionTitleText}
@@ -187,13 +178,26 @@ export function Workbench({
 							) : null}
 						</div>
 					</div>
-					<div className="flex shrink-0 items-center gap-1">
-						<Badge className="hidden gap-2 sm:inline-flex" variant="outline">
+					<div className="flex shrink-0 items-center gap-2">
+						<span
+							className="hidden items-center gap-2 sm:inline-flex"
+							role="status"
+							aria-label={`连接状态：${state.connected ? (state.reconnecting ? "重新连接中" : "已连接") : "离线"}`}
+						>
 							<span
-								className={cn("size-2 rounded-full", state.connected ? "bg-emerald-500" : "bg-destructive")}
+								className={cn(
+									"size-1.5 rounded-full",
+									state.connected
+										? state.reconnecting
+											? "bg-[var(--warning)]"
+											: "bg-[var(--success)]"
+										: "bg-destructive",
+								)}
 							/>
-							{state.connected ? (state.reconnecting ? "重新连接中" : "已连接") : "离线"}
-						</Badge>
+							<span className="text-xs font-medium tracking-tight text-muted-foreground">
+								{state.connected ? (state.reconnecting ? "重新连接中" : "已连接") : "离线"}
+							</span>
+						</span>
 						<Button
 							size="icon"
 							variant="ghost"

@@ -1,5 +1,5 @@
 import { ArrowUp, ArrowUpToLine, Check, ChevronDown, Plus, Square, Trash2 } from "lucide-react";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api";
 import { type CommandDialogRequest, executeComposerCommand, resolveComposerCommand } from "../../state/composer-commands";
 import { canSendPrompt, hasActiveSessionWork } from "../../state/chat-lifecycle";
@@ -58,9 +58,20 @@ export const Composer = memo(function Composer({ state, actions }: ComposerProps
 	const [modelSearch, setModelSearch] = useState("");
 	const [commandDialog, setCommandDialog] = useState<CommandDialogRequest & { sessionId?: string }>();
 	const [queueActionId, setQueueActionId] = useState<string>();
-	const submittingRef = useRef(false);
+	const submittingSessionIdsRef = useRef(new Set<string>());
+	const draftBySessionRef = useRef(new Map<string, string>());
 	const sessionIdRef = useRef(state.sessionId);
 	sessionIdRef.current = state.sessionId;
+	const inputSessionId = state.sessionId;
+	const handleInputChange = useCallback(
+		(value: string) => {
+			if (!inputSessionId) return;
+			if (value) draftBySessionRef.current.set(inputSessionId, value);
+			else draftBySessionRef.current.delete(inputSessionId);
+		},
+		[inputSessionId],
+	);
+	const initialInput = inputSessionId ? (draftBySessionRef.current.get(inputSessionId) ?? "") : "";
 	useEffect(() => {
 		setCommandDialog(undefined);
 		setModelSelectorOpen(false);
@@ -103,7 +114,11 @@ export const Composer = memo(function Composer({ state, actions }: ComposerProps
 	return (
 		<div className="shrink-0 bg-background px-4 pt-3 pb-[max(16px,env(safe-area-inset-bottom))] sm:px-8">
 			<div className="mx-auto w-full max-w-[var(--conversation-width)]">
-				<PromptInputProvider>
+				<PromptInputProvider
+					key={inputSessionId ?? "no-session"}
+					initialInput={initialInput}
+					onInputChange={handleInputChange}
+				>
 					<PromptCompletionProvider
 						disabled={disabled}
 						onError={(error) => actions.showToast(error instanceof Error ? error.message : String(error))}
@@ -133,15 +148,16 @@ export const Composer = memo(function Composer({ state, actions }: ComposerProps
 									else actions.showToast("附件类型不受支持");
 								}}
 								onSubmit={async ({ text, files, submitMode }) => {
-									if (!text.trim() || disabled) return;
-									if (submittingRef.current) throw new Error("正在提交，请稍候");
-									submittingRef.current = true;
+									const submissionSessionId = state.sessionId;
+									if (!text.trim() || disabled || !submissionSessionId) return;
+									if (submittingSessionIdsRef.current.has(submissionSessionId)) throw new Error("正在提交，请稍候");
+									submittingSessionIdsRef.current.add(submissionSessionId);
 									try {
 										const command = await resolveComposerCommand(text, (token, cursor) => {
 											if (!state.currentProjectId) throw new Error("请先选择项目");
-											return webApi.completions(state.currentProjectId, token, cursor, state.sessionId);
+											return webApi.completions(state.currentProjectId, token, cursor, submissionSessionId);
 										});
-										if (sessionIdRef.current !== state.sessionId) throw new Error("会话已切换，请确认后重新提交");
+										if (sessionIdRef.current !== submissionSessionId) throw new Error("会话已切换，请确认后重新提交");
 										if (command) {
 											if (files.length) throw new Error("内置命令不接受图片附件，请移除附件后执行");
 											await executeComposerCommand(command, state, actions, (request) => {
@@ -149,47 +165,49 @@ export const Composer = memo(function Composer({ state, actions }: ComposerProps
 												if (request.kind === "model") {
 													setModelSearch(request.value ?? "");
 													setModelSelectorOpen(true);
-												} else setCommandDialog({ ...request, sessionId: state.sessionId });
+												} else setCommandDialog({ ...request, sessionId: submissionSessionId });
 											});
 											return;
 										}
-						const mode = stopping
-							? submitMode === "steer"
-								? "steer"
-								: "follow-up"
-							: state.composerMode;
-						const uploadedImages = await Promise.all(
-							files.map((file) =>
-								webApi.uploadImage({
-									data: base64FromDataUrl(file.url ?? ""),
-									mimeType: file.mediaType || "application/octet-stream",
-								}),
-							),
-						);
-						const promptText = uploadedImages.length
-							? `${text}\n\n${uploadedImages.map((image) => `<file name="${image.path}"></file>`).join("\n")}`
-							: text;
-						const attachmentPreviews = uploadedImages.map((image, index) => ({
-							id: image.path,
-							filename: files[index]?.filename ?? `图片 ${index + 1}`,
-							mediaType: image.mimeType,
-							url: files[index]?.url ?? "",
-						}));
-						await actions.sendMessage(
-							promptText,
-							mode,
-							uploadedImages.map(({ path, mimeType }) => ({ path, mimeType })),
-							attachmentPreviews,
-							text,
-						);
+										const mode = stopping
+											? submitMode === "steer"
+												? "steer"
+												: "follow-up"
+											: state.composerMode;
+										if (sessionIdRef.current !== submissionSessionId) throw new Error("会话已切换，请确认后重新提交");
+										const uploadedImages = await Promise.all(
+											files.map((file) =>
+												webApi.uploadImage({
+													data: base64FromDataUrl(file.url ?? ""),
+													mimeType: file.mediaType || "application/octet-stream",
+												}),
+											),
+										);
+										if (sessionIdRef.current !== submissionSessionId) throw new Error("会话已切换，请确认后重新提交");
+										const promptText = uploadedImages.length
+											? `${text}\n\n${uploadedImages.map((image) => `<file name="${image.path}"></file>`).join("\n")}`
+											: text;
+										const attachmentPreviews = uploadedImages.map((image, index) => ({
+											id: image.path,
+											filename: files[index]?.filename ?? `图片 ${index + 1}`,
+											mediaType: image.mimeType,
+											url: files[index]?.url ?? "",
+										}));
+										await actions.sendMessage(
+											promptText,
+											mode,
+											uploadedImages.map(({ path, mimeType }) => ({ path, mimeType })),
+											attachmentPreviews,
+											text,
+										);
 									} catch (error) {
 										actions.showToast(error instanceof Error ? error.message : String(error));
 										throw error;
 									} finally {
-										submittingRef.current = false;
+										submittingSessionIdsRef.current.delete(submissionSessionId);
 									}
 								}}
-							>
+								>
 								<PromptInputHeader className="empty:hidden">
 									<ComposerAttachments />
 								</PromptInputHeader>

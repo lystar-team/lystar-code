@@ -81,16 +81,30 @@ export async function runWebRuntimeCli(args: readonly string[] = process.argv.sl
 			return;
 		}
 		if (command === "ensure") {
-			print(await ensureRuntimeService(endpoint));
+			print(await ensureRuntimeService(endpoint, undefined, undefined, args.includes("--interactive-admin")));
 			return;
 		}
 		if (command === "stop") {
-			print(await stopRuntimeService(endpoint, args.includes("--force")));
+			print(
+				await stopRuntimeService(
+					endpoint,
+					args.includes("--force"),
+					undefined,
+					undefined,
+					args.includes("--interactive-admin"),
+				),
+			);
 			return;
 		}
 		if (command === "uninstall") {
-			await stopRuntimeService(endpoint, args.includes("--force"));
-			removeRuntimeService();
+			await stopRuntimeService(
+				endpoint,
+				args.includes("--force"),
+				undefined,
+				undefined,
+				args.includes("--interactive-admin"),
+			);
+			removeRuntimeService(endpoint, undefined, undefined, args.includes("--interactive-admin"));
 			print({ removed: true, endpoint });
 			return;
 		}

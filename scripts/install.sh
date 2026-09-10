@@ -10,6 +10,27 @@ UPDATE_PATH=true
 DOWNLOADER=""
 tmp=""
 
+web_agent_dir="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+
+web_usage_exists() {
+    [[ -f "$web_agent_dir/web-config.json" || -f "$web_agent_dir/web/service-state.json" || -f "$web_agent_dir/web/gateway.json" ]]
+}
+
+reconcile_web_services() {
+    local target_version="$1"
+    local previous_version="${2:-}"
+    local launcher="${3:-$INSTALL_ROOT/current/lc}"
+    web_usage_exists || return 0
+    [[ -x "$launcher" ]] || {
+        print_warning "Web 服务已使用，但没有找到可执行的 lc：$launcher"
+        return 1
+    }
+    print_info "正在把 Web Gateway 和 Web Runtime 服务切换到 $target_version……"
+    LYSTAR_WEB_SERVICE_TARGET_VERSION="$target_version" \
+        LYSTAR_WEB_PREVIOUS_SERVICE_VERSION="$previous_version" \
+        "$launcher" web service reconcile --upgrade --non-interactive
+}
+
 print_usage() {
     printf '%s\n' \
         '用法：' \
@@ -47,6 +68,13 @@ print_warning() {
 die() {
     printf '\n[失败] %s\n' "$1" >&2
     printf '  当前版本没有切换，已有安装仍可使用。\n' >&2
+    exit 1
+}
+
+die_after_activation() {
+    printf '\n[失败] %s\n' "$1" >&2
+    printf '  LYStar Code 当前版本保持为 %s。\n' "$2" >&2
+    printf '  应用版本不会因 Web 服务错误回退。\n' >&2
     exit 1
 }
 
@@ -91,7 +119,12 @@ write_launcher() {
     cat > "$next" <<'LAUNCHER'
 #!/usr/bin/env bash
 set -e
-current="$HOME/.local/share/lystar-agent/current"
+root="$HOME/.local/share/lystar-agent"
+if [[ -n "${LYSTAR_WEB_SERVICE_VERSION:-}" ]]; then
+    current="$root/versions/$LYSTAR_WEB_SERVICE_VERSION"
+else
+    current="$root/current"
+fi
 if [[ -x "$current/lc" ]]; then
     exec "$current/lc" "$@"
 fi
@@ -220,6 +253,9 @@ if [[ "$ACTION" == "uninstall" ]]; then
     print_step 1 1 '删除 LYStar Code 安装文件'
     print_info "将删除安装目录：$INSTALL_ROOT"
     print_info '用户数据目录 ~/.pi/agent 不会删除。'
+    if [[ -x "$INSTALL_ROOT/current/lc" ]]; then
+        "$INSTALL_ROOT/current/lc" web service uninstall --non-interactive || die 'Web 服务卸载失败，未删除安装目录。'
+    fi
     rm -f "$BIN_DIR/lc" "$BIN_DIR/lystar" "$BIN_DIR/la"
     rm -rf "$INSTALL_ROOT"
     print_success 'LYStar Code 已卸载。用户数据仍保留在 ~/.pi/agent。'
@@ -238,7 +274,16 @@ if [[ "$ACTION" == "rollback" ]]; then
     if [[ -n "$current_target" ]]; then
         replace_symlink "$current_target" "$INSTALL_ROOT/previous"
     fi
-    print_success "已回退到 ${previous_target##*/}。"
+    rollback_launcher=""
+    if [[ -n "$current_target" && -x "$INSTALL_ROOT/$current_target/lc" ]]; then
+        rollback_launcher="$INSTALL_ROOT/$current_target/lc"
+    fi
+    target_version="${previous_target##*/}"
+    current_version="${current_target##*/}"
+    if ! reconcile_web_services "$target_version" "$current_version" "$rollback_launcher"; then
+        die_after_activation "LYStar Code 已回退到 $target_version，但 Web 服务切换失败。服务编排器已尝试恢复上一个可用服务版本。请运行 lc web service status 查看结果。" "$target_version"
+    fi
+    print_success "已回退到 $target_version。"
     exit 0
 fi
 
@@ -342,6 +387,10 @@ installed_version="$(HOME="$HOME" "$BIN_DIR/lc" --version)"
 alias_version="$(HOME="$HOME" "$BIN_DIR/lystar" --version)"
 [[ "$alias_version" == "$VERSION" ]] || die "安装后的 lystar 版本校验失败：预期 $VERSION，实际 $alias_version。"
 print_success "安装结果检查通过：lc 和 lystar 均为 $VERSION。"
+previous_service_version="${current_target##*/}"
+if ! reconcile_web_services "$VERSION" "$previous_service_version"; then
+    die_after_activation "LYStar Code $VERSION 已安装，但 Web 服务切换失败。服务编排器已尝试恢复上一个可用服务版本。请运行 lc web service status 查看结果。" "$VERSION"
+fi
 print_info '新开的终端可直接运行：lc、lystar。'
 print_info '首次使用：进入项目目录后执行 /login。'
 print_info '用户数据目录 ~/.pi/agent 不会被安装器删除。'

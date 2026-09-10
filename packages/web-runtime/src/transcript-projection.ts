@@ -451,8 +451,24 @@ function projectTranscriptViews(
 			},
 		];
 	}
-	if (role === "assistant") {
-		return assistantViews(content, images);
+	if (role === "assistant" && entryMessage) {
+		const views = assistantViews(content, images);
+		const stopReason = entryMessage.stopReason;
+		if (stopReason !== "error" && stopReason !== "aborted") return views;
+		const errorMessage = typeof entryMessage.errorMessage === "string" ? entryMessage.errorMessage.trim() : "";
+		const failureText =
+			stopReason === "aborted"
+				? errorMessage
+					? `请求已取消：${bounded(errorMessage)}`
+					: "请求已取消"
+				: errorMessage
+					? `请求失败：${bounded(errorMessage)}`
+					: "模型响应失败";
+		const visibleViews = views.filter((view) => {
+			if (view.type !== "assistant") return true;
+			return Boolean(view.text.trim() || view.images?.length);
+		});
+		return [...visibleViews, { type: "system", text: failureText }];
 	}
 	if (item.kind === "compaction") {
 		const source = record(payload);

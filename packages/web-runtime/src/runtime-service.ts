@@ -1,38 +1,30 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	realpathSync,
-	renameSync,
-	rmSync,
-	unlinkSync,
-	writeFileSync,
-} from "node:fs";
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import type { Socket } from "node:net";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { type ByteTransport, type OperationSnapshot, RuntimeProtocolClient } from "@lystar/code-web-protocol";
-import { connectRuntimeEndpoint, probeIpcRuntime } from "./ipc.ts";
+import { connectRuntimeEndpoint, defaultRuntimeEndpoint, probeIpcRuntime } from "./ipc.ts";
+import { getRuntimeAgentDir } from "./runtime-adapter.ts";
+import {
+	currentProcessInvocation,
+	ensureWebService,
+	getWebServiceStatus,
+	installWebService,
+	removeWebService,
+	stopWebService,
+	type WebServiceInvocation,
+	type WebServiceSpec,
+	type WebServiceStatus,
+	webServiceDiagnostic,
+} from "./service-manager.ts";
 
-const SERVICE_NAME = "lystar-web-runtime";
 const ACTIVE_OPERATION_STATUSES = new Set(["accepted", "running", "waiting_for_input"]);
 
-export interface RuntimeServiceStatus {
-	platform: NodeJS.Platform;
-	arch: string;
+export interface RuntimeServiceStatus extends WebServiceStatus {
 	endpoint: string;
 	reachable: boolean;
-	installed: boolean;
-	running: boolean;
-	persistent: boolean;
-	manager: "systemd-user" | "launch-daemon" | "scheduled-task" | "detached";
-	pid?: number;
-	servicePath?: string;
-	lingerEnabled?: boolean;
-	message?: string;
-	remedy?: string;
 }
 
 interface HostSnapshot {
@@ -40,45 +32,22 @@ interface HostSnapshot {
 	pendingUiRequests: unknown[];
 }
 
-interface ServiceInvocation {
-	program: string;
-	args: string[];
+export interface RuntimeServiceOptions {
+	profile?: string;
+	invocation?: WebServiceInvocation;
+	agentDir?: string;
+	environment?: Record<string, string | undefined>;
 }
 
-function executableInvocation(): ServiceInvocation {
-	const entry = process.argv[1];
-	if (entry && existsSync(entry) && basename(process.execPath).startsWith("node")) {
-		return { program: realpathSync(process.execPath), args: [realpathSync(entry)] };
+function runtimePidPath(endpoint: string, agentDir = getRuntimeAgentDir()): string {
+	if (endpoint.startsWith("tcp://")) {
+		const suffix = createHash("sha256").update(endpoint).digest("hex").slice(0, 24);
+		return join(agentDir, "host", `lystar-web-runtime-${suffix}.pid`);
 	}
-	return { program: realpathSync(process.execPath), args: [] };
+	return process.platform === "win32" ? join(agentDir, "host", "lystar-web-runtime.pid") : `${endpoint}.pid`;
 }
 
-function run(command: string, args: string[]): { ok: boolean; stdout: string; stderr: string } {
-	const result = spawnSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-	return {
-		ok: !result.error && result.status === 0,
-		stdout: result.stdout?.trim() ?? "",
-		stderr: result.error?.message ?? result.stderr?.trim() ?? "",
-	};
-}
-
-function runInteractive(command: string, args: string[]): { ok: boolean; stdout: string; stderr: string } {
-	const result = spawnSync(command, args, { stdio: "inherit" });
-	return {
-		ok: !result.error && result.status === 0,
-		stdout: "",
-		stderr: result.error?.message ?? "",
-	};
-}
-
-function writeAtomic(path: string, content: string, mode: number): void {
-	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-	const temporaryPath = `${path}.${process.pid}.tmp`;
-	writeFileSync(temporaryPath, content, { encoding: "utf8", mode });
-	renameSync(temporaryPath, path);
-}
-
-function runtimePidPath(endpoint: string): string {
+function legacyRuntimePidPath(endpoint: string): string {
 	if (endpoint.startsWith("tcp://")) {
 		const suffix = createHash("sha256").update(endpoint).digest("hex").slice(0, 24);
 		return join(homedir(), ".pi", "agent", "host", `lystar-web-runtime-${suffix}.pid`);
@@ -88,246 +57,133 @@ function runtimePidPath(endpoint: string): string {
 		: `${endpoint}.pid`;
 }
 
-export function writeRuntimePid(endpoint: string, pid = process.pid): void {
-	writeAtomic(runtimePidPath(endpoint), `${pid}\n`, 0o600);
+function runtimePidPaths(endpoint: string, agentDir: string): string[] {
+	const current = runtimePidPath(endpoint, agentDir);
+	const legacy = legacyRuntimePidPath(endpoint);
+	return current === legacy ? [current] : [current, legacy];
 }
 
-export function clearRuntimePid(endpoint: string, pid = process.pid): void {
-	const path = runtimePidPath(endpoint);
+export function writeRuntimePid(endpoint: string, pid = process.pid, agentDir = getRuntimeAgentDir()): void {
+	const path = runtimePidPath(endpoint, agentDir);
 	try {
-		if (readFileSync(path, "utf8").trim() === String(pid)) unlinkSync(path);
-	} catch {}
-}
-
-function readRuntimePid(endpoint: string): number | undefined {
-	try {
-		const pid = Number.parseInt(readFileSync(runtimePidPath(endpoint), "utf8").trim(), 10);
-		if (!Number.isInteger(pid) || pid <= 0) return undefined;
-		process.kill(pid, 0);
-		return pid;
-	} catch {
-		return undefined;
+		mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+		writeFileSync(path, `${pid}\n`, { encoding: "utf8", mode: 0o600 });
+	} catch (error) {
+		throw new Error(`无法写入 Web Runtime PID 文件：${error instanceof Error ? error.message : String(error)}`);
 	}
 }
 
-function systemdUnitPath(): string {
-	return join(homedir(), ".config", "systemd", "user", `${SERVICE_NAME}.service`);
+export function clearRuntimePid(endpoint: string, pid = process.pid, agentDir = getRuntimeAgentDir()): void {
+	for (const path of runtimePidPaths(endpoint, agentDir)) {
+		try {
+			if (readFileSync(path, "utf8").trim() === String(pid)) unlinkSync(path);
+		} catch {}
+	}
 }
 
-function launchDaemonLabel(): string {
-	return `com.lystar.web-runtime.${process.getuid?.() ?? 0}`;
+function readRuntimePid(endpoint: string, agentDir = getRuntimeAgentDir()): number | undefined {
+	for (const path of runtimePidPaths(endpoint, agentDir)) {
+		try {
+			const pid = Number.parseInt(readFileSync(path, "utf8").trim(), 10);
+			if (!Number.isInteger(pid) || pid <= 0) continue;
+			process.kill(pid, 0);
+			return pid;
+		} catch {}
+	}
+	return undefined;
 }
 
-function launchDaemonPath(): string {
-	return join("/Library", "LaunchDaemons", `${launchDaemonLabel()}.plist`);
+function withRuntimeEndpoint(args: readonly string[], endpoint: string): string[] {
+	const endpointIndex = args.findIndex((argument) => argument === "--endpoint" || argument.startsWith("--endpoint="));
+	if (endpointIndex === -1) return [...args, "--endpoint", endpoint];
+	if (args[endpointIndex] === "--endpoint") {
+		return [...args.slice(0, endpointIndex + 1), endpoint, ...args.slice(endpointIndex + 2)];
+	}
+	return [...args.slice(0, endpointIndex), `--endpoint=${endpoint}`, ...args.slice(endpointIndex + 1)];
 }
 
-function launchDaemonStagingPath(): string {
-	return join(homedir(), ".pi", "agent", "host", `${launchDaemonLabel()}.plist`);
-}
-
-function windowsTaskName(): string {
-	return "LYStar Web Runtime";
-}
-
-function linuxStatus(endpoint: string): RuntimeServiceStatus {
-	const servicePath = systemdUnitPath();
-	const active = run("systemctl", ["--user", "is-active", "--quiet", SERVICE_NAME]).ok;
-	const user = process.env.USER ?? process.env.LOGNAME ?? "";
-	const lingerEnabled = user !== "" && existsSync(join("/var/lib/systemd/linger", user));
-	const installed = existsSync(servicePath);
+function runtimeEnvironment(agentDir: string, endpoint: string): Record<string, string | undefined> {
 	return {
-		platform: process.platform,
-		arch: process.arch,
-		endpoint,
-		reachable: false,
-		installed,
-		running: active,
-		persistent: active && lingerEnabled,
-		manager: installed ? "systemd-user" : "detached",
-		...(readRuntimePid(endpoint) ? { pid: readRuntimePid(endpoint) } : {}),
-		servicePath,
-		lingerEnabled,
-		...(installed && !lingerEnabled && user
-			? {
-					message: "用户 lingering 尚未启用，SSH 退出后用户服务可能停止",
-					remedy: `sudo loginctl enable-linger ${user}`,
-				}
-			: {}),
+		PI_CODING_AGENT_DIR: agentDir,
+		PI_WEB_RUNTIME_ENDPOINT: endpoint,
+		HOME: process.env.HOME ?? homedir(),
+		USERPROFILE: process.env.USERPROFILE ?? homedir(),
+		APPDATA: process.env.APPDATA,
+		LOCALAPPDATA: process.env.LOCALAPPDATA,
 	};
 }
 
-function macStatus(endpoint: string): RuntimeServiceStatus {
-	const servicePath = launchDaemonPath();
-	const listed = run("launchctl", ["print", `system/${launchDaemonLabel()}`]).ok;
-	const installed = existsSync(servicePath);
+export function createRuntimeServiceSpec(endpoint: string, options: RuntimeServiceOptions = {}): WebServiceSpec {
+	const agentDir = options.agentDir ?? getRuntimeAgentDir();
+	const base = options.invocation ?? currentProcessInvocation();
+	const invocation = options.invocation
+		? { ...base, args: withRuntimeEndpoint(base.args, endpoint), cwd: agentDir }
+		: { ...base, args: [...base.args, "serve", "--endpoint", endpoint], cwd: agentDir };
 	return {
-		platform: process.platform,
-		arch: process.arch,
-		endpoint,
-		reachable: false,
-		installed,
-		running: listed,
-		persistent: listed,
-		manager: installed ? "launch-daemon" : "detached",
-		...(readRuntimePid(endpoint) ? { pid: readRuntimePid(endpoint) } : {}),
-		servicePath,
-		...(!installed
-			? {
-					message: "macOS 远端后台需要一次管理员批准",
-					remedy: "在远端终端运行 ~/.local/bin/lystar-web-runtime install --interactive-admin。",
-				}
-			: {}),
+		kind: "runtime",
+		...(options.profile ? { profile: options.profile } : {}),
+		agentDir,
+		invocation,
+		environment: { ...runtimeEnvironment(agentDir, endpoint), ...options.environment },
+		logPath: join(agentDir, "web", "runtime.log"),
 	};
 }
 
-function windowsStatus(endpoint: string): RuntimeServiceStatus {
-	const task = run("schtasks.exe", ["/Query", "/TN", windowsTaskName(), "/FO", "LIST"]);
-	const running = task.ok && /Running|正在运行/iu.test(task.stdout);
-	const installed = task.ok;
-	return {
-		platform: process.platform,
-		arch: process.arch,
-		endpoint,
-		reachable: false,
-		installed,
-		running,
-		persistent: installed,
-		manager: installed ? "scheduled-task" : "detached",
-		...(readRuntimePid(endpoint) ? { pid: readRuntimePid(endpoint) } : {}),
-		servicePath: windowsTaskName(),
-	};
-}
-
-export async function getRuntimeServiceStatus(endpoint: string): Promise<RuntimeServiceStatus> {
-	const base =
-		process.platform === "linux"
-			? linuxStatus(endpoint)
-			: process.platform === "darwin"
-				? macStatus(endpoint)
-				: windowsStatus(endpoint);
-	const reachable = (await probeIpcRuntime(endpoint)).reachable;
+function mergeRuntimeStatus(
+	base: WebServiceStatus,
+	endpoint: string,
+	reachable: boolean,
+	pid: number | undefined,
+): RuntimeServiceStatus {
+	const effectivePid = pid ?? base.pid;
 	return {
 		...base,
-		...(readRuntimePid(endpoint) ? { pid: readRuntimePid(endpoint) } : {}),
+		endpoint,
 		reachable,
 		running: base.running || reachable,
+		...(effectivePid !== undefined ? { pid: effectivePid } : {}),
 	};
 }
 
-function installLinux(endpoint: string): void {
-	const invocation = executableInvocation();
-	const command = [...invocation.args, "serve", "--endpoint", endpoint].reduce(
-		(value, argument) => `${value} ${JSON.stringify(argument)}`,
-		JSON.stringify(invocation.program),
-	);
-	const unit = `[Unit]\nDescription=LYStar Code Web Runtime\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=${command}\nEnvironment=${JSON.stringify(`PI_WEB_RUNTIME_ENDPOINT=${endpoint}`)}\nRestart=on-failure\nRestartSec=2\nKillMode=mixed\n\n[Install]\nWantedBy=default.target\n`;
-	writeAtomic(systemdUnitPath(), unit, 0o600);
-	const reload = run("systemctl", ["--user", "daemon-reload"]);
-	if (!reload.ok) throw new Error(`无法刷新 systemd 用户服务：${reload.stderr || reload.stdout}`);
-	const enable = run("systemctl", ["--user", "enable", SERVICE_NAME]);
-	if (!enable.ok) throw new Error(`无法启用 systemd 用户服务：${enable.stderr || enable.stdout}`);
-	const restart = run("systemctl", ["--user", "restart", SERVICE_NAME]);
-	if (!restart.ok) throw new Error(`无法启动 systemd 用户服务：${restart.stderr || restart.stdout}`);
+export async function getRuntimeServiceStatus(
+	endpoint: string,
+	profile?: string,
+	invocation?: WebServiceInvocation,
+	agentDir?: string,
+): Promise<RuntimeServiceStatus> {
+	const spec = createRuntimeServiceSpec(endpoint, {
+		...(profile ? { profile } : {}),
+		...(invocation ? { invocation } : {}),
+		...(agentDir ? { agentDir } : {}),
+	});
+	const base = getWebServiceStatus(spec);
+	const reachable = (await probeIpcRuntime(endpoint)).reachable;
+	return mergeRuntimeStatus(base, endpoint, reachable, readRuntimePid(endpoint, spec.agentDir));
 }
 
-function xml(value: string): string {
-	return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+function runtimeSpecOptions(options: RuntimeServiceOptions | undefined): RuntimeServiceOptions {
+	return options ?? {};
 }
 
-function sudo(interactiveAdmin: boolean, args: string[]): { ok: boolean; stdout: string; stderr: string } {
-	return interactiveAdmin ? runInteractive("sudo", args) : run("sudo", ["-n", ...args]);
-}
-
-function installMac(endpoint: string, interactiveAdmin: boolean): void {
-	const user = process.env.USER ?? process.env.LOGNAME;
-	if (!user) throw new Error("无法确定 macOS 后台运行用户");
-	const invocation = executableInvocation();
-	const programArguments = [invocation.program, ...invocation.args, "serve", "--endpoint", endpoint]
-		.map((argument) => `<string>${xml(argument)}</string>`)
-		.join("");
-	const escapedEndpoint = xml(endpoint);
-	const logs = xml(join(homedir(), "Library", "Logs"));
-	const plist = `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${launchDaemonLabel()}</string>\n<key>UserName</key><string>${xml(user)}</string>\n<key>ProgramArguments</key><array>${programArguments}</array>\n<key>EnvironmentVariables</key><dict><key>PI_WEB_RUNTIME_ENDPOINT</key><string>${escapedEndpoint}</string></dict>\n<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ProcessType</key><string>Background</string>\n<key>StandardOutPath</key><string>${logs}/lystar-web-runtime.log</string>\n<key>StandardErrorPath</key><string>${logs}/lystar-web-runtime.error.log</string>\n</dict></plist>\n`;
-	const stagingPath = launchDaemonStagingPath();
-	writeAtomic(stagingPath, plist, 0o600);
-	const install = sudo(interactiveAdmin, [
-		"install",
-		"-o",
-		"root",
-		"-g",
-		"wheel",
-		"-m",
-		"0644",
-		stagingPath,
-		launchDaemonPath(),
-	]);
-	if (!install.ok) {
-		throw new Error(
-			`macOS 远端后台需要管理员批准：请在远端终端运行 ~/.local/bin/lystar-web-runtime install --interactive-admin。${install.stderr || install.stdout}`,
-		);
-	}
-	sudo(interactiveAdmin, ["launchctl", "bootout", `system/${launchDaemonLabel()}`]);
-	const bootstrap = sudo(interactiveAdmin, ["launchctl", "bootstrap", "system", launchDaemonPath()]);
-	if (!bootstrap.ok) throw new Error(`无法启动 macOS LaunchDaemon：${bootstrap.stderr || bootstrap.stdout}`);
-}
-
-function installWindows(endpoint: string): void {
-	const invocation = executableInvocation();
-	const taskCommand = [invocation.program, ...invocation.args, "serve", "--endpoint", endpoint]
-		.map((argument) => `"${argument.replaceAll('"', '\\"')}"`)
-		.join(" ");
-	const username = process.env.USERNAME;
-	const runAs = username
-		? ["/RU", process.env.USERDOMAIN ? `${process.env.USERDOMAIN}\\${username}` : username, "/NP"]
-		: [];
-	const create = run("schtasks.exe", [
-		"/Create",
-		"/TN",
-		windowsTaskName(),
-		"/TR",
-		taskCommand,
-		"/SC",
-		"ONLOGON",
-		...runAs,
-		"/RL",
-		"LIMITED",
-		"/F",
-	]);
-	if (!create.ok) throw new Error(`无法创建 Windows 计划任务：${create.stderr || create.stdout}`);
-	const start = run("schtasks.exe", ["/Run", "/TN", windowsTaskName()]);
-	if (!start.ok) throw new Error(`无法启动 Windows 计划任务：${start.stderr || start.stdout}`);
-}
-
-async function waitUntilReachable(endpoint: string, timeoutMs = 10_000): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	while (Date.now() < deadline) {
-		if ((await probeIpcRuntime(endpoint)).reachable) return;
-		await new Promise((resolve) => setTimeout(resolve, 100));
-	}
-	throw new Error("Web Runtime服务启动超时");
-}
-
-async function waitUntilUnreachable(endpoint: string, timeoutMs = 10_000): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	while (Date.now() < deadline) {
-		if (!(await probeIpcRuntime(endpoint)).reachable) return;
-		await new Promise((resolve) => setTimeout(resolve, 100));
-	}
-	throw new Error("Web Runtime服务停止超时");
-}
-
-export async function installRuntimeService(endpoint: string, interactiveAdmin = false): Promise<RuntimeServiceStatus> {
-	if (process.platform === "linux") installLinux(endpoint);
-	else if (process.platform === "darwin") installMac(endpoint, interactiveAdmin);
-	else if (process.platform === "win32") installWindows(endpoint);
-	else throw new Error(`不支持的后台托管平台：${process.platform}`);
+export async function installRuntimeService(
+	endpoint: string,
+	interactiveAdmin = false,
+	options?: RuntimeServiceOptions,
+): Promise<RuntimeServiceStatus> {
+	const spec = createRuntimeServiceSpec(endpoint, runtimeSpecOptions(options));
+	installWebService(spec, { interactiveAdmin });
 	await waitUntilReachable(endpoint);
-	return getRuntimeServiceStatus(endpoint);
+	return getRuntimeServiceStatus(endpoint, options?.profile, options?.invocation, options?.agentDir);
 }
 
-export async function ensureRuntimeService(endpoint: string): Promise<RuntimeServiceStatus> {
-	const status = await getRuntimeServiceStatus(endpoint);
+export async function ensureRuntimeService(
+	endpoint: string,
+	profile?: string,
+	invocation?: WebServiceInvocation,
+	interactiveAdmin = false,
+	agentDir?: string,
+): Promise<RuntimeServiceStatus> {
+	const status = await getRuntimeServiceStatus(endpoint, profile, invocation, agentDir);
 	if (status.reachable) return status;
 	if (!status.installed) {
 		throw Object.assign(new Error("Web Runtime服务尚未安装"), {
@@ -335,23 +191,21 @@ export async function ensureRuntimeService(endpoint: string): Promise<RuntimeSer
 			status,
 		});
 	}
-	const start =
-		process.platform === "linux"
-			? run("systemctl", ["--user", "start", SERVICE_NAME])
-			: process.platform === "darwin"
-				? status.running
-					? run("sudo", ["-n", "launchctl", "kickstart", "-k", `system/${launchDaemonLabel()}`])
-					: run("sudo", ["-n", "launchctl", "bootstrap", "system", launchDaemonPath()])
-				: run("schtasks.exe", ["/Run", "/TN", windowsTaskName()]);
-	if (!start.ok) throw new Error(`无法启动 Web Runtime服务：${start.stderr || start.stdout}`);
+	const spec = createRuntimeServiceSpec(endpoint, {
+		...(profile ? { profile } : {}),
+		...(invocation ? { invocation } : {}),
+		...(agentDir ? { agentDir } : {}),
+	});
+	ensureWebService(spec, { interactiveAdmin });
 	await waitUntilReachable(endpoint);
-	return getRuntimeServiceStatus(endpoint);
+	return getRuntimeServiceStatus(endpoint, profile, invocation, agentDir);
 }
 
 class SocketTransport implements ByteTransport {
 	private readonly listeners = new Set<(bytes: Uint8Array) => void>();
 	private readonly closeListeners = new Set<(error?: Error) => void>();
 	private readonly socket: Socket;
+
 	constructor(socket: Socket) {
 		this.socket = socket;
 		socket.on("data", (bytes) => {
@@ -364,18 +218,22 @@ class SocketTransport implements ByteTransport {
 			for (const listener of this.closeListeners) listener(error);
 		});
 	}
+
 	async send(bytes: Uint8Array): Promise<void> {
 		await new Promise<void>((resolve, reject) =>
 			this.socket.write(bytes, (error) => (error ? reject(error) : resolve())),
 		);
 	}
+
 	async close(): Promise<void> {
 		this.socket.end();
 	}
+
 	onBytes(listener: (bytes: Uint8Array) => void): () => void {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
 	}
+
 	onClose(listener: (error?: Error) => void): () => void {
 		this.closeListeners.add(listener);
 		return () => this.closeListeners.delete(listener);
@@ -401,8 +259,33 @@ async function readHostSnapshot(endpoint: string): Promise<HostSnapshot | undefi
 	}
 }
 
-export async function stopRuntimeService(endpoint: string, force: boolean): Promise<RuntimeServiceStatus> {
-	const status = await getRuntimeServiceStatus(endpoint);
+async function waitUntilReachable(endpoint: string, timeoutMs = 10_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if ((await probeIpcRuntime(endpoint)).reachable) return;
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
+	throw new Error("Web Runtime服务启动超时");
+}
+
+async function waitUntilUnreachable(endpoint: string, timeoutMs = 10_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (!(await probeIpcRuntime(endpoint)).reachable) return;
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
+	throw new Error("Web Runtime服务停止超时");
+}
+
+export async function stopRuntimeService(
+	endpoint: string,
+	force: boolean,
+	profile?: string,
+	invocation?: WebServiceInvocation,
+	interactiveAdmin = false,
+	agentDir?: string,
+): Promise<RuntimeServiceStatus> {
+	const status = await getRuntimeServiceStatus(endpoint, profile, invocation, agentDir);
 	const snapshot = force ? undefined : await readHostSnapshot(endpoint);
 	if (snapshot) {
 		const active = snapshot.operations.filter((operation) => ACTIVE_OPERATION_STATUSES.has(operation.status));
@@ -414,61 +297,50 @@ export async function stopRuntimeService(endpoint: string, force: boolean): Prom
 			});
 		}
 	}
-	if (!status.installed) {
-		if (status.pid) {
-			try {
-				process.kill(status.pid, force ? "SIGKILL" : "SIGTERM");
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-			}
-			await waitUntilUnreachable(endpoint);
-			return getRuntimeServiceStatus(endpoint);
-		}
-		if (status.reachable) throw new Error("无法定位 Web Runtime 进程，请检查 Runtime PID 文件");
-		return status;
-	}
-	const stop =
-		process.platform === "linux"
-			? run("systemctl", ["--user", "stop", SERVICE_NAME])
-			: process.platform === "darwin"
-				? run("sudo", ["-n", "launchctl", "bootout", `system/${launchDaemonLabel()}`])
-				: run("schtasks.exe", ["/End", "/TN", windowsTaskName()]);
-	if (!stop.ok && (await probeIpcRuntime(endpoint)).reachable) {
-		throw new Error(`无法停止 Web Runtime服务：${stop.stderr || stop.stdout}`);
-	}
+	const spec = createRuntimeServiceSpec(endpoint, {
+		...(profile ? { profile } : {}),
+		...(invocation ? { invocation } : {}),
+		...(agentDir ? { agentDir } : {}),
+	});
+	stopWebService(spec, force, { detachedPid: status.pid, interactiveAdmin });
 	await waitUntilUnreachable(endpoint);
-	return getRuntimeServiceStatus(endpoint);
+	return getRuntimeServiceStatus(endpoint, profile, invocation, agentDir);
 }
 
 export function startDetachedRuntime(endpoint: string): void {
-	const invocation = executableInvocation();
-	const child = spawn(invocation.program, [...invocation.args, "serve", "--endpoint", endpoint], {
+	const invocation = createRuntimeServiceSpec(endpoint).invocation;
+	const child = spawn(invocation.program, invocation.args, {
 		detached: true,
 		stdio: "ignore",
-		env: { ...process.env, PI_WEB_RUNTIME_ENDPOINT: endpoint },
+		env: { ...process.env, PI_CODING_AGENT_DIR: getRuntimeAgentDir(), PI_WEB_RUNTIME_ENDPOINT: endpoint },
 	});
 	child.unref();
 }
 
-export function removeRuntimeService(): void {
-	if (process.platform === "linux") {
-		run("systemctl", ["--user", "disable", "--now", SERVICE_NAME]);
-		rmSync(systemdUnitPath(), { force: true });
-		run("systemctl", ["--user", "daemon-reload"]);
-	} else if (process.platform === "darwin") {
-		run("sudo", ["-n", "launchctl", "bootout", `system/${launchDaemonLabel()}`]);
-		run("sudo", ["-n", "rm", "-f", launchDaemonPath()]);
-		rmSync(launchDaemonStagingPath(), { force: true });
-	} else if (process.platform === "win32") {
-		run("schtasks.exe", ["/Delete", "/TN", windowsTaskName(), "/F"]);
-	}
+export function removeRuntimeService(
+	endpoint = defaultRuntimeEndpoint(getRuntimeAgentDir()),
+	profile?: string,
+	invocation?: WebServiceInvocation,
+	interactiveAdmin = false,
+	agentDir?: string,
+): void {
+	removeWebService(
+		createRuntimeServiceSpec(endpoint, {
+			...(profile ? { profile } : {}),
+			...(invocation ? { invocation } : {}),
+			...(agentDir ? { agentDir } : {}),
+		}),
+		{ interactiveAdmin },
+	);
 }
 
-export function hostServiceDiagnostic(_endpoint: string): string {
-	if (process.platform === "win32") {
-		const task = run("schtasks.exe", ["/Query", "/TN", windowsTaskName(), "/FO", "LIST", "/V"]);
-		return task.ok ? task.stdout : task.stderr || "Windows 计划任务尚未安装";
-	}
-	const path = process.platform === "linux" ? systemdUnitPath() : launchDaemonPath();
-	return existsSync(path) ? readFileSync(path, "utf8") : `后台服务尚未安装：${path}`;
+export function hostServiceDiagnostic(endpoint: string, profile?: string, agentDir?: string): string {
+	return webServiceDiagnostic(
+		createRuntimeServiceSpec(endpoint, {
+			...(profile ? { profile } : {}),
+			...(agentDir ? { agentDir } : {}),
+		}),
+	);
 }
+
+export { defaultRuntimeEndpoint } from "./ipc.ts";

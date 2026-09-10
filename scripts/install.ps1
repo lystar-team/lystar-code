@@ -18,6 +18,7 @@ $VersionsDir = Join-Path $InstallRoot "versions"
 $BinDir = Join-Path $InstallRoot "bin"
 $CurrentFile = Join-Path $InstallRoot "current"
 $PreviousFile = Join-Path $InstallRoot "previous"
+$WebAgentDir = if ($env:PI_CODING_AGENT_DIR) { $env:PI_CODING_AGENT_DIR } else { Join-Path $env:USERPROFILE ".pi\agent" }
 
 function Write-InstallerBanner([string]$Title = "LYStar Code Windows 安装器") {
     Write-Host ""
@@ -139,6 +140,36 @@ function Set-AtomicText([string]$Path, [string]$Value) {
     }
 }
 
+function Test-WebUsage {
+    return (Test-Path (Join-Path $WebAgentDir "web-config.json")) -or
+        (Test-Path (Join-Path $WebAgentDir "web\service-state.json")) -or
+        (Test-Path (Join-Path $WebAgentDir "web\gateway.json"))
+}
+
+function Invoke-WebServiceReconcile([string]$TargetVersion, [string]$PreviousVersion = "", [string]$Launcher = "") {
+    if (!(Test-WebUsage)) { return }
+    if (!$Launcher) { $Launcher = Join-Path $BinDir "lc.cmd" }
+    if (!(Test-Path $Launcher)) { throw "Web 服务已使用，但没有找到可执行的 lc：$Launcher" }
+    $HadTargetVersion = Test-Path Env:LYSTAR_WEB_SERVICE_TARGET_VERSION
+    $SavedTargetVersion = $env:LYSTAR_WEB_SERVICE_TARGET_VERSION
+    $HadPreviousVersion = Test-Path Env:LYSTAR_WEB_PREVIOUS_SERVICE_VERSION
+    $SavedPreviousVersion = $env:LYSTAR_WEB_PREVIOUS_SERVICE_VERSION
+    try {
+        $env:LYSTAR_WEB_SERVICE_TARGET_VERSION = $TargetVersion
+        if ($PreviousVersion) { $env:LYSTAR_WEB_PREVIOUS_SERVICE_VERSION = $PreviousVersion }
+        else { Remove-Item Env:LYSTAR_WEB_PREVIOUS_SERVICE_VERSION -ErrorAction SilentlyContinue }
+        Write-InstallerInfo "正在把 Web Gateway 和 Web Runtime 服务切换到 $TargetVersion……"
+        & $Launcher web service reconcile --upgrade --non-interactive | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw "Web 服务 reconcile 失败，退出码：$LASTEXITCODE。" }
+    }
+    finally {
+        if ($HadTargetVersion) { $env:LYSTAR_WEB_SERVICE_TARGET_VERSION = $SavedTargetVersion }
+        else { Remove-Item Env:LYSTAR_WEB_SERVICE_TARGET_VERSION -ErrorAction SilentlyContinue }
+        if ($HadPreviousVersion) { $env:LYSTAR_WEB_PREVIOUS_SERVICE_VERSION = $SavedPreviousVersion }
+        else { Remove-Item Env:LYSTAR_WEB_PREVIOUS_SERVICE_VERSION -ErrorAction SilentlyContinue }
+    }
+}
+
 function Send-EnvironmentChanged {
     try {
         Add-Type @'
@@ -217,6 +248,11 @@ if ($Uninstall) {
     Write-InstallerStep 1 1 "删除 LYStar Code 安装文件"
     Write-InstallerInfo "将删除安装目录：$InstallRoot"
     Write-InstallerInfo "用户数据目录 ~/.pi/agent 不会删除。"
+    $CurrentLauncher = Join-Path $InstallRoot "bin\lc.cmd"
+    if (Test-Path $CurrentLauncher) {
+        & $CurrentLauncher web service uninstall --non-interactive | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw "Web 服务卸载失败，未删除安装目录。" }
+    }
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $Parts = @($UserPath -split ";" | Where-Object { $_ -and $_ -ne $BinDir })
     [Environment]::SetEnvironmentVariable("Path", ($Parts -join ";"), "User")
@@ -232,10 +268,18 @@ if ($Rollback) {
     Write-InstallerStep 1 1 "切换到上一个 LYStar Code 版本"
     if (!(Test-Path $PreviousFile)) { throw "没有可回退的 LYStar Code 版本。" }
     $Previous = (Get-Content -Raw $PreviousFile).Trim()
-    $Current = if (Test-Path $CurrentFile) { (Get-Content -Raw $CurrentFile).Trim() } else { "" }
     if ($Previous -notmatch '^\d+\.\d+\.\d+-lystar\.\d+$') { throw "previous 版本指针无效。" }
+    $OldCurrent = if (Test-Path $CurrentFile) { (Get-Content -Raw $CurrentFile).Trim() } else { "" }
     Set-AtomicText $CurrentFile $Previous
-    if ($Current) { Set-AtomicText $PreviousFile $Current }
+    if ($OldCurrent) { Set-AtomicText $PreviousFile $OldCurrent }
+    $RollbackLauncher = Join-Path $InstallRoot "versions\$OldCurrent\lc.exe"
+    if (!(Test-Path $RollbackLauncher)) { $RollbackLauncher = "" }
+    try {
+        Invoke-WebServiceReconcile $Previous $OldCurrent $RollbackLauncher
+    }
+    catch {
+        throw "LYStar Code 已回退到 $Previous，但 Web 服务切换失败。应用版本不会因 Web 服务错误回退。服务编排器已尝试恢复上一个可用服务版本。请运行 lc web service status 查看结果。$($_.Exception.Message)"
+    }
     Write-InstallerSuccess "已回退到 $Previous。"
     exit 0
 }
@@ -325,8 +369,10 @@ try {
     $Bundle = Join-Path $Extract "lystar-agent"
     $Executable = Join-Path $Bundle "lc.exe"
     $TerminalHost = Join-Path $Bundle "lystar-terminal.exe"
+    $ServiceHost = Join-Path $Bundle "lystar-web-service.exe"
     if (!(Test-Path $Executable)) { throw "发行包缺少 lc.exe。" }
     if (!(Test-Path $TerminalHost)) { throw "发行包缺少 lystar-terminal.exe。" }
+    if (!(Test-Path $ServiceHost)) { throw "发行包缺少 lystar-web-service.exe。" }
     Write-InstallerSuccess "发行包已解压，文件检查通过。"
     Write-InstallerStep 3 6 "准备桌面终端组件"
     Ensure-WebView2Runtime $TerminalHost $Temp
@@ -359,7 +405,11 @@ try {
 
     $Launcher = @'
 @echo off
-set /p LYSTAR_VERSION=<"%~dp0..\current"
+if defined LYSTAR_WEB_SERVICE_VERSION (
+    set "LYSTAR_VERSION=%LYSTAR_WEB_SERVICE_VERSION%"
+) else (
+    set /p LYSTAR_VERSION=<"%~dp0..\current"
+)
 set "LYSTAR_EXECUTABLE=%~dp0..\versions\%LYSTAR_VERSION%\lc.exe"
 if not exist "%LYSTAR_EXECUTABLE%" set "LYSTAR_EXECUTABLE=%~dp0..\versions\%LYSTAR_VERSION%\la.exe"
 "%LYSTAR_EXECUTABLE%" %*
@@ -398,6 +448,13 @@ if not exist "%LYSTAR_EXECUTABLE%" set "LYSTAR_EXECUTABLE=%~dp0..\versions\%LYST
     $AliasVersion = (& (Join-Path $BinDir "lystar.cmd") --version | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $AliasVersion -ne $Version) {
         throw "安装后的 lystar 版本校验失败：预期 $Version，实际 $AliasVersion。"
+    }
+
+    try {
+        Invoke-WebServiceReconcile $Version $Current
+    }
+    catch {
+        throw "LYStar Code $Version 已安装，但 Web 服务切换失败。应用版本不会因 Web 服务错误回退。服务编排器已尝试恢复上一个可用服务版本。请运行 lc web service status 查看结果。$($_.Exception.Message)"
     }
 
     Write-InstallerSuccess "LYStar Code $Version 已安装到 $Target。"

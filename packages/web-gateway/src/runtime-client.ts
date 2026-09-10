@@ -15,9 +15,11 @@ import {
 	connectRuntimeEndpoint,
 	createBoundedWriter,
 	defaultRuntimeEndpoint,
+	ensureRuntimeService,
 	getRuntimeServiceStatus,
 	probeIpcRuntime,
 	stopRuntimeService,
+	type WebServiceInvocation,
 } from "@lystar/code-web-runtime";
 import type { WebGatewayConfig } from "./config.ts";
 
@@ -172,12 +174,39 @@ function runtimeIsBusy(snapshot: RuntimeInitialSnapshot): boolean {
 	);
 }
 
+function runtimeServiceProfile(): string | undefined {
+	return process.env.LYSTAR_CLI_MODE === "development" ? "development" : undefined;
+}
+
+function runtimeServiceInvocation(config: WebGatewayConfig): WebServiceInvocation | undefined {
+	return config.runtimeInvocation
+		? {
+				program: config.runtimeInvocation.command,
+				args: config.runtimeInvocation.args,
+				cwd: config.runtimeInvocation.cwd,
+			}
+		: undefined;
+}
+
 export function ensurePersistentRuntime(config: WebGatewayConfig): Promise<void> {
-	const existing = runtimeStartupPromises.get(config.runtimeEndpoint);
+	const startupKey = [config.agentDir, runtimeServiceProfile() ?? "default", config.runtimeEndpoint].join("\0");
+	const existing = runtimeStartupPromises.get(startupKey);
 	if (existing) return existing;
 	const promise = (async () => {
-		if ((await probeIpcRuntime(config.runtimeEndpoint)).reachable) return;
+		const serviceProfile = runtimeServiceProfile();
+		const serviceInvocation = runtimeServiceInvocation(config);
+		const status = await getRuntimeServiceStatus(
+			config.runtimeEndpoint,
+			serviceProfile,
+			serviceInvocation,
+			config.agentDir,
+		);
+		if (status.reachable) return;
 		if (!config.manageRuntime) throw new Error(`Web Runtime 未运行：${config.runtimeEndpoint}`);
+		if (status.installed) {
+			await ensureRuntimeService(config.runtimeEndpoint, serviceProfile, serviceInvocation, false, config.agentDir);
+			return;
+		}
 		const command = config.runtimeInvocation ?? runtimeCommand(config.runtimeEndpoint);
 		const child = spawn(command.command, withRuntimeEndpoint(command.args, config.runtimeEndpoint), {
 			cwd: command.cwd,
@@ -197,10 +226,9 @@ export function ensurePersistentRuntime(config: WebGatewayConfig): Promise<void>
 		}
 		throw new Error("Web Runtime 启动超时，请检查 Web Runtime 进程和日志");
 	})();
-	runtimeStartupPromises.set(config.runtimeEndpoint, promise);
+	runtimeStartupPromises.set(startupKey, promise);
 	return promise.finally(() => {
-		if (runtimeStartupPromises.get(config.runtimeEndpoint) === promise)
-			runtimeStartupPromises.delete(config.runtimeEndpoint);
+		if (runtimeStartupPromises.get(startupKey) === promise) runtimeStartupPromises.delete(startupKey);
 	});
 }
 
@@ -232,6 +260,7 @@ export async function connectRuntimeClient(
 	onClose: (error?: Error) => void,
 ): Promise<{ client: RuntimeProtocolClient; initial: RuntimeInitialSnapshot }> {
 	await ensurePersistentRuntime(config);
+	const serviceInvocation = runtimeServiceInvocation(config);
 	try {
 		return await openRuntimeClient(config, clientInstanceId, onEvent, onClose);
 	} catch (error) {
@@ -252,7 +281,12 @@ export async function connectRuntimeClient(
 				true,
 			);
 		}
-		const status = await getRuntimeServiceStatus(config.runtimeEndpoint);
+		const status = await getRuntimeServiceStatus(
+			config.runtimeEndpoint,
+			runtimeServiceProfile(),
+			serviceInvocation,
+			config.agentDir,
+		);
 		if (!status.pid && !status.installed) {
 			throw new RuntimeProtocolError(
 				"version",
@@ -260,7 +294,14 @@ export async function connectRuntimeClient(
 				false,
 			);
 		}
-		await stopRuntimeService(config.runtimeEndpoint, true);
+		await stopRuntimeService(
+			config.runtimeEndpoint,
+			true,
+			runtimeServiceProfile(),
+			serviceInvocation,
+			false,
+			config.agentDir,
+		);
 		await ensurePersistentRuntime(config);
 		return openRuntimeClient(config, clientInstanceId, onEvent, onClose);
 	}

@@ -1,4 +1,25 @@
+import type { WebSessionSummary } from "../../types";
+
 export type DropPosition = "before" | "after";
+
+export function hasUnreadSessions(
+	sessions: readonly Pick<WebSessionSummary, "id" | "activity">[],
+	unreadSessionIds: Readonly<Record<string, true>>,
+): boolean {
+	return sessions.some(
+		(session) =>
+			Boolean(unreadSessionIds[session.id]) &&
+			session.activity !== "running" &&
+			session.activity !== "waiting_for_input",
+	);
+}
+
+export function hasUnreadProjectSessions(
+	projects: readonly { readonly sessions: readonly Pick<WebSessionSummary, "id" | "activity">[] }[],
+	unreadSessionIds: Readonly<Record<string, true>>,
+): boolean {
+	return projects.some((project) => hasUnreadSessions(project.sessions, unreadSessionIds));
+}
 
 export function reorderIds(
 	ids: readonly string[],

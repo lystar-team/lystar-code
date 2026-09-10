@@ -2,7 +2,7 @@ import type { TranscriptItem } from "@lystar/code-web-protocol";
 import { describe, expect, it } from "vitest";
 import { projectTranscriptBatch, projectTranscriptItems } from "../src/transcript-projection.ts";
 
-function assistant(content: unknown): TranscriptItem {
+function assistant(content: unknown, options: { stopReason?: string; errorMessage?: string } = {}): TranscriptItem {
 	return {
 		entryId: "assistant-entry",
 		parentId: null,
@@ -10,7 +10,7 @@ function assistant(content: unknown): TranscriptItem {
 		kind: "message",
 		payload: {
 			type: "message",
-			message: { role: "assistant", content },
+			message: { role: "assistant", content, ...options },
 		},
 	} as TranscriptItem;
 }
@@ -79,6 +79,27 @@ describe("assistant transcript projection", () => {
 
 		expect(items).toHaveLength(1);
 		expect(items[0]?.view).toEqual({ type: "thinking", text: "private plan" });
+	});
+
+	it("把失败的空 assistant 响应投影为可见错误", () => {
+		const projected = projectTranscriptItems(
+			assistant([{ type: "text", text: "" }], { stopReason: "error", errorMessage: "503 service unavailable" }),
+		);
+
+		expect(projected.map((item) => item.view)).toEqual([
+			{ type: "system", text: "请求失败：503 service unavailable" },
+		]);
+	});
+
+	it("保留部分 assistant 响应并追加失败原因", () => {
+		const projected = projectTranscriptItems(
+			assistant([{ type: "text", text: "partial answer" }], { stopReason: "error", errorMessage: "连接中断" }),
+		);
+
+		expect(projected.map((item) => item.view)).toEqual([
+			{ type: "assistant", text: "partial answer" },
+			{ type: "system", text: "请求失败：连接中断" },
+		]);
 	});
 
 	it("does not render session control entries as chat content", () => {

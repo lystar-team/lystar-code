@@ -20,13 +20,14 @@ import {
 	type Edit,
 	type EditDiffError,
 	type EditDiffResult,
+	EditMatchError,
 	generateDiffString,
 	generateUnifiedPatch,
-	normalizeForFuzzyMatch,
 	normalizeToLF,
 	restoreLineEndings,
 	stripBom,
 } from "./edit-diff.ts";
+import { createEditRecoveryEvidence, truncateEditEvidence } from "./edit-recovery.ts";
 import { getMutationQueueKey, withFileMutationQueue } from "./file-mutation-queue.ts";
 import { resolveToCwd } from "./path-utils.ts";
 import { renderToolPath, str } from "./render-utils.ts";
@@ -61,6 +62,7 @@ export const editToolSystemPromptContribution = {
 		"Use edit for precise changes (edits[].oldText must match exactly)",
 		"When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
 		"Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
+		"Copy oldText from the current file without read output line numbers. After a batch rejection, review all reported issues and rebuild the whole batch; no valid block was applied separately.",
 		"Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
 	],
 } as const;
@@ -579,30 +581,40 @@ function getEditFailureMetadata(
 function normalizeEditFailure(error: unknown, edits: readonly Edit[] = []): ToolExecutionError {
 	if (error instanceof ToolExecutionError) return error;
 	const message = error instanceof Error ? error.message : String(error);
-	const metadata = getEditFailureMetadata(message, edits);
-	const code = /^edits\[\d+\] and edits\[\d+\] overlap/.test(message)
-		? "EDIT_OVERLAP"
-		: /Error code: (?:EACCES|EPERM)/.test(message)
-			? "PERMISSION_DENIED"
-			: /Error code: (?:ENOENT|ENOTDIR)/.test(message)
-				? "TARGET_NOT_FOUND"
-				: /^Could not find(?: the exact text| edits\[)/.test(message)
-					? "MATCH_NOT_FOUND"
-					: /^Found \d+ occurrences/.test(message)
-						? "MATCH_AMBIGUOUS"
-						: /^No changes made/.test(message)
-							? "NO_CHANGE"
-							: "UNCLASSIFIED";
+	const metadata = getEditFailureMetadata(error instanceof EditMatchError ? error.issues[0].message : message, edits);
+	if (error instanceof EditMatchError) {
+		metadata.details.issues = error.issues;
+		metadata.details.issueCount = error.issueCount;
+		metadata.details.totalEdits = error.totalEdits;
+		metadata.details.writeState = "not_written";
+	}
+	const code = /^Operation aborted/.test(message)
+		? "CANCELLED"
+		: /^edits\[\d+\] and edits\[\d+\] overlap/.test(message)
+			? "EDIT_OVERLAP"
+			: /Error code: (?:EACCES|EPERM)/.test(message)
+				? "PERMISSION_DENIED"
+				: /Error code: (?:ENOENT|ENOTDIR)/.test(message)
+					? "TARGET_NOT_FOUND"
+					: /^Could not find(?: the exact text| edits\[)/.test(message)
+						? "MATCH_NOT_FOUND"
+						: /^Found \d+ occurrences/.test(message)
+							? "MATCH_AMBIGUOUS"
+							: /^No changes made/.test(message)
+								? "NO_CHANGE"
+								: "UNCLASSIFIED";
 	const category =
-		code === "PERMISSION_DENIED"
-			? "permission"
-			: code === "TARGET_NOT_FOUND" ||
-					code === "MATCH_NOT_FOUND" ||
-					code === "MATCH_AMBIGUOUS" ||
-					code === "EDIT_OVERLAP" ||
-					code === "NO_CHANGE"
-				? "precondition"
-				: "unknown";
+		code === "CANCELLED"
+			? "cancelled"
+			: code === "PERMISSION_DENIED"
+				? "permission"
+				: code === "TARGET_NOT_FOUND" ||
+						code === "MATCH_NOT_FOUND" ||
+						code === "MATCH_AMBIGUOUS" ||
+						code === "EDIT_OVERLAP" ||
+						code === "NO_CHANGE"
+					? "precondition"
+					: "unknown";
 	return new ToolExecutionError(message, {
 		code,
 		category,
@@ -614,152 +626,67 @@ function normalizeEditFailure(error: unknown, edits: readonly Edit[] = []): Tool
 	});
 }
 
-function candidateLines(message: string): number[] {
-	const match = message.match(/at lines ([\d, ]+)/);
-	return match ? match[1].split(",").map(Number).filter(Number.isSafeInteger) : [];
-}
-
-function recoveryLineKey(line: string): string {
-	return normalizeForFuzzyMatch(line).trim();
-}
-
-function findRecoveryAnchorLine(lines: readonly string[], oldText: string): number | undefined {
-	const anchors = normalizeToLF(oldText)
-		.split("\n")
-		.map(recoveryLineKey)
-		.filter((line) => line.length >= 6)
-		.sort((left, right) => right.length - left.length);
-	if (anchors.length === 0) return undefined;
-
-	const normalizedLines = lines.map(recoveryLineKey);
-	for (const anchor of anchors) {
-		const exactIndex = normalizedLines.indexOf(anchor);
-		if (exactIndex !== -1) return exactIndex + 1;
-	}
-	for (const anchor of anchors) {
-		const partialIndex = normalizedLines.findIndex(
-			(line) => line.length >= 6 && (line.includes(anchor) || anchor.includes(line)),
-		);
-		if (partialIndex !== -1) return partialIndex + 1;
-	}
-	return undefined;
-}
-
-function recoveryBlockLineCount(oldText: string): number {
-	const normalized = normalizeToLF(oldText);
-	const lines = normalized.split("\n");
-	return Math.max(1, normalized.endsWith("\n") ? lines.length - 1 : lines.length);
-}
-
-type RecoveryWindow = { start: number; end: number };
-
-function buildRecoveryWindows(
-	totalLines: number,
-	candidateLineNumbers: readonly number[],
-	evidenceLine: number | undefined,
-	oldText: string,
-): RecoveryWindow[] {
-	const lineNumbers = candidateLineNumbers.length > 0 ? candidateLineNumbers : evidenceLine ? [evidenceLine] : [];
-	if (lineNumbers.length === 0) return [{ start: 0, end: Math.min(totalLines, 80) }];
-
-	const blockLines = recoveryBlockLineCount(oldText);
-	const windows = lineNumbers
-		.map((lineNumber) => ({
-			start: Math.max(0, lineNumber - 1 - 3),
-			end: Math.min(totalLines, lineNumber - 1 + blockLines + 3),
-		}))
-		.sort((left, right) => left.start - right.start);
-	const merged: RecoveryWindow[] = [];
-	for (const window of windows) {
-		const previous = merged.at(-1);
-		if (previous && window.start <= previous.end) previous.end = Math.max(previous.end, window.end);
-		else merged.push(window);
-	}
-	return merged;
-}
-
-function formatRecoveryWindows(
-	lines: readonly string[],
-	windows: readonly RecoveryWindow[],
-): {
-	text: string;
-	lineCount: number;
-	truncated: boolean;
-} {
-	const output: string[] = [];
-	let lineCount = 0;
-	let byteCount = 0;
-	for (let windowIndex = 0; windowIndex < windows.length; windowIndex++) {
-		if (windowIndex > 0) output.push("…");
-		for (let index = windows[windowIndex].start; index < windows[windowIndex].end; index++) {
-			const rendered = `${index + 1}: ${lines[index]}`;
-			const nextBytes = Buffer.byteLength(rendered, "utf8") + (output.length > 0 ? 1 : 0);
-			if (lineCount >= 200 || byteCount + nextBytes > 16 * 1024) {
-				return { text: output.join("\n"), lineCount, truncated: true };
-			}
-			output.push(rendered);
-			lineCount++;
-			byteCount += nextBytes;
-		}
-	}
-	return { text: output.join("\n"), lineCount, truncated: false };
-}
-
 function attachEditRecovery(
 	error: ToolExecutionError,
 	absolutePath: string,
 	path: string,
 	ops: EditOperations,
 	edits: readonly Edit[],
+	snapshot: string | undefined,
+	matchError: EditMatchError | undefined,
 ): ToolExecutionError {
-	if (error.code !== "MATCH_NOT_FOUND" && error.code !== "MATCH_AMBIGUOUS") return error;
+	if (!matchError || snapshot === undefined) return error;
 	return attachEditRecoveryHandler(error, async ({ signal }) => {
 		if (signal?.aborted) return { type: "stop", reason: "cancelled" };
 		return await withFileMutationQueue(absolutePath, async () => {
 			if (signal?.aborted) return { type: "stop", reason: "cancelled" } as const;
 			try {
-				const lines = normalizeToLF(stripBom((await ops.readFile(absolutePath)).toString("utf-8")).text).split(
-					"\n",
+				const current = (await ops.readFile(absolutePath)).toString("utf8");
+				if (signal?.aborted) return { type: "stop", reason: "cancelled" } as const;
+				const content = normalizeToLF(stripBom(current).text);
+				const targetChanged = current !== snapshot;
+				let currentError: EditMatchError | undefined = matchError;
+				if (targetChanged) {
+					currentError = undefined;
+					try {
+						applyEditsToNormalizedContent(content, edits, path);
+					} catch (failure) {
+						if (!(failure instanceof EditMatchError)) throw failure;
+						currentError = failure;
+					}
+				}
+				const issues = currentError?.issues ?? [];
+				const guidance = "\n请基于当前内容重建本次全部 edits；检查所有问题，不要原样重复失败参数。";
+				const status = targetChanged ? "内容已变化，以下重新定位" : "失败快照已核对";
+				const diagnosis =
+					currentError?.message ?? "当前快照未复现原匹配错误；本次恢复没有写入，请读取并确认目标修改。";
+				const header = `${truncateEditEvidence(diagnosis, 4096)}\n\n最新 ${truncateEditEvidence(path, 512)}（${status}）：\n`;
+				const formatted = createEditRecoveryEvidence(
+					content,
+					edits,
+					issues,
+					16 * 1024 - Buffer.byteLength(header) - Buffer.byteLength(guidance),
 				);
-				const failedEditIndex = getEditFailureIndex(error.message, edits);
-				const candidateLineNumbers = candidateLines(error.message);
-				const evidenceLine =
-					candidateLineNumbers[0] ??
-					(failedEditIndex === undefined
-						? undefined
-						: findRecoveryAnchorLine(lines, edits[failedEditIndex]?.oldText ?? ""));
-				const failedOldText = failedEditIndex === undefined ? "" : (edits[failedEditIndex]?.oldText ?? "");
-				const windows = buildRecoveryWindows(lines.length, candidateLineNumbers, evidenceLine, failedOldText);
-				const formatted = formatRecoveryWindows(lines, windows);
-				const locationNote =
-					candidateLineNumbers.length > 0
-						? `候选位置：${candidateLineNumbers.join(", ")}`
-						: evidenceLine === undefined
-							? "未定位到 oldText 的稳定上下文，以下为文件开头"
-							: `定位行：${evidenceLine}`;
-				const truncationNote = formatted.truncated ? "\n（上下文已截断，请使用 read 分段读取目标区域。）" : "";
+				const failedEditIndex = issues[0]?.editIndex;
 				const replacementResult: ToolRecoveryReplacementResult = {
-					content: [
-						{
-							type: "text",
-							text: `${error.message}\n\n最新 ${path}（${locationNote}）：\n${formatted.text}${truncationNote}\n请基于最新内容重建本次 edits；只保留目标修改，整批确认后再提交。`,
-						},
-					],
+					content: [{ type: "text", text: header + formatted.text + guidance }],
 					details: {
 						recovery: {
 							code: error.code,
+							issues,
+							issueCount: currentError?.issueCount ?? 0,
+							totalEdits: edits.length,
+							targetChanged,
+							snapshotHash: createHash("sha256").update(current).digest("hex"),
 							evidenceLines: formatted.lineCount,
-							candidateLines: candidateLineNumbers,
+							candidateLines: formatted.candidateLines,
+							truncated: formatted.truncated,
 							...(failedEditIndex === undefined ? {} : { failedEditIndex }),
-							...(evidenceLine === undefined ? {} : { evidenceLine }),
+							...(formatted.evidenceLine === undefined ? {} : { evidenceLine: formatted.evidenceLine }),
 						},
 					},
 				};
-				return {
-					type: "ask_model_to_rebuild",
-					guidance: "请基于最新内容重建本次 edits，不要原样重复失败参数。",
-					replacementResult,
-				} as const;
+				return { type: "ask_model_to_rebuild", guidance, replacementResult } as const;
 			} catch {
 				return undefined;
 			}
@@ -780,11 +707,11 @@ export function createEditToolDefinition(
 		promptSnippet: editToolSystemPromptContribution.snippet,
 		promptGuidelines: [...editToolSystemPromptContribution.guidelines],
 		parameters: editSchema,
-		getExecutionKeys: async (args) => {
+		getExecutionKeys: async (args, ctx) => {
 			if (!args || typeof args !== "object") return [];
 			const path = (args as { path?: unknown }).path;
 			if (typeof path !== "string") return [];
-			return [await getMutationQueueKey(resolveToCwd(path, cwd))];
+			return [await getMutationQueueKey(resolveToCwd(path, ctx?.cwd || cwd))];
 		},
 		constrainedSampling: getExperimentalToolSampling(),
 		renderShell: "self",
@@ -792,6 +719,8 @@ export function createEditToolDefinition(
 		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal, _onUpdate?, ctx?: ExtensionContext) {
 			const { path, edits } = validateEditInput(input);
 			const absolutePath = resolveToCwd(path, ctx?.cwd || cwd);
+			let snapshot: string | undefined;
+			const writeOutcome: { state: "not_written" | "unknown" | "written" } = { state: "not_written" };
 
 			try {
 				return await withFileMutationQueue(absolutePath, async () => {
@@ -820,6 +749,7 @@ export function createEditToolDefinition(
 					const buffer = await ops.readFile(absolutePath);
 					const snapshotHash = hashFileContent(buffer);
 					const rawContent = buffer.toString("utf-8");
+					snapshot = rawContent;
 					throwIfAborted();
 
 					// Strip BOM before matching. The model will not include an invisible BOM in oldText.
@@ -837,7 +767,9 @@ export function createEditToolDefinition(
 						if (currentHash !== snapshotHash) {
 							throw createWriteConflictError(path, snapshotHash, currentHash);
 						}
+						writeOutcome.state = "unknown";
 						await ops.writeFile(absolutePath, finalContent);
+						writeOutcome.state = "written";
 						throwIfAborted();
 					}
 
@@ -863,7 +795,28 @@ export function createEditToolDefinition(
 					};
 				});
 			} catch (error) {
-				throw attachEditRecovery(normalizeEditFailure(error, edits), absolutePath, path, ops, edits);
+				const failure = normalizeEditFailure(error, edits);
+				if (writeOutcome.state !== "not_written") {
+					const outcome =
+						writeOutcome.state === "written"
+							? "File was written before this error."
+							: "Write outcome is unknown.";
+					throw new ToolExecutionError(`${failure.message}\n${outcome} Read the current file before retrying.`, {
+						code: failure.code,
+						category: failure.category,
+						retryable: false,
+						details: { ...failure.details, writeState: writeOutcome.state },
+					});
+				}
+				throw attachEditRecovery(
+					failure,
+					absolutePath,
+					path,
+					ops,
+					edits,
+					snapshot,
+					error instanceof EditMatchError ? error : undefined,
+				);
 			}
 		},
 		...editRenderers,

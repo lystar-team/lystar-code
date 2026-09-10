@@ -44,8 +44,12 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card"
 import { Input } from "../ui/input";
 import { ScrollArea } from "../ui/scroll-area";
 import { Separator } from "../ui/separator";
-import { ProjectGroupDialog, ProjectGroupPickerDialog } from "./project-group-dialog";
-import { type DropPosition, reorderIds } from "./project-rail-utils";
+import {
+	ProjectGroupDialog,
+	ProjectGroupPickerDialog,
+	ProjectGroupProjectPickerDialog,
+} from "./project-group-dialog";
+import { type DropPosition, hasUnreadProjectSessions, hasUnreadSessions, reorderIds } from "./project-rail-utils";
 import { SessionButton } from "./session-button";
 import { SessionManagementDialog } from "./session-management-dialog";
 import type { WorkbenchActions } from "./types";
@@ -126,6 +130,7 @@ export const ProjectRail = memo(function ProjectRail({
 	const [editingGroup, setEditingGroup] = useState<ProjectGroup>();
 	const [groupDialogOpen, setGroupDialogOpen] = useState(false);
 	const [movingProject, setMovingProject] = useState<WebProject>();
+	const [addingProjectToGroup, setAddingProjectToGroup] = useState<ProjectGroup>();
 	const [sessionManagementProject, setSessionManagementProject] = useState<WebProject>();
 	const [projectNameDrafts, setProjectNameDrafts] = useState<Record<string, string>>({});
 	const [editingProjectId, setEditingProjectId] = useState<string>();
@@ -366,6 +371,7 @@ export const ProjectRail = memo(function ProjectRail({
 		const projectActionsVisible = openProjectMenuId === project.id;
 		const sessions = orderedSessions(project);
 		const runningSessionCount = sessions.filter(isSessionRunning).length;
+		const hasUnread = hasUnreadSessions(sessions, state.unreadSessionIds);
 		const visibleSessionCount = sessionVisibleCounts[project.id] ?? SESSION_PAGE_SIZE;
 		const visibleSessions = sessions.slice(0, visibleSessionCount);
 		const hasMoreSessions = visibleSessions.length < sessions.length;
@@ -433,6 +439,14 @@ export const ProjectRail = memo(function ProjectRail({
 												<span className="project-list-item-label min-w-0 flex-1 truncate text-left">
 													{project.name}
 												</span>
+												{hasUnread ? (
+													<span
+														role="img"
+														className="size-2 shrink-0 rounded-full bg-blue-500 ring-2 ring-blue-500/20 group-hover:invisible"
+														aria-label={`${project.name} 有新的会话内容`}
+														title="有新的会话内容"
+													/>
+												) : null}
 												{runningSessionCount > 0 ? (
 													<LoaderCircle
 														className="size-3.5 shrink-0 animate-spin text-primary group-hover:invisible"
@@ -728,90 +742,134 @@ export const ProjectRail = memo(function ProjectRail({
 			(total, project) => total + project.sessions.filter(isSessionRunning).length,
 			0,
 		);
+		const groupHasUnread = hasUnreadProjectSessions(groupProjects, state.unreadSessionIds);
+		const groupActionsVisible = openGroupMenuId === group.id;
+		const groupMenuItems = [
+			{ label: "添加项目", icon: Plus, onSelect: () => setAddingProjectToGroup(group) },
+			{ label: "重命名项目组", icon: Pencil, onSelect: () => openRenameGroup(group) },
+			{ label: "删除项目组", icon: Trash2, onSelect: () => void actions.removeProjectGroup(group.id) },
+		];
 		return (
-			<Collapsible
-				key={group.id}
-				open={expanded}
-				onOpenChange={(open) =>
-					setExpandedGroupIds((current) => {
-						const next = new Set(current);
-						if (open) next.add(group.id);
-						else next.delete(group.id);
-						return next;
-					})
-				}
-			>
-				<fieldset
-					aria-label={group.name}
-					className="m-0 min-w-0 border-0 p-0"
-					onDragOver={(event) => handleGroupDragOver(event, group.id)}
-					onDrop={(event) => handleGroupDrop(event, group.id)}
-				>
-					<div className={cn("group relative rounded-md", groupDrop && "ring-1 ring-primary/50")}>
-						<CollapsibleTrigger asChild>
-							<Button className="h-8 w-full min-w-0 justify-start gap-2 px-2 py-1 pr-12 text-xs" variant="ghost">
-								<ChevronDown
-									className={cn("size-3.5 shrink-0 transition-transform", !expanded && "-rotate-90")}
-								/>
-								<FolderTree className="size-4 shrink-0 text-muted-foreground" />
-								<span className="project-list-item-label min-w-0 flex-1 truncate text-left font-medium">
-									{group.name}
-								</span>
-								<span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-									{groupRunningSessionCount > 0 ? (
-										<LoaderCircle
-											className="size-3.5 animate-spin text-primary group-hover:invisible"
-											aria-label="项目组中有会话进行中"
-										/>
-									) : null}
-									{groupProjects.length}
-								</span>
-							</Button>
-						</CollapsibleTrigger>
-						<div className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center">
-							<DropdownMenu
-								open={openGroupMenuId === group.id}
-								onOpenChange={(open) => setOpenGroupMenuId(open ? group.id : null)}
+			<ContextMenu key={group.id}>
+				<div className="min-w-0">
+						<Collapsible
+							open={expanded}
+							onOpenChange={(open) =>
+								setExpandedGroupIds((current) => {
+									const next = new Set(current);
+									if (open) next.add(group.id);
+									else next.delete(group.id);
+									return next;
+								})
+							}
+						>
+							<fieldset
+								aria-label={group.name}
+								className="m-0 min-w-0 border-0 p-0"
+								onDragOver={(event) => handleGroupDragOver(event, group.id)}
+								onDrop={(event) => handleGroupDrop(event, group.id)}
 							>
-								<DropdownMenuTrigger asChild>
-									<Button
-										className={cn(
-											"opacity-0 group-hover:opacity-100 max-lg:opacity-100",
-											openGroupMenuId === group.id && "opacity-100",
+								<ContextMenuTrigger asChild>
+									<div className={cn("group relative rounded-md", groupDrop && "ring-1 ring-primary/50")}>
+									<CollapsibleTrigger asChild>
+										<Button className="h-8 w-full min-w-0 justify-start gap-2 px-2 py-1 pr-20 text-xs" variant="ghost">
+											<ChevronDown
+												className={cn("size-3.5 shrink-0 transition-transform", !expanded && "-rotate-90")}
+											/>
+											<FolderTree className="size-4 shrink-0 text-muted-foreground" />
+											<span className="project-list-item-label min-w-0 flex-1 truncate text-left font-medium">
+												{group.name}
+											</span>
+											<span className="flex items-center gap-1.5 text-[11px] text-muted-foreground group-hover:invisible">
+												{groupHasUnread ? (
+													<span
+														role="img"
+														className="size-2 shrink-0 rounded-full bg-blue-500 ring-2 ring-blue-500/20 group-hover:invisible"
+														aria-label={`${group.name} 中有新的会话内容`}
+														title="有新的会话内容"
+													/>
+												) : null}
+												{groupRunningSessionCount > 0 ? (
+													<LoaderCircle
+														className="size-3.5 animate-spin text-primary group-hover:invisible"
+														aria-label="项目组中有会话进行中"
+													/>
+												) : null}
+												{groupProjects.length}
+											</span>
+										</Button>
+									</CollapsibleTrigger>
+									<div className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5">
+										<Button
+											className={cn(
+												"text-muted-foreground transition-opacity hover:text-foreground",
+												groupActionsVisible
+													? "opacity-100"
+													: "opacity-0 group-hover:opacity-100 max-lg:opacity-100",
+											)}
+											size="icon-sm"
+											variant="ghost"
+											onClick={(event) => {
+												event.stopPropagation();
+												setAddingProjectToGroup(group);
+											}}
+											aria-label={`${group.name} 添加已有项目`}
+										>
+											<Plus className="size-4" />
+										</Button>
+										<DropdownMenu
+											open={groupActionsVisible}
+											onOpenChange={(open) => setOpenGroupMenuId(open ? group.id : null)}
+										>
+											<DropdownMenuTrigger asChild>
+												<Button
+													className={cn(
+														groupActionsVisible
+															? "opacity-100"
+															: "opacity-0 group-hover:opacity-100 max-lg:opacity-100",
+													)}
+													size="icon-sm"
+													variant="ghost"
+													aria-label={`${group.name} 更多操作`}
+												>
+													<MoreHorizontal className="size-4" />
+												</Button>
+											</DropdownMenuTrigger>
+											<DropdownMenuContent align="end">
+												{groupMenuItems.map(({ icon: Icon, label, onSelect }) => (
+													<DropdownMenuItem key={label} onSelect={onSelect}>
+														<Icon className="size-4" />
+														{label}
+													</DropdownMenuItem>
+												))}
+											</DropdownMenuContent>
+										</DropdownMenu>
+									</div>
+									</div>
+								</ContextMenuTrigger>
+								<CollapsibleContent>
+									<div className="mt-0.5 grid gap-0.5">
+										{groupProjects.length ? (
+											groupProjects.map((project) => renderProject(project, true))
+										) : (
+											<span className="px-2 py-2 text-[13px] text-muted-foreground">
+												{normalizedQuery ? "没有匹配项目" : "拖动项目到这里"}
+											</span>
 										)}
-										size="icon-sm"
-										variant="ghost"
-										aria-label={`${group.name} 更多操作`}
-									>
-										<MoreHorizontal className="size-4" />
-									</Button>
-								</DropdownMenuTrigger>
-								<DropdownMenuContent align="end">
-									<DropdownMenuItem onSelect={() => openRenameGroup(group)}>
-										<Pencil className="size-4" />
-										重命名项目组
-									</DropdownMenuItem>
-									<DropdownMenuItem onSelect={() => void actions.removeProjectGroup(group.id)}>
-										<Trash2 className="size-4" />
-										删除项目组
-									</DropdownMenuItem>
-								</DropdownMenuContent>
-							</DropdownMenu>
-						</div>
+									</div>
+								</CollapsibleContent>
+							</fieldset>
+						</Collapsible>
 					</div>
-					<CollapsibleContent>
-						<div className="mt-0.5 grid gap-0.5">
-							{groupProjects.length ? (
-								groupProjects.map((project) => renderProject(project, true))
-							) : (
-								<span className="px-2 py-2 text-[13px] text-muted-foreground">
-									{normalizedQuery ? "没有匹配项目" : "拖动项目到这里"}
-								</span>
-							)}
-						</div>
-					</CollapsibleContent>
-				</fieldset>
-			</Collapsible>
+				<ContextMenuContent className="w-52">
+					{groupMenuItems.map(({ icon: Icon, label, onSelect }) => (
+						<ContextMenuItem key={label} onSelect={onSelect}>
+							<Icon className="size-4" />
+							{label}
+						</ContextMenuItem>
+					))}
+				</ContextMenuContent>
+			</ContextMenu>
 		);
 	};
 
@@ -985,6 +1043,16 @@ export const ProjectRail = memo(function ProjectRail({
 				currentGroupId={movingProject ? groupForProject(movingProject.id)?.id : undefined}
 				onClose={() => setMovingProject(undefined)}
 				onSave={(groupId) => actions.setProjectGroup(movingProject!.id, groupId)}
+			/>
+			<ProjectGroupProjectPickerDialog
+				group={addingProjectToGroup}
+				projects={projects}
+				onClose={() => setAddingProjectToGroup(undefined)}
+				onSave={(projectId) =>
+					addingProjectToGroup
+						? actions.setProjectGroup(projectId, addingProjectToGroup.id)
+						: Promise.resolve(false)
+				}
 			/>
 			<SessionManagementDialog
 				project={sessionManagementProject}

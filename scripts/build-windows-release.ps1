@@ -17,6 +17,13 @@ $PlatformDir = Join-Path $OutputDir "windows-x64"
 $BundleDir = Join-Path $PlatformDir "lystar-agent"
 $ClipboardVersion = [string]$PackageJson.optionalDependencies.'@mariozechner/clipboard'
 $ReleaseDeps = Join-Path ([IO.Path]::GetTempPath()) ("lystar-release-deps-" + [Guid]::NewGuid())
+$ServiceSource = Join-Path $Root "packages\coding-agent\src\windows-service-host\service.cpp"
+$ServiceExecutable = Join-Path $BundleDir "lystar-web-service.exe"
+$VsWhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+if (!(Test-Path $VsWhere)) { throw "找不到 Visual Studio Build Tools。" }
+$VsPath = & $VsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+if (!$VsPath) { throw "找不到 MSVC x64 工具链。" }
+$VcVars = Join-Path $VsPath "VC\Auxiliary\Build\vcvars64.bat"
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $PlatformDir
 New-Item -ItemType Directory -Force $BundleDir, $ReleaseDeps | Out-Null
 
@@ -35,6 +42,22 @@ try {
     & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "scripts\build-windows-terminal.ps1") -OutputDir $BundleDir
     if ($LASTEXITCODE -ne 0) { throw "lystar-terminal.exe 构建失败。" }
 
+    $ServiceCommand = @"
+@echo off
+@chcp 65001 >nul
+call "$VcVars" >nul
+cl.exe /nologo /std:c++20 /EHsc /utf-8 /O2 /GL /MT /DUNICODE /D_UNICODE "$ServiceSource" /link /LTCG /SUBSYSTEM:CONSOLE /OUT:"$ServiceExecutable" advapi32.lib
+"@
+
+    $ServiceCommandPath = Join-Path ([IO.Path]::GetTempPath()) ("lystar-web-service-build-" + [Guid]::NewGuid() + ".cmd")
+    [IO.File]::WriteAllText($ServiceCommandPath, $ServiceCommand, [Text.UTF8Encoding]::new($true))
+    try {
+        & cmd.exe /d /c $ServiceCommandPath
+        if ($LASTEXITCODE -ne 0 -or !(Test-Path $ServiceExecutable)) { throw "lystar-web-service.exe 构建失败。" }
+    }
+    finally {
+        Remove-Item -Force -ErrorAction SilentlyContinue $ServiceCommandPath
+    }
     $Npm = (Get-Command npm.cmd -ErrorAction Stop).Source
     & $Npm install --prefix $ReleaseDeps --include=optional --no-save --package-lock=false --force --ignore-scripts "@mariozechner/clipboard@$ClipboardVersion" "@mariozechner/clipboard-win32-x64-msvc@$ClipboardVersion"
     if ($LASTEXITCODE -ne 0) { throw "Windows clipboard binding 准备失败。" }
@@ -67,7 +90,7 @@ try {
     Copy-Item (Join-Path $ClipboardRoot "clipboard-win32-x64-msvc\clipboard.win32-x64-msvc.node") (Join-Path $BundleDir "node_modules\@mariozechner\clipboard")
     Copy-Item (Join-Path $Root "packages\tui\native\win32\prebuilds\win32-x64\win32-console-mode.node") (Join-Path $BundleDir "native\win32\prebuilds\win32-x64")
 
-    foreach ($RequiredFile in @("lc.exe", "package.json", "photon_rs_bg.wasm", "web\index.html", "web\version.json", "skills\imagegen\SKILL.md")) {
+    foreach ($RequiredFile in @("lc.exe", "lystar-web-service.exe", "package.json", "photon_rs_bg.wasm", "web\index.html", "web\version.json", "skills\imagegen\SKILL.md")) {
         if (!(Test-Path (Join-Path $BundleDir $RequiredFile))) { throw "Windows release bundle is missing $RequiredFile." }
     }
 

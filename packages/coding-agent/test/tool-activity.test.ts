@@ -75,6 +75,48 @@ describe("ToolActivityTracker", () => {
 		expect(success?.revision).toBeGreaterThan(preparing?.revision ?? 0);
 	});
 
+	it("流式编辑参数不在每个增量上重算完整 Diff", () => {
+		const tracker = new ToolActivityTracker();
+		const startArgs = { path: "src/app.ts", edits: [] };
+		const streamedArgs = { path: "src/app.ts", edits: [{ oldText: "old\n", newText: "new\n" }] };
+		const start = tracker.apply(
+			event({
+				type: "message_update",
+				message: {
+					role: "assistant",
+					content: [{ type: "toolCall", id: "call-delta", name: "edit", arguments: startArgs }],
+				},
+				assistantMessageEvent: { type: "toolcall_start", contentIndex: 0 },
+			}),
+		)[0];
+		const delta = tracker.apply(
+			event({
+				type: "message_update",
+				message: {
+					role: "assistant",
+					content: [{ type: "toolCall", id: "call-delta", name: "edit", arguments: streamedArgs }],
+				},
+				assistantMessageEvent: { type: "toolcall_delta", contentIndex: 0 },
+			}),
+		)[0];
+		const queued = tracker.apply(
+			event({
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: [{ type: "toolCall", id: "call-delta", name: "edit", arguments: streamedArgs }],
+				},
+			}),
+		)[0];
+
+		expect(start).toMatchObject({ diff: { files: [{ path: "src/app.ts" }] } });
+		expect(delta).toMatchObject({ state: "preparing", diff: { files: [{ path: "src/app.ts" }] } });
+		expect(queued).toMatchObject({
+			state: "queued",
+			diff: { files: [{ path: "src/app.ts", additions: 1, deletions: 1, diff: "-old\n+new" }] },
+		});
+	});
+
 	it("终态后忽略迟到的进行时更新", () => {
 		const tracker = new ToolActivityTracker();
 		tracker.apply(

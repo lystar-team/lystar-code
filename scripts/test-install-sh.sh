@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+unset PI_CODING_AGENT_DIR
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -161,12 +163,14 @@ check_upgrade_rollback_and_uninstall() {
     [[ "$(readlink "$install_root/current")" == "versions/$VERSION" ]]
     [[ "$(readlink "$install_root/previous")" == "versions/$old_version" ]]
     [[ ! -e "$bin_dir/la" ]]
+    [[ "$(HOME="$home" LYSTAR_WEB_SERVICE_VERSION="$old_version" "$bin_dir/lc" --version)" == "$old_version" ]]
     [[ "$(HOME="$home" "$bin_dir/lc" --version)" == "$VERSION" ]]
     [[ "$(HOME="$home" "$bin_dir/lystar" --version)" == "$VERSION" ]]
 
     HOME="$home" bash "$release_dir/install.sh" --rollback >/dev/null
     [[ "$(readlink "$install_root/current")" == "versions/$old_version" ]]
     [[ "$(readlink "$install_root/previous")" == "versions/$VERSION" ]]
+    [[ "$(HOME="$home" LYSTAR_WEB_SERVICE_VERSION="$VERSION" "$bin_dir/lc" --version)" == "$VERSION" ]]
     [[ "$(HOME="$home" "$bin_dir/lc" --version)" == "$old_version" ]]
     [[ "$(HOME="$home" "$bin_dir/lystar" --version)" == "$old_version" ]]
 
@@ -177,11 +181,34 @@ check_upgrade_rollback_and_uninstall() {
     [[ -e "$home/.pi/agent/settings.json" ]]
 }
 
+check_web_reconcile_failure_keeps_new_version() {
+    local home="$tmp/home-web-reconcile-failure"
+    local install_root="$home/.local/share/lystar-agent"
+    local old_version="0.9.0-lystar.9"
+    local output="$tmp/web-reconcile-failure.log"
+    mkdir -p "$install_root/versions/$old_version" "$home/.pi/agent"
+    printf '%s\n' '#!/usr/bin/env bash' '[[ "${1:-}" == "--version" ]] || exit 2' "printf '%s\\n' '$old_version'" > "$install_root/versions/$old_version/lc"
+    chmod +x "$install_root/versions/$old_version/lc"
+    ln -s "versions/$old_version" "$install_root/current"
+    printf '{}\n' > "$home/.pi/agent/web-config.json"
+
+    if HOME="$home" SHELL=/bin/bash FIXTURE_DIR="$release_dir" PATH="$fake_curl_dir:$ORIGINAL_PATH" \
+        bash "$release_dir/install.sh" >"$output" 2>&1; then
+        printf 'installer unexpectedly accepted a failed Web reconcile\n' >&2
+        exit 1
+    fi
+
+    [[ "$(readlink "$install_root/current")" == "versions/$VERSION" ]]
+    [[ "$(readlink "$install_root/previous")" == "versions/$old_version" ]]
+    grep -F '应用版本不会因 Web 服务错误回退' "$output" >/dev/null
+}
+
 install_with_curl
 install_without_path_update
 install_with_wget_only
 reject_bad_checksum
 check_upgrade_rollback_and_uninstall
+check_web_reconcile_failure_keeps_new_version
 
 if HOME="$tmp/home-missing-version" bash "$ROOT/scripts/install.sh" --version >/dev/null 2>&1; then
     printf 'installer unexpectedly accepted --version without a value\n' >&2

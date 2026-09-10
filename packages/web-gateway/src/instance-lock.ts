@@ -57,6 +57,13 @@ function readLockRecord(path: string): GatewayLockRecord | undefined {
 	}
 }
 
+export function readGatewayPid(agentDir: string): number | undefined {
+	const path = join(agentDir, "web", LOCK_FILE_NAME);
+	const record = readLockRecord(path);
+	if (!record || !isProcessAlive(record)) return undefined;
+	return record.pid;
+}
+
 export class GatewayAlreadyRunningError extends Error {
 	readonly code = "gateway_already_running" as const;
 	readonly pid: number;

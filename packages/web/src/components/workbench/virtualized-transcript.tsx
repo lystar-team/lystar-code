@@ -460,7 +460,6 @@ export function VirtualizedConversationTranscript<T>({
 		<Virtuoso
 			key={sessionKey}
 			ref={virtuosoRef}
-			alignToBottom
 			atBottomStateChange={atBottomStateChange}
 			components={CONVERSATION_TRANSCRIPT_COMPONENTS}
 			computeItemKey={computeConversationItemKey}

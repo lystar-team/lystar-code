@@ -49,7 +49,8 @@ function normalizeMatchSegment(text: string): string {
 
 function createMatchView(content: string, tier: MatchTier): MatchView {
 	let text = "";
-	const boundaries: Array<number | undefined> = [];
+	const starts: Array<number | undefined> = [];
+	const ends: Array<number | undefined> = [];
 	const lines: MatchLine[] = [];
 	let lineStart = 0;
 
@@ -63,30 +64,32 @@ function createMatchView(content: string, tier: MatchTier): MatchView {
 		const keptEnd = lineStart + trailing;
 		const textStart = text.length;
 
-		// 每个规范化行的起点只写一次，避免被下一行首字符覆盖。
-		if (boundaries[textStart] === undefined) boundaries[textStart] = keptStart;
+		// 删除空白后，同一规范化位置的起点和终点对应不同的原始偏移。
+		starts[textStart] = keptStart;
+		if (ends[textStart] === undefined) ends[textStart] = keptStart;
 		for (const segment of graphemeSegmenter.segment(content.slice(keptStart, keptEnd))) {
 			const originalStart = keptStart + segment.index;
 			const originalEnd = originalStart + segment.segment.length;
 			const normalized = tier === "unicode" ? normalizeMatchSegment(segment.segment) : segment.segment;
-			if (boundaries[text.length] === undefined) boundaries[text.length] = originalStart;
+			starts[text.length] = originalStart;
 			text += normalized;
-			while (boundaries.length < text.length) boundaries.push(undefined);
-			boundaries[text.length] = originalEnd;
+			// 展开后的字素内部没有合法边界。
+			starts.length = text.length + 1;
+			ends.length = text.length + 1;
+			starts[text.length] = originalEnd;
+			ends[text.length] = originalEnd;
 		}
-
-		const textEnd = text.length;
-		if (boundaries[textEnd] === undefined) boundaries[textEnd] = keptEnd;
-		lines.push({ textStart, textEnd, originalStart: lineStart, contentStart: keptStart, originalEnd: keptEnd });
-
+		lines.push({ textStart, originalStart: lineStart });
 		if (newline === -1) break;
+		starts[text.length] = newline;
 		text += "\n";
-		boundaries[text.length] = newline + 1;
+		starts[text.length] = newline + 1;
+		ends[text.length] = newline + 1;
 		lineStart = newline + 1;
 	}
 
-	if (content.length === 0) boundaries[0] = 0;
-	return { text, boundaries, lines };
+	if (content.length === 0) starts[0] = ends[0] = 0;
+	return { text, starts, ends, lines };
 }
 
 function splitLinesWithEndings(content: string): string[] {
@@ -107,16 +110,46 @@ interface MatchedEdit {
 
 interface MatchLine {
 	textStart: number;
-	textEnd: number;
 	originalStart: number;
-	contentStart: number;
-	originalEnd: number;
 }
 
 interface MatchView {
 	text: string;
-	boundaries: Array<number | undefined>;
+	starts: Array<number | undefined>;
+	ends: Array<number | undefined>;
 	lines: MatchLine[];
+}
+
+export interface EditIssue {
+	code: "MATCH_NOT_FOUND" | "MATCH_AMBIGUOUS" | "EDIT_OVERLAP" | "EMPTY_OLD_TEXT";
+	editIndex: number;
+	message: string;
+	candidateLines?: number[];
+	matchCount?: number;
+	overlapEditIndex?: number;
+}
+
+export class EditMatchError extends Error {
+	readonly issues: readonly EditIssue[];
+	readonly issueCount: number;
+	readonly totalEdits: number;
+
+	constructor(issues: readonly EditIssue[], issueCount: number, totalEdits: number) {
+		const first = issues[0].message;
+		const summary = issues.slice(1, 6).map((issue) => issue.message.split("\n")[0]);
+		const remaining = issueCount - Math.min(issues.length, 6);
+		super(
+			first +
+				(first.includes("No changes were written") ? "" : "\nNo changes were written.") +
+				(issueCount > 1
+					? `\nBatch validation: ${issueCount} issue(s) in ${totalEdits} edit(s).\n${summary.join("\n")}${remaining > 0 ? `\n${remaining} more issue(s); inspect the remaining edits before retrying.` : ""}`
+					: ""),
+		);
+		this.name = "EditMatchError";
+		this.issues = issues;
+		this.issueCount = issueCount;
+		this.totalEdits = totalEdits;
+	}
 }
 
 type TextReplacement = Pick<MatchedEdit, "matchIndex" | "matchLength" | "newText">;
@@ -256,10 +289,10 @@ export interface AppliedEditsResult {
 export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResult {
 	// Try exact match first
 	const exactMatches = findAllOccurrences(content, oldText);
-	if (exactMatches.length > 0) {
+	if (exactMatches.count > 0) {
 		return {
 			found: true,
-			index: exactMatches[0],
+			index: exactMatches.offsets[0],
 			matchLength: oldText.length,
 			usedFuzzyMatch: false,
 			contentForReplacement: content,
@@ -271,7 +304,7 @@ export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResul
 	const fuzzyOldText = normalizeForFuzzyMatch(oldText);
 	const fuzzyMatches = findAllOccurrences(fuzzyContent, fuzzyOldText);
 
-	if (fuzzyMatches.length === 0) {
+	if (fuzzyMatches.count === 0) {
 		return {
 			found: false,
 			index: -1,
@@ -286,7 +319,7 @@ export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResul
 	// that normalized output should be written back.
 	return {
 		found: true,
-		index: fuzzyMatches[0],
+		index: fuzzyMatches.offsets[0],
 		matchLength: fuzzyOldText.length,
 		usedFuzzyMatch: true,
 		contentForReplacement: fuzzyContent,
@@ -298,15 +331,19 @@ export function stripBom(content: string): { bom: string; text: string } {
 	return content.startsWith("\uFEFF") ? { bom: "\uFEFF", text: content.slice(1) } : { bom: "", text: content };
 }
 
-function findAllOccurrences(content: string, text: string): number[] {
-	if (text.length === 0) return [];
+function findAllOccurrences(content: string, text: string, view?: MatchView): { count: number; offsets: number[] } {
 	const offsets: number[] = [];
+	let count = 0;
+	if (text.length === 0) return { count, offsets };
 	let searchStart = 0;
 	while (true) {
 		const offset = content.indexOf(text, searchStart);
-		if (offset === -1) return offsets;
-		offsets.push(offset);
-		searchStart = offset + text.length;
+		if (offset === -1) return { count, offsets };
+		if (!view || (view.starts[offset] !== undefined && view.ends[offset + text.length] !== undefined)) {
+			count++;
+			if (offsets.length < 5) offsets.push(offset);
+		}
+		searchStart = offset + 1;
 	}
 }
 
@@ -343,12 +380,11 @@ function getNotFoundError(path: string, editIndex: number, totalEdits: number): 
 	);
 }
 
-function getDuplicateError(path: string, editIndex: number, matchOffsets: number[], lineStarts: number[]): Error {
-	const displayedLines = matchOffsets.slice(0, 5).map((offset) => getLineNumber(offset, lineStarts));
-	const remaining = matchOffsets.length - displayedLines.length;
+function getDuplicateError(path: string, editIndex: number, displayedLines: number[], count: number): Error {
+	const remaining = count - displayedLines.length;
 	const more = remaining > 0 ? ` +${remaining} more` : "";
 	return new Error(
-		`Found ${matchOffsets.length} occurrences of edits[${editIndex}] in ${path} at lines ${displayedLines.join(", ")}${more}.\nInclude one stable unchanged line before or after the intended block, then retry.\nNo changes were written.`,
+		`Found ${count} occurrences of edits[${editIndex}] in ${path} at lines ${displayedLines.join(", ")}${more}.\nInclude one stable unchanged line before or after the intended block, then retry.\nNo changes were written.`,
 	);
 }
 
@@ -371,38 +407,56 @@ function findEditMatch(
 	path: string,
 	editIndex: number,
 	totalEdits: number,
-): MatchedEdit {
-	const lineStarts = getLineStarts(content);
+	lineStarts: number[],
+	views: Map<MatchTier, MatchView>,
+): MatchedEdit | EditIssue {
 	const exactMatches = findAllOccurrences(content, oldText);
-	if (exactMatches.length > 1) throw getDuplicateError(path, editIndex, exactMatches, lineStarts);
-	if (exactMatches.length === 1) {
-		return { editIndex, matchIndex: exactMatches[0], matchLength: oldText.length, newText: "" };
+	if (exactMatches.count > 1) {
+		const candidateLines = exactMatches.offsets.map((offset) => getLineNumber(offset, lineStarts));
+		return {
+			code: "MATCH_AMBIGUOUS",
+			editIndex,
+			candidateLines,
+			matchCount: exactMatches.count,
+			message: getDuplicateError(path, editIndex, candidateLines, exactMatches.count).message,
+		};
+	}
+	if (exactMatches.count === 1) {
+		return { editIndex, matchIndex: exactMatches.offsets[0], matchLength: oldText.length, newText: "" };
 	}
 
 	for (const tier of ["trailing", "trimmed", "unicode"] as const) {
-		const contentView = createMatchView(content, tier);
-		const oldTextView = createMatchView(oldText, tier);
-		const matchText = oldTextView.text;
+		let contentView = views.get(tier);
+		if (!contentView) {
+			contentView = createMatchView(content, tier);
+			views.set(tier, contentView);
+		}
+		const matchText = createMatchView(oldText, tier).text;
 		if (!matchText) continue;
-		const matches = findAllOccurrences(contentView.text, matchText).filter(
-			(offset) =>
-				contentView.boundaries[offset] !== undefined &&
-				contentView.boundaries[offset + matchText.length] !== undefined,
-		);
-		const originalOffsets = matches.map((offset) => contentView.boundaries[offset] ?? content.length);
-		if (matches.length > 1) throw getDuplicateError(path, editIndex, originalOffsets, lineStarts);
-		if (matches.length === 1) {
-			let start = contentView.boundaries[matches[0]] ?? content.length;
-			const end = contentView.boundaries[matches[0] + matchText.length] ?? content.length;
+		const matches = findAllOccurrences(contentView.text, matchText, contentView);
+		if (matches.count > 1) {
+			const candidateLines = matches.offsets.map((offset) => getLineNumber(contentView.starts[offset]!, lineStarts));
+			return {
+				code: "MATCH_AMBIGUOUS",
+				editIndex,
+				candidateLines,
+				matchCount: matches.count,
+				message: getDuplicateError(path, editIndex, candidateLines, matches.count).message,
+			};
+		}
+		if (matches.count === 1) {
+			const offset = matches.offsets[0];
+			let start = contentView.starts[offset]!;
+			const end = contentView.ends[offset + matchText.length]!;
 			if (firstLineHasIndent(oldText)) {
-				const startLine = contentView.lines.find((line) => line.textStart === matches[0]);
+				const startLine = contentView.lines.find((line) => line.textStart === offset);
 				if (startLine) start = startLine.originalStart;
 			}
 			return { editIndex, matchIndex: start, matchLength: end - start, newText: "" };
 		}
 	}
 
-	throw getNotFoundError(path, editIndex, totalEdits);
+	return { code: "MATCH_NOT_FOUND", editIndex, message: getNotFoundError(path, editIndex, totalEdits).message };
 }
 
 /**
@@ -415,7 +469,7 @@ function findEditMatch(
  */
 export function applyEditsToNormalizedContent(
 	normalizedContent: string,
-	edits: Edit[],
+	edits: readonly Edit[],
 	path: string,
 ): AppliedEditsResult {
 	const normalizedEdits = edits.map((edit) => ({
@@ -423,27 +477,60 @@ export function applyEditsToNormalizedContent(
 		newText: normalizeToLF(edit.newText),
 	}));
 
-	for (let i = 0; i < normalizedEdits.length; i++) {
-		if (normalizedEdits[i].oldText.length === 0) {
-			throw getEmptyOldTextError(path, i, normalizedEdits.length);
+	const lineStarts = getLineStarts(normalizedContent);
+	const views = new Map<MatchTier, MatchView>();
+	const matchedEdits: MatchedEdit[] = [];
+	const issues: EditIssue[] = [];
+	let issueCount = 0;
+	const addIssue = (issue: EditIssue): void => {
+		issueCount++;
+		if (issues.length < 20) issues.push(issue);
+	};
+	for (let index = 0; index < normalizedEdits.length; index++) {
+		const edit = normalizedEdits[index];
+		if (edit.oldText.length === 0) {
+			addIssue({
+				code: "EMPTY_OLD_TEXT",
+				editIndex: index,
+				message: getEmptyOldTextError(path, index, normalizedEdits.length).message,
+			});
+			continue;
 		}
+		const match = findEditMatch(
+			normalizedContent,
+			edit.oldText,
+			path,
+			index,
+			normalizedEdits.length,
+			lineStarts,
+			views,
+		);
+		if ("code" in match) addIssue(match);
+		else matchedEdits.push({ ...match, newText: edit.newText });
 	}
-
-	const matchedEdits = normalizedEdits.map((edit, index) => ({
-		...findEditMatch(normalizedContent, edit.oldText, path, index, normalizedEdits.length),
-		newText: edit.newText,
-	}));
 
 	matchedEdits.sort((a, b) => a.matchIndex - b.matchIndex);
-	for (let i = 1; i < matchedEdits.length; i++) {
-		const previous = matchedEdits[i - 1];
+	const ends = matchedEdits.map((edit) => edit.matchIndex + edit.matchLength).sort((left, right) => left - right);
+	let ended = 0;
+	for (let i = 0; i < matchedEdits.length; i++) {
 		const current = matchedEdits[i];
-		if (previous.matchIndex + previous.matchLength > current.matchIndex) {
-			throw new Error(
-				`edits[${previous.editIndex}] and edits[${current.editIndex}] overlap in ${path}. Merge them into one edit or target disjoint regions.`,
-			);
+		while (ended < ends.length && ends[ended] <= current.matchIndex) ended++;
+		const conflicts = i - ended;
+		issueCount += conflicts;
+		if (conflicts === 0 || issues.length >= 20) continue;
+		// Count all pairs, but materialize only the bounded diagnostic sample.
+		for (let previousIndex = 0; previousIndex < i && issues.length < 20; previousIndex++) {
+			const previous = matchedEdits[previousIndex];
+			if (previous.matchIndex + previous.matchLength <= current.matchIndex) continue;
+			issues.push({
+				code: "EDIT_OVERLAP",
+				editIndex: previous.editIndex,
+				overlapEditIndex: current.editIndex,
+				message: `edits[${previous.editIndex}] and edits[${current.editIndex}] overlap in ${path}. Merge them into one edit or target disjoint regions.`,
+			});
 		}
 	}
+	if (issueCount > 0) throw new EditMatchError(issues, issueCount, normalizedEdits.length);
 
 	const baseContent = normalizedContent;
 	const newContent = applyReplacements(normalizedContent, matchedEdits);

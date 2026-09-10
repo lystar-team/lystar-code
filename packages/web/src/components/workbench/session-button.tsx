@@ -148,7 +148,7 @@ export function SessionButton({
 								) : unread ? (
 									<span
 										role="img"
-										className="size-2 shrink-0 rounded-full bg-blue-500"
+										className="size-2 shrink-0 rounded-full bg-blue-500 ring-2 ring-blue-500/20"
 										aria-label="有新的会话内容"
 										title="有新的会话内容"
 									/>

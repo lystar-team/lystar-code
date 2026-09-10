@@ -14,6 +14,7 @@ import chalk from "chalk";
 import lockfile from "proper-lockfile";
 import { selectConfig } from "./cli/config-selector.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
+import { reconcileWebServicesAfterUpdate } from "./cli/web-command.ts";
 import {
 	APP_NAME,
 	APP_TITLE,
@@ -1070,12 +1071,21 @@ export async function handlePackageCommand(
 						if (plan.note) {
 							printSelfUpdateNote(plan.note);
 						}
+						let managedReleaseActivated = false;
 						try {
 							console.log(chalk.dim(`Updating managed ${APP_NAME} installation...`));
 							await _runManagedSelfUpdate(managedInstallRoot, plan.version);
+							managedReleaseActivated = true;
+							await reconcileWebServicesAfterUpdate();
 						} catch (error: unknown) {
 							const message = error instanceof Error ? error.message : "Unknown managed update error";
-							console.error(chalk.red(`Error: ${message}`));
+							console.error(
+								chalk.red(
+									managedReleaseActivated
+										? `${APP_TITLE} 已更新到 ${plan.version}，Web 服务处理失败：${message}`
+										: `Error: ${message}`,
+								),
+							);
 							process.exitCode = 1;
 							return true;
 						}
@@ -1117,6 +1127,7 @@ export async function handlePackageCommand(
 							prepareWindowsNpmSelfUpdate();
 						}
 						await runSelfUpdate(selfUpdateCommand);
+						await reconcileWebServicesAfterUpdate();
 					} catch (error: unknown) {
 						const message = error instanceof Error ? error.message : "Unknown package command error";
 						console.error(chalk.red(`Error: ${message}`));

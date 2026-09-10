@@ -41,6 +41,9 @@ try {
             'ExpectedAssetBytes',
             'Send-EnvironmentChanged',
             'set /p LYSTAR_VERSION=',
+            'LYSTAR_WEB_SERVICE_VERSION',
+            'LYSTAR_WEB_SERVICE_TARGET_VERSION',
+            'LYSTAR_WEB_PREVIOUS_SERVICE_VERSION',
             'versions\%LYSTAR_VERSION%\lc.exe',
             'versions\%LYSTAR_VERSION%\la.exe',
             '$PSVersionTable.PSVersion.Major -lt 5',
@@ -55,6 +58,7 @@ try {
             'Help',
             'Ensure-WebView2Runtime',
             'lystar-terminal.exe',
+            'lystar-web-service.exe',
             'LYStar Code.lnk',
             'lc --attached',
             'Write-InstallerBanner',
@@ -149,6 +153,17 @@ try {
             $InstalledVersion = (& $Launcher --version | Out-String).Trim()
             if ($InstalledVersion -ne $Current) {
                 throw "Installed launcher reported '$InstalledVersion', expected '$Current'."
+            }
+            $SavedServiceVersion = $env:LYSTAR_WEB_SERVICE_VERSION
+            try {
+                $env:LYSTAR_WEB_SERVICE_VERSION = $LegacyVersion
+                $PinnedServiceVersion = (& $Launcher --version | Out-String).Trim()
+                if ($PinnedServiceVersion -ne $LegacyVersion) {
+                    throw "Installed launcher ignored LYSTAR_WEB_SERVICE_VERSION: $PinnedServiceVersion"
+                }
+            }
+            finally {
+                $env:LYSTAR_WEB_SERVICE_VERSION = $SavedServiceVersion
             }
             $AliasVersion = (& (Join-Path $InstallRoot "bin\lystar.cmd") --version | Out-String).Trim()
             if ($AliasVersion -ne $Current) {

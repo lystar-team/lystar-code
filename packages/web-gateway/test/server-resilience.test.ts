@@ -153,6 +153,55 @@ test("Gateway 合并实时增量并在非进度事件前保持顺序", async (t)
 	assert.deepEqual(socket.sent.at(-1), { type: "sessions_changed" });
 });
 
+test("Gateway 工具生命周期即时发送并合并持续输出", async (t) => {
+	const server = new WebGatewayServer(createConfig());
+	t.after(() => void server.close());
+	const internal = internals(server);
+	const context = internal.createContext("tool-progress-client");
+	const socket = createSocket();
+	context.sockets.add(socket.webSocket);
+	internal.sessionIdsByPath.set("/tmp/tool-progress-session.jsonl", "session-1");
+	internal.subscriptionsFor(socket.webSocket).add("session-1");
+
+	const activity = {
+		activityEpoch: "epoch",
+		revision: 1,
+		toolCallId: "edit-1",
+		name: "edit",
+		state: "running" as const,
+		summary: "src/app.ts",
+		updatedAt: 1,
+	};
+	internal.handleHostEvent(context, {
+		type: "session_progress",
+		sessionPath: "/tmp/tool-progress-session.jsonl",
+		progress: { type: "tool_state", activity },
+	});
+	assert.equal(socket.sent.length, 1);
+
+	socket.sent.length = 0;
+	internal.handleHostEvent(context, {
+		type: "session_progress",
+		sessionPath: "/tmp/tool-progress-session.jsonl",
+		progress: { type: "tool_state", activity: { ...activity, revision: 2, progress: "第一段" } },
+	});
+	internal.handleHostEvent(context, {
+		type: "session_progress",
+		sessionPath: "/tmp/tool-progress-session.jsonl",
+		progress: { type: "tool_state", activity: { ...activity, revision: 3, progress: "第二段" } },
+	});
+	assert.equal(socket.sent.length, 0);
+	await wait(75);
+	assert.deepEqual(socket.sent, [
+		{
+			type: "session_progress",
+			sessionId: "session-1",
+			progress: { type: "tool_state", activity: { ...activity, revision: 3, progress: "第二段" } },
+			seq: 2,
+		},
+	]);
+});
+
 test("Gateway 只向订阅者发送会话详情，其他连接接收摘要", async (t) => {
 	const server = new WebGatewayServer(createConfig());
 	t.after(() => void server.close());

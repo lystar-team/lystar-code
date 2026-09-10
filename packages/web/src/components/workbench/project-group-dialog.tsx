@@ -129,3 +129,72 @@ export function ProjectGroupPickerDialog({
 		</Dialog>
 	);
 }
+
+export function ProjectGroupProjectPickerDialog({
+	group,
+	projects,
+	onClose,
+	onSave,
+}: {
+	group?: ProjectGroup;
+	projects: readonly WebProject[];
+	onClose: () => void;
+	onSave: (projectId: string) => Promise<boolean>;
+}) {
+	const [selectedProjectId, setSelectedProjectId] = useState("");
+	const [saving, setSaving] = useState(false);
+	const availableProjects = projects.filter((project) => !group?.projectIds.includes(project.id));
+
+	useEffect(() => {
+		setSelectedProjectId("");
+		setSaving(false);
+	}, [group?.id]);
+
+	const submit = async () => {
+		if (!group || !selectedProjectId) return;
+		setSaving(true);
+		try {
+			if (await onSave(selectedProjectId)) onClose();
+		} finally {
+			setSaving(false);
+		}
+	};
+
+	return (
+		<Dialog open={Boolean(group)} onOpenChange={(value) => !value && !saving && onClose()}>
+			<DialogContent className="max-w-md">
+				<DialogHeader>
+					<DialogTitle>添加项目到「{group?.name ?? "项目组"}」</DialogTitle>
+					<DialogDescription>从已有项目中选择一个加入当前项目组。</DialogDescription>
+				</DialogHeader>
+				{availableProjects.length ? (
+					<Select value={selectedProjectId} onValueChange={setSelectedProjectId}>
+						<SelectTrigger className="w-full">
+							<SelectValue placeholder="选择项目" />
+						</SelectTrigger>
+						<SelectContent>
+							{availableProjects.map((project) => (
+								<SelectItem key={project.id} value={project.id}>
+									{project.name}
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+				) : (
+					<div className="rounded-md border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
+						没有可添加的项目
+					</div>
+				)}
+				<DialogFooter>
+					<Button variant="outline" onClick={onClose} disabled={saving}>
+						取消
+					</Button>
+					<Button onClick={() => void submit()} disabled={!selectedProjectId || saving}>
+						{saving ? <LoaderCircle className="size-4 animate-spin" /> : <FolderPlus className="size-4" />}
+						添加
+					</Button>
+				</DialogFooter>
+			</DialogContent>
+		</Dialog>
+	);
+}
