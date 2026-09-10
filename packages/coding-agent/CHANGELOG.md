@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.85.1-lystar.2] - 2026-09-10
+
 ### New Features
 
 - **Web 界面重磅升级** — LYStar Code 首次提供完整 Web 工作台；此前版本没有 Web 界面。新增 Web Runtime 和 Web Gateway，支持在浏览器中管理项目与会话、发送 Prompt、查看流式回复和工具执行过程。
@@ -9,6 +11,13 @@
 - **资源预览与在线编辑** — 支持资源预览、图片附件、Office 文件预览、代码高亮、上下文压缩卡片和在线文本编辑。
 - **Web 运行与管理链路** — 增加 Windows Web Runtime/Gateway 启动、诊断、实例锁、协议升级、资源写入和会话恢复能力；新增 `web`、`web-runtime` 和 `close-old` 命令。
 - **Web 会话交互体验** — 完善会话刷新、订阅时序、滚动定位、工具状态、图片附件、Thinking 展示和资源加载处理。
+
+### Fixed
+
+- 修复干净安装环境中 Agent、Coding Agent 和 Web Runtime 加载 `pi-ai` 工具子路径失败的问题。
+- 修复编辑工具差异应用、恢复执行、并发修改保护、工具统计和活动状态同步。
+- 修复 Web Gateway、Web Runtime 服务升级、实例锁、会话恢复和实时 Transcript 同步链路。
+- 修复 Windows 独立包的 Web 服务、安装器资源和发布包完整性校验。
 
 ## [0.85.1-lystar.1] - 2026-09-09
 
