@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
+import { BACKGROUND_CONTEXT } from "../packages/agent/dist/harness/context.js";
 import { NodeExecutionEnv } from "../packages/agent/dist/harness/env/nodejs.js";
 import { resolveConfigValueUncached } from "../packages/coding-agent/dist/core/resolve-config-value.js";
 import { createLocalBashOperations } from "../packages/coding-agent/dist/core/tools/bash.js";
@@ -102,7 +103,7 @@ try {
 	}
 
 	const harnessEnv = new NodeExecutionEnv({ cwd, shellPath: bashPath, shellEnv: getShellEnv(managedEnv) });
-	const harnessResult = await harnessEnv.exec("git --version && printf harness-ok");
+	const harnessResult = await harnessEnv.exec("git --version && printf harness-ok", undefined, BACKGROUND_CONTEXT);
 	if (!harnessResult.ok || harnessResult.value.exitCode !== 0 || !harnessResult.value.stdout.includes("harness-ok")) {
 		throw new Error("Agent harness did not use the injected managed shell runtime");
 	}

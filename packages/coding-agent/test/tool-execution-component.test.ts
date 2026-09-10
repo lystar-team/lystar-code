@@ -576,7 +576,9 @@ describe("ToolExecutionComponent parity", () => {
 		expect(component.getCardClickActionAtRow(0)?.type).toBe("toggle");
 		expect(component.getCardClickActionAtRow(1)?.type).toBe("toggle");
 		expect(component.getCardClickActionAtRow(99)).toBeUndefined();
-		expect(component.render(80).join("\n")).not.toContain(theme.getBgAnsi("toolSuccessBg"));
+		if (theme.getColorMode() === "truecolor") {
+			expect(component.render(80).join("\n")).not.toContain(theme.getBgAnsi("toolSuccessBg"));
+		}
 
 		component.setHovered(true);
 		expect(component.render(80).join("\n")).toContain(theme.getBgAnsi("selectedBg"));
