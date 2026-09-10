@@ -1,4 +1,6 @@
-import { readFile, stat } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { closeSync, openSync } from "node:fs";
+import { mkdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { StringDecoder } from "node:string_decoder";
@@ -29,6 +31,8 @@ export interface WebGatewayCliOptions {
 	defaultRuntimePort?: number;
 	staticDir?: string;
 	runtimeInvocation?: RuntimeInvocation;
+	configFileName?: string;
+	backgroundInvocation?: RuntimeInvocation;
 	expectedProductVersion?: string;
 }
 
@@ -170,10 +174,29 @@ async function promptForWebConfig(
 	}
 }
 
-async function ensureWebConfig(agentDir: string, defaultPort: number, defaultRuntimePort: number): Promise<WebConfig> {
-	const store = new WebConfigStore(agentDir);
-	const current = await store.loadOrMigrate();
-	const legacy = current ? {} : await store.loadLegacy();
+async function ensureWebConfig(
+	agentDir: string,
+	defaultPort: number,
+	defaultRuntimePort: number,
+	configFileName?: string,
+): Promise<WebConfig> {
+	const configPath = configFileName ? join(agentDir, configFileName) : undefined;
+	const store = new WebConfigStore(agentDir, configPath);
+	let current = await store.loadOrMigrate();
+	let legacy = current ? {} : await store.loadLegacy();
+	if (!current && configFileName) {
+		const production = await new WebConfigStore(agentDir).load();
+		if (production) {
+			current = await store.save({
+				host: production.host,
+				allowedHosts: production.allowedHosts,
+				port: defaultPort,
+				runtimePort: defaultRuntimePort,
+				password: production.password,
+			});
+			legacy = {};
+		}
+	}
 	const environmentHost = environmentValue("PI_WEB_HOST");
 	const environmentAllowedHosts = environmentValue("PI_WEB_ALLOWED_HOSTS");
 	const environmentPort = environmentValue("PI_WEB_PORT");
@@ -238,6 +261,45 @@ function webAccessUrls(host: string, port: number): string[] {
 	return [...new Set(candidates)].map((candidate) => `http://${urlHost(candidate)}:${port}`);
 }
 
+async function startDetachedGateway(
+	invocation: RuntimeInvocation,
+	agentDir: string,
+): Promise<{ pid: number; logPath: string }> {
+	const logDirectory = join(agentDir, "web");
+	const logPath = join(logDirectory, "gateway.log");
+	await mkdir(logDirectory, { recursive: true, mode: 0o700 });
+	const logFd = openSync(logPath, "a");
+	try {
+		const child = spawn(invocation.command, invocation.args, {
+			cwd: invocation.cwd,
+			env: { ...process.env },
+			detached: true,
+			stdio: ["ignore", logFd, logFd],
+			windowsHide: true,
+		});
+		await new Promise<void>((resolvePromise, reject) => {
+			child.once("spawn", resolvePromise);
+			child.once("error", reject);
+		});
+		if (child.pid === undefined) throw new Error("后台 Gateway 进程未返回 PID");
+		child.unref();
+		return { pid: child.pid, logPath };
+	} finally {
+		closeSync(logFd);
+	}
+}
+
+function printBackgroundStartup(config: WebGatewayServer["config"], pid: number, logPath: string): void {
+	console.log("\nLYStar Code Web 工作台已在后台启动");
+	console.log(`Gateway：后台运行（监听 ${urlHost(config.host)}:${config.port}，PID ${pid}）`);
+	if (config.runtimeInvocation) {
+		console.log(`Runtime：随 Gateway 启动（127.0.0.1:${config.runtimePort ?? DEFAULT_RUNTIME_PORT}）`);
+	}
+	console.log("\nWeb UI 访问地址：");
+	for (const url of webAccessUrls(config.host, config.port)) console.log(`  ${url}`);
+	console.log(`\n日志文件：${logPath}`);
+}
+
 function printStartupSummary(
 	config: WebGatewayServer["config"],
 	runtimeStatus?: { reachable: boolean; pid?: number },
@@ -264,7 +326,22 @@ export async function runWebGatewayCli(options: WebGatewayCliOptions = {}): Prom
 	const defaultRuntimePort = options.defaultRuntimePort ?? DEFAULT_RUNTIME_PORT;
 	await verifyWebAssets(staticDir, options.expectedProductVersion);
 	const agentDir = getWebAgentDir();
-	await ensureWebConfig(agentDir, defaultPort, defaultRuntimePort);
+	await ensureWebConfig(agentDir, defaultPort, defaultRuntimePort, options.configFileName);
+	if (options.backgroundInvocation) {
+		const config = await loadWebGatewayConfig({
+			defaultPort,
+			defaultRuntimePort,
+			staticDir,
+			runtimeInvocation: options.runtimeInvocation,
+			configFileName: options.configFileName,
+		});
+		if (options.runtimeInvocation && config.port === config.runtimePort) {
+			throw new Error(`Web 端口和 Runtime 端口不能相同（当前都是 ${config.port}），请修改 ${config.configPath}`);
+		}
+		const { pid, logPath } = await startDetachedGateway(options.backgroundInvocation, agentDir);
+		printBackgroundStartup(config, pid, logPath);
+		return;
+	}
 	const instanceLock = await (async () => {
 		try {
 			return await GatewayInstanceLock.acquire(agentDir);
@@ -291,7 +368,11 @@ export async function runWebGatewayCli(options: WebGatewayCliOptions = {}): Prom
 				defaultRuntimePort,
 				staticDir,
 				runtimeInvocation: options.runtimeInvocation,
+				configFileName: options.configFileName,
 			});
+			if (options.runtimeInvocation && config.port === config.runtimePort) {
+				throw new Error(`Web 端口和 Runtime 端口不能相同（当前都是 ${config.port}），请修改 ${config.configPath}`);
+			}
 			if (options.runtimeInvocation) await ensurePersistentRuntime(config);
 			const gateway = new WebGatewayServer(config);
 			activeGateway = gateway;

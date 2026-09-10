@@ -2,7 +2,20 @@
 
 [返回文档首页](../README.md)
 
-LYStar 当前提供 Windows x64 发行包，需要 Windows PowerShell 5.1+。官方安装器会自动准备 LYStar 自己管理的 MinGit Bash，用户无需预装 Git、Bash、Node.js 或 npm。文件位于 `~/.pi/agent/bin/mingit/`，不会修改系统 Git 安装。
+LYStar 当前提供 Windows x64 发行包，需要 Windows PowerShell 5.1+。官方安装器会显示当前操作、安装目录、网络模式和六个处理阶段；失败时会保留当前版本并显示原因。安装器会自动准备 LYStar 自己管理的 MinGit Bash，用户无需预装 Git、Bash、Node.js 或 npm。文件位于 `~/.pi/agent/bin/mingit/`，不会修改系统 Git 安装。
+
+查看安装器的常用参数：
+
+```cmd
+install.cmd /?
+```
+
+需要离线安装、指定版本、回退或卸载时，查看 PowerShell 主脚本帮助：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Help
+```
+
 
 交互式 `lc` 默认使用 LYStar 独立终端窗口。一次性 CLI、管道、`--print`、JSON/RPC、安装和更新命令继续使用当前 PowerShell、CMD 或 IDE 终端。
 

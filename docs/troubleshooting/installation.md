@@ -10,9 +10,29 @@ lc --version
 
 根据结果选择下面的排查路径。
 
-## 找不到 `lc`
+## 安装器提示和 PATH
 
-macOS/Linux：
+Unix 安装器会显示当前平台、下载工具、安装目录和 PATH 处理方式。正常安装按六个阶段执行，失败时会显示原因，并保留当前版本，不会留下半成品 `current` 指针。
+
+查看帮助：
+
+```bash
+bash install.sh --help
+```
+
+不希望安装器修改 Shell 配置文件：
+
+```bash
+bash install.sh --no-path-update
+```
+
+这种情况下，安装器会显示需要手动加入的 PATH 配置。当前终端可以先执行：
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+
 
 ```bash
 ls -l ~/.local/bin/lc

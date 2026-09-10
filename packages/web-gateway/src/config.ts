@@ -40,7 +40,7 @@ export {
 	webGatewayTokenPath,
 } from "./web-config.ts";
 
-export const DEFAULT_WEB_GATEWAY_PORT = 1422;
+export const DEFAULT_WEB_GATEWAY_PORT = 2422;
 
 export interface WebGatewaySettings {
 	host: string;
@@ -74,6 +74,7 @@ export interface LoadWebGatewayConfigOptions {
 	defaultRuntimePort?: number;
 	staticDir?: string;
 	runtimeInvocation?: RuntimeInvocation;
+	configFileName?: string;
 }
 
 function envString(name: string): string | undefined {
@@ -141,7 +142,8 @@ export async function saveWebGatewayToken(agentDir: string, password: string): P
 
 export async function loadWebGatewayConfig(options: LoadWebGatewayConfigOptions = {}): Promise<WebGatewayConfig> {
 	const agentDir = getWebAgentDir();
-	const store = new WebConfigStore(agentDir);
+	const configPath = options.configFileName ? join(agentDir, options.configFileName) : undefined;
+	const store = new WebConfigStore(agentDir, configPath);
 	let persisted = await store.loadOrMigrate();
 	const environmentHost = envString("PI_WEB_HOST");
 	const environmentAllowedHosts = envString("PI_WEB_ALLOWED_HOSTS");

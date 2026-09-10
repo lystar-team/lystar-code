@@ -52,10 +52,18 @@ try {
             'ReleaseArchive',
             'ReleaseManifest',
             '[switch]$Offline',
+            'Help',
             'Ensure-WebView2Runtime',
             'lystar-terminal.exe',
             'LYStar Code.lnk',
-            'lc --attached'
+            'lc --attached',
+            'Write-InstallerBanner',
+            'Write-InstallerStep',
+            'Write-InstallerSuccess',
+            'Write-InstallerWarning',
+            '操作没有完成',
+            '安装范围：当前用户，不需要管理员权限。',
+            '用户数据目录 ~/.pi/agent 不会删除。'
         )) {
             if (!$Source.Contains($Required)) { throw "$Installer is missing: $Required" }
         }
@@ -71,8 +79,15 @@ try {
 
     $SourceCmd = [IO.File]::ReadAllText((Join-Path $Root "scripts/install.cmd"))
     $ReleaseCmd = [IO.File]::ReadAllText((Join-Path $Temp "install.cmd"))
-    foreach ($Required in @('powershell.exe', '-ExecutionPolicy Bypass', '-NoProfile', '%*', '$Attempt -le 3', '1MB')) {
+    foreach ($Required in @('powershell.exe', '-ExecutionPolicy Bypass', '-NoProfile', '%*', '$Attempt -le 3', '1MB', 'chcp 65001', 'LYStar Code Windows 安装器', '[1/2] 正在下载安装向导', '[失败] 安装没有完成', '新开一个 PowerShell 或 CMD 窗口', 'if /i "%~1"=="/?"', ':usage', 'install.cmd -Rollback')) {
         if (!$SourceCmd.Contains($Required)) { throw "install.cmd is missing: $Required" }
+    }
+    foreach ($Forbidden in @(
+        'Installer downloaded',
+        'Failed to download the LYStar Code installer',
+        'LYStar Code installer requires Windows PowerShell'
+    )) {
+        if ($SourceCmd.Contains($Forbidden)) { throw "install.cmd contains untranslated user-facing text: $Forbidden" }
     }
     if (!$SourceCmd.Contains('https://github.com/__LYSTAR_RELEASE_REPOSITORY__/releases/latest/download/install.ps1')) {
         throw "Source install.cmd must preserve the repository placeholder."

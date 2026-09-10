@@ -12,8 +12,28 @@ import {
 	WebConfigStore,
 } from "../src/config.ts";
 
-test("Web Gateway 默认端口固定为 1422", () => {
-	assert.equal(DEFAULT_WEB_GATEWAY_PORT, 1422);
+test("源码 Web Gateway 默认端口固定为 2422", () => {
+	assert.equal(DEFAULT_WEB_GATEWAY_PORT, 2422);
+});
+
+test("源码 Gateway 使用独立开发配置文件", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "lystar-web-dev-config-"));
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	try {
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		const config = await loadWebGatewayConfig({
+			defaultPort: 2422,
+			defaultRuntimePort: 1422,
+			configFileName: "web-dev-config.json",
+		});
+		assert.equal(config.port, 2422);
+		assert.equal(config.configPath, join(agentDir, "web-dev-config.json"));
+		assert.equal(await new WebConfigStore(agentDir).load(), undefined);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(agentDir, { recursive: true, force: true });
+	}
 });
 
 test("Web Gateway Host 白名单支持通配符 *", () => {

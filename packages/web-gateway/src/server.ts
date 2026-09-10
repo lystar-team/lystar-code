@@ -2396,7 +2396,7 @@ export class WebGatewayServer {
 	}
 
 	private async gatewaySecuritySettings(): Promise<GatewaySecuritySettingsResponse> {
-		const persisted = await new WebConfigStore(this.config.agentDir).loadOrMigrate();
+		const persisted = await new WebConfigStore(this.config.agentDir, this.config.configPath).loadOrMigrate();
 		return {
 			host: persisted?.host ?? this.config.host,
 			allowedHosts: persisted?.allowedHosts ?? this.config.allowedHosts,
@@ -2417,7 +2417,7 @@ export class WebGatewayServer {
 			throw new HttpError(503, "gateway_restart_unavailable", "当前 Gateway 不支持应用安全与访问设置");
 
 		const body = await parseJsonBody(request);
-		const store = new WebConfigStore(this.config.agentDir);
+		const store = new WebConfigStore(this.config.agentDir, this.config.configPath);
 		const persisted = await store.loadOrMigrate();
 		const current = {
 			host: persisted?.host ?? this.config.host,

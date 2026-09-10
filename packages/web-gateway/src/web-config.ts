@@ -161,9 +161,9 @@ export class WebConfigStore {
 	readonly agentDir: string;
 	readonly path: string;
 
-	constructor(agentDir: string) {
+	constructor(agentDir: string, configPath?: string) {
 		this.agentDir = agentDir;
-		this.path = webConfigPath(agentDir);
+		this.path = configPath ?? webConfigPath(agentDir);
 	}
 
 	async load(): Promise<WebConfig | undefined> {

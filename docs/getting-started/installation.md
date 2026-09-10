@@ -30,15 +30,22 @@ rm install.sh
 
 安装器会：
 
-1. 识别系统和 CPU 架构。
-2. 从 GitHub Release 读取最新版本。
-3. 下载当前平台归档和 `SHA256SUMS`。
-4. 校验 SHA-256，并运行归档内的 `lc --version`。
-5. 安装到 `~/.local/share/lystar-agent/versions/<version>/`。
-6. 切换 `current`，在 `~/.local/bin/` 创建 `lc` 和 `lystar`。
-7. PATH 缺失时写入当前 Shell 的 profile，并提示重新打开终端。
+1. 显示当前系统、架构、下载工具和 PATH 处理方式。
+2. 获取版本信息，下载当前平台归档和 `SHA256SUMS`。
+3. 校验 SHA-256，解压并检查 `lc`、`lystar` 和候选版本。
+4. 写入版本目录并切换 `current`，不覆盖正在使用的旧版本。
+5. 创建 `~/.local/bin/lc` 和 `~/.local/bin/lystar`。
+6. 检查安装结果，并提示下一步操作。
 
-不希望安装器修改 Shell profile：
+下载、校验、解压、版本切换和 PATH 处理都会显示中文状态。失败时会显示原因，并保留当前可用版本。
+
+查看参数：
+
+```bash
+bash install.sh --help
+```
+
+
 
 ```bash
 curl -fsSL https://github.com/lystar-team/lystar-code/releases/latest/download/install.sh -o install.sh
@@ -60,7 +67,19 @@ export PATH="$HOME/.local/bin:$PATH"
 $cmd="$env:TEMP\lystar-install.cmd"; iwr -UseBasicParsing https://github.com/lystar-team/lystar-code/releases/latest/download/install.cmd -OutFile $cmd; & $cmd
 ```
 
-`install.cmd` 只为本次安装进程使用 `ExecutionPolicy Bypass`，不会修改系统或用户执行策略。安装器下载 Windows x64 发行包和 `SHA256SUMS`，校验后安装到当前用户目录，不要求管理员权限，也不要求预装 Git、Bash、Node.js 或 npm。
+`install.cmd` 会先显示当前操作、安装目录和网络模式，再启动中文安装向导。安装向导会按六个阶段显示进度：获取版本信息、下载并校验发行包、准备桌面终端组件、准备托管 MinGit Bash、写入版本和快捷方式、检查安装结果。失败时会显示原因，并保留当前可用版本；成功后请新开 PowerShell 或 CMD 窗口，让用户 PATH 生效。
+
+查看 `install.cmd` 的常用参数：
+
+```cmd
+install.cmd /?
+```
+
+需要离线安装、指定版本、回退或卸载时，使用 PowerShell 主脚本的 `-Help`：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Help
+```
 
 安装器还会：
 

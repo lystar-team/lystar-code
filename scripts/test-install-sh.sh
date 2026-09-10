@@ -43,6 +43,13 @@ grep -F '$Repository = "lystar-team/lystar-code"' "$release_dir/install.ps1" >/d
 grep -F '$Repository -eq "__LYSTAR_RELEASE_REPOSITORY__"' "$release_dir/install.ps1" >/dev/null
 grep -F 'https://github.com/lystar-team/lystar-code/releases/latest/download/install.ps1' "$release_dir/install.cmd" >/dev/null
 grep -F 'https://github.com/__LYSTAR_RELEASE_REPOSITORY__/releases/latest/download/install.ps1' "$ROOT/scripts/install.cmd" >/dev/null
+grep -F 'print_banner' "$ROOT/scripts/install.sh" >/dev/null
+grep -F 'print_step' "$ROOT/scripts/install.sh" >/dev/null
+grep -F -- '--help' "$ROOT/scripts/install.sh" >/dev/null
+grep -F '当前版本没有切换' "$ROOT/scripts/install.sh" >/dev/null
+help_output="$(HOME="$tmp/home-help" bash "$ROOT/scripts/install.sh" --help)"
+printf '%s\n' "$help_output" | grep -F 'install.sh --no-path-update' >/dev/null
+printf '%s\n' "$help_output" | grep -F '安装失败时不会切换当前版本' >/dev/null
 
 fake_curl_dir="$tmp/fake-curl"
 mkdir -p "$fake_curl_dir"

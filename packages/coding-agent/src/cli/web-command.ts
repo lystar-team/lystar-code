@@ -22,6 +22,7 @@ interface WebGatewayModule {
 		staticDir: string;
 		expectedProductVersion: string;
 		runtimeInvocation: RuntimeInvocation;
+		backgroundInvocation?: RuntimeInvocation;
 	}): Promise<void>;
 }
 
@@ -39,10 +40,18 @@ function staticDir(): string {
 	return candidates.find((candidate) => existsSync(join(candidate, "index.html"))) ?? candidates[0];
 }
 
-function sourceRuntimeInvocation(): RuntimeInvocation {
+function selfInvocation(args: string[]): RuntimeInvocation {
 	const entrypoint = process.argv[1] ? resolve(process.argv[1]) : resolve(packageRoot(), "dist", "cli.js");
 	const sourceArgs = entrypoint.endsWith(".ts") ? ["--import", import.meta.resolve("tsx"), entrypoint] : [entrypoint];
-	return { command: process.execPath, args: [...sourceArgs, "web-runtime", "serve"], cwd: process.cwd() };
+	return { command: process.execPath, args: [...sourceArgs, ...args], cwd: process.cwd() };
+}
+
+function sourceRuntimeInvocation(): RuntimeInvocation {
+	return selfInvocation(["web-runtime", "serve"]);
+}
+
+function foregroundWebInvocation(): RuntimeInvocation {
+	return selfInvocation(["web", "--foreground"]);
 }
 
 async function loadGatewayModule(): Promise<WebGatewayModule> {
@@ -120,13 +129,29 @@ export async function runWebControlCommand(args: readonly string[]): Promise<voi
 export async function runWebCommand(args: readonly string[] = []): Promise<void> {
 	if (args.includes("--help") || args.includes("-h")) {
 		console.log(
-			"用法：lc web\n\n首次运行会依次配置监听 IP、白名单 IP、Web 端口、Runtime 端口和连接密码。\nWeb 默认端口：1420；Runtime 默认端口：1422。\n\n服务命令：\n  lc web gateway restart\n  lc web runtime restart\n",
+			"用法：lc web\n\n首次运行会依次配置监听 IP、白名单 IP、Web 端口、Runtime 端口和连接密码。\nWeb 默认端口：1420；Runtime 默认端口：1422。\n默认启动为后台模式；需要前台运行时使用：lc web --foreground。\n\n服务命令：\n  lc web gateway restart\n  lc web runtime restart\n",
 		);
 		return;
 	}
 	if (args.length > 0) {
-		await runWebControlCommand(args);
-		return;
+		const foreground = args.includes("--foreground");
+		const controlArgs = args.filter((arg) => arg !== "--foreground");
+		if (foreground && controlArgs.length > 0) throw new Error("用法：lc web [--foreground]");
+		if (!foreground && controlArgs.length > 0) {
+			await runWebControlCommand(controlArgs);
+			return;
+		}
+		if (foreground) {
+			const { runWebGatewayCli } = await loadGatewayRunnerModule();
+			await runWebGatewayCli({
+				defaultPort: DEFAULT_WEB_PORT,
+				defaultRuntimePort: DEFAULT_RUNTIME_PORT,
+				staticDir: staticDir(),
+				expectedProductVersion: VERSION,
+				runtimeInvocation: sourceRuntimeInvocation(),
+			});
+			return;
+		}
 	}
 	const { runWebGatewayCli } = await loadGatewayRunnerModule();
 	await runWebGatewayCli({
@@ -135,6 +160,7 @@ export async function runWebCommand(args: readonly string[] = []): Promise<void>
 		staticDir: staticDir(),
 		expectedProductVersion: VERSION,
 		runtimeInvocation: sourceRuntimeInvocation(),
+		backgroundInvocation: foregroundWebInvocation(),
 	});
 }
 
