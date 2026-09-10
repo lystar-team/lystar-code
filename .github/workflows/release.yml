@@ -1,6 +1,9 @@
 name: Release LYStar Code
 
 on:
+  push:
+    tags:
+      - "v*-lystar.*"
   workflow_dispatch:
     inputs:
       ref:
@@ -40,7 +43,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.ref }}
           fetch-depth: 0
 
       - name: Setup Node.js
@@ -105,7 +108,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.ref }}
           fetch-depth: 0
 
       - name: Setup Node.js
@@ -168,7 +171,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.ref }}
           fetch-depth: 0
 
       - name: Setup Node.js
@@ -212,7 +215,7 @@ jobs:
 
   publish:
     needs: verify-candidate
-    if: ${{ inputs.publish == true && needs.verify-candidate.result == 'success' }}
+    if: ${{ (inputs.publish == true || github.event_name == 'push') && needs.verify-candidate.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -224,7 +227,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.ref }}
           fetch-depth: 0
 
       - name: Download verified release candidate
@@ -239,14 +242,21 @@ jobs:
         run: |
           version="$(cat packages/coding-agent/binaries/VERSION)"
           tag="v${version}"
-          git fetch origin --tags
-          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
-            echo "Release tag already exists: ${tag}" >&2
-            exit 1
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            if [[ "$GITHUB_REF_NAME" != "$tag" ]]; then
+              echo "Pushed tag $GITHUB_REF_NAME does not match release version $tag" >&2
+              exit 1
+            fi
+          else
+            git fetch origin --tags
+            if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+              echo "Release tag already exists: ${tag}" >&2
+              exit 1
+            fi
+            source_sha="$(git rev-parse HEAD)"
+            git tag -a "$tag" "$source_sha" -m "LYStar Code $tag" -m "本版紧急修复。"
+            git push origin "$tag"
           fi
-          source_sha="$(git rev-parse HEAD)"
-          git tag "$tag" "$source_sha"
-          git push origin "$tag"
           {
             echo "version=$version"
             echo "tag=$tag"
