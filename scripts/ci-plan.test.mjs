@@ -1,48 +1,49 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createPlan, parseNameStatus } from "./ci-plan.mjs";
+import { createPlan, parseNameStatus, TEST_PACKAGES } from "./ci-plan.mjs";
 
-const allGates = { source: true, core: true, coding: true, platform: true, web: true, release: true };
+const allGates = { validate: true, core: true, coding: true, web: true, platform: true };
+const emptyTests = { core: [], coding: [], web: [] };
+const allTests = {
+	core: [...TEST_PACKAGES.core],
+	coding: [...TEST_PACKAGES.coding],
+	web: [...TEST_PACKAGES.web],
+};
+
 const fixtures = [
-	["docs only", ["README.md", "docs/ci.md"], {}],
-	["feature plan only", ["features/plan.md"], {}],
-	["AI public workspace", ["packages/ai/src/index.ts"], allGates],
-	["Agent public workspace", ["packages/agent/src/index.ts"], allGates],
-	["TUI public workspace", ["packages/tui/src/tui.ts"], allGates],
-	["Protocol public workspace", ["packages/protocol/src/index.ts"], allGates],
-	["lockfile", ["package-lock.json"], allGates],
-	["shrinkwrap", ["packages/coding-agent/npm-shrinkwrap.json"], allGates],
-	["CI workflow", [".github/workflows/ci.yml"], allGates],
-	["release workflow", [".github/workflows/release.yml"], allGates],
-	["unknown root path", ["LICENSE"], allGates],
-	["unknown workspace", ["packages/new-package/src/index.ts"], allGates],
-	["Coding Agent source", ["packages/coding-agent/src/core/session-manager.ts"], { source: true, coding: true, web: true }],
-	["Coding Agent Windows test", ["packages/coding-agent/test/bash-close-hang-windows.test.ts"], { source: true, coding: true, platform: true, web: true }],
-	["Web application", ["packages/web/src/App.tsx"], { source: true, web: true }],
-	["Web protocol", ["packages/web-protocol/src/schemas.ts"], { source: true, web: true }],
-	["Web runtime", ["packages/web-runtime/src/service.ts"], { source: true, web: true }],
-	["CI script", ["scripts/ci-summary.mjs"], { source: true }],
-	["Unix installer", ["scripts/test-install-sh.sh"], allGates],
-	["Windows installer", ["scripts/test-install-ps1.ps1"], allGates],
-	["release metadata", ["scripts/generate-release-metadata.mjs"], allGates],
-	["Windows terminal script", ["scripts/test-windows-terminal.ps1"], allGates],
-	["deleted known file fails open", [{ path: "packages/web/src/App.tsx", status: "D" }], allGates],
-	["unparseable path fails open", [{ path: "../outside.ts", status: "M" }], allGates],
+	["docs only", ["README.md", "docs/ci.md"], {}, emptyTests],
+	["feature plan only", ["features/plan.md"], {}, emptyTests],
+	["AI workspace", ["packages/ai/src/index.ts"], { validate: true, core: true }, { ...emptyTests, core: ["@earendil-works/pi-ai"] }],
+	["TUI workspace", ["packages/tui/src/tui.ts"], { validate: true, core: true }, { ...emptyTests, core: ["@earendil-works/pi-tui"] }],
+	["Coding Agent source", ["packages/coding-agent/src/core/session-manager.ts"], { validate: true, coding: true }, { ...emptyTests, coding: ["@earendil-works/pi-coding-agent"] }],
+	["Agent Windows test", ["packages/agent/test/harness/nodejs-env.windows.test.ts"], { validate: true, core: true, platform: true }, { ...emptyTests, core: ["@earendil-works/pi-agent-core"] }],
+	["platform test runner", ["scripts/run-coding-agent-platform-tests.mjs"], { validate: true, platform: true }, emptyTests],
+	["Web application", ["packages/web/src/App.tsx"], { validate: true, web: true }, { ...emptyTests, web: ["@lystar/code-web"] }],
+	["Web gateway", ["packages/web-gateway/src/cli.ts"], { validate: true, web: true }, { ...emptyTests, web: ["@lystar/code-web-gateway"] }],
+	["lockfile", ["package-lock.json"], allGates, allTests],
+	["CI workflow", [".github/workflows/ci.yml"], { validate: true }, emptyTests],
+	["CI planner", ["scripts/ci-plan.mjs"], { validate: true }, emptyTests],
+	["release script", ["scripts/build-binaries.sh"], { validate: true, platform: true }, emptyTests],
+	["evaluation workspace", ["packages/evals/src/example.eval.ts"], { validate: true }, emptyTests],
+	["unknown workspace", ["packages/new-package/src/index.ts"], allGates, allTests],
+	["deleted known file fails open", [{ path: "packages/web/src/App.tsx", status: "D" }], allGates, allTests],
+	["unparseable path fails open", [{ path: "../outside.ts", status: "M" }], allGates, allTests],
 ];
 
-test("changed-file planner covers representative workspace paths", () => {
-	assert.ok(fixtures.length >= 20);
-	for (const [name, changes, expected] of fixtures) {
+test("changed-file planner selects only affected gates and workspaces", () => {
+	for (const [name, changes, expectedGates, expectedTests] of fixtures) {
 		const plan = createPlan(changes, "enforce");
-		assert.deepEqual(plan.wouldRun, { ...Object.fromEntries(Object.keys(allGates).map((gate) => [gate, false])), ...expected }, name);
+		assert.deepEqual(plan.wouldRun, { ...Object.fromEntries(Object.keys(allGates).map((gate) => [gate, false])), ...expectedGates }, name);
 		assert.deepEqual(plan.execution, plan.wouldRun, `${name} enforce execution`);
+		assert.deepEqual(plan.tests, expectedTests, `${name} affected tests`);
 	}
 });
 
-test("observe keeps every existing required job active", () => {
+test("observe mode keeps every gate and full test package list active", () => {
 	const plan = createPlan(["packages/web/src/App.tsx"], "observe");
-	assert.deepEqual(plan.wouldRun, { source: true, core: false, coding: false, platform: false, web: true, release: false });
+	assert.deepEqual(plan.wouldRun, { validate: true, core: false, coding: false, web: true, platform: false });
 	assert.deepEqual(plan.execution, allGates);
+	assert.deepEqual(plan.tests, allTests);
 });
 
 test("rename parser classifies both paths and rejects malformed token streams", () => {

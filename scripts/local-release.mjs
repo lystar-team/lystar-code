@@ -202,7 +202,7 @@ mkdirSync(tarballDirectory, { recursive: true });
 run("npm", ["run", "generate:models"], { cwd: repoRoot });
 
 if (!options.skipCheck) {
-	run("npm", ["run", "check"], { cwd: repoRoot });
+	run("npm", ["run", "check:ci"], { cwd: repoRoot });
 }
 
 for (const pkg of packages) {

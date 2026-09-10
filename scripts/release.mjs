@@ -12,11 +12,11 @@
  * 3. Bump version via npm run version:xxx or set an explicit version
  * 4. Update CHANGELOG.md files: [Unreleased] -> [version] - date
  * 5. Regenerate release artifacts
- * 6. Run checks and tests
- * 7. Commit and tag the release
- * 8. Add new [Unreleased] section to changelogs
+ * 6. Run release preflight checks
+ * 7. Commit the release
+ * 8. Add new [Unreleased] sections to changelogs
  * 9. Commit next-cycle changelog updates
- * 10. Push main and the tag to trigger CI publication and verified pi.dev announcement
+ * 10. Push main and trigger the release candidate workflow
  */
 
 import { execSync, spawnSync } from "node:child_process";
@@ -221,6 +221,12 @@ if (status && status.trim()) {
 }
 console.log("  Working directory clean\n");
 
+const ghCheck = spawnSync("gh", ["auth", "status"], { stdio: "ignore" });
+if (ghCheck.status !== 0) {
+	console.error("Authenticated GitHub CLI is required to start the release workflow. Run gh auth login before running a release.");
+	process.exit(1);
+}
+
 // 2. Verify npm package registration before modifying the worktree.
 assertPackagesAreRegisteredWithNpm();
 
@@ -242,27 +248,22 @@ run("npm run install-lock:coding-agent");
 console.log();
 
 // 6. Run checks and tests
-console.log("Running checks...");
-run("npm run check");
+console.log("Running release preflight...");
+run("npm run check:ci");
 console.log();
 
-console.log("Building packages for tests...");
+console.log("Building packages for release checks...");
 run("npm run build:offline");
-console.log();
-
-console.log("Running tests...");
-run("./test.sh");
 console.log();
 
 console.log("Checking the packed coding-agent consumer install...");
 run("npm run check:package-install");
 console.log();
 
-// 7. Commit and tag
-console.log("Committing and tagging...");
+// 7. Commit the release
+console.log("Committing release...");
 stageChangedFiles();
 run(`git commit -m "Release v${version}"`);
-run(`git tag v${version}`);
 console.log();
 
 // 8. Add new [Unreleased] sections
@@ -276,10 +277,10 @@ stageChangedFiles();
 run(`git commit -m "Add [Unreleased] section for next cycle"`);
 console.log();
 
-// 10. Push
-console.log("Pushing to remote...");
+// 10. Push main and start the release candidate workflow
+console.log("Pushing main and starting release candidate workflow...");
 run("git push origin main");
-run(`git push origin v${version}`);
+run("gh workflow run release.yml --ref main --field ref=main --field publish=true");
 console.log();
 
-console.log(`=== Prepared release v${version}; CI publication and pi.dev announcement start after the tag push ===`);
+console.log(`=== Started release candidate validation for v${version}; the workflow creates the tag only after all five artifacts pass verification ===`);

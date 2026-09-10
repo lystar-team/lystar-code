@@ -6,16 +6,11 @@ import { parseDocument } from "yaml";
 const workflow = readFileSync(new URL("../.github/workflows/extended-quality.yml", import.meta.url), "utf8");
 const pinnedAction = /^[\w/-]+@[0-9a-f]{40}$/;
 
-test("extended quality workflow keeps live suites manual and non-live suites scheduled", () => {
+test("extended quality workflow keeps live suites manual, the full suite manual, and stress suites scheduled", () => {
 	const document = parseDocument(workflow);
 	assert.deepEqual(document.errors, []);
 	const parsed = document.toJS();
-	assert.deepEqual(parsed.on.workflow_dispatch.inputs.suite.options, [
-		"ai-live",
-		"coding-live",
-		"stress",
-		"non-live-all",
-	]);
+	assert.deepEqual(parsed.on.workflow_dispatch.inputs.suite.options, ["full", "ai-live", "coding-live", "stress"]);
 	assert.equal(parsed.on.schedule.length, 1);
 	assert.equal(parsed.permissions.contents, "read");
 	assert.equal(parsed.concurrency["cancel-in-progress"], false);
@@ -26,24 +21,19 @@ test("extended quality workflow keeps live suites manual and non-live suites sch
 		assert.match(job.if, /workflow_dispatch/);
 		assert.equal(job.environment, "live-provider");
 		assert.equal(job.env.PI_LIVE_TEST, "1");
-		assert.match(JSON.stringify(job.steps), /--assert-passed/);
-		assert.match(JSON.stringify(job.steps), /credential=1/);
+		assert.match(JSON.stringify(job.steps), /No .* credential configured/);
+		assert.match(JSON.stringify(job.steps), /test:live/);
 	}
 	assert.match(parsed.jobs.stress.if, /github\.event_name == 'schedule'/);
 	assert.match(JSON.stringify(parsed.jobs.stress.steps), /test:stress/);
-	assert.doesNotMatch(workflow, /cache-hit \|\| 'false'/);
+	assert.match(parsed.jobs.full.if, /workflow_dispatch/);
+	assert.match(JSON.stringify(parsed.jobs.full.steps), /npm test/);
+	assert.doesNotMatch(workflow, /ci-summary|ci-budget|json-output|date \+%s%N/);
 
-	for (const name of ["ai-live", "coding-live", "stress"]) {
+	for (const name of ["full", "ai-live", "coding-live", "stress"]) {
 		const job = parsed.jobs[name];
 		const setupNode = job.steps.find((step) => step.name === "Setup Node.js");
-		const summary = job.steps.find((step) => step.name.includes("summary"));
-		assert.equal(setupNode.id, "setup-node");
-		assert.match(summary.run, /scripts\/ci-summary\.mjs/);
-		assert.match(summary.run, /--require-positive-timings/);
-		for (const timing of ["wall", "setup", "test", "cache"]) assert.match(summary.run, new RegExp(`--timing "${timing}=`));
-		assert.match(summary.run, /--json-output/);
-		assert.match(summary.run, /--cache-hit "npm=\$\{\{ steps\.setup-node\.outputs\.cache-hit \|\| 'unavailable' \}\}"/);
-		assert.ok(job.steps.some((step) => typeof step.run === "string" && step.run.includes("date +%s%N")));
+		assert.ok(setupNode);
+		assert.ok(job.steps.some((step) => typeof step.run === "string" && step.run.includes("npm ci")));
 	}
-
 });

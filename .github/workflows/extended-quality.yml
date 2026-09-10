@@ -6,9 +6,9 @@ on:
       suite:
         description: Extended quality suite
         required: true
-        default: non-live-all
+        default: full
         type: choice
-        options: [ai-live, coding-live, stress, non-live-all]
+        options: [full, ai-live, coding-live, stress]
   schedule:
     - cron: "17 5 * * 1"
 
@@ -24,6 +24,26 @@ env:
   NPM_CI_ARGS: --ignore-scripts --no-audit --no-fund
 
 jobs:
+  full:
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'full'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci $NPM_CI_ARGS
+
+      - name: Run full deterministic suite
+        run: npm test
+
   ai-live:
     if: github.event_name == 'workflow_dispatch' && inputs.suite == 'ai-live'
     runs-on: ubuntu-24.04
@@ -44,97 +64,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Record AI live job start
-        id: job-start
-        shell: bash
-        run: echo "nanoseconds=$(date +%s%N)" >> "$GITHUB_OUTPUT"
-
-      - name: Record npm cache restore start
-        id: npm-cache-start
-        shell: bash
-        run: echo "nanoseconds=$(date +%s%N)" >> "$GITHUB_OUTPUT"
-
       - name: Setup Node.js
-        id: setup-node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
-      - name: Record npm cache restore end
-        id: npm-cache-end
-        if: always()
-        shell: bash
-        run: echo "nanoseconds=$(date +%s%N)" >> "$GITHUB_OUTPUT"
-
       - name: Install dependencies
-        id: install
-        shell: bash
-        run: |
-          set +e
-          npm ci $NPM_CI_ARGS
-          install_status=$?
-          echo "finished_at=$(date +%s%N)" >> "$GITHUB_OUTPUT"
-          exit "$install_status"
+        run: npm ci $NPM_CI_ARGS
 
       - name: Run AI live provider suite
-        id: tests
         shell: bash
         run: |
-          started_at=$(date +%s%N)
-          set +e
           if [[ -z "$ANTHROPIC_API_KEY$ANTHROPIC_OAUTH_TOKEN$OPENAI_API_KEY$OPENAI_OAUTH_TOKEN$GEMINI_API_KEY$GOOGLE_API_KEY$MISTRAL_API_KEY$OPENROUTER_API_KEY$HF_TOKEN" ]]; then
-            credential_skipped=true
-            test_status=0
-          else
-            credential_skipped=false
-            npm --workspace @earendil-works/pi-ai run test:live -- --reporter=json --outputFile="$RUNNER_TEMP/ai-live-report.json"
-            test_status=$?
+            echo "No live provider credential configured; suite skipped."
+            exit 0
           fi
-          echo "credential_skipped=$credential_skipped" >> "$GITHUB_OUTPUT"
-          echo "started_at=$started_at" >> "$GITHUB_OUTPUT"
-          echo "finished_at=$(date +%s%N)" >> "$GITHUB_OUTPUT"
-          exit "$test_status"
-
-      - name: Write AI live summary
-        if: always()
-        shell: bash
-        run: |
-          duration() {
-            local started_at="$1" finished_at="$2"
-            if [[ "$started_at" =~ ^[0-9]+$ && "$finished_at" =~ ^[0-9]+$ && "$finished_at" -ge "$started_at" ]]; then
-              awk -v started_at="$started_at" -v finished_at="$finished_at" 'BEGIN { printf "%.9f", (finished_at - started_at) / 1000000000 }'
-            else
-              echo 0
-            fi
-          }
-          now=$(date +%s%N)
-          arguments=(
-            --suite ai-live
-            --require-positive-timings
-            --timing "wall=$(duration '${{ steps.job-start.outputs.nanoseconds || '0' }}' "$now")"
-            --timing "setup=$(duration '${{ steps.job-start.outputs.nanoseconds || '0' }}' '${{ steps.install.outputs.finished_at || '0' }}')"
-            --timing "test=$(duration '${{ steps.tests.outputs.started_at || '0' }}' '${{ steps.tests.outputs.finished_at || '0' }}')"
-            --timing "cache=$(duration '${{ steps.npm-cache-start.outputs.nanoseconds || '0' }}' '${{ steps.npm-cache-end.outputs.nanoseconds || '0' }}')"
-            --cache-hit "npm=${{ steps.setup-node.outputs.cache-hit || 'unavailable' }}"
-          )
-          if [[ "${{ steps.tests.outputs.credential_skipped || 'false' }}" == "true" ]]; then
-            arguments+=(--no-test-report --skip credential=1)
-          else
-            arguments+=(--assert-passed --result "$RUNNER_TEMP/ai-live-report.json")
-          fi
-          node scripts/ci-summary.mjs "${arguments[@]}" --json-output "$RUNNER_TEMP/ai-live-metrics.json"
-
-      - name: Upload AI live report
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: extended-quality-ai-live
-          path: |
-            ${{ runner.temp }}/ai-live-report.json
-            ${{ runner.temp }}/ai-live-metrics.json
-          if-no-files-found: warn
-          retention-days: 7
+          npm --workspace @earendil-works/pi-ai run test:live
 
   coding-live:
     if: github.event_name == 'workflow_dispatch' && inputs.suite == 'coding-live'
@@ -149,179 +95,40 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Record Coding Agent live job start
-        id: job-start
-        shell: bash
-        run: echo "nanoseconds=$(date +%s%N)" >> "$GITHUB_OUTPUT"
-
-      - name: Record npm cache restore start
-        id: npm-cache-start
-        shell: bash
-        run: echo "nanoseconds=$(date +%s%N)" >> "$GITHUB_OUTPUT"
-
       - name: Setup Node.js
-        id: setup-node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
-      - name: Record npm cache restore end
-        id: npm-cache-end
-        if: always()
-        shell: bash
-        run: echo "nanoseconds=$(date +%s%N)" >> "$GITHUB_OUTPUT"
-
       - name: Install dependencies
-        id: install
-        shell: bash
-        run: |
-          set +e
-          npm ci $NPM_CI_ARGS
-          install_status=$?
-          echo "finished_at=$(date +%s%N)" >> "$GITHUB_OUTPUT"
-          exit "$install_status"
+        run: npm ci $NPM_CI_ARGS
 
       - name: Run Coding Agent live provider suite
-        id: tests
         shell: bash
         run: |
-          started_at=$(date +%s%N)
-          set +e
           if [[ -z "$ANTHROPIC_API_KEY$ANTHROPIC_OAUTH_TOKEN" ]]; then
-            credential_skipped=true
-            test_status=0
-          else
-            credential_skipped=false
-            npm --workspace @earendil-works/pi-coding-agent run test:live -- --reporter=json --outputFile="$RUNNER_TEMP/coding-live-report.json"
-            test_status=$?
+            echo "No Anthropic credential configured; suite skipped."
+            exit 0
           fi
-          echo "credential_skipped=$credential_skipped" >> "$GITHUB_OUTPUT"
-          echo "started_at=$started_at" >> "$GITHUB_OUTPUT"
-          echo "finished_at=$(date +%s%N)" >> "$GITHUB_OUTPUT"
-          exit "$test_status"
-
-      - name: Write Coding Agent live summary
-        if: always()
-        shell: bash
-        run: |
-          duration() {
-            local started_at="$1" finished_at="$2"
-            if [[ "$started_at" =~ ^[0-9]+$ && "$finished_at" =~ ^[0-9]+$ && "$finished_at" -ge "$started_at" ]]; then
-              awk -v started_at="$started_at" -v finished_at="$finished_at" 'BEGIN { printf "%.9f", (finished_at - started_at) / 1000000000 }'
-            else
-              echo 0
-            fi
-          }
-          now=$(date +%s%N)
-          arguments=(
-            --suite coding-live
-            --require-positive-timings
-            --timing "wall=$(duration '${{ steps.job-start.outputs.nanoseconds || '0' }}' "$now")"
-            --timing "setup=$(duration '${{ steps.job-start.outputs.nanoseconds || '0' }}' '${{ steps.install.outputs.finished_at || '0' }}')"
-            --timing "test=$(duration '${{ steps.tests.outputs.started_at || '0' }}' '${{ steps.tests.outputs.finished_at || '0' }}')"
-            --timing "cache=$(duration '${{ steps.npm-cache-start.outputs.nanoseconds || '0' }}' '${{ steps.npm-cache-end.outputs.nanoseconds || '0' }}')"
-            --cache-hit "npm=${{ steps.setup-node.outputs.cache-hit || 'unavailable' }}"
-          )
-          if [[ "${{ steps.tests.outputs.credential_skipped || 'false' }}" == "true" ]]; then
-            arguments+=(--no-test-report --skip credential=1)
-          else
-            arguments+=(--assert-passed --result "$RUNNER_TEMP/coding-live-report.json")
-          fi
-          node scripts/ci-summary.mjs "${arguments[@]}" --json-output "$RUNNER_TEMP/coding-live-metrics.json"
-
-      - name: Upload Coding Agent live report
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: extended-quality-coding-live
-          path: |
-            ${{ runner.temp }}/coding-live-report.json
-            ${{ runner.temp }}/coding-live-metrics.json
-          if-no-files-found: warn
-          retention-days: 7
+          npm --workspace @earendil-works/pi-coding-agent run test:live
 
   stress:
-    if: github.event_name == 'schedule' || inputs.suite == 'stress' || inputs.suite == 'non-live-all'
+    if: github.event_name == 'schedule' || inputs.suite == 'stress'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Record stress job start
-        id: job-start
-        shell: bash
-        run: echo "nanoseconds=$(date +%s%N)" >> "$GITHUB_OUTPUT"
-
-      - name: Record npm cache restore start
-        id: npm-cache-start
-        shell: bash
-        run: echo "nanoseconds=$(date +%s%N)" >> "$GITHUB_OUTPUT"
-
       - name: Setup Node.js
-        id: setup-node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
-      - name: Record npm cache restore end
-        id: npm-cache-end
-        if: always()
-        shell: bash
-        run: echo "nanoseconds=$(date +%s%N)" >> "$GITHUB_OUTPUT"
-
       - name: Install dependencies
-        id: install
-        shell: bash
-        run: |
-          set +e
-          npm ci $NPM_CI_ARGS
-          install_status=$?
-          echo "finished_at=$(date +%s%N)" >> "$GITHUB_OUTPUT"
-          exit "$install_status"
+        run: npm ci $NPM_CI_ARGS
 
       - name: Run stress suite
-        id: tests
-        shell: bash
-        run: |
-          started_at=$(date +%s%N)
-          set +e
-          npm --workspace @earendil-works/pi-coding-agent run test:stress -- --reporter=json --outputFile="$RUNNER_TEMP/stress-report.json"
-          test_status=$?
-          echo "started_at=$started_at" >> "$GITHUB_OUTPUT"
-          echo "finished_at=$(date +%s%N)" >> "$GITHUB_OUTPUT"
-          exit "$test_status"
-
-      - name: Write stress summary
-        if: always()
-        shell: bash
-        run: |
-          duration() {
-            local started_at="$1" finished_at="$2"
-            if [[ "$started_at" =~ ^[0-9]+$ && "$finished_at" =~ ^[0-9]+$ && "$finished_at" -ge "$started_at" ]]; then
-              awk -v started_at="$started_at" -v finished_at="$finished_at" 'BEGIN { printf "%.9f", (finished_at - started_at) / 1000000000 }'
-            else
-              echo 0
-            fi
-          }
-          now=$(date +%s%N)
-          node scripts/ci-summary.mjs --suite stress --assert-passed --require-positive-timings --result "$RUNNER_TEMP/stress-report.json" \
-            --timing "wall=$(duration '${{ steps.job-start.outputs.nanoseconds || '0' }}' "$now")" \
-            --timing "setup=$(duration '${{ steps.job-start.outputs.nanoseconds || '0' }}' '${{ steps.install.outputs.finished_at || '0' }}')" \
-            --timing "test=$(duration '${{ steps.tests.outputs.started_at || '0' }}' '${{ steps.tests.outputs.finished_at || '0' }}')" \
-            --timing "cache=$(duration '${{ steps.npm-cache-start.outputs.nanoseconds || '0' }}' '${{ steps.npm-cache-end.outputs.nanoseconds || '0' }}')" \
-            --cache-hit "npm=${{ steps.setup-node.outputs.cache-hit || 'unavailable' }}" \
-            --json-output "$RUNNER_TEMP/stress-metrics.json"
-
-      - name: Upload stress report
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: extended-quality-stress
-          path: |
-            ${{ runner.temp }}/stress-report.json
-            ${{ runner.temp }}/stress-metrics.json
-          if-no-files-found: warn
-          retention-days: 7
+        run: npm --workspace @earendil-works/pi-coding-agent run test:stress

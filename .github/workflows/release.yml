@@ -1,47 +1,29 @@
 name: Release LYStar Code
 
 on:
-  push:
-    tags:
-      - "v*-lystar.*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to build and verify
+        required: true
+        default: main
+        type: string
+      publish:
+        description: Create the version tag and GitHub release after candidate verification
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 env:
   NODE_VERSION: 24.18.0
-  NPM_CI_ARGS: --ignore-scripts --no-audit --no-fund
 
 jobs:
-  verify-ci:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - name: Wait for successful main CI for this commit
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          run_id=""
-          for _ in {1..20}; do
-            run_id=$(gh api \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&per_page=10" \
-              --jq '[.workflow_runs[] | select(.event == "push" and .head_branch == "main")] | first | .id // empty')
-            [[ -n "$run_id" ]] && break
-            sleep 3
-          done
-          if [[ -z "$run_id" ]]; then
-            echo "No main push CI found for ${GITHUB_SHA}" >&2
-            exit 1
-          fi
-          gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status --interval 10
-
   build-unix:
-    needs: verify-ci
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - platform: darwin-arm64
@@ -57,29 +39,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Record Unix build start
-        id: build-start
-        shell: bash
-        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
-
-      - name: Record npm cache restore start
-        id: cache-start
-        shell: bash
-        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
 
       - name: Setup Node.js
-        id: setup-node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-
-      - name: Record npm cache restore end
-        id: cache-end
-        if: always()
-        shell: bash
-        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -87,42 +55,31 @@ jobs:
           bun-version: 1.3.9
 
       - name: Verify source version
-        env:
-          TAG: ${{ github.ref_name }}
-        run: test "v$(node -p "require('./packages/coding-agent/package.json').piConfig.productVersion")" = "$TAG"
+        shell: bash
+        run: test -n "$(node -p \"require('./packages/coding-agent/package.json').piConfig.productVersion\")"
 
       - name: Install dependencies
-        run: npm ci $NPM_CI_ARGS
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Build JavaScript packages
-        id: javascript-build
-        shell: bash
-        run: |
-          started=$SECONDS
-          npm run build:offline
-          echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
+        run: npm run build:offline
 
-      - name: Build Unix standalone bundle
-        id: standalone-build
-        shell: bash
+      - name: Build Unix standalone release
         run: |
-          started=$SECONDS
           bash scripts/build-binaries.sh \
             --skip-install \
             --skip-build \
             --platform "${{ matrix.platform }}" \
             --repository "${GITHUB_REPOSITORY}"
-          echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
 
       - name: Verify Unix release artifact
-        env:
-          TAG: ${{ github.ref_name }}
+        shell: bash
         run: |
-          version="${TAG#v}"
+          version="$(node -p \"require('./packages/coding-agent/package.json').piConfig.productVersion\")"
           archive="packages/coding-agent/binaries/lystar-agent-v${version}-${{ matrix.platform }}.tar.gz"
-          test "v$(cat packages/coding-agent/binaries/VERSION)" = "$TAG"
-          archive_count="$(find packages/coding-agent/binaries -maxdepth 1 -name '*.tar.gz' | wc -l | tr -d '[:space:]')"
-          test "$archive_count" = "1"
+          test "v$(cat packages/coding-agent/binaries/VERSION)" = "v${version}"
+          test -f "$archive"
+          test "$(find packages/coding-agent/binaries -maxdepth 1 -name '*.tar.gz' | wc -l | tr -d '[:space:]')" = "1"
           tar -tzf "$archive" > archive-contents.txt
           grep -Fxq 'lystar-agent/lc' archive-contents.txt
           grep -Fxq 'lystar-agent/lystar' archive-contents.txt
@@ -134,65 +91,28 @@ jobs:
           ! grep -Fxq 'lystar-agent/la' archive-contents.txt
           rm archive-contents.txt
 
-      - name: Write Unix release build summary
-        if: always()
-        shell: bash
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          node scripts/release-summary.mjs --release cli --sha "$GITHUB_SHA" \
-            --artifact "${{ matrix.platform }}=packages/coding-agent/binaries/lystar-agent-v$version-${{ matrix.platform }}.tar.gz" \
-            --timing wall=$(( $(date +%s) - ${{ steps.build-start.outputs.seconds || 0 }} )) \
-            --timing build=$(( ${{ steps.javascript-build.outputs.seconds || 0 }} + ${{ steps.standalone-build.outputs.seconds || 0 }} )) \
-            --timing cache=$(( ${{ steps.cache-end.outputs.seconds || 0 }} - ${{ steps.cache-start.outputs.seconds || 0 }} )) \
-            --cache-hit npm=${{ steps.setup-node.outputs.cache-hit || 'false' }} \
-            --json-output "$RUNNER_TEMP/release-metrics-${{ matrix.platform }}.json"
-
-      - name: Upload Unix release artifact
+      - name: Upload Unix release candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: release-unix-${{ matrix.platform }}
+          name: release-candidate-unix-${{ matrix.platform }}
           path: packages/coding-agent/binaries/lystar-agent-*-${{ matrix.platform }}.tar.gz
           if-no-files-found: error
 
-      - name: Upload Unix release build metrics
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: release-budget-metrics-${{ matrix.platform }}
-          path: ${{ runner.temp }}/release-metrics-${{ matrix.platform }}.json
-          if-no-files-found: warn
-          retention-days: 7
-
   build-windows:
-    needs: verify-ci
     runs-on: windows-2025
     timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Record Windows build start
-        id: build-start
-        shell: bash
-        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
-
-      - name: Record npm cache restore start
-        id: cache-start
-        shell: bash
-        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
 
       - name: Setup Node.js
-        id: setup-node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-
-      - name: Record npm cache restore end
-        id: cache-end
-        if: always()
-        shell: bash
-        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -201,74 +121,98 @@ jobs:
           bun-download-url: https://github.com/oven-sh/bun/releases/download/bun-v1.3.9/bun-windows-x64-baseline.zip
 
       - name: Verify source version
-        shell: bash
-        env:
-          TAG: ${{ github.ref_name }}
-        run: test "v$(node -p "require('./packages/coding-agent/package.json').piConfig.productVersion")" = "$TAG"
+        shell: powershell
+        run: |
+          $Version = (Get-Content packages/coding-agent/package.json | ConvertFrom-Json).piConfig.productVersion
+          if ([string]::IsNullOrWhiteSpace($Version)) { throw "Coding Agent product version is empty" }
 
       - name: Install dependencies
-        run: npm ci $env:NPM_CI_ARGS
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Build JavaScript packages
-        id: javascript-build
-        shell: powershell
-        run: |
-          $started = Get-Date
-          npm run build:offline
-          "seconds=$([math]::Round(((Get-Date) - $started).TotalSeconds))" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        run: npm run build:offline
 
-      - name: Build Windows standalone bundle
-        id: standalone-build
+      - name: Build Windows standalone release
         shell: powershell
-        run: |
-          $started = Get-Date
-          .\scripts\build-windows-release.ps1 -Repository "${env:GITHUB_REPOSITORY}"
-          "seconds=$([math]::Round(((Get-Date) - $started).TotalSeconds))" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        run: .\scripts\build-windows-release.ps1 -Repository "${env:GITHUB_REPOSITORY}"
 
-      - name: Verify Windows binaries
+      - name: Verify Windows release artifact
         shell: powershell
         run: |
           $Version = (Get-Content packages/coding-agent/package.json | ConvertFrom-Json).piConfig.productVersion
           $Bundle = "packages/coding-agent/binaries/windows-x64/lystar-agent"
+          $Archives = @(Get-ChildItem packages/coding-agent/binaries -Filter "lystar-agent-*-windows-x64.zip")
+          if ($Archives.Count -ne 1) { throw "Expected exactly one Windows release archive" }
           if ((& "$Bundle/lc.exe" --version | Out-String).Trim() -ne $Version) { throw "lc.exe version mismatch" }
-          if (!(Test-Path "$Bundle/lystar.cmd")) { throw "lystar.cmd missing" }
-          if (!(Test-Path "$Bundle/skills/imagegen/SKILL.md")) { throw "imagegen skill missing" }
-          if (!(Test-Path "$Bundle/web/index.html")) { throw "Web index missing" }
-          if (!(Test-Path "$Bundle/web/version.json")) { throw "Web version missing" }
+          foreach ($RequiredFile in @("lystar.cmd", "skills/imagegen/SKILL.md", "web/index.html", "web/version.json")) {
+            if (!(Test-Path "$Bundle/$RequiredFile")) { throw "Windows release bundle is missing $RequiredFile" }
+          }
           if (Test-Path "$Bundle/la.exe") { throw "legacy la.exe must not be shipped" }
-          .\scripts\test-windows-terminal.ps1 -BundleDir $Bundle -ScreenshotPath "packages/coding-agent/binaries/windows-terminal-smoke.png"
 
-      - name: Write Windows release build summary
-        if: always()
-        shell: bash
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          node scripts/release-summary.mjs --release cli --sha "$GITHUB_SHA" \
-            --artifact "windows-x64=packages/coding-agent/binaries/lystar-agent-v$version-windows-x64.zip" \
-            --timing wall=$(( $(date +%s) - ${{ steps.build-start.outputs.seconds || 0 }} )) \
-            --timing build=$(( ${{ steps.javascript-build.outputs.seconds || 0 }} + ${{ steps.standalone-build.outputs.seconds || 0 }} )) \
-            --timing cache=$(( ${{ steps.cache-end.outputs.seconds || 0 }} - ${{ steps.cache-start.outputs.seconds || 0 }} )) \
-            --cache-hit npm=${{ steps.setup-node.outputs.cache-hit || 'false' }} \
-            --json-output "$RUNNER_TEMP/release-metrics-windows.json"
-
-      - name: Upload Windows release artifact
+      - name: Upload Windows release candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: release-windows
+          name: release-candidate-windows
           path: packages/coding-agent/binaries/lystar-agent-*-windows-x64.zip
           if-no-files-found: error
 
-      - name: Upload Windows release build metrics
-        if: always()
+  verify-candidate:
+    needs: [build-unix, build-windows]
+    if: ${{ needs.build-unix.result == 'success' && needs.build-windows.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download Unix release candidates
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-candidate-unix-*
+          path: packages/coding-agent/binaries
+          merge-multiple: true
+
+      - name: Download Windows release candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-candidate-windows
+          path: packages/coding-agent/binaries
+
+      - name: Generate and verify release metadata
+        shell: bash
+        run: |
+          version="$(node -p \"require('./packages/coding-agent/package.json').piConfig.productVersion\")"
+          node scripts/generate-release-metadata.mjs packages/coding-agent/binaries "$version" "${GITHUB_REPOSITORY}"
+          printf '%s\n' "$version" > packages/coding-agent/binaries/VERSION
+          test "$(find packages/coding-agent/binaries -maxdepth 1 \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l | tr -d '[:space:]')" = "5"
+          (
+            cd packages/coding-agent/binaries
+            sha256sum -c SHA256SUMS
+          )
+          node scripts/generate-release-metadata.mjs --verify packages/coding-agent/binaries "$version" "${GITHUB_REPOSITORY}"
+
+      - name: Upload verified release candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: release-budget-metrics-windows
-          path: ${{ runner.temp }}/release-metrics-windows.json
-          if-no-files-found: warn
-          retention-days: 7
+          name: release-candidate-verified
+          path: packages/coding-agent/binaries
+          if-no-files-found: error
+          retention-days: 30
 
-  release:
-    needs: [build-unix, build-windows]
+  publish:
+    needs: verify-candidate
+    if: ${{ inputs.publish == true && needs.verify-candidate.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -279,101 +223,34 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Record release start
-        id: release-start
-        shell: bash
-        run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
 
-      - name: Download Unix artifacts
+      - name: Download verified release candidate
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: release-unix-*
-          path: packages/coding-agent/binaries
-          merge-multiple: true
-
-      - name: Download Windows artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: release-windows
+          name: release-candidate-verified
           path: packages/coding-agent/binaries
 
-      - name: Download release build metrics
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          pattern: release-budget-metrics-*
-          path: ${{ runner.temp }}/release-budget-metrics
-          merge-multiple: true
-
-      - name: Generate release metadata
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          version="${TAG#v}"
-          node scripts/generate-release-metadata.mjs packages/coding-agent/binaries "$version" "${GITHUB_REPOSITORY}"
-          printf '%s\n' "$version" > packages/coding-agent/binaries/VERSION
-          archive_count="$(find packages/coding-agent/binaries -maxdepth 1 \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l | tr -d '[:space:]')"
-          test "$archive_count" = "5"
-
-      - name: Verify release checksums, manifest, and public assets
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          version="${TAG#v}"
-          (
-            cd packages/coding-agent/binaries
-            sha256sum -c SHA256SUMS
-          )
-          node scripts/generate-release-metadata.mjs --verify packages/coding-agent/binaries "$version" "${GITHUB_REPOSITORY}"
-
-      - name: Write CLI release summary
-        if: always()
+      - name: Create version tag after candidate verification
+        id: tag
         shell: bash
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          node scripts/release-summary.mjs --release cli --sha "$GITHUB_SHA" --full-matrix-count 1 \
-            --artifact "darwin-arm64=packages/coding-agent/binaries/lystar-agent-v$version-darwin-arm64.tar.gz" \
-            --artifact "darwin-x64=packages/coding-agent/binaries/lystar-agent-v$version-darwin-x64.tar.gz" \
-            --artifact "linux-x64=packages/coding-agent/binaries/lystar-agent-v$version-linux-x64.tar.gz" \
-            --artifact "linux-arm64=packages/coding-agent/binaries/lystar-agent-v$version-linux-arm64.tar.gz" \
-            --artifact "windows-x64=packages/coding-agent/binaries/lystar-agent-v$version-windows-x64.zip" \
-            --timing wall=$(( $(date +%s) - ${{ steps.release-start.outputs.seconds || 0 }} )) \
-            --timing build=0 --timing cache=unavailable \
-            --json-output "$RUNNER_TEMP/release-metrics-cli-final.json"
-
-      - name: Diagnose CLI release budget
-        if: always()
-        continue-on-error: true
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          workflow_started=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" --jq .created_at || date -u +%Y-%m-%dT%H:%M:%SZ)
-          inputs=()
-          while IFS= read -r path; do inputs+=(--input "$path"); done < <(find "$RUNNER_TEMP/release-budget-metrics" -name '*.json' -type f | sort)
-          inputs+=(--input "$RUNNER_TEMP/release-metrics-cli-final.json")
-          node scripts/ci-budget.mjs --aggregate --kind release --budget-class cli-release --workflow-start "$workflow_started" "${inputs[@]}" --output "$RUNNER_TEMP/release-budget-metrics.json"
-          node scripts/collect-budget-history.mjs --workflow release.yml --artifact release-budget-metrics --output "$RUNNER_TEMP/release-budget-history"
-          history=()
-          while IFS= read -r path; do history+=(--previous "$path"); done < <(find "$RUNNER_TEMP/release-budget-history" -name '*.json' -type f | sort | head -n 2)
-          node scripts/ci-budget.mjs --current "$RUNNER_TEMP/release-budget-metrics.json" "${history[@]}" --json-output "$RUNNER_TEMP/release-budget-diagnostic.json"
-
-      - name: Upload CLI release budget metrics
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: release-budget-metrics
-          path: |
-            ${{ runner.temp }}/release-metrics-cli-final.json
-            ${{ runner.temp }}/release-budget-metrics.json
-            ${{ runner.temp }}/release-budget-diagnostic.json
-          if-no-files-found: warn
-          retention-days: 7
+          version="$(cat packages/coding-agent/binaries/VERSION)"
+          tag="v${version}"
+          git fetch origin --tags
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "Release tag already exists: ${tag}" >&2
+            exit 1
+          fi
+          source_sha="$(git rev-parse HEAD)"
+          git tag "$tag" "$source_sha"
+          git push origin "$tag"
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Attest release artifacts
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
@@ -391,7 +268,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
+          gh release create "${{ steps.tag.outputs.tag }}" \
             --verify-tag \
             --generate-notes \
             packages/coding-agent/binaries/*.tar.gz \

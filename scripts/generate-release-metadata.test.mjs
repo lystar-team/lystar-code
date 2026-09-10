@@ -85,13 +85,17 @@ test("CLI release metadata verifies the final ten public assets", () => {
 	}
 });
 
-test("CLI release workflow verifies final assets before attestation and publishing", () => {
+test("CLI release workflow verifies a candidate before tagging and publishing", () => {
 	const document = parseDocument(workflow);
 	assert.deepEqual(document.errors, []);
-	const jobs = document.toJS().jobs;
-	const steps = jobs.release.steps;
-	const unixUpload = jobs["build-unix"].steps.find((step) => step.name === "Upload Unix release artifact");
-	const windowsUpload = jobs["build-windows"].steps.find((step) => step.name === "Upload Windows release artifact");
+	const parsed = document.toJS();
+	assert.deepEqual(parsed.on.workflow_dispatch.inputs.publish.type, "boolean");
+	assert.equal(parsed.on.workflow_dispatch.inputs.ref.default, "main");
+	assert.equal(parsed.jobs["verify-ci"], undefined);
+	assert.equal(parsed.jobs["build-unix"].strategy["fail-fast"], true);
+	const jobs = parsed.jobs;
+	const unixUpload = jobs["build-unix"].steps.find((step) => step.name === "Upload Unix release candidate");
+	const windowsUpload = jobs["build-windows"].steps.find((step) => step.name === "Upload Windows release candidate");
 	assert.deepEqual(
 		jobs["build-unix"].strategy.matrix.include.map(({ platform, runner }) => [platform, runner]),
 		[
@@ -103,15 +107,14 @@ test("CLI release workflow verifies final assets before attestation and publishi
 	);
 	assert.equal(unixUpload.with.path, "packages/coding-agent/binaries/lystar-agent-*-${{ matrix.platform }}.tar.gz");
 	assert.equal(windowsUpload.with.path, "packages/coding-agent/binaries/lystar-agent-*-windows-x64.zip");
-	const unixVerification = jobs["build-unix"].steps.find((step) => step.name === "Verify Unix release artifact");
-	const windowsVerification = jobs["build-windows"].steps.find((step) => step.name === "Verify Windows binaries");
-	assert.match(unixVerification.run, /lystar-agent\/lc/);
-	assert.match(windowsVerification.run, /lc\.exe/);
-	const generated = steps.findIndex((step) => step.name === "Generate release metadata");
-	const verified = steps.findIndex((step) => step.name === "Verify release checksums, manifest, and public assets");
-	const attested = steps.findIndex((step) => step.name === "Attest release artifacts");
-	const published = steps.findIndex((step) => step.name === "Publish GitHub release");
-	assert.ok(generated >= 0 && generated < verified && verified < attested && attested < published);
-	assert.match(steps[verified].run, /sha256sum -c SHA256SUMS/);
-	assert.match(steps[verified].run, /generate-release-metadata\.mjs --verify/);
+	const candidate = jobs["verify-candidate"];
+	assert.match(candidate.if, /build-unix\.result == 'success'/);
+	assert.match(candidate.steps.find((step) => step.name === "Generate and verify release metadata").run, /sha256sum -c SHA256SUMS/);
+	assert.match(candidate.steps.find((step) => step.name === "Generate and verify release metadata").run, /generate-release-metadata\.mjs --verify/);
+	assert.equal(jobs.publish.needs, "verify-candidate");
+	assert.match(jobs.publish.if, /inputs\.publish == true/);
+	assert.match(jobs.publish.steps.find((step) => step.name === "Create version tag after candidate verification").run, /git tag/);
+	assert.match(jobs.publish.steps.find((step) => step.name === "Create version tag after candidate verification").run, /git push origin/);
+	assert.doesNotMatch(workflow, /push:\s*\n\s*tags:/);
+	assert.doesNotMatch(workflow, /ci-budget|release-summary|release-budget-metrics/);
 });

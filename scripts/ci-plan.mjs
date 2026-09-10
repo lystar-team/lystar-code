@@ -2,18 +2,45 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-export const GATES = ["source", "core", "coding", "platform", "web", "release"];
+export const GATES = ["validate", "core", "coding", "web", "platform"];
+
+export const TEST_PACKAGES = Object.freeze({
+	core: [
+		"@earendil-works/chord",
+		"@earendil-works/pi-tui",
+		"@earendil-works/pi-telemetry",
+		"@earendil-works/pi-ai",
+		"@earendil-works/pi-agent-core",
+		"@earendil-works/pi-protocol",
+		"@earendil-works/pi-client",
+		"@earendil-works/pi-session-backend-sqlite-node",
+		"@earendil-works/pi-server",
+	],
+	coding: ["@earendil-works/pi-coding-agent"],
+	web: [
+		"@lystar/code-web-protocol",
+		"@lystar/code-web-runtime",
+		"@lystar/code-web",
+		"@lystar/code-web-gateway",
+	],
+});
 
 const FULL_GATES = new Set(GATES);
-const PUBLIC_PACKAGES = new Set([
-	"ai",
-	"agent",
-	"client",
-	"protocol",
-	"server",
-	"session-backends",
-	"telemetry",
-	"tui",
+const PACKAGE_GROUPS = new Map([
+	["chord", ["core", "@earendil-works/chord"]],
+	["telemetry", ["core", "@earendil-works/pi-telemetry"]],
+	["ai", ["core", "@earendil-works/pi-ai"]],
+	["agent", ["core", "@earendil-works/pi-agent-core"]],
+	["protocol", ["core", "@earendil-works/pi-protocol"]],
+	["client", ["core", "@earendil-works/pi-client"]],
+	["server", ["core", "@earendil-works/pi-server"]],
+	["tui", ["core", "@earendil-works/pi-tui"]],
+	["coding-agent", ["coding", "@earendil-works/pi-coding-agent"]],
+	["web", ["web", "@lystar/code-web"]],
+	["web-runtime", ["web", "@lystar/code-web-runtime"]],
+	["web-protocol", ["web", "@lystar/code-web-protocol"]],
+	["web-gateway", ["web", "@lystar/code-web-gateway"]],
+	["session-backends", ["core", "@earendil-works/pi-session-backend-sqlite-node"]],
 ]);
 
 function emptyPlan(mode) {
@@ -21,6 +48,7 @@ function emptyPlan(mode) {
 		mode,
 		wouldRun: Object.fromEntries(GATES.map((gate) => [gate, false])),
 		reasons: Object.fromEntries(GATES.map((gate) => [gate, []])),
+		tests: Object.fromEntries(Object.keys(TEST_PACKAGES).map((group) => [group, []])),
 	};
 }
 
@@ -39,14 +67,46 @@ function mark(plan, gates, reason) {
 	}
 }
 
+function addTests(plan, group, packageName, reason) {
+	if (!Object.hasOwn(plan.tests, group)) throw new Error(`Unknown test group: ${group}`);
+	if (!plan.tests[group].includes(packageName)) plan.tests[group].push(packageName);
+	mark(plan, ["validate", group], reason);
+}
+
 function markFull(plan, reason) {
 	mark(plan, FULL_GATES, reason);
+	for (const [group, packages] of Object.entries(TEST_PACKAGES)) {
+		for (const packageName of packages) addTests(plan, group, packageName, reason);
+	}
+}
+
+function markValidation(plan, reason) {
+	mark(plan, ["validate"], reason);
 }
 
 function isDocumentation(path) {
 	return path === "README.md" || path.startsWith("docs/") || path.startsWith("features/") || path.endsWith(".md");
 }
 
+function isReleaseScript(path) {
+	return [
+		"scripts/build-binaries.sh",
+		"scripts/build-windows-release.ps1",
+		"scripts/build-windows-terminal.ps1",
+		"scripts/generate-release-metadata.mjs",
+		"scripts/lystar-bun-cli.mjs",
+		"scripts/prepare-release-package.mjs",
+		"scripts/test-install-ps1.ps1",
+		"scripts/test-install-sh.sh",
+		"scripts/test-windows-managed-bash.mjs",
+		"scripts/test-windows-terminal.ps1",
+		"scripts/test-windows-web.mjs",
+	].includes(path);
+}
+
+function isPlatformScript(path) {
+	return path === "scripts/run-coding-agent-platform-tests.mjs";
+}
 function classifyPath(plan, path, status) {
 	if (status === "D") {
 		markFull(plan, `deleted file: ${path}`);
@@ -54,12 +114,17 @@ function classifyPath(plan, path, status) {
 	}
 	if (isDocumentation(path)) return;
 
+	if (path.startsWith(".github/")) {
+		markValidation(plan, `workflow configuration: ${path}`);
+		return;
+	}
+
 	if (
 		path === "package-lock.json" ||
 		path === "package.json" ||
+		path.endsWith("/package.json") ||
 		path.endsWith("/npm-shrinkwrap.json") ||
 		path.startsWith("packages/coding-agent/install-lock/") ||
-		path.startsWith(".github/") ||
 		path.startsWith(".git/") ||
 		path.startsWith(".npmrc") ||
 		path.startsWith("tsconfig") ||
@@ -70,11 +135,24 @@ function classifyPath(plan, path, status) {
 	}
 
 	if (path.startsWith("scripts/")) {
-		if (path.startsWith("scripts/ci-plan") || path.startsWith("scripts/ci-summary")) {
-			mark(plan, ["source"], `CI script: ${path}`);
+		if (path.startsWith("scripts/ci-plan") || path === "scripts/extended-quality-workflow.test.mjs") {
+			markValidation(plan, `CI planner or workflow test: ${path}`);
 			return;
 		}
-		markFull(plan, `build or installer script: ${path}`);
+		if (isReleaseScript(path)) {
+			mark(plan, ["validate", "platform"], `release script: ${path}`);
+			return;
+		}
+		if (isPlatformScript(path)) {
+			mark(plan, ["validate", "platform"], `platform test script: ${path}`);
+			return;
+		}
+		markValidation(plan, `repository script: ${path}`);
+		return;
+	}
+
+	if (path.startsWith("packages/session-backends/sqlite-node/")) {
+		addTests(plan, "core", "@earendil-works/pi-session-backend-sqlite-node", `workspace: ${path}`);
 		return;
 	}
 
@@ -84,33 +162,25 @@ function classifyPath(plan, path, status) {
 		return;
 	}
 
-	const packageName = packageMatch[1];
-	if (PUBLIC_PACKAGES.has(packageName)) {
-		markFull(plan, `public workspace: packages/${packageName}`);
-		return;
-	}
-	if (packageName === "coding-agent") {
-		mark(plan, ["source", "coding", "web"], `Coding Agent: ${path}`);
-		if (/windows|win32|\.ps1$/i.test(path)) mark(plan, ["platform"], `Windows path: ${path}`);
-		return;
-	}
-	if (packageName === "web" || packageName === "web-runtime" || packageName === "web-protocol" || packageName === "web-gateway") {
-		mark(plan, ["source", "web"], `Web workspace: ${path}`);
-		return;
-	}
-	if (packageName === "evals") {
-		mark(plan, ["source"], `evaluation workspace: ${path}`);
+	if (packageMatch[1] === "evals") {
+		markValidation(plan, `evaluation workspace: ${path}`);
 		return;
 	}
 
-	markFull(plan, `unknown workspace: ${path}`);
+	const packageInfo = PACKAGE_GROUPS.get(packageMatch[1]);
+	if (!packageInfo) {
+		markFull(plan, `unknown workspace: ${path}`);
+		return;
+	}
+
+	const [group, packageName] = packageInfo;
+	addTests(plan, group, packageName, `workspace: ${path}`);
+	if (/windows|win32|\.ps1$/i.test(path)) {
+		mark(plan, ["platform"], `Windows path: ${path}`);
+	}
 }
 
-/**
- * Maps changed files to the existing CI gates. Unknown and repository-wide
- * changes deliberately select every gate so the caller can fail open.
- */
-export function createPlan(changes, mode = "observe") {
+export function createPlan(changes, mode = "enforce") {
 	if (mode !== "observe" && mode !== "enforce") throw new Error(`Unsupported CI plan mode: ${mode}`);
 	const plan = emptyPlan(mode);
 	if (!Array.isArray(changes) || changes.length === 0) {
@@ -126,10 +196,13 @@ export function createPlan(changes, mode = "observe") {
 			classifyPath(plan, path, entry.status ?? "M");
 		}
 	}
-	return {
-		...plan,
-		execution: Object.fromEntries(GATES.map((gate) => [gate, mode === "observe" || plan.wouldRun[gate]])),
-	};
+
+	const execution = Object.fromEntries(GATES.map((gate) => [gate, mode === "observe" || plan.wouldRun[gate]]));
+	const tests = Object.fromEntries(Object.entries(plan.tests).map(([group, packages]) => [
+		group,
+		mode === "observe" ? [...TEST_PACKAGES[group]] : packages,
+	]));
+	return { ...plan, execution, tests };
 }
 
 export function parseNameStatus(output) {
@@ -186,21 +259,25 @@ function parseArguments(argv) {
 		else if (argument === "--json") options.jsonPath = value;
 		else if (argument === "--github-output") options.githubOutput = value;
 		else throw new Error(`Unknown argument: ${argument}`);
-		if (argument !== "--changed-file") index++;
-		else index++;
+		index++;
 	}
 	return options;
 }
 
 function writeGithubOutput(path, plan) {
-	const lines = GATES.map((gate) => `${gate}=${plan.wouldRun[gate]}`);
-	lines.push(`mode=${plan.mode}`, `plan=${JSON.stringify(plan)}`);
+	const lines = GATES.map((gate) => `${gate}=${plan.execution[gate]}`);
+	lines.push(
+		`core_tests=${JSON.stringify(plan.tests.core)}`,
+		`web_tests=${JSON.stringify(plan.tests.web)}`,
+		`mode=${plan.mode}`,
+		`plan=${JSON.stringify(plan)}`,
+	);
 	writeFileSync(path, `${lines.join("\n")}\n`, { flag: "a" });
 }
 
 export function runCli(argv = process.argv.slice(2)) {
 	const options = parseArguments(argv);
-	const mode = options.mode ?? process.env.CI_PLAN_MODE ?? "observe";
+	const mode = options.mode ?? process.env.CI_PLAN_MODE ?? "enforce";
 	let changes = options.changedFiles;
 	let fallbackReason;
 	if (options.base || options.head) {
@@ -214,9 +291,8 @@ export function runCli(argv = process.argv.slice(2)) {
 	const plan = createPlan(changes, mode);
 	if (fallbackReason) {
 		for (const gate of GATES) {
-			if (!plan.reasons[gate].includes(`git diff failed: ${fallbackReason}`)) {
-				plan.reasons[gate].push(`git diff failed: ${fallbackReason}`);
-			}
+			const reason = `git diff failed: ${fallbackReason}`;
+			if (!plan.reasons[gate].includes(reason)) plan.reasons[gate].push(reason);
 		}
 	}
 	const serialized = `${JSON.stringify(plan, null, 2)}\n`;

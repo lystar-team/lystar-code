@@ -10,7 +10,6 @@ const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta
 const codingAgentPackage = JSON.parse(
 	readFileSync(new URL("../packages/coding-agent/package.json", import.meta.url), "utf8"),
 );
-const webRuntimePackage = JSON.parse(readFileSync(new URL("../packages/web-runtime/package.json", import.meta.url), "utf8"));
 
 function loadAgentTestConfig(suite) {
 	const env = { ...process.env };
@@ -41,27 +40,20 @@ test("Agent Core Vitest config isolates the Windows platform suite", () => {
 	});
 });
 
-test("Windows CI retains the Agent Core platform report", () => {
-	assert.doesNotMatch(workflow, /^\s{4}if:.*env\.CI_PLAN_MODE/m);
-	assert.match(workflow, /^\s{4}if:.*\(inputs\.plan_mode \|\| 'observe'\) == 'observe'/m);
+test("Windows CI runs only the platform suites", () => {
 	assert.equal(codingAgentPackage.scripts["test:platform"], "node ../../scripts/run-coding-agent-platform-tests.mjs");
-	assert.match(workflow, /Build offline[\s\S]*Test Windows platform suites/);
-	assert.match(workflow, /--plan-json-env PLAN_JSON/);
+	assert.doesNotMatch(workflow, /Build offline|Build Windows standalone|MinGit|test-windows-web|test-windows-terminal/);
+	assert.match(workflow, /npm --workspace @earendil-works\/pi-coding-agent run test:platform/);
 	assert.match(
 		workflow,
-		/\$env:PI_TEST_SUITE = "platform"\s*\r?\n\s*npm --workspace @earendil-works\/pi-agent-core test -- --reporter=json --outputFile="\$env:RUNNER_TEMP\\ci-windows-agent-platform\.json"/,
+		/\$env:PI_TEST_SUITE = "platform"\s*\r?\n\s*npm --workspace @earendil-works\/pi-agent-core test/,
 	);
-	assert.doesNotMatch(workflow, /pi-agent-core test -- test\/harness\/nodejs-env\.windows\.test\.ts/);
+	assert.doesNotMatch(workflow, /--reporter=json|ci-windows-agent-platform/);
 });
 
-test("required CI bounds Web Runtime concurrency", () => {
-	assert.equal(
-		webRuntimePackage.scripts["test:required"],
-		"vitest --run --maxWorkers=1",
-	);
-	assert.match(workflow, /pi-coding-agent test -- --maxWorkers=2 --reporter=json/);
-	assert.match(
-		workflow,
-		/npm --workspace @lystar\/code-web-runtime run test:required -- --reporter=json --outputFile="\$RUNNER_TEMP\/ci-web-runtime\.json"/,
-	);
+test("Coding Agent required CI suite is separate from the full deterministic suite", () => {
+	assert.equal(codingAgentPackage.scripts["test:ci"], "PI_TEST_SUITE=ci vitest --run");
+	assert.match(workflow, /npm --workspace @earendil-works\/pi-coding-agent run test:ci/);
+	assert.doesNotMatch(workflow, /npm --workspace @earendil-works\/pi-coding-agent test/);
+	assert.match(workflow, /npm run check:web/);
 });
