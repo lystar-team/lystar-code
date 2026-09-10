@@ -103,8 +103,19 @@ try {
 	}
 
 	const harnessEnv = new NodeExecutionEnv({ cwd, shellPath: bashPath, shellEnv: getShellEnv(managedEnv) });
-	const harnessResult = await harnessEnv.exec("git --version && printf harness-ok", undefined, BACKGROUND_CONTEXT);
-	if (!harnessResult.ok || harnessResult.value.exitCode !== 0 || !harnessResult.value.stdout.includes("harness-ok")) {
+	let harnessOutput = "";
+	const harnessResult = await harnessEnv.exec(
+		"git --version && printf harness-ok",
+		{
+			onUpdate: (update) => {
+				if (update.kind === "replace") harnessOutput = update.output.text;
+				else if (update.kind === "append") harnessOutput += update.text;
+				else if (update.kind === "slide") harnessOutput = update.text;
+			},
+		},
+		BACKGROUND_CONTEXT,
+	);
+	if (!harnessResult.ok || harnessResult.value.exitCode !== 0 || !harnessOutput.includes("harness-ok")) {
 		throw new Error("Agent harness did not use the injected managed shell runtime");
 	}
 	await harnessEnv.cleanup();
