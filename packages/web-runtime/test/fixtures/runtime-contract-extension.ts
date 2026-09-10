@@ -2,29 +2,45 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-work
 import { Type } from "typebox";
 import type { ExtensionAPI } from "../../src/runtime-adapter.ts";
 
-const scenario = process.env.LYSTAR_WEB_CONTRACT_SCENARIO ?? "text";
-
 export default function runtimeContractExtension(pi: ExtensionAPI): void {
+	const scenario = process.env.LYSTAR_WEB_CONTRACT_SCENARIO ?? "text";
 	const faux = fauxProvider({
 		api: "lystar-contract-faux-api",
 		provider: "lystar-contract-faux",
 		models: [{ id: "contract-1", name: "Contract Model", reasoning: true }],
-		tokensPerSecond: scenario === "abort" ? 20_000 : undefined,
+		tokensPerSecond: scenario === "abort" ? 100 : undefined,
 	});
 
+	const isSessionNameRequest = (context: { systemPrompt?: string }): boolean =>
+		context.systemPrompt?.includes("会话命名助手") === true;
 	if (scenario === "tool") {
+		let toolCallReturned = false;
 		faux.setResponses([
-			fauxAssistantMessage(fauxToolCall("contract_echo", { text: "hello" }), { stopReason: "toolUse" }),
-			fauxAssistantMessage("tool complete"),
+			(context) => {
+				if (isSessionNameRequest(context)) return fauxAssistantMessage("自动标题");
+				toolCallReturned = true;
+				return fauxAssistantMessage(fauxToolCall("contract_echo", { text: "hello" }), { stopReason: "toolUse" });
+			},
+			(context) => {
+				if (isSessionNameRequest(context)) return fauxAssistantMessage("自动标题");
+				if (toolCallReturned) return fauxAssistantMessage("tool complete");
+				toolCallReturned = true;
+				return fauxAssistantMessage(fauxToolCall("contract_echo", { text: "hello" }), { stopReason: "toolUse" });
+			},
+			(context) =>
+				isSessionNameRequest(context) ? fauxAssistantMessage("自动标题") : fauxAssistantMessage("tool complete"),
 		]);
 	} else if (scenario === "abort") {
-		faux.setResponses([fauxAssistantMessage("x".repeat(20_000))]);
+		const response = (context: { systemPrompt?: string }) =>
+			isSessionNameRequest(context) ? fauxAssistantMessage("自动标题") : fauxAssistantMessage("x".repeat(20_000));
+		faux.setResponses([response, response]);
 	} else if (scenario === "resources") {
-		faux.setResponses([
-			fauxAssistantMessage("prompt expanded"),
-			fauxAssistantMessage("自动标题"),
-			fauxAssistantMessage("skill expanded"),
-		]);
+		const resourceResponses = ["prompt expanded", "skill expanded"];
+		const response = (context: { systemPrompt?: string }) =>
+			isSessionNameRequest(context)
+				? fauxAssistantMessage("自动标题")
+				: fauxAssistantMessage(resourceResponses.shift() ?? "skill expanded");
+		faux.setResponses([response, response, response, response]);
 	} else {
 		faux.setResponses([fauxAssistantMessage("text complete")]);
 	}

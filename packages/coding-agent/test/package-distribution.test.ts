@@ -22,7 +22,7 @@ describe("package distribution entrypoints", () => {
 		expect(packageJson.bin.lystar).toBe("dist/cli.js");
 		expect(packageJson.main).toBe("./dist/index.js");
 		expect(packageJson.exports["."].import).toBe("./dist/index.js");
-		expect(packageJson.exports["./client"].import).toBe("./dist/client/index.js");
+		expect(packageJson.exports["./client"]).toEqual({ source: "./src/client/index.ts" });
 		expect(packageJson.exports["./rpc-entry"].import).toBe("./dist/bundle/rpc-entry.js");
 	});
 

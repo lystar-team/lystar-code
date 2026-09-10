@@ -108,20 +108,20 @@ jobs:
           npm run test:scripts
           echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
 
-      - name: Verify source
-        id: check
-        shell: bash
-        run: |
-          started=$SECONDS
-          npm run check
-          echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
-
       - name: Build offline
         id: build
         shell: bash
         run: |
           started=$SECONDS
           npm run build:offline
+          echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
+
+      - name: Verify source
+        id: check
+        shell: bash
+        run: |
+          started=$SECONDS
+          npm run check
           echo "seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
 
       - name: Test Unix installer
@@ -447,6 +447,10 @@ jobs:
       - name: Build Windows standalone release
         shell: powershell
         run: .\scripts\build-windows-release.ps1 -Repository "${env:GITHUB_REPOSITORY}"
+
+      - name: Smoke test lc web and Web Runtime on Windows
+        shell: powershell
+        run: node scripts/test-windows-web.mjs --bundle-dir packages/coding-agent/binaries/windows-x64/lystar-agent
 
       - name: Download pinned MinGit archive on cache miss
         if: steps.mingit-cache.outputs.cache-hit != 'true'

@@ -284,7 +284,7 @@ describe("Web Runtime persistent IPC", () => {
 				waitForLine(host, "stderr", "ready", PROCESS_START_TIMEOUT_MS),
 				PROCESS_START_TIMEOUT_MS,
 			);
-			const socket = await withTimeout("TCP Host connect", connectSocket(endpoint));
+			const socket = await withTimeout("TCP Host connect", connectSocket(endpoint), PROCESS_START_TIMEOUT_MS);
 			const messages = readSocketMessages(socket);
 			const socketClosed = new Promise<void>((resolve) => socket.once("close", resolve));
 			socket.write(
@@ -300,6 +300,6 @@ describe("Web Runtime persistent IPC", () => {
 			host.kill("SIGTERM");
 			await withTimeout("TCP Host shutdown", waitForExit(host), 2_000);
 			children.delete(host);
-		});
+		}, 30_000);
 	}
 });

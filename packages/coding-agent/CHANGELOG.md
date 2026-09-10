@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### New Features
+
+- **Web 界面重磅升级** — LYStar Code 首次提供完整 Web 工作台；此前版本没有 Web 界面。新增 Web Runtime 和 Web Gateway，支持在浏览器中管理项目与会话、发送 Prompt、查看流式回复和工具执行过程。
+- **项目与会话工作台** — 支持项目组、会话树、分页恢复、运行面板、任务审阅、Git Diff、文件树和会话同步。
+- **资源预览与在线编辑** — 支持资源预览、图片附件、Office 文件预览、代码高亮、上下文压缩卡片和在线文本编辑。
+- **Web 运行与管理链路** — 增加 Windows Web Runtime/Gateway 启动、诊断、实例锁、协议升级、资源写入和会话恢复能力；新增 `web`、`web-runtime` 和 `close-old` 命令。
+- **Web 会话交互体验** — 完善会话刷新、订阅时序、滚动定位、工具状态、图片附件、Thinking 展示和资源加载处理。
+
 ## [0.85.1-lystar.1] - 2026-09-09
 
 ### 上游同步

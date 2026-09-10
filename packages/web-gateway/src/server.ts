@@ -980,12 +980,14 @@ export class WebGatewayServer {
 				(left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id),
 			);
 			for (const session of uniqueSessions) {
-				this.sessions.set(session.id, {
-					id: session.id,
-					path: session.path,
-					projectId: project.id,
-					cwd: session.cwd,
-				});
+				if (!this.sessions.has(session.id)) {
+					this.sessions.set(session.id, {
+						id: session.id,
+						path: session.path,
+						projectId: project.id,
+						cwd: session.cwd,
+					});
+				}
 				this.sessionIdsByPath.set(session.path, session.id);
 			}
 			await this.registry.setRecentSessions(project.id, uniqueSessions);

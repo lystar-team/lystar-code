@@ -825,7 +825,11 @@ describe("CodingAgentRuntimeAdapter", () => {
 		const agentDir = join(tempDir, "agent");
 		const cwd = join(tempDir, "project");
 		const faux = registerFauxProvider();
-		faux.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("second")]);
+		faux.setResponses([
+			(context) => fauxAssistantMessage(context.systemPrompt?.includes("会话命名助手") ? "自动标题" : "first"),
+			(context) => fauxAssistantMessage(context.systemPrompt?.includes("会话命名助手") ? "自动标题" : "second"),
+			(context) => fauxAssistantMessage(context.systemPrompt?.includes("会话命名助手") ? "自动标题" : "forked"),
+		]);
 		const model = faux.getModel();
 		for (const dir of [agentDir, cwd]) mkdirSync(dir, { recursive: true });
 		writeFileSync(
