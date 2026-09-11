@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Added OpenAI image model registrations for GPT Image 2.5 Flare and GPT Image 2.5 Sunburst alongside GPT Image 2.
+
 ## [0.85.1] - 2026-09-05
 
 ### Added

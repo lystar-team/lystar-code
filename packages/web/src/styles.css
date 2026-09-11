@@ -309,6 +309,54 @@ div:has(> .prompt-input-shell [data-slot="input-group-control"]:focus-visible) >
 	background: color-mix(in srgb, var(--brand) 18%, transparent);
 }
 
+@media (horizontal-viewport-segments: 2) {
+	[data-settings-root] > aside {
+		width: env(viewport-segment-width 0 0) !important;
+		flex-basis: env(viewport-segment-width 0 0) !important;
+	}
+
+	[data-settings-content] {
+		width: env(viewport-segment-width 1 0) !important;
+		flex: 0 0 env(viewport-segment-width 1 0) !important;
+		margin-left: calc(env(viewport-segment-left 1 0) - env(viewport-segment-width 0 0));
+	}
+
+	[data-settings-content] [class~="sm:flex-row"] {
+		flex-direction: column !important;
+	}
+
+	[data-settings-content] [class~="sm:items-center"] {
+		align-items: stretch !important;
+	}
+
+	[data-settings-content] [class~="sm:justify-between"] {
+		justify-content: flex-start !important;
+	}
+
+	[data-settings-content] [class~="sm:grid-cols-2"],
+	[data-settings-content] [class~="sm:grid-cols-3"],
+	[data-settings-content] [class~="sm:grid-cols-4"],
+	[data-settings-content] [class~="md:grid-cols-2"],
+	[data-settings-content] [class~="lg:grid-cols-2"],
+	[data-settings-content] [class~="lg:grid-cols-4"] {
+		grid-template-columns: minmax(0, 1fr) !important;
+	}
+
+	[data-settings-content] [class~="sm:p-12"],
+	[data-settings-content] [class~="lg:p-16"] {
+		padding: 1.25rem !important;
+	}
+
+	[data-settings-content] [class~="sm:mb-12"] {
+		margin-bottom: 2rem !important;
+	}
+
+	[data-settings-content] [class~="sm:text-4xl"] {
+		font-size: 1.5rem !important;
+		line-height: 2rem !important;
+	}
+}
+
 @media (prefers-reduced-motion: reduce) {
 	*,
 	*::before,

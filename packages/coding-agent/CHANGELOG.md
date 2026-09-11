@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added deterministic Flare, Sunburst, and GPT Image 2 selection for the built-in image generation Tool, including semantic profiles and strict explicit-model routing.
+
+### Fixed
+
+- Kept Web image generation cards visible through progress, completion, failure, refresh, and expired-reference recovery.
+
 ## [0.85.1-lystar.6] - 2026-09-11
 
 ### Fixed

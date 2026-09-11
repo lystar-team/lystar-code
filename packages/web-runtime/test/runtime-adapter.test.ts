@@ -516,6 +516,60 @@ describe("CodingAgentRuntimeAdapter", () => {
 		]);
 	});
 
+	it("projects image generation stages without placing image bytes in progress summaries", () => {
+		const start = {
+			type: "tool_execution_start",
+			toolCallId: "image-1",
+			toolName: "image_gen",
+			args: { prompt: "a red circle", model: "auto", profile: "standard" },
+		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>;
+		const update = {
+			type: "tool_execution_update",
+			toolCallId: "image-1",
+			toolName: "image_gen",
+			args: start.args,
+			partialResult: { content: [{ type: "text", text: "正在使用 gpt-image-2.5-flare 生成图片" }] },
+		} as Extract<AgentSessionEvent, { type: "tool_execution_update" }>;
+		const end = {
+			type: "tool_execution_end",
+			toolCallId: "image-1",
+			toolName: "image_gen",
+			result: {
+				content: [
+					{ type: "text", text: "Generated image saved to /tmp/image.png." },
+					{ type: "image", data: "A".repeat(100_000), mimeType: "image/png" },
+				],
+			},
+			isError: false,
+		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>;
+
+		expect(projectRuntimeProgress(start)).toEqual([
+			{
+				type: "tool_start",
+				toolCallId: "image-1",
+				name: "image_gen",
+				summary: '{"prompt":"a red circle","model":"auto","profile":"standard"}',
+			},
+		]);
+		expect(projectRuntimeProgress(update)).toEqual([
+			{
+				type: "tool_update",
+				toolCallId: "image-1",
+				name: "image_gen",
+				summary: "正在使用 gpt-image-2.5-flare 生成图片",
+			},
+		]);
+		expect(projectRuntimeProgress(end)).toEqual([
+			{
+				type: "tool_end",
+				toolCallId: "image-1",
+				name: "image_gen",
+				status: "success",
+				summary: "Generated image saved to /tmp/image.png.",
+			},
+		]);
+	});
+
 	it("projects bash commands and output snapshots without JSON summaries", () => {
 		const start: Extract<AgentSessionEvent, { type: "tool_execution_start" }> = {
 			type: "tool_execution_start",

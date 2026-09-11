@@ -185,6 +185,7 @@ function webSearchTitle(summary: string): string {
 function toolTitle(tool: ToolBatchTool): string {
 	if (tool.name === "web_search") return webSearchTitle(tool.summary);
 	const parsed = parseToolSummary(tool.summary);
+	if (tool.name === "image_gen" && typeof parsed?.prompt === "string") return parsed.prompt;
 	if (typeof parsed?.command === "string") return parsed.command;
 	for (const key of ["path", "file_path", "filename", "url"]) {
 		if (typeof parsed?.[key] === "string") return parsed[key] as string;
@@ -245,6 +246,7 @@ function toolActionLabel(name: string): string {
 		apply_patch: "应用了补丁",
 		find: "查找了文件",
 		grep: "搜索了内容",
+		image_gen: "生成了图片",
 		web_search: "搜索了网页",
 		ls: "查看了目录",
 	};
@@ -253,6 +255,7 @@ function toolActionLabel(name: string): string {
 
 export function toolBatchSummaryLabel(tools: readonly Pick<ToolBatchTool, "name" | "images">[]): string {
 	const imageCount = tools.reduce((count, tool) => count + (tool.images?.length ?? 0), 0);
+	if (imageCount > 0 && tools.some((tool) => tool.name === "image_gen")) return `已生成 ${imageCount} 张图片`;
 	if (imageCount > 0) return `已查看 ${imageCount} 张图像`;
 	return [...new Set(tools.map((tool) => toolActionLabel(tool.name)))].join("并") || "执行了工具";
 }
@@ -265,6 +268,7 @@ const activeToolLabels: Record<string, string> = {
 	apply_patch: "正在应用补丁",
 	find: "正在查找",
 	grep: "正在搜索",
+	image_gen: "正在生成图片",
 	web_search: "正在搜索网页",
 	ls: "正在查看目录",
 };
@@ -280,6 +284,7 @@ function toolRowActionLabel(name: string, state: ToolBatchState): string {
 		apply_patch: "已应用补丁",
 		find: "已查找",
 		grep: "已搜索",
+		image_gen: "已生成图片",
 		web_search: "已搜索网页",
 		ls: "已查看目录",
 	};
@@ -308,6 +313,19 @@ function batchTitle(tools: ToolBatchTool[]): string {
 }
 
 export function toolRowTitle(tool: ToolBatchTool): string {
+	if (tool.name === "image_gen") {
+		if (tool.images?.length) return `已生成 ${tool.images.length} 张图片`;
+		const title = toolTitle(tool);
+		const action =
+			tool.state === "output-error"
+				? "图片生成失败"
+				: tool.state === "output-cancelled"
+					? "图片生成已取消"
+					: tool.state === "output-interrupted"
+						? "图片生成已中断"
+						: toolRowActionLabel(tool.name, tool.state);
+		return title && title !== tool.name ? `${action} · ${title}` : action;
+	}
 	if (tool.images?.length) return `已查看 ${tool.images.length} 张图像`;
 	const skillName = skillNameFromTool(tool);
 	if (skillName && tool.state === "output-available") return `已加载 ${skillName} 技能`;
@@ -397,26 +415,54 @@ function ImageToolGallery({
 	tools,
 	sessionId,
 	onOpenPath,
+	large = false,
 }: {
 	tools: readonly ToolBatchTool[];
 	sessionId?: string;
 	onOpenPath?: (path: string) => void;
+	large?: boolean;
 }) {
 	return (
 		<div className="min-w-0 pt-1">
 			<ResourceImageGallery
 				items={tools.flatMap((tool) =>
-					(tool.images ?? []).map((image) => ({
+					(tool.images ?? []).map((image, index) => ({
 						id: `${tool.id}:${image.contentRef}`,
 						sessionId,
 						contentRef: image.contentRef,
 						mimeType: image.mimeType,
-						alt: image.alt || toolTitle(tool),
+						alt:
+							image.alt ||
+							(tool.name === "image_gen" ? `生成图片 ${index + 1}` : toolTitle(tool)),
 					})),
 				)}
-				itemClassName="w-40 [&>button]:h-32 [&>button]:w-40 [&>button]:min-h-0 [&>button>img]:h-full [&>button>img]:w-full"
+				itemClassName={
+					large
+						? "w-full max-w-3xl [&>button]:min-h-52 [&>button]:w-full [&>button>img]:max-h-[32rem] [&>button>img]:w-full"
+						: "w-40 [&>button]:h-32 [&>button]:w-40 [&>button]:min-h-0 [&>button>img]:h-full [&>button>img]:w-full"
+				}
 				onOpenPath={onOpenPath}
 			/>
+		</div>
+	);
+}
+
+function ImageGenerationStatus({ tool }: { tool: ToolBatchTool }) {
+	const active = tool.state === "input-available" || tool.state === "input-queued";
+	const failed = tool.state === "output-error" || tool.state === "output-cancelled" || tool.state === "output-interrupted";
+	const text =
+		tool.detail?.trim() ||
+		(active ? "正在生成图片" : failed ? statusLabels[tool.state] : "图片结果正在写入会话");
+	return (
+		<div
+			className={cn(
+				"flex min-h-40 w-full max-w-3xl flex-col items-center justify-center gap-3 rounded-xl border bg-muted/20 px-6 py-8 text-center",
+				failed && "border-destructive/30 bg-destructive/5",
+			)}
+			role={failed ? "alert" : "status"}
+		>
+			{active ? <LoaderCircleIcon className="size-6 animate-spin text-muted-foreground" /> : null}
+			<span className={cn("text-sm text-muted-foreground", failed && "text-destructive")}>{text}</span>
 		</div>
 	);
 }
@@ -451,8 +497,17 @@ function ToolDetail({
 	const plainText = tool.state === "input-available" || tool.state === "input-queued";
 	const title = toolTitle(tool);
 	const imagePreview = tool.images?.length ? (
-		<ImageToolGallery tools={[tool]} sessionId={sessionId} onOpenPath={onOpenPath} />
+		<ImageToolGallery
+			tools={[tool]}
+			sessionId={sessionId}
+			onOpenPath={onOpenPath}
+			large={tool.name === "image_gen"}
+		/>
 	) : null;
+
+	if (tool.name === "image_gen") {
+		return <div className="grid min-w-0 gap-2">{imagePreview ?? <ImageGenerationStatus tool={tool} />}</div>;
+	}
 
 	if (tool.name === "web_search") return <WebSearchToolDetail tool={tool} />;
 
@@ -567,14 +622,22 @@ function ToolBatchRow({
 	const skillName = skillNameFromTool(tool);
 	const stats = diffStats(tool.diff);
 	const hasDetails =
-		tool.name === "web_search"
-			? Boolean(tool.sources?.length)
-			: Boolean(tool.detail || tool.diff || tool.images?.length || tool.inputPreview || tool.sources?.length);
+		tool.name === "image_gen"
+			? true
+			: tool.name === "web_search"
+				? Boolean(tool.sources?.length)
+				: Boolean(tool.detail || tool.diff || tool.images?.length || tool.inputPreview || tool.sources?.length);
 
 	useEffect(() => {
-		if (previousActive.current && !active && resolveAutoCollapse(autoCollapseWhenComplete)) setOpen(false);
+		if (
+			previousActive.current &&
+			!active &&
+			tool.name !== "image_gen" &&
+			resolveAutoCollapse(autoCollapseWhenComplete)
+		)
+			setOpen(false);
 		previousActive.current = active;
-	}, [active, autoCollapseWhenComplete]);
+	}, [active, autoCollapseWhenComplete, tool.name]);
 
 	return (
 		<Collapsible open={open} onOpenChange={setOpen} className={cn("min-w-0", className)}>
@@ -649,18 +712,20 @@ export const ToolBatch = memo(function ToolBatch({
 	const active = tools.some((tool) => tool.state === "input-available" || tool.state === "input-queued");
 	const aggregateState = batchState(tools);
 	const imageGallery = tools.length > 0 && tools.every((tool) => tool.images?.length);
+	const imageGeneration = tools.some((tool) => tool.name === "image_gen");
 	const searchHasSources = tools.length === 1 && tools[0]?.name === "web_search" && Boolean(tools[0].sources?.length);
 	const [open, setOpen] = useControllableState({
-		defaultProp: imageGallery || initialOpen || searchHasSources,
-		prop: imageGallery ? undefined : controlledOpen,
-		onChange: imageGallery ? undefined : onOpenChange,
+		defaultProp: imageGallery || imageGeneration || initialOpen || searchHasSources,
+		prop: imageGeneration ? undefined : controlledOpen,
+		onChange: imageGeneration ? undefined : onOpenChange,
 	});
 	const previousActive = useRef(active);
 
 	useEffect(() => {
-		if (previousActive.current && !active && resolveAutoCollapse(autoCollapseWhenComplete)) setOpen(false);
+		if (previousActive.current && !active && !imageGeneration && resolveAutoCollapse(autoCollapseWhenComplete))
+			setOpen(false);
 		previousActive.current = active;
-	}, [active, autoCollapseWhenComplete]);
+	}, [active, autoCollapseWhenComplete, imageGeneration]);
 
 	if (!tools.length) return null;
 	const allToolsCompleted = tools.every(isToolComplete);
@@ -684,6 +749,9 @@ export const ToolBatch = memo(function ToolBatch({
 	}
 	if (imageGallery) {
 		const imageCount = tools.reduce((count, tool) => count + (tool.images?.length ?? 0), 0);
+		const imageLabel = tools.some((tool) => tool.name === "image_gen")
+			? `已生成 ${imageCount} 张图片`
+			: `已查看 ${imageCount} 张图像`;
 		return (
 			<Collapsible
 				className={cn("group/tool-batch min-w-0 w-full", className)}
@@ -694,11 +762,11 @@ export const ToolBatch = memo(function ToolBatch({
 					data-transcript-resize-anchor
 					className="flex min-h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 					type="button"
-					aria-label={`已查看 ${imageCount} 张图像${open ? "，收起" : "，展开"}`}
+					aria-label={`${imageLabel}${open ? "，收起" : "，展开"}`}
 				>
 					{toolIcon("read", undefined, false, true)}
 					<span className="min-w-0 flex-1 truncate font-mono text-[13px]">
-						{summaryLabel ?? `已查看 ${imageCount} 张图像`}
+						{summaryLabel ?? imageLabel}
 					</span>
 					<ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]/tool-batch:rotate-180" />
 				</CollapsibleTrigger>
@@ -709,7 +777,12 @@ export const ToolBatch = memo(function ToolBatch({
 						if (canCollapseFromContent(event)) setOpen(false);
 					}}
 				>
-					<ImageToolGallery tools={tools} sessionId={sessionId} onOpenPath={onOpenPath} />
+					<ImageToolGallery
+						tools={tools}
+						sessionId={sessionId}
+						onOpenPath={onOpenPath}
+						large={tools.some((tool) => tool.name === "image_gen")}
+					/>
 				</CollapsibleContent>
 			</Collapsible>
 		);
@@ -718,14 +791,20 @@ export const ToolBatch = memo(function ToolBatch({
 		const tool = tools[0];
 		if (!tool) return null;
 		const imageTool = Boolean(tool.images?.length);
+		const imageGenerationTool = tool.name === "image_gen";
 		return (
 			<ToolBatchRow
 				tool={tool}
 				sessionId={sessionId}
 				onOpenPath={onOpenPath}
-				initialOpen={imageTool || initialOpen || (tool.name === "web_search" && Boolean(tool.sources?.length))}
-				open={imageTool ? undefined : open}
-				onOpenChange={imageTool ? undefined : setOpen}
+				initialOpen={
+					imageTool ||
+					imageGenerationTool ||
+					initialOpen ||
+					(tool.name === "web_search" && Boolean(tool.sources?.length))
+				}
+				open={imageTool || imageGenerationTool ? undefined : open}
+				onOpenChange={imageTool || imageGenerationTool ? undefined : setOpen}
 				className={className}
 				autoCollapseWhenComplete={autoCollapseWhenComplete}
 			/>

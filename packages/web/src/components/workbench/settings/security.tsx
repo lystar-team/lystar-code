@@ -192,7 +192,7 @@ export function SecuritySettings({ state, actions }: { state: WorkbenchState; ac
 										disabled={!settings?.editable.password || state.securitySettingsSaving}
 										autoComplete="new-password"
 									/>
-									<p className="text-xs leading-5 text-muted-foreground">密码也是进入 Web 工作台时输入的 Web Token，至少 8 个字符。</p>
+									<p className="text-xs leading-5 text-muted-foreground">密码也是进入 Web 工作台时输入的 Web 密码，至少 8 个字符。</p>
 								</div>
 
 								<Alert>

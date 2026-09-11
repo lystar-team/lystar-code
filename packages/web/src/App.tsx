@@ -1,5 +1,5 @@
 import { LoaderCircle } from "lucide-react";
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { BrandLogo } from "./components/brand-logo";
 import { StabilityBoundary, StabilityFallbackPanel } from "./components/stability-boundary";
 import { TooltipProvider } from "./components/ui/tooltip";
@@ -14,8 +14,12 @@ function AppContent() {
 	const workbench = useWorkbench();
 	const { state, currentProject, orderedProjects } = workbench;
 
+	useEffect(() => {
+		document.title = state.branding.name;
+	}, [state.branding.name]);
+
 	if (state.authRequired) {
-		return <TokenGate loading={state.loading} error={state.connectionError} onSubmit={workbench.submitToken} />;
+		return <TokenGate branding={state.branding} loading={state.loading} error={state.connectionError} onSubmit={workbench.submitToken} />;
 	}
 
 	return (
@@ -29,8 +33,8 @@ function AppContent() {
 							aria-live="polite"
 							aria-busy="true"
 						>
-							<BrandLogo className="size-16 object-contain" alt="LYStar Code" />
-							<span className="text-base font-semibold tracking-tight">LYStar Code</span>
+							<BrandLogo logo={state.branding.logo} className="size-16 object-contain" alt={state.branding.name} />
+							<span className="text-base font-semibold tracking-tight">{state.branding.name}</span>
 							<span className="mt-2 text-sm text-muted-foreground">正在进入工作台</span>
 							<LoaderCircle className="mt-1 size-5 animate-spin" aria-hidden="true" />
 						</div>

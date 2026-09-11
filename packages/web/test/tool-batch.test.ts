@@ -90,6 +90,65 @@ describe("Skill read tool display", () => {
 		expect(markup).toContain("没有图片内容");
 		expect(markup).not.toContain("技能内容");
 	});
+	it("keeps the image generation card visible while running and after completion", () => {
+		const running: ToolBatchTool = {
+			id: "image-gen-1",
+			name: "image_gen",
+			summary: JSON.stringify({ prompt: "蓝色纸张上的白色圆形", model: "auto", profile: "standard" }),
+			state: "input-available",
+			detail: "正在使用 gpt-image-2.5-flare 生成图片",
+		};
+		const runningMarkup = renderToStaticMarkup(
+			createElement(ToolBatch, { tools: [running], open: false, autoCollapseWhenComplete: true }),
+		);
+
+		expect(runningMarkup).toContain("正在生成图片 · 蓝色纸张上的白色圆形");
+		expect(runningMarkup).toContain("正在使用 gpt-image-2.5-flare 生成图片");
+		expect(runningMarkup).toContain("lucide-loader-circle");
+
+		const completed: ToolBatchTool = {
+			...running,
+			state: "output-available",
+			detail: "Generated image saved to /tmp/generated.png.",
+			images: [{ contentRef: "generated-image-1", mimeType: "image/png", byteLength: 3 }],
+		};
+		const completedMarkup = renderToStaticMarkup(
+			createElement(ToolBatch, { tools: [completed], open: false, autoCollapseWhenComplete: true }),
+		);
+
+		expect(toolBatchSummaryLabel([completed])).toBe("已生成 1 张图片");
+		expect(completedMarkup).toContain("已生成 1 张图片");
+		expect(completedMarkup).toContain("生成图片 1");
+		expect(completedMarkup).toContain("min-h-52");
+		expect(completedMarkup).toContain("没有图片内容");
+	});
+
+	it("keeps failed image generation visible as an error card", () => {
+		const failed: ToolBatchTool = {
+			id: "image-gen-error",
+			name: "image_gen",
+			summary: JSON.stringify({ prompt: "blocked image" }),
+			state: "output-error",
+			detail: "content_policy_violation",
+		};
+		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [failed], open: false }));
+
+		expect(markup).toContain("图片生成失败 · blocked image");
+		expect(markup).toContain("content_policy_violation");
+		expect(markup).toContain('role="alert"');
+	});
+
+	it("allows completed image previews to be collapsed by the result boundary state", () => {
+		const tool = {
+			...readTool("/tmp/example.png"),
+			images: [{ contentRef: "image-1", mimeType: "image/png", byteLength: 3 }],
+		};
+		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool], open: false }));
+
+		expect(markup).toContain("已查看 1 张图像");
+		expect(markup).toContain("展开");
+		expect(markup).not.toContain("没有图片内容");
+	});
 	it("merges consecutive image reads into one gallery", () => {
 		const tools = [
 			{

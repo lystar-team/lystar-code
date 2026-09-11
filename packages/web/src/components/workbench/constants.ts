@@ -9,6 +9,26 @@ export const THINKING_LEVEL_LABELS: Record<string, string> = {
 	ultra: "极致(Ultra)",
 };
 
+export const VISIBLE_THINKING_LEVELS = ["off", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
+
+export function selectedVisibleThinkingLevel(level: string, visibleLevels: readonly string[]): string {
+	return level === "minimal" && visibleLevels.includes("low") ? "low" : level;
+}
+
+export function visibleThinkingLevels(levels: readonly string[]): string[] {
+	const supported = new Set(levels);
+	const visible: string[] = [];
+	for (const level of VISIBLE_THINKING_LEVELS) {
+		if (level !== "low") {
+			if (supported.has(level)) visible.push(level);
+			continue;
+		}
+		if (supported.has("low")) visible.push("low");
+		else if (supported.has("minimal")) visible.push("minimal");
+	}
+	return visible;
+}
+
 export const ACTIVE_OPERATION_STATUSES = new Set(["accepted", "running", "waiting_for_input"]);
 export const SIDEBAR_MIN_WIDTH = 280;
 export const SIDEBAR_MAX_WIDTH = 560;

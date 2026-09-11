@@ -7,6 +7,7 @@ const state = vi.hoisted(() => ({
 	reachable: true,
 	pid: 4321,
 	manager: "systemd-user",
+	connected: true,
 	operations: [] as Array<{ status: string; operationId: string }>,
 	pendingUiRequests: [] as unknown[],
 	readSnapshot: false,
@@ -27,7 +28,7 @@ vi.mock("@lystar/code-web-protocol", () => ({
 	RuntimeProtocolClient: class {
 		async connect() {}
 		getSnapshot() {
-			return { connected: true };
+			return state.connected ? { connected: true } : { connected: false, lastError: "Runtime unresponsive" };
 		}
 		async request() {
 			state.readSnapshot = true;
@@ -48,13 +49,17 @@ vi.mock("../src/service-manager.ts", () => ({
 	installWebService: vi.fn(() => {
 		expect(state.readSnapshot).toBe(true);
 		state.reachable = true;
+		state.connected = true;
 	}),
-	stopWebService: vi.fn(() => {
-		expect(state.readSnapshot).toBe(true);
+	stopWebService: vi.fn((_spec, force: boolean) => {
+		if (force) expect(state.readSnapshot).toBe(false);
+		else expect(state.readSnapshot).toBe(true);
 		state.reachable = false;
+		state.connected = false;
 	}),
 	ensureWebService: vi.fn(() => {
 		state.reachable = true;
+		state.connected = true;
 	}),
 	removeWebService: vi.fn(),
 	webServiceDiagnostic: vi.fn(),
@@ -64,6 +69,7 @@ beforeEach(() => {
 	state.reachable = true;
 	state.pid = 4321;
 	state.manager = "systemd-user";
+	state.connected = true;
 	state.operations = [];
 	state.pendingUiRequests = [];
 	state.readSnapshot = false;
@@ -104,6 +110,15 @@ describe("Runtime update and restart safety", () => {
 		expect(result.pid).toBe(4322);
 		expect(stopWebService).not.toHaveBeenCalled();
 	});
+	it("force-recovers a Runtime whose port accepts connections but protocol handshake is broken", async () => {
+		state.connected = false;
+
+		const result = await restartRuntimeService("/test/runtime.sock");
+
+		expect(stopWebService).toHaveBeenCalledWith(expect.anything(), true, expect.anything());
+		expect(result.responsive).toBe(true);
+	});
+
 	it("does not signal a busy macOS Runtime", async () => {
 		state.manager = "launch-daemon";
 		state.operations = [{ status: "running", operationId: "active" }];

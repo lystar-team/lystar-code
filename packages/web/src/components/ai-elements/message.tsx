@@ -84,12 +84,16 @@ export const MessageActions = ({
 export type MessageActionProps = ComponentProps<typeof Button> & {
   tooltip?: string;
   label?: string;
+  tooltipOpen?: boolean;
+  onTooltipOpenChange?: (open: boolean) => void;
 };
 
 export const MessageAction = ({
   tooltip,
   children,
   label,
+  tooltipOpen,
+  onTooltipOpenChange,
   variant = "ghost",
   size = "icon-sm",
   ...props
@@ -104,7 +108,11 @@ export const MessageAction = ({
   if (tooltip) {
     return (
       <TooltipProvider>
-        <Tooltip>
+        <Tooltip
+          disableHoverableContent
+          onOpenChange={onTooltipOpenChange}
+          open={tooltipOpen}
+        >
           <TooltipTrigger asChild>{button}</TooltipTrigger>
           <TooltipContent>
             <p>{tooltip}</p>

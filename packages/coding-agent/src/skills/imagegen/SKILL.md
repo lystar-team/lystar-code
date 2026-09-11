@@ -5,9 +5,7 @@ description: "Generate or edit raster images with the built-in image_gen tool. U
 
 # Image Generation
 
-> Adapted for LYStar Code from OpenAI Codex's `imagegen` Skill. This file has been modified to use LYStar's native Tool and packaging paths.
-
-Use the built-in `image_gen` Tool for normal image generation and editing. Do not create temporary Python or SDK scripts.
+Use the built-in `image_gen` Tool for normal image generation and editing. The user describes the visual outcome in natural language; convert that request into a complete prompt and structured model intent. Do not make the user write Tool JSON. Do not create temporary SDK scripts while the native Tool can perform the task.
 
 ## Decide the task
 
@@ -17,42 +15,38 @@ Use the built-in `image_gen` Tool for normal image generation and editing. Do no
 - Many distinct assets: make one Tool call per asset or prompt.
 - Existing vector, logo, icon, HTML/CSS, canvas, or editable project asset: modify that native asset when generation is unnecessary.
 
-## Prompt shape
+Read [references/model-selection.md](references/model-selection.md) before choosing `model` or `profile`. Read [references/prompting.md](references/prompting.md) when the request needs exact text, layout, identity preservation, multiple references, or production-level prompt detail.
 
-Turn the request into a concise production specification. Keep the user's exact requirements and add only details that improve the result:
+## Model intent
 
-```text
-Use case: <photo, product mockup, illustration, UI mockup, infographic, game asset, etc.>
-Asset type: <where it will be used>
-Primary request: <main request>
-Input images: <each image and its role, when present>
-Scene/backdrop: <environment>
-Subject: <main subject>
-Style/medium: <photo, illustration, 3D, pixel art, etc.>
-Composition/framing: <camera, crop, placement, negative space>
-Lighting/mood: <lighting and atmosphere>
-Text (verbatim): "<exact visible text>"
-Constraints: <must preserve or include>
-Avoid: <must not appear>
-```
+Use structured arguments instead of prompt keyword matching:
 
-For edits, repeat the invariants explicitly: change only the requested part and preserve identity, composition, proportions, text, or other locked details.
+- Normal new images, concepts, drafts, variations, style exploration: `model: "auto", profile: "standard"`.
+- Fast ideation or repeated rough iterations: `model: "auto", profile: "fast"`.
+- Precise edits, locked identity or product details, exact text/layout, complex compositing, highest fidelity: `model: "auto", profile: "precision"`.
+- If the user names Flare, Sunburst, or GPT Image 2, pass that exact model.
+- Treat the phrase “GPT Image 2.5” as a family request, not an API model ID. Choose Flare or Sunburst from the task semantics.
+- Never pass bare `gpt-image-2.5`.
 
 ## Tool usage
 
 New image:
 
 ```json
-{ "prompt": "<complete prompt>" }
+{
+  "prompt": "<complete prompt>",
+  "model": "auto",
+  "profile": "standard"
+}
 ```
-
-Do not request recent conversation images for a new image. If the active Provider requires values for optional schema fields, use `referenced_image_paths: []` and `num_last_images_to_include: 0`.
 
 Edit local images:
 
 ```json
 {
   "prompt": "<complete edit prompt with invariants>",
+  "model": "auto",
+  "profile": "precision",
   "referenced_image_paths": ["path/to/image.png"]
 }
 ```
@@ -62,16 +56,27 @@ Continue from recent conversation images:
 ```json
 {
   "prompt": "<targeted follow-up change>",
+  "model": "auto",
+  "profile": "precision",
   "num_last_images_to_include": 1
 }
 ```
 
-Use only one reference mode per call. At most five images are accepted.
+Use only one reference mode per call. At most five images are accepted. For a new image, omit reference fields; if all schema fields must be present, use `referenced_image_paths: []` and `num_last_images_to_include: 0`.
+
+## Prompt rules
+
+- Preserve the user's requested content, style, framing, dimensions, visible text, and exclusions.
+- Add production details only when they clarify the requested result.
+- Put exact visible text in quotation marks and spell it exactly.
+- For edits, state what changes and what must remain invariant.
+- Give each reference image one clear role.
+- Do not ask follow-up questions when a reasonable production choice can be made from context.
 
 ## Output policy
 
-- Generated images are saved under `~/.pi/agent/generated_images/<session>/<call>.png` and displayed automatically.
-- For preview or brainstorming, the default saved file can remain there.
+- Generated images are saved under `~/.pi/agent/generated_images/<session>/<call>.<ext>` and displayed in the image-generation card.
+- For preview or brainstorming, the generated file can remain there.
 - For project-bound assets, copy the selected output into the workspace and update the consuming code or references.
 - Do not leave a project-referenced asset only under `~/.pi/agent/generated_images`.
 - Do not overwrite an existing project asset unless the user requested replacement.
@@ -82,15 +87,14 @@ Use only one reference mode per call. At most five images are accepted.
 
 Inspect every result before finishing:
 
-- subject and requested style
-- composition and intended crop
-- exact visible text
-- preserved edit invariants
-- forbidden objects, logos, watermarks, or artifacts
-- suitability at the final usage size
+- subject, style, composition, crop, and intended usage
+- exact visible text and layout
+- preserved edit invariants and reference roles
+- forbidden objects, logos, watermarks, and artifacts
+- suitability at the final display size
 
-Iterate with one targeted change at a time.
+Iterate with one targeted change at a time. Use Flare for ordinary revisions; switch an automatic task to precision when the revision depends on locked details rather than broad visual direction.
 
 ## Transparent backgrounds
 
-The native Tool currently uses the Provider's automatic background policy and does not expose a transparency parameter. Do not promise true alpha output. For a simple opaque subject, generate against a flat removable chroma-key background and remove it with existing project tools only when the user requested transparency. For hair, glass, smoke, reflections, translucent materials, or other complex edges, explain the limitation before proceeding.
+The native Tool uses the Provider's automatic background policy and does not expose a transparency parameter. Do not promise true alpha output. For a simple opaque subject, generate against a flat removable chroma-key background and remove it with existing project tools only when the user requested transparency. For hair, glass, smoke, reflections, translucent materials, or other complex edges, explain the limitation before proceeding.

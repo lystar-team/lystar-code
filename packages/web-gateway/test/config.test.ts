@@ -32,6 +32,7 @@ test("源码 Gateway 使用独立开发配置文件", async () => {
 			configFileName: "web-dev-config.json",
 		});
 		assert.equal(config.port, 2422);
+		assert.equal(config.serviceProfile, "development");
 		assert.equal(config.configPath, join(agentDir, "web-dev-config.json"));
 		assert.notEqual(config.token, production.password);
 		assert.deepEqual(await new WebConfigStore(agentDir).load(), production);
@@ -66,6 +67,7 @@ test("bundled Gateway 忽略 Socket 覆盖并使用配置中的 Runtime TCP 端�
 			runtimeInvocation: { command: process.execPath, args: ["web-runtime", "serve"], cwd: agentDir },
 		});
 		assert.equal(config.runtimePort, 15422);
+		assert.equal(config.serviceProfile, undefined);
 		assert.equal(config.runtimeEndpoint, `tcp://${DEFAULT_RUNTIME_HOST}:15422`);
 		assert.equal(DEFAULT_RUNTIME_PORT, 1422);
 	} finally {

@@ -31,7 +31,13 @@ import type {
 	TranscriptItem,
 	TranscriptPage,
 } from "@lystar/code-web-protocol";
-import { getRuntimeServiceStatus, restartRuntimeService, stopRuntimeService } from "@lystar/code-web-runtime";
+import {
+	getRuntimeServiceStatus,
+	loadProductBranding,
+	restartRuntimeService,
+	saveProductBranding,
+	stopRuntimeService,
+} from "@lystar/code-web-runtime";
 import { WebSocket, WebSocketServer } from "ws";
 import {
 	bearerToken,
@@ -59,6 +65,7 @@ import {
 	hostUptimeSeconds,
 	readCpuSnapshot,
 } from "./host-diagnostics.ts";
+import { ProductUpdateController } from "./product-update.ts";
 import { type ProjectGroup, ProjectGroupRegistry } from "./project-group-registry.ts";
 import { ProjectRegistry, type WebProject } from "./project-registry.ts";
 import { connectRuntimeClient, ensurePersistentRuntime, type RuntimeInitialSnapshot } from "./runtime-client.ts";
@@ -585,10 +592,6 @@ async function readChunks(read: (offset: number) => Promise<ContentChunk>, maxBy
 	return result;
 }
 
-function runtimeServiceProfile(): string | undefined {
-	return process.env.LYSTAR_CLI_MODE === "development" ? "development" : undefined;
-}
-
 export class WebGatewayServer {
 	readonly config: WebGatewayConfig;
 	readonly registry: ProjectRegistry;
@@ -603,6 +606,7 @@ export class WebGatewayServer {
 	private readonly heartbeatTimer: ReturnType<typeof setInterval>;
 	private readonly uploadCleanupTimer: ReturnType<typeof setInterval>;
 	private readonly uploadedFiles = new Map<string, { mimeType: string; expiresAt: number }>();
+	private readonly productUpdate: ProductUpdateController;
 	private readonly socketLiveness = new WeakMap<WebSocket, boolean>();
 	private readonly detailSubscriptions = new WeakMap<WebSocket, Set<string>>();
 	private previousCpuSnapshot?: CpuSnapshot;
@@ -614,6 +618,7 @@ export class WebGatewayServer {
 		this.config = config;
 		this.registry = new ProjectRegistry(config.agentDir);
 		this.projectGroups = new ProjectGroupRegistry(config.agentDir);
+		this.productUpdate = new ProductUpdateController(config.agentDir);
 		this.server = createServer((request, response) => void this.handleRequest(request, response));
 		this.server.on("connection", (socket) => {
 			this.connections.add(socket);
@@ -867,7 +872,7 @@ export class WebGatewayServer {
 			: request.headers.authorization;
 		const candidate = bearerToken(header) ?? (websocket ? url?.searchParams.get("token")?.trim() : undefined);
 		if (!candidate || candidate !== this.config.token)
-			throw new HttpError(401, "unauthorized", "需要有效的 Web Token");
+			throw new HttpError(401, "unauthorized", "需要有效的 Web 密码");
 	}
 
 	private async getClient(context: BrowserContext): Promise<RuntimeProtocolClient> {
@@ -1175,6 +1180,10 @@ export class WebGatewayServer {
 				await this.handleHealth(response);
 				return;
 			}
+			if (url.pathname === "/api/branding" && request.method === "GET") {
+				await this.handleBranding(request, response);
+				return;
+			}
 			if (url.pathname.startsWith("/api/")) {
 				this.assertToken(request);
 				const context = this.contextFor(request, response);
@@ -1202,7 +1211,12 @@ export class WebGatewayServer {
 				command: "get_diagnostics",
 				...(project ? { cwd: project.cwd } : {}),
 			}),
-			getRuntimeServiceStatus(this.config.runtimeEndpoint, runtimeServiceProfile(), undefined, this.config.agentDir),
+			getRuntimeServiceStatus(
+				this.config.runtimeEndpoint,
+				this.config.serviceProfile,
+				undefined,
+				this.config.agentDir,
+			),
 			client.request<RuntimeConnectionStatus>({ command: "get_connection_status" }).catch(() => undefined),
 		]);
 		const currentCpuSnapshot = readCpuSnapshot();
@@ -1355,8 +1369,16 @@ export class WebGatewayServer {
 		context: BrowserContext,
 	): Promise<void> {
 		const parts = parsePathParts(url.pathname);
+		if (parts.length === 2 && parts[1] === "branding") {
+			await this.handleBranding(request, response);
+			return;
+		}
 		if (parts.length === 2 && parts[1] === "security-settings") {
 			await this.handleGatewaySecuritySettings(request, response);
+			return;
+		}
+		if (parts[1] === "product-update") {
+			await this.handleProductUpdate(request, response, context, parts);
 			return;
 		}
 		if (parts[1] === "bootstrap" && request.method === "GET") {
@@ -1522,7 +1544,7 @@ export class WebGatewayServer {
 			const body = await parseJsonBody(request);
 			const action = stringValue(body.action);
 			if (action === "restart-runtime") {
-				const profile = runtimeServiceProfile();
+				const profile = this.config.serviceProfile;
 				const currentStatus = await getRuntimeServiceStatus(
 					this.config.runtimeEndpoint,
 					profile,
@@ -1990,7 +2012,6 @@ export class WebGatewayServer {
 			return;
 		}
 		if (parts.length === 3 && request.method === "DELETE") {
-			context.leases.delete(sessionId);
 			await client.request({
 				command: "delete_session",
 				cwd: session.cwd,
@@ -1998,6 +2019,7 @@ export class WebGatewayServer {
 				clientInstanceId: context.id,
 				clientRequestId: randomUUID(),
 			});
+			context.leases.delete(sessionId);
 			this.sessions.delete(sessionId);
 			if (this.sessionIdsByPath.get(session.path) === sessionId) this.sessionIdsByPath.delete(session.path);
 			this.invalidateBootstrap(context);
@@ -2455,6 +2477,102 @@ export class WebGatewayServer {
 			return;
 		}
 		throw new HttpError(404, "operation_not_found", "未找到任务接口");
+	}
+
+	private async currentProductVersion(context: BrowserContext): Promise<string> {
+		const about = object(await (await this.getClient(context)).request<JsonValue>({ command: "get_about" }));
+		const version = stringValue(about?.productVersion);
+		if (!version) throw new HttpError(502, "product_version_invalid", "Runtime 没有返回有效的应用版本");
+		return version;
+	}
+
+	private async handleProductUpdate(
+		request: IncomingMessage,
+		response: ServerResponse,
+		context: BrowserContext,
+		parts: string[],
+	): Promise<void> {
+		const currentVersion = await this.currentProductVersion(context);
+		const job = await this.productUpdate.status(currentVersion);
+		if (parts.length === 2 && request.method === "GET") {
+			sendJson(response, 200, { currentVersion, ...(job ? { job } : {}) });
+			return;
+		}
+
+		const client = await this.getClient(context);
+		if (parts.length === 3 && parts[2] === "check" && request.method === "GET") {
+			try {
+				const check = object(await client.request<JsonValue>({ command: "check_for_updates" }));
+				if (!check) throw new Error("Runtime 返回的版本检查结果无效");
+				const repository = stringValue(check.repository);
+				const availability = await this.productUpdate.availability(repository);
+				sendJson(response, 200, {
+					...check,
+					currentVersion,
+					repository: repository ?? null,
+					installEnabled: availability.enabled,
+					installBlockedReason: availability.reason,
+					...(job ? { job } : {}),
+				});
+			} catch (error) {
+				sendJson(response, 200, {
+					currentVersion,
+					checkedAt: Date.now(),
+					repository: null,
+					installEnabled: false,
+					installBlockedReason: "版本检查失败",
+					status: "unavailable",
+					latestVersion: null,
+					note: error instanceof Error ? error.message : String(error),
+					...(job ? { job } : {}),
+				});
+			}
+			return;
+		}
+
+		if (parts.length === 2 && request.method === "POST") {
+			const body = await parseJsonBody(request);
+			const targetVersion = stringValue(body.targetVersion);
+			if (!targetVersion) throw new HttpError(400, "product_update_version_required", "目标版本不能为空");
+			const check = object(await client.request<JsonValue>({ command: "check_for_updates" }));
+			const latestVersion = stringValue(check?.latestVersion);
+			if (check?.status !== "available" || !latestVersion) {
+				throw new HttpError(409, "product_update_not_available", "当前没有可安装的新版本");
+			}
+			if (targetVersion !== latestVersion) {
+				throw new HttpError(409, "product_update_version_changed", `最新版本已变为 v${latestVersion}，请重新确认`);
+			}
+			const availability = await this.productUpdate.availability(stringValue(check?.repository));
+			if (!availability.enabled) {
+				throw new HttpError(409, "product_update_unavailable", availability.reason);
+			}
+			const started = await this.productUpdate.start(currentVersion, targetVersion);
+			sendJson(response, 202, { currentVersion, job: started });
+			return;
+		}
+
+		throw new HttpError(405, "method_not_allowed", "更新接口不支持当前方法");
+	}
+
+	private async handleBranding(request: IncomingMessage, response: ServerResponse): Promise<void> {
+		if (request.method === "GET") {
+			sendJson(response, 200, await loadProductBranding(this.config.agentDir));
+			return;
+		}
+		if (request.method !== "POST") throw new HttpError(405, "method_not_allowed", "该接口只支持 GET 或 POST");
+		const body = await parseJsonBody(request);
+		try {
+			sendJson(
+				response,
+				200,
+				await saveProductBranding(this.config.agentDir, {
+					name: body.name,
+					...(Object.hasOwn(body, "logo") ? { logo: body.logo } : {}),
+				}),
+			);
+		} catch (error) {
+			throw new HttpError(400, "branding_invalid", error instanceof Error ? error.message : String(error));
+		}
 	}
 
 	private gatewaySecuritySettingsEditable(): GatewaySecuritySettingsResponse["editable"] {

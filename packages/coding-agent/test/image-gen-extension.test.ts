@@ -10,11 +10,12 @@ import imageGenExtension, { createImageGenToolDefinition } from "../src/extensio
 import { builtInExtensions } from "../src/extensions/index.ts";
 
 const pngData = "iVBORw0KGgo=";
+type TestImageModelId = "gpt-image-2" | "gpt-image-2.5-flare" | "gpt-image-2.5-sunburst";
 
-function imageModel(provider: string): ImagesModel<ImagesApi> {
+function imageModel(provider: string, modelId: TestImageModelId = "gpt-image-2"): ImagesModel<ImagesApi> {
 	return {
-		id: provider === "openrouter" ? "openai/gpt-image-2" : "gpt-image-2",
-		name: "GPT Image 2",
+		id: provider === "openrouter" ? `openai/${modelId}` : modelId,
+		name: modelId,
 		api: provider === "openrouter" ? "openrouter-images" : "openai-images",
 		provider,
 		baseUrl: "https://example.test",
@@ -97,18 +98,21 @@ describe("image_gen extension tool", () => {
 		const skillPath = resources?.skillPaths?.[0];
 		expect(skillPath).toMatch(/skills[/\\]imagegen[/\\]SKILL\.md$/);
 		expect(skillPath && existsSync(skillPath)).toBe(true);
+		expect(skillPath && existsSync(join(skillPath, "..", "references", "model-selection.md"))).toBe(true);
 	});
 
-	it("uses the active OpenAI-compatible provider key, headers, and base URL first", async () => {
-		const openAI = imageModel("openai");
+	it("uses auto standard Flare through the active OpenAI-compatible provider and emits stable stages", async () => {
+		const openAI = imageModel("openai", "gpt-image-2.5-flare");
 		const activeModel = chatModel("company-openai", "openai-responses", "https://gateway.example/v1");
 		const generateImages = vi.fn(async (model: ImagesModel<ImagesApi>) => imageResult(model));
 		const getImageProviderAuth = vi.fn(async () => undefined);
+		const onUpdate = vi.fn();
 		const ctx = {
 			cwd: tempRoot,
 			model: activeModel,
 			modelRegistry: {
-				findImage: (provider: string) => (provider === "openai" ? openAI : undefined),
+				findImage: (provider: string, id: string) =>
+					provider === "openai" && id === "gpt-image-2.5-flare" ? openAI : undefined,
 				getApiKeyAndHeaders: async () => ({
 					ok: true,
 					apiKey: "provider-key",
@@ -125,7 +129,7 @@ describe("image_gen extension tool", () => {
 			"call/1",
 			{ prompt: "a red circle", referenced_image_paths: [], num_last_images_to_include: 0 },
 			undefined,
-			undefined,
+			onUpdate,
 			ctx,
 		);
 
@@ -140,10 +144,58 @@ describe("image_gen extension tool", () => {
 			},
 		);
 		expect(getImageProviderAuth).not.toHaveBeenCalled();
-		expect(result.details).toMatchObject({ provider: "company-openai", model: "gpt-image-2", mode: "generate" });
+		expect(result.details).toMatchObject({
+			provider: "company-openai",
+			model: "gpt-image-2.5-flare",
+			requestedModel: "auto",
+			profile: "standard",
+			mode: "generate",
+			mimeType: "image/png",
+		});
 		expect(result.details?.savedPath).toContain(join("generated_images", "session_1", "call_1.png"));
 		expect(readFileSync(result.details!.savedPath).toString("base64")).toBe(pngData);
 		expect(result.content.at(-1)).toEqual({ type: "image", data: pngData, mimeType: "image/png" });
+		expect(onUpdate.mock.calls.map(([update]) => update.content[0].text)).toEqual([
+			"正在准备生成参数",
+			"正在使用 company-openai/gpt-image-2.5-flare 生成图片",
+			"图片生成完成，正在保存原图",
+		]);
+	});
+
+	it("uses Sunburst for automatic precision work", async () => {
+		const sunburst = imageModel("openai", "gpt-image-2.5-sunburst");
+		const generateImages = vi.fn(async (model: ImagesModel<ImagesApi>) => imageResult(model));
+		const ctx = {
+			cwd: tempRoot,
+			model: chatModel("anthropic", "anthropic-messages", "https://api.anthropic.com"),
+			modelRegistry: {
+				findImage: (provider: string, id: string) =>
+					provider === "openai" && id === "gpt-image-2.5-sunburst" ? sunburst : undefined,
+				getImageProviderAuth: async (provider: string) =>
+					provider === "openai" ? { auth: { apiKey: "key" } } : undefined,
+				generateImages,
+			},
+			sessionManager: { getSessionId: () => "session-precision", getBranch: () => [] },
+		} as unknown as ExtensionContext;
+
+		const result = await createImageGenToolDefinition().execute(
+			"call-precision",
+			{ prompt: "preserve exact package typography", profile: "precision" },
+			undefined,
+			undefined,
+			ctx,
+		);
+
+		expect(generateImages).toHaveBeenCalledWith(
+			sunburst,
+			{ input: [{ type: "text", text: "preserve exact package typography" }] },
+			{ signal: undefined },
+		);
+		expect(result.details).toMatchObject({
+			model: "gpt-image-2.5-sunburst",
+			requestedModel: "auto",
+			profile: "precision",
+		});
 	});
 
 	it("falls back from unavailable Codex auth and includes recent conversation images", async () => {
@@ -155,8 +207,10 @@ describe("image_gen extension tool", () => {
 			cwd: tempRoot,
 			model: chatModel("anthropic", "anthropic-messages", "https://api.anthropic.com"),
 			modelRegistry: {
-				findImage: (provider: string) =>
-					provider === "openai-codex" ? codex : provider === "openai" ? openAI : undefined,
+				findImage: (provider: string, id: string) => {
+					if (id !== "gpt-image-2") return undefined;
+					return provider === "openai-codex" ? codex : provider === "openai" ? openAI : undefined;
+				},
 				getImageProviderAuth: async (provider: string) => {
 					authAttempts.push(provider);
 					return provider === "openai" ? { auth: { apiKey: "key" } } : undefined;
@@ -179,7 +233,7 @@ describe("image_gen extension tool", () => {
 
 		await createImageGenToolDefinition().execute(
 			"call-2",
-			{ prompt: "make it blue", num_last_images_to_include: 1 },
+			{ prompt: "make it blue", model: "gpt-image-2", num_last_images_to_include: 1 },
 			undefined,
 			undefined,
 			ctx,
@@ -198,6 +252,35 @@ describe("image_gen extension tool", () => {
 		);
 	});
 
+	it("uses GPT Image 2 only as the compatibility fallback for automatic selection", async () => {
+		const codex = imageModel("openai-codex");
+		const generateImages = vi.fn(async (model: ImagesModel<ImagesApi>) => imageResult(model));
+		const ctx = {
+			cwd: tempRoot,
+			model: chatModel("anthropic", "anthropic-messages", "https://api.anthropic.com"),
+			modelRegistry: {
+				findImage: (provider: string, id: string) =>
+					provider === "openai-codex" && id === "gpt-image-2" ? codex : undefined,
+				getImageProviderAuth: async (provider: string) =>
+					provider === "openai-codex" ? { auth: { apiKey: "codex-token" } } : undefined,
+				generateImages,
+			},
+			sessionManager: { getSessionId: () => "session-fallback", getBranch: () => [] },
+		} as unknown as ExtensionContext;
+
+		const result = await createImageGenToolDefinition().execute(
+			"call-fallback",
+			{ prompt: "a fallback image" },
+			undefined,
+			undefined,
+			ctx,
+		);
+
+		expect(generateImages).toHaveBeenCalledTimes(1);
+		expect(generateImages.mock.calls[0]?.[0]).toBe(codex);
+		expect(result.details).toMatchObject({ model: "gpt-image-2", requestedModel: "auto", profile: "standard" });
+	});
+
 	it("continues to the next configured credential when the active provider request fails", async () => {
 		const openAI = imageModel("openai");
 		const codex = imageModel("openai-codex");
@@ -209,8 +292,10 @@ describe("image_gen extension tool", () => {
 			cwd: tempRoot,
 			model: chatModel("company-openai", "openai-completions", "https://gateway.example/v1"),
 			modelRegistry: {
-				findImage: (provider: string) =>
-					provider === "openai" ? openAI : provider === "openai-codex" ? codex : undefined,
+				findImage: (provider: string, id: string) => {
+					if (id !== "gpt-image-2") return undefined;
+					return provider === "openai" ? openAI : provider === "openai-codex" ? codex : undefined;
+				},
 				getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "bad-key" }),
 				getImageProviderAuth: async (provider: string) =>
 					provider === "openai-codex" ? { auth: { apiKey: "codex-token" } } : undefined,
@@ -221,7 +306,7 @@ describe("image_gen extension tool", () => {
 
 		const result = await createImageGenToolDefinition().execute(
 			"call-3",
-			{ prompt: "a red circle" },
+			{ prompt: "a red circle", model: "gpt-image-2" },
 			undefined,
 			undefined,
 			ctx,
@@ -236,6 +321,70 @@ describe("image_gen extension tool", () => {
 		expect(result.details).toMatchObject({ provider: "openai-codex", model: "gpt-image-2" });
 	});
 
+	it("maps explicit Sunburst to the OpenRouter model ID", async () => {
+		const sunburst = imageModel("openrouter", "gpt-image-2.5-sunburst");
+		const generateImages = vi.fn(async (model: ImagesModel<ImagesApi>) => imageResult(model));
+		const ctx = {
+			cwd: tempRoot,
+			model: chatModel("anthropic", "anthropic-messages", "https://api.anthropic.com"),
+			modelRegistry: {
+				findImage: (provider: string, id: string) =>
+					provider === "openrouter" && id === "openai/gpt-image-2.5-sunburst" ? sunburst : undefined,
+				getImageProviderAuth: async (provider: string) =>
+					provider === "openrouter" ? { auth: { apiKey: "openrouter-key" } } : undefined,
+				generateImages,
+			},
+			sessionManager: { getSessionId: () => "session-openrouter", getBranch: () => [] },
+		} as unknown as ExtensionContext;
+
+		const result = await createImageGenToolDefinition().execute(
+			"call-openrouter",
+			{ prompt: "use sunburst", model: "gpt-image-2.5-sunburst" },
+			undefined,
+			undefined,
+			ctx,
+		);
+
+		expect(generateImages.mock.calls[0]?.[0]).toBe(sunburst);
+		expect(result.details).toMatchObject({
+			provider: "openrouter",
+			model: "openai/gpt-image-2.5-sunburst",
+			requestedModel: "gpt-image-2.5-sunburst",
+		});
+	});
+
+	it("does not silently change an explicitly requested model", async () => {
+		const flare = imageModel("openai", "gpt-image-2.5-flare");
+		const compatibility = imageModel("openai-codex");
+		const generateImages = vi.fn(async (model: ImagesModel<ImagesApi>) => imageError(model, "model unavailable"));
+		const ctx = {
+			cwd: tempRoot,
+			model: chatModel("anthropic", "anthropic-messages", "https://api.anthropic.com"),
+			modelRegistry: {
+				findImage: (provider: string, id: string) => {
+					if (provider === "openai" && id === "gpt-image-2.5-flare") return flare;
+					if (provider === "openai-codex" && id === "gpt-image-2") return compatibility;
+					return undefined;
+				},
+				getImageProviderAuth: async (provider: string) => ({ auth: { apiKey: `${provider}-key` } }),
+				generateImages,
+			},
+			sessionManager: { getSessionId: () => "session-explicit", getBranch: () => [] },
+		} as unknown as ExtensionContext;
+
+		await expect(
+			createImageGenToolDefinition().execute(
+				"call-explicit",
+				{ prompt: "use flare", model: "gpt-image-2.5-flare" },
+				undefined,
+				undefined,
+				ctx,
+			),
+		).rejects.toThrow("gpt-image-2.5-flare");
+		expect(generateImages).toHaveBeenCalledTimes(1);
+		expect(generateImages.mock.calls[0]?.[0]).toBe(flare);
+	});
+
 	it("preserves the Codex image endpoint and does not retry content-policy errors", async () => {
 		const codex = imageModel("openai-codex");
 		const openAI = imageModel("openai");
@@ -246,8 +395,10 @@ describe("image_gen extension tool", () => {
 			cwd: tempRoot,
 			model: chatModel("openai-codex", "openai-codex-responses", "https://chatgpt.com/backend-api"),
 			modelRegistry: {
-				findImage: (provider: string) =>
-					provider === "openai-codex" ? codex : provider === "openai" ? openAI : undefined,
+				findImage: (provider: string, id: string) => {
+					if (id !== "gpt-image-2") return undefined;
+					return provider === "openai-codex" ? codex : provider === "openai" ? openAI : undefined;
+				},
 				getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "codex-token" }),
 				getImageProviderAuth: async () => ({ auth: { apiKey: "fallback-key" } }),
 				generateImages,
@@ -256,7 +407,13 @@ describe("image_gen extension tool", () => {
 		} as unknown as ExtensionContext;
 
 		await expect(
-			createImageGenToolDefinition().execute("call-4", { prompt: "blocked prompt" }, undefined, undefined, ctx),
+			createImageGenToolDefinition().execute(
+				"call-4",
+				{ prompt: "blocked prompt", model: "gpt-image-2" },
+				undefined,
+				undefined,
+				ctx,
+			),
 		).rejects.toThrow("content_policy_violation");
 		expect(generateImages).toHaveBeenCalledTimes(1);
 		expect(generateImages.mock.calls[0]?.[0]).toMatchObject({

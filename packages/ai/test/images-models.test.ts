@@ -200,11 +200,19 @@ describe("ImagesModels", () => {
 		const providers = models.getProviders();
 		expect(providers.map((p) => p.id)).toEqual(["openai-codex", "openai", "openrouter"]);
 		expect(models.getModel("openai-codex", "gpt-image-2")?.api).toBe("openai-images");
-		expect(models.getModel("openai", "gpt-image-2")?.api).toBe("openai-images");
+		expect(models.getModels("openai").map((model) => model.id)).toEqual([
+			"gpt-image-2.5-flare",
+			"gpt-image-2.5-sunburst",
+			"gpt-image-2",
+		]);
+		expect(models.getModel("openai", "gpt-image-2.5")).toBeUndefined();
 
 		const list = models.getModels("openrouter");
 		expect(list.length).toBeGreaterThan(0);
 		expect(list.every((m) => m.api === "openrouter-images")).toBe(true);
+		expect(list.map((model) => model.id)).toEqual(
+			expect.arrayContaining(["openai/gpt-image-2", "openai/gpt-image-2.5-flare", "openai/gpt-image-2.5-sunburst"]),
+		);
 
 		expect((await models.getAuth(list[0]))?.auth.apiKey).toBe("or-key");
 	});

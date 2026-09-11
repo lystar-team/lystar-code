@@ -233,7 +233,9 @@ class FakeRuntime implements RuntimeSession {
 			activeCircuits: 0,
 		};
 	}
-	async dispose() {}
+	async dispose() {
+		this.counts.dispose_runtime = (this.counts.dispose_runtime ?? 0) + 1;
+	}
 	onEvent(listener: (event: RuntimeEvent) => void) {
 		this.events.on("event", listener);
 		return () => this.events.off("event", listener);
@@ -539,6 +541,64 @@ const SESSION_COMMANDS = new Set([
 ]);
 
 describe("WebRuntimeService journaled writes", () => {
+	it("deletes an idle Session while the requesting client owns its only lease", async () => {
+		const setupValue = setup();
+		const active = await lease(setupValue.service, setupValue.sessionPath);
+		await active.connection.handle({
+			type: "request",
+			id: "delete-controlled",
+			request: {
+				command: "delete_session",
+				cwd: setupValue.cwd,
+				sessionPath: setupValue.sessionPath,
+				clientInstanceId: "client",
+				clientRequestId: "delete-controlled",
+			},
+		});
+
+		expect(
+			active.connection.messages.find(
+				(message) => message.type === "response" && message.id === "delete-controlled",
+			),
+		).toMatchObject({ ok: true, result: { deleted: true } });
+		expect(setupValue.counts.dispose_runtime).toBe(1);
+		expect(setupValue.counts.delete_session).toBe(1);
+	});
+
+	it("keeps the requesting lease when another client still occupies the Session", async () => {
+		const setupValue = setup();
+		const first = await lease(setupValue.service, setupValue.sessionPath, "client-a");
+		await lease(setupValue.service, setupValue.sessionPath, "client-b");
+		await first.connection.handle({
+			type: "request",
+			id: "delete-shared",
+			request: {
+				command: "delete_session",
+				cwd: setupValue.cwd,
+				sessionPath: setupValue.sessionPath,
+				clientInstanceId: "client-a",
+				clientRequestId: "delete-shared",
+			},
+		});
+		await first.connection.handle({
+			type: "request",
+			id: "lease-still-valid",
+			request: {
+				command: "get_session_info",
+				sessionPath: setupValue.sessionPath,
+				leaseId: first.leaseId,
+			},
+		});
+
+		expect(
+			first.connection.messages.find((message) => message.type === "response" && message.id === "delete-shared"),
+		).toMatchObject({ ok: false, error: { code: "session_attached" } });
+		expect(
+			first.connection.messages.find((message) => message.type === "response" && message.id === "lease-still-valid"),
+		).toMatchObject({ ok: true });
+		expect(setupValue.counts.delete_session).toBeUndefined();
+	});
+
 	it("returns Core session information only for the active Session lease", async () => {
 		const setupValue = setup();
 		const active = await lease(setupValue.service, setupValue.sessionPath);

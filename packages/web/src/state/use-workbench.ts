@@ -22,6 +22,7 @@ import type {
 	ProjectTreeResponse,
 	PromptAttachment,
 	PromptAttachmentPreview,
+	ProductBranding,
 	QueuedUserPrompt,
 	SecuritySettingsResponse,
 	UiRequestEvent,
@@ -52,6 +53,12 @@ import {
 	restoreCompactionState,
 	updateCompactionState,
 } from "./compaction-state.ts";
+import {
+	connectionStateAfterHostUpdate,
+	connectionStateAfterSessionSubscription,
+	offlineConnectionState,
+	reconnectingConnectionState,
+} from "./connection-recovery.ts";
 import { readLastSession, saveLastSession } from "./session-persistence.ts";
 import {
 	bootstrapLeaseForSession,
@@ -72,12 +79,18 @@ import {
 } from "./transcript-state.ts";
 
 const TRANSCRIPT_PAGE_SIZE = 120;
+const RECONNECT_DELAY_MS = 1200;
+
+function browserNetworkOnline(): boolean {
+	return typeof navigator === "undefined" || navigator.onLine !== false;
+}
 
 export type InspectorMode = "runs" | "files" | "tree" | "git";
 export type ComposerMode = "prompt" | "steer" | "follow-up";
 export type ThemeMode = "system" | "light" | "dark";
 export type SettingsTab =
 	| "appearance"
+	| "system"
 	| "instructions"
 	| "skills"
 	| "models"
@@ -339,6 +352,7 @@ export function gitFileStatsKey(repositoryPath: string, path: string): string {
 
 export interface WorkbenchState {
 	loading: boolean;
+	networkOnline: boolean;
 	connected: boolean;
 	reconnecting: boolean;
 	connectionError: string;
@@ -413,6 +427,9 @@ export interface WorkbenchState {
 	directoryLoading: boolean;
 	settingsOpen: boolean;
 	settingsTab: SettingsTab;
+	branding: ProductBranding;
+	brandingSaving: boolean;
+	brandingError?: string;
 	securitySettings?: SecuritySettingsResponse;
 	securitySettingsLoading: boolean;
 	securitySettingsSaving: boolean;
@@ -938,6 +955,7 @@ export function projectInspectorStateForSelection(
 function initialState(): WorkbenchState {
 	return {
 		loading: false,
+		networkOnline: browserNetworkOnline(),
 		connected: false,
 		reconnecting: false,
 		connectionError: "",
@@ -981,6 +999,9 @@ function initialState(): WorkbenchState {
 		directoryLoading: false,
 		settingsOpen: false,
 		settingsTab: "appearance",
+		branding: { name: "LYStar Code" },
+		brandingSaving: false,
+		brandingError: undefined,
 		securitySettings: undefined,
 		securitySettingsLoading: false,
 		securitySettingsSaving: false,
@@ -1039,6 +1060,7 @@ export function useWorkbench() {
 	const sessionDetailSeqRef = useRef(new Map<string, number>());
 	const sessionSubscriptionWaitersRef = useRef(new Map<string, Set<SessionSubscriptionWaiter>>());
 	const initializePromiseRef = useRef<Promise<void> | undefined>(undefined);
+	const initializeRef = useRef<() => Promise<void>>(async () => {});
 	const runtimeRecoverySessionRef = useRef<string | undefined>(undefined);
 	const selectSessionRef = useRef<(sessionId: string) => Promise<void>>(async () => {});
 	const loadSessionTreeRef = useRef<() => Promise<void>>(async () => {});
@@ -1102,6 +1124,12 @@ export function useWorkbench() {
 				const nextLease = bootstrapLeaseForSession(current.sessionId, current.lease, data.leases ?? []);
 				const operations = mergeOperationSnapshots(current.operations, data.operations);
 				const projects = mergeProjectSessions(current.projects, data.projects);
+				const connection = connectionStateAfterHostUpdate(
+					current,
+					data.connection.connected,
+					Boolean(current.sessionId),
+					browserNetworkOnline(),
+				);
 				return {
 					...current,
 					projects: current.session
@@ -1110,13 +1138,11 @@ export function useWorkbench() {
 					projectGroups: data.projectGroups ?? [],
 					operations,
 					pendingUiRequests: data.pendingUiRequests,
-					connected: data.connection.connected,
-					connectionError: "",
-					reconnecting: false,
+					...connection,
 					authRequired: false,
 					lease: nextLease,
 					readOnly: current.sessionId ? nextLease === undefined : current.readOnly,
-					sessionReady: current.sessionId ? current.sessionReady && data.connection.connected : false,
+					sessionReady: current.sessionId ? current.sessionReady && connection.connected : false,
 					currentProjectId:
 						current.currentProjectId && data.projects.some((project) => project.id === current.currentProjectId)
 							? current.currentProjectId
@@ -1719,7 +1745,12 @@ export function useWorkbench() {
 					loadTranscript(sessionId),
 				]);
 			}
-			if (stateRef.current.sessionId === sessionId) updateState((current) => ({ ...current, sessionReady: true }));
+			if (stateRef.current.sessionId === sessionId) {
+				updateState((current) => ({
+					...current,
+					...connectionStateAfterSessionSubscription(current, browserNetworkOnline()),
+				}));
+			}
 			return true;
 		},
 		[loadSessionOperations, loadSessionSnapshot, loadTranscript, updateState],
@@ -1734,7 +1765,16 @@ export function useWorkbench() {
 					for (const waiter of [...waiters]) waiter.resolve(event.gap ? "gap" : "ready");
 				}
 				const selected = stateRef.current.sessionId === event.sessionId;
-				if (selected) updateState((current) => ({ ...current, sessionReady: !event.gap }));
+				if (selected) {
+					updateState((current) =>
+						event.gap
+							? { ...current, sessionReady: false }
+							: {
+									...current,
+									...connectionStateAfterSessionSubscription(current, browserNetworkOnline()),
+								},
+					);
+				}
 				if (event.gap && selected && selectionInFlightRef.current !== event.sessionId)
 					void completeSessionSubscription(event.sessionId, "gap").catch((error) => {
 						showToast(errorMessage(error));
@@ -1787,15 +1827,22 @@ export function useWorkbench() {
 				return;
 			}
 			if (event.type === "connection_state") {
-				updateState((current) => ({
-					...current,
-					connected: event.connected,
-					reconnecting: !event.connected,
-					connectionError: event.message ?? (event.connected ? "" : "Web Host 连接已断开"),
-					...(event.connected
-						? {}
-						: { lease: undefined, readOnly: Boolean(current.sessionId), sessionReady: false }),
-				}));
+				updateState((current) => {
+					const connection = connectionStateAfterHostUpdate(
+						current,
+						event.connected,
+						Boolean(current.sessionId),
+						browserNetworkOnline(),
+						event.message,
+					);
+					return {
+						...current,
+						...connection,
+						...(event.connected
+							? {}
+							: { lease: undefined, readOnly: Boolean(current.sessionId), sessionReady: false }),
+					};
+				});
 				return;
 			}
 			if (event.type === "sessions_changed") {
@@ -2143,7 +2190,32 @@ export function useWorkbench() {
 		],
 	);
 
+	const scheduleReconnect = useCallback(() => {
+		if (
+			reconnectTimerRef.current ||
+			!mountedRef.current ||
+			!webApi.hasToken() ||
+			!browserNetworkOnline()
+		)
+			return;
+		reconnectTimerRef.current = window.setTimeout(() => {
+			reconnectTimerRef.current = undefined;
+			if (mountedRef.current && !socketRef.current && webApi.hasToken() && browserNetworkOnline())
+				void initializeRef.current();
+		}, RECONNECT_DELAY_MS);
+	}, []);
+
 	const connectStream = useCallback(() => {
+		if (!browserNetworkOnline()) {
+			updateState((current) => ({
+				...current,
+				...offlineConnectionState(),
+				lease: undefined,
+				readOnly: Boolean(current.sessionId),
+				sessionReady: false,
+			}));
+			return;
+		}
 		const generation = streamGenerationRef.current + 1;
 		streamGenerationRef.current = generation;
 		if (reconnectTimerRef.current) {
@@ -2154,7 +2226,11 @@ export function useWorkbench() {
 		socketRef.current = undefined;
 		if (previous && previous.readyState !== WebSocket.CLOSED) previous.close();
 
-		updateState((current) => (current.sessionId ? { ...current, sessionReady: false } : current));
+		updateState((current) => ({
+			...current,
+			...reconnectingConnectionState(),
+			...(current.sessionId ? { sessionReady: false } : {}),
+		}));
 		let socket: WebSocket;
 		socket = webApi.connect(
 			(event) => {
@@ -2165,26 +2241,17 @@ export function useWorkbench() {
 				if (streamGenerationRef.current !== generation || socketRef.current !== socket) return;
 				socketRef.current = undefined;
 				if (!mountedRef.current) return;
+				const networkOnline = browserNetworkOnline();
 				updateState((current) => ({
 					...current,
-					connected: false,
-					reconnecting: true,
-					connectionError: "Web Host 连接已断开，正在重连",
+					...(networkOnline
+						? reconnectingConnectionState("Web Host 连接已断开，正在重连")
+						: offlineConnectionState()),
 					lease: undefined,
 					readOnly: Boolean(current.sessionId),
 					sessionReady: false,
 				}));
-				if (reconnectTimerRef.current) return;
-				reconnectTimerRef.current = window.setTimeout(() => {
-					reconnectTimerRef.current = undefined;
-					if (
-						mountedRef.current &&
-						streamGenerationRef.current === generation &&
-						!socketRef.current &&
-						webApi.hasToken()
-					)
-						connectStream();
-				}, 1200);
+				if (networkOnline) scheduleReconnect();
 			},
 		);
 		const subscribeSelectedSession = () => {
@@ -2197,7 +2264,7 @@ export function useWorkbench() {
 		socket.addEventListener("open", subscribeSelectedSession, { once: true });
 		socketRef.current = socket;
 		if (socket.readyState === WebSocket.OPEN) subscribeSelectedSession();
-	}, [completeSessionSubscription, handleEvent, showToast, subscribeSessionAndWait, updateState]);
+	}, [completeSessionSubscription, handleEvent, scheduleReconnect, showToast, subscribeSessionAndWait, updateState]);
 
 	const refreshModelSettings = useCallback(async () => {
 		updateState((current) => ({ ...current, modelSettingsLoading: true, modelSettingsError: undefined }));
@@ -2221,15 +2288,34 @@ export function useWorkbench() {
 		}
 	}, [updateState]);
 
+	const refreshBranding = useCallback(async () => {
+		try {
+			const branding = await webApi.branding();
+			updateState((current) => ({ ...current, branding }));
+		} catch {
+			// 品牌读取失败时保留内置品牌，不阻断登录和工作台启动。
+		}
+	}, [updateState]);
+
 	const initialize = useCallback((): Promise<void> => {
 		const existing = initializePromiseRef.current;
 		if (existing) return existing;
 		const promise = (async () => {
+			void refreshBranding();
 			if (!webApi.hasToken()) {
 				updateState((current) => ({ ...current, authRequired: true, loading: false }));
 				return;
 			}
-			updateState((current) => ({ ...current, loading: !current.transcriptPageLoaded, connectionError: "" }));
+			const networkOnline = browserNetworkOnline();
+			if (!networkOnline) {
+				updateState((current) => ({ ...current, ...offlineConnectionState(), loading: false }));
+				return;
+			}
+			updateState((current) => ({
+				...current,
+				...reconnectingConnectionState(),
+				loading: !current.transcriptPageLoaded,
+			}));
 			try {
 				const data = await webApi.bootstrap();
 				applyBootstrap(data);
@@ -2270,11 +2356,23 @@ export function useWorkbench() {
 			} catch (error) {
 				if (error instanceof UnauthorizedError) {
 					webApi.clearToken();
-					updateState((current) => ({ ...current, authRequired: true, connected: false }));
+					updateState((current) => ({
+						...current,
+						authRequired: true,
+						connected: false,
+						reconnecting: false,
+					}));
 				} else {
+					const online = browserNetworkOnline();
 					const message = errorMessage(error);
-					updateState((current) => ({ ...current, connectionError: message }));
-					showToast(message);
+					updateState((current) => ({
+						...current,
+						...(online ? reconnectingConnectionState(message) : offlineConnectionState()),
+						lease: undefined,
+						readOnly: Boolean(current.sessionId),
+						sessionReady: false,
+					}));
+					if (online) scheduleReconnect();
 				}
 			} finally {
 				updateState((current) => ({ ...current, loading: false }));
@@ -2285,7 +2383,8 @@ export function useWorkbench() {
 		});
 		initializePromiseRef.current = tracked;
 		return tracked;
-	}, [applyBootstrap, connectStream, refreshModelSettings, showToast, updateState]);
+	}, [applyBootstrap, connectStream, refreshBranding, refreshModelSettings, scheduleReconnect, updateState]);
+	initializeRef.current = initialize;
 
 	const submitToken = useCallback(
 		async (token: string) => {
@@ -2857,18 +2956,17 @@ export function useWorkbench() {
 	);
 
 	const deleteSession = useCallback(
-		async (sessionId: string) => {
+		async (sessionId: string): Promise<boolean> => {
 			const current = stateRef.current;
 			const project = current.projects.find((candidate) =>
 				candidate.sessions.some((session) => session.id === sessionId),
 			);
-			if (!project) return;
+			if (!project) return false;
 			if (current.sessionId === sessionId && hasActive(current.currentOperation)) {
 				showToast("运行中的会话不能删除");
-				return;
+				return false;
 			}
 			try {
-				if (current.sessionId === sessionId && current.lease) await webApi.release(sessionId);
 				await webApi.deleteSession(sessionId);
 				const nextSessionId = project.sessions.find((session) => session.id !== sessionId)?.id;
 				updateState((next) => {
@@ -2918,8 +3016,10 @@ export function useWorkbench() {
 					if (nextSessionId) await selectSession(nextSessionId);
 					else await loadProjectTreeRef.current();
 				}
+				return true;
 			} catch (error) {
 				showToast(errorMessage(error));
+				return false;
 			}
 		},
 		[selectSession, showToast, updateState],
@@ -3833,6 +3933,27 @@ export function useWorkbench() {
 		[showToast, updateState],
 	);
 
+	const saveBranding = useCallback(
+		async (input: { name: string; logo?: string | null }) => {
+			updateState((current) => ({ ...current, brandingSaving: true, brandingError: undefined }));
+			try {
+				const branding = await webApi.saveBranding(input);
+				updateState((current) => ({
+					...current,
+					branding,
+					brandingSaving: false,
+					brandingError: undefined,
+				}));
+				showToast("系统设置已保存");
+			} catch (error) {
+				const message = errorMessage(error);
+				updateState((current) => ({ ...current, brandingSaving: false, brandingError: message }));
+				showToast(message);
+			}
+		},
+		[showToast, updateState],
+	);
+
 	const refreshHostInstructions = useCallback(async () => {
 		updateState((current) => ({ ...current, hostInstructionsLoading: true, hostInstructionsError: undefined }));
 		try {
@@ -4001,21 +4122,65 @@ export function useWorkbench() {
 	}, [ensureSessionControl, state.connected, state.readOnly, state.sessionId]);
 
 	useEffect(() => {
+		const handleOffline = () => {
+			if (reconnectTimerRef.current) {
+				window.clearTimeout(reconnectTimerRef.current);
+				reconnectTimerRef.current = undefined;
+			}
+			streamGenerationRef.current += 1;
+			const socket = socketRef.current;
+			socketRef.current = undefined;
+			if (socket && socket.readyState !== WebSocket.CLOSED) socket.close();
+			updateState((current) => ({
+				...current,
+				...offlineConnectionState(),
+				lease: undefined,
+				readOnly: Boolean(current.sessionId),
+				sessionReady: false,
+			}));
+		};
+		const handleOnline = () => {
+			if (!webApi.hasToken()) {
+				updateState((current) => ({ ...current, networkOnline: true }));
+				return;
+			}
+			if (reconnectTimerRef.current) {
+				window.clearTimeout(reconnectTimerRef.current);
+				reconnectTimerRef.current = undefined;
+			}
+			updateState((current) => ({
+				...current,
+				...reconnectingConnectionState(),
+				lease: undefined,
+				readOnly: Boolean(current.sessionId),
+				sessionReady: false,
+			}));
+			void initializeRef.current();
+		};
+		window.addEventListener("offline", handleOffline);
+		window.addEventListener("online", handleOnline);
+		return () => {
+			window.removeEventListener("offline", handleOffline);
+			window.removeEventListener("online", handleOnline);
+		};
+	}, [updateState]);
+
+	useEffect(() => {
 		const handleVisibilityChange = () => {
 			if (document.visibilityState !== "visible") return;
 			flushPendingTextProgress();
-			if (!webApi.hasToken()) return;
+			if (!webApi.hasToken() || !browserNetworkOnline()) return;
 			const socket = socketRef.current;
 			if (socket && socket.readyState !== WebSocket.CLOSED) return;
 			if (reconnectTimerRef.current) {
 				window.clearTimeout(reconnectTimerRef.current);
 				reconnectTimerRef.current = undefined;
 			}
-			connectStream();
+			void initializeRef.current();
 		};
 		document.addEventListener("visibilitychange", handleVisibilityChange);
 		return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
-	}, [connectStream, flushPendingTextProgress]);
+	}, [flushPendingTextProgress]);
 
 	useEffect(() => {
 		mountedRef.current = true;
@@ -4085,7 +4250,9 @@ export function useWorkbench() {
 		refreshHostInstructions,
 		saveHostInstruction,
 		refreshModelSettings,
+		refreshBranding,
 		refreshSecuritySettings,
+		saveBranding,
 		saveSecuritySettings,
 		loadGitStatus,
 		loadGitRepositoryStats,

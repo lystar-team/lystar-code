@@ -5,7 +5,7 @@ interface MonacoEnvironment {
 }
 
 const globalScope = globalThis as typeof globalThis & { MonacoEnvironment?: MonacoEnvironment };
-const languageLoadPromises = new Map<string, Promise<string>>();
+const languageLoadPromises = new Map<string, Promise<unknown>>();
 let runtimePromise: Promise<typeof Monaco> | undefined;
 
 const lazyLanguageLoaders: Record<string, () => Promise<unknown>> = {
@@ -64,20 +64,33 @@ export function loadMonacoRuntime(): Promise<typeof Monaco> {
 	return runtimePromise;
 }
 
+function loadMonacoLanguageModule(language: string): Promise<unknown> {
+	const loader = lazyLanguageLoaders[language];
+	if (!loader) return Promise.resolve();
+	const existing = languageLoadPromises.get(language);
+	if (existing) return existing;
+	const promise = loader();
+	languageLoadPromises.set(language, promise);
+	return promise;
+}
+
+export function preloadMonacoRuntime(): void {
+	void loadMonacoRuntime().catch(() => {});
+}
+
+export function preloadMonacoLanguage(language: string): void {
+	if (!lazyLanguageLoaders[language]) return;
+	void Promise.all([loadMonacoRuntime(), loadMonacoLanguageModule(language)]).catch(() => {});
+}
+
 export function ensureMonacoLanguage(monaco: typeof Monaco, language: string): Promise<string> {
 	if (language === "text" || monaco.languages.getLanguages().some((entry) => entry.id === language)) {
 		return Promise.resolve(language);
 	}
-	const loader = lazyLanguageLoaders[language];
-	if (!loader) return Promise.resolve("text");
-	const existing = languageLoadPromises.get(language);
-	if (existing) return existing;
-	const promise = loader().then(
+	return loadMonacoLanguageModule(language).then(
 		() => (monaco.languages.getLanguages().some((entry) => entry.id === language) ? language : "text"),
 		() => "text",
 	);
-	languageLoadPromises.set(language, promise);
-	return promise;
 }
 
 export function setMonacoTheme(monaco: typeof Monaco, dark: boolean): void {

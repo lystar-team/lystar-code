@@ -1,6 +1,8 @@
 import { ArrowUp, ArrowUpToLine, Check, ChevronDown, Plus, Square, Trash2 } from "lucide-react";
+import { gsap } from "gsap";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api";
+import { runGsapMotion } from "../../lib/gsap-motion";
 import { type CommandDialogRequest, executeComposerCommand, resolveComposerCommand } from "../../state/composer-commands";
 import { canSendPrompt, hasActiveSessionWork } from "../../state/chat-lifecycle";
 import { CommandDialog } from "./command-dialog";
@@ -13,7 +15,12 @@ import { PromptInput, PromptInputBody, PromptInputButton, PromptInputFooter, Pro
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
-import { THINKING_LEVEL_LABELS } from "./constants";
+import { GsapReveal } from "../ui/gsap-reveal";
+import {
+	THINKING_LEVEL_LABELS,
+	selectedVisibleThinkingLevel,
+	visibleThinkingLevels,
+} from "./constants";
 import { formatModelDisplayName } from "./model-utils";
 import type { WorkbenchActions } from "./types";
 
@@ -60,8 +67,32 @@ export const Composer = memo(function Composer({ state, actions }: ComposerProps
 	const [queueActionId, setQueueActionId] = useState<string>();
 	const submittingSessionIdsRef = useRef(new Set<string>());
 	const draftBySessionRef = useRef(new Map<string, string>());
+	const promptAnimationScopeRef = useRef<HTMLDivElement>(null);
+	const promptAnimationCleanupRef = useRef<(() => void) | undefined>(undefined);
 	const sessionIdRef = useRef(state.sessionId);
 	sessionIdRef.current = state.sessionId;
+	const playPromptSubmitFeedback = useCallback(() => {
+		const submitButton = promptAnimationScopeRef.current?.querySelector<HTMLButtonElement>("[data-prompt-submit-button]");
+		if (!submitButton) return;
+		promptAnimationCleanupRef.current?.();
+		promptAnimationCleanupRef.current = runGsapMotion(submitButton, (reducedMotion) => {
+			if (reducedMotion) return;
+			gsap
+				.timeline()
+				.to(submitButton, { scale: 0.9, duration: 0.08, ease: "power2.out", overwrite: "auto" })
+				.to(submitButton, {
+					scale: 1,
+					duration: 0.32,
+					ease: "back.out(1.7)",
+					clearProps: "transform",
+				});
+		});
+	}, []);
+	useEffect(() => {
+		return () => {
+			promptAnimationCleanupRef.current?.();
+		};
+	}, []);
 	const inputSessionId = state.sessionId;
 	const handleInputChange = useCallback(
 		(value: string) => {
@@ -73,6 +104,7 @@ export const Composer = memo(function Composer({ state, actions }: ComposerProps
 	);
 	const initialInput = inputSessionId ? (draftBySessionRef.current.get(inputSessionId) ?? "") : "";
 	useEffect(() => {
+		promptAnimationCleanupRef.current?.();
 		setCommandDialog(undefined);
 		setModelSelectorOpen(false);
 		setQueueActionId(undefined);
@@ -94,9 +126,9 @@ export const Composer = memo(function Composer({ state, actions }: ComposerProps
 	);
 	const contextWindow = state.session?.contextWindow ?? selectedModel?.contextWindow ?? 0;
 	const contextTokens = state.session?.contextTokens ?? 0;
-	const thinkingLevels = (
-		selectedModel?.supportedThinkingLevels.length ? selectedModel.supportedThinkingLevels : ["off"]
-	).filter((level) => level !== "minimal");
+	const thinkingLevels = visibleThinkingLevels(
+		selectedModel?.supportedThinkingLevels.length ? selectedModel.supportedThinkingLevels : ["off"],
+	);
 	const modelsByProvider = useMemo(() => {
 		const groups = new Map<string, typeof state.models>();
 		for (const model of state.models) {
@@ -127,11 +159,18 @@ export const Composer = memo(function Composer({ state, actions }: ComposerProps
 					>
 						<div className="relative">
 							{state.queuedUserPrompts.length ? (
-								<QueuedPromptList
-									prompts={state.queuedUserPrompts}
-									busyId={queueActionId}
-									onAction={handleQueueAction}
-								/>
+								<GsapReveal
+									animationKey={state.queuedUserPrompts.at(-1)?.id ?? "queue"}
+									className="w-full"
+									distance={10}
+									duration={0.24}
+								>
+									<QueuedPromptList
+										prompts={state.queuedUserPrompts}
+										busyId={queueActionId}
+										onAction={handleQueueAction}
+									/>
+								</GsapReveal>
 							) : null}
 							<PromptCompletionMenu />
 							<PromptInput
@@ -152,6 +191,7 @@ export const Composer = memo(function Composer({ state, actions }: ComposerProps
 									if (!text.trim() || disabled || !submissionSessionId) return;
 									if (submittingSessionIdsRef.current.has(submissionSessionId)) throw new Error("正在提交，请稍候");
 									submittingSessionIdsRef.current.add(submissionSessionId);
+									playPromptSubmitFeedback();
 									try {
 										const command = await resolveComposerCommand(text, (token, cursor) => {
 											if (!state.currentProjectId) throw new Error("请先选择项目");
@@ -275,11 +315,10 @@ export const Composer = memo(function Composer({ state, actions }: ComposerProps
 										</ModelSelector>
 										{selectedModel?.reasoning ? (
 											<PromptInputSelect
-												value={
-													state.session?.thinkingLevel === "minimal"
-														? "low"
-														: (state.session?.thinkingLevel ?? "off")
-												}
+												value={selectedVisibleThinkingLevel(
+													state.session?.thinkingLevel ?? "off",
+													thinkingLevels,
+												)}
 												onValueChange={actions.updateThinking}
 											>
 												<PromptInputSelectTrigger
@@ -287,11 +326,7 @@ export const Composer = memo(function Composer({ state, actions }: ComposerProps
 													aria-label="思考强度"
 												>
 													<PromptInputSelectValue>
-														{thinkingLevelDisplayLabel(
-															state.session?.thinkingLevel === "minimal"
-																? "low"
-																: (state.session?.thinkingLevel ?? "off"),
-														)}
+														{thinkingLevelDisplayLabel(state.session?.thinkingLevel ?? "off")}
 													</PromptInputSelectValue>
 												</PromptInputSelectTrigger>
 												<PromptInputSelectContent
@@ -311,8 +346,9 @@ export const Composer = memo(function Composer({ state, actions }: ComposerProps
 											status={stopping ? "streaming" : "ready"}
 											onStop={stopping ? () => void actions.abort() : undefined}
 											disabled={disabled || (!stopping && !state.sessionId)}
-							data-prompt-submit-mode={stopping ? "steer" : undefined}
-							aria-label={stopping ? "停止" : "发送"}
+											data-prompt-submit-button
+											data-prompt-submit-mode={stopping ? "steer" : undefined}
+											aria-label={stopping ? "停止" : "发送"}
 										>
 											{stopping ? (
 												<Square className="size-4 fill-current" />

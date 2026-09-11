@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import {
 	assertRuntimeIdle,
+	captureUserCommandEnvironment,
 	createRuntimeServiceSpec,
 	defaultRuntimeEndpoint,
 	ensureRuntimeService,
@@ -12,6 +13,7 @@ import {
 	installWebService,
 	type RuntimeServiceStatus,
 	removeWebService,
+	restartRuntimeService,
 	runtimeTcpEndpoint,
 	stopRuntimeService,
 	stopWebService,
@@ -77,9 +79,17 @@ export interface WebServicesStatus {
 }
 
 export type WebServiceAction = "install" | "start" | "stop" | "restart" | "reconcile" | "status" | "uninstall";
+export type WebComponent = "gateway" | "runtime";
+export type WebComponentAction = "start" | "stop" | "restart" | "status";
 
 export interface WebServiceActionOptions extends WebServiceLaunchOptions {
 	action: WebServiceAction;
+}
+
+export interface WebComponentActionOptions extends WebServiceLaunchOptions {
+	component: WebComponent;
+	action: WebComponentAction;
+	force?: boolean;
 }
 
 function profileFor(configFileName: string | undefined): string {
@@ -92,6 +102,7 @@ function serviceEnvironment(
 	serviceVersion: string | undefined,
 ): Record<string, string | undefined> {
 	return {
+		...captureUserCommandEnvironment(),
 		PI_CODING_AGENT_DIR: config.agentDir,
 		...(configFileName ? { LYSTAR_CLI_MODE: "development" } : {}),
 		...(serviceVersion ? { LYSTAR_WEB_SERVICE_VERSION: serviceVersion } : {}),
@@ -123,14 +134,19 @@ function fallbackGatewayConfig(options: WebServiceLaunchOptions): WebGatewayConf
 	};
 }
 
+function serviceLogPath(agentDir: string, kind: "gateway" | "runtime", profile: string): string {
+	return join(agentDir, "web", `${kind}${profile === DEFAULT_PROFILE ? "" : `-${profile}`}.log`);
+}
+
 function gatewaySpec(config: WebGatewayConfig, options: WebServiceLaunchOptions): WebServiceSpec {
+	const profile = profileFor(options.configFileName);
 	return {
 		kind: "gateway",
-		profile: profileFor(options.configFileName),
+		profile,
 		agentDir: config.agentDir,
 		invocation: { ...serviceInvocation(options.gatewayInvocation)!, cwd: config.agentDir },
 		environment: serviceEnvironment(config, options.configFileName, options.serviceVersion),
-		logPath: join(config.agentDir, "web", "gateway.log"),
+		logPath: serviceLogPath(config.agentDir, "gateway", profile),
 	};
 }
 
@@ -145,13 +161,14 @@ function runtimeSpec(config: WebGatewayConfig, options: WebServiceLaunchOptions)
 	return runtime;
 }
 
-function statePath(agentDir: string): string {
-	return join(agentDir, "web", "service-state.json");
+function statePath(agentDir: string, configFileName?: string): string {
+	const profile = profileFor(configFileName);
+	return join(agentDir, "web", `service-state${profile === DEFAULT_PROFILE ? "" : `-${profile}`}.json`);
 }
 
 function readState(agentDir: string, configFileName: string | undefined): WebServiceState | undefined {
 	try {
-		const value: unknown = JSON.parse(readFileSync(statePath(agentDir), "utf8"));
+		const value: unknown = JSON.parse(readFileSync(statePath(agentDir, configFileName), "utf8"));
 		if (!value || typeof value !== "object") return undefined;
 		const state = value as Partial<WebServiceState>;
 		const port = typeof state.port === "number" ? state.port : undefined;
@@ -187,7 +204,7 @@ function readState(agentDir: string, configFileName: string | undefined): WebSer
 }
 
 function writeState(config: WebGatewayConfig, options: WebServiceLaunchOptions): void {
-	const path = statePath(config.agentDir);
+	const path = statePath(config.agentDir, options.configFileName);
 	mkdirSync(join(config.agentDir, "web"), { recursive: true, mode: 0o700 });
 	const state: WebServiceState = {
 		version: SERVICE_STATE_VERSION,
@@ -215,6 +232,7 @@ function stateConfig(state: WebServiceState, options: WebServiceLaunchOptions): 
 		host: state.host,
 		port: state.port,
 		agentDir: options.agentDir,
+		serviceProfile: profileFor(options.configFileName),
 		runtimeEndpoint: state.runtimeEndpoint,
 		runtimePort: state.runtimePort,
 		token: "",
@@ -238,10 +256,10 @@ async function loadConfiguredGateway(options: WebServiceLaunchOptions): Promise<
 	});
 }
 
-async function waitForGatewayExit(agentDir: string, timeoutMs = 10_000): Promise<void> {
+async function waitForGatewayExit(agentDir: string, profile: string, timeoutMs = 10_000): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
-		if (!readGatewayPid(agentDir)) return;
+		if (!readGatewayPid(agentDir, profile)) return;
 		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
 	throw new Error("Web Gateway服务停止超时");
@@ -272,15 +290,15 @@ async function waitForGatewayReady(config: WebGatewayConfig, timeoutMs = 10_000)
 	throw new Error(`Web Gateway服务启动超时${lastError ? `：${lastError}` : ""}`);
 }
 
-async function stopDetachedGateway(agentDir: string): Promise<void> {
-	const pid = readGatewayPid(agentDir);
+async function stopDetachedGateway(agentDir: string, profile: string): Promise<void> {
+	const pid = readGatewayPid(agentDir, profile);
 	if (!pid) return;
 	try {
 		process.kill(pid, "SIGTERM");
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
 	}
-	await waitForGatewayExit(agentDir);
+	await waitForGatewayExit(agentDir, profile);
 }
 
 export async function getWebServicesStatus(options: WebServiceLaunchOptions): Promise<WebServicesStatus> {
@@ -298,15 +316,15 @@ export async function getWebServicesStatus(options: WebServiceLaunchOptions): Pr
 			fallbackConfig.agentDir,
 		),
 	]);
+	const profile = profileFor(options.configFileName);
+	const gatewayPid = readGatewayPid(options.agentDir, profile);
 	return {
-		enabled: Boolean(
-			configured || state || gatewayStatus.installed || runtimeStatus.installed || readGatewayPid(options.agentDir),
-		),
-		profile: profileFor(options.configFileName),
+		enabled: Boolean(configured || state || gatewayStatus.installed || runtimeStatus.installed || gatewayPid),
+		profile,
 		...(state?.serviceVersion ? { serviceVersion: state.serviceVersion } : {}),
 		gateway: {
 			...gatewayStatus,
-			...(readGatewayPid(options.agentDir) ? { pid: readGatewayPid(options.agentDir) } : {}),
+			...(gatewayPid ? { pid: gatewayPid } : {}),
 		},
 		runtime: runtimeStatus,
 	};
@@ -326,14 +344,23 @@ async function applyWebServices(
 		runtimeInvocation,
 		config.agentDir,
 	);
+	const profile = profileFor(options.configFileName);
 	if (reinstall) {
 		await assertRuntimeIdle(config.runtimeEndpoint);
 		// 先停止接收新请求，避免旧 Gateway 在版本切换期间拉起旧 Runtime。
 		stopWebService(gateway, false, {
-			detachedPid: readGatewayPid(config.agentDir),
+			detachedPid: readGatewayPid(config.agentDir, profile),
 			interactiveAdmin: options.interactiveAdmin ?? false,
 		});
-		await waitForGatewayExit(config.agentDir);
+		try {
+			await waitForGatewayExit(config.agentDir, profile);
+		} catch {
+			stopWebService(gateway, true, {
+				detachedPid: readGatewayPid(config.agentDir, profile),
+				interactiveAdmin: options.interactiveAdmin ?? false,
+			});
+			await waitForGatewayExit(config.agentDir, profile);
+		}
 	}
 	if (!runtimeStatus.installed && (runtimeStatus.manager === "detached" || runtimeStatus.reachable)) {
 		await stopRuntimeService(
@@ -361,7 +388,8 @@ async function applyWebServices(
 			config.agentDir,
 		);
 	}
-	if (!gatewayStatus.installed && gatewayStatus.manager === "detached") await stopDetachedGateway(config.agentDir);
+	if (!gatewayStatus.installed && gatewayStatus.manager === "detached")
+		await stopDetachedGateway(config.agentDir, profile);
 	if (reinstall || !gatewayStatus.installed) {
 		installWebService(gateway, { interactiveAdmin: options.interactiveAdmin ?? false });
 	} else {
@@ -405,6 +433,106 @@ async function reconcileWebServices(options: WebServiceLaunchOptions): Promise<W
 	return transaction.recovered ? { ...status, recovered: transaction.recovered } : status;
 }
 
+export async function runWebComponentAction(
+	options: WebComponentActionOptions,
+): Promise<WebServiceStatus | RuntimeServiceStatus> {
+	const configured = await loadConfiguredGateway(options);
+	const state = readState(options.agentDir, options.configFileName);
+	const config = configured ?? (state ? stateConfig(state, options) : fallbackGatewayConfig(options));
+	const profile = profileFor(options.configFileName);
+	const interactiveAdmin = options.interactiveAdmin ?? false;
+	const runtimeInvocation = serviceInvocation(options.runtimeInvocation);
+
+	if (options.component === "runtime") {
+		const status = await getRuntimeServiceStatus(config.runtimeEndpoint, profile, runtimeInvocation, config.agentDir);
+		if (options.action === "status") return status;
+		if (!configured && !state) {
+			throw new Error(
+				`Web 尚未完成配置，请先运行 lc web。配置文件：${join(options.agentDir, options.configFileName ?? "web-config.json")}`,
+			);
+		}
+		if (options.action === "stop") {
+			return stopRuntimeService(
+				config.runtimeEndpoint,
+				options.force ?? false,
+				profile,
+				runtimeInvocation,
+				interactiveAdmin,
+				config.agentDir,
+			);
+		}
+		if (options.action === "restart") {
+			if (options.force) {
+				await stopRuntimeService(
+					config.runtimeEndpoint,
+					true,
+					profile,
+					runtimeInvocation,
+					interactiveAdmin,
+					config.agentDir,
+				);
+				return ensureRuntimeService(
+					config.runtimeEndpoint,
+					profile,
+					runtimeInvocation,
+					interactiveAdmin,
+					config.agentDir,
+				);
+			}
+			return restartRuntimeService(config.runtimeEndpoint, profile, runtimeInvocation, config.agentDir);
+		}
+		if (status.installed) {
+			return ensureRuntimeService(
+				config.runtimeEndpoint,
+				profile,
+				runtimeInvocation,
+				interactiveAdmin,
+				config.agentDir,
+			);
+		}
+		return installRuntimeService(config.runtimeEndpoint, interactiveAdmin, {
+			profile,
+			invocation: runtimeInvocation,
+			agentDir: config.agentDir,
+			environment: serviceEnvironment(config, options.configFileName, options.serviceVersion),
+		});
+	}
+
+	const gateway = gatewaySpec(config, options);
+	const status = getWebServiceStatus(gateway);
+	const gatewayStatus = (): WebServiceStatus => {
+		const current = getWebServiceStatus(gateway);
+		const pid = readGatewayPid(config.agentDir, profile);
+		return { ...current, ...(pid ? { pid } : {}) };
+	};
+	if (options.action === "status") return gatewayStatus();
+	if (!configured && !state) {
+		throw new Error(
+			`Web 尚未完成配置，请先运行 lc web。配置文件：${join(options.agentDir, options.configFileName ?? "web-config.json")}`,
+		);
+	}
+	if (options.action === "stop" || options.action === "restart") {
+		const stop = (force: boolean) =>
+			stopWebService(gateway, force, {
+				detachedPid: readGatewayPid(config.agentDir, profile),
+				interactiveAdmin,
+			});
+		stop(options.force ?? false);
+		try {
+			await waitForGatewayExit(config.agentDir, profile);
+		} catch (error) {
+			if (options.force) throw error;
+			stop(true);
+			await waitForGatewayExit(config.agentDir, profile);
+		}
+		if (options.action === "stop") return gatewayStatus();
+	}
+	if (status.installed) ensureWebService(gateway, { interactiveAdmin });
+	else installWebService(gateway, { interactiveAdmin });
+	await waitForGatewayReady(config);
+	return gatewayStatus();
+}
+
 export async function runWebServiceAction(options: WebServiceActionOptions): Promise<WebServicesStatus> {
 	if (options.action === "uninstall") {
 		const status = await getWebServicesStatus(options);
@@ -425,7 +553,7 @@ export async function runWebServiceAction(options: WebServiceActionOptions): Pro
 			});
 			removeWebService(runtime, { interactiveAdmin: options.interactiveAdmin ?? false });
 		}
-		rmSync(statePath(options.agentDir), { force: true });
+		rmSync(statePath(options.agentDir, options.configFileName), { force: true });
 		return { ...status, enabled: false };
 	}
 	if (options.action === "status") return getWebServicesStatus(options);
@@ -443,9 +571,19 @@ export async function runWebServiceAction(options: WebServiceActionOptions): Pro
 			config.agentDir,
 		);
 		stopWebService(gateway, false, {
-			detachedPid: readGatewayPid(config.agentDir),
+			detachedPid: readGatewayPid(config.agentDir, profileFor(options.configFileName)),
 			interactiveAdmin: options.interactiveAdmin ?? false,
 		});
+		const profile = profileFor(options.configFileName);
+		try {
+			await waitForGatewayExit(config.agentDir, profile);
+		} catch {
+			stopWebService(gateway, true, {
+				detachedPid: readGatewayPid(config.agentDir, profile),
+				interactiveAdmin: options.interactiveAdmin ?? false,
+			});
+			await waitForGatewayExit(config.agentDir, profile);
+		}
 		return getWebServicesStatus(options);
 	}
 	if (options.action === "start") return ensureWebServices(options);

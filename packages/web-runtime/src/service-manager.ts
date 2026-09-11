@@ -613,7 +613,13 @@ export function stopWebService(
 		return getWebServiceStatus(spec);
 	}
 	if (process.platform === "linux") {
-		const result = run("systemctl", ["--user", "stop", webServiceUnitName(spec.kind, spec.profile)]);
+		const unit = webServiceUnitName(spec.kind, spec.profile);
+		if (force) {
+			const kill = run("systemctl", ["--user", "kill", "--kill-whom=all", "--signal=SIGKILL", unit]);
+			if (!kill.ok && status.running)
+				throw new Error(`无法强制停止 systemd 用户服务：${kill.stderr || kill.stdout}`);
+		}
+		const result = run("systemctl", ["--user", "stop", "--no-block", unit]);
 		if (!result.ok && status.running) throw new Error(`无法停止 systemd 用户服务：${result.stderr || result.stdout}`);
 	} else if (process.platform === "darwin") {
 		const result = runAdmin(

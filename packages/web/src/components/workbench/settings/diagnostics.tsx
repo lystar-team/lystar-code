@@ -542,7 +542,7 @@ export function DiagnosticsSettings({ state, actions }: { state: WorkbenchState;
 				<div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
 					<StatText label="Host IP" value={ipAddresses} />
 					<StatText label="Web 服务端口" value={diagnostics.web?.port ? String(diagnostics.web.port) : "—"} />
-					<StatText label="LYStar Code 版本" value={diagnostics.product?.version ?? "—"} />
+					<StatText label={`${state.branding.name} 版本`} value={diagnostics.product?.version ?? "—"} />
 					<StatText label="平台 / 架构" value={`${diagnostics.host?.platform ?? "—"} / ${diagnostics.host?.arch ?? "—"}`} />
 				</div>
 			</SettingSection>

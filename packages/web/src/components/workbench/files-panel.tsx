@@ -10,7 +10,7 @@ import {
 	Presentation,
 	RefreshCw,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import type { ProjectTreeEntry } from "../../types";
 import type { WorkbenchState } from "../../state/use-workbench";
 import { FileTree, FileTreeFile, FileTreeFolder } from "../ai-elements/file-tree";
@@ -18,12 +18,18 @@ import { Button } from "../ui/button";
 import { Card, CardContent } from "../ui/card";
 import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../../lib/utils";
+import { preloadMonacoRuntime } from "./monaco-runtime";
 import type { WorkbenchActions } from "./types";
 
 export function FilesPanel({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
 	const tree = state.fileTree;
 	const entries = tree?.entries ?? [];
 	const cachedTrees = state.fileTreeCache;
+
+	useEffect(() => {
+		if (!state.currentProjectId) return;
+		preloadMonacoRuntime();
+	}, [state.currentProjectId]);
 
 	const findEntry = (path: string, items: readonly ProjectTreeEntry[]): ProjectTreeEntry | undefined => {
 		for (const entry of items) {

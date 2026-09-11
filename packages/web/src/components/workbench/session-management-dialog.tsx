@@ -1,11 +1,11 @@
 import { Check, LoaderCircle, Pencil, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { cn } from "../../lib/utils";
 import { sessionTitle } from "../../state/use-workbench.ts";
 import type { WebProject, WebSessionSummary } from "../../types.ts";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Input } from "../ui/input";
-import { ScrollArea } from "../ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import {
 	formatSessionTimestamp,
@@ -93,14 +93,19 @@ export function SessionManagementDialog({
 		const ids = pendingDeleteIds;
 		setBusyAction("delete");
 		try {
-			for (const sessionId of ids) await actions.deleteSession(sessionId);
-			setRemovedIds((current) => new Set([...current, ...ids]));
-			setSelectedIds((current) => {
-				const next = new Set(current);
-				for (const sessionId of ids) next.delete(sessionId);
-				return next;
-			});
-			setPendingDeleteIds([]);
+			const deletedIds: string[] = [];
+			for (const sessionId of ids) {
+				if (await actions.deleteSession(sessionId)) deletedIds.push(sessionId);
+			}
+			if (deletedIds.length) {
+				setRemovedIds((current) => new Set([...current, ...deletedIds]));
+				setSelectedIds((current) => {
+					const next = new Set(current);
+					for (const sessionId of deletedIds) next.delete(sessionId);
+					return next;
+				});
+			}
+			setPendingDeleteIds(ids.filter((sessionId) => !deletedIds.includes(sessionId)));
 		} finally {
 			setBusyAction(undefined);
 		}
@@ -134,7 +139,7 @@ export function SessionManagementDialog({
 					if (!open) onClose();
 				}}
 			>
-				<DialogContent className="!flex min-h-0 max-h-[min(88vh,760px)] w-[min(100%-1rem,760px)] max-w-none flex-col gap-0 overflow-hidden p-0 max-sm:inset-0 max-sm:h-dvh max-sm:max-h-none max-sm:w-screen max-sm:max-w-none max-sm:translate-x-0 max-sm:translate-y-0 max-sm:rounded-none sm:max-w-[760px]">
+				<DialogContent className="!flex h-[min(88dvh,760px)] min-h-0 max-h-[min(88dvh,760px)] w-[min(100%-1rem,760px)] max-w-none flex-col gap-0 overflow-hidden p-0 max-sm:inset-0 max-sm:h-dvh max-sm:max-h-none max-sm:w-screen max-sm:max-w-none max-sm:translate-x-0 max-sm:translate-y-0 max-sm:rounded-none sm:max-w-[760px]">
 					<DialogHeader className="shrink-0 border-b border-border/60 px-5 py-4 pr-12 text-left">
 						<DialogTitle>会话管理</DialogTitle>
 						<DialogDescription>
@@ -170,20 +175,30 @@ export function SessionManagementDialog({
 							</SelectContent>
 						</Select>
 					</div>
-					<ScrollArea className="min-h-0 flex-1 overflow-hidden px-5">
+					<div className="conversation-scroll min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain px-5">
 						<div className="grid gap-1 py-3">
 							{sessions.map((session) => {
 								const editing = editingId === session.id;
 								const busy = busyAction === session.id;
+								const selected = selectedIds.has(session.id);
 								return (
 									<div
 										key={session.id}
-										className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3 rounded-md border border-transparent px-2 py-3 hover:bg-muted/50"
+										className={cn(
+											"grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border px-2 py-2 transition-colors",
+											selected
+												? "border-primary/50 bg-primary/5"
+												: "border-border/60 hover:bg-muted/50",
+										)}
+										onClick={(event) => {
+											if (event.target instanceof Element && event.target.closest("button, input")) return;
+											toggleSelected(session.id);
+										}}
 									>
 										<input
-											className="mt-1 size-4 accent-primary"
+											className="size-4 accent-primary"
 											type="checkbox"
-											checked={selectedIds.has(session.id)}
+											checked={selected}
 											onChange={() => toggleSelected(session.id)}
 											aria-label={`选择会话：${sessionTitle(session)}`}
 										/>
@@ -228,9 +243,9 @@ export function SessionManagementDialog({
 													</Button>
 												</div>
 											) : (
-												<p className="truncate text-sm font-medium">{sessionTitle(session)}</p>
+												<p className="truncate text-sm leading-5 font-medium">{sessionTitle(session)}</p>
 											)}
-											<div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+											<div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] leading-4 text-muted-foreground">
 												<time dateTime={new Date(session.createdAt).toISOString()}>
 													创建 {formatSessionTimestamp(session.createdAt)}
 												</time>
@@ -239,7 +254,7 @@ export function SessionManagementDialog({
 												</time>
 											</div>
 										</div>
-										<div className="flex shrink-0 items-center gap-1">
+										<div className="flex shrink-0 items-center gap-0.5">
 											<Button
 												size="icon-xs"
 												variant="ghost"
@@ -267,7 +282,7 @@ export function SessionManagementDialog({
 								<div className="py-12 text-center text-sm text-muted-foreground">暂无会话</div>
 							) : null}
 						</div>
-					</ScrollArea>
+					</div>
 					<DialogFooter className="shrink-0 flex-row items-center justify-between border-t border-border/60 bg-background px-5 py-3">
 						<span className="text-xs text-muted-foreground">已选择 {selectedCount} 个会话</span>
 						<Button

@@ -17,6 +17,9 @@ import type {
 	ProjectTreeResponse,
 	ProjectTrustResponse,
 	PromptAttachment,
+	ProductBranding,
+	ProductUpdateCheckResponse,
+	ProductUpdateStatusResponse,
 	SaveSecuritySettingsResponse,
 	SecuritySettingsResponse,
 	SessionTreeResponse,
@@ -35,7 +38,7 @@ const CLIENT_ID_KEY = "lystar.web.client-id";
 
 export class UnauthorizedError extends Error {
 	constructor() {
-		super("需要输入 Web Token");
+		super("需要输入 Web 密码");
 		this.name = "UnauthorizedError";
 	}
 }
@@ -552,6 +555,17 @@ export class WebApi {
 		return this.request<SettingsResponse>(`/api/settings?sessionId=${encodeURIComponent(sessionId)}`);
 	}
 
+	async branding(): Promise<ProductBranding> {
+		return this.request<ProductBranding>("/api/branding");
+	}
+
+	async saveBranding(input: { name: string; logo?: string | null }): Promise<ProductBranding> {
+		return this.request<ProductBranding>("/api/branding", {
+			method: "POST",
+			body: JSON.stringify(input),
+		});
+	}
+
 	async securitySettings(): Promise<SecuritySettingsResponse> {
 		return this.request<SecuritySettingsResponse>("/api/security-settings");
 	}
@@ -578,6 +592,21 @@ export class WebApi {
 
 	async about(): Promise<unknown> {
 		return this.request("/api/about");
+	}
+
+	async productUpdateStatus(): Promise<ProductUpdateStatusResponse> {
+		return this.request<ProductUpdateStatusResponse>("/api/product-update");
+	}
+
+	async checkProductUpdate(): Promise<ProductUpdateCheckResponse> {
+		return this.request<ProductUpdateCheckResponse>("/api/product-update/check");
+	}
+
+	async startProductUpdate(targetVersion: string): Promise<ProductUpdateStatusResponse> {
+		return this.request<ProductUpdateStatusResponse>("/api/product-update", {
+			method: "POST",
+			body: JSON.stringify({ targetVersion }),
+		});
 	}
 
 	async diagnostics(projectId?: string): Promise<unknown> {

@@ -13,6 +13,7 @@ const DEV_WEB_CONFIG_FILE = "web-dev-config.json";
 
 type RuntimeInvocation = { command: string; args: string[]; cwd: string };
 type WebServiceAction = "install" | "start" | "stop" | "restart" | "reconcile" | "status" | "uninstall";
+type WebComponentAction = "start" | "stop" | "restart" | "status";
 type WebCommandName = "lc" | "lcd";
 type WebCommandSettings = {
 	commandName: WebCommandName;
@@ -20,15 +21,21 @@ type WebCommandSettings = {
 	defaultPort: number;
 	defaultRuntimePort: number;
 };
-type StoredWebConfig = {
-	host: string;
-	allowedHosts: string[];
-	port: number;
-	password: string;
-};
-
 interface WebGatewayModule {
-	loadWebConfig(agentDir: string, configFileName?: string): Promise<StoredWebConfig | undefined>;
+	runWebComponentAction(options: {
+		component: "gateway" | "runtime";
+		action: WebComponentAction;
+		force?: boolean;
+		agentDir: string;
+		configFileName?: string;
+		defaultPort?: number;
+		defaultRuntimePort?: number;
+		staticDir?: string;
+		gatewayInvocation: RuntimeInvocation;
+		runtimeInvocation?: RuntimeInvocation;
+		serviceVersion?: string;
+		interactiveAdmin?: boolean;
+	}): Promise<unknown>;
 	runWebServiceAction(options: {
 		action: WebServiceAction;
 		agentDir: string;
@@ -128,65 +135,43 @@ async function loadRuntimeModule(): Promise<{ runWebRuntimeCli(args: readonly st
 	return (await import(pathToFileURL(path).href)) as { runWebRuntimeCli(args: readonly string[]): Promise<void> };
 }
 
-function urlHost(host: string): string {
-	return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
-}
-
-function controlHosts(config: StoredWebConfig): string[] {
-	const configuredHost = config.host === "0.0.0.0" || config.host === "::" ? undefined : config.host;
-	const candidates = [
-		configuredHost,
-		...config.allowedHosts.filter((host) => host !== "*" && !host.startsWith("*.")),
-		"127.0.0.1",
-		"localhost",
-		"::1",
-	].filter((host): host is string => Boolean(host));
-	return [...new Set(candidates)];
-}
-
-async function restartWebService(
-	service: "gateway" | "runtime",
-	gatewayModule?: Pick<WebGatewayModule, "loadWebConfig">,
+async function runWebComponentCommand(
+	component: "gateway" | "runtime",
+	action: WebComponentAction,
+	force: boolean,
+	gatewayModule?: Pick<WebGatewayModule, "runWebComponentAction">,
 ): Promise<void> {
 	const settings = webCommandSettings();
-	const agentDir = getAgentDir();
 	const module = gatewayModule ?? (await loadGatewayModule());
-	const config = await module.loadWebConfig(agentDir, settings.configFileName);
-	if (!config)
-		throw new Error(
-			`Web 尚未完成配置，请先运行 ${settings.commandName} web。配置文件：${join(agentDir, settings.configFileName ?? "web-config.json")}`,
-		);
-	let lastError: Error | undefined;
-	for (const host of controlHosts(config)) {
-		let response: Response;
-		try {
-			response = await fetch(`http://${urlHost(host)}:${config.port}/api/diagnostics/actions`, {
-				method: "POST",
-				headers: {
-					Authorization: `Bearer ${config.password}`,
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify({ action: `restart-${service}` }),
-				signal: AbortSignal.timeout(service === "runtime" ? 35_000 : 15_000),
-			});
-		} catch (error) {
-			lastError = error instanceof Error ? error : new Error(String(error));
-			continue;
-		}
-		if (!response.ok) {
-			const body = (await response.text()).trim();
-			if (response.status === 400 && body.includes('"host_not_allowed"')) {
-				lastError = new Error(`Gateway 拒绝访问地址 ${host}：${body}`);
-				continue;
-			}
-			throw new Error(`Gateway 拒绝重启请求，HTTP ${response.status}${body ? `：${body}` : ""}`);
-		}
-		console.log(`${service === "gateway" ? "Gateway" : "Runtime"} 重启请求已发送。`);
+	const gatewayInvocation = foregroundWebInvocation();
+	const runtimeInvocation = sourceRuntimeInvocation();
+	const stableLauncher = stableLauncherPath();
+	const serviceVersion =
+		settings.commandName === "lc" &&
+		gatewayInvocation.command === stableLauncher &&
+		runtimeInvocation.command === stableLauncher
+			? VERSION
+			: undefined;
+	const result = await module.runWebComponentAction({
+		component,
+		action,
+		...(force ? { force: true } : {}),
+		agentDir: getAgentDir(),
+		configFileName: settings.configFileName,
+		defaultPort: settings.defaultPort,
+		defaultRuntimePort: settings.defaultRuntimePort,
+		staticDir: staticDir(),
+		gatewayInvocation,
+		runtimeInvocation,
+		...(serviceVersion ? { serviceVersion } : {}),
+		interactiveAdmin: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+	});
+	if (action === "status") {
+		console.log(JSON.stringify(result, null, "\t"));
 		return;
 	}
-	throw new Error(
-		`无法连接 Web Gateway，${service === "gateway" ? "不能重启 Gateway" : "不能重启 Runtime"}：${lastError?.message ?? "未知错误"}`,
-	);
+	const label = component === "gateway" ? "Gateway" : "Runtime";
+	console.log(`${label}${action === "stop" ? "已停止" : action === "start" ? "已启动" : "已重启"}。`);
 }
 
 export async function runWebServiceCommand(
@@ -272,22 +257,30 @@ export async function reconcileWebServicesAfterUpdate(): Promise<void> {
 
 export async function runWebControlCommand(
 	args: readonly string[],
-	options: { gatewayModule?: Pick<WebGatewayModule, "loadWebConfig"> } = {},
+	options: { gatewayModule?: Pick<WebGatewayModule, "runWebComponentAction"> } = {},
 ): Promise<void> {
 	const settings = webCommandSettings();
-	if (args.length !== 2 || (args[0] !== "gateway" && args[0] !== "runtime") || args[1] !== "restart") {
-		throw new Error(
-			`用法：${settings.commandName} web\n      ${settings.commandName} web gateway restart\n      ${settings.commandName} web runtime restart`,
-		);
+	const component = args[0];
+	const action = args[1] as WebComponentAction | undefined;
+	const force = args[2] === "--force";
+	if (
+		(component !== "gateway" && component !== "runtime") ||
+		!action ||
+		!["status", "stop", "start", "restart"].includes(action) ||
+		args.length > (force ? 3 : 2) ||
+		(args.length === 3 && !force) ||
+		(force && action !== "stop" && action !== "restart")
+	) {
+		throw new Error(`用法：${settings.commandName} web <gateway|runtime> <status|stop|start|restart> [--force]`);
 	}
-	await restartWebService(args[0], options.gatewayModule);
+	await runWebComponentCommand(component, action, force, options.gatewayModule);
 }
 
 export async function runWebCommand(args: readonly string[] = []): Promise<void> {
 	const settings = webCommandSettings();
 	if (args.includes("--help") || args.includes("-h")) {
 		console.log(
-			`用法：${settings.commandName} web\n\n首次运行会依次配置监听 IP、白名单 IP、Web 端口、Runtime 端口和连接密码。\nWeb 默认端口：${settings.defaultPort}；Runtime 默认端口：${settings.defaultRuntimePort}。\n配置文件：${settings.configFileName ?? "web-config.json"}。\n默认启动为后台模式；需要前台运行时使用：${settings.commandName} web --foreground。\n\n服务命令：\n  ${settings.commandName} web gateway restart\n  ${settings.commandName} web runtime restart\n  ${settings.commandName} web service install\n  ${settings.commandName} web service status\n  ${settings.commandName} web service restart\n  ${settings.commandName} web service uninstall\n`,
+			`用法：${settings.commandName} web\n\n首次运行会依次配置监听 IP、白名单 IP、Web 端口、Runtime 端口和连接密码。\nWeb 默认端口：${settings.defaultPort}；Runtime 默认端口：${settings.defaultRuntimePort}。\n配置文件：${settings.configFileName ?? "web-config.json"}。\n默认启动为后台模式；需要前台运行时使用：${settings.commandName} web --foreground。\n\n组件命令：\n  ${settings.commandName} web gateway status|stop|start|restart\n  ${settings.commandName} web runtime status|stop|start|restart\n\n服务命令：\n  ${settings.commandName} web service install\n  ${settings.commandName} web service status\n  ${settings.commandName} web service restart\n  ${settings.commandName} web service uninstall\n`,
 		);
 		return;
 	}

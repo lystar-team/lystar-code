@@ -8,13 +8,14 @@ import { ResourceImage, ResourceImageViewer, type ResourceImageItem } from "../a
 import { Button } from "../ui/button.tsx";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog.tsx";
 import { FileTypeIcon } from "./files-panel.tsx";
-import { languageForPath } from "./file-language.ts";
+import { languageForPath, monacoLanguageForPath } from "./file-language.ts";
 import {
 	MonacoFileEditor,
 	type MonacoFileEditorHandle,
 	type MonacoFileEditorState,
 } from "./monaco-file-editor.tsx";
 import { OfficeFilePreview, downloadBinaryFile, officeFormatForPath } from "./office-file-preview.tsx";
+import { preloadMonacoLanguage } from "./monaco-runtime.ts";
 import { CodeBlockView } from "./transcript.tsx";
 import type { WorkbenchActions } from "./types.ts";
 
@@ -85,6 +86,11 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 	useEffect(() => {
 		if (!open) setImagePreviewOpen(false);
 	}, [open]);
+
+	useEffect(() => {
+		if (!state.filePath) return;
+		preloadMonacoLanguage(monacoLanguageForPath(state.filePath));
+	}, [state.filePath]);
 
 	useEffect(() => {
 		setEditorState(INITIAL_EDITOR_STATE);

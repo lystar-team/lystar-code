@@ -5,7 +5,7 @@ import { Button } from "../../ui/button";
 import { Card, CardContent } from "../../ui/card";
 import { SettingSection } from "./shared";
 
-export function AppInstallSettings({ appInstall }: { appInstall: AppInstallState }) {
+export function AppInstallSettings({ appInstall, productName }: { appInstall: AppInstallState; productName: string }) {
 	const [installing, setInstalling] = useState(false);
 
 	const handleInstall = async () => {
@@ -29,7 +29,7 @@ export function AppInstallSettings({ appInstall }: { appInstall: AppInstallState
 								</div>
 								<div className="min-w-0">
 									<div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-										<p className="font-medium">安装 LYStar Code</p>
+										<p className="font-medium">安装 {productName}</p>
 										{appInstall.isInstalled ? (
 											<span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
 												<Check className="size-3.5" aria-hidden="true" />
@@ -38,7 +38,7 @@ export function AppInstallSettings({ appInstall }: { appInstall: AppInstallState
 										) : null}
 									</div>
 									<p className="mt-0.5 text-sm leading-5 text-muted-foreground">
-										从主屏幕打开后，LYStar Code 会以独立应用方式运行，不显示浏览器地址栏。
+										从主屏幕打开后，{productName} 会以独立应用方式运行，不显示浏览器地址栏。
 									</p>
 								</div>
 							</div>
@@ -65,7 +65,7 @@ export function AppInstallSettings({ appInstall }: { appInstall: AppInstallState
 
 						{!appInstall.isInstalled && !appInstall.isIos && appInstall.isSecureContext && !appInstall.canInstall ? (
 							<p className="rounded-lg bg-muted/60 px-3 py-2 text-xs leading-5 text-muted-foreground">
-								如果浏览器支持安装，请从地址栏或浏览器菜单选择“安装 LYStar Code”。
+								如果浏览器支持安装，请从地址栏或浏览器菜单选择“安装 {productName}”。
 							</p>
 						) : null}
 					</CardContent>

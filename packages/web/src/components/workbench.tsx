@@ -1,13 +1,15 @@
-import { LogOut, Menu, PanelRight, Settings } from "lucide-react";
+import { LoaderCircle, LogOut, Menu, PanelRight, Settings } from "lucide-react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { cn } from "../lib/utils";
+import { connectionPresentation, type ConnectionPresentation } from "../state/connection-recovery";
 import { StabilityBoundary, StabilityFallbackPanel } from "./stability-boundary";
 import type { WorkbenchState } from "../state/use-workbench";
 import { sessionTitle } from "../state/use-workbench";
 import type { WebProject, WebSessionSummary } from "../types";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Button } from "./ui/button";
+import { GsapReveal } from "./ui/gsap-reveal";
 import { Composer } from "./workbench/composer";
 import { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH } from "./workbench/constants";
 import { ConversationView } from "./workbench/conversation";
@@ -44,6 +46,7 @@ export function Workbench({
 	const [isResizingSidebar, setIsResizingSidebar] = useState(false);
 	const currentSessions = currentProject?.sessions ?? [];
 	const currentSessionSummary = currentSessions.find((session) => session.id === state.sessionId);
+	const connection = connectionPresentation(state);
 	const sessionTitleText = state.session
 		? resolvedSessionTitle(state.session, currentSessionSummary)
 		: currentProject?.name || "选择会话";
@@ -169,33 +172,33 @@ export function Workbench({
 						>
 							<Menu className="size-4" />
 						</Button>
-						<div className="min-w-0">
+						<GsapReveal animationKey={state.sessionId ?? "empty"} className="min-w-0" distance={8} duration={0.24}>
 							<h1 className="truncate text-base font-semibold tracking-tight sm:text-lg">
 								{sessionTitleText}
 							</h1>
 							{currentProject ? (
 								<p className="truncate text-xs text-muted-foreground">{currentProject.name}</p>
 							) : null}
-						</div>
+						</GsapReveal>
 					</div>
 					<div className="flex shrink-0 items-center gap-2">
 						<span
 							className="hidden items-center gap-2 sm:inline-flex"
 							role="status"
-							aria-label={`连接状态：${state.connected ? (state.reconnecting ? "重新连接中" : "已连接") : "离线"}`}
+							aria-label={`连接状态：${connection.label}`}
 						>
 							<span
 								className={cn(
 									"size-1.5 rounded-full",
-									state.connected
-										? state.reconnecting
+									connection.tone === "connected"
+										? "bg-[var(--success)]"
+										: connection.tone === "reconnecting"
 											? "bg-[var(--warning)]"
-											: "bg-[var(--success)]"
-										: "bg-destructive",
+											: "bg-destructive",
 								)}
 							/>
 							<span className="text-xs font-medium tracking-tight text-muted-foreground">
-								{state.connected ? (state.reconnecting ? "重新连接中" : "已连接") : "离线"}
+								{connection.label}
 							</span>
 						</span>
 						<Button
@@ -246,7 +249,14 @@ export function Workbench({
 									/>
 								)}
 							>
-								<ConversationView state={state} actions={actions} sessionTitleText={sessionTitleText} />
+								<GsapReveal
+									animationKey={state.sessionId ?? "empty"}
+									className="flex min-h-0 w-full flex-1 flex-col"
+									distance={12}
+									duration={0.34}
+								>
+									<ConversationView state={state} actions={actions} sessionTitleText={sessionTitleText} />
+								</GsapReveal>
 							</StabilityBoundary>
 						</div>
 						<StabilityBoundary
@@ -261,7 +271,9 @@ export function Workbench({
 								/>
 							)}
 						>
-							<Composer state={state} actions={actions} />
+							<GsapReveal animationKey={state.sessionId ?? "empty"} className="w-full shrink-0" distance={8} duration={0.26}>
+								<Composer state={state} actions={actions} />
+							</GsapReveal>
 						</StabilityBoundary>
 					</div>
 					{state.inspectorOpen ? (
@@ -321,9 +333,30 @@ export function Workbench({
 			/>
 			<ProjectRenameDialog project={editingProject} actions={actions} onClose={() => setEditingProject(undefined)} />
 			<UiRequestDialog state={state} actions={actions} />
+			{connection.blocking ? <ConnectionRecoveryOverlay presentation={connection} /> : null}
 		</div>
 	);
 }
+
+function ConnectionRecoveryOverlay({ presentation }: { presentation: ConnectionPresentation }) {
+	return (
+		<div className="fixed inset-0 z-[120] grid place-items-center bg-background/85 p-6 backdrop-blur-sm">
+			<div
+				className="flex max-w-sm flex-col items-center text-center"
+				role="status"
+				aria-live="assertive"
+				aria-busy="true"
+			>
+				<div className="grid size-12 place-items-center rounded-full bg-muted text-foreground">
+					<LoaderCircle className="size-5 animate-spin" aria-hidden="true" />
+				</div>
+				<h2 className="mt-4 text-base font-semibold tracking-tight">{presentation.title}</h2>
+				<p className="mt-1 text-sm text-muted-foreground">{presentation.description}</p>
+			</div>
+		</div>
+	);
+}
+
 function resolvedSessionTitle(session: WorkbenchState["session"], summary?: WebSessionSummary): string {
 	return session?.name?.trim() || (summary ? sessionTitle(summary) : sessionTitle(session));
 }

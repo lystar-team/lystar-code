@@ -1,5 +1,5 @@
 import { Check, CircleHelp, Clipboard, FileCode2 } from "lucide-react";
-import { memo, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { BundledLanguage } from "shiki";
 import { type TranscriptToolViewModel, toSessionItemViewModel } from "../../adapters/session-view-model";
 import { cn } from "../../lib/utils";
@@ -66,7 +66,7 @@ export const TranscriptMessageView = memo(function TranscriptMessageView({
 			)}
 		>
 			<TranscriptSources urls={sources} />
-			<MessageContent>
+			<MessageContent className={role === "user" && attachments.length ? "!gap-1" : undefined}>
 				<StabilityBoundary
 					scope={`message:${role}`}
 					fallback={() => (
@@ -94,8 +94,12 @@ export const TranscriptMessageView = memo(function TranscriptMessageView({
 				</StabilityBoundary>
 				<TranscriptAttachments attachments={attachments} sessionId={sessionId} />
 			</MessageContent>
-			{((role === "user" && text) || (showCopy && role === "assistant" && text)) ? (
-				<CopyMessageAction text={text} role={role === "assistant" ? "assistant" : "user"} />
+			{((role === "user" || role === "assistant") && text) ? (
+				<CopyMessageAction
+					text={text}
+					role={role}
+					visible={role === "user" || showCopy}
+				/>
 			) : null}
 		</Message>
 	);
@@ -186,7 +190,7 @@ function TranscriptAttachments({
 }) {
 	if (!attachments.length) return null;
 	return (
-		<div className="mt-2 flex flex-wrap gap-2">
+		<div className="flex flex-wrap gap-2">
 			{attachments.map((attachment) => {
 				const hasPreviewUrl = Boolean(attachment.url);
 				return (
@@ -196,7 +200,9 @@ function TranscriptAttachments({
 						sessionId={hasPreviewUrl ? undefined : sessionId}
 						contentRef={hasPreviewUrl ? undefined : attachment.id}
 						alt={attachment.filename}
-						className="w-48 max-w-full"
+						className="size-24 shrink-0"
+						buttonClassName="!size-full !min-h-0"
+						imageClassName="!size-full !object-cover"
 					/>
 				);
 			})}
@@ -245,14 +251,70 @@ export function CodeBlockView({
 	);
 }
 
-function CopyMessageAction({ text, role }: { text: string; role: "user" | "assistant" }) {
+async function copyTextToClipboard(text: string): Promise<void> {
+	const clipboard = typeof navigator === "undefined" ? undefined : navigator.clipboard;
+	if (clipboard?.writeText) {
+		try {
+			await clipboard.writeText(text);
+			return;
+		} catch {
+			// Clipboard API 失败时继续使用兼容回退。
+		}
+	}
+	copyTextWithSelection(text);
+}
+
+function copyTextWithSelection(text: string): void {
+	if (typeof document === "undefined" || !document.body) throw new Error("当前浏览器不支持复制");
+	const textarea = document.createElement("textarea");
+	textarea.value = text;
+	textarea.setAttribute("readonly", "true");
+	textarea.style.position = "fixed";
+	textarea.style.top = "0";
+	textarea.style.left = "0";
+	textarea.style.width = "1px";
+	textarea.style.height = "1px";
+	textarea.style.padding = "0";
+	textarea.style.border = "0";
+	textarea.style.opacity = "0";
+	textarea.style.pointerEvents = "none";
+	document.body.append(textarea);
+	try {
+		textarea.focus();
+		textarea.select();
+		if (!document.execCommand("copy")) throw new Error("当前浏览器不支持复制");
+	} finally {
+		textarea.remove();
+	}
+}
+
+function CopyMessageAction({
+	text,
+	role,
+	visible,
+}: {
+	text: string;
+	role: "user" | "assistant";
+	visible: boolean;
+}) {
 	const [copied, setCopied] = useState(false);
+	const [tooltipOpen, setTooltipOpen] = useState(false);
+	const timeoutRef = useRef(0);
 	const label = role === "user" ? "复制" : "复制回复";
+
+	useEffect(() => {
+		setCopied(false);
+		setTooltipOpen(false);
+		window.clearTimeout(timeoutRef.current);
+	}, [text, visible]);
+	useEffect(() => () => window.clearTimeout(timeoutRef.current), []);
+
 	const copy = async () => {
 		try {
-			await navigator.clipboard.writeText(text);
+			await copyTextToClipboard(text);
 			setCopied(true);
-			window.setTimeout(() => setCopied(false), 1600);
+			window.clearTimeout(timeoutRef.current);
+			timeoutRef.current = window.setTimeout(() => setCopied(false), 1600);
 		} catch {
 			setCopied(false);
 		}
@@ -260,11 +322,18 @@ function CopyMessageAction({ text, role }: { text: string; role: "user" | "assis
 	return (
 		<MessageActions
 			className={cn(
-				"opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100",
+				visible ? "opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100" : "hidden",
 				role === "user" && "self-end",
 			)}
 		>
-			<MessageAction label={label} tooltip={label} onClick={() => void copy()}>
+			<MessageAction
+				label={label}
+				tooltip={label}
+				tooltipOpen={tooltipOpen}
+				onTooltipOpenChange={setTooltipOpen}
+				disabled={!visible}
+				onClick={() => void copy()}
+			>
 				{copied ? <Check className="size-4" /> : <Clipboard className="size-4" />}
 			</MessageAction>
 		</MessageActions>

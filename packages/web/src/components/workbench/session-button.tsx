@@ -115,7 +115,7 @@ export function SessionButton({
 			<ContextMenuTrigger asChild>
 				<li
 					className={cn(
-						"list-none relative min-w-0 rounded-md",
+						"group/session list-none relative min-w-0 rounded-md",
 						dragging && "opacity-50",
 						dropTarget && "ring-1 ring-primary/50",
 						dropPosition === "before" &&
@@ -132,27 +132,29 @@ export function SessionButton({
 					<HoverCard openDelay={140} closeDelay={80}>
 						<HoverCardTrigger asChild>
 							<Button
-								className="h-8 w-full min-w-0 justify-start gap-2 py-1 pr-2 !pl-8 text-left text-xs"
+								className="h-8 w-full min-w-0 justify-start gap-2 py-1 pr-8 !pl-8 text-left text-xs"
 								variant={active ? "secondary" : "ghost"}
 								onClick={onClick}
 							>
 								<span className="project-list-item-label min-w-0 flex-1 truncate">{displayTitle}</span>
-								{session.pinned ? (
-									<Pin className="size-3.5 shrink-0 text-muted-foreground" aria-label="已置顶" />
-								) : null}
-								{running ? (
-									<LoaderCircle
-										className="size-3.5 shrink-0 animate-spin text-primary"
-										aria-label="会话进行中"
-									/>
-								) : unread ? (
-									<span
-										role="img"
-										className="size-2 shrink-0 rounded-full bg-blue-500 ring-2 ring-blue-500/20"
-										aria-label="有新的会话内容"
-										title="有新的会话内容"
-									/>
-								) : null}
+								<span className="flex shrink-0 items-center gap-2 transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0 max-lg:opacity-0">
+									{session.pinned ? (
+										<Pin className="size-3.5 shrink-0 text-muted-foreground" aria-label="已置顶" />
+									) : null}
+									{running ? (
+										<LoaderCircle
+											className="size-3.5 shrink-0 animate-spin text-primary"
+											aria-label="会话进行中"
+										/>
+									) : unread ? (
+										<span
+											role="img"
+											className="size-2 shrink-0 rounded-full bg-blue-500 ring-2 ring-blue-500/20"
+											aria-label="有新的会话内容"
+											title="有新的会话内容"
+										/>
+									) : null}
+								</span>
 							</Button>
 						</HoverCardTrigger>
 						<HoverCardContent
@@ -162,49 +164,62 @@ export function SessionButton({
 							className="w-max min-w-72 max-w-[calc(100vw-1rem)] rounded-xl border-border bg-background px-4 py-3 shadow-[0_2px_8px_rgb(0_0_0/0.05)]"
 							onPointerDown={(event) => event.stopPropagation()}
 						>
-							<div className="flex items-start justify-between gap-4 whitespace-nowrap">
-								{editingTitle ? (
-									<Input
-										aria-label="会话名称"
-										autoFocus
-										className="project-list-item-label h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 shadow-sm transition-[border-color,box-shadow,background-color] duration-150 focus-visible:border-input focus-visible:ring-0"
-										value={renameDraft}
-										onChange={(event) => setRenameDraft(event.target.value)}
-										onClick={(event) => event.stopPropagation()}
-										onBlur={() => void commitRename()}
-										onKeyDown={(event) => {
-											if (event.key === "Enter") {
-												event.preventDefault();
-												event.currentTarget.blur();
-											}
-											if (event.key === "Escape") {
-												event.preventDefault();
+								<div className="flex items-start justify-between gap-4 whitespace-nowrap">
+									{editingTitle ? (
+										<Input
+											aria-label="会话名称"
+											autoFocus
+											className="project-list-item-label h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 shadow-sm transition-[border-color,box-shadow,background-color] duration-150 focus-visible:border-input focus-visible:ring-0"
+											value={renameDraft}
+											onChange={(event) => setRenameDraft(event.target.value)}
+											onClick={(event) => event.stopPropagation()}
+											onBlur={() => void commitRename()}
+											onKeyDown={(event) => {
+												if (event.key === "Enter") {
+													event.preventDefault();
+													event.currentTarget.blur();
+												}
+												if (event.key === "Escape") {
+													event.preventDefault();
+													event.stopPropagation();
+													cancelRename();
+												}
+											}}
+											placeholder="输入会话名称"
+										/>
+									) : (
+										<button
+											type="button"
+											className="project-list-item-label min-w-0 max-w-[calc(100vw-3rem)] flex-1 cursor-text truncate whitespace-nowrap bg-transparent p-0 text-left text-foreground"
+											onClick={() => {
+												setRenameDraft(title);
+												setEditingTitle(true);
+											}}
+										>
+											{displayTitle}
+										</button>
+									)}
+									<div className="flex shrink-0 items-start gap-2">
+										<time
+											className="shrink-0 pt-1 text-xs text-muted-foreground"
+											dateTime={new Date(session.updatedAt).toISOString()}
+											title={absoluteTime}
+										>
+											{relativeTime}
+										</time>
+										<Button
+											aria-label={session.pinned ? "取消置顶会话" : "置顶会话"}
+											size="icon-sm"
+											variant="ghost"
+											onClick={(event) => {
 												event.stopPropagation();
-												cancelRename();
-											}
-										}}
-										placeholder="输入会话名称"
-									/>
-								) : (
-									<button
-										type="button"
-										className="project-list-item-label min-w-0 max-w-[calc(100vw-3rem)] cursor-text truncate whitespace-nowrap bg-transparent p-0 text-left text-foreground"
-										onClick={() => {
-											setRenameDraft(title);
-											setEditingTitle(true);
-										}}
-									>
-										{displayTitle}
-									</button>
-								)}
-								<time
-									className="shrink-0 text-xs text-muted-foreground"
-									dateTime={new Date(session.updatedAt).toISOString()}
-									title={absoluteTime}
-								>
-									{relativeTime}
-								</time>
-							</div>
+												onTogglePinned();
+											}}
+										>
+											<Pin className={cn("size-3.5", session.pinned && "text-primary")} />
+										</Button>
+									</div>
+								</div>
 							<div className="mt-3 grid gap-2 whitespace-nowrap text-xs text-muted-foreground">
 								<div className="flex min-w-0 items-center gap-2">
 									<Folder className="size-3.5 shrink-0" />
@@ -217,6 +232,20 @@ export function SessionButton({
 							</div>
 						</HoverCardContent>
 					</HoverCard>
+					<Button
+						aria-label={`删除会话：${title}`}
+						className="absolute top-1/2 right-1 -translate-y-1/2 text-muted-foreground opacity-0 transition-opacity hover:text-destructive focus:opacity-100 group-hover/session:opacity-100 group-focus-within/session:opacity-100 max-lg:opacity-100"
+						draggable={false}
+						size="icon-sm"
+						variant="ghost"
+						onPointerDown={(event) => event.stopPropagation()}
+						onClick={(event) => {
+							event.stopPropagation();
+							onDelete();
+						}}
+					>
+						<Trash2 className="size-3.5" />
+					</Button>
 				</li>
 			</ContextMenuTrigger>
 			<ContextMenuContent className="w-48">

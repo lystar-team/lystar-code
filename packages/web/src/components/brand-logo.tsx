@@ -1,9 +1,19 @@
 import type { ComponentProps } from "react";
 import { cn } from "../lib/utils";
 
-type BrandLogoProps = Omit<ComponentProps<"img">, "src">;
+type BrandLogoProps = Omit<ComponentProps<"img">, "src"> & {
+	logo?: string;
+};
 
-export function BrandLogo({ alt = "", className, ...props }: BrandLogoProps) {
+export function BrandLogo({ alt = "", className, logo, ...props }: BrandLogoProps) {
+	if (logo) {
+		return (
+			<span className="brand-logo" aria-hidden={alt ? undefined : true}>
+				<img {...props} className={className} src={logo} alt={alt} />
+			</span>
+		);
+	}
+
 	return (
 		<span className="brand-logo" aria-hidden={alt ? undefined : true}>
 			<img

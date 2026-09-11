@@ -1,15 +1,19 @@
 import {
-	AlertTriangle,
 	ArrowDownToLine,
+	Bot,
 	Check,
+	ChevronDown,
+	ChevronRight,
 	FileDiff,
 	FileText,
-	FolderSync,
+	Folder,
+	FolderOpen,
+	Info,
 	LoaderCircle,
 	RefreshCw,
 	WandSparkles,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import type { HarnessId, HarnessImportInstructionHunk, HarnessImportItem, HarnessImportSource } from "../../../types";
 import type { WorkbenchState } from "../../../state/use-workbench";
 import { Alert, AlertDescription, AlertTitle } from "../../ui/alert";
@@ -30,6 +34,8 @@ const harnessLabels: Record<HarnessId, string> = {
 	"claude-code": "Claude Code",
 };
 const resourceLabels: Record<HarnessImportItem["resourceType"], string> = {
+	agent: "子代理",
+	reference: "引用文件",
 	skill: "Skill",
 	prompt: "提示词模板",
 	instruction: "规则文件",
@@ -39,10 +45,11 @@ const scopeLabels: Record<HarnessImportItem["sourceScope"], string> = {
 	project: "项目来源",
 };
 
-function resourceIcon(type: HarnessImportItem["resourceType"]) {
+function resourceIcon(type: HarnessImportItem["resourceType"]): ReactNode {
+	if (type === "agent") return <Bot className="size-4" />;
 	if (type === "skill") return <WandSparkles className="size-4" />;
-	if (type === "prompt") return <FileText className="size-4" />;
-	return <FolderSync className="size-4" />;
+	if (type === "instruction") return <FileDiff className="size-4" />;
+	return <FileText className="size-4" />;
 }
 
 function sourceSummary(sources: HarnessImportSource[]) {
@@ -60,6 +67,77 @@ function itemStatusLabel(item: HarnessImportItem) {
 	return "不支持";
 }
 
+function itemStatusVariant(item: HarnessImportItem): "secondary" | "destructive" | "outline" {
+	if (item.status === "ready") return "secondary";
+	if (item.status === "conflict") return "destructive";
+	return "outline";
+}
+
+function isSelectableItem(item: HarnessImportItem): boolean {
+	return item.status === "ready" && item.resourceType !== "instruction";
+}
+
+interface ResourceTreeNode {
+	id: string;
+	label: string;
+	path: string;
+	children: ResourceTreeNode[];
+	itemIds: string[];
+	item?: HarnessImportItem;
+}
+
+function buildResourceTree(items: HarnessImportItem[]): ResourceTreeNode[] {
+	const roots: ResourceTreeNode[] = [];
+	for (const item of items) {
+		const segments = item.targetRelativePath.split("/").filter(Boolean);
+		if (segments.length === 0) continue;
+		let currentChildren = roots;
+		let parentPath = "";
+		for (const [index, segment] of segments.entries()) {
+			const isLeaf = index === segments.length - 1;
+			const path = parentPath ? `${parentPath}/${segment}` : segment;
+			if (isLeaf) {
+				currentChildren.push({
+					id: `item:${item.id}`,
+					label: item.resourceType === "instruction" ? "AGENTS.md" : item.name || segment,
+					path,
+					children: [],
+					itemIds: [item.id],
+					item,
+				});
+				break;
+			}
+			let group = currentChildren.find((candidate) => !candidate.item && candidate.path === path);
+			if (!group) {
+				group = { id: `group:${path}`, label: segment, path, children: [], itemIds: [] };
+				currentChildren.push(group);
+			}
+			group.itemIds.push(item.id);
+			currentChildren = group.children;
+			parentPath = path;
+		}
+	}
+	return sortResourceTree(roots);
+}
+
+function sortResourceTree(nodes: ResourceTreeNode[]): ResourceTreeNode[] {
+	const preferredOrder = ["agents", "rules", "skills", "prompts"];
+	return nodes
+		.slice()
+		.sort((left, right) => {
+			const leftItem = left.item !== undefined;
+			const rightItem = right.item !== undefined;
+			if (leftItem !== rightItem) return Number(leftItem) - Number(rightItem);
+			const leftPriority = preferredOrder.indexOf(left.label.toLowerCase());
+			const rightPriority = preferredOrder.indexOf(right.label.toLowerCase());
+			if (leftPriority !== rightPriority) {
+				return (leftPriority < 0 ? preferredOrder.length : leftPriority) - (rightPriority < 0 ? preferredOrder.length : rightPriority);
+			}
+			return left.label.localeCompare(right.label, "zh-CN");
+		})
+		.map((node) => ({ ...node, children: sortResourceTree(node.children) }));
+}
+
 export function HarnessImportsSettings({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
 	const [dialogOpen, setDialogOpen] = useState(false);
 	const sources = state.harnessImports?.sources.filter((source) => source.detected) ?? [];
@@ -74,7 +152,7 @@ export function HarnessImportsSettings({ state, actions }: { state: WorkbenchSta
 						<div className="flex items-start justify-between gap-4">
 							<div className="min-w-0">
 								<CardTitle className="text-base">从其他 Harness 导入资源</CardTitle>
-								<CardDescription>扫描本机已存在的配置，按 Harness 选择资源。</CardDescription>
+								<CardDescription>扫描本机配置，按 Harness 选择要迁移到 {state.branding.name} 的资源。</CardDescription>
 							</div>
 							<ArrowDownToLine className="size-5 shrink-0 text-muted-foreground" />
 						</div>
@@ -108,7 +186,7 @@ export function HarnessImportsSettings({ state, actions }: { state: WorkbenchSta
 						)}
 						<div className="flex flex-wrap items-center justify-between gap-3">
 							<p className="text-sm text-muted-foreground">
-								{totalReady ? `${totalReady} 项资源可导入` : "没有发现可直接导入的新资源"}
+								{totalReady ? `${totalReady} 项资源可迁移` : "没有发现可直接迁移的新资源"}
 							</p>
 							<div className="flex gap-2">
 								<Button variant="outline" onClick={() => void actions.refreshHarnessImports()} disabled={state.harnessImportsLoading}>
@@ -141,6 +219,7 @@ function HarnessImportDialog({
 	const [activeHarness, setActiveHarness] = useState<HarnessId>("codex");
 	const [filter, setFilter] = useState<ResourceFilter>("all");
 	const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+	const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 	const [ruleItem, setRuleItem] = useState<HarnessImportItem | undefined>();
 	const targetScope = state.harnessImportScope;
 	const items = state.harnessImports?.items ?? [];
@@ -153,7 +232,8 @@ function HarnessImportDialog({
 		() => harnessItems.filter((item) => filter === "all" || item.resourceType === filter),
 		[filter, harnessItems],
 	);
-	const selectableItems = visibleItems.filter((item) => item.status === "ready" && item.resourceType !== "instruction");
+	const resourceTree = useMemo(() => buildResourceTree(visibleItems), [visibleItems]);
+	const selectableItems = visibleItems.filter(isSelectableItem);
 	const selectedCount = items.filter((item) => selectedIds.has(item.id)).length;
 
 	useEffect(() => {
@@ -162,9 +242,14 @@ function HarnessImportDialog({
 
 	useEffect(() => {
 		if (!open) return;
-		setSelectedIds(new Set(items.filter((item) => item.status === "ready" && item.resourceType !== "instruction").map((item) => item.id)));
+		setSelectedIds(new Set(items.filter(isSelectableItem).map((item) => item.id)));
 		setFilter("all");
 	}, [open, state.harnessImports, targetScope, items]);
+
+	useEffect(() => {
+		if (!open) return;
+		setExpandedIds(new Set(resourceTree.filter((node) => node.item === undefined).map((node) => node.id)));
+	}, [open, resourceTree]);
 
 	const changeScope = (value: "user" | "project") => {
 		setSelectedIds(new Set());
@@ -172,7 +257,7 @@ function HarnessImportDialog({
 	};
 
 	const toggleItem = (item: HarnessImportItem) => {
-		if (item.status !== "ready" || item.resourceType === "instruction") return;
+		if (!isSelectableItem(item)) return;
 		setSelectedIds((current) => {
 			const next = new Set(current);
 			if (next.has(item.id)) next.delete(item.id);
@@ -181,28 +266,45 @@ function HarnessImportDialog({
 		});
 	};
 
-	const toggleVisible = () => {
+	const toggleItems = (itemIds: string[]) => {
+		const selectableIds = itemIds.filter((id) => {
+			const item = items.find((candidate) => candidate.id === id);
+			return item !== undefined && isSelectableItem(item);
+		});
+		if (selectableIds.length === 0) return;
 		setSelectedIds((current) => {
 			const next = new Set(current);
-			const allSelected = selectableItems.length > 0 && selectableItems.every((item) => next.has(item.id));
-			for (const item of selectableItems) {
-				if (allSelected) next.delete(item.id);
-				else next.add(item.id);
+			const allSelected = selectableIds.every((id) => next.has(id));
+			for (const id of selectableIds) {
+				if (allSelected) next.delete(id);
+				else next.add(id);
 			}
 			return next;
 		});
 	};
 
+	const toggleVisible = () => toggleItems(selectableItems.map((item) => item.id));
+
+	const importRule = (mode: "merge" | "replace", hunkIds: string[]) => {
+		if (!ruleItem) return;
+		const itemIds = [ruleItem.id, ...(ruleItem.referencedItemIds ?? [])];
+		if (mode === "replace") void actions.importHarnessResources(targetScope, itemIds, undefined, [ruleItem.id]);
+		else void actions.importHarnessResources(targetScope, itemIds, { [ruleItem.id]: hunkIds });
+		setRuleItem(undefined);
+	};
+
 	return (
 		<>
 			<Dialog open={open} onOpenChange={onOpenChange}>
-				<DialogContent className="flex h-[min(760px,calc(100dvh-2rem))] w-[calc(100%-1rem)] max-w-[calc(100%-1rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+				<DialogContent className="flex h-[min(800px,calc(100dvh-2rem))] w-[calc(100%-1rem)] max-w-[calc(100%-1rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl">
 					<DialogHeader className="shrink-0 border-b px-4 py-5 pr-12 sm:px-6">
-						<DialogTitle>选择要导入的资源</DialogTitle>
-						<DialogDescription>Skill 和提示词模板可以直接导入；规则文件先查看 Diff，再选择要合并的内容。</DialogDescription>
+						<DialogTitle>选择要迁移到 {state.branding.name} 的资源</DialogTitle>
+						<DialogDescription>
+							AGENTS.md 引用的文件和子代理会按目录列出；路径只在 {state.branding.name} 的目标副本中更新，来源 Harness 文件不会被修改。
+						</DialogDescription>
 					</DialogHeader>
 					<div className="flex min-h-0 flex-1 flex-col">
-						<div className="shrink-0 grid gap-4 border-b px-6 py-4">
+						<div className="grid shrink-0 gap-4 border-b px-4 py-4 sm:px-6">
 							<div className="flex flex-wrap items-center justify-between gap-3">
 								<Select value={targetScope} onValueChange={(value) => changeScope(value as "user" | "project")}>
 									<SelectTrigger aria-label="导入目标" className="w-44">
@@ -217,7 +319,7 @@ function HarnessImportDialog({
 									<RefreshCw className={state.harnessImportsLoading ? "size-4 animate-spin" : "size-4"} />重新扫描
 								</Button>
 							</div>
-							<div className="grid grid-cols-3 gap-2" role="tablist" aria-label="Harness">
+							<div className="grid grid-cols-1 gap-2 sm:grid-cols-3" role="tablist" aria-label="Harness">
 								{harnessOrder.map((harness) => {
 									const harnessItemsCount = items.filter((item) => item.harness === harness).length;
 									const detected = detectedHarnesses.includes(harness);
@@ -240,8 +342,8 @@ function HarnessImportDialog({
 						<div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6">
 							<div className="grid gap-4">
 								<div className="flex flex-wrap items-center justify-between gap-3">
-									<div className="flex flex-wrap items-center gap-1 rounded-lg bg-muted/60 p-1">
-										{(["all", "skill", "prompt", "instruction"] as const).map((value) => (
+									<div className="flex max-w-full gap-1 overflow-x-auto rounded-lg bg-muted/60 p-1">
+										{(["all", "agent", "reference", "skill", "prompt", "instruction"] as const).map((value) => (
 											<Button key={value} size="sm" variant={filter === value ? "secondary" : "ghost"} onClick={() => setFilter(value)}>
 												{value === "all" ? "全部" : resourceLabels[value]}
 											</Button>
@@ -258,54 +360,33 @@ function HarnessImportDialog({
 									<div className="flex min-h-56 items-center justify-center gap-2 text-sm text-muted-foreground" role="status">
 										<LoaderCircle className="size-4 animate-spin" />正在更新资源列表
 									</div>
-								) : visibleItems.length ? (
-									<div className="grid gap-2">
-										{visibleItems.map((item) => {
-											const selectable = item.status === "ready" && item.resourceType !== "instruction";
-											const isRule = item.resourceType === "instruction";
-											const selected = selectedIds.has(item.id);
-											return (
-												<button
-													aria-pressed={selected}
-													className={`flex w-full items-start gap-3 rounded-lg border p-3 text-left transition-colors ${selectable || isRule ? "hover:bg-muted/40" : "cursor-default opacity-70"}`}
-													disabled={!selectable && !isRule}
-													key={item.id}
-													onClick={() => (isRule && item.status === "ready" ? setRuleItem(item) : toggleItem(item))}
-													type="button"
-												>
-													<span className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded border ${selected ? "border-primary bg-primary text-primary-foreground" : "text-transparent"}`}>
-														{isRule ? <FileDiff className="size-3.5 text-muted-foreground" /> : <Check className="size-3.5" />}
-													</span>
-													<span className="grid size-8 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">{resourceIcon(item.resourceType)}</span>
-													<span className="min-w-0 flex-1">
-														<span className="flex flex-wrap items-center gap-2">
-															<strong className="truncate text-sm font-medium">{item.name}</strong>
-															<Badge variant="outline">{scopeLabels[item.sourceScope]}</Badge>
-															<Badge variant="outline">{item.harnessLabel}</Badge>
-															<Badge variant={item.status === "ready" ? "secondary" : "outline"}>{itemStatusLabel(item)}</Badge>
-														</span>
-														<span className="mt-1 block truncate text-xs text-muted-foreground">
-															{item.sourceRelativePath} → {item.targetRelativePath}
-														</span>
-														{item.warnings.length ? (
-															<span className="mt-1 flex items-center gap-1 text-xs text-amber-600">
-																<AlertTriangle className="size-3" />
-																{isRule ? "点击查看规则 Diff" : item.warnings[0]}
-															</span>
-														) : null}
-													</span>
-												</button>
-										);
-										})}
-									</div>
+								) : resourceTree.length ? (
+									<ResourceTree
+										expandedIds={expandedIds}
+										items={items}
+						nodes={resourceTree}
+						productName={state.branding.name}
+						onOpenInstruction={(item) => setRuleItem(item)}
+										onToggleExpanded={(nodeId) =>
+											setExpandedIds((current) => {
+												const next = new Set(current);
+												if (next.has(nodeId)) next.delete(nodeId);
+												else next.add(nodeId);
+												return next;
+											})
+										}
+										onToggleItems={toggleItems}
+										onToggleItem={toggleItem}
+										selectedIds={selectedIds}
+									/>
 								) : (
 									<div className="rounded-lg border border-dashed py-12 text-center text-sm text-muted-foreground">
-										{detectedHarnesses.length ? `没有找到 ${harnessLabels[activeHarness]} 的资源` : "没有找到可导入的资源"}
+										{detectedHarnesses.length ? `没有找到 ${harnessLabels[activeHarness]} 的资源` : "没有找到可迁移的资源"}
 									</div>
 								)}
 								{state.harnessImportResult ? (
 									<Alert>
-										<AlertTitle>导入完成</AlertTitle>
+										<AlertTitle>迁移完成</AlertTitle>
 										<AlertDescription>
 											成功 {state.harnessImportResult.imported} 项，跳过 {state.harnessImportResult.skipped} 项，失败 {state.harnessImportResult.failed} 项。
 										</AlertDescription>
@@ -313,7 +394,7 @@ function HarnessImportDialog({
 								) : null}
 								{state.harnessImportsError ? (
 									<Alert variant="destructive">
-										<AlertTitle>导入失败</AlertTitle>
+										<AlertTitle>迁移失败</AlertTitle>
 										<AlertDescription>{state.harnessImportsError}</AlertDescription>
 									</Alert>
 								) : null}
@@ -326,7 +407,7 @@ function HarnessImportDialog({
 						</Button>
 						<Button onClick={() => void actions.importHarnessResources(targetScope, [...selectedIds])} disabled={selectedCount === 0 || state.harnessImporting}>
 							{state.harnessImporting ? <LoaderCircle className="size-4 animate-spin" /> : <ArrowDownToLine className="size-4" />}
-							{state.harnessImporting ? "正在导入" : `导入 ${selectedCount} 项`}
+							{state.harnessImporting ? "正在迁移" : `迁移 ${selectedCount} 项`}
 						</Button>
 					</DialogFooter>
 				</DialogContent>
@@ -334,18 +415,212 @@ function HarnessImportDialog({
 			<RuleMergeDialog
 				item={ruleItem}
 				open={ruleItem !== undefined}
-				onOpenChange={(open) => {
-					if (!open) setRuleItem(undefined);
+				onOpenChange={(nextOpen) => {
+					if (!nextOpen) setRuleItem(undefined);
 				}}
-				onConfirm={(mode, hunkIds) => {
-					if (!ruleItem) return;
-					if (mode === "replace") void actions.importHarnessResources(targetScope, [ruleItem.id], undefined, [ruleItem.id]);
-					else void actions.importHarnessResources(targetScope, [ruleItem.id], { [ruleItem.id]: hunkIds });
-					setRuleItem(undefined);
-				}}
+				onConfirm={importRule}
 				busy={state.harnessImporting}
+				productName={state.branding.name}
 			/>
 		</>
+	);
+}
+
+function ResourceTree({
+	nodes,
+	items,
+	selectedIds,
+	expandedIds,
+	onToggleItem,
+	onToggleItems,
+	onToggleExpanded,
+	onOpenInstruction,
+	productName,
+}: {
+	nodes: ResourceTreeNode[];
+	items: HarnessImportItem[];
+	selectedIds: Set<string>;
+	expandedIds: Set<string>;
+	onToggleItem: (item: HarnessImportItem) => void;
+	onToggleItems: (itemIds: string[]) => void;
+	onToggleExpanded: (nodeId: string) => void;
+	onOpenInstruction: (item: HarnessImportItem) => void;
+	productName: string;
+}) {
+	const itemsById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items]);
+	return (
+		<div aria-label="迁移资源目录" className="rounded-lg border bg-background p-2" role="tree">
+			{nodes.map((node) => (
+				<ResourceTreeNodeView
+					expandedIds={expandedIds}
+					itemsById={itemsById}
+					key={node.id}
+					level={1}
+					node={node}
+					productName={productName}
+					onOpenInstruction={onOpenInstruction}
+					onToggleExpanded={onToggleExpanded}
+					onToggleItems={onToggleItems}
+					onToggleItem={onToggleItem}
+					selectedIds={selectedIds}
+				/>
+			))}
+		</div>
+	);
+}
+
+function ResourceTreeNodeView({
+	node,
+	level,
+	itemsById,
+	selectedIds,
+	expandedIds,
+	onToggleItem,
+	onToggleItems,
+	onToggleExpanded,
+	onOpenInstruction,
+	productName,
+}: {
+	node: ResourceTreeNode;
+	level: number;
+	itemsById: Map<string, HarnessImportItem>;
+	selectedIds: Set<string>;
+	expandedIds: Set<string>;
+	onToggleItem: (item: HarnessImportItem) => void;
+	onToggleItems: (itemIds: string[]) => void;
+	onToggleExpanded: (nodeId: string) => void;
+	onOpenInstruction: (item: HarnessImportItem) => void;
+	productName: string;
+}) {
+	if (node.item) {
+		const item = node.item;
+		const selectable = isSelectableItem(item);
+		const clickable = item.status === "ready";
+		const selected = selectedIds.has(item.id);
+		return (
+			<div aria-level={level} className="flex min-w-0 items-start gap-1 rounded-md px-1 py-0.5" role="treeitem">
+				{selectable ? (
+					<TreeCheckbox checked={selected} label={`选择 ${item.name}`} onChange={() => onToggleItem(item)} />
+				) : item.resourceType === "instruction" && clickable ? (
+					<span className="mt-2 grid size-4 shrink-0 place-items-center text-muted-foreground" title="查看 Diff">
+						<FileDiff className="size-3.5" />
+					</span>
+				) : (
+					<span className="mt-2 grid size-4 shrink-0 place-items-center text-muted-foreground/60">
+						{item.status === "already-imported" ? <Check className="size-3.5" /> : null}
+					</span>
+				)}
+				<button
+					aria-pressed={selectable ? selected : undefined}
+					className="flex min-w-0 flex-1 items-start gap-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-muted/50 disabled:cursor-default disabled:opacity-65"
+					disabled={!clickable}
+					onClick={() => (item.resourceType === "instruction" ? onOpenInstruction(item) : onToggleItem(item))}
+					type="button"
+				>
+					<span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">{resourceIcon(item.resourceType)}</span>
+					<span className="min-w-0 flex-1">
+						<span className="flex flex-wrap items-center gap-2">
+							<strong className="min-w-0 truncate text-sm font-medium">{item.name}</strong>
+							<Badge variant="outline">{scopeLabels[item.sourceScope]}</Badge>
+							<Badge variant={itemStatusVariant(item)}>{itemStatusLabel(item)}</Badge>
+						</span>
+						<span className="mt-1 flex min-w-0 items-center gap-1 truncate font-mono text-[11px] text-muted-foreground">
+							<span className="truncate">{item.sourceRelativePath}</span>
+							<span aria-hidden="true">→</span>
+							<span className="truncate">{productName} / {item.targetRelativePath}</span>
+						</span>
+						{item.warnings.length ? (
+							<span className="mt-1 flex items-start gap-1 text-xs text-muted-foreground">
+								<Info className="mt-0.5 size-3.5 shrink-0" />
+								<span>{item.warnings.join("；")}</span>
+							</span>
+						) : null}
+					</span>
+				</button>
+			</div>
+		);
+	}
+
+	const expanded = expandedIds.has(node.id);
+	const selectableIds = node.itemIds.filter((id) => {
+		const item = itemsById.get(id);
+		return item !== undefined && isSelectableItem(item);
+	});
+	const checked = selectableIds.length > 0 && selectableIds.every((id) => selectedIds.has(id));
+	const mixed = selectableIds.some((id) => selectedIds.has(id)) && !checked;
+	return (
+		<div aria-level={level} className="min-w-0" role="treeitem" aria-expanded={expanded}>
+			<div className="flex min-w-0 items-center gap-1 rounded-md px-1 py-0.5 hover:bg-muted/40">
+				<TreeCheckbox
+					checked={checked}
+					disabled={selectableIds.length === 0}
+					label={`选择目录 ${node.label}`}
+					mixed={mixed}
+					onChange={() => onToggleItems(node.itemIds)}
+				/>
+				<button
+					aria-expanded={expanded}
+					className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-2 text-left text-sm font-medium"
+					onClick={() => onToggleExpanded(node.id)}
+					type="button"
+				>
+					{expanded ? <ChevronDown className="size-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}
+					{expanded ? <FolderOpen className="size-4 shrink-0 text-muted-foreground" /> : <Folder className="size-4 shrink-0 text-muted-foreground" />}
+					<span className="min-w-0 truncate">{node.label}</span>
+					<span className="ml-auto shrink-0 text-xs font-normal text-muted-foreground">{node.itemIds.length}</span>
+				</button>
+			</div>
+			{expanded && node.children.length ? (
+				<div className="ml-5 border-l border-border pl-2" role="group">
+					{node.children.map((child) => (
+						<ResourceTreeNodeView
+							expandedIds={expandedIds}
+							itemsById={itemsById}
+							key={child.id}
+							level={level + 1}
+							node={child}
+							productName={productName}
+							onOpenInstruction={onOpenInstruction}
+							onToggleExpanded={onToggleExpanded}
+							onToggleItems={onToggleItems}
+							onToggleItem={onToggleItem}
+							selectedIds={selectedIds}
+						/>
+					))}
+				</div>
+			) : null}
+		</div>
+	);
+}
+
+function TreeCheckbox({
+	checked,
+	mixed = false,
+	disabled = false,
+	label,
+	onChange,
+}: {
+	checked: boolean;
+	mixed?: boolean;
+	disabled?: boolean;
+	label: string;
+	onChange: (event: ChangeEvent<HTMLInputElement>) => void;
+}) {
+	const ref = useRef<HTMLInputElement>(null);
+	useEffect(() => {
+		if (ref.current) ref.current.indeterminate = mixed;
+	}, [mixed]);
+	return (
+		<input
+			aria-checked={mixed ? "mixed" : checked}
+			aria-label={label}
+			checked={checked}
+			className="mt-2 size-4 shrink-0 accent-primary"
+			disabled={disabled}
+			onChange={onChange}
+			ref={ref}
+			type="checkbox"
+		/>
 	);
 }
 
@@ -355,12 +630,14 @@ function RuleMergeDialog({
 	onOpenChange,
 	onConfirm,
 	busy,
+	productName,
 }: {
 	item?: HarnessImportItem;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	onConfirm: (mode: "merge" | "replace", hunkIds: string[]) => void;
 	busy: boolean;
+	productName: string;
 }) {
 	const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 	const [mode, setMode] = useState<"merge" | "replace">("merge");
@@ -373,7 +650,7 @@ function RuleMergeDialog({
 			setMode("merge");
 			setSelectedIds(new Set(hunks.map((hunk) => hunk.id)));
 		}
-	}, [open, item]);
+	}, [open, item, hunks]);
 
 	const toggleHunk = (hunkId: string) => {
 		setSelectedIds((current) => {
@@ -386,11 +663,11 @@ function RuleMergeDialog({
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
-				<DialogContent className="flex h-[min(760px,calc(100dvh-2rem))] w-[calc(100%-1rem)] max-w-[calc(100%-1rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+			<DialogContent className="flex h-[min(760px,calc(100dvh-2rem))] w-[calc(100%-1rem)] max-w-[calc(100%-1rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
 				<DialogHeader className="shrink-0 border-b px-4 py-5 pr-12 sm:px-6">
-					<DialogTitle>合并规则 Diff</DialogTitle>
+					<DialogTitle>合并到 {productName} 的 AGENTS.md</DialogTitle>
 					<DialogDescription>
-						{item?.harnessLabel} · {item?.sourceRelativePath} → {item?.targetRelativePath}
+						{item?.harnessLabel} · {item?.sourceRelativePath} → {productName} / {item?.targetRelativePath}
 					</DialogDescription>
 				</DialogHeader>
 				<div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6">
@@ -406,19 +683,22 @@ function RuleMergeDialog({
 						{mode === "replace" ? (
 							<>
 								<Alert variant="destructive">
-									<AlertTitle>完整覆盖目标规则文件</AlertTitle>
-									<AlertDescription>确认后，目标 AGENTS.md 会被来源文件全文替换，目标现有内容不会保留。</AlertDescription>
+									<AlertTitle>完整覆盖 {productName} 的目标规则文件</AlertTitle>
+									<AlertDescription>确认后，只覆盖 {productName} 的目标 AGENTS.md；来源 Harness 文件和原有 Harness 内容不会被修改。</AlertDescription>
 								</Alert>
 								<div className="grid gap-3 md:grid-cols-2">
-									<RuleContentPreview title="来源完整内容" content={sourceContent} tone="source" />
-									<RuleContentPreview title="目标当前内容" content={targetContent} tone="target" />
+									<RuleContentPreview title="来源完整内容（只读）" content={sourceContent} tone="source" />
+									<RuleContentPreview title={`${productName} 当前内容`} content={targetContent} tone="target" />
 								</div>
 							</>
 						) : (
 							<>
 								<Alert>
-									<AlertTitle>只追加你选择的规则块</AlertTitle>
-									<AlertDescription>目标 AGENTS.md 已有内容不会被修改。绿色内容是来源文件中待合并的新增块。</AlertDescription>
+									<AlertTitle>只追加选择的规则块</AlertTitle>
+									<AlertDescription>
+										只修改 {productName} 的目标 AGENTS.md，来源文件保持不变。
+										{item?.referencedItemIds?.length ? `检测到 ${item.referencedItemIds.length} 个引用文件，确认后会一并迁移。` : ""}
+									</AlertDescription>
 								</Alert>
 								<div className="flex items-center justify-between gap-3 text-sm">
 									<span className="text-muted-foreground">已选择 {selectedIds.size} / {hunks.length} 个规则块</span>
@@ -446,10 +726,10 @@ function RuleMergeDialog({
 														<span className="text-xs text-muted-foreground">新增 {hunk.lines.length} 行</span>
 													</span>
 												</span>
-												<pre className="overflow-x-auto rounded-md bg-emerald-50 p-3 text-xs leading-5 text-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-200">
+												<pre className="overflow-x-auto rounded-md bg-muted/50 p-3 text-xs leading-5 text-foreground">
 													{hunk.lines.map((line, index) => (
 														<div className="flex min-w-max" key={`${hunk.id}-${index}`}>
-															<span className="mr-3 select-none text-emerald-600">+</span>
+															<span className="mr-3 select-none text-muted-foreground">+</span>
 															<span>{line || " "}</span>
 														</div>
 													))}
@@ -462,8 +742,8 @@ function RuleMergeDialog({
 								)}
 							</>
 						)}
-						</div>
 					</div>
+				</div>
 				<DialogFooter className="shrink-0 border-t px-4 py-4 sm:px-6">
 					<Button variant="outline" onClick={() => onOpenChange(false)}>
 						取消
@@ -486,7 +766,7 @@ function RuleContentPreview({ title, content, tone }: { title: string; content: 
 	return (
 		<section className="grid min-h-0 gap-2">
 			<h3 className="text-sm font-medium">{title}</h3>
-			<pre className={`max-h-96 min-h-48 overflow-auto rounded-md border p-3 text-xs leading-5 ${tone === "source" ? "bg-emerald-50 text-emerald-950 dark:bg-emerald-950/30 dark:text-emerald-100" : "bg-muted/40 text-foreground"}`}>
+			<pre className={`max-h-96 min-h-48 overflow-auto rounded-md border p-3 text-xs leading-5 ${tone === "source" ? "bg-muted/40 text-foreground" : "bg-background text-foreground"}`}>
 				{content || "（文件不存在或为空）"}
 			</pre>
 		</section>

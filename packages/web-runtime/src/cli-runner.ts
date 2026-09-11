@@ -12,6 +12,7 @@ import {
 } from "./runtime-service.ts";
 import { WebRuntimeService } from "./service.ts";
 import { runStdioRuntime } from "./stdio.ts";
+import { restoreUserCommandEnvironment } from "./user-execution-environment.ts";
 
 function endpointFromArgs(args: readonly string[]): string | undefined {
 	for (let index = 1; index < args.length; index += 1) {
@@ -33,6 +34,7 @@ function endpointFromArgs(args: readonly string[]): string | undefined {
 export async function runWebRuntimeCli(args: readonly string[] = process.argv.slice(2)): Promise<void> {
 	const agentDir = getRuntimeAgentDir();
 	const command = args[0] ?? "stdio";
+	if (command === "stdio" || command === "serve") restoreUserCommandEnvironment();
 	const endpoint = endpointFromArgs(args) ?? process.env.PI_WEB_RUNTIME_ENDPOINT ?? defaultRuntimeEndpoint(agentDir);
 	const startupSessionPath = process.env.PI_WEB_STARTUP_SESSION_PATH?.trim();
 	let service: WebRuntimeService | undefined;

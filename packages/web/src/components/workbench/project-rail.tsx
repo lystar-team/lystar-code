@@ -21,11 +21,12 @@ import {
 import type { DragEvent as ReactDragEvent } from "react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "../../lib/utils";
-import type { WorkbenchState } from "../../state/use-workbench";
+import { sessionTitle, type WorkbenchState } from "../../state/use-workbench";
 import type { ProjectGroup, WebProject, WebSessionSummary } from "../../types";
 import { BrandLogo } from "../brand-logo";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
 import {
 	ContextMenu,
 	ContextMenuContent,
@@ -44,11 +45,8 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card"
 import { Input } from "../ui/input";
 import { ScrollArea } from "../ui/scroll-area";
 import { Separator } from "../ui/separator";
-import {
-	ProjectGroupDialog,
-	ProjectGroupPickerDialog,
-	ProjectGroupProjectPickerDialog,
-} from "./project-group-dialog";
+import { ProjectGroupDialog, ProjectGroupPickerDialog, ProjectGroupProjectPickerDialog } from "./project-group-dialog";
+import { ProductUpdateControl } from "./product-update-control";
 import { type DropPosition, hasUnreadProjectSessions, hasUnreadSessions, reorderIds } from "./project-rail-utils";
 import { SessionButton } from "./session-button";
 import { SessionManagementDialog } from "./session-management-dialog";
@@ -87,6 +85,7 @@ function projectRailPropsEqual(previous: ProjectRailProps, next: ProjectRailProp
 		previous.state.projects === next.state.projects &&
 		previous.state.projectGroups === next.state.projectGroups &&
 		previous.state.sessionId === next.state.sessionId &&
+		previous.state.branding === next.state.branding &&
 		previous.state.unreadSessionIds === next.state.unreadSessionIds
 	);
 }
@@ -132,6 +131,8 @@ export const ProjectRail = memo(function ProjectRail({
 	const [movingProject, setMovingProject] = useState<WebProject>();
 	const [addingProjectToGroup, setAddingProjectToGroup] = useState<ProjectGroup>();
 	const [sessionManagementProject, setSessionManagementProject] = useState<WebProject>();
+	const [pendingDeleteSession, setPendingDeleteSession] = useState<{ id: string; title: string }>();
+	const [deletingSessionId, setDeletingSessionId] = useState<string>();
 	const [projectNameDrafts, setProjectNameDrafts] = useState<Record<string, string>>({});
 	const [editingProjectId, setEditingProjectId] = useState<string>();
 	const [projectActionId, setProjectActionId] = useState<string>();
@@ -365,6 +366,21 @@ export const ProjectRail = memo(function ProjectRail({
 	const saveGroup = (name: string): Promise<boolean> =>
 		editingGroup ? actions.updateProjectGroup(editingGroup.id, name) : actions.addProjectGroup(name);
 
+	const requestSessionDelete = (session: WebSessionSummary) => {
+		setPendingDeleteSession({ id: session.id, title: sessionTitle(session) });
+	};
+
+	const confirmSessionDelete = async () => {
+		const pending = pendingDeleteSession;
+		if (!pending || deletingSessionId) return;
+		setDeletingSessionId(pending.id);
+		try {
+			if (await actions.deleteSession(pending.id)) setPendingDeleteSession(undefined);
+		} finally {
+			setDeletingSessionId(undefined);
+		}
+	};
+
 	const renderProject = (project: WebProject, nested = false) => {
 		const active = currentProject?.id === project.id;
 		const expanded = expandedProjectIds.has(project.id);
@@ -463,7 +479,7 @@ export const ProjectRail = memo(function ProjectRail({
 										className="w-[min(28rem,calc(100vw-1rem))] rounded-xl border-border bg-background px-4 py-3 shadow-[0_2px_8px_rgb(0_0_0/0.05)]"
 										onPointerDown={(event) => event.stopPropagation()}
 									>
-										<div className="flex items-center gap-2">
+										<div className="flex items-start justify-between gap-4 whitespace-nowrap">
 											{editingProjectId === project.id ? (
 												<Input
 													aria-label="项目名称"
@@ -484,11 +500,11 @@ export const ProjectRail = memo(function ProjectRail({
 														}
 														if (event.key === "Escape") {
 															event.preventDefault();
-															setProjectNameDrafts((current) => ({
-																...current,
-																[project.id]: project.name,
-															}));
-															setEditingProjectId(undefined);
+														setProjectNameDrafts((current) => ({
+															...current,
+															[project.id]: project.name,
+														}));
+														setEditingProjectId(undefined);
 														}
 													}}
 													onBlur={() => {
@@ -500,7 +516,7 @@ export const ProjectRail = memo(function ProjectRail({
 											) : (
 												<button
 													type="button"
-													className="project-list-item-label min-w-0 flex-1 cursor-text truncate bg-transparent p-0 text-left text-foreground"
+													className="project-list-item-label min-w-0 flex-1 cursor-text truncate whitespace-nowrap bg-transparent p-0 text-left text-foreground"
 													onClick={() => {
 														setProjectNameDrafts((current) => ({
 															...current,
@@ -514,14 +530,14 @@ export const ProjectRail = memo(function ProjectRail({
 											)}
 											<Button
 												aria-label={project.pinned ? "取消置顶项目" : "置顶项目"}
-												size="icon"
+												size="icon-sm"
 												variant="ghost"
 												onClick={(event) => {
 													event.stopPropagation();
 													void actions.updateProject(project.id, { pinned: !project.pinned });
 												}}
 											>
-												<Pin className={cn("size-5", project.pinned && "text-primary")} />
+												<Pin className={cn("size-3.5", project.pinned && "text-primary")} />
 											</Button>
 										</div>
 										<div className="mt-3 flex items-center gap-2 text-sm text-foreground">
@@ -647,7 +663,7 @@ export const ProjectRail = memo(function ProjectRail({
 															onTogglePinned={() =>
 																void actions.setSessionPinned(session.id, !session.pinned)
 															}
-															onDelete={() => void actions.deleteSession(session.id)}
+															onDelete={() => requestSessionDelete(session)}
 															dragging={draggedSession?.sessionId === session.id}
 															dropTarget={sessionDrop}
 															dropPosition={sessionDrop ? sessionDropTarget?.position : undefined}
@@ -742,7 +758,9 @@ export const ProjectRail = memo(function ProjectRail({
 			(total, project) => total + project.sessions.filter(isSessionRunning).length,
 			0,
 		);
+		const groupSessionCount = groupProjects.reduce((total, project) => total + project.sessions.length, 0);
 		const groupHasUnread = hasUnreadProjectSessions(groupProjects, state.unreadSessionIds);
+
 		const groupActionsVisible = openGroupMenuId === group.id;
 		const groupMenuItems = [
 			{ label: "添加项目", icon: Plus, onSelect: () => setAddingProjectToGroup(group) },
@@ -771,34 +789,65 @@ export const ProjectRail = memo(function ProjectRail({
 							>
 								<ContextMenuTrigger asChild>
 									<div className={cn("group relative rounded-md", groupDrop && "ring-1 ring-primary/50")}>
-									<CollapsibleTrigger asChild>
-										<Button className="h-8 w-full min-w-0 justify-start gap-2 px-2 py-1 pr-20 text-xs" variant="ghost">
-											<ChevronDown
-												className={cn("size-3.5 shrink-0 transition-transform", !expanded && "-rotate-90")}
-											/>
-											<FolderTree className="size-4 shrink-0 text-muted-foreground" />
-											<span className="project-list-item-label min-w-0 flex-1 truncate text-left font-medium">
-												{group.name}
-											</span>
-											<span className="flex items-center gap-1.5 text-[11px] text-muted-foreground group-hover:invisible">
-												{groupHasUnread ? (
-													<span
-														role="img"
-														className="size-2 shrink-0 rounded-full bg-blue-500 ring-2 ring-blue-500/20 group-hover:invisible"
-														aria-label={`${group.name} 中有新的会话内容`}
-														title="有新的会话内容"
-													/>
-												) : null}
-												{groupRunningSessionCount > 0 ? (
-													<LoaderCircle
-														className="size-3.5 animate-spin text-primary group-hover:invisible"
-														aria-label="项目组中有会话进行中"
-													/>
-												) : null}
-												{groupProjects.length}
-											</span>
-										</Button>
-									</CollapsibleTrigger>
+											<HoverCard openDelay={140} closeDelay={80}>
+												<HoverCardTrigger asChild>
+													<CollapsibleTrigger asChild>
+														<Button className="h-8 w-full min-w-0 justify-start gap-2 px-2 py-1 pr-20 text-xs" variant="ghost">
+															<ChevronDown
+																className={cn("size-3.5 shrink-0 transition-transform", !expanded && "-rotate-90")}
+															/>
+															<FolderTree className="size-4 shrink-0 text-muted-foreground" />
+															<span className="project-list-item-label min-w-0 flex-1 truncate text-left font-medium">
+																{group.name}
+															</span>
+															<span className="flex items-center gap-1.5 text-[11px] text-muted-foreground group-hover:invisible">
+																{groupHasUnread ? (
+																	<span
+																		role="img"
+																		className="size-2 shrink-0 rounded-full bg-blue-500 ring-2 ring-blue-500/20 group-hover:invisible"
+																		aria-label={`${group.name} 中有新的会话内容`}
+																		title="有新的会话内容"
+																	/>
+																) : null}
+																{groupRunningSessionCount > 0 ? (
+																	<LoaderCircle
+																		className="size-3.5 animate-spin text-primary group-hover:invisible"
+																		aria-label="项目组中有会话进行中"
+																	/>
+																) : null}
+																{groupProjects.length}
+															</span>
+														</Button>
+													</CollapsibleTrigger>
+											</HoverCardTrigger>
+											<HoverCardContent
+												side="right"
+												align="start"
+												sideOffset={8}
+												className="w-max min-w-72 max-w-[calc(100vw-1rem)] rounded-xl border-border bg-background px-4 py-3 shadow-[0_2px_8px_rgb(0_0_0/0.05)]"
+												onPointerDown={(event) => event.stopPropagation()}
+											>
+												<div className="flex items-start justify-between gap-4 whitespace-nowrap">
+													<span className="project-list-item-label min-w-0 truncate text-foreground">{group.name}</span>
+												</div>
+												<div className="mt-3 grid gap-2 whitespace-nowrap text-xs text-muted-foreground">
+													<div className="flex min-w-0 items-center gap-2">
+														<FolderTree className="size-3.5 shrink-0" />
+														<span className="truncate">{groupProjects.length} 个项目</span>
+													</div>
+													<div className="flex min-w-0 items-center gap-2">
+														<List className="size-3.5 shrink-0" />
+														<span className="truncate">{groupSessionCount} 个会话</span>
+													</div>
+													{groupRunningSessionCount > 0 ? (
+														<div className="flex items-center gap-2 text-primary">
+															<LoaderCircle className="size-3.5 shrink-0 animate-spin" aria-hidden="true" />
+															<span>{groupRunningSessionCount} 个会话正在进行中</span>
+														</div>
+													) : null}
+												</div>
+											</HoverCardContent>
+										</HoverCard>
 									<div className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5">
 										<Button
 											className={cn(
@@ -877,8 +926,8 @@ export const ProjectRail = memo(function ProjectRail({
 		<div className="flex min-h-0 flex-1 flex-col bg-background">
 			<div className="flex h-16 shrink-0 items-center justify-between px-4 pr-14 lg:pr-4">
 				<div className="flex items-center gap-2.5 font-semibold tracking-tight">
-					<BrandLogo className="size-7 rounded-md object-contain" />
-					<span>LYStar Code</span>
+					<BrandLogo logo={state.branding.logo} className="size-7 rounded-md object-contain" />
+					<span>{state.branding.name}</span>
 				</div>
 				<div className="flex items-center gap-1">
 					<Button
@@ -1018,14 +1067,17 @@ export const ProjectRail = memo(function ProjectRail({
 				</div>
 			</ScrollArea>
 			<div className="grid shrink-0 gap-1 border-t p-3">
-				<Button
-					className="justify-start gap-2"
-					variant="ghost"
-					onClick={() => void actions.openSettings("appearance")}
-				>
-					<SunMoon className="size-4" />
-					<span className="project-list-item-label">偏好设置</span>
-				</Button>
+				<div className="flex min-w-0 items-center gap-2">
+					<Button
+						className="min-w-0 flex-1 justify-start gap-2"
+						variant="ghost"
+						onClick={() => void actions.openSettings("appearance")}
+					>
+						<SunMoon className="size-4 shrink-0" />
+						<span className="project-list-item-label truncate">偏好设置</span>
+					</Button>
+					<ProductUpdateControl />
+				</div>
 				<Button className="justify-start gap-2" variant="ghost" onClick={actions.signOut}>
 					<LogOut className="size-4" />
 					<span className="project-list-item-label">退出</span>
@@ -1059,6 +1111,42 @@ export const ProjectRail = memo(function ProjectRail({
 				actions={actions}
 				onClose={() => setSessionManagementProject(undefined)}
 			/>
+			<Dialog
+				open={Boolean(pendingDeleteSession)}
+				onOpenChange={(open) => {
+					if (!open && !deletingSessionId) setPendingDeleteSession(undefined);
+				}}
+			>
+				<DialogContent className="max-w-md">
+					<DialogHeader>
+						<DialogTitle>删除会话？</DialogTitle>
+						<DialogDescription className="break-words">
+							“{pendingDeleteSession?.title ?? "这个会话"}”删除后无法恢复。
+						</DialogDescription>
+					</DialogHeader>
+					<DialogFooter>
+						<Button
+							variant="outline"
+							disabled={Boolean(deletingSessionId)}
+							onClick={() => setPendingDeleteSession(undefined)}
+						>
+							取消
+						</Button>
+						<Button
+							variant="destructive"
+							disabled={Boolean(deletingSessionId)}
+							onClick={() => void confirmSessionDelete()}
+						>
+							{deletingSessionId ? (
+								<LoaderCircle className="size-4 animate-spin" />
+							) : (
+								<Trash2 className="size-4" />
+							)}
+							确认删除
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 		</div>
 	);
 }, projectRailPropsEqual);

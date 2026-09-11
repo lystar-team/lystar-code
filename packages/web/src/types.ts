@@ -66,6 +66,40 @@ export interface WebLease {
 	updatedAt: number;
 }
 
+export interface ProductBranding {
+	name: string;
+	logo?: string;
+}
+
+export interface ProductUpdateJob {
+	id: string;
+	status: "running" | "completed" | "failed";
+	stage: "starting" | "downloading" | "verifying" | "installing" | "restarting" | "completed" | "failed";
+	progress: number;
+	currentVersion: string;
+	targetVersion: string;
+	message: string;
+	startedAt: number;
+	updatedAt: number;
+}
+
+export interface ProductUpdateStatusResponse {
+	currentVersion: string;
+	job?: ProductUpdateJob;
+}
+
+export interface ProductUpdateCheckResponse extends ProductUpdateStatusResponse {
+	checkedAt: number;
+	repository: string | null;
+	installEnabled: boolean;
+	installBlockedReason: string;
+	status: "available" | "current" | "unavailable" | "offline";
+	latestVersion: string | null;
+	packageName?: string | null;
+	note?: string | null;
+	url?: string | null;
+}
+
 export interface DirectoryListing {
 	path: string;
 	parent?: string;

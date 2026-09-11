@@ -4,6 +4,12 @@ import { join } from "node:path";
 const LOCK_FILE_NAME = "gateway.lock";
 const MAX_ACQUIRE_ATTEMPTS = 3;
 
+function lockFileName(profile: string | undefined): string {
+	if (!profile || profile === "default") return LOCK_FILE_NAME;
+	const normalized = profile.replace(/[^A-Za-z0-9_.-]+/gu, "-").replace(/^-+|-+$/gu, "");
+	return normalized ? `gateway-${normalized}.lock` : LOCK_FILE_NAME;
+}
+
 interface GatewayLockRecord {
 	pid: number;
 	startedAt: number;
@@ -57,8 +63,8 @@ function readLockRecord(path: string): GatewayLockRecord | undefined {
 	}
 }
 
-export function readGatewayPid(agentDir: string): number | undefined {
-	const path = join(agentDir, "web", LOCK_FILE_NAME);
+export function readGatewayPid(agentDir: string, profile?: string): number | undefined {
+	const path = join(agentDir, "web", lockFileName(profile));
 	const record = readLockRecord(path);
 	if (!record || !isProcessAlive(record)) return undefined;
 	return record.pid;
@@ -87,10 +93,10 @@ export class GatewayInstanceLock {
 		this.record = record;
 	}
 
-	static async acquire(agentDir: string): Promise<GatewayInstanceLock> {
+	static async acquire(agentDir: string, profile?: string): Promise<GatewayInstanceLock> {
 		const directory = join(agentDir, "web");
 		mkdirSync(directory, { recursive: true, mode: 0o700 });
-		const path = join(directory, LOCK_FILE_NAME);
+		const path = join(directory, lockFileName(profile));
 		for (let attempt = 0; attempt < MAX_ACQUIRE_ATTEMPTS; attempt++) {
 			try {
 				const fd = openSync(path, "wx", 0o600);

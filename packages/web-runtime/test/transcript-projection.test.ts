@@ -162,6 +162,61 @@ describe("assistant transcript projection", () => {
 		});
 	});
 
+	it("projects generated-image metadata on the original tool result", () => {
+		const projected = projectTranscriptBatch([
+			assistant([
+				{
+					type: "toolCall",
+					id: "image-1",
+					name: "image_gen",
+					arguments: { prompt: "蓝色圆形", model: "auto", profile: "standard" },
+				},
+			]),
+			{
+				entryId: "image-result",
+				parentId: "assistant-entry",
+				timestamp: "2026-09-11T00:00:00Z",
+				kind: "message",
+				payload: {
+					type: "message",
+					message: {
+						role: "toolResult",
+						toolCallId: "image-1",
+						toolName: "image_gen",
+						content: [
+							{ type: "text", text: "Generated image saved to /tmp/image.png." },
+							{
+								type: "image",
+								data: {
+									type: "content_ref",
+									contentRef: "generated-ref",
+									mimeType: "image/png",
+									byteLength: 4,
+									previewHead: "",
+									previewTail: "",
+									lineCount: 0,
+								},
+								mimeType: "image/png",
+							},
+						],
+						isError: false,
+					},
+				},
+			} as TranscriptItem,
+		]);
+
+		expect(projected[1]?.view).toEqual({
+			type: "tool_result",
+			callId: "image-1",
+			name: "image_gen",
+			status: "success",
+			summary: '{"prompt":"蓝色圆形","model":"auto","profile":"standard"}',
+			detail: "Generated image saved to /tmp/image.png.",
+			contentRef: "generated-ref",
+			images: [{ contentRef: "generated-ref", mimeType: "image/png", byteLength: 4 }],
+		});
+	});
+
 	it("projects user image content as attachments for the Prompt card", () => {
 		const projected = projectTranscriptItems({
 			entryId: "user-entry",

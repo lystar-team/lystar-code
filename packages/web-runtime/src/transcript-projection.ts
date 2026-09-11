@@ -62,6 +62,7 @@ function text(value: JsonValue | undefined): string {
 						return typeof item.previewHead === "string" ? item.previewHead : "内容引用";
 					return JSON.stringify(item);
 				})
+				.filter((part) => part.length > 0)
 				.join(" "),
 		);
 	}

@@ -6,6 +6,7 @@ import { Button } from "../ui/button";
 import { Dialog, DialogContent } from "../ui/dialog";
 import { ScrollArea } from "../ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
+import { GsapReveal } from "../ui/gsap-reveal";
 import { FilesPanel } from "./files-panel";
 import { GitPanel } from "./git-panel";
 import { RunPanel } from "./run-panel";
@@ -90,20 +91,28 @@ export function InspectorPanel({
 					</TabsTrigger>
 				</TabsList>
 				<TabsContent className="min-h-0 w-full min-w-0 flex-1 overflow-hidden" value="files">
-					<FilesPanel state={state} actions={actions} />
+					<GsapReveal animationKey={state.inspectorMode} className="h-full min-h-0 w-full" distance={10} duration={0.28}>
+						<FilesPanel state={state} actions={actions} />
+					</GsapReveal>
 				</TabsContent>
 				<TabsContent className="min-h-0 w-full min-w-0 flex-1 overflow-hidden" value="git">
-					<GitPanel state={state} actions={actions} />
+					<GsapReveal animationKey={state.inspectorMode} className="h-full min-h-0 w-full" distance={10} duration={0.28}>
+						<GitPanel state={state} actions={actions} />
+					</GsapReveal>
 				</TabsContent>
 				<TabsContent className="min-h-0 w-full min-w-0 flex-1 overflow-hidden" value="runs">
-					<ScrollArea className="h-full w-full" viewportRef={runViewportRef}>
-						<RunPanel state={state} actions={actions} scrollRef={runViewportRef} />
-					</ScrollArea>
+					<GsapReveal animationKey={state.inspectorMode} className="h-full min-h-0 w-full" distance={10} duration={0.28}>
+						<ScrollArea className="h-full w-full" viewportRef={runViewportRef}>
+							<RunPanel state={state} actions={actions} scrollRef={runViewportRef} />
+						</ScrollArea>
+					</GsapReveal>
 				</TabsContent>
 				<TabsContent className="min-h-0 w-full min-w-0 flex-1 overflow-hidden" value="tree">
-					<ScrollArea className="h-full w-full" viewportRef={treeViewportRef}>
-						<SessionTreePanel state={state} actions={actions} scrollRef={treeViewportRef} />
-					</ScrollArea>
+					<GsapReveal animationKey={state.inspectorMode} className="h-full min-h-0 w-full" distance={10} duration={0.28}>
+						<ScrollArea className="h-full w-full" viewportRef={treeViewportRef}>
+							<SessionTreePanel state={state} actions={actions} scrollRef={treeViewportRef} />
+						</ScrollArea>
+					</GsapReveal>
 				</TabsContent>
 			</Tabs>
 		</div>

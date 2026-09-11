@@ -1,4 +1,4 @@
-import { ArrowDownIcon, LoaderCircle, Sparkles } from "lucide-react";
+import { ArrowDownIcon, ChevronDownIcon, LoaderCircle, Sparkles, WrenchIcon } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { VirtuosoHandle } from "react-virtuoso";
 import { toLiveToolViewModel } from "../../adapters/live-tool-view-model.ts";
@@ -11,6 +11,8 @@ import { CompactionCard } from "./compaction-card";
 import { Conversation, ConversationContent, ConversationEmptyState } from "../ai-elements/conversation";
 import { ToolBatch, toolBatchSummaryLabel, type ToolBatchTool } from "../ai-elements/tool-batch";
 import { Button } from "../ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
+import { GsapReveal } from "../ui/gsap-reveal";
 import { ACTIVE_OPERATION_STATUSES } from "./constants";
 import { ThinkingBlock } from "./live-turn";
 import { AgentErrorCard, TranscriptItemView, TranscriptMessageView } from "./transcript";
@@ -35,10 +37,12 @@ type ThinkingRenderItem = { kind: "thinking"; key: string; text: string };
 type TranscriptItemRenderItem = { kind: "item"; key: string; item: WorkbenchState["transcript"][number] };
 type TranscriptBatchRenderItem = { kind: "tool-batch"; key: string; tools: ToolBatchTool[] };
 type ActivityBoundaryRenderItem = { kind: "activity-boundary"; key: string };
+type ResultBoundaryRenderItem = { kind: "result-boundary"; key: string };
 type TranscriptToolStackRenderItem = {
 	kind: "tool-stack";
 	key: string;
 	live: boolean;
+	collapseForResult: boolean;
 	batches: TranscriptBatchRenderItem[];
 };
 type CompactionRenderItem = {
@@ -49,12 +53,18 @@ type CompactionRenderItem = {
 	text?: string;
 	tokensBefore?: number;
 };
-type ConversationRenderItem =
+type ConversationContentRenderItem =
 	| MessageRenderItem
 	| ThinkingRenderItem
 	| TranscriptItemRenderItem
 	| TranscriptToolStackRenderItem
 	| CompactionRenderItem;
+type WorkProcessRenderItem = {
+	kind: "work-process";
+	key: string;
+	items: ConversationContentRenderItem[];
+};
+type ConversationRenderItem = ConversationContentRenderItem | WorkProcessRenderItem | ResultBoundaryRenderItem;
 type RawRenderItem =
 	| MessageRenderItem
 	| TranscriptItemRenderItem
@@ -132,8 +142,9 @@ function toolBatchToolsEqual(previous: readonly ToolBatchTool[], next: readonly 
 	});
 }
 
-function persistedToolBatchKind(batch: TranscriptBatchRenderItem): "read" | "image" | "search" | "action" {
+function persistedToolBatchKind(batch: TranscriptBatchRenderItem): "read" | "generated-image" | "image" | "search" | "action" {
 	if (batch.tools.length > 0 && batch.tools.every((tool) => tool.name === "web_search")) return "search";
+	if (batch.tools.length > 0 && batch.tools.every((tool) => tool.name === "image_gen")) return "generated-image";
 	if (batch.tools.length > 0 && batch.tools.every((tool) => tool.name === "read" && Boolean(tool.images?.length))) return "image";
 	if (batch.tools.length > 0 && batch.tools.every((tool) => tool.name === "read")) return "read";
 	return "action";
@@ -155,6 +166,7 @@ function conversationRenderItemEqual(previous: ConversationRenderItem, next: Con
 	if (previous.kind === "tool-stack" && next.kind === "tool-stack") {
 		return (
 			previous.live === next.live &&
+			previous.collapseForResult === next.collapseForResult &&
 			previous.batches.length === next.batches.length &&
 			previous.batches.every((batch, index) => {
 				const candidate = next.batches[index];
@@ -162,6 +174,16 @@ function conversationRenderItemEqual(previous: ConversationRenderItem, next: Con
 			})
 		);
 	}
+	if (previous.kind === "work-process" && next.kind === "work-process") {
+		return (
+			previous.items.length === next.items.length &&
+			previous.items.every((item, index) => {
+				const candidate = next.items[index];
+				return candidate !== undefined && conversationRenderItemEqual(item, candidate);
+			})
+		);
+	}
+	if (previous.kind === "result-boundary" && next.kind === "result-boundary") return true;
 	if (previous.kind === "compaction" && next.kind === "compaction") {
 		return previous.live
 			? next.live && previous.state === next.state
@@ -170,10 +192,10 @@ function conversationRenderItemEqual(previous: ConversationRenderItem, next: Con
 	return previous.kind === "item" && next.kind === "item" && previous.item === next.item;
 }
 
-function groupPersistedToolBatches(rendered: Array<RawRenderItem>): ConversationRenderItem[] {
-	const grouped: ConversationRenderItem[] = [];
+function groupPersistedToolBatches(rendered: Array<RawRenderItem>): ConversationContentRenderItem[] {
+	const grouped: ConversationContentRenderItem[] = [];
 	let previousToolStack: TranscriptToolStackRenderItem | undefined;
-	let previousToolBatchKind: "read" | "image" | "search" | "action" | undefined;
+	let previousToolBatchKind: "read" | "generated-image" | "image" | "search" | "action" | undefined;
 	for (const entry of rendered) {
 		if (entry.kind === "activity-boundary") {
 			previousToolStack = undefined;
@@ -185,7 +207,13 @@ function groupPersistedToolBatches(rendered: Array<RawRenderItem>): Conversation
 			if (previousToolStack && previousToolBatchKind === toolBatchKind) {
 				previousToolStack.batches.push(entry);
 			} else {
-				previousToolStack = { kind: "tool-stack", key: `tool-stack:${entry.key}`, live: false, batches: [entry] };
+				previousToolStack = {
+				kind: "tool-stack",
+				key: `tool-stack:${entry.key}`,
+				live: false,
+				collapseForResult: false,
+				batches: [entry],
+			};
 				grouped.push(previousToolStack);
 			}
 			previousToolBatchKind = toolBatchKind;
@@ -202,7 +230,7 @@ export function buildPersistedRenderItems(
 	items: WorkbenchState["transcript"],
 	toolIndex: ToolIndex,
 	pendingUserPrompts: WorkbenchState["pendingUserPrompts"] = [],
-): ConversationRenderItem[] {
+): ConversationContentRenderItem[] {
 	const rendered: Array<RawRenderItem> = [];
 	let batchTools: ToolBatchTool[] = [];
 	let batchKey = "";
@@ -326,13 +354,13 @@ export function buildPersistedRenderItems(
 }
 
 export function appendLiveRenderItems(
-	rendered: ConversationRenderItem[],
+	rendered: ConversationContentRenderItem[],
 	liveItems: readonly LiveTurnItem[],
 	liveTools: WorkbenchState["liveTools"],
 	committedToolCallIds: ReadonlySet<string>,
 	liveCompaction: LiveCompactionState | undefined,
 	liveTurnId: number,
-): ConversationRenderItem[] {
+): ConversationContentRenderItem[] {
 	const next = [...rendered];
 	for (const item of liveItems) {
 		if (item.kind === "thinking") {
@@ -367,6 +395,7 @@ export function appendLiveRenderItems(
 			kind: "tool-stack",
 			key: `tool-stack:${batchKey}`,
 			live: true,
+			collapseForResult: false,
 			batches: [{ kind: "tool-batch", key: batchKey, tools }],
 		});
 	}
@@ -382,8 +411,82 @@ export function appendLiveRenderItems(
 	return next;
 }
 
+function markCompletedTurnResult(
+	turn: ConversationContentRenderItem[],
+	completed: boolean,
+): ConversationRenderItem[] {
+	const userMessage = turn[0];
+	if (!completed || userMessage?.kind !== "message" || userMessage.role !== "user") return turn;
+	let finalMessageIndex = -1;
+	for (let index = turn.length - 1; index >= 0; index--) {
+		const entry = turn[index];
+		if (entry?.kind === "message" && entry.role === "assistant" && entry.text) {
+			finalMessageIndex = index;
+			break;
+		}
+	}
+	if (finalMessageIndex <= 1) return turn;
+	const processItems = turn.slice(1, finalMessageIndex);
+	if (turn.slice(finalMessageIndex + 1).some((entry) => entry.kind === "tool-stack")) return turn;
+	const finalMessage = turn[finalMessageIndex];
+	if (!finalMessage || finalMessage.kind !== "message") return turn;
+
+	const completedItems: ConversationRenderItem[] = [userMessage];
+	let workProcessItems: ConversationContentRenderItem[] = [];
+	let workProcessIndex = 0;
+	const flushWorkProcess = () => {
+		if (!workProcessItems.length) return;
+		completedItems.push({
+			kind: "work-process",
+			key: `work-process:${finalMessage.key}:${workProcessIndex++}`,
+			items: workProcessItems,
+		});
+		workProcessItems = [];
+	};
+	for (const entry of processItems) {
+		const generatedImageStack =
+			entry.kind === "tool-stack" &&
+			entry.batches.every(
+				(batch) => batch.tools.length > 0 && batch.tools.every((tool) => tool.name === "image_gen"),
+			);
+		if (generatedImageStack) {
+			flushWorkProcess();
+			completedItems.push({ ...entry, collapseForResult: false });
+			continue;
+		}
+		workProcessItems.push(entry.kind === "tool-stack" ? { ...entry, collapseForResult: true } : entry);
+	}
+	flushWorkProcess();
+	completedItems.push(
+		{ kind: "result-boundary", key: `result-boundary:${finalMessage.key}` },
+		finalMessage,
+		...turn.slice(finalMessageIndex + 1),
+	);
+	return completedItems;
+}
+
+function markCompletedTurnResults(
+	rendered: ConversationContentRenderItem[],
+	responseActive: boolean,
+): ConversationRenderItem[] {
+	const next: ConversationRenderItem[] = [];
+	let turn: ConversationContentRenderItem[] = [];
+	for (const entry of rendered) {
+		if (entry.kind === "message" && entry.role === "user") {
+			if (turn.length) next.push(...markCompletedTurnResult(turn, true));
+			turn = [entry];
+		} else if (turn.length) {
+			turn.push(entry);
+		} else {
+			next.push(entry);
+		}
+	}
+	if (turn.length) next.push(...markCompletedTurnResult(turn, !responseActive));
+	return next;
+}
+
 export function buildConversationRenderItems(
-	persistedItems: ConversationRenderItem[],
+	persistedItems: ConversationContentRenderItem[],
 	liveItems: readonly LiveTurnItem[],
 	liveTools: WorkbenchState["liveTools"],
 	committedToolCallIds: ReadonlySet<string>,
@@ -399,14 +502,15 @@ export function buildConversationRenderItems(
 		liveCompaction,
 		liveTurnId,
 	);
-	if (responseActive) return withLive;
-	for (let index = withLive.length - 1; index >= 0; index--) {
-		const entry = withLive[index];
-		if (entry?.kind !== "message" || entry.role !== "assistant" || !entry.text) continue;
-		withLive[index] = { ...entry, copyVisible: true };
-		break;
+	if (!responseActive) {
+		for (let index = withLive.length - 1; index >= 0; index--) {
+			const entry = withLive[index];
+			if (entry?.kind !== "message" || entry.role !== "assistant" || !entry.text) continue;
+			withLive[index] = { ...entry, copyVisible: true };
+			break;
+		}
 	}
-	return withLive;
+	return markCompletedTurnResults(withLive, responseActive);
 }
 
 function isConversationResponseActive(state: WorkbenchState): boolean {
@@ -529,7 +633,6 @@ function ConversationBody({
 	const promptFollowRef = useRef(false);
 	const bottomFollowRef = useRef(true);
 	const lastUserScrollAtRef = useRef(Number.NEGATIVE_INFINITY);
-	const shouldAutoCollapseTools = useCallback(() => bottomFollowRef.current, []);
 	const scrollToBottom = useCallback(() => {
 		virtuosoRef.current?.scrollToIndex({ align: "end", behavior: "auto", index: "LAST" });
 	}, []);
@@ -619,9 +722,11 @@ function ConversationBody({
 	}, [responseActive]);
 
 	const openResource = actions.openResource;
+	const [expandedWorkProcesses, setExpandedWorkProcesses] = useState<ReadonlyMap<string, boolean>>(() => new Map());
 	const [expandedToolBatches, setExpandedToolBatches] = useState<ReadonlyMap<string, boolean>>(() => new Map());
 	const [expandedToolRows, setExpandedToolRows] = useState<ReadonlyMap<string, boolean>>(() => new Map());
 	useEffect(() => {
+		setExpandedWorkProcesses(new Map());
 		setExpandedToolBatches(new Map());
 		setExpandedToolRows(new Map());
 		promptFollowRef.current = true;
@@ -630,6 +735,15 @@ function ConversationBody({
 		setIsAtBottom(true);
 		setFollowOutput("auto");
 	}, [state.sessionId]);
+	const updateExpandedWorkProcess = useCallback((key: string, open: boolean) => {
+		setExpandedWorkProcesses((current) => {
+			if ((current.get(key) ?? false) === open) return current;
+			const next = new Map(current);
+			if (open) next.set(key, true);
+			else next.delete(key);
+			return next;
+		});
+	}, []);
 	const updateExpandedToolBatch = useCallback((key: string, open: boolean) => {
 		setExpandedToolBatches((current) => {
 			if ((current.get(key) ?? false) === open) return current;
@@ -650,11 +764,11 @@ function ConversationBody({
 	}, []);
 	const renderStateRef = useRef({ sessionId: state.sessionId, projectId: state.currentProjectId, toolStatuses });
 	renderStateRef.current = { sessionId: state.sessionId, projectId: state.currentProjectId, toolStatuses };
-	const renderConversationItem = useCallback(
-		(entry: ConversationRenderItem) => {
+	const renderConversationContentItem = useCallback(
+		(entry: ConversationContentRenderItem) => {
 			const current = renderStateRef.current;
 			if (entry.kind === "message") {
-				return (
+				const message = (
 					<TranscriptMessageView
 						role={entry.role}
 						text={entry.text}
@@ -667,11 +781,19 @@ function ConversationBody({
 						mode={entry.live ? "streaming" : "static"}
 					/>
 				);
+				return entry.role === "user" && entry.key.startsWith("optimistic-user:") ? (
+					<GsapReveal animationKey={entry.key} className="w-full" distance={18} duration={0.34}>
+						{message}
+					</GsapReveal>
+				) : (
+					message
+				);
 			}
 			if (entry.kind === "thinking") return <ThinkingBlock text={entry.text} />;
 			if (entry.kind === "tool-stack") {
 				const tools = entry.batches.flatMap((batch) => batch.tools);
 				const allToolsCompleted = tools.length > 0 && tools.every(isToolComplete);
+				const controlCollapsedState = entry.collapseForResult;
 				if (!allToolsCompleted) {
 					return (
 						<div className="tool-batch-stack">
@@ -681,9 +803,10 @@ function ConversationBody({
 									className="tool-batch-render-item"
 									tools={[tool]}
 									initialOpen={false}
-									open={entry.live ? undefined : expandedToolRows.get(tool.id) ?? false}
-									onOpenChange={entry.live ? undefined : (open) => updateExpandedToolRow(tool.id, open)}
-									autoCollapseWhenComplete={shouldAutoCollapseTools}
+									open={controlCollapsedState ? expandedToolRows.get(tool.id) ?? false : undefined}
+									onOpenChange={
+										controlCollapsedState ? (open) => updateExpandedToolRow(tool.id, open) : undefined
+									}
 									sessionId={current.sessionId}
 									onOpenPath={(path) => void openResource(path)}
 								/>
@@ -703,9 +826,10 @@ function ConversationBody({
 									className="tool-batch-render-item"
 									tools={[tool]}
 									initialOpen={false}
-									open={expandedToolRows.get(tool.id) ?? false}
-									onOpenChange={(open) => updateExpandedToolRow(tool.id, open)}
-									autoCollapseWhenComplete={shouldAutoCollapseTools}
+									open={controlCollapsedState ? expandedToolRows.get(tool.id) ?? false : undefined}
+									onOpenChange={
+										controlCollapsedState ? (open) => updateExpandedToolRow(tool.id, open) : undefined
+									}
 									sessionId={current.sessionId}
 									onOpenPath={(path) => void openResource(path)}
 								/>
@@ -720,11 +844,12 @@ function ConversationBody({
 						tools={tools}
 						summaryLabel={tools.length > 1 ? toolBatchSummaryLabel(tools) : undefined}
 						initialOpen={false}
-						open={entry.live ? undefined : expandedToolBatches.get(entry.key) ?? false}
-						onOpenChange={entry.live ? undefined : (open) => updateExpandedToolBatch(entry.key, open)}
-						toolOpen={entry.live ? undefined : expandedToolRows}
-						onToolOpenChange={entry.live ? undefined : updateExpandedToolRow}
-						autoCollapseWhenComplete={shouldAutoCollapseTools}
+						open={controlCollapsedState ? expandedToolBatches.get(entry.key) ?? false : undefined}
+						onOpenChange={
+							controlCollapsedState ? (open) => updateExpandedToolBatch(entry.key, open) : undefined
+						}
+						toolOpen={controlCollapsedState ? expandedToolRows : undefined}
+						onToolOpenChange={controlCollapsedState ? updateExpandedToolRow : undefined}
 						sessionId={current.sessionId}
 						onOpenPath={(path) => void openResource(path)}
 					/>
@@ -755,29 +880,81 @@ function ConversationBody({
 			expandedToolBatches,
 			expandedToolRows,
 			openResource,
-			shouldAutoCollapseTools,
 			updateExpandedToolBatch,
 			updateExpandedToolRow,
 		],
 	);
+	const renderConversationItem = useCallback(
+		(entry: ConversationRenderItem) => {
+			if (entry.kind === "result-boundary") {
+				return (
+					<div
+						aria-label="工作过程与最终结果分界"
+						className="w-full border-t border-border/50"
+						role="separator"
+					/>
+				);
+			}
+			if (entry.kind === "work-process") {
+				const open = expandedWorkProcesses.get(entry.key) ?? false;
+				return (
+					<Collapsible
+						className="group/work-process min-w-0 w-full"
+						onOpenChange={(nextOpen) => updateExpandedWorkProcess(entry.key, nextOpen)}
+						open={open}
+					>
+						<CollapsibleTrigger asChild>
+							<button
+								aria-label={`工作过程，${open ? "收起" : "展开"}`}
+								className="flex min-h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+								data-transcript-resize-anchor
+								type="button"
+							>
+								<WrenchIcon className="size-4 shrink-0" />
+								<span className="min-w-0 flex-1">工作过程</span>
+								<ChevronDownIcon className="size-4 shrink-0 transition-transform group-data-[state=open]/work-process:rotate-180" />
+							</button>
+						</CollapsibleTrigger>
+						<CollapsibleContent className="pt-2" data-transcript-resize-anchor>
+							<div className="grid min-w-0 gap-3">
+								{entry.items.map((item) => (
+									<div className="min-w-0" key={item.key}>
+										{renderConversationContentItem(item)}
+									</div>
+								))}
+							</div>
+						</CollapsibleContent>
+					</Collapsible>
+				);
+			}
+			return renderConversationContentItem(entry);
+		},
+		[expandedWorkProcesses, renderConversationContentItem, updateExpandedWorkProcess],
+	);
 	const transcriptItemKey = useCallback((entry: ConversationRenderItem) => entry.key, []);
 	const estimateTranscriptItemHeight = useCallback(
 		(entry: ConversationRenderItem) =>
-			(entry.kind === "tool-stack" ||
-				entry.kind === "compaction" ||
-				entry.kind === "thinking" ||
-				isWebSearchTranscriptItem(entry)
-				? 32
-				: 80),
+			entry.kind === "result-boundary"
+				? 1
+				: entry.kind === "work-process" ||
+						entry.kind === "tool-stack" ||
+						entry.kind === "compaction" ||
+						entry.kind === "thinking" ||
+						isWebSearchTranscriptItem(entry)
+					? 32
+					: 80,
 		[],
 	);
 
 	const transcriptGap = useCallback(
-		(previous: ConversationRenderItem, current: ConversationRenderItem) =>
-			(previous.kind === "tool-stack" && current.kind === "tool-stack") ||
-			(isWebSearchTranscriptItem(previous) && isWebSearchTranscriptItem(current))
+		(previous: ConversationRenderItem, current: ConversationRenderItem) => {
+			if (current.kind === "result-boundary") return 8;
+			if (previous.kind === "result-boundary") return DEFAULT_TRANSCRIPT_GAP;
+			return (previous.kind === "tool-stack" && current.kind === "tool-stack") ||
+				(isWebSearchTranscriptItem(previous) && isWebSearchTranscriptItem(current))
 				? 0
-				: DEFAULT_TRANSCRIPT_GAP,
+				: DEFAULT_TRANSCRIPT_GAP;
+		},
 		[],
 	);
 

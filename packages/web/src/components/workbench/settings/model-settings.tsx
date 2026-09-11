@@ -1,4 +1,4 @@
-import { Eye, LoaderCircle, Plus, RefreshCw, Settings } from "lucide-react";
+import { Check, Eye, LoaderCircle, Plus, RefreshCw, Settings } from "lucide-react";
 import type { FormEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "../../../lib/utils";
@@ -13,7 +13,7 @@ import { ScrollArea } from "../../ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../ui/select";
 import { Switch } from "../../ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../ui/tabs";
-import { THINKING_LEVEL_LABELS } from "../constants";
+import { THINKING_LEVEL_LABELS, VISIBLE_THINKING_LEVELS } from "../constants";
 import { modelIconId, formatModelDisplayName, providerIconId } from "../model-utils";
 import type { WorkbenchActions } from "../types";
 import { SettingSection } from "./shared";
@@ -43,7 +43,6 @@ type ModelDraft = {
 	maxTokens: string;
 };
 
-const MODEL_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
 const MODEL_PROVIDER_API_OPTIONS = [
 	{ value: "openai-completions", label: "OpenAI Chat Completions" },
 	{ value: "openai-responses", label: "OpenAI Responses" },
@@ -56,6 +55,17 @@ const MODEL_PROVIDER_API_OPTIONS = [
 	{ value: "openai-codex-responses", label: "OpenAI Codex Responses" },
 	{ value: "pi-messages", label: "Pi Messages" },
 ] as const;
+
+function editableThinkingLevelMap(
+	model?: WorkbenchState["models"][number],
+): Record<string, string | null> {
+	const supported = new Set(model?.supportedThinkingLevels ?? ["off", "low", "medium", "high"]);
+	const mapping: Record<string, string | null> = { ...(model?.thinkingLevelMap ?? {}), minimal: null };
+	for (const level of VISIBLE_THINKING_LEVELS) {
+		if (mapping[level] === undefined) mapping[level] = supported.has(level) ? level : null;
+	}
+	return mapping;
+}
 function ModelBrandIcon({
 	providerId,
 	modelId,
@@ -175,11 +185,11 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 			api: model?.api ?? provider?.api ?? "openai-completions",
 			baseUrl: provider?.baseUrl ?? "",
 			reasoning: model?.reasoning ?? false,
-			manualThinking: Boolean(model?.thinkingLevelMap),
-			thinkingLevelMap: { ...(model?.thinkingLevelMap ?? {}) },
+			manualThinking: false,
+			thinkingLevelMap: editableThinkingLevelMap(model),
 			input: (model?.input ?? ["text"]) as ("text" | "image")[],
-			contextWindow: model?.capabilitiesPending ? "" : model ? String(model.contextWindow) : "",
-			maxTokens: model?.capabilitiesPending ? "" : model ? String(model.maxTokens) : "",
+			contextWindow: model ? String(model.contextWindow) : "",
+			maxTokens: model ? String(model.maxTokens) : "",
 		});
 	};
 
@@ -188,8 +198,10 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 		if (!providerDraft?.provider.trim() || !providerDraft.baseUrl.trim() || !providerDraft.api.trim()) return;
 		setSubmitting(true);
 		try {
+			const providerId = providerDraft.provider.trim();
+			const isNew = providerDraft.isNew;
 			await actions.saveModelProvider({
-				provider: providerDraft.provider.trim(),
+				provider: providerId,
 				name: providerDraft.name.trim() || undefined,
 				baseUrl: providerDraft.baseUrl.trim(),
 				api: providerDraft.api.trim(),
@@ -198,7 +210,16 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 				clearCatalogProvider:
 					!providerDraft.isNew && providerDraft.catalogProvider === "__none__" ? true : undefined,
 			});
-			setSelectedProvider(providerDraft.provider.trim());
+			if (isNew) {
+				try {
+					await actions.syncModelProvider(providerId);
+				} catch (error) {
+					actions.showToast(
+						`供应商已保存，模型自动同步失败：${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+			}
+			setSelectedProvider(providerId);
 			setProviderDraft(null);
 		} catch (error) {
 			actions.showToast(error instanceof Error ? error.message : String(error));
@@ -225,7 +246,6 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 				input: modelDraft.input,
 				...(Number.isSafeInteger(contextWindow) && contextWindow > 0 ? { contextWindow } : {}),
 				...(Number.isSafeInteger(maxTokens) && maxTokens > 0 ? { maxTokens } : {}),
-				...(!modelDraft.manualThinking && !modelDraft.isNew ? { resetOverride: true } : {}),
 			});
 			setModelDraft(null);
 		} catch (error) {
@@ -439,10 +459,9 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 											<p className="truncate text-sm font-medium">{formatModelDisplayName(model)}</p>
 											<p className="truncate font-mono text-xs text-muted-foreground">{model.id}</p>
 											<p className="mt-1 text-xs text-muted-foreground">
-												{model.capabilitiesPending
-													? "能力待补充"
-													: `上下文 ${model.contextWindow.toLocaleString()} · 最大输出 ${model.maxTokens.toLocaleString()}`}{" "}
-												· {model.reasoning ? "支持思考" : "普通模型"}
+												上下文 {model.contextWindow.toLocaleString()} · 最大输出 {model.maxTokens.toLocaleString()} ·{" "}
+												{model.reasoning ? "支持思考" : "普通模型"}
+												{model.capabilitiesPending ? " · 部分能力待补充" : ""}
 											</p>
 										</div>
 										<div className="flex shrink-0 items-center gap-1">
@@ -695,37 +714,56 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 										type="button"
 										size="sm"
 										variant="ghost"
-										onClick={() =>
-											setModelDraft({ ...modelDraft, manualThinking: !modelDraft.manualThinking })
-										}
+										onClick={() => {
+											if (modelDraft.manualThinking) {
+												const model = state.models.find(
+													(candidate) =>
+														candidate.provider === modelDraft.provider && candidate.id === modelDraft.id,
+												);
+												setModelDraft({
+													...modelDraft,
+													manualThinking: false,
+													thinkingLevelMap: editableThinkingLevelMap(model),
+												});
+												return;
+											}
+											setModelDraft({ ...modelDraft, manualThinking: true });
+										}}
 									>
-										{modelDraft.manualThinking ? "使用自动匹配" : "手工设置"}
+										{modelDraft.manualThinking ? "取消修改" : "手工设置"}
 									</Button>
 								</div>
 								{modelDraft.manualThinking ? (
 									<div className="flex flex-wrap gap-2">
-										{MODEL_THINKING_LEVELS.map((level) => (
-											<Button
-												type="button"
-												key={level}
-												size="sm"
-												variant={modelDraft.thinkingLevelMap[level] ? "secondary" : "outline"}
-												onClick={() =>
-													setModelDraft({
-														...modelDraft,
-														thinkingLevelMap: {
-															...modelDraft.thinkingLevelMap,
-															[level]: modelDraft.thinkingLevelMap[level] ? null : level,
-														},
-													})
-												}
-											>
-												{THINKING_LEVEL_LABELS[level]}
-											</Button>
-										))}
+										{VISIBLE_THINKING_LEVELS.map((level) => {
+											const selected = modelDraft.thinkingLevelMap[level] !== null;
+											return (
+												<Button
+													type="button"
+													key={level}
+													size="sm"
+													variant={selected ? "default" : "outline"}
+													aria-pressed={selected}
+													onClick={() =>
+														setModelDraft({
+															...modelDraft,
+															thinkingLevelMap: {
+																...modelDraft.thinkingLevelMap,
+																[level]: selected ? null : level,
+															},
+														})
+													}
+												>
+													{selected ? <Check className="size-3.5" /> : null}
+													{THINKING_LEVEL_LABELS[level]}
+												</Button>
+											);
+										})}
 									</div>
 								) : (
-									<p className="text-xs text-muted-foreground">保留上游目录或 Provider 自动匹配的结果。</p>
+									<p className="text-xs text-muted-foreground">
+										当前使用模型目录中的能力；需要调整时再进入手工设置。
+									</p>
 								)}
 							</div>
 							<div className="grid gap-3 sm:grid-cols-2">

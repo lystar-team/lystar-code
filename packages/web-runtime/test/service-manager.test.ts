@@ -11,14 +11,22 @@ import {
 } from "../src/index.ts";
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+const originalServiceChild = process.env.LYSTAR_WEB_SERVICE_CHILD;
+const originalUserEnvSource = process.env.LYSTAR_USER_ENV_SOURCE;
 
 beforeEach(() => {
 	process.env.PI_CODING_AGENT_DIR = "/tmp/lystar-service-manager-test";
+	delete process.env.LYSTAR_WEB_SERVICE_CHILD;
+	delete process.env.LYSTAR_USER_ENV_SOURCE;
 });
 
 afterEach(() => {
 	if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 	else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+	if (originalServiceChild === undefined) delete process.env.LYSTAR_WEB_SERVICE_CHILD;
+	else process.env.LYSTAR_WEB_SERVICE_CHILD = originalServiceChild;
+	if (originalUserEnvSource === undefined) delete process.env.LYSTAR_USER_ENV_SOURCE;
+	else process.env.LYSTAR_USER_ENV_SOURCE = originalUserEnvSource;
 });
 
 describe("Web service specifications", () => {
@@ -49,6 +57,8 @@ describe("Web service specifications", () => {
 			cwd: "/tmp/lystar-explicit-agent",
 		});
 		expect(spec.environment).toMatchObject({
+			PATH: process.env.PATH,
+			LYSTAR_USER_ENV_SOURCE: "process",
 			PI_CODING_AGENT_DIR: "/tmp/lystar-explicit-agent",
 			PI_WEB_RUNTIME_ENDPOINT: "tcp://127.0.0.1:1422",
 			LYSTAR_WEB_SERVICE_VERSION: "0.85.1-lystar.1",

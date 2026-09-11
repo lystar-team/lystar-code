@@ -24,12 +24,16 @@ import { processImage } from "../../utils/image-process.ts";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 
 const MAX_EDIT_IMAGES = 5;
-const DEFAULT_IMAGE_MODEL = "gpt-image-2";
 const IMAGE_PROVIDER_ORDER = ["openai-codex", "openai", "openrouter"] as const;
+const IMAGE_MODEL_IDS = ["gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"] as const;
 const OPENAI_COMPATIBLE_IMAGE_APIS = new Set<Api>(["openai-completions", "openai-responses"]);
 const CONTENT_POLICY_ERROR = /content[_ -]?policy|content[_ -]?filter|moderation|safety system|safety violation/i;
 
 type ImageProviderId = (typeof IMAGE_PROVIDER_ORDER)[number];
+type ImageModelId = (typeof IMAGE_MODEL_IDS)[number];
+type ImageModelPreference = "auto" | ImageModelId;
+type ImageProfile = "fast" | "standard" | "precision";
+type ImageMode = "generate" | "edit";
 
 interface ImageGenerationCandidate {
 	sourceProvider: string;
@@ -37,9 +41,35 @@ interface ImageGenerationCandidate {
 	options?: ImagesOptions;
 }
 
+interface ImageModelSelection {
+	requestedModel: ImageModelPreference;
+	profile: ImageProfile;
+	modelIds: ImageModelId[];
+}
+
 const imageGenSchema = Type.Object(
 	{
 		prompt: Type.String({ description: "Complete image generation or editing prompt." }),
+		model: Type.Optional(
+			Type.Union(
+				[
+					Type.Literal("auto"),
+					Type.Literal("gpt-image-2"),
+					Type.Literal("gpt-image-2.5-flare"),
+					Type.Literal("gpt-image-2.5-sunburst"),
+				],
+				{
+					description:
+						"Image model. Default: auto. Flare is the normal fast model; Sunburst is for precision-sensitive work; GPT Image 2 is compatibility-only unless explicitly requested.",
+				},
+			),
+		),
+		profile: Type.Optional(
+			Type.Union([Type.Literal("fast"), Type.Literal("standard"), Type.Literal("precision")], {
+				description:
+					"Selection profile used when model is auto. fast and standard select Flare; precision selects Sunburst. Defaults to precision for edits and standard for new images.",
+			}),
+		),
 		referenced_image_paths: Type.Optional(
 			Type.Array(Type.String(), {
 				maxItems: MAX_EDIT_IMAGES,
@@ -62,13 +92,16 @@ type ImageGenInput = Static<typeof imageGenSchema>;
 export interface ImageGenDetails {
 	provider: string;
 	model: string;
+	requestedModel: ImageModelPreference;
+	profile: ImageProfile;
 	savedPath: string;
+	mimeType: string;
 	prompt: string;
-	mode: "generate" | "edit";
+	mode: ImageMode;
 }
 
-function imageModelId(provider: string): string {
-	return provider === "openrouter" ? "openai/gpt-image-2" : DEFAULT_IMAGE_MODEL;
+function imageModelId(provider: ImageProviderId, modelId: ImageModelId): string {
+	return provider === "openrouter" ? `openai/${modelId}` : modelId;
 }
 
 function imageProviderForActiveModel(model: Model<Api>): ImageProviderId | undefined {
@@ -85,19 +118,28 @@ function activeImageBaseUrl(model: Model<Api>, provider: ImageProviderId, resolv
 	return normalized.endsWith("/codex") ? normalized : `${normalized}/codex`;
 }
 
+function resolveImageModelSelection(input: ImageGenInput, mode: ImageMode): ImageModelSelection {
+	const requestedModel = input.model ?? "auto";
+	const profile = input.profile ?? (mode === "edit" ? "precision" : "standard");
+	if (requestedModel !== "auto") return { requestedModel, profile, modelIds: [requestedModel] };
+	const primary = profile === "precision" ? "gpt-image-2.5-sunburst" : "gpt-image-2.5-flare";
+	return { requestedModel, profile, modelIds: [primary, "gpt-image-2"] };
+}
+
 async function getActiveImageCandidate(
 	ctx: ExtensionContext,
+	modelId: ImageModelId,
 	failures: string[],
 ): Promise<ImageGenerationCandidate | undefined> {
 	const activeModel = ctx.model;
 	if (!activeModel) return undefined;
 	const imageProvider = imageProviderForActiveModel(activeModel);
 	if (!imageProvider) return undefined;
-	const imageModel = ctx.modelRegistry.findImage(imageProvider, imageModelId(imageProvider));
+	const imageModel = ctx.modelRegistry.findImage(imageProvider, imageModelId(imageProvider, modelId));
 	if (!imageModel) return undefined;
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(activeModel);
 	if (!auth.ok) {
-		failures.push(`${activeModel.provider}: ${auth.error}`);
+		failures.push(`${activeModel.provider}/${imageModel.id}: ${auth.error}`);
 		return undefined;
 	}
 	if (!auth.apiKey) return undefined;
@@ -114,15 +156,16 @@ async function getActiveImageCandidate(
 async function getConfiguredImageCandidate(
 	ctx: ExtensionContext,
 	provider: ImageProviderId,
+	modelId: ImageModelId,
 	failures: string[],
 ): Promise<ImageGenerationCandidate | undefined> {
-	const model = ctx.modelRegistry.findImage(provider, imageModelId(provider));
+	const model = ctx.modelRegistry.findImage(provider, imageModelId(provider, modelId));
 	if (!model) return undefined;
 	try {
 		const auth = await ctx.modelRegistry.getImageProviderAuth(provider);
 		return auth?.auth.apiKey ? { sourceProvider: provider, model } : undefined;
 	} catch (error) {
-		failures.push(`${provider}: ${error instanceof Error ? error.message : String(error)}`);
+		failures.push(`${provider}/${model.id}: ${error instanceof Error ? error.message : String(error)}`);
 		return undefined;
 	}
 }
@@ -145,7 +188,7 @@ async function tryImageCandidate(
 		throw new Error(result.errorMessage ?? "Image generation aborted.");
 	}
 	const message = result.errorMessage ?? `Image generation ${result.stopReason}.`;
-	failures.push(`${candidate.sourceProvider}: ${message}`);
+	failures.push(`${candidate.sourceProvider}/${candidate.model.id}: ${message}`);
 	if (CONTENT_POLICY_ERROR.test(message)) throw new Error(message);
 	return undefined;
 }
@@ -153,36 +196,44 @@ async function tryImageCandidate(
 async function generateWithProviderFallback(
 	ctx: ExtensionContext,
 	context: ImagesContext,
+	selection: ImageModelSelection,
 	signal?: AbortSignal,
+	onAttempt?: (candidate: ImageGenerationCandidate) => void,
 ): Promise<{
 	candidate: ImageGenerationCandidate;
 	result: AssistantImages;
 }> {
 	const failures: string[] = [];
 	let configuredCandidates = 0;
-	const activeCandidate = await getActiveImageCandidate(ctx, failures);
-	if (activeCandidate) {
-		configuredCandidates++;
-		const result = await tryImageCandidate(ctx, activeCandidate, context, failures, signal);
-		if (result) return { candidate: activeCandidate, result };
+
+	for (const modelId of selection.modelIds) {
+		const activeCandidate = await getActiveImageCandidate(ctx, modelId, failures);
+		if (activeCandidate) {
+			configuredCandidates++;
+			onAttempt?.(activeCandidate);
+			const result = await tryImageCandidate(ctx, activeCandidate, context, failures, signal);
+			if (result) return { candidate: activeCandidate, result };
+		}
+
+		for (const provider of IMAGE_PROVIDER_ORDER) {
+			if (activeCandidate?.sourceProvider === provider) continue;
+			const candidate = await getConfiguredImageCandidate(ctx, provider, modelId, failures);
+			if (!candidate) continue;
+			configuredCandidates++;
+			onAttempt?.(candidate);
+			const result = await tryImageCandidate(ctx, candidate, context, failures, signal);
+			if (result) return { candidate, result };
+		}
 	}
 
-	for (const provider of IMAGE_PROVIDER_ORDER) {
-		if (activeCandidate?.sourceProvider === provider) continue;
-		const candidate = await getConfiguredImageCandidate(ctx, provider, failures);
-		if (!candidate) continue;
-		configuredCandidates++;
-		const result = await tryImageCandidate(ctx, candidate, context, failures, signal);
-		if (result) return { candidate, result };
-	}
-
+	const requested = selection.requestedModel === "auto" ? selection.modelIds.join(" -> ") : selection.requestedModel;
 	if (configuredCandidates === 0) {
 		const detail = failures.length > 0 ? ` (${failures.join("; ")})` : "";
 		throw new Error(
-			`No image provider is configured. Configure the active OpenAI-compatible provider, sign in to OpenAI Codex, set OPENAI_API_KEY, or configure OpenRouter.${detail}`,
+			`No image provider is configured for ${requested}. Configure the active OpenAI-compatible provider, sign in to OpenAI Codex, set OPENAI_API_KEY, or configure OpenRouter.${detail}`,
 		);
 	}
-	throw new Error(`Image generation failed for all configured providers. ${failures.join("; ")}`);
+	throw new Error(`Image generation failed for ${requested}. ${failures.join("; ")}`);
 }
 
 async function loadImage(filePath: string, cwd: string): Promise<ImageContent> {
@@ -247,13 +298,25 @@ function sanitizePathPart(value: string): string {
 	return sanitized || "generated_image";
 }
 
-async function saveGeneratedImage(sessionId: string, toolCallId: string, data: string): Promise<string> {
+function extensionForMimeType(mimeType: string): string {
+	if (mimeType === "image/jpeg") return "jpg";
+	if (mimeType === "image/webp") return "webp";
+	return "png";
+}
+
+async function saveGeneratedImage(
+	sessionId: string,
+	toolCallId: string,
+	data: string,
+	mimeType: string,
+): Promise<string> {
 	const directory = join(getAgentDir(), "generated_images", sanitizePathPart(sessionId));
 	await mkdir(directory, { recursive: true });
-	let filePath = join(directory, `${sanitizePathPart(toolCallId)}.png`);
+	const extension = extensionForMimeType(mimeType);
+	let filePath = join(directory, `${sanitizePathPart(toolCallId)}.${extension}`);
 	try {
 		await access(filePath);
-		filePath = join(directory, `${sanitizePathPart(toolCallId)}-${randomUUID().slice(0, 8)}.png`);
+		filePath = join(directory, `${sanitizePathPart(toolCallId)}-${randomUUID().slice(0, 8)}.${extension}`);
 	} catch {}
 	const temporaryPath = `${filePath}.${randomUUID()}.tmp`;
 	try {
@@ -266,34 +329,87 @@ async function saveGeneratedImage(sessionId: string, toolCallId: string, data: s
 	}
 }
 
+function plannedMode(input: ImageGenInput): ImageMode {
+	return (input.referenced_image_paths?.length ?? 0) > 0 || (input.num_last_images_to_include ?? 0) > 0
+		? "edit"
+		: "generate";
+}
+
 export function createImageGenToolDefinition(): ToolDefinition<typeof imageGenSchema, ImageGenDetails> {
 	return {
 		name: "image_gen",
 		label: "image_gen",
 		description:
-			"Generate a new raster image or edit images from local paths or recent conversation context. Returns and saves a PNG.",
-		promptSnippet: "Generate or edit raster images with the configured image provider.",
+			"Generate a raster image or edit local/recent images. Supports automatic, Flare, Sunburst, and GPT Image 2 model selection, then saves the result locally.",
+		promptSnippet: "Generate or edit raster images with deterministic image-model selection.",
 		promptGuidelines: [
 			"Use image_gen for AI-created raster images; use native code or existing vector assets when they fit better.",
+			"For model=auto, use profile=fast or standard for normal Flare generation and profile=precision for Sunburst precision work.",
+			"Use precision for invariant-sensitive edits, identity preservation, exact text/layout, complex compositing, or explicit highest-fidelity requests.",
+			"Use gpt-image-2 only when the user explicitly requests it; automatic selection may use it as a compatibility fallback.",
 			"For a new image, omit reference fields; if the provider requires all schema fields, use referenced_image_paths=[] and num_last_images_to_include=0.",
 			"For project assets, copy the selected generated image into the workspace before finishing.",
 		],
 		parameters: imageGenSchema,
-		async execute(toolCallId, input, signal, _onUpdate, ctx) {
+		async execute(toolCallId, input, signal, onUpdate, ctx) {
 			const prompt = input.prompt.trim();
 			if (!prompt) throw new Error("prompt must not be empty.");
 			signal?.throwIfAborted();
+			const mode = plannedMode(input);
+			const selection = resolveImageModelSelection(input, mode);
+			const progressDetails: ImageGenDetails = {
+				provider: "",
+				model: selection.modelIds[0],
+				requestedModel: selection.requestedModel,
+				profile: selection.profile,
+				savedPath: "",
+				mimeType: "",
+				prompt,
+				mode,
+			};
+			onUpdate?.({
+				content: [{ type: "text", text: mode === "edit" ? "正在准备参考图片" : "正在准备生成参数" }],
+				details: progressDetails,
+			});
 			const references = await resolveReferences(input, ctx);
 			const { candidate, result } = await generateWithProviderFallback(
 				ctx,
 				{ input: [{ type: "text", text: prompt }, ...references] },
+				selection,
 				signal,
+				(attempt) =>
+					onUpdate?.({
+						content: [
+							{
+								type: "text",
+								text: `正在使用 ${attempt.sourceProvider}/${attempt.model.id} 生成图片`,
+							},
+						],
+						details: {
+							...progressDetails,
+							provider: attempt.sourceProvider,
+							model: attempt.model.id,
+						},
+					}),
 			);
 			const image = result.output.find((item): item is ImageContent => item.type === "image");
 			if (!image) throw new Error("Image provider returned no image data.");
 			signal?.throwIfAborted();
-			const savedPath = await saveGeneratedImage(ctx.sessionManager.getSessionId(), toolCallId, image.data);
-			const mode = references.length > 0 ? "edit" : "generate";
+			onUpdate?.({
+				content: [{ type: "text", text: "图片生成完成，正在保存原图" }],
+				details: {
+					...progressDetails,
+					provider: candidate.sourceProvider,
+					model: candidate.model.id,
+					mimeType: image.mimeType,
+				},
+			});
+			const savedPath = await saveGeneratedImage(
+				ctx.sessionManager.getSessionId(),
+				toolCallId,
+				image.data,
+				image.mimeType,
+			);
 			return {
 				content: [
 					{
@@ -305,9 +421,12 @@ export function createImageGenToolDefinition(): ToolDefinition<typeof imageGenSc
 				details: {
 					provider: candidate.sourceProvider,
 					model: candidate.model.id,
+					requestedModel: selection.requestedModel,
+					profile: selection.profile,
 					savedPath,
+					mimeType: image.mimeType,
 					prompt,
-					mode,
+					mode: references.length > 0 ? "edit" : "generate",
 				},
 				usage: result.usage,
 			};
@@ -338,7 +457,7 @@ export function createImageGenToolDefinition(): ToolDefinition<typeof imageGenSc
 					new Text(
 						theme.fg(
 							"muted",
-							`${result.details.provider}/${result.details.model}\n${shortenPath(result.details.savedPath)}\n${result.details.prompt}`,
+							`${result.details.provider}/${result.details.model} · ${result.details.profile}\n${shortenPath(result.details.savedPath)}\n${result.details.prompt}`,
 						),
 						0,
 						0,

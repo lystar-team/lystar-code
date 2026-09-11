@@ -35,7 +35,7 @@ export function AppearanceSettings({
 					))}
 				</div>
 			</SettingSection>
-			<AppInstallSettings appInstall={appInstall} />
+			<AppInstallSettings appInstall={appInstall} productName={state.branding.name} />
 		</div>
 	);
 }

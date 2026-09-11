@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { generateImages } from "../src/api/openai-images.ts";
 import { OPENAI_CODEX_GPT_IMAGE_2 } from "../src/providers/openai-codex-images.ts";
-import { OPENAI_GPT_IMAGE_2 } from "../src/providers/openai-images.ts";
+import {
+	OPENAI_GPT_IMAGE_2,
+	OPENAI_GPT_IMAGE_2_5_FLARE,
+	OPENAI_GPT_IMAGE_2_5_SUNBURST,
+	openAIImagesProvider,
+} from "../src/providers/openai-images.ts";
 import type { ImagesContext } from "../src/types.ts";
 
 const generatedPng = "iVBORw0KGgo=";
@@ -19,6 +24,29 @@ function codexToken(accountId: string): string {
 }
 
 describe("openai images provider", () => {
+	it("registers the verified GPT Image catalog without a bare 2.5 model", () => {
+		expect(
+			openAIImagesProvider()
+				.getModels()
+				.map((model) => model.id),
+		).toEqual(["gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2"]);
+		expect(OPENAI_GPT_IMAGE_2_5_FLARE.provider).toBe("openai");
+		expect(OPENAI_GPT_IMAGE_2_5_SUNBURST.provider).toBe("openai");
+	});
+
+	it("passes the selected 2.5 model ID to the OpenAI endpoint", async () => {
+		let requestBody: Record<string, unknown> = {};
+		await generateImages(OPENAI_GPT_IMAGE_2_5_FLARE, promptContext, {
+			apiKey: "test-key",
+			fetch: async (_input, init) => {
+				requestBody = JSON.parse(String(init?.body));
+				return jsonResponse({ data: [{ b64_json: generatedPng }] });
+			},
+		});
+
+		expect(requestBody.model).toBe("gpt-image-2.5-flare");
+	});
+
 	it("uses the OpenAI generations endpoint for text-only requests", async () => {
 		let requestUrl = "";
 		let requestBody: Record<string, unknown> = {};

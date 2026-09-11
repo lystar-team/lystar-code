@@ -185,17 +185,20 @@ export const MonacoFileEditor = forwardRef<MonacoFileEditorHandle, MonacoFileEdi
 				if (disposed) return;
 				const editor = monaco.editor.create(container, {
 					automaticLayout: false,
-					codeLens: true,
+					bracketPairColorization: { enabled: false },
+					codeLens: false,
 					contextmenu: true,
 					fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
 					fontSize: 13,
+					folding: false,
+					hover: { enabled: "off" },
 					largeFileOptimizations: true,
-					minimap: { enabled: true, maxColumn: 100, renderCharacters: true, showSlider: "mouseover" },
+					minimap: { enabled: false },
 					model: null,
 					readOnly: !editableRef.current,
 					renderValidationDecorations: "off",
 					scrollBeyondLastLine: false,
-					stickyScroll: { enabled: true },
+					stickyScroll: { enabled: false },
 					tabSize: 4,
 					wordWrap: "off",
 				});
@@ -240,33 +243,44 @@ export const MonacoFileEditor = forwardRef<MonacoFileEditorHandle, MonacoFileEdi
 				const previous = cachedModels.get(previousKey);
 				if (previous) previous.viewState = editor.saveViewState();
 			}
-			void ensureMonacoLanguage(monaco, monacoLanguageForPath(file.path)).then((language) => {
-				if (request !== requestRef.current || !editorRef.current || !monacoRef.current) return;
-				let entry = cachedModels.get(modelKey);
-				if (!entry) {
-					const model = monaco.editor.createModel(
-						file.content,
-						language,
-						monaco.Uri.parse(`inmemory://lystar-project/${encodeURIComponent(modelKey)}`),
-					);
-					entry = {
-						model,
-						savedAlternativeVersionId: model.getAlternativeVersionId(),
-						serverHash: file.contentHash,
-						contentVersion: file.contentVersion,
-						lastUsed: Date.now(),
-					};
-					cachedModels.set(modelKey, entry);
-				} else {
-					const incomingIdentity = serverIdentity(file);
-					const knownIdentity = entry.serverHash ?? entry.contentVersion;
-					if (incomingIdentity && incomingIdentity !== knownIdentity) {
-						if (isDirty(entry)) entry.pendingFile = file;
-						else applyServerFile(entry, file);
-					}
-					entry.lastUsed = Date.now();
+			let entry = cachedModels.get(modelKey);
+			if (!entry) {
+				const model = monaco.editor.createModel(
+					file.content,
+					"text",
+					monaco.Uri.parse(`inmemory://lystar-project/${encodeURIComponent(modelKey)}`),
+				);
+				entry = {
+					model,
+					savedAlternativeVersionId: model.getAlternativeVersionId(),
+					serverHash: file.contentHash,
+					contentVersion: file.contentVersion,
+					lastUsed: Date.now(),
+				};
+				cachedModels.set(modelKey, entry);
+			} else {
+				const incomingIdentity = serverIdentity(file);
+				const knownIdentity = entry.serverHash ?? entry.contentVersion;
+				if (incomingIdentity && incomingIdentity !== knownIdentity) {
+					if (isDirty(entry)) entry.pendingFile = file;
+					else applyServerFile(entry, file);
 				}
-				const largeFile = file.byteLength >= LARGE_FILE_BYTES || entry.model.getLineCount() >= LARGE_FILE_LINES;
+				entry.lastUsed = Date.now();
+			}
+			const largeFile = file.byteLength >= LARGE_FILE_BYTES || entry.model.getLineCount() >= LARGE_FILE_LINES;
+			editor.updateOptions({ readOnly: !editable });
+			editor.setModel(entry.model);
+			if (entry.viewState) editor.restoreViewState(entry.viewState);
+			editor.layout();
+			trimModelCache(modelKey);
+			publishState({ error: undefined });
+			const enhancementFrame = window.requestAnimationFrame(() => {
+				if (
+					request !== requestRef.current ||
+					editorRef.current !== editor ||
+					cachedModels.get(modelKey) !== entry
+				)
+					return;
 				editor.updateOptions({
 					bracketPairColorization: { enabled: !largeFile },
 					codeLens: !largeFile,
@@ -278,15 +292,22 @@ export const MonacoFileEditor = forwardRef<MonacoFileEditorHandle, MonacoFileEdi
 						renderCharacters: !largeFile,
 						showSlider: "mouseover",
 					},
-					readOnly: !editable,
 					stickyScroll: { enabled: !largeFile },
 				});
-				editor.setModel(entry.model);
-				if (entry.viewState) editor.restoreViewState(entry.viewState);
-				editor.layout();
-				trimModelCache(modelKey);
-				publishState({ error: undefined });
 			});
+			void ensureMonacoLanguage(monaco, monacoLanguageForPath(file.path)).then((language) => {
+				if (
+					request !== requestRef.current ||
+					editorRef.current !== editor ||
+					cachedModels.get(modelKey) !== entry
+				)
+					return;
+				if (entry.model.getLanguageId() !== language) monaco.editor.setModelLanguage(entry.model, language);
+			});
+			return () => {
+				window.cancelAnimationFrame(enhancementFrame);
+				if (request === requestRef.current) requestRef.current++;
+			};
 		}, [editable, file, modelKey, publishState, ready]);
 
 		useEffect(() => {

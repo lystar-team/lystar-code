@@ -57,6 +57,7 @@ export interface WebGatewayConfig {
 	host: string;
 	port: number;
 	agentDir: string;
+	serviceProfile?: string;
 	runtimeEndpoint: string;
 	runtimePort?: number;
 	token: string;
@@ -195,6 +196,7 @@ export async function loadWebGatewayConfig(options: LoadWebGatewayConfigOptions 
 		port: persisted.port,
 		runtimePort,
 		agentDir,
+		...(options.configFileName ? { serviceProfile: "development" } : {}),
 		runtimeEndpoint,
 		token: persisted.password,
 		tokenPath: store.path,

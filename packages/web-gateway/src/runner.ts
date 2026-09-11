@@ -330,7 +330,7 @@ export async function runWebGatewayCli(options: WebGatewayCliOptions = {}): Prom
 	}
 	const instanceLock = await (async () => {
 		try {
-			return await GatewayInstanceLock.acquire(agentDir);
+			return await GatewayInstanceLock.acquire(agentDir, options.configFileName ? "development" : undefined);
 		} catch (error) {
 			if (error instanceof GatewayAlreadyRunningError) throw new Error(error.message);
 			throw error;

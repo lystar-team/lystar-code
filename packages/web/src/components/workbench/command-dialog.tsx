@@ -5,7 +5,7 @@ import { sessionTitle, type WorkbenchState } from "../../state/use-workbench";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Input } from "../ui/input";
-import { THINKING_LEVEL_LABELS } from "./constants";
+import { THINKING_LEVEL_LABELS, selectedVisibleThinkingLevel, visibleThinkingLevels } from "./constants";
 import { formatModelDisplayName } from "./model-utils";
 import { VirtualizedSessionList } from "./virtualized-session-list";
 import {
@@ -56,7 +56,8 @@ export function CommandDialog({ request, state, actions, onClose }: {
 	const [error, setError] = useState("");
 	const [trust, setTrust] = useState<WorkbenchState["projectTrust"]>();
 	const model = state.models.find((item) => item.provider === state.session?.model?.provider && item.id === state.session?.model?.id);
-	const levels = model?.supportedThinkingLevels.length ? model.supportedThinkingLevels : ["off"];
+	const levels = visibleThinkingLevels(model?.supportedThinkingLevels.length ? model.supportedThinkingLevels : ["off"]);
+	const selectedThinkingLevel = selectedVisibleThinkingLevel(state.session?.thinkingLevel ?? "off", levels);
 	const project = state.projects.find((item) => item.id === state.currentProjectId);
 	const treeViewportRef = useRef<HTMLDivElement>(null);
 	const [pendingTurnId, setPendingTurnId] = useState<string>();
@@ -116,7 +117,7 @@ export function CommandDialog({ request, state, actions, onClose }: {
 					</form>
 				) : null}
 				{request.kind === "thinking" ? <div className="grid gap-1">{levels.map((level) => (
-					<Button key={level} variant={state.session?.thinkingLevel === level ? "secondary" : "ghost"} className="justify-start" disabled={unavailable} onClick={() => void run(() => actions.updateThinking(level))}>{THINKING_LEVEL_LABELS[level] ?? level}{state.session?.thinkingLevel === level ? " · 当前" : ""}</Button>
+					<Button key={level} variant={selectedThinkingLevel === level ? "secondary" : "ghost"} className="justify-start" disabled={unavailable} onClick={() => void run(() => actions.updateThinking(level))}>{THINKING_LEVEL_LABELS[level] ?? level}{selectedThinkingLevel === level ? " · 当前" : ""}</Button>
 				))}</div> : null}
 				{request.kind === "resume" ? <div className="grid min-h-0 gap-3">
 					<Input aria-label="搜索会话" placeholder="搜索会话…" value={value} onChange={(event) => setValue(event.target.value)} />

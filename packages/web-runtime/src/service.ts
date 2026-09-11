@@ -54,6 +54,7 @@ const BASE_CAPABILITIES: Capability[] = [
 ];
 
 const SESSION_FILE_POLL_INTERVAL_MS = 1_000;
+const CONTENT_CLEANUP_INTERVAL_MS = 60_000;
 const PROGRESS_BATCH_MS = 50;
 const MAX_PENDING_PROGRESS = 64;
 const MAX_OPERATION_MESSAGE_LENGTH = 16 * 1024;
@@ -373,6 +374,7 @@ export class WebRuntimeService {
 	private readonly sessionHandoffRecoveries = new Map<string, Promise<void>>();
 	private readonly sessionsInHandoff = new Set<string>();
 	private readonly sessionPollTimer: ReturnType<typeof setInterval>;
+	private readonly contentCleanupTimer: ReturnType<typeof setInterval>;
 	private readonly agentDir: string;
 	private pollingSessions = false;
 
@@ -405,6 +407,8 @@ export class WebRuntimeService {
 			SESSION_FILE_POLL_INTERVAL_MS,
 		);
 		this.sessionPollTimer.unref?.();
+		this.contentCleanupTimer = setInterval(() => this.contentStore.evictExpired(), CONTENT_CLEANUP_INTERVAL_MS);
+		this.contentCleanupTimer.unref?.();
 	}
 
 	createConnection(send: (message: ServerMessage) => Promise<void>): {
@@ -453,6 +457,7 @@ export class WebRuntimeService {
 	async dispose(): Promise<void> {
 		this.disposed = true;
 		clearInterval(this.sessionPollTimer);
+		clearInterval(this.contentCleanupTimer);
 		await Promise.allSettled([...this.sessionHandoffHosts.values()].map((host) => host.server.dispose()));
 		this.sessionHandoffHosts.clear();
 		await Promise.allSettled(this.sessionHandoffRecoveries.values());
@@ -1170,17 +1175,31 @@ export class WebRuntimeService {
 					scope: `session-collection:${cwd}`,
 					payload: { cwd, sessionPath },
 					run: async () => {
-						if (this.runtimes.has(sessionPath) || this.leases.has(sessionPath)) {
-							throw Object.assign(new Error("会话当前仍被占用"), {
-								code: "session_attached",
-								retryable: true,
-							});
-						}
 						if (
 							this.journal.list(sessionPath).some((operation) => ACTIVE_OPERATION_STATUSES.has(operation.status))
 						) {
 							throw Object.assign(new Error("会话存在正在执行的任务"), {
 								code: "session_operation_active",
+								retryable: true,
+							});
+						}
+						const requesterLease = this.leases.get(sessionPath, request.clientInstanceId);
+						if (this.leases.count(sessionPath) > (requesterLease ? 1 : 0)) {
+							throw Object.assign(new Error("会话当前仍被占用"), {
+								code: "session_attached",
+								retryable: true,
+							});
+						}
+						if (requesterLease) {
+							this.releaseAcceptedReservation(sessionPath);
+							this.leases.release(sessionPath, requesterLease.leaseId);
+						}
+						if (!this.leases.has(sessionPath) && this.runtimes.has(sessionPath)) {
+							await this.disposeRuntime(sessionPath);
+						}
+						if (this.runtimes.has(sessionPath) || this.leases.has(sessionPath)) {
+							throw Object.assign(new Error("会话当前仍被占用"), {
+								code: "session_attached",
 								retryable: true,
 							});
 						}

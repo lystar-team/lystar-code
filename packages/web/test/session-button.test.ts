@@ -1,5 +1,8 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { truncateSessionTitle } from "../src/components/workbench/session-button";
+import { SessionButton, truncateSessionTitle } from "../src/components/workbench/session-button";
+import type { WebSessionSummary } from "../src/types.ts";
 
 describe("会话标题展示", () => {
 	it("40 个字符以内保持原文", () => {
@@ -15,5 +18,41 @@ describe("会话标题展示", () => {
 	it("按 Unicode 字符截断，不拆分代理项", () => {
 		const title = "🙂".repeat(41);
 		expect(truncateSessionTitle(title)).toBe(`${"🙂".repeat(40)}...`);
+	});
+
+	it("会话行提供独立的删除按钮", () => {
+		const session: WebSessionSummary = {
+			id: "session-1",
+			name: "测试会话",
+			createdAt: 1,
+			updatedAt: 1,
+			messageCount: 1,
+			firstMessage: "测试会话",
+			activity: "idle",
+			writeAccess: "available",
+		};
+		const markup = renderToStaticMarkup(
+			createElement(SessionButton, {
+				projectName: "测试项目",
+				session,
+				active: false,
+				running: false,
+				unread: false,
+				onClick: () => {},
+				onRename: async () => {},
+				onContextRename: () => {},
+				onTogglePinned: () => {},
+				onDelete: () => {},
+				dragging: false,
+				dropTarget: false,
+				onDragStart: () => {},
+				onDragOver: () => {},
+				onDrop: () => {},
+				onDragEnd: () => {},
+			}),
+		);
+
+		expect(markup).toContain('aria-label="删除会话：测试会话"');
+		expect(markup).toContain("group-hover/session:opacity-100");
 	});
 });

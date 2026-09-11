@@ -694,6 +694,8 @@ export const HarnessResourceTypeSchema = Type.Union([
 	Type.Literal("skill"),
 	Type.Literal("prompt"),
 	Type.Literal("instruction"),
+	Type.Literal("agent"),
+	Type.Literal("reference"),
 ]);
 export type HarnessResourceType = Static<typeof HarnessResourceTypeSchema>;
 export const HarnessImportItemStatusSchema = Type.Union([
@@ -712,8 +714,10 @@ export const HarnessImportSourceSchema = StrictObject({
 	resourceCount: Type.Integer({ minimum: 0 }),
 	resourceTypes: StrictObject({
 		skills: Type.Integer({ minimum: 0 }),
+		agents: Type.Integer({ minimum: 0 }),
 		prompts: Type.Integer({ minimum: 0 }),
 		instructions: Type.Integer({ minimum: 0 }),
+		references: Type.Integer({ minimum: 0 }),
 	}),
 });
 export type HarnessImportSource = Static<typeof HarnessImportSourceSchema>;
@@ -736,6 +740,7 @@ export const HarnessImportItemSchema = StrictObject({
 	instructionHunks: Type.Optional(Type.Array(HarnessImportInstructionHunkSchema, { maxItems: 512 })),
 	instructionSourceContent: Type.Optional(Type.String({ maxLength: 4 * 1024 * 1024 })),
 	instructionTargetContent: Type.Optional(Type.String({ maxLength: 4 * 1024 * 1024 })),
+	referencedItemIds: Type.Optional(Type.Array(Id, { maxItems: 512 })),
 	status: HarnessImportItemStatusSchema,
 	warnings: Type.Array(Type.String({ maxLength: 4096 }), { maxItems: 32 }),
 });

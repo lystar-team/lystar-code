@@ -19,12 +19,14 @@ import {
 	type WebServiceStatus,
 	webServiceDiagnostic,
 } from "./service-manager.ts";
+import { captureUserCommandEnvironment } from "./user-execution-environment.ts";
 
 const ACTIVE_OPERATION_STATUSES = new Set(["accepted", "running", "waiting_for_input"]);
 
 export interface RuntimeServiceStatus extends WebServiceStatus {
 	endpoint: string;
 	reachable: boolean;
+	responsive: boolean;
 }
 
 interface HostSnapshot {
@@ -104,6 +106,7 @@ function withRuntimeEndpoint(args: readonly string[], endpoint: string): string[
 
 function runtimeEnvironment(agentDir: string, endpoint: string): Record<string, string | undefined> {
 	return {
+		...captureUserCommandEnvironment(),
 		PI_CODING_AGENT_DIR: agentDir,
 		PI_WEB_RUNTIME_ENDPOINT: endpoint,
 		HOME: process.env.HOME ?? homedir(),
@@ -125,7 +128,11 @@ export function createRuntimeServiceSpec(endpoint: string, options: RuntimeServi
 		agentDir,
 		invocation,
 		environment: { ...runtimeEnvironment(agentDir, endpoint), ...options.environment },
-		logPath: join(agentDir, "web", "runtime.log"),
+		logPath: join(
+			agentDir,
+			"web",
+			`runtime${options.profile && options.profile !== "default" ? `-${options.profile}` : ""}.log`,
+		),
 	};
 }
 
@@ -133,6 +140,7 @@ function mergeRuntimeStatus(
 	base: WebServiceStatus,
 	endpoint: string,
 	reachable: boolean,
+	responsive: boolean,
 	pid: number | undefined,
 ): RuntimeServiceStatus {
 	const effectivePid = pid ?? base.pid;
@@ -140,6 +148,7 @@ function mergeRuntimeStatus(
 		...base,
 		endpoint,
 		reachable,
+		responsive,
 		running: base.running || reachable,
 		...(effectivePid !== undefined ? { pid: effectivePid } : {}),
 	};
@@ -158,7 +167,8 @@ export async function getRuntimeServiceStatus(
 	});
 	const base = getWebServiceStatus(spec);
 	const reachable = (await probeIpcRuntime(endpoint)).reachable;
-	return mergeRuntimeStatus(base, endpoint, reachable, readRuntimePid(endpoint, spec.agentDir));
+	const responsive = reachable ? await probeRuntimeProtocol(endpoint) : false;
+	return mergeRuntimeStatus(base, endpoint, reachable, responsive, readRuntimePid(endpoint, spec.agentDir));
 }
 
 function runtimeSpecOptions(options: RuntimeServiceOptions | undefined): RuntimeServiceOptions {
@@ -181,7 +191,7 @@ export async function installRuntimeService(
 		options?.agentDir,
 	);
 	installWebService(spec, { interactiveAdmin });
-	await waitUntilReachable(endpoint);
+	await waitUntilResponsive(endpoint);
 	return getRuntimeServiceStatus(endpoint, options?.profile, options?.invocation, options?.agentDir);
 }
 
@@ -193,12 +203,15 @@ export async function ensureRuntimeService(
 	agentDir?: string,
 ): Promise<RuntimeServiceStatus> {
 	const status = await getRuntimeServiceStatus(endpoint, profile, invocation, agentDir);
-	if (status.reachable) return status;
+	if (status.responsive) return status;
 	if (!status.installed) {
 		throw Object.assign(new Error("Web Runtime服务尚未安装"), {
 			code: "host_service_not_installed",
 			status,
 		});
+	}
+	if (status.reachable) {
+		await stopRuntimeService(endpoint, true, profile, invocation, interactiveAdmin, agentDir);
 	}
 	const spec = createRuntimeServiceSpec(endpoint, {
 		...(profile ? { profile } : {}),
@@ -206,7 +219,7 @@ export async function ensureRuntimeService(
 		...(agentDir ? { agentDir } : {}),
 	});
 	ensureWebService(spec, { interactiveAdmin });
-	await waitUntilReachable(endpoint);
+	await waitUntilResponsive(endpoint);
 	return getRuntimeServiceStatus(endpoint, profile, invocation, agentDir);
 }
 
@@ -249,29 +262,53 @@ class SocketTransport implements ByteTransport {
 	}
 }
 
-async function readHostSnapshot(endpoint: string): Promise<HostSnapshot | undefined> {
-	if (!(await probeIpcRuntime(endpoint)).reachable) return undefined;
+async function openRuntimeControlClient(endpoint: string, timeoutMs: number): Promise<RuntimeProtocolClient> {
 	const client = new RuntimeProtocolClient(
-		new SocketTransport(await connectRuntimeEndpoint(endpoint)),
-		`host-control-${process.pid}`,
+		new SocketTransport(await connectRuntimeEndpoint(endpoint, timeoutMs)),
+		`host-control-${process.pid}-${Date.now()}`,
 	);
 	try {
 		await client.connect();
-		const deadline = Date.now() + 5_000;
-		while (!client.getSnapshot().connected && Date.now() < deadline) {
+		const deadline = Date.now() + timeoutMs;
+		while (Date.now() < deadline) {
+			const snapshot = client.getSnapshot();
+			if (snapshot.connected) return client;
+			if (snapshot.lastError) throw new Error(snapshot.lastError);
 			await new Promise((resolve) => setTimeout(resolve, 20));
 		}
-		if (!client.getSnapshot().connected) throw new Error("Web Runtime握手超时");
+		throw new Error("Web Runtime握手超时");
+	} catch (error) {
+		await client.close().catch(() => {});
+		throw error;
+	}
+}
+
+async function probeRuntimeProtocol(endpoint: string, timeoutMs = 1_000): Promise<boolean> {
+	let client: RuntimeProtocolClient | undefined;
+	try {
+		client = await openRuntimeControlClient(endpoint, timeoutMs);
+		return true;
+	} catch {
+		return false;
+	} finally {
+		await client?.close().catch(() => {});
+	}
+}
+
+async function readHostSnapshot(endpoint: string): Promise<HostSnapshot | undefined> {
+	if (!(await probeIpcRuntime(endpoint)).reachable) return undefined;
+	const client = await openRuntimeControlClient(endpoint, 5_000);
+	try {
 		return await client.request<HostSnapshot>({ command: "get_snapshot" }, { timeoutMs: 5_000 });
 	} finally {
 		await client.close();
 	}
 }
 
-async function waitUntilReachable(endpoint: string, timeoutMs = 10_000): Promise<void> {
+async function waitUntilResponsive(endpoint: string, timeoutMs = 10_000): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
-		if ((await probeIpcRuntime(endpoint)).reachable) return;
+		if (await probeRuntimeProtocol(endpoint, Math.min(1_000, Math.max(1, deadline - Date.now())))) return;
 		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
 	throw new Error("Web Runtime服务启动超时");
@@ -307,7 +344,7 @@ export async function restartRuntimeService(
 	agentDir = getRuntimeAgentDir(),
 ): Promise<RuntimeServiceStatus> {
 	const status = await getRuntimeServiceStatus(endpoint, profile, invocation, agentDir);
-	if (status.manager === "launch-daemon" && status.pid && status.reachable) {
+	if (status.manager === "launch-daemon" && status.pid && status.responsive) {
 		await assertRuntimeIdle(endpoint);
 		// 同用户的 Runtime 接收重启信号，由 launchd 拉起，无需后台 sudo 授权。
 		process.kill(status.pid, "SIGUSR2");
@@ -321,7 +358,7 @@ export async function restartRuntimeService(
 		}
 		throw new Error("Web Runtime 重启超时，请运行 lc web service status 查看服务状态");
 	}
-	await stopRuntimeService(endpoint, false, profile, invocation, false, agentDir);
+	await stopRuntimeService(endpoint, !status.responsive, profile, invocation, false, agentDir);
 	return ensureRuntimeService(endpoint, profile, invocation, false, agentDir);
 }
 
@@ -334,13 +371,14 @@ export async function stopRuntimeService(
 	agentDir?: string,
 ): Promise<RuntimeServiceStatus> {
 	const status = await getRuntimeServiceStatus(endpoint, profile, invocation, agentDir);
-	if (!force) await assertRuntimeIdle(endpoint);
+	const effectiveForce = force || (status.reachable && !status.responsive);
+	if (!effectiveForce) await assertRuntimeIdle(endpoint);
 	const spec = createRuntimeServiceSpec(endpoint, {
 		...(profile ? { profile } : {}),
 		...(invocation ? { invocation } : {}),
 		...(agentDir ? { agentDir } : {}),
 	});
-	stopWebService(spec, force, { detachedPid: status.pid, interactiveAdmin });
+	stopWebService(spec, effectiveForce, { detachedPid: status.pid, interactiveAdmin });
 	await waitUntilUnreachable(endpoint);
 	return getRuntimeServiceStatus(endpoint, profile, invocation, agentDir);
 }

@@ -25,6 +25,8 @@ export interface WorkbenchActions {
 	openInspector: (mode?: InspectorMode) => Promise<void>;
 	closeInspector: () => void;
 	openSettings: (tab?: SettingsTab) => Promise<void>;
+	refreshBranding: () => Promise<void>;
+	saveBranding: (input: { name: string; logo?: string | null }) => Promise<void>;
 	closeSettings: () => void;
 	signOut: () => void;
 	setComposerMode: (mode: ComposerMode) => void;
@@ -54,7 +56,7 @@ export interface WorkbenchActions {
 	reorderProjects: (projectIds: string[]) => Promise<void>;
 	reorderSessions: (projectId: string, sessionIds: string[]) => Promise<void>;
 	removeProject: (projectId: string) => Promise<void>;
-	deleteSession: (sessionId: string) => Promise<void>;
+	deleteSession: (sessionId: string) => Promise<boolean>;
 	renameSession: (sessionId: string, name: string) => Promise<void>;
 	setSessionPinned: (sessionId: string, pinned: boolean) => Promise<void>;
 	fork: (entryId: string) => Promise<void>;

@@ -5592,11 +5592,17 @@
                 "type": "object",
                 "required": [
                   "skills",
+                  "agents",
                   "prompts",
-                  "instructions"
+                  "instructions",
+                  "references"
                 ],
                 "properties": {
                   "skills": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "agents": {
                     "type": "integer",
                     "minimum": 0
                   },
@@ -5605,6 +5611,10 @@
                     "minimum": 0
                   },
                   "instructions": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "references": {
                     "type": "integer",
                     "minimum": 0
                   }
@@ -5684,6 +5694,14 @@
                   {
                     "type": "string",
                     "const": "instruction"
+                  },
+                  {
+                    "type": "string",
+                    "const": "agent"
+                  },
+                  {
+                    "type": "string",
+                    "const": "reference"
                   }
                 ]
               },
@@ -5747,6 +5765,15 @@
               "instructionTargetContent": {
                 "type": "string",
                 "maxLength": 4194304
+              },
+              "referencedItemIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "maxItems": 512
               },
               "status": {
                 "anyOf": [

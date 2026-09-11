@@ -174,10 +174,6 @@ function runtimeIsBusy(snapshot: RuntimeInitialSnapshot): boolean {
 	);
 }
 
-function runtimeServiceProfile(): string | undefined {
-	return process.env.LYSTAR_CLI_MODE === "development" ? "development" : undefined;
-}
-
 function runtimeServiceInvocation(config: WebGatewayConfig): WebServiceInvocation | undefined {
 	return config.runtimeInvocation
 		? {
@@ -189,11 +185,11 @@ function runtimeServiceInvocation(config: WebGatewayConfig): WebServiceInvocatio
 }
 
 export function ensurePersistentRuntime(config: WebGatewayConfig): Promise<void> {
-	const startupKey = [config.agentDir, runtimeServiceProfile() ?? "default", config.runtimeEndpoint].join("\0");
+	const startupKey = [config.agentDir, config.serviceProfile ?? "default", config.runtimeEndpoint].join("\0");
 	const existing = runtimeStartupPromises.get(startupKey);
 	if (existing) return existing;
 	const promise = (async () => {
-		const serviceProfile = runtimeServiceProfile();
+		const serviceProfile = config.serviceProfile;
 		const serviceInvocation = runtimeServiceInvocation(config);
 		const status = await getRuntimeServiceStatus(
 			config.runtimeEndpoint,
@@ -283,7 +279,7 @@ export async function connectRuntimeClient(
 		}
 		const status = await getRuntimeServiceStatus(
 			config.runtimeEndpoint,
-			runtimeServiceProfile(),
+			config.serviceProfile,
 			serviceInvocation,
 			config.agentDir,
 		);
@@ -297,7 +293,7 @@ export async function connectRuntimeClient(
 		await stopRuntimeService(
 			config.runtimeEndpoint,
 			true,
-			runtimeServiceProfile(),
+			config.serviceProfile,
 			serviceInvocation,
 			false,
 			config.agentDir,

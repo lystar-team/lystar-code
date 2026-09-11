@@ -135,9 +135,21 @@ import type {
 	UiRequest,
 	UiRequestHandler,
 } from "./types.ts";
+import { probeUserNodeToolchain } from "./user-execution-environment.ts";
 import { WebCompanionProtocolError, WebCompanionRuntime } from "./web-companion-runtime.ts";
 
 export { BUILTIN_SLASH_COMMANDS } from "@earendil-works/pi-coding-agent/core";
+
+function runtimeEngineCheck(): { id: string; status: string; message: string } {
+	const bunVersion = process.versions.bun;
+	return bunVersion
+		? {
+				id: "runtime-engine",
+				status: "ok",
+				message: `LYStar Runtime：Bun ${bunVersion}（Node API 兼容 ${process.versions.node ?? process.version}）`,
+			}
+		: { id: "runtime-engine", status: "ok", message: `LYStar Runtime：Node.js ${process.version}` };
+}
 
 function readHostVersion(): string | undefined {
 	for (const path of [
@@ -803,15 +815,72 @@ async function discoverProviderModels(baseUrl: string, apiKey?: string): Promise
 	});
 }
 
+function catalogApiFamily(api: string): string {
+	switch (api) {
+		case "openai-completions":
+		case "openai-responses":
+			return "openai";
+		case "openai-codex-responses":
+			return "openai-codex";
+		case "anthropic-messages":
+			return "anthropic";
+		case "google-generative-ai":
+			return "google";
+		case "google-vertex":
+			return "google-vertex";
+		case "mistral-conversations":
+			return "mistral";
+		case "azure-openai-responses":
+			return "azure-openai-responses";
+		case "bedrock-converse-stream":
+			return "amazon-bedrock";
+		default:
+			return api.split("-", 1)[0] ?? api;
+	}
+}
+
+function findMatchingCatalogModel(
+	runtime: ModelRuntime,
+	providerId: string,
+	modelId: string,
+	providerApi: string,
+): Model<Api> | undefined {
+	const normalizedId = modelId.toLowerCase();
+	const candidates = runtime
+		.getModels()
+		.filter(
+			(model) =>
+				model.provider !== providerId &&
+				runtime.isBuiltinProvider(model.provider) &&
+				model.id.toLowerCase() === normalizedId,
+		);
+	if (candidates.length <= 1) return candidates[0];
+
+	const apiFamily = catalogApiFamily(providerApi);
+	const ranked = candidates
+		.map((model) => ({
+			model,
+			score:
+				Number(model.provider === apiFamily) * 4 +
+				Number(model.api === providerApi) * 2 +
+				Number(providerApi.includes("codex") && model.provider.includes("codex")),
+		}))
+		.sort((left, right) => right.score - left.score || left.model.provider.localeCompare(right.model.provider));
+	const best = ranked[0];
+	if (!best || best.score === 0 || ranked[1]?.score === best.score) return undefined;
+	return best.model;
+}
+
 function modelDefinitionFromCatalog(
 	model: Model<Api>,
 	baseUrl: string,
 	override: DiscoveredProviderModel = { id: model.id },
+	api: string = model.api,
 ): ModelsJsonModel {
 	return {
-		id: model.id,
+		id: override.id,
 		name: override.name ?? model.name,
-		api: model.api,
+		api,
 		baseUrl,
 		reasoning: model.reasoning,
 		...(model.thinkingLevelMap ? { thinkingLevelMap: model.thinkingLevelMap } : {}),
@@ -819,7 +888,7 @@ function modelDefinitionFromCatalog(
 		cost: model.cost,
 		contextWindow: override.contextWindow ?? model.contextWindow,
 		maxTokens: override.maxTokens ?? model.maxTokens,
-		...(model.compat ? { compat: model.compat } : {}),
+		...(api === model.api && model.compat ? { compat: model.compat } : {}),
 	};
 }
 
@@ -1047,6 +1116,16 @@ export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgres
 					},
 				];
 			}
+			if (event.toolName === "image_gen") {
+				return [
+					{
+						type: "tool_update",
+						toolCallId: event.toolCallId,
+						name: event.toolName,
+						summary: boundedStatus(toolOutputText(event.partialResult) ?? "正在生成图片"),
+					},
+				];
+			}
 			return [
 				{
 					type: "tool_update",
@@ -1071,6 +1150,19 @@ export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgres
 						status: event.isError ? "error" : "success",
 						summary: bashOutput(event.result) ?? "",
 						...(diff ? { diff } : {}),
+					},
+				];
+			}
+			if (event.toolName === "image_gen") {
+				return [
+					{
+						type: "tool_end",
+						toolCallId: event.toolCallId,
+						name: event.toolName,
+						status: event.isError ? "error" : "success",
+						summary: boundedStatus(
+							toolOutputText(event.result) ?? (event.isError ? "图片生成失败" : "图片生成完成"),
+						),
 					},
 				];
 			}
@@ -1505,13 +1597,21 @@ class CoreRuntimeSession implements RuntimeSession {
 		this.emitStateChanged();
 	}
 
+	private async refreshModelProvider(provider: string): Promise<void> {
+		const modelRuntime = this.runtime.services.modelRuntime;
+		const result = await modelRuntime.refresh({ allowNetwork: false, providers: [provider] });
+		const error = result.errors.get(provider);
+		if (error) throw error;
+		const currentModel = this.runtime.session.model;
+		if (!currentModel || currentModel.provider !== provider) return;
+		const refreshedModel = modelRuntime.getModel(currentModel.provider, currentModel.id);
+		if (refreshedModel && refreshedModel !== currentModel) this.runtime.session.agent.state.model = refreshedModel;
+	}
+
 	async setModel(modelRef: ModelRef): Promise<void> {
 		const modelRuntime = this.runtime.services.modelRuntime;
-		let model = modelRuntime.getModel(modelRef.provider, modelRef.id);
-		if (!model) {
-			await modelRuntime.refresh({ allowNetwork: false, providers: [modelRef.provider] });
-			model = modelRuntime.getModel(modelRef.provider, modelRef.id);
-		}
+		await this.refreshModelProvider(modelRef.provider);
+		const model = modelRuntime.getModel(modelRef.provider, modelRef.id);
 		if (!model) {
 			throw Object.assign(new Error(`未找到模型：${modelRef.provider}/${modelRef.id}`), {
 				code: "model_not_found",
@@ -1523,6 +1623,8 @@ class CoreRuntimeSession implements RuntimeSession {
 	}
 
 	async setThinkingLevel(level: ThinkingLevel): Promise<void> {
+		const provider = this.runtime.session.model?.provider;
+		if (provider) await this.refreshModelProvider(provider);
 		this.runtime.session.setThinkingLevel(level, { persist: true });
 		await this.runtime.services.settingsManager.flush();
 		this.emitStateChanged();
@@ -1690,6 +1792,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	private readonly externalResourceGrants = new Map<string, { path: string; expiresAt: number }>();
 	private readonly sessionInfoCache: SessionInfoCache = { entries: new Map() };
 	private readonly sessionListPromises = new Map<string, Promise<SessionSummaryBase[]>>();
+	private readonly nodeToolchain = probeUserNodeToolchain();
 	private modelRuntimePromise?: Promise<ModelRuntime>;
 	private initialRuntime?: AgentSessionRuntime;
 	private initialRuntimeClaimed = false;
@@ -2307,8 +2410,10 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		const providerApi = providerConfig?.api ?? targetProvider?.getModels()[0]?.api;
 		if (!providerApi) throw new Error(`Provider ${providerId} 缺少 api`);
 		const definitions = discovered.map((model) => {
-			const source = sourceModels.find((candidate) => candidate.id === model.id);
-			if (source) return modelDefinitionFromCatalog(source, baseUrl, model);
+			const source =
+				sourceModels.find((candidate) => candidate.id === model.id) ??
+				findMatchingCatalogModel(runtime, providerId, model.id, providerApi);
+			if (source) return modelDefinitionFromCatalog(source, baseUrl, model, providerApi);
 			const existingDefinition = configuredModels.find((candidate) => candidate.id === model.id);
 			const existingModel = existingModels.get(model.id);
 			return {
@@ -2481,12 +2586,31 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			runtimeDiagnostics,
 			recoveryMode: getToolRecoveryMode(),
 		});
+		const { nodeVersion: _runtimeCompatibilityVersion, ...runtimeReport } = report;
 		const checks = [
-			{ id: "node", status: "ok", message: `Node.js ${process.version}` },
+			runtimeEngineCheck(),
+			this.nodeToolchain.node
+				? {
+						id: "node",
+						status: "ok",
+						message: `用户 Node.js ${this.nodeToolchain.node.version} · ${this.nodeToolchain.node.executable}`,
+					}
+				: {
+						id: "node",
+						status: "warning",
+						message: "用户环境未检测到 Node.js；Node、npm 和 npx 相关功能不可用",
+					},
+			...(this.nodeToolchain.npmVersion
+				? [{ id: "npm", status: "ok", message: `npm ${this.nodeToolchain.npmVersion}` }]
+				: []),
 			{ id: "agent-dir", status: existsSync(this.agentDir) ? "ok" : "warning", message: this.agentDir },
 			...(cwd ? [{ id: "cwd", status: existsSync(cwd) ? "ok" : "error", message: cwd }] : []),
 		];
-		return jsonValue({ ...report, checks });
+		return jsonValue({
+			...runtimeReport,
+			nodeVersion: this.nodeToolchain.node?.version ?? "unavailable",
+			checks,
+		});
 	}
 
 	async getGitStatus(cwd: string): Promise<GitStatus> {

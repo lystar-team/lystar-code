@@ -1,7 +1,9 @@
-import { ArrowLeft, Check, ChevronRight, Folder, HardDrive, LoaderCircle, Plus, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { gsap } from "gsap";
+import { ArrowLeft, Check, ChevronRight, Folder, HardDrive, LoaderCircle, Plus, RefreshCw, X } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { WorkbenchState } from "../../state/use-workbench";
 import type { WebProject, UiRequestEvent } from "../../types";
+import { runGsapMotion } from "../../lib/gsap-motion";
 import { Alert, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
@@ -284,14 +286,82 @@ export function UiRequestDialog({ state, actions }: { state: WorkbenchState; act
 }
 
 export function Toast({ message }: { message?: string }) {
-	if (!message) return null;
+	const [displayMessage, setDisplayMessage] = useState(message);
+	const [dismissedMessage, setDismissedMessage] = useState<string>();
+	const toastRef = useRef<HTMLDivElement>(null);
+	const isDismissed = Boolean(message && dismissedMessage === message);
+
+	useEffect(() => {
+		if (!message && !displayMessage) setDismissedMessage(undefined);
+	}, [displayMessage, message]);
+
+	useLayoutEffect(() => {
+		if (message && displayMessage !== message) {
+			setDisplayMessage(message);
+			return;
+		}
+
+		const element = toastRef.current;
+		if (!element || !displayMessage) return;
+
+		if (!message || isDismissed) {
+			return runGsapMotion(element, (reducedMotion) => {
+				if (reducedMotion) {
+					setDisplayMessage(undefined);
+					return;
+				}
+				gsap.to(element, {
+					autoAlpha: 0,
+					y: -8,
+					duration: 0.18,
+					ease: "power2.in",
+					overwrite: "auto",
+					onComplete: () => setDisplayMessage(undefined),
+				});
+			});
+		}
+
+		return runGsapMotion(element, (reducedMotion) => {
+			if (reducedMotion) return;
+			gsap.fromTo(
+				element,
+				{ autoAlpha: 0, y: -8 },
+				{
+					autoAlpha: 1,
+					y: 0,
+					duration: 0.22,
+					ease: "power2.out",
+					overwrite: "auto",
+					clearProps: "opacity,visibility,transform",
+				},
+			);
+		});
+	}, [displayMessage, isDismissed, message]);
+
+	if (!displayMessage) return null;
 	return (
-		<Alert
-			className="fixed top-4 right-4 left-auto z-[60] w-[min(420px,calc(100vw-2rem))] max-w-full rounded-lg border border-border/70 bg-background shadow-[0_8px_30px_rgb(0_0_0/0.08)]"
-			role="status"
+		<div
+			ref={toastRef}
+			className="pointer-events-none fixed top-[calc(env(safe-area-inset-top)+5rem)] right-4 left-auto z-40 w-[min(420px,calc(100vw-2rem))] max-w-full"
 		>
-			<Check className="size-4 text-emerald-600" />
-			<AlertDescription>{message}</AlertDescription>
-		</Alert>
+			<Alert
+				className="pointer-events-auto w-full rounded-xl border border-border/70 bg-card pr-12 shadow-[0_12px_32px_rgb(0_0_0/0.14)]"
+				role="status"
+			>
+				<Check className="size-4 text-emerald-600" />
+				<AlertDescription className="min-w-0 break-words">{displayMessage}</AlertDescription>
+				<Button
+					aria-label="关闭提示"
+					className="absolute top-2 right-2 text-muted-foreground"
+					onClick={() => {
+						if (message) setDismissedMessage(message);
+					}}
+					size="icon-sm"
+					variant="ghost"
+				>
+					<X className="size-4" />
+				</Button>
+			</Alert>
+		</div>
 	);
 }

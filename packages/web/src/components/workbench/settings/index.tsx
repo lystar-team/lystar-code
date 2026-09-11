@@ -1,4 +1,4 @@
-import { ArrowDownToLine, ArrowLeft, BookOpen, Bot, CircleHelp, RefreshCw, Search, ShieldCheck, Sparkles, SunMoon, WandSparkles } from "lucide-react";
+import { ArrowDownToLine, ArrowLeft, BookOpen, Bot, CircleHelp, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, SunMoon, WandSparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { useAppInstall } from "../../../state/use-app-install";
@@ -7,6 +7,7 @@ import { Button } from "../../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../../ui/dialog";
 import { Input } from "../../ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../ui/tabs";
+import { GsapReveal } from "../../ui/gsap-reveal";
 import { AboutSettings } from "./about";
 import { AppearanceSettings } from "./appearance";
 import { DiagnosticsSettings } from "./diagnostics";
@@ -15,6 +16,7 @@ import { HarnessImportsSettings } from "./imports";
 import { ModelSettings } from "./model-settings";
 import { SecuritySettings } from "./security";
 import { SkillsSettings } from "./skills";
+import { SystemSettings } from "./system";
 import type { WorkbenchActions } from "../types";
 
 export function SettingsDialog({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
@@ -35,6 +37,7 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 		{ value: "skills", label: "技能", icon: <WandSparkles className="size-4" />, section: "工作区" },
 		{ value: "imports", label: "迁移导入", icon: <ArrowDownToLine className="size-4" />, section: "工作区" },
 		{ value: "diagnostics", label: "诊断", icon: <CircleHelp className="size-4" />, section: "工作区" },
+		{ value: "system", label: "系统", icon: <Settings2 className="size-4" />, section: "系统" },
 		{ value: "security", label: "安全与访问", icon: <ShieldCheck className="size-4" />, section: "系统" },
 		{ value: "about", label: "关于", icon: <Sparkles className="size-4" />, section: "其他" },
 	];
@@ -53,6 +56,7 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 					<DialogDescription>工作台外观、模型、访问控制、诊断和版本信息</DialogDescription>
 				</DialogHeader>
 				<Tabs
+					data-settings-root
 					value={state.settingsTab}
 					onValueChange={(value) => void actions.openSettings(value as SettingsTab)}
 					orientation={isMobile ? "horizontal" : "vertical"}
@@ -106,23 +110,26 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 							})}
 						</TabsList>
 					</aside>
-					<section className="min-h-0 w-full min-w-0 max-w-full flex-1 overflow-x-hidden overflow-y-auto">
-						<div className="mx-auto w-full min-w-0 max-w-[1120px] p-5 sm:p-12 lg:p-16">
+					<section data-settings-content className="min-h-0 w-full min-w-0 max-w-full flex-1 overflow-x-hidden overflow-y-auto">
+						<GsapReveal animationKey={state.settingsTab} className="min-h-0 w-full" distance={16} duration={0.32}>
+							<div className="mx-auto w-full min-w-0 max-w-[1120px] p-5 sm:p-12 lg:p-16">
 							<div className="mb-8 sm:mb-12">
 								<div className="flex items-center justify-between gap-4">
 									<div className="min-w-0">
 										<h1 className="text-2xl font-semibold tracking-tight sm:text-4xl">{currentLabel}</h1>
 										<p className="mt-2 max-w-2xl text-base leading-7 text-muted-foreground sm:mt-3">
-											{state.settingsTab === "instructions"
+											{state.settingsTab === "system"
+								? "修改应用名称和 Logo，并保存到本机配置文件。"
+								: state.settingsTab === "instructions"
 												? "为所有项目的任务提供说明和上下文。"
 												: state.settingsTab === "skills"
 													? "查看和管理当前项目可用的 Skill。"
 													: state.settingsTab === "imports"
-														? "把其他 Harness 的资源导入 LYStar Code。"
+														? `把其他 Harness 的资源导入 ${state.branding.name}。`
 												: state.settingsTab === "security"
 													? "配置 Web Gateway 的监听 IP、白名单、Web/Runtime 端口和密码。"
 													: state.settingsTab === "about"
-														? "查看 LYStar Code 的版本信息。"
+														? `查看 ${state.branding.name} 的版本信息。`
 													: state.settingsTab === "appearance"
 														? "配置工作台的外观和应用安装。"
 														: "配置工作台的外观、模型连接和运行信息。"}
@@ -138,6 +145,9 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 							</div>
 							<TabsContent className="m-0 w-full min-w-0 max-w-full" value="appearance">
 								<AppearanceSettings state={state} actions={actions} appInstall={appInstall} />
+							</TabsContent>
+							<TabsContent className="m-0 w-full min-w-0 max-w-full" value="system">
+								<SystemSettings state={state} actions={actions} />
 							</TabsContent>
 							<TabsContent className="m-0 w-full min-w-0 max-w-full" value="instructions">
 								<GlobalInstructionsSettings state={state} actions={actions} />
@@ -160,7 +170,8 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 							<TabsContent className="m-0 w-full min-w-0 max-w-full" value="about">
 								<AboutSettings state={state} />
 							</TabsContent>
-						</div>
+							</div>
+						</GsapReveal>
 					</section>
 				</Tabs>
 			</DialogContent>

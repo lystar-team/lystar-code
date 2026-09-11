@@ -80,6 +80,79 @@ describe("conversation render items", () => {
 		]);
 	});
 
+	it("只在最终结果确认后折叠整轮工作过程并插入分界线", () => {
+		const tool = {
+			id: "tool-1",
+			name: "bash",
+			summary: "pwd",
+			state: "output-available" as const,
+			detail: "/workspace",
+		};
+		const transcript = [
+			{
+				entryId: "user-1",
+				parentId: null,
+				timestamp: "2026-09-08T00:00:00.000Z",
+				kind: "message",
+				view: { type: "user" as const, text: "检查项目" },
+			},
+			{
+				entryId: "assistant-process",
+				parentId: "user-1",
+				timestamp: "2026-09-08T00:00:01.000Z",
+				kind: "message",
+				view: { type: "assistant" as const, text: "我先检查文件。" },
+			},
+			{
+				entryId: "assistant-process",
+				parentId: "user-1",
+				timestamp: "2026-09-08T00:00:01.000Z",
+				kind: "message",
+				view: { type: "tool_call" as const, calls: [{ id: tool.id, name: tool.name, summary: tool.summary }] },
+			},
+			{
+				entryId: "tool-result",
+				parentId: "assistant-process",
+				timestamp: "2026-09-08T00:00:02.000Z",
+				kind: "message",
+				view: {
+					type: "tool_result" as const,
+					callId: tool.id,
+					name: tool.name,
+					summary: tool.summary,
+					status: "success" as const,
+					detail: tool.detail,
+				},
+			},
+			{
+				entryId: "assistant-final",
+				parentId: "tool-result",
+				timestamp: "2026-09-08T00:00:03.000Z",
+				kind: "message",
+				view: { type: "assistant" as const, text: "检查完成。" },
+			},
+		];
+		const toolIndex = {
+			callIds: new Set([tool.id]),
+			results: new Map([[tool.id, tool]]),
+			statuses: new Map([[tool.id, "success" as const]]),
+		};
+		const persisted = buildPersistedRenderItems(transcript, toolIndex);
+		const active = buildConversationRenderItems(persisted, [], {}, toolIndex.callIds, undefined, 1, true);
+		const completed = buildConversationRenderItems(persisted, [], {}, toolIndex.callIds, undefined, 1, false);
+
+		expect(active.some((item) => item.kind === "result-boundary" || item.kind === "work-process")).toBe(false);
+		expect(active.find((item) => item.kind === "tool-stack")).toMatchObject({ collapseForResult: false });
+		expect(completed.map((item) => item.kind)).toEqual(["message", "work-process", "result-boundary", "message"]);
+		const workProcess = completed.find((item) => item.kind === "work-process");
+		if (!workProcess || workProcess.kind !== "work-process") throw new Error("缺少折叠的工作过程");
+		expect(workProcess.items.map((item) => item.kind)).toEqual(["message", "tool-stack"]);
+		expect(workProcess.items.find((item) => item.kind === "message")).toMatchObject({ text: "我先检查文件。" });
+		expect(workProcess.items.find((item) => item.kind === "tool-stack")).toMatchObject({
+			collapseForResult: true,
+		});
+	});
+
 	it("显示转录中的模型请求错误而不是空行", () => {
 		const errorText = "请求失败：503 service unavailable";
 		const persisted = buildPersistedRenderItems(
