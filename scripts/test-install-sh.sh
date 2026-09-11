@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-unset PI_CODING_AGENT_DIR
+unset PI_CODING_AGENT_DIR LYSTAR_WEB_SERVICE_VERSION
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 ORIGINAL_PATH="$PATH"
 VERSION="1.0.0-lystar.1"
+profile='.bashrc'
+if [[ "$(uname -s)" == 'Darwin' ]]; then profile='.bash_profile'; fi
 
 case "$(uname -s)" in
     Darwin) os="darwin" ;;
@@ -55,7 +57,7 @@ grep -F -- '--help' "$ROOT/scripts/install.sh" >/dev/null
 grep -F '当前版本没有切换' "$ROOT/scripts/install.sh" >/dev/null
 help_output="$(HOME="$tmp/home-help" bash "$ROOT/scripts/install.sh" --help)"
 printf '%s\n' "$help_output" | grep -F 'install.sh --no-path-update' >/dev/null
-printf '%s\n' "$help_output" | grep -F '安装失败时不会切换当前版本' >/dev/null
+printf '%s\n' "$help_output" | grep -F '版本切换前失败会保留已有安装' >/dev/null
 
 fake_curl_dir="$tmp/fake-curl"
 mkdir -p "$fake_curl_dir"
@@ -92,18 +94,18 @@ install_with_curl() {
     [[ ! -e "$home/.local/bin/la" ]]
     [[ "$(HOME="$home" "$home/.local/bin/lc" --version)" == "$VERSION" ]]
     [[ "$(HOME="$home" "$home/.local/bin/lystar" --version)" == "$VERSION" ]]
-    [[ "$(grep -Fxc 'export PATH="$HOME/.local/bin:$PATH"' "$home/.bashrc")" == "1" ]]
+    [[ "$(grep -Fxc 'export PATH="$HOME/.local/bin:$PATH"' "$home/$profile")" == "1" ]]
 
     HOME="$home" SHELL=/bin/bash FIXTURE_DIR="$release_dir" PATH="$fake_curl_dir:$ORIGINAL_PATH" \
         bash "$release_dir/install.sh" >/dev/null
-    [[ "$(grep -Fxc 'export PATH="$HOME/.local/bin:$PATH"' "$home/.bashrc")" == "1" ]]
+    [[ "$(grep -Fxc 'export PATH="$HOME/.local/bin:$PATH"' "$home/$profile")" == "1" ]]
 }
 
 install_without_path_update() {
     local home="$tmp/home-no-path"
     HOME="$home" SHELL=/bin/bash FIXTURE_DIR="$release_dir" PATH="$fake_curl_dir:$ORIGINAL_PATH" \
         bash "$release_dir/install.sh" --no-path-update >/dev/null
-    [[ ! -e "$home/.bashrc" ]]
+    [[ ! -e "$home/$profile" ]]
     [[ -x "$home/.local/share/lystar-agent/current/lc" ]]
 }
 
@@ -111,9 +113,14 @@ install_with_wget_only() {
     local tool_dir="$tmp/wget-tools"
     mkdir -p "$tool_dir"
     local name
-    for name in bash tar gzip sha256sum awk tr grep uname mktemp rm ln mv mkdir readlink cat chmod; do
+    for name in bash tar gzip awk tr grep uname mktemp rm ln mv mkdir readlink cat chmod; do
         ln -s "$(command -v "$name")" "$tool_dir/$name"
     done
+    if command -v sha256sum >/dev/null 2>&1; then
+        ln -s "$(command -v sha256sum)" "$tool_dir/sha256sum"
+    else
+        ln -s "$(command -v shasum)" "$tool_dir/shasum"
+    fi
     cat > "$tool_dir/wget" <<'WGET'
 #!/bin/bash
 set -euo pipefail
@@ -133,7 +140,7 @@ WGET
 
     local home="$tmp/home-wget"
     HOME="$home" SHELL=/bin/bash FIXTURE_DIR="$release_dir" PATH="$tool_dir" \
-        /bin/bash "$release_dir/install.sh" >/dev/null
+        "$BASH" "$release_dir/install.sh" >/dev/null
     [[ -x "$home/.local/share/lystar-agent/current/lc" ]]
 }
 
@@ -163,7 +170,7 @@ check_upgrade_rollback_and_uninstall() {
     touch "$home/.pi/agent/settings.json"
 
     HOME="$home" SHELL=/bin/bash FIXTURE_DIR="$release_dir" PATH="$fake_curl_dir:$ORIGINAL_PATH" \
-        bash "$release_dir/install.sh" >/dev/null
+        bash "$release_dir/install.sh" --version "$VERSION" >/dev/null
     [[ "$(readlink "$install_root/current")" == "versions/$VERSION" ]]
     [[ "$(readlink "$install_root/previous")" == "versions/$old_version" ]]
     [[ ! -e "$bin_dir/la" ]]
@@ -207,6 +214,48 @@ check_web_reconcile_failure_keeps_new_version() {
     grep -F '应用版本不会因 Web 服务错误回退' "$output" >/dev/null
 }
 
+check_inherited_service_version() {
+    local home="$tmp/home-inherited"
+    HOME="$home" LYSTAR_WEB_SERVICE_VERSION='0.0.0-lystar.0' FIXTURE_DIR="$release_dir" PATH="$fake_curl_dir:$ORIGINAL_PATH" \
+        bash "$release_dir/install.sh" --version "$VERSION" --no-path-update >/dev/null
+    [[ "$(HOME="$home" "$home/.local/bin/lc" --version)" == "$VERSION" ]]
+}
+
+check_missing_rollback() {
+    local home="$tmp/home-missing-rollback"
+    local root="$home/.local/share/lystar-agent"
+    mkdir -p "$root"
+    ln -s 'versions/0.0.0-lystar.0' "$root/previous"
+    ln -s "versions/$VERSION" "$root/current"
+    if HOME="$home" bash "$release_dir/install.sh" --rollback >/dev/null 2>&1; then
+        printf 'missing rollback target was accepted\n' >&2
+        exit 1
+    fi
+    [[ "$(readlink "$root/current")" == "versions/$VERSION" ]]
+}
+
+check_corrupt_existing_version() {
+    local home="$tmp/home-corrupt"
+    local root="$home/.local/share/lystar-agent"
+    mkdir -p "$root/versions/$VERSION"
+    ln -s 'versions/0.0.0-lystar.0' "$root/current"
+    if HOME="$home" FIXTURE_DIR="$release_dir" PATH="$fake_curl_dir:$ORIGINAL_PATH" \
+        bash "$release_dir/install.sh" --version "$VERSION" >/dev/null 2>&1; then
+        printf 'corrupt existing version was accepted\n' >&2
+        exit 1
+    fi
+    [[ "$(readlink "$root/current")" == 'versions/0.0.0-lystar.0' ]]
+}
+
+# macOS Bash 的变量名扫描不能依赖中文标点来结束变量名。
+if LC_ALL=C grep -nE '\$[A-Za-z_][A-Za-z_0-9]*[^ -~]' "$ROOT/scripts/install.sh"; then
+    printf 'unbraced shell variable next to non-ASCII text\n' >&2
+    exit 1
+fi
+
+check_inherited_service_version
+check_missing_rollback
+check_corrupt_existing_version
 install_with_curl
 install_without_path_update
 install_with_wget_only

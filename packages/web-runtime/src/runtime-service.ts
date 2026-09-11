@@ -171,6 +171,15 @@ export async function installRuntimeService(
 	options?: RuntimeServiceOptions,
 ): Promise<RuntimeServiceStatus> {
 	const spec = createRuntimeServiceSpec(endpoint, runtimeSpecOptions(options));
+	// 重装同样经过忙碌检查，不能由系统服务重启绕过运行任务保护。
+	await stopRuntimeService(
+		endpoint,
+		false,
+		options?.profile,
+		options?.invocation,
+		interactiveAdmin,
+		options?.agentDir,
+	);
 	installWebService(spec, { interactiveAdmin });
 	await waitUntilReachable(endpoint);
 	return getRuntimeServiceStatus(endpoint, options?.profile, options?.invocation, options?.agentDir);
@@ -253,7 +262,7 @@ async function readHostSnapshot(endpoint: string): Promise<HostSnapshot | undefi
 			await new Promise((resolve) => setTimeout(resolve, 20));
 		}
 		if (!client.getSnapshot().connected) throw new Error("Web Runtime握手超时");
-		return await client.request<HostSnapshot>({ command: "get_snapshot" });
+		return await client.request<HostSnapshot>({ command: "get_snapshot" }, { timeoutMs: 5_000 });
 	} finally {
 		await client.close();
 	}
@@ -277,16 +286,8 @@ async function waitUntilUnreachable(endpoint: string, timeoutMs = 10_000): Promi
 	throw new Error("Web Runtime服务停止超时");
 }
 
-export async function stopRuntimeService(
-	endpoint: string,
-	force: boolean,
-	profile?: string,
-	invocation?: WebServiceInvocation,
-	interactiveAdmin = false,
-	agentDir?: string,
-): Promise<RuntimeServiceStatus> {
-	const status = await getRuntimeServiceStatus(endpoint, profile, invocation, agentDir);
-	const snapshot = force ? undefined : await readHostSnapshot(endpoint);
+export async function assertRuntimeIdle(endpoint: string): Promise<void> {
+	const snapshot = await readHostSnapshot(endpoint);
 	if (snapshot) {
 		const active = snapshot.operations.filter((operation) => ACTIVE_OPERATION_STATUSES.has(operation.status));
 		if (active.length > 0 || snapshot.pendingUiRequests.length > 0) {
@@ -297,6 +298,43 @@ export async function stopRuntimeService(
 			});
 		}
 	}
+}
+
+export async function restartRuntimeService(
+	endpoint: string,
+	profile?: string,
+	invocation?: WebServiceInvocation,
+	agentDir = getRuntimeAgentDir(),
+): Promise<RuntimeServiceStatus> {
+	const status = await getRuntimeServiceStatus(endpoint, profile, invocation, agentDir);
+	if (status.manager === "launch-daemon" && status.pid && status.reachable) {
+		await assertRuntimeIdle(endpoint);
+		// 同用户的 Runtime 接收重启信号，由 launchd 拉起，无需后台 sudo 授权。
+		process.kill(status.pid, "SIGUSR2");
+		const deadline = Date.now() + 15_000;
+		while (Date.now() < deadline) {
+			const pid = readRuntimePid(endpoint, agentDir);
+			if (pid && pid !== status.pid && (await probeIpcRuntime(endpoint)).reachable) {
+				return getRuntimeServiceStatus(endpoint, profile, invocation, agentDir);
+			}
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+		throw new Error("Web Runtime 重启超时，请运行 lc web service status 查看服务状态");
+	}
+	await stopRuntimeService(endpoint, false, profile, invocation, false, agentDir);
+	return ensureRuntimeService(endpoint, profile, invocation, false, agentDir);
+}
+
+export async function stopRuntimeService(
+	endpoint: string,
+	force: boolean,
+	profile?: string,
+	invocation?: WebServiceInvocation,
+	interactiveAdmin = false,
+	agentDir?: string,
+): Promise<RuntimeServiceStatus> {
+	const status = await getRuntimeServiceStatus(endpoint, profile, invocation, agentDir);
+	if (!force) await assertRuntimeIdle(endpoint);
 	const spec = createRuntimeServiceSpec(endpoint, {
 		...(profile ? { profile } : {}),
 		...(invocation ? { invocation } : {}),

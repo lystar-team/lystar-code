@@ -34,7 +34,7 @@ export function normalizeForFuzzyMatch(text: string): string {
 		.join("\n");
 }
 
-type MatchTier = "trailing" | "trimmed" | "unicode";
+type MatchTier = "trailing" | "unicode-indented" | "trimmed" | "unicode";
 
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
@@ -58,7 +58,7 @@ function createMatchView(content: string, tier: MatchTier): MatchView {
 		const newline = content.indexOf("\n", lineStart);
 		const lineEnd = newline === -1 ? content.length : newline;
 		const line = content.slice(lineStart, lineEnd);
-		const leading = tier === "trailing" ? 0 : line.length - line.trimStart().length;
+		const leading = tier === "trailing" || tier === "unicode-indented" ? 0 : line.length - line.trimStart().length;
 		const trailing = line.trimEnd().length;
 		const keptStart = lineStart + Math.min(leading, trailing);
 		const keptEnd = lineStart + trailing;
@@ -70,7 +70,10 @@ function createMatchView(content: string, tier: MatchTier): MatchView {
 		for (const segment of graphemeSegmenter.segment(content.slice(keptStart, keptEnd))) {
 			const originalStart = keptStart + segment.index;
 			const originalEnd = originalStart + segment.segment.length;
-			const normalized = tier === "unicode" ? normalizeMatchSegment(segment.segment) : segment.segment;
+			const normalized =
+				tier === "unicode" || tier === "unicode-indented"
+					? normalizeMatchSegment(segment.segment)
+					: segment.segment;
 			starts[text.length] = originalStart;
 			text += normalized;
 			// 展开后的字素内部没有合法边界。
@@ -331,17 +334,36 @@ export function stripBom(content: string): { bom: string; text: string } {
 	return content.startsWith("\uFEFF") ? { bom: "\uFEFF", text: content.slice(1) } : { bom: "", text: content };
 }
 
-function findAllOccurrences(content: string, text: string, view?: MatchView): { count: number; offsets: number[] } {
+function findAllOccurrences(
+	content: string,
+	text: string,
+	view?: MatchView,
+	preferIndentBoundary = false,
+): { count: number; offsets: number[] } {
 	const offsets: number[] = [];
+	const preferredOffsets: number[] = [];
 	let count = 0;
+	let preferredCount = 0;
+	let hasIndentBoundaryMatch = false;
 	if (text.length === 0) return { count, offsets };
 	let searchStart = 0;
 	while (true) {
 		const offset = content.indexOf(text, searchStart);
-		if (offset === -1) return { count, offsets };
+		if (offset === -1)
+			return hasIndentBoundaryMatch ? { count: preferredCount, offsets: preferredOffsets } : { count, offsets };
 		if (!view || (view.starts[offset] !== undefined && view.ends[offset + text.length] !== undefined)) {
 			count++;
 			if (offsets.length < 5) offsets.push(offset);
+			if (preferIndentBoundary) {
+				const lineStart = offset === 0 ? 0 : content.lastIndexOf("\n", offset - 1) + 1;
+				// 显式缩进优先匹配完整行首，不能把较深缩进的尾部视为同等候选。
+				// 代码中的空白子串仍是候选；没有更强证据时保留原有子串匹配。
+				if (offset === lineStart) hasIndentBoundaryMatch = true;
+				if (offset === lineStart || /\S/.test(content.slice(lineStart, offset))) {
+					preferredCount++;
+					if (preferredOffsets.length < 5) preferredOffsets.push(offset);
+				}
+			}
 		}
 		searchStart = offset + 1;
 	}
@@ -410,7 +432,8 @@ function findEditMatch(
 	lineStarts: number[],
 	views: Map<MatchTier, MatchView>,
 ): MatchedEdit | EditIssue {
-	const exactMatches = findAllOccurrences(content, oldText);
+	const preferIndentBoundary = /^[^\S\n]+\S/.test(oldText);
+	const exactMatches = findAllOccurrences(content, oldText, undefined, preferIndentBoundary);
 	if (exactMatches.count > 1) {
 		const candidateLines = exactMatches.offsets.map((offset) => getLineNumber(offset, lineStarts));
 		return {
@@ -425,7 +448,8 @@ function findEditMatch(
 		return { editIndex, matchIndex: exactMatches.offsets[0], matchLength: oldText.length, newText: "" };
 	}
 
-	for (const tier of ["trailing", "trimmed", "unicode"] as const) {
+	// 先归一化标点并保留缩进，再尝试丢弃缩进的弱匹配。
+	for (const tier of ["trailing", "unicode-indented", "trimmed", "unicode"] as const) {
 		let contentView = views.get(tier);
 		if (!contentView) {
 			contentView = createMatchView(content, tier);
@@ -433,7 +457,7 @@ function findEditMatch(
 		}
 		const matchText = createMatchView(oldText, tier).text;
 		if (!matchText) continue;
-		const matches = findAllOccurrences(contentView.text, matchText, contentView);
+		const matches = findAllOccurrences(contentView.text, matchText, contentView, preferIndentBoundary);
 		if (matches.count > 1) {
 			const candidateLines = matches.offsets.map((offset) => getLineNumber(contentView.starts[offset]!, lineStarts));
 			return {
@@ -465,7 +489,8 @@ function findEditMatch(
  * All edits are matched against the same original content. Replacements are
  * then applied in reverse order so offsets remain stable. Each edit chooses its
  * own matching tier, and fuzzy matches are mapped back to original offsets so
- * unrelated edits and untouched text keep their original bytes.
+ * unrelated edits and untouched text keep their original bytes. Explicit leading
+ * indentation prefers matches at its full boundary over suffixes of deeper indentation.
  */
 export function applyEditsToNormalizedContent(
 	normalizedContent: string,

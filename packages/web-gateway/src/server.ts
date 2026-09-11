@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readdir, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import type { Duplex } from "node:stream";
 import type {
 	CompletionResult,
 	ContentChunk,
@@ -29,7 +31,7 @@ import type {
 	TranscriptItem,
 	TranscriptPage,
 } from "@lystar/code-web-protocol";
-import { ensureRuntimeService, getRuntimeServiceStatus, stopRuntimeService } from "@lystar/code-web-runtime";
+import { getRuntimeServiceStatus, restartRuntimeService, stopRuntimeService } from "@lystar/code-web-runtime";
 import { WebSocket, WebSocketServer } from "ws";
 import {
 	bearerToken,
@@ -596,6 +598,8 @@ export class WebGatewayServer {
 	private readonly sessionIdsByPath = new Map<string, string>();
 	private readonly webSockets = new WebSocketServer({ noServer: true, maxPayload: MAX_BODY_BYTES });
 	private readonly server: Server;
+	private readonly connections = new Set<Socket>();
+	private closePromise?: Promise<void>;
 	private readonly heartbeatTimer: ReturnType<typeof setInterval>;
 	private readonly uploadCleanupTimer: ReturnType<typeof setInterval>;
 	private readonly uploadedFiles = new Map<string, { mimeType: string; expiresAt: number }>();
@@ -611,6 +615,10 @@ export class WebGatewayServer {
 		this.registry = new ProjectRegistry(config.agentDir);
 		this.projectGroups = new ProjectGroupRegistry(config.agentDir);
 		this.server = createServer((request, response) => void this.handleRequest(request, response));
+		this.server.on("connection", (socket) => {
+			this.connections.add(socket);
+			socket.once("close", () => this.connections.delete(socket));
+		});
 		this.server.on("upgrade", (request, socket, head) => void this.handleUpgrade(request, socket, head));
 		this.webSockets.on("connection", (socket, request) => void this.handleWebSocket(socket, request));
 		this.heartbeatTimer = setInterval(() => this.checkWebSocketLiveness(), 15_000);
@@ -632,27 +640,43 @@ export class WebGatewayServer {
 		});
 	}
 
-	async close(): Promise<void> {
+	close(): Promise<void> {
+		this.closePromise ??= this.shutdown();
+		return this.closePromise;
+	}
+
+	private async shutdown(): Promise<void> {
 		this.closed = true;
 		clearInterval(this.heartbeatTimer);
 		clearInterval(this.uploadCleanupTimer);
-		await this.cleanupUploadedFiles(true);
-		for (const context of this.contexts.values()) {
-			if (context.idleTimer) clearTimeout(context.idleTimer);
-			if (context.reconnectTimer) clearTimeout(context.reconnectTimer);
-			this.clearPendingProgress(context);
-			for (const socket of context.sockets) socket.close(1001, "Web Gateway stopped");
-			await context.client?.close().catch(() => {});
-		}
-		this.contexts.clear();
-		await new Promise<void>((resolvePromise) => {
-			if (!this.listening) {
-				resolvePromise();
-				return;
+		// 未完成的 HTTP 请求和未响应关闭帧的 WebSocket 不能阻塞重新监听。
+		const forceClose = setTimeout(() => {
+			for (const socket of this.webSockets.clients) socket.terminate();
+			for (const socket of this.connections) socket.destroy();
+		}, 1_000);
+		try {
+			await this.cleanupUploadedFiles(true);
+			for (const context of this.contexts.values()) {
+				if (context.idleTimer) clearTimeout(context.idleTimer);
+				if (context.reconnectTimer) clearTimeout(context.reconnectTimer);
+				this.clearPendingProgress(context);
+				for (const socket of context.sockets) socket.close(1001, "Web Gateway stopped");
+				await context.client?.close().catch(() => {});
 			}
-			this.server.close(() => resolvePromise());
-		});
-		this.listening = false;
+			this.contexts.clear();
+			await new Promise<void>((resolvePromise) => {
+				if (!this.listening) {
+					resolvePromise();
+					return;
+				}
+				this.server.close(() => resolvePromise());
+			});
+			for (const socket of this.webSockets.clients) socket.terminate();
+			this.webSockets.close();
+			this.listening = false;
+		} finally {
+			clearTimeout(forceClose);
+		}
 	}
 
 	getToken(): string {
@@ -858,6 +882,10 @@ export class WebGatewayServer {
 			(error) => this.handleRuntimeDisconnect(context, connectedClient, error),
 		)
 			.then(async (result) => {
+				if (this.closed) {
+					await result.client.close().catch(() => {});
+					throw new Error("Web Gateway 已关闭");
+				}
 				connectedClient = result.client;
 				context.client = result.client;
 				context.initial = result.initial;
@@ -1501,22 +1529,18 @@ export class WebGatewayServer {
 					undefined,
 					this.config.agentDir,
 				);
-				await stopRuntimeService(
-					this.config.runtimeEndpoint,
-					false,
-					profile,
-					undefined,
-					false,
-					this.config.agentDir,
-				);
+				if (!currentStatus.installed) {
+					await stopRuntimeService(
+						this.config.runtimeEndpoint,
+						false,
+						profile,
+						undefined,
+						false,
+						this.config.agentDir,
+					);
+				}
 				const status = currentStatus.installed
-					? await ensureRuntimeService(
-							this.config.runtimeEndpoint,
-							profile,
-							undefined,
-							false,
-							this.config.agentDir,
-						)
+					? await restartRuntimeService(this.config.runtimeEndpoint, profile, undefined, this.config.agentDir)
 					: await ensurePersistentRuntime({ ...this.config, manageRuntime: true });
 				sendJson(response, 200, { accepted: true, service: "runtime", status });
 				return;
@@ -2996,7 +3020,7 @@ export class WebGatewayServer {
 		}
 	}
 
-	private handleUpgrade(request: IncomingMessage, socket: import("node:stream").Duplex, head: Buffer): void {
+	private handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {
 		let context: BrowserContext | undefined;
 		try {
 			this.assertRequestBoundary(request, true);

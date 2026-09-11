@@ -26,6 +26,7 @@ export async function runServiceVersionTransaction(
 		options.commit(options.targetVersion);
 		return options.targetVersion ? { serviceVersion: options.targetVersion } : {};
 	} catch (error) {
+		if (error && typeof error === "object" && "code" in error && error.code === "host_busy") throw error;
 		if (!options.targetVersion || !options.previousVersion || options.targetVersion === options.previousVersion) {
 			throw error;
 		}

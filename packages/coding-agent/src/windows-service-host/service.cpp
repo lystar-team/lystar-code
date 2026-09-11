@@ -221,7 +221,7 @@ bool start_child(const ServiceConfig& config) {
         wchar_t comspec[MAX_PATH]{};
         const DWORD length = GetEnvironmentVariableW(L"ComSpec", comspec, MAX_PATH);
         application = length > 0 && length < MAX_PATH ? std::wstring(comspec, length) : L"C:\\Windows\\System32\\cmd.exe";
-        command_line = L"/d /s /c \"" + quote_windows_argument(config.program);
+        command_line = quote_windows_argument(application) + L" /d /s /c \"" + quote_windows_argument(config.program);
         if (!config.arguments.empty()) command_line += L" " + config.arguments;
         command_line += L"\"";
     } else {

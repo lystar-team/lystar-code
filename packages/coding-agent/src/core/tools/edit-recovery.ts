@@ -1,5 +1,7 @@
 import { type Edit, type EditIssue, normalizeForFuzzyMatch, normalizeToLF } from "./edit-diff.ts";
 
+const MAX_RECOVERY_LINES = 200;
+
 interface RecoveryWindow {
 	start: number;
 	end: number;
@@ -45,6 +47,53 @@ function findAnchorLocations(
 		repeated ??= { lines: found.lines, offset: anchor.offset };
 	}
 	return repeated?.lines.map((line) => ({ start: Math.max(0, line - repeated.offset), anchorLine: line + 1 })) ?? [];
+}
+
+function expandIdenticalWindows(lines: readonly string[], windows: RecoveryWindow[], maxBytes: number): string[] {
+	if (windows.length < 2) return [];
+	const lineBudget = Math.floor(MAX_RECOVERY_LINES / windows.length);
+	// 为窗口标题、代码围栏和补读说明留出预算；最终输出仍由格式化层截断。
+	const byteBudget = Math.max(0, Math.floor((maxBytes * 3) / 4 / windows.length) - 160);
+	const notes: string[] = [];
+	const duplicateGroups = (entries: RecoveryWindow[]): RecoveryWindow[][] => {
+		const groups = new Map<string, RecoveryWindow[]>();
+		for (const window of entries) {
+			const key = JSON.stringify([window.editIndexes, lines.slice(window.start, window.end)]);
+			const group = groups.get(key) ?? [];
+			group.push(window);
+			groups.set(key, group);
+		}
+		return [...groups.values()].filter((group) => group.length > 1);
+	};
+	const pending = duplicateGroups(windows);
+	while (pending.length > 0) {
+		const group = pending.pop()!;
+		// 同一窗口中的多个候选交给合并和原候选行号展示，无须重复扩展。
+		if (group.every((window) => window.start === group[0].start && window.end === group[0].end)) continue;
+		const expanded = group.map((window) => ({
+			start: Math.max(0, window.start - 1),
+			end: Math.min(lines.length, window.end + 1),
+		}));
+		if (
+			expanded.some(
+				(window) =>
+					window.end - window.start > lineBudget ||
+					Buffer.byteLength(lines.slice(window.start, window.end).join("\n")) > byteBudget,
+			)
+		) {
+			const ranges = expanded.map((window) => `read offset=${window.start + 1} limit=${window.end - window.start}`);
+			notes.push(
+				`edits[${group[0].editIndexes[0]}] 候选上下文仍相同，预算内无法区分；请补读 ${ranges.join("；")}，不要猜测目标。`,
+			);
+			continue;
+		}
+		for (let index = 0; index < group.length; index++) {
+			group[index].start = expanded[index].start;
+			group[index].end = expanded[index].end;
+		}
+		pending.push(...duplicateGroups(group));
+	}
+	return notes;
 }
 
 /** 证据只用于重建参数；推算出的行位置不能作为写入授权。 */
@@ -106,6 +155,7 @@ export function createEditRecoveryEvidence(
 		}
 	}
 
+	notes.push(...expandIdenticalWindows(lines, windows, maxBytes - Buffer.byteLength(notes.join("\n"))));
 	windows.sort((left, right) => left.start - right.start);
 	const merged: RecoveryWindow[] = [];
 	for (const window of windows) {
@@ -120,7 +170,7 @@ export function createEditRecoveryEvidence(
 	const noteText = truncateEditEvidence(notes.join("\n"), Math.max(0, Math.floor(maxBytes / 4)));
 	const output = noteText ? [noteText] : [];
 	let remainingBytes = Math.max(0, maxBytes - Buffer.byteLength(noteText) - Buffer.byteLength(truncationNote) - 2);
-	let remainingLines = 200;
+	let remainingLines = MAX_RECOVERY_LINES;
 	let truncated = noteText !== notes.join("\n");
 	let lineCount = 0;
 

@@ -40,6 +40,28 @@ describe("Web control commands", () => {
 		);
 	});
 
+	it("reports host_busy without retrying the Runtime restart or calling it a connection failure", async () => {
+		const loadWebConfig = vi.fn(async () => ({
+			host: "0.0.0.0",
+			allowedHosts: [],
+			port: 1420,
+			password: "web-password",
+		}));
+		const fetchMock = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ error: { code: "host_busy", message: "Runtime busy" } }), { status: 500 }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		await expect(runWebControlCommand(["runtime", "restart"], { gatewayModule: { loadWebConfig } })).rejects.toThrow(
+			"host_busy",
+		);
+		expect(fetchMock).toHaveBeenCalledOnce();
+		expect(fetchMock).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
+		);
+	});
+
 	it("dispatches service actions with independent service versions", async () => {
 		process.env.PI_CODING_AGENT_DIR = "/tmp/lystar-web-command-test";
 		delete process.env.LYSTAR_CLI_MODE;

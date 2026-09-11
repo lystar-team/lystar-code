@@ -158,24 +158,31 @@ async function restartWebService(
 		);
 	let lastError: Error | undefined;
 	for (const host of controlHosts(config)) {
+		let response: Response;
 		try {
-			const response = await fetch(`http://${urlHost(host)}:${config.port}/api/diagnostics/actions`, {
+			response = await fetch(`http://${urlHost(host)}:${config.port}/api/diagnostics/actions`, {
 				method: "POST",
 				headers: {
 					Authorization: `Bearer ${config.password}`,
 					"Content-Type": "application/json",
 				},
 				body: JSON.stringify({ action: `restart-${service}` }),
+				signal: AbortSignal.timeout(service === "runtime" ? 35_000 : 15_000),
 			});
-			if (response.ok) {
-				console.log(`${service === "gateway" ? "Gateway" : "Runtime"} 重启请求已发送。`);
-				return;
-			}
-			const body = (await response.text()).trim();
-			throw new Error(`Gateway 返回 HTTP ${response.status}${body ? `：${body}` : ""}`);
 		} catch (error) {
 			lastError = error instanceof Error ? error : new Error(String(error));
+			continue;
 		}
+		if (!response.ok) {
+			const body = (await response.text()).trim();
+			if (response.status === 400 && body.includes('"host_not_allowed"')) {
+				lastError = new Error(`Gateway 拒绝访问地址 ${host}：${body}`);
+				continue;
+			}
+			throw new Error(`Gateway 拒绝重启请求，HTTP ${response.status}${body ? `：${body}` : ""}`);
+		}
+		console.log(`${service === "gateway" ? "Gateway" : "Runtime"} 重启请求已发送。`);
+		return;
 	}
 	throw new Error(
 		`无法连接 Web Gateway，${service === "gateway" ? "不能重启 Gateway" : "不能重启 Runtime"}：${lastError?.message ?? "未知错误"}`,
@@ -259,7 +266,8 @@ export async function reconcileWebServicesAfterUpdate(): Promise<void> {
 		join(agentDir, "web", "service-state.json"),
 	];
 	if (!candidates.some((path) => existsSync(path))) return;
-	await runWebServiceCommand(["reconcile", "--upgrade", "--non-interactive"]);
+	const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+	await runWebServiceCommand(["reconcile", "--upgrade", ...(interactive ? [] : ["--non-interactive"])]);
 }
 
 export async function runWebControlCommand(

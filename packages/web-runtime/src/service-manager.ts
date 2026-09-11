@@ -69,7 +69,7 @@ function runElevatedWindows(command: string, args: string[]): CommandResult {
 	const scriptPath = join(tmpdir(), `lystar-web-service-${process.pid}-${randomUUID()}.ps1`);
 	const script = [
 		"$ErrorActionPreference = 'Stop'",
-		`$arguments = @(${args.map(powershellString).join(",")})`,
+		`$arguments = ${powershellString(args.map(commandLineArgument).join(" "))}`,
 		`$process = Start-Process -FilePath ${powershellString(command)} -ArgumentList $arguments -Verb RunAs -Wait -PassThru`,
 		"exit $process.ExitCode",
 		"",
@@ -95,7 +95,17 @@ function runWindowsTaskCommand(args: string[]): CommandResult {
 }
 
 function runAdmin(command: string, args: string[], interactive: boolean): CommandResult {
-	if (interactive) return run(command, args);
+	if (interactive) {
+		const authorization = spawnSync(command, ["-v"], { stdio: "inherit" });
+		if (authorization.error || authorization.status !== 0) {
+			return {
+				ok: false,
+				status: authorization.status,
+				stdout: "",
+				stderr: authorization.error?.message ?? "管理员授权失败",
+			};
+		}
+	}
 	return run(command, ["-n", ...args]);
 }
 
@@ -150,16 +160,8 @@ function serviceEnvironment(spec: WebServiceSpec): Record<string, string> {
 }
 
 function systemdEscape(value: string): string {
+	value = value.replaceAll("%", "%%");
 	return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("\n", "\\n")}"`;
-}
-
-function systemdPath(value: string): string {
-	return value
-		.replaceAll("\\", "\\\\")
-		.replaceAll('"', '\\"')
-		.replaceAll("\n", "\\n")
-		.replaceAll("\t", "\\t")
-		.replaceAll(" ", "\\x20");
 }
 
 function commandLineArgument(value: string): string {
@@ -214,8 +216,8 @@ function makeSystemdUnit(spec: WebServiceSpec): string {
 		"",
 		"[Service]",
 		"Type=simple",
-		`WorkingDirectory=${systemdPath(spec.invocation.cwd)}`,
-		`ExecStart=${[spec.invocation.program, ...spec.invocation.args].map(systemdEscape).join(" ")}`,
+		`WorkingDirectory=${spec.invocation.cwd.replaceAll("%", "%%")}`,
+		`ExecStart=${[spec.invocation.program, ...spec.invocation.args].map((value) => systemdEscape(value.replaceAll("$", "$$"))).join(" ")}`,
 		environment,
 		"Restart=on-failure",
 		"RestartSec=2",
@@ -274,19 +276,25 @@ function makeWindowsServiceConfig(spec: WebServiceSpec): string {
 }
 
 function windowsServiceHostPath(spec: WebServiceSpec): string {
-	const stableHost = join(spec.agentDir, "web", "services", "lystar-web-service.exe");
+	const version = spec.environment?.LYSTAR_WEB_SERVICE_VERSION;
+	const stableHost = join(
+		spec.agentDir,
+		"web",
+		"services",
+		version ? `lystar-web-service-${version}.exe` : "lystar-web-service.exe",
+	);
 	if (existsSync(stableHost)) return stableHost;
 	const launcherDirectory = dirname(spec.invocation.program);
 	let currentVersionHost: string | undefined;
 	try {
-		const currentVersion = readFileSync(join(launcherDirectory, "..", "current"), "utf8").trim();
+		const currentVersion = version ?? readFileSync(join(launcherDirectory, "..", "current"), "utf8").trim();
 		if (currentVersion)
 			currentVersionHost = join(launcherDirectory, "..", "versions", currentVersion, "lystar-web-service.exe");
 	} catch {}
 	const candidates = [
+		...(currentVersionHost ? [currentVersionHost] : []),
 		join(launcherDirectory, "lystar-web-service.exe"),
 		join(dirname(process.execPath), "lystar-web-service.exe"),
-		...(currentVersionHost ? [currentVersionHost] : []),
 	];
 	const source = candidates.find((candidate) => existsSync(candidate));
 	if (!source) {
@@ -388,7 +396,7 @@ export function getWebServiceStatus(spec: WebServiceSpec): WebServiceStatus {
 			...(spec.profile ? { profile: spec.profile } : {}),
 			serviceName,
 			installed: existsSync(path),
-			running: loaded,
+			running: loaded && pid !== undefined,
 			persistent: loaded,
 			manager: existsSync(path) ? "launch-daemon" : "detached",
 			...(pid !== undefined ? { pid } : {}),
@@ -463,6 +471,18 @@ function installMac(spec: WebServiceSpec, interactiveAdmin: boolean): void {
 	if (!bootstrap.ok) throw new Error(`无法启动 macOS LaunchDaemon：${bootstrap.stderr || bootstrap.stdout}`);
 }
 
+function waitForWindowsServiceStopped(name: string): void {
+	const deadline = Date.now() + 15_000;
+	const wait = new Int32Array(new SharedArrayBuffer(4));
+	while (Date.now() < deadline) {
+		const result = run("sc.exe", ["query", name]);
+		if (result.ok && /STATE\s*:\s*1\b|STOPPED/iu.test(result.stdout)) return;
+		if (!result.ok) throw new Error(`无法查询 Windows Service：${result.stderr || result.stdout}`);
+		Atomics.wait(wait, 0, 0, 100);
+	}
+	throw new Error(`Windows Service 停止超时：${name}`);
+}
+
 function installWindows(spec: WebServiceSpec): void {
 	const name = webServiceWindowsName(spec.kind, spec.profile);
 	const configPath = windowsServiceConfigPath(spec);
@@ -480,9 +500,10 @@ function installWindows(spec: WebServiceSpec): void {
 	const existing = run("sc.exe", ["query", name]).ok;
 	if (existing) {
 		const stop = runWindowsServiceCommand(["stop", name]);
-		if (!stop.ok && !/not started|未启动/iu.test(`${stop.stdout}\n${stop.stderr}`)) {
+		if (!stop.ok && !/1062|not started|未启动/iu.test(`${stop.stdout}\n${stop.stderr}`)) {
 			throw new Error(`无法停止旧 Windows Service：${stop.stderr || stop.stdout}`);
 		}
+		waitForWindowsServiceStopped(name);
 	}
 	const configure = runWindowsServiceCommand(
 		existing
@@ -534,6 +555,8 @@ export function installWebService(
 	spec: WebServiceSpec,
 	options: { interactiveAdmin?: boolean } = {},
 ): WebServiceStatus {
+	mkdirSync(spec.invocation.cwd, { recursive: true, mode: 0o700 });
+	mkdirSync(dirname(defaultLogPath(spec)), { recursive: true, mode: 0o700 });
 	if (process.platform === "linux") installLinux(spec);
 	else if (process.platform === "darwin") installMac(spec, options.interactiveAdmin ?? false);
 	else if (process.platform === "win32") installWindows(spec);
@@ -549,9 +572,11 @@ export function ensureWebService(spec: WebServiceSpec, options: { interactiveAdm
 		const result = run("systemctl", ["--user", "start", webServiceUnitName(spec.kind, spec.profile)]);
 		if (!result.ok) throw new Error(`无法启动 Web Service：${result.stderr || result.stdout}`);
 	} else if (process.platform === "darwin") {
+		const target = `system/${launchDaemonLabel(spec.kind, spec.profile)}`;
+		const loaded = run("launchctl", ["print", target]).ok;
 		const result = runAdmin(
 			"sudo",
-			["launchctl", "bootstrap", "system", launchDaemonPath(spec)],
+			loaded ? ["launchctl", "kickstart", target] : ["launchctl", "bootstrap", "system", launchDaemonPath(spec)],
 			options.interactiveAdmin ?? false,
 		);
 		if (!result.ok) throw new Error(`无法启动 macOS LaunchDaemon：${result.stderr || result.stdout}`);
@@ -600,8 +625,9 @@ export function stopWebService(
 			throw new Error(`无法停止 macOS LaunchDaemon：${result.stderr || result.stdout}`);
 	} else {
 		const result = runWindowsServiceCommand(["stop", webServiceWindowsName(spec.kind, spec.profile)]);
-		if (!result.ok && status.running && !/not started|未启动/iu.test(`${result.stdout}\n${result.stderr}`))
+		if (!result.ok && status.running && !/1062|not started|未启动/iu.test(`${result.stdout}\n${result.stderr}`))
 			throw new Error(`无法停止 Windows Service：${result.stderr || result.stdout}`);
+		waitForWindowsServiceStopped(webServiceWindowsName(spec.kind, spec.profile));
 	}
 	return getWebServiceStatus(spec);
 }
@@ -614,6 +640,14 @@ export function removeWebService(spec: WebServiceSpec, options: { interactiveAdm
 		return;
 	}
 	if (process.platform === "darwin") {
+		const targetPath = launchDaemonPath(spec);
+		if (
+			!existsSync(targetPath) &&
+			!run("launchctl", ["print", `system/${launchDaemonLabel(spec.kind, spec.profile)}`]).ok
+		) {
+			rmSync(launchDaemonStagingPath(spec), { force: true });
+			return;
+		}
 		const bootout = runAdmin(
 			"sudo",
 			["launchctl", "bootout", `system/${launchDaemonLabel(spec.kind, spec.profile)}`],
@@ -625,7 +659,6 @@ export function removeWebService(spec: WebServiceSpec, options: { interactiveAdm
 		) {
 			throw new Error(`无法停止 macOS LaunchDaemon：${bootout.stderr || bootout.stdout}`);
 		}
-		const targetPath = launchDaemonPath(spec);
 		if (existsSync(targetPath)) {
 			const remove = runAdmin("sudo", ["rm", "-f", targetPath], options.interactiveAdmin ?? false);
 			if (!remove.ok) throw new Error(`无法删除 macOS LaunchDaemon：${remove.stderr || remove.stdout}`);

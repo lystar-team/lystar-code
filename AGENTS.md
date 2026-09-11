@@ -119,6 +119,25 @@ Attribution:
 - Internal (from issues): `Fixed foo bar ([#123](https://github.com/earendil-works/pi-mono/issues/123))`
 - External contributions: `Added feature X ([#456](https://github.com/earendil-works/pi-mono/pull/456) by [@username](https://github.com/username))`
 
+## LYStar Code 发布仓库
+
+- `origin`（`lystar-team/lystar-code`）是 LYStar Code 的提交、推送、tag 和 Release 仓库。
+- `upstream`（`earendil-works/pi`）只用于同步上游代码，不用于查询或触发 LYStar Code 发布。
+- 所有 GitHub CLI 命令必须显式指定 `--repo lystar-team/lystar-code`，禁止依赖当前仓库自动识别。
+- LYStar Code 发布使用 `.github/workflows/release.yml`：推送 `main` 后创建并推送产品版本 tag，workflow 会完成五平台构建、候选校验和 GitHub Release。
+
+```bash
+version="0.85.1-lystar.N"
+tag="v${version}"
+git tag -a "$tag" HEAD -m "LYStar Code $tag" -m "本版发布。"
+git push origin "$tag"
+run_id="$(gh run list --repo lystar-team/lystar-code --workflow release.yml --event push --limit 1 --json databaseId,headBranch --jq ".[] | select(.headBranch == \"$tag\") | .databaseId" | head -n 1)"
+gh run watch "$run_id" --repo lystar-team/lystar-code --exit-status
+gh release view "$tag" --repo lystar-team/lystar-code
+```
+
+- `gh workflow run release.yml` 不是首选入口；当前 token 可能没有 `workflow` dispatch 权限。若必须手动触发，也必须带 `--repo lystar-team/lystar-code`。
+
 ## Releasing
 
 **Lockstep versioning**: all packages share one version; every release updates all together. `patch` = fixes + additions, `minor` = breaking changes. No major releases.

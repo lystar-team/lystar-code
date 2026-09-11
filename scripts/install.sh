@@ -9,6 +9,9 @@ ACTION="install"
 UPDATE_PATH=true
 DOWNLOADER=""
 tmp=""
+activated_version=""
+# 安装检查必须读取 current，不能继承后台服务固定的旧版本。
+unset LYSTAR_WEB_SERVICE_VERSION
 
 web_agent_dir="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
 
@@ -25,7 +28,7 @@ reconcile_web_services() {
         print_warning "Web 服务已使用，但没有找到可执行的 lc：$launcher"
         return 1
     }
-    print_info "正在把 Web Gateway 和 Web Runtime 服务切换到 $target_version……"
+    print_info "正在把 Web Gateway 和 Web Runtime 服务切换到 ${target_version}……"
     LYSTAR_WEB_SERVICE_TARGET_VERSION="$target_version" \
         LYSTAR_WEB_PREVIOUS_SERVICE_VERSION="$previous_version" \
         "$launcher" web service reconcile --upgrade --non-interactive
@@ -40,7 +43,7 @@ print_usage() {
         '  install.sh --rollback              回退到上一个版本' \
         '  install.sh --uninstall             卸载 LYStar Code' \
         '  install.sh --help                 查看帮助'
-    printf '\n%s\n' '安装失败时不会切换当前版本；用户数据目录 ~/.pi/agent 不会删除。'
+    printf '\n%s\n' '版本切换前失败会保留已有安装；切换后失败会报告当前版本。用户数据目录 ~/.pi/agent 不会删除。'
 }
 
 print_banner() {
@@ -67,7 +70,11 @@ print_warning() {
 
 die() {
     printf '\n[失败] %s\n' "$1" >&2
-    printf '  当前版本没有切换，已有安装仍可使用。\n' >&2
+    if [[ -n "$activated_version" ]]; then
+        printf '  当前应用版本为 %s；操作未完成，请处理错误后重试。\n' "$activated_version" >&2
+    else
+        printf '  当前版本没有切换，已有安装仍可使用。\n' >&2
+    fi
     exit 1
 }
 
@@ -81,19 +88,16 @@ die_after_activation() {
 handle_error() {
     local status=$?
     trap - ERR
-    printf '\n============================================================\n' >&2
-    printf '  操作没有完成\n' >&2
-    printf '============================================================\n' >&2
-    printf '  原因：安装器执行失败（退出码 %s）。\n' "$status" >&2
-    printf '  当前版本没有切换，已有安装仍可使用。\n' >&2
-    printf '  请根据上面的错误信息处理后重新运行安装器。\n' >&2
-    exit "$status"
+    die "安装器执行失败（退出码 ${status}）"
 }
 
 cleanup() {
+    local status=$?
+    trap - EXIT
     if [[ -n "$tmp" ]]; then
         rm -rf "$tmp" || true
     fi
+    exit "$status"
 }
 
 trap handle_error ERR
@@ -149,16 +153,16 @@ download() {
     local output="$2"
     local name="${output##*/}"
     local attempt
-    print_info "正在下载 $name（进度条包含实时速度）……"
+    print_info "正在下载 ${name}（进度条包含实时速度）……"
     for attempt in 1 2 3; do
         rm -f "$output"
         if [[ "$DOWNLOADER" == "curl" ]]; then
             if curl -fL --connect-timeout 10 "$url" -o "$output" && [[ -s "$output" ]]; then
-                print_success "已下载 $name。"
+                print_success "已下载 ${name}。"
                 return
             fi
         elif wget --progress=bar:force --tries=1 --timeout=10 -O "$output" "$url" && [[ -s "$output" ]]; then
-            print_success "已下载 $name。"
+            print_success "已下载 ${name}。"
             return
         fi
         if [[ "$attempt" -lt 3 ]]; then
@@ -172,7 +176,7 @@ download() {
 ensure_path() {
     case ":${PATH:-}:" in
         *":$BIN_DIR:"*)
-            print_info "当前 PATH 已包含 $BIN_DIR。"
+            print_info "当前 PATH 已包含 ${BIN_DIR}。"
             return
             ;;
     esac
@@ -194,7 +198,7 @@ ensure_path() {
     local path_line='export PATH="$HOME/.local/bin:$PATH"'
     if [[ ! -f "$profile" ]] || ! grep -Fqx "$path_line" "$profile"; then
         printf '\n%s\n' "$path_line" >> "$profile"
-        print_success "已把 $BIN_DIR 写入 $profile。"
+        print_success "已把 $BIN_DIR 写入 ${profile}。"
     else
         print_info "$profile 已包含 PATH 配置。"
     fi
@@ -254,6 +258,15 @@ current_version="${current_target##*/}"
 if [[ -z "$current_version" ]]; then current_version='未安装'; fi
 print_info "当前版本：$current_version"
 
+if [[ "$(uname -s)" == "Darwin" ]] && web_usage_exists; then
+    print_info 'macOS Web 后台服务使用 LaunchDaemon，需要管理员授权。'
+    if [[ -t 0 && -t 1 ]]; then
+        sudo -v || die '管理员授权失败，未修改安装和 Web 服务。'
+    else
+        sudo -n true || die 'Web 服务需要管理员授权。请在终端执行 sudo -v，再运行安装器或 lc update。'
+    fi
+fi
+
 if [[ "$ACTION" == "uninstall" ]]; then
     print_step 1 1 '删除 LYStar Code 安装文件'
     print_info "将删除安装目录：$INSTALL_ROOT"
@@ -274,8 +287,10 @@ if [[ "$ACTION" == "rollback" ]]; then
     fi
     current_target="$(readlink "$INSTALL_ROOT/current" 2>/dev/null || true)"
     previous_target="$(readlink "$INSTALL_ROOT/previous")"
+    [[ -x "$INSTALL_ROOT/$previous_target/lc" || -x "$INSTALL_ROOT/$previous_target/la" ]] || die '回退版本缺少可执行文件，未切换版本。'
     print_info "目标版本：${previous_target##*/}"
     replace_symlink "$previous_target" "$INSTALL_ROOT/current"
+    activated_version="${previous_target##*/}"
     if [[ -n "$current_target" ]]; then
         replace_symlink "$current_target" "$INSTALL_ROOT/previous"
     fi
@@ -286,9 +301,9 @@ if [[ "$ACTION" == "rollback" ]]; then
     target_version="${previous_target##*/}"
     current_version="${current_target##*/}"
     if ! reconcile_web_services "$target_version" "$current_version" "$rollback_launcher"; then
-        die_after_activation "LYStar Code 已回退到 $target_version，但 Web 服务切换失败。服务编排器已尝试恢复上一个可用服务版本。请运行 lc web service status 查看结果。" "$target_version"
+        die_after_activation "LYStar Code 已回退到 ${target_version}，但 Web 服务切换失败。请运行 lc web service status 查看结果。" "$target_version"
     fi
-    print_success "已回退到 $target_version。"
+    print_success "已回退到 ${target_version}。"
     exit 0
 fi
 
@@ -331,7 +346,7 @@ if [[ -z "$VERSION" ]]; then
 fi
 
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-lystar\.[0-9]+$ ]] || die "无效版本：$VERSION"
-print_success "目标版本：$VERSION。"
+print_success "目标版本：${VERSION}。"
 
 asset="lystar-agent-v${VERSION}-${os}-${arch}.tar.gz"
 base_url="https://github.com/$REPOSITORY/releases/download/v${VERSION}"
@@ -340,7 +355,7 @@ print_step 2 6 '下载并校验发行包'
 download "$base_url/$asset" "$tmp/$asset"
 download "$base_url/SHA256SUMS" "$tmp/SHA256SUMS"
 expected="$(awk -v file="$asset" '$2 == file || $2 == "*" file { print $1 }' "$tmp/SHA256SUMS")"
-[[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || die "SHA256SUMS 中缺少 $asset。"
+[[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || die "SHA256SUMS 中缺少 ${asset}。"
 
 print_info '正在校验发行包完整性（SHA-256）……'
 if command -v sha256sum >/dev/null 2>&1; then
@@ -359,8 +374,8 @@ tar -xzf "$tmp/$asset" -C "$tmp"
 [[ -x "$tmp/lystar-agent/lc" ]] || die '发行包缺少 lc。'
 [[ -x "$tmp/lystar-agent/lystar" ]] || die '发行包缺少 lystar。'
 CandidateVersion="$("$tmp/lystar-agent/lc" --version)"
-[[ "$CandidateVersion" == "$VERSION" ]] || die "候选版本校验失败：预期 $VERSION，实际 $CandidateVersion。"
-print_success "发行包检查通过，候选版本为 $CandidateVersion。"
+[[ "$CandidateVersion" == "$VERSION" ]] || die "候选版本校验失败：预期 ${VERSION}，实际 ${CandidateVersion}。"
+print_success "发行包检查通过，候选版本为 ${CandidateVersion}。"
 
 print_step 4 6 '写入版本和命令文件'
 mkdir -p "$INSTALL_ROOT/versions" "$BIN_DIR"
@@ -369,6 +384,8 @@ if [[ ! -d "$target" ]]; then
     mv "$tmp/lystar-agent" "$target.next"
     mv "$target.next" "$target"
 else
+    existing_version="$("$target/lc" --version)" || die "已有版本目录损坏：$target"
+    [[ "$existing_version" == "$VERSION" ]] || die "已有版本目录校验失败：$target"
     print_info "版本目录已存在，复用：$target"
 fi
 
@@ -377,7 +394,8 @@ if [[ -n "$current_target" && "$current_target" != "versions/$VERSION" ]]; then
     replace_symlink "$current_target" "$INSTALL_ROOT/previous"
 fi
 replace_symlink "versions/$VERSION" "$INSTALL_ROOT/current"
-print_success "当前版本已切换到 $VERSION。"
+activated_version="$VERSION"
+print_success "当前版本已切换到 ${VERSION}。"
 
 print_step 5 6 '创建命令入口并处理 PATH'
 write_launcher 'lc'
@@ -388,14 +406,14 @@ ensure_path
 
 print_step 6 6 '检查安装结果'
 installed_version="$(HOME="$HOME" "$BIN_DIR/lc" --version)"
-[[ "$installed_version" == "$VERSION" ]] || die "安装后的 lc 版本校验失败：预期 $VERSION，实际 $installed_version。"
+[[ "$installed_version" == "$VERSION" ]] || die "安装后的 lc 版本校验失败：预期 ${VERSION}，实际 ${installed_version}。"
 alias_version="$(HOME="$HOME" "$BIN_DIR/lystar" --version)"
-[[ "$alias_version" == "$VERSION" ]] || die "安装后的 lystar 版本校验失败：预期 $VERSION，实际 $alias_version。"
-print_success "安装结果检查通过：lc 和 lystar 均为 $VERSION。"
+[[ "$alias_version" == "$VERSION" ]] || die "安装后的 lystar 版本校验失败：预期 ${VERSION}，实际 ${alias_version}。"
+print_success "安装结果检查通过：lc 和 lystar 均为 ${VERSION}。"
 print_info "安装位置：$target"
 previous_service_version="${current_target##*/}"
 if ! reconcile_web_services "$VERSION" "$previous_service_version"; then
-    die_after_activation "LYStar Code $VERSION 已安装，但 Web 服务切换失败。服务编排器已尝试恢复上一个可用服务版本。请运行 lc web service status 查看结果。" "$VERSION"
+    die_after_activation "LYStar Code $VERSION 已安装，但 Web 服务切换失败。请运行 lc web service status 查看结果。" "$VERSION"
 fi
 print_info '新开的终端可直接运行：lc、lystar。'
 print_info '首次使用：进入项目目录后执行 /login。'

@@ -59,8 +59,13 @@ export async function runWebRuntimeCli(args: readonly string[] = process.argv.sl
 		await disposeService();
 	};
 	const onSignal = () => void shutdown();
+	const onRestart = () => {
+		process.exitCode = 1;
+		void shutdown();
+	};
 	process.once("SIGTERM", onSignal);
 	process.once("SIGINT", onSignal);
+	if (process.platform !== "win32") process.once("SIGUSR2", onRestart);
 
 	function print(value: unknown): void {
 		process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -133,6 +138,7 @@ export async function runWebRuntimeCli(args: readonly string[] = process.argv.sl
 	} finally {
 		process.off("SIGTERM", onSignal);
 		process.off("SIGINT", onSignal);
+		if (process.platform !== "win32") process.off("SIGUSR2", onRestart);
 		clearRuntimePid(endpoint);
 		await closeServer();
 		await disposeService();

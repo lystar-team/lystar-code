@@ -12,6 +12,8 @@
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "Continue"
+$ActivatedVersion = ""
+Remove-Item Env:LYSTAR_WEB_SERVICE_VERSION -ErrorAction SilentlyContinue
 $Repository = "__LYSTAR_RELEASE_REPOSITORY__"
 $InstallRoot = Join-Path $env:LOCALAPPDATA "LYStarAgent"
 $VersionsDir = Join-Path $InstallRoot "versions"
@@ -56,7 +58,12 @@ trap {
     Write-Host "============================================================" -ForegroundColor Red
     Write-Host "  原因：$($_.Exception.Message)" -ForegroundColor Red
     Write-Host ""
-    Write-InstallerWarning "当前版本没有切换，已有安装仍可使用。"
+    if ($ActivatedVersion) {
+        Write-InstallerWarning "当前应用版本为 ${ActivatedVersion}；操作未完成，请处理错误后重试。"
+    }
+    else {
+        Write-InstallerWarning "当前版本没有切换，已有安装仍可使用。"
+    }
     Write-InstallerInfo "可以根据上面的原因处理后重新运行安装器。"
     exit 1
 }
@@ -101,6 +108,7 @@ function Invoke-Download([string]$Uri, [string]$OutFile, [long]$ExpectedBytes = 
         $Response = $null
         $ResponseStream = $null
         $FileStream = $null
+        $ReadTimeout = $null
         try {
             Remove-Item -Force -ErrorAction SilentlyContinue $OutFile
             Add-Type -AssemblyName System.Net.Http
@@ -116,7 +124,11 @@ function Invoke-Download([string]$Uri, [string]$OutFile, [long]$ExpectedBytes = 
             $ContentLength = if ($ExpectedBytes -gt 0) { $ExpectedBytes } elseif ($Response.Content.Headers.ContentLength) { [long]$Response.Content.Headers.ContentLength } else { 0L }
             $Stopwatch = [Diagnostics.Stopwatch]::StartNew()
             $LastProgress = -1000L
-            while (($Read = $ResponseStream.Read($Buffer, 0, $Buffer.Length)) -gt 0) {
+            $ReadTimeout = New-Object System.Threading.CancellationTokenSource
+            while ($true) {
+                $ReadTimeout.CancelAfter(60000)
+                $Read = $ResponseStream.ReadAsync($Buffer, 0, $Buffer.Length, $ReadTimeout.Token).GetAwaiter().GetResult()
+                if ($Read -eq 0) { break }
                 $FileStream.Write($Buffer, 0, $Read)
                 $TotalBytes += $Read
                 if ($Stopwatch.ElapsedMilliseconds -ge ($LastProgress + 100)) {
@@ -137,14 +149,15 @@ function Invoke-Download([string]$Uri, [string]$OutFile, [long]$ExpectedBytes = 
             Write-Progress -Activity "下载 $Name" -Completed
             $ActualBytes = (Get-Item $OutFile).Length
             if ($ActualBytes -le 0) { throw "下载结果为空。" }
-            if ($ExpectedBytes -gt 0 -and $ActualBytes -ne $ExpectedBytes) {
-                throw "文件大小不符：预期 $(Format-Megabytes $ExpectedBytes)，实际 $(Format-Megabytes $ActualBytes)。"
+            if ($ContentLength -gt 0 -and $ActualBytes -ne $ContentLength) {
+                throw "文件大小不符：预期 $(Format-Megabytes $ContentLength)，实际 $(Format-Megabytes $ActualBytes)。"
             }
             Write-InstallerSuccess "已下载 $Name（$(Format-Megabytes $ActualBytes)）。"
             return
         }
         catch {
             Write-Progress -Activity "下载 $Name" -Completed
+            if ($FileStream) { $FileStream.Dispose(); $FileStream = $null }
             Remove-Item -Force -ErrorAction SilentlyContinue $OutFile
             if ($Attempt -eq 3) {
                 throw "下载失败：$Uri`n$($_.Exception.Message)"
@@ -157,6 +170,7 @@ function Invoke-Download([string]$Uri, [string]$OutFile, [long]$ExpectedBytes = 
             if ($ResponseStream) { $ResponseStream.Dispose() }
             if ($Response) { $Response.Dispose() }
             if ($Client) { $Client.Dispose() }
+            if ($ReadTimeout) { $ReadTimeout.Dispose() }
         }
     }
 }
@@ -325,7 +339,13 @@ if ($Rollback) {
     $Previous = (Get-Content -Raw $PreviousFile).Trim()
     if ($Previous -notmatch '^\d+\.\d+\.\d+-lystar\.\d+$') { throw "previous 版本指针无效。" }
     $OldCurrent = if (Test-Path $CurrentFile) { (Get-Content -Raw $CurrentFile).Trim() } else { "" }
+    $PreviousExecutable = Join-Path $InstallRoot "versions\$Previous\lc.exe"
+    if (!(Test-Path $PreviousExecutable)) { $PreviousExecutable = Join-Path $InstallRoot "versions\$Previous\la.exe" }
+    if (!(Test-Path $PreviousExecutable)) { throw "回退版本缺少可执行文件，未切换版本。" }
+    $PreviousCheck = (& $PreviousExecutable --version | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $PreviousCheck -ne $Previous) { throw "回退版本校验失败，未切换版本。" }
     Set-AtomicText $CurrentFile $Previous
+    $ActivatedVersion = $Previous
     if ($OldCurrent) { Set-AtomicText $PreviousFile $OldCurrent }
     $RollbackLauncher = Join-Path $InstallRoot "versions\$OldCurrent\lc.exe"
     if (!(Test-Path $RollbackLauncher)) { $RollbackLauncher = "" }
@@ -333,7 +353,7 @@ if ($Rollback) {
         Invoke-WebServiceReconcile $Previous $OldCurrent $RollbackLauncher
     }
     catch {
-        throw "LYStar Code 已回退到 $Previous，但 Web 服务切换失败。应用版本不会因 Web 服务错误回退。服务编排器已尝试恢复上一个可用服务版本。请运行 lc web service status 查看结果。$($_.Exception.Message)"
+        throw "LYStar Code 已回退到 $Previous，但 Web 服务切换失败。应用版本不会因 Web 服务错误回退。请运行 lc web service status 查看结果。$($_.Exception.Message)"
     }
     Write-InstallerSuccess "已回退到 $Previous。"
     exit 0
@@ -452,14 +472,20 @@ try {
     New-Item -ItemType Directory -Force $VersionsDir, $BinDir | Out-Null
     $Target = Join-Path $VersionsDir $Version
     if (!(Test-Path $Target)) { Move-Item $Bundle $Target }
+    else {
+        $ExistingVersion = (& (Join-Path $Target "lc.exe") --version | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or $ExistingVersion -ne $Version) { throw "已有版本目录校验失败：$Target" }
+    }
 
     $Current = if (Test-Path $CurrentFile) { (Get-Content -Raw $CurrentFile).Trim() } else { "" }
     if ($Current -and $Current -ne $Version) { Set-AtomicText $PreviousFile $Current }
     Set-AtomicText $CurrentFile $Version
+    $ActivatedVersion = $Version
     Write-InstallerSuccess "版本指针已切换到 $Version。"
 
     $Launcher = @'
 @echo off
+setlocal
 if defined LYSTAR_WEB_SERVICE_VERSION (
     set "LYSTAR_VERSION=%LYSTAR_WEB_SERVICE_VERSION%"
 ) else (
@@ -468,6 +494,7 @@ if defined LYSTAR_WEB_SERVICE_VERSION (
 set "LYSTAR_EXECUTABLE=%~dp0..\versions\%LYSTAR_VERSION%\lc.exe"
 if not exist "%LYSTAR_EXECUTABLE%" set "LYSTAR_EXECUTABLE=%~dp0..\versions\%LYSTAR_VERSION%\la.exe"
 "%LYSTAR_EXECUTABLE%" %*
+exit /b %errorlevel%
 '@
     [IO.File]::WriteAllText((Join-Path $BinDir "lc.cmd"), $Launcher, [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText((Join-Path $BinDir "lystar.cmd"), $Launcher, [Text.UTF8Encoding]::new($false))
@@ -509,7 +536,7 @@ if not exist "%LYSTAR_EXECUTABLE%" set "LYSTAR_EXECUTABLE=%~dp0..\versions\%LYST
         Invoke-WebServiceReconcile $Version $Current
     }
     catch {
-        throw "LYStar Code $Version 已安装，但 Web 服务切换失败。应用版本不会因 Web 服务错误回退。服务编排器已尝试恢复上一个可用服务版本。请运行 lc web service status 查看结果。$($_.Exception.Message)"
+        throw "LYStar Code $Version 已安装，但 Web 服务切换失败。应用版本不会因 Web 服务错误回退。请运行 lc web service status 查看结果。$($_.Exception.Message)"
     }
 
     Write-InstallerSuccess "LYStar Code $Version 已安装到 $Target。"
@@ -520,3 +547,4 @@ if not exist "%LYSTAR_EXECUTABLE%" set "LYSTAR_EXECUTABLE=%~dp0..\versions\%LYST
 finally {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $Temp
 }
+exit 0

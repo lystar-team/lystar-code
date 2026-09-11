@@ -55,7 +55,7 @@ describe("Web service specifications", () => {
 		});
 	});
 
-	it("writes an absolute systemd WorkingDirectory without quoting the path", () => {
+	it.skipIf(process.platform !== "linux")("writes an absolute systemd WorkingDirectory with literal spaces", () => {
 		const home = mkdtempSync(join(tmpdir(), "lystar-service-manager-home-"));
 		const bin = join(home, "bin");
 		mkdirSync(bin);
@@ -66,7 +66,7 @@ describe("Web service specifications", () => {
 		const originalPath = process.env.PATH;
 		process.env.HOME = home;
 		process.env.PATH = `${bin}:${originalPath ?? ""}`;
-		const cwd = join(home, "agent with space");
+		const cwd = join(home, "agent with space %n");
 		const spec: WebServiceSpec = {
 			kind: "runtime",
 			agentDir: join(home, "agent"),
@@ -75,7 +75,8 @@ describe("Web service specifications", () => {
 		try {
 			const status = installWebService(spec);
 			const unit = readFileSync(join(home, ".config", "systemd", "user", "lystar-web-runtime.service"), "utf8");
-			expect(unit).toContain(`WorkingDirectory=${cwd.replaceAll(" ", "\\x20")}`);
+			expect(unit).toContain(`WorkingDirectory=${cwd.replaceAll("%", "%%")}`);
+			expect(unit).not.toContain("\\x20");
 			expect(unit).not.toContain(`WorkingDirectory="${cwd}"`);
 			expect(status.manager).toBe("systemd-user");
 		} finally {

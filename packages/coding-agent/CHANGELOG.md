@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.85.1-lystar.6] - 2026-09-11
+
+### Fixed
+
+- 修复 macOS Bash 3.2 在中文标点相邻变量上的解析错误，避免安装器更新后误报成功。
+- 修复 Unix、PowerShell 安装器和更新命令的版本核验、失败状态和下载超时处理。
+- 修复 Linux systemd、macOS LaunchDaemon、Windows Service 的跨平台服务安装、更新、授权、停止和重启链路。
+- 修复 Gateway 关闭连接阻塞端口恢复，以及 Runtime 忙碌时服务重装绕过任务保护的问题。
+- 修复 Windows Service Host 的命令行转义和版本化宿主切换。
+
 ## [0.85.1-lystar.5] - 2026-09-11
 
 ### Changed

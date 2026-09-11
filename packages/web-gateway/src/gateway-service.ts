@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+	assertRuntimeIdle,
 	createRuntimeServiceSpec,
 	defaultRuntimeEndpoint,
 	ensureRuntimeService,
@@ -247,14 +248,22 @@ async function waitForGatewayExit(agentDir: string, timeoutMs = 10_000): Promise
 }
 
 async function waitForGatewayReady(config: WebGatewayConfig, timeoutMs = 10_000): Promise<void> {
-	const host = config.host === "0.0.0.0" ? "127.0.0.1" : config.host === "::" ? "[::1]" : config.host;
+	const address = config.host === "0.0.0.0" ? "127.0.0.1" : config.host === "::" ? "::1" : config.host;
+	const host = address.includes(":") && !address.startsWith("[") ? `[${address}]` : address;
 	const deadline = Date.now() + timeoutMs;
 	let lastError = "";
 	while (Date.now() < deadline) {
 		try {
-			const response = await fetch(`http://${host}:${config.port}/healthz`);
-			if (response.ok) return;
-			lastError = `HTTP ${response.status}`;
+			const response = await fetch(`http://${host}:${config.port}/healthz`, {
+				signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+			});
+			if (response.ok) {
+				const health = (await response.json()) as { ok?: boolean; host?: string };
+				if (health.ok === true && health.host === "connected") return;
+				lastError = "Gateway 尚未连接 Runtime";
+			} else {
+				lastError = `HTTP ${response.status}`;
+			}
 		} catch (error) {
 			lastError = error instanceof Error ? error.message : String(error);
 		}
@@ -317,11 +326,19 @@ async function applyWebServices(
 		runtimeInvocation,
 		config.agentDir,
 	);
-	if (!gatewayStatus.installed && gatewayStatus.manager === "detached") await stopDetachedGateway(config.agentDir);
+	if (reinstall) {
+		await assertRuntimeIdle(config.runtimeEndpoint);
+		// 先停止接收新请求，避免旧 Gateway 在版本切换期间拉起旧 Runtime。
+		stopWebService(gateway, false, {
+			detachedPid: readGatewayPid(config.agentDir),
+			interactiveAdmin: options.interactiveAdmin ?? false,
+		});
+		await waitForGatewayExit(config.agentDir);
+	}
 	if (!runtimeStatus.installed && (runtimeStatus.manager === "detached" || runtimeStatus.reachable)) {
 		await stopRuntimeService(
 			config.runtimeEndpoint,
-			true,
+			false,
 			profileFor(options.configFileName),
 			runtimeInvocation,
 			options.interactiveAdmin ?? false,
@@ -344,6 +361,7 @@ async function applyWebServices(
 			config.agentDir,
 		);
 	}
+	if (!gatewayStatus.installed && gatewayStatus.manager === "detached") await stopDetachedGateway(config.agentDir);
 	if (reinstall || !gatewayStatus.installed) {
 		installWebService(gateway, { interactiveAdmin: options.interactiveAdmin ?? false });
 	} else {

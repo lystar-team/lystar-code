@@ -49,6 +49,25 @@ test("目标服务失败时只恢复服务版本", async () => {
 	assert.equal(committed, "0.85.1-lystar.1");
 });
 
+test("Runtime 忙碌时不重装旧版本或提交服务状态", async () => {
+	const applied: Array<string | undefined> = [];
+	await assert.rejects(
+		runServiceVersionTransaction({
+			targetVersion: "0.85.1-lystar.5",
+			previousVersion: "0.85.1-lystar.1",
+			apply: async (version) => {
+				applied.push(version);
+				throw Object.assign(new Error("busy"), { code: "host_busy" });
+			},
+			commit: () => {
+				assert.fail("busy Runtime must not commit");
+			},
+		}),
+		{ code: "host_busy" },
+	);
+	assert.deepEqual(applied, ["0.85.1-lystar.5"]);
+});
+
 test("目标服务和恢复服务均失败时保留两个错误", async () => {
 	await assert.rejects(
 		runServiceVersionTransaction({
