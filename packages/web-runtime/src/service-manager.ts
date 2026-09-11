@@ -153,6 +153,15 @@ function systemdEscape(value: string): string {
 	return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("\n", "\\n")}"`;
 }
 
+function systemdPath(value: string): string {
+	return value
+		.replaceAll("\\", "\\\\")
+		.replaceAll('"', '\\"')
+		.replaceAll("\n", "\\n")
+		.replaceAll("\t", "\\t")
+		.replaceAll(" ", "\\x20");
+}
+
 function commandLineArgument(value: string): string {
 	if (value.length === 0) return '""';
 	if (!/[\s"\\]/u.test(value)) return value;
@@ -205,7 +214,7 @@ function makeSystemdUnit(spec: WebServiceSpec): string {
 		"",
 		"[Service]",
 		"Type=simple",
-		`WorkingDirectory=${systemdEscape(spec.invocation.cwd)}`,
+		`WorkingDirectory=${systemdPath(spec.invocation.cwd)}`,
 		`ExecStart=${[spec.invocation.program, ...spec.invocation.args].map(systemdEscape).join(" ")}`,
 		environment,
 		"Restart=on-failure",

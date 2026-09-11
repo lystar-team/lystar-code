@@ -115,6 +115,6 @@ test("CLI release workflow verifies a candidate before tagging and publishing", 
 	assert.match(jobs.publish.if, /inputs\.publish == true/);
 	assert.match(jobs.publish.steps.find((step) => step.name === "Create version tag after candidate verification").run, /git tag/);
 	assert.match(jobs.publish.steps.find((step) => step.name === "Create version tag after candidate verification").run, /git push origin/);
-	assert.doesNotMatch(workflow, /push:\s*\n\s*tags:/);
+	assert.deepEqual(parsed.on.push.tags, ["v*-lystar.*"]);
 	assert.doesNotMatch(workflow, /ci-budget|release-summary|release-budget-metrics/);
 });

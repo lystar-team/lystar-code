@@ -1,5 +1,14 @@
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createRuntimeServiceSpec, webServiceUnitName, webServiceWindowsName } from "../src/index.ts";
+import {
+	createRuntimeServiceSpec,
+	installWebService,
+	type WebServiceSpec,
+	webServiceUnitName,
+	webServiceWindowsName,
+} from "../src/index.ts";
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 
@@ -44,5 +53,37 @@ describe("Web service specifications", () => {
 			PI_WEB_RUNTIME_ENDPOINT: "tcp://127.0.0.1:1422",
 			LYSTAR_WEB_SERVICE_VERSION: "0.85.1-lystar.1",
 		});
+	});
+
+	it("writes an absolute systemd WorkingDirectory without quoting the path", () => {
+		const home = mkdtempSync(join(tmpdir(), "lystar-service-manager-home-"));
+		const bin = join(home, "bin");
+		mkdirSync(bin);
+		const systemctl = join(bin, "systemctl");
+		writeFileSync(systemctl, '#!/bin/sh\ncase " $* " in *" show "*) printf \'4321\\n\' ;; *) exit 0 ;; esac\n');
+		chmodSync(systemctl, 0o755);
+		const originalHome = process.env.HOME;
+		const originalPath = process.env.PATH;
+		process.env.HOME = home;
+		process.env.PATH = `${bin}:${originalPath ?? ""}`;
+		const cwd = join(home, "agent with space");
+		const spec: WebServiceSpec = {
+			kind: "runtime",
+			agentDir: join(home, "agent"),
+			invocation: { program: "/usr/bin/node", args: ["web-runtime", "serve"], cwd },
+		};
+		try {
+			const status = installWebService(spec);
+			const unit = readFileSync(join(home, ".config", "systemd", "user", "lystar-web-runtime.service"), "utf8");
+			expect(unit).toContain(`WorkingDirectory=${cwd.replaceAll(" ", "\\x20")}`);
+			expect(unit).not.toContain(`WorkingDirectory="${cwd}"`);
+			expect(status.manager).toBe("systemd-user");
+		} finally {
+			if (originalHome === undefined) delete process.env.HOME;
+			else process.env.HOME = originalHome;
+			if (originalPath === undefined) delete process.env.PATH;
+			else process.env.PATH = originalPath;
+			rmSync(home, { recursive: true, force: true });
+		}
 	});
 });

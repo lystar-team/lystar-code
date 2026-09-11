@@ -35,6 +35,7 @@ try {
         $Source = [IO.File]::ReadAllText($Installer)
         foreach ($Required in @(
             'Format-Megabytes',
+            'Format-TransferRate',
             'Invoke-Download',
             'Invoke-JsonRequest',
             'release-manifest.json',
@@ -64,8 +65,11 @@ try {
             'Write-InstallerBanner',
             'Write-InstallerStep',
             'Write-InstallerSuccess',
-            'Write-InstallerWarning',
-            '操作没有完成',
+            'Write-Progress',
+            'ResponseHeadersRead',
+            'ContentLength',
+            'ProgressPreference = "Continue"',
+            '当前版本：',
             '安装范围：当前用户，不需要管理员权限。',
             '用户数据目录 ~/.pi/agent 不会删除。'
         )) {
@@ -83,7 +87,7 @@ try {
 
     $SourceCmd = [IO.File]::ReadAllText((Join-Path $Root "scripts/install.cmd"))
     $ReleaseCmd = [IO.File]::ReadAllText((Join-Path $Temp "install.cmd"))
-    foreach ($Required in @('powershell.exe', '-ExecutionPolicy Bypass', '-NoProfile', '%*', '$Attempt -le 3', '1MB', 'chcp 65001', 'LYStar Code Windows 安装器', '[1/2] 正在下载安装向导', '[失败] 安装没有完成', '新开一个 PowerShell 或 CMD 窗口', 'if /i "%~1"=="/?"', ':usage', 'install.cmd -Rollback')) {
+    foreach ($Required in @('powershell.exe', '-ExecutionPolicy Bypass', '-NoProfile', '%*', '$Attempt -le 3', '1MB', 'chcp 65001', 'LYStar Code Windows 安装器', '[1/2] 正在下载安装向导', '进度条含实时速度', 'curl.exe', '--connect-timeout 10', '$ProgressPreference=''Continue''', 'LYStar Code Windows 安装器', '[失败] 安装没有完成', '新开一个 PowerShell 或 CMD 窗口', 'if /i "%~1"=="/?"', ':usage', 'install.cmd -Rollback')) {
         if (!$SourceCmd.Contains($Required)) { throw "install.cmd is missing: $Required" }
     }
     foreach ($Forbidden in @(

@@ -659,6 +659,12 @@ export class WebGatewayServer {
 		return this.config.token;
 	}
 
+	private restartAfterResponse(response: ServerResponse): void {
+		response.once("finish", () => {
+			setImmediate(() => this.restartHandler?.());
+		});
+	}
+
 	setRestartHandler(handler: () => void): void {
 		this.restartHandler = handler;
 	}
@@ -1518,8 +1524,8 @@ export class WebGatewayServer {
 			if (action === "restart-gateway") {
 				if (!this.restartHandler)
 					throw new HttpError(503, "gateway_restart_unavailable", "当前 Gateway 不支持自重启");
-				sendJson(response, 202, { accepted: true, service: "gateway" });
-				this.restartHandler();
+				this.restartAfterResponse(response);
+				sendJson(response, 202, { accepted: true, service: "gateway" }, { Connection: "close" });
 				return;
 			}
 			throw new HttpError(400, "diagnostics_action_invalid", "不支持的诊断操作");
@@ -2538,8 +2544,8 @@ export class WebGatewayServer {
 			restartPending: true,
 			runtimePreserved: true,
 		};
-		sendJson(response, 202, result);
-		this.restartHandler();
+		this.restartAfterResponse(response);
+		sendJson(response, 202, result, { Connection: "close" });
 	}
 
 	private async handleSettings(

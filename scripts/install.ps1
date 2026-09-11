@@ -11,7 +11,7 @@
 )
 
 $ErrorActionPreference = "Stop"
-$ProgressPreference = "SilentlyContinue"
+$ProgressPreference = "Continue"
 $Repository = "__LYSTAR_RELEASE_REPOSITORY__"
 $InstallRoot = Join-Path $env:LOCALAPPDATA "LYStarAgent"
 $VersionsDir = Join-Path $InstallRoot "versions"
@@ -19,6 +19,11 @@ $BinDir = Join-Path $InstallRoot "bin"
 $CurrentFile = Join-Path $InstallRoot "current"
 $PreviousFile = Join-Path $InstallRoot "previous"
 $WebAgentDir = if ($env:PI_CODING_AGENT_DIR) { $env:PI_CODING_AGENT_DIR } else { Join-Path $env:USERPROFILE ".pi\agent" }
+$CurrentVersion = "未安装"
+if (Test-Path $CurrentFile) {
+    $CurrentVersion = (Get-Content -Raw $CurrentFile).Trim()
+    if (!$CurrentVersion) { $CurrentVersion = "未安装" }
+}
 
 function Write-InstallerBanner([string]$Title = "LYStar Code Windows 安装器") {
     Write-Host ""
@@ -68,6 +73,12 @@ function Format-Megabytes([long]$Bytes) {
     return "{0:0.00} MB" -f ($Bytes / 1MB)
 }
 
+function Format-TransferRate([double]$BytesPerSecond) {
+    if ($BytesPerSecond -lt 1KB) { return "{0:0} B/s" -f $BytesPerSecond }
+    if ($BytesPerSecond -lt 1MB) { return "{0:0.00} KB/s" -f ($BytesPerSecond / 1KB) }
+    return "{0:0.00} MB/s" -f ($BytesPerSecond / 1MB)
+}
+
 if ($Help) {
     Write-InstallerBanner "LYStar Code 安装器帮助"
     Write-Host "用法："
@@ -84,11 +95,46 @@ if ($Help) {
 function Invoke-Download([string]$Uri, [string]$OutFile, [long]$ExpectedBytes = 0) {
     $Name = Split-Path -Leaf $OutFile
     $SizeHint = if ($ExpectedBytes -gt 0) { "（$(Format-Megabytes $ExpectedBytes)）" } else { "" }
-    Write-InstallerInfo "正在下载 $Name$SizeHint……"
+    Write-InstallerInfo "正在下载 $Name$SizeHint（进度条包含实时速度）……"
     for ($Attempt = 1; $Attempt -le 3; $Attempt++) {
+        $Client = $null
+        $Response = $null
+        $ResponseStream = $null
+        $FileStream = $null
         try {
             Remove-Item -Force -ErrorAction SilentlyContinue $OutFile
-            Invoke-WebRequest -UseBasicParsing -TimeoutSec 60 -Uri $Uri -OutFile $OutFile
+            Add-Type -AssemblyName System.Net.Http
+            $Client = New-Object System.Net.Http.HttpClient
+            $Client.Timeout = [TimeSpan]::FromSeconds(60)
+            $Client.DefaultRequestHeaders.UserAgent.ParseAdd("LYStar-Code-Installer")
+            $Response = $Client.GetAsync($Uri, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+            [void]$Response.EnsureSuccessStatusCode()
+            $ResponseStream = $Response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+            $FileStream = New-Object System.IO.FileStream($OutFile, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None, 81920, $false)
+            $Buffer = New-Object byte[] 81920
+            $TotalBytes = 0L
+            $ContentLength = if ($ExpectedBytes -gt 0) { $ExpectedBytes } elseif ($Response.Content.Headers.ContentLength) { [long]$Response.Content.Headers.ContentLength } else { 0L }
+            $Stopwatch = [Diagnostics.Stopwatch]::StartNew()
+            $LastProgress = -1000L
+            while (($Read = $ResponseStream.Read($Buffer, 0, $Buffer.Length)) -gt 0) {
+                $FileStream.Write($Buffer, 0, $Read)
+                $TotalBytes += $Read
+                if ($Stopwatch.ElapsedMilliseconds -ge ($LastProgress + 100)) {
+                    $ElapsedSeconds = [Math]::Max($Stopwatch.Elapsed.TotalSeconds, 0.001)
+                    $Rate = $TotalBytes / $ElapsedSeconds
+                    $Percent = if ($ContentLength -gt 0) { [Math]::Min(100, [Math]::Floor($TotalBytes * 100 / $ContentLength)) } else { 0 }
+                    $Status = if ($ContentLength -gt 0) {
+                        "{0:0.00} / {1:0.00} MB | {2}" -f ($TotalBytes / 1MB), ($ContentLength / 1MB), (Format-TransferRate $Rate)
+                    }
+                    else {
+                        "{0:0.00} MB | {1}" -f ($TotalBytes / 1MB), (Format-TransferRate $Rate)
+                    }
+                    Write-Progress -Activity "下载 $Name" -Status $Status -PercentComplete $Percent
+                    $LastProgress = $Stopwatch.ElapsedMilliseconds
+                }
+            }
+            $FileStream.Flush()
+            Write-Progress -Activity "下载 $Name" -Completed
             $ActualBytes = (Get-Item $OutFile).Length
             if ($ActualBytes -le 0) { throw "下载结果为空。" }
             if ($ExpectedBytes -gt 0 -and $ActualBytes -ne $ExpectedBytes) {
@@ -98,11 +144,19 @@ function Invoke-Download([string]$Uri, [string]$OutFile, [long]$ExpectedBytes = 
             return
         }
         catch {
+            Write-Progress -Activity "下载 $Name" -Completed
+            Remove-Item -Force -ErrorAction SilentlyContinue $OutFile
             if ($Attempt -eq 3) {
                 throw "下载失败：$Uri`n$($_.Exception.Message)"
             }
             Write-InstallerWarning "下载未完成，正在重试（$($Attempt + 1)/3）……"
             Start-Sleep -Seconds $Attempt
+        }
+        finally {
+            if ($FileStream) { $FileStream.Dispose() }
+            if ($ResponseStream) { $ResponseStream.Dispose() }
+            if ($Response) { $Response.Dispose() }
+            if ($Client) { $Client.Dispose() }
         }
     }
 }
@@ -243,6 +297,7 @@ if ($Offline) {
 else {
     Write-InstallerInfo "网络模式：在线安装，将从 GitHub Release 获取文件。"
 }
+Write-InstallerInfo "当前版本：$CurrentVersion"
 
 if ($Uninstall) {
     Write-InstallerStep 1 1 "删除 LYStar Code 安装文件"

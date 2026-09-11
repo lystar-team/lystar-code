@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.85.1-lystar.5] - 2026-09-11
+
+### Changed
+
+- 安装器显示当前版本、目标版本、下载进度和实时传输速度，并让 Windows 发布入口优先使用带速度显示的 curl 下载。
+
+### Fixed
+
+- 修复 Linux systemd Web 服务把带空格的 WorkingDirectory 生成为带引号路径，导致 systemd 拒绝加载服务单元的问题。
+- 修复 Gateway 在 HTTP 重启请求完成前关闭监听，导致进程存活但端口不再监听的问题。
+
 ## [0.85.1-lystar.4] - 2026-09-10
 
 ### Changed

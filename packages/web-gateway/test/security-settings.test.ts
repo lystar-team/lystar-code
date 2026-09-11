@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
@@ -18,15 +19,17 @@ function captureResponse(): {
 } {
 	let status = 0;
 	let body = "";
+	const response = Object.assign(new EventEmitter(), {
+		writeHead(code: number) {
+			status = code;
+		},
+		end(value?: string) {
+			body = value ?? "";
+			response.emit("finish");
+		},
+	});
 	return {
-		response: {
-			writeHead(code: number) {
-				status = code;
-			},
-			end(value?: string) {
-				body = value ?? "";
-			},
-		} as unknown as ServerResponse,
+		response: response as unknown as ServerResponse,
 		getStatus: () => status,
 		getBody: () => body,
 	};
@@ -87,6 +90,7 @@ test("Web 安全设置保存后重启 Gateway，Runtime 会话保持运行", asy
 			restartPending: true,
 			runtimePreserved: true,
 		});
+		await new Promise<void>((resolve) => setImmediate(resolve));
 		assert.equal(restartCount, 1);
 		assert.deepEqual(await loadWebGatewaySettings(agentDir), { host: "192.168.2.35", port: 15432 });
 		assert.deepEqual(JSON.parse(await readFile(webConfigPath(agentDir), "utf8")), {

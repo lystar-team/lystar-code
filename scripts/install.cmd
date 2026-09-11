@@ -24,9 +24,9 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo [1/2] 正在下载安装向导……
+echo [1/2] 正在下载安装向导（进度条含实时速度）……
 set "LYSTAR_INSTALLER=%TEMP%\lystar-install-%RANDOM%%RANDOM%.ps1"
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; for ($Attempt = 1; $Attempt -le 3; $Attempt++) { try { Remove-Item -Force -ErrorAction SilentlyContinue '%LYSTAR_INSTALLER%'; Invoke-WebRequest -UseBasicParsing -TimeoutSec 60 -Uri 'https://github.com/__LYSTAR_RELEASE_REPOSITORY__/releases/latest/download/install.ps1' -OutFile '%LYSTAR_INSTALLER%'; break } catch { if ($Attempt -eq 3) { Write-Host ('下载失败：' + $_.Exception.Message); exit 1 }; Write-Host ('下载未完成，正在重试（{0}/3）……' -f ($Attempt + 1)); Start-Sleep -Seconds $Attempt } }; $Size = (Get-Item '%LYSTAR_INSTALLER%').Length / 1MB; Write-Host ('安装向导已下载（{0:0.00} MB）。' -f $Size)"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $ProgressPreference='Continue'; [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; for ($Attempt = 1; $Attempt -le 3; $Attempt++) { try { Remove-Item -Force -ErrorAction SilentlyContinue '%LYSTAR_INSTALLER%'; if (Get-Command curl.exe -ErrorAction SilentlyContinue) { & curl.exe -fL --connect-timeout 10 --max-time 60 'https://github.com/__LYSTAR_RELEASE_REPOSITORY__/releases/latest/download/install.ps1' -o '%LYSTAR_INSTALLER%'; if ($LASTEXITCODE -ne 0) { throw '下载失败。' } } else { Invoke-WebRequest -UseBasicParsing -TimeoutSec 60 -Uri 'https://github.com/__LYSTAR_RELEASE_REPOSITORY__/releases/latest/download/install.ps1' -OutFile '%LYSTAR_INSTALLER%' }; if (!(Test-Path '%LYSTAR_INSTALLER%') -or (Get-Item '%LYSTAR_INSTALLER%').Length -le 0) { throw '下载结果为空。' }; break } catch { if ($Attempt -eq 3) { throw }; Write-Host ('下载未完成，正在重试（{0}/3）……' -f ($Attempt + 1)); Start-Sleep -Seconds $Attempt } }; $Size = (Get-Item '%LYSTAR_INSTALLER%').Length / 1MB; Write-Host ('安装向导已下载（{0:0.00} MB）。' -f $Size)"
 if errorlevel 1 (
   echo.
   echo [失败] 安装向导下载失败。

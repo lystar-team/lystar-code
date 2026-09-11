@@ -47,6 +47,10 @@ grep -F 'https://github.com/lystar-team/lystar-code/releases/latest/download/ins
 grep -F 'https://github.com/__LYSTAR_RELEASE_REPOSITORY__/releases/latest/download/install.ps1' "$ROOT/scripts/install.cmd" >/dev/null
 grep -F 'print_banner' "$ROOT/scripts/install.sh" >/dev/null
 grep -F 'print_step' "$ROOT/scripts/install.sh" >/dev/null
+grep -F '进度条包含实时速度' "$ROOT/scripts/install.sh" >/dev/null
+grep -F -- 'curl -fL --connect-timeout 10' "$ROOT/scripts/install.sh" >/dev/null
+grep -F -- '--progress=bar:force' "$ROOT/scripts/install.sh" >/dev/null
+grep -F '当前版本：' "$ROOT/scripts/install.sh" >/dev/null
 grep -F -- '--help' "$ROOT/scripts/install.sh" >/dev/null
 grep -F '当前版本没有切换' "$ROOT/scripts/install.sh" >/dev/null
 help_output="$(HOME="$tmp/home-help" bash "$ROOT/scripts/install.sh" --help)"

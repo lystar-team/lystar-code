@@ -149,14 +149,15 @@ download() {
     local output="$2"
     local name="${output##*/}"
     local attempt
-    print_info "正在下载 $name……"
+    print_info "正在下载 $name（进度条包含实时速度）……"
     for attempt in 1 2 3; do
+        rm -f "$output"
         if [[ "$DOWNLOADER" == "curl" ]]; then
-            if curl -fsL --silent --connect-timeout 10 "$url" -o "$output"; then
+            if curl -fL --connect-timeout 10 "$url" -o "$output" && [[ -s "$output" ]]; then
                 print_success "已下载 $name。"
                 return
             fi
-        elif wget --quiet --tries=1 --timeout=10 -O "$output" "$url"; then
+        elif wget --progress=bar:force --tries=1 --timeout=10 -O "$output" "$url" && [[ -s "$output" ]]; then
             print_success "已下载 $name。"
             return
         fi
@@ -248,6 +249,10 @@ case "$ACTION" in
 esac
 print_info "安装目录：$INSTALL_ROOT"
 print_info '安装范围：当前用户，不需要管理员权限。'
+current_target="$(readlink "$INSTALL_ROOT/current" 2>/dev/null || true)"
+current_version="${current_target##*/}"
+if [[ -z "$current_version" ]]; then current_version='未安装'; fi
+print_info "当前版本：$current_version"
 
 if [[ "$ACTION" == "uninstall" ]]; then
     print_step 1 1 '删除 LYStar Code 安装文件'
@@ -387,6 +392,7 @@ installed_version="$(HOME="$HOME" "$BIN_DIR/lc" --version)"
 alias_version="$(HOME="$HOME" "$BIN_DIR/lystar" --version)"
 [[ "$alias_version" == "$VERSION" ]] || die "安装后的 lystar 版本校验失败：预期 $VERSION，实际 $alias_version。"
 print_success "安装结果检查通过：lc 和 lystar 均为 $VERSION。"
+print_info "安装位置：$target"
 previous_service_version="${current_target##*/}"
 if ! reconcile_web_services "$VERSION" "$previous_service_version"; then
     die_after_activation "LYStar Code $VERSION 已安装，但 Web 服务切换失败。服务编排器已尝试恢复上一个可用服务版本。请运行 lc web service status 查看结果。" "$VERSION"
