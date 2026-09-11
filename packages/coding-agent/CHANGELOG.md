@@ -2,9 +2,17 @@
 
 ## [Unreleased]
 
+## [0.85.1-lystar.7] - 2026-09-11
+
 ### Added
 
-- Added deterministic Flare, Sunburst, and GPT Image 2 selection for the built-in image generation Tool, including semantic profiles and strict explicit-model routing.
+- Added deterministic Flare, Sunburst, and GPT Image 2 selection for the built-in image generation Tool, including semantic profiles, provider fallback, progress updates, reference-image handling, and original-format output saving.
+- Added system branding settings, product-update progress, runtime environment diagnostics, connection recovery, and richer Web workbench resource references.
+
+### Changed
+
+- Added component-level Web Gateway and Runtime status, start, stop, restart, force-stop, profile isolation, responsiveness checks, and service recovery flows.
+- Updated Web workbench session lists, tool output cards, model settings, file previews, editor loading, thinking-level visibility, and motion behavior.
 
 ### Fixed
 

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.85.1-lystar.7] - 2026-09-11
+
 ### Added
 
 - Added OpenAI image model registrations for GPT Image 2.5 Flare and GPT Image 2.5 Sunburst alongside GPT Image 2.
