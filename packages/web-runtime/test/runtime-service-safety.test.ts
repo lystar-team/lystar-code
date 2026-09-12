@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { installRuntimeService, restartRuntimeService } from "../src/runtime-service.ts";
+import { createRuntimeServiceSpec, installRuntimeService, restartRuntimeService } from "../src/runtime-service.ts";
 import { installWebService, stopWebService } from "../src/service-manager.ts";
 
 const state = vi.hoisted(() => ({
@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
 	connected: true,
 	operations: [] as Array<{ status: string; operationId: string }>,
 	pendingUiRequests: [] as unknown[],
+	sessions: [] as Array<{ path: string; activity: string; phase: string }>,
 	readSnapshot: false,
 }));
 vi.mock("node:fs", () => ({
@@ -32,7 +33,7 @@ vi.mock("@lystar/code-web-protocol", () => ({
 		}
 		async request() {
 			state.readSnapshot = true;
-			return { operations: state.operations, pendingUiRequests: state.pendingUiRequests };
+			return { operations: state.operations, pendingUiRequests: state.pendingUiRequests, sessions: state.sessions };
 		}
 		async close() {}
 	},
@@ -72,6 +73,7 @@ beforeEach(() => {
 	state.connected = true;
 	state.operations = [];
 	state.pendingUiRequests = [];
+	state.sessions = [];
 	state.readSnapshot = false;
 	vi.clearAllMocks();
 	vi.spyOn(process, "kill").mockImplementation((_pid, signal) => {
@@ -97,6 +99,21 @@ describe("Runtime update and restart safety", () => {
 		state.pendingUiRequests = [{}];
 		await expect(installRuntimeService("/test/runtime.sock")).rejects.toMatchObject({ code: "host_busy" });
 		expect(stopWebService).not.toHaveBeenCalled();
+	});
+	it("does not reinstall a Runtime whose Session is active through a companion client", async () => {
+		state.sessions = [{ path: "/test/session.jsonl", activity: "running", phase: "turn" }];
+		await expect(installRuntimeService("/test/runtime.sock")).rejects.toMatchObject({
+			code: "host_busy",
+			activeSessions: ["/test/session.jsonl"],
+		});
+		expect(stopWebService).not.toHaveBeenCalled();
+	});
+	it("passes the Runtime Profile to the managed process environment", () => {
+		const spec = createRuntimeServiceSpec("tcp://127.0.0.1:2423", {
+			profile: "development",
+			agentDir: "/test/agent",
+		});
+		expect(spec.environment?.PI_WEB_SERVICE_PROFILE).toBe("development");
 	});
 	it("checks idle state before stopping and reinstalling", async () => {
 		await installRuntimeService("/test/runtime.sock");

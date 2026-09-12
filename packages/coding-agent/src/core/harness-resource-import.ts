@@ -127,6 +127,8 @@ const TEXT_FILE_EXTENSIONS = new Set([
 	".yml",
 ]);
 
+const REFERENCE_DOCUMENT_EXTENSIONS = new Set([".md", ".mdx", ".txt"]);
+
 interface PathRewrite {
 	from: string;
 	to: string;
@@ -453,24 +455,17 @@ function collectAgentResources(root: string): string[] {
 	return result;
 }
 
-function collectReferencedFiles(path: string, depth = 0): string[] {
-	if (depth > MAX_SCAN_DEPTH || !isSafePath(path)) return [];
+function isImportableReferenceFile(path: string): boolean {
 	try {
 		const stat = statSync(path);
-		if (stat.isFile()) return stat.size <= MAX_FILE_BYTES ? [path] : [];
-		if (!stat.isDirectory()) return [];
-		const result: string[] = [];
-		for (const entry of readdirSync(path, { withFileTypes: true }).sort((left, right) =>
-			left.name.localeCompare(right.name),
-		)) {
-			if (entry.name === ".git" || entry.name === "node_modules" || entry.name.startsWith(".")) continue;
-			result.push(...collectReferencedFiles(join(path, entry.name), depth + 1));
-			if (result.length >= MAX_RESOURCE_FILES) break;
-		}
-		return result.slice(0, MAX_RESOURCE_FILES);
+		return stat.isFile() && stat.size <= MAX_FILE_BYTES;
 	} catch {
-		return [];
+		return false;
 	}
+}
+
+function canContainInstructionReferences(path: string): boolean {
+	return REFERENCE_DOCUMENT_EXTENSIONS.has(extname(path).toLowerCase());
 }
 
 function referenceTokens(content: string): string[] {
@@ -538,7 +533,7 @@ function expandReferencePath(
 	const allowedRoots = [sourceBase, ...sourceRoots];
 	return [...new Set(candidates.map(pathKey))]
 		.filter((path) => allowedRoots.some((root) => isInside(root, path)))
-		.filter((path) => isSafePath(path));
+		.filter((path) => isImportableReferenceFile(path));
 }
 
 function readTextFile(path: string): string | undefined {
@@ -569,14 +564,11 @@ function discoverReferencedPaths(
 		const content = readTextFile(current);
 		if (content === undefined) continue;
 		for (const reference of referenceTokens(content)) {
-			for (const resolvedPath of expandReferencePath(reference, profile, sourceScope, current, cwd)) {
-				for (const referencedPath of collectReferencedFiles(resolvedPath)) {
-					if (pathKey(referencedPath) === pathKey(instructionPath)) continue;
-					if (managedCandidates.some((candidate) => isInside(candidate.path, referencedPath))) continue;
-					result.add(referencedPath);
-					if (readTextFile(referencedPath) !== undefined) pending.push(referencedPath);
-					if (result.size >= MAX_RESOURCE_FILES) break;
-				}
+			for (const referencedPath of expandReferencePath(reference, profile, sourceScope, current, cwd)) {
+				if (pathKey(referencedPath) === pathKey(instructionPath)) continue;
+				if (managedCandidates.some((candidate) => isInside(candidate.path, referencedPath))) continue;
+				result.add(referencedPath);
+				if (canContainInstructionReferences(referencedPath)) pending.push(referencedPath);
 				if (result.size >= MAX_RESOURCE_FILES) break;
 			}
 			if (result.size >= MAX_RESOURCE_FILES) break;
@@ -705,14 +697,13 @@ function hashResource(path: string): string {
 }
 
 function itemStatus(
-	candidate: ResourceCandidate,
 	targetPath: string,
 	type: HarnessResourceType,
+	sourceHash: string,
 	ruleHunks?: HarnessImportInstructionHunk[],
 ): HarnessImportItemStatus {
 	if (!existsSync(targetPath)) return type === "instruction" && ruleHunks?.length === 0 ? "already-imported" : "ready";
 	if (type === "instruction") return ruleHunks?.length ? "ready" : "already-imported";
-	const sourceHash = hashResource(candidate.path);
 	const targetHash = hashResource(targetPath);
 	return sourceHash === targetHash ? "already-imported" : "conflict";
 }
@@ -772,7 +763,7 @@ function createItem(
 		...(ruleHunks ? { instructionHunks: ruleHunks } : {}),
 		...(instructionSourceContent !== undefined ? { instructionSourceContent } : {}),
 		...(instructionTargetContent !== undefined ? { instructionTargetContent } : {}),
-		status: itemStatus(candidate, targetPath, candidate.type, ruleHunks),
+		status: itemStatus(targetPath, candidate.type, contentHash, ruleHunks),
 		warnings,
 		contentHash,
 		sourcePath: candidate.path,

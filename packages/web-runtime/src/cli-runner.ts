@@ -1,4 +1,5 @@
 import type { Server } from "node:net";
+import { join } from "node:path";
 import { closeIpcRuntime, defaultRuntimeEndpoint, runIpcRelay, serveIpcRuntime } from "./ipc.ts";
 import { CodingAgentRuntimeAdapter, getRuntimeAgentDir } from "./runtime-adapter.ts";
 import {
@@ -31,8 +32,17 @@ function endpointFromArgs(args: readonly string[]): string | undefined {
 	return undefined;
 }
 
+function runtimeOperationJournalPath(agentDir: string, profile: string | undefined): string {
+	const normalized = profile?.replace(/[^A-Za-z0-9_.-]+/gu, "-").replace(/^-+|-+$/gu, "");
+	const suffix = normalized && normalized !== "default" ? `-${normalized}` : "";
+	return join(agentDir, "host", `operations${suffix}.jsonl`);
+}
+
 export async function runWebRuntimeCli(args: readonly string[] = process.argv.slice(2)): Promise<void> {
 	const agentDir = getRuntimeAgentDir();
+	const serviceProfile =
+		process.env.PI_WEB_SERVICE_PROFILE?.trim() ||
+		(process.env.LYSTAR_CLI_MODE === "development" ? "development" : undefined);
 	const command = args[0] ?? "stdio";
 	if (command === "stdio" || command === "serve") restoreUserCommandEnvironment();
 	const endpoint = endpointFromArgs(args) ?? process.env.PI_WEB_RUNTIME_ENDPOINT ?? defaultRuntimeEndpoint(agentDir);
@@ -116,11 +126,18 @@ export async function runWebRuntimeCli(args: readonly string[] = process.argv.sl
 			return;
 		}
 		if (command === "stdio" || command === "serve") {
-			service = new WebRuntimeService(new CodingAgentRuntimeAdapter(agentDir), {
-				agentDir,
-				persistent: command === "serve",
-				...(startupSessionPath ? { startupSessionPath } : {}),
-			});
+			service = new WebRuntimeService(
+				new CodingAgentRuntimeAdapter({
+					agentDir,
+					preferSessionOwnership: serviceProfile === "development",
+				}),
+				{
+					agentDir,
+					journalPath: runtimeOperationJournalPath(agentDir, serviceProfile),
+					persistent: command === "serve",
+					...(startupSessionPath ? { startupSessionPath } : {}),
+				},
+			);
 			if (command === "stdio") {
 				await runStdioRuntime(service);
 			} else {

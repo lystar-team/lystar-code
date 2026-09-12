@@ -143,12 +143,13 @@ describe("Web control commands", () => {
 		expect(warning).toHaveBeenCalledWith(expect.stringContaining("已恢复服务版本 0.85.1-lystar.1"));
 	});
 
-	it("uses a separate Runtime port for the development command", async () => {
+	it("development command reports the independent Runtime port", async () => {
 		process.env.LYSTAR_CLI_MODE = "development";
 		const output = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		await runWebCommand(["--help"]);
 
 		expect(output).toHaveBeenCalledWith(expect.stringContaining("Web 默认端口：2422；Runtime 默认端口：2423。"));
+		expect(output).toHaveBeenCalledWith(expect.stringContaining("lcd web runtime status|stop|start|restart"));
 	});
 });

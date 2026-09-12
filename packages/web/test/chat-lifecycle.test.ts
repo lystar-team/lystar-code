@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { toLiveToolViewModel } from "../src/adapters/live-tool-view-model.ts";
 import {
 	applyPromptAccepted,
@@ -12,6 +12,7 @@ import {
 	reconcilePendingUserPrompts,
 	removeQueuedUserPrompt,
 	removeQueuedUserPromptByText,
+	submitPromptWithFollowUpFallback,
 } from "../src/state/chat-lifecycle.ts";
 import { restoreRuntimeActivities, type WorkbenchState } from "../src/state/use-workbench.ts";
 import type { WebOperation, WebTranscriptItem } from "../src/types.ts";
@@ -112,6 +113,49 @@ describe("chat lifecycle", () => {
 		expect(hasActiveSessionSnapshot(snapshot!)).toBe(false);
 		expect(restored.liveTurnActive).toBe(false);
 		expect(hasActiveSessionWork({ ...restored, session: snapshot, currentOperation: undefined })).toBe(false);
+	});
+
+	it("owner queue snapshot replaces the matching optimistic prompt", () => {
+		const current = {
+			...liveState(),
+			pendingUserPrompts: [{ id: "optimistic-1", text: "排队任务", attachments: [], queueId: "queue-1" }],
+			queuedUserPrompts: [],
+		};
+		const snapshot = {
+			id: "session-1",
+			activity: "running",
+			phase: "turn",
+			queuedFollowUpCount: 1,
+			queuedFollowUpMessages: [{ id: "queue-1", text: "排队任务" }],
+		} as WorkbenchState["session"];
+		const restored = restoreRuntimeActivities(current, snapshot!);
+
+		expect(restored.pendingUserPrompts).toEqual([]);
+		expect(restored.queuedUserPrompts).toEqual([
+			{ id: "queue-1", text: "排队任务", displayText: "排队任务", attachments: [] },
+		]);
+	});
+
+	it("falls back from prompt to follow-up only for an active owner operation", async () => {
+		const active = Object.assign(new Error("busy"), { code: "session_operation_active" });
+		const submit = vi
+			.fn<(mode: "prompt" | "steer" | "follow-up") => Promise<string>>()
+			.mockRejectedValueOnce(active)
+			.mockResolvedValueOnce("queued");
+
+		await expect(submitPromptWithFollowUpFallback("prompt", submit)).resolves.toEqual({
+			result: "queued",
+			submittedMode: "follow-up",
+		});
+		expect(submit.mock.calls).toEqual([["prompt"], ["follow-up"]]);
+	});
+
+	it("preserves non-active errors without retrying", async () => {
+		const failure = Object.assign(new Error("offline"), { code: "runtime_unavailable" });
+		const submit = vi.fn<() => Promise<string>>().mockRejectedValue(failure);
+
+		await expect(submitPromptWithFollowUpFallback("prompt", submit)).rejects.toBe(failure);
+		expect(submit).toHaveBeenCalledOnce();
 	});
 
 	it("removes one optimistic prompt for each matching committed user message", () => {

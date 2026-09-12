@@ -79,6 +79,7 @@ export function smokeTestCodingAgentConsumer(directory, runtime = process.execPa
 	checkInstalledPackages(join(directory, "node_modules"));
 	const packageDir = join(directory, "node_modules", codingAgentName);
 	const manifest = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
+	const expectedVersion = manifest.piConfig?.productVersion ?? manifest.version;
 	for (const path of ["dist/client", "dist/experimental", "dist/cli/experimental", "dist/bundle/client.js", "dist/bundle/coordinator.js"]) {
 		if (existsSync(join(packageDir, path))) throw new Error(`Published package contains development-only code: ${path}`);
 	}
@@ -113,9 +114,11 @@ for (const subpath of ["/client", "/experimental/plugin"]) {
 }
 `);
 		run(runtime, [entry], { cwd: directory, env, timeout: 30_000 });
-		for (const cli of new Set([manifest.bin.pi, "dist/cli.js"])) {
+		const declaredCliPaths =
+			typeof manifest.bin === "string" ? [manifest.bin] : Object.values(manifest.bin ?? {});
+		for (const cli of new Set([...declaredCliPaths, "dist/cli.js"])) {
 			const output = run(runtime, [join(packageDir, cli), "--version"], { cwd: directory, env, timeout: 30_000 });
-			if (output.trim() !== manifest.version) throw new Error(`Unexpected version from ${cli}: ${output}`);
+			if (output.trim() !== expectedVersion) throw new Error(`Unexpected version from ${cli}: ${output}`);
 		}
 	} finally {
 		rmSync(entry, { force: true });

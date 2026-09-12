@@ -557,10 +557,24 @@ if (process.platform !== "win32") fs.chmodSync(piPath, 0o755);
 	});
 
 	it("uses the configured LYStar release repository for self-update", async () => {
+		const launcherDirectory =
+			process.platform === "win32" ? join(tempDir, "LYStarAgent", "bin") : join(tempDir, ".local", "bin");
+		const launcherPath = join(launcherDirectory, process.platform === "win32" ? "lc.cmd" : "lc");
+		mkdirSync(launcherDirectory, { recursive: true });
+		writeFileSync(
+			launcherPath,
+			process.platform === "win32" ? `@echo off\r\necho ${VERSION}\r\n` : `#!/bin/sh\nprintf '%s\\n' '${VERSION}'\n`,
+		);
+		chmodSync(launcherPath, 0o755);
+		if (process.platform === "win32") vi.stubEnv("LOCALAPPDATA", tempDir);
+		else vi.stubEnv("HOME", tempDir);
+		const installerName = process.platform === "win32" ? "install.ps1" : "install.sh";
 		const fetchMock = vi
 			.fn()
-			.mockResolvedValueOnce(Response.json({ version: "0.82.0-lystar.1" }))
-			.mockResolvedValueOnce(new Response("#!/bin/sh\nexit 0\n", { status: 200 }));
+			.mockResolvedValueOnce(Response.json({ version: VERSION }))
+			.mockResolvedValueOnce(
+				new Response(process.platform === "win32" ? "exit 0" : "#!/bin/sh\nexit 0\n", { status: 200 }),
+			);
 		vi.stubGlobal("fetch", fetchMock);
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -576,7 +590,7 @@ if (process.platform !== "win32") fs.chmodSync(piPath, 0o755);
 		);
 		expect(fetchMock).toHaveBeenNthCalledWith(
 			2,
-			"https://github.com/lystar-team/lystar-code/releases/latest/download/install.sh",
+			`https://github.com/lystar-team/lystar-code/releases/latest/download/${installerName}`,
 			expect.objectContaining({ signal: expect.any(AbortSignal) }),
 		);
 		expect(errorSpy).not.toHaveBeenCalled();

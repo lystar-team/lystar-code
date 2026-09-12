@@ -40,6 +40,7 @@ export interface MonacoFileEditorState {
 export interface MonacoFileEditorHandle {
 	copy(): Promise<void>;
 	download(filename: string): void;
+	getValue(): string;
 	hasUnsavedChanges(): boolean;
 	save(): Promise<void>;
 }
@@ -49,6 +50,7 @@ interface MonacoFileEditorProps {
 	editable: boolean;
 	file: FileResponse & { kind: "text"; content: string };
 	modelKey: string;
+	onContentChange?: (content: string) => void;
 	onSave: (content: string, expectedHash: string) => Promise<FileResponse>;
 	onStateChange: (state: MonacoFileEditorState) => void;
 }
@@ -84,13 +86,14 @@ function trimModelCache(activeKey: string): void {
 }
 
 export const MonacoFileEditor = forwardRef<MonacoFileEditorHandle, MonacoFileEditorProps>(
-	function MonacoFileEditor({ dark, editable, file, modelKey, onSave, onStateChange }, ref) {
+	function MonacoFileEditor({ dark, editable, file, modelKey, onContentChange, onSave, onStateChange }, ref) {
 		const containerRef = useRef<HTMLDivElement>(null);
 		const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor>();
 		const monacoRef = useRef<typeof Monaco>();
 		const activeKeyRef = useRef(modelKey);
 		const darkRef = useRef(dark);
 		const editableRef = useRef(editable);
+		const onContentChangeRef = useRef(onContentChange);
 		const onSaveRef = useRef(onSave);
 		const onStateChangeRef = useRef(onStateChange);
 		const publishStateRef = useRef<(update?: Partial<MonacoFileEditorState>) => void>(() => {});
@@ -108,6 +111,7 @@ export const MonacoFileEditor = forwardRef<MonacoFileEditorHandle, MonacoFileEdi
 		activeKeyRef.current = modelKey;
 		darkRef.current = dark;
 		editableRef.current = editable;
+		onContentChangeRef.current = onContentChange;
 		onSaveRef.current = onSave;
 		onStateChangeRef.current = onStateChange;
 
@@ -168,6 +172,7 @@ export const MonacoFileEditor = forwardRef<MonacoFileEditorHandle, MonacoFileEdi
 					link.remove();
 					URL.revokeObjectURL(url);
 				},
+				getValue: () => editorRef.current?.getValue() ?? "",
 				hasUnsavedChanges: () => isDirty(cachedModels.get(activeKeyRef.current)),
 				save,
 			}),
@@ -205,7 +210,10 @@ export const MonacoFileEditor = forwardRef<MonacoFileEditorHandle, MonacoFileEdi
 				editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () =>
 					void saveRef.current().catch(() => {}),
 				);
-				contentListener = editor.onDidChangeModelContent(() => publishStateRef.current({ error: undefined }));
+				contentListener = editor.onDidChangeModelContent(() => {
+					publishStateRef.current({ error: undefined });
+					onContentChangeRef.current?.(editor.getValue());
+				});
 				modelListener = editor.onDidChangeModel(() => publishStateRef.current({ error: undefined }));
 				resizeObserver = new ResizeObserver(() => editor.layout());
 				resizeObserver.observe(container);
@@ -270,6 +278,7 @@ export const MonacoFileEditor = forwardRef<MonacoFileEditorHandle, MonacoFileEdi
 			const largeFile = file.byteLength >= LARGE_FILE_BYTES || entry.model.getLineCount() >= LARGE_FILE_LINES;
 			editor.updateOptions({ readOnly: !editable });
 			editor.setModel(entry.model);
+			onContentChangeRef.current?.(entry.model.getValue());
 			if (entry.viewState) editor.restoreViewState(entry.viewState);
 			editor.layout();
 			trimModelCache(modelKey);

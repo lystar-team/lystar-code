@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
+import { assertWorkspaceCommandResult } from "@lystar/code-web-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodingAgentRuntimeAdapter } from "../src/runtime-adapter.ts";
 import type { RuntimeSession } from "../src/types.ts";
@@ -68,6 +69,79 @@ describe("Web Runtime model provider settings", () => {
 			input: ["text", "image"],
 			contextWindow: 272_000,
 			maxTokens: 128_000,
+		});
+	});
+
+	it("returns only authenticated prompt models with compact fields", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-model-options-"));
+		const agentDir = join(tempDir, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					ready: {
+						name: "Ready Provider",
+						baseUrl: "https://ready.test/v1",
+						apiKey: "ready-key",
+						api: "openai-completions",
+						models: [
+							{
+								id: "ready-model",
+								name: "Ready Model",
+								api: "openai-completions",
+								baseUrl: "https://ready.test/v1",
+								reasoning: true,
+								input: ["text"],
+								contextWindow: 64_000,
+								maxTokens: 8_000,
+							},
+						],
+					},
+					locked: {
+						name: "Locked Provider",
+						baseUrl: "https://locked.test/v1",
+						api: "openai-completions",
+						models: [
+							{
+								id: "locked-model",
+								name: "Locked Model",
+								api: "openai-completions",
+								baseUrl: "https://locked.test/v1",
+								input: ["text"],
+								contextWindow: 32_000,
+								maxTokens: 4_000,
+							},
+						],
+					},
+				},
+			}),
+		);
+		cleanups.push(() => rmSync(tempDir, { recursive: true, force: true }));
+
+		const result = await new CodingAgentRuntimeAdapter(agentDir).listModelOptions();
+		const ready = result.models.find((model) => model.provider === "ready" && model.id === "ready-model");
+
+		expect(ready).toEqual({
+			provider: "ready",
+			id: "ready-model",
+			name: "Ready Model",
+			reasoning: true,
+			contextWindow: 64_000,
+			supportedThinkingLevels: ["off", "minimal", "low", "medium", "high"],
+		});
+		expect(result.models.some((model) => model.provider === "locked")).toBe(false);
+		expect(result.providers).toContainEqual({ id: "ready", name: "Ready Provider", builtIn: false });
+		expect(() => assertWorkspaceCommandResult("list_model_options", result)).not.toThrow();
+
+		const included = await new CodingAgentRuntimeAdapter(agentDir).listModelOptions({ includeProviders: ["locked"] });
+		expect(included.models).toContainEqual({
+			provider: "locked",
+			id: "locked-model",
+			name: "Locked Model",
+			reasoning: false,
+			contextWindow: 32_000,
+			supportedThinkingLevels: ["off"],
 		});
 	});
 

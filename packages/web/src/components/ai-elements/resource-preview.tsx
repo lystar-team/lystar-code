@@ -324,7 +324,8 @@ export function ResourceImageViewer({ items, open, initialIndex = 0, onOpenChang
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent
 				showCloseButton={false}
-				className="fixed inset-0 z-50 flex h-dvh w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-0 bg-black p-0 text-white shadow-none sm:max-w-none"
+				overlayClassName="z-[100] bg-black/80"
+				className="fixed inset-0 z-[100] flex h-dvh w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-0 bg-black p-0 text-white shadow-none sm:max-w-none"
 			>
 				<DialogTitle className="sr-only">{current.alt ?? "图片预览"}</DialogTitle>
 				<div className="absolute top-4 right-4 z-20 flex items-center gap-1 rounded-xl border border-white/10 bg-white/10 p-1 shadow-2xl backdrop-blur-md">

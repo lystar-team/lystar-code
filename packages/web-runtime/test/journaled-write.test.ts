@@ -32,7 +32,9 @@ class FakeRuntime implements RuntimeSession {
 	lastAssistantText: string | undefined = "latest assistant";
 	lastBash: { command: string; excludeFromContext: boolean } | undefined;
 	lastQueueAction: { queueId: string; action: "remove" | "steer" } | undefined;
+	lastFollowUp: { text: string; queueId?: string } | undefined;
 	private releaseBash: (() => void) | undefined;
+	private releasePrompt: (() => void) | undefined;
 	constructor(sessionPath: string, cwd: string, counts: Record<string, number>) {
 		this.sessionPath = sessionPath;
 		this.cwd = cwd;
@@ -116,9 +118,24 @@ class FakeRuntime implements RuntimeSession {
 	async continueSubagent() {
 		this.counts.continue_subagent = (this.counts.continue_subagent ?? 0) + 1;
 	}
-	async prompt() {}
+	async prompt(text?: string, _images?: Array<{ data: string; mimeType: string }>, queueId?: string) {
+		this.counts.prompt = (this.counts.prompt ?? 0) + 1;
+		if (this.releasePrompt) {
+			this.counts.follow_up = (this.counts.follow_up ?? 0) + 1;
+			this.lastFollowUp = { text: text ?? "", ...(queueId ? { queueId } : {}) };
+			return;
+		}
+		if (this.counts.block_prompt) {
+			await new Promise<void>((resolve) => {
+				this.releasePrompt = resolve;
+			});
+		}
+	}
 	async steer() {}
-	async followUp() {}
+	async followUp(text: string, _images?: Array<{ data: string; mimeType: string }>, queueId?: string) {
+		this.counts.follow_up = (this.counts.follow_up ?? 0) + 1;
+		this.lastFollowUp = { text, ...(queueId ? { queueId } : {}) };
+	}
 	async queueAction(queueId: string, action: "remove" | "steer") {
 		this.counts.queue_action = (this.counts.queue_action ?? 0) + 1;
 		this.lastQueueAction = { queueId, action };
@@ -206,6 +223,8 @@ class FakeRuntime implements RuntimeSession {
 		this.counts.abort = (this.counts.abort ?? 0) + 1;
 		this.releaseBash?.();
 		this.releaseBash = undefined;
+		this.releasePrompt?.();
+		this.releasePrompt = undefined;
 	}
 	async reloadResources() {
 		this.counts.reload_resources = (this.counts.reload_resources ?? 0) + 1;
@@ -328,6 +347,19 @@ function setup() {
 		getDiagnostics: async () => ({}),
 		getGitStatus: async () => ({}),
 		getGitDiff: async () => ({}),
+		getGitStats: async () => ({}),
+		getGitBranches: async () => ({}),
+		getGitHistory: async () => ({}),
+		getGitCommit: async () => ({}),
+		mutateGit: async (_cwd: string, repositoryPath: string | undefined, mutation: { type: string }) => {
+			counts.mutate_git = (counts.mutate_git ?? 0) + 1;
+			return {
+				repositoryPath: repositoryPath ?? "",
+				action: mutation.type,
+				message: "ok",
+				status: { root: cwd, branch: "main", ahead: 0, behind: 0, files: [] },
+			};
+		},
 		checkForUpdates: async () => ({}),
 		listSettings: () => runtime.listSettings(),
 		getSessionTree: () => [],
@@ -541,6 +573,27 @@ const SESSION_COMMANDS = new Set([
 ]);
 
 describe("WebRuntimeService journaled writes", () => {
+	it("broadcasts a model catalog revision after a provider write", async () => {
+		const setupValue = setup();
+		const active = await connection(setupValue.service);
+		await active.handle({
+			type: "request",
+			id: "add-provider",
+			request: {
+				command: "add_model_provider",
+				provider: "provider-one",
+				baseUrl: "https://provider.test/v1",
+				api: "openai-completions",
+				clientInstanceId: "client",
+				clientRequestId: "add-provider",
+			},
+		});
+
+		expect(
+			active.messages.find((message) => message.type === "event" && message.event.type === "model_catalog_changed"),
+		).toMatchObject({ type: "event", event: { type: "model_catalog_changed", revision: 2 } });
+	});
+
 	it("deletes an idle Session while the requesting client owns its only lease", async () => {
 		const setupValue = setup();
 		const active = await lease(setupValue.service, setupValue.sessionPath);
@@ -565,10 +618,40 @@ describe("WebRuntimeService journaled writes", () => {
 		expect(setupValue.counts.delete_session).toBe(1);
 	});
 
-	it("keeps the requesting lease when another client still occupies the Session", async () => {
+	it("deletes multiple Sessions in one command and preserves partial failures", async () => {
+		const setupValue = setup();
+		const missingPath = join(setupValue.directory, "missing.jsonl");
+		const active = await connection(setupValue.service);
+		await active.handle({
+			type: "request",
+			id: "delete-batch",
+			request: {
+				command: "delete_sessions",
+				items: [
+					{ cwd: setupValue.cwd, sessionPath: setupValue.sessionPath },
+					{ cwd: setupValue.cwd, sessionPath: missingPath },
+				],
+				clientInstanceId: "client",
+				clientRequestId: "delete-batch",
+			},
+		});
+
+		expect(
+			active.messages.find((message) => message.type === "response" && message.id === "delete-batch"),
+		).toMatchObject({
+			ok: true,
+			result: {
+				deletedPaths: [setupValue.sessionPath],
+				failures: [{ sessionPath: missingPath, code: "not_found", message: "未找到会话" }],
+			},
+		});
+		expect(setupValue.counts.delete_session).toBe(1);
+	});
+
+	it("revokes every idle Web lease before deleting a Session", async () => {
 		const setupValue = setup();
 		const first = await lease(setupValue.service, setupValue.sessionPath, "client-a");
-		await lease(setupValue.service, setupValue.sessionPath, "client-b");
+		const second = await lease(setupValue.service, setupValue.sessionPath, "client-b");
 		await first.connection.handle({
 			type: "request",
 			id: "delete-shared",
@@ -580,23 +663,24 @@ describe("WebRuntimeService journaled writes", () => {
 				clientRequestId: "delete-shared",
 			},
 		});
-		await first.connection.handle({
+		await second.connection.handle({
 			type: "request",
-			id: "lease-still-valid",
+			id: "lease-revoked",
 			request: {
 				command: "get_session_info",
 				sessionPath: setupValue.sessionPath,
-				leaseId: first.leaseId,
+				leaseId: second.leaseId,
 			},
 		});
 
 		expect(
 			first.connection.messages.find((message) => message.type === "response" && message.id === "delete-shared"),
-		).toMatchObject({ ok: false, error: { code: "session_attached" } });
+		).toMatchObject({ ok: true, result: { deleted: true } });
 		expect(
-			first.connection.messages.find((message) => message.type === "response" && message.id === "lease-still-valid"),
-		).toMatchObject({ ok: true });
-		expect(setupValue.counts.delete_session).toBeUndefined();
+			second.connection.messages.find((message) => message.type === "response" && message.id === "lease-revoked"),
+		).toMatchObject({ ok: false, error: { code: "invalid_session_lease" } });
+		expect(setupValue.counts.dispose_runtime).toBe(1);
+		expect(setupValue.counts.delete_session).toBe(1);
 	});
 
 	it("returns Core session information only for the active Session lease", async () => {
@@ -861,6 +945,52 @@ describe("WebRuntimeService journaled writes", () => {
 		expect(
 			active.connection.messages.find((message) => message.type === "response" && message.id === "abort-share"),
 		).toMatchObject({ ok: true, result: { type: "share_session", status: "aborted" } });
+	});
+
+	it("atomically queues a prompt received while another prompt operation is active", async () => {
+		const setupValue = setup();
+		setupValue.counts.block_prompt = 1;
+		const active = await lease(setupValue.service, setupValue.sessionPath);
+		try {
+			await active.connection.handle({
+				type: "request",
+				id: "prompt-first",
+				request: {
+					command: "prompt",
+					sessionPath: setupValue.sessionPath,
+					leaseId: active.leaseId,
+					clientInstanceId: "client",
+					clientRequestId: "prompt-first",
+					text: "first",
+				},
+			});
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			await active.connection.handle({
+				type: "request",
+				id: "prompt-second",
+				request: {
+					command: "prompt",
+					sessionPath: setupValue.sessionPath,
+					leaseId: active.leaseId,
+					clientInstanceId: "client",
+					clientRequestId: "prompt-second",
+					text: "second",
+				},
+			});
+
+			const queued = active.connection.messages.find(
+				(message) => message.type === "response" && message.id === "prompt-second",
+			);
+			expect(queued).toMatchObject({
+				ok: true,
+				result: { operation: { type: "follow_up", status: "completed" } },
+			});
+			expect(setupValue.counts.prompt).toBe(2);
+			expect(setupValue.counts.follow_up).toBe(1);
+			expect(setupValue.runtime.lastFollowUp).toEqual({ text: "second", queueId: "prompt-second" });
+		} finally {
+			await setupValue.runtime.abort();
+		}
 	});
 
 	it("locks the session for the full resource reload window", async () => {
@@ -1459,6 +1589,32 @@ describe("WebRuntimeService journaled writes", () => {
 		});
 		expect(started).toContain("after-failure");
 	});
+	it("journals Git mutations by repository and replays duplicate requests once", async () => {
+		const setupValue = setup();
+		const active = await connection(setupValue.service);
+		const payload = {
+			command: "mutate_git" as const,
+			cwd: setupValue.cwd,
+			repositoryPath: "packages/app",
+			mutation: { type: "stage" as const, paths: ["src/app.ts"] },
+			clientInstanceId: "client",
+			clientRequestId: "git-stage-once",
+		};
+		await Promise.all([
+			active.handle({ type: "request", id: "git-a", request: payload }),
+			active.handle({ type: "request", id: "git-b", request: payload }),
+		]);
+		expect(setupValue.counts.mutate_git).toBe(1);
+		expect(
+			active.messages
+				.filter((message) => message.type === "response" && (message.id === "git-a" || message.id === "git-b"))
+				.map((message) => (message.type === "response" ? message.ok : false)),
+		).toEqual([true, true]);
+		expect(readFileSync(join(setupValue.directory, "host", "operations.jsonl"), "utf8")).toContain(
+			`"sessionPath":"git:${setupValue.cwd}:packages/app"`,
+		);
+	});
+
 	it("replays a completed login after a response drop without duplicating credentials", async () => {
 		const setupValue = setup();
 		const payload = request("login_model_provider", setupValue.cwd, setupValue.sessionPath, "", "dropped-login");

@@ -5,12 +5,19 @@ import type {
 	FileMetadataResponse,
 	FileResponse,
 	GatewayEvent,
+	GitBranchesResponse,
+	GitCommitResponse,
 	GitDiffResponse,
+	GitHistoryResponse,
+	GitMutation,
+	GitMutationResponse,
+	GitStatsResponse,
 	GitStatusResponse,
 	HarnessImportResultResponse,
 	HarnessImportsResponse,
 	HostInstructionsResponse,
 	ImageUploadResponse,
+	ModelOptionsResponse,
 	ModelsResponse,
 	ProjectGroup,
 	ProjectSkillsResponse,
@@ -112,6 +119,13 @@ export class WebApi {
 
 	async projectGroups(): Promise<{ groups: ProjectGroup[] }> {
 		return this.request<{ groups: ProjectGroup[] }>("/api/project-groups");
+	}
+
+	async reorderProjectGroups(groupIds: string[]): Promise<{ groups: ProjectGroup[] }> {
+		return this.request<{ groups: ProjectGroup[] }>("/api/project-groups", {
+			method: "PATCH",
+			body: JSON.stringify({ groupIds }),
+		});
 	}
 
 	async addProjectGroup(name: string): Promise<{ group: ProjectGroup; groups: ProjectGroup[] }> {
@@ -270,8 +284,9 @@ export class WebApi {
 		);
 	}
 
-	async gitStatus(projectId: string): Promise<GitStatusResponse> {
-		return this.request<GitStatusResponse>(`/api/projects/${encodeURIComponent(projectId)}/git/status`);
+	async gitStatus(projectId: string, discover = false): Promise<GitStatusResponse> {
+		const params = discover ? "?discover=true" : "";
+		return this.request<GitStatusResponse>(`/api/projects/${encodeURIComponent(projectId)}/git/status${params}`);
 	}
 
 	async gitDiff(projectId: string, path?: string, staged = false, repositoryPath?: string): Promise<GitDiffResponse> {
@@ -279,6 +294,48 @@ export class WebApi {
 		if (path) params.set("path", path);
 		if (repositoryPath) params.set("repositoryPath", repositoryPath);
 		return this.request<GitDiffResponse>(`/api/projects/${encodeURIComponent(projectId)}/git/diff?${params}`);
+	}
+
+	async gitStats(projectId: string, repositoryPath?: string): Promise<GitStatsResponse> {
+		const params = new URLSearchParams();
+		if (repositoryPath) params.set("repositoryPath", repositoryPath);
+		return this.request<GitStatsResponse>(`/api/projects/${encodeURIComponent(projectId)}/git/stats?${params}`);
+	}
+
+	async gitBranches(projectId: string, repositoryPath?: string): Promise<GitBranchesResponse> {
+		const params = new URLSearchParams();
+		if (repositoryPath) params.set("repositoryPath", repositoryPath);
+		return this.request<GitBranchesResponse>(`/api/projects/${encodeURIComponent(projectId)}/git/branches?${params}`);
+	}
+
+	async gitHistory(
+		projectId: string,
+		offset = 0,
+		limit = 50,
+		repositoryPath?: string,
+	): Promise<GitHistoryResponse> {
+		const params = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+		if (repositoryPath) params.set("repositoryPath", repositoryPath);
+		return this.request<GitHistoryResponse>(`/api/projects/${encodeURIComponent(projectId)}/git/history?${params}`);
+	}
+
+	async gitCommit(
+		projectId: string,
+		revision: string,
+		repositoryPath?: string,
+		path?: string,
+	): Promise<GitCommitResponse> {
+		const params = new URLSearchParams({ revision });
+		if (repositoryPath) params.set("repositoryPath", repositoryPath);
+		if (path) params.set("path", path);
+		return this.request<GitCommitResponse>(`/api/projects/${encodeURIComponent(projectId)}/git/commit?${params}`);
+	}
+
+	async mutateGit(projectId: string, mutation: GitMutation, repositoryPath?: string): Promise<GitMutationResponse> {
+		return this.request<GitMutationResponse>(`/api/projects/${encodeURIComponent(projectId)}/git/mutate`, {
+			method: "POST",
+			body: JSON.stringify({ mutation, clientRequestId: createUuid(), ...(repositoryPath ? { repositoryPath } : {}) }),
+		});
 	}
 
 	async projectTrust(projectId: string): Promise<ProjectTrustResponse> {
@@ -340,6 +397,7 @@ export class WebApi {
 		attachments?: PromptAttachment[],
 		queueId?: string,
 	): Promise<{ operation?: WebOperation; accepted?: boolean }> {
+		const clientRequestId = kind === "prompt" && queueId ? queueId : createUuid();
 		const result = await this.request<{ operation?: WebOperation; accepted?: boolean }>(
 			`/api/sessions/${encodeURIComponent(sessionId)}/${kind}`,
 			{
@@ -347,8 +405,8 @@ export class WebApi {
 				body: JSON.stringify({
 					text,
 					...(attachments?.length ? { attachments } : {}),
-					...(queueId ? { queueId } : {}),
-					clientRequestId: createUuid(),
+					...(kind !== "prompt" && queueId ? { queueId } : {}),
+					clientRequestId,
 				}),
 			},
 		);
@@ -402,6 +460,16 @@ export class WebApi {
 		await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
 	}
 
+	async deleteSessions(sessionIds: string[]): Promise<{
+		deletedIds: string[];
+		failures: Array<{ sessionId: string; code: string; message: string }>;
+	}> {
+		return this.request("/api/sessions", {
+			method: "DELETE",
+			body: JSON.stringify({ sessionIds }),
+		});
+	}
+
 	async renameSession(sessionId: string, name: string): Promise<{ session: WebSessionSnapshot }> {
 		return this.request<{ session: WebSessionSnapshot }>(`/api/sessions/${encodeURIComponent(sessionId)}/rename`, {
 			method: "POST",
@@ -451,6 +519,13 @@ export class WebApi {
 			method: "POST",
 			body: JSON.stringify({ entryId, summarize, clientRequestId: createUuid() }),
 		});
+	}
+
+	async modelOptions(includeProviders: readonly string[] = []): Promise<ModelOptionsResponse> {
+		const params = new URLSearchParams();
+		for (const provider of includeProviders) params.append("includeProvider", provider);
+		const query = params.size > 0 ? `?${params}` : "";
+		return this.request<ModelOptionsResponse>(`/api/model-options${query}`);
 	}
 
 	async models(): Promise<ModelsResponse> {

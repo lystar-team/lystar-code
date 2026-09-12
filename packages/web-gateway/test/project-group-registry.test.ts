@@ -32,6 +32,28 @@ test("ProjectGroupRegistry 持久化项目组和项目归属", async (t) => {
 	});
 });
 
+test("ProjectGroupRegistry 支持持久化项目组顺序", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "lystar-project-groups-order-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const registry = new ProjectGroupRegistry(join(root, "agent"));
+	await registry.load();
+	const first = await registry.create("第一个");
+	const second = await registry.create("第二个");
+
+	await registry.reorder([second.id, first.id]);
+	assert.deepEqual(
+		registry.list().map((group) => group.id),
+		[second.id, first.id],
+	);
+
+	const restored = new ProjectGroupRegistry(join(root, "agent"));
+	await restored.load();
+	assert.deepEqual(
+		restored.list().map((group) => group.id),
+		[second.id, first.id],
+	);
+});
+
 test("ProjectGroupRegistry 串行保存并保留并发创建的全部项目组", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "lystar-project-groups-concurrent-"));
 	t.after(() => rm(root, { recursive: true, force: true }));

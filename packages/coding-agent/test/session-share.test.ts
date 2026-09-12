@@ -85,14 +85,20 @@ describe("shareSessionAsPrivateGist", () => {
 		process.env.LYSTAR_FAKE_GH_MODE = "delay";
 		const controller = new AbortController();
 		let exportedPath = "";
+		let markExported!: () => void;
+		const exported = new Promise<void>((resolve) => {
+			markExported = resolve;
+		});
 		const pending = shareSessionAsPrivateGist({
 			signal: controller.signal,
 			exportHtml: async (path) => {
 				exportedPath = path;
 				writeFileSync(path, "shared session");
+				markExported();
 			},
 		});
-		setTimeout(() => controller.abort(), 50);
+		await exported;
+		controller.abort();
 
 		await expect(pending).rejects.toBeDefined();
 		expect(existsSync(dirname(exportedPath))).toBe(false);

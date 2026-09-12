@@ -1,16 +1,42 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import type { Server } from "node:http";
+import type { IncomingMessage, Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { ServerEvent } from "@lystar/code-web-protocol";
+import type { RuntimeProtocolClient, ServerEvent } from "@lystar/code-web-protocol";
 import { WebSocket } from "ws";
 import type { WebGatewayConfig } from "../src/config.ts";
-import { WebGatewayServer } from "../src/server.ts";
+import { scopedRuntimeClientId, WebGatewayServer } from "../src/server.ts";
+
+interface TestLease {
+	leaseId: string;
+	leaseGeneration: number;
+	sessionPath: string;
+	createdAt: number;
+	updatedAt: number;
+}
 
 interface TestContext {
+	id: string;
+	client?: RuntimeProtocolClient;
+	leases: Map<string, TestLease>;
 	sockets: Set<WebSocket>;
+	bootstrapGeneration: number;
+	bootstrapCache?: {
+		generation: number;
+		value: {
+			projects: unknown[];
+			projectGroups: unknown[];
+			capabilities: readonly string[];
+			connection: { connected: boolean; host: string };
+			pendingUiRequests: unknown[];
+			operations: unknown[];
+			leases: unknown[];
+		};
+	};
+	resumeGeneration?: number;
+	resumeSessionIds: Set<string>;
 }
 
 interface TestSocket {
@@ -18,12 +44,15 @@ interface TestSocket {
 	sent: unknown[];
 	pings: number;
 	terminated: number;
+	emit(event: string, ...args: unknown[]): void;
 }
 
 interface GatewayInternals {
 	server: Server;
 	createContext(id: string): TestContext;
 	handleHostEvent(context: TestContext, event: ServerEvent): void;
+	handleWebSocket(socket: WebSocket, request: IncomingMessage): Promise<void>;
+	restoreContextLeases(context: TestContext, client: RuntimeProtocolClient): Promise<void>;
 	checkWebSocketLiveness(): void;
 	sendWebSocket(socket: WebSocket, payload: string): void;
 	socketLiveness: WeakMap<WebSocket, boolean>;
@@ -50,6 +79,7 @@ function createConfig(): WebGatewayConfig {
 
 function createSocket(): TestSocket {
 	const sent: unknown[] = [];
+	const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
 	let pings = 0;
 	let terminated = 0;
 	const socket = {
@@ -66,6 +96,12 @@ function createSocket(): TestSocket {
 			terminated++;
 		},
 		close() {},
+		on(event: string, listener: (...args: unknown[]) => void) {
+			const eventListeners = listeners.get(event) ?? new Set<(...args: unknown[]) => void>();
+			eventListeners.add(listener);
+			listeners.set(event, eventListeners);
+			return this;
+		},
 	} as unknown as WebSocket;
 	return {
 		webSocket: socket,
@@ -75,6 +111,9 @@ function createSocket(): TestSocket {
 		},
 		get terminated() {
 			return terminated;
+		},
+		emit(event, ...args) {
+			for (const listener of listeners.get(event) ?? []) listener(...args);
 		},
 	};
 }
@@ -112,6 +151,111 @@ test("Gateway 对缺失资源返回 404，只对页面导航回退首页", async
 
 	const serviceWorker = await fetch(`${baseUrl}/sw.js`);
 	assert.equal(serviceWorker.headers.get("cache-control"), "no-cache");
+});
+
+test("Gateway 复用当前 bootstrap 时只发送轻量连接确认", async (t) => {
+	const server = new WebGatewayServer(createConfig());
+	t.after(() => void server.close());
+	const internal = internals(server);
+	const browserClientId = "bootstrap-cache-client";
+	const contextId = scopedRuntimeClientId(undefined, browserClientId);
+	const context = internal.createContext(contextId);
+	context.bootstrapGeneration = 3;
+	context.bootstrapCache = {
+		generation: 3,
+		value: {
+			projects: [],
+			projectGroups: [],
+			capabilities: [],
+			connection: { connected: true, host: "Web Host" },
+			pendingUiRequests: [],
+			operations: [],
+			leases: [],
+		},
+	};
+	internal.contexts.set(contextId, context);
+	const socket = createSocket();
+	const request = {
+		headers: { host: "127.0.0.1", "x-lystar-client-id": browserClientId },
+		url: "/ws",
+	} as unknown as IncomingMessage;
+
+	await internal.handleWebSocket(socket.webSocket, request);
+
+	assert.deepEqual(socket.sent, [{ type: "connection_state", connected: true, message: "" }]);
+});
+
+test("Gateway 同一浏览器未漏事件时复用断线 generation 轻量恢复", async (t) => {
+	const server = new WebGatewayServer(createConfig());
+	t.after(() => void server.close());
+	const internal = internals(server);
+	const browserClientId = "bootstrap-resume-client";
+	const contextId = scopedRuntimeClientId(undefined, browserClientId);
+	const context = internal.createContext(contextId);
+	context.bootstrapGeneration = 3;
+	context.bootstrapCache = {
+		generation: 3,
+		value: {
+			projects: [],
+			projectGroups: [],
+			capabilities: [],
+			connection: { connected: true, host: "Web Host" },
+			pendingUiRequests: [],
+			operations: [],
+			leases: [],
+		},
+	};
+	internal.contexts.set(contextId, context);
+	const request = {
+		headers: { host: "127.0.0.1", "x-lystar-client-id": browserClientId },
+		url: "/ws",
+	} as unknown as IncomingMessage;
+	const initialSocket = createSocket();
+	await internal.handleWebSocket(initialSocket.webSocket, request);
+	internal.handleHostEvent(context, { type: "sessions_changed", cwd: "/tmp" });
+	initialSocket.emit("close");
+	assert.equal(context.resumeGeneration, 4);
+
+	const resumedSocket = createSocket();
+	await internal.handleWebSocket(resumedSocket.webSocket, request);
+
+	assert.deepEqual(resumedSocket.sent, [{ type: "connection_state", connected: true, message: "" }]);
+});
+
+test("Gateway Runtime 断开时不复用旧 resume generation", async (t) => {
+	const server = new WebGatewayServer(createConfig());
+	t.after(() => void server.close());
+	const internal = internals(server);
+	const browserClientId = "runtime-disconnected-client";
+	const contextId = scopedRuntimeClientId(undefined, browserClientId);
+	const context = internal.createContext(contextId);
+	context.bootstrapGeneration = 4;
+	context.bootstrapCache = {
+		generation: 3,
+		value: {
+			projects: [],
+			projectGroups: [],
+			capabilities: [],
+			connection: { connected: true, host: "Web Host" },
+			pendingUiRequests: [],
+			operations: [],
+			leases: [],
+		},
+	};
+	context.resumeGeneration = 4;
+	const unavailable = Promise.reject<RuntimeProtocolClient>(new Error("runtime unavailable"));
+	void unavailable.catch(() => {});
+	Object.assign(context, { connectionState: "disconnected", connectPromise: unavailable });
+	internal.contexts.set(contextId, context);
+	const socket = createSocket();
+	const request = {
+		headers: { host: "127.0.0.1", "x-lystar-client-id": browserClientId },
+		url: "/ws",
+	} as unknown as IncomingMessage;
+
+	await internal.handleWebSocket(socket.webSocket, request);
+
+	assert.deepEqual(socket.sent, []);
 });
 
 test("Gateway 发送前把本条消息计入积压上限", async (t) => {
@@ -227,6 +371,90 @@ test("Gateway 只向订阅者发送会话详情，其他连接接收摘要", asy
 	assert.deepEqual(summaryOnly.sent, [{ type: "session_summary", sessionId: "session-1", activity: "running" }]);
 });
 
+test("Gateway 订阅确认前同步当前会话租约", async (t) => {
+	const server = new WebGatewayServer(createConfig());
+	t.after(() => void server.close());
+	const internal = internals(server);
+	const context = internal.createContext("lease-subscription-client");
+	const socket = createSocket();
+	context.sockets.add(socket.webSocket);
+	context.leases.set("session-1", {
+		leaseId: "lease-1",
+		leaseGeneration: 2,
+		sessionPath: "/tmp/lease-session.jsonl",
+		createdAt: 1,
+		updatedAt: 2,
+	});
+
+	internal.subscribeSession(context, socket.webSocket, "session-1");
+
+	assert.deepEqual(socket.sent, [
+		{
+			type: "session_lease",
+			sessionId: "session-1",
+			lease: { leaseId: "lease-1", leaseGeneration: 2, createdAt: 1, updatedAt: 2 },
+		},
+		{ type: "session_subscription", sessionId: "session-1", seq: 0, gap: false },
+	]);
+});
+
+test("Gateway 优先恢复已订阅会话的租约", async (t) => {
+	const server = new WebGatewayServer(createConfig());
+	t.after(() => void server.close());
+	const internal = internals(server);
+	const context = internal.createContext("lease-restore-client");
+	const socket = createSocket();
+	context.sockets.add(socket.webSocket);
+	internal.subscriptionsFor(socket.webSocket).add("active-session");
+	context.leases.set("inactive-session", {
+		leaseId: "old-inactive",
+		leaseGeneration: 1,
+		sessionPath: "/tmp/inactive-session.jsonl",
+		createdAt: 1,
+		updatedAt: 1,
+	});
+	context.leases.set("active-session", {
+		leaseId: "old-active",
+		leaseGeneration: 1,
+		sessionPath: "/tmp/active-session.jsonl",
+		createdAt: 1,
+		updatedAt: 1,
+	});
+	const restoredPaths: string[] = [];
+	const client = {
+		request<T>(request: { command: string; sessionPath?: string }): Promise<T> {
+			const sessionPath = request.sessionPath ?? "";
+			restoredPaths.push(sessionPath);
+			return Promise.resolve({
+				lease: {
+					leaseId: `restored:${sessionPath}`,
+					leaseGeneration: 2,
+					sessionPath,
+					createdAt: 2,
+					updatedAt: 2,
+				},
+			} as unknown as T);
+		},
+	} as unknown as RuntimeProtocolClient;
+	context.client = client;
+
+	await internal.restoreContextLeases(context, client);
+
+	assert.deepEqual(restoredPaths, ["/tmp/active-session.jsonl", "/tmp/inactive-session.jsonl"]);
+	assert.deepEqual(socket.sent, [
+		{
+			type: "session_lease",
+			sessionId: "active-session",
+			lease: {
+				leaseId: "restored:/tmp/active-session.jsonl",
+				leaseGeneration: 2,
+				createdAt: 2,
+				updatedAt: 2,
+			},
+		},
+	]);
+});
+
 test("Gateway 首次订阅也返回确认序号", async (t) => {
 	const server = new WebGatewayServer(createConfig());
 	t.after(() => void server.close());
@@ -337,11 +565,34 @@ test("Gateway 心跳会终止连续未响应的 WebSocket", async (t) => {
 	assert.equal(socket.terminated, 1);
 });
 
-test("Gateway 在没有浏览器连接时丢弃高频 session_progress", async (t) => {
+test("Gateway 断线期间保留上次订阅会话的进度序列", async (t) => {
+	const server = new WebGatewayServer(createConfig());
+	t.after(() => void server.close());
+	const internal = internals(server);
+	const context = internal.createContext("offline-resume-client");
+	context.resumeSessionIds.add("session-1");
+	internal.sessionIdsByPath.set("/tmp/offline-resume-session.jsonl", "session-1");
+
+	internal.handleHostEvent(context, {
+		type: "session_progress",
+		sessionPath: "/tmp/offline-resume-session.jsonl",
+		progress: { type: "assistant_delta", text: "补齐" },
+	});
+	const socket = createSocket();
+	internal.subscribeSession(context, socket.webSocket, "session-1", 0);
+
+	assert.deepEqual(socket.sent, [
+		{ type: "session_progress", sessionId: "session-1", progress: { type: "assistant_delta", text: "补齐" }, seq: 1 },
+		{ type: "session_subscription", sessionId: "session-1", seq: 1, gap: false },
+	]);
+});
+
+test("Gateway 在没有浏览器连接时丢弃未订阅会话的高频 session_progress", async (t) => {
 	const server = new WebGatewayServer(createConfig());
 	t.after(() => void server.close());
 	const internal = internals(server);
 	const context = internal.createContext("offline-client");
+	internal.sessionIdsByPath.set("/tmp/offline-session.jsonl", "session-1");
 
 	internal.handleHostEvent(context, {
 		type: "session_progress",
@@ -349,6 +600,8 @@ test("Gateway 在没有浏览器连接时丢弃高频 session_progress", async (
 		progress: { type: "assistant_delta", text: "ignored" },
 	});
 	await wait(75);
+	const socket = createSocket();
+	internal.subscribeSession(context, socket.webSocket, "session-1", 0);
 
-	assert.equal(context.sockets.size, 0);
+	assert.deepEqual(socket.sent, [{ type: "session_subscription", sessionId: "session-1", seq: 0, gap: false }]);
 });

@@ -884,6 +884,28 @@
                 {
                   "type": "object",
                   "required": [
+                    "command"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "list_model_options"
+                    },
+                    "includeProviders": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      },
+                      "maxItems": 1000
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
                     "command",
                     "provider",
                     "baseUrl",
@@ -1611,6 +1633,55 @@
                   "type": "object",
                   "required": [
                     "command",
+                    "items",
+                    "clientInstanceId",
+                    "clientRequestId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "delete_sessions"
+                    },
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "cwd",
+                          "sessionPath"
+                        ],
+                        "properties": {
+                          "cwd": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "sessionPath": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "minItems": 1,
+                      "maxItems": 10000
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
                     "cwd"
                   ],
                   "properties": {
@@ -2079,6 +2150,9 @@
                     "cwd": {
                       "type": "string",
                       "minLength": 1
+                    },
+                    "refreshRepositories": {
+                      "type": "boolean"
                     }
                   },
                   "additionalProperties": false
@@ -2108,6 +2182,368 @@
                     },
                     "staged": {
                       "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "get_git_stats"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "repositoryPath": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "get_git_branches"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "repositoryPath": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "offset",
+                    "limit"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "get_git_history"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "repositoryPath": {
+                      "type": "string"
+                    },
+                    "offset": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 100
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "revision"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "get_git_commit"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "repositoryPath": {
+                      "type": "string"
+                    },
+                    "revision": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "mutation",
+                    "clientInstanceId",
+                    "clientRequestId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "mutate_git"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "repositoryPath": {
+                      "type": "string"
+                    },
+                    "mutation": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "required": [
+                            "type",
+                            "paths"
+                          ],
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "stage"
+                            },
+                            "paths": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 16384
+                              },
+                              "minItems": 1,
+                              "maxItems": 10000
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "type",
+                            "paths"
+                          ],
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "unstage"
+                            },
+                            "paths": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 16384
+                              },
+                              "minItems": 1,
+                              "maxItems": 10000
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "type",
+                            "paths"
+                          ],
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "discard"
+                            },
+                            "paths": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 16384
+                              },
+                              "minItems": 1,
+                              "maxItems": 10000
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "type",
+                            "message"
+                          ],
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "commit"
+                            },
+                            "message": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 65536
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "type"
+                          ],
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "fetch"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "type"
+                          ],
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "pull"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "type"
+                          ],
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "push"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "type",
+                            "name"
+                          ],
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "create_branch"
+                            },
+                            "name": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 4096
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "type",
+                            "name"
+                          ],
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "switch_branch"
+                            },
+                            "name": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 4096
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "type",
+                            "name"
+                          ],
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "delete_branch"
+                            },
+                            "name": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 4096
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "type",
+                            "source"
+                          ],
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "merge"
+                            },
+                            "source": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 4096
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "type"
+                          ],
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "abort_merge"
+                            }
+                          },
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
                     }
                   },
                   "additionalProperties": false
@@ -3944,7 +4380,7 @@
             },
             "version": {
               "type": "integer",
-              "const": 4
+              "const": 6
             },
             "productVersion": {
               "type": "string",
@@ -3952,7 +4388,7 @@
             },
             "protocolVersion": {
               "type": "integer",
-              "const": 4
+              "const": 6
             },
             "serverInstanceId": {
               "type": "string",
@@ -4685,6 +5121,24 @@
                     "cwd": {
                       "type": "string",
                       "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "revision"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "model_catalog_changed"
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": 1
                     }
                   },
                   "additionalProperties": false
@@ -6182,6 +6636,12 @@
           "type": "string",
           "minLength": 1
         },
+        "detached": {
+          "type": "boolean"
+        },
+        "merging": {
+          "type": "boolean"
+        },
         "ahead": {
           "type": "integer",
           "minimum": 0
@@ -6278,6 +6738,12 @@
                 "type": "string",
                 "minLength": 1
               },
+              "detached": {
+                "type": "boolean"
+              },
+              "merging": {
+                "type": "boolean"
+              },
               "ahead": {
                 "type": "integer",
                 "minimum": 0
@@ -6360,6 +6826,11 @@
         "staged": {
           "type": "boolean"
         },
+        "revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
         "diff": {
           "type": "string"
         },
@@ -6381,6 +6852,646 @@
         },
         "contentTruncated": {
           "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceGetGitStatsResult": {
+      "type": "object",
+      "required": [
+        "repositoryPath",
+        "files"
+      ],
+      "properties": {
+        "repositoryPath": {
+          "type": "string"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "path",
+              "staged",
+              "additions",
+              "deletions",
+              "binary"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "originalPath": {
+                "type": "string",
+                "minLength": 1
+              },
+              "staged": {
+                "type": "boolean"
+              },
+              "additions": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "deletions": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "binary": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceGetGitBranchesResult": {
+      "type": "object",
+      "required": [
+        "repositoryPath",
+        "detached",
+        "merging",
+        "remotes",
+        "branches"
+      ],
+      "properties": {
+        "repositoryPath": {
+          "type": "string"
+        },
+        "current": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "detached": {
+          "type": "boolean"
+        },
+        "merging": {
+          "type": "boolean"
+        },
+        "remotes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "maxItems": 1000
+        },
+        "branches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "current",
+              "remote",
+              "ahead",
+              "behind",
+              "commit"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "current": {
+                "type": "boolean"
+              },
+              "remote": {
+                "type": "boolean"
+              },
+              "upstream": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "ahead": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "behind": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "commit": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 10000
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceGetGitHistoryResult": {
+      "type": "object",
+      "required": [
+        "repositoryPath",
+        "offset",
+        "commits",
+        "hasMore"
+      ],
+      "properties": {
+        "repositoryPath": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "commits": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "hash",
+              "shortHash",
+              "subject",
+              "authorName",
+              "authorEmail",
+              "authoredAt",
+              "parents"
+            ],
+            "properties": {
+              "hash": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "shortHash": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "subject": {
+                "type": "string",
+                "maxLength": 65536
+              },
+              "authorName": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "authorEmail": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "authoredAt": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "parents": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "maxItems": 64
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 100
+        },
+        "nextOffset": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hasMore": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceGetGitCommitResult": {
+      "type": "object",
+      "required": [
+        "repositoryPath",
+        "hash",
+        "shortHash",
+        "subject",
+        "authorName",
+        "authorEmail",
+        "authoredAt",
+        "parents",
+        "body",
+        "committerName",
+        "committerEmail",
+        "committedAt",
+        "files"
+      ],
+      "properties": {
+        "repositoryPath": {
+          "type": "string"
+        },
+        "hash": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "shortHash": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "subject": {
+          "type": "string",
+          "maxLength": 65536
+        },
+        "authorName": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "authorEmail": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "authoredAt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "parents": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "maxItems": 64
+        },
+        "body": {
+          "type": "string",
+          "maxLength": 1048576
+        },
+        "committerName": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "committerEmail": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "committedAt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "path",
+              "additions",
+              "deletions",
+              "binary"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "originalPath": {
+                "type": "string",
+                "minLength": 1
+              },
+              "additions": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "deletions": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "binary": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 100000
+        },
+        "diff": {
+          "type": "object",
+          "required": [
+            "staged",
+            "diff",
+            "additions",
+            "deletions"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "repositoryPath": {
+              "type": "string"
+            },
+            "staged": {
+              "type": "boolean"
+            },
+            "revision": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "diff": {
+              "type": "string"
+            },
+            "additions": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "deletions": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "original": {
+              "type": "string",
+              "maxLength": 2097152
+            },
+            "modified": {
+              "type": "string",
+              "maxLength": 2097152
+            },
+            "contentTruncated": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceMutateGitResult": {
+      "type": "object",
+      "required": [
+        "repositoryPath",
+        "action",
+        "message",
+        "status"
+      ],
+      "properties": {
+        "repositoryPath": {
+          "type": "string"
+        },
+        "action": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "stage"
+            },
+            {
+              "type": "string",
+              "const": "unstage"
+            },
+            {
+              "type": "string",
+              "const": "discard"
+            },
+            {
+              "type": "string",
+              "const": "commit"
+            },
+            {
+              "type": "string",
+              "const": "fetch"
+            },
+            {
+              "type": "string",
+              "const": "pull"
+            },
+            {
+              "type": "string",
+              "const": "push"
+            },
+            {
+              "type": "string",
+              "const": "create_branch"
+            },
+            {
+              "type": "string",
+              "const": "switch_branch"
+            },
+            {
+              "type": "string",
+              "const": "delete_branch"
+            },
+            {
+              "type": "string",
+              "const": "merge"
+            },
+            {
+              "type": "string",
+              "const": "abort_merge"
+            }
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "status": {
+          "type": "object",
+          "required": [
+            "root",
+            "ahead",
+            "behind",
+            "files"
+          ],
+          "properties": {
+            "root": {
+              "type": "string",
+              "minLength": 1
+            },
+            "branch": {
+              "type": "string",
+              "minLength": 1
+            },
+            "upstream": {
+              "type": "string",
+              "minLength": 1
+            },
+            "detached": {
+              "type": "boolean"
+            },
+            "merging": {
+              "type": "boolean"
+            },
+            "ahead": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "behind": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "path",
+                  "indexStatus",
+                  "worktreeStatus",
+                  "staged",
+                  "unstaged",
+                  "untracked",
+                  "conflicted"
+                ],
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "originalPath": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "indexStatus": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1
+                  },
+                  "worktreeStatus": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1
+                  },
+                  "staged": {
+                    "type": "boolean"
+                  },
+                  "unstaged": {
+                    "type": "boolean"
+                  },
+                  "untracked": {
+                    "type": "boolean"
+                  },
+                  "conflicted": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "repositories": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "root",
+                  "path",
+                  "kind",
+                  "ahead",
+                  "behind",
+                  "files"
+                ],
+                "properties": {
+                  "root": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "const": "root"
+                      },
+                      {
+                        "type": "string",
+                        "const": "nested"
+                      }
+                    ]
+                  },
+                  "branch": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "upstream": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "detached": {
+                    "type": "boolean"
+                  },
+                  "merging": {
+                    "type": "boolean"
+                  },
+                  "ahead": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "behind": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "path",
+                        "indexStatus",
+                        "worktreeStatus",
+                        "staged",
+                        "unstaged",
+                        "untracked",
+                        "conflicted"
+                      ],
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "originalPath": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "indexStatus": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 1
+                        },
+                        "worktreeStatus": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 1
+                        },
+                        "staged": {
+                          "type": "boolean"
+                        },
+                        "unstaged": {
+                          "type": "boolean"
+                        },
+                        "untracked": {
+                          "type": "boolean"
+                        },
+                        "conflicted": {
+                          "type": "boolean"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -7189,6 +8300,175 @@
         "additionalProperties": false
       },
       "maxItems": 1000
+    },
+    "WorkspaceListModelOptionsResult": {
+      "type": "object",
+      "required": [
+        "models",
+        "providers"
+      ],
+      "properties": {
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "provider",
+              "id",
+              "name",
+              "reasoning",
+              "contextWindow",
+              "supportedThinkingLevels"
+            ],
+            "properties": {
+              "provider": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "reasoning": {
+                "type": "boolean"
+              },
+              "contextWindow": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "supportedThinkingLevels": {
+                "type": "array",
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "off"
+                    },
+                    {
+                      "type": "string",
+                      "const": "minimal"
+                    },
+                    {
+                      "type": "string",
+                      "const": "low"
+                    },
+                    {
+                      "type": "string",
+                      "const": "medium"
+                    },
+                    {
+                      "type": "string",
+                      "const": "high"
+                    },
+                    {
+                      "type": "string",
+                      "const": "xhigh"
+                    },
+                    {
+                      "type": "string",
+                      "const": "max"
+                    },
+                    {
+                      "type": "string",
+                      "const": "ultra"
+                    }
+                  ]
+                },
+                "maxItems": 8
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 10000
+        },
+        "providers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "name",
+              "builtIn"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "builtIn": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 1000
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceDeleteSessionsResult": {
+      "type": "object",
+      "required": [
+        "deletedPaths",
+        "failures"
+      ],
+      "properties": {
+        "deletedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "maxItems": 10000
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "sessionPath",
+              "code",
+              "message"
+            ],
+            "properties": {
+              "sessionPath": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "code": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "message": {
+                "type": "string",
+                "maxLength": 16384
+              },
+              "retryable": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 10000
+        }
+      },
+      "additionalProperties": false
     },
     "WorkspaceSyncModelProviderResult": {
       "type": "array",

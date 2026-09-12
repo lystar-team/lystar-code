@@ -1233,7 +1233,129 @@ describe("CodingAgentRuntimeAdapter", () => {
 		expect(stagedDiff.diff).toContain("+staged");
 		expect(stagedDiff.original).toBe("");
 		expect(stagedDiff.modified).toBe("staged\n");
+		const stats = await adapter.getGitStats(tempDir);
+		expect(stats.files).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ path: "tracked.txt", staged: false, additions: 1, deletions: 0 }),
+				expect.objectContaining({ path: "staged.txt", staged: true, additions: 1, deletions: 0 }),
+				expect.objectContaining({ path: "renamed.txt", originalPath: "rename-me.txt", staged: true }),
+			]),
+		);
+		const branches = await adapter.getGitBranches(tempDir);
+		expect(branches).toMatchObject({ current: "main", detached: false, merging: false, remotes: [] });
+		expect(branches.branches).toEqual([
+			expect.objectContaining({ name: "main", current: true, remote: false, ahead: 0, behind: 0 }),
+		]);
+		const history = await adapter.getGitHistory(tempDir, 0, 1);
+		expect(history).toMatchObject({ offset: 0, hasMore: false });
+		expect(history.commits).toHaveLength(1);
+		const commit = await adapter.getGitCommit(tempDir, history.commits[0].hash, undefined, "tracked.txt");
+		expect(commit).toMatchObject({ subject: "base", authorName: "LYStar Test" });
+		expect(commit.files).toEqual(
+			expect.arrayContaining([expect.objectContaining({ path: "tracked.txt", additions: 1 })]),
+		);
+		expect(commit.diff).toMatchObject({
+			path: "tracked.txt",
+			revision: history.commits[0].hash,
+			original: "",
+			modified: "base\n",
+		});
 		expect(await adapter.getGitStatus(tempDir)).toEqual(before);
+	});
+
+	it("runs bounded Git mutations, remote sync, history pagination, and conflict recovery", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-git-mutations-"));
+		const repositoryDir = join(tempDir, "repository");
+		const remoteDir = join(tempDir, "remote.git");
+		const updaterDir = join(tempDir, "updater");
+		const runGit = (cwd: string, ...args: string[]) =>
+			execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, LC_ALL: "C" } });
+		cleanups.push(() => rmSync(tempDir, { recursive: true, force: true }));
+		mkdirSync(repositoryDir, { recursive: true });
+		runGit(tempDir, "init", "--bare", "--initial-branch=main", remoteDir);
+		runGit(repositoryDir, "init", "--initial-branch=main");
+		runGit(repositoryDir, "config", "user.name", "LYStar Test");
+		runGit(repositoryDir, "config", "user.email", "lystar@example.invalid");
+		writeFileSync(join(repositoryDir, "tracked.txt"), "base\n");
+		runGit(repositoryDir, "add", "tracked.txt");
+		runGit(repositoryDir, "commit", "-m", "base");
+		runGit(repositoryDir, "remote", "add", "origin", remoteDir);
+		runGit(repositoryDir, "push", "-u", "origin", "main");
+
+		const adapter = new CodingAgentRuntimeAdapter(join(tempDir, "agent"));
+		writeFileSync(join(repositoryDir, "tracked.txt"), "base\nlocal\n");
+		await adapter.mutateGit(repositoryDir, undefined, { type: "stage", paths: ["tracked.txt"] });
+		expect((await adapter.getGitStatus(repositoryDir)).files[0]).toMatchObject({ staged: true, unstaged: false });
+		await adapter.mutateGit(repositoryDir, undefined, { type: "unstage", paths: ["tracked.txt"] });
+		expect((await adapter.getGitStatus(repositoryDir)).files[0]).toMatchObject({ staged: false, unstaged: true });
+		await adapter.mutateGit(repositoryDir, undefined, { type: "stage", paths: ["tracked.txt"] });
+		await adapter.mutateGit(repositoryDir, undefined, { type: "commit", message: "local change" });
+		await adapter.mutateGit(repositoryDir, undefined, { type: "push" });
+		expect(runGit(remoteDir, "rev-parse", "main").trim()).toBe(runGit(repositoryDir, "rev-parse", "HEAD").trim());
+
+		runGit(tempDir, "clone", remoteDir, updaterDir);
+		runGit(updaterDir, "config", "user.name", "Remote Test");
+		runGit(updaterDir, "config", "user.email", "remote@example.invalid");
+		writeFileSync(join(updaterDir, "remote.txt"), "remote\n");
+		runGit(updaterDir, "add", "remote.txt");
+		runGit(updaterDir, "commit", "-m", "remote change");
+		runGit(updaterDir, "push");
+		await adapter.mutateGit(repositoryDir, undefined, { type: "fetch" });
+		expect(await adapter.getGitStatus(repositoryDir)).toMatchObject({ ahead: 0, behind: 1 });
+		await adapter.mutateGit(repositoryDir, undefined, { type: "pull" });
+		expect(readFileSync(join(repositoryDir, "remote.txt"), "utf8")).toBe("remote\n");
+
+		await adapter.mutateGit(repositoryDir, undefined, { type: "create_branch", name: "conflict" });
+		writeFileSync(join(repositoryDir, "tracked.txt"), "feature\n");
+		await adapter.mutateGit(repositoryDir, undefined, { type: "stage", paths: ["tracked.txt"] });
+		await adapter.mutateGit(repositoryDir, undefined, { type: "commit", message: "feature conflict" });
+		await adapter.mutateGit(repositoryDir, undefined, { type: "switch_branch", name: "main" });
+		writeFileSync(join(repositoryDir, "tracked.txt"), "main\n");
+		await adapter.mutateGit(repositoryDir, undefined, { type: "stage", paths: ["tracked.txt"] });
+		await adapter.mutateGit(repositoryDir, undefined, { type: "commit", message: "main conflict" });
+		await expect(
+			adapter.mutateGit(repositoryDir, undefined, { type: "merge", source: "conflict" }),
+		).rejects.toMatchObject({
+			code: "git_merge_conflict",
+		});
+		const conflicted = await adapter.getGitStatus(repositoryDir);
+		expect(conflicted.merging).toBe(true);
+		expect(conflicted.files).toEqual(
+			expect.arrayContaining([expect.objectContaining({ path: "tracked.txt", conflicted: true })]),
+		);
+		await adapter.mutateGit(repositoryDir, undefined, { type: "abort_merge" });
+		const afterAbort = await adapter.getGitStatus(repositoryDir);
+		expect(afterAbort.branch).toBe("main");
+		expect(afterAbort.merging).not.toBe(true);
+		await expect(
+			adapter.mutateGit(repositoryDir, undefined, { type: "delete_branch", name: "conflict" }),
+		).rejects.toThrow();
+
+		await adapter.mutateGit(repositoryDir, undefined, { type: "create_branch", name: "merged" });
+		writeFileSync(join(repositoryDir, "merged.txt"), "merged\n");
+		await adapter.mutateGit(repositoryDir, undefined, { type: "stage", paths: ["merged.txt"] });
+		await adapter.mutateGit(repositoryDir, undefined, { type: "commit", message: "merged branch" });
+		await adapter.mutateGit(repositoryDir, undefined, { type: "switch_branch", name: "main" });
+		await adapter.mutateGit(repositoryDir, undefined, { type: "merge", source: "merged" });
+		await adapter.mutateGit(repositoryDir, undefined, { type: "delete_branch", name: "merged" });
+		expect((await adapter.getGitBranches(repositoryDir)).branches.some((branch) => branch.name === "merged")).toBe(
+			false,
+		);
+
+		writeFileSync(join(repositoryDir, "tracked.txt"), "discarded\n");
+		writeFileSync(join(repositoryDir, "untracked.txt"), "untracked\n");
+		await adapter.mutateGit(repositoryDir, undefined, { type: "discard", paths: ["tracked.txt", "untracked.txt"] });
+		expect(readFileSync(join(repositoryDir, "tracked.txt"), "utf8")).toBe("main\n");
+		expect(existsSync(join(repositoryDir, "untracked.txt"))).toBe(false);
+
+		const firstPage = await adapter.getGitHistory(repositoryDir, 0, 1);
+		expect(firstPage).toMatchObject({ offset: 0, hasMore: true, nextOffset: 1 });
+		expect(firstPage.commits).toHaveLength(1);
+		const secondPage = await adapter.getGitHistory(repositoryDir, firstPage.nextOffset ?? 0, 1);
+		expect(secondPage.commits).toHaveLength(1);
+		await expect(
+			adapter.mutateGit(repositoryDir, undefined, { type: "create_branch", name: "--invalid" }),
+		).rejects.toMatchObject({ code: "git_branch_name_invalid" });
 	});
 
 	it("discovers nested repositories and reads their diffs", async () => {
@@ -1335,6 +1457,17 @@ describe("CodingAgentRuntimeAdapter", () => {
 		expect(repositories.some((repository) => repository.path === "")).toBe(false);
 		const diff = await adapter.getGitDiff(projectDir, "a.txt", false, "repo-a");
 		expect(diff).toMatchObject({ repositoryPath: "repo-a", path: "a.txt", additions: 1, deletions: 0 });
+		await adapter.mutateGit(projectDir, "repo-a", { type: "stage", paths: ["a.txt"] });
+		const updated = await adapter.getGitStatus(projectDir);
+		const updatedRepositories = updated.repositories ?? [];
+		expect(updatedRepositories.find((repository) => repository.path === "repo-a")?.files[0]).toMatchObject({
+			staged: true,
+			unstaged: false,
+		});
+		expect(updatedRepositories.find((repository) => repository.path === "repo-b")?.files[0]).toMatchObject({
+			staged: false,
+			unstaged: true,
+		});
 	});
 
 	it("bridges dynamic Extension command completions", async () => {

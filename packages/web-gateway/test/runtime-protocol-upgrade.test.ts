@@ -25,6 +25,7 @@ import { createServer } from "node:net";
 import { dirname } from "node:path";
 const { ClientMessageDecoder, encodeTrustedServerMessage } = await import(process.env.PROTOCOL_MODULE);
 const endpoint = process.env.RUNTIME_ENDPOINT;
+const busySession = process.env.LEGACY_BUSY_SESSION === "1";
 mkdirSync(dirname(endpoint), { recursive: true, mode: 0o700 });
 const server = createServer((socket) => {
   const decoder = new ClientMessageDecoder();
@@ -59,7 +60,33 @@ const server = createServer((socket) => {
           type: "response",
           id: message.id,
           ok: true,
-          result: { sessions: [], operations: [], pendingUiRequests: [] },
+          result: {
+            sessions: busySession
+              ? [{
+                  id: "busy-session",
+                  path: endpoint + ".session.jsonl",
+                  cwd: dirname(endpoint),
+                  createdAt: Date.now(),
+                  updatedAt: Date.now(),
+                  phase: "turn",
+                  activity: "running",
+                  attached: true,
+                  writeAccess: "owned",
+                  revision: 1,
+                  leafId: null,
+                  queuedSteerCount: 0,
+                  queuedFollowUpCount: 0,
+                  thinkingLevel: "off",
+                  transcriptGeneration: "busy-session",
+                  transcriptRevision: 0,
+                  toolActivityEpoch: "busy-session",
+                  toolActivityRevision: 0,
+                  toolActivities: [],
+                }]
+              : [],
+            operations: [],
+            pendingUiRequests: [],
+          },
         }));
       }
     }
@@ -118,6 +145,62 @@ afterEach(async () => {
 });
 
 describe("Web Gateway Runtime 协议升级", () => {
+	it("旧 Runtime 存在活跃会话时拒绝强制升级", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "web-runtime-busy-upgrade-"));
+		tempDirs.add(agentDir);
+		const endpoint = join(agentDir, "host.sock");
+		const legacy = spawn(
+			process.execPath,
+			["--import", tsxImport, "--input-type=module", "--eval", legacyRuntimeScript],
+			{
+				cwd: repositoryRoot,
+				env: {
+					...process.env,
+					PROTOCOL_MODULE: protocolModule,
+					RUNTIME_ENDPOINT: endpoint,
+					LEGACY_BUSY_SESSION: "1",
+				},
+				stdio: ["ignore", "pipe", "pipe"],
+			},
+		);
+		children.add(legacy);
+		await waitForReady(legacy);
+		const config: WebGatewayConfig = {
+			host: "127.0.0.1",
+			port: 0,
+			agentDir,
+			runtimeEndpoint: endpoint,
+			token: "test-token",
+			allowedHosts: ["127.0.0.1"],
+			staticDir: agentDir,
+			manageRuntime: true,
+			serviceProfile: "protocol-upgrade-busy-test",
+			runtimeInvocation: {
+				command: process.execPath,
+				args: ["--import", tsxImport, runtimeCli, "serve"],
+				cwd: repositoryRoot,
+			},
+		};
+
+		try {
+			await assert.rejects(
+				connectRuntimeClient(
+					config,
+					"busy-upgrade-client",
+					() => {},
+					() => {},
+				),
+				(error: Error & { code?: string; retryable?: boolean }) =>
+					error.code === "version" && error.retryable === true && error.message.includes("仍有运行任务"),
+			);
+			assert.equal(legacy.exitCode, null);
+			assert.equal(legacy.signalCode, null);
+		} finally {
+			await stopRuntimeService(endpoint, true, config.serviceProfile, undefined, false, agentDir);
+			await waitUntilUnreachable(endpoint);
+		}
+	});
+
 	it("旧 Runtime 空闲时停止旧进程并连接当前协议", async () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "web-runtime-upgrade-"));
 		tempDirs.add(agentDir);
@@ -143,6 +226,7 @@ describe("Web Gateway Runtime 协议升级", () => {
 			allowedHosts: ["127.0.0.1"],
 			staticDir: agentDir,
 			manageRuntime: true,
+			serviceProfile: "protocol-upgrade-test",
 			runtimeInvocation: {
 				command: process.execPath,
 				args: ["--import", tsxImport, runtimeCli, "serve"],
@@ -158,12 +242,12 @@ describe("Web Gateway Runtime 协议升级", () => {
 		);
 		try {
 			assert.equal(connected.client.getSnapshot().hello?.protocolVersion, RUNTIME_PROTOCOL_VERSION);
-			assert.equal(RUNTIME_PROTOCOL_VERSION, 4);
+			assert.equal(RUNTIME_PROTOCOL_VERSION, 6);
 			assert.equal(legacy.exitCode === null && legacy.signalCode === null, false);
 			children.delete(legacy);
 		} finally {
 			await connected.client.close();
-			await stopRuntimeService(endpoint, true);
+			await stopRuntimeService(endpoint, true, config.serviceProfile, undefined, false, agentDir);
 			await waitUntilUnreachable(endpoint);
 		}
 	});

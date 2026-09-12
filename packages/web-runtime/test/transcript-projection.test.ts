@@ -21,6 +21,7 @@ function toolResult(
 	toolCallId: string,
 	toolName: string,
 	output: string,
+	details?: unknown,
 ): TranscriptItem {
 	return {
 		entryId,
@@ -35,6 +36,7 @@ function toolResult(
 				toolName,
 				content: [{ type: "text", text: output }],
 				isError: false,
+				...(details === undefined ? {} : { details }),
 			},
 		},
 	} as TranscriptItem;
@@ -148,6 +150,43 @@ describe("assistant transcript projection", () => {
 			status: "success",
 			summary: "git status --short",
 			detail: " M src/app.ts",
+		});
+	});
+
+	it("keeps completed write contents from the tool call when result details only contain stats", () => {
+		const items = projectTranscriptBatch([
+			assistant([
+				{
+					type: "toolCall",
+					id: "write-1",
+					name: "write",
+					arguments: { path: "src/app.ts", content: "const one = 1;\nconst two = 2;\n" },
+				},
+			]),
+			toolResult("write-result", "assistant-entry", "write-1", "write", "Successfully wrote to src/app.ts", {
+				operation: "updated",
+				additions: 1,
+				deletions: 1,
+			}),
+		]);
+
+		expect(items[1]?.view).toMatchObject({
+			type: "tool_result",
+			callId: "write-1",
+			name: "write",
+			status: "success",
+			summary: "src/app.ts",
+			diff: {
+				files: [
+					{
+						path: "src/app.ts",
+						operation: "updated",
+						additions: 1,
+						deletions: 1,
+						diff: "+const one = 1;\n+const two = 2;",
+					},
+				],
+			},
 		});
 	});
 

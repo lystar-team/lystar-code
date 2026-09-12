@@ -93,10 +93,7 @@ export function SessionManagementDialog({
 		const ids = pendingDeleteIds;
 		setBusyAction("delete");
 		try {
-			const deletedIds: string[] = [];
-			for (const sessionId of ids) {
-				if (await actions.deleteSession(sessionId)) deletedIds.push(sessionId);
-			}
+			const deletedIds = await actions.deleteSessions(ids);
 			if (deletedIds.length) {
 				setRemovedIds((current) => new Set([...current, ...deletedIds]));
 				setSelectedIds((current) => {

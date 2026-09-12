@@ -119,9 +119,9 @@ export function SessionButton({
 						dragging && "opacity-50",
 						dropTarget && "ring-1 ring-primary/50",
 						dropPosition === "before" &&
-							"before:pointer-events-none before:absolute before:-top-1 before:right-0 before:left-0 before:z-10 before:h-0.5 before:rounded-full before:bg-primary",
+							"before:pointer-events-none before:absolute before:-top-1 before:right-0 before:left-0 before:z-10 before:h-0.5 before:rounded-full before:bg-border",
 						dropPosition === "after" &&
-							"after:pointer-events-none after:absolute after:right-0 after:-bottom-1 after:left-0 after:z-10 after:h-0.5 after:rounded-full after:bg-primary",
+							"after:pointer-events-none after:absolute after:right-0 after:-bottom-1 after:left-0 after:z-10 after:h-0.5 after:rounded-full after:bg-border",
 					)}
 					draggable
 					onDragStart={onDragStart}
@@ -137,7 +137,7 @@ export function SessionButton({
 								onClick={onClick}
 							>
 								<span className="project-list-item-label min-w-0 flex-1 truncate">{displayTitle}</span>
-								<span className="flex shrink-0 items-center gap-2 transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0 max-lg:opacity-0">
+								<span className="absolute top-1/2 right-1 flex size-8 -translate-y-1/2 items-center justify-center gap-1 transition-opacity group-hover/session:opacity-0">
 									{session.pinned ? (
 										<Pin className="size-3.5 shrink-0 text-muted-foreground" aria-label="已置顶" />
 									) : null}
@@ -234,7 +234,7 @@ export function SessionButton({
 					</HoverCard>
 					<Button
 						aria-label={`删除会话：${title}`}
-						className="absolute top-1/2 right-1 -translate-y-1/2 text-muted-foreground opacity-0 transition-opacity hover:text-destructive focus:opacity-100 group-hover/session:opacity-100 group-focus-within/session:opacity-100 max-lg:opacity-100"
+						className="pointer-events-none absolute top-1/2 right-1 -translate-y-1/2 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover/session:pointer-events-auto group-hover/session:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
 						draggable={false}
 						size="icon-sm"
 						variant="ghost"

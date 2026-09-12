@@ -144,7 +144,11 @@ export function GitDiffDialog({ state, actions }: { state: WorkbenchState; actio
 							{diff?.repositoryPath ? `${diff.repositoryPath}/` : ""}
 							{diff?.path || "工作区差异"}
 						</span>
-						{diff ? <Badge variant="outline">{diff.staged ? "暂存区" : "工作区"}</Badge> : null}
+						{diff ? (
+							<Badge variant="outline">
+								{diff.revision ? `提交 ${diff.revision.slice(0, 7)}` : diff.staged ? "暂存区" : "工作区"}
+							</Badge>
+						) : null}
 					</DialogTitle>
 					<DialogDescription>
 						{state.gitDiffLoading

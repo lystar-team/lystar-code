@@ -1,6 +1,10 @@
 import {
 	createUuid,
+	type GitBranches,
+	type GitCommit,
 	type GitDiff,
+	type GitHistory,
+	type GitMutation,
 	type GitStatus,
 	type SessionProgress,
 	type ToolActivity,
@@ -46,6 +50,7 @@ import {
 	reconcilePendingUserPrompts,
 	removeQueuedUserPrompt,
 	removeQueuedUserPromptByText,
+	submitPromptWithFollowUpFallback,
 } from "./chat-lifecycle.ts";
 import {
 	type LiveCompactionState,
@@ -57,6 +62,7 @@ import {
 	connectionStateAfterHostUpdate,
 	connectionStateAfterSessionSubscription,
 	offlineConnectionState,
+	reconnectDelayMs,
 	reconnectingConnectionState,
 } from "./connection-recovery.ts";
 import { readLastSession, saveLastSession } from "./session-persistence.ts";
@@ -79,7 +85,7 @@ import {
 } from "./transcript-state.ts";
 
 const TRANSCRIPT_PAGE_SIZE = 120;
-const RECONNECT_DELAY_MS = 1200;
+const MAX_HANDLED_NOTIFY_IDS = 256;
 
 function browserNetworkOnline(): boolean {
 	return typeof navigator === "undefined" || navigator.onLine !== false;
@@ -118,7 +124,7 @@ export type LiveTurnItem =
 
 type LiveTextProgress = Extract<SessionProgress, { type: "assistant_delta" | "thinking_delta" }>;
 type PendingTextProgress = { selection: number; sessionId: string; progress: LiveTextProgress };
-type SessionSubscriptionResult = "ready" | "gap" | "timeout";
+type SessionSubscriptionResult = "ready" | "gap" | "timeout" | "closed";
 type SessionSubscriptionWaiter = {
 	resolve: (result: SessionSubscriptionResult) => void;
 	timeoutId: number;
@@ -332,9 +338,14 @@ function queuedPromptsFromSnapshot(
 }
 
 export function restoreRuntimeActivities(current: WorkbenchState, snapshot: WebSessionSnapshot): WorkbenchState {
+	const queuedUserPrompts = queuedPromptsFromSnapshot(snapshot, current.queuedUserPrompts);
+	const queuedPromptIds = new Set(queuedUserPrompts.map((prompt) => prompt.id));
 	const next = {
 		...current,
-		queuedUserPrompts: queuedPromptsFromSnapshot(snapshot, current.queuedUserPrompts),
+		queuedUserPrompts,
+		pendingUserPrompts: (current.pendingUserPrompts ?? []).filter(
+			(prompt) => !prompt.queueId || !queuedPromptIds.has(prompt.queueId),
+		),
 		liveCompaction: restoreCompactionState(current.liveCompaction, snapshot.phase, current.transcript),
 		...(hasActiveSessionSnapshot(snapshot) ? {} : { liveTurnActive: false }),
 	};
@@ -395,10 +406,17 @@ export interface WorkbenchState {
 	inspectorOpen: boolean;
 	inspectorMode: InspectorMode;
 	gitStatus?: GitStatus;
+	gitBranches?: GitBranches;
+	gitHistory?: GitHistory;
+	gitCommit?: GitCommit;
 	gitFileStats: Record<string, GitFileDiffStats>;
 	gitDiff?: GitDiff;
 	gitLoading: boolean;
+	gitBranchesLoading: boolean;
+	gitHistoryLoading: boolean;
+	gitCommitLoading: boolean;
 	gitDiffLoading: boolean;
+	gitOperation?: GitMutation["type"];
 	fileTree?: ProjectTreeResponse;
 	fileTreeRootPath?: string;
 	fileTreeCache: Record<string, ProjectTreeResponse>;
@@ -449,6 +467,20 @@ export interface WorkbenchState {
 	harnessImportScope: "user" | "project";
 	harnessImporting: boolean;
 	harnessImportResult?: HarnessImportResultResponse;
+	modelOptions: Array<{
+		provider: string;
+		id: string;
+		name: string;
+		reasoning: boolean;
+		contextWindow: number;
+		supportedThinkingLevels: string[];
+	}>;
+	modelOptionProviders: Array<{
+		id: string;
+		name: string;
+		builtIn: boolean;
+	}>;
+	modelCatalogRevision: number;
 	models: Array<{
 		provider: string;
 		id: string;
@@ -844,31 +876,6 @@ export function transcriptText(item: WebTranscriptItem): string {
 	return item.view && "text" in item.view ? item.view.text : "";
 }
 
-function parseGitDiffStats(diff: string): Map<string, GitFileDiffStats> {
-	const stats = new Map<string, GitFileDiffStats>();
-	let currentPath: string | undefined;
-	for (const line of diff.split("\n")) {
-		const match = /^diff --git a\/(.+) b\/(.+)$/u.exec(line) ?? /^diff --git "a\/(.+)" "b\/(.+)"$/u.exec(line);
-		if (match) {
-			currentPath = match[2];
-			stats.set(currentPath, { additions: 0, deletions: 0 });
-			continue;
-		}
-		if (!currentPath) continue;
-		const entry = stats.get(currentPath);
-		if (!entry) continue;
-		if (line.startsWith("+") && !line.startsWith("+++")) entry.additions += 1;
-		else if (line.startsWith("-") && !line.startsWith("---")) entry.deletions += 1;
-	}
-	return stats;
-}
-
-function textLineCount(content: string): number {
-	if (!content) return 0;
-	const lines = content.split(/\r\n?|\n/gu);
-	return content.endsWith("\n") || content.endsWith("\r") ? lines.length - 1 : lines.length;
-}
-
 function changedFilePaths(progress: SessionProgress): string[] {
 	if (progress.type === "tool_end" && progress.status === "success") {
 		return progress.diff?.files.flatMap((file) => (file.path ? [file.path] : [])) ?? [];
@@ -924,10 +931,17 @@ export function projectInspectorStateForSelection(
 		| "fileTreeCache"
 		| "fileTreeLoading"
 		| "gitStatus"
+		| "gitBranches"
+		| "gitHistory"
+		| "gitCommit"
 		| "gitFileStats"
 		| "gitDiff"
 		| "gitLoading"
+		| "gitBranchesLoading"
+		| "gitHistoryLoading"
+		| "gitCommitLoading"
 		| "gitDiffLoading"
+		| "gitOperation"
 		| "filePath"
 		| "fileContent"
 		| "fileError"
@@ -941,11 +955,17 @@ export function projectInspectorStateForSelection(
 		fileTreeCache: {},
 		fileTreeLoading: false,
 		gitStatus: undefined,
+		gitBranches: undefined,
+		gitHistory: undefined,
+		gitCommit: undefined,
 		gitFileStats: {},
 		gitDiff: undefined,
 		gitLoading: false,
+		gitBranchesLoading: false,
+		gitHistoryLoading: false,
+		gitCommitLoading: false,
 		gitDiffLoading: false,
-		filePath: undefined,
+		gitOperation: undefined,
 		fileContent: undefined,
 		fileError: undefined,
 		fileLoading: false,
@@ -988,6 +1008,9 @@ function initialState(): WorkbenchState {
 		inspectorOpen: typeof window !== "undefined" && window.matchMedia("(min-width: 1280px)").matches,
 		inspectorMode: "files",
 		gitLoading: false,
+		gitBranchesLoading: false,
+		gitHistoryLoading: false,
+		gitCommitLoading: false,
 		gitDiffLoading: false,
 		fileTreeLoading: false,
 		fileTreeRootPath: undefined,
@@ -1015,6 +1038,9 @@ function initialState(): WorkbenchState {
 		harnessImportsLoading: false,
 		harnessImportScope: "user",
 		harnessImporting: false,
+		modelOptions: [],
+		modelOptionProviders: [],
+		modelCatalogRevision: 0,
 		models: [],
 		providers: [],
 		hiddenModelProviders: savedHiddenModelProviders(),
@@ -1032,6 +1058,8 @@ export function useWorkbench() {
 	const socketRef = useRef<WebSocket | undefined>(undefined);
 	const streamGenerationRef = useRef(0);
 	const reconnectTimerRef = useRef<number | undefined>(undefined);
+	const reconnectAttemptRef = useRef(0);
+	const bootstrapLoadedRef = useRef(false);
 	const transcriptTimerRef = useRef<number | undefined>(undefined);
 	const transcriptRefreshPendingRef = useRef<string | undefined>(undefined);
 	const liveToolBatchRef = useRef(0);
@@ -1044,9 +1072,13 @@ export function useWorkbench() {
 	const directoryRequestRef = useRef(0);
 	const fileMetadataPromisesRef = useRef(new Map<string, Promise<void>>());
 	const projectTreeRefreshPromisesRef = useRef(new Map<string, Promise<void>>());
-	const fileTreePollIndexRef = useRef(0);
+	const modelOptionsPromiseRef = useRef<Promise<void>>();
+	const modelSettingsPromiseRef = useRef<Promise<void>>();
 	const gitDiffRequestRef = useRef(0);
 	const gitStatusRequestRef = useRef(0);
+	const gitBranchesRequestRef = useRef(0);
+	const gitHistoryRequestRef = useRef(0);
+	const gitCommitRequestRef = useRef(0);
 	const gitStatusPromiseRef = useRef<Promise<void>>();
 	const gitStatsRepositoryRef = useRef(new Set<string>());
 	const projectTreeGenerationRef = useRef(0);
@@ -1054,6 +1086,7 @@ export function useWorkbench() {
 	const pendingUserPromptRef = useRef(0);
 	const projectRefreshRef = useRef(new Map<string, { promise: Promise<void>; rerun: boolean }>());
 	const toastTimerRef = useRef<number | undefined>(undefined);
+	const handledNotifyIdsRef = useRef(new Set<string>());
 	const selectionRef = useRef(0);
 	const selectionInFlightRef = useRef<string | undefined>(undefined);
 	const sessionDetailCacheRef = useRef(new Map<string, CachedSessionDetail>());
@@ -1061,13 +1094,18 @@ export function useWorkbench() {
 	const sessionSubscriptionWaitersRef = useRef(new Map<string, Set<SessionSubscriptionWaiter>>());
 	const initializePromiseRef = useRef<Promise<void> | undefined>(undefined);
 	const initializeRef = useRef<() => Promise<void>>(async () => {});
+	const resumeConnectionRef = useRef<() => void>(() => {});
 	const runtimeRecoverySessionRef = useRef<string | undefined>(undefined);
 	const selectSessionRef = useRef<(sessionId: string) => Promise<void>>(async () => {});
 	const loadSessionTreeRef = useRef<() => Promise<void>>(async () => {});
 	const loadProjectTrustRef = useRef<() => Promise<void>>(async () => {});
 	const loadProjectTreeRef = useRef<(path?: string) => Promise<void>>(async () => {});
 	const loadGitStatusRef = useRef<(silent?: boolean) => Promise<void>>(async () => {});
+	const loadGitBranchesRef = useRef<(repositoryPath?: string) => Promise<void>>(async () => {});
+	const loadGitHistoryRef = useRef<(repositoryPath?: string) => Promise<void>>(async () => {});
 	const refreshProjectFilesRef = useRef<(paths: readonly string[]) => Promise<void>>(async () => {});
+	const refreshModelOptionsRef = useRef<() => Promise<void>>(async () => {});
+	const refreshModelSettingsRef = useRef<() => Promise<void>>(async () => {});
 
 	const updateState = useCallback((update: WorkbenchState | ((current: WorkbenchState) => WorkbenchState)) => {
 		const next = typeof update === "function" ? update(stateRef.current) : update;
@@ -1120,7 +1158,8 @@ export function useWorkbench() {
 			operations: WebOperation[];
 			leases?: Array<{ sessionId: string; lease: WebLease }>;
 		}) => {
-			updateState((current) => {
+			bootstrapLoadedRef.current = true;
+			const next = updateState((current) => {
 				const nextLease = bootstrapLeaseForSession(current.sessionId, current.lease, data.leases ?? []);
 				const operations = mergeOperationSnapshots(current.operations, data.operations);
 				const projects = mergeProjectSessions(current.projects, data.projects);
@@ -1150,6 +1189,7 @@ export function useWorkbench() {
 					currentOperation: operationForSessionSnapshot(operations, current.session),
 				};
 			});
+			if (next.connected && !next.reconnecting) reconnectAttemptRef.current = 0;
 		},
 		[updateState],
 	);
@@ -1707,12 +1747,20 @@ export function useWorkbench() {
 		[applyProgressNow, flushPendingTextProgress],
 	);
 
+	const settleSessionSubscriptionWaiters = useCallback((result: SessionSubscriptionResult): void => {
+		for (const waiters of [...sessionSubscriptionWaitersRef.current.values()]) {
+			for (const waiter of [...waiters]) waiter.resolve(result);
+		}
+		sessionSubscriptionWaitersRef.current.clear();
+	}, []);
+
 	const subscribeSessionAndWait = useCallback((sessionId: string): Promise<SessionSubscriptionResult> => {
 		const socket = socketRef.current;
 		if (!socket || (socket.readyState !== WebSocket.OPEN && socket.readyState !== WebSocket.CONNECTING))
 			return Promise.resolve("timeout");
 		return new Promise((resolve) => {
 			const waiters = sessionSubscriptionWaitersRef.current.get(sessionId) ?? new Set<SessionSubscriptionWaiter>();
+			const shouldSubscribe = waiters.size === 0;
 			let waiter: SessionSubscriptionWaiter;
 			waiter = {
 				timeoutId: 0,
@@ -1726,15 +1774,20 @@ export function useWorkbench() {
 			waiter.timeoutId = window.setTimeout(() => waiter.resolve("timeout"), 1500);
 			waiters.add(waiter);
 			sessionSubscriptionWaitersRef.current.set(sessionId, waiters);
-			webApi.subscribeSession(socket, sessionId, sessionDetailSeqRef.current.get(sessionId));
+			if (shouldSubscribe) webApi.subscribeSession(socket, sessionId, sessionDetailSeqRef.current.get(sessionId));
 		});
 	}, []);
 
 	const completeSessionSubscription = useCallback(
 		async (sessionId: string, result: SessionSubscriptionResult): Promise<boolean> => {
+			if (result === "closed") return false;
 			if (result === "timeout") {
 				const socket = socketRef.current;
-				if (stateRef.current.sessionId === sessionId && socket?.readyState === WebSocket.OPEN)
+				if (
+					stateRef.current.sessionId === sessionId &&
+					!stateRef.current.sessionReady &&
+					socket?.readyState === WebSocket.OPEN
+				)
 					socket.close(4002, "会话订阅确认超时");
 				return false;
 			}
@@ -1746,14 +1799,44 @@ export function useWorkbench() {
 				]);
 			}
 			if (stateRef.current.sessionId === sessionId) {
-				updateState((current) => ({
+				const next = updateState((current) => ({
 					...current,
 					...connectionStateAfterSessionSubscription(current, browserNetworkOnline()),
 				}));
+				if (next.connected && !next.reconnecting) reconnectAttemptRef.current = 0;
 			}
 			return true;
 		},
 		[loadSessionOperations, loadSessionSnapshot, loadTranscript, updateState],
+	);
+
+	const restoreSelectedSessionSubscription = useCallback(
+		(sessionId: string): void => {
+			if (sessionSubscriptionWaitersRef.current.has(sessionId)) return;
+			void subscribeSessionAndWait(sessionId)
+				.then(async (result) => {
+					const ready = await completeSessionSubscription(sessionId, result);
+					if (ready && result !== "gap" && stateRef.current.sessionId === sessionId) {
+						void Promise.all([
+							loadSessionSnapshot(sessionId),
+							loadSessionOperations(sessionId),
+							loadTranscript(sessionId),
+						]).catch((error) => showToast(errorMessage(error)));
+					}
+				})
+				.catch((error) => {
+					showToast(errorMessage(error));
+					socketRef.current?.close(4002, "会话状态恢复失败");
+				});
+		},
+		[
+			completeSessionSubscription,
+			loadSessionOperations,
+			loadSessionSnapshot,
+			loadTranscript,
+			showToast,
+			subscribeSessionAndWait,
+		],
 	);
 
 	const handleEvent = useCallback(
@@ -1766,7 +1849,7 @@ export function useWorkbench() {
 				}
 				const selected = stateRef.current.sessionId === event.sessionId;
 				if (selected) {
-					updateState((current) =>
+					const next = updateState((current) =>
 						event.gap
 							? { ...current, sessionReady: false }
 							: {
@@ -1774,6 +1857,7 @@ export function useWorkbench() {
 									...connectionStateAfterSessionSubscription(current, browserNetworkOnline()),
 								},
 					);
+					if (next.connected && !next.reconnecting) reconnectAttemptRef.current = 0;
 				}
 				if (event.gap && selected && selectionInFlightRef.current !== event.sessionId)
 					void completeSessionSubscription(event.sessionId, "gap").catch((error) => {
@@ -1827,22 +1911,49 @@ export function useWorkbench() {
 				return;
 			}
 			if (event.type === "connection_state") {
-				updateState((current) => {
+				const current = stateRef.current;
+				const sessionId = current.sessionId;
+				const shouldRestoreSubscription = event.connected && Boolean(sessionId) && !current.sessionReady;
+				const next = updateState((value) => {
 					const connection = connectionStateAfterHostUpdate(
-						current,
+						value,
 						event.connected,
-						Boolean(current.sessionId),
+						Boolean(value.sessionId),
 						browserNetworkOnline(),
 						event.message,
 					);
 					return {
-						...current,
+						...value,
 						...connection,
 						...(event.connected
 							? {}
-							: { lease: undefined, readOnly: Boolean(current.sessionId), sessionReady: false }),
+							: { lease: undefined, readOnly: Boolean(value.sessionId), sessionReady: false }),
 					};
 				});
+				if (event.connected && !sessionId && next.connected) reconnectAttemptRef.current = 0;
+				if (shouldRestoreSubscription && sessionId) restoreSelectedSessionSubscription(sessionId);
+				return;
+			}
+			if (event.type === "session_lease") {
+				updateState((current) =>
+					current.sessionId === event.sessionId
+						? { ...current, lease: event.lease, readOnly: false }
+						: current,
+				);
+				return;
+			}
+			if (event.type === "model_catalog_changed") {
+				if (event.revision === stateRef.current.modelCatalogRevision) return;
+				void refreshModelOptionsRef.current().catch((error) => showToast(errorMessage(error)));
+				if (stateRef.current.settingsOpen && stateRef.current.settingsTab === "models") {
+					void refreshModelSettingsRef.current().catch((error) => showToast(errorMessage(error)));
+				}
+				return;
+			}
+			if (event.type === "project_files_changed") {
+				if (event.projectId === stateRef.current.currentProjectId) {
+					void refreshProjectFilesRef.current(event.paths).catch(() => {});
+				}
 				return;
 			}
 			if (event.type === "sessions_changed") {
@@ -2158,14 +2269,20 @@ export function useWorkbench() {
 			}
 			if (event.type === "ui_request") {
 				if (event.kind === "notify") {
+					if (handledNotifyIdsRef.current.has(event.id)) return;
+					handledNotifyIdsRef.current.add(event.id);
+					if (handledNotifyIdsRef.current.size > MAX_HANDLED_NOTIFY_IDS) {
+						const oldestId = handledNotifyIdsRef.current.values().next().value;
+						if (oldestId !== undefined) handledNotifyIdsRef.current.delete(oldestId);
+					}
 					const payload = eventIsObject(event.payload) ? event.payload : undefined;
-					showToast(
+					const message =
 						typeof payload?.message === "string"
-							? payload.message
+							? payload.message.trim()
 							: typeof payload?.text === "string"
-								? payload.text
-								: "后台通知",
-					);
+								? payload.text.trim()
+								: event.title.trim();
+					if (message) showToast(message);
 					return;
 				}
 				updateState((current) =>
@@ -2184,6 +2301,7 @@ export function useWorkbench() {
 			flushPendingTextProgress,
 			loadTranscript,
 			refreshProjectSessions,
+			restoreSelectedSessionSubscription,
 			scheduleTranscriptRefresh,
 			showToast,
 			updateState,
@@ -2198,15 +2316,17 @@ export function useWorkbench() {
 			!browserNetworkOnline()
 		)
 			return;
+		const attempt = reconnectAttemptRef.current;
+		reconnectAttemptRef.current += 1;
 		reconnectTimerRef.current = window.setTimeout(() => {
 			reconnectTimerRef.current = undefined;
-			if (mountedRef.current && !socketRef.current && webApi.hasToken() && browserNetworkOnline())
-				void initializeRef.current();
-		}, RECONNECT_DELAY_MS);
+			if (mountedRef.current) resumeConnectionRef.current();
+		}, reconnectDelayMs(attempt));
 	}, []);
 
 	const connectStream = useCallback(() => {
 		if (!browserNetworkOnline()) {
+			settleSessionSubscriptionWaiters("closed");
 			updateState((current) => ({
 				...current,
 				...offlineConnectionState(),
@@ -2222,6 +2342,7 @@ export function useWorkbench() {
 			window.clearTimeout(reconnectTimerRef.current);
 			reconnectTimerRef.current = undefined;
 		}
+		settleSessionSubscriptionWaiters("closed");
 		const previous = socketRef.current;
 		socketRef.current = undefined;
 		if (previous && previous.readyState !== WebSocket.CLOSED) previous.close();
@@ -2240,6 +2361,7 @@ export function useWorkbench() {
 			() => {
 				if (streamGenerationRef.current !== generation || socketRef.current !== socket) return;
 				socketRef.current = undefined;
+				settleSessionSubscriptionWaiters("closed");
 				if (!mountedRef.current) return;
 				const networkOnline = browserNetworkOnline();
 				updateState((current) => ({
@@ -2256,36 +2378,77 @@ export function useWorkbench() {
 		);
 		const subscribeSelectedSession = () => {
 			const sessionId = stateRef.current.sessionId;
-			if (sessionId)
-				void subscribeSessionAndWait(sessionId)
-					.then((result) => completeSessionSubscription(sessionId, result))
-					.catch((error) => showToast(errorMessage(error)));
+			if (sessionId) restoreSelectedSessionSubscription(sessionId);
 		};
 		socket.addEventListener("open", subscribeSelectedSession, { once: true });
 		socketRef.current = socket;
 		if (socket.readyState === WebSocket.OPEN) subscribeSelectedSession();
-	}, [completeSessionSubscription, handleEvent, scheduleReconnect, showToast, subscribeSessionAndWait, updateState]);
+	}, [
+		handleEvent,
+		restoreSelectedSessionSubscription,
+		scheduleReconnect,
+		settleSessionSubscriptionWaiters,
+		updateState,
+	]);
 
-	const refreshModelSettings = useCallback(async () => {
-		updateState((current) => ({ ...current, modelSettingsLoading: true, modelSettingsError: undefined }));
-		try {
-			const result = await webApi.models();
+	const refreshModelOptions = useCallback((): Promise<void> => {
+		const pending = modelOptionsPromiseRef.current;
+		if (pending) return pending;
+		const run = (async () => {
 			const visibilityOverrides = savedModelProviderVisibilityOverrides();
+			const result = await webApi.modelOptions(
+				Object.entries(visibilityOverrides).flatMap(([provider, visible]) => (visible ? [provider] : [])),
+			);
 			updateState((current) => {
-				const hiddenModelProviders = resolveHiddenModelProviders(result.providers, visibilityOverrides);
+				const visibilityProviders = current.providers.length
+					? current.providers
+					: result.providers.map((provider) => ({ ...provider, authenticated: true }));
 				return {
 					...current,
-					models: result.models,
-					providers: result.providers,
-					hiddenModelProviders,
-					modelSettingsLoading: false,
+					modelOptions: result.models,
+					modelOptionProviders: result.providers,
+					modelCatalogRevision: result.revision,
+					hiddenModelProviders: resolveHiddenModelProviders(visibilityProviders, visibilityOverrides),
 				};
 			});
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			updateState((current) => ({ ...current, modelSettingsLoading: false, modelSettingsError: message }));
-			throw error;
-		}
+		})();
+		const tracked = run.finally(() => {
+			if (modelOptionsPromiseRef.current === tracked) modelOptionsPromiseRef.current = undefined;
+		});
+		modelOptionsPromiseRef.current = tracked;
+		return tracked;
+	}, [updateState]);
+
+	const refreshModelSettings = useCallback((): Promise<void> => {
+		const pending = modelSettingsPromiseRef.current;
+		if (pending) return pending;
+		updateState((current) => ({ ...current, modelSettingsLoading: true, modelSettingsError: undefined }));
+		const run = (async () => {
+			try {
+				const result = await webApi.models();
+				const visibilityOverrides = savedModelProviderVisibilityOverrides();
+				updateState((current) => {
+					const hiddenModelProviders = resolveHiddenModelProviders(result.providers, visibilityOverrides);
+					return {
+						...current,
+						models: result.models,
+						providers: result.providers,
+						modelCatalogRevision: result.revision,
+						hiddenModelProviders,
+						modelSettingsLoading: false,
+					};
+				});
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				updateState((current) => ({ ...current, modelSettingsLoading: false, modelSettingsError: message }));
+				throw error;
+			}
+		})();
+		const tracked = run.finally(() => {
+			if (modelSettingsPromiseRef.current === tracked) modelSettingsPromiseRef.current = undefined;
+		});
+		modelSettingsPromiseRef.current = tracked;
+		return tracked;
 	}, [updateState]);
 
 	const refreshBranding = useCallback(async () => {
@@ -2320,7 +2483,7 @@ export function useWorkbench() {
 				const data = await webApi.bootstrap();
 				applyBootstrap(data);
 				connectStream();
-				void refreshModelSettings().catch(() => undefined);
+				void refreshModelOptions().catch(() => undefined);
 				const lastSession = readLastSession();
 				const lastSessionProject = lastSession
 					? data.projects.find(
@@ -2355,6 +2518,8 @@ export function useWorkbench() {
 				}
 			} catch (error) {
 				if (error instanceof UnauthorizedError) {
+					bootstrapLoadedRef.current = false;
+					reconnectAttemptRef.current = 0;
 					webApi.clearToken();
 					updateState((current) => ({
 						...current,
@@ -2383,11 +2548,29 @@ export function useWorkbench() {
 		});
 		initializePromiseRef.current = tracked;
 		return tracked;
-	}, [applyBootstrap, connectStream, refreshBranding, refreshModelSettings, scheduleReconnect, updateState]);
+	}, [applyBootstrap, connectStream, refreshBranding, refreshModelOptions, scheduleReconnect, updateState]);
 	initializeRef.current = initialize;
+
+	const resumeConnection = useCallback(() => {
+		if (!mountedRef.current || !webApi.hasToken() || !browserNetworkOnline()) return;
+		if (reconnectTimerRef.current) {
+			window.clearTimeout(reconnectTimerRef.current);
+			reconnectTimerRef.current = undefined;
+		}
+		const socket = socketRef.current;
+		if (socket && socket.readyState !== WebSocket.CLOSED) return;
+		if (bootstrapLoadedRef.current) {
+			connectStream();
+			return;
+		}
+		void initializeRef.current();
+	}, [connectStream]);
+	resumeConnectionRef.current = resumeConnection;
 
 	const submitToken = useCallback(
 		async (token: string) => {
+			bootstrapLoadedRef.current = false;
+			reconnectAttemptRef.current = 0;
 			webApi.setToken(token);
 			await initialize();
 		},
@@ -2396,6 +2579,9 @@ export function useWorkbench() {
 
 	const signOut = useCallback(() => {
 		streamGenerationRef.current += 1;
+		bootstrapLoadedRef.current = false;
+		reconnectAttemptRef.current = 0;
+		settleSessionSubscriptionWaiters("closed");
 		if (reconnectTimerRef.current) {
 			window.clearTimeout(reconnectTimerRef.current);
 			reconnectTimerRef.current = undefined;
@@ -2411,7 +2597,7 @@ export function useWorkbench() {
 			connected: false,
 			projects: [],
 		}));
-	}, [updateState]);
+	}, [settleSessionSubscriptionWaiters, updateState]);
 
 	const selectSession = useCallback(
 		async (sessionId: string) => {
@@ -2441,6 +2627,9 @@ export function useWorkbench() {
 				projectTreeRefreshPromisesRef.current.clear();
 				gitStatusPromiseRef.current = undefined;
 				gitStatusRequestRef.current++;
+				gitBranchesRequestRef.current++;
+				gitHistoryRequestRef.current++;
+				gitCommitRequestRef.current++;
 				gitDiffRequestRef.current++;
 				gitStatsRepositoryRef.current.clear();
 				projectTreeGenerationRef.current++;
@@ -2653,6 +2842,9 @@ export function useWorkbench() {
 				projectTreeRefreshPromisesRef.current.clear();
 				gitStatusPromiseRef.current = undefined;
 				gitStatusRequestRef.current++;
+				gitBranchesRequestRef.current++;
+				gitHistoryRequestRef.current++;
+				gitCommitRequestRef.current++;
 				gitDiffRequestRef.current++;
 				gitStatsRepositoryRef.current.clear();
 				projectTreeGenerationRef.current++;
@@ -2806,15 +2998,16 @@ export function useWorkbench() {
 			if (hasActiveSessionWork(current) && mode === "prompt") mode = "follow-up";
 			const value = text.trim();
 			if (!value) return;
-			const queueId = mode === "follow-up" ? createUuid() : undefined;
-			const queuedPrompt: QueuedUserPrompt | undefined = queueId
-				? {
-						id: queueId,
-						text: value,
-						displayText: displayText?.trim() || value,
-						attachments: attachmentPreviews ?? [],
-					}
-				: undefined;
+			const queueId = mode === "steer" ? undefined : createUuid();
+			const queuedPrompt: QueuedUserPrompt | undefined =
+				mode === "follow-up" && queueId
+					? {
+							id: queueId,
+							text: value,
+							displayText: displayText?.trim() || value,
+							attachments: attachmentPreviews ?? [],
+						}
+					: undefined;
 			const optimisticPrompt: PendingUserPrompt | undefined =
 				mode === "prompt"
 					? {
@@ -2822,6 +3015,7 @@ export function useWorkbench() {
 							text: value,
 							attachments: attachmentPreviews ?? [],
 							afterEntryId: current.transcript.at(-1)?.entryId,
+							queueId,
 						}
 					: undefined;
 			if (optimisticPrompt || queuedPrompt)
@@ -2837,16 +3031,43 @@ export function useWorkbench() {
 						: next,
 				);
 			try {
-				const result = await webApi.prompt(current.sessionId, value, mode, attachments, queueId);
+				const { result, submittedMode } = await submitPromptWithFollowUpFallback(mode, (candidateMode) =>
+					webApi.prompt(current.sessionId!, value, candidateMode, attachments, queueId),
+				);
 				updateState((next) => {
 					if (next.sessionId !== current.sessionId) return next;
 					const accepted = applyPromptAccepted(next, current.sessionId!, result.operation);
+					const acceptedAsFollowUp =
+						submittedMode === "follow-up" || result.operation?.type === "follow_up";
+					const optimisticStillPending = Boolean(
+						optimisticPrompt && accepted.pendingUserPrompts.some((prompt) => prompt.id === optimisticPrompt.id),
+					);
+					const convertedQueuedPrompt =
+						acceptedAsFollowUp && !queuedPrompt && queueId && optimisticStillPending
+							? {
+									id: queueId,
+									text: value,
+									displayText: displayText?.trim() || value,
+									attachments: attachmentPreviews ?? [],
+								}
+							: undefined;
+					const queuedUserPrompts = convertedQueuedPrompt
+						? accepted.queuedUserPrompts.some((prompt) => prompt.id === convertedQueuedPrompt.id)
+							? accepted.queuedUserPrompts.map((prompt) =>
+									prompt.id === convertedQueuedPrompt.id ? convertedQueuedPrompt : prompt,
+								)
+							: [...accepted.queuedUserPrompts, convertedQueuedPrompt]
+						: accepted.queuedUserPrompts;
 					return {
 						...accepted,
-						projects:
-							mode === "prompt"
-								? updateSessionSummaryFirstMessage(accepted.projects, current.sessionId!, value)
-								: accepted.projects,
+						pendingUserPrompts:
+							acceptedAsFollowUp && optimisticPrompt
+								? accepted.pendingUserPrompts.filter((prompt) => prompt.id !== optimisticPrompt.id)
+								: accepted.pendingUserPrompts,
+						queuedUserPrompts,
+						projects: acceptedAsFollowUp
+							? accepted.projects
+							: updateSessionSummaryFirstMessage(accepted.projects, current.sessionId!, value),
 						promptScrollRequest: (accepted.promptScrollRequest ?? 0) + 1,
 					};
 				});
@@ -2955,74 +3176,80 @@ export function useWorkbench() {
 		[showToast, updateState],
 	);
 
-	const deleteSession = useCallback(
-		async (sessionId: string): Promise<boolean> => {
-			const current = stateRef.current;
-			const project = current.projects.find((candidate) =>
-				candidate.sessions.some((session) => session.id === sessionId),
-			);
-			if (!project) return false;
-			if (current.sessionId === sessionId && hasActive(current.currentOperation)) {
-				showToast("运行中的会话不能删除");
-				return false;
-			}
+	const deleteSessions = useCallback(
+		async (sessionIds: string[]): Promise<string[]> => {
+			const ids = [...new Set(sessionIds)];
+			if (ids.length === 0) return [];
 			try {
-				await webApi.deleteSession(sessionId);
-				const nextSessionId = project.sessions.find((session) => session.id !== sessionId)?.id;
-				updateState((next) => {
-					const projects = next.projects.map((candidate) =>
-						candidate.id === project.id
-							? { ...candidate, sessions: candidate.sessions.filter((session) => session.id !== sessionId) }
-							: candidate,
-					);
-					if (next.sessionId !== sessionId) {
+				const result = await webApi.deleteSessions(ids);
+				const deletedIds = result.deletedIds;
+				const deleted = new Set(deletedIds);
+				if (deleted.size > 0) {
+					const current = stateRef.current;
+					const currentSessionDeleted = Boolean(current.sessionId && deleted.has(current.sessionId));
+					const currentProject = current.projects.find((project) => project.id === current.currentProjectId);
+					const nextSessionId = currentProject?.sessions.find((session) => !deleted.has(session.id))?.id;
+					for (const sessionId of deleted) {
 						sessionDetailCacheRef.current.delete(sessionId);
 						sessionDetailSeqRef.current.delete(sessionId);
-						return { ...next, projects };
 					}
-					sessionDetailCacheRef.current.delete(sessionId);
-					sessionDetailSeqRef.current.delete(sessionId);
-					return {
-						...next,
-						projects,
-						sessionId: nextSessionId,
-						session: undefined,
-						lease: undefined,
-						readOnly: false,
-						sessionReady: false,
-						pendingUserPrompts: [],
-						queuedUserPrompts: [],
-						transcript: [],
-						transcriptPageLoaded: false,
-						transcriptLoading: false,
-						transcriptError: undefined,
-						transcriptGeneration: undefined,
-						transcriptRevision: undefined,
-						transcriptLeafId: undefined,
-						previousCursor: undefined,
-						hasMorePrevious: false,
-						currentOperation: undefined,
-						liveTurnActive: false,
-						liveTurnStartRevision: undefined,
-						liveTools: {},
-						liveTurnItems: [],
-						statusText: "",
-						unreadSessionIds: Object.fromEntries(
-							Object.entries(next.unreadSessionIds).filter(([id]) => id !== sessionId),
-						) as Record<string, true>,
-					};
-				});
-				if (current.sessionId === sessionId) {
-					if (nextSessionId) await selectSession(nextSessionId);
-					else await loadProjectTreeRef.current();
+					updateState((next) => {
+						const projects = next.projects.map((project) => ({
+							...project,
+							sessions: project.sessions.filter((session) => !deleted.has(session.id)),
+						}));
+						if (!next.sessionId || !deleted.has(next.sessionId)) return { ...next, projects };
+						return {
+							...next,
+							projects,
+							sessionId: nextSessionId,
+							session: undefined,
+							lease: undefined,
+							readOnly: false,
+							sessionReady: false,
+							pendingUserPrompts: [],
+							queuedUserPrompts: [],
+							transcript: [],
+							transcriptPageLoaded: false,
+							transcriptLoading: false,
+							transcriptError: undefined,
+							transcriptGeneration: undefined,
+							transcriptRevision: undefined,
+							transcriptLeafId: undefined,
+							previousCursor: undefined,
+							hasMorePrevious: false,
+							currentOperation: undefined,
+							liveTurnActive: false,
+							liveTurnStartRevision: undefined,
+							liveTools: {},
+							liveTurnItems: [],
+							statusText: "",
+							unreadSessionIds: Object.fromEntries(
+								Object.entries(next.unreadSessionIds).filter(([id]) => !deleted.has(id)),
+							) as Record<string, true>,
+						};
+					});
+					if (currentSessionDeleted) {
+						if (nextSessionId) await selectSession(nextSessionId);
+						else await loadProjectTreeRef.current();
+					}
 				}
-				return true;
+				if (result.failures.length === 1) showToast(result.failures[0]!.message);
+				else if (result.failures.length > 1) {
+					showToast(`${result.failures.length} 个会话删除失败：${result.failures[0]!.message}`);
+				}
+				return deletedIds;
 			} catch (error) {
 				showToast(errorMessage(error));
-				return false;
+				return [];
 			}
 		},
 		[selectSession, showToast, updateState],
+	);
+
+	const deleteSession = useCallback(
+		async (sessionId: string): Promise<boolean> => (await deleteSessions([sessionId])).includes(sessionId),
+		[deleteSessions],
 	);
 
 	const fork = useCallback(
@@ -3211,7 +3438,7 @@ export function useWorkbench() {
 			if (!silent) updateState((current) => ({ ...current, gitLoading: true }));
 			const run = (async () => {
 				try {
-					const result = await webApi.gitStatus(projectId);
+					const result = await webApi.gitStatus(projectId, !silent);
 					if (requestId !== gitStatusRequestRef.current || stateRef.current.currentProjectId !== projectId) return;
 					updateState((current) =>
 						sameGitStatus(current.gitStatus, result)
@@ -3247,54 +3474,148 @@ export function useWorkbench() {
 			if (gitStatsRepositoryRef.current.has(cacheKey)) return;
 			gitStatsRepositoryRef.current.add(cacheKey);
 			try {
-				const diffs = await Promise.all([
-					webApi.gitDiff(projectId, undefined, false, repository.path || undefined).catch(() => undefined),
-					webApi.gitDiff(projectId, undefined, true, repository.path || undefined).catch(() => undefined),
-				]);
-				const stats = new Map<string, GitFileDiffStats>();
-				for (const diff of diffs) {
-					if (!diff?.diff) continue;
-					for (const [path, value] of parseGitDiffStats(diff.diff)) {
-						const key = gitFileStatsKey(repository.path, path);
-						const current = stats.get(key) ?? { additions: 0, deletions: 0 };
-						stats.set(key, {
-							additions: current.additions + value.additions,
-							deletions: current.deletions + value.deletions,
-						});
-					}
-				}
-				const untrackedStats = await Promise.all(
-					repository.files
-						.filter((file) => file.untracked)
-						.map(async (file) => {
-							const projectPath = [repository.path, file.path].filter(Boolean).join("/");
-							const content = await webApi.projectFile(projectId, projectPath).catch(() => undefined);
-							return [
-								gitFileStatsKey(repository.path, file.path),
-								{
-									additions: content?.kind === "text" && content.content ? textLineCount(content.content) : 0,
-									deletions: 0,
-								},
-							] as const;
-						}),
-				);
-				for (const [key, value] of untrackedStats) stats.set(key, value);
-				if (
-					stateRef.current.currentProjectId !== projectId ||
-					stateRef.current.gitStatus !== status
-				) {
+				const result = await webApi.gitStats(projectId, repository.path || undefined);
+				if (stateRef.current.currentProjectId !== projectId || stateRef.current.gitStatus !== status) {
 					gitStatsRepositoryRef.current.delete(cacheKey);
 					return;
 				}
+				const stats: Record<string, GitFileDiffStats> = {};
+				for (const file of result.files) {
+					const key = gitFileStatsKey(repository.path, file.path);
+					const current = stats[key] ?? { additions: 0, deletions: 0 };
+					stats[key] = {
+						additions: current.additions + file.additions,
+						deletions: current.deletions + file.deletions,
+					};
+				}
 				updateState((current) => ({
 					...current,
-					gitFileStats: { ...current.gitFileStats, ...Object.fromEntries(stats) },
+					gitFileStats: { ...current.gitFileStats, ...stats },
 				}));
 			} catch {
 				gitStatsRepositoryRef.current.delete(cacheKey);
 			}
 		},
 		[updateState],
+	);
+
+	const loadGitBranches = useCallback(
+		async (repositoryPath = "") => {
+			const projectId = stateRef.current.currentProjectId;
+			if (!projectId) return;
+			const requestId = ++gitBranchesRequestRef.current;
+			updateState((current) => ({ ...current, gitBranchesLoading: true }));
+			try {
+				const result = await webApi.gitBranches(projectId, repositoryPath || undefined);
+				if (requestId !== gitBranchesRequestRef.current || stateRef.current.currentProjectId !== projectId) return;
+				updateState((current) => ({ ...current, gitBranches: result }));
+			} finally {
+				if (requestId === gitBranchesRequestRef.current)
+					updateState((current) => ({ ...current, gitBranchesLoading: false }));
+			}
+		},
+		[updateState],
+	);
+
+	const loadGitHistory = useCallback(
+		async (repositoryPath = "", offset = 0, append = false) => {
+			const projectId = stateRef.current.currentProjectId;
+			if (!projectId) return;
+			const requestId = ++gitHistoryRequestRef.current;
+			updateState((current) => ({ ...current, gitHistoryLoading: true }));
+			try {
+				const result = await webApi.gitHistory(projectId, offset, 50, repositoryPath || undefined);
+				if (requestId !== gitHistoryRequestRef.current || stateRef.current.currentProjectId !== projectId) return;
+				updateState((current) => {
+					const previous =
+						append && current.gitHistory?.repositoryPath === result.repositoryPath
+							? current.gitHistory.commits
+							: [];
+					const seen = new Set(previous.map((commit) => commit.hash));
+					return {
+						...current,
+						gitHistory: {
+							...result,
+							commits: [...previous, ...result.commits.filter((commit) => !seen.has(commit.hash))],
+						},
+						...(current.gitCommit?.repositoryPath === result.repositoryPath ? {} : { gitCommit: undefined }),
+					};
+				});
+			} finally {
+				if (requestId === gitHistoryRequestRef.current)
+					updateState((current) => ({ ...current, gitHistoryLoading: false }));
+			}
+		},
+		[updateState],
+	);
+
+	const loadGitCommit = useCallback(
+		async (revision: string, repositoryPath = "", path?: string) => {
+			const projectId = stateRef.current.currentProjectId;
+			if (!projectId) return;
+			const requestId = ++gitCommitRequestRef.current;
+			if (path) gitDiffRequestRef.current++;
+			updateState((current) => ({
+				...current,
+				gitCommitLoading: true,
+				...(path ? { gitDiff: undefined, gitDiffLoading: true } : { gitCommit: undefined }),
+			}));
+			try {
+				const result = await webApi.gitCommit(projectId, revision, repositoryPath || undefined, path);
+				if (requestId !== gitCommitRequestRef.current || stateRef.current.currentProjectId !== projectId) return;
+				updateState((current) => ({
+					...current,
+					gitCommit: result,
+					...(path && result.diff ? { gitDiff: result.diff } : {}),
+				}));
+			} finally {
+				if (requestId === gitCommitRequestRef.current) {
+					updateState((current) => ({
+						...current,
+						gitCommitLoading: false,
+						...(path ? { gitDiffLoading: false } : {}),
+					}));
+				}
+			}
+		},
+		[updateState],
+	);
+
+	const closeGitCommit = useCallback(() => {
+		gitCommitRequestRef.current++;
+		updateState((current) => ({ ...current, gitCommit: undefined, gitCommitLoading: false }));
+	}, [updateState]);
+
+	const mutateGit = useCallback(
+		async (mutation: GitMutation, repositoryPath = ""): Promise<boolean> => {
+			const projectId = stateRef.current.currentProjectId;
+			if (!projectId || stateRef.current.gitOperation) return false;
+			updateState((current) => ({ ...current, gitOperation: mutation.type }));
+			try {
+				const result = await webApi.mutateGit(projectId, mutation, repositoryPath || undefined);
+				if (stateRef.current.currentProjectId !== projectId) return false;
+				gitStatsRepositoryRef.current.clear();
+				updateState((current) => ({ ...current, gitStatus: result.status, gitFileStats: {} }));
+				await Promise.allSettled([
+					loadGitRepositoryStats(repositoryPath),
+					loadGitBranches(repositoryPath),
+					loadGitHistory(repositoryPath),
+				]);
+				showToast(result.message);
+				return true;
+			} catch (error) {
+				showToast(errorMessage(error));
+				await loadGitStatusRef.current(true).catch(() => {});
+				return false;
+			} finally {
+				if (stateRef.current.currentProjectId === projectId)
+					updateState((current) => ({
+						...current,
+						...(current.gitOperation === mutation.type ? { gitOperation: undefined } : {}),
+					}));
+			}
+		},
+		[loadGitBranches, loadGitHistory, loadGitRepositoryStats, showToast, updateState],
 	);
 
 	const loadGitDiff = useCallback(
@@ -3477,21 +3798,34 @@ export function useWorkbench() {
 			const current = stateRef.current;
 			const project = current.projects.find((candidate) => candidate.id === current.currentProjectId);
 			if (!project) return;
+			const refreshAll = paths.includes("");
 			const normalized = paths.flatMap((path) => {
 				const value = normalizedProjectFilePath(project.path, path);
 				return value ? [value] : [];
 			});
-			const directories = new Set(normalized.map(parentProjectPath));
+			const directories = new Set(
+				refreshAll ? Object.keys(current.fileTreeCache) : normalized.map(parentProjectPath),
+			);
 			const loadedDirectories = new Set(Object.keys(current.fileTreeCache));
 			await Promise.all(
 				[...directories]
 					.filter((path) => path === current.fileTreeRootPath || loadedDirectories.has(path))
 					.map(refreshProjectTreePath),
 			);
-			if (refreshOpenedFile && current.filePath && normalized.includes(current.filePath)) {
+			if (refreshOpenedFile && current.filePath && (refreshAll || normalized.includes(current.filePath))) {
 				await refreshOpenFile(current.filePath, true);
 			}
-			if (current.inspectorOpen && current.inspectorMode === "git") await loadGitStatusRef.current(true);
+			if (current.inspectorOpen && current.inspectorMode === "git") {
+				await loadGitStatusRef.current(true);
+				const repositoryPath =
+					stateRef.current.gitBranches?.repositoryPath ?? stateRef.current.gitHistory?.repositoryPath;
+				if (repositoryPath !== undefined) {
+					await Promise.allSettled([
+						loadGitBranchesRef.current(repositoryPath),
+						loadGitHistoryRef.current(repositoryPath),
+					]);
+				}
+			}
 		},
 		[refreshOpenFile, refreshProjectTreePath],
 	);
@@ -3655,6 +3989,18 @@ export function useWorkbench() {
 		[showToast, updateState],
 	);
 
+	const reorderProjectGroups = useCallback(
+		async (groupIds: string[]) => {
+			try {
+				const result = await webApi.reorderProjectGroups(groupIds);
+				updateState((current) => ({ ...current, projectGroups: result.groups }));
+			} catch (error) {
+				showToast(errorMessage(error));
+			}
+		},
+		[showToast, updateState],
+	);
+
 	const updateProject = useCallback(
 		async (projectId: string, update: Partial<Pick<WebProject, "name" | "pinned" | "color" | "archived">>) => {
 			const result = await webApi.updateProject(projectId, update);
@@ -3728,6 +4074,7 @@ export function useWorkbench() {
 				}
 				return { ...current, hiddenModelProviders };
 			});
+			void refreshModelOptionsRef.current().catch(() => {});
 		},
 		[updateState],
 	);
@@ -3735,28 +4082,28 @@ export function useWorkbench() {
 	const saveModelProvider = useCallback(
 		async (input: WebModelProviderInput) => {
 			await webApi.modelProvider(input);
-			await refreshModelSettings();
+			await Promise.all([refreshModelSettings(), refreshModelOptions()]);
 			showToast("Provider 配置已保存");
 		},
-		[refreshModelSettings, showToast],
+		[refreshModelOptions, refreshModelSettings, showToast],
 	);
 
 	const saveProviderModel = useCallback(
 		async (provider: string, input: WebProviderModelInput) => {
 			await webApi.providerModel(provider, input);
-			await refreshModelSettings();
+			await Promise.all([refreshModelSettings(), refreshModelOptions()]);
 			showToast("模型配置已保存");
 		},
-		[refreshModelSettings, showToast],
+		[refreshModelOptions, refreshModelSettings, showToast],
 	);
 
 	const syncModelProvider = useCallback(
 		async (provider: string) => {
 			await webApi.syncModelProvider(provider);
-			await refreshModelSettings();
+			await Promise.all([refreshModelSettings(), refreshModelOptions()]);
 			showToast("模型目录已同步");
 		},
-		[refreshModelSettings, showToast],
+		[refreshModelOptions, refreshModelSettings, showToast],
 	);
 
 	const refreshSkills = useCallback(async () => {
@@ -4053,40 +4400,12 @@ export function useWorkbench() {
 	loadProjectTrustRef.current = loadProjectTrust;
 	loadProjectTreeRef.current = loadProjectTree;
 	loadGitStatusRef.current = loadGitStatus;
+	loadGitBranchesRef.current = loadGitBranches;
+	loadGitHistoryRef.current = loadGitHistory;
 	refreshProjectFilesRef.current = refreshProjectFiles;
+	refreshModelOptionsRef.current = refreshModelOptions;
+	refreshModelSettingsRef.current = refreshModelSettings;
 
-	useEffect(() => {
-		const filesVisible = state.inspectorOpen && state.inspectorMode === "files";
-		const projectFileOpen = Boolean(state.filePath && !isAbsoluteResourcePath(state.filePath));
-		if (!state.connected || !state.currentProjectId || (!filesVisible && !projectFileOpen)) return;
-		const timer = window.setInterval(() => {
-			if (document.visibilityState !== "visible") return;
-			const current = stateRef.current;
-			if (filesVisible) {
-				const paths = Object.keys(current.fileTreeCache);
-				const path = paths.length > 0 ? paths[fileTreePollIndexRef.current++ % paths.length] : current.fileTreeRootPath;
-				if (path !== undefined) void refreshProjectTreePath(path);
-			}
-			if (current.filePath && !isAbsoluteResourcePath(current.filePath)) void refreshOpenFile(current.filePath);
-		}, 5_000);
-		return () => window.clearInterval(timer);
-	}, [
-		refreshOpenFile,
-		refreshProjectTreePath,
-		state.connected,
-		state.currentProjectId,
-		state.filePath,
-		state.inspectorMode,
-		state.inspectorOpen,
-	]);
-
-	useEffect(() => {
-		if (!state.connected || !state.currentProjectId || !state.inspectorOpen || state.inspectorMode !== "git") return;
-		const timer = window.setInterval(() => {
-			if (document.visibilityState === "visible") void loadGitStatus(true).catch(() => {});
-		}, 5_000);
-		return () => window.clearInterval(timer);
-	}, [loadGitStatus, state.connected, state.currentProjectId, state.inspectorMode, state.inspectorOpen]);
 
 	useEffect(() => {
 		if (!state.currentProjectId || !state.sessionId) return;
@@ -4128,6 +4447,7 @@ export function useWorkbench() {
 				reconnectTimerRef.current = undefined;
 			}
 			streamGenerationRef.current += 1;
+			settleSessionSubscriptionWaiters("closed");
 			const socket = socketRef.current;
 			socketRef.current = undefined;
 			if (socket && socket.readyState !== WebSocket.CLOSED) socket.close();
@@ -4144,10 +4464,6 @@ export function useWorkbench() {
 				updateState((current) => ({ ...current, networkOnline: true }));
 				return;
 			}
-			if (reconnectTimerRef.current) {
-				window.clearTimeout(reconnectTimerRef.current);
-				reconnectTimerRef.current = undefined;
-			}
 			updateState((current) => ({
 				...current,
 				...reconnectingConnectionState(),
@@ -4155,7 +4471,7 @@ export function useWorkbench() {
 				readOnly: Boolean(current.sessionId),
 				sessionReady: false,
 			}));
-			void initializeRef.current();
+			resumeConnectionRef.current();
 		};
 		window.addEventListener("offline", handleOffline);
 		window.addEventListener("online", handleOnline);
@@ -4163,20 +4479,13 @@ export function useWorkbench() {
 			window.removeEventListener("offline", handleOffline);
 			window.removeEventListener("online", handleOnline);
 		};
-	}, [updateState]);
+	}, [settleSessionSubscriptionWaiters, updateState]);
 
 	useEffect(() => {
 		const handleVisibilityChange = () => {
 			if (document.visibilityState !== "visible") return;
 			flushPendingTextProgress();
-			if (!webApi.hasToken() || !browserNetworkOnline()) return;
-			const socket = socketRef.current;
-			if (socket && socket.readyState !== WebSocket.CLOSED) return;
-			if (reconnectTimerRef.current) {
-				window.clearTimeout(reconnectTimerRef.current);
-				reconnectTimerRef.current = undefined;
-			}
-			void initializeRef.current();
+			resumeConnectionRef.current();
 		};
 		document.addEventListener("visibilitychange", handleVisibilityChange);
 		return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
@@ -4188,6 +4497,7 @@ export function useWorkbench() {
 		return () => {
 			mountedRef.current = false;
 			streamGenerationRef.current += 1;
+			settleSessionSubscriptionWaiters("closed");
 			sessionDetailCacheRef.current.clear();
 			sessionDetailSeqRef.current.clear();
 			socketRef.current?.close();
@@ -4208,7 +4518,7 @@ export function useWorkbench() {
 			if (transcriptTimerRef.current) window.clearTimeout(transcriptTimerRef.current);
 			if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
 		};
-	}, [initialize]);
+	}, [initialize, settleSessionSubscriptionWaiters]);
 
 	return {
 		state,
@@ -4229,6 +4539,7 @@ export function useWorkbench() {
 		queueAction,
 		abort,
 		deleteSession,
+		deleteSessions,
 		renameSession,
 		setSessionPinned,
 		fork,
@@ -4256,6 +4567,11 @@ export function useWorkbench() {
 		saveSecuritySettings,
 		loadGitStatus,
 		loadGitRepositoryStats,
+		loadGitBranches,
+		loadGitHistory,
+		loadGitCommit,
+		closeGitCommit,
+		mutateGit,
 		loadGitDiff,
 		closeGitDiff,
 		openInspector,
@@ -4276,6 +4592,7 @@ export function useWorkbench() {
 		updateProjectGroup,
 		removeProjectGroup,
 		setProjectGroup,
+		reorderProjectGroups,
 		reorderProjects,
 		reorderSessions,
 		removeProject,

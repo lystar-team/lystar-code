@@ -1,9 +1,11 @@
 import type {
 	JsonValue,
+	ToolDiff,
 	TranscriptItem,
 	TranscriptViewItem,
 	TranscriptWebSearchSource,
 } from "@lystar/code-web-protocol";
+import { toolProgressDiff } from "./tool-progress.ts";
 
 const INTERNAL_PROMPT_BLOCK_PATTERNS = [
 	/<skill\b[^>]*\blocation="[^"]+"[^>]*>[\s\S]*?<\/skill>/gu,
@@ -36,6 +38,7 @@ export interface TranscriptToolCallProjection {
 	name: string;
 	summary: string;
 	href?: string;
+	diff?: ToolDiff;
 }
 
 export type TranscriptToolCallIndex = ReadonlyMap<string, TranscriptToolCallProjection>;
@@ -181,6 +184,23 @@ function toolDiff(name: string, details: JsonValue | undefined) {
 	};
 }
 
+function mergeToolDiff(previous: ToolDiff | undefined, next: ToolDiff | undefined): ToolDiff | undefined {
+	if (!next) return previous;
+	if (!previous) return next;
+	return {
+		files: next.files.map((file, index) => {
+			const previousFile = file.path
+				? previous.files.find((candidate) => candidate.path === file.path)
+				: previous.files[index];
+			return {
+				...(previousFile ?? {}),
+				...file,
+				...(file.path === undefined && previousFile?.path ? { path: previousFile.path } : {}),
+			};
+		}),
+	};
+}
+
 function toolCallSummary(name: string, argumentsValue: JsonValue | undefined): string {
 	const argumentsRecord = record(argumentsValue);
 	if (name === "bash" && typeof argumentsRecord?.command === "string") return argumentsRecord.command;
@@ -204,10 +224,12 @@ function toolCallProjection(part: JsonRecord): TranscriptToolCallProjection | un
 				: typeof argumentsValue?.file_path === "string"
 					? `file://${argumentsValue.file_path}`
 					: undefined;
+	const diff = toolProgressDiff(name, part.arguments);
 	return {
 		name,
 		summary: toolCallSummary(name, part.arguments),
 		...(href ? { href } : {}),
+		...(diff ? { diff } : {}),
 	};
 }
 
@@ -434,10 +456,11 @@ function projectTranscriptViews(
 		const call = toolCalls.get(callId);
 		const name = call?.name ?? (typeof entryMessage.toolName === "string" ? entryMessage.toolName : "Tool");
 		const detail = text(content);
-		const diff = toolDiff(
+		const resultDiff = toolDiff(
 			typeof entryMessage.toolName === "string" ? entryMessage.toolName : name,
 			entryMessage.details,
 		);
+		const diff = isError ? resultDiff : mergeToolDiff(call?.diff, resultDiff);
 		return [
 			{
 				type: "tool_result",

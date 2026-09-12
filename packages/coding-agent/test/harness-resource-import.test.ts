@@ -235,6 +235,44 @@ describe("harness resource import", () => {
 		expect(result).toMatchObject({ imported: 1, skipped: 1, failed: 0 });
 		expect(readFileSync(join(agentDir, "prompts", "review.md"), "utf8")).toBe("from codex\n");
 	});
+	it("keeps instruction references to explicit files without expanding directories or source imports", () => {
+		const root = mkdtempSync(join(tmpdir(), "lystar-harness-reference-scope-"));
+		const cwd = join(root, "project");
+		const agentDir = join(root, "agent");
+		const codexDir = join(cwd, ".codex");
+		mkdirSync(join(codexDir, "docs", "archive"), { recursive: true });
+		mkdirSync(join(codexDir, "src", "deep"), { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(join(codexDir, "AGENTS.md"), "Read ./docs/guide.md and ./docs/archive.\n");
+		writeFileSync(join(codexDir, "docs", "guide.md"), "Read ./detail.md and ../src/entry.ts.\n");
+		writeFileSync(join(codexDir, "docs", "detail.md"), "Detailed rules.\n");
+		writeFileSync(join(codexDir, "src", "entry.ts"), 'import "./deep/module.ts";\n');
+		writeFileSync(join(codexDir, "src", "deep", "module.ts"), "export const value = 1;\n");
+		for (let index = 0; index < 20; index++) {
+			writeFileSync(join(codexDir, "docs", "archive", `${index}.md`), `Archived rule ${index}.\n`);
+		}
+		const previousHome = process.env.HOME;
+		process.env.HOME = root;
+		cleanups.push(() => {
+			if (previousHome === undefined) delete process.env.HOME;
+			else process.env.HOME = previousHome;
+			rmSync(root, { recursive: true, force: true });
+		});
+
+		const preview = discoverHarnessImports({ cwd, agentDir, targetScope: "user" });
+		const items = preview.items.filter((item) => item.harness === "codex" && item.sourceScope === "project");
+		const instruction = items.find((item) => item.resourceType === "instruction");
+		const references = items
+			.filter((item) => item.resourceType === "reference")
+			.map((item) => item.sourceRelativePath)
+			.sort();
+
+		expect(references).toEqual(["docs/detail.md", "docs/guide.md", "src/entry.ts"]);
+		expect(instruction?.referencedItemIds).toHaveLength(3);
+		expect(items.some((item) => item.sourceRelativePath.includes("archive/"))).toBe(false);
+		expect(items.some((item) => item.sourceRelativePath.endsWith("deep/module.ts"))).toBe(false);
+	});
+
 	it("skips conflicting prompt files without overwriting them", () => {
 		const root = mkdtempSync(join(tmpdir(), "lystar-harness-conflict-"));
 		const cwd = join(root, "project");

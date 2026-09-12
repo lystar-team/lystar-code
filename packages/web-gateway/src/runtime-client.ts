@@ -170,7 +170,13 @@ async function readLegacyRuntimeSnapshot(endpoint: string, protocolVersion: numb
 function runtimeIsBusy(snapshot: RuntimeInitialSnapshot): boolean {
 	return (
 		snapshot.pendingUiRequests.length > 0 ||
-		snapshot.operations.some((operation) => ACTIVE_OPERATION_STATUSES.has(operation.status))
+		snapshot.operations.some((operation) => ACTIVE_OPERATION_STATUSES.has(operation.status)) ||
+		snapshot.sessions.some(
+			(session) =>
+				session.activity === "running" ||
+				session.activity === "waiting_for_input" ||
+				["turn", "compaction", "retry", "waiting_for_input"].includes(session.phase),
+		)
 	);
 }
 
@@ -197,12 +203,13 @@ export function ensurePersistentRuntime(config: WebGatewayConfig): Promise<void>
 			serviceInvocation,
 			config.agentDir,
 		);
-		if (status.reachable) return;
-		if (!config.manageRuntime) throw new Error(`Web Runtime 未运行：${config.runtimeEndpoint}`);
+		if (status.responsive) return;
+		if (!config.manageRuntime) throw new Error(`Web Runtime 未运行或无响应：${config.runtimeEndpoint}`);
 		if (status.installed) {
 			await ensureRuntimeService(config.runtimeEndpoint, serviceProfile, serviceInvocation, false, config.agentDir);
 			return;
 		}
+		if (status.reachable) return;
 		const command = config.runtimeInvocation ?? runtimeCommand(config.runtimeEndpoint);
 		const child = spawn(command.command, withRuntimeEndpoint(command.args, config.runtimeEndpoint), {
 			cwd: command.cwd,
@@ -210,6 +217,7 @@ export function ensurePersistentRuntime(config: WebGatewayConfig): Promise<void>
 				...process.env,
 				PI_CODING_AGENT_DIR: config.agentDir,
 				PI_WEB_RUNTIME_ENDPOINT: config.runtimeEndpoint,
+				PI_WEB_SERVICE_PROFILE: config.serviceProfile ?? "default",
 			},
 			detached: true,
 			stdio: "ignore",

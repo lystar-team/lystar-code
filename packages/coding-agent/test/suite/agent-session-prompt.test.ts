@@ -388,9 +388,10 @@ describe("AgentSession prompt characterization", () => {
 
 		const promptPromise = harness.session.prompt("start");
 		await sawToolStart;
-		await harness.session.prompt("queued", { streamingBehavior: "followUp" });
+		await harness.session.prompt("queued", { streamingBehavior: "followUp", queueId: "queue-1" });
 
 		expect(inputEvents.map((event) => event.streamingBehavior)).toEqual([undefined, "followUp"]);
+		expect(harness.session.getFollowUpQueueItems()).toEqual([{ id: "queue-1", text: "queued" }]);
 
 		releaseToolExecution?.();
 		await promptPromise;

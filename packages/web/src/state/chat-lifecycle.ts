@@ -42,11 +42,24 @@ export function canSendPrompt(
 	return Boolean(state.sessionId && state.sessionReady && state.connected && !state.readOnly);
 }
 
+export async function submitPromptWithFollowUpFallback<T>(
+	mode: "prompt" | "steer" | "follow-up",
+	submit: (mode: "prompt" | "steer" | "follow-up") => Promise<T>,
+): Promise<{ result: T; submittedMode: "prompt" | "steer" | "follow-up" }> {
+	try {
+		return { result: await submit(mode), submittedMode: mode };
+	} catch (error) {
+		if (mode !== "prompt" || (error as { code?: unknown }).code !== "session_operation_active") throw error;
+		return { result: await submit("follow-up"), submittedMode: "follow-up" };
+	}
+}
+
 export interface PendingUserPrompt {
 	id: string;
 	text: string;
 	attachments: PromptAttachmentPreview[];
 	afterEntryId?: string;
+	queueId?: string;
 }
 
 export function reconcilePendingUserPrompts(

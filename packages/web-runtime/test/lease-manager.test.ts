@@ -17,15 +17,17 @@ describe("LeaseManager", () => {
 			expect(leases.count("/tmp/session.jsonl")).toBe(2);
 		});
 
-		it("releases one client without detaching the remaining client", () => {
+		it("releases every client attached to one session", () => {
 			const leases = new LeaseManager();
 			const first = leases.acquire("/tmp/session.jsonl", "client-a");
 			const second = leases.acquire("/tmp/session.jsonl", "client-b");
 
-			expect(leases.release("/tmp/session.jsonl", first.leaseId)).toBe(true);
+			expect(leases.releaseSession("/tmp/session.jsonl")).toEqual([first, second]);
 			expect(() => leases.assert("/tmp/session.jsonl", first.leaseId, "client-a")).toThrow(InvalidSessionLeaseError);
-			expect(leases.assert("/tmp/session.jsonl", second.leaseId, "client-b")).toBe(second);
-			expect(leases.has("/tmp/session.jsonl")).toBe(true);
+			expect(() => leases.assert("/tmp/session.jsonl", second.leaseId, "client-b")).toThrow(
+				InvalidSessionLeaseError,
+			);
+			expect(leases.has("/tmp/session.jsonl")).toBe(false);
 		});
 	});
 });

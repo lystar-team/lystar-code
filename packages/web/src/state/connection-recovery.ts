@@ -15,6 +15,19 @@ export interface ConnectionPresentation {
 
 const OFFLINE_MESSAGE = "网络连接已断开，恢复网络后会自动重连";
 const RECONNECTING_MESSAGE = "连接已断开，正在恢复";
+const RECONNECT_BASE_DELAY_MS = 250;
+const RECONNECT_MAX_DELAY_MS = 1_000;
+
+export function reconnectDelayMs(attempt: number, jitter = Math.random()): number {
+	const normalizedAttempt = Number.isFinite(attempt) ? Math.max(0, Math.floor(attempt)) : 0;
+	if (normalizedAttempt === 0) return 0;
+	const exponentialDelay = Math.min(
+		RECONNECT_MAX_DELAY_MS,
+		RECONNECT_BASE_DELAY_MS * 2 ** Math.min(normalizedAttempt - 1, 5),
+	);
+	const normalizedJitter = Number.isFinite(jitter) ? Math.min(1, Math.max(0, jitter)) : 0.5;
+	return Math.min(RECONNECT_MAX_DELAY_MS, Math.round(exponentialDelay * (0.8 + normalizedJitter * 0.4)));
+}
 
 export function offlineConnectionState(): ConnectionRecoveryState {
 	return {

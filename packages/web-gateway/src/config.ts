@@ -76,6 +76,7 @@ export interface LoadWebGatewayConfigOptions {
 	defaultRuntimePort?: number;
 	staticDir?: string;
 	runtimeInvocation?: RuntimeInvocation;
+	allowRuntimeEndpointOverride?: boolean;
 	configFileName?: string;
 }
 
@@ -144,6 +145,7 @@ export async function saveWebGatewayToken(agentDir: string, password: string): P
 
 export async function loadWebGatewayConfig(options: LoadWebGatewayConfigOptions = {}): Promise<WebGatewayConfig> {
 	const agentDir = options.agentDir ?? getWebAgentDir();
+	const serviceProfile = options.configFileName ? "development" : undefined;
 	const configPath = options.configFileName ? join(agentDir, options.configFileName) : undefined;
 	const store = new WebConfigStore(agentDir, configPath);
 	let persisted = await store.loadOrMigrate();
@@ -188,15 +190,17 @@ export async function loadWebGatewayConfig(options: LoadWebGatewayConfigOptions 
 	}
 	const staticDir = options.staticDir ?? envString("PI_WEB_STATIC_DIR") ?? defaultWebStaticDir();
 	const runtimePort = persisted.runtimePort;
-	const runtimeEndpoint = options.runtimeInvocation
-		? runtimeTcpEndpoint(DEFAULT_RUNTIME_HOST, runtimePort)
-		: (envString("PI_WEB_RUNTIME_ENDPOINT") ?? defaultRuntimeEndpoint(agentDir));
+	const environmentRuntimeEndpoint = envString("PI_WEB_RUNTIME_ENDPOINT");
+	const runtimeEndpoint =
+		options.runtimeInvocation && !(options.allowRuntimeEndpointOverride && environmentRuntimeEndpoint)
+			? runtimeTcpEndpoint(DEFAULT_RUNTIME_HOST, runtimePort)
+			: (environmentRuntimeEndpoint ?? defaultRuntimeEndpoint(agentDir));
 	return {
 		host: persisted.host,
 		port: persisted.port,
 		runtimePort,
 		agentDir,
-		...(options.configFileName ? { serviceProfile: "development" } : {}),
+		...(serviceProfile ? { serviceProfile } : {}),
 		runtimeEndpoint,
 		token: persisted.password,
 		tokenPath: store.path,

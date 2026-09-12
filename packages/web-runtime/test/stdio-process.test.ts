@@ -240,7 +240,9 @@ describe("Web Runtime stdio process", () => {
 	it("returns the same model projection after an OAuth login", async () => {
 		const child = startHost();
 		await waitForReady(child);
-		const reading = readMessages(child, 5);
+		const decoder = new ServerMessageDecoder();
+		const messages: ServerMessage[] = [];
+		child.stdout.on("data", (chunk: Buffer) => messages.push(...decoder.push(chunk)));
 		child.stdin.write(
 			coalesce(
 				encodeClientMessage({ type: "hello", version: RUNTIME_PROTOCOL_VERSION, clientInstanceId: "client" }),
@@ -257,14 +259,21 @@ describe("Web Runtime stdio process", () => {
 				}),
 			),
 		);
-		const messages = await reading;
-		expect(messages.find((message) => message.type === "event" && message.event.type === "ui_request")).toMatchObject(
-			{
-				type: "event",
-				event: { type: "ui_request", kind: "notify", id: "stdio-oauth-notify" },
-			},
+		const notify = await waitForMessage(
+			messages,
+			(message) => message.type === "event" && message.event.type === "ui_request",
+			5_000,
 		);
-		expect(messages.find((message) => message.type === "response" && message.id === "oauth-login")).toMatchObject({
+		expect(notify).toMatchObject({
+			type: "event",
+			event: { type: "ui_request", kind: "notify", id: "stdio-oauth-notify" },
+		});
+		const login = await waitForMessage(
+			messages,
+			(message) => message.type === "response" && message.id === "oauth-login",
+			5_000,
+		);
+		expect(login).toMatchObject({
 			type: "response",
 			id: "oauth-login",
 			ok: true,

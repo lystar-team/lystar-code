@@ -1,8 +1,8 @@
 import { gsap } from "gsap";
 import { ArrowLeft, Check, ChevronRight, Folder, HardDrive, LoaderCircle, Plus, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { WorkbenchState } from "../../state/use-workbench";
-import type { WebProject, UiRequestEvent } from "../../types";
+import { sessionTitle, type WorkbenchState } from "../../state/use-workbench";
+import type { WebProject, UiRequestEvent, WebSessionSummary } from "../../types";
 import { runGsapMotion } from "../../lib/gsap-motion";
 import { Alert, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
@@ -211,6 +211,62 @@ export function ProjectRenameDialog({
 	);
 }
 
+export function SessionRenameDialog({
+	session,
+	actions,
+	onClose,
+}: {
+	session?: WebSessionSummary;
+	actions: WorkbenchActions;
+	onClose: () => void;
+}) {
+	const [name, setName] = useState("");
+	const [saving, setSaving] = useState(false);
+
+	useEffect(() => {
+		setName(sessionTitle(session));
+	}, [session]);
+
+	const save = async () => {
+		if (!session || saving) return;
+		const nextName = name.trim();
+		if (!nextName) return;
+		setSaving(true);
+		try {
+			await actions.renameSession(session.id, nextName);
+			onClose();
+		} finally {
+			setSaving(false);
+		}
+	};
+
+	return (
+		<Dialog
+			open={Boolean(session)}
+			onOpenChange={(open) => {
+				if (!open && !saving) onClose();
+			}}
+		>
+			<DialogContent className="max-w-md">
+				<DialogHeader>
+					<DialogTitle>重命名会话</DialogTitle>
+					<DialogDescription>修改会话在工作台中的显示名称</DialogDescription>
+				</DialogHeader>
+				<Input aria-label="会话名称" value={name} onChange={(event) => setName(event.target.value)} autoFocus />
+				<DialogFooter>
+					<Button variant="outline" onClick={onClose} disabled={saving}>
+						取消
+					</Button>
+					<Button disabled={!session || !name.trim() || saving} onClick={() => void save()}>
+						{saving ? <LoaderCircle className="size-4 animate-spin" /> : null}
+						保存
+					</Button>
+				</DialogFooter>
+			</DialogContent>
+		</Dialog>
+	);
+}
+
 export function UiRequestDialog({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
 	const request = state.pendingUiRequests[0];
 	const [value, setValue] = useState("");
@@ -290,53 +346,61 @@ export function Toast({ message }: { message?: string }) {
 	const [dismissedMessage, setDismissedMessage] = useState<string>();
 	const toastRef = useRef<HTMLDivElement>(null);
 	const isDismissed = Boolean(message && dismissedMessage === message);
+	const displayed = Boolean(displayMessage);
+	const visible = Boolean(message && !isDismissed);
 
 	useEffect(() => {
 		if (!message && !displayMessage) setDismissedMessage(undefined);
 	}, [displayMessage, message]);
 
 	useLayoutEffect(() => {
-		if (message && displayMessage !== message) {
-			setDisplayMessage(message);
-			return;
-		}
+		if (visible && displayMessage !== message) setDisplayMessage(message);
+	}, [displayMessage, message, visible]);
 
+	useLayoutEffect(() => {
 		const element = toastRef.current;
-		if (!element || !displayMessage) return;
+		if (!element || !displayed) return;
 
-		if (!message || isDismissed) {
-			return runGsapMotion(element, (reducedMotion) => {
-				if (reducedMotion) {
-					setDisplayMessage(undefined);
+		let cancelMotion: (() => void) | undefined;
+		const frameId = window.requestAnimationFrame(() => {
+			cancelMotion = runGsapMotion(element, (reducedMotion) => {
+				if (!visible) {
+					if (reducedMotion) {
+						setDisplayMessage(undefined);
+						return;
+					}
+					gsap.to(element, {
+						autoAlpha: 0,
+						y: -8,
+						duration: 0.18,
+						ease: "power2.in",
+						overwrite: "auto",
+						onComplete: () => setDisplayMessage(undefined),
+					});
 					return;
 				}
-				gsap.to(element, {
-					autoAlpha: 0,
-					y: -8,
-					duration: 0.18,
-					ease: "power2.in",
-					overwrite: "auto",
-					onComplete: () => setDisplayMessage(undefined),
-				});
-			});
-		}
 
-		return runGsapMotion(element, (reducedMotion) => {
-			if (reducedMotion) return;
-			gsap.fromTo(
-				element,
-				{ autoAlpha: 0, y: -8 },
-				{
-					autoAlpha: 1,
-					y: 0,
-					duration: 0.22,
-					ease: "power2.out",
-					overwrite: "auto",
-					clearProps: "opacity,visibility,transform",
-				},
-			);
+				if (reducedMotion) return;
+				gsap.fromTo(
+					element,
+					{ autoAlpha: 0, y: -8 },
+					{
+						autoAlpha: 1,
+						y: 0,
+						duration: 0.22,
+						ease: "power2.out",
+						overwrite: "auto",
+						clearProps: "opacity,visibility,transform",
+					},
+				);
+			});
 		});
-	}, [displayMessage, isDismissed, message]);
+
+		return () => {
+			window.cancelAnimationFrame(frameId);
+			cancelMotion?.();
+		};
+	}, [displayed, visible]);
 
 	if (!displayMessage) return null;
 	return (

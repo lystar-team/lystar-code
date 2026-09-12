@@ -162,24 +162,57 @@ function buildBunBinaryRelease(targetDirectory, archiveDirectory) {
 	]);
 	rmSync(targetDirectory, { force: true, recursive: true });
 	cpSync(join(binaryBuildDirectory, platform), targetDirectory, { recursive: true });
-	const archiveName = platform.startsWith("windows-") ? `pi-${platform}.zip` : `pi-${platform}.tar.gz`;
+	if (platform.startsWith("windows-")) {
+		const piBinary = join(targetDirectory, "pi.exe");
+		if (!existsSync(piBinary)) cpSync(join(targetDirectory, "lc.exe"), piBinary);
+	} else {
+		const piBinary = join(targetDirectory, "pi");
+		if (!existsSync(piBinary)) symlinkSync("lc", piBinary);
+	}
+	const releaseManifest = JSON.parse(readFileSync(join(binaryBuildDirectory, "release-manifest.json"), "utf8"));
+	const archiveName = releaseManifest.assets?.[platform]?.file;
+	if (typeof archiveName !== "string" || !archiveName) {
+		throw new Error(`Release manifest is missing the ${platform} archive filename.`);
+	}
 	cpSync(join(binaryBuildDirectory, archiveName), join(archiveDirectory, archiveName));
-	return platform;
+	return { archiveName, platform };
 }
 
 function createPiShim(installDirectory) {
 	const binDirectory = join(installDirectory, "node_modules", ".bin");
 	if (process.platform === "win32") {
-		if (existsSync(join(binDirectory, "pi.cmd"))) {
-			writeFileSync(join(installDirectory, "pi.cmd"), '@ECHO off\r\n"%~dp0node_modules\\.bin\\pi.cmd" %*\r\n');
-			writeFileSync(join(installDirectory, "pi.ps1"), '& "$PSScriptRoot/node_modules/.bin/pi.ps1" @args\n');
-			return;
+		for (const command of ["pi", "lc", "lystar"]) {
+			if (existsSync(join(binDirectory, `${command}.cmd`))) {
+				writeFileSync(
+					join(installDirectory, "pi.cmd"),
+					`@ECHO off\r\n"%~dp0node_modules\\.bin\\${command}.cmd" %*\r\n`,
+				);
+				writeFileSync(
+					join(installDirectory, "pi.ps1"),
+					`& "$PSScriptRoot/node_modules/.bin/${command}.ps1" @args\n`,
+				);
+				return;
+			}
+			if (existsSync(join(binDirectory, `${command}.exe`))) {
+				writeFileSync(
+					join(installDirectory, "pi.cmd"),
+					`@ECHO off\r\n"%~dp0node_modules\\.bin\\${command}.exe" %*\r\n`,
+				);
+				writeFileSync(
+					join(installDirectory, "pi.ps1"),
+					`& "$PSScriptRoot/node_modules/.bin/${command}.exe" @args\n`,
+				);
+				return;
+			}
 		}
-		writeFileSync(join(installDirectory, "pi.cmd"), '@ECHO off\r\n"%~dp0node_modules\\.bin\\pi.exe" %*\r\n');
-		writeFileSync(join(installDirectory, "pi.ps1"), '& "$PSScriptRoot/node_modules/.bin/pi.exe" @args\n');
+		throw new Error("Installed coding-agent package has no pi, lc, or lystar executable.");
+	}
+	for (const command of ["pi", "lc", "lystar"]) {
+		if (!existsSync(join(binDirectory, command))) continue;
+		symlinkSync(join("node_modules", ".bin", command), join(installDirectory, "pi"));
 		return;
 	}
-	symlinkSync(join("node_modules", ".bin", "pi"), join(installDirectory, "pi"));
+	throw new Error("Installed coding-agent package has no pi, lc, or lystar executable.");
 }
 
 const options = parseArgs();
@@ -220,9 +253,9 @@ if (!options.skipTest) {
 
 const tarballs = packReleasePackages(packages, tarballDirectory);
 
-let binaryPlatform;
+let binaryRelease;
 if (!options.skipInstall) {
-	binaryPlatform = buildBunBinaryRelease(binaryDirectory, outDir);
+	binaryRelease = buildBunBinaryRelease(binaryDirectory, outDir);
 
 	installCodingAgentConsumer(nodeInstallDirectory, tarballs);
 	smokeTestCodingAgentConsumer(nodeInstallDirectory);
@@ -248,9 +281,9 @@ for (const tarball of tarballs.values()) {
 if (!options.skipInstall) {
 	console.log("\nLocal Bun binary release:");
 	console.log(`  ${binaryDirectory}`);
-	console.log(`  ${join(outDir, `pi-${binaryPlatform}.${String(binaryPlatform).startsWith("windows-") ? "zip" : "tar.gz"}`)}`);
+	console.log(`  ${join(outDir, binaryRelease.archiveName)}`);
 	console.log("\nRun the local Bun binary release from outside the repository:");
-	console.log(`  ${join(binaryDirectory, String(binaryPlatform).startsWith("windows-") ? "pi.exe" : "pi")} --help`);
+	console.log(`  ${join(binaryDirectory, binaryRelease.platform.startsWith("windows-") ? "pi.exe" : "pi")} --help`);
 
 	console.log("\nIsolated npm install:");
 	console.log(`  ${nodeInstallDirectory}`);

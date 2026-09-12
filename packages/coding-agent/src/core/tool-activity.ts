@@ -246,6 +246,26 @@ function toolNumber(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
+function mergeToolDiff(
+	previous: ToolActivityDiff | undefined,
+	next: ToolActivityDiff | undefined,
+): ToolActivityDiff | undefined {
+	if (!next) return previous;
+	if (!previous) return next;
+	return {
+		files: next.files.map((file, index) => {
+			const previousFile = file.path
+				? previous.files.find((candidate) => candidate.path === file.path)
+				: previous.files[index];
+			return {
+				...(previousFile ?? {}),
+				...file,
+				...(file.path === undefined && previousFile?.path ? { path: previousFile.path } : {}),
+			};
+		}),
+	};
+}
+
 export function toolProgressDiff(name: string, args: unknown, result?: unknown): ToolActivityDiff | undefined {
 	if (!isDiffTool(name)) return undefined;
 	const details = toolRecord(toolRecord(result)?.details);
@@ -486,7 +506,8 @@ export class ToolActivityTracker {
 			// 终态摘要继续表示工具输入，结果单独放在 output，避免文件内容或命令输出替换标题。
 			activity.output = output;
 			activity.error = event.isError ? output || "工具调用失败" : undefined;
-			activity.diff = toolProgressDiff(event.toolName, activity.args, event.result);
+			const terminalDiff = toolProgressDiff(event.toolName, activity.args, event.result);
+			activity.diff = activity.state === "success" ? mergeToolDiff(activity.diff, terminalDiff) : terminalDiff;
 			activity.args = undefined;
 			activity.startedAt ??= Date.now();
 			activity.completedAt = Date.now();

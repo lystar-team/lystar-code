@@ -24,7 +24,7 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 	const [isMobile, setIsMobile] = useState(false);
 	const appInstall = useAppInstall();
 	useEffect(() => {
-		const media = window.matchMedia("(max-width: 639px)");
+		const media = window.matchMedia("(max-width: 767px)");
 		const update = () => setIsMobile(media.matches);
 		update();
 		media.addEventListener("change", update);
@@ -43,6 +43,7 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 	];
 	const visibleItems = settingItems.filter((item) => item.label.toLowerCase().includes(query.toLowerCase()));
 	const currentLabel = settingItems.find((item) => item.value === state.settingsTab)?.label ?? "设置";
+	const hostInstructionFile = state.hostInstructions.find((candidate) => candidate.fileName === "AGENTS.md");
 	return (
 		<Dialog
 			open={state.settingsOpen}
@@ -60,9 +61,9 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 					value={state.settingsTab}
 					onValueChange={(value) => void actions.openSettings(value as SettingsTab)}
 					orientation={isMobile ? "horizontal" : "vertical"}
-					className="flex h-full min-h-0 w-full min-w-0 max-w-full flex-col overflow-hidden sm:flex-row"
+					className="flex h-full min-h-0 w-full min-w-0 max-w-full flex-col gap-0 overflow-hidden md:flex-row"
 				>
-					<aside className="flex min-w-0 w-full shrink-0 flex-col border-b border-border/60 bg-background sm:w-[var(--sidebar-width)] sm:border-r sm:border-b-0">
+					<aside className="flex min-w-0 w-full shrink-0 flex-col border-b border-border/60 bg-background md:w-[clamp(13rem,24vw,17rem)] md:border-r md:border-b-0">
 						<div className="flex h-16 shrink-0 items-center px-5">
 							<Button
 								className="justify-start gap-2 px-0 text-base font-medium"
@@ -86,18 +87,18 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 							</div>
 						</div>
 						<TabsList
-							className="mx-4 mt-3 min-h-0 w-auto min-w-0 max-w-[calc(100%-2rem)] flex-none !flex-row flex-nowrap items-center justify-start gap-1 overflow-x-auto rounded-none bg-transparent p-0 sm:mx-0 sm:mt-0 sm:w-full sm:max-w-none sm:flex-1 sm:!flex-col sm:items-stretch sm:overflow-auto sm:rounded-none sm:px-5 sm:pb-5"
+							className="mx-4 mt-3 min-h-0 w-auto min-w-0 max-w-[calc(100%-2rem)] flex-none !flex-row flex-nowrap items-center justify-start gap-1 overflow-x-auto rounded-none bg-transparent p-0 md:mx-0 md:mt-0 md:w-full md:max-w-none md:flex-1 md:!flex-col md:items-stretch md:overflow-auto md:rounded-none md:px-5 md:pb-5"
 							variant="line"
 						>
 							{["个人", "工作区", "系统", "其他"].map((section) => {
 								const items = visibleItems.filter((item) => item.section === section);
 								if (!items.length) return null;
 								return (
-									<div className="contents sm:grid sm:w-full sm:gap-1" key={section}>
-										<p className="hidden px-3 pb-2 pt-4 text-xs font-medium text-muted-foreground sm:block">{section}</p>
+									<div className="contents md:grid md:w-full md:gap-1" key={section}>
+										<p className="hidden px-3 pb-2 pt-4 text-xs font-medium text-muted-foreground md:block">{section}</p>
 										{items.map((item) => (
 											<TabsTrigger
-													className="h-9 !w-auto !min-w-max !flex-none !justify-center whitespace-nowrap rounded-xl border-0 px-2 text-xs font-medium text-muted-foreground after:hidden data-[state=active]:bg-accent data-[state=active]:text-foreground data-[state=active]:shadow-none sm:h-10 sm:!w-full sm:!min-w-0 sm:!justify-start sm:gap-3 sm:rounded-md sm:border-0 sm:px-3 sm:text-sm sm:whitespace-normal sm:data-[state=active]:bg-accent"
+													className="h-9 !w-auto !min-w-max !flex-none !justify-center whitespace-nowrap rounded-xl border-0 px-2 text-xs font-medium text-muted-foreground after:hidden data-[state=active]:bg-accent data-[state=active]:text-foreground data-[state=active]:shadow-none md:h-10 md:!w-full md:!min-w-0 md:!justify-start md:gap-3 md:rounded-md md:border-0 md:px-3 md:text-sm md:whitespace-normal md:data-[state=active]:bg-accent"
 												key={item.value}
 												value={item.value}
 											>
@@ -112,11 +113,21 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 					</aside>
 					<section data-settings-content className="min-h-0 w-full min-w-0 max-w-full flex-1 overflow-x-hidden overflow-y-auto">
 						<GsapReveal animationKey={state.settingsTab} className="min-h-0 w-full" distance={16} duration={0.32}>
-							<div className="mx-auto w-full min-w-0 max-w-[1120px] p-5 sm:p-12 lg:p-16">
-							<div className="mb-8 sm:mb-12">
+							<div className="mx-auto w-full min-w-0 max-w-[1120px] p-5 sm:p-8 lg:p-12 xl:p-16">
+							<div className={state.settingsTab === "instructions" || state.settingsTab === "skills" ? "mb-5 sm:mb-6" : "mb-8 sm:mb-12"}>
 								<div className="flex items-center justify-between gap-4">
 									<div className="min-w-0">
-										<h1 className="text-2xl font-semibold tracking-tight sm:text-4xl">{currentLabel}</h1>
+										<div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
+											<h1 className="text-2xl font-semibold tracking-tight sm:text-4xl">{currentLabel}</h1>
+											{state.settingsTab === "instructions" ? (
+												<>
+													<span className="font-mono text-sm font-medium text-muted-foreground">AGENTS.md</span>
+													<span className={hostInstructionFile?.active ? "text-xs font-medium text-emerald-600 dark:text-emerald-400" : "text-xs text-muted-foreground"}>
+														{hostInstructionFile?.active ? "生效中" : "未创建"}
+													</span>
+												</>
+											) : null}
+										</div>
 										<p className="mt-2 max-w-2xl text-base leading-7 text-muted-foreground sm:mt-3">
 											{state.settingsTab === "system"
 								? "修改应用名称和 Logo，并保存到本机配置文件。"

@@ -96,6 +96,10 @@ function profileFor(configFileName: string | undefined): string {
 	return configFileName ? "development" : DEFAULT_PROFILE;
 }
 
+function runtimeProfileFor(config: WebGatewayConfig): string | undefined {
+	return config.serviceProfile;
+}
+
 function serviceEnvironment(
 	config: WebGatewayConfig,
 	configFileName: string | undefined,
@@ -104,6 +108,7 @@ function serviceEnvironment(
 	return {
 		...captureUserCommandEnvironment(),
 		PI_CODING_AGENT_DIR: config.agentDir,
+		PI_WEB_SERVICE_PROFILE: profileFor(configFileName),
 		...(configFileName ? { LYSTAR_CLI_MODE: "development" } : {}),
 		...(serviceVersion ? { LYSTAR_WEB_SERVICE_VERSION: serviceVersion } : {}),
 		PI_WEB_RUNTIME_ENDPOINT: config.runtimeEndpoint,
@@ -119,14 +124,17 @@ function serviceInvocation(invocation: RuntimeInvocation | undefined): WebServic
 }
 
 function fallbackGatewayConfig(options: WebServiceLaunchOptions): WebGatewayConfig {
+	const development = Boolean(options.configFileName);
+	const runtimePort = options.defaultRuntimePort ?? DEFAULT_RUNTIME_PORT;
 	return {
 		host: DEFAULT_WEB_HOST,
 		port: options.defaultPort ?? DEFAULT_WEB_GATEWAY_PORT,
 		agentDir: options.agentDir,
+		...(development ? { serviceProfile: "development" } : {}),
 		runtimeEndpoint: options.runtimeInvocation
-			? runtimeTcpEndpoint(DEFAULT_RUNTIME_HOST, options.defaultRuntimePort ?? DEFAULT_RUNTIME_PORT)
+			? runtimeTcpEndpoint(DEFAULT_RUNTIME_HOST, runtimePort)
 			: defaultRuntimeEndpoint(options.agentDir),
-		runtimePort: options.defaultRuntimePort ?? DEFAULT_RUNTIME_PORT,
+		runtimePort,
 		token: "",
 		allowedHosts: defaultAllowedHosts(DEFAULT_WEB_HOST),
 		staticDir: options.staticDir ?? defaultWebStaticDir(),
@@ -151,14 +159,12 @@ function gatewaySpec(config: WebGatewayConfig, options: WebServiceLaunchOptions)
 }
 
 function runtimeSpec(config: WebGatewayConfig, options: WebServiceLaunchOptions): WebServiceSpec {
-	const profile = profileFor(options.configFileName);
-	const runtime = createRuntimeServiceSpec(config.runtimeEndpoint, {
-		profile,
+	return createRuntimeServiceSpec(config.runtimeEndpoint, {
+		profile: runtimeProfileFor(config),
 		agentDir: config.agentDir,
 		environment: serviceEnvironment(config, options.configFileName, options.serviceVersion),
 		...(options.runtimeInvocation ? { invocation: serviceInvocation(options.runtimeInvocation) } : {}),
 	});
-	return runtime;
 }
 
 function statePath(agentDir: string, configFileName?: string): string {
@@ -311,7 +317,7 @@ export async function getWebServicesStatus(options: WebServiceLaunchOptions): Pr
 		getWebServiceStatus(gateway),
 		getRuntimeServiceStatus(
 			fallbackConfig.runtimeEndpoint,
-			profileFor(options.configFileName),
+			runtimeProfileFor(fallbackConfig),
 			runtimeInvocation,
 			fallbackConfig.agentDir,
 		),
@@ -319,7 +325,13 @@ export async function getWebServicesStatus(options: WebServiceLaunchOptions): Pr
 	const profile = profileFor(options.configFileName);
 	const gatewayPid = readGatewayPid(options.agentDir, profile);
 	return {
-		enabled: Boolean(configured || state || gatewayStatus.installed || runtimeStatus.installed || gatewayPid),
+		enabled: Boolean(
+			configured ||
+				state ||
+				gatewayStatus.installed ||
+				gatewayPid ||
+				(fallbackConfig.manageRuntime && runtimeStatus.installed),
+		),
 		profile,
 		...(state?.serviceVersion ? { serviceVersion: state.serviceVersion } : {}),
 		gateway: {
@@ -340,13 +352,13 @@ async function applyWebServices(
 	const runtimeInvocation = serviceInvocation(options.runtimeInvocation);
 	const runtimeStatus = await getRuntimeServiceStatus(
 		config.runtimeEndpoint,
-		profileFor(options.configFileName),
+		runtimeProfileFor(config),
 		runtimeInvocation,
 		config.agentDir,
 	);
 	const profile = profileFor(options.configFileName);
 	if (reinstall) {
-		await assertRuntimeIdle(config.runtimeEndpoint);
+		if (config.manageRuntime) await assertRuntimeIdle(config.runtimeEndpoint);
 		// 先停止接收新请求，避免旧 Gateway 在版本切换期间拉起旧 Runtime。
 		stopWebService(gateway, false, {
 			detachedPid: readGatewayPid(config.agentDir, profile),
@@ -362,31 +374,35 @@ async function applyWebServices(
 			await waitForGatewayExit(config.agentDir, profile);
 		}
 	}
-	if (!runtimeStatus.installed && (runtimeStatus.manager === "detached" || runtimeStatus.reachable)) {
-		await stopRuntimeService(
-			config.runtimeEndpoint,
-			false,
-			profileFor(options.configFileName),
-			runtimeInvocation,
-			options.interactiveAdmin ?? false,
-			config.agentDir,
-		);
-	}
-	if (reinstall || !runtimeStatus.installed) {
-		await installRuntimeService(config.runtimeEndpoint, options.interactiveAdmin ?? false, {
-			profile: profileFor(options.configFileName),
-			invocation: runtimeInvocation,
-			agentDir: config.agentDir,
-			environment: serviceEnvironment(config, options.configFileName, options.serviceVersion),
-		});
-	} else {
-		await ensureRuntimeService(
-			config.runtimeEndpoint,
-			profileFor(options.configFileName),
-			runtimeInvocation,
-			options.interactiveAdmin ?? false,
-			config.agentDir,
-		);
+	if (config.manageRuntime) {
+		if (!runtimeStatus.installed && (runtimeStatus.manager === "detached" || runtimeStatus.reachable)) {
+			await stopRuntimeService(
+				config.runtimeEndpoint,
+				false,
+				runtimeProfileFor(config),
+				runtimeInvocation,
+				options.interactiveAdmin ?? false,
+				config.agentDir,
+			);
+		}
+		if (reinstall || !runtimeStatus.installed) {
+			await installRuntimeService(config.runtimeEndpoint, options.interactiveAdmin ?? false, {
+				profile: runtimeProfileFor(config),
+				invocation: runtimeInvocation,
+				agentDir: config.agentDir,
+				environment: serviceEnvironment(config, options.configFileName, options.serviceVersion),
+			});
+		} else {
+			await ensureRuntimeService(
+				config.runtimeEndpoint,
+				runtimeProfileFor(config),
+				runtimeInvocation,
+				options.interactiveAdmin ?? false,
+				config.agentDir,
+			);
+		}
+	} else if (!runtimeStatus.responsive) {
+		throw new Error(`Web Runtime 未运行或无响应：${config.runtimeEndpoint}`);
 	}
 	if (!gatewayStatus.installed && gatewayStatus.manager === "detached")
 		await stopDetachedGateway(config.agentDir, profile);
@@ -444,7 +460,13 @@ export async function runWebComponentAction(
 	const runtimeInvocation = serviceInvocation(options.runtimeInvocation);
 
 	if (options.component === "runtime") {
-		const status = await getRuntimeServiceStatus(config.runtimeEndpoint, profile, runtimeInvocation, config.agentDir);
+		const runtimeProfile = runtimeProfileFor(config);
+		const status = await getRuntimeServiceStatus(
+			config.runtimeEndpoint,
+			runtimeProfile,
+			runtimeInvocation,
+			config.agentDir,
+		);
 		if (options.action === "status") return status;
 		if (!configured && !state) {
 			throw new Error(
@@ -455,7 +477,7 @@ export async function runWebComponentAction(
 			return stopRuntimeService(
 				config.runtimeEndpoint,
 				options.force ?? false,
-				profile,
+				runtimeProfile,
 				runtimeInvocation,
 				interactiveAdmin,
 				config.agentDir,
@@ -466,32 +488,32 @@ export async function runWebComponentAction(
 				await stopRuntimeService(
 					config.runtimeEndpoint,
 					true,
-					profile,
+					runtimeProfile,
 					runtimeInvocation,
 					interactiveAdmin,
 					config.agentDir,
 				);
 				return ensureRuntimeService(
 					config.runtimeEndpoint,
-					profile,
+					runtimeProfile,
 					runtimeInvocation,
 					interactiveAdmin,
 					config.agentDir,
 				);
 			}
-			return restartRuntimeService(config.runtimeEndpoint, profile, runtimeInvocation, config.agentDir);
+			return restartRuntimeService(config.runtimeEndpoint, runtimeProfile, runtimeInvocation, config.agentDir);
 		}
 		if (status.installed) {
 			return ensureRuntimeService(
 				config.runtimeEndpoint,
-				profile,
+				runtimeProfile,
 				runtimeInvocation,
 				interactiveAdmin,
 				config.agentDir,
 			);
 		}
 		return installRuntimeService(config.runtimeEndpoint, interactiveAdmin, {
-			profile,
+			profile: runtimeProfile,
 			invocation: runtimeInvocation,
 			agentDir: config.agentDir,
 			environment: serviceEnvironment(config, options.configFileName, options.serviceVersion),
@@ -546,12 +568,14 @@ export async function runWebServiceAction(options: WebServiceActionOptions): Pro
 				interactiveAdmin: options.interactiveAdmin ?? false,
 			});
 			removeWebService(gateway, { interactiveAdmin: options.interactiveAdmin ?? false });
-			const runtime = runtimeSpec(base, options);
-			stopWebService(runtime, true, {
-				detachedPid: status.runtime.pid,
-				interactiveAdmin: options.interactiveAdmin ?? false,
-			});
-			removeWebService(runtime, { interactiveAdmin: options.interactiveAdmin ?? false });
+			if (base.manageRuntime) {
+				const runtime = runtimeSpec(base, options);
+				stopWebService(runtime, true, {
+					detachedPid: status.runtime.pid,
+					interactiveAdmin: options.interactiveAdmin ?? false,
+				});
+				removeWebService(runtime, { interactiveAdmin: options.interactiveAdmin ?? false });
+			}
 		}
 		rmSync(statePath(options.agentDir, options.configFileName), { force: true });
 		return { ...status, enabled: false };
@@ -562,14 +586,16 @@ export async function runWebServiceAction(options: WebServiceActionOptions): Pro
 		if (!config) return getWebServicesStatus(options);
 		const gateway = gatewaySpec(config, options);
 		const runtimeInvocation = serviceInvocation(options.runtimeInvocation);
-		await stopRuntimeService(
-			config.runtimeEndpoint,
-			false,
-			profileFor(options.configFileName),
-			runtimeInvocation,
-			options.interactiveAdmin ?? false,
-			config.agentDir,
-		);
+		if (config.manageRuntime) {
+			await stopRuntimeService(
+				config.runtimeEndpoint,
+				false,
+				runtimeProfileFor(config),
+				runtimeInvocation,
+				options.interactiveAdmin ?? false,
+				config.agentDir,
+			);
+		}
 		stopWebService(gateway, false, {
 			detachedPid: readGatewayPid(config.agentDir, profileFor(options.configFileName)),
 			interactiveAdmin: options.interactiveAdmin ?? false,

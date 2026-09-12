@@ -88,6 +88,13 @@ export class LeaseManager {
 		return released;
 	}
 
+	releaseSession(sessionPath: string): ControlLease[] {
+		const sessionLeases = this.leases.get(sessionPath);
+		if (!sessionLeases) return [];
+		this.leases.delete(sessionPath);
+		return [...sessionLeases.values()];
+	}
+
 	move(sessionPath: string, nextSessionPath: string, leaseId: string): ControlLease {
 		const lease = this.assert(sessionPath, leaseId);
 		const currentLeases = this.leases.get(sessionPath);

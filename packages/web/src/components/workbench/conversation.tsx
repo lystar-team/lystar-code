@@ -6,32 +6,36 @@ import { toSessionItemViewModel } from "../../adapters/session-view-model";
 import { type LiveCompactionState } from "../../state/compaction-state";
 import { shouldJoinToolBatch } from "../../state/tool-batching";
 import type { LiveTurnItem, WorkbenchState } from "../../state/use-workbench";
+import { canSendPrompt, hasActiveSessionWork } from "../../state/chat-lifecycle";
 import type { PromptAttachmentPreview } from "../../types";
 import { CompactionCard } from "./compaction-card";
 import { Conversation, ConversationContent, ConversationEmptyState } from "../ai-elements/conversation";
 import { ToolBatch, toolBatchSummaryLabel, type ToolBatchTool } from "../ai-elements/tool-batch";
 import { Button } from "../ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
+import { Collapsible, CollapsibleTrigger } from "../ui/collapsible";
+import { GsapCollapsibleContent } from "../ui/gsap-collapsible-content";
 import { GsapReveal } from "../ui/gsap-reveal";
 import { ACTIVE_OPERATION_STATUSES } from "./constants";
-import { ThinkingBlock } from "./live-turn";
+import { latestThinkingLine, ThinkingBlock } from "./live-turn";
 import { AgentErrorCard, TranscriptItemView, TranscriptMessageView } from "./transcript";
 import {
 	DEFAULT_TRANSCRIPT_GAP,
 	shouldFollowTranscriptResize,
 	VirtualizedConversationTranscript,
 } from "./virtualized-transcript";
-import type { WorkbenchActions } from "./types";
+import type { PromptEditRequest, WorkbenchActions } from "./types";
 
 type MessageRenderItem = {
 	kind: "message";
 	key: string;
+	entryId?: string;
 	live: boolean;
 	role: "user" | "assistant" | "system";
 	text: string;
 	attachments: PromptAttachmentPreview[];
 	sources: string[];
 	copyVisible: boolean;
+	editable: boolean;
 };
 type ThinkingRenderItem = { kind: "thinking"; key: string; text: string };
 type TranscriptItemRenderItem = { kind: "item"; key: string; item: WorkbenchState["transcript"][number] };
@@ -74,6 +78,16 @@ type RawRenderItem =
 
 const HISTORY_LOAD_THRESHOLD = 240;
 const HISTORY_LOAD_RESET_DISTANCE = 480;
+
+type InitialTranscriptDisplayState = "ready" | "loading" | "error";
+
+export function initialTranscriptDisplayState(
+	state: Pick<WorkbenchState, "transcriptPageLoaded" | "transcriptLoading" | "transcriptError">,
+): InitialTranscriptDisplayState {
+	if (state.transcriptPageLoaded) return "ready";
+	if (state.transcriptLoading) return "loading";
+	return state.transcriptError ? "error" : "ready";
+}
 
 type ToolIndex = {
 	callIds: ReadonlySet<string>;
@@ -155,9 +169,11 @@ function conversationRenderItemEqual(previous: ConversationRenderItem, next: Con
 	if (previous.kind === "message" && next.kind === "message") {
 		return (
 			previous.live === next.live &&
+			previous.entryId === next.entryId &&
 			previous.role === next.role &&
 			previous.text === next.text &&
 			previous.copyVisible === next.copyVisible &&
+			previous.editable === next.editable &&
 			previous.sources.join("\u0000") === next.sources.join("\u0000") &&
 			attachmentListsEqual(previous.attachments, next.attachments)
 		);
@@ -274,6 +290,7 @@ export function buildPersistedRenderItems(
 				attachments: prompt.attachments,
 				sources: [],
 				copyVisible: false,
+				editable: false,
 			});
 		}
 	};
@@ -293,12 +310,14 @@ export function buildPersistedRenderItems(
 			rendered.push({
 				kind: "message",
 				key: item.renderId,
+				entryId: item.entryId,
 				live: false,
 				role: viewModel.role,
 				text: viewModel.text,
 				attachments: viewModel.attachments,
 				sources: viewModel.sources,
 				copyVisible: false,
+				editable: false,
 			});
 			continue;
 		}
@@ -364,21 +383,24 @@ export function appendLiveRenderItems(
 	const next = [...rendered];
 	for (const item of liveItems) {
 		if (item.kind === "thinking") {
-			if (!item.parts.length || next.some((entry) => entry.key === item.id)) continue;
-			next.push({ kind: "thinking", key: item.id, text: item.parts.join("") });
+			const text = item.parts.join("");
+			if (!latestThinkingLine(item.parts) || next.some((entry) => entry.key === item.id)) continue;
+			next.push({ kind: "thinking", key: item.id, text });
 			continue;
 		}
 		if (item.kind === "text") {
-			if (!item.parts.length || next.some((entry) => entry.key === item.id)) continue;
+			const text = item.parts.join("");
+			if (!text.trim() || next.some((entry) => entry.key === item.id)) continue;
 			next.push({
 				kind: "message",
 				key: item.id,
 				live: true,
 				role: "assistant",
-				text: item.parts.join(""),
+				text,
 				attachments: [],
 				sources: [],
 				copyVisible: false,
+				editable: false,
 			});
 			continue;
 		}
@@ -431,32 +453,17 @@ function markCompletedTurnResult(
 	const finalMessage = turn[finalMessageIndex];
 	if (!finalMessage || finalMessage.kind !== "message") return turn;
 
-	const completedItems: ConversationRenderItem[] = [userMessage];
-	let workProcessItems: ConversationContentRenderItem[] = [];
-	let workProcessIndex = 0;
-	const flushWorkProcess = () => {
-		if (!workProcessItems.length) return;
-		completedItems.push({
+	const workProcessItems = processItems.map((entry) =>
+		entry.kind === "tool-stack" ? { ...entry, collapseForResult: true } : entry,
+	);
+	const completedItems: ConversationRenderItem[] = [
+		userMessage,
+		{
 			kind: "work-process",
-			key: `work-process:${finalMessage.key}:${workProcessIndex++}`,
+			key: `work-process:${finalMessage.key}:0`,
 			items: workProcessItems,
-		});
-		workProcessItems = [];
-	};
-	for (const entry of processItems) {
-		const generatedImageStack =
-			entry.kind === "tool-stack" &&
-			entry.batches.every(
-				(batch) => batch.tools.length > 0 && batch.tools.every((tool) => tool.name === "image_gen"),
-			);
-		if (generatedImageStack) {
-			flushWorkProcess();
-			completedItems.push({ ...entry, collapseForResult: false });
-			continue;
-		}
-		workProcessItems.push(entry.kind === "tool-stack" ? { ...entry, collapseForResult: true } : entry);
-	}
-	flushWorkProcess();
+		},
+	];
 	completedItems.push(
 		{ kind: "result-boundary", key: `result-boundary:${finalMessage.key}` },
 		finalMessage,
@@ -493,6 +500,7 @@ export function buildConversationRenderItems(
 	liveCompaction: LiveCompactionState | undefined,
 	liveTurnId: number,
 	responseActive: boolean,
+	canEditPrompts = false,
 ): ConversationRenderItem[] {
 	const withLive = appendLiveRenderItems(
 		persistedItems,
@@ -502,6 +510,12 @@ export function buildConversationRenderItems(
 		liveCompaction,
 		liveTurnId,
 	);
+	for (let index = 0; index < withLive.length; index++) {
+		const entry = withLive[index];
+		if (entry?.kind !== "message" || entry.role !== "user") continue;
+		const editable = canEditPrompts && Boolean(entry.entryId);
+		if (entry.editable !== editable) withLive[index] = { ...entry, editable };
+	}
 	if (!responseActive) {
 		for (let index = withLive.length - 1; index >= 0; index--) {
 			const entry = withLive[index];
@@ -526,10 +540,12 @@ export function ConversationView({
 	state,
 	actions,
 	sessionTitleText,
+	onEditPrompt,
 }: {
 	state: WorkbenchState;
 	actions: WorkbenchActions;
 	sessionTitleText: string;
+	onEditPrompt: (request: PromptEditRequest) => void;
 }) {
 	const persistedToolIndex = useMemo(() => {
 		const callIds = new Set<string>();
@@ -569,6 +585,7 @@ export function ConversationView({
 		return results ? { ...persistedToolIndex, results } : persistedToolIndex;
 	}, [persistedToolIndex, state.liveTools]);
 	const responseActive = isConversationResponseActive(state);
+	const canEditPrompts = canSendPrompt(state) && !hasActiveSessionWork(state) && state.queuedUserPrompts.length === 0;
 	const persistedRenderItems = useMemo(
 		() => buildPersistedRenderItems(state.transcript, toolIndex, state.pendingUserPrompts),
 		[state.pendingUserPrompts, state.transcript, toolIndex],
@@ -583,6 +600,7 @@ export function ConversationView({
 				state.liveCompaction,
 				state.liveTurnId,
 				responseActive,
+				canEditPrompts,
 			),
 		[
 			persistedRenderItems,
@@ -592,6 +610,7 @@ export function ConversationView({
 			state.liveTurnItems,
 			toolIndex.callIds,
 			responseActive,
+			canEditPrompts,
 		],
 	);
 
@@ -604,6 +623,7 @@ export function ConversationView({
 					sessionTitleText={sessionTitleText}
 					renderItems={renderItems}
 					toolStatuses={toolIndex.statuses}
+					onEditPrompt={onEditPrompt}
 				/>
 			</Conversation>
 		</>
@@ -616,12 +636,14 @@ function ConversationBody({
 	sessionTitleText,
 	renderItems,
 	toolStatuses,
+	onEditPrompt,
 }: {
 	state: WorkbenchState;
 	actions: WorkbenchActions;
 	sessionTitleText: string;
 	renderItems: ConversationRenderItem[];
 	toolStatuses: ReadonlyMap<string, "success" | "error">;
+	onEditPrompt: (request: PromptEditRequest) => void;
 }) {
 	const responseActive = isConversationResponseActive(state);
 	const virtuosoRef = useRef<VirtuosoHandle>(null);
@@ -768,6 +790,15 @@ function ConversationBody({
 		(entry: ConversationContentRenderItem) => {
 			const current = renderStateRef.current;
 			if (entry.kind === "message") {
+				const editRequest =
+					entry.role === "user" && entry.editable && entry.entryId && current.sessionId
+						? {
+								sessionId: current.sessionId,
+								entryId: entry.entryId,
+								text: entry.text,
+								attachments: entry.attachments,
+							}
+						: undefined;
 				const message = (
 					<TranscriptMessageView
 						role={entry.role}
@@ -778,6 +809,7 @@ function ConversationBody({
 						sessionId={current.sessionId}
 						projectId={current.projectId}
 						onOpenPath={openResource}
+						onEdit={editRequest ? () => onEditPrompt(editRequest) : undefined}
 						mode={entry.live ? "streaming" : "static"}
 					/>
 				);
@@ -879,6 +911,7 @@ function ConversationBody({
 		[
 			expandedToolBatches,
 			expandedToolRows,
+			onEditPrompt,
 			openResource,
 			updateExpandedToolBatch,
 			updateExpandedToolRow,
@@ -911,11 +944,11 @@ function ConversationBody({
 								type="button"
 							>
 								<WrenchIcon className="size-4 shrink-0" />
-								<span className="min-w-0 flex-1">工作过程</span>
+								<span className="min-w-0 flex-1 text-[13px]">工作过程</span>
 								<ChevronDownIcon className="size-4 shrink-0 transition-transform group-data-[state=open]/work-process:rotate-180" />
 							</button>
 						</CollapsibleTrigger>
-						<CollapsibleContent className="pt-2" data-transcript-resize-anchor>
+						<GsapCollapsibleContent open={open} className="pt-2" data-transcript-resize-anchor>
 							<div className="grid min-w-0 gap-3">
 								{entry.items.map((item) => (
 									<div className="min-w-0" key={item.key}>
@@ -923,7 +956,7 @@ function ConversationBody({
 									</div>
 								))}
 							</div>
-						</CollapsibleContent>
+						</GsapCollapsibleContent>
 					</Collapsible>
 				);
 			}
@@ -979,11 +1012,11 @@ function ConversationBody({
 			重新加载更早消息
 		</Button>
 	) : null;
+	const initialTranscriptState = initialTranscriptDisplayState(state);
 	const showTranscript =
 		!state.loading &&
 		!state.sessionError &&
-		!(state.transcriptLoading && !state.transcript.length && !renderItems.length) &&
-		!(state.transcriptError && !state.transcript.length && !renderItems.length) &&
+		initialTranscriptState === "ready" &&
 		renderItems.length > 0;
 
 	if (showTranscript) {
@@ -1040,7 +1073,7 @@ function ConversationBody({
 					message={state.sessionError}
 					onRetry={state.sessionId ? () => void actions.selectSession(state.sessionId!) : undefined}
 				/>
-			) : state.transcriptLoading && !state.transcript.length && !renderItems.length ? (
+			) : initialTranscriptState === "loading" ? (
 				<div className="mx-auto grid w-full max-w-3xl gap-4 py-4" aria-live="polite" aria-busy="true">
 					<div className="flex items-center justify-center gap-2 py-2 text-sm text-muted-foreground">
 						<LoaderCircle className="size-4 animate-spin" />
@@ -1058,8 +1091,12 @@ function ConversationBody({
 						/>
 					))}
 				</div>
-			) : state.transcriptError && !state.transcript.length && !renderItems.length ? (
-				<AgentErrorCard title="会话记录加载失败" message={state.transcriptError} onRetry={() => void actions.loadTranscript()} />
+			) : initialTranscriptState === "error" ? (
+				<AgentErrorCard
+					title="会话记录加载失败"
+					message={state.transcriptError ?? "无法读取会话记录"}
+					onRetry={() => void actions.loadTranscript()}
+				/>
 			) : (
 				<ConversationEmptyState
 					className="min-h-[56vh]"

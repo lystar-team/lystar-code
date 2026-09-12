@@ -46,7 +46,7 @@ test("Web 安全设置保存后重启 Gateway，Runtime 会话保持运行", asy
 		tokenPath: webGatewayTokenPath(agentDir),
 		allowedHosts: ["127.0.0.1"],
 		staticDir: agentDir,
-		manageRuntime: false,
+		manageRuntime: true,
 	});
 	let restartCount = 0;
 	server.setRestartHandler(() => {

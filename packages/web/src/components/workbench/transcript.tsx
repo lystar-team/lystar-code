@@ -1,4 +1,4 @@
-import { Check, CircleHelp, Clipboard, FileCode2 } from "lucide-react";
+import { Check, CircleHelp, Clipboard, FileCode2, Pencil } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 import type { BundledLanguage } from "shiki";
 import { type TranscriptToolViewModel, toSessionItemViewModel } from "../../adapters/session-view-model";
@@ -45,6 +45,7 @@ export const TranscriptMessageView = memo(function TranscriptMessageView({
 	sessionId,
 	projectId,
 	onOpenPath,
+	onEdit,
 	mode = "static",
 }: {
 	role: "user" | "assistant" | "system";
@@ -55,6 +56,7 @@ export const TranscriptMessageView = memo(function TranscriptMessageView({
 	sessionId?: string;
 	projectId?: string;
 	onOpenPath: WorkbenchActions["openResource"];
+	onEdit?: () => void;
 	mode?: "static" | "streaming";
 }) {
 	return (
@@ -95,10 +97,11 @@ export const TranscriptMessageView = memo(function TranscriptMessageView({
 				<TranscriptAttachments attachments={attachments} sessionId={sessionId} />
 			</MessageContent>
 			{((role === "user" || role === "assistant") && text) ? (
-				<CopyMessageAction
+				<MessageActionBar
 					text={text}
 					role={role}
 					visible={role === "user" || showCopy}
+					onEdit={role === "user" ? onEdit : undefined}
 				/>
 			) : null}
 		</Message>
@@ -288,14 +291,16 @@ function copyTextWithSelection(text: string): void {
 	}
 }
 
-function CopyMessageAction({
+function MessageActionBar({
 	text,
 	role,
 	visible,
+	onEdit,
 }: {
 	text: string;
 	role: "user" | "assistant";
 	visible: boolean;
+	onEdit?: () => void;
 }) {
 	const [copied, setCopied] = useState(false);
 	const [tooltipOpen, setTooltipOpen] = useState(false);
@@ -326,6 +331,11 @@ function CopyMessageAction({
 				role === "user" && "self-end",
 			)}
 		>
+			{onEdit ? (
+				<MessageAction label="编辑 Prompt" tooltip="编辑 Prompt" onClick={onEdit}>
+					<Pencil className="size-4" />
+				</MessageAction>
+			) : null}
 			<MessageAction
 				label={label}
 				tooltip={label}

@@ -69,6 +69,7 @@ function extractUserMessageText(content: string | Array<{ type: string; text?: s
 }
 
 const DISPOSE_ABORT_SETTLE_TIMEOUT_MS = 2_000;
+const WEB_HANDOFF_BUSY_RETRY_MS = 200;
 
 async function abortBeforeDispose(session: AgentSession): Promise<void> {
 	await new Promise<void>((resolve) => {
@@ -92,12 +93,20 @@ export async function openSessionWithWebHandoff(
 	sessionDir?: string,
 	cwdOverride?: string,
 ): Promise<SessionManager> {
-	try {
-		return await SessionManager.openAsync(sessionPath, sessionDir, cwdOverride);
-	} catch (error) {
-		if (!(error instanceof SessionLockedError)) throw error;
-		if (!(await requestWebSessionHandoff(agentDir, sessionPath))) throw error;
-		return SessionManager.openAsync(sessionPath, sessionDir, cwdOverride);
+	while (true) {
+		try {
+			return await SessionManager.openAsync(sessionPath, sessionDir, cwdOverride);
+		} catch (error) {
+			if (!(error instanceof SessionLockedError)) throw error;
+			try {
+				if (!(await requestWebSessionHandoff(agentDir, sessionPath))) throw error;
+				return SessionManager.openAsync(sessionPath, sessionDir, cwdOverride);
+			} catch (handoffError) {
+				const handoff = handoffError as { code?: unknown; retryable?: unknown };
+				if (handoff.code !== "session_operation_active" || handoff.retryable !== true) throw handoffError;
+				await new Promise((resolve) => setTimeout(resolve, WEB_HANDOFF_BUSY_RETRY_MS));
+			}
+		}
 	}
 }
 

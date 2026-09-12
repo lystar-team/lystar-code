@@ -4,7 +4,12 @@ import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import type { Socket } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { type ByteTransport, type OperationSnapshot, RuntimeProtocolClient } from "@lystar/code-web-protocol";
+import {
+	type ByteTransport,
+	type OperationSnapshot,
+	RuntimeProtocolClient,
+	type SessionStateSnapshot,
+} from "@lystar/code-web-protocol";
 import { connectRuntimeEndpoint, defaultRuntimeEndpoint, probeIpcRuntime } from "./ipc.ts";
 import { getRuntimeAgentDir } from "./runtime-adapter.ts";
 import {
@@ -32,6 +37,7 @@ export interface RuntimeServiceStatus extends WebServiceStatus {
 interface HostSnapshot {
 	operations: OperationSnapshot[];
 	pendingUiRequests: unknown[];
+	sessions?: SessionStateSnapshot[];
 }
 
 export interface RuntimeServiceOptions {
@@ -104,11 +110,12 @@ function withRuntimeEndpoint(args: readonly string[], endpoint: string): string[
 	return [...args.slice(0, endpointIndex), `--endpoint=${endpoint}`, ...args.slice(endpointIndex + 1)];
 }
 
-function runtimeEnvironment(agentDir: string, endpoint: string): Record<string, string | undefined> {
+function runtimeEnvironment(agentDir: string, endpoint: string, profile?: string): Record<string, string | undefined> {
 	return {
 		...captureUserCommandEnvironment(),
 		PI_CODING_AGENT_DIR: agentDir,
 		PI_WEB_RUNTIME_ENDPOINT: endpoint,
+		PI_WEB_SERVICE_PROFILE: profile ?? "default",
 		HOME: process.env.HOME ?? homedir(),
 		USERPROFILE: process.env.USERPROFILE ?? homedir(),
 		APPDATA: process.env.APPDATA,
@@ -127,7 +134,7 @@ export function createRuntimeServiceSpec(endpoint: string, options: RuntimeServi
 		...(options.profile ? { profile: options.profile } : {}),
 		agentDir,
 		invocation,
-		environment: { ...runtimeEnvironment(agentDir, endpoint), ...options.environment },
+		environment: { ...runtimeEnvironment(agentDir, endpoint, options.profile), ...options.environment },
 		logPath: join(
 			agentDir,
 			"web",
@@ -327,10 +334,17 @@ export async function assertRuntimeIdle(endpoint: string): Promise<void> {
 	const snapshot = await readHostSnapshot(endpoint);
 	if (snapshot) {
 		const active = snapshot.operations.filter((operation) => ACTIVE_OPERATION_STATUSES.has(operation.status));
-		if (active.length > 0 || snapshot.pendingUiRequests.length > 0) {
+		const activeSessions = (snapshot.sessions ?? []).filter(
+			(session) =>
+				session.activity === "running" ||
+				session.activity === "waiting_for_input" ||
+				["turn", "compaction", "retry", "waiting_for_input"].includes(session.phase),
+		);
+		if (active.length > 0 || activeSessions.length > 0 || snapshot.pendingUiRequests.length > 0) {
 			throw Object.assign(new Error("Web Runtime仍有运行任务或待处理交互"), {
 				code: "host_busy",
 				activeOperations: active.map((operation) => operation.operationId),
+				activeSessions: activeSessions.map((session) => session.path),
 				pendingUiRequests: snapshot.pendingUiRequests.length,
 			});
 		}

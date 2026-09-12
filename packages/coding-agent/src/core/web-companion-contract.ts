@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { AgentSessionEvent } from "./agent-session.ts";
@@ -187,16 +188,29 @@ function endpointHash(agentDir: string, sessionPath: string): string {
 	return createHash("sha256").update(`${agentDir}\0${sessionPath}`).digest("hex").slice(0, 32);
 }
 
+const MAX_UNIX_SOCKET_PATH_BYTES = 100;
+
+function unixSocketEndpoint(
+	agentDir: string,
+	directory: "companions" | "handoffs",
+	prefix: "companion" | "handoff",
+	suffix: string,
+): string {
+	const scopedEndpoint = join(agentDir, "host", directory, `${suffix}.sock`);
+	if (Buffer.byteLength(scopedEndpoint) <= MAX_UNIX_SOCKET_PATH_BYTES) return scopedEndpoint;
+	return join(tmpdir(), "lystar-code-ipc", `${prefix}-${suffix}.sock`);
+}
+
 export function getWebCompanionEndpoint(agentDir: string, sessionPath: string): string {
 	const suffix = endpointHash(agentDir, sessionPath);
 	return process.platform === "win32"
 		? `\\\\.\\pipe\\lystar-session-companion-${suffix}`
-		: join(agentDir, "host", "companions", `${suffix}.sock`);
+		: unixSocketEndpoint(agentDir, "companions", "companion", suffix);
 }
 
 export function getWebSessionHandoffEndpoint(agentDir: string, sessionPath: string): string {
 	const suffix = endpointHash(agentDir, sessionPath);
 	return process.platform === "win32"
 		? `\\\\.\\pipe\\lystar-session-handoff-${suffix}`
-		: join(agentDir, "host", "handoffs", `${suffix}.sock`);
+		: unixSocketEndpoint(agentDir, "handoffs", "handoff", suffix);
 }

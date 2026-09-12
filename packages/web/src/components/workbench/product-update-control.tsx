@@ -142,23 +142,23 @@ export function ProductUpdateControl() {
 		<>
 			{updateAvailable ? (
 				<Button
-					className="h-8 min-w-0 max-w-[10rem] shrink px-2 text-[11px]"
+					className="h-8 min-w-0 max-w-[10rem] shrink px-2 text-[10px]"
 					variant="outline"
 					onClick={openConfirmation}
 					title={`更新到 ${versionLabel(check.latestVersion ?? undefined)}`}
 				>
 					<Download className="size-3.5 shrink-0" aria-hidden="true" />
-					<span className="truncate">更新 {versionLabel(check.latestVersion ?? undefined)}</span>
+					<span className="truncate text-[10px]">更新 {versionLabel(check.latestVersion ?? undefined)}</span>
 				</Button>
 			) : (
 				<Button
-					className="h-8 min-w-0 max-w-[9rem] shrink px-2 text-[11px] text-muted-foreground"
+					className="h-8 min-w-0 max-w-[9rem] shrink px-2 text-[10px] text-muted-foreground"
 					variant="ghost"
 					onClick={() => void checkNow()}
 					title="检查更新"
 				>
 					<RotateCw className={`size-3 shrink-0 ${checking ? "animate-spin" : ""}`} aria-hidden="true" />
-					<span className="truncate">{versionLabel(currentVersion)}</span>
+					<span className="truncate text-[10px]">{versionLabel(currentVersion)}</span>
 				</Button>
 			)}
 

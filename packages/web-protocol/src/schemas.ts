@@ -1,9 +1,10 @@
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
 
-export const RUNTIME_PROTOCOL_VERSION = 4 as const;
+export const RUNTIME_PROTOCOL_VERSION = 6 as const;
 export const MAX_TRANSCRIPT_PAGE_SIZE = 200;
 export const MAX_TRANSCRIPT_SEARCH_LIMIT = 100;
+export const MAX_GIT_HISTORY_PAGE_SIZE = 100;
 
 const Id = Type.String({ minLength: 1, maxLength: 4096 });
 const WorkspaceText = Type.String({ maxLength: 1024 * 1024 });
@@ -215,6 +216,29 @@ export const ModelProviderSummarySchema = StrictObject({
 	catalogProvider: Type.Optional(Id),
 });
 export type ModelProviderSummary = Static<typeof ModelProviderSummarySchema>;
+
+export const ModelOptionSchema = StrictObject({
+	provider: Id,
+	id: Id,
+	name: Type.String({ minLength: 1, maxLength: 4096 }),
+	reasoning: Type.Boolean(),
+	contextWindow: Type.Integer({ minimum: 1 }),
+	supportedThinkingLevels: Type.Array(ThinkingLevelSchema, { maxItems: 8 }),
+});
+export type ModelOption = Static<typeof ModelOptionSchema>;
+
+export const ModelOptionProviderSchema = StrictObject({
+	id: Id,
+	name: Type.String({ minLength: 1, maxLength: 4096 }),
+	builtIn: Type.Boolean(),
+});
+export type ModelOptionProvider = Static<typeof ModelOptionProviderSchema>;
+
+export const ModelOptionsSchema = StrictObject({
+	models: Type.Array(ModelOptionSchema, { maxItems: 10_000 }),
+	providers: Type.Array(ModelOptionProviderSchema, { maxItems: 1_000 }),
+});
+export type ModelOptions = Static<typeof ModelOptionsSchema>;
 
 export const SessionPhaseSchema = Type.Union([
 	Type.Literal("idle"),
@@ -641,6 +665,8 @@ export const GitRepositoryStatusSchema = StrictObject({
 	kind: Type.Union([Type.Literal("root"), Type.Literal("nested")]),
 	branch: Type.Optional(Type.String({ minLength: 1 })),
 	upstream: Type.Optional(Type.String({ minLength: 1 })),
+	detached: Type.Optional(Type.Boolean()),
+	merging: Type.Optional(Type.Boolean()),
 	ahead: Type.Integer({ minimum: 0 }),
 	behind: Type.Integer({ minimum: 0 }),
 	files: Type.Array(GitFileStatusSchema),
@@ -651,6 +677,8 @@ export const GitStatusSchema = StrictObject({
 	root: Type.String({ minLength: 1 }),
 	branch: Type.Optional(Type.String({ minLength: 1 })),
 	upstream: Type.Optional(Type.String({ minLength: 1 })),
+	detached: Type.Optional(Type.Boolean()),
+	merging: Type.Optional(Type.Boolean()),
 	ahead: Type.Integer({ minimum: 0 }),
 	behind: Type.Integer({ minimum: 0 }),
 	files: Type.Array(GitFileStatusSchema),
@@ -662,6 +690,7 @@ export const GitDiffSchema = StrictObject({
 	path: Type.Optional(Type.String({ minLength: 1 })),
 	repositoryPath: Type.Optional(Type.String()),
 	staged: Type.Boolean(),
+	revision: Type.Optional(Id),
 	diff: Type.String(),
 	additions: Type.Integer({ minimum: 0 }),
 	deletions: Type.Integer({ minimum: 0 }),
@@ -670,6 +699,133 @@ export const GitDiffSchema = StrictObject({
 	contentTruncated: Type.Optional(Type.Boolean()),
 });
 export type GitDiff = Static<typeof GitDiffSchema>;
+
+export const GitFileStatsSchema = StrictObject({
+	path: Type.String({ minLength: 1 }),
+	originalPath: Type.Optional(Type.String({ minLength: 1 })),
+	staged: Type.Boolean(),
+	additions: Type.Integer({ minimum: 0 }),
+	deletions: Type.Integer({ minimum: 0 }),
+	binary: Type.Boolean(),
+});
+export type GitFileStats = Static<typeof GitFileStatsSchema>;
+
+export const GitStatsSchema = StrictObject({
+	repositoryPath: Type.String(),
+	files: Type.Array(GitFileStatsSchema),
+});
+export type GitStats = Static<typeof GitStatsSchema>;
+
+export const GitBranchSchema = StrictObject({
+	name: Type.String({ minLength: 1, maxLength: 4096 }),
+	current: Type.Boolean(),
+	remote: Type.Boolean(),
+	upstream: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+	ahead: Type.Integer({ minimum: 0 }),
+	behind: Type.Integer({ minimum: 0 }),
+	commit: Id,
+});
+export type GitBranch = Static<typeof GitBranchSchema>;
+
+export const GitBranchesSchema = StrictObject({
+	repositoryPath: Type.String(),
+	current: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+	detached: Type.Boolean(),
+	merging: Type.Boolean(),
+	remotes: Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 1000 }),
+	branches: Type.Array(GitBranchSchema, { maxItems: 10_000 }),
+});
+export type GitBranches = Static<typeof GitBranchesSchema>;
+
+const GitCommitSummaryProperties = {
+	hash: Id,
+	shortHash: Id,
+	subject: Type.String({ maxLength: 64 * 1024 }),
+	authorName: Type.String({ maxLength: 4096 }),
+	authorEmail: Type.String({ maxLength: 4096 }),
+	authoredAt: Type.String({ minLength: 1, maxLength: 4096 }),
+	parents: Type.Array(Id, { maxItems: 64 }),
+};
+export const GitCommitSummarySchema = StrictObject(GitCommitSummaryProperties);
+export type GitCommitSummary = Static<typeof GitCommitSummarySchema>;
+
+export const GitHistorySchema = StrictObject({
+	repositoryPath: Type.String(),
+	offset: Type.Integer({ minimum: 0 }),
+	commits: Type.Array(GitCommitSummarySchema, { maxItems: MAX_GIT_HISTORY_PAGE_SIZE }),
+	nextOffset: Type.Optional(Type.Integer({ minimum: 1 })),
+	hasMore: Type.Boolean(),
+});
+export type GitHistory = Static<typeof GitHistorySchema>;
+
+export const GitCommitFileSchema = StrictObject({
+	path: Type.String({ minLength: 1 }),
+	originalPath: Type.Optional(Type.String({ minLength: 1 })),
+	additions: Type.Integer({ minimum: 0 }),
+	deletions: Type.Integer({ minimum: 0 }),
+	binary: Type.Boolean(),
+});
+export type GitCommitFile = Static<typeof GitCommitFileSchema>;
+
+export const GitCommitSchema = StrictObject({
+	repositoryPath: Type.String(),
+	...GitCommitSummaryProperties,
+	body: Type.String({ maxLength: 1024 * 1024 }),
+	committerName: Type.String({ maxLength: 4096 }),
+	committerEmail: Type.String({ maxLength: 4096 }),
+	committedAt: Type.String({ minLength: 1, maxLength: 4096 }),
+	files: Type.Array(GitCommitFileSchema, { maxItems: 100_000 }),
+	diff: Type.Optional(GitDiffSchema),
+});
+export type GitCommit = Static<typeof GitCommitSchema>;
+
+const GitMutationPathsSchema = Type.Array(Type.String({ minLength: 1, maxLength: 16 * 1024 }), {
+	minItems: 1,
+	maxItems: 10_000,
+});
+export const GitMutationSchema = Type.Union([
+	StrictObject({ type: Type.Literal("stage"), paths: GitMutationPathsSchema }),
+	StrictObject({ type: Type.Literal("unstage"), paths: GitMutationPathsSchema }),
+	StrictObject({ type: Type.Literal("discard"), paths: GitMutationPathsSchema }),
+	StrictObject({ type: Type.Literal("commit"), message: Type.String({ minLength: 1, maxLength: 64 * 1024 }) }),
+	StrictObject({ type: Type.Literal("fetch") }),
+	StrictObject({ type: Type.Literal("pull") }),
+	StrictObject({ type: Type.Literal("push") }),
+	StrictObject({ type: Type.Literal("create_branch"), name: Type.String({ minLength: 1, maxLength: 4096 }) }),
+	StrictObject({ type: Type.Literal("switch_branch"), name: Type.String({ minLength: 1, maxLength: 4096 }) }),
+	StrictObject({ type: Type.Literal("delete_branch"), name: Type.String({ minLength: 1, maxLength: 4096 }) }),
+	StrictObject({ type: Type.Literal("merge"), source: Type.String({ minLength: 1, maxLength: 4096 }) }),
+	StrictObject({ type: Type.Literal("abort_merge") }),
+]);
+export type GitMutation = Static<typeof GitMutationSchema>;
+
+export function isGitMutation(value: unknown): value is GitMutation {
+	return Check(GitMutationSchema, value);
+}
+
+export const GitMutationActionSchema = Type.Union([
+	Type.Literal("stage"),
+	Type.Literal("unstage"),
+	Type.Literal("discard"),
+	Type.Literal("commit"),
+	Type.Literal("fetch"),
+	Type.Literal("pull"),
+	Type.Literal("push"),
+	Type.Literal("create_branch"),
+	Type.Literal("switch_branch"),
+	Type.Literal("delete_branch"),
+	Type.Literal("merge"),
+	Type.Literal("abort_merge"),
+]);
+export type GitMutationAction = Static<typeof GitMutationActionSchema>;
+
+export const GitMutationResultSchema = StrictObject({
+	repositoryPath: Type.String(),
+	action: GitMutationActionSchema,
+	message: Type.String({ minLength: 1, maxLength: 16 * 1024 }),
+	status: GitStatusSchema,
+});
+export type GitMutationResult = Static<typeof GitMutationResultSchema>;
 
 export const ProjectInstructionSchema = StrictObject({
 	path: Type.String({ minLength: 1 }),
@@ -961,6 +1117,11 @@ export const UpdateStatusSchema = StrictObject({
 });
 export const GetGitStatusResultSchema = GitStatusSchema;
 export const GetGitDiffResultSchema = GitDiffSchema;
+export const GetGitStatsResultSchema = GitStatsSchema;
+export const GetGitBranchesResultSchema = GitBranchesSchema;
+export const GetGitHistoryResultSchema = GitHistorySchema;
+export const GetGitCommitResultSchema = GitCommitSchema;
+export const MutateGitResultSchema = GitMutationResultSchema;
 export const SaveProjectFileResultSchema = ProjectFileSaveResultSchema;
 export const CheckForUpdatesResultSchema = UpdateStatusSchema;
 export const GetCompletionsResultSchema = CompletionResultSchema;
@@ -968,6 +1129,19 @@ export const ListSettingsResultSchema = Type.Array(SettingSummarySchema, { maxIt
 export const SetSettingResultSchema = StrictObject({ setting: SettingSummarySchema, requiresRestart: Type.Boolean() });
 export const ListModelsResultSchema = Type.Array(ModelSummarySchema, { maxItems: 10_000 });
 export const ListModelProvidersResultSchema = Type.Array(ModelProviderSummarySchema, { maxItems: 1_000 });
+export const ListModelOptionsResultSchema = ModelOptionsSchema;
+export const DeleteSessionsResultSchema = StrictObject({
+	deletedPaths: Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 10_000 }),
+	failures: Type.Array(
+		StrictObject({
+			sessionPath: Type.String({ minLength: 1, maxLength: 4096 }),
+			code: Type.String({ minLength: 1, maxLength: 4096 }),
+			message: Type.String({ maxLength: 16 * 1024 }),
+			retryable: Type.Optional(Type.Boolean()),
+		}),
+		{ maxItems: 10_000 },
+	),
+});
 export const SetSessionModelResultSchema = SessionStateSnapshotSchema;
 export const SetSessionThinkingResultSchema = SessionStateSnapshotSchema;
 export const CycleSessionModelResultSchema = StrictObject({
@@ -1143,6 +1317,11 @@ export const WorkspaceCommandResultSchemas = {
 	save_host_instruction: SaveHostInstructionResultSchema,
 	get_git_status: GetGitStatusResultSchema,
 	get_git_diff: GetGitDiffResultSchema,
+	get_git_stats: GetGitStatsResultSchema,
+	get_git_branches: GetGitBranchesResultSchema,
+	get_git_history: GetGitHistoryResultSchema,
+	get_git_commit: GetGitCommitResultSchema,
+	mutate_git: MutateGitResultSchema,
 	save_project_file: SaveProjectFileResultSchema,
 	get_completions: GetCompletionsResultSchema,
 	check_for_updates: CheckForUpdatesResultSchema,
@@ -1150,6 +1329,8 @@ export const WorkspaceCommandResultSchemas = {
 	set_setting: SetSettingResultSchema,
 	list_models: ListModelsResultSchema,
 	list_model_providers: ListModelProvidersResultSchema,
+	list_model_options: ListModelOptionsResultSchema,
+	delete_sessions: DeleteSessionsResultSchema,
 	sync_model_provider: ListModelsResultSchema,
 	set_session_model: SetSessionModelResultSchema,
 	set_session_thinking: SetSessionThinkingResultSchema,
@@ -1347,6 +1528,10 @@ export const CommandSchema = Type.Union([
 	StrictObject({ command: Type.Literal("list_models") }),
 	StrictObject({ command: Type.Literal("list_model_providers") }),
 	StrictObject({
+		command: Type.Literal("list_model_options"),
+		includeProviders: Type.Optional(Type.Array(Id, { maxItems: 1_000 })),
+	}),
+	StrictObject({
 		command: Type.Literal("add_model_provider"),
 		provider: Id,
 		name: Type.Optional(Type.String({ minLength: 1 })),
@@ -1455,6 +1640,18 @@ export const CommandSchema = Type.Union([
 		clientInstanceId: Id,
 		clientRequestId: Id,
 	}),
+	StrictObject({
+		command: Type.Literal("delete_sessions"),
+		items: Type.Array(
+			StrictObject({
+				cwd: Type.String({ minLength: 1 }),
+				sessionPath: Type.String({ minLength: 1 }),
+			}),
+			{ minItems: 1, maxItems: 10_000 },
+		),
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
 	StrictObject({ command: Type.Literal("list_skills"), cwd: Type.String({ minLength: 1 }) }),
 	StrictObject({
 		command: Type.Literal("list_harness_imports"),
@@ -1525,13 +1722,49 @@ export const CommandSchema = Type.Union([
 	}),
 	StrictObject({ command: Type.Literal("get_diagnostics"), cwd: Type.Optional(Type.String({ minLength: 1 })) }),
 	StrictObject({ command: Type.Literal("get_connection_status") }),
-	StrictObject({ command: Type.Literal("get_git_status"), cwd: Type.String({ minLength: 1 }) }),
+	StrictObject({
+		command: Type.Literal("get_git_status"),
+		cwd: Type.String({ minLength: 1 }),
+		refreshRepositories: Type.Optional(Type.Boolean()),
+	}),
 	StrictObject({
 		command: Type.Literal("get_git_diff"),
 		cwd: Type.String({ minLength: 1 }),
 		path: Type.Optional(Type.String({ minLength: 1 })),
 		repositoryPath: Type.Optional(Type.String()),
 		staged: Type.Boolean(),
+	}),
+	StrictObject({
+		command: Type.Literal("get_git_stats"),
+		cwd: Type.String({ minLength: 1 }),
+		repositoryPath: Type.Optional(Type.String()),
+	}),
+	StrictObject({
+		command: Type.Literal("get_git_branches"),
+		cwd: Type.String({ minLength: 1 }),
+		repositoryPath: Type.Optional(Type.String()),
+	}),
+	StrictObject({
+		command: Type.Literal("get_git_history"),
+		cwd: Type.String({ minLength: 1 }),
+		repositoryPath: Type.Optional(Type.String()),
+		offset: Type.Integer({ minimum: 0 }),
+		limit: Type.Integer({ minimum: 1, maximum: MAX_GIT_HISTORY_PAGE_SIZE }),
+	}),
+	StrictObject({
+		command: Type.Literal("get_git_commit"),
+		cwd: Type.String({ minLength: 1 }),
+		repositoryPath: Type.Optional(Type.String()),
+		revision: Id,
+		path: Type.Optional(Type.String({ minLength: 1 })),
+	}),
+	StrictObject({
+		command: Type.Literal("mutate_git"),
+		cwd: Type.String({ minLength: 1 }),
+		repositoryPath: Type.Optional(Type.String()),
+		mutation: GitMutationSchema,
+		clientInstanceId: Id,
+		clientRequestId: Id,
 	}),
 	StrictObject({ command: Type.Literal("check_for_updates") }),
 	StrictObject({
@@ -1756,6 +1989,10 @@ export const ServerEventSchema = Type.Union([
 	StrictObject({ type: Type.Literal("session_snapshot"), snapshot: SessionStateSnapshotSchema }),
 	StrictObject({ type: Type.Literal("session_removed"), sessionPath: Type.String({ minLength: 1 }) }),
 	StrictObject({ type: Type.Literal("sessions_changed"), cwd: Type.String({ minLength: 1 }) }),
+	StrictObject({
+		type: Type.Literal("model_catalog_changed"),
+		revision: Type.Integer({ minimum: 1 }),
+	}),
 	StrictObject({ type: Type.Literal("transcript_changed"), sessionPath: Type.String({ minLength: 1 }) }),
 	StrictObject({
 		type: Type.Literal("session_progress"),

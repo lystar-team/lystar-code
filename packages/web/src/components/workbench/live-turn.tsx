@@ -1,6 +1,6 @@
 import { Shimmer } from "../ai-elements/shimmer";
 
-function latestThinkingLine(parts: readonly string[]): string {
+export function latestThinkingLine(parts: readonly string[]): string {
 	let line = "";
 	for (let index = parts.length - 1; index >= 0; index--) {
 		const part = parts[index] ?? "";

@@ -1,6 +1,12 @@
 import type {
 	CompletionResult,
+	GitBranches,
+	GitCommit,
 	GitDiff,
+	GitHistory,
+	GitMutation,
+	GitMutationResult,
+	GitStats,
 	GitStatus,
 	HarnessId,
 	HarnessImportInstructionHunk,
@@ -9,6 +15,8 @@ import type {
 	HarnessImportResult,
 	HarnessImportSource,
 	HostDirectoryEntry,
+	ModelOption,
+	ModelOptionProvider,
 	ModelProviderSummary,
 	ModelSummary,
 	OperationSnapshot,
@@ -30,6 +38,7 @@ export type {
 	HarnessImportPreview,
 	HarnessImportResult,
 	HarnessImportSource,
+	GitMutation,
 	ProjectInstruction,
 };
 
@@ -174,6 +183,9 @@ export type GatewayEvent =
 	| { type: "session_stream"; sessionId: string; text: string; thinking: string; seq?: number }
 	| { type: "bootstrap"; data: BootstrapResponse }
 	| { type: "connection_state"; connected: boolean; message?: string }
+	| { type: "session_lease"; sessionId: string; lease: WebLease }
+	| { type: "model_catalog_changed"; revision: number }
+	| { type: "project_files_changed"; projectId: string; paths: string[] }
 	| { type: "sessions_changed"; projectId?: string }
 	| {
 			type: "session_summary";
@@ -205,8 +217,15 @@ export type GatewayEvent =
 	| UiRequestEvent;
 
 export interface ModelsResponse {
+	revision: number;
 	models: ModelSummary[];
 	providers: (ModelProviderSummary & { catalogProvider?: string })[];
+}
+
+export interface ModelOptionsResponse {
+	revision: number;
+	models: ModelOption[];
+	providers: ModelOptionProvider[];
 }
 
 export type WebThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
@@ -300,5 +319,10 @@ export interface SessionTreeResponse {
 
 export interface GitStatusResponse extends GitStatus {}
 export interface GitDiffResponse extends GitDiff {}
+export interface GitStatsResponse extends GitStats {}
+export interface GitBranchesResponse extends GitBranches {}
+export interface GitHistoryResponse extends GitHistory {}
+export interface GitCommitResponse extends GitCommit {}
+export interface GitMutationResponse extends GitMutationResult {}
 export interface ProjectTrustResponse extends ProjectTrust {}
 export type TranscriptResponse = Omit<TranscriptPage, "items"> & { items: WebTranscriptItem[] };

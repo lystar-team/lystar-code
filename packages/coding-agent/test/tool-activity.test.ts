@@ -57,10 +57,9 @@ describe("ToolActivityTracker", () => {
 				toolCallId: "call-1",
 				toolName: "write",
 				result: toolResult("已写入", {
-					path: "src/app.ts",
+					operation: "created",
 					additions: 1,
 					deletions: 0,
-					diff: "+const answer = 42;",
 				}),
 				isError: false,
 			}),
@@ -69,7 +68,17 @@ describe("ToolActivityTracker", () => {
 			state: "success",
 			summary: "src/app.ts",
 			output: "已写入",
-			diff: { files: [{ path: "src/app.ts", additions: 1, deletions: 0 }] },
+			diff: {
+				files: [
+					{
+						path: "src/app.ts",
+						operation: "created",
+						additions: 1,
+						deletions: 0,
+						diff: "+const answer = 42;",
+					},
+				],
+			},
 		});
 		expect(success?.inputPreview).toBeUndefined();
 		expect(success?.revision).toBeGreaterThan(preparing?.revision ?? 0);

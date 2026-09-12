@@ -29,7 +29,7 @@ describe("WebRuntimeService Session observation", () => {
 		while (cleanups.length > 0) await cleanups.pop()?.();
 	});
 
-	it("observes external writer locks and committed JSONL changes without acquiring the Session", async () => {
+	it("observes an external Session owner and committed JSONL changes without acquiring the writer lock", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-observe-"));
 		const agentDir = join(tempDir, "agent");
 		const cwd = join(tempDir, "project");
@@ -72,7 +72,7 @@ describe("WebRuntimeService Session observation", () => {
 		}
 		const summaries = lockedResponse.result as unknown as SessionSummary[];
 		expect(summaries).toEqual([
-			expect.objectContaining({ path: sessionPath, writeAccess: "locked_externally", activity: "completed" }),
+			expect.objectContaining({ path: sessionPath, writeAccess: "available", activity: "idle" }),
 		]);
 
 		messages.length = 0;
@@ -167,7 +167,7 @@ describe("WebRuntimeService Session observation", () => {
 		if (!response || response.type !== "response" || !response.ok)
 			throw new Error("Missing activity Session response");
 		const summaries = response.result as unknown as SessionSummary[];
-		expect(summaries).toEqual([expect.objectContaining({ activity: "running", writeAccess: "locked_externally" })]);
+		expect(summaries).toEqual([expect.objectContaining({ activity: "running", writeAccess: "available" })]);
 		expect(inspectActivity).toHaveBeenCalledWith(external.sessionPath);
 	});
 

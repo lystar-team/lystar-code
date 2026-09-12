@@ -5,6 +5,7 @@ import {
 	connectionStateAfterSessionSubscription,
 	offlineConnectionState,
 	readyConnectionState,
+	reconnectDelayMs,
 	reconnectingConnectionState,
 } from "../src/state/connection-recovery.ts";
 
@@ -24,6 +25,15 @@ describe("连接恢复状态", () => {
 			connected: false,
 			reconnecting: true,
 		});
+	});
+
+	it("首次重连立即执行，失败后使用带抖动的短退避", () => {
+		expect(reconnectDelayMs(0, 0.5)).toBe(0);
+		expect(reconnectDelayMs(1, 0)).toBe(200);
+		expect(reconnectDelayMs(1, 0.5)).toBe(250);
+		expect(reconnectDelayMs(1, 1)).toBe(300);
+		expect(reconnectDelayMs(2, 0.5)).toBe(500);
+		expect(reconnectDelayMs(6, 1)).toBe(1_000);
 	});
 
 	it("主机恢复后等待当前会话完成同步", () => {

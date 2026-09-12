@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, type FSWatcher, realpathSync, statSync, watch } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
 	assertWorkspaceCommandResult,
@@ -53,7 +53,9 @@ const BASE_CAPABILITIES: Capability[] = [
 	"workspace-api",
 ];
 
-const SESSION_FILE_POLL_INTERVAL_MS = 1_000;
+const SESSION_FILE_WATCH_DEBOUNCE_MS = 150;
+const SESSION_FILE_FALLBACK_MIN_MS = 5_000;
+const SESSION_FILE_FALLBACK_MAX_MS = 60_000;
 const CONTENT_CLEANUP_INTERVAL_MS = 60_000;
 const PROGRESS_BATCH_MS = 50;
 const MAX_PENDING_PROGRESS = 64;
@@ -113,12 +115,18 @@ const WORKSPACE_COMMANDS = {
 	save_host_instruction: true,
 	get_git_status: true,
 	get_git_diff: true,
+	get_git_stats: true,
+	get_git_branches: true,
+	get_git_history: true,
+	get_git_commit: true,
+	mutate_git: true,
 	save_project_file: true,
 	check_for_updates: true,
 	list_settings: true,
 	set_setting: true,
 	list_models: true,
 	list_model_providers: true,
+	list_model_options: true,
 	set_session_model: true,
 	set_session_thinking: true,
 	cycle_session_model: true,
@@ -373,7 +381,12 @@ export class WebRuntimeService {
 	private readonly sessionHandoffHosts = new Map<string, SessionHandoffHost>();
 	private readonly sessionHandoffRecoveries = new Map<string, Promise<void>>();
 	private readonly sessionsInHandoff = new Set<string>();
-	private readonly sessionPollTimer: ReturnType<typeof setInterval>;
+	private readonly sessionsBeingDeleted = new Set<string>();
+	private modelCatalogRevision = 1;
+	private readonly sessionWatchers = new Map<string, FSWatcher>();
+	private sessionRefreshTimer?: ReturnType<typeof setTimeout>;
+	private sessionFallbackTimer?: ReturnType<typeof setTimeout>;
+	private sessionFallbackDelay = SESSION_FILE_FALLBACK_MIN_MS;
 	private readonly contentCleanupTimer: ReturnType<typeof setInterval>;
 	private readonly agentDir: string;
 	private pollingSessions = false;
@@ -402,11 +415,6 @@ export class WebRuntimeService {
 		} catch (error) {
 			if (!(error instanceof OperationJournalCorruptError)) throw error;
 		}
-		this.sessionPollTimer = setInterval(
-			() => void this.pollSessionFiles().catch(() => {}),
-			SESSION_FILE_POLL_INTERVAL_MS,
-		);
-		this.sessionPollTimer.unref?.();
 		this.contentCleanupTimer = setInterval(() => this.contentStore.evictExpired(), CONTENT_CLEANUP_INTERVAL_MS);
 		this.contentCleanupTimer.unref?.();
 	}
@@ -449,14 +457,16 @@ export class WebRuntimeService {
 			const runtime = this.runtimes.get(sessionPath);
 			if (runtime) await this.sendSessionSnapshots(runtime, this.leases.has(sessionPath));
 			this.releaseAcceptedReservation(sessionPath);
-			if (!this.leases.has(sessionPath) && !this.activeOperationBySession.has(sessionPath))
-				await this.disposeRuntime(sessionPath);
+			await this.disposeRuntimeIfUnused(sessionPath);
 		}
 	}
 
 	async dispose(): Promise<void> {
 		this.disposed = true;
-		clearInterval(this.sessionPollTimer);
+		if (this.sessionRefreshTimer) clearTimeout(this.sessionRefreshTimer);
+		if (this.sessionFallbackTimer) clearTimeout(this.sessionFallbackTimer);
+		for (const watcher of this.sessionWatchers.values()) watcher.close();
+		this.sessionWatchers.clear();
 		clearInterval(this.contentCleanupTimer);
 		await Promise.allSettled([...this.sessionHandoffHosts.values()].map((host) => host.server.dispose()));
 		this.sessionHandoffHosts.clear();
@@ -613,6 +623,7 @@ export class WebRuntimeService {
 				const cwd = canonicalProjectCwd(request.cwd);
 				const sessions = await this.listSessionSummaries(cwd, connection, request.metadataOnly === true);
 				this.rememberSessionFacts(cwd, sessions);
+				this.watchSessionDirectory(cwd);
 				if (!request.query) return sessions;
 				const query = request.query.toLowerCase();
 				return sessions.filter((session) => JSON.stringify(session).toLowerCase().includes(query));
@@ -684,6 +695,12 @@ export class WebRuntimeService {
 				this.assertClient(request.clientInstanceId, connection);
 				this.journal.assertWritable();
 				const sessionPath = canonicalSessionPath(request.sessionPath);
+				if (this.sessionsBeingDeleted.has(sessionPath)) {
+					throw Object.assign(new Error("会话正在删除"), {
+						code: "session_delete_in_progress",
+						retryable: true,
+					});
+				}
 				const lease = this.leases.acquire(sessionPath, request.clientInstanceId);
 				try {
 					const runtime = await this.ensureRuntime(
@@ -735,7 +752,7 @@ export class WebRuntimeService {
 				this.leases.release(sessionPath, request.leaseId);
 				const runtime = this.runtimes.get(sessionPath);
 				if (runtime) await this.sendSessionSnapshots(runtime, this.leases.has(sessionPath));
-				if (!this.leases.has(sessionPath)) await this.disposeRuntime(sessionPath);
+				await this.disposeRuntimeIfUnused(sessionPath);
 				return { released: true };
 			}
 			case "prompt":
@@ -744,7 +761,7 @@ export class WebRuntimeService {
 					request,
 					{ text: request.text, images: request.images ?? [] },
 					async (runtime, operation) => {
-						await runtime.prompt(request.text, request.images);
+						await runtime.prompt(request.text, request.images, request.clientRequestId);
 						return { sessionPath: canonicalSessionPath(runtime.sessionPath), operationId: operation.operationId };
 					},
 					afterResponse,
@@ -881,6 +898,8 @@ export class WebRuntimeService {
 				return jsonValue(await this.adapter.listModels());
 			case "list_model_providers":
 				return jsonValue(await this.adapter.listModelProviders());
+			case "list_model_options":
+				return jsonValue(await this.adapter.listModelOptions({ includeProviders: request.includeProviders }));
 			case "add_model_provider":
 			case "add_provider_model":
 			case "sync_model_provider":
@@ -895,15 +914,19 @@ export class WebRuntimeService {
 					lockSessionPath: request.command === "login_model_provider" ? `provider:${provider}` : undefined,
 					payload: request,
 					run: async (operation, signal) => {
+						let result: JsonValue;
 						switch (request.command) {
 							case "add_model_provider":
-								return jsonValue(await this.adapter.addModelProvider(request));
+								result = jsonValue(await this.adapter.addModelProvider(request));
+								break;
 							case "add_provider_model":
-								return jsonValue(await this.adapter.addProviderModel(request));
+								result = jsonValue(await this.adapter.addProviderModel(request));
+								break;
 							case "sync_model_provider":
-								return jsonValue(await this.adapter.syncModelProvider(request.provider));
+								result = jsonValue(await this.adapter.syncModelProvider(request.provider));
+								break;
 							case "login_model_provider":
-								return jsonValue(
+								result = jsonValue(
 									await this.adapter.loginModelProvider(
 										request.provider,
 										request.authType,
@@ -911,9 +934,14 @@ export class WebRuntimeService {
 										signal,
 									),
 								);
+								break;
 							case "logout_model_provider":
-								return jsonValue(await this.adapter.logoutModelProvider(request.provider));
+								result = jsonValue(await this.adapter.logoutModelProvider(request.provider));
+								break;
 						}
+						this.modelCatalogRevision += 1;
+						await this.broadcast({ type: "model_catalog_changed", revision: this.modelCatalogRevision });
+						return result;
 					},
 				});
 			}
@@ -1172,41 +1200,48 @@ export class WebRuntimeService {
 					command: request.command,
 					clientInstanceId: request.clientInstanceId,
 					clientRequestId: request.clientRequestId,
-					scope: `session-collection:${cwd}`,
+					scope: `session:${sessionPath}`,
 					payload: { cwd, sessionPath },
 					run: async () => {
-						if (
-							this.journal.list(sessionPath).some((operation) => ACTIVE_OPERATION_STATUSES.has(operation.status))
-						) {
-							throw Object.assign(new Error("会话存在正在执行的任务"), {
-								code: "session_operation_active",
-								retryable: true,
-							});
-						}
-						const requesterLease = this.leases.get(sessionPath, request.clientInstanceId);
-						if (this.leases.count(sessionPath) > (requesterLease ? 1 : 0)) {
-							throw Object.assign(new Error("会话当前仍被占用"), {
-								code: "session_attached",
-								retryable: true,
-							});
-						}
-						if (requesterLease) {
-							this.releaseAcceptedReservation(sessionPath);
-							this.leases.release(sessionPath, requesterLease.leaseId);
-						}
-						if (!this.leases.has(sessionPath) && this.runtimes.has(sessionPath)) {
-							await this.disposeRuntime(sessionPath);
-						}
-						if (this.runtimes.has(sessionPath) || this.leases.has(sessionPath)) {
-							throw Object.assign(new Error("会话当前仍被占用"), {
-								code: "session_attached",
-								retryable: true,
-							});
-						}
-						if (!existsSync(sessionPath)) throw Object.assign(new Error("未找到会话"), { code: "not_found" });
-						await this.adapter.deleteSession(sessionPath);
-						await this.broadcast({ type: "session_removed", sessionPath });
+						await this.deleteSessionPath(sessionPath);
 						return { deleted: true };
+					},
+				});
+			}
+			case "delete_sessions": {
+				const items = request.items.map((item) => ({
+					cwd: canonicalProjectCwd(item.cwd),
+					sessionPath: canonicalSessionPath(item.sessionPath),
+				}));
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: "host:sessions",
+					payload: { items },
+					run: async () => {
+						const deletedPaths: string[] = [];
+						const failures: Array<{
+							sessionPath: string;
+							code: string;
+							message: string;
+							retryable?: boolean;
+						}> = [];
+						for (const item of items) {
+							try {
+								await this.deleteSessionPath(item.sessionPath);
+								deletedPaths.push(item.sessionPath);
+							} catch (error) {
+								const value = protocolError(error);
+								failures.push({
+									sessionPath: item.sessionPath,
+									code: value.code,
+									message: value.message,
+									...(value.retryable === undefined ? {} : { retryable: value.retryable }),
+								});
+							}
+						}
+						return { deletedPaths, failures };
 					},
 				});
 			}
@@ -1427,9 +1462,30 @@ export class WebRuntimeService {
 					remoteBlockedReason: "持久 SSH 后台配置、凭据引用、探测和恢复契约尚未实现。",
 				};
 			case "get_git_status":
-				return this.adapter.getGitStatus(request.cwd);
+				return this.adapter.getGitStatus(request.cwd, { refreshRepositories: request.refreshRepositories });
 			case "get_git_diff":
 				return this.adapter.getGitDiff(request.cwd, request.path, request.staged, request.repositoryPath);
+			case "get_git_stats":
+				return this.adapter.getGitStats(request.cwd, request.repositoryPath);
+			case "get_git_branches":
+				return this.adapter.getGitBranches(request.cwd, request.repositoryPath);
+			case "get_git_history":
+				return this.adapter.getGitHistory(request.cwd, request.offset, request.limit, request.repositoryPath);
+			case "get_git_commit":
+				return this.adapter.getGitCommit(request.cwd, request.revision, request.repositoryPath, request.path);
+			case "mutate_git": {
+				const cwd = canonicalProjectCwd(request.cwd);
+				const repositoryPath = request.repositoryPath ?? "";
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `git:${cwd}:${repositoryPath}`,
+					payload: { cwd, repositoryPath, mutation: request.mutation },
+					run: async (_operation, signal) =>
+						jsonValue(await this.adapter.mutateGit(cwd, repositoryPath, request.mutation, signal)),
+				});
+			}
 			case "check_for_updates":
 				return this.adapter.checkForUpdates();
 			case "resolve_project_resource":
@@ -1876,6 +1932,80 @@ export class WebRuntimeService {
 		}
 	}
 
+	private async deleteSessionPath(sessionPath: string): Promise<void> {
+		if (this.sessionsBeingDeleted.has(sessionPath)) {
+			throw Object.assign(new Error("会话正在删除"), {
+				code: "session_delete_in_progress",
+				retryable: true,
+			});
+		}
+		this.sessionsBeingDeleted.add(sessionPath);
+		try {
+			if (this.journal.list(sessionPath).some((operation) => ACTIVE_OPERATION_STATUSES.has(operation.status))) {
+				throw Object.assign(new Error("会话存在正在执行的任务"), {
+					code: "session_operation_active",
+					retryable: true,
+				});
+			}
+			this.releaseAcceptedReservation(sessionPath);
+			this.leases.releaseSession(sessionPath);
+			if (this.runtimes.has(sessionPath)) await this.disposeRuntime(sessionPath);
+			if (this.runtimes.has(sessionPath) || this.leases.has(sessionPath)) {
+				throw Object.assign(new Error("会话当前仍被占用"), {
+					code: "session_attached",
+					retryable: true,
+				});
+			}
+			if (!existsSync(sessionPath)) throw Object.assign(new Error("未找到会话"), { code: "not_found" });
+			await this.adapter.deleteSession(sessionPath);
+			await this.broadcast({ type: "session_removed", sessionPath });
+		} finally {
+			this.sessionsBeingDeleted.delete(sessionPath);
+		}
+	}
+
+	private watchSessionDirectory(cwd: string): void {
+		if (this.sessionWatchers.has(cwd)) return;
+		if (!this.adapter.getSessionDirectory) {
+			this.scheduleSessionFallback();
+			return;
+		}
+		try {
+			const watcher = watch(this.adapter.getSessionDirectory(cwd), { persistent: false }, () => {
+				this.sessionFallbackDelay = SESSION_FILE_FALLBACK_MIN_MS;
+				this.scheduleSessionFallback();
+				if (this.sessionRefreshTimer) clearTimeout(this.sessionRefreshTimer);
+				this.sessionRefreshTimer = setTimeout(() => {
+					this.sessionRefreshTimer = undefined;
+					void this.pollSessionFiles().catch(() => {});
+				}, SESSION_FILE_WATCH_DEBOUNCE_MS);
+				this.sessionRefreshTimer.unref?.();
+			});
+			watcher.on("error", () => {
+				watcher.close();
+				if (this.sessionWatchers.get(cwd) === watcher) this.sessionWatchers.delete(cwd);
+			});
+			this.sessionWatchers.set(cwd, watcher);
+		} catch {
+			// 平台不支持目录监听时，退避扫描仍能保持外部会话同步。
+		}
+		this.scheduleSessionFallback();
+	}
+
+	private scheduleSessionFallback(): void {
+		if (this.sessionFallbackTimer) clearTimeout(this.sessionFallbackTimer);
+		this.sessionFallbackTimer = setTimeout(() => {
+			this.sessionFallbackTimer = undefined;
+			void this.pollSessionFiles()
+				.catch(() => {})
+				.finally(() => {
+					this.sessionFallbackDelay = Math.min(SESSION_FILE_FALLBACK_MAX_MS, this.sessionFallbackDelay * 2);
+					this.scheduleSessionFallback();
+				});
+		}, this.sessionFallbackDelay);
+		this.sessionFallbackTimer.unref?.();
+	}
+
 	private rememberSessionFacts(cwd: string, sessions: readonly SessionSummary[]): void {
 		this.watchedSessionFacts.set(
 			cwd,
@@ -2164,7 +2294,9 @@ export class WebRuntimeService {
 		return (
 			snapshot.activity === "running" ||
 			snapshot.activity === "waiting_for_input" ||
-			["turn", "compaction", "retry", "waiting_for_input"].includes(snapshot.phase)
+			["turn", "compaction", "retry", "waiting_for_input"].includes(snapshot.phase) ||
+			snapshot.queuedSteerCount > 0 ||
+			snapshot.queuedFollowUpCount > 0
 		);
 	}
 
@@ -2206,6 +2338,26 @@ export class WebRuntimeService {
 		}
 		const activeOperationId = this.activeOperationBySession.get(sessionPath);
 		if (activeOperationId) {
+			const activeOperation = this.journal.get(activeOperationId);
+			if (request.command === "prompt" && ["prompt", "compact"].includes(activeOperation?.type ?? "")) {
+				const runtime = this.runtimes.get(sessionPath);
+				if (!runtime) throw Object.assign(new Error("尚未获取会话运行时"), { code: "session_not_acquired" });
+				const accepted = this.journal.accept({
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					sessionPath,
+					type: "follow_up",
+					payloadHash,
+				});
+				const acceptedOperation = this.updateOperation(accepted.operation.operationId, "accepted", {
+					progress: operationMessageProgress(request.text, request.images?.length ?? 0),
+				});
+				const operation = await this.runQueueOperation(runtime, acceptedOperation, async (candidate) => {
+					await candidate.prompt(request.text, request.images, request.clientRequestId);
+					return {};
+				});
+				return { operation, duplicate: false };
+			}
 			throw Object.assign(new Error("会话已有正在执行的任务"), {
 				code: "session_operation_active",
 				retryable: true,
@@ -2273,7 +2425,7 @@ export class WebRuntimeService {
 				this.activeOperationBySession.delete(operation.sessionPath);
 			}
 			this.cancelPendingUi(operation.operationId);
-			if (!this.leases.has(operation.sessionPath)) await this.disposeRuntime(operation.sessionPath);
+			await this.disposeRuntimeIfUnused(operation.sessionPath);
 		}
 	}
 
@@ -2299,8 +2451,13 @@ export class WebRuntimeService {
 		this.runtimeUnsubscribers.set(
 			sessionPath,
 			runtime.onEvent((event) => {
+				if (event.type === "disconnected") {
+					this.startDisconnectedRuntimeRecovery(sessionPath, runtime);
+					return;
+				}
 				if (event.type === "state_changed") {
 					this.scheduleSessionSnapshots(runtime);
+					void this.disposeRuntimeIfUnused(sessionPath);
 				} else if (event.type === "entry_committed") {
 					this.flushSessionProgress(sessionPath);
 					const payload = event.payload as {
@@ -2432,7 +2589,7 @@ export class WebRuntimeService {
 				: {}),
 			path: sessionPath,
 			attached: attached && runtime.isConnected?.() !== false,
-			writeAccess: runtime.isConnected?.() === false ? "locked_externally" : writeAccess,
+			writeAccess: runtime.isConnected?.() === false ? "available" : writeAccess,
 			revision: projectedRevision,
 		};
 	}
@@ -2578,7 +2735,12 @@ export class WebRuntimeService {
 			});
 		}
 		const snapshot = runtime.getSnapshot("owned");
-		if (snapshot.activity !== "idle" || snapshot.phase !== "idle") {
+		if (
+			snapshot.activity !== "idle" ||
+			snapshot.phase !== "idle" ||
+			snapshot.queuedSteerCount > 0 ||
+			snapshot.queuedFollowUpCount > 0
+		) {
 			throw Object.assign(new Error("会话存在正在执行的任务"), {
 				code: "session_operation_active",
 				retryable: true,
@@ -2637,6 +2799,57 @@ export class WebRuntimeService {
 			if (Date.now() >= deadline) return;
 			await new Promise((resolve) => setTimeout(resolve, SESSION_HANDOFF_RECONNECT_INTERVAL_MS));
 		}
+	}
+
+	private startDisconnectedRuntimeRecovery(sessionPath: string, runtime: RuntimeSession): void {
+		if (
+			this.disposed ||
+			this.runtimes.get(sessionPath) !== runtime ||
+			this.sessionHandoffRecoveries.has(sessionPath)
+		) {
+			return;
+		}
+		const recovery = this.recoverDisconnectedRuntime(sessionPath, runtime).finally(() => {
+			if (this.sessionHandoffRecoveries.get(sessionPath) === recovery)
+				this.sessionHandoffRecoveries.delete(sessionPath);
+		});
+		this.sessionHandoffRecoveries.set(sessionPath, recovery);
+		void recovery.catch(() => {});
+	}
+
+	private async recoverDisconnectedRuntime(sessionPath: string, runtime: RuntimeSession): Promise<void> {
+		while (!this.disposed && this.runtimes.get(sessionPath) === runtime) {
+			if (!this.runtimeHasDemand(sessionPath, runtime)) {
+				await this.disposeRuntimeIfUnused(sessionPath);
+				return;
+			}
+			try {
+				await this.ensureRuntime(
+					sessionPath,
+					this.createUiRequestHandler(
+						() => this.activeOperationBySession.get(sessionPath) ?? `control:${sessionPath}`,
+						sessionPath,
+					),
+				);
+				return;
+			} catch {
+				await new Promise((resolve) => setTimeout(resolve, SESSION_HANDOFF_RECONNECT_INTERVAL_MS));
+			}
+		}
+	}
+
+	private runtimeHasDemand(sessionPath: string, runtime: RuntimeSession | undefined): boolean {
+		return (
+			this.leases.has(sessionPath) ||
+			this.activeOperationBySession.has(sessionPath) ||
+			runtime?.hasExternalClients?.() === true
+		);
+	}
+
+	private async disposeRuntimeIfUnused(sessionPath: string): Promise<void> {
+		const runtime = this.runtimes.get(sessionPath);
+		if (!runtime || this.runtimeHasDemand(sessionPath, runtime)) return;
+		await this.disposeRuntime(sessionPath);
 	}
 
 	private async disposeRuntime(sessionPath: string): Promise<void> {
@@ -2742,7 +2955,7 @@ export class WebRuntimeService {
 		const lease = this.leases.get(sessionPath, connection.clientInstanceId);
 		if (lease) return "owned";
 		if (this.runtimes.has(sessionPath) || this.leases.has(sessionPath)) return "controlled_elsewhere";
-		return this.adapter.isSessionWriterLocked(sessionPath) ? "locked_externally" : "available";
+		return "available";
 	}
 
 	private writeAccess(sessionPath: string, connection: ClientConnection): SessionStateSnapshot["writeAccess"] {

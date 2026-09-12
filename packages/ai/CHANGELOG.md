@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.85.1-lystar.8] - 2026-09-12
+
+### Changed
+
+- 刷新 Amazon Bedrock、Baseten、Fireworks、Hugging Face、OpenCode Go、OpenRouter 和 Vercel AI Gateway 模型目录，更新模型可用性、价格、上下文窗口、输出上限和输入能力元数据。
+
+### Fixed
+
+- 修复 OpenRouter 图像模型生成器输出未按仓库格式稳定序列化，导致刷新在线目录后生成文件无法通过 Biome 检查的问题。
+
 ## [0.85.1-lystar.7] - 2026-09-11
 
 ### Added

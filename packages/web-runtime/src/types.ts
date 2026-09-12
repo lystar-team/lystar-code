@@ -5,13 +5,20 @@ import type {
 	CompletionItem,
 	CompletionResult,
 	ContentChunk,
+	GitBranches,
+	GitCommit,
 	GitDiff,
+	GitHistory,
+	GitMutation,
+	GitMutationResult,
+	GitStats,
 	GitStatus,
 	HarnessImportPreview,
 	HarnessImportResult,
 	HarnessImportScope,
 	HostDirectoryListing,
 	JsonValue,
+	ModelOptions,
 	ModelRef,
 	PackageSummary,
 	ProjectFileSaveResult,
@@ -35,7 +42,7 @@ import type {
 export type QueueAction = "remove" | "steer";
 
 export interface RuntimeEvent {
-	type: "progress" | "entry_committed" | "state_changed" | "ui_request";
+	type: "progress" | "entry_committed" | "state_changed" | "ui_request" | "disconnected";
 	payload: JsonValue | SessionProgress;
 }
 
@@ -63,6 +70,7 @@ export interface RichTextRenderRequest {
 export interface RuntimeSessionAsyncControls {
 	isConnected?(): boolean;
 	ownsSessionWriter?(): boolean;
+	hasExternalClients?(): boolean;
 	getLiveMessage?(): { text: string; thinking: string } | undefined;
 	readLiveMessage?(): Promise<{ text: string; thinking: string } | undefined>;
 	getCapabilities?(): readonly string[];
@@ -95,7 +103,7 @@ export interface RuntimeSession extends RuntimeSessionAsyncControls {
 	readSubagent(agentId: string): { transcript?: SubagentSnapshot; live?: SubagentSnapshot };
 	abortSubagent(agentId: string): Promise<void>;
 	continueSubagent(agentId: string, text: string): Promise<void>;
-	prompt(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void>;
+	prompt(text: string, images?: Array<{ data: string; mimeType: string }>, queueId?: string): Promise<void>;
 	steer(text: string, images?: Array<{ data: string; mimeType: string }>, queueId?: string): Promise<void>;
 	followUp(text: string, images?: Array<{ data: string; mimeType: string }>, queueId?: string): Promise<void>;
 	queueAction(queueId: string, action: QueueAction): Promise<void>;
@@ -210,9 +218,11 @@ export interface RuntimeAdapter {
 	inspectSessionActivity?(sessionPath: string): Promise<SessionActivity | undefined>;
 	isSessionWriterLocked(sessionPath: string): boolean;
 	deleteSession(sessionPath: string): Promise<void>;
+	getSessionDirectory?(cwd: string): string;
 	listSessions(cwd: string, options?: { metadataOnly?: boolean }): Promise<SessionSummaryBase[]>;
 	listModels(): Promise<ModelSummary[]>;
 	listModelProviders(): Promise<ModelProviderSummary[]>;
+	listModelOptions(options?: { includeProviders?: readonly string[] }): Promise<ModelOptions>;
 	addModelProvider(input: ModelProviderInput): Promise<ModelProviderSummary[]>;
 	addProviderModel(input: ProviderModelInput): Promise<ModelSummary[]>;
 	syncModelProvider(provider: string): Promise<ModelSummary[]>;
@@ -263,8 +273,18 @@ export interface RuntimeAdapter {
 	getAbout(): JsonValue;
 	getChangelog(sessionPath: string, width: number, cwd?: string): ChangelogResult;
 	getDiagnostics(cwd?: string, runtimeDiagnostics?: ToolRecoveryRuntimeDiagnostics): Promise<JsonValue>;
-	getGitStatus(cwd: string): Promise<GitStatus>;
+	getGitStatus(cwd: string, options?: { refreshRepositories?: boolean }): Promise<GitStatus>;
 	getGitDiff(cwd: string, path: string | undefined, staged: boolean, repositoryPath?: string): Promise<GitDiff>;
+	getGitStats(cwd: string, repositoryPath?: string): Promise<GitStats>;
+	getGitBranches(cwd: string, repositoryPath?: string): Promise<GitBranches>;
+	getGitHistory(cwd: string, offset: number, limit: number, repositoryPath?: string): Promise<GitHistory>;
+	getGitCommit(cwd: string, revision: string, repositoryPath?: string, path?: string): Promise<GitCommit>;
+	mutateGit(
+		cwd: string,
+		repositoryPath: string | undefined,
+		mutation: GitMutation,
+		signal?: AbortSignal,
+	): Promise<GitMutationResult>;
 	checkForUpdates(): Promise<JsonValue>;
 	listSettings(sessionPath: string): SettingSummary[];
 	getSessionTree(sessionPath: string): SessionTreeNode[];

@@ -1,3 +1,4 @@
+import type { GitMutation } from "@lystar/code-web-protocol";
 import type { ComposerMode, InspectorMode, SettingsTab, ThemeMode, WorkbenchState } from "../../state/use-workbench";
 import type {
 	FileResponse,
@@ -8,6 +9,13 @@ import type {
 	WebProject,
 	WebProviderModelInput,
 } from "../../types";
+
+export interface PromptEditRequest {
+	sessionId: string;
+	entryId: string;
+	text: string;
+	attachments: PromptAttachmentPreview[];
+}
 
 export interface WorkbenchActions {
 	selectProject: (projectId: string) => Promise<void>;
@@ -34,6 +42,11 @@ export interface WorkbenchActions {
 	loadTranscript: () => Promise<void>;
 	loadGitStatus: () => Promise<void>;
 	loadGitRepositoryStats: (repositoryPath?: string) => Promise<void>;
+	loadGitBranches: (repositoryPath?: string) => Promise<void>;
+	loadGitHistory: (repositoryPath?: string, offset?: number, append?: boolean) => Promise<void>;
+	loadGitCommit: (revision: string, repositoryPath?: string, path?: string) => Promise<void>;
+	closeGitCommit: () => void;
+	mutateGit: (mutation: GitMutation, repositoryPath?: string) => Promise<boolean>;
 	loadGitDiff: (path?: string, staged?: boolean, repositoryPath?: string) => Promise<void>;
 	closeGitDiff: () => void;
 	loadProjectTree: (path?: string, preserveCurrentTree?: boolean) => Promise<void>;
@@ -53,10 +66,12 @@ export interface WorkbenchActions {
 	updateProjectGroup: (groupId: string, name: string) => Promise<boolean>;
 	removeProjectGroup: (groupId: string) => Promise<boolean>;
 	setProjectGroup: (projectId: string, groupId?: string) => Promise<boolean>;
+	reorderProjectGroups: (groupIds: string[]) => Promise<void>;
 	reorderProjects: (projectIds: string[]) => Promise<void>;
 	reorderSessions: (projectId: string, sessionIds: string[]) => Promise<void>;
 	removeProject: (projectId: string) => Promise<void>;
 	deleteSession: (sessionId: string) => Promise<boolean>;
+	deleteSessions: (sessionIds: string[]) => Promise<string[]>;
 	renameSession: (sessionId: string, name: string) => Promise<void>;
 	setSessionPinned: (sessionId: string, pinned: boolean) => Promise<void>;
 	fork: (entryId: string) => Promise<void>;

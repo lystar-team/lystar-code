@@ -6,6 +6,27 @@ interface BeforeInstallPromptEvent extends Event {
 	prompt: () => Promise<void>;
 }
 
+type InstallPromptSubscriber = (prompt: BeforeInstallPromptEvent | undefined) => void;
+
+let capturedInstallPrompt: BeforeInstallPromptEvent | undefined;
+let captureInitialized = false;
+const installPromptSubscribers = new Set<InstallPromptSubscriber>();
+
+function publishInstallPrompt(prompt: BeforeInstallPromptEvent | undefined): void {
+	capturedInstallPrompt = prompt;
+	for (const subscriber of installPromptSubscribers) subscriber(prompt);
+}
+
+export function initializeAppInstallCapture(): void {
+	if (captureInitialized) return;
+	captureInitialized = true;
+	window.addEventListener("beforeinstallprompt", (event) => {
+		event.preventDefault();
+		publishInstallPrompt(event as BeforeInstallPromptEvent);
+	});
+	window.addEventListener("appinstalled", () => publishInstallPrompt(undefined));
+}
+
 export interface AppInstallState {
 	readonly canInstall: boolean;
 	readonly canFullscreen: boolean;
@@ -29,7 +50,7 @@ function detectStandalone(): boolean {
 }
 
 export function useAppInstall(): AppInstallState {
-	const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent>();
+	const [deferredPrompt, setDeferredPrompt] = useState(() => capturedInstallPrompt);
 	const [isInstalled, setIsInstalled] = useState(() => detectStandalone());
 	const [isFullscreen, setIsFullscreen] = useState(() => Boolean(document.fullscreenElement));
 	const [isIos] = useState(() => detectIos());
@@ -40,24 +61,19 @@ export function useAppInstall(): AppInstallState {
 		const displayMode = window.matchMedia("(display-mode: standalone)");
 		const updateStandalone = () => setIsInstalled(detectStandalone());
 		const updateFullscreen = () => setIsFullscreen(Boolean(document.fullscreenElement));
-		const handleBeforeInstallPrompt = (event: Event) => {
-			event.preventDefault();
-			setDeferredPrompt(event as BeforeInstallPromptEvent);
-		};
-		const handleAppInstalled = () => {
-			setDeferredPrompt(undefined);
-			setIsInstalled(true);
-		};
+		const handleInstalled = () => setIsInstalled(true);
+		const handleInstallPrompt: InstallPromptSubscriber = (prompt) => setDeferredPrompt(prompt);
 
+		installPromptSubscribers.add(handleInstallPrompt);
+		setDeferredPrompt(capturedInstallPrompt);
 		displayMode.addEventListener("change", updateStandalone);
 		document.addEventListener("fullscreenchange", updateFullscreen);
-		window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
-		window.addEventListener("appinstalled", handleAppInstalled);
+		window.addEventListener("appinstalled", handleInstalled);
 		return () => {
+			installPromptSubscribers.delete(handleInstallPrompt);
 			displayMode.removeEventListener("change", updateStandalone);
 			document.removeEventListener("fullscreenchange", updateFullscreen);
-			window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
-			window.removeEventListener("appinstalled", handleAppInstalled);
+			window.removeEventListener("appinstalled", handleInstalled);
 		};
 	}, []);
 
@@ -65,7 +81,7 @@ export function useAppInstall(): AppInstallState {
 		if (!deferredPrompt) return "unavailable";
 		await deferredPrompt.prompt();
 		const choice = await deferredPrompt.userChoice;
-		setDeferredPrompt(undefined);
+		publishInstallPrompt(undefined);
 		return choice.outcome;
 	}, [deferredPrompt]);
 

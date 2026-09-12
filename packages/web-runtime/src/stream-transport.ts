@@ -90,6 +90,8 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 	const connection = service.createConnection((message: ServerMessage) => write(encodeTrustedServerMessage(message)));
 	const decoder = new ClientMessageDecoder();
 	let processing = Promise.resolve();
+	let handshake = Promise.resolve();
+	let transcriptProcessing = Promise.resolve();
 	let queuedRequests = 0;
 	let queuedBytes = 0;
 	let closed = false;
@@ -111,8 +113,14 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 						queuedBytes -= byteLength;
 					}
 				};
-				if (message.type === "ui_response") void handle().catch(fail);
-				else processing = processing.then(handle).catch(fail);
+				if (message.type === "ui_response") {
+					void handle().catch(fail);
+				} else if (message.type === "request" && message.request.command === "read_transcript") {
+					transcriptProcessing = Promise.all([handshake, transcriptProcessing]).then(handle).catch(fail);
+				} else {
+					processing = processing.then(handle).catch(fail);
+					if (message.type === "hello") handshake = processing;
+				}
 			}
 		} catch (error) {
 			fail(error);
@@ -128,7 +136,7 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 			const onEnd = () => {
 				try {
 					decoder.end();
-					void processing.then(() => {
+					void Promise.all([processing, transcriptProcessing]).then(() => {
 						cleanup();
 						resolve();
 					}, onError);

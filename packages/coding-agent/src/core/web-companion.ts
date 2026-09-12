@@ -435,15 +435,23 @@ export class WebCompanionServer {
 	private readonly session: AgentSession;
 	private readonly agentDir: string;
 	private readonly onSessionChanged?: () => void;
+	private readonly onClientCountChanged?: (count: number) => void;
 	private committedTranscriptRevision: number;
 	private snapshotBroadcastPending = false;
 	private snapshotBroadcastTimer?: ReturnType<typeof setTimeout>;
 	private committedBroadcastPending = false;
+	private promptAdmissionTail: Promise<void> = Promise.resolve();
 
-	constructor(session: AgentSession, agentDir: string, onSessionChanged?: () => void) {
+	constructor(
+		session: AgentSession,
+		agentDir: string,
+		onSessionChanged?: () => void,
+		onClientCountChanged?: (count: number) => void,
+	) {
 		this.session = session;
 		this.agentDir = agentDir;
 		this.onSessionChanged = onSessionChanged;
+		this.onClientCountChanged = onClientCountChanged;
 		this.committedEntryCount = session.sessionManager.getEntries().length;
 		const sessionPath = session.sessionFile;
 		this.committedTranscriptRevision = sessionPath && existsSync(sessionPath) ? statSync(sessionPath).size : 0;
@@ -476,6 +484,10 @@ export class WebCompanionServer {
 		}
 	}
 
+	getClientCount(): number {
+		return this.readySockets.size;
+	}
+
 	async dispose(): Promise<void> {
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
@@ -484,7 +496,9 @@ export class WebCompanionServer {
 		this.snapshotBroadcastPending = false;
 		for (const socket of this.sockets) socket.destroy();
 		this.sockets.clear();
+		const hadReadyClients = this.readySockets.size > 0;
 		this.readySockets.clear();
+		if (hadReadyClients) this.onClientCountChanged?.(0);
 		const server = this.server;
 		this.server = undefined;
 		this.endpoint = undefined;
@@ -522,7 +536,7 @@ export class WebCompanionServer {
 		const cleanup = () => {
 			clearTimeout(timer);
 			this.sockets.delete(socket);
-			this.readySockets.delete(socket);
+			if (this.readySockets.delete(socket)) this.onClientCountChanged?.(this.readySockets.size);
 		};
 		socket.once("close", cleanup);
 		socket.once("error", cleanup);
@@ -543,6 +557,7 @@ export class WebCompanionServer {
 			}
 			send(socket, { type: "ready", snapshot: this.snapshot() });
 			this.readySockets.add(socket);
+			this.onClientCountChanged?.(this.readySockets.size);
 			return;
 		}
 		if (
@@ -567,6 +582,34 @@ export class WebCompanionServer {
 		}
 	}
 
+	private async submitPrompt(command: Extract<WebCompanionCommand, { type: "request" }>): Promise<void> {
+		let unlockAdmission!: () => void;
+		const previousAdmission = this.promptAdmissionTail;
+		this.promptAdmissionTail = new Promise<void>((resolve) => {
+			unlockAdmission = resolve;
+		});
+		await previousAdmission;
+		let admissionUnlocked = false;
+		const unlock = () => {
+			if (admissionUnlocked) return;
+			admissionUnlocked = true;
+			unlockAdmission();
+		};
+		try {
+			const images = sessionImages(command.images);
+			await this.session.prompt(command.text!, {
+				images,
+				source: "rpc",
+				streamingBehavior: "followUp",
+				...(command.queueId ? { queueId: command.queueId } : {}),
+				preflightResult: unlock,
+			});
+			await this.session.waitForIdle();
+		} finally {
+			unlock();
+		}
+	}
+
 	private async execute(
 		command: Extract<WebCompanionCommand, { type: "request" }>,
 		socket?: Socket,
@@ -574,12 +617,7 @@ export class WebCompanionServer {
 		switch (command.command) {
 			case "prompt":
 				if (!command.text?.trim()) throw new Error("提示内容不能为空");
-				await this.session.prompt(command.text, {
-					images: sessionImages(command.images),
-					source: "rpc",
-					...(this.session.isStreaming ? { streamingBehavior: "followUp" as const } : {}),
-				});
-				await this.session.waitForIdle();
+				await this.submitPrompt(command);
 				return {};
 			case "steer":
 				if (!command.text?.trim()) throw new Error("提示内容不能为空");

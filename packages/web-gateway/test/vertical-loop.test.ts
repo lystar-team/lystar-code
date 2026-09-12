@@ -285,7 +285,20 @@ test("Web Gateway fake Provider 完成 Prompt、事件和 Transcript 闭环", as
 			PI_REASONING_LEVEL: "off",
 		}),
 	);
-	const gateway = startChild(
+	let gateway: ChildProcess | undefined;
+	const messages: Array<Record<string, unknown>> = [];
+	const handledUiRequests = new Set<string>();
+	let ws: WebSocket | undefined;
+	t.after(async () => {
+		ws?.close();
+		if (gateway) await stopChild(gateway);
+		await stopChild(host);
+		await closeServer(fakeProvider);
+		await rm(agentDir, { recursive: true, force: true });
+	});
+
+	await waitForSocket(endpoint);
+	gateway = startChild(
 		[gatewayCli],
 		childEnvironment({
 			PI_CODING_AGENT_DIR: agentDir,
@@ -303,18 +316,6 @@ test("Web Gateway fake Provider 完成 Prompt、事件和 Transcript 闭环", as
 			PI_REASONING_LEVEL: "off",
 		}),
 	);
-	const messages: Array<Record<string, unknown>> = [];
-	const handledUiRequests = new Set<string>();
-	let ws: WebSocket | undefined;
-	t.after(async () => {
-		ws?.close();
-		await stopChild(gateway);
-		await stopChild(host);
-		await closeServer(fakeProvider);
-		await rm(agentDir, { recursive: true, force: true });
-	});
-
-	await waitForSocket(endpoint);
 	await waitForHttp(`${baseUrl}/healthz`);
 	ws = new WebSocket(`${baseUrl.replace(/^http/u, "ws")}/ws?token=${token}&clientId=${clientId}`, {
 		headers: { Origin: baseUrl },

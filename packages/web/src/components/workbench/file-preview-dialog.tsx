@@ -1,9 +1,11 @@
 import { Copy, Download, LoaderCircle, Save, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isAbsoluteResourcePath } from "../../lib/resource-path.ts";
+import { cn } from "../../lib/utils.ts";
 import type { WorkbenchState } from "../../state/use-workbench.ts";
 import type { FileResponse } from "../../types.ts";
 import { CodeBlockCopyButton, CodeBlockDownloadButton } from "../ai-elements/code-block.tsx";
+import { MessageResponse } from "../ai-elements/message.tsx";
 import { ResourceImage, ResourceImageViewer, type ResourceImageItem } from "../ai-elements/resource-preview.tsx";
 import { Button } from "../ui/button.tsx";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog.tsx";
@@ -32,11 +34,15 @@ const INITIAL_EDITOR_STATE: MonacoFileEditorState = {
 	conflict: false,
 };
 
+type MarkdownView = "preview" | "edit";
+
 export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
 	const autoDownloadKeyRef = useRef<string>();
 	const editorRef = useRef<MonacoFileEditorHandle>(null);
 	const [editorState, setEditorState] = useState<MonacoFileEditorState>(INITIAL_EDITOR_STATE);
 	const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
+	const [markdownView, setMarkdownView] = useState<MarkdownView>("preview");
+	const [markdownPreviewContent, setMarkdownPreviewContent] = useState("");
 	const open = Boolean(state.fileLoading || state.fileContent || state.fileError);
 	const imageFile = state.fileContent?.kind === "image" ? state.fileContent : undefined;
 	const imagePreviewSource = imageFile?.data ? `data:${imageFile.mimeType};base64,${imageFile.data}` : undefined;
@@ -52,6 +58,7 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 		state.fileContent?.kind === "text" && state.fileContent.content !== undefined && !state.fileContent.truncated
 			? (state.fileContent as FileResponse & { kind: "text"; content: string })
 			: undefined;
+	const markdownFile = textFile && languageForPath(textFile.path) === "markdown" ? textFile : undefined;
 	const textActive = Boolean(textFile && textFile.path === state.filePath && !state.fileLoading);
 	const textEditable = Boolean(
 		textActive &&
@@ -75,6 +82,14 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 		actions.closeFilePreview();
 	}, [actions]);
 
+	const handleMarkdownViewChange = useCallback(
+		(value: MarkdownView) => {
+			if (value === "preview") setMarkdownPreviewContent(editorRef.current?.getValue() ?? textFile?.content ?? "");
+			setMarkdownView(value);
+		},
+		[textFile?.content],
+	);
+
 	useEffect(() => {
 		if (!binaryFile || binaryFile.truncated || binaryFormat || !binaryData) return;
 		const key = `${binaryFile.path}:${binaryFile.byteLength}`;
@@ -94,6 +109,8 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 
 	useEffect(() => {
 		setEditorState(INITIAL_EDITOR_STATE);
+		setMarkdownView("preview");
+		setMarkdownPreviewContent(textFile?.content ?? "");
 	}, [textFile?.path]);
 
 	return (
@@ -108,8 +125,8 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 					showCloseButton={false}
 					className="z-[70] flex h-[min(88vh,900px)] w-[min(94vw,1200px)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(94vw,1200px)] max-sm:left-0 max-sm:top-0 max-sm:h-dvh max-sm:w-screen max-sm:max-w-none max-sm:translate-x-0 max-sm:translate-y-0 max-sm:rounded-none max-sm:border-0"
 				>
-					<DialogHeader className="flex-row items-center justify-between gap-3 border-b border-border/60 px-4 py-3 text-left sm:px-5 sm:py-4">
-						<div className="min-w-0 flex-1">
+					<DialogHeader className="flex-row flex-wrap items-center justify-between gap-3 border-b border-border/60 px-4 py-3 text-left sm:px-5 sm:py-4 max-sm:gap-x-2 max-sm:gap-y-1">
+						<div className="order-1 min-w-0 flex-1 sm:order-none">
 							<DialogTitle className="flex min-w-0 items-center gap-2 text-sm">
 								<FileTypeIcon path={state.filePath ?? ""} />
 								<span className="min-w-0 truncate font-mono">{state.filePath || "文件预览"}</span>
@@ -140,7 +157,45 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 													: "文件预览"}
 							</DialogDescription>
 						</div>
-						<div className="flex shrink-0 items-center gap-1">
+						{markdownFile ? (
+							<div
+								className="order-3 flex h-8 w-full shrink-0 items-stretch sm:order-none sm:w-auto"
+								role="tablist"
+								aria-label="Markdown 文件视图"
+							>
+								<button
+									type="button"
+									id="markdown-preview-tab"
+									role="tab"
+									aria-controls="markdown-preview-panel"
+									aria-selected={markdownView === "preview"}
+									className={cn(
+										"relative min-w-0 flex-1 px-3 text-sm text-muted-foreground hover:text-foreground sm:flex-none",
+										markdownView === "preview" &&
+											"text-foreground after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:bg-foreground",
+									)}
+									onClick={() => handleMarkdownViewChange("preview")}
+								>
+									预览
+								</button>
+								<button
+									type="button"
+									id="markdown-edit-tab"
+									role="tab"
+									aria-controls="markdown-edit-panel"
+									aria-selected={markdownView === "edit"}
+									className={cn(
+										"relative min-w-0 flex-1 px-3 text-sm text-muted-foreground hover:text-foreground sm:flex-none",
+										markdownView === "edit" &&
+											"text-foreground after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:bg-foreground",
+									)}
+									onClick={() => handleMarkdownViewChange("edit")}
+								>
+									编辑
+								</button>
+							</div>
+						) : null}
+						<div className="order-2 flex shrink-0 items-center gap-1 sm:order-none">
 							{binaryFile?.data && !binaryFile.truncated ? (
 								<Button size="icon" variant="ghost" onClick={downloadBinary} aria-label="下载原文件">
 									<Download className="size-4" />
@@ -250,15 +305,44 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 								</Button>
 							</div>
 						) : textFile ? (
-							<MonacoFileEditor
-								ref={editorRef}
-								dark={dark}
-								editable={textEditable}
-								file={textFile}
-								modelKey={`${state.currentProjectId ?? "external"}:${textFile.path}`}
-								onSave={(content, expectedHash) => actions.saveFile(textFile.path, content, expectedHash)}
-								onStateChange={setEditorState}
-							/>
+							<>
+								{markdownFile && markdownView === "preview" ? (
+									<MessageResponse
+										id="markdown-preview-panel"
+										role="tabpanel"
+										aria-labelledby="markdown-preview-tab"
+										className="markdown-file-preview sd-prose !h-auto mx-auto min-h-full w-full max-w-4xl px-1 py-2 sm:px-4 sm:py-4"
+										mode="static"
+										parseIncompleteMarkdown
+										linkSafety={{ enabled: true }}
+										controls={{ code: { copy: true, download: true }, table: { copy: true, download: true } }}
+										onOpenPath={(path) => void actions.openResource(path)}
+										projectId={state.currentProjectId}
+									>
+										{markdownPreviewContent}
+									</MessageResponse>
+								) : null}
+								<div
+									id={markdownFile ? "markdown-edit-panel" : undefined}
+									role={markdownFile ? "tabpanel" : undefined}
+									aria-labelledby={markdownFile ? "markdown-edit-tab" : undefined}
+									className={cn(
+										"h-full min-h-0",
+										markdownFile && markdownView === "preview" && "hidden",
+									)}
+								>
+									<MonacoFileEditor
+										ref={editorRef}
+										dark={dark}
+										editable={textEditable}
+										file={textFile}
+										modelKey={`${state.currentProjectId ?? "external"}:${textFile.path}`}
+										onContentChange={markdownFile ? setMarkdownPreviewContent : undefined}
+										onSave={(content, expectedHash) => actions.saveFile(textFile.path, content, expectedHash)}
+										onStateChange={setEditorState}
+									/>
+								</div>
+							</>
 						) : state.fileContent ? (
 							<div className="space-y-3">
 								{state.fileContent.truncated ? (

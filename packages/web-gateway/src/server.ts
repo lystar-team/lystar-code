@@ -1,35 +1,43 @@
 import { createHash, randomUUID } from "node:crypto";
+import { type FSWatcher, watch } from "node:fs";
 import { readdir, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Duplex } from "node:stream";
-import type {
-	CompletionResult,
-	ContentChunk,
-	GitDiff,
-	GitStatus,
-	HostDirectoryListing,
-	JsonValue,
-	ModelProviderSummary,
-	ModelSummary,
-	OperationSnapshot,
-	ProjectFileSaveResult,
-	ProjectInstruction,
-	ProjectResource,
-	ProjectTrust,
-	ReadImageContentResult,
-	RuntimeProtocolClient,
-	ServerEvent,
-	SessionActivity,
-	SessionProgress,
-	SessionStateSnapshot,
-	SessionSummary,
-	SessionTreeNode,
-	SettingSummary,
-	TranscriptItem,
-	TranscriptPage,
+import {
+	type CompletionResult,
+	type ContentChunk,
+	type GitBranches,
+	type GitCommit,
+	type GitDiff,
+	type GitHistory,
+	type GitMutationResult,
+	type GitStats,
+	type GitStatus,
+	type HostDirectoryListing,
+	isGitMutation,
+	type JsonValue,
+	type ModelOptions,
+	type ModelProviderSummary,
+	type ModelSummary,
+	type OperationSnapshot,
+	type ProjectFileSaveResult,
+	type ProjectInstruction,
+	type ProjectResource,
+	type ProjectTrust,
+	type ReadImageContentResult,
+	type RuntimeProtocolClient,
+	type ServerEvent,
+	type SessionActivity,
+	type SessionProgress,
+	type SessionStateSnapshot,
+	type SessionSummary,
+	type SessionTreeNode,
+	type SettingSummary,
+	type TranscriptItem,
+	type TranscriptPage,
 } from "@lystar/code-web-protocol";
 import {
 	getRuntimeServiceStatus,
@@ -82,6 +90,7 @@ const BROWSER_CONTEXT_IDLE_MS = 60_000;
 const ACTIVE_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>(["accepted", "running", "waiting_for_input"]);
 const MAX_SESSION_DETAIL_EVENTS = 256;
 const MAX_SESSION_DETAIL_BYTES = 2 * 1024 * 1024;
+const PROJECT_WATCH_DEBOUNCE_MS = 150;
 const IMAGE_EXTENSIONS: Record<string, string> = {
 	"image/apng": ".apng",
 	"image/bmp": ".bmp",
@@ -113,6 +122,29 @@ interface SessionRef {
 	projectId: string;
 	cwd: string;
 }
+
+interface SessionDeleteFailure {
+	sessionId: string;
+	status: number;
+	code: string;
+	message: string;
+}
+
+interface SessionDeleteResult {
+	deletedIds: string[];
+	failures: SessionDeleteFailure[];
+}
+
+interface ProjectWatcher {
+	watcher: FSWatcher;
+	paths: Set<string>;
+	timer?: ReturnType<typeof setTimeout>;
+}
+
+type ModelSettingsResult = {
+	models: ModelSummary[];
+	providers: (ModelProviderSummary & { catalogProvider?: string })[];
+};
 
 type ContextLease = {
 	leaseId: string;
@@ -147,6 +179,8 @@ interface BrowserContext {
 	bootstrapGeneration: number;
 	bootstrapCache?: BootstrapCache;
 	bootstrapPromise?: Promise<BootstrapResponse>;
+	resumeGeneration?: number;
+	resumeSessionIds: Set<string>;
 	activeRequests: number;
 	idleTimer?: ReturnType<typeof setTimeout>;
 	reconnectTimer?: ReturnType<typeof setTimeout>;
@@ -342,6 +376,12 @@ function jsonValue(value: unknown): JsonValue {
 
 function contentHash(content: Uint8Array): string {
 	return createHash("sha256").update(content).digest("hex");
+}
+
+export function scopedRuntimeClientId(profile: string | undefined, browserClientId: string): string {
+	return createHash("sha256")
+		.update(`${profile ?? "default"}\0${browserClientId}`)
+		.digest("hex");
 }
 
 function statusOf(error: unknown): number {
@@ -606,7 +646,14 @@ export class WebGatewayServer {
 	private readonly heartbeatTimer: ReturnType<typeof setInterval>;
 	private readonly uploadCleanupTimer: ReturnType<typeof setInterval>;
 	private readonly uploadedFiles = new Map<string, { mimeType: string; expiresAt: number }>();
+	private readonly projectWatchers = new Map<string, ProjectWatcher>();
 	private readonly productUpdate: ProductUpdateController;
+	private modelCatalogRevision = 1;
+	private readonly modelOptionsCache = new Map<string, { revision: number; value: ModelOptions }>();
+	private readonly modelOptionsPromises = new Map<string, Promise<ModelOptions>>();
+	private modelSettingsCache?: { revision: number; value: ModelSettingsResult };
+	private modelSettingsPromise?: Promise<ModelSettingsResult>;
+	private lastRuntimeModelCatalogEvent?: string;
 	private readonly socketLiveness = new WeakMap<WebSocket, boolean>();
 	private readonly detailSubscriptions = new WeakMap<WebSocket, Set<string>>();
 	private previousCpuSnapshot?: CpuSnapshot;
@@ -661,6 +708,11 @@ export class WebGatewayServer {
 		}, 1_000);
 		try {
 			await this.cleanupUploadedFiles(true);
+			for (const state of this.projectWatchers.values()) {
+				if (state.timer) clearTimeout(state.timer);
+				state.watcher.close();
+			}
+			this.projectWatchers.clear();
 			for (const context of this.contexts.values()) {
 				if (context.idleTimer) clearTimeout(context.idleTimer);
 				if (context.reconnectTimer) clearTimeout(context.reconnectTimer);
@@ -710,6 +762,7 @@ export class WebGatewayServer {
 			sessionDetailState: new Map(),
 			sessionListGeneration: 0,
 			bootstrapGeneration: 0,
+			resumeSessionIds: new Set(),
 			activeRequests: 0,
 			pendingProgress: [],
 			reconnectAttempt: 0,
@@ -819,12 +872,113 @@ export class WebGatewayServer {
 		}
 	}
 
+	private invalidateModelCatalog(): void {
+		this.modelCatalogRevision += 1;
+		this.modelOptionsCache.clear();
+		this.modelOptionsPromises.clear();
+		this.modelSettingsCache = undefined;
+		this.modelSettingsPromise = undefined;
+		for (const context of this.contexts.values()) {
+			if (context.sockets.size > 0) {
+				this.broadcast(context, { type: "model_catalog_changed", revision: this.modelCatalogRevision });
+			}
+		}
+	}
+
+	private async modelOptions(context: BrowserContext, includeProviders: readonly string[]): Promise<ModelOptions> {
+		const normalizedProviders = [...new Set(includeProviders)].sort();
+		const key = normalizedProviders.join("\0");
+		const cached = this.modelOptionsCache.get(key);
+		if (cached?.revision === this.modelCatalogRevision) return cached.value;
+		const pending = this.modelOptionsPromises.get(key);
+		if (pending) return pending;
+		const revision = this.modelCatalogRevision;
+		const promise = this.getClient(context).then((client) =>
+			client.request<ModelOptions>({
+				command: "list_model_options",
+				...(normalizedProviders.length > 0 ? { includeProviders: normalizedProviders } : {}),
+			}),
+		);
+		this.modelOptionsPromises.set(key, promise);
+		try {
+			const value = await promise;
+			if (revision !== this.modelCatalogRevision) {
+				if (this.modelOptionsPromises.get(key) === promise) this.modelOptionsPromises.delete(key);
+				return this.modelOptions(context, normalizedProviders);
+			}
+			this.modelOptionsCache.set(key, { revision, value });
+			return value;
+		} finally {
+			if (this.modelOptionsPromises.get(key) === promise) this.modelOptionsPromises.delete(key);
+		}
+	}
+
+	private async modelSettings(context: BrowserContext): Promise<ModelSettingsResult> {
+		if (this.modelSettingsCache?.revision === this.modelCatalogRevision) return this.modelSettingsCache.value;
+		if (this.modelSettingsPromise) return this.modelSettingsPromise;
+		const revision = this.modelCatalogRevision;
+		const promise = this.getClient(context).then(async (client) => {
+			const [models, providers] = await Promise.all([
+				client.request<ModelSummary[]>({ command: "list_models" }),
+				client.request<ModelProviderSummary[]>({ command: "list_model_providers" }),
+			]);
+			return { models, providers };
+		});
+		this.modelSettingsPromise = promise;
+		try {
+			const value = await promise;
+			if (revision !== this.modelCatalogRevision) {
+				if (this.modelSettingsPromise === promise) this.modelSettingsPromise = undefined;
+				return this.modelSettings(context);
+			}
+			this.modelSettingsCache = { revision, value };
+			return value;
+		} finally {
+			if (this.modelSettingsPromise === promise) this.modelSettingsPromise = undefined;
+		}
+	}
+
+	private ensureProjectWatcher(project: WebProject): void {
+		if (this.projectWatchers.has(project.id)) return;
+		const onChange = (_eventType: string, filename: string | Buffer | null) => {
+			const state = this.projectWatchers.get(project.id);
+			if (!state) return;
+			const path = filename ? String(filename).split(sep).join("/") : "";
+			if (path === ".git/objects" || path.startsWith(".git/objects/")) return;
+			state.paths.add(path);
+			if (state.timer) clearTimeout(state.timer);
+			state.timer = setTimeout(() => {
+				state.timer = undefined;
+				const paths = [...state.paths];
+				state.paths.clear();
+				for (const context of this.contexts.values()) {
+					if (context.sockets.size > 0)
+						this.broadcast(context, { type: "project_files_changed", projectId: project.id, paths });
+				}
+			}, PROJECT_WATCH_DEBOUNCE_MS);
+			state.timer.unref?.();
+		};
+		let watcher: FSWatcher;
+		try {
+			watcher = watch(project.cwd, { persistent: false, recursive: true }, onChange);
+		} catch {
+			watcher = watch(project.cwd, { persistent: false }, onChange);
+		}
+		const state: ProjectWatcher = { watcher, paths: new Set() };
+		watcher.on("error", () => {
+			if (state.timer) clearTimeout(state.timer);
+			watcher.close();
+			if (this.projectWatchers.get(project.id) === state) this.projectWatchers.delete(project.id);
+		});
+		this.projectWatchers.set(project.id, state);
+	}
+
 	private contextFor(request: IncomingMessage, response?: ServerResponse, url?: URL): BrowserContext {
 		const header = request.headers["x-lystar-client-id"];
 		const headerValue = Array.isArray(header) ? header[0] : header;
 		const queryValue = url?.searchParams.get("clientId") ?? undefined;
 		const cookieClientId = cookieValue(request.headers.cookie, "lystar_web_client");
-		const id = isValidClientId(headerValue)
+		const browserClientId = isValidClientId(headerValue)
 			? headerValue
 			: isValidClientId(queryValue)
 				? queryValue
@@ -837,8 +991,9 @@ export class WebGatewayServer {
 			!isValidClientId(queryValue) &&
 			!isValidClientId(cookieClientId)
 		) {
-			response.setHeader("Set-Cookie", `lystar_web_client=${id}; Path=/; SameSite=Lax; HttpOnly`);
+			response.setHeader("Set-Cookie", `lystar_web_client=${browserClientId}; Path=/; SameSite=Lax; HttpOnly`);
 		}
+		const id = scopedRuntimeClientId(this.config.serviceProfile, browserClientId);
 		let context = this.contexts.get(id);
 		if (!context) {
 			context = this.createContext(id);
@@ -898,6 +1053,7 @@ export class WebGatewayServer {
 				if (context.client !== result.client) throw new Error("Web Runtime 在恢复会话控制权时断开");
 				context.connectionState = "connected";
 				context.reconnectAttempt = 0;
+				if (wasDisconnected) this.invalidateModelCatalog();
 				if (wasDisconnected && context.sockets.size > 0) {
 					this.broadcast(context, { type: "connection_state", connected: true, message: "Web Runtime 已恢复" });
 					void this.pushBootstrap(context);
@@ -945,8 +1101,12 @@ export class WebGatewayServer {
 	}
 
 	private async restoreContextLeases(context: BrowserContext, client: RuntimeProtocolClient): Promise<void> {
+		const subscribedSessionIds = new Set<string>();
+		for (const socket of context.sockets) {
+			for (const sessionId of this.subscriptionsFor(socket)) subscribedSessionIds.add(sessionId);
+		}
 		const previousLeases = [...context.leases.entries()];
-		for (const [sessionId, previous] of previousLeases) {
+		const restoreLease = async ([sessionId, previous]: [string, ContextLease]): Promise<void> => {
 			try {
 				const result = await client.request<{
 					lease: ContextLease;
@@ -955,11 +1115,22 @@ export class WebGatewayServer {
 					sessionPath: previous.sessionPath,
 					clientInstanceId: context.id,
 				});
+				if (context.client !== client) {
+					context.leases.delete(sessionId);
+					return;
+				}
 				context.leases.set(sessionId, result.lease);
+				const payload = JSON.stringify({ type: "session_lease", sessionId, lease: publicLease(result.lease) });
+				for (const socket of context.sockets) {
+					if (this.subscriptionsFor(socket).has(sessionId)) this.sendWebSocket(socket, payload);
+				}
 			} catch {
 				context.leases.delete(sessionId);
 			}
-		}
+		};
+		context.leases.clear();
+		await Promise.all(previousLeases.filter(([sessionId]) => subscribedSessionIds.has(sessionId)).map(restoreLease));
+		await Promise.all(previousLeases.filter(([sessionId]) => !subscribedSessionIds.has(sessionId)).map(restoreLease));
 	}
 
 	private async buildBootstrap(context: BrowserContext): Promise<BootstrapResponse> {
@@ -1081,7 +1252,23 @@ export class WebGatewayServer {
 	private async resolveSession(context: BrowserContext, sessionId: string): Promise<SessionRef> {
 		const cached = this.sessions.get(sessionId);
 		if (cached) return cached;
-		for (const project of this.registry.list()) {
+		const projects = this.registry.list();
+		for (const project of projects) {
+			const recent = project.recentSessions?.find(
+				(session) => session.id === sessionId && session.cwd === project.cwd,
+			);
+			if (!recent) continue;
+			try {
+				if (!(await stat(recent.path)).isFile()) continue;
+			} catch {
+				continue;
+			}
+			const resolved = { id: recent.id, path: recent.path, projectId: project.id, cwd: recent.cwd };
+			this.sessions.set(sessionId, resolved);
+			this.sessionIdsByPath.set(recent.path, sessionId);
+			return resolved;
+		}
+		for (const project of projects) {
 			const sessions = await this.listProjectSessions(context, project);
 			const session = sessions.find((candidate) => candidate.id === sessionId);
 			if (session) return this.sessions.get(session.id)!;
@@ -1144,6 +1331,66 @@ export class WebGatewayServer {
 			home: "",
 			entries: visibleEntries,
 		};
+	}
+
+	private async deleteSessions(context: BrowserContext, sessionIds: string[]): Promise<SessionDeleteResult> {
+		const client = await this.getClient(context);
+		const resolved = await Promise.all(
+			sessionIds.map(async (sessionId) => {
+				try {
+					return { sessionId, session: await this.resolveSession(context, sessionId) };
+				} catch (error) {
+					const value = toError(error);
+					return {
+						sessionId,
+						failure: { sessionId, status: value.status, code: value.code, message: value.message },
+					};
+				}
+			}),
+		);
+		const items = resolved.flatMap((entry) =>
+			entry.session ? [{ cwd: entry.session.cwd, sessionPath: entry.session.path }] : [],
+		);
+		const runtimeResult =
+			items.length > 0
+				? await client.request<{
+						deletedPaths: string[];
+						failures: Array<{ sessionPath: string; code: string; message: string; retryable?: boolean }>;
+					}>({
+						command: "delete_sessions",
+						items,
+						clientInstanceId: context.id,
+						clientRequestId: randomUUID(),
+					})
+				: { deletedPaths: [], failures: [] };
+		const sessionIdByPath = new Map(
+			resolved.flatMap((entry) => (entry.session ? [[entry.session.path, entry.sessionId] as const] : [])),
+		);
+		const deletedIds = runtimeResult.deletedPaths.flatMap((path) => {
+			const sessionId = sessionIdByPath.get(path);
+			if (!sessionId) return [];
+			context.leases.delete(sessionId);
+			this.sessions.delete(sessionId);
+			if (this.sessionIdsByPath.get(path) === sessionId) this.sessionIdsByPath.delete(path);
+			return [sessionId];
+		});
+		const failures: SessionDeleteFailure[] = [
+			...resolved.flatMap((entry) => (entry.failure ? [entry.failure] : [])),
+			...runtimeResult.failures.flatMap((failure) => {
+				const sessionId = sessionIdByPath.get(failure.sessionPath);
+				if (!sessionId) return [];
+				return [
+					{
+						sessionId,
+						status: failure.code === "not_found" ? 404 : failure.retryable ? 409 : 500,
+						code: failure.code,
+						message: failure.message,
+					},
+				];
+			}),
+		];
+		if (deletedIds.length > 0) this.invalidateBootstrap(context);
+		return { deletedIds, failures };
 	}
 
 	private async requireLease(
@@ -1454,6 +1701,15 @@ export class WebGatewayServer {
 			await this.handleOperations(request, response, url, context, parts);
 			return;
 		}
+		if (parts[1] === "model-options" && request.method === "GET") {
+			const includeProviders = url.searchParams
+				.getAll("includeProvider")
+				.map((provider) => provider.trim())
+				.filter(Boolean);
+			const options = await this.modelOptions(context, includeProviders);
+			sendJson(response, 200, { revision: this.modelCatalogRevision, ...options });
+			return;
+		}
 		if (parts[1] === "model-providers") {
 			const client = await this.getClient(context);
 			if (parts.length === 2 && request.method === "POST") {
@@ -1528,12 +1784,8 @@ export class WebGatewayServer {
 			throw new HttpError(404, "model_provider_not_found", "未找到模型 Provider 接口");
 		}
 		if (parts[1] === "models" && request.method === "GET") {
-			const client = await this.getClient(context);
-			const [models, providers] = await Promise.all([
-				client.request<ModelSummary[]>({ command: "list_models" }),
-				client.request<ModelProviderSummary[]>({ command: "list_model_providers" }),
-			]);
-			sendJson(response, 200, { models, providers });
+			const settings = await this.modelSettings(context);
+			sendJson(response, 200, { revision: this.modelCatalogRevision, ...settings });
 			return;
 		}
 		if (parts[1] === "about" && request.method === "GET") {
@@ -1544,6 +1796,9 @@ export class WebGatewayServer {
 			const body = await parseJsonBody(request);
 			const action = stringValue(body.action);
 			if (action === "restart-runtime") {
+				if (!this.config.manageRuntime) {
+					throw new HttpError(409, "runtime_not_managed", "当前 Gateway 不管理 Runtime 生命周期");
+				}
 				const profile = this.config.serviceProfile;
 				const currentStatus = await getRuntimeServiceStatus(
 					this.config.runtimeEndpoint,
@@ -1614,6 +1869,15 @@ export class WebGatewayServer {
 			const group = await this.projectGroups.create(stringValue(body.name) ?? "");
 			this.invalidateAllBootstraps();
 			sendJson(response, 201, { group, groups: this.projectGroups.list() });
+			return;
+		}
+		if (parts.length === 2 && request.method === "PATCH") {
+			const body = await parseJsonBody(request);
+			if (!Array.isArray(body.groupIds) || body.groupIds.some((id) => typeof id !== "string"))
+				throw new HttpError(400, "project_group_order_invalid", "项目组顺序数据无效");
+			await this.projectGroups.reorder(body.groupIds);
+			this.invalidateAllBootstraps();
+			sendJson(response, 200, { groups: this.projectGroups.list() });
 			return;
 		}
 		if (parts.length !== 3) throw new HttpError(404, "project_group_not_found", "未找到项目组接口");
@@ -1699,6 +1963,10 @@ export class WebGatewayServer {
 			return;
 		}
 		if (parts.length === 3 && request.method === "DELETE") {
+			const watcher = this.projectWatchers.get(projectId);
+			if (watcher?.timer) clearTimeout(watcher.timer);
+			watcher?.watcher.close();
+			this.projectWatchers.delete(projectId);
 			await this.registry.remove(projectId);
 			await this.projectGroups.assignProject(projectId);
 			this.invalidateAllBootstraps();
@@ -1767,6 +2035,7 @@ export class WebGatewayServer {
 			return;
 		}
 		if (parts.length >= 4 && parts[3] === "tree" && request.method === "GET") {
+			this.ensureProjectWatcher(project);
 			sendJson(response, 200, await this.projectTree(project, url.searchParams.get("path") ?? undefined));
 			return;
 		}
@@ -1880,10 +2149,15 @@ export class WebGatewayServer {
 			throw new HttpError(405, "method_not_allowed", "文件接口不支持当前方法");
 		}
 		if (parts.length === 5 && parts[3] === "git" && parts[4] === "status" && request.method === "GET") {
+			this.ensureProjectWatcher(project);
 			sendJson(
 				response,
 				200,
-				await (await this.getClient(context)).request<GitStatus>({ command: "get_git_status", cwd: project.cwd }),
+				await (await this.getClient(context)).request<GitStatus>({
+					command: "get_git_status",
+					cwd: project.cwd,
+					...(url.searchParams.get("discover") === "true" ? { refreshRepositories: true } : {}),
+				}),
 			);
 			return;
 		}
@@ -1899,6 +2173,95 @@ export class WebGatewayServer {
 					...(url.searchParams.get("path") ? { path: url.searchParams.get("path")! } : {}),
 					...(repositoryPath ? { repositoryPath } : {}),
 					staged: url.searchParams.get("staged") === "true",
+				}),
+			);
+			return;
+		}
+		if (parts.length === 5 && parts[3] === "git" && parts[4] === "stats" && request.method === "GET") {
+			const repositoryPath = url.searchParams.get("repositoryPath")?.trim();
+			if (repositoryPath) this.projectPath(project, repositoryPath);
+			sendJson(
+				response,
+				200,
+				await (await this.getClient(context)).request<GitStats>({
+					command: "get_git_stats",
+					cwd: project.cwd,
+					...(repositoryPath ? { repositoryPath } : {}),
+				}),
+			);
+			return;
+		}
+		if (parts.length === 5 && parts[3] === "git" && parts[4] === "branches" && request.method === "GET") {
+			const repositoryPath = url.searchParams.get("repositoryPath")?.trim();
+			if (repositoryPath) this.projectPath(project, repositoryPath);
+			sendJson(
+				response,
+				200,
+				await (await this.getClient(context)).request<GitBranches>({
+					command: "get_git_branches",
+					cwd: project.cwd,
+					...(repositoryPath ? { repositoryPath } : {}),
+				}),
+			);
+			return;
+		}
+		if (parts.length === 5 && parts[3] === "git" && parts[4] === "history" && request.method === "GET") {
+			const repositoryPath = url.searchParams.get("repositoryPath")?.trim();
+			if (repositoryPath) this.projectPath(project, repositoryPath);
+			const offset = Number(url.searchParams.get("offset") ?? "0");
+			const limit = Number(url.searchParams.get("limit") ?? "50");
+			if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+				throw new HttpError(400, "git_history_page_invalid", "Git 历史分页参数无效");
+			}
+			sendJson(
+				response,
+				200,
+				await (await this.getClient(context)).request<GitHistory>({
+					command: "get_git_history",
+					cwd: project.cwd,
+					...(repositoryPath ? { repositoryPath } : {}),
+					offset,
+					limit,
+				}),
+			);
+			return;
+		}
+		if (parts.length === 5 && parts[3] === "git" && parts[4] === "commit" && request.method === "GET") {
+			const repositoryPath = url.searchParams.get("repositoryPath")?.trim();
+			if (repositoryPath) this.projectPath(project, repositoryPath);
+			const revision = url.searchParams.get("revision")?.trim();
+			if (!revision) throw new HttpError(400, "git_revision_required", "Git 提交版本不能为空");
+			const path = url.searchParams.get("path")?.trim();
+			sendJson(
+				response,
+				200,
+				await (await this.getClient(context)).request<GitCommit>({
+					command: "get_git_commit",
+					cwd: project.cwd,
+					...(repositoryPath ? { repositoryPath } : {}),
+					revision,
+					...(path ? { path } : {}),
+				}),
+			);
+			return;
+		}
+		if (parts.length === 5 && parts[3] === "git" && parts[4] === "mutate" && request.method === "POST") {
+			const body = await parseJsonBody(request);
+			const repositoryPath = stringValue(body.repositoryPath);
+			if (repositoryPath) this.projectPath(project, repositoryPath);
+			if (!isGitMutation(body.mutation)) {
+				throw new HttpError(400, "git_mutation_invalid", "Git 操作参数无效");
+			}
+			sendJson(
+				response,
+				200,
+				await (await this.getClient(context)).request<GitMutationResult>({
+					command: "mutate_git",
+					cwd: project.cwd,
+					...(repositoryPath ? { repositoryPath } : {}),
+					mutation: body.mutation,
+					clientInstanceId: context.id,
+					clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
 				}),
 			);
 			return;
@@ -1999,6 +2362,21 @@ export class WebGatewayServer {
 			sendJson(response, 201, { session: publicSessionSnapshot(result.snapshot), lease: publicLease(result.lease) });
 			return;
 		}
+		if (parts.length === 2 && request.method === "DELETE") {
+			const body = await parseJsonBody(request);
+			const sessionIds = Array.isArray(body.sessionIds)
+				? [...new Set(body.sessionIds.filter((value): value is string => Boolean(stringValue(value))))]
+				: [];
+			if (sessionIds.length === 0) {
+				throw new HttpError(400, "session_ids_required", "至少选择一个会话");
+			}
+			const result = await this.deleteSessions(context, sessionIds);
+			sendJson(response, 200, {
+				deletedIds: result.deletedIds,
+				failures: result.failures.map(({ sessionId, code, message }) => ({ sessionId, code, message })),
+			});
+			return;
+		}
 		if (parts.length < 3) throw new HttpError(404, "session_not_found", "未找到会话");
 		const sessionId = parts[2];
 		const session = await this.resolveSession(context, sessionId);
@@ -2012,17 +2390,9 @@ export class WebGatewayServer {
 			return;
 		}
 		if (parts.length === 3 && request.method === "DELETE") {
-			await client.request({
-				command: "delete_session",
-				cwd: session.cwd,
-				sessionPath: session.path,
-				clientInstanceId: context.id,
-				clientRequestId: randomUUID(),
-			});
-			context.leases.delete(sessionId);
-			this.sessions.delete(sessionId);
-			if (this.sessionIdsByPath.get(session.path) === sessionId) this.sessionIdsByPath.delete(session.path);
-			this.invalidateBootstrap(context);
+			const result = await this.deleteSessions(context, [sessionId]);
+			const failure = result.failures[0];
+			if (failure) throw new HttpError(failure.status, failure.code, failure.message);
 			sendJson(response, 200, { removed: true });
 			return;
 		}
@@ -2580,7 +2950,7 @@ export class WebGatewayServer {
 			host: !process.env.PI_WEB_HOST?.trim(),
 			allowedHosts: !process.env.PI_WEB_ALLOWED_HOSTS?.trim(),
 			port: !process.env.PI_WEB_PORT?.trim(),
-			runtimePort: !process.env.PI_WEB_RUNTIME_PORT?.trim(),
+			runtimePort: this.config.manageRuntime && !process.env.PI_WEB_RUNTIME_PORT?.trim(),
 			password: !process.env.PI_WEB_TOKEN?.trim(),
 		};
 	}
@@ -2591,7 +2961,9 @@ export class WebGatewayServer {
 			host: persisted?.host ?? this.config.host,
 			allowedHosts: persisted?.allowedHosts ?? this.config.allowedHosts,
 			port: persisted?.port ?? this.config.port,
-			runtimePort: persisted?.runtimePort ?? this.config.runtimePort ?? DEFAULT_RUNTIME_PORT,
+			runtimePort: this.config.manageRuntime
+				? (persisted?.runtimePort ?? this.config.runtimePort ?? DEFAULT_RUNTIME_PORT)
+				: (this.config.runtimePort ?? DEFAULT_RUNTIME_PORT),
 			passwordConfigured: Boolean(persisted?.password ?? this.config.token),
 			editable: this.gatewaySecuritySettingsEditable(),
 		};
@@ -2613,7 +2985,9 @@ export class WebGatewayServer {
 			host: persisted?.host ?? this.config.host,
 			allowedHosts: persisted?.allowedHosts ?? this.config.allowedHosts,
 			port: persisted?.port ?? this.config.port,
-			runtimePort: persisted?.runtimePort ?? this.config.runtimePort ?? DEFAULT_RUNTIME_PORT,
+			runtimePort: this.config.manageRuntime
+				? (persisted?.runtimePort ?? this.config.runtimePort ?? DEFAULT_RUNTIME_PORT)
+				: (this.config.runtimePort ?? DEFAULT_RUNTIME_PORT),
 			password: persisted?.password ?? this.config.token,
 		};
 		const editable = this.gatewaySecuritySettingsEditable();
@@ -2835,11 +3209,24 @@ export class WebGatewayServer {
 	}
 
 	private handleHostEvent(context: BrowserContext, event: ServerEvent): void {
-		if (context.sockets.size === 0) {
-			if (event.type !== "session_progress") {
-				this.invalidateBootstrap(context);
-				this.projectEvent(event);
+		if (event.type === "model_catalog_changed") {
+			const hello = context.client?.getSnapshot().hello;
+			const eventKey = `${hello?.serverInstanceId ?? "runtime"}:${event.revision}`;
+			if (this.lastRuntimeModelCatalogEvent !== eventKey) {
+				this.lastRuntimeModelCatalogEvent = eventKey;
+				this.invalidateModelCatalog();
 			}
+			return;
+		}
+		if (context.sockets.size === 0) {
+			const projected = this.projectEvent(event);
+			if (projected?.type === "session_progress") {
+				const sessionId = stringValue(projected.sessionId);
+				if (sessionId && context.resumeSessionIds.has(sessionId))
+					this.broadcastSessionProgress(context, projected as WebSessionProgressEvent);
+				return;
+			}
+			this.invalidateBootstrap(context);
 			return;
 		}
 		if (event.type !== "session_progress") this.invalidateBootstrap(context);
@@ -2868,6 +3255,7 @@ export class WebGatewayServer {
 		if (projected.type === "session_removed") {
 			const sessionId = typeof projected.sessionId === "string" ? projected.sessionId : undefined;
 			if (sessionId) {
+				context.leases.delete(sessionId);
 				context.sessionSummaryState.delete(sessionId);
 				context.sessionSnapshotState.delete(sessionId);
 				context.sessionDetailState.delete(sessionId);
@@ -3020,6 +3408,10 @@ export class WebGatewayServer {
 
 	private subscribeSession(context: BrowserContext, socket: WebSocket, sessionId: string, lastSeq?: number): void {
 		this.subscriptionsFor(socket).add(sessionId);
+		const lease = context.leases.get(sessionId);
+		if (lease) {
+			this.sendWebSocket(socket, JSON.stringify({ type: "session_lease", sessionId, lease: publicLease(lease) }));
+		}
 		const state = context.sessionDetailState.get(sessionId);
 		const currentSeq = state?.nextSeq ?? 0;
 		if (lastSeq !== undefined) {
@@ -3161,6 +3553,8 @@ export class WebGatewayServer {
 			undefined,
 			new URL(request.url ?? "/ws", `http://${request.headers.host ?? "localhost"}`),
 		);
+		const resumeGeneration = context.sockets.size === 0 ? context.resumeGeneration : undefined;
+		context.resumeGeneration = undefined;
 		context.sockets.add(socket);
 		this.touchContext(context);
 		this.socketLiveness.set(socket, true);
@@ -3185,15 +3579,40 @@ export class WebGatewayServer {
 		socket.on("pong", () => {
 			this.socketLiveness.set(socket, true);
 		});
+		let removed = false;
 		const removeSocket = () => {
+			if (removed) return;
+			removed = true;
 			context.sockets.delete(socket);
-			if (context.sockets.size === 0) this.clearPendingProgress(context);
+			if (context.sockets.size === 0) {
+				this.flushPendingProgress(context);
+				context.resumeGeneration = context.bootstrapGeneration;
+				context.resumeSessionIds = new Set(subscriptions);
+			}
 			this.scheduleContextCleanup(context);
 		};
 		socket.on("close", removeSocket);
 		socket.on("error", removeSocket);
 		try {
-			this.invalidateBootstrap(context);
+			const cached = context.bootstrapCache;
+			if (
+				cached &&
+				context.connectionState !== "disconnected" &&
+				(cached.generation === context.bootstrapGeneration || resumeGeneration === context.bootstrapGeneration)
+			) {
+				this.sendWebSocket(
+					socket,
+					JSON.stringify({ type: "connection_state", connected: cached.value.connection.connected, message: "" }),
+				);
+				return;
+			}
+			const runtimeRecovery = context.connectionState === "disconnected";
+			if (!context.client?.getSnapshot().connected) {
+				await this.getClient(context);
+				if (runtimeRecovery) return;
+			}
+			if (socket.readyState !== WebSocket.OPEN) return;
+			this.sendWebSocket(socket, JSON.stringify({ type: "connection_state", connected: true, message: "" }));
 			const bootstrap = await this.buildBootstrap(context);
 			this.sendWebSocket(socket, JSON.stringify({ type: "bootstrap", data: bootstrap }));
 		} catch (error) {

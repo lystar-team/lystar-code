@@ -55,7 +55,7 @@ export function CommandDialog({ request, state, actions, onClose }: {
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState("");
 	const [trust, setTrust] = useState<WorkbenchState["projectTrust"]>();
-	const model = state.models.find((item) => item.provider === state.session?.model?.provider && item.id === state.session?.model?.id);
+	const model = state.modelOptions.find((item) => item.provider === state.session?.model?.provider && item.id === state.session?.model?.id);
 	const levels = visibleThinkingLevels(model?.supportedThinkingLevels.length ? model.supportedThinkingLevels : ["off"]);
 	const selectedThinkingLevel = selectedVisibleThinkingLevel(state.session?.thinkingLevel ?? "off", levels);
 	const project = state.projects.find((item) => item.id === state.currentProjectId);

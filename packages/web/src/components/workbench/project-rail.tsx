@@ -1,3 +1,4 @@
+import { gsap } from "gsap";
 import {
 	Archive,
 	ArrowRight,
@@ -19,13 +20,14 @@ import {
 	Trash2,
 } from "lucide-react";
 import type { DragEvent as ReactDragEvent } from "react";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { cn } from "../../lib/utils";
 import { sessionTitle, type WorkbenchState } from "../../state/use-workbench";
 import type { ProjectGroup, WebProject, WebSessionSummary } from "../../types";
 import { BrandLogo } from "../brand-logo";
 import { Button } from "../ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
+import { Collapsible, CollapsibleTrigger } from "../ui/collapsible";
+import { GsapCollapsibleContent } from "../ui/gsap-collapsible-content";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
 import {
 	ContextMenu,
@@ -48,6 +50,7 @@ import { Separator } from "../ui/separator";
 import { ProjectGroupDialog, ProjectGroupPickerDialog, ProjectGroupProjectPickerDialog } from "./project-group-dialog";
 import { ProductUpdateControl } from "./product-update-control";
 import { type DropPosition, hasUnreadProjectSessions, hasUnreadSessions, reorderIds } from "./project-rail-utils";
+import { SessionRenameDialog } from "./dialogs";
 import { SessionButton } from "./session-button";
 import { SessionManagementDialog } from "./session-management-dialog";
 import type { WorkbenchActions } from "./types";
@@ -59,6 +62,7 @@ type ProjectDropTarget =
 	| { kind: "project"; projectId: string; position: DropPosition }
 	| { kind: "group"; groupId: string }
 	| { kind: "ungrouped" };
+type GroupDropTarget = { groupId: string; position: DropPosition };
 type SessionDrag = { projectId: string; sessionId: string };
 type SessionDropTarget = { projectId: string; sessionId: string; position: DropPosition };
 
@@ -106,6 +110,27 @@ function orderedSessions(project: WebProject): WebSessionSummary[] {
 	];
 }
 
+function ProjectRailChevron({ className, open }: { className?: string; open: boolean }) {
+	const iconRef = useRef<SVGSVGElement>(null);
+	const initializedRef = useRef(false);
+
+	useLayoutEffect(() => {
+		const icon = iconRef.current;
+		if (!icon) return;
+		const rotation = open ? 0 : -90;
+		gsap.killTweensOf(icon);
+		if (!initializedRef.current || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+			initializedRef.current = true;
+			gsap.set(icon, { rotation });
+			return;
+		}
+		gsap.to(icon, { duration: 0.18, ease: "power2.out", overwrite: "auto", rotation });
+		return () => gsap.killTweensOf(icon);
+	}, [open]);
+
+	return <ChevronDown aria-hidden="true" className={className} ref={iconRef} />;
+}
+
 export const ProjectRail = memo(function ProjectRail({
 	state,
 	actions,
@@ -117,6 +142,7 @@ export const ProjectRail = memo(function ProjectRail({
 }: ProjectRailProps) {
 	const [query, setQuery] = useState("");
 	const [showArchived, setShowArchived] = useState(false);
+	const [ungroupedOpen, setUngroupedOpen] = useState(true);
 	const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(() => new Set());
 	const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(() => new Set());
 	const [sessionVisibleCounts, setSessionVisibleCounts] = useState<Record<string, number>>({});
@@ -124,6 +150,8 @@ export const ProjectRail = memo(function ProjectRail({
 	const [openGroupMenuId, setOpenGroupMenuId] = useState<string | null>(null);
 	const [projectDropTarget, setProjectDropTarget] = useState<ProjectDropTarget>();
 	const [draggedProjectId, setDraggedProjectId] = useState<string>();
+	const [draggedGroupId, setDraggedGroupId] = useState<string>();
+	const [groupDropTarget, setGroupDropTarget] = useState<GroupDropTarget>();
 	const [draggedSession, setDraggedSession] = useState<SessionDrag>();
 	const [sessionDropTarget, setSessionDropTarget] = useState<SessionDropTarget>();
 	const [editingGroup, setEditingGroup] = useState<ProjectGroup>();
@@ -131,6 +159,7 @@ export const ProjectRail = memo(function ProjectRail({
 	const [movingProject, setMovingProject] = useState<WebProject>();
 	const [addingProjectToGroup, setAddingProjectToGroup] = useState<ProjectGroup>();
 	const [sessionManagementProject, setSessionManagementProject] = useState<WebProject>();
+	const [sessionRenameTarget, setSessionRenameTarget] = useState<WebSessionSummary>();
 	const [pendingDeleteSession, setPendingDeleteSession] = useState<{ id: string; title: string }>();
 	const [deletingSessionId, setDeletingSessionId] = useState<string>();
 	const [projectNameDrafts, setProjectNameDrafts] = useState<Record<string, string>>({});
@@ -266,6 +295,46 @@ export const ProjectRail = memo(function ProjectRail({
 		return next;
 	};
 
+	const resetGroupDrag = () => {
+		setDraggedGroupId(undefined);
+		setGroupDropTarget(undefined);
+	};
+
+	const handleGroupHeaderDragStart = (event: ReactDragEvent<HTMLElement>, groupId: string) => {
+		if (normalizedQuery) return;
+		event.dataTransfer.effectAllowed = "move";
+		event.dataTransfer.setData("text/plain", `project-group:${groupId}`);
+		setDraggedGroupId(groupId);
+	};
+
+	const handleGroupHeaderDragOver = (event: ReactDragEvent<HTMLElement>, groupId: string) => {
+		if (!draggedGroupId || draggedGroupId === groupId || normalizedQuery) return;
+		event.preventDefault();
+		event.stopPropagation();
+		event.dataTransfer.dropEffect = "move";
+		setGroupDropTarget({ groupId, position: dropPosition(event) });
+	};
+
+	const handleGroupHeaderDrop = (event: ReactDragEvent<HTMLElement>, groupId: string) => {
+		const transfer = event.dataTransfer.getData("text/plain");
+		const sourceGroupId =
+			draggedGroupId ?? (transfer.startsWith("project-group:") ? transfer.slice("project-group:".length) : undefined);
+		if (!sourceGroupId) return;
+		event.preventDefault();
+		event.stopPropagation();
+		if (sourceGroupId !== groupId) {
+			void actions.reorderProjectGroups(
+				reorderIds(
+					state.projectGroups.map((candidate) => candidate.id),
+					sourceGroupId,
+					groupId,
+					dropPosition(event),
+				),
+			);
+		}
+		resetGroupDrag();
+	};
+
 	const handleGroupDragOver = (event: ReactDragEvent<HTMLElement>, groupId: string) => {
 		if (!draggedProjectId || normalizedQuery) return;
 		event.preventDefault();
@@ -391,7 +460,6 @@ export const ProjectRail = memo(function ProjectRail({
 		const visibleSessionCount = sessionVisibleCounts[project.id] ?? SESSION_PAGE_SIZE;
 		const visibleSessions = sessions.slice(0, visibleSessionCount);
 		const hasMoreSessions = visibleSessions.length < sessions.length;
-		const projectDrop = projectDropTarget?.kind === "project" && projectDropTarget.projectId === project.id;
 
 		return (
 			<ContextMenu key={project.id}>
@@ -417,13 +485,12 @@ export const ProjectRail = memo(function ProjectRail({
 							<li
 								className={cn(
 									"list-none relative rounded-md",
-									projectDrop && "ring-1 ring-primary/50",
 									projectDropTarget?.kind === "project" &&
 										projectDropTarget.position === "before" &&
-										"before:absolute before:-top-1 before:right-0 before:left-0 before:h-0.5 before:bg-primary",
+										"before:absolute before:-top-1 before:right-0 before:left-0 before:h-0.5 before:bg-border",
 									projectDropTarget?.kind === "project" &&
 										projectDropTarget.position === "after" &&
-										"after:absolute after:-bottom-1 after:right-0 after:left-0 after:h-0.5 after:bg-primary",
+										"after:absolute after:-bottom-1 after:right-0 after:left-0 after:h-0.5 after:bg-border",
 								)}
 								draggable={!normalizedQuery}
 								onDragStart={(event) => handleProjectDragStart(event, project.id)}
@@ -634,7 +701,7 @@ export const ProjectRail = memo(function ProjectRail({
 									</DropdownMenu>
 								</div>
 							</li>
-							<CollapsibleContent>
+							<GsapCollapsibleContent open={expanded}>
 								<div className="mt-0.5">
 									{sessions.length ? (
 										<>
@@ -659,7 +726,7 @@ export const ProjectRail = memo(function ProjectRail({
 																onNavigate?.();
 															}}
 															onRename={(name) => actions.renameSession(session.id, name)}
-															onContextRename={() => setSessionManagementProject(project)}
+															onContextRename={() => setSessionRenameTarget(session)}
 															onTogglePinned={() =>
 																void actions.setSessionPinned(session.id, !session.pinned)
 															}
@@ -712,7 +779,7 @@ export const ProjectRail = memo(function ProjectRail({
 										<span className="px-2 py-2 text-[13px] text-muted-foreground">暂无会话</span>
 									)}
 								</div>
-							</CollapsibleContent>
+							</GsapCollapsibleContent>
 						</Collapsible>
 					</div>
 				</ContextMenuTrigger>
@@ -753,7 +820,7 @@ export const ProjectRail = memo(function ProjectRail({
 
 	const renderGroup = (group: ProjectGroup, groupProjects: WebProject[]) => {
 		const expanded = expandedGroupIds.has(group.id);
-		const groupDrop = projectDropTarget?.kind === "group" && projectDropTarget.groupId === group.id;
+		const groupDrop = groupDropTarget?.groupId === group.id;
 		const groupRunningSessionCount = groupProjects.reduce(
 			(total, project) => total + project.sessions.filter(isSessionRunning).length,
 			0,
@@ -788,14 +855,28 @@ export const ProjectRail = memo(function ProjectRail({
 								onDrop={(event) => handleGroupDrop(event, group.id)}
 							>
 								<ContextMenuTrigger asChild>
-									<div className={cn("group relative rounded-md", groupDrop && "ring-1 ring-primary/50")}>
+									<div
+										className={cn(
+											"group relative cursor-grab rounded-md active:cursor-grabbing",
+											groupDrop &&
+												groupDropTarget?.position === "before" &&
+												"before:pointer-events-none before:absolute before:-top-1 before:right-0 before:left-0 before:z-10 before:h-0.5 before:rounded-full before:bg-border",
+											groupDrop &&
+												groupDropTarget?.position === "after" &&
+												"after:pointer-events-none after:absolute after:right-0 after:-bottom-1 after:left-0 after:z-10 after:h-0.5 after:rounded-full after:bg-border",
+											draggedGroupId === group.id && "opacity-50",
+										)}
+										draggable={!normalizedQuery}
+										onDragStart={(event) => handleGroupHeaderDragStart(event, group.id)}
+										onDragOver={(event) => handleGroupHeaderDragOver(event, group.id)}
+										onDrop={(event) => handleGroupHeaderDrop(event, group.id)}
+										onDragEnd={resetGroupDrag}
+									>
 											<HoverCard openDelay={140} closeDelay={80}>
 												<HoverCardTrigger asChild>
 													<CollapsibleTrigger asChild>
 														<Button className="h-8 w-full min-w-0 justify-start gap-2 px-2 py-1 pr-20 text-xs" variant="ghost">
-															<ChevronDown
-																className={cn("size-3.5 shrink-0 transition-transform", !expanded && "-rotate-90")}
-															/>
+													<ProjectRailChevron className="size-3.5 shrink-0" open={expanded} />
 															<FolderTree className="size-4 shrink-0 text-muted-foreground" />
 															<span className="project-list-item-label min-w-0 flex-1 truncate text-left font-medium">
 																{group.name}
@@ -896,7 +977,7 @@ export const ProjectRail = memo(function ProjectRail({
 									</div>
 									</div>
 								</ContextMenuTrigger>
-								<CollapsibleContent>
+								<GsapCollapsibleContent open={expanded}>
 									<div className="mt-0.5 grid gap-0.5">
 										{groupProjects.length ? (
 											groupProjects.map((project) => renderProject(project, true))
@@ -906,7 +987,7 @@ export const ProjectRail = memo(function ProjectRail({
 											</span>
 										)}
 									</div>
-								</CollapsibleContent>
+								</GsapCollapsibleContent>
 							</fieldset>
 						</Collapsible>
 					</div>
@@ -931,7 +1012,6 @@ export const ProjectRail = memo(function ProjectRail({
 				</div>
 				<div className="flex items-center gap-1">
 					<Button
-						className="max-lg:-translate-y-2"
 						size="icon"
 						variant="ghost"
 						onClick={onAddProject}
@@ -940,7 +1020,6 @@ export const ProjectRail = memo(function ProjectRail({
 						<Plus className="size-4" />
 					</Button>
 					<Button
-						className="max-lg:-translate-y-2"
 						size="icon"
 						variant="ghost"
 						onClick={openCreateGroup}
@@ -988,19 +1067,16 @@ export const ProjectRail = memo(function ProjectRail({
 					<div className="grid gap-0.5">
 						{filteredProjectSections.groups.map((section) => renderGroup(section.group, section.projects))}
 						{state.projectGroups.length > 0 && filteredProjectSections.ungrouped.length > 0 ? (
-							<Collapsible defaultOpen>
+							<Collapsible open={ungroupedOpen} onOpenChange={setUngroupedOpen}>
 								<fieldset
 									aria-label="未分组项目"
-									className={cn(
-										"group relative rounded-md",
-										projectDropTarget?.kind === "ungrouped" && "ring-1 ring-primary/50",
-									)}
+									className={cn("group relative rounded-md border-0 p-0")}
 									onDragOver={handleUngroupedDragOver}
 									onDrop={handleUngroupedDrop}
 								>
 									<CollapsibleTrigger asChild>
 										<Button className="h-8 w-full min-w-0 justify-start gap-2 px-2 py-1 text-xs" variant="ghost">
-											<ChevronDown className="size-3.5 shrink-0" />
+											<ProjectRailChevron className="size-3.5 shrink-0" open={ungroupedOpen} />
 											<FolderTree className="size-4 shrink-0 text-muted-foreground" />
 											<span className="project-list-item-label min-w-0 flex-1 truncate text-left font-medium">
 												未分组
@@ -1010,7 +1086,7 @@ export const ProjectRail = memo(function ProjectRail({
 											</span>
 										</Button>
 									</CollapsibleTrigger>
-									<CollapsibleContent>
+									<GsapCollapsibleContent open={ungroupedOpen}>
 										<div className="mt-0.5 grid gap-0.5">
 											{filteredProjectSections.ungrouped.length ? (
 												filteredProjectSections.ungrouped.map((project) => renderProject(project))
@@ -1020,7 +1096,7 @@ export const ProjectRail = memo(function ProjectRail({
 												</span>
 											)}
 										</div>
-									</CollapsibleContent>
+									</GsapCollapsibleContent>
 								</fieldset>
 							</Collapsible>
 						) : (
@@ -1110,6 +1186,11 @@ export const ProjectRail = memo(function ProjectRail({
 				project={sessionManagementProject}
 				actions={actions}
 				onClose={() => setSessionManagementProject(undefined)}
+			/>
+			<SessionRenameDialog
+				session={sessionRenameTarget}
+				actions={actions}
+				onClose={() => setSessionRenameTarget(undefined)}
 			/>
 			<Dialog
 				open={Boolean(pendingDeleteSession)}

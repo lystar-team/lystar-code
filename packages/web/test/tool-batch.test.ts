@@ -2,12 +2,18 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
+	MAX_DIFF_HIGHLIGHT_BYTES,
+	MAX_DIFF_HIGHLIGHT_LINES,
+	shouldHighlightDiffCode,
+} from "../src/components/ai-elements/code-block.tsx";
+import {
 	skillNameFromTool,
 	ToolBatch,
 	type ToolBatchTool,
 	toolBatchSummaryLabel,
 	toolRowTitle,
 } from "../src/components/ai-elements/tool-batch.tsx";
+import { highlightCode } from "../src/lib/code-highlighter.ts";
 
 function readTool(path: string, state: ToolBatchTool["state"] = "output-available"): ToolBatchTool {
 	return {
@@ -64,6 +70,54 @@ describe("Skill read tool display", () => {
 		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool], initialOpen: true }));
 
 		expect(markup.match(/\+11/gu)).toHaveLength(1);
+	});
+
+	it("highlights source syntax inside completed file diffs and keeps active previews plain", async () => {
+		const source = "const value: number = 1;\nconst oldValue = 0;";
+		await new Promise<void>((resolve) => {
+			const result = highlightCode(source, "typescript", () => resolve());
+			if (result) resolve();
+		});
+
+		const completed: ToolBatchTool = {
+			id: "edit-complete",
+			name: "edit",
+			summary: JSON.stringify({ path: "/tmp/example.ts" }),
+			state: "output-available",
+			diff: {
+				files: [
+					{
+						path: "/tmp/example.ts",
+						additions: 1,
+						deletions: 1,
+						diff: "+ 1 const value: number = 1;\n- 2 const oldValue = 0;",
+					},
+				],
+			},
+		};
+		const completedMarkup = renderToStaticMarkup(createElement(ToolBatch, { tools: [completed], initialOpen: true }));
+
+		expect(completedMarkup).toMatch(/>const<\/span>/u);
+		expect(completedMarkup).toMatch(/>number<\/span>/u);
+		expect(completedMarkup.match(/data-diff-line="added"/gu)).toHaveLength(1);
+		expect(completedMarkup.match(/data-diff-line="removed"/gu)).toHaveLength(1);
+
+		const activeMarkup = renderToStaticMarkup(
+			createElement(ToolBatch, {
+				tools: [{ ...completed, id: "edit-active", state: "input-available" }],
+				initialOpen: true,
+			}),
+		);
+		expect(activeMarkup).not.toMatch(/>const<\/span>/u);
+		expect(activeMarkup.match(/data-diff-line="added"/gu)).toHaveLength(1);
+		expect(activeMarkup.match(/data-diff-line="removed"/gu)).toHaveLength(1);
+	});
+	it("skips source highlighting for large diffs", () => {
+		expect(shouldHighlightDiffCode(`+${"x".repeat(MAX_DIFF_HIGHLIGHT_BYTES)}`)).toBe(false);
+		expect(
+			shouldHighlightDiffCode(Array.from({ length: MAX_DIFF_HIGHLIGHT_LINES + 1 }, () => "+line").join("\n")),
+		).toBe(false);
+		expect(shouldHighlightDiffCode("+ 1 const value: number = 1;")).toBe(true);
 	});
 	it("does not render the input preview hint while editing", () => {
 		const tool: ToolBatchTool = {

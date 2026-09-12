@@ -20,10 +20,12 @@ import { type MouseEvent as ReactMouseEvent, type ReactNode, memo, useEffect, us
 import type { BundledLanguage } from "shiki";
 import { cn } from "@/lib/utils";
 import { StabilityBoundary } from "../stability-boundary";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
+import { Collapsible, CollapsibleTrigger } from "../ui/collapsible";
+import { GsapCollapsibleContent } from "../ui/gsap-collapsible-content";
 import { CodeBlock, CodeBlockActions, CodeBlockCopyButton, CodeBlockHeader, CodeBlockTitle } from "./code-block";
 import { Button } from "../ui/button";
 import { ResourceImageGallery } from "./resource-preview";
+import { languageForPath } from "../workbench/file-language";
 import { Source } from "./sources";
 
 export type ToolBatchState =
@@ -198,43 +200,7 @@ function toolTitle(tool: ToolBatchTool): string {
 }
 
 function codeLanguageForPath(path: string): BundledLanguage {
-	const fileName = path.split(/[?#]/u)[0]?.split(/[\\/]/u).pop()?.toLowerCase() ?? "";
-	if (fileName === "dockerfile") return "dockerfile";
-	if (fileName === "makefile") return "make";
-	const extension = fileName.includes(".") ? fileName.slice(fileName.lastIndexOf(".") + 1) : "";
-	const languages: Record<string, BundledLanguage> = {
-		c: "c",
-		cpp: "cpp",
-		cs: "csharp",
-		css: "css",
-		go: "go",
-		html: "html",
-		java: "java",
-		js: "javascript",
-		json: "json",
-		jsx: "jsx",
-		kt: "kotlin",
-		less: "less",
-		md: "markdown",
-		php: "php",
-		py: "python",
-		rb: "ruby",
-		rust: "rust",
-		sass: "scss",
-		scss: "scss",
-		sh: "bash",
-		sql: "sql",
-		svelte: "svelte",
-		swift: "swift",
-		ts: "typescript",
-		tsx: "tsx",
-		toml: "toml",
-		vue: "vue",
-		xml: "xml",
-		yaml: "yaml",
-		yml: "yaml",
-	};
-	return languages[extension] ?? "text";
+	return languageForPath(path) as BundledLanguage;
 }
 
 function toolActionLabel(name: string): string {
@@ -369,6 +335,7 @@ function ToolDiffOutput({
 							className="my-0 border-border/60 bg-muted/25"
 							code={file.diff}
 							language={"diff" as BundledLanguage}
+							diffLanguage={displayPath ? codeLanguageForPath(displayPath) : ("text" as BundledLanguage)}
 							plainText={plainText}
 						>
 							<CodeBlockHeader className="border-b-0 bg-transparent px-2 py-1">
@@ -672,7 +639,8 @@ function ToolBatchRow({
 				</button>
 			</CollapsibleTrigger>
 			{hasDetails ? (
-				<CollapsibleContent
+				<GsapCollapsibleContent
+					open={open}
 					data-transcript-resize-anchor
 					className="min-w-0 max-h-[min(32rem,60vh)] overflow-y-auto overflow-x-hidden overscroll-contain pb-0.5 pl-6 pr-0 pt-0"
 					onClick={(event) => {
@@ -690,7 +658,7 @@ function ToolBatchRow({
 					>
 						<ToolDetail tool={tool} sessionId={sessionId} onOpenPath={onOpenPath} />
 					</StabilityBoundary>
-				</CollapsibleContent>
+				</GsapCollapsibleContent>
 			) : null}
 		</Collapsible>
 	);
@@ -770,7 +738,8 @@ export const ToolBatch = memo(function ToolBatch({
 					</span>
 					<ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]/tool-batch:rotate-180" />
 				</CollapsibleTrigger>
-				<CollapsibleContent
+				<GsapCollapsibleContent
+					open={open}
 					data-transcript-resize-anchor
 					className="min-w-0 overflow-hidden pb-0"
 					onClick={(event) => {
@@ -783,7 +752,7 @@ export const ToolBatch = memo(function ToolBatch({
 						onOpenPath={onOpenPath}
 						large={tools.some((tool) => tool.name === "image_gen")}
 					/>
-				</CollapsibleContent>
+				</GsapCollapsibleContent>
 			</Collapsible>
 		);
 	}
@@ -840,7 +809,8 @@ export const ToolBatch = memo(function ToolBatch({
 					<ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]/tool-batch:rotate-180" />
 				</span>
 			</CollapsibleTrigger>
-			<CollapsibleContent
+			<GsapCollapsibleContent
+				open={open}
 				data-transcript-resize-anchor
 				className="relative min-w-0 max-h-[min(34rem,60vh)] overflow-y-auto overflow-x-hidden overscroll-contain pb-0"
 				onClick={(event) => {
@@ -859,7 +829,7 @@ export const ToolBatch = memo(function ToolBatch({
 						/>
 					))}
 				</div>
-			</CollapsibleContent>
+			</GsapCollapsibleContent>
 		</Collapsible>
 	);
 });

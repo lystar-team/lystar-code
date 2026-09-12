@@ -5,8 +5,10 @@ import {
 	appendLiveRenderItems,
 	buildConversationRenderItems,
 	buildPersistedRenderItems,
+	initialTranscriptDisplayState,
 } from "../src/components/workbench/conversation.tsx";
 import { ThinkingBlock } from "../src/components/workbench/live-turn.tsx";
+import { TranscriptMessageView } from "../src/components/workbench/transcript.tsx";
 
 const thinking = { id: "thinking-1", kind: "thinking" as const, parts: ["先分析任务"], turnId: 1 };
 const text = { id: "text-1", kind: "text" as const, parts: ["回复内容"], turnId: 1 };
@@ -17,11 +19,70 @@ const emptyToolIndex = {
 };
 
 describe("conversation render items", () => {
+	it("首个历史页完成前不把实时片段当成完整会话展示", () => {
+		expect(
+			initialTranscriptDisplayState({
+				transcriptPageLoaded: false,
+				transcriptLoading: true,
+				transcriptError: undefined,
+			}),
+		).toBe("loading");
+		expect(
+			initialTranscriptDisplayState({
+				transcriptPageLoaded: false,
+				transcriptLoading: false,
+				transcriptError: "读取失败",
+			}),
+		).toBe("error");
+		expect(
+			initialTranscriptDisplayState({
+				transcriptPageLoaded: true,
+				transcriptLoading: true,
+				transcriptError: undefined,
+			}),
+		).toBe("ready");
+		expect(
+			initialTranscriptDisplayState({
+				transcriptPageLoaded: false,
+				transcriptLoading: false,
+				transcriptError: undefined,
+			}),
+		).toBe("ready");
+	});
+
 	it("保留后续文本或工具到达前已经产生的 Thinking 项", () => {
 		const rendered = appendLiveRenderItems([], [thinking, text], {}, new Set(), undefined, 1);
 
 		expect(rendered.map((item) => item.kind)).toEqual(["thinking", "message"]);
 		expect(rendered[0]).toMatchObject({ kind: "thinking", key: "thinking-1", text: "先分析任务" });
+	});
+
+	it("忽略工具之间没有可见内容的实时文本和 Thinking 项", () => {
+		const toolId = "live-tool-1";
+		const rendered = appendLiveRenderItems(
+			[],
+			[
+				{ id: "blank-text", kind: "text", parts: ["\n", "  "], turnId: 1 },
+				{ id: "blank-thinking", kind: "thinking", parts: ["已完成检查\n"], turnId: 1 },
+				{ id: "live-tools", kind: "tools", turnId: 1, batchId: "batch-1", toolIds: [toolId] },
+			],
+			{
+				[toolId]: {
+					id: toolId,
+					name: "edit",
+					batchId: "batch-1",
+					summary: "正在编辑",
+					state: "running",
+					status: "running",
+				},
+			},
+			new Set(),
+			undefined,
+			1,
+		);
+
+		expect(rendered).toHaveLength(1);
+		expect(rendered[0]).toMatchObject({ kind: "tool-stack", live: true });
 	});
 
 	it("只呈现最新一行 Shimmer Thinking 内容", () => {
@@ -47,7 +108,46 @@ describe("conversation render items", () => {
 		]);
 		const rendered = buildConversationRenderItems(persisted, [], {}, new Set(), undefined, 1, true);
 
-		expect(rendered[0]).toMatchObject({ kind: "message", text: "请查看截图", attachments: [attachment] });
+		expect(rendered[0]).toMatchObject({
+			kind: "message",
+			text: "请查看截图",
+			attachments: [attachment],
+			editable: false,
+		});
+	});
+
+	it("只允许空闲状态下编辑已落盘的用户 Prompt", () => {
+		const persisted = buildPersistedRenderItems(
+			[
+				{
+					entryId: "user-1",
+					parentId: null,
+					timestamp: "2026-09-08T00:00:00.000Z",
+					kind: "message",
+					view: { type: "user", text: "检查登录流程" },
+				},
+			],
+			emptyToolIndex,
+		);
+		const idle = buildConversationRenderItems(persisted, [], {}, new Set(), undefined, 1, false, true);
+		const running = buildConversationRenderItems(persisted, [], {}, new Set(), undefined, 1, true, false);
+
+		expect(idle[0]).toMatchObject({ kind: "message", entryId: "user-1", editable: true });
+		expect(running[0]).toMatchObject({ kind: "message", entryId: "user-1", editable: false });
+	});
+
+	it("在用户 Prompt 操作区显示编辑入口", () => {
+		const html = renderToStaticMarkup(
+			createElement(TranscriptMessageView, {
+				role: "user",
+				text: "检查登录流程",
+				showCopy: false,
+				onOpenPath: async () => {},
+				onEdit: () => {},
+			}),
+		);
+
+		expect(html).toContain("编辑 Prompt");
 	});
 
 	it("把乐观 Prompt 放在已提交输出之前", () => {

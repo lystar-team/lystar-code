@@ -91,6 +91,19 @@ export class ProjectGroupRegistry {
 		return { ...next, projectIds: next.projectIds.slice() };
 	}
 
+	async reorder(groupIds: readonly string[]): Promise<void> {
+		const existingIds = new Set(this.state.groups.map((group) => group.id));
+		const orderedIds = [...new Set(groupIds)].filter((id) => existingIds.has(id));
+		const orderedSet = new Set(orderedIds);
+		const nextGroups = [
+			...orderedIds.flatMap((id) => this.state.groups.filter((group) => group.id === id)),
+			...this.state.groups.filter((group) => !orderedSet.has(group.id)),
+		];
+		if (nextGroups.every((group, index) => group.id === this.state.groups[index]?.id)) return;
+		this.state.groups = nextGroups;
+		await this.save();
+	}
+
 	async remove(id: string): Promise<void> {
 		if (!this.state.groups.some((group) => group.id === id))
 			throw Object.assign(new Error("未找到项目组"), { code: "project_group_not_found", status: 404 });

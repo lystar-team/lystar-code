@@ -20,6 +20,91 @@ interface RouteInternals {
 	): Promise<void>;
 }
 
+test("Web 批量删除路由只发送一个 Runtime 请求", async (t) => {
+	const agentDir = join(tmpdir(), "web-batch-delete-route-test");
+	const server = new WebGatewayServer({
+		host: "127.0.0.1",
+		port: 0,
+		agentDir,
+		runtimeEndpoint: join(agentDir, "host.sock"),
+		token: "test-token",
+		tokenPath: join(agentDir, "token"),
+		allowedHosts: ["127.0.0.1"],
+		staticDir: agentDir,
+		manageRuntime: false,
+	});
+	t.after(() => server.close());
+	const routes = server as unknown as RouteInternals;
+	const commands: Command[] = [];
+	let requestCount = 0;
+	routes.getClient = async () => ({
+		request: async (command) => {
+			commands.push(command);
+			requestCount++;
+			if (command.command !== "delete_sessions") throw new Error("unexpected command");
+			return {
+				deletedPaths: command.items.map((item) => item.sessionPath),
+				failures: [],
+			};
+		},
+	});
+	routes.resolveSession = async (_context, id) => ({
+		id,
+		path: `/tmp/${id}.jsonl`,
+		projectId: "project-one",
+		cwd: "/tmp/project",
+	});
+	let status = 0;
+	let body = "";
+	const request = Readable.from([
+		Buffer.from(JSON.stringify({ sessionIds: ["session-one", "session-two", "session-three"] })),
+	]) as unknown as IncomingMessage;
+	request.method = "DELETE";
+	request.headers = {};
+	const response = {
+		writeHead(code: number) {
+			status = code;
+		},
+		end(value: string) {
+			body = value;
+		},
+	} as unknown as ServerResponse;
+	const context = {
+		id: "browser-one",
+		leases: new Map(),
+		sockets: new Set(),
+		sessionListPromises: new Map(),
+		sessionListCache: new Map(),
+		bootstrapGeneration: 0,
+		sessionListGeneration: 0,
+		activeRequests: 1,
+	};
+
+	await routes.handleSessions(request, response, new URL("http://localhost/api/sessions"), context, [
+		"api",
+		"sessions",
+	]);
+
+	assert.equal(status, 200);
+	assert.deepEqual(JSON.parse(body), {
+		deletedIds: ["session-one", "session-two", "session-three"],
+		failures: [],
+	});
+	assert.equal(requestCount, 1);
+	assert.deepEqual(commands, [
+		{
+			command: "delete_sessions",
+			items: [
+				{ cwd: "/tmp/project", sessionPath: "/tmp/session-one.jsonl" },
+				{ cwd: "/tmp/project", sessionPath: "/tmp/session-two.jsonl" },
+				{ cwd: "/tmp/project", sessionPath: "/tmp/session-three.jsonl" },
+			],
+			clientInstanceId: "browser-one",
+			clientRequestId: commands[0]?.command === "delete_sessions" ? commands[0].clientRequestId : "",
+		},
+	]);
+});
+
 test("Web reload 路由使用当前会话 lease 调用 reload_resources 并返回快照", async (t) => {
 	const agentDir = join(tmpdir(), "web-reload-route-test");
 	const server = new WebGatewayServer({

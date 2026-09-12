@@ -53,7 +53,7 @@ describe("image generation conversation grouping", () => {
 		]);
 	});
 
-	it("keeps the completed image card outside the collapsed work process", () => {
+	it("keeps generated images inside a single collapsed work process", () => {
 		const imageTool = {
 			id: "image-1",
 			name: "image_gen",
@@ -87,9 +87,16 @@ describe("image generation conversation grouping", () => {
 				},
 			},
 			{
-				entryId: "assistant-final",
+				entryId: "assistant-process-after",
 				parentId: "assistant-image",
 				timestamp: "2026-09-11T00:00:03.000Z",
+				kind: "message",
+				view: { type: "assistant" as const, text: "我再确认图片结果。" },
+			},
+			{
+				entryId: "assistant-final",
+				parentId: "assistant-process-after",
+				timestamp: "2026-09-11T00:00:04.000Z",
 				kind: "message",
 				view: { type: "assistant" as const, text: "图片已生成。" },
 			},
@@ -103,13 +110,10 @@ describe("image generation conversation grouping", () => {
 		const persisted = buildPersistedRenderItems(transcript, toolIndex);
 		const rendered = buildConversationRenderItems(persisted, [], {}, toolIndex.callIds, undefined, 1, false);
 
-		expect(rendered.map((item) => item.kind)).toEqual([
-			"message",
-			"work-process",
-			"tool-stack",
-			"result-boundary",
-			"message",
-		]);
-		expect(rendered[2]).toMatchObject({ kind: "tool-stack", collapseForResult: false });
+		expect(rendered.map((item) => item.kind)).toEqual(["message", "work-process", "result-boundary", "message"]);
+		const workProcess = rendered[1];
+		if (!workProcess || workProcess.kind !== "work-process") throw new Error("缺少工作过程");
+		expect(workProcess.items.map((item) => item.kind)).toEqual(["message", "tool-stack", "message"]);
+		expect(workProcess.items[1]).toMatchObject({ kind: "tool-stack", collapseForResult: true });
 	});
 });

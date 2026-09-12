@@ -331,10 +331,11 @@ export const MessageBranchPage = ({
   );
 };
 
-export type MessageResponseProps = ComponentProps<typeof Streamdown> & {
-	onOpenPath?: (path: string) => void;
-	projectId?: string;
-};
+export type MessageResponseProps = ComponentProps<typeof Streamdown> &
+	Pick<HTMLAttributes<HTMLDivElement>, "id" | "role" | "aria-labelledby"> & {
+		onOpenPath?: (path: string) => void;
+		projectId?: string;
+	};
 
 type ResourcePathContextValue = {
 	onOpenPath?: (path: string) => void;
@@ -459,8 +460,20 @@ function streamdownPluginsFor(mode: MessageResponseProps["mode"], overrides?: Pl
 }
 
 export const MessageResponse: NamedExoticComponent<MessageResponseProps> = memo(
-	({ className, onOpenPath, projectId, components, mode = "static", plugins: callerPlugins, rehypePlugins: callerRehypePlugins, ...props }: MessageResponseProps): ReactElement => (
-		<ResourcePathContext.Provider value={{ onOpenPath, projectId }}>
+	({
+		className,
+		id,
+		role,
+		"aria-labelledby": ariaLabelledBy,
+		onOpenPath,
+		projectId,
+		components,
+		mode = "static",
+		plugins: callerPlugins,
+		rehypePlugins: callerRehypePlugins,
+		...props
+	}: MessageResponseProps): ReactElement => {
+		const response = (
 			<Streamdown
 				className={cn(
 					"size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
@@ -480,12 +493,26 @@ export const MessageResponse: NamedExoticComponent<MessageResponseProps> = memo(
 				}
 				{...props}
 			/>
-		</ResourcePathContext.Provider>
-	),
+		);
+		return (
+			<ResourcePathContext.Provider value={{ onOpenPath, projectId }}>
+				{id || role || ariaLabelledBy ? (
+					<div id={id} role={role} aria-labelledby={ariaLabelledBy} className="contents">
+						{response}
+					</div>
+				) : (
+					response
+				)}
+			</ResourcePathContext.Provider>
+		);
+	},
 	(prevProps, nextProps) =>
 		prevProps.children === nextProps.children &&
 		prevProps.mode === nextProps.mode &&
 		prevProps.projectId === nextProps.projectId &&
+		prevProps.id === nextProps.id &&
+		prevProps.role === nextProps.role &&
+		prevProps["aria-labelledby"] === nextProps["aria-labelledby"] &&
 		nextProps.isAnimating === prevProps.isAnimating &&
 		nextProps.onOpenPath === prevProps.onOpenPath,
 );

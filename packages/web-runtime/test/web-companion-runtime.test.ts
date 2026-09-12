@@ -3,7 +3,10 @@ import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { getWebCompanionEndpoint } from "../../coding-agent/src/core/web-companion-contract.ts";
+import {
+	getWebCompanionEndpoint,
+	getWebSessionHandoffEndpoint,
+} from "../../coding-agent/src/core/web-companion-contract.ts";
 import type { RuntimeEvent } from "../src/types.ts";
 import { WebCompanionProtocolError, WebCompanionRuntime } from "../src/web-companion-runtime.ts";
 
@@ -74,6 +77,19 @@ function baseSnapshot(sessionPath: string, cwd: string): Record<string, unknown>
 }
 
 describe("WebCompanionRuntime 协议协商", () => {
+	it("长 Agent 目录使用受限长度的 Unix Socket 路径", () => {
+		if (process.platform === "win32") return;
+		const agentDir = join(tmpdir(), "a".repeat(160));
+		const sessionPath = join(agentDir, "sessions", "session.jsonl");
+		for (const endpoint of [
+			getWebCompanionEndpoint(agentDir, sessionPath),
+			getWebSessionHandoffEndpoint(agentDir, sessionPath),
+		]) {
+			expect(Buffer.byteLength(endpoint)).toBeLessThanOrEqual(100);
+			expect(endpoint.startsWith(agentDir)).toBe(false);
+		}
+	});
+
 	it("握手粘包保留实时事件直到订阅接管", async () => {
 		const tail = `${JSON.stringify({ type: "agent_event", event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "保留消息" } } })}\n`;
 		const server = await serveSnapshot(baseSnapshot, tail);

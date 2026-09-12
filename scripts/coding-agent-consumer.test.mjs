@@ -21,13 +21,14 @@ function createFixture(t, { importServer = false, declareServer = false } = {}) 
 			name: pkg.name,
 			version: "1.0.0",
 			type: "module",
+			...(isAgent ? { piConfig: { productVersion: "1.0.0-lystar.1" } } : {}),
 			exports: isAgent ? {
 				".": "./dist/index.js",
 				"./client": { source: "./src/client/index.ts" },
 				"./experimental/plugin": { source: "./src/experimental/plugin.ts" },
 			} : "./dist/index.js",
 			...(isAgent ? {
-				bin: { pi: "dist/bundle/cli.js" },
+				bin: { lc: "dist/bundle/cli.js", lystar: "dist/bundle/cli.js" },
 				dependencies: {
 					"@earendil-works/chord": "1.0.0",
 					...(declareServer ? { "@earendil-works/pi-server": "1.0.0" } : {}),
@@ -46,8 +47,8 @@ export class SessionManager { static inMemory() {} }
 export class ModelRuntime { static create() {} }
 ` : 'export const marker = "local tarball";',
 			...(isAgent ? {
-				"dist/cli.js": 'console.log("1.0.0");',
-				"dist/bundle/cli.js": 'console.log("1.0.0");',
+				"dist/cli.js": 'console.log("1.0.0-lystar.1");',
+				"dist/bundle/cli.js": 'console.log("1.0.0-lystar.1");',
 			} : {}),
 		};
 		for (const [path, content] of Object.entries(files)) {

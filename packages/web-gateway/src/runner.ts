@@ -35,6 +35,7 @@ export interface WebGatewayCliOptions {
 	backgroundInvocation?: RuntimeInvocation;
 	serviceVersion?: string;
 	expectedProductVersion?: string;
+	allowRuntimeEndpointOverride?: boolean;
 }
 
 function environmentValue(name: string): string | undefined {
@@ -306,6 +307,7 @@ export async function runWebGatewayCli(options: WebGatewayCliOptions = {}): Prom
 			staticDir,
 			runtimeInvocation: options.runtimeInvocation,
 			configFileName: options.configFileName,
+			allowRuntimeEndpointOverride: options.allowRuntimeEndpointOverride,
 		});
 		if (options.runtimeInvocation && config.port === config.runtimePort) {
 			throw new Error(`Web 端口和 Runtime 端口不能相同（当前都是 ${config.port}），请修改 ${config.configPath}`);
@@ -355,6 +357,7 @@ export async function runWebGatewayCli(options: WebGatewayCliOptions = {}): Prom
 				staticDir,
 				runtimeInvocation: options.runtimeInvocation,
 				configFileName: options.configFileName,
+				allowRuntimeEndpointOverride: options.allowRuntimeEndpointOverride,
 			});
 			if (options.runtimeInvocation && config.port === config.runtimePort) {
 				throw new Error(`Web 端口和 Runtime 端口不能相同（当前都是 ${config.port}），请修改 ${config.configPath}`);
@@ -378,7 +381,7 @@ export async function runWebGatewayCli(options: WebGatewayCliOptions = {}): Prom
 				const runtimeStatus = options.runtimeInvocation
 					? await getRuntimeServiceStatus(
 							config.runtimeEndpoint,
-							options.configFileName ? "development" : undefined,
+							config.serviceProfile,
 							undefined,
 							config.agentDir,
 						)

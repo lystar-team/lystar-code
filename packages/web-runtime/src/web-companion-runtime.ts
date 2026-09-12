@@ -391,7 +391,10 @@ export class WebCompanionRuntime implements RuntimeSession {
 			let buffer = "";
 			const fail = (error: Error) => {
 				clearTimeout(timer);
-				runtime?.rejectPending(error);
+				if (runtime) {
+					runtime.disconnect(error);
+					return;
+				}
 				socket.destroy();
 				reject(error);
 			};
@@ -565,8 +568,8 @@ export class WebCompanionRuntime implements RuntimeSession {
 		await this.request("continue_subagent", { agentId, text });
 	}
 
-	async prompt(text: string, images?: WebCompanionImage[]): Promise<void> {
-		await this.request("prompt", { text, images });
+	async prompt(text: string, images?: WebCompanionImage[], queueId?: string): Promise<void> {
+		await this.request("prompt", { text, images, ...(queueId ? { queueId } : {}) });
 	}
 
 	async steer(text: string, images?: WebCompanionImage[], queueId?: string): Promise<void> {
@@ -688,8 +691,9 @@ export class WebCompanionRuntime implements RuntimeSession {
 		this.rejectPending();
 		this.initialEvents.length = 0;
 		this.listeners.clear();
-		this.socket?.destroy();
+		const socket = this.socket;
 		this.socket = undefined;
+		socket?.destroy();
 	}
 
 	onEvent(listener: (event: RuntimeEvent) => void): () => void {
@@ -714,6 +718,18 @@ export class WebCompanionRuntime implements RuntimeSession {
 			newline = this.buffer.indexOf("\n");
 		}
 		if (Buffer.byteLength(this.buffer) > MAX_COMPANION_BYTES) throw new Error("TUI 共享残帧超过大小限制");
+	}
+
+	private disconnect(error: Error): void {
+		if (this.disposed || !this.socket) return;
+		const socket = this.socket;
+		this.socket = undefined;
+		this.rejectPending(error);
+		socket.destroy();
+		this.emit({
+			type: "disconnected",
+			payload: { message: error.message },
+		});
 	}
 
 	private rejectPending(error = new Error("TUI 共享会话已断开")): void {

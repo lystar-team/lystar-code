@@ -71,6 +71,7 @@ import {
 	readClipboardText,
 	readSessionSnapshot,
 	renderTerminalRichText,
+	requestWebSessionHandoff,
 	resolveProjectTrusted,
 	type SessionEntry,
 	type SessionInfoCache,
@@ -85,6 +86,7 @@ import {
 	saveModelsJsonProvider,
 	stripInternalPromptContent,
 	VERSION,
+	WebCompanionServer,
 } from "@earendil-works/pi-coding-agent/core";
 import type {
 	AuthType,
@@ -92,15 +94,23 @@ import type {
 	CompletionItem,
 	CompletionResult,
 	ContentChunk,
+	GitBranches,
+	GitCommit,
 	GitDiff,
+	GitFileStats,
 	GitFileStatus,
+	GitHistory,
+	GitMutation,
+	GitMutationResult,
 	GitRepositoryStatus,
+	GitStats,
 	GitStatus,
 	HarnessImportPreview,
 	HarnessImportResult,
 	HarnessImportScope,
 	HostDirectoryListing,
 	JsonValue,
+	ModelOptions,
 	ModelRef,
 	PackageSummary,
 	ProjectFileSaveResult,
@@ -362,6 +372,75 @@ async function git(cwd: string, args: string[]): Promise<string> {
 	}
 }
 
+async function gitWrite(cwd: string, args: string[], signal?: AbortSignal): Promise<string> {
+	try {
+		const result = await execFileAsync("git", ["-C", cwd, ...args], {
+			encoding: "utf8",
+			maxBuffer: GIT_MAX_OUTPUT_BYTES,
+			signal,
+			env: { ...process.env, GIT_LITERAL_PATHSPECS: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" },
+		});
+		return result.stdout;
+	} catch (error) {
+		const candidate = error as Error & { code?: string | number; stdout?: string; stderr?: string };
+		const output = [candidate.stdout?.trim(), candidate.stderr?.trim()].filter(Boolean).join("\n");
+		if (args[0] === "merge" && (output.includes("CONFLICT") || output.includes("Automatic merge failed"))) {
+			throw Object.assign(new Error("合并产生冲突，请解决冲突后提交，或中止合并"), {
+				code: "git_merge_conflict",
+				retryable: false,
+			});
+		}
+		if (args[0] === "pull" && output.includes("Not possible to fast-forward")) {
+			throw Object.assign(new Error("当前分支与远端已分叉，不能快进拉取；请明确执行分支合并"), {
+				code: "git_fast_forward_required",
+				retryable: false,
+			});
+		}
+		throw Object.assign(new Error(output || candidate.message), {
+			code: "git_command_failed",
+			retryable: false,
+		});
+	}
+}
+
+async function gitHasHead(cwd: string): Promise<boolean> {
+	try {
+		await git(cwd, ["rev-parse", "--verify", "HEAD"]);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function currentGitBranch(cwd: string): Promise<string | undefined> {
+	try {
+		return (await git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"])).trim() || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+async function gitMergeInProgress(cwd: string): Promise<boolean> {
+	try {
+		const mergeHead = (await git(cwd, ["rev-parse", "--git-path", "MERGE_HEAD"])).trim();
+		return Boolean(mergeHead && existsSync(isAbsolute(mergeHead) ? mergeHead : resolve(cwd, mergeHead)));
+	} catch {
+		return false;
+	}
+}
+
+async function validateGitBranchName(cwd: string, value: string): Promise<string> {
+	if (value.trim() !== value || value.startsWith("-") || value.includes("\0")) {
+		throw Object.assign(new Error("Git 分支名称无效"), { code: "git_branch_name_invalid", retryable: false });
+	}
+	try {
+		await git(cwd, ["check-ref-format", "--branch", value]);
+		return value;
+	} catch {
+		throw Object.assign(new Error("Git 分支名称无效"), { code: "git_branch_name_invalid", retryable: false });
+	}
+}
+
 function boundedGitEditorContent(content: string): string | undefined {
 	if (content.includes("\0") || Buffer.byteLength(content, "utf8") > GIT_EDITOR_CONTENT_MAX_BYTES) return undefined;
 	return content;
@@ -424,6 +503,122 @@ function repositoryPathFromRoot(projectRoot: string, repositoryRoot: string): st
 	return relative(projectRoot, repositoryRoot).split(sep).join("/");
 }
 
+async function resolveGitRepositoryRoot(projectRoot: string, repositoryPath?: string): Promise<string> {
+	if (repositoryPath !== undefined) {
+		if (repositoryPath.includes("\0") || isAbsolute(repositoryPath)) {
+			throw Object.assign(new Error("Git 仓库路径必须是项目内相对路径"), {
+				code: "git_repository_path_invalid",
+			});
+		}
+		const candidate = resolve(projectRoot, repositoryPath || ".");
+		if (!isInside(projectRoot, candidate)) {
+			throw Object.assign(new Error("Git 仓库不在当前项目范围内"), { code: "resource_outside_project" });
+		}
+		const repositoryRoot = canonicalDirectory(candidate);
+		const detectedRoot = canonicalDirectory((await git(repositoryRoot, ["rev-parse", "--show-toplevel"])).trim());
+		if (detectedRoot !== repositoryRoot || !isInside(projectRoot, detectedRoot)) {
+			throw Object.assign(new Error("目标目录不是当前项目内的 Git 仓库"), {
+				code: "git_repository_path_invalid",
+			});
+		}
+		return repositoryRoot;
+	}
+	try {
+		const repositoryRoot = canonicalDirectory((await git(projectRoot, ["rev-parse", "--show-toplevel"])).trim());
+		if (!isInside(projectRoot, repositoryRoot)) throw new Error("Git 根目录不在当前项目范围内");
+		return repositoryRoot;
+	} catch {
+		const repositoryRoot = (await discoverGitRepositoryRoots(projectRoot)).sort()[0];
+		if (repositoryRoot) return repositoryRoot;
+		throw Object.assign(new Error("未找到 Git 仓库"), { code: "git_not_repository" });
+	}
+}
+
+function assertGitFilePath(repositoryRoot: string, path: string): void {
+	if (path.includes("\0") || isAbsolute(path) || !isInside(repositoryRoot, resolve(repositoryRoot, path))) {
+		throw Object.assign(new Error("Git 文件路径无效"), { code: "git_file_path_invalid" });
+	}
+}
+
+function assertGitRevision(revision: string): void {
+	if (!/^[0-9a-f]{7,128}$/iu.test(revision)) {
+		throw Object.assign(new Error("Git 提交版本无效"), { code: "git_revision_invalid", retryable: false });
+	}
+}
+
+function parseGitNumStats(output: string, staged: boolean): GitFileStats[] {
+	const records = output.split("\0");
+	const files: GitFileStats[] = [];
+	for (let index = 0; index < records.length; index++) {
+		const record = records[index];
+		if (!record) continue;
+		const firstTab = record.indexOf("\t");
+		const secondTab = firstTab < 0 ? -1 : record.indexOf("\t", firstTab + 1);
+		if (firstTab < 0 || secondTab < 0) continue;
+		const additionsText = record.slice(0, firstTab);
+		const deletionsText = record.slice(firstTab + 1, secondTab);
+		let path = record.slice(secondTab + 1);
+		let originalPath: string | undefined;
+		if (!path) {
+			originalPath = records[++index];
+			path = records[++index] ?? "";
+		}
+		if (!path) continue;
+		const binary = additionsText === "-" || deletionsText === "-";
+		files.push({
+			path,
+			...(originalPath ? { originalPath } : {}),
+			staged,
+			additions: binary ? 0 : Number(additionsText),
+			deletions: binary ? 0 : Number(deletionsText),
+			binary,
+		});
+	}
+	return files;
+}
+
+function parseGitTracking(value: string): { ahead: number; behind: number } {
+	return {
+		ahead: Number(/ahead (\d+)/u.exec(value)?.[1] ?? 0),
+		behind: Number(/behind (\d+)/u.exec(value)?.[1] ?? 0),
+	};
+}
+
+function parseGitHistory(output: string): Array<{
+	hash: string;
+	shortHash: string;
+	subject: string;
+	authorName: string;
+	authorEmail: string;
+	authoredAt: string;
+	parents: string[];
+}> {
+	const fields = output.split("\0");
+	const commits: Array<{
+		hash: string;
+		shortHash: string;
+		subject: string;
+		authorName: string;
+		authorEmail: string;
+		authoredAt: string;
+		parents: string[];
+	}> = [];
+	for (let index = 0; index + 6 < fields.length; index += 7) {
+		const hash = fields[index];
+		if (!hash) break;
+		commits.push({
+			hash,
+			shortHash: fields[index + 1] ?? "",
+			authorName: fields[index + 2] ?? "",
+			authorEmail: fields[index + 3] ?? "",
+			authoredAt: fields[index + 4] ?? "",
+			subject: fields[index + 5] ?? "",
+			parents: (fields[index + 6] ?? "").split(" ").filter(Boolean),
+		});
+	}
+	return commits;
+}
+
 async function discoverGitRepositoryRoots(projectRoot: string, rootRepository?: string): Promise<string[]> {
 	const repositories = new Set<string>();
 	if (rootRepository && isInside(projectRoot, rootRepository)) repositories.add(rootRepository);
@@ -470,6 +665,8 @@ function gitRepositoryStatus(status: GitStatus, projectRoot: string, rootReposit
 		kind: status.root === rootRepository ? "root" : "nested",
 		...(status.branch ? { branch: status.branch } : {}),
 		...(status.upstream ? { upstream: status.upstream } : {}),
+		...(status.detached ? { detached: true } : {}),
+		...(status.merging ? { merging: true } : {}),
 		ahead: status.ahead,
 		behind: status.behind,
 		files: status.files,
@@ -481,6 +678,7 @@ function parseGitStatus(root: string, output: string): GitStatus {
 	const files: GitFileStatus[] = [];
 	let branch: string | undefined;
 	let upstream: string | undefined;
+	let detached = false;
 	let ahead = 0;
 	let behind = 0;
 	for (let index = 0; index < records.length; index++) {
@@ -488,7 +686,8 @@ function parseGitStatus(root: string, output: string): GitStatus {
 		if (!record) continue;
 		if (record.startsWith("# branch.head ")) {
 			const value = record.slice(14);
-			if (value !== "(detached)") branch = value;
+			if (value === "(detached)") detached = true;
+			else branch = value;
 			continue;
 		}
 		if (record.startsWith("# branch.upstream ")) {
@@ -516,7 +715,15 @@ function parseGitStatus(root: string, output: string): GitStatus {
 			files.push(gitFile(fields.slice(10).join(" "), fields[1] ?? "UU", undefined, false, true));
 		}
 	}
-	return { root, ...(branch ? { branch } : {}), ...(upstream ? { upstream } : {}), ahead, behind, files };
+	return {
+		root,
+		...(branch ? { branch } : {}),
+		...(upstream ? { upstream } : {}),
+		...(detached ? { detached: true } : {}),
+		ahead,
+		behind,
+		files,
+	};
 }
 
 function jsonValue(value: unknown): JsonValue {
@@ -913,12 +1120,24 @@ async function requestAuthPrompt(onUiRequest: UiRequestHandler, prompt: AuthProm
 	return response.value;
 }
 
+function authEventMessage(event: AuthEvent): string {
+	switch (event.type) {
+		case "info":
+		case "progress":
+			return event.message;
+		case "auth_url":
+			return event.instructions?.trim() || "请在浏览器中完成模型认证";
+		case "device_code":
+			return `请使用验证码 ${event.userCode} 完成模型认证`;
+	}
+}
+
 function notifyAuthEvent(onUiRequest: UiRequestHandler, event: AuthEvent): void {
 	void onUiRequest({
 		id: randomUUID(),
 		kind: "notify",
 		title: "模型认证",
-		payload: jsonValue({ method: `auth_${event.type}`, ...event }),
+		payload: jsonValue({ method: `auth_${event.type}`, ...event, message: authEventMessage(event) }),
 	});
 }
 
@@ -1287,10 +1506,18 @@ class CoreRuntimeSession implements RuntimeSession {
 	private lastTranscriptGeneration?: string;
 	private lastTranscriptRevision = 0;
 	private disposed = false;
+	private readonly agentDir: string;
+	private companion?: WebCompanionServer;
+	private externalClientCount = 0;
 
-	constructor(runtime: Awaited<ReturnType<typeof createAgentSessionRuntime>>, onUiRequest: UiRequestHandler) {
+	constructor(
+		runtime: Awaited<ReturnType<typeof createAgentSessionRuntime>>,
+		onUiRequest: UiRequestHandler,
+		agentDir: string,
+	) {
 		this.runtime = runtime;
 		this.onUiRequest = onUiRequest;
+		this.agentDir = agentDir;
 	}
 
 	get sessionPath(): string {
@@ -1317,6 +1544,17 @@ class CoreRuntimeSession implements RuntimeSession {
 
 	ownsSessionWriter(): boolean {
 		return true;
+	}
+
+	hasExternalClients(): boolean {
+		const companion = this.companion as unknown as
+			| {
+					getClientCount?: () => number;
+					readySockets?: Set<unknown>;
+			  }
+			| undefined;
+		const companionClientCount = companion?.getClientCount?.() ?? companion?.readySockets?.size ?? 0;
+		return this.externalClientCount > 0 || companionClientCount > 0;
 	}
 
 	async bind(): Promise<void> {
@@ -1503,11 +1741,13 @@ class CoreRuntimeSession implements RuntimeSession {
 		);
 	}
 
-	async prompt(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void> {
+	async prompt(text: string, images?: Array<{ data: string; mimeType: string }>, _queueId?: string): Promise<void> {
 		const entryCount = this.runtime.session.sessionManager.getEntries().length;
 		await this.runtime.session.prompt(text, {
 			images: contentImages(images),
 			source: "rpc",
+			streamingBehavior: "followUp",
+			...(_queueId ? { queueId: _queueId } : {}),
 		});
 		await this.runtime.session.waitForIdle();
 		const error = promptFailure(this.runtime.session.sessionManager.getEntries().slice(entryCount));
@@ -1696,6 +1936,11 @@ class CoreRuntimeSession implements RuntimeSession {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.unsubscribe?.();
+		this.unsubscribe = undefined;
+		const companion = this.companion;
+		this.companion = undefined;
+		this.externalClientCount = 0;
+		await companion?.dispose();
 		await this.runtime.dispose();
 	}
 
@@ -1706,6 +1951,11 @@ class CoreRuntimeSession implements RuntimeSession {
 
 	private async bindCurrentSession(): Promise<void> {
 		this.unsubscribe?.();
+		this.unsubscribe = undefined;
+		const previousCompanion = this.companion;
+		this.companion = undefined;
+		this.externalClientCount = 0;
+		await previousCompanion?.dispose();
 		const session = this.runtime.session;
 		const unsupportedSessionChange = async () => {
 			throw new Error("LYStar Web Runtime不支持由扩展替换会话");
@@ -1735,6 +1985,26 @@ class CoreRuntimeSession implements RuntimeSession {
 			}
 			this.emit({ type: "state_changed", payload: jsonValue(this.getSnapshot("owned")) });
 		});
+		const companion = new WebCompanionServer(
+			session,
+			this.agentDir,
+			() => {
+				if (this.disposed || this.runtime.session !== session) return;
+				this.emitCommittedEntries();
+				this.emitStateChanged();
+			},
+			(count) => {
+				if (this.disposed || this.runtime.session !== session) return;
+				this.externalClientCount = count;
+				this.emitStateChanged();
+			},
+		);
+		await companion.start();
+		if (this.disposed || this.runtime.session !== session) {
+			await companion.dispose();
+			return;
+		}
+		this.companion = companion;
 	}
 
 	private emitCommittedEntries(): void {
@@ -1784,6 +2054,7 @@ export interface CodingAgentRuntimeAdapterOptions {
 	agentDir?: string;
 	initialRuntime?: AgentSessionRuntime;
 	createRuntime?: CreateAgentSessionRuntimeFactory;
+	preferSessionOwnership?: boolean;
 }
 
 export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
@@ -1792,19 +2063,23 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	private readonly externalResourceGrants = new Map<string, { path: string; expiresAt: number }>();
 	private readonly sessionInfoCache: SessionInfoCache = { entries: new Map() };
 	private readonly sessionListPromises = new Map<string, Promise<SessionSummaryBase[]>>();
+	private readonly gitRepositoryRootsCache = new Map<string, { rootRepository?: string; repositoryRoots: string[] }>();
 	private readonly nodeToolchain = probeUserNodeToolchain();
 	private modelRuntimePromise?: Promise<ModelRuntime>;
 	private initialRuntime?: AgentSessionRuntime;
 	private initialRuntimeClaimed = false;
+	private readonly preferSessionOwnership: boolean;
 
 	constructor(options: string | CodingAgentRuntimeAdapterOptions = getAgentDir()) {
 		if (typeof options === "string") {
 			this.agentDir = options;
+			this.preferSessionOwnership = false;
 			return;
 		}
 		this.agentDir = options.agentDir ?? getAgentDir();
 		this.initialRuntime = options.initialRuntime;
 		this.createRuntimeFactory = options.createRuntime;
+		this.preferSessionOwnership = options.preferSessionOwnership === true;
 	}
 
 	get hasClaimedInitialRuntime(): boolean {
@@ -1827,11 +2102,31 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			return this.createRuntime(manager.getCwd(), manager, onUiRequest);
 		} catch (error) {
 			if (!(error instanceof SessionLockedError)) throw error;
+			let handoffError: Error | undefined;
+			if (this.preferSessionOwnership) {
+				try {
+					if (await requestWebSessionHandoff(this.agentDir, sessionPath)) {
+						try {
+							const manager = await SessionManager.openAsync(sessionPath);
+							return this.createRuntime(manager.getCwd(), manager, onUiRequest);
+						} catch (takeoverError) {
+							if (!(takeoverError instanceof SessionLockedError)) throw takeoverError;
+							handoffError = takeoverError;
+						}
+					}
+				} catch (takeoverError) {
+					handoffError = takeoverError instanceof Error ? takeoverError : new Error(String(takeoverError));
+				}
+			}
 			try {
 				return await WebCompanionRuntime.open(this.agentDir, sessionPath);
 			} catch (companionError) {
 				if (companionError instanceof WebCompanionProtocolError) throw companionError;
-				throw error;
+				const cause = handoffError ?? (companionError instanceof Error ? companionError : error);
+				throw Object.assign(new Error("会话协作通道暂不可用，请稍后重试", { cause }), {
+					code: "session_coordination_unavailable",
+					retryable: true,
+				});
 			}
 		}
 	}
@@ -1896,6 +2191,10 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		await SessionManager.deleteSessionWithRecoveryLedger(this.agentDir, sessionPath, () =>
 			SessionManager.withWriterLock(sessionPath, () => unlinkSync(sessionPath)),
 		);
+	}
+
+	getSessionDirectory(cwd: string): string {
+		return getDefaultSessionDir(cwd, this.agentDir);
 	}
 
 	async listSessions(cwd: string, options: { metadataOnly?: boolean } = {}): Promise<SessionSummaryBase[]> {
@@ -2304,6 +2603,41 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		});
 	}
 
+	async listModelOptions(options: { includeProviders?: readonly string[] } = {}): Promise<ModelOptions> {
+		const runtime = await this.getModelRuntime();
+		const includedProviders = new Set(options.includeProviders ?? []);
+		const authenticatedProviders = new Set(
+			runtime
+				.getProviders()
+				.filter(
+					(provider) =>
+						runtime.getProviderAuthStatus(provider.id).configured || includedProviders.has(provider.id),
+				)
+				.map((provider) => provider.id),
+		);
+		const models = runtime
+			.getModels()
+			.filter((model) => authenticatedProviders.has(model.provider))
+			.map((model) => ({
+				provider: model.provider,
+				id: model.id,
+				name: model.name,
+				reasoning: model.reasoning,
+				contextWindow: model.contextWindow,
+				supportedThinkingLevels: getSupportedThinkingLevels(model),
+			}));
+		const visibleProviders = new Set(models.map((model) => model.provider));
+		const providers = runtime
+			.getProviders()
+			.filter((provider) => visibleProviders.has(provider.id))
+			.map((provider) => ({
+				id: provider.id,
+				name: provider.name,
+				builtIn: runtime.isBuiltinProvider(provider.id),
+			}));
+		return { models, providers };
+	}
+
 	async addModelProvider(input: ModelProviderInput): Promise<ModelProviderSummary[]> {
 		if (input.clearCatalogProvider)
 			await clearModelsJsonProviderCatalogProvider(join(this.agentDir, "models.json"), input.provider);
@@ -2613,30 +2947,53 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		});
 	}
 
-	async getGitStatus(cwd: string): Promise<GitStatus> {
+	async getGitStatus(cwd: string, options: { refreshRepositories?: boolean } = {}): Promise<GitStatus> {
 		const projectRoot = canonicalDirectory(cwd);
-		let rootRepository: string | undefined;
-		try {
-			const detectedRoot = canonicalDirectory((await git(cwd, ["rev-parse", "--show-toplevel"])).trim());
-			if (isInside(projectRoot, detectedRoot)) rootRepository = detectedRoot;
-		} catch {
-			// 当前目录可以是包含多个独立仓库的工作目录。
+		let topology = options.refreshRepositories ? undefined : this.gitRepositoryRootsCache.get(projectRoot);
+		if (!topology) {
+			let rootRepository: string | undefined;
+			try {
+				const detectedRoot = canonicalDirectory((await git(cwd, ["rev-parse", "--show-toplevel"])).trim());
+				if (isInside(projectRoot, detectedRoot)) rootRepository = detectedRoot;
+			} catch {
+				// 当前目录可以是包含多个独立仓库的工作目录。
+			}
+			topology = {
+				rootRepository,
+				repositoryRoots: await discoverGitRepositoryRoots(projectRoot, rootRepository),
+			};
+			this.gitRepositoryRootsCache.set(projectRoot, topology);
 		}
-		const repositoryRoots = await discoverGitRepositoryRoots(projectRoot, rootRepository);
-		const statuses = await Promise.all(
-			repositoryRoots.map(async (repositoryRootPath) =>
-				parseGitStatus(
-					repositoryRootPath,
-					await git(repositoryRootPath, ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]),
-				),
-			),
-		);
+		let statuses: GitStatus[];
+		try {
+			statuses = await Promise.all(
+				topology.repositoryRoots.map(async (repositoryRootPath) => {
+					const status = parseGitStatus(
+						repositoryRootPath,
+						await git(repositoryRootPath, [
+							"status",
+							"--porcelain=v2",
+							"--branch",
+							"-z",
+							"--untracked-files=all",
+						]),
+					);
+					return (await gitMergeInProgress(repositoryRootPath)) ? { ...status, merging: true } : status;
+				}),
+			);
+		} catch (error) {
+			if (!options.refreshRepositories) {
+				this.gitRepositoryRootsCache.delete(projectRoot);
+				return this.getGitStatus(projectRoot, { refreshRepositories: true });
+			}
+			throw error;
+		}
 		const primary =
-			statuses.find((status) => status.root === rootRepository) ??
+			statuses.find((status) => status.root === topology.rootRepository) ??
 			statuses.slice().sort((left, right) => left.root.localeCompare(right.root))[0];
 		if (!primary) throw Object.assign(new Error("未找到 Git 仓库"), { code: "git_not_repository" });
 		const repositories = statuses
-			.map((status) => gitRepositoryStatus(status, projectRoot, rootRepository))
+			.map((status) => gitRepositoryStatus(status, projectRoot, topology.rootRepository))
 			.sort(
 				(left, right) =>
 					Number(right.kind === "root") - Number(left.kind === "root") || left.path.localeCompare(right.path),
@@ -2646,40 +3003,8 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 
 	async getGitDiff(cwd: string, path: string | undefined, staged: boolean, repositoryPath?: string): Promise<GitDiff> {
 		const projectRoot = canonicalDirectory(cwd);
-		let repositoryRoot: string;
-		if (repositoryPath) {
-			if (repositoryPath.includes("\0") || isAbsolute(repositoryPath)) {
-				throw Object.assign(new Error("Git 仓库路径必须是项目内相对路径"), { code: "git_repository_path_invalid" });
-			}
-			const candidate = resolve(projectRoot, repositoryPath);
-			if (!isInside(projectRoot, candidate)) {
-				throw Object.assign(new Error("Git 仓库不在当前项目范围内"), { code: "resource_outside_project" });
-			}
-			repositoryRoot = canonicalDirectory(candidate);
-			const detectedRoot = canonicalDirectory((await git(repositoryRoot, ["rev-parse", "--show-toplevel"])).trim());
-			if (detectedRoot !== repositoryRoot || !isInside(projectRoot, detectedRoot)) {
-				throw Object.assign(new Error("目标目录不是当前项目内的 Git 仓库"), {
-					code: "git_repository_path_invalid",
-				});
-			}
-		} else {
-			try {
-				repositoryRoot = canonicalDirectory((await git(cwd, ["rev-parse", "--show-toplevel"])).trim());
-				if (!isInside(projectRoot, repositoryRoot)) throw new Error("Git 根目录不在当前项目范围内");
-			} catch {
-				const repositoryRoots = await discoverGitRepositoryRoots(projectRoot);
-				repositoryRoot = repositoryRoots[0] ?? "";
-				if (!repositoryRoot) {
-					throw Object.assign(new Error("未找到 Git 仓库"), { code: "git_not_repository" });
-				}
-			}
-		}
-		if (
-			path &&
-			(path.includes("\0") || isAbsolute(path) || !isInside(repositoryRoot, resolve(repositoryRoot, path)))
-		) {
-			throw Object.assign(new Error("Git 文件路径无效"), { code: "git_file_path_invalid" });
-		}
+		const repositoryRoot = await resolveGitRepositoryRoot(projectRoot, repositoryPath);
+		if (path) assertGitFilePath(repositoryRoot, path);
 		const args = ["diff", "--no-ext-diff", "--unified=3"];
 		if (staged) args.push("--cached");
 		if (path) args.push("--", path);
@@ -2705,6 +3030,314 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			: readWorkingTreeGitContent(repositoryRoot, path);
 		if (original === undefined || modified === undefined) return { ...result, contentTruncated: true };
 		return { ...result, original, modified };
+	}
+
+	async getGitStats(cwd: string, repositoryPath?: string): Promise<GitStats> {
+		const projectRoot = canonicalDirectory(cwd);
+		const repositoryRoot = await resolveGitRepositoryRoot(projectRoot, repositoryPath);
+		const [worktree, staged] = await Promise.all([
+			git(repositoryRoot, ["diff", "--numstat", "-z", "--find-renames"]),
+			git(repositoryRoot, ["diff", "--cached", "--numstat", "-z", "--find-renames"]),
+		]);
+		return {
+			repositoryPath: repositoryPathFromRoot(projectRoot, repositoryRoot),
+			files: [...parseGitNumStats(worktree, false), ...parseGitNumStats(staged, true)],
+		};
+	}
+
+	async getGitBranches(cwd: string, repositoryPath?: string): Promise<GitBranches> {
+		const projectRoot = canonicalDirectory(cwd);
+		const repositoryRoot = await resolveGitRepositoryRoot(projectRoot, repositoryPath);
+		const [current, hasHead, merging, remotesOutput, branchesOutput] = await Promise.all([
+			currentGitBranch(repositoryRoot),
+			gitHasHead(repositoryRoot),
+			gitMergeInProgress(repositoryRoot),
+			git(repositoryRoot, ["remote"]),
+			git(repositoryRoot, [
+				"for-each-ref",
+				"--format=%(refname)%00%(refname:short)%00%(HEAD)%00%(upstream:short)%00%(upstream:track)%00%(objectname)%00",
+				"refs/heads",
+				"refs/remotes",
+			]),
+		]);
+		const branches = branchesOutput
+			.split("\n")
+			.flatMap((row) => {
+				if (!row) return [];
+				const [refname, name, head, upstream, tracking, commit] = row.split("\0");
+				if (!refname || !name || !commit || refname.endsWith("/HEAD")) return [];
+				const remote = refname.startsWith("refs/remotes/");
+				return [
+					{
+						name,
+						current: head.trim() === "*",
+						remote,
+						...(upstream ? { upstream } : {}),
+						...parseGitTracking(tracking ?? ""),
+						commit,
+					},
+				];
+			})
+			.sort(
+				(left, right) =>
+					Number(right.current) - Number(left.current) ||
+					Number(left.remote) - Number(right.remote) ||
+					left.name.localeCompare(right.name),
+			);
+		return {
+			repositoryPath: repositoryPathFromRoot(projectRoot, repositoryRoot),
+			...(current ? { current } : {}),
+			detached: !current && hasHead,
+			merging,
+			remotes: remotesOutput
+				.split("\n")
+				.map((remote) => remote.trim())
+				.filter(Boolean),
+			branches,
+		};
+	}
+
+	async getGitHistory(cwd: string, offset: number, limit: number, repositoryPath?: string): Promise<GitHistory> {
+		const projectRoot = canonicalDirectory(cwd);
+		const repositoryRoot = await resolveGitRepositoryRoot(projectRoot, repositoryPath);
+		const resolvedRepositoryPath = repositoryPathFromRoot(projectRoot, repositoryRoot);
+		if (!(await gitHasHead(repositoryRoot))) {
+			return { repositoryPath: resolvedRepositoryPath, offset, commits: [], hasMore: false };
+		}
+		const commits = parseGitHistory(
+			await git(repositoryRoot, [
+				"log",
+				"-z",
+				`--skip=${offset}`,
+				`--max-count=${limit + 1}`,
+				"--format=%H%x00%h%x00%an%x00%ae%x00%aI%x00%s%x00%P",
+			]),
+		);
+		const hasMore = commits.length > limit;
+		const page = commits.slice(0, limit);
+		return {
+			repositoryPath: resolvedRepositoryPath,
+			offset,
+			commits: page,
+			...(hasMore ? { nextOffset: offset + page.length } : {}),
+			hasMore,
+		};
+	}
+
+	async getGitCommit(cwd: string, revision: string, repositoryPath?: string, path?: string): Promise<GitCommit> {
+		assertGitRevision(revision);
+		const projectRoot = canonicalDirectory(cwd);
+		const repositoryRoot = await resolveGitRepositoryRoot(projectRoot, repositoryPath);
+		if (path) assertGitFilePath(repositoryRoot, path);
+		const fields = (
+			await git(repositoryRoot, [
+				"show",
+				"-s",
+				"-z",
+				"--format=%H%x00%h%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%s%x00%B%x00%P",
+				revision,
+			])
+		).split("\0");
+		const hash = fields[0];
+		if (!hash || fields.length < 11) {
+			throw Object.assign(new Error("未找到 Git 提交"), { code: "git_commit_not_found", retryable: false });
+		}
+		const parents = (fields[10] ?? "").split(" ").filter(Boolean);
+		const firstParent = parents[0];
+		const fileStats = parseGitNumStats(
+			firstParent
+				? await git(repositoryRoot, ["diff", "--numstat", "-z", "--find-renames", firstParent, hash])
+				: await git(repositoryRoot, [
+						"diff-tree",
+						"--root",
+						"--no-commit-id",
+						"-r",
+						"--numstat",
+						"-z",
+						"--find-renames",
+						hash,
+					]),
+			false,
+		);
+		const files = fileStats.map(({ staged: _staged, ...file }) => file);
+		let diff: GitDiff | undefined;
+		if (path) {
+			const file = files.find((candidate) => candidate.path === path);
+			const patch = firstParent
+				? await git(repositoryRoot, [
+						"diff",
+						"--no-ext-diff",
+						"--unified=3",
+						"--find-renames",
+						firstParent,
+						hash,
+						"--",
+						path,
+					])
+				: await git(repositoryRoot, [
+						"show",
+						"--format=",
+						"--no-ext-diff",
+						"--unified=3",
+						"--find-renames",
+						hash,
+						"--",
+						path,
+					]);
+			const original = firstParent
+				? await readGitRevisionContent(repositoryRoot, firstParent, file?.originalPath ?? path)
+				: "";
+			const modified = await readGitRevisionContent(repositoryRoot, hash, path);
+			diff = {
+				path,
+				repositoryPath: repositoryPathFromRoot(projectRoot, repositoryRoot),
+				staged: false,
+				revision: hash,
+				diff: patch,
+				additions: file?.additions ?? 0,
+				deletions: file?.deletions ?? 0,
+				...(original === undefined || modified === undefined ? { contentTruncated: true } : { original, modified }),
+			};
+		}
+		return {
+			repositoryPath: repositoryPathFromRoot(projectRoot, repositoryRoot),
+			hash,
+			shortHash: fields[1] ?? hash.slice(0, 7),
+			authorName: fields[2] ?? "",
+			authorEmail: fields[3] ?? "",
+			authoredAt: fields[4] ?? "",
+			committerName: fields[5] ?? "",
+			committerEmail: fields[6] ?? "",
+			committedAt: fields[7] ?? "",
+			subject: fields[8] ?? "",
+			body: fields[9] ?? "",
+			parents,
+			files,
+			...(diff ? { diff } : {}),
+		};
+	}
+
+	async mutateGit(
+		cwd: string,
+		repositoryPath: string | undefined,
+		mutation: GitMutation,
+		signal?: AbortSignal,
+	): Promise<GitMutationResult> {
+		const projectRoot = canonicalDirectory(cwd);
+		const repositoryRoot = await resolveGitRepositoryRoot(projectRoot, repositoryPath);
+		const resolvedRepositoryPath = repositoryPathFromRoot(projectRoot, repositoryRoot);
+		let message: string;
+		switch (mutation.type) {
+			case "stage":
+				for (const path of mutation.paths) assertGitFilePath(repositoryRoot, path);
+				await gitWrite(repositoryRoot, ["add", "--", ...mutation.paths], signal);
+				message = `已暂存 ${mutation.paths.length} 个文件`;
+				break;
+			case "unstage":
+				for (const path of mutation.paths) assertGitFilePath(repositoryRoot, path);
+				await gitWrite(repositoryRoot, ["reset", "--quiet", "--", ...mutation.paths], signal);
+				message = `已取消暂存 ${mutation.paths.length} 个文件`;
+				break;
+			case "discard": {
+				for (const path of mutation.paths) assertGitFilePath(repositoryRoot, path);
+				const status = parseGitStatus(
+					repositoryRoot,
+					await git(repositoryRoot, ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]),
+				);
+				const untrackedPaths = new Set(status.files.filter((file) => file.untracked).map((file) => file.path));
+				const tracked = mutation.paths.filter((path) => !untrackedPaths.has(path));
+				const untracked = mutation.paths.filter((path) => untrackedPaths.has(path));
+				if (tracked.length > 0) await gitWrite(repositoryRoot, ["restore", "--worktree", "--", ...tracked], signal);
+				if (untracked.length > 0) await gitWrite(repositoryRoot, ["clean", "-f", "--", ...untracked], signal);
+				message = `已恢复 ${mutation.paths.length} 个文件`;
+				break;
+			}
+			case "commit": {
+				const commitMessage = mutation.message.trim();
+				if (!commitMessage)
+					throw Object.assign(new Error("提交说明不能为空"), { code: "git_commit_message_required" });
+				await gitWrite(repositoryRoot, ["commit", "-m", commitMessage], signal);
+				const shortHash = (await git(repositoryRoot, ["rev-parse", "--short", "HEAD"])).trim();
+				message = `已提交 ${shortHash}`;
+				break;
+			}
+			case "fetch":
+				await gitWrite(repositoryRoot, ["fetch"], signal);
+				message = "已获取远端更新";
+				break;
+			case "pull":
+				await gitWrite(repositoryRoot, ["pull", "--ff-only"], signal);
+				message = "已快进拉取远端更新";
+				break;
+			case "push": {
+				let upstream: string | undefined;
+				try {
+					upstream = (
+						await git(repositoryRoot, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
+					).trim();
+				} catch {
+					upstream = undefined;
+				}
+				if (upstream) {
+					await gitWrite(repositoryRoot, ["push"], signal);
+				} else {
+					const branch = await currentGitBranch(repositoryRoot);
+					if (!branch)
+						throw Object.assign(new Error("Detached HEAD 不能直接推送"), {
+							code: "git_detached_head",
+							retryable: false,
+						});
+					const remotes = (await git(repositoryRoot, ["remote"]))
+						.split("\n")
+						.map((remote) => remote.trim())
+						.filter(Boolean);
+					const remote = remotes[0];
+					if (!remote || remotes.length !== 1) {
+						throw Object.assign(new Error("当前分支没有上游，且无法确定唯一远端"), {
+							code: "git_upstream_required",
+							retryable: false,
+						});
+					}
+					await gitWrite(repositoryRoot, ["push", "--set-upstream", remote, branch], signal);
+				}
+				message = "已推送当前分支";
+				break;
+			}
+			case "create_branch": {
+				const name = await validateGitBranchName(repositoryRoot, mutation.name);
+				await gitWrite(repositoryRoot, ["switch", "-c", name], signal);
+				message = `已创建并切换到 ${name}`;
+				break;
+			}
+			case "switch_branch": {
+				const name = await validateGitBranchName(repositoryRoot, mutation.name);
+				await gitWrite(repositoryRoot, ["switch", name], signal);
+				message = `已切换到 ${name}`;
+				break;
+			}
+			case "delete_branch": {
+				const name = await validateGitBranchName(repositoryRoot, mutation.name);
+				await gitWrite(repositoryRoot, ["branch", "-d", name], signal);
+				message = `已删除分支 ${name}`;
+				break;
+			}
+			case "merge": {
+				const source = await validateGitBranchName(repositoryRoot, mutation.source);
+				await gitWrite(repositoryRoot, ["merge", "--no-edit", "--", source], signal);
+				message = `已合并 ${source}`;
+				break;
+			}
+			case "abort_merge":
+				await gitWrite(repositoryRoot, ["merge", "--abort"], signal);
+				message = "已中止合并";
+				break;
+		}
+		return {
+			repositoryPath: resolvedRepositoryPath,
+			action: mutation.type,
+			message,
+			status: await this.getGitStatus(projectRoot),
+		};
 	}
 
 	async checkForUpdates(): Promise<JsonValue> {
@@ -2986,7 +3619,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	}
 
 	private async wrapRuntime(runtime: AgentSessionRuntime, onUiRequest: UiRequestHandler): Promise<RuntimeSession> {
-		const wrapped = new CoreRuntimeSession(runtime, onUiRequest);
+		const wrapped = new CoreRuntimeSession(runtime, onUiRequest, this.agentDir);
 		try {
 			await wrapped.bind();
 			return wrapped;

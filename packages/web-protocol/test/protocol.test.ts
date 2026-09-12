@@ -507,6 +507,101 @@ describe("Web Runtime Protocol v1", () => {
 		).toThrow();
 	});
 
+	it("strictly decodes bounded Git reads and mutations", () => {
+		const decoder = new ClientMessageDecoder();
+		const mutation = {
+			type: "request" as const,
+			id: "git-stage",
+			request: {
+				command: "mutate_git" as const,
+				cwd: "/tmp/project",
+				repositoryPath: "packages/app",
+				mutation: { type: "stage" as const, paths: ["src/app.ts"] },
+				clientInstanceId: "client",
+				clientRequestId: "git-stage-1",
+			},
+		};
+		expect(decoder.push(encodeClientMessage(mutation))).toEqual([mutation]);
+		expect(() =>
+			encodeClientMessage({
+				...mutation,
+				request: { ...mutation.request, mutation: { type: "rebase", branch: "main" } },
+			} as never),
+		).toThrow();
+		expect(() =>
+			encodeClientMessage({
+				type: "request",
+				id: "git-history-overflow",
+				request: { command: "get_git_history", cwd: "/tmp/project", offset: 0, limit: 101 },
+			}),
+		).toThrow();
+
+		const status = {
+			root: "/tmp/project/packages/app",
+			branch: "main",
+			upstream: "origin/main",
+			ahead: 1,
+			behind: 0,
+			files: [
+				{
+					path: "src/app.ts",
+					indexStatus: "M",
+					worktreeStatus: ".",
+					staged: true,
+					unstaged: false,
+					untracked: false,
+					conflicted: false,
+				},
+			],
+		};
+		expect(() =>
+			assertWorkspaceCommandResult("mutate_git", {
+				repositoryPath: "packages/app",
+				action: "stage",
+				message: "已暂存 1 个文件",
+				status,
+			}),
+		).not.toThrow();
+		expect(() =>
+			assertWorkspaceCommandResult("get_git_history", {
+				repositoryPath: "packages/app",
+				offset: 0,
+				commits: [
+					{
+						hash: "a".repeat(40),
+						shortHash: "aaaaaaa",
+						subject: "Commit",
+						authorName: "LYStar",
+						authorEmail: "lystar@example.invalid",
+						authoredAt: "2026-09-12T00:00:00Z",
+						parents: [],
+					},
+				],
+				hasMore: false,
+			}),
+		).not.toThrow();
+		expect(() =>
+			assertWorkspaceCommandResult("get_git_branches", {
+				repositoryPath: "packages/app",
+				current: "main",
+				detached: false,
+				merging: false,
+				remotes: ["origin"],
+				branches: [
+					{
+						name: "main",
+						current: true,
+						remote: false,
+						upstream: "origin/main",
+						ahead: 1,
+						behind: 0,
+						commit: "a".repeat(40),
+					},
+				],
+			}),
+		).not.toThrow();
+	});
+
 	it("rejects Workspace oversized clipboard, tree, package, and settings payloads", () => {
 		const decoder = new ClientMessageDecoder();
 		expect(() =>
