@@ -249,18 +249,53 @@ jobs:
             fi
           else
             git fetch origin --tags
-            if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
-              echo "Release tag already exists: ${tag}" >&2
-              exit 1
-            fi
             source_sha="$(git rev-parse HEAD)"
-            git tag -a "$tag" "$source_sha" -m "LYStar Code $tag" -m "本版紧急修复。"
-            git push origin "$tag"
+            remote_tag_sha="$(git ls-remote origin "refs/tags/${tag}^{}" | awk '{print $1}')"
+            if [[ -z "$remote_tag_sha" ]]; then
+              remote_tag_sha="$(git ls-remote origin "refs/tags/${tag}" | awk '{print $1}')"
+            fi
+            if [[ -n "$remote_tag_sha" ]]; then
+              if [[ "$remote_tag_sha" != "$source_sha" ]]; then
+                echo "Release tag ${tag} points to ${remote_tag_sha}, expected ${source_sha}" >&2
+                exit 1
+              fi
+              echo "Reusing release tag ${tag} at ${source_sha}"
+            else
+              git tag -a "$tag" "$source_sha" -m "LYStar Code $tag" -m "本版紧急修复。"
+              git push origin "$tag"
+            fi
           fi
           {
             echo "version=$version"
             echo "tag=$tag"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Generate Chinese release notes
+        id: release-notes
+        shell: bash
+        run: |
+          version="${{ steps.tag.outputs.version }}"
+          tag="${{ steps.tag.outputs.tag }}"
+          heading="## [${version}]"
+          notes_path="${RUNNER_TEMP}/release-notes.md"
+          {
+            printf '# LYStar Code v%s\n\n' "$version"
+            awk -v heading="$heading" '
+              index($0, heading) == 1 { capture = 1; next }
+              capture && /^## \[/ { exit }
+              capture { print }
+            ' packages/coding-agent/CHANGELOG.md
+            previous_tag="$(git describe --tags --abbrev=0 "${tag}^" 2>/dev/null || true)"
+            if [[ -n "$previous_tag" ]]; then
+              printf '\n**完整提交对比**：https://github.com/%s/compare/%s...%s\n' \
+                "$GITHUB_REPOSITORY" "$previous_tag" "$tag"
+            fi
+          } > "$notes_path"
+          if ! grep -q '^### ' "$notes_path"; then
+            echo "No changelog section found for ${version}" >&2
+            exit 1
+          fi
+          echo "path=$notes_path" >> "$GITHUB_OUTPUT"
 
       - name: Attest release artifacts
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
@@ -277,14 +312,26 @@ jobs:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          gh release create "${{ steps.tag.outputs.tag }}" \
-            --verify-tag \
-            --generate-notes \
-            packages/coding-agent/binaries/*.tar.gz \
-            packages/coding-agent/binaries/*.zip \
-            packages/coding-agent/binaries/SHA256SUMS \
-            packages/coding-agent/binaries/release-manifest.json \
-            packages/coding-agent/binaries/install.sh \
-            packages/coding-agent/binaries/install.ps1 \
+          tag="${{ steps.tag.outputs.tag }}"
+          notes_path="${{ steps.release-notes.outputs.path }}"
+          assets=(
+            packages/coding-agent/binaries/*.tar.gz
+            packages/coding-agent/binaries/*.zip
+            packages/coding-agent/binaries/SHA256SUMS
+            packages/coding-agent/binaries/release-manifest.json
+            packages/coding-agent/binaries/install.sh
+            packages/coding-agent/binaries/install.ps1
             packages/coding-agent/binaries/install.cmd
+          )
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --title "$tag" --notes-file "$notes_path"
+            gh release upload "$tag" --clobber "${assets[@]}"
+          else
+            gh release create "$tag" \
+              --verify-tag \
+              --title "$tag" \
+              --notes-file "$notes_path" \
+              "${assets[@]}"
+          fi
