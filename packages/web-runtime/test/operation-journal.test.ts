@@ -1,6 +1,7 @@
 import { mkdtempSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	hashOperationPayload,
@@ -198,6 +199,37 @@ describe("OperationJournal", () => {
 			expect(reopened.find("current-client", "current-request", "current-hash")?.status).toBe("accepted");
 			expect(readdirSync(dirname(path)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
 		}
+	});
+
+	it("loads large persisted operation payloads within the Runtime startup budget", () => {
+		const path = journalPath();
+		const largeResult = {
+			items: Array.from({ length: 3_000 }, (_, index) => ({
+				index,
+				path: `/tmp/file-${index}.txt`,
+				content: "x".repeat(100),
+			})),
+		};
+		const records = ["first", "second"].map((operationId) => ({
+			operationId,
+			clientInstanceId: "client",
+			clientRequestId: operationId,
+			sessionPath: "/tmp/session.jsonl",
+			type: "export_session",
+			status: "completed",
+			acceptedAt: 1,
+			updatedAt: 2,
+			payloadHash: `${operationId}-hash`,
+			result: largeResult,
+		}));
+		writeFileSync(path, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
+
+		const started = performance.now();
+		const journal = new OperationJournal(path);
+		const elapsed = performance.now() - started;
+
+		expect(journal.list()).toHaveLength(2);
+		expect(elapsed).toBeLessThan(1_000);
 	});
 
 	it("refuses writes when a journal record fails the protocol schema", () => {

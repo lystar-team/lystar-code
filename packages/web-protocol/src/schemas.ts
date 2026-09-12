@@ -1,4 +1,5 @@
 import Type, { type Static } from "typebox";
+import { Compile } from "typebox/compile";
 import { Check } from "typebox/value";
 
 export const RUNTIME_PROTOCOL_VERSION = 6 as const;
@@ -627,9 +628,10 @@ export const OperationSnapshotSchema = StrictObject({
 	error: Type.Optional(Type.String()),
 });
 export type OperationSnapshot = Static<typeof OperationSnapshotSchema>;
+const validateOperationSnapshot = Compile(OperationSnapshotSchema);
 
 export function isOperationSnapshot(value: unknown): value is OperationSnapshot {
-	return Check(OperationSnapshotSchema, value);
+	return validateOperationSnapshot.Check(value);
 }
 
 export const SkillScopeSchema = Type.Union([Type.Literal("user"), Type.Literal("project"), Type.Literal("temporary")]);
