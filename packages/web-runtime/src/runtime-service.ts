@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import {
 	type ByteTransport,
 	type OperationSnapshot,
+	RUNTIME_PROTOCOL_VERSION,
 	RuntimeProtocolClient,
 	type SessionStateSnapshot,
 } from "@lystar/code-web-protocol";
@@ -269,10 +270,18 @@ class SocketTransport implements ByteTransport {
 	}
 }
 
-async function openRuntimeControlClient(endpoint: string, timeoutMs: number): Promise<RuntimeProtocolClient> {
+async function openRuntimeControlClient(
+	endpoint: string,
+	timeoutMs: number,
+	protocolVersion: number = RUNTIME_PROTOCOL_VERSION,
+): Promise<RuntimeProtocolClient> {
 	const client = new RuntimeProtocolClient(
 		new SocketTransport(await connectRuntimeEndpoint(endpoint, timeoutMs)),
 		`host-control-${process.pid}-${Date.now()}`,
+		{
+			protocolVersion,
+			trustedServerMessages: protocolVersion !== RUNTIME_PROTOCOL_VERSION,
+		},
 	);
 	try {
 		await client.connect();
@@ -302,13 +311,33 @@ async function probeRuntimeProtocol(endpoint: string, timeoutMs = 1_000): Promis
 	}
 }
 
-async function readHostSnapshot(endpoint: string): Promise<HostSnapshot | undefined> {
-	if (!(await probeIpcRuntime(endpoint)).reachable) return undefined;
-	const client = await openRuntimeControlClient(endpoint, 5_000);
+function incompatibleRuntimeVersion(error: unknown): number | undefined {
+	const message = error instanceof Error ? error.message : String(error);
+	if (!message.startsWith("Web Runtime Protocol ") || !message.includes(" is unsupported; Host requires "))
+		return undefined;
+	const match = /Host requires (\d+)/u.exec(message);
+	if (!match) return undefined;
+	const version = Number.parseInt(match[1]!, 10);
+	return Number.isInteger(version) && version >= 0 && version !== RUNTIME_PROTOCOL_VERSION ? version : undefined;
+}
+
+async function requestHostSnapshot(endpoint: string, protocolVersion: number): Promise<HostSnapshot> {
+	const client = await openRuntimeControlClient(endpoint, 5_000, protocolVersion);
 	try {
 		return await client.request<HostSnapshot>({ command: "get_snapshot" }, { timeoutMs: 5_000 });
 	} finally {
 		await client.close();
+	}
+}
+
+async function readHostSnapshot(endpoint: string): Promise<HostSnapshot | undefined> {
+	if (!(await probeIpcRuntime(endpoint)).reachable) return undefined;
+	try {
+		return await requestHostSnapshot(endpoint, RUNTIME_PROTOCOL_VERSION);
+	} catch (error) {
+		const legacyVersion = incompatibleRuntimeVersion(error);
+		if (legacyVersion === undefined) throw error;
+		return requestHostSnapshot(endpoint, legacyVersion);
 	}
 }
 
