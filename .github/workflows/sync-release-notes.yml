@@ -1,0 +1,63 @@
+name: Sync GitHub Release Notes
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/sync-release-notes.yml"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to update; defaults to the current product version
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  sync-release-notes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Generate and publish Chinese release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          current_version="$(node -p "require('./packages/coding-agent/package.json').piConfig.productVersion")"
+          tag="${REQUESTED_TAG:-v${current_version}}"
+          version="${tag#v}"
+          heading="## [${version}]"
+          notes_path="${RUNNER_TEMP}/release-notes.md"
+          {
+            printf '# LYStar Code v%s\n\n' "$version"
+            awk -v heading="$heading" '
+              index($0, heading) == 1 { capture = 1; next }
+              capture && /^## \[/ { exit }
+              capture && $0 == "### Added" { print "### 新增"; next }
+              capture && $0 == "### Changed" { print "### 调整"; next }
+              capture && $0 == "### Fixed" { print "### 修复"; next }
+              capture && $0 == "### Removed" { print "### 移除"; next }
+              capture && $0 == "### Breaking Changes" { print "### 破坏性变更"; next }
+              capture { print }
+            ' packages/coding-agent/CHANGELOG.md
+            previous_tag="$(git describe --tags --abbrev=0 "${tag}^" 2>/dev/null || true)"
+            if [[ -n "$previous_tag" ]]; then
+              printf '\n**完整提交对比**：https://github.com/%s/compare/%s...%s\n' \
+                "$GITHUB_REPOSITORY" "$previous_tag" "$tag"
+            fi
+          } > "$notes_path"
+          if ! grep -q '^### ' "$notes_path"; then
+            echo "No changelog section found for ${version}" >&2
+            exit 1
+          fi
+          gh release view "$tag" >/dev/null
+          gh release edit "$tag" --title "$tag" --notes-file "$notes_path"
