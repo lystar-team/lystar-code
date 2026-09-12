@@ -34,7 +34,7 @@ import {
 	type WebGatewayConfig,
 } from "./config.ts";
 import { readGatewayPid } from "./instance-lock.ts";
-import { runServiceVersionTransaction } from "./service-version-transaction.ts";
+import { requiresServiceVersionReconcile, runServiceVersionTransaction } from "./service-version-transaction.ts";
 
 const SERVICE_STATE_VERSION = 1 as const;
 const DEFAULT_PROFILE = "default";
@@ -421,6 +421,9 @@ export async function ensureWebServices(options: WebServiceLaunchOptions): Promi
 			`Web 尚未完成配置，请先运行 lc web。配置文件：${join(options.agentDir, options.configFileName ?? "web-config.json")}`,
 		);
 	const state = readState(options.agentDir, options.configFileName);
+	if (requiresServiceVersionReconcile(options.serviceVersion, state?.serviceVersion)) {
+		return reconcileWebServices(options);
+	}
 	const launchOptions = state?.serviceVersion ? { ...options, serviceVersion: state.serviceVersion } : options;
 	await applyWebServices(config, launchOptions, false);
 	writeState(config, launchOptions);
@@ -454,6 +457,13 @@ export async function runWebComponentAction(
 ): Promise<WebServiceStatus | RuntimeServiceStatus> {
 	const configured = await loadConfiguredGateway(options);
 	const state = readState(options.agentDir, options.configFileName);
+	if (
+		(options.action === "start" || options.action === "restart") &&
+		requiresServiceVersionReconcile(options.serviceVersion, state?.serviceVersion)
+	) {
+		const services = await reconcileWebServices(options);
+		return options.component === "runtime" ? services.runtime : services.gateway;
+	}
 	const config = configured ?? (state ? stateConfig(state, options) : fallbackGatewayConfig(options));
 	const profile = profileFor(options.configFileName);
 	const interactiveAdmin = options.interactiveAdmin ?? false;

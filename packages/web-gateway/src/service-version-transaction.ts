@@ -18,6 +18,13 @@ export interface ServiceVersionTransactionResult {
 	};
 }
 
+export function requiresServiceVersionReconcile(
+	targetVersion: string | undefined,
+	serviceVersion: string | undefined,
+): boolean {
+	return targetVersion !== undefined && serviceVersion !== undefined && targetVersion !== serviceVersion;
+}
+
 export async function runServiceVersionTransaction(
 	options: ServiceVersionTransactionOptions,
 ): Promise<ServiceVersionTransactionResult> {

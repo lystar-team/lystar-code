@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { runServiceVersionTransaction } from "../src/service-version-transaction.ts";
+import { requiresServiceVersionReconcile, runServiceVersionTransaction } from "../src/service-version-transaction.ts";
+
+test("记录的服务版本落后时需要 reconcile", () => {
+	assert.equal(requiresServiceVersionReconcile("0.85.1-lystar.11", "0.85.1-lystar.7"), true);
+	assert.equal(requiresServiceVersionReconcile("0.85.1-lystar.11", "0.85.1-lystar.11"), false);
+	assert.equal(requiresServiceVersionReconcile("0.85.1-lystar.11", undefined), false);
+	assert.equal(requiresServiceVersionReconcile(undefined, "0.85.1-lystar.7"), false);
+});
 
 test("服务版本事务在目标服务健康后提交目标版本", async () => {
 	const applied: Array<string | undefined> = [];
