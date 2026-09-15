@@ -240,9 +240,129 @@ div:has(> .prompt-input-shell [data-slot="input-group-control"]:focus-visible) >
 	border-color: var(--ring) !important;
 }
 
+.command-output-toggle {
+	font-size: 0.8125rem;
+	line-height: 1.25rem;
+}
+
+.tool-command-block .code-block-pre {
+	padding: 0.5rem 0.75rem;
+	font-size: 0.8125rem;
+	line-height: 1.25rem;
+}
+
+.tool-command-block .code-block-pre code {
+	font-size: inherit;
+	line-height: inherit;
+}
+
+.tool-command-output .ansi-black-fg,
+.tool-command-output .ansi-bright-black-fg {
+	color: var(--text-muted);
+}
+
+.tool-command-output .ansi-red-fg,
+.tool-command-output .ansi-bright-red-fg {
+	color: var(--danger);
+}
+
+.tool-command-output .ansi-green-fg,
+.tool-command-output .ansi-bright-green-fg {
+	color: var(--success);
+}
+
+.tool-command-output .ansi-yellow-fg,
+.tool-command-output .ansi-bright-yellow-fg {
+	color: var(--warning);
+}
+
+.tool-command-output .ansi-blue-fg,
+.tool-command-output .ansi-bright-blue-fg,
+.tool-command-output .ansi-magenta-fg,
+.tool-command-output .ansi-bright-magenta-fg,
+.tool-command-output .ansi-cyan-fg,
+.tool-command-output .ansi-bright-cyan-fg {
+	color: var(--brand);
+}
+
+.tool-command-output .ansi-white-fg,
+.tool-command-output .ansi-bright-white-fg {
+	color: var(--foreground);
+}
+
+.tool-command-output [class$="-bg"] {
+	border-radius: 0.125rem;
+}
+
+.tool-command-output .ansi-black-bg,
+.tool-command-output .ansi-bright-black-bg {
+	background-color: var(--bg-strong);
+}
+
+.tool-command-output .ansi-red-bg,
+.tool-command-output .ansi-bright-red-bg {
+	background-color: color-mix(in srgb, var(--danger) 20%, transparent);
+}
+
+.tool-command-output .ansi-green-bg,
+.tool-command-output .ansi-bright-green-bg {
+	background-color: color-mix(in srgb, var(--success) 20%, transparent);
+}
+
+.tool-command-output .ansi-yellow-bg,
+.tool-command-output .ansi-bright-yellow-bg {
+	background-color: color-mix(in srgb, var(--warning) 20%, transparent);
+}
+
+.tool-command-output .ansi-blue-bg,
+.tool-command-output .ansi-bright-blue-bg,
+.tool-command-output .ansi-magenta-bg,
+.tool-command-output .ansi-bright-magenta-bg,
+.tool-command-output .ansi-cyan-bg,
+.tool-command-output .ansi-bright-cyan-bg {
+	background-color: color-mix(in srgb, var(--brand) 20%, transparent);
+}
+
+.tool-command-output .ansi-white-bg,
+.tool-command-output .ansi-bright-white-bg {
+	background-color: var(--background);
+}
+
+.tool-command-output .ansi-bold {
+	font-weight: 600;
+}
+
+.tool-command-output .ansi-dim {
+	opacity: 0.65;
+}
+
+.tool-command-output .ansi-italic {
+	font-style: italic;
+}
+
+.tool-command-output .ansi-underline {
+	text-decoration: underline;
+}
+
+.tool-command-output .ansi-strikethrough {
+	text-decoration: line-through;
+}
+
 .code-block-token,
 .code-block-pre {
 	color: inherit;
+}
+
+.code-block-pre[data-diff="true"] > code {
+	display: block;
+	width: max-content;
+	min-width: 100%;
+}
+
+.code-block-pre[data-diff="true"] .code-block-line {
+	box-sizing: border-box;
+	width: max-content;
+	min-width: 100%;
 }
 
 .code-block-line[data-diff-line="added"] {

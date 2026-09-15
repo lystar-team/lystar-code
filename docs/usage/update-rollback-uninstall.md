@@ -30,6 +30,17 @@ lc update --all
 
 `PI_OFFLINE=1` 或 `--offline` 下不会执行网络更新。
 
+macOS 已安装 Web 后台服务时，`lc update` 会复用首次安装的管理员授权更新 Helper、Gateway LaunchDaemon 和 Runtime LaunchAgent，不重复询问管理员密码。从 Web 设置页启动更新前会检查管理员静默通道；未初始化时更新不会启动，并提示在本机终端执行：
+
+```bash
+lc web service install
+lc web permissions setup
+```
+
+授权状态可通过 `lc web permissions status` 或 Web 设置页的“系统授权”查看。钥匙串初始化会探测当前系统实际存在的 Git、SSH 和 `security`，缺失工具直接跳过。Web Git 通过带超时的 Keychain helper 读取 HTTPS 凭据，SSH 使用非交互模式；未授权或凭据不可用时直接返回错误，不弹出远程无法处理的输入窗口。
+
+Web 后台中的 `osascript ... with administrator privileges` 会直接报错，管理员命令应使用 `sudo`；普通 `osascript` 和 `security` 等待系统授权超过 30 秒时会终止并提示重新授权。
+
 ## 回退
 
 ```bash

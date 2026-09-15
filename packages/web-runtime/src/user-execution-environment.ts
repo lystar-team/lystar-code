@@ -79,6 +79,11 @@ export function restoreUserCommandEnvironment(
 	for (const [key, value] of Object.entries(discovered)) {
 		if (value !== undefined) env[key] = value;
 	}
+	const webCommandBin = env.LYSTAR_WEB_COMMAND_BIN?.trim();
+	if (process.platform === "darwin" && webCommandBin) {
+		const path = environmentValue(env, "PATH") ?? "";
+		env.PATH = path.split(":").includes(webCommandBin) ? path : `${webCommandBin}:${path}`;
+	}
 	return true;
 }
 

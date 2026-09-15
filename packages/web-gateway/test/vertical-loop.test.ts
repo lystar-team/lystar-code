@@ -422,21 +422,34 @@ test("Web Gateway fake Provider 完成 Prompt、事件和 Transcript 闭环", as
 	assert.equal(lease.leaseGeneration, 1);
 
 	const imageData = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
-	const uploadResponse = await requestJson(baseUrl, "/api/uploads/image", {
+	const uploadResponse = await requestJson(baseUrl, "/api/uploads/file", {
 		method: "POST",
-		body: JSON.stringify({ data: imageData, mimeType: "image/png" }),
+		body: JSON.stringify({ data: imageData, filename: "screenshot.png", mimeType: "image/png" }),
 	});
 	assert.equal(uploadResponse.status, 201);
 	const upload = record(uploadResponse.data);
 	const uploadedPath = requiredString(upload?.path, "uploaded image path");
 	assert.match(uploadedPath, /lystar-web-upload-/u);
 
-	const promptText = `<file name="${uploadedPath}"></file>\n请只回复 OK，不要调用工具。`;
+	const textData = Buffer.from("# 报告\n请读取这份说明。", "utf8").toString("base64");
+	const textUploadResponse = await requestJson(baseUrl, "/api/uploads/file", {
+		method: "POST",
+		body: JSON.stringify({ data: textData, filename: "report.md", mimeType: "text/markdown" }),
+	});
+	assert.equal(textUploadResponse.status, 201);
+	const textUpload = record(textUploadResponse.data);
+	const uploadedTextPath = requiredString(textUpload?.path, "uploaded text path");
+	assert.match(uploadedTextPath, /lystar-web-upload-.*\.md$/u);
+
+	const promptText = `<file name="${uploadedPath}" filename="screenshot.png" mimeType="image/png"></file>\n<file name="${uploadedTextPath}" filename="report.md" mimeType="text/markdown"></file>\n请只回复 OK，不要调用工具。`;
 	const promptResponse = await requestJson(baseUrl, `/api/sessions/${sessionId}/prompt`, {
 		method: "POST",
 		body: JSON.stringify({
 			text: promptText,
-			attachments: [{ path: uploadedPath, mimeType: "image/png" }],
+			attachments: [
+				{ path: uploadedPath, mimeType: "image/png" },
+				{ path: uploadedTextPath, mimeType: "text/markdown" },
+			],
 			clientRequestId: "prompt-vertical-loop",
 		}),
 	});
@@ -524,10 +537,13 @@ test("Web Gateway fake Provider 完成 Prompt、事件和 Transcript 闭环", as
 	assert.match(JSON.stringify(transcriptResponse.data.items), /OK/u);
 	assert.match(JSON.stringify(transcriptResponse.data.items), /请只回复 OK/u);
 	assert.match(JSON.stringify(transcriptResponse.data.items), /"images"/u);
+	assert.doesNotMatch(JSON.stringify(transcriptResponse.data.items), /<file\b/u);
 	const userTranscriptItem = (transcriptResponse.data.items as unknown[])
 		.map(record)
 		.find((item) => record(item?.view)?.type === "user");
 	const userView = record(userTranscriptItem?.view);
+	assert.deepEqual(userView?.files, [{ filename: "report.md", mimeType: "text/markdown" }]);
+	assert.equal(JSON.stringify(userView?.files).includes(uploadedTextPath), false);
 	const userImages = Array.isArray(userView?.images) ? userView.images.map(record).filter(Boolean) : [];
 	const contentRef = requiredString(userImages[0]?.contentRef, "uploaded image content reference");
 	const imageContentResponse = await requestJson(
@@ -545,10 +561,12 @@ test("Web Gateway fake Provider 完成 Prompt、事件和 Transcript 闭环", as
 	const operationResult = record(operationResponse.data.operation);
 	if (!operationResult) throw new Error("Operation response is missing operation data");
 	assert.equal(operationResult.status, "completed");
+	assert.doesNotMatch(JSON.stringify(operationResult.progress ?? ""), /<file\b/u);
 	assert.equal("sessionPath" in operationResult, false);
 	assert.equal("clientInstanceId" in operationResult, false);
 	assert.equal("clientRequestId" in operationResult, false);
 	assert.ok(requests.some((request) => request.body.includes(uploadedPath)));
+	assert.ok(requests.some((request) => request.body.includes(uploadedTextPath)));
 	assert.equal(
 		requests.some((request) => request.body.includes(imageData)),
 		false,

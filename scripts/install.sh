@@ -415,6 +415,12 @@ previous_service_version="${current_target##*/}"
 if ! reconcile_web_services "$VERSION" "$previous_service_version"; then
     die_after_activation "LYStar Code $VERSION 已安装，但 Web 服务切换失败。请运行 lc web service status 查看结果。" "$VERSION"
 fi
+if [[ "$os" == "darwin" ]] && web_usage_exists && [[ -t 0 && -t 1 ]]; then
+    print_info '正在检查 macOS Web 系统授权……'
+    if ! "$BIN_DIR/lc" web permissions setup; then
+        print_warning 'macOS 系统授权没有全部完成。可在本机终端运行 lc web permissions setup 后继续。'
+    fi
+fi
 print_info '新开的终端可直接运行：lc、lystar。'
 print_info '首次使用：进入项目目录后执行 /login。'
 print_info '用户数据目录 ~/.pi/agent 不会被安装器删除。'

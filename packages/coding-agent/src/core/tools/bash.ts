@@ -99,17 +99,27 @@ export function createLocalShellOperations(
 				throw new Error(`Working directory does not exist: ${cwd}\nCannot execute ${shellName} commands.`);
 			}
 
+			const commandEnvironment = getShellEnv(env);
+			const webCommandBin = commandEnvironment.LYSTAR_WEB_COMMAND_BIN?.trim();
+			const effectiveCommand =
+				process.platform === "darwin" && commandEnvironment.LYSTAR_WEB_SERVICE_CHILD === "1" && webCommandBin
+					? `export PATH='${webCommandBin.replaceAll("'", `'\\''`)}':"$PATH"\n${command}`
+					: command;
 			const commandFromStdin = shellConfig.commandTransport === "stdin";
-			const child = spawn(shellConfig.shell, commandFromStdin ? shellConfig.args : [...shellConfig.args, command], {
-				cwd,
-				detached: process.platform !== "win32",
-				env: getShellEnv(env),
-				stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
-				windowsHide: true,
-			});
+			const child = spawn(
+				shellConfig.shell,
+				commandFromStdin ? shellConfig.args : [...shellConfig.args, effectiveCommand],
+				{
+					cwd,
+					detached: process.platform !== "win32",
+					env: commandEnvironment,
+					stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
+					windowsHide: true,
+				},
+			);
 			if (commandFromStdin) {
 				child.stdin?.on("error", () => {});
-				child.stdin?.end(command);
+				child.stdin?.end(effectiveCommand);
 			}
 			if (child.pid) trackDetachedChildPid(child.pid);
 			let timedOut = false;

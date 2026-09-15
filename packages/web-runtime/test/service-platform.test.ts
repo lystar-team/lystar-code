@@ -40,6 +40,17 @@ const spec: WebServiceSpec = {
 	environment: { LYSTAR_WEB_SERVICE_VERSION: "0.85.1-lystar.5" },
 };
 
+const runtimeSpec: WebServiceSpec = {
+	...spec,
+	kind: "runtime",
+	macosSession: "gui",
+	invocation: {
+		program: "/test/user space/bin/lc.cmd",
+		args: ["web-runtime", "serve"],
+		cwd: "/test/user space/agent",
+	},
+};
+
 beforeEach(() => {
 	files.clear();
 	vi.mocked(spawnSync).mockReset();
@@ -63,20 +74,80 @@ describe("platform service lifecycle", () => {
 		files.set(path, "plist");
 		ensureWebService(spec);
 		expect(spawnSync).toHaveBeenCalledWith(
-			"sudo",
-			expect.arrayContaining(["-n", "launchctl", "kickstart"]),
+			"/usr/bin/sudo",
+			expect.arrayContaining(["-n", expect.stringContaining("web-service-admin"), "kickstart"]),
 			expect.anything(),
 		);
 		expect(vi.mocked(spawnSync).mock.calls.some(([, args]) => args?.includes("bootstrap"))).toBe(false);
 	});
 
-	it("creates log directories and obtains macOS authorization on the terminal", () => {
+	it("installs the macOS Runtime as a user LaunchAgent", () => {
 		Object.defineProperty(process, "platform", { value: "darwin" });
+		installWebService(runtimeSpec);
+		const status = getWebServiceStatus(runtimeSpec);
+		expect(status.manager).toBe("launch-agent");
+		expect(status.servicePath).toContain("/Library/LaunchAgents/com.lystar.web-runtime");
+		const plist = files.get(status.servicePath!);
+		expect(plist).not.toContain("<key>UserName</key>");
+		expect(spawnSync).toHaveBeenCalledWith(
+			"/bin/launchctl",
+			expect.arrayContaining(["bootstrap", expect.stringMatching(/^gui\/\d+$/u), status.servicePath]),
+			expect.anything(),
+		);
+	});
+
+	it("creates log directories and obtains macOS authorization on the terminal", async () => {
+		Object.defineProperty(process, "platform", { value: "darwin" });
+		let helperInstalled = false;
+		vi.mocked(spawnSync).mockImplementation((command, args) => {
+			if (command === "/usr/bin/sudo" && args?.at(-1) === "status") {
+				return helperInstalled ? success() : failure("authorization missing");
+			}
+			if (command === "sudo" && args?.includes("/etc/sudoers.d/lystar-web-service-1000")) {
+				helperInstalled = true;
+			}
+			return success();
+		});
 		installWebService(spec, { interactiveAdmin: true });
 		expect(mkdirSync).toHaveBeenCalledWith("/test/user space/agent/web", expect.anything());
 		expect(spawnSync).toHaveBeenCalledWith("sudo", ["-v"], { stdio: "inherit" });
 		const plist = [...files.values()].find((value) => value.includes("<plist"));
 		expect(plist).toContain("<key>WorkingDirectory</key><string>/test/user space/agent</string>");
+		expect(plist).toContain("/test/user space/agent/web/bin");
+		expect(files.get("/test/user space/agent/web/bin/sudo")).toContain("web-service-admin");
+		const osascriptWrapper = files.get("/test/user space/agent/web/bin/osascript");
+		const credentialWrapper = files.get("/test/user space/agent/web/bin/git-credential-lystar");
+		const securityWrapper = files.get("/test/user space/agent/web/bin/security");
+		const sshWrapper = files.get("/test/user space/agent/web/bin/ssh");
+		expect(osascriptWrapper).toContain("administrator");
+		expect(credentialWrapper).toContain("git-credential-osxkeychain");
+		expect(securityWrapper).toContain("等待钥匙串授权超过 30 秒");
+		expect(sshWrapper).toContain("BatchMode=yes");
+		for (const wrapper of [osascriptWrapper, credentialWrapper, securityWrapper]) {
+			expect(wrapper).toContain("exec 3<&0");
+			expect(wrapper).toContain("<&3 &");
+		}
+		const helper = files.get("/test/user space/agent/web/services/web-service-admin-1000");
+		expect(helper).toContain('exec /usr/bin/sudo -n "$@"');
+		const { spawnSync: actualSpawnSync } =
+			await vi.importActual<typeof import("node:child_process")>("node:child_process");
+		expect(actualSpawnSync("/bin/bash", ["-n"], { input: helper, encoding: "utf8" }).status).toBe(0);
+		for (const wrapper of [osascriptWrapper, credentialWrapper, securityWrapper, sshWrapper]) {
+			expect(actualSpawnSync("/bin/bash", ["-n"], { input: wrapper, encoding: "utf8" }).status).toBe(0);
+		}
+	});
+
+	it("updates the macOS helper through the existing silent authorization", () => {
+		Object.defineProperty(process, "platform", { value: "darwin" });
+		installWebService(spec);
+		expect(spawnSync).toHaveBeenCalledWith(
+			"/usr/bin/sudo",
+			expect.arrayContaining(["-n", expect.stringContaining("web-service-admin"), "upgrade"]),
+			expect.anything(),
+		);
+		expect(vi.mocked(spawnSync).mock.calls.some(([command, args]) => command === "sudo" && args?.[0] === "-v")).toBe(
+			false,
+		);
 	});
 
 	it("waits for Windows STOPPED and installs the requested version of the service host", () => {
@@ -98,6 +169,26 @@ describe("platform service lifecycle", () => {
 		installWebService(spec);
 		expect(files.get("/test/user space/agent/web/services/lystar-web-service-0.85.1-lystar.5.exe")).toBe("new-host");
 		expect(files.get("/test/user space/agent/web/services/lystar-web-service.exe")).toBe("old-host");
+	});
+
+	it("removes a legacy macOS Runtime LaunchDaemon during LaunchAgent uninstall", () => {
+		Object.defineProperty(process, "platform", { value: "darwin" });
+		const legacyPath = `/Library/LaunchDaemons/com.lystar.web-runtime.${process.getuid?.() ?? 0}.plist`;
+		files.set(legacyPath, "legacy");
+		vi.mocked(spawnSync).mockImplementation((command, args) => {
+			if (command === "launchctl" && args?.[0] === "print" && String(args[1]).startsWith("gui/")) {
+				return failure("Could not find service");
+			}
+			return success();
+		});
+
+		removeWebService(runtimeSpec);
+
+		expect(spawnSync).toHaveBeenCalledWith(
+			"/usr/bin/sudo",
+			expect.arrayContaining(["-n", expect.stringContaining("web-service-admin"), "remove", legacyPath]),
+			expect.anything(),
+		);
 	});
 
 	it("does not require sudo to uninstall a macOS service that was never installed", () => {

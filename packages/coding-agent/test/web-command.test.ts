@@ -1,7 +1,12 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runWebCommand, runWebControlCommand, runWebServiceCommand } from "../src/cli/web-command.ts";
+import {
+	runWebCommand,
+	runWebControlCommand,
+	runWebPermissionsCommand,
+	runWebServiceCommand,
+} from "../src/cli/web-command.ts";
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 const originalCliMode = process.env.LYSTAR_CLI_MODE;
@@ -141,6 +146,21 @@ describe("Web control commands", () => {
 		});
 
 		expect(warning).toHaveBeenCalledWith(expect.stringContaining("已恢复服务版本 0.85.1-lystar.1"));
+	});
+
+	it("dispatches macOS permission commands through the bundled Gateway module", async () => {
+		process.env.PI_CODING_AGENT_DIR = "/tmp/lystar-web-command-permissions-test";
+		const status = { platform: "darwin", supported: true, permissions: [] };
+		const runMacosPermissionsCommand = vi.fn(async () => status);
+		const output = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await runWebPermissionsCommand(["status"], { runMacosPermissionsCommand });
+
+		expect(runMacosPermissionsCommand).toHaveBeenCalledWith({
+			action: "status",
+			agentDir: "/tmp/lystar-web-command-permissions-test",
+		});
+		expect(output).toHaveBeenCalledWith(JSON.stringify(status, null, "\t"));
 	});
 
 	it("development command reports the independent Runtime port", async () => {

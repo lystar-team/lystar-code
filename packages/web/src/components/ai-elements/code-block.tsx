@@ -318,6 +318,7 @@ const CodeBlockBody = memo(
 					className,
 				)}
 				data-code-background={transparent ? "transparent" : "themed"}
+				data-diff={diffLineKinds ? "true" : undefined}
 				style={preStyle}
 			>
 				<code

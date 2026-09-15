@@ -53,6 +53,51 @@ describe("image generation conversation grouping", () => {
 		]);
 	});
 
+	it("uses the generated image result summary instead of the requested model selector", () => {
+		const callSummary = JSON.stringify({ prompt: "蓝色圆形", model: "auto", profile: "standard" });
+		const resultSummary = JSON.stringify({
+			prompt: "蓝色圆形",
+			model: "gpt-image-2.5-flare",
+			requestedModel: "auto",
+			profile: "standard",
+			filename: "image.png",
+		});
+		const transcript = [
+			{
+				entryId: "assistant-image",
+				parentId: null,
+				timestamp: "2026-09-11T00:00:00.000Z",
+				kind: "message",
+				view: {
+					type: "tool_call" as const,
+					calls: [{ id: "image-1", name: "image_gen", summary: callSummary }],
+				},
+			},
+		];
+		const toolIndex = {
+			callIds: new Set(["image-1"]),
+			results: new Map([
+				[
+					"image-1",
+					{
+						id: "image-1",
+						name: "image_gen",
+						summary: resultSummary,
+						state: "output-available" as const,
+						images: [{ contentRef: "image-ref", mimeType: "image/png", byteLength: 3 }],
+					},
+				],
+			]),
+			statuses: new Map([["image-1", "success" as const]]),
+		};
+
+		const rendered = buildPersistedRenderItems(transcript, toolIndex);
+		const stack = rendered[0];
+		if (!stack || stack.kind !== "tool-stack") throw new Error("缺少图片工具结果");
+
+		expect(stack.batches[0]?.tools[0]?.summary).toBe(resultSummary);
+	});
+
 	it("keeps generated images inside a single collapsed work process", () => {
 		const imageTool = {
 			id: "image-1",

@@ -13,11 +13,12 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { projectCodeHighlighter } from "@/lib/code-highlighter";
-import { decodeResourceLink, isExternalResourceLink, isLocalResourcePath } from "@/lib/resource-path";
+import { isExternalResourceLink, isLocalResourcePath, resolveResourcePath } from "@/lib/resource-path";
+import type { UIMessage } from "ai";
 import { cjk } from "@streamdown/cjk";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
-import type { UIMessage } from "ai";
+import { Virtuoso } from "react-virtuoso";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import type { ComponentProps, HTMLAttributes, NamedExoticComponent, ReactElement } from "react";
 import {
@@ -32,7 +33,12 @@ import {
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
 import { PlainTextCodeBlock } from "./code-block";
 import { ResourceImage } from "./resource-preview";
-import { Streamdown, defaultRehypePlugins, type PluginConfig } from "streamdown";
+import {
+	parseMarkdownIntoBlocks,
+	Streamdown,
+	defaultRehypePlugins,
+	type PluginConfig,
+} from "streamdown";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: UIMessage["role"];
@@ -335,11 +341,20 @@ export type MessageResponseProps = ComponentProps<typeof Streamdown> &
 	Pick<HTMLAttributes<HTMLDivElement>, "id" | "role" | "aria-labelledby"> & {
 		onOpenPath?: (path: string) => void;
 		projectId?: string;
+		basePath?: string;
+		virtualize?: boolean;
 	};
+
+export const MARKDOWN_VIRTUALIZATION_THRESHOLD = 96 * 1024;
+
+export function shouldVirtualizeMarkdown(content: string): boolean {
+	return content.length >= MARKDOWN_VIRTUALIZATION_THRESHOLD;
+}
 
 type ResourcePathContextValue = {
 	onOpenPath?: (path: string) => void;
 	projectId?: string;
+	basePath?: string;
 };
 
 const ResourcePathContext = createContext<ResourcePathContextValue>({});
@@ -352,7 +367,7 @@ function messageRehypePluginsFor(callerPlugins: MessageResponseProps["rehypePlug
 
 const MessageMarkdownImage = ({ src, alt }: ComponentProps<"img">) => {
 	const resource = useContext(ResourcePathContext);
-	const localPath = src && isLocalResourcePath(src) ? decodeResourceLink(src) : undefined;
+	const localPath = src && isLocalResourcePath(src) ? resolveResourcePath(resource.basePath, src) : undefined;
 	return src ? (
 		<ResourceImage
 			{...(localPath ? { path: localPath, projectId: resource.projectId } : { src })}
@@ -399,7 +414,7 @@ function ExternalMessageLink({ href, children }: { href: string; children: React
 
 const MessageMarkdownLink = ({ href, children, ...props }: ComponentProps<"a">) => {
 	const resource = useContext(ResourcePathContext);
-	const localPath = href && isLocalResourcePath(href) ? decodeResourceLink(href) : undefined;
+	const localPath = href && isLocalResourcePath(href) ? resolveResourcePath(resource.basePath, href) : undefined;
 	if (localPath && resource.onOpenPath) {
 		if (/\.(?:avif|gif|jpe?g|png|svg|webp)(?:[?#].*)?$/iu.test(localPath)) {
 			return (
@@ -461,26 +476,35 @@ function streamdownPluginsFor(mode: MessageResponseProps["mode"], overrides?: Pl
 
 export const MessageResponse: NamedExoticComponent<MessageResponseProps> = memo(
 	({
+		children,
 		className,
 		id,
 		role,
 		"aria-labelledby": ariaLabelledBy,
 		onOpenPath,
 		projectId,
+		basePath,
+		virtualize = false,
 		components,
 		mode = "static",
 		plugins: callerPlugins,
 		rehypePlugins: callerRehypePlugins,
-		...props
+		...streamdownProps
 	}: MessageResponseProps): ReactElement => {
-		const response = (
+		const virtualized = virtualize && mode === "static" && typeof children === "string";
+		const markdownBlocks = useMemo(
+			() => (virtualized ? parseMarkdownIntoBlocks(children ?? "") : []),
+			[children, virtualized],
+		);
+		const renderStreamdown = (content: string, contentClassName?: string) => (
 			<Streamdown
+				{...streamdownProps}
 				className={cn(
 					"size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
-					className,
+					contentClassName,
 				)}
-				mode={mode}
-				plugins={streamdownPluginsFor(mode, callerPlugins)}
+				mode={virtualized ? "static" : mode}
+				plugins={streamdownPluginsFor(virtualized ? "static" : mode, callerPlugins)}
 				translations={streamdownTranslations}
 				rehypePlugins={messageRehypePluginsFor(callerRehypePlugins)}
 				components={
@@ -491,11 +515,29 @@ export const MessageResponse: NamedExoticComponent<MessageResponseProps> = memo(
 						p: MessageMarkdownParagraph,
 					} as NonNullable<MessageResponseProps["components"]>
 				}
-				{...props}
-			/>
+			>
+				{content}
+			</Streamdown>
 		);
+		const response = virtualized ? (
+			<div className={cn("h-full w-full", className)}>
+				<Virtuoso
+					data={markdownBlocks}
+					increaseViewportBy={600}
+					itemContent={(index, block) => (
+						<div
+							className="mx-auto w-full max-w-4xl px-1 py-2 sm:px-4 sm:py-4"
+							data-markdown-block={index}
+						>
+							{renderStreamdown(block)}
+						</div>
+					)}
+					style={{ height: "100%", width: "100%" }}
+				/>
+			</div>
+		) : renderStreamdown(children ?? "", className);
 		return (
-			<ResourcePathContext.Provider value={{ onOpenPath, projectId }}>
+			<ResourcePathContext.Provider value={{ onOpenPath, projectId, basePath }}>
 				{id || role || ariaLabelledBy ? (
 					<div id={id} role={role} aria-labelledby={ariaLabelledBy} className="contents">
 						{response}
@@ -510,6 +552,8 @@ export const MessageResponse: NamedExoticComponent<MessageResponseProps> = memo(
 		prevProps.children === nextProps.children &&
 		prevProps.mode === nextProps.mode &&
 		prevProps.projectId === nextProps.projectId &&
+		prevProps.basePath === nextProps.basePath &&
+		prevProps.virtualize === nextProps.virtualize &&
 		prevProps.id === nextProps.id &&
 		prevProps.role === nextProps.role &&
 		prevProps["aria-labelledby"] === nextProps["aria-labelledby"] &&

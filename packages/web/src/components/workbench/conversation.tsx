@@ -4,7 +4,7 @@ import type { VirtuosoHandle } from "react-virtuoso";
 import { toLiveToolViewModel } from "../../adapters/live-tool-view-model.ts";
 import { toSessionItemViewModel } from "../../adapters/session-view-model";
 import { type LiveCompactionState } from "../../state/compaction-state";
-import { shouldJoinToolBatch } from "../../state/tool-batching";
+import { shouldJoinToolBatch, skillNameFromTool } from "../../state/tool-batching";
 import type { LiveTurnItem, WorkbenchState } from "../../state/use-workbench";
 import { canSendPrompt, hasActiveSessionWork } from "../../state/chat-lifecycle";
 import type { PromptAttachmentPreview } from "../../types";
@@ -156,7 +156,10 @@ function toolBatchToolsEqual(previous: readonly ToolBatchTool[], next: readonly 
 	});
 }
 
-function persistedToolBatchKind(batch: TranscriptBatchRenderItem): "read" | "generated-image" | "image" | "search" | "action" {
+type PersistedToolBatchKind = "read" | "skill" | "generated-image" | "image" | "search" | "action";
+
+function persistedToolBatchKind(batch: TranscriptBatchRenderItem): PersistedToolBatchKind {
+	if (batch.tools.length > 0 && batch.tools.every((tool) => Boolean(skillNameFromTool(tool)))) return "skill";
 	if (batch.tools.length > 0 && batch.tools.every((tool) => tool.name === "web_search")) return "search";
 	if (batch.tools.length > 0 && batch.tools.every((tool) => tool.name === "image_gen")) return "generated-image";
 	if (batch.tools.length > 0 && batch.tools.every((tool) => tool.name === "read" && Boolean(tool.images?.length))) return "image";
@@ -211,7 +214,7 @@ function conversationRenderItemEqual(previous: ConversationRenderItem, next: Con
 function groupPersistedToolBatches(rendered: Array<RawRenderItem>): ConversationContentRenderItem[] {
 	const grouped: ConversationContentRenderItem[] = [];
 	let previousToolStack: TranscriptToolStackRenderItem | undefined;
-	let previousToolBatchKind: "read" | "generated-image" | "image" | "search" | "action" | undefined;
+	let previousToolBatchKind: PersistedToolBatchKind | undefined;
 	for (const entry of rendered) {
 		if (entry.kind === "activity-boundary") {
 			previousToolStack = undefined;
@@ -220,7 +223,7 @@ function groupPersistedToolBatches(rendered: Array<RawRenderItem>): Conversation
 		}
 		if (entry.kind === "tool-batch") {
 			const toolBatchKind = persistedToolBatchKind(entry);
-			if (previousToolStack && previousToolBatchKind === toolBatchKind) {
+			if (previousToolStack && previousToolBatchKind === toolBatchKind && toolBatchKind !== "skill") {
 				previousToolStack.batches.push(entry);
 			} else {
 				previousToolStack = {
@@ -337,10 +340,10 @@ export function buildPersistedRenderItems(
 			for (const tool of viewModel.tools) {
 				const result = toolIndex.results.get(tool.id);
 				const resolvedTool = result
-					? { ...tool, ...result, summary: tool.summary || result.summary }
+					? { ...tool, ...result, summary: tool.name === "image_gen" ? result.summary || tool.summary : tool.summary || result.summary }
 					: tool;
 				const previous = batchTools.at(-1);
-				if (!previous || batchEntryId !== item.entryId || !shouldJoinToolBatch(previous.name, resolvedTool.name)) {
+				if (!previous || batchEntryId !== item.entryId || !shouldJoinToolBatch(previous, resolvedTool)) {
 					flushBatch();
 					batchEntryId = item.entryId;
 					batchKey = `tool-batch:${item.renderId}:${resolvedTool.id}`;
@@ -826,7 +829,14 @@ function ConversationBody({
 				const tools = entry.batches.flatMap((batch) => batch.tools);
 				const allToolsCompleted = tools.length > 0 && tools.every(isToolComplete);
 				const controlCollapsedState = entry.collapseForResult;
-				if (!allToolsCompleted) {
+				const groupedActivityTools =
+					tools.length > 1 &&
+					(tools.every((tool) => tool.name === "read" && !tool.images?.length) ||
+						tools.every((tool) => tool.name === "bash" && !tool.images?.length) ||
+						tools.every((tool) =>
+							tool.name === "edit" || tool.name === "write" || tool.name === "apply_patch",
+						));
+				if (!allToolsCompleted && !groupedActivityTools) {
 					return (
 						<div className="tool-batch-stack">
 							{tools.map((tool) => (
@@ -846,10 +856,8 @@ function ConversationBody({
 						</div>
 					);
 				}
-				const standaloneReadTools =
-					tools.length > 0 && tools.every((tool) => tool.name === "read" && !tool.images?.length);
 				const standaloneSearchTools = tools.length > 0 && tools.every((tool) => tool.name === "web_search");
-				if (standaloneReadTools || standaloneSearchTools) {
+				if (standaloneSearchTools) {
 					return (
 						<div className="tool-batch-stack">
 							{tools.map((tool) => (

@@ -45,6 +45,7 @@ import {
 	committedToolCallIds,
 	hasActiveSessionSnapshot,
 	hasActiveSessionWork,
+	promptDisplayText,
 	type PendingUserPrompt,
 	reconcileCommittedTurn,
 	reconcilePendingUserPrompts,
@@ -102,6 +103,7 @@ export type SettingsTab =
 	| "models"
 	| "imports"
 	| "diagnostics"
+	| "permissions"
 	| "security"
 	| "about";
 
@@ -223,12 +225,20 @@ function liveToolFromActivity(activity: ToolActivity, previous: LiveTool | undef
 	};
 }
 
-function nextLiveToolBatchId(current: WorkbenchState, toolName: string, turnId: number, fallback: string): string {
+function nextLiveToolBatchId(
+	current: WorkbenchState,
+	toolName: string,
+	toolSummary: string,
+	turnId: number,
+	fallback: string,
+): string {
 	const last = current.liveTurnItems.at(-1);
 	if (last?.kind !== "tools" || last.turnId !== turnId) return fallback;
 	const previousToolId = last.toolIds.at(-1);
 	const previousTool = previousToolId ? current.liveTools[previousToolId] : undefined;
-	return shouldJoinLiveToolBatch(previousTool?.name, toolName, last?.turnId, turnId) ? last.batchId : fallback;
+	return shouldJoinLiveToolBatch(previousTool, { name: toolName, summary: toolSummary }, last?.turnId, turnId)
+		? last.batchId
+		: fallback;
 }
 
 function applyToolActivityState(current: WorkbenchState, activity: ToolActivity): WorkbenchState {
@@ -246,6 +256,7 @@ function applyToolActivityState(current: WorkbenchState, activity: ToolActivity)
 		nextLiveToolBatchId(
 			current,
 			activity.name,
+			activity.summary,
 			current.liveTurnId,
 			`live-tool-batch:${activity.activityEpoch}:${activity.toolCallId}`,
 		);
@@ -289,6 +300,7 @@ function restoreToolActivities(current: WorkbenchState, snapshot: WebSessionSnap
 		const batchId = nextLiveToolBatchId(
 			next,
 			activity.name,
+			activity.summary,
 			next.liveTurnId,
 			`live-tool-batch:${activity.activityEpoch}:${activity.toolCallId}`,
 		);
@@ -329,7 +341,7 @@ function queuedPromptsFromSnapshot(
 			return {
 				id,
 				text,
-				displayText: previous?.displayText ?? text,
+				displayText: previous?.displayText || promptDisplayText(text) || "附件消息",
 				attachments: previous?.attachments ?? [],
 			};
 		});
@@ -1320,8 +1332,12 @@ export function useWorkbench() {
 						current.transcriptPageLoaded &&
 						current.transcriptRevision === result.transcriptRevision &&
 						!shouldClearLiveTurn(current)
-					)
-						return current.transcriptLoading ? { ...current, transcriptLoading: false } : current;
+					) {
+						const pendingUserPrompts = reconcilePendingUserPrompts(current.pendingUserPrompts, current.transcript);
+						if (pendingUserPrompts.length === current.pendingUserPrompts.length)
+							return current.transcriptLoading ? { ...current, transcriptLoading: false } : current;
+						return { ...current, transcriptLoading: false, pendingUserPrompts };
+					}
 					const renderIdOverrides =
 						!cursor && sameHistory
 							? transcriptRenderIdOverrides(
@@ -1495,11 +1511,13 @@ export function useWorkbench() {
 						return applyToolActivityState(current, progress.activity);
 					case "tool_start": {
 						const previous = current.liveTools[progress.toolCallId];
+						const summary = progress.summary ?? previous?.summary ?? "正在执行";
 						const batchId =
 							previous?.batchId ??
 							nextLiveToolBatchId(
 								current,
 								progress.name,
+								summary,
 								current.liveTurnId,
 								`live-tool-batch:${liveToolBatchRef.current++}`,
 							);
@@ -1511,7 +1529,7 @@ export function useWorkbench() {
 									id: progress.toolCallId,
 									name: progress.name,
 									batchId,
-									summary: progress.summary ?? previous?.summary ?? "正在执行",
+									summary,
 									state: "running",
 									status: "running",
 									diff: mergeToolDiff(previous?.diff, progress.diff),
@@ -1532,11 +1550,13 @@ export function useWorkbench() {
 					case "tool_update": {
 						const previous = current.liveTools[progress.toolCallId];
 						if (previous && previous.status !== "running") return current;
+						const summary = progress.summary || previous?.summary || "正在执行";
 						const batchId =
 							previous?.batchId ??
 							nextLiveToolBatchId(
 								current,
 								progress.name,
+								summary,
 								current.liveTurnId,
 								`live-tool-batch:${liveToolBatchRef.current++}`,
 							);
@@ -1548,7 +1568,7 @@ export function useWorkbench() {
 									id: progress.toolCallId,
 									name: progress.name,
 									batchId,
-									summary: progress.summary || previous?.summary || "正在执行",
+									summary,
 									state: "running",
 									result: progress.summary,
 									status: "running",
@@ -1568,11 +1588,13 @@ export function useWorkbench() {
 					}
 					case "tool_end": {
 						const previous = current.liveTools[progress.toolCallId];
+						const summary = previous?.summary ?? progress.summary;
 						const batchId =
 							previous?.batchId ??
 							nextLiveToolBatchId(
 								current,
 								progress.name,
+								summary,
 								current.liveTurnId,
 								`live-tool-batch:${liveToolBatchRef.current++}`,
 							);
@@ -1584,7 +1606,7 @@ export function useWorkbench() {
 									id: progress.toolCallId,
 									name: progress.name,
 									batchId,
-									summary: previous?.summary ?? progress.summary,
+									summary,
 									state: progress.status === "success" ? "success" : "error",
 									result: progress.summary,
 									status: progress.status,
@@ -2997,6 +3019,10 @@ export function useWorkbench() {
 			if (!current.sessionId || !canSendPrompt(current)) return;
 			if (hasActiveSessionWork(current) && mode === "prompt") mode = "follow-up";
 			const value = text.trim();
+			const fallbackDisplayText = attachmentPreviews?.length
+				? `附件：${attachmentPreviews.map((attachment) => attachment.filename).join("、")}`
+				: undefined;
+			const visibleValue = displayText?.trim() || promptDisplayText(value) || fallbackDisplayText || value;
 			if (!value) return;
 			const queueId = mode === "steer" ? undefined : createUuid();
 			const queuedPrompt: QueuedUserPrompt | undefined =
@@ -3004,7 +3030,7 @@ export function useWorkbench() {
 					? {
 							id: queueId,
 							text: value,
-							displayText: displayText?.trim() || value,
+							displayText: visibleValue,
 							attachments: attachmentPreviews ?? [],
 						}
 					: undefined;
@@ -3012,7 +3038,7 @@ export function useWorkbench() {
 				mode === "prompt"
 					? {
 							id: `optimistic-user:${pendingUserPromptRef.current++}`,
-							text: value,
+							text: visibleValue,
 							attachments: attachmentPreviews ?? [],
 							afterEntryId: current.transcript.at(-1)?.entryId,
 							queueId,
@@ -3042,12 +3068,13 @@ export function useWorkbench() {
 					const optimisticStillPending = Boolean(
 						optimisticPrompt && accepted.pendingUserPrompts.some((prompt) => prompt.id === optimisticPrompt.id),
 					);
+					const pendingUserPrompts = reconcilePendingUserPrompts(accepted.pendingUserPrompts, accepted.transcript);
 					const convertedQueuedPrompt =
 						acceptedAsFollowUp && !queuedPrompt && queueId && optimisticStillPending
 							? {
 									id: queueId,
 									text: value,
-									displayText: displayText?.trim() || value,
+									displayText: visibleValue,
 									attachments: attachmentPreviews ?? [],
 								}
 							: undefined;
@@ -3062,12 +3089,12 @@ export function useWorkbench() {
 						...accepted,
 						pendingUserPrompts:
 							acceptedAsFollowUp && optimisticPrompt
-								? accepted.pendingUserPrompts.filter((prompt) => prompt.id !== optimisticPrompt.id)
-								: accepted.pendingUserPrompts,
+								? pendingUserPrompts.filter((prompt) => prompt.id !== optimisticPrompt.id)
+								: pendingUserPrompts,
 						queuedUserPrompts,
 						projects: acceptedAsFollowUp
 							? accepted.projects
-							: updateSessionSummaryFirstMessage(accepted.projects, current.sessionId!, value),
+							: updateSessionSummaryFirstMessage(accepted.projects, current.sessionId!, visibleValue),
 						promptScrollRequest: (accepted.promptScrollRequest ?? 0) + 1,
 					};
 				});

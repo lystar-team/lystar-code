@@ -132,6 +132,7 @@ export function createRuntimeServiceSpec(endpoint: string, options: RuntimeServi
 		: { ...base, args: [...base.args, "serve", "--endpoint", endpoint], cwd: agentDir };
 	return {
 		kind: "runtime",
+		macosSession: "gui",
 		...(options.profile ? { profile: options.profile } : {}),
 		agentDir,
 		invocation,
@@ -387,7 +388,7 @@ export async function restartRuntimeService(
 	agentDir = getRuntimeAgentDir(),
 ): Promise<RuntimeServiceStatus> {
 	const status = await getRuntimeServiceStatus(endpoint, profile, invocation, agentDir);
-	if (status.manager === "launch-daemon" && status.pid && status.responsive) {
+	if ((status.manager === "launch-daemon" || status.manager === "launch-agent") && status.pid && status.responsive) {
 		await assertRuntimeIdle(endpoint);
 		// 同用户的 Runtime 接收重启信号，由 launchd 拉起，无需后台 sudo 授权。
 		process.kill(status.pid, "SIGUSR2");

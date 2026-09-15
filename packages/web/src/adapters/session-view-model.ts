@@ -83,12 +83,20 @@ export function toSessionItemViewModel(
 			role: view.type,
 			text: view.text,
 			timestamp: item.timestamp,
-			attachments: (view.images ?? []).map((image, index) => ({
-				id: image.contentRef,
-				filename: image.alt || `图片 ${index + 1}`,
-				mediaType: image.mimeType,
-				url: "",
-			})),
+			attachments: [
+				...(view.images ?? []).map((image, index) => ({
+					id: image.contentRef,
+					filename: image.alt || `图片 ${index + 1}`,
+					mediaType: image.mimeType,
+					url: "",
+				})),
+				...(view.files ?? []).map((file, index) => ({
+					id: `${item.entryId}:file:${index}`,
+					filename: file.filename,
+					mediaType: file.mimeType,
+					url: "",
+				})),
+			],
 			sources: view.type === "assistant" ? extractSources(view.text) : [],
 		};
 	}

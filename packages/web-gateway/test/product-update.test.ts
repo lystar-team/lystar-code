@@ -24,6 +24,23 @@ test("安装器日志映射为更新阶段和进度", () => {
 	});
 });
 
+test("macOS Web 更新在管理员静默通道缺失时不可启动", async (t) => {
+	const root = join(tmpdir(), `lystar-product-update-macos-auth-${process.pid}-${Date.now()}`);
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const installRoot = join(root, "install");
+	await createInstalledLayout(installRoot);
+	const originalPlatform = process.platform;
+	Object.defineProperty(process, "platform", { configurable: true, value: "darwin" });
+	try {
+		const controller = new ProductUpdateController(join(root, "agent"), { installRoot, development: false });
+		const availability = await controller.availability("lystar-team/lystar-code");
+		assert.equal(availability.enabled, false);
+		assert.match(availability.reason, /lc web service install/u);
+	} finally {
+		Object.defineProperty(process, "platform", { configurable: true, value: originalPlatform });
+	}
+});
+
 test("更新任务保留进度并在 Runtime 切换版本后完成", async (t) => {
 	const root = join(tmpdir(), `lystar-product-update-${process.pid}-${Date.now()}`);
 	await mkdir(root, { recursive: true });

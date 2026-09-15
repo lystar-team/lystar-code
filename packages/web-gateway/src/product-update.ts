@@ -3,6 +3,7 @@ import { closeSync, openSync } from "node:fs";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { getMacosWebAdminStatus } from "./macos-permissions.ts";
 
 const UPDATE_STATE_VERSION = 1 as const;
 const PRODUCT_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
@@ -261,6 +262,10 @@ export class ProductUpdateController {
 		if (this.development) return { enabled: false, reason: "开发模式不执行应用更新" };
 		if (!repository) return { enabled: false, reason: "当前构建没有配置发布仓库" };
 		if (!(await this.executablePath())) return { enabled: false, reason: "当前环境不是 LYStar Code 正式安装目录" };
+		if (process.platform === "darwin") {
+			const authorization = getMacosWebAdminStatus();
+			if (!authorization.granted) return { enabled: false, reason: authorization.message };
+		}
 		return { enabled: true, reason: "可以安装新版本" };
 	}
 

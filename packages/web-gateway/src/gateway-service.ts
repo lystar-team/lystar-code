@@ -34,6 +34,12 @@ import {
 	type WebGatewayConfig,
 } from "./config.ts";
 import { readGatewayPid } from "./instance-lock.ts";
+import {
+	getMacosPermissionsStatus,
+	type MacosPermissionsStatus,
+	removeMacosWebAdminAuthorization,
+	runMacosPermissionsSetup,
+} from "./macos-permissions.ts";
 import { requiresServiceVersionReconcile, runServiceVersionTransaction } from "./service-version-transaction.ts";
 
 const SERVICE_STATE_VERSION = 1 as const;
@@ -90,6 +96,15 @@ export interface WebComponentActionOptions extends WebServiceLaunchOptions {
 	component: WebComponent;
 	action: WebComponentAction;
 	force?: boolean;
+}
+
+export async function runMacosPermissionsCommand(options: {
+	action: "status" | "setup";
+	agentDir: string;
+}): Promise<MacosPermissionsStatus> {
+	return options.action === "setup"
+		? runMacosPermissionsSetup(options.agentDir)
+		: getMacosPermissionsStatus(options.agentDir);
 }
 
 function profileFor(configFileName: string | undefined): string {
@@ -588,6 +603,7 @@ export async function runWebServiceAction(options: WebServiceActionOptions): Pro
 			}
 		}
 		rmSync(statePath(options.agentDir, options.configFileName), { force: true });
+		removeMacosWebAdminAuthorization(options.agentDir, options.interactiveAdmin ?? false);
 		return { ...status, enabled: false };
 	}
 	if (options.action === "status") return getWebServicesStatus(options);

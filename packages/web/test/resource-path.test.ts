@@ -4,6 +4,7 @@ import {
 	isAbsoluteResourcePath,
 	isExternalResourceLink,
 	isLocalResourcePath,
+	resolveResourcePath,
 } from "../src/lib/resource-path.ts";
 
 describe("resource path routing", () => {
@@ -24,6 +25,18 @@ describe("resource path routing", () => {
 		expect(isLocalResourcePath("src/views/SessionView.vue")).toBe(true);
 		expect(isLocalResourcePath("../shared/file.ts")).toBe(true);
 		expect(isLocalResourcePath("README.md")).toBe(true);
+	});
+
+	it("resolves project-relative Markdown resources from the current document directory", () => {
+		expect(resolveResourcePath("docs/guide/README.md", "../images/logo.png")).toBe("docs/images/logo.png");
+		expect(resolveResourcePath("README.md", "./images/logo.png")).toBe("images/logo.png");
+		expect(resolveResourcePath("docs/README.md", "../other.md#install")).toBe("other.md");
+	});
+
+	it("preserves absolute resource references while removing Markdown fragments", () => {
+		expect(resolveResourcePath("docs/README.md", "/tmp/image.png#preview")).toBe("/tmp/image.png");
+		expect(resolveResourcePath("/tmp/docs/README.md", "../image.png?raw=1")).toBe("/tmp/image.png");
+		expect(resolveResourcePath("file:///tmp/docs/README.md", "../image.png")).toBe("file:///tmp/image.png");
 	});
 
 	it("does not intercept browser links as local files", () => {

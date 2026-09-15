@@ -26,6 +26,10 @@ describe("session turn presentation", () => {
 		expect(sessionTreeNodeKindLabel(item)).toBe("用户消息");
 	});
 
+	it("会话树摘要隐藏内部文件引用", () => {
+		const item = node({ role: "user", content: '说明\n<file name="/tmp/report.md"></file>' });
+		expect(sessionTreeNodeLabel(item)).toBe("用户提交：说明");
+	});
 	it("将工具调用转换成工具摘要而不是展示原始 JSON", () => {
 		const item = node({ role: "assistant", content: [{ type: "toolCall", name: "read" }] });
 		expect(sessionTreeNodeLabel(item)).toBe("Agent：调用工具：read");

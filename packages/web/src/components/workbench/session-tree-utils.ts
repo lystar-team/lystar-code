@@ -1,3 +1,4 @@
+import { promptDisplayText } from "../../state/chat-lifecycle";
 import type { WorkbenchState } from "../../state/use-workbench";
 
 export type SessionTreeNode = WorkbenchState["sessionTree"][number];
@@ -35,13 +36,20 @@ function clip(value: string, maxLength = 180): string {
 }
 
 function contentText(value: unknown): string | undefined {
-	if (typeof value === "string") return value;
+	if (typeof value === "string") {
+		const text = promptDisplayText(value);
+		return text || undefined;
+	}
 	if (!Array.isArray(value)) return undefined;
 	const parts = value.flatMap((part) => {
 		const item = record(part);
 		if (!item) return [];
-		if (item.type === "text" && typeof item.text === "string") return [item.text];
+		if (item.type === "text" && typeof item.text === "string") {
+			const text = promptDisplayText(item.text);
+			return text ? [text] : [];
+		}
 		if (item.type === "image") return ["图片附件"];
+		if (item.type === "file") return ["文件附件"];
 		if (item.type === "toolCall" && typeof item.name === "string") return [`调用工具：${item.name}`];
 		return [];
 	});

@@ -134,7 +134,7 @@ export type FileMetadataResponse = Pick<
 	"kind" | "path" | "mimeType" | "byteLength" | "contentVersion"
 >;
 
-export interface ImageUploadResponse {
+export interface FileUploadResponse {
 	path: string;
 	mimeType: string;
 	byteLength: number;
@@ -282,6 +282,20 @@ export interface ProjectSkillsResponse {
 
 export interface SettingsResponse {
 	settings: SettingSummary[];
+}
+
+export interface SystemPermissionStatus {
+	id: "administrator" | "keychain" | "accessibility" | "automation" | "screen-recording";
+	name: string;
+	state: "granted" | "required" | "unknown" | "unsupported";
+	message: string;
+	canRequest: boolean;
+}
+
+export interface SystemPermissionsResponse {
+	platform: string;
+	supported: boolean;
+	permissions: SystemPermissionStatus[];
 }
 
 export interface SecuritySettingsResponse {

@@ -1,11 +1,17 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { basename, dirname, join } from "node:path";
 
 export type WebServiceKind = "gateway" | "runtime";
-export type WebServiceManager = "systemd-user" | "launch-daemon" | "windows-service" | "scheduled-task" | "detached";
+export type WebServiceManager =
+	| "systemd-user"
+	| "launch-daemon"
+	| "launch-agent"
+	| "windows-service"
+	| "scheduled-task"
+	| "detached";
 
 export interface WebServiceInvocation {
 	program: string;
@@ -20,6 +26,7 @@ export interface WebServiceSpec {
 	invocation: WebServiceInvocation;
 	environment?: Record<string, string | undefined>;
 	logPath?: string;
+	macosSession?: "system" | "gui";
 }
 
 export interface WebServiceStatus {
@@ -109,6 +116,320 @@ function runAdmin(command: string, args: string[], interactive: boolean): Comman
 	return run(command, ["-n", ...args]);
 }
 
+function macosAdminUid(): number {
+	return process.getuid?.() ?? userInfo().uid;
+}
+
+function macosAdminHelperPath(): string {
+	return join("/Library", "PrivilegedHelperTools", `com.lystar.web-service-admin.${macosAdminUid()}`);
+}
+
+function macosAdminSudoersPath(): string {
+	return join("/etc", "sudoers.d", `lystar-web-service-${macosAdminUid()}`);
+}
+
+function macosAdminHelperStagingPath(spec: WebServiceSpec): string {
+	return join(spec.agentDir, "web", "services", `web-service-admin-${macosAdminUid()}`);
+}
+
+function macosAdminSudoersStagingPath(spec: WebServiceSpec): string {
+	return join(spec.agentDir, "web", "services", `web-service-sudoers-${macosAdminUid()}`);
+}
+
+function macosWebBinPath(spec: WebServiceSpec): string {
+	return join(spec.agentDir, "web", "bin");
+}
+
+function shellSingleQuote(value: string): string {
+	return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+function makeMacosAdminHelper(spec: WebServiceSpec): string {
+	const uid = macosAdminUid();
+	const agentDir = shellSingleQuote(spec.agentDir);
+	return `#!/bin/bash
+set -euo pipefail
+expected_uid=${uid}
+agent_dir=${agentDir}
+
+invalid_path() {
+	[[ "$1" == *".."* || "$1" == *$'\\n'* || "$1" == *$'\\r'* ]]
+}
+
+valid_source() {
+	invalid_path "$1" && return 1
+	case "$1" in
+		"$agent_dir"/web/services/com.lystar.web-gateway*."$expected_uid".plist|"$agent_dir"/web/services/com.lystar.web-runtime*."$expected_uid".plist) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+valid_target() {
+	invalid_path "$1" && return 1
+	case "$1" in
+		/Library/LaunchDaemons/com.lystar.web-gateway*."$expected_uid".plist|/Library/LaunchDaemons/com.lystar.web-runtime*."$expected_uid".plist) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+valid_label() {
+	invalid_path "$1" && return 1
+	case "$1" in
+		system/com.lystar.web-gateway*."$expected_uid"|system/com.lystar.web-runtime*."$expected_uid") return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+valid_admin_source() {
+	invalid_path "$1" && return 1
+	case "$1" in
+		"$agent_dir"/web/services/web-service-admin-"$expected_uid"|"$agent_dir"/web/services/web-service-sudoers-"$expected_uid") return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+action="\${1:-}"
+shift || true
+case "$action" in
+	status)
+		exit 0
+		;;
+	upgrade)
+		[[ $# -eq 2 ]] && valid_admin_source "$1" && valid_admin_source "$2" || exit 64
+		[[ "$(/usr/bin/basename "$1")" == "web-service-admin-$expected_uid" ]] || exit 64
+		[[ "$(/usr/bin/basename "$2")" == "web-service-sudoers-$expected_uid" ]] || exit 64
+		/usr/bin/install -o root -g wheel -m 0755 "$1" ${shellSingleQuote(macosAdminHelperPath())}
+		exec /usr/bin/install -o root -g wheel -m 0440 "$2" ${shellSingleQuote(macosAdminSudoersPath())}
+		;;
+	uninstall-authorization)
+		[[ $# -eq 0 ]] || exit 64
+		/bin/rm -f ${shellSingleQuote(macosAdminSudoersPath())}
+		exec /bin/rm -f "$0"
+		;;
+	install)
+		[[ $# -eq 2 ]] && valid_source "$1" && valid_target "$2" || exit 64
+		[[ "$(/usr/bin/basename "$1")" == "$(/usr/bin/basename "$2")" ]] || exit 64
+		exec /usr/bin/install -o root -g wheel -m 0644 "$1" "$2"
+		;;
+	bootstrap)
+		[[ $# -eq 1 ]] && valid_target "$1" || exit 64
+		exec /bin/launchctl bootstrap system "$1"
+		;;
+	kickstart)
+		[[ $# -eq 1 ]] && valid_label "$1" || exit 64
+		exec /bin/launchctl kickstart "$1"
+		;;
+	bootout)
+		[[ $# -eq 1 ]] && valid_label "$1" || exit 64
+		exec /bin/launchctl bootout "$1"
+		;;
+	remove)
+		[[ $# -eq 1 ]] && valid_target "$1" || exit 64
+		exec /bin/rm -f "$1"
+		;;
+	sudo)
+		[[ $# -gt 0 ]] || exit 64
+		exec /usr/bin/sudo -n "$@"
+		;;
+	*)
+		exit 64
+		;;
+esac
+`;
+}
+
+function makeMacosSudoers(): string {
+	const username = userInfo().username;
+	if (!/^[A-Za-z0-9._-]+$/u.test(username)) throw new Error("macOS 用户名无法写入 Web 管理员授权规则");
+	return `${username} ALL=(root) NOPASSWD: ${macosAdminHelperPath()}\n`;
+}
+
+function makeMacosSudoWrapper(): string {
+	return `#!/bin/bash\nexec /usr/bin/sudo -n ${shellSingleQuote(macosAdminHelperPath())} sudo "$@"\n`;
+}
+
+function makeMacosGitCredentialWrapper(): string {
+	return `#!/bin/bash
+helper="$(git --exec-path 2>/dev/null)/git-credential-osxkeychain"
+if [[ ! -x "$helper" ]]; then
+	exit 0
+fi
+exec 3<&0
+"$helper" "$@" <&3 &
+child=$!
+exec 3<&-
+(
+	/bin/sleep 30
+	/bin/kill -TERM "$child" 2>/dev/null || true
+	/bin/sleep 2
+	/bin/kill -KILL "$child" 2>/dev/null || true
+) &
+watchdog=$!
+wait "$child"
+status=$?
+/bin/kill "$watchdog" 2>/dev/null || true
+wait "$watchdog" 2>/dev/null || true
+exit "$status"
+`;
+}
+
+function makeMacosSecurityWrapper(): string {
+	return `#!/bin/bash
+if [[ ! -x /usr/bin/security ]]; then
+	printf '%s\\n' '当前 macOS 没有可用的 security 工具。' >&2
+	exit 127
+fi
+exec 3<&0
+/usr/bin/security "$@" <&3 &
+child=$!
+exec 3<&-
+(
+	/bin/sleep 30
+	/bin/kill -TERM "$child" 2>/dev/null || true
+	/bin/sleep 2
+	/bin/kill -KILL "$child" 2>/dev/null || true
+) &
+watchdog=$!
+wait "$child"
+status=$?
+/bin/kill "$watchdog" 2>/dev/null || true
+wait "$watchdog" 2>/dev/null || true
+if [[ "$status" -eq 143 || "$status" -eq 137 ]]; then
+	printf '%s\\n' 'security 等待钥匙串授权超过 30 秒，任务已终止。请在设置的“系统授权”页面完成授权。' >&2
+	exit 78
+fi
+exit "$status"
+`;
+}
+
+function makeMacosSshWrapper(): string {
+	return `#!/bin/bash
+if [[ ! -x /usr/bin/ssh ]]; then
+	printf '%s\\n' '当前 macOS 没有安装 SSH。' >&2
+	exit 127
+fi
+exec /usr/bin/ssh -oBatchMode=yes "$@"
+`;
+}
+
+function makeMacosOsascriptWrapper(): string {
+	return `#!/bin/bash
+script="$*"
+if printf '%s' "$script" | /usr/bin/grep -Eiq 'with[[:space:]]+administrator[[:space:]]+privileges'; then
+	printf '%s\\n' 'LYStar Code Web 不执行 macOS 图形管理员弹窗。请把管理员命令改为 sudo 执行。' >&2
+	exit 77
+fi
+exec 3<&0
+/usr/bin/osascript "$@" <&3 &
+child=$!
+exec 3<&-
+(
+	/bin/sleep 30
+	/bin/kill -TERM "$child" 2>/dev/null || true
+) &
+watchdog=$!
+wait "$child"
+status=$?
+/bin/kill "$watchdog" 2>/dev/null || true
+wait "$watchdog" 2>/dev/null || true
+if [[ "$status" -eq 143 ]]; then
+	printf '%s\\n' 'osascript 等待系统授权超过 30 秒，任务已终止。请在设置的“系统授权”页面完成授权。' >&2
+	exit 78
+fi
+exit "$status"
+`;
+}
+
+function installMacosAdminHelper(spec: WebServiceSpec, interactive: boolean): CommandResult {
+	const helperStaging = macosAdminHelperStagingPath(spec);
+	const sudoersStaging = macosAdminSudoersStagingPath(spec);
+	writeAtomic(helperStaging, makeMacosAdminHelper(spec), 0o700);
+	writeAtomic(sudoersStaging, makeMacosSudoers(), 0o600);
+	const validate = run("/usr/sbin/visudo", ["-cf", sudoersStaging]);
+	if (!validate.ok) return validate;
+	const current = run("/usr/bin/sudo", ["-n", macosAdminHelperPath(), "status"]);
+	if (current.ok) {
+		const upgrade = run("/usr/bin/sudo", ["-n", macosAdminHelperPath(), "upgrade", helperStaging, sudoersStaging]);
+		if (!upgrade.ok) return upgrade;
+	} else {
+		const helperInstall = runAdmin(
+			"sudo",
+			["install", "-o", "root", "-g", "wheel", "-m", "0755", helperStaging, macosAdminHelperPath()],
+			interactive,
+		);
+		if (!helperInstall.ok) return helperInstall;
+		const sudoersInstall = runAdmin(
+			"sudo",
+			["install", "-o", "root", "-g", "wheel", "-m", "0440", sudoersStaging, macosAdminSudoersPath()],
+			interactive,
+		);
+		if (!sudoersInstall.ok) return sudoersInstall;
+	}
+	writeAtomic(join(macosWebBinPath(spec), "sudo"), makeMacosSudoWrapper(), 0o700);
+	writeAtomic(join(macosWebBinPath(spec), "git-credential-lystar"), makeMacosGitCredentialWrapper(), 0o700);
+	writeAtomic(join(macosWebBinPath(spec), "security"), makeMacosSecurityWrapper(), 0o700);
+	writeAtomic(join(macosWebBinPath(spec), "ssh"), makeMacosSshWrapper(), 0o700);
+	writeAtomic(join(macosWebBinPath(spec), "osascript"), makeMacosOsascriptWrapper(), 0o700);
+	return run("/usr/bin/sudo", ["-n", macosAdminHelperPath(), "status"]);
+}
+
+function runMacosAdmin(
+	spec: WebServiceSpec,
+	action: "install" | "bootstrap" | "kickstart" | "bootout" | "remove",
+	args: string[],
+	interactive: boolean,
+): CommandResult {
+	let status = run("/usr/bin/sudo", ["-n", macosAdminHelperPath(), "status"]);
+	if (!status.ok && interactive) status = installMacosAdminHelper(spec, true);
+	if (!status.ok) {
+		return {
+			ok: false,
+			status: status.status,
+			stdout: status.stdout,
+			stderr: "macOS Web 管理员授权尚未初始化，请在本机终端运行 lc web service install",
+		};
+	}
+	return run("/usr/bin/sudo", ["-n", macosAdminHelperPath(), action, ...args]);
+}
+
+export interface MacosWebAdminStatus {
+	supported: boolean;
+	granted: boolean;
+	helperPath?: string;
+	message: string;
+}
+
+export function getMacosWebAdminStatus(): MacosWebAdminStatus {
+	if (process.platform !== "darwin") return { supported: false, granted: false, message: "当前系统不是 macOS" };
+	const helperPath = macosAdminHelperPath();
+	const result = run("/usr/bin/sudo", ["-n", helperPath, "status"]);
+	return {
+		supported: true,
+		granted: result.ok,
+		helperPath,
+		message: result.ok ? "管理员静默执行通道可用" : "请在本机终端运行 lc web service install 完成一次授权",
+	};
+}
+
+export function removeMacosWebAdminAuthorization(agentDir: string, interactive = false): void {
+	if (process.platform !== "darwin") return;
+	const helperPath = macosAdminHelperPath();
+	let result = run("/usr/bin/sudo", ["-n", helperPath, "uninstall-authorization"]);
+	if (!result.ok && interactive) {
+		result = runAdmin("sudo", ["rm", "-f", helperPath, macosAdminSudoersPath()], true);
+	}
+	if (!result.ok && existsSync(helperPath)) {
+		throw new Error(`无法删除 macOS Web 管理员授权：${result.stderr || result.stdout}`);
+	}
+	rmSync(join(agentDir, "web", "bin", "sudo"), { force: true });
+	rmSync(join(agentDir, "web", "bin", "git-credential-lystar"), { force: true });
+	rmSync(join(agentDir, "web", "bin", "security"), { force: true });
+	rmSync(join(agentDir, "web", "bin", "ssh"), { force: true });
+	rmSync(join(agentDir, "web", "bin", "osascript"), { force: true });
+	rmSync(join(agentDir, "web", "services", `web-service-admin-${macosAdminUid()}`), { force: true });
+	rmSync(join(agentDir, "web", "services", `web-service-sudoers-${macosAdminUid()}`), { force: true });
+}
+
 function profileSuffix(profile: string | undefined): string {
 	if (!profile || profile === "default") return "";
 	const normalized = profile.replace(/[^A-Za-z0-9_.-]+/gu, "-").replace(/^-+|-+$/gu, "");
@@ -138,6 +459,37 @@ function launchDaemonPath(spec: WebServiceSpec): string {
 	return join("/Library", "LaunchDaemons", `${launchDaemonLabel(spec.kind, spec.profile)}.plist`);
 }
 
+function launchAgentPath(spec: WebServiceSpec): string {
+	return join(homedir(), "Library", "LaunchAgents", `${launchDaemonLabel(spec.kind, spec.profile)}.plist`);
+}
+
+function launchdPath(spec: WebServiceSpec): string {
+	return spec.macosSession === "gui" ? launchAgentPath(spec) : launchDaemonPath(spec);
+}
+
+function launchdDomain(spec: WebServiceSpec): string {
+	return spec.macosSession === "gui" ? `gui/${macosAdminUid()}` : "system";
+}
+
+function launchdTarget(spec: WebServiceSpec): string {
+	return `${launchdDomain(spec)}/${launchDaemonLabel(spec.kind, spec.profile)}`;
+}
+
+function runMacosUserLaunchctl(args: string[]): CommandResult {
+	const direct = run("/bin/launchctl", args);
+	if (direct.ok) return direct;
+	return run("/usr/bin/sudo", [
+		"-n",
+		macosAdminHelperPath(),
+		"sudo",
+		"/bin/launchctl",
+		"asuser",
+		String(macosAdminUid()),
+		"/bin/launchctl",
+		...args,
+	]);
+}
+
 function launchDaemonStagingPath(spec: WebServiceSpec): string {
 	return join(spec.agentDir, "web", "services", `${launchDaemonLabel(spec.kind, spec.profile)}.plist`);
 }
@@ -154,6 +506,11 @@ function serviceEnvironment(spec: WebServiceSpec): Record<string, string> {
 	const values: Record<string, string> = {};
 	for (const [key, value] of Object.entries(spec.environment ?? {})) {
 		if (value !== undefined) values[key] = value;
+	}
+	if (process.platform === "darwin") {
+		const currentPath = values.PATH ?? process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+		values.LYSTAR_WEB_COMMAND_BIN = macosWebBinPath(spec);
+		values.PATH = `${macosWebBinPath(spec)}:${currentPath}`;
 	}
 	values.LYSTAR_WEB_SERVICE_CHILD = "1";
 	return values;
@@ -236,14 +593,15 @@ function makeLaunchDaemon(spec: WebServiceSpec): string {
 		.map(([key, value]) => `<key>${xml(key)}</key><string>${xml(value)}</string>`)
 		.join("");
 	const user = process.env.USER ?? process.env.LOGNAME ?? "";
-	if (!user) throw new Error("无法确定 macOS 后台运行用户");
+	if (spec.macosSession !== "gui" && !user) throw new Error("无法确定 macOS 后台运行用户");
+	const identity = spec.macosSession === "gui" ? "" : `<key>UserName</key><string>${xml(user)}</string>`;
 	const logPath = defaultLogPath(spec);
 	return [
 		'<?xml version="1.0" encoding="UTF-8"?>',
 		'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
 		'<plist version="1.0"><dict>',
 		`<key>Label</key><string>${xml(launchDaemonLabel(spec.kind, spec.profile))}</string>`,
-		`<key>UserName</key><string>${xml(user)}</string>`,
+		identity,
 		`<key>ProgramArguments</key><array>${plistArguments(spec)}</array>`,
 		`<key>WorkingDirectory</key><string>${xml(spec.invocation.cwd)}</string>`,
 		`<key>EnvironmentVariables</key><dict>${environment}</dict>`,
@@ -335,7 +693,7 @@ function servicePid(spec: WebServiceSpec): number | undefined {
 		return result.ok ? parsePid(result.stdout) : undefined;
 	}
 	if (process.platform === "darwin") {
-		const result = run("launchctl", ["print", `system/${launchDaemonLabel(spec.kind, spec.profile)}`]);
+		const result = run("launchctl", ["print", launchdTarget(spec)]);
 		const match = /\bpid\s*=\s*(\d+)/u.exec(result.stdout);
 		return match ? parsePid(match[1]!) : undefined;
 	}
@@ -388,8 +746,8 @@ export function getWebServiceStatus(spec: WebServiceSpec): WebServiceStatus {
 		};
 	}
 	if (process.platform === "darwin") {
-		const path = launchDaemonPath(spec);
-		const loaded = run("launchctl", ["print", `system/${launchDaemonLabel(spec.kind, spec.profile)}`]).ok;
+		const path = launchdPath(spec);
+		const loaded = run("launchctl", ["print", launchdTarget(spec)]).ok;
 		const pid = servicePid(spec);
 		return {
 			kind: spec.kind,
@@ -398,12 +756,14 @@ export function getWebServiceStatus(spec: WebServiceSpec): WebServiceStatus {
 			installed: existsSync(path),
 			running: loaded && pid !== undefined,
 			persistent: loaded,
-			manager: existsSync(path) ? "launch-daemon" : "detached",
+			manager: existsSync(path) ? (spec.macosSession === "gui" ? "launch-agent" : "launch-daemon") : "detached",
 			...(pid !== undefined ? { pid } : {}),
 			servicePath: path,
 			...(!existsSync(path)
 				? { message: "macOS 后台服务尚未安装", remedy: "运行 lc web service install 并完成管理员授权" }
-				: {}),
+				: spec.macosSession === "gui" && !loaded
+					? { message: "macOS 用户会话服务未运行", remedy: "登录 macOS 用户会话后运行 lc web service start" }
+					: {}),
 		};
 	}
 	const service = run("sc.exe", ["query", serviceName]);
@@ -457,17 +817,30 @@ function installLinux(spec: WebServiceSpec): void {
 }
 
 function installMac(spec: WebServiceSpec, interactiveAdmin: boolean): void {
+	const authorization = installMacosAdminHelper(spec, interactiveAdmin);
+	if (!authorization.ok)
+		throw new Error(`无法初始化 macOS Web 管理员授权：${authorization.stderr || authorization.stdout}`);
+	if (spec.macosSession === "gui") {
+		const legacyPath = launchDaemonPath(spec);
+		const legacyTarget = `system/${launchDaemonLabel(spec.kind, spec.profile)}`;
+		if (existsSync(legacyPath) || run("launchctl", ["print", legacyTarget]).ok) {
+			runMacosAdmin(spec, "bootout", [legacyTarget], false);
+			if (existsSync(legacyPath)) runMacosAdmin(spec, "remove", [legacyPath], false);
+		}
+		const targetPath = launchAgentPath(spec);
+		writeAtomic(targetPath, makeLaunchDaemon(spec), 0o600);
+		runMacosUserLaunchctl(["bootout", launchdTarget(spec)]);
+		const bootstrap = runMacosUserLaunchctl(["bootstrap", launchdDomain(spec), targetPath]);
+		if (!bootstrap.ok) throw new Error(`无法启动 macOS LaunchAgent：${bootstrap.stderr || bootstrap.stdout}`);
+		return;
+	}
 	const stagingPath = launchDaemonStagingPath(spec);
 	const targetPath = launchDaemonPath(spec);
 	writeAtomic(stagingPath, makeLaunchDaemon(spec), 0o600);
-	const install = runAdmin(
-		"sudo",
-		["install", "-o", "root", "-g", "wheel", "-m", "0644", stagingPath, targetPath],
-		interactiveAdmin,
-	);
+	const install = runMacosAdmin(spec, "install", [stagingPath, targetPath], false);
 	if (!install.ok) throw new Error(`无法安装 macOS LaunchDaemon：${install.stderr || install.stdout}`);
-	runAdmin("sudo", ["launchctl", "bootout", `system/${launchDaemonLabel(spec.kind, spec.profile)}`], interactiveAdmin);
-	const bootstrap = runAdmin("sudo", ["launchctl", "bootstrap", "system", targetPath], interactiveAdmin);
+	runMacosAdmin(spec, "bootout", [launchdTarget(spec)], false);
+	const bootstrap = runMacosAdmin(spec, "bootstrap", [targetPath], false);
 	if (!bootstrap.ok) throw new Error(`无法启动 macOS LaunchDaemon：${bootstrap.stderr || bootstrap.stdout}`);
 }
 
@@ -572,14 +945,23 @@ export function ensureWebService(spec: WebServiceSpec, options: { interactiveAdm
 		const result = run("systemctl", ["--user", "start", webServiceUnitName(spec.kind, spec.profile)]);
 		if (!result.ok) throw new Error(`无法启动 Web Service：${result.stderr || result.stdout}`);
 	} else if (process.platform === "darwin") {
-		const target = `system/${launchDaemonLabel(spec.kind, spec.profile)}`;
+		const target = launchdTarget(spec);
 		const loaded = run("launchctl", ["print", target]).ok;
-		const result = runAdmin(
-			"sudo",
-			loaded ? ["launchctl", "kickstart", target] : ["launchctl", "bootstrap", "system", launchDaemonPath(spec)],
-			options.interactiveAdmin ?? false,
-		);
-		if (!result.ok) throw new Error(`无法启动 macOS LaunchDaemon：${result.stderr || result.stdout}`);
+		const result =
+			spec.macosSession === "gui"
+				? runMacosUserLaunchctl(
+						loaded ? ["kickstart", target] : ["bootstrap", launchdDomain(spec), launchdPath(spec)],
+					)
+				: runMacosAdmin(
+						spec,
+						loaded ? "kickstart" : "bootstrap",
+						[loaded ? target : launchdPath(spec)],
+						options.interactiveAdmin ?? false,
+					);
+		if (!result.ok)
+			throw new Error(
+				`无法启动 macOS ${spec.macosSession === "gui" ? "LaunchAgent" : "LaunchDaemon"}：${result.stderr || result.stdout}`,
+			);
 	} else {
 		const result = runWindowsServiceCommand(["start", webServiceWindowsName(spec.kind, spec.profile)]);
 		if (!result.ok && !/already been started|已启动/iu.test(`${result.stdout}\n${result.stderr}`))
@@ -622,13 +1004,14 @@ export function stopWebService(
 		const result = run("systemctl", ["--user", "stop", "--no-block", unit]);
 		if (!result.ok && status.running) throw new Error(`无法停止 systemd 用户服务：${result.stderr || result.stdout}`);
 	} else if (process.platform === "darwin") {
-		const result = runAdmin(
-			"sudo",
-			["launchctl", "bootout", `system/${launchDaemonLabel(spec.kind, spec.profile)}`],
-			options.interactiveAdmin ?? false,
-		);
+		const result =
+			spec.macosSession === "gui"
+				? runMacosUserLaunchctl(["bootout", launchdTarget(spec)])
+				: runMacosAdmin(spec, "bootout", [launchdTarget(spec)], options.interactiveAdmin ?? false);
 		if (!result.ok && status.running)
-			throw new Error(`无法停止 macOS LaunchDaemon：${result.stderr || result.stdout}`);
+			throw new Error(
+				`无法停止 macOS ${spec.macosSession === "gui" ? "LaunchAgent" : "LaunchDaemon"}：${result.stderr || result.stdout}`,
+			);
 	} else {
 		const result = runWindowsServiceCommand(["stop", webServiceWindowsName(spec.kind, spec.profile)]);
 		if (!result.ok && status.running && !/1062|not started|未启动/iu.test(`${result.stdout}\n${result.stderr}`))
@@ -646,28 +1029,50 @@ export function removeWebService(spec: WebServiceSpec, options: { interactiveAdm
 		return;
 	}
 	if (process.platform === "darwin") {
-		const targetPath = launchDaemonPath(spec);
-		if (
-			!existsSync(targetPath) &&
-			!run("launchctl", ["print", `system/${launchDaemonLabel(spec.kind, spec.profile)}`]).ok
-		) {
+		const targetPath = launchdPath(spec);
+		const target = launchdTarget(spec);
+		const legacyPath = spec.macosSession === "gui" ? launchDaemonPath(spec) : undefined;
+		const legacyTarget =
+			spec.macosSession === "gui" ? `system/${launchDaemonLabel(spec.kind, spec.profile)}` : undefined;
+		const currentLoaded = run("launchctl", ["print", target]).ok;
+		const legacyLoaded = legacyTarget ? run("launchctl", ["print", legacyTarget]).ok : false;
+		if (!existsSync(targetPath) && !currentLoaded && !legacyLoaded && (!legacyPath || !existsSync(legacyPath))) {
 			rmSync(launchDaemonStagingPath(spec), { force: true });
 			return;
 		}
-		const bootout = runAdmin(
-			"sudo",
-			["launchctl", "bootout", `system/${launchDaemonLabel(spec.kind, spec.profile)}`],
-			options.interactiveAdmin ?? false,
-		);
-		if (
-			!bootout.ok &&
-			!/could not find service|找不到服务|no such process/iu.test(`${bootout.stdout}\n${bootout.stderr}`)
-		) {
-			throw new Error(`无法停止 macOS LaunchDaemon：${bootout.stderr || bootout.stdout}`);
+		if (existsSync(targetPath) || currentLoaded) {
+			const bootout =
+				spec.macosSession === "gui"
+					? runMacosUserLaunchctl(["bootout", target])
+					: runMacosAdmin(spec, "bootout", [target], options.interactiveAdmin ?? false);
+			if (
+				!bootout.ok &&
+				!/could not find service|找不到服务|no such process/iu.test(`${bootout.stdout}\n${bootout.stderr}`)
+			) {
+				throw new Error(
+					`无法停止 macOS ${spec.macosSession === "gui" ? "LaunchAgent" : "LaunchDaemon"}：${bootout.stderr || bootout.stdout}`,
+				);
+			}
+			if (existsSync(targetPath)) {
+				if (spec.macosSession === "gui") rmSync(targetPath, { force: true });
+				else {
+					const remove = runMacosAdmin(spec, "remove", [targetPath], options.interactiveAdmin ?? false);
+					if (!remove.ok) throw new Error(`无法删除 macOS LaunchDaemon：${remove.stderr || remove.stdout}`);
+				}
+			}
 		}
-		if (existsSync(targetPath)) {
-			const remove = runAdmin("sudo", ["rm", "-f", targetPath], options.interactiveAdmin ?? false);
-			if (!remove.ok) throw new Error(`无法删除 macOS LaunchDaemon：${remove.stderr || remove.stdout}`);
+		if (legacyTarget && legacyPath && (legacyLoaded || existsSync(legacyPath))) {
+			const bootout = runMacosAdmin(spec, "bootout", [legacyTarget], options.interactiveAdmin ?? false);
+			if (
+				!bootout.ok &&
+				!/could not find service|找不到服务|no such process/iu.test(`${bootout.stdout}\n${bootout.stderr}`)
+			) {
+				throw new Error(`无法停止旧 macOS Runtime LaunchDaemon：${bootout.stderr || bootout.stdout}`);
+			}
+			if (existsSync(legacyPath)) {
+				const remove = runMacosAdmin(spec, "remove", [legacyPath], options.interactiveAdmin ?? false);
+				if (!remove.ok) throw new Error(`无法删除旧 macOS Runtime LaunchDaemon：${remove.stderr || remove.stdout}`);
+			}
 		}
 		rmSync(launchDaemonStagingPath(spec), { force: true });
 		return;
@@ -694,10 +1099,8 @@ export function webServiceDiagnostic(spec: WebServiceSpec): string {
 			: readIfExists(systemdUnitPath(spec), `后台服务尚未安装：${systemdUnitPath(spec)}`);
 	}
 	if (process.platform === "darwin") {
-		const result = run("launchctl", ["print", `system/${launchDaemonLabel(spec.kind, spec.profile)}`]);
-		return result.ok
-			? result.stdout
-			: readIfExists(launchDaemonPath(spec), `后台服务尚未安装：${launchDaemonPath(spec)}`);
+		const result = run("launchctl", ["print", launchdTarget(spec)]);
+		return result.ok ? result.stdout : readIfExists(launchdPath(spec), `后台服务尚未安装：${launchdPath(spec)}`);
 	}
 	const result = run("sc.exe", ["qc", webServiceWindowsName(spec.kind, spec.profile)]);
 	return result.ok ? result.stdout : readIfExists(windowsServiceConfigPath(spec), "Windows Service 尚未安装");

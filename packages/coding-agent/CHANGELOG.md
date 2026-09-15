@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.85.1-lystar.12] - 2026-09-15
+
+### Added
+
+- 新增 macOS Web 系统授权向导、`lc web permissions status|setup` 命令和设置页授权状态入口，集中处理管理员、用户钥匙串、辅助功能、自动化及屏幕录制权限；未安装 Git、SSH 或系统钥匙串工具时自动跳过，不阻断服务流程。
+
+### Changed
+
+- macOS Gateway 保持系统 LaunchDaemon，Runtime 改为当前登录用户的 LaunchAgent，在用户离开电脑或锁屏时继续运行，并复用同一用户会话的钥匙串；更新时自动迁移旧 Runtime LaunchDaemon。
+
+### Fixed
+
+- 修复 macOS Web 后台执行管理员命令或更新服务时因图形授权弹窗无人处理而持续挂起的问题；首次授权后由 root Helper 静默转发 `sudo`，管理员 AppleScript 直接报错，普通 AppleScript 超时后终止，Linux 和 Windows 服务流程保持不变。
+- 修复 macOS Web Git 拉取、推送和获取远端时未调用 Keychain credential helper，导致 Gitee 等 HTTPS 远端直接报 `terminal prompts disabled` 的问题；现在通过带超时的 LYStar Keychain helper 静默复用钥匙串凭据，凭据缺失时返回本机初始化指令。
+- 修复 macOS Web 中 Git 钥匙串、SSH 和 `security` 可能等待远程用户无法处理的输入或系统授权的问题；Git 与钥匙串访问设置超时，SSH 强制非交互执行。
+- 修复 macOS Keychain 超时包装器在后台启动 credential helper 时丢失标准输入，导致 Git 凭据写入和读取失败的问题；权限初始化现在使用合成凭据验证 `git credential` 经 LYStar Helper 在 Runtime LaunchAgent 中完成读回，旧初始化标记不再误报已授权。
+
 ## [0.85.1-lystar.11] - 2026-09-12
 
 ### Fixed

@@ -1,10 +1,9 @@
-import { ArrowRight, LockKeyhole, LoaderCircle, ShieldCheck } from "lucide-react";
+import { ArrowRight, LockKeyhole, LoaderCircle } from "lucide-react";
 import type { ProductBranding } from "../../types";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { BrandLogo } from "../brand-logo";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
-import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
@@ -39,8 +38,7 @@ export function TokenGate({
 						</div>
 					</div>
 					<div>
-						<Badge variant="secondary">私有控制台</Badge>
-						<h1 className="mt-4 text-2xl font-semibold tracking-tight">连接你的本机 Agent</h1>
+						<h1 className="text-2xl font-semibold tracking-tight">随时连接，随地开工</h1>
 						<p className="mt-2 text-sm leading-6 text-muted-foreground">浏览器用于控制和查看运行状态。</p>
 					</div>
 				</CardHeader>
@@ -73,10 +71,6 @@ export function TokenGate({
 							{loading ? <LoaderCircle className="size-4 animate-spin" /> : <ArrowRight className="size-4" />}
 							{loading ? "正在连接" : "进入工作台"}
 						</Button>
-						<p className="flex items-center gap-2 text-xs text-muted-foreground">
-							<ShieldCheck className="size-4 text-emerald-600" />
-							密码只保存在当前浏览器
-						</p>
 					</form>
 				</CardContent>
 			</Card>

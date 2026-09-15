@@ -37,6 +37,19 @@ rm install.sh
 5. 创建 `~/.local/bin/lc` 和 `~/.local/bin/lystar`。
 6. 检查安装结果，并提示下一步操作。
 
+首次执行 `lc web` 并安装 macOS Web 后台服务时，终端会集中请求一次管理员授权，并继续引导完成用户钥匙串、辅助功能、自动化和屏幕录制授权。管理员密码只由系统 `sudo` 读取，LYStar Code 不保存密码。完成后，Web 后台可通过已安装的 Helper 静默转发 `sudo` 命令。
+
+macOS Gateway 使用系统 LaunchDaemon，Runtime 使用当前登录用户的 LaunchAgent。用户离开电脑或锁屏后服务仍可运行，Runtime 可复用该用户会话中的钥匙串。授权向导会检查系统钥匙串及已登记项目的 Git HTTPS 远端；Git、SSH 或 `security` 不存在时对应项目会标记为“已跳过”，不会阻断安装或更新。
+
+可查看或重新执行授权向导：
+
+```bash
+lc web permissions status
+lc web permissions setup
+```
+
+Web 设置页的“系统授权”仅在 macOS 显示。权限缺失时，后台任务会返回明确错误，不等待无法远程处理的系统弹窗。
+
 下载、校验、解压、版本切换和 PATH 处理都会显示中文状态。失败时会显示原因，并保留当前可用版本。
 
 查看参数：

@@ -155,14 +155,15 @@ describe("Runtime update and restart safety", () => {
 			agentDir: "/test/agent",
 		});
 		expect(spec.environment?.PI_WEB_SERVICE_PROFILE).toBe("development");
+		expect(spec.macosSession).toBe("gui");
 	});
 	it("checks idle state before stopping and reinstalling", async () => {
 		await installRuntimeService("/test/runtime.sock");
 		expect(stopWebService).toHaveBeenCalledOnce();
 		expect(installWebService).toHaveBeenCalledOnce();
 	});
-	it("restarts a macOS Runtime through launchd without a background sudo prompt", async () => {
-		state.manager = "launch-daemon";
+	it("restarts a macOS Runtime LaunchAgent through launchd without a background sudo prompt", async () => {
+		state.manager = "launch-agent";
 		const result = await restartRuntimeService("/test/runtime.sock");
 		expect(process.kill).toHaveBeenCalledWith(4321, "SIGUSR2");
 		expect(result.pid).toBe(4322);

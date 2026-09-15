@@ -66,6 +66,7 @@ import {
 	PACKAGE_VERSION,
 	type ProjectTrustContext,
 	ProjectTrustStore,
+	promptDisplayText,
 	RELEASE_REPOSITORY,
 	readClipboardImage,
 	readClipboardText,
@@ -84,7 +85,6 @@ import {
 	saveModelsJsonModelOverride,
 	saveModelsJsonModels,
 	saveModelsJsonProvider,
-	stripInternalPromptContent,
 	VERSION,
 	WebCompanionServer,
 } from "@earendil-works/pi-coding-agent/core";
@@ -129,6 +129,7 @@ import type {
 	TranscriptItem,
 } from "@lystar/code-web-protocol";
 import { RUNTIME_PROTOCOL_VERSION } from "@lystar/code-web-protocol";
+import { macosGitCredentialError, webGitArguments } from "./git-environment.ts";
 import { isDiffTool, toolCallUpdate, toolPath, toolProgressDiff, toolRecord } from "./tool-progress.ts";
 import type {
 	ModelProviderInput,
@@ -356,7 +357,7 @@ function readResourceFile(path: string, offset: number, limit: number): ContentC
 
 async function git(cwd: string, args: string[]): Promise<string> {
 	try {
-		const result = await execFileAsync("git", ["-C", cwd, ...args], {
+		const result = await execFileAsync("git", webGitArguments(cwd, args), {
 			encoding: "utf8",
 			maxBuffer: GIT_MAX_OUTPUT_BYTES,
 			env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_LITERAL_PATHSPECS: "1", LC_ALL: "C" },
@@ -374,7 +375,7 @@ async function git(cwd: string, args: string[]): Promise<string> {
 
 async function gitWrite(cwd: string, args: string[], signal?: AbortSignal): Promise<string> {
 	try {
-		const result = await execFileAsync("git", ["-C", cwd, ...args], {
+		const result = await execFileAsync("git", webGitArguments(cwd, args), {
 			encoding: "utf8",
 			maxBuffer: GIT_MAX_OUTPUT_BYTES,
 			signal,
@@ -393,6 +394,13 @@ async function gitWrite(cwd: string, args: string[], signal?: AbortSignal): Prom
 		if (args[0] === "pull" && output.includes("Not possible to fast-forward")) {
 			throw Object.assign(new Error("当前分支与远端已分叉，不能快进拉取；请明确执行分支合并"), {
 				code: "git_fast_forward_required",
+				retryable: false,
+			});
+		}
+		const credentialError = macosGitCredentialError(output);
+		if (credentialError) {
+			throw Object.assign(new Error(credentialError.message), {
+				code: credentialError.code,
 				retryable: false,
 			});
 		}
@@ -2222,7 +2230,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 					updatedAt: session.modified.getTime(),
 					messageCount: session.messageCount,
 					firstMessage:
-						(session.firstMessage === "(no messages)" ? "" : stripInternalPromptContent(session.firstMessage)) ||
+						(session.firstMessage === "(no messages)" ? "" : promptDisplayText(session.firstMessage)) ||
 						"未命名会话",
 					activity: session.lastOutcome ?? "idle",
 				})),

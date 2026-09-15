@@ -116,6 +116,54 @@ describe("conversation render items", () => {
 		});
 	});
 
+	it("以通用附件卡片展示非图片附件", () => {
+		const html = renderToStaticMarkup(
+			createElement(TranscriptMessageView, {
+				role: "user",
+				text: "请阅读报告",
+				attachments: [
+					{
+						id: "upload-2",
+						filename: "报告.md",
+						mediaType: "text/markdown",
+						url: "data:text/markdown;base64,IyByZXBvcnQ=",
+					},
+				],
+				showCopy: false,
+				onOpenPath: async () => {},
+			}),
+		);
+
+		expect(html).toContain("报告.md");
+		expect(html).not.toContain("<img");
+	});
+
+	it("把历史投影的非图片文件转换为附件卡片", () => {
+		const persisted = buildPersistedRenderItems(
+			[
+				{
+					entryId: "user-file-1",
+					parentId: null,
+					timestamp: "2026-09-14T00:00:00.000Z",
+					kind: "message",
+					view: {
+						type: "user",
+						text: "",
+						files: [{ filename: "报告.md", mimeType: "text/markdown" }],
+					},
+				},
+			],
+			emptyToolIndex,
+		);
+		const rendered = buildConversationRenderItems(persisted, [], {}, new Set(), undefined, 1, false);
+
+		expect(rendered[0]).toMatchObject({
+			kind: "message",
+			text: "",
+			attachments: [{ filename: "报告.md", mediaType: "text/markdown" }],
+		});
+	});
+
 	it("只允许空闲状态下编辑已落盘的用户 Prompt", () => {
 		const persisted = buildPersistedRenderItems(
 			[
@@ -180,10 +228,45 @@ describe("conversation render items", () => {
 		]);
 	});
 
+	it("把 Skill 读取保留为独立工具卡片", () => {
+		const ordinaryRead = {
+			id: "read-before",
+			name: "read",
+			summary: JSON.stringify({ path: "src/app.ts" }),
+		};
+		const skillRead = {
+			id: "skill-read",
+			name: "read",
+			summary: JSON.stringify({ path: "/home/yean/.agents/skills/demo/SKILL.md" }),
+		};
+		const trailingRead = {
+			id: "read-after",
+			name: "read",
+			summary: JSON.stringify({ path: "src/other.ts" }),
+		};
+		const persisted = buildPersistedRenderItems(
+			[
+				{
+					entryId: "assistant-process",
+					parentId: null,
+					timestamp: "2026-09-08T00:00:00.000Z",
+					kind: "message",
+					view: {
+						type: "tool_call",
+						calls: [ordinaryRead, skillRead, trailingRead],
+					},
+				},
+			],
+			emptyToolIndex,
+		);
+		const stacks = persisted.filter((entry) => entry.kind === "tool-stack");
+
+		expect(stacks).toHaveLength(3);
+		expect(stacks.every((stack) => stack.batches.flatMap((batch) => batch.tools).length === 1)).toBe(true);
+		expect(stacks[1]?.batches[0]?.tools[0]?.summary).toBe(skillRead.summary);
+	});
 	it("只在最终结果确认后折叠整轮工作过程并插入分界线", () => {
 		const tool = {
-			id: "tool-1",
-			name: "bash",
 			summary: "pwd",
 			state: "output-available" as const,
 			detail: "/workspace",

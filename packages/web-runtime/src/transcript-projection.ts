@@ -1,16 +1,51 @@
 import type {
 	JsonValue,
 	ToolDiff,
+	TranscriptFile,
 	TranscriptItem,
 	TranscriptViewItem,
 	TranscriptWebSearchSource,
 } from "@lystar/code-web-protocol";
 import { toolProgressDiff } from "./tool-progress.ts";
 
+const INTERNAL_FILE_REFERENCE_PATTERN = /<file\b[^>]*>[\s\S]*?<\/file>/gu;
+const FILE_ATTRIBUTE_PATTERN = /\bname="([^"]*)"/u;
+const FILENAME_ATTRIBUTE_PATTERN = /\bfilename="([^"]*)"/u;
+const MIME_TYPE_ATTRIBUTE_PATTERN = /\bmimeType="([^"]*)"/u;
 const INTERNAL_PROMPT_BLOCK_PATTERNS = [
+	/<file\b[^>]*>[\s\S]*?<\/file>/gu,
 	/<skill\b[^>]*\blocation="[^"]+"[^>]*>[\s\S]*?<\/skill>/gu,
 	/<skill_references\b[^>]*>[\s\S]*?<\/skill_references>/gu,
 ] as const;
+
+const FILE_MIME_TYPES: Record<string, string> = {
+	".avif": "image/avif",
+	".bmp": "image/bmp",
+	".csv": "text/csv",
+	".css": "text/css",
+	".doc": "application/msword",
+	".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	".html": "text/html",
+	".js": "text/javascript",
+	".json": "application/json",
+	".md": "text/markdown",
+	".pdf": "application/pdf",
+	".png": "image/png",
+	".jpg": "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif": "image/gif",
+	".ppt": "application/vnd.ms-powerpoint",
+	".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+	".svg": "image/svg+xml",
+	".ts": "text/typescript",
+	".txt": "text/plain",
+	".webp": "image/webp",
+	".xls": "application/vnd.ms-excel",
+	".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+	".yaml": "text/yaml",
+	".yml": "text/yaml",
+	".zip": "application/zip",
+};
 
 const HIDDEN_SESSION_ENTRY_TYPES = new Set([
 	"session",
@@ -20,7 +55,7 @@ const HIDDEN_SESSION_ENTRY_TYPES = new Set([
 	"session_info",
 ]);
 
-function stripInternalPromptContent(value: string): string {
+export function stripInternalPromptContent(value: string): string {
 	let projected = value;
 	for (const pattern of INTERNAL_PROMPT_BLOCK_PATTERNS) projected = projected.replace(pattern, "");
 	return projected
@@ -39,6 +74,11 @@ export interface TranscriptToolCallProjection {
 	summary: string;
 	href?: string;
 	diff?: ToolDiff;
+	imageGeneration?: {
+		prompt?: string;
+		requestedModel?: string;
+		profile?: string;
+	};
 }
 
 export type TranscriptToolCallIndex = ReadonlyMap<string, TranscriptToolCallProjection>;
@@ -123,6 +163,47 @@ function imageMetadata(value: JsonValue | undefined): Array<{
 		});
 	}
 	return images;
+}
+
+function decodeXmlAttribute(value: string): string {
+	return value
+		.replace(/&quot;/gu, '"')
+		.replace(/&apos;/gu, "'")
+		.replace(/&lt;/gu, "<")
+		.replace(/&gt;/gu, ">");
+}
+
+function fileMetadata(value: JsonValue | undefined): TranscriptFile[] {
+	const source = text(value);
+	const files: TranscriptFile[] = [];
+	const seen = new Set<string>();
+	for (const match of source.matchAll(INTERNAL_FILE_REFERENCE_PATTERN)) {
+		const tag = match[0];
+		const rawPath = tag.match(FILE_ATTRIBUTE_PATTERN)?.[1];
+		if (!rawPath) continue;
+		const path = decodeXmlAttribute(rawPath).trim();
+		const rawFilename = tag.match(FILENAME_ATTRIBUTE_PATTERN)?.[1];
+		const filename = decodeXmlAttribute(rawFilename ?? "").trim() || path.split(/[\\/]/u).at(-1)?.trim() || "附件";
+		const rawMimeType = tag.match(MIME_TYPE_ATTRIBUTE_PATTERN)?.[1];
+		const mimeType =
+			decodeXmlAttribute(rawMimeType ?? "").trim() ||
+			FILE_MIME_TYPES[filename.includes(".") ? `.${filename.split(".").at(-1)!.toLowerCase()}` : ""] ||
+			"application/octet-stream";
+		if (mimeType.startsWith("image/")) continue;
+		const key = `${filename}\0${mimeType}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		files.push({ filename, mimeType });
+		if (files.length >= 32) break;
+	}
+	return files;
+}
+
+export function promptDisplayText(value: string): string {
+	const visible = stripInternalPromptContent(value);
+	if (visible) return visible;
+	const files = fileMetadata(value);
+	return files.length > 0 ? `附件：${files.map((file) => file.filename).join("、")}` : "";
 }
 
 function diffValue(value: JsonValue | undefined): { diff?: string; truncated?: boolean } {
@@ -212,6 +293,44 @@ function toolCallSummary(name: string, argumentsValue: JsonValue | undefined): s
 	return text(argumentsValue);
 }
 
+function imageGenerationCallMetadata(
+	name: string,
+	argumentsValue: JsonValue | undefined,
+): TranscriptToolCallProjection["imageGeneration"] {
+	if (name !== "image_gen") return undefined;
+	const argumentsRecord = record(argumentsValue);
+	if (!argumentsRecord) return undefined;
+	const prompt = typeof argumentsRecord.prompt === "string" ? bounded(argumentsRecord.prompt) : undefined;
+	const requestedModel = typeof argumentsRecord.model === "string" ? bounded(argumentsRecord.model) : undefined;
+	const profile = typeof argumentsRecord.profile === "string" ? bounded(argumentsRecord.profile) : undefined;
+	if (!prompt && !requestedModel && !profile) return undefined;
+	return {
+		...(prompt ? { prompt } : {}),
+		...(requestedModel ? { requestedModel } : {}),
+		...(profile ? { profile } : {}),
+	};
+}
+
+function generatedImageSummary(
+	name: string,
+	call: TranscriptToolCallProjection | undefined,
+	details: JsonValue | undefined,
+): string {
+	if (name !== "image_gen") return call?.summary ?? name;
+	const result = record(details);
+	const model = typeof result?.model === "string" ? bounded(result.model) : undefined;
+	const savedPath = typeof result?.savedPath === "string" ? result.savedPath : undefined;
+	const filename = savedPath?.replaceAll("\\", "/").split("/").filter(Boolean).at(-1);
+	const metadata = {
+		...(call?.imageGeneration?.prompt ? { prompt: call.imageGeneration.prompt } : {}),
+		...(model ? { model } : {}),
+		...(call?.imageGeneration?.requestedModel ? { requestedModel: call.imageGeneration.requestedModel } : {}),
+		...(call?.imageGeneration?.profile ? { profile: call.imageGeneration.profile } : {}),
+		...(filename ? { filename: bounded(filename) } : {}),
+	};
+	return Object.keys(metadata).length > 0 ? bounded(JSON.stringify(metadata)) : (call?.summary ?? name);
+}
+
 function toolCallProjection(part: JsonRecord): TranscriptToolCallProjection | undefined {
 	if (part.type !== "toolCall" || typeof part.id !== "string") return undefined;
 	const name = typeof part.name === "string" ? part.name : "Tool";
@@ -225,11 +344,13 @@ function toolCallProjection(part: JsonRecord): TranscriptToolCallProjection | un
 					? `file://${argumentsValue.file_path}`
 					: undefined;
 	const diff = toolProgressDiff(name, part.arguments);
+	const imageGeneration = imageGenerationCallMetadata(name, part.arguments);
 	return {
 		name,
 		summary: toolCallSummary(name, part.arguments),
 		...(href ? { href } : {}),
 		...(diff ? { diff } : {}),
+		...(imageGeneration ? { imageGeneration } : {}),
 	};
 }
 
@@ -431,12 +552,14 @@ function projectTranscriptViews(
 	const role = entryMessage?.role;
 	const content = entryMessage?.content ?? payload?.text;
 	const images = imageMetadata(content);
+	const files = fileMetadata(content);
 	if (role === "user") {
 		return [
 			{
 				type: "user",
 				text: stripInternalPromptContent(text(content)),
 				...(images.length > 0 ? { images } : {}),
+				...(files.length > 0 ? { files } : {}),
 			},
 		];
 	}
@@ -461,13 +584,14 @@ function projectTranscriptViews(
 			entryMessage.details,
 		);
 		const diff = isError ? resultDiff : mergeToolDiff(call?.diff, resultDiff);
+		const summary = generatedImageSummary(name, call, entryMessage.details);
 		return [
 			{
 				type: "tool_result",
 				callId,
 				name,
 				status: isError ? "error" : "success",
-				summary: call?.summary ?? name,
+				summary,
 				...(detail ? { detail } : {}),
 				...(contentRef(content) ? { contentRef: contentRef(content) } : {}),
 				...(diff ? { diff } : {}),

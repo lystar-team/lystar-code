@@ -4,7 +4,7 @@ import { readdir, readFile, realpath, stat, unlink, writeFile } from "node:fs/pr
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Duplex } from "node:stream";
 import {
 	type CompletionResult,
@@ -73,6 +73,7 @@ import {
 	hostUptimeSeconds,
 	readCpuSnapshot,
 } from "./host-diagnostics.ts";
+import { getMacosPermissionsStatus, requestMacosPermission } from "./macos-permissions.ts";
 import { ProductUpdateController } from "./product-update.ts";
 import { type ProjectGroup, ProjectGroupRegistry } from "./project-group-registry.ts";
 import { ProjectRegistry, type WebProject } from "./project-registry.ts";
@@ -91,14 +92,27 @@ const ACTIVE_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>(["accepte
 const MAX_SESSION_DETAIL_EVENTS = 256;
 const MAX_SESSION_DETAIL_BYTES = 2 * 1024 * 1024;
 const PROJECT_WATCH_DEBOUNCE_MS = 150;
-const IMAGE_EXTENSIONS: Record<string, string> = {
+const UPLOAD_EXTENSIONS: Record<string, string> = {
+	"application/pdf": ".pdf",
+	"application/zip": ".zip",
 	"image/apng": ".apng",
 	"image/bmp": ".bmp",
 	"image/gif": ".gif",
 	"image/jpeg": ".jpg",
 	"image/png": ".png",
 	"image/webp": ".webp",
+	"text/css": ".css",
+	"text/html": ".html",
+	"text/javascript": ".js",
+	"text/markdown": ".md",
+	"text/plain": ".txt",
+	"text/typescript": ".ts",
 };
+
+function uploadExtension(filename: string | undefined, mimeType: string): string {
+	const extension = filename ? extname(filename).toLowerCase() : "";
+	return /^\.[a-z0-9][a-z0-9._-]{0,15}$/u.test(extension) ? extension : (UPLOAD_EXTENSIONS[mimeType] ?? ".bin");
+}
 
 export type WebSessionSummary = Omit<SessionSummary, "path" | "cwd"> & { pinned?: boolean };
 export type WebSessionSnapshot = Omit<SessionStateSnapshot, "path" | "cwd">;
@@ -1624,6 +1638,27 @@ export class WebGatewayServer {
 			await this.handleGatewaySecuritySettings(request, response);
 			return;
 		}
+		if (parts.length === 2 && parts[1] === "system-permissions") {
+			if (request.method === "GET") {
+				sendJson(response, 200, getMacosPermissionsStatus(this.config.agentDir));
+				return;
+			}
+			if (request.method === "POST") {
+				const body = await parseJsonBody(request);
+				const permission = stringValue(body.permission);
+				if (
+					permission !== "keychain" &&
+					permission !== "accessibility" &&
+					permission !== "automation" &&
+					permission !== "screen-recording"
+				) {
+					throw new HttpError(400, "system_permission_invalid", "不支持的系统授权项目");
+				}
+				sendJson(response, 200, requestMacosPermission(permission, this.config.agentDir));
+				return;
+			}
+			throw new HttpError(405, "method_not_allowed", "系统授权接口只支持 GET 或 POST");
+		}
 		if (parts[1] === "product-update") {
 			await this.handleProductUpdate(request, response, context, parts);
 			return;
@@ -1667,8 +1702,8 @@ export class WebGatewayServer {
 			});
 			return;
 		}
-		if (parts.length === 3 && parts[1] === "uploads" && parts[2] === "image" && request.method === "POST") {
-			await this.handleImageUpload(request, response);
+		if (parts.length === 3 && parts[1] === "uploads" && parts[2] === "file" && request.method === "POST") {
+			await this.handleFileUpload(request, response);
 			return;
 		}
 		if (parts[1] === "project-groups") {
@@ -2699,22 +2734,20 @@ export class WebGatewayServer {
 		throw new HttpError(404, "not_found", "未找到会话接口");
 	}
 
-	private async handleImageUpload(request: IncomingMessage, response: ServerResponse): Promise<void> {
+	private async handleFileUpload(request: IncomingMessage, response: ServerResponse): Promise<void> {
 		const body = await parseJsonBody(request);
-		const mimeType = stringValue(body.mimeType);
+		const filename = stringValue(body.filename);
+		const mimeType = stringValue(body.mimeType)?.trim() || "application/octet-stream";
 		const encoded = stringValue(body.data);
-		if (!mimeType || !mimeType.startsWith("image/"))
-			throw new HttpError(400, "image_type_invalid", "只支持上传图片文件");
-		if (!encoded) throw new HttpError(400, "image_data_required", "图片内容不能为空");
+		if (!encoded) throw new HttpError(400, "file_data_required", "文件内容不能为空");
 		const comma = encoded.startsWith("data:") ? encoded.indexOf(",") : -1;
 		const base64 = comma >= 0 ? encoded.slice(comma + 1) : encoded;
 		if (!/^[A-Za-z0-9+/]*={0,2}$/u.test(base64) || base64.length % 4 === 1)
-			throw new HttpError(400, "image_data_invalid", "图片内容不是有效的 Base64 数据");
+			throw new HttpError(400, "file_data_invalid", "文件内容不是有效的 Base64 数据");
 		const bytes = Buffer.from(base64, "base64");
-		if (bytes.length === 0) throw new HttpError(400, "image_data_invalid", "图片内容不能为空");
-		if (bytes.length > MAX_UPLOAD_BYTES) throw new HttpError(413, "image_too_large", "单个图片不能超过 8 MB");
-		const extension = IMAGE_EXTENSIONS[mimeType] ?? ".img";
-		const path = join(tmpdir(), `lystar-web-upload-${randomUUID()}${extension}`);
+		if (bytes.length === 0) throw new HttpError(400, "file_data_invalid", "文件内容不能为空");
+		if (bytes.length > MAX_UPLOAD_BYTES) throw new HttpError(413, "file_too_large", "单个文件不能超过 8 MB");
+		const path = join(tmpdir(), `lystar-web-upload-${randomUUID()}${uploadExtension(filename, mimeType)}`);
 		await writeFile(path, bytes, { mode: 0o600 });
 		this.uploadedFiles.set(path, { mimeType, expiresAt: Date.now() + UPLOAD_TTL_MS });
 		sendJson(response, 201, { path, mimeType, byteLength: bytes.byteLength });
@@ -2729,23 +2762,26 @@ export class WebGatewayServer {
 		}
 	}
 
-	private async readUploadedImages(
+	private async readUploadedFiles(
 		value: unknown,
 	): Promise<Array<{ data: string; mimeType: string; displayOnly: true }>> {
 		if (value === undefined) return [];
-		if (!Array.isArray(value)) throw new HttpError(400, "image_attachments_invalid", "图片附件数据无效");
+		if (!Array.isArray(value)) throw new HttpError(400, "file_attachments_invalid", "文件附件数据无效");
 		const images: Array<{ data: string; mimeType: string; displayOnly: true }> = [];
 		for (const item of value) {
 			const attachment = object(item);
 			const path = stringValue(attachment?.path);
-			if (!path) throw new HttpError(400, "image_attachment_path_required", "图片附件路径不能为空");
+			if (!path) throw new HttpError(400, "file_attachment_path_required", "文件附件路径不能为空");
 			const upload = this.uploadedFiles.get(path);
 			if (!upload || upload.expiresAt <= Date.now()) {
-				throw new HttpError(400, "image_attachment_expired", "图片附件已过期，请重新上传");
+				throw new HttpError(400, "file_attachment_expired", "文件附件已过期，请重新上传");
 			}
-			const bytes = await readFile(path).catch(() => undefined);
-			if (!bytes) throw new HttpError(400, "image_attachment_missing", "图片附件不存在，请重新上传");
+			const file = await stat(path).catch(() => undefined);
+			if (!file?.isFile()) throw new HttpError(400, "file_attachment_missing", "文件附件不存在，请重新上传");
 			upload.expiresAt = Date.now() + UPLOAD_TTL_MS;
+			if (!upload.mimeType.startsWith("image/")) continue;
+			const bytes = await readFile(path).catch(() => undefined);
+			if (!bytes) throw new HttpError(400, "file_attachment_missing", "文件附件不存在，请重新上传");
 			images.push({ data: bytes.toString("base64"), mimeType: upload.mimeType, displayOnly: true });
 		}
 		return images;
@@ -2795,7 +2831,7 @@ export class WebGatewayServer {
 		if (!text.trim()) throw new HttpError(400, "prompt_required", "消息内容不能为空");
 		const lease = await this.requireLease(context, sessionId);
 		const rawImages = Array.isArray(body.images) ? body.images : [];
-		const uploadedImages = await this.readUploadedImages(body.attachments);
+		const uploadedImages = await this.readUploadedFiles(body.attachments);
 		const images = [...rawImages, ...uploadedImages];
 		const command = kind === "prompt" ? "prompt" : kind === "steer" ? "steer" : "follow_up";
 		const queueId = kind === "prompt" ? undefined : stringValue(body.queueId);

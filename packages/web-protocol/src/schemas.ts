@@ -463,6 +463,11 @@ const TranscriptImageSchema = StrictObject({
 	alt: Type.Optional(Type.String({ maxLength: 4096 })),
 });
 export type TranscriptImage = Static<typeof TranscriptImageSchema>;
+const TranscriptFileSchema = StrictObject({
+	filename: Type.String({ minLength: 1, maxLength: 4096 }),
+	mimeType: Type.String({ minLength: 1, maxLength: 256 }),
+});
+export type TranscriptFile = Static<typeof TranscriptFileSchema>;
 const TranscriptToolCallSchema = StrictObject({
 	id: Id,
 	name: Type.String({ minLength: 1, maxLength: 256 }),
@@ -494,11 +499,13 @@ export const TranscriptViewItemSchema = Type.Union([
 		type: Type.Literal("user"),
 		text: TranscriptViewTextSchema,
 		images: Type.Optional(Type.Array(TranscriptImageSchema, { maxItems: 32 })),
+		files: Type.Optional(Type.Array(TranscriptFileSchema, { maxItems: 32 })),
 	}),
 	StrictObject({
 		type: Type.Literal("assistant"),
 		text: TranscriptViewTextSchema,
 		images: Type.Optional(Type.Array(TranscriptImageSchema, { maxItems: 32 })),
+		files: Type.Optional(Type.Array(TranscriptFileSchema, { maxItems: 32 })),
 	}),
 	StrictObject({ type: Type.Literal("thinking"), text: TranscriptViewTextSchema }),
 	TranscriptWebSearchSchema,

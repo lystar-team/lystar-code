@@ -16,7 +16,7 @@ import type {
 	HarnessImportResultResponse,
 	HarnessImportsResponse,
 	HostInstructionsResponse,
-	ImageUploadResponse,
+	FileUploadResponse,
 	ModelOptionsResponse,
 	ModelsResponse,
 	ProjectGroup,
@@ -29,6 +29,7 @@ import type {
 	ProductUpdateStatusResponse,
 	SaveSecuritySettingsResponse,
 	SecuritySettingsResponse,
+	SystemPermissionsResponse,
 	SessionTreeResponse,
 	SettingsResponse,
 	TranscriptResponse,
@@ -383,8 +384,8 @@ export class WebApi {
 		return this.request<TranscriptResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/transcript${query}`);
 	}
 
-	async uploadImage(input: { data: string; mimeType: string }): Promise<ImageUploadResponse> {
-		return this.request<ImageUploadResponse>("/api/uploads/image", {
+	async uploadFile(input: { data: string; filename: string; mimeType: string }): Promise<FileUploadResponse> {
+		return this.request<FileUploadResponse>("/api/uploads/file", {
 			method: "POST",
 			body: JSON.stringify(input),
 		});
@@ -655,6 +656,19 @@ export class WebApi {
 		return this.request<SaveSecuritySettingsResponse>("/api/security-settings", {
 			method: "POST",
 			body: JSON.stringify(input),
+		});
+	}
+
+	async systemPermissions(): Promise<SystemPermissionsResponse> {
+		return this.request<SystemPermissionsResponse>("/api/system-permissions");
+	}
+
+	async requestSystemPermission(
+		permission: "keychain" | "accessibility" | "automation" | "screen-recording",
+	): Promise<SystemPermissionsResponse> {
+		return this.request<SystemPermissionsResponse>("/api/system-permissions", {
+			method: "POST",
+			body: JSON.stringify({ permission }),
 		});
 	}
 

@@ -3,7 +3,11 @@ import { dirname, join } from "node:path";
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { restoreSandboxEnv } from "../packages/coding-agent/dist/bun/restore-sandbox-env.js";
 import { APP_NAME, VERSION } from "../packages/coding-agent/dist/config.js";
-import { runWebComponentAction, runWebServiceAction } from "../packages/web-gateway/dist/gateway-service.js";
+import {
+	runMacosPermissionsCommand,
+	runWebComponentAction,
+	runWebServiceAction,
+} from "../packages/web-gateway/dist/gateway-service.js";
 
 process.title = APP_NAME;
 process.emitWarning = () => {};
@@ -18,12 +22,15 @@ const foreground = args.includes("--foreground");
 if (args[0] === "web") {
 	if (args.includes("--help") || args.includes("-h")) {
 		process.stdout.write(
-			"用法：lc web\n\n首次运行会依次配置监听 IP、白名单 IP、Web 端口、Runtime 端口和连接密码。\nWeb 默认端口：1420；Runtime 默认端口：1422。\n默认启动为后台模式；需要前台运行时使用：lc web --foreground。\n\n组件命令：\n  lc web gateway status|stop|start|restart\n  lc web runtime status|stop|start|restart\n\n服务命令：\n  lc web service install\n  lc web service status\n  lc web service restart\n  lc web service uninstall\n",
+			"用法：lc web\n\n首次运行会依次配置监听 IP、白名单 IP、Web 端口、Runtime 端口和连接密码。\nWeb 默认端口：1420；Runtime 默认端口：1422。\n默认启动为后台模式；需要前台运行时使用：lc web --foreground。\n\n组件命令：\n  lc web gateway status|stop|start|restart\n  lc web runtime status|stop|start|restart\n\n服务命令：\n  lc web service install\n  lc web service status\n  lc web service restart\n  lc web service uninstall\n\nmacOS 授权：\n  lc web permissions status\n  lc web permissions setup\n",
 		);
 	} else if (args.length > 1 && !foreground) {
 		if (args[1] === "service") {
 			const { runWebServiceCommand } = await import("../packages/coding-agent/dist/cli/web-command.js");
 			await runWebServiceCommand(args.slice(2), { gatewayModule: { runWebServiceAction } });
+		} else if (args[1] === "permissions") {
+			const { runWebPermissionsCommand } = await import("../packages/coding-agent/dist/cli/web-command.js");
+			await runWebPermissionsCommand(args.slice(2), { runMacosPermissionsCommand });
 		} else {
 			const { runWebControlCommand } = await import("../packages/coding-agent/dist/cli/web-command.js");
 			await runWebControlCommand(args.slice(1), { gatewayModule: { runWebComponentAction } });
@@ -48,6 +55,10 @@ if (args[0] === "web") {
 			backgroundInvocation,
 			...(serviceVersion ? { serviceVersion } : {}),
 		});
+		if (!foreground && process.stdin.isTTY && process.stdout.isTTY) {
+			const { runWebPermissionsCommand } = await import("../packages/coding-agent/dist/cli/web-command.js");
+			await runWebPermissionsCommand(["setup"], { runMacosPermissionsCommand });
+		}
 	}
 } else if (args[0] === "web-runtime") {
 	const { runWebRuntimeCli } = await import("../packages/web-runtime/dist/cli-runner.js");

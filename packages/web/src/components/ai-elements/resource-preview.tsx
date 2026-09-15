@@ -3,7 +3,9 @@
 import {
 	ChevronLeftIcon,
 	ChevronRightIcon,
+	CopyIcon,
 	DownloadIcon,
+	ImageIcon,
 	LoaderCircleIcon,
 	MinusIcon,
 	PlusIcon,
@@ -16,6 +18,12 @@ import { isAbsoluteResourcePath } from "@/lib/resource-path";
 import { webApi } from "../../adapters/host-protocol/api.ts";
 import type { FileResponse } from "../../types.ts";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog";
+import { Button } from "../ui/button";
+
+export interface ResourceImageGenerationMetadata {
+	model?: string;
+	prompt?: string;
+}
 
 export interface ResourceImageItem {
 	id: string;
@@ -27,6 +35,7 @@ export interface ResourceImageItem {
 	contentRef?: string;
 	mimeType?: string;
 	alt?: string;
+	generation?: ResourceImageGenerationMetadata;
 }
 
 export interface ResourceImageProps {
@@ -37,6 +46,7 @@ export interface ResourceImageProps {
 	sessionId?: string;
 	contentRef?: string;
 	alt?: string;
+	generation?: ResourceImageGenerationMetadata;
 	className?: string;
 	imageClassName?: string;
 	buttonClassName?: string;
@@ -183,6 +193,7 @@ export function ResourceImageViewer({ items, open, initialIndex = 0, onOpenChang
 	const [source, setSource] = useState<string | undefined>();
 	const [loading, setLoading] = useState(false);
 	const [failed, setFailed] = useState(false);
+	const [copiedPrompt, setCopiedPrompt] = useState(false);
 	const pinchStartDistanceRef = useRef<number>();
 	const pinchStartZoomRef = useRef(1);
 	const dragStartRef = useRef<{ x: number; y: number }>();
@@ -203,6 +214,7 @@ export function ResourceImageViewer({ items, open, initialIndex = 0, onOpenChang
 		let cancelled = false;
 		setSource(current.src);
 		setFailed(false);
+		setCopiedPrompt(false);
 		if (current.src || (!current.path && !(current.sessionId && current.contentRef))) {
 			setLoading(false);
 			return;
@@ -319,6 +331,156 @@ export function ResourceImageViewer({ items, open, initialIndex = 0, onOpenChang
 		link.click();
 		link.remove();
 	};
+	const copyPrompt = async () => {
+		const prompt = current.generation?.prompt;
+		if (!prompt || !navigator.clipboard?.writeText) return;
+		await navigator.clipboard.writeText(prompt);
+		setCopiedPrompt(true);
+	};
+
+	if (current.generation) {
+		return (
+			<Dialog open={open} onOpenChange={onOpenChange}>
+				<DialogContent
+					showCloseButton={false}
+					overlayClassName="z-[100] bg-black/35"
+					className="fixed inset-0 z-[100] flex h-dvh w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-0 bg-background p-0 text-foreground shadow-none sm:max-w-none"
+				>
+					<header className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4">
+						<DialogTitle className="min-w-0 flex-1 truncate text-sm font-medium">
+							{resourceFileName(current, index)}
+						</DialogTitle>
+						<Button
+							className="h-8 gap-1.5 px-2.5"
+							disabled={!source}
+							onClick={download}
+							size="sm"
+							type="button"
+							variant="outline"
+						>
+							<DownloadIcon className="size-4" />
+							下载
+						</Button>
+						<Button
+							aria-label="关闭图片预览"
+							className="size-8"
+							onClick={() => onOpenChange(false)}
+							size="icon-sm"
+							type="button"
+							variant="ghost"
+						>
+							<XIcon className="size-5" />
+						</Button>
+					</header>
+
+					<div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(12rem,42vh)] lg:grid-cols-[minmax(0,1fr)_22rem] lg:grid-rows-1">
+						<div
+							className={cn(
+								"relative flex min-h-0 touch-none items-center justify-center overflow-hidden bg-muted/30 p-6 cursor-grab",
+								dragging && "cursor-grabbing",
+							)}
+							onWheel={handleWheel}
+							onTouchStart={handleTouchStart}
+							onTouchMove={handleTouchMove}
+							onTouchEnd={handleTouchEnd}
+							onTouchCancel={handleTouchEnd}
+							onPointerDown={handlePointerDown}
+							onPointerMove={handlePointerMove}
+							onPointerUp={handlePointerEnd}
+							onPointerCancel={handlePointerEnd}
+						>
+							{items.length > 1 ? (
+								<Button
+									aria-label="上一张图片"
+									className="absolute left-4 z-10 rounded-full bg-background/90 shadow-sm"
+									onClick={() => move(-1)}
+									size="icon"
+									type="button"
+									variant="outline"
+								>
+									<ChevronLeftIcon className="size-5" />
+								</Button>
+							) : null}
+							{source ? (
+								<img
+									className={cn(
+										"max-h-full max-w-full select-none object-contain",
+										!dragging && "transition-transform duration-100 ease-out",
+									)}
+									src={source}
+									alt={current.alt ?? "图片"}
+									draggable={false}
+									style={{ transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})` }}
+								/>
+							) : loading ? (
+								<LoaderCircleIcon className="size-8 animate-spin text-muted-foreground" />
+							) : (
+								<span className="text-sm text-muted-foreground">
+									{failed ? "图片暂时无法预览" : "没有图片内容"}
+								</span>
+							)}
+							{items.length > 1 ? (
+								<Button
+									aria-label="下一张图片"
+									className="absolute right-4 z-10 rounded-full bg-background/90 shadow-sm"
+									onClick={() => move(1)}
+									size="icon"
+									type="button"
+									variant="outline"
+								>
+									<ChevronRightIcon className="size-5" />
+								</Button>
+							) : null}
+							<div className="absolute inset-x-0 bottom-5 flex justify-center px-4">
+								<div className="flex items-center gap-1 rounded-lg border border-border bg-background p-1 shadow-sm">
+									<Button aria-label="缩小图片" onClick={() => changeZoom(-0.1)} size="icon-sm" type="button" variant="ghost">
+										<MinusIcon className="size-4" />
+									</Button>
+									<span className="min-w-12 px-1 text-center text-xs tabular-nums text-muted-foreground">
+										{Math.round(zoom * 100)}%
+									</span>
+									<Button aria-label="放大图片" onClick={() => changeZoom(0.1)} size="icon-sm" type="button" variant="ghost">
+										<PlusIcon className="size-4" />
+									</Button>
+								</div>
+							</div>
+						</div>
+
+						<aside className="min-h-0 overflow-y-auto border-t border-border bg-background p-6 lg:border-t-0 lg:border-l">
+							<div className="flex items-center gap-2">
+								<ImageIcon className="size-5" />
+								<h2 className="text-base font-medium">图片详情</h2>
+							</div>
+							{current.generation.model ? (
+								<div className="mt-6 grid gap-2">
+									<div className="text-xs text-muted-foreground">生成模型</div>
+									<div className="break-all font-mono text-[13px] leading-5">{current.generation.model}</div>
+								</div>
+							) : null}
+							{current.generation.prompt ? (
+								<div className="mt-6 border-t border-border pt-6">
+									<div className="flex items-center justify-between gap-3">
+										<div className="text-xs text-muted-foreground">提示词</div>
+										<Button
+											className="h-8 gap-1.5 px-2 text-muted-foreground"
+											onClick={() => void copyPrompt()}
+											size="sm"
+											type="button"
+											variant="ghost"
+										>
+											<CopyIcon className="size-4" />
+											{copiedPrompt ? "已复制" : "复制"}
+										</Button>
+									</div>
+									<p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6">{current.generation.prompt}</p>
+								</div>
+							) : null}
+						</aside>
+					</div>
+				</DialogContent>
+			</Dialog>
+		);
+	}
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
@@ -435,6 +597,7 @@ export function ResourceImage({
 	sessionId,
 	contentRef,
 	alt = "图片",
+	generation,
 	className,
 	imageClassName,
 	buttonClassName,
@@ -450,6 +613,7 @@ export function ResourceImage({
 		sessionId,
 		contentRef,
 		alt,
+		generation,
 	};
 	const { source, loading, failed } = useResourceImageSource(item);
 	const [open, setOpen] = useState(false);

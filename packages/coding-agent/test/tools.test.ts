@@ -771,6 +771,35 @@ describe("Coding Agent Tools", () => {
 			expect(Buffer.concat(chunks).toString("utf-8")).toBe(command);
 		});
 
+		it("should keep the macOS Web command wrapper ahead of the login shell PATH", async () => {
+			vi.spyOn(shellModule, "ensureShellConfig").mockResolvedValue({
+				shell: process.execPath,
+				args: [
+					"-e",
+					'let input = ""; process.stdin.setEncoding("utf8"); process.stdin.on("data", (chunk) => { input += chunk; }); process.stdin.on("end", () => { process.stdout.write(input); });',
+				],
+				commandTransport: "stdin",
+			});
+			const originalPlatform = process.platform;
+			Object.defineProperty(process, "platform", { configurable: true, value: "darwin" });
+			try {
+				const chunks: Buffer[] = [];
+				const ops = createLocalBashOperations();
+				await ops.exec("sudo whoami", testDir, {
+					onData: (data) => chunks.push(data),
+					env: {
+						LYSTAR_WEB_SERVICE_CHILD: "1",
+						LYSTAR_WEB_COMMAND_BIN: "/tmp/lystar web/bin",
+					},
+				});
+				expect(Buffer.concat(chunks).toString("utf8")).toBe(
+					`export PATH='/tmp/lystar web/bin':"$PATH"\nsudo whoami`,
+				);
+			} finally {
+				Object.defineProperty(process, "platform", { configurable: true, value: originalPlatform });
+			}
+		});
+
 		it("should resolve legacy WSL bash.exe to stdin command transport", () => {
 			if (process.platform === "win32") return;
 			const originalCwd = process.cwd();

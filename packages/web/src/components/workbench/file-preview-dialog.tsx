@@ -5,7 +5,7 @@ import { cn } from "../../lib/utils.ts";
 import type { WorkbenchState } from "../../state/use-workbench.ts";
 import type { FileResponse } from "../../types.ts";
 import { CodeBlockCopyButton, CodeBlockDownloadButton } from "../ai-elements/code-block.tsx";
-import { MessageResponse } from "../ai-elements/message.tsx";
+import { MessageResponse, shouldVirtualizeMarkdown } from "../ai-elements/message.tsx";
 import { ResourceImage, ResourceImageViewer, type ResourceImageItem } from "../ai-elements/resource-preview.tsx";
 import { Button } from "../ui/button.tsx";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog.tsx";
@@ -72,6 +72,9 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 		state.theme === "dark" ||
 		(state.theme === "system" && typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches);
 	const filename = state.fileContent?.path.split(/[\\/]/u).at(-1) || "code.txt";
+	const markdownPreviewVirtualized = Boolean(
+		markdownFile && markdownView === "preview" && shouldVirtualizeMarkdown(markdownPreviewContent),
+	);
 
 	const downloadBinary = useCallback(() => {
 		if (binaryPath && binaryData) downloadBinaryFile(binaryPath, binaryData, binaryMimeType || "application/octet-stream");
@@ -250,7 +253,12 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 							</DialogClose>
 						</div>
 					</DialogHeader>
-					<div className="relative min-h-0 flex-1 overflow-auto bg-background p-3 sm:p-4">
+					<div
+						className={cn(
+							"relative min-h-0 flex-1 overflow-auto bg-background p-3 sm:p-4",
+							markdownPreviewVirtualized && "overflow-hidden p-0",
+						)}
+					>
 						{state.fileLoading && !state.fileContent ? (
 							<div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
 								<LoaderCircle className="size-4 animate-spin" />
@@ -311,13 +319,18 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 										id="markdown-preview-panel"
 										role="tabpanel"
 										aria-labelledby="markdown-preview-tab"
-										className="markdown-file-preview sd-prose !h-auto mx-auto min-h-full w-full max-w-4xl px-1 py-2 sm:px-4 sm:py-4"
+										className={cn(
+											"markdown-file-preview sd-prose !h-auto mx-auto min-h-full w-full max-w-4xl px-1 py-2 sm:px-4 sm:py-4",
+											markdownPreviewVirtualized && "!h-full !max-w-none !min-h-0 !px-0 !py-0",
+										)}
 										mode="static"
 										parseIncompleteMarkdown
 										linkSafety={{ enabled: true }}
 										controls={{ code: { copy: true, download: true }, table: { copy: true, download: true } }}
 										onOpenPath={(path) => void actions.openResource(path)}
 										projectId={state.currentProjectId}
+										basePath={markdownFile.path}
+										virtualize={markdownPreviewVirtualized}
 									>
 										{markdownPreviewContent}
 									</MessageResponse>

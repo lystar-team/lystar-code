@@ -4,6 +4,7 @@ import type { BundledLanguage } from "shiki";
 import { type TranscriptToolViewModel, toSessionItemViewModel } from "../../adapters/session-view-model";
 import { cn } from "../../lib/utils";
 import type { WorkbenchState } from "../../state/use-workbench";
+import { Attachment, AttachmentInfo, AttachmentPreview, Attachments } from "../ai-elements/attachments";
 import { CodeBlock, CodeBlockActions, CodeBlockCopyButton, CodeBlockDownloadButton, CodeBlockFilename, CodeBlockHeader, CodeBlockTitle } from "../ai-elements/code-block";
 import { Message, MessageAction, MessageActions, MessageContent, MessageResponse, PromptResponse } from "../ai-elements/message";
 import { PromptTokenContent, hasPromptTokenCandidates } from "../ai-elements/prompt-token.tsx";
@@ -193,23 +194,40 @@ function TranscriptAttachments({
 }) {
 	if (!attachments.length) return null;
 	return (
-		<div className="flex flex-wrap gap-2">
+		<Attachments variant="inline">
 			{attachments.map((attachment) => {
-				const hasPreviewUrl = Boolean(attachment.url);
+				if (attachment.mediaType.startsWith("image/")) {
+					const hasPreviewUrl = Boolean(attachment.url);
+					return (
+						<ResourceImage
+							key={attachment.id}
+							src={hasPreviewUrl ? attachment.url : undefined}
+							sessionId={hasPreviewUrl ? undefined : sessionId}
+							contentRef={hasPreviewUrl ? undefined : attachment.id}
+							alt={attachment.filename}
+							className="size-24 shrink-0"
+							buttonClassName="!size-full !min-h-0"
+							imageClassName="!size-full !object-cover"
+						/>
+					);
+				}
 				return (
-					<ResourceImage
+					<Attachment
 						key={attachment.id}
-						src={hasPreviewUrl ? attachment.url : undefined}
-						sessionId={hasPreviewUrl ? undefined : sessionId}
-						contentRef={hasPreviewUrl ? undefined : attachment.id}
-						alt={attachment.filename}
-						className="size-24 shrink-0"
-						buttonClassName="!size-full !min-h-0"
-						imageClassName="!size-full !object-cover"
-					/>
+						data={{
+							id: attachment.id,
+							type: "file",
+							filename: attachment.filename,
+							mediaType: attachment.mediaType,
+							url: attachment.url,
+						}}
+					>
+						<AttachmentPreview />
+						<AttachmentInfo showMediaType />
+					</Attachment>
 				);
 			})}
-		</div>
+		</Attachments>
 	);
 }
 

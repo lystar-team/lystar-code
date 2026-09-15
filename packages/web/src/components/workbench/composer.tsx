@@ -27,8 +27,17 @@ import type { PromptEditRequest, WorkbenchActions } from "./types";
 
 function base64FromDataUrl(url: string): string {
 	const separator = url.indexOf(",");
-	if (!url.startsWith("data:") || separator < 0) throw new Error("图片附件读取失败，请重新选择图片");
+	if (!url.startsWith("data:") || separator < 0) throw new Error("附件读取失败，请重新选择文件");
 	return url.slice(separator + 1);
+}
+
+function internalFileReference(path: string, filename: string | undefined, mimeType: string, index: number): string {
+	const displayName = filename || `附件 ${index + 1}`;
+	return `<file name="${path}" filename="${xmlAttribute(displayName)}" mimeType="${xmlAttribute(mimeType)}"></file>`;
+}
+
+function xmlAttribute(value: string): string {
+	return value.replace(/"/gu, "&quot;").replace(/</gu, "&lt;").replace(/>/gu, "&gt;");
 }
 
 function thinkingLevelDisplayLabel(level: string): string {
@@ -257,7 +266,6 @@ export const Composer = memo(function Composer({
 							<PromptCompletionMenu />
 							<PromptInput
 								className="prompt-input-shell [&_[data-slot=input-group]]:rounded-[48px] [&_[data-slot=input-group]]:bg-background [&_[data-slot=input-group]]:shadow-[0_2px_12px_rgb(0_0_0/0.05)]"
-								accept="image/*"
 								globalDrop
 								multiple
 								maxFiles={8}
@@ -265,14 +273,14 @@ export const Composer = memo(function Composer({
 								onError={(error) => {
 									if (error.code === "max_files") actions.showToast("最多添加 8 个附件");
 									else if (error.code === "max_file_size") actions.showToast("单个附件不能超过 8 MB");
-									else if (error.code === "accept") actions.showToast("只能上传图片");
+									else if (error.code === "accept") actions.showToast("不支持的文件类型");
 									else actions.showToast("附件类型不受支持");
 								}}
 								onSubmit={async ({ text, files, submitMode }) => {
 									const submissionSessionId = state.sessionId;
 									const submissionEditRequest = activeEditRequest;
 									const submissionEditKey = editRequestKey;
-									if (!text.trim() || disabled || !submissionSessionId) return;
+									if ((!text.trim() && files.length === 0) || disabled || !submissionSessionId) return;
 									if (submissionEditRequest && editAttachmentState !== "ready") return;
 									if (submittingSessionIdsRef.current.has(submissionSessionId)) throw new Error("正在提交，请稍候");
 									submittingSessionIdsRef.current.add(submissionSessionId);
@@ -286,7 +294,7 @@ export const Composer = memo(function Composer({
 												});
 										if (sessionIdRef.current !== submissionSessionId) throw new Error("会话已切换，请确认后重新提交");
 										if (command) {
-											if (files.length) throw new Error("内置命令不接受图片附件，请移除附件后执行");
+											if (files.length) throw new Error("内置命令不接受附件，请移除附件后执行");
 											await executeComposerCommand(command, state, actions, (request) => {
 												actions.closeInspector();
 												if (request.kind === "model") {
@@ -304,21 +312,22 @@ export const Composer = memo(function Composer({
 													: "follow-up"
 												: state.composerMode;
 										if (sessionIdRef.current !== submissionSessionId) throw new Error("会话已切换，请确认后重新提交");
-										const uploadedImages = await Promise.all(
+										const uploadedFiles = await Promise.all(
 											files.map((file) =>
-												webApi.uploadImage({
+												webApi.uploadFile({
 													data: base64FromDataUrl(file.url ?? ""),
+													filename: file.filename || "attachment",
 													mimeType: file.mediaType || "application/octet-stream",
 												}),
 											),
 										);
 										if (sessionIdRef.current !== submissionSessionId) throw new Error("会话已切换，请确认后重新提交");
-										const promptText = uploadedImages.length
-											? `${text}\n\n${uploadedImages.map((image) => `<file name="${image.path}"></file>`).join("\n")}`
+										const promptText = uploadedFiles.length
+											? `${text}\n\n${uploadedFiles.map((file, index) => internalFileReference(file.path, files[index]?.filename, files[index]?.mediaType || file.mimeType, index)).join("\n")}`
 											: text;
-										const attachmentPreviews = uploadedImages.map((image, index) => ({
+										const attachmentPreviews = uploadedFiles.map((image, index) => ({
 											id: image.path,
-											filename: files[index]?.filename ?? `图片 ${index + 1}`,
+											filename: files[index]?.filename ?? `附件 ${index + 1}`,
 											mediaType: image.mimeType,
 											url: files[index]?.url ?? "",
 										}));
@@ -335,9 +344,9 @@ export const Composer = memo(function Composer({
 										await actions.sendMessage(
 											promptText,
 											mode,
-											uploadedImages.map(({ path, mimeType }) => ({ path, mimeType })),
+											uploadedFiles.map(({ path, mimeType }) => ({ path, mimeType })),
 											attachmentPreviews,
-											text,
+											text.trim() || `附件：${files.map((file) => file.filename || "未命名文件").join("、")}`,
 										);
 										if (submissionEditRequest) onEditComplete();
 									} catch (error) {
@@ -373,7 +382,7 @@ export const Composer = memo(function Composer({
 								</PromptInputBody>
 								<PromptInputFooter className="items-center !pb-2">
 									<PromptInputTools className="shrink-0">
-										<ImageUploadButton disabled={disabled || editAttachmentState === "loading"} />
+										<FileUploadButton disabled={disabled || editAttachmentState === "loading"} />
 									</PromptInputTools>
 									<PromptInputTools className="min-w-0 flex-1 justify-end gap-1">
 										<ContextRing contextWindow={contextWindow} usedTokens={contextTokens} />
@@ -811,14 +820,14 @@ function QueuedPromptList({
 		</section>
 	);
 }
-function ImageUploadButton({ disabled }: { disabled: boolean }) {
+function FileUploadButton({ disabled }: { disabled: boolean }) {
 	const attachments = usePromptInputAttachments();
 	return (
 		<PromptInputButton
 			className="size-9"
 			disabled={disabled}
 			onClick={attachments.openFileDialog}
-			aria-label="上传图片"
+			aria-label="上传文件"
 		>
 			<Plus className="size-5" />
 		</PromptInputButton>
@@ -891,7 +900,7 @@ function ComposerAttachments() {
 	if (!attachments.files.length) return null;
 
 	const previewItems = attachments.files.flatMap((file) =>
-		file.type === "file" && file.url
+		file.mediaType?.startsWith("image/") && file.url
 			? [{ id: file.id, src: file.url, alt: file.filename ?? "图片" }]
 			: [],
 	);
@@ -924,7 +933,7 @@ function ComposerAttachments() {
 							className={previewable ? "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" : undefined}
 						>
 							<AttachmentPreview />
-							<AttachmentInfo />
+							<AttachmentInfo showMediaType={!previewable} />
 							<AttachmentRemove label="移除附件" />
 						</Attachment>
 					);

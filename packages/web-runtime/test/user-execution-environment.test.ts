@@ -63,6 +63,32 @@ describe("user execution environment", () => {
 		expect(serviceEnv.LYSTAR_USER_ENV_SOURCE).toBe("shell");
 	});
 
+	it.skipIf(process.platform === "win32")("restores the macOS Web command wrapper after shell discovery", () => {
+		const directory = temporaryDirectory("lystar-user-env-macos-");
+		const shell = join(directory, "test-bash");
+		writeFileSync(shell, '#!/bin/sh\nPATH="$DISCOVERED_PATH"\nexport PATH\nexec /bin/sh -c "$2"\n');
+		chmodSync(shell, 0o755);
+		const discoveredPath = [join(directory, "node-bin"), "/usr/bin"].join(delimiter);
+		const commandBin = join(directory, "web-bin");
+		const env: NodeJS.ProcessEnv = {
+			HOME: directory,
+			SHELL: shell,
+			DISCOVERED_PATH: discoveredPath,
+			PATH: directory,
+			LYSTAR_WEB_SERVICE_CHILD: "1",
+			LYSTAR_USER_ENV_SOURCE: "process",
+			LYSTAR_WEB_COMMAND_BIN: commandBin,
+		};
+		const originalPlatform = process.platform;
+		Object.defineProperty(process, "platform", { value: "darwin" });
+		try {
+			expect(restoreUserCommandEnvironment({ env, shellPath: shell })).toBe(true);
+			expect(env.PATH).toBe(`${commandBin}:${discoveredPath}`);
+		} finally {
+			Object.defineProperty(process, "platform", { value: originalPlatform });
+		}
+	});
+
 	it.skipIf(process.platform === "win32")("returns an unavailable toolchain when Node is not installed", () => {
 		const directory = temporaryDirectory("lystar-user-env-empty-");
 		expect(probeUserNodeToolchain({ PATH: directory })).toEqual({});

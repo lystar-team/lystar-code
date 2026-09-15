@@ -239,6 +239,10 @@ describe("assistant transcript projection", () => {
 							},
 						],
 						isError: false,
+						details: {
+							model: "gpt-image-2.5-flare",
+							savedPath: "/tmp/image.png",
+						},
 					},
 				},
 			} as TranscriptItem,
@@ -249,7 +253,8 @@ describe("assistant transcript projection", () => {
 			callId: "image-1",
 			name: "image_gen",
 			status: "success",
-			summary: '{"prompt":"蓝色圆形","model":"auto","profile":"standard"}',
+			summary:
+				'{"prompt":"蓝色圆形","model":"gpt-image-2.5-flare","requestedModel":"auto","profile":"standard","filename":"image.png"}',
 			detail: "Generated image saved to /tmp/image.png.",
 			contentRef: "generated-ref",
 			images: [{ contentRef: "generated-ref", mimeType: "image/png", byteLength: 4 }],
@@ -293,6 +298,32 @@ describe("assistant transcript projection", () => {
 		});
 	});
 
+	it("hides internal file references from projected user text", () => {
+		const projected = projectTranscriptItems({
+			entryId: "user-file-entry",
+			parentId: null,
+			timestamp: "2026-09-07T00:00:00Z",
+			kind: "message",
+			payload: {
+				type: "message",
+				message: {
+					role: "user",
+					content: [
+						{
+							type: "text",
+							text: '说明\n\n<file name="/tmp/upload-123" filename="report.md" mimeType="text/markdown"></file>\n\n后续说明',
+						},
+					],
+				},
+			},
+		} as TranscriptItem);
+
+		expect(projected[0]?.view).toEqual({
+			type: "user",
+			text: "说明\n\n后续说明",
+			files: [{ filename: "report.md", mimeType: "text/markdown" }],
+		});
+	});
 	it("projects compaction entries from the real summary field", () => {
 		const projected = projectTranscriptItems({
 			entryId: "compaction-entry",

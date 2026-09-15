@@ -136,6 +136,27 @@ describe("chat lifecycle", () => {
 		]);
 	});
 
+	it("refreshing the queue snapshot hides internal file references", () => {
+		const current = { ...liveState(), queuedUserPrompts: [] };
+		const snapshot = {
+			id: "session-1",
+			activity: "running",
+			phase: "turn",
+			queuedFollowUpCount: 1,
+			queuedFollowUpMessages: [{ id: "queue-file-1", text: '<file name="/tmp/report.md"></file>' }],
+		} as WorkbenchState["session"];
+
+		const restored = restoreRuntimeActivities(current, snapshot!);
+
+		expect(restored.queuedUserPrompts).toEqual([
+			{
+				id: "queue-file-1",
+				text: '<file name="/tmp/report.md"></file>',
+				displayText: "附件：report.md",
+				attachments: [],
+			},
+		]);
+	});
 	it("falls back from prompt to follow-up only for an active owner operation", async () => {
 		const active = Object.assign(new Error("busy"), { code: "session_operation_active" });
 		const submit = vi
@@ -156,6 +177,80 @@ describe("chat lifecycle", () => {
 
 		await expect(submitPromptWithFollowUpFallback("prompt", submit)).rejects.toBe(failure);
 		expect(submit).toHaveBeenCalledOnce();
+	});
+
+	it("reconciles attachment-only optimistic prompts with empty committed text", () => {
+		const attachment = {
+			id: "file-1",
+			filename: "report.md",
+			mediaType: "text/markdown",
+			url: "",
+		};
+		const pending = [
+			{
+				id: "prompt-file-1",
+				text: "附件：report.md",
+				attachments: [attachment],
+			},
+		];
+		const committed: WebTranscriptItem[] = [
+			{
+				...user,
+				view: { type: "user", text: "", files: [{ filename: "report.md", mimeType: "text/markdown" }] },
+			},
+		];
+
+		expect(reconcilePendingUserPrompts(pending, committed)).toEqual([]);
+	});
+
+	it("认领内部 file 引用被 Transcript 投影剥离的乐观 Prompt", () => {
+		const pending = [
+			{
+				id: "prompt-file-projected-1",
+				text: '请阅读这份报告\n\n<file name="/tmp/report.md" filename="report.md" mimeType="text/markdown"></file>',
+				attachments: [{ id: "file-1", filename: "report.md", mediaType: "text/markdown", url: "" }],
+			},
+		];
+		const committed: WebTranscriptItem[] = [
+			{
+				...user,
+				view: {
+					type: "user",
+					text: "请阅读这份报告",
+					files: [{ filename: "report.md", mimeType: "text/markdown" }],
+				},
+			},
+		];
+
+		expect(reconcilePendingUserPrompts(pending, committed)).toEqual([]);
+	});
+
+	it("认领带两个图片附件且投影文本包含图片标签的乐观 Prompt", () => {
+		const pending = [
+			{
+				id: "prompt-images-1",
+				text: "请比较这两张截图",
+				attachments: [
+					{ id: "image-1", filename: "before.png", mediaType: "image/png", url: "" },
+					{ id: "image-2", filename: "after.png", mediaType: "image/png", url: "" },
+				],
+			},
+		];
+		const committed: WebTranscriptItem[] = [
+			{
+				...user,
+				view: {
+					type: "user",
+					text: "请比较这两张截图 before.png after.png",
+					images: [
+						{ contentRef: "image-1", mimeType: "image/png", byteLength: 1, alt: "before.png" },
+						{ contentRef: "image-2", mimeType: "image/png", byteLength: 1, alt: "after.png" },
+					],
+				},
+			},
+		];
+
+		expect(reconcilePendingUserPrompts(pending, committed)).toEqual([]);
 	});
 
 	it("removes one optimistic prompt for each matching committed user message", () => {

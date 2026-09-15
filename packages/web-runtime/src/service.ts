@@ -24,7 +24,7 @@ import { LeaseManager } from "./lease-manager.ts";
 import { hashOperationPayload, OperationJournal, OperationJournalCorruptError } from "./operation-journal.ts";
 import { BUILTIN_SLASH_COMMANDS } from "./runtime-adapter.ts";
 import { WebSessionHandoffServer } from "./session-handoff-server.ts";
-import { projectTranscriptBatch } from "./transcript-projection.ts";
+import { projectTranscriptBatch, promptDisplayText } from "./transcript-projection.ts";
 import { TranscriptReader } from "./transcript-reader.ts";
 import type { RuntimeAdapter, RuntimeSession, UiRequestHandler } from "./types.ts";
 
@@ -74,10 +74,11 @@ const TERMINAL_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>([
 ]);
 
 function operationMessageProgress(text: string, imageCount: number): JsonValue {
+	const displayText = promptDisplayText(text);
 	return {
 		type: "message",
-		text: text.slice(0, MAX_OPERATION_MESSAGE_LENGTH),
-		...(text.length > MAX_OPERATION_MESSAGE_LENGTH ? { truncated: true } : {}),
+		text: displayText.slice(0, MAX_OPERATION_MESSAGE_LENGTH),
+		...(displayText.length > MAX_OPERATION_MESSAGE_LENGTH ? { truncated: true } : {}),
 		...(imageCount > 0 ? { imageCount } : {}),
 	};
 }

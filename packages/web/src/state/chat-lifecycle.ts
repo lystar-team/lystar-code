@@ -2,6 +2,41 @@ import type { SessionProgress, ToolActivity } from "@lystar/code-web-protocol";
 import type { PromptAttachmentPreview, QueuedUserPrompt, WebSessionSnapshot, WebTranscriptItem } from "../types.ts";
 import type { LiveTurnItem, WorkbenchState } from "./use-workbench.ts";
 
+const INTERNAL_FILE_BLOCK_PATTERN = /<file\b[^>]*>[\s\S]*?<\/file>/gu;
+const FILE_NAME_ATTRIBUTE_PATTERN = /\bfilename="([^"]*)"/u;
+const FILE_PATH_ATTRIBUTE_PATTERN = /\bname="([^"]*)"/u;
+const INTERNAL_PROMPT_BLOCK_PATTERNS = [
+	INTERNAL_FILE_BLOCK_PATTERN,
+	/<skill\b[^>]*\blocation="[^"]+"[^>]*>[\s\S]*?<\/skill>/gu,
+	/<skill_references\b[^>]*>[\s\S]*?<\/skill_references>/gu,
+] as const;
+
+function decodeFileAttribute(value: string): string {
+	return value.replace(/&quot;/gu, '"').replace(/&apos;/gu, "'").replace(/&lt;/gu, "<").replace(/&gt;/gu, ">");
+}
+
+export function stripInternalPromptContent(value: string): string {
+	let projected = value;
+	for (const pattern of INTERNAL_PROMPT_BLOCK_PATTERNS) projected = projected.replace(pattern, "");
+	return projected
+		.replace(/[ \t]+\n/gu, "\n")
+		.replace(/\n{3,}/gu, "\n\n")
+		.trim();
+}
+
+export function promptDisplayText(value: string): string {
+	const visible = stripInternalPromptContent(value);
+	if (visible) return visible;
+	const filenames = new Set<string>();
+	for (const match of value.matchAll(INTERNAL_FILE_BLOCK_PATTERN)) {
+		const tag = match[0];
+		const rawFilename = tag.match(FILE_NAME_ATTRIBUTE_PATTERN)?.[1] ?? tag.match(FILE_PATH_ATTRIBUTE_PATTERN)?.[1];
+		const filename = decodeFileAttribute(rawFilename ?? "").trim().split(/[\\/]/u).at(-1);
+		if (filename) filenames.add(filename);
+	}
+	return filenames.size > 0 ? `附件：${[...filenames].join("、")}` : "";
+}
+
 const ACTIVE_TOOL_ACTIVITY_STATES = new Set<ToolActivity["state"]>(["preparing", "queued", "running"]);
 
 export function hasActiveToolActivities(activities: readonly ToolActivity[] | undefined): boolean {
@@ -62,6 +97,50 @@ export interface PendingUserPrompt {
 	queueId?: string;
 }
 
+type UserTranscriptView = Extract<NonNullable<WebTranscriptItem["view"]>, { type: "user" }>;
+
+function normalizePromptComparisonText(value: string): string {
+	return promptDisplayText(value).replace(/\s+/gu, " ").trim();
+}
+
+function projectedAttachmentShapeMatches(prompt: PendingUserPrompt, view: UserTranscriptView): boolean {
+	const expectedImages = prompt.attachments.filter((attachment) => attachment.mediaType.startsWith("image/")).length;
+	if ((view.images?.length ?? 0) !== expectedImages) return false;
+
+	const expectedFiles = prompt.attachments
+		.filter((attachment) => !attachment.mediaType.startsWith("image/"))
+		.map((attachment) => `${attachment.filename}\u0000${attachment.mediaType}`)
+		.filter((key, index, values) => values.indexOf(key) === index)
+		.sort();
+	const projectedFiles = (view.files ?? [])
+		.map((file) => `${file.filename}\u0000${file.mimeType}`)
+		.filter((key, index, values) => values.indexOf(key) === index)
+		.sort();
+	return expectedFiles.length === projectedFiles.length && expectedFiles.every((key, index) => key === projectedFiles[index]);
+}
+
+function removeProjectedImageLabels(value: string, view: UserTranscriptView): string {
+	let normalized = normalizePromptComparisonText(value);
+	for (const alt of [...(view.images ?? [])].reverse().flatMap((image) => (image.alt ? [image.alt] : []))) {
+		const label = normalizePromptComparisonText(alt);
+		if (!label) continue;
+		if (normalized === label) {
+			normalized = "";
+			continue;
+		}
+		const suffix = ` ${label}`;
+		if (normalized.endsWith(suffix)) normalized = normalized.slice(0, -suffix.length).trim();
+	}
+	return normalized;
+}
+
+function promptTextMatches(prompt: PendingUserPrompt, view: UserTranscriptView): boolean {
+	const pendingText = normalizePromptComparisonText(prompt.text);
+	const committedText = normalizePromptComparisonText(view.text);
+	if (pendingText === committedText) return true;
+	return prompt.attachments.length > 0 && pendingText === removeProjectedImageLabels(view.text, view);
+}
+
 export function reconcilePendingUserPrompts(
 	pending: readonly PendingUserPrompt[],
 	items: readonly WebTranscriptItem[],
@@ -70,7 +149,13 @@ export function reconcilePendingUserPrompts(
 	for (const item of items) {
 		const view = item.view;
 		if (view?.type !== "user") continue;
-		const index = remaining.findIndex((prompt) => prompt.text === view.text);
+		const attachmentMatchIndex = remaining.findIndex(
+			(prompt) =>
+				prompt.attachments.length > 0 &&
+				projectedAttachmentShapeMatches(prompt, view) &&
+				(!view.text.trim() || promptTextMatches(prompt, view)),
+		);
+		const index = attachmentMatchIndex >= 0 ? attachmentMatchIndex : remaining.findIndex((prompt) => promptTextMatches(prompt, view));
 		if (index >= 0) remaining.splice(index, 1);
 	}
 	return remaining;

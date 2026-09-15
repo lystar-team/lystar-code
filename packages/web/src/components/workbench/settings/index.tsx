@@ -1,6 +1,7 @@
-import { ArrowDownToLine, ArrowLeft, BookOpen, Bot, CircleHelp, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, SunMoon, WandSparkles } from "lucide-react";
+import { ArrowDownToLine, ArrowLeft, BookOpen, Bot, CircleHelp, KeyRound, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, SunMoon, WandSparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import { webApi } from "../../../adapters/host-protocol/api";
 import { useAppInstall } from "../../../state/use-app-install";
 import type { SettingsTab, WorkbenchState } from "../../../state/use-workbench";
 import { Button } from "../../ui/button";
@@ -14,6 +15,7 @@ import { DiagnosticsSettings } from "./diagnostics";
 import { GlobalInstructionsSettings } from "./global-instructions";
 import { HarnessImportsSettings } from "./imports";
 import { ModelSettings } from "./model-settings";
+import { SystemPermissionsSettings } from "./permissions";
 import { SecuritySettings } from "./security";
 import { SkillsSettings } from "./skills";
 import { SystemSettings } from "./system";
@@ -22,6 +24,7 @@ import type { WorkbenchActions } from "../types";
 export function SettingsDialog({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
 	const [query, setQuery] = useState("");
 	const [isMobile, setIsMobile] = useState(false);
+	const [permissionsSupported, setPermissionsSupported] = useState(false);
 	const appInstall = useAppInstall();
 	useEffect(() => {
 		const media = window.matchMedia("(max-width: 767px)");
@@ -30,6 +33,21 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 		media.addEventListener("change", update);
 		return () => media.removeEventListener("change", update);
 	}, []);
+	useEffect(() => {
+		if (!state.settingsOpen) return;
+		let active = true;
+		void webApi
+			.systemPermissions()
+			.then((result) => {
+				if (active) setPermissionsSupported(result.supported);
+			})
+			.catch(() => {
+				if (active) setPermissionsSupported(false);
+			});
+		return () => {
+			active = false;
+		};
+	}, [state.settingsOpen]);
 	const settingItems: Array<{ value: SettingsTab; label: string; icon: ReactNode; section: string }> = [
 		{ value: "appearance", label: "外观", icon: <SunMoon className="size-4" />, section: "个人" },
 		{ value: "instructions", label: "全局提示词", icon: <BookOpen className="size-4" />, section: "个人" },
@@ -38,6 +56,9 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 		{ value: "imports", label: "迁移导入", icon: <ArrowDownToLine className="size-4" />, section: "工作区" },
 		{ value: "diagnostics", label: "诊断", icon: <CircleHelp className="size-4" />, section: "工作区" },
 		{ value: "system", label: "系统", icon: <Settings2 className="size-4" />, section: "系统" },
+		...(permissionsSupported
+			? [{ value: "permissions" as const, label: "系统授权", icon: <KeyRound className="size-4" />, section: "系统" }]
+			: []),
 		{ value: "security", label: "安全与访问", icon: <ShieldCheck className="size-4" />, section: "系统" },
 		{ value: "about", label: "关于", icon: <Sparkles className="size-4" />, section: "其他" },
 	];
@@ -137,7 +158,9 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 													? "查看和管理当前项目可用的 Skill。"
 													: state.settingsTab === "imports"
 														? `把其他 Harness 的资源导入 ${state.branding.name}。`
-												: state.settingsTab === "security"
+												: state.settingsTab === "permissions"
+											? "检查并完成 macOS Web 后台任务需要的系统授权。"
+										: state.settingsTab === "security"
 													? "配置 Web Gateway 的监听 IP、白名单、Web/Runtime 端口和密码。"
 													: state.settingsTab === "about"
 														? `查看 ${state.branding.name} 的版本信息。`
@@ -174,6 +197,9 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 							</TabsContent>
 							<TabsContent className="m-0 w-full min-w-0 max-w-full" value="diagnostics">
 								<DiagnosticsSettings state={state} actions={actions} />
+							</TabsContent>
+							<TabsContent className="m-0 w-full min-w-0 max-w-full" value="permissions">
+								<SystemPermissionsSettings />
 							</TabsContent>
 							<TabsContent className="m-0 w-full min-w-0 max-w-full" value="security">
 								<SecuritySettings state={state} actions={actions} />

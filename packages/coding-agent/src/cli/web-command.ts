@@ -49,6 +49,7 @@ interface WebGatewayModule {
 		previousServiceVersion?: string;
 		interactiveAdmin?: boolean;
 	}): Promise<unknown>;
+	runMacosPermissionsCommand(options: { action: "status" | "setup"; agentDir: string }): Promise<unknown>;
 	runWebGatewayCli(options: {
 		defaultPort: number;
 		defaultRuntimePort: number;
@@ -255,6 +256,19 @@ export async function reconcileWebServicesAfterUpdate(): Promise<void> {
 	await runWebServiceCommand(["reconcile", "--upgrade", ...(interactive ? [] : ["--non-interactive"])]);
 }
 
+export async function runWebPermissionsCommand(
+	args: readonly string[],
+	gatewayModule?: Pick<WebGatewayModule, "runMacosPermissionsCommand">,
+): Promise<void> {
+	const action = args[0] as "status" | "setup" | undefined;
+	if (!action || !["status", "setup"].includes(action) || args.length !== 1) {
+		throw new Error("用法：lc web permissions <status|setup>");
+	}
+	const module = gatewayModule ?? (await loadGatewayModule());
+	const result = await module.runMacosPermissionsCommand({ action, agentDir: getAgentDir() });
+	console.log(JSON.stringify(result, null, "\t"));
+}
+
 export async function runWebControlCommand(
 	args: readonly string[],
 	options: { gatewayModule?: Pick<WebGatewayModule, "runWebComponentAction"> } = {},
@@ -280,7 +294,7 @@ export async function runWebCommand(args: readonly string[] = []): Promise<void>
 	const settings = webCommandSettings();
 	if (args.includes("--help") || args.includes("-h")) {
 		console.log(
-			`用法：${settings.commandName} web\n\n首次运行会依次配置监听 IP、白名单 IP、Web 端口、Runtime 端口和连接密码。\nWeb 默认端口：${settings.defaultPort}；Runtime 默认端口：${settings.defaultRuntimePort}。\n配置文件：${settings.configFileName ?? "web-config.json"}。\n默认启动为后台模式；需要前台运行时使用：${settings.commandName} web --foreground。\n\n组件命令：\n  ${settings.commandName} web gateway status|stop|start|restart\n  ${settings.commandName} web runtime status|stop|start|restart\n\n服务命令：\n  ${settings.commandName} web service install\n  ${settings.commandName} web service status\n  ${settings.commandName} web service restart\n  ${settings.commandName} web service uninstall\n`,
+			`用法：${settings.commandName} web\n\n首次运行会依次配置监听 IP、白名单 IP、Web 端口、Runtime 端口和连接密码。\nWeb 默认端口：${settings.defaultPort}；Runtime 默认端口：${settings.defaultRuntimePort}。\n配置文件：${settings.configFileName ?? "web-config.json"}。\n默认启动为后台模式；需要前台运行时使用：${settings.commandName} web --foreground。\n\n组件命令：\n  ${settings.commandName} web gateway status|stop|start|restart\n  ${settings.commandName} web runtime status|stop|start|restart\n\n服务命令：\n  ${settings.commandName} web service install\n  ${settings.commandName} web service status\n  ${settings.commandName} web service restart\n  ${settings.commandName} web service uninstall\n\nmacOS 授权：\n  ${settings.commandName} web permissions status\n  ${settings.commandName} web permissions setup\n`,
 		);
 		return;
 	}
@@ -291,6 +305,8 @@ export async function runWebCommand(args: readonly string[] = []): Promise<void>
 		if (!foreground && controlArgs.length > 0) {
 			if (controlArgs[0] === "service") {
 				await runWebServiceCommand(controlArgs.slice(1));
+			} else if (controlArgs[0] === "permissions") {
+				await runWebPermissionsCommand(controlArgs.slice(1));
 			} else {
 				await runWebControlCommand(controlArgs);
 			}
@@ -329,6 +345,9 @@ export async function runWebCommand(args: readonly string[] = []): Promise<void>
 		backgroundInvocation: gatewayInvocation,
 		...(serviceVersion ? { serviceVersion } : {}),
 	});
+	if (process.platform === "darwin" && process.stdin.isTTY && process.stdout.isTTY) {
+		await runWebPermissionsCommand(["setup"]);
+	}
 }
 
 export async function runWebRuntimeCommand(args: readonly string[]): Promise<void> {

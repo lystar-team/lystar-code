@@ -168,7 +168,7 @@ export {
 	type ResolveProjectTrustedOptions,
 	resolveProjectTrusted,
 } from "./project-trust.ts";
-export { stripInternalPromptContent } from "./prompt-display.ts";
+export { promptDisplayText, stripInternalPromptContent } from "./prompt-display.ts";
 export {
 	DefaultResourceLoader,
 	type DefaultResourceLoaderOptions,

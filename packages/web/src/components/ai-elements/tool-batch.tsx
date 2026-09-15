@@ -3,7 +3,11 @@
 import { useControllableState } from "@radix-ui/react-use-controllable-state";
 import type { ToolDiff } from "@lystar/code-web-protocol";
 import {
+	CheckCircleIcon,
 	ChevronDownIcon,
+	CircleAlertIcon,
+	CopyIcon,
+	ExternalLinkIcon,
 	EyeIcon,
 	FileCode2Icon,
 	FileTextIcon,
@@ -15,8 +19,9 @@ import {
 	SparklesIcon,
 	TerminalIcon,
 	WrenchIcon,
+	XCircleIcon,
 } from "lucide-react";
-import { type MouseEvent as ReactMouseEvent, type ReactNode, memo, useEffect, useRef } from "react";
+import { type MouseEvent as ReactMouseEvent, type ReactNode, memo, useEffect, useRef, useState } from "react";
 import type { BundledLanguage } from "shiki";
 import { cn } from "@/lib/utils";
 import { StabilityBoundary } from "../stability-boundary";
@@ -24,7 +29,14 @@ import { Collapsible, CollapsibleTrigger } from "../ui/collapsible";
 import { GsapCollapsibleContent } from "../ui/gsap-collapsible-content";
 import { CodeBlock, CodeBlockActions, CodeBlockCopyButton, CodeBlockHeader, CodeBlockTitle } from "./code-block";
 import { Button } from "../ui/button";
-import { ResourceImageGallery } from "./resource-preview";
+import {
+	ResourceImage,
+	ResourceImageGallery,
+	ResourceImageViewer,
+	type ResourceImageGenerationMetadata,
+	type ResourceImageItem,
+} from "./resource-preview";
+import { skillNameFromTool } from "../../state/tool-batching";
 import { languageForPath } from "../workbench/file-language";
 import { Source } from "./sources";
 
@@ -76,6 +88,77 @@ function canCollapseFromContent(event: ReactMouseEvent<HTMLElement>): boolean {
 	return !selection || selection.isCollapsed;
 }
 
+type AnsiStyleState = {
+	foreground?: string;
+	background?: string;
+	bold?: boolean;
+	dim?: boolean;
+	italic?: boolean;
+	underline?: boolean;
+	strikethrough?: boolean;
+};
+
+const ANSI_COLORS = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"] as const;
+
+function ansiColorClass(code: number, background: boolean): string | undefined {
+	const base = background ? (code >= 100 ? 100 : 40) : code >= 90 ? 90 : 30;
+	const color = ANSI_COLORS[code - base];
+	if (!color) return undefined;
+	const bright = code >= 90;
+	return `ansi-${bright ? "bright-" : ""}${color}-${background ? "bg" : "fg"}`;
+}
+
+function applyAnsiCodes(current: AnsiStyleState, codes: readonly number[]): AnsiStyleState {
+	let next = { ...current };
+	for (const code of codes) {
+		if (code === 0) next = {};
+		else if (code === 1) next.bold = true;
+		else if (code === 2) next.dim = true;
+		else if (code === 3) next.italic = true;
+		else if (code === 4) next.underline = true;
+		else if (code === 9) next.strikethrough = true;
+		else if (code === 22) {
+			delete next.bold;
+			delete next.dim;
+		} else if (code === 23) delete next.italic;
+		else if (code === 24) delete next.underline;
+		else if (code === 29) delete next.strikethrough;
+		else if (code === 39) delete next.foreground;
+		else if (code === 49) delete next.background;
+		else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) next.foreground = ansiColorClass(code, false);
+		else if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107)) next.background = ansiColorClass(code, true);
+	}
+	return next;
+}
+
+function ansiStyleClassName(style: AnsiStyleState): string | undefined {
+	return cn(
+		style.foreground,
+		style.background,
+		style.bold && "ansi-bold",
+		style.dim && "ansi-dim",
+		style.italic && "ansi-italic",
+		style.underline && "ansi-underline",
+		style.strikethrough && "ansi-strikethrough",
+	);
+}
+
+function AnsiOutput({ children }: { children: string }) {
+	const nodes: ReactNode[] = [];
+	const pattern = /\u001b\[([0-9;]*)m/gu;
+	let style: AnsiStyleState = {};
+	let cursor = 0;
+	for (const match of children.matchAll(pattern)) {
+		const index = match.index;
+		if (index > cursor) nodes.push(<span className={ansiStyleClassName(style)} key={`text-${cursor}`}>{children.slice(cursor, index)}</span>);
+		const codes = (match[1] || "0").split(";").map((value) => Number(value || 0));
+		style = applyAnsiCodes(style, codes);
+		cursor = index + match[0].length;
+	}
+	if (cursor < children.length) nodes.push(<span className={ansiStyleClassName(style)} key={`text-${cursor}`}>{children.slice(cursor)}</span>);
+	return <code>{nodes}</code>;
+}
+
 const statusLabels: Record<ToolBatchState, string> = {
 	"input-available": "运行中",
 	"input-queued": "已排队",
@@ -85,25 +168,6 @@ const statusLabels: Record<ToolBatchState, string> = {
 	"output-interrupted": "已中断",
 };
 
-function skillNameFromPath(path: string): string | undefined {
-	let normalizedPath = path.split(/[?#]/u, 1)[0] ?? path;
-	try {
-		normalizedPath = decodeURIComponent(normalizedPath);
-	} catch {
-		// 路径不是 URL 编码时继续使用原始值。
-	}
-	normalizedPath = normalizedPath.replaceAll("\\", "/");
-	const segments = normalizedPath.split("/").filter(Boolean);
-	const skillDirectoryIndex = segments.findIndex((segment) => segment.toLowerCase() === "skills");
-	if (skillDirectoryIndex < 0 || skillDirectoryIndex !== segments.length - 3) return undefined;
-	if (segments.at(-1)?.toLowerCase() !== "skill.md") return undefined;
-	return segments.at(-2);
-}
-
-export function skillNameFromTool(tool: ToolBatchTool): string | undefined {
-	if (tool.name !== "read") return undefined;
-	return skillNameFromPath(toolTitle(tool));
-}
 
 function toolIcon(name: string, className?: string, skill = false, images = false): ReactNode {
 	const Icon = images
@@ -378,6 +442,376 @@ function ToolDiffOutput({
 	);
 }
 
+type ToolActivityKind = "read" | "command" | "mutation";
+
+function activityPathParts(tool: ToolBatchTool): { filename: string; directory?: string } {
+	const title = toolTitle(tool).replaceAll("\\", "/");
+	if (tool.name === "bash") return { filename: title || "命令" };
+	const separator = title.lastIndexOf("/");
+	if (separator < 0) return { filename: title || "文件" };
+	return {
+		filename: title.slice(separator + 1) || title,
+		directory: title.slice(0, separator + 1),
+	};
+}
+
+function activityStatusLabel(state: ToolBatchState): string {
+	if (state === "input-available") return "运行中";
+	if (state === "input-queued") return "已排队";
+	if (state === "output-available") return "已完成";
+	return statusLabels[state];
+}
+
+function activityStatusIcon(state: ToolBatchState): ReactNode {
+	if (state === "input-available") return <LoaderCircleIcon className="size-3 animate-spin text-primary" />;
+	if (state === "input-queued") return <span className="size-1.5 rounded-full bg-muted-foreground/45" />;
+	if (state === "output-available") return <CheckCircleIcon className="size-3 text-[var(--success)]" />;
+	return <XCircleIcon className="size-3 text-destructive" />;
+}
+
+function readLineRange(tool: ToolBatchTool): string | undefined {
+	if (tool.name !== "read") return undefined;
+	const parsed = parseToolSummary(tool.summary);
+	const offset = typeof parsed?.offset === "number" && Number.isInteger(parsed.offset) && parsed.offset > 0 ? parsed.offset : 1;
+	const limit = typeof parsed?.limit === "number" && Number.isInteger(parsed.limit) && parsed.limit > 0 ? parsed.limit : undefined;
+	const explicitRange = tool.detail?.match(/\[Showing lines (\d+)-(\d+) of /u);
+	if (explicitRange?.[1] && explicitRange[2]) return `第${explicitRange[1]}-${explicitRange[2]}行`;
+	if (tool.state === "output-available" && tool.detail) {
+		const content = tool.detail.replace(/\n*\[Showing lines \d+-\d+ of [^\]]+\]\s*$/u, "").replace(/\n+$/u, "");
+		if (content) return `第${offset}-${offset + content.split(/\r?\n/u).length - 1}行`;
+	}
+	if (limit) return `第${offset}-${offset + limit - 1}行`;
+	return undefined;
+}
+
+function toolActivityBatchLabel(tools: readonly ToolBatchTool[], kind: ToolActivityKind): string {
+	if (tools.some((tool) => tool.state === "input-available")) {
+		if (kind === "read") return "正在读取文件";
+		if (kind === "command") return "正在运行命令";
+		return "正在修改文件";
+	}
+	if (tools.some((tool) => tool.state === "input-queued")) {
+		if (kind === "read") return "准备读取文件";
+		if (kind === "command") return "准备运行命令";
+		return "准备修改文件";
+	}
+	const completed = tools.filter((tool) => tool.state === "output-available").length;
+	const failed = tools.length - completed;
+	const count = new Set(tools.map((tool) => toolTitle(tool))).size;
+	if (failed > 0) {
+		if (kind === "read") return `读取文件 · ${failed} 个未完成`;
+		if (kind === "command") return `运行命令 · ${failed} 条未完成`;
+		return `修改文件 · ${failed} 个未完成`;
+	}
+	if (kind === "read") return `已读取 ${count} 个文件`;
+	if (kind === "command") return `运行了 ${tools.length} 条命令`;
+	return `已修改 ${count} 个文件`;
+}
+
+function ToolActivityRow({
+	tool,
+	sessionId,
+	onOpenPath,
+	open: controlledOpen,
+	onOpenChange,
+}: {
+	tool: ToolBatchTool;
+	sessionId?: string;
+	onOpenPath?: (path: string) => void;
+	open?: boolean;
+	onOpenChange?: (open: boolean) => void;
+}) {
+	const [open, setOpen] = useControllableState({ defaultProp: false, prop: controlledOpen, onChange: onOpenChange });
+	const hasDetails = Boolean(tool.detail || tool.diff || tool.images?.length || tool.inputPreview || tool.sources?.length);
+	const stats = diffStats(tool.diff);
+	const lineRange = readLineRange(tool);
+	const { filename, directory } = activityPathParts(tool);
+	return (
+		<Collapsible open={open} onOpenChange={setOpen} className="min-w-0">
+			<CollapsibleTrigger asChild disabled={!hasDetails}>
+				<button
+					aria-label={`${toolTitle(tool)}，${activityStatusLabel(tool.state)}${hasDetails ? `，${open ? "收起" : "展开"}详情` : ""}`}
+					className="grid min-h-7 w-full min-w-0 grid-cols-[12px_14px_minmax(0,1fr)_auto] items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none"
+					type="button"
+				>
+					<span className="relative z-10 flex size-3 items-center justify-center bg-background">
+						{activityStatusIcon(tool.state)}
+					</span>
+					{toolIcon(tool.name, "size-3.5")}
+					{tool.name === "bash" ? (
+						<span
+							className="min-w-0 truncate font-mono text-[13px] leading-5 text-foreground"
+							data-command-title="true"
+							title={filename}
+						>
+							{filename}
+						</span>
+					) : (
+						<span className="flex min-w-0 items-baseline font-mono text-[13px] leading-5" title={toolTitle(tool)}>
+							{directory ? <span className="min-w-0 truncate text-muted-foreground" data-activity-directory>{directory}</span> : null}
+							<span className="shrink-0 text-foreground" data-activity-filename>{filename}</span>
+						</span>
+					)}
+					<span className="flex shrink-0 items-center gap-1.5">
+						{lineRange ? <span className="text-xs tabular-nums text-muted-foreground">{lineRange}</span> : null}
+						{stats ? (
+							<span className="flex gap-1 text-xs">
+								{stats.additions ? <span className="text-emerald-600">+{stats.additions}</span> : null}
+								{stats.deletions ? <span className="text-destructive">-{stats.deletions}</span> : null}
+							</span>
+						) : null}
+						<span className={cn("text-xs", tool.state === "input-available" ? "text-brand" : "text-muted-foreground")}>{activityStatusLabel(tool.state)}</span>
+					</span>
+				</button>
+			</CollapsibleTrigger>
+			{hasDetails ? (
+				<GsapCollapsibleContent
+					open={open}
+					className="min-w-0 pb-1 pl-4 pt-0.5"
+					onClick={(event) => {
+						event.stopPropagation();
+						if (canCollapseFromContent(event)) setOpen(false);
+					}}
+				>
+					<StabilityBoundary
+						scope={`tool-activity-detail:${tool.name}`}
+						fallback={() => <div className="text-xs text-destructive">工具详情渲染失败。</div>}
+					>
+						<ToolDetail tool={tool} sessionId={sessionId} onOpenPath={onOpenPath} />
+					</StabilityBoundary>
+				</GsapCollapsibleContent>
+			) : null}
+		</Collapsible>
+	);
+}
+
+function ToolActivityGroup({
+	tools,
+	kind,
+	open,
+	onOpenChange,
+	toolOpen,
+	onToolOpenChange,
+	sessionId,
+	onOpenPath,
+	className,
+}: {
+	tools: readonly ToolBatchTool[];
+	kind: ToolActivityKind;
+	open: boolean;
+	onOpenChange: (open: boolean) => void;
+	toolOpen?: ReadonlyMap<string, boolean>;
+	onToolOpenChange?: (toolId: string, open: boolean) => void;
+	sessionId?: string;
+	onOpenPath?: (path: string) => void;
+	className?: string;
+}) {
+	const active = tools.some((tool) => tool.state === "input-available");
+	const label = toolActivityBatchLabel(tools, kind);
+	const headerIcon = active
+		? <LoaderCircleIcon className="size-4 animate-spin text-primary" />
+		: kind === "command"
+			? <TerminalIcon className="size-4 text-muted-foreground" />
+			: kind === "mutation"
+				? <PencilIcon className="size-4 text-muted-foreground" />
+				: <FileTextIcon className="size-4 text-muted-foreground" />;
+	return (
+		<Collapsible className={cn("group/tool-activity min-w-0 w-full max-w-3xl", className)} open={open} onOpenChange={onOpenChange}>
+			<CollapsibleTrigger asChild>
+				<button
+					aria-label={`${label}，${open ? "收起" : "展开"}`}
+					className="flex min-h-7 w-full items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					type="button"
+				>
+					{headerIcon}
+					<span className="min-w-0 flex-1 truncate font-mono text-[13px] text-foreground">{label}</span>
+					<ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]/tool-activity:rotate-180" />
+				</button>
+			</CollapsibleTrigger>
+			<GsapCollapsibleContent open={open} className="pt-1.5">
+				<div className="relative ml-1 grid min-w-0 gap-0 pl-4 before:absolute before:bottom-2 before:left-[5px] before:top-2 before:w-px before:bg-border">
+					{tools.map((tool) => (
+						<ToolActivityRow
+							key={tool.id}
+							tool={tool}
+							sessionId={sessionId}
+							onOpenPath={onOpenPath}
+							open={toolOpen ? (toolOpen.get(tool.id) ?? false) : undefined}
+							onOpenChange={toolOpen ? (nextOpen) => onToolOpenChange?.(tool.id, nextOpen) : undefined}
+						/>
+					))}
+				</div>
+			</GsapCollapsibleContent>
+		</Collapsible>
+	);
+}
+
+function commandErrorExcerpt(detail: string | undefined): string | undefined {
+	const lines = detail?.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean) ?? [];
+	return lines.find((line) => /(?:error|failed|exception|失败|错误)/iu.test(line)) ?? lines.at(-1);
+}
+
+function CommandErrorPanel({
+	tool,
+	open,
+	onOpenChange,
+	className,
+}: {
+	tool: ToolBatchTool;
+	open: boolean;
+	onOpenChange: (open: boolean) => void;
+	className?: string;
+}) {
+	const [copied, setCopied] = useState(false);
+	const excerpt = commandErrorExcerpt(tool.detail);
+	const command = toolTitle(tool);
+	const copyOutput = async () => {
+		if (!tool.detail || !navigator.clipboard?.writeText) return;
+		await navigator.clipboard.writeText(tool.detail);
+		setCopied(true);
+	};
+	return (
+		<Collapsible className={cn("min-w-0 w-full max-w-3xl overflow-hidden rounded-xl border border-border bg-muted/20", className)} open={open} onOpenChange={onOpenChange}>
+			<div className="grid gap-3 p-4">
+				<div className="flex min-w-0 items-center justify-between gap-2">
+					<div className="flex min-w-0 items-center gap-1.5 font-mono text-[13px]">
+						<TerminalIcon className="size-4 shrink-0 text-muted-foreground" />
+						<span>命令执行失败</span>
+					</div>
+					{tool.detail ? (
+						<CollapsibleTrigger asChild>
+							<Button className="command-output-toggle -my-0.5 h-7 shrink-0 gap-1 px-1.5 font-mono text-[13px] leading-5 text-brand" size="sm" type="button" variant="ghost">
+								{open ? "收起输出" : "查看输出"}
+								<ChevronDownIcon className={cn("size-3.5 transition-transform", open && "rotate-180")} />
+							</Button>
+						</CollapsibleTrigger>
+					) : null}
+				</div>
+				<div className="rounded-md bg-muted px-3 py-2 font-mono text-[13px] leading-5">$ {command}</div>
+				<div className="flex min-w-0 items-start gap-2">
+					<CircleAlertIcon className="mt-0.5 size-4 shrink-0 text-destructive" />
+					<span className="min-w-0 flex-1 break-words font-mono text-[13px] leading-5 text-destructive">{excerpt ?? "命令执行失败"}</span>
+				</div>
+			</div>
+			{tool.detail ? (
+				<GsapCollapsibleContent open={open} className="border-t border-border bg-background">
+					<div className="relative max-h-60 overflow-auto p-4 pr-12 font-mono text-[13px] leading-5">
+						<pre className="tool-command-output whitespace-pre-wrap break-words text-foreground"><AnsiOutput>{tool.detail}</AnsiOutput></pre>
+						<Button aria-label="复制命令输出" className="absolute right-3 top-3" onClick={() => void copyOutput()} size="icon-sm" type="button" variant="ghost">
+							{copied ? <CheckCircleIcon className="size-4" /> : <CopyIcon className="size-4" />}
+						</Button>
+					</div>
+				</GsapCollapsibleContent>
+			) : null}
+		</Collapsible>
+	);
+}
+
+type ImageGenerationPresentation = ResourceImageGenerationMetadata & { filename?: string };
+
+function imageGenerationPresentation(tool: ToolBatchTool): ImageGenerationPresentation {
+	const parsed = parseToolSummary(tool.summary);
+	const prompt = typeof parsed?.prompt === "string" ? parsed.prompt : undefined;
+	const model = typeof parsed?.model === "string" && parsed.model !== "auto" ? parsed.model : undefined;
+	const filename = typeof parsed?.filename === "string" ? parsed.filename : undefined;
+	return { ...(prompt ? { prompt } : {}), ...(model ? { model } : {}), ...(filename ? { filename } : {}) };
+}
+
+function ImageGenerationToolResult({
+	tool,
+	sessionId,
+	onOpenPath,
+}: {
+	tool: ToolBatchTool;
+	sessionId?: string;
+	onOpenPath?: (path: string) => void;
+}) {
+	const [openIndex, setOpenIndex] = useState<number>();
+	const [promptOpen, setPromptOpen] = useState(false);
+	const [copiedPrompt, setCopiedPrompt] = useState(false);
+	const metadata = imageGenerationPresentation(tool);
+	const items: ResourceImageItem[] = (tool.images ?? []).map((image, index) => {
+		const filename = metadata.filename ?? image.alt ?? `generated-image-${index + 1}.png`;
+		return {
+			id: `${tool.id}:${image.contentRef}`,
+			sessionId,
+			contentRef: image.contentRef,
+			mimeType: image.mimeType,
+			alt: filename,
+			generation: { ...(metadata.model ? { model: metadata.model } : {}), ...(metadata.prompt ? { prompt: metadata.prompt } : {}) },
+		};
+	});
+	const copyPrompt = async () => {
+		if (!metadata.prompt || !navigator.clipboard?.writeText) return;
+		await navigator.clipboard.writeText(metadata.prompt);
+		setCopiedPrompt(true);
+	};
+	return (
+		<div className="grid min-w-0 w-full max-w-3xl gap-3">
+			<div className="flex min-h-7 items-center gap-1.5 px-1 py-0.5 font-mono text-[13px]">
+				<ImagesIcon className="size-4" />
+				<span>{`已生成 ${items.length} 张图片`}</span>
+				<CheckCircleIcon className="size-4 text-[var(--success)]" />
+			</div>
+			<div className="grid gap-5">
+				{items.map((item, index) => (
+					<div className="grid min-w-0 gap-2" key={item.id}>
+						<ResourceImage
+							sessionId={item.sessionId}
+							contentRef={item.contentRef}
+							alt={item.alt}
+							generation={item.generation}
+							className="w-full"
+							buttonClassName="w-full min-h-52 max-h-[32rem] rounded-lg bg-background"
+							imageClassName="max-h-[32rem] w-full object-contain"
+							onOpenPath={onOpenPath}
+							onPreview={() => setOpenIndex(index)}
+						/>
+						<div className="flex min-h-8 items-center justify-between gap-3">
+							<span
+								className="min-w-0 truncate text-sm"
+								title={metadata.model ?? item.alt ?? "图片"}
+							>
+								{metadata.model ?? item.alt ?? "图片"}
+							</span>
+							<Button className="h-8 shrink-0 gap-1 px-2 text-[13px]! font-normal leading-5!" onClick={() => setOpenIndex(index)} size="sm" type="button" variant="ghost">
+								<ExternalLinkIcon className="size-3.5" />查看大图
+							</Button>
+						</div>
+					</div>
+				))}
+			</div>
+			{metadata.model || metadata.prompt ? (
+				<div className="grid gap-3 border-t border-border pt-4 text-[13px] leading-5">
+					{metadata.model ? (
+						<div className="grid grid-cols-[5rem_minmax(0,1fr)] gap-2 max-sm:grid-cols-1 max-sm:gap-1">
+							<span className="text-muted-foreground">生成模型</span>
+							<span className="break-all font-mono">{metadata.model}</span>
+						</div>
+					) : null}
+					{metadata.prompt ? (
+						<div className="grid grid-cols-[5rem_minmax(0,1fr)] gap-2 max-sm:grid-cols-1 max-sm:gap-1">
+							<span className="text-muted-foreground">提示词</span>
+							<div className="grid min-w-0 gap-1.5">
+								<p className={cn("min-w-0 whitespace-pre-wrap break-words", !promptOpen && "line-clamp-4")}>{metadata.prompt}</p>
+								<div className="flex min-h-8 items-center justify-between gap-3">
+									{metadata.prompt.length > 240 ? (
+										<button className="w-fit text-xs text-brand hover:underline" onClick={() => setPromptOpen((value) => !value)} type="button">{promptOpen ? "收起提示词" : "展开提示词"}</button>
+									) : null}
+									<Button className="ml-auto h-8 shrink-0 gap-1 px-2 text-[13px]! font-normal leading-5! text-muted-foreground" onClick={() => void copyPrompt()} size="sm" type="button" variant="ghost">
+										<CopyIcon className="size-3.5" />{copiedPrompt ? "已复制" : "复制提示词"}
+									</Button>
+								</div>
+							</div>
+						</div>
+					) : null}
+				</div>
+			) : null}
+			<ResourceImageViewer items={items} open={openIndex !== undefined} initialIndex={openIndex ?? 0} onOpenChange={(nextOpen) => { if (!nextOpen) setOpenIndex(undefined); }} />
+		</div>
+	);
+}
+
 function ImageToolGallery({
 	tools,
 	sessionId,
@@ -452,6 +886,47 @@ function WebSearchToolDetail({ tool }: { tool: ToolBatchTool }) {
 	);
 }
 
+function CommandToolDetail({
+	command,
+	output,
+	imagePreview,
+}: {
+	command: string;
+	output?: string;
+	imagePreview: ReactNode;
+}) {
+	const content = [`$ ${command}`, output].filter(Boolean).join("\n\n");
+	return (
+		<div className="grid min-w-0 gap-1">
+			{imagePreview}
+			<div className="overflow-hidden rounded-md border border-border/60 bg-muted/25">
+				<CodeBlock
+					className="tool-command-block my-0 rounded-none border-0 bg-transparent shadow-none"
+					code={`$ ${command}`}
+					language={"bash" as BundledLanguage}
+					transparent
+					wrap
+				>
+					<CodeBlockHeader className="border-b border-border/50 bg-transparent px-2 py-1">
+						<CodeBlockTitle className="font-mono text-[13px] text-foreground">Shell</CodeBlockTitle>
+						<CodeBlockActions>
+							<CodeBlockCopyButton aria-label="复制命令和输出" code={content} />
+						</CodeBlockActions>
+					</CodeBlockHeader>
+				</CodeBlock>
+				{output ? (
+					<div className="border-t border-border/50 bg-background/50">
+						<div className="px-3 pt-2 font-mono text-xs text-muted-foreground">输出</div>
+						<pre className="tool-command-output max-h-80 overflow-auto whitespace-pre-wrap break-words px-3 pb-3 pt-1 font-mono text-[13px] leading-5 text-foreground">
+							<AnsiOutput>{output}</AnsiOutput>
+						</pre>
+					</div>
+				) : null}
+			</div>
+		</div>
+	);
+}
+
 function ToolDetail({
 	tool,
 	sessionId,
@@ -508,25 +983,7 @@ function ToolDetail({
 	}
 
 	if (tool.name === "bash") {
-		const code = [`$ ${title}`, tool.detail].filter(Boolean).join("\n\n");
-		return (
-			<div className="grid min-w-0 gap-1">
-				{imagePreview}
-				<CodeBlock
-					className="my-0 border-border/60 bg-muted/25"
-					code={code}
-					language={"bash" as BundledLanguage}
-					plainText
-				>
-					<CodeBlockHeader className="border-b-0 bg-transparent px-2 py-1">
-						<CodeBlockTitle className="text-foreground">Shell</CodeBlockTitle>
-						<CodeBlockActions>
-							<CodeBlockCopyButton aria-label="复制命令和输出" />
-						</CodeBlockActions>
-					</CodeBlockHeader>
-				</CodeBlock>
-			</div>
-		);
+		return <CommandToolDetail command={title} output={tool.detail} imagePreview={imagePreview} />;
 	}
 
 	return (
@@ -587,6 +1044,11 @@ function ToolBatchRow({
 	const previousActive = useRef(active);
 	const title = toolRowTitle(tool);
 	const skillName = skillNameFromTool(tool);
+	const standaloneRead = tool.name === "read" && !skillName && !tool.images?.length;
+	const standaloneMutation = tool.name === "edit" || tool.name === "write" || tool.name === "apply_patch";
+	const pathActivity = standaloneRead || standaloneMutation;
+	const pathParts = pathActivity ? activityPathParts(tool) : undefined;
+	const lineRange = standaloneRead ? readLineRange(tool) : undefined;
 	const stats = diffStats(tool.diff);
 	const hasDetails =
 		tool.name === "image_gen"
@@ -616,9 +1078,18 @@ function ToolBatchRow({
 					aria-label={`${title}，${statusLabels[tool.state]}${hasDetails ? `，${open ? "收起" : "展开"}详情` : ""}`}
 				>
 					{toolIcon(tool.name, undefined, Boolean(skillName), Boolean(tool.images?.length))}
-					<span className="min-w-0 flex-1 truncate font-mono text-[13px]" title={title}>
-						{title}
-					</span>
+					{pathParts ? (
+						<span className="flex min-w-0 flex-1 items-baseline font-mono text-[13px]" title={toolTitle(tool)}>
+							<span className="mr-1.5 shrink-0">{toolRowActionLabel(tool.name, tool.state)}</span>
+							{pathParts.directory ? <span className="min-w-0 truncate text-muted-foreground">{pathParts.directory}</span> : null}
+							<span className="shrink-0 text-foreground">{pathParts.filename}</span>
+						</span>
+					) : (
+						<span className="min-w-0 flex-1 truncate font-mono text-[13px]" title={title}>
+							{title}
+						</span>
+					)}
+					{lineRange ? <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{lineRange}</span> : null}
 					{stats ? (
 						<span className="flex shrink-0 gap-1 text-xs">
 							{stats.additions ? <span className="text-emerald-600">+{stats.additions}</span> : null}
@@ -681,9 +1152,19 @@ export const ToolBatch = memo(function ToolBatch({
 	const aggregateState = batchState(tools);
 	const imageGallery = tools.length > 0 && tools.every((tool) => tool.images?.length);
 	const imageGeneration = tools.some((tool) => tool.name === "image_gen");
+	const readActivity =
+		tools.length > 1 &&
+		tools.every((tool) => tool.name === "read" && !tool.images?.length && !skillNameFromTool(tool));
+	const commandActivity = tools.length > 1 && tools.every((tool) => tool.name === "bash" && !tool.images?.length);
+	const mutationActivity =
+		tools.length > 1 &&
+		tools.every((tool) =>
+			tool.name === "edit" || tool.name === "write" || tool.name === "apply_patch",
+		);
+	const compactActivity = readActivity || commandActivity || mutationActivity;
 	const searchHasSources = tools.length === 1 && tools[0]?.name === "web_search" && Boolean(tools[0].sources?.length);
 	const [open, setOpen] = useControllableState({
-		defaultProp: imageGallery || imageGeneration || initialOpen || searchHasSources,
+		defaultProp: imageGallery || imageGeneration || (compactActivity && active) || initialOpen || searchHasSources,
 		prop: imageGeneration ? undefined : controlledOpen,
 		onChange: imageGeneration ? undefined : onOpenChange,
 	});
@@ -696,6 +1177,33 @@ export const ToolBatch = memo(function ToolBatch({
 	}, [active, autoCollapseWhenComplete, imageGeneration]);
 
 	if (!tools.length) return null;
+	if (readActivity || commandActivity || mutationActivity) {
+		return (
+			<ToolActivityGroup
+				tools={tools}
+				kind={readActivity ? "read" : commandActivity ? "command" : "mutation"}
+				open={open}
+				onOpenChange={setOpen}
+				toolOpen={toolOpen}
+				onToolOpenChange={onToolOpenChange}
+				sessionId={sessionId}
+				onOpenPath={onOpenPath}
+				className={className}
+			/>
+		);
+	}
+	if (tools.length === 1 && tools[0]?.name === "bash" && tools[0].state === "output-error") {
+		return <CommandErrorPanel tool={tools[0]} open={open} onOpenChange={setOpen} className={className} />;
+	}
+	if (imageGeneration && imageGallery) {
+		return (
+			<div className={cn("grid min-w-0 gap-5", className)}>
+				{tools.map((tool) => (
+					<ImageGenerationToolResult key={tool.id} tool={tool} sessionId={sessionId} onOpenPath={onOpenPath} />
+				))}
+			</div>
+		);
+	}
 	const allToolsCompleted = tools.every(isToolComplete);
 	if (!allToolsCompleted && tools.length > 1) {
 		return (
@@ -834,4 +1342,4 @@ export const ToolBatch = memo(function ToolBatch({
 	);
 });
 
-export { statusLabels as toolBatchStatusLabels, toolTitle };
+export { skillNameFromTool, statusLabels as toolBatchStatusLabels, toolTitle };
