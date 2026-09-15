@@ -26,6 +26,18 @@ import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult
 
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const MAX_TIMEOUT_SECONDS = MAX_TIMEOUT_MS / 1000;
+const MACOS_GIT_KEYCHAIN_AUTHORIZATION_MARKER = "LYSTAR_GIT_KEYCHAIN_AUTHORIZATION_REQUIRED";
+
+export function macosWebGitCredentialFailure(output: string, env: NodeJS.ProcessEnv): string | undefined {
+	if (process.platform !== "darwin" || env.LYSTAR_WEB_SERVICE_CHILD !== "1") return undefined;
+	const helperFailure = new RegExp(
+		`${MACOS_GIT_KEYCHAIN_AUTHORIZATION_MARKER}|terminal prompts disabled|could not read (?:Username|Password)|credential-osxkeychain`,
+		"iu",
+	).test(output);
+	const httpsAuthenticationFailure = /fatal:\s+Authentication failed for ['"]https:\/\//iu.test(output);
+	if (!helperFailure && !httpsAuthenticationFailure) return undefined;
+	return `${MACOS_GIT_KEYCHAIN_AUTHORIZATION_MARKER}: Git 需要访问这台 Mac 的登录钥匙串，本次后台命令已停止。请在运行 LYStar Code Web 的 Mac 本机终端执行 lc web permissions setup，完成后回到 Web 重试。`;
+}
 
 function resolveTimeoutMs(timeout: number | undefined): number | undefined {
 	if (timeout === undefined) return undefined;
@@ -466,7 +478,8 @@ export function createShellToolDefinition(
 				const snapshot = await finishOutput();
 				const { text: outputText, details } = formatOutput(snapshot);
 				if (exitCode !== 0 && exitCode !== null) {
-					throw new Error(appendStatus(outputText, `Command exited with code ${exitCode}`));
+					const failure = appendStatus(outputText, `Command exited with code ${exitCode}`);
+					throw new Error(macosWebGitCredentialFailure(failure, spawnContext.env) ?? failure);
 				}
 				return { content: [{ type: "text", text: outputText }], details };
 			} finally {

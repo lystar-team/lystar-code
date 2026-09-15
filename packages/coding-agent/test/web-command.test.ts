@@ -1,7 +1,9 @@
-import { homedir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	reconcileWebServicesAfterUpdate,
 	runWebCommand,
 	runWebControlCommand,
 	runWebPermissionsCommand,
@@ -12,6 +14,7 @@ const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 const originalCliMode = process.env.LYSTAR_CLI_MODE;
 
 afterEach(() => {
+	vi.useRealTimers();
 	vi.unstubAllGlobals();
 	vi.restoreAllMocks();
 	if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -114,6 +117,90 @@ describe("Web control commands", () => {
 		);
 	});
 
+	it("reconciles post-update services with the explicit target version instead of the stale updater version", async () => {
+		const agentDir = join(tmpdir(), `lystar-web-update-version-${process.pid}-${Date.now()}`);
+		mkdirSync(join(agentDir, "web"), { recursive: true });
+		writeFileSync(join(agentDir, "web", "service-state.json"), "{}\n");
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		const stableLauncher =
+			process.platform === "win32"
+				? join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "LYStarAgent", "bin", "lc.cmd")
+				: join(homedir(), ".local", "bin", "lc");
+		const runWebServiceAction = vi.fn(async () => ({
+			enabled: true,
+			profile: "default",
+			serviceVersion: "0.85.2-lystar.1",
+			gateway: { running: true },
+			runtime: { running: true },
+		}));
+		try {
+			await reconcileWebServicesAfterUpdate("0.85.2-lystar.1", "0.85.1-lystar.12", {
+				gatewayModule: { runWebServiceAction },
+				gatewayInvocation: { command: stableLauncher, args: ["web", "--foreground"], cwd: agentDir },
+				runtimeInvocation: { command: stableLauncher, args: ["web-runtime", "serve"], cwd: agentDir },
+			});
+
+			expect(runWebServiceAction).toHaveBeenCalledWith(
+				expect.objectContaining({
+					action: "reconcile",
+					serviceVersion: "0.85.2-lystar.1",
+					previousServiceVersion: "0.85.1-lystar.12",
+				}),
+			);
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true });
+		}
+	});
+
+	it("retries the target version when the first post-update reconcile recovers the old service", async () => {
+		vi.useFakeTimers();
+		const agentDir = join(tmpdir(), `lystar-web-update-retry-${process.pid}-${Date.now()}`);
+		mkdirSync(join(agentDir, "web"), { recursive: true });
+		writeFileSync(join(agentDir, "web", "service-state.json"), "{}\n");
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		const stableLauncher =
+			process.platform === "win32"
+				? join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "LYStarAgent", "bin", "lc.cmd")
+				: join(homedir(), ".local", "bin", "lc");
+		const runWebServiceAction = vi
+			.fn()
+			.mockResolvedValueOnce({
+				enabled: true,
+				profile: "default",
+				serviceVersion: "0.85.1-lystar.12",
+				recovered: {
+					targetVersion: "0.85.2-lystar.1",
+					serviceVersion: "0.85.1-lystar.12",
+					reason: "Gateway 尚未就绪",
+				},
+				gateway: { running: true },
+				runtime: { running: true },
+			})
+			.mockResolvedValueOnce({
+				enabled: true,
+				profile: "default",
+				serviceVersion: "0.85.2-lystar.1",
+				gateway: { running: true },
+				runtime: { running: true },
+			});
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const operation = reconcileWebServicesAfterUpdate("0.85.2-lystar.1", "0.85.1-lystar.12", {
+				gatewayModule: { runWebServiceAction },
+				gatewayInvocation: { command: stableLauncher, args: ["web", "--foreground"], cwd: agentDir },
+				runtimeInvocation: { command: stableLauncher, args: ["web-runtime", "serve"], cwd: agentDir },
+			});
+			await vi.runAllTimersAsync();
+			await operation;
+			expect(runWebServiceAction).toHaveBeenCalledTimes(2);
+			expect(runWebServiceAction).toHaveBeenLastCalledWith(
+				expect.objectContaining({ serviceVersion: "0.85.2-lystar.1" }),
+			);
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true });
+		}
+	});
+
 	it("reports a recovered service version without rejecting the application update", async () => {
 		process.env.PI_CODING_AGENT_DIR = "/tmp/lystar-web-command-recovery-test";
 		delete process.env.LYSTAR_CLI_MODE;
@@ -146,6 +233,68 @@ describe("Web control commands", () => {
 		});
 
 		expect(warning).toHaveBeenCalledWith(expect.stringContaining("已恢复服务版本 0.85.1-lystar.1"));
+	});
+
+	it("runs the local permission setup after an interactive macOS service reconcile", async () => {
+		process.env.PI_CODING_AGENT_DIR = "/tmp/lystar-web-command-macos-reconcile";
+		const platform = process.platform;
+		const stdinIsTTY = process.stdin.isTTY;
+		const stdoutIsTTY = process.stdout.isTTY;
+		Object.defineProperty(process, "platform", { configurable: true, value: "darwin" });
+		Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+		Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
+		const runWebServiceAction = vi.fn(async () => ({ gateway: { running: true }, runtime: { running: true } }));
+		const runMacosPermissionsCommand = vi.fn(async () => ({ platform: "darwin", supported: true, permissions: [] }));
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			await runWebServiceCommand(["reconcile", "--upgrade"], {
+				gatewayModule: { runWebServiceAction },
+				permissionsGatewayModule: { runMacosPermissionsCommand },
+				gatewayInvocation: { command: "/usr/bin/node", args: ["gateway"], cwd: "/tmp" },
+				runtimeInvocation: { command: "/usr/bin/node", args: ["runtime"], cwd: "/tmp" },
+			});
+
+			expect(runMacosPermissionsCommand).toHaveBeenCalledWith({
+				action: "setup",
+				agentDir: "/tmp/lystar-web-command-macos-reconcile",
+				onlyIfRequired: true,
+			});
+		} finally {
+			Object.defineProperty(process, "platform", { configurable: true, value: platform });
+			Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: stdinIsTTY });
+			Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: stdoutIsTTY });
+		}
+	});
+
+	it("does not fail a completed macOS service upgrade when the permission follow-up fails", async () => {
+		process.env.PI_CODING_AGENT_DIR = "/tmp/lystar-web-command-macos-permission-failure";
+		const platform = process.platform;
+		const stdinIsTTY = process.stdin.isTTY;
+		const stdoutIsTTY = process.stdout.isTTY;
+		Object.defineProperty(process, "platform", { configurable: true, value: "darwin" });
+		Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+		Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
+		const runWebServiceAction = vi.fn(async () => ({ gateway: { running: true }, runtime: { running: true } }));
+		const runMacosPermissionsCommand = vi.fn(async () => {
+			throw new Error("等待 macOS 登录钥匙串密码超过 30 秒");
+		});
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			await expect(
+				runWebServiceCommand(["reconcile", "--upgrade"], {
+					gatewayModule: { runWebServiceAction },
+					permissionsGatewayModule: { runMacosPermissionsCommand },
+					gatewayInvocation: { command: "/usr/bin/node", args: ["gateway"], cwd: "/tmp" },
+					runtimeInvocation: { command: "/usr/bin/node", args: ["runtime"], cwd: "/tmp" },
+				}),
+			).resolves.toMatchObject({ gateway: { running: true }, runtime: { running: true } });
+			expect(warning).toHaveBeenCalledWith(expect.stringContaining("不影响当前版本继续运行"));
+		} finally {
+			Object.defineProperty(process, "platform", { configurable: true, value: platform });
+			Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: stdinIsTTY });
+			Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: stdoutIsTTY });
+		}
 	});
 
 	it("dispatches macOS permission commands through the bundled Gateway module", async () => {

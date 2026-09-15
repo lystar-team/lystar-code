@@ -47,6 +47,7 @@ export interface WorkbenchActions {
 	loadGitCommit: (revision: string, repositoryPath?: string, path?: string) => Promise<void>;
 	closeGitCommit: () => void;
 	mutateGit: (mutation: GitMutation, repositoryPath?: string) => Promise<boolean>;
+	closeGitCredentialAuthorization: () => void;
 	loadGitDiff: (path?: string, staged?: boolean, repositoryPath?: string) => Promise<void>;
 	closeGitDiff: () => void;
 	loadProjectTree: (path?: string, preserveCurrentTree?: boolean) => Promise<void>;

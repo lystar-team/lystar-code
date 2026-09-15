@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	getMacosGitKeychainRequirement,
 	getMacosPermissionsStatus,
 	requestMacosPermission,
 	runMacosPermissionsSetup,
@@ -8,8 +9,12 @@ import {
 
 const files = vi.hoisted(() => new Map<string, string>());
 
-vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
-vi.mock("node:fs", () => ({
+vi.mock("node:child_process", async (importOriginal) => ({
+	...(await importOriginal<typeof import("node:child_process")>()),
+	spawnSync: vi.fn(),
+}));
+vi.mock("node:fs", async (importOriginal) => ({
+	...(await importOriginal<typeof import("node:fs")>()),
 	existsSync: (path: string) => files.has(path),
 	mkdirSync: vi.fn(),
 	readFileSync: (path: string) => {
@@ -17,7 +22,7 @@ vi.mock("node:fs", () => ({
 		if (value === undefined) throw Object.assign(new Error("missing"), { code: "ENOENT" });
 		return value;
 	},
-	rmSync: vi.fn(),
+	rmSync: (path: string) => files.delete(path),
 	writeFileSync: (path: string, value: string) => files.set(path, value),
 }));
 
@@ -44,34 +49,55 @@ describe("macOS keychain permission discovery", () => {
 		});
 	});
 
-	it("skips unavailable Git, SSH, and security tools without blocking setup", () => {
-		const status = getMacosPermissionsStatus("/tmp/lystar-agent");
-		const keychain = status.permissions.find((permission) => permission.id === "keychain");
-		expect(keychain).toMatchObject({ state: "unsupported", canRequest: false });
-		expect(keychain?.message).toContain("已跳过");
+	it("skips unavailable Git, SSH, and security tools without blocking setup", async () => {
+		const stdinIsTTY = process.stdin.isTTY;
+		const stdoutIsTTY = process.stdout.isTTY;
+		Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+		Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
+		try {
+			const status = getMacosPermissionsStatus("/tmp/lystar-agent");
+			const keychain = status.permissions.find((permission) => permission.id === "keychain");
+			expect(keychain).toMatchObject({ state: "unsupported", canRequest: false });
+			expect(keychain?.message).toContain("已跳过");
 
-		expect(() => requestMacosPermission("keychain", "/tmp/lystar-agent")).not.toThrow();
-		expect(files.has("/tmp/lystar-agent/web/macos-permissions.json")).toBe(true);
+			await runMacosPermissionsSetup("/tmp/lystar-agent");
+			expect(files.has("/tmp/lystar-agent/web/macos-permissions.json")).toBe(true);
+		} finally {
+			Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: stdinIsTTY });
+			Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: stdoutIsTTY });
+		}
 	});
 
-	it("completes keychain setup when Git and SSH are absent", () => {
+	it("rejects direct keychain requests outside the terminal setup flow", () => {
+		expect(() => requestMacosPermission("keychain", "/tmp/lystar-agent")).toThrow("lc web permissions setup");
+	});
+
+	it("completes keychain setup when Git and SSH are absent", async () => {
+		const stdinIsTTY = process.stdin.isTTY;
+		const stdoutIsTTY = process.stdout.isTTY;
+		Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+		Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
 		vi.mocked(spawnSync).mockImplementation((command) => {
 			if (command === "/usr/bin/sudo") return success();
 			if (command === "/usr/bin/osascript") return success("true");
 			if (command === "/usr/bin/security") return success();
 			return unavailable();
 		});
+		try {
+			const before = getMacosPermissionsStatus("/tmp/lystar-agent");
+			expect(before.permissions.find((permission) => permission.id === "keychain")).toMatchObject({
+				state: "required",
+				canRequest: true,
+			});
 
-		const before = getMacosPermissionsStatus("/tmp/lystar-agent");
-		expect(before.permissions.find((permission) => permission.id === "keychain")).toMatchObject({
-			state: "required",
-			canRequest: true,
-		});
-
-		const after = requestMacosPermission("keychain", "/tmp/lystar-agent");
-		expect(after.permissions.find((permission) => permission.id === "keychain")).toMatchObject({
-			state: "granted",
-		});
+			const after = await runMacosPermissionsSetup("/tmp/lystar-agent");
+			expect(after.permissions.find((permission) => permission.id === "keychain")).toMatchObject({
+				state: "granted",
+			});
+		} finally {
+			Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: stdinIsTTY });
+			Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: stdoutIsTTY });
+		}
 	});
 
 	it("does not trust a legacy keychain marker without a Runtime readback probe", () => {
@@ -87,22 +113,69 @@ describe("macOS keychain permission discovery", () => {
 		const status = getMacosPermissionsStatus("/tmp/lystar-agent");
 		expect(status.permissions.find((permission) => permission.id === "keychain")).toMatchObject({
 			state: "required",
-			message: expect.stringContaining("Runtime"),
+			message: expect.stringContaining("本机终端"),
 		});
 	});
 
-	it("grants keychain status only after a Runtime LaunchAgent reads the synthetic credential", () => {
+	it("reads the login-keychain password once and batch-authorizes every matching HTTPS credential", async () => {
 		const stdinIsTTY = process.stdin.isTTY;
 		const stdoutIsTTY = process.stdout.isTTY;
+		const helperPath = "/mock/git-core/git-credential-osxkeychain";
+		const readKeychainPassword = vi.fn(async () => "login-password");
+		let securityInput = "";
 		Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
 		Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
-		files.set("/tmp/lystar-agent/web/bin/git-credential-lystar", "wrapper");
-		vi.mocked(spawnSync).mockImplementation((command, args) => {
+		files.set(helperPath, "helper-v1");
+		files.set(
+			"/tmp/lystar-agent/web/projects.json",
+			JSON.stringify({
+				projects: [{ cwd: "/tmp/project-a" }, { cwd: "/tmp/project-b" }, { cwd: "/tmp/project-c" }],
+			}),
+		);
+		vi.mocked(spawnSync).mockImplementation((command, args, options) => {
 			if (command === "/usr/bin/sudo") return success();
 			if (command === "/usr/bin/osascript") return success("true");
 			if (command === "git" && args?.[0] === "--version") return success();
-			if (command === "/usr/bin/git") return success();
+			if (command === "/usr/bin/git" && args?.[0] === "--exec-path") return success("/mock/git-core");
+			if (command === "git" && args?.[0] === "-C" && args?.[2] === "remote" && args.length === 3)
+				return success("origin");
+			if (command === "git" && args?.[0] === "-C" && args?.[2] === "remote" && args?.[3] === "get-url") {
+				return success(
+					args[1] === "/tmp/project-b"
+						? "https://github.com/lystar/b.git"
+						: `https://gitee.com/lystar/${args[1] === "/tmp/project-a" ? "a" : "c"}.git`,
+				);
+			}
+			if (command === "/usr/bin/security" && args?.[0] === "login-keychain")
+				return success('"/mock/login.keychain-db"');
+			if (command === "/usr/bin/security" && args?.[0] === "dump-keychain") {
+				return success(`keychain: "/mock/login.keychain-db"
+class: "inet"
+attributes:
+    "acct"<blob>="gitee-primary"
+    "path"<blob>="/lystar/a.git"
+    "ptcl"<uint32>="htps"
+    "srvr"<blob>="gitee.com"
+keychain: "/mock/login.keychain-db"
+class: "inet"
+attributes:
+    "acct"<blob>="gitee-secondary"
+    "path"<blob>="/lystar/c.git"
+    "ptcl"<uint32>="htps"
+    "srvr"<blob>="gitee.com"
+keychain: "/mock/login.keychain-db"
+class: "inet"
+attributes:
+    "acct"<blob>="github-account"
+    "ptcl"<uint32>="htps"
+    "srvr"<blob>="github.com"`);
+			}
+			if (command === "/usr/bin/security" && args?.[0] === "-i") {
+				securityInput = String(options?.input ?? "");
+				return success();
+			}
 			if (command === "/usr/bin/security") return success();
+			if (command === "/usr/bin/codesign") return success();
 			if (command === "/bin/launchctl" && args?.[0] === "bootstrap") {
 				const script = [...files.entries()].find(([path]) => path.endsWith(".sh"))?.[1];
 				const resultPath = script?.match(/> '([^']+\.result)'/u)?.[1];
@@ -113,15 +186,40 @@ describe("macOS keychain permission discovery", () => {
 			return unavailable();
 		});
 		try {
-			const status = requestMacosPermission("keychain", "/tmp/lystar-agent");
+			const status = await runMacosPermissionsSetup("/tmp/lystar-agent", { readKeychainPassword });
+			expect(readKeychainPassword).toHaveBeenCalledTimes(1);
+			expect(securityInput).toContain('unlock-keychain -p "login-password"');
+			expect(securityInput.match(/set-internet-password-partition-list/gu)).toHaveLength(3);
+			const securityInteractiveCall = vi
+				.mocked(spawnSync)
+				.mock.calls.find(([command, args]) => command === "/usr/bin/security" && args?.[0] === "-i");
+			expect(securityInteractiveCall?.[1]).not.toContain("login-password");
 			expect(status.permissions.find((permission) => permission.id === "keychain")).toMatchObject({
 				state: "granted",
 			});
-			expect(files.get("/tmp/lystar-agent/web/macos-permissions.json")).toContain('"keychainProbeVersion": 2');
+			expect(files.get("/tmp/lystar-agent/web/macos-permissions.json")).toContain('"keychainProbeVersion": 4');
+			expect(files.get("/tmp/lystar-agent/web/git-keychain-authorization.helper")).toBe(`${helperPath}\n`);
+			expect(files.get("/tmp/lystar-agent/web/git-keychain-authorization.hosts")).toBe("gitee.com\ngithub.com\n");
 		} finally {
 			Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: stdinIsTTY });
 			Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: stdoutIsTTY });
 		}
+	});
+
+	it("blocks a new HTTPS remote until the local setup authorizes its host", () => {
+		vi.mocked(spawnSync).mockImplementation((command, args) => {
+			if (command === "git" && args?.[0] === "-C" && args?.[2] === "remote" && args.length === 3)
+				return success("origin");
+			if (command === "git" && args?.[0] === "-C" && args?.[2] === "remote" && args?.[3] === "get-url")
+				return success("https://gitee.com/lystar/project.git");
+			return unavailable();
+		});
+
+		expect(getMacosGitKeychainRequirement("/tmp/project", "/tmp/lystar-agent")).toMatchObject({
+			required: true,
+			hosts: ["gitee.com"],
+			message: expect.stringContaining("lc web permissions setup"),
+		});
 	});
 
 	it("continues setup without waiting for terminal input and remembers the terminal application", async () => {

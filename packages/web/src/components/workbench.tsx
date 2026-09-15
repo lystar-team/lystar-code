@@ -13,7 +13,13 @@ import { GsapReveal } from "./ui/gsap-reveal";
 import { Composer } from "./workbench/composer";
 import { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH } from "./workbench/constants";
 import { ConversationView } from "./workbench/conversation";
-import { DirectoryDialog, ProjectRenameDialog, Toast, UiRequestDialog } from "./workbench/dialogs";
+import {
+	DirectoryDialog,
+	GitCredentialAuthorizationDialog,
+	ProjectRenameDialog,
+	Toast,
+	UiRequestDialog,
+} from "./workbench/dialogs";
 import { FilePreviewDialog } from "./workbench/file-preview-dialog";
 import { InspectorDialog, InspectorPanel } from "./workbench/inspector";
 import { ProjectRail } from "./workbench/project-rail";
@@ -509,6 +515,7 @@ export function Workbench({
 				onClose={() => setDirectoryOpen(false)}
 			/>
 			<ProjectRenameDialog project={editingProject} actions={actions} onClose={() => setEditingProject(undefined)} />
+			<GitCredentialAuthorizationDialog state={state} actions={actions} />
 			<UiRequestDialog state={state} actions={actions} />
 			{connection.blocking ? <ConnectionRecoveryOverlay presentation={connection} /> : null}
 		</div>

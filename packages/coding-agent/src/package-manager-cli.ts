@@ -1076,7 +1076,7 @@ export async function handlePackageCommand(
 							console.log(chalk.dim(`Updating managed ${APP_NAME} installation...`));
 							await _runManagedSelfUpdate(managedInstallRoot, plan.version);
 							managedReleaseActivated = true;
-							await reconcileWebServicesAfterUpdate();
+							await reconcileWebServicesAfterUpdate(plan.version, VERSION);
 						} catch (error: unknown) {
 							const message = error instanceof Error ? error.message : "Unknown managed update error";
 							console.error(
@@ -1132,7 +1132,7 @@ export async function handlePackageCommand(
 							prepareWindowsNpmSelfUpdate();
 						}
 						await runSelfUpdate(selfUpdateCommand);
-						await reconcileWebServicesAfterUpdate();
+						await reconcileWebServicesAfterUpdate(plan.version, VERSION);
 					} catch (error: unknown) {
 						const message = error instanceof Error ? error.message : "Unknown package command error";
 						console.error(chalk.red(`Error: ${message}`));

@@ -6,6 +6,7 @@ import { Alert, AlertDescription, AlertTitle } from "../../ui/alert";
 import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../ui/dialog";
 import { SettingSection } from "./shared";
 
 function badgeVariant(state: SystemPermissionStatus["state"]): "default" | "secondary" | "outline" | "destructive" {
@@ -25,6 +26,7 @@ export function SystemPermissionsSettings() {
 	const [status, setStatus] = useState<SystemPermissionsResponse>();
 	const [loading, setLoading] = useState(true);
 	const [requesting, setRequesting] = useState<SystemPermissionStatus["id"]>();
+	const [keychainGuideOpen, setKeychainGuideOpen] = useState(false);
 	const [error, setError] = useState<string>();
 
 	const refresh = useCallback(async () => {
@@ -44,6 +46,10 @@ export function SystemPermissionsSettings() {
 	}, [refresh]);
 
 	const request = async (permission: "keychain" | "accessibility" | "automation" | "screen-recording") => {
+		if (permission === "keychain") {
+			setKeychainGuideOpen(true);
+			return;
+		}
 		setRequesting(permission);
 		setError(undefined);
 		try {
@@ -64,7 +70,7 @@ export function SystemPermissionsSettings() {
 					<CardHeader className="gap-2">
 						<CardTitle className="text-base">Web 后台权限</CardTitle>
 						<CardDescription>
-							完成一次授权后，后台任务会使用静默管理员通道；缺少权限时任务会直接报错，不再等待系统弹窗。
+							后台不会打开或等待密码窗口。Git 钥匙串授权在 Mac 本机终端集中完成；缺少授权时任务会立即停止并提示。
 						</CardDescription>
 					</CardHeader>
 					<CardContent className="grid gap-4">
@@ -96,6 +102,8 @@ export function SystemPermissionsSettings() {
 												<p className="mt-1 text-sm leading-6 text-muted-foreground">{permission.message}</p>
 												{permission.id === "administrator" && !granted ? (
 													<code className="mt-2 block w-fit rounded bg-muted px-2 py-1 text-xs">lc web service install</code>
+												) : permission.id === "keychain" ? (
+													<code className="mt-2 block w-fit rounded bg-muted px-2 py-1 text-xs">lc web permissions setup</code>
 												) : null}
 											</div>
 										</div>
@@ -108,7 +116,11 @@ export function SystemPermissionsSettings() {
 								}
 							>
 								{requesting === permission.id ? <LoaderCircle className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}
-								{granted ? "重新授权" : "开始授权"}
+								{permission.id === "keychain"
+									? "查看授权方法"
+									: granted
+										? "重新授权"
+										: "开始授权"}
 							</Button>
 						) : null}
 									</div>
@@ -131,6 +143,34 @@ export function SystemPermissionsSettings() {
 					</CardContent>
 				</Card>
 			</SettingSection>
+			<Dialog open={keychainGuideOpen} onOpenChange={setKeychainGuideOpen}>
+				<DialogContent className="max-w-lg">
+					<DialogHeader>
+						<DialogTitle>Git 钥匙串需要在 Mac 本机授权</DialogTitle>
+						<DialogDescription>
+							Web 不会在后台触发登录密码窗口。请到运行 LYStar Code Web 的 Mac 本机终端完成授权。
+						</DialogDescription>
+					</DialogHeader>
+					<div className="grid gap-3 text-sm leading-6 text-muted-foreground">
+						<p>执行下面的命令。终端会隐藏输入一次当前 macOS 登录钥匙串密码，并批量授权已登记的 Git HTTPS 凭据。</p>
+						<code className="w-fit rounded bg-muted px-2 py-1 text-xs text-foreground">lc web permissions setup</code>
+						<p>完成后回到这里点击“重新检测”，再重试 Git 操作。</p>
+					</div>
+					<DialogFooter>
+						<Button variant="outline" onClick={() => setKeychainGuideOpen(false)}>
+							关闭
+						</Button>
+						<Button
+							onClick={() => {
+								setKeychainGuideOpen(false);
+								void refresh();
+							}}
+						>
+							重新检测
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 		</div>
 	);
 }

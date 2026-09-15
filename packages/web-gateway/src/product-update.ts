@@ -148,11 +148,23 @@ function stripTerminalFormatting(value: string): string {
 }
 
 function latestLogMessage(log: string): string | undefined {
-	return stripTerminalFormatting(log)
+	const lines = stripTerminalFormatting(log)
 		.split("\n")
 		.map((line) => line.trim())
-		.filter(Boolean)
-		.at(-1);
+		.filter(Boolean);
+	const genericProcessExit = /^Error:\s+.+(?:退出码[:：]|exited with code)\s*\d+/iu;
+	const specificFailure = lines
+		.slice()
+		.reverse()
+		.find((line) => !genericProcessExit.test(line) && /\[失败\]|失败|无法|错误|Error:/iu.test(line));
+	return (
+		specificFailure ??
+		lines
+			.slice()
+			.reverse()
+			.find((line) => !genericProcessExit.test(line)) ??
+		lines.at(-1)
+	);
 }
 
 export function productUpdateProgressFromLog(log: string): Pick<ProductUpdateJob, "stage" | "progress" | "message"> {
@@ -352,10 +364,13 @@ export class ProductUpdateController {
 		};
 		await this.writeJob(initial);
 
-		const env: NodeJS.ProcessEnv = { ...process.env, PI_CODING_AGENT_DIR: this.agentDir };
+		const env: NodeJS.ProcessEnv = {
+			...process.env,
+			PI_CODING_AGENT_DIR: this.agentDir,
+			LYSTAR_WEB_SERVICE_TARGET_VERSION: targetVersion,
+			LYSTAR_WEB_PREVIOUS_SERVICE_VERSION: currentVersion,
+		};
 		delete env.LYSTAR_WEB_SERVICE_VERSION;
-		delete env.LYSTAR_WEB_SERVICE_TARGET_VERSION;
-		delete env.LYSTAR_WEB_PREVIOUS_SERVICE_VERSION;
 		let updater: SpawnedUpdater;
 		try {
 			updater = await this.spawnUpdate(executable, ["update", "--self"], {

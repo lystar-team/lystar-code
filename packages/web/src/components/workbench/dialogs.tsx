@@ -267,6 +267,44 @@ export function SessionRenameDialog({
 	);
 }
 
+export function GitCredentialAuthorizationDialog({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
+	const message = state.gitCredentialAuthorizationMessage;
+	return (
+		<Dialog
+			open={Boolean(message)}
+			onOpenChange={(open) => {
+				if (!open) actions.closeGitCredentialAuthorization();
+			}}
+		>
+			<DialogContent className="max-w-lg">
+				<DialogHeader>
+					<DialogTitle>需要在 Mac 本机授权 Git 钥匙串</DialogTitle>
+					<DialogDescription>{message}</DialogDescription>
+				</DialogHeader>
+				<Alert>
+					<AlertDescription>
+						后台不会等待系统密码窗口。需要 HTTPS 凭据的 Git 操作会暂停；其他 Web 功能和已经完成的应用更新不受影响。请在运行服务的 Mac 本机终端执行下面的命令，终端会隐藏输入一次 macOS 登录钥匙串密码，并批量授权全部已登记的 Git HTTPS 凭据。
+						<code className="mt-2 block w-fit rounded bg-muted px-2 py-1 text-xs">lc web permissions setup</code>
+					</AlertDescription>
+				</Alert>
+				<DialogFooter>
+					<Button variant="outline" onClick={actions.closeGitCredentialAuthorization}>
+						关闭
+					</Button>
+					<Button
+						onClick={() => {
+							actions.closeGitCredentialAuthorization();
+							void actions.openSettings("permissions");
+						}}
+					>
+						查看系统授权
+					</Button>
+				</DialogFooter>
+			</DialogContent>
+		</Dialog>
+	);
+}
+
 export function UiRequestDialog({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
 	const request = state.pendingUiRequests[0];
 	const [value, setValue] = useState("");

@@ -101,9 +101,10 @@ export interface WebComponentActionOptions extends WebServiceLaunchOptions {
 export async function runMacosPermissionsCommand(options: {
 	action: "status" | "setup";
 	agentDir: string;
+	onlyIfRequired?: boolean;
 }): Promise<MacosPermissionsStatus> {
 	return options.action === "setup"
-		? runMacosPermissionsSetup(options.agentDir)
+		? runMacosPermissionsSetup(options.agentDir, { forceKeychain: !options.onlyIfRequired })
 		: getMacosPermissionsStatus(options.agentDir);
 }
 

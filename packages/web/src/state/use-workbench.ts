@@ -29,6 +29,7 @@ import type {
 	ProductBranding,
 	QueuedUserPrompt,
 	SecuritySettingsResponse,
+	SystemPermissionsResponse,
 	UiRequestEvent,
 	WebLease,
 	WebModelProviderInput,
@@ -429,6 +430,7 @@ export interface WorkbenchState {
 	gitCommitLoading: boolean;
 	gitDiffLoading: boolean;
 	gitOperation?: GitMutation["type"];
+	gitCredentialAuthorizationMessage?: string;
 	fileTree?: ProjectTreeResponse;
 	fileTreeRootPath?: string;
 	fileTreeCache: Record<string, ProjectTreeResponse>;
@@ -711,6 +713,39 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+const GIT_KEYCHAIN_AUTHORIZATION_MARKER = "LYSTAR_GIT_KEYCHAIN_AUTHORIZATION_REQUIRED";
+const GIT_KEYCHAIN_AUTHORIZATION_MESSAGE =
+	"Git 需要访问这台 Mac 的登录钥匙串，本次后台操作已停止。请在运行 LYStar Code Web 的 Mac 本机终端执行 lc web permissions setup，在终端隐藏输入一次登录钥匙串密码完成批量授权，完成后回到 Web 重试。";
+
+export function gitCredentialAuthorizationMessageFromSystemPermissions(
+	permissions: SystemPermissionsResponse,
+): string | undefined {
+	if (!permissions.supported) return undefined;
+	const keychain = permissions.permissions.find((permission) => permission.id === "keychain");
+	if (keychain?.state !== "required") return undefined;
+	return keychain.message || GIT_KEYCHAIN_AUTHORIZATION_MESSAGE;
+}
+
+export function gitCredentialAuthorizationMessage(value: unknown): string | undefined {
+	const candidate = value && typeof value === "object" ? (value as { code?: unknown; message?: unknown }) : undefined;
+	const code = typeof candidate?.code === "string" ? candidate.code : undefined;
+	const message =
+		typeof candidate?.message === "string"
+			? candidate.message
+			: typeof value === "string"
+				? value
+				: value instanceof Error
+					? value.message
+					: "";
+	if (
+		code !== "git_credentials_required" &&
+		!message.includes(GIT_KEYCHAIN_AUTHORIZATION_MARKER) &&
+		!(/Git|git/u.test(message) && /钥匙串|keychain/iu.test(message) && message.includes("lc web permissions setup"))
+	)
+		return undefined;
+	return code === "git_credentials_required" && message.trim() ? message.trim() : GIT_KEYCHAIN_AUTHORIZATION_MESSAGE;
+}
+
 function hasMeaningfulSessionFirstMessage(value: string): boolean {
 	const normalized = value.trim();
 	return normalized.length > 0 && normalized !== "未命名会话";
@@ -884,6 +919,16 @@ function sessionActivityFromProgress(progress: SessionProgress): "running" | "wa
 	}
 }
 
+function gitCredentialAuthorizationMessageFromProgress(progress: SessionProgress): string | undefined {
+	if (progress.type === "tool_state") {
+		return gitCredentialAuthorizationMessage(
+			progress.activity.error ?? progress.activity.output ?? progress.activity.progress,
+		);
+	}
+	if (progress.type === "tool_end") return gitCredentialAuthorizationMessage(progress.summary);
+	return undefined;
+}
+
 export function transcriptText(item: WebTranscriptItem): string {
 	return item.view && "text" in item.view ? item.view.text : "";
 }
@@ -1024,6 +1069,7 @@ function initialState(): WorkbenchState {
 		gitHistoryLoading: false,
 		gitCommitLoading: false,
 		gitDiffLoading: false,
+		gitCredentialAuthorizationMessage: undefined,
 		fileTreeLoading: false,
 		fileTreeRootPath: undefined,
 		fileTreeCache: {},
@@ -1467,7 +1513,9 @@ export function useWorkbench() {
 
 	const applyProgressNow = useCallback(
 		(progress: SessionProgress) => {
+			const gitAuthorizationMessage = gitCredentialAuthorizationMessageFromProgress(progress);
 			updateState((current) => {
+				if (gitAuthorizationMessage) current = { ...current, gitCredentialAuthorizationMessage: gitAuthorizationMessage };
 				const activity = sessionActivityFromProgress(progress);
 				if (current.session && activity && current.session.activity !== activity) {
 					current = { ...current, session: { ...current.session, activity } };
@@ -2482,6 +2530,15 @@ export function useWorkbench() {
 		}
 	}, [updateState]);
 
+	const refreshGitCredentialAuthorization = useCallback(async () => {
+		try {
+			const message = gitCredentialAuthorizationMessageFromSystemPermissions(await webApi.systemPermissions());
+			if (message) updateState((current) => ({ ...current, gitCredentialAuthorizationMessage: message }));
+		} catch {
+			// 系统授权状态读取失败不阻断工作台启动；Git 操作仍会在执行前返回结构化错误。
+		}
+	}, [updateState]);
+
 	const initialize = useCallback((): Promise<void> => {
 		const existing = initializePromiseRef.current;
 		if (existing) return existing;
@@ -2505,6 +2562,7 @@ export function useWorkbench() {
 				const data = await webApi.bootstrap();
 				applyBootstrap(data);
 				connectStream();
+				void refreshGitCredentialAuthorization();
 				void refreshModelOptions().catch(() => undefined);
 				const lastSession = readLastSession();
 				const lastSessionProject = lastSession
@@ -2570,7 +2628,15 @@ export function useWorkbench() {
 		});
 		initializePromiseRef.current = tracked;
 		return tracked;
-	}, [applyBootstrap, connectStream, refreshBranding, refreshModelOptions, scheduleReconnect, updateState]);
+	}, [
+		applyBootstrap,
+		connectStream,
+		refreshBranding,
+		refreshGitCredentialAuthorization,
+		refreshModelOptions,
+		scheduleReconnect,
+		updateState,
+	]);
 	initializeRef.current = initialize;
 
 	const resumeConnection = useCallback(() => {
@@ -3631,7 +3697,12 @@ export function useWorkbench() {
 				showToast(result.message);
 				return true;
 			} catch (error) {
-				showToast(errorMessage(error));
+				const authorizationMessage = gitCredentialAuthorizationMessage(error);
+				if (authorizationMessage) {
+					updateState((current) => ({ ...current, gitCredentialAuthorizationMessage: authorizationMessage }));
+				} else {
+					showToast(errorMessage(error));
+				}
 				await loadGitStatusRef.current(true).catch(() => {});
 				return false;
 			} finally {
@@ -3643,6 +3714,11 @@ export function useWorkbench() {
 			}
 		},
 		[loadGitBranches, loadGitHistory, loadGitRepositoryStats, showToast, updateState],
+	);
+
+	const closeGitCredentialAuthorization = useCallback(
+		() => updateState((current) => ({ ...current, gitCredentialAuthorizationMessage: undefined })),
+		[updateState],
 	);
 
 	const loadGitDiff = useCallback(
@@ -4599,6 +4675,7 @@ export function useWorkbench() {
 		loadGitCommit,
 		closeGitCommit,
 		mutateGit,
+		closeGitCredentialAuthorization,
 		loadGitDiff,
 		closeGitDiff,
 		openInspector,

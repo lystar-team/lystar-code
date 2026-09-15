@@ -49,7 +49,11 @@ interface WebGatewayModule {
 		previousServiceVersion?: string;
 		interactiveAdmin?: boolean;
 	}): Promise<unknown>;
-	runMacosPermissionsCommand(options: { action: "status" | "setup"; agentDir: string }): Promise<unknown>;
+	runMacosPermissionsCommand(options: {
+		action: "status" | "setup";
+		agentDir: string;
+		onlyIfRequired?: boolean;
+	}): Promise<unknown>;
 	runWebGatewayCli(options: {
 		defaultPort: number;
 		defaultRuntimePort: number;
@@ -175,19 +179,38 @@ async function runWebComponentCommand(
 	console.log(`${label}${action === "stop" ? "已停止" : action === "start" ? "已启动" : "已重启"}。`);
 }
 
+interface WebServiceCommandOptions {
+	gatewayModule?: Pick<WebGatewayModule, "runWebServiceAction">;
+	permissionsGatewayModule?: Pick<WebGatewayModule, "runMacosPermissionsCommand">;
+	gatewayInvocation?: RuntimeInvocation;
+	runtimeInvocation?: RuntimeInvocation;
+	serviceVersion?: string;
+	previousServiceVersion?: string;
+}
+
+type WebServiceCommandDependencies = Omit<WebServiceCommandOptions, "serviceVersion" | "previousServiceVersion">;
+
+async function runPostServiceMacosPermissions(
+	gatewayModule?: Pick<WebGatewayModule, "runMacosPermissionsCommand">,
+): Promise<void> {
+	try {
+		await runWebPermissionsCommand(["setup", "--if-required"], gatewayModule);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.warn(
+			`Web 服务已经完成安装或升级；macOS 系统授权没有完成，不影响当前版本继续运行。请回到 Mac 本机后执行 lc web permissions setup。原因：${message}`,
+		);
+	}
+}
+
 export async function runWebServiceCommand(
 	args: readonly string[],
-	options: {
-		gatewayModule?: Pick<WebGatewayModule, "runWebServiceAction">;
-		gatewayInvocation?: RuntimeInvocation;
-		runtimeInvocation?: RuntimeInvocation;
-		serviceVersion?: string;
-		previousServiceVersion?: string;
-	} = {},
-): Promise<void> {
+	options: WebServiceCommandOptions = {},
+): Promise<unknown> {
 	const settings = webCommandSettings();
 	const action = args[0] as WebServiceAction | undefined;
 	const flags = new Set(args.slice(1));
+	const interactive = !flags.has("--non-interactive") && Boolean(process.stdin.isTTY && process.stdout.isTTY);
 	if (!action || !["install", "start", "stop", "restart", "reconcile", "status", "uninstall"].includes(action)) {
 		throw new Error(
 			`用法：${settings.commandName} web service <install|start|stop|restart|reconcile|status|uninstall>`,
@@ -221,7 +244,7 @@ export async function runWebServiceCommand(
 		runtimeInvocation,
 		...(serviceVersion ? { serviceVersion } : {}),
 		...(previousServiceVersion ? { previousServiceVersion } : {}),
-		interactiveAdmin: !flags.has("--non-interactive") && Boolean(process.stdin.isTTY && process.stdout.isTTY),
+		interactiveAdmin: interactive,
 	});
 	if (action === "status") {
 		console.log(JSON.stringify(result, null, "\t"));
@@ -239,11 +262,33 @@ export async function runWebServiceCommand(
 			);
 		} else {
 			console.log(`Web Gateway 和 Web Runtime 服务${action === "stop" ? "已停止" : "已启动"}。`);
+			if (process.platform === "darwin" && interactive && (action === "install" || action === "reconcile")) {
+				await runPostServiceMacosPermissions(options.permissionsGatewayModule);
+			}
 		}
 	}
+	return result;
 }
 
-export async function reconcileWebServicesAfterUpdate(): Promise<void> {
+function completedServiceVersion(result: unknown): string | undefined {
+	if (!result || typeof result !== "object" || Array.isArray(result)) return undefined;
+	const value = (result as { serviceVersion?: unknown; recovered?: unknown }).serviceVersion;
+	return (result as { recovered?: unknown }).recovered === undefined && typeof value === "string" ? value : undefined;
+}
+
+function updateReconcileError(value: unknown): string {
+	return value instanceof Error ? value.message : String(value);
+}
+
+async function waitForUpdateReconcileRetry(): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, 1_000));
+}
+
+export async function reconcileWebServicesAfterUpdate(
+	targetVersion: string,
+	previousServiceVersion = VERSION,
+	options: WebServiceCommandDependencies = {},
+): Promise<void> {
 	const settings = webCommandSettings();
 	const agentDir = getAgentDir();
 	const candidates = [
@@ -253,7 +298,33 @@ export async function reconcileWebServicesAfterUpdate(): Promise<void> {
 	];
 	if (!candidates.some((path) => existsSync(path))) return;
 	const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
-	await runWebServiceCommand(["reconcile", "--upgrade", ...(interactive ? [] : ["--non-interactive"])]);
+	const args = ["reconcile", "--upgrade", ...(interactive ? [] : ["--non-interactive"])] as const;
+	const commandOptions: WebServiceCommandOptions = {
+		...options,
+		serviceVersion: targetVersion,
+		previousServiceVersion,
+	};
+	let firstFailure: string | undefined;
+	try {
+		const result = await runWebServiceCommand(args, commandOptions);
+		if (completedServiceVersion(result) === targetVersion) return;
+		firstFailure = `服务仍为 ${completedServiceVersion(result) ?? "未知版本"}`;
+	} catch (error) {
+		firstFailure = updateReconcileError(error);
+	}
+	console.warn(`Web 服务首次切换到 ${targetVersion} 没有完成，1秒后自动重试。原因：${firstFailure}`);
+	await waitForUpdateReconcileRetry();
+	try {
+		const result = await runWebServiceCommand(args, commandOptions);
+		const actualVersion = completedServiceVersion(result);
+		if (actualVersion === targetVersion) return;
+		throw new Error(`重试后服务仍为 ${actualVersion ?? "未知版本"}`);
+	} catch (error) {
+		throw new Error(
+			`应用已经更新到 ${targetVersion}，但 Web Gateway 和 Runtime 自动切换失败。首次结果：${firstFailure}；重试结果：${updateReconcileError(error)}`,
+			{ cause: error },
+		);
+	}
 }
 
 export async function runWebPermissionsCommand(
@@ -261,11 +332,16 @@ export async function runWebPermissionsCommand(
 	gatewayModule?: Pick<WebGatewayModule, "runMacosPermissionsCommand">,
 ): Promise<void> {
 	const action = args[0] as "status" | "setup" | undefined;
-	if (!action || !["status", "setup"].includes(action) || args.length !== 1) {
-		throw new Error("用法：lc web permissions <status|setup>");
+	const onlyIfRequired = action === "setup" && args[1] === "--if-required" && args.length === 2;
+	if (!action || !["status", "setup"].includes(action) || (!onlyIfRequired && args.length !== 1)) {
+		throw new Error("用法：lc web permissions <status|setup [--if-required]>");
 	}
 	const module = gatewayModule ?? (await loadGatewayModule());
-	const result = await module.runMacosPermissionsCommand({ action, agentDir: getAgentDir() });
+	const result = await module.runMacosPermissionsCommand({
+		action,
+		agentDir: getAgentDir(),
+		...(onlyIfRequired ? { onlyIfRequired: true } : {}),
+	});
 	console.log(JSON.stringify(result, null, "\t"));
 }
 
@@ -346,7 +422,7 @@ export async function runWebCommand(args: readonly string[] = []): Promise<void>
 		...(serviceVersion ? { serviceVersion } : {}),
 	});
 	if (process.platform === "darwin" && process.stdin.isTTY && process.stdout.isTTY) {
-		await runWebPermissionsCommand(["setup"]);
+		await runPostServiceMacosPermissions();
 	}
 }
 

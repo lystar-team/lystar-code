@@ -49,18 +49,25 @@ test("更新任务保留进度并在 Runtime 切换版本后完成", async (t) =
 	const agentDir = join(root, "agent");
 	await createInstalledLayout(installRoot);
 	let now = 100;
+	let spawnedEnv: NodeJS.ProcessEnv | undefined;
 	const completion = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(() => {});
 	const controller = new ProductUpdateController(agentDir, {
 		installRoot,
 		development: false,
 		now: () => now++,
 		isProcessAlive: () => true,
-		spawnUpdate: async () => ({ pid: 321, completion }),
+		spawnUpdate: async (_executable, _args, options) => {
+			spawnedEnv = options.env;
+			return { pid: 321, completion };
+		},
 	});
 
 	const started = await controller.start("0.85.1-lystar.6", "0.85.2-lystar.1");
 	assert.equal(started.status, "running");
 	assert.equal(started.pid, 321);
+	assert.equal(spawnedEnv?.LYSTAR_WEB_SERVICE_TARGET_VERSION, "0.85.2-lystar.1");
+	assert.equal(spawnedEnv?.LYSTAR_WEB_PREVIOUS_SERVICE_VERSION, "0.85.1-lystar.6");
+	assert.equal(spawnedEnv?.LYSTAR_WEB_SERVICE_VERSION, undefined);
 	await writeFile(join(agentDir, "web", "product-update.log"), "[3/6] 解压并检查发行包\n");
 	const running = await controller.status("0.85.1-lystar.6");
 	assert.equal(running?.stage, "verifying");
@@ -86,7 +93,7 @@ test("更新进程退出但版本未切换时记录失败", async (t) => {
 	});
 
 	await controller.start("0.85.1-lystar.6", "0.85.2-lystar.1");
-	await writeFile(join(agentDir, "web", "product-update.log"), "下载失败：HTTP 503\n");
+	await writeFile(join(agentDir, "web", "product-update.log"), "下载失败：HTTP 503\nError: bash 退出码：1\n");
 	const failed = await controller.status("0.85.1-lystar.6");
 	assert.equal(failed?.status, "failed");
 	assert.equal(failed?.message, "下载失败：HTTP 503");

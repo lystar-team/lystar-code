@@ -5,6 +5,7 @@ import {
 	appendLiveRenderItems,
 	buildConversationRenderItems,
 	buildPersistedRenderItems,
+	formatElapsedDuration,
 	initialTranscriptDisplayState,
 } from "../src/components/workbench/conversation.tsx";
 import { ThinkingBlock } from "../src/components/workbench/live-turn.tsx";
@@ -19,6 +20,13 @@ const emptyToolIndex = {
 };
 
 describe("conversation render items", () => {
+	it("按分钟、小时和天展示 Agent 耗时", () => {
+		expect(formatElapsedDuration(12 * 60_000)).toBe("12分钟");
+		expect(formatElapsedDuration(2 * 60 * 60_000 + 8 * 60_000)).toBe("2小时08分钟");
+		expect(formatElapsedDuration(1 * 24 * 60 * 60_000 + 3 * 60 * 60_000 + 20 * 60_000)).toBe("1天03小时20分钟");
+		expect(formatElapsedDuration(15_000)).toBe("1分钟");
+	});
+
 	it("首个历史页完成前不把实时片段当成完整会话展示", () => {
 		expect(
 			initialTranscriptDisplayState({
@@ -94,6 +102,20 @@ describe("conversation render items", () => {
 		expect(html).not.toContain("旧过程");
 		expect(html).not.toContain("思考过程");
 		expect(html).not.toContain("<button");
+	});
+
+	it("在最终 Agent 回复下显示本次耗时", () => {
+		const html = renderToStaticMarkup(
+			createElement(TranscriptMessageView, {
+				role: "assistant",
+				text: "检查完成。",
+				durationLabel: "2小时08分钟",
+				showCopy: true,
+				onOpenPath: async () => {},
+			}),
+		);
+
+		expect(html).toContain("本次耗时：2小时08分钟");
 	});
 
 	it("保留乐观用户消息的图片附件", () => {
@@ -327,6 +349,7 @@ describe("conversation render items", () => {
 		expect(active.some((item) => item.kind === "result-boundary" || item.kind === "work-process")).toBe(false);
 		expect(active.find((item) => item.kind === "tool-stack")).toMatchObject({ collapseForResult: false });
 		expect(completed.map((item) => item.kind)).toEqual(["message", "work-process", "result-boundary", "message"]);
+		expect(completed.at(-1)).toMatchObject({ durationLabel: "1分钟" });
 		const workProcess = completed.find((item) => item.kind === "work-process");
 		if (!workProcess || workProcess.kind !== "work-process") throw new Error("缺少折叠的工作过程");
 		expect(workProcess.items.map((item) => item.kind)).toEqual(["message", "tool-stack"]);

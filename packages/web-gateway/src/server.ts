@@ -73,7 +73,11 @@ import {
 	hostUptimeSeconds,
 	readCpuSnapshot,
 } from "./host-diagnostics.ts";
-import { getMacosPermissionsStatus, requestMacosPermission } from "./macos-permissions.ts";
+import {
+	getMacosGitKeychainRequirement,
+	getMacosPermissionsStatus,
+	requestMacosPermission,
+} from "./macos-permissions.ts";
 import { ProductUpdateController } from "./product-update.ts";
 import { type ProjectGroup, ProjectGroupRegistry } from "./project-group-registry.ts";
 import { ProjectRegistry, type WebProject } from "./project-registry.ts";
@@ -422,6 +426,7 @@ function toError(error: unknown): HttpError {
 		return new HttpError(409, code, "全局 AGENTS.md 已被外部修改，请重新加载后再保存");
 	if (code === "instruction_path_invalid") return new HttpError(400, code, "全局 AGENTS.md 路径无效");
 	if (code === "project_file_conflict") return new HttpError(409, code, "文件已被外部修改，请重新加载后再保存");
+	if (code === "git_credentials_required") return new HttpError(409, code, message);
 	if (code === "project_file_not_editable" || code === "project_file_too_large") {
 		return new HttpError(400, code, message);
 	}
@@ -1654,6 +1659,13 @@ export class WebGatewayServer {
 				) {
 					throw new HttpError(400, "system_permission_invalid", "不支持的系统授权项目");
 				}
+				if (permission === "keychain") {
+					throw new HttpError(
+						409,
+						"system_permission_requires_terminal",
+						"Git 钥匙串授权只能在运行 LYStar Code Web 的 Mac 本机终端完成。请执行 lc web permissions setup。",
+					);
+				}
 				sendJson(response, 200, requestMacosPermission(permission, this.config.agentDir));
 				return;
 			}
@@ -2283,9 +2295,17 @@ export class WebGatewayServer {
 		if (parts.length === 5 && parts[3] === "git" && parts[4] === "mutate" && request.method === "POST") {
 			const body = await parseJsonBody(request);
 			const repositoryPath = stringValue(body.repositoryPath);
-			if (repositoryPath) this.projectPath(project, repositoryPath);
+			const repositoryDirectory = this.projectPath(project, repositoryPath);
 			if (!isGitMutation(body.mutation)) {
 				throw new HttpError(400, "git_mutation_invalid", "Git 操作参数无效");
+			}
+			if (["fetch", "pull", "push"].includes(body.mutation.type)) {
+				const requirement = getMacosGitKeychainRequirement(repositoryDirectory, this.config.agentDir);
+				if (requirement.required) {
+					throw new HttpError(409, "git_credentials_required", requirement.message ?? "Git 钥匙串需要本机授权", {
+						hosts: requirement.hosts,
+					});
+				}
 			}
 			sendJson(
 				response,

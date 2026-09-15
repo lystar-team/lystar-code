@@ -40,6 +40,7 @@ export function AgentErrorCard({ title, message, onRetry }: { title: string; mes
 export const TranscriptMessageView = memo(function TranscriptMessageView({
 	role,
 	text,
+	durationLabel,
 	attachments = [],
 	sources = [],
 	showCopy,
@@ -51,6 +52,7 @@ export const TranscriptMessageView = memo(function TranscriptMessageView({
 }: {
 	role: "user" | "assistant" | "system";
 	text: string;
+	durationLabel?: string;
 	attachments?: Array<{ id: string; filename: string; mediaType: string; url: string }>;
 	sources?: string[];
 	showCopy: boolean;
@@ -96,6 +98,11 @@ export const TranscriptMessageView = memo(function TranscriptMessageView({
 					)}
 				</StabilityBoundary>
 				<TranscriptAttachments attachments={attachments} sessionId={sessionId} />
+				{role === "assistant" && durationLabel ? (
+					<div className="text-xs text-muted-foreground" data-testid="assistant-duration">
+						本次耗时：{durationLabel}
+					</div>
+				) : null}
 			</MessageContent>
 			{((role === "user" || role === "assistant") && text) ? (
 				<MessageActionBar

@@ -32,6 +32,8 @@ type MessageRenderItem = {
 	live: boolean;
 	role: "user" | "assistant" | "system";
 	text: string;
+	timestamp?: string;
+	durationLabel?: string;
 	attachments: PromptAttachmentPreview[];
 	sources: string[];
 	copyVisible: boolean;
@@ -78,6 +80,27 @@ type RawRenderItem =
 
 const HISTORY_LOAD_THRESHOLD = 240;
 const HISTORY_LOAD_RESET_DISTANCE = 480;
+
+export function formatElapsedDuration(durationMs: number): string | undefined {
+	if (!Number.isFinite(durationMs) || durationMs < 0) return undefined;
+	const totalMinutes = Math.max(1, Math.floor(durationMs / 60_000));
+	const totalHours = Math.floor(totalMinutes / 60);
+	const minutes = totalMinutes % 60;
+	if (totalHours === 0) return `${totalMinutes}分钟`;
+	const paddedMinutes = String(minutes).padStart(2, "0");
+	if (totalHours < 24) return `${totalHours}小时${paddedMinutes}分钟`;
+	const days = Math.floor(totalHours / 24);
+	const hours = totalHours % 24;
+	return `${days}天${String(hours).padStart(2, "0")}小时${paddedMinutes}分钟`;
+}
+
+function elapsedDurationLabel(startTimestamp?: string, endTimestamp?: string): string | undefined {
+	if (!startTimestamp || !endTimestamp) return undefined;
+	const start = Date.parse(startTimestamp);
+	const end = Date.parse(endTimestamp);
+	if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return undefined;
+	return formatElapsedDuration(end - start);
+}
 
 type InitialTranscriptDisplayState = "ready" | "loading" | "error";
 
@@ -175,6 +198,7 @@ function conversationRenderItemEqual(previous: ConversationRenderItem, next: Con
 			previous.entryId === next.entryId &&
 			previous.role === next.role &&
 			previous.text === next.text &&
+			previous.durationLabel === next.durationLabel &&
 			previous.copyVisible === next.copyVisible &&
 			previous.editable === next.editable &&
 			previous.sources.join("\u0000") === next.sources.join("\u0000") &&
@@ -317,6 +341,7 @@ export function buildPersistedRenderItems(
 				live: false,
 				role: viewModel.role,
 				text: viewModel.text,
+				timestamp: viewModel.timestamp,
 				attachments: viewModel.attachments,
 				sources: viewModel.sources,
 				copyVisible: false,
@@ -450,11 +475,18 @@ function markCompletedTurnResult(
 			break;
 		}
 	}
-	if (finalMessageIndex <= 1) return turn;
-	const processItems = turn.slice(1, finalMessageIndex);
-	if (turn.slice(finalMessageIndex + 1).some((entry) => entry.kind === "tool-stack")) return turn;
+	if (finalMessageIndex < 0) return turn;
 	const finalMessage = turn[finalMessageIndex];
 	if (!finalMessage || finalMessage.kind !== "message") return turn;
+	const durationLabel = elapsedDurationLabel(userMessage.timestamp, finalMessage.timestamp);
+	const completedTurn = durationLabel
+		? turn.map((entry, index) => (index === finalMessageIndex ? { ...entry, durationLabel } : entry))
+		: turn;
+	if (finalMessageIndex <= 1) return completedTurn;
+	const processItems = completedTurn.slice(1, finalMessageIndex);
+	if (completedTurn.slice(finalMessageIndex + 1).some((entry) => entry.kind === "tool-stack")) return completedTurn;
+	const completedFinalMessage = completedTurn[finalMessageIndex];
+	if (!completedFinalMessage || completedFinalMessage.kind !== "message") return completedTurn;
 
 	const workProcessItems = processItems.map((entry) =>
 		entry.kind === "tool-stack" ? { ...entry, collapseForResult: true } : entry,
@@ -463,14 +495,14 @@ function markCompletedTurnResult(
 		userMessage,
 		{
 			kind: "work-process",
-			key: `work-process:${finalMessage.key}:0`,
+			key: `work-process:${completedFinalMessage.key}:0`,
 			items: workProcessItems,
 		},
 	];
 	completedItems.push(
-		{ kind: "result-boundary", key: `result-boundary:${finalMessage.key}` },
-		finalMessage,
-		...turn.slice(finalMessageIndex + 1),
+		{ kind: "result-boundary", key: `result-boundary:${completedFinalMessage.key}` },
+		completedFinalMessage,
+		...completedTurn.slice(finalMessageIndex + 1),
 	);
 	return completedItems;
 }
@@ -806,6 +838,7 @@ function ConversationBody({
 					<TranscriptMessageView
 						role={entry.role}
 						text={entry.text}
+						durationLabel={entry.durationLabel}
 						attachments={entry.attachments}
 						sources={entry.sources}
 						showCopy={entry.copyVisible}

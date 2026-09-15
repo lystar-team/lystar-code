@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { makeMacosGitCredentialWrapper } from "./git-environment.ts";
 
 export type WebServiceKind = "gateway" | "runtime";
 export type WebServiceManager =
@@ -248,31 +249,6 @@ function makeMacosSudoWrapper(): string {
 	return `#!/bin/bash\nexec /usr/bin/sudo -n ${shellSingleQuote(macosAdminHelperPath())} sudo "$@"\n`;
 }
 
-function makeMacosGitCredentialWrapper(): string {
-	return `#!/bin/bash
-helper="$(git --exec-path 2>/dev/null)/git-credential-osxkeychain"
-if [[ ! -x "$helper" ]]; then
-	exit 0
-fi
-exec 3<&0
-"$helper" "$@" <&3 &
-child=$!
-exec 3<&-
-(
-	/bin/sleep 30
-	/bin/kill -TERM "$child" 2>/dev/null || true
-	/bin/sleep 2
-	/bin/kill -KILL "$child" 2>/dev/null || true
-) &
-watchdog=$!
-wait "$child"
-status=$?
-/bin/kill "$watchdog" 2>/dev/null || true
-wait "$watchdog" 2>/dev/null || true
-exit "$status"
-`;
-}
-
 function makeMacosSecurityWrapper(): string {
 	return `#!/bin/bash
 if [[ ! -x /usr/bin/security ]]; then
@@ -366,7 +342,11 @@ function installMacosAdminHelper(spec: WebServiceSpec, interactive: boolean): Co
 		if (!sudoersInstall.ok) return sudoersInstall;
 	}
 	writeAtomic(join(macosWebBinPath(spec), "sudo"), makeMacosSudoWrapper(), 0o700);
-	writeAtomic(join(macosWebBinPath(spec), "git-credential-lystar"), makeMacosGitCredentialWrapper(), 0o700);
+	writeAtomic(
+		join(macosWebBinPath(spec), "git-credential-lystar"),
+		makeMacosGitCredentialWrapper(spec.agentDir),
+		0o700,
+	);
 	writeAtomic(join(macosWebBinPath(spec), "security"), makeMacosSecurityWrapper(), 0o700);
 	writeAtomic(join(macosWebBinPath(spec), "ssh"), makeMacosSshWrapper(), 0o700);
 	writeAtomic(join(macosWebBinPath(spec), "osascript"), makeMacosOsascriptWrapper(), 0o700);
@@ -511,6 +491,15 @@ function serviceEnvironment(spec: WebServiceSpec): Record<string, string> {
 		const currentPath = values.PATH ?? process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 		values.LYSTAR_WEB_COMMAND_BIN = macosWebBinPath(spec);
 		values.PATH = `${macosWebBinPath(spec)}:${currentPath}`;
+		values.GIT_CONFIG_COUNT = "2";
+		values.GIT_CONFIG_KEY_0 = "credential.helper";
+		values.GIT_CONFIG_VALUE_0 = "";
+		values.GIT_CONFIG_KEY_1 = "credential.helper";
+		values.GIT_CONFIG_VALUE_1 = "lystar";
+		values.GIT_TERMINAL_PROMPT = "0";
+		values.GIT_ASKPASS = "/usr/bin/false";
+		values.SSH_ASKPASS = "/usr/bin/false";
+		values.GCM_INTERACTIVE = "never";
 	}
 	values.LYSTAR_WEB_SERVICE_CHILD = "1";
 	return values;

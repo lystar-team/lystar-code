@@ -417,7 +417,7 @@ if ! reconcile_web_services "$VERSION" "$previous_service_version"; then
 fi
 if [[ "$os" == "darwin" ]] && web_usage_exists && [[ -t 0 && -t 1 ]]; then
     print_info '正在检查 macOS Web 系统授权……'
-    if ! "$BIN_DIR/lc" web permissions setup; then
+    if ! "$BIN_DIR/lc" web permissions setup --if-required; then
         print_warning 'macOS 系统授权没有全部完成。可在本机终端运行 lc web permissions setup 后继续。'
     fi
 fi
