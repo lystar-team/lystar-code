@@ -12,7 +12,7 @@ import type {
 import { projectTranscriptItems } from "./transcript-projection.ts";
 
 const READ_BUFFER_SIZE = 64 * 1024;
-const MAX_JSONL_LINE_BYTES = 4 * 1024 * 1024;
+const DEFAULT_MAX_JSONL_LINE_BYTES = 128 * 1024 * 1024;
 const CURSOR_VERSION = 3;
 const SEARCH_CURSOR_VERSION = 3;
 const TRANSCRIPT_FINGERPRINT_BYTES = 64 * 1024;
@@ -73,8 +73,8 @@ export class TranscriptLineTooLargeError extends Error {
 	readonly code = "transcript_line_too_large" as const;
 	readonly retryable = false as const;
 
-	constructor() {
-		super(`Transcript JSONL line exceeds the ${MAX_JSONL_LINE_BYTES} byte limit`);
+	constructor(limit: number) {
+		super(`Transcript JSONL line exceeds the ${limit} byte limit`);
 		this.name = "TranscriptLineTooLargeError";
 	}
 }
@@ -198,16 +198,28 @@ function fileGeneration(sessionId: string, stat: { dev: number; ino: number; bir
 	return `${sessionId}:${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
 }
 
-function finishLine(chunks: readonly Buffer[], length: number, segment: Buffer, prepend = false): Buffer {
+function finishLine(
+	chunks: readonly Buffer[],
+	length: number,
+	segment: Buffer,
+	maxLineBytes: number,
+	prepend = false,
+): Buffer {
 	const total = length + segment.length;
-	if (total > MAX_JSONL_LINE_BYTES) throw new TranscriptLineTooLargeError();
+	if (total > maxLineBytes) throw new TranscriptLineTooLargeError(maxLineBytes);
 	if (length === 0) return segment;
 	return Buffer.concat(prepend ? [segment, ...chunks] : [...chunks, segment], total);
 }
 
-function appendLineSegment(chunks: Buffer[], length: number, segment: Buffer, prepend = false): number {
+function appendLineSegment(
+	chunks: Buffer[],
+	length: number,
+	segment: Buffer,
+	maxLineBytes: number,
+	prepend = false,
+): number {
 	const total = length + segment.length;
-	if (total > MAX_JSONL_LINE_BYTES) throw new TranscriptLineTooLargeError();
+	if (total > maxLineBytes) throw new TranscriptLineTooLargeError(maxLineBytes);
 	if (prepend) chunks.unshift(segment);
 	else chunks.push(segment);
 	return total;
@@ -216,6 +228,7 @@ function appendLineSegment(chunks: Buffer[], length: number, segment: Buffer, pr
 async function scanForward(
 	handle: Awaited<ReturnType<typeof open>>,
 	offset: number,
+	maxLineBytes: number,
 	onLine: (line: Buffer) => boolean,
 ): Promise<void> {
 	let start = 0;
@@ -227,7 +240,7 @@ async function scanForward(
 		for (let index = 0; index < chunk.length; index++) {
 			if (chunk[index] !== 0x0a) continue;
 			const segment = chunk.subarray(lineStart, index);
-			const line = finishLine(pending, pendingLength, segment);
+			const line = finishLine(pending, pendingLength, segment, maxLineBytes);
 			pending = [];
 			pendingLength = 0;
 			if (onLine(line)) return;
@@ -235,7 +248,7 @@ async function scanForward(
 		}
 		if (lineStart < chunk.length) {
 			const segment = chunk.subarray(lineStart);
-			pendingLength = appendLineSegment(pending, pendingLength, segment);
+			pendingLength = appendLineSegment(pending, pendingLength, segment, maxLineBytes);
 		}
 		start += chunk.length;
 	}
@@ -244,6 +257,7 @@ async function scanForward(
 async function scanReverse(
 	handle: Awaited<ReturnType<typeof open>>,
 	offset: number,
+	maxLineBytes: number,
 	onLine: (line: Buffer, previousOffset: number) => boolean,
 ): Promise<number> {
 	let end = offset;
@@ -256,7 +270,7 @@ async function scanReverse(
 		for (let index = chunk.length - 1; index >= 0; index--) {
 			if (chunk[index] !== 0x0a) continue;
 			const segment = chunk.subarray(index + 1, lineEnd);
-			const line = finishLine(pending, pendingLength, segment, true);
+			const line = finishLine(pending, pendingLength, segment, maxLineBytes, true);
 			pending = [];
 			pendingLength = 0;
 			if (onLine(line, start + index)) return start + index;
@@ -264,12 +278,12 @@ async function scanReverse(
 		}
 		if (lineEnd > 0) {
 			const segment = chunk.subarray(0, lineEnd);
-			pendingLength = appendLineSegment(pending, pendingLength, segment, true);
+			pendingLength = appendLineSegment(pending, pendingLength, segment, maxLineBytes, true);
 		}
 		end = start;
 	}
 	if (pendingLength > 0) {
-		if (pendingLength > MAX_JSONL_LINE_BYTES) throw new TranscriptLineTooLargeError();
+		if (pendingLength > maxLineBytes) throw new TranscriptLineTooLargeError(maxLineBytes);
 		onLine(Buffer.concat(pending, pendingLength), 0);
 	}
 	return 0;
@@ -278,9 +292,10 @@ async function scanReverse(
 async function readHeader(
 	handle: Awaited<ReturnType<typeof open>>,
 	completeSize: number,
+	maxLineBytes: number,
 ): Promise<RawEntry | undefined> {
 	let header: RawEntry | undefined;
-	await scanForward(handle, completeSize, (line) => {
+	await scanForward(handle, completeSize, maxLineBytes, (line) => {
 		const entry = parseLine(line);
 		if (!entry) return false;
 		if (entry.type === "session") header = entry;
@@ -289,9 +304,13 @@ async function readHeader(
 	return header;
 }
 
-async function readTailId(handle: Awaited<ReturnType<typeof open>>, completeSize: number): Promise<string | null> {
+async function readTailId(
+	handle: Awaited<ReturnType<typeof open>>,
+	completeSize: number,
+	maxLineBytes: number,
+): Promise<string | null> {
 	let tailId: string | null = null;
-	await scanReverse(handle, completeSize, (line) => {
+	await scanReverse(handle, completeSize, maxLineBytes, (line) => {
 		const entry = parseLine(line);
 		if (!entry || entry.type === "session" || typeof entry.id !== "string") return false;
 		tailId = entry.id;
@@ -348,7 +367,12 @@ function searchEntry(entry: RawEntry, query: string): TranscriptSearchHit | unde
 export class TranscriptReader {
 	private readonly observed = new Map<string, ObservedGeneration>();
 	private readonly searchIndexes = new Map<string, SearchIndex>();
+	private readonly maxJsonlLineBytes: number;
 	private searchCacheBytes = 0;
+
+	constructor(maxJsonlLineBytes = DEFAULT_MAX_JSONL_LINE_BYTES) {
+		this.maxJsonlLineBytes = maxJsonlLineBytes;
+	}
 
 	async read(
 		sessionPath: string,
@@ -373,7 +397,7 @@ export class TranscriptReader {
 		try {
 			const stat = await handle.stat();
 			const completeSize = await findCompleteSize(handle, stat.size);
-			const header = await readHeader(handle, completeSize);
+			const header = await readHeader(handle, completeSize, this.maxJsonlLineBytes);
 			if (!header || typeof header.id !== "string") throw new Error("Session file has no valid header");
 			const previous = this.remembered(this.observed, resolvedPath);
 			const unchangedSincePrevious =
@@ -387,7 +411,7 @@ export class TranscriptReader {
 				? { contentHash: previous.contentHash, tailHash: previous.tailHash }
 				: await fileFingerprint(handle, completeSize);
 			const contentHash = fingerprint.contentHash;
-			const persistedTailId = cursor ? null : await readTailId(handle, completeSize);
+			const persistedTailId = cursor ? null : await readTailId(handle, completeSize, this.maxJsonlLineBytes);
 			const rewriteGeneration: RewriteGeneration = {
 				size: completeSize,
 				device: stat.dev,
@@ -462,17 +486,22 @@ export class TranscriptReader {
 			const items: RawEntry[] = [];
 			let wantedId: string | null = cursor?.wantedId ?? leafId;
 			let matched = wantedId === null;
-			const nextOffset = await scanReverse(handle, cursor?.offset ?? completeSize, (line) => {
-				const entry = parseLine(line);
-				if (!entry || entry.type === "session" || typeof entry.id !== "string" || entry.id !== wantedId)
-					return false;
-				matched = true;
-				wantedId = typeof entry.parentId === "string" ? entry.parentId : null;
-				if (isVisible(entry)) items.push(entry);
-				const splitsToolExchange =
-					entry.type === "message" && (entry.message as { role?: string } | undefined)?.role === "toolResult";
-				return items.length >= options.limit && !splitsToolExchange;
-			});
+			const nextOffset = await scanReverse(
+				handle,
+				cursor?.offset ?? completeSize,
+				this.maxJsonlLineBytes,
+				(line) => {
+					const entry = parseLine(line);
+					if (!entry || entry.type === "session" || typeof entry.id !== "string" || entry.id !== wantedId)
+						return false;
+					matched = true;
+					wantedId = typeof entry.parentId === "string" ? entry.parentId : null;
+					if (isVisible(entry)) items.push(entry);
+					const splitsToolExchange =
+						entry.type === "message" && (entry.message as { role?: string } | undefined)?.role === "toolResult";
+					return items.length >= options.limit && !splitsToolExchange;
+				},
+			);
 			if (!matched || (nextOffset === 0 && wantedId !== null)) throw new TranscriptCursorInvalidError();
 			items.reverse();
 			const hasMorePrevious = wantedId !== null && nextOffset > 0;
@@ -570,12 +599,12 @@ export class TranscriptReader {
 		}
 		const handle = await open(path, "r");
 		try {
-			const tailId = await readTailId(handle, index.transcriptRevision);
+			const tailId = await readTailId(handle, index.transcriptRevision, this.maxJsonlLineBytes);
 			let wantedId = tailId;
 			let seenMatches = 0;
 			const hits: TranscriptSearchHit[] = [];
 			let hasMore = false;
-			await scanReverse(handle, index.transcriptRevision, (line) => {
+			await scanReverse(handle, index.transcriptRevision, this.maxJsonlLineBytes, (line) => {
 				const entry = parseLine(line);
 				if (!entry || entry.type === "session" || !entry.id || entry.id !== wantedId) return false;
 				wantedId = typeof entry.parentId === "string" ? entry.parentId : null;
@@ -656,12 +685,12 @@ export class TranscriptReader {
 		try {
 			const stat = await handle.stat();
 			const completeSize = await findCompleteSize(handle, stat.size);
-			const tailId = await readTailId(handle, completeSize);
+			const tailId = await readTailId(handle, completeSize, this.maxJsonlLineBytes);
 			let wantedId = tailId;
 			let bytes = 0;
 			let cacheable = true;
 			const entries: SearchIndexEntry[] = [];
-			await scanReverse(handle, completeSize, (line) => {
+			await scanReverse(handle, completeSize, this.maxJsonlLineBytes, (line) => {
 				const entry = parseLine(line);
 				if (!entry || entry.type === "session" || !entry.id || entry.id !== wantedId) return false;
 				wantedId = typeof entry.parentId === "string" ? entry.parentId : null;

@@ -574,6 +574,27 @@ export class WebApi {
 		);
 	}
 
+	async removeModelProvider(provider: string): Promise<{ providers: ModelsResponse["providers"] }> {
+		return this.request<{ providers: ModelsResponse["providers"] }>(
+			`/api/model-providers/${encodeURIComponent(provider)}`,
+			{ method: "DELETE" },
+		);
+	}
+
+	async setProviderModelEnabled(
+		provider: string,
+		modelId: string,
+		enabled: boolean,
+	): Promise<{ models: ModelsResponse["models"] }> {
+		return this.request<{ models: ModelsResponse["models"] }>(
+			`/api/model-providers/${encodeURIComponent(provider)}/models/enabled`,
+			{
+				method: "POST",
+				body: JSON.stringify({ id: modelId, enabled, clientRequestId: createUuid() }),
+			},
+		);
+	}
+
 	async syncModelProvider(provider: string): Promise<{ models: ModelsResponse["models"] }> {
 		return this.request<{ models: ModelsResponse["models"] }>(
 			`/api/model-providers/${encodeURIComponent(provider)}/sync`,

@@ -616,7 +616,7 @@ function ToolActivityGroup({
 				? <PencilIcon className="size-4 text-muted-foreground" />
 				: <FileTextIcon className="size-4 text-muted-foreground" />;
 	return (
-		<Collapsible className={cn("group/tool-activity min-w-0 w-full max-w-3xl", className)} open={open} onOpenChange={onOpenChange}>
+		<Collapsible className={cn("group/tool-activity min-w-0 w-full", className)} open={open} onOpenChange={onOpenChange}>
 			<CollapsibleTrigger asChild>
 				<button
 					aria-label={`${label}，${open ? "收起" : "展开"}`}
@@ -671,7 +671,7 @@ function CommandErrorPanel({
 		setCopied(true);
 	};
 	return (
-		<Collapsible className={cn("min-w-0 w-full max-w-3xl overflow-hidden rounded-xl border border-border bg-muted/20", className)} open={open} onOpenChange={onOpenChange}>
+		<Collapsible className={cn("min-w-0 w-full overflow-hidden rounded-xl border border-border bg-muted/20", className)} open={open} onOpenChange={onOpenChange}>
 			<div className="grid gap-3 p-4">
 				<div className="flex min-w-0 items-center justify-between gap-2">
 					<div className="flex min-w-0 items-center gap-1.5 font-mono text-[13px]">
@@ -747,7 +747,7 @@ function ImageGenerationToolResult({
 		setCopiedPrompt(true);
 	};
 	return (
-		<div className="grid min-w-0 w-full max-w-3xl gap-3">
+		<div className="grid min-w-0 w-full gap-3">
 			<div className="flex min-h-7 items-center gap-1.5 px-1 py-0.5 font-mono text-[13px]">
 				<ImagesIcon className="size-4" />
 				<span>{`已生成 ${items.length} 张图片`}</span>
@@ -839,7 +839,7 @@ function ImageToolGallery({
 				)}
 				itemClassName={
 					large
-						? "w-full max-w-3xl [&>button]:min-h-52 [&>button]:w-full [&>button>img]:max-h-[32rem] [&>button>img]:w-full"
+						? "w-full [&>button]:min-h-52 [&>button]:w-full [&>button>img]:max-h-[32rem] [&>button>img]:w-full"
 						: "w-40 [&>button]:h-32 [&>button]:w-40 [&>button]:min-h-0 [&>button>img]:h-full [&>button>img]:w-full"
 				}
 				onOpenPath={onOpenPath}
@@ -857,7 +857,7 @@ function ImageGenerationStatus({ tool }: { tool: ToolBatchTool }) {
 	return (
 		<div
 			className={cn(
-				"flex min-h-40 w-full max-w-3xl flex-col items-center justify-center gap-3 rounded-xl border bg-muted/20 px-6 py-8 text-center",
+				"flex min-h-40 w-full flex-col items-center justify-center gap-3 rounded-xl border bg-muted/20 px-6 py-8 text-center",
 				failed && "border-destructive/30 bg-destructive/5",
 			)}
 			role={failed ? "alert" : "status"}

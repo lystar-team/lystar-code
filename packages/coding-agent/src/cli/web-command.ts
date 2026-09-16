@@ -6,6 +6,7 @@ import { getAgentDir, VERSION } from "../config.ts";
 
 const DEFAULT_WEB_PORT = 1420;
 const DEFAULT_DEV_WEB_PORT = 2422;
+const DEFAULT_DEV_FRONTEND_PORT = 2420;
 const DEFAULT_RUNTIME_PORT = 1422;
 const DEFAULT_DEV_RUNTIME_PORT = 2423;
 const DEVELOPMENT_CLI_MODE = "development";
@@ -64,6 +65,7 @@ interface WebGatewayModule {
 		commandName?: "lc" | "lcd";
 		backgroundInvocation?: RuntimeInvocation;
 		serviceVersion?: string;
+		skipWebAssetVerification?: boolean;
 	}): Promise<void>;
 }
 
@@ -369,8 +371,15 @@ export async function runWebControlCommand(
 export async function runWebCommand(args: readonly string[] = []): Promise<void> {
 	const settings = webCommandSettings();
 	if (args.includes("--help") || args.includes("-h")) {
+		const development = settings.commandName === "lcd";
+		const developmentFrontend = development
+			? `\n开发前端（Vite HMR）：http://127.0.0.1:${DEFAULT_DEV_FRONTEND_PORT}。Gateway 端口：${settings.defaultPort}。`
+			: "";
+		const launchMode = development
+			? `${settings.commandName} web 会启动后台 Gateway、Runtime 和前台 Vite HMR。`
+			: `默认启动为后台模式；需要前台运行时使用：${settings.commandName} web --foreground。`;
 		console.log(
-			`用法：${settings.commandName} web\n\n首次运行会依次配置监听 IP、白名单 IP、Web 端口、Runtime 端口和连接密码。\nWeb 默认端口：${settings.defaultPort}；Runtime 默认端口：${settings.defaultRuntimePort}。\n配置文件：${settings.configFileName ?? "web-config.json"}。\n默认启动为后台模式；需要前台运行时使用：${settings.commandName} web --foreground。\n\n组件命令：\n  ${settings.commandName} web gateway status|stop|start|restart\n  ${settings.commandName} web runtime status|stop|start|restart\n\n服务命令：\n  ${settings.commandName} web service install\n  ${settings.commandName} web service status\n  ${settings.commandName} web service restart\n  ${settings.commandName} web service uninstall\n\nmacOS 授权：\n  ${settings.commandName} web permissions status\n  ${settings.commandName} web permissions setup\n`,
+			`用法：${settings.commandName} web\n\n首次运行会依次配置监听 IP、白名单 IP、Web 端口、Runtime 端口和连接密码。\nWeb 默认端口：${settings.defaultPort}；Runtime 默认端口：${settings.defaultRuntimePort}。${developmentFrontend}\n配置文件：${settings.configFileName ?? "web-config.json"}。\n${launchMode}\n\n组件命令：\n  ${settings.commandName} web gateway status|stop|start|restart\n  ${settings.commandName} web runtime status|stop|start|restart\n\n服务命令：\n  ${settings.commandName} web service install\n  ${settings.commandName} web service status\n  ${settings.commandName} web service restart\n  ${settings.commandName} web service uninstall\n\nmacOS 授权：\n  ${settings.commandName} web permissions status\n  ${settings.commandName} web permissions setup\n`,
 		);
 		return;
 	}
@@ -398,6 +407,7 @@ export async function runWebCommand(args: readonly string[] = []): Promise<void>
 				runtimeInvocation: sourceRuntimeInvocation(),
 				configFileName: settings.configFileName,
 				commandName: settings.commandName,
+				skipWebAssetVerification: settings.commandName === "lcd",
 			});
 			return;
 		}
@@ -418,6 +428,7 @@ export async function runWebCommand(args: readonly string[] = []): Promise<void>
 		runtimeInvocation,
 		configFileName: settings.configFileName,
 		commandName: settings.commandName,
+		skipWebAssetVerification: settings.commandName === "lcd",
 		backgroundInvocation: gatewayInvocation,
 		...(serviceVersion ? { serviceVersion } : {}),
 	});

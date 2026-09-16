@@ -83,7 +83,9 @@ export interface WorkbenchActions {
 	updateThinking: (level: string) => Promise<void>;
 	setModelProviderVisibility: (providerId: string, visible: boolean) => void;
 	saveModelProvider: (input: WebModelProviderInput) => Promise<void>;
+	removeModelProvider: (providerId: string) => Promise<void>;
 	saveProviderModel: (provider: string, input: WebProviderModelInput) => Promise<void>;
+	setProviderModelEnabled: (provider: string, modelId: string, enabled: boolean) => Promise<void>;
 	syncModelProvider: (provider: string) => Promise<void>;
 	refreshSkills: () => Promise<void>;
 	refreshDiagnostics: () => Promise<void>;

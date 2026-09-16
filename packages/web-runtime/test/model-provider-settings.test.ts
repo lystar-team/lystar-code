@@ -9,6 +9,28 @@ import type { RuntimeSession } from "../src/types.ts";
 
 const cleanups: Array<() => Promise<void> | void> = [];
 
+function temporaryAgentDir(prefix: string): string {
+	const tempDir = mkdtempSync(join(tmpdir(), prefix));
+	const agentDir = join(tempDir, "agent");
+	mkdirSync(agentDir, { recursive: true });
+	cleanups.push(() => rmSync(tempDir, { recursive: true, force: true }));
+	return agentDir;
+}
+
+function readModelsJson(agentDir: string): {
+	providers: Record<
+		string,
+		| {
+				models?: Array<{ id: string }>;
+				disabledModels?: string[];
+				syncedModels?: string[];
+		  }
+		| undefined
+	>;
+} {
+	return JSON.parse(readFileSync(join(agentDir, "models.json"), "utf8"));
+}
+
 afterEach(async () => {
 	vi.restoreAllMocks();
 	while (cleanups.length) await cleanups.pop()?.();
@@ -214,5 +236,277 @@ describe("Web Runtime model provider settings", () => {
 		await runtime.setThinkingLevel("max");
 
 		expect(runtime.getSnapshot("owned")).toMatchObject({ thinkingLevel: "max", contextWindow: 200_000 });
+	});
+
+	it("解析启动时凭据引用并在 /v1/models 回退发现模型", async () => {
+		const agentDir = temporaryAgentDir("web-runtime-provider-keyref-");
+		writeFileSync(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					keyref: {
+						name: "Key Ref",
+						baseUrl: "https://gateway.test/anthropic",
+						api: "anthropic-messages",
+						apiKey: "$WEB_RUNTIME_TEST_KEY",
+					},
+				},
+			}),
+		);
+		vi.stubEnv("WEB_RUNTIME_TEST_KEY", "resolved-key");
+		cleanups.push(() => {
+			vi.unstubAllEnvs();
+		});
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+			const url = String(input);
+			if (url === "https://gateway.test/anthropic/models") return new Response("not found", { status: 404 });
+			if (url === "https://gateway.test/anthropic/v1/models")
+				return new Response(JSON.stringify({ data: [{ id: "claude-x", name: "Claude X" }] }), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				});
+			throw new Error(`unexpected fetch ${url}`);
+		});
+
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		const models = await adapter.syncModelProvider("keyref");
+
+		expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
+			"https://gateway.test/anthropic/models",
+			"https://gateway.test/anthropic/v1/models",
+		]);
+		const headers = fetchMock.mock.calls[1]?.[1]?.headers as Record<string, string>;
+		expect(headers.authorization).toBe("Bearer resolved-key");
+		expect(headers["x-api-key"]).toBe("resolved-key");
+		expect(models).toContainEqual(expect.objectContaining({ provider: "keyref", id: "claude-x", name: "Claude X" }));
+		expect(readModelsJson(agentDir).providers.keyref?.syncedModels).toEqual(["claude-x"]);
+	});
+
+	it("凭据解析失败时停止同步，不退化为匿名请求", async () => {
+		const agentDir = temporaryAgentDir("web-runtime-provider-auth-error-");
+		const envName = "WEB_RUNTIME_TEST_MISSING_PROVIDER_KEY";
+		const previous = process.env[envName];
+		delete process.env[envName];
+		cleanups.push(() => {
+			if (previous === undefined) delete process.env[envName];
+			else process.env[envName] = previous;
+		});
+		writeFileSync(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					"missing-key": {
+						baseUrl: "https://gateway.test/v1",
+						api: "openai-completions",
+						apiKey: `$${envName}`,
+					},
+				},
+			}),
+		);
+		const fetchMock = vi.spyOn(globalThis, "fetch");
+
+		await expect(new CodingAgentRuntimeAdapter(agentDir).syncModelProvider("missing-key")).rejects.toThrow(
+			"API key auth failed for provider missing-key",
+		);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("同步时删除远端已消失的同步模型，保留手工模型", async () => {
+		const agentDir = temporaryAgentDir("web-runtime-provider-stale-");
+		writeFileSync(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					sync: {
+						name: "Sync",
+						baseUrl: "https://sync.test/v1",
+						apiKey: "test-key",
+						api: "openai-completions",
+						syncedModels: ["stale"],
+						models: [
+							{
+								id: "manual",
+								name: "Manual",
+								api: "openai-completions",
+								baseUrl: "https://sync.test/v1",
+								input: ["text"],
+							},
+							{
+								id: "stale",
+								name: "Stale",
+								api: "openai-completions",
+								baseUrl: "https://sync.test/v1",
+								input: ["text"],
+							},
+						],
+					},
+				},
+			}),
+		);
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(JSON.stringify({ data: [{ id: "fresh", name: "Fresh" }] }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		const models = await adapter.syncModelProvider("sync");
+
+		expect(
+			models
+				.filter((model) => model.provider === "sync")
+				.map((model) => model.id)
+				.sort(),
+		).toEqual(["fresh", "manual"]);
+		const persisted = readModelsJson(agentDir).providers.sync;
+		expect(persisted?.models?.map((model) => model.id).sort()).toEqual(["fresh", "manual"]);
+		expect(persisted?.syncedModels).toEqual(["fresh"]);
+	});
+
+	it("远端模型与手工模型同名时不接管手工模型", async () => {
+		const agentDir = temporaryAgentDir("web-runtime-provider-manual-overlap-");
+		writeFileSync(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					sync: {
+						name: "Sync",
+						baseUrl: "https://sync.test/v1",
+						apiKey: "test-key",
+						api: "openai-completions",
+						models: [
+							{
+								id: "manual",
+								name: "Manual",
+								api: "openai-completions",
+								baseUrl: "https://sync.test/v1",
+								input: ["text"],
+							},
+						],
+					},
+				},
+			}),
+		);
+		let syncCount = 0;
+		vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+			syncCount += 1;
+			const modelIds = syncCount === 1 ? ["manual", "fresh"] : ["fresh"];
+			return new Response(JSON.stringify({ data: modelIds.map((id) => ({ id })) }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		});
+
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		await adapter.syncModelProvider("sync");
+		expect(readModelsJson(agentDir).providers.sync?.syncedModels).toEqual(["fresh"]);
+
+		const models = await adapter.syncModelProvider("sync");
+		expect(
+			models
+				.filter((model) => model.provider === "sync")
+				.map((model) => model.id)
+				.sort(),
+		).toEqual(["fresh", "manual"]);
+		expect(
+			readModelsJson(agentDir)
+				.providers.sync?.models?.map((model) => model.id)
+				.sort(),
+		).toEqual(["fresh", "manual"]);
+	});
+
+	it("按模型启用与禁用，并同步到模型选择器", async () => {
+		const agentDir = temporaryAgentDir("web-runtime-model-toggle-");
+		const definitions = ["alpha", "beta"].map((id) => ({
+			id,
+			name: id.toUpperCase(),
+			api: "openai-completions",
+			baseUrl: "https://proxy.test/v1",
+			input: ["text"],
+		}));
+		writeFileSync(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					proxy: {
+						name: "Proxy",
+						baseUrl: "https://proxy.test/v1",
+						apiKey: "test-key",
+						api: "openai-completions",
+						models: definitions,
+					},
+				},
+			}),
+		);
+
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		const enabled = () =>
+			adapter
+				.listModels()
+				.then((models) => models.filter((model) => model.provider === "proxy").map((model) => model.id));
+		expect(await enabled()).toEqual(["alpha", "beta"]);
+
+		await adapter.setProviderModelEnabled("proxy", "beta", false);
+
+		expect(await enabled()).toEqual(["alpha"]);
+		expect(readModelsJson(agentDir).providers.proxy?.disabledModels).toEqual(["beta"]);
+		expect(await adapter.listModelProviders()).toContainEqual(
+			expect.objectContaining({ id: "proxy", modelCount: 1, disabledModels: ["beta"], hasCustomConfig: true }),
+		);
+		const options = await adapter.listModelOptions();
+		expect(options.models.some((model) => model.provider === "proxy" && model.id === "beta")).toBe(false);
+
+		await adapter.setProviderModelEnabled("proxy", "beta", true);
+
+		expect(await enabled()).toEqual(["alpha", "beta"]);
+		expect(readModelsJson(agentDir).providers.proxy?.disabledModels).toBeUndefined();
+	});
+
+	it("删除自定义 Provider，并仅为内置 Provider 清除自定义配置", async () => {
+		const agentDir = temporaryAgentDir("web-runtime-provider-remove-");
+		writeFileSync(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					proxy: {
+						name: "Proxy",
+						baseUrl: "https://proxy.test/v1",
+						apiKey: "test-key",
+						api: "openai-completions",
+						models: [
+							{
+								id: "alpha",
+								name: "Alpha",
+								api: "openai-completions",
+								baseUrl: "https://proxy.test/v1",
+								input: ["text"],
+							},
+						],
+					},
+				},
+			}),
+		);
+
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		const providers = await adapter.removeModelProvider("proxy");
+
+		expect(providers.some((provider) => provider.id === "proxy")).toBe(false);
+		expect((await adapter.listModels()).some((model) => model.provider === "proxy")).toBe(false);
+		expect(readModelsJson(agentDir).providers.proxy).toBeUndefined();
+		await expect(adapter.removeModelProvider("proxy")).rejects.toThrow("未找到 Provider");
+		await expect(adapter.removeModelProvider("anthropic")).rejects.toThrow("没有可清除的自定义配置");
+
+		await adapter.addModelProvider({
+			provider: "anthropic",
+			baseUrl: "https://proxy.test/anthropic",
+			api: "anthropic-messages",
+			apiKey: "test-key",
+		});
+		const cleared = await adapter.removeModelProvider("anthropic");
+		expect(cleared).toContainEqual(
+			expect.objectContaining({ id: "anthropic", builtIn: true, hasCustomConfig: false }),
+		);
+		expect(readModelsJson(agentDir).providers.anthropic).toBeUndefined();
 	});
 });

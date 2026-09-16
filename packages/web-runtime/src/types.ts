@@ -171,6 +171,8 @@ export interface ModelProviderSummary {
 	modelCount: number;
 	builtIn: boolean;
 	custom: boolean;
+	hasCustomConfig: boolean;
+	disabledModels: string[];
 	catalogProvider?: string;
 }
 
@@ -224,7 +226,9 @@ export interface RuntimeAdapter {
 	listModelProviders(): Promise<ModelProviderSummary[]>;
 	listModelOptions(options?: { includeProviders?: readonly string[] }): Promise<ModelOptions>;
 	addModelProvider(input: ModelProviderInput): Promise<ModelProviderSummary[]>;
+	removeModelProvider(provider: string): Promise<ModelProviderSummary[]>;
 	addProviderModel(input: ProviderModelInput): Promise<ModelSummary[]>;
+	setProviderModelEnabled(provider: string, modelId: string, enabled: boolean): Promise<ModelSummary[]>;
 	syncModelProvider(provider: string): Promise<ModelSummary[]>;
 	loginModelProvider(
 		provider: string,

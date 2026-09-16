@@ -1,4 +1,4 @@
-import { Check, Eye, LoaderCircle, Plus, RefreshCw, Settings } from "lucide-react";
+import { Check, Eye, LoaderCircle, Plus, RefreshCw, Settings, Trash2 } from "lucide-react";
 import type { FormEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "../../../lib/utils";
@@ -116,6 +116,9 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 	const [modelDraft, setModelDraft] = useState<ModelDraft | null>(null);
 	const [submitting, setSubmitting] = useState(false);
 	const [syncingProvider, setSyncingProvider] = useState<string | null>(null);
+	const [removingProvider, setRemovingProvider] = useState<string | null>(null);
+	const [removeTarget, setRemoveTarget] = useState<WorkbenchState["providers"][number] | null>(null);
+	const [togglingModel, setTogglingModel] = useState<string | null>(null);
 	const [providerTab, setProviderTab] = useState<"custom" | "builtin">("custom");
 	const [modelListProviderId, setModelListProviderId] = useState<string | null>(null);
 	const orderedProviders = useMemo(
@@ -142,6 +145,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 	const modelListModels = modelListProviderId
 		? state.models.filter((model) => model.provider === modelListProviderId)
 		: [];
+	const disabledModelIds = modelListProvider?.disabledModels ?? [];
 
 	useEffect(() => {
 		if (providerTab === "custom" && customProviders.length === 0 && builtinProviders.length > 0)
@@ -284,6 +288,31 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 		}
 	};
 
+	const confirmRemoveProvider = async () => {
+		if (!removeTarget) return;
+		setRemovingProvider(removeTarget.id);
+		try {
+			await actions.removeModelProvider(removeTarget.id);
+			setRemoveTarget(null);
+			if (modelListProviderId === removeTarget.id) setModelListProviderId(null);
+		} catch (error) {
+			actions.showToast(error instanceof Error ? error.message : String(error));
+		} finally {
+			setRemovingProvider(null);
+		}
+	};
+
+	const toggleModelEnabled = async (providerId: string, modelId: string, enabled: boolean) => {
+		setTogglingModel(`${providerId}/${modelId}`);
+		try {
+			await actions.setProviderModelEnabled(providerId, modelId, enabled);
+		} catch (error) {
+			actions.showToast(error instanceof Error ? error.message : String(error));
+		} finally {
+			setTogglingModel(null);
+		}
+	};
+
 	return (
 		<div className="grid min-w-0 gap-6">
 			<SettingSection title="模型供应商">
@@ -390,19 +419,32 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 												>
 													<Settings className="size-4" />
 												</Button>
-												<Button
-													size="icon"
-													variant="ghost"
-													onClick={() => void syncProvider(provider.id)}
-													disabled={syncingProvider === provider.id}
-													aria-label={`同步 ${provider.id}`}
-												>
-													{syncingProvider === provider.id ? (
-														<LoaderCircle className="size-4 animate-spin" />
-													) : (
-														<RefreshCw className="size-4" />
-													)}
-												</Button>
+															<Button
+																size="icon"
+																variant="ghost"
+																onClick={() => void syncProvider(provider.id)}
+																disabled={syncingProvider === provider.id}
+																aria-label={`同步 ${provider.id}`}
+															>
+																{syncingProvider === provider.id ? (
+																	<LoaderCircle className="size-4 animate-spin" />
+																) : (
+																	<RefreshCw className="size-4" />
+																)}
+															</Button>
+															{provider.custom || provider.hasCustomConfig ? (
+																<Button
+																	size="icon"
+																	variant="ghost"
+																	onClick={() => setRemoveTarget(provider)}
+																	aria-label={
+																		provider.custom ? `删除 ${provider.id}` : `清除 ${provider.id} 的自定义配置`
+																	}
+																	title={provider.custom ? "删除供应商" : "清除自定义配置"}
+																>
+																	<Trash2 className="size-4" />
+																</Button>
+															) : null}
 											</div>
 										</CardContent>
 									</Card>
@@ -448,54 +490,124 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 					</div>
 					<ScrollArea className="max-h-[min(560px,calc(100vh-12rem))] pr-3">
 						<div className="grid gap-1">
-							{modelListModels.length ? (
-								modelListModels.map((model) => (
-									<div
-										key={`${model.provider}/${model.id}`}
-										className="flex items-center gap-2 rounded-md px-2 py-2 hover:bg-accent/60"
-									>
-										<ModelBrandIcon providerId={model.provider} modelId={model.id} name={model.name} small />
-										<div className="min-w-0 flex-1">
-											<p className="truncate text-sm font-medium">{formatModelDisplayName(model)}</p>
-											<p className="truncate font-mono text-xs text-muted-foreground">{model.id}</p>
-											<p className="mt-1 text-xs text-muted-foreground">
-												上下文 {model.contextWindow.toLocaleString()} · 最大输出 {model.maxTokens.toLocaleString()} ·{" "}
-												{model.reasoning ? "支持思考" : "普通模型"}
-												{model.capabilitiesPending ? " · 部分能力待补充" : ""}
-											</p>
-										</div>
-										<div className="flex shrink-0 items-center gap-1">
-											<Badge
-												variant={
-													model.capabilitiesPending
-														? "outline"
+							{modelListModels.length || disabledModelIds.length ? (
+								<>
+									{modelListModels.map((model) => (
+										<div
+											key={`${model.provider}/${model.id}`}
+											className="flex items-center gap-2 rounded-md px-2 py-2 hover:bg-accent/60"
+										>
+											<ModelBrandIcon providerId={model.provider} modelId={model.id} name={model.name} small />
+											<div className="min-w-0 flex-1">
+												<p className="truncate text-sm font-medium">{formatModelDisplayName(model)}</p>
+												<p className="truncate font-mono text-xs text-muted-foreground">{model.id}</p>
+												<p className="mt-1 text-xs text-muted-foreground">
+													上下文 {model.contextWindow.toLocaleString()} · 最大输出 {model.maxTokens.toLocaleString()} ·{" "}
+													{model.reasoning ? "支持思考" : "普通模型"}
+													{model.capabilitiesPending ? " · 部分能力待补充" : ""}
+												</p>
+											</div>
+											<div className="flex shrink-0 items-center gap-1">
+												<Badge
+													variant={
+														model.capabilitiesPending
+															? "outline"
+															: model.hasOverrides
+																? "secondary"
+																: "outline"
+													}
+												>
+													{model.capabilitiesPending
+														? "待补充"
 														: model.hasOverrides
-															? "secondary"
-															: "outline"
-												}
-											>
-												{model.capabilitiesPending
-													? "待补充"
-													: model.hasOverrides
-														? "手工覆盖"
-														: "自动匹配"}
-											</Badge>
-											<Button
-												size="icon"
-												variant="ghost"
-												onClick={() => openModel(model.provider, model)}
-												aria-label={`编辑 ${formatModelDisplayName(model)}`}
-											>
-												<Settings className="size-4" />
-											</Button>
+															? "手工覆盖"
+															: "自动匹配"}
+												</Badge>
+												<Button
+													size="icon"
+													variant="ghost"
+													onClick={() => openModel(model.provider, model)}
+													aria-label={`编辑 ${formatModelDisplayName(model)}`}
+												>
+													<Settings className="size-4" />
+												</Button>
+												<div className="flex items-center gap-1 px-1" title="启用后显示在模型选择器">
+													<Switch
+														className="h-5 w-10"
+														checked
+														disabled={togglingModel === `${model.provider}/${model.id}`}
+														onCheckedChange={(checked) => void toggleModelEnabled(model.provider, model.id, checked)}
+														aria-label={`禁用 ${model.id}`}
+													/>
+												</div>
+											</div>
 										</div>
-									</div>
-								))
+									))}
+									{disabledModelIds.length ? (
+										<p className="px-2 pt-3 pb-1 text-xs font-medium text-muted-foreground">已禁用</p>
+									) : null}
+									{disabledModelIds.map((modelId) => (
+										<div
+											key={modelId}
+											className="flex items-center gap-2 rounded-md px-2 py-2 opacity-65 hover:bg-accent/60"
+										>
+											<MonochromeProviderIcon providerId={modelListProviderId ?? ""} small />
+											<div className="min-w-0 flex-1">
+												<p className="truncate font-mono text-sm font-medium">{modelId}</p>
+												<p className="mt-1 text-xs text-muted-foreground">已禁用，不显示在模型选择器</p>
+											</div>
+											<div className="flex shrink-0 items-center gap-1">
+												<div className="flex items-center gap-1 px-1" title="启用后显示在模型选择器">
+													<Switch
+														className="h-5 w-10"
+														checked={false}
+														disabled={togglingModel === `${modelListProviderId}/${modelId}`}
+														onCheckedChange={(checked) =>
+															void toggleModelEnabled(modelListProviderId ?? "", modelId, checked)
+														}
+														aria-label={`启用 ${modelId}`}
+													/>
+												</div>
+											</div>
+										</div>
+									))}
+								</>
 							) : (
 								<div className="py-10 text-center text-sm text-muted-foreground">当前供应商暂无模型</div>
 							)}
 						</div>
 					</ScrollArea>
+				</DialogContent>
+			</Dialog>
+			<Dialog
+				open={Boolean(removeTarget)}
+				onOpenChange={(open) => {
+					if (!open) setRemoveTarget(null);
+				}}
+			>
+				<DialogContent className="w-[calc(100%-1rem)] max-w-[calc(100%-1rem)] sm:max-w-md">
+					<DialogHeader>
+						<DialogTitle>{removeTarget?.custom ? "删除模型 Provider" : "清除自定义配置"}</DialogTitle>
+						<DialogDescription>
+							{removeTarget?.custom
+								? `将删除 ${removeTarget.name}（${removeTarget.id}）及其模型配置，并清除已保存的登录状态。`
+								: `将移除 ${removeTarget?.name ?? ""}（${removeTarget?.id ?? ""}）的 baseUrl、API Key 与模型配置，恢复内置默认值，不影响已保存的登录状态。`}
+						</DialogDescription>
+					</DialogHeader>
+					<DialogFooter>
+						<Button type="button" variant="outline" onClick={() => setRemoveTarget(null)}>
+							取消
+						</Button>
+						<Button
+							type="button"
+							variant="destructive"
+							onClick={() => void confirmRemoveProvider()}
+							disabled={removingProvider !== null}
+						>
+							{removingProvider ? <LoaderCircle className="size-4 animate-spin" /> : null}
+							{removeTarget?.custom ? "删除" : "清除"}
+						</Button>
+					</DialogFooter>
 				</DialogContent>
 			</Dialog>
 			<Dialog

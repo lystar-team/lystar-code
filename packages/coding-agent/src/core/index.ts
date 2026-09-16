@@ -145,10 +145,14 @@ export {
 	type ModelsJsonModel,
 	type ModelsJsonModelOverride,
 	type ModelsJsonProvider,
+	removeModelsJsonModels,
+	removeModelsJsonProvider,
 	saveModelsJsonModel,
 	saveModelsJsonModelOverride,
 	saveModelsJsonModels,
 	saveModelsJsonProvider,
+	saveModelsJsonSyncedModels,
+	setModelsJsonModelDisabled,
 } from "./model-config.ts";
 export {
 	type CreateModelRuntimeOptions,

@@ -12,6 +12,7 @@ import {
 	Settings2,
 	Share2,
 	SquareTerminal,
+	Trash2,
 	Upload,
 	Wrench,
 } from "lucide-react";
@@ -63,7 +64,9 @@ const OPERATION_TITLES: Record<string, string> = {
 	import_session: "导入会话",
 	run_bash: "运行命令",
 	add_model_provider: "添加模型 Provider",
+	remove_model_provider: "删除模型 Provider",
 	add_provider_model: "添加模型",
+	set_provider_model_enabled: "更新模型启用状态",
 	sync_model_provider: "同步模型目录",
 	login_model_provider: "登录模型 Provider",
 	logout_model_provider: "退出模型 Provider",
@@ -104,9 +107,10 @@ function operationIcon(type: string): ReactNode {
 	if (["import_session", "import_harness_resources"].includes(type)) return <FileInput className="size-3.5 shrink-0" />;
 	if (["share_session"].includes(type)) return <Share2 className="size-3.5 shrink-0" />;
 	if (["install_package", "remove_package", "update_packages"].includes(type)) return <Archive className="size-3.5 shrink-0" />;
-	if (["set_session_model", "cycle_session_model", "add_model_provider", "add_provider_model"].includes(type))
+	if (["set_session_model", "cycle_session_model", "add_model_provider", "add_provider_model", "set_provider_model_enabled"].includes(type))
 		return <Settings2 className="size-3.5 shrink-0" />;
 	if (["reload_resources", "sync_model_provider"].includes(type)) return <RefreshCw className="size-3.5 shrink-0" />;
+	if (["remove_model_provider", "remove_package"].includes(type)) return <Trash2 className="size-3.5 shrink-0" />;
 	if (["save_project_instruction", "save_host_instruction", "set_project_trust"].includes(type))
 		return <Upload className="size-3.5 shrink-0" />;
 	return <Wrench className="size-3.5 shrink-0" />;

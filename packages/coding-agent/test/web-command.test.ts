@@ -319,6 +319,10 @@ describe("Web control commands", () => {
 		await runWebCommand(["--help"]);
 
 		expect(output).toHaveBeenCalledWith(expect.stringContaining("Web 默认端口：2422；Runtime 默认端口：2423。"));
+		expect(output).toHaveBeenCalledWith(expect.stringContaining("开发前端（Vite HMR）：http://127.0.0.1:2420"));
+		expect(output).toHaveBeenCalledWith(
+			expect.stringContaining("lcd web 会启动后台 Gateway、Runtime 和前台 Vite HMR"),
+		);
 		expect(output).toHaveBeenCalledWith(expect.stringContaining("lcd web runtime status|stop|start|restart"));
 	});
 });

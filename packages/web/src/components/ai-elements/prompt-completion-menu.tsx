@@ -144,7 +144,8 @@ function deletePromptToken(
 	return { text: nextText, cursor: target.start };
 }
 
-const PROMPT_TEXT_GEOMETRY_CLASS = "box-border whitespace-pre-wrap break-words text-left text-base md:text-sm";
+const PROMPT_TEXT_GEOMETRY_CLASS =
+	"box-border whitespace-pre-wrap break-words text-left !text-base md:!text-sm";
 const PROMPT_TEXT_PADDING_CLASS = "!px-5 !pt-4 !pb-2";
 
 function mobilePromptEnterInsertsNewline(): boolean {
@@ -468,7 +469,7 @@ export function PromptCompletionTextarea({
 	}, [focused, hasTokens, refreshVisualCaret]);
 
 	return (
-		<div className="relative flex min-w-0 flex-1">
+		<div className="relative flex w-full min-w-0 flex-1">
 			{hasTokens ? (
 				<PromptTokenOverlay
 					className={className}

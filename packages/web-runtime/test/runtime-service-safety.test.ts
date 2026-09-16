@@ -10,6 +10,7 @@ import { installWebService, stopWebService } from "../src/service-manager.ts";
 
 const state = vi.hoisted(() => ({
 	reachable: true,
+	installed: true,
 	pid: 4321,
 	manager: "systemd-user",
 	connected: true,
@@ -17,7 +18,7 @@ const state = vi.hoisted(() => ({
 	pendingUiRequests: [] as unknown[],
 	sessions: [] as Array<{ path: string; activity: string; phase: string }>,
 	readSnapshot: false,
-	requiredProtocolVersion: 6,
+	requiredProtocolVersion: 7,
 	attemptedProtocolVersions: [] as number[],
 }));
 vi.mock("node:fs", () => ({
@@ -33,12 +34,12 @@ vi.mock("../src/ipc.ts", () => ({
 	defaultRuntimeEndpoint: () => "/test/runtime.sock",
 }));
 vi.mock("@lystar/code-web-protocol", () => ({
-	RUNTIME_PROTOCOL_VERSION: 6,
+	RUNTIME_PROTOCOL_VERSION: 7,
 	RuntimeProtocolClient: class {
 		private readonly protocolVersion: number;
 
 		constructor(_transport: unknown, _clientInstanceId: string, options: { protocolVersion?: number } = {}) {
-			this.protocolVersion = options.protocolVersion ?? 6;
+			this.protocolVersion = options.protocolVersion ?? 7;
 			state.attemptedProtocolVersions.push(this.protocolVersion);
 		}
 
@@ -64,13 +65,14 @@ vi.mock("../src/service-manager.ts", () => ({
 	currentProcessInvocation: () => ({ program: "/test/lc", args: [], cwd: "/test/agent" }),
 	getWebServiceStatus: () => ({
 		kind: "runtime",
-		installed: true,
+		installed: state.installed,
 		running: state.reachable,
 		manager: state.manager,
 		pid: state.pid,
 	}),
 	installWebService: vi.fn(() => {
 		expect(state.readSnapshot).toBe(true);
+		state.installed = true;
 		state.reachable = true;
 		state.connected = true;
 	}),
@@ -90,6 +92,7 @@ vi.mock("../src/service-manager.ts", () => ({
 
 beforeEach(() => {
 	state.reachable = true;
+	state.installed = true;
 	state.pid = 4321;
 	state.manager = "systemd-user";
 	state.connected = true;
@@ -97,7 +100,7 @@ beforeEach(() => {
 	state.pendingUiRequests = [];
 	state.sessions = [];
 	state.readSnapshot = false;
-	state.requiredProtocolVersion = 6;
+	state.requiredProtocolVersion = 7;
 	state.attemptedProtocolVersions = [];
 	vi.clearAllMocks();
 	vi.spyOn(process, "kill").mockImplementation((_pid, signal) => {
@@ -137,7 +140,7 @@ describe("Runtime update and restart safety", () => {
 
 		await assertRuntimeIdle("/test/runtime.sock");
 
-		expect(state.attemptedProtocolVersions).toEqual([6, 4]);
+		expect(state.attemptedProtocolVersions).toEqual([7, 4]);
 		expect(state.readSnapshot).toBe(true);
 	});
 	it("preserves busy Runtime protection across a protocol upgrade", async () => {
@@ -146,7 +149,7 @@ describe("Runtime update and restart safety", () => {
 
 		await expect(assertRuntimeIdle("/test/runtime.sock")).rejects.toMatchObject({ code: "host_busy" });
 
-		expect(state.attemptedProtocolVersions).toEqual([6, 4]);
+		expect(state.attemptedProtocolVersions).toEqual([7, 4]);
 		expect(state.readSnapshot).toBe(true);
 	});
 	it("passes the Runtime Profile to the managed process environment", () => {
@@ -162,6 +165,21 @@ describe("Runtime update and restart safety", () => {
 		expect(stopWebService).toHaveBeenCalledOnce();
 		expect(installWebService).toHaveBeenCalledOnce();
 	});
+	it("installs and restarts a detached development Runtime", async () => {
+		state.manager = "detached";
+		state.installed = false;
+
+		const result = await restartRuntimeService("/test/runtime.sock", "development", {
+			program: "/test/lc",
+			args: ["web-runtime", "serve"],
+			cwd: "/test/agent",
+		});
+
+		expect(stopWebService).toHaveBeenCalledOnce();
+		expect(installWebService).toHaveBeenCalledOnce();
+		expect(result).toMatchObject({ installed: true, responsive: true });
+	});
+
 	it("restarts a macOS Runtime LaunchAgent through launchd without a background sudo prompt", async () => {
 		state.manager = "launch-agent";
 		const result = await restartRuntimeService("/test/runtime.sock");

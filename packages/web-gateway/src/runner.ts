@@ -35,6 +35,7 @@ export interface WebGatewayCliOptions {
 	backgroundInvocation?: RuntimeInvocation;
 	serviceVersion?: string;
 	expectedProductVersion?: string;
+	skipWebAssetVerification?: boolean;
 	allowRuntimeEndpointOverride?: boolean;
 }
 
@@ -297,7 +298,7 @@ export async function runWebGatewayCli(options: WebGatewayCliOptions = {}): Prom
 	const staticDir = options.staticDir ?? defaultWebStaticDir();
 	const defaultPort = options.defaultPort ?? DEFAULT_WEB_GATEWAY_PORT;
 	const defaultRuntimePort = options.defaultRuntimePort ?? DEFAULT_RUNTIME_PORT;
-	await verifyWebAssets(staticDir, options.expectedProductVersion);
+	if (!options.skipWebAssetVerification) await verifyWebAssets(staticDir, options.expectedProductVersion);
 	const agentDir = getWebAgentDir();
 	await ensureWebConfig(agentDir, defaultPort, defaultRuntimePort, options.configFileName, options.commandName);
 	if (options.backgroundInvocation) {

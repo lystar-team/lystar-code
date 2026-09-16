@@ -996,6 +996,78 @@
                   "required": [
                     "command",
                     "provider",
+                    "clientInstanceId",
+                    "clientRequestId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "remove_model_provider"
+                    },
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "provider",
+                    "id",
+                    "enabled",
+                    "clientInstanceId",
+                    "clientRequestId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "set_provider_model_enabled"
+                    },
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "provider",
                     "id",
                     "reasoning",
                     "input",
@@ -4380,7 +4452,7 @@
             },
             "version": {
               "type": "integer",
-              "const": 6
+              "const": 7
             },
             "productVersion": {
               "type": "string",
@@ -4388,7 +4460,7 @@
             },
             "protocolVersion": {
               "type": "integer",
-              "const": 6
+              "const": 7
             },
             "serverInstanceId": {
               "type": "string",
@@ -8282,7 +8354,9 @@
           "authMethods",
           "modelCount",
           "builtIn",
-          "custom"
+          "custom",
+          "hasCustomConfig",
+          "disabledModels"
         ],
         "properties": {
           "id": {
@@ -8338,6 +8412,18 @@
           },
           "custom": {
             "type": "boolean"
+          },
+          "hasCustomConfig": {
+            "type": "boolean"
+          },
+          "disabledModels": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "maxItems": 10000
           },
           "catalogProvider": {
             "type": "string",
@@ -8519,6 +8605,370 @@
       "additionalProperties": false
     },
     "WorkspaceSyncModelProviderResult": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "provider",
+          "id",
+          "name",
+          "api",
+          "reasoning",
+          "input",
+          "contextWindow",
+          "maxTokens",
+          "cost",
+          "supportedThinkingLevels",
+          "authenticated",
+          "authMethods"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "api": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "reasoning": {
+            "type": "boolean"
+          },
+          "input": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "text"
+                },
+                {
+                  "type": "string",
+                  "const": "image"
+                }
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 8
+          },
+          "contextWindow": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "maxTokens": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "cost": {
+            "type": "object",
+            "required": [
+              "input",
+              "output",
+              "cacheRead",
+              "cacheWrite"
+            ],
+            "properties": {
+              "input": {
+                "type": "number",
+                "minimum": 0
+              },
+              "output": {
+                "type": "number",
+                "minimum": 0
+              },
+              "cacheRead": {
+                "type": "number",
+                "minimum": 0
+              },
+              "cacheWrite": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          "thinkingLevelMap": {
+            "type": "object",
+            "properties": {
+              "off": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "minimal": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "low": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "medium": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "high": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "xhigh": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "max": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "ultra": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
+          "capabilitiesPending": {
+            "type": "boolean"
+          },
+          "hasOverrides": {
+            "type": "boolean"
+          },
+          "supportedThinkingLevels": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "off"
+                },
+                {
+                  "type": "string",
+                  "const": "minimal"
+                },
+                {
+                  "type": "string",
+                  "const": "low"
+                },
+                {
+                  "type": "string",
+                  "const": "medium"
+                },
+                {
+                  "type": "string",
+                  "const": "high"
+                },
+                {
+                  "type": "string",
+                  "const": "xhigh"
+                },
+                {
+                  "type": "string",
+                  "const": "max"
+                },
+                {
+                  "type": "string",
+                  "const": "ultra"
+                }
+              ]
+            },
+            "maxItems": 8
+          },
+          "authenticated": {
+            "type": "boolean"
+          },
+          "authMethods": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "api_key"
+                },
+                {
+                  "type": "string",
+                  "const": "oauth"
+                }
+              ]
+            },
+            "maxItems": 2
+          },
+          "authSource": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "additionalProperties": false
+      },
+      "maxItems": 10000
+    },
+    "WorkspaceRemoveModelProviderResult": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "authenticated",
+          "authMethods",
+          "modelCount",
+          "builtIn",
+          "custom",
+          "hasCustomConfig",
+          "disabledModels"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "api": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "baseUrl": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384
+          },
+          "authenticated": {
+            "type": "boolean"
+          },
+          "authMethods": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "api_key"
+                },
+                {
+                  "type": "string",
+                  "const": "oauth"
+                }
+              ]
+            },
+            "maxItems": 2
+          },
+          "authSource": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "modelCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "builtIn": {
+            "type": "boolean"
+          },
+          "custom": {
+            "type": "boolean"
+          },
+          "hasCustomConfig": {
+            "type": "boolean"
+          },
+          "disabledModels": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "maxItems": 10000
+          },
+          "catalogProvider": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "additionalProperties": false
+      },
+      "maxItems": 1000
+    },
+    "WorkspaceSetProviderModelEnabledResult": {
       "type": "array",
       "items": {
         "type": "object",

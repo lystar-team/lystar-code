@@ -2,7 +2,7 @@ import Type, { type Static } from "typebox";
 import { Compile } from "typebox/compile";
 import { Check } from "typebox/value";
 
-export const RUNTIME_PROTOCOL_VERSION = 6 as const;
+export const RUNTIME_PROTOCOL_VERSION = 7 as const;
 export const MAX_TRANSCRIPT_PAGE_SIZE = 200;
 export const MAX_TRANSCRIPT_SEARCH_LIMIT = 100;
 export const MAX_GIT_HISTORY_PAGE_SIZE = 100;
@@ -214,6 +214,8 @@ export const ModelProviderSummarySchema = StrictObject({
 	modelCount: Type.Integer({ minimum: 0 }),
 	builtIn: Type.Boolean(),
 	custom: Type.Boolean(),
+	hasCustomConfig: Type.Boolean(),
+	disabledModels: Type.Array(Id, { maxItems: 10_000 }),
 	catalogProvider: Type.Optional(Id),
 });
 export type ModelProviderSummary = Static<typeof ModelProviderSummarySchema>;
@@ -1341,6 +1343,8 @@ export const WorkspaceCommandResultSchemas = {
 	list_model_options: ListModelOptionsResultSchema,
 	delete_sessions: DeleteSessionsResultSchema,
 	sync_model_provider: ListModelsResultSchema,
+	remove_model_provider: ListModelProvidersResultSchema,
+	set_provider_model_enabled: ListModelsResultSchema,
 	set_session_model: SetSessionModelResultSchema,
 	set_session_thinking: SetSessionThinkingResultSchema,
 	cycle_session_model: CycleSessionModelResultSchema,
@@ -1555,6 +1559,20 @@ export const CommandSchema = Type.Union([
 	StrictObject({
 		command: Type.Literal("sync_model_provider"),
 		provider: Id,
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
+	StrictObject({
+		command: Type.Literal("remove_model_provider"),
+		provider: Id,
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
+	StrictObject({
+		command: Type.Literal("set_provider_model_enabled"),
+		provider: Id,
+		id: Id,
+		enabled: Type.Boolean(),
 		clientInstanceId: Id,
 		clientRequestId: Id,
 	}),

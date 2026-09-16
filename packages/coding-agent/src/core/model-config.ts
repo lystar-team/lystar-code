@@ -225,6 +225,8 @@ const ProviderConfigSchema = Type.Object({
 	authHeader: Type.Optional(Type.Boolean()),
 	models: Type.Optional(Type.Array(ModelDefinitionSchema)),
 	modelOverrides: Type.Optional(Type.Record(Type.String(), ModelOverrideSchema)),
+	disabledModels: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+	syncedModels: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
 });
 
 const ModelsConfigSchema = Type.Object({
@@ -358,6 +360,71 @@ export async function saveModelsJsonModelOverride(
 				[modelId]: { ...previous, ...structuredClone(override) },
 			},
 		};
+	});
+}
+
+export async function removeModelsJsonProvider(modelsJsonPath: string, providerId: string): Promise<void> {
+	await updateModelsJson(modelsJsonPath, (config) => {
+		delete config.providers[providerId];
+	});
+}
+
+export async function removeModelsJsonModels(
+	modelsJsonPath: string,
+	providerId: string,
+	modelIds: readonly string[],
+): Promise<void> {
+	if (modelIds.length === 0) return;
+	await updateModelsJson(modelsJsonPath, (config) => {
+		const provider = config.providers[providerId];
+		if (!provider) return;
+		const removing = new Set(modelIds);
+		const nextProvider = { ...provider };
+		const models = (provider.models ?? []).filter((model) => !removing.has(model.id));
+		if (models.length > 0) nextProvider.models = models;
+		else delete nextProvider.models;
+		const modelOverrides = Object.fromEntries(
+			Object.entries(provider.modelOverrides ?? {}).filter(([modelId]) => !removing.has(modelId)),
+		);
+		if (Object.keys(modelOverrides).length > 0) nextProvider.modelOverrides = modelOverrides;
+		else delete nextProvider.modelOverrides;
+		const disabledModels = (provider.disabledModels ?? []).filter((modelId) => !removing.has(modelId));
+		if (disabledModels.length > 0) nextProvider.disabledModels = disabledModels;
+		else delete nextProvider.disabledModels;
+		config.providers[providerId] = nextProvider;
+	});
+}
+
+export async function setModelsJsonModelDisabled(
+	modelsJsonPath: string,
+	providerId: string,
+	modelId: string,
+	disabled: boolean,
+): Promise<void> {
+	await updateModelsJson(modelsJsonPath, (config) => {
+		const provider = config.providers[providerId] ?? {};
+		const disabledModels = new Set(provider.disabledModels ?? []);
+		if (disabled) disabledModels.add(modelId);
+		else disabledModels.delete(modelId);
+		const nextProvider = { ...provider };
+		if (disabledModels.size > 0) nextProvider.disabledModels = [...disabledModels];
+		else delete nextProvider.disabledModels;
+		config.providers[providerId] = nextProvider;
+	});
+}
+
+export async function saveModelsJsonSyncedModels(
+	modelsJsonPath: string,
+	providerId: string,
+	modelIds: readonly string[],
+): Promise<void> {
+	await updateModelsJson(modelsJsonPath, (config) => {
+		const provider = config.providers[providerId];
+		if (!provider) return;
+		const nextProvider = { ...provider };
+		if (modelIds.length > 0) nextProvider.syncedModels = [...modelIds];
+		else delete nextProvider.syncedModels;
+		config.providers[providerId] = nextProvider;
 	});
 }
 

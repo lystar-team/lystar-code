@@ -11,6 +11,7 @@ import {
 	readSync,
 	realpathSync,
 	renameSync,
+	rmSync,
 	statSync,
 	unlinkSync,
 	writeFileSync,
@@ -19,7 +20,7 @@ import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { type Api, contentText, type Model, type WebSearchCallContent } from "@earendil-works/pi-ai";
+import { type Api, type AuthResult, contentText, type Model, type WebSearchCallContent } from "@earendil-works/pi-ai";
 
 import {
 	type AgentSessionEvent,
@@ -71,6 +72,8 @@ import {
 	readClipboardImage,
 	readClipboardText,
 	readSessionSnapshot,
+	removeModelsJsonModels,
+	removeModelsJsonProvider,
 	renderTerminalRichText,
 	requestWebSessionHandoff,
 	resolveProjectTrusted,
@@ -85,6 +88,8 @@ import {
 	saveModelsJsonModelOverride,
 	saveModelsJsonModels,
 	saveModelsJsonProvider,
+	saveModelsJsonSyncedModels,
+	setModelsJsonModelDisabled,
 	VERSION,
 	WebCompanionServer,
 } from "@earendil-works/pi-coding-agent/core";
@@ -130,6 +135,11 @@ import type {
 } from "@lystar/code-web-protocol";
 import { RUNTIME_PROTOCOL_VERSION } from "@lystar/code-web-protocol";
 import { macosGitCredentialError, webGitArguments } from "./git-environment.ts";
+import {
+	migrateLegacyWebAttachments,
+	rebindSessionAttachments,
+	sessionAttachmentDirectory,
+} from "./session-attachments.ts";
 import { isDiffTool, toolCallUpdate, toolPath, toolProgressDiff, toolRecord } from "./tool-progress.ts";
 import type {
 	ModelProviderInput,
@@ -991,23 +1001,38 @@ function positiveInteger(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
-function providerModelsUrl(baseUrl: string): URL {
-	return new URL("models", baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`);
+function providerModelsUrls(baseUrl: string): URL[] {
+	const root = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+	const candidates = [new URL("models", root), new URL("v1/models", root)];
+	const seen = new Set<string>();
+	const urls: URL[] = [];
+	for (const url of candidates) {
+		if (seen.has(url.href)) continue;
+		seen.add(url.href);
+		urls.push(url);
+	}
+	return urls;
 }
 
-async function discoverProviderModels(baseUrl: string, apiKey?: string): Promise<DiscoveredProviderModel[]> {
-	const response = await fetch(providerModelsUrl(baseUrl), {
-		headers: {
-			accept: "application/json",
-			...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
-		},
-		signal: AbortSignal.timeout(10_000),
-	});
-	if (!response.ok) throw new Error(`模型目录请求失败：HTTP ${response.status}`);
-	const payload = (await response.json()) as unknown;
+function discoveryHeaders(auth: AuthResult | undefined, api: string | undefined): Record<string, string> {
+	const apiKey = auth?.auth.apiKey;
+	const configured: Record<string, string> = {};
+	for (const [name, value] of Object.entries(auth?.auth.headers ?? {})) {
+		if (typeof value === "string") configured[name] = value;
+	}
+	return {
+		accept: "application/json",
+		...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+		...(apiKey && api === "anthropic-messages" ? { "x-api-key": apiKey } : {}),
+		...(api === "anthropic-messages" ? { "anthropic-version": "2023-06-01" } : {}),
+		...configured,
+	};
+}
+
+function parseDiscoveredModels(payload: unknown): DiscoveredProviderModel[] | undefined {
 	const root = recordValue(payload);
 	const values = Array.isArray(payload) ? payload : Array.isArray(root?.data) ? root.data : root?.models;
-	if (!Array.isArray(values)) throw new Error("模型目录响应缺少 models 或 data 列表");
+	if (!Array.isArray(values)) return undefined;
 	return values.flatMap((value): DiscoveredProviderModel[] => {
 		const item = recordValue(value);
 		if (!item) return [];
@@ -1028,6 +1053,39 @@ async function discoverProviderModels(baseUrl: string, apiKey?: string): Promise
 			},
 		];
 	});
+}
+
+async function discoverProviderModels(
+	baseUrl: string,
+	auth: AuthResult | undefined,
+	api: string | undefined,
+): Promise<DiscoveredProviderModel[]> {
+	const headers = discoveryHeaders(auth, api);
+	const failures: string[] = [];
+	for (const url of providerModelsUrls(baseUrl)) {
+		let response: Response;
+		try {
+			response = await fetch(url, { headers, signal: AbortSignal.timeout(10_000) });
+		} catch (error) {
+			failures.push(`${url.href}：${error instanceof Error ? error.message : String(error)}`);
+			continue;
+		}
+		if (!response.ok) {
+			failures.push(`${url.href}：HTTP ${response.status}`);
+			continue;
+		}
+		const discovered = parseDiscoveredModels(await response.json().catch(() => undefined));
+		if (discovered === undefined) {
+			failures.push(`${url.href}：响应缺少 models 或 data 列表`);
+			continue;
+		}
+		if (discovered.length === 0) {
+			failures.push(`${url.href}：未返回任何模型`);
+			continue;
+		}
+		return discovered;
+	}
+	throw new Error(`模型目录请求失败：${failures.join("；")}`);
 }
 
 function catalogApiFamily(api: string): string {
@@ -1808,7 +1866,12 @@ class CoreRuntimeSession implements RuntimeSession {
 	}
 
 	async importSession(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }> {
-		return this.runtime.importFromJsonl(inputPath, cwdOverride, this.runtime.cwd);
+		const sourcePath = isAbsolute(inputPath) ? inputPath : resolve(this.runtime.cwd, inputPath);
+		const result = await this.runtime.importFromJsonl(inputPath, cwdOverride, this.runtime.cwd);
+		if (!result.cancelled) {
+			await rebindSessionAttachments(this.runtime.session.sessionManager, sourcePath).catch(() => false);
+		}
+		return result;
 	}
 
 	async shareSession(signal?: AbortSignal): Promise<{ previewUrl: string; gistUrl: string }> {
@@ -1897,10 +1960,12 @@ class CoreRuntimeSession implements RuntimeSession {
 	}
 
 	async fork(entryId: string, position?: "before" | "at"): Promise<{ sessionPath: string; selectedText?: string }> {
+		const sourceSessionPath = this.sessionPath;
 		const result = await this.runtime.fork(entryId, { position });
 		if (result.cancelled) {
 			throw Object.assign(new Error("已取消会话分叉"), { code: "session_fork_cancelled" });
 		}
+		await rebindSessionAttachments(this.runtime.session.sessionManager, sourceSessionPath).catch(() => false);
 		this.emitStateChanged();
 		return { sessionPath: this.sessionPath, selectedText: result.selectedText };
 	}
@@ -2104,9 +2169,13 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 
 	async openSession(sessionPath: string, onUiRequest: UiRequestHandler): Promise<RuntimeSession> {
 		const initialRuntime = this.takeInitialRuntime(sessionPath);
-		if (initialRuntime) return this.wrapRuntime(initialRuntime, onUiRequest);
+		if (initialRuntime) {
+			await migrateLegacyWebAttachments(initialRuntime.session.sessionManager).catch(() => false);
+			return this.wrapRuntime(initialRuntime, onUiRequest);
+		}
 		try {
 			const manager = await SessionManager.openAsync(sessionPath);
+			await migrateLegacyWebAttachments(manager).catch(() => false);
 			return this.createRuntime(manager.getCwd(), manager, onUiRequest);
 		} catch (error) {
 			if (!(error instanceof SessionLockedError)) throw error;
@@ -2116,6 +2185,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 					if (await requestWebSessionHandoff(this.agentDir, sessionPath)) {
 						try {
 							const manager = await SessionManager.openAsync(sessionPath);
+							await migrateLegacyWebAttachments(manager).catch(() => false);
 							return this.createRuntime(manager.getCwd(), manager, onUiRequest);
 						} catch (takeoverError) {
 							if (!(takeoverError instanceof SessionLockedError)) throw takeoverError;
@@ -2197,7 +2267,10 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 
 	async deleteSession(sessionPath: string): Promise<void> {
 		await SessionManager.deleteSessionWithRecoveryLedger(this.agentDir, sessionPath, () =>
-			SessionManager.withWriterLock(sessionPath, () => unlinkSync(sessionPath)),
+			SessionManager.withWriterLock(sessionPath, () => {
+				unlinkSync(sessionPath);
+				rmSync(sessionAttachmentDirectory(sessionPath), { recursive: true, force: true });
+			}),
 		);
 	}
 
@@ -2606,6 +2679,8 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				modelCount: runtime.getModels(provider.id).length,
 				builtIn,
 				custom: !builtIn && config.getProvider(provider.id) !== undefined,
+				hasCustomConfig: providerConfig !== undefined,
+				disabledModels: [...(providerConfig?.disabledModels ?? [])],
 				...(providerConfig?.catalogProvider ? { catalogProvider: providerConfig.catalogProvider } : {}),
 			};
 		});
@@ -2721,7 +2796,8 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 
 	async syncModelProvider(providerId: string): Promise<ModelSummary[]> {
 		const runtime = await this.getModelRuntime();
-		const config = await ModelConfig.load(join(this.agentDir, "models.json"));
+		const modelsPath = join(this.agentDir, "models.json");
+		const config = await ModelConfig.load(modelsPath);
 		const providerConfig = config.getProvider(providerId);
 		const builtIn = runtime.isBuiltinProvider(providerId);
 		if (!providerConfig && !builtIn) throw new Error(`未找到 Provider：${providerId}`);
@@ -2745,7 +2821,11 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 					contextWindow: model.contextWindow,
 					maxTokens: model.maxTokens,
 				}))
-			: await discoverProviderModels(baseUrl, providerConfig?.apiKey);
+			: await discoverProviderModels(
+					baseUrl,
+					await runtime.getAuth(providerId),
+					providerConfig?.api ?? targetProvider?.getModels()[0]?.api,
+				);
 		if (discovered.length === 0) throw new Error("没有发现可同步的模型");
 		const existingModels = new Map(runtime.getModels(providerId).map((model) => [model.id, model] as const));
 		const configuredModels = providerConfig?.models ?? [];
@@ -2773,7 +2853,52 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 					: {}),
 			};
 		});
-		await saveModelsJsonModels(join(this.agentDir, "models.json"), providerId, definitions);
+		await saveModelsJsonModels(modelsPath, providerId, definitions);
+		const discoveredIds = new Set(discovered.map((model) => model.id));
+		const configuredModelIds = new Set(configuredModels.map((model) => model.id));
+		const previouslySyncedIds = new Set(providerConfig?.syncedModels ?? []);
+		const staleModelIds = [...previouslySyncedIds].filter(
+			(modelId) =>
+				!discoveredIds.has(modelId) &&
+				configuredModelIds.has(modelId) &&
+				providerConfig?.modelOverrides?.[modelId] === undefined,
+		);
+		const nextSyncedIds = [...discoveredIds].filter(
+			(modelId) => previouslySyncedIds.has(modelId) || !configuredModelIds.has(modelId),
+		);
+		await removeModelsJsonModels(modelsPath, providerId, staleModelIds);
+		await saveModelsJsonSyncedModels(modelsPath, providerId, nextSyncedIds);
+		await runtime.refresh({ allowNetwork: false, providers: [providerId] });
+		return this.listModels();
+	}
+
+	async removeModelProvider(providerId: string): Promise<ModelProviderSummary[]> {
+		const runtime = await this.getModelRuntime();
+		const modelsPath = join(this.agentDir, "models.json");
+		const config = await ModelConfig.load(modelsPath);
+		const providerConfig = config.getProvider(providerId);
+		const builtIn = runtime.isBuiltinProvider(providerId);
+		if (!providerConfig && !builtIn) throw new Error(`未找到 Provider：${providerId}`);
+		if (!providerConfig) throw new Error(`Provider ${providerId} 没有可清除的自定义配置`);
+		if (!builtIn) await runtime.logout(providerId);
+		await removeModelsJsonProvider(modelsPath, providerId);
+		await runtime.refresh({ allowNetwork: false, providers: [providerId] });
+		return this.listModelProviders();
+	}
+
+	async setProviderModelEnabled(providerId: string, modelId: string, enabled: boolean): Promise<ModelSummary[]> {
+		const runtime = await this.getModelRuntime();
+		const modelsPath = join(this.agentDir, "models.json");
+		const config = await ModelConfig.load(modelsPath);
+		const providerConfig = config.getProvider(providerId);
+		const builtIn = runtime.isBuiltinProvider(providerId);
+		if (!providerConfig && !builtIn) throw new Error(`未找到 Provider：${providerId}`);
+		const known =
+			runtime.getModel(providerId, modelId) !== undefined ||
+			(providerConfig?.models ?? []).some((model) => model.id === modelId) ||
+			(providerConfig?.disabledModels ?? []).includes(modelId);
+		if (!known) throw new Error(`未找到模型：${providerId}/${modelId}`);
+		await setModelsJsonModelDisabled(modelsPath, providerId, modelId, !enabled);
 		await runtime.refresh({ allowNetwork: false, providers: [providerId] });
 		return this.listModels();
 	}

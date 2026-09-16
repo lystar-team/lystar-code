@@ -525,6 +525,8 @@ export interface WorkbenchState {
 		modelCount: number;
 		builtIn: boolean;
 		custom: boolean;
+		hasCustomConfig: boolean;
+		disabledModels: string[];
 		catalogProvider?: string;
 	}>;
 	hiddenModelProviders: string[];
@@ -4191,11 +4193,41 @@ export function useWorkbench() {
 		[refreshModelOptions, refreshModelSettings, showToast],
 	);
 
+	const removeModelProvider = useCallback(
+		async (providerId: string) => {
+			const result = await webApi.removeModelProvider(providerId);
+			const removed = !result.providers.some((provider) => provider.id === providerId);
+			if (removed) {
+				if (typeof window !== "undefined") {
+					const overrides = savedModelProviderVisibilityOverrides();
+					delete overrides[providerId];
+					window.localStorage.setItem(MODEL_PROVIDER_VISIBILITY_KEY, JSON.stringify(overrides));
+				}
+				updateState((current) => ({
+					...current,
+					hiddenModelProviders: current.hiddenModelProviders.filter((id) => id !== providerId),
+				}));
+			}
+			await Promise.all([refreshModelSettings(), refreshModelOptions()]);
+			showToast(removed ? "Provider 已删除" : "Provider 自定义配置已清除");
+		},
+		[refreshModelOptions, refreshModelSettings, showToast, updateState],
+	);
+
 	const saveProviderModel = useCallback(
 		async (provider: string, input: WebProviderModelInput) => {
 			await webApi.providerModel(provider, input);
 			await Promise.all([refreshModelSettings(), refreshModelOptions()]);
 			showToast("模型配置已保存");
+		},
+		[refreshModelOptions, refreshModelSettings, showToast],
+	);
+
+	const setProviderModelEnabled = useCallback(
+		async (provider: string, modelId: string, enabled: boolean) => {
+			await webApi.setProviderModelEnabled(provider, modelId, enabled);
+			await Promise.all([refreshModelSettings(), refreshModelOptions()]);
+			showToast(enabled ? "模型已启用" : "模型已禁用");
 		},
 		[refreshModelOptions, refreshModelSettings, showToast],
 	);
@@ -4654,7 +4686,9 @@ export function useWorkbench() {
 		setModelProviderVisibility,
 		syncModelProvider,
 		saveModelProvider,
+		removeModelProvider,
 		saveProviderModel,
+		setProviderModelEnabled,
 		refreshSkills,
 		refreshDiagnostics,
 		restartDiagnosticService,

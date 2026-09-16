@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.85.1-lystar.14] - 2026-09-16
+
+### Added
+
+- 新增 Web 模型设置中的 Provider 删除和模型启用开关：自定义 Provider 直接删除并退出登录，内置 Provider 只清除 `models.json` 自定义配置；模型可以单独禁用并在列表中以禁用状态保留，随时重新启用。Runtime 协议升到 v7，新增 `remove_model_provider` 和 `set_provider_model_enabled` 命令，Provider 摘要补充 `hasCustomConfig` 和 `disabledModels`，`models.json` 支持 `disabledModels` 与 `syncedModels`，被禁用的模型不再注册到运行模型列表。
+- 新增 Web 会话附件持久化：上传的图片附件写入会话旁的 `.attachments/<会话名>/`，以内容哈希命名并复用同哈希文件，历史 Transcript 打开时按引用重建可显示图片，会话分叉和导入复制附件，删除会话时一并清理；旧版仅用于展示的图片附件在打开会话时迁移为持久化附件并改写 Prompt 中的 `name` 引用，单条消息最多 8 个附件、总大小 32 MB。
+
+### Changed
+
+- 调整模型目录同步：依次尝试 `models` 和 `v1/models` 端点并在全部失败时汇总错误原因，改用运行时认证结果构造请求头（支持 `x-api-key`、`anthropic-version` 和自定义 headers），同步后清理上一轮同步写入但已从目录消失的模型，并记录本轮同步来源。
+- 提升大记录承载能力：Transcript JSONL 单行上限从 4 MB 提高到 128 MB，Web 图片展示上限从 4 MB 提高到 8 MB。
+- 调整 Web 展示宽度：工具批次、命令错误回调、图片生成状态和结果画廊取消固定 `max-w-3xl` 宽度，改为跟随会话栏自适应；Prompt 输入框撑满栏宽并固定字号。
+- 调整本地开发链路：`lcd web` 在启动后台进程前先构建 Web 产物，前台开发模式额外启动 Vite HMR 前端（`127.0.0.1:2420`），开发模式跳过静态资源版本校验。
+
+### Fixed
+
+- 修复 Web Runtime 服务尚未安装时执行 `lc web service restart` 直接失败的问题；现在会转为安装服务。
+
 ## [0.85.1-lystar.13] - 2026-09-15
 
 ### Fixed

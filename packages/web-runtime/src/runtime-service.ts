@@ -388,6 +388,13 @@ export async function restartRuntimeService(
 	agentDir = getRuntimeAgentDir(),
 ): Promise<RuntimeServiceStatus> {
 	const status = await getRuntimeServiceStatus(endpoint, profile, invocation, agentDir);
+	if (!status.installed) {
+		return installRuntimeService(endpoint, false, {
+			...(profile ? { profile } : {}),
+			...(invocation ? { invocation } : {}),
+			agentDir,
+		});
+	}
 	if ((status.manager === "launch-daemon" || status.manager === "launch-agent") && status.pid && status.responsive) {
 		await assertRuntimeIdle(endpoint);
 		// 同用户的 Runtime 接收重启信号，由 launchd 拉起，无需后台 sudo 授权。

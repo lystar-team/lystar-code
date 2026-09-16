@@ -128,6 +128,8 @@ const WORKSPACE_COMMANDS = {
 	list_models: true,
 	list_model_providers: true,
 	list_model_options: true,
+	remove_model_provider: true,
+	set_provider_model_enabled: true,
 	set_session_model: true,
 	set_session_thinking: true,
 	cycle_session_model: true,
@@ -902,7 +904,9 @@ export class WebRuntimeService {
 			case "list_model_options":
 				return jsonValue(await this.adapter.listModelOptions({ includeProviders: request.includeProviders }));
 			case "add_model_provider":
+			case "remove_model_provider":
 			case "add_provider_model":
+			case "set_provider_model_enabled":
 			case "sync_model_provider":
 			case "login_model_provider":
 			case "logout_model_provider": {
@@ -920,8 +924,16 @@ export class WebRuntimeService {
 							case "add_model_provider":
 								result = jsonValue(await this.adapter.addModelProvider(request));
 								break;
+							case "remove_model_provider":
+								result = jsonValue(await this.adapter.removeModelProvider(request.provider));
+								break;
 							case "add_provider_model":
 								result = jsonValue(await this.adapter.addProviderModel(request));
+								break;
+							case "set_provider_model_enabled":
+								result = jsonValue(
+									await this.adapter.setProviderModelEnabled(request.provider, request.id, request.enabled),
+								);
 								break;
 							case "sync_model_provider":
 								result = jsonValue(await this.adapter.syncModelProvider(request.provider));

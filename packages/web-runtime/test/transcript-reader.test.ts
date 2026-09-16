@@ -214,10 +214,25 @@ describe("TranscriptReader", () => {
 		}
 	});
 
+	it("reads legacy JSONL lines above the former 4 MiB limit", async () => {
+		const largeText = "x".repeat(5 * 1024 * 1024);
+		writeFileSync(
+			sessionPath,
+			`${[header(), { ...message("large", null), message: { role: "user", content: largeText, timestamp: 1 } }]
+				.map((entry) => JSON.stringify(entry))
+				.join("\n")}\n`,
+		);
+
+		const page = await new TranscriptReader().read(sessionPath, { limit: 1 });
+
+		expect(page.items.map((item) => item.entryId)).toEqual(["large"]);
+	});
+
 	it("rejects a JSONL line before accumulating beyond the configured bound", async () => {
-		writeFileSync(sessionPath, `${"x".repeat(4 * 1024 * 1024 + 1)}\n${JSON.stringify(header())}\n`);
-		await expect(new TranscriptReader().read(sessionPath, { limit: 1 })).rejects.toMatchObject({
+		writeFileSync(sessionPath, `${"x".repeat(1025)}\n${JSON.stringify(header())}\n`);
+		await expect(new TranscriptReader(1024).read(sessionPath, { limit: 1 })).rejects.toMatchObject({
 			code: "transcript_line_too_large",
+			message: "Transcript JSONL line exceeds the 1024 byte limit",
 		});
 	});
 

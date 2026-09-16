@@ -8,6 +8,7 @@ export * from "./runtime-adapter.ts";
 export * from "./runtime-service.ts";
 export * from "./service.ts";
 export * from "./service-manager.ts";
+export * from "./session-attachments.ts";
 export * from "./stdio.ts";
 export * from "./stream-transport.ts";
 export * from "./transcript-reader.ts";

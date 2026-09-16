@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { ContentChunk, ContentReference, JsonValue, TranscriptItem } from "@lystar/code-web-protocol";
+import { promptFileReferences, resolveSessionAttachmentPath } from "./session-attachments.ts";
 
 const REFERENCE_THRESHOLD = 64 * 1024;
 const PREVIEW_HEAD_BYTES = 24 * 1024;
 const PREVIEW_TAIL_BYTES = 8 * 1024;
 const MAX_CONTENT_BYTES = 64 * 1024 * 1024;
+const MAX_IMAGE_DISPLAY_BYTES = 8 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 128 * 1024 * 1024;
 const REFERENCE_TTL_MS = 15 * 60 * 1000;
 const CONTENT_SAMPLE_BYTES = 64;
@@ -77,7 +79,8 @@ export class ContentStore {
 	private totalBytes = 0;
 
 	compactTranscriptItem(sessionPath: string, item: TranscriptItem): TranscriptItem {
-		const payload = this.compactImages(sessionPath, item.payload, toolResultArtifactPath(item));
+		const imagePayload = this.compactImages(sessionPath, item.payload, toolResultArtifactPath(item));
+		const payload = this.compactPromptImages(sessionPath, imagePayload);
 		return { ...item, payload: isToolResult(item) ? this.compactValue(sessionPath, payload) : payload };
 	}
 
@@ -118,8 +121,8 @@ export class ContentStore {
 				retryable: false,
 			});
 		}
-		if (entry.bytes.length > 4 * 1024 * 1024) {
-			throw Object.assign(new Error("Image content exceeds the 4 MiB display limit"), {
+		if (entry.bytes.length > MAX_IMAGE_DISPLAY_BYTES) {
+			throw Object.assign(new Error("Image content exceeds the 8 MiB display limit"), {
 				code: "image_content_too_large",
 				retryable: false,
 			});
@@ -142,6 +145,49 @@ export class ContentStore {
 
 	evictExpired(now = Date.now()): void {
 		for (const [contentRef, entry] of this.entries) if (entry.expiresAt <= now) this.delete(contentRef);
+	}
+
+	private compactPromptImages(sessionPath: string, value: JsonValue): JsonValue {
+		if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+		const message = value.message;
+		if (!message || typeof message !== "object" || Array.isArray(message) || message.role !== "user") return value;
+		const content = message.content;
+		if (
+			Array.isArray(content) &&
+			content.some((part) => !!part && typeof part === "object" && !Array.isArray(part) && part.type === "image")
+		) {
+			return value;
+		}
+		const images = promptFileReferences(content).flatMap((reference): JsonValue[] => {
+			if (!reference.mimeType.startsWith("image/")) return [];
+			const path = resolveSessionAttachmentPath(sessionPath, reference.path);
+			if (!path) return [];
+			let bytes: Buffer;
+			try {
+				bytes = readFileSync(path);
+			} catch {
+				return [];
+			}
+			return [
+				{
+					type: "image",
+					mimeType: reference.mimeType,
+					alt: reference.filename,
+					data: this.createReference(
+						sessionPath,
+						bytes,
+						reference.mimeType,
+						undefined,
+						path,
+					) as unknown as JsonValue,
+				},
+			];
+		});
+		if (images.length === 0) return value;
+		const nextContent: JsonValue[] = Array.isArray(content)
+			? [...content, ...images]
+			: [{ type: "text", text: typeof content === "string" ? content : "" }, ...images];
+		return { ...value, message: { ...message, content: nextContent } };
 	}
 
 	private compactValue(sessionPath: string, value: JsonValue): JsonValue {

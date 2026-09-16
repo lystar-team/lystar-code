@@ -493,6 +493,10 @@ test("Web Gateway fake Provider 完成 Prompt、事件和 Transcript 闭环", as
 	const sessionFiles = (await readdir(sessionDirectory)).filter((file) => file.endsWith(".jsonl"));
 	assert.equal(sessionFiles.length, 1);
 	const originalSessionPath = join(sessionDirectory, sessionFiles[0]!);
+	const originalSessionContents = await readFile(originalSessionPath, "utf8");
+	assert.doesNotMatch(originalSessionContents, new RegExp(imageData, "u"));
+	assert.doesNotMatch(originalSessionContents, /sendToModel/u);
+	assert.match(originalSessionContents, /[/\\]\.attachments[/\\]/u);
 	const duplicateSessionPath = join(sessionDirectory, "duplicate-session.jsonl");
 	const duplicateUpdatedAt = Date.now() + 10_000;
 	const duplicateContents = (await readFile(originalSessionPath, "utf8"))
@@ -565,11 +569,12 @@ test("Web Gateway fake Provider 完成 Prompt、事件和 Transcript 闭环", as
 	assert.equal("sessionPath" in operationResult, false);
 	assert.equal("clientInstanceId" in operationResult, false);
 	assert.equal("clientRequestId" in operationResult, false);
-	assert.ok(requests.some((request) => request.body.includes(uploadedPath)));
-	assert.ok(requests.some((request) => request.body.includes(uploadedTextPath)));
+	const attachmentRequest = requests.find((request) => /[/\\]\.attachments[/\\]/u.test(request.body));
+	assert.ok(attachmentRequest);
+	assert.doesNotMatch(attachmentRequest.body, /lystar-web-upload-/u);
 	assert.equal(
 		requests.some((request) => request.body.includes(imageData)),
 		false,
 	);
-	assert.match(requests.find((request) => request.body.includes(uploadedPath))?.body ?? "", /请只回复 OK/u);
+	assert.match(attachmentRequest.body, /请只回复 OK/u);
 });

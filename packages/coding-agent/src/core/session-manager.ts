@@ -1811,6 +1811,22 @@ export class SessionManager {
 	}
 
 	/**
+	 * Atomically replace persisted entries while retaining the current Session header.
+	 * Reserved for bounded format migrations that already own the Session writer lock.
+	 */
+	rewriteEntries(entries: readonly SessionEntry[]): void {
+		this._assertWritable();
+		const header = this.getHeader();
+		if (!header) throw new Error("Session header is missing");
+		this.fileEntries = [header, ...entries];
+		this._buildIndex();
+		if (this.persist && this.sessionFile) {
+			this._rewriteFile();
+			this.flushed = true;
+		}
+	}
+
+	/**
 	 * Get the session as a tree structure. Returns a shallow defensive copy of all entries.
 	 * A well-formed session has exactly one root (first entry with parentId === null).
 	 * Orphaned entries (broken parent chain) are also returned as roots.

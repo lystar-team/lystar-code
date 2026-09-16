@@ -190,6 +190,7 @@ function applyModelsJson(
 		!config.headers &&
 		!config.compat &&
 		!hasOverrides &&
+		!config.disabledModels?.length &&
 		!config.apiKey &&
 		!config.oauth &&
 		config.authHeader === undefined
@@ -439,6 +440,7 @@ export function composeModelProvider(
 		extension && refreshedExtensionModels ? { ...extension, models: refreshedExtensionModels } : extension;
 	// models.json modelOverrides are the topmost user-config layer: they apply once,
 	// after custom-model upserts, extension model replacement, and legacy OAuth projection.
+	const disabledModels = new Set(config?.disabledModels ?? []);
 	const getModels = () => {
 		let models = applyExtension(
 			providerId,
@@ -448,10 +450,12 @@ export function composeModelProvider(
 		if (extensionOAuthCredential && extension?.oauth?.modifyModels) {
 			models = extension.oauth.modifyModels(models, extensionOAuthCredential);
 		}
-		return models.map((model) => {
-			const override = config?.modelOverrides?.[model.id];
-			return override ? applyModelOverride(model, override) : model;
-		});
+		return models
+			.filter((model) => !disabledModels.has(model.id))
+			.map((model) => {
+				const override = config?.modelOverrides?.[model.id];
+				return override ? applyModelOverride(model, override) : model;
+			});
 	};
 	// Validate eagerly so registration/reload reports structural errors immediately.
 	getModels();

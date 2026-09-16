@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { type FSWatcher, watch } from "node:fs";
-import { readdir, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Duplex } from "node:stream";
 import {
 	type CompletionResult,
@@ -87,6 +87,8 @@ const MAX_BODY_BYTES = 32 * 1024 * 1024;
 const MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024;
 const MAX_BINARY_PREVIEW_BYTES = 8 * 1024 * 1024;
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
+const MAX_PROMPT_ATTACHMENTS = 8;
+const MAX_PROMPT_ATTACHMENT_BYTES = 32 * 1024 * 1024;
 const UPLOAD_TTL_MS = 60 * 60 * 1000;
 const UPLOAD_CLEANUP_MS = 5 * 60 * 1000;
 const PROGRESS_BATCH_MS = 50;
@@ -116,6 +118,50 @@ const UPLOAD_EXTENSIONS: Record<string, string> = {
 function uploadExtension(filename: string | undefined, mimeType: string): string {
 	const extension = filename ? extname(filename).toLowerCase() : "";
 	return /^\.[a-z0-9][a-z0-9._-]{0,15}$/u.test(extension) ? extension : (UPLOAD_EXTENSIONS[mimeType] ?? ".bin");
+}
+
+function xmlAttribute(value: string): string {
+	return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function promptFileTag(reference: { path: string; filename: string; mimeType: string }): string {
+	return `<file name="${xmlAttribute(reference.path)}" filename="${xmlAttribute(reference.filename)}" mimeType="${xmlAttribute(reference.mimeType)}"></file>`;
+}
+
+function replacePromptFilePath(text: string, sourcePath: string, targetPath: string): string {
+	return text.replaceAll(`name="${xmlAttribute(sourcePath)}"`, `name="${xmlAttribute(targetPath)}"`);
+}
+
+async function persistSessionAttachment(
+	sessionPath: string,
+	input: { bytes: Uint8Array; filename?: string; mimeType: string },
+): Promise<{ path: string }> {
+	const bytes = Buffer.from(input.bytes);
+	const hash = contentHash(bytes);
+	const resolvedSessionPath = resolve(sessionPath);
+	const directory = join(
+		dirname(resolvedSessionPath),
+		".attachments",
+		basename(resolvedSessionPath, extname(resolvedSessionPath)),
+	);
+	const path = join(directory, `${hash}${uploadExtension(input.filename, input.mimeType)}`);
+	await mkdir(directory, { recursive: true, mode: 0o700 });
+	try {
+		await writeFile(path, bytes, { flag: "wx", mode: 0o600 });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+		const existing = await readFile(path);
+		if (contentHash(existing) !== hash) {
+			const temporaryPath = join(directory, `.${hash}.${process.pid}.${randomUUID()}.tmp`);
+			try {
+				await writeFile(temporaryPath, bytes, { flag: "wx", mode: 0o600 });
+				await rename(temporaryPath, path);
+			} finally {
+				await unlink(temporaryPath).catch(() => {});
+			}
+		}
+	}
+	return { path };
 }
 
 export type WebSessionSummary = Omit<SessionSummary, "path" | "cwd"> & { pinned?: boolean };
@@ -364,6 +410,22 @@ function mergeProgress(left: SessionProgress, right: SessionProgress): SessionPr
 interface SessionListCache {
 	generation: number;
 	value: SessionSummary[];
+}
+
+interface UploadedFile {
+	byteLength: number;
+	expiresAt: number;
+	filename?: string;
+	mimeType: string;
+	persistedPath?: string;
+}
+
+interface PersistedUpload {
+	byteLength: number;
+	filename: string;
+	mimeType: string;
+	path: string;
+	sourcePath: string;
 }
 
 class HttpError extends Error {
@@ -664,7 +726,7 @@ export class WebGatewayServer {
 	private closePromise?: Promise<void>;
 	private readonly heartbeatTimer: ReturnType<typeof setInterval>;
 	private readonly uploadCleanupTimer: ReturnType<typeof setInterval>;
-	private readonly uploadedFiles = new Map<string, { mimeType: string; expiresAt: number }>();
+	private readonly uploadedFiles = new Map<string, UploadedFile>();
 	private readonly projectWatchers = new Map<string, ProjectWatcher>();
 	private readonly productUpdate: ProductUpdateController;
 	private modelCatalogRevision = 1;
@@ -1759,6 +1821,18 @@ export class WebGatewayServer {
 		}
 		if (parts[1] === "model-providers") {
 			const client = await this.getClient(context);
+			if (parts.length === 3 && request.method === "DELETE") {
+				const provider = stringValue(parts[2]);
+				if (!provider) throw new HttpError(400, "model_provider_required", "Provider 不能为空");
+				const result = await client.request<ModelProviderSummary[]>({
+					command: "remove_model_provider",
+					provider,
+					clientInstanceId: context.id,
+					clientRequestId: randomUUID(),
+				});
+				sendJson(response, 200, { providers: result });
+				return;
+			}
 			if (parts.length === 2 && request.method === "POST") {
 				const body = await parseJsonBody(request);
 				const provider = stringValue(body.provider);
@@ -1810,6 +1884,22 @@ export class WebGatewayServer {
 					...(Number.isInteger(body.maxTokens) && Number(body.maxTokens) > 0
 						? { maxTokens: Number(body.maxTokens) }
 						: {}),
+					clientInstanceId: context.id,
+					clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
+				});
+				sendJson(response, 200, { models: result });
+				return;
+			}
+			if (parts.length === 5 && parts[3] === "models" && parts[4] === "enabled" && request.method === "POST") {
+				const body = await parseJsonBody(request);
+				const provider = stringValue(parts[2]);
+				const id = stringValue(body.id);
+				if (!provider || !id) throw new HttpError(400, "model_provider_required", "Provider 和模型 ID 不能为空");
+				const result = await client.request<ModelSummary[]>({
+					command: "set_provider_model_enabled",
+					provider,
+					id,
+					enabled: body.enabled !== false,
 					clientInstanceId: context.id,
 					clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
 				});
@@ -2769,7 +2859,12 @@ export class WebGatewayServer {
 		if (bytes.length > MAX_UPLOAD_BYTES) throw new HttpError(413, "file_too_large", "单个文件不能超过 8 MB");
 		const path = join(tmpdir(), `lystar-web-upload-${randomUUID()}${uploadExtension(filename, mimeType)}`);
 		await writeFile(path, bytes, { mode: 0o600 });
-		this.uploadedFiles.set(path, { mimeType, expiresAt: Date.now() + UPLOAD_TTL_MS });
+		this.uploadedFiles.set(path, {
+			mimeType,
+			...(filename ? { filename } : {}),
+			byteLength: bytes.byteLength,
+			expiresAt: Date.now() + UPLOAD_TTL_MS,
+		});
 		sendJson(response, 201, { path, mimeType, byteLength: bytes.byteLength });
 	}
 
@@ -2782,29 +2877,59 @@ export class WebGatewayServer {
 		}
 	}
 
-	private async readUploadedFiles(
-		value: unknown,
-	): Promise<Array<{ data: string; mimeType: string; displayOnly: true }>> {
+	private async persistUploadedFiles(sessionPath: string, value: unknown): Promise<PersistedUpload[]> {
 		if (value === undefined) return [];
 		if (!Array.isArray(value)) throw new HttpError(400, "file_attachments_invalid", "文件附件数据无效");
-		const images: Array<{ data: string; mimeType: string; displayOnly: true }> = [];
+		if (value.length > MAX_PROMPT_ATTACHMENTS) {
+			throw new HttpError(413, "too_many_file_attachments", `单条消息最多上传 ${MAX_PROMPT_ATTACHMENTS} 个附件`);
+		}
+		const persisted: PersistedUpload[] = [];
+		const seen = new Set<string>();
+		let totalBytes = 0;
 		for (const item of value) {
 			const attachment = object(item);
-			const path = stringValue(attachment?.path);
-			if (!path) throw new HttpError(400, "file_attachment_path_required", "文件附件路径不能为空");
-			const upload = this.uploadedFiles.get(path);
+			const sourcePath = stringValue(attachment?.path);
+			if (!sourcePath) throw new HttpError(400, "file_attachment_path_required", "文件附件路径不能为空");
+			if (seen.has(sourcePath)) continue;
+			seen.add(sourcePath);
+			const upload = this.uploadedFiles.get(sourcePath);
 			if (!upload || upload.expiresAt <= Date.now()) {
 				throw new HttpError(400, "file_attachment_expired", "文件附件已过期，请重新上传");
 			}
-			const file = await stat(path).catch(() => undefined);
-			if (!file?.isFile()) throw new HttpError(400, "file_attachment_missing", "文件附件不存在，请重新上传");
+			totalBytes += upload.byteLength;
+			if (totalBytes > MAX_PROMPT_ATTACHMENT_BYTES) {
+				throw new HttpError(413, "file_attachments_too_large", "单条消息附件总大小不能超过 32 MB");
+			}
 			upload.expiresAt = Date.now() + UPLOAD_TTL_MS;
-			if (!upload.mimeType.startsWith("image/")) continue;
-			const bytes = await readFile(path).catch(() => undefined);
-			if (!bytes) throw new HttpError(400, "file_attachment_missing", "文件附件不存在，请重新上传");
-			images.push({ data: bytes.toString("base64"), mimeType: upload.mimeType, displayOnly: true });
+			let path = upload.persistedPath;
+			if (path) {
+				const file = await stat(path).catch(() => undefined);
+				if (!file?.isFile()) path = undefined;
+			}
+			if (!path) {
+				const file = await stat(sourcePath).catch(() => undefined);
+				if (!file?.isFile()) throw new HttpError(400, "file_attachment_missing", "文件附件不存在，请重新上传");
+				const bytes = await readFile(sourcePath).catch(() => undefined);
+				if (!bytes) throw new HttpError(400, "file_attachment_missing", "文件附件不存在，请重新上传");
+				const artifact = await persistSessionAttachment(sessionPath, {
+					bytes,
+					filename: upload.filename,
+					mimeType: upload.mimeType,
+				});
+				path = artifact.path;
+				upload.persistedPath = path;
+				await unlink(sourcePath).catch(() => {});
+			}
+			if (!path) throw new Error("Persisted attachment path is missing");
+			persisted.push({
+				sourcePath,
+				path,
+				filename: upload.filename ?? `attachment${uploadExtension(undefined, upload.mimeType)}`,
+				mimeType: upload.mimeType,
+				byteLength: upload.byteLength,
+			});
 		}
-		return images;
+		return persisted;
 	}
 
 	private async handleQueueAction(
@@ -2850,9 +2975,15 @@ export class WebGatewayServer {
 		const text = typeof body.text === "string" ? body.text : "";
 		if (!text.trim()) throw new HttpError(400, "prompt_required", "消息内容不能为空");
 		const lease = await this.requireLease(context, sessionId);
-		const rawImages = Array.isArray(body.images) ? body.images : [];
-		const uploadedImages = await this.readUploadedFiles(body.attachments);
-		const images = [...rawImages, ...uploadedImages];
+		if (Array.isArray(body.images) && body.images.length > 0) {
+			throw new HttpError(400, "inline_images_unsupported", "图片必须先通过文件上传接口提交");
+		}
+		const uploadedFiles = await this.persistUploadedFiles(session.path, body.attachments);
+		let persistedText = text;
+		for (const upload of uploadedFiles) {
+			const rewritten = replacePromptFilePath(persistedText, upload.sourcePath, upload.path);
+			persistedText = rewritten === persistedText ? `${persistedText}\n${promptFileTag(upload)}`.trim() : rewritten;
+		}
 		const command = kind === "prompt" ? "prompt" : kind === "steer" ? "steer" : "follow_up";
 		const queueId = kind === "prompt" ? undefined : stringValue(body.queueId);
 		const result = await (await this.getClient(context)).request<{ operation?: OperationSnapshot }>({
@@ -2861,11 +2992,8 @@ export class WebGatewayServer {
 			leaseId: lease.leaseId,
 			clientInstanceId: context.id,
 			clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
-			text,
+			text: persistedText,
 			...(queueId ? { queueId } : {}),
-			...(images.length > 0
-				? { images: jsonValue(images) as Array<{ data: string; mimeType: string; displayOnly?: boolean }> }
-				: {}),
 		});
 		sendJson(
 			response,

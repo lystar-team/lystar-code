@@ -92,6 +92,47 @@ describe("Skill read tool display", () => {
 		expect(markup).not.toContain("核对续租条件");
 	});
 
+	it("keeps every tool row on the same full transcript width", () => {
+		const groupMarkup = renderToStaticMarkup(
+			createElement(ToolBatch, { tools: [readTool("src/a.ts"), readTool("src/b.ts")] }),
+		);
+		expect(groupMarkup).toContain("min-w-0 w-full");
+		expect(groupMarkup).not.toContain("max-w-3xl");
+
+		const failedMarkup = renderToStaticMarkup(
+			createElement(ToolBatch, {
+				tools: [
+					{
+						id: "bash-failed-width",
+						name: "bash",
+						summary: "npm run check",
+						state: "output-error",
+						detail: "error TS2304",
+					},
+				],
+				open: false,
+			}),
+		);
+		expect(failedMarkup).toContain("命令执行失败");
+		expect(failedMarkup).not.toContain("max-w-3xl");
+
+		const imageMarkup = renderToStaticMarkup(
+			createElement(ToolBatch, {
+				tools: [
+					{
+						id: "image-gen-width",
+						name: "image_gen",
+						summary: JSON.stringify({ prompt: "蓝色圆形", model: "gpt-image-2.5-flare" }),
+						state: "output-available",
+						images: [{ contentRef: "generated-image-width", mimeType: "image/png", byteLength: 3 }],
+					},
+				],
+			}),
+		);
+		expect(imageMarkup).toContain("已生成 1 张图片");
+		expect(imageMarkup).not.toContain("max-w-3xl");
+	});
+
 	it("shows the actual line range for repeated segmented reads", () => {
 		const tools: ToolBatchTool[] = [
 			{
