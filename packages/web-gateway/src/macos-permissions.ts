@@ -428,7 +428,7 @@ function verifyRuntimeKeychainAccess(
 			]
 				.map(shellSingleQuote)
 				.join(" ");
-			return `if ! printf '%s\\n' ${input} | ${shellSingleQuote(helperPath)} get | /usr/bin/awk -F= '\n$1 == "username" && length($2) > 0 { username = 1 }\n$1 == "password" && length($2) > 0 { password = 1 }\nEND { exit username && password ? 0 : 1 }\n'; then\n\tprintf '%s\\n' failed > ${shellSingleQuote(resultPath)}\n\texit 1\nfi`;
+			return `if ! printf '%s\\n' ${input} | ${shellSingleQuote(helperPath)} get | /usr/bin/awk -F= '\n$1 == "password" && length($2) > 0 { password = 1 }\nEND { exit password ? 0 : 1 }\n'; then\n\tprintf '%s\\n' failed > ${shellSingleQuote(resultPath)}\n\texit 1\nfi`;
 		})
 		.join("\n");
 	const script = `#!/bin/bash

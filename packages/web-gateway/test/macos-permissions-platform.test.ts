@@ -178,6 +178,9 @@ attributes:
 			if (command === "/usr/bin/codesign") return success();
 			if (command === "/bin/launchctl" && args?.[0] === "bootstrap") {
 				const script = [...files.entries()].find(([path]) => path.endsWith(".sh"))?.[1];
+				expect(script).toContain('$1 == "password" && length($2) > 0');
+				expect(script).toContain("END { exit password ? 0 : 1 }");
+				expect(script).not.toContain("exit username && password");
 				const resultPath = script?.match(/> '([^']+\.result)'/u)?.[1];
 				if (resultPath) files.set(resultPath, "ok\n");
 				return success();

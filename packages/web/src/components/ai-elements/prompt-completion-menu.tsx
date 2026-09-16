@@ -1,12 +1,12 @@
 import { FileText, Folder, Puzzle, Sparkles, Terminal } from "lucide-react";
-import type { ClipboardEvent, ComponentProps, KeyboardEvent, ReactNode, RefObject } from "react";
+import type { KeyboardEvent, ReactNode, RefObject, SyntheticEvent } from "react";
 import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api.ts";
 import { cn } from "../../lib/utils";
 import { webCommandCompletions } from "../../state/composer-commands";
 import type { WebCompletionResult } from "../../types.ts";
 import { Spinner } from "../ui/spinner";
-import { usePromptInputAttachments, usePromptInputController } from "./prompt-input.tsx";
+import { PromptInputTextarea, type PromptInputTextareaProps, usePromptInputController } from "./prompt-input.tsx";
 
 type CompletionResult = WebCompletionResult;
 type CompletionItem = CompletionResult["items"][number];
@@ -21,9 +21,8 @@ type CompletionContextValue = {
 	moveSelection: (direction: 1 | -1) => void;
 	setSelectedIndex: (index: number) => void;
 	close: () => void;
-	cursor: number;
-	editorRef: RefObject<HTMLDivElement>;
-	handleKeyDown: (event: KeyboardEvent<HTMLDivElement>) => void;
+	textareaRef: RefObject<HTMLTextAreaElement>;
+	handleKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
 	setCursor: (cursor: number) => void;
 	trigger: "@" | "$" | "/" | undefined;
 	validTokens: ReadonlySet<string>;
@@ -101,6 +100,8 @@ function completionItemLabel(item: CompletionItem, trigger: CompletionContextVal
 
 import {
 	PromptTokenPartView,
+	hasPromptTokens,
+	promptTokenDisplayOffset,
 	promptTokenParts,
 	promptTokenRanges,
 	usePromptTokenValidation,
@@ -143,6 +144,50 @@ function deletePromptToken(
 	return { text: nextText, cursor: target.start };
 }
 
+const PROMPT_TEXT_GEOMETRY_CLASS = "box-border whitespace-pre-wrap break-words text-left text-base md:text-sm";
+const PROMPT_TEXT_PADDING_CLASS = "!px-5 !pt-4 !pb-2";
+
+function mobilePromptEnterInsertsNewline(): boolean {
+	return window.matchMedia("(max-width: 767px)").matches;
+}
+
+function PromptTokenOverlay({
+	text,
+	className,
+	overlayRef,
+	validTokens,
+}: {
+	text: string;
+	className?: string;
+	overlayRef: RefObject<HTMLDivElement>;
+	validTokens: ReadonlySet<string>;
+}) {
+	return (
+		<div
+			aria-hidden="true"
+			className={cn(
+				"pointer-events-none absolute inset-0 z-0 overflow-hidden",
+				PROMPT_TEXT_GEOMETRY_CLASS,
+				PROMPT_TEXT_PADDING_CLASS,
+				className,
+			)}
+			ref={overlayRef}
+		>
+			{promptTokenParts(text, validTokens).map((part, index) => (
+				<PromptTokenPartView
+					key={`${part.start}:${part.end}:${index}`}
+					part={part}
+					index={index}
+					attributes={{
+						"data-prompt-part-start": part.start,
+						"data-prompt-part-end": part.end,
+					}}
+				/>
+			))}
+		</div>
+	);
+}
+
 export interface PromptCompletionProviderProps {
 	projectId?: string;
 	sessionId?: string;
@@ -168,7 +213,7 @@ export function PromptCompletionProvider({
 	const requestVersion = useRef(0);
 	const cursorRef = useRef(text.length);
 	const onErrorRef = useRef(onError);
-	const editorRef = useRef<HTMLDivElement>(null);
+	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const suppressAutoOpenRef = useRef(false);
 	const menuId = `prompt-completions-${useId().replaceAll(":", "")}`;
 	const trigger = completionTrigger(text, cursor);
@@ -250,7 +295,9 @@ export function PromptCompletionProvider({
 			setCursor(nextCursor);
 			close();
 			window.requestAnimationFrame(() => {
-				setPromptEditorSelection(editorRef.current, nextCursor);
+				const textarea = textareaRef.current;
+				textarea?.focus();
+				textarea?.setSelectionRange(nextCursor, nextCursor);
 			});
 		},
 		[close, controller.textInput, markValidToken, result, setCursor, text],
@@ -266,7 +313,7 @@ export function PromptCompletionProvider({
 	);
 
 	const handleKeyDown = useCallback(
-		(event: KeyboardEvent<HTMLDivElement>) => {
+		(event: KeyboardEvent<HTMLTextAreaElement>) => {
 			if (!open || event.nativeEvent.isComposing) return;
 			if (event.key === "ArrowDown") {
 				event.preventDefault();
@@ -291,8 +338,6 @@ export function PromptCompletionProvider({
 	const value = useMemo<CompletionContextValue>(
 		() => ({
 			close,
-			cursor,
-			editorRef,
 			handleKeyDown,
 			loading,
 			menuId,
@@ -304,13 +349,13 @@ export function PromptCompletionProvider({
 			selectItem,
 			setCursor,
 			setSelectedIndex,
+			textareaRef,
 			trigger,
 			validTokens,
 			markValidToken,
 		}),
 		[
 			close,
-			cursor,
 			handleKeyDown,
 			loading,
 			menuId,
@@ -321,6 +366,8 @@ export function PromptCompletionProvider({
 			selectedIndex,
 			selectItem,
 			setCursor,
+			setSelectedIndex,
+			textareaRef,
 			trigger,
 			validTokens,
 			markValidToken,
@@ -330,426 +377,208 @@ export function PromptCompletionProvider({
 	return <CompletionContext.Provider value={value}>{children}</CompletionContext.Provider>;
 }
 
-type PromptEditorSelection = { start: number; end: number };
+type PromptCaretPosition = { left: number; top: number; height: number };
 
-function promptEditorNodeText(node: Node): string {
-	if (node.nodeType === Node.TEXT_NODE) return (node.textContent ?? "").replaceAll("\u00a0", " ").replaceAll("\u200b", "");
-	if (!(node instanceof HTMLElement)) return "";
-	const tokenRaw = node.dataset.promptTokenRaw;
-	if (tokenRaw !== undefined) return tokenRaw;
-	if (node.tagName === "BR") return node.dataset.promptLineBreak === "true" ? "\n" : "";
-	const text = [...node.childNodes].map(promptEditorNodeText).join("");
-	return (node.tagName === "DIV" || node.tagName === "P") && node.nextSibling && !text.endsWith("\n")
-		? `${text}\n`
-		: text;
+function firstTextNode(element: Element): Text | undefined {
+	return [...element.childNodes].find((node): node is Text => node.nodeType === Node.TEXT_NODE);
 }
 
-function promptEditorText(editor: HTMLDivElement): string {
-	return [...editor.childNodes].map(promptEditorNodeText).join("");
-}
+function promptCaretPosition(
+	overlay: HTMLDivElement,
+	textarea: HTMLTextAreaElement,
+	text: string,
+	validTokens: ReadonlySet<string>,
+): PromptCaretPosition {
+	const overlayRect = overlay.getBoundingClientRect();
+	const style = getComputedStyle(overlay);
+	const fallbackHeight = Number.parseFloat(style.lineHeight) || Number.parseFloat(style.fontSize) || 16;
+	const cursor = Math.max(0, Math.min(textarea.selectionStart, text.length));
+	const fallback = (): PromptCaretPosition => ({
+		left: Number.parseFloat(style.paddingLeft) || 0,
+		top: (Number.parseFloat(style.paddingTop) || 0) + (text.slice(0, cursor).split("\n").length - 1) * fallbackHeight,
+		height: fallbackHeight,
+	});
+	const parts = promptTokenParts(text, validTokens);
+	const part =
+		parts.find((candidate) => cursor > candidate.start && cursor < candidate.end) ??
+		parts.find((candidate) => cursor === candidate.end) ??
+		parts.find((candidate) => cursor === candidate.start);
+	if (!part) return fallback();
 
-function promptEditorRawOffset(editor: HTMLDivElement, target: Node, targetOffset: number): number | undefined {
-	const targetElement = target instanceof Element ? target : target.parentElement;
-	const containingToken = targetElement?.closest<HTMLElement>("[data-prompt-token-raw]");
-	if (containingToken && containingToken !== target && editor.contains(containingToken)) {
-		const tokenStart = promptEditorRawOffset(editor, containingToken, 0);
-		if (tokenStart === undefined) return undefined;
-		const displayLength = containingToken.textContent?.length ?? 0;
-		return tokenStart + (targetOffset * 2 >= displayLength ? (containingToken.dataset.promptTokenRaw?.length ?? 0) : 0);
-	}
+	const partElement = overlay.querySelector<HTMLElement>(
+		`[data-prompt-part-start="${part.start}"][data-prompt-part-end="${part.end}"]`,
+	);
+	const textElement = part.kind ? partElement?.querySelector<HTMLElement>('[data-prompt-text="true"]') : partElement;
+	const textNode = textElement ? firstTextNode(textElement) : undefined;
+	if (!textNode) return fallback();
 
-	let rawOffset = 0;
-	let result: number | undefined;
-	const visit = (node: Node): void => {
-		if (result !== undefined) return;
-		if (node === target) {
-			if (node.nodeType === Node.TEXT_NODE) {
-				const value = node.textContent ?? "";
-				const domOffset = Math.max(0, Math.min(targetOffset, value.length));
-				result = rawOffset + value.slice(0, domOffset).replaceAll("\u00a0", " ").replaceAll("\u200b", "").length;
-				return;
-			}
-			if (node instanceof HTMLElement && node.dataset.promptTokenRaw !== undefined) {
-				result = rawOffset + (targetOffset > 0 ? node.dataset.promptTokenRaw.length : 0);
-				return;
-			}
-			const children = [...node.childNodes];
-			for (const child of children.slice(0, Math.max(0, Math.min(targetOffset, children.length)))) {
-				rawOffset += promptEditorNodeText(child).length;
-			}
-			result = rawOffset;
-			return;
-		}
-		if (node.nodeType === Node.TEXT_NODE) {
-			rawOffset += promptEditorNodeText(node).length;
-			return;
-		}
-		if (!(node instanceof HTMLElement)) return;
-		if (node.dataset.promptTokenRaw !== undefined || node.tagName === "BR") {
-			rawOffset += promptEditorNodeText(node).length;
-			return;
-		}
-		for (const child of node.childNodes) visit(child);
-		if ((node.tagName === "DIV" || node.tagName === "P") && node.nextSibling) rawOffset += 1;
-	};
-	visit(editor);
-	return result;
-}
-
-function promptEditorSelection(editor: HTMLDivElement): PromptEditorSelection | undefined {
-	const selection = window.getSelection();
-	if (!selection?.anchorNode || !selection.focusNode) return undefined;
-	if (!editor.contains(selection.anchorNode) || !editor.contains(selection.focusNode)) return undefined;
-	const anchor = promptEditorRawOffset(editor, selection.anchorNode, selection.anchorOffset);
-	const focus = promptEditorRawOffset(editor, selection.focusNode, selection.focusOffset);
-	if (anchor === undefined || focus === undefined) return undefined;
-	return { start: Math.min(anchor, focus), end: Math.max(anchor, focus) };
-}
-
-function setPromptEditorSelection(editor: HTMLDivElement | null, rawCursor: number): void {
-	if (!editor) return;
-	const cursor = Math.max(0, rawCursor);
-	const parts = [...editor.querySelectorAll<HTMLElement>("[data-prompt-part-start][data-prompt-part-end]")];
+	const rawValue = text.slice(part.start, part.end);
+	const rawOffset = cursor - part.start;
+	const offset = part.kind
+		? promptTokenDisplayOffset(rawValue, part.kind, rawOffset, part.text.length)
+		: Math.max(0, Math.min(part.text.length, rawOffset));
 	const range = document.createRange();
-	let placed = false;
-	for (const part of parts) {
-		const start = Number(part.dataset.promptPartStart);
-		const end = Number(part.dataset.promptPartEnd);
-		if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
-		const parent = part.parentNode;
-		if (!parent) continue;
-		const childIndex = [...parent.childNodes].indexOf(part);
-		if (cursor <= start) {
-			range.setStart(parent, childIndex);
-			placed = true;
-			break;
-		}
-		if (part.dataset.promptTokenRaw !== undefined && cursor <= end) {
-			range.setStart(parent, childIndex + 1);
-			placed = true;
-			break;
-		}
-		if (part.dataset.promptTokenRaw === undefined && cursor <= end) {
-			let remaining = Math.max(0, cursor - start);
-			for (const child of part.childNodes) {
-				if (child.nodeType === Node.TEXT_NODE) {
-					const value = child.textContent ?? "";
-					const length = promptEditorNodeText(child).length;
-					if (remaining <= length) {
-						let rawIndex = 0;
-						let domOffset = value.length;
-						for (let index = 0; index < value.length; index += 1) {
-							if (value[index] === "\u200b") continue;
-							if (rawIndex === remaining) {
-								domOffset = index;
-								break;
-							}
-							rawIndex += 1;
-						}
-						range.setStart(child, domOffset);
-						placed = true;
-						break;
-					}
-					remaining -= length;
-					continue;
-				}
-				if (child instanceof HTMLElement && child.tagName === "BR") {
-					const breakIndex = [...part.childNodes].indexOf(child);
-					if (remaining === 0) {
-						range.setStart(part, breakIndex);
-						placed = true;
-						break;
-					}
-					remaining -= 1;
-				}
-			}
-			if (placed) break;
-		}
-	}
-	if (!placed) range.setStart(editor, editor.childNodes.length);
+	range.setStart(textNode, Math.min(offset, textNode.length));
 	range.collapse(true);
-	const selection = window.getSelection();
-	selection?.removeAllRanges();
-	selection?.addRange(range);
-	editor.focus();
+	const rect = range.getBoundingClientRect();
+	if (!rect.height) return fallback();
+	return { left: rect.left - overlayRect.left, top: rect.top - overlayRect.top, height: rect.height };
 }
-
-function mobilePromptEnterInsertsNewline(): boolean {
-	return window.matchMedia("(max-width: 767px)").matches;
-}
-
-function submitPromptEditor(editor: HTMLDivElement, mode: "prompt" | "steer"): void {
-	const form = editor.closest("form");
-	if (!form) return;
-	const visibleSubmit = form.querySelector<HTMLButtonElement>("[data-prompt-submit-button]");
-	if (visibleSubmit?.disabled) return;
-	if (mode === "steer") {
-		const steerSubmit = form.querySelector<HTMLButtonElement>('button[data-prompt-submit-mode="steer"]');
-		if (steerSubmit) form.requestSubmit(steerSubmit);
-		else form.requestSubmit();
-		return;
-	}
-	form.requestSubmit();
-}
-
-function promptEditorLineText(line: string): string {
-	return line
-		.replace(/^ +/u, (spaces) => "\u00a0".repeat(spaces.length))
-		.replace(/ +$/u, (spaces) => "\u00a0".repeat(spaces.length));
-}
-
-function PromptEditorPlainPart({ text, start, end }: { text: string; start: number; end: number }): ReactNode {
-	const children: ReactNode[] = [];
-	const lines = text.split("\n");
-	for (const [index, line] of lines.entries()) {
-		const stableLine = promptEditorLineText(line);
-		children.push(index === 0 ? stableLine : `\u200b${stableLine}`);
-		if (index < lines.length - 1) children.push(<br data-prompt-line-break="true" key={`break-${start + index}`} />);
-	}
-	return (
-		<span data-prompt-part-end={end} data-prompt-part-start={start}>
-			{children}
-		</span>
-	);
-}
-
-function PromptEditorParts({ text, validTokens }: { text: string; validTokens: ReadonlySet<string> }): ReactNode {
-	if (!text) return null;
-	return promptTokenParts(text, validTokens).map((part, index) =>
-		part.kind ? (
-			<span
-				contentEditable={false}
-				data-prompt-part-end={part.end}
-				data-prompt-part-start={part.start}
-				data-prompt-token-raw={text.slice(part.start, part.end)}
-				key={`${part.start}:${part.end}:${index}`}
-			>
-				<PromptTokenPartView part={part} index={index} />
-			</span>
-		) : (
-			<PromptEditorPlainPart
-				key={`${part.start}:${part.end}:${index}`}
-				text={part.text}
-				start={part.start}
-				end={part.end}
-			/>
-		),
-	);
-}
-
-export type PromptCompletionTextareaProps = Omit<
-	ComponentProps<"div">,
-	"children" | "contentEditable" | "onBeforeInput" | "onInput" | "onKeyDown" | "onPaste"
-> & {
-	disabled?: boolean;
-	placeholder?: string;
-};
 
 export function PromptCompletionTextarea({
 	className,
-	disabled = false,
-	placeholder = "What would you like to know?",
+	onChange,
+	onKeyDown,
+	onSelect,
+	onScroll,
+	onFocus,
+	onBlur,
 	...props
-}: PromptCompletionTextareaProps) {
+}: PromptInputTextareaProps) {
 	const context = useCompletionContext();
 	const controller = usePromptInputController();
-	const attachments = usePromptInputAttachments();
-	const pendingCursorRef = useRef<number>();
-	const composingRef = useRef(false);
-	const mirrorRef = useRef<HTMLDivElement>(null);
-	const replaceSelectionRef = useRef<(editor: HTMLDivElement, replacement: string) => void>(() => undefined);
+	const overlayRef = useRef<HTMLDivElement | null>(null);
 	const [focused, setFocused] = useState(false);
-	const text = controller.textInput.value;
-
-	const commitText = useCallback(
-		(nextText: string, cursor: number) => {
-			pendingCursorRef.current = cursor;
-			context.resumeAutoOpen();
-			context.setCursor(cursor);
-			controller.textInput.setInput(nextText);
+	const [caret, setCaret] = useState<PromptCaretPosition | null>(null);
+	const hasTokens = hasPromptTokens(controller.textInput.value, context.validTokens);
+	const refreshVisualCaret = useCallback(() => {
+		const overlay = overlayRef.current;
+		const textarea = context.textareaRef.current;
+		if (!focused || !hasTokens || !overlay || !textarea) {
+			setCaret(null);
+			return;
+		}
+		setCaret(promptCaretPosition(overlay, textarea, controller.textInput.value, context.validTokens));
+	}, [context.textareaRef, controller.textInput.value, focused, hasTokens]);
+	const updateCursor = useCallback(
+		(event: SyntheticEvent<HTMLTextAreaElement>) => {
+			context.setCursor(event.currentTarget.selectionStart);
+			window.requestAnimationFrame(refreshVisualCaret);
 		},
-		[context, controller.textInput],
-	);
-
-	const replaceSelection = useCallback(
-		(editor: HTMLDivElement, replacement: string) => {
-			const selection = promptEditorSelection(editor) ?? { start: text.length, end: text.length };
-			commitText(`${text.slice(0, selection.start)}${replacement}${text.slice(selection.end)}`, selection.start + replacement.length);
-		},
-		[commitText, text],
-	);
-	replaceSelectionRef.current = replaceSelection;
-
-	const syncCursor = useCallback(
-		(editor: HTMLDivElement) => {
-			const selection = promptEditorSelection(editor);
-			if (selection) context.setCursor(selection.end);
-		},
-		[context],
+		[context, refreshVisualCaret],
 	);
 
 	useLayoutEffect(() => {
-		const editor = context.editorRef.current;
-		const mirror = mirrorRef.current;
-		if (!editor || !mirror || composingRef.current) return;
-		const nextMarkup = mirror.innerHTML;
-		const markupChanged = editor.innerHTML !== nextMarkup;
-		const pendingCursor = pendingCursorRef.current;
-		if (!markupChanged && pendingCursor === undefined) return;
-		const selection = focused ? promptEditorSelection(editor) : undefined;
-		const cursor = pendingCursor ?? selection?.end ?? context.cursor;
-		if (markupChanged) editor.innerHTML = nextMarkup;
-		pendingCursorRef.current = undefined;
-		if (focused) setPromptEditorSelection(editor, cursor);
-	}, [context.cursor, context.editorRef, context.validTokens, focused, text]);
-
-	useEffect(() => {
-		if (!focused) return;
-		const handleSelectionChange = () => {
-			const editor = context.editorRef.current;
-			if (editor) syncCursor(editor);
-		};
-		document.addEventListener("selectionchange", handleSelectionChange);
-		return () => document.removeEventListener("selectionchange", handleSelectionChange);
-	}, [context.editorRef, focused, syncCursor]);
-
-	useLayoutEffect(() => {
-		const editor = context.editorRef.current;
-		if (!editor) return;
-		const handleBeforeInput = (event: InputEvent) => {
-			if (event.isComposing || composingRef.current) return;
-			if (event.inputType === "insertParagraph" || event.inputType === "insertLineBreak") {
-				event.preventDefault();
-				replaceSelectionRef.current(editor, "\n");
-			}
-		};
-		editor.addEventListener("beforeinput", handleBeforeInput);
-		return () => editor.removeEventListener("beforeinput", handleBeforeInput);
-	}, [context.editorRef]);
+		if (!focused || !hasTokens) {
+			setCaret(null);
+			return;
+		}
+		const frame = window.requestAnimationFrame(refreshVisualCaret);
+		return () => window.cancelAnimationFrame(frame);
+	}, [focused, hasTokens, refreshVisualCaret]);
 
 	return (
-		<>
-			<div aria-hidden="true" hidden ref={mirrorRef}>
-				<PromptEditorParts text={text} validTokens={context.validTokens} />
-			</div>
-			<div
+		<div className="relative flex min-w-0 flex-1">
+			{hasTokens ? (
+				<PromptTokenOverlay
+					className={className}
+					overlayRef={overlayRef}
+					text={controller.textInput.value}
+					validTokens={context.validTokens}
+				/>
+			) : null}
+			<PromptInputTextarea
 				{...props}
-			aria-activedescendant={context.open ? `${context.menuId}-item-${context.selectedIndex}` : undefined}
-			aria-autocomplete="list"
-			aria-controls={context.open ? context.menuId : undefined}
-			aria-disabled={disabled}
-			aria-expanded={context.open}
-			aria-multiline="true"
-			className={cn(
-				"box-border max-h-48 min-h-16 w-full min-w-0 flex-1 cursor-text overflow-y-auto whitespace-pre-wrap break-words bg-transparent !px-5 !pt-4 !pb-2 text-left text-base leading-6 outline-none empty:before:pointer-events-none empty:before:text-muted-foreground empty:before:content-[attr(data-placeholder)] md:text-sm md:leading-5",
-				disabled && "cursor-not-allowed opacity-50",
-				className,
-			)}
-			contentEditable={!disabled}
-			data-placeholder={placeholder}
-			data-slot="input-group-control"
-			enterKeyHint="enter"
-			onClick={(event) => {
-				context.resumeAutoOpen();
-				syncCursor(event.currentTarget);
-				props.onClick?.(event);
-			}}
-			onFocus={(event) => {
-				setFocused(true);
-				context.resumeAutoOpen();
-				syncCursor(event.currentTarget);
-				props.onFocus?.(event);
-			}}
-			onCompositionStart={(event) => {
-				composingRef.current = true;
-				props.onCompositionStart?.(event);
-			}}
-			onCompositionEnd={(event) => {
-				composingRef.current = false;
-				const editor = event.currentTarget;
-				const nextText = promptEditorText(editor);
-				const selection = promptEditorSelection(editor);
-				commitText(nextText, selection?.end ?? nextText.length);
-				props.onCompositionEnd?.(event);
-			}}
-			onBlur={(event) => {
-				setFocused(false);
-				props.onBlur?.(event);
-			}}
-			onInput={(event) => {
-				if (composingRef.current || (event.nativeEvent as InputEvent).isComposing) return;
-				const editor = event.currentTarget;
-				const nextText = promptEditorText(editor);
-				const selection = promptEditorSelection(editor);
-				const cursor = selection?.end ?? nextText.length;
-				if (nextText === text) context.setCursor(cursor);
-				else commitText(nextText, cursor);
-			}}
-			onKeyDown={(event) => {
-				context.handleKeyDown(event);
-				if (event.defaultPrevented || event.nativeEvent.isComposing) return;
-				if (event.key === "Backspace" || event.key === "Delete") {
-					const selection = promptEditorSelection(event.currentTarget);
-					if (selection) {
-						const deletion = deletePromptToken(text, selection.start, selection.end, event.key, context.validTokens);
+				aria-activedescendant={context.open ? `${context.menuId}-item-${context.selectedIndex}` : undefined}
+				aria-autocomplete="list"
+				aria-controls={context.open ? context.menuId : undefined}
+				aria-expanded={context.open}
+				className={cn(
+					PROMPT_TEXT_GEOMETRY_CLASS,
+					PROMPT_TEXT_PADDING_CLASS,
+					className,
+					hasTokens && "relative z-10 bg-transparent text-transparent caret-transparent placeholder:text-muted-foreground selection:bg-blue-100 selection:text-transparent dark:selection:bg-blue-500/20",
+				)}
+				onChange={(event) => {
+					context.resumeAutoOpen();
+					updateCursor(event);
+					onChange?.(event);
+				}}
+				onClick={(event) => {
+					context.resumeAutoOpen();
+					updateCursor(event);
+					props.onClick?.(event);
+				}}
+				onKeyDown={(event) => {
+					context.handleKeyDown(event);
+					if (
+						!event.defaultPrevented &&
+						event.key === "Enter" &&
+						!event.ctrlKey &&
+						!event.metaKey &&
+						mobilePromptEnterInsertsNewline()
+					) {
+						event.preventDefault();
+						const start = event.currentTarget.selectionStart;
+						const end = event.currentTarget.selectionEnd;
+						const nextCursor = start + 1;
+						controller.textInput.setInput(
+							`${controller.textInput.value.slice(0, start)}\n${controller.textInput.value.slice(end)}`,
+						);
+						context.resumeAutoOpen();
+						context.setCursor(nextCursor);
+						onKeyDown?.(event);
+						window.requestAnimationFrame(() => {
+							const textarea = context.textareaRef.current;
+							textarea?.focus();
+							textarea?.setSelectionRange(nextCursor, nextCursor);
+							refreshVisualCaret();
+						});
+						return;
+					}
+					if (!event.defaultPrevented && (event.key === "Backspace" || event.key === "Delete")) {
+						const deletion = deletePromptToken(
+							controller.textInput.value,
+							event.currentTarget.selectionStart,
+							event.currentTarget.selectionEnd,
+							event.key,
+							context.validTokens,
+						);
 						if (deletion) {
 							event.preventDefault();
-							commitText(deletion.text, deletion.cursor);
-							return;
+							context.resumeAutoOpen();
+							controller.textInput.setInput(deletion.text);
+							context.setCursor(deletion.cursor);
+							window.requestAnimationFrame(() => {
+								const textarea = context.textareaRef.current;
+								textarea?.focus();
+								textarea?.setSelectionRange(deletion.cursor, deletion.cursor);
+								refreshVisualCaret();
+							});
 						}
 					}
-					if (event.key === "Backspace" && text === "" && attachments.files.length > 0) {
-						event.preventDefault();
-						const lastAttachment = attachments.files.at(-1);
-						if (lastAttachment) attachments.remove(lastAttachment.id);
-					}
-					return;
-				}
-				if (event.key !== "Enter") return;
-				event.preventDefault();
-				if (event.ctrlKey || event.metaKey) {
-					submitPromptEditor(event.currentTarget, "steer");
-					return;
-				}
-				if (event.shiftKey || mobilePromptEnterInsertsNewline()) {
-					replaceSelection(event.currentTarget, "\n");
-					return;
-				}
-				submitPromptEditor(event.currentTarget, "prompt");
-			}}
-			onKeyUp={(event) => {
-				syncCursor(event.currentTarget);
-				props.onKeyUp?.(event);
-			}}
-			onPaste={(event: ClipboardEvent<HTMLDivElement>) => {
-				const files = [...event.clipboardData.items]
-					.filter((item) => item.kind === "file")
-					.flatMap((item) => {
-						const file = item.getAsFile();
-						return file ? [file] : [];
-					});
-				if (files.length > 0) {
-					event.preventDefault();
-					attachments.add(files);
-					return;
-				}
-				const pastedText = event.clipboardData.getData("text/plain");
-				if (pastedText) {
-					event.preventDefault();
-					replaceSelection(event.currentTarget, pastedText);
-				}
-			}}
-			onPointerUp={(event) => {
-				syncCursor(event.currentTarget);
-				props.onPointerUp?.(event);
-			}}
-			ref={context.editorRef}
-			role="textbox"
-			spellCheck
-			suppressContentEditableWarning
-				tabIndex={disabled ? undefined : (props.tabIndex ?? 0)}
+					onKeyDown?.(event);
+				}}
+				onFocus={(event) => {
+					setFocused(true);
+					onFocus?.(event);
+					window.requestAnimationFrame(refreshVisualCaret);
+				}}
+				onBlur={(event) => {
+					setFocused(false);
+					onBlur?.(event);
+				}}
+				onScroll={(event) => {
+					overlayRef.current?.scrollTo(event.currentTarget.scrollLeft, event.currentTarget.scrollTop);
+					window.requestAnimationFrame(refreshVisualCaret);
+					onScroll?.(event);
+				}}
+				onSelect={(event) => {
+					context.resumeAutoOpen();
+					updateCursor(event);
+					onSelect?.(event);
+				}}
+				ref={context.textareaRef}
+				value={controller.textInput.value}
 			/>
-		</>
+			{focused && caret ? (
+				<span
+					aria-hidden="true"
+					className="pointer-events-none absolute z-20 w-px animate-pulse bg-foreground"
+					style={{ left: caret.left, top: caret.top, height: caret.height }}
+				/>
+			) : null}
+		</div>
 	);
 }
 

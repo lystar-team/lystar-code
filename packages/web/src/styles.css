@@ -157,11 +157,13 @@ kbd {
 	border-color: var(--destructive);
 }
 
-.agent-error-card,
-.inspector-panel,
-.artifact-surface,
-[data-slot="card"] {
-	corner-shape: squircle;
+@supports (corner-shape: squircle) {
+	.agent-error-card,
+	.inspector-panel,
+	.artifact-surface,
+	[data-slot="card"] {
+		corner-shape: squircle;
+	}
 }
 
 .project-list-item-label {
@@ -182,8 +184,15 @@ kbd {
 .prompt-input-shell [data-slot="input-group"]:focus-within,
 .prompt-input-shell [data-slot="input-group"]:has([data-slot="input-group-control"]:focus-visible) {
 	border: 1px solid var(--border) !important;
-	corner-shape: squircle;
 	box-shadow: 0 2px 12px rgb(0 0 0 / 0.05) !important;
+}
+
+@supports (corner-shape: squircle) {
+	.prompt-input-shell [data-slot="input-group"],
+	.prompt-input-shell [data-slot="input-group"]:focus-within,
+	.prompt-input-shell [data-slot="input-group"]:has([data-slot="input-group-control"]:focus-visible) {
+		corner-shape: squircle;
+	}
 }
 
 /* 待发送消息和输入框属于同一个编辑面板，不能显示成独立通知卡。 */
@@ -195,7 +204,12 @@ section[aria-label="排队消息"] {
 	border-radius: var(--radius) var(--radius) 0 0 !important;
 	background: color-mix(in srgb, var(--muted) 32%, var(--background)) !important;
 	box-shadow: none !important;
-	corner-shape: squircle;
+}
+
+@supports (corner-shape: squircle) {
+	section[aria-label="排队消息"] {
+		corner-shape: squircle;
+	}
 }
 
 section[aria-label="排队消息"] > div:first-child {

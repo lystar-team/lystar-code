@@ -144,6 +144,7 @@ export const ProjectRail = memo(function ProjectRail({
 	const [showArchived, setShowArchived] = useState(false);
 	const [ungroupedOpen, setUngroupedOpen] = useState(true);
 	const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(() => new Set());
+	const [selectedProjectId, setSelectedProjectId] = useState<string | undefined>(state.currentProjectId);
 	const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(() => new Set());
 	const [sessionVisibleCounts, setSessionVisibleCounts] = useState<Record<string, number>>({});
 	const [openProjectMenuId, setOpenProjectMenuId] = useState<string | null>(null);
@@ -176,6 +177,7 @@ export const ProjectRail = memo(function ProjectRail({
 				: projects,
 		[normalizedQuery, projects],
 	);
+	const selectedProject = projects.find((project) => project.id === selectedProjectId);
 
 	const projectSections = useMemo(() => {
 		const assigned = new Set<string>();
@@ -223,8 +225,18 @@ export const ProjectRail = memo(function ProjectRail({
 			);
 	}, [currentProject?.id, state.projectGroups]);
 
+	useEffect(() => {
+		setSelectedProjectId(state.currentProjectId);
+	}, [state.currentProjectId]);
+
 	const groupForProject = (projectId: string): ProjectGroup | undefined =>
 		state.projectGroups.find((group) => group.projectIds.includes(projectId));
+
+	const createProjectSession = async (projectId: string) => {
+		if (projectId !== state.currentProjectId) await actions.selectProject(projectId);
+		await actions.createSession();
+		onNavigate?.();
+	};
 
 	const resetProjectDrag = () => {
 		setDraggedProjectId(undefined);
@@ -451,7 +463,7 @@ export const ProjectRail = memo(function ProjectRail({
 	};
 
 	const renderProject = (project: WebProject, nested = false) => {
-		const active = currentProject?.id === project.id;
+		const selected = selectedProjectId === project.id;
 		const expanded = expandedProjectIds.has(project.id);
 		const projectActionsVisible = openProjectMenuId === project.id;
 		const sessions = orderedSessions(project);
@@ -515,8 +527,8 @@ export const ProjectRail = memo(function ProjectRail({
 										<CollapsibleTrigger asChild>
 											<Button
 												className="h-8 w-full min-w-0 justify-start gap-2 px-2 py-1 pr-20 text-xs"
-												variant={active ? "secondary" : "ghost"}
-												onClick={() => void actions.selectProject(project.id)}
+												variant={selected ? "secondary" : "ghost"}
+												onClick={() => setSelectedProjectId(project.id)}
 											>
 												<Folder className="size-4 shrink-0 text-muted-foreground" />
 												<span className="project-list-item-label min-w-0 flex-1 truncate text-left">
@@ -637,9 +649,7 @@ export const ProjectRail = memo(function ProjectRail({
 										variant="ghost"
 										onClick={(event) => {
 											event.stopPropagation();
-											void (active
-												? actions.createSession()
-												: actions.selectProject(project.id).then(() => actions.createSession()));
+											void createProjectSession(project.id);
 										}}
 										aria-label={`${project.name} 新建会话`}
 									>
@@ -721,10 +731,11 @@ export const ProjectRail = memo(function ProjectRail({
 															active={state.sessionId === session.id}
 															running={running}
 															unread={Boolean(state.unreadSessionIds[session.id]) && !running}
-															onClick={() => {
-																void actions.selectSession(session.id);
-																onNavigate?.();
-															}}
+											onClick={() => {
+												setSelectedProjectId(project.id);
+												void actions.selectSession(session.id);
+												onNavigate?.();
+											}}
 															onRename={(name) => actions.renameSession(session.id, name)}
 															onContextRename={() => setSessionRenameTarget(session)}
 															onTogglePinned={() =>
@@ -1033,10 +1044,10 @@ export const ProjectRail = memo(function ProjectRail({
 				<Button
 					className="h-10 w-full justify-start gap-2 px-3"
 					variant="ghost"
-					disabled={!currentProject}
+					disabled={!selectedProject}
 					onClick={() => {
-						void actions.createSession();
-						onNavigate?.();
+						if (!selectedProject) return;
+						void createProjectSession(selectedProject.id);
 					}}
 				>
 					<MessageSquarePlus className="size-4" />

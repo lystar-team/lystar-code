@@ -35,6 +35,12 @@ function hasPromptTokenBoundary(text: string, start: number): boolean {
 	return !previous || !/[\p{L}\p{N}_$@]/u.test(previous);
 }
 
+export function promptTokenDisplayOffset(value: string, kind: PromptTokenKind, offset: number, displayLength: number): number {
+	const prefixLength =
+		kind === "file" ? (value.startsWith('@"') ? 2 : 1) : value.startsWith("/skill:") ? "/skill:".length : 2;
+	return Math.max(0, Math.min(displayLength, offset - prefixLength));
+}
+
 export function promptTokenCandidates(text: string): string[] {
 	return [...text.matchAll(PROMPT_TOKEN_PATTERN)]
 		.filter((match) => hasPromptTokenBoundary(text, match.index ?? 0))

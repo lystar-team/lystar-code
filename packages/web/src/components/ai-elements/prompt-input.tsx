@@ -26,9 +26,11 @@ import type {
 import {
   Children,
   createContext,
+  forwardRef,
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -1001,16 +1003,63 @@ export type PromptInputTextareaProps = ComponentProps<
   typeof InputGroupTextarea
 >;
 
-export const PromptInputTextarea = ({
-  onChange,
-  onKeyDown,
-  className,
-  placeholder = "What would you like to know?",
-  ...props
-}: PromptInputTextareaProps) => {
+export const PromptInputTextarea = forwardRef<
+  HTMLTextAreaElement,
+  PromptInputTextareaProps
+>(function PromptInputTextarea(
+  {
+    onChange,
+    onInput,
+    onKeyDown,
+    className,
+    placeholder = "What would you like to know?",
+    ...props
+  },
+  forwardedRef,
+) {
   const controller = useOptionalPromptInputController();
   const attachments = usePromptInputAttachments();
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [isComposing, setIsComposing] = useState(false);
+
+  const setTextareaRef = useCallback(
+    (node: HTMLTextAreaElement | null) => {
+      textareaRef.current = node;
+      if (typeof forwardedRef === "function") {
+        forwardedRef(node);
+      } else if (forwardedRef) {
+        forwardedRef.current = node;
+      }
+    },
+    [forwardedRef],
+  );
+
+  const resizeTextarea = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    const styles = getComputedStyle(textarea);
+    const minHeight = Number.parseFloat(styles.minHeight);
+    const maxHeight = Number.parseFloat(styles.maxHeight);
+    const contentHeight = Math.max(textarea.scrollHeight, Number.isFinite(minHeight) ? minHeight : 0);
+    const height = Number.isFinite(maxHeight) ? Math.min(contentHeight, maxHeight) : contentHeight;
+    textarea.style.height = `${height}px`;
+    textarea.style.overflowY = Number.isFinite(maxHeight) && contentHeight > maxHeight ? "auto" : "hidden";
+  }, []);
+
+  const inputValue = controller?.textInput.value ?? props.value ?? "";
+
+  useLayoutEffect(() => {
+    resizeTextarea();
+  }, [inputValue, placeholder, resizeTextarea]);
+
+  const handleInput: FormEventHandler<HTMLTextAreaElement> = useCallback(
+    (event) => {
+      resizeTextarea();
+      onInput?.(event);
+    },
+    [onInput, resizeTextarea],
+  );
 
   const handleKeyDown: KeyboardEventHandler<HTMLTextAreaElement> = useCallback(
     (e) => {
@@ -1125,14 +1174,16 @@ export const PromptInputTextarea = ({
       name="message"
       onCompositionEnd={handleCompositionEnd}
       onCompositionStart={handleCompositionStart}
+      onInput={handleInput}
       onKeyDown={handleKeyDown}
       onPaste={handlePaste}
       placeholder={placeholder}
+      ref={setTextareaRef}
       {...props}
       {...controlledProps}
     />
   );
-};
+});
 
 export type PromptInputHeaderProps = Omit<
   ComponentProps<typeof InputGroupAddon>,

@@ -20,11 +20,15 @@ const emptyToolIndex = {
 };
 
 describe("conversation render items", () => {
-	it("按分钟、小时和天展示 Agent 耗时", () => {
+	it("按秒、分钟、小时和天展示 Agent 耗时", () => {
+		expect(formatElapsedDuration(0)).toBe("0秒");
+		expect(formatElapsedDuration(15_000)).toBe("15秒");
+		expect(formatElapsedDuration(59_999)).toBe("59秒");
+		expect(formatElapsedDuration(90_000)).toBe("1分钟30秒");
 		expect(formatElapsedDuration(12 * 60_000)).toBe("12分钟");
 		expect(formatElapsedDuration(2 * 60 * 60_000 + 8 * 60_000)).toBe("2小时08分钟");
+		expect(formatElapsedDuration(2 * 60 * 60_000 + 8 * 60_000 + 5_000)).toBe("2小时08分钟05秒");
 		expect(formatElapsedDuration(1 * 24 * 60 * 60_000 + 3 * 60 * 60_000 + 20 * 60_000)).toBe("1天03小时20分钟");
-		expect(formatElapsedDuration(15_000)).toBe("1分钟");
 	});
 
 	it("首个历史页完成前不把实时片段当成完整会话展示", () => {
@@ -349,7 +353,7 @@ describe("conversation render items", () => {
 		expect(active.some((item) => item.kind === "result-boundary" || item.kind === "work-process")).toBe(false);
 		expect(active.find((item) => item.kind === "tool-stack")).toMatchObject({ collapseForResult: false });
 		expect(completed.map((item) => item.kind)).toEqual(["message", "work-process", "result-boundary", "message"]);
-		expect(completed.at(-1)).toMatchObject({ durationLabel: "1分钟" });
+		expect(completed.at(-1)).toMatchObject({ durationLabel: "3秒" });
 		const workProcess = completed.find((item) => item.kind === "work-process");
 		if (!workProcess || workProcess.kind !== "work-process") throw new Error("缺少折叠的工作过程");
 		expect(workProcess.items.map((item) => item.kind)).toEqual(["message", "tool-stack"]);
