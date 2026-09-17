@@ -118,9 +118,7 @@ export {
 export {
 	discoverHarnessImports,
 	type HarnessId,
-	type HarnessImportInstructionHunk,
 	type HarnessImportItem,
-	type HarnessImportItemStatus,
 	type HarnessImportPreview,
 	type HarnessImportResult,
 	type HarnessImportResultItem,

@@ -15,7 +15,6 @@ import type {
 	GitStatus,
 	HarnessImportPreview,
 	HarnessImportResult,
-	HarnessImportScope,
 	HostDirectoryListing,
 	JsonValue,
 	ModelOptions,
@@ -238,15 +237,8 @@ export interface RuntimeAdapter {
 	): Promise<ModelSummary[]>;
 	logoutModelProvider(provider: string): Promise<ModelSummary[]>;
 	listSkills(cwd: string, onUiRequest: UiRequestHandler): Promise<{ skills: SkillSummary[]; diagnostics: JsonValue }>;
-	listHarnessImports(cwd: string, targetScope: HarnessImportScope): HarnessImportPreview;
-	importHarnessResources(
-		cwd: string,
-		targetScope: HarnessImportScope,
-		itemIds: string[],
-		onUiRequest: UiRequestHandler,
-		ruleSelections?: Record<string, string[]>,
-		replaceItemIds?: string[],
-	): Promise<HarnessImportResult>;
+	listHarnessImports(cwd: string): HarnessImportPreview;
+	importHarnessResources(cwd: string, itemIds: string[], onUiRequest: UiRequestHandler): Promise<HarnessImportResult>;
 	setSkillEnabled(
 		cwd: string,
 		path: string,

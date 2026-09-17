@@ -98,13 +98,8 @@ export interface WorkbenchActions {
 		password?: string;
 	}) => Promise<void>;
 	restartDiagnosticService: (service: "gateway" | "runtime") => Promise<void>;
-	refreshHarnessImports: (targetScope?: "user" | "project") => Promise<void>;
-	importHarnessResources: (
-		targetScope: "user" | "project",
-		itemIds: string[],
-		ruleSelections?: Record<string, string[]>,
-		replaceItemIds?: string[],
-	) => Promise<void>;
+	refreshHarnessImports: () => Promise<void>;
+	importHarnessResources: (itemIds: string[]) => Promise<void>;
 	toggleSkill: (skill: WorkbenchState["skills"][number]) => Promise<void>;
 	refreshHostInstructions: () => Promise<void>;
 	saveHostInstruction: (content: string, expectedHash?: string) => Promise<void>;

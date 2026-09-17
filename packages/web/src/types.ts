@@ -9,7 +9,6 @@ import type {
 	GitStats,
 	GitStatus,
 	HarnessId,
-	HarnessImportInstructionHunk,
 	HarnessImportItem,
 	HarnessImportPreview,
 	HarnessImportResult,
@@ -34,7 +33,6 @@ import type {
 export type {
 	HarnessId,
 	HarnessImportItem,
-	HarnessImportInstructionHunk,
 	HarnessImportPreview,
 	HarnessImportResult,
 	HarnessImportSource,

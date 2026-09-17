@@ -49,6 +49,7 @@ import {
 	hasActiveSessionWork,
 	promptDisplayText,
 	type PendingUserPrompt,
+	matchPendingUserPrompts,
 	reconcileCommittedTurn,
 	reconcilePendingUserPrompts,
 	reconcileQueuedUserPromptCounts,
@@ -137,6 +138,7 @@ export type LiveTurnItem =
 			attachments: PromptAttachmentPreview[];
 			afterEntryId?: string;
 			stepId?: string;
+			sentAt?: number;
 			status: "queued" | "processing";
 	  };
 
@@ -203,6 +205,7 @@ function appendLiveUserPrompt(
 			displayText: prompt.displayText,
 			attachments: prompt.attachments,
 			afterEntryId,
+			sentAt: Date.now(),
 			...(stepId ? { stepId } : {}),
 			status: "queued",
 		},
@@ -221,6 +224,22 @@ function markLiveUserPromptProcessing(items: LiveTurnItem[], queueId: string | u
 		matched = true;
 		return { ...item, status: "processing" };
 	});
+}
+
+/** 记住每个已落盘用户消息对应的客户端发送时刻。 */
+function withPromptSendTimes(
+	current: WorkbenchState,
+	transcript: readonly WebTranscriptItem[],
+): Record<string, number> {
+	const matches = matchPendingUserPrompts(current.pendingUserPrompts, transcript);
+	if (matches.length === 0) return current.promptSendTimes;
+	let next: Record<string, number> | undefined;
+	for (const match of matches) {
+		if (match.prompt.sentAt === undefined) continue;
+		next ??= { ...current.promptSendTimes };
+		next[match.entryId] = match.prompt.sentAt;
+	}
+	return next ?? current.promptSendTimes;
 }
 
 function reconcileLiveUserPrompts(items: LiveTurnItem[], transcript: readonly WebTranscriptItem[]): LiveTurnItem[] {
@@ -507,6 +526,8 @@ export interface WorkbenchState {
 	readOnly: boolean;
 	sessionReady: boolean;
 	pendingUserPrompts: PendingUserPrompt[];
+	/** 已落盘用户消息 entryId → 客户端按下发送的时刻，使「已处理」和「本次耗时」同一起点。 */
+	promptSendTimes: Record<string, number>;
 	queuedUserPrompts: QueuedUserPrompt[];
 	currentOperation?: WebOperation;
 	operations: WebOperation[];
@@ -583,7 +604,6 @@ export interface WorkbenchState {
 	harnessImports?: HarnessImportsResponse;
 	harnessImportsLoading: boolean;
 	harnessImportsError?: string;
-	harnessImportScope: "user" | "project";
 	harnessImporting: boolean;
 	harnessImportResult?: HarnessImportResultResponse;
 	modelOptions: Array<{
@@ -666,6 +686,7 @@ type SessionDetailCache = Pick<
 	| "liveTurnActive"
 	| "liveCompaction"
 	| "pendingUserPrompts"
+	| "promptSendTimes"
 	| "queuedUserPrompts"
 	| "statusText"
 >;
@@ -691,6 +712,7 @@ function sessionDetailCacheFromState(state: WorkbenchState): SessionDetailCache 
 		liveTurnActive: state.liveTurnActive,
 		liveCompaction: state.liveCompaction,
 		pendingUserPrompts: state.pendingUserPrompts,
+		promptSendTimes: state.promptSendTimes,
 		queuedUserPrompts: state.queuedUserPrompts,
 		statusText: state.statusText,
 	};
@@ -754,8 +776,6 @@ const THEME_KEY = "lystar.web.theme";
 const MODEL_PROVIDER_VISIBILITY_KEY = "lystar.web.model-provider-visibility.v2";
 const ACTIVE_OPERATION_STATUSES = new Set(["accepted", "running", "waiting_for_input"]);
 const TERMINAL_OPERATION_STATUSES = new Set(["completed", "failed", "aborted", "interrupted"]);
-const LIGHT_FAVICON_PATH = "/brand/lystar-mark-light.png";
-const DARK_FAVICON_PATH = "/brand/lystar-mark-dark.png";
 
 function savedTheme(): ThemeMode {
 	if (typeof window === "undefined") return "system";
@@ -803,19 +823,10 @@ export function resolveHiddenModelProviders(
 		.map(({ id }) => id);
 }
 
-function applyFavicon(theme: ThemeMode): void {
-	if (typeof document === "undefined") return;
-	const isDark =
-		theme === "dark" || (theme === "system" && window.matchMedia?.("(prefers-color-scheme: dark)").matches === true);
-	const favicon = document.querySelector<HTMLLinkElement>("link[data-theme-favicon]");
-	if (favicon) favicon.href = isDark ? DARK_FAVICON_PATH : LIGHT_FAVICON_PATH;
-}
-
 function applyTheme(theme: ThemeMode): void {
 	if (typeof document === "undefined") return;
 	document.documentElement.dataset.theme = theme === "system" ? "" : theme;
 	window.localStorage.setItem(THEME_KEY, theme);
-	applyFavicon(theme);
 }
 
 function errorMessage(error: unknown): string {
@@ -1162,6 +1173,7 @@ function initialState(): WorkbenchState {
 		readOnly: false,
 		sessionReady: false,
 		pendingUserPrompts: [],
+		promptSendTimes: {},
 		queuedUserPrompts: [],
 		operations: [],
 		liveTools: {},
@@ -1205,7 +1217,6 @@ function initialState(): WorkbenchState {
 		hostInstructionsLoading: false,
 		hostInstructionSaving: false,
 		harnessImportsLoading: false,
-		harnessImportScope: "user",
 		harnessImporting: false,
 		modelOptions: [],
 		modelOptionProviders: [],
@@ -1505,7 +1516,13 @@ export function useWorkbench() {
 							liveTurnItems.length === current.liveTurnItems.length
 						)
 							return current.transcriptLoading ? { ...current, transcriptLoading: false } : current;
-						return { ...current, transcriptLoading: false, pendingUserPrompts, liveTurnItems };
+						return {
+							...current,
+							transcriptLoading: false,
+							pendingUserPrompts,
+							promptSendTimes: withPromptSendTimes(current, current.transcript),
+							liveTurnItems,
+						};
 					}
 					const renderIdOverrides =
 						!cursor && sameHistory
@@ -1525,6 +1542,9 @@ export function useWorkbench() {
 					const pendingUserPrompts = cursor
 						? current.pendingUserPrompts
 						: reconcilePendingUserPrompts(current.pendingUserPrompts, transcriptWindow.transcript);
+					const promptSendTimes = cursor
+						? current.promptSendTimes
+						: withPromptSendTimes(current, transcriptWindow.transcript);
 					const completedTurnSynced = !cursor && shouldClearLiveTurn(current);
 					const knownIds = new Set(current.transcript.map((item) => item.entryId));
 					const next =
@@ -1541,6 +1561,7 @@ export function useWorkbench() {
 						transcriptLoading: false,
 						transcriptError: undefined,
 						pendingUserPrompts,
+						promptSendTimes,
 						liveTurnItems: cursor
 							? next.liveTurnItems
 							: reconcileLiveUserPrompts(next.liveTurnItems, transcriptWindow.transcript),
@@ -2370,6 +2391,7 @@ export function useWorkbench() {
 						previousCursor: current.previousCursor,
 						hasMorePrevious: current.hasMorePrevious,
 						pendingUserPrompts: reconcilePendingUserPrompts(current.pendingUserPrompts, transcript),
+						promptSendTimes: withPromptSendTimes(current, transcript),
 						liveTurnItems: reconcileLiveUserPrompts(next.liveTurnItems, transcript),
 						transcriptGeneration: current.transcriptGeneration,
 						transcriptRevision: stale ? current.transcriptRevision : event.toRevision,
@@ -3300,6 +3322,7 @@ export function useWorkbench() {
 							attachments: attachmentPreviews ?? [],
 							afterEntryId: current.transcript.at(-1)?.entryId,
 							queueId,
+							sentAt: Date.now(),
 						}
 					: undefined;
 			if (optimisticPrompt || queuedPrompt)
@@ -3364,6 +3387,7 @@ export function useWorkbench() {
 							acceptedAsFollowUp && optimisticPrompt
 								? pendingUserPrompts.filter((prompt) => prompt.id !== optimisticPrompt.id)
 								: pendingUserPrompts,
+						promptSendTimes: withPromptSendTimes(accepted, accepted.transcript),
 						queuedUserPrompts,
 						projects: acceptedAsFollowUp
 							? accepted.projects
@@ -4572,64 +4596,53 @@ export function useWorkbench() {
 		[showToast, updateState],
 	);
 
-	const refreshHarnessImports = useCallback(
-		async (targetScope: "user" | "project" = stateRef.current.harnessImportScope) => {
-			const projectId = stateRef.current.currentProjectId;
-			if (!projectId) {
-				updateState((current) => ({
-					...current,
-					harnessImports: undefined,
-					harnessImportsLoading: false,
-					harnessImportsError: "请先选择一个项目",
-				}));
-				return;
-			}
+	const refreshHarnessImports = useCallback(async () => {
+		const projectId = stateRef.current.currentProjectId;
+		if (!projectId) {
 			updateState((current) => ({
 				...current,
-				harnessImportScope: targetScope,
-				harnessImportsLoading: true,
+				harnessImports: undefined,
+				harnessImportsLoading: false,
+				harnessImportsError: "请先选择一个项目",
+			}));
+			return;
+		}
+		updateState((current) => ({
+			...current,
+			harnessImportsLoading: true,
+			harnessImportsError: undefined,
+		}));
+		try {
+			const result = await webApi.harnessImports(projectId);
+			updateState((current) => ({
+				...current,
+				harnessImports: result,
+				harnessImportsLoading: false,
+				harnessImportsError: undefined,
+			}));
+		} catch (error) {
+			const message = errorMessage(error);
+			updateState((current) => ({ ...current, harnessImportsLoading: false, harnessImportsError: message }));
+			showToast(message);
+		}
+	}, [showToast, updateState]);
+
+	const importHarnessResources = useCallback(
+		async (itemIds: string[]) => {
+			const projectId = stateRef.current.currentProjectId;
+			if (!projectId || itemIds.length === 0) return;
+			updateState((current) => ({
+				...current,
+				harnessImporting: true,
 				harnessImportsError: undefined,
 				harnessImportResult: undefined,
 			}));
 			try {
-				const result = await webApi.harnessImports(projectId, targetScope);
-				updateState((current) => ({
-					...current,
-					harnessImports: result,
-					harnessImportsLoading: false,
-					harnessImportsError: undefined,
-				}));
-			} catch (error) {
-				const message = errorMessage(error);
-				updateState((current) => ({ ...current, harnessImportsLoading: false, harnessImportsError: message }));
-				showToast(message);
-			}
-		},
-		[showToast, updateState],
-	);
-
-	const importHarnessResources = useCallback(
-		async (
-			targetScope: "user" | "project",
-			itemIds: string[],
-			ruleSelections?: Record<string, string[]>,
-			replaceItemIds?: string[],
-		) => {
-			const projectId = stateRef.current.currentProjectId;
-			if (!projectId || itemIds.length === 0) return;
-			updateState((current) => ({ ...current, harnessImporting: true, harnessImportsError: undefined }));
-			try {
-				const result = await webApi.importHarnessResources(
-					projectId,
-					targetScope,
-					itemIds,
-					ruleSelections,
-					replaceItemIds,
-				);
+				const result = await webApi.importHarnessResources(projectId, itemIds);
 				updateState((current) => ({ ...current, harnessImporting: false, harnessImportResult: result }));
-				await refreshHarnessImports(targetScope);
+				await refreshHarnessImports();
 				await refreshSkills();
-				showToast(result.imported > 0 ? `已导入 ${result.imported} 项资源` : "没有导入新的资源");
+				showToast(result.imported > 0 ? `已迁移 ${result.imported} 项资源` : "没有可迁移的资源");
 			} catch (error) {
 				const message = errorMessage(error);
 				updateState((current) => ({ ...current, harnessImporting: false, harnessImportsError: message }));
@@ -4968,13 +4981,6 @@ export function useWorkbench() {
 		applyTheme(state.theme);
 	}, [state.theme]);
 
-	useEffect(() => {
-		if (state.theme !== "system" || typeof window.matchMedia !== "function") return;
-		const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
-		const handleChange = () => applyFavicon("system");
-		mediaQuery.addEventListener("change", handleChange);
-		return () => mediaQuery.removeEventListener("change", handleChange);
-	}, [state.theme]);
 
 	useEffect(() => {
 		if (!state.connected || !state.sessionId) {

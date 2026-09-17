@@ -1267,7 +1267,7 @@ export class WebRuntimeService {
 					),
 				);
 			case "list_harness_imports":
-				return jsonValue(this.adapter.listHarnessImports(canonicalProjectCwd(request.cwd), request.targetScope));
+				return jsonValue(this.adapter.listHarnessImports(canonicalProjectCwd(request.cwd)));
 			case "import_harness_resources": {
 				const cwd = canonicalProjectCwd(request.cwd);
 				const sessionPath = this.mutationSessionPath(request);
@@ -1275,27 +1275,21 @@ export class WebRuntimeService {
 					command: request.command,
 					clientInstanceId: request.clientInstanceId,
 					clientRequestId: request.clientRequestId,
-					scope: request.targetScope === "user" ? "host:harness-import" : `project:${cwd}`,
+					scope: "host:harness-import",
 					lockSessionPath: sessionPath,
 					payload: {
 						...(sessionPath ? { sessionPath } : {}),
 						cwd,
-						targetScope: request.targetScope,
 						itemIds: request.itemIds,
-						...(request.ruleSelections ? { ruleSelections: request.ruleSelections } : {}),
-						...(request.replaceItemIds ? { replaceItemIds: request.replaceItemIds } : {}),
 					},
 					run: async (operation) => {
 						const runtime = this.assertMutationSession(connection, request, cwd);
 						const result = await this.adapter.importHarnessResources(
 							cwd,
-							request.targetScope,
 							request.itemIds,
 							this.createUiRequestHandler(operation.operationId, undefined, request.clientInstanceId),
-							request.ruleSelections,
-							request.replaceItemIds,
 						);
-						await this.reloadMutationResources(runtime, request.targetScope === "project" ? cwd : undefined);
+						await this.reloadMutationResources(runtime);
 						return jsonValue(result);
 					},
 				});

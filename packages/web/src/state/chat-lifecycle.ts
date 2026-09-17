@@ -95,6 +95,7 @@ export interface PendingUserPrompt {
 	attachments: PromptAttachmentPreview[];
 	afterEntryId?: string;
 	queueId?: string;
+	sentAt?: number;
 }
 
 type UserTranscriptView = Extract<NonNullable<WebTranscriptItem["view"]>, { type: "user" }>;
@@ -141,16 +142,24 @@ function promptTextMatches(prompt: PendingUserPrompt, view: UserTranscriptView):
 	return prompt.attachments.length > 0 && pendingText === removeProjectedImageLabels(view.text, view);
 }
 
-export function reconcilePendingUserPrompts(
+export interface MatchedUserPrompt {
+	prompt: PendingUserPrompt;
+	entryId: string;
+}
+
+/** 把乐观用户消息与会话里已落盘的同一条消息配对，用于把客户端发送时刻带到已提交的回合上。 */
+export function matchPendingUserPrompts(
 	pending: readonly PendingUserPrompt[],
 	items: readonly WebTranscriptItem[],
-): PendingUserPrompt[] {
+): MatchedUserPrompt[] {
 	const remaining = [...pending];
+	const matches: MatchedUserPrompt[] = [];
 	const lastIndexByEntryId = new Map<string, number>();
 	for (let index = 0; index < items.length; index++) lastIndexByEntryId.set(items[index]!.entryId, index);
 	for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
-		const view = items[itemIndex]?.view;
-		if (view?.type !== "user") continue;
+		const item = items[itemIndex];
+		const view = item?.view;
+		if (!item || view?.type !== "user") continue;
 		const followsPromptAnchor = (prompt: PendingUserPrompt) => {
 			if (!prompt.afterEntryId) return true;
 			const anchorIndex = lastIndexByEntryId.get(prompt.afterEntryId);
@@ -167,9 +176,21 @@ export function reconcilePendingUserPrompts(
 			attachmentMatchIndex >= 0
 				? attachmentMatchIndex
 				: remaining.findIndex((prompt) => followsPromptAnchor(prompt) && promptTextMatches(prompt, view));
-		if (index >= 0) remaining.splice(index, 1);
+		if (index < 0) continue;
+		const [matched] = remaining.splice(index, 1);
+		if (matched) matches.push({ prompt: matched, entryId: item.entryId });
 	}
-	return remaining;
+	return matches;
+}
+
+export function reconcilePendingUserPrompts(
+	pending: readonly PendingUserPrompt[],
+	items: readonly WebTranscriptItem[],
+): PendingUserPrompt[] {
+	const matches = matchPendingUserPrompts(pending, items);
+	if (matches.length === 0) return [...pending];
+	const matchedIds = new Set(matches.map((match) => match.prompt.id));
+	return pending.filter((prompt) => !matchedIds.has(prompt.id));
 }
 
 export function reconcileQueuedUserPromptCounts(

@@ -7,6 +7,7 @@ import {
 	buildPersistedRenderItems,
 	formatElapsedDuration,
 	initialTranscriptDisplayState,
+	LiveElapsedHeader,
 } from "../src/components/workbench/conversation.tsx";
 import { activeThinkingText, THINKING_SHIMMER_HEIGHT, ThinkingBlock } from "../src/components/workbench/live-turn.tsx";
 import { TranscriptMessageView } from "../src/components/workbench/transcript.tsx";
@@ -160,6 +161,137 @@ describe("conversation render items", () => {
 		);
 
 		expect(html).toContain("本次耗时：2小时08分钟");
+	});
+
+	it("处理中在用户消息下方显示实时已处理耗时行", () => {
+		const persisted = buildPersistedRenderItems([], emptyToolIndex, [
+			{ id: "prompt-1", text: "部署后端", attachments: [], sentAt: Date.now() - 24_000 },
+		]);
+		const rendered = buildConversationRenderItems(persisted, [text], {}, new Set(), undefined, 1, true);
+
+		expect(rendered.map((item) => item.kind)).toEqual(["message", "live-elapsed", "message"]);
+		expect(rendered[1]).toMatchObject({ kind: "live-elapsed", startedAt: expect.any(Number) });
+	});
+
+	it("实时耗时行从已落盘的用户消息时间起算", () => {
+		const persisted = buildPersistedRenderItems(
+			[
+				{
+					entryId: "user-1",
+					parentId: null,
+					timestamp: "2026-09-16T00:00:00.000Z",
+					kind: "message",
+					view: { type: "user", text: "部署后端" },
+				},
+			],
+			emptyToolIndex,
+		);
+		const rendered = buildConversationRenderItems(persisted, [text], {}, new Set(), undefined, 1, true);
+
+		expect(rendered[1]).toMatchObject({ kind: "live-elapsed", startedAt: Date.parse("2026-09-16T00:00:00.000Z") });
+	});
+
+	it("回合结束后用最终回复下方的本次耗时替换实时行", () => {
+		const persisted = buildPersistedRenderItems(
+			[
+				{
+					entryId: "user-1",
+					parentId: null,
+					timestamp: "2026-09-08T00:00:00.000Z",
+					kind: "message",
+					view: { type: "user", text: "部署后端" },
+				},
+				{
+					entryId: "assistant-1",
+					parentId: "user-1",
+					timestamp: "2026-09-08T00:02:08.000Z",
+					kind: "message",
+					view: { type: "assistant", text: "部署完成。" },
+				},
+			],
+			emptyToolIndex,
+		);
+		const rendered = buildConversationRenderItems(persisted, [], {}, new Set(), undefined, 1, false);
+
+		expect(rendered.some((item) => item.kind === "live-elapsed")).toBe(false);
+		expect(rendered.filter((item) => item.kind === "message" && item.durationLabel)).toMatchObject([
+			{ role: "assistant", durationLabel: "2分钟08秒" },
+		]);
+	});
+
+	it("已落盘回合的耗时从客户端按下发送时刻起算", () => {
+		const transcript = [
+			{
+				entryId: "user-1",
+				parentId: null,
+				timestamp: "2026-09-16T00:00:00.000Z",
+				kind: "message" as const,
+				view: { type: "user" as const, text: "部署后端" },
+			},
+			{
+				entryId: "assistant-1",
+				parentId: "user-1",
+				timestamp: "2026-09-16T00:02:08.000Z",
+				kind: "message" as const,
+				view: { type: "assistant" as const, text: "部署完成。" },
+			},
+		];
+		const sentAt = Date.parse("2026-09-16T00:00:20.000Z");
+		const labels = (items: ReturnType<typeof buildPersistedRenderItems>) =>
+			buildConversationRenderItems(items, [], {}, new Set(), undefined, 1, false).flatMap((item) =>
+				item.kind === "message" && item.durationLabel ? [item.durationLabel] : [],
+			);
+
+		expect(labels(buildPersistedRenderItems(transcript, emptyToolIndex))).toEqual(["2分钟08秒"]);
+		expect(labels(buildPersistedRenderItems(transcript, emptyToolIndex, [], { "user-1": sentAt }))).toEqual([
+			"1分钟48秒",
+		]);
+	});
+
+	it("客户端看到的实时数值优先作为本次耗时", () => {
+		const transcript = [
+			{
+				entryId: "user-1",
+				parentId: null,
+				timestamp: "2026-09-16T00:00:00.000Z",
+				kind: "message" as const,
+				view: { type: "user" as const, text: "部署后端" },
+			},
+			{
+				entryId: "assistant-1",
+				parentId: "user-1",
+				timestamp: "2026-09-16T00:02:08.000Z",
+				kind: "message" as const,
+				view: { type: "assistant" as const, text: "部署完成。" },
+			},
+		];
+		const sentAt = Date.parse("2026-09-16T00:00:20.000Z");
+		const persisted = buildPersistedRenderItems(transcript, emptyToolIndex, [], { "user-1": sentAt });
+		const rendered = buildConversationRenderItems(
+			persisted,
+			[],
+			{},
+			new Set(),
+			undefined,
+			1,
+			false,
+			false,
+			{},
+			(value) => (value === sentAt ? 17_000 : undefined),
+		);
+
+		expect(rendered.filter((item) => item.kind === "message" && item.durationLabel)).toMatchObject([
+			{ role: "assistant", durationLabel: "17秒" },
+		]);
+	});
+
+	it("实时耗时行下方跟随分割线", () => {
+		const html = renderToStaticMarkup(createElement(LiveElapsedHeader, { startedAt: Date.now() - 24_000 }));
+
+		expect(html).toContain("已处理");
+		expect(html).toContain("秒");
+		expect(html).toContain('data-testid="live-elapsed"');
+		expect(html).toContain('role="separator"');
 	});
 
 	it("在乐观用户卡片下显示调整方向排队状态", () => {

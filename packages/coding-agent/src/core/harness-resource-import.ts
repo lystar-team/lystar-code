@@ -1,11 +1,13 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	chmodSync,
 	copyFileSync,
+	cpSync,
 	existsSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	rmSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
@@ -15,7 +17,6 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } 
 export type HarnessId = "codex" | "opencode" | "claude-code";
 export type HarnessImportScope = "user" | "project";
 export type HarnessResourceType = "skill" | "prompt" | "instruction" | "agent" | "reference";
-export type HarnessImportItemStatus = "ready" | "already-imported" | "conflict" | "unsupported";
 
 export interface HarnessImportItem {
 	id: string;
@@ -27,11 +28,7 @@ export interface HarnessImportItem {
 	sourceRelativePath: string;
 	targetRelativePath: string;
 	description?: string;
-	instructionHunks?: HarnessImportInstructionHunk[];
-	instructionSourceContent?: string;
-	instructionTargetContent?: string;
 	referencedItemIds?: string[];
-	status: HarnessImportItemStatus;
 	warnings: string[];
 	contentHash: string;
 	sourcePath: string;
@@ -64,12 +61,7 @@ export interface HarnessImportResult {
 	skipped: number;
 	failed: number;
 	items: HarnessImportResultItem[];
-}
-
-export interface HarnessImportInstructionHunk {
-	id: string;
-	title: string;
-	lines: string[];
+	backupPath?: string;
 }
 
 interface ResourceCandidate {
@@ -93,7 +85,6 @@ interface HarnessProfile {
 	userPromptRoots: string[];
 	projectPromptRoots: string[];
 	userInstructionFiles: string[];
-	projectInstructionFiles: string[];
 }
 
 const MAX_SCAN_DEPTH = 5;
@@ -148,7 +139,6 @@ function profilePaths(home: string, cwd: string): HarnessProfile[] {
 			userPromptRoots: [join(home, ".codex", "prompts")],
 			projectPromptRoots: [join(cwd, ".codex", "prompts")],
 			userInstructionFiles: [join(home, ".codex", "AGENTS.md")],
-			projectInstructionFiles: [join(cwd, "AGENTS.md"), join(cwd, ".codex", "AGENTS.md")],
 		},
 		{
 			harness: "opencode",
@@ -172,11 +162,6 @@ function profilePaths(home: string, cwd: string): HarnessProfile[] {
 				join(home, ".opencode", "AGENTS.md"),
 				join(home, ".opencode", "opencode.md"),
 			],
-			projectInstructionFiles: [
-				join(cwd, "AGENTS.md"),
-				join(cwd, ".opencode", "AGENTS.md"),
-				join(cwd, ".opencode", "opencode.md"),
-			],
 		},
 		{
 			harness: "claude-code",
@@ -190,7 +175,6 @@ function profilePaths(home: string, cwd: string): HarnessProfile[] {
 			userPromptRoots: [join(home, ".claude", "commands"), join(home, ".claude", "prompts")],
 			projectPromptRoots: [join(cwd, ".claude", "commands"), join(cwd, ".claude", "prompts")],
 			userInstructionFiles: [join(home, ".claude", "CLAUDE.md")],
-			projectInstructionFiles: [join(cwd, "CLAUDE.md"), join(cwd, ".claude", "CLAUDE.md")],
 		},
 	];
 }
@@ -292,14 +276,17 @@ function isTextFile(path: string, content: Buffer): boolean {
 }
 
 function rewriteText(content: string, rewrites: PathRewrite[]): { text: string; replacements: number } {
-	let text = content;
+	if (rewrites.length === 0) return { text: content, replacements: 0 };
+	const targets = new Map(rewrites.map((rewrite) => [rewrite.from, rewrite.to]));
+	const pattern = [...targets.keys()]
+		.sort((left, right) => right.length - left.length)
+		.map((source) => source.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"))
+		.join("|");
 	let replacements = 0;
-	for (const rewrite of rewrites) {
-		const matches = text.split(rewrite.from).length - 1;
-		if (matches === 0) continue;
-		replacements += matches;
-		text = text.replaceAll(rewrite.from, rewrite.to);
-	}
+	const text = content.replace(new RegExp(pattern, "gu"), (source) => {
+		replacements++;
+		return targets.get(source) ?? source;
+	});
 	return { text, replacements };
 }
 
@@ -582,7 +569,7 @@ function collectCandidates(profile: HarnessProfile, scope: HarnessImportScope, c
 	const skillRoots = scope === "user" ? profile.userSkillRoots : profile.projectSkillRoots;
 	const agentRoots = scope === "user" ? profile.userAgentRoots : profile.projectAgentRoots;
 	const promptRoots = scope === "user" ? profile.userPromptRoots : profile.projectPromptRoots;
-	const instructionFiles = scope === "user" ? profile.userInstructionFiles : profile.projectInstructionFiles;
+	const instructionFiles = scope === "user" ? profile.userInstructionFiles : [];
 	for (const root of skillRoots) {
 		for (const path of collectSkillDirectories(root)) {
 			const metadata = readFrontmatter(join(path, "SKILL.md"));
@@ -646,34 +633,6 @@ function sourceRelativePath(candidate: ResourceCandidate): string {
 	return relative(candidate.root, candidate.path).split(sep).join("/") || basename(candidate.path);
 }
 
-function instructionBlocks(content: string): string[] {
-	return content
-		.replace(/\r\n/gu, "\n")
-		.trim()
-		.split(/\n{2,}/u)
-		.map((block) => block.trim())
-		.filter(Boolean);
-}
-
-function instructionHunks(candidate: ResourceCandidate, targetPath: string): HarnessImportInstructionHunk[] {
-	const sourceBlocks = instructionBlocks(readFileSync(candidate.path, "utf8"));
-	const targetBlocks = new Set(
-		(existsSync(targetPath) ? instructionBlocks(readFileSync(targetPath, "utf8")) : []).map((block) => block),
-	);
-	return sourceBlocks
-		.map((block, index) => ({ block, index }))
-		.filter(({ block }) => !targetBlocks.has(block))
-		.map(({ block, index }) => {
-			const lines = block.split("\n");
-			const heading = lines.find((line) => /^#{1,6}\s+/u.test(line))?.replace(/^#{1,6}\s+/u, "");
-			return {
-				id: hashText(`${pathKey(candidate.path)}:${index}:${block}`),
-				title: heading || lines[0]?.slice(0, 80) || `规则块 ${index + 1}`,
-				lines,
-			};
-		});
-}
-
 function targetRelativePath(candidate: ResourceCandidate): string {
 	if (candidate.type === "skill") {
 		const relativePath = sourceRelativePath(candidate);
@@ -696,33 +655,17 @@ function hashResource(path: string): string {
 	return statSync(path).isDirectory() ? hashDirectory(path) : hashText(readFileSync(path, "utf8"));
 }
 
-function itemStatus(
-	targetPath: string,
-	type: HarnessResourceType,
-	sourceHash: string,
-	ruleHunks?: HarnessImportInstructionHunk[],
-): HarnessImportItemStatus {
-	if (!existsSync(targetPath)) return type === "instruction" && ruleHunks?.length === 0 ? "already-imported" : "ready";
-	if (type === "instruction") return ruleHunks?.length ? "ready" : "already-imported";
-	const targetHash = hashResource(targetPath);
-	return sourceHash === targetHash ? "already-imported" : "conflict";
-}
-
 function createItem(
 	profile: HarnessProfile,
 	candidate: ResourceCandidate,
 	sourceScope: HarnessImportScope,
-	targetScope: HarnessImportScope,
 	agentDir: string,
 	cwd: string,
 ): HarnessImportItem {
+	const targetScope = sourceScope;
 	const destinationRoot = targetRoot(agentDir, cwd, targetScope);
 	const targetRelative = targetRelativePath(candidate);
 	const targetPath = join(destinationRoot, targetRelative);
-	const instructionSourceContent = candidate.type === "instruction" ? readFileSync(candidate.path, "utf8") : undefined;
-	const instructionTargetContent =
-		candidate.type === "instruction" && existsSync(targetPath) ? readFileSync(targetPath, "utf8") : undefined;
-	const ruleHunks = candidate.type === "instruction" ? instructionHunks(candidate, targetPath) : undefined;
 	const sourceRelative = sourceRelativePath(candidate);
 	const rewrites = resourcePathRewrites({
 		harness: profile.harness,
@@ -735,10 +678,9 @@ function createItem(
 		cwd,
 		agentDir,
 	});
-	const contentHash = hashResource(candidate.path);
 	const warnings: string[] = [];
 	if (candidate.type === "instruction") {
-		warnings.push("只修改 LYStar Code 的目标 AGENTS.md，来源 Harness 文件不会被修改");
+		warnings.push("会完整覆盖 LYStar Code 的全局 AGENTS.md，来源 Harness 文件不会被修改");
 		if (candidate.referencedPaths?.length)
 			warnings.push(`会一并迁移 ${candidate.referencedPaths.length} 个被引用文件`);
 	} else if (candidate.type === "prompt" && candidate.description === undefined) {
@@ -749,7 +691,7 @@ function createItem(
 		warnings.push(
 			`导入到 LYStar Code 时会改写 ${rewriteCount} 处 ${profile.label} 路径引用；原 Harness 文件不变，脚本执行权限会保留`,
 		);
-	const id = hashText(`${profile.harness}:${sourceScope}:${targetScope}:${pathKey(candidate.path)}:${targetRelative}`);
+	const id = hashText(`${profile.harness}:${sourceScope}:${pathKey(candidate.path)}:${targetRelative}`);
 	return {
 		id,
 		harness: profile.harness,
@@ -757,25 +699,17 @@ function createItem(
 		sourceScope,
 		resourceType: candidate.type,
 		name: candidate.name,
-		sourceRelativePath: sourceRelativePath(candidate),
+		sourceRelativePath: sourceRelative,
 		targetRelativePath: targetRelative,
 		...(candidate.description ? { description: candidate.description } : {}),
-		...(ruleHunks ? { instructionHunks: ruleHunks } : {}),
-		...(instructionSourceContent !== undefined ? { instructionSourceContent } : {}),
-		...(instructionTargetContent !== undefined ? { instructionTargetContent } : {}),
-		status: itemStatus(targetPath, candidate.type, contentHash, ruleHunks),
 		warnings,
-		contentHash,
+		contentHash: hashResource(candidate.path),
 		sourcePath: candidate.path,
 		targetPath,
 	};
 }
 
-export function discoverHarnessImports(options: {
-	cwd: string;
-	agentDir: string;
-	targetScope: HarnessImportScope;
-}): HarnessImportPreview {
+export function discoverHarnessImports(options: { cwd: string; agentDir: string }): HarnessImportPreview {
 	const cwd = resolve(options.cwd);
 	const agentDir = resolve(options.agentDir);
 	const profiles = profilePaths(homedir(), cwd);
@@ -785,9 +719,7 @@ export function discoverHarnessImports(options: {
 		for (const scope of ["user", "project"] as const) {
 			const candidates = collectCandidates(profile, scope, cwd);
 			const detected = sourceDetected(profile, scope, candidates);
-			const sourceItems = candidates.map((candidate) =>
-				createItem(profile, candidate, scope, options.targetScope, agentDir, cwd),
-			);
+			const sourceItems = candidates.map((candidate) => createItem(profile, candidate, scope, agentDir, cwd));
 			const itemIdsBySourcePath = new Map(sourceItems.map((item) => [pathKey(item.sourcePath), item.id]));
 			const enrichedItems = sourceItems.map((item, index) => {
 				const referencedItemIds = [
@@ -845,12 +777,7 @@ function copyDirectory(source: string, target: string, rewrites: PathRewrite[] =
 	}
 }
 
-function previewPathRewrites(
-	items: HarnessImportItem[],
-	targetScope: HarnessImportScope,
-	cwd: string,
-	agentDir: string,
-): PathRewrite[] {
+function previewPathRewrites(items: HarnessImportItem[], cwd: string, agentDir: string): PathRewrite[] {
 	const rewrites: PathRewrite[] = [];
 	for (const item of items) {
 		for (const rewrite of resourcePathRewrites({
@@ -860,7 +787,7 @@ function previewPathRewrites(
 			sourceRelativePath: item.sourceRelativePath,
 			targetPath: item.targetPath,
 			targetRelativePath: item.targetRelativePath,
-			targetScope,
+			targetScope: item.sourceScope,
 			cwd,
 			agentDir,
 		})) {
@@ -871,99 +798,46 @@ function previewPathRewrites(
 	return rewrites.sort((left, right) => right.from.length - left.from.length);
 }
 
-function overwriteInstruction(item: HarnessImportItem, rewrites: PathRewrite[]): void {
-	const source = item.instructionSourceContent ?? readFileSync(item.sourcePath, "utf8");
-	mkdirSync(dirname(item.targetPath), { recursive: true });
-	writeFileSync(item.targetPath, `${rewriteText(source, rewrites).text.trimEnd()}\n`, "utf8");
-}
-
-function appendInstruction(
-	item: HarnessImportItem,
-	selectedHunkIds: string[] | undefined,
-	rewrites: PathRewrite[],
-): boolean {
-	const target = existsSync(item.targetPath) ? readFileSync(item.targetPath, "utf8").trimEnd() : "";
-	const hunks = item.instructionHunks ?? [
-		{
-			id: "legacy",
-			title: item.name,
-			lines: readFileSync(item.sourcePath, "utf8").trim().split(/\r?\n/u),
-		},
-	];
-	const selected = selectedHunkIds === undefined ? new Set(hunks.map((hunk) => hunk.id)) : new Set(selectedHunkIds);
-	const additions: string[] = [];
-	for (const hunk of hunks) {
-		if (!selected.has(hunk.id)) continue;
-		const block = rewriteText(hunk.lines.join("\n"), rewrites).text.trim();
-		const start = `<!-- LYStar 导入自 ${item.harnessLabel}：${item.sourceRelativePath}#${hunk.id} -->`;
-		const end = `<!-- LYStar 导入结束：${item.sourceRelativePath}#${hunk.id} -->`;
-		if (!block || target.includes(start) || target.includes(block)) continue;
-		additions.push([start, block, end].join("\n\n"));
-	}
-	if (additions.length === 0) return false;
-	const content = [target, ...additions].filter(Boolean).join("\n\n");
-	mkdirSync(dirname(item.targetPath), { recursive: true });
-	writeFileSync(item.targetPath, `${content}\n`, "utf8");
-	return true;
-}
-
 export function importHarnessResources(options: {
 	cwd: string;
 	agentDir: string;
-	targetScope: HarnessImportScope;
 	itemIds: string[];
-	ruleSelections?: Record<string, string[]>;
-	replaceItemIds?: string[];
 }): HarnessImportResult {
-	const preview = discoverHarnessImports({
-		cwd: options.cwd,
-		agentDir: options.agentDir,
-		targetScope: options.targetScope,
-	});
+	const preview = discoverHarnessImports({ cwd: options.cwd, agentDir: options.agentDir });
 	const selected = new Set(options.itemIds);
 	for (const item of preview.items) {
-		if (!selected.has(item.id) || item.resourceType !== "instruction" || item.status !== "ready") continue;
+		if (!selected.has(item.id) || item.resourceType !== "instruction") continue;
 		for (const dependencyId of item.referencedItemIds ?? []) selected.add(dependencyId);
 	}
-	const replacements = new Set(options.replaceItemIds);
-	const rewrites = previewPathRewrites(preview.items, options.targetScope, options.cwd, options.agentDir);
+	const selectedItems = preview.items.filter((candidate) => selected.has(candidate.id));
+	const rewrites = previewPathRewrites(selectedItems, options.cwd, options.agentDir);
 	const result: HarnessImportResult = { imported: 0, skipped: 0, failed: 0, items: [] };
-	for (const item of preview.items.filter((candidate) => selected.has(candidate.id))) {
-		if (item.status === "already-imported" || item.status === "conflict" || item.status === "unsupported") {
-			result.skipped++;
-			result.items.push({
-				id: item.id,
-				status: "skipped",
-				message:
-					item.status === "already-imported"
-						? "内容已经导入"
-						: item.status === "conflict"
-							? "目标文件已存在且内容不同"
-							: "资源格式不支持",
-			});
-			continue;
-		}
-		if (item.resourceType !== "instruction" && existsSync(item.targetPath)) {
-			result.skipped++;
-			result.items.push({ id: item.id, status: "skipped", message: "目标路径已被其他资源占用" });
-			continue;
-		}
+	const backupRoot = join(
+		resolve(options.agentDir),
+		"migration-backups",
+		`${new Date().toISOString().replace(/[:.]/gu, "-")}-${randomUUID()}`,
+	);
+	const backups = new Map<string, string>();
+	for (const item of selectedItems) {
+		let itemBackupPath = backups.get(item.targetPath);
 		try {
-			if (item.resourceType === "instruction") {
-				if (replacements.has(item.id)) overwriteInstruction(item, rewrites);
-				else if (!appendInstruction(item, options.ruleSelections?.[item.id], rewrites)) {
-					result.skipped++;
-					result.items.push({ id: item.id, status: "skipped", message: "没有选择新的规则块" });
-					continue;
-				}
-			} else if (statSync(item.sourcePath).isDirectory()) {
-				copyDirectory(item.sourcePath, item.targetPath, rewrites);
-			} else {
-				copyFile(item.sourcePath, item.targetPath, rewrites);
+			if (!itemBackupPath && existsSync(item.targetPath)) {
+				itemBackupPath = join(backupRoot, item.sourceScope, item.targetRelativePath);
+				mkdirSync(dirname(itemBackupPath), { recursive: true });
+				cpSync(item.targetPath, itemBackupPath, { recursive: true, force: true, preserveTimestamps: true });
+				backups.set(item.targetPath, itemBackupPath);
 			}
+			rmSync(item.targetPath, { recursive: true, force: true });
+			if (statSync(item.sourcePath).isDirectory()) copyDirectory(item.sourcePath, item.targetPath, rewrites);
+			else copyFile(item.sourcePath, item.targetPath, rewrites);
 			result.imported++;
 			result.items.push({ id: item.id, status: "imported" });
 		} catch (error) {
+			if (itemBackupPath && existsSync(itemBackupPath)) {
+				rmSync(item.targetPath, { recursive: true, force: true });
+				mkdirSync(dirname(item.targetPath), { recursive: true });
+				cpSync(itemBackupPath, item.targetPath, { recursive: true, force: true, preserveTimestamps: true });
+			}
 			result.failed++;
 			result.items.push({
 				id: item.id,
@@ -972,5 +846,6 @@ export function importHarnessResources(options: {
 			});
 		}
 	}
+	if (backups.size > 0) result.backupPath = backupRoot;
 	return result;
 }

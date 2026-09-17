@@ -112,7 +112,6 @@ import type {
 	GitStatus,
 	HarnessImportPreview,
 	HarnessImportResult,
-	HarnessImportScope,
 	HostDirectoryListing,
 	JsonValue,
 	ModelOptions,
@@ -2996,8 +2995,8 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		return this.listModels();
 	}
 
-	listHarnessImports(cwd: string, targetScope: HarnessImportScope): HarnessImportPreview {
-		const preview = discoverHarnessImports({ cwd, agentDir: this.agentDir, targetScope });
+	listHarnessImports(cwd: string): HarnessImportPreview {
+		const preview = discoverHarnessImports({ cwd, agentDir: this.agentDir });
 		return {
 			sources: preview.sources,
 			items: preview.items.map(
@@ -3008,21 +3007,15 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 
 	async importHarnessResources(
 		cwd: string,
-		targetScope: HarnessImportScope,
 		itemIds: string[],
 		onUiRequest: UiRequestHandler,
-		ruleSelections?: Record<string, string[]>,
-		replaceItemIds?: string[],
 	): Promise<HarnessImportResult> {
-		if (targetScope === "project") await this.createTrustedSettings(cwd, onUiRequest);
-		return importHarnessResources({
-			cwd,
-			agentDir: this.agentDir,
-			targetScope,
-			itemIds,
-			ruleSelections,
-			replaceItemIds,
-		});
+		const selectedIds = new Set(itemIds);
+		const preview = discoverHarnessImports({ cwd, agentDir: this.agentDir });
+		if (preview.items.some((item) => selectedIds.has(item.id) && item.sourceScope === "project")) {
+			await this.createTrustedSettings(cwd, onUiRequest);
+		}
+		return importHarnessResources({ cwd, agentDir: this.agentDir, itemIds });
 	}
 
 	async listSkills(

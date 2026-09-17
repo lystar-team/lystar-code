@@ -659,29 +659,18 @@ export class WebApi {
 		);
 	}
 
-	async harnessImports(projectId: string, targetScope: "user" | "project"): Promise<HarnessImportsResponse> {
+	async harnessImports(projectId: string): Promise<HarnessImportsResponse> {
 		return this.request<HarnessImportsResponse>(
-			`/api/settings/imports?projectId=${encodeURIComponent(projectId)}&targetScope=${targetScope}`,
+			`/api/settings/imports?projectId=${encodeURIComponent(projectId)}`,
 		);
 	}
 
-	async importHarnessResources(
-		projectId: string,
-		targetScope: "user" | "project",
-		itemIds: string[],
-		ruleSelections?: Record<string, string[]>,
-		replaceItemIds?: string[],
-	): Promise<HarnessImportResultResponse> {
+	async importHarnessResources(projectId: string, itemIds: string[]): Promise<HarnessImportResultResponse> {
 		return this.request<HarnessImportResultResponse>(
-			`/api/settings/imports?projectId=${encodeURIComponent(projectId)}&targetScope=${targetScope}`,
+			`/api/settings/imports?projectId=${encodeURIComponent(projectId)}`,
 			{
 				method: "POST",
-				body: JSON.stringify({
-					itemIds,
-					...(ruleSelections ? { ruleSelections } : {}),
-					...(replaceItemIds ? { replaceItemIds } : {}),
-					clientRequestId: createUuid(),
-				}),
+				body: JSON.stringify({ itemIds, clientRequestId: createUuid() }),
 			},
 		);
 	}

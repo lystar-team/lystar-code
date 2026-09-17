@@ -3729,13 +3729,12 @@ export class WebGatewayServer {
 			const projectId = stringValue(url.searchParams.get("projectId"));
 			if (!projectId) throw new HttpError(400, "project_required", "导入资源需要当前项目");
 			const project = this.project(projectId);
-			const targetScope = url.searchParams.get("targetScope") === "project" ? "project" : "user";
 			const client = await this.getClient(context);
 			if (request.method === "GET") {
 				sendJson(
 					response,
 					200,
-					await client.request<JsonValue>({ command: "list_harness_imports", cwd: project.cwd, targetScope }),
+					await client.request<JsonValue>({ command: "list_harness_imports", cwd: project.cwd }),
 				);
 				return;
 			}
@@ -3744,43 +3743,14 @@ export class WebGatewayServer {
 				const itemIds = Array.isArray(body.itemIds)
 					? body.itemIds.filter((value): value is string => typeof value === "string" && value.length > 0)
 					: [];
-				if (itemIds.length === 0) throw new HttpError(400, "import_items_required", "至少选择一项资源");
-				const ruleSelections: Record<string, string[]> = {};
-				if (body.ruleSelections !== undefined) {
-					if (
-						typeof body.ruleSelections !== "object" ||
-						body.ruleSelections === null ||
-						Array.isArray(body.ruleSelections)
-					)
-						throw new HttpError(400, "rule_selections_invalid", "规则合并选择格式无效");
-					for (const [itemId, selections] of Object.entries(body.ruleSelections)) {
-						if (
-							!Array.isArray(selections) ||
-							selections.some((value) => typeof value !== "string" || value.length === 0)
-						)
-							throw new HttpError(400, "rule_selections_invalid", "规则合并选择格式无效");
-						ruleSelections[itemId] = selections;
-					}
-				}
-				const replaceItemIds: string[] = [];
-				if (body.replaceItemIds !== undefined) {
-					if (
-						!Array.isArray(body.replaceItemIds) ||
-						body.replaceItemIds.some((value) => typeof value !== "string" || value.length === 0)
-					)
-						throw new HttpError(400, "replace_items_invalid", "覆盖资源列表格式无效");
-					replaceItemIds.push(...body.replaceItemIds);
-				}
+				if (itemIds.length === 0) throw new HttpError(400, "import_items_required", "没有可迁移的资源");
 				sendJson(
 					response,
 					200,
 					await client.request<JsonValue>({
 						command: "import_harness_resources",
 						cwd: project.cwd,
-						targetScope,
 						itemIds,
-						...(Object.keys(ruleSelections).length > 0 ? { ruleSelections } : {}),
-						...(replaceItemIds.length > 0 ? { replaceItemIds } : {}),
 						clientInstanceId: context.id,
 						clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
 					}),

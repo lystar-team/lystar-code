@@ -892,13 +892,6 @@ export const HarnessResourceTypeSchema = Type.Union([
 	Type.Literal("reference"),
 ]);
 export type HarnessResourceType = Static<typeof HarnessResourceTypeSchema>;
-export const HarnessImportItemStatusSchema = Type.Union([
-	Type.Literal("ready"),
-	Type.Literal("already-imported"),
-	Type.Literal("conflict"),
-	Type.Literal("unsupported"),
-]);
-export type HarnessImportItemStatus = Static<typeof HarnessImportItemStatusSchema>;
 export const HarnessImportSourceSchema = StrictObject({
 	id: Id,
 	harness: HarnessIdSchema,
@@ -915,12 +908,6 @@ export const HarnessImportSourceSchema = StrictObject({
 	}),
 });
 export type HarnessImportSource = Static<typeof HarnessImportSourceSchema>;
-export const HarnessImportInstructionHunkSchema = StrictObject({
-	id: Id,
-	title: Type.String({ minLength: 1, maxLength: 4096 }),
-	lines: Type.Array(Type.String({ maxLength: 16 * 1024 }), { minItems: 1, maxItems: 512 }),
-});
-export type HarnessImportInstructionHunk = Static<typeof HarnessImportInstructionHunkSchema>;
 export const HarnessImportItemSchema = StrictObject({
 	id: Id,
 	harness: HarnessIdSchema,
@@ -931,11 +918,7 @@ export const HarnessImportItemSchema = StrictObject({
 	sourceRelativePath: Type.String({ minLength: 1, maxLength: 4096 }),
 	targetRelativePath: Type.String({ minLength: 1, maxLength: 4096 }),
 	description: Type.Optional(Type.String({ maxLength: 16 * 1024 })),
-	instructionHunks: Type.Optional(Type.Array(HarnessImportInstructionHunkSchema, { maxItems: 512 })),
-	instructionSourceContent: Type.Optional(Type.String({ maxLength: 4 * 1024 * 1024 })),
-	instructionTargetContent: Type.Optional(Type.String({ maxLength: 4 * 1024 * 1024 })),
 	referencedItemIds: Type.Optional(Type.Array(Id, { maxItems: 512 })),
-	status: HarnessImportItemStatusSchema,
 	warnings: Type.Array(Type.String({ maxLength: 4096 }), { maxItems: 32 }),
 });
 export type HarnessImportItem = Static<typeof HarnessImportItemSchema>;
@@ -955,6 +938,7 @@ export const HarnessImportResultSchema = StrictObject({
 	skipped: Type.Integer({ minimum: 0 }),
 	failed: Type.Integer({ minimum: 0 }),
 	items: Type.Array(HarnessImportResultItemSchema, { maxItems: 10_000 }),
+	backupPath: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
 });
 export type HarnessImportResult = Static<typeof HarnessImportResultSchema>;
 
@@ -1710,19 +1694,13 @@ export const CommandSchema = Type.Union([
 	StrictObject({
 		command: Type.Literal("list_harness_imports"),
 		cwd: Type.String({ minLength: 1 }),
-		targetScope: HarnessImportScopeSchema,
 	}),
 	StrictObject({
 		command: Type.Literal("import_harness_resources"),
 		sessionPath: Type.Optional(Type.String({ minLength: 1 })),
 		leaseId: Type.Optional(Id),
 		cwd: Type.String({ minLength: 1 }),
-		targetScope: HarnessImportScopeSchema,
 		itemIds: Type.Array(Id, { maxItems: 10_000 }),
-		ruleSelections: Type.Optional(
-			Type.Record(Type.String({ minLength: 1, maxLength: 4096 }), Type.Array(Id, { maxItems: 512 })),
-		),
-		replaceItemIds: Type.Optional(Type.Array(Id, { maxItems: 512 })),
 		clientInstanceId: Id,
 		clientRequestId: Id,
 	}),

@@ -8,6 +8,7 @@ import {
 	hasActiveSessionSnapshot,
 	hasActiveSessionWork,
 	hasActiveToolActivities,
+	matchPendingUserPrompts,
 	reconcileCommittedTurn,
 	reconcilePendingUserPrompts,
 	reconcileQueuedUserPromptCounts,
@@ -60,6 +61,13 @@ function operation(status: WebOperation["status"], updatedAt: number): WebOperat
 }
 
 describe("chat lifecycle", () => {
+	it("把乐观用户消息匹配到已落盘条目并带回发送时刻", () => {
+		const pending = [{ id: "optimistic-user:1", text: "新任务", attachments: [], sentAt: 1_789_628_000_000 }];
+
+		expect(matchPendingUserPrompts(pending, [user])).toEqual([{ prompt: pending[0], entryId: "user-2" }]);
+		expect(matchPendingUserPrompts(pending, [assistant])).toEqual([]);
+	});
+
 	it("blocks prompt submission before the session subscription is ready", () => {
 		const current = { ...liveState(), connected: true, readOnly: false, sessionReady: false };
 		expect(canSendPrompt(current)).toBe(false);

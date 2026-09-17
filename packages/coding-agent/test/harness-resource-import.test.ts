@@ -10,51 +10,53 @@ describe("harness resource import", () => {
 		for (const cleanup of cleanups.splice(0)) cleanup();
 	});
 
-	it("detects project Claude Code resources and previews relative targets", () => {
+	it("detects project resources without treating project rules as migration input", () => {
 		const root = mkdtempSync(join(tmpdir(), "lystar-harness-preview-"));
 		const cwd = join(root, "project");
 		const agentDir = join(root, "agent");
-		mkdirSync(join(cwd, ".claude", "skills", "review", "references"), { recursive: true });
+		mkdirSync(join(cwd, ".claude", "skills", "review"), { recursive: true });
 		mkdirSync(join(cwd, ".claude", "commands"), { recursive: true });
 		writeFileSync(
 			join(cwd, ".claude", "skills", "review", "SKILL.md"),
 			"---\nname: review\ndescription: Review code\n---\nUse review.\n",
 		);
-		writeFileSync(join(cwd, ".claude", "skills", "review", "references", "guide.md"), "guide\n");
-		writeFileSync(
-			join(cwd, ".claude", "commands", "review.md"),
-			"---\ndescription: Review changes\n---\nReview $ARGUMENTS\n",
-		);
-		writeFileSync(join(cwd, ".claude", "CLAUDE.md"), "Project rules\n");
+		writeFileSync(join(cwd, ".claude", "commands", "review.md"), "Review $ARGUMENTS\n");
+		writeFileSync(join(cwd, "CLAUDE.md"), "Project root rules\n");
+		writeFileSync(join(cwd, ".claude", "CLAUDE.md"), "Project harness rules\n");
 		cleanups.push(() => rmSync(root, { recursive: true, force: true }));
 
-		const preview = discoverHarnessImports({ cwd, agentDir, targetScope: "project" });
-		const claude = preview.sources.filter((source) => source.harness === "claude-code" && source.scope === "project");
+		const preview = discoverHarnessImports({ cwd, agentDir });
+		const source = preview.sources.find(
+			(candidate) => candidate.harness === "claude-code" && candidate.scope === "project",
+		);
 		const items = preview.items.filter((item) => item.harness === "claude-code" && item.sourceScope === "project");
 
-		expect(claude).toHaveLength(1);
-		expect(claude[0]).toMatchObject({ detected: true, resourceCount: 3 });
+		expect(source).toMatchObject({ detected: true, resourceCount: 2 });
+		expect(source?.resourceTypes.instructions).toBe(0);
 		expect(items.map((item) => item.targetRelativePath)).toEqual(
-			expect.arrayContaining(["skills/review", "prompts/review.md", "AGENTS.md"]),
+			expect.arrayContaining(["skills/review", "prompts/review.md"]),
 		);
-		expect(items.every((item) => !item.sourceRelativePath.startsWith("/"))).toBe(true);
+		expect(items.some((item) => item.resourceType === "instruction")).toBe(false);
 	});
 
-	it("imports selected resources and remains idempotent", () => {
-		const root = mkdtempSync(join(tmpdir(), "lystar-harness-import-"));
+	it("overwrites global resources and the full global AGENTS.md", () => {
+		const root = mkdtempSync(join(tmpdir(), "lystar-harness-global-"));
 		const cwd = join(root, "project");
 		const agentDir = join(root, "agent");
-		mkdirSync(join(cwd, ".claude", "skills", "writer"), { recursive: true });
-		mkdirSync(join(cwd, ".claude", "commands"), { recursive: true });
-		mkdirSync(agentDir, { recursive: true });
-		writeFileSync(
-			join(cwd, ".claude", "skills", "writer", "SKILL.md"),
-			"---\nname: writer\ndescription: Write\n---\nWrite.\n",
-		);
-		writeFileSync(join(cwd, ".claude", "skills", "writer", "template.txt"), "template\n");
-		writeFileSync(join(cwd, ".claude", "commands", "write.md"), "Write $ARGUMENTS\n");
-		writeFileSync(join(cwd, ".claude", "CLAUDE.md"), "Keep output concise.\n");
-		writeFileSync(join(agentDir, "AGENTS.md"), "Existing rules.\n");
+		const sourceSkill = join(root, ".claude", "skills", "writer");
+		mkdirSync(sourceSkill, { recursive: true });
+		mkdirSync(join(root, ".claude", "commands"), { recursive: true });
+		mkdirSync(join(agentDir, "skills", "writer"), { recursive: true });
+		mkdirSync(join(agentDir, "prompts"), { recursive: true });
+		writeFileSync(join(sourceSkill, "SKILL.md"), "---\nname: writer\ndescription: Write\n---\nNew skill.\n");
+		writeFileSync(join(sourceSkill, "template.txt"), "new template\n");
+		writeFileSync(join(root, ".claude", "commands", "write.md"), "New prompt\n");
+		const sourceRules = "# Global rules\nUse the imported rules.\n";
+		writeFileSync(join(root, ".claude", "CLAUDE.md"), sourceRules);
+		writeFileSync(join(agentDir, "skills", "writer", "SKILL.md"), "Old skill\n");
+		writeFileSync(join(agentDir, "skills", "writer", "stale.txt"), "stale\n");
+		writeFileSync(join(agentDir, "prompts", "write.md"), "Old prompt\n");
+		writeFileSync(join(agentDir, "AGENTS.md"), "Old rules\n");
 		const previousHome = process.env.HOME;
 		process.env.HOME = root;
 		cleanups.push(() => {
@@ -63,44 +65,47 @@ describe("harness resource import", () => {
 			rmSync(root, { recursive: true, force: true });
 		});
 
-		const initial = discoverHarnessImports({ cwd, agentDir, targetScope: "user" });
-		const selected = initial.items.filter((item) => item.harness === "claude-code" && item.sourceScope === "project");
-		const first = importHarnessResources({
-			cwd,
-			agentDir,
-			targetScope: "user",
-			itemIds: selected.map((item) => item.id),
-		});
+		const preview = discoverHarnessImports({ cwd, agentDir });
+		const itemIds = preview.items
+			.filter((item) => item.harness === "claude-code" && item.sourceScope === "user")
+			.map((item) => item.id);
+		const first = importHarnessResources({ cwd, agentDir, itemIds });
 
 		expect(first).toMatchObject({ imported: 3, skipped: 0, failed: 0 });
-		expect(existsSync(join(agentDir, "skills", "writer", "template.txt"))).toBe(true);
-		expect(readFileSync(join(agentDir, "prompts", "write.md"), "utf8")).toContain("$ARGUMENTS");
-		expect(readFileSync(join(agentDir, "AGENTS.md"), "utf8")).toContain("Keep output concise.");
+		expect(first.backupPath).toBeDefined();
+		expect(readFileSync(join(first.backupPath!, "user", "AGENTS.md"), "utf8")).toBe("Old rules\n");
+		expect(readFileSync(join(first.backupPath!, "user", "skills", "writer", "stale.txt"), "utf8")).toBe("stale\n");
+		expect(readFileSync(join(agentDir, "skills", "writer", "template.txt"), "utf8")).toBe("new template\n");
+		expect(existsSync(join(agentDir, "skills", "writer", "stale.txt"))).toBe(false);
+		expect(readFileSync(join(agentDir, "prompts", "write.md"), "utf8")).toBe("New prompt\n");
+		expect(readFileSync(join(agentDir, "AGENTS.md"), "utf8")).toBe(sourceRules);
 
-		const secondPreview = discoverHarnessImports({ cwd, agentDir, targetScope: "user" });
+		const secondPreview = discoverHarnessImports({ cwd, agentDir });
 		const second = importHarnessResources({
 			cwd,
 			agentDir,
-			targetScope: "user",
-			itemIds: secondPreview.items.filter((item) => item.harness === "claude-code").map((item) => item.id),
+			itemIds: secondPreview.items
+				.filter((item) => item.harness === "claude-code" && item.sourceScope === "user")
+				.map((item) => item.id),
 		});
-		expect(second).toMatchObject({ imported: 0, failed: 0 });
-		expect(second.skipped).toBeGreaterThanOrEqual(3);
+		expect(second).toMatchObject({ imported: 3, skipped: 0, failed: 0 });
 	});
 
-	it("imports Skill scripts, rewrites Harness paths, and preserves executable permissions", () => {
-		const root = mkdtempSync(join(tmpdir(), "lystar-harness-skill-script-"));
+	it("replaces project resource directories, rewrites paths, and preserves executable permissions", () => {
+		const root = mkdtempSync(join(tmpdir(), "lystar-harness-project-"));
 		const cwd = join(root, "project");
 		const agentDir = join(root, "agent");
-		const skillDir = join(cwd, ".claude", "skills", "runner");
+		const skillDir = join(cwd, ".codex", "skills", "runner");
 		const scriptPath = join(skillDir, "scripts", "run.py");
 		mkdirSync(dirname(scriptPath), { recursive: true });
+		mkdirSync(join(cwd, ".pi", "skills", "runner"), { recursive: true });
 		writeFileSync(
 			join(skillDir, "SKILL.md"),
-			`---\nname: runner\ndescription: Run the helper\n---\nRun .claude/skills/runner/scripts/run.py and ${scriptPath}.\n`,
+			"---\nname: runner\ndescription: Run\n---\nRun .codex/skills/runner/scripts/run.py.\n",
 		);
-		writeFileSync(scriptPath, `#!/usr/bin/env python3\n# ${scriptPath}\nprint("ok")\n`);
+		writeFileSync(scriptPath, "#!/usr/bin/env python3\nprint('ok')\n");
 		chmodSync(scriptPath, 0o755);
+		writeFileSync(join(cwd, ".pi", "skills", "runner", "stale.txt"), "stale\n");
 		const previousHome = process.env.HOME;
 		process.env.HOME = root;
 		cleanups.push(() => {
@@ -109,40 +114,35 @@ describe("harness resource import", () => {
 			rmSync(root, { recursive: true, force: true });
 		});
 
-		const preview = discoverHarnessImports({ cwd, agentDir, targetScope: "project" });
+		const preview = discoverHarnessImports({ cwd, agentDir });
 		const item = preview.items.find(
 			(candidate) =>
-				candidate.harness === "claude-code" && candidate.resourceType === "skill" && candidate.name === "runner",
+				candidate.harness === "codex" && candidate.sourceScope === "project" && candidate.resourceType === "skill",
 		);
-		expect(item?.warnings.join(" ")).toContain("改写");
-		const result = importHarnessResources({
-			cwd,
-			agentDir,
-			targetScope: "project",
-			itemIds: item ? [item.id] : [],
-		});
+		const result = importHarnessResources({ cwd, agentDir, itemIds: item ? [item.id] : [] });
 
 		expect(result).toMatchObject({ imported: 1, skipped: 0, failed: 0 });
+		expect(result.backupPath).toBeDefined();
+		expect(readFileSync(join(result.backupPath!, "project", "skills", "runner", "stale.txt"), "utf8")).toBe(
+			"stale\n",
+		);
 		const targetSkillDir = join(cwd, ".pi", "skills", "runner");
-		const targetSkill = readFileSync(join(targetSkillDir, "SKILL.md"), "utf8");
-		const targetScript = readFileSync(join(targetSkillDir, "scripts", "run.py"), "utf8");
-		expect(targetSkill).toContain(".pi/skills/runner/scripts/run.py");
-		expect(targetSkill).not.toContain(".claude/skills/runner/scripts/run.py");
-		expect(targetScript).toContain(".pi/skills/runner/scripts/run.py");
-		expect(targetScript).not.toContain(".claude/skills/runner/scripts/run.py");
+		expect(existsSync(join(targetSkillDir, "stale.txt"))).toBe(false);
+		expect(readFileSync(join(targetSkillDir, "SKILL.md"), "utf8")).toContain(".pi/skills/runner/scripts/run.py");
 		expect(statSync(join(targetSkillDir, "scripts", "run.py")).mode & 0o111).toBeGreaterThan(0);
 	});
 
-	it("merges only the selected instruction hunks", () => {
-		const root = mkdtempSync(join(tmpdir(), "lystar-harness-rule-hunks-"));
+	it("imports files referenced by a global rule and leaves project rules untouched", () => {
+		const root = mkdtempSync(join(tmpdir(), "lystar-harness-references-"));
 		const cwd = join(root, "project");
 		const agentDir = join(root, "agent");
-		mkdirSync(join(cwd, ".claude"), { recursive: true });
-		mkdirSync(agentDir, { recursive: true });
-		writeFileSync(
-			join(cwd, ".claude", "CLAUDE.md"),
-			"# Keep\nAlways keep output concise.\n\n# Optional\nUse a table when it helps.\n",
-		);
+		const sourceRoot = join(root, ".codex");
+		const guidePath = join(sourceRoot, "docs", "guide.md");
+		mkdirSync(dirname(guidePath), { recursive: true });
+		mkdirSync(cwd, { recursive: true });
+		writeFileSync(join(sourceRoot, "AGENTS.md"), `Read ${guidePath}.\n`);
+		writeFileSync(guidePath, "Imported guide.\n");
+		writeFileSync(join(cwd, "AGENTS.md"), "Project rules stay here.\n");
 		const previousHome = process.env.HOME;
 		process.env.HOME = root;
 		cleanups.push(() => {
@@ -151,143 +151,16 @@ describe("harness resource import", () => {
 			rmSync(root, { recursive: true, force: true });
 		});
 
-		const preview = discoverHarnessImports({ cwd, agentDir, targetScope: "user" });
-		const item = preview.items.find(
-			(candidate) => candidate.harness === "claude-code" && candidate.sourceScope === "project",
+		const preview = discoverHarnessImports({ cwd, agentDir });
+		const instruction = preview.items.find(
+			(item) => item.harness === "codex" && item.sourceScope === "user" && item.resourceType === "instruction",
 		);
-		expect(item?.instructionHunks).toHaveLength(2);
-		const selected = item?.instructionHunks?.[0];
-		const result = importHarnessResources({
-			cwd,
-			agentDir,
-			targetScope: "user",
-			itemIds: item ? [item.id] : [],
-			ruleSelections: item && selected ? { [item.id]: [selected.id] } : {},
-		});
+		expect(instruction?.referencedItemIds).toHaveLength(1);
+		const result = importHarnessResources({ cwd, agentDir, itemIds: instruction ? [instruction.id] : [] });
 
-		expect(result).toMatchObject({ imported: 1, skipped: 0, failed: 0 });
-		const target = readFileSync(join(agentDir, "AGENTS.md"), "utf8");
-		expect(target).toContain("Always keep output concise.");
-		expect(target).not.toContain("Use a table when it helps.");
-		const remaining = discoverHarnessImports({ cwd, agentDir, targetScope: "user" }).items.find(
-			(candidate) => candidate.harness === "claude-code" && candidate.sourceScope === "project",
-		);
-		expect(remaining?.instructionHunks).toHaveLength(1);
-	});
-	it("can replace the target instruction file with the full source", () => {
-		const root = mkdtempSync(join(tmpdir(), "lystar-harness-rule-replace-"));
-		const cwd = join(root, "project");
-		const agentDir = join(root, "agent");
-		mkdirSync(join(cwd, ".claude"), { recursive: true });
-		mkdirSync(agentDir, { recursive: true });
-		const source = "# Source rules\nUse the source file exactly.\n";
-		writeFileSync(join(cwd, ".claude", "CLAUDE.md"), source);
-		writeFileSync(join(agentDir, "AGENTS.md"), "# Existing rules\nReplace me.\n");
-		const previousHome = process.env.HOME;
-		process.env.HOME = root;
-		cleanups.push(() => {
-			if (previousHome === undefined) delete process.env.HOME;
-			else process.env.HOME = previousHome;
-			rmSync(root, { recursive: true, force: true });
-		});
-
-		const preview = discoverHarnessImports({ cwd, agentDir, targetScope: "user" });
-		const item = preview.items.find(
-			(candidate) => candidate.harness === "claude-code" && candidate.sourceScope === "project",
-		);
-		const result = importHarnessResources({
-			cwd,
-			agentDir,
-			targetScope: "user",
-			itemIds: item ? [item.id] : [],
-			replaceItemIds: item ? [item.id] : [],
-		});
-
-		expect(result).toMatchObject({ imported: 1, skipped: 0, failed: 0 });
-		expect(readFileSync(join(agentDir, "AGENTS.md"), "utf8")).toBe(source);
-	});
-	it("does not overwrite same-name resources selected from different Harnesses", () => {
-		const root = mkdtempSync(join(tmpdir(), "lystar-harness-name-conflict-"));
-		const cwd = join(root, "project");
-		const agentDir = join(root, "agent");
-		mkdirSync(join(cwd, ".codex", "prompts"), { recursive: true });
-		mkdirSync(join(cwd, ".claude", "commands"), { recursive: true });
-		mkdirSync(agentDir, { recursive: true });
-		writeFileSync(join(cwd, ".codex", "prompts", "review.md"), "from codex\n");
-		writeFileSync(join(cwd, ".claude", "commands", "review.md"), "from claude\n");
-		const previousHome = process.env.HOME;
-		process.env.HOME = root;
-		cleanups.push(() => {
-			if (previousHome === undefined) delete process.env.HOME;
-			else process.env.HOME = previousHome;
-			rmSync(root, { recursive: true, force: true });
-		});
-
-		const preview = discoverHarnessImports({ cwd, agentDir, targetScope: "user" });
-		const selected = preview.items.filter((item) => item.sourceScope === "project" && item.resourceType === "prompt");
-		const result = importHarnessResources({
-			cwd,
-			agentDir,
-			targetScope: "user",
-			itemIds: selected.map((item) => item.id),
-		});
-
-		expect(result).toMatchObject({ imported: 1, skipped: 1, failed: 0 });
-		expect(readFileSync(join(agentDir, "prompts", "review.md"), "utf8")).toBe("from codex\n");
-	});
-	it("keeps instruction references to explicit files without expanding directories or source imports", () => {
-		const root = mkdtempSync(join(tmpdir(), "lystar-harness-reference-scope-"));
-		const cwd = join(root, "project");
-		const agentDir = join(root, "agent");
-		const codexDir = join(cwd, ".codex");
-		mkdirSync(join(codexDir, "docs", "archive"), { recursive: true });
-		mkdirSync(join(codexDir, "src", "deep"), { recursive: true });
-		mkdirSync(agentDir, { recursive: true });
-		writeFileSync(join(codexDir, "AGENTS.md"), "Read ./docs/guide.md and ./docs/archive.\n");
-		writeFileSync(join(codexDir, "docs", "guide.md"), "Read ./detail.md and ../src/entry.ts.\n");
-		writeFileSync(join(codexDir, "docs", "detail.md"), "Detailed rules.\n");
-		writeFileSync(join(codexDir, "src", "entry.ts"), 'import "./deep/module.ts";\n');
-		writeFileSync(join(codexDir, "src", "deep", "module.ts"), "export const value = 1;\n");
-		for (let index = 0; index < 20; index++) {
-			writeFileSync(join(codexDir, "docs", "archive", `${index}.md`), `Archived rule ${index}.\n`);
-		}
-		const previousHome = process.env.HOME;
-		process.env.HOME = root;
-		cleanups.push(() => {
-			if (previousHome === undefined) delete process.env.HOME;
-			else process.env.HOME = previousHome;
-			rmSync(root, { recursive: true, force: true });
-		});
-
-		const preview = discoverHarnessImports({ cwd, agentDir, targetScope: "user" });
-		const items = preview.items.filter((item) => item.harness === "codex" && item.sourceScope === "project");
-		const instruction = items.find((item) => item.resourceType === "instruction");
-		const references = items
-			.filter((item) => item.resourceType === "reference")
-			.map((item) => item.sourceRelativePath)
-			.sort();
-
-		expect(references).toEqual(["docs/detail.md", "docs/guide.md", "src/entry.ts"]);
-		expect(instruction?.referencedItemIds).toHaveLength(3);
-		expect(items.some((item) => item.sourceRelativePath.includes("archive/"))).toBe(false);
-		expect(items.some((item) => item.sourceRelativePath.endsWith("deep/module.ts"))).toBe(false);
-	});
-
-	it("skips conflicting prompt files without overwriting them", () => {
-		const root = mkdtempSync(join(tmpdir(), "lystar-harness-conflict-"));
-		const cwd = join(root, "project");
-		const agentDir = join(root, "agent");
-		mkdirSync(join(cwd, ".claude", "commands"), { recursive: true });
-		mkdirSync(join(agentDir, "prompts"), { recursive: true });
-		writeFileSync(join(cwd, ".claude", "commands", "review.md"), "source\n");
-		writeFileSync(join(agentDir, "prompts", "review.md"), "existing\n");
-		cleanups.push(() => rmSync(root, { recursive: true, force: true }));
-
-		const preview = discoverHarnessImports({ cwd, agentDir, targetScope: "user" });
-		const item = preview.items.find((candidate) => candidate.targetRelativePath === "prompts/review.md");
-		expect(item?.status).toBe("conflict");
-		const result = importHarnessResources({ cwd, agentDir, targetScope: "user", itemIds: item ? [item.id] : [] });
-		expect(result).toMatchObject({ imported: 0, skipped: 1, failed: 0 });
-		expect(readFileSync(join(agentDir, "prompts", "review.md"), "utf8")).toBe("existing\n");
+		expect(result).toMatchObject({ imported: 2, skipped: 0, failed: 0 });
+		expect(readFileSync(join(agentDir, "docs", "guide.md"), "utf8")).toBe("Imported guide.\n");
+		expect(readFileSync(join(agentDir, "AGENTS.md"), "utf8")).toContain(join(agentDir, "docs", "guide.md"));
+		expect(readFileSync(join(cwd, "AGENTS.md"), "utf8")).toBe("Project rules stay here.\n");
 	});
 });

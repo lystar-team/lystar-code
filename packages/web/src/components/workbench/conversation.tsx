@@ -40,6 +40,7 @@ type MessageRenderItem = {
 	role: "user" | "assistant" | "system";
 	text: string;
 	timestamp?: string;
+	sentAt?: number;
 	durationLabel?: string;
 	statusLabel?: string;
 	queueId?: string;
@@ -96,7 +97,12 @@ type WorkProcessRenderItem = {
 	key: string;
 	items: ConversationContentRenderItem[];
 };
-type ConversationRenderItem = ConversationContentRenderItem | WorkProcessRenderItem | ResultBoundaryRenderItem;
+type LiveElapsedRenderItem = { kind: "live-elapsed"; key: string; startedAt: number };
+type ConversationRenderItem =
+	| ConversationContentRenderItem
+	| WorkProcessRenderItem
+	| ResultBoundaryRenderItem
+	| LiveElapsedRenderItem;
 type RawRenderItem =
 	| MessageRenderItem
 	| TranscriptItemRenderItem
@@ -113,6 +119,7 @@ const EMPTY_LIVE_STEPS = Object.freeze({}) as WorkbenchState["liveSteps"];
 type ConversationRenderCacheEntry = {
 	transcript: WorkbenchState["transcript"];
 	pendingUserPrompts: WorkbenchState["pendingUserPrompts"];
+	promptSendTimes: WorkbenchState["promptSendTimes"];
 	liveTools: WorkbenchState["liveTools"];
 	liveTurnItems: WorkbenchState["liveTurnItems"];
 	liveCompaction: WorkbenchState["liveCompaction"];
@@ -141,12 +148,40 @@ export function formatElapsedDuration(durationMs: number): string | undefined {
 	return `${days}天${String(hours).padStart(2, "0")}小时${paddedMinutes}分钟${secondsLabel}`;
 }
 
-function elapsedDurationLabel(startTimestamp?: string, endTimestamp?: string): string | undefined {
-	if (!startTimestamp || !endTimestamp) return undefined;
-	const start = Date.parse(startTimestamp);
-	const end = Date.parse(endTimestamp);
-	if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return undefined;
-	return formatElapsedDuration(end - start);
+/**
+ * 回合处理中的实时耗时行，回合结束后由最终回复下方的“本次耗时”接手。
+ * 计时起点是用户按下发送的时刻。
+ */
+export function LiveElapsedHeader({
+	startedAt,
+	onElapsedChange,
+}: {
+	startedAt: number;
+	/** 每次跳动后回报当前显示的秒数，让回合结束时下方数字与用户看到的最后一个数字一致。 */
+	onElapsedChange?: (startedAt: number, seconds: number) => void;
+}) {
+	const [now, setNow] = useState(() => Date.now());
+	useEffect(() => {
+		setNow(Date.now());
+		const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+		return () => window.clearInterval(timer);
+	}, [startedAt]);
+	const elapsedMs = Math.max(0, now - startedAt);
+	const seconds = Math.floor(elapsedMs / 1_000);
+	useEffect(() => {
+		onElapsedChange?.(startedAt, seconds);
+	}, [onElapsedChange, seconds, startedAt]);
+	const label = formatElapsedDuration(elapsedMs);
+	return (
+		<div className="w-full" data-testid="live-elapsed">
+			<div className="pb-2 text-xs text-muted-foreground">{label ? `已处理 ${label}` : "已处理"}</div>
+			<div
+				aria-label="已处理耗时与回复分界"
+				className="w-full border-t border-border/50"
+				role="separator"
+			/>
+		</div>
+	);
 }
 
 function AgentStepContent({
@@ -376,6 +411,7 @@ function conversationRenderItemEqual(previous: ConversationRenderItem, next: Con
 		);
 	}
 	if (previous.kind === "result-boundary" && next.kind === "result-boundary") return true;
+	if (previous.kind === "live-elapsed" && next.kind === "live-elapsed") return previous.startedAt === next.startedAt;
 	if (previous.kind === "compaction" && next.kind === "compaction") {
 		return previous.live
 			? next.live && previous.state === next.state
@@ -528,6 +564,7 @@ export function buildPersistedRenderItems(
 	items: WorkbenchState["transcript"],
 	toolIndex: ToolIndex,
 	pendingUserPrompts: WorkbenchState["pendingUserPrompts"] = [],
+	promptSendTimes: WorkbenchState["promptSendTimes"] = {},
 ): ConversationContentRenderItem[] {
 	const rendered: Array<RawRenderItem> = [];
 	let batchTools: ToolBatchTool[] = [];
@@ -575,6 +612,7 @@ export function buildPersistedRenderItems(
 				live: false,
 				role: "user",
 				text: prompt.text,
+				sentAt: prompt.sentAt,
 				attachments: prompt.attachments,
 				sources: [],
 				copyVisible: false,
@@ -611,6 +649,7 @@ export function buildPersistedRenderItems(
 				role: viewModel.role,
 				text: viewModel.text,
 				timestamp: viewModel.timestamp,
+				sentAt: promptSendTimes[item.entryId],
 				attachments: viewModel.attachments,
 				sources: viewModel.sources,
 				copyVisible: false,
@@ -732,6 +771,7 @@ export function appendLiveRenderItems(
 				live: false,
 				role: "user",
 				text: item.displayText,
+				sentAt: item.sentAt,
 				statusLabel: item.status === "queued" ? "已发出 · 等待当前步骤结束" : "已发出 · Agent 正在处理",
 				queueId: item.status === "queued" ? item.queueId : undefined,
 				attachments: item.attachments,
@@ -820,14 +860,49 @@ export function appendLiveRenderItems(
 	return next;
 }
 
+function messageStartedAt(message: MessageRenderItem): number | undefined {
+	if (message.sentAt !== undefined) return message.sentAt;
+	if (!message.timestamp) return undefined;
+	const parsed = Date.parse(message.timestamp);
+	return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/**
+ * 回合结束后位于最终回复下方的耗时。
+ * 优先用客户端亲眼看到的实时值，保证与上方「已处理」完全一致；
+ * 其次从用户消息的发送时刻算到末条文本回复，历史回合回退到会话时间戳。
+ */
+function completedTurnDurationLabel(
+	userMessage: MessageRenderItem | undefined,
+	finalMessage: MessageRenderItem,
+	observedElapsed?: (sentAt: number) => number | undefined,
+): string | undefined {
+	if (!userMessage) return undefined;
+	const observed = userMessage.sentAt === undefined ? undefined : observedElapsed?.(userMessage.sentAt);
+	if (observed !== undefined) return formatElapsedDuration(observed);
+	const start = messageStartedAt(userMessage);
+	const end = finalMessage.timestamp ? Date.parse(finalMessage.timestamp) : Number.NaN;
+	if (start === undefined || !Number.isFinite(end) || end < start) return undefined;
+	return formatElapsedDuration(end - start);
+}
+
 function markCompletedTurnResult(
 	turn: ConversationContentRenderItem[],
 	completed: boolean,
+	observedElapsed?: (sentAt: number) => number | undefined,
 ): ConversationRenderItem[] {
-	if (!completed) return turn;
 	const firstEntry = turn[0];
 	const userMessage =
 		firstEntry?.kind === "message" && firstEntry.role === "user" ? firstEntry : undefined;
+	if (!completed) {
+		const startedAt = userMessage ? messageStartedAt(userMessage) : undefined;
+		if (!userMessage || startedAt === undefined) return turn;
+		return [
+			userMessage,
+			{ kind: "live-elapsed", key: `live-elapsed:${userMessage.key}`, startedAt },
+			...turn.slice(1),
+		];
+	}
 	let finalMessageIndex = -1;
 	for (let index = turn.length - 1; index >= 0; index--) {
 		const entry = turn[index];
@@ -839,7 +914,7 @@ function markCompletedTurnResult(
 	if (finalMessageIndex < 0) return turn;
 	const finalMessage = turn[finalMessageIndex];
 	if (!finalMessage || finalMessage.kind !== "message") return turn;
-	const durationLabel = userMessage ? elapsedDurationLabel(userMessage.timestamp, finalMessage.timestamp) : undefined;
+	const durationLabel = completedTurnDurationLabel(userMessage, finalMessage, observedElapsed);
 	const completedTurn = durationLabel
 		? turn.map((entry, index) => (index === finalMessageIndex ? { ...entry, durationLabel } : entry))
 		: turn;
@@ -871,18 +946,19 @@ function markCompletedTurnResult(
 function markCompletedTurnResults(
 	rendered: ConversationContentRenderItem[],
 	responseActive: boolean,
+	observedElapsed?: (sentAt: number) => number | undefined,
 ): ConversationRenderItem[] {
 	const next: ConversationRenderItem[] = [];
 	let turn: ConversationContentRenderItem[] = [];
 	for (const entry of rendered) {
 		if (entry.kind === "message" && entry.role === "user") {
-			if (turn.length) next.push(...markCompletedTurnResult(turn, true));
+			if (turn.length) next.push(...markCompletedTurnResult(turn, true, observedElapsed));
 			turn = [entry];
 		} else {
 			turn.push(entry);
 		}
 	}
-	if (turn.length) next.push(...markCompletedTurnResult(turn, !responseActive));
+	if (turn.length) next.push(...markCompletedTurnResult(turn, !responseActive, observedElapsed));
 	return next;
 }
 
@@ -896,6 +972,7 @@ export function buildConversationRenderItems(
 	responseActive: boolean,
 	canEditPrompts = false,
 	liveSteps: WorkbenchState["liveSteps"] = {},
+	observedElapsed?: (sentAt: number) => number | undefined,
 ): ConversationRenderItem[] {
 	const withLive = appendLiveRenderItems(
 		persistedItems,
@@ -920,7 +997,7 @@ export function buildConversationRenderItems(
 			break;
 		}
 	}
-	return markCompletedTurnResults(withLive, responseActive);
+	return markCompletedTurnResults(withLive, responseActive, observedElapsed);
 }
 
 function isConversationResponseActive(state: WorkbenchState): boolean {
@@ -947,12 +1024,29 @@ export function ConversationView({
 	const canEditPrompts = canSendPrompt(state) && !hasActiveSessionWork(state) && state.queuedUserPrompts.length === 0;
 	const liveSteps = responseActive ? state.liveSteps : EMPTY_LIVE_STEPS;
 	const renderCacheRef = useRef(new Map<string, ConversationRenderCacheEntry>());
+	// 实时「已处理」每次跳动回报的秒数，按发送时刻归档，回合结束时供下方「本次耗时」复用。
+	const observedElapsedRef = useRef(new Map<number, number>());
+	const recordLiveElapsed = useCallback((sentAt: number, seconds: number) => {
+		const observed = observedElapsedRef.current;
+		observed.delete(sentAt);
+		observed.set(sentAt, seconds * 1_000);
+		while (observed.size > 64) {
+			const oldest = observed.keys().next().value;
+			if (oldest === undefined) break;
+			observed.delete(oldest);
+		}
+	}, []);
+	const resolveObservedElapsed = useCallback((sentAt: number) => observedElapsedRef.current.get(sentAt), []);
+	useEffect(() => {
+		observedElapsedRef.current.clear();
+	}, [state.sessionId]);
 	const { toolIndex, renderItems } = useMemo(() => {
 		const cacheKey = state.sessionId ?? "empty";
 		const cached = renderCacheRef.current.get(cacheKey);
 		if (
 			cached?.transcript === state.transcript &&
 			cached.pendingUserPrompts === state.pendingUserPrompts &&
+			cached.promptSendTimes === state.promptSendTimes &&
 			cached.liveTools === state.liveTools &&
 			cached.liveTurnItems === state.liveTurnItems &&
 			cached.liveCompaction === state.liveCompaction &&
@@ -1003,6 +1097,7 @@ export function ConversationView({
 			state.transcript,
 			toolIndex,
 			state.pendingUserPrompts,
+			state.promptSendTimes,
 		);
 		const renderItems = buildConversationRenderItems(
 			persistedRenderItems,
@@ -1014,10 +1109,12 @@ export function ConversationView({
 			responseActive,
 			canEditPrompts,
 			liveSteps,
+			resolveObservedElapsed,
 		);
 		const entry: ConversationRenderCacheEntry = {
 			transcript: state.transcript,
 			pendingUserPrompts: state.pendingUserPrompts,
+			promptSendTimes: state.promptSendTimes,
 			liveTools: state.liveTools,
 			liveTurnItems: state.liveTurnItems,
 			liveCompaction: state.liveCompaction,
@@ -1039,12 +1136,14 @@ export function ConversationView({
 	}, [
 		canEditPrompts,
 		liveSteps,
+		resolveObservedElapsed,
 		responseActive,
 		state.liveCompaction,
 		state.liveTools,
 		state.liveTurnId,
 		state.liveTurnItems,
 		state.pendingUserPrompts,
+		state.promptSendTimes,
 		state.sessionId,
 		state.transcript,
 	]);
@@ -1058,6 +1157,7 @@ export function ConversationView({
 					sessionTitleText={sessionTitleText}
 					renderItems={renderItems}
 					toolStatuses={toolIndex.statuses}
+					liveElapsedChange={recordLiveElapsed}
 					onEditPrompt={onEditPrompt}
 				/>
 			</Conversation>
@@ -1071,6 +1171,7 @@ function ConversationBody({
 	sessionTitleText,
 	renderItems,
 	toolStatuses,
+	liveElapsedChange,
 	onEditPrompt,
 }: {
 	state: WorkbenchState;
@@ -1078,6 +1179,7 @@ function ConversationBody({
 	sessionTitleText: string;
 	renderItems: ConversationRenderItem[];
 	toolStatuses: ReadonlyMap<string, "success" | "error">;
+	liveElapsedChange: (sentAt: number, seconds: number) => void;
 	onEditPrompt: (request: PromptEditRequest) => void;
 }) {
 	const responseActive = isConversationResponseActive(state);
@@ -1461,6 +1563,7 @@ function ConversationBody({
 		},
 		[
 			expandedAgentSteps,
+			liveElapsedChange,
 			openResource,
 			renderAgentStepItem,
 			renderCompaction,
@@ -1471,6 +1574,15 @@ function ConversationBody({
 	);
 	const renderConversationItem = useCallback(
 		(entry: ConversationRenderItem) => {
+			if (entry.kind === "live-elapsed") {
+				return (
+					<LiveElapsedHeader
+						key={entry.key}
+						startedAt={entry.startedAt}
+						onElapsedChange={liveElapsedChange}
+					/>
+				);
+			}
 			if (entry.kind === "result-boundary") {
 				return (
 					<div
@@ -1523,7 +1635,9 @@ function ConversationBody({
 		(entry: ConversationRenderItem) =>
 			entry.kind === "result-boundary"
 				? 1
-				: entry.kind === "work-process" ||
+				: entry.kind === "live-elapsed"
+					? 32
+					: entry.kind === "work-process" ||
 						entry.kind === "agent-step" ||
 						entry.kind === "tool-stack" ||
 						entry.kind === "compaction" ||
