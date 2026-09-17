@@ -105,6 +105,15 @@ export function toSessionItemViewModel(
 		return { kind: "reasoning", text: view.text, timestamp: item.timestamp };
 	}
 
+	if (view.type === "agent_step") {
+		return {
+			kind: "summary",
+			title: view.step.title,
+			text: view.step.summary ?? "",
+			timestamp: item.timestamp,
+		};
+	}
+
 	if (view.type === "web_search") {
 		return {
 			kind: "tools",

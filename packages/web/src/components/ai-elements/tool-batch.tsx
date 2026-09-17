@@ -53,6 +53,7 @@ export interface ToolBatchTool {
 	name: string;
 	summary: string;
 	state: ToolBatchState;
+	stepId?: string;
 	detail?: string;
 	sources?: Array<{ url: string; title?: string }>;
 	images?: Array<{ contentRef: string; mimeType: string; byteLength: number; alt?: string }>;
@@ -188,9 +189,14 @@ function toolIcon(name: string, className?: string, skill = false, images = fals
 	return <Icon className={cn("size-4 shrink-0 text-muted-foreground", className)} />;
 }
 
-function toolStatusIndicator(state: ToolBatchState): ReactNode {
+// 运行中把 Loading 放在工具图标的位置，执行结束后换回原工具图标。
+function toolLeadingIcon(state: ToolBatchState, name: string, skill = false, images = false): ReactNode {
 	if (state === "input-available")
-		return <LoaderCircleIcon className="size-3.5 shrink-0 animate-spin text-muted-foreground" />;
+		return <LoaderCircleIcon className="size-4 shrink-0 animate-spin text-muted-foreground" />;
+	return toolIcon(name, undefined, skill, images);
+}
+
+function toolStatusIndicator(state: ToolBatchState): ReactNode {
 	if (state === "input-queued") return <span className="size-1.5 shrink-0 rounded-full bg-muted-foreground" />;
 	if (state === "output-error" || state === "output-cancelled" || state === "output-interrupted")
 		return <span role="img" aria-label={statusLabels[state]} className="size-1.5 shrink-0 rounded-full bg-destructive" />;
@@ -547,12 +553,21 @@ function ToolActivityRow({
 							{filename}
 						</span>
 					) : (
-						<span className="flex min-w-0 items-baseline font-mono text-[13px] leading-5" title={toolTitle(tool)}>
-							{directory ? <span className="min-w-0 truncate text-muted-foreground" data-activity-directory>{directory}</span> : null}
-							<span className="shrink-0 text-foreground" data-activity-filename>{filename}</span>
+						<span
+							className="flex min-w-0 items-baseline overflow-hidden font-mono text-[13px] leading-5"
+							title={toolTitle(tool)}
+						>
+							{directory ? (
+								<span className="hidden min-w-0 truncate text-muted-foreground sm:inline" data-activity-directory>
+									{directory}
+								</span>
+							) : null}
+							<span className="min-w-0 truncate text-foreground sm:shrink-0" data-activity-filename>
+								{filename}
+							</span>
 						</span>
 					)}
-					<span className="flex shrink-0 items-center gap-1.5">
+					<span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
 						{lineRange ? <span className="text-xs tabular-nums text-muted-foreground">{lineRange}</span> : null}
 						{stats ? (
 							<span className="flex gap-1 text-xs">
@@ -1077,12 +1092,19 @@ function ToolBatchRow({
 					type="button"
 					aria-label={`${title}，${statusLabels[tool.state]}${hasDetails ? `，${open ? "收起" : "展开"}详情` : ""}`}
 				>
-					{toolIcon(tool.name, undefined, Boolean(skillName), Boolean(tool.images?.length))}
+					{toolLeadingIcon(tool.state, tool.name, Boolean(skillName), Boolean(tool.images?.length))}
 					{pathParts ? (
-						<span className="flex min-w-0 flex-1 items-baseline font-mono text-[13px]" title={toolTitle(tool)}>
+						<span
+							className="flex min-w-0 flex-1 items-baseline overflow-hidden font-mono text-[13px]"
+							title={toolTitle(tool)}
+						>
 							<span className="mr-1.5 shrink-0">{toolRowActionLabel(tool.name, tool.state)}</span>
-							{pathParts.directory ? <span className="min-w-0 truncate text-muted-foreground">{pathParts.directory}</span> : null}
-							<span className="shrink-0 text-foreground">{pathParts.filename}</span>
+							{pathParts.directory ? (
+								<span className="hidden min-w-0 truncate text-muted-foreground sm:inline">
+									{pathParts.directory}
+								</span>
+							) : null}
+							<span className="min-w-0 truncate text-foreground sm:shrink-0">{pathParts.filename}</span>
 						</span>
 					) : (
 						<span className="min-w-0 flex-1 truncate font-mono text-[13px]" title={title}>
@@ -1096,14 +1118,14 @@ function ToolBatchRow({
 							{stats.deletions ? <span className="text-destructive">-{stats.deletions}</span> : null}
 						</span>
 					) : null}
-					<span className="flex shrink-0 items-center gap-1.5">
+					<span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
 						{toolStatusIndicator(tool.state)}
 						{tool.state !== "output-available" ? (
 							<span className="text-xs text-muted-foreground">{statusLabels[tool.state]}</span>
 						) : null}
 						{hasDetails ? (
 							<ChevronDownIcon
-								className={cn("size-4 text-muted-foreground transition-transform", open && "rotate-180")}
+								className={cn("size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")}
 							/>
 						) : null}
 					</span>
@@ -1300,9 +1322,9 @@ export const ToolBatch = memo(function ToolBatch({
 				type="button"
 				aria-label={`${summaryLabel ?? batchTitle(tools)}，${statusLabels[aggregateState]}${open ? "，收起" : "，展开"}`}
 			>
-				{toolIcon(
+				{toolLeadingIcon(
+					aggregateState,
 					tools[0]?.name ?? "tool",
-					undefined,
 					Boolean(tools[0] && skillNameFromTool(tools[0])),
 					Boolean(tools[0]?.images?.length),
 				)}
@@ -1313,7 +1335,6 @@ export const ToolBatch = memo(function ToolBatch({
 					{aggregateState !== "output-available" ? (
 						<span className="text-xs text-muted-foreground">{statusLabels[aggregateState]}</span>
 					) : null}
-					{aggregateState === "input-available" ? toolStatusIndicator(aggregateState) : null}
 					<ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]/tool-batch:rotate-180" />
 				</span>
 			</CollapsibleTrigger>

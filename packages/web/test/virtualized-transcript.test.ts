@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+	selectTranscriptContentAnchors,
+	shouldCancelPrependAnchorForKey,
+	shouldCancelPrependAnchorForWheel,
+	transcriptAnchorScrollDelta,
+} from "../src/components/workbench/prepend-anchored-transcript.tsx";
+import {
 	buildTranscriptHeightEstimates,
 	resolveTranscriptFirstItemIndex,
 	safeTranscriptItemKey,
-	shouldFollowTranscriptResize,
-	shouldPreserveTranscriptResizeAnchor,
+	selectTranscriptScrollAnchor,
+	shouldCaptureTranscriptScrollState,
 	transcriptDataIndex,
 } from "../src/components/workbench/virtualized-transcript.tsx";
 
@@ -59,19 +65,61 @@ describe("transcript virtualization", () => {
 		);
 	});
 
-	it("follows layout changes only while bottom-follow intent is active", () => {
-		expect(shouldFollowTranscriptResize(true, 1_000, 1_200)).toBe(true);
-		expect(shouldFollowTranscriptResize(false, 1_000, 1_200)).toBe(false);
-		expect(shouldFollowTranscriptResize(true, 1_150, 1_200)).toBe(false);
-	});
+	it("selects the first visible transcript row as the message anchor", () => {
+		const transcriptItems = items([80, "message"], [120, "message"], [60, "tool"]);
 
-	it("preserves a clicked row only after the user has left the bottom", () => {
-		expect(shouldPreserveTranscriptResizeAnchor(579, 1_000, 421)).toBe(false);
-		expect(shouldPreserveTranscriptResizeAnchor(450, 1_000, 421)).toBe(true);
+		expect(
+			selectTranscriptScrollAnchor(
+				transcriptItems,
+				[
+					{ bottom: 100.5, index: 0, top: 20 },
+					{ bottom: 180, index: 1, top: 80 },
+					{ bottom: 240, index: 2, top: 180 },
+				],
+				100,
+				(item) => item.key,
+			),
+		).toEqual({ anchorKey: "item-1", anchorOffset: -20, atBottom: false });
 	});
 
 	it("converts Virtuoso absolute indexes back to transcript array indexes", () => {
 		expect(transcriptDataIndex(998, 998)).toBe(0);
 		expect(transcriptDataIndex(1_005, 998)).toBe(7);
+	});
+
+	it("anchors the first visible content item instead of its containing virtual row", () => {
+		expect(
+			selectTranscriptContentAnchors(
+				[
+					{ key: "hidden-child", top: 10, bottom: 90 },
+					{ key: "visible-message", top: 80, bottom: 160 },
+					{ key: "below-viewport", top: 220, bottom: 300 },
+				],
+				100,
+				200,
+			),
+		).toEqual([{ anchorKey: "visible-message", anchorOffset: -20 }]);
+	});
+
+	it("restores the captured content pixel after nested history changes its containing row", () => {
+		expect(transcriptAnchorScrollDelta(71, 49)).toBe(22);
+		expect(transcriptAnchorScrollDelta(48.7, 49)).toBe(0);
+		expect(transcriptAnchorScrollDelta(Number.NaN, 49)).toBe(0);
+	});
+
+	it("keeps the anchor during the loading gesture and releases it when the user leaves", () => {
+		expect(shouldCancelPrependAnchorForWheel(-120, true)).toBe(false);
+		expect(shouldCancelPrependAnchorForWheel(120, true)).toBe(true);
+		expect(shouldCancelPrependAnchorForWheel(-120, false)).toBe(true);
+		expect(shouldCancelPrependAnchorForKey("PageUp", true)).toBe(false);
+		expect(shouldCancelPrependAnchorForKey("ArrowDown", true)).toBe(true);
+		expect(shouldCancelPrependAnchorForKey("PageUp", false)).toBe(true);
+	});
+
+	it("does not let programmatic off-bottom corrections overwrite user scroll state", () => {
+		expect(shouldCaptureTranscriptScrollState(false, false, false)).toBe(false);
+		expect(shouldCaptureTranscriptScrollState(false, true, false)).toBe(false);
+		expect(shouldCaptureTranscriptScrollState(false, true, true)).toBe(true);
+		expect(shouldCaptureTranscriptScrollState(true, false, false)).toBe(true);
 	});
 });

@@ -82,6 +82,7 @@ async function parseResponse<T>(response: Response): Promise<T> {
 
 export class WebApi {
 	private readonly pendingSessionSubscriptions = new WeakMap<WebSocket, Map<string, number | undefined>>();
+	private readonly pendingProjectSubscriptions = new WeakMap<WebSocket, Set<string>>();
 	private readonly pendingSubscriptionListeners = new WeakMap<
 		WebSocket,
 		{ onOpen: () => void; onClose: () => void }
@@ -228,6 +229,59 @@ export class WebApi {
 	async projectFile(projectId: string, path: string): Promise<FileResponse> {
 		return this.request<FileResponse>(
 			`/api/projects/${encodeURIComponent(projectId)}/file?path=${encodeURIComponent(path)}`,
+		);
+	}
+
+	async downloadProjectFile(projectId: string, path: string): Promise<Blob> {
+		const response = await fetch(
+			`/api/projects/${encodeURIComponent(projectId)}/file?path=${encodeURIComponent(path)}&download=true`,
+			{ headers: { ...jsonHeaders(), Accept: "application/octet-stream" } },
+		);
+		if (!response.ok) await parseResponse<never>(response);
+		return response.blob();
+	}
+
+	async renameProjectEntry(projectId: string, path: string, name: string): Promise<{ path: string }> {
+		return this.request<{ path: string }>(`/api/projects/${encodeURIComponent(projectId)}/file`, {
+			method: "PATCH",
+			body: JSON.stringify({ path, name }),
+		});
+	}
+
+	async deleteProjectEntries(projectId: string, paths: string[]): Promise<{ paths: string[] }> {
+		return this.request<{ paths: string[] }>(`/api/projects/${encodeURIComponent(projectId)}/file`, {
+			method: "DELETE",
+			body: JSON.stringify({ paths }),
+		});
+	}
+
+	async uploadProjectFile(
+		projectId: string,
+		directory: string,
+		file: File,
+	): Promise<{ path: string; byteLength: number }> {
+		const query = new URLSearchParams({ path: directory, name: file.name });
+		return this.request<{ path: string; byteLength: number }>(
+			`/api/projects/${encodeURIComponent(projectId)}/upload?${query.toString()}`,
+			{
+				method: "POST",
+				headers: { "Content-Type": file.type || "application/octet-stream" },
+				body: file,
+			},
+		);
+	}
+
+	async createProjectArchive(
+		projectId: string,
+		paths: string[],
+		name: string,
+	): Promise<{ path: string; entryCount: number }> {
+		return this.request<{ path: string; entryCount: number }>(
+			`/api/projects/${encodeURIComponent(projectId)}/archive`,
+			{
+				method: "POST",
+				body: JSON.stringify({ paths, name }),
+			},
 		);
 	}
 
@@ -749,10 +803,14 @@ export class WebApi {
 
 	private flushPendingSessionSubscriptions(socket: WebSocket): void {
 		if (socket.readyState !== WebSocket.OPEN) return;
-		const pending = this.pendingSessionSubscriptions.get(socket);
-		if (!pending) return;
-		for (const [sessionId, lastSeq] of pending) this.sendSessionSubscription(socket, sessionId, lastSeq);
-		pending.clear();
+		const pendingSessions = this.pendingSessionSubscriptions.get(socket);
+		for (const [sessionId, lastSeq] of pendingSessions ?? []) {
+			this.sendSessionSubscription(socket, sessionId, lastSeq);
+		}
+		const pendingProjects = this.pendingProjectSubscriptions.get(socket);
+		for (const projectId of pendingProjects ?? []) {
+			socket.send(JSON.stringify({ type: "subscribe_project", projectId }));
+		}
 		const listeners = this.pendingSubscriptionListeners.get(socket);
 		if (listeners) {
 			socket.removeEventListener("open", listeners.onOpen);
@@ -760,6 +818,20 @@ export class WebApi {
 			this.pendingSubscriptionListeners.delete(socket);
 		}
 		this.pendingSessionSubscriptions.delete(socket);
+		this.pendingProjectSubscriptions.delete(socket);
+	}
+
+	private ensurePendingSubscriptionListeners(socket: WebSocket): void {
+		if (this.pendingSubscriptionListeners.has(socket)) return;
+		const onOpen = () => this.flushPendingSessionSubscriptions(socket);
+		const onClose = () => {
+			this.pendingSessionSubscriptions.delete(socket);
+			this.pendingProjectSubscriptions.delete(socket);
+			this.pendingSubscriptionListeners.delete(socket);
+		};
+		this.pendingSubscriptionListeners.set(socket, { onOpen, onClose });
+		socket.addEventListener("open", onOpen, { once: true });
+		socket.addEventListener("close", onClose, { once: true });
 	}
 
 	subscribeSession(socket: WebSocket, sessionId: string, lastSeq?: number): void {
@@ -772,21 +844,32 @@ export class WebApi {
 		const pending = this.pendingSessionSubscriptions.get(socket) ?? new Map<string, number | undefined>();
 		pending.set(sessionId, lastSeq);
 		this.pendingSessionSubscriptions.set(socket, pending);
-		if (this.pendingSubscriptionListeners.has(socket)) return;
-		const onOpen = () => this.flushPendingSessionSubscriptions(socket);
-		const onClose = () => {
-			this.pendingSessionSubscriptions.delete(socket);
-			this.pendingSubscriptionListeners.delete(socket);
-		};
-		this.pendingSubscriptionListeners.set(socket, { onOpen, onClose });
-		socket.addEventListener("open", onOpen, { once: true });
-		socket.addEventListener("close", onClose, { once: true });
+		this.ensurePendingSubscriptionListeners(socket);
 	}
 
 	unsubscribeSession(socket: WebSocket, sessionId: string): void {
 		this.pendingSessionSubscriptions.get(socket)?.delete(sessionId);
 		if (socket.readyState !== WebSocket.OPEN || !sessionId) return;
 		socket.send(JSON.stringify({ type: "unsubscribe_session", sessionId }));
+	}
+
+	subscribeProject(socket: WebSocket, projectId: string): void {
+		if (!projectId) return;
+		if (socket.readyState === WebSocket.OPEN) {
+			socket.send(JSON.stringify({ type: "subscribe_project", projectId }));
+			return;
+		}
+		if (socket.readyState !== WebSocket.CONNECTING) return;
+		const pending = this.pendingProjectSubscriptions.get(socket) ?? new Set<string>();
+		pending.add(projectId);
+		this.pendingProjectSubscriptions.set(socket, pending);
+		this.ensurePendingSubscriptionListeners(socket);
+	}
+
+	unsubscribeProject(socket: WebSocket, projectId: string): void {
+		this.pendingProjectSubscriptions.get(socket)?.delete(projectId);
+		if (socket.readyState !== WebSocket.OPEN || !projectId) return;
+		socket.send(JSON.stringify({ type: "unsubscribe_project", projectId }));
 	}
 
 	connect(onEvent: (event: GatewayEvent) => void, onClose: () => void): WebSocket {

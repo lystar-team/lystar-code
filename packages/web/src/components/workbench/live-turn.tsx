@@ -1,4 +1,7 @@
+import type { LiveTurnItem } from "../../state/use-workbench";
 import { Shimmer } from "../ai-elements/shimmer";
+
+export const THINKING_SHIMMER_HEIGHT = 32;
 
 export function latestThinkingLine(parts: readonly string[]): string {
 	let line = "";
@@ -15,14 +18,29 @@ export function latestThinkingLine(parts: readonly string[]): string {
 		.replace(/__\s*(.*?)\s*__/gu, "$1");
 }
 
+export function activeThinkingText(items: readonly LiveTurnItem[]): string {
+	for (let index = items.length - 1; index >= 0; index--) {
+		const item = items[index];
+		if (!item || item.kind === "user") continue;
+		return item.kind === "thinking" ? latestThinkingLine(item.parts) : "";
+	}
+	return "";
+}
+
 export function ThinkingBlock({ text }: { text: string }) {
 	const thinkingLine = latestThinkingLine([text]);
-	if (!thinkingLine) return null;
 	return (
-		<div className="min-h-8 px-1 py-1 text-sm text-muted-foreground" aria-live="polite" role="status">
-			<Shimmer as="span" className="block truncate text-sm font-normal">
-				{thinkingLine}
-			</Shimmer>
+		<div
+			className="px-1 py-1 text-sm text-muted-foreground"
+			style={{ height: THINKING_SHIMMER_HEIGHT }}
+			aria-live="polite"
+			role="status"
+		>
+			{thinkingLine ? (
+				<Shimmer as="span" className="block truncate text-sm font-normal">
+					{thinkingLine}
+				</Shimmer>
+			) : null}
 		</div>
 	);
 }

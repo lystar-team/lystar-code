@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { test } from "node:test";
+import { inflateRawSync } from "node:zlib";
 import type { Command, ProjectResource } from "@lystar/code-web-protocol";
 import type { ProjectRegistry } from "../src/project-registry.ts";
 import { WebGatewayServer } from "../src/server.ts";
@@ -42,11 +43,69 @@ function responseCapture(): {
 	};
 }
 
+function rawResponseCapture(): {
+	response: ServerResponse;
+	result: () => { status: number; headers: Record<string, string>; body: Buffer };
+} {
+	let status = 0;
+	let headers: Record<string, string> = {};
+	let body = Buffer.alloc(0);
+	return {
+		response: {
+			writeHead(code: number, values?: Record<string, string>) {
+				status = code;
+				headers = values ?? {};
+			},
+			end(value?: string | Uint8Array) {
+				body = value === undefined ? Buffer.alloc(0) : Buffer.from(value);
+			},
+		} as unknown as ServerResponse,
+		result: () => ({ status, headers, body }),
+	};
+}
+
 function request(method: string, body?: Record<string, unknown>): IncomingMessage {
 	const value = Readable.from(body ? [Buffer.from(JSON.stringify(body))] : []) as unknown as IncomingMessage;
 	value.method = method;
 	value.headers = {};
 	return value;
+}
+
+function binaryRequest(body: Uint8Array): IncomingMessage {
+	const value = Readable.from([body]) as unknown as IncomingMessage;
+	value.method = "POST";
+	value.headers = { "content-type": "application/octet-stream" };
+	return value;
+}
+
+function unzipEntries(archive: Buffer): Map<string, Buffer> {
+	const endSignature = Buffer.from([0x50, 0x4b, 0x05, 0x06]);
+	const endOffset = archive.lastIndexOf(endSignature);
+	assert.notEqual(endOffset, -1);
+	const entryCount = archive.readUInt16LE(endOffset + 10);
+	let offset = archive.readUInt32LE(endOffset + 16);
+	const entries = new Map<string, Buffer>();
+	for (let index = 0; index < entryCount; index++) {
+		assert.equal(archive.readUInt32LE(offset), 0x02014b50);
+		const method = archive.readUInt16LE(offset + 10);
+		const compressedSize = archive.readUInt32LE(offset + 20);
+		const uncompressedSize = archive.readUInt32LE(offset + 24);
+		const nameLength = archive.readUInt16LE(offset + 28);
+		const extraLength = archive.readUInt16LE(offset + 30);
+		const commentLength = archive.readUInt16LE(offset + 32);
+		const localOffset = archive.readUInt32LE(offset + 42);
+		const name = archive.subarray(offset + 46, offset + 46 + nameLength).toString("utf8");
+		assert.equal(archive.readUInt32LE(localOffset), 0x04034b50);
+		const localNameLength = archive.readUInt16LE(localOffset + 26);
+		const localExtraLength = archive.readUInt16LE(localOffset + 28);
+		const dataOffset = localOffset + 30 + localNameLength + localExtraLength;
+		const compressed = archive.subarray(dataOffset, dataOffset + compressedSize);
+		const content = method === 8 ? inflateRawSync(compressed) : Buffer.from(compressed);
+		assert.equal(content.length, uncompressedSize);
+		entries.set(name, content);
+		offset += 46 + nameLength + extraLength + commentLength;
+	}
+	return entries;
 }
 
 test("项目文件路由返回内容版本并使用哈希保护保存", async (t) => {
@@ -185,4 +244,130 @@ test("项目文件路由返回内容版本并使用哈希保护保存", async (t
 			contentVersion: "4:300:400",
 		},
 	});
+
+	const downloaded = rawResponseCapture();
+	await routes.handleProjects(
+		request("GET"),
+		downloaded.response,
+		new URL(`http://localhost/api/projects/${project.id}/file?path=app.ts&download=true`),
+		{ id: "browser-one" },
+		parts,
+	);
+	assert.equal(downloaded.result().status, 200);
+	assert.equal(downloaded.result().headers["Content-Type"], "application/octet-stream");
+	assert.match(downloaded.result().headers["Content-Disposition"], /app\.ts/u);
+	assert.equal(downloaded.result().body.toString("utf8"), "one\n");
+
+	const renamed = responseCapture();
+	await routes.handleProjects(
+		request("PATCH", { path: "app.ts", name: "renamed.ts" }),
+		renamed.response,
+		new URL(`http://localhost/api/projects/${project.id}/file`),
+		{ id: "browser-one" },
+		parts,
+	);
+	assert.deepEqual(renamed.result(), { status: 200, body: { path: "renamed.ts" } });
+	assert.equal(await readFile(join(cwd, "renamed.ts"), "utf8"), "one\n");
+
+	await writeFile(join(cwd, "taken.ts"), "taken\n");
+	await assert.rejects(
+		routes.handleProjects(
+			request("PATCH", { path: "renamed.ts", name: "taken.ts" }),
+			responseCapture().response,
+			new URL(`http://localhost/api/projects/${project.id}/file`),
+			{ id: "browser-one" },
+			parts,
+		),
+		/同一目录下已有同名文件/u,
+	);
+
+	await mkdir(join(cwd, "folder"));
+	await writeFile(join(cwd, "folder", "nested.txt"), "nested\n");
+	const renamedDirectory = responseCapture();
+	await routes.handleProjects(
+		request("PATCH", { path: "folder", name: "renamed-folder" }),
+		renamedDirectory.response,
+		new URL(`http://localhost/api/projects/${project.id}/file`),
+		{ id: "browser-one" },
+		parts,
+	);
+	assert.deepEqual(renamedDirectory.result(), { status: 200, body: { path: "renamed-folder" } });
+	assert.equal(await readFile(join(cwd, "renamed-folder", "nested.txt"), "utf8"), "nested\n");
+
+	const archived = responseCapture();
+	await routes.handleProjects(
+		request("POST", { paths: ["renamed.ts", "renamed-folder"], name: "bundle.zip" }),
+		archived.response,
+		new URL(`http://localhost/api/projects/${project.id}/archive`),
+		{ id: "browser-one" },
+		["api", "projects", project.id, "archive"],
+	);
+	assert.deepEqual(archived.result(), { status: 200, body: { path: "bundle.zip", entryCount: 3 } });
+	const zipEntries = unzipEntries(await readFile(join(cwd, "bundle.zip")));
+	assert.equal(zipEntries.get("renamed.ts")?.toString("utf8"), "one\n");
+	assert.equal(zipEntries.get("renamed-folder/")?.byteLength, 0);
+	assert.equal(zipEntries.get("renamed-folder/nested.txt")?.toString("utf8"), "nested\n");
+	await assert.rejects(
+		routes.handleProjects(
+			request("POST", { paths: ["renamed.ts"], name: "bundle.zip" }),
+			responseCapture().response,
+			new URL(`http://localhost/api/projects/${project.id}/archive`),
+			{ id: "browser-one" },
+			["api", "projects", project.id, "archive"],
+		),
+		/已有同名 ZIP 文件/u,
+	);
+
+	const uploadedRoot = responseCapture();
+	await routes.handleProjects(
+		binaryRequest(Buffer.from("root upload\n")),
+		uploadedRoot.response,
+		new URL(`http://localhost/api/projects/${project.id}/upload?path=&name=uploaded.txt`),
+		{ id: "browser-one" },
+		["api", "projects", project.id, "upload"],
+	);
+	assert.deepEqual(uploadedRoot.result(), {
+		status: 200,
+		body: { path: "uploaded.txt", byteLength: 12 },
+	});
+	assert.equal(await readFile(join(cwd, "uploaded.txt"), "utf8"), "root upload\n");
+
+	const uploadedNested = responseCapture();
+	await routes.handleProjects(
+		binaryRequest(Buffer.from([0, 1, 2, 3])),
+		uploadedNested.response,
+		new URL(`http://localhost/api/projects/${project.id}/upload?path=renamed-folder&name=data.bin`),
+		{ id: "browser-one" },
+		["api", "projects", project.id, "upload"],
+	);
+	assert.deepEqual(uploadedNested.result(), {
+		status: 200,
+		body: { path: "renamed-folder/data.bin", byteLength: 4 },
+	});
+	assert.deepEqual(await readFile(join(cwd, "renamed-folder", "data.bin")), Buffer.from([0, 1, 2, 3]));
+	await assert.rejects(
+		routes.handleProjects(
+			binaryRequest(Buffer.from("conflict")),
+			responseCapture().response,
+			new URL(`http://localhost/api/projects/${project.id}/upload?path=&name=uploaded.txt`),
+			{ id: "browser-one" },
+			["api", "projects", project.id, "upload"],
+		),
+		/已有同名文件或目录/u,
+	);
+
+	const deleted = responseCapture();
+	await routes.handleProjects(
+		request("DELETE", { paths: ["renamed.ts", "renamed-folder", "renamed-folder/nested.txt"] }),
+		deleted.response,
+		new URL(`http://localhost/api/projects/${project.id}/file`),
+		{ id: "browser-one" },
+		parts,
+	);
+	assert.deepEqual(deleted.result(), {
+		status: 200,
+		body: { paths: ["renamed.ts", "renamed-folder"] },
+	});
+	await assert.rejects(readFile(join(cwd, "renamed.ts")), /ENOENT/u);
+	await assert.rejects(readFile(join(cwd, "renamed-folder", "nested.txt")), /ENOENT/u);
 });

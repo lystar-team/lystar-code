@@ -34,6 +34,20 @@ const GitDiffDialog = lazy(() =>
 	import("./workbench/git-diff-dialog").then((module) => ({ default: module.GitDiffDialog })),
 );
 
+function useMediaQuery(query: string): boolean {
+	const [matches, setMatches] = useState(() => typeof window !== "undefined" && window.matchMedia(query).matches);
+
+	useEffect(() => {
+		const mediaQuery = window.matchMedia(query);
+		const update = () => setMatches(mediaQuery.matches);
+		update();
+		mediaQuery.addEventListener("change", update);
+		return () => mediaQuery.removeEventListener("change", update);
+	}, [query]);
+
+	return matches;
+}
+
 function MobileProjectRailDialog({
 	actions,
 	currentProject,
@@ -239,6 +253,7 @@ export function Workbench({
 	const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
 	const [isResizingSidebar, setIsResizingSidebar] = useState(false);
 	const [promptEditRequest, setPromptEditRequest] = useState<PromptEditRequest>();
+	const desktopLayout = useMediaQuery("(min-width: 1024px)");
 	const currentSessions = currentProject?.sessions ?? [];
 	const currentSessionSummary = currentSessions.find((session) => session.id === state.sessionId);
 	const connection = connectionPresentation(state);
@@ -287,10 +302,11 @@ export function Workbench({
 
 	return (
 		<div className="flex h-dvh min-h-0 overflow-hidden bg-background text-foreground">
-			<aside
-				className="relative hidden shrink-0 border-r border-border/60 bg-background lg:flex"
-				style={{ width: `${sidebarWidth}px` }}
-			>
+			{desktopLayout ? (
+				<aside
+					className="relative flex shrink-0 border-r border-border/60 bg-background"
+					style={{ width: `${sidebarWidth}px` }}
+				>
 				<StabilityBoundary
 					scope="project-rail"
 					resetKeys={[state.currentProjectId]}
@@ -323,7 +339,7 @@ export function Workbench({
 					aria-valuenow={sidebarWidth}
 					tabIndex={0}
 					className={cn(
-						"absolute top-0 right-0 z-20 hidden h-full w-1 translate-x-1/2 cursor-col-resize touch-none lg:block",
+						"absolute top-0 right-0 z-20 block h-full w-1 translate-x-1/2 cursor-col-resize touch-none",
 						isResizingSidebar ? "bg-border" : "hover:bg-border",
 					)}
 					onPointerDown={startSidebarResize}
@@ -331,19 +347,22 @@ export function Workbench({
 					onPointerUp={stopSidebarResize}
 					onPointerCancel={stopSidebarResize}
 				/>
-			</aside>
+				</aside>
+			) : null}
 
 			<main className="flex min-w-0 flex-1 flex-col overflow-hidden">
 				<header className="relative flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-border/60 pl-3 pr-5 pt-[env(safe-area-inset-top)] sm:pl-5 sm:pr-7">
 					<div className="flex min-w-0 items-center gap-2">
-						<MobileProjectRailDialog
-							state={state}
-							actions={actions}
-							projects={projects}
-							currentProject={currentProject}
-							onAddProject={openDirectory}
-							onEditProject={setEditingProject}
-						/>
+						{desktopLayout ? null : (
+							<MobileProjectRailDialog
+								state={state}
+								actions={actions}
+								projects={projects}
+								currentProject={currentProject}
+								onAddProject={openDirectory}
+								onEditProject={setEditingProject}
+							/>
+						)}
 						<GsapReveal animationKey={state.sessionId ?? "empty"} className="min-w-0" distance={8} duration={0.24}>
 							<h1 className="truncate text-base font-semibold tracking-tight sm:text-lg">
 								{sessionTitleText}

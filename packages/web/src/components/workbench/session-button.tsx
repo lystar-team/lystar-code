@@ -1,6 +1,6 @@
 import { Clock3, Folder, LoaderCircle, Pencil, Pin, Trash2 } from "lucide-react";
 import type { DragEvent as ReactDragEvent } from "react";
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { cn } from "../../lib/utils";
 import { sessionTitle } from "../../state/use-workbench";
 import type { WebSessionSummary } from "../../types";
@@ -47,25 +47,7 @@ function formatSessionDate(timestamp: number): string {
 	}).format(timestamp);
 }
 
-export function SessionButton({
-	projectName,
-	session,
-	active,
-	running,
-	unread,
-	onClick,
-	onRename,
-	onContextRename,
-	onTogglePinned,
-	onDelete,
-	dragging,
-	dropTarget,
-	dropPosition,
-	onDragStart,
-	onDragOver,
-	onDrop,
-	onDragEnd,
-}: {
+export interface SessionButtonProps {
 	projectName: string;
 	session: WebSessionSummary;
 	active: boolean;
@@ -83,7 +65,27 @@ export function SessionButton({
 	onDragOver: (event: ReactDragEvent<HTMLElement>) => void;
 	onDrop: (event: ReactDragEvent<HTMLElement>) => void;
 	onDragEnd: () => void;
-}) {
+}
+
+function SessionButtonComponent({
+	projectName,
+	session,
+	active,
+	running,
+	unread,
+	onClick,
+	onRename,
+	onContextRename,
+	onTogglePinned,
+	onDelete,
+	dragging,
+	dropTarget,
+	dropPosition,
+	onDragStart,
+	onDragOver,
+	onDrop,
+	onDragEnd,
+}: SessionButtonProps) {
 	const title = sessionTitle(session);
 	const displayTitle = truncateSessionTitle(title);
 	const [editingTitle, setEditingTitle] = useState(false);
@@ -266,3 +268,5 @@ export function SessionButton({
 		</ContextMenu>
 	);
 }
+
+export const SessionButton = memo(SessionButtonComponent);

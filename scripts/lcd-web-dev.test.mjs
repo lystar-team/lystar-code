@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { shouldBuildDevelopmentWeb, shouldRunDevelopmentWebFrontend } from "./lcd-web-dev.mjs";
+import { shouldBuildDevelopmentWeb, shouldStartDevelopmentWebStack } from "./lcd-web-dev.mjs";
 
 describe("lcd Web development routing", () => {
 	it("builds before commands that start development backend processes", () => {
@@ -36,9 +36,9 @@ describe("lcd Web development routing", () => {
 		}
 	});
 
-	it("runs Vite only for the main development Web command", () => {
-		assert.equal(shouldRunDevelopmentWebFrontend(["web"]), true);
-		assert.equal(shouldRunDevelopmentWebFrontend(["web", "--foreground"]), true);
-		assert.equal(shouldRunDevelopmentWebFrontend(["web", "gateway", "restart"]), false);
+	it("routes the main command through the managed development Web stack", () => {
+		assert.equal(shouldStartDevelopmentWebStack(["web"]), true);
+		assert.equal(shouldStartDevelopmentWebStack(["web", "--foreground"]), true);
+		assert.equal(shouldStartDevelopmentWebStack(["web", "gateway", "restart"]), false);
 	});
 });

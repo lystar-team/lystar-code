@@ -208,6 +208,7 @@ export interface AttachmentsContext {
 
 export interface TextInputContext {
   value: string;
+  getValue: () => string;
   setInput: (v: string) => void;
   clear: () => void;
 }
@@ -272,8 +273,12 @@ export const PromptInputProvider = ({
 }: PromptInputProviderProps) => {
   // ----- textInput state
   const [textInput, setTextInput] = useState(initialTextInput);
+  const textInputRef = useRef(textInput);
+  textInputRef.current = textInput;
+  const getInput = useCallback(() => textInputRef.current, []);
   const setInput = useCallback(
     (value: string) => {
+      textInputRef.current = value;
       setTextInput(value);
       onInputChange?.(value);
     },
@@ -376,11 +381,12 @@ export const PromptInputProvider = ({
       attachments,
       textInput: {
         clear: clearInput,
+        getValue: getInput,
         setInput,
         value: textInput,
       },
     }),
-    [textInput, clearInput, attachments, __registerFileInput]
+    [textInput, clearInput, getInput, setInput, attachments, __registerFileInput]
   );
 
   return (
@@ -569,12 +575,9 @@ export const PromptInput = ({
     (SourceDocumentUIPart & { id: string })[]
   >([]);
 
-  // Keep a ref to files for cleanup on unmount (avoids stale closure)
+  // Keep a ref to the latest draft attachments for submit rollback and unmount cleanup.
   const filesRef = useRef(files);
-
-  useEffect(() => {
-    filesRef.current = files;
-  }, [files]);
+  filesRef.current = files;
 
   const openFileDialogLocal = useCallback(() => {
     inputRef.current?.click();
@@ -737,11 +740,6 @@ export const PromptInput = ({
     ? controller.attachments.openFileDialog
     : openFileDialogLocal;
 
-  const clear = useCallback(() => {
-    clearAttachments();
-    clearReferencedSources();
-  }, [clearAttachments, clearReferencedSources]);
-
   // Let provider know about our hidden file input so external menus can call openFileDialog()
   useEffect(() => {
     if (!usingProvider) {
@@ -881,68 +879,64 @@ export const PromptInput = ({
             const formData = new FormData(form);
             return (formData.get("message") as string) || "";
           })();
+      const submittedFiles = [...files];
       const submitter = (event.nativeEvent as SubmitEvent).submitter;
       const submitMode = submitter?.getAttribute("data-prompt-submit-mode") === "steer" ? "steer" : "prompt";
 
-      // Reset form immediately after capturing text to avoid race condition
-      // where user input during async blob conversion would be lost
-      if (!usingProvider) {
-        form.reset();
-      }
+      const restoreSubmittedDraft = () => {
+        const textarea = form.querySelector<HTMLTextAreaElement>('textarea[name="message"]');
+        const currentText = usingProvider ? controller.textInput.getValue() : (textarea?.value ?? "");
+        const draftUntouched = !currentText && filesRef.current.length === 0;
+        if (!draftUntouched) return;
+        if (usingProvider) controller.textInput.setInput(text);
+        else if (textarea) textarea.value = text;
+        const sourceFiles = submittedFiles.flatMap((file) => (file.sourceFile ? [file.sourceFile] : []));
+        if (sourceFiles.length !== submittedFiles.length) return;
+        if (usingProvider) controller.attachments.add(sourceFiles);
+        else addLocal(sourceFiles);
+      };
+
+      // Start reading attachment data before releasing preview URLs, then clear the accepted draft immediately.
+      const convertedFilesPromise = Promise.all(
+        submittedFiles.map(async ({ id, sourceFile, ...item }): Promise<PromptInputAttachment> => {
+          if (sourceFile) {
+            const dataUrl = await convertFileToDataUrl(sourceFile);
+            return {
+              ...item,
+              id,
+              url: dataUrl ?? item.url,
+            };
+          }
+          if (item.url?.startsWith("blob:")) {
+            const dataUrl = await convertBlobUrlToDataUrl(item.url);
+            return {
+              ...item,
+              id,
+              url: dataUrl ?? item.url,
+            };
+          }
+          return { ...item, id };
+        })
+      );
+      const submittedIds = new Set(submittedFiles.map((file) => file.id));
+      filesRef.current = filesRef.current.filter((file) => !submittedIds.has(file.id));
+      for (const file of submittedFiles) remove(file.id);
+      if (usingProvider) controller.textInput.clear();
+      else form.reset();
 
       try {
-        // Convert blob URLs to data URLs asynchronously
-        const convertedFiles: PromptInputAttachment[] = await Promise.all(
-          files.map(async ({ id, sourceFile, ...item }) => {
-            if (sourceFile) {
-              const dataUrl = await convertFileToDataUrl(sourceFile);
-              return {
-                ...item,
-                id,
-                url: dataUrl ?? item.url,
-              };
-            }
-            if (item.url?.startsWith("blob:")) {
-              const dataUrl = await convertBlobUrlToDataUrl(item.url);
-              // If conversion failed, keep the original blob URL
-              return {
-                ...item,
-                id,
-                url: dataUrl ?? item.url,
-              };
-            }
-            return { ...item, id };
-          })
-        );
-
+        const convertedFiles = await convertedFilesPromise;
         const result = onSubmit(
           { files: convertedFiles, text, submitMode },
           event
         );
-
-        // Handle both sync and async onSubmit
-        if (result instanceof Promise) {
-          try {
-            await result;
-            clear();
-            if (usingProvider) {
-              controller.textInput.clear();
-            }
-          } catch {
-            // Don't clear on error - user may want to retry
-          }
-        } else {
-          // Sync function completed without throwing, clear inputs
-          clear();
-          if (usingProvider) {
-            controller.textInput.clear();
-          }
-        }
+        if (result instanceof Promise) await result;
+        clearReferencedSources();
       } catch {
-        // Don't clear on error - user may want to retry
+        restoreSubmittedDraft();
       }
     },
-    [usingProvider, controller, files, onSubmit, clear]
+    [addLocal, clearReferencedSources, controller, files, onSubmit, remove, usingProvider]
   );
 
   // Render with or without local provider
@@ -1003,6 +997,15 @@ export type PromptInputTextareaProps = ComponentProps<
   typeof InputGroupTextarea
 >;
 
+export function shouldFollowPromptInputCaret(
+  focused: boolean,
+  selectionStart: number | null,
+  selectionEnd: number | null,
+  valueLength: number,
+): boolean {
+  return focused && selectionStart === valueLength && selectionEnd === valueLength;
+}
+
 export const PromptInputTextarea = forwardRef<
   HTMLTextAreaElement,
   PromptInputTextareaProps
@@ -1037,14 +1040,22 @@ export const PromptInputTextarea = forwardRef<
   const resizeTextarea = useCallback(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
+    const followCaret = shouldFollowPromptInputCaret(
+      document.activeElement === textarea,
+      textarea.selectionStart,
+      textarea.selectionEnd,
+      textarea.value.length,
+    );
     textarea.style.height = "auto";
     const styles = getComputedStyle(textarea);
     const minHeight = Number.parseFloat(styles.minHeight);
     const maxHeight = Number.parseFloat(styles.maxHeight);
     const contentHeight = Math.max(textarea.scrollHeight, Number.isFinite(minHeight) ? minHeight : 0);
-    const height = Number.isFinite(maxHeight) ? Math.min(contentHeight, maxHeight) : contentHeight;
+    const overflowing = Number.isFinite(maxHeight) && contentHeight > maxHeight;
+    const height = overflowing ? maxHeight : contentHeight;
     textarea.style.height = `${height}px`;
-    textarea.style.overflowY = Number.isFinite(maxHeight) && contentHeight > maxHeight ? "auto" : "hidden";
+    textarea.style.overflowY = overflowing ? "auto" : "hidden";
+    if (overflowing && followCaret) textarea.scrollTop = textarea.scrollHeight;
   }, []);
 
   const inputValue = controller?.textInput.value ?? props.value ?? "";

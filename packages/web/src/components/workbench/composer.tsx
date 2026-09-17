@@ -122,26 +122,37 @@ export const Composer = memo(function Composer({
 	sessionIdRef.current = state.sessionId;
 	const playPromptSubmitFeedback = useCallback((submitMode: "prompt" | "steer") => {
 		const scope = promptAnimationScopeRef.current;
+		if (!scope) return;
 		const preferredSelector =
 			submitMode === "steer"
 				? '[data-prompt-submit-button][data-prompt-submit-mode="steer"]'
 				: '[data-prompt-submit-button][data-prompt-submit-mode="follow-up"], [data-prompt-submit-button]:not([data-prompt-submit-mode])';
 		const submitButton =
-			scope?.querySelector<HTMLButtonElement>(preferredSelector) ??
-			scope?.querySelector<HTMLButtonElement>("[data-prompt-submit-button]");
-		if (!submitButton) return;
+			scope.querySelector<HTMLButtonElement>(preferredSelector) ??
+			scope.querySelector<HTMLButtonElement>("[data-prompt-submit-button]");
+		const inputGroup = scope.querySelector<HTMLElement>('[data-slot="input-group"]');
+		if (!submitButton || !inputGroup) return;
 		promptAnimationCleanupRef.current?.();
-		promptAnimationCleanupRef.current = runGsapMotion(submitButton, (reducedMotion) => {
-			if (reducedMotion) return;
+		promptAnimationCleanupRef.current = runGsapMotion(scope, (reducedMotion) => {
+			gsap.killTweensOf([submitButton, inputGroup]);
+			if (reducedMotion) {
+				gsap.set([submitButton, inputGroup], { clearProps: "transform" });
+				return;
+			}
 			gsap
-				.timeline()
-				.to(submitButton, { scale: 0.9, duration: 0.08, ease: "power2.out", overwrite: "auto" })
-				.to(submitButton, {
-					scale: 1,
-					duration: 0.32,
-					ease: "back.out(1.7)",
-					clearProps: "transform",
-				});
+				.timeline({ defaults: { overwrite: "auto" } })
+				.to(submitButton, { scale: 0.9, duration: 0.08, ease: "power2.out" }, 0)
+				.to(inputGroup, { scale: 0.992, y: 1, duration: 0.08, ease: "power2.out" }, 0)
+				.to(
+					submitButton,
+					{ scale: 1, duration: 0.3, ease: "back.out(1.7)", clearProps: "transform" },
+					0.08,
+				)
+				.to(
+					inputGroup,
+					{ scale: 1, y: 0, duration: 0.22, ease: "power3.out", clearProps: "transform" },
+					0.08,
+				);
 		});
 	}, []);
 	useEffect(() => {
@@ -192,6 +203,10 @@ export const Composer = memo(function Composer({
 			setQueueActionId(undefined);
 		}
 	};
+	const queuedFollowUpPrompts = useMemo(
+		() => state.queuedUserPrompts.filter((prompt) => prompt.delivery === "follow-up"),
+		[state.queuedUserPrompts],
+	);
 	const selectedModel = state.modelOptions.find(
 		(model) => model.provider === state.session?.model?.provider && model.id === state.session?.model?.id,
 	);
@@ -229,15 +244,15 @@ export const Composer = memo(function Composer({
 						sessionId={state.sessionId}
 					>
 						<div className="relative" ref={promptAnimationScopeRef}>
-							{state.queuedUserPrompts.length ? (
+							{queuedFollowUpPrompts.length ? (
 								<GsapReveal
-									animationKey={state.queuedUserPrompts.at(-1)?.id ?? "queue"}
+									animationKey={queuedFollowUpPrompts.at(-1)?.id ?? "queue"}
 									className="w-full"
 									distance={10}
 									duration={0.24}
 								>
 									<QueuedPromptList
-										prompts={state.queuedUserPrompts}
+										prompts={queuedFollowUpPrompts}
 										busyId={queueActionId}
 										onAction={handleQueueAction}
 									/>
@@ -765,6 +780,7 @@ function QueuedPromptList({
 	return (
 		<section
 			aria-label="排队消息"
+			aria-live="polite"
 			className="mb-2 overflow-hidden rounded-2xl border border-border/70 bg-muted/20 shadow-sm"
 		>
 			<div className="flex items-center justify-between px-3 py-2 text-xs text-muted-foreground">
@@ -772,50 +788,59 @@ function QueuedPromptList({
 				<span>{prompts.length} 条</span>
 			</div>
 			<div className="max-h-56 divide-y divide-border/60 overflow-y-auto">
-				{prompts.map((prompt) => (
-					<div className="flex min-w-0 items-start gap-3 px-3 py-2.5" key={prompt.id}>
-						<div className="min-w-0 flex-1">
-							<p className="whitespace-pre-wrap break-words text-sm leading-5 text-foreground">{prompt.displayText}</p>
-							{prompt.attachments.length ? (
-								<p className="mt-1 truncate text-xs text-muted-foreground">
-									附件：{prompt.attachments.map((attachment) => attachment.filename).join("、")}
+				{prompts.map((prompt) => {
+					const steering = prompt.delivery === "steer";
+					return (
+						<div className="flex min-w-0 items-start gap-3 px-3 py-2.5" key={prompt.id}>
+							<div className="min-w-0 flex-1">
+								<p className="whitespace-pre-wrap break-words text-sm leading-5 text-foreground">{prompt.displayText}</p>
+								<p className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+									{steering ? <ArrowUpToLine className="size-3.5 shrink-0" /> : <Clock3 className="size-3.5 shrink-0" />}
+									<span>{steering ? "调整方向 · 等待当前步骤结束" : "完成后发送 · 等待当前任务结束"}</span>
 								</p>
-							) : null}
+								{prompt.attachments.length ? (
+									<p className="mt-1 truncate text-xs text-muted-foreground">
+										附件：{prompt.attachments.map((attachment) => attachment.filename).join("、")}
+									</p>
+								) : null}
+							</div>
+							<div className="flex shrink-0 items-center gap-0.5">
+								{steering ? null : (
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<Button
+												type="button"
+												variant="ghost"
+												size="icon-sm"
+												aria-label="调整方向"
+												disabled={busyId !== undefined}
+												onClick={() => onAction(prompt.id, "steer")}
+											>
+												<ArrowUpToLine className="size-4" />
+											</Button>
+										</TooltipTrigger>
+										<TooltipContent side="top">调整方向（立即插队）</TooltipContent>
+									</Tooltip>
+								)}
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<Button
+											type="button"
+											variant="ghost"
+											size="icon-sm"
+											aria-label="删除排队消息"
+											disabled={busyId !== undefined}
+											onClick={() => onAction(prompt.id, "remove")}
+										>
+											<Trash2 className="size-4" />
+										</Button>
+									</TooltipTrigger>
+									<TooltipContent side="top">删除，不发送</TooltipContent>
+								</Tooltip>
+							</div>
 						</div>
-						<div className="flex shrink-0 items-center gap-0.5">
-							<Tooltip>
-								<TooltipTrigger asChild>
-									<Button
-										type="button"
-										variant="ghost"
-										size="icon-sm"
-										aria-label="调整方向"
-										disabled={busyId !== undefined}
-										onClick={() => onAction(prompt.id, "steer")}
-									>
-										<ArrowUpToLine className="size-4" />
-									</Button>
-								</TooltipTrigger>
-								<TooltipContent side="top">调整方向（立即插队）</TooltipContent>
-							</Tooltip>
-							<Tooltip>
-								<TooltipTrigger asChild>
-									<Button
-										type="button"
-										variant="ghost"
-										size="icon-sm"
-										aria-label="删除排队消息"
-										disabled={busyId !== undefined}
-										onClick={() => onAction(prompt.id, "remove")}
-									>
-										<Trash2 className="size-4" />
-									</Button>
-								</TooltipTrigger>
-								<TooltipContent side="top">删除，不发送</TooltipContent>
-							</Tooltip>
-						</div>
-					</div>
-				))}
+					);
+				})}
 			</div>
 		</section>
 	);

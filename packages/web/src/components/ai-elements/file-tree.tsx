@@ -21,11 +21,14 @@ import {
   useState,
 } from "react";
 
+type FileTreeSelectEvent = React.MouseEvent<HTMLElement> | React.KeyboardEvent<HTMLElement>;
+
 interface FileTreeContextType {
   expandedPaths: Set<string>;
   togglePath: (path: string) => void;
   selectedPath?: string;
-  onSelect?: (path: string) => void;
+  selectedPaths?: ReadonlySet<string>;
+  onSelect?: (path: string, event: FileTreeSelectEvent) => boolean | void;
 }
 
 // Default noop for context default value
@@ -42,7 +45,8 @@ export type FileTreeProps = Omit<HTMLAttributes<HTMLDivElement>, "onSelect"> & {
   expanded?: Set<string>;
   defaultExpanded?: Set<string>;
   selectedPath?: string;
-  onSelect?: (path: string) => void;
+  selectedPaths?: ReadonlySet<string>;
+  onSelect?: (path: string, event: FileTreeSelectEvent) => boolean | void;
   onExpandedChange?: (expanded: Set<string>) => void;
 };
 
@@ -50,6 +54,7 @@ export const FileTree = ({
   expanded: controlledExpanded,
   defaultExpanded = new Set(),
   selectedPath,
+  selectedPaths,
   onSelect,
   onExpandedChange,
   className,
@@ -74,8 +79,8 @@ export const FileTree = ({
   );
 
   const contextValue = useMemo(
-    () => ({ expandedPaths, onSelect, selectedPath, togglePath }),
-    [expandedPaths, onSelect, selectedPath, togglePath]
+    () => ({ expandedPaths, onSelect, selectedPath, selectedPaths, togglePath }),
+    [expandedPaths, onSelect, selectedPath, selectedPaths, togglePath]
   );
 
   return (
@@ -144,10 +149,10 @@ export const FileTreeFolder = ({
   children,
   ...props
 }: FileTreeFolderProps) => {
-  const { expandedPaths, togglePath, selectedPath, onSelect } =
+  const { expandedPaths, togglePath, selectedPath, selectedPaths, onSelect } =
     useContext(FileTreeContext);
   const isExpanded = expandedPaths.has(path);
-  const isSelected = selectedPath === path;
+  const isSelected = selectedPaths ? selectedPaths.has(path) : selectedPath === path;
 
   const handleToggle = useCallback(() => {
     const nextExpanded = !isExpanded;
@@ -163,9 +168,12 @@ export const FileTreeFolder = ({
     [onToggle, path, togglePath]
   );
 
-  const handleSelect = useCallback(() => {
-    onSelect?.(path);
-  }, [onSelect, path]);
+  const handleSelect = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      if (onSelect?.(path, event) !== false) handleToggle();
+    },
+    [handleToggle, onSelect, path]
+  );
 
   const folderContextValue = useMemo(
     () => ({ isExpanded, name, path }),
@@ -204,7 +212,6 @@ export const FileTreeFolder = ({
             <button
               className="flex min-w-0 flex-1 cursor-pointer items-center gap-1 border-none bg-transparent p-0 text-left"
               onClick={handleSelect}
-              onDoubleClick={handleToggle}
               type="button"
             >
               <FileTreeIcon>
@@ -250,17 +257,21 @@ export const FileTreeFile = ({
   children,
   ...props
 }: FileTreeFileProps) => {
-  const { selectedPath, onSelect } = useContext(FileTreeContext);
-  const isSelected = selectedPath === path;
+  const { selectedPath, selectedPaths, onSelect } = useContext(FileTreeContext);
+  const isSelected = selectedPaths ? selectedPaths.has(path) : selectedPath === path;
 
-  const handleClick = useCallback(() => {
-    onSelect?.(path);
-  }, [onSelect, path]);
+  const handleClick = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      onSelect?.(path, event);
+    },
+    [onSelect, path]
+  );
 
   const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
       if (e.key === "Enter" || e.key === " ") {
-        onSelect?.(path);
+        e.preventDefault();
+        onSelect?.(path, e);
       }
     },
     [onSelect, path]

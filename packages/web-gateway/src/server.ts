@@ -1,11 +1,27 @@
 import { createHash, randomUUID } from "node:crypto";
-import { type FSWatcher, watch } from "node:fs";
-import { mkdir, readdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { createReadStream, createWriteStream, type FSWatcher, watch } from "node:fs";
+import {
+	type FileHandle,
+	link,
+	lstat,
+	mkdir,
+	open,
+	readdir,
+	readFile,
+	realpath,
+	rename,
+	rm,
+	stat,
+	unlink,
+	writeFile,
+} from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { Duplex } from "node:stream";
+import { type Duplex, Transform, Writable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { crc32, createDeflateRaw } from "node:zlib";
 import {
 	type CompletionResult,
 	type ContentChunk,
@@ -682,6 +698,229 @@ function relativePath(root: string, candidate: string): string {
 	return value === "." ? "" : value.split(sep).join("/");
 }
 
+interface ZipSourceEntry {
+	path: string;
+	archivePath: string;
+	directory: boolean;
+	mode: number;
+	modifiedAt: Date;
+}
+
+interface ZipCentralEntry extends ZipSourceEntry {
+	crc: number;
+	compressedSize: number;
+	uncompressedSize: number;
+	localOffset: number;
+	method: number;
+}
+
+const ZIP_MAX_VALUE = 0xffffffff;
+const ZIP_MAX_ENTRIES = 0xffff;
+
+function zipDateTime(date: Date): { date: number; time: number } {
+	const year = Math.min(2107, Math.max(1980, date.getFullYear()));
+	return {
+		date: ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate(),
+		time: (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2),
+	};
+}
+
+async function writeZipBuffer(handle: FileHandle, position: number, value: Buffer): Promise<number> {
+	let offset = 0;
+	while (offset < value.length) {
+		const result = await handle.write(value, offset, value.length - offset, position + offset);
+		offset += result.bytesWritten;
+	}
+	return position + value.length;
+}
+
+async function collectZipEntries(
+	root: string,
+	selections: ReadonlyArray<{ path: string; kind: "file" | "directory" }>,
+): Promise<ZipSourceEntry[]> {
+	const unique = [...new Map(selections.map((entry) => [entry.path, entry])).values()].sort(
+		(left, right) => left.path.length - right.path.length || left.path.localeCompare(right.path),
+	);
+	const roots = unique.filter(
+		(entry) =>
+			!unique.some(
+				(candidate) =>
+					candidate.path !== entry.path && candidate.kind === "directory" && isInside(candidate.path, entry.path),
+			),
+	);
+	const result: ZipSourceEntry[] = [];
+	const archivePaths = new Set<string>();
+	const visitedDirectories = new Set<string>();
+	const append = (entry: ZipSourceEntry) => {
+		if (archivePaths.has(entry.archivePath)) return;
+		if (result.length >= ZIP_MAX_ENTRIES) {
+			throw new HttpError(413, "archive_entry_limit", "ZIP 内文件数量超过 65535 个");
+		}
+		archivePaths.add(entry.archivePath);
+		result.push(entry);
+	};
+	const visit = async (path: string, archivePath: string): Promise<void> => {
+		const canonicalPath = await realpath(path);
+		if (!isInside(root, canonicalPath)) return;
+		const info = await stat(canonicalPath);
+		const normalizedPath = archivePath.replaceAll("\\", "/").replace(/^\/+/, "");
+		if (info.isDirectory()) {
+			const directoryPath = normalizedPath.endsWith("/") ? normalizedPath : `${normalizedPath}/`;
+			append({
+				path: canonicalPath,
+				archivePath: directoryPath,
+				directory: true,
+				mode: info.mode,
+				modifiedAt: info.mtime,
+			});
+			if (visitedDirectories.has(canonicalPath)) return;
+			visitedDirectories.add(canonicalPath);
+			const children = await readdir(canonicalPath, { withFileTypes: true });
+			children.sort((left, right) => left.name.localeCompare(right.name));
+			for (const child of children) {
+				const childCandidate = resolve(canonicalPath, child.name);
+				let childPath: string;
+				try {
+					childPath = await realpath(childCandidate);
+				} catch {
+					continue;
+				}
+				if (!isInside(root, childPath)) continue;
+				await visit(childPath, normalizedPath ? `${normalizedPath}/${child.name}` : child.name);
+			}
+			return;
+		}
+		if (!info.isFile()) return;
+		append({
+			path: canonicalPath,
+			archivePath: normalizedPath,
+			directory: false,
+			mode: info.mode,
+			modifiedAt: info.mtime,
+		});
+	};
+	for (const selection of roots) await visit(selection.path, relativePath(root, selection.path));
+	return result;
+}
+
+async function createZipArchive(outputPath: string, entries: readonly ZipSourceEntry[]): Promise<void> {
+	const temporaryPath = join(dirname(outputPath), `.${basename(outputPath)}.${process.pid}.${randomUUID()}.tmp`);
+	let handle: FileHandle | undefined;
+	try {
+		handle = await open(temporaryPath, "wx", 0o600);
+		let position = 0;
+		const centralEntries: ZipCentralEntry[] = [];
+		for (const entry of entries) {
+			const name = Buffer.from(entry.archivePath, "utf8");
+			if (name.length > ZIP_MAX_ENTRIES) throw new HttpError(413, "archive_path_too_long", "ZIP 内路径过长");
+			if (position > ZIP_MAX_VALUE) throw new HttpError(413, "archive_too_large", "ZIP 文件超过 4 GiB 上限");
+			const timestamp = zipDateTime(entry.modifiedAt);
+			const localOffset = position;
+			const method = entry.directory ? 0 : 8;
+			const flags = entry.directory ? 0x0800 : 0x0808;
+			const localHeader = Buffer.alloc(30);
+			localHeader.writeUInt32LE(0x04034b50, 0);
+			localHeader.writeUInt16LE(20, 4);
+			localHeader.writeUInt16LE(flags, 6);
+			localHeader.writeUInt16LE(method, 8);
+			localHeader.writeUInt16LE(timestamp.time, 10);
+			localHeader.writeUInt16LE(timestamp.date, 12);
+			localHeader.writeUInt16LE(name.length, 26);
+			position = await writeZipBuffer(handle, position, localHeader);
+			position = await writeZipBuffer(handle, position, name);
+
+			let checksum = 0;
+			let compressedSize = 0;
+			let uncompressedSize = 0;
+			if (!entry.directory) {
+				const checksumStream = new Transform({
+					transform(chunk: Buffer, _encoding, callback) {
+						const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+						uncompressedSize += data.length;
+						checksum = crc32(data, checksum) >>> 0;
+						if (uncompressedSize > ZIP_MAX_VALUE) {
+							callback(new HttpError(413, "archive_entry_too_large", "ZIP 内单个文件超过 4 GiB 上限"));
+							return;
+						}
+						callback(null, data);
+					},
+				});
+				const output = new Writable({
+					write(chunk: Buffer, _encoding, callback) {
+						const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+						void writeZipBuffer(handle!, position, data)
+							.then((nextPosition) => {
+								position = nextPosition;
+								compressedSize += data.length;
+								if (compressedSize > ZIP_MAX_VALUE || position > ZIP_MAX_VALUE) {
+									callback(new HttpError(413, "archive_too_large", "ZIP 文件超过 4 GiB 上限"));
+									return;
+								}
+								callback();
+							})
+							.catch((error) => callback(error as Error));
+					},
+				});
+				await pipeline(createReadStream(entry.path), checksumStream, createDeflateRaw(), output);
+				const descriptor = Buffer.alloc(16);
+				descriptor.writeUInt32LE(0x08074b50, 0);
+				descriptor.writeUInt32LE(checksum, 4);
+				descriptor.writeUInt32LE(compressedSize, 8);
+				descriptor.writeUInt32LE(uncompressedSize, 12);
+				position = await writeZipBuffer(handle, position, descriptor);
+			}
+			centralEntries.push({ ...entry, crc: checksum, compressedSize, uncompressedSize, localOffset, method });
+		}
+
+		const centralOffset = position;
+		for (const entry of centralEntries) {
+			const name = Buffer.from(entry.archivePath, "utf8");
+			const timestamp = zipDateTime(entry.modifiedAt);
+			const header = Buffer.alloc(46);
+			header.writeUInt32LE(0x02014b50, 0);
+			header.writeUInt16LE(0x0314, 4);
+			header.writeUInt16LE(20, 6);
+			header.writeUInt16LE(entry.directory ? 0x0800 : 0x0808, 8);
+			header.writeUInt16LE(entry.method, 10);
+			header.writeUInt16LE(timestamp.time, 12);
+			header.writeUInt16LE(timestamp.date, 14);
+			header.writeUInt32LE(entry.crc, 16);
+			header.writeUInt32LE(entry.compressedSize, 20);
+			header.writeUInt32LE(entry.uncompressedSize, 24);
+			header.writeUInt16LE(name.length, 28);
+			header.writeUInt32LE((((entry.mode & 0xffff) << 16) | (entry.directory ? 0x10 : 0)) >>> 0, 38);
+			header.writeUInt32LE(entry.localOffset, 42);
+			position = await writeZipBuffer(handle, position, header);
+			position = await writeZipBuffer(handle, position, name);
+		}
+		const centralSize = position - centralOffset;
+		if (centralOffset > ZIP_MAX_VALUE || centralSize > ZIP_MAX_VALUE) {
+			throw new HttpError(413, "archive_too_large", "ZIP 文件超过 4 GiB 上限");
+		}
+		const end = Buffer.alloc(22);
+		end.writeUInt32LE(0x06054b50, 0);
+		end.writeUInt16LE(centralEntries.length, 8);
+		end.writeUInt16LE(centralEntries.length, 10);
+		end.writeUInt32LE(centralSize, 12);
+		end.writeUInt32LE(centralOffset, 16);
+		await writeZipBuffer(handle, position, end);
+		await handle.sync();
+		await handle.close();
+		handle = undefined;
+		try {
+			await link(temporaryPath, outputPath);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+				throw new HttpError(409, "archive_name_conflict", "项目根目录下已有同名 ZIP 文件");
+			}
+			throw error;
+		}
+	} finally {
+		await handle?.close().catch(() => {});
+		await unlink(temporaryPath).catch(() => {});
+	}
+}
+
 function latestOperation(operations: OperationSnapshot[], sessionPath: string): OperationSnapshot | undefined {
 	return operations
 		.filter((operation) => operation.sessionPath === sessionPath)
@@ -737,6 +976,7 @@ export class WebGatewayServer {
 	private lastRuntimeModelCatalogEvent?: string;
 	private readonly socketLiveness = new WeakMap<WebSocket, boolean>();
 	private readonly detailSubscriptions = new WeakMap<WebSocket, Set<string>>();
+	private readonly projectSubscriptions = new WeakMap<WebSocket, Set<string>>();
 	private previousCpuSnapshot?: CpuSnapshot;
 	private restartHandler?: () => void;
 	private listening = false;
@@ -1034,7 +1274,11 @@ export class WebGatewayServer {
 				state.paths.clear();
 				for (const context of this.contexts.values()) {
 					if (context.sockets.size > 0)
-						this.broadcast(context, { type: "project_files_changed", projectId: project.id, paths });
+						this.broadcastProject(context, project.id, {
+							type: "project_files_changed",
+							projectId: project.id,
+							paths,
+						});
 				}
 			}, PROJECT_WATCH_DEBOUNCE_MS);
 			state.timer.unref?.();
@@ -1372,6 +1616,66 @@ export class WebGatewayServer {
 		if (!isInside(project.cwd, candidate))
 			throw new HttpError(403, "project_path_escape", "目标路径不在当前项目范围内");
 		return candidate;
+	}
+
+	private async projectEntryPath(
+		project: WebProject,
+		input: string,
+	): Promise<{ path: string; root: string; kind: "file" | "directory" }> {
+		const root = await realpath(resolve(project.cwd));
+		const candidate = this.projectPath(project, input);
+		let path: string;
+		try {
+			path = await realpath(candidate);
+		} catch {
+			throw new HttpError(404, "file_not_found", "文件或目录不存在");
+		}
+		if (!isInside(root, path)) throw new HttpError(403, "project_path_escape", "目标路径不在当前项目范围内");
+		const info = await stat(path);
+		if (!info.isFile() && !info.isDirectory()) {
+			throw new HttpError(400, "file_not_regular", "目标不是普通文件或目录");
+		}
+		return { path, root, kind: info.isDirectory() ? "directory" : "file" };
+	}
+
+	private async projectFilePath(project: WebProject, input: string): Promise<{ path: string; root: string }> {
+		const entry = await this.projectEntryPath(project, input);
+		if (entry.kind !== "file") throw new HttpError(400, "file_not_regular", "目标不是普通文件");
+		return entry;
+	}
+
+	private async projectMutableEntryPath(
+		project: WebProject,
+		input: string,
+	): Promise<{ path: string; root: string; kind: "file" | "directory" }> {
+		if (!input.trim()) throw new HttpError(400, "file_path_required", "文件或目录路径不能为空");
+		const root = resolve(project.cwd);
+		const canonicalRoot = await realpath(root);
+		const path = this.projectPath(project, input);
+		let info: Awaited<ReturnType<typeof lstat>>;
+		let canonicalParent: string;
+		try {
+			[info, canonicalParent] = await Promise.all([lstat(path), realpath(dirname(path))]);
+		} catch {
+			throw new HttpError(404, "file_not_found", "文件或目录不存在");
+		}
+		if (!isInside(canonicalRoot, canonicalParent)) {
+			throw new HttpError(403, "project_path_escape", "目标路径不在当前项目范围内");
+		}
+		if (info.isSymbolicLink()) return { path, root, kind: "file" };
+		let canonicalPath: string;
+		try {
+			canonicalPath = await realpath(path);
+		} catch {
+			throw new HttpError(404, "file_not_found", "文件或目录不存在");
+		}
+		if (!isInside(canonicalRoot, canonicalPath)) {
+			throw new HttpError(403, "project_path_escape", "目标路径不在当前项目范围内");
+		}
+		if (!info.isFile() && !info.isDirectory()) {
+			throw new HttpError(400, "file_not_regular", "目标不是普通文件或目录");
+		}
+		return { path, root, kind: info.isDirectory() ? "directory" : "file" };
 	}
 
 	private async projectTree(project: WebProject, input: string | undefined): Promise<DirectoryResponse> {
@@ -2176,7 +2480,172 @@ export class WebGatewayServer {
 			sendJson(response, 200, await this.projectTree(project, url.searchParams.get("path") ?? undefined));
 			return;
 		}
+		if (parts.length === 4 && parts[3] === "upload" && request.method === "POST") {
+			const directoryPath = url.searchParams.get("path")?.trim() ?? "";
+			const name = url.searchParams.get("name")?.trim();
+			if (!name) throw new HttpError(400, "file_name_required", "文件名不能为空");
+			if (name === "." || name === ".." || name.includes("/") || name.includes("\\") || name.includes("\0")) {
+				throw new HttpError(400, "file_name_invalid", "文件名不能包含路径分隔符");
+			}
+			const directory = await this.projectEntryPath(project, directoryPath);
+			if (directory.kind !== "directory") {
+				throw new HttpError(400, "upload_target_not_directory", "上传目标不是目录");
+			}
+			const target = resolve(directory.path, name);
+			if (dirname(target) !== directory.path) {
+				throw new HttpError(403, "project_path_escape", "上传目标不在当前目录范围内");
+			}
+			try {
+				await lstat(target);
+				throw new HttpError(409, "file_name_conflict", "同一目录下已有同名文件或目录");
+			} catch (error) {
+				if (error instanceof HttpError) throw error;
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			}
+			const temporaryPath = join(directory.path, `.${name}.${process.pid}.${randomUUID()}.upload`);
+			try {
+				await pipeline(request, createWriteStream(temporaryPath, { flags: "wx", mode: 0o644 }));
+				try {
+					await link(temporaryPath, target);
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+						throw new HttpError(409, "file_name_conflict", "同一目录下已有同名文件或目录");
+					}
+					throw error;
+				}
+				const info = await stat(target);
+				this.ensureProjectWatcher(project);
+				sendJson(response, 200, {
+					path: relativePath(directory.root, target),
+					byteLength: info.size,
+				});
+			} finally {
+				await unlink(temporaryPath).catch(() => {});
+			}
+			return;
+		}
+		if (parts.length === 4 && parts[3] === "archive" && request.method === "POST") {
+			const body = await parseJsonBody(request);
+			const name = stringValue(body.name);
+			if (
+				!name ||
+				!name.toLowerCase().endsWith(".zip") ||
+				name.includes("/") ||
+				name.includes("\\") ||
+				name.includes("\0")
+			) {
+				throw new HttpError(400, "archive_name_invalid", "ZIP 文件名必须以 .zip 结尾且不能包含路径分隔符");
+			}
+			if (
+				!Array.isArray(body.paths) ||
+				body.paths.length === 0 ||
+				body.paths.length > 1000 ||
+				body.paths.some((path) => typeof path !== "string" || !path.trim())
+			) {
+				throw new HttpError(400, "archive_paths_invalid", "请选择 1 至 1000 个文件或目录");
+			}
+			const sources = await Promise.all(
+				body.paths.map((path) => this.projectEntryPath(project, (path as string).trim())),
+			);
+			const root = sources[0].root;
+			const outputPath = resolve(root, name);
+			if (dirname(outputPath) !== root) {
+				throw new HttpError(403, "project_path_escape", "ZIP 必须生成在项目根目录");
+			}
+			try {
+				await stat(outputPath);
+				throw new HttpError(409, "archive_name_conflict", "项目根目录下已有同名 ZIP 文件");
+			} catch (error) {
+				if (error instanceof HttpError) throw error;
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			}
+			const archiveEntries = await collectZipEntries(root, sources);
+			if (archiveEntries.length === 0) throw new HttpError(400, "archive_empty", "选中内容没有可压缩文件");
+			this.ensureProjectWatcher(project);
+			await createZipArchive(outputPath, archiveEntries);
+			sendJson(response, 200, { path: name, entryCount: archiveEntries.length });
+			return;
+		}
 		if (parts.length === 4 && parts[3] === "file") {
+			if (request.method === "GET" && url.searchParams.get("download") === "true") {
+				const path = url.searchParams.get("path")?.trim();
+				if (!path) throw new HttpError(400, "file_path_required", "文件路径不能为空");
+				const file = await this.projectFilePath(project, path);
+				const info = await stat(file.path);
+				const filename = encodeURIComponent(basename(file.path)).replace(
+					/[!'()*]/gu,
+					(value) => `%${value.charCodeAt(0).toString(16).toUpperCase()}`,
+				);
+				response.writeHead(200, {
+					"Cache-Control": "no-store",
+					"Content-Disposition": `attachment; filename*=UTF-8''${filename}`,
+					"Content-Length": String(info.size),
+					"Content-Type": "application/octet-stream",
+				});
+				response.end(await readFile(file.path));
+				return;
+			}
+			if (request.method === "PATCH") {
+				const body = await parseJsonBody(request);
+				const path = stringValue(body.path);
+				const name = stringValue(body.name);
+				if (!path) throw new HttpError(400, "file_path_required", "文件路径不能为空");
+				if (!name) throw new HttpError(400, "file_name_required", "文件名不能为空");
+				if (name === "." || name === ".." || name.includes("/") || name.includes("\\") || name.includes("\0")) {
+					throw new HttpError(400, "file_name_invalid", "文件名不能包含路径分隔符");
+				}
+				const source = await this.projectMutableEntryPath(project, path);
+				if (basename(source.path) === name) {
+					sendJson(response, 200, { path: relativePath(source.root, source.path) });
+					return;
+				}
+				const target = resolve(dirname(source.path), name);
+				if (!isInside(source.root, target)) {
+					throw new HttpError(403, "project_path_escape", "目标路径不在当前项目范围内");
+				}
+				try {
+					await lstat(target);
+					throw new HttpError(409, "file_name_conflict", "同一目录下已有同名文件或目录");
+				} catch (error) {
+					if (error instanceof HttpError) throw error;
+					if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+				}
+				await rename(source.path, target);
+				sendJson(response, 200, { path: relativePath(source.root, target) });
+				return;
+			}
+			if (request.method === "DELETE") {
+				const body = await parseJsonBody(request);
+				if (
+					!Array.isArray(body.paths) ||
+					body.paths.length === 0 ||
+					body.paths.length > 1000 ||
+					body.paths.some((path) => typeof path !== "string" || !path.trim())
+				) {
+					throw new HttpError(400, "delete_paths_invalid", "请选择 1 至 1000 个文件或目录");
+				}
+				const entries = await Promise.all(
+					body.paths.map((path) => this.projectMutableEntryPath(project, (path as string).trim())),
+				);
+				const uniqueEntries = [...new Map(entries.map((entry) => [entry.path, entry])).values()];
+				const deletionRoots = uniqueEntries.filter(
+					(entry) =>
+						!uniqueEntries.some(
+							(candidate) =>
+								candidate.path !== entry.path &&
+								candidate.kind === "directory" &&
+								isInside(candidate.path, entry.path),
+						),
+				);
+				this.ensureProjectWatcher(project);
+				for (const entry of deletionRoots) {
+					await rm(entry.path, { recursive: entry.kind === "directory", force: false });
+				}
+				sendJson(response, 200, {
+					paths: deletionRoots.map((entry) => relativePath(entry.root, entry.path)),
+				});
+				return;
+			}
 			const client = await this.getClient(context);
 			if (request.method === "GET") {
 				const path = url.searchParams.get("path")?.trim();
@@ -2567,6 +3036,7 @@ export class WebGatewayServer {
 								sessionId,
 								text: live.text,
 								thinking: live.thinking,
+								...(typeof live.stepId === "string" ? { stepId: live.stepId } : {}),
 							});
 						},
 					},
@@ -3559,6 +4029,15 @@ export class WebGatewayServer {
 		return subscriptions;
 	}
 
+	private projectSubscriptionsFor(socket: WebSocket): Set<string> {
+		let subscriptions = this.projectSubscriptions.get(socket);
+		if (!subscriptions) {
+			subscriptions = new Set();
+			this.projectSubscriptions.set(socket, subscriptions);
+		}
+		return subscriptions;
+	}
+
 	private detailStateFor(context: BrowserContext, sessionId: string): SessionDetailState {
 		let state = context.sessionDetailState.get(sessionId);
 		if (!state) {
@@ -3638,11 +4117,12 @@ export class WebGatewayServer {
 		operationUpdatedAt?: number,
 	): void {
 		const previous = context.sessionSummaryState.get(sessionId);
-		if (
-			previous?.activity === activity &&
-			(operationUpdatedAt === undefined || previous.operationUpdatedAt === operationUpdatedAt)
-		)
+		if (previous?.activity === activity) {
+			if (operationUpdatedAt !== undefined && previous.operationUpdatedAt !== operationUpdatedAt) {
+				context.sessionSummaryState.set(sessionId, { ...previous, operationUpdatedAt });
+			}
 			return;
+		}
 		context.sessionSummaryState.set(sessionId, {
 			name: previous?.name,
 			activity,
@@ -3695,6 +4175,13 @@ export class WebGatewayServer {
 		this.recordSessionDetail(context, sessionId, event);
 	}
 
+	private broadcastProject(context: BrowserContext, projectId: string, value: unknown): void {
+		const payload = JSON.stringify(value);
+		for (const socket of context.sockets) {
+			if (this.projectSubscriptionsFor(socket).has(projectId)) this.sendWebSocket(socket, payload);
+		}
+	}
+
 	private broadcast(context: BrowserContext, value: unknown): void {
 		const payload = JSON.stringify(value);
 		for (const socket of context.sockets) this.sendWebSocket(socket, payload);
@@ -3743,9 +4230,17 @@ export class WebGatewayServer {
 		this.touchContext(context);
 		this.socketLiveness.set(socket, true);
 		const subscriptions = this.subscriptionsFor(socket);
+		const projectSubscriptions = this.projectSubscriptionsFor(socket);
 		socket.on("message", (raw) => {
 			try {
 				const message = object(JSON.parse(String(raw)));
+				if (message?.type === "subscribe_project" || message?.type === "unsubscribe_project") {
+					const projectId = stringValue(message.projectId);
+					if (!projectId) return;
+					if (message.type === "subscribe_project") projectSubscriptions.add(projectId);
+					else projectSubscriptions.delete(projectId);
+					return;
+				}
 				const sessionId = stringValue(message?.sessionId);
 				if (!sessionId) return;
 				if (message?.type === "subscribe_session") {

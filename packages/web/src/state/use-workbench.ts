@@ -5,13 +5,14 @@ import {
 	type GitDiff,
 	type GitHistory,
 	type GitMutation,
+	type AgentStep,
 	type GitStatus,
 	type SessionProgress,
 	type ToolActivity,
 	type ToolActivityState,
 	type ToolDiff,
 } from "@lystar/code-web-protocol";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UnauthorizedError, webApi } from "../adapters/host-protocol/api.ts";
 import { isAbsoluteResourcePath } from "../lib/resource-path.ts";
 import type {
@@ -50,6 +51,7 @@ import {
 	type PendingUserPrompt,
 	reconcileCommittedTurn,
 	reconcilePendingUserPrompts,
+	reconcileQueuedUserPromptCounts,
 	removeQueuedUserPrompt,
 	removeQueuedUserPromptByText,
 	submitPromptWithFollowUpFallback,
@@ -116,14 +118,27 @@ export interface LiveTool {
 	state: ToolActivityState;
 	result?: string;
 	status: "running" | "success" | "error";
+	stepId?: string;
 	inputPreview?: boolean;
 	diff?: ToolDiff;
 }
 
 export type LiveTurnItem =
-	| { id: string; kind: "text"; parts: readonly string[]; turnId: number }
-	| { id: string; kind: "thinking"; parts: readonly string[]; turnId: number }
-	| { id: string; kind: "tools"; turnId: number; batchId: string; toolIds: string[] };
+	| { id: string; kind: "text"; parts: readonly string[]; turnId: number; stepId?: string }
+	| { id: string; kind: "thinking"; parts: readonly string[]; turnId: number; stepId?: string }
+	| { id: string; kind: "tools"; turnId: number; batchId: string; toolIds: string[] }
+	| {
+			id: string;
+			kind: "user";
+			turnId: number;
+			queueId: string;
+			text: string;
+			displayText: string;
+			attachments: PromptAttachmentPreview[];
+			afterEntryId?: string;
+			stepId?: string;
+			status: "queued" | "processing";
+	  };
 
 type LiveTextProgress = Extract<SessionProgress, { type: "assistant_delta" | "thinking_delta" }>;
 type PendingTextProgress = { selection: number; sessionId: string; progress: LiveTextProgress };
@@ -139,12 +154,13 @@ function appendLiveTextBlock(
 	text: string,
 	id: string,
 	turnId: number,
+	stepId?: string,
 ): LiveTurnItem[] {
 	if (!text) return items;
 	const last = items.at(-1);
-	if (last?.kind === kind && last.turnId === turnId)
+	if (last?.kind === kind && last.turnId === turnId && last.stepId === stepId)
 		return [...items.slice(0, -1), { ...last, parts: [...last.parts, text] }];
-	return [...items, { id, kind, parts: [text], turnId }];
+	return [...items, { id, kind, parts: [text], turnId, ...(stepId ? { stepId } : {}) }];
 }
 
 function appendLiveToolBlock(
@@ -160,6 +176,69 @@ function appendLiveToolBlock(
 		return [...items.slice(0, -1), { ...last, toolIds: [...last.toolIds, toolCallId] }];
 	}
 	return [...items, { id, kind: "tools", turnId, batchId, toolIds: [toolCallId] }];
+}
+
+function runningAgentStepId(steps: Readonly<Record<string, AgentStep>>): string | undefined {
+	const runningSteps = Object.values(steps).filter((step) => step.status === "running");
+	return runningSteps.length === 1 ? runningSteps[0]?.id : undefined;
+}
+
+function appendLiveUserPrompt(
+	items: LiveTurnItem[],
+	prompt: QueuedUserPrompt,
+	turnId: number,
+	afterEntryId: string | undefined,
+	stepId?: string,
+): LiveTurnItem[] {
+	const id = `optimistic-user:${prompt.id}`;
+	if (items.some((item) => item.id === id)) return items;
+	return [
+		...items,
+		{
+			id,
+			kind: "user",
+			turnId,
+			queueId: prompt.id,
+			text: prompt.text,
+			displayText: prompt.displayText,
+			attachments: prompt.attachments,
+			afterEntryId,
+			...(stepId ? { stepId } : {}),
+			status: "queued",
+		},
+	];
+}
+
+function removeLiveUserPrompt(items: LiveTurnItem[], queueId: string): LiveTurnItem[] {
+	return items.filter((item) => item.kind !== "user" || item.queueId !== queueId);
+}
+
+function markLiveUserPromptProcessing(items: LiveTurnItem[], queueId: string | undefined, text: string): LiveTurnItem[] {
+	let matched = false;
+	return items.map((item) => {
+		if (matched || item.kind !== "user" || item.status === "processing") return item;
+		if (queueId ? item.queueId !== queueId : item.text !== text) return item;
+		matched = true;
+		return { ...item, status: "processing" };
+	});
+}
+
+function reconcileLiveUserPrompts(items: LiveTurnItem[], transcript: readonly WebTranscriptItem[]): LiveTurnItem[] {
+	const liveUsers = items.filter((item): item is Extract<LiveTurnItem, { kind: "user" }> => item.kind === "user");
+	if (!liveUsers.length) return items;
+	const remainingIds = new Set(
+		reconcilePendingUserPrompts(
+			liveUsers.map((item) => ({
+				id: item.id,
+				text: item.text,
+				attachments: item.attachments,
+				afterEntryId: item.afterEntryId,
+				queueId: item.queueId,
+			})),
+			transcript,
+		).map((item) => item.id),
+	);
+	return items.filter((item) => item.kind !== "user" || remainingIds.has(item.id));
 }
 
 function mergeToolDiff(previous: ToolDiff | undefined, next: ToolDiff | undefined): ToolDiff | undefined {
@@ -220,6 +299,7 @@ function liveToolFromActivity(activity: ToolActivity, previous: LiveTool | undef
 		summary: activity.summary || previous?.summary || activity.name,
 		state: activity.state,
 		status: toolActivityStatus(activity.state),
+		stepId: activity.stepId ?? previous?.stepId,
 		inputPreview: activity.inputPreview,
 		result: activity.output ?? activity.progress ?? activity.error ?? previous?.result,
 		...(terminal ? { diff: activity.diff } : { diff: mergeToolDiff(previous?.diff, activity.diff) }),
@@ -230,6 +310,7 @@ function nextLiveToolBatchId(
 	current: WorkbenchState,
 	toolName: string,
 	toolSummary: string,
+	stepId: string | undefined,
 	turnId: number,
 	fallback: string,
 ): string {
@@ -237,6 +318,7 @@ function nextLiveToolBatchId(
 	if (last?.kind !== "tools" || last.turnId !== turnId) return fallback;
 	const previousToolId = last.toolIds.at(-1);
 	const previousTool = previousToolId ? current.liveTools[previousToolId] : undefined;
+	if (previousTool?.stepId !== stepId) return fallback;
 	return shouldJoinLiveToolBatch(previousTool, { name: toolName, summary: toolSummary }, last?.turnId, turnId)
 		? last.batchId
 		: fallback;
@@ -258,6 +340,7 @@ function applyToolActivityState(current: WorkbenchState, activity: ToolActivity)
 			current,
 			activity.name,
 			activity.summary,
+			activity.stepId,
 			current.liveTurnId,
 			`live-tool-batch:${activity.activityEpoch}:${activity.toolCallId}`,
 		);
@@ -302,6 +385,7 @@ function restoreToolActivities(current: WorkbenchState, snapshot: WebSessionSnap
 			next,
 			activity.name,
 			activity.summary,
+			activity.stepId,
 			next.liveTurnId,
 			`live-tool-batch:${activity.activityEpoch}:${activity.toolCallId}`,
 		);
@@ -335,27 +419,47 @@ function queuedPromptsFromSnapshot(
 	snapshot: WebSessionSnapshot,
 	fallback: readonly QueuedUserPrompt[],
 ): QueuedUserPrompt[] {
+	const reconciled = reconcileQueuedUserPromptCounts(
+		fallback,
+		snapshot.queuedSteerCount ?? 0,
+		snapshot.queuedFollowUpCount,
+	);
 	if (snapshot.queuedFollowUpMessages !== undefined) {
+		const steering = reconciled.filter((prompt) => prompt.delivery === "steer");
 		const fallbackById = new Map(fallback.map((prompt) => [prompt.id, prompt]));
-		return snapshot.queuedFollowUpMessages.map(({ id, text }) => {
+		const followUp = snapshot.queuedFollowUpMessages.map(({ id, text }) => {
 			const previous = fallbackById.get(id);
 			return {
 				id,
 				text,
 				displayText: previous?.displayText || promptDisplayText(text) || "附件消息",
+				delivery: "follow-up" as const,
 				attachments: previous?.attachments ?? [],
 			};
 		});
+		return [...steering, ...followUp];
 	}
-	return snapshot.queuedFollowUpCount === 0 ? [] : [...fallback];
+	return reconciled;
 }
 
 export function restoreRuntimeActivities(current: WorkbenchState, snapshot: WebSessionSnapshot): WorkbenchState {
-	const queuedUserPrompts = queuedPromptsFromSnapshot(snapshot, current.queuedUserPrompts);
+	const queuedUserPrompts = queuedPromptsFromSnapshot(snapshot, current.queuedUserPrompts ?? []);
 	const queuedPromptIds = new Set(queuedUserPrompts.map((prompt) => prompt.id));
+	const liveTurnItems = current.liveTurnItems.map((item) =>
+		item.kind === "user" && item.status === "queued" && !queuedPromptIds.has(item.queueId)
+			? { ...item, status: "processing" as const }
+			: item,
+	);
+	const liveSteps = snapshot.activeStep
+		? { [snapshot.activeStep.id]: snapshot.activeStep }
+		: hasActiveSessionSnapshot(snapshot)
+			? Object.fromEntries(Object.entries(current.liveSteps ?? {}).filter(([, step]) => step.status !== "running"))
+			: {};
 	const next = {
 		...current,
 		queuedUserPrompts,
+		liveSteps,
+		liveTurnItems,
 		pendingUserPrompts: (current.pendingUserPrompts ?? []).filter(
 			(prompt) => !prompt.queueId || !queuedPromptIds.has(prompt.queueId),
 		),
@@ -407,6 +511,7 @@ export interface WorkbenchState {
 	currentOperation?: WebOperation;
 	operations: WebOperation[];
 	liveTools: Record<string, LiveTool>;
+	liveSteps: Record<string, AgentStep>;
 	liveTurnItems: LiveTurnItem[];
 	liveTurnId: number;
 	liveTurnStartRevision?: number;
@@ -554,6 +659,7 @@ type SessionDetailCache = Pick<
 	| "hasMorePrevious"
 	| "loadingEarlier"
 	| "liveTools"
+	| "liveSteps"
 	| "liveTurnItems"
 	| "liveTurnId"
 	| "liveTurnStartRevision"
@@ -578,6 +684,7 @@ function sessionDetailCacheFromState(state: WorkbenchState): SessionDetailCache 
 		hasMorePrevious: state.hasMorePrevious,
 		loadingEarlier: state.loadingEarlier,
 		liveTools: state.liveTools,
+		liveSteps: state.liveSteps,
 		liveTurnItems: state.liveTurnItems,
 		liveTurnId: state.liveTurnId,
 		liveTurnStartRevision: state.liveTurnStartRevision,
@@ -901,6 +1008,7 @@ function sessionActivityFromProgress(progress: SessionProgress): "running" | "wa
 			return progress.status === "running" || progress.status === "waiting" ? "running" : undefined;
 		case "assistant_delta":
 		case "thinking_delta":
+		case "agent_step":
 		case "tool_start":
 		case "tool_update":
 		case "tool_end":
@@ -921,13 +1029,13 @@ function sessionActivityFromProgress(progress: SessionProgress): "running" | "wa
 	}
 }
 
-function gitCredentialAuthorizationMessageFromProgress(progress: SessionProgress): string | undefined {
-	if (progress.type === "tool_state") {
-		return gitCredentialAuthorizationMessage(
-			progress.activity.error ?? progress.activity.output ?? progress.activity.progress,
-		);
+export function gitCredentialAuthorizationMessageFromProgress(progress: SessionProgress): string | undefined {
+	if (progress.type === "tool_state" && progress.activity.state === "error") {
+		return gitCredentialAuthorizationMessage(progress.activity.error);
 	}
-	if (progress.type === "tool_end") return gitCredentialAuthorizationMessage(progress.summary);
+	if (progress.type === "tool_end" && progress.status === "error") {
+		return gitCredentialAuthorizationMessage(progress.summary);
+	}
 	return undefined;
 }
 
@@ -967,8 +1075,8 @@ function sameProjectTree(left: ProjectTreeResponse | undefined, right: ProjectTr
 	return left !== undefined && JSON.stringify(left) === JSON.stringify(right);
 }
 
-function hasLiveTurnContent(state: Pick<WorkbenchState, "liveTools" | "liveTurnItems">): boolean {
-	return Boolean(Object.keys(state.liveTools).length || state.liveTurnItems.length);
+function hasLiveTurnContent(state: Pick<WorkbenchState, "liveTools" | "liveSteps" | "liveTurnItems">): boolean {
+	return Boolean(Object.keys(state.liveTools).length || Object.keys(state.liveSteps).length || state.liveTurnItems.length);
 }
 
 function shouldClearLiveTurn(state: WorkbenchState): boolean {
@@ -1057,6 +1165,7 @@ function initialState(): WorkbenchState {
 		queuedUserPrompts: [],
 		operations: [],
 		liveTools: {},
+		liveSteps: {},
 		liveTurnItems: [],
 		liveCompaction: undefined,
 		liveTurnId: 0,
@@ -1173,6 +1282,14 @@ export function useWorkbench() {
 		setState(next);
 		return next;
 	}, []);
+	const transitionState = useCallback(
+		(update: WorkbenchState | ((current: WorkbenchState) => WorkbenchState)) => {
+			startTransition(() => {
+				updateState(update);
+			});
+		},
+		[updateState],
+	);
 
 	const currentProject = useMemo(
 		() => state.projects.find((project) => project.id === state.currentProjectId),
@@ -1322,7 +1439,7 @@ export function useWorkbench() {
 	);
 
 	const loadTranscript = useCallback(
-		async (sessionId = stateRef.current.sessionId, cursor?: string) => {
+		async (sessionId = stateRef.current.sessionId, cursor?: string, deferCommit = false) => {
 			if (!sessionId) return;
 			const requestedHistory = {
 				generation: stateRef.current.transcriptGeneration,
@@ -1339,7 +1456,7 @@ export function useWorkbench() {
 			try {
 				const result = await webApi.transcript(sessionId, { cursor, limit: TRANSCRIPT_PAGE_SIZE });
 				if (requestId !== transcriptRequestRef.current || stateRef.current.sessionId !== sessionId) return;
-				updateState((current) => {
+				(deferCommit && !cursor ? transitionState : updateState)((current) => {
 					const resultMatchesCurrentHistory =
 						current.transcriptGeneration === undefined ||
 						current.transcriptGeneration === result.transcriptGeneration;
@@ -1382,9 +1499,13 @@ export function useWorkbench() {
 						!shouldClearLiveTurn(current)
 					) {
 						const pendingUserPrompts = reconcilePendingUserPrompts(current.pendingUserPrompts, current.transcript);
-						if (pendingUserPrompts.length === current.pendingUserPrompts.length)
+						const liveTurnItems = reconcileLiveUserPrompts(current.liveTurnItems, current.transcript);
+						if (
+							pendingUserPrompts.length === current.pendingUserPrompts.length &&
+							liveTurnItems.length === current.liveTurnItems.length
+						)
 							return current.transcriptLoading ? { ...current, transcriptLoading: false } : current;
-						return { ...current, transcriptLoading: false, pendingUserPrompts };
+						return { ...current, transcriptLoading: false, pendingUserPrompts, liveTurnItems };
 					}
 					const renderIdOverrides =
 						!cursor && sameHistory
@@ -1403,7 +1524,7 @@ export function useWorkbench() {
 					);
 					const pendingUserPrompts = cursor
 						? current.pendingUserPrompts
-						: reconcilePendingUserPrompts(current.pendingUserPrompts, result.items);
+						: reconcilePendingUserPrompts(current.pendingUserPrompts, transcriptWindow.transcript);
 					const completedTurnSynced = !cursor && shouldClearLiveTurn(current);
 					const knownIds = new Set(current.transcript.map((item) => item.entryId));
 					const next =
@@ -1420,12 +1541,15 @@ export function useWorkbench() {
 						transcriptLoading: false,
 						transcriptError: undefined,
 						pendingUserPrompts,
+						liveTurnItems: cursor
+							? next.liveTurnItems
+							: reconcileLiveUserPrompts(next.liveTurnItems, transcriptWindow.transcript),
 						transcriptGeneration: result.transcriptGeneration,
 						transcriptRevision: sameHistory
 							? Math.max(current.transcriptRevision ?? 0, result.transcriptRevision)
 							: result.transcriptRevision,
 						transcriptLeafId: cursor ? current.transcriptLeafId : result.leafId,
-						...(completedTurnSynced ? { liveTools: {}, liveTurnItems: [] } : {}),
+						...(completedTurnSynced ? { liveTools: {}, liveSteps: {}, liveTurnItems: [] } : {}),
 					};
 					return {
 						...updated,
@@ -1443,7 +1567,7 @@ export function useWorkbench() {
 				throw error;
 			}
 		},
-		[updateState],
+		[transitionState, updateState],
 	);
 
 	const loadSessionOperations = useCallback(
@@ -1533,6 +1657,7 @@ export function useWorkbench() {
 								progress.text,
 								`live-turn:${liveTurnItemRef.current++}`,
 								current.liveTurnId,
+								progress.stepId,
 							),
 							statusText: "正在生成回复",
 						};
@@ -1546,6 +1671,7 @@ export function useWorkbench() {
 								progress.text,
 								`live-thinking:${liveTurnItemRef.current++}`,
 								current.liveTurnId,
+								progress.stepId,
 							),
 							statusText: "正在思考",
 						};
@@ -1555,7 +1681,19 @@ export function useWorkbench() {
 							queuedUserPrompts: progress.queueId
 								? removeQueuedUserPrompt(current.queuedUserPrompts, progress.queueId)
 								: removeQueuedUserPromptByText(current.queuedUserPrompts, progress.text),
+							liveTurnItems: markLiveUserPromptProcessing(
+								current.liveTurnItems,
+								progress.queueId,
+								progress.text,
+							),
 							statusText: "正在处理",
+						};
+					case "agent_step":
+						return {
+							...current,
+							liveTurnActive: true,
+							liveSteps: { ...current.liveSteps, [progress.step.id]: progress.step },
+							statusText: progress.step.status === "running" ? progress.step.title : current.statusText,
 						};
 					case "tool_state":
 						return applyToolActivityState(current, progress.activity);
@@ -1568,6 +1706,7 @@ export function useWorkbench() {
 								current,
 								progress.name,
 								summary,
+								progress.stepId,
 								current.liveTurnId,
 								`live-tool-batch:${liveToolBatchRef.current++}`,
 							);
@@ -1582,6 +1721,7 @@ export function useWorkbench() {
 									summary,
 									state: "running",
 									status: "running",
+									stepId: progress.stepId ?? previous?.stepId,
 									diff: mergeToolDiff(previous?.diff, progress.diff),
 								},
 							},
@@ -1607,6 +1747,7 @@ export function useWorkbench() {
 								current,
 								progress.name,
 								summary,
+								progress.stepId,
 								current.liveTurnId,
 								`live-tool-batch:${liveToolBatchRef.current++}`,
 							);
@@ -1622,6 +1763,7 @@ export function useWorkbench() {
 									state: "running",
 									result: progress.summary,
 									status: "running",
+									stepId: progress.stepId ?? previous?.stepId,
 									diff: mergeToolDiff(previous?.diff, progress.diff),
 								},
 							},
@@ -1645,6 +1787,7 @@ export function useWorkbench() {
 								current,
 								progress.name,
 								summary,
+								progress.stepId,
 								current.liveTurnId,
 								`live-tool-batch:${liveToolBatchRef.current++}`,
 							);
@@ -1660,6 +1803,7 @@ export function useWorkbench() {
 									state: progress.status === "success" ? "success" : "error",
 									result: progress.summary,
 									status: progress.status,
+									stepId: progress.stepId ?? previous?.stepId,
 									diff: mergeToolDiff(previous?.diff, progress.diff),
 								},
 							},
@@ -1675,15 +1819,27 @@ export function useWorkbench() {
 							statusText: progress.status === "error" ? `${progress.name} 执行失败` : `${progress.name} 已完成`,
 						};
 					}
-					case "queue_update":
+					case "queue_update": {
+						const queuedUserPrompts = reconcileQueuedUserPromptCounts(
+							current.queuedUserPrompts,
+							progress.steeringCount,
+							progress.followUpCount,
+						);
+						const queuedPromptIds = new Set(queuedUserPrompts.map((prompt) => prompt.id));
 						return {
 							...current,
-							queuedUserPrompts: progress.followUpCount === 0 ? [] : current.queuedUserPrompts,
+							queuedUserPrompts,
+							liveTurnItems: current.liveTurnItems.map((item) =>
+								item.kind === "user" && item.status === "queued" && !queuedPromptIds.has(item.queueId)
+									? { ...item, status: "processing" as const }
+									: item,
+							),
 							statusText:
 								progress.steeringCount + progress.followUpCount > 0
 									? `队列中 ${progress.steeringCount + progress.followUpCount} 项`
 									: "正在处理",
 						};
+					}
 					case "phase": {
 						const liveCompaction =
 							progress.phase === "compaction"
@@ -1699,7 +1855,8 @@ export function useWorkbench() {
 								? {
 										liveTurnStartRevision: current.transcriptRevision,
 										liveTurnActive: true,
-										liveTurnItems: [],
+										liveTurnItems: current.liveTurnItems.filter((item) => item.kind === "user"),
+										liveSteps: {},
 									}
 								: progress.phase === "idle" || progress.phase === "interrupted"
 									? { liveTurnActive: false }
@@ -1775,7 +1932,7 @@ export function useWorkbench() {
 		for (const entry of pending) {
 			if (entry.selection !== selection || entry.sessionId !== sessionId) continue;
 			const progress = entry.progress;
-			if (batch && batch.type === progress.type) {
+			if (batch && batch.type === progress.type && batch.stepId === progress.stepId) {
 				batch = { ...batch, text: batch.text + progress.text };
 				continue;
 			}
@@ -1794,7 +1951,8 @@ export function useWorkbench() {
 				if (
 					previous?.selection === selection &&
 					previous.sessionId === sessionId &&
-					previous.progress.type === progress.type
+					previous.progress.type === progress.type &&
+					previous.progress.stepId === progress.stepId
 				) {
 					pending[pending.length - 1] = {
 						selection,
@@ -1914,12 +2072,12 @@ export function useWorkbench() {
 	const handleEvent = useCallback(
 		(event: GatewayEvent) => {
 			if (event.type === "session_subscription") {
-				sessionDetailSeqRef.current.set(event.sessionId, event.seq);
+				const selected = stateRef.current.sessionId === event.sessionId;
+				if (selected) sessionDetailSeqRef.current.set(event.sessionId, event.seq);
 				const waiters = sessionSubscriptionWaitersRef.current.get(event.sessionId);
 				if (waiters) {
 					for (const waiter of [...waiters]) waiter.resolve(event.gap ? "gap" : "ready");
 				}
-				const selected = stateRef.current.sessionId === event.sessionId;
 				if (selected) {
 					const next = updateState((current) =>
 						event.gap
@@ -1944,7 +2102,12 @@ export function useWorkbench() {
 					: event.type === "operation_updated"
 						? event.operation.sessionId
 						: undefined;
-			if (sequenceSessionId && "seq" in event && typeof event.seq === "number") {
+			if (
+				sequenceSessionId &&
+				sequenceSessionId === stateRef.current.sessionId &&
+				"seq" in event &&
+				typeof event.seq === "number"
+			) {
 				const previousSeq = sessionDetailSeqRef.current.get(sequenceSessionId);
 				if (previousSeq !== undefined && event.seq <= previousSeq) return;
 				sessionDetailSeqRef.current.set(sequenceSessionId, event.seq);
@@ -1952,8 +2115,9 @@ export function useWorkbench() {
 			if (event.type === "session_stream") {
 				if (event.sessionId !== stateRef.current.sessionId) return;
 				updateState((current) => {
-					const tools = current.liveTurnItems.filter((item) => item.kind === "tools");
-					let items: LiveTurnItem[] = tools;
+					const retained = current.liveTurnItems.filter((item) => item.kind === "tools" || item.kind === "user");
+					const tools = retained.filter((item) => item.kind === "tools");
+					let items: LiveTurnItem[] = retained;
 					if (event.thinking)
 						items = appendLiveTextBlock(
 							items,
@@ -1961,6 +2125,7 @@ export function useWorkbench() {
 							event.thinking,
 							`restored-thinking:${liveTurnItemRef.current++}`,
 							current.liveTurnId,
+							event.stepId,
 						);
 					if (event.text)
 						items = appendLiveTextBlock(
@@ -1969,6 +2134,7 @@ export function useWorkbench() {
 							event.text,
 							`restored-text:${liveTurnItemRef.current++}`,
 							current.liveTurnId,
+							event.stepId,
 						);
 					return {
 						...current,
@@ -2114,6 +2280,7 @@ export function useWorkbench() {
 									previousCursor: undefined,
 									hasMorePrevious: false,
 									liveTools: {},
+									liveSteps: {},
 									liveTurnItems: [],
 								}
 							: {}),
@@ -2155,6 +2322,7 @@ export function useWorkbench() {
 								previousCursor: undefined,
 								hasMorePrevious: false,
 								liveTools: {},
+								liveSteps: {},
 								liveTurnItems: [],
 								liveTurnActive: false,
 								liveCompaction: undefined,
@@ -2192,15 +2360,17 @@ export function useWorkbench() {
 						event.items,
 					);
 					const next = !stale ? reconcileCommittedTurn(current, event.items, event.toRevision) : current;
+					const transcript = stale
+						? current.transcript
+						: mergeTranscriptEntries(current.transcript, event.items, false, renderIdOverrides);
 					const updated = {
 						...next,
-						transcript: stale
-							? current.transcript
-							: mergeTranscriptEntries(current.transcript, event.items, false, renderIdOverrides),
+						transcript,
 						transcriptPageLoaded: current.transcriptPageLoaded,
 						previousCursor: current.previousCursor,
 						hasMorePrevious: current.hasMorePrevious,
-						pendingUserPrompts: reconcilePendingUserPrompts(current.pendingUserPrompts, event.items),
+						pendingUserPrompts: reconcilePendingUserPrompts(current.pendingUserPrompts, transcript),
+						liveTurnItems: reconcileLiveUserPrompts(next.liveTurnItems, transcript),
 						transcriptGeneration: current.transcriptGeneration,
 						transcriptRevision: stale ? current.transcriptRevision : event.toRevision,
 					};
@@ -2448,13 +2618,14 @@ export function useWorkbench() {
 				if (networkOnline) scheduleReconnect();
 			},
 		);
-		const subscribeSelectedSession = () => {
-			const sessionId = stateRef.current.sessionId;
+		const subscribeSelectedState = () => {
+			const { currentProjectId, sessionId } = stateRef.current;
+			if (currentProjectId) webApi.subscribeProject(socket, currentProjectId);
 			if (sessionId) restoreSelectedSessionSubscription(sessionId);
 		};
-		socket.addEventListener("open", subscribeSelectedSession, { once: true });
+		socket.addEventListener("open", subscribeSelectedState, { once: true });
 		socketRef.current = socket;
-		if (socket.readyState === WebSocket.OPEN) subscribeSelectedSession();
+		if (socket.readyState === WebSocket.OPEN) subscribeSelectedState();
 	}, [
 		handleEvent,
 		restoreSelectedSessionSubscription,
@@ -2584,6 +2755,8 @@ export function useWorkbench() {
 						.sort((left, right) => Number(right.pinned) - Number(left.pinned))[0];
 				if (firstProject) {
 					updateState((current) => ({ ...current, currentProjectId: firstProject.id }));
+					const socket = socketRef.current;
+					if (socket) webApi.subscribeProject(socket, firstProject.id);
 					await loadProjectTreeRef.current();
 					const sessions =
 						stateRef.current.projects.find((project) => project.id === firstProject.id)?.sessions ??
@@ -2734,13 +2907,19 @@ export function useWorkbench() {
 			}
 			const cached = readCachedSessionDetail(sessionDetailCacheRef.current, sessionId);
 			const socket = socketRef.current;
+			if (socket && selectedProjectId) {
+				if (previous.currentProjectId && previous.currentProjectId !== selectedProjectId) {
+					webApi.unsubscribeProject(socket, previous.currentProjectId);
+				}
+				webApi.subscribeProject(socket, selectedProjectId);
+			}
 			if (transcriptTimerRef.current) {
 				window.clearTimeout(transcriptTimerRef.current);
 				transcriptTimerRef.current = undefined;
 			}
 			transcriptRefreshPendingRef.current = undefined;
 			transcriptRequestRef.current++;
-			updateState((current) => ({
+			(cached?.transcriptPageLoaded ? transitionState : updateState)((current) => ({
 				...current,
 				...projectInspectorStateForSelection(previous.currentProjectId, selectedProjectId),
 				...(selectedProjectId ? { currentProjectId: selectedProjectId } : {}),
@@ -2765,6 +2944,7 @@ export function useWorkbench() {
 								hasMorePrevious: false,
 								loadingEarlier: false,
 								liveTools: {},
+								liveSteps: {},
 								liveTurnItems: [],
 								liveTurnActive: undefined,
 								liveTurnStartRevision: undefined,
@@ -2795,7 +2975,7 @@ export function useWorkbench() {
 			) {
 				void webApi.release(previous.sessionId).catch(() => {});
 			}
-			const transcriptPromise = loadTranscript(sessionId);
+			const transcriptPromise = loadTranscript(sessionId, undefined, true);
 			void transcriptPromise.catch(() => {});
 			if (projectChanged && previous.inspectorOpen) {
 				const projectReviewRefresh =
@@ -2917,6 +3097,7 @@ export function useWorkbench() {
 			loadTranscript,
 			showToast,
 			subscribeSessionAndWait,
+			transitionState,
 			updateState,
 		],
 	);
@@ -2926,6 +3107,13 @@ export function useWorkbench() {
 			const request = ++selectionRef.current;
 			const previous = stateRef.current;
 			const projectChanged = projectId !== previous.currentProjectId;
+			const socket = socketRef.current;
+			if (socket) {
+				if (previous.currentProjectId && previous.currentProjectId !== projectId) {
+					webApi.unsubscribeProject(socket, previous.currentProjectId);
+				}
+				webApi.subscribeProject(socket, projectId);
+			}
 			if (projectChanged) {
 				fileRequestRef.current++;
 				fileMetadataPromisesRef.current.clear();
@@ -2979,6 +3167,7 @@ export function useWorkbench() {
 				liveTurnActive: false,
 				liveTurnStartRevision: undefined,
 				liveTools: {},
+				liveSteps: {},
 				liveTurnItems: [],
 				liveCompaction: undefined,
 				sessionTree: [],
@@ -3092,13 +3281,14 @@ export function useWorkbench() {
 				: undefined;
 			const visibleValue = displayText?.trim() || promptDisplayText(value) || fallbackDisplayText || value;
 			if (!value) return;
-			const queueId = mode === "steer" ? undefined : createUuid();
+			const queueId = createUuid();
 			const queuedPrompt: QueuedUserPrompt | undefined =
-				mode === "follow-up" && queueId
+				mode === "steer" || mode === "follow-up"
 					? {
 							id: queueId,
 							text: value,
 							displayText: visibleValue,
+							delivery: mode,
 							attachments: attachmentPreviews ?? [],
 						}
 					: undefined;
@@ -3121,6 +3311,20 @@ export function useWorkbench() {
 									? { pendingUserPrompts: [...next.pendingUserPrompts, optimisticPrompt] }
 									: {}),
 								...(queuedPrompt ? { queuedUserPrompts: [...next.queuedUserPrompts, queuedPrompt] } : {}),
+								...(queuedPrompt?.delivery === "steer"
+									? {
+											liveTurnItems: appendLiveUserPrompt(
+												next.liveTurnItems,
+												queuedPrompt,
+												next.liveTurnId,
+												next.transcript.at(-1)?.entryId,
+												runningAgentStepId(next.liveSteps),
+											),
+										}
+									: {}),
+								...(optimisticPrompt || queuedPrompt?.delivery === "steer"
+									? { promptScrollRequest: (next.promptScrollRequest ?? 0) + 1 }
+									: {}),
 							}
 						: next,
 				);
@@ -3143,6 +3347,7 @@ export function useWorkbench() {
 									id: queueId,
 									text: value,
 									displayText: visibleValue,
+									delivery: "follow-up" as const,
 									attachments: attachmentPreviews ?? [],
 								}
 							: undefined;
@@ -3163,7 +3368,6 @@ export function useWorkbench() {
 						projects: acceptedAsFollowUp
 							? accepted.projects
 							: updateSessionSummaryFirstMessage(accepted.projects, current.sessionId!, visibleValue),
-						promptScrollRequest: (accepted.promptScrollRequest ?? 0) + 1,
 					};
 				});
 			} catch (error) {
@@ -3180,7 +3384,10 @@ export function useWorkbench() {
 											}
 										: {}),
 									...(queuedPrompt
-										? { queuedUserPrompts: removeQueuedUserPrompt(next.queuedUserPrompts, queuedPrompt.id) }
+										? {
+												queuedUserPrompts: removeQueuedUserPrompt(next.queuedUserPrompts, queuedPrompt.id),
+												liveTurnItems: removeLiveUserPrompt(next.liveTurnItems, queuedPrompt.id),
+											}
 										: {}),
 								}
 							: next,
@@ -3195,12 +3402,66 @@ export function useWorkbench() {
 		async (queueId: string, action: "remove" | "steer") => {
 			const current = stateRef.current;
 			if (!current.sessionId || !canSendPrompt(current)) return;
-			await webApi.queueAction(current.sessionId, queueId, action);
-			updateState((next) =>
-				next.sessionId === current.sessionId
-					? { ...next, queuedUserPrompts: removeQueuedUserPrompt(next.queuedUserPrompts, queueId) }
-					: next,
+			const promptIndex = current.queuedUserPrompts.findIndex((prompt) => prompt.id === queueId);
+			const prompt = promptIndex >= 0 ? current.queuedUserPrompts[promptIndex] : undefined;
+			const livePromptIndex = current.liveTurnItems.findIndex(
+				(item) => item.kind === "user" && item.queueId === queueId,
 			);
+			const livePrompt = livePromptIndex >= 0 ? current.liveTurnItems[livePromptIndex] : undefined;
+			if (prompt) {
+				updateState((next) => {
+					if (next.sessionId !== current.sessionId) return next;
+					const steeringPrompt = action === "steer" ? { ...prompt, delivery: "steer" as const } : undefined;
+					return {
+						...next,
+						queuedUserPrompts:
+							action === "remove"
+								? removeQueuedUserPrompt(next.queuedUserPrompts, queueId)
+								: next.queuedUserPrompts.map((candidate) =>
+										candidate.id === queueId ? steeringPrompt! : candidate,
+									),
+						liveTurnItems:
+							action === "remove"
+								? removeLiveUserPrompt(next.liveTurnItems, queueId)
+								: appendLiveUserPrompt(
+										next.liveTurnItems,
+									steeringPrompt!,
+									next.liveTurnId,
+									next.transcript.at(-1)?.entryId,
+									runningAgentStepId(next.liveSteps),
+								),
+						...(action === "steer" && !livePrompt
+							? { promptScrollRequest: (next.promptScrollRequest ?? 0) + 1 }
+							: {}),
+					};
+				});
+			}
+			try {
+				await webApi.queueAction(current.sessionId, queueId, action);
+			} catch (error) {
+				if (prompt) {
+					updateState((next) => {
+						if (next.sessionId !== current.sessionId) return next;
+						let queuedUserPrompts = next.queuedUserPrompts;
+						const existingIndex = queuedUserPrompts.findIndex((candidate) => candidate.id === queueId);
+						if (existingIndex >= 0) {
+							queuedUserPrompts = queuedUserPrompts.map((candidate) =>
+								candidate.id === queueId ? prompt : candidate,
+							);
+						} else {
+							queuedUserPrompts = [...queuedUserPrompts];
+							queuedUserPrompts.splice(Math.min(promptIndex, queuedUserPrompts.length), 0, prompt);
+						}
+						let liveTurnItems = removeLiveUserPrompt(next.liveTurnItems, queueId);
+						if (livePrompt) {
+							liveTurnItems = [...liveTurnItems];
+							liveTurnItems.splice(Math.min(livePromptIndex, liveTurnItems.length), 0, livePrompt);
+						}
+						return { ...next, queuedUserPrompts, liveTurnItems };
+					});
+				}
+				throw error;
+			}
 		},
 		[updateState],
 	);
@@ -3317,6 +3578,7 @@ export function useWorkbench() {
 							liveTurnActive: false,
 							liveTurnStartRevision: undefined,
 							liveTools: {},
+							liveSteps: {},
 							liveTurnItems: [],
 							statusText: "",
 							unreadSessionIds: Object.fromEntries(
@@ -3384,6 +3646,7 @@ export function useWorkbench() {
 				liveTurnActive: false,
 				liveTurnStartRevision: undefined,
 				liveTools: {},
+				liveSteps: {},
 				liveTurnItems: [],
 				liveCompaction: undefined,
 			}));
@@ -4541,6 +4804,160 @@ export function useWorkbench() {
 	refreshModelOptionsRef.current = refreshModelOptions;
 	refreshModelSettingsRef.current = refreshModelSettings;
 
+	const actions = useMemo(
+		() => ({
+			selectProject,
+			selectSession,
+			createSession,
+			sendMessage,
+			queueAction,
+			abort,
+			openInspector,
+			closeInspector,
+			openSettings,
+			refreshBranding,
+			saveBranding,
+			closeSettings,
+			signOut,
+			setComposerMode,
+			loadEarlier,
+			loadTranscript,
+			loadGitStatus,
+			loadGitRepositoryStats,
+			loadGitBranches,
+			loadGitHistory,
+			loadGitCommit,
+			closeGitCommit,
+			mutateGit,
+			closeGitCredentialAuthorization,
+			loadGitDiff,
+			closeGitDiff,
+			loadProjectTree,
+			openFile,
+			openResource,
+			saveFile,
+			closeFilePreview,
+			loadSessionTree,
+			navigateTree,
+			loadDirectory,
+			addProject,
+			updateProject,
+			addProjectGroup,
+			updateProjectGroup,
+			removeProjectGroup,
+			setProjectGroup,
+			reorderProjectGroups,
+			reorderProjects,
+			reorderSessions,
+			removeProject,
+			deleteSession,
+			deleteSessions,
+			renameSession,
+			setSessionPinned,
+			fork,
+			reloadResources,
+			compact,
+			exportSession,
+			updateModel,
+			updateThinking,
+			setModelProviderVisibility,
+			saveModelProvider,
+			removeModelProvider,
+			saveProviderModel,
+			setProviderModelEnabled,
+			syncModelProvider,
+			refreshSkills,
+			refreshDiagnostics,
+			refreshSecuritySettings,
+			saveSecuritySettings,
+			restartDiagnosticService,
+			refreshHarnessImports,
+			importHarnessResources,
+			toggleSkill,
+			refreshHostInstructions,
+			saveHostInstruction,
+			setTheme,
+			setProjectTrust,
+			respondUiRequest,
+			showToast,
+		}),
+		[
+			selectProject,
+			selectSession,
+			createSession,
+			sendMessage,
+			queueAction,
+			abort,
+			openInspector,
+			closeInspector,
+			openSettings,
+			refreshBranding,
+			saveBranding,
+			closeSettings,
+			signOut,
+			setComposerMode,
+			loadEarlier,
+			loadTranscript,
+			loadGitStatus,
+			loadGitRepositoryStats,
+			loadGitBranches,
+			loadGitHistory,
+			loadGitCommit,
+			closeGitCommit,
+			mutateGit,
+			closeGitCredentialAuthorization,
+			loadGitDiff,
+			closeGitDiff,
+			loadProjectTree,
+			openFile,
+			openResource,
+			saveFile,
+			closeFilePreview,
+			loadSessionTree,
+			navigateTree,
+			loadDirectory,
+			addProject,
+			updateProject,
+			addProjectGroup,
+			updateProjectGroup,
+			removeProjectGroup,
+			setProjectGroup,
+			reorderProjectGroups,
+			reorderProjects,
+			reorderSessions,
+			removeProject,
+			deleteSession,
+			deleteSessions,
+			renameSession,
+			setSessionPinned,
+			fork,
+			reloadResources,
+			compact,
+			exportSession,
+			updateModel,
+			updateThinking,
+			setModelProviderVisibility,
+			saveModelProvider,
+			removeModelProvider,
+			saveProviderModel,
+			setProviderModelEnabled,
+			syncModelProvider,
+			refreshSkills,
+			refreshDiagnostics,
+			refreshSecuritySettings,
+			saveSecuritySettings,
+			restartDiagnosticService,
+			refreshHarnessImports,
+			importHarnessResources,
+			toggleSkill,
+			refreshHostInstructions,
+			saveHostInstruction,
+			setTheme,
+			setProjectTrust,
+			respondUiRequest,
+			showToast,
+		],
+	);
 
 	useEffect(() => {
 		if (!state.currentProjectId || !state.sessionId) return;
@@ -4657,6 +5074,7 @@ export function useWorkbench() {
 
 	return {
 		state,
+		actions,
 		currentProject,
 		currentSessions,
 		currentSessionSummary,

@@ -89,7 +89,7 @@ function CompactionActivityContent({ state }: { state: LiveCompactionState }) {
 						statusClassName(state),
 					)}
 				/>
-				<span className={cn("min-w-0 flex-1 truncate font-medium text-sm", statusClassName(state))}>
+				<span className={cn("min-w-0 flex-1 truncate font-medium text-[13px]", statusClassName(state))}>
 					上下文压缩
 				</span>
 				<span className="min-w-0 shrink-0 truncate text-xs text-muted-foreground" title={detail}>
@@ -133,7 +133,7 @@ export function CompactionSummaryCard({
 					aria-label={`${open ? "收起" : "展开"}上下文压缩摘要`}
 				>
 					<Sparkles className="size-4 shrink-0 text-muted-foreground" />
-					<span className="min-w-0 flex-1 truncate font-medium text-sm text-muted-foreground">上下文压缩</span>
+					<span className="min-w-0 flex-1 truncate font-medium text-[13px] text-muted-foreground">上下文压缩</span>
 					{tokenLabel ? <span className="shrink-0 text-xs text-muted-foreground">{tokenLabel}</span> : null}
 					<ChevronDown
 						className={cn("size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")}

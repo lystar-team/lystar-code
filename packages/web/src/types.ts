@@ -156,6 +156,7 @@ export interface QueuedUserPrompt {
 	id: string;
 	text: string;
 	displayText: string;
+	delivery: "steer" | "follow-up";
 	attachments: PromptAttachmentPreview[];
 }
 
@@ -180,7 +181,7 @@ export interface UiRequestEvent {
 }
 
 export type GatewayEvent =
-	| { type: "session_stream"; sessionId: string; text: string; thinking: string; seq?: number }
+	| { type: "session_stream"; sessionId: string; text: string; thinking: string; stepId?: string; seq?: number }
 	| { type: "bootstrap"; data: BootstrapResponse }
 	| { type: "connection_state"; connected: boolean; message?: string }
 	| { type: "session_lease"; sessionId: string; lease: WebLease }

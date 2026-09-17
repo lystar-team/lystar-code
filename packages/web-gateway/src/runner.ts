@@ -29,6 +29,8 @@ export interface WebGatewayCliOptions {
 	defaultPort?: number;
 	defaultRuntimePort?: number;
 	staticDir?: string;
+	frontendInvocation?: RuntimeInvocation;
+	frontendPort?: number;
 	runtimeInvocation?: RuntimeInvocation;
 	configFileName?: string;
 	commandName?: "lc" | "lcd";
@@ -260,8 +262,14 @@ function webAccessUrls(host: string, port: number): string[] {
 function printBackgroundStartup(
 	config: WebGatewayServer["config"],
 	status: Awaited<ReturnType<typeof ensureWebServices>>,
+	frontendPort?: number,
 ): void {
 	console.log("\nLYStar Code Web 工作台已在后台启动");
+	if (status.frontend && frontendPort !== undefined) {
+		console.log(
+			`Frontend：服务已启动（监听 ${urlHost(config.host)}:${frontendPort}${status.frontend.pid ? `，PID ${status.frontend.pid}` : ""}）`,
+		);
+	}
 	console.log(
 		`Gateway：服务已启动（监听 ${urlHost(config.host)}:${config.port}${status.gateway.pid ? `，PID ${status.gateway.pid}` : ""}）`,
 	);
@@ -269,7 +277,8 @@ function printBackgroundStartup(
 		`Runtime：服务已启动（127.0.0.1:${config.runtimePort ?? DEFAULT_RUNTIME_PORT}${status.runtime.pid ? `，PID ${status.runtime.pid}` : ""}）`,
 	);
 	console.log("\nWeb UI 访问地址：");
-	for (const url of webAccessUrls(config.host, config.port)) console.log(`  ${url}`);
+	for (const url of webAccessUrls(config.host, frontendPort ?? config.port)) console.log(`  ${url}`);
+	if (status.frontend) console.log(`\nGateway API：http://127.0.0.1:${config.port}`);
 	console.log(`\n日志目录：${config.agentDir}/web`);
 }
 
@@ -319,6 +328,8 @@ export async function runWebGatewayCli(options: WebGatewayCliOptions = {}): Prom
 			defaultPort,
 			defaultRuntimePort,
 			staticDir,
+			frontendInvocation: options.frontendInvocation,
+			frontendPort: options.frontendPort,
 			gatewayInvocation: options.backgroundInvocation ?? {
 				command: process.execPath,
 				args: process.argv[1] ? [process.argv[1], "web", "--foreground"] : ["web", "--foreground"],
@@ -328,7 +339,7 @@ export async function runWebGatewayCli(options: WebGatewayCliOptions = {}): Prom
 			...(options.serviceVersion ? { serviceVersion: options.serviceVersion } : {}),
 			interactiveAdmin: Boolean(process.stdin.isTTY && process.stdout.isTTY),
 		});
-		printBackgroundStartup(config, status);
+		printBackgroundStartup(config, status, options.frontendPort);
 		return;
 	}
 	const instanceLock = await (async () => {

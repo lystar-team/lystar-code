@@ -71,8 +71,8 @@ export interface RuntimeSessionAsyncControls {
 	isConnected?(): boolean;
 	ownsSessionWriter?(): boolean;
 	hasExternalClients?(): boolean;
-	getLiveMessage?(): { text: string; thinking: string } | undefined;
-	readLiveMessage?(): Promise<{ text: string; thinking: string } | undefined>;
+	getLiveMessage?(): { text: string; thinking: string; stepId?: string } | undefined;
+	readLiveMessage?(): Promise<{ text: string; thinking: string; stepId?: string } | undefined>;
 	getCapabilities?(): readonly string[];
 	listSettingsAsync?(): Promise<SettingSummary[]>;
 	getSessionTreeAsync?(): Promise<SessionTreeNode[]>;

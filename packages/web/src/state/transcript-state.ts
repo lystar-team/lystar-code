@@ -12,7 +12,8 @@ export interface TranscriptWindow {
 export type LiveRenderSource =
 	| { kind: "text"; id: string; parts: readonly string[] }
 	| { kind: "thinking"; id: string }
-	| { kind: "tools"; id: string; toolIds: readonly string[] };
+	| { kind: "tools"; id: string; toolIds: readonly string[] }
+	| { kind: "user"; id: string };
 
 export type TranscriptRenderIdOverrides = ReadonlyMap<string, string>;
 
@@ -38,6 +39,7 @@ export function mergeTranscriptPage(
 function transcriptViewIdentity(item: WebTranscriptItem): string {
 	const view = item.view;
 	if (!view) return item.kind;
+	if (view.type === "agent_step") return `${view.type}:${view.step.id}`;
 	if (view.type === "tool_call") return `${view.type}:${view.calls.map((call) => call.id).join(",")}`;
 	if (view.type === "tool_result") return `${view.type}:${view.callId}`;
 	return view.type;

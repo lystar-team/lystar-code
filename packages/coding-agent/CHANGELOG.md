@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.85.1-lystar.15] - 2026-09-17
+
+### Added
+
+- 新增 Agent 步骤轨迹：新增 `step_start` 和 `step_end` 工具，Runtime 把每个步骤持久化为 `lystar.web.agent-step` 自定义记录，Progress、Transcript 和会话快照携带 `stepId` 与 `activeStep`，Web 会话按步骤聚合助手内容与工具调用并可展开收起，Runtime 协议升到 v9，步骤控制工具不进入工具列表，取消会话或停止服务时把运行中步骤标记为 `interrupted`。
+- 新增 Web 项目文件管理：文件树支持搜索、多选（Ctrl/Shift）、上传（选择或拖拽到目录）、下载、重命名、删除和压缩为 ZIP；Gateway 新增 `/api/projects/:id/upload`、`/api/projects/:id/archive`、文件 `download=true`、`PATCH` 和 `DELETE` 路由，限制 ZIP 条目数、单个文件和整体 4 GiB 上限，并拒绝项目目录之外的路径。
+- 新增 Transcript 滚动锚定：分页补齐更早历史时按可见内容锚点保持视口位置，滚轮、指针或翻页操作会取消锚定。
+
+### Changed
+
+- 调整本地开发 Web 服务生命周期：`lcd web` 与 `lcd web service start|restart|stop|status|uninstall` 统一管理 Vite HMR 前端、Gateway 和 Runtime，开发前端作为独立后台服务监听 `2420`，不再依赖终端前台进程维持热更新。
+- 调整 Web 排队消息：区分“调整方向”和“完成后发送”两种投递方式，补充排队状态、附件和删除操作，实时 Thinking 固定到底部槽，步骤卡片按真实顺序归类已关联工具和中途插话。
+- 调整 Web 交互细节：工具运行中把加载图标放回工具图标位置，Prompt 输入框在光标位于末尾时跟随滚动并在提交失败时还原草稿，会话拖拽排序限定在同组置顶状态内，窄屏改用移动端项目栏，文件与模型面板跟随会话栏宽度。
+
+### Fixed
+
+- 修复 Gateway 把项目文件变更广播给全部连接的问题，只发送给订阅对应项目的连接；会话与项目订阅在 WebSocket 建立前排队并在重连后补发。
+- 修复 Gateway 会话摘要把同一操作状态变化重复推送的问题，按状态去重并只为订阅者保留操作详情。
+- 修复 Git 凭据授权提示误判：工具成功输出中出现授权标记不再打开弹窗，只有失败的工具事件上报授权错误时才提示。
+- 修复待确认用户消息对账：带附件的 Prompt 按发送时的锚点匹配，避免历史分页补齐后重复挂载或匹配到同类旧消息。
+
 ## [0.85.1-lystar.14] - 2026-09-16
 
 ### Added

@@ -64,6 +64,8 @@ export interface WebServiceLaunchOptions {
 	defaultPort?: number;
 	defaultRuntimePort?: number;
 	staticDir?: string;
+	frontendInvocation?: RuntimeInvocation;
+	frontendPort?: number;
 	gatewayInvocation: RuntimeInvocation;
 	runtimeInvocation?: RuntimeInvocation;
 	serviceVersion?: string;
@@ -80,6 +82,7 @@ export interface WebServicesStatus {
 		serviceVersion: string;
 		reason: string;
 	};
+	frontend?: WebServiceStatus;
 	gateway: WebServiceStatus;
 	runtime: RuntimeServiceStatus;
 }
@@ -158,7 +161,7 @@ function fallbackGatewayConfig(options: WebServiceLaunchOptions): WebGatewayConf
 	};
 }
 
-function serviceLogPath(agentDir: string, kind: "gateway" | "runtime", profile: string): string {
+function serviceLogPath(agentDir: string, kind: "frontend" | "gateway" | "runtime", profile: string): string {
 	return join(agentDir, "web", `${kind}${profile === DEFAULT_PROFILE ? "" : `-${profile}`}.log`);
 }
 
@@ -181,6 +184,21 @@ function runtimeSpec(config: WebGatewayConfig, options: WebServiceLaunchOptions)
 		environment: serviceEnvironment(config, options.configFileName, options.serviceVersion),
 		...(options.runtimeInvocation ? { invocation: serviceInvocation(options.runtimeInvocation) } : {}),
 	});
+}
+
+function frontendSpec(config: WebGatewayConfig, options: WebServiceLaunchOptions): WebServiceSpec | undefined {
+	const invocation = serviceInvocation(options.frontendInvocation);
+	if (!invocation) return undefined;
+	const profile = profileFor(options.configFileName);
+	return {
+		kind: "frontend",
+		profile,
+		agentDir: config.agentDir,
+		invocation,
+		environment: serviceEnvironment(config, options.configFileName, options.serviceVersion),
+		logPath: serviceLogPath(config.agentDir, "frontend", profile),
+		macosSession: "gui",
+	};
 }
 
 function statePath(agentDir: string, configFileName?: string): string {
@@ -323,10 +341,49 @@ async function stopDetachedGateway(agentDir: string, profile: string): Promise<v
 	await waitForGatewayExit(agentDir, profile);
 }
 
+async function waitForServiceStopped(spec: WebServiceSpec, timeoutMs = 10_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (!getWebServiceStatus(spec).running) return;
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
+	throw new Error(`${spec.kind} 服务停止超时`);
+}
+
+async function stopFrontendService(spec: WebServiceSpec, options: WebServiceLaunchOptions): Promise<void> {
+	stopWebService(spec, false, { interactiveAdmin: options.interactiveAdmin ?? false });
+	try {
+		await waitForServiceStopped(spec);
+	} catch {
+		stopWebService(spec, true, { interactiveAdmin: options.interactiveAdmin ?? false });
+		await waitForServiceStopped(spec);
+	}
+}
+
+async function waitForFrontendReady(port: number, timeoutMs = 20_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	let lastError = "";
+	while (Date.now() < deadline) {
+		try {
+			const response = await fetch(`http://127.0.0.1:${port}/healthz`, {
+				signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+			});
+			if (response.ok) return;
+			lastError = `HTTP ${response.status}`;
+		} catch (error) {
+			lastError = error instanceof Error ? error.message : String(error);
+		}
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
+	throw new Error(`Web 开发前端启动超时${lastError ? `：${lastError}` : ""}`);
+}
+
 export async function getWebServicesStatus(options: WebServiceLaunchOptions): Promise<WebServicesStatus> {
 	const configured = await loadConfiguredGateway(options);
 	const state = readState(options.agentDir, options.configFileName);
 	const fallbackConfig = configured ?? (state ? stateConfig(state, options) : fallbackGatewayConfig(options));
+	const frontend = frontendSpec(fallbackConfig, options);
+	const frontendStatus = frontend ? getWebServiceStatus(frontend) : undefined;
 	const gateway = gatewaySpec(fallbackConfig, options);
 	const runtimeInvocation = serviceInvocation(options.runtimeInvocation);
 	const [gatewayStatus, runtimeStatus] = await Promise.all([
@@ -344,12 +401,14 @@ export async function getWebServicesStatus(options: WebServiceLaunchOptions): Pr
 		enabled: Boolean(
 			configured ||
 				state ||
+				frontendStatus?.installed ||
 				gatewayStatus.installed ||
 				gatewayPid ||
 				(fallbackConfig.manageRuntime && runtimeStatus.installed),
 		),
 		profile,
 		...(state?.serviceVersion ? { serviceVersion: state.serviceVersion } : {}),
+		...(frontendStatus ? { frontend: frontendStatus } : {}),
 		gateway: {
 			...gatewayStatus,
 			...(gatewayPid ? { pid: gatewayPid } : {}),
@@ -363,6 +422,8 @@ async function applyWebServices(
 	options: WebServiceLaunchOptions,
 	reinstall: boolean,
 ): Promise<void> {
+	const frontend = frontendSpec(config, options);
+	const frontendStatus = frontend ? getWebServiceStatus(frontend) : undefined;
 	const gateway = gatewaySpec(config, options);
 	const gatewayStatus = getWebServiceStatus(gateway);
 	const runtimeInvocation = serviceInvocation(options.runtimeInvocation);
@@ -374,6 +435,7 @@ async function applyWebServices(
 	);
 	const profile = profileFor(options.configFileName);
 	if (reinstall) {
+		if (frontend && frontendStatus?.running) await stopFrontendService(frontend, options);
 		if (config.manageRuntime) await assertRuntimeIdle(config.runtimeEndpoint);
 		// 先停止接收新请求，避免旧 Gateway 在版本切换期间拉起旧 Runtime。
 		stopWebService(gateway, false, {
@@ -428,6 +490,15 @@ async function applyWebServices(
 		ensureWebService(gateway, { interactiveAdmin: options.interactiveAdmin ?? false });
 	}
 	await waitForGatewayReady(config);
+	if (frontend) {
+		if (reinstall || !frontendStatus?.installed || !frontendStatus.running) {
+			installWebService(frontend, { interactiveAdmin: options.interactiveAdmin ?? false });
+		} else {
+			ensureWebService(frontend, { interactiveAdmin: options.interactiveAdmin ?? false });
+		}
+		if (options.frontendPort === undefined) throw new Error("Web 开发前端缺少监听端口");
+		await waitForFrontendReady(options.frontendPort);
+	}
 }
 
 export async function ensureWebServices(options: WebServiceLaunchOptions): Promise<WebServicesStatus> {
@@ -588,6 +659,14 @@ export async function runWebServiceAction(options: WebServiceActionOptions): Pro
 		const state = readState(options.agentDir, options.configFileName);
 		const base = config ?? (state ? stateConfig(state, options) : fallbackGatewayConfig(options));
 		if (base) {
+			const frontend = frontendSpec(base, options);
+			if (frontend) {
+				stopWebService(frontend, true, {
+					detachedPid: status.frontend?.pid,
+					interactiveAdmin: options.interactiveAdmin ?? false,
+				});
+				removeWebService(frontend, { interactiveAdmin: options.interactiveAdmin ?? false });
+			}
 			const gateway = gatewaySpec(base, options);
 			stopWebService(gateway, true, {
 				detachedPid: status.gateway.pid,
@@ -611,6 +690,8 @@ export async function runWebServiceAction(options: WebServiceActionOptions): Pro
 	if (options.action === "stop") {
 		const config = await loadConfiguredGateway(options);
 		if (!config) return getWebServicesStatus(options);
+		const frontend = frontendSpec(config, options);
+		if (frontend && getWebServiceStatus(frontend).running) await stopFrontendService(frontend, options);
 		const gateway = gatewaySpec(config, options);
 		const runtimeInvocation = serviceInvocation(options.runtimeInvocation);
 		if (config.manageRuntime) {

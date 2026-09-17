@@ -1,4 +1,5 @@
 import type {
+	AgentStep,
 	JsonValue,
 	ToolDiff,
 	TranscriptFile,
@@ -6,6 +7,7 @@ import type {
 	TranscriptViewItem,
 	TranscriptWebSearchSource,
 } from "@lystar/code-web-protocol";
+import { AGENT_STEP_CUSTOM_TYPE, AGENT_STEP_TOOL_NAMES } from "./agent-steps.ts";
 import { toolProgressDiff } from "./tool-progress.ts";
 
 const INTERNAL_FILE_REFERENCE_PATTERN = /<file\b[^>]*>[\s\S]*?<\/file>/gu;
@@ -72,6 +74,7 @@ type JsonRecord = Record<string, JsonValue>;
 export interface TranscriptToolCallProjection {
 	name: string;
 	summary: string;
+	stepId?: string;
 	href?: string;
 	diff?: ToolDiff;
 	imageGeneration?: {
@@ -85,6 +88,38 @@ export type TranscriptToolCallIndex = ReadonlyMap<string, TranscriptToolCallProj
 
 function record(value: JsonValue | undefined): JsonRecord | undefined {
 	return value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+}
+
+function projectedAgentStep(payload: JsonRecord | undefined): AgentStep | undefined {
+	if (payload?.type !== "custom" || payload.customType !== AGENT_STEP_CUSTOM_TYPE) return undefined;
+	const data = record(payload.data);
+	const step = record(data?.step);
+	if (
+		data?.version !== 1 ||
+		typeof step?.id !== "string" ||
+		typeof step.title !== "string" ||
+		(step.status !== "running" &&
+			step.status !== "completed" &&
+			step.status !== "failed" &&
+			step.status !== "interrupted") ||
+		!Array.isArray(step.toolCallIds) ||
+		!step.toolCallIds.every((id) => typeof id === "string") ||
+		(step.messageEntryIds !== undefined &&
+			(!Array.isArray(step.messageEntryIds) || !step.messageEntryIds.every((id) => typeof id === "string"))) ||
+		typeof step.startedAt !== "number"
+	) {
+		return undefined;
+	}
+	return {
+		id: step.id,
+		title: step.title,
+		status: step.status,
+		toolCallIds: step.toolCallIds as string[],
+		messageEntryIds: (step.messageEntryIds as string[] | undefined) ?? [],
+		startedAt: step.startedAt,
+		...(typeof step.endedAt === "number" ? { endedAt: step.endedAt } : {}),
+		...(typeof step.summary === "string" ? { summary: step.summary } : {}),
+	};
 }
 
 function bounded(value: string): string {
@@ -114,6 +149,24 @@ function text(value: JsonValue | undefined): string {
 	if (item?.type === "content_ref")
 		return typeof item.previewHead === "string" ? bounded(item.previewHead) : "内容引用";
 	return bounded(JSON.stringify(value));
+}
+
+function promptText(value: JsonValue | undefined): string {
+	if (!Array.isArray(value)) return text(value);
+	return bounded(
+		value
+			.map((part) => {
+				const item = record(part);
+				if (!item) return typeof part === "string" ? part : "";
+				if (item.type === "image") return "";
+				if (typeof item.text === "string") return item.text;
+				if (item.type === "content_ref")
+					return typeof item.previewHead === "string" ? item.previewHead : "内容引用";
+				return JSON.stringify(item);
+			})
+			.filter((part) => part.length > 0)
+			.join(" "),
+	);
 }
 
 function contentRef(value: JsonValue | undefined): string | undefined {
@@ -331,9 +384,10 @@ function generatedImageSummary(
 	return Object.keys(metadata).length > 0 ? bounded(JSON.stringify(metadata)) : (call?.summary ?? name);
 }
 
-function toolCallProjection(part: JsonRecord): TranscriptToolCallProjection | undefined {
+function toolCallProjection(part: JsonRecord, stepId?: string): TranscriptToolCallProjection | undefined {
 	if (part.type !== "toolCall" || typeof part.id !== "string") return undefined;
 	const name = typeof part.name === "string" ? part.name : "Tool";
+	if (AGENT_STEP_TOOL_NAMES.has(name)) return undefined;
 	const argumentsValue = record(part.arguments);
 	const href =
 		typeof argumentsValue?.url === "string"
@@ -348,14 +402,15 @@ function toolCallProjection(part: JsonRecord): TranscriptToolCallProjection | un
 	return {
 		name,
 		summary: toolCallSummary(name, part.arguments),
+		...(stepId ? { stepId } : {}),
 		...(href ? { href } : {}),
 		...(diff ? { diff } : {}),
 		...(imageGeneration ? { imageGeneration } : {}),
 	};
 }
 
-function toolCallView(part: JsonRecord): TranscriptViewItem | undefined {
-	const projection = toolCallProjection(part);
+function toolCallView(part: JsonRecord, stepByToolCall: ReadonlyMap<string, string>): TranscriptViewItem | undefined {
+	const projection = toolCallProjection(part, typeof part.id === "string" ? stepByToolCall.get(part.id) : undefined);
 	if (!projection || typeof part.id !== "string") return undefined;
 	return {
 		type: "tool_call",
@@ -363,6 +418,7 @@ function toolCallView(part: JsonRecord): TranscriptViewItem | undefined {
 			{
 				id: part.id,
 				name: projection.name,
+				...(projection.stepId ? { stepId: projection.stepId } : {}),
 				summary: projection.summary,
 				...(projection.href ? { href: projection.href } : {}),
 			},
@@ -445,7 +501,11 @@ function webSearchView(
 	};
 }
 
-function assistantViews(content: JsonValue | undefined, images: TranscriptImageMetadata): TranscriptViewItem[] {
+function assistantViews(
+	content: JsonValue | undefined,
+	images: TranscriptImageMetadata,
+	stepByToolCall: ReadonlyMap<string, string>,
+): TranscriptViewItem[] {
 	if (!Array.isArray(content)) {
 		return [{ type: "assistant", text: text(content), ...(images.length > 0 ? { images } : {}) }];
 	}
@@ -473,7 +533,7 @@ function assistantViews(content: JsonValue | undefined, images: TranscriptImageM
 		if (toolCalls.length > 0) {
 			const remaining = TOOL_CALL_LIMIT - projectedToolCallCount;
 			const calls = toolCalls.slice(0, Math.max(0, remaining)).flatMap((part) => {
-				const view = toolCallView(part);
+				const view = toolCallView(part, stepByToolCall);
 				return view?.type === "tool_call" ? view.calls : [];
 			});
 			if (calls.length > 0) {
@@ -500,6 +560,7 @@ function assistantViews(content: JsonValue | undefined, images: TranscriptImageM
 			continue;
 		}
 		if (item.type === "toolCall" && typeof item.id === "string") {
+			if (typeof item.name === "string" && AGENT_STEP_TOOL_NAMES.has(item.name)) continue;
 			flushThinking();
 			flushText();
 			toolCalls.push(item);
@@ -540,6 +601,8 @@ function message(item: TranscriptItem): JsonRecord | undefined {
 function projectTranscriptViews(
 	item: TranscriptItem,
 	toolCalls: TranscriptToolCallIndex = new Map(),
+	stepByToolCall: ReadonlyMap<string, string> = new Map(),
+	latestStepEntryIds?: ReadonlySet<string>,
 ): TranscriptViewItem[] {
 	const payload = record(item.payload);
 	if (
@@ -557,7 +620,7 @@ function projectTranscriptViews(
 		return [
 			{
 				type: "user",
-				text: stripInternalPromptContent(text(content)),
+				text: stripInternalPromptContent(promptText(content)),
 				...(images.length > 0 ? { images } : {}),
 				...(files.length > 0 ? { files } : {}),
 			},
@@ -574,6 +637,7 @@ function projectTranscriptViews(
 		return [{ type: "bash", text: bounded(lines.join("\n")) }];
 	}
 	if (role === "toolResult" && entryMessage) {
+		if (typeof entryMessage.toolName === "string" && AGENT_STEP_TOOL_NAMES.has(entryMessage.toolName)) return [];
 		const isError = entryMessage?.isError === true;
 		const callId = typeof entryMessage.toolCallId === "string" ? entryMessage.toolCallId : item.entryId;
 		const call = toolCalls.get(callId);
@@ -590,6 +654,7 @@ function projectTranscriptViews(
 				type: "tool_result",
 				callId,
 				name,
+				...(stepByToolCall.get(callId) ? { stepId: stepByToolCall.get(callId) } : {}),
 				status: isError ? "error" : "success",
 				summary,
 				...(detail ? { detail } : {}),
@@ -600,7 +665,7 @@ function projectTranscriptViews(
 		];
 	}
 	if (role === "assistant" && entryMessage) {
-		const views = assistantViews(content, images);
+		const views = assistantViews(content, images, stepByToolCall);
 		const stopReason = entryMessage.stopReason;
 		if (stopReason !== "error" && stopReason !== "aborted") return views;
 		const errorMessage = typeof entryMessage.errorMessage === "string" ? entryMessage.errorMessage.trim() : "";
@@ -644,6 +709,10 @@ function projectTranscriptViews(
 		];
 	}
 	if (item.kind === "custom" || item.kind === "custom_message") {
+		const step = projectedAgentStep(payload);
+		if (step) {
+			return !latestStepEntryIds || latestStepEntryIds.has(item.entryId) ? [{ type: "agent_step", step }] : [];
+		}
 		const name = typeof payload?.customType === "string" ? payload.customType : "";
 		return [name === "bash" ? { type: "bash", text: text(payload) } : { type: "custom", text: text(payload) }];
 	}
@@ -658,6 +727,14 @@ export function projectTranscriptItems(
 }
 
 export function projectTranscriptBatch(items: readonly TranscriptItem[]): TranscriptItem[] {
+	const stepByToolCall = new Map<string, string>();
+	const latestStepEntryIdsByStep = new Map<string, string>();
+	for (const item of items) {
+		const step = projectedAgentStep(record(item.payload));
+		if (!step) continue;
+		latestStepEntryIdsByStep.set(step.id, item.entryId);
+		for (const toolCallId of step.toolCallIds) stepByToolCall.set(toolCallId, step.id);
+	}
 	const toolCalls = new Map<string, TranscriptToolCallProjection>();
 	for (const item of items) {
 		const payload = record(item.payload);
@@ -665,11 +742,17 @@ export function projectTranscriptBatch(items: readonly TranscriptItem[]): Transc
 		if (entryMessage?.role !== "assistant" || !Array.isArray(entryMessage.content)) continue;
 		for (const part of entryMessage.content) {
 			const candidate = record(part);
-			const projection = candidate ? toolCallProjection(candidate) : undefined;
+			const projection =
+				candidate && typeof candidate.id === "string"
+					? toolCallProjection(candidate, stepByToolCall.get(candidate.id))
+					: undefined;
 			if (candidate && typeof candidate.id === "string" && projection) toolCalls.set(candidate.id, projection);
 		}
 	}
-	return items.flatMap((item) => projectTranscriptItems(item, toolCalls));
+	const latestStepEntryIds = new Set(latestStepEntryIdsByStep.values());
+	return items.flatMap((item) =>
+		projectTranscriptViews(item, toolCalls, stepByToolCall, latestStepEntryIds).map((view) => ({ ...item, view })),
+	);
 }
 
 export function projectTranscriptItem(item: TranscriptItem): TranscriptViewItem {

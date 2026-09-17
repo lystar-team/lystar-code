@@ -62,7 +62,7 @@ describe("Web Runtime Protocol v1", () => {
 					event: {
 						type: "session_progress",
 						sessionPath: "/session",
-						progress: { type: "assistant_delta", text: "增量" },
+						progress: { type: "assistant_delta", text: "增量", stepId: "step-1" },
 					},
 				});
 				const batch = new Uint8Array(response.length + event.length);

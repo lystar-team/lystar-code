@@ -12,6 +12,6 @@ export function shouldBuildDevelopmentWeb(args) {
 	return false;
 }
 
-export function shouldRunDevelopmentWebFrontend(args) {
+export function shouldStartDevelopmentWebStack(args) {
 	return args[0] === "web" && (args.length === 1 || (args.length === 2 && args[1] === "--foreground"));
 }

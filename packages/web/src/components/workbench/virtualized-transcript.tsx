@@ -1,8 +1,9 @@
-import type { ReactNode, Ref } from "react";
+import type { ReactNode } from "react";
 import { forwardRef, memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
 	Virtuoso,
 	type FollowOutput,
+	type IndexLocationWithAlign,
 	type ListProps,
 	type ScrollerProps,
 	type VirtuosoHandle,
@@ -12,8 +13,14 @@ export const DEFAULT_TRANSCRIPT_GAP = 12;
 const TRANSCRIPT_OVERSCAN = 480;
 const TRANSCRIPT_MIN_OVERSCAN_ITEMS = 4;
 const INITIAL_RENDER_ITEM_COUNT = 24;
-const CONVERSATION_EDGE_PADDING = 48;
+export const CONVERSATION_EDGE_PADDING = 48;
 const TRANSCRIPT_FIRST_ITEM_INDEX = 1_000_000_000;
+
+export type ConversationTranscriptAnchor = { atBottom: false; anchorKey: string; anchorOffset: number };
+
+export type ConversationTranscriptScrollState = { atBottom: true } | ConversationTranscriptAnchor;
+
+type TranscriptAnchorCandidate = { index: number; top: number; bottom: number };
 
 type ScrollRef = { current: HTMLElement | null };
 type TranscriptGap<T> = number | ((previous: T, current: T, index: number) => number);
@@ -40,20 +47,30 @@ export function safeTranscriptItemKey<T>(
 	return item === undefined ? `virtual-placeholder:${index}` : getKey(item, index);
 }
 
-export function shouldFollowTranscriptResize(
-	followRequested: boolean,
-	lastUserScrollAt: number,
-	now: number,
+export function shouldCaptureTranscriptScrollState(
+	userInitiated: boolean,
+	atBottom: boolean,
+	followOutput: FollowOutput,
 ): boolean {
-	return followRequested && now - lastUserScrollAt >= 120;
+	return userInitiated || (atBottom && followOutput !== false);
 }
 
-export function shouldPreserveTranscriptResizeAnchor(
-	scrollTop: number,
-	scrollHeight: number,
-	clientHeight: number,
-): boolean {
-	return scrollHeight - scrollTop - clientHeight > 2;
+export function selectTranscriptScrollAnchor<T>(
+	items: readonly T[],
+	candidates: readonly TranscriptAnchorCandidate[],
+	viewportTop: number,
+	getKey: (item: T, index: number) => string,
+): ConversationTranscriptAnchor | undefined {
+	for (const candidate of candidates) {
+		const item = items[candidate.index];
+		if (!Number.isInteger(candidate.index) || item === undefined || candidate.bottom <= viewportTop + 0.5) continue;
+		return {
+			atBottom: false,
+			anchorKey: getKey(item, candidate.index),
+			anchorOffset: candidate.top - viewportTop,
+		};
+	}
+	return undefined;
 }
 
 export function buildTranscriptHeightEstimates<T>(
@@ -68,29 +85,16 @@ type VirtualizedTranscriptRowProps = {
 	item: unknown;
 	index: number;
 	gap: number;
-	edgePadding: number;
-	isFirst: boolean;
-	isLast: boolean;
 	renderItem: (item: unknown, index: number) => ReactNode;
 	isItemEqual?: (previous: unknown, next: unknown) => boolean;
 };
 
 const VirtualizedTranscriptRow = memo(
-	function VirtualizedTranscriptRow({
-		item,
-		index,
-		gap,
-		edgePadding,
-		isFirst,
-		isLast,
-		renderItem,
-	}: VirtualizedTranscriptRowProps) {
+	function VirtualizedTranscriptRow({ item, index, gap, renderItem }: VirtualizedTranscriptRowProps) {
 		return (
 			<div data-virtualized-transcript-row>
-				{isFirst && edgePadding > 0 ? <div aria-hidden="true" style={{ height: edgePadding }} /> : null}
 				{renderItem(item, index)}
 				{gap > 0 ? <div aria-hidden="true" style={{ height: gap }} /> : null}
-				{isLast && edgePadding > 0 ? <div aria-hidden="true" style={{ height: edgePadding }} /> : null}
 			</div>
 		);
 	},
@@ -98,9 +102,6 @@ const VirtualizedTranscriptRow = memo(
 		if (
 			previous.index !== next.index ||
 			previous.gap !== next.gap ||
-			previous.edgePadding !== next.edgePadding ||
-			previous.isFirst !== next.isFirst ||
-			previous.isLast !== next.isLast ||
 			previous.renderItem !== next.renderItem
 		)
 			return false;
@@ -125,21 +126,16 @@ function useTranscriptRenderer<T>({
 	renderItem,
 	isItemEqual,
 	gap,
-	edgePadding = 0,
-}: Omit<VirtualizedTranscriptProps<T>, "scrollRef"> & { edgePadding?: number }) {
+}: Omit<VirtualizedTranscriptProps<T>, "scrollRef">) {
 	const itemsRef = useRef(items);
 	const gapRef = useRef(gap ?? DEFAULT_TRANSCRIPT_GAP);
 	itemsRef.current = items;
 	gapRef.current = gap ?? DEFAULT_TRANSCRIPT_GAP;
 
-	const heightEstimates = useMemo(() => {
-		const estimates = buildTranscriptHeightEstimates(items, estimateHeight, gap ?? DEFAULT_TRANSCRIPT_GAP);
-		if (edgePadding > 0 && estimates.length) {
-			estimates[0] += edgePadding;
-			estimates[estimates.length - 1] += edgePadding;
-		}
-		return estimates;
-	}, [edgePadding, estimateHeight, gap, items]);
+	const heightEstimates = useMemo(
+		() => buildTranscriptHeightEstimates(items, estimateHeight, gap ?? DEFAULT_TRANSCRIPT_GAP),
+		[estimateHeight, gap, items],
+	);
 	const computeItemKey = useCallback(
 		(index: number, item: T | undefined) => safeTranscriptItemKey(index, item, getKey),
 		[getKey],
@@ -153,15 +149,12 @@ function useTranscriptRenderer<T>({
 					item={item}
 					index={index}
 					gap={transcriptGapAt(currentItems, index, gapRef.current)}
-					edgePadding={edgePadding}
-					isFirst={index === 0}
-					isLast={index === currentItems.length - 1}
 					renderItem={renderItem as (item: unknown, index: number) => ReactNode}
 					isItemEqual={isItemEqual as ((previous: unknown, next: unknown) => boolean) | undefined}
 				/>
 			);
 		},
-		[edgePadding, isItemEqual, renderItem],
+		[isItemEqual, renderItem],
 	);
 	return { computeItemKey, heightEstimates, itemContent };
 }
@@ -200,9 +193,6 @@ export function VirtualizedTranscript<T>({
 						item={item}
 						index={index}
 						gap={transcriptGapAt(items, index, gap)}
-						edgePadding={0}
-						isFirst={index === 0}
-						isLast={index === items.length - 1}
 						renderItem={renderItem as (item: unknown, index: number) => ReactNode}
 						isItemEqual={isItemEqual as ((previous: unknown, next: unknown) => boolean) | undefined}
 					/>
@@ -226,13 +216,15 @@ export function VirtualizedTranscript<T>({
 }
 
 type ConversationTranscriptContext = {
+	footer: ReactNode;
 	header: ReactNode;
-	onResizeAnchor: (element: HTMLElement) => void;
 	onScrollerRef: (element: HTMLElement | null) => void;
 	onUserScrollAway: () => void;
+	onUserScrollIntent: () => void;
 };
 
 const SCROLL_AWAY_KEYS = new Set(["ArrowUp", "Home", "PageUp"]);
+const SCROLL_INTENT_KEYS = new Set(["ArrowDown", "ArrowUp", "End", "Home", "PageDown", "PageUp", " "]);
 
 const ConversationTranscriptScroller = forwardRef<
 	HTMLDivElement,
@@ -256,16 +248,12 @@ const ConversationTranscriptScroller = forwardRef<
 			className="conversation-scroll min-w-0 max-w-full overflow-auto overscroll-y-contain"
 			style={{ ...style, overflowAnchor: "none" }}
 			onKeyDownCapture={(event) => {
+				if (SCROLL_INTENT_KEYS.has(event.key)) contextRef.current.onUserScrollIntent();
 				if (SCROLL_AWAY_KEYS.has(event.key)) contextRef.current.onUserScrollAway();
 			}}
 			onWheelCapture={(event) => {
+				contextRef.current.onUserScrollIntent();
 				if (event.deltaY < 0) contextRef.current.onUserScrollAway();
-			}}
-			onPointerDownCapture={(event) => {
-				const target = event.target;
-				if (!(target instanceof Element) || !target.closest("[data-transcript-resize-anchor]")) return;
-				const row = target.closest("[data-virtualized-transcript-row]");
-				if (row instanceof HTMLElement) contextRef.current.onResizeAnchor(row);
 			}}
 			onPointerCancel={() => {
 				pointerActiveRef.current = false;
@@ -279,6 +267,7 @@ const ConversationTranscriptScroller = forwardRef<
 			onScroll={(event) => {
 				if (!pointerActiveRef.current) return;
 				const element = event.currentTarget;
+				contextRef.current.onUserScrollIntent();
 				if (element.scrollHeight - element.scrollTop - element.clientHeight > 2)
 					contextRef.current.onUserScrollAway();
 			}}
@@ -292,6 +281,20 @@ const ConversationTranscriptScroller = forwardRef<
 		</div>
 	);
 });
+
+function ConversationTranscriptHeader() {
+	return <div aria-hidden="true" style={{ height: CONVERSATION_EDGE_PADDING }} />;
+}
+
+function ConversationTranscriptFooter({ context }: { context: ConversationTranscriptContext }) {
+	return (
+		<div style={{ height: CONVERSATION_EDGE_PADDING }}>
+			<div className="conversation-content mx-auto min-w-0 w-full max-w-[var(--conversation-width)] px-5 sm:px-10">
+				{context.footer}
+			</div>
+		</div>
+	);
+}
 
 const ConversationTranscriptList = forwardRef<
 	HTMLDivElement,
@@ -308,6 +311,8 @@ const ConversationTranscriptList = forwardRef<
 });
 
 const CONVERSATION_TRANSCRIPT_COMPONENTS = {
+	Footer: ConversationTranscriptFooter,
+	Header: ConversationTranscriptHeader,
 	List: ConversationTranscriptList,
 	Scroller: ConversationTranscriptScroller,
 };
@@ -351,13 +356,17 @@ function useTranscriptFirstItemIndex<T>(
 export interface VirtualizedConversationTranscriptProps<T>
 	extends Omit<VirtualizedTranscriptProps<T>, "scrollRef"> {
 	atBottomStateChange: (atBottom: boolean) => void;
+	atTopStateChange: (atTop: boolean) => void;
+	atTopThreshold?: number;
 	followOutput: FollowOutput;
+	footer?: ReactNode;
 	header?: ReactNode;
-	onScrollerRef: (element: HTMLElement | null) => void;
-	onTotalListHeightChanged: (height: number) => void;
+	onScrollStateCapture: (sessionKey: string, state: ConversationTranscriptScrollState) => void;
+	scrollState?: ConversationTranscriptScrollState;
+	onScrollerRef?: (element: HTMLElement | null) => void;
 	onUserScrollAway: () => void;
 	sessionKey: string;
-	virtuosoRef: Ref<VirtuosoHandle>;
+	virtuosoRef: (handle: VirtuosoHandle | null) => void;
 }
 
 export function VirtualizedConversationTranscript<T>({
@@ -366,83 +375,91 @@ export function VirtualizedConversationTranscript<T>({
 	estimateHeight,
 	renderItem,
 	atBottomStateChange,
+	atTopStateChange,
+	atTopThreshold,
 	followOutput,
+	footer,
 	header = null,
+	onScrollStateCapture,
+	scrollState,
 	onScrollerRef,
-	onTotalListHeightChanged,
 	onUserScrollAway,
 	sessionKey,
 	virtuosoRef,
 	isItemEqual,
 	gap = DEFAULT_TRANSCRIPT_GAP,
 }: VirtualizedConversationTranscriptProps<T>) {
-	const renderer = useTranscriptRenderer({
-		items,
-		getKey,
-		estimateHeight,
-		renderItem,
-		isItemEqual,
-		gap,
-		edgePadding: CONVERSATION_EDGE_PADDING,
-	});
+	const renderer = useTranscriptRenderer({ items, getKey, estimateHeight, renderItem, isItemEqual, gap });
 	const scrollerElementRef = useRef<HTMLElement | null>(null);
-	const resizeAnchorRef = useRef<{ element: HTMLElement; top: number }>();
-	const totalHeightFrameRef = useRef<number>();
-	const latestTotalHeightRef = useRef(0);
+	const activeSessionKeyRef = useRef(sessionKey);
+	const scrollingStartedRef = useRef(false);
+	const userScrollIntentRef = useRef(false);
+	if (activeSessionKeyRef.current !== sessionKey) {
+		activeSessionKeyRef.current = sessionKey;
+		scrollingStartedRef.current = false;
+		userScrollIntentRef.current = false;
+	}
+	const handleScrollingStateChange = useCallback(
+		(scrolling: boolean) => {
+			if (scrolling) {
+				scrollingStartedRef.current = true;
+				return;
+			}
+			if (!scrollingStartedRef.current) return;
+			scrollingStartedRef.current = false;
+			const scroller = scrollerElementRef.current;
+			if (!scroller) return;
+			const atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 2;
+			const userInitiated = userScrollIntentRef.current;
+			userScrollIntentRef.current = false;
+			if (!shouldCaptureTranscriptScrollState(userInitiated, atBottom, followOutput)) {
+				atBottomStateChange(false);
+				return;
+			}
+			if (atBottom) {
+				atBottomStateChange(true);
+				onScrollStateCapture(sessionKey, { atBottom: true });
+				return;
+			}
+			atBottomStateChange(false);
+			const scrollerTop = scroller.getBoundingClientRect().top;
+			const anchor = selectTranscriptScrollAnchor(
+				items,
+				Array.from(scroller.querySelectorAll<HTMLElement>("[data-virtualized-transcript-row]"), (row) => {
+					const bounds = row.getBoundingClientRect();
+					const indexValue = row.parentElement?.getAttribute("data-index");
+					return {
+						bottom: bounds.bottom,
+						index: indexValue === null || indexValue === undefined ? Number.NaN : Number(indexValue),
+						top: bounds.top,
+					};
+				}),
+				scrollerTop,
+				getKey,
+			);
+			if (anchor) onScrollStateCapture(sessionKey, anchor);
+		},
+		[atBottomStateChange, followOutput, getKey, items, onScrollStateCapture, sessionKey],
+	);
 	const handleScrollerRef = useCallback(
 		(element: HTMLElement | null) => {
 			scrollerElementRef.current = element;
-			onScrollerRef(element);
+			onScrollerRef?.(element);
 		},
 		[onScrollerRef],
 	);
-	const handleResizeAnchor = useCallback(
-		(element: HTMLElement) => {
-			const scroller = scrollerElementRef.current;
-			if (
-				!scroller ||
-				!shouldPreserveTranscriptResizeAnchor(scroller.scrollTop, scroller.scrollHeight, scroller.clientHeight)
-			) {
-				resizeAnchorRef.current = undefined;
-				return;
-			}
-			resizeAnchorRef.current = { element, top: element.getBoundingClientRect().top };
-			onUserScrollAway();
-		},
-		[onUserScrollAway],
-	);
-	const handleTotalListHeightChanged = useCallback(
-		(height: number) => {
-			const anchor = resizeAnchorRef.current;
-			resizeAnchorRef.current = undefined;
-			if (anchor?.element.isConnected) {
-				const offset = anchor.element.getBoundingClientRect().top - anchor.top;
-				if (Math.abs(offset) >= 0.5) scrollerElementRef.current?.scrollBy({ behavior: "auto", top: offset });
-				return;
-			}
-			latestTotalHeightRef.current = height;
-			if (totalHeightFrameRef.current !== undefined) window.cancelAnimationFrame(totalHeightFrameRef.current);
-			totalHeightFrameRef.current = window.requestAnimationFrame(() => {
-				totalHeightFrameRef.current = undefined;
-				onTotalListHeightChanged(latestTotalHeightRef.current);
-			});
-		},
-		[onTotalListHeightChanged],
-	);
-	useLayoutEffect(
-		() => () => {
-			if (totalHeightFrameRef.current !== undefined) window.cancelAnimationFrame(totalHeightFrameRef.current);
-		},
-		[],
-	);
+	const handleUserScrollIntent = useCallback(() => {
+		userScrollIntentRef.current = true;
+	}, []);
 	const context = useMemo(
 		() => ({
+			footer,
 			header,
-			onResizeAnchor: handleResizeAnchor,
 			onScrollerRef: handleScrollerRef,
 			onUserScrollAway,
+			onUserScrollIntent: handleUserScrollIntent,
 		}),
-		[header, handleResizeAnchor, handleScrollerRef, onUserScrollAway],
+		[footer, header, handleScrollerRef, handleUserScrollIntent, onUserScrollAway],
 	);
 	const firstItemIndex = useTranscriptFirstItemIndex(items, getKey, sessionKey);
 	const computeConversationItemKey = useCallback(
@@ -454,6 +471,13 @@ export function VirtualizedConversationTranscript<T>({
 		(index: number, item: T | undefined) => renderer.itemContent(transcriptDataIndex(index, firstItemIndex), item),
 		[firstItemIndex, renderer.itemContent],
 	);
+	const initialTopMostItemIndex = useMemo<IndexLocationWithAlign>(() => {
+		if (!scrollState || scrollState.atBottom) return { align: "end", index: "LAST" };
+		const anchorIndex = items.findIndex((item, index) => getKey(item, index) === scrollState.anchorKey);
+		return anchorIndex < 0
+			? { align: "end", index: "LAST" }
+			: { align: "start", index: anchorIndex, offset: -scrollState.anchorOffset };
+	}, [getKey, items, scrollState]);
 
 	if (!items.length) return null;
 	return (
@@ -461,6 +485,8 @@ export function VirtualizedConversationTranscript<T>({
 			key={sessionKey}
 			ref={virtuosoRef}
 			atBottomStateChange={atBottomStateChange}
+			atTopStateChange={atTopStateChange}
+			atTopThreshold={atTopThreshold}
 			components={CONVERSATION_TRANSCRIPT_COMPONENTS}
 			computeItemKey={computeConversationItemKey}
 			context={context}
@@ -468,12 +494,12 @@ export function VirtualizedConversationTranscript<T>({
 			firstItemIndex={firstItemIndex}
 			followOutput={followOutput}
 			heightEstimates={renderer.heightEstimates}
-			initialTopMostItemIndex={{ index: "LAST", align: "end" }}
+			initialTopMostItemIndex={initialTopMostItemIndex}
+			isScrolling={handleScrollingStateChange}
 			itemContent={conversationItemContent}
 			minOverscanItemCount={{ bottom: TRANSCRIPT_MIN_OVERSCAN_ITEMS, top: TRANSCRIPT_MIN_OVERSCAN_ITEMS }}
 			overscan={{ main: TRANSCRIPT_OVERSCAN, reverse: TRANSCRIPT_OVERSCAN }}
 			style={{ height: "100%", minWidth: 0, width: "100%" }}
-			totalListHeightChanged={handleTotalListHeightChanged}
 		/>
 	);
 }

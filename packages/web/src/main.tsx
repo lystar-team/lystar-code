@@ -18,6 +18,16 @@ root.dataset.platform = /Mac/i.test(navigator.userAgent)
 installBrowserDiagnostics();
 initializeAppInstallCapture();
 
+document.addEventListener(
+	"animationiteration",
+	(event) => {
+		if (event.animationName === "spin" && event.target instanceof Element && event.target.classList.contains("animate-spin")) {
+			event.stopPropagation();
+		}
+	},
+	true,
+);
+
 async function configureServiceWorker(): Promise<void> {
 	if (!("serviceWorker" in navigator)) return;
 	const registration = await navigator.serviceWorker.register(import.meta.env.PROD ? "/sw.js" : "/sw-dev.js", {

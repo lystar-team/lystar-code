@@ -125,6 +125,50 @@ describe("assistant transcript projection", () => {
 		).toEqual([{ type: "assistant", text: "visible" }]);
 	});
 
+	it("隐藏步骤控制工具，并把真实工具投影到步骤", () => {
+		const stepId = "step-1";
+		const projected = projectTranscriptBatch([
+			assistant([
+				{ type: "toolCall", id: "step-start-1", name: "step_start", arguments: { title: "读取项目说明" } },
+				{ type: "toolCall", id: "read-1", name: "read", arguments: { path: "README.md" } },
+			]),
+			toolResult("step-result", "assistant-entry", "step-start-1", "step_start", "已开始步骤"),
+			{
+				entryId: "step-snapshot",
+				parentId: "step-result",
+				timestamp: "2026-09-16T00:00:01Z",
+				kind: "custom",
+				payload: {
+					type: "custom",
+					customType: "lystar.web.agent-step",
+					data: {
+						version: 1,
+						step: {
+							id: stepId,
+							title: "读取项目说明",
+							status: "running",
+							toolCallIds: ["read-1"],
+							messageEntryIds: ["assistant-entry"],
+							startedAt: 1,
+						},
+					},
+				},
+			} as TranscriptItem,
+			toolResult("read-result", "step-snapshot", "read-1", "read", "项目说明"),
+		]);
+
+		expect(projected.map((item) => item.view?.type)).toEqual(["tool_call", "agent_step", "tool_result"]);
+		expect(projected[0]?.view).toEqual({
+			type: "tool_call",
+			calls: [{ id: "read-1", name: "read", stepId, summary: "README.md", href: "file://README.md" }],
+		});
+		expect(projected[1]?.view).toMatchObject({
+			type: "agent_step",
+			step: { id: stepId, title: "读取项目说明", messageEntryIds: ["assistant-entry"] },
+		});
+		expect(projected[2]?.view).toMatchObject({ type: "tool_result", callId: "read-1", stepId });
+	});
+
 	it("uses tool input for the result title and keeps output in detail", () => {
 		const items = projectTranscriptBatch([
 			assistant([
@@ -295,6 +339,47 @@ describe("assistant transcript projection", () => {
 			type: "user",
 			text: "请读取 /tmp/upload.png",
 			images: [{ contentRef: "image-ref", mimeType: "image/png", byteLength: 4 }],
+		});
+	});
+
+	it("hides image filenames added for attachment previews from projected user text", () => {
+		const projected = projectTranscriptItems({
+			entryId: "user-image-file-entry",
+			parentId: null,
+			timestamp: "2026-09-07T00:00:00Z",
+			kind: "message",
+			payload: {
+				type: "message",
+				message: {
+					role: "user",
+					content: [
+						{
+							type: "text",
+							text: '请处理截图\n\n<file name="/tmp/upload-123" filename="internal-name.png" mimeType="image/png"></file>',
+						},
+						{
+							type: "image",
+							alt: "internal-name.png",
+							data: {
+								type: "content_ref",
+								contentRef: "image-ref",
+								mimeType: "image/png",
+								byteLength: 4,
+								previewHead: "",
+								previewTail: "",
+								lineCount: 0,
+							},
+							mimeType: "image/png",
+						},
+					],
+				},
+			},
+		} as TranscriptItem);
+
+		expect(projected[0]?.view).toEqual({
+			type: "user",
+			text: "请处理截图",
+			images: [{ contentRef: "image-ref", mimeType: "image/png", byteLength: 4, alt: "internal-name.png" }],
 		});
 	});
 

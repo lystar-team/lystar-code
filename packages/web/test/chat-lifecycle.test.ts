@@ -10,6 +10,7 @@ import {
 	hasActiveToolActivities,
 	reconcileCommittedTurn,
 	reconcilePendingUserPrompts,
+	reconcileQueuedUserPromptCounts,
 	removeQueuedUserPrompt,
 	removeQueuedUserPromptByText,
 	submitPromptWithFollowUpFallback,
@@ -101,18 +102,64 @@ describe("chat lifecycle", () => {
 		expect(hasActiveSessionWork({ ...settled, currentOperation: operation("running", 1) })).toBe(true);
 	});
 
-	it("空闲快照会结束缓存中的旧 Live Turn", () => {
+	it("空闲快照会结束缓存中的旧 Live Turn 和运行步骤", () => {
 		const snapshot = {
 			id: "session-1",
 			activity: "idle",
 			phase: "idle",
 			queuedFollowUpCount: 0,
 		} as WorkbenchState["session"];
-		const restored = restoreRuntimeActivities(liveState(), snapshot!);
+		const current = {
+			...liveState(),
+			liveSteps: {
+				"step-old": {
+					id: "step-old",
+					title: "旧步骤",
+					status: "running" as const,
+					toolCallIds: ["tool-1"],
+					startedAt: 1,
+				},
+			},
+		};
+		const restored = restoreRuntimeActivities(current, snapshot!);
 
 		expect(hasActiveSessionSnapshot(snapshot!)).toBe(false);
 		expect(restored.liveTurnActive).toBe(false);
+		expect(restored.liveSteps).toEqual({});
 		expect(hasActiveSessionWork({ ...restored, session: snapshot, currentOperation: undefined })).toBe(false);
+	});
+
+	it("活动快照用当前步骤替换缓存中的旧步骤", () => {
+		const current = {
+			...liveState(),
+			liveSteps: {
+				"step-old": {
+					id: "step-old",
+					title: "旧步骤",
+					status: "running" as const,
+					toolCallIds: [],
+					startedAt: 1,
+				},
+			},
+		};
+		const activeStep = {
+			id: "step-current",
+			title: "当前步骤",
+			status: "running" as const,
+			toolCallIds: ["tool-1"],
+			startedAt: 2,
+		};
+		const snapshot = {
+			id: "session-1",
+			activity: "running",
+			phase: "turn",
+			queuedFollowUpCount: 0,
+			activeStep,
+		} as WorkbenchState["session"];
+
+		const restored = restoreRuntimeActivities(current, snapshot!);
+
+		expect(restored.liveSteps).toEqual({ [activeStep.id]: activeStep });
 	});
 
 	it("owner queue snapshot replaces the matching optimistic prompt", () => {
@@ -132,7 +179,13 @@ describe("chat lifecycle", () => {
 
 		expect(restored.pendingUserPrompts).toEqual([]);
 		expect(restored.queuedUserPrompts).toEqual([
-			{ id: "queue-1", text: "排队任务", displayText: "排队任务", attachments: [] },
+			{
+				id: "queue-1",
+				text: "排队任务",
+				displayText: "排队任务",
+				delivery: "follow-up",
+				attachments: [],
+			},
 		]);
 	});
 
@@ -153,6 +206,7 @@ describe("chat lifecycle", () => {
 				id: "queue-file-1",
 				text: '<file name="/tmp/report.md"></file>',
 				displayText: "附件：report.md",
+				delivery: "follow-up",
 				attachments: [],
 			},
 		]);
@@ -253,6 +307,49 @@ describe("chat lifecycle", () => {
 		expect(reconcilePendingUserPrompts(pending, committed)).toEqual([]);
 	});
 
+	it("从合并后的 Transcript 认领发送位置之后的图片 Prompt", () => {
+		const pending = [
+			{
+				id: "prompt-image-merged",
+				text: "请处理截图",
+				attachments: [{ id: "image-1", filename: "image.png", mediaType: "image/png", url: "" }],
+				afterEntryId: "assistant-anchor",
+			},
+		];
+		const committed: WebTranscriptItem[] = [
+			{ ...user, entryId: "older-user", view: { type: "user", text: "请处理截图" } },
+			{ ...assistant, entryId: "assistant-anchor" },
+			{
+				...user,
+				entryId: "committed-image-prompt",
+				view: {
+					type: "user",
+					text: "请处理截图",
+					images: [{ contentRef: "image-1", mimeType: "image/png", byteLength: 1, alt: "image.png" }],
+				},
+			},
+		];
+
+		expect(reconcilePendingUserPrompts(pending, committed)).toEqual([]);
+	});
+
+	it("不让发送位置之前的同文 Prompt 误认领新乐观消息", () => {
+		const pending = [
+			{
+				id: "prompt-repeated",
+				text: "重复任务",
+				attachments: [],
+				afterEntryId: "assistant-anchor",
+			},
+		];
+		const committed: WebTranscriptItem[] = [
+			{ ...user, entryId: "older-user", view: { type: "user", text: "重复任务" } },
+			{ ...assistant, entryId: "assistant-anchor" },
+		];
+
+		expect(reconcilePendingUserPrompts(pending, committed)).toEqual(pending);
+	});
+
 	it("removes one optimistic prompt for each matching committed user message", () => {
 		const pending = [
 			{ id: "prompt-1", text: "新任务", attachments: [] },
@@ -261,10 +358,47 @@ describe("chat lifecycle", () => {
 		expect(reconcilePendingUserPrompts(pending, [user])).toEqual([pending[1]]);
 	});
 
+	it("按运行时数量保留调整方向和完成后发送队列", () => {
+		const pending = [
+			{ id: "steer-1", text: "先修接口", displayText: "先修接口", delivery: "steer" as const, attachments: [] },
+			{ id: "follow-1", text: "补测试", displayText: "补测试", delivery: "follow-up" as const, attachments: [] },
+			{ id: "steer-2", text: "再看样式", displayText: "再看样式", delivery: "steer" as const, attachments: [] },
+		];
+
+		expect(reconcileQueuedUserPromptCounts(pending, 1, 1)).toEqual([pending[0], pending[1]]);
+		expect(reconcileQueuedUserPromptCounts(pending, 1, 0)).toEqual([pending[0]]);
+	});
+
+	it("会话快照保留本地调整方向队列并刷新完成后发送内容", () => {
+		const current = {
+			...liveState(),
+			pendingUserPrompts: [],
+			queuedUserPrompts: [
+				{ id: "steer-1", text: "调整实现", displayText: "调整实现", delivery: "steer" as const, attachments: [] },
+				{ id: "follow-1", text: "旧内容", displayText: "旧内容", delivery: "follow-up" as const, attachments: [] },
+			],
+		};
+		const snapshot = {
+			id: "session-1",
+			activity: "running",
+			phase: "turn",
+			queuedSteerCount: 1,
+			queuedFollowUpCount: 1,
+			queuedFollowUpMessages: [{ id: "follow-1", text: "补充测试" }],
+		} as WorkbenchState["session"];
+
+		const restored = restoreRuntimeActivities(current, snapshot!);
+
+		expect(restored.queuedUserPrompts).toEqual([
+			current.queuedUserPrompts[0],
+			{ id: "follow-1", text: "补充测试", displayText: "旧内容", delivery: "follow-up", attachments: [] },
+		]);
+	});
+
 	it("removes a queued prompt by ID without touching duplicate text", () => {
 		const pending = [
-			{ id: "queue-1", text: "重复任务", displayText: "重复任务", attachments: [] },
-			{ id: "queue-2", text: "重复任务", displayText: "重复任务", attachments: [] },
+			{ id: "queue-1", text: "重复任务", displayText: "重复任务", delivery: "follow-up" as const, attachments: [] },
+			{ id: "queue-2", text: "重复任务", displayText: "重复任务", delivery: "follow-up" as const, attachments: [] },
 		];
 		expect(removeQueuedUserPrompt(pending, "queue-2")).toEqual([pending[0]]);
 		expect(removeQueuedUserPromptByText(pending, "重复任务")).toEqual([pending[1]]);
@@ -275,6 +409,26 @@ describe("chat lifecycle", () => {
 		expect(next.liveTurnStartRevision).toBe(11);
 		expect(next.liveTurnItems).toEqual([]);
 		expect(next.liveTools["tool-1"].state).toBe("running");
+	});
+
+	it("Assistant 输出落盘时保留尚未落盘的调整方向 Prompt", () => {
+		const current = liveState();
+		const steer = {
+			id: "optimistic-user:queue-1",
+			kind: "user" as const,
+			turnId: 1,
+			queueId: "queue-1",
+			text: "先修接口",
+			displayText: "先修接口",
+			attachments: [],
+			status: "queued" as const,
+		};
+		current.liveTurnItems = [...current.liveTurnItems, steer];
+
+		const next = reconcileCommittedTurn(current, [assistant], 11);
+
+		expect(next.liveTurnItems.map((item) => item.kind)).toEqual(["tools", "user"]);
+		expect(next.liveTurnItems.at(-1)).toEqual(steer);
 	});
 
 	it("does not clear a new assistant turn for an older duplicate commit", () => {

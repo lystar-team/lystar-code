@@ -20,7 +20,7 @@ import {
 	Trash2,
 } from "lucide-react";
 import type { DragEvent as ReactDragEvent } from "react";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { cn } from "../../lib/utils";
 import { sessionTitle, type WorkbenchState } from "../../state/use-workbench";
 import type { ProjectGroup, WebProject, WebSessionSummary } from "../../types";
@@ -51,7 +51,7 @@ import { ProjectGroupDialog, ProjectGroupPickerDialog, ProjectGroupProjectPicker
 import { ProductUpdateControl } from "./product-update-control";
 import { type DropPosition, hasUnreadProjectSessions, hasUnreadSessions, reorderIds } from "./project-rail-utils";
 import { SessionRenameDialog } from "./dialogs";
-import { SessionButton } from "./session-button";
+import { SessionButton, type SessionButtonProps } from "./session-button";
 import { SessionManagementDialog } from "./session-management-dialog";
 import type { WorkbenchActions } from "./types";
 import { VirtualizedSessionList } from "./virtualized-session-list";
@@ -65,6 +65,18 @@ type ProjectDropTarget =
 type GroupDropTarget = { groupId: string; position: DropPosition };
 type SessionDrag = { projectId: string; sessionId: string };
 type SessionDropTarget = { projectId: string; sessionId: string; position: DropPosition };
+type SessionButtonHandlers = Pick<
+	SessionButtonProps,
+	| "onClick"
+	| "onRename"
+	| "onContextRename"
+	| "onTogglePinned"
+	| "onDelete"
+	| "onDragStart"
+	| "onDragOver"
+	| "onDrop"
+	| "onDragEnd"
+>;
 
 type ProjectRailProps = {
 	state: WorkbenchState;
@@ -80,6 +92,7 @@ function projectRailPropsEqual(previous: ProjectRailProps, next: ProjectRailProp
 	return (
 		previous.projects === next.projects &&
 		previous.currentProject === next.currentProject &&
+		previous.actions === next.actions &&
 		previous.onAddProject === next.onAddProject &&
 		previous.onEditProject === next.onEditProject &&
 		previous.onNavigate === next.onNavigate &&
@@ -108,6 +121,10 @@ function orderedSessions(project: WebProject): WebSessionSummary[] {
 		...project.sessions.filter((session) => session.pinned),
 		...project.sessions.filter((session) => !session.pinned),
 	];
+}
+
+function sessionItemKey(session: WebSessionSummary): string {
+	return session.id;
 }
 
 function ProjectRailChevron({ className, open }: { className?: string; open: boolean }) {
@@ -167,6 +184,8 @@ export const ProjectRail = memo(function ProjectRail({
 	const [editingProjectId, setEditingProjectId] = useState<string>();
 	const [projectActionId, setProjectActionId] = useState<string>();
 	const sessionViewportRef = useRef<HTMLDivElement>(null);
+	const draggedSessionRef = useRef<SessionDrag>();
+	draggedSessionRef.current = draggedSession;
 
 	const normalizedQuery = query.trim().toLowerCase();
 	const archivedProjects = state.projects.filter((project) => project.archived);
@@ -243,10 +262,10 @@ export const ProjectRail = memo(function ProjectRail({
 		setProjectDropTarget(undefined);
 	};
 
-	const resetSessionDrag = () => {
+	const resetSessionDrag = useCallback(() => {
 		setDraggedSession(undefined);
 		setSessionDropTarget(undefined);
-	};
+	}, []);
 
 	const handleProjectDragStart = (event: ReactDragEvent<HTMLElement>, projectId: string) => {
 		if (normalizedQuery) return;
@@ -390,36 +409,60 @@ export const ProjectRail = memo(function ProjectRail({
 		resetProjectDrag();
 	};
 
-	const handleSessionDrop = (event: ReactDragEvent<HTMLElement>, project: WebProject, targetSessionId: string) => {
-		event.preventDefault();
-		const source = draggedSession;
-		if (!source || source.projectId !== project.id || source.sessionId === targetSessionId) {
+	const handleSessionDragStart = useCallback(
+		(event: ReactDragEvent<HTMLElement>, projectId: string, sessionId: string) => {
+			event.dataTransfer.effectAllowed = "move";
+			event.dataTransfer.setData("text/plain", sessionId);
+			setDraggedSession({ projectId, sessionId });
+		},
+		[],
+	);
+
+	const handleSessionDragOver = useCallback(
+		(event: ReactDragEvent<HTMLElement>, projectId: string, sessionId: string) => {
+			const source = draggedSessionRef.current;
+			if (!source || source.projectId !== projectId || source.sessionId === sessionId) return;
+			event.preventDefault();
+			event.dataTransfer.dropEffect = "move";
+			setSessionDropTarget({ projectId, sessionId, position: dropPosition(event) });
+		},
+		[],
+	);
+
+	const handleSessionDrop = useCallback(
+		(event: ReactDragEvent<HTMLElement>, projectId: string, targetSessionId: string) => {
+			event.preventDefault();
+			const source = draggedSessionRef.current;
+			const project = projects.find((candidate) => candidate.id === projectId);
+			if (!source || !project || source.projectId !== projectId || source.sessionId === targetSessionId) {
+				resetSessionDrag();
+				return;
+			}
+			const sessions = orderedSessions(project);
+			const sourceSession = sessions.find((session) => session.id === source.sessionId);
+			const targetSession = sessions.find((session) => session.id === targetSessionId);
+			if (!sourceSession || !targetSession) {
+				resetSessionDrag();
+				return;
+			}
+			if (sourceSession.pinned !== targetSession.pinned) {
+				actions.showToast("置顶会话与普通会话分别调整顺序");
+				resetSessionDrag();
+				return;
+			}
+			void actions.reorderSessions(
+				project.id,
+				reorderIds(
+					sessions.map((session) => session.id),
+					source.sessionId,
+					targetSessionId,
+					dropPosition(event),
+				),
+			);
 			resetSessionDrag();
-			return;
-		}
-		const sessions = orderedSessions(project);
-		const sourceSession = sessions.find((session) => session.id === source.sessionId);
-		const targetSession = sessions.find((session) => session.id === targetSessionId);
-		if (!sourceSession || !targetSession) {
-			resetSessionDrag();
-			return;
-		}
-		if (sourceSession.pinned !== targetSession.pinned) {
-			actions.showToast("置顶会话与普通会话分别调整顺序");
-			resetSessionDrag();
-			return;
-		}
-		void actions.reorderSessions(
-			project.id,
-			reorderIds(
-				sessions.map((session) => session.id),
-				source.sessionId,
-				targetSessionId,
-				dropPosition(event),
-			),
-		);
-		resetSessionDrag();
-	};
+		},
+		[actions.reorderSessions, actions.showToast, projects, resetSessionDrag],
+	);
 
 	const saveProjectName = async (project: WebProject) => {
 		const name = (projectNameDrafts[project.id] ?? project.name).trim();
@@ -447,9 +490,44 @@ export const ProjectRail = memo(function ProjectRail({
 	const saveGroup = (name: string): Promise<boolean> =>
 		editingGroup ? actions.updateProjectGroup(editingGroup.id, name) : actions.addProjectGroup(name);
 
-	const requestSessionDelete = (session: WebSessionSummary) => {
+	const requestSessionDelete = useCallback((session: WebSessionSummary) => {
 		setPendingDeleteSession({ id: session.id, title: sessionTitle(session) });
-	};
+	}, []);
+
+	const sessionHandlers = useMemo(() => {
+		const handlers = new Map<string, SessionButtonHandlers>();
+		for (const project of projects) {
+			for (const session of project.sessions) {
+				handlers.set(session.id, {
+					onClick: () => {
+						setSelectedProjectId(project.id);
+						void actions.selectSession(session.id);
+						onNavigate?.();
+					},
+					onRename: (name) => actions.renameSession(session.id, name),
+					onContextRename: () => setSessionRenameTarget(session),
+					onTogglePinned: () => void actions.setSessionPinned(session.id, !session.pinned),
+					onDelete: () => requestSessionDelete(session),
+					onDragStart: (event) => handleSessionDragStart(event, project.id, session.id),
+					onDragOver: (event) => handleSessionDragOver(event, project.id, session.id),
+					onDrop: (event) => handleSessionDrop(event, project.id, session.id),
+					onDragEnd: resetSessionDrag,
+				});
+			}
+		}
+		return handlers;
+	}, [
+		actions.renameSession,
+		actions.selectSession,
+		actions.setSessionPinned,
+		handleSessionDragOver,
+		handleSessionDragStart,
+		handleSessionDrop,
+		onNavigate,
+		projects,
+		requestSessionDelete,
+		resetSessionDrag,
+	]);
 
 	const confirmSessionDelete = async () => {
 		const pending = pendingDeleteSession;
@@ -717,7 +795,7 @@ export const ProjectRail = memo(function ProjectRail({
 										<>
 											<VirtualizedSessionList
 												items={visibleSessions}
-												getKey={(session) => session.id}
+												getKey={sessionItemKey}
 												scrollRef={sessionViewportRef}
 												renderItem={(session) => {
 													const running = isSessionRunning(session);
@@ -731,41 +809,10 @@ export const ProjectRail = memo(function ProjectRail({
 															active={state.sessionId === session.id}
 															running={running}
 															unread={Boolean(state.unreadSessionIds[session.id]) && !running}
-											onClick={() => {
-												setSelectedProjectId(project.id);
-												void actions.selectSession(session.id);
-												onNavigate?.();
-											}}
-															onRename={(name) => actions.renameSession(session.id, name)}
-															onContextRename={() => setSessionRenameTarget(session)}
-															onTogglePinned={() =>
-																void actions.setSessionPinned(session.id, !session.pinned)
-															}
-															onDelete={() => requestSessionDelete(session)}
 															dragging={draggedSession?.sessionId === session.id}
 															dropTarget={sessionDrop}
 															dropPosition={sessionDrop ? sessionDropTarget?.position : undefined}
-															onDragStart={(event) => {
-																event.dataTransfer.effectAllowed = "move";
-																event.dataTransfer.setData("text/plain", session.id);
-																setDraggedSession({ projectId: project.id, sessionId: session.id });
-															}}
-															onDragOver={(event) => {
-																if (
-																	draggedSession?.projectId !== project.id ||
-																	draggedSession.sessionId === session.id
-																)
-																	return;
-																event.preventDefault();
-																event.dataTransfer.dropEffect = "move";
-																setSessionDropTarget({
-																	projectId: project.id,
-																	sessionId: session.id,
-																	position: dropPosition(event),
-																});
-															}}
-															onDrop={(event) => handleSessionDrop(event, project, session.id)}
-															onDragEnd={resetSessionDrag}
+															{...sessionHandlers.get(session.id)!}
 														/>
 													);
 												}}

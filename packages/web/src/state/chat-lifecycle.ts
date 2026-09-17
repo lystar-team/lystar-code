@@ -146,19 +146,42 @@ export function reconcilePendingUserPrompts(
 	items: readonly WebTranscriptItem[],
 ): PendingUserPrompt[] {
 	const remaining = [...pending];
-	for (const item of items) {
-		const view = item.view;
+	const lastIndexByEntryId = new Map<string, number>();
+	for (let index = 0; index < items.length; index++) lastIndexByEntryId.set(items[index]!.entryId, index);
+	for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+		const view = items[itemIndex]?.view;
 		if (view?.type !== "user") continue;
+		const followsPromptAnchor = (prompt: PendingUserPrompt) => {
+			if (!prompt.afterEntryId) return true;
+			const anchorIndex = lastIndexByEntryId.get(prompt.afterEntryId);
+			return anchorIndex === undefined || itemIndex > anchorIndex;
+		};
 		const attachmentMatchIndex = remaining.findIndex(
 			(prompt) =>
+				followsPromptAnchor(prompt) &&
 				prompt.attachments.length > 0 &&
 				projectedAttachmentShapeMatches(prompt, view) &&
 				(!view.text.trim() || promptTextMatches(prompt, view)),
 		);
-		const index = attachmentMatchIndex >= 0 ? attachmentMatchIndex : remaining.findIndex((prompt) => promptTextMatches(prompt, view));
+		const index =
+			attachmentMatchIndex >= 0
+				? attachmentMatchIndex
+				: remaining.findIndex((prompt) => followsPromptAnchor(prompt) && promptTextMatches(prompt, view));
 		if (index >= 0) remaining.splice(index, 1);
 	}
 	return remaining;
+}
+
+export function reconcileQueuedUserPromptCounts(
+	pending: readonly QueuedUserPrompt[],
+	steeringCount: number,
+	followUpCount: number,
+): QueuedUserPrompt[] {
+	const steering = pending.filter((prompt) => prompt.delivery === "steer").slice(0, Math.max(0, steeringCount));
+	const followUp = pending
+		.filter((prompt) => prompt.delivery === "follow-up")
+		.slice(0, Math.max(0, followUpCount));
+	return [...steering, ...followUp];
 }
 
 export function removeQueuedUserPrompt(pending: readonly QueuedUserPrompt[], id: string): QueuedUserPrompt[] {
@@ -173,6 +196,7 @@ export function removeQueuedUserPromptByText(pending: readonly QueuedUserPrompt[
 export function clearsThinking(progress: SessionProgress): boolean {
 	return (
 		progress.type === "assistant_delta" ||
+		progress.type === "agent_step" ||
 		progress.type === "user_message" ||
 		progress.type === "tool_start" ||
 		progress.type === "tool_update" ||
@@ -208,6 +232,7 @@ export function reconcileCommittedTurn(
 		...current,
 		...(assistantCommitted ? { liveTurnStartRevision: revision } : {}),
 		liveTurnItems: current.liveTurnItems.flatMap((item): LiveTurnItem[] => {
+			if (item.kind === "user") return [item];
 			if (item.kind !== "tools") return assistantCommitted ? [] : [item];
 			const toolIds = item.toolIds.filter((id) => !callIds.has(id));
 			return toolIds.length ? [{ ...item, toolIds }] : [];

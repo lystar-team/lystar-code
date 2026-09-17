@@ -59,7 +59,9 @@ interface GatewayInternals {
 	sessionIdsByPath: Map<string, string>;
 	contexts: Map<string, TestContext>;
 	subscriptionsFor(socket: WebSocket): Set<string>;
+	projectSubscriptionsFor(socket: WebSocket): Set<string>;
 	subscribeSession(context: TestContext, socket: WebSocket, sessionId: string, lastSeq?: number): void;
+	broadcastProject(context: TestContext, projectId: string, value: unknown): void;
 }
 
 function createConfig(): WebGatewayConfig {
@@ -369,6 +371,110 @@ test("Gateway 只向订阅者发送会话详情，其他连接接收摘要", asy
 		{ type: "session_progress", sessionId: "session-1", progress: { type: "assistant_delta", text: "详情" }, seq: 1 },
 	]);
 	assert.deepEqual(summaryOnly.sent, [{ type: "session_summary", sessionId: "session-1", activity: "running" }]);
+});
+
+test("Gateway 项目文件变更只发送给对应项目订阅者", async (t) => {
+	const server = new WebGatewayServer(createConfig());
+	t.after(() => void server.close());
+	const internal = internals(server);
+	const browserClientId = "project-subscription-client";
+	const contextId = scopedRuntimeClientId(undefined, browserClientId);
+	const context = internal.createContext(contextId);
+	context.bootstrapGeneration = 1;
+	context.bootstrapCache = {
+		generation: 1,
+		value: {
+			projects: [],
+			projectGroups: [],
+			capabilities: [],
+			connection: { connected: true, host: "Web Host" },
+			pendingUiRequests: [],
+			operations: [],
+			leases: [],
+		},
+	};
+	internal.contexts.set(contextId, context);
+	const subscribed = createSocket();
+	const unrelated = createSocket();
+	const request = {
+		headers: { host: "127.0.0.1", "x-lystar-client-id": browserClientId },
+		url: "/ws",
+	} as unknown as IncomingMessage;
+	await internal.handleWebSocket(subscribed.webSocket, request);
+	context.sockets.add(unrelated.webSocket);
+	subscribed.sent.length = 0;
+
+	subscribed.emit("message", JSON.stringify({ type: "subscribe_project", projectId: "project-1" }));
+	internal.broadcastProject(context, "project-1", {
+		type: "project_files_changed",
+		projectId: "project-1",
+		paths: ["src/app.ts"],
+	});
+
+	assert.deepEqual(subscribed.sent, [
+		{ type: "project_files_changed", projectId: "project-1", paths: ["src/app.ts"] },
+	]);
+	assert.deepEqual(unrelated.sent, []);
+
+	subscribed.emit("message", JSON.stringify({ type: "unsubscribe_project", projectId: "project-1" }));
+	internal.broadcastProject(context, "project-1", {
+		type: "project_files_changed",
+		projectId: "project-1",
+		paths: ["src/next.ts"],
+	});
+	assert.equal(subscribed.sent.length, 1);
+});
+
+test("Gateway 会话摘要按状态去重并保留订阅者操作详情", async (t) => {
+	const server = new WebGatewayServer(createConfig());
+	t.after(() => void server.close());
+	const internal = internals(server);
+	const context = internal.createContext("operation-summary-client");
+	const detail = createSocket();
+	const summaryOnly = createSocket();
+	context.sockets.add(detail.webSocket);
+	context.sockets.add(summaryOnly.webSocket);
+	internal.subscriptionsFor(detail.webSocket).add("session-1");
+	internal.sessionIdsByPath.set("/tmp/operation-summary-session.jsonl", "session-1");
+	const operation = {
+		operationId: "operation-1",
+		clientInstanceId: "client-1",
+		clientRequestId: "request-1",
+		sessionPath: "/tmp/operation-summary-session.jsonl",
+		type: "run_bash",
+		status: "running" as const,
+		acceptedAt: 1,
+		updatedAt: 1,
+		payloadHash: "payload-1",
+	};
+
+	internal.handleHostEvent(context, { type: "operation_updated", operation });
+	internal.handleHostEvent(context, {
+		type: "operation_updated",
+		operation: { ...operation, updatedAt: 2, progress: { output: "第二段" } },
+	});
+	internal.handleHostEvent(context, {
+		type: "operation_updated",
+		operation: { ...operation, status: "completed", updatedAt: 3, result: { ok: true } },
+	});
+
+	assert.deepEqual(summaryOnly.sent, [
+		{ type: "session_summary", sessionId: "session-1", activity: "running", operationUpdatedAt: 1 },
+		{ type: "session_summary", sessionId: "session-1", activity: "completed", operationUpdatedAt: 3 },
+	]);
+	assert.equal(detail.sent.length, 3);
+	assert.deepEqual(
+		detail.sent.map((event) => ({
+			type: (event as { type?: unknown }).type,
+			seq: (event as { seq?: unknown }).seq,
+			updatedAt: (event as { operation?: { updatedAt?: unknown } }).operation?.updatedAt,
+		})),
+		[
+			{ type: "operation_updated", seq: 1, updatedAt: 1 },
+			{ type: "operation_updated", seq: 2, updatedAt: 2 },
+			{ type: "operation_updated", seq: 3, updatedAt: 3 },
+		],
+	);
 });
 
 test("Gateway 订阅确认前同步当前会话租约", async (t) => {

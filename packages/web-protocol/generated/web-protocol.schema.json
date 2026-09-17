@@ -3764,6 +3764,11 @@
             "text": {
               "type": "string",
               "maxLength": 16384
+            },
+            "stepId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
             }
           },
           "additionalProperties": false
@@ -3782,6 +3787,98 @@
             "text": {
               "type": "string",
               "maxLength": 16384
+            },
+            "stepId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "step"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "agent_step"
+            },
+            "step": {
+              "type": "object",
+              "required": [
+                "id",
+                "title",
+                "status",
+                "toolCallIds",
+                "startedAt"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "status": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "running"
+                    },
+                    {
+                      "type": "string",
+                      "const": "completed"
+                    },
+                    {
+                      "type": "string",
+                      "const": "failed"
+                    },
+                    {
+                      "type": "string",
+                      "const": "interrupted"
+                    }
+                  ]
+                },
+                "toolCallIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "maxItems": 256
+                },
+                "messageEntryIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "maxItems": 256
+                },
+                "startedAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "endedAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "summary": {
+                  "type": "string",
+                  "maxLength": 4096
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -3827,6 +3924,11 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 256
+                },
+                "stepId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
                 },
                 "state": {
                   "anyOf": [
@@ -3964,6 +4066,11 @@
               "minLength": 1,
               "maxLength": 256
             },
+            "stepId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
             "summary": {
               "type": "string",
               "maxLength": 16384
@@ -4038,6 +4145,11 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 256
+            },
+            "stepId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
             },
             "summary": {
               "type": "string",
@@ -4114,6 +4226,11 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 256
+            },
+            "stepId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
             },
             "status": {
               "$ref": "#/$defs/ToolEndStatus"
@@ -4452,7 +4569,7 @@
             },
             "version": {
               "type": "integer",
-              "const": 7
+              "const": 9
             },
             "productVersion": {
               "type": "string",
@@ -4460,7 +4577,7 @@
             },
             "protocolVersion": {
               "type": "integer",
-              "const": 7
+              "const": 9
             },
             "serverInstanceId": {
               "type": "string",
@@ -5042,6 +5159,11 @@
                                 "minLength": 1,
                                 "maxLength": 256
                               },
+                              "stepId": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 4096
+                              },
                               "state": {
                                 "anyOf": [
                                   {
@@ -5154,6 +5276,79 @@
                             "additionalProperties": false
                           },
                           "maxItems": 128
+                        },
+                        "activeStep": {
+                          "type": "object",
+                          "required": [
+                            "id",
+                            "title",
+                            "status",
+                            "toolCallIds",
+                            "startedAt"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 4096
+                            },
+                            "title": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 512
+                            },
+                            "status": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "const": "running"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "completed"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "failed"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "interrupted"
+                                }
+                              ]
+                            },
+                            "toolCallIds": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 4096
+                              },
+                              "maxItems": 256
+                            },
+                            "messageEntryIds": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 4096
+                              },
+                              "maxItems": 256
+                            },
+                            "startedAt": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "endedAt": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "summary": {
+                              "type": "string",
+                              "maxLength": 4096
+                            }
+                          },
+                          "additionalProperties": false
                         }
                       },
                       "additionalProperties": false
@@ -5567,6 +5762,93 @@
                                 "type": "object",
                                 "required": [
                                   "type",
+                                  "step"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "agent_step"
+                                  },
+                                  "step": {
+                                    "type": "object",
+                                    "required": [
+                                      "id",
+                                      "title",
+                                      "status",
+                                      "toolCallIds",
+                                      "startedAt"
+                                    ],
+                                    "properties": {
+                                      "id": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 4096
+                                      },
+                                      "title": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 512
+                                      },
+                                      "status": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string",
+                                            "const": "running"
+                                          },
+                                          {
+                                            "type": "string",
+                                            "const": "completed"
+                                          },
+                                          {
+                                            "type": "string",
+                                            "const": "failed"
+                                          },
+                                          {
+                                            "type": "string",
+                                            "const": "interrupted"
+                                          }
+                                        ]
+                                      },
+                                      "toolCallIds": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 4096
+                                        },
+                                        "maxItems": 256
+                                      },
+                                      "messageEntryIds": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 4096
+                                        },
+                                        "maxItems": 256
+                                      },
+                                      "startedAt": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      },
+                                      "endedAt": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      },
+                                      "summary": {
+                                        "type": "string",
+                                        "maxLength": 4096
+                                      }
+                                    },
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "type",
                                   "calls"
                                 ],
                                 "properties": {
@@ -5593,6 +5875,11 @@
                                           "type": "string",
                                           "minLength": 1,
                                           "maxLength": 256
+                                        },
+                                        "stepId": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 4096
                                         },
                                         "summary": {
                                           "type": "string",
@@ -5634,6 +5921,11 @@
                                     "type": "string",
                                     "minLength": 1,
                                     "maxLength": 256
+                                  },
+                                  "stepId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 4096
                                   },
                                   "status": {
                                     "anyOf": [
@@ -9563,6 +9855,11 @@
                 "minLength": 1,
                 "maxLength": 256
               },
+              "stepId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
               "state": {
                 "anyOf": [
                   {
@@ -9675,6 +9972,79 @@
             "additionalProperties": false
           },
           "maxItems": 128
+        },
+        "activeStep": {
+          "type": "object",
+          "required": [
+            "id",
+            "title",
+            "status",
+            "toolCallIds",
+            "startedAt"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "running"
+                },
+                {
+                  "type": "string",
+                  "const": "completed"
+                },
+                {
+                  "type": "string",
+                  "const": "failed"
+                },
+                {
+                  "type": "string",
+                  "const": "interrupted"
+                }
+              ]
+            },
+            "toolCallIds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "maxItems": 256
+            },
+            "messageEntryIds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "maxItems": 256
+            },
+            "startedAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "endedAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "summary": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -10002,6 +10372,11 @@
                 "minLength": 1,
                 "maxLength": 256
               },
+              "stepId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
               "state": {
                 "anyOf": [
                   {
@@ -10114,6 +10489,79 @@
             "additionalProperties": false
           },
           "maxItems": 128
+        },
+        "activeStep": {
+          "type": "object",
+          "required": [
+            "id",
+            "title",
+            "status",
+            "toolCallIds",
+            "startedAt"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "running"
+                },
+                {
+                  "type": "string",
+                  "const": "completed"
+                },
+                {
+                  "type": "string",
+                  "const": "failed"
+                },
+                {
+                  "type": "string",
+                  "const": "interrupted"
+                }
+              ]
+            },
+            "toolCallIds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "maxItems": 256
+            },
+            "messageEntryIds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "maxItems": 256
+            },
+            "startedAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "endedAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "summary": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -10449,6 +10897,11 @@
                     "minLength": 1,
                     "maxLength": 256
                   },
+                  "stepId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
                   "state": {
                     "anyOf": [
                       {
@@ -10561,6 +11014,79 @@
                 "additionalProperties": false
               },
               "maxItems": 128
+            },
+            "activeStep": {
+              "type": "object",
+              "required": [
+                "id",
+                "title",
+                "status",
+                "toolCallIds",
+                "startedAt"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "status": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "running"
+                    },
+                    {
+                      "type": "string",
+                      "const": "completed"
+                    },
+                    {
+                      "type": "string",
+                      "const": "failed"
+                    },
+                    {
+                      "type": "string",
+                      "const": "interrupted"
+                    }
+                  ]
+                },
+                "toolCallIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "maxItems": 256
+                },
+                "messageEntryIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "maxItems": 256
+                },
+                "startedAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "endedAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "summary": {
+                  "type": "string",
+                  "maxLength": 4096
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -10905,6 +11431,11 @@
                     "minLength": 1,
                     "maxLength": 256
                   },
+                  "stepId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
                   "state": {
                     "anyOf": [
                       {
@@ -11017,6 +11548,79 @@
                 "additionalProperties": false
               },
               "maxItems": 128
+            },
+            "activeStep": {
+              "type": "object",
+              "required": [
+                "id",
+                "title",
+                "status",
+                "toolCallIds",
+                "startedAt"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "status": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "running"
+                    },
+                    {
+                      "type": "string",
+                      "const": "completed"
+                    },
+                    {
+                      "type": "string",
+                      "const": "failed"
+                    },
+                    {
+                      "type": "string",
+                      "const": "interrupted"
+                    }
+                  ]
+                },
+                "toolCallIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "maxItems": 256
+                },
+                "messageEntryIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "maxItems": 256
+                },
+                "startedAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "endedAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "summary": {
+                  "type": "string",
+                  "maxLength": 4096
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -11353,6 +11957,11 @@
                 "minLength": 1,
                 "maxLength": 256
               },
+              "stepId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
               "state": {
                 "anyOf": [
                   {
@@ -11465,6 +12074,79 @@
             "additionalProperties": false
           },
           "maxItems": 128
+        },
+        "activeStep": {
+          "type": "object",
+          "required": [
+            "id",
+            "title",
+            "status",
+            "toolCallIds",
+            "startedAt"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "running"
+                },
+                {
+                  "type": "string",
+                  "const": "completed"
+                },
+                {
+                  "type": "string",
+                  "const": "failed"
+                },
+                {
+                  "type": "string",
+                  "const": "interrupted"
+                }
+              ]
+            },
+            "toolCallIds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "maxItems": 256
+            },
+            "messageEntryIds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "maxItems": 256
+            },
+            "startedAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "endedAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "summary": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -12027,6 +12709,11 @@
                     "minLength": 1,
                     "maxLength": 256
                   },
+                  "stepId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
                   "state": {
                     "anyOf": [
                       {
@@ -12139,6 +12826,79 @@
                 "additionalProperties": false
               },
               "maxItems": 128
+            },
+            "activeStep": {
+              "type": "object",
+              "required": [
+                "id",
+                "title",
+                "status",
+                "toolCallIds",
+                "startedAt"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "status": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "running"
+                    },
+                    {
+                      "type": "string",
+                      "const": "completed"
+                    },
+                    {
+                      "type": "string",
+                      "const": "failed"
+                    },
+                    {
+                      "type": "string",
+                      "const": "interrupted"
+                    }
+                  ]
+                },
+                "toolCallIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "maxItems": 256
+                },
+                "messageEntryIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "maxItems": 256
+                },
+                "startedAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "endedAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "summary": {
+                  "type": "string",
+                  "maxLength": 4096
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false

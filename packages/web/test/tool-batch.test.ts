@@ -84,6 +84,9 @@ describe("Skill read tool display", () => {
 		expect(markup).toContain("src/services/");
 		expect(markup).toContain('data-activity-directory="true"');
 		expect(markup).toContain('data-activity-filename="true"');
+		expect(markup).toContain("overflow-hidden");
+		expect(markup).toContain("sm:inline");
+		expect(markup).toContain("sm:shrink-0");
 		expect(markup.indexOf("src/services/")).toBeLessThan(markup.indexOf("lease-service.ts"));
 		expect(markup).toContain("renewal-form.tsx");
 		expect(markup).toContain("运行中");
@@ -167,7 +170,32 @@ describe("Skill read tool display", () => {
 		expect(markup).toContain("/home/yean/projectWorkspace/liteasy-pi-agent/packages/web-runtime/src/");
 		expect(markup).toContain("service-manager.ts");
 		expect(markup).toContain("第1-200行");
+		expect(markup).toContain("overflow-hidden");
+		expect(markup).toContain("whitespace-nowrap");
+		expect(markup).toContain("shrink-0 text-muted-foreground transition-transform");
 		expect(markup.indexOf("service-manager.ts")).toBeLessThan(markup.indexOf("第1-200行"));
+	});
+
+	it("moves the loading icon into the tool icon slot while a tool row is running", () => {
+		const running: ToolBatchTool = {
+			id: "bash-running",
+			name: "bash",
+			summary: JSON.stringify({ command: "sleep 210" }),
+			state: "input-available",
+		};
+		const runningMarkup = renderToStaticMarkup(createElement(ToolBatch, { tools: [running] }));
+
+		expect(runningMarkup).toContain("正在执行");
+		expect(runningMarkup).toContain("运行中");
+		expect(runningMarkup).not.toContain("lucide-terminal");
+		expect(runningMarkup.match(/lucide-loader-circle/gu)).toHaveLength(1);
+		expect(runningMarkup.indexOf("lucide-loader-circle")).toBeLessThan(runningMarkup.indexOf(">正在执行 sleep 210<"));
+
+		const completed: ToolBatchTool = { ...running, id: "bash-completed", state: "output-available" };
+		const completedMarkup = renderToStaticMarkup(createElement(ToolBatch, { tools: [completed] }));
+
+		expect(completedMarkup).toContain("lucide-terminal");
+		expect(completedMarkup).not.toContain("lucide-loader-circle");
 	});
 
 	it("keeps the filename visible for standalone completed and active edits", () => {

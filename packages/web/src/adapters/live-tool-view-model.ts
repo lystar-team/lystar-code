@@ -6,6 +6,7 @@ export function toLiveToolViewModel(tool: LiveTool): ToolBatchTool {
 		id: tool.id,
 		name: tool.name,
 		summary: tool.summary,
+		stepId: tool.stepId,
 		state:
 			tool.state === "success"
 				? "output-available"

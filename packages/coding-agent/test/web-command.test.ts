@@ -1,6 +1,6 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	reconcileWebServicesAfterUpdate,
@@ -115,6 +115,38 @@ describe("Web control commands", () => {
 				interactiveAdmin: false,
 			}),
 		);
+	});
+
+	it("manages the development frontend with Gateway and Runtime service actions", async () => {
+		process.env.PI_CODING_AGENT_DIR = "/tmp/lystar-web-command-development-test";
+		process.env.LYSTAR_CLI_MODE = "development";
+		const runWebServiceAction = vi.fn(async () => ({
+			enabled: true,
+			profile: "development",
+			frontend: { running: true },
+			gateway: { running: true },
+			runtime: { running: true },
+		}));
+		const output = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await runWebServiceCommand(["restart"], {
+			gatewayModule: { runWebServiceAction },
+			gatewayInvocation: { command: "/usr/bin/node", args: ["gateway"], cwd: "/tmp" },
+			runtimeInvocation: { command: "/usr/bin/node", args: ["runtime"], cwd: "/tmp" },
+		});
+
+		expect(runWebServiceAction).toHaveBeenCalledWith(
+			expect.objectContaining({
+				action: "restart",
+				configFileName: "web-dev-config.json",
+				frontendInvocation: expect.objectContaining({
+					command: join(dirname(process.execPath), process.platform === "win32" ? "npm.cmd" : "npm"),
+					args: ["run", "dev", "--workspace=@lystar/code-web"],
+				}),
+				frontendPort: 2420,
+			}),
+		);
+		expect(output).toHaveBeenCalledWith("开发 Web 前端、Gateway 和 Runtime 服务已启动。");
 	});
 
 	it("reconciles post-update services with the explicit target version instead of the stale updater version", async () => {
@@ -321,7 +353,7 @@ describe("Web control commands", () => {
 		expect(output).toHaveBeenCalledWith(expect.stringContaining("Web 默认端口：2422；Runtime 默认端口：2423。"));
 		expect(output).toHaveBeenCalledWith(expect.stringContaining("开发前端（Vite HMR）：http://127.0.0.1:2420"));
 		expect(output).toHaveBeenCalledWith(
-			expect.stringContaining("lcd web 会启动后台 Gateway、Runtime 和前台 Vite HMR"),
+			expect.stringContaining("lcd web 会启动并托管 Vite HMR 前端、Gateway 和 Runtime"),
 		);
 		expect(output).toHaveBeenCalledWith(expect.stringContaining("lcd web runtime status|stop|start|restart"));
 	});

@@ -18,7 +18,7 @@ const state = vi.hoisted(() => ({
 	pendingUiRequests: [] as unknown[],
 	sessions: [] as Array<{ path: string; activity: string; phase: string }>,
 	readSnapshot: false,
-	requiredProtocolVersion: 7,
+	requiredProtocolVersion: 9,
 	attemptedProtocolVersions: [] as number[],
 }));
 vi.mock("node:fs", () => ({
@@ -34,12 +34,12 @@ vi.mock("../src/ipc.ts", () => ({
 	defaultRuntimeEndpoint: () => "/test/runtime.sock",
 }));
 vi.mock("@lystar/code-web-protocol", () => ({
-	RUNTIME_PROTOCOL_VERSION: 7,
+	RUNTIME_PROTOCOL_VERSION: 9,
 	RuntimeProtocolClient: class {
 		private readonly protocolVersion: number;
 
 		constructor(_transport: unknown, _clientInstanceId: string, options: { protocolVersion?: number } = {}) {
-			this.protocolVersion = options.protocolVersion ?? 7;
+			this.protocolVersion = options.protocolVersion ?? 9;
 			state.attemptedProtocolVersions.push(this.protocolVersion);
 		}
 
@@ -100,7 +100,7 @@ beforeEach(() => {
 	state.pendingUiRequests = [];
 	state.sessions = [];
 	state.readSnapshot = false;
-	state.requiredProtocolVersion = 7;
+	state.requiredProtocolVersion = 9;
 	state.attemptedProtocolVersions = [];
 	vi.clearAllMocks();
 	vi.spyOn(process, "kill").mockImplementation((_pid, signal) => {
@@ -140,7 +140,7 @@ describe("Runtime update and restart safety", () => {
 
 		await assertRuntimeIdle("/test/runtime.sock");
 
-		expect(state.attemptedProtocolVersions).toEqual([7, 4]);
+		expect(state.attemptedProtocolVersions).toEqual([9, 4]);
 		expect(state.readSnapshot).toBe(true);
 	});
 	it("preserves busy Runtime protection across a protocol upgrade", async () => {
@@ -149,7 +149,7 @@ describe("Runtime update and restart safety", () => {
 
 		await expect(assertRuntimeIdle("/test/runtime.sock")).rejects.toMatchObject({ code: "host_busy" });
 
-		expect(state.attemptedProtocolVersions).toEqual([7, 4]);
+		expect(state.attemptedProtocolVersions).toEqual([9, 4]);
 		expect(state.readSnapshot).toBe(true);
 	});
 	it("passes the Runtime Profile to the managed process environment", () => {

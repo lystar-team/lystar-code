@@ -2,7 +2,7 @@ import Type, { type Static } from "typebox";
 import { Compile } from "typebox/compile";
 import { Check } from "typebox/value";
 
-export const RUNTIME_PROTOCOL_VERSION = 7 as const;
+export const RUNTIME_PROTOCOL_VERSION = 9 as const;
 export const MAX_TRANSCRIPT_PAGE_SIZE = 200;
 export const MAX_TRANSCRIPT_SEARCH_LIMIT = 100;
 export const MAX_GIT_HISTORY_PAGE_SIZE = 100;
@@ -296,11 +296,30 @@ export const ToolActivityStateSchema = Type.Union([
 	Type.Literal("interrupted"),
 ]);
 export type ToolActivityState = Static<typeof ToolActivityStateSchema>;
+export const AgentStepStatusSchema = Type.Union([
+	Type.Literal("running"),
+	Type.Literal("completed"),
+	Type.Literal("failed"),
+	Type.Literal("interrupted"),
+]);
+export type AgentStepStatus = Static<typeof AgentStepStatusSchema>;
+export const AgentStepSchema = StrictObject({
+	id: Id,
+	title: Type.String({ minLength: 1, maxLength: 512 }),
+	status: AgentStepStatusSchema,
+	toolCallIds: Type.Array(Id, { maxItems: 256 }),
+	messageEntryIds: Type.Optional(Type.Array(Id, { maxItems: 256 })),
+	startedAt: TimestampSchema,
+	endedAt: Type.Optional(TimestampSchema),
+	summary: Type.Optional(Type.String({ maxLength: 4096 })),
+});
+export type AgentStep = Static<typeof AgentStepSchema>;
 export const ToolActivitySchema = StrictObject({
 	activityEpoch: Id,
 	revision: Type.Integer({ minimum: 0 }),
 	toolCallId: Id,
 	name: Type.String({ minLength: 1, maxLength: 256 }),
+	stepId: Type.Optional(Id),
 	state: ToolActivityStateSchema,
 	summary: ProgressTextSchema,
 	inputPreview: Type.Optional(Type.Boolean()),
@@ -325,13 +344,15 @@ export const SessionProgressSchema = Type.Union([
 		text: ProgressTextSchema,
 		queueId: Type.Optional(Id),
 	}),
-	StrictObject({ type: Type.Literal("assistant_delta"), text: ProgressTextSchema }),
-	StrictObject({ type: Type.Literal("thinking_delta"), text: ProgressTextSchema }),
+	StrictObject({ type: Type.Literal("assistant_delta"), text: ProgressTextSchema, stepId: Type.Optional(Id) }),
+	StrictObject({ type: Type.Literal("thinking_delta"), text: ProgressTextSchema, stepId: Type.Optional(Id) }),
+	StrictObject({ type: Type.Literal("agent_step"), step: AgentStepSchema }),
 	StrictObject({ type: Type.Literal("tool_state"), activity: ToolActivitySchema }),
 	StrictObject({
 		type: Type.Literal("tool_start"),
 		toolCallId: Id,
 		name: Type.String({ minLength: 1, maxLength: 256 }),
+		stepId: Type.Optional(Id),
 		summary: Type.Optional(ProgressTextSchema),
 		diff: Type.Optional(ToolDiffSchema),
 	}),
@@ -339,6 +360,7 @@ export const SessionProgressSchema = Type.Union([
 		type: Type.Literal("tool_update"),
 		toolCallId: Id,
 		name: Type.String({ minLength: 1, maxLength: 256 }),
+		stepId: Type.Optional(Id),
 		summary: ProgressTextSchema,
 		diff: Type.Optional(ToolDiffSchema),
 	}),
@@ -346,6 +368,7 @@ export const SessionProgressSchema = Type.Union([
 		type: Type.Literal("tool_end"),
 		toolCallId: Id,
 		name: Type.String({ minLength: 1, maxLength: 256 }),
+		stepId: Type.Optional(Id),
 		status: Type.Union([Type.Literal("success"), Type.Literal("error")]),
 		summary: ProgressTextSchema,
 		diff: Type.Optional(ToolDiffSchema),
@@ -439,6 +462,7 @@ export const SessionStateSnapshotSchema = StrictObject({
 	toolActivityEpoch: Type.Optional(Id),
 	toolActivityRevision: Type.Optional(Type.Integer({ minimum: 0 })),
 	toolActivities: Type.Optional(Type.Array(ToolActivitySchema, { maxItems: 128 })),
+	activeStep: Type.Optional(AgentStepSchema),
 });
 export type SessionStateSnapshot = Static<typeof SessionStateSnapshotSchema>;
 
@@ -473,6 +497,7 @@ export type TranscriptFile = Static<typeof TranscriptFileSchema>;
 const TranscriptToolCallSchema = StrictObject({
 	id: Id,
 	name: Type.String({ minLength: 1, maxLength: 256 }),
+	stepId: Type.Optional(Id),
 	summary: TranscriptViewTextSchema,
 	href: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
 });
@@ -511,11 +536,13 @@ export const TranscriptViewItemSchema = Type.Union([
 	}),
 	StrictObject({ type: Type.Literal("thinking"), text: TranscriptViewTextSchema }),
 	TranscriptWebSearchSchema,
+	StrictObject({ type: Type.Literal("agent_step"), step: AgentStepSchema }),
 	StrictObject({ type: Type.Literal("tool_call"), calls: Type.Array(TranscriptToolCallSchema, { maxItems: 32 }) }),
 	StrictObject({
 		type: Type.Literal("tool_result"),
 		callId: Id,
 		name: Type.String({ minLength: 1, maxLength: 256 }),
+		stepId: Type.Optional(Id),
 		status: Type.Union([Type.Literal("success"), Type.Literal("error")]),
 		summary: TranscriptViewTextSchema,
 		detail: Type.Optional(TranscriptViewTextSchema),

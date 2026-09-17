@@ -134,6 +134,7 @@ import type {
 	TranscriptItem,
 } from "@lystar/code-web-protocol";
 import { RUNTIME_PROTOCOL_VERSION } from "@lystar/code-web-protocol";
+import { AGENT_STEP_TOOL_NAMES, AgentStepController, createAgentStepTools } from "./agent-steps.ts";
 import { macosGitCredentialError, webGitArguments } from "./git-environment.ts";
 import {
 	migrateLegacyWebAttachments,
@@ -1292,6 +1293,7 @@ function bashOutput(value: unknown): string | undefined {
 }
 
 export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgress[] {
+	if ("toolName" in event && AGENT_STEP_TOOL_NAMES.has(event.toolName)) return [];
 	switch (event.type) {
 		case "message_start":
 			if (event.message.role === "assistant") return [{ type: "phase", phase: "turn" }];
@@ -1335,7 +1337,7 @@ export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgres
 				event.message.role === "assistant"
 			) {
 				const content = event.message.content[stream.contentIndex];
-				if (content?.type === "toolCall") {
+				if (content?.type === "toolCall" && !AGENT_STEP_TOOL_NAMES.has(content.name)) {
 					const summary = isDiffTool(content.name)
 						? (toolPath(content.arguments) ?? content.name)
 						: boundedStatus(content.arguments);
@@ -1467,7 +1469,9 @@ export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgres
 		case "entry_appended":
 			return [];
 		case "tool_activity":
-			return [{ type: "tool_state", activity: event.activity }];
+			return AGENT_STEP_TOOL_NAMES.has(event.activity.name)
+				? []
+				: [{ type: "tool_state", activity: event.activity }];
 		case "queue_update":
 			return [{ type: "queue_update", steeringCount: event.steering.length, followUpCount: event.followUp.length }];
 		case "compaction_start":
@@ -1546,6 +1550,22 @@ export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgres
 	}
 }
 
+function progressWithAgentStep(progress: SessionProgress, controller: AgentStepController): SessionProgress {
+	if (progress.type === "assistant_delta" || progress.type === "thinking_delta") {
+		const stepId = controller.activeStep?.id;
+		return stepId ? { ...progress, stepId } : progress;
+	}
+	if (progress.type === "tool_state") {
+		const stepId = controller.stepIdForTool(progress.activity.toolCallId);
+		return stepId ? { ...progress, activity: { ...progress.activity, stepId } } : progress;
+	}
+	if (progress.type === "tool_start" || progress.type === "tool_update" || progress.type === "tool_end") {
+		const stepId = controller.stepIdForTool(progress.toolCallId);
+		return stepId ? { ...progress, stepId } : progress;
+	}
+	return progress;
+}
+
 function contentImages(images?: Array<{ data: string; mimeType: string; displayOnly?: boolean }>) {
 	return images?.map((image) =>
 		image.displayOnly
@@ -1566,7 +1586,9 @@ class CoreRuntimeSession implements RuntimeSession {
 	private readonly listeners = new Set<(event: RuntimeEvent) => void>();
 	private readonly runtime: Awaited<ReturnType<typeof createAgentSessionRuntime>>;
 	private readonly onUiRequest: UiRequestHandler;
+	private readonly stepController: AgentStepController;
 	private unsubscribe?: () => void;
+	private unsubscribeSteps?: () => void;
 	private stateRevision = 0;
 	private committedEntryCount = 0;
 	private lastTranscriptGeneration?: string;
@@ -1580,10 +1602,12 @@ class CoreRuntimeSession implements RuntimeSession {
 		runtime: Awaited<ReturnType<typeof createAgentSessionRuntime>>,
 		onUiRequest: UiRequestHandler,
 		agentDir: string,
+		stepController: AgentStepController,
 	) {
 		this.runtime = runtime;
 		this.onUiRequest = onUiRequest;
 		this.agentDir = agentDir;
+		this.stepController = stepController;
 	}
 
 	get sessionPath(): string {
@@ -1592,8 +1616,8 @@ class CoreRuntimeSession implements RuntimeSession {
 		return path;
 	}
 
-	getLiveMessage(): { text: string; thinking: string } {
-		const result = { text: "", thinking: "" };
+	getLiveMessage(): { text: string; thinking: string; stepId?: string } {
+		const result: { text: string; thinking: string; stepId?: string } = { text: "", thinking: "" };
 		const message = this.runtime.session.agent.state.streamingMessage;
 		if (message?.role === "assistant") {
 			for (const part of message.content) {
@@ -1601,7 +1625,8 @@ class CoreRuntimeSession implements RuntimeSession {
 				if (part.type === "thinking") result.thinking += part.thinking;
 			}
 		}
-		return result;
+		const stepId = this.stepController.activeStep?.id;
+		return stepId ? { ...result, stepId } : result;
 	}
 
 	isConnected(): boolean {
@@ -1644,7 +1669,10 @@ class CoreRuntimeSession implements RuntimeSession {
 			typeof session.getToolActivityRevision === "function" ? session.getToolActivityRevision() : undefined;
 		const toolActivities =
 			typeof session.getToolActivitySnapshot === "function"
-				? session.getToolActivitySnapshot({ activeOnly: true })
+				? session.getToolActivitySnapshot({ activeOnly: true }).map((activity) => {
+						const stepId = this.stepController.stepIdForTool(activity.toolCallId);
+						return stepId ? { ...activity, stepId } : activity;
+					})
 				: undefined;
 		const hasActiveToolActivity = Boolean(toolActivities?.length);
 		const queuedSteerMessages = session.getSteeringQueueItems();
@@ -1681,6 +1709,7 @@ class CoreRuntimeSession implements RuntimeSession {
 			...(toolActivityEpoch ? { toolActivityEpoch } : {}),
 			...(toolActivityRevision === undefined ? {} : { toolActivityRevision }),
 			...(toolActivities === undefined ? {} : { toolActivities }),
+			...(this.stepController.activeStep ? { activeStep: this.stepController.activeStep } : {}),
 		};
 	}
 
@@ -1971,6 +2000,7 @@ class CoreRuntimeSession implements RuntimeSession {
 	}
 
 	async abort(): Promise<void> {
+		this.stepController.finishActive("interrupted", "任务已取消");
 		this.runtime.session.abortBash();
 		await this.runtime.session.abort();
 	}
@@ -2008,8 +2038,11 @@ class CoreRuntimeSession implements RuntimeSession {
 	async dispose(): Promise<void> {
 		if (this.disposed) return;
 		this.disposed = true;
+		this.stepController.finishActive("interrupted", "会话已停止");
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
+		this.unsubscribeSteps?.();
+		this.unsubscribeSteps = undefined;
 		const companion = this.companion;
 		this.companion = undefined;
 		this.externalClientCount = 0;
@@ -2025,6 +2058,8 @@ class CoreRuntimeSession implements RuntimeSession {
 	private async bindCurrentSession(): Promise<void> {
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
+		this.unsubscribeSteps?.();
+		this.unsubscribeSteps = undefined;
 		const previousCompanion = this.companion;
 		this.companion = undefined;
 		this.externalClientCount = 0;
@@ -2048,13 +2083,43 @@ class CoreRuntimeSession implements RuntimeSession {
 			abortHandler: () => void this.abort(),
 			onError: (error) => this.emit({ type: "progress", payload: jsonValue({ type: "extension_error", ...error }) }),
 		});
+		this.unsubscribeSteps = this.stepController.onChange((step) => {
+			this.stateRevision++;
+			this.emit({ type: "progress", payload: { type: "agent_step", step } });
+			queueMicrotask(() => this.emitCommittedEntries());
+			this.emit({ type: "state_changed", payload: jsonValue(this.getSnapshot("owned")) });
+		});
 		this.unsubscribe = session.subscribe((event) => {
 			this.stateRevision++;
+			if (event.type === "tool_execution_start" && !AGENT_STEP_TOOL_NAMES.has(event.toolName)) {
+				this.stepController.associateTool(event.toolCallId);
+			}
+			if (event.type === "message_end" && (event.message.role === "assistant" || event.message.role === "user")) {
+				const messageRole = event.message.role;
+				const stepId = this.stepController.activeStep?.id;
+				if (stepId) {
+					const entryOffset = session.sessionManager.getEntries().length;
+					queueMicrotask(() => {
+						if (this.disposed || this.runtime.session !== session) return;
+						const entry = session.sessionManager
+							.getEntries()
+							.slice(entryOffset)
+							.find((candidate) => candidate.type === "message" && candidate.message.role === messageRole);
+						if (entry) this.stepController.associateMessage(entry.id, stepId);
+					});
+				}
+				if (event.message.role === "assistant" && event.message.stopReason === "error") {
+					this.stepController.finishActive("failed", event.message.errorMessage ?? "模型响应失败");
+				} else if (event.message.role === "assistant" && event.message.stopReason === "aborted") {
+					this.stepController.finishActive("interrupted", event.message.errorMessage ?? "请求已取消");
+				}
+			}
+			if (event.type === "agent_settled") this.stepController.finishActive("completed");
 			if (event.type === "message_end" || event.type === "entry_appended") {
 				queueMicrotask(() => this.emitCommittedEntries());
 			}
 			for (const progress of projectRuntimeProgress(event)) {
-				this.emit({ type: "progress", payload: progress });
+				this.emit({ type: "progress", payload: progressWithAgentStep(progress, this.stepController) });
 			}
 			this.emit({ type: "state_changed", payload: jsonValue(this.getSnapshot("owned")) });
 		});
@@ -2138,6 +2203,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	private readonly sessionListPromises = new Map<string, Promise<SessionSummaryBase[]>>();
 	private readonly gitRepositoryRootsCache = new Map<string, { rootRepository?: string; repositoryRoots: string[] }>();
 	private readonly nodeToolchain = probeUserNodeToolchain();
+	private readonly stepControllers = new WeakMap<AgentSessionRuntime, AgentStepController>();
 	private modelRuntimePromise?: Promise<ModelRuntime>;
 	private initialRuntime?: AgentSessionRuntime;
 	private initialRuntimeClaimed = false;
@@ -3680,6 +3746,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		onUiRequest: UiRequestHandler,
 	): Promise<RuntimeSession> {
 		const trustStore = new ProjectTrustStore(this.agentDir);
+		const stepController = new AgentStepController(sessionManager);
 		const defaultCreateRuntime: CreateAgentSessionRuntimeFactory = async ({
 			cwd: runtimeCwd,
 			agentDir,
@@ -3722,6 +3789,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 					services,
 					sessionManager: runtimeSessionManager,
 					sessionStartEvent,
+					customTools: createAgentStepTools(stepController),
 				})),
 				services,
 				diagnostics: services.diagnostics,
@@ -3739,6 +3807,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			sessionManager,
 			projectTrustContext,
 		});
+		this.stepControllers.set(runtime, stepController);
 		return this.wrapRuntime(runtime, onUiRequest);
 	}
 
@@ -3752,7 +3821,9 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	}
 
 	private async wrapRuntime(runtime: AgentSessionRuntime, onUiRequest: UiRequestHandler): Promise<RuntimeSession> {
-		const wrapped = new CoreRuntimeSession(runtime, onUiRequest, this.agentDir);
+		const stepController =
+			this.stepControllers.get(runtime) ?? new AgentStepController(runtime.session.sessionManager);
+		const wrapped = new CoreRuntimeSession(runtime, onUiRequest, this.agentDir, stepController);
 		try {
 			await wrapped.bind();
 			return wrapped;

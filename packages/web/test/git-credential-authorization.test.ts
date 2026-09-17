@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	gitCredentialAuthorizationMessage,
+	gitCredentialAuthorizationMessageFromProgress,
 	gitCredentialAuthorizationMessageFromSystemPermissions,
 } from "../src/state/use-workbench.ts";
 
@@ -52,6 +53,45 @@ describe("Git keychain authorization prompt", () => {
 				],
 			}),
 		).toBeUndefined();
+	});
+
+	it("ignores successful tool output that mentions the macOS authorization marker", () => {
+		expect(
+			gitCredentialAuthorizationMessageFromProgress({
+				type: "tool_end",
+				toolCallId: "read-source",
+				name: "read",
+				status: "success",
+				summary: "LYSTAR_GIT_KEYCHAIN_AUTHORIZATION_REQUIRED: lc web permissions setup",
+			}),
+		).toBeUndefined();
+		expect(
+			gitCredentialAuthorizationMessageFromProgress({
+				type: "tool_state",
+				activity: {
+					activityEpoch: "epoch-1",
+					revision: 1,
+					toolCallId: "search-source",
+					name: "bash",
+					state: "success",
+					summary: "rg Git 钥匙串",
+					output: "Git 钥匙串需要本机授权，请执行 lc web permissions setup",
+					updatedAt: 1,
+				},
+			}),
+		).toBeUndefined();
+	});
+
+	it("opens the prompt for failed tool events that report the authorization error", () => {
+		expect(
+			gitCredentialAuthorizationMessageFromProgress({
+				type: "tool_end",
+				toolCallId: "git-push",
+				name: "bash",
+				status: "error",
+				summary: "LYSTAR_GIT_KEYCHAIN_AUTHORIZATION_REQUIRED: 远端 gitee.com 需要本机确认",
+			}),
+		).toContain("lc web permissions setup");
 	});
 
 	it("ignores unrelated Git failures", () => {

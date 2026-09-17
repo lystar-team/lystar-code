@@ -44,6 +44,8 @@ interface WebGatewayModule {
 		defaultPort?: number;
 		defaultRuntimePort?: number;
 		staticDir?: string;
+		frontendInvocation?: RuntimeInvocation;
+		frontendPort?: number;
 		gatewayInvocation: RuntimeInvocation;
 		runtimeInvocation?: RuntimeInvocation;
 		serviceVersion?: string;
@@ -59,6 +61,8 @@ interface WebGatewayModule {
 		defaultPort: number;
 		defaultRuntimePort: number;
 		staticDir: string;
+		frontendInvocation?: RuntimeInvocation;
+		frontendPort?: number;
 		expectedProductVersion: string;
 		runtimeInvocation: RuntimeInvocation;
 		configFileName?: string;
@@ -81,6 +85,15 @@ function webCommandSettings(): WebCommandSettings {
 
 function packageRoot(): string {
 	return resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+}
+
+function developmentFrontendInvocation(settings: WebCommandSettings): RuntimeInvocation | undefined {
+	if (settings.commandName !== "lcd") return undefined;
+	return {
+		command: join(dirname(process.execPath), process.platform === "win32" ? "npm.cmd" : "npm"),
+		args: ["run", "dev", "--workspace=@lystar/code-web"],
+		cwd: resolve(packageRoot(), "../.."),
+	};
 }
 
 function modulePath(packageName: "web-gateway" | "web-runtime", fileName: string): string {
@@ -184,6 +197,8 @@ async function runWebComponentCommand(
 interface WebServiceCommandOptions {
 	gatewayModule?: Pick<WebGatewayModule, "runWebServiceAction">;
 	permissionsGatewayModule?: Pick<WebGatewayModule, "runMacosPermissionsCommand">;
+	frontendInvocation?: RuntimeInvocation;
+	frontendPort?: number;
 	gatewayInvocation?: RuntimeInvocation;
 	runtimeInvocation?: RuntimeInvocation;
 	serviceVersion?: string;
@@ -222,6 +237,8 @@ export async function runWebServiceCommand(
 		throw new Error(`用法：${settings.commandName} web service ${action} [--upgrade] [--non-interactive]`);
 	}
 	const module = options.gatewayModule ?? (await loadGatewayModule());
+	const frontendInvocation = options.frontendInvocation ?? developmentFrontendInvocation(settings);
+	const frontendPort = options.frontendPort ?? (frontendInvocation ? DEFAULT_DEV_FRONTEND_PORT : undefined);
 	const gatewayInvocation = options.gatewayInvocation ?? foregroundWebInvocation();
 	const runtimeInvocation = options.runtimeInvocation ?? sourceRuntimeInvocation();
 	const stableLauncher = stableLauncherPath();
@@ -242,6 +259,8 @@ export async function runWebServiceCommand(
 		defaultPort: settings.defaultPort,
 		defaultRuntimePort: settings.defaultRuntimePort,
 		staticDir: staticDir(),
+		...(frontendInvocation ? { frontendInvocation } : {}),
+		...(frontendPort !== undefined ? { frontendPort } : {}),
 		gatewayInvocation,
 		runtimeInvocation,
 		...(serviceVersion ? { serviceVersion } : {}),
@@ -251,7 +270,11 @@ export async function runWebServiceCommand(
 	if (action === "status") {
 		console.log(JSON.stringify(result, null, "\t"));
 	} else if (action === "uninstall") {
-		console.log("Web Gateway 和 Web Runtime 服务已卸载。");
+		console.log(
+			frontendInvocation
+				? "开发 Web 前端、Gateway 和 Runtime 服务已卸载。"
+				: "Web Gateway 和 Web Runtime 服务已卸载。",
+		);
 	} else {
 		const recovered = (
 			result as {
@@ -263,7 +286,10 @@ export async function runWebServiceCommand(
 				`Web 服务版本 ${recovered.targetVersion} 启动失败，已恢复服务版本 ${recovered.serviceVersion}。LYStar Code 应用版本保持不变。原因：${recovered.reason}`,
 			);
 		} else {
-			console.log(`Web Gateway 和 Web Runtime 服务${action === "stop" ? "已停止" : "已启动"}。`);
+			const serviceLabel = frontendInvocation
+				? "开发 Web 前端、Gateway 和 Runtime 服务"
+				: "Web Gateway 和 Web Runtime 服务";
+			console.log(`${serviceLabel}${action === "stop" ? "已停止" : "已启动"}。`);
 			if (process.platform === "darwin" && interactive && (action === "install" || action === "reconcile")) {
 				await runPostServiceMacosPermissions(options.permissionsGatewayModule);
 			}
@@ -376,7 +402,7 @@ export async function runWebCommand(args: readonly string[] = []): Promise<void>
 			? `\n开发前端（Vite HMR）：http://127.0.0.1:${DEFAULT_DEV_FRONTEND_PORT}。Gateway 端口：${settings.defaultPort}。`
 			: "";
 		const launchMode = development
-			? `${settings.commandName} web 会启动后台 Gateway、Runtime 和前台 Vite HMR。`
+			? `${settings.commandName} web 会启动并托管 Vite HMR 前端、Gateway 和 Runtime。`
 			: `默认启动为后台模式；需要前台运行时使用：${settings.commandName} web --foreground。`;
 		console.log(
 			`用法：${settings.commandName} web\n\n首次运行会依次配置监听 IP、白名单 IP、Web 端口、Runtime 端口和连接密码。\nWeb 默认端口：${settings.defaultPort}；Runtime 默认端口：${settings.defaultRuntimePort}。${developmentFrontend}\n配置文件：${settings.configFileName ?? "web-config.json"}。\n${launchMode}\n\n组件命令：\n  ${settings.commandName} web gateway status|stop|start|restart\n  ${settings.commandName} web runtime status|stop|start|restart\n\n服务命令：\n  ${settings.commandName} web service install\n  ${settings.commandName} web service status\n  ${settings.commandName} web service restart\n  ${settings.commandName} web service uninstall\n\nmacOS 授权：\n  ${settings.commandName} web permissions status\n  ${settings.commandName} web permissions setup\n`,
@@ -413,6 +439,7 @@ export async function runWebCommand(args: readonly string[] = []): Promise<void>
 		}
 	}
 	const { runWebGatewayCli } = await loadGatewayRunnerModule();
+	const frontendInvocation = developmentFrontendInvocation(settings);
 	const gatewayInvocation = foregroundWebInvocation();
 	const runtimeInvocation = sourceRuntimeInvocation();
 	const stableLauncher = stableLauncherPath();
@@ -424,6 +451,7 @@ export async function runWebCommand(args: readonly string[] = []): Promise<void>
 		defaultPort: settings.defaultPort,
 		defaultRuntimePort: settings.defaultRuntimePort,
 		staticDir: staticDir(),
+		...(frontendInvocation ? { frontendInvocation, frontendPort: DEFAULT_DEV_FRONTEND_PORT } : {}),
 		expectedProductVersion: VERSION,
 		runtimeInvocation,
 		configFileName: settings.configFileName,

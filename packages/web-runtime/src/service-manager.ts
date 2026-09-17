@@ -5,7 +5,7 @@ import { homedir, tmpdir, userInfo } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { makeMacosGitCredentialWrapper } from "./git-environment.ts";
 
-export type WebServiceKind = "gateway" | "runtime";
+export type WebServiceKind = "frontend" | "gateway" | "runtime";
 export type WebServiceManager =
 	| "systemd-user"
 	| "launch-daemon"
@@ -160,7 +160,7 @@ invalid_path() {
 valid_source() {
 	invalid_path "$1" && return 1
 	case "$1" in
-		"$agent_dir"/web/services/com.lystar.web-gateway*."$expected_uid".plist|"$agent_dir"/web/services/com.lystar.web-runtime*."$expected_uid".plist) return 0 ;;
+		"$agent_dir"/web/services/com.lystar.web-frontend*."$expected_uid".plist|"$agent_dir"/web/services/com.lystar.web-gateway*."$expected_uid".plist|"$agent_dir"/web/services/com.lystar.web-runtime*."$expected_uid".plist) return 0 ;;
 		*) return 1 ;;
 	esac
 }
@@ -168,7 +168,7 @@ valid_source() {
 valid_target() {
 	invalid_path "$1" && return 1
 	case "$1" in
-		/Library/LaunchDaemons/com.lystar.web-gateway*."$expected_uid".plist|/Library/LaunchDaemons/com.lystar.web-runtime*."$expected_uid".plist) return 0 ;;
+		/Library/LaunchDaemons/com.lystar.web-frontend*."$expected_uid".plist|/Library/LaunchDaemons/com.lystar.web-gateway*."$expected_uid".plist|/Library/LaunchDaemons/com.lystar.web-runtime*."$expected_uid".plist) return 0 ;;
 		*) return 1 ;;
 	esac
 }
@@ -176,7 +176,7 @@ valid_target() {
 valid_label() {
 	invalid_path "$1" && return 1
 	case "$1" in
-		system/com.lystar.web-gateway*."$expected_uid"|system/com.lystar.web-runtime*."$expected_uid") return 0 ;;
+		system/com.lystar.web-frontend*."$expected_uid"|system/com.lystar.web-gateway*."$expected_uid"|system/com.lystar.web-runtime*."$expected_uid") return 0 ;;
 		*) return 1 ;;
 	esac
 }
@@ -420,9 +420,14 @@ export function webServiceUnitName(kind: WebServiceKind, profile?: string): stri
 	return `lystar-web-${kind}${profileSuffix(profile)}`;
 }
 
+function serviceKindLabel(kind: WebServiceKind): string {
+	if (kind === "frontend") return "Frontend";
+	return kind === "gateway" ? "Gateway" : "Runtime";
+}
+
 export function webServiceWindowsName(kind: WebServiceKind, profile?: string): string {
 	const suffix = profileSuffix(profile);
-	return `LYStar Web ${kind === "gateway" ? "Gateway" : "Runtime"}${suffix ? ` ${suffix.slice(1)}` : ""}`;
+	return `LYStar Web ${serviceKindLabel(kind)}${suffix ? ` ${suffix.slice(1)}` : ""}`;
 }
 
 function launchDaemonLabel(kind: WebServiceKind, profile?: string): string {
@@ -545,7 +550,7 @@ function plistArguments(spec: WebServiceSpec): string {
 }
 
 function serviceDescription(spec: WebServiceSpec): string {
-	return `LYStar Code Web ${spec.kind === "gateway" ? "Gateway" : "Runtime"}${profileSuffix(spec.profile)}`;
+	return `LYStar Code Web ${serviceKindLabel(spec.kind)}${profileSuffix(spec.profile)}`;
 }
 
 function makeSystemdUnit(spec: WebServiceSpec): string {

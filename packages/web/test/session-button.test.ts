@@ -20,6 +20,10 @@ describe("会话标题展示", () => {
 		expect(truncateSessionTitle(title)).toBe(`${"🙂".repeat(40)}...`);
 	});
 
+	it("组件使用 React memo 隔离未变化的会话行", () => {
+		expect((SessionButton as unknown as { $$typeof?: symbol }).$$typeof).toBe(Symbol.for("react.memo"));
+	});
+
 	it("会话行提供独立的删除按钮", () => {
 		const session: WebSessionSummary = {
 			id: "session-1",

@@ -247,7 +247,7 @@ function sessionProgressKey(progress: SessionProgress): string | undefined {
 }
 
 function shouldSendProgressImmediately(progress: SessionProgress): boolean {
-	if (progress.type === "tool_start" || progress.type === "tool_end") return true;
+	if (progress.type === "agent_step" || progress.type === "tool_start" || progress.type === "tool_end") return true;
 	if (progress.type !== "tool_state") return false;
 	return (
 		(progress.activity.state === "running" &&

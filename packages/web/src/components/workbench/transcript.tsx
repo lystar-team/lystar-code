@@ -1,4 +1,4 @@
-import { Check, CircleHelp, Clipboard, FileCode2, Pencil } from "lucide-react";
+import { Check, CircleHelp, Clipboard, FileCode2, Pencil, Trash2 } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 import type { BundledLanguage } from "shiki";
 import { type TranscriptToolViewModel, toSessionItemViewModel } from "../../adapters/session-view-model";
@@ -41,6 +41,7 @@ export const TranscriptMessageView = memo(function TranscriptMessageView({
 	role,
 	text,
 	durationLabel,
+	statusLabel,
 	attachments = [],
 	sources = [],
 	showCopy,
@@ -48,11 +49,13 @@ export const TranscriptMessageView = memo(function TranscriptMessageView({
 	projectId,
 	onOpenPath,
 	onEdit,
+	onRemove,
 	mode = "static",
 }: {
 	role: "user" | "assistant" | "system";
 	text: string;
 	durationLabel?: string;
+	statusLabel?: string;
 	attachments?: Array<{ id: string; filename: string; mediaType: string; url: string }>;
 	sources?: string[];
 	showCopy: boolean;
@@ -60,6 +63,7 @@ export const TranscriptMessageView = memo(function TranscriptMessageView({
 	projectId?: string;
 	onOpenPath: WorkbenchActions["openResource"];
 	onEdit?: () => void;
+	onRemove?: () => void;
 	mode?: "static" | "streaming";
 }) {
 	return (
@@ -98,6 +102,11 @@ export const TranscriptMessageView = memo(function TranscriptMessageView({
 					)}
 				</StabilityBoundary>
 				<TranscriptAttachments attachments={attachments} sessionId={sessionId} />
+				{role === "user" && statusLabel ? (
+					<div className="text-xs text-muted-foreground" aria-live="polite" data-testid="user-delivery-status">
+						{statusLabel}
+					</div>
+				) : null}
 				{role === "assistant" && durationLabel ? (
 					<div className="text-xs text-muted-foreground" data-testid="assistant-duration">
 						本次耗时：{durationLabel}
@@ -110,6 +119,7 @@ export const TranscriptMessageView = memo(function TranscriptMessageView({
 					role={role}
 					visible={role === "user" || showCopy}
 					onEdit={role === "user" ? onEdit : undefined}
+					onRemove={role === "user" ? onRemove : undefined}
 				/>
 			) : null}
 		</Message>
@@ -321,11 +331,13 @@ function MessageActionBar({
 	role,
 	visible,
 	onEdit,
+	onRemove,
 }: {
 	text: string;
 	role: "user" | "assistant";
 	visible: boolean;
 	onEdit?: () => void;
+	onRemove?: () => void;
 }) {
 	const [copied, setCopied] = useState(false);
 	const [tooltipOpen, setTooltipOpen] = useState(false);
@@ -359,6 +371,11 @@ function MessageActionBar({
 			{onEdit ? (
 				<MessageAction label="编辑 Prompt" tooltip="编辑 Prompt" onClick={onEdit}>
 					<Pencil className="size-4" />
+				</MessageAction>
+			) : null}
+			{onRemove ? (
+				<MessageAction label="删除排队消息" tooltip="删除排队消息" onClick={onRemove}>
+					<Trash2 className="size-4" />
 				</MessageAction>
 			) : null}
 			<MessageAction

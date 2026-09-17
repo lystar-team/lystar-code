@@ -41,7 +41,7 @@ function AppContent() {
 					</div>
 				}
 			>
-				<Workbench state={state} actions={workbench} projects={orderedProjects} currentProject={currentProject} />
+				<Workbench state={state} actions={workbench.actions} projects={orderedProjects} currentProject={currentProject} />
 			</Suspense>
 		</TooltipProvider>
 	);
