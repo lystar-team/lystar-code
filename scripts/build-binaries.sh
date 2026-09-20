@@ -5,7 +5,6 @@ cd "$(dirname "$0")/.."
 ROOT_DIR="$(pwd)"
 
 SKIP_INSTALL=false
-SKIP_DEPS=false
 SKIP_BUILD=false
 OFFLINE_MODEL_DATA=false
 PLATFORM=""
@@ -39,7 +38,6 @@ native_platform() {
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --skip-install) SKIP_INSTALL=true; shift ;;
-        --skip-deps) SKIP_DEPS=true; shift ;;
         --skip-build) SKIP_BUILD=true; shift ;;
         --offline-model-data) OFFLINE_MODEL_DATA=true; shift ;;
         --platform) PLATFORM="$2"; shift 2 ;;
@@ -71,11 +69,8 @@ if [[ -n "$CONFIGURED_REPOSITORY" && "$REPOSITORY" != "$CONFIGURED_REPOSITORY" ]
 fi
 
 VERSION="$(node -p "const p=require('./packages/coding-agent/package.json'); p.piConfig?.productVersion || p.version")"
-CLIPBOARD_MODULES_DIR="$ROOT_DIR/node_modules/@mariozechner"
-RELEASE_DEPS_DIR=""
 BUN_STAGING_FILES=()
 cleanup() {
-    if [[ -n "$RELEASE_DEPS_DIR" ]]; then rm -rf "$RELEASE_DEPS_DIR"; fi
     if [[ ${#BUN_STAGING_FILES[@]} -gt 0 ]]; then rm -f "${BUN_STAGING_FILES[@]}"; fi
 }
 trap cleanup EXIT
@@ -88,19 +83,6 @@ fi
 
 if [[ "$SKIP_INSTALL" == false ]]; then
     npm ci --ignore-scripts
-fi
-
-if [[ "$SKIP_DEPS" == false ]]; then
-    CLIPBOARD_VERSION="$(node -p "require('./packages/coding-agent/package.json').optionalDependencies['@mariozechner/clipboard']")"
-    RELEASE_DEPS_DIR="$(mktemp -d "$ROOT_DIR/.release-deps.XXXXXX")"
-    npm install --prefix "$RELEASE_DEPS_DIR" --include=optional --no-save --package-lock=false --force --ignore-scripts \
-        @mariozechner/clipboard@"$CLIPBOARD_VERSION" \
-        @mariozechner/clipboard-darwin-arm64@"$CLIPBOARD_VERSION" \
-        @mariozechner/clipboard-darwin-x64@"$CLIPBOARD_VERSION" \
-        @mariozechner/clipboard-linux-x64-gnu@"$CLIPBOARD_VERSION" \
-        @mariozechner/clipboard-linux-arm64-gnu@"$CLIPBOARD_VERSION" \
-        @mariozechner/clipboard-win32-x64-msvc@"$CLIPBOARD_VERSION"
-    CLIPBOARD_MODULES_DIR="$RELEASE_DEPS_DIR/node_modules/@mariozechner"
 fi
 
 if [[ "$SKIP_BUILD" == false ]]; then
@@ -155,39 +137,11 @@ for platform in "${PLATFORMS[@]}"; do
     mkdir -p "$OUTPUT_DIR/$platform/web"
     cp -r "$ROOT_DIR/packages/web/dist/." "$OUTPUT_DIR/$platform/web/"
 
-    case "$platform" in
-        darwin-arm64)
-            clipboard_package="clipboard-darwin-arm64"
-            clipboard_file="clipboard.darwin-arm64.node"
-            ;;
-        darwin-x64)
-            clipboard_package="clipboard-darwin-x64"
-            clipboard_file="clipboard.darwin-x64.node"
-            ;;
-        linux-x64)
-            clipboard_package="clipboard-linux-x64-gnu"
-            clipboard_file="clipboard.linux-x64-gnu.node"
-            ;;
-        linux-arm64)
-            clipboard_package="clipboard-linux-arm64-gnu"
-            clipboard_file="clipboard.linux-arm64-gnu.node"
-            ;;
-        windows-x64)
-            clipboard_package="clipboard-win32-x64-msvc"
-            clipboard_file="clipboard.win32-x64-msvc.node"
-            ;;
-    esac
-    mkdir -p "$OUTPUT_DIR/$platform/node_modules/@mariozechner"
-    cp -r "$CLIPBOARD_MODULES_DIR/clipboard" "$OUTPUT_DIR/$platform/node_modules/@mariozechner/"
-    cp -r "$CLIPBOARD_MODULES_DIR/$clipboard_package" "$OUTPUT_DIR/$platform/node_modules/@mariozechner/"
-    cp "$CLIPBOARD_MODULES_DIR/$clipboard_package/$clipboard_file" \
-        "$OUTPUT_DIR/$platform/node_modules/@mariozechner/clipboard/"
-
-    if [[ "$platform" == darwin-* ]]; then
-        mkdir -p "$OUTPUT_DIR/$platform/native/darwin/prebuilds/$platform"
-        cp "../tui/native/darwin/prebuilds/$platform/darwin-modifiers.node" \
-            "$OUTPUT_DIR/$platform/native/darwin/prebuilds/$platform/"
-    fi
+    # 复制当前平台的原生辅助模块，运行时按 native/<os>/prebuilds/<platform> 查找。
+    native_platform_dir="${platform/windows-/win32-}"
+    native_path="native/${native_platform_dir%-*}/prebuilds"
+    mkdir -p "$OUTPUT_DIR/$platform/$native_path"
+    cp -R "../tui/$native_path/$native_platform_dir" "$OUTPUT_DIR/$platform/$native_path/"
 
     [[ -x "$OUTPUT_DIR/$platform/lc" ]] || { printf 'Release bundle is missing lc for %s\n' "$platform" >&2; exit 1; }
     [[ "$("$OUTPUT_DIR/$platform/lc" --version)" == "$VERSION" ]] || { printf 'Release bundle lc version mismatch for %s\n' "$platform" >&2; exit 1; }
