@@ -1,9 +1,10 @@
 # Changelog
 
-## [0.86.0-lystar.1] - 2026-09-20
+## [0.86.0-lystar.2] - 2026-09-20
 
 ### Fixed
 
+- 修复发布构建：`build` 与 `build:offline` 把 `packages/durable` 排在 `packages/ai` 之前，durable 构建时找不到 pi-ai 类型，改为先构建 ai 再构建 durable。
 - 修复 Web 会话切换、分页恢复和 Subagent 历史加载时的 Task/工具归属与顺序：统一使用会话级步骤索引和序列归并，保留 `stepId`，清理过期工具活动与取消压缩卡片。
 
 ## [0.85.1-lystar.16] - 2026-09-17
